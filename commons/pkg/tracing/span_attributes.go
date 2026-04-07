@@ -50,12 +50,12 @@ func AddHealthEventStatusAttributes(span trace.Span, healthEventStatus *pb.Healt
 		)
 	}
 
-	faultRemediated := false
+	faultRemediated := ""
 	if healthEventStatus.FaultRemediated != nil {
-		faultRemediated = healthEventStatus.FaultRemediated.GetValue()
+		faultRemediated = fmt.Sprintf("%t", healthEventStatus.FaultRemediated.GetValue())
 	}
 
-	attrs = append(attrs, attribute.Bool("health_event_status.fault_remediated", faultRemediated))
+	attrs = append(attrs, attribute.String("health_event_status.fault_remediated", faultRemediated))
 
 	span.SetAttributes(attrs...)
 }
@@ -93,6 +93,13 @@ func AddHealthEventAttributes(span trace.Span, event *pb.HealthEvent) {
 			attrs = append(attrs, attribute.String(fmt.Sprintf("health_event.entities_impacted.%s",
 				entity.EntityType), entity.EntityValue))
 		}
+	}
+
+	if event.QuarantineOverrides != nil {
+		attrs = append(attrs,
+			attribute.Bool("health_event.quarantine_overrides.force", event.QuarantineOverrides.Force),
+			attribute.Bool("health_event.quarantine_overrides.skip", event.QuarantineOverrides.Skip),
+		)
 	}
 
 	span.SetAttributes(attrs...)

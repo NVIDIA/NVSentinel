@@ -186,7 +186,7 @@ func (m *MockHealthEventStore) FindHealthEventsByStatus(ctx context.Context, sta
 	return nil, nil
 }
 
-func (m *MockHealthEventStore) UpdateNodeQuarantineStatus(ctx context.Context, eventID string, status datastore.Status) error {
+func (m *MockHealthEventStore) UpdateNodeQuarantineStatus(ctx context.Context, eventID string, status datastore.Status, spanID string) error {
 	return nil
 }
 

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/store-client/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers/mongodb/watcher"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -38,7 +39,7 @@ func UpdateHealthEventStatus(ctx context.Context, client DatabaseClient, eventID
 // UpdateHealthEventNodeQuarantineStatus updates the node quarantine status
 // Used by fault-quarantine-module
 func UpdateHealthEventNodeQuarantineStatus(ctx context.Context, client DatabaseClient,
-	eventID string, status string) error {
+	eventID string, status string, spanID string) error {
 	fields := map[string]interface{}{
 		"healtheventstatus.nodequarantined": status,
 	}
@@ -46,6 +47,8 @@ func UpdateHealthEventNodeQuarantineStatus(ctx context.Context, client DatabaseC
 	if status == "Quarantined" || status == "AlreadyQuarantined" {
 		fields["healtheventstatus.quarantinefinishtimestamp"] = timestamppb.Now()
 	}
+
+	fields["healtheventstatus.spanids."+tracing.ServiceFaultQuarantine] = spanID
 
 	return client.UpdateDocumentStatusFields(ctx, eventID, fields)
 }

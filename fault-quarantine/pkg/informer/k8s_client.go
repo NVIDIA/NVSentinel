@@ -84,19 +84,19 @@ func NewFaultQuarantineClient(kubeconfig string, dryRun bool,
 
 func (c *FaultQuarantineClient) EnsureCircuitBreakerConfigMap(ctx context.Context,
 	name, namespace string, initialStatus breaker.State) error {
-	slog.Info("Ensuring circuit breaker config map",
+	slog.InfoContext(ctx, "Ensuring circuit breaker config map",
 		"name", name, "namespace", namespace, "initialStatus", initialStatus)
 
 	cmClient := c.Clientset.CoreV1().ConfigMaps(namespace)
 
 	_, err := cmClient.Get(ctx, name, metav1.GetOptions{})
 	if err == nil {
-		slog.Info("Circuit breaker config map already exists", "name", name, "namespace", namespace)
+		slog.InfoContext(ctx, "Circuit breaker config map already exists", "name", name, "namespace", namespace)
 		return nil
 	}
 
 	if !errors.IsNotFound(err) {
-		slog.Error("Error getting circuit breaker config map", "name", name, "namespace", namespace, "error", err)
+		slog.ErrorContext(ctx, "Error getting circuit breaker config map", "name", name, "namespace", namespace, "error", err)
 		return fmt.Errorf("failed to get config map %s in namespace %s: %w", name, namespace, err)
 	}
 
@@ -110,7 +110,9 @@ func (c *FaultQuarantineClient) EnsureCircuitBreakerConfigMap(ctx context.Contex
 
 	_, err = cmClient.Create(ctx, cm, metav1.CreateOptions{})
 	if err != nil {
-		slog.Error("Error creating circuit breaker config map", "name", name, "namespace", namespace, "error", err)
+		slog.ErrorContext(ctx, "Error creating circuit breaker config map",
+			"name", name, "namespace", namespace, "error", err)
+
 		return fmt.Errorf("failed to create config map %s in namespace %s: %w", name, namespace, err)
 	}
 
@@ -123,7 +125,7 @@ func (c *FaultQuarantineClient) GetTotalNodes(ctx context.Context) (int, error) 
 		return 0, fmt.Errorf("failed to get node counts from informer: %w", err)
 	}
 
-	slog.Debug("Got total nodes from NodeInformer cache", "totalNodes", totalNodes)
+	slog.DebugContext(ctx, "Got total nodes from NodeInformer cache", "totalNodes", totalNodes)
 
 	return totalNodes, nil
 }
@@ -188,7 +190,7 @@ func isRetryableError(err error) bool {
 func (c *FaultQuarantineClient) ReadCircuitBreakerState(
 	ctx context.Context, name, namespace string,
 ) (breaker.State, error) {
-	slog.Info("Reading circuit breaker state from config map",
+	slog.InfoContext(ctx, "Reading circuit breaker state from config map",
 		"name", name, "namespace", namespace)
 
 	cm, err := c.Clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
@@ -287,23 +289,23 @@ func (c *FaultQuarantineClient) QuarantineNodeAndSetAnnotations(
 ) error {
 	updateFn := func(node *v1.Node) error {
 		if len(taints) > 0 {
-			if err := c.applyTaints(node, taints, nodename); err != nil {
+			if err := c.applyTaints(ctx, node, taints, nodename); err != nil {
 				return fmt.Errorf("failed to apply taints to node %s: %w", nodename, err)
 			}
 		}
 
 		if isCordon {
-			if shouldSkip := c.handleCordon(node, nodename); shouldSkip {
+			if shouldSkip := c.handleCordon(ctx, node, nodename); shouldSkip {
 				return nil
 			}
 		}
 
 		if len(annotations) > 0 {
-			c.applyAnnotations(node, annotations, nodename)
+			c.applyAnnotations(ctx, node, annotations, nodename)
 		}
 
 		if len(labels) > 0 {
-			c.applyLabels(node, labels, nodename)
+			c.applyLabels(ctx, node, labels, nodename)
 		}
 
 		return nil
@@ -312,9 +314,11 @@ func (c *FaultQuarantineClient) QuarantineNodeAndSetAnnotations(
 	return c.UpdateNode(ctx, nodename, updateFn)
 }
 
-func (c *FaultQuarantineClient) applyTaints(node *v1.Node, taints []config.Taint, nodename string) error {
+func (c *FaultQuarantineClient) applyTaints(
+	ctx context.Context, node *v1.Node, taints []config.Taint, nodename string,
+) error {
 	if c.DryRunMode {
-		slog.Info("DryRun mode enabled, skipping taint application", "node", nodename)
+		slog.InfoContext(ctx, "DryRun mode enabled, skipping taint application", "node", nodename)
 		return nil
 	}
 
@@ -327,7 +331,7 @@ func (c *FaultQuarantineClient) applyTaints(node *v1.Node, taints []config.Taint
 		key := config.Taint{Key: taintConfig.Key, Value: taintConfig.Value, Effect: string(taintConfig.Effect)}
 
 		if _, exists := existingTaints[key]; !exists {
-			slog.Info("Tainting node", "node", nodename, "taintConfig", taintConfig)
+			slog.InfoContext(ctx, "Tainting node", "node", nodename, "taintConfig", taintConfig)
 			existingTaints[key] = v1.Taint{
 				Key:    taintConfig.Key,
 				Value:  taintConfig.Value,
@@ -344,18 +348,18 @@ func (c *FaultQuarantineClient) applyTaints(node *v1.Node, taints []config.Taint
 	return nil
 }
 
-func (c *FaultQuarantineClient) handleCordon(node *v1.Node, nodename string) bool {
+func (c *FaultQuarantineClient) handleCordon(ctx context.Context, node *v1.Node, nodename string) bool {
 	_, exist := node.Annotations[common.QuarantineHealthEventAnnotationKey]
 
 	if node.Spec.Unschedulable {
 		if exist {
-			slog.Info("Node already cordoned by FQM; skipping taint/annotation updates", "node", nodename)
+			slog.InfoContext(ctx, "Node already cordoned by FQM; skipping taint/annotation updates", "node", nodename)
 			return true
 		}
 
-		slog.Info("Node is cordoned manually; applying FQM taints/annotations", "node", nodename)
+		slog.InfoContext(ctx, "Node is cordoned manually; applying FQM taints/annotations", "node", nodename)
 	} else {
-		slog.Info("Cordoning node", "node", nodename)
+		slog.InfoContext(ctx, "Cordoning node", "node", nodename)
 
 		if !c.DryRunMode {
 			node.Spec.Unschedulable = true
@@ -365,24 +369,28 @@ func (c *FaultQuarantineClient) handleCordon(node *v1.Node, nodename string) boo
 	return false
 }
 
-func (c *FaultQuarantineClient) applyAnnotations(node *v1.Node, annotations map[string]string, nodename string) {
+func (c *FaultQuarantineClient) applyAnnotations(
+	ctx context.Context, node *v1.Node, annotations map[string]string, nodename string,
+) {
 	if node.Annotations == nil {
 		node.Annotations = make(map[string]string)
 	}
 
-	slog.Info("Setting annotations on node", "node", nodename, "annotations", annotations)
+	slog.InfoContext(ctx, "Setting annotations on node", "node", nodename, "annotations", annotations)
 
 	for annotationKey, annotationValue := range annotations {
 		node.Annotations[annotationKey] = annotationValue
 	}
 }
 
-func (c *FaultQuarantineClient) applyLabels(node *v1.Node, labels map[string]string, nodename string) {
+func (c *FaultQuarantineClient) applyLabels(
+	ctx context.Context, node *v1.Node, labels map[string]string, nodename string,
+) {
 	if node.Labels == nil {
 		node.Labels = make(map[string]string)
 	}
 
-	slog.Info("Adding labels on node", "node", nodename)
+	slog.InfoContext(ctx, "Adding labels on node", "node", nodename)
 
 	for k, v := range labels {
 		node.Labels[k] = v
@@ -399,23 +407,23 @@ func (c *FaultQuarantineClient) UnQuarantineNodeAndRemoveAnnotations(
 ) error {
 	updateFn := func(node *v1.Node) error {
 		if len(taints) > 0 {
-			if shouldReturn := c.removeTaints(node, taints, nodename); shouldReturn {
+			if shouldReturn := c.removeTaints(ctx, node, taints, nodename); shouldReturn {
 				return nil
 			}
 		}
 
-		c.handleUncordon(node, labels, nodename)
+		c.handleUncordon(ctx, node, labels, nodename)
 
 		if len(annotationKeys) > 0 {
 			for _, annotationKey := range annotationKeys {
-				slog.Info("Removing annotation key from node", "key", annotationKey, "node", nodename)
+				slog.InfoContext(ctx, "Removing annotation key from node", "key", annotationKey, "node", nodename)
 				delete(node.Annotations, annotationKey)
 			}
 		}
 
 		if len(labelsToRemove) > 0 {
 			for _, labelKey := range labelsToRemove {
-				slog.Info("Removing label key from node", "key", labelKey, "node", nodename)
+				slog.InfoContext(ctx, "Removing label key from node", "key", labelKey, "node", nodename)
 				delete(node.Labels, labelKey)
 			}
 		}
@@ -426,9 +434,11 @@ func (c *FaultQuarantineClient) UnQuarantineNodeAndRemoveAnnotations(
 	return c.UpdateNode(ctx, nodename, updateFn)
 }
 
-func (c *FaultQuarantineClient) removeTaints(node *v1.Node, taints []config.Taint, nodename string) bool {
+func (c *FaultQuarantineClient) removeTaints(
+	ctx context.Context, node *v1.Node, taints []config.Taint, nodename string,
+) bool {
 	if c.DryRunMode {
-		slog.Info("DryRun mode enabled, skipping taint removal", "node", nodename)
+		slog.InfoContext(ctx, "DryRun mode enabled, skipping taint removal", "node", nodename)
 		return false
 	}
 
@@ -448,7 +458,7 @@ func (c *FaultQuarantineClient) removeTaints(node *v1.Node, taints []config.Tain
 
 		found := taintsAlreadyPresentOnNodeMap[key]
 		if !found {
-			slog.Info("Node already does not have the taint", "node", nodename, "taint", taintConfig)
+			slog.InfoContext(ctx, "Node already does not have the taint", "node", nodename, "taint", taintConfig)
 		} else {
 			taintsToActuallyRemove = append(taintsToActuallyRemove, taintConfig)
 		}
@@ -458,24 +468,24 @@ func (c *FaultQuarantineClient) removeTaints(node *v1.Node, taints []config.Tain
 		return true
 	}
 
-	slog.Info("Untainting node", "node", nodename, "taints", taintsToActuallyRemove)
+	slog.InfoContext(ctx, "Untainting node", "node", nodename, "taints", taintsToActuallyRemove)
 
-	c.removeNodeTaints(node, taintsToActuallyRemove)
+	c.removeNodeTaints(ctx, node, taintsToActuallyRemove)
 
 	return false
 }
 
 func (c *FaultQuarantineClient) handleUncordon(
-	node *v1.Node, labels map[string]string, nodename string,
+	ctx context.Context, node *v1.Node, labels map[string]string, nodename string,
 ) {
-	slog.Info("Uncordoning node", "node", nodename)
+	slog.InfoContext(ctx, "Uncordoning node", "node", nodename)
 
 	if !c.DryRunMode {
 		node.Spec.Unschedulable = false
 	}
 
 	if len(labels) > 0 {
-		c.applyLabels(node, labels, nodename)
+		c.applyLabels(ctx, node, labels, nodename)
 
 		uncordonReason := node.Labels[c.cordonedReasonLabelKey]
 
@@ -542,9 +552,9 @@ func (c *FaultQuarantineClient) HandleManualUntaintCleanup(
 	return c.UpdateNode(ctx, nodename, updateFn)
 }
 
-func (c *FaultQuarantineClient) removeNodeTaints(node *v1.Node, taintsToRemove []config.Taint) {
+func (c *FaultQuarantineClient) removeNodeTaints(ctx context.Context, node *v1.Node, taintsToRemove []config.Taint) {
 	if c.DryRunMode {
-		slog.Info("DryRun mode enabled, skipping node taint removal")
+		slog.InfoContext(ctx, "DryRun mode enabled, skipping node taint removal")
 		return
 	}
 

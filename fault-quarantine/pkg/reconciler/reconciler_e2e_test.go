@@ -340,9 +340,9 @@ func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2ERec
 		}
 	}
 
-	r.precomputeTaintInitKeys(ruleSetEvals, rulesetsConfig)
+	r.precomputeTaintInitKeys(context.Background(), ruleSetEvals, rulesetsConfig)
 
-	r.initializeQuarantineMetrics()
+	r.initializeQuarantineMetrics(context.Background())
 
 	// Create mock watcher
 	mockWatcher := testutils.NewMockChangeStreamWatcher()
@@ -531,8 +531,8 @@ func runReconcilerAndQuarantineNode(
 			}
 		}
 
-		r.precomputeTaintInitKeys(ruleSetEvals, rulesetsConfig)
-		r.initializeQuarantineMetrics()
+		r.precomputeTaintInitKeys(context.Background(), ruleSetEvals, rulesetsConfig)
+		r.initializeQuarantineMetrics(context.Background())
 
 		mockWatcher := testutils.NewMockChangeStreamWatcher()
 
@@ -620,7 +620,7 @@ func verifyUnquarantineLabels(t *testing.T, node *corev1.Node) {
 
 // MockEventWatcher is a test mock for EventWatcherInterface that can simulate various scenarios
 type MockEventWatcher struct {
-	CancelLatestQuarantiningEventsFn func(ctx context.Context, nodeName string) error
+	CancelLatestQuarantiningEventsFn func(ctx context.Context, nodeName string, reason string) error
 	ProcessEventCallbackFn           func(ctx context.Context, event *model.HealthEventWithStatus) *model.Status
 	StartFn                          func(ctx context.Context) error
 }
@@ -636,11 +636,11 @@ func (m *MockEventWatcher) SetProcessEventCallback(callback func(ctx context.Con
 	m.ProcessEventCallbackFn = callback
 }
 
-func (m *MockEventWatcher) SetFetchDocIDsFn(_ func(nodeName string) []string) {}
+func (m *MockEventWatcher) SetFetchDocIDsFn(_ func(ctx context.Context, nodeName string) []string) {}
 
-func (m *MockEventWatcher) CancelLatestQuarantiningEvents(ctx context.Context, nodeName string) error {
+func (m *MockEventWatcher) CancelLatestQuarantiningEvents(ctx context.Context, nodeName string, reason string) error {
 	if m.CancelLatestQuarantiningEventsFn != nil {
-		return m.CancelLatestQuarantiningEventsFn(ctx, nodeName)
+		return m.CancelLatestQuarantiningEventsFn(ctx, nodeName, reason)
 	}
 	// Default behavior: simulate MongoDB document not found (returns nil as per the real implementation)
 	return nil
@@ -3870,1237 +3870,1237 @@ func TestE2E_UnhealthyEventNotMatchingRulesNotPropagated(t *testing.T) {
 	assert.Equal(t, 1, healthEventsMap.Count(), "Should still have only GpuXidError tracked")
 }
 
-// // TestE2E_ManualUncordonWithCancellation tests that manual uncordon triggers proper cleanup
-// func TestE2E_ManualUncordonWithCancellation(t *testing.T) {
-// 	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
-// 	defer cancel()
-
-// 	nodeName := testutils.GenerateTestNodeName("e2e-manual-uncordon")
-// 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
-// 	defer func() {
-// 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
-// 	}()
-
-// 	tomlConfig := config.TomlConfig{
-// 		LabelPrefix: "k8s.nvidia.com/",
-// 		RuleSets: []config.RuleSet{
-// 			{
-// 				Name:     "gpu-xid-errors",
-// 				Version:  "1",
-// 				Priority: 10,
-// 				Match: config.Match{
-// 					Any: []config.Rule{
-// 						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError' && event.isFatal == true"},
-// 					},
-// 				},
-// 				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
-// 				Cordon: config.Cordon{ShouldCordon: true},
-// 			},
-// 		},
-// 	}
-
-// 	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
-
-// 	beforeManualUncordon := getCounterVecValue(t, metrics.TotalNodesManuallyUncordoned, nodeName)
-// 	beforeCurrentQuarantined := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
-
-// 	t.Log("Sending unhealthy event to quarantine node")
-// 	eventID1 := generateTestID()
-// 	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
-// 		eventID1,
-// 		nodeName,
-// 		"GpuXidError",
-// 		false,
-// 		true,
-// 		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
-// 		model.StatusInProgress,
-// 	)}
-
-// 	t.Log("Waiting for node to be quarantined")
-// 	require.Eventually(t, func() bool {
-// 		status := getStatus(eventID1)
-// 		return status != nil && *status == model.Quarantined
-// 	}, statusCheckTimeout, statusCheckPollInterval, "Status should be Quarantined")
-
-// 	require.Eventually(t, func() bool {
-// 		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 		return err == nil && node.Spec.Unschedulable
-// 	}, eventuallyTimeout, eventuallyPollInterval, "Node should be quarantined")
-
-// 	t.Log("Manually uncordon the node")
-// 	quarantinedNode, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 	require.NoError(t, err)
-// 	quarantinedNode.Spec.Unschedulable = false
-// 	_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, quarantinedNode, metav1.UpdateOptions{})
-// 	require.NoError(t, err)
-
-// 	t.Log("Verify manual uncordon cleanup")
-// 	require.Eventually(t, func() bool {
-// 		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 		if err != nil {
-// 			return false
-// 		}
-
-// 		return node.Annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey] == common.QuarantinedNodeUncordonedManuallyAnnotationValue &&
-// 			node.Annotations[common.QuarantineHealthEventAnnotationKey] == ""
-// 	}, eventuallyTimeout, eventuallyPollInterval, "Manual uncordon should clean up annotations")
-
-// 	t.Log("Verify manual uncordon metric incremented")
-// 	afterManualUncordon := getCounterVecValue(t, metrics.TotalNodesManuallyUncordoned, nodeName)
-// 	assert.Equal(t, beforeManualUncordon+1, afterManualUncordon, "TotalNodesManuallyUncordoned should increment")
-
-// 	t.Log("Verify current quarantined nodes gauge updated")
-// 	afterCurrentQuarantined := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
-// 	assert.Equal(t, float64(0), afterCurrentQuarantined, "CurrentQuarantinedNodes should be 0")
-// 	assert.GreaterOrEqual(t, beforeCurrentQuarantined, float64(0), "Gauge should have been set before")
-// }
-
-// // TestE2E_ManualUncordonMultipleEvents tests that manual uncordon works with multiple events on the same node
-// func TestE2E_ManualUncordonMultipleEvents(t *testing.T) {
-// 	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
-// 	defer cancel()
-
-// 	nodeName := testutils.GenerateTestNodeName("e2e-manual-multi")
-// 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
-// 	defer func() {
-// 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
-// 	}()
-
-// 	tomlConfig := config.TomlConfig{
-// 		LabelPrefix: "k8s.nvidia.com/",
-// 		RuleSets: []config.RuleSet{
-// 			{
-// 				Name:     "gpu-xid-errors",
-// 				Version:  "1",
-// 				Priority: 10,
-// 				Match: config.Match{
-// 					Any: []config.Rule{
-// 						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
-// 					},
-// 				},
-// 				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
-// 				Cordon: config.Cordon{ShouldCordon: true},
-// 			},
-// 		},
-// 	}
-
-// 	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
-
-// 	t.Log("Send first unhealthy event (Quarantined)")
-// 	eventID1 := generateTestID()
-// 	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
-// 		eventID1,
-// 		nodeName,
-// 		"GpuXidError",
-// 		false,
-// 		true,
-// 		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
-// 		model.StatusInProgress,
-// 	)}
-
-// 	require.Eventually(t, func() bool {
-// 		status := getStatus(eventID1)
-// 		return status != nil && *status == model.Quarantined
-// 	}, statusCheckTimeout, statusCheckPollInterval, "First event should be Quarantined")
-
-// 	t.Log("Send second unhealthy event (AlreadyQuarantined)")
-// 	eventID2 := generateTestID()
-// 	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
-// 		eventID2,
-// 		nodeName,
-// 		"GpuXidError",
-// 		false,
-// 		true,
-// 		[]*protos.Entity{{EntityType: "GPU", EntityValue: "1"}},
-// 		model.StatusInProgress,
-// 	)}
-
-// 	require.Eventually(t, func() bool {
-// 		status := getStatus(eventID2)
-// 		return status != nil && *status == model.AlreadyQuarantined
-// 	}, statusCheckTimeout, statusCheckPollInterval, "Second event should be Quarantined")
-
-// 	t.Log("Send third unhealthy event (AlreadyQuarantined)")
-// 	eventID3 := generateTestID()
-// 	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
-// 		eventID3,
-// 		nodeName,
-// 		"GpuXidError",
-// 		false,
-// 		true,
-// 		[]*protos.Entity{{EntityType: "GPU", EntityValue: "2"}},
-// 		model.StatusInProgress,
-// 	)}
-
-// 	require.Eventually(t, func() bool {
-// 		status := getStatus(eventID3)
-// 		return status != nil && *status == model.AlreadyQuarantined
-// 	}, statusCheckTimeout, statusCheckPollInterval, "Third event should be AlreadyQuarantined")
-
-// 	t.Log("Manually uncordon the node")
-// 	quarantinedNode, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 	require.NoError(t, err)
-// 	quarantinedNode.Spec.Unschedulable = false
-// 	_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, quarantinedNode, metav1.UpdateOptions{})
-// 	require.NoError(t, err)
-
-// 	t.Log("Verify manual uncordon annotation is set")
-// 	require.Eventually(t, func() bool {
-// 		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 		if err != nil {
-// 			return false
-// 		}
-// 		return node.Annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey] == common.QuarantinedNodeUncordonedManuallyAnnotationValue
-// 	}, eventuallyTimeout, eventuallyPollInterval, "Manual uncordon annotation should be set")
-
-// 	t.Log("Verify quarantine annotation cleared")
-// 	require.Eventually(t, func() bool {
-// 		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 		if err != nil {
-// 			return false
-// 		}
-// 		return node.Annotations[common.QuarantineHealthEventAnnotationKey] == ""
-// 	}, eventuallyTimeout, eventuallyPollInterval, "Quarantine annotation should be cleared")
-// }
-
-// // TestE2E_ConcurrentHealthyEvents_WithDelayedInformer verifies that the reconciler correctly
-// // uncordons a node when multiple health checks recover simultaneously, even when the informer
-// // cache is stale.
-// //
-// // SCENARIO:
-// // A node has two different failing health checks. Both checks recover at the same time,
-// // generating two healthy events that are processed concurrently. Each event:
-// //   - Reads the node state from the informer cache
-// //   - Removes its own check from the annotation
-// //   - Decides whether to uncordon based on remaining checks
-// //
-// // CHALLENGE:
-// // When both events read the cache before either update propagates back, they both see
-// // stale data showing "the other check is still failing." The reconciler must handle this
-// // correctly and ensure the node is uncordoned when all checks have actually recovered.
-// //
-// // TEST STRATEGY:
-// // We inject a 500ms delay into the informer's watch connection, simulating real-world
-// // cache lag due to network latency or API server load. The delay is toggled:
-// //   - DISABLED during setup: allows normal operation to quarantine the node
-// //   - ENABLED during trigger: forces concurrent events to see stale cache
-// func TestE2E_ConcurrentHealthyEvents_WithDelayedInformer(t *testing.T) {
-// 	// This test requires its own envtest instance with a custom transport wrapper
-// 	testEnv := &envtest.Environment{}
-// 	restConfig, err := testEnv.Start()
-// 	require.NoError(t, err, "Failed to start test environment")
-
-// 	// Start with delay DISABLED - we need normal operation during setup phase
-// 	delayedRT := &delayedWatchRoundTripper{
-// 		watchDelay: 500 * time.Millisecond,
-// 		enabled:    false,
-// 	}
-
-// 	stopCh := make(chan struct{})
-
-// 	// Shutdown order matters: disable delay first (unblocks any pending reads), then stop
-// 	// informer (closes watch connection), then stop envtest (can now shut down cleanly)
-// 	defer func() {
-// 		delayedRT.SetEnabled(false)
-// 		close(stopCh)
-// 		if err := testEnv.Stop(); err != nil {
-// 			t.Logf("Warning: Failed to stop test environment: %v", err)
-// 		}
-// 	}()
-
-// 	// Wrap the transport to delay only watch requests (informer cache sync)
-// 	// Regular GET/POST/PUT/DELETE requests are unaffected
-// 	restConfig.Wrap(func(rt http.RoundTripper) http.RoundTripper {
-// 		delayedRT.delegate = rt
-// 		return delayedRT
-// 	})
-
-// 	k8sClient, err := kubernetes.NewForConfig(restConfig)
-// 	require.NoError(t, err, "Failed to create k8s client")
-
-// 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-// 	defer cancel()
-
-// 	nodeName := "concurrent-recovery-" + generateShortTestID()
-// 	node := &corev1.Node{
-// 		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
-// 		Spec:       corev1.NodeSpec{Unschedulable: false},
-// 		Status:     corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}},
-// 	}
-// 	_, err = k8sClient.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
-// 	require.NoError(t, err, "Failed to create test node")
-// 	defer func() {
-// 		_ = k8sClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
-// 	}()
-
-// 	tomlConfig := config.TomlConfig{
-// 		LabelPrefix: "k8s.nvidia.com/",
-// 		RuleSets: []config.RuleSet{{
-// 			Name:     "gpu-fatal-errors",
-// 			Version:  "1",
-// 			Priority: 10,
-// 			Match:    config.Match{Any: []config.Rule{{Kind: "HealthEvent", Expression: "event.isFatal == true"}}},
-// 			Taint:    config.Taint{Key: "nvidia.com/gpu-error", Value: "true", Effect: "NoSchedule"},
-// 			Cordon:   config.Cordon{ShouldCordon: true},
-// 		}},
-// 	}
-
-// 	// Resync period of 0 disables periodic re-listing. The informer only updates via watch
-// 	// events, not by periodically fetching all nodes. This ensures cache staleness is controlled
-// 	// solely by our delayed watch transport.
-// 	nodeInformer, err := informer.NewNodeInformer(k8sClient, 0)
-// 	require.NoError(t, err)
-
-// 	fqClient := &informer.FaultQuarantineClient{
-// 		Clientset:    k8sClient,
-// 		DryRunMode:   false,
-// 		NodeInformer: nodeInformer,
-// 	}
-
-// 	go func() { _ = nodeInformer.Run(stopCh) }()
-
-// 	require.Eventually(t, nodeInformer.HasSynced, 10*time.Second, 100*time.Millisecond, "NodeInformer should sync")
-
-// 	ruleSetEvals, err := evaluator.InitializeRuleSetEvaluators(tomlConfig.RuleSets, fqClient.NodeInformer)
-// 	require.NoError(t, err)
-
-// 	r := NewReconciler(ReconcilerConfig{TomlConfig: tomlConfig}, fqClient, nil)
-// 	r.SetLabelKeys(tomlConfig.LabelPrefix)
-// 	fqClient.SetLabelKeys(r.cordonedReasonLabelKey, r.uncordonedReasonLabelKey)
-
-// 	rulesetsConfig := rulesetsConfig{
-// 		TaintConfigMap:     make(map[string]*config.Taint),
-// 		CordonConfigMap:    make(map[string]bool),
-// 		RuleSetPriorityMap: make(map[string]int),
-// 	}
-// 	for _, rs := range tomlConfig.RuleSets {
-// 		if rs.Taint.Key != "" {
-// 			rulesetsConfig.TaintConfigMap[rs.Name] = &rs.Taint
-// 		}
-// 		if rs.Cordon.ShouldCordon {
-// 			rulesetsConfig.CordonConfigMap[rs.Name] = true
-// 		}
-// 		if rs.Priority > 0 {
-// 			rulesetsConfig.RuleSetPriorityMap[rs.Name] = rs.Priority
-// 		}
-// 	}
-
-// 	r.precomputeTaintInitKeys(ruleSetEvals, rulesetsConfig)
-// 	fqClient.NodeInformer.SetOnManualUncordonCallback(r.handleManualUncordon)
-
-// 	mockWatcher := testutils.NewMockChangeStreamWatcher()
-// 	t.Cleanup(func() { close(mockWatcher.EventsChan) })
-
-// 	go func() {
-// 		for event := range mockWatcher.Events() {
-// 			var healthEventWithStatus model.HealthEventWithStatus
-// 			if err := event.UnmarshalDocument(&healthEventWithStatus); err != nil {
-// 				continue
-// 			}
-// 			r.ProcessEvent(ctx, &healthEventWithStatus, ruleSetEvals, rulesetsConfig)
-// 		}
-// 	}()
-
-// 	// === SETUP: Quarantine node with TWO different checks ===
-// 	t.Log("Setup: Quarantining node with two checks")
-
-// 	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
-// 		generateTestID(), nodeName, "GpuInforomWatch", false, true,
-// 		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}}, model.StatusInProgress,
-// 	)}
-
-// 	require.Eventually(t, func() bool {
-// 		n, _ := k8sClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 		return n.Spec.Unschedulable
-// 	}, 10*time.Second, 100*time.Millisecond, "Node should be quarantined")
-
-// 	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
-// 		generateTestID(), nodeName, "GpuDcgmConnectivityFailure", false, true,
-// 		[]*protos.Entity{}, model.StatusInProgress,
-// 	)}
-
-// 	require.Eventually(t, func() bool {
-// 		n, _ := k8sClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 		var m healthEventsAnnotation.HealthEventsAnnotationMap
-// 		if err := json.Unmarshal([]byte(n.Annotations[common.QuarantineHealthEventAnnotationKey]), &m); err != nil {
-// 			return false
-// 		}
-// 		return m.Count() == 2
-// 	}, 10*time.Second, 100*time.Millisecond, "Both checks should be tracked")
-
-// 	// === TRIGGER: Process both healthy events CONCURRENTLY with delayed watch ===
-// 	t.Log("Trigger: Enabling watch delay and processing healthy events concurrently")
-
-// 	// From this point, every informer cache update is delayed by 500ms. Any K8s API update
-// 	// the reconciler makes won't be visible in the cache until well after both events finish.
-// 	delayedRT.SetEnabled(true)
-
-// 	// Recovery events for both checks - these will be processed simultaneously
-// 	eventA := &model.HealthEventWithStatus{
-// 		HealthEvent: &protos.HealthEvent{
-// 			Version: 1, Agent: "gpu-health-monitor", ComponentClass: "GPU",
-// 			CheckName: "GpuDcgmConnectivityFailure", IsHealthy: true, IsFatal: false,
-// 			EntitiesImpacted: []*protos.Entity{}, NodeName: nodeName,
-// 		},
-// 	}
-
-// 	eventB := &model.HealthEventWithStatus{
-// 		HealthEvent: &protos.HealthEvent{
-// 			Version: 1, Agent: "gpu-health-monitor", ComponentClass: "GPU",
-// 			CheckName: "GpuInforomWatch", IsHealthy: true, IsFatal: false,
-// 			EntitiesImpacted: []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}}, NodeName: nodeName,
-// 		},
-// 	}
-
-// 	var wg sync.WaitGroup
-// 	wg.Add(2)
-
-// 	// startBarrier ensures both goroutines begin at exactly the same instant. Both block
-// 	// on receiving from this channel; closing the channel unblocks all receivers simultaneously.
-// 	// This maximizes overlap between the two ProcessEvent calls, guaranteeing they both read
-// 	// the cache before either has a chance to see the other's updates.
-// 	startBarrier := make(chan struct{})
-
-// 	go func() {
-// 		defer wg.Done()
-// 		<-startBarrier
-// 		r.ProcessEvent(ctx, eventA, ruleSetEvals, rulesetsConfig)
-// 	}()
-
-// 	go func() {
-// 		defer wg.Done()
-// 		<-startBarrier
-// 		r.ProcessEvent(ctx, eventB, ruleSetEvals, rulesetsConfig)
-// 	}()
-
-// 	close(startBarrier)
-// 	wg.Wait()
-
-// 	// === VERIFY: Node should be fully recovered ===
-// 	delayedRT.SetEnabled(false)
-
-// 	// Read directly from API server (not cache) to get the true final state
-// 	finalNode, err := k8sClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 	require.NoError(t, err)
-
-// 	annotation := finalNode.Annotations[common.QuarantineHealthEventAnnotationKey]
-// 	isStillCordoned := finalNode.Spec.Unschedulable
-
-// 	t.Logf("Final state: annotation=%q, stillCordoned=%v", annotation, isStillCordoned)
-
-// 	// Verify annotation is empty - both events successfully removed their checks
-// 	var healthEventsMap healthEventsAnnotation.HealthEventsAnnotationMap
-// 	annotationIsEmpty := annotation == "" || annotation == "[]"
-// 	if !annotationIsEmpty && annotation != "" {
-// 		if err := json.Unmarshal([]byte(annotation), &healthEventsMap); err == nil {
-// 			annotationIsEmpty = healthEventsMap.IsEmpty()
-// 		}
-// 	}
-
-// 	require.True(t, annotationIsEmpty, "Annotation should be empty after both checks recovered, got: %s", annotation)
-
-// 	// With all checks recovered (empty annotation), node must be uncordoned
-// 	require.False(t, isStillCordoned,
-// 		"Node should be uncordoned when all health checks have recovered. "+
-// 			"The reconciler must correctly handle concurrent recovery events even with stale cache.")
-
-// 	require.Empty(t, finalNode.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey])
-
-// 	fqTaintCount := 0
-// 	for _, taint := range finalNode.Spec.Taints {
-// 		if taint.Key == "nvidia.com/gpu-error" {
-// 			fqTaintCount++
-// 		}
-// 	}
-// 	require.Equal(t, 0, fqTaintCount, "FQ taints should be removed")
-// }
-
-// // TestE2E_StaleAnnotationOnRestart test verifies that stale annotation and taints are cleaned up
-// // on restart if node has been manually uncordoned before the FQ pod restarted:
-// // SCENARIO:
-// // 1. FQ reconciler is running and taints + cordons a node due to a health event
-// // 2. Reconciler pod crashes or stops running (simulating OOM, cluster upgrade, etc.)
-// // 3. While reconciler is down, operator manually removes taints and uncordons the node
-// // 4. Reconciler pod restarts
-// // Expected: Reconciler should detect stale annotations (annotation + taints present but node not cordoned/tainted)
-// // and clean them up, ensuring metrics are correctly initialized to 0.
-// func TestE2E_StaleAnnotationOnRestart_TaintsAndCordon(t *testing.T) {
-// 	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
-// 	defer cancel()
-
-// 	nodeName := "stale-annotation-test-node-" + generateShortTestID()
-
-// 	// Create a clean node initially
-// 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
-// 	defer func() {
-// 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
-// 	}()
-
-// 	tomlConfig := config.TomlConfig{
-// 		LabelPrefix: "k8s.nvidia.com/",
-// 		RuleSets: []config.RuleSet{
-// 			{
-// 				Name:     "gpu-xid-errors",
-// 				Version:  "1",
-// 				Priority: 10,
-// 				Match: config.Match{
-// 					Any: []config.Rule{
-// 						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
-// 					},
-// 				},
-// 				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
-// 				Cordon: config.Cordon{ShouldCordon: true},
-// 			},
-// 		},
-// 	}
-
-// 	// Step 1: Start reconciler and let it taint and cordon the node
-// 	t.Log("Step 1: Starting reconciler and sending health event to taint and cordon node")
-// 	runReconcilerAndQuarantineNode(t, ctx, nodeName, tomlConfig, func(t *testing.T, node *corev1.Node) bool {
-// 		hasHealthEvent := node.Annotations[common.QuarantineHealthEventAnnotationKey] != ""
-// 		hasAppliedTaintsAnnotation := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey] != ""
-// 		hasCordonAnnotation := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] == "True"
-// 		isCordoned := node.Spec.Unschedulable
-
-// 		hasFQTaint := false
-// 		for _, taint := range node.Spec.Taints {
-// 			if taint.Key == "nvidia.com/gpu-xid-error" {
-// 				hasFQTaint = true
-// 				break
-// 			}
-// 		}
-
-// 		t.Logf("Node quarantined check: hasHealthEvent=%v, hasAppliedTaintsAnnotation=%v, hasCordonAnnotation=%v, isCordoned=%v, hasFQTaint=%v",
-// 			hasHealthEvent, hasAppliedTaintsAnnotation, hasCordonAnnotation, isCordoned, hasFQTaint)
-// 		return hasHealthEvent && hasAppliedTaintsAnnotation && hasCordonAnnotation && isCordoned && hasFQTaint
-// 	})
-
-// 	// Step 2: Manually remove taints and uncordon the node
-// 	t.Log("Step 2: Manually removing taints and uncordoning the node while reconciler is down")
-// 	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 	require.NoError(t, err)
-
-// 	// Remove FQ taints
-// 	filteredTaints := []corev1.Taint{}
-// 	for _, taint := range node.Spec.Taints {
-// 		if taint.Key != "nvidia.com/gpu-xid-error" && taint.Key != "node.kubernetes.io/unschedulable" {
-// 			filteredTaints = append(filteredTaints, taint)
-// 		}
-// 	}
-// 	node.Spec.Taints = filteredTaints
-// 	node.Spec.Unschedulable = false
-
-// 	_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
-// 	require.NoError(t, err)
-
-// 	t.Log("Verifying node is manually untainted/uncordoned but stale annotations remain")
-// 	require.Eventually(t, func() bool {
-// 		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 		if err != nil {
-// 			return false
-// 		}
-// 		hasHealthEvent := node.Annotations[common.QuarantineHealthEventAnnotationKey] != ""
-// 		hasAppliedTaintsAnnotation := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey] != ""
-// 		isNotCordoned := !node.Spec.Unschedulable
-
-// 		hasFQTaint := false
-// 		for _, taint := range node.Spec.Taints {
-// 			if taint.Key == "nvidia.com/gpu-xid-error" {
-// 				hasFQTaint = true
-// 				break
-// 			}
-// 		}
-
-// 		t.Logf("Stale state check: hasHealthEvent=%v, hasAppliedTaintsAnnotation=%v, isNotCordoned=%v, hasFQTaint=%v",
-// 			hasHealthEvent, hasAppliedTaintsAnnotation, isNotCordoned, hasFQTaint)
-// 		return hasHealthEvent && hasAppliedTaintsAnnotation && isNotCordoned && !hasFQTaint
-// 	}, eventuallyTimeout, eventuallyPollInterval, "Node should be untainted/uncordoned but have stale annotations")
-
-// 	// Step 3: Restart reconciler - it should detect and clean up stale annotations
-// 	t.Log("Step 3: Setting up reconciler - simulating pod restart with stale annotation")
-// 	setupE2EReconciler(t, ctx, tomlConfig, nil)
-
-// 	t.Log("Verifying stale annotations are cleaned up")
-// 	require.Eventually(t, func() bool {
-// 		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 		if err != nil {
-// 			return false
-// 		}
-
-// 		// Stale annotations should be removed
-// 		annotationRemoved := node.Annotations[common.QuarantineHealthEventAnnotationKey] == ""
-// 		appliedTaintsRemoved := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey] == ""
-// 		cordonedAnnotationRemoved := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] == ""
-// 		labelRemoved := node.Labels[statemanager.NVSentinelStateLabelKey] == ""
-
-// 		fqTaintCount := 0
-// 		for _, taint := range node.Spec.Taints {
-// 			if taint.Key == "nvidia.com/gpu-xid-error" {
-// 				fqTaintCount++
-// 			}
-// 		}
-
-// 		return annotationRemoved &&
-// 			appliedTaintsRemoved &&
-// 			cordonedAnnotationRemoved &&
-// 			labelRemoved &&
-// 			fqTaintCount == 0 &&
-// 			!node.Spec.Unschedulable
-// 	}, eventuallyTimeout, eventuallyPollInterval, "Stale annotations should be cleaned up on restart")
-
-// 	t.Log("Verifying metric is correctly initialized to 0 (not 1)")
-// 	gaugeValue := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
-// 	assert.Equal(t, float64(0), gaugeValue, "CurrentQuarantinedNodes should be 0 after cleaning stale annotation")
-// }
-
-// // TestE2E_StaleAnnotationOnRestart_CordonOnly tests stale annotation is cleaned up on restart if node has been manually uncordoned before the FQ pod restarted:
-// // SCENARIO:
-// // 1. FQ reconciler is running and cordons a node due to a health event (no taints, cordon-only)
-// // 2. Reconciler pod crashes or stops running (simulating OOM, cluster upgrade, etc.)
-// // 3. While reconciler is down, operator manually uncordons the node
-// // 4. Reconciler pod restarts
-// // Expected: Reconciler should detect stale annotations (annotation says cordoned but node is not cordoned)
-// // and clean them up, ensuring metrics are correctly initialized to 0.
-// func TestE2E_StaleAnnotationOnRestart_CordonOnly(t *testing.T) {
-// 	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
-// 	defer cancel()
-
-// 	nodeName := "stale-cordon-only-node-" + generateShortTestID()
-
-// 	// Create a clean node initially
-// 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
-// 	defer func() {
-// 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
-// 	}()
-
-// 	tomlConfig := config.TomlConfig{
-// 		LabelPrefix: "k8s.nvidia.com/",
-// 		RuleSets: []config.RuleSet{
-// 			{
-// 				Name:     "gpu-xid-errors",
-// 				Version:  "1",
-// 				Priority: 10,
-// 				Match: config.Match{
-// 					Any: []config.Rule{
-// 						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
-// 					},
-// 				},
-// 				Cordon: config.Cordon{ShouldCordon: true}, // Cordon-only, no taints
-// 			},
-// 		},
-// 	}
-
-// 	// Step 1: Start reconciler and let it cordon the node (no taints)
-// 	t.Log("Step 1: Starting reconciler and sending health event to cordon node")
-// 	runReconcilerAndQuarantineNode(t, ctx, nodeName, tomlConfig, func(t *testing.T, node *corev1.Node) bool {
-// 		hasHealthEvent := node.Annotations[common.QuarantineHealthEventAnnotationKey] != ""
-// 		hasCordonAnnotation := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] == "True"
-// 		isCordoned := node.Spec.Unschedulable
-// 		t.Logf("Node cordoned check: hasHealthEvent=%v, hasCordonAnnotation=%v, isCordoned=%v",
-// 			hasHealthEvent, hasCordonAnnotation, isCordoned)
-// 		return hasHealthEvent && hasCordonAnnotation && isCordoned
-// 	})
-
-// 	// Step 2: Manually uncordon the node (simulating kubectl uncordon)
-// 	t.Log("Step 2: Manually uncordoning the node while reconciler is down")
-// 	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 	require.NoError(t, err)
-// 	node.Spec.Unschedulable = false
-// 	_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
-// 	require.NoError(t, err)
-
-// 	t.Log("Verifying node is manually uncordoned but stale annotations remain")
-// 	require.Eventually(t, func() bool {
-// 		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 		if err != nil {
-// 			return false
-// 		}
-// 		hasHealthEvent := node.Annotations[common.QuarantineHealthEventAnnotationKey] != ""
-// 		hasCordonAnnotation := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] == "True"
-// 		isNotCordoned := !node.Spec.Unschedulable
-// 		t.Logf("Stale state check: hasHealthEvent=%v, hasCordonAnnotation=%v, isNotCordoned=%v",
-// 			hasHealthEvent, hasCordonAnnotation, isNotCordoned)
-// 		return hasHealthEvent && hasCordonAnnotation && isNotCordoned
-// 	}, eventuallyTimeout, eventuallyPollInterval, "Node should be uncordoned but have stale annotations")
-
-// 	// Step 3: Restart reconciler - it should detect and clean up stale annotations
-// 	t.Log("Step 3: Setting up reconciler - simulating pod restart with stale cordon annotation")
-// 	_, _, _, _ = setupE2EReconciler(t, ctx, tomlConfig, nil)
-
-// 	t.Log("Verifying stale cordon annotations were cleaned up during reconciler startup")
-// 	require.Eventually(t, func() bool {
-// 		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 		if err != nil {
-// 			return false
-// 		}
-
-// 		annotationRemoved := node.Annotations[common.QuarantineHealthEventAnnotationKey] == ""
-// 		cordonedAnnotationRemoved := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] == ""
-// 		labelRemoved := node.Labels[statemanager.NVSentinelStateLabelKey] == ""
-
-// 		return annotationRemoved &&
-// 			cordonedAnnotationRemoved &&
-// 			labelRemoved &&
-// 			!node.Spec.Unschedulable
-// 	}, eventuallyTimeout, eventuallyPollInterval, "Stale cordon annotations should be cleaned up")
-
-// 	t.Log("Verifying metric is correctly initialized to 0 (not 1)")
-// 	gaugeValue := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
-// 	assert.Equal(t, float64(0), gaugeValue, "CurrentQuarantinedNodes should be 0 after cleaning stale annotation")
-// }
-
-// // TestE2E_StaleAnnotationOnRestart_TaintsOnly test verifies that stale annotation and taints are cleaned up
-// // on restart when node was manually untainted and uncordoned while reconciler was down:
-// // SCENARIO:
-// // 1. FQ reconciler is running and taints + cordons a node due to a health event
-// // 2. Reconciler pod crashes or stops running (simulating OOM, cluster upgrade, etc.)
-// // 3. While reconciler is down, operator manually removes taints and uncordons the node
-// // 4. Reconciler pod restarts
-// // Expected: Reconciler should detect stale annotations (health event + appliedTaints annotations exist but node is not tainted/cordoned)
-// // and clean them up, ensuring metrics are correctly initialized to 0.
-// func TestE2E_StaleAnnotationOnRestart_TaintsOnly(t *testing.T) {
-// 	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
-// 	defer cancel()
-
-// 	nodeName := "stale-taints-node-" + generateShortTestID()
-
-// 	// Create a clean node initially
-// 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
-// 	defer func() {
-// 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
-// 	}()
-
-// 	tomlConfig := config.TomlConfig{
-// 		LabelPrefix: "k8s.nvidia.com/",
-// 		RuleSets: []config.RuleSet{
-// 			{
-// 				Name:     "gpu-xid-errors",
-// 				Version:  "1",
-// 				Priority: 10,
-// 				Match: config.Match{
-// 					Any: []config.Rule{
-// 						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
-// 					},
-// 				},
-// 				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
-// 				Cordon: config.Cordon{ShouldCordon: true},
-// 			},
-// 		},
-// 	}
-
-// 	// Step 1: Start reconciler and let it taint and cordon the node
-// 	t.Log("Step 1: Starting reconciler and sending health event to taint and cordon node")
-// 	runReconcilerAndQuarantineNode(t, ctx, nodeName, tomlConfig, func(t *testing.T, node *corev1.Node) bool {
-// 		hasHealthEvent := node.Annotations[common.QuarantineHealthEventAnnotationKey] != ""
-// 		hasAppliedTaintsAnnotation := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey] != ""
-// 		isCordoned := node.Spec.Unschedulable
-
-// 		hasFQTaint := false
-// 		for _, taint := range node.Spec.Taints {
-// 			if taint.Key == "nvidia.com/gpu-xid-error" {
-// 				hasFQTaint = true
-// 				break
-// 			}
-// 		}
-
-// 		t.Logf("Node tainted check: hasHealthEvent=%v, hasAppliedTaintsAnnotation=%v, isCordoned=%v, hasFQTaint=%v",
-// 			hasHealthEvent, hasAppliedTaintsAnnotation, isCordoned, hasFQTaint)
-// 		return hasHealthEvent && hasAppliedTaintsAnnotation && isCordoned && hasFQTaint
-// 	})
-
-// 	// Step 2: Manually remove taints and uncordon the node (simulating kubectl uncordon + manual taint removal)
-// 	t.Log("Step 2: Manually removing taints and uncordoning the node while reconciler is down")
-// 	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 	require.NoError(t, err)
-
-// 	// Remove FQ taints
-// 	filteredTaints := []corev1.Taint{}
-// 	for _, taint := range node.Spec.Taints {
-// 		if taint.Key != "nvidia.com/gpu-xid-error" && taint.Key != "node.kubernetes.io/unschedulable" {
-// 			filteredTaints = append(filteredTaints, taint)
-// 		}
-// 	}
-// 	node.Spec.Taints = filteredTaints
-// 	node.Spec.Unschedulable = false
-
-// 	_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
-// 	require.NoError(t, err)
-
-// 	t.Log("Verifying node is manually untainted/uncordoned but stale annotations remain")
-// 	require.Eventually(t, func() bool {
-// 		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 		if err != nil {
-// 			return false
-// 		}
-// 		hasHealthEvent := node.Annotations[common.QuarantineHealthEventAnnotationKey] != ""
-// 		hasAppliedTaintsAnnotation := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey] != ""
-// 		isNotCordoned := !node.Spec.Unschedulable
-
-// 		hasFQTaint := false
-// 		for _, taint := range node.Spec.Taints {
-// 			if taint.Key == "nvidia.com/gpu-xid-error" {
-// 				hasFQTaint = true
-// 				break
-// 			}
-// 		}
-
-// 		t.Logf("Stale state check: hasHealthEvent=%v, hasAppliedTaintsAnnotation=%v, isNotCordoned=%v, hasFQTaint=%v",
-// 			hasHealthEvent, hasAppliedTaintsAnnotation, isNotCordoned, hasFQTaint)
-// 		return hasHealthEvent && hasAppliedTaintsAnnotation && isNotCordoned && !hasFQTaint
-// 	}, eventuallyTimeout, eventuallyPollInterval, "Node should be untainted/uncordoned but have stale annotations")
-
-// 	// Step 3: Restart reconciler - it should detect and clean up stale annotations
-// 	t.Log("Step 3: Restarting reconciler - should detect and clean up stale annotations")
-// 	_, _, _, _ = setupE2EReconciler(t, ctx, tomlConfig, nil)
-
-// 	t.Log("Verifying stale annotations were cleaned up during reconciler startup")
-// 	require.Eventually(t, func() bool {
-// 		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 		if err != nil {
-// 			return false
-// 		}
-
-// 		annotationRemoved := node.Annotations[common.QuarantineHealthEventAnnotationKey] == ""
-// 		appliedTaintsRemoved := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey] == ""
-// 		cordonAnnotationRemoved := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] == ""
-// 		labelRemoved := node.Labels[statemanager.NVSentinelStateLabelKey] == ""
-
-// 		fqTaintCount := 0
-// 		for _, taint := range node.Spec.Taints {
-// 			if taint.Key == "nvidia.com/gpu-xid-error" {
-// 				fqTaintCount++
-// 			}
-// 		}
-
-// 		t.Logf("Cleanup check: annotationRemoved=%v, appliedTaintsRemoved=%v, cordonAnnotationRemoved=%v, labelRemoved=%v, fqTaintCount=%d, isUnschedulable=%v",
-// 			annotationRemoved, appliedTaintsRemoved, cordonAnnotationRemoved, labelRemoved, fqTaintCount, node.Spec.Unschedulable)
-
-// 		return annotationRemoved &&
-// 			appliedTaintsRemoved &&
-// 			cordonAnnotationRemoved &&
-// 			labelRemoved &&
-// 			fqTaintCount == 0 &&
-// 			!node.Spec.Unschedulable
-// 	}, eventuallyTimeout, eventuallyPollInterval, "Stale annotations should be cleaned up after detecting manual untaint/uncordon")
-
-// 	t.Log("Verifying metric is correctly initialized to 0 (not 1)")
-// 	gaugeValue := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
-// 	assert.Equal(t, float64(0), gaugeValue, "CurrentQuarantinedNodes should be 0 after cleaning stale annotations for manually untainted/uncordoned node")
-// }
-
-// // TestE2E_ManualUncordonWithMissingMongoDoc tests :
-// // SCENARIO:
-// // Node was cordoned by fault-quarantine and taints along with annotations are applied.
-// // Cluster upgrade was done where PVC were deleted.
-// // After upgrade when FQ restarts,
-// // if node is manually uncordoned and MongoDB document is missing (e.g., DB was reset),
-// // FQ should handle this gracefully with a warning (not error) and still update metrics correctly.
-// func TestE2E_ManualUncordonWithMissingMongoDoc(t *testing.T) {
-// 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
-// 	defer cancel()
-
-// 	nodeName := "test-node-" + generateShortTestID()
-
-// 	// Simulate post-upgrade state: node was cordoned before upgrade
-// 	existingEvent := &protos.HealthEvent{
-// 		NodeName:       nodeName,
-// 		Agent:          "gpu-health-monitor",
-// 		CheckName:      "GpuXidError",
-// 		ComponentClass: "GPU",
-// 		Version:        1,
-// 		IsHealthy:      false,
-// 		EntitiesImpacted: []*protos.Entity{
-// 			{EntityType: "GPU", EntityValue: "0"},
-// 		},
-// 	}
-
-// 	existingMap := healthEventsAnnotation.NewHealthEventsAnnotationMap()
-// 	existingMap.AddOrUpdateEvent(existingEvent)
-// 	existingBytes, err := json.Marshal(existingMap)
-// 	require.NoError(t, err)
-
-// 	annotations := map[string]string{
-// 		common.QuarantineHealthEventAnnotationKey:              string(existingBytes),
-// 		common.QuarantineHealthEventAppliedTaintsAnnotationKey: `[{"Key":"nvidia.com/gpu-xid-error","Value":"true","Effect":"NoSchedule"}]`,
-// 		common.QuarantineHealthEventIsCordonedAnnotationKey:    "True",
-// 	}
-
-// 	labels := map[string]string{
-// 		statemanager.NVSentinelStateLabelKey: string(statemanager.QuarantinedLabelValue),
-// 	}
-
-// 	taints := []corev1.Taint{
-// 		{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
-// 	}
-
-// 	createE2ETestNode(ctx, t, nodeName, annotations, labels, taints, true)
-// 	defer func() {
-// 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
-// 	}()
-
-// 	tomlConfig := config.TomlConfig{
-// 		LabelPrefix: "k8s.nvidia.com/",
-// 	}
-
-// 	t.Log("Setting up reconciler after simulated upgrade with eventWatcher")
-// 	r, _, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
-// 	mockEventWatcher := &MockEventWatcher{}
-// 	mockEventWatcher.CancelLatestQuarantiningEventsFn = func(ctx context.Context, nodeName string) error {
-// 		return fmt.Errorf("error decoding latest quarantining event for node %s: mongo: no documents in result", nodeName)
-// 	}
-// 	mockEventWatcher.ProcessEventCallbackFn = func(ctx context.Context, event *model.HealthEventWithStatus) *model.Status {
-// 		return nil
-// 	}
-// 	mockEventWatcher.StartFn = func(ctx context.Context) error {
-// 		return nil
-// 	}
-
-// 	r.eventWatcher = mockEventWatcher
-
-// 	require.Eventually(t, func() bool {
-// 		node, err := r.k8sClient.NodeInformer.GetNode(nodeName)
-// 		return err == nil && node != nil && node.Spec.Unschedulable
-// 	}, eventuallyTimeout, eventuallyPollInterval, "Informer should see the initially quarantined node")
-
-// 	beforeManualUncordon := getCounterVecValue(t, metrics.TotalNodesManuallyUncordoned, nodeName)
-// 	beforeCurrentQuarantined := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
-
-// 	t.Log("Manually uncordon node (simulating operator action after upgrade)")
-// 	quarantinedNode, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 	require.NoError(t, err)
-// 	quarantinedNode.Spec.Unschedulable = false
-// 	_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, quarantinedNode, metav1.UpdateOptions{})
-// 	require.NoError(t, err)
-
-// 	t.Log("Verifying manual uncordon cleanup completes successfully")
-// 	require.Eventually(t, func() bool {
-// 		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 		if err != nil {
-// 			return false
-// 		}
-
-// 		// Manual uncordon annotation should be set
-// 		hasManualUncordonAnnotation := node.Annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey] == common.QuarantinedNodeUncordonedManuallyAnnotationValue
-
-// 		// FQ annotations should be cleaned up
-// 		annotationRemoved := node.Annotations[common.QuarantineHealthEventAnnotationKey] == ""
-// 		appliedTaintsRemoved := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey] == ""
-// 		cordonedAnnotationRemoved := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] == ""
-
-// 		// FQ taints should remain (manual uncordon only removes annotations, not taints)
-// 		hasFQTaint := false
-// 		for _, taint := range node.Spec.Taints {
-// 			if taint.Key == "nvidia.com/gpu-xid-error" {
-// 				hasFQTaint = true
-// 				break
-// 			}
-// 		}
-
-// 		// Node should be uncordoned
-// 		isUncordoned := !node.Spec.Unschedulable
-
-// 		return hasManualUncordonAnnotation &&
-// 			annotationRemoved &&
-// 			appliedTaintsRemoved &&
-// 			cordonedAnnotationRemoved &&
-// 			hasFQTaint && // FQ taint should remain (manual uncordon doesn't remove taints)
-// 			isUncordoned // node should be uncordoned
-// 	}, eventuallyTimeout, eventuallyPollInterval, "Manual uncordon should complete cleanup even without MongoDB doc")
-
-// 	t.Log("Verifying metrics are correctly updated despite missing MongoDB document")
-// 	afterManualUncordon := getCounterVecValue(t, metrics.TotalNodesManuallyUncordoned, nodeName)
-// 	assert.Equal(t, beforeManualUncordon+1, afterManualUncordon, "TotalNodesManuallyUncordoned should increment")
-
-// 	afterCurrentQuarantined := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
-// 	assert.Equal(t, float64(0), afterCurrentQuarantined, "CurrentQuarantinedNodes should be 0")
-// 	assert.GreaterOrEqual(t, beforeCurrentQuarantined, float64(0), "Gauge should have been initialized before")
-// }
-
-// // TestE2ECordonAndTaint_ManualUntaint tests:
-// // SCENARIO:
-// // Node was cordoned by fault-quarantine and taints along with annotations are applied.
-// // Node is manually untainted by the operator.
-// // FQ should detect the manual untaint and clean up the FQ state.
-// func TestE2ECordonAndTaint_ManualUntaint(t *testing.T) {
-// 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
-// 	defer cancel()
-
-// 	nodeName := "test-node-" + generateShortTestID()
-
-// 	// Create a clean node initially
-// 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
-// 	defer func() {
-// 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
-// 	}()
-
-// 	tomlConfig := config.TomlConfig{
-// 		LabelPrefix: "k8s.nvidia.com/",
-// 		RuleSets: []config.RuleSet{
-// 			{
-// 				Name:     "gpu-xid-errors",
-// 				Version:  "1",
-// 				Priority: 10,
-// 				Match: config.Match{
-// 					Any: []config.Rule{
-// 						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
-// 					},
-// 				},
-// 				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
-// 				Cordon: config.Cordon{ShouldCordon: true},
-// 			},
-// 		},
-// 	}
-
-// 	// Step 1: Start reconciler and let it taint and cordon the node
-// 	t.Log("Step 1: Starting reconciler and sending health event to taint and cordon node")
-// 	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
-
-// 	// Send health event to quarantine the node
-// 	eventID := generateTestID()
-// 	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
-// 		eventID,
-// 		nodeName,
-// 		"GpuXidError",
-// 		false, // unhealthy
-// 		false,
-// 		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
-// 		model.StatusInProgress,
-// 	)}
-
-// 	// Wait for node to be quarantined
-// 	t.Log("Waiting for FQ to quarantine the node")
-// 	require.Eventually(t, func() bool {
-// 		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 		if err != nil {
-// 			return false
-// 		}
-// 		hasHealthEvent := node.Annotations[common.QuarantineHealthEventAnnotationKey] != ""
-// 		hasAppliedTaintsAnnotation := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey] != ""
-// 		isCordoned := node.Spec.Unschedulable
-
-// 		hasFQTaint := false
-// 		for _, taint := range node.Spec.Taints {
-// 			if taint.Key == "nvidia.com/gpu-xid-error" {
-// 				hasFQTaint = true
-// 				break
-// 			}
-// 		}
-
-// 		t.Logf("Node tainted check: hasHealthEvent=%v, hasAppliedTaintsAnnotation=%v, isCordoned=%v, hasFQTaint=%v",
-// 			hasHealthEvent, hasAppliedTaintsAnnotation, isCordoned, hasFQTaint)
-// 		return hasHealthEvent && hasAppliedTaintsAnnotation && isCordoned && hasFQTaint
-// 	}, eventuallyTimeout, eventuallyPollInterval, "Node should be quarantined by FQ")
-
-// 	// Reconciler and mockWatcher remain running for subsequent test steps
-
-// 	// Capture metric values before manual untaint
-// 	beforeManualUntaint := getCounterVecValue(t, metrics.TotalNodesManuallyUntainted, nodeName)
-// 	beforeCurrentQuarantined := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
-
-// 	t.Log("Step 2: Manually remove the taint from the node")
-// 	quarantinedNode, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 	require.NoError(t, err)
-
-// 	// Remove the FQ taint manually
-// 	updatedTaints := []corev1.Taint{}
-// 	for _, taint := range quarantinedNode.Spec.Taints {
-// 		if taint.Key != "nvidia.com/gpu-xid-error" {
-// 			updatedTaints = append(updatedTaints, taint)
-// 		}
-// 	}
-// 	quarantinedNode.Spec.Taints = updatedTaints
-
-// 	_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, quarantinedNode, metav1.UpdateOptions{})
-// 	require.NoError(t, err)
-
-// 	t.Log("Step 3:Verify manual untaint is detected and FQ state cleaned up")
-// 	require.Eventually(t, func() bool {
-// 		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 		if err != nil {
-// 			return false
-// 		}
-
-// 		// Manual untaint annotation should be set
-// 		hasManualUntaintAnnotation := node.Annotations[common.QuarantinedNodeIsUntaintedManuallyAnnotationKey] == common.QuarantinedNodeIsUntaintedManuallyAnnotationValue
-
-// 		// FQ annotations should be cleaned up
-// 		_, hasQuarantineAnnotation := node.Annotations[common.QuarantineHealthEventAnnotationKey]
-// 		_, hasAppliedTaintsAnnotation := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey]
-// 		_, hasCordonedAnnotation := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]
-
-// 		// State label should be removed
-// 		_, hasStateLabel := node.Labels[statemanager.NVSentinelStateLabelKey]
-
-// 		// Check that FQ taint is removed (manually removed by test)
-// 		hasFQTaint := false
-// 		for _, taint := range node.Spec.Taints {
-// 			if taint.Key == "nvidia.com/gpu-xid-error" {
-// 				hasFQTaint = true
-// 				break
-// 			}
-// 		}
-
-// 		// Node should still be cordoned (manual untaint only removes taints, not the cordon)
-// 		isCordoned := node.Spec.Unschedulable
-
-// 		// Note: Manual untaint only removes taints and annotations, not the cordon.
-// 		// The node should still be cordoned.
-// 		return hasManualUntaintAnnotation &&
-// 			!hasQuarantineAnnotation &&
-// 			!hasAppliedTaintsAnnotation &&
-// 			!hasCordonedAnnotation &&
-// 			!hasFQTaint && // FQ taint should be removed
-// 			isCordoned && // node should still be cordoned
-// 			!hasStateLabel
-// 	}, eventuallyTimeout, eventuallyPollInterval, "Manual untaint should clean up FQ state")
-
-// 	t.Log("Verify metrics are correctly updated")
-// 	afterManualUntaint := getCounterVecValue(t, metrics.TotalNodesManuallyUntainted, nodeName)
-// 	assert.Equal(t, beforeManualUntaint+1, afterManualUntaint, "TotalNodesManuallyUntainted should increment")
-
-// 	afterCurrentQuarantined := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
-// 	assert.Equal(t, float64(0), afterCurrentQuarantined, "CurrentQuarantinedNodes should be 0")
-// 	assert.GreaterOrEqual(t, beforeCurrentQuarantined, float64(0), "Gauge should have been initialized before")
-// }
-
-// // TestE2ECordonAndTaint_ManualUncordon tests:
-// // SCENARIO:
-// // Node was cordoned by fault-quarantine and taints along with annotations are applied.
-// // Node is manually uncordoned by the operator.
-// // FQ should detect the manual uncordon and clean up the FQ state.
-// func TestE2ECordonAndTaint_ManualUncordon(t *testing.T) {
-// 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
-// 	defer cancel()
-
-// 	nodeName := "test-node-" + generateShortTestID()
-
-// 	// Create a clean node initially
-// 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
-// 	defer func() {
-// 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
-// 	}()
-
-// 	tomlConfig := config.TomlConfig{
-// 		LabelPrefix: "k8s.nvidia.com/",
-// 		RuleSets: []config.RuleSet{
-// 			{
-// 				Name:     "gpu-xid-errors",
-// 				Version:  "1",
-// 				Priority: 10,
-// 				Match: config.Match{
-// 					Any: []config.Rule{
-// 						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
-// 					},
-// 				},
-// 				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
-// 				Cordon: config.Cordon{ShouldCordon: true},
-// 			},
-// 		},
-// 	}
-
-// 	// Step 1: Start reconciler and let it taint and cordon the node
-// 	t.Log("Step 1: Starting reconciler and sending health event to taint and cordon node")
-// 	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
-
-// 	// Send health event to quarantine the node
-// 	eventID := generateTestID()
-// 	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
-// 		eventID,
-// 		nodeName,
-// 		"GpuXidError",
-// 		false, // unhealthy
-// 		false,
-// 		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
-// 		model.StatusInProgress,
-// 	)}
-
-// 	// Wait for node to be quarantined
-// 	t.Log("Waiting for FQ to quarantine the node")
-// 	require.Eventually(t, func() bool {
-// 		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 		if err != nil {
-// 			return false
-// 		}
-// 		hasHealthEvent := node.Annotations[common.QuarantineHealthEventAnnotationKey] != ""
-// 		hasAppliedTaintsAnnotation := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey] != ""
-// 		isCordoned := node.Spec.Unschedulable
-
-// 		hasFQTaint := false
-// 		for _, taint := range node.Spec.Taints {
-// 			if taint.Key == "nvidia.com/gpu-xid-error" {
-// 				hasFQTaint = true
-// 				break
-// 			}
-// 		}
-
-// 		t.Logf("Node tainted check: hasHealthEvent=%v, hasAppliedTaintsAnnotation=%v, isCordoned=%v, hasFQTaint=%v",
-// 			hasHealthEvent, hasAppliedTaintsAnnotation, isCordoned, hasFQTaint)
-// 		return hasHealthEvent && hasAppliedTaintsAnnotation && isCordoned && hasFQTaint
-// 	}, eventuallyTimeout, eventuallyPollInterval, "Node should be quarantined by FQ")
-
-// 	// Reconciler and mockWatcher remain running for subsequent test steps
-
-// 	// Capture metric values before manual uncordon
-// 	beforeManualUncordon := getCounterVecValue(t, metrics.TotalNodesManuallyUncordoned, nodeName)
-// 	beforeCurrentQuarantined := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
-
-// 	t.Log("Manually uncordon the node")
-// 	quarantinedNode, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 	require.NoError(t, err)
-
-// 	// Uncordon the node manually
-// 	quarantinedNode.Spec.Unschedulable = false
-
-// 	_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, quarantinedNode, metav1.UpdateOptions{})
-// 	require.NoError(t, err)
-
-// 	t.Log("Verify manual uncordon is detected and FQ state cleaned up")
-// 	require.Eventually(t, func() bool {
-// 		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-// 		if err != nil {
-// 			return false
-// 		}
-
-// 		// Manual uncordon annotation should be set
-// 		hasManualUncordonAnnotation := node.Annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey] == common.QuarantinedNodeUncordonedManuallyAnnotationValue
-
-// 		// FQ annotations should be cleaned up
-// 		_, hasQuarantineAnnotation := node.Annotations[common.QuarantineHealthEventAnnotationKey]
-// 		_, hasAppliedTaintsAnnotation := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey]
-// 		_, hasCordonedAnnotation := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]
-
-// 		// State label should be removed
-// 		_, hasStateLabel := node.Labels[statemanager.NVSentinelStateLabelKey]
-
-// 		// Check that FQ taint remains (manual uncordon only removes cordon, not taints)
-// 		hasFQTaint := false
-// 		for _, taint := range node.Spec.Taints {
-// 			if taint.Key == "nvidia.com/gpu-xid-error" {
-// 				hasFQTaint = true
-// 				break
-// 			}
-// 		}
-
-// 		// Node should be uncordoned
-// 		isUncordoned := !node.Spec.Unschedulable
-
-// 		return hasManualUncordonAnnotation &&
-// 			!hasQuarantineAnnotation &&
-// 			!hasAppliedTaintsAnnotation &&
-// 			!hasCordonedAnnotation &&
-// 			hasFQTaint && // FQ taint should remain (manual uncordon doesn't remove taints)
-// 			isUncordoned && // node should be uncordoned
-// 			!hasStateLabel
-// 	}, eventuallyTimeout, eventuallyPollInterval, "Manual uncordon should clean up FQ state")
-
-// 	t.Log("Verify metrics are correctly updated")
-// 	afterManualUncordon := getCounterVecValue(t, metrics.TotalNodesManuallyUncordoned, nodeName)
-// 	assert.Equal(t, beforeManualUncordon+1, afterManualUncordon, "TotalNodesManuallyUncordoned should increment")
-
-// 	afterCurrentQuarantined := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
-// 	assert.Equal(t, float64(0), afterCurrentQuarantined, "CurrentQuarantinedNodes should be 0")
-// 	assert.GreaterOrEqual(t, beforeCurrentQuarantined, float64(0), "Gauge should have been initialized before")
-// }
+// TestE2E_ManualUncordonWithCancellation tests that manual uncordon triggers proper cleanup
+func TestE2E_ManualUncordonWithCancellation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := testutils.GenerateTestNodeName("e2e-manual-uncordon")
+	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.RuleSet{
+			{
+				Name:     "gpu-xid-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError' && event.isFatal == true"},
+					},
+				},
+				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	beforeManualUncordon := getCounterVecValue(t, metrics.TotalNodesManuallyUncordoned, nodeName)
+	beforeCurrentQuarantined := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
+
+	t.Log("Sending unhealthy event to quarantine node")
+	eventID1 := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		eventID1,
+		nodeName,
+		"GpuXidError",
+		false,
+		true,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		model.StatusInProgress,
+	)}
+
+	t.Log("Waiting for node to be quarantined")
+	require.Eventually(t, func() bool {
+		status := getStatus(eventID1)
+		return status != nil && *status == model.Quarantined
+	}, statusCheckTimeout, statusCheckPollInterval, "Status should be Quarantined")
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		return err == nil && node.Spec.Unschedulable
+	}, eventuallyTimeout, eventuallyPollInterval, "Node should be quarantined")
+
+	t.Log("Manually uncordon the node")
+	quarantinedNode, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	quarantinedNode.Spec.Unschedulable = false
+	_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, quarantinedNode, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	t.Log("Verify manual uncordon cleanup")
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		return node.Annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey] == common.QuarantinedNodeUncordonedManuallyAnnotationValue &&
+			node.Annotations[common.QuarantineHealthEventAnnotationKey] == ""
+	}, eventuallyTimeout, eventuallyPollInterval, "Manual uncordon should clean up annotations")
+
+	t.Log("Verify manual uncordon metric incremented")
+	afterManualUncordon := getCounterVecValue(t, metrics.TotalNodesManuallyUncordoned, nodeName)
+	assert.Equal(t, beforeManualUncordon+1, afterManualUncordon, "TotalNodesManuallyUncordoned should increment")
+
+	t.Log("Verify current quarantined nodes gauge updated")
+	afterCurrentQuarantined := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
+	assert.Equal(t, float64(0), afterCurrentQuarantined, "CurrentQuarantinedNodes should be 0")
+	assert.GreaterOrEqual(t, beforeCurrentQuarantined, float64(0), "Gauge should have been set before")
+}
+
+// TestE2E_ManualUncordonMultipleEvents tests that manual uncordon works with multiple events on the same node
+func TestE2E_ManualUncordonMultipleEvents(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := testutils.GenerateTestNodeName("e2e-manual-multi")
+	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.RuleSet{
+			{
+				Name:     "gpu-xid-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+					},
+				},
+				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	t.Log("Send first unhealthy event (Quarantined)")
+	eventID1 := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		eventID1,
+		nodeName,
+		"GpuXidError",
+		false,
+		true,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		model.StatusInProgress,
+	)}
+
+	require.Eventually(t, func() bool {
+		status := getStatus(eventID1)
+		return status != nil && *status == model.Quarantined
+	}, statusCheckTimeout, statusCheckPollInterval, "First event should be Quarantined")
+
+	t.Log("Send second unhealthy event (AlreadyQuarantined)")
+	eventID2 := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		eventID2,
+		nodeName,
+		"GpuXidError",
+		false,
+		true,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "1"}},
+		model.StatusInProgress,
+	)}
+
+	require.Eventually(t, func() bool {
+		status := getStatus(eventID2)
+		return status != nil && *status == model.AlreadyQuarantined
+	}, statusCheckTimeout, statusCheckPollInterval, "Second event should be Quarantined")
+
+	t.Log("Send third unhealthy event (AlreadyQuarantined)")
+	eventID3 := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		eventID3,
+		nodeName,
+		"GpuXidError",
+		false,
+		true,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "2"}},
+		model.StatusInProgress,
+	)}
+
+	require.Eventually(t, func() bool {
+		status := getStatus(eventID3)
+		return status != nil && *status == model.AlreadyQuarantined
+	}, statusCheckTimeout, statusCheckPollInterval, "Third event should be AlreadyQuarantined")
+
+	t.Log("Manually uncordon the node")
+	quarantinedNode, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	quarantinedNode.Spec.Unschedulable = false
+	_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, quarantinedNode, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	t.Log("Verify manual uncordon annotation is set")
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		return node.Annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey] == common.QuarantinedNodeUncordonedManuallyAnnotationValue
+	}, eventuallyTimeout, eventuallyPollInterval, "Manual uncordon annotation should be set")
+
+	t.Log("Verify quarantine annotation cleared")
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		return node.Annotations[common.QuarantineHealthEventAnnotationKey] == ""
+	}, eventuallyTimeout, eventuallyPollInterval, "Quarantine annotation should be cleared")
+}
+
+// TestE2E_ConcurrentHealthyEvents_WithDelayedInformer verifies that the reconciler correctly
+// uncordons a node when multiple health checks recover simultaneously, even when the informer
+// cache is stale.
+//
+// SCENARIO:
+// A node has two different failing health checks. Both checks recover at the same time,
+// generating two healthy events that are processed concurrently. Each event:
+//   - Reads the node state from the informer cache
+//   - Removes its own check from the annotation
+//   - Decides whether to uncordon based on remaining checks
+//
+// CHALLENGE:
+// When both events read the cache before either update propagates back, they both see
+// stale data showing "the other check is still failing." The reconciler must handle this
+// correctly and ensure the node is uncordoned when all checks have actually recovered.
+//
+// TEST STRATEGY:
+// We inject a 500ms delay into the informer's watch connection, simulating real-world
+// cache lag due to network latency or API server load. The delay is toggled:
+//   - DISABLED during setup: allows normal operation to quarantine the node
+//   - ENABLED during trigger: forces concurrent events to see stale cache
+func TestE2E_ConcurrentHealthyEvents_WithDelayedInformer(t *testing.T) {
+	// This test requires its own envtest instance with a custom transport wrapper
+	testEnv := &envtest.Environment{}
+	restConfig, err := testEnv.Start()
+	require.NoError(t, err, "Failed to start test environment")
+
+	// Start with delay DISABLED - we need normal operation during setup phase
+	delayedRT := &delayedWatchRoundTripper{
+		watchDelay: 500 * time.Millisecond,
+		enabled:    false,
+	}
+
+	stopCh := make(chan struct{})
+
+	// Shutdown order matters: disable delay first (unblocks any pending reads), then stop
+	// informer (closes watch connection), then stop envtest (can now shut down cleanly)
+	defer func() {
+		delayedRT.SetEnabled(false)
+		close(stopCh)
+		if err := testEnv.Stop(); err != nil {
+			t.Logf("Warning: Failed to stop test environment: %v", err)
+		}
+	}()
+
+	// Wrap the transport to delay only watch requests (informer cache sync)
+	// Regular GET/POST/PUT/DELETE requests are unaffected
+	restConfig.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+		delayedRT.delegate = rt
+		return delayedRT
+	})
+
+	k8sClient, err := kubernetes.NewForConfig(restConfig)
+	require.NoError(t, err, "Failed to create k8s client")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	nodeName := "concurrent-recovery-" + generateShortTestID()
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		Spec:       corev1.NodeSpec{Unschedulable: false},
+		Status:     corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}},
+	}
+	_, err = k8sClient.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
+	require.NoError(t, err, "Failed to create test node")
+	defer func() {
+		_ = k8sClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.RuleSet{{
+			Name:     "gpu-fatal-errors",
+			Version:  "1",
+			Priority: 10,
+			Match:    config.Match{Any: []config.Rule{{Kind: "HealthEvent", Expression: "event.isFatal == true"}}},
+			Taint:    config.Taint{Key: "nvidia.com/gpu-error", Value: "true", Effect: "NoSchedule"},
+			Cordon:   config.Cordon{ShouldCordon: true},
+		}},
+	}
+
+	// Resync period of 0 disables periodic re-listing. The informer only updates via watch
+	// events, not by periodically fetching all nodes. This ensures cache staleness is controlled
+	// solely by our delayed watch transport.
+	nodeInformer, err := informer.NewNodeInformer(k8sClient, 0)
+	require.NoError(t, err)
+
+	fqClient := &informer.FaultQuarantineClient{
+		Clientset:    k8sClient,
+		DryRunMode:   false,
+		NodeInformer: nodeInformer,
+	}
+
+	go func() { _ = nodeInformer.Run(stopCh) }()
+
+	require.Eventually(t, nodeInformer.HasSynced, 10*time.Second, 100*time.Millisecond, "NodeInformer should sync")
+
+	ruleSetEvals, err := evaluator.InitializeRuleSetEvaluators(tomlConfig.RuleSets, fqClient.NodeInformer)
+	require.NoError(t, err)
+
+	r := NewReconciler(ReconcilerConfig{TomlConfig: tomlConfig}, fqClient, nil)
+	r.SetLabelKeys(tomlConfig.LabelPrefix)
+	fqClient.SetLabelKeys(r.cordonedReasonLabelKey, r.uncordonedReasonLabelKey)
+
+	rulesetsConfig := rulesetsConfig{
+		TaintConfigMap:     make(map[string]*config.Taint),
+		CordonConfigMap:    make(map[string]bool),
+		RuleSetPriorityMap: make(map[string]int),
+	}
+	for _, rs := range tomlConfig.RuleSets {
+		if rs.Taint.Key != "" {
+			rulesetsConfig.TaintConfigMap[rs.Name] = &rs.Taint
+		}
+		if rs.Cordon.ShouldCordon {
+			rulesetsConfig.CordonConfigMap[rs.Name] = true
+		}
+		if rs.Priority > 0 {
+			rulesetsConfig.RuleSetPriorityMap[rs.Name] = rs.Priority
+		}
+	}
+
+	r.precomputeTaintInitKeys(context.Background(), ruleSetEvals, rulesetsConfig)
+	fqClient.NodeInformer.SetOnManualUncordonCallback(r.handleManualUncordon)
+
+	mockWatcher := testutils.NewMockChangeStreamWatcher()
+	t.Cleanup(func() { close(mockWatcher.EventsChan) })
+
+	go func() {
+		for event := range mockWatcher.Events() {
+			var healthEventWithStatus model.HealthEventWithStatus
+			if err := event.UnmarshalDocument(&healthEventWithStatus); err != nil {
+				continue
+			}
+			r.ProcessEvent(ctx, &healthEventWithStatus, ruleSetEvals, rulesetsConfig)
+		}
+	}()
+
+	// === SETUP: Quarantine node with TWO different checks ===
+	t.Log("Setup: Quarantining node with two checks")
+
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		generateTestID(), nodeName, "GpuInforomWatch", false, true,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}}, model.StatusInProgress,
+	)}
+
+	require.Eventually(t, func() bool {
+		n, _ := k8sClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		return n.Spec.Unschedulable
+	}, 10*time.Second, 100*time.Millisecond, "Node should be quarantined")
+
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		generateTestID(), nodeName, "GpuDcgmConnectivityFailure", false, true,
+		[]*protos.Entity{}, model.StatusInProgress,
+	)}
+
+	require.Eventually(t, func() bool {
+		n, _ := k8sClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		var m healthEventsAnnotation.HealthEventsAnnotationMap
+		if err := json.Unmarshal([]byte(n.Annotations[common.QuarantineHealthEventAnnotationKey]), &m); err != nil {
+			return false
+		}
+		return m.Count() == 2
+	}, 10*time.Second, 100*time.Millisecond, "Both checks should be tracked")
+
+	// === TRIGGER: Process both healthy events CONCURRENTLY with delayed watch ===
+	t.Log("Trigger: Enabling watch delay and processing healthy events concurrently")
+
+	// From this point, every informer cache update is delayed by 500ms. Any K8s API update
+	// the reconciler makes won't be visible in the cache until well after both events finish.
+	delayedRT.SetEnabled(true)
+
+	// Recovery events for both checks - these will be processed simultaneously
+	eventA := &model.HealthEventWithStatus{
+		HealthEvent: &protos.HealthEvent{
+			Version: 1, Agent: "gpu-health-monitor", ComponentClass: "GPU",
+			CheckName: "GpuDcgmConnectivityFailure", IsHealthy: true, IsFatal: false,
+			EntitiesImpacted: []*protos.Entity{}, NodeName: nodeName,
+		},
+	}
+
+	eventB := &model.HealthEventWithStatus{
+		HealthEvent: &protos.HealthEvent{
+			Version: 1, Agent: "gpu-health-monitor", ComponentClass: "GPU",
+			CheckName: "GpuInforomWatch", IsHealthy: true, IsFatal: false,
+			EntitiesImpacted: []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}}, NodeName: nodeName,
+		},
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// startBarrier ensures both goroutines begin at exactly the same instant. Both block
+	// on receiving from this channel; closing the channel unblocks all receivers simultaneously.
+	// This maximizes overlap between the two ProcessEvent calls, guaranteeing they both read
+	// the cache before either has a chance to see the other's updates.
+	startBarrier := make(chan struct{})
+
+	go func() {
+		defer wg.Done()
+		<-startBarrier
+		r.ProcessEvent(ctx, eventA, ruleSetEvals, rulesetsConfig)
+	}()
+
+	go func() {
+		defer wg.Done()
+		<-startBarrier
+		r.ProcessEvent(ctx, eventB, ruleSetEvals, rulesetsConfig)
+	}()
+
+	close(startBarrier)
+	wg.Wait()
+
+	// === VERIFY: Node should be fully recovered ===
+	delayedRT.SetEnabled(false)
+
+	// Read directly from API server (not cache) to get the true final state
+	finalNode, err := k8sClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+
+	annotation := finalNode.Annotations[common.QuarantineHealthEventAnnotationKey]
+	isStillCordoned := finalNode.Spec.Unschedulable
+
+	t.Logf("Final state: annotation=%q, stillCordoned=%v", annotation, isStillCordoned)
+
+	// Verify annotation is empty - both events successfully removed their checks
+	var healthEventsMap healthEventsAnnotation.HealthEventsAnnotationMap
+	annotationIsEmpty := annotation == "" || annotation == "[]"
+	if !annotationIsEmpty && annotation != "" {
+		if err := json.Unmarshal([]byte(annotation), &healthEventsMap); err == nil {
+			annotationIsEmpty = healthEventsMap.IsEmpty()
+		}
+	}
+
+	require.True(t, annotationIsEmpty, "Annotation should be empty after both checks recovered, got: %s", annotation)
+
+	// With all checks recovered (empty annotation), node must be uncordoned
+	require.False(t, isStillCordoned,
+		"Node should be uncordoned when all health checks have recovered. "+
+			"The reconciler must correctly handle concurrent recovery events even with stale cache.")
+
+	require.Empty(t, finalNode.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey])
+
+	fqTaintCount := 0
+	for _, taint := range finalNode.Spec.Taints {
+		if taint.Key == "nvidia.com/gpu-error" {
+			fqTaintCount++
+		}
+	}
+	require.Equal(t, 0, fqTaintCount, "FQ taints should be removed")
+}
+
+// TestE2E_StaleAnnotationOnRestart test verifies that stale annotation and taints are cleaned up
+// on restart if node has been manually uncordoned before the FQ pod restarted:
+// SCENARIO:
+// 1. FQ reconciler is running and taints + cordons a node due to a health event
+// 2. Reconciler pod crashes or stops running (simulating OOM, cluster upgrade, etc.)
+// 3. While reconciler is down, operator manually removes taints and uncordons the node
+// 4. Reconciler pod restarts
+// Expected: Reconciler should detect stale annotations (annotation + taints present but node not cordoned/tainted)
+// and clean them up, ensuring metrics are correctly initialized to 0.
+func TestE2E_StaleAnnotationOnRestart_TaintsAndCordon(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := "stale-annotation-test-node-" + generateShortTestID()
+
+	// Create a clean node initially
+	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.RuleSet{
+			{
+				Name:     "gpu-xid-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+					},
+				},
+				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	// Step 1: Start reconciler and let it taint and cordon the node
+	t.Log("Step 1: Starting reconciler and sending health event to taint and cordon node")
+	runReconcilerAndQuarantineNode(t, ctx, nodeName, tomlConfig, func(t *testing.T, node *corev1.Node) bool {
+		hasHealthEvent := node.Annotations[common.QuarantineHealthEventAnnotationKey] != ""
+		hasAppliedTaintsAnnotation := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey] != ""
+		hasCordonAnnotation := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] == "True"
+		isCordoned := node.Spec.Unschedulable
+
+		hasFQTaint := false
+		for _, taint := range node.Spec.Taints {
+			if taint.Key == "nvidia.com/gpu-xid-error" {
+				hasFQTaint = true
+				break
+			}
+		}
+
+		t.Logf("Node quarantined check: hasHealthEvent=%v, hasAppliedTaintsAnnotation=%v, hasCordonAnnotation=%v, isCordoned=%v, hasFQTaint=%v",
+			hasHealthEvent, hasAppliedTaintsAnnotation, hasCordonAnnotation, isCordoned, hasFQTaint)
+		return hasHealthEvent && hasAppliedTaintsAnnotation && hasCordonAnnotation && isCordoned && hasFQTaint
+	})
+
+	// Step 2: Manually remove taints and uncordon the node
+	t.Log("Step 2: Manually removing taints and uncordoning the node while reconciler is down")
+	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+
+	// Remove FQ taints
+	filteredTaints := []corev1.Taint{}
+	for _, taint := range node.Spec.Taints {
+		if taint.Key != "nvidia.com/gpu-xid-error" && taint.Key != "node.kubernetes.io/unschedulable" {
+			filteredTaints = append(filteredTaints, taint)
+		}
+	}
+	node.Spec.Taints = filteredTaints
+	node.Spec.Unschedulable = false
+
+	_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	t.Log("Verifying node is manually untainted/uncordoned but stale annotations remain")
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		hasHealthEvent := node.Annotations[common.QuarantineHealthEventAnnotationKey] != ""
+		hasAppliedTaintsAnnotation := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey] != ""
+		isNotCordoned := !node.Spec.Unschedulable
+
+		hasFQTaint := false
+		for _, taint := range node.Spec.Taints {
+			if taint.Key == "nvidia.com/gpu-xid-error" {
+				hasFQTaint = true
+				break
+			}
+		}
+
+		t.Logf("Stale state check: hasHealthEvent=%v, hasAppliedTaintsAnnotation=%v, isNotCordoned=%v, hasFQTaint=%v",
+			hasHealthEvent, hasAppliedTaintsAnnotation, isNotCordoned, hasFQTaint)
+		return hasHealthEvent && hasAppliedTaintsAnnotation && isNotCordoned && !hasFQTaint
+	}, eventuallyTimeout, eventuallyPollInterval, "Node should be untainted/uncordoned but have stale annotations")
+
+	// Step 3: Restart reconciler - it should detect and clean up stale annotations
+	t.Log("Step 3: Setting up reconciler - simulating pod restart with stale annotation")
+	setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	t.Log("Verifying stale annotations are cleaned up")
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		// Stale annotations should be removed
+		annotationRemoved := node.Annotations[common.QuarantineHealthEventAnnotationKey] == ""
+		appliedTaintsRemoved := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey] == ""
+		cordonedAnnotationRemoved := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] == ""
+		labelRemoved := node.Labels[statemanager.NVSentinelStateLabelKey] == ""
+
+		fqTaintCount := 0
+		for _, taint := range node.Spec.Taints {
+			if taint.Key == "nvidia.com/gpu-xid-error" {
+				fqTaintCount++
+			}
+		}
+
+		return annotationRemoved &&
+			appliedTaintsRemoved &&
+			cordonedAnnotationRemoved &&
+			labelRemoved &&
+			fqTaintCount == 0 &&
+			!node.Spec.Unschedulable
+	}, eventuallyTimeout, eventuallyPollInterval, "Stale annotations should be cleaned up on restart")
+
+	t.Log("Verifying metric is correctly initialized to 0 (not 1)")
+	gaugeValue := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
+	assert.Equal(t, float64(0), gaugeValue, "CurrentQuarantinedNodes should be 0 after cleaning stale annotation")
+}
+
+// TestE2E_StaleAnnotationOnRestart_CordonOnly tests stale annotation is cleaned up on restart if node has been manually uncordoned before the FQ pod restarted:
+// SCENARIO:
+// 1. FQ reconciler is running and cordons a node due to a health event (no taints, cordon-only)
+// 2. Reconciler pod crashes or stops running (simulating OOM, cluster upgrade, etc.)
+// 3. While reconciler is down, operator manually uncordons the node
+// 4. Reconciler pod restarts
+// Expected: Reconciler should detect stale annotations (annotation says cordoned but node is not cordoned)
+// and clean them up, ensuring metrics are correctly initialized to 0.
+func TestE2E_StaleAnnotationOnRestart_CordonOnly(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := "stale-cordon-only-node-" + generateShortTestID()
+
+	// Create a clean node initially
+	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.RuleSet{
+			{
+				Name:     "gpu-xid-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+					},
+				},
+				Cordon: config.Cordon{ShouldCordon: true}, // Cordon-only, no taints
+			},
+		},
+	}
+
+	// Step 1: Start reconciler and let it cordon the node (no taints)
+	t.Log("Step 1: Starting reconciler and sending health event to cordon node")
+	runReconcilerAndQuarantineNode(t, ctx, nodeName, tomlConfig, func(t *testing.T, node *corev1.Node) bool {
+		hasHealthEvent := node.Annotations[common.QuarantineHealthEventAnnotationKey] != ""
+		hasCordonAnnotation := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] == "True"
+		isCordoned := node.Spec.Unschedulable
+		t.Logf("Node cordoned check: hasHealthEvent=%v, hasCordonAnnotation=%v, isCordoned=%v",
+			hasHealthEvent, hasCordonAnnotation, isCordoned)
+		return hasHealthEvent && hasCordonAnnotation && isCordoned
+	})
+
+	// Step 2: Manually uncordon the node (simulating kubectl uncordon)
+	t.Log("Step 2: Manually uncordoning the node while reconciler is down")
+	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	node.Spec.Unschedulable = false
+	_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	t.Log("Verifying node is manually uncordoned but stale annotations remain")
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		hasHealthEvent := node.Annotations[common.QuarantineHealthEventAnnotationKey] != ""
+		hasCordonAnnotation := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] == "True"
+		isNotCordoned := !node.Spec.Unschedulable
+		t.Logf("Stale state check: hasHealthEvent=%v, hasCordonAnnotation=%v, isNotCordoned=%v",
+			hasHealthEvent, hasCordonAnnotation, isNotCordoned)
+		return hasHealthEvent && hasCordonAnnotation && isNotCordoned
+	}, eventuallyTimeout, eventuallyPollInterval, "Node should be uncordoned but have stale annotations")
+
+	// Step 3: Restart reconciler - it should detect and clean up stale annotations
+	t.Log("Step 3: Setting up reconciler - simulating pod restart with stale cordon annotation")
+	_, _, _, _ = setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	t.Log("Verifying stale cordon annotations were cleaned up during reconciler startup")
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		annotationRemoved := node.Annotations[common.QuarantineHealthEventAnnotationKey] == ""
+		cordonedAnnotationRemoved := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] == ""
+		labelRemoved := node.Labels[statemanager.NVSentinelStateLabelKey] == ""
+
+		return annotationRemoved &&
+			cordonedAnnotationRemoved &&
+			labelRemoved &&
+			!node.Spec.Unschedulable
+	}, eventuallyTimeout, eventuallyPollInterval, "Stale cordon annotations should be cleaned up")
+
+	t.Log("Verifying metric is correctly initialized to 0 (not 1)")
+	gaugeValue := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
+	assert.Equal(t, float64(0), gaugeValue, "CurrentQuarantinedNodes should be 0 after cleaning stale annotation")
+}
+
+// TestE2E_StaleAnnotationOnRestart_TaintsOnly test verifies that stale annotation and taints are cleaned up
+// on restart when node was manually untainted and uncordoned while reconciler was down:
+// SCENARIO:
+// 1. FQ reconciler is running and taints + cordons a node due to a health event
+// 2. Reconciler pod crashes or stops running (simulating OOM, cluster upgrade, etc.)
+// 3. While reconciler is down, operator manually removes taints and uncordons the node
+// 4. Reconciler pod restarts
+// Expected: Reconciler should detect stale annotations (health event + appliedTaints annotations exist but node is not tainted/cordoned)
+// and clean them up, ensuring metrics are correctly initialized to 0.
+func TestE2E_StaleAnnotationOnRestart_TaintsOnly(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := "stale-taints-node-" + generateShortTestID()
+
+	// Create a clean node initially
+	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.RuleSet{
+			{
+				Name:     "gpu-xid-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+					},
+				},
+				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	// Step 1: Start reconciler and let it taint and cordon the node
+	t.Log("Step 1: Starting reconciler and sending health event to taint and cordon node")
+	runReconcilerAndQuarantineNode(t, ctx, nodeName, tomlConfig, func(t *testing.T, node *corev1.Node) bool {
+		hasHealthEvent := node.Annotations[common.QuarantineHealthEventAnnotationKey] != ""
+		hasAppliedTaintsAnnotation := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey] != ""
+		isCordoned := node.Spec.Unschedulable
+
+		hasFQTaint := false
+		for _, taint := range node.Spec.Taints {
+			if taint.Key == "nvidia.com/gpu-xid-error" {
+				hasFQTaint = true
+				break
+			}
+		}
+
+		t.Logf("Node tainted check: hasHealthEvent=%v, hasAppliedTaintsAnnotation=%v, isCordoned=%v, hasFQTaint=%v",
+			hasHealthEvent, hasAppliedTaintsAnnotation, isCordoned, hasFQTaint)
+		return hasHealthEvent && hasAppliedTaintsAnnotation && isCordoned && hasFQTaint
+	})
+
+	// Step 2: Manually remove taints and uncordon the node (simulating kubectl uncordon + manual taint removal)
+	t.Log("Step 2: Manually removing taints and uncordoning the node while reconciler is down")
+	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+
+	// Remove FQ taints
+	filteredTaints := []corev1.Taint{}
+	for _, taint := range node.Spec.Taints {
+		if taint.Key != "nvidia.com/gpu-xid-error" && taint.Key != "node.kubernetes.io/unschedulable" {
+			filteredTaints = append(filteredTaints, taint)
+		}
+	}
+	node.Spec.Taints = filteredTaints
+	node.Spec.Unschedulable = false
+
+	_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	t.Log("Verifying node is manually untainted/uncordoned but stale annotations remain")
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		hasHealthEvent := node.Annotations[common.QuarantineHealthEventAnnotationKey] != ""
+		hasAppliedTaintsAnnotation := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey] != ""
+		isNotCordoned := !node.Spec.Unschedulable
+
+		hasFQTaint := false
+		for _, taint := range node.Spec.Taints {
+			if taint.Key == "nvidia.com/gpu-xid-error" {
+				hasFQTaint = true
+				break
+			}
+		}
+
+		t.Logf("Stale state check: hasHealthEvent=%v, hasAppliedTaintsAnnotation=%v, isNotCordoned=%v, hasFQTaint=%v",
+			hasHealthEvent, hasAppliedTaintsAnnotation, isNotCordoned, hasFQTaint)
+		return hasHealthEvent && hasAppliedTaintsAnnotation && isNotCordoned && !hasFQTaint
+	}, eventuallyTimeout, eventuallyPollInterval, "Node should be untainted/uncordoned but have stale annotations")
+
+	// Step 3: Restart reconciler - it should detect and clean up stale annotations
+	t.Log("Step 3: Restarting reconciler - should detect and clean up stale annotations")
+	_, _, _, _ = setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	t.Log("Verifying stale annotations were cleaned up during reconciler startup")
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		annotationRemoved := node.Annotations[common.QuarantineHealthEventAnnotationKey] == ""
+		appliedTaintsRemoved := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey] == ""
+		cordonAnnotationRemoved := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] == ""
+		labelRemoved := node.Labels[statemanager.NVSentinelStateLabelKey] == ""
+
+		fqTaintCount := 0
+		for _, taint := range node.Spec.Taints {
+			if taint.Key == "nvidia.com/gpu-xid-error" {
+				fqTaintCount++
+			}
+		}
+
+		t.Logf("Cleanup check: annotationRemoved=%v, appliedTaintsRemoved=%v, cordonAnnotationRemoved=%v, labelRemoved=%v, fqTaintCount=%d, isUnschedulable=%v",
+			annotationRemoved, appliedTaintsRemoved, cordonAnnotationRemoved, labelRemoved, fqTaintCount, node.Spec.Unschedulable)
+
+		return annotationRemoved &&
+			appliedTaintsRemoved &&
+			cordonAnnotationRemoved &&
+			labelRemoved &&
+			fqTaintCount == 0 &&
+			!node.Spec.Unschedulable
+	}, eventuallyTimeout, eventuallyPollInterval, "Stale annotations should be cleaned up after detecting manual untaint/uncordon")
+
+	t.Log("Verifying metric is correctly initialized to 0 (not 1)")
+	gaugeValue := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
+	assert.Equal(t, float64(0), gaugeValue, "CurrentQuarantinedNodes should be 0 after cleaning stale annotations for manually untainted/uncordoned node")
+}
+
+// TestE2E_ManualUncordonWithMissingMongoDoc tests :
+// SCENARIO:
+// Node was cordoned by fault-quarantine and taints along with annotations are applied.
+// Cluster upgrade was done where PVC were deleted.
+// After upgrade when FQ restarts,
+// if node is manually uncordoned and MongoDB document is missing (e.g., DB was reset),
+// FQ should handle this gracefully with a warning (not error) and still update metrics correctly.
+func TestE2E_ManualUncordonWithMissingMongoDoc(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
+	defer cancel()
+
+	nodeName := "test-node-" + generateShortTestID()
+
+	// Simulate post-upgrade state: node was cordoned before upgrade
+	existingEvent := &protos.HealthEvent{
+		NodeName:       nodeName,
+		Agent:          "gpu-health-monitor",
+		CheckName:      "GpuXidError",
+		ComponentClass: "GPU",
+		Version:        1,
+		IsHealthy:      false,
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU", EntityValue: "0"},
+		},
+	}
+
+	existingMap := healthEventsAnnotation.NewHealthEventsAnnotationMap()
+	existingMap.AddOrUpdateEvent(existingEvent)
+	existingBytes, err := json.Marshal(existingMap)
+	require.NoError(t, err)
+
+	annotations := map[string]string{
+		common.QuarantineHealthEventAnnotationKey:              string(existingBytes),
+		common.QuarantineHealthEventAppliedTaintsAnnotationKey: `[{"Key":"nvidia.com/gpu-xid-error","Value":"true","Effect":"NoSchedule"}]`,
+		common.QuarantineHealthEventIsCordonedAnnotationKey:    "True",
+	}
+
+	labels := map[string]string{
+		statemanager.NVSentinelStateLabelKey: string(statemanager.QuarantinedLabelValue),
+	}
+
+	taints := []corev1.Taint{
+		{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+	}
+
+	createE2ETestNode(ctx, t, nodeName, annotations, labels, taints, true)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+	}
+
+	t.Log("Setting up reconciler after simulated upgrade with eventWatcher")
+	r, _, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+	mockEventWatcher := &MockEventWatcher{}
+	mockEventWatcher.CancelLatestQuarantiningEventsFn = func(ctx context.Context, nodeName string, reason string) error {
+		return fmt.Errorf("error decoding latest quarantining event for node %s: mongo: no documents in result", nodeName)
+	}
+	mockEventWatcher.ProcessEventCallbackFn = func(ctx context.Context, event *model.HealthEventWithStatus) *model.Status {
+		return nil
+	}
+	mockEventWatcher.StartFn = func(ctx context.Context) error {
+		return nil
+	}
+
+	r.eventWatcher = mockEventWatcher
+
+	require.Eventually(t, func() bool {
+		node, err := r.k8sClient.NodeInformer.GetNode(nodeName)
+		return err == nil && node != nil && node.Spec.Unschedulable
+	}, eventuallyTimeout, eventuallyPollInterval, "Informer should see the initially quarantined node")
+
+	beforeManualUncordon := getCounterVecValue(t, metrics.TotalNodesManuallyUncordoned, nodeName)
+	beforeCurrentQuarantined := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
+
+	t.Log("Manually uncordon node (simulating operator action after upgrade)")
+	quarantinedNode, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	quarantinedNode.Spec.Unschedulable = false
+	_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, quarantinedNode, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	t.Log("Verifying manual uncordon cleanup completes successfully")
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		// Manual uncordon annotation should be set
+		hasManualUncordonAnnotation := node.Annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey] == common.QuarantinedNodeUncordonedManuallyAnnotationValue
+
+		// FQ annotations should be cleaned up
+		annotationRemoved := node.Annotations[common.QuarantineHealthEventAnnotationKey] == ""
+		appliedTaintsRemoved := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey] == ""
+		cordonedAnnotationRemoved := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] == ""
+
+		// FQ taints should remain (manual uncordon only removes annotations, not taints)
+		hasFQTaint := false
+		for _, taint := range node.Spec.Taints {
+			if taint.Key == "nvidia.com/gpu-xid-error" {
+				hasFQTaint = true
+				break
+			}
+		}
+
+		// Node should be uncordoned
+		isUncordoned := !node.Spec.Unschedulable
+
+		return hasManualUncordonAnnotation &&
+			annotationRemoved &&
+			appliedTaintsRemoved &&
+			cordonedAnnotationRemoved &&
+			hasFQTaint && // FQ taint should remain (manual uncordon doesn't remove taints)
+			isUncordoned // node should be uncordoned
+	}, eventuallyTimeout, eventuallyPollInterval, "Manual uncordon should complete cleanup even without MongoDB doc")
+
+	t.Log("Verifying metrics are correctly updated despite missing MongoDB document")
+	afterManualUncordon := getCounterVecValue(t, metrics.TotalNodesManuallyUncordoned, nodeName)
+	assert.Equal(t, beforeManualUncordon+1, afterManualUncordon, "TotalNodesManuallyUncordoned should increment")
+
+	afterCurrentQuarantined := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
+	assert.Equal(t, float64(0), afterCurrentQuarantined, "CurrentQuarantinedNodes should be 0")
+	assert.GreaterOrEqual(t, beforeCurrentQuarantined, float64(0), "Gauge should have been initialized before")
+}
+
+// TestE2ECordonAndTaint_ManualUntaint tests:
+// SCENARIO:
+// Node was cordoned by fault-quarantine and taints along with annotations are applied.
+// Node is manually untainted by the operator.
+// FQ should detect the manual untaint and clean up the FQ state.
+func TestE2ECordonAndTaint_ManualUntaint(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
+	defer cancel()
+
+	nodeName := "test-node-" + generateShortTestID()
+
+	// Create a clean node initially
+	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.RuleSet{
+			{
+				Name:     "gpu-xid-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+					},
+				},
+				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	// Step 1: Start reconciler and let it taint and cordon the node
+	t.Log("Step 1: Starting reconciler and sending health event to taint and cordon node")
+	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	// Send health event to quarantine the node
+	eventID := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		eventID,
+		nodeName,
+		"GpuXidError",
+		false, // unhealthy
+		false,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		model.StatusInProgress,
+	)}
+
+	// Wait for node to be quarantined
+	t.Log("Waiting for FQ to quarantine the node")
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		hasHealthEvent := node.Annotations[common.QuarantineHealthEventAnnotationKey] != ""
+		hasAppliedTaintsAnnotation := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey] != ""
+		isCordoned := node.Spec.Unschedulable
+
+		hasFQTaint := false
+		for _, taint := range node.Spec.Taints {
+			if taint.Key == "nvidia.com/gpu-xid-error" {
+				hasFQTaint = true
+				break
+			}
+		}
+
+		t.Logf("Node tainted check: hasHealthEvent=%v, hasAppliedTaintsAnnotation=%v, isCordoned=%v, hasFQTaint=%v",
+			hasHealthEvent, hasAppliedTaintsAnnotation, isCordoned, hasFQTaint)
+		return hasHealthEvent && hasAppliedTaintsAnnotation && isCordoned && hasFQTaint
+	}, eventuallyTimeout, eventuallyPollInterval, "Node should be quarantined by FQ")
+
+	// Reconciler and mockWatcher remain running for subsequent test steps
+
+	// Capture metric values before manual untaint
+	beforeManualUntaint := getCounterVecValue(t, metrics.TotalNodesManuallyUntainted, nodeName)
+	beforeCurrentQuarantined := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
+
+	t.Log("Step 2: Manually remove the taint from the node")
+	quarantinedNode, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+
+	// Remove the FQ taint manually
+	updatedTaints := []corev1.Taint{}
+	for _, taint := range quarantinedNode.Spec.Taints {
+		if taint.Key != "nvidia.com/gpu-xid-error" {
+			updatedTaints = append(updatedTaints, taint)
+		}
+	}
+	quarantinedNode.Spec.Taints = updatedTaints
+
+	_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, quarantinedNode, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	t.Log("Step 3:Verify manual untaint is detected and FQ state cleaned up")
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		// Manual untaint annotation should be set
+		hasManualUntaintAnnotation := node.Annotations[common.QuarantinedNodeIsUntaintedManuallyAnnotationKey] == common.QuarantinedNodeIsUntaintedManuallyAnnotationValue
+
+		// FQ annotations should be cleaned up
+		_, hasQuarantineAnnotation := node.Annotations[common.QuarantineHealthEventAnnotationKey]
+		_, hasAppliedTaintsAnnotation := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey]
+		_, hasCordonedAnnotation := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]
+
+		// State label should be removed
+		_, hasStateLabel := node.Labels[statemanager.NVSentinelStateLabelKey]
+
+		// Check that FQ taint is removed (manually removed by test)
+		hasFQTaint := false
+		for _, taint := range node.Spec.Taints {
+			if taint.Key == "nvidia.com/gpu-xid-error" {
+				hasFQTaint = true
+				break
+			}
+		}
+
+		// Node should still be cordoned (manual untaint only removes taints, not the cordon)
+		isCordoned := node.Spec.Unschedulable
+
+		// Note: Manual untaint only removes taints and annotations, not the cordon.
+		// The node should still be cordoned.
+		return hasManualUntaintAnnotation &&
+			!hasQuarantineAnnotation &&
+			!hasAppliedTaintsAnnotation &&
+			!hasCordonedAnnotation &&
+			!hasFQTaint && // FQ taint should be removed
+			isCordoned && // node should still be cordoned
+			!hasStateLabel
+	}, eventuallyTimeout, eventuallyPollInterval, "Manual untaint should clean up FQ state")
+
+	t.Log("Verify metrics are correctly updated")
+	afterManualUntaint := getCounterVecValue(t, metrics.TotalNodesManuallyUntainted, nodeName)
+	assert.Equal(t, beforeManualUntaint+1, afterManualUntaint, "TotalNodesManuallyUntainted should increment")
+
+	afterCurrentQuarantined := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
+	assert.Equal(t, float64(0), afterCurrentQuarantined, "CurrentQuarantinedNodes should be 0")
+	assert.GreaterOrEqual(t, beforeCurrentQuarantined, float64(0), "Gauge should have been initialized before")
+}
+
+// TestE2ECordonAndTaint_ManualUncordon tests:
+// SCENARIO:
+// Node was cordoned by fault-quarantine and taints along with annotations are applied.
+// Node is manually uncordoned by the operator.
+// FQ should detect the manual uncordon and clean up the FQ state.
+func TestE2ECordonAndTaint_ManualUncordon(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
+	defer cancel()
+
+	nodeName := "test-node-" + generateShortTestID()
+
+	// Create a clean node initially
+	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.RuleSet{
+			{
+				Name:     "gpu-xid-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+					},
+				},
+				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	// Step 1: Start reconciler and let it taint and cordon the node
+	t.Log("Step 1: Starting reconciler and sending health event to taint and cordon node")
+	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	// Send health event to quarantine the node
+	eventID := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		eventID,
+		nodeName,
+		"GpuXidError",
+		false, // unhealthy
+		false,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		model.StatusInProgress,
+	)}
+
+	// Wait for node to be quarantined
+	t.Log("Waiting for FQ to quarantine the node")
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		hasHealthEvent := node.Annotations[common.QuarantineHealthEventAnnotationKey] != ""
+		hasAppliedTaintsAnnotation := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey] != ""
+		isCordoned := node.Spec.Unschedulable
+
+		hasFQTaint := false
+		for _, taint := range node.Spec.Taints {
+			if taint.Key == "nvidia.com/gpu-xid-error" {
+				hasFQTaint = true
+				break
+			}
+		}
+
+		t.Logf("Node tainted check: hasHealthEvent=%v, hasAppliedTaintsAnnotation=%v, isCordoned=%v, hasFQTaint=%v",
+			hasHealthEvent, hasAppliedTaintsAnnotation, isCordoned, hasFQTaint)
+		return hasHealthEvent && hasAppliedTaintsAnnotation && isCordoned && hasFQTaint
+	}, eventuallyTimeout, eventuallyPollInterval, "Node should be quarantined by FQ")
+
+	// Reconciler and mockWatcher remain running for subsequent test steps
+
+	// Capture metric values before manual uncordon
+	beforeManualUncordon := getCounterVecValue(t, metrics.TotalNodesManuallyUncordoned, nodeName)
+	beforeCurrentQuarantined := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
+
+	t.Log("Manually uncordon the node")
+	quarantinedNode, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+
+	// Uncordon the node manually
+	quarantinedNode.Spec.Unschedulable = false
+
+	_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, quarantinedNode, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	t.Log("Verify manual uncordon is detected and FQ state cleaned up")
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		// Manual uncordon annotation should be set
+		hasManualUncordonAnnotation := node.Annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey] == common.QuarantinedNodeUncordonedManuallyAnnotationValue
+
+		// FQ annotations should be cleaned up
+		_, hasQuarantineAnnotation := node.Annotations[common.QuarantineHealthEventAnnotationKey]
+		_, hasAppliedTaintsAnnotation := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey]
+		_, hasCordonedAnnotation := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]
+
+		// State label should be removed
+		_, hasStateLabel := node.Labels[statemanager.NVSentinelStateLabelKey]
+
+		// Check that FQ taint remains (manual uncordon only removes cordon, not taints)
+		hasFQTaint := false
+		for _, taint := range node.Spec.Taints {
+			if taint.Key == "nvidia.com/gpu-xid-error" {
+				hasFQTaint = true
+				break
+			}
+		}
+
+		// Node should be uncordoned
+		isUncordoned := !node.Spec.Unschedulable
+
+		return hasManualUncordonAnnotation &&
+			!hasQuarantineAnnotation &&
+			!hasAppliedTaintsAnnotation &&
+			!hasCordonedAnnotation &&
+			hasFQTaint && // FQ taint should remain (manual uncordon doesn't remove taints)
+			isUncordoned && // node should be uncordoned
+			!hasStateLabel
+	}, eventuallyTimeout, eventuallyPollInterval, "Manual uncordon should clean up FQ state")
+
+	t.Log("Verify metrics are correctly updated")
+	afterManualUncordon := getCounterVecValue(t, metrics.TotalNodesManuallyUncordoned, nodeName)
+	assert.Equal(t, beforeManualUncordon+1, afterManualUncordon, "TotalNodesManuallyUncordoned should increment")
+
+	afterCurrentQuarantined := getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName)
+	assert.Equal(t, float64(0), afterCurrentQuarantined, "CurrentQuarantinedNodes should be 0")
+	assert.GreaterOrEqual(t, beforeCurrentQuarantined, float64(0), "Gauge should have been initialized before")
+}
 
 // delayedWatchRoundTripper intercepts HTTP requests made by the Kubernetes client.
 //
@@ -5742,7 +5742,7 @@ func TestSourceDocIDsFromAnnotation(t *testing.T) {
 				return err == nil
 			}, eventuallyTimeout, statusCheckPollInterval, "informer should observe test node")
 
-			ids := r.sourceDocIDsFromAnnotation(nodeName)
+			ids := r.sourceDocIDsFromAnnotation(ctx, nodeName)
 			assert.ElementsMatch(t, tc.expectedIDs, ids)
 		})
 	}

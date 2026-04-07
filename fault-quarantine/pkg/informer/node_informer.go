@@ -122,14 +122,14 @@ func (ni *NodeInformer) HasSynced() bool {
 
 // WaitForSync waits for the informer cache to sync with context cancellation support.
 func (ni *NodeInformer) WaitForSync(ctx context.Context) bool {
-	slog.Info("Waiting for NodeInformer cache to sync...")
+	slog.InfoContext(ctx, "Waiting for NodeInformer cache to sync...")
 
 	if ok := cache.WaitForCacheSync(ctx.Done(), ni.informerSynced); !ok {
-		slog.Warn("NodeInformer cache sync failed or context cancelled")
+		slog.WarnContext(ctx, "NodeInformer cache sync failed or context cancelled")
 		return false
 	}
 
-	slog.Info("NodeInformer cache synced")
+	slog.InfoContext(ctx, "NodeInformer cache synced")
 
 	return true
 }

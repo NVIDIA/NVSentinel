@@ -228,10 +228,10 @@ func (h *MongoHealthEventStore) FindHealthEventsByStatus(ctx context.Context,
 
 // UpdateNodeQuarantineStatus updates node quarantine status
 func (h *MongoHealthEventStore) UpdateNodeQuarantineStatus(ctx context.Context, eventID string,
-	status datastore.Status) error {
+	status datastore.Status, spanID string) error {
 	// Use the convenience function from our existing implementation
 	return client.UpdateHealthEventNodeQuarantineStatus(ctx, h.databaseClient, eventID,
-		string(status))
+		string(status), spanID)
 }
 
 // UpdatePodEvictionStatus updates pod eviction status
