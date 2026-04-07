@@ -539,11 +539,6 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *pr
 	ctx, span := tracing.StartSpan(ctx, "platform_connector.k8s.process_health_events")
 	defer span.End()
 
-	var (
-		nodeConditionsUpdated int
-		nodeEventsWritten     int
-	)
-
 	processableEvents := filterProcessableEvents(ctx, healthEvents)
 
 	span.SetAttributes(
@@ -555,8 +550,7 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *pr
 	var firstErr error
 
 	for _, nodeEvents := range eventsByNode {
-		updated, err := r.processNodeConditionUpdates(ctx, nodeEvents)
-		if err != nil {
+		if err := r.processNodeConditionUpdates(ctx, nodeEvents); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -565,8 +559,6 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *pr
 				attribute.String("platform_connector.k8s.error.type", "node_condition_update_error"),
 				attribute.String("platform_connector.k8s.error.message", err.Error()),
 			))
-		} else if updated {
-			nodeConditionsUpdated++
 		}
 	}
 
@@ -586,16 +578,9 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *pr
 					attribute.String("platform_connector.k8s.error.type", "node_event_write_failed"),
 					attribute.String("platform_connector.k8s.error.message", err.Error()),
 				))
-			} else {
-				nodeEventsWritten++
 			}
 		}
 	}
-
-	span.SetAttributes(
-		attribute.Int("platform_connector.k8s.nodes_with_updated_conditions", nodeConditionsUpdated),
-		attribute.Int("platform_connector.k8s.node_events_written", nodeEventsWritten),
-	)
 
 	return firstErr
 }
@@ -611,24 +596,24 @@ func groupEventsByNode(events []*protos.HealthEvent) map[string][]*protos.Health
 }
 
 func (r *K8sConnector) processNodeConditionUpdates(ctx context.Context,
-	events []*protos.HealthEvent) (bool, error) {
+	events []*protos.HealthEvent) error {
 	start := time.Now()
 	conditionsProcessed, err := r.updateNodeConditions(ctx, events)
 
 	if !conditionsProcessed {
-		return false, err
+		return err
 	}
 
 	if err != nil {
 		nodeConditionUpdateCounter.WithLabelValues(StatusFailed).Inc()
 
-		return true, err
+		return err
 	}
 
 	nodeConditionUpdateDuration.Observe(float64(time.Since(start).Milliseconds()))
 	nodeConditionUpdateCounter.WithLabelValues(StatusSuccess).Inc()
 
-	return true, nil
+	return nil
 }
 
 // isTemporaryError checks if the error is a temporary network error that should be retried

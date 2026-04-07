@@ -101,8 +101,6 @@ func (a *Augmentor) Transform(ctx context.Context, event *pb.HealthEvent) error 
 	}
 
 	span.SetAttributes(
-		attribute.String("metadata.node", event.NodeName),
-		attribute.String("metadata.provider_id", metadata.ProviderID),
 		attribute.Int("metadata.labels_added", labelsAdded),
 	)
 
