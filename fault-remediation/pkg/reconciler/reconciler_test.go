@@ -140,6 +140,7 @@ func (w *MockCRStatusCheckerWrapper) IsSuccessful(ctx context.Context, crName st
 type MockNodeAnnotationManager struct {
 	existingCRs         map[string]string
 	existingGroupStates map[string]annotation.EquivalenceGroupState
+	removedGroups       []string
 }
 
 func (m *MockNodeAnnotationManager) GetRemediationState(ctx context.Context, nodeName string) (*annotation.RemediationStateAnnotation, *corev1.Node, error) {
@@ -165,7 +166,7 @@ func (m *MockNodeAnnotationManager) GetRemediationState(ctx context.Context, nod
 }
 
 func (m *MockNodeAnnotationManager) UpdateRemediationState(ctx context.Context, nodeName string,
-	group string, crName string, actionName string) error {
+	group string, crName string, actionName string, componentClass string) error {
 	return nil
 }
 
@@ -174,6 +175,18 @@ func (m *MockNodeAnnotationManager) ClearRemediationState(ctx context.Context, n
 }
 
 func (m *MockNodeAnnotationManager) RemoveGroupsFromState(ctx context.Context, nodeName string, groups []string) error {
+	m.removedGroups = append(m.removedGroups, groups...)
+
+	for _, group := range groups {
+		if m.existingGroupStates != nil {
+			delete(m.existingGroupStates, group)
+		}
+
+		if m.existingCRs != nil {
+			delete(m.existingCRs, group)
+		}
+	}
+
 	return nil
 }
 
@@ -1031,6 +1044,7 @@ func TestCheckExistingCRStatus_DeduplicatesStoredInProgressCROnDifferentComponen
 				MaintenanceCR: "maintenance-gpu-123",
 				CreatedAt:     time.Now(),
 				ActionName:    protos.RecommendedAction_COMPONENT_RESET.String(),
+				ComponentClass: "GPU",
 			},
 		},
 	}
@@ -1047,7 +1061,7 @@ func TestCheckExistingCRStatus_DeduplicatesStoredInProgressCROnDifferentComponen
 
 	healthEvent := &protos.HealthEvent{
 		NodeName:          "test-node",
-		ComponentClass:    "LPU",
+		ComponentClass:    "GPU",
 		RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
 	}
 
@@ -1056,6 +1070,71 @@ func TestCheckExistingCRStatus_DeduplicatesStoredInProgressCROnDifferentComponen
 	assert.False(t, shouldCreateCR,
 		"dedup should skip creating a new CR when the stored equivalence-group entry already points to an in-progress CR")
 	assert.Equal(t, "maintenance-gpu-123", existingCRName)
+}
+
+func TestCheckExistingCRStatus_IgnoresLegacyAnnotationEntryWithoutActionName(t *testing.T) {
+	ctx := context.Background()
+
+	existingCR := &unstructured.Unstructured{}
+	existingCR.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "janitor.dgxc.nvidia.com",
+		Version: "v1alpha1",
+		Kind:    "RebootNode",
+	})
+	existingCR.SetName("maintenance-legacy-123")
+	existingCR.Object["status"] = map[string]any{
+		"conditions": []any{
+			map[string]any{
+				"type":   "NodeReady",
+				"status": "Unknown",
+			},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	statusClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existingCR).Build()
+
+	remediationConfig := &config.TomlConfig{
+		RemediationActions: map[string]config.MaintenanceResource{
+			protos.RecommendedAction_RESTART_BM.String(): {
+				ApiGroup:              "janitor.dgxc.nvidia.com",
+				Version:               "v1alpha1",
+				Kind:                  "RebootNode",
+				CompleteConditionType: "NodeReady",
+			},
+		},
+	}
+
+	mockAnnotationManager := &MockNodeAnnotationManager{
+		existingGroupStates: map[string]annotation.EquivalenceGroupState{
+			"restart": {
+				MaintenanceCR: "maintenance-legacy-123",
+				CreatedAt:     time.Now(),
+			},
+		},
+	}
+
+	mockK8sClient := &MockK8sClient{
+		annotationManagerOverride: mockAnnotationManager,
+		statusCheckerOverride:     crstatus.NewCRStatusChecker(statusClient, remediationConfig, false),
+		configOverride:            remediationConfig,
+	}
+
+	r := NewFaultRemediationReconciler(nil, nil, nil, ReconcilerConfig{
+		RemediationClient: mockK8sClient,
+	}, false)
+
+	healthEvent := &protos.HealthEvent{
+		NodeName:          "test-node",
+		RecommendedAction: protos.RecommendedAction_RESTART_BM,
+	}
+
+	shouldCreateCR, existingCRName, err := r.checkExistingCRStatus(ctx, healthEvent, getGroupConfig("restart", nil))
+	assert.NoError(t, err)
+	assert.True(t, shouldCreateCR, "legacy entries without an actionName should be ignored")
+	assert.Empty(t, existingCRName)
+	assert.Equal(t, []string{"restart"}, mockAnnotationManager.removedGroups)
+	assert.Empty(t, mockAnnotationManager.existingGroupStates)
 }
 
 // TestLogCollectorOnlyCalledWhenShouldCreateCR verifies that log collector is only called

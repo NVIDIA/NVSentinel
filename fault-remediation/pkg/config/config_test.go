@@ -19,6 +19,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestTomlConfig_Validate(t *testing.T) {
@@ -445,23 +447,55 @@ func TestResolvedActionKeyAndActionNameHelpers(t *testing.T) {
 		},
 	}
 
-	if got := ResolvedActionKey("", "COMPONENT_RESET"); got != "COMPONENT_RESET" {
-		t.Fatalf("ResolvedActionKey() = %q, want %q", got, "COMPONENT_RESET")
+	assert.Equal(t, "COMPONENT_RESET", ResolvedActionKey("", "COMPONENT_RESET"))
+	assert.Equal(t, "GPU/COMPONENT_RESET", ResolvedActionKey("GPU", "COMPONENT_RESET"))
+	assert.Equal(t, []string{"COMPONENT_RESET", "RESTART_VM"}, config.SharedActionNames())
+	assert.Equal(t, []string{"COMPONENT_RESET", "RESTART_BM"}, config.ComponentActionNames("GPU"))
+	assert.Nil(t, config.ComponentActionNames("LPU"))
+}
+
+func TestTomlConfig_ResolveStoredMaintenanceResource(t *testing.T) {
+	cfg := TomlConfig{
+		RemediationActions: map[string]MaintenanceResource{
+			"COMPONENT_RESET": {Kind: "RebootNode"},
+		},
+		ComponentRemediationActions: ComponentRemediationActions{
+			"GPU": {
+				"COMPONENT_RESET": {Kind: "GPUReset"},
+			},
+			"LPU": {
+				"COMPONENT_RESET": {Kind: "LPURemediation"},
+			},
+		},
 	}
 
-	if got := ResolvedActionKey("GPU", "COMPONENT_RESET"); got != "GPU/COMPONENT_RESET" {
-		t.Fatalf("ResolvedActionKey() = %q, want %q", got, "GPU/COMPONENT_RESET")
-	}
+	t.Run("component-specific resource resolves exactly from stored component class", func(t *testing.T) {
+		resource, found := cfg.ResolveStoredMaintenanceResource("GPU", "COMPONENT_RESET")
+		assert.True(t, found)
+		assert.Equal(t, MaintenanceResource{Kind: "GPUReset"}, resource)
+	})
 
-	if got := config.SharedActionNames(); len(got) != 2 || got[0] != "COMPONENT_RESET" || got[1] != "RESTART_VM" {
-		t.Fatalf("SharedActionNames() = %v, want %v", got, []string{"COMPONENT_RESET", "RESTART_VM"})
-	}
+	t.Run("stored component class falls back to shared action when no override exists", func(t *testing.T) {
+		resource, found := cfg.ResolveStoredMaintenanceResource("NIC", "COMPONENT_RESET")
+		assert.True(t, found)
+		assert.Equal(t, MaintenanceResource{Kind: "RebootNode"}, resource)
+	})
 
-	if got := config.ComponentActionNames("GPU"); len(got) != 2 || got[0] != "COMPONENT_RESET" || got[1] != "RESTART_BM" {
-		t.Fatalf("ComponentActionNames(GPU) = %v, want %v", got, []string{"COMPONENT_RESET", "RESTART_BM"})
-	}
+	t.Run("empty component class returns no resource when action is ambiguous", func(t *testing.T) {
+		resource, found := cfg.ResolveStoredMaintenanceResource("", "COMPONENT_RESET")
+		assert.False(t, found)
+		assert.Equal(t, MaintenanceResource{}, resource)
+	})
 
-	if got := config.ComponentActionNames("LPU"); got != nil {
-		t.Fatalf("ComponentActionNames(LPU) = %v, want nil", got)
-	}
+	t.Run("empty component class can still resolve an unambiguous shared action", func(t *testing.T) {
+		cfgWithoutOverrides := TomlConfig{
+			RemediationActions: map[string]MaintenanceResource{
+				"COMPONENT_RESET": {Kind: "RebootNode"},
+			},
+		}
+
+		resource, found := cfgWithoutOverrides.ResolveStoredMaintenanceResource("", "COMPONENT_RESET")
+		assert.True(t, found)
+		assert.Equal(t, MaintenanceResource{Kind: "RebootNode"}, resource)
+	})
 }

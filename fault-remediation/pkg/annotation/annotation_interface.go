@@ -29,7 +29,8 @@ const (
 // NodeAnnotationManagerInterface defines the interface for managing node annotations
 type NodeAnnotationManagerInterface interface {
 	GetRemediationState(ctx context.Context, nodeName string) (*RemediationStateAnnotation, *corev1.Node, error)
-	UpdateRemediationState(ctx context.Context, nodeName string, group string, crName string, actionName string) error
+	UpdateRemediationState(ctx context.Context, nodeName string, group string, crName string, actionName string,
+		componentClass string) error
 	ClearRemediationState(ctx context.Context, nodeName string) error
 	RemoveGroupsFromState(ctx context.Context, nodeName string, groups []string) error
 }
@@ -44,7 +45,9 @@ type EquivalenceGroupState struct {
 	MaintenanceCR string    `json:"maintenanceCR"`
 	CreatedAt     time.Time `json:"createdAt"`
 
-	// Action that created the CR (e.g., "RESTART_BM")
-	// Required to look up the corresponding MaintenanceResource from the TomlConfig
+	// Action corresponding with the HealthEvent that created the CR (e.g., "RESTART_BM")
 	ActionName string `json:"actionName"`
+
+	// Component class corresponding with the HealthEvent that created the CR (e.g. "GPU")
+	ComponentClass string `json:"componentClass,omitempty"`
 }

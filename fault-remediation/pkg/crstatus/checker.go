@@ -44,28 +44,27 @@ func NewCRStatusChecker(
 	}
 }
 
-// ShouldSkipCRCreation returns true if the CR exists and is not in a terminal state otherwise returns false.
+// ShouldSkipCRCreation returns true if a matching CR exists and is not in a terminal state otherwise returns false.
 func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, componentClass, actionName, crName string) bool {
 	if c.dryRun {
 		slog.Info("DRY-RUN: CR doesn't exist (dry-run mode)", "crName", crName, "action", actionName)
 		return false
 	}
 
-	resource, _, exists := c.remediationConfig.ResolveMaintenanceResource(componentClass, actionName)
-	if !exists {
+	resource, found := c.remediationConfig.ResolveStoredMaintenanceResource(componentClass, actionName)
+	if !found {
 		slog.Error("No remediation configuration found for action",
 			"action", actionName,
 			"componentClass", componentClass)
 		return false
 	}
 
+	obj := &unstructured.Unstructured{}
 	gvk := schema.GroupVersionKind{
 		Group:   resource.ApiGroup,
 		Version: resource.Version,
 		Kind:    resource.Kind,
 	}
-
-	obj := &unstructured.Unstructured{}
 	obj.SetGroupVersionKind(gvk)
 
 	key := client.ObjectKey{Name: crName, Namespace: resource.Namespace}
@@ -75,7 +74,12 @@ func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, componentCla
 			return false
 		}
 
-		slog.Warn("Failed to get CR, allowing create", "crName", crName, "gvk", gvk.String(), "error", err)
+		slog.Warn("Failed to get CR, assuming not in progress",
+			"crName", crName,
+			"action", actionName,
+			"componentClass", componentClass,
+			"gvk", gvk.String(),
+			"error", err)
 		return false
 	}
 

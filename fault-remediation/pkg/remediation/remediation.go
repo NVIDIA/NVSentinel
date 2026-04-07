@@ -196,7 +196,7 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, 
 	healthEvent := healthEventData.HealthEvent
 	healthEventID := healthEventData.ID
 
-	// Generate CR name
+	// Generate the maintenance CR name from the node and health event ID.
 	crName := fmt.Sprintf("maintenance-%s-%s", healthEvent.NodeName, healthEventID)
 
 	// Skip custom resource creation if dry-run is enabled
@@ -231,7 +231,7 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, 
 	}
 
 	if err := c.updateRemediationAnnotationIfNeeded(ctx, healthEvent.NodeName, groupConfig.EffectiveEquivalenceGroup,
-		actualCRName, recommendedActionName); err != nil {
+		actualCRName, recommendedActionName, healthEvent.ComponentClass); err != nil {
 		return "", err
 	}
 
@@ -303,14 +303,14 @@ func (c *FaultRemediationClient) createMaintenanceCR(ctx context.Context, select
 // updateRemediationAnnotationIfNeeded updates node remediation state when equivalence group
 // and annotation manager are set.
 func (c *FaultRemediationClient) updateRemediationAnnotationIfNeeded(ctx context.Context, nodeName string,
-	effectiveEquivalenceGroup string, actualCRName, recommendedActionName string,
+	effectiveEquivalenceGroup string, actualCRName, recommendedActionName, componentClass string,
 ) error {
 	if effectiveEquivalenceGroup == "" || c.annotationManager == nil {
 		return nil
 	}
 
 	err := c.annotationManager.UpdateRemediationState(ctx, nodeName, effectiveEquivalenceGroup,
-		actualCRName, recommendedActionName)
+		actualCRName, recommendedActionName, componentClass)
 	if err != nil {
 		slog.Warn("Failed to update node annotation", "node", nodeName, "error", err)
 		return fmt.Errorf("failed to update node annotation: %w", err)

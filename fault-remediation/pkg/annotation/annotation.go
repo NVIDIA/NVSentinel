@@ -95,7 +95,7 @@ func (m *NodeAnnotationManager) GetRemediationState(
 
 // UpdateRemediationState updates the node annotation with new remediation state
 func (m *NodeAnnotationManager) UpdateRemediationState(ctx context.Context, nodeName string,
-	group string, crName string, actionName string) error {
+	group string, crName string, actionName string, componentClass string) error {
 	err := retry.RetryOnConflict(conflictBackoff, func() error {
 		// Get current state
 		state, node, err := m.GetRemediationState(ctx, nodeName)
@@ -106,9 +106,10 @@ func (m *NodeAnnotationManager) UpdateRemediationState(ctx context.Context, node
 
 		// Update state for the group
 		state.EquivalenceGroups[group] = EquivalenceGroupState{
-			MaintenanceCR: crName,
-			CreatedAt:     time.Now().UTC(),
-			ActionName:    actionName,
+			MaintenanceCR:  crName,
+			CreatedAt:      time.Now().UTC(),
+			ActionName:     actionName,
+			ComponentClass: componentClass,
 		}
 
 		// Marshal to JSON

@@ -492,7 +492,7 @@ func (r *FaultRemediationReconciler) checkExistingCRStatus(ctx context.Context, 
 	var groupsToRemove []string
 
 	for groupName, groupState := range groupStates {
-		shouldSkip := statusChecker.ShouldSkipCRCreation(ctx, healthEvent.ComponentClass,
+		shouldSkip := statusChecker.ShouldSkipCRCreation(ctx, groupState.ComponentClass,
 			groupState.ActionName, groupState.MaintenanceCR)
 		if shouldSkip {
 			slog.Info("CR exists and is in progress, skipping event", "node", nodeName, "crName", groupState.MaintenanceCR)

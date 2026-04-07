@@ -127,7 +127,7 @@ func TestCheckCondition(t *testing.T) {
 	}
 }
 
-func TestShouldSkipCRCreation_DoesNotMatchOtherComponentOverride(t *testing.T) {
+func TestShouldSkipCRCreation_DoesNotGuessAcrossOtherComponentOverrides(t *testing.T) {
 	scheme := runtime.NewScheme()
 
 	existingCR := &unstructured.Unstructured{}
@@ -164,7 +164,7 @@ func TestShouldSkipCRCreation_DoesNotMatchOtherComponentOverride(t *testing.T) {
 
 	shouldSkip := checker.ShouldSkipCRCreation(context.Background(), "LPU", "COMPONENT_RESET", "maintenance-node-1-event-1")
 
-	assert.False(t, shouldSkip, "expected checker to ignore a CR belonging to another component override")
+	assert.False(t, shouldSkip, "expected checker not to guess across other component overrides")
 }
 
 func TestShouldSkipCRCreation_FallsBackToSharedAction(t *testing.T) {
@@ -213,4 +213,52 @@ func TestShouldSkipCRCreation_FallsBackToSharedAction(t *testing.T) {
 	shouldSkip := checker.ShouldSkipCRCreation(context.Background(), "LPU", "COMPONENT_RESET", "maintenance-node-2-event-1")
 
 	assert.True(t, shouldSkip, "expected checker to fall back to the shared action mapping")
+}
+
+func TestShouldSkipCRCreation_EmptyStoredComponentClassTreatsAmbiguousActionAsStale(t *testing.T) {
+	scheme := runtime.NewScheme()
+
+	existingCR := &unstructured.Unstructured{}
+	existingCR.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "janitor.dgxc.nvidia.com",
+		Version: "v1alpha1",
+		Kind:    "GPUReset",
+	})
+	existingCR.SetName("maintenance-node-3-event-1")
+	existingCR.Object["status"] = map[string]any{
+		"conditions": []any{
+			map[string]any{
+				"type":   "Complete",
+				"status": "Unknown",
+			},
+		},
+	}
+
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existingCR).Build()
+	cfg := &config.TomlConfig{
+		ComponentRemediationActions: config.ComponentRemediationActions{
+			"GPU": {
+				"COMPONENT_RESET": {
+					ApiGroup:              "janitor.dgxc.nvidia.com",
+					Version:               "v1alpha1",
+					Kind:                  "GPUReset",
+					CompleteConditionType: "Complete",
+				},
+			},
+			"LPU": {
+				"COMPONENT_RESET": {
+					ApiGroup:              "janitor.dgxc.nvidia.com",
+					Version:               "v1alpha1",
+					Kind:                  "LPURemediation",
+					CompleteConditionType: "Complete",
+				},
+			},
+		},
+	}
+
+	checker := NewCRStatusChecker(client, cfg, false)
+
+	shouldSkip := checker.ShouldSkipCRCreation(context.Background(), "", "COMPONENT_RESET", "maintenance-node-3-event-1")
+
+	assert.False(t, shouldSkip, "expected empty stored component class to be treated as stale when action is ambiguous")
 }
