@@ -75,15 +75,22 @@ func InitTracing(serviceName string) error {
 		return fmt.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT is not configured")
 	}
 
-	var opts []otlptracegrpc.Option
+	opts := []otlptracegrpc.Option{
+		otlptracegrpc.WithEndpoint(endpoint),
+	}
 
 	if os.Getenv("OTEL_EXPORTER_OTLP_INSECURE") == "true" {
 		opts = append(opts, otlptracegrpc.WithTLSCredentials(insecure.NewCredentials()))
 	}
 
-	exporter, err := otlptracegrpc.New(context.Background(), opts...)
+	primaryExporter, err := otlptracegrpc.New(context.Background(), opts...)
 	if err != nil {
-		return fmt.Errorf("failed to create OTLP exporter: %w", err)
+		return fmt.Errorf("failed to create primary OTLP exporter: %w", err)
+	}
+
+	childOnlyExporter, err := otlptracegrpc.New(context.Background(), opts...)
+	if err != nil {
+		return fmt.Errorf("failed to create child-only OTLP exporter: %w", err)
 	}
 
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
@@ -91,7 +98,7 @@ func InitTracing(serviceName string) error {
 	}))
 
 	tracerProvider = sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
+		sdktrace.WithBatcher(primaryExporter),
 		sdktrace.WithResource(res),
 	)
 
@@ -100,7 +107,7 @@ func InitTracing(serviceName string) error {
 	// preventing standalone root traces from background operations like change
 	// stream getMore polling and listCollections.
 	childOnlyTracerProvider = sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
+		sdktrace.WithBatcher(childOnlyExporter),
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.NeverSample())),
 	)

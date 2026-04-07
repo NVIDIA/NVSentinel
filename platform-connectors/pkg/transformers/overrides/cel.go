@@ -15,6 +15,7 @@
 package overrides
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -44,7 +45,7 @@ func compileRules(config *Config) ([]compiledRule, error) {
 
 	env, err := buildCELEnvironment()
 	if err != nil {
-		slog.Error("Failed to create CEL environment", "error", err)
+		slog.ErrorContext(context.Background(), "Failed to create CEL environment", "error", err)
 		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
 	}
 
@@ -53,14 +54,15 @@ func compileRules(config *Config) ([]compiledRule, error) {
 	for i, rule := range config.Rules {
 		ast, issues := env.Compile(rule.When)
 		if issues != nil && issues.Err() != nil {
-			slog.Error("Failed to compile CEL expression", "rule", rule.Name, "error", issues.Err())
+			slog.ErrorContext(context.Background(), "Failed to compile CEL expression", "rule", rule.Name, "error", issues.Err())
 
 			return nil, fmt.Errorf("rule[%d] (%s): CEL compilation failed: %w",
 				i, rule.Name, issues.Err())
 		}
 
 		if ast.OutputType() != cel.BoolType {
-			slog.Error("Failed to compile CEL expression", "rule", rule.Name, "error", ast.OutputType())
+			slog.ErrorContext(context.Background(), "Failed to compile CEL expression",
+				"rule", rule.Name, "error", ast.OutputType())
 
 			return nil, fmt.Errorf("rule[%d] (%s): expression must return boolean, got %v",
 				i, rule.Name, ast.OutputType())
@@ -68,7 +70,7 @@ func compileRules(config *Config) ([]compiledRule, error) {
 
 		program, err := env.Program(ast)
 		if err != nil {
-			slog.Error("Failed to create CEL program", "rule", rule.Name, "error", err)
+			slog.ErrorContext(context.Background(), "Failed to create CEL program", "rule", rule.Name, "error", err)
 
 			return nil, fmt.Errorf("rule[%d] (%s): failed to create program: %w",
 				i, rule.Name, err)
@@ -84,14 +86,14 @@ func compileRules(config *Config) ([]compiledRule, error) {
 	return compiled, nil
 }
 
-func (r *compiledRule) evaluate(event *pb.HealthEvent) (bool, error) {
+func (r *compiledRule) evaluate(ctx context.Context, event *pb.HealthEvent) (bool, error) {
 	eventMap := buildEventMap(event)
 
 	result, _, err := r.program.Eval(map[string]any{
 		"event": eventMap,
 	})
 	if err != nil {
-		slog.Error("Failed to evaluate CEL expression", "rule", r.name, "error", err)
+		slog.ErrorContext(ctx, "Failed to evaluate CEL expression", "rule", r.name, "error", err)
 
 		return false, fmt.Errorf("evaluation failed: %w", err)
 	}

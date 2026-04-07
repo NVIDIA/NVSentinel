@@ -94,9 +94,9 @@ func TestRingBuffer_Queue(t *testing.T) {
 		},
 	}
 	for _, healthEvent := range healthEventsList {
-		healthEvents := protos.HealthEvents{Version: 1, Events: make([]*protos.HealthEvent, 0)}
+		healthEvents := &protos.HealthEvents{Version: 1, Events: make([]*protos.HealthEvent, 0)}
 		healthEvents.Events = append(healthEvents.Events, healthEvent.healthEvent)
-		ringBuffer.Enqueue(&healthEvents)
+		ringBuffer.Enqueue(NewQueuedHealthEvents(healthEvents))
 	}
 
 	for testCase, healthEvent := range healthEventsList {
@@ -104,7 +104,7 @@ func TestRingBuffer_Queue(t *testing.T) {
 		if quit {
 			t.Errorf("Unexpected quit signal during normal operation")
 		}
-		for _, healthEventItem := range item.Events {
+		for _, healthEventItem := range item.Events.Events {
 			if healthEventItem.CheckName != healthEvent.expectedHealthEventOutput {
 				t.Errorf("Testcase %d. The expected healthEvent %s is not matching with the currentEvent %s from the queue", testCase, healthEvent.expectedHealthEventOutput, healthEventItem.CheckName)
 			}
@@ -133,8 +133,8 @@ func TestRingBuffer_DequeueWithCancelledContext(t *testing.T) {
 		GeneratedTimestamp: timestamppb.New(time.Now()),
 		ComponentClass:     "gpu",
 	}
-	healthEvents := protos.HealthEvents{Version: 1, Events: []*protos.HealthEvent{healthEvent}}
-	ringBuffer.Enqueue(&healthEvents)
+	healthEvents := &protos.HealthEvents{Version: 1, Events: []*protos.HealthEvent{healthEvent}}
+	ringBuffer.Enqueue(NewQueuedHealthEvents(healthEvents))
 
 	result, quit := ringBuffer.Dequeue()
 	if !quit {
@@ -158,9 +158,9 @@ func TestRingBuffer_HealthMetricEleProcessingFailed(t *testing.T) {
 		GeneratedTimestamp: timestamppb.New(time.Now()),
 		ComponentClass:     "gpu",
 	}
-	healthEvents := protos.HealthEvents{Version: 1, Events: []*protos.HealthEvent{healthEvent}}
+	healthEvents := &protos.HealthEvents{Version: 1, Events: []*protos.HealthEvent{healthEvent}}
 
-	ringBuffer.Enqueue(&healthEvents)
+	ringBuffer.Enqueue(NewQueuedHealthEvents(healthEvents))
 	item, quit := ringBuffer.Dequeue()
 	if quit {
 		t.Errorf("Unexpected quit signal during normal operation")
@@ -186,8 +186,8 @@ func TestRingBuffer_ShutDown(t *testing.T) {
 		GeneratedTimestamp: timestamppb.New(time.Now()),
 		ComponentClass:     "gpu",
 	}
-	healthEvents := protos.HealthEvents{Version: 1, Events: []*protos.HealthEvent{healthEvent}}
-	ringBuffer.Enqueue(&healthEvents)
+	healthEvents := &protos.HealthEvents{Version: 1, Events: []*protos.HealthEvent{healthEvent}}
+	ringBuffer.Enqueue(NewQueuedHealthEvents(healthEvents))
 
 	ringBuffer.ShutDownHealthMetricQueue()
 
@@ -227,8 +227,8 @@ func TestRingBuffer_CurrentLength(t *testing.T) {
 			GeneratedTimestamp: timestamppb.New(time.Now()),
 			ComponentClass:     "gpu",
 		}
-		healthEvents := protos.HealthEvents{Version: 1, Events: []*protos.HealthEvent{healthEvent}}
-		ringBuffer.Enqueue(&healthEvents)
+		healthEvents := &protos.HealthEvents{Version: 1, Events: []*protos.HealthEvent{healthEvent}}
+		ringBuffer.Enqueue(NewQueuedHealthEvents(healthEvents))
 	}
 
 	if ringBuffer.CurrentLength() != 3 {
