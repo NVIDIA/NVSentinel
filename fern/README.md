@@ -6,42 +6,58 @@ The `docs/` directory on `main` is the **source of truth**. This `fern/` directo
 
 ## How publishing works
 
-- **Authoring**: edit markdown files in `docs/`, update `docs/index.yml` for navigation
-- **CI on merge to main**: syncs `docs/` to the `docs-website` branch and runs `fern generate --docs`
-- **CI on `vX.Y.Z` tag**: creates a versioned snapshot and publishes it alongside `dev`
-- **PRs**: `fern check` + broken-link scan run automatically; a preview URL is posted as a PR comment
+| Trigger | What happens |
+|---|---|
+| PR touching `docs/**` or `fern/**` | `fern check` + broken-link scan; preview URL posted as PR comment |
+| Merge to `main` | Syncs `docs/` to `docs-website` branch, publishes dev docs |
+| Tag `vX.Y.Z` | Snapshots current docs as a versioned release, publishes |
 
-The `docs-website` branch is CI-managed — never edit it by hand.
+The `docs-website` branch is CI-managed — never edit it by hand. All authoring happens in `docs/`; update `docs/index.yml` to add or move pages in the sidebar.
 
 ## One-time setup (required before CI can publish)
 
-1. **Register the project with Fern** at [buildwithfern.com](https://buildwithfern.com), create an organization (use `nvidia` or your own), and obtain a `FERN_TOKEN`. Note that publishing to a custom domain (e.g. `docs.nvidia.com/nvsentinel`) requires a paid Fern plan; the `buildwithfern.com` preview URL is available on the free tier.
+### 1. Register with Fern
 
-2. **Update org/URL** if the project slug differs from `nvsentinel`:
-   - `fern/fern.config.json` → `organization`
-   - `fern/docs.yml` → `instances[0].url` (and `custom-domain` if applicable)
+Go to [buildwithfern.com](https://buildwithfern.com), create an account, and register the project. The free tier gives a preview URL at `nvsentinel.docs.buildwithfern.com`; a paid plan is required for a custom domain (e.g. `docs.nvidia.com/nvsentinel`).
 
-3. **Create the `docs-website` branch**:
-   ```bash
-   git checkout --orphan docs-website
-   git commit --allow-empty -m "chore: init docs-website branch"
-   git push origin docs-website
-   git checkout main
-   ```
+### 2. Update org/URL if needed
 
-4. **Add `FERN_TOKEN` as a GitHub Actions secret** in repo Settings → Secrets and variables → Actions.
+If the org or project slug differs from `nvidia` / `nvsentinel`, update:
+- `fern/fern.config.json` → `organization`
+- `fern/docs.yml` → `instances[0].url` (and `custom-domain` if applicable)
 
-5. **Validate locally**:
-   ```bash
-   npm install -g fern-api
-   fern check
-   ```
+### 3. Create the `docs-website` branch
+
+This branch accumulates versioned doc snapshots over time and must exist before CI can push to it. Create it once:
+
+```bash
+git checkout --orphan docs-website
+git commit --allow-empty -m "chore: init docs-website branch"
+git push origin docs-website
+git checkout main
+```
+
+### 4. Add the `FERN_TOKEN` secret
+
+In the repo: **Settings → Secrets and variables → Actions → New repository secret**
+
+- Name: `FERN_TOKEN`
+- Value: token obtained from your Fern account
+
+### 5. Validate locally
+
+```bash
+npm install -g fern-api
+fern check
+```
 
 ## Local preview
 
 ```bash
 npm install -g fern-api
-fern docs dev
+HOST=0.0.0.0 fern docs dev   # bind to host IP for remote access
+# or
+fern docs dev                  # localhost only
 ```
 
 ## Releasing a new version
