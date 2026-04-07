@@ -70,6 +70,7 @@ type FaultRemediationClient struct {
 	statusChecker     *crstatus.CRStatusChecker
 }
 
+// nolint:cyclop
 func NewRemediationClient(
 	client client.Client,
 	dryRun bool,
@@ -110,8 +111,9 @@ func NewRemediationClient(
 	for componentClass, actions := range remediationConfig.ComponentRemediationActions {
 		for actionName, maintenanceResource := range actions {
 			if maintenanceResource.Scope == "Namespaced" && maintenanceResource.Namespace == "" {
-				return nil, fmt.Errorf("remediation action %s for componentClass %s is namespaced but missing namespace configuration",
-					actionName, componentClass)
+				return nil,
+					fmt.Errorf("remediation action %s for componentClass %s is namespaced but missing namespace configuration",
+						actionName, componentClass)
 			}
 		}
 	}

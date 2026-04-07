@@ -85,7 +85,8 @@ type TomlConfig struct {
 	// Common configuration
 	UpdateRetry UpdateRetry `toml:"updateRetry"`
 
-	// RemediationActions and ComponentRemediationActions define a static mapping from healthEvent attributes to MaintenanceResource
+	// RemediationActions and ComponentRemediationActions define a static mapping
+	// from healthEvent attributes to MaintenanceResource
 
 	// ComponentClass, RecommendedAction -> MaintenanceResource
 	ComponentRemediationActions ComponentRemediationActions `toml:"componentRemediationActions"`
@@ -145,7 +146,10 @@ func (c *TomlConfig) validateRemediationAction(actionName string, resource Maint
 	return nil
 }
 
-func (c *TomlConfig) validateComponentRemediationAction(componentClass, actionName string, resource MaintenanceResource) error {
+func (c *TomlConfig) validateComponentRemediationAction(
+	componentClass, actionName string,
+	resource MaintenanceResource,
+) error {
 	if componentClass == "" {
 		return fmt.Errorf("componentRemediationActions must have a non-empty componentClass")
 	}
@@ -306,8 +310,8 @@ func (c *TomlConfig) ComponentActionNames(componentClass string) []string {
 // ResolveStoredMaintenanceResource resolves the maintenance resource for a
 // remediation entry previously stored in the node annotation.
 //
-// Older remediation annotations may not have ComponentClass populated. 
-// When componentClass is unpopulated, we will resolve the action when it is still unambiguous in the current config. 
+// Older remediation annotations may not have ComponentClass populated.
+// When componentClass is unpopulated, we will resolve the action when it is still unambiguous in the current config.
 // If ambiguous, it will be treated as stale.
 func (c *TomlConfig) ResolveStoredMaintenanceResource(componentClass, actionName string) (MaintenanceResource, bool) {
 	if componentClass != "" {

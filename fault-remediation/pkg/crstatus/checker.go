@@ -56,6 +56,7 @@ func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, componentCla
 		slog.Error("No remediation configuration found for action",
 			"action", actionName,
 			"componentClass", componentClass)
+
 		return false
 	}
 
@@ -80,6 +81,7 @@ func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, componentCla
 			"componentClass", componentClass,
 			"gvk", gvk.String(),
 			"error", err)
+
 		return false
 	}
 
