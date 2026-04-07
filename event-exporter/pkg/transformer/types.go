@@ -16,6 +16,7 @@ package transformer
 
 import (
 	"context"
+	"fmt"
 
 	"go.opentelemetry.io/otel/attribute"
 
@@ -49,7 +50,7 @@ func (t *CloudEventsTransformer) Transform(ctx context.Context, event *pb.Health
 		)
 		tracing.RecordError(span, err)
 
-		return nil, err
+		return nil, fmt.Errorf("error in transforming the event to cloud event: %w", err)
 	}
 
 	return cloudEvent, nil
