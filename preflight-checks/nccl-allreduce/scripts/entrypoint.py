@@ -93,7 +93,17 @@ def main() -> int:
     if isinstance(gang_config, int):
         return gang_config
 
-    # 3. Launch torchrun (replaces this process)
+    # 3. Validate peers have consistent check configuration
+    validation_error = gang_config.validate_peers()
+    if validation_error is not None:
+        log.error(
+            "Gang peer validation failed",
+            extra={"error": validation_error},
+        )
+        _report_error(NCCLError.GANG_CONFIG_ERROR, validation_error)
+        return NCCLError.GANG_CONFIG_ERROR.value.exit_code
+
+    # 4. Launch torchrun (replaces this process)
     _launch_torchrun(gang_config, cfg.nprocs_per_node)
 
     # Should never reach here (os.execvp replaces the process)

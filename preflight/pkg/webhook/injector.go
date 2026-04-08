@@ -18,7 +18,9 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
@@ -43,6 +45,11 @@ const (
 	dshmVolumeName = "dshm"
 	// ncclTopoVolumeName is the name for the NCCL topology ConfigMap volume
 	ncclTopoVolumeName = "nccl-topo"
+
+	// PreflightChecksAnnotation is the pod annotation listing which preflight
+	// checks to run. Value is a comma-separated list of init container names.
+	// When absent, all containers with defaultEnabled (or omitted) are injected.
+	PreflightChecksAnnotation = "nvsentinel.nvidia.com/preflight-checks"
 )
 
 type PatchOperation struct {
@@ -68,6 +75,29 @@ func NewInjector(cfg *config.Config, discoverer gang.GangDiscoverer) *Injector {
 type GangContext struct {
 	GangID        string
 	ConfigMapName string
+	// CheckNames is a sorted, comma-separated list of injected check
+	// container names. Written into the gang peer line for validation.
+	CheckNames string
+}
+
+// ParseCheckNames splits a comma-separated annotation value into a sorted,
+// deduplicated list of container names. Exported so the gang controller can
+// use the same normalization.
+func ParseCheckNames(csv string) []string {
+	seen := make(map[string]bool)
+	var names []string
+
+	for _, part := range strings.Split(csv, ",") {
+		name := strings.TrimSpace(part)
+		if name != "" && !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+
+	sort.Strings(names)
+
+	return names
 }
 
 func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *GangContext, error) {
@@ -103,7 +133,19 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 		}
 	}
 
-	initContainers := i.buildInitContainers(pod, maxResources, gangCtx)
+	selected := i.selectInitContainers(pod)
+	initContainers := i.buildInitContainers(pod, maxResources, gangCtx, selected)
+
+	// Compute sorted check names for gang validation.
+	if gangCtx != nil {
+		names := make([]string, len(initContainers))
+		for idx, c := range initContainers {
+			names[idx] = c.Name
+		}
+		sort.Strings(names)
+		gangCtx.CheckNames = strings.Join(names, ",")
+	}
+
 	if len(initContainers) == 0 {
 		// No init containers to inject, but still return gangCtx
 		// so the controller can track gang membership
@@ -192,10 +234,54 @@ func (i *Injector) updateMax(resources corev1.ResourceList, name corev1.Resource
 	}
 }
 
+// selectInitContainers returns the subset of configured init containers to
+// inject based on the pod's preflight-checks annotation or defaultEnabled.
+func (i *Injector) selectInitContainers(pod *corev1.Pod) []config.InitContainerSpec {
+	ann, ok := pod.Annotations[PreflightChecksAnnotation]
+	if !ok || strings.TrimSpace(ann) == "" {
+		// No annotation — use defaultEnabled.
+		var result []config.InitContainerSpec
+		for _, spec := range i.cfg.InitContainers {
+			if spec.IsDefaultEnabled() {
+				result = append(result, spec)
+			} else {
+				slog.Debug("Init container disabled by default", "container", spec.Name)
+			}
+		}
+
+		return result
+	}
+
+	// Annotation present — only inject named containers.
+	requested := ParseCheckNames(ann)
+	configuredByName := make(map[string]config.InitContainerSpec, len(i.cfg.InitContainers))
+
+	for _, spec := range i.cfg.InitContainers {
+		configuredByName[spec.Name] = spec
+	}
+
+	var result []config.InitContainerSpec
+
+	for _, name := range requested {
+		spec, exists := configuredByName[name]
+		if !exists {
+			slog.Warn("Annotation requests unknown preflight check, skipping",
+				"check", name, "pod", pod.Name, "namespace", pod.Namespace)
+
+			continue
+		}
+
+		result = append(result, spec)
+	}
+
+	return result
+}
+
 func (i *Injector) buildInitContainers(
 	pod *corev1.Pod,
 	maxResources corev1.ResourceList,
 	gangCtx *GangContext,
+	selected []config.InitContainerSpec,
 ) []corev1.Container {
 	var initContainers []corev1.Container
 
@@ -209,8 +295,8 @@ func (i *Injector) buildInitContainers(
 	userEnvVars := i.collectMatchingEnvVars(pod.Spec.Containers)
 	userVolumeMounts := i.collectMatchingVolumeMounts(pod.Spec.Containers)
 
-	for _, tmpl := range i.cfg.InitContainers {
-		container := tmpl.DeepCopy()
+	for _, tmpl := range selected {
+		container := tmpl.Container.DeepCopy()
 
 		if container.Resources.Requests == nil {
 			container.Resources.Requests = make(corev1.ResourceList)

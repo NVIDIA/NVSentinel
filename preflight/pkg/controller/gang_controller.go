@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
@@ -153,11 +154,19 @@ func (c *GangController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, nil
 	}
 
+	// Normalize the preflight-checks annotation so all peers serialize the
+	// same sorted value, enabling gang-level consistency validation.
+	checkNames := ""
+	if ann, ok := pod.Annotations[webhook.PreflightChecksAnnotation]; ok {
+		checkNames = strings.Join(webhook.ParseCheckNames(ann), ",")
+	}
+
 	peer := gang.PeerInfo{
-		PodName:   pod.Name,
-		PodIP:     pod.Status.PodIP,
-		NodeName:  pod.Spec.NodeName,
-		Namespace: pod.Namespace,
+		PodName:    pod.Name,
+		PodIP:      pod.Status.PodIP,
+		NodeName:   pod.Spec.NodeName,
+		Namespace:  pod.Namespace,
+		CheckNames: checkNames,
 	}
 
 	if err := c.coordinator.RegisterPeer(ctx, pod.Namespace, gangInfo, peer); err != nil {

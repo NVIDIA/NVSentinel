@@ -286,9 +286,9 @@ func TestInjectInitContainers(t *testing.T) {
 			cfg: func() *config.Config {
 				c := testConfig()
 				c.InitContainerPlacement = config.PlacementPrepend
-				c.InitContainers = []corev1.Container{
-					{Name: "preflight-dcgm-diag", Image: "dcgm:latest"},
-					{Name: "preflight-nccl-loopback", Image: "nccl:latest"},
+				c.InitContainers = []config.InitContainerSpec{
+					{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
+					{Container: corev1.Container{Name: "preflight-nccl-loopback", Image: "nccl:latest"}},
 				}
 				return c
 			}(),
@@ -437,7 +437,7 @@ func TestBuildInitContainers(t *testing.T) {
 			"vpc.amazonaws.com/efa": resource.MustParse("4"),
 		}
 
-		containers := injector.buildInitContainers(pod, maxResources, nil)
+		containers := injector.buildInitContainers(pod, maxResources, nil, cfg.InitContainers)
 		require.Len(t, containers, 1)
 
 		c := containers[0]
@@ -454,7 +454,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 		containers := injector.buildInitContainers(pod, corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, nil)
+		}, nil, cfg.InitContainers)
 		require.Len(t, containers, 1)
 
 		assert.Equal(t, resource.MustParse("100m"), containers[0].Resources.Requests[corev1.ResourceCPU])
@@ -463,8 +463,8 @@ func TestBuildInitContainers(t *testing.T) {
 
 	t.Run("CPU and memory floor not applied when already set", func(t *testing.T) {
 		cfg := testConfig()
-		cfg.InitContainers = []corev1.Container{
-			{
+		cfg.InitContainers = []config.InitContainerSpec{
+			{Container: corev1.Container{
 				Name:  "preflight-dcgm-diag",
 				Image: "dcgm:latest",
 				Resources: corev1.ResourceRequirements{
@@ -473,13 +473,13 @@ func TestBuildInitContainers(t *testing.T) {
 						corev1.ResourceMemory: resource.MustParse("1Gi"),
 					},
 				},
-			},
+			}},
 		}
 		injector := NewInjector(cfg, nil)
 
 		containers := injector.buildInitContainers(gpuPod(), corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, nil)
+		}, nil, cfg.InitContainers)
 		require.Len(t, containers, 1)
 
 		assert.Equal(t, resource.MustParse("200m"), containers[0].Resources.Requests[corev1.ResourceCPU])
@@ -488,15 +488,15 @@ func TestBuildInitContainers(t *testing.T) {
 
 	t.Run("DCGM env only for dcgm-diag container", func(t *testing.T) {
 		cfg := testConfig()
-		cfg.InitContainers = []corev1.Container{
-			{Name: "preflight-dcgm-diag", Image: "dcgm:latest"},
-			{Name: "preflight-nccl-allreduce", Image: "nccl:latest"},
+		cfg.InitContainers = []config.InitContainerSpec{
+			{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
+			{Container: corev1.Container{Name: "preflight-nccl-allreduce", Image: "nccl:latest"}},
 		}
 		injector := NewInjector(cfg, nil)
 
 		containers := injector.buildInitContainers(gpuPod(), corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, nil)
+		}, nil, cfg.InitContainers)
 		require.Len(t, containers, 2)
 
 		assert.True(t, hasEnvVar(containers[0], "DCGM_DIAG_LEVEL"), "dcgm-diag should have DCGM_DIAG_LEVEL")
@@ -511,7 +511,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 		containers := injector.buildInitContainers(gpuPod(), corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, nil)
+		}, nil, cfg.InitContainers)
 		require.Len(t, containers, 1)
 
 		assert.True(t, hasEnvVar(containers[0], "NODE_NAME"))
@@ -525,7 +525,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 		containers := injector.buildInitContainers(gpuPod(), corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, nil)
+		}, nil, cfg.InitContainers)
 		require.Len(t, containers, 1)
 
 		assert.False(t, hasEnvVar(containers[0], "GANG_ID"))
@@ -541,7 +541,7 @@ func TestBuildInitContainers(t *testing.T) {
 		gangCtx := &GangContext{GangID: "test-gang", ConfigMapName: "preflight-test-gang"}
 		containers := injector.buildInitContainers(gpuPod(), corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, gangCtx)
+		}, gangCtx, cfg.InitContainers)
 		require.Len(t, containers, 1)
 
 		c := containers[0]
@@ -565,7 +565,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 		containers := injector.buildInitContainers(pod, corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, nil)
+		}, nil, cfg.InitContainers)
 		require.Len(t, containers, 1)
 		assert.Equal(t, "INFO", findEnv(containers[0].Env, "NCCL_DEBUG"))
 	})
@@ -573,12 +573,12 @@ func TestBuildInitContainers(t *testing.T) {
 	t.Run("user env lower precedence than template", func(t *testing.T) {
 		cfg := testConfig()
 		cfg.NCCLEnvPatterns = []string{"NCCL_*"}
-		cfg.InitContainers = []corev1.Container{
-			{
+		cfg.InitContainers = []config.InitContainerSpec{
+			{Container: corev1.Container{
 				Name:  "preflight-dcgm-diag",
 				Image: "dcgm:latest",
 				Env:   []corev1.EnvVar{{Name: "NCCL_DEBUG", Value: "WARN"}},
-			},
+			}},
 		}
 		injector := NewInjector(cfg, nil)
 
@@ -589,7 +589,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 		containers := injector.buildInitContainers(pod, corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, nil)
+		}, nil, cfg.InitContainers)
 		require.Len(t, containers, 1)
 		assert.Equal(t, "WARN", findEnv(containers[0].Env, "NCCL_DEBUG"))
 	})
@@ -606,7 +606,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 		containers := injector.buildInitContainers(pod, corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, nil)
+		}, nil, cfg.InitContainers)
 		require.Len(t, containers, 1)
 		assert.True(t, hasVolumeMount(containers[0], "nvtcpxo-libraries"))
 	})
@@ -624,7 +624,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 		containers := injector.buildInitContainers(pod, corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, gangCtx)
+		}, gangCtx, cfg.InitContainers)
 		require.Len(t, containers, 1)
 		require.Len(t, containers[0].Resources.Claims, 2)
 		assert.Equal(t, "gpu-claim", containers[0].Resources.Claims[0].Name)
@@ -644,7 +644,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 		containers := injector.buildInitContainers(pod, corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, gangCtx)
+		}, gangCtx, cfg.InitContainers)
 		require.Len(t, containers, 1)
 		assert.Empty(t, containers[0].Resources.Claims)
 	})
@@ -660,7 +660,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 		containers := injector.buildInitContainers(pod, corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, nil)
+		}, nil, cfg.InitContainers)
 		require.Len(t, containers, 1)
 		assert.Empty(t, containers[0].Resources.Claims)
 	})
@@ -864,8 +864,8 @@ func boolPtr(b bool) *bool { return &b }
 func testConfig() *config.Config {
 	return &config.Config{
 		FileConfig: config.FileConfig{
-			InitContainers: []corev1.Container{
-				{Name: "preflight-dcgm-diag", Image: "nvcr.io/nvidia/dcgm:latest"},
+			InitContainers: []config.InitContainerSpec{
+				{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "nvcr.io/nvidia/dcgm:latest"}},
 			},
 			GPUResourceNames:       []string{"nvidia.com/gpu"},
 			NetworkResourceNames:   []string{"vpc.amazonaws.com/efa"},

@@ -108,7 +108,16 @@ dcgm:
 #   checks before any other init containers.
 initContainerPlacement: "append"
 
+# Per-pod check selection: annotate pods with a comma-separated list of
+# init container names to override which checks run:
+#
+#   nvsentinel.nvidia.com/preflight-checks: "preflight-dcgm-diag,preflight-nccl-loopback"
+#
+# When the annotation is absent, all containers with defaultEnabled: true
+# (or omitted, which defaults to true) are injected.
+
 initContainers:
+  # defaultEnabled: true  # (default when omitted)
   - name: preflight-dcgm-diag
     image:
       repository: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag

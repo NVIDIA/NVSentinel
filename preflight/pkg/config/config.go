@@ -46,8 +46,21 @@ const (
 	PlacementPrepend InitContainerPlacement = "prepend"
 )
 
+// InitContainerSpec wraps corev1.Container with a DefaultEnabled field
+// that controls whether the check runs when no per-pod annotation overrides
+// the check selection. Defaults to true when omitted (nil).
+type InitContainerSpec struct {
+	corev1.Container `yaml:",inline"`
+	DefaultEnabled   *bool `yaml:"defaultEnabled,omitempty"`
+}
+
+// IsDefaultEnabled returns true when DefaultEnabled is nil or explicitly true.
+func (s *InitContainerSpec) IsDefaultEnabled() bool {
+	return s.DefaultEnabled == nil || *s.DefaultEnabled
+}
+
 type FileConfig struct {
-	InitContainers       []corev1.Container     `yaml:"initContainers"`
+	InitContainers       []InitContainerSpec    `yaml:"initContainers"`
 	GPUResourceNames     []string               `yaml:"gpuResourceNames"`
 	NetworkResourceNames []string               `yaml:"networkResourceNames"`
 	DCGM                 DCGMConfig             `yaml:"dcgm"`

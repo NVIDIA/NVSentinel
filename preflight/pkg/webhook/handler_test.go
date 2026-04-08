@@ -55,8 +55,8 @@ func buildAdmissionReview(pod *corev1.Pod, uid types.UID, namespace string) []by
 func handlerConfig() *config.Config {
 	return &config.Config{
 		FileConfig: config.FileConfig{
-			InitContainers: []corev1.Container{
-				{Name: "preflight-dcgm-diag", Image: "dcgm:latest"},
+			InitContainers: []config.InitContainerSpec{
+				{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
 			},
 			GPUResourceNames: []string{"nvidia.com/gpu"},
 			DCGM: config.DCGMConfig{

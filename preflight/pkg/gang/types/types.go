@@ -30,6 +30,11 @@ type PeerInfo struct {
 	PodIP     string
 	NodeName  string
 	Namespace string
+
+	// CheckNames is a sorted, comma-separated list of preflight check
+	// container names this pod is configured to run. Used for gang
+	// validation — all peers must have the same value.
+	CheckNames string
 }
 
 type GangInfo struct {
