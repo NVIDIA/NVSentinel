@@ -110,32 +110,40 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 		return nil, gangCtx, nil
 	}
 
-	var patches []PatchOperation
+	patches := i.patchInitContainers(pod, initContainers)
+	patches = append(patches, i.injectVolumes(pod, gangCtx)...)
 
+	return patches, gangCtx, nil
+}
+
+// patchInitContainers builds JSON Patch operations to add preflight init
+// containers to the pod. When no existing init containers are present,
+// the array is created. Otherwise placement is controlled by config.
+func (i *Injector) patchInitContainers(pod *corev1.Pod, initContainers []corev1.Container) []PatchOperation {
 	if len(pod.Spec.InitContainers) == 0 {
-		patches = append(patches, PatchOperation{
+		return []PatchOperation{{
 			Op:    "add",
 			Path:  "/spec/initContainers",
 			Value: initContainers,
-		})
-	} else {
-		// Append preflight init containers after existing init containers.
-		// This preserves platform/user init ordering and ensures any
-		// provider-injected setup init containers (e.g., GCP TCPXO daemon)
-		// complete before running preflight checks.
-		for _, c := range initContainers {
-			patches = append(patches, PatchOperation{
-				Op:    "add",
-				Path:  "/spec/initContainers/-",
-				Value: c,
-			})
-		}
+		}}
 	}
 
-	volumePatches := i.injectVolumes(pod, gangCtx)
-	patches = append(patches, volumePatches...)
+	patches := make([]PatchOperation, 0, len(initContainers))
 
-	return patches, gangCtx, nil
+	for idx, c := range initContainers {
+		path := "/spec/initContainers/-"
+		if i.cfg.InitContainerPlacement == config.PlacementPrepend {
+			path = fmt.Sprintf("/spec/initContainers/%d", idx)
+		}
+
+		patches = append(patches, PatchOperation{
+			Op:    "add",
+			Path:  path,
+			Value: c,
+		})
+	}
+
+	return patches
 }
 
 // findMaxResources scans all containers and returns the maximum quantity

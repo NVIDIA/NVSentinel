@@ -23,7 +23,7 @@ Preflight runs as a Deployment with a mutating admission webhook:
 
 1. **Namespace opt-in**: Label namespaces with `nvsentinel.nvidia.com/preflight=enabled`
 2. **Pod admission**: When a GPU pod is created in a labeled namespace, the webhook intercepts the request. Optionally, an `objectSelector` can further restrict which pods are intercepted based on pod labels
-3. **Init container injection**: The webhook prepends diagnostic init containers to the pod spec
+3. **Init container injection**: The webhook injects diagnostic init containers into the pod spec (appended after existing init containers by default; set `initContainerPlacement: prepend` to insert before)
 4. **Checks run**: Init containers execute sequentially before the main workload starts
 5. **Health reporting**: Each check reports results as health events via the Platform Connector (gRPC over Unix domain socket)
 6. **Pass/fail**: If all checks pass (exit code 0), the main containers start normally. If any check fails, the pod stays in `Init:Error` and a health event triggers quarantine

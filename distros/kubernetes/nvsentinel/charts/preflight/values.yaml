@@ -100,6 +100,14 @@ dcgm:
   # Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY
   processingStrategy: "EXECUTE_REMEDIATION"
 
+# Controls where preflight init containers are placed relative to existing
+# init containers in the pod spec.
+# "append" (default): add after existing init containers — ensures
+#   provider-injected setup (e.g., GCP TCPXO daemon) completes first.
+# "prepend": add before existing init containers — runs GPU health
+#   checks before any other init containers.
+initContainerPlacement: "append"
+
 initContainers:
   - name: preflight-dcgm-diag
     image:

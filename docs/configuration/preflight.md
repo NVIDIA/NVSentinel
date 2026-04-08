@@ -31,6 +31,20 @@ kubectl label namespace <namespace> nvsentinel.nvidia.com/preflight=enabled
 
 The chart default `namespaceSelector` matches that label.
 
+## Init container placement
+
+By default the webhook **appends** preflight init containers after any existing init containers in the pod spec. This ensures provider-injected setup containers (e.g., GCP TCPXO daemon) complete before preflight checks run.
+
+Set `initContainerPlacement` to change this behavior:
+
+```yaml
+# "append" (default): add after existing init containers
+# "prepend": add before existing init containers
+initContainerPlacement: "prepend"
+```
+
+Use `prepend` when preflight checks must run before other init containers — for example, to gate workload setup on GPU health validation.
+
 ## Init containers (check configuration)
 
 The `initContainers` list in the preflight chart defines which checks the webhook injects. Each entry is a standard `corev1.Container` — you control images, env vars, resource limits, security contexts, and volume mounts.
@@ -259,6 +273,7 @@ For DRA / device claims mirrored into init containers, see [ADR-026 §DRA Integr
 | Area | Location |
 |------|-----------|
 | Webhook TLS, failure policy, cert provider | `preflight.webhook` |
+| Init container placement (append/prepend) | `preflight.initContainerPlacement` |
 | Injected init container images and env | `preflight.initContainers` |
 | GPU / network resource names | `preflight.gpuResourceNames`, `preflight.networkResourceNames` |
 | Copy NCCL / fabric env and mounts from user containers | `preflight.ncclEnvPatterns`, `preflight.volumeMountPatterns` |

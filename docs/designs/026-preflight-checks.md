@@ -178,7 +178,7 @@ webhooks:
 
 ### Injected init containers (sketch)
 
-One init container per enabled check with be prepended to the pod's init containers:
+One init container per enabled check is injected into the pod's init containers (appended by default; configurable via `initContainerPlacement`):
 
 ```yaml
 initContainers:

@@ -73,6 +73,9 @@ data:
       {{- if not (kindIs "invalid" .Values.gangCoordination.mirrorResourceClaims) }}
       mirrorResourceClaims: {{ .Values.gangCoordination.mirrorResourceClaims }}
       {{- end }}
+    {{- if .Values.initContainerPlacement }}
+    initContainerPlacement: {{ .Values.initContainerPlacement | quote }}
+    {{- end }}
     initContainers:
       {{- $extraEnv := .Values.ncclAllreduceExtraEnv | default list }}
       {{- $globalTag := ((.Values.global).image).tag | default "" }}
