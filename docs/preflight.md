@@ -22,7 +22,7 @@ If a preflight check fails, the pod stays in `Init:Error`, a health event enters
 Preflight runs as a Deployment with a mutating admission webhook:
 
 1. **Namespace opt-in**: Label namespaces with `nvsentinel.nvidia.com/preflight=enabled`
-2. **Pod admission**: When a GPU pod is created in a labeled namespace, the webhook intercepts the request
+2. **Pod admission**: When a GPU pod is created in a labeled namespace, the webhook intercepts the request. Optionally, an `objectSelector` can further restrict which pods are intercepted based on pod labels
 3. **Init container injection**: The webhook prepends diagnostic init containers to the pod spec
 4. **Checks run**: Init containers execute sequentially before the main workload starts
 5. **Health reporting**: Each check reports results as health events via the Platform Connector (gRPC over Unix domain socket)
@@ -68,6 +68,7 @@ Key configuration areas:
 | `preflight.gangCoordination` | Multi-node coordination timeouts, NCCL topology, extra mounts |
 | `preflight.webhook` | TLS, failure policy, cert provider |
 | `preflight.namespaceSelector` | Which namespaces the webhook applies to |
+| `preflight.objectSelector` | Which pods the webhook applies to (label-based filtering within selected namespaces) |
 
 For detailed configuration including per-check env vars, fabric-specific NCCL setup, and gang discovery examples, see [Preflight configuration](./configuration/preflight.md).
 

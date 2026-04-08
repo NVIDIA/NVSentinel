@@ -265,6 +265,31 @@ For DRA / device claims mirrored into init containers, see [ADR-026 §DRA Integr
 | Gang discovery | `preflight.gangDiscovery` |
 | Gang coordination (timeouts, topology, mounts) | `preflight.gangCoordination` |
 | Namespace selector for the webhook | `preflight.namespaceSelector` |
+| Pod-level selector for the webhook | `preflight.objectSelector` |
+
+## Object selector (pod-level filtering)
+
+By default the webhook intercepts all GPU pods in labeled namespaces. To further restrict which pods are intercepted, set `objectSelector` with standard Kubernetes label selectors. When empty (`{}`), no `objectSelector` is emitted and all pods in matching namespaces are intercepted.
+
+Example — only intercept pods explicitly labeled for preflight:
+
+```yaml
+objectSelector:
+  matchLabels:
+    nvsentinel.nvidia.com/preflight: "enabled"
+```
+
+`matchExpressions` are also supported:
+
+```yaml
+objectSelector:
+  matchExpressions:
+    - key: nvsentinel.nvidia.com/preflight
+      operator: In
+      values: ["enabled", "true"]
+```
+
+This is useful when you want namespace-wide opt-in via `namespaceSelector` but only run preflight on specific workloads within those namespaces.
 
 Full defaults and comments: `distros/kubernetes/nvsentinel/charts/preflight/values.yaml`.
 

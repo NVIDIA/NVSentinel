@@ -215,6 +215,21 @@ platformConnector:
   postgresqlStore:
     clientCertMountPath: "/etc/ssl/client-certs"
 
+  # gRPC sink connector - forwards health events to an external gRPC server
+  # using the PlatformConnector HealthEventOccurredV1 RPC.
+  grpcSinkConnector:
+    # Enable or disable the gRPC sink connector.
+    enabled: false
+    # gRPC server address, e.g. "my-service.example.com:50051".
+    target: ""
+    # Number of retry attempts (with exponential backoff) before dropping an event.
+    # Total send attempts = 1 initial + maxRetries retries.
+    maxRetries: 3
+    # Optional: path to a projected Kubernetes ServiceAccount token for
+    # bearer token authentication.
+    # Leave empty to disable authentication.
+    tokenPath: ""
+
   k8sConnector:
     enabled: true
     maxNodeConditionMessageLength: 1024
