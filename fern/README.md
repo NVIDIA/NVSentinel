@@ -16,6 +16,9 @@ The `docs-website` branch is CI-managed — never edit it by hand. All authoring
 
 ## One-time setup (required before CI can publish)
 
+> **Important:** Steps 1–4 must be completed by a repo owner **before merging this PR**.
+> The CI workflow will fail on first run if `docs-website` does not exist or `FERN_TOKEN` is not set.
+
 ### 1. Register with Fern
 
 Go to [buildwithfern.com](https://buildwithfern.com), create an account, and register the project. The free tier gives a preview URL at `nvsentinel.docs.buildwithfern.com`; a paid plan is required for a custom domain (e.g. `docs.nvidia.com/nvsentinel`).
