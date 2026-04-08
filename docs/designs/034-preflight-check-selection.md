@@ -50,6 +50,80 @@ initContainers:
 
 When the annotation is absent, containers with `defaultEnabled: true` (or omitted, which defaults to true) are injected. When the annotation is present, it overrides `defaultEnabled` entirely.
 
+### Example: multiple DCGM diag levels for different workloads
+
+Define three DCGM containers in `values.yaml`, each with a different diagnostic level. Only the fast check is enabled by default — jobs opt into deeper diagnostics via annotation:
+
+```yaml
+initContainers:
+  # Quick hardware check (~30s) — runs on every GPU pod by default
+  - name: preflight-dcgm-fast
+    image:
+      repository: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag
+      tag: ""
+    env:
+      - name: DCGM_DIAG_LEVEL
+        value: "1"
+
+  # Medium diagnostics (~2 min) — opt-in via annotation
+  - name: preflight-dcgm-medium
+    defaultEnabled: false
+    image:
+      repository: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag
+      tag: ""
+    env:
+      - name: DCGM_DIAG_LEVEL
+        value: "2"
+
+  # Full stress test (~15 min) — opt-in via annotation
+  - name: preflight-dcgm-full
+    defaultEnabled: false
+    image:
+      repository: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag
+      tag: ""
+    env:
+      - name: DCGM_DIAG_LEVEL
+        value: "3"
+
+  - name: preflight-nccl-loopback
+    image: ...
+```
+
+Jobs select the level they need:
+
+```yaml
+# Interactive notebook — fast check only (default, no annotation needed)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: notebook
+spec: ...
+```
+
+```yaml
+# Batch training — medium DCGM + NCCL loopback
+apiVersion: v1
+kind: Pod
+metadata:
+  name: training-job
+  annotations:
+    nvsentinel.nvidia.com/preflight-checks: "preflight-dcgm-medium,preflight-nccl-loopback"
+spec: ...
+```
+
+```yaml
+# Post-maintenance validation — full stress test, no NCCL
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-validation
+  annotations:
+    nvsentinel.nvidia.com/preflight-checks: "preflight-dcgm-full"
+spec: ...
+```
+
+All three use the same DCGM image with different env vars. The platform team defines the levels once in the chart; workload owners pick by name.
+
 ### Gang validation
 
 The peer line format in gang ConfigMaps is extended from 3 to 4 fields:
