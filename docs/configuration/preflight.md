@@ -55,7 +55,7 @@ metadata:
     nvsentinel.nvidia.com/preflight-checks: "preflight-dcgm-diag,preflight-nccl-loopback"
 ```
 
-Only the named containers are injected, in the order they appear in the annotation. Unknown container names reject admission with an error listing the invalid names and the available checks.
+Only the named containers are injected, in the order they appear in the annotation. Duplicate or unknown container names reject admission with an error.
 
 An empty value disables all checks:
 
