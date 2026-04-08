@@ -1,0 +1,182 @@
+name: "Reflection: Publish Preflight"
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Override image/chart tag (default: <chart-version>-<short-sha>)'
+        required: false
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write  # Required for Workload Identity Federation
+
+env:
+  GCP_REGISTRY: us-central1-docker.pkg.dev
+  GCP_PROJECT: reflectionai-gpu-platform
+  AR_REPOSITORY: nvsentinel
+
+jobs:
+  # Compute the image/chart tag once, share across jobs
+  compute-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute tag
+        id: tag
+        run: |
+          if [[ -n "${{ inputs.tag }}" ]]; then
+            echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            CHART_VERSION=$(grep '^version:' distros/kubernetes/nvsentinel/Chart.yaml | awk '{print $2}')
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-8)
+            echo "value=${CHART_VERSION}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Build the preflight webhook server (Go, ko-built)
+  build-preflight-webhook:
+    runs-on: ubuntu-latest
+    needs: compute-tag
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load versions
+        id: versions
+        run: |
+          echo "go_version=$(yq '.languages.go' .versions.yaml)" >> "$GITHUB_OUTPUT"
+          echo "ko_version=$(yq '.container_tools.ko' .versions.yaml)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.versions.outputs.go_version }}
+
+      - name: Install ko
+        run: go install github.com/google/ko@${{ steps.versions.outputs.ko_version }}
+
+      - name: Authenticate to GCP
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          token_format: 'access_token'
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          create_credentials_file: false
+          export_environment_variables: false
+
+      - name: Login to Artifact Registry
+        run: echo "${{ steps.auth.outputs.access_token }}" | ko login ${{ env.GCP_REGISTRY }} -u oauth2accesstoken --password-stdin
+
+      - name: Build and push preflight webhook
+        env:
+          KO_DOCKER_REPO: ${{ env.GCP_REGISTRY }}/${{ env.GCP_PROJECT }}/${{ env.AR_REPOSITORY }}
+          VERSION: ${{ needs.compute-tag.outputs.tag }}
+          GIT_COMMIT: ${{ github.sha }}
+          BUILD_DATE: ${{ github.event.head_commit.timestamp }}
+        run: |
+          # Ensure go.work exists for multi-module repo
+          if [ ! -f go.work ]; then
+            go work init
+            go work use ./preflight
+          fi
+
+          ko build --platform=linux/amd64 --tags="${VERSION}" --bare ./preflight
+
+  # Build preflight check init container images (Docker-built Python)
+  build-preflight-checks:
+    runs-on: ubuntu-latest
+    needs: compute-tag
+    strategy:
+      matrix:
+        component:
+          - dcgm-diag
+          - nccl-allreduce
+          - nccl-loopback
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+
+      - name: Authenticate to GCP
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          token_format: 'access_token'
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          create_credentials_file: false
+          export_environment_variables: false
+
+      - name: Login to Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.GCP_REGISTRY }}
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Build and push ${{ matrix.component }}
+        env:
+          CONTAINER_REGISTRY: ${{ env.GCP_REGISTRY }}
+          CONTAINER_ORG: ${{ env.GCP_PROJECT }}
+          CI_COMMIT_REF_NAME: ${{ needs.compute-tag.outputs.tag }}
+          PLATFORMS: linux/amd64
+          DISABLE_REGISTRY_CACHE: "true"
+        run: make -C preflight-checks/${{ matrix.component }} docker-publish
+
+  # Package and push Helm chart (after images are published)
+  publish-helm-chart:
+    runs-on: ubuntu-latest
+    needs:
+      - compute-tag
+      - build-preflight-webhook
+      - build-preflight-checks
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load Helm version
+        id: versions
+        run: echo "helm_version=$(yq '.testing_tools.helm' .versions.yaml)" >> "$GITHUB_OUTPUT"
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ steps.versions.outputs.helm_version }}
+
+      - name: Authenticate to GCP
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          token_format: 'access_token'
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          create_credentials_file: false
+          export_environment_variables: false
+
+      - name: Login to Helm OCI registry
+        run: echo "${{ steps.auth.outputs.access_token }}" | helm registry login ${{ env.GCP_REGISTRY }} -u oauth2accesstoken --password-stdin
+
+      - name: Build Helm dependencies
+        run: |
+          cd distros/kubernetes/nvsentinel
+          # Add dependency repos and build deps
+          helm dependency build || echo "Some optional dependencies may not be available"
+
+      - name: Package and push Helm chart
+        env:
+          SAFE_REF: ${{ needs.compute-tag.outputs.tag }}
+          HELM_OCI_REGISTRY: ${{ env.GCP_REGISTRY }}
+          HELM_OCI_REPOSITORY: ${{ env.GCP_PROJECT }}/${{ env.AR_REPOSITORY }}
+          HELM_EXPERIMENTAL_OCI: "1"
+        run: make -C distros/kubernetes helm-publish
