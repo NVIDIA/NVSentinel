@@ -60,11 +60,12 @@ func main() {
 	err := run()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 
 	if shutdownErr := tracing.ShutdownTracing(shutdownCtx); shutdownErr != nil {
 		slog.Warn("Failed to shutdown tracing", "error", shutdownErr)
 	}
+
+	cancel()
 
 	if err != nil {
 		slog.Error("Fatal error", "error", err)
