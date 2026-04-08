@@ -172,7 +172,7 @@ To migrate from the Bitnami-based deployment to the Percona Operator, we will pe
 1. **Uninstall:** Uninstall the existing Helm release to ensure a clean state.
 
    ```bash
-   helm uninstall <release-name> -n `<namespace>`
+   helm uninstall <release-name> -n <namespace>
    ```
 
 2. **Cleanup:** Manually remove lingering resources from the previous release to avoid conflicts.
@@ -180,23 +180,23 @@ To migrate from the Bitnami-based deployment to the Percona Operator, we will pe
    - **PVCs:** The Bitnami chart retains PVCs by default. Delete them to free up storage for the new cluster.
 
      ```bash
-     kubectl delete pvc -l app.kubernetes.io/name=mongodb -n `<namespace>`
+     kubectl delete pvc -l app.kubernetes.io/name=mongodb -n <namespace>
      ```
 
    - **Secrets:** Remove secrets that may persist (due to resource policies or external creation) and conflict with the new deployment.
 
      ```bash
      # Old credentials (retained by resource-policy)
-     kubectl delete secret mongodb -n `<namespace>`
+     kubectl delete secret mongodb -n <namespace>
      # Old TLS artifacts (created by cert-manager or helper jobs)
-     kubectl delete secret mongo-ca-secret mongo-root-ca-secret mongo-app-client-cert-secret -n `<namespace>`
+     kubectl delete secret mongo-ca-secret mongo-root-ca-secret mongo-app-client-cert-secret -n <namespace>
      ```
 
 3. **Install:** Install the chart with Percona enabled.
 
    ```bash
    helm upgrade --install <release-name> <chart-path> \
-     --namespace `<namespace>` \
+     --namespace <namespace> \
      --set mongodb-store.useBitnami=false \
      --set mongodb-store.usePerconaOperator=true \
      --set global.mongodbStore.enabled=true

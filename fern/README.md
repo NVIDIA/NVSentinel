@@ -32,6 +32,8 @@ This branch accumulates versioned doc snapshots over time and must exist before 
 
 ```bash
 git checkout --orphan docs-website
+git rm -rf .
+git clean -fdx
 git commit --allow-empty -m "chore: init docs-website branch"
 git push origin docs-website
 git checkout main

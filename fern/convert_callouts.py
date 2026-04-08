@@ -64,6 +64,7 @@ Usage:
 import argparse
 import re
 import sys
+import textwrap
 from pathlib import Path
 
 # Mapping from GitHub alert types to Fern admonition tags
@@ -144,6 +145,9 @@ def convert_single_admonition(match: re.Match) -> str:
     # Extract the actual content from blockquote lines
     content = extract_blockquote_content(raw_content, indent)
 
+    # Escape bare angle brackets so Fern's MDX parser doesn't treat them as JSX
+    content = content.replace("<", "&lt;").replace(">", "&gt;")
+
     # Handle multi-line content
     # For Fern, we can either:
     # 1. Keep it on one line (for short content)
@@ -156,7 +160,7 @@ def convert_single_admonition(match: re.Match) -> str:
     else:
         # Multi-line content - format with proper indentation
         # Fern supports multi-line content within the tags
-        formatted_content = "\n".join(content_lines)
+        formatted_content = "\n".join(indent + line if line.strip() else line for line in content_lines)
         return f"{indent}<{fern_tag}>\n{formatted_content}\n{indent}</{fern_tag}>\n"
 
 
@@ -213,14 +217,14 @@ def process_directory(dir_path: Path, recursive: bool = True) -> int:
     return count
 
 
-def run_tests():
+def run_tests() -> bool:
     """Run all test cases for the convert_admonitions function."""
-    import textwrap
 
     passed = 0
     failed = 0
 
-    def test(name: str, input_text: str, expected: str):
+    def test(name: str, input_text: str, expected: str) -> None:
+        """Run a single named test case and print pass/fail."""
         nonlocal passed, failed
         result = convert_admonitions(input_text)
         if result == expected:
@@ -375,7 +379,8 @@ def run_tests():
     return failed == 0
 
 
-def main():
+def main() -> None:
+    """Parse CLI arguments and run the appropriate conversion or test action."""
     parser = argparse.ArgumentParser(
         description="Convert GitHub-style admonitions to Fern format",
         formatter_class=argparse.RawDescriptionHelpFormatter,
