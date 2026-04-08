@@ -57,11 +57,13 @@ class PeerInfo:
         pod_name: Kubernetes pod name.
         pod_ip: Pod IP address.
         rank: Distributed rank (0-indexed).
+        check_names: Comma-separated preflight check names.
     """
 
     pod_name: str
     pod_ip: str
     rank: int
+    check_names: str = ""
 
 
 @dataclass
@@ -85,6 +87,25 @@ class GangConfig:
     peers: list[PeerInfo]
     my_rank: int
     my_pod_name: str
+
+    def validate_peers(self) -> str | None:
+        """Validate that all peers have the same preflight check names.
+
+        Returns:
+            ``None`` if all peers are consistent, or a descriptive error string.
+        """
+        if not self.peers:
+            return None
+
+        first = self.peers[0].check_names
+        for peer in self.peers[1:]:
+            if peer.check_names != first:
+                parts = []
+                for p in self.peers:
+                    parts.append(f"{p.pod_name}=[{p.check_names}]")
+                return f"Check name mismatch across gang: {'; '.join(parts)}"
+
+        return None
 
     def get_torchrun_args(self, nprocs_per_node: int, script: str) -> list[str]:
         """Build torchrun command arguments.
@@ -193,7 +214,8 @@ class GangConfigReader:
     def _read_peers(self) -> list[PeerInfo]:
         """Read and parse the peers list from the ConfigMap.
 
-        Format: "pod_name;pod_ip;rank" per line.
+        Format: "pod_name;pod_ip;rank[;check_names]" per line.
+        The check_names field is optional for backward compatibility.
 
         Returns:
             List of PeerInfo objects.
@@ -230,7 +252,11 @@ class GangConfigReader:
                         extra={"line": line, "bad_rank": parts[2].strip()},
                     )
 
-            peers.append(PeerInfo(pod_name=pod_name, pod_ip=pod_ip, rank=rank))
+            check_names = ""
+            if len(parts) >= 4:
+                check_names = parts[3].strip()
+
+            peers.append(PeerInfo(pod_name=pod_name, pod_ip=pod_ip, rank=rank, check_names=check_names))
 
         return peers
 

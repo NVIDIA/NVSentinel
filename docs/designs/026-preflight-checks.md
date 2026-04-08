@@ -178,7 +178,7 @@ webhooks:
 
 ### Injected init containers (sketch)
 
-One init container per enabled check with be prepended to the pod's init containers:
+One init container per enabled check is injected into the pod's init containers (appended by default; configurable via `initContainerPlacement`):
 
 ```yaml
 initContainers:
@@ -657,12 +657,13 @@ preflight-injector:
     # - name: nccl-allreduce
     #   image: ghcr.io/nvidia/nvsentinel/preflight-nccl-allreduce:v1
   
-  # DCGM configuration
+  # DCGM configuration (legacy — prefer inline env vars on the init container;
+  # see ADR-035 for rationale)
   dcgm:
     hostengineAddr: "dcgm-hostengine.nvsentinel.svc:5555"  # DCGM Service address
     diagLevel: 1       # 1 (quick, ~30s) or 2 (extended, ~2-3min)
   
-  # NCCL test configuration
+  # NCCL test configuration (inlined before shipping — DCGM should follow)
   nccl:
     loopbackThresholdGBps: 10.0   # Min bus bandwidth for loopback pass
     allreduceThresholdGBps: 5.0   # Min bus bandwidth for all-reduce pass

@@ -184,13 +184,12 @@ func TestGangController_WebhookRegistration(t *testing.T) {
 	})
 }
 
-
 // Verifies that topology configmap are created upon pod registration and is idempotent upon subsequent registrations.
 func TestGangController_EnsureNCCLTopoConfigMap(t *testing.T) {
 	const (
-		gangID       = "topo-gang"
-		topoName     = "nccl-topo"
-		topoData     = "<topology>test</topology>"
+		gangID   = "topo-gang"
+		topoName = "nccl-topo"
+		topoData = "<topology>test</topology>"
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -269,7 +268,6 @@ func TestGangController_MultipleGangsIndependent(t *testing.T) {
 		assert.NotEqual(t, "worker-b", p.PodName, "gang-a ConfigMap should not contain worker-b")
 	}
 }
-
 
 type mockDiscoverer struct {
 	canHandle bool
