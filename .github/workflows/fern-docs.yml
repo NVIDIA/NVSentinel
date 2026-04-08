@@ -39,10 +39,6 @@ on:
     tags:
       # Match only clean semver tags: vX.Y.Z
       - 'v[0-9]+.[0-9]+.[0-9]+'
-  pull_request:
-    paths:
-      - 'docs/**'
-      - 'fern/**'
   workflow_dispatch:
     inputs:
       tag:
@@ -71,7 +67,7 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "docs=true" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+          elif echo "$GITHUB_REF" | grep -qE '^refs/heads/pull-request/[0-9]+$'; then
             echo "docs=true" >> $GITHUB_OUTPUT
           elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
             # New branch push - treat as having docs changes
@@ -92,7 +88,7 @@ jobs:
     if: |
       github.ref_type != 'tag' &&
       needs.changed-files.outputs.docs == 'true' &&
-      github.event_name == 'pull_request'
+      startsWith(github.ref, 'refs/heads/pull-request/')
     runs-on: linux-amd64-cpu32
     permissions:
       contents: read
@@ -117,7 +113,7 @@ jobs:
     if: |
       github.ref_type != 'tag' &&
       needs.changed-files.outputs.docs == 'true' &&
-      github.event_name == 'pull_request'
+      startsWith(github.ref, 'refs/heads/pull-request/')
     runs-on: linux-amd64-cpu32
     permissions:
       contents: read
@@ -304,11 +300,12 @@ jobs:
           fi
 
       - name: Comment preview URL on PR
-        if: steps.ctx.outputs.is_main != 'true' && steps.preview.outputs.url != '' && github.event_name == 'pull_request'
+        if: steps.ctx.outputs.is_main != 'true' && steps.preview.outputs.url != '' && startsWith(github.ref, 'refs/heads/pull-request/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh pr comment "${{ github.event.pull_request.html_url }}" \
+          PR_NUMBER="${GITHUB_REF#refs/heads/pull-request/}"
+          gh pr comment "$PR_NUMBER" \
             --edit-last --create-if-none \
             --body "🌿 **Fern Docs Preview:** ${{ steps.preview.outputs.url }}/dev"
 
