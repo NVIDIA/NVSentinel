@@ -56,6 +56,7 @@ jobs:
     if: github.ref_type != 'tag'
     outputs:
       docs: ${{ steps.changes.outputs.docs }}
+      docs_website_exists: ${{ steps.branch_check.outputs.exists }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -76,6 +77,16 @@ jobs:
             echo "docs=true" >> $GITHUB_OUTPUT
           else
             echo "docs=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check if docs-website branch exists
+        id: branch_check
+        run: |
+          if git ls-remote --exit-code --heads origin docs-website > /dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "::warning::docs-website branch does not exist. Skipping sync/preview. See fern/README.md for one-time setup instructions."
           fi
 
   #############################################################################
@@ -144,6 +155,7 @@ jobs:
     if: |
       github.ref_type != 'tag' &&
       needs.changed-files.outputs.docs == 'true' &&
+      needs.changed-files.outputs.docs_website_exists == 'true' &&
       (github.event.inputs.tag == '' || github.event.inputs.tag == null)
     runs-on: linux-amd64-cpu32
     permissions:
@@ -377,6 +389,13 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Processing version: $VERSION (tag: $TAG)"
+
+      - name: Check if docs-website branch exists
+        run: |
+          if ! git ls-remote --exit-code --heads origin docs-website > /dev/null 2>&1; then
+            echo "::error::docs-website branch does not exist. See fern/README.md for one-time setup instructions."
+            exit 1
+          fi
 
       - name: Checkout docs-website branch
         uses: actions/checkout@v4
