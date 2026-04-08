@@ -45,6 +45,26 @@ initContainerPlacement: "prepend"
 
 Use `prepend` when preflight checks must run before other init containers — for example, to gate workload setup on GPU health validation.
 
+## Per-pod check selection
+
+By default, all init containers with `defaultEnabled: true` (or omitted, which defaults to true) are injected into every GPU pod. To select a subset of checks for a specific pod, annotate it:
+
+```yaml
+metadata:
+  annotations:
+    nvsentinel.nvidia.com/preflight-checks: "preflight-dcgm-diag,preflight-nccl-loopback"
+```
+
+Only the named containers are injected. An empty value disables all checks:
+
+```yaml
+nvsentinel.nvidia.com/preflight-checks: ""
+```
+
+When the annotation is absent, `defaultEnabled` on each init container controls whether it runs. For gang-aware checks (`nccl-allreduce`), all pods in the gang must have the same annotation value — mismatches are detected and fail fast before torchrun launches.
+
+See [ADR-034](../designs/034-preflight-check-selection.md) for design details.
+
 ## Init containers (check configuration)
 
 The `initContainers` list in the preflight chart defines which checks the webhook injects. Each entry is a standard `corev1.Container` — you control images, env vars, resource limits, security contexts, and volume mounts.

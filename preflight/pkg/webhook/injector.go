@@ -238,7 +238,7 @@ func (i *Injector) updateMax(resources corev1.ResourceList, name corev1.Resource
 // inject based on the pod's preflight-checks annotation or defaultEnabled.
 func (i *Injector) selectInitContainers(pod *corev1.Pod) []config.InitContainerSpec {
 	ann, ok := pod.Annotations[PreflightChecksAnnotation]
-	if !ok || strings.TrimSpace(ann) == "" {
+	if !ok {
 		// No annotation — use defaultEnabled.
 		var result []config.InitContainerSpec
 		for _, spec := range i.cfg.InitContainers {

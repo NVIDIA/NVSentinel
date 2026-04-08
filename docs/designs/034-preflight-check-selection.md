@@ -28,7 +28,11 @@ metadata:
     nvsentinel.nvidia.com/preflight-checks: "preflight-dcgm-diag,preflight-nccl-loopback"
 ```
 
-Only named containers are injected. Unknown names are logged and skipped.
+Only named containers are injected. Unknown names are logged and skipped. An empty value disables all checks:
+
+```yaml
+nvsentinel.nvidia.com/preflight-checks: ""
+```
 
 ### Default behavior (no annotation)
 
@@ -91,6 +95,7 @@ Before launching torchrun, the NCCL all-reduce init container calls `validate_pe
 
 - Annotation cannot override env vars (e.g., DCGM diag level) — that stays in `values.yaml` or on the init container spec
 - Annotation is free-form text; typos in container names are silently skipped (logged as warnings)
+- An empty annotation disables all checks, which may be surprising if set accidentally
 
 ### Mitigations
 
