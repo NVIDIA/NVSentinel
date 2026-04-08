@@ -133,7 +133,7 @@ pod-0;10.0.0.1;0;preflight-dcgm-diag,preflight-nccl-allreduce
 pod-1;10.0.0.2;1;preflight-dcgm-diag,preflight-nccl-allreduce
 ```
 
-The 4th field (`checkNames`) is a sorted, comma-separated list of injected check names. Old 3-field lines parse with an empty check names field for backward compatibility.
+The 4th field (`checkNames`) is a comma-separated list of injected check names, sorted for deterministic comparison across peers. Old 3-field lines parse with an empty check names field for backward compatibility.
 
 Before launching torchrun, the NCCL all-reduce init container calls `validate_peers()`. If any peer has a different check list, it logs the mismatch, reports `GANG_CONFIG_ERROR`, and exits immediately instead of hanging.
 

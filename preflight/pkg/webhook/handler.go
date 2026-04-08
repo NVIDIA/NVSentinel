@@ -35,8 +35,8 @@ type GangRegistration struct {
 	PodName       string
 	GangID        string
 	ConfigMapName string
-	// CheckNames is a sorted, comma-separated list of preflight checks
-	// this pod will run. Written into the gang peer line for validation.
+	// CheckNames is a comma-separated list of preflight checks this pod
+	// will run, sorted for deterministic gang validation.
 	CheckNames string
 }
 

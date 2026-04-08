@@ -75,14 +75,17 @@ func NewInjector(cfg *config.Config, discoverer gang.GangDiscoverer) *Injector {
 type GangContext struct {
 	GangID        string
 	ConfigMapName string
-	// CheckNames is a sorted, comma-separated list of injected check
-	// container names. Written into the gang peer line for validation.
+	// CheckNames is a comma-separated list of injected check container
+	// names, sorted for deterministic comparison across peers.
+	// Containers are injected in chart order; this string is sorted
+	// independently for gang validation.
 	CheckNames string
 }
 
 // ParseCheckNames splits a comma-separated annotation value into a sorted,
-// deduplicated list of container names. Exported so the gang controller can
-// use the same normalization.
+// deduplicated list of container names. Sorted for deterministic comparison
+// across peers in gang validation. Exported so the gang controller can use
+// the same normalization.
 func ParseCheckNames(csv string) []string {
 	seen := make(map[string]bool)
 	var names []string
@@ -149,7 +152,7 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 
 	initContainers := i.buildInitContainers(pod, maxResources, gangCtx, selected)
 
-	// Compute sorted check names for gang validation.
+	// Compute check names for gang validation (sorted for deterministic comparison).
 	if gangCtx != nil {
 		names := make([]string, len(initContainers))
 		for idx, c := range initContainers {
