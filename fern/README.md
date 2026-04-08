@@ -1,10 +1,22 @@
 # NVSentinel Fern Docs
 
-This directory contains the [Fern](https://buildwithfern.com) configuration for publishing NVSentinel documentation to a hosted docs site.
+This directory contains the [Fern](https://buildwithfern.com) configuration for publishing NVSentinel documentation to [docs.nvidia.com/nvsentinel](https://docs.nvidia.com/nvsentinel).
 
-The `docs/` directory on `main` is the **source of truth**. This `fern/` directory holds site config and theme assets only — never doc content.
+The `docs/` directory on `main` is the **source of truth**. This `fern/` directory holds site config and theme assets only — never doc content. Contributors not involved in docs publishing can ignore this directory.
 
-## How publishing works
+## Local preview
+
+```bash
+npm install -g fern-api@4.23.0
+fern check
+HOST=0.0.0.0 fern docs dev   # bind to host IP for remote access
+```
+
+Navigate to `http://<host>:3000/nvsentinel/dev`.
+
+## Automated publishing (optional)
+
+Publishing is automated via GitHub Actions CI (`.github/workflows/fern-docs.yml`). CI is optional — the `fern/` configuration is complete on its own and can be used for local preview without it.
 
 | Trigger | What happens |
 |---|---|
@@ -14,24 +26,22 @@ The `docs/` directory on `main` is the **source of truth**. This `fern/` directo
 
 The `docs-website` branch is CI-managed — never edit it by hand. All authoring happens in `docs/`; update `docs/index.yml` to add or move pages in the sidebar.
 
-## One-time setup (required before CI can publish)
+## Releasing a new version
 
-> **Important:** Steps 1–4 must be completed by a repo owner **before merging this PR**.
-> The CI workflow will fail on first run if `docs-website` does not exist or `FERN_TOKEN` is not set.
+Push a semver tag — the CI workflow handles the rest:
 
-### 1. Register with Fern
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
 
-Go to [buildwithfern.com](https://buildwithfern.com), create an account, and register the project. The free tier gives a preview URL at `nvsentinel.docs.buildwithfern.com`; a paid plan is required for a custom domain (e.g. `docs.nvidia.com/nvsentinel`).
+## One-time setup for repo owners (required to enable CI publishing)
 
-### 2. Update org/URL if needed
+The following steps require repo owner permissions. They are independent of merging this PR — the `fern/` configuration is valid without them.
 
-If the org or project slug differs from `nvidia` / `nvsentinel`, update:
-- `fern/fern.config.json` → `organization`
-- `fern/docs.yml` → `instances[0].url` (and `custom-domain` if applicable)
+**Versioned releases:** if doc snapshots tied to `vX.Y.Z` tags are needed, decide this before the first publish run — snapshots cannot be created retroactively. Confirm the existing tag convention matches `vX.Y.Z`.
 
-### 3. Create the `docs-website` branch
-
-This branch accumulates versioned doc snapshots over time and must exist before CI can push to it. Create it once:
+### 1. Create the `docs-website` branch
 
 ```bash
 git checkout --orphan docs-website
@@ -42,34 +52,13 @@ git push origin docs-website
 git checkout main
 ```
 
-### 4. Add the `FERN_TOKEN` secret
+### 2. Register the project with Fern
+
+Register under the NVIDIA org via NVIDIA's Fern account. Coordinate with the docs infrastructure team to get the project registered and the `docs.nvidia.com/nvsentinel` route provisioned.
+
+### 3. Add the `FERN_TOKEN` secret
 
 In the repo: **Settings → Secrets and variables → Actions → New repository secret**
 
 - Name: `FERN_TOKEN`
-- Value: token obtained from your Fern account
-
-### 5. Validate locally
-
-```bash
-npm install -g fern-api
-fern check
-```
-
-## Local preview
-
-```bash
-npm install -g fern-api
-HOST=0.0.0.0 fern docs dev   # bind to host IP for remote access
-# or
-fern docs dev                  # localhost only
-```
-
-## Releasing a new version
-
-Push a semver tag — the workflow handles the rest:
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
+- Value: token from the NVIDIA Fern account
