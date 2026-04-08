@@ -37,6 +37,11 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+const (
+	ServicePlatformConnector    = "platform-connector"
+	ServiceHealthEventsAnalyzer = "health-events-analyzer"
+)
+
 var (
 	tracerProvider          *sdktrace.TracerProvider
 	childOnlyTracerProvider *sdktrace.TracerProvider
