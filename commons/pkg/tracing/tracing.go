@@ -43,6 +43,10 @@ var (
 	tracer                  trace.Tracer
 )
 
+// Service name constants used across multiple modules for span-ID lookups.
+// For example, platform-connector's span ID is read by fault-quarantine,
+// event-exporter, and health-events-analyzer to establish parent-child
+// trace relationships.
 const (
 	ServicePlatformConnector = "platform-connector"
 	ServiceFaultQuarantine   = "fault-quarantine"

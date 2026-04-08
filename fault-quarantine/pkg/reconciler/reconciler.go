@@ -894,12 +894,6 @@ func (r *Reconciler) applyQuarantine(
 	ctx, span := tracing.StartSpan(ctx, "fault_quarantine.apply_quarantine")
 	defer span.End()
 
-	span.SetAttributes(
-		attribute.Bool("fault_quarantine.action.cordon", isCordoned.Load()),
-		attribute.Bool("fault_quarantine.action.taint", len(taintsToBeApplied) > 0),
-		attribute.Int("fault_quarantine.action.taint_count", len(taintsToBeApplied)),
-	)
-
 	r.recordCordonEventInCircuitBreaker(event)
 
 	healthEvents := healthEventsAnnotation.NewHealthEventsAnnotationMap()
@@ -948,10 +942,6 @@ func (r *Reconciler) applyQuarantine(
 	}
 
 	labels := syncMapToStringMap(labelsMap)
-
-	span.SetAttributes(attribute.Bool("fault_quarantine.labels_applied", len(labels) > 0))
-
-	span.SetAttributes(attribute.Bool("fault_quarantine.annotation_applied", len(annotationsMap) > 0))
 
 	err := r.k8sClient.QuarantineNodeAndSetAnnotations(
 		ctx,
