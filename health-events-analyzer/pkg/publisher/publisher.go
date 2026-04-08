@@ -102,6 +102,8 @@ func (p *PublisherConfig) sendHealthEventWithRetry(ctx context.Context, healthEv
 	return nil
 }
 
+// NewPublisher creates a PublisherConfig that sends health events to the
+// platform-connector via gRPC.
 func NewPublisher(platformConnectorClient protos.PlatformConnectorClient,
 	processingStrategy protos.ProcessingStrategy) *PublisherConfig {
 	return &PublisherConfig{
@@ -110,6 +112,9 @@ func NewPublisher(platformConnectorClient protos.PlatformConnectorClient,
 	}
 }
 
+// Publish clones the incoming health event, updates the fields defined by the
+// rule (agent, check name, recommended action, isFatal, and processing strategy),
+// and sends the resulting event to the platform-connector with retries.
 func (p *PublisherConfig) Publish(ctx context.Context, event *protos.HealthEvent,
 	recommendedAction protos.RecommendedAction, ruleName string, message string,
 	rule *config.HealthEventsAnalyzerRule) error {

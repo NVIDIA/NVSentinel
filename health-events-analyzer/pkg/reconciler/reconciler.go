@@ -359,7 +359,6 @@ func (r *Reconciler) publishMatchedEvent(ctx context.Context,
 	ctx, span := tracing.StartSpan(ctx, "health_events_analyzer.publish_matched_event")
 	defer span.End()
 
-	slog.InfoContext(ctx, "Rule matched for event", "rule_name", rule.Name, "event", event)
 	ruleMatchedTotal.WithLabelValues(rule.Name, event.HealthEvent.NodeName).Inc()
 
 	actionVal := r.getRecommendedActionValue(rule.RecommendedAction, rule.Name)
