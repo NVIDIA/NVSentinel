@@ -146,8 +146,8 @@ by profiles:
 | Env var | Source |
 |---------|--------|
 | `NODE_NAME` | Downward API (`spec.nodeName`) |
-| `PLATFORM_CONNECTOR_SOCKET` | Chart `dcgm.connectorSocket` |
-| `PROCESSING_STRATEGY` | Chart `dcgm.processingStrategy` |
+| `PLATFORM_CONNECTOR_SOCKET` | Chart `connectorSocket` (legacy: `dcgm.connectorSocket`, see ADR-035) |
+| `PROCESSING_STRATEGY` | Chart `processingStrategy` (legacy: `dcgm.processingStrategy`, see ADR-035) |
 | `POD_NAME` | Downward API (`metadata.name`) |
 | `GANG_ID` | Gang coordinator |
 | `GANG_CONFIG_DIR` | Gang coordinator |
