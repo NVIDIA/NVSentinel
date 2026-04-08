@@ -1,4 +1,4 @@
-name: "Reflection: Publish Preflight"
+name: "Reflection: Publish"
 
 on:
   push:
@@ -44,8 +44,8 @@ jobs:
             echo "value=${CHART_VERSION}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
           fi
 
-  # Build the preflight webhook server (Go, ko-built)
-  build-preflight-webhook:
+  # Build all Go components via ko
+  build-ko-images:
     runs-on: ubuntu-latest
     needs: compute-tag
     steps:
@@ -77,31 +77,78 @@ jobs:
       - name: Login to Artifact Registry
         run: echo "${{ steps.auth.outputs.access_token }}" | ko login ${{ env.GCP_REGISTRY }} -u oauth2accesstoken --password-stdin
 
-      - name: Build and push preflight webhook
+      - name: Build and push all Go images
         env:
-          KO_DOCKER_REPO: ${{ env.GCP_REGISTRY }}/${{ env.GCP_PROJECT }}/${{ env.AR_REPOSITORY }}/preflight
+          KO_DOCKER_REPO: ${{ env.GCP_REGISTRY }}/${{ env.GCP_PROJECT }}/${{ env.AR_REPOSITORY }}
           VERSION: ${{ needs.compute-tag.outputs.tag }}
           GIT_COMMIT: ${{ github.sha }}
           BUILD_DATE: ${{ github.event.head_commit.timestamp }}
+          PLATFORMS: linux/amd64
         run: |
           # Ensure go.work exists for multi-module repo
           if [ ! -f go.work ]; then
             go work init
-            go work use ./preflight
+            go work use \
+              ./event-exporter \
+              ./fault-quarantine \
+              ./fault-remediation \
+              ./health-events-analyzer \
+              ./health-monitors/csp-health-monitor \
+              ./health-monitors/kubernetes-object-monitor \
+              ./health-monitors/nic-health-monitor \
+              ./janitor \
+              ./janitor-provider \
+              ./labeler \
+              ./node-drainer \
+              ./platform-connectors \
+              ./plugins/slinky-drainer \
+              ./preflight
           fi
 
-          ko build --platform=linux/amd64 --tags="${VERSION}" --bare --sbom=none ./preflight
+          ko build --platform="${PLATFORMS}" --tags="${VERSION}" --sbom=none \
+            ./event-exporter \
+            ./fault-quarantine \
+            ./fault-remediation \
+            ./health-events-analyzer \
+            ./health-monitors/csp-health-monitor/cmd/csp-health-monitor \
+            ./health-monitors/csp-health-monitor/cmd/maintenance-notifier \
+            ./health-monitors/kubernetes-object-monitor \
+            ./health-monitors/nic-health-monitor \
+            ./janitor \
+            ./janitor-provider \
+            ./labeler \
+            ./node-drainer \
+            ./platform-connectors \
+            ./plugins/slinky-drainer \
+            ./preflight
 
-  # Build preflight check init container images (Docker-built Python)
-  build-preflight-checks:
+  # Build Docker-based images (Python health monitors, preflight checks, etc.)
+  build-docker-images:
     runs-on: ubuntu-latest
     needs: compute-tag
     strategy:
       matrix:
-        component:
-          - dcgm-diag
-          - nccl-allreduce
-          - nccl-loopback
+        include:
+          - component: gpu-health-monitor-dcgm3
+            make_command: 'make -C health-monitors/gpu-health-monitor docker-publish-dcgm3'
+          - component: gpu-health-monitor-dcgm4
+            make_command: 'make -C health-monitors/gpu-health-monitor docker-publish-dcgm4'
+          - component: syslog-health-monitor
+            make_command: 'make -C health-monitors/syslog-health-monitor docker-publish'
+          - component: metadata-collector
+            make_command: 'make -C metadata-collector docker-publish'
+          - component: log-collector
+            make_command: 'make -C log-collector docker-publish-log-collector'
+          - component: file-server-cleanup
+            make_command: 'make -C log-collector docker-publish-file-server-cleanup'
+          - component: preflight-dcgm-diag
+            make_command: 'make -C preflight-checks/dcgm-diag docker-publish'
+          - component: preflight-nccl-allreduce
+            make_command: 'make -C preflight-checks/nccl-allreduce docker-publish'
+          - component: preflight-nccl-loopback
+            make_command: 'make -C preflight-checks/nccl-loopback docker-publish'
+          - component: gpu-reset
+            make_command: 'make -C gpu-reset docker-publish'
     steps:
       - uses: actions/checkout@v4
 
@@ -134,15 +181,15 @@ jobs:
           CI_COMMIT_REF_NAME: ${{ needs.compute-tag.outputs.tag }}
           PLATFORMS: linux/amd64
           DISABLE_REGISTRY_CACHE: "true"
-        run: make -C preflight-checks/${{ matrix.component }} docker-publish
+        run: ${{ matrix.make_command }}
 
-  # Package and push Helm chart (after images are published)
+  # Package and push Helm chart (after all images are published)
   publish-helm-chart:
     runs-on: ubuntu-latest
     needs:
       - compute-tag
-      - build-preflight-webhook
-      - build-preflight-checks
+      - build-ko-images
+      - build-docker-images
     steps:
       - uses: actions/checkout@v4
 

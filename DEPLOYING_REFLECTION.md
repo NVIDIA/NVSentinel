@@ -18,14 +18,14 @@ details.
 
 ### Automatic (CI/CD)
 
-Pushes to `main` automatically build and publish preflight components via the
+Pushes to `main` automatically build and publish all components via the
 [`reflection-publish.yml`](.github/workflows/reflection-publish.yml) GitHub
 Actions workflow. It can also be triggered manually from the Actions tab with an
 optional tag override.
 
 The workflow builds:
-- **Preflight webhook server** (Go, via `ko`)
-- **Preflight check images** — `dcgm-diag`, `nccl-allreduce`, `nccl-loopback` (Docker)
+- **All Go components** via `ko` (preflight, fault-quarantine, health-events-analyzer, labeler, node-drainer, etc.)
+- **All Docker components** (gpu-health-monitor, syslog-health-monitor, metadata-collector, log-collector, preflight checks, gpu-reset)
 - **Helm chart** (OCI push)
 
 Authentication uses Workload Identity Federation (keyless) with the
@@ -33,8 +33,8 @@ Authentication uses Workload Identity Federation (keyless) with the
 
 ### Manual
 
-[`scripts/reflection-publish.sh`](scripts/reflection-publish.sh) builds and
-publishes **all** components (not just preflight) in one shot:
+[`scripts/reflection-publish.sh`](scripts/reflection-publish.sh) does the same
+thing locally (requires `gcloud` auth):
 
 ```bash
 ./scripts/reflection-publish.sh
