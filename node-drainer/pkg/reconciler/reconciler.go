@@ -235,7 +235,7 @@ func (r *Reconciler) setInitialStatusAndEnqueue(ctx context.Context, document ma
 	r.logStatusUpdateResult(result, nodeName, documentID)
 
 	// Enqueue to the queue manager
-	return r.queueManager.EnqueueEventGeneric(ctx, nodeName, document, r.databaseClient, r.healthEventStore)
+	return r.queueManager.EnqueueEventGeneric(ctx, nodeName, document, r.databaseClient, r.healthEventStore, documentID)
 }
 
 // logStatusUpdateResult logs the result of the status update

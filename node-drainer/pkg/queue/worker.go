@@ -23,6 +23,31 @@ import (
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
+// fetchEventFromDB retrieves the full event document from the database by its native ID.
+func fetchEventFromDB(ctx context.Context, documentID interface{}, database DataStore) (datastore.Event, error) {
+	filter := map[string]interface{}{"_id": documentID}
+
+	result, err := database.FindDocument(ctx, filter, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch event %v from database: %w", documentID, err)
+	}
+
+	if result.Err() != nil {
+		return nil, fmt.Errorf("event %v not found in database: %w", documentID, result.Err())
+	}
+
+	var event datastore.Event
+	if err := result.Decode(&event); err != nil {
+		return nil, fmt.Errorf("failed to decode event %v: %w", documentID, err)
+	}
+
+	if _, hasID := event["_id"]; !hasID {
+		event["_id"] = documentID
+	}
+
+	return event, nil
+}
+
 // Interfaces are defined in types.go
 
 func (m *eventQueueManager) Start(ctx context.Context) {
@@ -46,14 +71,26 @@ func (m *eventQueueManager) processNextWorkItem(ctx context.Context) bool {
 
 	defer m.queue.Done(nodeEvent)
 
-	var err error
-	// Use database-agnostic interface
-	if nodeEvent.Event != nil && nodeEvent.Database != nil && nodeEvent.HealthEventStore != nil {
-		err = m.processEventGeneric(ctx, *nodeEvent.Event, nodeEvent.Database, nodeEvent.HealthEventStore, nodeEvent.NodeName)
-	} else {
-		err = fmt.Errorf("event data, database interface, or health event store not available")
+	if nodeEvent.Database == nil || nodeEvent.HealthEventStore == nil {
+		slog.Error("NodeEvent missing database or health event store, dropping",
+			"node", nodeEvent.NodeName, "eventID", nodeEvent.EventID)
+		m.queue.Forget(nodeEvent)
+		metrics.QueueDepth.Set(float64(m.queue.Len()))
+
+		return true
 	}
 
+	event, fetchErr := fetchEventFromDB(ctx, nodeEvent.DocumentID, nodeEvent.Database)
+	if fetchErr != nil {
+		slog.Warn("Failed to fetch event from database (will retry)",
+			"node", nodeEvent.NodeName, "eventID", nodeEvent.EventID, "error", fetchErr)
+		m.queue.AddRateLimited(nodeEvent)
+		metrics.QueueDepth.Set(float64(m.queue.Len()))
+
+		return true
+	}
+
+	err := m.processEventGeneric(ctx, event, nodeEvent.Database, nodeEvent.HealthEventStore, nodeEvent.NodeName)
 	if err != nil {
 		slog.Warn("Error processing event for node (will retry)",
 			"node", nodeEvent.NodeName,
