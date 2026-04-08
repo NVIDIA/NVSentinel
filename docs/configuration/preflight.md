@@ -31,6 +31,20 @@ kubectl label namespace <namespace> nvsentinel.nvidia.com/preflight=enabled
 
 The chart default `namespaceSelector` matches that label.
 
+## Init container placement
+
+By default the webhook **appends** preflight init containers after any existing init containers in the pod spec. This ensures provider-injected setup containers (e.g., GCP TCPXO daemon) complete before preflight checks run.
+
+Set `initContainerPlacement` to change this behavior:
+
+```yaml
+# "append" (default): add after existing init containers
+# "prepend": add before existing init containers
+initContainerPlacement: "prepend"
+```
+
+Use `prepend` when preflight checks must run before other init containers — for example, to gate workload setup on GPU health validation.
+
 ## Init containers (check configuration)
 
 The `initContainers` list in the preflight chart defines which checks the webhook injects. Each entry is a standard `corev1.Container` — you control images, env vars, resource limits, security contexts, and volume mounts.
@@ -259,12 +273,38 @@ For DRA / device claims mirrored into init containers, see [ADR-026 §DRA Integr
 | Area | Location |
 |------|-----------|
 | Webhook TLS, failure policy, cert provider | `preflight.webhook` |
+| Init container placement (append/prepend) | `preflight.initContainerPlacement` |
 | Injected init container images and env | `preflight.initContainers` |
 | GPU / network resource names | `preflight.gpuResourceNames`, `preflight.networkResourceNames` |
 | Copy NCCL / fabric env and mounts from user containers | `preflight.ncclEnvPatterns`, `preflight.volumeMountPatterns` |
 | Gang discovery | `preflight.gangDiscovery` |
 | Gang coordination (timeouts, topology, mounts) | `preflight.gangCoordination` |
 | Namespace selector for the webhook | `preflight.namespaceSelector` |
+| Pod-level selector for the webhook | `preflight.objectSelector` |
+
+## Object selector (pod-level filtering)
+
+By default the webhook intercepts all GPU pods in labeled namespaces. To further restrict which pods are intercepted, set `objectSelector` with standard Kubernetes label selectors. When empty (`{}`), no `objectSelector` is emitted and all pods in matching namespaces are intercepted.
+
+Example — only intercept pods explicitly labeled for preflight:
+
+```yaml
+objectSelector:
+  matchLabels:
+    nvsentinel.nvidia.com/preflight: "enabled"
+```
+
+`matchExpressions` are also supported:
+
+```yaml
+objectSelector:
+  matchExpressions:
+    - key: nvsentinel.nvidia.com/preflight
+      operator: In
+      values: ["enabled", "true"]
+```
+
+This is useful when you want namespace-wide opt-in via `namespaceSelector` but only run preflight on specific workloads within those namespaces.
 
 Full defaults and comments: `distros/kubernetes/nvsentinel/charts/preflight/values.yaml`.
 

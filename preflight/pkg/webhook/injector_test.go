@@ -259,6 +259,70 @@ func TestInjectInitContainers(t *testing.T) {
 			},
 		},
 		{
+			name: "placement prepend inserts init containers before existing",
+			cfg: func() *config.Config {
+				c := testConfig()
+				c.InitContainerPlacement = config.PlacementPrepend
+				return c
+			}(),
+			pod: func() *corev1.Pod {
+				p := gpuPod()
+				p.Spec.InitContainers = []corev1.Container{{Name: "user-init", Image: "busybox"}}
+				return p
+			}(),
+			expectPatches: true,
+			validatePatches: func(t *testing.T, patches []PatchOperation) {
+				t.Helper()
+				assert.Nil(t, findPatchByPath(patches, "/spec/initContainers"), "should not replace init containers array")
+				assert.Zero(t, countPatchesByPath(patches, "/spec/initContainers/-"), "should not use append path")
+
+				p := findPatchByPath(patches, "/spec/initContainers/0")
+				require.NotNil(t, p, "should insert at index 0")
+				assert.Equal(t, "add", p.Op)
+			},
+		},
+		{
+			name: "placement prepend with multiple init containers uses sequential indices",
+			cfg: func() *config.Config {
+				c := testConfig()
+				c.InitContainerPlacement = config.PlacementPrepend
+				c.InitContainers = []corev1.Container{
+					{Name: "preflight-dcgm-diag", Image: "dcgm:latest"},
+					{Name: "preflight-nccl-loopback", Image: "nccl:latest"},
+				}
+				return c
+			}(),
+			pod: func() *corev1.Pod {
+				p := gpuPod()
+				p.Spec.InitContainers = []corev1.Container{{Name: "user-init", Image: "busybox"}}
+				return p
+			}(),
+			expectPatches: true,
+			validatePatches: func(t *testing.T, patches []PatchOperation) {
+				t.Helper()
+				p0 := findPatchByPath(patches, "/spec/initContainers/0")
+				require.NotNil(t, p0, "should insert first container at index 0")
+				p1 := findPatchByPath(patches, "/spec/initContainers/1")
+				require.NotNil(t, p1, "should insert second container at index 1")
+			},
+		},
+		{
+			name: "placement prepend with no existing init containers creates array",
+			cfg: func() *config.Config {
+				c := testConfig()
+				c.InitContainerPlacement = config.PlacementPrepend
+				return c
+			}(),
+			pod:           gpuPod(),
+			expectPatches: true,
+			validatePatches: func(t *testing.T, patches []PatchOperation) {
+				t.Helper()
+				p := findPatchByPath(patches, "/spec/initContainers")
+				require.NotNil(t, p, "should create init containers array")
+				assert.Equal(t, "add", p.Op)
+			},
+		},
+		{
 			name:          "no existing init containers creates array",
 			cfg:           testConfig(),
 			pod:           gpuPod(),
@@ -803,8 +867,9 @@ func testConfig() *config.Config {
 			InitContainers: []corev1.Container{
 				{Name: "preflight-dcgm-diag", Image: "nvcr.io/nvidia/dcgm:latest"},
 			},
-			GPUResourceNames:     []string{"nvidia.com/gpu"},
-			NetworkResourceNames: []string{"vpc.amazonaws.com/efa"},
+			GPUResourceNames:       []string{"nvidia.com/gpu"},
+			NetworkResourceNames:   []string{"vpc.amazonaws.com/efa"},
+			InitContainerPlacement: config.PlacementAppend,
 			DCGM: config.DCGMConfig{
 				HostengineAddr:     "localhost:5555",
 				DiagLevel:          1,

@@ -73,6 +73,7 @@ container_tools:
 testing_tools:
   kind: '0.30.0'
   helm: 'v3.19.2'
+  helm_unittest: 'v1.0.3'
   kwok: 'v0.7.0'
   kwok_chart: '0.2.0'  # KWOK Helm chart version (different from app version)
   ctlptl: '0.8.43'

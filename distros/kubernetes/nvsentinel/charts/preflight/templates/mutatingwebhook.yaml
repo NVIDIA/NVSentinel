@@ -55,3 +55,7 @@ webhooks:
       matchExpressions:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+    {{- with .Values.objectSelector }}
+    objectSelector:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}

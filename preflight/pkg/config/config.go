@@ -30,6 +30,22 @@ type Config struct {
 	FileConfig
 }
 
+// InitContainerPlacement controls where preflight init containers are
+// inserted relative to existing init containers in the pod spec.
+type InitContainerPlacement string
+
+const (
+	// PlacementAppend appends preflight init containers after existing ones.
+	// This is the default and ensures provider-injected setup containers
+	// (e.g., GCP TCPXO daemon) complete before preflight checks run.
+	PlacementAppend InitContainerPlacement = "append"
+
+	// PlacementPrepend prepends preflight init containers before existing ones.
+	// Use this when preflight checks must run before other init containers,
+	// for example to gate workload setup on GPU health validation.
+	PlacementPrepend InitContainerPlacement = "prepend"
+)
+
 type FileConfig struct {
 	InitContainers       []corev1.Container     `yaml:"initContainers"`
 	GPUResourceNames     []string               `yaml:"gpuResourceNames"`
@@ -37,6 +53,11 @@ type FileConfig struct {
 	DCGM                 DCGMConfig             `yaml:"dcgm"`
 	GangDiscovery        GangDiscoveryConfig    `yaml:"gangDiscovery"`
 	GangCoordination     GangCoordinationConfig `yaml:"gangCoordination"`
+
+	// InitContainerPlacement controls where preflight init containers are
+	// placed relative to existing init containers in the pod spec.
+	// Valid values: "prepend", "append". Default: "append".
+	InitContainerPlacement InitContainerPlacement `yaml:"initContainerPlacement,omitempty"`
 
 	// NCCLEnvPatterns are glob patterns for environment variable names to copy
 	// from the pod's main containers to preflight init containers.
@@ -201,6 +222,10 @@ func (c *FileConfig) setDefaults() {
 		c.GPUResourceNames = []string{"nvidia.com/gpu"}
 	}
 
+	if c.InitContainerPlacement == "" {
+		c.InitContainerPlacement = PlacementAppend
+	}
+
 	c.DCGM.setDefaults()
 	c.GangCoordination.setDefaults()
 }
@@ -256,6 +281,13 @@ func (c *GangCoordinationConfig) setDefaults() {
 }
 
 func (c *FileConfig) validate() error {
+	switch c.InitContainerPlacement {
+	case PlacementPrepend, PlacementAppend:
+	default:
+		return fmt.Errorf("invalid initContainerPlacement %q: must be %q or %q",
+			c.InitContainerPlacement, PlacementPrepend, PlacementAppend)
+	}
+
 	if c.GangCoordination.Enabled {
 		timeout, err := time.ParseDuration(c.GangCoordination.Timeout)
 		if err != nil {

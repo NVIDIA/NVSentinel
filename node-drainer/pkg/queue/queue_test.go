@@ -53,7 +53,7 @@ func TestWorkqueueDeduplication_WithoutEventID(t *testing.T) {
 	}
 
 	// Enqueue first event
-	err := mgr.EnqueueEventGeneric(ctx, "node-1", event1, mockDB, mockHealthEventStore)
+	err := mgr.EnqueueEventGeneric(ctx, "node-1", event1, mockDB, mockHealthEventStore, event1["_id"])
 	require.NoError(t, err)
 
 	// Simulate: Worker gets the event but doesn't call Done yet (simulates processing)
@@ -63,7 +63,7 @@ func TestWorkqueueDeduplication_WithoutEventID(t *testing.T) {
 	assert.Equal(t, "node-1", item1.NodeName)
 
 	// Now enqueue second event WHILE first is being processed
-	err = mgr.EnqueueEventGeneric(ctx, "node-1", event2, mockDB, mockHealthEventStore)
+	err = mgr.EnqueueEventGeneric(ctx, "node-1", event2, mockDB, mockHealthEventStore, event2["_id"])
 	require.NoError(t, err)
 
 	// Without EventID: Both events might get deduplicated because NodeEvent
@@ -100,7 +100,7 @@ func TestWorkqueueDeduplication_WithEventID(t *testing.T) {
 	}
 
 	// Enqueue first event (EventID extracted from event map)
-	err := mgr.EnqueueEventGeneric(ctx, "node-1", event1, mockDB, mockHealthEventStore)
+	err := mgr.EnqueueEventGeneric(ctx, "node-1", event1, mockDB, mockHealthEventStore, event1["_id"])
 	require.NoError(t, err)
 
 	// Get the event but DON'T call Done (simulates processing)
@@ -114,7 +114,7 @@ func TestWorkqueueDeduplication_WithEventID(t *testing.T) {
 	assert.Equal(t, 0, queueImpl.queue.Len())
 
 	// Now enqueue second event WHILE first is being processed
-	err = mgr.EnqueueEventGeneric(ctx, "node-1", event2, mockDB, mockHealthEventStore)
+	err = mgr.EnqueueEventGeneric(ctx, "node-1", event2, mockDB, mockHealthEventStore, event2["_id"])
 	require.NoError(t, err)
 
 	// With EventID: Second event should be in the queue (different EventID!)
@@ -132,7 +132,10 @@ func TestWorkqueueDeduplication_WithEventID(t *testing.T) {
 }
 
 // TestWorkqueueDeduplication_SameEventDifferentStatus tests that updates to the SAME event
-// are correctly deduplicated (we don't want to process the same event twice)
+// are correctly deduplicated — the same document ID is not processed twice concurrently.
+// With DocumentID-based deduplication, re-enqueuing an event that is already being
+// processed marks it "dirty" in the workqueue rather than adding a new queue entry.
+// The item only becomes available again after Done() is called on the in-flight item.
 func TestWorkqueueDeduplication_SameEventDifferentStatus(t *testing.T) {
 	mgr := NewEventQueueManager()
 	defer mgr.Shutdown()
@@ -148,41 +151,36 @@ func TestWorkqueueDeduplication_SameEventDifferentStatus(t *testing.T) {
 		"userPodsEvictionStatus": "NotStarted",
 	}
 
-	// Same event, status updated to Succeeded
+	// Same event, status updated to Succeeded (same _id)
 	event2 := datastore.Event{
-		"_id":                    "507f1f77bcf86cd799439011", // SAME _id!
+		"_id":                    "507f1f77bcf86cd799439011",
 		"nodeName":               "node-1",
 		"userPodsEvictionStatus": "Succeeded",
 	}
 
 	// Enqueue first event
-	err := mgr.EnqueueEventGeneric(ctx, "node-1", event1, mockDB, mockHealthEventStore)
+	err := mgr.EnqueueEventGeneric(ctx, "node-1", event1, mockDB, mockHealthEventStore, event1["_id"])
 	require.NoError(t, err)
 
-	// Get the event but DON'T call Done
+	// Get the event but DON'T call Done (simulates in-flight processing)
 	queueImpl := mgr.(*eventQueueManager)
 	item1, shutdown := queueImpl.queue.Get()
 	require.False(t, shutdown)
 	assert.Equal(t, "507f1f77bcf86cd799439011", item1.EventID)
 
-	// Queue should be empty
+	// Queue should be empty while item1 is in-flight
 	assert.Equal(t, 0, queueImpl.queue.Len())
 
-	// Try to enqueue the SAME event (different status) WHILE processing
-	err = mgr.EnqueueEventGeneric(ctx, "node-1", event2, mockDB, mockHealthEventStore)
+	// Re-enqueue the SAME event (same DocumentID) while it is still being processed.
+	// The workqueue marks it as "dirty" — it will NOT appear in Len() until Done() is
+	// called, preventing the same event from being processed twice concurrently.
+	err = mgr.EnqueueEventGeneric(ctx, "node-1", event2, mockDB, mockHealthEventStore, event2["_id"])
 	require.NoError(t, err)
+	assert.Equal(t, 0, queueImpl.queue.Len(), "Same event is dirty (not yet queued) while in-flight")
 
-	// The workqueue marks it as "dirty" and adds to the queue
-	// Because the struct comparison includes Event pointer (which changes each time),
-	// the workqueue treats it as a different item
-	// But the EventID being the SAME is what matters semantically
-	assert.Equal(t, 1, queueImpl.queue.Len(), "Same event (different status) is queued")
-
-	// Now call Done on the first event
+	// Completing the first processing makes the dirty item available
 	queueImpl.queue.Done(item1)
-
-	// The second update should still be in the queue
-	assert.Equal(t, 1, queueImpl.queue.Len(), "Updated event still in queue")
+	assert.Equal(t, 1, queueImpl.queue.Len(), "Updated event is queued after Done()")
 
 	// Clean up
 	item2, shutdown := queueImpl.queue.Get()
@@ -216,7 +214,7 @@ func TestWorkqueueDeduplication_MultipleFaultsSameNode(t *testing.T) {
 	}
 
 	// Enqueue first fault
-	err := mgr.EnqueueEventGeneric(ctx, "node-gpu-1", event1, mockDB, mockHealthEventStore)
+	err := mgr.EnqueueEventGeneric(ctx, "node-gpu-1", event1, mockDB, mockHealthEventStore, event1["_id"])
 	require.NoError(t, err)
 
 	// Get first fault but DON'T call Done (simulates long drain operation)
@@ -226,7 +224,7 @@ func TestWorkqueueDeduplication_MultipleFaultsSameNode(t *testing.T) {
 	assert.Equal(t, "507f1f77bcf86cd799439011", item1.EventID)
 
 	// Enqueue second fault WHILE first is being processed
-	err = mgr.EnqueueEventGeneric(ctx, "node-gpu-1", event2, mockDB, mockHealthEventStore)
+	err = mgr.EnqueueEventGeneric(ctx, "node-gpu-1", event2, mockDB, mockHealthEventStore, event2["_id"])
 	require.NoError(t, err)
 
 	// Second fault should be in the queue (different EventID!)
@@ -258,7 +256,7 @@ func TestWorkqueueDeduplication_RealWorldScenario(t *testing.T) {
 		"nodeQuarantined": "Quarantined",
 	}
 
-	err := mgr.EnqueueEventGeneric(ctx, "node-1", quarantineEvent, mockDB, mockHealthEventStore)
+	err := mgr.EnqueueEventGeneric(ctx, "node-1", quarantineEvent, mockDB, mockHealthEventStore, quarantineEvent["_id"])
 	require.NoError(t, err)
 
 	queueImpl := mgr.(*eventQueueManager)
@@ -278,7 +276,7 @@ func TestWorkqueueDeduplication_RealWorldScenario(t *testing.T) {
 		"nodeQuarantined": "Cancelled",
 	}
 
-	err = mgr.EnqueueEventGeneric(ctx, "node-1", cancelledEvent, mockDB, mockHealthEventStore)
+	err = mgr.EnqueueEventGeneric(ctx, "node-1", cancelledEvent, mockDB, mockHealthEventStore, cancelledEvent["_id"])
 	require.NoError(t, err)
 
 	// The bug: Without EventID, this would be deduplicated
@@ -319,10 +317,10 @@ func TestWorkqueueDeduplication_DifferentNodes(t *testing.T) {
 	}
 
 	// Enqueue both events
-	err := mgr.EnqueueEventGeneric(ctx, "node-1", event1, mockDB, mockHealthEventStore)
+	err := mgr.EnqueueEventGeneric(ctx, "node-1", event1, mockDB, mockHealthEventStore, event1["_id"])
 	require.NoError(t, err)
 
-	err = mgr.EnqueueEventGeneric(ctx, "node-2", event2, mockDB, mockHealthEventStore)
+	err = mgr.EnqueueEventGeneric(ctx, "node-2", event2, mockDB, mockHealthEventStore, event2["_id"])
 	require.NoError(t, err)
 
 	// Both should be in the queue
