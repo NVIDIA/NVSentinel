@@ -50,7 +50,7 @@ type Components struct {
 }
 
 func InitializeAll(ctx context.Context, params InitializationParams) (*Components, error) {
-	slog.Info("Starting fault quarantine module initialization")
+	slog.InfoContext(ctx, "Starting fault quarantine module initialization")
 
 	tokenConfig, err := storeconfig.TokenConfigFromEnv("fault-quarantine")
 	if err != nil {
@@ -72,7 +72,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 	}
 
 	if params.DryRun {
-		slog.Info("Running in dry-run mode")
+		slog.InfoContext(ctx, "Running in dry-run mode")
 	}
 
 	k8sClient, err := informer.NewFaultQuarantineClient(params.KubeconfigPath, params.DryRun, 30*time.Minute)
@@ -80,7 +80,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		return nil, fmt.Errorf("error while initializing kubernetes client: %w", err)
 	}
 
-	slog.Info("Successfully initialized kubernetes client with embedded node informer")
+	slog.InfoContext(ctx, "Successfully initialized kubernetes client with embedded node informer")
 
 	circuitBreaker, err := setupCircuitBreaker(ctx, params, tomlCfg, k8sClient)
 	if err != nil {
@@ -102,7 +102,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		circuitBreaker,
 	)
 
-	slog.Info("Initialization completed successfully")
+	slog.InfoContext(ctx, "Initialization completed successfully")
 
 	return &Components{
 		Reconciler:      reconcilerInstance,
@@ -146,7 +146,7 @@ func setupCircuitBreaker(
 	k8sClient *informer.FaultQuarantineClient,
 ) (breaker.CircuitBreaker, error) {
 	if !params.CircuitBreakerEnabled {
-		slog.Info("Circuit breaker is disabled, skipping initialization")
+		slog.InfoContext(ctx, "Circuit breaker is disabled, skipping initialization")
 		return nil, nil
 	}
 
@@ -158,7 +158,7 @@ func setupCircuitBreaker(
 		return nil, fmt.Errorf("error while initializing circuit breaker: %w", err)
 	}
 
-	slog.Info("Successfully initialized circuit breaker")
+	slog.InfoContext(ctx, "Successfully initialized circuit breaker")
 
 	return cb, nil
 }
@@ -177,7 +177,7 @@ func initializeCircuitBreaker(
 		return nil, fmt.Errorf("invalid circuit breaker duration %q: %w", cbConfig.Duration, err)
 	}
 
-	slog.Info("Initializing circuit breaker",
+	slog.InfoContext(ctx, "Initializing circuit breaker",
 		"configMap", circuitBreakerName,
 		"namespace", namespace,
 		"percentage", cbConfig.Percentage,

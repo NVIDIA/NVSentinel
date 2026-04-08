@@ -77,7 +77,7 @@ type HealthEventStore interface {
 	UpdateHealthEventsByQuery(ctx context.Context, queryBuilder QueryBuilder, updateBuilder UpdateBuilder) error
 
 	// Convenience methods for common operations
-	UpdateNodeQuarantineStatus(ctx context.Context, eventID string, status Status) error
+	UpdateNodeQuarantineStatus(ctx context.Context, eventID string, status Status, spanID string) error
 	UpdatePodEvictionStatus(ctx context.Context, eventID string, status OperationStatus) error
 	UpdateRemediationStatus(ctx context.Context, eventID string, status interface{}) error
 

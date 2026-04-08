@@ -110,8 +110,4 @@ func TestSpanHelpers(t *testing.T) {
 	t.Run("RecordError does not panic", func(t *testing.T) {
 		assert.NotPanics(t, func() { RecordError(span, assert.AnError) })
 	})
-
-	t.Run("SetOperationStatus nil span does not panic", func(t *testing.T) {
-		assert.NotPanics(t, func() { SetOperationStatus(nil, "success", "test_service") })
-	})
 }

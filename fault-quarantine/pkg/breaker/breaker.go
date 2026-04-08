@@ -65,7 +65,7 @@ func NewSlidingWindowBreaker(ctx context.Context, cfg Config) (CircuitBreaker, e
 
 	err := cfg.K8sClient.EnsureCircuitBreakerConfigMap(ctx, cfg.ConfigMapName, cfg.ConfigMapNamespace, StateClosed)
 	if err != nil {
-		slog.Error("Error ensuring circuit breaker config map", "error", err)
+		slog.ErrorContext(ctx, "Error ensuring circuit breaker config map", "error", err)
 		return nil, fmt.Errorf("error ensuring circuit breaker config map: %w", err)
 	}
 
@@ -196,13 +196,13 @@ func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 
 	totalNodes, err := b.getTotalNodesWithRetry(ctx)
 	if err != nil {
-		slog.Error("Failed to get total nodes after retries", "error", err)
+		slog.ErrorContext(ctx, "Failed to get total nodes after retries", "error", err)
 
 		return false, fmt.Errorf("failed to get total nodes after retries: %w", err)
 	}
 
 	if totalNodes == 0 {
-		slog.Error("Total nodes is still 0 after all retry attempts - cluster may have no GPU nodes")
+		slog.ErrorContext(ctx, "Total nodes is still 0 after all retry attempts - cluster may have no GPU nodes")
 		return false, fmt.Errorf("total nodes is 0 after retries")
 	}
 
@@ -217,7 +217,7 @@ func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 
 	b.mu.Unlock()
 
-	slog.Debug("Recent cordoned nodes status",
+	slog.DebugContext(ctx, "Recent cordoned nodes status",
 		"recentCordonedNodes", recentCordonedNodes,
 		"totalNodes", totalNodes,
 		"tripPercentage", b.cfg.TripPercentage)
@@ -227,7 +227,7 @@ func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 	if shouldTrip {
 		err := b.ForceState(ctx, StateTripped)
 		if err != nil {
-			slog.Error("Error forcing circuit breaker state to TRIPPED", "error", err)
+			slog.ErrorContext(ctx, "Error forcing circuit breaker state to TRIPPED", "error", err)
 			return true, fmt.Errorf("error forcing circuit breaker state to TRIPPED: %w", err)
 		}
 
@@ -252,11 +252,11 @@ func (b *slidingWindowBreaker) ForceState(ctx context.Context, s State) error {
 	err := b.cfg.K8sClient.WriteCircuitBreakerState(
 		ctx, b.cfg.ConfigMapName, b.cfg.ConfigMapNamespace, s)
 	if err != nil {
-		slog.Error("Error writing circuit breaker state", "error", err)
+		slog.ErrorContext(ctx, "Error writing circuit breaker state", "error", err)
 		return fmt.Errorf("error writing circuit breaker state: %w", err)
 	}
 
-	slog.Info("ForceState changed", "state", s)
+	slog.InfoContext(ctx, "ForceState changed", "state", s)
 
 	return nil
 }
@@ -316,7 +316,7 @@ func (b *slidingWindowBreaker) getTotalNodesWithRetry(ctx context.Context) (int,
 		}
 
 		if attempt == 0 {
-			slog.Info("Circuit breaker starting retries: NodeInformer cache may not be synced yet",
+			slog.InfoContext(ctx, "Circuit breaker starting retries: NodeInformer cache may not be synced yet",
 				"maxRetries", maxRetries)
 		}
 
@@ -383,7 +383,7 @@ func (b *slidingWindowBreaker) performRetryDelay(ctx context.Context, attempt, m
 	initialDelay, maxDelay time.Duration) error {
 	delay := b.calculateBackoffDelay(attempt, initialDelay, maxDelay)
 
-	slog.Debug("Circuit breaker retry; got 0 nodes, retrying (NodeInformer cache may still be syncing)",
+	slog.DebugContext(ctx, "Circuit breaker retry; got 0 nodes, retrying (NodeInformer cache may still be syncing)",
 		"attempt", attempt+1,
 		"maxRetries", maxRetries,
 		"delay", delay)
@@ -422,7 +422,7 @@ func (b *slidingWindowBreaker) logRetriesExhausted(ctx context.Context, maxRetri
 	initialDelay, maxDelay time.Duration) error {
 	actualNodes, err := b.cfg.K8sClient.GetTotalNodes(ctx)
 	if err != nil {
-		slog.Error(
+		slog.ErrorContext(ctx,
 			"Circuit breaker: All retry attempts exhausted; failed to get node count from Kubernetes API; pod will restart",
 			"maxRetries", maxRetries,
 			"error", err,
@@ -433,7 +433,7 @@ func (b *slidingWindowBreaker) logRetriesExhausted(ctx context.Context, maxRetri
 		return fmt.Errorf("%w: failed to get node count: %w", ErrRetryExhausted, err)
 	}
 
-	slog.Error("Circuit breaker: All retry attempts exhausted",
+	slog.ErrorContext(ctx, "Circuit breaker: All retry attempts exhausted",
 		"maxRetries", maxRetries,
 		"actualNodes", actualNodes,
 		"initialDelay", initialDelay,

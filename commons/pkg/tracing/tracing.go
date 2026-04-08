@@ -43,6 +43,15 @@ var (
 	tracer                  trace.Tracer
 )
 
+// Service name constants used across multiple modules for span-ID lookups.
+// For example, platform-connector's span ID is read by fault-quarantine,
+// event-exporter, and health-events-analyzer to establish parent-child
+// trace relationships.
+const (
+	ServicePlatformConnector = "platform-connector"
+	ServiceFaultQuarantine   = "fault-quarantine"
+)
+
 // MetadataKeyTraceID is the key used to store the trace ID in the health event's
 // Metadata map. Platform-connector writes it at ingestion time so that all
 // downstream event consumers are linked to same trace.
@@ -51,12 +60,6 @@ const MetadataKeyTraceID = "trace_id"
 // defaultTraceID is the hex representation of the zero-value OpenTelemetry trace ID,
 // which is present when the context doesn't carry trace info.
 var defaultTraceID = trace.TraceID{}.String()
-
-const (
-	OperationStatusThrottled = "throttled"
-	OperationStatusCancelled = "cancelled"
-	OperationStatusSkipped   = "skipped"
-)
 
 // InitTracing initializes OpenTelemetry tracing with OTLP gRPC exporter.
 func InitTracing(serviceName string) error {
@@ -349,13 +352,4 @@ func RecordError(span trace.Span, err error, opts ...trace.EventOption) {
 // SpanFromContext returns the active span stored in ctx, or a no-op span if none exists.
 func SpanFromContext(ctx context.Context) trace.Span {
 	return trace.SpanFromContext(ctx)
-}
-
-// SetOperationStatus sets the standard operation status attribute on a span.
-func SetOperationStatus(span trace.Span, status string, service string) {
-	if span == nil {
-		return
-	}
-
-	span.SetAttributes(attribute.String(fmt.Sprintf("%s.operation.status", service), status))
 }
