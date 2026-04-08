@@ -129,15 +129,10 @@ class GangConfig:
         errors: list[str] = []
 
         if missing:
-            errors.append(
-                f"Peers missing check '{check_name}': {', '.join(missing)}"
-            )
+            errors.append(f"Peers missing check '{check_name}': {', '.join(missing)}")
 
         if len(hashes) > 1:
-            parts = [
-                f"{config!r}: [{', '.join(pods)}]"
-                for config, pods in hashes.items()
-            ]
+            parts = [f"{config!r}: [{', '.join(pods)}]" for config, pods in hashes.items()]
             errors.append(f"Config mismatch across gang: {'; '.join(parts)}")
 
         if errors:
@@ -297,13 +292,15 @@ class GangConfigReader:
             if len(parts) >= 5:
                 allreduce_config = parts[4].strip()
 
-            peers.append(PeerInfo(
-                pod_name=pod_name,
-                pod_ip=pod_ip,
-                rank=rank,
-                checks=checks,
-                allreduce_config=allreduce_config,
-            ))
+            peers.append(
+                PeerInfo(
+                    pod_name=pod_name,
+                    pod_ip=pod_ip,
+                    rank=rank,
+                    checks=checks,
+                    allreduce_config=allreduce_config,
+                )
+            )
 
         return peers
 

@@ -158,10 +158,7 @@ class TestExtendedPeerFormat:
             config_dir,
             {
                 "expected_count": "2",
-                "peers": (
-                    "pod-0;10.0.0.1;0\n"
-                    "pod-1;10.0.0.2;1;preflight-nccl-allreduce;def456"
-                ),
+                "peers": ("pod-0;10.0.0.1;0\n" "pod-1;10.0.0.2;1;preflight-nccl-allreduce;def456"),
             },
         )
 
