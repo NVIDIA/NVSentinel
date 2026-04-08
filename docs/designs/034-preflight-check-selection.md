@@ -28,7 +28,7 @@ metadata:
     nvsentinel.nvidia.com/preflight-checks: "preflight-dcgm-diag,preflight-nccl-loopback"
 ```
 
-Only named containers are injected. Unknown names reject admission with an error listing the invalid names and the available checks. An empty value disables all checks:
+Only named containers are injected, in the order they appear in the chart (not the annotation order). Unknown names reject admission with an error listing the invalid names and the available checks. An empty value disables all checks:
 
 ```yaml
 nvsentinel.nvidia.com/preflight-checks: ""
@@ -174,7 +174,7 @@ Before launching torchrun, the NCCL all-reduce init container calls `validate_pe
 ### Mitigations
 
 - Env var overrides can be addressed separately if needed; the annotation mechanism is orthogonal
-- Unknown container name warnings are logged, making typos discoverable via pod admission logs
+- Unknown container names reject admission with an error listing the invalid names and configured checks
 
 ## Alternatives Considered
 
