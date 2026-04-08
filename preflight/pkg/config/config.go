@@ -294,6 +294,17 @@ func (c *GangCoordinationConfig) setDefaults() {
 }
 
 func (c *FileConfig) validate() error {
+	seen := make(map[string]struct{}, len(c.InitContainers))
+	for i, spec := range c.InitContainers {
+		if spec.Name == "" {
+			return fmt.Errorf("initContainers[%d].name must be set", i)
+		}
+		if _, exists := seen[spec.Name]; exists {
+			return fmt.Errorf("duplicate init container name %q", spec.Name)
+		}
+		seen[spec.Name] = struct{}{}
+	}
+
 	switch c.InitContainerPlacement {
 	case PlacementPrepend, PlacementAppend:
 	default:

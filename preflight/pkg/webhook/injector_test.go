@@ -851,6 +851,34 @@ func TestSelectInitContainers(t *testing.T) {
 		assert.Contains(t, err.Error(), "unknown checks")
 	})
 
+	t.Run("annotation preserves configured order not annotation order", func(t *testing.T) {
+		cfg := multiConfig()
+		injector := NewInjector(cfg, nil)
+		pod := gpuPod()
+		pod.Annotations = map[string]string{
+			PreflightChecksAnnotation: "preflight-nccl-loopback,preflight-dcgm-diag",
+		}
+
+		selected, err := injector.selectInitContainers(pod)
+		require.NoError(t, err)
+		require.Len(t, selected, 2)
+		assert.Equal(t, "preflight-dcgm-diag", selected[0].Name)
+		assert.Equal(t, "preflight-nccl-loopback", selected[1].Name)
+	})
+
+	t.Run("comma-only annotation disables all checks", func(t *testing.T) {
+		cfg := multiConfig()
+		injector := NewInjector(cfg, nil)
+		pod := gpuPod()
+		pod.Annotations = map[string]string{
+			PreflightChecksAnnotation: " , , ",
+		}
+
+		selected, err := injector.selectInitContainers(pod)
+		require.NoError(t, err)
+		assert.Empty(t, selected)
+	})
+
 	t.Run("annotation with spaces and trailing commas", func(t *testing.T) {
 		cfg := multiConfig()
 		injector := NewInjector(cfg, nil)

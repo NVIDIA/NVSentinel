@@ -266,24 +266,41 @@ func (i *Injector) selectInitContainers(pod *corev1.Pod) ([]config.InitContainer
 	}
 
 	// Annotation present — only inject named containers.
+	// ParseCheckNames normalizes: split, trim, sort, dedup.
+	// An empty or whitespace/comma-only annotation yields an empty list,
+	// which disables all checks.
 	requested := ParseCheckNames(ann)
-	configuredByName := make(map[string]config.InitContainerSpec, len(i.cfg.InitContainers))
-
-	for _, spec := range i.cfg.InitContainers {
-		configuredByName[spec.Name] = spec
+	if len(requested) == 0 {
+		return nil, nil
 	}
 
+	requestedSet := make(map[string]bool, len(requested))
+	for _, name := range requested {
+		requestedSet[name] = true
+	}
+
+	// Walk configured containers in their defined order so init container
+	// execution order matches the chart, regardless of annotation order.
 	var result []config.InitContainerSpec
 	var unknown []string
 
-	for _, name := range requested {
-		spec, exists := configuredByName[name]
-		if !exists {
-			unknown = append(unknown, name)
-			continue
+	for _, spec := range i.cfg.InitContainers {
+		if requestedSet[spec.Name] {
+			result = append(result, spec)
 		}
+	}
 
-		result = append(result, spec)
+	for _, name := range requested {
+		found := false
+		for _, spec := range i.cfg.InitContainers {
+			if spec.Name == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			unknown = append(unknown, name)
+		}
 	}
 
 	if len(unknown) > 0 {
