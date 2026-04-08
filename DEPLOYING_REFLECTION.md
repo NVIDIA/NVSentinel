@@ -16,9 +16,25 @@ details.
 
 ## Building and Publishing
 
-[`scripts/reflection-publish.sh`](scripts/reflection-publish.sh) handles auth,
-build, and publish in one shot. It tags images and the Helm chart with the
-current commit hash:
+### Automatic (CI/CD)
+
+Pushes to `main` automatically build and publish preflight components via the
+[`reflection-publish.yml`](.github/workflows/reflection-publish.yml) GitHub
+Actions workflow. It can also be triggered manually from the Actions tab with an
+optional tag override.
+
+The workflow builds:
+- **Preflight webhook server** (Go, via `ko`)
+- **Preflight check images** — `dcgm-diag`, `nccl-allreduce`, `nccl-loopback` (Docker)
+- **Helm chart** (OCI push)
+
+Authentication uses Workload Identity Federation (keyless) with the
+`nvsentinel-ci` service account in `reflectionai-gpu-platform`.
+
+### Manual
+
+[`scripts/reflection-publish.sh`](scripts/reflection-publish.sh) builds and
+publishes **all** components (not just preflight) in one shot:
 
 ```bash
 ./scripts/reflection-publish.sh
@@ -27,14 +43,16 @@ current commit hash:
 ./scripts/reflection-publish.sh --skip-auth
 ```
 
+### Registries
+
 Images are pushed to:
 ```
-us-central1-docker.pkg.dev/reflectionai-gpu-platform/nvsentinel/<component>:<commit-hash>
+us-central1-docker.pkg.dev/reflectionai-gpu-platform/nvsentinel/<component>:<version>-<commit-hash>
 ```
 
 The Helm chart is pushed to:
 ```
-oci://us-central1-docker.pkg.dev/reflectionai-gpu-platform/nvsentinel:<commit-hash>
+oci://us-central1-docker.pkg.dev/reflectionai-gpu-platform/nvsentinel/nvsentinel:<version>-<commit-hash>
 ```
 
 ## MongoDB Atlas Configuration
