@@ -116,7 +116,7 @@ func run() error {
 	defer components.GRPCConn.Close()
 
 	for _, p := range components.Config.Policies {
-		ff.Set("policy_"+metrics.ToSnakeCase(p.Name), p.Enabled)
+		ff.Set(p.Name, p.Enabled)
 	}
 
 	slog.Info("Starting manager")

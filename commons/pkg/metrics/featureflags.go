@@ -17,9 +17,6 @@
 package featureflags
 
 import (
-	"strings"
-	"unicode"
-
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -88,47 +85,4 @@ func (r *Registry) Set(flag string, enabled bool) {
 // flag to 1 when strategy == "STORE_ONLY", else 0.
 func (r *Registry) SetStoreOnlyMode(strategy string) {
 	r.Set("store_only_mode", strategy == "STORE_ONLY")
-}
-
-// ToSnakeCase converts a human-readable or camelCase name into a snake_case
-// string suitable for use as a Prometheus flag label. It handles both
-// space-separated names ("GPU fatal error ruleset" → "gpu_fatal_error_ruleset")
-// and camelCase ("MultipleRemediations" → "multiple_remediations").
-func ToSnakeCase(s string) string {
-	var (
-		builder        strings.Builder
-		prevUnderscore bool
-		prev           rune
-	)
-
-	for i, r := range s {
-		switch {
-		case unicode.IsUpper(r):
-			if i > 0 && !prevUnderscore && isLowerOrDigit(prev) {
-				builder.WriteByte('_')
-			}
-
-			builder.WriteRune(unicode.ToLower(r))
-
-			prevUnderscore = false
-		case unicode.IsLetter(r) || unicode.IsDigit(r):
-			builder.WriteRune(r)
-
-			prevUnderscore = false
-		default:
-			if !prevUnderscore {
-				builder.WriteByte('_')
-
-				prevUnderscore = true
-			}
-		}
-
-		prev = r
-	}
-
-	return strings.Trim(builder.String(), "_")
-}
-
-func isLowerOrDigit(r rune) bool {
-	return unicode.IsLower(r) || unicode.IsDigit(r)
 }

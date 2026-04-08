@@ -137,8 +137,7 @@ func run() error {
 	}
 
 	for _, rule := range tomlConfig.Rules {
-		flagName := "rule_" + metrics.ToSnakeCase(rule.Name)
-		ff.Set(flagName, rule.EvaluateRule)
+		ff.Set(rule.Name, rule.EvaluateRule)
 	}
 
 	reconcilerCfg := reconciler.HealthEventsAnalyzerReconcilerConfig{

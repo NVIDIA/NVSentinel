@@ -101,7 +101,7 @@ func run() error {
 	}
 
 	for _, rs := range components.TomlConfig.RuleSets {
-		ff.Set(metrics.ToSnakeCase(rs.Name), rs.Enabled)
+		ff.Set(rs.Name, rs.Enabled)
 	}
 
 	g, gCtx := errgroup.WithContext(ctx)
