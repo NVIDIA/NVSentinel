@@ -154,20 +154,9 @@ func (c *GangController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, nil
 	}
 
-	// Normalize the preflight-checks annotation so all peers serialize the
-	// same sorted value, enabling gang-level consistency validation.
-	// Errors are not expected here — the webhook already validated the
-	// annotation at admission time. Log and continue with empty if it fails.
-	checkNames := ""
-	if ann, ok := pod.Annotations[webhook.PreflightChecksAnnotation]; ok {
-		parsed, err := webhook.ParseCheckNames(ann)
-		if err != nil {
-			slog.Warn("Failed to parse preflight-checks annotation, using empty",
-				"pod", pod.Name, "error", err)
-		} else {
-			checkNames = strings.Join(parsed, ",")
-		}
-	}
+	// Build check names in chart order — same logic as the injector's
+	// selectInitContainers so both paths produce identical strings.
+	checkNames := checkNamesFromPod(&pod, c.cfg)
 
 	peer := gang.PeerInfo{
 		PodName:    pod.Name,
@@ -273,4 +262,49 @@ func (c *GangController) ensureNCCLTopoConfigMap(ctx context.Context, namespace 
 	slog.Info("Created NCCL topo ConfigMap",
 		"namespace", namespace,
 		"configMap", gcfg.NCCLTopoConfigMap)
+}
+
+// checkNamesFromPod computes the check names string for a pod using chart
+// order, matching the injector's selectInitContainers logic. This ensures
+// the gang peer line is identical regardless of annotation order.
+func checkNamesFromPod(pod *corev1.Pod, cfg *config.Config) string {
+	ann, ok := pod.Annotations[webhook.PreflightChecksAnnotation]
+	if !ok {
+		// No annotation — use defaultEnabled in chart order.
+		var names []string
+		for _, spec := range cfg.InitContainers {
+			if spec.IsDefaultEnabled() {
+				names = append(names, spec.Name)
+			}
+		}
+
+		return strings.Join(names, ",")
+	}
+
+	// Annotation present — parse names, then walk chart order.
+	parsed, err := webhook.ParseCheckNames(ann)
+	if err != nil {
+		slog.Warn("Failed to parse preflight-checks annotation",
+			"pod", pod.Name, "error", err)
+
+		return ""
+	}
+
+	if len(parsed) == 0 {
+		return ""
+	}
+
+	requestedSet := make(map[string]bool, len(parsed))
+	for _, name := range parsed {
+		requestedSet[name] = true
+	}
+
+	var names []string
+	for _, spec := range cfg.InitContainers {
+		if requestedSet[spec.Name] {
+			names = append(names, spec.Name)
+		}
+	}
+
+	return strings.Join(names, ",")
 }

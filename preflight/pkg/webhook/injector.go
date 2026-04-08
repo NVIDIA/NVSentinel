@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -76,16 +75,13 @@ type GangContext struct {
 	GangID        string
 	ConfigMapName string
 	// CheckNames is a comma-separated list of injected check container
-	// names, sorted for deterministic comparison across peers.
-	// Containers are injected in chart order; this string is sorted
-	// independently for gang validation.
+	// names in chart order. Gang validation compares these as sets.
 	CheckNames string
 }
 
-// ParseCheckNames splits a comma-separated annotation value into a sorted
-// list of container names. Returns an error if any name appears more than
-// once. Sorted for deterministic comparison across peers in gang validation.
-// Exported so the gang controller can use the same normalization.
+// ParseCheckNames splits a comma-separated annotation value into a list of
+// container names. Returns an error if any name appears more than once.
+// Exported so the gang controller can use the same parsing.
 func ParseCheckNames(csv string) ([]string, error) {
 	seen := make(map[string]bool)
 	var names []string
@@ -102,8 +98,6 @@ func ParseCheckNames(csv string) ([]string, error) {
 		seen[name] = true
 		names = append(names, name)
 	}
-
-	sort.Strings(names)
 
 	return names, nil
 }
@@ -157,13 +151,12 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 
 	initContainers := i.buildInitContainers(pod, maxResources, gangCtx, selected)
 
-	// Compute check names for gang validation (sorted for deterministic comparison).
+	// Compute check names for gang validation.
 	if gangCtx != nil {
 		names := make([]string, len(initContainers))
 		for idx, c := range initContainers {
 			names[idx] = c.Name
 		}
-		sort.Strings(names)
 		gangCtx.CheckNames = strings.Join(names, ",")
 	}
 

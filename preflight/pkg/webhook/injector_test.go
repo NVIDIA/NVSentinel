@@ -923,10 +923,10 @@ func TestSelectInitContainers(t *testing.T) {
 }
 
 func TestParseCheckNames(t *testing.T) {
-	t.Run("sorts names", func(t *testing.T) {
+	t.Run("preserves order", func(t *testing.T) {
 		names, err := ParseCheckNames("b, a, c")
 		require.NoError(t, err)
-		assert.Equal(t, []string{"a", "b", "c"}, names)
+		assert.Equal(t, []string{"b", "a", "c"}, names)
 	})
 
 	t.Run("empty string returns empty", func(t *testing.T) {
