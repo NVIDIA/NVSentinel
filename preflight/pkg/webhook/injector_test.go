@@ -695,6 +695,118 @@ func requireVolume(t *testing.T, volumes []corev1.Volume, name string) *corev1.V
 	return vol
 }
 
+func TestSelectInitContainers(t *testing.T) {
+	multiConfig := func() *config.Config {
+		cfg := testConfig()
+		f := false
+		cfg.InitContainers = []config.InitContainerSpec{
+			{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
+			{Container: corev1.Container{Name: "preflight-nccl-loopback", Image: "nccl:latest"}},
+			{Container: corev1.Container{Name: "preflight-nccl-allreduce", Image: "nccl:latest"}, DefaultEnabled: &f},
+		}
+		return cfg
+	}
+
+	t.Run("no annotation uses defaultEnabled", func(t *testing.T) {
+		cfg := multiConfig()
+		injector := NewInjector(cfg, nil)
+		pod := gpuPod()
+
+		selected, err := injector.selectInitContainers(pod)
+		require.NoError(t, err)
+		assert.Len(t, selected, 2)
+		assert.Equal(t, "preflight-dcgm-diag", selected[0].Name)
+		assert.Equal(t, "preflight-nccl-loopback", selected[1].Name)
+	})
+
+	t.Run("annotation selects subset", func(t *testing.T) {
+		cfg := multiConfig()
+		injector := NewInjector(cfg, nil)
+		pod := gpuPod()
+		pod.Annotations = map[string]string{
+			PreflightChecksAnnotation: "preflight-dcgm-diag",
+		}
+
+		selected, err := injector.selectInitContainers(pod)
+		require.NoError(t, err)
+		require.Len(t, selected, 1)
+		assert.Equal(t, "preflight-dcgm-diag", selected[0].Name)
+	})
+
+	t.Run("annotation overrides defaultEnabled false", func(t *testing.T) {
+		cfg := multiConfig()
+		injector := NewInjector(cfg, nil)
+		pod := gpuPod()
+		pod.Annotations = map[string]string{
+			PreflightChecksAnnotation: "preflight-nccl-allreduce",
+		}
+
+		selected, err := injector.selectInitContainers(pod)
+		require.NoError(t, err)
+		require.Len(t, selected, 1)
+		assert.Equal(t, "preflight-nccl-allreduce", selected[0].Name)
+	})
+
+	t.Run("empty annotation disables all checks", func(t *testing.T) {
+		cfg := multiConfig()
+		injector := NewInjector(cfg, nil)
+		pod := gpuPod()
+		pod.Annotations = map[string]string{
+			PreflightChecksAnnotation: "",
+		}
+
+		selected, err := injector.selectInitContainers(pod)
+		require.NoError(t, err)
+		assert.Empty(t, selected)
+	})
+
+	t.Run("unknown check name rejects admission", func(t *testing.T) {
+		cfg := multiConfig()
+		injector := NewInjector(cfg, nil)
+		pod := gpuPod()
+		pod.Annotations = map[string]string{
+			PreflightChecksAnnotation: "preflight-dcgm-diag,bogus-check",
+		}
+
+		_, err := injector.selectInitContainers(pod)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "bogus-check")
+		assert.Contains(t, err.Error(), "unknown checks")
+	})
+
+	t.Run("unknown check name lists configured checks in error", func(t *testing.T) {
+		cfg := multiConfig()
+		injector := NewInjector(cfg, nil)
+		pod := gpuPod()
+		pod.Annotations = map[string]string{
+			PreflightChecksAnnotation: "typo-check",
+		}
+
+		_, err := injector.selectInitContainers(pod)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "preflight-dcgm-diag")
+		assert.Contains(t, err.Error(), "preflight-nccl-loopback")
+		assert.Contains(t, err.Error(), "preflight-nccl-allreduce")
+	})
+}
+
+func TestParseCheckNames(t *testing.T) {
+	t.Run("sorts and deduplicates", func(t *testing.T) {
+		names := ParseCheckNames("b, a, b, c")
+		assert.Equal(t, []string{"a", "b", "c"}, names)
+	})
+
+	t.Run("empty string returns empty", func(t *testing.T) {
+		names := ParseCheckNames("")
+		assert.Empty(t, names)
+	})
+
+	t.Run("whitespace only returns empty", func(t *testing.T) {
+		names := ParseCheckNames("  ,  , ")
+		assert.Empty(t, names)
+	})
+}
+
 // TestInjectVolumes covers volume patch generation: nvsentinel socket,
 // gang ConfigMap (optional), /dev/shm, NCCL topology, extra hostPaths,
 // and dedup against existing pod volumes.

@@ -100,6 +100,15 @@ func ParseCheckNames(csv string) []string {
 	return names
 }
 
+func configuredNames(specs []config.InitContainerSpec) []string {
+	names := make([]string, len(specs))
+	for i, s := range specs {
+		names[i] = s.Name
+	}
+
+	return names
+}
+
 func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *GangContext, error) {
 	maxResources := i.findMaxResources(pod)
 	if len(maxResources) == 0 {
@@ -133,7 +142,11 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 		}
 	}
 
-	selected := i.selectInitContainers(pod)
+	selected, err := i.selectInitContainers(pod)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	initContainers := i.buildInitContainers(pod, maxResources, gangCtx, selected)
 
 	// Compute sorted check names for gang validation.
@@ -236,7 +249,7 @@ func (i *Injector) updateMax(resources corev1.ResourceList, name corev1.Resource
 
 // selectInitContainers returns the subset of configured init containers to
 // inject based on the pod's preflight-checks annotation or defaultEnabled.
-func (i *Injector) selectInitContainers(pod *corev1.Pod) []config.InitContainerSpec {
+func (i *Injector) selectInitContainers(pod *corev1.Pod) ([]config.InitContainerSpec, error) {
 	ann, ok := pod.Annotations[PreflightChecksAnnotation]
 	if !ok {
 		// No annotation — use defaultEnabled.
@@ -249,7 +262,7 @@ func (i *Injector) selectInitContainers(pod *corev1.Pod) []config.InitContainerS
 			}
 		}
 
-		return result
+		return result, nil
 	}
 
 	// Annotation present — only inject named containers.
@@ -261,20 +274,27 @@ func (i *Injector) selectInitContainers(pod *corev1.Pod) []config.InitContainerS
 	}
 
 	var result []config.InitContainerSpec
+	var unknown []string
 
 	for _, name := range requested {
 		spec, exists := configuredByName[name]
 		if !exists {
-			slog.Warn("Annotation requests unknown preflight check, skipping",
-				"check", name, "pod", pod.Name, "namespace", pod.Namespace)
-
+			unknown = append(unknown, name)
 			continue
 		}
 
 		result = append(result, spec)
 	}
 
-	return result
+	if len(unknown) > 0 {
+		return nil, fmt.Errorf(
+			"annotation %s references unknown checks: %s (configured: %s)",
+			PreflightChecksAnnotation,
+			strings.Join(unknown, ", "),
+			strings.Join(configuredNames(i.cfg.InitContainers), ", "))
+	}
+
+	return result, nil
 }
 
 func (i *Injector) buildInitContainers(
