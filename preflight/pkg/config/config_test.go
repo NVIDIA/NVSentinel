@@ -137,6 +137,85 @@ gangCoordination:
 		assert.True(t, *cfg.GangCoordination.ExtraHostPathMounts[0].ReadOnly)
 	})
 
+	t.Run("initContainerPlacement defaults to append", func(t *testing.T) {
+		path := writeYAML(t, `
+initContainers:
+  - name: preflight-dcgm-diag
+    image: dcgm:latest
+`)
+		cfg, err := Load(path)
+		require.NoError(t, err)
+
+		assert.Equal(t, PlacementAppend, cfg.InitContainerPlacement)
+	})
+
+	t.Run("initContainerPlacement prepend", func(t *testing.T) {
+		path := writeYAML(t, `
+initContainers:
+  - name: preflight-dcgm-diag
+    image: dcgm:latest
+initContainerPlacement: "prepend"
+`)
+		cfg, err := Load(path)
+		require.NoError(t, err)
+
+		assert.Equal(t, PlacementPrepend, cfg.InitContainerPlacement)
+	})
+
+	t.Run("initContainerPlacement invalid value", func(t *testing.T) {
+		path := writeYAML(t, `
+initContainers:
+  - name: preflight-dcgm-diag
+    image: dcgm:latest
+initContainerPlacement: "middle"
+`)
+		_, err := Load(path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "initContainerPlacement")
+	})
+
+	t.Run("empty init container name rejected", func(t *testing.T) {
+		path := writeYAML(t, `
+initContainers:
+  - name: ""
+    image: dcgm:latest
+`)
+		_, err := Load(path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "name must be set")
+	})
+
+	t.Run("duplicate init container names rejected", func(t *testing.T) {
+		path := writeYAML(t, `
+initContainers:
+  - name: preflight-dcgm-diag
+    image: dcgm:latest
+  - name: preflight-dcgm-diag
+    image: dcgm:v2
+`)
+		_, err := Load(path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "duplicate")
+		assert.Contains(t, err.Error(), "preflight-dcgm-diag")
+	})
+
+	t.Run("defaultEnabled parsed from YAML", func(t *testing.T) {
+		path := writeYAML(t, `
+initContainers:
+  - name: preflight-dcgm-diag
+    image: dcgm:latest
+  - name: preflight-nccl-allreduce
+    image: nccl:latest
+    defaultEnabled: false
+`)
+		cfg, err := Load(path)
+		require.NoError(t, err)
+		require.Len(t, cfg.InitContainers, 2)
+
+		assert.True(t, cfg.InitContainers[0].IsDefaultEnabled(), "nil DefaultEnabled should be true")
+		assert.False(t, cfg.InitContainers[1].IsDefaultEnabled(), "explicit false should be false")
+	})
+
 	t.Run("extra hostPath readOnly explicit false", func(t *testing.T) {
 		path := writeYAML(t, `
 initContainers:
