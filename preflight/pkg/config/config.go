@@ -46,8 +46,16 @@ const (
 	PlacementPrepend InitContainerPlacement = "prepend"
 )
 
+// InitContainer wraps corev1.Container with a DefaultEnabled field that
+// controls whether the check runs when no per-pod PreflightProfile is present.
+// Defaults to true if omitted.
+type InitContainer struct {
+	corev1.Container `yaml:",inline"`
+	DefaultEnabled   *bool `yaml:"defaultEnabled,omitempty"`
+}
+
 type FileConfig struct {
-	InitContainers       []corev1.Container     `yaml:"initContainers"`
+	InitContainers       []InitContainer        `yaml:"initContainers"`
 	GPUResourceNames     []string               `yaml:"gpuResourceNames"`
 	NetworkResourceNames []string               `yaml:"networkResourceNames"`
 	DCGM                 DCGMConfig             `yaml:"dcgm"`

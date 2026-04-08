@@ -30,6 +30,18 @@ type PeerInfo struct {
 	PodIP     string
 	NodeName  string
 	Namespace string
+
+	// Checks is a comma-separated list of preflight init container names
+	// injected into the pod (e.g. "preflight-dcgm,preflight-nccl-allreduce").
+	// Empty string means the information was not yet available; "none" means
+	// the pod had no matching preflight init containers.
+	Checks string
+
+	// AllReduceConfig is the collective-op configuration for the peer,
+	// encoded as a sorted, comma-separated list of KEY=VAL environment
+	// variable pairs (e.g. "BENCHMARK_ITERS=20,MESSAGE_SIZES=8G").
+	// Only populated when the pod has an allreduce init container.
+	AllReduceConfig string
 }
 
 type GangInfo struct {

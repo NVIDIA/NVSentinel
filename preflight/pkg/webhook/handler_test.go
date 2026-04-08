@@ -55,8 +55,8 @@ func buildAdmissionReview(pod *corev1.Pod, uid types.UID, namespace string) []by
 func handlerConfig() *config.Config {
 	return &config.Config{
 		FileConfig: config.FileConfig{
-			InitContainers: []corev1.Container{
-				{Name: "preflight-dcgm-diag", Image: "dcgm:latest"},
+			InitContainers: []config.InitContainer{
+				{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
 			},
 			GPUResourceNames: []string{"nvidia.com/gpu"},
 			DCGM: config.DCGMConfig{
@@ -86,7 +86,7 @@ func handlerGangConfig() *config.Config {
 // gang registration callback, and error responses for invalid input.
 func TestHandleMutate(t *testing.T) {
 	t.Run("valid GPU pod returns patch", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil)
 
 		pod := &corev1.Pod{
 			Spec: corev1.PodSpec{
@@ -118,7 +118,7 @@ func TestHandleMutate(t *testing.T) {
 	})
 
 	t.Run("valid non-GPU pod returns allowed without patch", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil)
 
 		pod := &corev1.Pod{
 			Spec: corev1.PodSpec{
@@ -142,7 +142,7 @@ func TestHandleMutate(t *testing.T) {
 	})
 
 	t.Run("invalid body returns 400", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil)
 
 		req := httptest.NewRequest(http.MethodPost, "/mutate", bytes.NewReader([]byte("not-json")))
 		rec := httptest.NewRecorder()
@@ -153,7 +153,7 @@ func TestHandleMutate(t *testing.T) {
 	})
 
 	t.Run("invalid pod JSON returns not allowed", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil)
 
 		// Build the outer JSON manually so that object.raw contains invalid JSON
 		// without json.Marshal rejecting it.
@@ -187,7 +187,7 @@ func TestHandleMutate(t *testing.T) {
 	})
 
 	t.Run("nil request returns allowed", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil)
 
 		review := admissionv1.AdmissionReview{
 			TypeMeta: metav1.TypeMeta{APIVersion: "admission.k8s.io/v1", Kind: "AdmissionReview"},
@@ -208,7 +208,7 @@ func TestHandleMutate(t *testing.T) {
 	})
 
 	t.Run("response UID matches request", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil)
 
 		pod := &corev1.Pod{
 			Spec: corev1.PodSpec{
@@ -238,7 +238,7 @@ func TestHandleMutate(t *testing.T) {
 
 		disc := &mockDiscoverer{name: "test", canHandle: true, gangID: "test-gang"}
 		cfg := handlerGangConfig()
-		handler := NewHandler(cfg, disc, func(_ context.Context, reg GangRegistration) {
+		handler := NewHandler(cfg, disc, nil, func(_ context.Context, reg GangRegistration) {
 			mu.Lock()
 			defer mu.Unlock()
 			captured = reg
@@ -275,7 +275,7 @@ func TestHandleMutate(t *testing.T) {
 
 		disc := &mockDiscoverer{name: "volcano", canHandle: true, gangID: "volcano-default-pg1"}
 		cfg := handlerGangConfig()
-		handler := NewHandler(cfg, disc, func(_ context.Context, reg GangRegistration) {
+		handler := NewHandler(cfg, disc, nil, func(_ context.Context, reg GangRegistration) {
 			mu.Lock()
 			defer mu.Unlock()
 			called = true
@@ -315,7 +315,7 @@ func TestHandleMutate(t *testing.T) {
 
 		disc := &mockDiscoverer{name: "test", canHandle: true, gangID: "test-gang"}
 		cfg := handlerGangConfig()
-		handler := NewHandler(cfg, disc, func(_ context.Context, reg GangRegistration) {
+		handler := NewHandler(cfg, disc, nil, func(_ context.Context, reg GangRegistration) {
 			mu.Lock()
 			defer mu.Unlock()
 			captured = reg
@@ -346,7 +346,7 @@ func TestHandleMutate(t *testing.T) {
 
 	t.Run("gang registration not called without gang", func(t *testing.T) {
 		called := false
-		handler := NewHandler(handlerConfig(), nil, func(_ context.Context, _ GangRegistration) {
+		handler := NewHandler(handlerConfig(), nil, nil, func(_ context.Context, _ GangRegistration) {
 			called = true
 		})
 

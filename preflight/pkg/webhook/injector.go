@@ -15,6 +15,7 @@
 package webhook
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -43,7 +44,26 @@ const (
 	dshmVolumeName = "dshm"
 	// ncclTopoVolumeName is the name for the NCCL topology ConfigMap volume
 	ncclTopoVolumeName = "nccl-topo"
+
+	// preflightProfileAnnotation is the pod annotation that references a
+	// PreflightProfile CRD by name. The CRD must exist in the same namespace
+	// as the pod.
+	preflightProfileAnnotation = "nvsentinel.nvidia.com/preflight-profile"
 )
+
+// protectedEnvVars are control-plane env vars injected by the webhook that
+// cannot be overridden by PreflightProfile env overrides.
+var protectedEnvVars = map[string]bool{
+	"POD_NAME":                  true,
+	"POD_IP":                    true,
+	"NODE_NAME":                 true,
+	"GANG_ID":                   true,
+	"GANG_CONFIG_DIR":           true,
+	"GANG_TIMEOUT_SECONDS":      true,
+	"MASTER_PORT":               true,
+	"PLATFORM_CONNECTOR_SOCKET": true,
+	"PROCESSING_STRATEGY":       true,
+}
 
 type PatchOperation struct {
 	Op    string `json:"op"`
@@ -54,12 +74,14 @@ type PatchOperation struct {
 type Injector struct {
 	cfg        *config.Config
 	discoverer gang.GangDiscoverer
+	profiles   ProfileReader
 }
 
-func NewInjector(cfg *config.Config, discoverer gang.GangDiscoverer) *Injector {
+func NewInjector(cfg *config.Config, discoverer gang.GangDiscoverer, profiles ProfileReader) *Injector {
 	return &Injector{
 		cfg:        cfg,
 		discoverer: discoverer,
+		profiles:   profiles,
 	}
 }
 
@@ -70,7 +92,7 @@ type GangContext struct {
 	ConfigMapName string
 }
 
-func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *GangContext, error) {
+func (i *Injector) InjectInitContainers(ctx context.Context, pod *corev1.Pod) ([]PatchOperation, *GangContext, error) {
 	maxResources := i.findMaxResources(pod)
 	if len(maxResources) == 0 {
 		slog.Debug("Pod does not request GPU/network resources, skipping injection")
@@ -104,14 +126,31 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 	}
 
 	initContainers := i.buildInitContainers(pod, maxResources, gangCtx)
-	if len(initContainers) == 0 {
-		// No init containers to inject, but still return gangCtx
-		// so the controller can track gang membership
-		return nil, gangCtx, nil
+
+	// Look up the PreflightProfile CRD if the pod has a profile annotation.
+	// Fail closed: if the annotation exists but the profile can't be read,
+	// reject admission rather than falling back to defaults.
+	profileSpec, err := i.lookupProfile(ctx, pod)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	patches := i.patchInitContainers(pod, initContainers)
-	patches = append(patches, i.injectVolumes(pod, gangCtx)...)
+	initContainers = applyPreflightConfig(profileSpec, i.cfg.InitContainers, initContainers)
+
+	var patches []PatchOperation
+
+	if len(initContainers) > 0 {
+		patches = i.patchInitContainers(pod, initContainers)
+		patches = append(patches, i.injectVolumes(pod, gangCtx)...)
+	} else if gangCtx != nil {
+		// No init containers but pod belongs to a gang. Inject only the gang
+		// ConfigMap volume so the controller can track pod membership.
+		patches = i.injectGangOnlyVolumes(pod, gangCtx)
+	}
+
+	if len(patches) == 0 {
+		return nil, gangCtx, nil
+	}
 
 	return patches, gangCtx, nil
 }
@@ -210,7 +249,7 @@ func (i *Injector) buildInitContainers(
 	userVolumeMounts := i.collectMatchingVolumeMounts(pod.Spec.Containers)
 
 	for _, tmpl := range i.cfg.InitContainers {
-		container := tmpl.DeepCopy()
+		container := tmpl.Container.DeepCopy()
 
 		if container.Resources.Requests == nil {
 			container.Resources.Requests = make(corev1.ResourceList)
@@ -360,6 +399,148 @@ func (i *Injector) injectCommonEnv(container *corev1.Container) {
 	}
 
 	i.mergeEnvVars(container, envVars)
+}
+
+// lookupProfile reads the PreflightProfile CRD referenced by the pod's
+// preflight-profile annotation. Returns nil if no annotation is present.
+// Returns an error if the annotation exists but the profile cannot be read
+// (fail closed — reject admission rather than silently falling back).
+func (i *Injector) lookupProfile(ctx context.Context, pod *corev1.Pod) (*PreflightProfileSpec, error) {
+	profileName, ok := pod.Annotations[preflightProfileAnnotation]
+	if !ok || profileName == "" {
+		return nil, nil
+	}
+
+	if i.profiles == nil {
+		return nil, fmt.Errorf(
+			"pod references PreflightProfile %q but no profile reader is configured",
+			profileName)
+	}
+
+	spec, err := i.profiles.GetProfile(ctx, pod.Namespace, profileName)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"pod references PreflightProfile %q but it could not be read: %w",
+			profileName, err)
+	}
+
+	slog.Info("Loaded PreflightProfile",
+		"profile", profileName,
+		"namespace", pod.Namespace,
+		"overrides", len(spec.InitContainers))
+
+	return spec, nil
+}
+
+// applyPreflightConfig filters and overrides init containers based on
+// Helm defaults (defaultEnabled) and per-pod profile overrides.
+func applyPreflightConfig(
+	profileSpec *PreflightProfileSpec,
+	helmContainers []config.InitContainer,
+	initContainers []corev1.Container,
+) []corev1.Container {
+	var overridesByName map[string]*PreflightContainerOverride
+	if profileSpec != nil {
+		overridesByName = make(map[string]*PreflightContainerOverride, len(profileSpec.InitContainers))
+		for i := range profileSpec.InitContainers {
+			overridesByName[profileSpec.InitContainers[i].Name] = &profileSpec.InitContainers[i]
+		}
+	}
+
+	defaultEnabled := make(map[string]*bool, len(helmContainers))
+	for i := range helmContainers {
+		defaultEnabled[helmContainers[i].Name] = helmContainers[i].DefaultEnabled
+	}
+
+	matched := make(map[string]bool, len(overridesByName))
+	var result []corev1.Container
+
+	for _, c := range initContainers {
+		override := overridesByName[c.Name]
+
+		if override != nil {
+			matched[c.Name] = true
+
+			if override.Enabled != nil && !*override.Enabled {
+				slog.Info("Preflight check disabled via profile", "container", c.Name)
+				continue
+			}
+
+			applyEnvOverrides(&c, override.Env)
+			result = append(result, c)
+			continue
+		}
+
+		if de := defaultEnabled[c.Name]; de != nil && !*de {
+			continue
+		}
+
+		result = append(result, c)
+	}
+
+	for name := range overridesByName {
+		if !matched[name] {
+			slog.Warn("PreflightProfile references unknown container, ignoring",
+				"container", name)
+		}
+	}
+
+	return result
+}
+
+// applyEnvOverrides applies env var overrides to a container.
+// Protected control-plane env vars are silently skipped.
+func applyEnvOverrides(container *corev1.Container, overrides []corev1.EnvVar) {
+	for _, override := range overrides {
+		if protectedEnvVars[override.Name] {
+			slog.Warn("PreflightProfile tried to override protected env var, skipping",
+				"container", container.Name, "envVar", override.Name)
+			continue
+		}
+
+		found := false
+		for j := range container.Env {
+			if container.Env[j].Name == override.Name {
+				container.Env[j] = override
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			container.Env = append(container.Env, override)
+		}
+	}
+}
+
+// injectGangOnlyVolumes injects only the gang ConfigMap volume when a gang
+// pod has all preflight checks disabled.
+func (i *Injector) injectGangOnlyVolumes(pod *corev1.Pod, gangCtx *GangContext) []PatchOperation {
+	existingVolumes := make(map[string]bool)
+	for _, vol := range pod.Spec.Volumes {
+		existingVolumes[vol.Name] = true
+	}
+
+	if existingVolumes[types.GangConfigVolumeName] {
+		return nil
+	}
+
+	optional := true
+	gangVolume := corev1.Volume{
+		Name: types.GangConfigVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: gangCtx.ConfigMapName},
+				Optional:             &optional,
+			},
+		},
+	}
+
+	if len(pod.Spec.Volumes) == 0 {
+		return []PatchOperation{{Op: "add", Path: "/spec/volumes", Value: []corev1.Volume{gangVolume}}}
+	}
+
+	return []PatchOperation{{Op: "add", Path: "/spec/volumes/-", Value: gangVolume}}
 }
 
 func (i *Injector) injectVolumes(pod *corev1.Pod, gangCtx *GangContext) []PatchOperation {

@@ -271,7 +271,9 @@ func (c *Coordinator) GetGangConfigMap(ctx context.Context, namespace, gangID st
 }
 
 // ParsePeers parses the peers string from a ConfigMap into a slice of PeerInfo.
-// Format: "podName;podIP;rank" per line (rank is optional for backwards compatibility).
+// Format: "podName;podIP;rank[;checks;allReduceConfig]" per line.
+// The checks and allReduceConfig fields are optional for backward compatibility
+// with the older 3-field format.
 func ParsePeers(peersData string) []types.PeerInfo {
 	var peers []types.PeerInfo
 
@@ -281,15 +283,25 @@ func ParsePeers(peersData string) []types.PeerInfo {
 			continue
 		}
 
-		parts := strings.SplitN(line, ";", 3)
+		parts := strings.SplitN(line, ";", 5)
 		if len(parts) < 2 {
 			continue
 		}
 
-		peers = append(peers, types.PeerInfo{
+		peer := types.PeerInfo{
 			PodName: strings.TrimSpace(parts[0]),
 			PodIP:   strings.TrimSpace(parts[1]),
-		})
+		}
+
+		if len(parts) >= 4 {
+			peer.Checks = strings.TrimSpace(parts[3])
+		}
+
+		if len(parts) >= 5 {
+			peer.AllReduceConfig = strings.TrimSpace(parts[4])
+		}
+
+		peers = append(peers, peer)
 	}
 
 	return peers
@@ -350,6 +362,8 @@ func (c *Coordinator) addPeerToConfigMap(cm *corev1.ConfigMap, peer types.PeerIn
 	for i, p := range existingPeers {
 		if p.PodName == peer.PodName {
 			existingPeers[i].PodIP = peer.PodIP
+			existingPeers[i].Checks = peer.Checks
+			existingPeers[i].AllReduceConfig = peer.AllReduceConfig
 			found = true
 
 			break
@@ -368,7 +382,7 @@ func (c *Coordinator) addPeerToConfigMap(cm *corev1.ConfigMap, peer types.PeerIn
 	// Serialize peers with rank (index after sorting)
 	var lines []string
 	for rank, p := range existingPeers {
-		lines = append(lines, fmt.Sprintf("%s;%s;%d", p.PodName, p.PodIP, rank))
+		lines = append(lines, fmt.Sprintf("%s;%s;%d;%s;%s", p.PodName, p.PodIP, rank, p.Checks, p.AllReduceConfig))
 	}
 
 	cm.Data[DataKeyPeers] = strings.Join(lines, "\n")

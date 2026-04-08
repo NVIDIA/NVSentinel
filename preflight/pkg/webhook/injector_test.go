@@ -286,9 +286,9 @@ func TestInjectInitContainers(t *testing.T) {
 			cfg: func() *config.Config {
 				c := testConfig()
 				c.InitContainerPlacement = config.PlacementPrepend
-				c.InitContainers = []corev1.Container{
-					{Name: "preflight-dcgm-diag", Image: "dcgm:latest"},
-					{Name: "preflight-nccl-loopback", Image: "nccl:latest"},
+				c.InitContainers = []config.InitContainer{
+					{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
+					{Container: corev1.Container{Name: "preflight-nccl-loopback", Image: "nccl:latest"}},
 				}
 				return c
 			}(),
@@ -395,9 +395,9 @@ func TestInjectInitContainers(t *testing.T) {
 			if tt.discoverer != nil {
 				disc = tt.discoverer
 			}
-			injector := NewInjector(tt.cfg, disc)
+			injector := NewInjector(tt.cfg, disc, nil)
 
-			patches, gangCtx, err := injector.InjectInitContainers(tt.pod)
+			patches, gangCtx, err := injector.InjectInitContainers(context.Background(), tt.pod)
 			require.NoError(t, err)
 
 			if tt.expectPatches {
@@ -429,7 +429,7 @@ func TestInjectInitContainers(t *testing.T) {
 func TestBuildInitContainers(t *testing.T) {
 	t.Run("resources mirrored to init containers", func(t *testing.T) {
 		cfg := testConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 		pod := gpuEFAPod()
 
 		maxResources := corev1.ResourceList{
@@ -449,7 +449,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 	t.Run("CPU and memory floor applied when not set", func(t *testing.T) {
 		cfg := testConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 		pod := gpuPod()
 
 		containers := injector.buildInitContainers(pod, corev1.ResourceList{
@@ -463,8 +463,8 @@ func TestBuildInitContainers(t *testing.T) {
 
 	t.Run("CPU and memory floor not applied when already set", func(t *testing.T) {
 		cfg := testConfig()
-		cfg.InitContainers = []corev1.Container{
-			{
+		cfg.InitContainers = []config.InitContainer{
+			{Container: corev1.Container{
 				Name:  "preflight-dcgm-diag",
 				Image: "dcgm:latest",
 				Resources: corev1.ResourceRequirements{
@@ -473,9 +473,9 @@ func TestBuildInitContainers(t *testing.T) {
 						corev1.ResourceMemory: resource.MustParse("1Gi"),
 					},
 				},
-			},
+			}},
 		}
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		containers := injector.buildInitContainers(gpuPod(), corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
@@ -488,11 +488,11 @@ func TestBuildInitContainers(t *testing.T) {
 
 	t.Run("DCGM env only for dcgm-diag container", func(t *testing.T) {
 		cfg := testConfig()
-		cfg.InitContainers = []corev1.Container{
-			{Name: "preflight-dcgm-diag", Image: "dcgm:latest"},
-			{Name: "preflight-nccl-allreduce", Image: "nccl:latest"},
+		cfg.InitContainers = []config.InitContainer{
+			{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
+			{Container: corev1.Container{Name: "preflight-nccl-allreduce", Image: "nccl:latest"}},
 		}
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		containers := injector.buildInitContainers(gpuPod(), corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
@@ -507,7 +507,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 	t.Run("common env injected", func(t *testing.T) {
 		cfg := testConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		containers := injector.buildInitContainers(gpuPod(), corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
@@ -521,7 +521,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 	t.Run("gang env not injected without context", func(t *testing.T) {
 		cfg := testGangConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		containers := injector.buildInitContainers(gpuPod(), corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
@@ -536,7 +536,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 	t.Run("gang env injected with context", func(t *testing.T) {
 		cfg := testGangConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		gangCtx := &GangContext{GangID: "test-gang", ConfigMapName: "preflight-test-gang"}
 		containers := injector.buildInitContainers(gpuPod(), corev1.ResourceList{
@@ -556,7 +556,7 @@ func TestBuildInitContainers(t *testing.T) {
 	t.Run("user NCCL env inherited", func(t *testing.T) {
 		cfg := testConfig()
 		cfg.NCCLEnvPatterns = []string{"NCCL_*"}
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		pod := gpuPod()
 		pod.Spec.Containers[0].Env = []corev1.EnvVar{
@@ -573,14 +573,14 @@ func TestBuildInitContainers(t *testing.T) {
 	t.Run("user env lower precedence than template", func(t *testing.T) {
 		cfg := testConfig()
 		cfg.NCCLEnvPatterns = []string{"NCCL_*"}
-		cfg.InitContainers = []corev1.Container{
-			{
+		cfg.InitContainers = []config.InitContainer{
+			{Container: corev1.Container{
 				Name:  "preflight-dcgm-diag",
 				Image: "dcgm:latest",
 				Env:   []corev1.EnvVar{{Name: "NCCL_DEBUG", Value: "WARN"}},
-			},
+			}},
 		}
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		pod := gpuPod()
 		pod.Spec.Containers[0].Env = []corev1.EnvVar{
@@ -597,7 +597,7 @@ func TestBuildInitContainers(t *testing.T) {
 	t.Run("user volume mounts inherited", func(t *testing.T) {
 		cfg := testConfig()
 		cfg.VolumeMountPatterns = []string{"nvtcpxo-*"}
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		pod := gpuPod()
 		pod.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{
@@ -613,7 +613,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 	t.Run("DRA claims mirrored when enabled", func(t *testing.T) {
 		cfg := testGangConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		pod := gpuPod()
 		pod.Spec.ResourceClaims = []corev1.PodResourceClaim{
@@ -634,7 +634,7 @@ func TestBuildInitContainers(t *testing.T) {
 	t.Run("DRA claims not mirrored when disabled", func(t *testing.T) {
 		cfg := testGangConfig()
 		cfg.GangCoordination.MirrorResourceClaims = boolPtr(false)
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		pod := gpuPod()
 		pod.Spec.ResourceClaims = []corev1.PodResourceClaim{
@@ -651,7 +651,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 	t.Run("DRA claims not mirrored without gang context", func(t *testing.T) {
 		cfg := testGangConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		pod := gpuPod()
 		pod.Spec.ResourceClaims = []corev1.PodResourceClaim{
@@ -864,8 +864,8 @@ func boolPtr(b bool) *bool { return &b }
 func testConfig() *config.Config {
 	return &config.Config{
 		FileConfig: config.FileConfig{
-			InitContainers: []corev1.Container{
-				{Name: "preflight-dcgm-diag", Image: "nvcr.io/nvidia/dcgm:latest"},
+			InitContainers: []config.InitContainer{
+				{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "nvcr.io/nvidia/dcgm:latest"}},
 			},
 			GPUResourceNames:       []string{"nvidia.com/gpu"},
 			NetworkResourceNames:   []string{"vpc.amazonaws.com/efa"},

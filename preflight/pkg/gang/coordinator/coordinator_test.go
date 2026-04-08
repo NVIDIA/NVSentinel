@@ -206,6 +206,29 @@ func TestParsePeers(t *testing.T) {
 			wantCount: 2,
 			wantFirst: types.PeerInfo{PodName: "pod-0", PodIP: "2001:db8::1"},
 		},
+		{
+			name:      "extended 5-field format",
+			peersData: "pod-0;10.0.0.1;0;preflight-dcgm,preflight-nccl-allreduce;BENCHMARK_ITERS=20,MESSAGE_SIZES=8G",
+			wantCount: 1,
+			wantFirst: types.PeerInfo{
+				PodName:         "pod-0",
+				PodIP:           "10.0.0.1",
+				Checks:          "preflight-dcgm,preflight-nccl-allreduce",
+				AllReduceConfig: "BENCHMARK_ITERS=20,MESSAGE_SIZES=8G",
+			},
+		},
+		{
+			name:      "backward-compatible 3-field format",
+			peersData: "pod-0;10.0.0.1;0\npod-1;10.0.0.2;1",
+			wantCount: 2,
+			wantFirst: types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.1", Checks: "", AllReduceConfig: ""},
+		},
+		{
+			name:      "mixed old and new format peers",
+			peersData: "pod-0;10.0.0.1;0\npod-1;10.0.0.2;1;preflight-nccl-allreduce;MESSAGE_SIZES=8G",
+			wantCount: 2,
+			wantFirst: types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.1", Checks: "", AllReduceConfig: ""},
+		},
 	}
 
 	for _, tt := range tests {
@@ -216,11 +239,27 @@ func TestParsePeers(t *testing.T) {
 				t.Errorf("ParsePeers() count = %d, want %d", len(got), tt.wantCount)
 			}
 
-			if tt.wantCount > 0 && (got[0].PodName != tt.wantFirst.PodName || got[0].PodIP != tt.wantFirst.PodIP) {
+			if tt.wantCount > 0 && got[0] != tt.wantFirst {
 				t.Errorf("ParsePeers()[0] = %+v, want %+v", got[0], tt.wantFirst)
 			}
 		})
 	}
+}
+
+func TestParsePeersMixedFormatSecondPeer(t *testing.T) {
+	peersData := "pod-0;10.0.0.1;0\npod-1;10.0.0.2;1;preflight-nccl-allreduce;MESSAGE_SIZES=8G"
+	got := ParsePeers(peersData)
+	require.Len(t, got, 2)
+
+	assert.Equal(t, types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.1"}, got[0],
+		"first peer (old format) should have empty Checks and AllReduceConfig")
+
+	assert.Equal(t, types.PeerInfo{
+		PodName:         "pod-1",
+		PodIP:           "10.0.0.2",
+		Checks:          "preflight-nccl-allreduce",
+		AllReduceConfig: "MESSAGE_SIZES=8G",
+	}, got[1], "second peer (new format) should have Checks and AllReduceConfig populated")
 }
 
 func TestGetRank(t *testing.T) {

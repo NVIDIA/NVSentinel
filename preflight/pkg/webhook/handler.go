@@ -45,9 +45,9 @@ type Handler struct {
 	onGangRegister GangRegistrationFunc
 }
 
-func NewHandler(cfg *config.Config, discoverer gang.GangDiscoverer, onGangRegister GangRegistrationFunc) *Handler {
+func NewHandler(cfg *config.Config, discoverer gang.GangDiscoverer, profiles ProfileReader, onGangRegister GangRegistrationFunc) *Handler {
 	return &Handler{
-		injector:       NewInjector(cfg, discoverer),
+		injector:       NewInjector(cfg, discoverer, profiles),
 		onGangRegister: onGangRegister,
 	}
 }
@@ -120,7 +120,7 @@ func (h *Handler) mutate(ctx context.Context, req *admissionv1.AdmissionRequest)
 		pod.Namespace = req.Namespace
 	}
 
-	patch, gangCtx, err := h.injector.InjectInitContainers(&pod)
+	patch, gangCtx, err := h.injector.InjectInitContainers(ctx, &pod)
 	if err != nil {
 		slog.Error("Failed to inject init containers", "error", err)
 
@@ -132,15 +132,9 @@ func (h *Handler) mutate(ctx context.Context, req *admissionv1.AdmissionRequest)
 		}
 	}
 
-	if patch == nil {
-		slog.Debug("No mutation needed", "pod", pod.Name, "namespace", req.Namespace)
-
-		return &admissionv1.AdmissionResponse{
-			Allowed: true,
-		}
-	}
-
-	// Register pod with gang controller if it's part of a gang
+	// Register pod with gang controller before checking patches.
+	// Gang registration must happen even when no init containers are injected,
+	// so that pods with disabled checks are still tracked as peers.
 	if gangCtx != nil && h.onGangRegister != nil {
 		podName := pod.Name
 		if podName == "" {
@@ -161,6 +155,14 @@ func (h *Handler) mutate(ctx context.Context, req *admissionv1.AdmissionRequest)
 			GangID:        gangCtx.GangID,
 			ConfigMapName: gangCtx.ConfigMapName,
 		})
+	}
+
+	if patch == nil {
+		slog.Debug("No mutation needed", "pod", pod.Name, "namespace", req.Namespace)
+
+		return &admissionv1.AdmissionResponse{
+			Allowed: true,
+		}
 	}
 
 	patchBytes, err := json.Marshal(patch)

@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-{{- if .Values.gangCoordination.enabled }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -20,16 +19,22 @@ metadata:
   labels:
     {{- include "preflight.labels" . | nindent 4 }}
 rules:
+  # PreflightProfile CRD access
+  - apiGroups: ["nvsentinel.nvidia.com"]
+    resources: ["preflightprofiles"]
+    verbs: ["get", "list", "watch"]
+
+  {{- if .Values.gangCoordination.enabled }}
   # Core resources for gang discovery
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
-  
+
   # ConfigMaps for gang coordination
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  
+
   # Gang discovery API - dynamically generated based on gangDiscovery config
   {{- if .Values.gangDiscovery.podGroupGVR }}
   # PodGroup-based scheduler ({{ .Values.gangDiscovery.name | default "custom" }})
@@ -41,5 +46,4 @@ rules:
     resources: ["workloads"]
   {{- end }}
     verbs: ["get", "list", "watch"]
-
-{{- end }}
+  {{- end }}

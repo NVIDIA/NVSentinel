@@ -310,6 +310,39 @@ Full defaults and comments: `distros/kubernetes/nvsentinel/charts/preflight/valu
 
 Tilt development often trims init containers to DCGM-only; see `distros/kubernetes/nvsentinel/values-tilt.yaml`.
 
+## Per-pod check configuration (PreflightProfile CRD)
+
+The `PreflightProfile` CRD (`nvsentinel.nvidia.com/v1alpha1`) lets workload owners customise which preflight checks run and override their environment variables on a per-pod basis, without changing the cluster-wide Helm defaults.
+
+Create a profile in the workload namespace:
+
+```yaml
+apiVersion: nvsentinel.nvidia.com/v1alpha1
+kind: PreflightProfile
+metadata:
+  name: fast-check
+  namespace: training
+spec:
+  initContainers:
+    - name: preflight-dcgm-diag
+      enabled: true
+      env:
+        - name: DCGM_DIAG_LEVEL
+          value: "1"
+    - name: preflight-nccl-allreduce
+      enabled: false
+```
+
+Reference it from a pod via annotation:
+
+```yaml
+metadata:
+  annotations:
+    nvsentinel.nvidia.com/preflight-profile: "fast-check"
+```
+
+The webhook merges the profile with chart-level defaults. Protected env vars (`NODE_NAME`, `PLATFORM_CONNECTOR_SOCKET`, etc.) cannot be overridden by profiles. If the referenced profile does not exist, the webhook falls back to chart defaults (fail-closed). See [ADR-034](../designs/034-preflight-pod-config.md) for full design details.
+
 ## Observability
 
 - Webhook pod: liveness/readiness probes use `/healthz` on the webhook port.

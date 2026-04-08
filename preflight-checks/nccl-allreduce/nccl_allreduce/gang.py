@@ -57,11 +57,15 @@ class PeerInfo:
         pod_name: Kubernetes pod name.
         pod_ip: Pod IP address.
         rank: Distributed rank (0-indexed).
+        checks: Comma-separated list of checks this peer is configured to run.
+        allreduce_config: Hash or identifier for the peer's allreduce configuration.
     """
 
     pod_name: str
     pod_ip: str
     rank: int
+    checks: str = ""
+    allreduce_config: str = ""
 
 
 @dataclass
@@ -85,6 +89,61 @@ class GangConfig:
     peers: list[PeerInfo]
     my_rank: int
     my_pod_name: str
+
+    def validate_peers(self, check_name: str) -> str | None:
+        """Validate that all peers are configured for the given check.
+
+        For each peer:
+        - If the peer has an empty ``checks`` field (old format), log a
+          warning and skip validation for that peer.
+        - Otherwise, verify that ``check_name`` appears in the peer's
+          comma-separated checks list.
+        - Record each peer's ``allreduce_config`` in a dict (even when
+          empty) and detect mismatches across the gang.
+
+        Args:
+            check_name: The check name to look for (e.g.
+                ``"preflight-nccl-allreduce"``).
+
+        Returns:
+            ``None`` if all peers are valid, or a descriptive error string.
+        """
+        missing: list[str] = []
+        hashes: dict[str, list[str]] = {}
+
+        for peer in self.peers:
+            # Always record allreduce_config (even empty string).
+            hashes.setdefault(peer.allreduce_config, []).append(peer.pod_name)
+
+            if not peer.checks:
+                log.warning(
+                    "Peer uses old format without checks field, skipping validation",
+                    extra={"pod_name": peer.pod_name},
+                )
+                continue
+
+            peer_checks = [c.strip() for c in peer.checks.split(",")]
+            if check_name not in peer_checks:
+                missing.append(peer.pod_name)
+
+        errors: list[str] = []
+
+        if missing:
+            errors.append(
+                f"Peers missing check '{check_name}': {', '.join(missing)}"
+            )
+
+        if len(hashes) > 1:
+            parts = [
+                f"{config!r}: [{', '.join(pods)}]"
+                for config, pods in hashes.items()
+            ]
+            errors.append(f"Config mismatch across gang: {'; '.join(parts)}")
+
+        if errors:
+            return "; ".join(errors)
+
+        return None
 
     def get_torchrun_args(self, nprocs_per_node: int, script: str) -> list[str]:
         """Build torchrun command arguments.
@@ -230,7 +289,21 @@ class GangConfigReader:
                         extra={"line": line, "bad_rank": parts[2].strip()},
                     )
 
-            peers.append(PeerInfo(pod_name=pod_name, pod_ip=pod_ip, rank=rank))
+            checks = ""
+            if len(parts) >= 4:
+                checks = parts[3].strip()
+
+            allreduce_config = ""
+            if len(parts) >= 5:
+                allreduce_config = parts[4].strip()
+
+            peers.append(PeerInfo(
+                pod_name=pod_name,
+                pod_ip=pod_ip,
+                rank=rank,
+                checks=checks,
+                allreduce_config=allreduce_config,
+            ))
 
         return peers
 

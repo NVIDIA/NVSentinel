@@ -18,7 +18,8 @@
 This script:
 1. Waits for gang formation (all peers registered in ConfigMap)
 2. Extracts coordination info (rank, master address, etc.)
-3. Execs torchrun with the appropriate arguments
+3. Validates peers (checks and config consistency)
+4. Execs torchrun with the appropriate arguments
 
 The ConfigMap is mounted at GANG_CONFIG_DIR (default: /etc/preflight) and
 contains:
@@ -93,7 +94,17 @@ def main() -> int:
     if isinstance(gang_config, int):
         return gang_config
 
-    # 3. Launch torchrun (replaces this process)
+    # 3. Validate peers before launching torchrun
+    validation_error = gang_config.validate_peers("preflight-nccl-allreduce")
+    if validation_error is not None:
+        log.error(
+            "Gang peer validation failed",
+            extra={"error": validation_error},
+        )
+        _report_error(NCCLError.GANG_CONFIG_ERROR, validation_error)
+        return NCCLError.GANG_CONFIG_ERROR.value.exit_code
+
+    # 4. Launch torchrun (replaces this process)
     _launch_torchrun(gang_config, cfg.nprocs_per_node)
 
     # Should never reach here (os.execvp replaces the process)

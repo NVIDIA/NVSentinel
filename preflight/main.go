@@ -33,6 +33,7 @@ import (
 	"github.com/nvidia/nvsentinel/preflight/pkg/controller"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
 	"github.com/nvidia/nvsentinel/preflight/pkg/webhook"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
@@ -45,6 +46,7 @@ var (
 	date    = "unknown"
 
 	discoverer     gang.GangDiscoverer
+	profileReader  webhook.ProfileReader
 	onGangRegister webhook.GangRegistrationFunc
 )
 
@@ -89,13 +91,26 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Create a dynamic client for PreflightProfile CRD lookups.
+	restConfig, err := rest.InClusterConfig()
+	if err != nil {
+		slog.Warn("Failed to get in-cluster config, PreflightProfile CRD lookups disabled", "error", err)
+	} else {
+		dynClient, err := dynamic.NewForConfig(restConfig)
+		if err != nil {
+			return fmt.Errorf("failed to create dynamic client: %w", err)
+		}
+
+		profileReader = webhook.NewK8sProfileReader(dynClient)
+	}
+
 	if cfg.GangCoordination.Enabled {
 		if err := setupGangCoordination(ctx, cfg, stop); err != nil {
 			return err
 		}
 	}
 
-	handler := webhook.NewHandler(cfg, discoverer, onGangRegister)
+	handler := webhook.NewHandler(cfg, discoverer, profileReader, onGangRegister)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mutate", handler.HandleMutate)
