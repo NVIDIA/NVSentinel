@@ -892,18 +892,18 @@ func TestSelectInitContainers(t *testing.T) {
 		assert.Len(t, selected, 2)
 	})
 
-	t.Run("annotation with duplicates selects each once", func(t *testing.T) {
+	t.Run("annotation with duplicates returns error", func(t *testing.T) {
 		cfg := multiConfig()
 		injector := NewInjector(cfg, nil)
 		pod := gpuPod()
 		pod.Annotations = map[string]string{
-			PreflightChecksAnnotation: "preflight-dcgm-diag,preflight-dcgm-diag,preflight-dcgm-diag",
+			PreflightChecksAnnotation: "preflight-dcgm-diag,preflight-dcgm-diag",
 		}
 
-		selected, err := injector.selectInitContainers(pod)
-		require.NoError(t, err)
-		require.Len(t, selected, 1)
-		assert.Equal(t, "preflight-dcgm-diag", selected[0].Name)
+		_, err := injector.selectInitContainers(pod)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "duplicate")
+		assert.Contains(t, err.Error(), "preflight-dcgm-diag")
 	})
 
 	t.Run("unknown check name lists configured checks in error", func(t *testing.T) {
@@ -923,19 +923,29 @@ func TestSelectInitContainers(t *testing.T) {
 }
 
 func TestParseCheckNames(t *testing.T) {
-	t.Run("sorts and deduplicates", func(t *testing.T) {
-		names := ParseCheckNames("b, a, b, c")
+	t.Run("sorts names", func(t *testing.T) {
+		names, err := ParseCheckNames("b, a, c")
+		require.NoError(t, err)
 		assert.Equal(t, []string{"a", "b", "c"}, names)
 	})
 
 	t.Run("empty string returns empty", func(t *testing.T) {
-		names := ParseCheckNames("")
+		names, err := ParseCheckNames("")
+		require.NoError(t, err)
 		assert.Empty(t, names)
 	})
 
 	t.Run("whitespace only returns empty", func(t *testing.T) {
-		names := ParseCheckNames("  ,  , ")
+		names, err := ParseCheckNames("  ,  , ")
+		require.NoError(t, err)
 		assert.Empty(t, names)
+	})
+
+	t.Run("duplicate name returns error", func(t *testing.T) {
+		_, err := ParseCheckNames("a, b, a")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "duplicate")
+		assert.Contains(t, err.Error(), "a")
 	})
 }
 

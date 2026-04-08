@@ -82,25 +82,30 @@ type GangContext struct {
 	CheckNames string
 }
 
-// ParseCheckNames splits a comma-separated annotation value into a sorted,
-// deduplicated list of container names. Sorted for deterministic comparison
-// across peers in gang validation. Exported so the gang controller can use
-// the same normalization.
-func ParseCheckNames(csv string) []string {
+// ParseCheckNames splits a comma-separated annotation value into a sorted
+// list of container names. Returns an error if any name appears more than
+// once. Sorted for deterministic comparison across peers in gang validation.
+// Exported so the gang controller can use the same normalization.
+func ParseCheckNames(csv string) ([]string, error) {
 	seen := make(map[string]bool)
 	var names []string
 
 	for _, part := range strings.Split(csv, ",") {
 		name := strings.TrimSpace(part)
-		if name != "" && !seen[name] {
-			seen[name] = true
-			names = append(names, name)
+		if name == "" {
+			continue
 		}
+		if seen[name] {
+			return nil, fmt.Errorf("duplicate check name %q in annotation %s",
+				name, PreflightChecksAnnotation)
+		}
+		seen[name] = true
+		names = append(names, name)
 	}
 
 	sort.Strings(names)
 
-	return names
+	return names, nil
 }
 
 func configuredNames(specs []config.InitContainerSpec) []string {
@@ -269,10 +274,13 @@ func (i *Injector) selectInitContainers(pod *corev1.Pod) ([]config.InitContainer
 	}
 
 	// Annotation present — only inject named containers.
-	// ParseCheckNames normalizes: split, trim, sort, dedup.
+	// ParseCheckNames normalizes: split, trim, sort; rejects duplicates.
 	// An empty or whitespace/comma-only annotation yields an empty list,
 	// which disables all checks.
-	requested := ParseCheckNames(ann)
+	requested, err := ParseCheckNames(ann)
+	if err != nil {
+		return nil, err
+	}
 	if len(requested) == 0 {
 		return nil, nil
 	}

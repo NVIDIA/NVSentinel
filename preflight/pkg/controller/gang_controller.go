@@ -156,9 +156,17 @@ func (c *GangController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	// Normalize the preflight-checks annotation so all peers serialize the
 	// same sorted value, enabling gang-level consistency validation.
+	// Errors are not expected here — the webhook already validated the
+	// annotation at admission time. Log and continue with empty if it fails.
 	checkNames := ""
 	if ann, ok := pod.Annotations[webhook.PreflightChecksAnnotation]; ok {
-		checkNames = strings.Join(webhook.ParseCheckNames(ann), ",")
+		parsed, err := webhook.ParseCheckNames(ann)
+		if err != nil {
+			slog.Warn("Failed to parse preflight-checks annotation, using empty",
+				"pod", pod.Name, "error", err)
+		} else {
+			checkNames = strings.Join(parsed, ",")
+		}
 	}
 
 	peer := gang.PeerInfo{
