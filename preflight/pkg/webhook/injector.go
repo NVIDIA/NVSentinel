@@ -85,6 +85,7 @@ type GangContext struct {
 // Exported so the gang controller can use the same parsing.
 func ParseCheckNames(csv string) ([]string, error) {
 	seen := make(map[string]bool)
+
 	var names []string
 
 	for _, part := range strings.Split(csv, ",") {
@@ -92,10 +93,12 @@ func ParseCheckNames(csv string) ([]string, error) {
 		if name == "" {
 			continue
 		}
+
 		if seen[name] {
 			return nil, fmt.Errorf("duplicate check name %q in annotation %s",
 				name, PreflightChecksAnnotation)
 		}
+
 		seen[name] = true
 		names = append(names, name)
 	}
@@ -158,6 +161,7 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 		for idx, c := range initContainers {
 			names[idx] = c.Name
 		}
+
 		gangCtx.CheckNames = strings.Join(names, ",")
 	}
 
@@ -256,6 +260,7 @@ func (i *Injector) selectInitContainers(pod *corev1.Pod) ([]config.InitContainer
 	if !ok {
 		// No annotation — use defaultEnabled.
 		var result []config.InitContainerSpec
+
 		for _, spec := range i.cfg.InitContainers {
 			if spec.IsDefaultEnabled() {
 				result = append(result, spec)
@@ -275,11 +280,13 @@ func (i *Injector) selectInitContainers(pod *corev1.Pod) ([]config.InitContainer
 	if err != nil {
 		return nil, err
 	}
+
 	if len(requested) == 0 {
 		return nil, nil
 	}
 
 	configuredByName := make(map[string]config.InitContainerSpec, len(i.cfg.InitContainers))
+
 	for _, spec := range i.cfg.InitContainers {
 		configuredByName[spec.Name] = spec
 	}
@@ -287,14 +294,17 @@ func (i *Injector) selectInitContainers(pod *corev1.Pod) ([]config.InitContainer
 	// Walk annotation order so init container execution order matches
 	// what the user specified.
 	var result []config.InitContainerSpec
+
 	var unknown []string
 
 	for _, name := range requested {
 		spec, exists := configuredByName[name]
 		if !exists {
 			unknown = append(unknown, name)
+
 			continue
 		}
+
 		result = append(result, spec)
 	}
 
@@ -328,7 +338,7 @@ func (i *Injector) buildInitContainers(
 	userVolumeMounts := i.collectMatchingVolumeMounts(pod.Spec.Containers)
 
 	for _, tmpl := range selected {
-		container := tmpl.Container.DeepCopy()
+		container := tmpl.DeepCopy()
 
 		if container.Resources.Requests == nil {
 			container.Resources.Requests = make(corev1.ResourceList)

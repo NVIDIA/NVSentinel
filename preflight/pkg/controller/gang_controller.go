@@ -272,6 +272,7 @@ func checkNamesFromPod(pod *corev1.Pod, cfg *config.Config) string {
 	if !ok {
 		// No annotation — use defaultEnabled in chart order.
 		var names []string
+
 		for _, spec := range cfg.InitContainers {
 			if spec.IsDefaultEnabled() {
 				names = append(names, spec.Name)
@@ -296,6 +297,7 @@ func checkNamesFromPod(pod *corev1.Pod, cfg *config.Config) string {
 	}
 
 	var names []string
+
 	for _, name := range parsed {
 		if configuredSet[name] {
 			names = append(names, name)

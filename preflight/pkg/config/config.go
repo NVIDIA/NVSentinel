@@ -299,9 +299,11 @@ func (c *FileConfig) validate() error {
 		if spec.Name == "" {
 			return fmt.Errorf("initContainers[%d].name must be set", i)
 		}
+
 		if _, exists := seen[spec.Name]; exists {
 			return fmt.Errorf("duplicate init container name %q", spec.Name)
 		}
+
 		seen[spec.Name] = struct{}{}
 	}
 

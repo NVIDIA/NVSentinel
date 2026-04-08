@@ -208,13 +208,14 @@ func TestInjectInitContainers(t *testing.T) {
 			expectGangCtx: false,
 		},
 		{
-			name:          "GPU pod with gang enabled and is gang member",
-			cfg:           testGangConfig(),
-			discoverer:    &mockDiscoverer{name: "volcano", canHandle: true, gangID: "volcano-default-pg1"},
-			pod:           gpuEFAPod(),
-			expectPatches: true,
-			expectGangCtx: true,
-			expectGangID:  "volcano-default-pg1",
+			name:             "GPU pod with gang enabled and is gang member",
+			cfg:              testGangConfig(),
+			discoverer:       &mockDiscoverer{name: "volcano", canHandle: true, gangID: "volcano-default-pg1"},
+			pod:              gpuEFAPod(),
+			expectPatches:    true,
+			expectGangCtx:    true,
+			expectGangID:     "volcano-default-pg1",
+			expectCheckNames: "preflight-dcgm-diag",
 			validatePatches: func(t *testing.T, patches []PatchOperation) {
 				t.Helper()
 				initPatch := findPatchByPath(patches, "/spec/initContainers")
@@ -335,9 +336,10 @@ func TestInjectInitContainers(t *testing.T) {
 			},
 		},
 		{
-			name:       "existing volumes are not duplicated",
-			cfg:        testGangConfig(),
-			discoverer: &mockDiscoverer{name: "test", canHandle: true, gangID: "test-gang"},
+			name:             "existing volumes are not duplicated",
+			cfg:              testGangConfig(),
+			discoverer:       &mockDiscoverer{name: "test", canHandle: true, gangID: "test-gang"},
+			expectCheckNames: "preflight-dcgm-diag",
 			pod: func() *corev1.Pod {
 				p := gpuPod()
 				p.Spec.Volumes = []corev1.Volume{
@@ -486,9 +488,7 @@ func TestInjectInitContainers(t *testing.T) {
 					assert.Equal(t, tt.expectGangID, gangCtx.GangID)
 					assert.NotEmpty(t, gangCtx.ConfigMapName)
 				}
-				if tt.expectCheckNames != "" {
-					assert.Equal(t, tt.expectCheckNames, gangCtx.CheckNames)
-				}
+				assert.Equal(t, tt.expectCheckNames, gangCtx.CheckNames)
 			} else {
 				assert.Nil(t, gangCtx)
 			}
