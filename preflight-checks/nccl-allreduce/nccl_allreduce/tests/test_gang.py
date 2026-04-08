@@ -216,6 +216,20 @@ class TestValidatePeers:
         cfg = self._make_config([])
         assert cfg.validate_peers() is None
 
+    def test_mismatch_error_includes_pod_details(self) -> None:
+        peers = [
+            PeerInfo("pod-0", "10.0.0.1", 0, "a,b"),
+            PeerInfo("pod-1", "10.0.0.2", 1, "a,b"),
+            PeerInfo("pod-2", "10.0.0.3", 2, "a"),
+        ]
+        cfg = self._make_config(peers)
+        result = cfg.validate_peers()
+        assert result is not None
+        assert "pod-0" in result
+        assert "pod-2" in result
+        assert "[a,b]" in result
+        assert "[a]" in result
+
     def test_mixed_default_and_explicit_mismatch(self) -> None:
         peers = [
             PeerInfo("pod-0", "10.0.0.1", 0),
