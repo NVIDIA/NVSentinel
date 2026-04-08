@@ -273,7 +273,7 @@ func (i *Injector) selectInitContainers(pod *corev1.Pod) ([]config.InitContainer
 	}
 
 	// Annotation present — only inject named containers.
-	// ParseCheckNames normalizes: split, trim, sort; rejects duplicates.
+	// ParseCheckNames normalizes: split, trim; rejects duplicates.
 	// An empty or whitespace/comma-only annotation yields an empty list,
 	// which disables all checks.
 	requested, err := ParseCheckNames(ann)
