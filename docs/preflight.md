@@ -62,8 +62,8 @@ Key configuration areas:
 
 | Area | Description |
 |------|-------------|
-| `preflight.initContainers` | Which checks to inject, their images, env vars, and resource limits |
-| `preflight.dcgm` | DCGM hostengine endpoint, diagnostic level, processing strategy |
+| `preflight.initContainers` | Which checks to inject, their images, env vars, and resource limits. **Preferred** location for DCGM config — define `DCGM_HOSTENGINE_ADDR` and `DCGM_DIAG_LEVEL` as env vars directly on the `preflight-dcgm-diag` container |
+| `preflight.dcgm` | DCGM hostengine endpoint, diagnostic level, processing strategy. Legacy — prefer inline env vars on the init container instead (see [ADR-035](./designs/035-preflight-inline-dcgm-config.md)) |
 | `preflight.gangDiscovery` | Scheduler-specific gang identification (Volcano, Run:ai, native K8s) |
 | `preflight.gangCoordination` | Multi-node coordination timeouts, NCCL topology, extra mounts |
 | `preflight.webhook` | TLS, failure policy, cert provider |
@@ -76,4 +76,5 @@ For detailed configuration including per-check env vars, fabric-specific NCCL se
 
 - [Preflight configuration guide](./configuration/preflight.md) — full Helm values reference
 - [ADR-026: Preflight checks](./designs/026-preflight-checks.md) — architecture and design rationale
+- [ADR-035: Inline DCGM config](./designs/035-preflight-inline-dcgm-config.md) — why inline env vars are preferred over the `dcgm:` block
 - [GPU Health Monitor](./gpu-health-monitor.md) — continuous runtime GPU monitoring (complementary to preflight)

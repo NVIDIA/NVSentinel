@@ -72,6 +72,15 @@ type FileConfig struct {
 	VolumeMountPatterns []string `yaml:"volumeMountPatterns,omitempty"`
 }
 
+// DCGMConfig holds DCGM-specific and (legacy) global preflight config.
+//
+// Prefer defining HostengineAddr and DiagLevel as inline env vars on the
+// preflight-dcgm-diag init container in values.yaml instead of using this
+// config block. Inline env vars take precedence via mergeEnvVars.
+//
+// ConnectorSocket and ProcessingStrategy are global preflight config that
+// apply to all init containers — they are incorrectly scoped here and will
+// move to a top-level struct (see ADR-035).
 type DCGMConfig struct {
 	HostengineAddr     string `yaml:"hostengineAddr"`
 	DiagLevel          int    `yaml:"diagLevel"`

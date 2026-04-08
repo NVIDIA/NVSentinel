@@ -345,6 +345,10 @@ func (i *Injector) injectCommonEnv(container *corev1.Container) {
 		},
 	}
 
+	// NOTE: ConnectorSocket and ProcessingStrategy are global preflight config
+	// that is incorrectly scoped under DCGMConfig. These apply to all init
+	// containers, not just dcgm-diag. They will move to a top-level config
+	// struct when the dcgm: block is removed (see ADR-035).
 	if i.cfg.DCGM.ConnectorSocket != "" {
 		envVars = append(envVars, corev1.EnvVar{
 			Name:  "PLATFORM_CONNECTOR_SOCKET",
@@ -532,6 +536,12 @@ func parseHostPathType(hostPathType string) (*corev1.HostPathType, bool) {
 }
 
 // injectDCGMEnv injects DCGM-specific environment variables for the dcgm-diag check.
+//
+// Deprecated: prefer defining DCGM_DIAG_LEVEL and DCGM_HOSTENGINE_ADDR as
+// inline env vars on the preflight-dcgm-diag init container in values.yaml.
+// Inline env vars take precedence via mergeEnvVars (user-defined wins over
+// webhook-injected). This function will be removed when the dcgm: config
+// block is dropped (see ADR-035).
 func (i *Injector) injectDCGMEnv(container *corev1.Container) {
 	if container.Name != "preflight-dcgm-diag" {
 		return

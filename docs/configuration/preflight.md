@@ -54,8 +54,8 @@ The webhook automatically injects these env vars into every init container (you 
 | Env var | Source | Purpose |
 |---------|--------|---------|
 | `NODE_NAME` | Downward API (`spec.nodeName`) | Kubernetes node name for health events |
-| `PLATFORM_CONNECTOR_SOCKET` | Chart `dcgm.connectorSocket` | Unix socket for the platform-connector gRPC endpoint |
-| `PROCESSING_STRATEGY` | Chart `dcgm.processingStrategy` | `EXECUTE_REMEDIATION` or `STORE_ONLY` — controls downstream action |
+| `PLATFORM_CONNECTOR_SOCKET` | Chart `connectorSocket` (legacy: `dcgm.connectorSocket`) | Unix socket for the platform-connector gRPC endpoint |
+| `PROCESSING_STRATEGY` | Chart `processingStrategy` (legacy: `dcgm.processingStrategy`) | `EXECUTE_REMEDIATION` or `STORE_ONLY` — controls downstream action |
 
 For gang-aware containers the webhook also injects `GANG_ID`, `GANG_CONFIG_DIR`, `GANG_TIMEOUT_SECONDS`, and `POD_NAME`.
 
@@ -63,16 +63,39 @@ For gang-aware containers the webhook also injects `GANG_ID`, `GANG_CONFIG_DIR`,
 
 Runs DCGM diagnostics against every GPU allocated to the pod via the remote hostengine.
 
-The webhook auto-injects `DCGM_DIAG_LEVEL` and `DCGM_HOSTENGINE_ADDR` from the chart-level `dcgm` block. Override per-container if needed.
-
 | Env var | Default | Description |
 |---------|---------|-------------|
-| `DCGM_DIAG_LEVEL` | `2` (from chart `dcgm.diagLevel`) | Diagnostic depth: 1 = short (approx 30 s, software deployment checks), 2 = medium (approx 2 min, adds PCIe and basic GPU stress), 3 = long (approx 15 min, adds Diagnostic plugin stress), 4 = xlong (1-2 hr, extended stress) |
+| `DCGM_DIAG_LEVEL` | `2` | Diagnostic depth: 1 = short (approx 30 s, software deployment checks), 2 = medium (approx 2 min, adds PCIe and basic GPU stress), 3 = long (approx 15 min, adds Diagnostic plugin stress), 4 = xlong (1-2 hr, extended stress) |
 | `DCGM_HOSTENGINE_ADDR` | `nvidia-dcgm.gpu-operator.svc:5555` | DCGM hostengine gRPC endpoint |
 
-Chart-level DCGM settings (apply to dcgm-diag):
+#### Preferred: inline env vars on the init container
+
+Define DCGM settings as env vars directly on the `preflight-dcgm-diag` container in `initContainers`. This is consistent with how NCCL checks are configured and keeps all per-check config in one place:
 
 ```yaml
+initContainers:
+  - name: preflight-dcgm-diag
+    image:
+      repository: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag
+      tag: ""
+    env:
+      - name: DCGM_HOSTENGINE_ADDR
+        value: "nvidia-dcgm.gpu-operator.svc:5555"
+      - name: DCGM_DIAG_LEVEL
+        value: "2"
+    volumeMounts:
+      - name: nvsentinel-socket
+        mountPath: /var/run
+```
+
+When env vars are defined on the container, they take precedence over values injected from the `dcgm:` block (via `mergeEnvVars`). You can leave the `dcgm:` block empty or at defaults.
+
+#### Legacy: chart-level `dcgm:` block
+
+The `dcgm:` block still works but is not recommended for new deployments. It splits DCGM config across two locations (the `dcgm:` block and the `initContainers` list), and the webhook bridges them by matching the hardcoded container name `"preflight-dcgm-diag"`. See [ADR-035](../designs/035-preflight-inline-dcgm-config.md) for background on why inline config is preferred.
+
+```yaml
+# Legacy approach — prefer inline env vars above
 dcgm:
   service:
     endpoint: "nvidia-dcgm.gpu-operator.svc"
@@ -318,6 +341,7 @@ Tilt development often trims init containers to DCGM-only; see `distros/kubernet
 ## Related documentation
 
 - [ADR-026: Preflight checks](../designs/026-preflight-checks.md)
+- [ADR-035: Inline DCGM config](../designs/035-preflight-inline-dcgm-config.md) — why inline env vars are preferred over the `dcgm:` block
 - [gRPC / TLS authentication](../designs/030-grpc-tls-authentication.md) (mentions preflight among webhooks)
 - [Helm chart README](../../distros/kubernetes/README.md)
 - E2E test entry point: `tests/preflight_test.go` (build tag `amd64_group`)
