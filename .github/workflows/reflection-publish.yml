@@ -90,7 +90,7 @@ jobs:
             go work use ./preflight
           fi
 
-          ko build --platform=linux/amd64 --tags="${VERSION}" --bare ./preflight
+          ko build --platform=linux/amd64 --tags="${VERSION}" --bare --sbom=none ./preflight
 
   # Build preflight check init container images (Docker-built Python)
   build-preflight-checks:
