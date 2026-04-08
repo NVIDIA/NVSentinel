@@ -57,15 +57,13 @@ class PeerInfo:
         pod_name: Kubernetes pod name.
         pod_ip: Pod IP address.
         rank: Distributed rank (0-indexed).
-        checks: Comma-separated list of checks this peer is configured to run.
-        allreduce_config: Hash or identifier for the peer's allreduce configuration.
+        profile_name: PreflightProfile CRD name referenced by the pod.
     """
 
     pod_name: str
     pod_ip: str
     rank: int
-    checks: str = ""
-    allreduce_config: str = ""
+    profile_name: str = ""
 
 
 @dataclass
@@ -90,55 +88,25 @@ class GangConfig:
     my_rank: int
     my_pod_name: str
 
-    def validate_peers(self, check_name: str) -> str | None:
-        """Validate that all peers are configured for the given check.
+    def validate_peers(self) -> str | None:
+        """Validate that all peers reference the same PreflightProfile.
 
-        For each peer:
-        - If the peer has an empty ``checks`` field (old format), log a
-          warning and skip validation for that peer.
-        - Otherwise, verify that ``check_name`` appears in the peer's
-          comma-separated checks list.
-        - Record each peer's ``allreduce_config`` in a dict (even when
-          empty) and detect mismatches across the gang.
-
-        Args:
-            check_name: The check name to look for (e.g.
-                ``"preflight-nccl-allreduce"``).
+        If all peers share the same ``profile_name`` (including all empty,
+        meaning helm defaults), the gang is consistent. A mismatch means
+        different pods would run different check configurations.
 
         Returns:
-            ``None`` if all peers are valid, or a descriptive error string.
+            ``None`` if all peers are consistent, or a descriptive error string.
         """
-        missing: list[str] = []
-        hashes: dict[str, list[str]] = {}
-
+        profiles: dict[str, list[str]] = {}
         for peer in self.peers:
-            # Always record allreduce_config (even empty string).
-            hashes.setdefault(peer.allreduce_config, []).append(peer.pod_name)
+            profiles.setdefault(peer.profile_name or "(default)", []).append(peer.pod_name)
 
-            if not peer.checks:
-                log.warning(
-                    "Peer uses old format without checks field, skipping validation",
-                    extra={"pod_name": peer.pod_name},
-                )
-                continue
+        if len(profiles) <= 1:
+            return None
 
-            peer_checks = [c.strip() for c in peer.checks.split(",")]
-            if check_name not in peer_checks:
-                missing.append(peer.pod_name)
-
-        errors: list[str] = []
-
-        if missing:
-            errors.append(f"Peers missing check '{check_name}': {', '.join(missing)}")
-
-        if len(hashes) > 1:
-            parts = [f"{config!r}: [{', '.join(pods)}]" for config, pods in hashes.items()]
-            errors.append(f"Config mismatch across gang: {'; '.join(parts)}")
-
-        if errors:
-            return "; ".join(errors)
-
-        return None
+        parts = [f"{profile!r}: [{', '.join(pods)}]" for profile, pods in profiles.items()]
+        return f"Profile mismatch across gang: {'; '.join(parts)}"
 
     def get_torchrun_args(self, nprocs_per_node: int, script: str) -> list[str]:
         """Build torchrun command arguments.
@@ -247,7 +215,7 @@ class GangConfigReader:
     def _read_peers(self) -> list[PeerInfo]:
         """Read and parse the peers list from the ConfigMap.
 
-        Format: "pod_name;pod_ip;rank" per line.
+        Format: "pod_name;pod_ip;rank[;profile_name]" per line.
 
         Returns:
             List of PeerInfo objects.
@@ -284,21 +252,16 @@ class GangConfigReader:
                         extra={"line": line, "bad_rank": parts[2].strip()},
                     )
 
-            checks = ""
+            profile_name = ""
             if len(parts) >= 4:
-                checks = parts[3].strip()
-
-            allreduce_config = ""
-            if len(parts) >= 5:
-                allreduce_config = parts[4].strip()
+                profile_name = parts[3].strip()
 
             peers.append(
                 PeerInfo(
                     pod_name=pod_name,
                     pod_ip=pod_ip,
                     rank=rank,
-                    checks=checks,
-                    allreduce_config=allreduce_config,
+                    profile_name=profile_name,
                 )
             )
 

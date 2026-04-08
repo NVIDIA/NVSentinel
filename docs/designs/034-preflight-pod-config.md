@@ -169,23 +169,21 @@ missing peer to join the NCCL communicator).
 
 ### Data flow
 
-1. **Webhook** writes each pod's enabled-checks list and a hash of its
-   allreduce configuration into the gang ConfigMap peer line:
+1. **Controller** writes each pod's PreflightProfile name into the gang
+   ConfigMap peer line:
 
    ```
-   pod-0;10.0.0.1;0;preflight-nccl-allreduce,preflight-dcgm;abc123
-   pod-1;10.0.0.2;1;preflight-nccl-allreduce,preflight-dcgm;abc123
+   pod-0;10.0.0.1;0;full-diagnostics
+   pod-1;10.0.0.2;1;full-diagnostics
    ```
 
-   Fields 4 and 5 are optional for backward compatibility.
+   Field 4 (profile name) is optional for backward compatibility.
 
-2. **Init container** calls `gang_config.validate_peers("preflight-nccl-allreduce")`
-   before launching torchrun.
+2. **Init container** calls `gang_config.validate_peers()` before launching
+   torchrun.
 
 3. **Validation** checks:
-   - Every peer has the check in its checks list (old-format peers without
-     the field are skipped with a warning).
-   - All peers share the same `allreduce_config` hash.
+   - All peers reference the same PreflightProfile CRD (or all use defaults).
 
 4. **On mismatch**: the init container logs the error, reports
    `GANG_CONFIG_ERROR` to the platform connector, and exits immediately

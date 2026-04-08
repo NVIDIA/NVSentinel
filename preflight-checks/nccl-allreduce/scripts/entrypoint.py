@@ -95,7 +95,7 @@ def main() -> int:
         return gang_config
 
     # 3. Validate peers before launching torchrun
-    validation_error = gang_config.validate_peers("preflight-nccl-allreduce")
+    validation_error = gang_config.validate_peers()
     if validation_error is not None:
         log.error(
             "Gang peer validation failed",

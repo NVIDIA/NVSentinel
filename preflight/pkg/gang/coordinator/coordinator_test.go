@@ -207,27 +207,26 @@ func TestParsePeers(t *testing.T) {
 			wantFirst: types.PeerInfo{PodName: "pod-0", PodIP: "2001:db8::1"},
 		},
 		{
-			name:      "extended 5-field format",
-			peersData: "pod-0;10.0.0.1;0;preflight-dcgm,preflight-nccl-allreduce;BENCHMARK_ITERS=20,MESSAGE_SIZES=8G",
+			name:      "4-field format with profile",
+			peersData: "pod-0;10.0.0.1;0;full-diagnostics",
 			wantCount: 1,
 			wantFirst: types.PeerInfo{
-				PodName:         "pod-0",
-				PodIP:           "10.0.0.1",
-				Checks:          "preflight-dcgm,preflight-nccl-allreduce",
-				AllReduceConfig: "BENCHMARK_ITERS=20,MESSAGE_SIZES=8G",
+				PodName:     "pod-0",
+				PodIP:       "10.0.0.1",
+				ProfileName: "full-diagnostics",
 			},
 		},
 		{
 			name:      "backward-compatible 3-field format",
 			peersData: "pod-0;10.0.0.1;0\npod-1;10.0.0.2;1",
 			wantCount: 2,
-			wantFirst: types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.1", Checks: "", AllReduceConfig: ""},
+			wantFirst: types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.1"},
 		},
 		{
 			name:      "mixed old and new format peers",
-			peersData: "pod-0;10.0.0.1;0\npod-1;10.0.0.2;1;preflight-nccl-allreduce;MESSAGE_SIZES=8G",
+			peersData: "pod-0;10.0.0.1;0\npod-1;10.0.0.2;1;full-diagnostics",
 			wantCount: 2,
-			wantFirst: types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.1", Checks: "", AllReduceConfig: ""},
+			wantFirst: types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.1"},
 		},
 	}
 
@@ -247,19 +246,18 @@ func TestParsePeers(t *testing.T) {
 }
 
 func TestParsePeersMixedFormatSecondPeer(t *testing.T) {
-	peersData := "pod-0;10.0.0.1;0\npod-1;10.0.0.2;1;preflight-nccl-allreduce;MESSAGE_SIZES=8G"
+	peersData := "pod-0;10.0.0.1;0\npod-1;10.0.0.2;1;full-diagnostics"
 	got := ParsePeers(peersData)
 	require.Len(t, got, 2)
 
 	assert.Equal(t, types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.1"}, got[0],
-		"first peer (old format) should have empty Checks and AllReduceConfig")
+		"first peer (old format) should have empty ProfileName")
 
 	assert.Equal(t, types.PeerInfo{
-		PodName:         "pod-1",
-		PodIP:           "10.0.0.2",
-		Checks:          "preflight-nccl-allreduce",
-		AllReduceConfig: "MESSAGE_SIZES=8G",
-	}, got[1], "second peer (new format) should have Checks and AllReduceConfig populated")
+		PodName:     "pod-1",
+		PodIP:       "10.0.0.2",
+		ProfileName: "full-diagnostics",
+	}, got[1], "second peer (new format) should have ProfileName populated")
 }
 
 func TestGetRank(t *testing.T) {

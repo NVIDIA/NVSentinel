@@ -19,8 +19,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sort"
-	"strings"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
@@ -35,12 +33,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
-// collectiveOpEnvVars are the environment variable names extracted from allreduce
-// init containers to record in the peer's AllReduceConfig field.
-var collectiveOpEnvVars = []string{"MESSAGE_SIZES", "BENCHMARK_ITERS", "WARMUP_ITERS", "NCCL_REDUCE_OP"}
-
-// allreduceContainerName is the init container name for the NCCL allreduce check.
-const allreduceContainerName = "preflight-nccl-allreduce"
+// profileAnnotation is the pod annotation key for the PreflightProfile CRD reference.
+const profileAnnotation = "nvsentinel.nvidia.com/preflight-profile"
 
 // GangController reconciles pods to update gang ConfigMaps with peer information.
 type GangController struct {
@@ -162,15 +156,12 @@ func (c *GangController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, nil
 	}
 
-	injectedChecks, allReduceConfig := c.extractPreflightMetadata(&pod)
-
 	peer := gang.PeerInfo{
-		PodName:         pod.Name,
-		PodIP:           pod.Status.PodIP,
-		NodeName:        pod.Spec.NodeName,
-		Namespace:       pod.Namespace,
-		Checks:          injectedChecks,
-		AllReduceConfig: allReduceConfig,
+		PodName:     pod.Name,
+		PodIP:       pod.Status.PodIP,
+		NodeName:    pod.Spec.NodeName,
+		Namespace:   pod.Namespace,
+		ProfileName: pod.Annotations[profileAnnotation],
 	}
 
 	if err := c.coordinator.RegisterPeer(ctx, pod.Namespace, gangInfo, peer); err != nil {
@@ -271,57 +262,3 @@ func (c *GangController) ensureNCCLTopoConfigMap(ctx context.Context, namespace 
 		"configMap", gcfg.NCCLTopoConfigMap)
 }
 
-// extractPreflightMetadata inspects the pod's init containers and returns:
-//   - injectedChecks: comma-separated list of preflight init container names
-//     that match the controller's configured check names, or "none" if no
-//     matches are found.
-//   - allReduceConfig: collective-op env var config from the allreduce init
-//     container (empty string if the container is not present).
-func (c *GangController) extractPreflightMetadata(pod *corev1.Pod) (injectedChecks, allReduceConfig string) {
-	configuredNames := make(map[string]struct{}, len(c.cfg.InitContainers))
-	for _, ic := range c.cfg.InitContainers {
-		configuredNames[ic.Name] = struct{}{}
-	}
-
-	var matched []string
-
-	for _, container := range pod.Spec.InitContainers {
-		if _, ok := configuredNames[container.Name]; !ok {
-			continue
-		}
-
-		matched = append(matched, container.Name)
-
-		if container.Name == allreduceContainerName {
-			allReduceConfig = collectiveOpConfig(container)
-		}
-	}
-
-	if len(matched) == 0 {
-		return "none", allReduceConfig
-	}
-
-	return strings.Join(matched, ","), allReduceConfig
-}
-
-// collectiveOpConfig extracts collective-op environment variables from the
-// given container and returns them as a sorted, comma-separated "KEY=VAL"
-// string. Only variables listed in collectiveOpEnvVars are included.
-func collectiveOpConfig(container corev1.Container) string {
-	wanted := make(map[string]struct{}, len(collectiveOpEnvVars))
-	for _, name := range collectiveOpEnvVars {
-		wanted[name] = struct{}{}
-	}
-
-	var pairs []string
-
-	for _, env := range container.Env {
-		if _, ok := wanted[env.Name]; ok {
-			pairs = append(pairs, env.Name+"="+env.Value)
-		}
-	}
-
-	sort.Strings(pairs)
-
-	return strings.Join(pairs, ",")
-}
