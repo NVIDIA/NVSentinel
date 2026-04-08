@@ -75,7 +75,8 @@ type GangContext struct {
 	GangID        string
 	ConfigMapName string
 	// CheckNames is a comma-separated list of injected check container
-	// names in chart order. Gang validation compares these as sets.
+	// names. Annotation order when annotation is present, chart order
+	// when using defaults.
 	CheckNames string
 }
 
@@ -278,33 +279,23 @@ func (i *Injector) selectInitContainers(pod *corev1.Pod) ([]config.InitContainer
 		return nil, nil
 	}
 
-	requestedSet := make(map[string]bool, len(requested))
-	for _, name := range requested {
-		requestedSet[name] = true
+	configuredByName := make(map[string]config.InitContainerSpec, len(i.cfg.InitContainers))
+	for _, spec := range i.cfg.InitContainers {
+		configuredByName[spec.Name] = spec
 	}
 
-	// Walk configured containers in their defined order so init container
-	// execution order matches the chart, regardless of annotation order.
+	// Walk annotation order so init container execution order matches
+	// what the user specified.
 	var result []config.InitContainerSpec
 	var unknown []string
 
-	for _, spec := range i.cfg.InitContainers {
-		if requestedSet[spec.Name] {
-			result = append(result, spec)
-		}
-	}
-
 	for _, name := range requested {
-		found := false
-		for _, spec := range i.cfg.InitContainers {
-			if spec.Name == name {
-				found = true
-				break
-			}
-		}
-		if !found {
+		spec, exists := configuredByName[name]
+		if !exists {
 			unknown = append(unknown, name)
+			continue
 		}
+		result = append(result, spec)
 	}
 
 	if len(unknown) > 0 {

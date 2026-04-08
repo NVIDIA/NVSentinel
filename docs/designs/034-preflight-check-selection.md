@@ -28,7 +28,7 @@ metadata:
     nvsentinel.nvidia.com/preflight-checks: "preflight-dcgm-diag,preflight-nccl-loopback"
 ```
 
-Only named containers are injected, in the order they appear in the chart (not the annotation order). Unknown names reject admission with an error listing the invalid names and the available checks. An empty value disables all checks:
+Only named containers are injected, in the order they appear in the annotation. When no annotation is present, chart order is used. Unknown names reject admission with an error listing the invalid names and the available checks. An empty value disables all checks:
 
 ```yaml
 nvsentinel.nvidia.com/preflight-checks: ""
@@ -128,12 +128,12 @@ All three use the same DCGM image with different env vars. The platform team def
 
 The peer line format in gang ConfigMaps is extended from 3 to 4 fields:
 
-```
+```text
 pod-0;10.0.0.1;0;preflight-dcgm-diag,preflight-nccl-allreduce
 pod-1;10.0.0.2;1;preflight-dcgm-diag,preflight-nccl-allreduce
 ```
 
-The 4th field (`checkNames`) is a comma-separated list of injected check names in chart order. Old 3-field lines parse with an empty check names field for backward compatibility.
+The 4th field (`checkNames`) is a comma-separated list of injected check names. Old 3-field lines parse with an empty check names field for backward compatibility.
 
 Before launching torchrun, the NCCL all-reduce init container calls `validate_peers()`. If any peer has a different check list, it logs the mismatch, reports `GANG_CONFIG_ERROR`, and exits immediately instead of hanging.
 

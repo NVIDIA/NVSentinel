@@ -32,8 +32,8 @@ type PeerInfo struct {
 	Namespace string
 
 	// CheckNames is a comma-separated list of preflight check container
-	// names this pod is configured to run. Gang validation compares
-	// these as sets — all peers must run the same checks.
+	// names this pod is configured to run. All peers in a gang must
+	// have the same value.
 	CheckNames string
 }
 

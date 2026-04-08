@@ -409,7 +409,7 @@ func TestInjectInitContainers(t *testing.T) {
 			expectPatches:    true,
 			expectGangCtx:    true,
 			expectGangID:     "test-gang",
-			expectCheckNames: "preflight-dcgm-diag,preflight-nccl-allreduce",
+			expectCheckNames: "preflight-nccl-allreduce,preflight-dcgm-diag",
 		},
 		{
 			name:       "empty annotation with gang returns empty CheckNames",
@@ -851,10 +851,11 @@ func TestSelectInitContainers(t *testing.T) {
 		assert.Contains(t, err.Error(), "unknown checks")
 	})
 
-	t.Run("annotation preserves configured order not annotation order", func(t *testing.T) {
+	t.Run("annotation order controls injection order", func(t *testing.T) {
 		cfg := multiConfig()
 		injector := NewInjector(cfg, nil)
 		pod := gpuPod()
+		// Reverse of chart order — should inject in annotation order.
 		pod.Annotations = map[string]string{
 			PreflightChecksAnnotation: "preflight-nccl-loopback,preflight-dcgm-diag",
 		}
@@ -862,8 +863,8 @@ func TestSelectInitContainers(t *testing.T) {
 		selected, err := injector.selectInitContainers(pod)
 		require.NoError(t, err)
 		require.Len(t, selected, 2)
-		assert.Equal(t, "preflight-dcgm-diag", selected[0].Name)
-		assert.Equal(t, "preflight-nccl-loopback", selected[1].Name)
+		assert.Equal(t, "preflight-nccl-loopback", selected[0].Name)
+		assert.Equal(t, "preflight-dcgm-diag", selected[1].Name)
 	})
 
 	t.Run("comma-only annotation disables all checks", func(t *testing.T) {

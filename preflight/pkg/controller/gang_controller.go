@@ -264,9 +264,9 @@ func (c *GangController) ensureNCCLTopoConfigMap(ctx context.Context, namespace 
 		"configMap", gcfg.NCCLTopoConfigMap)
 }
 
-// checkNamesFromPod computes the check names string for a pod using chart
-// order, matching the injector's selectInitContainers logic. This ensures
-// the gang peer line is identical regardless of annotation order.
+// checkNamesFromPod computes the check names string for a pod, matching
+// the injector's selectInitContainers logic. Annotation order is preserved
+// so the string matches what the injector produces.
 func checkNamesFromPod(pod *corev1.Pod, cfg *config.Config) string {
 	ann, ok := pod.Annotations[webhook.PreflightChecksAnnotation]
 	if !ok {
@@ -281,7 +281,7 @@ func checkNamesFromPod(pod *corev1.Pod, cfg *config.Config) string {
 		return strings.Join(names, ",")
 	}
 
-	// Annotation present — parse names, then walk chart order.
+	// Annotation present — use annotation order, skip unknown names.
 	parsed, err := webhook.ParseCheckNames(ann)
 	if err != nil {
 		slog.Warn("Failed to parse preflight-checks annotation",
@@ -290,19 +290,15 @@ func checkNamesFromPod(pod *corev1.Pod, cfg *config.Config) string {
 		return ""
 	}
 
-	if len(parsed) == 0 {
-		return ""
-	}
-
-	requestedSet := make(map[string]bool, len(parsed))
-	for _, name := range parsed {
-		requestedSet[name] = true
+	configuredSet := make(map[string]bool, len(cfg.InitContainers))
+	for _, spec := range cfg.InitContainers {
+		configuredSet[spec.Name] = true
 	}
 
 	var names []string
-	for _, spec := range cfg.InitContainers {
-		if requestedSet[spec.Name] {
-			names = append(names, spec.Name)
+	for _, name := range parsed {
+		if configuredSet[name] {
+			names = append(names, name)
 		}
 	}
 

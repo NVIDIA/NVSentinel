@@ -57,7 +57,7 @@ class PeerInfo:
         pod_name: Kubernetes pod name.
         pod_ip: Pod IP address.
         rank: Distributed rank (0-indexed).
-        check_names: Comma-separated preflight check names in chart order.
+        check_names: Comma-separated preflight check names.
     """
 
     pod_name: str
