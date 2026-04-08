@@ -79,7 +79,7 @@ jobs:
 
       - name: Build and push preflight webhook
         env:
-          KO_DOCKER_REPO: ${{ env.GCP_REGISTRY }}/${{ env.GCP_PROJECT }}/${{ env.AR_REPOSITORY }}
+          KO_DOCKER_REPO: ${{ env.GCP_REGISTRY }}/${{ env.GCP_PROJECT }}/${{ env.AR_REPOSITORY }}/preflight
           VERSION: ${{ needs.compute-tag.outputs.tag }}
           GIT_COMMIT: ${{ github.sha }}
           BUILD_DATE: ${{ github.event.head_commit.timestamp }}
