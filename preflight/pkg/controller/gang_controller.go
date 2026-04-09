@@ -190,10 +190,6 @@ func (c *GangController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		"configMap", webhookCM,
 		"podIP", pod.Status.PodIP)
 
-	// Clean up orphaned ConfigMap if the annotation-based gang ID maps to
-	// a different ConfigMap than the one the webhook mounted. This happens
-	// when the webhook used a label fallback before the scheduler annotation
-	// arrived, producing a different gang ID.
 	c.cleanupOrphanedConfigMap(ctx, pod.Namespace, webhookCM, gangID)
 
 	return ctrl.Result{}, nil
@@ -291,9 +287,9 @@ func webhookConfigMapName(pod *corev1.Pod) string {
 	return ""
 }
 
-// cleanupOrphanedConfigMap deletes the annotation-derived ConfigMap when it
-// differs from the one the webhook actually mounted. No-op when the names
-// match or the webhook name is empty (no volume found).
+// cleanupOrphanedConfigMap deletes the annotation-derived ConfigMap when the
+// webhook mounted a different one (label-fallback). This happens when the
+// webhook used a provisional gang ID before the scheduler annotation arrived.
 func (c *GangController) cleanupOrphanedConfigMap(ctx context.Context, namespace, webhookCM, gangID string) {
 	derivedCM := gang.ConfigMapName(gangID)
 	if webhookCM == "" || derivedCM == webhookCM {
