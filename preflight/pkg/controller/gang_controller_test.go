@@ -27,10 +27,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -426,6 +429,7 @@ func (te *testEnv) assertNoConfigMaps(t *testing.T, ctx context.Context, namespa
 	assert.Empty(t, cms.Items, "expected no ConfigMaps")
 }
 
+
 func newTestPod(name, namespace, ip string) *corev1.Pod {
 	return newTestPodWithGangVolume(name, namespace, ip, false)
 }
@@ -481,4 +485,177 @@ func newGangDiscoverer(gangID string, minCount int) *mockDiscoverer {
 
 func newNonGangDiscoverer() *mockDiscoverer {
 	return &mockDiscoverer{canHandle: false}
+}
+
+func TestWebhookConfigMapName(t *testing.T) {
+	tests := []struct {
+		name string
+		pod  *corev1.Pod
+		want string
+	}{
+		{
+			name: "pod with gang config volume returns ConfigMap name",
+			pod:  newGangPod("p", "ns", "10.0.0.1"),
+			want: "preflight-test-gang",
+		},
+		{
+			name: "pod without gang config volume returns empty",
+			pod:  newTestPod("p", "ns", "10.0.0.1"),
+			want: "",
+		},
+		{
+			name: "gang volume name present but no ConfigMap source returns empty",
+			pod: &corev1.Pod{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "c", Image: "img"}},
+					Volumes: []corev1.Volume{
+						{
+							Name: types.GangConfigVolumeName,
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
+					},
+				},
+			},
+			want: "",
+		},
+		{
+			name: "pod with unrelated volumes returns empty",
+			pod: &corev1.Pod{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "c", Image: "img"}},
+					Volumes: []corev1.Volume{
+						{
+							Name: "other-volume",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "other-cm"},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, webhookConfigMapName(tt.pod))
+		})
+	}
+}
+
+func TestCheckNamesFromPod(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+
+	baseCfg := &config.Config{
+		FileConfig: config.FileConfig{
+			InitContainers: []config.InitContainerSpec{
+				{Container: corev1.Container{Name: "preflight-dcgm-diag"}, DefaultEnabled: nil},
+				{Container: corev1.Container{Name: "preflight-nccl-allreduce"}, DefaultEnabled: nil},
+				{Container: corev1.Container{Name: "preflight-nccl-loopback"}, DefaultEnabled: boolPtr(false)},
+			},
+		},
+	}
+
+	tests := []struct {
+		name string
+		pod  *corev1.Pod
+		cfg  *config.Config
+		want string
+	}{
+		{
+			name: "no annotation uses defaultEnabled checks in chart order",
+			pod:  &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p"}},
+			cfg:  baseCfg,
+			want: "preflight-dcgm-diag,preflight-nccl-allreduce",
+		},
+		{
+			name: "annotation overrides with explicit order",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "p",
+					Annotations: map[string]string{webhook.PreflightChecksAnnotation: "preflight-nccl-allreduce,preflight-dcgm-diag"},
+				},
+			},
+			cfg:  baseCfg,
+			want: "preflight-nccl-allreduce,preflight-dcgm-diag",
+		},
+		{
+			name: "annotation with unknown check names filters them out",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "p",
+					Annotations: map[string]string{webhook.PreflightChecksAnnotation: "preflight-dcgm-diag,nonexistent"},
+				},
+			},
+			cfg:  baseCfg,
+			want: "preflight-dcgm-diag",
+		},
+		{
+			name: "annotation can enable a non-default check",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "p",
+					Annotations: map[string]string{webhook.PreflightChecksAnnotation: "preflight-nccl-loopback"},
+				},
+			},
+			cfg:  baseCfg,
+			want: "preflight-nccl-loopback",
+		},
+		{
+			name: "duplicate annotation returns empty",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "p",
+					Annotations: map[string]string{webhook.PreflightChecksAnnotation: "preflight-dcgm-diag,preflight-dcgm-diag"},
+				},
+			},
+			cfg:  baseCfg,
+			want: "",
+		},
+		{
+			name: "empty config returns empty string",
+			pod:  &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p"}},
+			cfg:  &config.Config{},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, checkNamesFromPod(tt.pod, tt.cfg))
+		})
+	}
+}
+
+func TestDeleteOrphanedConfigMap(t *testing.T) {
+	t.Run("deletes existing orphaned ConfigMap", func(t *testing.T) {
+		ctx := context.Background()
+		orphanName := coordinator.ConfigMapName("orphan-gang")
+
+		orphanCM := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: orphanName, Namespace: "default"},
+		}
+		fc := fake.NewClientBuilder().WithObjects(orphanCM).Build()
+
+		gc := &GangController{Client: fc}
+		gc.deleteOrphanedConfigMap(ctx, "default", orphanName)
+
+		err := fc.Get(ctx, client.ObjectKey{Namespace: "default", Name: orphanName}, &corev1.ConfigMap{})
+		assert.True(t, errors.IsNotFound(err), "orphaned ConfigMap should be deleted")
+	})
+
+	t.Run("no-op when ConfigMap does not exist", func(t *testing.T) {
+		ctx := context.Background()
+		fc := fake.NewClientBuilder().Build()
+
+		gc := &GangController{Client: fc}
+
+		// Should not panic or error.
+		gc.deleteOrphanedConfigMap(ctx, "default", "nonexistent-cm")
+	})
 }
