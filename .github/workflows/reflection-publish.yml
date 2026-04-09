@@ -41,7 +41,7 @@ jobs:
           else
             CHART_VERSION=$(grep '^version:' distros/kubernetes/nvsentinel/Chart.yaml | awk '{print $2}')
             SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-8)
-            echo "value=${CHART_VERSION}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+            echo "value=${CHART_VERSION}-g${SHORT_SHA}" >> "$GITHUB_OUTPUT"
           fi
 
   # Build all Go components via ko
