@@ -8,8 +8,6 @@ instances:
 
 title: NVIDIA NVSentinel Documentation
 
-# On main, products lists only the dev version.
-# On docs-website, the CI workflow expands this to include all versioned snapshots.
 products:
   - display-name: NVSentinel
     slug: /
