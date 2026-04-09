@@ -73,6 +73,10 @@ data:
     {{- if .Values.initContainerPlacement }}
     initContainerPlacement: {{ .Values.initContainerPlacement | quote }}
     {{- end }}
+    {{- if .Values.injectedImagePullSecrets }}
+    imagePullSecrets:
+      {{- toYaml .Values.injectedImagePullSecrets | nindent 6 }}
+    {{- end }}
     initContainers:
       {{- $extraEnv := .Values.ncclAllreduceExtraEnv | default list }}
       {{- $globalTag := ((.Values.global).image).tag | default "" }}
