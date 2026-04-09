@@ -59,6 +59,17 @@ jobs:
       - name: Validate Fern configuration
         run: fern check
 
+      - name: Warn on non-lowercase or underscore markdown filenames
+        # TODO: convert to a hard failure once existing violations are resolved
+        run: |
+          find docs/ -name "*.md" | while read f; do
+            base=$(basename "$f")
+            if echo "$base" | grep -qE '[A-Z]|_'; then
+              suggested=$(echo "$base" | tr '[:upper:]' '[:lower:]' | tr '_' '-')
+              echo "::warning file=$f::Filename '$base' should be lowercase with hyphens (e.g. '$suggested')"
+            fi
+          done
+
   fern-broken-links:
     name: Fern Broken Links Check
     needs: changed-files
