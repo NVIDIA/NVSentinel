@@ -150,6 +150,10 @@ jobs:
           - component: gpu-reset
             make_command: 'make -C gpu-reset docker-publish'
     steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+          sudo docker system prune -af
       - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
