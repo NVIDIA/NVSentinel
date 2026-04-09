@@ -154,12 +154,6 @@ func (c *GangController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, nil
 	}
 
-	// The webhook may have used a different gang ID (e.g., from a label
-	// fallback) than the one the controller discovers from the scheduler
-	// annotation. We must update the ConfigMap the webhook mounted, not
-	// create a new one derived from the controller's gang ID.
-	webhookCM := webhookConfigMapName(&pod)
-
 	// Build check names in chart order — same logic as the injector's
 	// selectInitContainers so both paths produce identical strings.
 	checkNames := checkNamesFromPod(&pod, c.cfg)
@@ -172,12 +166,11 @@ func (c *GangController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		CheckNames: checkNames,
 	}
 
-	if err := c.coordinator.RegisterPeerInConfigMap(ctx, pod.Namespace, webhookCM, gangInfo, peer); err != nil {
+	if err := c.coordinator.RegisterPeer(ctx, pod.Namespace, gangInfo, peer); err != nil {
 		slog.Error("Failed to register peer",
 			"pod", pod.Name,
 			"namespace", pod.Namespace,
 			"gangID", gangID,
-			"configMap", webhookCM,
 			"error", err)
 
 		return ctrl.Result{}, fmt.Errorf("failed to register peer: %w", err)
@@ -187,7 +180,6 @@ func (c *GangController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		"pod", pod.Name,
 		"namespace", pod.Namespace,
 		"gangID", gangID,
-		"configMap", webhookCM,
 		"podIP", pod.Status.PodIP)
 
 	return ctrl.Result{}, nil
@@ -270,19 +262,6 @@ func (c *GangController) ensureNCCLTopoConfigMap(ctx context.Context, namespace 
 	slog.Info("Created NCCL topo ConfigMap",
 		"namespace", namespace,
 		"configMap", gcfg.NCCLTopoConfigMap)
-}
-
-// webhookConfigMapName extracts the ConfigMap name from the pod's gang config
-// volume. This is the ConfigMap the webhook created and the init container is
-// actually reading — the controller must update this one, not derive a new name.
-func webhookConfigMapName(pod *corev1.Pod) string {
-	for _, vol := range pod.Spec.Volumes {
-		if vol.Name == types.GangConfigVolumeName && vol.ConfigMap != nil {
-			return vol.ConfigMap.Name
-		}
-	}
-
-	return ""
 }
 
 // checkNamesFromPod computes the check names string for a pod, matching

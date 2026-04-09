@@ -60,14 +60,14 @@ func TestPodGroupDiscoverer_CanHandle(t *testing.T) {
 			want: true,
 		},
 		{
-			name:   "matches label fallback",
+			name:   "label only does not match (reinvocation handles this)",
 			config: testConfig(),
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{"test.io/job-name": "my-job"},
 				},
 			},
-			want: true,
+			want: false,
 		},
 		{
 			name:   "no matching annotation or label",

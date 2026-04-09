@@ -106,21 +106,14 @@ func (d *PodGroupDiscoverer) ExtractGangID(pod *corev1.Pod) string {
 	return fmt.Sprintf("%s-%s-%s", d.config.Name, pod.Namespace, podGroupName)
 }
 
-// getPodGroupName extracts the pod group name from annotations or labels.
+// getPodGroupName extracts the pod group name from annotations.
+// Labels are not checked here — the webhook uses reinvocationPolicy: IfNeeded
+// to wait for the scheduler annotation instead of falling back to labels,
+// which avoids gang ID mismatches between the webhook and controller.
 func (d *PodGroupDiscoverer) getPodGroupName(pod *corev1.Pod) string {
-	// Check annotations first
 	if pod.Annotations != nil {
 		for _, key := range d.config.AnnotationKeys {
 			if name := pod.Annotations[key]; name != "" {
-				return name
-			}
-		}
-	}
-
-	// Check labels as fallback
-	if pod.Labels != nil {
-		for _, key := range d.config.LabelKeys {
-			if name := pod.Labels[key]; name != "" {
 				return name
 			}
 		}

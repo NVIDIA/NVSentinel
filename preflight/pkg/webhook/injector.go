@@ -122,31 +122,16 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 		return nil, nil, nil
 	}
 
-	// Check if pod is part of a gang
-	var gangCtx *GangContext
-
-	if i.cfg.GangCoordination.Enabled && i.discoverer != nil {
-		if i.discoverer.CanHandle(pod) {
-			gangID := i.discoverer.ExtractGangID(pod)
-			if gangID != "" {
-				gangCtx = &GangContext{
-					GangID:        gangID,
-					ConfigMapName: gang.ConfigMapName(gangID),
-				}
-				slog.Info("Pod is part of a gang",
-					"pod", pod.Name,
-					"namespace", pod.Namespace,
-					"gangID", gangID,
-					"configMap", gangCtx.ConfigMapName,
-					"discoverer", i.discoverer.Name())
-			}
-		} else {
-			slog.Debug("Pod not handled by gang discoverer",
-				"pod", pod.Name,
-				"namespace", pod.Namespace,
-				"discoverer", i.discoverer.Name())
-		}
+	// Detect reinvocation: if our init containers are already in the pod,
+	// the API server is reinvoking us after another webhook mutated the pod.
+	// On reinvocation we only add gang context (if now available), not
+	// re-inject init containers.
+	if i.alreadyInjected(pod) {
+		return i.handleReinvocation(pod)
 	}
+
+	// Check if pod is part of a gang
+	gangCtx := i.detectGang(pod)
 
 	selected, err := i.selectInitContainers(pod)
 	if err != nil {
@@ -176,6 +161,238 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 	patches = append(patches, i.injectImagePullSecrets(pod)...)
 
 	return patches, gangCtx, nil
+}
+
+// detectGang checks if the pod belongs to a gang and returns the context.
+func (i *Injector) detectGang(pod *corev1.Pod) *GangContext {
+	if !i.cfg.GangCoordination.Enabled || i.discoverer == nil {
+		return nil
+	}
+
+	if !i.discoverer.CanHandle(pod) {
+		slog.Debug("Pod not handled by gang discoverer",
+			"pod", pod.Name,
+			"namespace", pod.Namespace,
+			"discoverer", i.discoverer.Name())
+
+		return nil
+	}
+
+	gangID := i.discoverer.ExtractGangID(pod)
+	if gangID == "" {
+		return nil
+	}
+
+	gangCtx := &GangContext{
+		GangID:        gangID,
+		ConfigMapName: gang.ConfigMapName(gangID),
+	}
+
+	slog.Info("Pod is part of a gang",
+		"pod", pod.Name,
+		"namespace", pod.Namespace,
+		"gangID", gangID,
+		"configMap", gangCtx.ConfigMapName,
+		"discoverer", i.discoverer.Name())
+
+	return gangCtx
+}
+
+// alreadyInjected returns true if the pod already has preflight init containers
+// (i.e., this is a reinvocation by the API server).
+func (i *Injector) alreadyInjected(pod *corev1.Pod) bool {
+	configured := make(map[string]bool, len(i.cfg.InitContainers))
+	for _, spec := range i.cfg.InitContainers {
+		configured[spec.Name] = true
+	}
+
+	for _, c := range pod.Spec.InitContainers {
+		if configured[c.Name] {
+			return true
+		}
+	}
+
+	return false
+}
+
+// handleReinvocation is called when the API server reinvokes the webhook after
+// another webhook (e.g., KAI scheduler) mutated the pod. If gang context is
+// now available (scheduler annotation appeared), it patches gang env vars,
+// volume mounts, and volumes onto the existing init containers.
+func (i *Injector) handleReinvocation(pod *corev1.Pod) ([]PatchOperation, *GangContext, error) {
+	gangCtx := i.detectGang(pod)
+	if gangCtx == nil {
+		slog.Debug("Reinvocation: still no gang context, nothing to do",
+			"pod", pod.Name, "namespace", pod.Namespace)
+		return nil, nil, nil
+	}
+
+	slog.Info("Reinvocation: gang context now available, patching existing init containers",
+		"pod", pod.Name,
+		"namespace", pod.Namespace,
+		"gangID", gangCtx.GangID)
+
+	// Find indices of our init containers in the pod spec and build
+	// patches to add gang env vars and volume mounts.
+	configured := make(map[string]bool, len(i.cfg.InitContainers))
+	for _, spec := range i.cfg.InitContainers {
+		configured[spec.Name] = true
+	}
+
+	var patches []PatchOperation
+	var checkNames []string
+
+	mirrorClaims := i.cfg.GangCoordination.MirrorResourceClaims != nil &&
+		*i.cfg.GangCoordination.MirrorResourceClaims
+
+	for idx, c := range pod.Spec.InitContainers {
+		if !configured[c.Name] {
+			continue
+		}
+
+		checkNames = append(checkNames, c.Name)
+
+		// Add gang env vars
+		gangEnv := i.gangEnvVars(gangCtx)
+		for _, env := range gangEnv {
+			if !hasEnvName(c.Env, env.Name) {
+				patches = append(patches, PatchOperation{
+					Op:    "add",
+					Path:  fmt.Sprintf("/spec/initContainers/%d/env/-", idx),
+					Value: env,
+				})
+			}
+		}
+
+		// Add gang volume mounts
+		gangMounts := i.gangVolumeMounts()
+		for _, vm := range gangMounts {
+			if !hasVolumeMountName(c.VolumeMounts, vm.Name) {
+				patches = append(patches, PatchOperation{
+					Op:    "add",
+					Path:  fmt.Sprintf("/spec/initContainers/%d/volumeMounts/-", idx),
+					Value: vm,
+				})
+			}
+		}
+
+		// Mirror DRA resource claims
+		if mirrorClaims {
+			for _, podClaim := range pod.Spec.ResourceClaims {
+				if !hasResourceClaim(c.Resources.Claims, podClaim.Name) {
+					patches = append(patches, PatchOperation{
+						Op:    "add",
+						Path:  fmt.Sprintf("/spec/initContainers/%d/resources/claims/-", idx),
+						Value: corev1.ResourceClaim{Name: podClaim.Name},
+					})
+				}
+			}
+		}
+	}
+
+	gangCtx.CheckNames = strings.Join(checkNames, ",")
+
+	// Add gang volumes to the pod
+	patches = append(patches, i.injectVolumes(pod, gangCtx)...)
+
+	if len(patches) == 0 {
+		return nil, gangCtx, nil
+	}
+
+	return patches, gangCtx, nil
+}
+
+// gangEnvVars returns the gang-related environment variables.
+func (i *Injector) gangEnvVars(gangCtx *GangContext) []corev1.EnvVar {
+	return []corev1.EnvVar{
+		{Name: "GANG_ID", Value: gangCtx.GangID},
+		{Name: "GANG_CONFIG_DIR", Value: i.cfg.GangCoordination.ConfigMapMountPath},
+		{Name: "GANG_TIMEOUT_SECONDS", Value: strconv.Itoa(int(i.cfg.GangCoordination.TimeoutDuration.Seconds()))},
+		{Name: "MASTER_PORT", Value: strconv.Itoa(i.cfg.GangCoordination.MasterPort)},
+		{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{
+			FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"},
+		}},
+		{Name: "POD_IP", ValueFrom: &corev1.EnvVarSource{
+			FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"},
+		}},
+	}
+}
+
+// gangVolumeMounts returns gang-related volume mounts for an init container.
+func (i *Injector) gangVolumeMounts() []corev1.VolumeMount {
+	var mounts []corev1.VolumeMount
+
+	mounts = append(mounts,
+		corev1.VolumeMount{
+			Name:      types.GangConfigVolumeName,
+			MountPath: i.cfg.GangCoordination.ConfigMapMountPath,
+			ReadOnly:  true,
+		},
+		corev1.VolumeMount{
+			Name:      dshmVolumeName,
+			MountPath: "/dev/shm",
+		},
+	)
+
+	if i.cfg.GangCoordination.NCCLTopoConfigMap != "" {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      ncclTopoVolumeName,
+			MountPath: "/etc/nccl",
+			ReadOnly:  true,
+		})
+	}
+
+	for _, m := range i.cfg.GangCoordination.ExtraHostPathMounts {
+		if m.Name != "" && m.MountPath != "" {
+			mounts = append(mounts, corev1.VolumeMount{
+				Name:      m.Name,
+				MountPath: m.MountPath,
+				ReadOnly:  boolDefault(m.ReadOnly, true),
+			})
+		}
+	}
+
+	for _, m := range i.cfg.GangCoordination.ExtraVolumeMounts {
+		if m.Name != "" && m.MountPath != "" {
+			mounts = append(mounts, corev1.VolumeMount{
+				Name:      m.Name,
+				MountPath: m.MountPath,
+				ReadOnly:  boolDefault(m.ReadOnly, true),
+			})
+		}
+	}
+
+	return mounts
+}
+
+func hasEnvName(envs []corev1.EnvVar, name string) bool {
+	for _, e := range envs {
+		if e.Name == name {
+			return true
+		}
+	}
+
+	return false
+}
+
+func hasVolumeMountName(mounts []corev1.VolumeMount, name string) bool {
+	for _, m := range mounts {
+		if m.Name == name {
+			return true
+		}
+	}
+
+	return false
+}
+
+func hasResourceClaim(claims []corev1.ResourceClaim, name string) bool {
+	for _, c := range claims {
+		if c.Name == name {
+			return true
+		}
+	}
+
+	return false
 }
 
 // patchInitContainers builds JSON Patch operations to add preflight init
