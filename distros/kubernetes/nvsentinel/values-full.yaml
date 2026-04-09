@@ -1561,28 +1561,6 @@ preflight:
     certProvider: cert-manager
 
   ##############################################################################
-  # DCGM CONFIGURATION
-  #
-  # Shared by the preflight-dcgm-diag init container.
-  # global.dcgm takes precedence when set.
-  ##############################################################################
-  dcgm:
-    service:
-      # DCGM hostengine gRPC endpoint
-      endpoint: "nvidia-dcgm.gpu-operator.svc"
-      port: 5555
-    # Diagnostic level (maps to dcgmi diag -r <level>):
-    #   1 = Short  (~30 s)   - software deployment checks only (permissions, libraries, etc.)
-    #   2 = Medium (~2 min)  - adds PCIe bandwidth and basic GPU stress tests
-    #   3 = Long   (~15 min) - adds targeted stress (Diagnostic plugin, default 180 s per GPU)
-    #   4 = XLong  (~1-2 hr) - extended stress with longer Diagnostic plugin duration
-    diagLevel: 2
-    # How downstream modules handle the health event:
-    #   EXECUTE_REMEDIATION - trigger quarantine/drain/remediation pipeline
-    #   STORE_ONLY          - persist the event without acting on it
-    processingStrategy: "EXECUTE_REMEDIATION"
-
-  ##############################################################################
   # INIT CONTAINERS (PREFLIGHT CHECKS)
   #
   # Each entry becomes an init container injected into GPU pods.
@@ -1591,15 +1569,14 @@ preflight:
   #
   # The webhook automatically injects these env vars on every init container:
   #   NODE_NAME, PLATFORM_CONNECTOR_SOCKET, PROCESSING_STRATEGY
-  # And for the dcgm-diag container:
-  #   DCGM_DIAG_LEVEL, DCGM_HOSTENGINE_ADDR
   # And for gang-aware containers:
   #   GANG_ID, GANG_CONFIG_DIR, GANG_TIMEOUT_SECONDS, POD_NAME
   ##############################################################################
   initContainers:
     # DCGM diagnostic - runs DCGM diag against allocated GPUs
-    # Env: DCGM_DIAG_LEVEL (1-4, set from dcgm.diagLevel above),
-    #       DCGM_HOSTENGINE_ADDR (set from dcgm.service above)
+    # Env vars:
+    #   DCGM_DIAG_LEVEL       - diagnostic depth 1-4 (default 2)
+    #   DCGM_HOSTENGINE_ADDR  - hostengine gRPC endpoint (default nvidia-dcgm.gpu-operator.svc:5555)
     - name: preflight-dcgm-diag
       image: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag:latest
       volumeMounts:
