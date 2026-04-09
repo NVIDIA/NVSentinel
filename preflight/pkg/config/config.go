@@ -60,24 +60,19 @@ func (s *InitContainerSpec) IsDefaultEnabled() bool {
 }
 
 type FileConfig struct {
-	InitContainers       []InitContainerSpec    `yaml:"initContainers"`
-	GPUResourceNames     []string               `yaml:"gpuResourceNames"`
-	NetworkResourceNames []string               `yaml:"networkResourceNames"`
-	ConnectorSocket    string `yaml:"connectorSocket"`
-	ProcessingStrategy string `yaml:"processingStrategy"`
+	InitContainers       []InitContainerSpec `yaml:"initContainers"`
+	GPUResourceNames     []string            `yaml:"gpuResourceNames"`
+	NetworkResourceNames []string            `yaml:"networkResourceNames"`
+	ConnectorSocket      string              `yaml:"connectorSocket"`
+	ProcessingStrategy   string              `yaml:"processingStrategy"`
 
-	GangDiscovery GangDiscoveryConfig `yaml:"gangDiscovery"`
-	GangCoordination     GangCoordinationConfig `yaml:"gangCoordination"`
+	GangDiscovery    GangDiscoveryConfig    `yaml:"gangDiscovery"`
+	GangCoordination GangCoordinationConfig `yaml:"gangCoordination"`
 
 	// InitContainerPlacement controls where preflight init containers are
 	// placed relative to existing init containers in the pod spec.
 	// Valid values: "prepend", "append". Default: "append".
 	InitContainerPlacement InitContainerPlacement `yaml:"initContainerPlacement,omitempty"`
-
-	// ImagePullSecrets are added to the target pod's spec.imagePullSecrets
-	// when init containers are injected. This is needed when the init
-	// container images are stored in a private registry.
-	ImagePullSecrets []corev1.LocalObjectReference `yaml:"imagePullSecrets,omitempty"`
 
 	// NCCLEnvPatterns are glob patterns for environment variable names to copy
 	// from the pod's main containers to preflight init containers.

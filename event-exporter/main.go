@@ -29,7 +29,9 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/initializer"
 	_ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers"
 )
@@ -41,10 +43,24 @@ var (
 )
 
 func main() {
-	logger.SetDefaultStructuredLogger("event-exporter", version)
+	logger.SetDefaultStructuredLoggerWithTraceCorrelation("event-exporter", version)
 	slog.Info("Health Events Exporter starting", "version", version, "commit", commit, "date", date)
 
-	if err := run(); err != nil {
+	if err := tracing.InitTracing(tracing.ServiceEventExporter); err != nil {
+		slog.Warn("Failed to initialize tracing", "error", err)
+	}
+
+	err := run()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+	if shutdownErr := tracing.ShutdownTracing(shutdownCtx); shutdownErr != nil {
+		slog.Warn("Failed to shutdown tracing", "error", shutdownErr)
+	}
+
+	cancel()
+
+	if err != nil {
 		slog.Error("Fatal error", "error", err)
 		os.Exit(1)
 	}
@@ -71,6 +87,9 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize components: %w", err)
 	}
+
+	ff := metrics.NewRegistry("event-exporter")
+	ff.Set("backfill_enabled", components.BackfillEnabled)
 
 	httpServer, err := createMetricsServer(*metricsPort)
 	if err != nil {

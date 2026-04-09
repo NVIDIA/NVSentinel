@@ -31,6 +31,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	met "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	srv "github.com/nvidia/nvsentinel/commons/pkg/server"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
@@ -148,6 +149,10 @@ func setupKubernetesClient() (kubernetes.Interface, error) {
 
 func run() error {
 	appCfg := parseFlags()
+
+	ff := met.NewRegistry("maintenance-notifier")
+	ff.SetStoreOnlyMode(appCfg.processingStrategy)
+
 	logStartupInfo(appCfg)
 
 	cfg, err := config.LoadConfig(appCfg.configPath)

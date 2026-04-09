@@ -66,7 +66,9 @@ circuitBreaker:
 # Rules are evaluated using CEL (Common Expression Language) expressions
 # Multiple rulesets can be defined and are evaluated in order
 ruleSets:
-  - # Ruleset version (for future compatibility and migration)
+  - # Enable or disable this ruleset; disabled rulesets are skipped entirely
+    enabled: true
+    # Ruleset version (for future compatibility and migration)
     version: "1"
     # Human-readable name for the ruleset (used in logs and metrics)
     name: "GPU fatal error ruleset"
@@ -105,7 +107,8 @@ ruleSets:
     #   # NoExecute: Existing pods without toleration are evicted
     #   effect: "NoSchedule"
 
-  - version: "1"
+  - enabled: true
+    version: "1"
     name: "CSP health monitor fatal error ruleset"
     match:
       all:
@@ -117,7 +120,8 @@ ruleSets:
     cordon:
       shouldCordon: true
 
-  - version: "1"
+  - enabled: true
+    version: "1"
     name: "Syslog fatal error ruleset"
     match:
       all:
@@ -129,7 +133,8 @@ ruleSets:
     cordon:
       shouldCordon: true
 
-  - version: "1"
+  - enabled: true
+    version: "1"
     name: "Kubernetes object monitor fatal error ruleset"
     match:
       all:

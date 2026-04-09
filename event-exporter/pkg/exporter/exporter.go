@@ -20,8 +20,11 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"k8s.io/apimachinery/pkg/util/wait"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/config"
@@ -64,23 +67,23 @@ func New(
 func (e *HealthEventsExporter) Run(ctx context.Context) error {
 	switch {
 	case e.cfg.Exporter.Backfill.Enabled && !e.hasResumeToken:
-		slog.Info("Backfill enabled and no resume token found - running historical backfill",
+		slog.InfoContext(ctx, "Backfill enabled and no resume token found - running historical backfill",
 			"maxAge", e.cfg.Exporter.Backfill.GetMaxAge(),
 			"maxEvents", e.cfg.Exporter.Backfill.MaxEvents)
 
 		if err := e.runBackfill(ctx); err != nil {
-			slog.Error("Failed to run backfill", "error", err)
+			slog.ErrorContext(ctx, "Failed to run backfill", "error", err)
 			return fmt.Errorf("backfill: %w", err)
 		}
 
-		slog.Info("Backfill complete")
+		slog.InfoContext(ctx, "Backfill complete")
 	case e.cfg.Exporter.Backfill.Enabled && e.hasResumeToken:
-		slog.Info("Backfill enabled but resume token exists - skipping backfill (already initialized)")
+		slog.InfoContext(ctx, "Backfill enabled but resume token exists - skipping backfill (already initialized)")
 	default:
-		slog.Info("Backfill disabled in configuration")
+		slog.InfoContext(ctx, "Backfill disabled in configuration")
 	}
 
-	slog.Info("Starting event stream")
+	slog.InfoContext(ctx, "Starting event stream")
 
 	e.source.Start(ctx)
 
@@ -88,38 +91,73 @@ func (e *HealthEventsExporter) Run(ctx context.Context) error {
 }
 
 func (e *HealthEventsExporter) runBackfill(ctx context.Context) error {
+	ctx, span := tracing.StartSpan(ctx, "event_exporter.backfill")
+	defer span.End()
+
 	startTime := time.Now().UTC()
 	backfillStart := startTime.Add(-e.cfg.Exporter.Backfill.GetMaxAge())
 
-	slog.Info("Starting backfill", "backfillStart", backfillStart, "maxAge", e.cfg.Exporter.Backfill.GetMaxAge())
+	slog.InfoContext(ctx, "Starting backfill",
+		"backfillStart", backfillStart, "maxAge", e.cfg.Exporter.Backfill.GetMaxAge())
 
 	metrics.BackfillInProgress.Set(1)
 	defer metrics.BackfillInProgress.Set(0)
 
 	cursor, err := e.queryBackfillEvents(ctx, backfillStart, startTime)
 	if err != nil {
-		slog.Error("Failed to query backfill events", "error", err)
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("event_exporter.backfill.status", "failed"),
+			attribute.String("event_exporter.error.type", "backfill_query_error"),
+			attribute.String("event_exporter.error.message", err.Error()),
+		)
+		slog.ErrorContext(ctx, "Failed to query backfill events", "error", err)
+
 		return fmt.Errorf("query backfill events: %w", err)
 	}
 	defer cursor.Close(ctx)
 
 	count, err := e.processBackfillCursor(ctx, cursor)
 	if err != nil {
-		slog.Error("Failed to process backfill cursor", "error", err)
+		span.SetAttributes(
+			attribute.String("event_exporter.backfill.status", "partial_success"),
+			attribute.Int("event_exporter.backfill.events_processed", count),
+			attribute.String("event_exporter.error.type", "backfill_process_error"),
+			attribute.String("event_exporter.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
+		slog.ErrorContext(ctx, "Failed to process backfill cursor", "error", err)
+
 		return fmt.Errorf("process backfill cursor: %w", err)
 	}
 
 	metrics.BackfillDuration.Observe(time.Since(startTime).Seconds())
-	slog.Info("Backfill complete", "events", count)
+	slog.InfoContext(ctx, "Backfill complete", "events", count)
 
 	return nil
 }
 
 func (e *HealthEventsExporter) queryBackfillEvents(ctx context.Context, start, end time.Time) (client.Cursor, error) {
+	ctx, span := tracing.StartSpan(ctx, "event_exporter.backfill.query")
+	defer span.End()
+
 	if e.cfg.Exporter.Backfill.MaxEvents <= 0 {
-		return nil,
-			fmt.Errorf("invalid MaxEvents value %d: must be positive", e.cfg.Exporter.Backfill.MaxEvents)
+		err := fmt.Errorf("invalid MaxEvents value %d: must be positive", e.cfg.Exporter.Backfill.MaxEvents)
+
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("event_exporter.error.type", "invalid_max_events_value"),
+			attribute.String("event_exporter.error.message", err.Error()),
+		)
+
+		return nil, err
 	}
+
+	span.SetAttributes(
+		attribute.String("event_exporter.backfill.query.start", start.Format(time.RFC3339)),
+		attribute.String("event_exporter.backfill.query.end", end.Format(time.RFC3339)),
+		attribute.Int("event_exporter.backfill.query.max_events", e.cfg.Exporter.Backfill.MaxEvents),
+	)
 
 	filter := map[string]any{
 		"createdAt": map[string]any{
@@ -135,7 +173,15 @@ func (e *HealthEventsExporter) queryBackfillEvents(ctx context.Context, start, e
 
 	cursor, err := e.dbClient.Find(ctx, filter, opts)
 	if err != nil {
-		slog.Error("Failed to query events", "error", err)
+		tracing.RecordError(span, err)
+
+		span.SetAttributes(
+			attribute.String("event_exporter.error.type", "find_events_error"),
+			attribute.String("event_exporter.error.message", err.Error()),
+		)
+
+		slog.ErrorContext(ctx, "Failed to query events", "error", err)
+
 		return nil, fmt.Errorf("query events: %w", err)
 	}
 
@@ -143,6 +189,9 @@ func (e *HealthEventsExporter) queryBackfillEvents(ctx context.Context, start, e
 }
 
 func (e *HealthEventsExporter) processBackfillCursor(ctx context.Context, cursor client.Cursor) (int, error) {
+	ctx, span := tracing.StartSpan(ctx, "event_exporter.backfill.process")
+	defer span.End()
+
 	var rateLimiter *time.Ticker
 
 	useRateLimiting := e.cfg.Exporter.Backfill.RateLimit > 0
@@ -151,30 +200,55 @@ func (e *HealthEventsExporter) processBackfillCursor(ctx context.Context, cursor
 		rateLimiter = time.NewTicker(time.Second / time.Duration(e.cfg.Exporter.Backfill.RateLimit))
 		defer rateLimiter.Stop()
 	} else {
-		slog.Info("Rate limiting disabled for backfill (RateLimit=0)")
+		slog.InfoContext(ctx, "Rate limiting disabled for backfill (RateLimit=0)")
 	}
 
 	count := 0
 
 	for cursor.Next(ctx) {
 		if ctx.Err() != nil {
-			slog.Error("Context done", "error", ctx.Err())
+			slog.ErrorContext(ctx, "Context done", "error", ctx.Err())
+			tracing.RecordError(span, ctx.Err())
+			span.SetAttributes(
+				attribute.String("event_exporter.error.type", "context_done_error"),
+				attribute.String("event_exporter.error.message", ctx.Err().Error()),
+			)
+
 			return count, ctx.Err()
 		}
 
-		healthEvent, err := e.decodeBackfillEvent(cursor)
+		healthEvent, err := e.decodeBackfillEvent(ctx, cursor)
 		if err != nil {
-			slog.Error("Failed to decode backfill event", "error", err)
+			slog.ErrorContext(ctx, "Failed to decode backfill event", "error", err)
+
+			tracing.RecordError(span, err)
+			span.AddEvent(
+				"decode_backfill_event_error",
+				trace.WithAttributes(
+					attribute.String("event_exporter.error.type", "decode_backfill_event_error"),
+					attribute.String("event_exporter.error.message", err.Error()),
+				),
+			)
+
 			continue
 		}
 
 		if healthEvent == nil {
-			slog.Debug("Skipping nil health event")
+			slog.DebugContext(ctx, "Skipping nil health event")
 			continue
 		}
 
 		if err := e.publishWithRetry(ctx, healthEvent); err != nil {
-			slog.Error("Failed to publish backfill event", "error", err)
+			slog.ErrorContext(ctx, "Failed to publish backfill event", "error", err)
+			tracing.RecordError(span, err)
+			span.AddEvent(
+				"publish_event_error",
+				trace.WithAttributes(
+					attribute.String("event_exporter.error.type", "publish_event_error"),
+					attribute.String("event_exporter.error.message", err.Error()),
+				),
+			)
+
 			return count, err
 		}
 
@@ -183,28 +257,45 @@ func (e *HealthEventsExporter) processBackfillCursor(ctx context.Context, cursor
 		metrics.BackfillEventsProcessed.Inc()
 
 		if err := e.waitForRateLimit(ctx, useRateLimiting, rateLimiter); err != nil {
-			slog.Error("Failed to wait for rate limit", "error", err)
+			slog.ErrorContext(ctx, "Failed to wait for rate limit", "error", err)
+			tracing.RecordError(span, err)
+			span.AddEvent(
+				"wait_for_rate_limit_error",
+				trace.WithAttributes(
+					attribute.String("event_exporter.error.type", "wait_for_rate_limit_error"),
+					attribute.String("event_exporter.error.message", err.Error()),
+				),
+			)
+
 			return count, fmt.Errorf("wait for rate limit: %w", err)
 		}
 	}
 
 	if err := cursor.Err(); err != nil {
-		slog.Error("Failed to get cursor error", "error", err)
+		slog.ErrorContext(ctx, "Failed to get cursor error", "error", err)
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("event_exporter.error.type", "cursor_error"),
+			attribute.String("event_exporter.error.message", err.Error()),
+		)
+
 		return count, fmt.Errorf("cursor error: %w", err)
 	}
+
+	span.SetAttributes(attribute.Int("event_exporter.backfill.events_processed", count))
 
 	return count, nil
 }
 
-func (e *HealthEventsExporter) decodeBackfillEvent(cursor client.Cursor) (*pb.HealthEvent, error) {
+func (e *HealthEventsExporter) decodeBackfillEvent(ctx context.Context, cursor client.Cursor) (*pb.HealthEvent, error) {
 	var healthEventWithStatus model.HealthEventWithStatus
 	if err := cursor.Decode(&healthEventWithStatus); err != nil {
-		slog.Warn("Failed to decode event", "error", err)
+		slog.WarnContext(ctx, "Failed to decode event", "error", err)
 		return nil, err
 	}
 
 	if healthEventWithStatus.HealthEvent == nil {
-		slog.Debug("Skipping nil health event")
+		slog.DebugContext(ctx, "Skipping nil health event")
 		return nil, nil
 	}
 
@@ -219,12 +310,12 @@ func (e *HealthEventsExporter) waitForRateLimit(
 	if useRateLimiting {
 		select {
 		case <-ctx.Done():
-			slog.Error("Context done", "error", ctx.Err())
+			slog.ErrorContext(ctx, "Context done", "error", ctx.Err())
 			return ctx.Err()
 		case <-rateLimiter.C:
 		}
 	} else if ctx.Err() != nil {
-		slog.Error("Context done", "error", ctx.Err())
+		slog.ErrorContext(ctx, "Context done", "error", ctx.Err())
 		return ctx.Err()
 	}
 
@@ -237,7 +328,7 @@ func (e *HealthEventsExporter) streamEvents(ctx context.Context) error {
 		numWorkers = 1
 	}
 
-	slog.Info("Starting event stream", "workers", numWorkers)
+	slog.InfoContext(ctx, "Starting event stream", "workers", numWorkers)
 
 	return e.streamEventsConcurrent(ctx, numWorkers)
 }
@@ -287,12 +378,12 @@ func (e *HealthEventsExporter) consumeAndDispatch(
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("Context done", "error", ctx.Err())
+			slog.InfoContext(ctx, "Context done", "error", ctx.Err())
 			return ctx.Err()
 
 		case healthEvent, ok := <-e.source.Events():
 			if !ok {
-				slog.Info("Event channel closed, finishing in-flight events")
+				slog.InfoContext(ctx, "Event channel closed, finishing in-flight events")
 				return nil
 			}
 
@@ -316,29 +407,43 @@ func (e *HealthEventsExporter) consumeAndDispatch(
 // nil documents) so the token writer advances the resume token. Returns
 // a non-nil error only for fatal publish failures.
 func (e *HealthEventsExporter) processEvent(ctx context.Context, rawEvent client.Event) error {
-	event, err := unmarshalHealthEvent(rawEvent)
+	healthEventWithStatus, err := unmarshalHealthEventWithStatus(ctx, rawEvent)
 	if err != nil {
-		slog.Warn("Failed to unmarshal event", "error", err)
+		slog.WarnContext(ctx, "Failed to unmarshal event", "error", err)
 		metrics.TransformErrors.Inc()
 
 		return nil
 	}
 
-	if event == nil {
-		slog.Debug("Skipping nil health event")
+	if healthEventWithStatus.HealthEvent == nil {
+		slog.DebugContext(ctx, "Skipping nil health event")
 		return nil
 	}
 
-	return e.publishWithRetry(ctx, event)
+	traceID := tracing.TraceIDFromMetadata(healthEventWithStatus.HealthEvent.GetMetadata())
+	parentSpanID := tracing.ParentSpanID(healthEventWithStatus.HealthEventStatus.SpanIds, tracing.ServicePlatformConnector)
+
+	ctx, span := tracing.StartSpanWithLinkFromTraceContext(ctx, traceID, parentSpanID, "event_exporter.process_event")
+	defer span.End()
+
+	return e.publishWithRetry(ctx, healthEventWithStatus.HealthEvent)
 }
 
 func (e *HealthEventsExporter) publishWithRetry(ctx context.Context, event *pb.HealthEvent) error {
-	cloudEvent, err := e.transformer.Transform(event)
-	if err != nil {
-		metrics.TransformErrors.Inc()
-		slog.Error("Failed to transform event", "error", err)
+	ctx, span := tracing.StartSpan(ctx, "event_exporter.publish_with_retry")
+	defer span.End()
 
-		return fmt.Errorf("transform event: %w", err)
+	cloudEvent, transformErr := e.transformer.Transform(ctx, event)
+	if transformErr != nil {
+		tracing.RecordError(span, transformErr)
+		span.SetAttributes(
+			attribute.String("event_exporter.error.type", "transform_error"),
+			attribute.String("event_exporter.error.message", transformErr.Error()),
+		)
+		metrics.TransformErrors.Inc()
+		slog.ErrorContext(ctx, "Failed to transform event", "error", transformErr)
+
+		return fmt.Errorf("transform event: %w", transformErr)
 	}
 
 	startTime := time.Now()
@@ -352,15 +457,14 @@ func (e *HealthEventsExporter) publishWithRetry(ctx context.Context, event *pb.H
 		Cap:      e.cfg.Exporter.FailureHandling.GetMaxBackoff(),
 	}
 
-	err = wait.ExponentialBackoffWithContext(ctx, backoffConfig, func(ctx context.Context) (bool, error) {
+	err := wait.ExponentialBackoffWithContext(ctx, backoffConfig, func(ctx context.Context) (bool, error) {
 		if attempt > 0 {
-			slog.Info("Publish failed, retrying", "attempt", attempt)
+			slog.InfoContext(ctx, "Publish failed, retrying", "attempt", attempt)
 		}
 
 		publishErr := e.sink.Publish(ctx, cloudEvent)
 		if publishErr == nil {
-			slog.Debug("Publish succeeded", "attempt", attempt)
-
+			slog.DebugContext(ctx, "Publish succeeded", "attempt", attempt)
 			metrics.PublishDuration.Observe(time.Since(startTime).Seconds())
 			metrics.EventsPublished.WithLabelValues(metrics.StatusSuccess).Inc()
 
@@ -368,8 +472,7 @@ func (e *HealthEventsExporter) publishWithRetry(ctx context.Context, event *pb.H
 		}
 
 		attempt++
-
-		slog.Warn("Publish failed, retrying",
+		slog.WarnContext(ctx, "Publish failed, retrying",
 			"attempt", attempt,
 			"maxRetries", e.cfg.Exporter.FailureHandling.MaxRetries,
 			"error", publishErr)
@@ -377,9 +480,16 @@ func (e *HealthEventsExporter) publishWithRetry(ctx context.Context, event *pb.H
 		return false, nil
 	})
 	if err != nil {
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("event_exporter.publish.failed_reason", "max_retries_exceeded"),
+			attribute.String("event_exporter.error.type", "publish_failed"),
+			attribute.String("event_exporter.error.message", err.Error()),
+		)
+
 		metrics.PublishErrors.WithLabelValues("max_retries_exceeded").Inc()
 		metrics.EventsPublished.WithLabelValues(metrics.StatusFailure).Inc()
-		slog.Error("Publish failed after max retries", "error", err)
+		slog.ErrorContext(ctx, "Publish failed after max retries", "error", err)
 
 		return fmt.Errorf("publish failed after %d retries: %w", e.cfg.Exporter.FailureHandling.MaxRetries, err)
 	}
@@ -387,12 +497,12 @@ func (e *HealthEventsExporter) publishWithRetry(ctx context.Context, event *pb.H
 	return nil
 }
 
-func unmarshalHealthEvent(event client.Event) (*pb.HealthEvent, error) {
+func unmarshalHealthEventWithStatus(ctx context.Context, event client.Event) (model.HealthEventWithStatus, error) {
 	var healthEventWithStatus model.HealthEventWithStatus
 	if err := event.UnmarshalDocument(&healthEventWithStatus); err != nil {
-		slog.Error("Failed to unmarshal document", "error", err)
-		return nil, fmt.Errorf("unmarshal document: %w", err)
+		slog.ErrorContext(ctx, "Failed to unmarshal document", "error", err)
+		return healthEventWithStatus, fmt.Errorf("unmarshal document: %w", err)
 	}
 
-	return healthEventWithStatus.HealthEvent, nil
+	return healthEventWithStatus, nil
 }

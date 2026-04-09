@@ -162,7 +162,7 @@ func (wp *workerPool) tokenWriter(ctx context.Context) error {
 		}
 
 		if err := wp.source.MarkProcessed(ctx, token); err != nil {
-			slog.Error("Failed to mark processed", "error", err)
+			slog.ErrorContext(ctx, "Failed to mark processed", "error", err)
 			wp.cancel()
 
 			return fmt.Errorf("mark processed: %w", err)
@@ -170,7 +170,7 @@ func (wp *workerPool) tokenWriter(ctx context.Context) error {
 
 		metrics.ResumeTokenUpdateTimestamp.SetToCurrentTime()
 
-		slog.Debug("Resume token advanced",
+		slog.DebugContext(ctx, "Resume token advanced",
 			"seq", result.seq,
 			"pendingOutOfOrder", tracker.pending())
 	}

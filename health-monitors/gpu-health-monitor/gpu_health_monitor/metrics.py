@@ -12,18 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-enabled: true
-additional_trustees:
-  - dims
-  - lalitadithya
-  - Jay-Madden
-  - nitz2407
-  - XRFXLP
-  - mchmarny
-  - tanishagoyal2
-  - ksaur
-  - deesharma24
-  - natherz97
-  - suket22
-  - cbumb
-  - pdmack
+"""Expose runtime feature toggles as a Prometheus gauge metric
+(nvsentinel_feature_flag_enabled) for observability."""
+
+from prometheus_client import Gauge
+
+nvsentinel_feature_flag_enabled = Gauge(
+    "nvsentinel_feature_flag_enabled",
+    "Reports whether a feature flag is enabled (1) or disabled (0).",
+    labelnames=["service", "flag"],
+)
+
+
+def set_flag(flag: str, enabled: bool) -> None:
+    nvsentinel_feature_flag_enabled.labels(service="gpu-health-monitor", flag=flag).set(1 if enabled else 0)

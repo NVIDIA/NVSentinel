@@ -27,9 +27,12 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
+
 	"github.com/nvidia/nvsentinel/commons/pkg/flags"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/initializer"
 )
 
@@ -41,11 +44,16 @@ var (
 )
 
 func main() {
-	logger.SetDefaultStructuredLogger("fault-quarantine", version)
+	logger.SetDefaultStructuredLoggerWithTraceCorrelation("fault-quarantine", version)
 	slog.Info("Starting fault-quarantine", "version", version, "commit", commit, "date", date)
 
 	if err := auditlogger.InitAuditLogger("fault-quarantine"); err != nil {
 		slog.Warn("Failed to initialize audit logger", "error", err)
+	}
+
+	// Initialize OpenTelemetry tracing
+	if err := tracing.InitTracing(tracing.ServiceFaultQuarantine); err != nil {
+		slog.Warn("Failed to initialize tracing", "error", err)
 	}
 
 	if err := run(); err != nil {
@@ -61,11 +69,19 @@ func main() {
 	if err := auditlogger.CloseAuditLogger(); err != nil {
 		slog.Warn("Failed to close audit logger", "error", err)
 	}
+
+	if err := tracing.ShutdownTracing(context.Background()); err != nil {
+		slog.Warn("Failed to shutdown tracing", "error", err)
+	}
 }
 
 func run() error {
 	metricsPort, databaseClientCertMountPath, kubeconfigPath, dryRun, circuitBreakerEnabled,
 		tomlConfigPath := parseFlags()
+
+	ff := metrics.NewRegistry("fault-quarantine")
+	ff.Set("dry_run", *dryRun)
+	ff.Set("circuit_breaker", *circuitBreakerEnabled)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -92,6 +108,10 @@ func run() error {
 	components, err := initializer.InitializeAll(ctx, params)
 	if err != nil {
 		return fmt.Errorf("initialization failed: %w", err)
+	}
+
+	for _, rs := range components.TomlConfig.RuleSets {
+		ff.Set(rs.Name, rs.Enabled)
 	}
 
 	g, gCtx := errgroup.WithContext(ctx)
