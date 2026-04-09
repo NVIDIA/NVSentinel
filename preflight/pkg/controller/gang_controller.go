@@ -195,7 +195,7 @@ func (c *GangController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	// when the webhook used a label fallback before the scheduler annotation
 	// arrived, producing a different gang ID.
 	derivedCM := gang.ConfigMapName(gangID)
-	if derivedCM != webhookCM {
+	if webhookCM != "" && derivedCM != webhookCM {
 		c.deleteOrphanedConfigMap(ctx, pod.Namespace, derivedCM)
 	}
 
