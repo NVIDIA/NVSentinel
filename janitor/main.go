@@ -40,8 +40,11 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
+
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
@@ -127,6 +130,15 @@ func run() error {
 
 		return err
 	}
+
+	ff := metrics.NewRegistry("janitor",
+		metrics.WithRegisterer(crmetrics.Registry),
+	)
+	ff.Set("manual_mode", cfg.Global.ManualMode != nil && *cfg.Global.ManualMode)
+	ff.Set("controller_reboot_node_enabled", cfg.RebootNode.Enabled)
+	ff.Set("controller_terminate_node_enabled", cfg.TerminateNode.Enabled)
+	ff.Set("controller_gpu_reset_enabled", cfg.GPUReset.Enabled)
+	ff.Set("csp_provider_auth_enabled", cfg.Global.CSPProviderTokenPath != "")
 
 	// 3. Setup config server (port, handler, server)
 	configServer, configPort, err := setupConfigServer(cfg, flags.configAddr)

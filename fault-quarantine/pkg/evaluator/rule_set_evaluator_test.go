@@ -231,6 +231,7 @@ func TestInitializeRuleSetEvaluators(t *testing.T) {
 	}
 
 	ruleSet1 := config.RuleSet{
+		Enabled:  true,
 		Name:     "RuleSet1",
 		Version:  "1",
 		Priority: 1,
@@ -240,6 +241,7 @@ func TestInitializeRuleSetEvaluators(t *testing.T) {
 	}
 
 	ruleSet2 := config.RuleSet{
+		Enabled:  true,
 		Name:     "RuleSet2",
 		Version:  "1",
 		Priority: 2,
@@ -249,6 +251,7 @@ func TestInitializeRuleSetEvaluators(t *testing.T) {
 	}
 
 	ruleSetInvalid := config.RuleSet{
+		Enabled:  true,
 		Name:     "RuleSetInvalid",
 		Version:  "1",
 		Priority: 3,

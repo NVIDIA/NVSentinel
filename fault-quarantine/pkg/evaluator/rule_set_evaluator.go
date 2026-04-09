@@ -34,7 +34,11 @@ func InitializeRuleSetEvaluators(
 	)
 
 	for _, ruleSet := range ruleSets {
-		// We can extend this to add different types of match based rules
+		if !ruleSet.Enabled {
+			slog.Info("Skipping disabled ruleSet", "ruleSet", ruleSet.Name)
+			continue
+		}
+
 		if len(ruleSet.Match.Any) > 0 {
 			evaluators, err := createEvaluators(ruleSet.Match.Any, nodeInformer)
 			if err != nil {

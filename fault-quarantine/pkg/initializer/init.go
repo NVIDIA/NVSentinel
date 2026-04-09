@@ -46,6 +46,7 @@ type Components struct {
 	CircuitBreaker  breaker.CircuitBreaker
 	DatastoreConfig *datastore.DataStoreConfig
 	Pipeline        interface{}
+	TomlConfig      config.TomlConfig
 }
 
 func InitializeAll(ctx context.Context, params InitializationParams) (*Components, error) {
@@ -109,6 +110,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		CircuitBreaker:  circuitBreaker,
 		DatastoreConfig: datastoreConfig,
 		Pipeline:        pipeline,
+		TomlConfig:      tomlCfg,
 	}, nil
 }
 

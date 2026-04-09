@@ -438,7 +438,9 @@ fault-quarantine:
   # Rules are evaluated in order for each health event
   ruleSets:
     # Example rule 1: Quarantine nodes with fatal GPU errors
-    - version: "1"
+    # Enable or disable this ruleset; disabled rulesets are skipped entirely
+    - enabled: true
+      version: "1"
       name: "GPU fatal error ruleset"
       
       # Match conditions - all must be true
@@ -482,7 +484,8 @@ fault-quarantine:
       #   effect: "NoSchedule"
 
     # Example rule 2: Quarantine nodes with CSP maintenance events
-    - version: "1"
+    - enabled: true
+      version: "1"
       name: "CSP health monitor fatal error ruleset"
       match:
         all:
@@ -495,7 +498,8 @@ fault-quarantine:
         shouldCordon: true
 
     # Example rule 3: Quarantine nodes with syslog errors
-    - version: "1"
+    - enabled: true
+      version: "1"
       name: "Syslog fatal error ruleset"
       match:
         all:

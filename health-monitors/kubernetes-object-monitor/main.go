@@ -24,7 +24,10 @@ import (
 	"syscall"
 	"time"
 
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
+
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/initializer"
 	_ "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/metrics"
 )
@@ -88,6 +91,11 @@ func main() {
 }
 
 func run() error {
+	ff := metrics.NewRegistry(defaultAgentName,
+		metrics.WithRegisterer(crmetrics.Registry),
+	)
+	ff.SetStoreOnlyMode(*processingStrategyFlag)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -106,6 +114,10 @@ func run() error {
 		return fmt.Errorf("failed to initialize components: %w", err)
 	}
 	defer components.GRPCConn.Close()
+
+	for _, p := range components.Config.Policies {
+		ff.Set(p.Name, p.Enabled)
+	}
 
 	slog.Info("Starting manager")
 

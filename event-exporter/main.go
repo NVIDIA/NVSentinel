@@ -29,6 +29,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/initializer"
@@ -86,6 +87,9 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize components: %w", err)
 	}
+
+	ff := metrics.NewRegistry("event-exporter")
+	ff.Set("backfill_enabled", components.BackfillEnabled)
 
 	httpServer, err := createMetricsServer(*metricsPort)
 	if err != nil {

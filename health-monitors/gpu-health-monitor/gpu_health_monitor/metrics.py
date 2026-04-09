@@ -12,27 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: fault-quarantine
-  namespace: nvsentinel
-data:
-  config.toml: |
-    [circuitBreaker]
-      percentage = 50
-      duration = "5m"
-    
-    [[rule-sets]]
-      enabled = true
-      name = "Basic-Match-Rule"
-      [[rule-sets.match.all]]
-        kind = "HealthEvent"
-        expression = "event.agent == 'gpu-health-monitor' && event.checkName == 'GpuXidError'"
-      [rule-sets.taint]
-        key = "AggregatedNodeHealth"
-        value = "False"
-        effect = "NoSchedule"
-      [rule-sets.cordon]
-        shouldCordon = true
+"""Expose runtime feature toggles as a Prometheus gauge metric
+(nvsentinel_feature_flag_enabled) for observability."""
 
+from prometheus_client import Gauge
+
+nvsentinel_feature_flag_enabled = Gauge(
+    "nvsentinel_feature_flag_enabled",
+    "Reports whether a feature flag is enabled (1) or disabled (0).",
+    labelnames=["service", "flag"],
+)
+
+
+def set_flag(flag: str, enabled: bool) -> None:
+    nvsentinel_feature_flag_enabled.labels(service="gpu-health-monitor", flag=flag).set(1 if enabled else 0)

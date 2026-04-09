@@ -660,6 +660,7 @@ func TestE2E_BasicQuarantineAndUnquarantine(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-critical-errors",
 				Version:  "1",
 				Priority: 10,
@@ -801,6 +802,7 @@ func TestE2E_EntityLevelTracking(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-critical-errors",
 				Version:  "1",
 				Priority: 10,
@@ -958,6 +960,7 @@ func TestE2E_MultipleChecksOnSameNode(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-critical-errors",
 				Version:  "1",
 				Priority: 10,
@@ -970,6 +973,7 @@ func TestE2E_MultipleChecksOnSameNode(t *testing.T) {
 				Cordon: config.Cordon{ShouldCordon: true},
 			},
 			{
+				Enabled:  true,
 				Name:     "gpu-nvlink-errors",
 				Version:  "1",
 				Priority: 8,
@@ -1079,6 +1083,7 @@ func TestE2E_CheckLevelHealthyEvent(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-critical-errors",
 				Version:  "1",
 				Priority: 10,
@@ -1149,6 +1154,7 @@ func TestE2E_DuplicateEntityEvents(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-critical-errors",
 				Version:  "1",
 				Priority: 10,
@@ -1231,6 +1237,7 @@ func TestE2E_HealthyEventWithoutQuarantine(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-critical-errors",
 				Version:  "1",
 				Priority: 10,
@@ -1294,6 +1301,7 @@ func TestE2E_PartialEntityRecovery(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-critical-errors",
 				Version:  "1",
 				Priority: 10,
@@ -1369,6 +1377,7 @@ func TestE2E_AllGPUsFailThenRecover(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-critical-errors",
 				Version:  "1",
 				Priority: 10,
@@ -1444,6 +1453,7 @@ func TestE2E_SyslogMultipleEntityTypes(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "syslog-xid-critical-errors",
 				Version:  "1",
 				Priority: 10,
@@ -1569,6 +1579,7 @@ func TestE2E_BackwardCompatibilityOldFormat(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-nvlink-errors",
 				Version:  "1",
 				Priority: 8,
@@ -1657,6 +1668,7 @@ func TestE2E_MixedHealthyUnhealthyFlapping(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-critical-errors",
 				Version:  "1",
 				Priority: 10,
@@ -1736,6 +1748,7 @@ func TestE2E_MultipleNodesSimultaneous(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-critical-errors",
 				Version:  "1",
 				Priority: 10,
@@ -1803,6 +1816,7 @@ func TestE2E_HealthyEventForNonMatchingCheck(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-critical-errors",
 				Version:  "1",
 				Priority: 10,
@@ -1879,6 +1893,7 @@ func TestE2E_MultipleRulesetsWithPriorities(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "low-priority-rule",
 				Version:  "1",
 				Priority: 5,
@@ -1891,6 +1906,7 @@ func TestE2E_MultipleRulesetsWithPriorities(t *testing.T) {
 				Cordon: config.Cordon{ShouldCordon: false},
 			},
 			{
+				Enabled:  true,
 				Name:     "high-priority-rule",
 				Version:  "1",
 				Priority: 10,
@@ -1948,6 +1964,7 @@ func TestE2E_NonFatalEventDoesNotQuarantine(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-critical-errors",
 				Version:  "1",
 				Priority: 10,
@@ -2004,6 +2021,7 @@ func TestE2E_OutOfOrderEvents(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-critical-errors",
 				Version:  "1",
 				Priority: 10,
@@ -2071,6 +2089,7 @@ func TestE2E_SkipRedundantCordoning(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-critical-errors",
 				Version:  "1",
 				Priority: 10,
@@ -2142,6 +2161,7 @@ func TestE2E_NodeAlreadyCordonedManually(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-errors",
 				Version:  "1",
 				Priority: 10,
@@ -2383,6 +2403,7 @@ func TestE2E_RulesetNotMatching(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-fatal-only",
 				Version:  "1",
 				Priority: 10,
@@ -2460,6 +2481,7 @@ func TestE2E_PartialAnnotationUpdate(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-errors",
 				Version:  "1",
 				Priority: 10,
@@ -2566,6 +2588,7 @@ func TestE2E_CircuitBreakerBasic(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-errors",
 				Version:  "1",
 				Priority: 10,
@@ -2688,6 +2711,7 @@ func TestE2E_CircuitBreakerSlidingWindow(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-errors",
 				Version:  "1",
 				Priority: 10,
@@ -2780,6 +2804,7 @@ func TestE2E_CircuitBreakerUniqueNodeTracking(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-errors",
 				Version:  "1",
 				Priority: 10,
@@ -2888,6 +2913,7 @@ func TestE2E_QuarantineOverridesForce(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "should-not-match",
 				Version:  "1",
 				Priority: 10,
@@ -2969,6 +2995,7 @@ func TestE2E_NodeRuleEvaluator(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "managed-nodes-only",
 				Version:  "1",
 				Priority: 10,
@@ -3026,6 +3053,7 @@ func TestE2E_NodeRuleDoesNotMatch(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "managed-nodes-only",
 				Version:  "1",
 				Priority: 10,
@@ -3085,6 +3113,7 @@ func TestE2E_TaintWithoutCordon(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "taint-only-rule",
 				Version:  "1",
 				Priority: 10,
@@ -3158,6 +3187,7 @@ func TestE2E_CordonWithoutTaint(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "cordon-only-rule",
 				Version:  "1",
 				Priority: 10,
@@ -3237,6 +3267,7 @@ func TestE2E_ManualUncordonAnnotationCleanup(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-errors",
 				Version:  "1",
 				Priority: 10,
@@ -3322,6 +3353,7 @@ func TestE2E_UnhealthyEventOnQuarantinedNodeNoRuleMatch(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-only",
 				Version:  "1",
 				Priority: 10,
@@ -3404,6 +3436,7 @@ func TestE2E_ForceQuarantineOnAlreadyQuarantinedNode(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-only",
 				Version:  "1",
 				Priority: 10,
@@ -3498,6 +3531,7 @@ func TestE2E_DryRunMode(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-errors",
 				Version:  "1",
 				Priority: 10,
@@ -3569,6 +3603,7 @@ func TestE2E_TaintOnlyThenCordonRule(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "taint-first",
 				Version:  "1",
 				Priority: 5,
@@ -3581,6 +3616,7 @@ func TestE2E_TaintOnlyThenCordonRule(t *testing.T) {
 				Cordon: config.Cordon{ShouldCordon: false},
 			},
 			{
+				Enabled:  true,
 				Name:     "cordon-second",
 				Version:  "1",
 				Priority: 10,
@@ -3717,6 +3753,7 @@ func TestE2E_HealthyEventForUntrackedCheckNotPropagated(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-critical-errors",
 				Version:  "1",
 				Priority: 10,
@@ -3798,6 +3835,7 @@ func TestE2E_UnhealthyEventNotMatchingRulesNotPropagated(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-fatal-only",
 				Version:  "1",
 				Priority: 10,
@@ -3885,6 +3923,7 @@ func TestE2E_ManualUncordonWithCancellation(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-errors",
 				Version:  "1",
 				Priority: 10,
@@ -3970,6 +4009,7 @@ func TestE2E_ManualUncordonMultipleEvents(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-errors",
 				Version:  "1",
 				Priority: 10,
@@ -4136,6 +4176,7 @@ func TestE2E_ConcurrentHealthyEvents_WithDelayedInformer(t *testing.T) {
 	tomlConfig := config.TomlConfig{
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{{
+			Enabled:  true,
 			Name:     "gpu-fatal-errors",
 			Version:  "1",
 			Priority: 10,
@@ -4340,6 +4381,7 @@ func TestE2E_StaleAnnotationOnRestart_TaintsAndCordon(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-errors",
 				Version:  "1",
 				Priority: 10,
@@ -4477,6 +4519,7 @@ func TestE2E_StaleAnnotationOnRestart_CordonOnly(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-errors",
 				Version:  "1",
 				Priority: 10,
@@ -4574,6 +4617,7 @@ func TestE2E_StaleAnnotationOnRestart_TaintsOnly(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-errors",
 				Version:  "1",
 				Priority: 10,
@@ -4837,6 +4881,7 @@ func TestE2ECordonAndTaint_ManualUntaint(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-errors",
 				Version:  "1",
 				Priority: 10,
@@ -4984,6 +5029,7 @@ func TestE2ECordonAndTaint_ManualUncordon(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-errors",
 				Version:  "1",
 				Priority: 10,
@@ -5241,6 +5287,7 @@ func TestMetrics_NodeQuarantineDuration(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-critical-errors",
 				Version:  "1",
 				Priority: 10,
@@ -5338,6 +5385,7 @@ func TestMetrics_NodeRemediationDuration(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-critical-errors",
 				Version:  "1",
 				Priority: 10,
@@ -5512,6 +5560,7 @@ func TestMetrics_FullQuarantineUnquarantineMetricsFlow(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-critical-errors",
 				Version:  "1",
 				Priority: 10,
