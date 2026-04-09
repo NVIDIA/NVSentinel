@@ -632,6 +632,53 @@ func TestCheckNamesFromPod(t *testing.T) {
 	}
 }
 
+func TestCleanupOrphanedConfigMap(t *testing.T) {
+	t.Run("deletes when webhook and derived names differ", func(t *testing.T) {
+		ctx := context.Background()
+		derivedName := coordinator.ConfigMapName("annotation-gang")
+
+		fc := fake.NewClientBuilder().WithObjects(&corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: derivedName, Namespace: "default"},
+		}).Build()
+
+		gc := &GangController{Client: fc}
+		gc.cleanupOrphanedConfigMap(ctx, "default", "webhook-label-cm", "annotation-gang")
+
+		err := fc.Get(ctx, client.ObjectKey{Namespace: "default", Name: derivedName}, &corev1.ConfigMap{})
+		assert.True(t, errors.IsNotFound(err), "derived ConfigMap should be deleted")
+	})
+
+	t.Run("no-op when names match", func(t *testing.T) {
+		ctx := context.Background()
+		cmName := coordinator.ConfigMapName("same-gang")
+
+		fc := fake.NewClientBuilder().WithObjects(&corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: "default"},
+		}).Build()
+
+		gc := &GangController{Client: fc}
+		gc.cleanupOrphanedConfigMap(ctx, "default", cmName, "same-gang")
+
+		err := fc.Get(ctx, client.ObjectKey{Namespace: "default", Name: cmName}, &corev1.ConfigMap{})
+		assert.NoError(t, err, "ConfigMap should still exist when names match")
+	})
+
+	t.Run("no-op when webhookCM is empty", func(t *testing.T) {
+		ctx := context.Background()
+		derivedName := coordinator.ConfigMapName("some-gang")
+
+		fc := fake.NewClientBuilder().WithObjects(&corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: derivedName, Namespace: "default"},
+		}).Build()
+
+		gc := &GangController{Client: fc}
+		gc.cleanupOrphanedConfigMap(ctx, "default", "", "some-gang")
+
+		err := fc.Get(ctx, client.ObjectKey{Namespace: "default", Name: derivedName}, &corev1.ConfigMap{})
+		assert.NoError(t, err, "ConfigMap should still exist when webhookCM is empty")
+	})
+}
+
 func TestDeleteOrphanedConfigMap(t *testing.T) {
 	t.Run("deletes existing orphaned ConfigMap", func(t *testing.T) {
 		ctx := context.Background()
