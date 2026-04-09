@@ -96,6 +96,14 @@ processingStrategy: "EXECUTE_REMEDIATION"
 #   checks before any other init containers.
 initContainerPlacement: "append"
 
+# ImagePullSecrets injected into target pods when init containers are added.
+# Use this when init container images are in a private registry.
+# These are added to the pod's spec.imagePullSecrets (not the webhook deployment).
+# Example:
+#   injectedImagePullSecrets:
+#     - name: gcr-image-pull
+injectedImagePullSecrets: []
+
 # Per-pod check selection: annotate pods with a comma-separated list of
 # init container names to override which checks run:
 #
