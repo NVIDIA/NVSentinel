@@ -42,13 +42,15 @@ import (
 func TestGangController_Reconcile(t *testing.T) {
 	tests := []struct {
 		name            string
+		gangID          string
 		pod             *corev1.Pod
 		discoverer      *mockDiscoverer
 		expectConfigMap bool
 	}{
 		{
 			name:            "pod with IP belonging to gang registers peer",
-			pod:             newGangPod("gang-pod-0", "default", "10.0.0.1"),
+			gangID:          "test-gang",
+			pod:             newGangPod("gang-pod-0", "default", "10.0.0.1", "test-gang"),
 			discoverer:      newGangDiscoverer("test-gang", 2),
 			expectConfigMap: true,
 		},
@@ -75,6 +77,12 @@ func TestGangController_Reconcile(t *testing.T) {
 			defer te.teardown()
 
 			te.createNamespace(t, ctx, tt.pod.Namespace)
+
+			// Pre-create the gang ConfigMap (in prod the webhook does this).
+			if tt.gangID != "" {
+				te.ensureGangConfigMap(t, ctx, tt.pod.Namespace, tt.gangID)
+			}
+
 			te.createPodWithIP(t, ctx, tt.pod)
 
 			if tt.expectConfigMap {
@@ -179,7 +187,7 @@ func TestGangController_WebhookRegistration(t *testing.T) {
 		})
 
 		// Now create a pod with IP — the controller should reconcile and register the peer
-		te.createPodWithIP(t, ctx, newGangPod("worker-0", "default", "10.0.0.1"))
+		te.createPodWithIP(t, ctx, newGangPod("worker-0", "default", "10.0.0.1", "full-gang"))
 		te.assertConfigMapWithPeer(t, ctx, "default", "full-gang", "worker-0", "10.0.0.1")
 	})
 }
@@ -252,9 +260,13 @@ func TestGangController_MultipleGangsIndependent(t *testing.T) {
 
 	te.createNamespace(t, ctx, "default")
 
+	// Pre-create gang ConfigMaps (in prod the webhook does this).
+	te.ensureGangConfigMap(t, ctx, "default", "gang-a")
+	te.ensureGangConfigMap(t, ctx, "default", "gang-b")
+
 	// Create two gang pods — each belongs to a different gang.
-	te.createPodWithIP(t, ctx, newGangPod("worker-a", "default", "10.0.0.1"))
-	te.createPodWithIP(t, ctx, newGangPod("worker-b", "default", "10.0.0.2"))
+	te.createPodWithIP(t, ctx, newGangPod("worker-a", "default", "10.0.0.1", "gang-a"))
+	te.createPodWithIP(t, ctx, newGangPod("worker-b", "default", "10.0.0.2", "gang-b"))
 
 	// Each pod should register into its own gang's ConfigMap.
 	te.assertConfigMapWithPeer(t, ctx, "default", "gang-a", "worker-a", "10.0.0.1")
@@ -375,6 +387,13 @@ func (te *testEnv) createNamespace(t *testing.T, ctx context.Context, name strin
 	}
 }
 
+func (te *testEnv) ensureGangConfigMap(t *testing.T, ctx context.Context, namespace, gangID string) {
+	t.Helper()
+	coord := gang.NewCoordinator(te.mgr.GetClient(), gang.DefaultCoordinatorConfig())
+	err := coord.EnsureConfigMap(ctx, namespace, gangID, 0)
+	require.NoError(t, err, "failed to create gang ConfigMap")
+}
+
 func (te *testEnv) createPodWithIP(t *testing.T, ctx context.Context, pod *corev1.Pod) {
 	t.Helper()
 	createdPod, err := te.kubeClient.CoreV1().Pods(pod.Namespace).Create(ctx, pod, metav1.CreateOptions{})
@@ -427,14 +446,14 @@ func (te *testEnv) assertNoConfigMaps(t *testing.T, ctx context.Context, namespa
 }
 
 func newTestPod(name, namespace, ip string) *corev1.Pod {
-	return newTestPodWithGangVolume(name, namespace, ip, false)
+	return newTestPodWithGangVolume(name, namespace, ip, "")
 }
 
-func newGangPod(name, namespace, ip string) *corev1.Pod {
-	return newTestPodWithGangVolume(name, namespace, ip, true)
+func newGangPod(name, namespace, ip, gangID string) *corev1.Pod {
+	return newTestPodWithGangVolume(name, namespace, ip, gangID)
 }
 
-func newTestPodWithGangVolume(name, namespace, ip string, withGangVolume bool) *corev1.Pod {
+func newTestPodWithGangVolume(name, namespace, ip, gangID string) *corev1.Pod {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -450,14 +469,14 @@ func newTestPodWithGangVolume(name, namespace, ip string, withGangVolume bool) *
 		},
 	}
 
-	if withGangVolume {
+	if gangID != "" {
 		pod.Spec.Volumes = []corev1.Volume{
 			{
 				Name: types.GangConfigVolumeName,
 				VolumeSource: corev1.VolumeSource{
 					ConfigMap: &corev1.ConfigMapVolumeSource{
 						LocalObjectReference: corev1.LocalObjectReference{
-							Name: "preflight-test-gang",
+							Name: coordinator.ConfigMapName(gangID),
 						},
 					},
 				},
