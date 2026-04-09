@@ -105,7 +105,7 @@ jobs:
               ./preflight
           fi
 
-          ko build --platform="${PLATFORMS}" --tags="${VERSION}" --sbom=none \
+          ko build -B --platform="${PLATFORMS}" --tags="${VERSION}" --sbom=none \
             ./event-exporter \
             ./fault-quarantine \
             ./fault-remediation \
