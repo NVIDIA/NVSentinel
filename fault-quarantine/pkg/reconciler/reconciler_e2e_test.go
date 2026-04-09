@@ -3923,6 +3923,7 @@ func TestE2E_ManualUncordonWithCancellation(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-errors",
 				Version:  "1",
 				Priority: 10,
@@ -4008,6 +4009,7 @@ func TestE2E_ManualUncordonMultipleEvents(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-errors",
 				Version:  "1",
 				Priority: 10,
@@ -4174,6 +4176,7 @@ func TestE2E_ConcurrentHealthyEvents_WithDelayedInformer(t *testing.T) {
 	tomlConfig := config.TomlConfig{
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{{
+			Enabled:  true,
 			Name:     "gpu-fatal-errors",
 			Version:  "1",
 			Priority: 10,
@@ -4378,6 +4381,7 @@ func TestE2E_StaleAnnotationOnRestart_TaintsAndCordon(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-errors",
 				Version:  "1",
 				Priority: 10,
@@ -4515,6 +4519,7 @@ func TestE2E_StaleAnnotationOnRestart_CordonOnly(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-errors",
 				Version:  "1",
 				Priority: 10,
@@ -4612,6 +4617,7 @@ func TestE2E_StaleAnnotationOnRestart_TaintsOnly(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-errors",
 				Version:  "1",
 				Priority: 10,
@@ -4875,6 +4881,7 @@ func TestE2ECordonAndTaint_ManualUntaint(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-errors",
 				Version:  "1",
 				Priority: 10,
@@ -5022,6 +5029,7 @@ func TestE2ECordonAndTaint_ManualUncordon(t *testing.T) {
 		LabelPrefix: "k8s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
+				Enabled:  true,
 				Name:     "gpu-xid-errors",
 				Version:  "1",
 				Priority: 10,
