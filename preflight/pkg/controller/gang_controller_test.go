@@ -151,7 +151,7 @@ func TestGangController_WebhookRegistration(t *testing.T) {
 
 		cm, err := te.kubeClient.CoreV1().ConfigMaps("default").Get(ctx, cmName, metav1.GetOptions{})
 		require.NoError(t, err)
-		assert.Equal(t, "0", cm.Data["expected_count"], "skeleton ConfigMap should have expected_count=0")
+		assert.Equal(t, "-1", cm.Data["expected_count"], "skeleton ConfigMap should have expected_count=-1 (discovery pending)")
 	})
 
 	t.Run("RegisterPod then reconcile fills peers", func(t *testing.T) {

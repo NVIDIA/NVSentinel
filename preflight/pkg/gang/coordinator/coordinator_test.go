@@ -455,9 +455,9 @@ func TestRegisterPeer(t *testing.T) {
 		coord := newFakeCoordinator()
 		ctx := context.Background()
 
-		require.NoError(t, coord.EnsureConfigMap(ctx, "default", "skeleton-gang", 0))
+		require.NoError(t, coord.EnsureConfigMap(ctx, "default", "skeleton-gang", -1))
 		cm := getConfigMap(t, coord.client, "default", ConfigMapName("skeleton-gang"))
-		assert.Equal(t, "0", cm.Data[DataKeyExpectedCount])
+		assert.Equal(t, "-1", cm.Data[DataKeyExpectedCount])
 
 		gangInfo := &types.GangInfo{GangID: "skeleton-gang", ExpectedMinCount: 4}
 		require.NoError(t, coord.RegisterPeer(ctx, "default", gangInfo, types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.1"}))

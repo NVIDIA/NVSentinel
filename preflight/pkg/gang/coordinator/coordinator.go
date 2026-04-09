@@ -279,10 +279,10 @@ func (c *Coordinator) updateConfigMap(
 			return fmt.Errorf("failed to get ConfigMap %s: %w", configMapName, err)
 		}
 
-		// Update expected_count if it was 0 (skeleton) and we now have the real value
+		// Update expected_count if it was a skeleton (-1 or 0) and we now have the real value
 		if expectedCount > 0 {
 			currentCount, _ := strconv.Atoi(cm.Data[DataKeyExpectedCount])
-			if currentCount == 0 {
+			if currentCount <= 0 {
 				cm.Data[DataKeyExpectedCount] = strconv.Itoa(expectedCount)
 			}
 		}
