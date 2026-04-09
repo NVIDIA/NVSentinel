@@ -90,7 +90,7 @@ Runs DCGM diagnostics against every GPU allocated to the pod via the remote host
 | `DCGM_DIAG_LEVEL` | `2` | Diagnostic depth: 1 = short (approx 30 s, software deployment checks), 2 = medium (approx 2 min, adds PCIe and basic GPU stress), 3 = long (approx 15 min, adds Diagnostic plugin stress), 4 = xlong (1-2 hr, extended stress) |
 | `DCGM_HOSTENGINE_ADDR` | `nvidia-dcgm.gpu-operator.svc:5555` | DCGM hostengine gRPC endpoint |
 
-DCGM settings are defined as env vars directly on the `preflight-dcgm-diag` container in `initContainers`, consistent with how all other checks are configured:
+Example values override:
 
 ```yaml
 initContainers:
@@ -107,8 +107,6 @@ initContainers:
       - name: nvsentinel-socket
         mountPath: /var/run
 ```
-
-> **Migrating from the legacy `dcgm:` block?** The separate `dcgm:` config block was removed in the ADR-035 refactor. Move `dcgm.service.endpoint` and `dcgm.service.port` into `DCGM_HOSTENGINE_ADDR` (as `host:port`), `dcgm.diagLevel` into `DCGM_DIAG_LEVEL`, and `dcgm.processingStrategy` into the top-level `processingStrategy`. See [ADR-035](../designs/035-preflight-inline-dcgm-config.md) for details.
 
 ### preflight-nccl-loopback
 
@@ -347,7 +345,7 @@ Tilt development often trims init containers to DCGM-only; see `distros/kubernet
 ## Related documentation
 
 - [ADR-026: Preflight checks](../designs/026-preflight-checks.md)
-- [ADR-035: Inline DCGM config](../designs/035-preflight-inline-dcgm-config.md) — removal of the legacy `dcgm:` block in favor of inline env vars
+- [ADR-035: Inline DCGM config](../designs/035-preflight-inline-dcgm-config.md) — design rationale for inline env var configuration
 - [gRPC / TLS authentication](../designs/030-grpc-tls-authentication.md) (mentions preflight among webhooks)
 - [Helm chart README](../../distros/kubernetes/README.md)
 - E2E test entry point: `tests/preflight_test.go` (build tag `amd64_group`)
