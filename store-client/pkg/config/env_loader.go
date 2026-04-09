@@ -21,6 +21,7 @@ import (
 	"strconv"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/stringutil"
+	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 )
 
 // DatabaseConfig represents database-agnostic configuration
@@ -281,9 +282,15 @@ func newPostgreSQLCompatibleConfig(certMountPath, tableEnvVar, defaultTable stri
 	sslkey := getEnvWithDefault("DATASTORE_SSLKEY", filepath.Join(certMountPath, "tls.key"))
 	sslrootcert := getEnvWithDefault("DATASTORE_SSLROOTCERT", filepath.Join(certMountPath, "ca.crt"))
 
+	password := os.Getenv("DATASTORE_PASSWORD")
+
 	// Build connection URI in PostgreSQL format
 	connectionURI := fmt.Sprintf("host=%s port=%s dbname=%s user=%s sslmode=%s sslcert=%s sslkey=%s sslrootcert=%s",
 		host, port, database, username, sslmode, sslcert, sslkey, sslrootcert)
+
+	if password != "" {
+		connectionURI += " password=" + utils.QuotePQValue(password)
+	}
 
 	// Determine table name using the provided parameters
 	// For PostgreSQL, this maps to the table name (converted to snake_case by the client)
