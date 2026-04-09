@@ -1,0 +1,87 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Workflow 2 of 2 for Fern doc previews.
+#
+# Triggered by workflow_run after "Preview Fern Docs: Build" completes.
+# Downloads the fern/ artifact, generates a preview with DOCS_FERN_TOKEN,
+# and posts a stable comment on the PR. This workflow never checks out the
+# PR branch directly, keeping secrets isolated from untrusted code.
+#
+# Required configuration:
+# - Organization secret: DOCS_FERN_TOKEN (from `fern token` for the nvidia Fern org)
+
+name: "Preview Fern Docs: Comment"
+
+on:
+  workflow_run:
+    workflows: ["Preview Fern Docs: Build"]
+    types: [completed]
+
+permissions:
+  pull-requests: write
+  actions: read
+
+jobs:
+  preview:
+    runs-on: linux-amd64-cpu32
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - name: Download fern sources and metadata
+        uses: actions/download-artifact@v4
+        with:
+          name: fern-preview
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read PR metadata
+        id: metadata
+        run: |
+          echo "pr_number=$(cat .preview-metadata/pr_number)" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$(cat .preview-metadata/head_ref)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Fern CLI
+        run: npm install -g fern-api@4.42.1
+
+      - name: Generate preview URL
+        id: generate-docs
+        env:
+          FERN_TOKEN: ${{ secrets.DOCS_FERN_TOKEN }}
+          HEAD_REF: ${{ steps.metadata.outputs.head_ref }}
+        working-directory: ./fern
+        run: |
+          OUTPUT=$(fern generate --docs --preview --id "$HEAD_REF" 2>&1)
+          echo "$OUTPUT"
+          URL=$(echo "$OUTPUT" | grep -oP 'Published docs to \K.*(?= \()')
+          if [ -z "$URL" ]; then
+            echo "::error::Failed to generate preview URL. See fern output above."
+            exit 1
+          fi
+          echo "preview_url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Post or update PR comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.metadata.outputs.pr_number }}
+          PREVIEW_URL: ${{ steps.generate-docs.outputs.preview_url }}
+        run: |
+          MARKER="<!-- fern-preview-docs -->"
+          BODY=":herb: **Fern Docs Preview:** <${PREVIEW_URL}>
+
+          ${MARKER}"
+
+          COMMENT_ID=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" | head -1)
+
+          if [ -n "$COMMENT_ID" ]; then
+            gh api "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}" \
+              -X PATCH -f body="$BODY"
+          else
+            gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+              -f body="$BODY"
+          fi
