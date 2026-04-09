@@ -33,11 +33,8 @@ data:
     volumeMountPatterns:
       {{- toYaml .Values.volumeMountPatterns | nindent 6 }}
     {{- end }}
-    dcgm:
-      hostengineAddr: {{ include "preflight.dcgmHostengineAddr" . | quote }}
-      diagLevel: {{ include "preflight.dcgmDiagLevel" . }}
-      connectorSocket: {{ include "preflight.connectorSocket" . | quote }}
-      processingStrategy: {{ include "preflight.processingStrategy" . | quote }}
+    connectorSocket: {{ include "preflight.connectorSocket" . | quote }}
+    processingStrategy: {{ include "preflight.processingStrategy" . | quote }}
     gangDiscovery:
       {{- toYaml .Values.gangDiscovery | nindent 6 }}
     gangCoordination:

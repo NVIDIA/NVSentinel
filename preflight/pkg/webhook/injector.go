@@ -362,7 +362,6 @@ func (i *Injector) buildInitContainers(
 		}
 
 		i.injectCommonEnv(container)
-		i.injectDCGMEnv(container)
 		i.injectGangEnv(container, gangCtx)
 
 		// Copy matching env vars from user containers (lower precedence
@@ -473,21 +472,17 @@ func (i *Injector) injectCommonEnv(container *corev1.Container) {
 		},
 	}
 
-	// NOTE: ConnectorSocket and ProcessingStrategy are global preflight config
-	// that is incorrectly scoped under DCGMConfig. These apply to all init
-	// containers, not just dcgm-diag. They will move to a top-level config
-	// struct when the dcgm: block is removed (see ADR-035).
-	if i.cfg.DCGM.ConnectorSocket != "" {
+	if i.cfg.ConnectorSocket != "" {
 		envVars = append(envVars, corev1.EnvVar{
 			Name:  "PLATFORM_CONNECTOR_SOCKET",
-			Value: i.cfg.DCGM.ConnectorSocket,
+			Value: i.cfg.ConnectorSocket,
 		})
 	}
 
-	if i.cfg.DCGM.ProcessingStrategy != "" {
+	if i.cfg.ProcessingStrategy != "" {
 		envVars = append(envVars, corev1.EnvVar{
 			Name:  "PROCESSING_STRATEGY",
-			Value: i.cfg.DCGM.ProcessingStrategy,
+			Value: i.cfg.ProcessingStrategy,
 		})
 	}
 
@@ -504,7 +499,7 @@ func (i *Injector) injectVolumes(pod *corev1.Pod, gangCtx *GangContext) []PatchO
 		existingVolumes[vol.Name] = true
 	}
 
-	if i.cfg.DCGM.ConnectorSocket != "" && !existingVolumes[nvsentinelSocketVolumeName] {
+	if i.cfg.ConnectorSocket != "" && !existingVolumes[nvsentinelSocketVolumeName] {
 		// Platform-connector mounts /var/run/nvsentinel (host) -> /var/run (container)
 		// and creates socket at /var/run/nvsentinel.sock inside its container.
 		// This is the same hostPath used by gpu-health-monitor.
@@ -661,35 +656,6 @@ func parseHostPathType(hostPathType string) (*corev1.HostPathType, bool) {
 	}
 
 	return &t, true
-}
-
-// injectDCGMEnv injects DCGM-specific environment variables for the dcgm-diag check.
-//
-// Deprecated: prefer defining DCGM_DIAG_LEVEL and DCGM_HOSTENGINE_ADDR as
-// inline env vars on the preflight-dcgm-diag init container in values.yaml.
-// Inline env vars take precedence via mergeEnvVars (user-defined wins over
-// webhook-injected). This function will be removed when the dcgm: config
-// block is dropped (see ADR-035).
-func (i *Injector) injectDCGMEnv(container *corev1.Container) {
-	if container.Name != "preflight-dcgm-diag" {
-		return
-	}
-
-	envVars := []corev1.EnvVar{
-		{
-			Name:  "DCGM_DIAG_LEVEL",
-			Value: fmt.Sprintf("%d", i.cfg.DCGM.DiagLevel),
-		},
-	}
-
-	if i.cfg.DCGM.HostengineAddr != "" {
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  "DCGM_HOSTENGINE_ADDR",
-			Value: i.cfg.DCGM.HostengineAddr,
-		})
-	}
-
-	i.mergeEnvVars(container, envVars)
 }
 
 // injectGangEnv injects gang-related environment variables for multi-node checks.
