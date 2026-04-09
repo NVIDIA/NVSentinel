@@ -46,8 +46,21 @@ const (
 	PlacementPrepend InitContainerPlacement = "prepend"
 )
 
+// InitContainerSpec wraps corev1.Container with a DefaultEnabled field
+// that controls whether the check runs when no per-pod annotation overrides
+// the check selection. Defaults to true when omitted (nil).
+type InitContainerSpec struct {
+	corev1.Container `yaml:",inline"`
+	DefaultEnabled   *bool `yaml:"defaultEnabled,omitempty"`
+}
+
+// IsDefaultEnabled returns true when DefaultEnabled is nil or explicitly true.
+func (s *InitContainerSpec) IsDefaultEnabled() bool {
+	return s.DefaultEnabled == nil || *s.DefaultEnabled
+}
+
 type FileConfig struct {
-	InitContainers       []corev1.Container     `yaml:"initContainers"`
+	InitContainers       []InitContainerSpec    `yaml:"initContainers"`
 	GPUResourceNames     []string               `yaml:"gpuResourceNames"`
 	NetworkResourceNames []string               `yaml:"networkResourceNames"`
 	DCGM                 DCGMConfig             `yaml:"dcgm"`
@@ -72,6 +85,15 @@ type FileConfig struct {
 	VolumeMountPatterns []string `yaml:"volumeMountPatterns,omitempty"`
 }
 
+// DCGMConfig holds DCGM-specific and (legacy) global preflight config.
+//
+// Prefer defining HostengineAddr and DiagLevel as inline env vars on the
+// preflight-dcgm-diag init container in values.yaml instead of using this
+// config block. Inline env vars take precedence via mergeEnvVars.
+//
+// ConnectorSocket and ProcessingStrategy are global preflight config that
+// apply to all init containers — they are incorrectly scoped here and will
+// move to a top-level struct (see ADR-035).
 type DCGMConfig struct {
 	HostengineAddr     string `yaml:"hostengineAddr"`
 	DiagLevel          int    `yaml:"diagLevel"`
@@ -281,6 +303,19 @@ func (c *GangCoordinationConfig) setDefaults() {
 }
 
 func (c *FileConfig) validate() error {
+	seen := make(map[string]struct{}, len(c.InitContainers))
+	for i, spec := range c.InitContainers {
+		if spec.Name == "" {
+			return fmt.Errorf("initContainers[%d].name must be set", i)
+		}
+
+		if _, exists := seen[spec.Name]; exists {
+			return fmt.Errorf("duplicate init container name %q", spec.Name)
+		}
+
+		seen[spec.Name] = struct{}{}
+	}
+
 	switch c.InitContainerPlacement {
 	case PlacementPrepend, PlacementAppend:
 	default:

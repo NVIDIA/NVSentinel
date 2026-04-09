@@ -142,8 +142,6 @@ func TestFindMaxResources_NoGPU_ReturnsNil(t *testing.T) {
 	assert.Nil(t, injector.findMaxResources(pod))
 }
 
-
-
 // TestInjectInitContainers covers the main entry point: GPU detection,
 // gang context extraction, init container / volume patch generation,
 // and append-vs-create behavior for existing init containers and volumes.
@@ -156,6 +154,8 @@ func TestInjectInitContainers(t *testing.T) {
 		expectPatches    bool
 		expectGangCtx    bool
 		expectGangID     string
+		expectCheckNames string
+		expectError      bool
 		validatePatches  func(t *testing.T, patches []PatchOperation)
 	}{
 		{
@@ -183,20 +183,20 @@ func TestInjectInitContainers(t *testing.T) {
 				assert.Len(t, containers, 1)
 				assert.Equal(t, "preflight-dcgm-diag", containers[0].Name)
 
-			// No gang volumes should be present (check both single-volume
-			// appends and the initial slice-valued /spec/volumes patch).
-			for _, p := range patches {
-				switch v := p.Value.(type) {
-				case corev1.Volume:
-					assert.NotEqual(t, types.GangConfigVolumeName, v.Name)
-					assert.NotEqual(t, dshmVolumeName, v.Name)
-				case []corev1.Volume:
-					for _, vol := range v {
-						assert.NotEqual(t, types.GangConfigVolumeName, vol.Name)
-						assert.NotEqual(t, dshmVolumeName, vol.Name)
+				// No gang volumes should be present (check both single-volume
+				// appends and the initial slice-valued /spec/volumes patch).
+				for _, p := range patches {
+					switch v := p.Value.(type) {
+					case corev1.Volume:
+						assert.NotEqual(t, types.GangConfigVolumeName, v.Name)
+						assert.NotEqual(t, dshmVolumeName, v.Name)
+					case []corev1.Volume:
+						for _, vol := range v {
+							assert.NotEqual(t, types.GangConfigVolumeName, vol.Name)
+							assert.NotEqual(t, dshmVolumeName, vol.Name)
+						}
 					}
 				}
-			}
 			},
 		},
 		{
@@ -208,13 +208,14 @@ func TestInjectInitContainers(t *testing.T) {
 			expectGangCtx: false,
 		},
 		{
-			name:       "GPU pod with gang enabled and is gang member",
-			cfg:        testGangConfig(),
-			discoverer: &mockDiscoverer{name: "volcano", canHandle: true, gangID: "volcano-default-pg1"},
-			pod:        gpuEFAPod(),
-			expectPatches: true,
-			expectGangCtx: true,
-			expectGangID:  "volcano-default-pg1",
+			name:             "GPU pod with gang enabled and is gang member",
+			cfg:              testGangConfig(),
+			discoverer:       &mockDiscoverer{name: "volcano", canHandle: true, gangID: "volcano-default-pg1"},
+			pod:              gpuEFAPod(),
+			expectPatches:    true,
+			expectGangCtx:    true,
+			expectGangID:     "volcano-default-pg1",
+			expectCheckNames: "preflight-dcgm-diag",
 			validatePatches: func(t *testing.T, patches []PatchOperation) {
 				t.Helper()
 				initPatch := findPatchByPath(patches, "/spec/initContainers")
@@ -235,10 +236,10 @@ func TestInjectInitContainers(t *testing.T) {
 			},
 		},
 		{
-			name: "GPU pod with gang enabled but nil discoverer",
-			cfg:  testGangConfig(),
-			discoverer: nil,
-			pod:        gpuPod(),
+			name:          "GPU pod with gang enabled but nil discoverer",
+			cfg:           testGangConfig(),
+			discoverer:    nil,
+			pod:           gpuPod(),
 			expectPatches: true,
 			expectGangCtx: false,
 		},
@@ -286,9 +287,9 @@ func TestInjectInitContainers(t *testing.T) {
 			cfg: func() *config.Config {
 				c := testConfig()
 				c.InitContainerPlacement = config.PlacementPrepend
-				c.InitContainers = []corev1.Container{
-					{Name: "preflight-dcgm-diag", Image: "dcgm:latest"},
-					{Name: "preflight-nccl-loopback", Image: "nccl:latest"},
+				c.InitContainers = []config.InitContainerSpec{
+					{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
+					{Container: corev1.Container{Name: "preflight-nccl-loopback", Image: "nccl:latest"}},
 				}
 				return c
 			}(),
@@ -335,9 +336,10 @@ func TestInjectInitContainers(t *testing.T) {
 			},
 		},
 		{
-			name: "existing volumes are not duplicated",
-			cfg:  testGangConfig(),
-			discoverer: &mockDiscoverer{name: "test", canHandle: true, gangID: "test-gang"},
+			name:             "existing volumes are not duplicated",
+			cfg:              testGangConfig(),
+			discoverer:       &mockDiscoverer{name: "test", canHandle: true, gangID: "test-gang"},
+			expectCheckNames: "preflight-dcgm-diag",
 			pod: func() *corev1.Pod {
 				p := gpuPod()
 				p.Spec.Volumes = []corev1.Volume{
@@ -387,6 +389,76 @@ func TestInjectInitContainers(t *testing.T) {
 				assert.Equal(t, "add", p.Op)
 			},
 		},
+		{
+			name: "annotation selects subset and populates GangContext.CheckNames",
+			cfg: func() *config.Config {
+				cfg := testGangConfig()
+				cfg.InitContainers = []config.InitContainerSpec{
+					{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
+					{Container: corev1.Container{Name: "preflight-nccl-loopback", Image: "nccl:latest"}},
+					{Container: corev1.Container{Name: "preflight-nccl-allreduce", Image: "nccl:latest"}},
+				}
+				return cfg
+			}(),
+			discoverer: &mockDiscoverer{name: "test", canHandle: true, gangID: "test-gang"},
+			pod: func() *corev1.Pod {
+				p := gpuPod()
+				p.Annotations = map[string]string{
+					PreflightChecksAnnotation: "preflight-nccl-allreduce,preflight-dcgm-diag",
+				}
+				return p
+			}(),
+			expectPatches:    true,
+			expectGangCtx:    true,
+			expectGangID:     "test-gang",
+			expectCheckNames: "preflight-nccl-allreduce,preflight-dcgm-diag",
+		},
+		{
+			name:       "empty annotation with gang returns empty CheckNames",
+			cfg:        testGangConfig(),
+			discoverer: &mockDiscoverer{name: "test", canHandle: true, gangID: "test-gang"},
+			pod: func() *corev1.Pod {
+				p := gpuPod()
+				p.Annotations = map[string]string{
+					PreflightChecksAnnotation: "",
+				}
+				return p
+			}(),
+			expectPatches: false,
+			expectGangCtx: true,
+			expectGangID:  "test-gang",
+		},
+		{
+			name: "no annotation populates CheckNames from defaultEnabled",
+			cfg: func() *config.Config {
+				cfg := testGangConfig()
+				f := false
+				cfg.InitContainers = []config.InitContainerSpec{
+					{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
+					{Container: corev1.Container{Name: "preflight-nccl-allreduce", Image: "nccl:latest"}, DefaultEnabled: &f},
+				}
+				return cfg
+			}(),
+			discoverer:       &mockDiscoverer{name: "test", canHandle: true, gangID: "test-gang"},
+			pod:              gpuPod(),
+			expectPatches:    true,
+			expectGangCtx:    true,
+			expectGangID:     "test-gang",
+			expectCheckNames: "preflight-dcgm-diag",
+		},
+		{
+			name: "unknown check name returns error",
+			cfg:  testConfig(),
+			pod: func() *corev1.Pod {
+				p := gpuPod()
+				p.Annotations = map[string]string{
+					PreflightChecksAnnotation: "preflight-dcgm-diag,nonexistent",
+				}
+				return p
+			}(),
+			expectPatches: false,
+			expectError:   true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -398,6 +470,10 @@ func TestInjectInitContainers(t *testing.T) {
 			injector := NewInjector(tt.cfg, disc)
 
 			patches, gangCtx, err := injector.InjectInitContainers(tt.pod)
+			if tt.expectError {
+				require.Error(t, err)
+				return
+			}
 			require.NoError(t, err)
 
 			if tt.expectPatches {
@@ -412,6 +488,7 @@ func TestInjectInitContainers(t *testing.T) {
 					assert.Equal(t, tt.expectGangID, gangCtx.GangID)
 					assert.NotEmpty(t, gangCtx.ConfigMapName)
 				}
+				assert.Equal(t, tt.expectCheckNames, gangCtx.CheckNames)
 			} else {
 				assert.Nil(t, gangCtx)
 			}
@@ -437,7 +514,7 @@ func TestBuildInitContainers(t *testing.T) {
 			"vpc.amazonaws.com/efa": resource.MustParse("4"),
 		}
 
-		containers := injector.buildInitContainers(pod, maxResources, nil)
+		containers := injector.buildInitContainers(pod, maxResources, nil, cfg.InitContainers)
 		require.Len(t, containers, 1)
 
 		c := containers[0]
@@ -454,7 +531,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 		containers := injector.buildInitContainers(pod, corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, nil)
+		}, nil, cfg.InitContainers)
 		require.Len(t, containers, 1)
 
 		assert.Equal(t, resource.MustParse("100m"), containers[0].Resources.Requests[corev1.ResourceCPU])
@@ -463,8 +540,8 @@ func TestBuildInitContainers(t *testing.T) {
 
 	t.Run("CPU and memory floor not applied when already set", func(t *testing.T) {
 		cfg := testConfig()
-		cfg.InitContainers = []corev1.Container{
-			{
+		cfg.InitContainers = []config.InitContainerSpec{
+			{Container: corev1.Container{
 				Name:  "preflight-dcgm-diag",
 				Image: "dcgm:latest",
 				Resources: corev1.ResourceRequirements{
@@ -473,13 +550,13 @@ func TestBuildInitContainers(t *testing.T) {
 						corev1.ResourceMemory: resource.MustParse("1Gi"),
 					},
 				},
-			},
+			}},
 		}
 		injector := NewInjector(cfg, nil)
 
 		containers := injector.buildInitContainers(gpuPod(), corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, nil)
+		}, nil, cfg.InitContainers)
 		require.Len(t, containers, 1)
 
 		assert.Equal(t, resource.MustParse("200m"), containers[0].Resources.Requests[corev1.ResourceCPU])
@@ -488,15 +565,15 @@ func TestBuildInitContainers(t *testing.T) {
 
 	t.Run("DCGM env only for dcgm-diag container", func(t *testing.T) {
 		cfg := testConfig()
-		cfg.InitContainers = []corev1.Container{
-			{Name: "preflight-dcgm-diag", Image: "dcgm:latest"},
-			{Name: "preflight-nccl-allreduce", Image: "nccl:latest"},
+		cfg.InitContainers = []config.InitContainerSpec{
+			{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
+			{Container: corev1.Container{Name: "preflight-nccl-allreduce", Image: "nccl:latest"}},
 		}
 		injector := NewInjector(cfg, nil)
 
 		containers := injector.buildInitContainers(gpuPod(), corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, nil)
+		}, nil, cfg.InitContainers)
 		require.Len(t, containers, 2)
 
 		assert.True(t, hasEnvVar(containers[0], "DCGM_DIAG_LEVEL"), "dcgm-diag should have DCGM_DIAG_LEVEL")
@@ -511,7 +588,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 		containers := injector.buildInitContainers(gpuPod(), corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, nil)
+		}, nil, cfg.InitContainers)
 		require.Len(t, containers, 1)
 
 		assert.True(t, hasEnvVar(containers[0], "NODE_NAME"))
@@ -525,7 +602,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 		containers := injector.buildInitContainers(gpuPod(), corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, nil)
+		}, nil, cfg.InitContainers)
 		require.Len(t, containers, 1)
 
 		assert.False(t, hasEnvVar(containers[0], "GANG_ID"))
@@ -541,7 +618,7 @@ func TestBuildInitContainers(t *testing.T) {
 		gangCtx := &GangContext{GangID: "test-gang", ConfigMapName: "preflight-test-gang"}
 		containers := injector.buildInitContainers(gpuPod(), corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, gangCtx)
+		}, gangCtx, cfg.InitContainers)
 		require.Len(t, containers, 1)
 
 		c := containers[0]
@@ -565,7 +642,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 		containers := injector.buildInitContainers(pod, corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, nil)
+		}, nil, cfg.InitContainers)
 		require.Len(t, containers, 1)
 		assert.Equal(t, "INFO", findEnv(containers[0].Env, "NCCL_DEBUG"))
 	})
@@ -573,12 +650,12 @@ func TestBuildInitContainers(t *testing.T) {
 	t.Run("user env lower precedence than template", func(t *testing.T) {
 		cfg := testConfig()
 		cfg.NCCLEnvPatterns = []string{"NCCL_*"}
-		cfg.InitContainers = []corev1.Container{
-			{
+		cfg.InitContainers = []config.InitContainerSpec{
+			{Container: corev1.Container{
 				Name:  "preflight-dcgm-diag",
 				Image: "dcgm:latest",
 				Env:   []corev1.EnvVar{{Name: "NCCL_DEBUG", Value: "WARN"}},
-			},
+			}},
 		}
 		injector := NewInjector(cfg, nil)
 
@@ -589,7 +666,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 		containers := injector.buildInitContainers(pod, corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, nil)
+		}, nil, cfg.InitContainers)
 		require.Len(t, containers, 1)
 		assert.Equal(t, "WARN", findEnv(containers[0].Env, "NCCL_DEBUG"))
 	})
@@ -606,7 +683,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 		containers := injector.buildInitContainers(pod, corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, nil)
+		}, nil, cfg.InitContainers)
 		require.Len(t, containers, 1)
 		assert.True(t, hasVolumeMount(containers[0], "nvtcpxo-libraries"))
 	})
@@ -624,7 +701,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 		containers := injector.buildInitContainers(pod, corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, gangCtx)
+		}, gangCtx, cfg.InitContainers)
 		require.Len(t, containers, 1)
 		require.Len(t, containers[0].Resources.Claims, 2)
 		assert.Equal(t, "gpu-claim", containers[0].Resources.Claims[0].Name)
@@ -644,7 +721,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 		containers := injector.buildInitContainers(pod, corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, gangCtx)
+		}, gangCtx, cfg.InitContainers)
 		require.Len(t, containers, 1)
 		assert.Empty(t, containers[0].Resources.Claims)
 	})
@@ -660,7 +737,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 		containers := injector.buildInitContainers(pod, corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
-		}, nil)
+		}, nil, cfg.InitContainers)
 		require.Len(t, containers, 1)
 		assert.Empty(t, containers[0].Resources.Claims)
 	})
@@ -693,6 +770,184 @@ func requireVolume(t *testing.T, volumes []corev1.Volume, name string) *corev1.V
 	vol := findVolume(volumes, name)
 	require.NotNil(t, vol, "expected volume %q", name)
 	return vol
+}
+
+func TestSelectInitContainers(t *testing.T) {
+	multiConfig := func() *config.Config {
+		cfg := testConfig()
+		f := false
+		cfg.InitContainers = []config.InitContainerSpec{
+			{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
+			{Container: corev1.Container{Name: "preflight-nccl-loopback", Image: "nccl:latest"}},
+			{Container: corev1.Container{Name: "preflight-nccl-allreduce", Image: "nccl:latest"}, DefaultEnabled: &f},
+		}
+		return cfg
+	}
+
+	t.Run("no annotation uses defaultEnabled", func(t *testing.T) {
+		cfg := multiConfig()
+		injector := NewInjector(cfg, nil)
+		pod := gpuPod()
+
+		selected, err := injector.selectInitContainers(pod)
+		require.NoError(t, err)
+		assert.Len(t, selected, 2)
+		assert.Equal(t, "preflight-dcgm-diag", selected[0].Name)
+		assert.Equal(t, "preflight-nccl-loopback", selected[1].Name)
+	})
+
+	t.Run("annotation selects subset", func(t *testing.T) {
+		cfg := multiConfig()
+		injector := NewInjector(cfg, nil)
+		pod := gpuPod()
+		pod.Annotations = map[string]string{
+			PreflightChecksAnnotation: "preflight-dcgm-diag",
+		}
+
+		selected, err := injector.selectInitContainers(pod)
+		require.NoError(t, err)
+		require.Len(t, selected, 1)
+		assert.Equal(t, "preflight-dcgm-diag", selected[0].Name)
+	})
+
+	t.Run("annotation overrides defaultEnabled false", func(t *testing.T) {
+		cfg := multiConfig()
+		injector := NewInjector(cfg, nil)
+		pod := gpuPod()
+		pod.Annotations = map[string]string{
+			PreflightChecksAnnotation: "preflight-nccl-allreduce",
+		}
+
+		selected, err := injector.selectInitContainers(pod)
+		require.NoError(t, err)
+		require.Len(t, selected, 1)
+		assert.Equal(t, "preflight-nccl-allreduce", selected[0].Name)
+	})
+
+	t.Run("empty annotation disables all checks", func(t *testing.T) {
+		cfg := multiConfig()
+		injector := NewInjector(cfg, nil)
+		pod := gpuPod()
+		pod.Annotations = map[string]string{
+			PreflightChecksAnnotation: "",
+		}
+
+		selected, err := injector.selectInitContainers(pod)
+		require.NoError(t, err)
+		assert.Empty(t, selected)
+	})
+
+	t.Run("unknown check name rejects admission", func(t *testing.T) {
+		cfg := multiConfig()
+		injector := NewInjector(cfg, nil)
+		pod := gpuPod()
+		pod.Annotations = map[string]string{
+			PreflightChecksAnnotation: "preflight-dcgm-diag,bogus-check",
+		}
+
+		_, err := injector.selectInitContainers(pod)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "bogus-check")
+		assert.Contains(t, err.Error(), "unknown checks")
+	})
+
+	t.Run("annotation order controls injection order", func(t *testing.T) {
+		cfg := multiConfig()
+		injector := NewInjector(cfg, nil)
+		pod := gpuPod()
+		// Reverse of chart order — should inject in annotation order.
+		pod.Annotations = map[string]string{
+			PreflightChecksAnnotation: "preflight-nccl-loopback,preflight-dcgm-diag",
+		}
+
+		selected, err := injector.selectInitContainers(pod)
+		require.NoError(t, err)
+		require.Len(t, selected, 2)
+		assert.Equal(t, "preflight-nccl-loopback", selected[0].Name)
+		assert.Equal(t, "preflight-dcgm-diag", selected[1].Name)
+	})
+
+	t.Run("comma-only annotation disables all checks", func(t *testing.T) {
+		cfg := multiConfig()
+		injector := NewInjector(cfg, nil)
+		pod := gpuPod()
+		pod.Annotations = map[string]string{
+			PreflightChecksAnnotation: " , , ",
+		}
+
+		selected, err := injector.selectInitContainers(pod)
+		require.NoError(t, err)
+		assert.Empty(t, selected)
+	})
+
+	t.Run("annotation with spaces and trailing commas", func(t *testing.T) {
+		cfg := multiConfig()
+		injector := NewInjector(cfg, nil)
+		pod := gpuPod()
+		pod.Annotations = map[string]string{
+			PreflightChecksAnnotation: " , preflight-dcgm-diag , preflight-nccl-loopback , ",
+		}
+
+		selected, err := injector.selectInitContainers(pod)
+		require.NoError(t, err)
+		assert.Len(t, selected, 2)
+	})
+
+	t.Run("annotation with duplicates returns error", func(t *testing.T) {
+		cfg := multiConfig()
+		injector := NewInjector(cfg, nil)
+		pod := gpuPod()
+		pod.Annotations = map[string]string{
+			PreflightChecksAnnotation: "preflight-dcgm-diag,preflight-dcgm-diag",
+		}
+
+		_, err := injector.selectInitContainers(pod)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "duplicate")
+		assert.Contains(t, err.Error(), "preflight-dcgm-diag")
+	})
+
+	t.Run("unknown check name lists configured checks in error", func(t *testing.T) {
+		cfg := multiConfig()
+		injector := NewInjector(cfg, nil)
+		pod := gpuPod()
+		pod.Annotations = map[string]string{
+			PreflightChecksAnnotation: "typo-check",
+		}
+
+		_, err := injector.selectInitContainers(pod)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "preflight-dcgm-diag")
+		assert.Contains(t, err.Error(), "preflight-nccl-loopback")
+		assert.Contains(t, err.Error(), "preflight-nccl-allreduce")
+	})
+}
+
+func TestParseCheckNames(t *testing.T) {
+	t.Run("preserves order", func(t *testing.T) {
+		names, err := ParseCheckNames("b, a, c")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"b", "a", "c"}, names)
+	})
+
+	t.Run("empty string returns empty", func(t *testing.T) {
+		names, err := ParseCheckNames("")
+		require.NoError(t, err)
+		assert.Empty(t, names)
+	})
+
+	t.Run("whitespace only returns empty", func(t *testing.T) {
+		names, err := ParseCheckNames("  ,  , ")
+		require.NoError(t, err)
+		assert.Empty(t, names)
+	})
+
+	t.Run("duplicate name returns error", func(t *testing.T) {
+		_, err := ParseCheckNames("a, b, a")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "duplicate")
+		assert.Contains(t, err.Error(), "a")
+	})
 }
 
 // TestInjectVolumes covers volume patch generation: nvsentinel socket,
@@ -845,7 +1100,6 @@ func findEnv(envs []corev1.EnvVar, name string) string {
 	return ""
 }
 
-
 type mockDiscoverer struct {
 	name      string
 	canHandle bool
@@ -864,8 +1118,8 @@ func boolPtr(b bool) *bool { return &b }
 func testConfig() *config.Config {
 	return &config.Config{
 		FileConfig: config.FileConfig{
-			InitContainers: []corev1.Container{
-				{Name: "preflight-dcgm-diag", Image: "nvcr.io/nvidia/dcgm:latest"},
+			InitContainers: []config.InitContainerSpec{
+				{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "nvcr.io/nvidia/dcgm:latest"}},
 			},
 			GPUResourceNames:       []string{"nvidia.com/gpu"},
 			NetworkResourceNames:   []string{"vpc.amazonaws.com/efa"},
@@ -883,11 +1137,11 @@ func testConfig() *config.Config {
 func testGangConfig() *config.Config {
 	cfg := testConfig()
 	cfg.GangCoordination = config.GangCoordinationConfig{
-		Enabled:            true,
-		Timeout:            "10m",
-		TimeoutDuration:    10 * time.Minute,
-		MasterPort:         29500,
-		ConfigMapMountPath: "/etc/preflight",
+		Enabled:              true,
+		Timeout:              "10m",
+		TimeoutDuration:      10 * time.Minute,
+		MasterPort:           29500,
+		ConfigMapMountPath:   "/etc/preflight",
 		MirrorResourceClaims: boolPtr(true),
 	}
 	return cfg

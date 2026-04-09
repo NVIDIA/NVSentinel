@@ -35,6 +35,9 @@ type GangRegistration struct {
 	PodName       string
 	GangID        string
 	ConfigMapName string
+	// CheckNames is a comma-separated list of preflight checks this pod
+	// will run. Annotation order when present, chart order for defaults.
+	CheckNames string
 }
 
 // GangRegistrationFunc is called after a pod is admitted to register it with a gang.
@@ -160,6 +163,7 @@ func (h *Handler) mutate(ctx context.Context, req *admissionv1.AdmissionRequest)
 			PodName:       podName,
 			GangID:        gangCtx.GangID,
 			ConfigMapName: gangCtx.ConfigMapName,
+			CheckNames:    gangCtx.CheckNames,
 		})
 	}
 

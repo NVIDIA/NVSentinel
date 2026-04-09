@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
@@ -153,11 +154,16 @@ func (c *GangController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, nil
 	}
 
+	// Build check names in chart order — same logic as the injector's
+	// selectInitContainers so both paths produce identical strings.
+	checkNames := checkNamesFromPod(&pod, c.cfg)
+
 	peer := gang.PeerInfo{
-		PodName:   pod.Name,
-		PodIP:     pod.Status.PodIP,
-		NodeName:  pod.Spec.NodeName,
-		Namespace: pod.Namespace,
+		PodName:    pod.Name,
+		PodIP:      pod.Status.PodIP,
+		NodeName:   pod.Spec.NodeName,
+		Namespace:  pod.Namespace,
+		CheckNames: checkNames,
 	}
 
 	if err := c.coordinator.RegisterPeer(ctx, pod.Namespace, gangInfo, peer); err != nil {
@@ -256,4 +262,47 @@ func (c *GangController) ensureNCCLTopoConfigMap(ctx context.Context, namespace 
 	slog.Info("Created NCCL topo ConfigMap",
 		"namespace", namespace,
 		"configMap", gcfg.NCCLTopoConfigMap)
+}
+
+// checkNamesFromPod computes the check names string for a pod, matching
+// the injector's selectInitContainers logic. Annotation order is preserved
+// so the string matches what the injector produces.
+func checkNamesFromPod(pod *corev1.Pod, cfg *config.Config) string {
+	ann, ok := pod.Annotations[webhook.PreflightChecksAnnotation]
+	if !ok {
+		// No annotation — use defaultEnabled in chart order.
+		var names []string
+
+		for _, spec := range cfg.InitContainers {
+			if spec.IsDefaultEnabled() {
+				names = append(names, spec.Name)
+			}
+		}
+
+		return strings.Join(names, ",")
+	}
+
+	// Annotation present — use annotation order, skip unknown names.
+	parsed, err := webhook.ParseCheckNames(ann)
+	if err != nil {
+		slog.Warn("Failed to parse preflight-checks annotation",
+			"pod", pod.Name, "error", err)
+
+		return ""
+	}
+
+	configuredSet := make(map[string]bool, len(cfg.InitContainers))
+	for _, spec := range cfg.InitContainers {
+		configuredSet[spec.Name] = true
+	}
+
+	var names []string
+
+	for _, name := range parsed {
+		if configuredSet[name] {
+			names = append(names, name)
+		}
+	}
+
+	return strings.Join(names, ",")
 }

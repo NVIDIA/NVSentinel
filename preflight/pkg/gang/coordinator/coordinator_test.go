@@ -206,6 +206,28 @@ func TestParsePeers(t *testing.T) {
 			wantCount: 2,
 			wantFirst: types.PeerInfo{PodName: "pod-0", PodIP: "2001:db8::1"},
 		},
+		{
+			name:      "4-field format with check names",
+			peersData: "pod-0;10.0.0.1;0;preflight-dcgm-diag,preflight-nccl-allreduce",
+			wantCount: 1,
+			wantFirst: types.PeerInfo{
+				PodName:    "pod-0",
+				PodIP:      "10.0.0.1",
+				CheckNames: "preflight-dcgm-diag,preflight-nccl-allreduce",
+			},
+		},
+		{
+			name:      "backward compatible 3-field format",
+			peersData: "pod-0;10.0.0.1;0\npod-1;10.0.0.2;1",
+			wantCount: 2,
+			wantFirst: types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.1"},
+		},
+		{
+			name:      "mixed old and new format",
+			peersData: "pod-0;10.0.0.1;0\npod-1;10.0.0.2;1;preflight-dcgm-diag",
+			wantCount: 2,
+			wantFirst: types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.1"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -216,11 +238,64 @@ func TestParsePeers(t *testing.T) {
 				t.Errorf("ParsePeers() count = %d, want %d", len(got), tt.wantCount)
 			}
 
-			if tt.wantCount > 0 && (got[0].PodName != tt.wantFirst.PodName || got[0].PodIP != tt.wantFirst.PodIP) {
+			if tt.wantCount > 0 && got[0] != tt.wantFirst {
 				t.Errorf("ParsePeers()[0] = %+v, want %+v", got[0], tt.wantFirst)
 			}
 		})
 	}
+}
+
+func TestAddPeerToConfigMapCheckNames(t *testing.T) {
+	c := &Coordinator{config: CoordinatorConfig{MasterPort: 29500}}
+
+	t.Run("serializes and round-trips CheckNames", func(t *testing.T) {
+		cm := &corev1.ConfigMap{Data: map[string]string{}}
+		c.addPeerToConfigMap(cm, types.PeerInfo{
+			PodName: "pod-0", PodIP: "10.0.0.1",
+			CheckNames: "preflight-dcgm-diag,preflight-nccl-allreduce",
+		})
+		c.addPeerToConfigMap(cm, types.PeerInfo{
+			PodName: "pod-1", PodIP: "10.0.0.2",
+			CheckNames: "preflight-dcgm-diag,preflight-nccl-allreduce",
+		})
+
+		parsed := ParsePeers(cm.Data[DataKeyPeers])
+		require.Len(t, parsed, 2)
+		assert.Equal(t, "preflight-dcgm-diag,preflight-nccl-allreduce", parsed[0].CheckNames)
+		assert.Equal(t, "preflight-dcgm-diag,preflight-nccl-allreduce", parsed[1].CheckNames)
+	})
+
+	t.Run("update preserves CheckNames", func(t *testing.T) {
+		cm := &corev1.ConfigMap{Data: map[string]string{}}
+		c.addPeerToConfigMap(cm, types.PeerInfo{
+			PodName: "pod-0", PodIP: "10.0.0.1",
+			CheckNames: "preflight-dcgm-diag",
+		})
+		// Re-register with new IP, same CheckNames
+		c.addPeerToConfigMap(cm, types.PeerInfo{
+			PodName: "pod-0", PodIP: "10.0.0.99",
+			CheckNames: "preflight-dcgm-diag",
+		})
+
+		parsed := ParsePeers(cm.Data[DataKeyPeers])
+		require.Len(t, parsed, 1)
+		assert.Equal(t, "10.0.0.99", parsed[0].PodIP)
+		assert.Equal(t, "preflight-dcgm-diag", parsed[0].CheckNames)
+	})
+
+	t.Run("empty CheckNames produces valid 4-field line", func(t *testing.T) {
+		cm := &corev1.ConfigMap{Data: map[string]string{}}
+		c.addPeerToConfigMap(cm, types.PeerInfo{
+			PodName: "pod-0", PodIP: "10.0.0.1",
+		})
+
+		// Raw format should be "pod-0;10.0.0.1;0;" (trailing semicolon)
+		assert.Contains(t, cm.Data[DataKeyPeers], "pod-0;10.0.0.1;0;")
+
+		parsed := ParsePeers(cm.Data[DataKeyPeers])
+		require.Len(t, parsed, 1)
+		assert.Equal(t, "", parsed[0].CheckNames)
+	})
 }
 
 func TestGetRank(t *testing.T) {
