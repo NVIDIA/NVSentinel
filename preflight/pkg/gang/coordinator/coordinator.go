@@ -229,6 +229,42 @@ func (c *Coordinator) RegisterPeer(
 	return nil
 }
 
+// RegisterPeerInConfigMap registers a pod as a peer in a specific ConfigMap
+// (rather than deriving the name from the gang ID). This is used when the
+// webhook created a ConfigMap under a provisional gang ID (e.g., from a label
+// fallback) that differs from the controller's discovered gang ID.
+func (c *Coordinator) RegisterPeerInConfigMap(
+	ctx context.Context,
+	namespace string,
+	configMapName string,
+	gangInfo *types.GangInfo,
+	peer types.PeerInfo,
+) error {
+	if configMapName == "" {
+		// Fallback: no webhook ConfigMap found, use the standard path.
+		return c.RegisterPeer(ctx, namespace, gangInfo, peer)
+	}
+
+	slog.Debug("Registering peer in webhook ConfigMap",
+		"configMap", configMapName,
+		"namespace", namespace,
+		"gangID", gangInfo.GangID,
+		"peer", peer.PodName,
+		"peerIP", peer.PodIP)
+
+	if err := c.updateConfigMap(ctx, namespace, configMapName, gangInfo.ExpectedMinCount, peer); err != nil {
+		return fmt.Errorf("failed to update ConfigMap: %w", err)
+	}
+
+	slog.Info("Registered peer in gang ConfigMap",
+		"configMap", configMapName,
+		"namespace", namespace,
+		"peer", peer.PodName,
+		"peerIP", peer.PodIP)
+
+	return nil
+}
+
 // updateConfigMap updates an existing ConfigMap, retrying on conflict.
 func (c *Coordinator) updateConfigMap(
 	ctx context.Context,

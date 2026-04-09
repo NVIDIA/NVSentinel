@@ -59,4 +59,3 @@ webhooks:
     objectSelector:
       {{- toYaml . | nindent 6 }}
     {{- end }}
-    reinvocationPolicy: IfNeeded
