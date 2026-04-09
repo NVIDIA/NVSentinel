@@ -60,12 +60,14 @@ func (s *InitContainerSpec) IsDefaultEnabled() bool {
 }
 
 type FileConfig struct {
-	InitContainers       []InitContainerSpec    `yaml:"initContainers"`
-	GPUResourceNames     []string               `yaml:"gpuResourceNames"`
-	NetworkResourceNames []string               `yaml:"networkResourceNames"`
-	DCGM                 DCGMConfig             `yaml:"dcgm"`
-	GangDiscovery        GangDiscoveryConfig    `yaml:"gangDiscovery"`
-	GangCoordination     GangCoordinationConfig `yaml:"gangCoordination"`
+	InitContainers       []InitContainerSpec `yaml:"initContainers"`
+	GPUResourceNames     []string            `yaml:"gpuResourceNames"`
+	NetworkResourceNames []string            `yaml:"networkResourceNames"`
+	ConnectorSocket      string              `yaml:"connectorSocket"`
+	ProcessingStrategy   string              `yaml:"processingStrategy"`
+
+	GangDiscovery    GangDiscoveryConfig    `yaml:"gangDiscovery"`
+	GangCoordination GangCoordinationConfig `yaml:"gangCoordination"`
 
 	// InitContainerPlacement controls where preflight init containers are
 	// placed relative to existing init containers in the pod spec.
@@ -83,22 +85,6 @@ type FileConfig struct {
 	// This allows the init container to inherit fabric-specific mounts
 	// (e.g. host EFA libs, TCPXO plugin volumes) from the user's container.
 	VolumeMountPatterns []string `yaml:"volumeMountPatterns,omitempty"`
-}
-
-// DCGMConfig holds DCGM-specific and (legacy) global preflight config.
-//
-// Prefer defining HostengineAddr and DiagLevel as inline env vars on the
-// preflight-dcgm-diag init container in values.yaml instead of using this
-// config block. Inline env vars take precedence via mergeEnvVars.
-//
-// ConnectorSocket and ProcessingStrategy are global preflight config that
-// apply to all init containers — they are incorrectly scoped here and will
-// move to a top-level struct (see ADR-035).
-type DCGMConfig struct {
-	HostengineAddr     string `yaml:"hostengineAddr"`
-	DiagLevel          int    `yaml:"diagLevel"`
-	ConnectorSocket    string `yaml:"connectorSocket"`
-	ProcessingStrategy string `yaml:"processingStrategy"`
 }
 
 // GangDiscoveryConfig configures gang discovery for PodGroup-based schedulers.
@@ -248,18 +234,11 @@ func (c *FileConfig) setDefaults() {
 		c.InitContainerPlacement = PlacementAppend
 	}
 
-	c.DCGM.setDefaults()
-	c.GangCoordination.setDefaults()
-}
-
-func (c *DCGMConfig) setDefaults() {
-	if c.DiagLevel == 0 {
-		c.DiagLevel = 1
-	}
-
 	if c.ProcessingStrategy == "" {
 		c.ProcessingStrategy = "EXECUTE_REMEDIATION"
 	}
+
+	c.GangCoordination.setDefaults()
 }
 
 func (c *GangCoordinationConfig) setDefaults() {

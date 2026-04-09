@@ -106,7 +106,7 @@ global:
   metadataPath: /var/lib/nvsentinel/gpu_metadata.json
 
   # DCGM (Data Center GPU Manager) configuration
-  # Shared by gpu-health-monitor and preflight dcgm-diag
+  # Used by gpu-health-monitor
   dcgm:
     # Enable DCGM Kubernetes service integration
     enabled: true
