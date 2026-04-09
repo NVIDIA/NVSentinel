@@ -190,6 +190,15 @@ func (c *GangController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		"configMap", webhookCM,
 		"podIP", pod.Status.PodIP)
 
+	// Clean up orphaned ConfigMap if the annotation-based gang ID maps to
+	// a different ConfigMap than the one the webhook mounted. This happens
+	// when the webhook used a label fallback before the scheduler annotation
+	// arrived, producing a different gang ID.
+	derivedCM := gang.ConfigMapName(gangID)
+	if derivedCM != webhookCM {
+		c.deleteOrphanedConfigMap(ctx, pod.Namespace, derivedCM)
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -283,6 +292,29 @@ func webhookConfigMapName(pod *corev1.Pod) string {
 	}
 
 	return ""
+}
+
+// deleteOrphanedConfigMap deletes a gang ConfigMap that was created for an
+// annotation-based gang ID that differs from the webhook's label-based one.
+// This is best-effort — if it doesn't exist, that's fine.
+func (c *GangController) deleteOrphanedConfigMap(ctx context.Context, namespace, name string) {
+	cm := &corev1.ConfigMap{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, cm); err != nil {
+		return // doesn't exist, nothing to clean up
+	}
+
+	if err := c.Delete(ctx, cm); err != nil && !errors.IsNotFound(err) {
+		slog.Warn("Failed to delete orphaned gang ConfigMap",
+			"configMap", name,
+			"namespace", namespace,
+			"error", err)
+
+		return
+	}
+
+	slog.Info("Deleted orphaned gang ConfigMap",
+		"configMap", name,
+		"namespace", namespace)
 }
 
 // checkNamesFromPod computes the check names string for a pod, matching
