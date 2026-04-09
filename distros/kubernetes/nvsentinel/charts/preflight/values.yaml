@@ -85,30 +85,8 @@ webhook:
   # certProvider: openshift-service-ca
   certProvider: cert-manager
 
-# DCGM config block (legacy — prefer inline env vars on the init container).
-#
-# New deployments should define DCGM_HOSTENGINE_ADDR and DCGM_DIAG_LEVEL as
-# env vars directly on the preflight-dcgm-diag container in initContainers
-# below. This matches how NCCL checks are configured and avoids split-brain
-# config between this block and the container spec. Inline env vars take
-# precedence over values injected from this block.
-#
-# See ADR-035 (docs/designs/035-preflight-inline-dcgm-config.md) for details.
-#
-# connectorSocket and processingStrategy are global preflight config and will
-# move to top-level keys in a future release.
-dcgm:
-  service:
-    endpoint: "nvidia-dcgm.gpu-operator.svc"
-    port: 5555
-  # Diagnostic level (maps to dcgmi diag -r <level>):
-  #   1 = Short  (~30 s)   - software deployment checks only (permissions, libraries, etc.)
-  #   2 = Medium (~2 min)  - adds PCIe bandwidth and basic GPU stress tests
-  #   3 = Long   (~15 min) - adds targeted stress (Diagnostic plugin, default 180 s per GPU)
-  #   4 = XLong  (~1-2 hr) - extended stress with longer Diagnostic plugin duration
-  diagLevel: 2
-  # Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY
-  processingStrategy: "EXECUTE_REMEDIATION"
+# Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY
+processingStrategy: "EXECUTE_REMEDIATION"
 
 # Controls where preflight init containers are placed relative to existing
 # init containers in the pod spec.
@@ -132,13 +110,16 @@ initContainers:
     image:
       repository: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag
       tag: ""
-    # Preferred: define DCGM config as inline env vars here instead of in the
-    # dcgm: block above. These take precedence over webhook-injected values.
-    # env:
-    #   - name: DCGM_HOSTENGINE_ADDR
-    #     value: "nvidia-dcgm.gpu-operator.svc:5555"
-    #   - name: DCGM_DIAG_LEVEL
-    #     value: "2"
+    env:
+      - name: DCGM_HOSTENGINE_ADDR
+        value: "nvidia-dcgm.gpu-operator.svc:5555"
+      # Diagnostic level (maps to dcgmi diag -r <level>):
+      #   1 = Short  (~30 s)   - software deployment checks only
+      #   2 = Medium (~2 min)  - adds PCIe bandwidth and basic GPU stress tests
+      #   3 = Long   (~15 min) - adds targeted stress (Diagnostic plugin)
+      #   4 = XLong  (~1-2 hr) - extended stress
+      - name: DCGM_DIAG_LEVEL
+        value: "2"
     volumeMounts:
       - name: nvsentinel-socket
         mountPath: /var/run

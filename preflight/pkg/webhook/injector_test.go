@@ -563,25 +563,6 @@ func TestBuildInitContainers(t *testing.T) {
 		assert.Equal(t, resource.MustParse("1Gi"), containers[0].Resources.Requests[corev1.ResourceMemory])
 	})
 
-	t.Run("DCGM env only for dcgm-diag container", func(t *testing.T) {
-		cfg := testConfig()
-		cfg.InitContainers = []config.InitContainerSpec{
-			{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
-			{Container: corev1.Container{Name: "preflight-nccl-allreduce", Image: "nccl:latest"}},
-		}
-		injector := NewInjector(cfg, nil)
-
-		containers := injector.buildInitContainers(gpuPod(), corev1.ResourceList{
-			"nvidia.com/gpu": resource.MustParse("8"),
-		}, nil, cfg.InitContainers)
-		require.Len(t, containers, 2)
-
-		assert.True(t, hasEnvVar(containers[0], "DCGM_DIAG_LEVEL"), "dcgm-diag should have DCGM_DIAG_LEVEL")
-		assert.True(t, hasEnvVar(containers[0], "DCGM_HOSTENGINE_ADDR"), "dcgm-diag should have DCGM_HOSTENGINE_ADDR")
-		assert.False(t, hasEnvVar(containers[1], "DCGM_DIAG_LEVEL"), "nccl container should NOT have DCGM_DIAG_LEVEL")
-		assert.False(t, hasEnvVar(containers[1], "DCGM_HOSTENGINE_ADDR"), "nccl container should NOT have DCGM_HOSTENGINE_ADDR")
-	})
-
 	t.Run("common env injected", func(t *testing.T) {
 		cfg := testConfig()
 		injector := NewInjector(cfg, nil)
@@ -1124,12 +1105,8 @@ func testConfig() *config.Config {
 			GPUResourceNames:       []string{"nvidia.com/gpu"},
 			NetworkResourceNames:   []string{"vpc.amazonaws.com/efa"},
 			InitContainerPlacement: config.PlacementAppend,
-			DCGM: config.DCGMConfig{
-				HostengineAddr:     "localhost:5555",
-				DiagLevel:          1,
-				ConnectorSocket:    "/var/run/nvsentinel/nvsentinel.sock",
-				ProcessingStrategy: "EXECUTE_REMEDIATION",
-			},
+			ConnectorSocket:    "/var/run/nvsentinel/nvsentinel.sock",
+			ProcessingStrategy: "EXECUTE_REMEDIATION",
 		},
 	}
 }

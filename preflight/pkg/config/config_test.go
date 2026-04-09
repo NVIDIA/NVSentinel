@@ -32,7 +32,7 @@ func writeYAML(t *testing.T, content string) string {
 	return path
 }
 
-// TestLoad covers YAML parsing, default population (GPU resources, DCGM,
+// TestLoad covers YAML parsing, default population (GPU resources,
 // gang coordination), validation errors (bad timeout), file errors,
 // and extraHostPathMounts readOnly defaulting.
 func TestLoad(t *testing.T) {
@@ -46,8 +46,7 @@ initContainers:
 		require.NoError(t, err)
 
 		assert.Equal(t, []string{"nvidia.com/gpu"}, cfg.GPUResourceNames)
-		assert.Equal(t, 1, cfg.DCGM.DiagLevel)
-		assert.Equal(t, "EXECUTE_REMEDIATION", cfg.DCGM.ProcessingStrategy)
+		assert.Equal(t, "EXECUTE_REMEDIATION", cfg.ProcessingStrategy)
 		assert.Len(t, cfg.InitContainers, 1)
 		assert.Equal(t, "preflight-dcgm-diag", cfg.InitContainers[0].Name)
 	})

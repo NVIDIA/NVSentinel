@@ -59,11 +59,8 @@ func handlerConfig() *config.Config {
 				{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
 			},
 			GPUResourceNames: []string{"nvidia.com/gpu"},
-			DCGM: config.DCGMConfig{
-				ConnectorSocket:    "/var/run/nvsentinel/nvsentinel.sock",
-				DiagLevel:          1,
-				ProcessingStrategy: "EXECUTE_REMEDIATION",
-			},
+			ConnectorSocket:    "/var/run/nvsentinel/nvsentinel.sock",
+			ProcessingStrategy: "EXECUTE_REMEDIATION",
 		},
 	}
 }
