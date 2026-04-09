@@ -128,22 +128,28 @@ func (e *postgresqlEvent) GetResumeToken() []byte {
 	return []byte(fmt.Sprintf("%d", e.changelogID))
 }
 
-func (e *postgresqlEvent) UnmarshalDocument(v interface{}) error {
-	// Get the full document from new_values or old_values
-	var document map[string]interface{}
-
+func (e *postgresqlEvent) extractDocument() map[string]interface{} {
 	if e.newValues != nil {
 		if doc, ok := e.newValues["document"]; ok {
-			document, _ = doc.(map[string]interface{})
+			if m, ok := doc.(map[string]interface{}); ok {
+				return m
+			}
 		}
 	}
 
-	if document == nil && e.oldValues != nil {
+	if e.oldValues != nil {
 		if doc, ok := e.oldValues["document"]; ok {
-			document, _ = doc.(map[string]interface{})
+			if m, ok := doc.(map[string]interface{}); ok {
+				return m
+			}
 		}
 	}
 
+	return nil
+}
+
+func (e *postgresqlEvent) UnmarshalDocument(v interface{}) error {
+	document := e.extractDocument()
 	if document == nil {
 		return datastore.NewValidationError(
 			datastore.ProviderPostgreSQL,
@@ -152,7 +158,10 @@ func (e *postgresqlEvent) UnmarshalDocument(v interface{}) error {
 		)
 	}
 
-	// Marshal and unmarshal to convert to target type
+	if _, hasID := document["_id"]; !hasID && e.recordID != "" {
+		document["_id"] = e.recordID
+	}
+
 	docJSON, err := json.Marshal(document)
 	if err != nil {
 		return datastore.NewSerializationError(

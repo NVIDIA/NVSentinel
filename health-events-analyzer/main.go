@@ -28,6 +28,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/flags"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	config "github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
@@ -106,6 +107,9 @@ func run() error {
 
 	flag.Parse()
 
+	ff := metrics.NewRegistry("health-events-analyzer")
+	ff.SetStoreOnlyMode(*processingStrategyFlag)
+
 	databaseConfig, err := loadDatabaseConfig(certConfig.ResolveCertPath())
 	if err != nil {
 		return err
@@ -130,6 +134,10 @@ func run() error {
 	tomlConfig, err := config.LoadTomlConfig(*tomlConfigPath)
 	if err != nil {
 		return fmt.Errorf("error loading TOML config: %w", err)
+	}
+
+	for _, rule := range tomlConfig.Rules {
+		ff.Set(rule.Name, rule.EvaluateRule)
 	}
 
 	reconcilerCfg := reconciler.HealthEventsAnalyzerReconcilerConfig{

@@ -513,6 +513,24 @@ helm-lint:
 	done
 	@echo "✅ All Helm charts validated successfully"
 
+# Helm chart unit tests
+.PHONY: helm-test
+helm-test:
+	@echo "🧪 Running Helm chart unit tests..."
+	@if ! helm plugin list | grep -q unittest; then \
+		echo "❌ Error: helm-unittest plugin not found. Install with: helm plugin install https://github.com/helm-unittest/helm-unittest"; \
+		exit 1; \
+	fi
+	@for chart_dir in distros/kubernetes/nvsentinel/charts/*/; do \
+		if [[ -d "$$chart_dir/tests" ]]; then \
+			chart_name=$$(basename "$$chart_dir"); \
+			echo "Running unit tests for chart: $$chart_name"; \
+			helm unittest "$$chart_dir" || exit 1; \
+			echo ""; \
+		fi; \
+	done
+	@echo "✅ All Helm chart unit tests passed"
+
 # Log collector lint (shell script)
 .PHONY: log-collector-lint
 log-collector-lint: ## Lint shell scripts in log collector

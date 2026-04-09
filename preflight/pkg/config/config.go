@@ -60,14 +60,14 @@ func (s *InitContainerSpec) IsDefaultEnabled() bool {
 }
 
 type FileConfig struct {
-	InitContainers       []InitContainerSpec    `yaml:"initContainers"`
-	GPUResourceNames     []string               `yaml:"gpuResourceNames"`
-	NetworkResourceNames []string               `yaml:"networkResourceNames"`
-	ConnectorSocket    string `yaml:"connectorSocket"`
-	ProcessingStrategy string `yaml:"processingStrategy"`
+	InitContainers       []InitContainerSpec `yaml:"initContainers"`
+	GPUResourceNames     []string            `yaml:"gpuResourceNames"`
+	NetworkResourceNames []string            `yaml:"networkResourceNames"`
+	ConnectorSocket      string              `yaml:"connectorSocket"`
+	ProcessingStrategy   string              `yaml:"processingStrategy"`
 
-	GangDiscovery GangDiscoveryConfig `yaml:"gangDiscovery"`
-	GangCoordination     GangCoordinationConfig `yaml:"gangCoordination"`
+	GangDiscovery    GangDiscoveryConfig    `yaml:"gangDiscovery"`
+	GangCoordination GangCoordinationConfig `yaml:"gangCoordination"`
 
 	// InitContainerPlacement controls where preflight init containers are
 	// placed relative to existing init containers in the pod spec.

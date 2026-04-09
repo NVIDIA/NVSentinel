@@ -34,10 +34,6 @@ import (
 	"github.com/nvidia/nvsentinel/store-client/pkg/factory"
 )
 
-const (
-	ServicePlatformConnector = "platform-connector"
-)
-
 type DatabaseStoreConnector struct {
 	// databaseClient is the database-agnostic client
 	databaseClient client.DatabaseClient
@@ -223,7 +219,7 @@ func (r *DatabaseStoreConnector) insertHealthEvents(
 			HealthEventStatus: &protos.HealthEventStatus{
 				UserPodsEvictionStatus: &protos.OperationStatus{},
 				SpanIds: map[string]string{
-					ServicePlatformConnector: tracing.SpanIDFromSpan(eventSpan),
+					tracing.ServicePlatformConnector: tracing.SpanIDFromSpan(eventSpan),
 				},
 			},
 		}

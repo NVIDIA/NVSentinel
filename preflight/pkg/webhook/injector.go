@@ -557,9 +557,11 @@ func (i *Injector) injectImagePullSecrets(pod *corev1.Pod) []PatchOperation {
 	}
 
 	var toAdd []corev1.LocalObjectReference
+
 	for _, s := range i.cfg.ImagePullSecrets {
 		if !existing[s.Name] {
 			toAdd = append(toAdd, s)
+			existing[s.Name] = true
 		}
 	}
 

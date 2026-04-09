@@ -664,15 +664,24 @@ func (p *PostgreSQLHealthEventStore) FindHealthEventsByStatus(
 
 // UpdateNodeQuarantineStatus updates node quarantine status for a specific event
 func (p *PostgreSQLHealthEventStore) UpdateNodeQuarantineStatus(
-	ctx context.Context, eventID string, status datastore.Status,
+	ctx context.Context, eventID string, status datastore.Status, spanID string,
 ) error {
 	// PostgreSQL stores health event status in BOTH table columns AND the JSONB document.
 	// We must update BOTH to keep them in sync for aggregation pipelines to work correctly.
+	//nolint:dupword // SQL query uses nested jsonb_set calls
 	query := `
 		UPDATE health_events
 		SET node_quarantined = $1,
 		    document = jsonb_set(
-		        document,
+		        jsonb_set(
+		            CASE
+		                WHEN document #> '{healtheventstatus,spanids}' IS NULL
+		                THEN jsonb_set(document, '{healtheventstatus,spanids}', '{}'::jsonb)
+		                ELSE document
+		            END,
+		            '{healtheventstatus,spanids,fault-quarantine}',
+		            to_jsonb($3::text)
+		        ),
 		        '{healtheventstatus,nodequarantined}',
 		        to_jsonb($1::text)
 		    ),
@@ -680,7 +689,7 @@ func (p *PostgreSQLHealthEventStore) UpdateNodeQuarantineStatus(
 		WHERE id = $2
 	`
 
-	result, err := p.db.ExecContext(ctx, query, string(status), eventID)
+	result, err := p.db.ExecContext(ctx, query, string(status), eventID, spanID)
 	if err != nil {
 		return fmt.Errorf("failed to update node quarantine status: %w", err)
 	}

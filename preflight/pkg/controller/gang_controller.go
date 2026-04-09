@@ -195,7 +195,7 @@ func (c *GangController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	// when the webhook used a label fallback before the scheduler annotation
 	// arrived, producing a different gang ID.
 	derivedCM := gang.ConfigMapName(gangID)
-	if derivedCM != webhookCM {
+	if webhookCM != "" && derivedCM != webhookCM {
 		c.deleteOrphanedConfigMap(ctx, pod.Namespace, derivedCM)
 	}
 
@@ -300,7 +300,14 @@ func webhookConfigMapName(pod *corev1.Pod) string {
 func (c *GangController) deleteOrphanedConfigMap(ctx context.Context, namespace, name string) {
 	cm := &corev1.ConfigMap{}
 	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, cm); err != nil {
-		return // doesn't exist, nothing to clean up
+		if !errors.IsNotFound(err) {
+			slog.Debug("Failed to get orphaned gang ConfigMap",
+				"configMap", name,
+				"namespace", namespace,
+				"error", err)
+		}
+
+		return
 	}
 
 	if err := c.Delete(ctx, cm); err != nil && !errors.IsNotFound(err) {

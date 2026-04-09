@@ -56,12 +56,13 @@ type InitializationParams struct {
 
 // Components holds the initialized runtime dependencies returned by InitializeAll.
 type Components struct {
-	Informers      *informers.Informers
-	EventWatcher   client.ChangeStreamWatcher
-	QueueManager   queue.EventQueueManager
-	Reconciler     *reconciler.Reconciler
-	DatabaseClient client.DatabaseClient
-	DataStore      datastore.DataStore
+	Informers          *informers.Informers
+	EventWatcher       client.ChangeStreamWatcher
+	QueueManager       queue.EventQueueManager
+	Reconciler         *reconciler.Reconciler
+	DatabaseClient     client.DatabaseClient
+	DataStore          datastore.DataStore
+	CustomDrainEnabled bool
 }
 
 // InitializeAll creates all node-drainer runtime dependencies from the given params and returns them as Components.
@@ -148,12 +149,13 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 	closeOnErr = false
 
 	return &Components{
-		Informers:      informersInstance,
-		EventWatcher:   dsComponents.eventWatcher,
-		QueueManager:   queueManager,
-		Reconciler:     reconcilerInstance,
-		DatabaseClient: dsComponents.databaseClient,
-		DataStore:      ds,
+		Informers:          informersInstance,
+		EventWatcher:       dsComponents.eventWatcher,
+		QueueManager:       queueManager,
+		Reconciler:         reconcilerInstance,
+		DatabaseClient:     dsComponents.databaseClient,
+		DataStore:          ds,
+		CustomDrainEnabled: configs.tomlCfg.CustomDrain.Enabled,
 	}, nil
 }
 

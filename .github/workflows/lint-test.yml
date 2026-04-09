@@ -96,13 +96,17 @@ jobs:
 
       - name: Setup Helm
         if: matrix.component == 'helm-charts'
-        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4  # v4.3.1
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2  # v5.0.0
         with:
           version: ${{ steps.helm-version.outputs.helm_version }}
 
       - name: Validate Helm Charts
         if: matrix.component == 'helm-charts'
         run: make helm-lint
+
+      - name: Run Helm Chart Unit Tests
+        if: matrix.component == 'helm-charts'
+        run: make helm-test
 
   health-monitors-lint-test:
     if: github.repository == 'nvidia/nvsentinel'

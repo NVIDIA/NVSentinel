@@ -35,8 +35,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
+
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/initializer"
 )
 
@@ -91,6 +94,13 @@ func main() {
 
 func run() error {
 	parseFlags()
+
+	ff := metrics.NewRegistry("fault-remediation",
+		metrics.WithRegisterer(crmetrics.Registry),
+	)
+	ff.Set("dry_run", dryRun)
+	ff.Set("leader_election", enableLeaderElection)
+	ff.Set("log_collector", enableLogCollector)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
