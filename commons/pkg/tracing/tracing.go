@@ -50,6 +50,7 @@ var (
 const (
 	ServicePlatformConnector = "platform-connector"
 	ServiceFaultQuarantine   = "fault-quarantine"
+	ServiceEventExporter     = "event-exporter"
 )
 
 // MetadataKeyTraceID is the key used to store the trace ID in the health event's

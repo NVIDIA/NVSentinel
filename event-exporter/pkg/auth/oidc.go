@@ -94,7 +94,7 @@ func (p *TokenProvider) fetchNewToken(ctx context.Context) (string, error) {
 		if execErr != nil {
 			if isRetriableHTTPStatus(statusCode) {
 				attempt++
-				slog.Warn("Token fetch failed, will retry",
+				slog.WarnContext(ctx, "Token fetch failed, will retry",
 					"attempt", attempt,
 					"statusCode", statusCode,
 					"error", execErr)
@@ -108,7 +108,7 @@ func (p *TokenProvider) fetchNewToken(ctx context.Context) (string, error) {
 		tokenResp = resp
 
 		if attempt > 0 {
-			slog.Info("Token fetch succeeded after retry", "attempt", attempt)
+			slog.InfoContext(ctx, "Token fetch succeeded after retry", "attempt", attempt)
 		}
 
 		return true, nil

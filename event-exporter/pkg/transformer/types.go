@@ -15,11 +15,17 @@
 package transformer
 
 import (
+	"context"
+	"fmt"
+
+	"go.opentelemetry.io/otel/attribute"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 type EventTransformer interface {
-	Transform(event *pb.HealthEvent) (*CloudEvent, error)
+	Transform(ctx context.Context, event *pb.HealthEvent) (*CloudEvent, error)
 }
 
 type CloudEventsTransformer struct {
@@ -32,6 +38,20 @@ func NewCloudEventsTransformer(metadata map[string]string) EventTransformer {
 	}
 }
 
-func (t *CloudEventsTransformer) Transform(event *pb.HealthEvent) (*CloudEvent, error) {
-	return ToCloudEvent(event, t.metadata)
+func (t *CloudEventsTransformer) Transform(ctx context.Context, event *pb.HealthEvent) (*CloudEvent, error) {
+	_, span := tracing.StartSpan(ctx, "event_exporter.transform")
+	defer span.End()
+
+	cloudEvent, err := ToCloudEvent(event, t.metadata)
+	if err != nil {
+		span.SetAttributes(
+			attribute.String("event_exporter.error.type", "transform_error"),
+			attribute.String("event_exporter.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
+
+		return nil, fmt.Errorf("error in transforming the event to cloud event: %w", err)
+	}
+
+	return cloudEvent, nil
 }
