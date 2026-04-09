@@ -8,7 +8,7 @@ For architecture, tradeoffs, and metrics design, see [ADR-026: Preflight checks]
 
 - Helm subchart is off by default; enable with `global.preflight.enabled` (see below).
 - cert-manager (or OpenShift service CA) for webhook TLS—same expectation as the rest of the NVSentinel chart.
-- DCGM reachable from injected init containers (typically the NVIDIA GPU Operator's DCGM / hostengine service). The chart shares DCGM settings with the GPU health monitor where applicable (`global.dcgm`).
+- DCGM reachable from injected init containers (typically the NVIDIA GPU Operator's DCGM / hostengine service). Configure the endpoint via `DCGM_HOSTENGINE_ADDR` on the `preflight-dcgm-diag` init container.
 - Multi-node / gang checks (e.g. `preflight-nccl-allreduce`): enable gang coordination and configure gang discovery for your scheduler (see below).
 
 ## Enable preflight
@@ -21,7 +21,7 @@ global:
     enabled: true
 ```
 
-2. Configure the preflight subchart under the top-level `preflight:` key (values merge into `distros/kubernetes/nvsentinel/charts/preflight/values.yaml`). At minimum, review `initContainers`, `webhook.failurePolicy`, and DCGM connectivity.
+2. Configure the preflight subchart under the top-level `preflight:` key (values merge into `distros/kubernetes/nvsentinel/charts/preflight/values.yaml`). At minimum, review `initContainers` (including DCGM and NCCL env vars) and `webhook.failurePolicy`.
 
 3. Label namespaces where injection should apply:
 
@@ -76,8 +76,8 @@ The webhook automatically injects these env vars into every init container (you 
 | Env var | Source | Purpose |
 |---------|--------|---------|
 | `NODE_NAME` | Downward API (`spec.nodeName`) | Kubernetes node name for health events |
-| `PLATFORM_CONNECTOR_SOCKET` | Chart `connectorSocket` (legacy: `dcgm.connectorSocket`) | Unix socket for the platform-connector gRPC endpoint |
-| `PROCESSING_STRATEGY` | Chart `processingStrategy` (legacy: `dcgm.processingStrategy`) | `EXECUTE_REMEDIATION` or `STORE_ONLY` — controls downstream action |
+| `PLATFORM_CONNECTOR_SOCKET` | Chart `connectorSocket` | Unix socket for the platform-connector gRPC endpoint |
+| `PROCESSING_STRATEGY` | Chart `processingStrategy` | `EXECUTE_REMEDIATION` or `STORE_ONLY` — controls downstream action |
 
 For gang-aware containers the webhook also injects `GANG_ID`, `GANG_CONFIG_DIR`, `GANG_TIMEOUT_SECONDS`, and `POD_NAME`.
 
@@ -90,9 +90,7 @@ Runs DCGM diagnostics against every GPU allocated to the pod via the remote host
 | `DCGM_DIAG_LEVEL` | `2` | Diagnostic depth: 1 = short (approx 30 s, software deployment checks), 2 = medium (approx 2 min, adds PCIe and basic GPU stress), 3 = long (approx 15 min, adds Diagnostic plugin stress), 4 = xlong (1-2 hr, extended stress) |
 | `DCGM_HOSTENGINE_ADDR` | `nvidia-dcgm.gpu-operator.svc:5555` | DCGM hostengine gRPC endpoint |
 
-#### Preferred: inline env vars on the init container
-
-Define DCGM settings as env vars directly on the `preflight-dcgm-diag` container in `initContainers`. This is consistent with how NCCL checks are configured and keeps all per-check config in one place:
+DCGM settings are defined as env vars directly on the `preflight-dcgm-diag` container in `initContainers`, consistent with how all other checks are configured:
 
 ```yaml
 initContainers:
@@ -110,21 +108,7 @@ initContainers:
         mountPath: /var/run
 ```
 
-When env vars are defined on the container, they take precedence over values injected from the `dcgm:` block (via `mergeEnvVars`). You can leave the `dcgm:` block empty or at defaults.
-
-#### Legacy: chart-level `dcgm:` block
-
-The `dcgm:` block still works but is not recommended for new deployments. It splits DCGM config across two locations (the `dcgm:` block and the `initContainers` list), and the webhook bridges them by matching the hardcoded container name `"preflight-dcgm-diag"`. See [ADR-035](../designs/035-preflight-inline-dcgm-config.md) for background on why inline config is preferred.
-
-```yaml
-# Legacy approach — prefer inline env vars above
-dcgm:
-  service:
-    endpoint: "nvidia-dcgm.gpu-operator.svc"
-    port: 5555
-  diagLevel: 2
-  processingStrategy: "EXECUTE_REMEDIATION"
-```
+> **Migrating from the legacy `dcgm:` block?** The separate `dcgm:` config block was removed in the ADR-035 refactor. Move `dcgm.service.endpoint` and `dcgm.service.port` into `DCGM_HOSTENGINE_ADDR` (as `host:port`), `dcgm.diagLevel` into `DCGM_DIAG_LEVEL`, and `dcgm.processingStrategy` into the top-level `processingStrategy`. See [ADR-035](../designs/035-preflight-inline-dcgm-config.md) for details.
 
 ### preflight-nccl-loopback
 
@@ -363,7 +347,7 @@ Tilt development often trims init containers to DCGM-only; see `distros/kubernet
 ## Related documentation
 
 - [ADR-026: Preflight checks](../designs/026-preflight-checks.md)
-- [ADR-035: Inline DCGM config](../designs/035-preflight-inline-dcgm-config.md) — why inline env vars are preferred over the `dcgm:` block
+- [ADR-035: Inline DCGM config](../designs/035-preflight-inline-dcgm-config.md) — removal of the legacy `dcgm:` block in favor of inline env vars
 - [gRPC / TLS authentication](../designs/030-grpc-tls-authentication.md) (mentions preflight among webhooks)
 - [Helm chart README](../../distros/kubernetes/README.md)
 - E2E test entry point: `tests/preflight_test.go` (build tag `amd64_group`)
