@@ -39,9 +39,6 @@ layout:
   tabs-placement: header
   hide-feedback: true
 
-metadata:
-  canonical-host: "docs.nvidia.com/nvsentinel"
-
 experimental:
   mdx-components:
     - ./components
