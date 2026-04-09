@@ -372,6 +372,7 @@ func (r *Reconciler) publishMatchedEvent(ctx context.Context,
 			attribute.String("health_events_analyzer.error.type", "publish_event_error"),
 			attribute.String("health_events_analyzer.error.message", err.Error()),
 		)
+
 		tracing.RecordError(span, err)
 
 		return fmt.Errorf("error in publishing the new fatal event: %w", err)
