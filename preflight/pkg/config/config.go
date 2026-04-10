@@ -74,6 +74,11 @@ type FileConfig struct {
 	// Valid values: "prepend", "append". Default: "append".
 	InitContainerPlacement InitContainerPlacement `yaml:"initContainerPlacement,omitempty"`
 
+	// ImagePullSecrets are added to the target pod's spec.imagePullSecrets
+	// when init containers are injected. This is needed when the init
+	// container images are stored in a private registry.
+	ImagePullSecrets []corev1.LocalObjectReference `yaml:"imagePullSecrets,omitempty"`
+
 	// NCCLEnvPatterns are glob patterns for environment variable names to copy
 	// from the pod's main containers to preflight init containers.
 	// This allows the init container to inherit fabric-specific NCCL config

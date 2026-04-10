@@ -244,7 +244,7 @@ func TestCheckRule(t *testing.T) {
 		cursor, _ := createMockCursor([]map[string]interface{}{
 			{"ruleMatched": true},
 		})
-		mockClient.On("Aggregate", ctx, mock.Anything).Return(cursor, nil).Once()
+		mockClient.On("Aggregate", mock.Anything, mock.Anything).Return(cursor, nil).Once()
 		result, err := reconciler.validateAllSequenceCriteria(ctx, rules[0], healthEvent_13)
 		assert.NoError(t, err)
 		assert.True(t, result)
@@ -256,7 +256,7 @@ func TestCheckRule(t *testing.T) {
 		cursor, _ := createMockCursor([]map[string]interface{}{
 			{"ruleMatched": false},
 		})
-		mockClient.On("Aggregate", ctx, mock.Anything).Return(cursor, nil).Once()
+		mockClient.On("Aggregate", mock.Anything, mock.Anything).Return(cursor, nil).Once()
 		result, err := reconciler.validateAllSequenceCriteria(ctx, rules[1], healthEvent_13)
 		assert.NoError(t, err)
 		assert.False(t, result)
@@ -264,7 +264,7 @@ func TestCheckRule(t *testing.T) {
 	})
 
 	t.Run("aggregate fails", func(t *testing.T) {
-		mockClient.On("Aggregate", ctx, mock.Anything).Return((*mockCursor)(nil), fmt.Errorf("aggregate failed")).Once()
+		mockClient.On("Aggregate", mock.Anything, mock.Anything).Return((*mockCursor)(nil), fmt.Errorf("aggregate failed")).Once()
 		result, err := reconciler.validateAllSequenceCriteria(ctx, rules[0], healthEvent_13)
 		assert.Error(t, err)
 		assert.False(t, result)
@@ -317,13 +317,13 @@ func TestHandleEvent(t *testing.T) {
 			Events:  []*protos.HealthEvent{expectedTransformedEvent},
 		}
 
-		mockPublisher.On("HealthEventOccurredV1", ctx, expectedHealthEvents).Return(&emptypb.Empty{}, nil)
+		mockPublisher.On("HealthEventOccurredV1", mock.Anything, expectedHealthEvents).Return(&emptypb.Empty{}, nil)
 
 		// Rule2 requires 3 occurrences, so return ruleMatched: true
 		cursor, _ := createMockCursor([]map[string]interface{}{
 			{"ruleMatched": true},
 		})
-		mockClient.On("Aggregate", ctx, mock.Anything).Return(cursor, nil)
+		mockClient.On("Aggregate", mock.Anything, mock.Anything).Return(cursor, nil)
 
 		published, _ := reconciler.handleEvent(ctx, &healthEvent_13)
 		assert.True(t, published)
@@ -367,7 +367,7 @@ func TestHandleEvent(t *testing.T) {
 		cursor, _ := createMockCursor([]map[string]interface{}{
 			{"ruleMatched": false},
 		})
-		mockClient.On("Aggregate", ctx, mock.Anything).Return(cursor, nil).Maybe()
+		mockClient.On("Aggregate", mock.Anything, mock.Anything).Return(cursor, nil).Maybe()
 
 		published, err := reconciler.handleEvent(ctx, &testEventCopy)
 		assert.NoError(t, err)
@@ -393,7 +393,7 @@ func TestHandleEvent(t *testing.T) {
 		cursor, _ := createMockCursor([]map[string]interface{}{
 			{"ruleMatched": false},
 		})
-		mockClient.On("Aggregate", ctx, mock.Anything).Return(cursor, nil).Maybe() // Rule1 and other calls
+		mockClient.On("Aggregate", mock.Anything, mock.Anything).Return(cursor, nil).Maybe() // Rule1 and other calls
 
 		published, _ := reconciler.handleEvent(ctx, &healthEvent_13)
 		assert.False(t, published)

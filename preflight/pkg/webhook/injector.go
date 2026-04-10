@@ -173,6 +173,7 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 
 	patches := i.patchInitContainers(pod, initContainers)
 	patches = append(patches, i.injectVolumes(pod, gangCtx)...)
+	patches = append(patches, i.injectImagePullSecrets(pod)...)
 
 	return patches, gangCtx, nil
 }
@@ -538,6 +539,51 @@ func (i *Injector) injectVolumes(pod *corev1.Pod, gangCtx *GangContext) []PatchO
 				Value: vol,
 			})
 		}
+	}
+
+	return patches
+}
+
+// injectImagePullSecrets builds JSON Patch operations to add configured
+// imagePullSecrets to the pod. Secrets already present on the pod are skipped.
+func (i *Injector) injectImagePullSecrets(pod *corev1.Pod) []PatchOperation {
+	if len(i.cfg.ImagePullSecrets) == 0 {
+		return nil
+	}
+
+	existing := make(map[string]bool, len(pod.Spec.ImagePullSecrets))
+	for _, s := range pod.Spec.ImagePullSecrets {
+		existing[s.Name] = true
+	}
+
+	var toAdd []corev1.LocalObjectReference
+
+	for _, s := range i.cfg.ImagePullSecrets {
+		if !existing[s.Name] {
+			toAdd = append(toAdd, s)
+			existing[s.Name] = true
+		}
+	}
+
+	if len(toAdd) == 0 {
+		return nil
+	}
+
+	if len(pod.Spec.ImagePullSecrets) == 0 {
+		return []PatchOperation{{
+			Op:    "add",
+			Path:  "/spec/imagePullSecrets",
+			Value: toAdd,
+		}}
+	}
+
+	patches := make([]PatchOperation, 0, len(toAdd))
+	for _, s := range toAdd {
+		patches = append(patches, PatchOperation{
+			Op:    "add",
+			Path:  "/spec/imagePullSecrets/-",
+			Value: s,
+		})
 	}
 
 	return patches

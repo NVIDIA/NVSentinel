@@ -48,9 +48,10 @@ var (
 // event-exporter, and health-events-analyzer to establish parent-child
 // trace relationships.
 const (
-	ServicePlatformConnector = "platform-connector"
-	ServiceFaultQuarantine   = "fault-quarantine"
-	ServiceEventExporter     = "event-exporter"
+	ServicePlatformConnector    = "platform-connector"
+	ServiceFaultQuarantine      = "fault-quarantine"
+	ServiceEventExporter        = "event-exporter"
+	ServiceHealthEventsAnalyzer = "health-events-analyzer"
 )
 
 // MetadataKeyTraceID is the key used to store the trace ID in the health event's
