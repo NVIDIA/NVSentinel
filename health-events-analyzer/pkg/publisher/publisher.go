@@ -20,11 +20,13 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"k8s.io/apimachinery/pkg/util/wait"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
 )
@@ -54,6 +56,9 @@ func isRetryableError(err error) bool {
 }
 
 func (p *PublisherConfig) sendHealthEventWithRetry(ctx context.Context, healthEvents *protos.HealthEvents) error {
+	ctx, span := tracing.StartSpan(ctx, "health_events_analyzer.grpc.publish")
+	defer span.End()
+
 	backoff := wait.Backoff{
 		Steps:    maxRetries,
 		Duration: delay,
@@ -64,26 +69,32 @@ func (p *PublisherConfig) sendHealthEventWithRetry(ctx context.Context, healthEv
 	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
 		_, err := p.platformConnectorClient.HealthEventOccurredV1(ctx, healthEvents)
 		if err == nil {
-			slog.Debug("Successfully sent health events", "events", healthEvents)
+			slog.DebugContext(ctx, "Successfully sent health events", "events", healthEvents)
 
 			return true, nil
 		}
 
 		if isRetryableError(err) {
-			slog.Error("Retryable error occurred", "error", err)
+			slog.ErrorContext(ctx, "Retryable error occurred", "error", err)
 			fatalEventPublishingError.WithLabelValues("retryable_error").Inc()
 
 			return false, nil
 		}
 
-		slog.Error("Non-retryable error occurred", "error", err)
+		slog.ErrorContext(ctx, "Non-retryable error occurred", "error", err)
 		fatalEventPublishingError.WithLabelValues("non_retryable_error").Inc()
 
 		return false, fmt.Errorf("non retryable error occurred while sending health event: %w", err)
 	})
 	if err != nil {
-		slog.Error("All retry attempts to send health event failed", "error", err)
+		slog.ErrorContext(ctx, "All retry attempts to send health event failed", "error", err)
 		fatalEventPublishingError.WithLabelValues("event_publishing_to_UDS_error").Inc()
+
+		span.SetAttributes(
+			attribute.String("health_events_analyzer.error.type", "grpc_publish_error"),
+			attribute.String("health_events_analyzer.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
 
 		return fmt.Errorf("all retry attempts to send health event failed: %w", err)
 	}
@@ -91,6 +102,8 @@ func (p *PublisherConfig) sendHealthEventWithRetry(ctx context.Context, healthEv
 	return nil
 }
 
+// NewPublisher creates a PublisherConfig that sends health events to the
+// platform-connector via gRPC.
 func NewPublisher(platformConnectorClient protos.PlatformConnectorClient,
 	processingStrategy protos.ProcessingStrategy) *PublisherConfig {
 	return &PublisherConfig{
@@ -99,9 +112,20 @@ func NewPublisher(platformConnectorClient protos.PlatformConnectorClient,
 	}
 }
 
+// Publish clones the incoming health event, updates the fields defined by the
+// rule (agent, check name, recommended action, isFatal, and processing strategy),
+// and sends the resulting event to the platform-connector with retries.
 func (p *PublisherConfig) Publish(ctx context.Context, event *protos.HealthEvent,
 	recommendedAction protos.RecommendedAction, ruleName string, message string,
 	rule *config.HealthEventsAnalyzerRule) error {
+	ctx, span := tracing.StartSpan(ctx, "health_events_analyzer.publish")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("health_events_analyzer.publish.rule_name", ruleName),
+		attribute.String("health_events_analyzer.publish.recommended_action", recommendedAction.String()),
+	)
+
 	newEvent := proto.Clone(event).(*protos.HealthEvent)
 
 	newEvent.Agent = "health-events-analyzer"
@@ -116,6 +140,13 @@ func (p *PublisherConfig) Publish(ctx context.Context, event *protos.HealthEvent
 	if rule != nil && rule.ProcessingStrategy != "" {
 		value, ok := protos.ProcessingStrategy_value[rule.ProcessingStrategy]
 		if !ok {
+			span.SetAttributes(
+				attribute.String("health_events_analyzer.error.type", "invalid_processing_strategy"),
+				attribute.String("health_events_analyzer.error.message",
+					fmt.Sprintf("unexpected processingStrategy: %q", rule.ProcessingStrategy)),
+			)
+			tracing.RecordError(span, fmt.Errorf("unexpected processingStrategy value: %q", rule.ProcessingStrategy))
+
 			return fmt.Errorf("unexpected processingStrategy value: %q", rule.ProcessingStrategy)
 		}
 
