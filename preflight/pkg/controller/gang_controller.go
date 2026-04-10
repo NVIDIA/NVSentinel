@@ -102,15 +102,7 @@ func (c *GangController) podIPChangedPredicate() predicate.Predicate {
 }
 
 // hasGangConfigVolume checks if the pod was injected by the webhook for gang coordination.
-func hasGangConfigVolume(pod *corev1.Pod) bool {
-	for _, vol := range pod.Spec.Volumes {
-		if vol.Name == types.GangConfigVolumeName {
-			return true
-		}
-	}
-
-	return false
-}
+var hasGangConfigVolume = types.HasGangConfigVolume
 
 // Reconcile handles pod events to register gang peers.
 func (c *GangController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

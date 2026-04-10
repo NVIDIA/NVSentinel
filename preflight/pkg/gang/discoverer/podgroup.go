@@ -46,6 +46,11 @@ type PodGroupConfig struct {
 	// MinCountExpr is a CEL expression to extract minCount from PodGroup.
 	// Receives 'podGroup' as map[string]any.
 	MinCountExpr string
+
+	// PeerFilter optionally restricts which pods are included as gang peers.
+	// When set, only pods passing the filter are counted and ExpectedMinCount
+	// is derived from the filtered peer count instead of the CRD's minMember.
+	PeerFilter types.PeerFilter
 }
 
 // PodGroupDiscoverer discovers gang members using PodGroup CRDs.
@@ -177,6 +182,12 @@ func (d *PodGroupDiscoverer) DiscoverPeers(ctx context.Context, pod *corev1.Pod)
 			continue
 		}
 
+		// Skip pods that don't pass the peer filter (e.g., pods without
+		// init containers in a mixed JobSet like Ray head + GPU workers).
+		if d.config.PeerFilter != nil && !d.config.PeerFilter(p) {
+			continue
+		}
+
 		peers = append(peers, types.PeerInfo{
 			PodName:   p.Name,
 			PodIP:     p.Status.PodIP,
@@ -193,6 +204,14 @@ func (d *PodGroupDiscoverer) DiscoverPeers(ctx context.Context, pod *corev1.Pod)
 			"gangID", gangID)
 
 		return nil, nil
+	}
+
+	// When a peer filter is active, the CRD's minMember may include pods
+	// that are not gang participants (e.g., a head pod without GPUs).
+	// Use the filtered count so init containers don't wait for peers
+	// that will never register.
+	if d.config.PeerFilter != nil {
+		expectedCount = len(peers)
 	}
 
 	slog.Info("Discovered gang",

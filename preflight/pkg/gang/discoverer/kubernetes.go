@@ -43,13 +43,32 @@ var WorkloadGVK = schema.GroupVersionKind{
 //	    name: training-job-workload
 //	    podGroup: workers
 type WorkloadRefDiscoverer struct {
-	client client.Client
+	client     client.Client
+	peerFilter types.PeerFilter
 }
 
 // NewWorkloadRefDiscoverer creates a new workloadRef gang discoverer.
-func NewWorkloadRefDiscoverer(c client.Client) *WorkloadRefDiscoverer {
-	return &WorkloadRefDiscoverer{
+func NewWorkloadRefDiscoverer(c client.Client, opts ...WorkloadRefOption) *WorkloadRefDiscoverer {
+	d := &WorkloadRefDiscoverer{
 		client: c,
+	}
+
+	for _, opt := range opts {
+		opt(d)
+	}
+
+	return d
+}
+
+// WorkloadRefOption configures a WorkloadRefDiscoverer.
+type WorkloadRefOption func(*WorkloadRefDiscoverer)
+
+// WithPeerFilter sets a peer filter that restricts which pods are included
+// as gang peers. When set, only pods passing the filter are counted and
+// ExpectedMinCount is derived from the filtered count.
+func WithPeerFilter(f types.PeerFilter) WorkloadRefOption {
+	return func(d *WorkloadRefDiscoverer) {
+		d.peerFilter = f
 	}
 }
 
@@ -111,7 +130,13 @@ func (w *WorkloadRefDiscoverer) DiscoverPeers(
 		return nil, nil
 	}
 
-	if expectedMinCount == 0 {
+	// When a peer filter is active, the Workload CRD's minCount may include
+	// pods that are not gang participants (e.g., a head pod without GPUs).
+	// Use the filtered count so init containers don't wait for peers
+	// that will never register.
+	if w.peerFilter != nil {
+		expectedMinCount = len(peers)
+	} else if expectedMinCount == 0 {
 		expectedMinCount = len(peers)
 	}
 
@@ -185,7 +210,15 @@ func (w *WorkloadRefDiscoverer) isPeerMatch(p *corev1.Pod, workloadName, podGrou
 		return false
 	}
 
-	return p.Status.Phase == corev1.PodRunning || p.Status.Phase == corev1.PodPending
+	if p.Status.Phase != corev1.PodRunning && p.Status.Phase != corev1.PodPending {
+		return false
+	}
+
+	if w.peerFilter != nil && !w.peerFilter(p) {
+		return false
+	}
+
+	return true
 }
 
 // getWorkloadMinCount retrieves the minCount from a Workload's podGroup gang policy.

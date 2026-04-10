@@ -25,6 +25,27 @@ import (
 // The controller uses this to identify pods that belong to a gang.
 const GangConfigVolumeName = "nvsentinel-preflight-gang-config"
 
+// PeerFilter determines whether a discovered pod should be included as a
+// gang peer. When set on a discoverer, pods that fail the filter are excluded
+// from the peer list and ExpectedMinCount is derived from the filtered count
+// instead of the scheduler CRD value. This handles JobSets where not all pods
+// in a PodGroup have init containers (e.g., a Ray head pod without GPUs).
+type PeerFilter func(pod *corev1.Pod) bool
+
+// HasGangConfigVolume returns true if the pod has the gang coordination
+// ConfigMap volume (injected by the webhook for pods with GPU resources).
+// This is the standard PeerFilter: only pods with preflight init containers
+// should participate in gang coordination.
+func HasGangConfigVolume(pod *corev1.Pod) bool {
+	for _, vol := range pod.Spec.Volumes {
+		if vol.Name == GangConfigVolumeName {
+			return true
+		}
+	}
+
+	return false
+}
+
 type PeerInfo struct {
 	PodName   string
 	PodIP     string

@@ -119,6 +119,7 @@ func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context
 		cfg.GangDiscovery,
 		mgr.GetClient(),
 		mgr.GetRESTMapper(),
+		gang.HasGangConfigVolume,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create gang discoverer: %w", err)

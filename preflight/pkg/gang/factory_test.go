@@ -119,7 +119,7 @@ func TestNewDiscovererFromConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := NewDiscovererFromConfig(tt.cfg, fakeClient, restMapper)
+			got, err := NewDiscovererFromConfig(tt.cfg, fakeClient, restMapper, nil)
 
 			if tt.wantError {
 				if err == nil {

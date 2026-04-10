@@ -45,6 +45,7 @@ var (
 	DefaultCoordinatorConfig = coordinator.DefaultCoordinatorConfig
 	ParsePeers               = coordinator.ParsePeers
 	GetRank                  = coordinator.GetRank
+	HasGangConfigVolume      = types.HasGangConfigVolume
 )
 
 type discoveryType int
@@ -56,10 +57,14 @@ const (
 )
 
 // NewDiscovererFromConfig creates a gang discoverer from configuration.
+// The peerFilter, when non-nil, restricts which pods are included as gang
+// peers during discovery. This handles JobSets where not all pods in a
+// PodGroup have init containers (e.g., a Ray head pod without GPUs).
 func NewDiscovererFromConfig(
 	cfg config.GangDiscoveryConfig,
 	c client.Client,
 	restMapper meta.RESTMapper,
+	peerFilter types.PeerFilter,
 ) (GangDiscoverer, error) {
 	switch detectDiscoveryType(cfg) {
 	case discoveryTypeKubernetes:
@@ -67,7 +72,12 @@ func NewDiscovererFromConfig(
 			return nil, fmt.Errorf("kubernetes native Workload API not available (requires K8s 1.35+): %w", err)
 		}
 
-		return discoverer.NewWorkloadRefDiscoverer(c), nil
+		var opts []discoverer.WorkloadRefOption
+		if peerFilter != nil {
+			opts = append(opts, discoverer.WithPeerFilter(peerFilter))
+		}
+
+		return discoverer.NewWorkloadRefDiscoverer(c, opts...), nil
 
 	case discoveryTypePodGroup:
 		gvr := schema.GroupVersionResource{
@@ -81,7 +91,7 @@ func NewDiscovererFromConfig(
 			return nil, fmt.Errorf("gangDiscovery.podGroupGVR validation failed: %w", err)
 		}
 
-		return newPodGroupDiscoverer(cfg, c, gvk)
+		return newPodGroupDiscoverer(cfg, c, gvk, peerFilter)
 
 	case discoveryTypeInvalid:
 		return nil, fmt.Errorf(
@@ -129,6 +139,7 @@ func newPodGroupDiscoverer(
 	cfg config.GangDiscoveryConfig,
 	c client.Client,
 	gvk schema.GroupVersionKind,
+	peerFilter types.PeerFilter,
 ) (GangDiscoverer, error) {
 	podGroupConfig := discoverer.PodGroupConfig{
 		Name:           cfg.Name,
@@ -136,6 +147,7 @@ func newPodGroupDiscoverer(
 		LabelKeys:      cfg.LabelKeys,
 		PodGroupGVK:    gvk,
 		MinCountExpr:   cfg.MinCountExpr,
+		PeerFilter:     peerFilter,
 	}
 
 	return discoverer.NewPodGroupDiscoverer(c, podGroupConfig)

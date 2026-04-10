@@ -196,4 +196,44 @@ func TestWorkloadRefDiscoverer_DiscoverPeers(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, info)
 	})
+
+	t.Run("peer filter excludes pods without gang volume", func(t *testing.T) {
+		workload := makeWorkloadCRD("default", "train", []map[string]any{
+			{"name": "all", "policy": map[string]any{"gang": map[string]any{"minCount": int64(5)}}},
+		})
+		// Head pod without gang volume
+		head := makeWorkloadPod("head-0", "default", "train", "all", "10.0.0.1", corev1.PodRunning)
+		// Worker pods with gang volume
+		w0 := makeWorkloadPod("worker-0", "default", "train", "all", "10.0.0.2", corev1.PodRunning)
+		w0.Spec.Volumes = []corev1.Volume{{Name: "nvsentinel-preflight-gang-config"}}
+		w1 := makeWorkloadPod("worker-1", "default", "train", "all", "10.0.0.3", corev1.PodRunning)
+		w1.Spec.Volumes = []corev1.Volume{{Name: "nvsentinel-preflight-gang-config"}}
+		w2 := makeWorkloadPod("worker-2", "default", "train", "all", "10.0.0.4", corev1.PodPending)
+		w2.Spec.Volumes = []corev1.Volume{{Name: "nvsentinel-preflight-gang-config"}}
+		w3 := makeWorkloadPod("worker-3", "default", "train", "all", "10.0.0.5", corev1.PodRunning)
+		w3.Spec.Volumes = []corev1.Volume{{Name: "nvsentinel-preflight-gang-config"}}
+
+		pods := []runtime.Object{head, w0, w1, w2, w3}
+		c := fake.NewClientBuilder().WithRuntimeObjects(append(pods, workload)...).Build()
+
+		hasGangVolume := func(pod *corev1.Pod) bool {
+			for _, v := range pod.Spec.Volumes {
+				if v.Name == "nvsentinel-preflight-gang-config" {
+					return true
+				}
+			}
+			return false
+		}
+		d := NewWorkloadRefDiscoverer(c, WithPeerFilter(hasGangVolume))
+
+		info, err := d.DiscoverPeers(context.Background(), w0)
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		assert.Len(t, info.Peers, 4, "head pod should be excluded by peer filter")
+		assert.Equal(t, 4, info.ExpectedMinCount, "ExpectedMinCount should match filtered count, not Workload minCount")
+
+		for _, p := range info.Peers {
+			assert.NotEqual(t, "head-0", p.PodName, "head pod should not be in peer list")
+		}
+	})
 }

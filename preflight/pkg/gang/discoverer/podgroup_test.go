@@ -281,4 +281,65 @@ func TestPodGroupDiscoverer_DiscoverPeers(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, info)
 	})
+
+	t.Run("peer filter excludes pods without gang volume", func(t *testing.T) {
+		pg := makePodGroupCRD("default", "mixed-pg", 5) // minMember includes head
+		headPod := makePodInGroup("head-0", "default", "mixed-pg", "10.0.0.1", corev1.PodRunning)
+		// Workers have the gang config volume (injected by webhook)
+		worker0 := makePodInGroup("worker-0", "default", "mixed-pg", "10.0.0.2", corev1.PodRunning)
+		worker0.Spec.Volumes = []corev1.Volume{{Name: "nvsentinel-preflight-gang-config"}}
+		worker1 := makePodInGroup("worker-1", "default", "mixed-pg", "10.0.0.3", corev1.PodRunning)
+		worker1.Spec.Volumes = []corev1.Volume{{Name: "nvsentinel-preflight-gang-config"}}
+		worker2 := makePodInGroup("worker-2", "default", "mixed-pg", "10.0.0.4", corev1.PodPending)
+		worker2.Spec.Volumes = []corev1.Volume{{Name: "nvsentinel-preflight-gang-config"}}
+		worker3 := makePodInGroup("worker-3", "default", "mixed-pg", "10.0.0.5", corev1.PodRunning)
+		worker3.Spec.Volumes = []corev1.Volume{{Name: "nvsentinel-preflight-gang-config"}}
+
+		pods := []runtime.Object{headPod, worker0, worker1, worker2, worker3}
+
+		c := fake.NewClientBuilder().WithRuntimeObjects(append(pods, pg)...).Build()
+		cfg := testConfig()
+		cfg.PodGroupGVK = pgGVK
+		cfg.PeerFilter = func(pod *corev1.Pod) bool {
+			for _, v := range pod.Spec.Volumes {
+				if v.Name == "nvsentinel-preflight-gang-config" {
+					return true
+				}
+			}
+			return false
+		}
+		d, err := NewPodGroupDiscoverer(c, cfg)
+		require.NoError(t, err)
+
+		info, err := d.DiscoverPeers(context.Background(), worker0)
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		assert.Len(t, info.Peers, 4, "head pod should be excluded by peer filter")
+		assert.Equal(t, 4, info.ExpectedMinCount, "ExpectedMinCount should match filtered count, not PodGroup minMember")
+
+		// Verify head pod is not in the peer list
+		for _, p := range info.Peers {
+			assert.NotEqual(t, "head-0", p.PodName, "head pod should not be in peer list")
+		}
+	})
+
+	t.Run("no peer filter preserves minMember from CRD", func(t *testing.T) {
+		pg := makePodGroupCRD("default", "nofilt-pg", 5)
+		pods := []runtime.Object{
+			makePodInGroup("pod-0", "default", "nofilt-pg", "10.0.0.1", corev1.PodRunning),
+			makePodInGroup("pod-1", "default", "nofilt-pg", "10.0.0.2", corev1.PodRunning),
+		}
+
+		c := fake.NewClientBuilder().WithRuntimeObjects(append(pods, pg)...).Build()
+		cfg := testConfig()
+		cfg.PodGroupGVK = pgGVK
+		// No PeerFilter set
+		d, err := NewPodGroupDiscoverer(c, cfg)
+		require.NoError(t, err)
+
+		info, err := d.DiscoverPeers(context.Background(), makePodInGroup("pod-0", "default", "nofilt-pg", "10.0.0.1", corev1.PodRunning))
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		assert.Equal(t, 5, info.ExpectedMinCount, "without filter, minMember from CRD should be used")
+	})
 }
