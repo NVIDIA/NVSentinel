@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	gonvml "github.com/NVIDIA/go-nvml/pkg/nvml"
@@ -27,16 +29,35 @@ import (
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nvml"
 )
 
-type Collector struct {
-	nvml *nvml.NVMLWrapper
+type nvmlClient interface {
+	GetDeviceCount() (int, error)
+	GetDriverVersion() (string, error)
+	BuildDeviceMap() (map[string]gonvml.Device, error)
+	ParseNVLinkTopologyWithContext(context.Context) (map[int]nvml.GPUNVLinkTopology, error)
+	GetGPUInfo(index int) (*model.GPUInfo, error)
+	GetChassisSerial(index int) *string
+	CollectNVLinkTopology(
+		gpuInfo *model.GPUInfo,
+		index int,
+		deviceMap map[string]gonvml.Device,
+		parsedTopology map[int]nvml.GPUNVLinkTopology,
+	) (map[string]struct{}, error)
 }
 
-func NewCollector(nvmlWrapper *nvml.NVMLWrapper) *Collector {
+// Collector gathers GPU metadata from a node using NVML.
+type Collector struct {
+	nvml nvmlClient
+}
+
+// NewCollector creates a Collector backed by the provided NVML client.
+func NewCollector(nvmlWrapper nvmlClient) *Collector {
 	return &Collector{
 		nvml: nvmlWrapper,
 	}
 }
 
+// Collect gathers GPU metadata from the node via NVML, including device info,
+// NVLink topology, NVSwitch PCIs, and (for drivers >= R560) chassis serial.
 func (c *Collector) Collect(ctx context.Context) (*model.GPUMetadata, error) {
 	count, err := c.nvml.GetDeviceCount()
 	if err != nil {
@@ -73,6 +94,7 @@ func (c *Collector) Collect(ctx context.Context) (*model.GPUMetadata, error) {
 	return metadata, nil
 }
 
+// prepareTopologyData builds the device map and parses NVLink topology.
 func (c *Collector) prepareTopologyData(
 	ctx context.Context,
 ) (map[string]gonvml.Device, map[int]nvml.GPUNVLinkTopology, error) {
@@ -95,6 +117,7 @@ func (c *Collector) prepareTopologyData(
 	return deviceMap, parsedTopology, nil
 }
 
+// collectGPUData iterates over GPUs to populate metadata, NVSwitch, and chassis serial fields.
 func (c *Collector) collectGPUData(
 	count int,
 	metadata *model.GPUMetadata,
@@ -105,13 +128,20 @@ func (c *Collector) collectGPUData(
 
 	var chassisSerial *string
 
+	collectChassisSerial := supportsChassisSerial(metadata.DriverVersion)
+
+	if !collectChassisSerial {
+		slog.Info("Skipping chassis serial collection because driver does not support platform info",
+			"driver_version", metadata.DriverVersion)
+	}
+
 	for i := range count {
 		nvmlGPUInfo, err := c.nvml.GetGPUInfo(i)
 		if err != nil {
 			return fmt.Errorf("failed to get GPU info for GPU %d: %w", i, err)
 		}
 
-		if i == 0 {
+		if i == 0 && collectChassisSerial {
 			chassisSerial = c.nvml.GetChassisSerial(i)
 		}
 
@@ -135,4 +165,29 @@ func (c *Collector) collectGPUData(
 	}
 
 	return nil
+}
+
+// supportsChassisSerial reports whether the driver version supports platform info queries (>= R560).
+func supportsChassisSerial(driverVersion string) bool {
+	const minSupportedMajorVersion = 560
+
+	majorVersionString := strings.TrimSpace(strings.SplitN(driverVersion, ".", 2)[0])
+	if majorVersionString == "" {
+		slog.Warn("Failed to parse driver major version for chassis serial support",
+			"driver_version", driverVersion,
+			"error", "missing major version")
+
+		return false
+	}
+
+	majorVersion, err := strconv.Atoi(majorVersionString)
+	if err != nil {
+		slog.Warn("Failed to parse driver major version for chassis serial support",
+			"driver_version", driverVersion,
+			"error", err)
+
+		return false
+	}
+
+	return majorVersion >= minSupportedMajorVersion
 }
