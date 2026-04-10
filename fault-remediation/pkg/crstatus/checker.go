@@ -18,6 +18,7 @@ import (
 	"context"
 	"log/slog"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -26,49 +27,61 @@ import (
 )
 
 type CRStatusChecker struct {
-	client             client.Client
-	remediationActions map[string]config.MaintenanceResource
-	dryRun             bool
+	client            client.Client
+	remediationConfig *config.TomlConfig
+	dryRun            bool
 }
 
 func NewCRStatusChecker(
 	client client.Client,
-	remediationActions map[string]config.MaintenanceResource,
+	remediationConfig *config.TomlConfig,
 	dryRun bool,
 ) *CRStatusChecker {
 	return &CRStatusChecker{
-		client:             client,
-		remediationActions: remediationActions,
-		dryRun:             dryRun,
+		client:            client,
+		remediationConfig: remediationConfig,
+		dryRun:            dryRun,
 	}
 }
 
-// ShouldSkipCRCreation returns true if the CR exists and is not in a terminal state otherwise returns false.
-func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, actionName string, crName string) bool {
-	resource, exists := c.remediationActions[actionName]
-	if !exists {
-		slog.Error("No remediation configuration found for action", "action", actionName)
-		return false
-	}
-
+// ShouldSkipCRCreation returns true if a matching CR exists and is not in a terminal state otherwise returns false.
+func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, componentClass, actionName, crName string) bool {
 	if c.dryRun {
 		slog.Info("DRY-RUN: CR doesn't exist (dry-run mode)", "crName", crName, "action", actionName)
 		return false
 	}
 
+	resource, found := c.remediationConfig.ResolveStoredMaintenanceResource(componentClass, actionName)
+	if !found {
+		slog.Error("No remediation configuration found for action",
+			"action", actionName,
+			"componentClass", componentClass)
+
+		return false
+	}
+
+	obj := &unstructured.Unstructured{}
 	gvk := schema.GroupVersionKind{
 		Group:   resource.ApiGroup,
 		Version: resource.Version,
 		Kind:    resource.Kind,
 	}
-
-	obj := &unstructured.Unstructured{}
 	obj.SetGroupVersionKind(gvk)
 
 	key := client.ObjectKey{Name: crName, Namespace: resource.Namespace}
 
 	if err := c.client.Get(ctx, key, obj); err != nil {
-		slog.Warn("Failed to get CR, allowing create", "crName", crName, "gvk", gvk.String(), "error", err)
+		if apierrors.IsNotFound(err) {
+			return false
+		}
+
+		slog.Warn("Failed to get CR, assuming not in progress",
+			"crName", crName,
+			"action", actionName,
+			"componentClass", componentClass,
+			"gvk", gvk.String(),
+			"error", err)
+
 		return false
 	}
 

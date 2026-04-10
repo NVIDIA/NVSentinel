@@ -25,26 +25,42 @@ import (
 )
 
 func TestGetGroupConfigForEvent(t *testing.T) {
-	remediationActions := map[string]config.MaintenanceResource{
-		"RESTART_BM": {
-			ApiGroup:                     "janitor.dgxc.nvidia.com",
-			Version:                      "v1alpha1",
-			Kind:                         "RebootNode",
-			TemplateFileName:             "rebootnode-template.yaml",
-			CompleteConditionType:        "NodeReady",
-			EquivalenceGroup:             "restart",
-			ImpactedEntityScope:          "",
-			SupersedingEquivalenceGroups: nil,
+	remediationConfig := &config.TomlConfig{
+		RemediationActions: map[string]config.MaintenanceResource{
+			"RESTART_BM": {
+				ApiGroup:                     "janitor.dgxc.nvidia.com",
+				Version:                      "v1alpha1",
+				Kind:                         "RebootNode",
+				TemplateFileName:             "rebootnode-template.yaml",
+				CompleteConditionType:        "NodeReady",
+				EquivalenceGroup:             "restart",
+				ImpactedEntityScope:          "",
+				SupersedingEquivalenceGroups: nil,
+			},
+			"COMPONENT_RESET": {
+				ApiGroup:                     "janitor.dgxc.nvidia.com",
+				Version:                      "v1alpha1",
+				Kind:                         "RebootNode",
+				TemplateFileName:             "rebootnode-template.yaml",
+				CompleteConditionType:        "NodeReady",
+				EquivalenceGroup:             "reset",
+				ImpactedEntityScope:          "GPU_UUID",
+				SupersedingEquivalenceGroups: []string{"restart"},
+			},
 		},
-		"COMPONENT_RESET": {
-			ApiGroup:                     "janitor.dgxc.nvidia.com",
-			Version:                      "v1alpha1",
-			Kind:                         "RebootNode",
-			TemplateFileName:             "rebootnode-template.yaml",
-			CompleteConditionType:        "NodeReady",
-			EquivalenceGroup:             "reset",
-			ImpactedEntityScope:          "GPU_UUID",
-			SupersedingEquivalenceGroups: []string{"restart"},
+		ComponentRemediationActions: config.ComponentRemediationActions{
+			"GPU": {
+				"COMPONENT_RESET": {
+					ApiGroup:                     "janitor.dgxc.nvidia.com",
+					Version:                      "v1alpha1",
+					Kind:                         "GPUReset",
+					TemplateFileName:             "gpureset-template.yaml",
+					CompleteConditionType:        "Complete",
+					EquivalenceGroup:             "gpu-reset",
+					ImpactedEntityScope:          "GPU_UUID",
+					SupersedingEquivalenceGroups: []string{"restart"},
+				},
+			},
 		},
 	}
 
@@ -98,10 +114,29 @@ func TestGetGroupConfigForEvent(t *testing.T) {
 			expectError:         true,
 			expectedGroupConfig: nil,
 		},
+		{
+			name: "Component override is used for equivalence group resolution",
+			healthEvent: &protos.HealthEvent{
+				ComponentClass:    "GPU",
+				RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+				EntitiesImpacted: []*protos.Entity{
+					{
+						EntityType:  "GPU_UUID",
+						EntityValue: "GPU-456",
+					},
+				},
+			},
+			expectError: false,
+			expectedGroupConfig: &EquivalenceGroupConfig{
+				EffectiveEquivalenceGroup:    "gpu-reset-GPU-456",
+				ImpactedEntityScopeValue:     "GPU-456",
+				SupersedingEquivalenceGroups: []string{"restart"},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			groupConfig, err := GetGroupConfigForEvent(remediationActions, tt.healthEvent)
+			groupConfig, err := GetGroupConfigForEvent(remediationConfig, tt.healthEvent)
 			if tt.expectError {
 				assert.Error(t, err)
 			} else {

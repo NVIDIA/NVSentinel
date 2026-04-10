@@ -52,18 +52,46 @@ Defines the Custom Resource that will be created to trigger remediation actions.
 fault-remediation:
   maintenance:
     actions:
-      "COMPONENT_RESET":
+      "RESTART_VM":
         apiGroup: "janitor.dgxc.nvidia.com"
         version: "v1alpha1"
-        kind: "GPUReset"
+        kind: "RebootNode"
         scope: "Cluster"
-        completeConditionType: "Complete"
-        templateFileName: "gpureset-template.yaml"
-        equivalenceGroup: "reset"
-        supersedingEquivalenceGroups: ["restart"]
-        impactedEntityScope: "GPU_UUID"
+        completeConditionType: "NodeReady"
+        templateFileName: "rebootnode-template.yaml"
+        equivalenceGroup: "restart"
+
+    componentActions:
+      "GPU":
+        "COMPONENT_RESET":
+          apiGroup: "janitor.dgxc.nvidia.com"
+          version: "v1alpha1"
+          kind: "GPUReset"
+          scope: "Cluster"
+          completeConditionType: "Complete"
+          templateFileName: "gpureset-template.yaml"
+          equivalenceGroup: "reset"
+          supersedingEquivalenceGroups: ["restart"]
+          impactedEntityScope: "GPU_UUID"
+      "LPU":
+        "COMPONENT_RESET":
+          apiGroup: "janitor.dgxc.nvidia.com"
+          version: "v1alpha1"
+          kind: "LPURemediation"
+          scope: "Cluster"
+          completeConditionType: "Complete"
+          templateFileName: "lpu-remediation-template.yaml"
+          equivalenceGroup: "reset"
+          supersedingEquivalenceGroups: ["restart"]
 
     templates:
+      "rebootnode-template.yaml": |
+        apiVersion: {{.ApiGroup}}/{{.Version}}
+        kind: RebootNode
+        metadata:
+          name: maintenance-{{ .HealthEvent.NodeName }}-{{ .HealthEventID }}
+        spec:
+          nodeName: {{ .HealthEvent.NodeName }}
       "gpureset-template.yaml": |
         apiVersion: {{.ApiGroup}}/{{.Version}}
         kind: GPUReset
@@ -74,9 +102,35 @@ fault-remediation:
           selector:
             uuids:
               - {{ .ImpactedEntityScopeValue }}
+      "lpu-remediation-template.yaml": |
+        apiVersion: {{.ApiGroup}}/{{.Version}}
+        kind: LPURemediation
+        metadata:
+          name: maintenance-{{ .HealthEvent.NodeName }}-{{ .HealthEventID }}
+        spec:
+          nodeName: {{ .HealthEvent.NodeName }}
+          device: {{ index .HealthEvent.Metadata "device" }}
 ```
 
+### Resolution Order
+
+Fault Remediation resolves the maintenance resource in this order:
+
+1. `maintenance.componentActions[healthEvent.componentClass][healthEvent.recommendedAction]`
+2. `maintenance.actions[healthEvent.recommendedAction]`
+
+This allows node-level actions such as `RESTART_VM` and `RESTART_BM` to remain shared while still letting a
+component-specific action like `COMPONENT_RESET` resolve to different CR kinds for GPU and LPU events.
+
 ### Parameters
+
+#### actions
+Shared remediation mappings keyed only by recommended action. Use this for actions that should behave the same across
+component types, such as rebooting or terminating a node.
+
+#### componentActions
+Optional component-specific remediation mappings keyed by component class first and recommended action second. Use this
+when the same recommended action should create a different maintenance CR depending on the failing component type.
 
 #### apiGroup
 API group of the maintenance CRD installed by your maintenance operator.
@@ -100,10 +154,15 @@ Kubernetes namespace where maintenance CRs will be created.
 Defines which remediation actions are considered equivalent for deduplication. Actions in the same group will deduplicate against each other regardless of CRD type if a previous CRD is in a non-terminal state.
 
 #### supersedingEquivalenceGroups
-Defines additional equivalence groups that are considered equivalent for deduplication. For example, the COMPONENT_RESET action in the reset group should be deduplicated with the RESTART_VM action in the restart group. In other words, rebooting a node will have the same effect as resetting a GPU whereas the inverse is not true.
+Defines additional equivalence groups that are considered equivalent for deduplication. For example, the GPU
+`COMPONENT_RESET` action in the `reset` group can be deduplicated with the `RESTART_VM` action in the `restart` group.
+In other words, rebooting a node will have the same effect as resetting a GPU whereas the inverse is not true.
 
 #### impactedEntityScope
-For the COMPONENT_RESET action, the impacted entity scope should be defined so that there's a unique equivalence group for each entity. The unique equivalence group is constructed by appending the value for the given impacted entity to the equivalence group name. For example, each GPU needing reset will be in its own equivalence group named like reset-<GPU_UUID>.
+For component-scoped reset actions such as GPU `COMPONENT_RESET`, the impacted entity scope should be defined so that
+there's a unique equivalence group for each entity. The unique equivalence group is constructed by appending the value
+for the given impacted entity to the equivalence group name. For example, each GPU needing reset will be in its own
+equivalence group named like `reset-<GPU_UUID>`.
 
 #### templates
 Go template that generates the maintenance CR YAML. See Template Extension Point section below.
@@ -119,11 +178,11 @@ The maintenance template is a Go template that generates the Kubernetes CR YAML 
 - `.HealthEvent` (HealthEvent) - The entire content of the triggering health event
 - `.RecommendedAction` (int) - Numeric action code from health event (see [health_event.proto](https://github.com/NVIDIA/NVSentinel/blob/main/data-models/protobufs/health_event.proto))
 - `.RecommendedActionName` (string) - Action name from the health event
-- `.ImpactedEntityScopeValue` (string) - The GPU_UUID used in COMPONENT_RESET remediation actions
-- `.ApiGroup` (string) - Value from `maintenance.apiGroup`
-- `.Version` (string) - Value from `maintenance.version`
-- `.Kind` (string) - Value from `maintenance.kind`
-- `.Namespace` (string) - Value from `maintenance.namespace`
+- `.ImpactedEntityScopeValue` (string) - The impacted entity value used by component-scoped reset actions such as GPU `COMPONENT_RESET`
+- `.ApiGroup` (string) - Value from the resolved maintenance resource
+- `.Version` (string) - Value from the resolved maintenance resource
+- `.Kind` (string) - Value from the resolved maintenance resource
+- `.Namespace` (string) - Value from the resolved maintenance resource
 
 ### Template Examples
 

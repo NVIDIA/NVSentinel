@@ -18,14 +18,15 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"testing"
+	"time"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"testing"
-	"time"
 )
 
 func TestGetRemediationState(t *testing.T) {
@@ -74,7 +75,8 @@ func TestGetRemediationState(t *testing.T) {
 							"gpu-timeout": {
 							  "maintenanceCR": "gpu-maintenance-abc123",
 							  "createdAt": "%s",
-                              "actionName": "testAction1"
+                              "actionName": "testAction1",
+                              "componentClass": "GPU"
 							},
 							"node-reboot": {
 							  "maintenanceCR": "node-reboot-cr-789",
@@ -89,9 +91,10 @@ func TestGetRemediationState(t *testing.T) {
 			expectedState: RemediationStateAnnotation{
 				EquivalenceGroups: map[string]EquivalenceGroupState{
 					"gpu-timeout": {
-						MaintenanceCR: "gpu-maintenance-abc123",
-						CreatedAt:     now,
-						ActionName:    "testAction1",
+						MaintenanceCR:  "gpu-maintenance-abc123",
+						CreatedAt:      now,
+						ActionName:     "testAction1",
+						ComponentClass: "GPU",
 					},
 					"node-reboot": {
 						MaintenanceCR: "node-reboot-cr-789",
@@ -128,6 +131,7 @@ func TestGetRemediationState(t *testing.T) {
 				for expectedKey, expectedValue := range tt.expectedState.EquivalenceGroups {
 					assert.Equal(t, expectedValue.MaintenanceCR, resultState.EquivalenceGroups[expectedKey].MaintenanceCR)
 					assert.Equal(t, expectedValue.ActionName, resultState.EquivalenceGroups[expectedKey].ActionName)
+					assert.Equal(t, expectedValue.ComponentClass, resultState.EquivalenceGroups[expectedKey].ComponentClass)
 					assert.Equal(t, expectedValue.CreatedAt.Unix(), resultState.EquivalenceGroups[expectedKey].CreatedAt.Unix())
 				}
 			}
@@ -150,7 +154,7 @@ func TestUpdateRemediationState(t *testing.T) {
 	annotationManager := NodeAnnotationManager{
 		client: client,
 	}
-	err := annotationManager.UpdateRemediationState(context.TODO(), nodeName, group, crName, actionName)
+	err := annotationManager.UpdateRemediationState(context.TODO(), nodeName, group, crName, actionName, "GPU")
 	assert.NoError(t, err)
 
 	state, _, err := annotationManager.GetRemediationState(context.TODO(), nodeName)
@@ -159,6 +163,7 @@ func TestUpdateRemediationState(t *testing.T) {
 	assert.Contains(t, state.EquivalenceGroups, group)
 	assert.Equal(t, crName, state.EquivalenceGroups[group].MaintenanceCR)
 	assert.Equal(t, actionName, state.EquivalenceGroups[group].ActionName)
+	assert.Equal(t, "GPU", state.EquivalenceGroups[group].ComponentClass)
 }
 
 func TestClearRemediationState(t *testing.T) {
@@ -290,9 +295,9 @@ func TestConcurrentUpdateAndRemoveGroupsFromState(t *testing.T) {
 	const iterations = 100
 	for i := 0; i < iterations; i++ {
 		// Reset state each iteration
-		err := annotationManager.UpdateRemediationState(context.TODO(), nodeName, "existing-group-1", "old-cr-1", "RESTART_BM")
+		err := annotationManager.UpdateRemediationState(context.TODO(), nodeName, "existing-group-1", "old-cr-1", "RESTART_BM", "")
 		require.NoError(t, err)
-		err = annotationManager.UpdateRemediationState(context.TODO(), nodeName, "existing-group-2", "old-cr-2", "COMPONENT_RESET")
+		err = annotationManager.UpdateRemediationState(context.TODO(), nodeName, "existing-group-2", "old-cr-2", "COMPONENT_RESET", "")
 		require.NoError(t, err)
 
 		var wg sync.WaitGroup
@@ -305,7 +310,7 @@ func TestConcurrentUpdateAndRemoveGroupsFromState(t *testing.T) {
 
 		go func() {
 			defer wg.Done()
-			_ = annotationManager.UpdateRemediationState(context.TODO(), nodeName, "new-group", "new-cr", "COMPONENT_RESET")
+			_ = annotationManager.UpdateRemediationState(context.TODO(), nodeName, "new-group", "new-cr", "COMPONENT_RESET", "")
 		}()
 
 		wg.Wait()

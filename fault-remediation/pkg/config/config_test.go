@@ -19,6 +19,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestTomlConfig_Validate(t *testing.T) {
@@ -47,7 +49,7 @@ func TestTomlConfig_Validate(t *testing.T) {
 		{
 			name: "empty template mountPath should be rejected",
 			config: TomlConfig{
-				Template:          Template{MountPath: ""},
+				Template:           Template{MountPath: ""},
 				RemediationActions: map[string]MaintenanceResource{},
 			},
 			expectError: true,
@@ -70,6 +72,31 @@ func TestTomlConfig_Validate(t *testing.T) {
 						EquivalenceGroup:             "reset",
 						SupersedingEquivalenceGroups: []string{"restart"},
 						ImpactedEntityScope:          "GPU_UUID",
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "valid config with component override",
+			config: TomlConfig{
+				Template: Template{MountPath: tempDir},
+				RemediationActions: map[string]MaintenanceResource{
+					"RESTART_VM": {
+						TemplateFileName: "template-a.yaml",
+						Scope:            "Cluster",
+						EquivalenceGroup: "restart",
+					},
+				},
+				ComponentRemediationActions: ComponentRemediationActions{
+					"GPU": {
+						"COMPONENT_RESET": {
+							TemplateFileName:             "template-b.yaml",
+							Scope:                        "Cluster",
+							EquivalenceGroup:             "reset",
+							SupersedingEquivalenceGroups: []string{"restart"},
+							ImpactedEntityScope:          "GPU_UUID",
+						},
 					},
 				},
 			},
@@ -275,6 +302,24 @@ func TestTomlConfig_Validate(t *testing.T) {
 			expectError: true,
 			errorSubstr: "cannot have an ImpactedEntityScope defined",
 		},
+		{
+			name: "component override must have a non-empty componentClass",
+			config: TomlConfig{
+				Template:           Template{MountPath: tempDir},
+				RemediationActions: map[string]MaintenanceResource{},
+				ComponentRemediationActions: ComponentRemediationActions{
+					"": {
+						"COMPONENT_RESET": {
+							TemplateFileName: "template-a.yaml",
+							Scope:            "Cluster",
+							EquivalenceGroup: "reset",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorSubstr: "must have a non-empty componentClass",
+		},
 	}
 
 	for _, tt := range tests {
@@ -297,4 +342,160 @@ func TestTomlConfig_Validate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTomlConfig_ResolveMaintenanceResource(t *testing.T) {
+	config := TomlConfig{
+		RemediationActions: map[string]MaintenanceResource{
+			"COMPONENT_RESET": {
+				Kind:             "RebootNode",
+				EquivalenceGroup: "restart",
+			},
+			"RESTART_VM": {
+				Kind:             "RebootNode",
+				EquivalenceGroup: "restart",
+			},
+		},
+		ComponentRemediationActions: ComponentRemediationActions{
+			"GPU": {
+				"COMPONENT_RESET": {
+					Kind:                "GPUReset",
+					EquivalenceGroup:    "reset",
+					ImpactedEntityScope: "GPU_UUID",
+				},
+			},
+			"LPU": {
+				"COMPONENT_RESET": {
+					Kind:             "LPURemediation",
+					EquivalenceGroup: "reset",
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name           string
+		componentClass string
+		actionName     string
+		wantKind       string
+		wantKey        string
+		wantFound      bool
+	}{
+		{
+			name:           "component override wins",
+			componentClass: "GPU",
+			actionName:     "COMPONENT_RESET",
+			wantKind:       "GPUReset",
+			wantKey:        "GPU/COMPONENT_RESET",
+			wantFound:      true,
+		},
+		{
+			name:           "falls back to shared remediation action",
+			componentClass: "GPU",
+			actionName:     "RESTART_VM",
+			wantKind:       "RebootNode",
+			wantKey:        "RESTART_VM",
+			wantFound:      true,
+		},
+		{
+			name:           "unknown component also falls back to shared action",
+			componentClass: "DPU",
+			actionName:     "COMPONENT_RESET",
+			wantKind:       "RebootNode",
+			wantKey:        "COMPONENT_RESET",
+			wantFound:      true,
+		},
+		{
+			name:           "missing action is not resolved",
+			componentClass: "GPU",
+			actionName:     "REPLACE_VM",
+			wantKey:        "",
+			wantFound:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotResource, gotKey, gotFound := config.ResolveMaintenanceResource(tt.componentClass, tt.actionName)
+
+			if gotFound != tt.wantFound {
+				t.Fatalf("ResolveMaintenanceResource() found = %v, want %v", gotFound, tt.wantFound)
+			}
+
+			if gotKey != tt.wantKey {
+				t.Fatalf("ResolveMaintenanceResource() key = %q, want %q", gotKey, tt.wantKey)
+			}
+
+			if gotResource.Kind != tt.wantKind {
+				t.Fatalf("ResolveMaintenanceResource() kind = %q, want %q", gotResource.Kind, tt.wantKind)
+			}
+		})
+	}
+}
+
+func TestResolvedActionKeyAndActionNameHelpers(t *testing.T) {
+	config := TomlConfig{
+		RemediationActions: map[string]MaintenanceResource{
+			"RESTART_VM":      {},
+			"COMPONENT_RESET": {},
+		},
+		ComponentRemediationActions: ComponentRemediationActions{
+			"GPU": {
+				"COMPONENT_RESET": {},
+				"RESTART_BM":      {},
+			},
+		},
+	}
+
+	assert.Equal(t, "COMPONENT_RESET", ResolvedActionKey("", "COMPONENT_RESET"))
+	assert.Equal(t, "GPU/COMPONENT_RESET", ResolvedActionKey("GPU", "COMPONENT_RESET"))
+	assert.Equal(t, []string{"COMPONENT_RESET", "RESTART_VM"}, config.SharedActionNames())
+	assert.Equal(t, []string{"COMPONENT_RESET", "RESTART_BM"}, config.ComponentActionNames("GPU"))
+	assert.Nil(t, config.ComponentActionNames("LPU"))
+}
+
+func TestTomlConfig_ResolveStoredMaintenanceResource(t *testing.T) {
+	cfg := TomlConfig{
+		RemediationActions: map[string]MaintenanceResource{
+			"COMPONENT_RESET": {Kind: "RebootNode"},
+		},
+		ComponentRemediationActions: ComponentRemediationActions{
+			"GPU": {
+				"COMPONENT_RESET": {Kind: "GPUReset"},
+			},
+			"LPU": {
+				"COMPONENT_RESET": {Kind: "LPURemediation"},
+			},
+		},
+	}
+
+	t.Run("component-specific resource resolves exactly from stored component class", func(t *testing.T) {
+		resource, found := cfg.ResolveStoredMaintenanceResource("GPU", "COMPONENT_RESET")
+		assert.True(t, found)
+		assert.Equal(t, MaintenanceResource{Kind: "GPUReset"}, resource)
+	})
+
+	t.Run("stored component class falls back to shared action when no override exists", func(t *testing.T) {
+		resource, found := cfg.ResolveStoredMaintenanceResource("NIC", "COMPONENT_RESET")
+		assert.True(t, found)
+		assert.Equal(t, MaintenanceResource{Kind: "RebootNode"}, resource)
+	})
+
+	t.Run("empty component class returns no resource when action is ambiguous", func(t *testing.T) {
+		resource, found := cfg.ResolveStoredMaintenanceResource("", "COMPONENT_RESET")
+		assert.False(t, found)
+		assert.Equal(t, MaintenanceResource{}, resource)
+	})
+
+	t.Run("empty component class can still resolve an unambiguous shared action", func(t *testing.T) {
+		cfgWithoutOverrides := TomlConfig{
+			RemediationActions: map[string]MaintenanceResource{
+				"COMPONENT_RESET": {Kind: "RebootNode"},
+			},
+		}
+
+		resource, found := cfgWithoutOverrides.ResolveStoredMaintenanceResource("", "COMPONENT_RESET")
+		assert.True(t, found)
+		assert.Equal(t, MaintenanceResource{Kind: "RebootNode"}, resource)
+	})
 }

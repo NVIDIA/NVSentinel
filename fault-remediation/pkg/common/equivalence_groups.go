@@ -59,11 +59,11 @@ In the second example for COMPONENT_RESET, we will consider the HealthEvent as b
 and restart EquivalenceGroups. Additionally, the ImpactedEntityScope will be passed to the corresponding maintenance
 custom resource template.
 */
-func GetGroupConfigForEvent(remediationActions map[string]config.MaintenanceResource,
+func GetGroupConfigForEvent(remediationConfig *config.TomlConfig,
 	healthEvent *protos.HealthEvent) (*EquivalenceGroupConfig, error) {
 	actionName := healthEvent.RecommendedAction.String()
 
-	actionConfig, exists := remediationActions[actionName]
+	actionConfig, _, exists := remediationConfig.ResolveMaintenanceResource(healthEvent.ComponentClass, actionName)
 	if !exists {
 		slog.Warn("Action not found in remediation configuration",
 			"action", actionName,

@@ -283,8 +283,7 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 	healthEvent := healthEventWithStatus.HealthEvent
 	nodeName := healthEvent.NodeName
 
-	groupConfig, err := common.GetGroupConfigForEvent(r.Config.RemediationClient.GetConfig().RemediationActions,
-		healthEvent)
+	groupConfig, err := common.GetGroupConfigForEvent(r.Config.RemediationClient.GetConfig(), healthEvent)
 	if err != nil {
 		// If we got an error, groupConfig will be nil which will result in shouldSkipEvent setting state label to
 		// remediation-failed
@@ -493,7 +492,8 @@ func (r *FaultRemediationReconciler) checkExistingCRStatus(ctx context.Context, 
 	var groupsToRemove []string
 
 	for groupName, groupState := range groupStates {
-		shouldSkip := statusChecker.ShouldSkipCRCreation(ctx, groupState.ActionName, groupState.MaintenanceCR)
+		shouldSkip := statusChecker.ShouldSkipCRCreation(ctx, groupState.ComponentClass,
+			groupState.ActionName, groupState.MaintenanceCR)
 		if shouldSkip {
 			slog.Info("CR exists and is in progress, skipping event", "node", nodeName, "crName", groupState.MaintenanceCR)
 			return false, groupState.MaintenanceCR, nil
