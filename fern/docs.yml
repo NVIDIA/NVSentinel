@@ -1,0 +1,70 @@
+# yaml-language-server: $schema=https://schema.buildwithfern.dev/docs-yml.json
+
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+instances:
+  - url: nvsentinel.docs.buildwithfern.com/nvsentinel
+
+title: NVIDIA NVSentinel Documentation
+
+products:
+  - display-name: NVSentinel
+    slug: /
+    path: ../docs/index.yml
+    versions:
+      - display-name: dev
+        path: ../docs/index.yml
+
+redirects:
+  - source: "/nvsentinel/index.html"
+    destination: "/nvsentinel/"
+  - source: "/nvsentinel/dev/index.html"
+    destination: "/nvsentinel/dev/"
+
+# GitHub repository link in navbar
+navbar-links:
+  - type: github
+    value: https://github.com/NVIDIA/NVSentinel
+
+footer: ./components/CustomFooter.tsx
+
+layout:
+  searchbar-placement: header
+  page-width: 1376px
+  sidebar-width: 248px
+  content-width: 812px
+  tabs-placement: header
+  hide-feedback: true
+
+experimental:
+  mdx-components:
+    - ./components
+  basepath-aware: true
+
+colors:
+  accentPrimary:
+    dark: '#76B900'
+    light: '#76B900'
+  background:
+    light: '#FFFFFF'
+    dark: '#000000'
+
+theme:
+  page-actions: toolbar
+  footer-nav: minimal
+
+logo:
+  dark: ./assets/NVIDIA_dark.svg
+  light: ./assets/NVIDIA_light.svg
+  height: 20
+  href: /nvsentinel
+  right-text: Documentation
+
+favicon: ./assets/NVIDIA_symbol.svg
+
+js:
+  - url: https://assets.adobedtm.com/5d4962a43b79/c1061d2c5e7b/launch-191c2462b890.min.js
+    strategy: beforeInteractive
+css:
+  - ./main.css

@@ -55,11 +55,11 @@ helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
 
 By default, only health monitoring is enabled. This is safe to deploy in any cluster as it only observes and reports. Enable fault quarantine, node drainer, and fault remediation via Helm values as you build confidence in the system's behavior in your environment. **Preflight** is disabled by default; turn it on with `global.preflight.enabled` when you want admission-time GPU checks ([configuration guide](./configuration/preflight.md)).
 
-See the [Helm Chart Configuration Guide](../distros/kubernetes/README.md) for all options, and the [local fault injection demo](../demos/local-fault-injection-demo/README.md) to see the full pipeline in a KIND cluster without GPU hardware.
+See the Helm Chart Configuration Guide (`distros/kubernetes/README.md`) for all options, and the local fault injection demo (`demos/local-fault-injection-demo/README.md`) to see the full pipeline in a KIND cluster without GPU hardware.
 
 ## Security and supply chain
 
-All container images are built with ko, attested with SLSA build provenance, and include SPDX SBOMs. In-cluster verification is supported via Sigstore Policy Controller. See [Security](../SECURITY.md) for details.
+All container images are built with ko, attested with SLSA build provenance, and include SPDX SBOMs. In-cluster verification is supported via Sigstore Policy Controller. See `SECURITY.md` in the repository root for details.
 
 ## Learn more
 
@@ -67,6 +67,6 @@ All container images are built with ko, attested with SLSA build provenance, and
 - [Preflight](./configuration/preflight.md) for admission-time GPU checks and gang discovery
 - [Integration guide](./INTEGRATIONS.md) for taints, node conditions, and custom remediation triggers
 - [Metrics reference](./METRICS.md) for Prometheus dashboards and alerts
-- [Component configuration](./configuration/) for per-module setup
-- [Runbooks](./runbooks/) for troubleshooting
-- [Development guide](../DEVELOPMENT.md) for contributing
+- Component configuration — see the Configuration section for per-module setup
+- Runbooks — see the Runbooks section for troubleshooting
+- Development guide — see `DEVELOPMENT.md` in the repository root for contributing

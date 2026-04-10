@@ -406,7 +406,7 @@ kubectl exec -i nvsentinel-postgresql-0 -n nvsentinel -- \
 | **Scalability** | Vertical + read replicas | Horizontal sharding |
 | **Maturity** | Very mature (30+ years) | Mature (15+ years) |
 | **Ops Complexity** | Well-known, standard | Specialized knowledge |
-| **Change Stream Latency** | ~1s (polling) | <100ms (native) |
+| **Change Stream Latency** | ~1s (polling) | &lt;100ms (native) |
 
 ## References
 

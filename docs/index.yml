@@ -1,0 +1,138 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Navigation tree for NVSentinel documentation.
+# Paths are relative to this docs/ directory.
+# This file is used directly by fern/docs.yml on main (dev version),
+# and synced to fern/versions/dev.yml on the docs-website branch by CI.
+
+navigation:
+  - section: Getting Started
+    contents:
+      - page: Overview
+        path: OVERVIEW.md
+      - page: Integrations
+        path: INTEGRATIONS.md
+
+  - section: Architecture
+    contents:
+      - page: Data Flow
+        path: DATA_FLOW.md
+      - page: External Datastore
+        path: external-datastore.md
+
+  - section: Components
+    contents:
+      - page: GPU Health Monitor
+        path: gpu-health-monitor.md
+      - page: Syslog Health Monitor
+        path: syslog-health-monitor.md
+      - page: CSP Health Monitor IAM
+        path: csp-health-monitor-iam.md
+      - section: NIC Health Monitor
+        contents:
+          - page: Overview
+            path: nic-health-monitor/Overview.md
+          - page: Link State Detection
+            path: nic-health-monitor/link-state-detection.md
+          - page: Link Counter Detection
+            path: nic-health-monitor/link-counter-detection.md
+          - page: Syslog Detection and Correlation
+            path: nic-health-monitor/syslog-detection-correlation.md
+      - page: Kubernetes Object Monitor
+        path: kubernetes-object-monitor.md
+      - page: Event Exporter
+        path: event-exporter.md
+      - page: Metadata Collector
+        path: metadata-collector.md
+      - page: Labeler
+        path: labeler.md
+      - page: Platform Connectors
+        path: platform-connectors.md
+      - page: Preflight
+        path: preflight.md
+      - page: State Manager
+        path: state-manager.md
+      - page: Node Drainer
+        path: node-drainer.md
+      - page: Fault Quarantine
+        path: fault-quarantine.md
+      - page: Fault Remediation
+        path: fault-remediation.md
+      - page: Circuit Breaker
+        path: circuit-breaker.md
+      - page: Cancelling Breakfix
+        path: cancelling-breakfix.md
+      - page: Log Collection
+        path: log-collection.md
+      - page: Monitoring Critical Operators
+        path: monitoring-critical-operators.md
+      - page: PostgreSQL Provider
+        path: postgresql-provider.md
+
+  - section: Observability
+    contents:
+      - page: Metrics Reference
+        path: METRICS.md
+
+  - section: Configuration
+    contents:
+      - page: GPU Health Monitor
+        path: configuration/gpu-health-monitor.md
+      - page: Syslog Health Monitor
+        path: configuration/syslog-health-monitor.md
+      - page: CSP Health Monitor
+        path: configuration/csp-health-monitor.md
+      - page: Kubernetes Object Monitor
+        path: configuration/kubernetes-object-monitor.md
+      - page: Fault Quarantine
+        path: configuration/fault-quarantine.md
+      - page: Node Drainer
+        path: configuration/node-drainer.md
+      - page: Fault Remediation
+        path: configuration/fault-remediation.md
+      - page: Event Exporter
+        path: configuration/event-exporter.md
+      - page: Metadata Collector
+        path: configuration/metadata-collector.md
+      - page: Labeler
+        path: configuration/labeler.md
+      - page: Platform Connectors
+        path: configuration/platform-connectors.md
+      - page: Preflight
+        path: configuration/preflight.md
+      - page: MongoDB Store
+        path: configuration/mongodb-store.md
+
+  - section: Runbooks
+    contents:
+      - page: Circuit Breaker
+        path: runbooks/circuit-breaker.md
+      - page: Cordoned Nodes
+        path: runbooks/cordoned-nodes.md
+      - page: CSP Health Monitor IAM
+        path: runbooks/csp-health-monitor-iam.md
+      - page: Datastore Connection
+        path: runbooks/datastore-connection.md
+      - page: Driver Upgrades
+        path: runbooks/driver-upgrades.md
+      - page: GPU Monitor DCGM Failures
+        path: runbooks/gpu-monitor-dcgm-failures.md
+      - page: Health Event Analyzer High Error Rate
+        path: runbooks/health-event-analyzer-high-error-rate.md
+      - page: Health Monitor UDS Failures
+        path: runbooks/health-monitor-uds-failures.md
+      - page: Log Collection Job Failures
+        path: runbooks/log-collection-job-failures.md
+      - page: Log Rotation Failures
+        path: runbooks/log-rotation-failures.md
+      - page: MongoDB Connection Error
+        path: runbooks/mongodb-connection-error.md
+      - page: Node Conditions
+        path: runbooks/node-conditions.md
+      - page: Node Condition Update Failures
+        path: runbooks/node-condition-update-failures.md
+      - page: Node Event Creation Failures
+        path: runbooks/node-event-creation-failures.md
+      - page: Stale Events
+        path: runbooks/stale-events.md

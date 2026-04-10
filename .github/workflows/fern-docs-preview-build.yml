@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Workflow 1 of 2 for Fern doc previews.
+#
+# Collects fern/ sources and PR metadata and uploads them as an artifact.
+# No secrets are used here — safe to run on any push to a pull-request/* branch.
+#
+# The companion workflow (fern-docs-preview-comment.yml) picks up the artifact,
+# builds the preview with DOCS_FERN_TOKEN, and posts the PR comment.
+
+name: "Preview Fern Docs: Build"
+
+on:
+  push:
+    branches:
+      - "pull-request/[0-9]+"
+
+permissions:
+  contents: read
+
+jobs:
+  changed-files:
+    runs-on: linux-amd64-cpu32
+    outputs:
+      docs: ${{ steps.changes.outputs.docs }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for docs changes
+        id: changes
+        run: |
+          if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            echo "docs=true" >> $GITHUB_OUTPUT
+          elif git diff --name-only "${{ github.event.before }}" HEAD 2>/dev/null | grep -qE '^(docs/|fern/)'; then
+            echo "docs=true" >> $GITHUB_OUTPUT
+          else
+            echo "docs=false" >> $GITHUB_OUTPUT
+          fi
+
+  collect:
+    needs: changed-files
+    if: needs.changed-files.outputs.docs == 'true'
+    runs-on: linux-amd64-cpu32
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Save PR metadata
+        run: |
+          PR_NUMBER="${GITHUB_REF#refs/heads/pull-request/}"
+          HEAD_REF="${GITHUB_REF#refs/heads/}"
+          mkdir -p .preview-metadata
+          echo "$PR_NUMBER" > .preview-metadata/pr_number
+          echo "$HEAD_REF" > .preview-metadata/head_ref
+          git diff --name-only "origin/main...HEAD" -- '*.mdx' > .preview-metadata/changed_mdx_files 2>/dev/null || true
+
+      - name: Upload fern sources and metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: fern-preview
+          path: |
+            fern/
+            docs/
+            .preview-metadata/
+          retention-days: 1

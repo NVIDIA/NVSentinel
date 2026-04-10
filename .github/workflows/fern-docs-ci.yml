@@ -1,0 +1,91 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Validates Fern configuration and checks for broken links on pull requests
+# that touch docs/** or fern/** files.
+
+name: Fern Docs (CI)
+
+on:
+  push:
+    branches:
+      - "pull-request/[0-9]+"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  changed-files:
+    runs-on: linux-amd64-cpu32
+    outputs:
+      docs: ${{ steps.changes.outputs.docs }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for docs changes
+        id: changes
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "docs=true" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            echo "docs=true" >> $GITHUB_OUTPUT
+          elif git diff --name-only "${{ github.event.before }}" HEAD 2>/dev/null | grep -qE '^(docs/|fern/)'; then
+            echo "docs=true" >> $GITHUB_OUTPUT
+          else
+            echo "docs=false" >> $GITHUB_OUTPUT
+          fi
+
+  fern-check:
+    name: Fern Configuration Check
+    needs: changed-files
+    if: needs.changed-files.outputs.docs == 'true'
+    runs-on: linux-amd64-cpu32
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Fern CLI
+        run: npm install -g fern-api@4.42.1
+
+      - name: Validate Fern configuration
+        run: fern check
+
+      - name: Warn on non-lowercase or underscore markdown filenames
+        # TODO: convert to a hard failure once existing violations are resolved
+        run: |
+          find docs/ -name "*.md" | while read f; do
+            base=$(basename "$f")
+            if echo "$base" | grep -qE '[A-Z]|_'; then
+              suggested=$(echo "$base" | tr '[:upper:]' '[:lower:]' | tr '_' '-')
+              echo "::warning file=$f::Filename '$base' should be lowercase with hyphens (e.g. '$suggested')"
+            fi
+          done
+
+  fern-broken-links:
+    name: Fern Broken Links Check
+    needs: changed-files
+    if: needs.changed-files.outputs.docs == 'true'
+    runs-on: linux-amd64-cpu32
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Fern CLI
+        run: npm install -g fern-api@4.42.1
+
+      - name: Check for broken links
+        run: fern docs broken-links
