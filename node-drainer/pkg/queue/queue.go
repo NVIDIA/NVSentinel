@@ -20,6 +20,8 @@ import (
 	"log/slog"
 	"time"
 
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.opentelemetry.io/otel/trace"
 	"k8s.io/client-go/util/workqueue"
 
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
@@ -69,7 +71,7 @@ func (m *eventQueueManager) EnqueueEventGeneric(ctx context.Context, nodeName st
 		HealthEventStore: healthEventStore,
 	}
 
-	slog.Debug("Enqueueing event", "nodeName", nodeName, "eventID", eventID)
+	slog.DebugContext(ctx, "Enqueueing event", "nodeName", nodeName, "eventID", eventID)
 
 	m.queue.Add(nodeEvent)
 	metrics.QueueDepth.Set(float64(m.queue.Len()))
@@ -84,4 +86,122 @@ func (m *eventQueueManager) Shutdown() {
 	m.queue.ShutDown()
 	close(m.shutdown)
 	slog.Info("Workqueue shutdown complete")
+}
+
+// toMap converts a value to map[string]interface{}, handling standard Go maps,
+// named map types (e.g. datastore.Event), and MongoDB's primitive.D (ordered
+// BSON documents returned by the driver when decoding nested documents).
+func toMap(v interface{}) (map[string]interface{}, bool) {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		return val, true
+	case datastore.Event:
+		return map[string]interface{}(val), true
+	case primitive.D:
+		m := make(map[string]interface{}, len(val))
+		for _, e := range val {
+			m[e.Key] = e.Value
+		}
+
+		return m, true
+	default:
+		return nil, false
+	}
+}
+
+// ExtractTraceIDFromEvent returns the trace_id from the health event's metadata
+// (healthevent.metadata.trace_id) in the event document (or fullDocument).
+func ExtractTraceIDFromEvent(event datastore.Event) string {
+	doc := map[string]interface{}(event)
+	if fullDoc, ok := toMap(event["fullDocument"]); ok {
+		doc = fullDoc
+	}
+
+	heMap, ok := toMap(doc["healthevent"])
+	if !ok {
+		slog.Error("Drain session: Failed to extract healthevent from event", "event", event)
+
+		return ""
+	}
+
+	metaMap, ok := toMap(heMap["metadata"])
+	if !ok {
+		slog.Error("Drain session: Failed to extract metadata from healthevent", "event", event)
+
+		return ""
+	}
+
+	if tid, ok := metaMap["trace_id"].(string); ok {
+		return tid
+	}
+
+	return ""
+}
+
+// ExtractSpanIDsFromEvent returns the span_ids map from healtheventstatus.spanids
+// in the event document (or fullDocument).
+func ExtractSpanIDsFromEvent(event datastore.Event) map[string]string {
+	doc := map[string]interface{}(event)
+	if fullDoc, ok := toMap(event["fullDocument"]); ok {
+		doc = fullDoc
+	}
+
+	statusMap, ok := toMap(doc["healtheventstatus"])
+	if !ok {
+		slog.Error("Drain session: Failed to extract healtheventstatus from event", "event", event)
+
+		return nil
+	}
+
+	spanMap, ok := toMap(statusMap["spanids"])
+	if !ok {
+		slog.Error("Drain session: Failed to extract spanids from healtheventstatus", "event", event)
+
+		return nil
+	}
+
+	result := make(map[string]string, len(spanMap))
+	for k, v := range spanMap {
+		if s, ok := v.(string); ok {
+			result[k] = s
+		}
+	}
+
+	return result
+}
+
+// DrainSession holds per-event tracing state that persists across requeue
+// cycles via the eventQueueManager.sessions map. Phase transitions are marked
+// by short-lived ".start" and ".end" child spans of DrainSessionSpan;
+// drain scope is set directly on DrainSessionSpan via SetAttributes in the reconciler.
+type DrainSession struct {
+	DrainSessionSpan trace.Span
+
+	// Per-phase flags — false means "not yet entered".
+	// Set to true when the reconciler first enters a phase (emitting a .start marker span).
+	// Reset to false when the phase ends (emitting a .end marker span).
+	ImmediateEvictionStarted  bool
+	DeleteAfterTimeoutStarted bool
+	AllowCompletionStarted    bool
+
+	ScopeSet bool
+}
+
+type drainSessionContextKey struct{}
+
+var drainSessionKey = drainSessionContextKey{}
+
+// ContextWithDrainSession attaches the session to ctx so the reconciler can
+// start/end phase spans and set drain scope attributes without explicit plumbing.
+func ContextWithDrainSession(ctx context.Context, ds *DrainSession) context.Context {
+	return context.WithValue(ctx, drainSessionKey, ds)
+}
+
+// DrainSessionFromContext returns the DrainSession from ctx, or nil if not set.
+func DrainSessionFromContext(ctx context.Context) *DrainSession {
+	if ds, _ := ctx.Value(drainSessionKey).(*DrainSession); ds != nil {
+		return ds
+	}
+
+	return nil
 }
