@@ -159,4 +159,4 @@ csp-health-monitor:
 ## Additional Resources
 
 - **Configuration Guide**: See [docs/configuration/csp-health-monitor.md](./configuration/csp-health-monitor.md) for detailed Helm configuration options
-- **Troubleshooting**: See [docs/runbooks/csp-health-monitor.md](./runbooks/csp-health-monitor.md) for common issues and solutions
+- **Troubleshooting**: See [docs/runbooks/csp-health-monitor-iam.md](./runbooks/csp-health-monitor-iam.md) for common issues and solutions

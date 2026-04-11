@@ -73,5 +73,5 @@ jobs:
       - name: Check for broken links
         uses: lycheeverse/lychee-action@v2
         with:
-          args: --offline --no-progress --exclude-path 'docs/designs' 'docs/**/*.md'
+          args: --offline --no-progress --exclude-path '^docs/designs(/|$)' 'docs/**/*.md'
           fail: true
