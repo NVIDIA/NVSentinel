@@ -21,6 +21,7 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
@@ -93,12 +94,12 @@ func (m *eventQueueManager) processNextWorkItem(ctx context.Context) bool {
 		return true
 	}
 
-	traceID := ExtractTraceIDFromEvent(event)
-	spanIDs := ExtractSpanIDsFromEvent(event)
-
+	traceID := ""
 	parentSpanID := ""
-	if spanIDs != nil {
-		parentSpanID = spanIDs[tracing.ServiceFaultQuarantine]
+
+	if healthEvent, err := eventutil.ParseHealthEventFromEvent(event); err == nil {
+		traceID = tracing.TraceIDFromMetadata(healthEvent.HealthEvent.GetMetadata())
+		parentSpanID = tracing.ParentSpanID(healthEvent.HealthEventStatus.SpanIds, tracing.ServiceFaultQuarantine)
 	}
 
 	raw, _ := m.sessions.LoadOrStore(nodeEvent.EventID, &DrainSession{})
