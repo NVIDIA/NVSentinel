@@ -282,6 +282,7 @@ GRPCIO_TOOLS_VERSION=$(yq '.protobuf.grpcio_tools' .versions.yaml)
 BLACK_VERSION=$(yq '.linting.black' .versions.yaml)
 SHELLCHECK_VERSION=$(yq '.linting.shellcheck' .versions.yaml)
 CTLPTL_VERSION=$(yq '.testing_tools.ctlptl' .versions.yaml)
+KO_VERSION=$(yq '.container_tools.ko' .versions.yaml)
 
 echo ""
 log_info "Target Versions:"
@@ -624,7 +625,32 @@ if [[ "${SKIP_TOOLS}" == "false" ]]; then
             log_success "ctlptl installed"
         fi
     fi
-    
+
+    # ko (Go container image builder, required by Tilt for building NVSentinel services)
+    if command_exists ko; then
+        log_success "ko already installed: $(ko version 2>/dev/null || echo 'installed')"
+    else
+        log_info "Installing ko ${KO_VERSION}..."
+        if prompt_continue; then
+            if command_exists go; then
+                go install github.com/google/ko@"${KO_VERSION}"
+            else
+                log_warning "Go not available — cannot install ko. Install Go first."
+            fi
+            log_success "ko installed"
+        fi
+    fi
+
+    # Helm chart repositories (required by Tilt for cert-manager, prometheus, kwok)
+    if command_exists helm; then
+        log_info "Adding required Helm chart repositories..."
+        helm repo add jetstack https://charts.jetstack.io 2>/dev/null || true
+        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
+        helm repo add sigs-kwok https://kwok.sigs.k8s.io/charts 2>/dev/null || true
+        helm repo update
+        log_success "Helm repositories configured"
+    fi
+
     echo ""
 fi
 
@@ -736,6 +762,7 @@ TOOLS=(
     "golangci-lint:golangci-lint version 2>/dev/null | head -1"
     "gotestsum:echo installed"
     "addlicense:echo installed"
+    "ko:ko version 2>/dev/null || echo installed"
 )
 
 for tool_spec in "${TOOLS[@]}"; do
