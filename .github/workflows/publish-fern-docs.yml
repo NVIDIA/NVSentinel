@@ -1,27 +1,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Publishes the Fern documentation site when a docs tag is pushed or manually triggered.
-#
-# To publish:  git tag docs/v1.0.0 && git push origin docs/v1.0.0
-# Or use the "Run workflow" button in the Actions tab.
+# Publishes the Fern docs site on a docs/v* tag push or manual dispatch.
 #
 # Required configuration:
-# - Organization secret: DOCS_FERN_TOKEN (from `fern token` for the nvidia Fern org)
+# - Repository secret: DOCS_FERN_TOKEN (provisioned by the docs infrastructure team)
 
 name: Publish Fern Docs
 
 on:
   push:
     tags:
-      - 'docs/v*'
-  workflow_dispatch:
+      - "docs/v*"
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
 jobs:
   publish:
+    name: Publish Fern Docs
     runs-on: linux-amd64-cpu32
     steps:
       - name: Checkout repository
@@ -35,8 +33,7 @@ jobs:
       - name: Install Fern CLI
         run: npm install -g fern-api@4.42.1
 
-      - name: Publish Docs
+      - name: Publish docs
         env:
           FERN_TOKEN: ${{ secrets.DOCS_FERN_TOKEN }}
-        working-directory: ./fern
         run: fern generate --docs
