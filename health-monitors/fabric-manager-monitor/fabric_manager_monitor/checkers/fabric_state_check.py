@@ -29,14 +29,28 @@ fabric.state values (mapped to nvidia-smi query):
     In Progress -- FM is still configuring (may be stuck)
     Not Started -- FM has not begun configuring this GPU
     N/A -- fabric state unavailable (non-NVSwitch topology)
+
+State classification (splits the former FM_UNRESPONSIVE into 3 states):
+    FM_NOT_STARTED       -- fabric.state == "Not Started"
+    FM_REGISTRATION_STUCK -- fabric.state == "In Progress"
+    FM_FABRIC_ERROR      -- fabric.state == "Completed" and fabric.status != "Success"
 """
 
 import logging as log
 import subprocess
 from dataclasses import dataclass
+from enum import Enum
 from typing import List, Optional
 
 from .types import CheckResult
+
+
+class FabricFailureState(Enum):
+    """Granular FM failure states replacing the monolithic FM_UNRESPONSIVE."""
+
+    FM_NOT_STARTED = "FM_NOT_STARTED"
+    FM_REGISTRATION_STUCK = "FM_REGISTRATION_STUCK"
+    FM_FABRIC_ERROR = "FM_FABRIC_ERROR"
 
 
 @dataclass
@@ -109,30 +123,55 @@ class FabricStateChecker:
                 log.warning(f"Failed to parse fabric state line '{line}': {e}")
         return results
 
+    @staticmethod
+    def classify_failure(gpu: GpuFabricState) -> Optional[FabricFailureState]:
+        """Classify a GPU's fabric state into a specific failure mode.
+
+        Returns None if the GPU is healthy (Completed/Success) or N/A.
+        """
+        if gpu.fabric_state == "N/A":
+            return None
+        if gpu.fabric_state == "Completed" and gpu.fabric_status == "Success":
+            return None
+
+        if gpu.fabric_state == "Not Started":
+            return FabricFailureState.FM_NOT_STARTED
+        if gpu.fabric_state == "In Progress":
+            return FabricFailureState.FM_REGISTRATION_STUCK
+        if gpu.fabric_state == "Completed" and gpu.fabric_status != "Success":
+            return FabricFailureState.FM_FABRIC_ERROR
+
+        # Fallback for any unexpected combination
+        return FabricFailureState.FM_FABRIC_ERROR
+
     def to_check_results(self, statuses: List[GpuFabricState], node_name: str) -> List[CheckResult]:
         """Convert GpuFabricState list to CheckResult list.
 
         Healthy: fabric_state == "Completed" and fabric_status == "Success"
         Also healthy: fabric_state == "N/A" (non-NVSwitch topology)
-        Unhealthy: anything else (stuck, error, not started outside grace)
+
+        Unhealthy states (replaces monolithic FM_UNRESPONSIVE):
+          FM_NOT_STARTED        -- FM has not begun configuring this GPU
+          FM_REGISTRATION_STUCK -- FM configuration in progress (may be hung)
+          FM_FABRIC_ERROR       -- FM completed but with error status
         """
         results = []
         for gpu in statuses:
-            # N/A means non-NVSwitch topology -- not a failure
+            # N/A means non-NVSwitch topology -- skip
             if gpu.fabric_state == "N/A":
                 continue
 
-            is_healthy = gpu.fabric_state == "Completed" and gpu.fabric_status == "Success"
+            failure = self.classify_failure(gpu)
 
-            if not is_healthy:
+            if failure is not None:
                 results.append(
                     CheckResult(
                         check_name="FabricStateUnhealthy",
                         is_healthy=False,
                         is_fatal=True,
-                        error_codes=["FABRIC_STATE_UNHEALTHY"],
+                        error_codes=[failure.value],
                         message=(
-                            f"Fabric state unhealthy on {node_name} GPU {gpu.gpu_index}: "
+                            f"{failure.value} on {node_name} GPU {gpu.gpu_index}: "
                             f"state={gpu.fabric_state}, status={gpu.fabric_status}"
                         ),
                         entities_impacted=[{"entityType": "GPU", "entityValue": str(gpu.gpu_index)}],
@@ -140,6 +179,7 @@ class FabricStateChecker:
                             "gpu_index": str(gpu.gpu_index),
                             "fabric_state": gpu.fabric_state,
                             "fabric_status": gpu.fabric_status,
+                            "failure_class": failure.value,
                         },
                     )
                 )
