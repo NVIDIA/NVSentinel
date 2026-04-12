@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Main polling loop for fabric-manager-monitor.
+"""Main polling loop for system-service-monitor.
 
 Runs non-DCGM health checks on a configurable interval and fires
 callbacks (e.g. PlatformConnectorEventProcessor) with the aggregated
@@ -31,7 +31,7 @@ from functools import partial
 from threading import Event
 from typing import List
 
-from fabric_manager_monitor import metrics
+from system_service_monitor import metrics
 from .cuda_validation import CUDAValidator
 from .fabric_state_check import FabricStateChecker
 from .service_check import ServiceChecker

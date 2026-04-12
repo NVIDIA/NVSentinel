@@ -2,17 +2,17 @@
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: fabric-manager-monitor
+  name: system-service-monitor
   namespace: nvsentinel
   labels:
-    app.kubernetes.io/name: fabric-manager-monitor
+    app.kubernetes.io/name: system-service-monitor
     app.kubernetes.io/instance: nvsentinel
     app.kubernetes.io/component: metrics
     release: prometheus  # Required for Prometheus Operator discovery
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: fabric-manager-monitor
+      app.kubernetes.io/name: system-service-monitor
       app.kubernetes.io/instance: nvsentinel
       app.kubernetes.io/component: metrics
   namespaceSelector:
@@ -30,10 +30,10 @@ spec:
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
-  name: fabric-manager-monitor
+  name: system-service-monitor
   namespace: nvsentinel
   labels:
-    app.kubernetes.io/name: fabric-manager-monitor
+    app.kubernetes.io/name: system-service-monitor
     app.kubernetes.io/instance: nvsentinel
     release: prometheus
 spec:
@@ -46,7 +46,7 @@ spec:
           for: 5m
           labels:
             severity: critical
-            component: fabric-manager-monitor
+            component: system-service-monitor
           annotations:
             summary: "Fabric Manager down on {{ $labels.node }}"
             description: >-
@@ -61,51 +61,26 @@ spec:
           for: 5m
           labels:
             severity: warning
-            component: fabric-manager-monitor
+            component: system-service-monitor
           annotations:
             summary: "Fabric Manager flapping on {{ $labels.node }}"
             description: >-
               Fabric Manager is restarting repeatedly on {{ $labels.node }}.
               Check journalctl -u nvidia-fabricmanager for root cause.
 
-        # Critical: NVLink degraded AND Fabric Manager down (correlated)
-        - alert: NVLinkFabricDegraded
-          expr: nvlink_fabric_healthy == 0 and on(node) fabric_manager_up == 0
+        # Critical: Per-GPU fabric state unhealthy
+        - alert: FabricStateUnhealthy
+          expr: fabric_state_healthy == 0
           for: 5m
           labels:
             severity: critical
-            component: fabric-manager-monitor
+            component: system-service-monitor
           annotations:
-            summary: "NVLink fabric degraded on {{ $labels.node }}"
+            summary: "Fabric state unhealthy on {{ $labels.node }} GPU {{ $labels.gpu_index }}"
             description: >-
-              NVLink fabric is degraded AND Fabric Manager is down on
-              {{ $labels.node }}. All multi-GPU communication is broken.
-
-        # Warning: PCIe link downtraining
-        - alert: GPUPCIeLinkDegraded
-          expr: pcie_link_degraded == 1
-          for: 5m
-          labels:
-            severity: warning
-            component: fabric-manager-monitor
-          annotations:
-            summary: "PCIe link degraded on {{ $labels.node }} GPU {{ $labels.gpu }}"
-            description: >-
-              GPU {{ $labels.gpu }} on {{ $labels.node }} has a degraded PCIe link.
-              Current link may be running at reduced width or generation.
-
-        # Warning: GPU clock throttled for 10 minutes
-        - alert: GPUClockThrottled
-          expr: gpu_clock_throttled == 1
-          for: 10m
-          labels:
-            severity: warning
-            component: fabric-manager-monitor
-          annotations:
-            summary: "GPU {{ $labels.gpu }} throttled on {{ $labels.node }}"
-            description: >-
-              GPU {{ $labels.gpu }} on {{ $labels.node }} has been clock-throttled
-              for more than 10 minutes. Check thermal and power conditions.
+              Fabric Manager orchestration is in a bad state for GPU
+              {{ $labels.gpu_index }} on {{ $labels.node }}.
+              Check nvidia-smi -q for fabric.state and fabric.status.
 
         # Critical: GPU systemd service down
         - alert: GPUServiceDown
@@ -113,7 +88,7 @@ spec:
           for: 3m
           labels:
             severity: critical
-            component: fabric-manager-monitor
+            component: system-service-monitor
           annotations:
             summary: "{{ $labels.service_name }} down on {{ $labels.node }}"
             description: >-
@@ -126,7 +101,7 @@ spec:
           for: 5m
           labels:
             severity: critical
-            component: fabric-manager-monitor
+            component: system-service-monitor
           annotations:
             summary: "CUDA validation failed on {{ $labels.node }}"
             description: >-

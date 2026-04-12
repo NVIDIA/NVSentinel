@@ -13,14 +13,14 @@
 # limitations under the License.
 
 """
-Structured JSON logging for fabric-manager-monitor using structlog.
+Structured JSON logging for system-service-monitor using structlog.
 
 Usage:
-    from fabric_manager_monitor.logger import set_default_structured_logger_with_level
+    from system_service_monitor.logger import set_default_structured_logger_with_level
     import logging as log
 
     # At application startup
-    set_default_structured_logger_with_level("fabric-manager-monitor", "v0.1.0", "info")
+    set_default_structured_logger_with_level("system-service-monitor", "v0.1.0", "info")
 
     # Use standard logging
     log.info("Application started")

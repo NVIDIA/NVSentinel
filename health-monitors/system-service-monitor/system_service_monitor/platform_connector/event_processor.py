@@ -26,8 +26,8 @@ from typing import List
 import grpc
 from google.protobuf.timestamp_pb2 import Timestamp
 
-from fabric_manager_monitor.checkers.types import CallbackInterface, CheckResult
-from fabric_manager_monitor.protos import (
+from system_service_monitor.checkers.types import CallbackInterface, CheckResult
+from system_service_monitor.protos import (
     health_event_pb2 as platformconnector_pb2,
     health_event_pb2_grpc as platformconnector_pb2_grpc,
 )
@@ -56,7 +56,7 @@ class PlatformConnectorEventProcessor(CallbackInterface):
         self._socket_path = socket_path
         self._node_name = node_name
         self._version = 1
-        self._agent = "fabric-manager-monitor"
+        self._agent = "system-service-monitor"
         self._component_class = "INFRASTRUCTURE"
         self._processing_strategy = processing_strategy
         self.entity_cache: dict[str, CachedEntityState] = {}
@@ -72,8 +72,8 @@ class PlatformConnectorEventProcessor(CallbackInterface):
     def _get_recommended_action(self, result: CheckResult) -> int:
         """Map check result to a RecommendedAction enum value.
 
-        Fatal infrastructure failures (Fabric Manager down, PCIe degraded) recommend RESTART_BM.
-        Non-fatal issues (clock throttle, NVLink CRC) recommend CONTACT_SUPPORT.
+        Fatal infrastructure failures (Fabric Manager down, fabric error) recommend RESTART_BM.
+        Non-fatal issues (GPU service down) recommend CONTACT_SUPPORT.
         Healthy results use NONE.
         """
         if result.is_healthy:
@@ -128,7 +128,7 @@ class PlatformConnectorEventProcessor(CallbackInterface):
                         is_fatal=result.is_fatal, is_healthy=result.is_healthy
                     )
 
-            log.debug(f"fabric manager health events to send: {len(health_events)}")
+            log.debug(f"health events to send: {len(health_events)}")
             if len(health_events):
                 try:
                     if self.send_health_event_with_retries(health_events):

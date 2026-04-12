@@ -22,10 +22,10 @@ from threading import Event
 import click
 from prometheus_client import start_http_server
 
-from fabric_manager_monitor.checkers.watcher import FabricManagerWatcher
-from fabric_manager_monitor.logger import set_default_structured_logger_with_level
-from fabric_manager_monitor.platform_connector.event_processor import PlatformConnectorEventProcessor
-from fabric_manager_monitor.protos import health_event_pb2 as platformconnector_pb2
+from system_service_monitor.checkers.watcher import FabricManagerWatcher
+from system_service_monitor.logger import set_default_structured_logger_with_level
+from system_service_monitor.platform_connector.event_processor import PlatformConnectorEventProcessor
+from system_service_monitor.protos import health_event_pb2 as platformconnector_pb2
 
 
 @click.command()
@@ -83,9 +83,9 @@ def cli(
 
     # Initialize structured JSON logging
     # Version is read from package metadata (set at build time via poetry version)
-    version = get_package_version("fabric-manager-monitor")
+    version = get_package_version("system-service-monitor")
     log_level = "debug" if verbose else os.getenv("LOG_LEVEL", "info")
-    set_default_structured_logger_with_level("fabric-manager-monitor", version, log_level)
+    set_default_structured_logger_with_level("system-service-monitor", version, log_level)
 
     # Validate processing strategy
     try:
