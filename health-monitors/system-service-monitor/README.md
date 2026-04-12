@@ -102,3 +102,42 @@ Health events flow through the standard NVSentinel pipeline:
 - **Boot grace period**: Suppresses alerts during node startup (configurable, default 300s)
 - **Flap detection**: Tracks service restart frequency to distinguish transient from persistent failures
 - **State caching**: Only state transitions generate events, preventing duplicate alerts
+
+## GKE Container-Optimized OS (COS) Considerations
+
+On GKE with Container-Optimized OS, Fabric Manager does not run as a host systemd service. Instead, the NVIDIA GPU Operator manages the full driver stack -- including Fabric Manager -- inside gpu-operator driver pods. This changes how FM health is monitored:
+
+### Problem
+
+The default `ServiceChecker` uses `nsenter -t 1 -m -- systemctl show nvidia-fabricmanager` to query FM status from the host PID namespace. On COS nodes, this will report FM as inactive because there is no host-level systemd unit for it. FM is running inside a container managed by the gpu-operator DaemonSet.
+
+### Approach
+
+On GKE COS, FM health should be inferred from two sources:
+
+1. **Per-GPU fabric state (`nvidia-smi fabric.state`)**: The `FabricStateChecker` already works on COS because it queries the GPU driver directly, not systemd. If FM is down or stuck inside the gpu-operator pod, the per-GPU fabric state will reflect it (Not Started, In Progress, or error status). This is the primary detection path on COS.
+
+2. **gpu-operator pod health**: Instead of querying host systemd, check whether the gpu-operator driver pod on this node is Running and Ready. This can be done via the Kubernetes API (the DaemonSet already has node read RBAC) or by watching the gpu-operator's own health endpoints.
+
+### Configuration for GKE COS
+
+When deploying on GKE with COS:
+
+```
+system_service_monitor \
+  --platform-connector-socket /run/nvsentinel/platform-connector.sock \
+  --disable-fabric-check \
+  --enable-cuda-validation \
+  --processing-strategy EXECUTE_REMEDIATION
+```
+
+Disable `--fabric-check` (which uses host systemd) and rely on per-GPU fabric state and CUDA validation. The `FabricStateChecker` runs independently and will detect FM failures through `nvidia-smi fabric.state`.
+
+### Future Work
+
+A dedicated `GpuOperatorPodChecker` could be added to query the gpu-operator driver pod status via the Kubernetes API for COS environments. This would provide:
+- Pod phase and container readiness (Running vs CrashLoopBackOff)
+- Restart count for flap detection (analogous to FM systemd restart tracking)
+- Container log analysis for FM-specific errors
+
+This is tracked as a potential Phase 2 enhancement.
