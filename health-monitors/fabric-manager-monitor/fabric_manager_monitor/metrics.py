@@ -67,45 +67,6 @@ nvidia_service_up = Gauge(
     labelnames=["node", "service_name"],
 )
 
-# --- PCIe link health ---
-pcie_link_width = Gauge(
-    "pcie_link_width",
-    "Current PCIe link width",
-    labelnames=["node", "gpu"],
-)
-
-pcie_link_gen = Gauge(
-    "pcie_link_gen",
-    "Current PCIe link generation",
-    labelnames=["node", "gpu"],
-)
-
-pcie_link_degraded = Gauge(
-    "pcie_link_degraded",
-    "PCIe link degraded (1=degraded, 0=normal)",
-    labelnames=["node", "gpu"],
-)
-
-# --- NVLink fabric ---
-nvlink_fabric_healthy = Gauge(
-    "nvlink_fabric_healthy",
-    "NVLink fabric health (1=healthy, 0=degraded)",
-    labelnames=["node"],
-)
-
-# --- Clock throttling ---
-gpu_clock_throttled = Gauge(
-    "gpu_clock_throttled",
-    "GPU clock throttled (1=throttled, 0=normal)",
-    labelnames=["node", "gpu"],
-)
-
-gpu_clock_ratio = Gauge(
-    "gpu_clock_ratio",
-    "GPU clock ratio (current/max, 1.0=full speed)",
-    labelnames=["node", "gpu"],
-)
-
 # --- CUDA validation ---
 cuda_validation_passed = Gauge(
     "cuda_validation_passed",

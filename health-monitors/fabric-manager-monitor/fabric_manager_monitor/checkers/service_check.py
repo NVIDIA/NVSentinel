@@ -88,10 +88,11 @@ class FabricManagerStatus(ServiceStatus):
 class ServiceChecker:
     """Checks host systemd services via nsenter."""
 
-    # Additional GPU-related services to check alongside Fabric Manager
+    # Additional GPU-related services to check alongside Fabric Manager.
+    # nv-hostengine (DCGM) is intentionally excluded -- GpuDcgmConnectivityFailure
+    # in gpu-health-monitor already covers DCGM service health.
     DEFAULT_GPU_SERVICES = [
         "nvidia-persistenced",
-        "nv-hostengine",
     ]
 
     def __init__(self, flap_window: int = 600, flap_threshold: int = 3):

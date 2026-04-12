@@ -47,25 +47,10 @@ from fabric_manager_monitor.protos import health_event_pb2 as platformconnector_
 @click.option("--flap-window", type=int, default=600, help="Seconds window for counting service restarts")
 @click.option("--flap-threshold", type=int, default=3, help="Restart count within flap window to flag flapping")
 @click.option("--enable-fabric-check/--disable-fabric-check", default=True, help="Enable Fabric Manager service check")
-@click.option("--enable-pcie-check/--disable-pcie-check", default=True, help="Enable PCIe link health check")
-@click.option("--enable-clock-check/--disable-clock-check", default=True, help="Enable GPU clock throttle check")
-@click.option("--enable-nvlink-check/--disable-nvlink-check", default=True, help="Enable NVLink fabric health check")
 @click.option(
     "--enable-cuda-validation/--disable-cuda-validation",
     default=False,
     help="Enable CUDA context validation (resource intensive, disabled by default)",
-)
-@click.option(
-    "--dcgm-exporter-url",
-    type=str,
-    default="http://localhost:9400",
-    help="DCGM exporter Prometheus endpoint URL",
-)
-@click.option(
-    "--clock-throttle-ratio",
-    type=float,
-    default=0.85,
-    help="Clock ratio threshold below which GPU is considered throttled",
 )
 @click.option(
     "--processing-strategy",
@@ -83,12 +68,7 @@ def cli(
     flap_window,
     flap_threshold,
     enable_fabric_check,
-    enable_pcie_check,
-    enable_clock_check,
-    enable_nvlink_check,
     enable_cuda_validation,
-    dcgm_exporter_url,
-    clock_throttle_ratio,
     processing_strategy,
     verbose,
 ):
@@ -136,7 +116,7 @@ def cli(
     signal.signal(signal.SIGTERM, process_exit_signal)
     signal.signal(signal.SIGINT, process_exit_signal)
 
-    # Create watcher with all enabled checks
+    # Create watcher with enabled checks (scoped to non-DCGM signals per ADR-030)
     watcher = FabricManagerWatcher(
         poll_interval=poll_interval,
         callbacks=[event_processor],
@@ -145,12 +125,7 @@ def cli(
         flap_window=flap_window,
         flap_threshold=flap_threshold,
         enable_fabric_check=enable_fabric_check,
-        enable_pcie_check=enable_pcie_check,
-        enable_clock_check=enable_clock_check,
-        enable_nvlink_check=enable_nvlink_check,
         enable_cuda_validation=enable_cuda_validation,
-        dcgm_exporter_url=dcgm_exporter_url,
-        clock_throttle_ratio=clock_throttle_ratio,
     )
 
     watcher.start(exit)

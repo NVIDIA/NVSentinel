@@ -14,9 +14,14 @@
 
 """Main polling loop for fabric-manager-monitor.
 
-Runs all enabled health checks on a configurable interval and fires
+Runs non-DCGM health checks on a configurable interval and fires
 callbacks (e.g. PlatformConnectorEventProcessor) with the aggregated
 results. Mirrors the DCGMWatcher pattern from gpu-health-monitor.
+
+Scope (per ADR-030): only checks that DCGM cannot see --
+  FM service health, FM flap detection, fabric state, CUDA context,
+  GPU service lifecycle. PCIe, NVLink, and clock throttling are
+  owned by gpu-health-monitor via pydcgm.
 """
 
 import logging as log
@@ -27,19 +32,20 @@ from threading import Event
 from typing import List
 
 from fabric_manager_monitor import metrics
-from .clock_check import ClockChecker
 from .cuda_validation import CUDAValidator
-from .fabric_check import NVLinkFabricChecker
-from .pcie_check import PCIeChecker
 from .service_check import ServiceChecker
 from .types import CallbackInterface, CheckResult
 
 
 class FabricManagerWatcher:
-    """Orchestrates all health checks and fires callbacks with results.
+    """Orchestrates non-DCGM health checks and fires callbacks with results.
 
     Follows the same callback pattern as DCGMWatcher: a list of CallbackInterface
     implementations are invoked after each check cycle.
+
+    PCIe link health, NVLink fabric, and clock throttling are intentionally
+    excluded -- those signals are DCGM-visible and belong in gpu-health-monitor
+    (see ADR-030).
     """
 
     def __init__(
@@ -51,12 +57,7 @@ class FabricManagerWatcher:
         flap_window: int = 600,
         flap_threshold: int = 3,
         enable_fabric_check: bool = True,
-        enable_pcie_check: bool = True,
-        enable_clock_check: bool = True,
-        enable_nvlink_check: bool = True,
         enable_cuda_validation: bool = False,
-        dcgm_exporter_url: str = "http://localhost:9400",
-        clock_throttle_ratio: float = 0.85,
     ) -> None:
         self._poll_interval = poll_interval
         self._callbacks = callbacks
@@ -64,9 +65,6 @@ class FabricManagerWatcher:
         self._boot_grace_period = boot_grace_period
         self._start_time = time.monotonic()
         self._callback_thread_pool = ThreadPoolExecutor()
-
-        # Track cross-check state for correlation
-        self._fabric_manager_down = False
 
         # Initialize checkers and build the check list based on enabled flags
         self._checkers: List[tuple[str, callable]] = []
@@ -77,18 +75,6 @@ class FabricManagerWatcher:
                 flap_threshold=flap_threshold,
             )
             self._checkers.append(("services", self._run_service_checks))
-
-        if enable_pcie_check:
-            self._pcie_checker = PCIeChecker()
-            self._checkers.append(("pcie", self._run_pcie_checks))
-
-        if enable_clock_check:
-            self._clock_checker = ClockChecker(throttle_ratio=clock_throttle_ratio)
-            self._checkers.append(("clocks", self._run_clock_checks))
-
-        if enable_nvlink_check:
-            self._nvlink_checker = NVLinkFabricChecker(dcgm_url=dcgm_exporter_url)
-            self._checkers.append(("nvlink", self._run_nvlink_checks))
 
         if enable_cuda_validation:
             self._cuda_validator = CUDAValidator()
@@ -157,7 +143,6 @@ class FabricManagerWatcher:
         results: List[CheckResult] = []
 
         fm = self._service_checker.check_fabric_manager()
-        self._fabric_manager_down = not fm.active
 
         # Update Prometheus metrics
         metrics.fabric_manager_up.labels(self._node_name).set(1 if fm.active else 0)
@@ -234,61 +219,6 @@ class FabricManagerWatcher:
                 )
 
         return results
-
-    def _run_pcie_checks(self) -> List[CheckResult]:
-        """Check PCIe link health for all GPUs."""
-        statuses = self._pcie_checker.check()
-
-        # Update Prometheus metrics
-        for pcie in statuses:
-            gpu = str(pcie.gpu_index)
-            metrics.pcie_link_width.labels(self._node_name, gpu).set(pcie.link_width_current)
-            metrics.pcie_link_gen.labels(self._node_name, gpu).set(pcie.link_gen_current)
-            metrics.pcie_link_degraded.labels(self._node_name, gpu).set(1 if pcie.degraded else 0)
-            if pcie.degraded:
-                log.warning(
-                    f"PCIe degraded on {self._node_name} GPU {gpu}: "
-                    f"Gen{pcie.link_gen_current} x{pcie.link_width_current} "
-                    f"(max Gen{pcie.link_gen_max} x{pcie.link_width_max})"
-                )
-
-        return self._pcie_checker.to_check_results(statuses, self._node_name)
-
-    def _run_clock_checks(self) -> List[CheckResult]:
-        """Check GPU clock throttling."""
-        statuses = self._clock_checker.check()
-
-        # Update Prometheus metrics
-        for clk in statuses:
-            gpu = str(clk.gpu_index)
-            metrics.gpu_clock_throttled.labels(self._node_name, gpu).set(1 if clk.throttled else 0)
-            metrics.gpu_clock_ratio.labels(self._node_name, gpu).set(clk.clock_ratio)
-            if clk.throttled:
-                log.warning(
-                    f"GPU {gpu} throttled on {self._node_name}: "
-                    f"{clk.graphics_clock_current}/{clk.graphics_clock_max} MHz "
-                    f"(ratio={clk.clock_ratio:.2f}, reasons={clk.throttle_reasons})"
-                )
-
-        return self._clock_checker.to_check_results(statuses, self._node_name)
-
-    def _run_nvlink_checks(self) -> List[CheckResult]:
-        """Check NVLink fabric health."""
-        status = self._nvlink_checker.check()
-
-        # False-positive mitigation: only flag unhealthy when NVLink has CRC errors
-        # OR bandwidth is zero AND Fabric Manager is down
-        fabric_nvlink_degraded = not status.healthy or (status.bandwidth_zero and self._fabric_manager_down)
-        metrics.nvlink_fabric_healthy.labels(self._node_name).set(0 if fabric_nvlink_degraded else 1)
-
-        if fabric_nvlink_degraded and not self._in_grace_period():
-            log.error(
-                f"NVLink fabric degraded on {self._node_name} "
-                f"(crc_errors={status.crc_error_count:.0f}, "
-                f"bw_zero={status.bandwidth_zero}, fm_down={self._fabric_manager_down})"
-            )
-
-        return self._nvlink_checker.to_check_results(status, self._node_name, self._fabric_manager_down)
 
     def _run_cuda_checks(self) -> List[CheckResult]:
         """Run CUDA validation."""
