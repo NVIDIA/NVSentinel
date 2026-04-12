@@ -33,6 +33,7 @@ from typing import List
 
 from fabric_manager_monitor import metrics
 from .cuda_validation import CUDAValidator
+from .fabric_state_check import FabricStateChecker
 from .service_check import ServiceChecker
 from .types import CallbackInterface, CheckResult
 
@@ -75,6 +76,10 @@ class FabricManagerWatcher:
                 flap_threshold=flap_threshold,
             )
             self._checkers.append(("services", self._run_service_checks))
+
+            # Per-GPU fabric state query (depends on FM being monitored)
+            self._fabric_state_checker = FabricStateChecker()
+            self._checkers.append(("fabric_state", self._run_fabric_state_checks))
 
         if enable_cuda_validation:
             self._cuda_validator = CUDAValidator()
@@ -219,6 +224,24 @@ class FabricManagerWatcher:
                 )
 
         return results
+
+    def _run_fabric_state_checks(self) -> List[CheckResult]:
+        """Query per-GPU fabric state via nvidia-smi."""
+        statuses = self._fabric_state_checker.check()
+
+        # Update per-GPU Prometheus metrics
+        for gpu in statuses:
+            if gpu.fabric_state == "N/A":
+                continue
+            is_healthy = gpu.fabric_state == "Completed" and gpu.fabric_status == "Success"
+            metrics.fabric_state_healthy.labels(self._node_name, str(gpu.gpu_index)).set(1 if is_healthy else 0)
+            if not is_healthy:
+                log.warning(
+                    f"Fabric state unhealthy on {self._node_name} GPU {gpu.gpu_index}: "
+                    f"state={gpu.fabric_state}, status={gpu.fabric_status}"
+                )
+
+        return self._fabric_state_checker.to_check_results(statuses, self._node_name)
 
     def _run_cuda_checks(self) -> List[CheckResult]:
         """Run CUDA validation."""
