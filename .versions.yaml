@@ -36,7 +36,7 @@ languages:
 
 # Build & Package Management
 build_tools:
-  poetry: '2.2.1'
+  poetry: '2.3.3'
   poetry_plugin_export: '1.10.0'
 
 # Go Development Tools
