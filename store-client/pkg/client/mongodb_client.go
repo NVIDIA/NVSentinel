@@ -603,7 +603,7 @@ func (c *MongoDBClient) UpdateDocument(
 ) (*UpdateResult, error) {
 	return c.executeUpdate(ctx, "db.update_document", filter, update,
 		func(ctx context.Context) (*mongo.UpdateResult, error) {
-			return c.mongoCol.UpdateOne(ctx, filter, update)
+			return c.mongoCol.UpdateOne(ctx, resolveMongoFilter(filter), update)
 		})
 }
 
@@ -629,7 +629,7 @@ func (c *MongoDBClient) UpdateManyDocuments(
 ) (*UpdateResult, error) {
 	return c.executeUpdate(ctx, "db.update_many_documents", filter, update,
 		func(ctx context.Context) (*mongo.UpdateResult, error) {
-			return c.mongoCol.UpdateMany(ctx, filter, update)
+			return c.mongoCol.UpdateMany(ctx, resolveMongoFilter(filter), update)
 		})
 }
 
@@ -663,7 +663,7 @@ func (c *MongoDBClient) UpsertDocument(
 	opts := options.Update().SetUpsert(true)
 	update := bson.M{"$set": document}
 
-	result, err := c.mongoCol.UpdateOne(ctx, filter, update, opts)
+	result, err := c.mongoCol.UpdateOne(ctx, resolveMongoFilter(filter), update, opts)
 	if err != nil {
 		return nil, datastore.NewInsertError(
 			datastore.ProviderMongoDB,
