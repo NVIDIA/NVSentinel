@@ -1167,7 +1167,7 @@ func (r *Reconciler) handleCancelledEvent(ctx context.Context, nodeName string,
 			"node", nodeName,
 			"error", err)
 		span.SetAttributes(
-			attribute.String("node_drainer.error.type", err.Error()),
+			attribute.String("node_drainer.error.type", "remove_draining_label_error"),
 			attribute.String("node_drainer.error.message", err.Error()),
 		)
 		tracing.RecordError(span, err)

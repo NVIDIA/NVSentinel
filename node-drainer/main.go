@@ -23,6 +23,7 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -76,8 +77,18 @@ func main() {
 		slog.Warn("Failed to initialize tracing", "error", err)
 	}
 
-	if err := run(); err != nil {
-		slog.Error("Node drainer module exited with error", "error", err)
+	runErr := run()
+
+	tracingCtx, tracingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+	if err := tracing.ShutdownTracing(tracingCtx); err != nil {
+		slog.Warn("Failed to shutdown tracing", "error", err)
+	}
+
+	tracingCancel()
+
+	if runErr != nil {
+		slog.Error("Node drainer module exited with error", "error", runErr)
 
 		if closeErr := auditlogger.CloseAuditLogger(); closeErr != nil {
 			slog.Warn("Failed to close audit logger", "error", closeErr)
@@ -367,10 +378,6 @@ func shutdownComponents(ctx context.Context, components *initializer.Components)
 		if errStop := components.EventWatcher.Close(ctx); errStop != nil {
 			return fmt.Errorf("failed to close event watcher: %w", errStop)
 		}
-	}
-
-	if err := tracing.ShutdownTracing(ctx); err != nil {
-		return fmt.Errorf("failed to shutdown tracing: %w", err)
 	}
 
 	components.QueueManager.Shutdown()
