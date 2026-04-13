@@ -19,7 +19,7 @@ This directory contains troubleshooting runbooks for NVSentinel operations.
 ### Health Monitor Issues
 - [Health Monitor UDS Communication Failures](health-monitor-uds-failures.md) - Troubleshoot health monitor to platform-connector communication
 - [GPU Monitor DCGM Connectivity Failures](gpu-monitor-dcgm-failures.md) - Resolve DCGM connectivity issues
-- [CSP Health Monitor Issues](csp-health-monitor.md) - Troubleshoot cloud provider API access and permissions
+- [CSP Health Monitor Issues](csp-health-monitor-iam.md) - Troubleshoot cloud provider API access and permissions
 
 ### Operational Issues
 - [Log Collection Job Failures](log-collection-job-failures.md) - Troubleshoot failed log collection jobs

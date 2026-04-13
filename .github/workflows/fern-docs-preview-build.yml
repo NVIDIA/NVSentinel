@@ -58,7 +58,7 @@ jobs:
           mkdir -p .preview-metadata
           echo "$PR_NUMBER" > .preview-metadata/pr_number
           echo "$HEAD_REF" > .preview-metadata/head_ref
-          git diff --name-only "origin/main...HEAD" -- '*.mdx' > .preview-metadata/changed_mdx_files 2>/dev/null || true
+          git diff --name-only "origin/main...HEAD" -- '*.md' > .preview-metadata/changed_mdx_files 2>/dev/null || true
 
       - name: Upload fern sources and metadata
         uses: actions/upload-artifact@v4

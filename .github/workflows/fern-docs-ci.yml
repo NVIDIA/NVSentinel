@@ -70,22 +70,8 @@ jobs:
             fi
           done
 
-  fern-broken-links:
-    name: Fern Broken Links Check
-    needs: changed-files
-    if: needs.changed-files.outputs.docs == 'true'
-    runs-on: linux-amd64-cpu32
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install Fern CLI
-        run: npm install -g fern-api@4.42.1
-
       - name: Check for broken links
-        run: fern docs broken-links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --offline --no-progress 'docs/**/*.md'
+          fail: true
