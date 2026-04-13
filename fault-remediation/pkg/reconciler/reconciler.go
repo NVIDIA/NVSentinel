@@ -196,7 +196,7 @@ func (r *FaultRemediationReconciler) completeEventSession(
 	reconcileErr error,
 ) {
 	// Keep the lifecycle span open while controller-runtime is still retrying/requeueing.
-	if reconcileErr != nil || result.Requeue || result.RequeueAfter > 0 {
+	if reconcileErr != nil || result.RequeueAfter > 0 {
 		return
 	}
 
@@ -529,8 +529,6 @@ func (r *FaultRemediationReconciler) handleExistingCRSkip(
 	slog.InfoContext(ctx, "Skipping event for node due to existing CR",
 		"node", nodeName,
 		"existingCR", existingCR)
-
-	metrics.EventsProcessed.WithLabelValues(metrics.CRStatusSkipped, nodeName).Inc()
 
 	if span != nil {
 		span.SetAttributes(
