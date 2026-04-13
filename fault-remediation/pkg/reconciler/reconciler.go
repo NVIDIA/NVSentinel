@@ -41,9 +41,12 @@ import (
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/remediation"
 	nvstoreclient "github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	"github.com/nvidia/nvsentinel/store-client/pkg/query"
 	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+const coldStartBatchSize = 1000
 
 type ReconcilerConfig struct {
 	DataStoreConfig    datastore.DataStoreConfig
@@ -67,6 +70,7 @@ type FaultRemediationReconciler struct {
 	Config            ReconcilerConfig
 	annotationManager annotation.NodeAnnotationManagerInterface
 	dryRun            bool
+	coldStartCh       chan event.TypedGenericEvent[*datastore.EventWithToken]
 }
 
 // NewFaultRemediationReconciler creates a new FaultRemediationReconciler with the provided dependencies.
@@ -262,11 +266,8 @@ func (r *FaultRemediationReconciler) handleCancellationEvent(
 		return ctrl.Result{}, fmt.Errorf("failed to clear remediation state for node: %w", err)
 	}
 
-	if err := watcherInstance.MarkProcessed(context.Background(), resumeToken); err != nil {
-		metrics.ProcessingErrors.WithLabelValues("mark_processed_error", nodeName).Inc()
-		slog.Error("Error updating resume token", "error", err)
-
-		return ctrl.Result{}, fmt.Errorf("failed to mark event as processed: %w", err)
+	if err := safeMarkProcessed(context.Background(), watcherInstance, resumeToken, nodeName); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
@@ -337,11 +338,8 @@ func (r *FaultRemediationReconciler) trySkipEvent(
 		return ctrl.Result{}, nil, false
 	}
 
-	if err := watcherInstance.MarkProcessed(ctx, eventWithToken.ResumeToken); err != nil {
-		metrics.ProcessingErrors.WithLabelValues("mark_processed_error", nodeName).Inc()
-		slog.Error("Error updating resume token", "error", err)
-
-		return ctrl.Result{}, fmt.Errorf("error updating resume token: %w", err), true
+	if err := safeMarkProcessed(ctx, watcherInstance, eventWithToken.ResumeToken, nodeName); err != nil {
+		return ctrl.Result{}, err, true
 	}
 
 	return ctrl.Result{}, nil, true
@@ -360,11 +358,8 @@ func (r *FaultRemediationReconciler) handleExistingCRSkip(
 
 	metrics.EventsProcessed.WithLabelValues(metrics.CRStatusSkipped, nodeName).Inc()
 
-	if err := watcherInstance.MarkProcessed(ctx, eventWithToken.ResumeToken); err != nil {
-		metrics.ProcessingErrors.WithLabelValues("mark_processed_error", nodeName).Inc()
-		slog.Error("Error updating resume token", "error", err)
-
-		return ctrl.Result{}, fmt.Errorf("error updating resume token: %w", err)
+	if err := safeMarkProcessed(ctx, watcherInstance, eventWithToken.ResumeToken, nodeName); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
@@ -377,7 +372,7 @@ func (r *FaultRemediationReconciler) runLogCollectorAndRemediate(
 	healthEvent *protos.HealthEvent,
 	healthEventWithStatus *events.HealthEventDoc,
 	eventWithToken datastore.EventWithToken,
-	watcherInstance datastore.ChangeStreamWatcher,
+	_ datastore.ChangeStreamWatcher,
 	healthEventStore datastore.HealthEventStore,
 	groupConfig *common.EquivalenceGroupConfig,
 	nodeName string,
@@ -408,6 +403,26 @@ func (r *FaultRemediationReconciler) runLogCollectorAndRemediate(
 	return ctrl.Result{}, nil
 }
 
+// safeMarkProcessed advances the resume token for live stream events.
+// Cold-start events carry an empty ResumeToken; calling MarkProcessed
+// with an empty token would incorrectly advance the checkpoint to the
+// current change-stream cursor position, potentially skipping live
+// events that haven't been processed yet.
+func safeMarkProcessed(ctx context.Context, w datastore.ChangeStreamWatcher, token []byte, node string) error {
+	if len(token) == 0 {
+		return nil
+	}
+
+	if err := w.MarkProcessed(ctx, token); err != nil {
+		metrics.ProcessingErrors.WithLabelValues("mark_processed_error", node).Inc()
+		slog.Error("Error updating resume token", "error", err)
+
+		return fmt.Errorf("failed to mark event as processed: %w", err)
+	}
+
+	return nil
+}
+
 // markProcessedOrError marks the event processed and returns (Result{}, nil) or (zero, err).
 func (r *FaultRemediationReconciler) markProcessedOrError(
 	ctx context.Context,
@@ -415,11 +430,8 @@ func (r *FaultRemediationReconciler) markProcessedOrError(
 	eventWithToken datastore.EventWithToken,
 	nodeName string,
 ) (ctrl.Result, error) {
-	if err := watcherInstance.MarkProcessed(ctx, eventWithToken.ResumeToken); err != nil {
-		metrics.ProcessingErrors.WithLabelValues("mark_processed_error", nodeName).Inc()
-		slog.Error("Error updating resume token", "error", err)
-
-		return ctrl.Result{}, fmt.Errorf("error updating resume token: %w", err)
+	if err := safeMarkProcessed(ctx, watcherInstance, eventWithToken.ResumeToken, nodeName); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
@@ -539,12 +551,9 @@ func (r *FaultRemediationReconciler) parseHealthEvent(eventWithToken datastore.E
 		metrics.ProcessingErrors.WithLabelValues(errorLabel, "unknown").Inc()
 		slog.Error("Error parsing health event", "error", err)
 
-		if markErr := watcherInstance.MarkProcessed(context.Background(), eventWithToken.ResumeToken); markErr != nil {
-			metrics.ProcessingErrors.WithLabelValues("mark_processed_error", "unknown").Inc()
-			slog.Error("Error updating resume token", "error", markErr)
-		}
+		_ = safeMarkProcessed(context.Background(), watcherInstance, eventWithToken.ResumeToken, "unknown")
 
-		return result, fmt.Errorf("error updating resume token: %w", err)
+		return result, fmt.Errorf("error parsing health event: %w", err)
 	}
 
 	// Extract document ID and wrap into HealthEventDoc
@@ -553,10 +562,7 @@ func (r *FaultRemediationReconciler) parseHealthEvent(eventWithToken datastore.E
 		metrics.ProcessingErrors.WithLabelValues("extract_id_error", "unknown").Inc()
 		slog.Error("Error extracting document ID", "error", err)
 
-		if markErr := watcherInstance.MarkProcessed(context.Background(), eventWithToken.ResumeToken); markErr != nil {
-			metrics.ProcessingErrors.WithLabelValues("mark_processed_error", "unknown").Inc()
-			slog.Error("Error updating resume token", "error", markErr)
-		}
+		_ = safeMarkProcessed(context.Background(), watcherInstance, eventWithToken.ResumeToken, "unknown")
 
 		return result, fmt.Errorf("error extracting document ID: %w", err)
 	}
@@ -599,30 +605,79 @@ func (r *FaultRemediationReconciler) CloseAll(ctx context.Context) error {
 func (r *FaultRemediationReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) (<-chan struct{}, error) {
 	r.Watcher.Start(ctx)
 
-	reconciler := builder.TypedControllerManagedBy[*datastore.EventWithToken](mgr)
 	typedCh, watcherDone := AdaptEvents(ctx, r.Watcher.Events())
 
-	src := source.TypedChannel[*datastore.EventWithToken, *datastore.EventWithToken](
-		typedCh,
-		handler.TypedFuncs[*datastore.EventWithToken, *datastore.EventWithToken]{
-			GenericFunc: func(
-				ctx context.Context,
-				e event.TypedGenericEvent[*datastore.EventWithToken],
-				q workqueue.TypedRateLimitingInterface[*datastore.EventWithToken],
-			) {
-				q.Add(e.Object)
-			},
-		},
-	)
+	r.coldStartCh = make(chan event.TypedGenericEvent[*datastore.EventWithToken], coldStartBatchSize)
 
-	err := reconciler.
+	enqueueHandler := handler.TypedFuncs[*datastore.EventWithToken, *datastore.EventWithToken]{
+		GenericFunc: func(
+			ctx context.Context,
+			e event.TypedGenericEvent[*datastore.EventWithToken],
+			q workqueue.TypedRateLimitingInterface[*datastore.EventWithToken],
+		) {
+			q.Add(e.Object)
+		},
+	}
+
+	err := builder.TypedControllerManagedBy[*datastore.EventWithToken](mgr).
 		Named("fault-remediation-controller").
-		WatchesRawSource(
-			src,
-		).
+		WatchesRawSource(source.TypedChannel(typedCh, enqueueHandler)).
+		WatchesRawSource(source.TypedChannel(r.coldStartCh, enqueueHandler)).
 		Complete(r)
 
 	return watcherDone, err
+}
+
+// HandleColdStart queries for health events that need remediation or cancellation
+// cleanup after a restart. Events are enqueued into the controller-runtime workqueue
+// via the cold start channel so they get full requeue/retry semantics — the same
+// processing path as live change stream events.
+func (r *FaultRemediationReconciler) HandleColdStart(ctx context.Context) {
+	slog.Info("Handling cold start: checking for unremediated events")
+
+	q := query.New().Build(
+		query.Or(
+			// Quarantined + drained but not yet remediated
+			query.And(
+				query.In("healtheventstatus.nodequarantined",
+					[]interface{}{string(model.Quarantined), string(model.AlreadyQuarantined)}),
+				query.In("healtheventstatus.userpodsevictionstatus.status",
+					[]interface{}{string(model.StatusSucceeded), string(model.AlreadyDrained)}),
+				query.Eq("healtheventstatus.faultremediated", nil),
+			),
+			// Cancelled/unquarantined events (need cleanup)
+			query.In("healtheventstatus.nodequarantined",
+				[]interface{}{string(model.UnQuarantined), string(model.Cancelled)}),
+		),
+	)
+
+	enqueued := 0
+
+	err := r.healthEventStore.FindHealthEventsByQueryBatched(ctx, q, coldStartBatchSize,
+		func(batch []datastore.HealthEventWithStatus) error {
+			for _, he := range batch {
+				if len(he.RawEvent) == 0 {
+					continue
+				}
+
+				evt := datastore.EventWithToken{Event: he.RawEvent}
+
+				select {
+				case r.coldStartCh <- event.TypedGenericEvent[*datastore.EventWithToken]{Object: &evt}:
+					enqueued++
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+
+			return nil
+		})
+	if err != nil {
+		slog.Error("Cold start query failed", "error", err)
+		return
+	}
+
+	slog.Info("Cold start: enqueued events for processing", "count", enqueued)
 }
 
 // AdaptEvents transforms a channel of EventWithToken into a channel of controller-runtime

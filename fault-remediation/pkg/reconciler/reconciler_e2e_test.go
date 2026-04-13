@@ -153,8 +153,11 @@ func (m *MockChangeStreamWatcher) GetCallCounts() (int, int, int, int) {
 
 // MockHealthEventStore provides a mock implementation of datastore.HealthEventStore for testing
 type MockHealthEventStore struct {
-	UpdateHealthEventStatusFn func(ctx context.Context, id string, status datastore.HealthEventStatus) error
-	updateCalled              int
+	UpdateHealthEventStatusFn          func(ctx context.Context, id string, status datastore.HealthEventStatus) error
+	FindHealthEventsByQueryFn          func(ctx context.Context, builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error)
+	FindHealthEventsByQueryBatchedFn   func(ctx context.Context, builder datastore.QueryBuilder, batchSize int, fn func([]datastore.HealthEventWithStatus) error) error
+	updateCalled                       int
+	findHealthEventsByQueryCalls       int
 }
 
 // UpdateHealthEventStatus updates a health event status (mock implementation)
@@ -207,7 +210,21 @@ func (m *MockHealthEventStore) FindLatestEventForNode(ctx context.Context, nodeN
 }
 
 func (m *MockHealthEventStore) FindHealthEventsByQuery(ctx context.Context, builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error) {
+	m.findHealthEventsByQueryCalls++
+
+	if m.FindHealthEventsByQueryFn != nil {
+		return m.FindHealthEventsByQueryFn(ctx, builder)
+	}
+
 	return nil, nil
+}
+
+func (m *MockHealthEventStore) FindHealthEventsByQueryBatched(ctx context.Context, builder datastore.QueryBuilder, batchSize int, fn func([]datastore.HealthEventWithStatus) error) error {
+	if m.FindHealthEventsByQueryBatchedFn != nil {
+		return m.FindHealthEventsByQueryBatchedFn(ctx, builder, batchSize, fn)
+	}
+
+	return nil
 }
 
 func (m *MockHealthEventStore) UpdateHealthEventsByQuery(ctx context.Context, queryBuilder datastore.QueryBuilder, updateBuilder datastore.UpdateBuilder) error {
@@ -1871,4 +1888,177 @@ func getHistogramCount(t *testing.T, histogram prometheus.Histogram) uint64 {
 	err := histogram.Write(metric)
 	require.NoError(t, err)
 	return metric.Histogram.GetSampleCount()
+}
+
+// --- HandleColdStart E2E tests ---
+
+func makeColdStartHealthEvent(
+	eventID, nodeName string, quarantineStatus model.Status, drainStatus model.Status,
+	action protos.RecommendedAction, createdAt time.Time,
+) datastore.HealthEventWithStatus {
+	return datastore.HealthEventWithStatus{
+		CreatedAt: createdAt,
+		RawEvent: datastore.Event{
+			"_id": eventID,
+			"healtheventstatus": map[string]interface{}{
+				"nodequarantined": string(quarantineStatus),
+				"userpodsevictionstatus": map[string]interface{}{
+					"status": string(drainStatus),
+				},
+			},
+			"healthevent": map[string]interface{}{
+				"nodename":          nodeName,
+				"recommendedaction": int32(action),
+			},
+		},
+	}
+}
+
+// TestHandleColdStart_RemediationFlow tests the full cold start remediation flow:
+//  1. A node was quarantined and drained while FR was down
+//  2. HandleColdStart enqueues the missed event into the controller workqueue
+//  3. Controller-runtime processes it and FR creates a maintenance CR
+func TestHandleColdStart_RemediationFlow(t *testing.T) {
+	mockStore.updateCalled = 0
+
+	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := testutils.GenerateTestNodeName("cold-start-remediation")
+
+	createTestNode(ctx, nodeName, nil, map[string]string{
+		statemanager.NVSentinelStateLabelKey: string(statemanager.DrainSucceededLabelValue),
+	})
+
+	gvr := schema.GroupVersionResource{
+		Group:    "janitor.dgxc.nvidia.com",
+		Version:  "v1alpha1",
+		Resource: "rebootnodes",
+	}
+
+	defer func() {
+		cleanupNodeAnnotations(ctx, t, nodeName)
+		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+		mockStore.FindHealthEventsByQueryBatchedFn = nil
+	}()
+
+	missedEvent := makeColdStartHealthEvent(
+		"cold-start-event-1", nodeName,
+		model.Quarantined, model.StatusSucceeded,
+		protos.RecommendedAction_RESTART_BM, time.Now(),
+	)
+
+	mockStore.FindHealthEventsByQueryBatchedFn = func(_ context.Context, _ datastore.QueryBuilder, _ int, fn func([]datastore.HealthEventWithStatus) error) error {
+		return fn([]datastore.HealthEventWithStatus{missedEvent})
+	}
+
+	t.Log("Calling HandleColdStart to enqueue missed event")
+	reconciler.HandleColdStart(ctx)
+
+	t.Log("Verifying remediation state was set on the node")
+	require.Eventually(t, func() bool {
+		state, _, err := reconciler.annotationManager.GetRemediationState(ctx, nodeName)
+		if err != nil {
+			return false
+		}
+
+		grp, ok := state.EquivalenceGroups["restart"]
+		if !ok {
+			return false
+		}
+
+		return grp.MaintenanceCR != ""
+	}, 5*time.Second, 100*time.Millisecond, "Cold start should create a maintenance CR")
+
+	state, _, err := reconciler.annotationManager.GetRemediationState(ctx, nodeName)
+	require.NoError(t, err)
+
+	crName := state.EquivalenceGroups["restart"].MaintenanceCR
+	t.Logf("Maintenance CR created via cold start: %s", crName)
+
+	_ = testDynamic.Resource(gvr).Delete(ctx, crName, metav1.DeleteOptions{})
+}
+
+// TestHandleColdStart_CancellationFlow tests that cold start processes cancellation events:
+//  1. A node was quarantined and FR created a CR for it
+//  2. While FR was down, the event was cancelled
+//  3. HandleColdStart picks up the cancellation and clears remediation state
+func TestHandleColdStart_CancellationFlow(t *testing.T) {
+	mockStore.updateCalled = 0
+
+	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := testutils.GenerateTestNodeName("cold-start-cancellation")
+	createTestNode(ctx, nodeName, nil, map[string]string{
+		statemanager.NVSentinelStateLabelKey: string(statemanager.DrainSucceededLabelValue),
+	})
+
+	gvr := schema.GroupVersionResource{
+		Group:    "janitor.dgxc.nvidia.com",
+		Version:  "v1alpha1",
+		Resource: "rebootnodes",
+	}
+
+	defer func() {
+		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+		mockStore.FindHealthEventsByQueryBatchedFn = nil
+	}()
+
+	// Step 1: Send a quarantine event through the normal change stream path
+	t.Log("Step 1: Processing quarantine event via change stream")
+	eventID := "cold-start-cancel-event-1"
+	quarantineEvent := createQuarantineEvent(eventID, nodeName, protos.RecommendedAction_RESTART_BM)
+	mockWatcher.EventsChan <- datastore.EventWithToken{
+		Event:       map[string]interface{}(quarantineEvent),
+		ResumeToken: []byte("cold-start-token-1"),
+	}
+
+	var crName string
+	require.Eventually(t, func() bool {
+		state, _, err := reconciler.annotationManager.GetRemediationState(ctx, nodeName)
+		if err != nil {
+			return false
+		}
+
+		if grp, ok := state.EquivalenceGroups["restart"]; ok {
+			crName = grp.MaintenanceCR
+			return crName != ""
+		}
+
+		return false
+	}, 5*time.Second, 100*time.Millisecond, "CR should be created via normal path")
+
+	t.Logf("CR created: %s", crName)
+
+	// Step 2: Simulate FR going down and a cancellation happening while it's down
+	t.Log("Step 2: Simulating cold start with a missed cancellation event")
+	cancelledEvent := makeColdStartHealthEvent(
+		eventID, nodeName,
+		model.Cancelled, model.StatusSucceeded,
+		protos.RecommendedAction_RESTART_BM, time.Now(),
+	)
+
+	mockStore.FindHealthEventsByQueryBatchedFn = func(_ context.Context, _ datastore.QueryBuilder, _ int, fn func([]datastore.HealthEventWithStatus) error) error {
+		return fn([]datastore.HealthEventWithStatus{cancelledEvent})
+	}
+
+	t.Log("Step 3: Calling HandleColdStart to enqueue missed cancellation")
+	reconciler.HandleColdStart(ctx)
+
+	// Step 4: Verify remediation state was cleared (async via workqueue)
+	t.Log("Step 4: Verifying remediation state was cleared")
+	require.Eventually(t, func() bool {
+		node, err := testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		_, hasAnnotation := node.Annotations[annotation.AnnotationKey]
+
+		return !hasAnnotation
+	}, 5*time.Second, 100*time.Millisecond,
+		"Cold start should clear remediation annotation for cancelled events")
+
+	_ = testDynamic.Resource(gvr).Delete(ctx, crName, metav1.DeleteOptions{})
 }

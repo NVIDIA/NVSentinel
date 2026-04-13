@@ -35,6 +35,7 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/initializer"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
 	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 )
@@ -264,28 +265,27 @@ func startEventWatcher(ctx context.Context, components *initializer.Components, 
 	}()
 }
 
-// handleColdStart re-processes events that were in-progress or quarantined during a restart
+const coldStartBatchSize = 1000
+
+// handleColdStart re-processes events that were in-progress or quarantined during a restart.
+// Events are fetched in bounded batches via FindHealthEventsByQueryBatched to prevent
+// unbounded memory usage. All matching events are loaded (not just latest per node)
+// because a single node can have multiple concurrent partial drains.
 func handleColdStart(ctx context.Context, components *initializer.Components) error {
 	slog.Info("Querying for events requiring processing")
 
-	// Query for events that need processing:
-	// 1. Events with StatusInProgress (actively being processed when we went down)
-	// 2. Events that are Quarantined but haven't started processing yet (status is empty or NotStarted)
-	// This handles cases where node-drainer was restarted after quarantine but before processing started
-
-	// Build database-agnostic query using query builder
 	q := query.New().Build(
 		query.Or(
-			// Case 1: Events that were in-progress
+			// Events that were in-progress
 			query.Eq("healtheventstatus.userpodsevictionstatus.status", string(model.StatusInProgress)),
 
-			// Case 2: Quarantined events that haven't been processed yet
+			// Quarantined events that haven't been processed yet
 			query.And(
 				query.Eq("healtheventstatus.nodequarantined", string(model.Quarantined)),
 				query.In("healtheventstatus.userpodsevictionstatus.status", []interface{}{"", string(model.StatusNotStarted)}),
 			),
 
-			// Case 3: AlreadyQuarantined events that haven't been processed yet
+			// AlreadyQuarantined events that haven't been processed yet
 			query.And(
 				query.Eq("healtheventstatus.nodequarantined", string(model.AlreadyQuarantined)),
 				query.In("healtheventstatus.userpodsevictionstatus.status", []interface{}{"", string(model.StatusNotStarted)}),
@@ -293,60 +293,60 @@ func handleColdStart(ctx context.Context, components *initializer.Components) er
 		),
 	)
 
-	// Get health event store (database-agnostic)
 	healthStore := components.DataStore.HealthEventStore()
-
-	// Execute query (works with both MongoDB and PostgreSQL)
-	healthEvents, err := healthStore.FindHealthEventsByQuery(ctx, q)
-	if err != nil {
-		return fmt.Errorf("failed to query events for cold start: %w", err)
-	}
-
-	slog.Info("Found events to re-process", "count", len(healthEvents))
-
 	dbAdapter := &dataStoreAdapter{DatabaseClient: components.DatabaseClient}
 
-	// Re-process each event
-	for _, he := range healthEvents {
-		// Use the RawEvent from the database query which includes _id
-		// This is critical for status updates to work properly
-		event := he.RawEvent
-		if len(event) == 0 {
-			slog.Error("RawEvent is empty, skipping cold start event")
-			continue
-		}
+	err := healthStore.FindHealthEventsByQueryBatched(ctx, q, coldStartBatchSize,
+		func(batch []datastore.HealthEventWithStatus) error {
+			slog.Info("Processing cold start batch", "count", len(batch))
 
-		// Parse the event to extract node name
-		parsedEvent, err := eventutil.ParseHealthEventFromEvent(event)
-		if err != nil {
-			slog.Error("Failed to parse health event from cold start event", "error", err)
-			continue
-		}
+			for _, he := range batch {
+				event := he.RawEvent
+				if len(event) == 0 {
+					slog.Error("RawEvent is empty, skipping cold start event")
 
-		if parsedEvent.HealthEvent == nil {
-			slog.Error("Health event is nil in cold start event")
-			continue
-		}
+					continue
+				}
 
-		nodeName := parsedEvent.HealthEvent.GetNodeName()
-		if nodeName == "" {
-			slog.Error("Node name is empty in cold start event")
-			continue
-		}
+				parsedEvent, err := eventutil.ParseHealthEventFromEvent(event)
+				if err != nil {
+					slog.Error("Failed to parse health event from cold start event", "error", err)
 
-		documentID, err := utils.ExtractDocumentIDNative(event)
-		if err != nil {
-			slog.Error("Failed to extract document ID from cold start event", "error", err)
-			continue
-		}
+					continue
+				}
 
-		err = components.QueueManager.EnqueueEventGeneric(
-			ctx, nodeName, event, dbAdapter, healthStore, documentID)
-		if err != nil {
-			slog.Error("Failed to enqueue cold start event", "error", err, "nodeName", nodeName)
-		} else {
-			slog.Info("Re-queued event from cold start", "nodeName", nodeName)
-		}
+				if parsedEvent.HealthEvent == nil {
+					slog.Error("Health event is nil in cold start event")
+
+					continue
+				}
+
+				nodeName := parsedEvent.HealthEvent.GetNodeName()
+				if nodeName == "" {
+					slog.Error("Node name is empty in cold start event")
+
+					continue
+				}
+
+				documentID, err := utils.ExtractDocumentIDNative(event)
+				if err != nil {
+					slog.Error("Failed to extract document ID from cold start event", "error", err)
+
+					continue
+				}
+
+				if enqueueErr := components.QueueManager.EnqueueEventGeneric(
+					ctx, nodeName, event, dbAdapter, healthStore, documentID); enqueueErr != nil {
+					slog.Error("Failed to enqueue cold start event", "error", enqueueErr, "nodeName", nodeName)
+				} else {
+					slog.Info("Re-queued event from cold start", "nodeName", nodeName)
+				}
+			}
+
+			return nil
+		})
+	if err != nil {
+		return fmt.Errorf("failed to process cold start events: %w", err)
 	}
 
 	slog.Info("Cold start processing completed")

@@ -72,6 +72,10 @@ func (mockStore *mockHealthEventStore) FindHealthEventsByQuery(_ context.Context
 	return healthEventsForCall, nil
 }
 
+func (mockStore *mockHealthEventStore) FindHealthEventsByQueryBatched(_ context.Context, _ datastore.QueryBuilder, _ int, _ func([]datastore.HealthEventWithStatus) error) error {
+	return nil
+}
+
 type testSetup struct {
 	ctx               context.Context
 	client            kubernetes.Interface

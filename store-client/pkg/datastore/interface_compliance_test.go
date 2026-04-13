@@ -140,11 +140,15 @@ func TestHealthEventStoreInterfaceCompliance(t *testing.T) {
 			"FindHealthEventsByNode",
 			"FindHealthEventsByFilter",
 			"FindHealthEventsByStatus",
+			"FindHealthEventsByQuery",
+			"UpdateHealthEventsByQuery",
 			"UpdateNodeQuarantineStatus",
 			"UpdatePodEvictionStatus",
 			"UpdateRemediationStatus",
+			"UpdateSpanID",
 			"CheckIfNodeAlreadyDrained",
 			"FindLatestEventForNode",
+			"FindHealthEventsByQueryBatched",
 		}
 
 		for _, methodName := range expectedMethods {

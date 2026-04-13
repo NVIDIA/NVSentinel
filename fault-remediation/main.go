@@ -236,6 +236,8 @@ func initializeAndWatch(
 
 	slog.Info("Initialization completed, reconciler registered with manager")
 
+	reconciler.HandleColdStart(ctx)
+
 	select {
 	case <-ctx.Done():
 		return cleanup, nil
