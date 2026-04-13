@@ -245,7 +245,7 @@ var (
 	testRestConfig    *rest.Config
 	mockWatcher       *MockChangeStreamWatcher
 	mockStore         *MockHealthEventStore
-	reconciler        FaultRemediationReconciler
+	reconciler        *FaultRemediationReconciler
 )
 
 func TestMain(m *testing.M) {
@@ -405,7 +405,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 			UpdateRetryDelay:  100 * time.Millisecond,
 		}
 
-		r := FaultRemediationReconciler{
+		r := &FaultRemediationReconciler{
 			Config:            cfg,
 			annotationManager: cfg.RemediationClient.GetAnnotationManager(),
 		}
@@ -470,7 +470,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 			UpdateMaxRetries:  3,
 			UpdateRetryDelay:  100 * time.Millisecond,
 		}
-		r := FaultRemediationReconciler{
+		r := &FaultRemediationReconciler{
 			Config:            cfg,
 			annotationManager: cfg.RemediationClient.GetAnnotationManager(),
 		}
@@ -530,7 +530,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 			UpdateMaxRetries:  3,
 			UpdateRetryDelay:  100 * time.Millisecond,
 		}
-		r := FaultRemediationReconciler{
+		r := &FaultRemediationReconciler{
 			Config:            cfg,
 			annotationManager: cfg.RemediationClient.GetAnnotationManager(),
 		}
@@ -624,7 +624,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 			UpdateMaxRetries:  3,
 			UpdateRetryDelay:  100 * time.Millisecond,
 		}
-		r := FaultRemediationReconciler{
+		r := &FaultRemediationReconciler{
 			Config:            cfg,
 			annotationManager: cfg.RemediationClient.GetAnnotationManager(),
 		}
@@ -703,7 +703,7 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 		UpdateMaxRetries:  3,
 		UpdateRetryDelay:  100 * time.Millisecond,
 	}
-	r := FaultRemediationReconciler{
+	r := &FaultRemediationReconciler{
 		Config:            cfg,
 		annotationManager: cfg.RemediationClient.GetAnnotationManager(),
 	}
@@ -840,7 +840,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 		UpdateMaxRetries:  3,
 		UpdateRetryDelay:  100 * time.Millisecond,
 	}
-	r := FaultRemediationReconciler{
+	r := &FaultRemediationReconciler{
 		Config:            cfg,
 		annotationManager: cfg.RemediationClient.GetAnnotationManager(),
 	}
@@ -1300,7 +1300,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 			UpdateRetryDelay:  100 * time.Millisecond,
 		}
 
-		reconcilerInstance := FaultRemediationReconciler{
+		reconcilerInstance := &FaultRemediationReconciler{
 			Config:            cfg,
 			annotationManager: cfg.RemediationClient.GetAnnotationManager(),
 		}

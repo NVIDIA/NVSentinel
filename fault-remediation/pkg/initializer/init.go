@@ -45,7 +45,7 @@ type InitializationParams struct {
 }
 
 type Components struct {
-	FaultRemediationReconciler reconciler.FaultRemediationReconciler
+	FaultRemediationReconciler *reconciler.FaultRemediationReconciler
 }
 
 func InitializeAll(

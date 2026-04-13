@@ -33,14 +33,16 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
-
+	"github.com/go-logr/logr"
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/initializer"
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 func init() {
@@ -70,11 +72,19 @@ var (
 )
 
 func main() {
-	logger.SetDefaultStructuredLogger("fault-remediation", version)
+	logger.SetDefaultStructuredLoggerWithTraceCorrelation("fault-remediation", version)
 	slog.Info("Starting fault-remediation", "version", version, "commit", commit, "date", date)
+
+	// Set controller-runtime's log sink so manager and controllers can log (required for shutdown, etc.)
+	logrLogger := logr.FromSlogHandler(slog.Default().Handler())
+	ctrllog.SetLogger(logrLogger)
 
 	if err := auditlogger.InitAuditLogger("fault-remediation"); err != nil {
 		slog.Warn("Failed to initialize audit logger", "error", err)
+	}
+
+	if err := tracing.InitTracing("fault-remediation"); err != nil {
+		slog.Warn("Failed to initialize tracing", "error", err)
 	}
 
 	if err := run(); err != nil {
@@ -107,6 +117,10 @@ func run() error {
 
 	err := setupCtrlRuntimeManagement(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			slog.Info("Shutdown complete (signal received)", "reason", ctx.Err())
+		}
+
 		return err
 	}
 

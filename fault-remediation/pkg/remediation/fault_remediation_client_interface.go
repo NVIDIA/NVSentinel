@@ -44,6 +44,8 @@ type TemplateData struct {
 	HealthEventID            string
 	RecommendedAction        protos.RecommendedAction
 	RecommendedActionName    string
+	TraceID                  string
+	SpanID                   string
 
 	HealthEvent *protos.HealthEvent
 
