@@ -46,7 +46,7 @@ jobs:
 
       - name: Scan Repo
         continue-on-error: true
-        uses: aquasecurity/trivy-action@e368e328979b113139d6f9068e03accaed98a518  # v0.34.1
+        uses: aquasecurity/trivy-action@f685ba721536b1ff19093eb4e1b1bf994c2bdbe2  # v0.34.1
         with:
           scan-type: 'fs'
           scan-ref: '.'
