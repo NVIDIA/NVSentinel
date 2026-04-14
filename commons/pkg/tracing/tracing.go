@@ -52,6 +52,7 @@ const (
 	ServiceFaultQuarantine      = "fault-quarantine"
 	ServiceEventExporter        = "event-exporter"
 	ServiceHealthEventsAnalyzer = "health-events-analyzer"
+	ServiceNodeDrainer          = "node-drainer"
 )
 
 // MetadataKeyTraceID is the key used to store the trace ID in the health event's
