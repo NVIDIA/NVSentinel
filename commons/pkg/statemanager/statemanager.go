@@ -320,7 +320,7 @@ func validateStateTransition(nodeName, currentValue string, exists bool, targetS
 
 	// Define expected transitions based on the normal state machine flow
 	validTransitions := map[NVSentinelStateLabelValue][]NVSentinelStateLabelValue{
-		QuarantinedLabelValue:          {DrainingLabelValue},
+		QuarantinedLabelValue:          {DrainingLabelValue, DrainSucceededLabelValue},
 		DrainingLabelValue:             {DrainSucceededLabelValue, DrainFailedLabelValue},
 		DrainSucceededLabelValue:       {RemediatingLabelValue},
 		DrainFailedLabelValue:          {}, // Terminal state - fault-remediation doesn't consume drain-failed
