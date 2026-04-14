@@ -425,7 +425,7 @@ func (i *Informers) EvictAllPodsInImmediateMode(ctx context.Context,
 	namespace, nodeName string, timeout time.Duration, partialDrainEntity *protos.Entity) error {
 	pods, err := i.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity)
 	if err != nil {
-		slog.Error("Failed to find evictable pods in namespace on node",
+		slog.ErrorContext(ctx, "Failed to find evictable pods in namespace on node",
 			"namespace", namespace,
 			"node", nodeName,
 			"error", err)
@@ -439,7 +439,7 @@ func (i *Informers) EvictAllPodsInImmediateMode(ctx context.Context,
 
 	err = i.evictPodsInNamespaceAndNode(ctx, namespace, timeout, pods)
 	if err != nil {
-		slog.Error("Failed to evict pods in namespace on node",
+		slog.ErrorContext(ctx, "Failed to evict pods in namespace on node",
 			"namespace", namespace,
 			"node", nodeName,
 			"error", err)
@@ -467,12 +467,12 @@ func (i *Informers) evictPodsInNamespaceAndNode(ctx context.Context,
 			err := i.sendEvictionRequestForPod(ctx, namespace, timeout, pod)
 			if err != nil {
 				if errors.IsNotFound(err) {
-					slog.Info("Pod already evicted from namespace on node",
+					slog.InfoContext(ctx, "Pod already evicted from namespace on node",
 						"pod", pod.Name,
 						"namespace", pod.Namespace,
 						"node", pod.Spec.NodeName)
 				} else {
-					slog.Error("Failed to evict pod from namespace on node",
+					slog.ErrorContext(ctx, "Failed to evict pod from namespace on node",
 						"pod", pod.Name,
 						"namespace", pod.Namespace,
 						"node", pod.Spec.NodeName,
@@ -484,7 +484,7 @@ func (i *Informers) evictPodsInNamespaceAndNode(ctx context.Context,
 					mu.Unlock()
 				}
 			} else {
-				slog.Info("Pod eviction initiated for namespace on node",
+				slog.InfoContext(ctx, "Pod eviction initiated for namespace on node",
 					"pod", pod.Name,
 					"namespace", pod.Namespace,
 					"node", pod.Spec.NodeName)
@@ -531,7 +531,7 @@ func (i *Informers) UpdateNodeEvent(ctx context.Context, nodeName string, reason
 
 	cachedEvents, err := i.eventInformer.GetIndexer().ByIndex(NodeEventReasonIndex, compositeKey)
 	if err != nil {
-		slog.Error("Failed to query event cache", "error", err)
+		slog.ErrorContext(ctx, "Failed to query event cache", "error", err)
 		return fmt.Errorf("error querying event cache: %w", err)
 	}
 
@@ -551,7 +551,7 @@ func (i *Informers) UpdateNodeEvent(ctx context.Context, nodeName string, reason
 
 			_, err = eventsClient.Update(ctx, eventCopy, metav1.UpdateOptions{})
 			if err != nil {
-				slog.Error("Failed to update event occurrence count", "error", err)
+				slog.ErrorContext(ctx, "Failed to update event occurrence count", "error", err)
 				return fmt.Errorf("error in updating event occurrence count: %w", err)
 			}
 
@@ -587,7 +587,7 @@ func (i *Informers) UpdateNodeEvent(ctx context.Context, nodeName string, reason
 
 	_, err = eventsClient.Create(ctx, newEvent, metav1.CreateOptions{})
 	if err != nil {
-		slog.Error("Failed to create event", "error", err, "node", nodeName, "reason", reason)
+		slog.ErrorContext(ctx, "Failed to create event", "error", err, "node", nodeName, "reason", reason)
 		return fmt.Errorf("error in creating event: %w", err)
 	}
 
@@ -622,7 +622,7 @@ func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string,
 	timeout int, event *model.HealthEventWithStatus, partialDrainEntity *protos.Entity) error {
 	drainTimeout, err := i.getNodeDrainTimeout(timeout, event)
 	if err != nil {
-		slog.Error("Failed to get node drain timeout", "error", err)
+		slog.ErrorContext(ctx, "Failed to get node drain timeout", "error", err)
 		return fmt.Errorf("failed to get node drain timeout: %w", err)
 	}
 
@@ -632,14 +632,14 @@ func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string,
 
 	evicted, remainingPods := i.checkIfPodsPresentInNamespaceAndNode(namespaces, nodeName, partialDrainEntity)
 	if evicted {
-		slog.Info("All pods on node have been deleted", "node", nodeName)
+		slog.InfoContext(ctx, "All pods on node have been deleted", "node", nodeName)
 		metrics.NodeDrainTimeout.WithLabelValues(nodeName).Set(0)
 
 		return nil
 	}
 
 	if timeoutReached {
-		slog.Info("Timeout reached for node, force deleting remaining pods",
+		slog.InfoContext(ctx, "Timeout reached for node, force deleting remaining pods",
 			"node", nodeName,
 			"count", len(remainingPods))
 
@@ -651,7 +651,7 @@ func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string,
 		metrics.NodeDrainTimeout.WithLabelValues(nodeName).Set(0)
 
 		if err := i.forceDeletePods(ctx, remainingPods); err != nil {
-			slog.Error("Failed to force delete pods on node",
+			slog.ErrorContext(ctx, "Failed to force delete pods on node",
 				"node", nodeName,
 				"error", err)
 
@@ -659,7 +659,7 @@ func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string,
 		}
 
 		// After force deleting, requeue to verify pods are gone
-		return fmt.Errorf("force deleted %d pods, requeueing to verify deletion on node %s", len(remainingPods), nodeName)
+		return fmt.Errorf("force deleted %d pods, requeuing to verify deletion on node %s", len(remainingPods), nodeName)
 	}
 
 	metrics.NodeDrainTimeout.WithLabelValues(nodeName).Set(1)
@@ -679,12 +679,12 @@ func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string,
 	reason := "WaitingBeforeForceDelete"
 
 	if err := i.UpdateNodeEvent(ctx, nodeName, reason, message); err != nil {
-		slog.Error("Failed to update node event",
+		slog.ErrorContext(ctx, "Failed to update node event",
 			"node", nodeName,
 			"error", err)
 	}
 
-	slog.Info("Still waiting for pods to finish",
+	slog.InfoContext(ctx, "Still waiting for pods to finish",
 		"pods", podNames,
 		"namespaces", namespaces,
 		"node", nodeName,
@@ -723,7 +723,7 @@ func (i *Informers) forceDeletePods(ctx context.Context, pods []*v1.Pod) error {
 			})
 			if err != nil {
 				if !errors.IsNotFound(err) {
-					slog.Error("Failed to force delete pod in namespace",
+					slog.ErrorContext(ctx, "Failed to force delete pod in namespace",
 						"pod", p.Name,
 						"namespace", p.Namespace,
 						"error", err)
@@ -734,7 +734,7 @@ func (i *Informers) forceDeletePods(ctx context.Context, pods []*v1.Pod) error {
 					mu.Unlock()
 				}
 			} else {
-				slog.Info("Force deleted pod in namespace",
+				slog.InfoContext(ctx, "Force deleted pod in namespace",
 					"pod", p.Name,
 					"namespace", p.Namespace)
 			}
@@ -755,13 +755,13 @@ func (i *Informers) GetNamespacesMatchingPattern(ctx context.Context,
 
 	excludeRegex, err := i.compileExcludePattern(excludePattern)
 	if err != nil {
-		slog.Error("Failed to compile exclude pattern", "error", err)
+		slog.ErrorContext(ctx, "Failed to compile exclude pattern", "error", err)
 		return nil, fmt.Errorf("failed to compile exclude pattern: %w", err)
 	}
 
 	namespaceSet, err := i.extractNamespacesFromPods(objs, includePattern, excludeRegex)
 	if err != nil {
-		slog.Error("Failed to extract namespaces from pods", "error", err)
+		slog.ErrorContext(ctx, "Failed to extract namespaces from pods", "error", err)
 		return nil, fmt.Errorf("failed to extract namespaces from pods: %w", err)
 	}
 
@@ -866,7 +866,7 @@ func (i *Informers) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context,
 	allEvicted, remainingPods := i.checkIfPodsPresentInNamespaceAndNode(namespaces, nodeName, partialDrainEntity)
 
 	if allEvicted {
-		slog.Info("All pods evicted in namespace from node",
+		slog.InfoContext(ctx, "All pods evicted in namespace from node",
 			"namespaces", namespaces,
 			"node", nodeName)
 
@@ -892,13 +892,13 @@ func (i *Informers) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context,
 	}
 
 	if shouldForceDelete {
-		slog.Info("Pods on node exceeded timeout, attempting force deletion",
+		slog.InfoContext(ctx, "Pods on node exceeded timeout, attempting force deletion",
 			"node", nodeName)
 
 		err := i.forceDeletePods(ctx, remainingPods)
 		if err != nil {
 			metrics.ProcessingErrors.WithLabelValues("pods_force_deletion_error", nodeName).Inc()
-			slog.Error("Failed to force delete pods on node",
+			slog.ErrorContext(ctx, "Failed to force delete pods on node",
 				"node", nodeName,
 				"error", err)
 
@@ -907,7 +907,7 @@ func (i *Informers) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context,
 
 		allEvicted, _ = i.checkIfPodsPresentInNamespaceAndNode(namespaces, nodeName, partialDrainEntity)
 		if allEvicted {
-			slog.Info("All pods evicted after force deletion on node",
+			slog.InfoContext(ctx, "All pods evicted after force deletion on node",
 				"node", nodeName)
 		}
 
@@ -919,7 +919,7 @@ func (i *Informers) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context,
 		remainingPodNames = append(remainingPodNames, fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
 	}
 
-	slog.Info("Pods still present on node, will retry",
+	slog.InfoContext(ctx, "Pods still present on node, will retry",
 		"node", nodeName,
 		"pods", remainingPodNames)
 

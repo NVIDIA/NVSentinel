@@ -22,7 +22,7 @@ packages = [{include = "nccl_allreduce"}]
 [tool.poetry.dependencies]
 python = "^3.10"
 grpcio = "^1.74.0"
-protobuf = ">=6.31.1,<7.0.0"
+protobuf = ">=6.31.1,<8.0.0"
 structlog = "^25.1.0"
 # torch is provided by the base image, not installed via poetry
 
@@ -30,7 +30,7 @@ structlog = "^25.1.0"
 black = "^26.3.1"
 pytest = "^9.0.0"
 coverage = "^7.13.2"
-ruff = "^0.11.0"
+ruff = ">=0.11,<0.16"
 
 [build-system]
 requires = ["poetry-core"]
