@@ -16,10 +16,14 @@ package parser
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"strings"
+	"time"
 
 	"github.com/hashicorp/go-retryablehttp"
 
@@ -45,6 +49,46 @@ func NewSidecarParser(endpoint, nodeName, driverVersion string) *SidecarParser {
 		nodeName:      nodeName,
 		driverVersion: driverVersion,
 	}
+}
+
+// WaitUntilReady blocks until the sidecar HTTP endpoint is accepting TCP connections.
+// This is the application-level fallback for Kubernetes < 1.29 where native sidecar
+// containers are not available to guarantee startup ordering.
+func (p *SidecarParser) WaitUntilReady(ctx context.Context, maxRetries int, retryDelay time.Duration) error {
+	host := strings.TrimPrefix(p.url, "http://")
+	host = strings.TrimPrefix(host, "https://")
+
+	if idx := strings.Index(host, "/"); idx != -1 {
+		host = host[:idx]
+	}
+
+	slog.Info("Waiting for XID analyzer sidecar to become ready", "host", host)
+
+	dialer := &net.Dialer{Timeout: 1 * time.Second}
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		conn, err := dialer.DialContext(ctx, "tcp", host)
+		if err == nil {
+			conn.Close()
+			slog.Info("XID analyzer sidecar is ready", "attempt", attempt)
+
+			return nil
+		}
+
+		slog.Warn("XID analyzer sidecar not ready yet",
+			"attempt", attempt,
+			"maxRetries", maxRetries,
+			"error", err,
+		)
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("context cancelled while waiting for sidecar: %w", ctx.Err())
+		case <-time.After(retryDelay):
+		}
+	}
+
+	return fmt.Errorf("XID analyzer sidecar at %s not ready after %d attempts", host, maxRetries)
 }
 
 // Parse sends the message to sidecar service for XID parsing
