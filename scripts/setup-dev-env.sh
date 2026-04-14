@@ -315,18 +315,9 @@ if [[ "${SKIP_GO}" == "false" ]]; then
         fi
     else
         log_warning "Go not found"
-        log_info "Installing Go..."
+        log_info "Installing Go ${GO_VERSION}..."
         if prompt_continue; then
-            if [[ "${OS}" == "darwin" ]]; then
-                if command_exists brew; then
-                    brew install go
-                    log_success "Go installed via Homebrew"
-                else
-                    log_error "Homebrew not found. Please install Go manually or install Homebrew first."
-                fi
-            elif [[ "${OS}" == "linux" ]]; then
-                make install-go-ci
-            fi
+            make install-go-ci
         fi
     fi
     echo ""
@@ -409,6 +400,12 @@ if [[ "${SKIP_PYTHON}" == "false" ]]; then
                 fi
                 pipx install "poetry==${POETRY_VERSION}"
                 pipx inject poetry "poetry-plugin-export==${POETRY_PLUGIN_EXPORT_VERSION}"
+                # Add pipx bin to PATH for this session
+                PIPX_BIN="${HOME}/.local/bin"
+                if [[ ":${PATH}:" != *":${PIPX_BIN}:"* ]]; then
+                    export PATH="${PATH}:${PIPX_BIN}"
+                    log_info "Added ${PIPX_BIN} to PATH for this session"
+                fi
             elif [[ "${OS}" == "linux" ]]; then
                 python3 -m pip install --break-system-packages poetry=="${POETRY_VERSION}" poetry-plugin-export=="${POETRY_PLUGIN_EXPORT_VERSION}" || \
                     python3 -m pip install --user poetry=="${POETRY_VERSION}" poetry-plugin-export=="${POETRY_PLUGIN_EXPORT_VERSION}"
@@ -634,10 +631,10 @@ if [[ "${SKIP_TOOLS}" == "false" ]]; then
         if prompt_continue; then
             if command_exists go; then
                 go install github.com/google/ko@"${KO_VERSION}"
+                log_success "ko installed"
             else
                 log_warning "Go not available — cannot install ko. Install Go first."
             fi
-            log_success "ko installed"
         fi
     fi
 
@@ -697,10 +694,10 @@ if [[ "${SKIP_TOOLS}" == "false" ]] && command_exists go; then
     # Ensure GOPATH/bin is on PATH
     GOPATH_BIN="$(go env GOPATH)/bin"
     if [[ ":${PATH}:" != *":${GOPATH_BIN}:"* ]]; then
-        export PATH="${PATH}:${GOPATH_BIN}"
+        export PATH="${GOPATH_BIN}:${PATH}"
         log_warning "Added ${GOPATH_BIN} to PATH for this session"
         log_info "To make this permanent, add to your shell profile:"
-        log_info "  echo 'export PATH=\"\$PATH:\$(go env GOPATH)/bin\"' >> ~/.zshrc"
+        log_info "  echo 'export PATH=\"\$(go env GOPATH)/bin:\$PATH\"' >> ~/.zshrc"
     fi
 
     echo ""
