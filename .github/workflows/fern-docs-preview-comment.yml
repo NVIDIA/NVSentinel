@@ -37,8 +37,8 @@ jobs:
       - name: Read PR metadata
         id: metadata
         run: |
-          echo "pr_number=$(cat .preview-metadata/pr_number)" >> "$GITHUB_OUTPUT"
-          echo "head_ref=$(cat .preview-metadata/head_ref)" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$(cat preview-metadata/pr_number)" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$(cat preview-metadata/head_ref)" >> "$GITHUB_OUTPUT"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
