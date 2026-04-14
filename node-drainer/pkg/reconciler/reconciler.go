@@ -421,14 +421,10 @@ func (r *Reconciler) ProcessEventGeneric(ctx context.Context,
 
 	err = r.executeAction(ctx, actionResult, healthEventWithStatus, event, database, eventID)
 	if err != nil {
-		_, span := tracing.StartSpan(ctx, "node_drainer.execute_action")
-		defer span.End()
+		if !isRequeueSignal(err) {
+			_, span := tracing.StartSpan(ctx, "node_drainer.execute_action")
+			defer span.End()
 
-		if isRequeueSignal(err) {
-			span.SetAttributes(
-				attribute.String("node_drainer.requeue_signal.message", err.Error()),
-			)
-		} else {
 			tracing.RecordError(span, err)
 			span.SetAttributes(
 				attribute.String("node_drainer.error.type", "execute_action_error"),
@@ -497,12 +493,6 @@ func (r *Reconciler) updateDrainSessionTracing(
 	}
 
 	r.setDrainScope(ds, action)
-
-	traceID := tracing.TraceIDFromMetadata(healthEvent.HealthEvent.GetMetadata())
-	parentSpanID := tracing.ParentSpanID(
-		healthEvent.HealthEventStatus.SpanIds, tracing.ServiceFaultQuarantine)
-
-	r.endPhaseMarkers(ctx, ds, action.Action, traceID, parentSpanID)
 }
 
 func (r *Reconciler) setDrainScope(ds *queue.DrainSession, action *evaluator.DrainActionResult) {
@@ -521,35 +511,6 @@ func (r *Reconciler) setDrainScope(ds *queue.DrainSession, action *evaluator.Dra
 	}
 
 	ds.ScopeSet = true
-}
-
-func (r *Reconciler) endPhaseMarkers(
-	ctx context.Context, ds *queue.DrainSession, currentAction evaluator.DrainAction,
-	traceID, parentSpanID string,
-) {
-	if currentAction != evaluator.ActionEvictImmediate && ds.ImmediateEvictionStarted {
-		_, endSpan := tracing.StartSpanWithLinkFromTraceContext(
-			ctx, traceID, parentSpanID, "node_drainer.phase.immediate_eviction.end")
-		endSpan.End()
-
-		ds.ImmediateEvictionStarted = false
-	}
-
-	if currentAction != evaluator.ActionEvictWithTimeout && ds.DeleteAfterTimeoutStarted {
-		_, endSpan := tracing.StartSpanWithLinkFromTraceContext(
-			ctx, traceID, parentSpanID, "node_drainer.phase.delete_after_timeout.end")
-		endSpan.End()
-
-		ds.DeleteAfterTimeoutStarted = false
-	}
-
-	if currentAction != evaluator.ActionCheckCompletion && ds.AllowCompletionStarted {
-		_, endSpan := tracing.StartSpanWithLinkFromTraceContext(
-			ctx, traceID, parentSpanID, "node_drainer.phase.allow_completion.end")
-		endSpan.End()
-
-		ds.AllowCompletionStarted = false
-	}
 }
 
 func (r *Reconciler) handleMarkAlreadyDrained(ctx context.Context, eventID, nodeName string,
@@ -612,20 +573,6 @@ func (r *Reconciler) executeImmediateEviction(ctx context.Context, action *evalu
 	healthEvent model.HealthEventWithStatus, partialDrainEntity *protos.Entity) error {
 	nodeName := healthEvent.HealthEvent.NodeName
 
-	if ds := queue.DrainSessionFromContext(ctx); ds != nil && !ds.ImmediateEvictionStarted {
-		traceID := tracing.TraceIDFromMetadata(healthEvent.HealthEvent.GetMetadata())
-		parentSpanID := tracing.ParentSpanID(
-			healthEvent.HealthEventStatus.SpanIds, tracing.ServiceFaultQuarantine)
-
-		if traceID != "" {
-			_, startSpan := tracing.StartSpanWithLinkFromTraceContext(
-				ctx, traceID, parentSpanID, "node_drainer.phase.immediate_eviction.start")
-			startSpan.End()
-
-			ds.ImmediateEvictionStarted = true
-		}
-	}
-
 	for _, namespace := range action.Namespaces {
 		if err := r.informers.EvictAllPodsInImmediateMode(ctx, namespace, nodeName, action.Timeout,
 			partialDrainEntity); err != nil {
@@ -647,20 +594,6 @@ func (r *Reconciler) executeImmediateEviction(ctx context.Context, action *evalu
 
 func (r *Reconciler) executeTimeoutEviction(ctx context.Context, action *evaluator.DrainActionResult,
 	healthEvent model.HealthEventWithStatus, eventID string, partialDrainEntity *protos.Entity) error {
-	if ds := queue.DrainSessionFromContext(ctx); ds != nil && !ds.DeleteAfterTimeoutStarted {
-		traceID := tracing.TraceIDFromMetadata(healthEvent.HealthEvent.GetMetadata())
-		parentSpanID := tracing.ParentSpanID(
-			healthEvent.HealthEventStatus.SpanIds, tracing.ServiceFaultQuarantine)
-
-		if traceID != "" {
-			_, startSpan := tracing.StartSpanWithLinkFromTraceContext(
-				ctx, traceID, parentSpanID, "node_drainer.phase.delete_after_timeout.start")
-			startSpan.End()
-
-			ds.DeleteAfterTimeoutStarted = true
-		}
-	}
-
 	span := tracing.SpanFromContext(ctx)
 	nodeName := healthEvent.HealthEvent.NodeName
 	timeoutMinutes := int(action.Timeout.Minutes())
@@ -713,20 +646,6 @@ func (r *Reconciler) isTimeoutEvictionCancelled(ctx context.Context, eventID, no
 
 func (r *Reconciler) executeCheckCompletion(ctx context.Context, action *evaluator.DrainActionResult,
 	healthEvent model.HealthEventWithStatus, partialDrainEntity *protos.Entity) error {
-	if ds := queue.DrainSessionFromContext(ctx); ds != nil && !ds.AllowCompletionStarted {
-		traceID := tracing.TraceIDFromMetadata(healthEvent.HealthEvent.GetMetadata())
-		parentSpanID := tracing.ParentSpanID(
-			healthEvent.HealthEventStatus.SpanIds, tracing.ServiceFaultQuarantine)
-
-		if traceID != "" {
-			_, startSpan := tracing.StartSpanWithLinkFromTraceContext(
-				ctx, traceID, parentSpanID, "node_drainer.phase.allow_completion.start")
-			startSpan.End()
-
-			ds.AllowCompletionStarted = true
-		}
-	}
-
 	span := tracing.SpanFromContext(ctx)
 	nodeName := healthEvent.HealthEvent.NodeName
 

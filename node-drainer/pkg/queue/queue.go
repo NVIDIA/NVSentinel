@@ -94,13 +94,6 @@ func (m *eventQueueManager) Shutdown() {
 type DrainSession struct {
 	DrainSessionSpan trace.Span
 
-	// Per-phase flags — false means "not yet entered".
-	// Set to true when the reconciler first enters a phase (emitting a .start marker span).
-	// Reset to false when the phase ends (emitting a .end marker span).
-	ImmediateEvictionStarted  bool
-	DeleteAfterTimeoutStarted bool
-	AllowCompletionStarted    bool
-
 	ScopeSet bool
 }
 
