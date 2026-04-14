@@ -439,7 +439,6 @@ func (e *NodeDrainEvaluator) evaluateCustomDrain(ctx context.Context, healthEven
 
 		span.SetAttributes(
 			attribute.String("node_drainer.custom_cr.name", crName),
-			attribute.String("node_drainer.custom_cr.status", "in_progress"),
 		)
 
 		return &DrainActionResult{

@@ -253,10 +253,6 @@ func (r *Reconciler) setInitialStatusAndEnqueue(ctx context.Context, document ma
 	ctx, span := tracing.StartSpan(ctx, "node_drainer.set_initial_status_and_enqueue")
 	defer span.End()
 
-	span.SetAttributes(
-		attribute.String("node_drainer.user_pods_eviction_status.status", string(model.StatusInProgress)),
-	)
-
 	// Set initial status to StatusInProgress (idempotent - only updates if not already set)
 	filter := map[string]any{
 		"_id": documentID,
@@ -517,8 +513,6 @@ func (r *Reconciler) setDrainScope(ds *queue.DrainSession, action *evaluator.Dra
 	if action.PartialDrainEntity != nil {
 		ds.DrainSessionSpan.SetAttributes(
 			attribute.String("node_drainer.drain.scope", "partial"),
-			attribute.String("node_drainer.partial_drain.entity_type", action.PartialDrainEntity.EntityType),
-			attribute.String("node_drainer.partial_drain.entity_value", action.PartialDrainEntity.EntityValue),
 		)
 	} else {
 		ds.DrainSessionSpan.SetAttributes(
@@ -1271,12 +1265,14 @@ func (r *Reconciler) deleteCustomDrainCRIfEnabled(ctx context.Context, nodeName 
 			"node", nodeName,
 			"crName", crName,
 			"error", err)
-		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("node_drainer.error.type", "custom_drain_cr_deletion_error"),
+			attribute.String("node_drainer.error.message", err.Error()),
+		)
 	} else {
 		slog.InfoContext(ctx, "Deleted custom drain CR",
 			"node", nodeName,
 			"crName", crName)
-		span.SetAttributes(attribute.Bool("node_drainer.custom_cr.deleted", true))
 	}
 }
 
