@@ -21,7 +21,7 @@ ARG NCCL_TESTS_VERSION=v2.13.11
 # =============================================================================
 # Build stage: Compile Go binary
 # =============================================================================
-FROM public.ecr.aws/docker/library/golang:1.25-bookworm AS go-builder
+FROM public.ecr.aws/docker/library/golang:1.26-bookworm AS go-builder
 
 ARG VERSION="dev"
 ARG GIT_COMMIT="none"
