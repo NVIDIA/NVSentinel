@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
@@ -177,7 +178,7 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, 
 		return crName, nil
 	}
 
-	recommendedActionName := healthEvent.RecommendedAction.String()
+	recommendedActionName := model.GetEffectiveActionName(healthEvent)
 
 	maintenanceResource, selectedTemplate, actionKey, err :=
 		c.selectRemediationActionAndTemplate(recommendedActionName, healthEvent.NodeName)

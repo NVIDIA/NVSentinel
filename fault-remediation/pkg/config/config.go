@@ -191,8 +191,11 @@ func validateResourceImpactedEntityScope(actionName string, resource Maintenance
 		return nil
 	}
 
-	if actionName != protos.RecommendedAction_COMPONENT_RESET.String() {
-		return fmt.Errorf("action '%s' cannot have an ImpactedEntityScope defined", actionName)
+	_, isBuiltinAction := protos.RecommendedAction_value[actionName]
+	if isBuiltinAction && actionName != protos.RecommendedAction_COMPONENT_RESET.String() {
+		return fmt.Errorf(
+			"built-in action '%s' cannot have an ImpactedEntityScope; "+
+				"only COMPONENT_RESET and custom actions support this", actionName)
 	}
 
 	if _, ok := model.EntityTypeToResourceNames[resource.ImpactedEntityScope]; !ok {
