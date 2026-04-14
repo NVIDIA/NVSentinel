@@ -151,10 +151,11 @@ func (r *FaultRemediationReconciler) shouldSkipEvent(ctx context.Context,
 	}
 
 	// Unsupported action detected
+	actionName := model.GetEffectiveActionName(healthEventWithStatus.HealthEvent)
 	slog.Info("Unsupported recommended action for node",
-		"action", action.String(),
+		"action", actionName,
 		"node", nodeName)
-	metrics.TotalUnsupportedRemediationActions.WithLabelValues(action.String(), nodeName).Inc()
+	metrics.TotalUnsupportedRemediationActions.WithLabelValues(actionName, nodeName).Inc()
 
 	_, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 		healthEventWithStatus.HealthEvent.NodeName,

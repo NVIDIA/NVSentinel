@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM nvcr.io/nvidia/cuda:13.2.0-runtime-ubuntu24.04
-
-COPY gpu-reset/gpu_reset.sh /usr/local/bin/gpu_reset.sh
-
-RUN chmod +x /usr/local/bin/gpu_reset.sh
-
-ENTRYPOINT ["/usr/local/bin/gpu_reset.sh"]
+apiVersion: {{.ApiGroup}}/{{.Version}}
+kind: {{.Kind}}
+metadata:
+  name: custom-maintenance-{{.NodeName}}-{{.HealthEventID}}
+  labels:
+    nvsentinel.nvidia.com/custom-action: "true"
+spec:
+  nodeName: {{.NodeName}}

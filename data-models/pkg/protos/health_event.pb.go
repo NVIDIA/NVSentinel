@@ -103,6 +103,7 @@ const (
 	RecommendedAction_RESTART_BM      RecommendedAction = 24
 	RecommendedAction_REPLACE_VM      RecommendedAction = 25
 	RecommendedAction_RUN_DCGMEUD     RecommendedAction = 26
+	RecommendedAction_CUSTOM          RecommendedAction = 27
 	RecommendedAction_UNKNOWN         RecommendedAction = 99
 )
 
@@ -117,6 +118,7 @@ var (
 		24: "RESTART_BM",
 		25: "REPLACE_VM",
 		26: "RUN_DCGMEUD",
+		27: "CUSTOM",
 		99: "UNKNOWN",
 	}
 	RecommendedAction_value = map[string]int32{
@@ -128,6 +130,7 @@ var (
 		"RESTART_BM":      24,
 		"REPLACE_VM":      25,
 		"RUN_DCGMEUD":     26,
+		"CUSTOM":          27,
 		"UNKNOWN":         99,
 	}
 )
@@ -471,26 +474,27 @@ func (x *Entity) GetEntityValue() string {
 }
 
 type HealthEvent struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	Version             uint32                 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
-	Agent               string                 `protobuf:"bytes,2,opt,name=agent,proto3" json:"agent,omitempty"`
-	ComponentClass      string                 `protobuf:"bytes,3,opt,name=componentClass,proto3" json:"componentClass,omitempty"`
-	CheckName           string                 `protobuf:"bytes,4,opt,name=checkName,proto3" json:"checkName,omitempty"`
-	IsFatal             bool                   `protobuf:"varint,5,opt,name=isFatal,proto3" json:"isFatal,omitempty"`
-	IsHealthy           bool                   `protobuf:"varint,6,opt,name=isHealthy,proto3" json:"isHealthy,omitempty"`
-	Message             string                 `protobuf:"bytes,7,opt,name=message,proto3" json:"message,omitempty"`
-	RecommendedAction   RecommendedAction      `protobuf:"varint,8,opt,name=recommendedAction,proto3,enum=datamodels.RecommendedAction" json:"recommendedAction,omitempty"`
-	ErrorCode           []string               `protobuf:"bytes,9,rep,name=errorCode,proto3" json:"errorCode,omitempty"`
-	EntitiesImpacted    []*Entity              `protobuf:"bytes,10,rep,name=entitiesImpacted,proto3" json:"entitiesImpacted,omitempty"`
-	Metadata            map[string]string      `protobuf:"bytes,11,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	GeneratedTimestamp  *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=generatedTimestamp,proto3" json:"generatedTimestamp,omitempty"`
-	NodeName            string                 `protobuf:"bytes,13,opt,name=nodeName,proto3" json:"nodeName,omitempty"`
-	QuarantineOverrides *BehaviourOverrides    `protobuf:"bytes,14,opt,name=quarantineOverrides,proto3" json:"quarantineOverrides,omitempty"`
-	DrainOverrides      *BehaviourOverrides    `protobuf:"bytes,15,opt,name=drainOverrides,proto3" json:"drainOverrides,omitempty"`
-	ProcessingStrategy  ProcessingStrategy     `protobuf:"varint,16,opt,name=processingStrategy,proto3,enum=datamodels.ProcessingStrategy" json:"processingStrategy,omitempty"`
-	Id                  string                 `protobuf:"bytes,17,opt,name=id,proto3" json:"id,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	state                   protoimpl.MessageState `protogen:"open.v1"`
+	Version                 uint32                 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
+	Agent                   string                 `protobuf:"bytes,2,opt,name=agent,proto3" json:"agent,omitempty"`
+	ComponentClass          string                 `protobuf:"bytes,3,opt,name=componentClass,proto3" json:"componentClass,omitempty"`
+	CheckName               string                 `protobuf:"bytes,4,opt,name=checkName,proto3" json:"checkName,omitempty"`
+	IsFatal                 bool                   `protobuf:"varint,5,opt,name=isFatal,proto3" json:"isFatal,omitempty"`
+	IsHealthy               bool                   `protobuf:"varint,6,opt,name=isHealthy,proto3" json:"isHealthy,omitempty"`
+	Message                 string                 `protobuf:"bytes,7,opt,name=message,proto3" json:"message,omitempty"`
+	RecommendedAction       RecommendedAction      `protobuf:"varint,8,opt,name=recommendedAction,proto3,enum=datamodels.RecommendedAction" json:"recommendedAction,omitempty"`
+	ErrorCode               []string               `protobuf:"bytes,9,rep,name=errorCode,proto3" json:"errorCode,omitempty"`
+	EntitiesImpacted        []*Entity              `protobuf:"bytes,10,rep,name=entitiesImpacted,proto3" json:"entitiesImpacted,omitempty"`
+	Metadata                map[string]string      `protobuf:"bytes,11,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	GeneratedTimestamp      *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=generatedTimestamp,proto3" json:"generatedTimestamp,omitempty"`
+	NodeName                string                 `protobuf:"bytes,13,opt,name=nodeName,proto3" json:"nodeName,omitempty"`
+	QuarantineOverrides     *BehaviourOverrides    `protobuf:"bytes,14,opt,name=quarantineOverrides,proto3" json:"quarantineOverrides,omitempty"`
+	DrainOverrides          *BehaviourOverrides    `protobuf:"bytes,15,opt,name=drainOverrides,proto3" json:"drainOverrides,omitempty"`
+	ProcessingStrategy      ProcessingStrategy     `protobuf:"varint,16,opt,name=processingStrategy,proto3,enum=datamodels.ProcessingStrategy" json:"processingStrategy,omitempty"`
+	Id                      string                 `protobuf:"bytes,17,opt,name=id,proto3" json:"id,omitempty"`
+	CustomRecommendedAction string                 `protobuf:"bytes,18,opt,name=customRecommendedAction,proto3" json:"customRecommendedAction,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *HealthEvent) Reset() {
@@ -642,6 +646,13 @@ func (x *HealthEvent) GetId() string {
 	return ""
 }
 
+func (x *HealthEvent) GetCustomRecommendedAction() string {
+	if x != nil {
+		return x.CustomRecommendedAction
+	}
+	return ""
+}
+
 type BehaviourOverrides struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Force         bool                   `protobuf:"varint,1,opt,name=force,proto3" json:"force,omitempty"`
@@ -779,7 +790,7 @@ const file_health_event_proto_rawDesc = "" +
 	"\n" +
 	"entityType\x18\x01 \x01(\tR\n" +
 	"entityType\x12 \n" +
-	"\ventityValue\x18\x02 \x01(\tR\ventityValue\"\xe2\x06\n" +
+	"\ventityValue\x18\x02 \x01(\tR\ventityValue\"\x9c\a\n" +
 	"\vHealthEvent\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\rR\aversion\x12\x14\n" +
 	"\x05agent\x18\x02 \x01(\tR\x05agent\x12&\n" +
@@ -798,7 +809,8 @@ const file_health_event_proto_rawDesc = "" +
 	"\x13quarantineOverrides\x18\x0e \x01(\v2\x1e.datamodels.BehaviourOverridesR\x13quarantineOverrides\x12F\n" +
 	"\x0edrainOverrides\x18\x0f \x01(\v2\x1e.datamodels.BehaviourOverridesR\x0edrainOverrides\x12N\n" +
 	"\x12processingStrategy\x18\x10 \x01(\x0e2\x1e.datamodels.ProcessingStrategyR\x12processingStrategy\x12\x0e\n" +
-	"\x02id\x18\x11 \x01(\tR\x02id\x1a;\n" +
+	"\x02id\x18\x11 \x01(\tR\x02id\x128\n" +
+	"\x17customRecommendedAction\x18\x12 \x01(\tR\x17customRecommendedAction\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\">\n" +
@@ -813,7 +825,7 @@ const file_health_event_proto_rawDesc = "" +
 	"\vUNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13EXECUTE_REMEDIATION\x10\x01\x12\x0e\n" +
 	"\n" +
-	"STORE_ONLY\x10\x02*\xa8\x01\n" +
+	"STORE_ONLY\x10\x02*\xb4\x01\n" +
 	"\x11RecommendedAction\x12\b\n" +
 	"\x04NONE\x10\x00\x12\x13\n" +
 	"\x0fCOMPONENT_RESET\x10\x02\x12\x13\n" +
@@ -825,7 +837,9 @@ const file_health_event_proto_rawDesc = "" +
 	"RESTART_BM\x10\x18\x12\x0e\n" +
 	"\n" +
 	"REPLACE_VM\x10\x19\x12\x0f\n" +
-	"\vRUN_DCGMEUD\x10\x1a\x12\v\n" +
+	"\vRUN_DCGMEUD\x10\x1a\x12\n" +
+	"\n" +
+	"\x06CUSTOM\x10\x1b\x12\v\n" +
 	"\aUNKNOWN\x10c2`\n" +
 	"\x11PlatformConnector\x12K\n" +
 	"\x15HealthEventOccurredV1\x12\x18.datamodels.HealthEvents\x1a\x16.google.protobuf.Empty\"\x00B5Z3github.com/nvidia/nvsentinel/data-models/pkg/protosb\x06proto3"
