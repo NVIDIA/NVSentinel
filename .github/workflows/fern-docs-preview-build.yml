@@ -55,10 +55,10 @@ jobs:
         run: |
           PR_NUMBER="${GITHUB_REF#refs/heads/pull-request/}"
           HEAD_REF="${GITHUB_REF#refs/heads/}"
-          mkdir -p .preview-metadata
-          echo "$PR_NUMBER" > .preview-metadata/pr_number
-          echo "$HEAD_REF" > .preview-metadata/head_ref
-          git diff --name-only "origin/main...HEAD" -- '*.md' > .preview-metadata/changed_mdx_files 2>/dev/null || true
+          mkdir -p preview-metadata
+          echo "$PR_NUMBER" > preview-metadata/pr_number
+          echo "$HEAD_REF" > preview-metadata/head_ref
+          git diff --name-only "origin/main...HEAD" -- '*.md' > preview-metadata/changed_md_files 2>/dev/null || true
 
       - name: Upload fern sources and metadata
         uses: actions/upload-artifact@v7
@@ -67,5 +67,5 @@ jobs:
           path: |
             fern/
             docs/
-            .preview-metadata/
+            preview-metadata/
           retention-days: 1
