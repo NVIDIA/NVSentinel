@@ -572,8 +572,8 @@ func (r *FaultRemediationReconciler) runLogCollectorAndRemediate(
 	}
 
 	crName, performRemediationErr := r.performRemediation(ctx, healthEventWithStatus, groupConfig)
-	nodeRemediatedStatus := performRemediationErr == nil
 
+	nodeRemediatedStatus := performRemediationErr == nil
 	if performRemediationErr != nil {
 		span.SetAttributes(
 			attribute.String("fault_remediation.status", "failed"),
