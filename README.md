@@ -107,21 +107,39 @@ See NVSentinel in action — click any thumbnail to watch:
 
 <table>
 <tr>
-<td align="center">
-<a href="https://youtu.be/6HHYMF-YfqY"><img src="https://img.youtube.com/vi/6HHYMF-YfqY/mqdefault.jpg" alt="End-to-End" width="240"/><br/><b>End-to-End</b></a>
+<td align="center" width="33%">
+<a href="https://youtu.be/6HHYMF-YfqY">
+<img src="https://img.youtube.com/vi/6HHYMF-YfqY/hqdefault.jpg" alt="End-to-End" width="300"/>
+<br/><b>End-to-End</b>
+</a>
 </td>
-<td align="center">
-<a href="https://youtu.be/0qmrHUmxNPQ"><img src="https://img.youtube.com/vi/0qmrHUmxNPQ/mqdefault.jpg" alt="Custom Health Monitors" width="240"/><br/><b>Custom Health Monitors</b></a>
+<td align="center" width="33%">
+<a href="https://youtu.be/0qmrHUmxNPQ">
+<img src="https://img.youtube.com/vi/0qmrHUmxNPQ/hqdefault.jpg" alt="Custom Health Monitors" width="300"/>
+<br/><b>Custom Health Monitors</b>
+</a>
 </td>
-<td align="center">
-<a href="https://youtu.be/G1j4NV5IMkY"><img src="https://img.youtube.com/vi/G1j4NV5IMkY/mqdefault.jpg" alt="Custom Drain Plugins" width="240"/><br/><b>Custom Drain Plugins</b></a>
+<td align="center" width="33%">
+<a href="https://youtu.be/G1j4NV5IMkY">
+<img src="https://img.youtube.com/vi/G1j4NV5IMkY/hqdefault.jpg" alt="Custom Drain Plugins" width="300"/>
+<br/><b>Custom Drain Plugins</b>
+</a>
 </td>
-<td align="center">
-<a href="https://youtu.be/VVAtON7ERHQ"><img src="https://img.youtube.com/vi/VVAtON7ERHQ/mqdefault.jpg" alt="Extensible Remediation" width="240"/><br/><b>Extensible Remediation</b></a>
+</tr>
+<tr>
+<td align="center" width="33%">
+<a href="https://youtu.be/VVAtON7ERHQ">
+<img src="https://img.youtube.com/vi/VVAtON7ERHQ/hqdefault.jpg" alt="Extensible Remediation" width="300"/>
+<br/><b>Extensible Remediation</b>
+</a>
 </td>
-<td align="center">
-<a href="https://youtu.be/kwWnC0SEFEI"><img src="https://img.youtube.com/vi/kwWnC0SEFEI/mqdefault.jpg" alt="Health Events Analyzer" width="240"/><br/><b>Health Events Analyzer</b></a>
+<td align="center" width="33%">
+<a href="https://youtu.be/kwWnC0SEFEI">
+<img src="https://img.youtube.com/vi/kwWnC0SEFEI/hqdefault.jpg" alt="Health Events Analyzer" width="300"/>
+<br/><b>Health Events Analyzer</b>
+</a>
 </td>
+<td></td>
 </tr>
 </table>
 
