@@ -178,6 +178,12 @@ spec:
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+            {{- if .Values.global.tracing.enabled }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.global.tracing.endpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: {{ .Values.global.tracing.insecure | quote }}
+            {{- end }}
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           {{- if or .Values.global.auditLogging.enabled .Values.tls.enabled (and (eq (.Values.csp.provider | default "kind") "nebius") .Values.csp.nebius.serviceAccountKeySecret) }}

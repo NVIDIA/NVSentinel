@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -46,6 +47,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
 	"github.com/nvidia/nvsentinel/janitor/pkg/controller"
@@ -91,19 +93,33 @@ type serverSetup struct {
 }
 
 func main() {
-	logger.SetDefaultStructuredLogger("janitor", version)
+	logger.SetDefaultStructuredLoggerWithTraceCorrelation("janitor", version)
 	slog.Info("Starting janitor", "version", version, "commit", commit, "date", date)
 
 	if err := auditlogger.InitAuditLogger("janitor"); err != nil {
 		slog.Warn("Failed to initialize audit logger", "error", err)
 	}
 
+	if err := tracing.InitTracing("janitor"); err != nil {
+		slog.Warn("Failed to initialize tracing", "error", err)
+	}
+
 	slogHandler := slog.Default().Handler()
 	logrLogger := logr.FromSlogHandler(slogHandler)
 	ctrllog.SetLogger(logrLogger)
 
-	if err := run(); err != nil {
-		slog.Error("Application encountered a fatal error", "error", err)
+	runErr := run()
+
+	tracingCtx, tracingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+	if err := tracing.ShutdownTracing(tracingCtx); err != nil {
+		slog.Warn("Failed to shutdown tracing", "error", err)
+	}
+
+	tracingCancel()
+
+	if runErr != nil {
+		slog.Error("Application encountered a fatal error", "error", runErr)
 
 		if closeErr := auditlogger.CloseAuditLogger(); closeErr != nil {
 			slog.Warn("Failed to close audit logger", "error", closeErr)

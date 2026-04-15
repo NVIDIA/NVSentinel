@@ -78,7 +78,7 @@ func (c *Client) SendTerminateSignal(
 	containerName := parts[len(parts)-1]
 	clusterName := parts[3]
 
-	slog.Info("Attempting to terminate node", "node", node.Name, "container", containerName)
+	slog.InfoContext(ctx, "Attempting to terminate node", "node", node.Name, "container", containerName)
 
 	// Create a timeout context for docker operations
 	dockerCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -116,18 +116,18 @@ func (c *Client) SendTerminateSignal(
 	}
 
 	if !found {
-		slog.Info("Container not found, assuming already deleted", "container", containerName)
+		slog.InfoContext(ctx, "Container not found, assuming already deleted", "container", containerName)
 
 		return model.TerminateNodeRequestRef(""), nil
 	}
 
-	slog.Info("Found container, attempting deletion", "container", containerName)
+	slog.InfoContext(ctx, "Found container, attempting deletion", "container", containerName)
 
 	if err := c.deleteAndVerifyContainer(ctx, dockerCtx, containerName); err != nil {
 		return "", err
 	}
 
-	slog.Info("Successfully deleted container", "container", containerName)
+	slog.InfoContext(ctx, "Successfully deleted container", "container", containerName)
 
 	return model.TerminateNodeRequestRef(""), nil
 }
