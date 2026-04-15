@@ -100,7 +100,7 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		ctx, span := tracing.StartSpan(sessionCtx, "janitor.terminatenode.reconcile")
 		defer span.End()
 
-		result, err := r.reconcileHelper(ctx, &terminateNode, traceID, spanID)
+		result, err := r.reconcileHelper(ctx, &terminateNode)
 		// We will always re-queue the object and check if Unlock is needed on the next reconcile rather than
 		// re-fetch the object or require reconcileHelper to specify it completed reconciling. If the controller
 		// forces a re-queue by returning an error or setting a RequeueAfter, we will respect that re-queue behavior,
@@ -162,7 +162,7 @@ func (r *TerminateNodeReconciler) endTerminateSession(crKey string) {
 //
 //nolint:gocognit,cyclop,gocyclo // Business logic kept in one method for readability
 func (r *TerminateNodeReconciler) reconcileHelper(
-	ctx context.Context, terminateNode *janitordgxcnvidiacomv1alpha1.TerminateNode, traceID, spanID string,
+	ctx context.Context, terminateNode *janitordgxcnvidiacomv1alpha1.TerminateNode,
 ) (ctrl.Result, error) {
 	// Take a deep copy to compare against at the end
 	originalTerminateNode := terminateNode.DeepCopy()
@@ -271,16 +271,6 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 			metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusSucceeded, node.Name)
 			metrics.GlobalMetrics.RecordActionMTTR(metrics.ActionTypeTerminate, time.Since(terminateNode.CreationTimestamp.Time))
 
-			if span := tracing.SpanFromContext(ctx); span != nil {
-				span.SetAttributes(
-					attribute.String("janitor.terminatenode.status", "succeeded"),
-					attribute.Bool("janitor.terminatenode.node_terminated", true),
-					attribute.Bool("janitor.terminatenode.node_deleted", true),
-					attribute.Float64("janitor.terminatenode.duration_seconds",
-						time.Since(terminateNode.CreationTimestamp.Time).Seconds()),
-				)
-			}
-
 			r.endTerminateSession(crKey)
 
 			result = ctrl.Result{} // Don't requeue on success
@@ -298,16 +288,6 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 			})
 
 			metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusFailed, node.Name)
-
-			if span := tracing.SpanFromContext(ctx); span != nil {
-				span.SetAttributes(
-					attribute.String("janitor.terminatenode.status", "failed"),
-					attribute.String("janitor.error.type", "timeout"),
-					attribute.String("janitor.error.message", "Node failed to transition to not ready state after timeout"),
-					attribute.Float64("janitor.terminatenode.duration_seconds",
-						time.Since(terminateNode.CreationTimestamp.Time).Seconds()),
-				)
-			}
 
 			r.endTerminateSession(crKey)
 

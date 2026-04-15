@@ -28,7 +28,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/go-logr/logr"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -76,15 +75,13 @@ func (s *janitorProviderServer) SendRebootSignal(
 			span.End()
 		}
 	}()
-	start := time.Now()
-	span.SetAttributes(
-		attribute.String("janitor_provider.reboot.node", req.NodeName),
-	)
+
 	slog.InfoContext(ctx, "Sending reboot signal", "node", req.NodeName)
+
 	node, err := s.k8sClient.CoreV1().Nodes().Get(ctx, req.NodeName, metav1.GetOptions{})
+
 	if err != nil {
 		span.SetAttributes(
-			attribute.Bool("janitor_provider.reboot.sent", false),
 			attribute.String("janitor_provider.error.type", "grpc_error"),
 			attribute.String("janitor_provider.error.message", err.Error()),
 		)
@@ -95,18 +92,15 @@ func (s *janitorProviderServer) SendRebootSignal(
 	requestID, err := s.cspClient.SendRebootSignal(ctx, *node)
 	if err != nil {
 		span.SetAttributes(
-			attribute.Bool("janitor_provider.reboot.sent", false),
 			attribute.String("janitor_provider.error.type", "csp_api_error"),
 			attribute.String("janitor_provider.error.message", err.Error()),
 		)
 		tracing.RecordError(span, err)
 		return nil, status.Errorf(codes.Internal, "failed to send reboot signal: %v", err)
 	}
-	durationMs := time.Since(start).Milliseconds()
+
 	span.SetAttributes(
-		attribute.Bool("janitor_provider.reboot.sent", true),
 		attribute.String("janitor_provider.reboot.request_ref", string(requestID)),
-		attribute.Int64("janitor_provider.reboot.duration_ms", durationMs),
 	)
 
 	return &cspv1alpha1.SendRebootSignalResponse{
@@ -121,10 +115,6 @@ func (s *janitorProviderServer) IsNodeReady(ctx context.Context, req *cspv1alpha
 			span.End()
 		}
 	}()
-	span.SetAttributes(
-		attribute.String("janitor_provider.reboot.node", req.NodeName),
-		attribute.String("janitor_provider.reboot.request_ref", req.RequestId),
-	)
 
 	slog.InfoContext(ctx, "Checking if node is ready", "node", req.NodeName)
 	node, err := s.k8sClient.CoreV1().Nodes().Get(ctx, req.NodeName, metav1.GetOptions{})
@@ -155,18 +145,12 @@ func (s *janitorProviderServer) IsNodeReady(ctx context.Context, req *cspv1alpha
 
 func (s *janitorProviderServer) SendTerminateSignal(ctx context.Context, req *cspv1alpha1.SendTerminateSignalRequest) (*cspv1alpha1.SendTerminateSignalResponse, error) {
 	ctx, span := tracing.StartSpan(ctx, "janitor_provider.SendTerminateSignal")
-	defer func() {
-		if span != nil {
-			span.End()
-		}
-	}()
-	span.SetAttributes(attribute.String("janitor_provider.terminate.node", req.NodeName))
+	defer span.End()
 
 	slog.InfoContext(ctx, "Sending terminate signal", "node", req.NodeName)
 	node, err := s.k8sClient.CoreV1().Nodes().Get(ctx, req.NodeName, metav1.GetOptions{})
 	if err != nil {
 		span.SetAttributes(
-			attribute.Bool("janitor_provider.terminate.sent", false),
 			attribute.String("janitor_provider.error.type", "grpc_error"),
 			attribute.String("janitor_provider.error.message", err.Error()),
 		)
@@ -177,7 +161,6 @@ func (s *janitorProviderServer) SendTerminateSignal(ctx context.Context, req *cs
 	requestID, err := s.cspClient.SendTerminateSignal(ctx, *node)
 	if err != nil {
 		span.SetAttributes(
-			attribute.Bool("janitor_provider.terminate.sent", false),
 			attribute.String("janitor_provider.error.type", "csp_api_error"),
 			attribute.String("janitor_provider.error.message", err.Error()),
 		)

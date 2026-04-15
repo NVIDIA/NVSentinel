@@ -126,7 +126,7 @@ func (r *GPUResetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if !completedReconciling || reconcileDelete {
 		// Start or retrieve the long-lived session span that covers the entire GPU reset lifecycle.
 		// Per-reconcile spans are created as children of this session span.
-		sessionCtx, _ := r.startResetSessionIfNeeded(ctx, crKey, traceID, spanID, &gpuReset)
+		sessionCtx, _ := r.startResetSessionIfNeeded(ctx, crKey, traceID, spanID)
 
 		ctx, span := tracing.StartSpan(sessionCtx, "janitor.gpureset.reconcile")
 		defer span.End()
@@ -145,7 +145,7 @@ func (r *GPUResetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if reconcileDelete {
 			result, err := r.reconcileDelete(ctx, &gpuReset)
 			if err == nil && result.RequeueAfter == 0 {
-				r.endResetSession(crKey, &gpuReset, "deleted", "")
+				r.endResetSession(crKey)
 			}
 
 			return result, err
@@ -167,7 +167,7 @@ func (r *GPUResetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// Defensive cleanup: if reconciling completed but the session span was not ended,
 	// end it now (e.g. completion was set but session wasn't cleaned up).
-	r.endResetSession(crKey, &gpuReset, "succeeded", "")
+	r.endResetSession(crKey)
 
 	retryUnlock := r.NodeLock.CheckUnlock(ctx, &gpuReset, gpuReset.Spec.NodeName)
 	if retryUnlock {
@@ -181,8 +181,8 @@ func (r *GPUResetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 // for a given GPUReset CR. On the first call it creates the span and stores it; subsequent calls
 // return the existing span. The returned context carries the session span as the active span
 // so that child spans (per-reconcile) are nested under it.
-func (r *GPUResetReconciler) startResetSessionIfNeeded(
-	ctx context.Context, crKey, traceID, spanID string, gr *v1alpha1.GPUReset,
+func (r *GPUResetReconciler) startResetSessionIfNeeded(ctx context.Context,
+	crKey, traceID, spanID string,
 ) (context.Context, trace.Span) {
 	if existing, ok := r.resetSessionSpans.Load(crKey); ok {
 		span := existing.(trace.Span) //nolint:errcheck,forcetypeassert // value is always trace.Span
@@ -197,7 +197,7 @@ func (r *GPUResetReconciler) startResetSessionIfNeeded(
 }
 
 // endResetSession ends the long-lived session span for a GPUReset CR and sets final outcome attributes.
-func (r *GPUResetReconciler) endResetSession(crKey string, gr *v1alpha1.GPUReset, status string, reason string) {
+func (r *GPUResetReconciler) endResetSession(crKey string) {
 	val, ok := r.resetSessionSpans.LoadAndDelete(crKey)
 	if !ok {
 		return
@@ -909,7 +909,7 @@ func (r *GPUResetReconciler) reconcileCompletion(ctx context.Context, gr *v1alph
 		metrics.GPUResetDurationSeconds.WithLabelValues(nodeName, "success").Observe(duration.Seconds())
 	}
 
-	r.endResetSession(gr.Name, gr, "succeeded", "")
+	r.endResetSession(gr.Name)
 
 	return ctrl.Result{}, nil
 }
@@ -1314,7 +1314,7 @@ func (r *GPUResetReconciler) reconcileTerminalFailure(
 		}
 	}
 
-	r.endResetSession(gr.Name, gr, "failed", string(reason))
+	r.endResetSession(gr.Name)
 
 	return ctrl.Result{}, nil
 }
