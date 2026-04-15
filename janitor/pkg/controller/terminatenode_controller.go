@@ -159,8 +159,6 @@ func (r *TerminateNodeReconciler) endTerminateSession(crKey string) {
 }
 
 // reconcileHelper contains the main reconciliation logic
-//
-//nolint:gocognit,cyclop,gocyclo // Business logic kept in one method for readability
 func (r *TerminateNodeReconciler) reconcileHelper(
 	ctx context.Context, terminateNode *janitordgxcnvidiacomv1alpha1.TerminateNode,
 ) (ctrl.Result, error) {
@@ -182,13 +180,12 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 			// Node is already deleted, which is the desired state. Do not return an error.
 			node = nil
 		} else {
-			if span := tracing.SpanFromContext(ctx); span != nil {
-				span.SetAttributes(
-					attribute.String("janitor.error.type", "node_fetch_failed"),
-					attribute.String("janitor.error.message", err.Error()),
-				)
-				tracing.RecordError(span, err)
-			}
+			span := tracing.SpanFromContext(ctx)
+			span.SetAttributes(
+				attribute.String("janitor.error.type", "node_fetch_failed"),
+				attribute.String("janitor.error.message", err.Error()),
+			)
+			tracing.RecordError(span, err)
 
 			return ctrl.Result{}, err
 		}
@@ -198,13 +195,12 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 	// CA bundles and SA tokens are picked up from disk automatically.
 	cspClient, cleanup, err := r.dialProvider(ctx)
 	if err != nil {
-		if span := tracing.SpanFromContext(ctx); span != nil {
-			span.SetAttributes(
-				attribute.String("janitor.error.type", "dial_csp_provider_failed"),
-				attribute.String("janitor.error.message", err.Error()),
-			)
-			tracing.RecordError(span, err)
-		}
+		span := tracing.SpanFromContext(ctx)
+		span.SetAttributes(
+			attribute.String("janitor.error.type", "dial_csp_provider_failed"),
+			attribute.String("janitor.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
 
 		return ctrl.Result{}, fmt.Errorf("dial csp-provider: %w", err)
 	}
@@ -228,17 +224,6 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 			metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusSucceeded, terminateNode.Spec.NodeName)
 			metrics.GlobalMetrics.RecordActionMTTR(metrics.ActionTypeTerminate, time.Since(terminateNode.CreationTimestamp.Time))
 
-			if span := tracing.SpanFromContext(ctx); span != nil {
-				span.SetAttributes(
-					attribute.String("janitor.terminatenode.status", "succeeded"),
-					attribute.Bool("janitor.terminatenode.node_terminated", true),
-					attribute.Float64("janitor.terminatenode.duration_seconds",
-						time.Since(terminateNode.CreationTimestamp.Time).Seconds()),
-				)
-			}
-
-			r.endTerminateSession(crKey)
-
 			result = ctrl.Result{} // Don't requeue on success
 		} else if isNodeNotReady(node) {
 			slog.InfoContext(ctx, "Node reached not ready state, deleting from cluster", "node", terminateNode.Spec.NodeName)
@@ -246,13 +231,12 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 			if err := r.Delete(ctx, node); err != nil {
 				slog.ErrorContext(ctx, "failed to delete node from cluster", "node", node.Name, "error", err)
 
-				if span := tracing.SpanFromContext(ctx); span != nil {
-					span.SetAttributes(
-						attribute.String("janitor.error.type", "node_delete_failed"),
-						attribute.String("janitor.error.message", err.Error()),
-					)
-					tracing.RecordError(span, err)
-				}
+				span := tracing.SpanFromContext(ctx)
+				span.SetAttributes(
+					attribute.String("janitor.error.type", "node_delete_failed"),
+					attribute.String("janitor.error.message", err.Error()),
+				)
+				tracing.RecordError(span, err)
 
 				return ctrl.Result{}, err
 			}
@@ -271,8 +255,6 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 			metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusSucceeded, node.Name)
 			metrics.GlobalMetrics.RecordActionMTTR(metrics.ActionTypeTerminate, time.Since(terminateNode.CreationTimestamp.Time))
 
-			r.endTerminateSession(crKey)
-
 			result = ctrl.Result{} // Don't requeue on success
 		} else if time.Since(terminateNode.Status.StartTime.Time) > r.getTimeout() {
 			slog.ErrorContext(ctx, "Node terminate timed out", "node", node.Name, "timeout", r.getTimeout())
@@ -289,8 +271,6 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 
 			metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusFailed, node.Name)
 
-			r.endTerminateSession(crKey)
-
 			result = ctrl.Result{} // Don't requeue on timeout
 		} else {
 			// Still waiting for terminate to complete
@@ -304,13 +284,12 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 
 			slog.ErrorContext(ctx, "Node not found for terminate", "node", terminateNode.Spec.NodeName)
 
-			if span := tracing.SpanFromContext(ctx); span != nil {
-				span.SetAttributes(
-					attribute.String("janitor.error.type", "node_not_found"),
-					attribute.String("janitor.error.message", err.Error()),
-				)
-				tracing.RecordError(span, err)
-			}
+			span := tracing.SpanFromContext(ctx)
+			span.SetAttributes(
+				attribute.String("janitor.error.type", "node_not_found"),
+				attribute.String("janitor.error.message", err.Error()),
+			)
+			tracing.RecordError(span, err)
 
 			return ctrl.Result{}, err
 		}
@@ -374,10 +353,6 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 						LastTransitionTime: metav1.Now(),
 					}
 
-					if span := tracing.SpanFromContext(ctx); span != nil {
-						span.SetAttributes(attribute.Bool("janitor.terminatenode.signal_sent", true))
-					}
-
 					// Continue monitoring if signal was sent successfully
 					result = ctrl.Result{RequeueAfter: 30 * time.Second}
 				} else {
@@ -396,14 +371,12 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 
 					metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusFailed, node.Name)
 
-					if span := tracing.SpanFromContext(ctx); span != nil {
-						span.SetAttributes(
-							attribute.Bool("janitor.terminatenode.signal_sent", false),
-							attribute.String("janitor.error.type", "terminate_signal_failed"),
-							attribute.String("janitor.error.message", terminateErr.Error()),
-						)
-						tracing.RecordError(span, terminateErr)
-					}
+					span := tracing.SpanFromContext(ctx)
+					span.SetAttributes(
+						attribute.String("janitor.error.type", "terminate_signal_failed"),
+						attribute.String("janitor.error.message", terminateErr.Error()),
+					)
+					tracing.RecordError(span, terminateErr)
 				}
 
 				terminateNode.SetCondition(signalSentCondition)
@@ -426,13 +399,12 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 
 			slog.ErrorContext(ctx, "failed to refresh TerminateNode before status update", "error", err)
 
-			if span := tracing.SpanFromContext(ctx); span != nil {
-				span.SetAttributes(
-					attribute.String("janitor.error.type", "status_refresh_failed"),
-					attribute.String("janitor.error.message", err.Error()),
-				)
-				tracing.RecordError(span, err)
-			}
+			span := tracing.SpanFromContext(ctx)
+			span.SetAttributes(
+				attribute.String("janitor.error.type", "status_refresh_failed"),
+				attribute.String("janitor.error.message", err.Error()),
+			)
+			tracing.RecordError(span, err)
 
 			return ctrl.Result{}, err
 		}
@@ -443,18 +415,21 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 		if err := r.Status().Update(ctx, &freshTerminateNode); err != nil {
 			slog.ErrorContext(ctx, "failed to update TerminateNode status", "error", err)
 
-			if span := tracing.SpanFromContext(ctx); span != nil {
-				span.SetAttributes(
-					attribute.String("janitor.error.type", "status_update_failed"),
-					attribute.String("janitor.error.message", err.Error()),
-				)
-				tracing.RecordError(span, err)
-			}
+			span := tracing.SpanFromContext(ctx)
+			span.SetAttributes(
+				attribute.String("janitor.error.type", "status_update_failed"),
+				attribute.String("janitor.error.message", err.Error()),
+			)
+			tracing.RecordError(span, err)
 
 			return ctrl.Result{}, err
 		}
 
 		slog.InfoContext(ctx, "TerminateNode status updated", "node", terminateNode.Spec.NodeName)
+
+		if terminateNode.Status.CompletionTime != nil {
+			r.endTerminateSession(crKey)
+		}
 	}
 
 	return result, nil

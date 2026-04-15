@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/go-logr/logr"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -70,11 +71,7 @@ func (s *janitorProviderServer) SendRebootSignal(
 	ctx context.Context, req *cspv1alpha1.SendRebootSignalRequest,
 ) (*cspv1alpha1.SendRebootSignalResponse, error) {
 	ctx, span := tracing.StartSpan(ctx, "janitor_provider.SendRebootSignal")
-	defer func() {
-		if span != nil {
-			span.End()
-		}
-	}()
+	defer span.End()
 
 	slog.InfoContext(ctx, "Sending reboot signal", "node", req.NodeName)
 
@@ -110,11 +107,7 @@ func (s *janitorProviderServer) SendRebootSignal(
 
 func (s *janitorProviderServer) IsNodeReady(ctx context.Context, req *cspv1alpha1.IsNodeReadyRequest) (*cspv1alpha1.IsNodeReadyResponse, error) {
 	ctx, span := tracing.StartSpan(ctx, "janitor_provider.IsNodeReady")
-	defer func() {
-		if span != nil {
-			span.End()
-		}
-	}()
+	defer span.End()
 
 	slog.InfoContext(ctx, "Checking if node is ready", "node", req.NodeName)
 	node, err := s.k8sClient.CoreV1().Nodes().Get(ctx, req.NodeName, metav1.GetOptions{})
@@ -194,6 +187,12 @@ func realMain() int {
 		slog.Warn("Failed to initialize audit logger", "error", err)
 	}
 	defer auditlogger.CloseAuditLogger() //nolint:errcheck
+
+	tracingCtx, tracingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := tracing.ShutdownTracing(tracingCtx); err != nil {
+		slog.Warn("Failed to shutdown tracing", "error", err)
+	}
+	tracingCancel()
 
 	if err := run(); err != nil {
 		slog.Error("Failed to run", "error", err)

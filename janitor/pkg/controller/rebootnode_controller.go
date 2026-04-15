@@ -178,13 +178,12 @@ func (r *RebootNodeReconciler) reconcileHelper(
 	var node corev1.Node
 	if err := r.Get(ctx, client.ObjectKey{Name: rebootNode.Spec.NodeName}, &node); err != nil {
 		if !apierrors.IsNotFound(err) {
-			if span := tracing.SpanFromContext(ctx); span != nil {
-				span.SetAttributes(
-					attribute.String("janitor.error.type", "node_fetch_failed"),
-					attribute.String("janitor.error.message", err.Error()),
-				)
-				tracing.RecordError(span, err)
-			}
+			span := tracing.SpanFromContext(ctx)
+			span.SetAttributes(
+				attribute.String("janitor.error.type", "node_fetch_failed"),
+				attribute.String("janitor.error.message", err.Error()),
+			)
+			tracing.RecordError(span, err)
 		}
 
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -194,13 +193,12 @@ func (r *RebootNodeReconciler) reconcileHelper(
 	// CA bundles and SA tokens are picked up from disk automatically.
 	cspClient, cleanup, err := r.dialProvider(ctx)
 	if err != nil {
-		if span := tracing.SpanFromContext(ctx); span != nil {
-			span.SetAttributes(
-				attribute.String("janitor.error.type", "dial_csp_provider_failed"),
-				attribute.String("janitor.error.message", err.Error()),
-			)
-			tracing.RecordError(span, err)
-		}
+		span := tracing.SpanFromContext(ctx)
+		span.SetAttributes(
+			attribute.String("janitor.error.type", "dial_csp_provider_failed"),
+			attribute.String("janitor.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
 
 		return ctrl.Result{}, fmt.Errorf("dial csp-provider: %w", err)
 	}
@@ -219,15 +217,18 @@ func (r *RebootNodeReconciler) reconcileHelper(
 			return ctrl.Result{}, nil
 		}
 
-		if span := tracing.SpanFromContext(ctx); span != nil {
-			span.SetAttributes(
-				attribute.String("janitor.error.type", "status_update_failed"),
-				attribute.String("janitor.error.message", err.Error()),
-			)
-			tracing.RecordError(span, err)
-		}
+		span := tracing.SpanFromContext(ctx)
+		span.SetAttributes(
+			attribute.String("janitor.error.type", "status_update_failed"),
+			attribute.String("janitor.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
 
 		return ctrl.Result{}, err
+	}
+
+	if rebootNode.Status.CompletionTime != nil {
+		r.endRebootSession(rebootNode.Name)
 	}
 
 	return result, nil
@@ -254,13 +255,12 @@ func (r *RebootNodeReconciler) updateRebootNodeStatusIfChanged(
 
 		slog.Error("failed to refresh RebootNode before status update", "error", err)
 
-		if span := tracing.SpanFromContext(ctx); span != nil {
-			span.SetAttributes(
-				attribute.String("janitor.error.type", "status_refresh_failed"),
-				attribute.String("janitor.error.message", err.Error()),
-			)
-			tracing.RecordError(span, err)
-		}
+		span := tracing.SpanFromContext(ctx)
+		span.SetAttributes(
+			attribute.String("janitor.error.type", "status_refresh_failed"),
+			attribute.String("janitor.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
 
 		return fmt.Errorf("refreshing RebootNode %q before status update: %w", rebootNode.Name, err)
 	}
@@ -270,13 +270,12 @@ func (r *RebootNodeReconciler) updateRebootNodeStatusIfChanged(
 	if err := r.Status().Update(ctx, &freshRebootNode); err != nil {
 		slog.Error("failed to update RebootNode status", "error", err)
 
-		if span := tracing.SpanFromContext(ctx); span != nil {
-			span.SetAttributes(
-				attribute.String("janitor.error.type", "status_update_failed"),
-				attribute.String("janitor.error.message", err.Error()),
-			)
-			tracing.RecordError(span, err)
-		}
+		span := tracing.SpanFromContext(ctx)
+		span.SetAttributes(
+			attribute.String("janitor.error.type", "status_update_failed"),
+			attribute.String("janitor.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
 
 		return fmt.Errorf("updating RebootNode %q status: %w", rebootNode.Name, err)
 	}
@@ -314,19 +313,16 @@ func (r *RebootNodeReconciler) handleRebootInProgress(
 	ctx context.Context, cspClient cspv1alpha1.CSPProviderServiceClient,
 	rebootNode *janitordgxcnvidiacomv1alpha1.RebootNode, node *corev1.Node,
 ) ctrl.Result {
-	crKey := rebootNode.Name
-
 	cspReady, nodeReadyErr := r.checkNodeReadyFromCSP(ctx, cspClient, rebootNode, node.Name)
 	kubernetesReady := isNodeKubernetesReady(node)
 
 	if nodeReadyErr != nil {
 		if isTransientGRPCError(nodeReadyErr) {
-			if span := tracing.SpanFromContext(ctx); span != nil {
-				span.SetAttributes(
-					attribute.Bool("janitor.rebootnode.reboot_session.transient_error", true),
-				)
-				tracing.RecordError(span, nodeReadyErr)
-			}
+			span := tracing.SpanFromContext(ctx)
+			span.SetAttributes(
+				attribute.Bool("janitor.rebootnode.reboot_session.transient_error", true),
+			)
+			tracing.RecordError(span, nodeReadyErr)
 
 			slog.WarnContext(ctx, "Transient CSP error during node ready check, will requeue",
 				"node", node.Name, "error", nodeReadyErr, "requeueAfter", requeueBackoffForTransientCSPError)
@@ -334,47 +330,41 @@ func (r *RebootNodeReconciler) handleRebootInProgress(
 			return ctrl.Result{RequeueAfter: requeueBackoffForTransientCSPError}
 		}
 
-		if span := tracing.SpanFromContext(ctx); span != nil {
-			span.SetAttributes(
-				attribute.String("janitor.error.type", "node_ready_check_failed"),
-				attribute.String("janitor.error.message", nodeReadyErr.Error()),
-			)
-			tracing.RecordError(span, nodeReadyErr)
-		}
+		span := tracing.SpanFromContext(ctx)
+		span.SetAttributes(
+			attribute.String("janitor.error.type", "node_ready_check_failed"),
+			attribute.String("janitor.error.message", nodeReadyErr.Error()),
+		)
+		tracing.RecordError(span, nodeReadyErr)
 
 		slog.ErrorContext(ctx, "Node ready status check failed", "node", node.Name, "error", nodeReadyErr)
-		r.endRebootSession(crKey)
 
 		return r.completeNodeReadyCheck(rebootNode, node, metav1.ConditionFalse, "Failed",
 			fmt.Sprintf("Node status could not be checked from CSP: %s", nodeReadyErr), metrics.StatusFailed)
 	}
 
 	if cspReady && kubernetesReady {
-		if span := tracing.SpanFromContext(ctx); span != nil {
-			span.SetAttributes(
-				attribute.Float64("janitor.rebootnode.reboot_session.time_to_ready_seconds",
-					time.Since(rebootNode.CreationTimestamp.Time).Seconds()),
-			)
-		}
+		span := tracing.SpanFromContext(ctx)
+		span.SetAttributes(
+			attribute.Float64("janitor.rebootnode.reboot_session.time_to_ready_seconds",
+				time.Since(rebootNode.CreationTimestamp.Time).Seconds()),
+		)
 
 		slog.InfoContext(ctx, "Node reached ready state post-reboot", "node", node.Name)
 		metrics.GlobalMetrics.RecordActionMTTR(metrics.ActionTypeReboot, time.Since(rebootNode.CreationTimestamp.Time))
-		r.endRebootSession(crKey)
 
 		return r.completeNodeReadyCheck(rebootNode, node, metav1.ConditionTrue, "Succeeded",
 			"Node reached ready state post-reboot", metrics.StatusSucceeded)
 	}
 
 	if time.Since(rebootNode.Status.StartTime.Time) > r.getRebootTimeout() {
-		if span := tracing.SpanFromContext(ctx); span != nil {
-			span.SetAttributes(
-				attribute.String("janitor.error.type", "reboot_timeout"),
-				attribute.Float64("janitor.rebootnode.reboot_session.timeout_seconds", r.getRebootTimeout().Seconds()),
-			)
-		}
+		span := tracing.SpanFromContext(ctx)
+		span.SetAttributes(
+			attribute.String("janitor.error.type", "reboot_timeout"),
+			attribute.Float64("janitor.rebootnode.reboot_session.timeout_seconds", r.getRebootTimeout().Seconds()),
+		)
 
 		slog.ErrorContext(ctx, "Node reboot timed out", "node", node.Name, "timeout", r.getRebootTimeout())
-		r.endRebootSession(crKey)
 
 		return r.completeNodeReadyCheck(rebootNode, node, metav1.ConditionFalse, "Timeout",
 			"Node failed to return to ready state after timeout duration", metrics.StatusFailed)
