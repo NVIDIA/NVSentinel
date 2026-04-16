@@ -143,11 +143,7 @@ func (r *FaultRemediationReconciler) Reconcile(
 
 	ctx, span := tracing.StartSpan(sessionCtx, "fault_remediation.reconcile")
 
-	defer func() {
-		if span != nil {
-			span.End()
-		}
-	}()
+	defer span.End()
 
 	// Add health event attributes to span (nil-safe: span and optional status fields)
 	tracing.AddHealthEventStatusAttributes(
@@ -155,14 +151,6 @@ func (r *FaultRemediationReconciler) Reconcile(
 	nodeQuarantined := healthEventWithStatus.HealthEventStatus.NodeQuarantined
 
 	if nodeQuarantined == string(model.UnQuarantined) || nodeQuarantined == string(model.Cancelled) {
-		span := tracing.SpanFromContext(ctx)
-		if span != nil {
-			span.SetAttributes(
-				attribute.String("fault_remediation.action.type", "cancelled"),
-				attribute.String("fault_remediation.status", "skipped"),
-			)
-		}
-
 		return r.handleCancellationEvent(ctx, nodeName, model.Status(nodeQuarantined), r.Watcher, event.ResumeToken)
 	}
 
@@ -225,13 +213,9 @@ func (r *FaultRemediationReconciler) shouldSkipEvent(ctx context.Context,
 		slog.InfoContext(ctx, "Skipping event for node: recommended action is NONE (no remediation needed)",
 			"node", nodeName)
 
-		if span != nil {
-			span.SetAttributes(
-				attribute.String("fault_remediation.action.type", "skip"),
-				attribute.String("fault_remediation.skip_reason", "recommended_action_none"),
-				attribute.String("fault_remediation.status", "skipped"),
-			)
-		}
+		span.SetAttributes(
+			attribute.String("fault_remediation.skip_reason", "recommended_action_none"),
+		)
 
 		return true
 	}
@@ -239,9 +223,7 @@ func (r *FaultRemediationReconciler) shouldSkipEvent(ctx context.Context,
 	if healthEventWithStatus.HealthEventStatus != nil && healthEventWithStatus.HealthEventStatus.FaultRemediated != nil &&
 		healthEventWithStatus.HealthEventStatus.FaultRemediated.GetValue() {
 		span.SetAttributes(
-			attribute.String("fault_remediation.action.type", "skip"),
 			attribute.String("fault_remediation.skip_reason", "already_remediated"),
-			attribute.String("fault_remediation.status", "skipped"),
 		)
 
 		return true
@@ -258,14 +240,9 @@ func (r *FaultRemediationReconciler) shouldSkipEvent(ctx context.Context,
 		"node", nodeName)
 	metrics.TotalUnsupportedRemediationActions.WithLabelValues(actionName, nodeName).Inc()
 
-	if span != nil {
-		span.SetAttributes(
-			attribute.String("fault_remediation.action.type", "skip"),
-			attribute.Bool("fault_remediation.action.skip", true),
-			attribute.String("fault_remediation.skip_reason", "unsupported_action"),
-			attribute.String("fault_remediation.status", "skipped"),
-		)
-	}
+	span.SetAttributes(
+		attribute.String("fault_remediation.skip_reason", "unsupported_action"),
+	)
 
 	_, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 		healthEventWithStatus.HealthEvent.NodeName,
@@ -403,9 +380,6 @@ func (r *FaultRemediationReconciler) handleCancellationEvent(
 	slog.InfoContext(ctx, "Cancellation event received, clearing all remediation state",
 		"node", nodeName,
 		"status", status)
-	span.SetAttributes(
-		attribute.String("fault_remediation.cancellation.status", string(status)),
-	)
 
 	if err := r.annotationManager.ClearRemediationState(ctx, nodeName); err != nil {
 		slog.ErrorContext(ctx, "Failed to clear remediation state for node",
@@ -435,7 +409,9 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 	watcherInstance datastore.ChangeStreamWatcher,
 	healthEventStore datastore.HealthEventStore,
 ) (ctrl.Result, error) {
-	span := tracing.SpanFromContext(ctx)
+	ctx, span := tracing.StartSpan(ctx, "fault_remediation.handle_remediation_event")
+	defer span.End()
+
 	healthEvent := healthEventWithStatus.HealthEvent
 	nodeName := healthEvent.NodeName
 
@@ -450,11 +426,9 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 
 	res, err, done := r.trySkipEvent(ctx, healthEventWithStatus, groupConfig, eventWithToken, watcherInstance, nodeName)
 	if done {
-		if span != nil {
-			span.SetAttributes(
-				attribute.String("fault_remediation.status", "skipped"),
-			)
-		}
+		span.SetAttributes(
+			attribute.String("fault_remediation.status", "skipped"),
+		)
 
 		return res, err
 	}
@@ -464,14 +438,11 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 		metrics.ProcessingErrors.WithLabelValues("cr_status_check_error", nodeName).Inc()
 		slog.ErrorContext(ctx, "Error checking existing CR status", "node", nodeName, "error", err)
 
-		if span != nil {
-			span.SetAttributes(
-				attribute.String("fault_remediation.status", "failed"),
-				attribute.String("fault_remediation.error.type", "cr_status_check_error"),
-				attribute.String("fault_remediation.error.message", err.Error()),
-			)
-			tracing.RecordError(span, err)
-		}
+		span.SetAttributes(
+			attribute.String("fault_remediation.error.type", "cr_status_check_error"),
+			attribute.String("fault_remediation.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
 
 		return ctrl.Result{}, fmt.Errorf("error checking existing CR status: %w", err)
 	}
@@ -530,14 +501,10 @@ func (r *FaultRemediationReconciler) handleExistingCRSkip(
 		"node", nodeName,
 		"existingCR", existingCR)
 
-	if span != nil {
-		span.SetAttributes(
-			attribute.String("fault_remediation.action.type", "skip"),
-			attribute.String("fault_remediation.action.reason", "existing_cr"),
-			attribute.String("fault_remediation.existing_cr.name", existingCR),
-			attribute.String("fault_remediation.status", "skipped"),
-		)
-	}
+	span.SetAttributes(
+		attribute.String("fault_remediation.skip_reason", "existing_cr_found"),
+		attribute.String("fault_remediation.existing_cr.name", existingCR),
+	)
 
 	metrics.EventsProcessed.WithLabelValues(metrics.CRStatusSkipped, nodeName).Inc()
 
@@ -571,22 +538,15 @@ func (r *FaultRemediationReconciler) runLogCollectorAndRemediate(
 		return result, nil
 	}
 
-	crName, performRemediationErr := r.performRemediation(ctx, healthEventWithStatus, groupConfig)
+	_, performRemediationErr := r.performRemediation(ctx, healthEventWithStatus, groupConfig)
 
 	nodeRemediatedStatus := performRemediationErr == nil
 	if performRemediationErr != nil {
 		span.SetAttributes(
-			attribute.String("fault_remediation.status", "failed"),
 			attribute.String("fault_remediation.error.type", "perform_remediation_error"),
 			attribute.String("fault_remediation.error.message", performRemediationErr.Error()),
 		)
 		tracing.RecordError(span, performRemediationErr)
-	} else {
-		span.SetAttributes(
-			attribute.String("fault_remediation.status", "succeeded"),
-			attribute.String("fault_remediation.action.type", "create_cr"),
-			attribute.String("fault_remediation.cr.name", crName),
-		)
 	}
 
 	if err = r.updateNodeRemediatedStatus(ctx, healthEventStore, eventWithToken, nodeRemediatedStatus); err != nil {
@@ -594,7 +554,6 @@ func (r *FaultRemediationReconciler) runLogCollectorAndRemediate(
 		slog.ErrorContext(ctx, "Error updating remediation status for node", "error", err)
 		tracing.RecordError(span, err)
 		span.SetAttributes(
-			attribute.String("fault_remediation.status", "failed"),
 			attribute.String("fault_remediation.error.type", "update_status_error"),
 			attribute.String("fault_remediation.error.message", err.Error()),
 		)
@@ -605,11 +564,6 @@ func (r *FaultRemediationReconciler) runLogCollectorAndRemediate(
 	if performRemediationErr != nil {
 		return ctrl.Result{}, performRemediationErr
 	}
-
-	span.AddEvent("fault_remediation.remediation_finished", oteltrace.WithAttributes(
-		attribute.String("fault_remediation.cr.name", crName),
-		attribute.String("fault_remediation.status", "succeeded"),
-	))
 
 	return ctrl.Result{}, nil
 }
@@ -624,11 +578,13 @@ func safeMarkProcessed(ctx context.Context, w datastore.ChangeStreamWatcher, tok
 		return nil
 	}
 
-	span := tracing.SpanFromContext(ctx)
+	ctx, span := tracing.StartSpan(ctx, "fault_remediation.mark_processed")
+	defer span.End()
 
 	if err := w.MarkProcessed(ctx, token); err != nil {
 		metrics.ProcessingErrors.WithLabelValues("mark_processed_error", node).Inc()
 		slog.ErrorContext(ctx, "Error updating resume token", "error", err)
+
 		tracing.RecordError(span, err)
 		span.SetAttributes(
 			attribute.String("fault_remediation.error.type", "mark_processed_error"),
@@ -663,6 +619,10 @@ func (r *FaultRemediationReconciler) updateNodeRemediatedStatus(
 ) error {
 	ctx, statusSpan := tracing.StartSpan(ctx, "fault_remediation.remediation_status_updated")
 	defer statusSpan.End()
+
+	statusSpan.SetAttributes(
+		attribute.Bool("fault_remediation.status", nodeRemediatedStatus),
+	)
 
 	documentID, err := utils.ExtractDocumentID(eventWithToken.Event)
 	if err != nil {
