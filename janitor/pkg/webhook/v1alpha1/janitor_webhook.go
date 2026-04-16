@@ -255,7 +255,8 @@ func (v *JanitorCustomValidator) validateNodeAndGPUs(oldNodeName, newNodeName st
 }
 
 // validateNodeForCreate validates node existence and exclusions, then logs success.
-func (v *JanitorCustomValidator) validateNodeForCreate(ctx context.Context, controllerType, objName, nodeName string) (admission.Warnings, error) { // nolint:lll
+func (v *JanitorCustomValidator) validateNodeForCreate(ctx context.Context,
+	controllerType, objName, nodeName string) (admission.Warnings, error) {
 	if nodeName != "" {
 		if err := v.validateNodeExists(ctx, nodeName); err != nil {
 			janitorWebhookLog.Info("Node validation failed",
@@ -278,7 +279,8 @@ func (v *JanitorCustomValidator) validateNodeForCreate(ctx context.Context, cont
 }
 
 // validateNodeForUpdate validates node existence and exclusions for updates, then logs success.
-func (v *JanitorCustomValidator) validateNodeForUpdate(ctx context.Context, controllerType, objName, nodeName string, allowDeletedNode bool) (admission.Warnings, error) { // nolint:lll
+func (v *JanitorCustomValidator) validateNodeForUpdate(ctx context.Context,
+	controllerType, objName, nodeName string, allowDeletedNode bool) (admission.Warnings, error) {
 	if len(nodeName) != 0 && !allowDeletedNode {
 		if err := v.validateNodeExists(ctx, nodeName); err != nil {
 			janitorWebhookLog.Info("Node validation failed",
@@ -304,7 +306,8 @@ func (v *JanitorCustomValidator) validateNodeForUpdate(ctx context.Context, cont
 
 type rebootNodeValidator struct{ *JanitorCustomValidator }
 
-func (v *rebootNodeValidator) ValidateCreate(ctx context.Context, obj *janitordgxcnvidiacomv1alpha1.RebootNode) (admission.Warnings, error) { // nolint:lll
+func (v *rebootNodeValidator) ValidateCreate(ctx context.Context,
+	obj *janitordgxcnvidiacomv1alpha1.RebootNode) (admission.Warnings, error) {
 	objName := obj.GetName()
 	nodeName := obj.Spec.NodeName
 
@@ -323,7 +326,8 @@ func (v *rebootNodeValidator) ValidateCreate(ctx context.Context, obj *janitordg
 	return v.validateNodeForCreate(ctx, controllerTypeRebootNode, objName, nodeName)
 }
 
-func (v *rebootNodeValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *janitordgxcnvidiacomv1alpha1.RebootNode) (admission.Warnings, error) { // nolint:lll
+func (v *rebootNodeValidator) ValidateUpdate(ctx context.Context,
+	oldObj, newObj *janitordgxcnvidiacomv1alpha1.RebootNode) (admission.Warnings, error) {
 	objName := newObj.GetName()
 	nodeName := newObj.Spec.NodeName
 
@@ -339,7 +343,8 @@ func (v *rebootNodeValidator) ValidateUpdate(ctx context.Context, oldObj, newObj
 	return v.validateNodeForUpdate(ctx, controllerTypeRebootNode, objName, nodeName, false)
 }
 
-func (v *rebootNodeValidator) ValidateDelete(_ context.Context, obj *janitordgxcnvidiacomv1alpha1.RebootNode) (admission.Warnings, error) { // nolint:lll
+func (v *rebootNodeValidator) ValidateDelete(_ context.Context,
+	obj *janitordgxcnvidiacomv1alpha1.RebootNode) (admission.Warnings, error) {
 	objName := obj.GetName()
 
 	if v.Config == nil || !v.Config.RebootNode.Enabled {
@@ -356,7 +361,8 @@ func (v *rebootNodeValidator) ValidateDelete(_ context.Context, obj *janitordgxc
 
 type terminateNodeValidator struct{ *JanitorCustomValidator }
 
-func (v *terminateNodeValidator) ValidateCreate(ctx context.Context, obj *janitordgxcnvidiacomv1alpha1.TerminateNode) (admission.Warnings, error) { // nolint:lll
+func (v *terminateNodeValidator) ValidateCreate(ctx context.Context,
+	obj *janitordgxcnvidiacomv1alpha1.TerminateNode) (admission.Warnings, error) {
 	objName := obj.GetName()
 	nodeName := obj.Spec.NodeName
 
@@ -375,7 +381,8 @@ func (v *terminateNodeValidator) ValidateCreate(ctx context.Context, obj *janito
 	return v.validateNodeForCreate(ctx, controllerTypeTerminateNode, objName, nodeName)
 }
 
-func (v *terminateNodeValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *janitordgxcnvidiacomv1alpha1.TerminateNode) (admission.Warnings, error) { // nolint:lll
+func (v *terminateNodeValidator) ValidateUpdate(ctx context.Context,
+	oldObj, newObj *janitordgxcnvidiacomv1alpha1.TerminateNode) (admission.Warnings, error) {
 	objName := newObj.GetName()
 	nodeName := newObj.Spec.NodeName
 
@@ -391,7 +398,8 @@ func (v *terminateNodeValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	return v.validateNodeForUpdate(ctx, controllerTypeTerminateNode, objName, nodeName, false)
 }
 
-func (v *terminateNodeValidator) ValidateDelete(_ context.Context, obj *janitordgxcnvidiacomv1alpha1.TerminateNode) (admission.Warnings, error) { // nolint:lll
+func (v *terminateNodeValidator) ValidateDelete(_ context.Context,
+	obj *janitordgxcnvidiacomv1alpha1.TerminateNode) (admission.Warnings, error) {
 	objName := obj.GetName()
 
 	if v.Config == nil || !v.Config.TerminateNode.Enabled {
@@ -408,7 +416,8 @@ func (v *terminateNodeValidator) ValidateDelete(_ context.Context, obj *janitord
 
 type gpuResetValidator struct{ *JanitorCustomValidator }
 
-func (v *gpuResetValidator) ValidateCreate(ctx context.Context, obj *janitordgxcnvidiacomv1alpha1.GPUReset) (admission.Warnings, error) { // nolint:lll
+func (v *gpuResetValidator) ValidateCreate(ctx context.Context,
+	obj *janitordgxcnvidiacomv1alpha1.GPUReset) (admission.Warnings, error) {
 	objName := obj.GetName()
 	nodeName := obj.Spec.NodeName
 	uuids := obj.Spec.Selector.UUIDs
@@ -428,7 +437,8 @@ func (v *gpuResetValidator) ValidateCreate(ctx context.Context, obj *janitordgxc
 	return v.validateNodeForCreate(ctx, controllerTypeGPUReset, objName, nodeName)
 }
 
-func (v *gpuResetValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *janitordgxcnvidiacomv1alpha1.GPUReset) (admission.Warnings, error) { // nolint:lll
+func (v *gpuResetValidator) ValidateUpdate(ctx context.Context,
+	oldObj, newObj *janitordgxcnvidiacomv1alpha1.GPUReset) (admission.Warnings, error) {
 	objName := newObj.GetName()
 	nodeName := newObj.Spec.NodeName
 
@@ -449,7 +459,8 @@ func (v *gpuResetValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *
 	return v.validateNodeForUpdate(ctx, controllerTypeGPUReset, objName, nodeName, true)
 }
 
-func (v *gpuResetValidator) ValidateDelete(_ context.Context, obj *janitordgxcnvidiacomv1alpha1.GPUReset) (admission.Warnings, error) { // nolint:lll
+func (v *gpuResetValidator) ValidateDelete(_ context.Context,
+	obj *janitordgxcnvidiacomv1alpha1.GPUReset) (admission.Warnings, error) {
 	objName := obj.GetName()
 
 	if v.Config == nil || !v.Config.GPUReset.Enabled {
