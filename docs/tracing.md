@@ -4,7 +4,7 @@
 
 NVSentinel uses OpenTelemetry distributed tracing to provide end-to-end visibility into the lifecycle of every health event as it moves through the breakfix pipeline. A single trace follows one health event from detection through quarantine, drain, and remediation across all NVSentinel modules — platform-connector, fault-quarantine, node-drainer, fault-remediation, health-events-analyzer, janitor, janitor-provider, and event-exporter.
 
-Instead of manually correlating logs across multiple services to debug an issue(e.g, Why was node not remediated? Why fault-quarantine took more than expected time to handle and event?), you can look up a single trace and see the complete journey, timing, and outcome of any health event in one view.
+Instead of manually correlating logs across multiple services to debug an issue (e.g., "Why was a node not remediated?" or "Why did fault-quarantine take longer than expected to handle an event?"), you can look up a single trace and see the complete journey, timing, and outcome of any health event in one view.
 
 ### Why Do You Need This?
 
@@ -115,7 +115,7 @@ Each module reads the upstream trace context, creates a linked span in the same 
 
 ### Log-Trace Correlation
 
-When tracing is enabled, every JSON log line emitted by NVSentinel modules includes `trace_id` and `span_id` fields. This lets you jump from a trace to the corresponding logs (or vice versa) in your log aggregation system.
+When tracing is enabled and a module uses trace-correlation logging, JSON logs emitted within an active span context include `trace_id` and `span_id` fields. This lets you jump from a trace to corresponding logs (or vice versa) in your log aggregation system.
 
 ```json
 {
@@ -200,8 +200,7 @@ K8s API calls appear as `HTTP PUT`, `HTTP DELETE`, `HTTP GET` spans within a tra
 {name =~ "HTTP.*" && duration > 500ms}
 ```
 
-This returns all spans where a HTTP call operation took longer than 500ms, helping you identify slow queries across all modules.
-
+This returns all spans where an HTTP call took longer than 500ms, helping you identify slow API calls across all modules.
 ## Troubleshooting
 
 **Q: Tracing is enabled but I don't see any traces in my backend**
@@ -211,7 +210,7 @@ This returns all spans where a HTTP call operation took longer than 500ms, helpi
 - Check NVSentinel module logs for OTLP export errors
 
 **Q: Log lines don't have `trace_id` and `span_id` fields**
-- Log-trace correlation requires tracing to be enabled. Verify `OTEL_TRACES_ENABLED` is set to `true` in the module's environment
+- Log-trace correlation requires tracing to be enabled. Verify `global.tracing.enabled` is set to `true` in your Helm values and that `OTEL_EXPORTER_OTLP_ENDPOINT` is present in the module's environment. You can also confirm tracing is active by checking the module's container logs for the startup message `"OpenTelemetry tracing initialized"` — if present, tracing was successfully initialized for that module
 - The `trace_id` and `span_id` are only injected into log lines emitted during an active span context. Logs outside of event processing won't have these fields
 
 **Q: Can I use tracing without Grafana Tempo?**
