@@ -58,6 +58,8 @@ def main() -> None:
 
     diag = DCGMDiagnostic(hostengine_addr=cfg.hostengine_addr)
 
+    store_only = cfg.processing_strategy == pb.ProcessingStrategy.STORE_ONLY
+
     try:
         results = diag.run(cfg.diag_level)
     except Exception as e:
@@ -65,6 +67,9 @@ def main() -> None:
         # is_fatal=True: sets node condition for visibility, even though this may be
         # an infrastructure issue (DCGM unavailable) rather than a confirmed GPU failure.
         reporter.send_event(gpu_uuid="", is_healthy=False, is_fatal=True, message=str(e))
+        if store_only:
+            log.warning("DCGM unavailable (STORE_ONLY — not blocking pod)")
+            sys.exit(0)
         sys.exit(1)
 
     failures = [r for r in results if r.status == "fail"]
@@ -105,9 +110,12 @@ def main() -> None:
             test_name=r.test_name,
         )
 
-    if failures:
+    if failures and not store_only:
         log.error("DCGM diagnostic check failed")
         sys.exit(1)
+
+    if failures and store_only:
+        log.warning("DCGM diagnostic check failed (STORE_ONLY — not blocking pod)")
 
     log.info("DCGM diagnostic check passed")
     sys.exit(0)
