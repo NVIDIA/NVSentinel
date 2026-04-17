@@ -24,6 +24,7 @@ data:
       duration = "5m"
     
     [[rule-sets]]
+      enabled = true
       name = "Basic-Match-Rule"
       [[rule-sets.match.all]]
         kind = "HealthEvent"

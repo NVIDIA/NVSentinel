@@ -64,6 +64,8 @@ spec:
                     - "REPLACE_VM"
                     - 26
                     - "RUN_DCGMEUD"
+                    - 27
+                    - "CUSTOM"
                     - 99
                     - "UNKNOWN"
                   format: enum
@@ -119,6 +121,8 @@ spec:
                   x-kubernetes-int-or-string: true
                 id:
                   type: string
+                customRecommendedAction:
+                  type: string
             status:
               nullable: true
               type: object
@@ -145,5 +149,9 @@ spec:
                 lastRemediationTimestamp:
                   type: string
                   format: RFC3339
+                spanIds:
+                  type: object
+                  additionalProperties:
+                    type: string
           description: HealthEventResource is the root type for CRD generation. This will map to Kubernetes .spec and .status fields.
       additionalPrinterColumns: []

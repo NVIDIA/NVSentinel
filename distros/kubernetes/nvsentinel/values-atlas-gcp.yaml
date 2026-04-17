@@ -15,11 +15,13 @@
 # NVSentinel — MongoDB Atlas (GCP) values override
 # See docs/external-datastore.md for setup instructions.
 #
-# Usage:
+# Usage (URI only in a Kubernetes Secret — set MONGODB_URI from Atlas Connect → Drivers first):
+#   kubectl create secret generic nvsentinel-datastore-mongodb-uri \
+#     --from-literal=MONGODB_URI="$MONGODB_URI" \
+#     --namespace nvsentinel
 #   helm upgrade --install nvsentinel . \
 #     -f values.yaml \
 #     -f values-atlas-gcp.yaml \
-#     --set-string global.datastore.uri="mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/HealthEventsDatabase?retryWrites=false" \
 #     --namespace nvsentinel
 
 global:
@@ -29,10 +31,10 @@ global:
   datastore:
     provider: "mongodb"
 
-    # Full Atlas connection string (mongodb+srv) — must be passed at deploy time
-    # via --set-string (see Usage above). Do not store credentials in this file.
-    # Format: mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/HealthEventsDatabase?retryWrites=false
-    uri: ""
+    # Full URI must be in Secret key MONGODB_URI (see Usage above).
+    # Atlas uses a public DigiCert CA — no custom CA cert required.
+    credentialsFromSecret:
+      name: nvsentinel-datastore-mongodb-uri
 
     connection:
       database: "HealthEventsDatabase"

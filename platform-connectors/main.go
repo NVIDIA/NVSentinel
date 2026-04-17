@@ -34,7 +34,9 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/flags"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	srv "github.com/nvidia/nvsentinel/commons/pkg/server"
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/grpcsink"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/kubernetes"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
@@ -56,25 +58,31 @@ var (
 )
 
 func main() {
-	logger.SetDefaultStructuredLogger("platform-connectors", version)
-	slog.Info("Starting platform-connectors", "version", version, "commit", commit, "date", date)
+	logger.SetDefaultStructuredLoggerWithTraceCorrelation("platform-connectors", version)
+
+	initCtx := context.Background()
+	slog.InfoContext(initCtx, "Starting platform-connectors", "version", version, "commit", commit, "date", date)
 
 	if err := auditlogger.InitAuditLogger("platform-connectors"); err != nil {
-		slog.Warn("Failed to initialize audit logger", "error", err)
+		slog.WarnContext(initCtx, "Failed to initialize audit logger", "error", err)
+	}
+
+	if err := tracing.InitTracing("platform-connector"); err != nil {
+		slog.WarnContext(initCtx, "Failed to initialize tracing", "error", err)
 	}
 
 	if err := run(); err != nil {
-		slog.Error("Platform connectors exited with error", "error", err)
+		slog.ErrorContext(initCtx, "Platform connectors exited with error", "error", err)
 
 		if closeErr := auditlogger.CloseAuditLogger(); closeErr != nil {
-			slog.Warn("Failed to close audit logger", "error", closeErr)
+			slog.WarnContext(initCtx, "Failed to close audit logger", "error", closeErr)
 		}
 
 		os.Exit(1)
 	}
 
 	if err := auditlogger.CloseAuditLogger(); err != nil {
-		slog.Warn("Failed to close audit logger", "error", err)
+		slog.WarnContext(initCtx, "Failed to close audit logger", "error", err)
 	}
 }
 
@@ -169,10 +177,10 @@ func initializeDatabaseStoreConnector(
 	return storeConnector, nil
 }
 
-func initializePipeline(config map[string]any) (*pipeline.Pipeline, error) {
+func initializePipeline(ctx context.Context, config map[string]any) (*pipeline.Pipeline, error) {
 	pipelineCfg, ok := config["pipeline"].([]any)
 	if !ok || len(pipelineCfg) == 0 {
-		slog.Error("No pipeline configuration found, events will not be transformed")
+		slog.ErrorContext(ctx, "No pipeline configuration found, events will not be transformed")
 		return pipeline.New(), fmt.Errorf("no pipeline configuration found")
 	}
 
@@ -206,7 +214,7 @@ func initializePipeline(config map[string]any) (*pipeline.Pipeline, error) {
 		})
 	}
 
-	return pipeline.NewFromConfigs(transformerConfigs)
+	return pipeline.NewFromConfigs(ctx, transformerConfigs)
 }
 
 func startGRPCServer(
@@ -214,7 +222,7 @@ func startGRPCServer(
 	socket string,
 	pipeline *pipeline.Pipeline,
 ) (net.Listener, error) {
-	slog.Info("Starting gRPC server on Unix socket", "socket", socket)
+	slog.InfoContext(ctx, "Starting gRPC server on Unix socket", "socket", socket)
 
 	err := os.Remove(socket)
 	if err != nil && !os.IsNotExist(err) {
@@ -233,7 +241,7 @@ func startGRPCServer(
 		return nil, fmt.Errorf("failed to set socket permissions: %w", err)
 	}
 
-	slog.Info("gRPC server socket created successfully", "socket", socket, "permissions", "0666")
+	slog.InfoContext(ctx, "gRPC server socket created successfully", "socket", socket, "permissions", "0666")
 
 	var opts []grpc.ServerOption
 
@@ -243,11 +251,11 @@ func startGRPCServer(
 	})
 
 	go func() {
-		slog.Info("Starting gRPC server listener", "socket", socket)
+		slog.InfoContext(ctx, "Starting gRPC server listener", "socket", socket)
 
 		err = grpcServer.Serve(lis)
 		if err != nil {
-			slog.Error("Not able to accept incoming connections", "error", err)
+			slog.ErrorContext(ctx, "Not able to accept incoming connections", "error", err)
 			os.Exit(1)
 		}
 	}()
@@ -255,22 +263,56 @@ func startGRPCServer(
 	return lis, nil
 }
 
+func initializeGRPCSinkConnector(
+	ctx context.Context,
+	config map[string]interface{},
+) (*grpcsink.GRPCSinkConnector, error) {
+	ringBuffer := ringbuffer.NewRingBuffer("grpcSink", ctx)
+	server.InitializeAndAttachRingBufferForConnectors(ringBuffer)
+
+	target, ok := config["GRPCSinkTarget"].(string)
+	if !ok || target == "" {
+		return nil, fmt.Errorf("grpcSinkTarget not configured or empty")
+	}
+
+	maxRetriesInt64, ok := config["GRPCSinkConnectorMaxRetries"].(int64)
+	if !ok {
+		return nil, fmt.Errorf("failed to convert GRPCSinkConnectorMaxRetries to int: %v",
+			config["GRPCSinkConnectorMaxRetries"])
+	}
+
+	maxRetries := int(maxRetriesInt64)
+
+	// Optional SA token auth — empty string disables it
+	tokenPath, _ := config["GRPCSinkTokenPath"].(string)
+
+	connector, err := grpcsink.InitializeGRPCSinkConnector(ringBuffer, target, maxRetries, tokenPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize gRPC sink connector: %w", err)
+	}
+
+	go connector.FetchAndProcessHealthMetric(ctx)
+
+	return connector, nil
+}
+
 func initializeConnectors(
 	ctx context.Context,
 	config map[string]interface{},
 	stopCh chan struct{},
 	databaseClientCertMountPath string,
-) (*ringbuffer.RingBuffer, *store.DatabaseStoreConnector, error) {
+) (*ringbuffer.RingBuffer, *store.DatabaseStoreConnector, *grpcsink.GRPCSinkConnector, error) {
 	var (
-		k8sRingBuffer  *ringbuffer.RingBuffer
-		storeConnector *store.DatabaseStoreConnector
-		err            error
+		k8sRingBuffer     *ringbuffer.RingBuffer
+		storeConnector    *store.DatabaseStoreConnector
+		grpcSinkConnector *grpcsink.GRPCSinkConnector
+		err               error
 	)
 
 	if config["enableK8sPlatformConnector"] == True {
 		k8sRingBuffer, err = initializeK8sConnector(ctx, config, stopCh)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize K8s connector: %w", err)
+			return nil, nil, nil, fmt.Errorf("failed to initialize K8s connector: %w", err)
 		}
 	}
 
@@ -278,18 +320,27 @@ func initializeConnectors(
 	if config["enableMongoDBStorePlatformConnector"] == True || config["enablePostgresDBStorePlatformConnector"] == True {
 		storeConnector, err = initializeDatabaseStoreConnector(ctx, config, databaseClientCertMountPath)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize database store connector: %w", err)
+			return nil, nil, nil, fmt.Errorf("failed to initialize database store connector: %w", err)
 		}
 	}
 
-	return k8sRingBuffer, storeConnector, nil
+	if config["enableGRPCSinkConnector"] == True {
+		grpcSinkConnector, err = initializeGRPCSinkConnector(ctx, config)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to initialize gRPC sink connector: %w", err)
+		}
+	}
+
+	return k8sRingBuffer, storeConnector, grpcSinkConnector, nil
 }
 
 func cleanupResources(
+	ctx context.Context,
 	socket string,
 	lis net.Listener,
 	k8sRingBuffer *ringbuffer.RingBuffer,
 	storeConnector *store.DatabaseStoreConnector,
+	grpcSinkConnector *grpcsink.GRPCSinkConnector,
 ) error {
 	if lis != nil {
 		if k8sRingBuffer != nil {
@@ -297,22 +348,30 @@ func cleanupResources(
 		}
 
 		if err := lis.Close(); err != nil {
-			slog.Error("Failed to close listener", "error", err)
+			slog.ErrorContext(ctx, "Failed to close listener", "error", err)
 		}
 
 		if err := os.Remove(socket); err != nil && !os.IsNotExist(err) {
-			slog.Error("Failed to remove socket file", "error", err)
+			slog.ErrorContext(ctx, "Failed to remove socket file", "error", err)
 		}
 	}
 
 	if storeConnector != nil {
-		storeConnector.ShutdownRingBuffer()
+		storeConnector.ShutdownRingBuffer(ctx)
 
 		disconnectCtx, disconnectCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer disconnectCancel()
 
 		if err := storeConnector.Disconnect(disconnectCtx); err != nil {
 			return fmt.Errorf("error disconnecting database store connector: %w", err)
+		}
+	}
+
+	if grpcSinkConnector != nil {
+		grpcSinkConnector.ShutdownRingBuffer()
+
+		if err := grpcSinkConnector.Close(); err != nil {
+			slog.Error("Failed to close gRPC sink connector", "error", err)
 		}
 	}
 
@@ -353,6 +412,50 @@ func parseFlags() (*platformConnectorConfig, error) {
 	}, nil
 }
 
+func handleShutdown(
+	gCtx context.Context,
+	sigs chan os.Signal,
+	stopCh chan struct{},
+	cfg *platformConnectorConfig,
+	lis net.Listener,
+	k8sRingBuffer *ringbuffer.RingBuffer,
+	storeConnector *store.DatabaseStoreConnector,
+	grpcSinkConnector *grpcsink.GRPCSinkConnector,
+	cancel context.CancelFunc,
+) error {
+	slog.InfoContext(gCtx, "Waiting for SIGINT/SIGTERM or context cancellation")
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
+	defer func() {
+		signal.Stop(sigs)
+		close(sigs)
+	}()
+
+	select {
+	case sig := <-sigs:
+		slog.InfoContext(gCtx, "Received signal", "signal", sig)
+	case <-gCtx.Done():
+		slog.InfoContext(gCtx, "Context cancelled, initiating shutdown")
+	}
+
+	close(stopCh)
+
+	if err := cleanupResources(gCtx, cfg.socket, lis, k8sRingBuffer, storeConnector, grpcSinkConnector); err != nil {
+		return err
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+
+	if err := tracing.ShutdownTracing(shutdownCtx); err != nil {
+		slog.WarnContext(shutdownCtx, "Failed to shutdown tracing", "error", err)
+	}
+
+	cancel()
+
+	return nil
+}
+
 func run() error {
 	cfg, err := parseFlags()
 	if err != nil {
@@ -372,13 +475,13 @@ func run() error {
 		return err
 	}
 
-	k8sRingBuffer, storeConnector, err := initializeConnectors(ctx,
+	k8sRingBuffer, storeConnector, grpcSinkConnector, err := initializeConnectors(ctx,
 		config, stopCh, cfg.databaseClientCertMountPath)
 	if err != nil {
 		return fmt.Errorf("failed to initialize connectors: %w", err)
 	}
 
-	pipeline, err := initializePipeline(config)
+	pipeline, err := initializePipeline(ctx, config)
 	if err != nil {
 		return fmt.Errorf("failed to initialize pipeline: %w", err)
 	}
@@ -398,42 +501,17 @@ func run() error {
 
 	// Metrics server failures are logged but do NOT terminate the service
 	g.Go(func() error {
-		slog.Info("Starting metrics server", "port", cfg.metricsPort)
+		slog.InfoContext(gCtx, "Starting metrics server", "port", cfg.metricsPort)
 
 		if err := srv.Serve(gCtx); err != nil {
-			slog.Error("Metrics server failed - continuing without metrics", "error", err)
+			slog.ErrorContext(gCtx, "Metrics server failed - continuing without metrics", "error", err)
 		}
 
 		return nil
 	})
 
 	g.Go(func() error {
-		slog.Info("Waiting for SIGINT/SIGTERM or context cancellation")
-		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-
-		defer func() {
-			// Always stop signal delivery and close channel to avoid leaks.
-			signal.Stop(sigs)
-			close(sigs)
-		}()
-
-		select {
-		case sig := <-sigs:
-			slog.Info("Received signal", "signal", sig)
-		case <-gCtx.Done():
-			slog.Info("Context cancelled, initiating shutdown")
-		}
-
-		close(stopCh)
-
-		if err := cleanupResources(cfg.socket, lis, k8sRingBuffer, storeConnector); err != nil {
-			return err
-		}
-
-		// Also cancel the root to propagate shutdown to any other goroutines.
-		cancel()
-
-		return nil
+		return handleShutdown(gCtx, sigs, stopCh, cfg, lis, k8sRingBuffer, storeConnector, grpcSinkConnector, cancel)
 	})
 
 	return g.Wait()

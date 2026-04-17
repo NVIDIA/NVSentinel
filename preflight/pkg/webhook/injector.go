@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
@@ -43,6 +44,11 @@ const (
 	dshmVolumeName = "dshm"
 	// ncclTopoVolumeName is the name for the NCCL topology ConfigMap volume
 	ncclTopoVolumeName = "nccl-topo"
+
+	// PreflightChecksAnnotation is the pod annotation listing which preflight
+	// checks to run. Value is a comma-separated list of init container names.
+	// When absent, all containers with defaultEnabled (or omitted) are injected.
+	PreflightChecksAnnotation = "nvsentinel.nvidia.com/preflight-checks"
 )
 
 type PatchOperation struct {
@@ -68,6 +74,45 @@ func NewInjector(cfg *config.Config, discoverer gang.GangDiscoverer) *Injector {
 type GangContext struct {
 	GangID        string
 	ConfigMapName string
+	// CheckNames is a comma-separated list of injected check container
+	// names. Annotation order when annotation is present, chart order
+	// when using defaults.
+	CheckNames string
+}
+
+// ParseCheckNames splits a comma-separated annotation value into a list of
+// container names. Returns an error if any name appears more than once.
+// Exported so the gang controller can use the same parsing.
+func ParseCheckNames(csv string) ([]string, error) {
+	seen := make(map[string]bool)
+
+	var names []string
+
+	for _, part := range strings.Split(csv, ",") {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			continue
+		}
+
+		if seen[name] {
+			return nil, fmt.Errorf("duplicate check name %q in annotation %s",
+				name, PreflightChecksAnnotation)
+		}
+
+		seen[name] = true
+		names = append(names, name)
+	}
+
+	return names, nil
+}
+
+func configuredNames(specs []config.InitContainerSpec) []string {
+	names := make([]string, len(specs))
+	for i, s := range specs {
+		names[i] = s.Name
+	}
+
+	return names
 }
 
 func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *GangContext, error) {
@@ -103,39 +148,64 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 		}
 	}
 
-	initContainers := i.buildInitContainers(pod, maxResources, gangCtx)
+	selected, err := i.selectInitContainers(pod)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	initContainers := i.buildInitContainers(pod, maxResources, gangCtx, selected)
+
+	// Compute check names for gang validation.
+	if gangCtx != nil {
+		names := make([]string, len(initContainers))
+		for idx, c := range initContainers {
+			names[idx] = c.Name
+		}
+
+		gangCtx.CheckNames = strings.Join(names, ",")
+	}
+
 	if len(initContainers) == 0 {
 		// No init containers to inject, but still return gangCtx
 		// so the controller can track gang membership
 		return nil, gangCtx, nil
 	}
 
-	var patches []PatchOperation
+	patches := i.patchInitContainers(pod, initContainers)
+	patches = append(patches, i.injectVolumes(pod, gangCtx)...)
+	patches = append(patches, i.injectImagePullSecrets(pod)...)
 
+	return patches, gangCtx, nil
+}
+
+// patchInitContainers builds JSON Patch operations to add preflight init
+// containers to the pod. When no existing init containers are present,
+// the array is created. Otherwise placement is controlled by config.
+func (i *Injector) patchInitContainers(pod *corev1.Pod, initContainers []corev1.Container) []PatchOperation {
 	if len(pod.Spec.InitContainers) == 0 {
-		patches = append(patches, PatchOperation{
+		return []PatchOperation{{
 			Op:    "add",
 			Path:  "/spec/initContainers",
 			Value: initContainers,
-		})
-	} else {
-		// Append preflight init containers after existing init containers.
-		// This preserves platform/user init ordering and ensures any
-		// provider-injected setup init containers (e.g., GCP TCPXO daemon)
-		// complete before running preflight checks.
-		for _, c := range initContainers {
-			patches = append(patches, PatchOperation{
-				Op:    "add",
-				Path:  "/spec/initContainers/-",
-				Value: c,
-			})
-		}
+		}}
 	}
 
-	volumePatches := i.injectVolumes(pod, gangCtx)
-	patches = append(patches, volumePatches...)
+	patches := make([]PatchOperation, 0, len(initContainers))
 
-	return patches, gangCtx, nil
+	for idx, c := range initContainers {
+		path := "/spec/initContainers/-"
+		if i.cfg.InitContainerPlacement == config.PlacementPrepend {
+			path = fmt.Sprintf("/spec/initContainers/%d", idx)
+		}
+
+		patches = append(patches, PatchOperation{
+			Op:    "add",
+			Path:  path,
+			Value: c,
+		})
+	}
+
+	return patches
 }
 
 // findMaxResources scans all containers and returns the maximum quantity
@@ -184,10 +254,77 @@ func (i *Injector) updateMax(resources corev1.ResourceList, name corev1.Resource
 	}
 }
 
+// selectInitContainers returns the subset of configured init containers to
+// inject based on the pod's preflight-checks annotation or defaultEnabled.
+func (i *Injector) selectInitContainers(pod *corev1.Pod) ([]config.InitContainerSpec, error) {
+	ann, ok := pod.Annotations[PreflightChecksAnnotation]
+	if !ok {
+		// No annotation — use defaultEnabled.
+		var result []config.InitContainerSpec
+
+		for _, spec := range i.cfg.InitContainers {
+			if spec.IsDefaultEnabled() {
+				result = append(result, spec)
+			} else {
+				slog.Debug("Init container disabled by default", "container", spec.Name)
+			}
+		}
+
+		return result, nil
+	}
+
+	// Annotation present — only inject named containers.
+	// ParseCheckNames normalizes: split, trim; rejects duplicates.
+	// An empty or whitespace/comma-only annotation yields an empty list,
+	// which disables all checks.
+	requested, err := ParseCheckNames(ann)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(requested) == 0 {
+		return nil, nil
+	}
+
+	configuredByName := make(map[string]config.InitContainerSpec, len(i.cfg.InitContainers))
+
+	for _, spec := range i.cfg.InitContainers {
+		configuredByName[spec.Name] = spec
+	}
+
+	// Walk annotation order so init container execution order matches
+	// what the user specified.
+	var result []config.InitContainerSpec
+
+	var unknown []string
+
+	for _, name := range requested {
+		spec, exists := configuredByName[name]
+		if !exists {
+			unknown = append(unknown, name)
+
+			continue
+		}
+
+		result = append(result, spec)
+	}
+
+	if len(unknown) > 0 {
+		return nil, fmt.Errorf(
+			"annotation %s references unknown checks: %s (configured: %s)",
+			PreflightChecksAnnotation,
+			strings.Join(unknown, ", "),
+			strings.Join(configuredNames(i.cfg.InitContainers), ", "))
+	}
+
+	return result, nil
+}
+
 func (i *Injector) buildInitContainers(
 	pod *corev1.Pod,
 	maxResources corev1.ResourceList,
 	gangCtx *GangContext,
+	selected []config.InitContainerSpec,
 ) []corev1.Container {
 	var initContainers []corev1.Container
 
@@ -201,7 +338,7 @@ func (i *Injector) buildInitContainers(
 	userEnvVars := i.collectMatchingEnvVars(pod.Spec.Containers)
 	userVolumeMounts := i.collectMatchingVolumeMounts(pod.Spec.Containers)
 
-	for _, tmpl := range i.cfg.InitContainers {
+	for _, tmpl := range selected {
 		container := tmpl.DeepCopy()
 
 		if container.Resources.Requests == nil {
@@ -226,7 +363,6 @@ func (i *Injector) buildInitContainers(
 		}
 
 		i.injectCommonEnv(container)
-		i.injectDCGMEnv(container)
 		i.injectGangEnv(container, gangCtx)
 
 		// Copy matching env vars from user containers (lower precedence
@@ -337,17 +473,17 @@ func (i *Injector) injectCommonEnv(container *corev1.Container) {
 		},
 	}
 
-	if i.cfg.DCGM.ConnectorSocket != "" {
+	if i.cfg.ConnectorSocket != "" {
 		envVars = append(envVars, corev1.EnvVar{
 			Name:  "PLATFORM_CONNECTOR_SOCKET",
-			Value: i.cfg.DCGM.ConnectorSocket,
+			Value: i.cfg.ConnectorSocket,
 		})
 	}
 
-	if i.cfg.DCGM.ProcessingStrategy != "" {
+	if i.cfg.ProcessingStrategy != "" {
 		envVars = append(envVars, corev1.EnvVar{
 			Name:  "PROCESSING_STRATEGY",
-			Value: i.cfg.DCGM.ProcessingStrategy,
+			Value: i.cfg.ProcessingStrategy,
 		})
 	}
 
@@ -364,7 +500,7 @@ func (i *Injector) injectVolumes(pod *corev1.Pod, gangCtx *GangContext) []PatchO
 		existingVolumes[vol.Name] = true
 	}
 
-	if i.cfg.DCGM.ConnectorSocket != "" && !existingVolumes[nvsentinelSocketVolumeName] {
+	if i.cfg.ConnectorSocket != "" && !existingVolumes[nvsentinelSocketVolumeName] {
 		// Platform-connector mounts /var/run/nvsentinel (host) -> /var/run (container)
 		// and creates socket at /var/run/nvsentinel.sock inside its container.
 		// This is the same hostPath used by gpu-health-monitor.
@@ -403,6 +539,51 @@ func (i *Injector) injectVolumes(pod *corev1.Pod, gangCtx *GangContext) []PatchO
 				Value: vol,
 			})
 		}
+	}
+
+	return patches
+}
+
+// injectImagePullSecrets builds JSON Patch operations to add configured
+// imagePullSecrets to the pod. Secrets already present on the pod are skipped.
+func (i *Injector) injectImagePullSecrets(pod *corev1.Pod) []PatchOperation {
+	if len(i.cfg.ImagePullSecrets) == 0 {
+		return nil
+	}
+
+	existing := make(map[string]bool, len(pod.Spec.ImagePullSecrets))
+	for _, s := range pod.Spec.ImagePullSecrets {
+		existing[s.Name] = true
+	}
+
+	var toAdd []corev1.LocalObjectReference
+
+	for _, s := range i.cfg.ImagePullSecrets {
+		if !existing[s.Name] {
+			toAdd = append(toAdd, s)
+			existing[s.Name] = true
+		}
+	}
+
+	if len(toAdd) == 0 {
+		return nil
+	}
+
+	if len(pod.Spec.ImagePullSecrets) == 0 {
+		return []PatchOperation{{
+			Op:    "add",
+			Path:  "/spec/imagePullSecrets",
+			Value: toAdd,
+		}}
+	}
+
+	patches := make([]PatchOperation, 0, len(toAdd))
+	for _, s := range toAdd {
+		patches = append(patches, PatchOperation{
+			Op:    "add",
+			Path:  "/spec/imagePullSecrets/-",
+			Value: s,
+		})
 	}
 
 	return patches
@@ -521,29 +702,6 @@ func parseHostPathType(hostPathType string) (*corev1.HostPathType, bool) {
 	}
 
 	return &t, true
-}
-
-// injectDCGMEnv injects DCGM-specific environment variables for the dcgm-diag check.
-func (i *Injector) injectDCGMEnv(container *corev1.Container) {
-	if container.Name != "preflight-dcgm-diag" {
-		return
-	}
-
-	envVars := []corev1.EnvVar{
-		{
-			Name:  "DCGM_DIAG_LEVEL",
-			Value: fmt.Sprintf("%d", i.cfg.DCGM.DiagLevel),
-		},
-	}
-
-	if i.cfg.DCGM.HostengineAddr != "" {
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  "DCGM_HOSTENGINE_ADDR",
-			Value: i.cfg.DCGM.HostengineAddr,
-		})
-	}
-
-	i.mergeEnvVars(container, envVars)
 }
 
 // injectGangEnv injects gang-related environment variables for multi-node checks.

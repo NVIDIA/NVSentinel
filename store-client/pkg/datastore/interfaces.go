@@ -77,13 +77,25 @@ type HealthEventStore interface {
 	UpdateHealthEventsByQuery(ctx context.Context, queryBuilder QueryBuilder, updateBuilder UpdateBuilder) error
 
 	// Convenience methods for common operations
-	UpdateNodeQuarantineStatus(ctx context.Context, eventID string, status Status) error
+	UpdateNodeQuarantineStatus(ctx context.Context, eventID string, status Status, spanID string) error
 	UpdatePodEvictionStatus(ctx context.Context, eventID string, status OperationStatus) error
 	UpdateRemediationStatus(ctx context.Context, eventID string, status interface{}) error
+
+	// Writes a service's span ID into the span_ids map for trace context propagation.
+	UpdateSpanID(ctx context.Context, id string, serviceName string, spanID string) error
 
 	// Node drain specific operations
 	CheckIfNodeAlreadyDrained(ctx context.Context, nodeName string) (bool, error)
 	FindLatestEventForNode(ctx context.Context, nodeName string) (*HealthEventWithStatus, error)
+
+	// Cold-start support: iterates matching events in bounded batches.
+	// fn is called once per batch; return a non-nil error from fn to stop iteration.
+	// MongoDB: cursor-based batch iteration
+	// PostgreSQL: LIMIT/OFFSET pagination
+	FindHealthEventsByQueryBatched(
+		ctx context.Context, builder QueryBuilder, batchSize int,
+		fn func([]HealthEventWithStatus) error,
+	) error
 }
 
 // QueryBuilder interface for database-agnostic queries

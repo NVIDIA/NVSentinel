@@ -1,0 +1,206 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# NVSentinel configuration for custom remediation demo
+
+global:
+  dryRun: false
+
+  # Enable core components needed for custom remediation
+  platformConnector:
+    enabled: true
+
+  faultQuarantine:
+    enabled: true
+
+  nodeDrainer:
+    enabled: true
+
+  faultRemediation:
+    enabled: true
+
+  mongodbStore:
+    enabled: true
+
+  # Disable all health monitors (we use our own memory-pressure-monitor)
+  gpuHealthMonitor:
+    enabled: false
+
+  syslogHealthMonitor:
+    enabled: false
+
+  cspHealthMonitor:
+    enabled: false
+
+  kubernetesObjectMonitor:
+    enabled: false
+
+  # Disable components not needed for this demo
+  healthEventsAnalyzer:
+    enabled: false
+
+  janitor:
+    enabled: false
+
+  labeler:
+    enabled: false
+
+  metadataCollector:
+    enabled: false
+
+# Disable monitoring (no Prometheus in this demo)
+monitoring:
+  enabled: false
+podMonitor:
+  enabled: false
+
+# Simple Health Client for viewing events
+simpleHealthClient:
+  enabled: true
+  replicas: 1
+  resources:
+    requests:
+      memory: "64Mi"
+      cpu: "50m"
+    limits:
+      memory: "128Mi"
+      cpu: "200m"
+
+# MongoDB sub-chart configuration
+mongodb-store:
+  useBitnami: true
+  usePerconaOperator: false
+
+  job:
+    nodeSelector:
+      node-role.kubernetes.io/control-plane: ""
+    tolerations:
+      - operator: Exists
+
+  mongodb:
+    replicaCount: 1
+    nodeSelector:
+      node-role.kubernetes.io/control-plane: ""
+
+    tolerations:
+    - operator: Exists
+
+    jobTolerations:
+    - operator: Exists
+
+    image:
+      registry: "docker.io"
+      repository: "bitnamilegacy/mongodb"
+      tag: "8.0.3-debian-12-r1"
+      pullPolicy: "IfNotPresent"
+
+    tls:
+      replicaset:
+        existingSecrets:
+          - "mongo-server-cert-0"
+
+      image:
+        registry: "docker.io"
+        repository: "bitnamilegacy/nginx"
+        tag: "1.27.2-debian-12-r2"
+        pullPolicy: "IfNotPresent"
+
+    metrics:
+      enabled: true
+      image:
+        registry: docker.io
+        repository: bitnamilegacy/mongodb-exporter
+        tag: 0.41.2-debian-12-r1
+
+    auth:
+      enabled: true
+      rootPassword: "demo-password"
+    persistence:
+      enabled: false
+
+# Platform Connector configuration
+platform-connectors:
+  clientCertMountPath: /etc/ssl/mongo-client
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# Fault Quarantine configuration
+fault-quarantine:
+  clientCertMountPath: /etc/ssl/mongo-client
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  ruleSets:
+    - enabled: true
+      version: "1"
+      name: "GPU fatal error ruleset"
+      match:
+        all:
+          - kind: "HealthEvent"
+            expression: "event.agent == 'gpu-health-monitor' && event.componentClass == 'GPU' && event.isFatal == true"
+      cordon:
+        shouldCordon: true
+    - enabled: true
+      version: "1"
+      name: "Memory pressure monitor ruleset"
+      match:
+        all:
+          - kind: "HealthEvent"
+            expression: "event.agent == 'memory-pressure-monitor' && event.componentClass == 'Memory' && event.isFatal == true"
+      cordon:
+        shouldCordon: true
+
+# Node Drainer configuration
+node-drainer:
+  systemNamespaces: "^(nvsentinel|kube-system|gpu-operator|cert-manager|local-path-storage)$"
+  userNamespaces:
+    - name: "default"
+      mode: "Immediate"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# Fault Remediation with custom RECLAIM_MEMORY action
+fault-remediation:
+  clientCertMountPath: /etc/ssl/mongo-client
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  maintenance:
+    actions:
+      RECLAIM_MEMORY:
+        apiGroup: "demo.nvsentinel.nvidia.com"
+        version: "v1alpha1"
+        kind: "MemoryReclaim"
+        scope: "Cluster"
+        completeConditionType: "MemoryReclaimed"
+        templateFileName: "reclaim-memory-template.yaml"
+        equivalenceGroup: "memory-reclaim"
+
+    templates:
+      "reclaim-memory-template.yaml": |
+        apiVersion: demo.nvsentinel.nvidia.com/v1alpha1
+        kind: MemoryReclaim
+        metadata:
+          name: memory-reclaim-{{ .HealthEvent.NodeName }}-{{ .HealthEventID }}
+          labels:
+            app.kubernetes.io/managed-by: nvsentinel
+        spec:
+          nodeName: {{ .HealthEvent.NodeName }}

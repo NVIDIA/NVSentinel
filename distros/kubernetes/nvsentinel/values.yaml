@@ -34,19 +34,18 @@ global:
   #   # Database provider. Supported values: "mongodb", "postgresql"
   #   provider: "mongodb"
   #
-  #   # --- Connection ---
-  #   # Option 1 — full connection URI (use for external/managed MongoDB services).
-  #   # Required for Atlas, DocumentDB, and Cosmos DB which need a full connection string.
-  #   # If set, takes priority over the individual connection fields below.
-  #   # Examples:
-  #   #   MongoDB Atlas:    mongodb+srv://user:pass@cluster.mongodb.net/
-  #   #   AWS DocumentDB:   mongodb://user:pass@cluster.xxx.us-east-1.docdb.amazonaws.com:27017/
-  #   #   Azure Cosmos DB:  mongodb://account:key==@account.mongo.cosmos.azure.com:10255/?ssl=true
-  #   uri: ""
+  #   # --- MongoDB connection URI ---
+  #   # External MongoDB (global.mongodbStore.enabled false): full URI only via Secret
+  #   # key MONGODB_URI and credentialsFromSecret.name (envFrom.secretRef). Do not set uri.
+  #   # In-cluster + global.mongodbStore.enabled true: credential-free URI can be built from
+  #   # connection.* in the ConfigMap unless credentialsFromSecret is set; see docs/external-datastore.md.
+  #   credentialsFromSecret:
+  #     name: ""
   #
-  #   # Option 2 — individual connection fields (use for PostgreSQL).
-  #   # PostgreSQL requires separate fields for SSL mode, cert paths, etc.
-  #   # Not needed for external MongoDB — use the uri field above instead.
+  #   # --- Connection metadata ---
+  #   # Individual fields (PostgreSQL; optional MongoDB metadata such as database/collection names).
+  #   # For external MongoDB, connection.database etc. still configure collection env vars;
+  #   # the URI itself always comes from the Secret above.
   #   connection:
   #     host: ""
   #     port: 5432           # 5432 for PostgreSQL, 27017 for MongoDB
@@ -72,7 +71,7 @@ global:
   #     mechanism: "scram"
   #     # For scram: name of a Kubernetes Secret containing DB credentials.
   #     # Secret must have keys: username, password.
-  #     # Not needed if credentials are already embedded in the uri field above.
+  #     # Not needed when application auth is via MONGODB_URI in credentialsFromSecret only.
   #     existingSecret: ""
   #     # For x509: name of a Kubernetes Secret containing the client certificate.
   #     # Secret must have keys: tls.crt, tls.key, ca.crt.
@@ -94,7 +93,7 @@ global:
   #       pullPolicy: IfNotPresent
   #     # Optional: name of an existing Kubernetes Secret with admin credentials
   #     # for the setup job to authenticate. Secret must have keys: username, password.
-  #     # Not needed if admin credentials are embedded in the uri field above.
+  #     # Not needed if MONGODB_URI in credentialsFromSecret has sufficient privileges.
   #     adminSecret: ""
 
   # Certificate rotation (MongoDB only)
@@ -107,7 +106,7 @@ global:
   metadataPath: /var/lib/nvsentinel/gpu_metadata.json
 
   # DCGM (Data Center GPU Manager) configuration
-  # Shared by gpu-health-monitor and preflight dcgm-diag
+  # Used by gpu-health-monitor
   dcgm:
     # Enable DCGM Kubernetes service integration
     enabled: true
@@ -116,6 +115,13 @@ global:
       endpoint: "nvidia-dcgm.gpu-operator.svc"
       # DCGM hostengine service port
       port: 5555
+
+  # OpenTelemetry tracing configuration
+  tracing:
+    enabled: false # Enable/disable tracing for all components
+    insecure: false # Set to true to disable TLS for the collector connection
+    # OTel collector's OTLP gRPC endpoint (host:port) for trace ingestion
+    endpoint: ""
 
   # Audit logging configuration
   auditLogging:
@@ -207,6 +213,21 @@ platformConnector:
 
   postgresqlStore:
     clientCertMountPath: "/etc/ssl/client-certs"
+
+  # gRPC sink connector - forwards health events to an external gRPC server
+  # using the PlatformConnector HealthEventOccurredV1 RPC.
+  grpcSinkConnector:
+    # Enable or disable the gRPC sink connector.
+    enabled: false
+    # gRPC server address, e.g. "my-service.example.com:50051".
+    target: ""
+    # Number of retry attempts (with exponential backoff) before dropping an event.
+    # Total send attempts = 1 initial + maxRetries retries.
+    maxRetries: 3
+    # Optional: path to a projected Kubernetes ServiceAccount token for
+    # bearer token authentication.
+    # Leave empty to disable authentication.
+    tokenPath: ""
 
   k8sConnector:
     enabled: true
@@ -301,3 +322,4 @@ podMonitor:
   # scrapeTimeout: ""  # Scrape timeout (defaults to Prometheus default if not specified)
   # metricsPath: "/metrics"  # Metrics path (defaults to /metrics)
   # labels: {}  # Additional labels for the PodMonitor resource
+  

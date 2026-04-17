@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sync/errgroup"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -32,11 +33,16 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	"github.com/go-logr/logr"
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/initializer"
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 func init() {
@@ -66,11 +72,19 @@ var (
 )
 
 func main() {
-	logger.SetDefaultStructuredLogger("fault-remediation", version)
+	logger.SetDefaultStructuredLoggerWithTraceCorrelation("fault-remediation", version)
 	slog.Info("Starting fault-remediation", "version", version, "commit", commit, "date", date)
+
+	// Set controller-runtime's log sink so manager and controllers can log (required for shutdown, etc.)
+	logrLogger := logr.FromSlogHandler(slog.Default().Handler())
+	ctrllog.SetLogger(logrLogger)
 
 	if err := auditlogger.InitAuditLogger("fault-remediation"); err != nil {
 		slog.Warn("Failed to initialize audit logger", "error", err)
+	}
+
+	if err := tracing.InitTracing("fault-remediation"); err != nil {
+		slog.Warn("Failed to initialize tracing", "error", err)
 	}
 
 	if err := run(); err != nil {
@@ -91,11 +105,22 @@ func main() {
 func run() error {
 	parseFlags()
 
+	ff := metrics.NewRegistry("fault-remediation",
+		metrics.WithRegisterer(crmetrics.Registry),
+	)
+	ff.Set("dry_run", dryRun)
+	ff.Set("leader_election", enableLeaderElection)
+	ff.Set("log_collector", enableLogCollector)
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	err := setupCtrlRuntimeManagement(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			slog.Info("Shutdown complete (signal received)", "reason", ctx.Err())
+		}
+
 		return err
 	}
 
@@ -105,12 +130,63 @@ func run() error {
 func setupCtrlRuntimeManagement(ctx context.Context) error {
 	slog.Info("Running in controller runtime managed mode")
 
+	mgr, err := createManager()
+	if err != nil {
+		return err
+	}
+
+	params := initializer.InitializationParams{
+		TomlConfigPath:     tomlConfigPath,
+		DryRun:             dryRun,
+		EnableLogCollector: enableLogCollector,
+		Config:             mgr.GetConfig(),
+	}
+
+	g, gCtx := errgroup.WithContext(ctx)
+
+	// Start the manager first so health/metrics endpoints are live immediately.
+	// This prevents Kubernetes liveness probes from killing the pod while MongoDB
+	// initialization (which may be slow due to stale resume tokens or connectivity
+	// issues) is still in progress.
+	g.Go(func() error {
+		slog.Info("Starting controller runtime controller")
+
+		if err := mgr.Start(gCtx); err != nil {
+			slog.Error("Problem running manager", "error", err)
+			return err
+		}
+
+		return nil
+	})
+
+	// Initialize datastore and reconciler concurrently — the manager is already
+	// serving health probes, so the pod won't be killed during this phase.
+	// cleanupReconciler is set once the reconciler is created so cleanup can run
+	// after g.Wait() (i.e., after the manager has fully drained).
+	var cleanupReconciler func()
+
+	g.Go(func() error {
+		cleanup, initErr := initializeAndWatch(gCtx, params, mgr)
+		cleanupReconciler = cleanup
+
+		return initErr
+	})
+
+	err = g.Wait()
+
+	if cleanupReconciler != nil {
+		cleanupReconciler()
+	}
+
+	return err
+}
+
+func createManager() (ctrl.Manager, error) {
 	cfg := ctrl.GetConfigOrDie()
 	cfg.Wrap(func(rt http.RoundTripper) http.RoundTripper {
 		return auditlogger.NewAuditingRoundTripper(rt)
 	})
 
-	//TODO: setup informers for node and job
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
@@ -126,52 +202,66 @@ func setupCtrlRuntimeManagement(ctx context.Context) error {
 	})
 	if err != nil {
 		slog.Error("Unable to start manager", "error", err)
-		return err
+		return nil, err
 	}
 
 	if err = mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		slog.Error("Unable to set up health check", "error", err)
-		return err
+		return nil, err
 	}
 
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		slog.Error("Unable to set up ready check", "error", err)
-		return err
+		return nil, err
 	}
 
-	params := initializer.InitializationParams{
-		TomlConfigPath:     tomlConfigPath,
-		DryRun:             dryRun,
-		EnableLogCollector: enableLogCollector,
-		Config:             mgr.GetConfig(),
-	}
+	return mgr, nil
+}
 
+const reconcilerCloseTimeout = 30 * time.Second
+
+// initializeAndWatch performs MongoDB initialization, registers the reconciler, and
+// blocks until shutdown or unexpected stream death. It returns a cleanup function that
+// the caller must invoke after the manager has fully stopped (after g.Wait) so that
+// datastore resources are not torn down under in-flight reconciles.
+func initializeAndWatch(
+	ctx context.Context, params initializer.InitializationParams, mgr ctrl.Manager,
+) (cleanup func(), err error) {
 	components, err := initializer.InitializeAll(ctx, params, mgr.GetClient())
 	if err != nil {
-		return fmt.Errorf("initialization failed: %w", err)
+		return nil, fmt.Errorf("initialization failed: %w", err)
 	}
 
 	reconciler := components.FaultRemediationReconciler
 
-	defer func() {
-		if err := reconciler.CloseAll(ctx); err != nil {
-			slog.Error("failed to close datastore components", "error", err)
+	cleanup = func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), reconcilerCloseTimeout)
+		defer cancel()
+
+		if closeErr := reconciler.CloseAll(closeCtx); closeErr != nil {
+			slog.Error("failed to close datastore components", "error", closeErr)
 		}
-	}()
-
-	err = components.FaultRemediationReconciler.SetupWithManager(ctx, mgr)
-	if err != nil {
-		return fmt.Errorf("SetupWithManager failed: %w", err)
 	}
 
-	slog.Info("Starting controller runtime controller")
-
-	if err = mgr.Start(ctx); err != nil {
-		slog.Error("Problem running manager", "error", err)
-		return err
+	watcherDone, setupErr := reconciler.SetupWithManager(ctx, mgr)
+	if setupErr != nil {
+		return cleanup, fmt.Errorf("SetupWithManager failed: %w", setupErr)
 	}
 
-	return nil
+	slog.Info("Initialization completed, reconciler registered with manager")
+
+	reconciler.HandleColdStart(ctx)
+
+	select {
+	case <-ctx.Done():
+		return cleanup, nil
+	case <-watcherDone:
+		if ctx.Err() == nil {
+			return cleanup, fmt.Errorf("change stream watcher terminated unexpectedly, event processing has stopped")
+		}
+
+		return cleanup, nil
+	}
 }
 
 func parseFlags() {

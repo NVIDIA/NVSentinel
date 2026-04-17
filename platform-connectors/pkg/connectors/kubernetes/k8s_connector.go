@@ -20,10 +20,12 @@ import (
 	"log/slog"
 	"net/http"
 
+	"go.opentelemetry.io/otel/attribute"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 )
 
@@ -103,21 +105,33 @@ func (r *K8sConnector) FetchAndProcessHealthMetric(ctx context.Context) {
 	for {
 		select {
 		case <-r.stopCh:
-			slog.Info("k8sConnector queue received stop signal")
+			slog.InfoContext(r.ctx, "k8sConnector queue received stop signal")
 			return
 		default:
-			healthEvents, quit := r.ringBuffer.Dequeue()
+			queuedHealthEvents, quit := r.ringBuffer.Dequeue()
 			if quit {
-				slog.Info("Queue signaled shutdown, exiting processing loop")
+				slog.InfoContext(ctx, "Queue signaled shutdown, exiting processing loop")
 				return
 			}
 
-			if err := r.processHealthEvents(ctx, healthEvents); err != nil {
-				slog.Error("Not able to process healthEvent", "error", err)
-				r.ringBuffer.HealthMetricEleProcessingFailed(healthEvents)
+			healthEvents := queuedHealthEvents.Events
+
+			batchCtx, span := tracing.StartSpanWithLinkFromSpanContext(
+				ctx, queuedHealthEvents.ParentSpanContext, "platform_connector.k8s.fetch_and_process_health_metric")
+
+			if err := r.processHealthEvents(batchCtx, healthEvents); err != nil {
+				slog.ErrorContext(batchCtx, "Not able to process healthEvent", "error", err)
+				tracing.RecordError(span, err)
+				span.SetAttributes(
+					attribute.String("platform_connector.k8s.error.type", "not_able_to_process_health_event"),
+					attribute.String("platform_connector.k8s.error.message", err.Error()),
+				)
+				r.ringBuffer.HealthMetricEleProcessingFailed(queuedHealthEvents)
 			} else {
-				r.ringBuffer.HealthMetricEleProcessingCompleted(healthEvents)
+				r.ringBuffer.HealthMetricEleProcessingCompleted(queuedHealthEvents)
 			}
+
+			span.End()
 		}
 	}
 }

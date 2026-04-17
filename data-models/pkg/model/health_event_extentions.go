@@ -42,3 +42,14 @@ type HealthEventWithStatus struct {
 	HealthEvent       *protos.HealthEvent       `bson:"healthevent,omitempty"`
 	HealthEventStatus *protos.HealthEventStatus `bson:"healtheventstatus"`
 }
+
+// GetEffectiveActionName returns the action name to use for remediation routing.
+// For built-in actions, returns the enum string (e.g., "RESTART_BM").
+// For CUSTOM actions, returns the customRecommendedAction string.
+func GetEffectiveActionName(he *protos.HealthEvent) string {
+	if he.RecommendedAction == protos.RecommendedAction_CUSTOM {
+		return he.CustomRecommendedAction
+	}
+
+	return he.RecommendedAction.String()
+}

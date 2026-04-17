@@ -29,6 +29,10 @@ data:
       "StoreConnectorMaxRetries": {{ .Values.platformConnector.mongodbStore.maxRetries }},
       "enableMongoDBStorePlatformConnector": "{{ or .Values.global.mongodbStore.enabled (and .Values.global.datastore (eq (default "" .Values.global.datastore.provider) "mongodb")) }}",
       "enablePostgresDBStorePlatformConnector": {{ if and .Values.global.datastore .Values.global.datastore.provider }}{{ eq .Values.global.datastore.provider "postgresql" | quote }}{{ else }}"false"{{ end }}
+      ,"enableGRPCSinkConnector": "{{ .Values.platformConnector.grpcSinkConnector.enabled }}"
+      ,"GRPCSinkTarget": "{{ .Values.platformConnector.grpcSinkConnector.target }}"
+      ,"GRPCSinkConnectorMaxRetries": {{ .Values.platformConnector.grpcSinkConnector.maxRetries }}
+      ,"GRPCSinkTokenPath": "{{ .Values.platformConnector.grpcSinkConnector.tokenPath }}"
       {{- with .Values.platformConnector.pipeline }}
       ,"pipeline": {{ . | toJson }}
       {{- end }}

@@ -15,14 +15,87 @@
 package parser
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSidecarParser_WaitUntilReady_ImmediatelyReady(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	p := NewSidecarParser(server.URL, "test-node", "570.148.08")
+	err := p.WaitUntilReady(context.Background(), 5, 100*time.Millisecond)
+	assert.NoError(t, err)
+}
+
+func TestSidecarParser_WaitUntilReady_BecomesReadyAfterDelay(t *testing.T) {
+	listener, err := net.Listen("tcp", "localhost:0")
+	require.NoError(t, err)
+
+	addr := listener.Addr().String()
+	listener.Close()
+
+	go func() {
+		time.Sleep(1 * time.Second)
+		ln, listenErr := net.Listen("tcp", addr)
+		if listenErr != nil {
+			return
+		}
+		defer ln.Close()
+		// Keep accepting until test ends
+		for {
+			conn, acceptErr := ln.Accept()
+			if acceptErr != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+
+	p := NewSidecarParser(fmt.Sprintf("http://%s", addr), "test-node", "570.148.08")
+	err = p.WaitUntilReady(context.Background(), 15, 200*time.Millisecond)
+	assert.NoError(t, err)
+}
+
+func TestSidecarParser_WaitUntilReady_ContextCancelled(t *testing.T) {
+	listener, err := net.Listen("tcp", "localhost:0")
+	require.NoError(t, err)
+
+	addr := listener.Addr().String()
+	listener.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	p := NewSidecarParser(fmt.Sprintf("http://%s", addr), "test-node", "570.148.08")
+	err = p.WaitUntilReady(ctx, 30, 200*time.Millisecond)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "context")
+}
+
+func TestSidecarParser_WaitUntilReady_ExhaustsRetries(t *testing.T) {
+	listener, err := net.Listen("tcp", "localhost:0")
+	require.NoError(t, err)
+
+	addr := listener.Addr().String()
+	listener.Close()
+
+	p := NewSidecarParser(fmt.Sprintf("http://%s", addr), "test-node", "570.148.08")
+	err = p.WaitUntilReady(context.Background(), 3, 100*time.Millisecond)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not ready after 3 attempts")
+}
 
 func TestSidecarParser_Parse(t *testing.T) {
 	testCases := []struct {

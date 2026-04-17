@@ -23,8 +23,11 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/XSAM/otelsql"
 	_ "github.com/lib/pq" // PostgreSQL driver
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/store-client/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
@@ -68,8 +71,11 @@ func NewPostgreSQLClientFromDB(db *sql.DB, tableName string) *PostgreSQLClient {
 
 // NewPostgreSQLClient creates a new PostgreSQL client from database configuration
 func NewPostgreSQLClient(ctx context.Context, dbConfig config.DatabaseConfig) (*PostgreSQLClient, error) {
-	// Open PostgreSQL connection
-	db, err := sql.Open("postgres", dbConfig.GetConnectionURI())
+	// Open PostgreSQL connection with OTel instrumentation
+	db, err := otelsql.Open("postgres", dbConfig.GetConnectionURI(),
+		otelsql.WithAttributes(semconv.DBSystemPostgreSQL),
+		otelsql.WithTracerProvider(tracing.GetChildOnlyTracerProvider()),
+	)
 	if err != nil {
 		return nil, datastore.NewConnectionError(
 			datastore.ProviderPostgreSQL,

@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
@@ -153,18 +154,30 @@ func (c *GangController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, nil
 	}
 
+	// The webhook may have used a different gang ID (e.g., from a label
+	// fallback) than the one the controller discovers from the scheduler
+	// annotation. We must update the ConfigMap the webhook mounted, not
+	// create a new one derived from the controller's gang ID.
+	webhookCM := webhookConfigMapName(&pod)
+
+	// Build check names in chart order — same logic as the injector's
+	// selectInitContainers so both paths produce identical strings.
+	checkNames := checkNamesFromPod(&pod, c.cfg)
+
 	peer := gang.PeerInfo{
-		PodName:   pod.Name,
-		PodIP:     pod.Status.PodIP,
-		NodeName:  pod.Spec.NodeName,
-		Namespace: pod.Namespace,
+		PodName:    pod.Name,
+		PodIP:      pod.Status.PodIP,
+		NodeName:   pod.Spec.NodeName,
+		Namespace:  pod.Namespace,
+		CheckNames: checkNames,
 	}
 
-	if err := c.coordinator.RegisterPeer(ctx, pod.Namespace, gangInfo, peer); err != nil {
+	if err := c.coordinator.RegisterPeerInConfigMap(ctx, pod.Namespace, webhookCM, gangInfo, peer); err != nil {
 		slog.Error("Failed to register peer",
 			"pod", pod.Name,
 			"namespace", pod.Namespace,
 			"gangID", gangID,
+			"configMap", webhookCM,
 			"error", err)
 
 		return ctrl.Result{}, fmt.Errorf("failed to register peer: %w", err)
@@ -174,7 +187,10 @@ func (c *GangController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		"pod", pod.Name,
 		"namespace", pod.Namespace,
 		"gangID", gangID,
+		"configMap", webhookCM,
 		"podIP", pod.Status.PodIP)
+
+	c.cleanupOrphanedConfigMap(ctx, pod.Namespace, webhookCM, gangID)
 
 	return ctrl.Result{}, nil
 }
@@ -256,4 +272,102 @@ func (c *GangController) ensureNCCLTopoConfigMap(ctx context.Context, namespace 
 	slog.Info("Created NCCL topo ConfigMap",
 		"namespace", namespace,
 		"configMap", gcfg.NCCLTopoConfigMap)
+}
+
+// webhookConfigMapName extracts the ConfigMap name from the pod's gang config
+// volume. This is the ConfigMap the webhook created and the init container is
+// actually reading — the controller must update this one, not derive a new name.
+func webhookConfigMapName(pod *corev1.Pod) string {
+	for _, vol := range pod.Spec.Volumes {
+		if vol.Name == types.GangConfigVolumeName && vol.ConfigMap != nil {
+			return vol.ConfigMap.Name
+		}
+	}
+
+	return ""
+}
+
+// cleanupOrphanedConfigMap deletes the annotation-derived ConfigMap when the
+// webhook mounted a different one (label-fallback). This happens when the
+// webhook used a provisional gang ID before the scheduler annotation arrived.
+func (c *GangController) cleanupOrphanedConfigMap(ctx context.Context, namespace, webhookCM, gangID string) {
+	derivedCM := gang.ConfigMapName(gangID)
+	if webhookCM == "" || derivedCM == webhookCM {
+		return
+	}
+
+	c.deleteOrphanedConfigMap(ctx, namespace, derivedCM)
+}
+
+// deleteOrphanedConfigMap deletes a gang ConfigMap that was created for an
+// annotation-based gang ID that differs from the webhook's label-based one.
+// This is best-effort — if it doesn't exist, that's fine.
+func (c *GangController) deleteOrphanedConfigMap(ctx context.Context, namespace, name string) {
+	cm := &corev1.ConfigMap{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, cm); err != nil {
+		if !errors.IsNotFound(err) {
+			slog.Debug("Failed to get orphaned gang ConfigMap",
+				"configMap", name,
+				"namespace", namespace,
+				"error", err)
+		}
+
+		return
+	}
+
+	if err := c.Delete(ctx, cm); err != nil && !errors.IsNotFound(err) {
+		slog.Warn("Failed to delete orphaned gang ConfigMap",
+			"configMap", name,
+			"namespace", namespace,
+			"error", err)
+
+		return
+	}
+
+	slog.Info("Deleted orphaned gang ConfigMap",
+		"configMap", name,
+		"namespace", namespace)
+}
+
+// checkNamesFromPod computes the check names string for a pod, matching
+// the injector's selectInitContainers logic. Annotation order is preserved
+// so the string matches what the injector produces.
+func checkNamesFromPod(pod *corev1.Pod, cfg *config.Config) string {
+	ann, ok := pod.Annotations[webhook.PreflightChecksAnnotation]
+	if !ok {
+		// No annotation — use defaultEnabled in chart order.
+		var names []string
+
+		for _, spec := range cfg.InitContainers {
+			if spec.IsDefaultEnabled() {
+				names = append(names, spec.Name)
+			}
+		}
+
+		return strings.Join(names, ",")
+	}
+
+	// Annotation present — use annotation order, skip unknown names.
+	parsed, err := webhook.ParseCheckNames(ann)
+	if err != nil {
+		slog.Warn("Failed to parse preflight-checks annotation",
+			"pod", pod.Name, "error", err)
+
+		return ""
+	}
+
+	configuredSet := make(map[string]bool, len(cfg.InitContainers))
+	for _, spec := range cfg.InitContainers {
+		configuredSet[spec.Name] = true
+	}
+
+	var names []string
+
+	for _, name := range parsed {
+		if configuredSet[name] {
+			names = append(names, name)
+		}
+	}
+
+	return strings.Join(names, ",")
 }

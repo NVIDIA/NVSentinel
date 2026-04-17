@@ -56,17 +56,18 @@ type InitializationParams struct {
 
 // Components holds the initialized runtime dependencies returned by InitializeAll.
 type Components struct {
-	Informers      *informers.Informers
-	EventWatcher   client.ChangeStreamWatcher
-	QueueManager   queue.EventQueueManager
-	Reconciler     *reconciler.Reconciler
-	DatabaseClient client.DatabaseClient
-	DataStore      datastore.DataStore
+	Informers          *informers.Informers
+	EventWatcher       client.ChangeStreamWatcher
+	QueueManager       queue.EventQueueManager
+	Reconciler         *reconciler.Reconciler
+	DatabaseClient     client.DatabaseClient
+	DataStore          datastore.DataStore
+	CustomDrainEnabled bool
 }
 
 // InitializeAll creates all node-drainer runtime dependencies from the given params and returns them as Components.
 func InitializeAll(ctx context.Context, params InitializationParams) (*Components, error) {
-	slog.Info("Starting node drainer initialization")
+	slog.InfoContext(ctx, "Starting node drainer initialization")
 
 	configs, err := loadConfigurations(params)
 	if err != nil {
@@ -76,13 +77,13 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 	pipeline := config.NewQuarantinePipeline()
 
 	if params.DryRun {
-		slog.Info("Running in dry-run mode")
+		slog.InfoContext(ctx, "Running in dry-run mode")
 	}
 
 	if configs.tomlCfg.PartialDrainEnabled {
-		slog.Info("Running with partial drain enabled")
+		slog.InfoContext(ctx, "Running with partial drain enabled")
 	} else {
-		slog.Info("Running with partial drain disabled")
+		slog.InfoContext(ctx, "Running with partial drain disabled")
 	}
 
 	clientSet, restConfig, err := initializeKubernetesClient(params.KubeconfigPath)
@@ -90,7 +91,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		return nil, fmt.Errorf("failed to initialize kubernetes client: %w", err)
 	}
 
-	slog.Info("Successfully initialized kubernetes client")
+	slog.InfoContext(ctx, "Successfully initialized kubernetes client")
 
 	dynamicClient, restMapper, err := initializeDynamicClientAndMapper(restConfig)
 	if err != nil {
@@ -124,7 +125,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 
 	defer closeOnError(&closeOnErr, ds.Close, "datastore")
 
-	slog.Debug("Created datastore", "provider", configs.dsConfig.Provider)
+	slog.DebugContext(ctx, "Created datastore", "provider", configs.dsConfig.Provider)
 
 	dsComponents, err := initializeDatastoreComponents(ctx, ds, clientTokenConfig.ClientName, pipeline)
 	if err != nil {
@@ -143,17 +144,18 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 
 	queueManager := reconcilerInstance.GetQueueManager()
 
-	slog.Info("Initialization completed successfully")
+	slog.InfoContext(ctx, "Initialization completed successfully")
 
 	closeOnErr = false
 
 	return &Components{
-		Informers:      informersInstance,
-		EventWatcher:   dsComponents.eventWatcher,
-		QueueManager:   queueManager,
-		Reconciler:     reconcilerInstance,
-		DatabaseClient: dsComponents.databaseClient,
-		DataStore:      ds,
+		Informers:          informersInstance,
+		EventWatcher:       dsComponents.eventWatcher,
+		QueueManager:       queueManager,
+		Reconciler:         reconcilerInstance,
+		DatabaseClient:     dsComponents.databaseClient,
+		DataStore:          ds,
+		CustomDrainEnabled: configs.tomlCfg.CustomDrain.Enabled,
 	}, nil
 }
 

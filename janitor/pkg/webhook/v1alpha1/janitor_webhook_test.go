@@ -35,10 +35,13 @@ import (
 
 var _ = Describe("Janitor Webhook", func() {
 	var (
-		ctx        context.Context
-		validator  JanitorCustomValidator
-		fakeClient client.Client
-		testNode   *corev1.Node
+		ctx            context.Context
+		baseValidator  *JanitorCustomValidator
+		rebootVal      *rebootNodeValidator
+		terminateVal   *terminateNodeValidator
+		gpuResetVal    *gpuResetValidator
+		fakeClient     client.Client
+		testNode       *corev1.Node
 	)
 
 	BeforeEach(func() {
@@ -61,7 +64,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 	Context("When controller is enabled and node exists", func() {
 		BeforeEach(func() {
-			validator = JanitorCustomValidator{
+			baseValidator = &JanitorCustomValidator{
 				Config: &config.Config{
 					Global: config.GlobalConfig{
 						Timeout: 30 * time.Minute,
@@ -84,6 +87,9 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 				Client: fakeClient,
 			}
+			rebootVal = &rebootNodeValidator{baseValidator}
+			terminateVal = &terminateNodeValidator{baseValidator}
+			gpuResetVal = &gpuResetValidator{baseValidator}
 		})
 
 		It("Should admit RebootNode creation when node exists", func() {
@@ -96,7 +102,7 @@ var _ = Describe("Janitor Webhook", func() {
 					Force:    false,
 				},
 			}
-			_, err := validator.ValidateCreate(ctx, obj)
+			_, err := rebootVal.ValidateCreate(ctx, obj)
 			Expect(err).ToNot(HaveOccurred())
 		})
 
@@ -110,7 +116,7 @@ var _ = Describe("Janitor Webhook", func() {
 					Force:    false,
 				},
 			}
-			_, err := validator.ValidateCreate(ctx, obj)
+			_, err := terminateVal.ValidateCreate(ctx, obj)
 			Expect(err).ToNot(HaveOccurred())
 		})
 
@@ -126,7 +132,7 @@ var _ = Describe("Janitor Webhook", func() {
 					},
 				},
 			}
-			_, err := validator.ValidateCreate(ctx, obj)
+			_, err := gpuResetVal.ValidateCreate(ctx, obj)
 			Expect(err).ToNot(HaveOccurred())
 		})
 
@@ -149,7 +155,7 @@ var _ = Describe("Janitor Webhook", func() {
 					Force:    true,
 				},
 			}
-			_, err := validator.ValidateUpdate(ctx, oldObj, newObj)
+			_, err := rebootVal.ValidateUpdate(ctx, oldObj, newObj)
 			Expect(err).ToNot(HaveOccurred())
 		})
 
@@ -163,14 +169,14 @@ var _ = Describe("Janitor Webhook", func() {
 					Force:    false,
 				},
 			}
-			_, err := validator.ValidateDelete(ctx, obj)
+			_, err := rebootVal.ValidateDelete(ctx, obj)
 			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 
 	Context("When controller is enabled but node does not exist", func() {
 		BeforeEach(func() {
-			validator = JanitorCustomValidator{
+			baseValidator = &JanitorCustomValidator{
 				Config: &config.Config{
 					Global: config.GlobalConfig{
 						Timeout: 30 * time.Minute,
@@ -193,6 +199,9 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 				Client: fakeClient,
 			}
+			rebootVal = &rebootNodeValidator{baseValidator}
+			terminateVal = &terminateNodeValidator{baseValidator}
+			gpuResetVal = &gpuResetValidator{baseValidator}
 		})
 
 		It("Should reject RebootNode creation when node does not exist", func() {
@@ -205,7 +214,7 @@ var _ = Describe("Janitor Webhook", func() {
 					Force:    false,
 				},
 			}
-			_, err := validator.ValidateCreate(ctx, obj)
+			_, err := rebootVal.ValidateCreate(ctx, obj)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("node 'non-existent-node' does not exist in the cluster"))
 		})
@@ -220,7 +229,7 @@ var _ = Describe("Janitor Webhook", func() {
 					Force:    false,
 				},
 			}
-			_, err := validator.ValidateCreate(ctx, obj)
+			_, err := terminateVal.ValidateCreate(ctx, obj)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("node 'non-existent-node' does not exist in the cluster"))
 		})
@@ -237,7 +246,7 @@ var _ = Describe("Janitor Webhook", func() {
 					},
 				},
 			}
-			_, err := validator.ValidateCreate(ctx, obj)
+			_, err := gpuResetVal.ValidateCreate(ctx, obj)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("node 'non-existent-node' does not exist in the cluster"))
 		})
@@ -261,15 +270,42 @@ var _ = Describe("Janitor Webhook", func() {
 					Force:    true,
 				},
 			}
-			_, err := validator.ValidateUpdate(ctx, oldObj, newObj)
+			_, err := rebootVal.ValidateUpdate(ctx, oldObj, newObj)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("node 'non-existent-node' does not exist in the cluster"))
+		})
+
+		It("Should accept GPUReset updates when node does not exist", func() {
+			oldObj := &janitordgxcnvidiacomv1alpha1.GPUReset{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-gpu-reset",
+				},
+				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
+					NodeName: "non-existent-node",
+					Selector: &janitordgxcnvidiacomv1alpha1.GPUSelector{
+						UUIDs: []string{"test-uuid"},
+					},
+				},
+			}
+			newObj := &janitordgxcnvidiacomv1alpha1.GPUReset{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-gpu-reset",
+				},
+				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
+					NodeName: "non-existent-node",
+					Selector: &janitordgxcnvidiacomv1alpha1.GPUSelector{
+						UUIDs: []string{"test-uuid"},
+					},
+				},
+			}
+			_, err := gpuResetVal.ValidateUpdate(ctx, oldObj, newObj)
+			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 
 	Context("Existing resource verification", func() {
 		BeforeEach(func() {
-			validator = JanitorCustomValidator{
+			baseValidator = &JanitorCustomValidator{
 				Config: &config.Config{
 					Global: config.GlobalConfig{
 						Timeout: 30 * time.Minute,
@@ -292,6 +328,8 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 				Client: fakeClient,
 			}
+			rebootVal = &rebootNodeValidator{baseValidator}
+			gpuResetVal = &gpuResetValidator{baseValidator}
 		})
 
 		It("Should reject RebootNode creation when an in-progress RebootNode exists", func() {
@@ -317,8 +355,8 @@ var _ = Describe("Janitor Webhook", func() {
 			Expect(corev1.AddToScheme(scheme)).To(Succeed())
 			Expect(janitordgxcnvidiacomv1alpha1.AddToScheme(scheme)).To(Succeed())
 			fakeClient = fake.NewClientBuilder().WithScheme(scheme).WithObjects(testNode, obj2).Build()
-			validator.Client = fakeClient
-			_, err := validator.ValidateCreate(ctx, obj)
+			baseValidator.Client = fakeClient
+			_, err := rebootVal.ValidateCreate(ctx, obj)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("node 'test-node' already has an active reboot in progress (RebootNode: test-reboot-2)"))
 		})
@@ -349,8 +387,8 @@ var _ = Describe("Janitor Webhook", func() {
 			Expect(corev1.AddToScheme(scheme)).To(Succeed())
 			Expect(janitordgxcnvidiacomv1alpha1.AddToScheme(scheme)).To(Succeed())
 			fakeClient = fake.NewClientBuilder().WithScheme(scheme).WithObjects(testNode, obj2).Build()
-			validator.Client = fakeClient
-			_, err := validator.ValidateCreate(ctx, obj)
+			baseValidator.Client = fakeClient
+			_, err := rebootVal.ValidateCreate(ctx, obj)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
@@ -381,8 +419,8 @@ var _ = Describe("Janitor Webhook", func() {
 			Expect(corev1.AddToScheme(scheme)).To(Succeed())
 			Expect(janitordgxcnvidiacomv1alpha1.AddToScheme(scheme)).To(Succeed())
 			fakeClient = fake.NewClientBuilder().WithScheme(scheme).WithObjects(testNode, obj2).Build()
-			validator.Client = fakeClient
-			_, err := validator.ValidateCreate(ctx, obj)
+			baseValidator.Client = fakeClient
+			_, err := gpuResetVal.ValidateCreate(ctx, obj)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("node 'test-node' and GPU 'test-uuid' already has an active reset in progress (GPUReset: test-gpu-reset-2)"))
 		})
@@ -417,8 +455,8 @@ var _ = Describe("Janitor Webhook", func() {
 			Expect(corev1.AddToScheme(scheme)).To(Succeed())
 			Expect(janitordgxcnvidiacomv1alpha1.AddToScheme(scheme)).To(Succeed())
 			fakeClient = fake.NewClientBuilder().WithScheme(scheme).WithObjects(testNode, obj2).Build()
-			validator.Client = fakeClient
-			_, err := validator.ValidateCreate(ctx, obj)
+			baseValidator.Client = fakeClient
+			_, err := gpuResetVal.ValidateCreate(ctx, obj)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
@@ -449,15 +487,15 @@ var _ = Describe("Janitor Webhook", func() {
 			Expect(corev1.AddToScheme(scheme)).To(Succeed())
 			Expect(janitordgxcnvidiacomv1alpha1.AddToScheme(scheme)).To(Succeed())
 			fakeClient = fake.NewClientBuilder().WithScheme(scheme).WithObjects(testNode, obj2).Build()
-			validator.Client = fakeClient
-			_, err := validator.ValidateCreate(ctx, obj)
+			baseValidator.Client = fakeClient
+			_, err := gpuResetVal.ValidateCreate(ctx, obj)
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 
 	Context("Node and GPU verification on updates", func() {
 		BeforeEach(func() {
-			validator = JanitorCustomValidator{
+			baseValidator = &JanitorCustomValidator{
 				Config: &config.Config{
 					Global: config.GlobalConfig{
 						Timeout: 30 * time.Minute,
@@ -480,6 +518,8 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 				Client: fakeClient,
 			}
+			rebootVal = &rebootNodeValidator{baseValidator}
+			gpuResetVal = &gpuResetValidator{baseValidator}
 		})
 
 		It("Should reject RebootNode updates when node name changes", func() {
@@ -501,8 +541,7 @@ var _ = Describe("Janitor Webhook", func() {
 					Force:    false,
 				},
 			}
-			validator.Client = fakeClient
-			_, err := validator.ValidateUpdate(ctx, obj, obj2)
+			_, err := rebootVal.ValidateUpdate(ctx, obj, obj2)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("nodeName cannot be changed after creation"))
 		})
@@ -530,8 +569,7 @@ var _ = Describe("Janitor Webhook", func() {
 					},
 				},
 			}
-			validator.Client = fakeClient
-			_, err := validator.ValidateUpdate(ctx, obj, obj2)
+			_, err := gpuResetVal.ValidateUpdate(ctx, obj, obj2)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("nodeName cannot be changed after creation"))
 		})
@@ -559,8 +597,7 @@ var _ = Describe("Janitor Webhook", func() {
 					},
 				},
 			}
-			validator.Client = fakeClient
-			_, err := validator.ValidateUpdate(ctx, obj, obj2)
+			_, err := gpuResetVal.ValidateUpdate(ctx, obj, obj2)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("uuids cannot be changed after creation"))
 		})
@@ -588,15 +625,14 @@ var _ = Describe("Janitor Webhook", func() {
 					},
 				},
 			}
-			validator.Client = fakeClient
-			_, err := validator.ValidateUpdate(ctx, obj, obj2)
+			_, err := gpuResetVal.ValidateUpdate(ctx, obj, obj2)
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 
 	Context("When controller is disabled", func() {
 		BeforeEach(func() {
-			validator = JanitorCustomValidator{
+			baseValidator = &JanitorCustomValidator{
 				Config: &config.Config{
 					Global: config.GlobalConfig{
 						Timeout: 30 * time.Minute,
@@ -619,6 +655,9 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 				Client: fakeClient,
 			}
+			rebootVal = &rebootNodeValidator{baseValidator}
+			terminateVal = &terminateNodeValidator{baseValidator}
+			gpuResetVal = &gpuResetValidator{baseValidator}
 		})
 
 		It("Should reject RebootNode creation when controller disabled", func() {
@@ -631,7 +670,7 @@ var _ = Describe("Janitor Webhook", func() {
 					Force:    false,
 				},
 			}
-			_, err := validator.ValidateCreate(ctx, obj)
+			_, err := rebootVal.ValidateCreate(ctx, obj)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("RebootNode controller is disabled"))
 		})
@@ -646,7 +685,7 @@ var _ = Describe("Janitor Webhook", func() {
 					Force:    false,
 				},
 			}
-			_, err := validator.ValidateCreate(ctx, obj)
+			_, err := terminateVal.ValidateCreate(ctx, obj)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("TerminateNode controller is disabled"))
 		})
@@ -663,7 +702,7 @@ var _ = Describe("Janitor Webhook", func() {
 					},
 				},
 			}
-			_, err := validator.ValidateCreate(ctx, obj)
+			_, err := gpuResetVal.ValidateCreate(ctx, obj)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("GPUReset controller is disabled"))
 		})
@@ -687,7 +726,7 @@ var _ = Describe("Janitor Webhook", func() {
 					Force:    true,
 				},
 			}
-			_, err := validator.ValidateUpdate(ctx, oldObj, newObj)
+			_, err := rebootVal.ValidateUpdate(ctx, oldObj, newObj)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("RebootNode controller is disabled"))
 		})
@@ -702,7 +741,7 @@ var _ = Describe("Janitor Webhook", func() {
 					Force:    false,
 				},
 			}
-			_, err := validator.ValidateDelete(ctx, obj)
+			_, err := rebootVal.ValidateDelete(ctx, obj)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("RebootNode controller is disabled"))
 		})
@@ -710,10 +749,11 @@ var _ = Describe("Janitor Webhook", func() {
 
 	Context("When configuration is nil", func() {
 		BeforeEach(func() {
-			validator = JanitorCustomValidator{
+			baseValidator = &JanitorCustomValidator{
 				Config: nil,
 				Client: fakeClient,
 			}
+			rebootVal = &rebootNodeValidator{baseValidator}
 		})
 
 		It("Should reject any CRD creation when config is nil", func() {
@@ -726,7 +766,7 @@ var _ = Describe("Janitor Webhook", func() {
 					Force:    false,
 				},
 			}
-			_, err := validator.ValidateCreate(ctx, obj)
+			_, err := rebootVal.ValidateCreate(ctx, obj)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("RebootNode controller is disabled"))
 		})
@@ -734,7 +774,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 	Context("When client is nil", func() {
 		BeforeEach(func() {
-			validator = JanitorCustomValidator{
+			baseValidator = &JanitorCustomValidator{
 				Config: &config.Config{
 					Global: config.GlobalConfig{
 						Timeout: 30 * time.Minute,
@@ -747,6 +787,7 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 				Client: nil,
 			}
+			rebootVal = &rebootNodeValidator{baseValidator}
 		})
 
 		It("Should reject CRD creation when client is nil", func() {
@@ -759,41 +800,14 @@ var _ = Describe("Janitor Webhook", func() {
 					Force:    false,
 				},
 			}
-			_, err := validator.ValidateCreate(ctx, obj)
+			_, err := rebootVal.ValidateCreate(ctx, obj)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("kubernetes client not available"))
 		})
 	})
 
-	Context("When invalid object type is provided", func() {
-		BeforeEach(func() {
-			validator = JanitorCustomValidator{
-				Config: &config.Config{
-					Global: config.GlobalConfig{
-						Timeout: 30 * time.Minute,
-					},
-				},
-				Client: fakeClient,
-			}
-		})
-
-		It("Should return error for unknown object type", func() {
-			// Using a Pod instead of a Janitor CRD type
-			pod := &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-pod",
-				},
-			}
-			// The validator should reject non-Janitor objects
-			_, err := validator.ValidateCreate(ctx, pod)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("expected a Janitor CR object but got"))
-		})
-	})
-
 	Context("When node exclusions are configured", func() {
 		It("Should reject RebootNode creation when node matches exclusion label", func() {
-			// Create a node with an exclusion label
 			excludedNode := &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "excluded-node",
@@ -809,7 +823,7 @@ var _ = Describe("Janitor Webhook", func() {
 			Expect(janitordgxcnvidiacomv1alpha1.AddToScheme(scheme)).To(Succeed())
 			clientWithExcludedNode := fake.NewClientBuilder().WithScheme(scheme).WithObjects(excludedNode).Build()
 
-			validator = JanitorCustomValidator{
+			v := &rebootNodeValidator{&JanitorCustomValidator{
 				Config: &config.Config{
 					Global: config.GlobalConfig{
 						Timeout: 30 * time.Minute,
@@ -836,7 +850,7 @@ var _ = Describe("Janitor Webhook", func() {
 					},
 				},
 				Client: clientWithExcludedNode,
-			}
+			}}
 
 			obj := &janitordgxcnvidiacomv1alpha1.RebootNode{
 				ObjectMeta: metav1.ObjectMeta{
@@ -848,14 +862,13 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 
-			_, err := validator.ValidateCreate(ctx, obj)
+			_, err := v.ValidateCreate(ctx, obj)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("is excluded from janitor"))
 			Expect(err.Error()).To(ContainSubstring("global.nodes.exclusions"))
 		})
 
 		It("Should admit RebootNode creation when node does not match exclusion labels", func() {
-			// Create a node without exclusion labels
 			normalNode := &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "normal-node",
@@ -870,7 +883,7 @@ var _ = Describe("Janitor Webhook", func() {
 			Expect(janitordgxcnvidiacomv1alpha1.AddToScheme(scheme)).To(Succeed())
 			clientWithNormalNode := fake.NewClientBuilder().WithScheme(scheme).WithObjects(normalNode).Build()
 
-			validator = JanitorCustomValidator{
+			v := &rebootNodeValidator{&JanitorCustomValidator{
 				Config: &config.Config{
 					Global: config.GlobalConfig{
 						Timeout: 30 * time.Minute,
@@ -897,7 +910,7 @@ var _ = Describe("Janitor Webhook", func() {
 					},
 				},
 				Client: clientWithNormalNode,
-			}
+			}}
 
 			obj := &janitordgxcnvidiacomv1alpha1.RebootNode{
 				ObjectMeta: metav1.ObjectMeta{
@@ -909,12 +922,12 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 
-			_, err := validator.ValidateCreate(ctx, obj)
+			_, err := v.ValidateCreate(ctx, obj)
 			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("Should admit RebootNode creation when no exclusions are configured", func() {
-			validator = JanitorCustomValidator{
+			v := &rebootNodeValidator{&JanitorCustomValidator{
 				Config: &config.Config{
 					Global: config.GlobalConfig{
 						Timeout: 30 * time.Minute,
@@ -929,7 +942,7 @@ var _ = Describe("Janitor Webhook", func() {
 					},
 				},
 				Client: fakeClient,
-			}
+			}}
 
 			obj := &janitordgxcnvidiacomv1alpha1.RebootNode{
 				ObjectMeta: metav1.ObjectMeta{
@@ -941,7 +954,7 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 
-			_, err := validator.ValidateCreate(ctx, obj)
+			_, err := v.ValidateCreate(ctx, obj)
 			Expect(err).ToNot(HaveOccurred())
 		})
 	})

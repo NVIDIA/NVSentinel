@@ -108,6 +108,8 @@ cover/
 coverage.txt
 htmlcov/
 
+.claude
+
 # Code quality reports
 code-quality-report.json
 

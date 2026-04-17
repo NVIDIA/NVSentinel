@@ -341,6 +341,143 @@ var _ = Describe("GPUReset Controller", func() {
 		})
 	})
 
+	Context("Successful workflow with GPU Service Manager when node is deleted", func() {
+		var nodeName = "success-test-node-deleted"
+		var resetName = "success-test-reset-node-deleted"
+		var typeNamespacedName = types.NamespacedName{Name: resetName}
+		var node *corev1.Node
+
+		BeforeEach(func() {
+			By("Creating a test node")
+			node = &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: make(map[string]string)}}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			By("Cleaning up resources")
+			if err := k8sClient.Delete(ctx, node); err != nil && !apierrors.IsNotFound(err) {
+				Expect(err).NotTo(HaveOccurred())
+			}
+			reset := &v1alpha1.GPUReset{ObjectMeta: metav1.ObjectMeta{Name: resetName}}
+			if err := k8sClient.Delete(ctx, reset); err != nil && !apierrors.IsNotFound(err) {
+				Expect(err).NotTo(HaveOccurred())
+			}
+			var jobList batchv1.JobList
+			Expect(k8sClient.List(ctx, &jobList)).To(Succeed())
+			for _, job := range jobList.Items {
+				if strings.HasPrefix(job.Name, resetName) {
+					if err := k8sClient.Delete(ctx, &job, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
+						Expect(err).NotTo(HaveOccurred())
+					}
+				}
+			}
+		})
+
+		It("should reconcile a GPUReset through all states successfully when node is deleted", func() {
+			By("Creating a new GPUReset resource")
+			reset := &v1alpha1.GPUReset{
+				ObjectMeta: metav1.ObjectMeta{Name: resetName},
+				Spec: v1alpha1.GPUResetSpec{
+					NodeName: nodeName,
+					Selector: &v1alpha1.GPUSelector{
+						UUIDs: []string{"GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, reset)).To(Succeed())
+
+			By("Waiting for the status to be initialized")
+			var updatedReset v1alpha1.GPUReset
+			Eventually(func(g Gomega) {
+				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.Ready))).NotTo(BeNil())
+				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetPending))
+			}, "10s", "250ms").Should(Succeed())
+			Expect(controllerutil.ContainsFinalizer(&updatedReset, gpuResetFinalizer)).To(BeTrue())
+
+			By("Waiting for the reset to be scheduled")
+			Eventually(func(g Gomega) {
+				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.Ready))).To(BeTrue())
+				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetPending))
+			}, "10s", "250ms").Should(Succeed())
+			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.Ready)).Reason).To(Equal(string(v1alpha1.ReasonReadyForReset)))
+
+			By("Waiting for services to be torn down")
+			Eventually(func(g Gomega) {
+				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.ServicesTornDown))).To(BeTrue())
+			}, "10s", "250ms").Should(Succeed())
+
+			By("Waiting for the reset job to be created")
+			Eventually(func(g Gomega) {
+				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(updatedReset.Status.JobRef).NotTo(BeNil())
+				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.ServicesTornDown))).To(BeTrue())
+				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetInProgress))
+
+				// wait for the job to exist
+				jobKey := types.NamespacedName{Name: updatedReset.Status.JobRef.Name, Namespace: updatedReset.Status.JobRef.Namespace}
+				var createdJob batchv1.Job
+				g.Expect(k8sClient.Get(ctx, jobKey, &createdJob)).To(Succeed())
+
+				cond := meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.ResetJobCreated))
+				g.Expect(cond).NotTo(BeNil())
+				g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+				g.Expect(cond.Reason).To(Equal(string(v1alpha1.ReasonResetJobCreationSucceeded)))
+			}, "10s", "250ms").Should(Succeed())
+			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.ResetJobCreated)).Reason).To(Equal(string(v1alpha1.ReasonResetJobCreationSucceeded)))
+
+			By("Simulating the job succeeding")
+			var createdJob batchv1.Job
+			jobKey := types.NamespacedName{Name: updatedReset.Status.JobRef.Name, Namespace: updatedReset.Status.JobRef.Namespace}
+			Expect(k8sClient.Get(ctx, jobKey, &createdJob)).To(Succeed())
+			createdJob.Status.Succeeded = 1
+			Expect(k8sClient.Status().Update(ctx, &createdJob)).To(Succeed())
+
+			By("Waiting for the job to be marked as completed")
+			Eventually(func(g Gomega) {
+				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.ResetJobCompleted))).To(BeTrue())
+				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetInProgress))
+			}, "10s", "250ms").Should(Succeed())
+			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.ResetJobCompleted)).Reason).To(Equal(string(v1alpha1.ReasonResetJobSucceeded)))
+
+			By("Deleting the node resource mid-workflow")
+			Expect(k8sClient.Delete(ctx, node)).To(Succeed())
+
+			By("Waiting for services to be restored")
+			Eventually(func(g Gomega) {
+				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.ServicesRestored))).To(BeTrue())
+				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetInProgress))
+			}, "10s", "250ms").Should(Succeed())
+			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.ServicesRestored)).Reason).To(Equal(string(v1alpha1.ReasonSkipped)))
+
+			By("Waiting for the reset to be marked as complete")
+			Eventually(func(g Gomega) {
+				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(updatedReset.Status.CompletionTime).NotTo(BeNil())
+				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.Complete))).To(BeTrue())
+				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetSucceeded))
+			}, "10s", "250ms").Should(Succeed())
+			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.Complete)).Reason).To(Equal(string(v1alpha1.ReasonGPUResetSucceeded)))
+		})
+	})
+
 	Context("Successful Workflow without GPU Service Manager (no-op service teardown/restoration)", func() {
 		var nodeName = "noop-test-node"
 		var resetName = "noop-test-reset"
@@ -1193,6 +1330,48 @@ var _ = Describe("GPUReset Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &updatedNode)).To(Succeed())
 			Expect(updatedNode.Labels["nvidia.com/gpu.deploy.device-plugin"]).To(Equal("true"))
 		})
+
+		It("should allow GPUReset deletion if node is deleted", func() {
+			reset := &v1alpha1.GPUReset{
+				ObjectMeta: metav1.ObjectMeta{Name: resetName},
+				Spec: v1alpha1.GPUResetSpec{
+					NodeName: nodeName,
+				},
+			}
+			Expect(k8sClient.Create(ctx, reset)).To(Succeed())
+
+			By("Reconciling until services are torn down")
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+
+				var updatedReset v1alpha1.GPUReset
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.ServicesTornDown))).To(BeTrue())
+			}, "10s", "250ms").Should(Succeed())
+
+			By("Verifying services are disabled")
+			var updatedNode corev1.Node
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &updatedNode)).To(Succeed())
+			Expect(updatedNode.Labels["nvidia.com/gpu.deploy.device-plugin"]).To(Equal("false"))
+
+			By("Deleting node mid-workflow")
+			Expect(k8sClient.Delete(ctx, node)).To(Succeed())
+
+			By("Deleting the GPUReset resource mid-workflow")
+			Expect(k8sClient.Delete(ctx, reset)).To(Succeed())
+
+			By("Reconciling until the resource is fully deleted")
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+
+				var deletedReset v1alpha1.GPUReset
+				err = k8sClient.Get(ctx, typeNamespacedName, &deletedReset)
+				g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+			}, "10s", "250ms").Should(Succeed())
+		})
+
 	})
 
 	Context("Metrics", func() {

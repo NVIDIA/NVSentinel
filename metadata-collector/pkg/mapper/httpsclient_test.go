@@ -557,3 +557,36 @@ func TestListPodsWithUnmarshalError(t *testing.T) {
 	_, err := client.ListPods()
 	assert.Error(t, err)
 }
+
+func TestNewKubeletHTTPSClientHostResolution(t *testing.T) {
+	tests := []struct {
+		name     string
+		hostEnv  string
+		expected string
+	}{
+		{
+			name:     "empty env defaults to localhost",
+			hostEnv:  "",
+			expected: "https://localhost:10250/pods",
+		},
+		{
+			name:     "IPv4 host",
+			hostEnv:  "192.168.1.100",
+			expected: "https://192.168.1.100:10250/pods",
+		},
+		{
+			name:     "IPv6 host is bracketed",
+			hostEnv:  "fd00::1",
+			expected: "https://[fd00::1]:10250/pods",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(kubeletHostEnvVar, tc.hostEnv)
+			client, err := NewKubeletHTTPSClient(context.Background())
+			assert.NoError(t, err)
+			assert.Equal(t, tc.expected, client.(*kubeletHTTPSClient).listPodsURI)
+		})
+	}
+}

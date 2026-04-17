@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
@@ -61,7 +62,7 @@ custom resource template.
 */
 func GetGroupConfigForEvent(remediationActions map[string]config.MaintenanceResource,
 	healthEvent *protos.HealthEvent) (*EquivalenceGroupConfig, error) {
-	actionName := healthEvent.RecommendedAction.String()
+	actionName := model.GetEffectiveActionName(healthEvent)
 
 	actionConfig, exists := remediationActions[actionName]
 	if !exists {

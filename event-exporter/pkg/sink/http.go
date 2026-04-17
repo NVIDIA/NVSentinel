@@ -24,8 +24,10 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/auth"
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/transformer"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type HTTPSink struct {
@@ -46,22 +48,26 @@ func NewHTTPSink(
 		maxConcurrency = 1
 	}
 
+	transport := &http.Transport{
+		MaxIdleConns:        maxConcurrency * 2,
+		MaxIdleConnsPerHost: maxConcurrency,
+		MaxConnsPerHost:     maxConcurrency,
+		IdleConnTimeout:     90 * time.Second,
+		TLSClientConfig: &tls.Config{
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: insecureSkipVerify, //nolint:gosec // This is only used for testing
+		},
+	}
+
 	return &HTTPSink{
 		endpoint:      endpoint,
 		timeout:       timeout,
 		tokenProvider: tokenProvider,
 		client: &http.Client{
 			Timeout: timeout,
-			Transport: &http.Transport{
-				MaxIdleConns:        maxConcurrency * 2,
-				MaxIdleConnsPerHost: maxConcurrency,
-				MaxConnsPerHost:     maxConcurrency,
-				IdleConnTimeout:     90 * time.Second,
-				TLSClientConfig: &tls.Config{
-					MinVersion:         tls.VersionTLS12,
-					InsecureSkipVerify: insecureSkipVerify, //nolint:gosec // This is only used for testing
-				},
-			},
+			Transport: otelhttp.NewTransport(transport,
+				otelhttp.WithTracerProvider(tracing.GetChildOnlyTracerProvider()),
+			),
 		},
 	}
 }
@@ -74,13 +80,13 @@ func (s *HTTPSink) Publish(ctx context.Context, event *transformer.CloudEvent) e
 
 	token, err := s.tokenProvider.GetToken(ctx)
 	if err != nil {
-		slog.Error("Failed to get token", "error", err)
+		slog.ErrorContext(ctx, "Failed to get token", "error", err)
 		return fmt.Errorf("get token: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.endpoint, bytes.NewReader(body))
 	if err != nil {
-		slog.Error("Failed to create request", "error", err)
+		slog.ErrorContext(ctx, "Failed to create request", "error", err)
 		return fmt.Errorf("create request: %w", err)
 	}
 
@@ -89,7 +95,7 @@ func (s *HTTPSink) Publish(ctx context.Context, event *transformer.CloudEvent) e
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		slog.Error("Failed to execute request", "error", err)
+		slog.ErrorContext(ctx, "Failed to execute request", "error", err)
 		return fmt.Errorf("execute request: %w", err)
 	}
 	defer resp.Body.Close()
@@ -98,7 +104,7 @@ func (s *HTTPSink) Publish(ctx context.Context, event *transformer.CloudEvent) e
 		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	slog.Debug("Event published successfully", "status", resp.StatusCode)
+	slog.DebugContext(ctx, "Event published successfully", "status", resp.StatusCode)
 
 	return nil
 }

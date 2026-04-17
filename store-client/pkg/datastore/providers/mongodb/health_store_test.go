@@ -17,6 +17,7 @@ package mongodb
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -297,6 +298,98 @@ func TestMongoHealthEventStore_FindLatestEventForNode(t *testing.T) {
 
 		mockDB.AssertExpectations(t)
 		mockResult.AssertExpectations(t)
+	})
+}
+
+// mockQueryBuilder is a minimal QueryBuilder for tests.
+type mockQueryBuilder struct{}
+
+func (mockQueryBuilder) ToMongo() map[string]interface{} {
+	return map[string]interface{}{"status": "active"}
+}
+
+func (mockQueryBuilder) ToSQL() (string, []interface{}) { return "", nil }
+
+func TestMongoHealthEventStore_FindHealthEventsByQueryBatched(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("delivers events in batches", func(t *testing.T) {
+		mockDB := new(MockDatabaseClient)
+		mockCursor := new(MockCursor)
+		store := &MongoHealthEventStore{databaseClient: mockDB}
+
+		mockDB.On("Find", ctx, mock.Anything, (*client.FindOptions)(nil)).Return(mockCursor, nil)
+		mockCursor.On("Close", ctx).Return(nil)
+
+		// Simulate 3 documents; batch size = 2 → two callback invocations (2 + 1).
+		docIdx := 0
+		mockCursor.On("Next", ctx).Return(true).Times(3)
+		mockCursor.On("Next", ctx).Return(false).Once()
+		mockCursor.On("Decode", mock.AnythingOfType("*map[string]interface {}")).Return(nil).Run(func(args mock.Arguments) {
+			docIdx++
+			doc := args.Get(0).(*map[string]interface{})
+			*doc = map[string]interface{}{
+				"_id": fmt.Sprintf("event-%d", docIdx),
+			}
+		})
+		mockCursor.On("Err").Return(nil)
+
+		var batches [][]datastore.HealthEventWithStatus
+
+		err := store.FindHealthEventsByQueryBatched(ctx, mockQueryBuilder{}, 2,
+			func(batch []datastore.HealthEventWithStatus) error {
+				cp := make([]datastore.HealthEventWithStatus, len(batch))
+				copy(cp, batch)
+				batches = append(batches, cp)
+
+				return nil
+			})
+
+		assert.NoError(t, err)
+		assert.Len(t, batches, 2, "should have 2 callback invocations (batch of 2 + batch of 1)")
+		assert.Len(t, batches[0], 2)
+		assert.Len(t, batches[1], 1)
+
+		mockDB.AssertExpectations(t)
+		mockCursor.AssertExpectations(t)
+	})
+
+	t.Run("find error", func(t *testing.T) {
+		mockDB := new(MockDatabaseClient)
+		store := &MongoHealthEventStore{databaseClient: mockDB}
+
+		mockDB.On("Find", ctx, mock.Anything, (*client.FindOptions)(nil)).
+			Return((*MockCursor)(nil), errors.New("db error"))
+
+		err := store.FindHealthEventsByQueryBatched(ctx, mockQueryBuilder{}, 10,
+			func([]datastore.HealthEventWithStatus) error { return nil })
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to find health events for batched query")
+
+		mockDB.AssertExpectations(t)
+	})
+
+	t.Run("callback error stops iteration", func(t *testing.T) {
+		mockDB := new(MockDatabaseClient)
+		mockCursor := new(MockCursor)
+		store := &MongoHealthEventStore{databaseClient: mockDB}
+
+		mockDB.On("Find", ctx, mock.Anything, (*client.FindOptions)(nil)).Return(mockCursor, nil)
+		mockCursor.On("Close", ctx).Return(nil)
+
+		mockCursor.On("Next", ctx).Return(true).Once()
+		mockCursor.On("Decode", mock.AnythingOfType("*map[string]interface {}")).Return(nil).Run(func(args mock.Arguments) {
+			doc := args.Get(0).(*map[string]interface{})
+			*doc = map[string]interface{}{"_id": "evt"}
+		})
+
+		callbackErr := errors.New("stop processing")
+
+		err := store.FindHealthEventsByQueryBatched(ctx, mockQueryBuilder{}, 1,
+			func([]datastore.HealthEventWithStatus) error { return callbackErr })
+		assert.ErrorIs(t, err, callbackErr)
+
+		mockDB.AssertExpectations(t)
 	})
 }
 

@@ -44,6 +44,7 @@ type Params struct {
 type Components struct {
 	Exporter        *exporter.HealthEventsExporter
 	DatastoreBundle *helper.DatastoreClientBundle
+	BackfillEnabled bool
 }
 
 func InitializeAll(ctx context.Context, params Params) (*Components, error) {
@@ -90,6 +91,7 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 	return &Components{
 		Exporter:        exp,
 		DatastoreBundle: datastoreBundle,
+		BackfillEnabled: cfg.Exporter.Backfill.Enabled,
 	}, nil
 }
 

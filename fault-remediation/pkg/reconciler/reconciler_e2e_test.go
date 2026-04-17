@@ -153,8 +153,11 @@ func (m *MockChangeStreamWatcher) GetCallCounts() (int, int, int, int) {
 
 // MockHealthEventStore provides a mock implementation of datastore.HealthEventStore for testing
 type MockHealthEventStore struct {
-	UpdateHealthEventStatusFn func(ctx context.Context, id string, status datastore.HealthEventStatus) error
-	updateCalled              int
+	UpdateHealthEventStatusFn          func(ctx context.Context, id string, status datastore.HealthEventStatus) error
+	FindHealthEventsByQueryFn          func(ctx context.Context, builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error)
+	FindHealthEventsByQueryBatchedFn   func(ctx context.Context, builder datastore.QueryBuilder, batchSize int, fn func([]datastore.HealthEventWithStatus) error) error
+	updateCalled                       int
+	findHealthEventsByQueryCalls       int
 }
 
 // UpdateHealthEventStatus updates a health event status (mock implementation)
@@ -186,7 +189,7 @@ func (m *MockHealthEventStore) FindHealthEventsByStatus(ctx context.Context, sta
 	return nil, nil
 }
 
-func (m *MockHealthEventStore) UpdateNodeQuarantineStatus(ctx context.Context, eventID string, status datastore.Status) error {
+func (m *MockHealthEventStore) UpdateNodeQuarantineStatus(ctx context.Context, eventID string, status datastore.Status, spanID string) error {
 	return nil
 }
 
@@ -207,10 +210,28 @@ func (m *MockHealthEventStore) FindLatestEventForNode(ctx context.Context, nodeN
 }
 
 func (m *MockHealthEventStore) FindHealthEventsByQuery(ctx context.Context, builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error) {
+	m.findHealthEventsByQueryCalls++
+
+	if m.FindHealthEventsByQueryFn != nil {
+		return m.FindHealthEventsByQueryFn(ctx, builder)
+	}
+
 	return nil, nil
 }
 
+func (m *MockHealthEventStore) FindHealthEventsByQueryBatched(ctx context.Context, builder datastore.QueryBuilder, batchSize int, fn func([]datastore.HealthEventWithStatus) error) error {
+	if m.FindHealthEventsByQueryBatchedFn != nil {
+		return m.FindHealthEventsByQueryBatchedFn(ctx, builder, batchSize, fn)
+	}
+
+	return nil
+}
+
 func (m *MockHealthEventStore) UpdateHealthEventsByQuery(ctx context.Context, queryBuilder datastore.QueryBuilder, updateBuilder datastore.UpdateBuilder) error {
+	return nil
+}
+
+func (m *MockHealthEventStore) UpdateSpanID(ctx context.Context, id string, serviceName string, spanID string) error {
 	return nil
 }
 
@@ -224,7 +245,7 @@ var (
 	testRestConfig    *rest.Config
 	mockWatcher       *MockChangeStreamWatcher
 	mockStore         *MockHealthEventStore
-	reconciler        FaultRemediationReconciler
+	reconciler        *FaultRemediationReconciler
 )
 
 func TestMain(m *testing.M) {
@@ -292,7 +313,7 @@ func TestMain(m *testing.M) {
 
 	reconciler = NewFaultRemediationReconciler(nil, mockWatcher, mockStore, cfg, false)
 
-	err = reconciler.SetupWithManager(testContext, mgr)
+	_, err = reconciler.SetupWithManager(testContext, mgr)
 	if err != nil {
 		log.Fatalf("Failed to launch reconciler with mgr %v", err)
 	}
@@ -384,7 +405,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 			UpdateRetryDelay:  100 * time.Millisecond,
 		}
 
-		r := FaultRemediationReconciler{
+		r := &FaultRemediationReconciler{
 			Config:            cfg,
 			annotationManager: cfg.RemediationClient.GetAnnotationManager(),
 		}
@@ -449,7 +470,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 			UpdateMaxRetries:  3,
 			UpdateRetryDelay:  100 * time.Millisecond,
 		}
-		r := FaultRemediationReconciler{
+		r := &FaultRemediationReconciler{
 			Config:            cfg,
 			annotationManager: cfg.RemediationClient.GetAnnotationManager(),
 		}
@@ -509,7 +530,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 			UpdateMaxRetries:  3,
 			UpdateRetryDelay:  100 * time.Millisecond,
 		}
-		r := FaultRemediationReconciler{
+		r := &FaultRemediationReconciler{
 			Config:            cfg,
 			annotationManager: cfg.RemediationClient.GetAnnotationManager(),
 		}
@@ -603,7 +624,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 			UpdateMaxRetries:  3,
 			UpdateRetryDelay:  100 * time.Millisecond,
 		}
-		r := FaultRemediationReconciler{
+		r := &FaultRemediationReconciler{
 			Config:            cfg,
 			annotationManager: cfg.RemediationClient.GetAnnotationManager(),
 		}
@@ -682,7 +703,7 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 		UpdateMaxRetries:  3,
 		UpdateRetryDelay:  100 * time.Millisecond,
 	}
-	r := FaultRemediationReconciler{
+	r := &FaultRemediationReconciler{
 		Config:            cfg,
 		annotationManager: cfg.RemediationClient.GetAnnotationManager(),
 	}
@@ -819,7 +840,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 		UpdateMaxRetries:  3,
 		UpdateRetryDelay:  100 * time.Millisecond,
 	}
-	r := FaultRemediationReconciler{
+	r := &FaultRemediationReconciler{
 		Config:            cfg,
 		annotationManager: cfg.RemediationClient.GetAnnotationManager(),
 	}
@@ -1279,7 +1300,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 			UpdateRetryDelay:  100 * time.Millisecond,
 		}
 
-		reconcilerInstance := FaultRemediationReconciler{
+		reconcilerInstance := &FaultRemediationReconciler{
 			Config:            cfg,
 			annotationManager: cfg.RemediationClient.GetAnnotationManager(),
 		}
@@ -1302,6 +1323,28 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		afterUnsupported := getCounterVecValue(t, metrics.TotalUnsupportedRemediationActions, "UNKNOWN", nodeName)
 		assert.Equal(t, beforeUnsupported+1, afterUnsupported, "TotalUnsupportedRemediationActions should increment")
 	})
+
+}
+
+// createCustomActionQuarantineEvent creates a quarantine event with CUSTOM recommendedAction
+func createCustomActionQuarantineEvent(eventID, nodeName, customAction string) datastore.Event {
+	return datastore.Event{
+		"operationType": "update",
+		"fullDocument": map[string]interface{}{
+			"_id": eventID,
+			"healtheventstatus": map[string]interface{}{
+				"userpodsevictionstatus": map[string]interface{}{
+					"status": model.StatusSucceeded,
+				},
+				"nodequarantined": model.Quarantined,
+			},
+			"healthevent": map[string]interface{}{
+				"nodename":                  nodeName,
+				"recommendedaction":         int32(protos.RecommendedAction_CUSTOM),
+				"customrecommendedaction":   customAction,
+			},
+		},
+	}
 }
 
 // Helper to create quarantine event
@@ -1867,4 +1910,275 @@ func getHistogramCount(t *testing.T, histogram prometheus.Histogram) uint64 {
 	err := histogram.Write(metric)
 	require.NoError(t, err)
 	return metric.Histogram.GetSampleCount()
+}
+
+// --- HandleColdStart E2E tests ---
+
+func makeColdStartHealthEvent(
+	eventID, nodeName string, quarantineStatus model.Status, drainStatus model.Status,
+	action protos.RecommendedAction, createdAt time.Time,
+) datastore.HealthEventWithStatus {
+	return datastore.HealthEventWithStatus{
+		CreatedAt: createdAt,
+		RawEvent: datastore.Event{
+			"_id": eventID,
+			"healtheventstatus": map[string]interface{}{
+				"nodequarantined": string(quarantineStatus),
+				"userpodsevictionstatus": map[string]interface{}{
+					"status": string(drainStatus),
+				},
+			},
+			"healthevent": map[string]interface{}{
+				"nodename":          nodeName,
+				"recommendedaction": int32(action),
+			},
+		},
+	}
+}
+
+// TestHandleColdStart_RemediationFlow tests the full cold start remediation flow:
+//  1. A node was quarantined and drained while FR was down
+//  2. HandleColdStart enqueues the missed event into the controller workqueue
+//  3. Controller-runtime processes it and FR creates a maintenance CR
+func TestHandleColdStart_RemediationFlow(t *testing.T) {
+	mockStore.updateCalled = 0
+
+	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := testutils.GenerateTestNodeName("cold-start-remediation")
+
+	createTestNode(ctx, nodeName, nil, map[string]string{
+		statemanager.NVSentinelStateLabelKey: string(statemanager.DrainSucceededLabelValue),
+	})
+
+	gvr := schema.GroupVersionResource{
+		Group:    "janitor.dgxc.nvidia.com",
+		Version:  "v1alpha1",
+		Resource: "rebootnodes",
+	}
+
+	defer func() {
+		cleanupNodeAnnotations(ctx, t, nodeName)
+		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+		mockStore.FindHealthEventsByQueryBatchedFn = nil
+	}()
+
+	missedEvent := makeColdStartHealthEvent(
+		"cold-start-event-1", nodeName,
+		model.Quarantined, model.StatusSucceeded,
+		protos.RecommendedAction_RESTART_BM, time.Now(),
+	)
+
+	mockStore.FindHealthEventsByQueryBatchedFn = func(_ context.Context, _ datastore.QueryBuilder, _ int, fn func([]datastore.HealthEventWithStatus) error) error {
+		return fn([]datastore.HealthEventWithStatus{missedEvent})
+	}
+
+	t.Log("Calling HandleColdStart to enqueue missed event")
+	reconciler.HandleColdStart(ctx)
+
+	t.Log("Verifying remediation state was set on the node")
+	require.Eventually(t, func() bool {
+		state, _, err := reconciler.annotationManager.GetRemediationState(ctx, nodeName)
+		if err != nil {
+			return false
+		}
+
+		grp, ok := state.EquivalenceGroups["restart"]
+		if !ok {
+			return false
+		}
+
+		return grp.MaintenanceCR != ""
+	}, 5*time.Second, 100*time.Millisecond, "Cold start should create a maintenance CR")
+
+	state, _, err := reconciler.annotationManager.GetRemediationState(ctx, nodeName)
+	require.NoError(t, err)
+
+	crName := state.EquivalenceGroups["restart"].MaintenanceCR
+	t.Logf("Maintenance CR created via cold start: %s", crName)
+
+	_ = testDynamic.Resource(gvr).Delete(ctx, crName, metav1.DeleteOptions{})
+}
+
+// TestHandleColdStart_CancellationFlow tests that cold start processes cancellation events:
+//  1. A node was quarantined and FR created a CR for it
+//  2. While FR was down, the event was cancelled
+//  3. HandleColdStart picks up the cancellation and clears remediation state
+func TestHandleColdStart_CancellationFlow(t *testing.T) {
+	mockStore.updateCalled = 0
+
+	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := testutils.GenerateTestNodeName("cold-start-cancellation")
+	createTestNode(ctx, nodeName, nil, map[string]string{
+		statemanager.NVSentinelStateLabelKey: string(statemanager.DrainSucceededLabelValue),
+	})
+
+	gvr := schema.GroupVersionResource{
+		Group:    "janitor.dgxc.nvidia.com",
+		Version:  "v1alpha1",
+		Resource: "rebootnodes",
+	}
+
+	defer func() {
+		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+		mockStore.FindHealthEventsByQueryBatchedFn = nil
+	}()
+
+	// Step 1: Send a quarantine event through the normal change stream path
+	t.Log("Step 1: Processing quarantine event via change stream")
+	eventID := "cold-start-cancel-event-1"
+	quarantineEvent := createQuarantineEvent(eventID, nodeName, protos.RecommendedAction_RESTART_BM)
+	mockWatcher.EventsChan <- datastore.EventWithToken{
+		Event:       map[string]interface{}(quarantineEvent),
+		ResumeToken: []byte("cold-start-token-1"),
+	}
+
+	var crName string
+	require.Eventually(t, func() bool {
+		state, _, err := reconciler.annotationManager.GetRemediationState(ctx, nodeName)
+		if err != nil {
+			return false
+		}
+
+		if grp, ok := state.EquivalenceGroups["restart"]; ok {
+			crName = grp.MaintenanceCR
+			return crName != ""
+		}
+
+		return false
+	}, 5*time.Second, 100*time.Millisecond, "CR should be created via normal path")
+
+	t.Logf("CR created: %s", crName)
+
+	// Step 2: Simulate FR going down and a cancellation happening while it's down
+	t.Log("Step 2: Simulating cold start with a missed cancellation event")
+	cancelledEvent := makeColdStartHealthEvent(
+		eventID, nodeName,
+		model.Cancelled, model.StatusSucceeded,
+		protos.RecommendedAction_RESTART_BM, time.Now(),
+	)
+
+	mockStore.FindHealthEventsByQueryBatchedFn = func(_ context.Context, _ datastore.QueryBuilder, _ int, fn func([]datastore.HealthEventWithStatus) error) error {
+		return fn([]datastore.HealthEventWithStatus{cancelledEvent})
+	}
+
+	t.Log("Step 3: Calling HandleColdStart to enqueue missed cancellation")
+	reconciler.HandleColdStart(ctx)
+
+	// Step 4: Verify remediation state was cleared (async via workqueue)
+	t.Log("Step 4: Verifying remediation state was cleared")
+	require.Eventually(t, func() bool {
+		node, err := testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		_, hasAnnotation := node.Annotations[annotation.AnnotationKey]
+
+		return !hasAnnotation
+	}, 5*time.Second, 100*time.Millisecond,
+		"Cold start should clear remediation annotation for cancelled events")
+
+	_ = testDynamic.Resource(gvr).Delete(ctx, crName, metav1.DeleteOptions{})
+}
+
+// TestCustomAction_E2E tests the full reconciler flow with a custom remediation action.
+// Exercises the complete path: raw MongoDB event → Reconcile → GetEffectiveActionName
+// → template rendering → CR creation.
+func TestCustomAction_E2E(t *testing.T) {
+	ctx, cancel := context.WithTimeout(testContext, 15*time.Second)
+	defer cancel()
+
+	nodeName := "test-node-custom-action-e2e"
+	createTestNode(ctx, nodeName, nil, map[string]string{"test": "label"})
+	defer func() {
+		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	customRemediationActions := map[string]config.MaintenanceResource{
+		"REPLACE_DISK": {
+			ApiGroup:              "janitor.dgxc.nvidia.com",
+			Version:               "v1alpha1",
+			Kind:                  "RebootNode",
+			TemplateFileName:      "custom-action-template.yaml",
+			CompleteConditionType: "NodeReady",
+			EquivalenceGroup:      "disk-replace",
+		},
+	}
+
+	remediationClient, err := createTestRemediationClient(false, customRemediationActions)
+	require.NoError(t, err)
+
+	customMockStore := &MockHealthEventStore{}
+	customMockStore.UpdateHealthEventStatusFn = func(ctx context.Context, id string, status datastore.HealthEventStatus) error {
+		return nil
+	}
+
+	customWatcher := NewMockChangeStreamWatcher()
+
+	cfg := ReconcilerConfig{
+		RemediationClient: remediationClient,
+		StateManager:      statemanager.NewStateManager(testClient),
+		UpdateMaxRetries:  3,
+		UpdateRetryDelay:  100 * time.Millisecond,
+	}
+
+	customReconciler := NewFaultRemediationReconciler(nil, customWatcher, customMockStore, cfg, false)
+
+	gvr := schema.GroupVersionResource{
+		Group:    "janitor.dgxc.nvidia.com",
+		Version:  "v1alpha1",
+		Resource: "rebootnodes",
+	}
+
+	// Pre-set the node state to match what fault-quarantine + node-drainer would have done
+	_, err = cfg.StateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName,
+		statemanager.QuarantinedLabelValue, false)
+	require.NoError(t, err)
+	_, err = cfg.StateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName,
+		statemanager.DrainingLabelValue, false)
+	require.NoError(t, err)
+	_, err = cfg.StateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName,
+		statemanager.DrainSucceededLabelValue, false)
+	require.NoError(t, err)
+
+	eventID := "custom-action-e2e-event-1"
+	rawEvent := createCustomActionQuarantineEvent(eventID, nodeName, "REPLACE_DISK")
+	eventToken := datastore.EventWithToken{
+		Event:       map[string]interface{}(rawEvent),
+		ResumeToken: []byte("custom-token-1"),
+	}
+
+	_, err = customReconciler.Reconcile(ctx, &eventToken)
+	require.NoError(t, err)
+
+	state, _, err := customReconciler.annotationManager.GetRemediationState(ctx, nodeName)
+	require.NoError(t, err)
+	require.Contains(t, state.EquivalenceGroups, "disk-replace",
+		"Should have disk-replace equivalence group")
+
+	crName := state.EquivalenceGroups["disk-replace"].MaintenanceCR
+	assert.Contains(t, crName, "custom-maintenance-",
+		"CR name should use the custom template prefix")
+
+	cr, err := testDynamic.Resource(gvr).Get(ctx, crName, metav1.GetOptions{})
+	require.NoError(t, err, "Custom action CR should exist in Kubernetes")
+	assert.Equal(t, nodeName, cr.Object["spec"].(map[string]interface{})["nodeName"])
+
+	labels := cr.GetLabels()
+	assert.Equal(t, "true", labels["nvsentinel.nvidia.com/custom-action"],
+		"CR should have custom-action label from template")
+
+	node, err := testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	require.Contains(t, node.Annotations, annotation.AnnotationKey,
+		"Node should have remediation annotation")
+
+	_, markedCount, _, _ := customWatcher.GetCallCounts()
+	assert.Equal(t, 1, markedCount, "MarkProcessed should be called once")
+
+	_ = testDynamic.Resource(gvr).Delete(ctx, crName, metav1.DeleteOptions{})
 }

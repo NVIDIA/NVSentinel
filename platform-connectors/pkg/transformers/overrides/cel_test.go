@@ -15,6 +15,7 @@
 package overrides
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -220,7 +221,7 @@ func TestCompiledRuleEvaluate(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, compiled, 1)
 
-			match, err := compiled[0].evaluate(tt.event)
+			match, err := compiled[0].evaluate(context.Background(), tt.event)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expectMatch, match, "match result mismatch")
 		})

@@ -21,6 +21,7 @@ from prometheus_client import start_http_server
 import csv
 from .dcgm_watcher import dcgm
 from .platform_connector import platform_connector
+from . import metrics
 from gpu_health_monitor.protos import health_event_pb2 as platformconnector_pb2
 from gpu_health_monitor.logger import set_default_structured_logger_with_level
 
@@ -127,6 +128,9 @@ def cli(
         sys.exit(1)
 
     log.info(f"Event handling strategy configured to: {processing_strategy_value}")
+
+    metrics.set_flag("store_only_mode", processing_strategy == "STORE_ONLY")
+    metrics.set_flag("dcgm_k8s_service_enabled", dcgm_k8s_service_enabled)
 
     log.info("Initialization completed")
     enabled_event_processor_names = cli_config["EnabledEventProcessors"].split(",")

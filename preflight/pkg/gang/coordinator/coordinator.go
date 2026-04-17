@@ -229,6 +229,42 @@ func (c *Coordinator) RegisterPeer(
 	return nil
 }
 
+// RegisterPeerInConfigMap registers a pod as a peer in a specific ConfigMap
+// (rather than deriving the name from the gang ID). This is used when the
+// webhook created a ConfigMap under a provisional gang ID (e.g., from a label
+// fallback) that differs from the controller's discovered gang ID.
+func (c *Coordinator) RegisterPeerInConfigMap(
+	ctx context.Context,
+	namespace string,
+	configMapName string,
+	gangInfo *types.GangInfo,
+	peer types.PeerInfo,
+) error {
+	if configMapName == "" {
+		// Fallback: no webhook ConfigMap found, use the standard path.
+		return c.RegisterPeer(ctx, namespace, gangInfo, peer)
+	}
+
+	slog.Debug("Registering peer in webhook ConfigMap",
+		"configMap", configMapName,
+		"namespace", namespace,
+		"gangID", gangInfo.GangID,
+		"peer", peer.PodName,
+		"peerIP", peer.PodIP)
+
+	if err := c.updateConfigMap(ctx, namespace, configMapName, gangInfo.ExpectedMinCount, peer); err != nil {
+		return fmt.Errorf("failed to update ConfigMap: %w", err)
+	}
+
+	slog.Info("Registered peer in gang ConfigMap",
+		"configMap", configMapName,
+		"namespace", namespace,
+		"peer", peer.PodName,
+		"peerIP", peer.PodIP)
+
+	return nil
+}
+
 // updateConfigMap updates an existing ConfigMap, retrying on conflict.
 func (c *Coordinator) updateConfigMap(
 	ctx context.Context,
@@ -271,7 +307,8 @@ func (c *Coordinator) GetGangConfigMap(ctx context.Context, namespace, gangID st
 }
 
 // ParsePeers parses the peers string from a ConfigMap into a slice of PeerInfo.
-// Format: "podName;podIP;rank" per line (rank is optional for backwards compatibility).
+// Format: "podName;podIP;rank[;checkNames]" per line.
+// The checkNames field is optional for backward compatibility with older 3-field lines.
 func ParsePeers(peersData string) []types.PeerInfo {
 	var peers []types.PeerInfo
 
@@ -281,15 +318,21 @@ func ParsePeers(peersData string) []types.PeerInfo {
 			continue
 		}
 
-		parts := strings.SplitN(line, ";", 3)
+		parts := strings.SplitN(line, ";", 4)
 		if len(parts) < 2 {
 			continue
 		}
 
-		peers = append(peers, types.PeerInfo{
+		peer := types.PeerInfo{
 			PodName: strings.TrimSpace(parts[0]),
 			PodIP:   strings.TrimSpace(parts[1]),
-		})
+		}
+
+		if len(parts) >= 4 {
+			peer.CheckNames = strings.TrimSpace(parts[3])
+		}
+
+		peers = append(peers, peer)
 	}
 
 	return peers
@@ -350,6 +393,7 @@ func (c *Coordinator) addPeerToConfigMap(cm *corev1.ConfigMap, peer types.PeerIn
 	for i, p := range existingPeers {
 		if p.PodName == peer.PodName {
 			existingPeers[i].PodIP = peer.PodIP
+			existingPeers[i].CheckNames = peer.CheckNames
 			found = true
 
 			break
@@ -368,7 +412,7 @@ func (c *Coordinator) addPeerToConfigMap(cm *corev1.ConfigMap, peer types.PeerIn
 	// Serialize peers with rank (index after sorting)
 	var lines []string
 	for rank, p := range existingPeers {
-		lines = append(lines, fmt.Sprintf("%s;%s;%d", p.PodName, p.PodIP, rank))
+		lines = append(lines, fmt.Sprintf("%s;%s;%d;%s", p.PodName, p.PodIP, rank, p.CheckNames))
 	}
 
 	cm.Data[DataKeyPeers] = strings.Join(lines, "\n")

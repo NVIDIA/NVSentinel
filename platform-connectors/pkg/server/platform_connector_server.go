@@ -21,7 +21,11 @@ import (
 	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"go.opentelemetry.io/otel/attribute"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
@@ -50,14 +54,27 @@ type PlatformConnectorServer struct {
 
 func (p *PlatformConnectorServer) HealthEventOccurredV1(ctx context.Context,
 	he *pb.HealthEvents) (*empty.Empty, error) {
-	slog.Info("Health events received", "events", he)
+	ctx, span := tracing.StartSpan(ctx, "platform_connector.grpc.health_events_received")
+	defer span.End()
 
-	healthEventsReceived.Add(float64(len(he.Events)))
+	eventCount := len(he.Events)
+	span.SetAttributes(
+		attribute.Int("platform_connector.grpc.event_count", eventCount),
+	)
 
-	// Custom monitors that don't set processingStrategy will default to EXECUTE_REMEDIATION.
+	slog.InfoContext(ctx, "Health events received", "events", he)
+	healthEventsReceived.Add(float64(eventCount))
+
 	for _, event := range he.Events {
+		// Custom monitors that don't set processingStrategy will default to EXECUTE_REMEDIATION.
 		if event.ProcessingStrategy == pb.ProcessingStrategy_UNSPECIFIED {
 			event.ProcessingStrategy = pb.ProcessingStrategy_EXECUTE_REMEDIATION
+		}
+
+		if event.RecommendedAction == pb.RecommendedAction_CUSTOM && event.CustomRecommendedAction == "" {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"recommendedAction is CUSTOM but customRecommendedAction is empty (node=%s, agent=%s)",
+				event.NodeName, event.Agent)
 		}
 	}
 
@@ -67,8 +84,12 @@ func (p *PlatformConnectorServer) HealthEventOccurredV1(ctx context.Context,
 		}
 	}
 
+	// Enqueue with trace context so store and K8s connectors continue this trace
+	parentSC := span.SpanContext()
+	item := &ringbuffer.QueuedHealthEvents{Events: he, ParentSpanContext: parentSC}
+
 	for _, buffer := range ringBufferQueue {
-		buffer.Enqueue(he)
+		buffer.Enqueue(item)
 	}
 
 	return nil, nil

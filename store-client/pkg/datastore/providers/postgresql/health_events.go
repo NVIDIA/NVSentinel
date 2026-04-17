@@ -40,14 +40,31 @@ func NewPostgreSQLHealthEventStore(db *sql.DB) *PostgreSQLHealthEventStore {
 	return &PostgreSQLHealthEventStore{db: db}
 }
 
-// formatTimeRFC3339 formats t as RFC3339Nano with "Z" for JSONB document storage.
-// Ensures timestamps parse correctly in Go (RFC3339) and other consumers; PostgreSQL to_jsonb(timestamp) can omit "Z".
-func formatTimeRFC3339(t *timestamppb.Timestamp) string {
+// timestampToTime converts a protobuf Timestamp to *time.Time for use as a
+// database/sql parameter. database/sql cannot serialize timestamppb.Timestamp
+// directly (it doesn't implement driver.Valuer).
+func timestampToTime(t *timestamppb.Timestamp) *time.Time {
 	if t == nil {
-		return ""
+		return nil
 	}
 
-	return t.AsTime().UTC().Format(time.RFC3339Nano)
+	goTime := t.AsTime().UTC()
+
+	return &goTime
+}
+
+// formatTimestampAsProtobufJSON serializes t as the JSON object that encoding/json
+// produces for timestamppb.Timestamp: {"seconds":N,"nanos":N}. This must be used
+// when storing timestamps inside the JSONB document column so that consumers
+// deserializing with encoding/json (e.g. node-drainer) get a compatible format.
+func formatTimestampAsProtobufJSON(t *timestamppb.Timestamp) string {
+	if t == nil {
+		return "null"
+	}
+
+	ts := t.AsTime().UTC()
+
+	return fmt.Sprintf(`{"seconds":%d,"nanos":%d}`, ts.Unix(), ts.Nanosecond())
 }
 
 // InsertHealthEvents inserts health events into the database
@@ -219,6 +236,38 @@ func (p *PostgreSQLHealthEventStore) insertHealthEventRecord(
 	return nil
 }
 
+// UpdateSpanID writes a service's span ID into the span_ids map for trace context propagation.
+func (p *PostgreSQLHealthEventStore) UpdateSpanID(
+	ctx context.Context, id string, serviceName string, spanID string,
+) error {
+	query := `
+		UPDATE health_events
+		SET document = jsonb_set(
+			COALESCE(document, '{}'::jsonb),
+			'{healtheventstatus,spanids}',
+			COALESCE(document#>'{healtheventstatus,spanids}', '{}'::jsonb)
+				|| jsonb_build_object($1::text, $2::text)
+		),
+		updated_at = NOW()
+		WHERE id = $3`
+
+	result, err := p.db.ExecContext(ctx, query, serviceName, spanID, id)
+	if err != nil {
+		return fmt.Errorf("failed to update span ID: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("health event not found: %s", id)
+	}
+
+	return nil
+}
+
 // UpdateHealthEventStatus updates the status of a health event by ID
 func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 	ctx context.Context, id string, status datastore.HealthEventStatus,
@@ -236,9 +285,8 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 	switch {
 	case status.NodeQuarantined != nil:
 		// NodeQuarantined has a value - update it in both column and JSONB.
-		// Store lastremediationtimestamp in document as RFC3339 with "Z" for parseable JSON.
 		statusStr := string(*status.NodeQuarantined)
-		lastRemediationRFC3339 := formatTimeRFC3339(status.LastRemediationTimestamp)
+		lastRemediationJSON := formatTimestampAsProtobufJSON(status.LastRemediationTimestamp)
 		//nolint:dupword // SQL query uses nested jsonb_set calls
 		query = `
 			UPDATE health_events
@@ -265,29 +313,28 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 			                to_jsonb($4::text)
 			            ),
 			            '{healtheventstatus,faultremediated}',
-			            to_jsonb($6::boolean)
+			            jsonb_build_object('value', $6::boolean)
 			        ),
 			        '{healtheventstatus,lastremediationtimestamp}',
-			        to_jsonb($9::text)
+			        $9::jsonb
 			    ),
 			    updated_at = NOW()
 			WHERE id = $8::uuid
 		`
 		params = []interface{}{
 			statusStr,
-			status.QuarantineFinishTimestamp,
+			timestampToTime(status.QuarantineFinishTimestamp),
 			string(status.UserPodsEvictionStatus.Status),
 			status.UserPodsEvictionStatus.Message,
-			status.DrainFinishTimestamp,
+			timestampToTime(status.DrainFinishTimestamp),
 			status.FaultRemediated,
-			status.LastRemediationTimestamp,
+			timestampToTime(status.LastRemediationTimestamp),
 			id,
-			lastRemediationRFC3339,
+			lastRemediationJSON,
 		}
 	case status.UserPodsEvictionStatus.Status != "":
 		// NodeQuarantined is NULL but UserPodsEvictionStatus is set - update eviction + remediation fields only.
-		// Store lastremediationtimestamp in document as RFC3339 with "Z" for parseable JSON.
-		lastRemediationRFC3339 := formatTimeRFC3339(status.LastRemediationTimestamp)
+		lastRemediationJSON := formatTimestampAsProtobufJSON(status.LastRemediationTimestamp)
 		//nolint:dupword // SQL query uses nested jsonb_set calls
 		query = `
 			UPDATE health_events
@@ -309,29 +356,28 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 			                to_jsonb($3::text)
 			            ),
 			            '{healtheventstatus,faultremediated}',
-			            to_jsonb($5::boolean)
+			            jsonb_build_object('value', $5::boolean)
 			        ),
 			        '{healtheventstatus,lastremediationtimestamp}',
-			        to_jsonb($8::text)
+			        $8::jsonb
 			    ),
 			    updated_at = NOW()
 			WHERE id = $7::uuid
 		`
 		params = []interface{}{
-			status.QuarantineFinishTimestamp,
+			timestampToTime(status.QuarantineFinishTimestamp),
 			string(status.UserPodsEvictionStatus.Status),
 			status.UserPodsEvictionStatus.Message,
-			status.DrainFinishTimestamp,
+			timestampToTime(status.DrainFinishTimestamp),
 			status.FaultRemediated,
-			status.LastRemediationTimestamp,
+			timestampToTime(status.LastRemediationTimestamp),
 			id,
-			lastRemediationRFC3339,
+			lastRemediationJSON,
 		}
 	default:
 		// NodeQuarantined is NULL and UserPodsEvictionStatus is empty (e.g. FR-only update):
 		// only update fault_remediated and last_remediation_timestamp, preserve existing eviction status.
-		// Store lastremediationtimestamp in document as RFC3339 with "Z" so JSON unmarshal (Go/MongoDB consumers) succeeds.
-		lastRemediationRFC3339 := formatTimeRFC3339(status.LastRemediationTimestamp)
+		lastRemediationJSON := formatTimestampAsProtobufJSON(status.LastRemediationTimestamp)
 		//nolint:dupword // SQL query uses nested jsonb_set
 		query = `
 			UPDATE health_events
@@ -341,18 +387,18 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 			        jsonb_set(
 			            document,
 			            '{healtheventstatus,faultremediated}',
-			            to_jsonb($1::boolean)
+			            jsonb_build_object('value', $1::boolean)
 			        ),
 			        '{healtheventstatus,lastremediationtimestamp}',
-			        to_jsonb($3::text)
+			        $3::jsonb
 			    ),
 			    updated_at = NOW()
 			WHERE id = $4::uuid
 		`
 		params = []interface{}{
 			status.FaultRemediated,
-			status.LastRemediationTimestamp,
-			lastRemediationRFC3339,
+			timestampToTime(status.LastRemediationTimestamp),
+			lastRemediationJSON,
 			id,
 		}
 	}
@@ -632,15 +678,24 @@ func (p *PostgreSQLHealthEventStore) FindHealthEventsByStatus(
 
 // UpdateNodeQuarantineStatus updates node quarantine status for a specific event
 func (p *PostgreSQLHealthEventStore) UpdateNodeQuarantineStatus(
-	ctx context.Context, eventID string, status datastore.Status,
+	ctx context.Context, eventID string, status datastore.Status, spanID string,
 ) error {
 	// PostgreSQL stores health event status in BOTH table columns AND the JSONB document.
 	// We must update BOTH to keep them in sync for aggregation pipelines to work correctly.
+	//nolint:dupword // SQL query uses nested jsonb_set calls
 	query := `
 		UPDATE health_events
 		SET node_quarantined = $1,
 		    document = jsonb_set(
-		        document,
+		        jsonb_set(
+		            CASE
+		                WHEN document #> '{healtheventstatus,spanids}' IS NULL
+		                THEN jsonb_set(document, '{healtheventstatus,spanids}', '{}'::jsonb)
+		                ELSE document
+		            END,
+		            '{healtheventstatus,spanids,fault-quarantine}',
+		            to_jsonb($3::text)
+		        ),
 		        '{healtheventstatus,nodequarantined}',
 		        to_jsonb($1::text)
 		    ),
@@ -648,7 +703,7 @@ func (p *PostgreSQLHealthEventStore) UpdateNodeQuarantineStatus(
 		WHERE id = $2
 	`
 
-	result, err := p.db.ExecContext(ctx, query, string(status), eventID)
+	result, err := p.db.ExecContext(ctx, query, string(status), eventID, spanID)
 	if err != nil {
 		return fmt.Errorf("failed to update node quarantine status: %w", err)
 	}
@@ -731,7 +786,7 @@ func (p *PostgreSQLHealthEventStore) UpdateRemediationStatus(
 		    document = jsonb_set(
 		        document,
 		        '{healtheventstatus,faultremediated}',
-		        to_jsonb($1::boolean)
+		        jsonb_build_object('value', $1::boolean)
 		    ),
 		    updated_at = NOW()
 		WHERE id = $2
@@ -816,10 +871,8 @@ func (p *PostgreSQLHealthEventStore) FindLatestEventForNode(
 // PostgreSQL: converts builder to SQL and uses native query
 func (p *PostgreSQLHealthEventStore) FindHealthEventsByQuery(ctx context.Context,
 	builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error) {
-	// Convert query builder to SQL
 	whereClause, args := builder.ToSQL()
 
-	// Build the full query - include id column for PostgreSQL document identification
 	//nolint:gosec // G202 false positive - using parameterized query with placeholders
 	query := `
 		SELECT id, document
@@ -827,6 +880,49 @@ func (p *PostgreSQLHealthEventStore) FindHealthEventsByQuery(ctx context.Context
 		WHERE ` + whereClause + `
 	`
 
+	return p.queryHealthEventsWithID(ctx, query, args...)
+}
+
+// FindHealthEventsByQueryBatched iterates matching health events in bounded batches.
+// fn is called once per batch of up to batchSize events. Return a non-nil error from
+// fn to stop iteration early. Uses LIMIT/OFFSET pagination to bound memory.
+func (p *PostgreSQLHealthEventStore) FindHealthEventsByQueryBatched(ctx context.Context,
+	builder datastore.QueryBuilder, batchSize int,
+	fn func([]datastore.HealthEventWithStatus) error) error {
+	whereClause, args := builder.ToSQL()
+
+	for offset := 0; ; offset += batchSize {
+		//nolint:gosec // G202 false positive - batchSize/offset are integers, not user input
+		q := fmt.Sprintf(
+			"SELECT id, document FROM health_events WHERE %s ORDER BY id LIMIT %d OFFSET %d",
+			whereClause, batchSize, offset)
+
+		batch, err := p.queryHealthEventsWithID(ctx, q, args...)
+		if err != nil {
+			return fmt.Errorf("failed to query health events batch at offset %d: %w", offset, err)
+		}
+
+		if len(batch) == 0 {
+			break
+		}
+
+		if err := fn(batch); err != nil {
+			return err
+		}
+
+		if len(batch) < batchSize {
+			break
+		}
+	}
+
+	return nil
+}
+
+// queryHealthEventsWithID executes a query that returns (id, document) rows
+// and converts them into HealthEventWithStatus slices with RawEvent populated.
+func (p *PostgreSQLHealthEventStore) queryHealthEventsWithID(
+	ctx context.Context, query string, args ...interface{},
+) ([]datastore.HealthEventWithStatus, error) {
 	rows, err := p.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query health events: %w", err)
@@ -850,16 +946,14 @@ func (p *PostgreSQLHealthEventStore) FindHealthEventsByQuery(ctx context.Context
 			return nil, fmt.Errorf("failed to unmarshal health event: %w", err)
 		}
 
-		// Populate RawEvent for cold-start support
 		var rawEvent map[string]interface{}
 		if err := json.Unmarshal(documentJSON, &rawEvent); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal raw event: %w", err)
 		}
 
-		// Add PostgreSQL id to RawEvent for document identification
 		rawEvent["id"] = documentID
-
 		event.RawEvent = rawEvent
+
 		events = append(events, event)
 	}
 

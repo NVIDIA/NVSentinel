@@ -17,6 +17,7 @@ package mongodb
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -47,6 +48,18 @@ func (h *MongoHealthEventStore) UpdateHealthEventStatus(ctx context.Context, id 
 	err := h.databaseClient.UpdateDocumentStatus(ctx, id, "healtheventstatus", status)
 	if err != nil {
 		return fmt.Errorf("failed to update health event status: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateSpanID writes a service's span ID into the span_ids map for trace context propagation.
+func (h *MongoHealthEventStore) UpdateSpanID(ctx context.Context, id string, serviceName string, spanID string) error {
+	err := h.databaseClient.UpdateDocumentStatusFields(ctx, id, map[string]interface{}{
+		"healtheventstatus.spanids." + serviceName: spanID,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update span ID: %w", err)
 	}
 
 	return nil
@@ -216,10 +229,10 @@ func (h *MongoHealthEventStore) FindHealthEventsByStatus(ctx context.Context,
 
 // UpdateNodeQuarantineStatus updates node quarantine status
 func (h *MongoHealthEventStore) UpdateNodeQuarantineStatus(ctx context.Context, eventID string,
-	status datastore.Status) error {
+	status datastore.Status, spanID string) error {
 	// Use the convenience function from our existing implementation
 	return client.UpdateHealthEventNodeQuarantineStatus(ctx, h.databaseClient, eventID,
-		string(status))
+		string(status), spanID)
 }
 
 // UpdatePodEvictionStatus updates pod eviction status
@@ -326,6 +339,95 @@ func (h *MongoHealthEventStore) UpdateHealthEventsByQuery(ctx context.Context,
 			"failed to update health events by query",
 			err,
 		)
+	}
+
+	return nil
+}
+
+// decodeRawDocToHealthEvent decodes a raw BSON map into a HealthEventWithStatus,
+// preserving the original map in RawEvent.
+func decodeRawDocToHealthEvent(rawDoc map[string]interface{}) (datastore.HealthEventWithStatus, error) {
+	bsonBytes, err := bson.Marshal(rawDoc)
+	if err != nil {
+		return datastore.HealthEventWithStatus{}, datastore.NewQueryError(
+			datastore.ProviderMongoDB, "failed to marshal document to BSON", err)
+	}
+
+	var event datastore.HealthEventWithStatus
+	if err := bson.Unmarshal(bsonBytes, &event); err != nil {
+		return datastore.HealthEventWithStatus{}, datastore.NewQueryError(
+			datastore.ProviderMongoDB, "failed to unmarshal BSON to health event", err)
+	}
+
+	event.RawEvent = rawDoc
+
+	return event, nil
+}
+
+// FindHealthEventsByQueryBatched iterates matching health events in bounded batches.
+// fn is called once per batch of up to batchSize events. Return a non-nil error from
+// fn to stop iteration early. Memory is bounded to O(batchSize) at any point.
+func (h *MongoHealthEventStore) FindHealthEventsByQueryBatched(ctx context.Context,
+	builder datastore.QueryBuilder, batchSize int,
+	fn func([]datastore.HealthEventWithStatus) error) error {
+	filter := builder.ToMongo()
+
+	cursor, err := h.databaseClient.Find(ctx, filter, nil)
+	if err != nil {
+		return datastore.NewQueryError(
+			datastore.ProviderMongoDB,
+			"failed to find health events for batched query",
+			err,
+		)
+	}
+	defer cursor.Close(ctx)
+
+	batch := make([]datastore.HealthEventWithStatus, 0, batchSize)
+
+	for cursor.Next(ctx) {
+		var rawDoc map[string]interface{}
+		if err := cursor.Decode(&rawDoc); err != nil {
+			slog.Error("Skipping undecodable document in batched query",
+				"error", err)
+
+			continue
+		}
+
+		event, err := decodeRawDocToHealthEvent(rawDoc)
+		if err != nil {
+			slog.Error("Skipping document that failed struct conversion in batched query",
+				"error", err)
+
+			continue
+		}
+
+		batch = append(batch, event)
+
+		if len(batch) >= batchSize {
+			normalizeHealthEvents(batch)
+
+			if err := fn(batch); err != nil {
+				return err
+			}
+
+			batch = make([]datastore.HealthEventWithStatus, 0, batchSize)
+		}
+	}
+
+	if err := cursor.Err(); err != nil {
+		return datastore.NewQueryError(
+			datastore.ProviderMongoDB,
+			"cursor error while iterating batched query",
+			err,
+		)
+	}
+
+	if len(batch) > 0 {
+		normalizeHealthEvents(batch)
+
+		if err := fn(batch); err != nil {
+			return err
+		}
 	}
 
 	return nil

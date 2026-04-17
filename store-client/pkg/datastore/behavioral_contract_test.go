@@ -103,6 +103,11 @@ func (m *MockHealthEventStore) UpdateHealthEventStatusByNode(ctx context.Context
 	return args.Error(0)
 }
 
+func (m *MockHealthEventStore) UpdateSpanID(ctx context.Context, id string, serviceName string, spanID string) error {
+	args := m.Called(ctx, id, serviceName, spanID)
+	return args.Error(0)
+}
+
 func (m *MockHealthEventStore) FindHealthEventsByNode(ctx context.Context, nodeName string) ([]datastore.HealthEventWithStatus, error) {
 	args := m.Called(ctx, nodeName)
 	if args.Get(0) == nil {
@@ -127,8 +132,13 @@ func (m *MockHealthEventStore) FindHealthEventsByStatus(ctx context.Context, sta
 	return args.Get(0).([]datastore.HealthEventWithStatus), args.Error(1)
 }
 
-func (m *MockHealthEventStore) UpdateNodeQuarantineStatus(ctx context.Context, eventID string, status datastore.Status) error {
-	args := m.Called(ctx, eventID, status)
+func (m *MockHealthEventStore) FindHealthEventsByQueryBatched(ctx context.Context, builder datastore.QueryBuilder, batchSize int, fn func([]datastore.HealthEventWithStatus) error) error {
+	args := m.Called(ctx, builder, batchSize, fn)
+	return args.Error(0)
+}
+
+func (m *MockHealthEventStore) UpdateNodeQuarantineStatus(ctx context.Context, eventID string, status datastore.Status, spanID string) error {
+	args := m.Called(ctx, eventID, status, spanID)
 	return args.Error(0)
 }
 

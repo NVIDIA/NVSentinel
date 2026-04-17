@@ -21,9 +21,11 @@ import (
 	"sync"
 
 	"github.com/hashicorp/golang-lru/v2/expirable"
+	"go.opentelemetry.io/otel/attribute"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
@@ -50,7 +52,7 @@ func New(ctx context.Context, config *Config, clientset kubernetes.Interface) (*
 		config.CacheTTL,
 	)
 
-	slog.Info("Metadata augmentor initialized",
+	slog.InfoContext(ctx, "Metadata augmentor initialized",
 		"cacheSize", config.CacheSize,
 		"cacheTTL", config.CacheTTL,
 		"allowedLabels", config.AllowedLabels)
@@ -67,14 +69,25 @@ func (a *Augmentor) Transform(ctx context.Context, event *pb.HealthEvent) error 
 		return fmt.Errorf("event has empty node name")
 	}
 
+	ctx, span := tracing.StartSpan(ctx, "platform_connector.transformer.metadata")
+	defer span.End()
+
 	metadata, err := a.getOrFetchMetadata(ctx, event.NodeName)
 	if err != nil {
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("platform_connector.transformer.metadata.error.type", "failed_to_get_metadata"),
+			attribute.String("platform_connector.transformer.metadata.error.message", err.Error()),
+		)
+
 		return fmt.Errorf("failed to get metadata for node %s: %w", event.NodeName, err)
 	}
 
 	if event.Metadata == nil {
 		event.Metadata = make(map[string]string)
 	}
+
+	var labelsAdded int
 
 	if metadata.ProviderID != "" {
 		event.Metadata["providerID"] = metadata.ProviderID
@@ -83,13 +96,18 @@ func (a *Augmentor) Transform(ctx context.Context, event *pb.HealthEvent) error 
 	for _, labelKey := range a.config.AllowedLabels {
 		if labelValue, exists := metadata.Labels[labelKey]; exists {
 			event.Metadata[labelKey] = labelValue
+			labelsAdded++
 		}
 	}
 
-	slog.Info("Metadata augmented",
+	span.SetAttributes(
+		attribute.Int("metadata.labels_added", labelsAdded),
+	)
+
+	slog.InfoContext(ctx, "Metadata augmented",
 		"node", event.NodeName,
 		"providerID", metadata.ProviderID,
-		"labelsAdded", len(metadata.Labels))
+		"labelsAdded", labelsAdded)
 
 	return nil
 }

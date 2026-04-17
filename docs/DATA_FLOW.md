@@ -5,6 +5,7 @@ This document illustrates how data flows through the NVSentinel system, from det
 ## Table of Contents
 
 - [Overview](#overview)
+- [Preflight (optional admission checks)](#preflight-optional-admission-checks)
 - [Core Data Structure: HealthEvent](#core-data-structure-healthevent)
 - [Component Data Flow](#component-data-flow)
 - [Detailed Sequence Diagrams](#detailed-sequence-diagrams)
@@ -20,6 +21,10 @@ NVSentinel uses a **publish-subscribe** pattern through MongoDB change streams:
 2. **Platform Connectors** persist events to MongoDB and update Kubernetes
 3. **Core Modules** subscribe to MongoDB change streams and react independently
 4. **Kubernetes API** is the final actuator for all remediation actions
+
+### Preflight (optional admission checks)
+
+**Preflight** does not publish events through MongoDB or platform connectors. A **mutating admission webhook** injects init containers into GPU pods in labeled namespaces. When a check detects a failure, the init container sends a health event to the platform connector over the Unix domain socket (`PLATFORM_CONNECTOR_SOCKET`), which then follows the normal ingestion path. This is separate from the change-stream pipeline above because healthy checks produce no events at all. Multi-node checks use **gang discovery** and ConfigMap coordination ([ADR-026](./designs/026-preflight-checks.md), [configuration](./configuration/preflight.md)).
 
 ```mermaid
 graph TB

@@ -26,17 +26,17 @@ IS_KO_MODULE := 1
 # fault-quarantine specific settings
 CLEAN_EXTRA_FILES := fault-quarantine
 
-# Test setup commands for kubebuilder envtest
-TEST_SETUP_COMMANDS := \
-	go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest && \
-	eval $$(setup-envtest use --use-env -p env) &&
-
 # =============================================================================
 # INCLUDE SHARED DEFINITIONS
 # =============================================================================
 
 include ../make/common.mk
 include ../make/go.mk
+
+# Test setup commands for kubebuilder envtest
+TEST_SETUP_COMMANDS := \
+	go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION) && \
+	eval $$(setup-envtest use --use-env -p env) &&
 
 # =============================================================================
 # DEFAULT TARGET

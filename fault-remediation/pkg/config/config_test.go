@@ -233,11 +233,11 @@ func TestTomlConfig_Validate(t *testing.T) {
 			config: TomlConfig{
 				Template: Template{MountPath: tempDir},
 				RemediationActions: map[string]MaintenanceResource{
-					"ACTION_A": {
+					"RESTART_BM": {
 						TemplateFileName:    "template-a.yaml",
 						Scope:               "Cluster",
 						EquivalenceGroup:    "restart",
-						ImpactedEntityScope: "PCI",
+						ImpactedEntityScope: "GPU_UUID",
 					},
 					"COMPONENT_RESET": {
 						TemplateFileName:             "template-b.yaml",
@@ -250,19 +250,19 @@ func TestTomlConfig_Validate(t *testing.T) {
 				},
 			},
 			expectError: true,
-			errorSubstr: "cannot have an ImpactedEntityScope defined",
+			errorSubstr: "built-in action 'RESTART_BM' cannot have an ImpactedEntityScope",
 		},
 		{
-			name: "Only the COMPONENT_RESET action can have an ImpactedEntityScope",
+			name: "Built-in actions other than COMPONENT_RESET cannot have an ImpactedEntityScope",
 			config: TomlConfig{
 				Template: Template{MountPath: tempDir},
 				RemediationActions: map[string]MaintenanceResource{
-					"ACTION_A": {
+					"RESTART_VM": {
 						TemplateFileName: "template-a.yaml",
 						Scope:            "Cluster",
 						EquivalenceGroup: "restart",
 					},
-					"ACTION_B": {
+					"RESTART_BM": {
 						TemplateFileName:             "template-b.yaml",
 						Scope:                        "Namespaced",
 						Namespace:                    "test-namespace",
@@ -273,7 +273,29 @@ func TestTomlConfig_Validate(t *testing.T) {
 				},
 			},
 			expectError: true,
-			errorSubstr: "cannot have an ImpactedEntityScope defined",
+			errorSubstr: "built-in action 'RESTART_BM' cannot have an ImpactedEntityScope",
+		},
+		{
+			name: "Custom actions can have an ImpactedEntityScope with valid entity type",
+			config: TomlConfig{
+				Template: Template{MountPath: tempDir},
+				RemediationActions: map[string]MaintenanceResource{
+					"RESTART_VM": {
+						TemplateFileName: "template-a.yaml",
+						Scope:            "Cluster",
+						EquivalenceGroup: "restart",
+					},
+					"REPLACE_DISK": {
+						TemplateFileName:             "template-b.yaml",
+						Scope:                        "Namespaced",
+						Namespace:                    "test-namespace",
+						EquivalenceGroup:             "reset",
+						SupersedingEquivalenceGroups: []string{"restart"},
+						ImpactedEntityScope:          "GPU_UUID",
+					},
+				},
+			},
+			expectError: false,
 		},
 	}
 

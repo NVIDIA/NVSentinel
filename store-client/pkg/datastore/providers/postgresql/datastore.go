@@ -22,10 +22,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/XSAM/otelsql"
 	_ "github.com/lib/pq" // PostgreSQL driver
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 )
 
 // PostgreSQLDataStore implements the DataStore interface for PostgreSQL
@@ -57,7 +61,10 @@ func NewPostgreSQLStore(ctx context.Context, config datastore.DataStoreConfig) (
 
 	connectionString := buildConnectionString(config.Connection)
 
-	db, err := sql.Open("postgres", connectionString)
+	db, err := otelsql.Open("postgres", connectionString,
+		otelsql.WithAttributes(semconv.DBSystemPostgreSQL),
+		otelsql.WithTracerProvider(tracing.GetChildOnlyTracerProvider()),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open PostgreSQL connection: %w", err)
 	}
@@ -72,6 +79,12 @@ func NewPostgreSQLStore(ctx context.Context, config datastore.DataStoreConfig) (
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(10)
 	db.SetConnMaxLifetime(time.Hour)
+
+	if _, err := otelsql.RegisterDBStatsMetrics(db,
+		otelsql.WithAttributes(semconv.DBSystemPostgreSQL),
+	); err != nil {
+		slog.Warn("Failed to register DB stats metrics", "error", err)
+	}
 
 	// Create tables if they don't exist
 	if err := createTables(ctx, db); err != nil {
@@ -257,7 +270,7 @@ func buildConnectionString(conn datastore.ConnectionConfig) string {
 	}
 
 	if conn.Password != "" {
-		params = append(params, fmt.Sprintf("password=%s", conn.Password))
+		params = append(params, "password="+utils.QuotePQValue(conn.Password))
 	}
 
 	if conn.SSLMode != "" {

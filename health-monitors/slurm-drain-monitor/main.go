@@ -24,7 +24,10 @@ import (
 	"syscall"
 	"time"
 
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
+
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	featureflags "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/health-monitors/slurm-drain-monitor/pkg/initializer"
 	_ "github.com/nvidia/nvsentinel/health-monitors/slurm-drain-monitor/pkg/metrics"
 )
@@ -88,6 +91,11 @@ func main() {
 }
 
 func run() error {
+	ff := featureflags.NewRegistry(defaultAgentName,
+		featureflags.WithRegisterer(crmetrics.Registry),
+	)
+	ff.SetStoreOnlyMode(*processingStrategyFlag)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

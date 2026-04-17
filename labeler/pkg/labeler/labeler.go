@@ -292,6 +292,10 @@ func (l *Labeler) registerNodeEventHandlers() error {
 			}
 		},
 		UpdateFunc: func(oldObj, newObj any) {
+			if !l.nodeRequiresReconciliation(oldObj, newObj) {
+				return
+			}
+
 			if err := l.handleNodeEvent(newObj); err != nil {
 				slog.Error("Failed to handle node update event", "error", err)
 			}
@@ -386,6 +390,31 @@ func hasReadyDriverPod(objs []any, excludePod *v1.Pod) bool {
 		}
 
 		if podutil.IsPodReady(pod) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// nodeRequiresReconciliation returns true only when a node update changed an
+// input label the labeler reads from nodes. DCGM and driver labels are driven
+// by pod events, so the node UpdateFunc only needs to react to changes in kata
+// detection labels and the gpu-present label (for assumeDriverInstalled mode).
+func (l *Labeler) nodeRequiresReconciliation(oldObj, newObj any) bool {
+	oldNode, ok1 := oldObj.(*v1.Node)
+	newNode, ok2 := newObj.(*v1.Node)
+
+	if !ok1 || !ok2 {
+		return true
+	}
+
+	if oldNode.Labels[gpuPresentLabel] != newNode.Labels[gpuPresentLabel] {
+		return true
+	}
+
+	for _, key := range l.kataLabels {
+		if oldNode.Labels[key] != newNode.Labels[key] {
 			return true
 		}
 	}

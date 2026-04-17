@@ -17,6 +17,7 @@
 package pipeline
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 )
@@ -41,12 +42,12 @@ func Create(cfg *Config) (Transformer, error) {
 // NewFromConfigs creates a Pipeline from a slice of transformer configurations.
 // Disabled transformers are skipped. Returns an error if any enabled transformer
 // fails to initialize.
-func NewFromConfigs(configs []Config) (*Pipeline, error) {
+func NewFromConfigs(ctx context.Context, configs []Config) (*Pipeline, error) {
 	var transformers []Transformer
 
 	for _, cfg := range configs {
 		if !cfg.Enabled {
-			slog.Info("Transformer disabled", "name", cfg.Name)
+			slog.InfoContext(ctx, "Transformer disabled", "name", cfg.Name)
 			continue
 		}
 
@@ -56,7 +57,7 @@ func NewFromConfigs(configs []Config) (*Pipeline, error) {
 		}
 
 		transformers = append(transformers, t)
-		slog.Info("Transformer registered", "name", t.Name())
+		slog.InfoContext(ctx, "Transformer registered", "name", t.Name())
 	}
 
 	return New(transformers...), nil

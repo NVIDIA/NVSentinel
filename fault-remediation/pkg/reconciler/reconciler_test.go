@@ -325,6 +325,38 @@ func TestHandleEvent(t *testing.T) {
 			assert.Equal(t, tt.expectedError, err)
 		})
 	}
+
+	t.Run("Successful custom action", func(t *testing.T) {
+		k8sClient := &MockK8sClient{
+			createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *events.HealthEventData,
+				_ *common.EquivalenceGroupConfig) (string, error) {
+				assert.Equal(t, "node-custom", healthEventDoc.HealthEventWithStatus.HealthEvent.NodeName)
+				assert.Equal(t, protos.RecommendedAction_CUSTOM,
+					healthEventDoc.HealthEventWithStatus.HealthEvent.RecommendedAction)
+				assert.Equal(t, "REPLACE_DISK",
+					healthEventDoc.HealthEventWithStatus.HealthEvent.CustomRecommendedAction)
+				return "test-cr-custom", nil
+			},
+		}
+
+		cfg := ReconcilerConfig{RemediationClient: k8sClient}
+		r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
+		healthEventData := &events.HealthEventData{
+			ID: uuid.New().String(),
+			HealthEventWithStatus: model.HealthEventWithStatus{
+				HealthEvent: &protos.HealthEvent{
+					NodeName:                "node-custom",
+					RecommendedAction:       protos.RecommendedAction_CUSTOM,
+					CustomRecommendedAction: "REPLACE_DISK",
+				},
+			},
+		}
+		groupConfig := getGroupConfig("disk-replace", nil)
+
+		crName, err := r.Config.RemediationClient.CreateMaintenanceResource(ctx, healthEventData, groupConfig)
+		assert.NoError(t, err)
+		assert.Equal(t, "test-cr-custom", crName)
+	})
 }
 
 func TestPerformRemediationWithUnsupportedAction(t *testing.T) {
@@ -612,6 +644,35 @@ func TestShouldSkipEvent(t *testing.T) {
 			assert.Equal(t, tt.shouldSkip, result, tt.description)
 		})
 	}
+
+	t.Run("Process custom action with group config", func(t *testing.T) {
+		healthEvent := &protos.HealthEvent{
+			NodeName:                "test-node-custom",
+			RecommendedAction:       protos.RecommendedAction_CUSTOM,
+			CustomRecommendedAction: "REPLACE_DISK",
+		}
+		healthEventWithStatus := model.HealthEventWithStatus{
+			HealthEvent: healthEvent,
+		}
+		groupConfig := getGroupConfig("disk-replace", nil)
+
+		result := r.shouldSkipEvent(t.Context(), healthEventWithStatus, groupConfig)
+		assert.False(t, result, "Custom actions with a matching group config should not be skipped")
+	})
+
+	t.Run("Skip custom action without group config", func(t *testing.T) {
+		healthEvent := &protos.HealthEvent{
+			NodeName:                "test-node-custom-unconfigured",
+			RecommendedAction:       protos.RecommendedAction_CUSTOM,
+			CustomRecommendedAction: "UNCONFIGURED_ACTION",
+		}
+		healthEventWithStatus := model.HealthEventWithStatus{
+			HealthEvent: healthEvent,
+		}
+
+		result := r.shouldSkipEvent(t.Context(), healthEventWithStatus, nil)
+		assert.True(t, result, "Custom actions without a matching group config should be skipped")
+	})
 }
 
 func TestRunLogCollectorOnNoneActionWhenEnabled(t *testing.T) {
@@ -1027,5 +1088,57 @@ func TestLogCollectorOnlyCalledWhenShouldCreateCR(t *testing.T) {
 
 			assert.Equal(t, tt.expectLogCollectorCall, logCollectorCalled, tt.description)
 		})
+	}
+}
+
+func TestAdaptEvents_DoneChannelClosesOnInputClose(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan datastore.EventWithToken)
+	_, done := AdaptEvents(ctx, in)
+
+	// Close the input channel to simulate change stream death
+	close(in)
+
+	select {
+	case <-done:
+		// done channel closed as expected
+	case <-time.After(2 * time.Second):
+		t.Fatal("done channel was not closed after input channel closed")
+	}
+}
+
+func TestAdaptEvents_DoneChannelClosesOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	in := make(chan datastore.EventWithToken)
+	_, done := AdaptEvents(ctx, in)
+
+	cancel()
+
+	select {
+	case <-done:
+		// done channel closed as expected
+	case <-time.After(2 * time.Second):
+		t.Fatal("done channel was not closed after context cancellation")
+	}
+}
+
+func TestAdaptEvents_ForwardsEvents(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan datastore.EventWithToken, 1)
+	out, _ := AdaptEvents(ctx, in)
+
+	testEvent := datastore.EventWithToken{}
+	in <- testEvent
+
+	select {
+	case <-out:
+		// Event forwarded successfully
+	case <-time.After(2 * time.Second):
+		t.Fatal("event was not forwarded through AdaptEvents")
 	}
 }

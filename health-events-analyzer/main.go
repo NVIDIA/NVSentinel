@@ -20,7 +20,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
@@ -28,7 +31,9 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/flags"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	config "github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/publisher"
@@ -46,10 +51,24 @@ var (
 )
 
 func main() {
-	logger.SetDefaultStructuredLogger("health-events-analyzer", version)
+	logger.SetDefaultStructuredLoggerWithTraceCorrelation("health-events-analyzer", version)
 	slog.Info("Starting health-events-analyzer", "version", version, "commit", commit, "date", date)
 
-	if err := run(); err != nil {
+	if err := tracing.InitTracing(tracing.ServiceHealthEventsAnalyzer); err != nil {
+		slog.Warn("Failed to initialize tracing", "error", err)
+	}
+
+	err := run()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+	if shutdownErr := tracing.ShutdownTracing(shutdownCtx); shutdownErr != nil {
+		slog.Warn("Failed to shutdown tracing", "error", shutdownErr)
+	}
+
+	cancel()
+
+	if err != nil {
 		slog.Error("Fatal error", "error", err)
 		os.Exit(1)
 	}
@@ -95,7 +114,8 @@ func connectToPlatform(socket string, processingStrategy protos.ProcessingStrate
 }
 
 func run() error {
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	metricsPort := flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
 	socket := flag.String("socket", "unix:///var/run/nvsentinel.sock", "unix domain socket")
@@ -105,6 +125,9 @@ func run() error {
 		"Event processing strategy for analyzer output: EXECUTE_REMEDIATION or STORE_ONLY")
 
 	flag.Parse()
+
+	ff := metrics.NewRegistry("health-events-analyzer")
+	ff.SetStoreOnlyMode(*processingStrategyFlag)
 
 	databaseConfig, err := loadDatabaseConfig(certConfig.ResolveCertPath())
 	if err != nil {
@@ -130,6 +153,10 @@ func run() error {
 	tomlConfig, err := config.LoadTomlConfig(*tomlConfigPath)
 	if err != nil {
 		return fmt.Errorf("error loading TOML config: %w", err)
+	}
+
+	for _, rule := range tomlConfig.Rules {
+		ff.Set(rule.Name, rule.EvaluateRule)
 	}
 
 	reconcilerCfg := reconciler.HealthEventsAnalyzerReconcilerConfig{

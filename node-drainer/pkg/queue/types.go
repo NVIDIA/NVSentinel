@@ -16,6 +16,7 @@ package queue
 
 import (
 	"context"
+	"sync"
 
 	"k8s.io/client-go/util/workqueue"
 
@@ -25,14 +26,10 @@ import (
 
 type NodeEvent struct {
 	NodeName         string
-	EventID          string                     // Unique event ID for deduplication (from _id field)
-	Event            *datastore.Event           // Database-agnostic event data
-	HealthEventStore datastore.HealthEventStore // New database-agnostic interface
-	Database         DataStore                  // New database-agnostic interface
-
-	// Deprecated fields for backward compatibility
-	EventBSON *map[string]interface{} // DEPRECATED: Use Event instead
-	// Collection field has been removed - use Database instead
+	EventID          string      // String event ID for logging and rate-limiter deduplication
+	DocumentID       interface{} // Native DB document ID (e.g. MongoDB ObjectID) for lazy fetch
+	HealthEventStore datastore.HealthEventStore
+	Database         DataStore
 }
 
 // DataStore provides database-agnostic operations using store-client
@@ -53,7 +50,7 @@ type DataStoreEventProcessor interface {
 type EventQueueManager interface {
 	// New database-agnostic method
 	EnqueueEventGeneric(ctx context.Context, nodeName string, event datastore.Event, database DataStore,
-		healthEventStore datastore.HealthEventStore) error
+		healthEventStore datastore.HealthEventStore, documentID interface{}) error
 
 	// Deprecated EnqueueEvent method has been removed - use EnqueueEventGeneric instead
 
@@ -70,4 +67,5 @@ type eventQueueManager struct {
 	queue                   workqueue.TypedRateLimitingInterface[NodeEvent]
 	dataStoreEventProcessor DataStoreEventProcessor // New database-agnostic processor
 	shutdown                chan struct{}
+	sessions                sync.Map // EventID -> *DrainSession
 }

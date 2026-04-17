@@ -16,6 +16,21 @@ limitations under the License.
 {{- if .Values.global.datastore }}
 {{- /* Default connection port when not set: PostgreSQL 5432, MongoDB 27017 */}}
 {{- $defaultDatastorePort := ternary 27017 5432 (eq .Values.global.datastore.provider "mongodb") }}
+{{- $mongoUriSecretName := include "nvsentinel.datastore.mongodbUriSecretName" . | trim }}
+{{- /* External managed MongoDB: mongodbStore.enabled false. In-cluster (Tilt): mongodbStore.enabled true + connection-derived URI in ConfigMap unless Secret is set. */}}
+{{- $inClusterMongo := and .Values.global.mongodbStore (.Values.global.mongodbStore.enabled | default false) }}
+{{- if eq .Values.global.datastore.provider "mongodb" }}
+{{- if and (not $inClusterMongo) (eq $mongoUriSecretName "") }}
+{{- fail "global.datastore.credentialsFromSecret.name is required for external MongoDB (global.mongodbStore.enabled false); create a Secret with key MONGODB_URI (full connection string)" }}
+{{- end }}
+{{- $mongoExplicitUri := .Values.global.datastore.uri | default "" | trim }}
+{{- if and (not $inClusterMongo) $mongoExplicitUri }}
+{{- fail "global.datastore.uri is not supported for external MongoDB; put the connection string in a Secret (key MONGODB_URI) and set credentialsFromSecret.name" }}
+{{- end }}
+{{- if and $inClusterMongo $mongoExplicitUri }}
+{{- fail "global.datastore.uri is not supported for MongoDB when using global.datastore; use credentialsFromSecret or connection fields for in-cluster MongoDB" }}
+{{- end }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -25,7 +40,7 @@ metadata:
 data:
   datastore.yaml: |
     provider: {{ .Values.global.datastore.provider | quote }}
-    {{- if .Values.global.datastore.uri }}
+    {{- if and .Values.global.datastore.uri (ne .Values.global.datastore.provider "mongodb") }}
     uri: {{ .Values.global.datastore.uri | quote }}
     {{- end }}
     {{- if .Values.global.datastore.connection }}
@@ -113,20 +128,12 @@ data:
   {{- end }}
   {{- end }}
 
-  # MongoDB connection URI
-  # If global.datastore.uri is set, it is used directly (supports full connection strings
-  # for external/managed services like Atlas, DocumentDB, Cosmos DB).
-  # Otherwise, URI is constructed from individual connection fields (host, port, extraParams).
-  #
-  # NOTE: Unlike the internal mongodb-config ConfigMap (which stores credential-free cluster
-  # addresses), external managed-service URIs may embed username:password directly in the
-  # connection string. ConfigMaps cannot reference Secret values, so credentials must be
-  # supplied via --set-string at deploy time or a secrets manager (e.g., helm-secrets, ESO).
-  # Migrating MONGODB_URI to a secretKeyRef-backed env var is tracked as a follow-up.
+  # MongoDB — external: MONGODB_URI only from Secret (envFrom.secretRef).
+  # In-cluster (global.mongodbStore.enabled): MONGODB_URI built from connection when no Secret is set.
   {{- if eq .Values.global.datastore.provider "mongodb" }}
-  {{- if .Values.global.datastore.uri }}
-  MONGODB_URI: {{ .Values.global.datastore.uri | quote }}
-  {{- else if .Values.global.datastore.connection }}
+  {{- if ne $mongoUriSecretName "" }}
+  {{- /* MONGODB_URI from Secret */}}
+  {{- else if and $inClusterMongo .Values.global.datastore.connection .Values.global.datastore.connection.host }}
   {{- $mongodbURI := printf "mongodb://%s:%d/" .Values.global.datastore.connection.host (int (.Values.global.datastore.connection.port | default 27017)) }}
   {{- if .Values.global.datastore.connection.extraParams }}
   {{- $params := list }}
@@ -136,9 +143,10 @@ data:
   {{- $mongodbURI = printf "%s?%s" $mongodbURI (join "&" $params) }}
   {{- end }}
   MONGODB_URI: {{ $mongodbURI | quote }}
+  {{- else }}
+  {{- fail "global.datastore.provider mongodb requires credentialsFromSecret.name (external) or connection.host (in-cluster mongodbStore.enabled)" }}
   {{- end }}
   {{- else }}
-  # For non-MongoDB datastores, set empty MongoDB URI
   MONGODB_URI: ""
   {{- end }}
   {{- if .Values.global.datastore.connection }}

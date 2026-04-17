@@ -30,13 +30,54 @@ type Config struct {
 	FileConfig
 }
 
+// InitContainerPlacement controls where preflight init containers are
+// inserted relative to existing init containers in the pod spec.
+type InitContainerPlacement string
+
+const (
+	// PlacementAppend appends preflight init containers after existing ones.
+	// This is the default and ensures provider-injected setup containers
+	// (e.g., GCP TCPXO daemon) complete before preflight checks run.
+	PlacementAppend InitContainerPlacement = "append"
+
+	// PlacementPrepend prepends preflight init containers before existing ones.
+	// Use this when preflight checks must run before other init containers,
+	// for example to gate workload setup on GPU health validation.
+	PlacementPrepend InitContainerPlacement = "prepend"
+)
+
+// InitContainerSpec wraps corev1.Container with a DefaultEnabled field
+// that controls whether the check runs when no per-pod annotation overrides
+// the check selection. Defaults to true when omitted (nil).
+type InitContainerSpec struct {
+	corev1.Container `yaml:",inline"`
+	DefaultEnabled   *bool `yaml:"defaultEnabled,omitempty"`
+}
+
+// IsDefaultEnabled returns true when DefaultEnabled is nil or explicitly true.
+func (s *InitContainerSpec) IsDefaultEnabled() bool {
+	return s.DefaultEnabled == nil || *s.DefaultEnabled
+}
+
 type FileConfig struct {
-	InitContainers       []corev1.Container     `yaml:"initContainers"`
-	GPUResourceNames     []string               `yaml:"gpuResourceNames"`
-	NetworkResourceNames []string               `yaml:"networkResourceNames"`
-	DCGM                 DCGMConfig             `yaml:"dcgm"`
-	GangDiscovery        GangDiscoveryConfig    `yaml:"gangDiscovery"`
-	GangCoordination     GangCoordinationConfig `yaml:"gangCoordination"`
+	InitContainers       []InitContainerSpec `yaml:"initContainers"`
+	GPUResourceNames     []string            `yaml:"gpuResourceNames"`
+	NetworkResourceNames []string            `yaml:"networkResourceNames"`
+	ConnectorSocket      string              `yaml:"connectorSocket"`
+	ProcessingStrategy   string              `yaml:"processingStrategy"`
+
+	GangDiscovery    GangDiscoveryConfig    `yaml:"gangDiscovery"`
+	GangCoordination GangCoordinationConfig `yaml:"gangCoordination"`
+
+	// InitContainerPlacement controls where preflight init containers are
+	// placed relative to existing init containers in the pod spec.
+	// Valid values: "prepend", "append". Default: "append".
+	InitContainerPlacement InitContainerPlacement `yaml:"initContainerPlacement,omitempty"`
+
+	// ImagePullSecrets are added to the target pod's spec.imagePullSecrets
+	// when init containers are injected. This is needed when the init
+	// container images are stored in a private registry.
+	ImagePullSecrets []corev1.LocalObjectReference `yaml:"imagePullSecrets,omitempty"`
 
 	// NCCLEnvPatterns are glob patterns for environment variable names to copy
 	// from the pod's main containers to preflight init containers.
@@ -49,13 +90,6 @@ type FileConfig struct {
 	// This allows the init container to inherit fabric-specific mounts
 	// (e.g. host EFA libs, TCPXO plugin volumes) from the user's container.
 	VolumeMountPatterns []string `yaml:"volumeMountPatterns,omitempty"`
-}
-
-type DCGMConfig struct {
-	HostengineAddr     string `yaml:"hostengineAddr"`
-	DiagLevel          int    `yaml:"diagLevel"`
-	ConnectorSocket    string `yaml:"connectorSocket"`
-	ProcessingStrategy string `yaml:"processingStrategy"`
 }
 
 // GangDiscoveryConfig configures gang discovery for PodGroup-based schedulers.
@@ -201,18 +235,15 @@ func (c *FileConfig) setDefaults() {
 		c.GPUResourceNames = []string{"nvidia.com/gpu"}
 	}
 
-	c.DCGM.setDefaults()
-	c.GangCoordination.setDefaults()
-}
-
-func (c *DCGMConfig) setDefaults() {
-	if c.DiagLevel == 0 {
-		c.DiagLevel = 1
+	if c.InitContainerPlacement == "" {
+		c.InitContainerPlacement = PlacementAppend
 	}
 
 	if c.ProcessingStrategy == "" {
 		c.ProcessingStrategy = "EXECUTE_REMEDIATION"
 	}
+
+	c.GangCoordination.setDefaults()
 }
 
 func (c *GangCoordinationConfig) setDefaults() {
@@ -256,6 +287,26 @@ func (c *GangCoordinationConfig) setDefaults() {
 }
 
 func (c *FileConfig) validate() error {
+	seen := make(map[string]struct{}, len(c.InitContainers))
+	for i, spec := range c.InitContainers {
+		if spec.Name == "" {
+			return fmt.Errorf("initContainers[%d].name must be set", i)
+		}
+
+		if _, exists := seen[spec.Name]; exists {
+			return fmt.Errorf("duplicate init container name %q", spec.Name)
+		}
+
+		seen[spec.Name] = struct{}{}
+	}
+
+	switch c.InitContainerPlacement {
+	case PlacementPrepend, PlacementAppend:
+	default:
+		return fmt.Errorf("invalid initContainerPlacement %q: must be %q or %q",
+			c.InitContainerPlacement, PlacementPrepend, PlacementAppend)
+	}
+
 	if c.GangCoordination.Enabled {
 		timeout, err := time.ParseDuration(c.GangCoordination.Timeout)
 		if err != nil {

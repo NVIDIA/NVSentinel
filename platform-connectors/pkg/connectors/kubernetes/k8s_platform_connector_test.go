@@ -241,7 +241,7 @@ func TestK8sNodeConditions(t *testing.T) {
 	fakeNode := getNode()
 	_, err := clientSet.CoreV1().Nodes().Create(ctx, fakeNode, metav1.CreateOptions{})
 	if err != nil {
-		slog.Error("Failed to create node", "error", err)
+		slog.ErrorContext(ctx, "Failed to create node", "error", err)
 		os.Exit(1)
 	}
 	for testCase, healthEvent := range healthEventsList {
@@ -339,7 +339,7 @@ func TestK8sNodeEvents(t *testing.T) {
 	fakeNode := getNode()
 	_, err := clientSet.CoreV1().Nodes().Create(ctx, fakeNode, metav1.CreateOptions{})
 	if err != nil {
-		slog.Error("Failed to create node", "error", err)
+		slog.ErrorContext(ctx, "Failed to create node", "error", err)
 		os.Exit(1)
 	}
 

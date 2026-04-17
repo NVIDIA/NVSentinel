@@ -84,6 +84,19 @@ func SetDefaultStructuredLoggerWithLevel(module, version, level string) {
 	slog.SetDefault(NewStructuredLogger(module, version, level))
 }
 
+// SetDefaultStructuredLoggerWithTraceCorrelation sets the default slog logger to
+// JSON on stderr with TraceContextHandler.
+// Derives log level from the LOG_LEVEL environment variable.
+func SetDefaultStructuredLoggerWithTraceCorrelation(module, version string) {
+	SetDefaultStructuredLoggerWithTraceCorrelationAndLevel(module, version, os.Getenv(EnvVarLogLevel))
+}
+
+// SetDefaultStructuredLoggerWithTraceCorrelationAndLevel is like
+// SetDefaultStructuredLoggerWithTraceCorrelation with an explicit level string.
+func SetDefaultStructuredLoggerWithTraceCorrelationAndLevel(module, version, level string) {
+	slog.SetDefault(NewStructuredLoggerWithTraceCorrelation(module, version, level))
+}
+
 // ParseLogLevel converts a string representation of a log level into a slog.Level.
 // Parameters:
 //   - level: The log level as a string (e.g., "debug", "info", "warn", "error").

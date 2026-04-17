@@ -40,6 +40,7 @@ type Match struct {
 }
 
 type RuleSet struct {
+	Enabled  bool   `toml:"enabled"`
 	Version  string `toml:"version"`
 	Name     string `toml:"name"`
 	Priority int    `toml:"priority"`

@@ -267,7 +267,7 @@ Example PodResourcesLister output:
 
 * **Map the COMPONENT_RESET action to the GPUReset custom resource:** currently, the fault-remediation-module supports a single equivalence group for called restart which maps COMPONENT_RESET, RESTART_VM, and RESTART_BM to the RebootNode custom resource. We will add a new equivalence group called reset which maps the COMPONENT_RESET action to the GPUReset custom resource.
 * **Construct new equivalence groups for each GPU being reset:** an equivalence group represents remediation actions which result in the same action being taken against a node. For GPUResets, the action is only equivalent if it maps to exactly the same set of GPUs being reset. As a result, we will need to construct different equivalence groups depending on the specific GPUs being reset.
-    * This can be accomplished by naming the equivalence group like reset-<GPU-UUID> which will ensure that the same GPU cannot be reset concurrently. Recall that each HealthEvent will only include a single GPU.
+    * This can be accomplished by naming the equivalence group like reset-`<GPU-UUID>` which will ensure that the same GPU cannot be reset concurrently. Recall that each HealthEvent will only include a single GPU.
 * **Update the latestFaultRemediationState annotation:** if a successful GPUReset occurs, this state will need to be tracked as part of the existing latestFaultRemediationState annotation. In addition to the per-GPU equivalence group, the maintenance custom resource type will need to be stored as part of the annotation or looked up dynamically from the equivalence group name since the underlying resource could be a RebootNode or GPUReset.
 
 ```

@@ -60,9 +60,8 @@ to also support external/hosted databases by adding `uri`, `tls`, and `auth` sub
 - Was originally designed for switching providers (mongodb vs postgresql), not for external DB
   support — the concept is being stretched beyond its original intent
 - Currently lacks `uri`, `tls`, `auth` fields — needs significant extension
-- `configmap-datastore.yaml` constructs `MONGODB_URI` as `mongodb://host:port/` only — it
-  cannot accept raw URIs like `mongodb+srv://user:pass@atlas.mongodb.net/`. Raw URI support
-  must be added.
+- `configmap-datastore.yaml` no longer embeds `MONGODB_URI` for provider `mongodb`; the chart
+  requires a pre-created Secret (`MONGODB_URI` key) and `credentialsFromSecret.name`.
 - The init job (`mongodb-store/templates/jobs.yaml`) hardcodes `mongodb-config` — it does
   NOT participate in the `global.datastore` switching path and must be separately updated
 - Risk of confusion between "which provider" and "where is it running" (internal vs external)
@@ -93,17 +92,17 @@ Whichever option is chosen, the user will need to supply these to connect to an 
 
 | Field | Purpose | Example |
 |---|---|---|
-| Full connection URI | Connect to external DB with credentials embedded | `mongodb+srv://user:pass@cluster.mongodb.net/` |
+| Full connection URI | Connect to external DB (credentials embedded in the string your provider shows) | Obtain from the provider console; store only in a Kubernetes Secret, not in git |
 | TLS enabled/disabled | Whether to use TLS | `true` / `false` |
 | CA cert secret name | Kubernetes Secret with CA cert — required only when the service uses a private CA (e.g. AWS DocumentDB). Leave empty for services that use a public CA (MongoDB Atlas, Azure DocumentDB). | `docdb-ca` |
 
 ### Expected Behavior
 
-| Scenario | `mongodbStore.enabled` | External URI provided | Result |
+| Scenario | `mongodbStore.enabled` | External MongoDB URI | Result |
 |---|---|---|---|
-| Internal MongoDB | `true` | No | Deploy Bitnami/Percona MongoDB in-cluster (unchanged) |
-| External MongoDB | `false` | Yes | Connect to external MongoDB — nothing deployed in-cluster |
-| External PostgreSQL | `false` | Yes | Connect to external PostgreSQL — nothing deployed in-cluster |
+| Internal MongoDB | `true` | N/A | Deploy Bitnami/Percona MongoDB in-cluster (unchanged) |
+| External MongoDB | `false` | Secret `MONGODB_URI` + `credentialsFromSecret.name` | Connect to external MongoDB — nothing deployed in-cluster |
+| External PostgreSQL | `false` | Per PostgreSQL values (e.g. connection / optional `uri`) | Connect to external PostgreSQL — nothing deployed in-cluster |
 | Neither | `false` | No | No DB configured — services will have no connection |
 
 ---
@@ -145,11 +144,51 @@ Whichever option is chosen, the user will need to supply these to connect to an 
 
 ## What Does NOT Change
 
-- **Go application code** — already reads `MONGODB_URI` as a plain string. A raw external URI
-  will work once the ConfigMap is populated correctly.
+- **Go application code** — already reads `MONGODB_URI` as a plain string from the environment.
+  External MongoDB supplies that via `envFrom.secretRef` only.
 - **Default behavior** — all existing deployments with `mongodbStore.enabled: true` are
   completely unaffected. This is purely additive.
 - **PostgreSQL internal support** — existing `postgresql.enabled: true` path is unchanged.
+
+---
+
+## `MONGODB_URI` only from a Kubernetes Secret (external MongoDB)
+
+For **external** managed MongoDB (`global.mongodbStore.enabled: false` and
+`global.datastore.provider: mongodb`), the full URI is **not** written to the datastore
+ConfigMap. You must create an existing Secret whose **data key** is exactly `MONGODB_URI` and
+set `global.datastore.credentialsFromSecret.name`. Helm fails if that name is missing, or if
+`global.datastore.uri` is set for this mode.
+
+**In-cluster MongoDB** (for example Tilt / `global.mongodbStore.enabled: true`): when no
+`credentialsFromSecret` is set, the chart builds a credential-free `MONGODB_URI` in the
+ConfigMap from `global.datastore.connection` (host, port, `extraParams`). You can still set
+`credentialsFromSecret` to override with a Secret.
+
+1. Create the Secret. Set `MONGODB_URI` in your shell to the full string from your provider (for example MongoDB Atlas **Connect → Drivers**), or put that single line in a local file that is never committed:
+
+   ```bash
+   kubectl create secret generic nvsentinel-datastore-mongodb-uri \
+     --from-literal=MONGODB_URI="$MONGODB_URI" \
+     --namespace nvsentinel
+   ```
+
+   Alternatively: `--from-file=MONGODB_URI=./mongodb-uri.txt` (one line; keep the file out of version control).
+
+2. Reference it in values:
+
+   ```yaml
+   global:
+     datastore:
+       provider: "mongodb"
+       credentialsFromSecret:
+         name: nvsentinel-datastore-mongodb-uri
+       # ... tls, connection, auth as usual ...
+   ```
+
+DB-consuming workloads use `envFrom.secretRef` when `credentialsFromSecret.name` is set;
+otherwise they read `MONGODB_URI` from the ConfigMap. The embedded `datastore.yaml` does not
+include a MongoDB `uri` field from Helm values in either mode.
 
 ---
 
@@ -157,18 +196,13 @@ Whichever option is chosen, the user will need to supply these to connect to an 
 
 > This section will be filled in as each CSP is tested.
 
-### Connection URI Format Reference
+### Connection URI format reference (Secret `MONGODB_URI` value)
 
-```
-MongoDB Atlas:
-  mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/HealthEventsDatabase?retryWrites=false
+Use the **exact connection string** your provider shows in its console as the **literal value** of key `MONGODB_URI` in the Kubernetes Secret (never as `global.datastore.uri` for MongoDB). Do not paste real credentials into docs or source control.
 
-AWS DocumentDB:
-  mongodb://<user>:<pass>@<cluster>.cluster-<suffix>.<region>.docdb.amazonaws.com:27017/?tls=true&replicaSet=rs0&readPreference=secondaryPreferred&retryWrites=false
-
-Azure DocumentDB vCore:
-  mongodb+srv://<user>:<pass>@<cluster>.mongocluster.cosmos.azure.com/?tls=true&authMechanism=SCRAM-SHA-256&retrywrites=false&maxIdleTimeMS=120000
-```
+- **MongoDB Atlas:** `mongodb+srv` SRV string from **Connect → Drivers**; include the database path (for example `/HealthEventsDatabase`) and query options your deployment needs (for example `retryWrites=false`).
+- **AWS DocumentDB:** `mongodb` URL to the cluster endpoint with TLS and replica-set query parameters per [AWS DocumentDB connection documentation](https://docs.aws.amazon.com/documentdb/latest/developerguide/connect-to-replica-set.html).
+- **Azure DocumentDB vCore:** `mongodb+srv` string from **Settings → Connection Strings** (primary); includes host under `mongocluster.cosmos.azure.com` and the TLS/auth query parameters the portal provides.
 
 ### Database and Collection Setup (Automatic)
 
@@ -246,9 +280,11 @@ Apply the parameter group to your cluster and reboot.
 From a pod with network access to DocumentDB (e.g. a debug pod in your EKS cluster):
 
 ```bash
-mongosh "mongodb://<user>:<password>@<cluster-endpoint>:27017/admin?tls=true&replicaSet=rs0&tlsAllowInvalidCertificates=true" \
+mongosh "$DOCUMENTDB_ADMIN_URI" \
   --eval 'db.adminCommand({ modifyChangeStreams: 1, database: "HealthEventsDatabase", collection: "", enable: true })'
 ```
+
+Set `DOCUMENTDB_ADMIN_URI` to an admin connection URL from the AWS console for your cluster. Do not store that value in this repository.
 
 Without this, `health-events-analyzer` and `fault-quarantine` will fail to start their change stream watchers.
 
@@ -302,7 +338,12 @@ The key **must** be named `ca.crt` — this is what the Helm chart volume mounts
 
 #### Step 5 — Helm Values Configuration
 
-Create a values override file (e.g. `values-aws-docdb.yaml`) with your connection details:
+Create a values override file (e.g. `values-aws-docdb.yaml`) with your connection details.
+Put the full connection string (with password) in a Kubernetes Secret with data key
+`MONGODB_URI` (see [`MONGODB_URI` only from a Kubernetes Secret](#mongodb_uri-only-from-a-kubernetes-secret-external-mongodb))
+and set `credentialsFromSecret.name`.
+
+Example values:
 
 ```yaml
 global:
@@ -311,7 +352,8 @@ global:
 
   datastore:
     provider: "mongodb"
-    uri: "mongodb://<user>:<password>@<cluster-endpoint>:27017/HealthEventsDatabase?tls=true&replicaSet=rs0&readPreference=secondaryPreferred&retryWrites=false"
+    credentialsFromSecret:
+      name: nvsentinel-datastore-mongodb-uri
     connection:
       host: "<cluster-endpoint>"
       port: 27017
@@ -405,13 +447,9 @@ Verify the following before proceeding:
 
 ##### Connection String (both options)
 
-Go to **Settings → Connection Strings** and copy the Primary Connection String:
+Go to **Settings → Connection Strings** and copy the **Primary Connection String** into your Kubernetes Secret only (see [`MONGODB_URI` only from a Kubernetes Secret](#mongodb_uri-only-from-a-kubernetes-secret-external-mongodb)).
 
-```
-mongodb+srv://<username>:<password>@<cluster-name>.mongocluster.cosmos.azure.com/?tls=true&authMechanism=SCRAM-SHA-256&retrywrites=false&maxIdleTimeMS=120000
-```
-
-Percent-encode any special characters in the password: `#` → `%23`, `@` → `%40`, `%` → `%25`
+If you assemble the URI yourself, percent-encode reserved characters in the database user’s password: `#` → `%23`, `@` → `%40`, `%` → `%25`
 
 > If special characters are not encoded, `platform-connectors` will fail with
 > `MongoParseError: Password contains unescaped characters` on startup.
@@ -420,7 +458,10 @@ Percent-encode any special characters in the password: `#` → `%23`, `@` → `%
 
 #### Step 2 — Helm Values Configuration
 
-Create a values override file (e.g. `values-external-mongodb.yaml`) with your connection details:
+Create a values override file (e.g. `values-cosmosdb-test.yaml`) with your connection details.
+Put the connection string in a Secret (`MONGODB_URI` key) and set
+`credentialsFromSecret.name` — see
+[`MONGODB_URI` only from a Kubernetes Secret](#mongodb_uri-only-from-a-kubernetes-secret-external-mongodb).
 
 ```yaml
 global:
@@ -429,7 +470,8 @@ global:
 
   datastore:
     provider: "mongodb"
-    uri: "<your-mongodb-connection-string>"  # paste your connection string here
+    credentialsFromSecret:
+      name: nvsentinel-datastore-mongodb-uri
     connection:
       host: "<cluster>.mongocluster.cosmos.azure.com"
       port: 27017
@@ -475,11 +517,8 @@ or connecting to one that already exists.
 2. Choose **M0 (Free)** for testing or **M10+** for production
 3. Select **GCP** as the provider and choose the region closest to your GKE cluster (e.g. `us-central1`)
 4. Name the cluster and click **Create**
-5. When prompted to create a database user, set a username and password (SCRAM-SHA-256 auth)
-6. Note the connection string from **Connect → Drivers**:
-   ```
-   mongodb+srv://<username>:<password>@<cluster-name>.mongodb.net/
-   ```
+5. When prompted to create a database user, configure SCRAM-SHA-256 auth in the Atlas UI
+6. Copy the full connection string from **Connect → Drivers** and supply it only via the Kubernetes Secret (`MONGODB_URI`); do not commit it to git
 
 ---
 
@@ -515,6 +554,10 @@ kubectl get nodes -o wide
 
 No CA certificate secret is needed — Atlas uses DigiCert public CA which is trusted by the Go TLS runtime by default.
 
+Store the Atlas connection string in a Kubernetes Secret (`MONGODB_URI` key)
+and set `credentialsFromSecret.name` — see
+[`MONGODB_URI` only from a Kubernetes Secret](#mongodb_uri-only-from-a-kubernetes-secret-external-mongodb).
+
 Create a values override file `values-atlas-gcp.yaml`:
 
 ```yaml
@@ -524,9 +567,8 @@ global:
 
   datastore:
     provider: "mongodb"
-    # Paste your Atlas connection string here — percent-encode special chars in password:
-    # '#' → '%23', '@' → '%40', '%' → '%25'
-    uri: "mongodb+srv://<user>:<password>@<cluster>.mongodb.net/HealthEventsDatabase?retryWrites=false"
+    credentialsFromSecret:
+      name: nvsentinel-datastore-mongodb-uri
     connection:
       host: "<cluster>.mongodb.net"
       port: 27017
@@ -535,6 +577,8 @@ global:
       enabled: true
       caSecretName: ""   # Atlas uses public DigiCert CA — no custom CA cert required
 ```
+
+> Percent-encode password characters in the Secret value if needed: `#` → `%23`, `@` → `%40`, `%` → `%25`
 
 ---
 

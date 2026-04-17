@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"k8s.io/client-go/util/workqueue"
 
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
@@ -44,9 +45,11 @@ func (m *eventQueueManager) SetDataStoreEventProcessor(processor DataStoreEventP
 	m.dataStoreEventProcessor = processor
 }
 
-// EnqueueEventGeneric enqueues an event using the new database-agnostic interface
+// EnqueueEventGeneric enqueues an event using the new database-agnostic interface.
+// Only the document ID is stored in the queue; the full event is fetched from the
+// database lazily when the worker processes the item, keeping queue memory minimal.
 func (m *eventQueueManager) EnqueueEventGeneric(ctx context.Context, nodeName string, event datastore.Event,
-	database DataStore, healthEventStore datastore.HealthEventStore) error {
+	database DataStore, healthEventStore datastore.HealthEventStore, documentID interface{}) error {
 	if ctx.Err() != nil {
 		return fmt.Errorf("context cancelled while enqueueing event for node %s: %w", nodeName, ctx.Err())
 	}
@@ -62,12 +65,12 @@ func (m *eventQueueManager) EnqueueEventGeneric(ctx context.Context, nodeName st
 	nodeEvent := NodeEvent{
 		NodeName:         nodeName,
 		EventID:          eventID,
-		Event:            &event,
+		DocumentID:       documentID,
 		Database:         database,
 		HealthEventStore: healthEventStore,
 	}
 
-	slog.Debug("Enqueueing event", "nodeName", nodeName, "eventID", eventID)
+	slog.DebugContext(ctx, "Enqueueing event", "nodeName", nodeName, "eventID", eventID)
 
 	m.queue.Add(nodeEvent)
 	metrics.QueueDepth.Set(float64(m.queue.Len()))
@@ -82,4 +85,33 @@ func (m *eventQueueManager) Shutdown() {
 	m.queue.ShutDown()
 	close(m.shutdown)
 	slog.Info("Workqueue shutdown complete")
+}
+
+// DrainSession holds per-event tracing state that persists across requeue
+// cycles via the eventQueueManager.sessions map. Phase transitions are marked
+// by short-lived ".start" and ".end" child spans of DrainSessionSpan;
+// drain scope is set directly on DrainSessionSpan via SetAttributes in the reconciler.
+type DrainSession struct {
+	DrainSessionSpan trace.Span
+
+	ScopeSet bool
+}
+
+type drainSessionContextKey struct{}
+
+var drainSessionKey = drainSessionContextKey{}
+
+// ContextWithDrainSession attaches the session to ctx so the reconciler can
+// start/end phase spans and set drain scope attributes without explicit plumbing.
+func ContextWithDrainSession(ctx context.Context, ds *DrainSession) context.Context {
+	return context.WithValue(ctx, drainSessionKey, ds)
+}
+
+// DrainSessionFromContext returns the DrainSession from ctx, or nil if not set.
+func DrainSessionFromContext(ctx context.Context) *DrainSession {
+	if ds, _ := ctx.Value(drainSessionKey).(*DrainSession); ds != nil {
+		return ds
+	}
+
+	return nil
 }

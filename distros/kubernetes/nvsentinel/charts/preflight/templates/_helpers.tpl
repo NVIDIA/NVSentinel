@@ -18,23 +18,14 @@ limitations under the License.
 Expand the name of the chart.
 */}}
 {{- define "preflight.name" -}}
-{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
+{{- .Chart.Name | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Create a default fully qualified app name.
 */}}
 {{- define "preflight.fullname" -}}
-{{- if .Values.fullnameOverride }}
-{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
-{{- else }}
-{{- $name := default .Chart.Name .Values.nameOverride }}
-{{- if contains $name .Release.Name }}
-{{- .Release.Name | trunc 63 | trimSuffix "-" }}
-{{- else }}
-{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" }}
-{{- end }}
-{{- end }}
+{{- "preflight" | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
@@ -100,46 +91,10 @@ Certificate DNS names
 {{- end }}
 
 {{/*
-DCGM service endpoint - uses global.dcgm.service.endpoint with fallback to local
-*/}}
-{{- define "preflight.dcgmEndpoint" -}}
-{{- if and .Values.global .Values.global.dcgm .Values.global.dcgm.service }}
-{{- .Values.global.dcgm.service.endpoint | default .Values.dcgm.service.endpoint }}
-{{- else }}
-{{- .Values.dcgm.service.endpoint }}
-{{- end }}
-{{- end }}
-
-{{/*
-DCGM service port - uses global.dcgm.service.port with fallback to local
-*/}}
-{{- define "preflight.dcgmPort" -}}
-{{- if and .Values.global .Values.global.dcgm .Values.global.dcgm.service }}
-{{- .Values.global.dcgm.service.port | default .Values.dcgm.service.port }}
-{{- else }}
-{{- .Values.dcgm.service.port }}
-{{- end }}
-{{- end }}
-
-{{/*
-DCGM hostengine address - combines endpoint and port
-*/}}
-{{- define "preflight.dcgmHostengineAddr" -}}
-{{- printf "%s:%v" (include "preflight.dcgmEndpoint" .) (include "preflight.dcgmPort" .) }}
-{{- end }}
-
-{{/*
-DCGM diagnostic level
-*/}}
-{{- define "preflight.dcgmDiagLevel" -}}
-{{- .Values.dcgm.diagLevel | default 1 }}
-{{- end }}
-
-{{/*
 Event processing strategy
 */}}
 {{- define "preflight.processingStrategy" -}}
-{{- .Values.dcgm.processingStrategy | default "EXECUTE_REMEDIATION" }}
+{{- .Values.processingStrategy | default "EXECUTE_REMEDIATION" }}
 {{- end }}
 
 {{/*

@@ -31,10 +31,12 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/commons/pkg/stringutil"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	fd "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/syslog-monitor"
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid/parser"
 )
 
 const (
@@ -89,6 +91,11 @@ func run() error {
 		return err
 	}
 
+	ff := metrics.NewRegistry("syslog-health-monitor")
+	ff.SetStoreOnlyMode(*processingStrategyFlag)
+	ff.Set("xid_sidecar_enabled", *xidAnalyserEndpoint != "")
+	ff.Set("kata_enabled", stringutil.IsTruthyValue(*kataEnabled))
+
 	root := context.Background()
 
 	ctx, stop := signal.NotifyContext(root, os.Interrupt, syscall.SIGTERM)
@@ -114,6 +121,10 @@ func run() error {
 
 	checks = applyKataConfig(checks)
 
+	for _, c := range checks {
+		ff.Set(c.Name, true)
+	}
+
 	monitor, pollingInterval, err := createSyslogMonitor(nodeName, checks, client)
 	if err != nil {
 		return err
@@ -135,6 +146,10 @@ func run() error {
 
 		return nil
 	})
+
+	if err := waitForSidecarIfEnabled(gCtx, nodeName); err != nil {
+		return err
+	}
 
 	g.Go(func() error {
 		return runPollingLoop(gCtx, monitor, pollingInterval, checks)
@@ -332,6 +347,20 @@ func runPollingLoop(
 			}
 		}
 	}
+}
+
+func waitForSidecarIfEnabled(ctx context.Context, nodeName string) error {
+	if *xidAnalyserEndpoint == "" {
+		return nil
+	}
+
+	sidecar := parser.NewSidecarParser(*xidAnalyserEndpoint, nodeName, "")
+
+	if err := sidecar.WaitUntilReady(ctx, 30, 2*time.Second); err != nil {
+		return fmt.Errorf("sidecar readiness check failed: %w", err)
+	}
+
+	return nil
 }
 
 // dialWithRetry dials a gRPC target with bounded retries and per-attempt timeout.

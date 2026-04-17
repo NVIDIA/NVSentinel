@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM public.ecr.aws/docker/library/golang:1.25-trixie AS builder
+FROM public.ecr.aws/docker/library/golang:1.26-trixie AS builder
 
 ARG BUILD_TAGS="systemd"
 ARG VERSION="dev"

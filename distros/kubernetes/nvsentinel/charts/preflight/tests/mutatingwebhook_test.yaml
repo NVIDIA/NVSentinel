@@ -1,0 +1,49 @@
+suite: mutatingwebhook
+templates:
+  - templates/mutatingwebhook.yaml
+tests:
+  - it: should not render objectSelector when empty
+    asserts:
+      - isKind:
+          of: MutatingWebhookConfiguration
+      - notExists:
+          path: webhooks[0].objectSelector
+
+  - it: should render objectSelector with matchLabels
+    set:
+      objectSelector:
+        matchLabels:
+          nvsentinel.nvidia.com/preflight: "enabled"
+    asserts:
+      - equal:
+          path: webhooks[0].objectSelector.matchLabels
+          value:
+            nvsentinel.nvidia.com/preflight: "enabled"
+
+  - it: should render objectSelector with matchExpressions
+    set:
+      objectSelector:
+        matchExpressions:
+          - key: nvsentinel.nvidia.com/preflight
+            operator: In
+            values:
+              - "enabled"
+              - "true"
+    asserts:
+      - equal:
+          path: webhooks[0].objectSelector.matchExpressions[0].key
+          value: nvsentinel.nvidia.com/preflight
+      - equal:
+          path: webhooks[0].objectSelector.matchExpressions[0].operator
+          value: In
+
+  - it: should always render namespaceSelector regardless of objectSelector
+    set:
+      objectSelector:
+        matchLabels:
+          app: test
+    asserts:
+      - exists:
+          path: webhooks[0].namespaceSelector
+      - exists:
+          path: webhooks[0].objectSelector
