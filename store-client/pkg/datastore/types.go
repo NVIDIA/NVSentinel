@@ -91,6 +91,7 @@ type HealthEventStatus struct {
 	DrainFinishTimestamp      *timestamppb.Timestamp `json:"drainfinishtimestamp,omitempty"`
 	FaultRemediated           *bool                  `json:"faultremediated"`
 	LastRemediationTimestamp  *timestamppb.Timestamp `json:"lastremediationtimestamp,omitempty"`
+	SpanIds                   map[string]string      `json:"spanids,omitempty"`
 }
 
 // HealthEventWithStatus wraps a health event with status information

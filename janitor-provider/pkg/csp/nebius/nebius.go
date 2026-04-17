@@ -143,7 +143,7 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 		return "", fmt.Errorf("failed to parse provider ID: %w", err)
 	}
 
-	slog.Info("Stopping Nebius instance for reboot", "instanceID", nodeFields.instanceID)
+	slog.InfoContext(ctx, "Stopping Nebius instance for reboot", "instanceID", nodeFields.instanceID)
 
 	instanceService, cleanup, err := c.getInstanceService(ctx)
 	if err != nil {
@@ -158,7 +158,7 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 		return "", fmt.Errorf("failed to stop instance %s: %w", nodeFields.instanceID, err)
 	}
 
-	slog.Info("Waiting for instance stop operation to complete", "instanceID", nodeFields.instanceID)
+	slog.InfoContext(ctx, "Waiting for instance stop operation to complete", "instanceID", nodeFields.instanceID)
 
 	waitCtx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 	defer cancel()
@@ -167,7 +167,7 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 		return "", fmt.Errorf("failed to wait for stop operation on instance %s: %w", nodeFields.instanceID, err)
 	}
 
-	slog.Info("Instance stopped successfully", "instanceID", nodeFields.instanceID)
+	slog.InfoContext(ctx, "Instance stopped successfully", "instanceID", nodeFields.instanceID)
 
 	// Return instance ID - IsNodeReady will poll the instance state
 	return model.ResetSignalRequestRef(nodeFields.instanceID), nil
@@ -201,12 +201,12 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID st
 
 	switch state {
 	case compute.InstanceStatus_RUNNING:
-		slog.Info("Nebius instance is running", "instanceID", instanceID)
+		slog.InfoContext(ctx, "Nebius instance is running", "instanceID", instanceID)
 
 		return true, nil
 
 	case compute.InstanceStatus_STOPPED:
-		slog.Info("Starting Nebius instance", "instanceID", instanceID)
+		slog.InfoContext(ctx, "Starting Nebius instance", "instanceID", instanceID)
 
 		_, err := instanceService.Start(ctx, &compute.StartInstanceRequest{
 			Id: instanceID,
@@ -219,7 +219,7 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID st
 		return false, nil
 
 	case compute.InstanceStatus_STOPPING, compute.InstanceStatus_STARTING:
-		slog.Info("Nebius instance is in transitional state, waiting",
+		slog.InfoContext(ctx, "Nebius instance is in transitional state, waiting",
 			"instanceID", instanceID, "state", state.String())
 
 		return false, nil
@@ -229,14 +229,14 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID st
 		compute.InstanceStatus_UPDATING,
 		compute.InstanceStatus_DELETING,
 		compute.InstanceStatus_ERROR:
-		slog.Info("Nebius instance is in unexpected state",
+		slog.InfoContext(ctx, "Nebius instance is in unexpected state",
 			"instanceID", instanceID, "state", state.String())
 
 		return false, nil
 	}
 
 	// Fallback for any unhandled states (future-proofing)
-	slog.Info("Nebius instance is in unknown state",
+	slog.InfoContext(ctx, "Nebius instance is in unknown state",
 		"instanceID", instanceID, "state", state.String())
 
 	return false, nil

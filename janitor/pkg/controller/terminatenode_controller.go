@@ -20,10 +20,14 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sync"
 	"time"
 
 	"log/slog"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -33,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	grpcclient "github.com/nvidia/nvsentinel/janitor/pkg/client"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
@@ -51,6 +56,10 @@ type TerminateNodeReconciler struct {
 	// dialProviderFunc overrides the default gRPC dial behavior.
 	// Used in tests to inject a mock CSP client.
 	dialProviderFunc cspProviderDialFunc
+
+	// terminateSessionSpans holds one long-lived "terminate_session" span per CR, keyed by CR name.
+	// Started on the first reconcile, ended on completion/failure.
+	terminateSessionSpans sync.Map
 }
 
 // +kubebuilder:rbac:groups=janitor.dgxc.nvidia.com,resources=terminatenodes,verbs=get;list;watch;create;update;patch;delete
@@ -74,13 +83,22 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Check if reconciliation is complete
+	annotations := terminateNode.GetAnnotations()
+	traceID := annotations[tracing.TraceIDAnnotationKey]
+	spanID := annotations[tracing.SpanIDAnnotationKey]
+	crKey := terminateNode.Name
 	completedReconciling := terminateNode.Status.CompletionTime != nil
+
 	if !completedReconciling {
 		locked := r.NodeLock.LockNode(ctx, &terminateNode, terminateNode.Spec.NodeName)
 		if !locked {
 			return ctrl.Result{RequeueAfter: time.Second * 2}, nil
 		}
+
+		sessionCtx, _ := r.startTerminateSessionIfNeeded(ctx, crKey, traceID, spanID)
+
+		ctx, span := tracing.StartSpan(sessionCtx, "janitor.terminatenode.reconcile")
+		defer span.End()
 
 		result, err := r.reconcileHelper(ctx, &terminateNode)
 		// We will always re-queue the object and check if Unlock is needed on the next reconcile rather than
@@ -96,6 +114,8 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{RequeueAfter: time.Second * 2}, nil
 	}
 
+	r.endTerminateSession(crKey)
+
 	retryUnlock := r.NodeLock.CheckUnlock(ctx, &terminateNode, terminateNode.Spec.NodeName)
 	if retryUnlock {
 		return ctrl.Result{RequeueAfter: time.Second * 2}, nil
@@ -104,8 +124,44 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{}, nil
 }
 
+// startTerminateSessionIfNeeded creates or retrieves the long-lived "janitor.terminatenode.terminate_session" span
+// for a given TerminateNode CR. On the first call it creates the span and stores it; subsequent calls
+// return the existing span. The returned context carries the session span as the active span
+// so that child spans (per-reconcile) are nested under it.
+func (r *TerminateNodeReconciler) startTerminateSessionIfNeeded(
+	ctx context.Context, crKey, traceID, spanID string,
+) (context.Context, trace.Span) {
+	if existing, ok := r.terminateSessionSpans.Load(crKey); ok {
+		span := existing.(trace.Span) //nolint:errcheck,forcetypeassert // value is always trace.Span
+		return trace.ContextWithSpan(ctx, span), span
+	}
+
+	_, span := tracing.StartSpanWithLinkFromTraceContext(ctx, traceID, spanID, "janitor.terminatenode.terminate_session")
+
+	r.terminateSessionSpans.Store(crKey, span)
+
+	return trace.ContextWithSpan(ctx, span), span
+}
+
+// endTerminateSession ends the long-lived session span for a TerminateNode CR.
+func (r *TerminateNodeReconciler) endTerminateSession(crKey string) {
+	val, ok := r.terminateSessionSpans.LoadAndDelete(crKey)
+	if !ok {
+		return
+	}
+
+	span, _ := val.(trace.Span) //nolint:errcheck,forcetypeassert // value is always trace.Span
+	if span == nil {
+		return
+	}
+
+	span.End()
+}
+
 // reconcileHelper contains the main reconciliation logic
-func (r *TerminateNodeReconciler) reconcileHelper(ctx context.Context, terminateNode *janitordgxcnvidiacomv1alpha1.TerminateNode) (ctrl.Result, error) {
+func (r *TerminateNodeReconciler) reconcileHelper(
+	ctx context.Context, terminateNode *janitordgxcnvidiacomv1alpha1.TerminateNode,
+) (ctrl.Result, error) {
 	// Take a deep copy to compare against at the end
 	originalTerminateNode := terminateNode.DeepCopy()
 
@@ -124,6 +180,13 @@ func (r *TerminateNodeReconciler) reconcileHelper(ctx context.Context, terminate
 			// Node is already deleted, which is the desired state. Do not return an error.
 			node = nil
 		} else {
+			span := tracing.SpanFromContext(ctx)
+			span.SetAttributes(
+				attribute.String("janitor.error.type", "node_fetch_failed"),
+				attribute.String("janitor.error.message", err.Error()),
+			)
+			tracing.RecordError(span, err)
+
 			return ctrl.Result{}, err
 		}
 	}
@@ -132,9 +195,18 @@ func (r *TerminateNodeReconciler) reconcileHelper(ctx context.Context, terminate
 	// CA bundles and SA tokens are picked up from disk automatically.
 	cspClient, cleanup, err := r.dialProvider(ctx)
 	if err != nil {
+		span := tracing.SpanFromContext(ctx)
+		span.SetAttributes(
+			attribute.String("janitor.error.type", "dial_csp_provider_failed"),
+			attribute.String("janitor.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
+
 		return ctrl.Result{}, fmt.Errorf("dial csp-provider: %w", err)
 	}
 	defer cleanup()
+
+	crKey := terminateNode.Name
 
 	if terminateNode.IsTerminateInProgress() {
 		// nolint:gocritic // the if/else chain is fine
@@ -154,9 +226,18 @@ func (r *TerminateNodeReconciler) reconcileHelper(ctx context.Context, terminate
 
 			result = ctrl.Result{} // Don't requeue on success
 		} else if isNodeNotReady(node) {
-			slog.Info("Node reached not ready state, deleting from cluster", "node", terminateNode.Spec.NodeName)
+			slog.InfoContext(ctx, "Node reached not ready state, deleting from cluster", "node", terminateNode.Spec.NodeName)
 
 			if err := r.Delete(ctx, node); err != nil {
+				slog.ErrorContext(ctx, "failed to delete node from cluster", "node", node.Name, "error", err)
+
+				span := tracing.SpanFromContext(ctx)
+				span.SetAttributes(
+					attribute.String("janitor.error.type", "node_delete_failed"),
+					attribute.String("janitor.error.message", err.Error()),
+				)
+				tracing.RecordError(span, err)
+
 				return ctrl.Result{}, err
 			}
 
@@ -176,7 +257,7 @@ func (r *TerminateNodeReconciler) reconcileHelper(ctx context.Context, terminate
 
 			result = ctrl.Result{} // Don't requeue on success
 		} else if time.Since(terminateNode.Status.StartTime.Time) > r.getTimeout() {
-			slog.Error("Node terminate timed out", "node", node.Name, "timeout", r.getTimeout())
+			slog.ErrorContext(ctx, "Node terminate timed out", "node", node.Name, "timeout", r.getTimeout())
 
 			// Update status
 			terminateNode.SetCompletionTime()
@@ -199,7 +280,18 @@ func (r *TerminateNodeReconciler) reconcileHelper(ctx context.Context, terminate
 		// If this case is hit it means that the node did not exist when
 		// the CR was created. This case should be handled by the admission webhook.
 		if node == nil {
-			return ctrl.Result{}, errors.New("node not found and terminate not in progress")
+			err := errors.New("node not found and terminate not in progress")
+
+			slog.ErrorContext(ctx, "Node not found for terminate", "node", terminateNode.Spec.NodeName)
+
+			span := tracing.SpanFromContext(ctx)
+			span.SetAttributes(
+				attribute.String("janitor.error.type", "node_not_found"),
+				attribute.String("janitor.error.message", err.Error()),
+			)
+			tracing.RecordError(span, err)
+
+			return ctrl.Result{}, err
 		}
 
 		// Check if signal was already sent (but terminate not in progress due to other issues)
@@ -214,7 +306,7 @@ func (r *TerminateNodeReconciler) reconcileHelper(ctx context.Context, terminate
 
 		if signalAlreadySent {
 			// Signal was already sent, just continue monitoring
-			slog.Debug("Terminate signal already sent for node, continuing monitoring", "node", node.Name)
+			slog.DebugContext(ctx, "Terminate signal already sent for node, continuing monitoring", "node", node.Name)
 
 			result = ctrl.Result{RequeueAfter: 30 * time.Second}
 		} else {
@@ -240,11 +332,11 @@ func (r *TerminateNodeReconciler) reconcileHelper(ctx context.Context, terminate
 					metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusStarted, node.Name)
 				}
 
-				slog.Info("Manual mode enabled, janitor will not send terminate signal for node", "node", node.Name)
+				slog.InfoContext(ctx, "Manual mode enabled, janitor will not send terminate signal for node", "node", node.Name)
 
 				result = ctrl.Result{}
 			} else {
-				slog.Info("Sending terminate signal to node", "node", terminateNode.Spec.NodeName)
+				slog.InfoContext(ctx, "Sending terminate signal to node", "node", terminateNode.Spec.NodeName)
 				metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusStarted, node.Name)
 				_, terminateErr := cspClient.SendTerminateSignal(ctx, &cspv1alpha1.SendTerminateSignalRequest{
 					NodeName: node.Name,
@@ -260,6 +352,7 @@ func (r *TerminateNodeReconciler) reconcileHelper(ctx context.Context, terminate
 						Message:            "Terminate signal sent to CSP",
 						LastTransitionTime: metav1.Now(),
 					}
+
 					// Continue monitoring if signal was sent successfully
 					result = ctrl.Result{RequeueAfter: 30 * time.Second}
 				} else {
@@ -277,6 +370,13 @@ func (r *TerminateNodeReconciler) reconcileHelper(ctx context.Context, terminate
 					result = ctrl.Result{}
 
 					metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusFailed, node.Name)
+
+					span := tracing.SpanFromContext(ctx)
+					span.SetAttributes(
+						attribute.String("janitor.error.type", "terminate_signal_failed"),
+						attribute.String("janitor.error.message", terminateErr.Error()),
+					)
+					tracing.RecordError(span, terminateErr)
 				}
 
 				terminateNode.SetCondition(signalSentCondition)
@@ -292,12 +392,19 @@ func (r *TerminateNodeReconciler) reconcileHelper(ctx context.Context, terminate
 		objectKey := client.ObjectKey{Name: terminateNode.Name, Namespace: terminateNode.Namespace}
 		if err := r.Get(ctx, objectKey, &freshTerminateNode); err != nil {
 			if apierrors.IsNotFound(err) {
-				slog.Debug("Post-reconciliation status update: not found, object assumed deleted", "node", terminateNode.Name)
+				slog.DebugContext(ctx, "Post-reconciliation status update: not found, object assumed deleted", "node", terminateNode.Name)
 
 				return ctrl.Result{}, nil
 			}
 
-			slog.Error("failed to refresh TerminateNode before status update", "error", err)
+			slog.ErrorContext(ctx, "failed to refresh TerminateNode before status update", "error", err)
+
+			span := tracing.SpanFromContext(ctx)
+			span.SetAttributes(
+				attribute.String("janitor.error.type", "status_refresh_failed"),
+				attribute.String("janitor.error.message", err.Error()),
+			)
+			tracing.RecordError(span, err)
 
 			return ctrl.Result{}, err
 		}
@@ -306,11 +413,23 @@ func (r *TerminateNodeReconciler) reconcileHelper(ctx context.Context, terminate
 		freshTerminateNode.Status = terminateNode.Status
 
 		if err := r.Status().Update(ctx, &freshTerminateNode); err != nil {
-			slog.Error("failed to update TerminateNode status", "error", err)
+			slog.ErrorContext(ctx, "failed to update TerminateNode status", "error", err)
+
+			span := tracing.SpanFromContext(ctx)
+			span.SetAttributes(
+				attribute.String("janitor.error.type", "status_update_failed"),
+				attribute.String("janitor.error.message", err.Error()),
+			)
+			tracing.RecordError(span, err)
+
 			return ctrl.Result{}, err
 		}
 
-		slog.Info("TerminateNode status updated", "node", terminateNode.Spec.NodeName)
+		slog.InfoContext(ctx, "TerminateNode status updated", "node", terminateNode.Spec.NodeName)
+
+		if terminateNode.Status.CompletionTime != nil {
+			r.endTerminateSession(crKey)
+		}
 	}
 
 	return result, nil
@@ -351,6 +470,8 @@ func (r *TerminateNodeReconciler) dialProvider(ctx context.Context) (cspv1alpha1
 	if err != nil {
 		return nil, nil, fmt.Errorf("create dial options: %w", err)
 	}
+
+	dialOpts = append(dialOpts, grpc.WithStatsHandler(otelgrpc.NewClientHandler()))
 
 	if !r.Config.CSPProviderInsecure {
 		tokenPath := r.Config.CSPProviderTokenPath
