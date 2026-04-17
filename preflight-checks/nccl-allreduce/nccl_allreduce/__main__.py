@@ -95,6 +95,18 @@ def run() -> int:
         log.error("Configuration error", extra={"error": str(err)})
         return NCCLError.GANG_CONFIG_ERROR.value.exit_code
 
+    store_only = cfg.processing_strategy == pb.ProcessingStrategy.STORE_ONLY
+    exit_code = _run_benchmark_flow(cfg)
+
+    if exit_code != 0 and store_only:
+        log.warning("Check failed (STORE_ONLY — not blocking pod)")
+        return NCCLError.SUCCESS.value.exit_code
+    return exit_code
+
+
+def _run_benchmark_flow(cfg: Config) -> int:
+    """Execute the benchmark and return an exit code."""
+
     # Set NCCL defaults if not already set by the container env.
     if "NCCL_DEBUG" not in os.environ:
         os.environ["NCCL_DEBUG"] = "INFO"
@@ -272,10 +284,6 @@ def _handle_failure(cfg: Config, error: NCCLError, message: str) -> int:
             extra={"error": str(err)},
         )
         return NCCLError.HEALTH_REPORT_FAILED.value.exit_code
-
-    if cfg.processing_strategy == pb.ProcessingStrategy.STORE_ONLY:
-        log.warning("Check failed (STORE_ONLY — not blocking pod)", extra={"details": message})
-        return NCCLError.SUCCESS.value.exit_code
 
     return error.value.exit_code
 
