@@ -110,12 +110,12 @@ def main() -> None:
             test_name=r.test_name,
         )
 
-    if failures and not store_only:
-        log.error("DCGM diagnostic check failed")
-        sys.exit(1)
-
-    if failures and store_only:
-        log.warning("DCGM diagnostic check failed (STORE_ONLY — not blocking pod)")
+    if failures:
+        if store_only:
+            log.warning("DCGM diagnostic check failed (STORE_ONLY — not blocking pod)")
+        else:
+            log.error("DCGM diagnostic check failed")
+            sys.exit(1)
 
     log.info("DCGM diagnostic check passed")
     sys.exit(0)
