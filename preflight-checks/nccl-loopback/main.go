@@ -24,6 +24,8 @@ import (
 	"github.com/nvidia/nvsentinel/preflight-checks/nccl-loopback/pkg/benchmark"
 	"github.com/nvidia/nvsentinel/preflight-checks/nccl-loopback/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight-checks/nccl-loopback/pkg/health"
+
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 var (
@@ -89,6 +91,11 @@ func run() int {
 			return exitSendEventError
 		}
 
+		if cfg.ProcessingStrategy == pb.ProcessingStrategy_STORE_ONLY {
+			slog.Warn("NCCL benchmark failed (STORE_ONLY — not blocking pod)", "error", err)
+			return exitSuccess
+		}
+
 		return exitTestFailed
 	}
 
@@ -134,6 +141,13 @@ func run() int {
 		); sendErr != nil {
 			slog.Error("Failed to send health event", "error", sendErr)
 			return exitSendEventError
+		}
+
+		if cfg.ProcessingStrategy == pb.ProcessingStrategy_STORE_ONLY {
+			slog.Warn("NCCL loopback test failed (STORE_ONLY — not blocking pod)",
+				"measured_gbps", result.BusBandwidthGbps,
+				"threshold_gbps", cfg.BWThresholdGbps)
+			return exitSuccess
 		}
 
 		return exitTestFailed
