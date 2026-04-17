@@ -61,6 +61,17 @@ func run() int {
 		return exitConfigError
 	}
 
+	exitCode := execute(ctx, cfg)
+
+	if exitCode != exitSuccess && cfg.ProcessingStrategy == pb.ProcessingStrategy_STORE_ONLY {
+		slog.Warn("Check failed (STORE_ONLY — not blocking pod)")
+		return exitSuccess
+	}
+	return exitCode
+}
+
+func execute(ctx context.Context, cfg *config.Config) int {
+
 	slog.Info("Configuration loaded",
 		"bw_threshold_gbps", cfg.BWThresholdGbps,
 		"skip_bandwidth_check", cfg.SkipBandwidthCheck,
@@ -89,11 +100,6 @@ func run() int {
 		); sendErr != nil {
 			slog.Error("Failed to send health event", "error", sendErr)
 			return exitSendEventError
-		}
-
-		if cfg.ProcessingStrategy == pb.ProcessingStrategy_STORE_ONLY {
-			slog.Warn("NCCL benchmark failed (STORE_ONLY — not blocking pod)", "error", err)
-			return exitSuccess
 		}
 
 		return exitTestFailed
@@ -141,13 +147,6 @@ func run() int {
 		); sendErr != nil {
 			slog.Error("Failed to send health event", "error", sendErr)
 			return exitSendEventError
-		}
-
-		if cfg.ProcessingStrategy == pb.ProcessingStrategy_STORE_ONLY {
-			slog.Warn("NCCL loopback test failed (STORE_ONLY — not blocking pod)",
-				"measured_gbps", result.BusBandwidthGbps,
-				"threshold_gbps", cfg.BWThresholdGbps)
-			return exitSuccess
 		}
 
 		return exitTestFailed
