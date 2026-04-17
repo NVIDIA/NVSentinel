@@ -59,6 +59,18 @@ global:
   imagePullSecrets: []
 ```
 
+### Tracing
+
+Enable OpenTelemetry distributed tracing to get end-to-end visibility into health event processing across all modules.
+
+```yaml
+global:
+  tracing:
+    enabled: false       # Enable/disable tracing for all components
+    endpoint: ""         # OTLP gRPC address of your OpenTelemetry Collector (e.g., "alloy.observability.svc.cluster.local:4317")
+    insecure: true       # Set to false if the collector endpoint uses TLS
+```
+
 ## Module-Specific Configuration
 
 Each module has additional configuration options documented in its dedicated guide:

@@ -24,40 +24,28 @@ When a health event enters NVSentinel, the system creates a **trace** — a uniq
 
 All NVSentinel modules export traces via OTLP gRPC to an OpenTelemetry Collector.
 
-```text
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                          NVSentinel Namespace                                │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  platform-connector   fault-quarantine   node-drainer   fault-remediation    │
-│  health-events-analyzer   janitor   janitor-provider   event-exporter        │
-│         │                    │              │                │               │
-│         │  OTLP (gRPC)       │              │                │               │
-│         └────────────────────┴──────────────┴────────────────┘               │
-│                                      │                                       │
-└──────────────────────────────────────┼───────────────────────────────────────┘
-                                       │
-                                       │  global.tracing.endpoint
-                                       │ 
-                                       ▼
-         ┌─────────────────────────────────────────────────────────────┐
-         │  OpenTelemetry Collector (Alloy, Grafana Alloy, etc.)       │
-         │  - Receives traces from NVSentinel modules                  │
-         │  - Batches and forwards to backend                          │
-         └────────────────────────────┬────────────────────────────────┘
-                                      │
-                       ┌──────────────┼──────────────┐
-                       ▼              ▼              ▼
-              ┌──────────────┐ ┌───────────┐ ┌───────────────────┐
-              │  Jaeger      │ │  Tempo    │ │  Any OTLP Backend │
-              └──────────────┘ └───────────┘ └───────────────────┘
-                       │              │
-                       ▼              ▼
-              ┌────────────────────────────┐
-              │  Grafana / Jaeger UI       │
-              │  - Trace explorer,         |
-              |  - service map,            |
-              |  - latency analysis        │
-              └────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph NS["NVSentinel Namespace"]
+        PC[platform-connector]
+        FQ[fault-quarantine]
+        ND[node-drainer]
+        FR[fault-remediation]
+        HEA[health-events-analyzer]
+        JN[janitor]
+        JNP[janitor-provider]
+        EE[event-exporter]
+    end
+
+    PC & FQ & ND & FR & HEA & JN & JNP & EE -->|OTLP gRPC| otel-collector
+
+    otel-collector["OpenTelemetry Collector (Alloy, Grafana Alloy, etc.)"]
+
+    otel-collector --> Jaeger[Jaeger]
+    otel-collector --> Tempo[Tempo]
+    otel-collector --> Other[Any OTLP Backend]
+
+    Jaeger & Tempo --> UI[Grafana / Jaeger UI]
 ```
 
 
