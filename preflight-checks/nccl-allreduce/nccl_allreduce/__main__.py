@@ -46,6 +46,7 @@ import torch.distributed as dist
 from .benchmark import Benchmark, BenchmarkResult, parse_size
 from .config import Config
 from .errors import NCCLError
+from .protos import health_event_pb2 as pb
 from .health import HealthReporter
 from .logger import set_default_structured_logger
 
@@ -271,6 +272,10 @@ def _handle_failure(cfg: Config, error: NCCLError, message: str) -> int:
             extra={"error": str(err)},
         )
         return NCCLError.HEALTH_REPORT_FAILED.value.exit_code
+
+    if cfg.processing_strategy == pb.ProcessingStrategy.STORE_ONLY:
+        log.warning("Check failed (STORE_ONLY — not blocking pod)", extra={"details": message})
+        return NCCLError.SUCCESS.value.exit_code
 
     return error.value.exit_code
 
