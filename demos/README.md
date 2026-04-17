@@ -74,6 +74,16 @@ Run these locally on your laptop — no GPU hardware needed.
 **Best for:** Understanding how NVSentinel's node-drainer can delegate pod eviction to external controllers for custom drain workflows coordinated with HPC schedulers.
 
 
+### [Local Custom Remediation Demo](local-custom-remediation-demo/)
+
+**What it shows:** Custom remediation action extensibility with a real memory pressure health monitor and third-party remediation controller
+
+**Requirements:** Docker, kubectl, kind, helm, ko, go 1.25+ - **no GPU hardware needed**
+
+**Time:** 5-10 minutes
+
+**Best for:** Understanding how to extend NVSentinel beyond GPU faults to handle any hardware or system fault — custom health monitors, custom remediation actions, and third-party controllers.
+
 ## Coming Soon
 
 - Pod rescheduling and restarting from checkpointing
