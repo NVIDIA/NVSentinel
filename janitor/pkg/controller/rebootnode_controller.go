@@ -344,12 +344,6 @@ func (r *RebootNodeReconciler) handleRebootInProgress(
 	}
 
 	if cspReady && kubernetesReady {
-		span := tracing.SpanFromContext(ctx)
-		span.SetAttributes(
-			attribute.Float64("janitor.rebootnode.reboot_session.time_to_ready_seconds",
-				time.Since(rebootNode.CreationTimestamp.Time).Seconds()),
-		)
-
 		slog.InfoContext(ctx, "Node reached ready state post-reboot", "node", node.Name)
 		metrics.GlobalMetrics.RecordActionMTTR(metrics.ActionTypeReboot, time.Since(rebootNode.CreationTimestamp.Time))
 

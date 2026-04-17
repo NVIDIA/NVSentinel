@@ -188,14 +188,16 @@ func realMain() int {
 	}
 	defer auditlogger.CloseAuditLogger() //nolint:errcheck
 
+	runErr := run()
+
 	tracingCtx, tracingCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	if err := tracing.ShutdownTracing(tracingCtx); err != nil {
 		slog.Warn("Failed to shutdown tracing", "error", err)
 	}
 	tracingCancel()
 
-	if err := run(); err != nil {
-		slog.Error("Failed to run", "error", err)
+	if runErr != nil {
+		slog.Error("Failed to run", "error", runErr)
 		return 1
 	}
 

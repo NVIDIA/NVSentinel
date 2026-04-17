@@ -1341,13 +1341,6 @@ func (r *GPUResetReconciler) updateCondition(
 	ctx, span := tracing.StartSpan(ctx, "update_condition")
 	defer span.End()
 
-	span.SetAttributes(
-		attribute.String("janitor.gpureset.condition_type", string(condType)),
-		attribute.String("janitor.gpureset.status", string(status)),
-		attribute.String("janitor.gpureset.reason", string(reason)),
-		attribute.String("janitor.gpureset.message", message),
-	)
-
 	updatedGR := gr.DeepCopy()
 	newCond := NewCondition(condType, status, reason, message)
 	meta.SetStatusCondition(&updatedGR.Status.Conditions, newCond)
@@ -1377,10 +1370,6 @@ func (r *GPUResetReconciler) updateStatus(
 
 	ctx, span := tracing.StartSpan(ctx, "update_status")
 	defer span.End()
-
-	span.SetAttributes(
-		attribute.String("janitor.gpureset.status", string(newStatus.Phase)),
-	)
 
 	grName := gr.Name
 
