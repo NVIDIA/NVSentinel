@@ -24,6 +24,8 @@ import (
 	"github.com/nvidia/nvsentinel/preflight-checks/nccl-loopback/pkg/benchmark"
 	"github.com/nvidia/nvsentinel/preflight-checks/nccl-loopback/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight-checks/nccl-loopback/pkg/health"
+
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 var (
@@ -58,6 +60,17 @@ func run() int {
 		slog.Error("Configuration error", "error", err)
 		return exitConfigError
 	}
+
+	exitCode := execute(ctx, cfg)
+
+	if exitCode != exitSuccess && cfg.ProcessingStrategy == pb.ProcessingStrategy_STORE_ONLY {
+		slog.Warn("Check failed (STORE_ONLY — not blocking pod)")
+		return exitSuccess
+	}
+	return exitCode
+}
+
+func execute(ctx context.Context, cfg *config.Config) int {
 
 	slog.Info("Configuration loaded",
 		"bw_threshold_gbps", cfg.BWThresholdGbps,
