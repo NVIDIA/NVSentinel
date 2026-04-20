@@ -397,7 +397,7 @@ func (c *Coordinator) addPeerToConfigMap(cm *corev1.ConfigMap, peer types.PeerIn
 
 	existingPeers := ParsePeers(cm.Data[DataKeyPeers])
 
-	if len(livePodNames) > 0 {
+	if livePodNames != nil {
 		activePeers := existingPeers[:0]
 		for _, p := range existingPeers {
 			if livePodNames[p.PodName] {
@@ -408,6 +408,7 @@ func (c *Coordinator) addPeerToConfigMap(cm *corev1.ConfigMap, peer types.PeerIn
 					"triggerPod", peer.PodName)
 			}
 		}
+
 		existingPeers = activePeers
 	}
 
@@ -442,7 +443,14 @@ func (c *Coordinator) addPeerToConfigMap(cm *corev1.ConfigMap, peer types.PeerIn
 }
 
 // livePodNamesFromPeers builds a set of pod names from the discovered peers.
+// Returns nil when peers is empty so callers can distinguish "no live data
+// available" (nil → skip pruning) from "discovered peers but none matched"
+// (non-nil empty map → prune all stale entries).
 func livePodNamesFromPeers(peers []types.PeerInfo) map[string]bool {
+	if len(peers) == 0 {
+		return nil
+	}
+
 	names := make(map[string]bool, len(peers))
 	for _, p := range peers {
 		names[p.PodName] = true

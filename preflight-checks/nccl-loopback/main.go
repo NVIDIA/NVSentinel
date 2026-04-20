@@ -67,11 +67,11 @@ func run() int {
 		slog.Warn("Check failed (STORE_ONLY — not blocking pod)")
 		return exitSuccess
 	}
+
 	return exitCode
 }
 
 func execute(ctx context.Context, cfg *config.Config) int {
-
 	slog.Info("Configuration loaded",
 		"bw_threshold_gbps", cfg.BWThresholdGbps,
 		"skip_bandwidth_check", cfg.SkipBandwidthCheck,

@@ -76,7 +76,18 @@ def _run_diagnostic(cfg: Config, reporter: HealthReporter, diag: DCGMDiagnostic)
         log.error("DCGM diagnostic failed", extra={"error": str(e)})
         # is_fatal=True: sets node condition for visibility, even though this may be
         # an infrastructure issue (DCGM unavailable) rather than a confirmed GPU failure.
-        reporter.send_event(gpu_uuid="", is_healthy=False, is_fatal=True, message=str(e))
+        try:
+            reporter.send_event(gpu_uuid="", is_healthy=False, is_fatal=True, message=str(e))
+        except Exception as send_err:  # noqa: BLE001
+            log.error(
+                "Failed to send health event",
+                extra={
+                    "error": str(send_err),
+                    "gpu_uuid": "",
+                    "is_healthy": False,
+                    "is_fatal": True,
+                },
+            )
         return 1
 
     failures = [r for r in results if r.status == "fail"]
@@ -108,14 +119,26 @@ def _run_diagnostic(cfg: Config, reporter: HealthReporter, diag: DCGMDiagnostic)
             f"Test {r.status}",
             extra={"gpu": r.gpu_uuid, "test": r.test_name, "error_code": r.error_code, "detail": message},
         )
-        reporter.send_event(
-            gpu_uuid=r.gpu_uuid,
-            is_healthy=is_pass,
-            is_fatal=is_fatal,
-            message=message,
-            error_code=r.error_code if not is_pass else 0,
-            test_name=r.test_name,
-        )
+        try:
+            reporter.send_event(
+                gpu_uuid=r.gpu_uuid,
+                is_healthy=is_pass,
+                is_fatal=is_fatal,
+                message=message,
+                error_code=r.error_code if not is_pass else 0,
+                test_name=r.test_name,
+            )
+        except Exception as send_err:  # noqa: BLE001
+            log.error(
+                "Failed to send health event",
+                extra={
+                    "error": str(send_err),
+                    "gpu_uuid": r.gpu_uuid,
+                    "test": r.test_name,
+                    "is_healthy": is_pass,
+                    "is_fatal": is_fatal,
+                },
+            )
 
     if failures:
         log.error("DCGM diagnostic check failed")

@@ -83,8 +83,8 @@ class DCGMDiagnostic:
         # node.  Without this, RunDiagnostic fails with "already running".
         try:
             dcgm_agent.dcgmStopDiagnostic(self._handle.handle)
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001
+            log.debug("Failed to stop previous diagnostic", exc_info=True)
 
         group = self._create_gpu_group(gpu_indices)
         try:
