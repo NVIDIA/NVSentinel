@@ -21,6 +21,7 @@ from .config import Config
 from .diag import DCGMDiagnostic
 from .health import HealthReporter
 from .logger import setup_logging
+from . import otel_metrics
 from .protos import health_event_pb2 as pb
 
 
@@ -60,6 +61,15 @@ def main() -> None:
     store_only = cfg.processing_strategy == pb.ProcessingStrategy.STORE_ONLY
 
     exit_code = _run_diagnostic(cfg, reporter, diag)
+
+    otel_metrics.emit_check_result(
+        check_name=f"dcgm-diag-{cfg.diag_level}",
+        passed=exit_code == 0,
+        attributes={
+            "node": cfg.node_name,
+            "processing_strategy": pb.ProcessingStrategy.Name(cfg.processing_strategy),
+        },
+    )
 
     if exit_code != 0 and store_only:
         log.warning("Check failed (STORE_ONLY — not blocking pod)")

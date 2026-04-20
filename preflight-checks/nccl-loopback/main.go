@@ -26,6 +26,7 @@ import (
 	"github.com/nvidia/nvsentinel/preflight-checks/nccl-loopback/pkg/health"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/preflight-checks/nccl-loopback/pkg/otelmetrics"
 )
 
 var (
@@ -62,6 +63,11 @@ func run() int {
 	}
 
 	exitCode := execute(ctx, cfg)
+
+	otelmetrics.EmitCheckResult("nccl-loopback", exitCode == exitSuccess, map[string]string{
+		"node":                cfg.NodeName,
+		"processing_strategy": cfg.ProcessingStrategy.String(),
+	})
 
 	if exitCode != exitSuccess && cfg.ProcessingStrategy == pb.ProcessingStrategy_STORE_ONLY {
 		slog.Warn("Check failed (STORE_ONLY — not blocking pod)")

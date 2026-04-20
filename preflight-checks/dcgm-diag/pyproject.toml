@@ -11,6 +11,9 @@ grpcio = "^1.74.0"
 protobuf = ">=6.31.1,<8.0.0"
 pynvml = ">=12,<14"
 structlog = "^25.1.0"
+opentelemetry-api = "^1.20.0"
+opentelemetry-sdk = "^1.20.0"
+opentelemetry-exporter-otlp-proto-grpc = "^1.20.0"
 
 [tool.poetry.group.dev.dependencies]
 black = "^26.3.1"
