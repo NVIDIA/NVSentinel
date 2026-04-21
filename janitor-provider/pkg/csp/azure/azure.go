@@ -75,7 +75,7 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 	// Get the Azure client
 	vmssClient, err := c.getVMSSClient(ctx)
 	if err != nil {
-		slog.Error("Failed to create Azure client", "error", err)
+		slog.ErrorContext(ctx, "Failed to create Azure client", "error", err)
 		return "", err
 	}
 
@@ -83,7 +83,7 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 	providerID := node.Spec.ProviderID
 	if providerID == "" {
 		err := fmt.Errorf("no provider ID found for node %s", node.Name)
-		slog.Error("Failed to reboot node", "error", err)
+		slog.ErrorContext(ctx, "Failed to reboot node", "error", err)
 
 		return "", err
 	}
@@ -91,14 +91,14 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 	// Extract the resource group and VM name from the provider ID
 	resourceGroup, vmName, instanceID, err := parseAzureProviderID(providerID)
 	if err != nil {
-		slog.Error("Failed to parse provider ID", "error", err)
+		slog.ErrorContext(ctx, "Failed to parse provider ID", "error", err)
 		return "", err
 	}
 
 	// Reboot the VM
 	_, err = vmssClient.BeginRestart(ctx, resourceGroup, vmName, instanceID, nil)
 	if err != nil {
-		slog.Error("Failed to send restart signal to node", "error", err, "node", vmName)
+		slog.ErrorContext(ctx, "Failed to send restart signal to node", "error", err, "node", vmName)
 		return "", err
 	}
 
@@ -121,7 +121,7 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID st
 	providerID := node.Spec.ProviderID
 	if providerID == "" {
 		err := fmt.Errorf("no provider ID found for node %s", node.Name)
-		slog.Error("Failed to reboot node", "error", err)
+		slog.ErrorContext(ctx, "Failed to reboot node", "error", err)
 
 		return false, err
 	}
@@ -129,27 +129,27 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID st
 	// Extract the resource group and VM name from the provider ID
 	resourceGroup, vmName, instanceID, err := parseAzureProviderID(providerID)
 	if err != nil {
-		slog.Error("Failed to parse provider ID", "error", err)
+		slog.ErrorContext(ctx, "Failed to parse provider ID", "error", err)
 		return false, err
 	}
 
 	// Get the Azure client
 	vmssClient, err := c.getVMSSClient(ctx)
 	if err != nil {
-		slog.Error("Failed to create Azure client", "error", err)
+		slog.ErrorContext(ctx, "Failed to create Azure client", "error", err)
 		return false, err
 	}
 
 	instanceView, err := vmssClient.GetInstanceView(ctx, resourceGroup, vmName, instanceID, nil)
 	if err != nil {
-		slog.Error("Failed to get instance view for VM", "error", err, "node", vmName)
+		slog.ErrorContext(ctx, "Failed to get instance view for VM", "error", err, "node", vmName)
 		return false, err
 	}
 
 	if instanceView.Statuses != nil {
 		for _, status := range instanceView.Statuses {
 			if *status.Code == "ProvisioningState/succeeded" {
-				slog.Info(fmt.Sprintf("Node %s is in a healthy state", node.Name))
+				slog.InfoContext(ctx, fmt.Sprintf("Node %s is in a healthy state", node.Name))
 				return true, nil
 			}
 		}
@@ -199,7 +199,7 @@ func createDefaultVMSSClient(ctx context.Context) (VMSSClientInterface, error) {
 
 	cred, err := azidentity.NewDefaultAzureCredential(nil)
 	if err != nil {
-		slog.Error("Failed to create Azure credential", "error", err)
+		slog.ErrorContext(ctx, "Failed to create Azure credential", "error", err)
 		return nil, err
 	}
 
@@ -211,7 +211,7 @@ func createDefaultVMSSClient(ctx context.Context) (VMSSClientInterface, error) {
 		},
 	})
 	if err != nil {
-		slog.Error("Failed to create Azure client", "error", err)
+		slog.ErrorContext(ctx, "Failed to create Azure client", "error", err)
 		return nil, err
 	}
 
@@ -255,7 +255,7 @@ func getSubscriptionID(ctx context.Context) (string, error) {
 
 	defer func() {
 		if cerr := resp.Body.Close(); cerr != nil {
-			slog.Error("failed to close IMDS response body", "error", cerr)
+			slog.ErrorContext(ctx, "failed to close IMDS response body", "error", cerr)
 		}
 	}()
 

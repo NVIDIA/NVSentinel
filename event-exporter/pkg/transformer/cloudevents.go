@@ -66,6 +66,10 @@ func ToCloudEvent(event *pb.HealthEvent, metadata map[string]string) (*CloudEven
 		"processingStrategy": event.ProcessingStrategy.String(),
 	}
 
+	if event.CustomRecommendedAction != "" {
+		healthEventData["customRecommendedAction"] = event.CustomRecommendedAction
+	}
+
 	if len(event.Metadata) > 0 {
 		healthEventData["metadata"] = event.Metadata
 	}

@@ -103,7 +103,7 @@ Defines which remediation actions are considered equivalent for deduplication. A
 Defines additional equivalence groups that are considered equivalent for deduplication. For example, the COMPONENT_RESET action in the reset group should be deduplicated with the RESTART_VM action in the restart group. In other words, rebooting a node will have the same effect as resetting a GPU whereas the inverse is not true.
 
 #### impactedEntityScope
-For the COMPONENT_RESET action, the impacted entity scope should be defined so that there's a unique equivalence group for each entity. The unique equivalence group is constructed by appending the value for the given impacted entity to the equivalence group name. For example, each GPU needing reset will be in its own equivalence group named like reset-<GPU_UUID>.
+For the COMPONENT_RESET action, the impacted entity scope should be defined so that there's a unique equivalence group for each entity. The unique equivalence group is constructed by appending the value for the given impacted entity to the equivalence group name. For example, each GPU needing reset will be in its own equivalence group named like reset-`<GPU_UUID>`.
 
 #### templates
 Go template that generates the maintenance CR YAML. See Template Extension Point section below.

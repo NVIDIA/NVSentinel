@@ -43,7 +43,7 @@ XID 74 is logged when the GPU detects a problem with a connection from the GPU t
 
 ### Message Format
 ```
-[449410.332316] NVRM: Xid (PCI:0003:00:00): 74, pid='<unknown>', name=<unknown>, NVLink: fatal error detected on link 14(0x0, 0x0, 0x10000, 0x0, 0x0, 0x0, 0x0)
+[449410.332316] NVRM: Xid (PCI:0003:00:00): 74, pid='`<unknown>`', name=`<unknown>`, NVLink: fatal error detected on link 14(0x0, 0x0, 0x10000, 0x0, 0x0, 0x0, 0x0)
 ```
 The error message contains **7 hex register values** in parentheses:
 

@@ -59,6 +59,8 @@ spec:
             - "--webhook-cert-path={{ .Values.webhook.certDir }}"
             - "--webhook-cert-name=tls.crt"
             - "--webhook-cert-key=tls.key"
+            - "--enable-ttl={{ .Values.ttl.enabled }}"
+            - "--default-ttl={{ .Values.ttl.defaultTTL }}"
             {{- if .Values.metrics.tls.enabled }}
             - "--metrics-secure=true"
             - "--metrics-cert-path={{ .Values.metrics.tls.certDir }}"
@@ -79,6 +81,12 @@ spec:
             {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- if .Values.global.tracing.enabled }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.global.tracing.endpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: {{ .Values.global.tracing.insecure | quote }}
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

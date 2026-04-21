@@ -106,7 +106,6 @@ def run() -> int:
 
 def _run_benchmark_flow(cfg: Config) -> int:
     """Execute the benchmark and return an exit code."""
-
     # Set NCCL defaults if not already set by the container env.
     if "NCCL_DEBUG" not in os.environ:
         os.environ["NCCL_DEBUG"] = "INFO"

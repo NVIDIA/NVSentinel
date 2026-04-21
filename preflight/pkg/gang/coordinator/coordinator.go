@@ -216,7 +216,47 @@ func (c *Coordinator) RegisterPeer(
 		"peer", peer.PodName,
 		"peerIP", peer.PodIP)
 
-	if err := c.updateConfigMap(ctx, namespace, configMapName, gangInfo.ExpectedMinCount, peer); err != nil {
+	livePodNames := livePodNamesFromPeers(gangInfo.Peers)
+
+	if err := c.updateConfigMap(ctx, namespace, configMapName, gangInfo.ExpectedMinCount, peer, livePodNames); err != nil {
+		return fmt.Errorf("failed to update ConfigMap: %w", err)
+	}
+
+	slog.Info("Registered peer in gang ConfigMap",
+		"configMap", configMapName,
+		"namespace", namespace,
+		"peer", peer.PodName,
+		"peerIP", peer.PodIP)
+
+	return nil
+}
+
+// RegisterPeerInConfigMap registers a pod as a peer in a specific ConfigMap
+// (rather than deriving the name from the gang ID). This is used when the
+// webhook created a ConfigMap under a provisional gang ID (e.g., from a label
+// fallback) that differs from the controller's discovered gang ID.
+func (c *Coordinator) RegisterPeerInConfigMap(
+	ctx context.Context,
+	namespace string,
+	configMapName string,
+	gangInfo *types.GangInfo,
+	peer types.PeerInfo,
+) error {
+	if configMapName == "" {
+		// Fallback: no webhook ConfigMap found, use the standard path.
+		return c.RegisterPeer(ctx, namespace, gangInfo, peer)
+	}
+
+	slog.Debug("Registering peer in webhook ConfigMap",
+		"configMap", configMapName,
+		"namespace", namespace,
+		"gangID", gangInfo.GangID,
+		"peer", peer.PodName,
+		"peerIP", peer.PodIP)
+
+	livePodNames := livePodNamesFromPeers(gangInfo.Peers)
+
+	if err := c.updateConfigMap(ctx, namespace, configMapName, gangInfo.ExpectedMinCount, peer, livePodNames); err != nil {
 		return fmt.Errorf("failed to update ConfigMap: %w", err)
 	}
 
@@ -272,6 +312,7 @@ func (c *Coordinator) updateConfigMap(
 	configMapName string,
 	expectedCount int,
 	peer types.PeerInfo,
+	livePodNames map[string]bool,
 ) error {
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		cm := &corev1.ConfigMap{}
@@ -287,7 +328,7 @@ func (c *Coordinator) updateConfigMap(
 			}
 		}
 
-		c.addPeerToConfigMap(cm, peer)
+		c.addPeerToConfigMap(cm, peer, livePodNames)
 		c.updateMasterAddr(cm)
 
 		return c.client.Update(ctx, cm)
@@ -378,7 +419,10 @@ func (c *Coordinator) createConfigMap(name, namespace string, gangInfo *types.Ga
 }
 
 // addPeerToConfigMap adds a peer to the ConfigMap's peer list.
-func (c *Coordinator) addPeerToConfigMap(cm *corev1.ConfigMap, peer types.PeerInfo) {
+// When livePodNames is non-nil, entries for pods not in the set are pruned.
+// This prevents stale entries from accumulating when pods are rescheduled
+// (each replacement pod gets a new name, leaving the old entry behind).
+func (c *Coordinator) addPeerToConfigMap(cm *corev1.ConfigMap, peer types.PeerInfo, livePodNames map[string]bool) {
 	if cm.Data == nil {
 		cm.Data = make(map[string]string)
 	}
@@ -388,6 +432,22 @@ func (c *Coordinator) addPeerToConfigMap(cm *corev1.ConfigMap, peer types.PeerIn
 	}
 
 	existingPeers := ParsePeers(cm.Data[DataKeyPeers])
+
+	if livePodNames != nil {
+		activePeers := existingPeers[:0]
+		for _, p := range existingPeers {
+			if livePodNames[p.PodName] {
+				activePeers = append(activePeers, p)
+			} else {
+				slog.Info("Pruning stale gang peer",
+					"stalePod", p.PodName,
+					"triggerPod", peer.PodName)
+			}
+		}
+
+		existingPeers = activePeers
+	}
+
 	found := false
 
 	for i, p := range existingPeers {
@@ -416,6 +476,23 @@ func (c *Coordinator) addPeerToConfigMap(cm *corev1.ConfigMap, peer types.PeerIn
 	}
 
 	cm.Data[DataKeyPeers] = strings.Join(lines, "\n")
+}
+
+// livePodNamesFromPeers builds a set of pod names from the discovered peers.
+// Returns nil when peers is empty so callers can distinguish "no live data
+// available" (nil → skip pruning) from "discovered peers but none matched"
+// (non-nil empty map → prune all stale entries).
+func livePodNamesFromPeers(peers []types.PeerInfo) map[string]bool {
+	if len(peers) == 0 {
+		return nil
+	}
+
+	names := make(map[string]bool, len(peers))
+	for _, p := range peers {
+		names[p.PodName] = true
+	}
+
+	return names
 }
 
 // updateMasterAddr updates the master address in the ConfigMap.

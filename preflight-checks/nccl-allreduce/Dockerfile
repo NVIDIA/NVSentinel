@@ -22,19 +22,19 @@
 
 # PyTorch version determines CUDA runtime version - must match cluster's GPU driver
 # See: https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html#id4
-#   25.01-py3 = CUDA 12.8 (driver 570+)
-ARG PYTORCH_VERSION=25.01-py3
+#   26.03-py3 = CUDA 13.2 (Ubuntu 24.04, Python 3.12)
+ARG PYTORCH_VERSION=26.03-py3
 ARG VERSION="0.1.0"
 
 # =============================================================================
 # Build stage: Install Python dependencies
 # =============================================================================
-FROM public.ecr.aws/docker/library/python:3.10-bookworm AS build
+FROM public.ecr.aws/docker/library/python:3.13-trixie AS build
 
 ARG VERSION
 
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install poetry==2.2.1 poetry-plugin-export==1.10.0
+    pip install poetry==2.3.3 poetry-plugin-export==1.10.0
 
 ENV POETRY_NO_INTERACTION=1 \
     POETRY_VIRTUALENVS_IN_PROJECT=1 \

@@ -19,6 +19,10 @@ import (
 	"fmt"
 	"log/slog"
 
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
@@ -51,7 +55,7 @@ func fetchEventFromDB(ctx context.Context, documentID interface{}, database Data
 // Interfaces are defined in types.go
 
 func (m *eventQueueManager) Start(ctx context.Context) {
-	slog.Info("Starting workqueue processor")
+	slog.InfoContext(ctx, "Starting workqueue processor")
 
 	go m.runWorker(ctx)
 }
@@ -60,7 +64,7 @@ func (m *eventQueueManager) runWorker(ctx context.Context) {
 	for m.processNextWorkItem(ctx) {
 	}
 
-	slog.Info("Worker stopped")
+	slog.InfoContext(ctx, "Worker stopped")
 }
 
 func (m *eventQueueManager) processNextWorkItem(ctx context.Context) bool {
@@ -72,7 +76,7 @@ func (m *eventQueueManager) processNextWorkItem(ctx context.Context) bool {
 	defer m.queue.Done(nodeEvent)
 
 	if nodeEvent.Database == nil || nodeEvent.HealthEventStore == nil {
-		slog.Error("NodeEvent missing database or health event store, dropping",
+		slog.ErrorContext(ctx, "NodeEvent missing database or health event store, dropping",
 			"node", nodeEvent.NodeName, "eventID", nodeEvent.EventID)
 		m.queue.Forget(nodeEvent)
 		metrics.QueueDepth.Set(float64(m.queue.Len()))
@@ -82,7 +86,7 @@ func (m *eventQueueManager) processNextWorkItem(ctx context.Context) bool {
 
 	event, fetchErr := fetchEventFromDB(ctx, nodeEvent.DocumentID, nodeEvent.Database)
 	if fetchErr != nil {
-		slog.Warn("Failed to fetch event from database (will retry)",
+		slog.WarnContext(ctx, "Failed to fetch event from database (will retry)",
 			"node", nodeEvent.NodeName, "eventID", nodeEvent.EventID, "error", fetchErr)
 		m.queue.AddRateLimited(nodeEvent)
 		metrics.QueueDepth.Set(float64(m.queue.Len()))
@@ -90,14 +94,54 @@ func (m *eventQueueManager) processNextWorkItem(ctx context.Context) bool {
 		return true
 	}
 
-	err := m.processEventGeneric(ctx, event, nodeEvent.Database, nodeEvent.HealthEventStore, nodeEvent.NodeName)
+	traceID := ""
+	parentSpanID := ""
+
+	if healthEvent, err := eventutil.ParseHealthEventFromEvent(event); err == nil {
+		traceID = tracing.TraceIDFromMetadata(healthEvent.HealthEvent.GetMetadata())
+		parentSpanID = tracing.ParentSpanID(healthEvent.HealthEventStatus.SpanIds, tracing.ServiceFaultQuarantine)
+	}
+
+	raw, _ := m.sessions.LoadOrStore(nodeEvent.EventID, &DrainSession{})
+	session := raw.(*DrainSession)
+
+	slog.DebugContext(ctx, "Drain session trace context",
+		"node", nodeEvent.NodeName,
+		"eventID", nodeEvent.EventID,
+		"docTraceID", traceID,
+		"docParentSpanID", parentSpanID,
+		"drainSessionSpanExists", session.DrainSessionSpan != nil,
+	)
+
+	processCtx := ctx
+
+	if session.DrainSessionSpan == nil {
+		if traceID != "" {
+			var spanCtx context.Context
+
+			spanCtx, session.DrainSessionSpan = tracing.StartSpanWithLinkFromTraceContext(
+				ctx, traceID, parentSpanID, "node_drainer.drain_session")
+			processCtx = spanCtx
+		}
+	} else {
+		processCtx = trace.ContextWithSpan(ctx, session.DrainSessionSpan)
+	}
+
+	processCtx = ContextWithDrainSession(processCtx, session)
+
+	err := m.processEventGeneric(processCtx, event, nodeEvent.Database, nodeEvent.HealthEventStore, nodeEvent.NodeName)
 	if err != nil {
-		slog.Warn("Error processing event for node (will retry)",
+		slog.WarnContext(processCtx, "Error processing event for node (will retry)",
 			"node", nodeEvent.NodeName,
 			"attempt", m.queue.NumRequeues(nodeEvent)+1,
 			"error", err)
 		m.queue.AddRateLimited(nodeEvent)
 	} else {
+		if session.DrainSessionSpan != nil {
+			session.DrainSessionSpan.End()
+		}
+
+		m.sessions.Delete(nodeEvent.EventID)
 		m.queue.Forget(nodeEvent)
 	}
 
@@ -114,5 +158,3 @@ func (m *eventQueueManager) processEventGeneric(ctx context.Context,
 
 	return m.dataStoreEventProcessor.ProcessEventGeneric(ctx, event, database, healthEventStore, nodeName)
 }
-
-// processEvent method has been removed - only processEventGeneric is used now

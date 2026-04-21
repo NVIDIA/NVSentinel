@@ -393,3 +393,7 @@ func (m mockCursor) Err() error {
 type MockHealthEventStore struct {
 	datastore.HealthEventStore
 }
+
+func (m *MockHealthEventStore) FindHealthEventsByQueryBatched(_ context.Context, _ datastore.QueryBuilder, _ int, _ func([]datastore.HealthEventWithStatus) error) error {
+	return nil
+}

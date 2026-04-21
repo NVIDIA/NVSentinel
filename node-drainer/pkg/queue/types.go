@@ -16,6 +16,7 @@ package queue
 
 import (
 	"context"
+	"sync"
 
 	"k8s.io/client-go/util/workqueue"
 
@@ -66,4 +67,5 @@ type eventQueueManager struct {
 	queue                   workqueue.TypedRateLimitingInterface[NodeEvent]
 	dataStoreEventProcessor DataStoreEventProcessor // New database-agnostic processor
 	shutdown                chan struct{}
+	sessions                sync.Map // EventID -> *DrainSession
 }

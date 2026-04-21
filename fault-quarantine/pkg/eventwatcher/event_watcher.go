@@ -160,19 +160,19 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 		return fmt.Errorf("error getting document ID: %w", err)
 	}
 
-	// Rather than include the object ID on the model.HealthEventWithStatus struct, we will manually set the ID
-	// on the nested protos.HealthEvent struct. Note that protos.HealthEvent structs are stored as part of the
-	// quarantineHealthEvent annotation. We require that the object ID is available in events included in the
-	// annotation so that the node-drainer can use this ID to look up if any previous drains have completed for
-	// the given node.
-	if healthEventWithStatus.HealthEvent != nil {
-		healthEventWithStatus.HealthEvent.Id = eventID
-	}
-
-	// Get the record UUID for database updates (different from changelog ID for PostgreSQL)
+	// GetRecordUUID returns the actual database primary key:
+	//   MongoDB  → ObjectID hex (same as GetDocumentID)
+	//   PostgreSQL → UUID (different from the changelog sequence ID returned by GetDocumentID)
 	recordUUID, err := event.GetRecordUUID()
 	if err != nil {
 		return fmt.Errorf("error getting record UUID: %w", err)
+	}
+
+	// Store the record UUID on the proto so that when it is serialized into the
+	// quarantineHealthEvent annotation, node-drainer can use it for DB lookups
+	// (e.g. checking whether previous drains completed for the node).
+	if healthEventWithStatus.HealthEvent != nil {
+		healthEventWithStatus.HealthEvent.Id = recordUUID
 	}
 
 	w.lastProcessedObjectID.StoreLastProcessedObjectID(eventID)

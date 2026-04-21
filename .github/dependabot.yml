@@ -21,122 +21,102 @@ updates:
     schedule:
       interval: "weekly"
     labels: ["dependencies"]
+    groups:
+      github-actions:
+        patterns: ["*"]
 
-  # Health Monitors (only those with go.mod)
+  # Go modules
   - package-ecosystem: "gomod"
-    directory: "/health-monitors/csp-health-monitor"
+    directories:
+      - "/api"
+      - "/commons"
+      - "/data-models"
+      - "/event-exporter"
+      - "/fault-quarantine"
+      - "/fault-remediation"
+      - "/health-events-analyzer"
+      - "/health-monitors/csp-health-monitor"
+      - "/health-monitors/kubernetes-object-monitor"
+      - "/health-monitors/nic-health-monitor"
+      - "/health-monitors/slurm-drain-monitor"
+      - "/health-monitors/syslog-health-monitor"
+      - "/janitor"
+      - "/janitor-provider"
+      - "/labeler"
+      - "/metadata-collector"
+      - "/node-drainer"
+      - "/platform-connectors"
+      - "/plugins/mock-slurm-operator"
+      - "/plugins/slinky-drainer"
+      - "/preflight"
+      - "/preflight-checks/nccl-loopback"
+      - "/store-client"
+      - "/tests"
+      - "/tests/scale-tests/cmd/fqm-scale-test"
+      - "/tests/scale-tests/event-generator"
+      - "/tilt/csp-api-mock"
+      - "/tilt/event-exporter-mock"
+      - "/tilt/simple-health-client"
     target-branch: "main"
     schedule:
       interval: "weekly"
     labels: ["dependencies"]
-
-  - package-ecosystem: "gomod"
-    directory: "/health-monitors/syslog-health-monitor"
-    target-branch: "main"
-    schedule:
-      interval: "weekly"
-    labels: ["dependencies"]
-
-  - package-ecosystem: "gomod"
-    directory: "/health-monitors/nic-health-monitor"
-    target-branch: "main"
-    schedule:
-      interval: "weekly"
-    labels: ["dependencies"]
-
-  # API
-  - package-ecosystem: "gomod"
-    directory: "/api"
-    target-branch: "main"
-    schedule:
-      interval: "weekly"
-    labels: ["dependencies"]
-
-  # Core Services
-  - package-ecosystem: "gomod"
-    directory: "/health-events-analyzer"
-    target-branch: "main"
-    schedule:
-      interval: "weekly"
-    labels: ["dependencies"]
-
-  - package-ecosystem: "gomod"
-    directory: "/platform-connectors"
-    target-branch: "main"
-    schedule:
-      interval: "weekly"
-    labels: ["dependencies"]
-
-  - package-ecosystem: "gomod"
-    directory: "/store-client"
-    target-branch: "main"
-    schedule:
-      interval: "weekly"
-    labels: ["dependencies"]
-
-  - package-ecosystem: "gomod"
-    directory: "/commons"
-    target-branch: "main"
-    schedule:
-      interval: "weekly"
-    labels: ["dependencies"]
-
-  # Fault Management
-  - package-ecosystem: "gomod"
-    directory: "/fault-quarantine"
-    target-branch: "main"
-    schedule:
-      interval: "weekly"
-    labels: ["dependencies"]
-
-  - package-ecosystem: "gomod"
-    directory: "/fault-remediation"
-    target-branch: "main"
-    schedule:
-      interval: "weekly"
-    labels: ["dependencies"]
-
-  - package-ecosystem: "gomod"
-    directory: "/labeler"
-    target-branch: "main"
-    schedule:
-      interval: "weekly"
-    labels: ["dependencies"]
-
-  - package-ecosystem: "gomod"
-    directory: "/node-drainer"
-    target-branch: "main"
-    schedule:
-      interval: "weekly"
-    labels: ["dependencies"]
-
-  # Tests
-  - package-ecosystem: "gomod"
-    directory: "/tests"
-    target-branch: "main"
-    schedule:
-      interval: "weekly"
-    labels: ["dependencies"]
+    groups:
+      kubernetes:
+        patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/*"
+      grpc-protobuf:
+        patterns:
+          - "google.golang.org/grpc*"
+          - "google.golang.org/protobuf*"
+          - "google.golang.org/genproto*"
+      go-dependencies:
+        update-types:
+          - "minor"
+          - "patch"
+        exclude-patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/*"
+          - "google.golang.org/grpc*"
+          - "google.golang.org/protobuf*"
+          - "google.golang.org/genproto*"
 
   # Python packages
   - package-ecosystem: "pip"
-    directory: "/health-monitors/gpu-health-monitor"
+    directories:
+      - "/health-monitors/gpu-health-monitor"
+      - "/log-collector"
+      - "/preflight-checks/dcgm-diag"
+      - "/preflight-checks/nccl-allreduce"
     target-branch: "main"
     schedule:
       interval: "weekly"
     labels: ["dependencies"]
-
-  - package-ecosystem: "pip"
-    directory: "/log-collector"
-    target-branch: "main"
-    schedule:
-      interval: "weekly"
-    labels: ["dependencies"]
+    groups:
+      python-dependencies:
+        patterns: ["*"]
 
   # Docker
   - package-ecosystem: "docker"
-    directory: "/"
+    directories:
+      - "/gpu-reset"
+      - "/health-monitors/gpu-health-monitor"
+      - "/health-monitors/syslog-health-monitor"
+      - "/log-collector"
+      - "/metadata-collector"
+      - "/preflight-checks/dcgm-diag"
+      - "/preflight-checks/nccl-allreduce"
+      - "/preflight-checks/nccl-loopback"
+      - "/tests/scale-tests/event-generator"
+      - "/tilt/csp-api-mock"
+      - "/tilt/dcgm-fake"
+      - "/tilt/event-exporter-mock"
+      - "/tilt/simple-health-client"
     target-branch: "main"
     schedule:
       interval: "monthly"
     labels: ["dependencies"]
+    groups:
+      docker-dependencies:
+        patterns: ["*"]

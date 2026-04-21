@@ -77,7 +77,7 @@ When a ResetGpu CR is created, the controller initiates the following sequence:
 
 3. **Execute GPU Reset:** The pod created by the Job performs the following actions in order:
     1. Disables NVIDIA persistence mode for the target GPU (if enabled).
-    2. Executes a reset of the target GPU (i.e., via nvidia-smi --gpu-reset --id <ID>; NVIDIA, n.d.-k).
+    2. Executes a reset of the target GPU (i.e., via nvidia-smi --gpu-reset --id `<ID>`; NVIDIA, n.d.-k).
     3. Runs a health check to verify the GPU’s status.
     4. Re-enables NVIDIA persistence mode (only if it was originally enabled).
     5. Exits with a standard success code (**0**) or a non-zero failure code (e.g., **1**) based on the outcome.

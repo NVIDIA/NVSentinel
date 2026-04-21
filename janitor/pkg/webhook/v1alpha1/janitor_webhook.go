@@ -21,11 +21,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
@@ -57,25 +55,22 @@ func SetupJanitorWebhookWithManager(mgr ctrl.Manager, cfg *config.Config) error 
 	}
 
 	// Register webhook for RebootNode
-	if err := ctrl.NewWebhookManagedBy(mgr).
-		For(&janitordgxcnvidiacomv1alpha1.RebootNode{}).
-		WithValidator(validator).
+	if err := ctrl.NewWebhookManagedBy(mgr, &janitordgxcnvidiacomv1alpha1.RebootNode{}).
+		WithValidator(&rebootNodeValidator{validator}).
 		Complete(); err != nil {
 		return err
 	}
 
 	// Register webhook for TerminateNode
-	if err := ctrl.NewWebhookManagedBy(mgr).
-		For(&janitordgxcnvidiacomv1alpha1.TerminateNode{}).
-		WithValidator(validator).
+	if err := ctrl.NewWebhookManagedBy(mgr, &janitordgxcnvidiacomv1alpha1.TerminateNode{}).
+		WithValidator(&terminateNodeValidator{validator}).
 		Complete(); err != nil {
 		return err
 	}
 
 	// Register webhook for GPUReset
-	if err := ctrl.NewWebhookManagedBy(mgr).
-		For(&janitordgxcnvidiacomv1alpha1.GPUReset{}).
-		WithValidator(validator).
+	if err := ctrl.NewWebhookManagedBy(mgr, &janitordgxcnvidiacomv1alpha1.GPUReset{}).
+		WithValidator(&gpuResetValidator{validator}).
 		Complete(); err != nil {
 		return err
 	}
@@ -103,8 +98,6 @@ type JanitorCustomValidator struct {
 	Config *config.Config
 	Client client.Client
 }
-
-var _ webhook.CustomValidator = &JanitorCustomValidator{}
 
 // validateNodeExists checks if the specified node exists in the cluster
 func (v *JanitorCustomValidator) validateNodeExists(ctx context.Context, nodeName string) error {
@@ -261,108 +254,20 @@ func (v *JanitorCustomValidator) validateNodeAndGPUs(oldNodeName, newNodeName st
 	return nil
 }
 
-// ValidateCreate implements webhook.CustomValidator so a webhook will be registered for all Janitor CRD types.
-// nolint:cyclop
-func (v *JanitorCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	var (
-		objName        string
-		controllerType string
-		nodeName       string
-	)
-
-	switch typedObj := obj.(type) {
-	case *janitordgxcnvidiacomv1alpha1.RebootNode:
-		objName = typedObj.GetName()
-		controllerType = controllerTypeRebootNode
-		nodeName = typedObj.Spec.NodeName
-
-		if v.Config == nil || !v.Config.RebootNode.Enabled {
-			janitorWebhookLog.Info("RebootNode controller is disabled, rejecting creation", "name", objName)
-			return nil, fmt.Errorf("RebootNode controller is disabled in configuration")
-		}
-
-		// Check for active reboots
-		if err := v.validateNoActiveReboot(ctx, nodeName); err != nil {
-			janitorWebhookLog.Info(
-				"Active reboot validation failed", // nolint:lll
-				"type", controllerType,
-				"name", objName,
-				"nodeName", nodeName,
-				"error", err.Error(),
-			)
-
-			return nil, err
-		}
-
-	case *janitordgxcnvidiacomv1alpha1.TerminateNode:
-		objName = typedObj.GetName()
-		controllerType = controllerTypeTerminateNode
-		nodeName = typedObj.Spec.NodeName
-
-		if v.Config == nil || !v.Config.TerminateNode.Enabled {
-			janitorWebhookLog.Info("TerminateNode controller is disabled, rejecting creation", "name", objName)
-			return nil, fmt.Errorf("TerminateNode controller is disabled in configuration")
-		}
-
-		// Check for active terminations
-		if err := v.validateNoActiveTermination(ctx, nodeName); err != nil {
-			janitorWebhookLog.Info(
-				"Active termination validation failed", // nolint:lll
-				"type", controllerType,
-				"name", objName,
-				"nodeName", nodeName,
-				"error", err.Error(),
-			)
-
-			return nil, err
-		}
-
-	case *janitordgxcnvidiacomv1alpha1.GPUReset:
-		objName = typedObj.GetName()
-		controllerType = controllerTypeGPUReset
-		nodeName = typedObj.Spec.NodeName
-		uuids := typedObj.Spec.Selector.UUIDs
-
-		if v.Config == nil || !v.Config.GPUReset.Enabled {
-			janitorWebhookLog.Info("GPUReset controller is disabled, rejecting creation", "name", objName)
-			return nil, fmt.Errorf("GPUReset controller is disabled in configuration")
-		}
-
-		// Check for active terminations
-		if err := v.validateNoActiveResetForSameGPU(ctx, nodeName, uuids); err != nil {
-			janitorWebhookLog.Info("Active reset validation failed", "type", controllerType, "name", objName,
-				"nodeName", nodeName, "error", err.Error(),
-			)
-
-			return nil, err
-		}
-
-	default:
-		return nil, fmt.Errorf("expected a Janitor CR object but got %T", obj)
-	}
-
-	// Validate node existence for CRs that reference nodes
+// validateNodeForCreate validates node existence and exclusions, then logs success.
+func (v *JanitorCustomValidator) validateNodeForCreate(ctx context.Context,
+	controllerType, objName, nodeName string) (admission.Warnings, error) {
 	if nodeName != "" {
 		if err := v.validateNodeExists(ctx, nodeName); err != nil {
-			janitorWebhookLog.Info(
-				"Node validation failed", // nolint:lll
-				"type", controllerType,
-				"name", objName,
-				"nodeName", nodeName,
-				"error", err.Error(),
-			)
+			janitorWebhookLog.Info("Node validation failed",
+				"type", controllerType, "name", objName, "nodeName", nodeName, "error", err.Error())
 
 			return nil, err
 		}
 
 		if err := v.validateNodeNotInExclusions(ctx, nodeName); err != nil {
-			janitorWebhookLog.Info(
-				"Node exclusion list validation failed", // nolint:lll
-				"type", controllerType,
-				"name", objName,
-				"nodeName", nodeName,
-				"error", err.Error(),
-			)
+			janitorWebhookLog.Info("Node exclusion list validation failed",
+				"type", controllerType, "name", objName, "nodeName", nodeName, "error", err.Error())
 
 			return nil, err
 		}
@@ -373,108 +278,20 @@ func (v *JanitorCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 	return nil, nil
 }
 
-// ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for all Janitor CRD types.
-// nolint:cyclop,lll,gocognit
-func (v *JanitorCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	var (
-		objName        string
-		controllerType string
-		nodeName       string
-		oldNodeName    string
-	)
-
-	allowDeletedNode := false
-
-	switch typedObj := newObj.(type) {
-	case *janitordgxcnvidiacomv1alpha1.RebootNode:
-		objName = typedObj.GetName()
-		controllerType = controllerTypeRebootNode
-		nodeName = typedObj.Spec.NodeName
-
-		if v.Config == nil || !v.Config.RebootNode.Enabled {
-			janitorWebhookLog.Info("RebootNode controller is disabled, rejecting update", "name", objName)
-			return nil, fmt.Errorf("RebootNode controller is disabled in configuration")
-		}
-
-		// Prevent changes to nodeName
-		if oldRebootNode, ok := oldObj.(*janitordgxcnvidiacomv1alpha1.RebootNode); ok {
-			oldNodeName = oldRebootNode.Spec.NodeName
-			if oldNodeName != nodeName {
-				return nil, fmt.Errorf("nodeName cannot be changed after creation")
-			}
-		}
-
-	case *janitordgxcnvidiacomv1alpha1.TerminateNode:
-		objName = typedObj.GetName()
-		controllerType = controllerTypeTerminateNode
-		nodeName = typedObj.Spec.NodeName
-
-		if v.Config == nil || !v.Config.TerminateNode.Enabled {
-			janitorWebhookLog.Info("TerminateNode controller is disabled, rejecting update", "name", objName)
-			return nil, fmt.Errorf("TerminateNode controller is disabled in configuration")
-		}
-
-		// Prevent changes to nodeName
-		if oldTerminateNode, ok := oldObj.(*janitordgxcnvidiacomv1alpha1.TerminateNode); ok {
-			oldNodeName = oldTerminateNode.Spec.NodeName
-			if oldNodeName != nodeName {
-				return nil, fmt.Errorf("nodeName cannot be changed after creation")
-			}
-		}
-
-	case *janitordgxcnvidiacomv1alpha1.GPUReset:
-		objName = typedObj.GetName()
-		controllerType = controllerTypeGPUReset
-		nodeName = typedObj.Spec.NodeName
-
-		if v.Config == nil || !v.Config.GPUReset.Enabled {
-			janitorWebhookLog.Info("GPUReset controller is disabled, rejecting update", "name", objName)
-			return nil, fmt.Errorf("GPUReset controller is disabled in configuration")
-		}
-
-		// Prevent changes to nodeName or GPU UUIDs
-		if oldGPUReset, ok := oldObj.(*janitordgxcnvidiacomv1alpha1.GPUReset); ok {
-			oldNodeName = oldGPUReset.Spec.NodeName
-
-			err := v.validateNodeAndGPUs(oldNodeName, nodeName, oldGPUReset.Spec.Selector.UUIDs,
-				typedObj.Spec.Selector.UUIDs)
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		// The gpu-reset-controller needs to be able to issue an update request to remove the
-		// janitor.dgxc.nvidia.com/finalizer whether the current node exists or not. Note that the delete webhook
-		// handler for GPUReset CRs already allows the initial delete request to succeed if the corresponding node
-		// is deleted.
-		allowDeletedNode = true
-
-	default:
-		return nil, fmt.Errorf("expected a Janitor CR object but got %T", newObj)
-	}
-
-	// Validate node existence for CRs that reference nodes
+// validateNodeForUpdate validates node existence and exclusions for updates, then logs success.
+func (v *JanitorCustomValidator) validateNodeForUpdate(ctx context.Context,
+	controllerType, objName, nodeName string, allowDeletedNode bool) (admission.Warnings, error) {
 	if len(nodeName) != 0 && !allowDeletedNode {
 		if err := v.validateNodeExists(ctx, nodeName); err != nil {
-			janitorWebhookLog.Info(
-				"Node validation failed", // nolint:lll
-				"type", controllerType,
-				"name", objName,
-				"nodeName", nodeName,
-				"error", err.Error(),
-			)
+			janitorWebhookLog.Info("Node validation failed",
+				"type", controllerType, "name", objName, "nodeName", nodeName, "error", err.Error())
 
 			return nil, err
 		}
 
 		if err := v.validateNodeNotInExclusions(ctx, nodeName); err != nil {
-			janitorWebhookLog.Info(
-				"Node exclusion list validation failed", // nolint:lll
-				"type", controllerType,
-				"name", objName,
-				"nodeName", nodeName,
-				"error", err.Error(),
-			)
+			janitorWebhookLog.Info("Node exclusion list validation failed",
+				"type", controllerType, "name", objName, "nodeName", nodeName, "error", err.Error())
 
 			return nil, err
 		}
@@ -485,50 +302,173 @@ func (v *JanitorCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	return nil, nil
 }
 
-// ValidateDelete implements webhook.CustomValidator so a webhook will be registered for all Janitor CRD types.
-// nolint:cyclop
-func (v *JanitorCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	var (
-		objName        string
-		controllerType string
-	)
+// --- RebootNode typed validator ---
 
-	switch typedObj := obj.(type) {
-	case *janitordgxcnvidiacomv1alpha1.RebootNode:
-		objName = typedObj.GetName()
-		controllerType = controllerTypeRebootNode
+type rebootNodeValidator struct{ *JanitorCustomValidator }
 
-		if v.Config == nil || !v.Config.RebootNode.Enabled {
-			janitorWebhookLog.Info("RebootNode controller is disabled, rejecting deletion", "name", objName)
-			return nil, fmt.Errorf("RebootNode controller is disabled in configuration")
-		}
+func (v *rebootNodeValidator) ValidateCreate(ctx context.Context,
+	obj *janitordgxcnvidiacomv1alpha1.RebootNode) (admission.Warnings, error) {
+	objName := obj.GetName()
+	nodeName := obj.Spec.NodeName
 
-	case *janitordgxcnvidiacomv1alpha1.TerminateNode:
-		objName = typedObj.GetName()
-		controllerType = controllerTypeTerminateNode
-
-		if v.Config == nil || !v.Config.TerminateNode.Enabled {
-			janitorWebhookLog.Info("TerminateNode controller is disabled, rejecting deletion", "name", objName)
-			return nil, fmt.Errorf("TerminateNode controller is disabled in configuration")
-		}
-
-	// Finalizer on GPUReset resources will ensure services are restored prior to deletion so we do not need to
-	// have the webhook block a deletion if the given GPUReset has not completed reconciling.
-	case *janitordgxcnvidiacomv1alpha1.GPUReset:
-		objName = typedObj.GetName()
-		controllerType = controllerTypeGPUReset
-
-		if v.Config == nil || !v.Config.GPUReset.Enabled {
-			janitorWebhookLog.Info("GPUReset controller is disabled, rejecting deletion", "name", objName)
-			return nil, fmt.Errorf("GPUReset controller is disabled in configuration")
-		}
-
-	default:
-		return nil, fmt.Errorf("expected a Janitor CR object but got %T", obj)
+	if v.Config == nil || !v.Config.RebootNode.Enabled {
+		janitorWebhookLog.Info("RebootNode controller is disabled, rejecting creation", "name", objName)
+		return nil, fmt.Errorf("RebootNode controller is disabled in configuration")
 	}
 
-	// Note: We don't validate node existence for deletions since the node might have been deleted already
-	janitorWebhookLog.Info("Validation for Janitor CR upon deletion", "type", controllerType, "name", objName)
+	if err := v.validateNoActiveReboot(ctx, nodeName); err != nil {
+		janitorWebhookLog.Info("Active reboot validation failed",
+			"type", controllerTypeRebootNode, "name", objName, "nodeName", nodeName, "error", err.Error())
+
+		return nil, err
+	}
+
+	return v.validateNodeForCreate(ctx, controllerTypeRebootNode, objName, nodeName)
+}
+
+func (v *rebootNodeValidator) ValidateUpdate(ctx context.Context,
+	oldObj, newObj *janitordgxcnvidiacomv1alpha1.RebootNode) (admission.Warnings, error) {
+	objName := newObj.GetName()
+	nodeName := newObj.Spec.NodeName
+
+	if v.Config == nil || !v.Config.RebootNode.Enabled {
+		janitorWebhookLog.Info("RebootNode controller is disabled, rejecting update", "name", objName)
+		return nil, fmt.Errorf("RebootNode controller is disabled in configuration")
+	}
+
+	if oldObj.Spec.NodeName != nodeName {
+		return nil, fmt.Errorf("nodeName cannot be changed after creation")
+	}
+
+	return v.validateNodeForUpdate(ctx, controllerTypeRebootNode, objName, nodeName, false)
+}
+
+func (v *rebootNodeValidator) ValidateDelete(_ context.Context,
+	obj *janitordgxcnvidiacomv1alpha1.RebootNode) (admission.Warnings, error) {
+	objName := obj.GetName()
+
+	if v.Config == nil || !v.Config.RebootNode.Enabled {
+		janitorWebhookLog.Info("RebootNode controller is disabled, rejecting deletion", "name", objName)
+		return nil, fmt.Errorf("RebootNode controller is disabled in configuration")
+	}
+
+	janitorWebhookLog.Info("Validation for Janitor CR upon deletion", "type", controllerTypeRebootNode, "name", objName)
+
+	return nil, nil
+}
+
+// --- TerminateNode typed validator ---
+
+type terminateNodeValidator struct{ *JanitorCustomValidator }
+
+func (v *terminateNodeValidator) ValidateCreate(ctx context.Context,
+	obj *janitordgxcnvidiacomv1alpha1.TerminateNode) (admission.Warnings, error) {
+	objName := obj.GetName()
+	nodeName := obj.Spec.NodeName
+
+	if v.Config == nil || !v.Config.TerminateNode.Enabled {
+		janitorWebhookLog.Info("TerminateNode controller is disabled, rejecting creation", "name", objName)
+		return nil, fmt.Errorf("TerminateNode controller is disabled in configuration")
+	}
+
+	if err := v.validateNoActiveTermination(ctx, nodeName); err != nil {
+		janitorWebhookLog.Info("Active termination validation failed",
+			"type", controllerTypeTerminateNode, "name", objName, "nodeName", nodeName, "error", err.Error())
+
+		return nil, err
+	}
+
+	return v.validateNodeForCreate(ctx, controllerTypeTerminateNode, objName, nodeName)
+}
+
+func (v *terminateNodeValidator) ValidateUpdate(ctx context.Context,
+	oldObj, newObj *janitordgxcnvidiacomv1alpha1.TerminateNode) (admission.Warnings, error) {
+	objName := newObj.GetName()
+	nodeName := newObj.Spec.NodeName
+
+	if v.Config == nil || !v.Config.TerminateNode.Enabled {
+		janitorWebhookLog.Info("TerminateNode controller is disabled, rejecting update", "name", objName)
+		return nil, fmt.Errorf("TerminateNode controller is disabled in configuration")
+	}
+
+	if oldObj.Spec.NodeName != nodeName {
+		return nil, fmt.Errorf("nodeName cannot be changed after creation")
+	}
+
+	return v.validateNodeForUpdate(ctx, controllerTypeTerminateNode, objName, nodeName, false)
+}
+
+func (v *terminateNodeValidator) ValidateDelete(_ context.Context,
+	obj *janitordgxcnvidiacomv1alpha1.TerminateNode) (admission.Warnings, error) {
+	objName := obj.GetName()
+
+	if v.Config == nil || !v.Config.TerminateNode.Enabled {
+		janitorWebhookLog.Info("TerminateNode controller is disabled, rejecting deletion", "name", objName)
+		return nil, fmt.Errorf("TerminateNode controller is disabled in configuration")
+	}
+
+	janitorWebhookLog.Info("Validation for Janitor CR upon deletion", "type", controllerTypeTerminateNode, "name", objName)
+
+	return nil, nil
+}
+
+// --- GPUReset typed validator ---
+
+type gpuResetValidator struct{ *JanitorCustomValidator }
+
+func (v *gpuResetValidator) ValidateCreate(ctx context.Context,
+	obj *janitordgxcnvidiacomv1alpha1.GPUReset) (admission.Warnings, error) {
+	objName := obj.GetName()
+	nodeName := obj.Spec.NodeName
+	uuids := obj.Spec.Selector.UUIDs
+
+	if v.Config == nil || !v.Config.GPUReset.Enabled {
+		janitorWebhookLog.Info("GPUReset controller is disabled, rejecting creation", "name", objName)
+		return nil, fmt.Errorf("GPUReset controller is disabled in configuration")
+	}
+
+	if err := v.validateNoActiveResetForSameGPU(ctx, nodeName, uuids); err != nil {
+		janitorWebhookLog.Info("Active reset validation failed",
+			"type", controllerTypeGPUReset, "name", objName, "nodeName", nodeName, "error", err.Error())
+
+		return nil, err
+	}
+
+	return v.validateNodeForCreate(ctx, controllerTypeGPUReset, objName, nodeName)
+}
+
+func (v *gpuResetValidator) ValidateUpdate(ctx context.Context,
+	oldObj, newObj *janitordgxcnvidiacomv1alpha1.GPUReset) (admission.Warnings, error) {
+	objName := newObj.GetName()
+	nodeName := newObj.Spec.NodeName
+
+	if v.Config == nil || !v.Config.GPUReset.Enabled {
+		janitorWebhookLog.Info("GPUReset controller is disabled, rejecting update", "name", objName)
+		return nil, fmt.Errorf("GPUReset controller is disabled in configuration")
+	}
+
+	if err := v.validateNodeAndGPUs(oldObj.Spec.NodeName, nodeName, oldObj.Spec.Selector.UUIDs,
+		newObj.Spec.Selector.UUIDs); err != nil {
+		return nil, err
+	}
+
+	// The gpu-reset-controller needs to be able to issue an update request to remove the
+	// janitor.dgxc.nvidia.com/finalizer whether the current node exists or not. Note that the delete webhook
+	// handler for GPUReset CRs already allows the initial delete request to succeed if the corresponding node
+	// is deleted.
+	return v.validateNodeForUpdate(ctx, controllerTypeGPUReset, objName, nodeName, true)
+}
+
+func (v *gpuResetValidator) ValidateDelete(_ context.Context,
+	obj *janitordgxcnvidiacomv1alpha1.GPUReset) (admission.Warnings, error) {
+	objName := obj.GetName()
+
+	if v.Config == nil || !v.Config.GPUReset.Enabled {
+		janitorWebhookLog.Info("GPUReset controller is disabled, rejecting deletion", "name", objName)
+		return nil, fmt.Errorf("GPUReset controller is disabled in configuration")
+	}
+
+	janitorWebhookLog.Info("Validation for Janitor CR upon deletion", "type", controllerTypeGPUReset, "name", objName)
 
 	return nil, nil
 }
