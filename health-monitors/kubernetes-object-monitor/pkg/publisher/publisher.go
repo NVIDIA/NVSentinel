@@ -95,6 +95,20 @@ func (p *Publisher) PublishHealthEvent(ctx context.Context,
 		EntitiesImpacted:   entitiesImpacted,
 	}
 
+	if policy.HealthEvent.DrainOverrides != nil {
+		event.DrainOverrides = &pb.BehaviourOverrides{
+			Skip:  policy.HealthEvent.DrainOverrides.Skip,
+			Force: policy.HealthEvent.DrainOverrides.Force,
+		}
+	}
+
+	if policy.HealthEvent.QuarantineOverrides != nil {
+		event.QuarantineOverrides = &pb.BehaviourOverrides{
+			Skip:  policy.HealthEvent.QuarantineOverrides.Skip,
+			Force: policy.HealthEvent.QuarantineOverrides.Force,
+		}
+	}
+
 	healthEvents := &pb.HealthEvents{
 		Version: 1,
 		Events:  []*pb.HealthEvent{event},
