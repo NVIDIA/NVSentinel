@@ -49,6 +49,7 @@ from .errors import NCCLError
 from .protos import health_event_pb2 as pb
 from .health import HealthReporter
 from .logger import set_default_structured_logger
+from . import otel_metrics
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +98,15 @@ def run() -> int:
 
     store_only = cfg.processing_strategy == pb.ProcessingStrategy.STORE_ONLY
     exit_code = _run_benchmark_flow(cfg)
+
+    otel_metrics.emit_check_result(
+        check_name="nccl-allreduce",
+        passed=exit_code == 0,
+        attributes={
+            "node": cfg.node_name,
+            "processing_strategy": pb.ProcessingStrategy.Name(cfg.processing_strategy),
+        },
+    )
 
     if exit_code != 0 and store_only:
         log.warning("Check failed (STORE_ONLY — not blocking pod)")
@@ -204,7 +214,11 @@ def _run_benchmark(cfg: Config, rank: int) -> int:
 
     # Only rank 0 reports results and determines exit code
     if rank != 0:
-        return NCCLError.SUCCESS.value.exit_code if passed else NCCLError.ALLREDUCE_BW_DEGRADED.value.exit_code
+        return (
+            NCCLError.SUCCESS.value.exit_code
+            if passed
+            else NCCLError.ALLREDUCE_BW_DEGRADED.value.exit_code
+        )
 
     if cfg.skip_bandwidth_check and not result.passed:
         log.info(
