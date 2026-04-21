@@ -14,7 +14,9 @@
 
 module csp-api-mock
 
-go 1.25.0
+go 1.26.0
+
+toolchain go1.26.2
 
 require (
 	cloud.google.com/go/logging v1.16.0
@@ -28,7 +30,7 @@ require (
 require (
 	cloud.google.com/go/iam v1.7.0 // indirect
 	cloud.google.com/go/longrunning v0.9.0 // indirect
-	golang.org/x/net v0.52.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/text v0.35.0 // indirect
+	golang.org/x/net v0.53.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/text v0.36.0 // indirect
 )

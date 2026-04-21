@@ -459,7 +459,7 @@ test_xid_monitoring_syslog_gpu_reset() {
     fi
 
     uuid=$(echo "$uuid_pci" | awk -F', ' '{print $1}')
-    pci=$(echo "$uuid_pci" | awk -F', ' '{print $2}' | sed -E 's/^00000000://; s/\.0$//; y/ABCDEF/abcdef/; s/^/0000:/')
+    pci=$(echo "$uuid_pci" | awk -F', ' '{print $2}' | sed 's/^0000//; s/\.[0-9]*$//' | tr '[:upper:]' '[:lower:]')
     if [[ -z "$uuid" || -z "$pci" ]]; then
         error "Parsed empty UUID or PCI from nvidia-smi output: '$uuid_pci'"
     fi

@@ -15,6 +15,7 @@
 import logging
 from dataclasses import dataclass
 
+import dcgm_agent
 import dcgm_structs
 import pydcgm
 
@@ -77,6 +78,13 @@ class DCGMDiagnostic:
             raise RuntimeError("No GPUs allocated to this container")
 
         log.info(f"Running DCGM diagnostic level={level} gpus={gpu_indices}")
+
+        # Stop any zombie diagnostic left by a previous crashed container on this
+        # node.  Without this, RunDiagnostic fails with "already running".
+        try:
+            dcgm_agent.dcgmStopDiagnostic(self._handle.handle)
+        except Exception:  # noqa: BLE001
+            log.debug("Failed to stop previous diagnostic", exc_info=True)
 
         group = self._create_gpu_group(gpu_indices)
         try:
