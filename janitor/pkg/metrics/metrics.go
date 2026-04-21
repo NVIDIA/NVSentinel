@@ -83,6 +83,13 @@ var (
 		Name: "gpu_reset_failure_reasons_total",
 		Help: "Total number of GPU reset failures, labeled by the specific reason.",
 	}, []string{"node", "reason"})
+
+	// ttlDeletionsTotal tracks the number of CRs deleted by the TTL reconciler,
+	// labeled by the CR kind.
+	ttlDeletionsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "janitor_ttl_deletions_total",
+		Help: "Total number of CRs deleted by the TTL reconciler, labeled by kind.",
+	}, []string{"kind"})
 )
 
 // ActionMetrics provides a centralized interface for recording action metrics
@@ -99,6 +106,7 @@ func NewActionMetrics() *ActionMetrics {
 		GPUResetDurationSeconds,
 		GPUResetActiveRequests,
 		GPUResetFailureReasonsTotal,
+		ttlDeletionsTotal,
 	)
 
 	return &ActionMetrics{}
@@ -118,6 +126,11 @@ func (m *ActionMetrics) RecordActionMTTR(actionType string, duration time.Durati
 	actionMTTRHistogram.With(prometheus.Labels{
 		"action_type": actionType,
 	}).Observe(duration.Seconds())
+}
+
+// IncTTLDeletion increments the TTL-deletion counter for the given CR kind.
+func (m *ActionMetrics) IncTTLDeletion(kind string) {
+	ttlDeletionsTotal.With(prometheus.Labels{"kind": kind}).Inc()
 }
 
 // GetActionsCountValue returns the current value of the actions counter for testing purposes

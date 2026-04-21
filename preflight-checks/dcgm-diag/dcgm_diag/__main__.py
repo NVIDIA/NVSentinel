@@ -57,6 +57,18 @@ def main() -> None:
     )
 
     diag = DCGMDiagnostic(hostengine_addr=cfg.hostengine_addr)
+    store_only = cfg.processing_strategy == pb.ProcessingStrategy.STORE_ONLY
+
+    exit_code = _run_diagnostic(cfg, reporter, diag)
+
+    if exit_code != 0 and store_only:
+        log.warning("Check failed (STORE_ONLY — not blocking pod)")
+        sys.exit(0)
+    sys.exit(exit_code)
+
+
+def _run_diagnostic(cfg: Config, reporter: HealthReporter, diag: DCGMDiagnostic) -> int:
+    log = logging.getLogger(__name__)
 
     try:
         results = diag.run(cfg.diag_level)
@@ -64,8 +76,19 @@ def main() -> None:
         log.error("DCGM diagnostic failed", extra={"error": str(e)})
         # is_fatal=True: sets node condition for visibility, even though this may be
         # an infrastructure issue (DCGM unavailable) rather than a confirmed GPU failure.
-        reporter.send_event(gpu_uuid="", is_healthy=False, is_fatal=True, message=str(e))
-        sys.exit(1)
+        try:
+            reporter.send_event(gpu_uuid="", is_healthy=False, is_fatal=True, message=str(e))
+        except Exception as send_err:  # noqa: BLE001
+            log.error(
+                "Failed to send health event",
+                extra={
+                    "error": str(send_err),
+                    "gpu_uuid": "",
+                    "is_healthy": False,
+                    "is_fatal": True,
+                },
+            )
+        return 1
 
     failures = [r for r in results if r.status == "fail"]
     warnings = [r for r in results if r.status == "warn"]
@@ -96,21 +119,33 @@ def main() -> None:
             f"Test {r.status}",
             extra={"gpu": r.gpu_uuid, "test": r.test_name, "error_code": r.error_code, "detail": message},
         )
-        reporter.send_event(
-            gpu_uuid=r.gpu_uuid,
-            is_healthy=is_pass,
-            is_fatal=is_fatal,
-            message=message,
-            error_code=r.error_code if not is_pass else 0,
-            test_name=r.test_name,
-        )
+        try:
+            reporter.send_event(
+                gpu_uuid=r.gpu_uuid,
+                is_healthy=is_pass,
+                is_fatal=is_fatal,
+                message=message,
+                error_code=r.error_code if not is_pass else 0,
+                test_name=r.test_name,
+            )
+        except Exception as send_err:  # noqa: BLE001
+            log.error(
+                "Failed to send health event",
+                extra={
+                    "error": str(send_err),
+                    "gpu_uuid": r.gpu_uuid,
+                    "test": r.test_name,
+                    "is_healthy": is_pass,
+                    "is_fatal": is_fatal,
+                },
+            )
 
     if failures:
         log.error("DCGM diagnostic check failed")
-        sys.exit(1)
+        return 1
 
     log.info("DCGM diagnostic check passed")
-    sys.exit(0)
+    return 0
 
 
 if __name__ == "__main__":

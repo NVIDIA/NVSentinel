@@ -72,6 +72,9 @@ jobs:
             make_command: 'make -C preflight-checks/nccl-allreduce docker-build'
           - component: preflight-nccl-loopback
             make_command: 'make -C preflight-checks/nccl-loopback docker-build'
+          # Metadata Collector (Docker-based)
+          - component: metadata-collector
+            make_command: 'make -C metadata-collector docker-build'
           # GPU Reset (Docker-based)
           - component: gpu-reset
             make_command: 'make -C gpu-reset docker-build'

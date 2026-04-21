@@ -14,14 +14,14 @@
 
 # PyTorch version determines CUDA runtime version - must match cluster's GPU driver
 # See: https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html#id4
-#   25.01-py3 = CUDA 12.8 (driver 570+)
-ARG PYTORCH_VERSION=25.01-py3
+#   26.03-py3 = CUDA 13.2 (Ubuntu 24.04, Python 3.12)
+ARG PYTORCH_VERSION=26.03-py3
 ARG NCCL_TESTS_VERSION=v2.13.11
 
 # =============================================================================
 # Build stage: Compile Go binary
 # =============================================================================
-FROM public.ecr.aws/docker/library/golang:1.26-bookworm AS go-builder
+FROM public.ecr.aws/docker/library/golang:1.26.2-trixie AS go-builder
 
 ARG VERSION="dev"
 ARG GIT_COMMIT="none"

@@ -107,6 +107,9 @@ maintenance:
         annotations:
           nvsentinel.nvidia.com/trace-id: "{{ .TraceID }}"
           nvsentinel.nvidia.com/span-id: "{{ .SpanID }}"
+          # TTL-based auto-cleanup by janitor after completion.
+          # See docs/designs/037-janitor-cr-ttl-cleanup.md.
+          nvsentinel.nvidia.com/ttl: "336h"
       spec:
         nodeName: {{ .HealthEvent.NodeName }}
         force: false
@@ -120,6 +123,7 @@ maintenance:
         annotations:
           nvsentinel.nvidia.com/trace-id: "{{ .TraceID }}"
           nvsentinel.nvidia.com/span-id: "{{ .SpanID }}"
+          nvsentinel.nvidia.com/ttl: "336h"
       spec:
         nodeName: {{ .HealthEvent.NodeName }}
         force: false

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM golang:1.25 AS builder
+FROM public.ecr.aws/docker/library/golang:1.26.2-trixie AS builder
 
 WORKDIR /go/src/app
 
@@ -24,7 +24,7 @@ COPY demos/local-custom-remediation-demo/memory-reclaim-controller/ .
 
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /memory-reclaim-controller .
 
-FROM gcr.io/distroless/static-debian12
+FROM gcr.io/distroless/static-debian13
 
 COPY --from=builder /memory-reclaim-controller /memory-reclaim-controller
 

@@ -22,7 +22,7 @@ jobs:
       docs: ${{ steps.changes.outputs.docs }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
 
@@ -46,15 +46,25 @@ jobs:
     runs-on: linux-amd64-cpu32
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
           node-version: '20'
 
       - name: Install Fern CLI
         run: npm install -g fern-api@4.42.1
+
+      - name: Check MDX safety
+        # Intentionally inline — a composite action would add indirection without benefit for a single grep.
+        run: |
+          BAD=$(grep -rn '<img\b[^>]*[^/]>' docs/ fern/ --include="*.md" --include="*.mdx" || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::Non-self-closing <img> tags found (MDX requires <img ... />):"
+            echo "$BAD"
+            exit 1
+          fi
 
       - name: Validate Fern configuration
         run: fern check
@@ -71,7 +81,7 @@ jobs:
           done
 
       - name: Check for broken links
-        uses: lycheeverse/lychee-action@v2
+        uses: lycheeverse/lychee-action@8646ba30535128ac92d33dfc9133794bfdd9b411  # v2.8.0
         with:
           args: --offline --no-progress 'docs/**/*.md'
           fail: true

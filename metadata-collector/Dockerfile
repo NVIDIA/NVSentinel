@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM public.ecr.aws/docker/library/golang:1.26-bookworm AS builder
+FROM public.ecr.aws/docker/library/golang:1.26.2-trixie AS builder
 
 ARG VERSION="dev"
 ARG GIT_COMMIT="none"
