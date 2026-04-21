@@ -253,11 +253,11 @@ func TestAddPeerToConfigMapCheckNames(t *testing.T) {
 		c.addPeerToConfigMap(cm, types.PeerInfo{
 			PodName: "pod-0", PodIP: "10.0.0.1",
 			CheckNames: "preflight-dcgm-diag,preflight-nccl-allreduce",
-		})
+		}, nil)
 		c.addPeerToConfigMap(cm, types.PeerInfo{
 			PodName: "pod-1", PodIP: "10.0.0.2",
 			CheckNames: "preflight-dcgm-diag,preflight-nccl-allreduce",
-		})
+		}, nil)
 
 		parsed := ParsePeers(cm.Data[DataKeyPeers])
 		require.Len(t, parsed, 2)
@@ -270,12 +270,12 @@ func TestAddPeerToConfigMapCheckNames(t *testing.T) {
 		c.addPeerToConfigMap(cm, types.PeerInfo{
 			PodName: "pod-0", PodIP: "10.0.0.1",
 			CheckNames: "preflight-dcgm-diag",
-		})
+		}, nil)
 		// Re-register with new IP, same CheckNames
 		c.addPeerToConfigMap(cm, types.PeerInfo{
 			PodName: "pod-0", PodIP: "10.0.0.99",
 			CheckNames: "preflight-dcgm-diag",
-		})
+		}, nil)
 
 		parsed := ParsePeers(cm.Data[DataKeyPeers])
 		require.Len(t, parsed, 1)
@@ -287,7 +287,7 @@ func TestAddPeerToConfigMapCheckNames(t *testing.T) {
 		cm := &corev1.ConfigMap{Data: map[string]string{}}
 		c.addPeerToConfigMap(cm, types.PeerInfo{
 			PodName: "pod-0", PodIP: "10.0.0.1",
-		})
+		}, nil)
 
 		// Raw format should be "pod-0;10.0.0.1;0;" (trailing semicolon)
 		assert.Contains(t, cm.Data[DataKeyPeers], "pod-0;10.0.0.1;0;")
@@ -295,6 +295,50 @@ func TestAddPeerToConfigMapCheckNames(t *testing.T) {
 		parsed := ParsePeers(cm.Data[DataKeyPeers])
 		require.Len(t, parsed, 1)
 		assert.Equal(t, "", parsed[0].CheckNames)
+	})
+
+	t.Run("prunes stale peers from rescheduled pods", func(t *testing.T) {
+		cm := &corev1.ConfigMap{Data: map[string]string{}}
+
+		// Gen 1: two pods register with no live-set (nil).
+		c.addPeerToConfigMap(cm, types.PeerInfo{
+			PodName: "job-workers-0-0-aaaa", PodIP: "10.0.0.1",
+			CheckNames: "preflight-dcgm-diag",
+		}, nil)
+		c.addPeerToConfigMap(cm, types.PeerInfo{
+			PodName: "job-workers-0-1-bbbb", PodIP: "10.0.0.2",
+			CheckNames: "preflight-dcgm-diag",
+		}, nil)
+		require.Len(t, ParsePeers(cm.Data[DataKeyPeers]), 2)
+
+		// Gen 2: pods rescheduled with new names. The live-set contains
+		// only the new pods, so the old entries should be pruned.
+		livePods := map[string]bool{
+			"job-workers-0-0-cccc": true,
+			"job-workers-0-1-dddd": true,
+		}
+		c.addPeerToConfigMap(cm, types.PeerInfo{
+			PodName: "job-workers-0-0-cccc", PodIP: "10.0.0.3",
+			CheckNames: "preflight-dcgm-diag",
+		}, livePods)
+
+		parsed := ParsePeers(cm.Data[DataKeyPeers])
+		require.Len(t, parsed, 1, "stale gen-1 entries should be pruned")
+		assert.Equal(t, "job-workers-0-0-cccc", parsed[0].PodName)
+		assert.Contains(t, cm.Data[DataKeyPeers], "job-workers-0-0-cccc;10.0.0.3;0;")
+
+		// Second gen-2 pod registers.
+		c.addPeerToConfigMap(cm, types.PeerInfo{
+			PodName: "job-workers-0-1-dddd", PodIP: "10.0.0.4",
+			CheckNames: "preflight-dcgm-diag",
+		}, livePods)
+
+		parsed = ParsePeers(cm.Data[DataKeyPeers])
+		require.Len(t, parsed, 2, "should have exactly 2 live peers")
+		assert.Equal(t, "job-workers-0-0-cccc", parsed[0].PodName)
+		assert.Equal(t, "job-workers-0-1-dddd", parsed[1].PodName)
+		assert.Contains(t, cm.Data[DataKeyPeers], "job-workers-0-0-cccc;10.0.0.3;0;")
+		assert.Contains(t, cm.Data[DataKeyPeers], "job-workers-0-1-dddd;10.0.0.4;1;")
 	})
 }
 

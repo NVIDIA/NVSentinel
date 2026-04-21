@@ -17,7 +17,7 @@ ARG VERSION="0.1.0"
 ARG GIT_COMMIT="none"
 ARG BUILD_DATE=$(date -u +%FT%TZ)
 
-FROM public.ecr.aws/docker/library/python:3.10-bookworm AS build
+FROM public.ecr.aws/docker/library/python:3.13-trixie AS build
 
 ARG VERSION
 

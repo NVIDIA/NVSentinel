@@ -31,8 +31,8 @@
 
 # Language Versions
 languages:
-  go: '1.25.5'
-  python: '3.10'
+  go: '1.26.2'
+  python: '3.13'
 
 # Build & Package Management
 build_tools:
