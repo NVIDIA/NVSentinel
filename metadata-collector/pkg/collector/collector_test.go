@@ -197,12 +197,14 @@ func TestCollectTopoFailureLeavesTopologyEmpty(t *testing.T) {
 	assert.Empty(t, metadata.NICTopology)
 }
 
-// TestCollectNoNICsLeavesTopologyEmpty verifies that an empty matrix
-// (node without InfiniBand NICs) yields an empty NICTopology field.
-func TestCollectNoNICsLeavesTopologyEmpty(t *testing.T) {
+// TestCollectNoNICsLeavesTopologyEmptyButPopulatesNUMA verifies that a
+// topo matrix with GPUs but no NICs still populates gpus[].numa_node
+// while leaving nic_topology empty.
+func TestCollectNoNICsLeavesTopologyEmptyButPopulatesNUMA(t *testing.T) {
 	fake := &fakeNVMLClient{deviceCount: 1, driverVersion: "560.35.03"}
 	topo := &fakeNICTopoCollector{matrix: &nic.TopoMatrix{
-		GPUs: []string{"GPU0"},
+		GPUs:         []string{"GPU0"},
+		GPUNUMANodes: []int{0},
 	}}
 
 	collector := NewCollector(fake, topo)
@@ -210,6 +212,7 @@ func TestCollectNoNICsLeavesTopologyEmpty(t *testing.T) {
 	metadata, err := collector.Collect(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, metadata.NICTopology)
+	assert.Equal(t, 0, metadata.GPUs[0].NUMANode, "NUMA must be populated even without NICs")
 }
 
 // TestCollectNilTopoCollectorLeavesFieldsEmpty verifies that passing a

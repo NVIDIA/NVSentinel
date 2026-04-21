@@ -143,8 +143,8 @@ func (c *Collector) populateNICTopology(ctx context.Context, metadata *model.GPU
 		return
 	}
 
-	if matrix == nil || len(matrix.NICs) == 0 {
-		slog.Info("No InfiniBand NICs reported by nvidia-smi topo -m, nic_topology will be empty")
+	if matrix == nil {
+		slog.Info("No topology matrix returned by nvidia-smi topo -m")
 		return
 	}
 
@@ -160,12 +160,17 @@ func (c *Collector) populateNICTopology(ctx context.Context, metadata *model.GPU
 		return
 	}
 
+	populateGPUNUMANodes(metadata, matrix)
+
+	if len(matrix.NICs) == 0 {
+		slog.Info("No InfiniBand NICs reported by nvidia-smi topo -m, nic_topology will be empty")
+		return
+	}
+
 	metadata.NICTopology = make(map[string][]string, len(matrix.NICs))
 	for _, name := range matrix.NICs {
 		metadata.NICTopology[name] = matrix.Relationships[name]
 	}
-
-	populateGPUNUMANodes(metadata, matrix)
 
 	slog.Info("Populated NIC topology matrix",
 		"gpus", len(matrix.GPUs),
