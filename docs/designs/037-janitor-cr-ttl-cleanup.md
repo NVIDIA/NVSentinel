@@ -22,7 +22,8 @@ Observed in production: across multiple long-running clusters, 93–99% of `Rebo
 Add a generic, annotation-driven TTL reconciler as a new controller inside the existing janitor binary, wired at compile time to the three janitor CRDs.
 
 - Each CR carries `nvsentinel.nvidia.com/ttl` (e.g. `"336h"`). The reconciler computes `nvsentinel.nvidia.com/expiry` on first reconcile and deletes the CR when `now > expiry`.
-- Default TTL: `336h` (14 days), configurable via CLI flag. `0` disables.
+- Default TTL: `336h` (14 days), configurable via `--default-ttl`. `0` disables the default (per-CR annotations still take effect).
+- Fully disabled via `--enable-ttl=false`: the TTL reconcilers are not registered at all, annotations are ignored, and CRs persist indefinitely. Intended for dev/test environments.
 - Per-CR opt-out: `nvsentinel.nvidia.com/preserve: "true"`.
 - The three existing janitor reconcilers are unchanged. No CRD schema changes.
 
@@ -109,11 +110,12 @@ Existing CRs without the annotation receive the system default on first reconcil
 
 ### Helm values
 
-`charts/janitor/values.yaml` gains one field, surfaced to the janitor binary as a CLI flag:
+`charts/janitor/values.yaml` gains two fields, surfaced to the janitor binary as CLI flags:
 
 ```yaml
 ttl:
-  defaultTTL: "336h"    # "0" disables
+  enabled: true         # set to false to disable the TTL reconcilers entirely (dev/test)
+  defaultTTL: "336h"    # "0" disables the default; per-CR annotations still take effect
 ```
 
 ### Metrics
@@ -137,7 +139,7 @@ Negative:
 - Historical CRs beyond TTL are gone. Maintenance CRs are a transient workflow artifact; long-term audit should come from the configured event store, not these CRs.
 - First rollout on a large backlog briefly spikes deletion traffic.
 
-Mitigations: 14-day default gives investigation time; `preserve: "true"` pins individual CRs; `defaultTTL: "0"` disables enforcement; operators with large backlogs can ramp `defaultTTL` down over a release or two (e.g. `2160h` → `720h` → `336h`) to smooth the burst.
+Mitigations: 14-day default gives investigation time; `preserve: "true"` pins individual CRs; `defaultTTL: "0"` disables the default while still honoring explicit annotations; `ttl.enabled: false` turns the reconcilers off entirely for dev/test; operators with large backlogs can ramp `defaultTTL` down over a release or two (e.g. `2160h` → `720h` → `336h`) to smooth the burst.
 
 ## Alternatives Considered
 

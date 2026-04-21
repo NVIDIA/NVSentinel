@@ -312,6 +312,8 @@ fault-remediation:
           name: maintenance-{{ .HealthEvent.NodeName }}-{{ .HealthEventID }}
           labels:
             app.kubernetes.io/managed-by: nvsentinel
+          annotations:
+            nvsentinel.nvidia.com/ttl: "336h"
         spec:
           nodeName: {{ .HealthEvent.NodeName }}
 
