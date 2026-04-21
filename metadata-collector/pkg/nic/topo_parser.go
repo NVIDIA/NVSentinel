@@ -32,12 +32,16 @@ import (
 
 const topoCommandTimeout = 30 * time.Second
 
-// Column patterns recognise both NIC-naming conventions: modern drivers
-// emit real device names (mlx5_0), older/OCI builds emit placeholders
-// (NIC0) that are mapped to mlx5_N via a trailing "NIC Legend" block.
+// Column patterns recognise NIC-naming conventions in the header:
+//   - NICn placeholders (older/OCI drivers), remapped via "NIC Legend"
+//   - mlx5_N (modern drivers)
+//   - Arbitrary device names like ibp3s0, roceP6p3s0 (GB200 / non-Mellanox)
+//
+// nicColumnPattern accepts any alphanumeric+underscore token that is NOT
+// a GPU column, a known metadata label, or a data cell value.
 var (
 	gpuColumnPattern = regexp.MustCompile(`^GPU\d+$`)
-	nicColumnPattern = regexp.MustCompile(`^(?:mlx5_\d+|NIC\d+)$`)
+	nicColumnPattern = regexp.MustCompile(`^(?:mlx5_\d+|NIC\d+|(?:ib|roce|rdma|mlx|cx)\w+)$`)
 	nicLegendEntry   = regexp.MustCompile(`^(NIC\d+)\s*:\s*(\S+)\s*$`)
 	dataCellPattern  = regexp.MustCompile(`^(X|PIX|PXB|PHB|NODE|SYS|NV\d+)$`)
 

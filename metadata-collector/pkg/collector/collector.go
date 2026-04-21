@@ -117,6 +117,10 @@ func (c *Collector) Collect(ctx context.Context) (*model.GPUMetadata, error) {
 		return nil, fmt.Errorf("failed to collect GPU data: %w", err)
 	}
 
+	for i := range metadata.GPUs {
+		metadata.GPUs[i].NUMANode = -1
+	}
+
 	c.populateNICTopology(ctx, metadata)
 
 	return metadata, nil
@@ -145,14 +149,15 @@ func (c *Collector) populateNICTopology(ctx context.Context, metadata *model.GPU
 	}
 
 	if mismatch := checkGPUCountMismatch(matrix, metadata); mismatch != "" {
-		slog.Warn("NIC topology GPU count does not match NVML GPU count",
+		slog.Warn("NIC topology GPU count does not match NVML GPU count — "+
+			"dropping nic_topology and gpu numa_node to avoid misaligned data",
 			"detail", mismatch,
 			"nvml_gpu_count", len(metadata.GPUs),
 			"topo_gpu_count", len(matrix.GPUs),
 			"topo_gpus", matrix.GPUs,
-			"hint", "nic_topology arrays will be aligned to the topo matrix only; "+
-				"downstream consumers will see a shorter-than-expected array per NIC",
 		)
+
+		return
 	}
 
 	metadata.NICTopology = make(map[string][]string, len(matrix.NICs))
@@ -169,18 +174,14 @@ func (c *Collector) populateNICTopology(ctx context.Context, metadata *model.GPU
 }
 
 // populateGPUNUMANodes copies the parsed NUMA Affinity values from
-// the topo matrix into the corresponding GPUInfo entries. When the
-// counts match, GPUs[i].NUMANode = matrix.GPUNUMANodes[i]. When they
-// don't (already logged as a WARN by the caller), we write as many
-// as we can in order.
+// the topo matrix into the corresponding GPUInfo entries. The caller
+// guarantees the GPU counts match (mismatches cause an early return
+// before this function is called).
 func populateGPUNUMANodes(metadata *model.GPUMetadata, matrix *nic.TopoMatrix) {
-	n := len(metadata.GPUs)
-	if len(matrix.GPUNUMANodes) < n {
-		n = len(matrix.GPUNUMANodes)
-	}
-
-	for i := range n {
-		metadata.GPUs[i].NUMANode = matrix.GPUNUMANodes[i]
+	for i := range metadata.GPUs {
+		if i < len(matrix.GPUNUMANodes) {
+			metadata.GPUs[i].NUMANode = matrix.GPUNUMANodes[i]
+		}
 	}
 }
 

@@ -154,16 +154,18 @@ func TestCollectCollectsChassisSerialOnSupportedDrivers(t *testing.T) {
 }
 
 // TestCollectPopulatesNICTopology verifies that the NIC topo matrix is
-// copied verbatim into GPUMetadata.NICTopology.
+// copied verbatim into GPUMetadata.NICTopology and that GPU NUMA nodes
+// are populated from the topo matrix.
 func TestCollectPopulatesNICTopology(t *testing.T) {
 	fake := &fakeNVMLClient{
-		deviceCount:   1,
+		deviceCount:   2,
 		driverVersion: "560.35.03",
 	}
 
 	matrix := &nic.TopoMatrix{
-		GPUs: []string{"GPU0", "GPU1"},
-		NICs: []string{"mlx5_0", "mlx5_1"},
+		GPUs:         []string{"GPU0", "GPU1"},
+		NICs:         []string{"mlx5_0", "mlx5_1"},
+		GPUNUMANodes: []int{0, 1},
 		Relationships: map[string][]string{
 			"mlx5_0": {"PIX", "SYS"},
 			"mlx5_1": {"SYS", "PIX"},
@@ -178,6 +180,8 @@ func TestCollectPopulatesNICTopology(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, topo.calls)
 	assert.Equal(t, matrix.Relationships, metadata.NICTopology)
+	assert.Equal(t, 0, metadata.GPUs[0].NUMANode)
+	assert.Equal(t, 1, metadata.GPUs[1].NUMANode)
 }
 
 // TestCollectTopoFailureLeavesTopologyEmpty verifies the collector does
@@ -218,6 +222,28 @@ func TestCollectNilTopoCollectorLeavesFieldsEmpty(t *testing.T) {
 	metadata, err := collector.Collect(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, metadata.NICTopology)
+}
+
+// TestCollectGPUCountMismatchDropsTopology verifies that when the topo
+// matrix reports a different GPU count than NVML, nic_topology and
+// numa_node are dropped rather than silently misaligned.
+func TestCollectGPUCountMismatchDropsTopology(t *testing.T) {
+	fake := &fakeNVMLClient{deviceCount: 1, driverVersion: "560.35.03"}
+	matrix := &nic.TopoMatrix{
+		GPUs:         []string{"GPU0", "GPU1"},
+		NICs:         []string{"mlx5_0"},
+		GPUNUMANodes: []int{0, 1},
+		Relationships: map[string][]string{
+			"mlx5_0": {"PIX", "SYS"},
+		},
+	}
+
+	collector := NewCollector(fake, &fakeNICTopoCollector{matrix: matrix})
+
+	metadata, err := collector.Collect(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, metadata.NICTopology, "topology must be dropped on GPU count mismatch")
+	assert.Equal(t, -1, metadata.GPUs[0].NUMANode, "NUMA must stay -1 when topology is dropped")
 }
 
 func TestCheckGPUCountMismatch(t *testing.T) {
