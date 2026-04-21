@@ -138,7 +138,7 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID st
 	// and kubernetes still sees the node as ready. Wait five minutes before checking the status
 	storedTime, err := time.Parse(time.RFC3339, requestID)
 	if err != nil {
-		slog.Error("Failed to parse time", "error", err)
+		slog.ErrorContext(ctx, "Failed to parse time", "error", err)
 		return false, err
 	}
 

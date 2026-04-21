@@ -217,12 +217,12 @@ func TestStateTransitionValidProgression(t *testing.T) {
 		{"DrainSucceeded to Remediating", string(DrainSucceededLabelValue), RemediatingLabelValue, true, false},
 		{"Remediating to RemediationSucceeded", string(RemediatingLabelValue), RemediationSucceededLabelValue, true, false},
 		{"Remediating to RemediationFailed", string(RemediatingLabelValue), RemediationFailedLabelValue, true, false},
+		{"Quarantined to DrainSucceeded", string(QuarantinedLabelValue), DrainSucceededLabelValue, true, false},
 
 		// Unexpected progressions (return error but label is still updated)
 		// This allows callers to emit error metrics while labels reflect reality
 		{"NoState to Draining", "", DrainingLabelValue, false, true},
 		{"NoState to Remediating", "", RemediatingLabelValue, false, true},
-		{"Quarantined to DrainSucceeded", string(QuarantinedLabelValue), DrainSucceededLabelValue, true, true},
 		{"Quarantined to Remediating", string(QuarantinedLabelValue), RemediatingLabelValue, true, true},
 		{"Draining to Remediating", string(DrainingLabelValue), RemediatingLabelValue, true, true},
 		// DrainFailed is a terminal state - fault-remediation only consumes drain-succeeded

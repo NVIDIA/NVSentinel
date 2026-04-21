@@ -171,7 +171,7 @@ Execution flow:
 **Rejected** because: Each module would need to maintain state and query logic. This duplicates code across quarantine, drainer, and remediation modules. State management becomes complex (what happens on pod restart?). No single source of truth for which events triggered which actions.
 
 ### Stateful Stream Processing (Flink, Spark Streaming)
-**Rejected** because: Adds significant operational complexity with external dependencies. Requires deploying and managing a stream processing cluster. Overkill for the relatively simple correlation patterns needed. Event volume (typically <100 events/hour per node) doesn't justify stream processing overhead.
+**Rejected** because: Adds significant operational complexity with external dependencies. Requires deploying and managing a stream processing cluster. Overkill for the relatively simple correlation patterns needed. Event volume (typically &lt;100 events/hour per node) doesn't justify stream processing overhead.
 
 ### Rules Engine (Drools, etc.)
 **Rejected** because: Introduces new technology stack and programming model. Rules engines are designed for complex business logic, not time-series event correlation. MongoDB aggregation is more natural fit for database queries. Additional dependency increases operational burden.

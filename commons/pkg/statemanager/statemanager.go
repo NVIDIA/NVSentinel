@@ -26,39 +26,39 @@
 //	                         │ Fault detected
 //	                         ▼
 //	                ┌──────────────────┐
-//	                │   quarantined    │
-//	                └────────┬─────────┘
-//	                         │
-//	                         │ Start drain
-//	                         ▼
-//	                ┌──────────────────┐
-//	   Healthy ◄────┤     draining     │
-//	   event        └────────┬─────────┘
-//	   (cancel)              │
-//	      │                  │ Drain completed
-//	      │         ┌────────┴────────┐
-//	      │         │                 │
-//	      │         ▼                 ▼
-//	      │  ┌───────────────┐  ┌─────────────┐
-//	      │  │drain-succeeded│  │drain-failed │ [TERMINAL]
-//	      │  └──────┬────────┘  └─────────────┘
-//	      │         │
-//	      │         │ Start remediation
-//	      │         ▼
-//	      │  ┌──────────────┐    Note: fault-remediation
-//	      │  │ remediating  │    only consumes drain-succeeded.
-//	      │  └──────┬───────┘    drain-failed is a terminal state.
-//	      │         │
-//	      │    ┌────┴────────────────┐
-//	      │    │                     │
-//	      │    ▼                     ▼
-//	      │  ┌─────────────┐  ┌──────────────┐
-//	      │  │ remediation-│  │ remediation- │ [TERMINAL]
-//	      │  │ succeeded   │  │   failed     │
-//	      │  └─────┬───────┘  └──────────────┘
-//	      │        │
-//	      │        │ Healthy event
-//	      ▼        ▼
+//	                │   quarantined    ├──────────────────────┐
+//	                └────────┬─────────┘                      │
+//	                         │                                │
+//	                         │ Start drain                    │ No pods to drain
+//	                         ▼                                │
+//	                ┌──────────────────┐                      │
+//	   Healthy ◄────┤     draining     │                      │
+//	   event        └────────┬─────────┘                      │
+//	   (cancel)              │                                │
+//	      │                  │ Drain completed                │
+//	      │         ┌────────┴────────┐                       │
+//	      │         │                 │                       │
+//	      │         ▼                 ▼                       │
+//	      │  ┌───────────────┐  ┌────────────────┐            │
+//	      │  │drain-failed   │  │drain-succeeded │◄───────────┘
+//	      │  └───────────────┘  └───────┬────────┘
+//	      │    [TERMINAL]              │
+//	      │                            │ Start remediation
+//	      │                            ▼
+//	      │                     ┌──────────────┐  Note: fault-remediation
+//	      │                     │ remediating  │  only consumes drain-succeeded.
+//	      │                     └──────┬───────┘  drain-failed is a terminal state.
+//	      │                            │
+//	      │                   ┌────────┴────────┐
+//	      │                   │                 │
+//	      │                   ▼                 ▼
+//	      │            ┌─────────────┐  ┌──────────────┐
+//	      │            │ remediation-│  │ remediation- │ [TERMINAL]
+//	      │            │ succeeded   │  │   failed     │
+//	      │            └─────┬───────┘  └──────────────┘
+//	      │                  │
+//	      │                  │ Healthy event
+//	      ▼                  ▼
 //	┌──────────────────────────────┐
 //	│        [NO LABEL]            │
 //	│   (removeStateLabel=true     │
@@ -80,6 +80,7 @@
 //
 //	Drain Phase:
 //	  quarantined → draining       (node-drainer starts drain)
+//	  quarantined → drain-succeeded (node-drainer: no pods to drain)
 //	  draining → drain-succeeded   (node-drainer: drain completed)
 //	  draining → drain-failed      (node-drainer: drain failed)
 //
@@ -99,7 +100,6 @@
 //	Skipping States:
 //	  none → draining              (should start with quarantined)
 //	  none → remediating           (should start with quarantined)
-//	  quarantined → drain-succeeded (should go through draining)
 //	  quarantined → remediating    (should go through draining and drain-succeeded)
 //	  draining → remediating       (should complete drain first)
 //
@@ -117,10 +117,13 @@
 //  2. Failed remediation:
 //     none → quarantined → draining → drain-succeeded → remediating → remediation-failed [TERMINAL]
 //
-//  3. Failed draining:
+//  3. No pods to drain:
+//     none → quarantined → drain-succeeded → remediating → remediation-succeeded → (no label)
+//
+//  4. Failed draining:
 //     none → quarantined → draining → drain-failed [TERMINAL]
 //
-//  4. Canceled drain (healthy event):
+//  5. Canceled drain (healthy event):
 //     none → quarantined → draining → (no label)
 //
 // # Validation Behavior
@@ -183,9 +186,11 @@ Example label sequences:
     remediation-succeeded → (label removed)
  2. Failed remediation: quarantined → draining → drain-succeeded → remediating →
     remediation-failed (terminal state, label remains)
- 3. Failed draining: quarantined → draining → drain-failed (terminal state, label remains,
+ 3. No pods to drain: quarantined → drain-succeeded → remediating →
+    remediation-succeeded → (label removed)
+ 4. Failed draining: quarantined → draining → drain-failed (terminal state, label remains,
     no remediation)
- 4. Canceled drain: quarantined → draining → (label removed via healthy event)
+ 5. Canceled drain: quarantined → draining → (label removed via healthy event)
 
 Terminal states (drain-failed, remediation-failed, remediation-succeeded) have no valid forward transitions.
 The fault-remediation only consumes drain-succeeded; drain-failed nodes are not remediated.
@@ -315,7 +320,7 @@ func validateStateTransition(nodeName, currentValue string, exists bool, targetS
 
 	// Define expected transitions based on the normal state machine flow
 	validTransitions := map[NVSentinelStateLabelValue][]NVSentinelStateLabelValue{
-		QuarantinedLabelValue:          {DrainingLabelValue},
+		QuarantinedLabelValue:          {DrainingLabelValue, DrainSucceededLabelValue},
 		DrainingLabelValue:             {DrainSucceededLabelValue, DrainFailedLabelValue},
 		DrainSucceededLabelValue:       {RemediatingLabelValue},
 		DrainFailedLabelValue:          {}, // Terminal state - fault-remediation doesn't consume drain-failed

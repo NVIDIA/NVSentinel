@@ -17,12 +17,12 @@ ARG VERSION="0.1.0"
 ARG GIT_COMMIT="none"
 ARG BUILD_DATE=$(date -u +%FT%TZ)
 
-FROM public.ecr.aws/docker/library/python:3.10-bookworm AS build
+FROM public.ecr.aws/docker/library/python:3.13-trixie AS build
 
 ARG VERSION
 
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install poetry==2.2.1 poetry-plugin-export==1.10.0
+    pip install poetry==2.3.3 poetry-plugin-export==1.10.0
 
 ENV POETRY_NO_INTERACTION=1 \
     POETRY_VIRTUALENVS_IN_PROJECT=1 \

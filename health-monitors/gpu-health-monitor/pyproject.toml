@@ -9,8 +9,8 @@ readme = "README.md"
 python = "^3.10"
 grpcio = "^1.80.0"
 click = "^8.3.2"
-prometheus-client = "^0.24.1"
-grpcio-tools = "1.78.0"
+prometheus-client = "^0.25.0"
+grpcio-tools = "1.80.0"
 protobuf = ">=6.31.1,<7.0.0"
 googleapis-common-protos = ">=1.56.0"
 structlog = "^25.1.0"
@@ -18,7 +18,7 @@ structlog = "^25.1.0"
 [tool.poetry.group.dev.dependencies]
 black = "^26.3.1"
 coverage = "^7.13.5"
-pytest = "^9.0.2"
+pytest = "^9.0.3"
 
 [build-system]
 requires = ["poetry-core"]

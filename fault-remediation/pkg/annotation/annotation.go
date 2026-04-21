@@ -79,7 +79,7 @@ func (m *NodeAnnotationManager) GetRemediationState(
 
 	var state RemediationStateAnnotation
 	if err = json.Unmarshal([]byte(annotationValue), &state); err != nil {
-		slog.Error("Failed to unmarshal annotation", "node", nodeName, "error", err)
+		slog.ErrorContext(ctx, "Failed to unmarshal annotation", "node", nodeName, "error", err)
 		// Return empty state if unmarshal fails
 		return &RemediationStateAnnotation{
 			EquivalenceGroups: make(map[string]EquivalenceGroupState),
@@ -100,7 +100,7 @@ func (m *NodeAnnotationManager) UpdateRemediationState(ctx context.Context, node
 		// Get current state
 		state, node, err := m.GetRemediationState(ctx, nodeName)
 		if err != nil {
-			slog.Warn("Failed to get current remediation state", "node", nodeName, "error", err)
+			slog.WarnContext(ctx, "Failed to get current remediation state", "node", nodeName, "error", err)
 			return err
 		}
 
@@ -128,7 +128,7 @@ func (m *NodeAnnotationManager) UpdateRemediationState(ctx context.Context, node
 			return err
 		}
 
-		slog.Info("Updated remediation state annotation for node",
+		slog.InfoContext(ctx, "Updated remediation state annotation for node",
 			"node", nodeName,
 			"group", group,
 			"crName", crName)
@@ -164,7 +164,7 @@ func (m *NodeAnnotationManager) ClearRemediationState(ctx context.Context, nodeN
 			return err
 		}
 
-		slog.Info("Cleared remediation state annotation for node", "node", nodeName)
+		slog.InfoContext(ctx, "Cleared remediation state annotation for node", "node", nodeName)
 
 		return nil
 	})
@@ -200,7 +200,7 @@ func (m *NodeAnnotationManager) RemoveGroupsFromState(ctx context.Context, nodeN
 				return err
 			}
 
-			slog.Info("Cleared remediation state annotation for node", "node", nodeName)
+			slog.InfoContext(ctx, "Cleared remediation state annotation for node", "node", nodeName)
 
 			return nil
 		}
@@ -221,7 +221,7 @@ func (m *NodeAnnotationManager) RemoveGroupsFromState(ctx context.Context, nodeN
 			return err
 		}
 
-		slog.Info("Removed groups from remediation state for node", "node", nodeName, "groups", groups)
+		slog.InfoContext(ctx, "Removed groups from remediation state for node", "node", nodeName, "groups", groups)
 
 		return nil
 	})

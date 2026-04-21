@@ -29,6 +29,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 )
 
 // PostgreSQLDataStore implements the DataStore interface for PostgreSQL
@@ -269,7 +270,7 @@ func buildConnectionString(conn datastore.ConnectionConfig) string {
 	}
 
 	if conn.Password != "" {
-		params = append(params, fmt.Sprintf("password=%s", conn.Password))
+		params = append(params, "password="+utils.QuotePQValue(conn.Password))
 	}
 
 	if conn.SSLMode != "" {

@@ -79,7 +79,8 @@ enum RecommendedAction {
   RESTART_BM = 24;
   REPLACE_VM = 25;
   RUN_DCGMEUD = 26;
-  REMEDIATE = 27;
+  CUSTOM = 27;
+  REMEDIATE = 28;
 
   UNKNOWN = 99;
 }
@@ -110,6 +111,7 @@ message HealthEvent {
   BehaviourOverrides drainOverrides = 15;
   ProcessingStrategy processingStrategy = 16;
   string id = 17;
+  string customRecommendedAction = 18;
 }
 
 message BehaviourOverrides {

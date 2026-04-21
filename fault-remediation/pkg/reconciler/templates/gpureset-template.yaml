@@ -16,6 +16,9 @@ apiVersion: {{.ApiGroup}}/{{.Version}}
 kind: GPUReset
 metadata:
   name: maintenance-{{.NodeName}}-{{.HealthEventID}}
+  annotations:
+    nvsentinel.nvidia.com/trace-id: "{{.TraceID}}"
+    nvsentinel.nvidia.com/span-id: "{{.SpanID}}"
 spec:
   nodeName: {{.NodeName}}
   selector:

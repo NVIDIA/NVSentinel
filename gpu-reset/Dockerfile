@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM nvcr.io/nvidia/cuda:13.1.0-runtime-ubuntu24.04
+FROM nvcr.io/nvidia/cuda:13.2.0-runtime-ubuntu24.04
 
 COPY gpu-reset/gpu_reset.sh /usr/local/bin/gpu_reset.sh
 

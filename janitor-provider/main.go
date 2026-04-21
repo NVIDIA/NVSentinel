@@ -28,7 +28,11 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/go-logr/logr"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel/attribute"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -38,11 +42,13 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/auth"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/model"
@@ -64,57 +70,100 @@ type janitorProviderServer struct {
 func (s *janitorProviderServer) SendRebootSignal(
 	ctx context.Context, req *cspv1alpha1.SendRebootSignalRequest,
 ) (*cspv1alpha1.SendRebootSignalResponse, error) {
-	slog.Info("Sending reboot signal", "node", req.NodeName)
+	ctx, span := tracing.StartSpan(ctx, "janitor_provider.SendRebootSignal")
+	defer span.End()
+
+	slog.InfoContext(ctx, "Sending reboot signal", "node", req.NodeName)
 
 	node, err := s.k8sClient.CoreV1().Nodes().Get(ctx, req.NodeName, metav1.GetOptions{})
+
 	if err != nil {
+		span.SetAttributes(
+			attribute.String("janitor_provider.error.type", "grpc_error"),
+			attribute.String("janitor_provider.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
 		return nil, status.Errorf(codes.Internal, "failed to get node: %v", err)
 	}
 
 	requestID, err := s.cspClient.SendRebootSignal(ctx, *node)
 	if err != nil {
+		span.SetAttributes(
+			attribute.String("janitor_provider.error.type", "csp_api_error"),
+			attribute.String("janitor_provider.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
 		return nil, status.Errorf(codes.Internal, "failed to send reboot signal: %v", err)
 	}
+
+	span.SetAttributes(
+		attribute.String("janitor_provider.reboot.request_ref", string(requestID)),
+	)
 
 	return &cspv1alpha1.SendRebootSignalResponse{
 		RequestId: string(requestID),
 	}, nil
 }
 
-func (s *janitorProviderServer) IsNodeReady(
-	ctx context.Context, req *cspv1alpha1.IsNodeReadyRequest,
-) (*cspv1alpha1.IsNodeReadyResponse, error) {
-	slog.Info("Checking if node is ready", "node", req.NodeName)
+func (s *janitorProviderServer) IsNodeReady(ctx context.Context, req *cspv1alpha1.IsNodeReadyRequest) (*cspv1alpha1.IsNodeReadyResponse, error) {
+	ctx, span := tracing.StartSpan(ctx, "janitor_provider.IsNodeReady")
+	defer span.End()
 
+	slog.InfoContext(ctx, "Checking if node is ready", "node", req.NodeName)
 	node, err := s.k8sClient.CoreV1().Nodes().Get(ctx, req.NodeName, metav1.GetOptions{})
 	if err != nil {
+		span.SetAttributes(
+			attribute.String("janitor_provider.error.type", "grpc_error"),
+			attribute.String("janitor_provider.error.message", err.Error()),
+		)
+		span.RecordError(err)
 		return nil, status.Errorf(codes.Internal, "failed to get node: %v", err)
 	}
 
 	isReady, err := s.cspClient.IsNodeReady(ctx, *node, req.RequestId)
 	if err != nil {
+		span.SetAttributes(
+			attribute.String("janitor_provider.error.type", "csp_api_error"),
+			attribute.String("janitor_provider.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
 		return nil, status.Errorf(codes.Internal, "failed to check if node is ready: %v", err)
 	}
+	span.SetAttributes(attribute.Bool("janitor_provider.node_ready.ready", isReady))
 
 	return &cspv1alpha1.IsNodeReadyResponse{
 		IsReady: isReady,
 	}, nil
 }
 
-func (s *janitorProviderServer) SendTerminateSignal(
-	ctx context.Context, req *cspv1alpha1.SendTerminateSignalRequest,
-) (*cspv1alpha1.SendTerminateSignalResponse, error) {
-	slog.Info("Sending terminate signal", "node", req.NodeName)
+func (s *janitorProviderServer) SendTerminateSignal(ctx context.Context, req *cspv1alpha1.SendTerminateSignalRequest) (*cspv1alpha1.SendTerminateSignalResponse, error) {
+	ctx, span := tracing.StartSpan(ctx, "janitor_provider.SendTerminateSignal")
+	defer span.End()
 
+	slog.InfoContext(ctx, "Sending terminate signal", "node", req.NodeName)
 	node, err := s.k8sClient.CoreV1().Nodes().Get(ctx, req.NodeName, metav1.GetOptions{})
 	if err != nil {
+		span.SetAttributes(
+			attribute.String("janitor_provider.error.type", "grpc_error"),
+			attribute.String("janitor_provider.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
 		return nil, status.Errorf(codes.Internal, "failed to get node: %v", err)
 	}
 
 	requestID, err := s.cspClient.SendTerminateSignal(ctx, *node)
 	if err != nil {
+		span.SetAttributes(
+			attribute.String("janitor_provider.error.type", "csp_api_error"),
+			attribute.String("janitor_provider.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
 		return nil, status.Errorf(codes.Internal, "failed to send terminate signal: %v", err)
 	}
+	span.SetAttributes(
+		attribute.Bool("janitor_provider.terminate.sent", true),
+		attribute.String("janitor_provider.terminate.request_ref", string(requestID)),
+	)
 
 	return &cspv1alpha1.SendTerminateSignalResponse{
 		RequestId: string(requestID),
@@ -127,15 +176,28 @@ func main() {
 
 func realMain() int {
 	logger.SetDefaultStructuredLogger("janitor-provider", version)
+	ctrllog.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
 	slog.Info("Starting janitor-provider", "version", version, "commit", commit, "date", date)
+
+	if err := tracing.InitTracing("janitor-provider"); err != nil {
+		slog.Warn("Failed to initialize tracing", "error", err)
+	}
 
 	if err := auditlogger.InitAuditLogger("janitor-provider"); err != nil {
 		slog.Warn("Failed to initialize audit logger", "error", err)
 	}
 	defer auditlogger.CloseAuditLogger() //nolint:errcheck
 
-	if err := run(); err != nil {
-		slog.Error("Failed to run", "error", err)
+	runErr := run()
+
+	tracingCtx, tracingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := tracing.ShutdownTracing(tracingCtx); err != nil {
+		slog.Warn("Failed to shutdown tracing", "error", err)
+	}
+	tracingCancel()
+
+	if runErr != nil {
+		slog.Error("Failed to run", "error", runErr)
 		return 1
 	}
 
@@ -249,7 +311,9 @@ func newK8sClient() (kubernetes.Interface, error) {
 func buildServerOpts(
 	k8sClient kubernetes.Interface,
 ) ([]grpc.ServerOption, *certwatcher.CertWatcher, error) {
-	var serverOpts []grpc.ServerOption
+	serverOpts := []grpc.ServerOption{
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+	}
 
 	certPath, keyPath := os.Getenv("TLS_CERT_PATH"), os.Getenv("TLS_KEY_PATH")
 	tlsEnabled := certPath != "" && keyPath != ""

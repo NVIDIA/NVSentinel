@@ -65,7 +65,7 @@ spec:
                     - 26
                     - "RUN_DCGMEUD"
                     - 27
-                    - "REMEDIATE"
+                    - "CUSTOM"
                     - 99
                     - "UNKNOWN"
                   format: enum
@@ -120,6 +120,8 @@ spec:
                   format: enum
                   x-kubernetes-int-or-string: true
                 id:
+                  type: string
+                customRecommendedAction:
                   type: string
             status:
               nullable: true

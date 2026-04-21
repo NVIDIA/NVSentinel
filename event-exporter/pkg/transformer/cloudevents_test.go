@@ -256,6 +256,30 @@ func TestToCloudEvent(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "custom action includes customRecommendedAction",
+			event: &pb.HealthEvent{
+				Version:                 1,
+				Agent:                   "disk-health-monitor",
+				ComponentClass:          "Disk",
+				CheckName:               "SmartCheck",
+				NodeName:                "node-1",
+				GeneratedTimestamp:      fixedTimestamp,
+				RecommendedAction:      pb.RecommendedAction_CUSTOM,
+				CustomRecommendedAction: "REPLACE_DISK",
+			},
+			metadata: map[string]string{"cluster": "test-cluster"},
+			wantErr:  false,
+			validateFunc: func(t *testing.T, ce *CloudEvent) {
+				healthEvent := ce.Data["healthEvent"].(map[string]any)
+				if healthEvent["recommendedAction"] != "CUSTOM" {
+					t.Errorf("recommendedAction = %v, want CUSTOM", healthEvent["recommendedAction"])
+				}
+				if healthEvent["customRecommendedAction"] != "REPLACE_DISK" {
+					t.Errorf("customRecommendedAction = %v, want REPLACE_DISK", healthEvent["customRecommendedAction"])
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {

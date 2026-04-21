@@ -21,7 +21,10 @@ import (
 	"time"
 
 	multierror "github.com/hashicorp/go-multierror"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	datamodels "github.com/nvidia/nvsentinel/data-models/pkg/model"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/analyzer"
@@ -70,14 +73,14 @@ func (r *Reconciler) Start(ctx context.Context) error {
 
 	// Check if using PostgreSQL and enable XID burst detector
 	if ds.Provider() == datastore.ProviderPostgreSQL {
-		slog.Debug("PostgreSQL detected - enabling Go-based XID burst detection")
+		slog.DebugContext(ctx, "PostgreSQL detected - enabling Go-based XID burst detection")
 
 		// Extract XID burst detector config from the RepeatedXidError rule's pipeline
 		xidConfig := r.extractXidDetectorConfig()
 		r.xidDetector = analyzer.NewXidBurstDetectorWithConfig(xidConfig)
 		r.useXidDetector = true
 	} else {
-		slog.Debug("MongoDB detected - using pipeline-based XID detection")
+		slog.DebugContext(ctx, "MongoDB detected - using pipeline-based XID detection")
 
 		r.useXidDetector = false
 	}
@@ -127,7 +130,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	// Set the event handler for processing health events
 	r.eventProcessor.SetEventHandler(client.EventHandlerFunc(r.processHealthEvent))
 
-	slog.Info("Starting health events analyzer with unified event processor...")
+	slog.InfoContext(ctx, "Starting health events analyzer with unified event processor...")
 
 	// Start the event processor
 	return r.eventProcessor.Start(ctx)
@@ -136,6 +139,13 @@ func (r *Reconciler) Start(ctx context.Context) error {
 // processHealthEvent handles individual health events and implements the EventHandler interface
 func (r *Reconciler) processHealthEvent(ctx context.Context, event *datamodels.HealthEventWithStatus) error {
 	startTime := time.Now()
+
+	traceID := tracing.TraceIDFromMetadata(event.HealthEvent.GetMetadata())
+	parentSpanID := tracing.ParentSpanID(event.HealthEventStatus.SpanIds, tracing.ServicePlatformConnector)
+
+	ctx, span := tracing.StartSpanWithLinkFromTraceContext(
+		ctx, traceID, parentSpanID, "health_events_analyzer.process_health_event")
+	defer span.End()
 
 	// Track event reception metrics
 	// Use nodeName as label value, fall back to first entity if available
@@ -157,7 +167,13 @@ func (r *Reconciler) processHealthEvent(ctx context.Context, event *datamodels.H
 		// Return error - EventProcessor will NOT mark as processed
 		// Event will be retried on next pod restart
 		totalEventProcessingError.WithLabelValues("handle_event_error").Inc()
-		slog.Error("Failed to process health event", "error", err, "nodeName", labelValue)
+		slog.ErrorContext(ctx, "Failed to process health event", "error", err, "nodeName", labelValue)
+
+		span.SetAttributes(
+			attribute.String("health_events_analyzer.error.type", "handle_event_error"),
+			attribute.String("health_events_analyzer.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
 
 		return fmt.Errorf("failed to handle event: %w", err)
 	}
@@ -165,17 +181,21 @@ func (r *Reconciler) processHealthEvent(ctx context.Context, event *datamodels.H
 	// Track success metrics
 	totalEventsSuccessfullyProcessed.Inc()
 
+	span.SetAttributes(
+		attribute.Bool("health_events_analyzer.event.published", publishedNewEvent),
+	)
+
 	if publishedNewEvent {
-		slog.Info("New fatal event published.")
+		slog.InfoContext(ctx, "New fatal event published.")
 		// Only track entity-specific metrics if EntitiesImpacted is not empty
 		if len(event.HealthEvent.EntitiesImpacted) > 0 {
 			fatalEventsPublishedTotal.WithLabelValues(event.HealthEvent.EntitiesImpacted[0].EntityValue).Inc()
 		} else {
-			slog.Warn("Fatal event published but EntitiesImpacted is empty, using 'unknown' for metrics")
+			slog.WarnContext(ctx, "Fatal event published but EntitiesImpacted is empty, using 'unknown' for metrics")
 			fatalEventsPublishedTotal.WithLabelValues("unknown").Inc()
 		}
 	} else {
-		slog.Info("Fatal event is not published, rule set criteria didn't match.")
+		slog.InfoContext(ctx, "Fatal event is not published, rule set criteria didn't match.")
 	}
 
 	// Track processing duration
@@ -186,6 +206,9 @@ func (r *Reconciler) processHealthEvent(ctx context.Context, event *datamodels.H
 }
 
 func (r *Reconciler) handleEvent(ctx context.Context, event *datamodels.HealthEventWithStatus) (bool, error) {
+	ctx, span := tracing.StartSpan(ctx, "health_events_analyzer.handle_event")
+	defer span.End()
+
 	var multiErr *multierror.Error
 
 	publishedNewEvent := false
@@ -203,13 +226,18 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *datamodels.HealthEv
 	// Process regular rules
 	for _, rule := range r.config.HealthEventsAnalyzerRules.Rules {
 		if !rule.EvaluateRule {
-			slog.Info("Skipping rule evaluation", "rule_name", rule.Name)
+			slog.InfoContext(ctx, "Skipping rule evaluation", "rule_name", rule.Name)
 			continue
 		}
 
 		published, err := r.processRule(ctx, rule, event)
 		if err != nil {
 			multiErr = multierror.Append(multiErr, err)
+			span.AddEvent("rule_evaluation_error", trace.WithAttributes(
+				attribute.String("health_events_analyzer.error.type", "rule_evaluation_error"),
+				attribute.String("health_events_analyzer.error.message", err.Error()),
+			))
+
 			continue
 		}
 
@@ -219,7 +247,13 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *datamodels.HealthEv
 	}
 
 	if multiErr.ErrorOrNil() != nil {
-		slog.Error("Error in handling the event", "error", multiErr)
+		slog.ErrorContext(ctx, "Error in handling the event", "error", multiErr)
+		span.SetAttributes(
+			attribute.String("health_events_analyzer.error.type", "handle_event_error"),
+			attribute.String("health_events_analyzer.error.message", multiErr.Error()),
+		)
+		tracing.RecordError(span, multiErr.ErrorOrNil())
+
 		return publishedNewEvent, fmt.Errorf("error in handling the event: %w", multiErr)
 	}
 
@@ -232,11 +266,14 @@ func (r *Reconciler) handleXidDetector(ctx context.Context, event *datamodels.He
 		return false, nil
 	}
 
+	ctx, span := tracing.StartSpan(ctx, "health_events_analyzer.handle_xid_detector")
+	defer span.End()
+
 	// Clear XID burst history when a healthy GPU event is received
-	// This prevents stale XID history from triggering RepeatedXidError after recovery
 	if r.shouldClearXidHistory(event.HealthEvent) {
 		r.xidDetector.ClearNodeHistory(event.HealthEvent.NodeName)
-		slog.Info("Cleared XID burst history for node due to healthy GPU event",
+		span.SetAttributes(attribute.Bool("health_events_analyzer.xid.history_cleared", true))
+		slog.InfoContext(ctx, "Cleared XID burst history for node due to healthy GPU event",
 			"node", event.HealthEvent.NodeName)
 	}
 
@@ -244,9 +281,17 @@ func (r *Reconciler) handleXidDetector(ctx context.Context, event *datamodels.He
 	if r.shouldProcessXidEvent(event.HealthEvent) {
 		published, err := r.processXidBurstDetection(ctx, event.HealthEvent)
 		if err != nil {
-			slog.Error("Error processing XID burst detection", "error", err)
+			slog.ErrorContext(ctx, "Error processing XID burst detection", "error", err)
+			span.SetAttributes(
+				attribute.String("health_events_analyzer.error.type", "xid_burst_detection_error"),
+				attribute.String("health_events_analyzer.error.message", err.Error()),
+			)
+			tracing.RecordError(span, err)
+
 			return false, err
 		}
+
+		span.SetAttributes(attribute.Bool("health_events_analyzer.published_event", published))
 
 		return published, nil
 	}
@@ -258,17 +303,35 @@ func (r *Reconciler) handleXidDetector(ctx context.Context, event *datamodels.He
 func (r *Reconciler) processRule(ctx context.Context,
 	rule config.HealthEventsAnalyzerRule,
 	event *datamodels.HealthEventWithStatus) (bool, error) {
+	ctx, span := tracing.StartSpan(ctx, "health_events_analyzer.evaluate_rule")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("health_events_analyzer.rule.name", rule.Name),
+		attribute.String("health_events_analyzer.rule.recommended_action", rule.RecommendedAction),
+	)
+
 	startTime := time.Now()
 
 	// Validate all sequences from DB docs
 	matchedSequences, err := r.validateAllSequenceCriteria(ctx, rule, *event)
 	if err != nil {
-		slog.Error("Error in validating all sequence criteria", "error", err)
+		slog.ErrorContext(ctx, "Error in validating all sequence criteria", "error", err)
+		span.SetAttributes(
+			attribute.String("health_events_analyzer.error.type", "validate_sequence_error"),
+			attribute.String("health_events_analyzer.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
+
 		return false, fmt.Errorf("error in validating all sequence criteria: %w", err)
 	}
 
 	duration := time.Since(startTime).Seconds()
 	mongoQueryExecutionDuration.WithLabelValues(rule.Name).Observe(duration)
+
+	span.AddEvent("rule_evaluation_duration_seconds", trace.WithAttributes(
+		attribute.Float64("rule_evaluation_duration_seconds", duration),
+	))
 
 	if !matchedSequences {
 		return false, nil
@@ -276,7 +339,13 @@ func (r *Reconciler) processRule(ctx context.Context,
 
 	err = r.publishMatchedEvent(ctx, rule, event)
 	if err != nil {
-		slog.Error("Error in publishing the matched event", "error", err)
+		slog.ErrorContext(ctx, "Error in publishing the matched event", "error", err)
+		span.SetAttributes(
+			attribute.String("health_events_analyzer.error.type", "publish_matched_event_error"),
+			attribute.String("health_events_analyzer.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
+
 		return false, fmt.Errorf("error in publishing the matched event: %w", err)
 	}
 
@@ -287,21 +356,29 @@ func (r *Reconciler) processRule(ctx context.Context,
 func (r *Reconciler) publishMatchedEvent(ctx context.Context,
 	rule config.HealthEventsAnalyzerRule,
 	event *datamodels.HealthEventWithStatus) error {
-	slog.Info("Rule matched for event", "rule_name", rule.Name, "event", event)
+	ctx, span := tracing.StartSpan(ctx, "health_events_analyzer.publish_matched_event")
+	defer span.End()
+
 	ruleMatchedTotal.WithLabelValues(rule.Name, event.HealthEvent.NodeName).Inc()
 
 	actionVal := r.getRecommendedActionValue(rule.RecommendedAction, rule.Name)
 
-	// No need to clone here - Publisher.Publish already clones the event
-	// The EventProcessor creates a fresh stack variable for each event, so no mutation risk
 	err := r.config.Publisher.Publish(ctx, event.HealthEvent, protos.RecommendedAction(actionVal),
 		rule.Name, rule.Message, &rule)
 	if err != nil {
-		slog.Error("Error in publishing the new fatal event", "error", err)
+		slog.ErrorContext(ctx, "Error in publishing the new fatal event", "error", err)
+		span.SetAttributes(
+			attribute.Bool("health_events_analyzer.event.published", false),
+			attribute.String("health_events_analyzer.error.type", "publish_event_error"),
+			attribute.String("health_events_analyzer.error.message", err.Error()),
+		)
+
+		tracing.RecordError(span, err)
+
 		return fmt.Errorf("error in publishing the new fatal event: %w", err)
 	}
 
-	slog.Info("New event successfully published for matching rule", "rule_name", rule.Name)
+	slog.InfoContext(ctx, "New event successfully published for matching rule", "rule_name", rule.Name)
 
 	return nil
 }
@@ -324,7 +401,11 @@ func (r *Reconciler) getRecommendedActionValue(recommendedAction, ruleName strin
 
 func (r *Reconciler) validateAllSequenceCriteria(ctx context.Context, rule config.HealthEventsAnalyzerRule,
 	healthEventWithStatus datamodels.HealthEventWithStatus) (bool, error) {
-	slog.Info("→ Evaluating rule for event",
+	// Execute aggregation with tracing
+	ctx, span := tracing.StartSpan(ctx, "health_events_analyzer.mongo.aggregate")
+	defer span.End()
+
+	slog.InfoContext(ctx, "→ Evaluating rule for event",
 		"rule_name", rule.Name,
 		"node", healthEventWithStatus.HealthEvent.NodeName,
 		"error_code", healthEventWithStatus.HealthEvent.ErrorCode,
@@ -333,21 +414,31 @@ func (r *Reconciler) validateAllSequenceCriteria(ctx context.Context, rule confi
 	// Build aggregation pipeline from stages
 	pipelineStages, err := r.getPipelineStages(rule, healthEventWithStatus)
 	if err != nil {
-		slog.Error("Failed to build pipeline stages", "error", err)
-		totalEventProcessingError.WithLabelValues("build_pipeline_error").Inc()
+		slog.ErrorContext(ctx, "Failed to build pipeline stages", "error", err)
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("health_events_analyzer.error.type", "build_pipeline_error"),
+			attribute.String("health_events_analyzer.error.message", err.Error()),
+		)
 
 		return false, fmt.Errorf("failed to build pipeline stages: %w", err)
 	}
 
 	var result []map[string]interface{}
 
-	// Execute aggregation using store-client abstraction
-	slog.Debug("Executing aggregation pipeline", "rule_name", rule.Name, "pipeline_stages_count", len(pipelineStages))
+	slog.DebugContext(ctx, "Executing aggregation pipeline",
+		"rule_name", rule.Name, "pipeline_stages_count", len(pipelineStages))
 
 	cursor, err := r.databaseClient.Aggregate(ctx, pipelineStages)
 	if err != nil {
-		slog.Error("Failed to execute aggregation pipeline", "error", err, "rule_name", rule.Name)
+		slog.ErrorContext(ctx, "Failed to execute aggregation pipeline", "error", err, "rule_name", rule.Name)
 		totalEventProcessingError.WithLabelValues("execute_pipeline_error").Inc()
+
+		span.SetAttributes(
+			attribute.String("health_events_analyzer.error.type", "execute_pipeline_error"),
+			attribute.String("health_events_analyzer.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
 
 		return false, fmt.Errorf("failed to execute aggregation pipeline: %w", err)
 	}
@@ -355,27 +446,33 @@ func (r *Reconciler) validateAllSequenceCriteria(ctx context.Context, rule confi
 	defer cursor.Close(ctx)
 
 	if err = cursor.All(ctx, &result); err != nil {
-		slog.Error("Failed to decode cursor", "error", err, "rule_name", rule.Name)
+		slog.ErrorContext(ctx, "Failed to decode cursor", "error", err, "rule_name", rule.Name)
 		totalEventProcessingError.WithLabelValues("decode_cursor_error").Inc()
+
+		span.SetAttributes(
+			attribute.String("health_events_analyzer.error.type", "decode_cursor_error"),
+			attribute.String("health_events_analyzer.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
 
 		return false, fmt.Errorf("failed to decode cursor: %w", err)
 	}
 
-	slog.Debug("Aggregation pipeline completed", "rule_name", rule.Name, "result_count", len(result))
+	slog.DebugContext(ctx, "Aggregation pipeline completed", "rule_name", rule.Name, "result_count", len(result))
 
 	// Check if we have results (rule matched)
 	if len(result) > 0 {
 		// Check for explicit ruleMatched field (used in tests and by SequenceFacet pipelines)
 		if matched, ok := result[0]["ruleMatched"].(bool); ok {
 			if matched {
-				slog.Info("Rule matched via ruleMatched field",
+				slog.InfoContext(ctx, "Rule matched via ruleMatched field",
 					"rule_name", rule.Name,
 					"node", healthEventWithStatus.HealthEvent.NodeName)
 
 				return true, nil
 			}
 
-			slog.Info("Rule did not match (ruleMatched=false)",
+			slog.InfoContext(ctx, "Rule did not match (ruleMatched=false)",
 				"rule_name", rule.Name,
 				"node", healthEventWithStatus.HealthEvent.NodeName,
 				"result", result[0])
@@ -386,7 +483,7 @@ func (r *Reconciler) validateAllSequenceCriteria(ctx context.Context, rule confi
 		return true, nil
 	}
 
-	slog.Info("Rule did not match (no results)",
+	slog.InfoContext(ctx, "Rule did not match (no results)",
 		"rule_name", rule.Name,
 		"node", healthEventWithStatus.HealthEvent.NodeName)
 
@@ -453,10 +550,18 @@ func (r *Reconciler) shouldClearXidHistory(event *protos.HealthEvent) bool {
 // processXidBurstDetection processes GPU XID events through the burst detector
 // and publishes RepeatedXidError events when burst patterns are detected
 func (r *Reconciler) processXidBurstDetection(ctx context.Context, event *protos.HealthEvent) (bool, error) {
+	ctx, span := tracing.StartSpan(ctx, "health_events_analyzer.xid.burst_detection")
+	defer span.End()
+
 	shouldTrigger, burstCount := r.xidDetector.ProcessEvent(event)
 
+	span.SetAttributes(
+		attribute.Bool("health_events_analyzer.xid.burst_detected", shouldTrigger),
+		attribute.Int("health_events_analyzer.xid.burst_count", burstCount),
+	)
+
 	if !shouldTrigger {
-		slog.Debug("XID event processed but no burst pattern detected",
+		slog.DebugContext(ctx, "XID event processed but no burst pattern detected",
 			"node", event.NodeName,
 			"xid", event.ErrorCode[0],
 			"burstCount", burstCount)
@@ -466,7 +571,7 @@ func (r *Reconciler) processXidBurstDetection(ctx context.Context, event *protos
 
 	// Burst pattern detected - publish RepeatedXidError event
 	xidCode := event.ErrorCode[0]
-	slog.Info("RepeatedXidError detected - publishing alert",
+	slog.InfoContext(ctx, "RepeatedXidError detected - publishing alert",
 		"node", event.NodeName,
 		"xid", xidCode,
 		"burstCount", burstCount)
@@ -476,15 +581,26 @@ func (r *Reconciler) processXidBurstDetection(ctx context.Context, event *protos
 	err := r.config.Publisher.Publish(ctx, event, protos.RecommendedAction_CONTACT_SUPPORT, "RepeatedXidError",
 		event.Message, nil)
 	if err != nil {
-		slog.Error("Failed to publish RepeatedXidError event",
+		slog.ErrorContext(ctx, "Failed to publish RepeatedXidError event",
 			"error", err,
 			"node", event.NodeName,
 			"xid", xidCode)
 
+		span.SetAttributes(
+			attribute.String("health_events_analyzer.error.type", "xid_publish_error"),
+			attribute.String("health_events_analyzer.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
+
 		return false, fmt.Errorf("failed to publish RepeatedXidError event: %w", err)
 	}
 
-	slog.Info("Successfully published RepeatedXidError event",
+	span.SetAttributes(
+		attribute.Bool("health_events_analyzer.event.published", true),
+		attribute.String("health_events_analyzer.event.published_rule", "RepeatedXidError"),
+	)
+
+	slog.InfoContext(ctx, "Successfully published RepeatedXidError event",
 		"node", event.NodeName,
 		"xid", xidCode,
 		"burstCount", burstCount)

@@ -119,9 +119,8 @@ global:
   # OpenTelemetry tracing configuration
   tracing:
     enabled: false # Enable/disable tracing for all components
-    insecure: false # Set to true if the collector endpoint does not use TLS
-    # OTLP gRPC endpoint (host:port) where services send traces.
-    # Point this to your tracing backend's (Tempo, Jaeger, Zipkin, etc.) gRPC ingestion endpoint.
+    insecure: false # Set to true to disable TLS for the collector connection
+    # OTel collector's OTLP gRPC endpoint (host:port) for trace ingestion
     endpoint: ""
 
   # Audit logging configuration
