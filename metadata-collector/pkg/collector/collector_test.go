@@ -16,6 +16,7 @@ package collector
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	gonvml "github.com/NVIDIA/go-nvml/pkg/nvml"
@@ -23,8 +24,20 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nic"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nvml"
 )
+
+type fakeNICTopoCollector struct {
+	matrix *nic.TopoMatrix
+	err    error
+	calls  int
+}
+
+func (f *fakeNICTopoCollector) Collect(context.Context) (*nic.TopoMatrix, error) {
+	f.calls++
+	return f.matrix, f.err
+}
 
 // fakeNVMLClient is a test double for the nvmlClient interface.
 type fakeNVMLClient struct {
@@ -114,7 +127,7 @@ func TestCollectSkipsChassisSerialOnUnsupportedDrivers(t *testing.T) {
 		chassisSerial: &serial,
 	}
 
-	collector := NewCollector(fake)
+	collector := NewCollector(fake, &fakeNICTopoCollector{})
 
 	metadata, err := collector.Collect(context.Background())
 	require.NoError(t, err)
@@ -131,7 +144,7 @@ func TestCollectCollectsChassisSerialOnSupportedDrivers(t *testing.T) {
 		chassisSerial: &serial,
 	}
 
-	collector := NewCollector(fake)
+	collector := NewCollector(fake, &fakeNICTopoCollector{})
 
 	metadata, err := collector.Collect(context.Background())
 	require.NoError(t, err)
@@ -139,3 +152,93 @@ func TestCollectCollectsChassisSerialOnSupportedDrivers(t *testing.T) {
 	assert.Equal(t, serial, *metadata.ChassisSerial)
 	assert.Equal(t, 1, fake.getChassisSerialCalls)
 }
+
+// TestCollectPopulatesNICTopology verifies that the NIC topo matrix is
+// copied verbatim into GPUMetadata.NICTopology.
+func TestCollectPopulatesNICTopology(t *testing.T) {
+	fake := &fakeNVMLClient{
+		deviceCount:   1,
+		driverVersion: "560.35.03",
+	}
+
+	matrix := &nic.TopoMatrix{
+		GPUs: []string{"GPU0", "GPU1"},
+		NICs: []string{"mlx5_0", "mlx5_1"},
+		Relationships: map[string][]string{
+			"mlx5_0": {"PIX", "SYS"},
+			"mlx5_1": {"SYS", "PIX"},
+		},
+	}
+
+	topo := &fakeNICTopoCollector{matrix: matrix}
+
+	collector := NewCollector(fake, topo)
+
+	metadata, err := collector.Collect(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, topo.calls)
+	assert.Equal(t, matrix.Relationships, metadata.NICTopology)
+}
+
+// TestCollectTopoFailureLeavesTopologyEmpty verifies the collector does
+// not abort when `nvidia-smi topo -m` fails.
+func TestCollectTopoFailureLeavesTopologyEmpty(t *testing.T) {
+	fake := &fakeNVMLClient{deviceCount: 1, driverVersion: "560.35.03"}
+	topo := &fakeNICTopoCollector{err: fmt.Errorf("nvidia-smi not available")}
+
+	collector := NewCollector(fake, topo)
+
+	metadata, err := collector.Collect(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, metadata.NICTopology)
+}
+
+// TestCollectNoNICsLeavesTopologyEmpty verifies that an empty matrix
+// (node without InfiniBand NICs) yields an empty NICTopology field.
+func TestCollectNoNICsLeavesTopologyEmpty(t *testing.T) {
+	fake := &fakeNVMLClient{deviceCount: 1, driverVersion: "560.35.03"}
+	topo := &fakeNICTopoCollector{matrix: &nic.TopoMatrix{
+		GPUs: []string{"GPU0"},
+	}}
+
+	collector := NewCollector(fake, topo)
+
+	metadata, err := collector.Collect(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, metadata.NICTopology)
+}
+
+// TestCollectNilTopoCollectorLeavesFieldsEmpty verifies that passing a
+// nil topology collector disables topology publishing without crashing.
+func TestCollectNilTopoCollectorLeavesFieldsEmpty(t *testing.T) {
+	fake := &fakeNVMLClient{deviceCount: 1, driverVersion: "560.35.03"}
+
+	collector := NewCollector(fake, nil)
+
+	metadata, err := collector.Collect(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, metadata.NICTopology)
+}
+
+func TestCheckGPUCountMismatch(t *testing.T) {
+	match := checkGPUCountMismatch(
+		&nic.TopoMatrix{GPUs: []string{"GPU0", "GPU1"}},
+		&model.GPUMetadata{GPUs: []model.GPUInfo{{GPUID: 0}, {GPUID: 1}}},
+	)
+	assert.Empty(t, match, "equal counts must produce no mismatch message")
+
+	short := checkGPUCountMismatch(
+		&nic.TopoMatrix{GPUs: []string{"GPU0", "GPU1"}},
+		&model.GPUMetadata{GPUs: []model.GPUInfo{{GPUID: 0}, {GPUID: 1}, {GPUID: 2}}},
+	)
+	assert.Contains(t, short, "2 GPU columns")
+	assert.Contains(t, short, "3 GPUs")
+
+	long := checkGPUCountMismatch(
+		&nic.TopoMatrix{GPUs: []string{"GPU0", "GPU1", "GPU2"}},
+		&model.GPUMetadata{GPUs: []model.GPUInfo{{GPUID: 0}}},
+	)
+	assert.Contains(t, long, "3 GPU columns")
+	assert.Contains(t, long, "1 GPUs")
+}
+

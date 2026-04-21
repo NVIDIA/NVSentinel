@@ -26,8 +26,32 @@ import (
 	gonvml "github.com/NVIDIA/go-nvml/pkg/nvml"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nic"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nvml"
 )
+
+// NICTopoCollector produces the raw nvidia-smi topo -m matrix. Tests
+// inject fakes; production uses NewDefaultTopoCollector.
+type NICTopoCollector interface {
+	Collect(ctx context.Context) (*nic.TopoMatrix, error)
+}
+
+// defaultNICTopoCollector runs nvidia-smi and parses the output.
+type defaultNICTopoCollector struct{}
+
+func (defaultNICTopoCollector) Collect(ctx context.Context) (*nic.TopoMatrix, error) {
+	output, err := nic.RunTopoCommand(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("nvidia-smi topo -m failed: %w", err)
+	}
+
+	return nic.ParseTopoMatrix(output)
+}
+
+// NewDefaultTopoCollector returns the production NICTopoCollector.
+func NewDefaultTopoCollector() NICTopoCollector {
+	return defaultNICTopoCollector{}
+}
 
 type nvmlClient interface {
 	GetDeviceCount() (int, error)
@@ -44,20 +68,22 @@ type nvmlClient interface {
 	) (map[string]struct{}, error)
 }
 
-// Collector gathers GPU metadata from a node using NVML.
+// Collector gathers GPU metadata from a node using NVML and nvidia-smi.
 type Collector struct {
-	nvml nvmlClient
+	nvml    nvmlClient
+	nicTopo NICTopoCollector
 }
 
-// NewCollector creates a Collector backed by the provided NVML client.
-func NewCollector(nvmlWrapper nvmlClient) *Collector {
-	return &Collector{
-		nvml: nvmlWrapper,
-	}
+// NewCollector creates a Collector. A nil topo collector disables NIC
+// topology publishing, which is useful for tests that exercise only
+// the NVML-derived fields.
+func NewCollector(nvmlWrapper nvmlClient, topo NICTopoCollector) *Collector {
+	return &Collector{nvml: nvmlWrapper, nicTopo: topo}
 }
 
-// Collect gathers GPU metadata from the node via NVML, including device info,
-// NVLink topology, NVSwitch PCIs, and (for drivers >= R560) chassis serial.
+// Collect gathers GPU metadata via NVML (device info, NVLink topology,
+// NVSwitch PCIs, and for driver ≥ R560 the chassis serial) and enriches
+// it with the nvidia-smi topo -m matrix.
 func (c *Collector) Collect(ctx context.Context) (*model.GPUMetadata, error) {
 	count, err := c.nvml.GetDeviceCount()
 	if err != nil {
@@ -91,7 +117,84 @@ func (c *Collector) Collect(ctx context.Context) (*model.GPUMetadata, error) {
 		return nil, fmt.Errorf("failed to collect GPU data: %w", err)
 	}
 
+	c.populateNICTopology(ctx, metadata)
+
 	return metadata, nil
+}
+
+// populateNICTopology attaches the raw nvidia-smi topo -m matrix to
+// metadata.NICTopology. Failures degrade to an empty map rather than
+// aborting the collector — other consumers of gpu_metadata.json still
+// receive the NVML-derived fields.
+func (c *Collector) populateNICTopology(ctx context.Context, metadata *model.GPUMetadata) {
+	if c.nicTopo == nil {
+		return
+	}
+
+	matrix, err := c.nicTopo.Collect(ctx)
+	if err != nil {
+		slog.Warn("Failed to collect NIC topology matrix, nic_topology will be empty",
+			"error", err)
+
+		return
+	}
+
+	if matrix == nil || len(matrix.NICs) == 0 {
+		slog.Info("No InfiniBand NICs reported by nvidia-smi topo -m, nic_topology will be empty")
+		return
+	}
+
+	if mismatch := checkGPUCountMismatch(matrix, metadata); mismatch != "" {
+		slog.Warn("NIC topology GPU count does not match NVML GPU count",
+			"detail", mismatch,
+			"nvml_gpu_count", len(metadata.GPUs),
+			"topo_gpu_count", len(matrix.GPUs),
+			"topo_gpus", matrix.GPUs,
+			"hint", "nic_topology arrays will be aligned to the topo matrix only; "+
+				"downstream consumers will see a shorter-than-expected array per NIC",
+		)
+	}
+
+	metadata.NICTopology = make(map[string][]string, len(matrix.NICs))
+	for _, name := range matrix.NICs {
+		metadata.NICTopology[name] = matrix.Relationships[name]
+	}
+
+	populateGPUNUMANodes(metadata, matrix)
+
+	slog.Info("Populated NIC topology matrix",
+		"gpus", len(matrix.GPUs),
+		"nics", len(matrix.NICs),
+	)
+}
+
+// populateGPUNUMANodes copies the parsed NUMA Affinity values from
+// the topo matrix into the corresponding GPUInfo entries. When the
+// counts match, GPUs[i].NUMANode = matrix.GPUNUMANodes[i]. When they
+// don't (already logged as a WARN by the caller), we write as many
+// as we can in order.
+func populateGPUNUMANodes(metadata *model.GPUMetadata, matrix *nic.TopoMatrix) {
+	n := len(metadata.GPUs)
+	if len(matrix.GPUNUMANodes) < n {
+		n = len(matrix.GPUNUMANodes)
+	}
+
+	for i := range n {
+		metadata.GPUs[i].NUMANode = matrix.GPUNUMANodes[i]
+	}
+}
+
+// checkGPUCountMismatch returns a short description when the parsed
+// matrix disagrees with NVML's GPU count, or an empty string when they
+// match. The caller emits a WARN so the mismatch is visible without
+// aborting the collector.
+func checkGPUCountMismatch(matrix *nic.TopoMatrix, metadata *model.GPUMetadata) string {
+	topo, nvml := len(matrix.GPUs), len(metadata.GPUs)
+	if topo == nvml {
+		return ""
+	}
+
+	return fmt.Sprintf("topo matrix parsed %d GPU columns but NVML reports %d GPUs", topo, nvml)
 }
 
 // prepareTopologyData builds the device map and parses NVLink topology.
