@@ -45,11 +45,12 @@ var (
 	nicLegendEntry   = regexp.MustCompile(`^(NIC\d+)\s*:\s*(\S+)\s*$`)
 	dataCellPattern  = regexp.MustCompile(`^(X|PIX|PXB|PHB|NODE|SYS|NV\d+)$`)
 
-	// ansiEscape matches ANSI escape sequences (CSI sequences like
-	// \x1b[4m for underline-on, \x1b[0m for reset). nvidia-smi emits
-	// these in its piped output on some driver versions to underline the
-	// header row, which breaks field parsing if not stripped first.
-	ansiEscape = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+	// ansiEscape matches ANSI escape sequences: CSI sequences (e.g.,
+	// \x1b[4m underline-on, \x1b[0m reset), OSC sequences (terminated
+	// by BEL), and the 8-bit CSI introducer (\x9b). nvidia-smi emits
+	// SGR sequences in piped output on some driver versions to underline
+	// the header row, which breaks field parsing if not stripped first.
+	ansiEscape = regexp.MustCompile("[\u001B\u009B][[\\]()#;?]*(?:(?:(?:[a-zA-Z\\d]*(?:;[a-zA-Z\\d]*)*)?\u0007)|(?:(?:\\d{1,4}(?:;\\d{0,4})*)?[\\dA-PRZcf-ntqry=><~]))")
 )
 
 // TopoMatrix is the parsed relationship map. NICs entries are remapped
@@ -90,7 +91,7 @@ func ParseTopoMatrix(output string) (*TopoMatrix, error) {
 
 	headerIdx, headers, err := findHeaderRow(lines)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse nvidia-smi topo -m header: %w", err)
 	}
 
 	gpuCols, nicCols := collectColumns(headers)

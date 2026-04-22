@@ -215,16 +215,17 @@ func TestCollectNoNICsLeavesTopologyEmptyButPopulatesNUMA(t *testing.T) {
 	assert.Equal(t, 0, metadata.GPUs[0].NUMANode, "NUMA must be populated even without NICs")
 }
 
-// TestCollectNilTopoCollectorLeavesFieldsEmpty verifies that passing a
-// nil topology collector disables topology publishing without crashing.
-func TestCollectNilTopoCollectorLeavesFieldsEmpty(t *testing.T) {
+// TestCollectEmptyTopoCollectorLeavesFieldsEmpty verifies that a topo
+// collector returning nil matrix leaves topology fields empty.
+func TestCollectEmptyTopoCollectorLeavesFieldsEmpty(t *testing.T) {
 	fake := &fakeNVMLClient{deviceCount: 1, driverVersion: "560.35.03"}
 
-	collector := NewCollector(fake, nil)
+	collector := NewCollector(fake, &fakeNICTopoCollector{})
 
 	metadata, err := collector.Collect(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, metadata.NICTopology)
+	assert.Equal(t, -1, metadata.GPUs[0].NUMANode)
 }
 
 // TestCollectGPUCountMismatchDropsTopology verifies that when the topo
@@ -250,24 +251,26 @@ func TestCollectGPUCountMismatchDropsTopology(t *testing.T) {
 }
 
 func TestCheckGPUCountMismatch(t *testing.T) {
-	match := checkGPUCountMismatch(
+	err := checkGPUCountMismatch(
 		&nic.TopoMatrix{GPUs: []string{"GPU0", "GPU1"}},
 		&model.GPUMetadata{GPUs: []model.GPUInfo{{GPUID: 0}, {GPUID: 1}}},
 	)
-	assert.Empty(t, match, "equal counts must produce no mismatch message")
+	assert.NoError(t, err, "equal counts must produce no error")
 
-	short := checkGPUCountMismatch(
+	err = checkGPUCountMismatch(
 		&nic.TopoMatrix{GPUs: []string{"GPU0", "GPU1"}},
 		&model.GPUMetadata{GPUs: []model.GPUInfo{{GPUID: 0}, {GPUID: 1}, {GPUID: 2}}},
 	)
-	assert.Contains(t, short, "2 GPU columns")
-	assert.Contains(t, short, "3 GPUs")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "2 GPU columns")
+	assert.Contains(t, err.Error(), "3 GPUs")
 
-	long := checkGPUCountMismatch(
+	err = checkGPUCountMismatch(
 		&nic.TopoMatrix{GPUs: []string{"GPU0", "GPU1", "GPU2"}},
 		&model.GPUMetadata{GPUs: []model.GPUInfo{{GPUID: 0}}},
 	)
-	assert.Contains(t, long, "3 GPU columns")
-	assert.Contains(t, long, "1 GPUs")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "3 GPU columns")
+	assert.Contains(t, err.Error(), "1 GPUs")
 }
 
