@@ -139,7 +139,7 @@ func TestFaultRemediationColdStart(t *testing.T) {
 		// Step 4: Delete FR's resume token so the change stream starts
 		// fresh from "now" and cannot replay the missed event.
 		t.Log("Step 4: Deleting FR resume token from MongoDB")
-		helpers.DeleteResumeToken(ctx, t, restConfig, mongoPod, "fault-remediation")
+		helpers.DeleteResumeToken(ctx, t, restConfig, client, mongoPod, "fault-remediation")
 
 		// Step 5: Scale FR back to 1. The change stream starts from
 		// "now" (no resume token), so the only way FR can find the
@@ -279,7 +279,7 @@ func TestNodeDrainerColdStart(t *testing.T) {
 		// Step 4: Delete ND's resume token so the change stream starts
 		// fresh and cannot replay the missed event.
 		t.Log("Step 4: Deleting ND resume token from MongoDB")
-		helpers.DeleteResumeToken(ctx, t, restConfig, mongoPod, "node-drainer")
+		helpers.DeleteResumeToken(ctx, t, restConfig, client, mongoPod, "node-drainer")
 
 		// Step 5: Verify no draining label exists yet (ND is still down).
 		t.Log("Step 5: Confirming node is NOT draining while ND is offline")
