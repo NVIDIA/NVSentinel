@@ -623,17 +623,17 @@ func (l *Labeler) handleNodeEvent(obj any) error {
 }
 
 func (l *Labeler) updateNodeLabels(nodeName string) error {
-	driverLabel, err := l.getDriverLabelForNode(nodeName)
-	if err != nil {
-		return fmt.Errorf("failed to check driver pods for node %s: %w", nodeName, err)
-	}
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		driverLabel, err := l.getDriverLabelForNode(nodeName)
+		if err != nil {
+			return fmt.Errorf("failed to check driver pods for node %s: %w", nodeName, err)
+		}
 
-	dcgmVersion, err := l.getDCGMVersionForNode(nodeName)
-	if err != nil {
-		return fmt.Errorf("failed to check DCGM pods for node %s: %w", nodeName, err)
-	}
+		dcgmVersion, err := l.getDCGMVersionForNode(nodeName)
+		if err != nil {
+			return fmt.Errorf("failed to check DCGM pods for node %s: %w", nodeName, err)
+		}
 
-	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		node, err := l.clientset.CoreV1().Nodes().Get(l.ctx, nodeName, metav1.GetOptions{})
 		if err != nil {
 			return err

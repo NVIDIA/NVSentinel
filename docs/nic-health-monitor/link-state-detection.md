@@ -254,7 +254,7 @@ const (
 **Physical State Substates**: `Sleep (1)`, `Polling (2)`, `Disabled (3)`, `Training (4)`, `LinkUp (5)`, `LinkErrorRecovery (6)`
 
 - **Polling (2)**: Transient state during link training. Every port passes through Polling when establishing a connection. Classified as **Non-Fatal** (`IsFatal=false`). If a port remains in Polling, it won't count as active in the card homogeneity check, so the card's active port count will fall below the peer mode and be caught as a Fatal anomaly (see Section 4.2).
-- **LinkErrorRecovery (6)**: Active error recovery in progress (FATAL)
+- **LinkErrorRecovery (6)**: Active error recovery in progress. Classified as **Non-Fatal** (`IsFatal=false`) because the HCA firmware is actively retrying. If recovery fails and the port remains unhealthy, the card homogeneity check (Section 4.3) escalates to Fatal by detecting fewer active ports than peers.
 
 ### 3.3 Diagnostic Commands
 
@@ -317,14 +317,14 @@ cat /sys/class/infiniband/mlx5_0/ports/1/phys_state
 This section describes three zero-configuration mechanisms that replace the previous `gpu_port_config` / `AtLeastPorts` / `AtLeastRate` approach. These mechanisms require no per-GPU-type configuration and work automatically across DGX, HGX, Grace-based superchips (GB200/GH200), OEM servers, and cloud VMs.
 
 - **Section 4.1**: NUMA-based management NIC exclusion (exclude NICs on non-GPU NUMA nodes)
-- **Section 4.2**: NIC role classification (topo matrix + link layer + optional default-route exclusion)
+- **Section 4.2**: NIC role classification (topo matrix + link layer + default-route exclusion)
 - **Section 4.3**: Role-based card homogeneity (detect uncabled ports and failures within each role group)
 
 The classification of each NIC uses a **three-step decision** built from four complementary signals:
 
 1. **Step 1 — Management gate (NUMA locality, Section 4.1)**: Is the NIC on a CPU socket that hosts GPUs? If not, exclude it.
 2. **Step 2 — Compute vs Storage (topo matrix + link layer, Section 4.2)**: For NICs that pass Step 1, consult the `nvidia-smi topo -m` GPU↔NIC relationship. If the topo matrix shows PCIe proximity (PIX/PXB), classify as Compute. Otherwise, use the NIC's **link layer** as a tiebreaker: InfiniBand NICs are Compute fabric; Ethernet NICs are Storage.
-3. **Step 3 — Default route exclusion (optional, Section 4.2)**: If the NIC carries the host's default IP route, classify as Management regardless of topo or link layer. This catches management NICs that share a NUMA node with GPUs (e.g., on-prem L40S, GB200).
+3. **Step 3 — Default route exclusion (Section 4.2)**: If the NIC carries the host's default IP route, classify as Management regardless of topo or link layer. This catches management NICs that share a NUMA node with GPUs (e.g., on-prem L40S, GB200). The classifier reads the host's `/proc/net/route` (bind-mounted at `/nvsentinel/proc/net/route`) at startup to resolve the default route interface.
 
 These steps use four **complementary signals**, each covering platforms where the others fail:
 
@@ -399,16 +399,24 @@ The mapping from NVIDIA topology levels (the `nvmlGpuTopologyLevel_t` enum, disp
 
 ```
 classify_nic(nic):
-    # Step 1: NUMA isolation gate
+    # Step 1: Default route exclusion
+    # Catches management NICs that share a NUMA node with GPUs
+    # (e.g., on-prem L40S, GB200). Runs first so the management NIC
+    # is excluded even if it has PCIe proximity to a GPU.
+    if device == default_route_device:
+        return Management
+
+    # Step 2: NUMA isolation gate
     if nic_numa not in gpu_numa_set:
         return Management
 
-    # Step 2: Role determination (topo + link layer)
+    # Step 3: Role determination (topo + link layer)
     topo = topo_matrix[nic]  # array of relationships, one per GPU
 
     if any GPU has PIX or PXB:
         return Compute
 
+    # Step 4: Topology-based classification
     if link_layer == "InfiniBand":
         return Compute
 
@@ -417,28 +425,19 @@ classify_nic(nic):
 
     # All-SYS fallback (Grace/GB200 where GPUs aren't on PCIe)
     return Storage
-
-    # Step 3: Default route exclusion (optional enhancement)
-    # Applied as a pre-check before Steps 1-2 when hostNetwork access is available.
-    # If the NIC carries the host's default IP route → Management (excluded).
-    # This catches management NICs that share NUMA with GPUs
-    # (e.g., mlx5_0 on on-prem L40S, roceP6p3s0 on GB200).
-    # If not available, Steps 1-2 still produce correct results:
-    # the management NIC is classified as Storage (monitored) which is
-    # safe — if it fails, the node has lost connectivity anyway.
 ```
 
 **Precedence explained**:
 
 1. **PIX/PXB → Compute**: The topo matrix authoritatively identifies NICs that share a PCIe switch with a GPU. This is the primary signal on SXM systems (DGX/HGX A100, H100).
 
-2. **InfiniBand → Compute**: On platforms where no NIC has PIX/PXB to a GPU (PCIe-only GPUs like L40S, or Grace where GPUs aren't on PCIe), the link layer distinguishes compute fabric NICs (InfiniBand) from storage/management NICs (Ethernet). This is the decisive signal on on-prem L40S and GB200.
+2. **Default route → Management**: Runs before topology classification. The classifier reads `/proc/net/route` at startup, finds the default route interface, and maps it to an IB device via `/sys/class/net/<iface>/device/infiniband/`. This prevents the management NIC from being monitored as Storage, avoiding false REPLACE_VM for control-plane network failures. If `/proc/net/route` is unavailable or the interface has no IB backing, the check is silently skipped.
 
-3. **NODE/PHB → Storage**: NICs that share a NUMA node or host bridge with a GPU but don't share a PCIe switch and aren't InfiniBand. Typical storage NIC layout on H100 OCI (Slot1/Slot2 ConnectX-7 Ethernet cards).
+3. **InfiniBand → Compute**: On platforms where no NIC has PIX/PXB to a GPU (PCIe-only GPUs like L40S, or Grace where GPUs aren't on PCIe), the link layer distinguishes compute fabric NICs (InfiniBand) from storage/management NICs (Ethernet). This is the decisive signal on on-prem L40S and GB200.
 
-4. **All-SYS fallback → Storage**: NICs on a GPU NUMA but with no PCIe relationship and Ethernet link layer. Safe default: monitored.
+4. **NODE/PHB → Storage**: NICs that share a NUMA node or host bridge with a GPU but don't share a PCIe switch and aren't InfiniBand. Typical storage NIC layout on H100 OCI (Slot1/Slot2 ConnectX-7 Ethernet cards).
 
-5. **Default route → Management (optional)**: If enabled, excludes the host-networking NIC before Steps 1-2 run. This prevents the management NIC from being monitored as Storage, which avoids emitting REPLACE_VM for control-plane network failures. If not enabled, the management NIC ends up as Storage (still monitored, in a separate group from IB Compute NICs), which is operationally acceptable.
+5. **All-SYS fallback → Storage**: NICs on a GPU NUMA but with no PCIe relationship and Ethernet link layer. Safe default: monitored.
 
 #### 4.2.3 Three-Tier Classification
 
@@ -446,7 +445,7 @@ Combined with the NUMA gate from Section 4.1, the monitor assigns each NIC to on
 
 | Role           | Detection                                                                                                                                | Monitoring Behavior                                            |
 |----------------|------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------|
-| **Management** | NIC NUMA has no compute GPU, **or** NIC carries the host's default route (optional), **or** NIC is a BlueField DPU in the all-SYS branch | Excluded from monitoring entirely                              |
+| **Management** | NIC NUMA has no compute GPU, **or** NIC carries the host's default route, **or** NIC is a BlueField DPU in the all-SYS branch | Excluded from monitoring entirely                              |
 | **Compute**    | Any GPU has PIX or PXB relationship to this NIC, **or** NIC link layer is InfiniBand (when no PIX/PXB exists)                            | Monitored; compared against other compute NICs for homogeneity |
 | **Storage**    | Ethernet NIC with NODE or PHB to a GPU, **or** Ethernet NIC in all-SYS fallback on GPU NUMA                                              | Monitored; compared against other storage NICs for homogeneity |
 
@@ -498,7 +497,7 @@ With the link-layer check:
 
 Result: 0 Management + 4 Compute + 1 Storage. The 4 IB NICs are in the Compute homogeneity group; the Ethernet management NIC is in a separate Storage group. No cross-comparison between IB and Ethernet, preventing false positives from hardware diversity.
 
-With the optional default-route check enabled: `mlx5_0` (carries default route) → **Management** (excluded). Result becomes: 1 Management + 4 Compute + 0 Storage.
+With the default-route check: `mlx5_0` (carries default route) → **Management** (excluded). Result: 1 Management + 4 Compute + 0 Storage.
 
 **GB200 NVL4 (2-socket Grace Neoverse-V2, 4 GPUs, 6 PF NICs: 4 ConnectX-7 IB + 2 BlueField-3 DPU):**
 
@@ -517,7 +516,7 @@ Result: 2 Management (BlueField DPUs) + 4 Compute (IB ConnectX-7) + 0 Storage. T
 
 Known BlueField HCA types excluded: MT41682 (BlueField-2), MT41686 (BlueField-2 variant), MT41692 (BlueField-3). Unrecognised HCA types fall through to Storage (monitored) — the safe direction for future hardware.
 
-With the optional default-route check also enabled: `roceP6p3s0` (carries default route) would be excluded by Step 3 before the HCA check even runs. Same result, different detection path.
+With the default-route check: `roceP6p3s0` (carries default route) would be excluded by Step 3 before the HCA check even runs. Same result, different detection path.
 
 ### 4.3 Uncabled Port Detection (Role-Based Card Homogeneity)
 
@@ -1140,9 +1139,15 @@ The key question: **"Will the workload fail because of this?"**
 | **NIC state = DOWN**               | **RecommendedAction_REPLACE_VM** | No network connectivity, workloads will timeout            |
 | **Device disappeared**             | **RecommendedAction_REPLACE_VM** | Hardware failure, immediate job failure                    |
 | **phys_state = Disabled**          | **RecommendedAction_REPLACE_VM** | Port disabled, no communication possible                   |
-| **phys_state = LinkErrorRecovery** | **RecommendedAction_REPLACE_VM** | Active link problems                                       |
 | **Uncabled port anomaly**          | **RecommendedAction_REPLACE_VM** | Card has fewer active ports than peers (homogeneity check) |
 | **Port flapping (3+ cycles)**      | **RecommendedAction_REPLACE_VM** | Intermittent hardware/cable instability                    |
+
+### Non-Fatal State Conditions (IsFatal = false)
+
+| Condition                          | Recommended Action               | Rationale                                                  |
+|------------------------------------|----------------------------------|------------------------------------------------------------|
+| **phys_state = LinkErrorRecovery** | **RecommendedAction_NONE**       | HCA firmware actively retrying; escalated to fatal by card homogeneity check if persistent |
+| **phys_state = Polling**           | **RecommendedAction_NONE**       | Transient link training; escalated to fatal by card homogeneity check if persistent |
 
 ### Fatal Counters (IsFatal = true)
 
@@ -1163,7 +1168,7 @@ For kernel log pattern details (fatal and non-fatal classifications, regex patte
 |----------------------------------|----------------------------------|-------------------------------------------------------|
 | `state = DOWN`                   | **RecommendedAction_REPLACE_VM** | `/sys/class/infiniband/<dev>/ports/<port>/state`      |
 | `phys_state = Disabled`          | **RecommendedAction_REPLACE_VM** | `/sys/class/infiniband/<dev>/ports/<port>/phys_state` |
-| `phys_state = LinkErrorRecovery` | **RecommendedAction_REPLACE_VM** | `/sys/class/infiniband/<dev>/ports/<port>/phys_state` |
+| `phys_state = LinkErrorRecovery` | **RecommendedAction_NONE**       | `/sys/class/infiniband/<dev>/ports/<port>/phys_state` (non-fatal; escalated by homogeneity check if persistent) |
 | Uncabled port anomaly            | **RecommendedAction_REPLACE_VM** | Card homogeneity check (PCI card grouping + mode)     |
 | Device disappeared               | **RecommendedAction_REPLACE_VM** | Device enumeration in `/sys/class/infiniband/`        |
 
