@@ -59,6 +59,37 @@ global:
   imagePullSecrets: []
 ```
 
+### Tracing
+
+Enable OpenTelemetry distributed tracing to get end-to-end visibility into health event processing across all modules.
+
+```yaml
+global:
+  tracing:
+    enabled: false       # Enable/disable tracing for all components
+    endpoint: ""         # OTLP gRPC address of your OpenTelemetry Collector (e.g., "alloy.observability.svc.cluster.local:4317")
+    insecure: true       # Set to false if the collector endpoint uses TLS
+```
+
+For full details, see [Distributed Tracing](../tracing.md).
+
+### Audit logging
+
+Enable file-based audit logs of HTTP write operations (POST, PUT, PATCH, DELETE) to the Kubernetes and CSP APIs, with rotation and optional request-body capture.
+
+```yaml
+global:
+  auditLogging:
+    enabled: true
+    logRequestBody: false
+    maxSizeMB: 100
+    maxBackups: 7
+    maxAgeDays: 30
+    compress: true
+```
+
+For full details, see [Audit Logging](../audit-logging.md).
+
 ## Module-Specific Configuration
 
 Each module has additional configuration options documented in its dedicated guide:

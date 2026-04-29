@@ -101,7 +101,53 @@ kubectl get nodes  # Verify GPU nodes are visible
 
 ## 🎮 Try the Demo
 
-Want to see NVSentinel in action without GPU hardware? Try our **[Local Fault Injection Demo](demos/local-fault-injection-demo/README.md)**:
+### Demo Videos
+
+See NVSentinel in action — click any thumbnail to watch:
+
+<table>
+<tr>
+<td align="center" width="33%">
+<a href="https://youtu.be/6HHYMF-YfqY">
+<img src="https://img.youtube.com/vi/6HHYMF-YfqY/hqdefault.jpg" alt="End-to-End" width="100%"/>
+<br/><b>End-to-End</b>
+</a>
+</td>
+<td align="center" width="33%">
+<a href="https://youtu.be/0qmrHUmxNPQ">
+<img src="https://img.youtube.com/vi/0qmrHUmxNPQ/hqdefault.jpg" alt="Custom Health Monitors" width="100%"/>
+<br/><b>Custom Health Monitors</b>
+</a>
+</td>
+<td align="center" width="33%">
+<a href="https://youtu.be/G1j4NV5IMkY">
+<img src="https://img.youtube.com/vi/G1j4NV5IMkY/hqdefault.jpg" alt="Custom Drain Plugins" width="100%"/>
+<br/><b>Custom Drain Plugins</b>
+</a>
+</td>
+</tr>
+<tr>
+<td align="center" width="33%">
+<a href="https://youtu.be/VVAtON7ERHQ">
+<img src="https://img.youtube.com/vi/VVAtON7ERHQ/hqdefault.jpg" alt="Extensible Remediation" width="100%"/>
+<br/><b>Extensible Remediation</b>
+</a>
+</td>
+<td align="center" width="33%">
+<a href="https://youtu.be/kwWnC0SEFEI">
+<img src="https://img.youtube.com/vi/kwWnC0SEFEI/hqdefault.jpg" alt="Health Events Analyzer" width="100%"/>
+<br/><b>Health Events Analyzer</b>
+</a>
+</td>
+<td></td>
+</tr>
+</table>
+
+See the [demos directory](demos/) for full descriptions.
+
+### Run It Locally
+
+Want to try NVSentinel without GPU hardware? Run our **[Local Fault Injection Demo](demos/local-fault-injection-demo/README.md)**:
 
 - 🚀 **5-minute setup** - runs entirely in a local KIND cluster
 - 🔍 **Real pipeline** - see fault detection → quarantine → node cordon

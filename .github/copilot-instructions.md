@@ -203,7 +203,7 @@ testEnv.Stop()
 ### GitHub Actions Workflows
 - **PR Checks**: lint, test, build for all modules
 - **Release**: automated image builds and Helm chart publishing
-- **Vulnerability Scanning**: daily Trivy scans uploaded to Security tab
+- **Code Scanning**: CodeQL static analysis on push/PR, with Dependabot security alerts for dependencies
 - **Provenance**: SLSA attestation for all artifacts
 
 ### Container Images

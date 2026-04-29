@@ -85,21 +85,21 @@ type nodeLock struct {
 func (lock *nodeLock) LockNode(ctx context.Context, maintenanceObject client.Object, nodeName string) bool {
 	nodeLockName, lease, err := lock.getNodeLockLease(ctx, nodeName)
 	if err == nil {
-		slog.Debug("Node lock already exists, checking if current maintenance resource is the holder",
+		slog.DebugContext(ctx, "Node lock already exists, checking if current maintenance resource is the holder",
 			"maintenanceResource", maintenanceObject.GetName(), "nodeLockName", nodeLockName)
 
 		return lease.GetOwnerReferences()[0].UID == maintenanceObject.GetUID()
 	}
 
 	if !apierrors.IsNotFound(err) {
-		slog.Error("Got an error fetching node lock lease",
+		slog.ErrorContext(ctx, "Got an error fetching node lock lease",
 			"error", err, "maintenanceResource", maintenanceObject.GetName(), "nodeLockName", nodeLockName)
 		metrics.IncActionCount(metrics.ActionTypeLock, metrics.StatusFailed, nodeName)
 
 		return false
 	}
 
-	slog.Debug("Node lock lease does not exist, attempting to acquire the lock",
+	slog.DebugContext(ctx, "Node lock lease does not exist, attempting to acquire the lock",
 		"maintenanceResource", maintenanceObject.GetName(), "nodeLockName", nodeLockName)
 
 	// Get GVK from the object - if empty, infer from object type
@@ -145,18 +145,18 @@ func (lock *nodeLock) LockNode(ctx context.Context, maintenanceObject client.Obj
 	err = lock.Create(ctx, lease)
 	if err != nil {
 		if !apierrors.IsAlreadyExists(err) {
-			slog.Error("Got an error creating node lock lease, failed to acquire the lock",
+			slog.ErrorContext(ctx, "Got an error creating node lock lease, failed to acquire the lock",
 				"error", err, "maintenanceResource", maintenanceObject.GetName(), "nodeLockName", nodeLockName)
 			metrics.IncActionCount(metrics.ActionTypeLock, metrics.StatusFailed, nodeName)
 		} else {
-			slog.Debug("Node lock lease already exists, failed to acquire the lock",
+			slog.DebugContext(ctx, "Node lock lease already exists, failed to acquire the lock",
 				"maintenanceResource", maintenanceObject.GetName(), "nodeLockName", nodeLockName)
 		}
 
 		return false
 	}
 
-	slog.Info("Successfully created node lock lease and acquired lock",
+	slog.InfoContext(ctx, "Successfully created node lock lease and acquired lock",
 		"maintenanceResource", maintenanceObject.GetName(), "nodeLockName", nodeLockName)
 
 	return true
@@ -180,7 +180,7 @@ we won't ever need to re-acquire the lock since the node is gone, however, it en
 */
 func (lock *nodeLock) CheckUnlock(ctx context.Context,
 	maintenanceObject client.Object, nodeName string) (retryUnlock bool) {
-	slog.Debug("Completion timestamp set for maintenance resource, checking if lock needs released",
+	slog.DebugContext(ctx, "Completion timestamp set for maintenance resource, checking if lock needs released",
 		"maintenanceResource", maintenanceObject.GetName())
 
 	nodeLockName, lease, err := lock.getNodeLockLease(ctx, nodeName)
@@ -188,13 +188,13 @@ func (lock *nodeLock) CheckUnlock(ctx context.Context,
 		return handleNotFoundError(err, nodeLockName, nodeName)
 	}
 
-	slog.Debug("Node lock already exists, checking if current maintenance resource is the holder",
+	slog.DebugContext(ctx, "Node lock already exists, checking if current maintenance resource is the holder",
 		"maintenanceResource", maintenanceObject.GetName(), "nodeLockName", nodeLockName)
 	// The current maintenance object will always have the lock for the second invocation of checkUnlock in
 	// ReconcileWrapper because it is called after lockNode, however, this check is required on the first invocation
 	// of the function where it is not known if the current maintenance object is the holder of the lock.
 	if lease.GetOwnerReferences()[0].UID == maintenanceObject.GetUID() {
-		slog.Debug("Node lock needs released for maintenance resource, attempting to delete lock",
+		slog.DebugContext(ctx, "Node lock needs released for maintenance resource, attempting to delete lock",
 			"maintenanceResource", maintenanceObject.GetName(), "nodeLockName", lease.GetName())
 
 		err = lock.Delete(ctx, lease)
@@ -202,10 +202,10 @@ func (lock *nodeLock) CheckUnlock(ctx context.Context,
 			return handleNotFoundError(err, nodeName, nodeName)
 		}
 
-		slog.Info("Node lock successfully released for maintenance resource",
+		slog.InfoContext(ctx, "Node lock successfully released for maintenance resource",
 			"maintenanceResource", maintenanceObject.GetName(), "nodeLockName", lease.GetName())
 	} else {
-		slog.Debug("Node lock already exists but the current maintenance resource isn't the owner",
+		slog.DebugContext(ctx, "Node lock already exists but the current maintenance resource isn't the owner",
 			"maintenanceResource", maintenanceObject.GetName())
 	}
 

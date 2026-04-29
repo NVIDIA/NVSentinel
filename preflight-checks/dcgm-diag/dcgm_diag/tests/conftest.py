@@ -114,6 +114,7 @@ class MockPyDCGM:
         def __init__(self, ipAddress: str | None = None, opMode: int | None = None) -> None:
             self.ipAddress = ipAddress
             self.opMode = opMode
+            self.handle = MagicMock()
 
         def Shutdown(self) -> None:
             pass
@@ -135,11 +136,21 @@ class MockPyDCGM:
             pass
 
 
+class MockDCGMAgent:
+    """Mock dcgm_agent module for testing."""
+
+    @staticmethod
+    def dcgmStopDiagnostic(handle: object) -> None:
+        pass
+
+
 # Install mocks in sys.modules before any imports
 dcgm_structs_mock = MockDCGMStructs()
+dcgm_agent_mock = MockDCGMAgent()
 pydcgm_mock = MockPyDCGM()
 pynvml_mock = MockPyNVML()
 
+sys.modules["dcgm_agent"] = dcgm_agent_mock
 sys.modules["dcgm_structs"] = dcgm_structs_mock
 sys.modules["pydcgm"] = pydcgm_mock
 sys.modules["pynvml"] = pynvml_mock

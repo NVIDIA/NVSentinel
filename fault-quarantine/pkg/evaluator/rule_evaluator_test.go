@@ -261,10 +261,11 @@ func TestRoundTrip(t *testing.T) {
 			"seconds": float64(eventTime.GetSeconds()),
 			"nanos":   float64(eventTime.GetNanos()),
 		},
-		"nodeName":            "test-node",
-		"processingStrategy":  float64(0),
-		"quarantineOverrides": nil,
-		"drainOverrides":      nil,
+		"nodeName":                 "test-node",
+		"processingStrategy":        float64(0),
+		"quarantineOverrides":       nil,
+		"drainOverrides":            nil,
+		"customRecommendedAction":   "",
 	}
 
 	if !reflect.DeepEqual(result, expectedMap) {

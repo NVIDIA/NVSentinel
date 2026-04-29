@@ -19,6 +19,23 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// sxidCounterMetric is intentionally NOT pre-initialized at startup (unlike the
+// sibling XID / GPU-fallen counters). Its label set includes both link and
+// nvswitch, which together carry per-event cardinality that is not enumerable
+// at startup: on any given NVSwitch-backed node the specific (err_code, link,
+// nvswitch) triples that will actually fire are unknown until an event occurs.
+//
+// Emitting a fake combination at startup would either pollute the series space
+// with entries that never match a real event (and never cancel out the Google
+// Managed Prometheus "first-sample-as-baseline" bug for the real series) or,
+// if we enumerated the full cartesian product, create hundreds of stale series
+// per pod. Both outcomes are worse than the first-sample loss we are trying to
+// fix.
+//
+// If we ever need to close the first-sample gap for SXID as well, the right
+// approach is to drop the link/nvswitch labels on this counter (keeping them
+// on the emitted health event / logs) so the remaining {node, err_code} space
+// becomes enumerable.
 var (
 	sxidCounterMetric = promauto.NewCounterVec(
 		prometheus.CounterOpts{

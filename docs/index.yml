@@ -74,6 +74,10 @@ navigation:
     contents:
       - page: Metrics Reference
         path: METRICS.md
+      - page: Distributed Tracing
+        path: tracing.md
+      - page: Audit Logging
+        path: audit-logging.md
 
   - section: Configuration
     contents:

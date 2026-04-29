@@ -35,7 +35,11 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/commons/pkg/stringutil"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/common"
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/gpufallen"
 	fd "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/syslog-monitor"
+	xidmetrics "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid/metrics"
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid/parser"
 )
 
 const (
@@ -124,6 +128,8 @@ func run() error {
 		ff.Set(c.Name, true)
 	}
 
+	preInitializeMetrics(nodeName, checks)
+
 	monitor, pollingInterval, err := createSyslogMonitor(nodeName, checks, client)
 	if err != nil {
 		return err
@@ -145,6 +151,10 @@ func run() error {
 
 		return nil
 	})
+
+	if err := waitForSidecarIfEnabled(gCtx, nodeName); err != nil {
+		return err
+	}
 
 	g.Go(func() error {
 		return runPollingLoop(gCtx, monitor, pollingInterval, checks)
@@ -226,6 +236,65 @@ func applyKataConfig(list []fd.CheckDefinition) []fd.CheckDefinition {
 	}
 
 	return filtered
+}
+
+// preInitializeMetrics materializes the CounterVec series owned by this agent
+// at zero so backends that establish a baseline from the first ingested sample
+// (e.g. Google Managed Prometheus) do not drop the first real occurrence of
+// an XID / GPU-fallen event on this node. See
+// https://cloud.google.com/stackdriver/docs/managed-prometheus/troubleshooting#counter-sums
+// and NVIDIA/NVSentinel#1196.
+//
+// Pre-initialization is gated on the set of checks enabled for this pod, so a
+// DaemonSet deployment that only runs a subset of the checks (e.g. Kata mode
+// disables SXID) does not export counters for disabled subsystems.
+func preInitializeMetrics(nodeName string, enabledChecks []fd.CheckDefinition) {
+	enabled := make(map[string]bool, len(enabledChecks))
+	for _, c := range enabledChecks {
+		enabled[c.Name] = true
+	}
+
+	if enabled[fd.XIDErrorCheck] {
+		xidCodes, err := knownXIDCodes()
+		if err != nil {
+			// Loading the embedded catalog is best-effort: pre-initialization
+			// is an observability nicety, not a correctness requirement. Log
+			// and continue so the monitor still starts.
+			slog.Warn("Could not load XID catalog for metric pre-initialization; "+
+				"first observation of each XID code on this node may be lost in "+
+				"Google Managed Prometheus",
+				"error", err)
+		} else {
+			xidmetrics.PreInitialize(nodeName, xidCodes)
+			slog.Info("Pre-initialized XID counter metrics at zero",
+				"node", nodeName, "xidCodeCount", len(xidCodes))
+		}
+	}
+
+	if enabled[fd.GPUFallenOffCheck] {
+		gpufallen.PreInitialize(nodeName)
+		slog.Info("Pre-initialized GPU-fallen counter metric at zero", "node", nodeName)
+	}
+
+	// SxidCounterMetric is deliberately not pre-initialized because its
+	// {link, nvswitch} labels carry per-event cardinality that is not
+	// enumerable at startup. See pkg/sxid/metrics.go for the rationale.
+}
+
+// knownXIDCodes returns the set of XID codes baked into the embedded NVIDIA
+// catalog. Used to pre-initialize XidCounterMetric at 0 per known code.
+func knownXIDCodes() ([]int, error) {
+	m, err := common.LoadErrorResolutionMap()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load XID error resolution map: %w", err)
+	}
+
+	codes := make([]int, 0, len(m))
+	for code := range m {
+		codes = append(codes, code)
+	}
+
+	return codes, nil
 }
 
 func createSyslogMonitor(
@@ -342,6 +411,20 @@ func runPollingLoop(
 			}
 		}
 	}
+}
+
+func waitForSidecarIfEnabled(ctx context.Context, nodeName string) error {
+	if *xidAnalyserEndpoint == "" {
+		return nil
+	}
+
+	sidecar := parser.NewSidecarParser(*xidAnalyserEndpoint, nodeName, "")
+
+	if err := sidecar.WaitUntilReady(ctx, 30, 2*time.Second); err != nil {
+		return fmt.Errorf("sidecar readiness check failed: %w", err)
+	}
+
+	return nil
 }
 
 // dialWithRetry dials a gRPC target with bounded retries and per-attempt timeout.

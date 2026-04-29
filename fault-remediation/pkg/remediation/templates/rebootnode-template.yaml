@@ -16,5 +16,8 @@ apiVersion: {{.ApiGroup}}/{{.Version}}
 kind: RebootNode
 metadata:
   name: maintenance-{{.NodeName}}-{{.HealthEventID}}
+  annotations:
+    nvsentinel.nvidia.com/trace-id: "{{.TraceID}}"
+    nvsentinel.nvidia.com/span-id: "{{.SpanID}}"
 spec:
   nodeName: {{.NodeName}}

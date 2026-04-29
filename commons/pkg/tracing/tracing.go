@@ -52,6 +52,10 @@ const (
 	ServiceFaultQuarantine      = "fault-quarantine"
 	ServiceEventExporter        = "event-exporter"
 	ServiceHealthEventsAnalyzer = "health-events-analyzer"
+	ServiceNodeDrainer          = "node-drainer"
+	ServiceFaultRemediation     = "fault-remediation"
+	TraceIDAnnotationKey        = "nvsentinel.nvidia.com/trace-id"
+	SpanIDAnnotationKey         = "nvsentinel.nvidia.com/span-id"
 )
 
 // MetadataKeyTraceID is the key used to store the trace ID in the health event's

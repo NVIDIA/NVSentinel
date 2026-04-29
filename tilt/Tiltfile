@@ -35,6 +35,8 @@ if use_postgresql:
     print("Using PostgreSQL as datastore (USE_POSTGRESQL=1)")
 elif disable_tls and use_percona_env:
     print("Using Percona MongoDB without TLS (DISABLE_TLS=1, USE_PERCONA=1)")
+elif use_percona_env:
+    print("Using Percona MongoDB with TLS (USE_PERCONA=1)")
 elif disable_tls:
     print("Using MongoDB without TLS (DISABLE_TLS=1)")
 else:
@@ -154,6 +156,8 @@ if use_postgresql:
     values_files.append('../distros/kubernetes/nvsentinel/values-tilt-postgresql.yaml')
 elif disable_tls and use_percona_env:
     values_files.append('../distros/kubernetes/nvsentinel/values-tilt-mongodb-tls-disabled-percona.yaml')
+elif use_percona_env:
+    values_files.append('../distros/kubernetes/nvsentinel/values-tilt-mongodb-percona.yaml')
 elif disable_tls:
     values_files.append('../distros/kubernetes/nvsentinel/values-tilt-mongodb-tls-disabled.yaml')
 else:

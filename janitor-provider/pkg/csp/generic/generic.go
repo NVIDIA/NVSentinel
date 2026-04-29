@@ -93,20 +93,20 @@ func NewClientWithK8s(k8sClient kubernetes.Interface, config Config) *Client {
 func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
 	preRebootBootID := node.Status.NodeInfo.BootID
 	if preRebootBootID == "" {
-		slog.Error("Node has no bootID", "node", node.Name)
+		slog.ErrorContext(ctx, "Node has no bootID", "node", node.Name)
 		return "", fmt.Errorf("node %s has no bootID", node.Name)
 	}
 
 	job := c.buildRebootJob(node.Name)
 
-	slog.Info("Creating reboot Job", "node", node.Name, "namespace", c.config.RebootJobNamespace)
+	slog.InfoContext(ctx, "Creating reboot Job", "node", node.Name, "namespace", c.config.RebootJobNamespace)
 
 	created, err := c.k8sClient.BatchV1().Jobs(c.config.RebootJobNamespace).Create(ctx, job, metav1.CreateOptions{})
 	if err != nil {
 		return "", fmt.Errorf("failed to create reboot job for node %s: %w", node.Name, err)
 	}
 
-	slog.Info("Reboot Job created", "node", node.Name, "job", created.Name,
+	slog.InfoContext(ctx, "Reboot Job created", "node", node.Name, "job", created.Name,
 		"jobNamespace", c.config.RebootJobNamespace, "bootID", preRebootBootID)
 
 	return model.ResetSignalRequestRef(preRebootBootID), nil
@@ -124,18 +124,18 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID st
 
 	currentBootID := node.Status.NodeInfo.BootID
 	if currentBootID == preRebootBootID {
-		slog.Info("Node has not yet rebooted", "node", node.Name, "bootID", currentBootID)
+		slog.InfoContext(ctx, "Node has not yet rebooted", "node", node.Name, "bootID", currentBootID)
 		return false, nil
 	}
 
 	if !isNodeReady(node) {
-		slog.Info("Node rebooted but not yet Ready", "node", node.Name,
+		slog.InfoContext(ctx, "Node rebooted but not yet Ready", "node", node.Name,
 			"oldBootID", preRebootBootID, "newBootID", currentBootID)
 
 		return false, nil
 	}
 
-	slog.Info("Node rebooted and Ready", "node", node.Name,
+	slog.InfoContext(ctx, "Node rebooted and Ready", "node", node.Name,
 		"oldBootID", preRebootBootID, "newBootID", currentBootID)
 
 	c.cleanupRebootJob(ctx, node.Name)
@@ -220,7 +220,7 @@ func (c *Client) checkRebootJobPodStatus(ctx context.Context, nodeName string) e
 		LabelSelector: labelSelector,
 	})
 	if err != nil {
-		slog.Warn("Failed to list reboot job pods, skipping pod status check", "node", nodeName, "error", err)
+		slog.WarnContext(ctx, "Failed to list reboot job pods, skipping pod status check", "node", nodeName, "error", err)
 		return nil
 	}
 
@@ -259,7 +259,7 @@ func (c *Client) cleanupRebootJob(ctx context.Context, nodeName string) {
 		LabelSelector: labelSelector,
 	})
 	if err != nil {
-		slog.Warn("Failed to list reboot jobs for cleanup", "node", nodeName, "error", err)
+		slog.WarnContext(ctx, "Failed to list reboot jobs for cleanup", "node", nodeName, "error", err)
 		return
 	}
 
@@ -268,9 +268,9 @@ func (c *Client) cleanupRebootJob(ctx context.Context, nodeName string) {
 			PropagationPolicy: &propagation,
 		})
 		if err != nil {
-			slog.Warn("Failed to cleanup reboot job", "job", jobs.Items[i].Name, "node", nodeName, "error", err)
+			slog.WarnContext(ctx, "Failed to cleanup reboot job", "job", jobs.Items[i].Name, "node", nodeName, "error", err)
 		} else {
-			slog.Info("Cleaned up reboot job", "job", jobs.Items[i].Name, "node", nodeName)
+			slog.InfoContext(ctx, "Cleaned up reboot job", "job", jobs.Items[i].Name, "node", nodeName)
 		}
 	}
 }

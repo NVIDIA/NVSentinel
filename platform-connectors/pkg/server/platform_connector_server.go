@@ -22,6 +22,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.opentelemetry.io/otel/attribute"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -63,10 +65,16 @@ func (p *PlatformConnectorServer) HealthEventOccurredV1(ctx context.Context,
 	slog.InfoContext(ctx, "Health events received", "events", he)
 	healthEventsReceived.Add(float64(eventCount))
 
-	// Custom monitors that don't set processingStrategy will default to EXECUTE_REMEDIATION.
 	for _, event := range he.Events {
+		// Custom monitors that don't set processingStrategy will default to EXECUTE_REMEDIATION.
 		if event.ProcessingStrategy == pb.ProcessingStrategy_UNSPECIFIED {
 			event.ProcessingStrategy = pb.ProcessingStrategy_EXECUTE_REMEDIATION
+		}
+
+		if event.RecommendedAction == pb.RecommendedAction_CUSTOM && event.CustomRecommendedAction == "" {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"recommendedAction is CUSTOM but customRecommendedAction is empty (node=%s, agent=%s)",
+				event.NodeName, event.Agent)
 		}
 	}
 

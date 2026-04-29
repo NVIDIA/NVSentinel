@@ -687,11 +687,16 @@ type CounterBreachFlag struct {
 // and emit a recovery event (IsHealthy=true). Without this, the platform
 // would remain stuck in the FATAL state for that port.
 // Also enables device disappearance detection across restarts via KnownDevices.
+//
+// LinkLayer ("InfiniBand" or "Ethernet") lets each state check filter the
+// shared map to its own ports on startup so the IB and Ethernet checks
+// don't treat each other's entries as "disappeared" during the seed.
 type PortStateSnapshot struct {
-    State         string `json:"state"`           // e.g., "4: ACTIVE"
-    PhysicalState string `json:"physical_state"`  // e.g., "5: LinkUp"
-    Device        string `json:"device"`          // e.g., "mlx5_0"
+    State         string `json:"state"`                  // raw sysfs value, e.g., "4: ACTIVE", "1: DOWN"
+    PhysicalState string `json:"physical_state"`         // raw sysfs value, e.g., "5: LinkUp", "3: Disabled"
+    Device        string `json:"device"`                 // e.g., "mlx5_0"
     Port          int    `json:"port"`
+    LinkLayer     string `json:"link_layer,omitempty"`   // "InfiniBand" | "Ethernet"
 }
 ```
 
@@ -879,11 +884,16 @@ type CounterBreachFlag struct {
 // checks. Enables recovery event emission (IsHealthy=true) after pod restart
 // when a previously-DOWN port has been fixed. Also enables device disappearance
 // detection across restarts via the KnownDevices list in MonitorState.
+//
+// LinkLayer ("InfiniBand" or "Ethernet") lets each state check filter the
+// shared map to its own ports on startup so the IB and Ethernet checks
+// don't treat each other's entries as "disappeared" during the seed.
 type PersistedPortState struct {
     State         string `json:"state"`
     PhysicalState string `json:"physical_state"`
     Device        string `json:"device"`
     Port          int    `json:"port"`
+    LinkLayer     string `json:"link_layer,omitempty"`
 }
 ```
 
@@ -906,8 +916,8 @@ type PersistedPortState struct {
     }
   },
   "port_states": {
-    "mlx5_0_1": {"state": "1: DOWN", "physical_state": "3: Disabled", "device": "mlx5_0", "port": 1},
-    "mlx5_1_1": {"state": "4: ACTIVE", "physical_state": "5: LinkUp", "device": "mlx5_1", "port": 1}
+    "mlx5_0_1": {"state": "1: DOWN", "physical_state": "3: Disabled", "device": "mlx5_0", "port": 1, "link_layer": "InfiniBand"},
+    "mlx5_1_1": {"state": "4: ACTIVE", "physical_state": "5: LinkUp", "device": "mlx5_1", "port": 1, "link_layer": "InfiniBand"}
   },
   "known_devices": ["mlx5_0", "mlx5_1", "mlx5_2", "mlx5_3"]
 }

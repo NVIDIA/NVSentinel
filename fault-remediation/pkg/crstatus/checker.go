@@ -47,12 +47,12 @@ func NewCRStatusChecker(
 func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, actionName string, crName string) bool {
 	resource, exists := c.remediationActions[actionName]
 	if !exists {
-		slog.Error("No remediation configuration found for action", "action", actionName)
+		slog.ErrorContext(ctx, "No remediation configuration found for action", "action", actionName)
 		return false
 	}
 
 	if c.dryRun {
-		slog.Info("DRY-RUN: CR doesn't exist (dry-run mode)", "crName", crName, "action", actionName)
+		slog.InfoContext(ctx, "DRY-RUN: CR doesn't exist (dry-run mode)", "crName", crName, "action", actionName)
 		return false
 	}
 
@@ -68,7 +68,7 @@ func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, actionName s
 	key := client.ObjectKey{Name: crName, Namespace: resource.Namespace}
 
 	if err := c.client.Get(ctx, key, obj); err != nil {
-		slog.Warn("Failed to get CR, allowing create", "crName", crName, "gvk", gvk.String(), "error", err)
+		slog.WarnContext(ctx, "Failed to get CR, allowing create", "crName", crName, "gvk", gvk.String(), "error", err)
 		return false
 	}
 

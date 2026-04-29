@@ -113,7 +113,7 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 
 	defer func() {
 		if cerr := instancesClient.Close(); cerr != nil {
-			slog.Error("failed to close instances client", "error", cerr)
+			slog.ErrorContext(ctx, "failed to close instances client", "error", cerr)
 		}
 	}()
 
@@ -123,7 +123,7 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 		Zone:     nodeFields.zone,
 	}
 
-	slog.Info("Sending reset signal to", "node", nodeFields.instance)
+	slog.InfoContext(ctx, "Sending reset signal to", "node", nodeFields.instance)
 
 	op, err := instancesClient.Reset(ctx, resetReq)
 	if err != nil {
@@ -147,7 +147,7 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID st
 
 	defer func() {
 		if cerr := zoneOperationsClient.Close(); cerr != nil {
-			slog.Error("failed to close zone operations client", "error", cerr)
+			slog.ErrorContext(ctx, "failed to close zone operations client", "error", cerr)
 		}
 	}()
 
@@ -183,7 +183,7 @@ func (c *Client) SendTerminateSignal(ctx context.Context, node corev1.Node) (mod
 
 	defer func() {
 		if cerr := instancesClient.Close(); cerr != nil {
-			slog.Error("failed to close instances client", "error", cerr)
+			slog.ErrorContext(ctx, "failed to close instances client", "error", cerr)
 		}
 	}()
 
@@ -193,7 +193,7 @@ func (c *Client) SendTerminateSignal(ctx context.Context, node corev1.Node) (mod
 		Zone:     nodeFields.zone,
 	}
 
-	slog.Info("Sending delete signal to", "node", nodeFields.instance)
+	slog.InfoContext(ctx, "Sending delete signal to", "node", nodeFields.instance)
 
 	op, err := instancesClient.Delete(ctx, deleteReq)
 	if err != nil {
@@ -219,7 +219,7 @@ func prepareInstanceOp(
 	nodeFields, err := getNodeFields(node)
 	if err != nil {
 		if cerr := instancesClient.Close(); cerr != nil {
-			slog.Error("failed to close instances client", "error", cerr)
+			slog.ErrorContext(ctx, "failed to close instances client", "error", cerr)
 		}
 
 		return nil, nil, fmt.Errorf("failed to get node fields for node %q: %w", node.Name, err)

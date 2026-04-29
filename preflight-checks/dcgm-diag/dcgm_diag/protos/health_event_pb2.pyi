@@ -29,6 +29,7 @@ class RecommendedAction(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     RESTART_BM: _ClassVar[RecommendedAction]
     REPLACE_VM: _ClassVar[RecommendedAction]
     RUN_DCGMEUD: _ClassVar[RecommendedAction]
+    CUSTOM: _ClassVar[RecommendedAction]
     UNKNOWN: _ClassVar[RecommendedAction]
 UNSPECIFIED: ProcessingStrategy
 EXECUTE_REMEDIATION: ProcessingStrategy
@@ -41,6 +42,7 @@ RESTART_VM: RecommendedAction
 RESTART_BM: RecommendedAction
 REPLACE_VM: RecommendedAction
 RUN_DCGMEUD: RecommendedAction
+CUSTOM: RecommendedAction
 UNKNOWN: RecommendedAction
 
 class OperationStatus(_message.Message):
@@ -103,7 +105,7 @@ class Entity(_message.Message):
     def __init__(self, entityType: _Optional[str] = ..., entityValue: _Optional[str] = ...) -> None: ...
 
 class HealthEvent(_message.Message):
-    __slots__ = ("version", "agent", "componentClass", "checkName", "isFatal", "isHealthy", "message", "recommendedAction", "errorCode", "entitiesImpacted", "metadata", "generatedTimestamp", "nodeName", "quarantineOverrides", "drainOverrides", "processingStrategy", "id")
+    __slots__ = ("version", "agent", "componentClass", "checkName", "isFatal", "isHealthy", "message", "recommendedAction", "errorCode", "entitiesImpacted", "metadata", "generatedTimestamp", "nodeName", "quarantineOverrides", "drainOverrides", "processingStrategy", "id", "customRecommendedAction")
     class MetadataEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -128,6 +130,7 @@ class HealthEvent(_message.Message):
     DRAINOVERRIDES_FIELD_NUMBER: _ClassVar[int]
     PROCESSINGSTRATEGY_FIELD_NUMBER: _ClassVar[int]
     ID_FIELD_NUMBER: _ClassVar[int]
+    CUSTOMRECOMMENDEDACTION_FIELD_NUMBER: _ClassVar[int]
     version: int
     agent: str
     componentClass: str
@@ -145,7 +148,8 @@ class HealthEvent(_message.Message):
     drainOverrides: BehaviourOverrides
     processingStrategy: ProcessingStrategy
     id: str
-    def __init__(self, version: _Optional[int] = ..., agent: _Optional[str] = ..., componentClass: _Optional[str] = ..., checkName: _Optional[str] = ..., isFatal: bool = ..., isHealthy: bool = ..., message: _Optional[str] = ..., recommendedAction: _Optional[_Union[RecommendedAction, str]] = ..., errorCode: _Optional[_Iterable[str]] = ..., entitiesImpacted: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ..., metadata: _Optional[_Mapping[str, str]] = ..., generatedTimestamp: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., nodeName: _Optional[str] = ..., quarantineOverrides: _Optional[_Union[BehaviourOverrides, _Mapping]] = ..., drainOverrides: _Optional[_Union[BehaviourOverrides, _Mapping]] = ..., processingStrategy: _Optional[_Union[ProcessingStrategy, str]] = ..., id: _Optional[str] = ...) -> None: ...
+    customRecommendedAction: str
+    def __init__(self, version: _Optional[int] = ..., agent: _Optional[str] = ..., componentClass: _Optional[str] = ..., checkName: _Optional[str] = ..., isFatal: bool = ..., isHealthy: bool = ..., message: _Optional[str] = ..., recommendedAction: _Optional[_Union[RecommendedAction, str]] = ..., errorCode: _Optional[_Iterable[str]] = ..., entitiesImpacted: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ..., metadata: _Optional[_Mapping[str, str]] = ..., generatedTimestamp: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., nodeName: _Optional[str] = ..., quarantineOverrides: _Optional[_Union[BehaviourOverrides, _Mapping]] = ..., drainOverrides: _Optional[_Union[BehaviourOverrides, _Mapping]] = ..., processingStrategy: _Optional[_Union[ProcessingStrategy, str]] = ..., id: _Optional[str] = ..., customRecommendedAction: _Optional[str] = ...) -> None: ...
 
 class BehaviourOverrides(_message.Message):
     __slots__ = ("force", "skip")

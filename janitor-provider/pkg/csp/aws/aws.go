@@ -101,7 +101,7 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 	providerID := node.Spec.ProviderID
 	if providerID == "" {
 		err := fmt.Errorf("no provider ID found for node %s", node.Name)
-		slog.Error("Failed to reboot node", "error", err)
+		slog.ErrorContext(ctx, "Failed to reboot node", "error", err)
 
 		return "", err
 	}
@@ -109,19 +109,19 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 	// Extract the instance ID from the provider ID
 	instanceID, err := parseAWSProviderID(providerID)
 	if err != nil {
-		slog.Error("Failed to parse provider ID", "error", err)
+		slog.ErrorContext(ctx, "Failed to parse provider ID", "error", err)
 
 		return "", err
 	}
 
 	// Reboot the EC2 instance
-	slog.Info("Rebooting node", "node", node.Name, "instanceID", instanceID)
+	slog.InfoContext(ctx, "Rebooting node", "node", node.Name, "instanceID", instanceID)
 
 	_, err = c.ec2.RebootInstances(ctx, &ec2.RebootInstancesInput{
 		InstanceIds: []string{instanceID},
 	})
 	if err != nil {
-		slog.Error("Failed to reboot instance", "error", err, "instanceID", instanceID)
+		slog.ErrorContext(ctx, "Failed to reboot instance", "error", err, "instanceID", instanceID)
 
 		return "", err
 	}

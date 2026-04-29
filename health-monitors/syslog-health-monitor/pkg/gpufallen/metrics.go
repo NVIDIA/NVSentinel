@@ -29,3 +29,13 @@ var (
 		[]string{"node"},
 	)
 )
+
+// PreInitialize materializes gpuFallenCounterMetric at zero for the local node
+// so backends that establish a baseline from the first ingested sample (e.g.
+// Google Managed Prometheus) do not drop the first real occurrence.
+//
+// Calling PreInitialize is idempotent; WithLabelValues(...).Add(0) is a no-op
+// on an already-materialized counter.
+func PreInitialize(nodeName string) {
+	gpuFallenCounterMetric.WithLabelValues(nodeName).Add(0)
+}

@@ -179,6 +179,21 @@ config:
             cpu: "100m"
             memory: "128Mi"
 
+# TTL-based cleanup of completed maintenance CRs (RebootNode / GPUReset /
+# TerminateNode). See docs/designs/037-janitor-cr-ttl-cleanup.md for details.
+ttl:
+  # Enable the TTL reconcilers. When false, the reconcilers are not registered
+  # at all; maintenance CRs persist indefinitely and any
+  # nvsentinel.nvidia.com/ttl annotations are ignored. Intended for dev/test
+  # environments where CRs should remain for manual inspection.
+  enabled: true
+
+  # System-wide default TTL applied to CRs that don't carry an explicit
+  # nvsentinel.nvidia.com/ttl annotation. Only consulted when ttl.enabled is
+  # true. Set to "0" to disable the default while still honoring per-CR
+  # annotations.
+  defaultTTL: "336h"  # 14 days
+
 # Webhook Configuration
 webhook:
   # Port for the webhook server

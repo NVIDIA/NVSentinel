@@ -251,6 +251,42 @@ func TestAugmentorTransform(t *testing.T) {
 			},
 		},
 		{
+			name: "topograph topology labels",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-node-7",
+					Labels: map[string]string{
+						"network.topology.nvidia.com/accelerator": "clique-7",
+						"network.topology.nvidia.com/leaf":        "leaf-42",
+						"network.topology.nvidia.com/spine":       "spine-3",
+						"network.topology.nvidia.com/core":        "core-1",
+						"node.kubernetes.io/instance-type":        "p5.48xlarge",
+					},
+				},
+				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-topograph1"},
+			},
+			config: &Config{
+				CacheSize: 100,
+				CacheTTL:  1 * time.Hour,
+				AllowedLabels: []string{
+					"network.topology.nvidia.com/accelerator",
+					"network.topology.nvidia.com/leaf",
+					"network.topology.nvidia.com/spine",
+					"network.topology.nvidia.com/core",
+				},
+			},
+			eventNodeName: "test-node-7",
+			expectError:   false,
+			validateResult: func(t *testing.T, event *pb.HealthEvent) {
+				assert.Equal(t, "aws:///us-west-2a/i-topograph1", event.Metadata["providerID"])
+				assert.Equal(t, "clique-7", event.Metadata["network.topology.nvidia.com/accelerator"])
+				assert.Equal(t, "leaf-42", event.Metadata["network.topology.nvidia.com/leaf"])
+				assert.Equal(t, "spine-3", event.Metadata["network.topology.nvidia.com/spine"])
+				assert.Equal(t, "core-1", event.Metadata["network.topology.nvidia.com/core"])
+				assert.NotContains(t, event.Metadata, "node.kubernetes.io/instance-type", "should not include non-allowed labels")
+			},
+		},
+		{
 			name: "multiple nodes enrichment",
 			nodes: []*corev1.Node{
 				{

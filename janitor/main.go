@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -34,6 +35,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -46,9 +48,12 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
 	"github.com/nvidia/nvsentinel/janitor/pkg/controller"
+	janitormetrics "github.com/nvidia/nvsentinel/janitor/pkg/metrics"
+	"github.com/nvidia/nvsentinel/janitor/pkg/ttl"
 	webhookv1alpha1 "github.com/nvidia/nvsentinel/janitor/pkg/webhook/v1alpha1"
 )
 
@@ -79,6 +84,8 @@ type runFlags struct {
 	leaseDuration                                    time.Duration
 	renewDeadline                                    time.Duration
 	retryPeriod                                      time.Duration
+	enableTTL                                        bool
+	defaultTTL                                       time.Duration
 }
 
 // serverSetup holds the webhook server, metrics options, and optional cert watchers
@@ -91,19 +98,33 @@ type serverSetup struct {
 }
 
 func main() {
-	logger.SetDefaultStructuredLogger("janitor", version)
+	logger.SetDefaultStructuredLoggerWithTraceCorrelation("janitor", version)
 	slog.Info("Starting janitor", "version", version, "commit", commit, "date", date)
 
 	if err := auditlogger.InitAuditLogger("janitor"); err != nil {
 		slog.Warn("Failed to initialize audit logger", "error", err)
 	}
 
+	if err := tracing.InitTracing("janitor"); err != nil {
+		slog.Warn("Failed to initialize tracing", "error", err)
+	}
+
 	slogHandler := slog.Default().Handler()
 	logrLogger := logr.FromSlogHandler(slogHandler)
 	ctrllog.SetLogger(logrLogger)
 
-	if err := run(); err != nil {
-		slog.Error("Application encountered a fatal error", "error", err)
+	runErr := run()
+
+	tracingCtx, tracingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+	if err := tracing.ShutdownTracing(tracingCtx); err != nil {
+		slog.Warn("Failed to shutdown tracing", "error", err)
+	}
+
+	tracingCancel()
+
+	if runErr != nil {
+		slog.Error("Application encountered a fatal error", "error", runErr)
 
 		if closeErr := auditlogger.CloseAuditLogger(); closeErr != nil {
 			slog.Warn("Failed to close audit logger", "error", closeErr)
@@ -219,6 +240,12 @@ func run() error {
 
 	slog.Info("RebootNode, TerminateNode, and GPUReset controllers registered")
 
+	// Register TTL reconcilers for each maintenance CR kind. See
+	// docs/designs/037-janitor-cr-ttl-cleanup.md for the design.
+	if err = registerTTLReconcilers(mgr, flags.enableTTL, flags.defaultTTL); err != nil {
+		return err
+	}
+
 	// 7. Register webhook
 	if err = webhookv1alpha1.SetupJanitorWebhookWithManager(mgr, cfg); err != nil {
 		slog.Error("Unable to create webhook", "webhook", "Janitor", "error", err)
@@ -312,7 +339,22 @@ func parseFlags() runFlags {
 	flag.DurationVar(&rf.retryPeriod, "retry-period", 5*time.Second,
 		"The duration the LeaderElector clients should wait between tries of actions.")
 
+	// TTL cleanup flags.
+	flag.BoolVar(&rf.enableTTL, "enable-ttl", true,
+		"Enable the TTL reconcilers that auto-delete completed maintenance CRs after their TTL. "+
+			"Set to false in dev/test environments where CRs should persist for manual inspection "+
+			"regardless of any nvsentinel.nvidia.com/ttl annotation.")
+	flag.DurationVar(&rf.defaultTTL, "default-ttl", 14*24*time.Hour,
+		"Default TTL applied to maintenance CRs without an explicit nvsentinel.nvidia.com/ttl "+
+			"annotation. Only consulted when --enable-ttl=true. Set to 0 to disable automatic "+
+			"defaulting while still honoring per-CR annotations.")
+
 	flag.Parse()
+
+	if rf.defaultTTL < 0 {
+		slog.Error("--default-ttl must be >= 0", "value", rf.defaultTTL)
+		os.Exit(1)
+	}
 
 	slog.Info("Parsed flags",
 		"metrics-bind-address", rf.metricsAddr,
@@ -330,7 +372,9 @@ func parseFlags() runFlags {
 		"metrics-cert-key", rf.metricsCertKey,
 		"lease-duration", rf.leaseDuration,
 		"renew-deadline", rf.renewDeadline,
-		"retry-period", rf.retryPeriod)
+		"retry-period", rf.retryPeriod,
+		"enable-ttl", rf.enableTTL,
+		"default-ttl", rf.defaultTTL)
 
 	return rf
 }
@@ -454,4 +498,57 @@ func setupTLSAndServers(rf runFlags) (serverSetup, error) {
 	}
 
 	return result, nil
+}
+
+// registerTTLReconcilers wires a generic TTL reconciler for each maintenance
+// CR kind when enabled is true. A zero defaultTTL means no system default —
+// per-CR TTL annotations still take effect. The reconcilers share janitor's
+// existing RBAC.
+//
+// When enabled is false, the reconcilers are not registered at all: TTL
+// annotations on CRs are ignored, no automatic deletion occurs, and CRs
+// persist indefinitely. Intended for dev/test environments.
+func registerTTLReconcilers(mgr ctrl.Manager, enabled bool, defaultTTL time.Duration) error {
+	if !enabled {
+		slog.Info("TTL reconcilers disabled; maintenance CRs will not be auto-deleted")
+
+		return nil
+	}
+
+	if err := setupTTL[*janitordgxcnvidiacomv1alpha1.RebootNode](
+		mgr, "rebootnode-ttl", "RebootNode", defaultTTL); err != nil {
+		return err
+	}
+
+	if err := setupTTL[*janitordgxcnvidiacomv1alpha1.GPUReset](
+		mgr, "gpureset-ttl", "GPUReset", defaultTTL); err != nil {
+		return err
+	}
+
+	if err := setupTTL[*janitordgxcnvidiacomv1alpha1.TerminateNode](
+		mgr, "terminatenode-ttl", "TerminateNode", defaultTTL); err != nil {
+		return err
+	}
+
+	slog.Info("TTL reconcilers registered for RebootNode, GPUReset, TerminateNode",
+		"default-ttl", defaultTTL)
+
+	return nil
+}
+
+// setupTTL wires a single TTL reconciler for type T with the standard options
+// used by janitor (default TTL + metrics callback). Kept generic so a new
+// maintenance CR kind can be added with one line in registerTTLReconcilers.
+func setupTTL[T client.Object](mgr ctrl.Manager, name, kind string, defaultTTL time.Duration) error {
+	err := ttl.Setup[T](mgr, name,
+		ttl.WithDefaultTTL[T](defaultTTL),
+		ttl.WithMetrics[T](janitormetrics.GlobalMetrics.IncTTLDeletion),
+	)
+	if err != nil {
+		slog.Error("Unable to create TTL reconciler", "kind", kind, "error", err)
+
+		return fmt.Errorf("setup %s ttl: %w", kind, err)
+	}
+
+	return nil
 }

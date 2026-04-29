@@ -16,70 +16,33 @@ package config
 
 import (
 	"fmt"
-	"os"
+	"regexp"
+	"strings"
 
-	"gopkg.in/yaml.v3"
+	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
 )
 
-// Config represents the NIC Health Monitor configuration loaded from YAML.
+// Config represents the NIC Health Monitor configuration loaded from TOML.
 type Config struct {
 	// NicExclusionRegex contains comma-separated regex patterns for NICs to exclude
-	NicExclusionRegex string `yaml:"nicExclusionRegex"`
+	NicExclusionRegex string `toml:"nicExclusionRegex"`
 
 	// NicInclusionRegexOverride, when non-empty, bypasses automatic device discovery
 	// and monitors only NIC devices whose names match these comma-separated regex patterns.
-	NicInclusionRegexOverride string `yaml:"nicInclusionRegexOverride"`
+	NicInclusionRegexOverride string `toml:"nicInclusionRegexOverride"`
 
 	// SysClassNetPath is the sysfs path for network interfaces (container mount point)
-	SysClassNetPath string `yaml:"sysClassNetPath"`
+	SysClassNetPath string `toml:"sysClassNetPath"`
 
 	// SysClassInfinibandPath is the sysfs path for InfiniBand devices (container mount point)
-	SysClassInfinibandPath string `yaml:"sysClassInfinibandPath"`
-
-	// CounterDetection contains counter monitoring configuration
-	CounterDetection CounterDetectionConfig `yaml:"counterDetection"`
+	SysClassInfinibandPath string `toml:"sysClassInfinibandPath"`
 }
 
-// CounterDetectionConfig contains the configuration for counter-based monitoring.
-type CounterDetectionConfig struct {
-	// Enabled controls whether counter monitoring is active
-	Enabled bool `yaml:"enabled"`
-	// Counters is the list of counter definitions to monitor
-	Counters []CounterConfig `yaml:"counters"`
-}
-
-// CounterConfig defines a single counter to monitor.
-type CounterConfig struct {
-	// Name is the counter identifier (e.g., "link_downed")
-	Name string `yaml:"name"`
-	// Path is the sysfs path relative to the port directory (e.g., "counters/link_downed")
-	Path string `yaml:"path"`
-	// Enabled controls whether this counter is monitored
-	Enabled bool `yaml:"enabled"`
-	// IsFatal indicates whether threshold breach triggers a Fatal event
-	IsFatal bool `yaml:"isFatal"`
-	// ThresholdType is either "delta" (absolute change) or "velocity" (rate per time unit)
-	ThresholdType string `yaml:"thresholdType"`
-	// Threshold is the numeric threshold value
-	Threshold float64 `yaml:"threshold"`
-	// VelocityUnit is the time unit for velocity thresholds: "second", "minute", "hour"
-	VelocityUnit string `yaml:"velocityUnit,omitempty"`
-	// Description is a human-readable description for event messages
-	Description string `yaml:"description"`
-	// RecommendedAction is the action for events (e.g., "REPLACE_VM", "NONE")
-	RecommendedAction string `yaml:"recommendedAction"`
-}
-
-// LoadConfig reads and parses the YAML configuration file.
+// LoadConfig reads and parses the TOML configuration file.
 func LoadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
-	}
-
 	cfg := &Config{}
-	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
+	if err := configmanager.LoadTOMLConfig(path, cfg); err != nil {
+		return nil, err
 	}
 
 	if cfg.SysClassNetPath == "" {
@@ -90,5 +53,32 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.SysClassInfinibandPath = "/nvsentinel/sys/class/infiniband"
 	}
 
+	if err := validateRegexList(cfg.NicExclusionRegex); err != nil {
+		return nil, fmt.Errorf("invalid nicExclusionRegex: %w", err)
+	}
+
+	if err := validateRegexList(cfg.NicInclusionRegexOverride); err != nil {
+		return nil, fmt.Errorf("invalid nicInclusionRegexOverride: %w", err)
+	}
+
 	return cfg, nil
+}
+
+func validateRegexList(commaSeparated string) error {
+	if commaSeparated == "" {
+		return nil
+	}
+
+	for _, pat := range strings.Split(commaSeparated, ",") {
+		pat = strings.TrimSpace(pat)
+		if pat == "" {
+			continue
+		}
+
+		if _, err := regexp.Compile(pat); err != nil {
+			return fmt.Errorf("pattern %q: %w", pat, err)
+		}
+	}
+
+	return nil
 }

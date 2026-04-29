@@ -22,6 +22,14 @@ type GPUMetadata struct {
 	ChassisSerial *string   `json:"chassis_serial"`
 	GPUs          []GPUInfo `json:"gpus"`
 	NVSwitches    []string  `json:"nvswitches"`
+
+	// NICTopology publishes the raw GPU↔NIC relationship matrix from
+	// `nvidia-smi topo -m` for downstream consumers. Keys are InfiniBand
+	// device names (e.g., "mlx5_0"); values are a list of topology-level
+	// strings aligned to the GPUs slice, so NICTopology["mlx5_0"][i] is the
+	// level between GPUs[i] and "mlx5_0". Valid level strings are "X",
+	// "PIX", "PXB", "PHB", "NODE", "SYS", or "NV<n>" for NVLink bonds.
+	NICTopology map[string][]string `json:"nic_topology,omitempty"`
 }
 
 type GPUInfo struct {
@@ -31,6 +39,12 @@ type GPUInfo struct {
 	SerialNumber string   `json:"serial_number"`
 	DeviceName   string   `json:"device_name"`
 	NVLinks      []NVLink `json:"nvlinks"`
+
+	// NUMANode is the NUMA Affinity of the GPU, parsed from the
+	// `nvidia-smi topo -m` output. A value of -1 means the information
+	// was not available (e.g., older driver or single-socket system).
+	// Consumed by the NIC Health Monitor for management-NIC exclusion.
+	NUMANode int `json:"numa_node"`
 }
 
 type NVLink struct {
