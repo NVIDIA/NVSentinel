@@ -32,6 +32,8 @@ import (
 
 const (
 	healthyHealthEventMessage = "No Health Failures"
+	gpuResetFailureErrorCode  = "GPU_RESET_FAILURE"
+	gpuResetFailureMessage    = "GPU reset failed, proceeding with a node reboot"
 )
 
 func NewXIDHandler(nodeName, defaultAgentName,
@@ -83,9 +85,9 @@ func (xidHandler *XIDHandler) ProcessLine(message string) (*pb.HealthEvents, err
 		return nil, nil
 	}
 
-	if uuid := xidHandler.parseGPUResetLine(message); len(uuid) != 0 {
-		slog.Info("GPU was reset, creating healthy HealthEvent", "GPU_UUID", uuid)
-		return xidHandler.createHealthEventGPUResetEvent(uuid)
+	if uuid, success := xidHandler.parseGPUResetLine(message); len(uuid) != 0 {
+		slog.Info("GPU reset syslog event received, creating HealthEvent", "GPU_UUID", uuid, "success", success)
+		return xidHandler.createHealthEventGPUResetEvent(uuid, success)
 	}
 
 	xidResp, err := xidHandler.parser.Parse(message)
@@ -105,13 +107,13 @@ func (xidHandler *XIDHandler) ProcessLine(message string) (*pb.HealthEvents, err
 	return xidHandler.createHealthEventFromResponse(xidResp, message), nil
 }
 
-func (xidHandler *XIDHandler) parseGPUResetLine(message string) string {
+func (xidHandler *XIDHandler) parseGPUResetLine(message string) (uuid string, success bool) {
 	m := gpuResetMap.FindStringSubmatch(message)
-	if len(m) >= 2 {
-		return m[1]
+	if len(m) >= 3 {
+		return m[1], m[2] == "true"
 	}
 
-	return ""
+	return "", false
 }
 
 func (xidHandler *XIDHandler) parseNVRMGPUMapLine(message string) (string, string) {
@@ -175,7 +177,7 @@ remediation action.
 
 Healthy event generation:
 1. GPU reset occurs in syslog which includes the GPU UUID:
-GPU reset executed: GPU-455d8f70-2051-db6c-0430-ffc457bff834
+GPU reset executed: GPU-455d8f70-2051-db6c-0430-ffc457bff834, success: true
 
 2. Using the metadata-collector, look up the corresponding PCI for the given GPU UUID.
 
@@ -259,7 +261,68 @@ func (xidHandler *XIDHandler) createHealthEventFromResponse(
 	}
 }
 
-func (xidHandler *XIDHandler) createHealthEventGPUResetEvent(uuid string) (*pb.HealthEvents, error) {
+/*
+A COMPONENT_RESET remediation will result in the following log line being emitted to syslog and consumed by the
+syslog-health-monitor (regardless of which health-monitor created the original COMPONENT_RESET unhealthy event):
+
+GPU reset executed: GPU-455d8f70-2051-db6c-0430-ffc457bff834, success: <true/false>
+
+1. Successful resets: will result in a healthy event that can clear XID errors from the SysLogsXIDError check for
+matching impacted entities (GPU UUID and PCI ID). Note that if a different health-monitor emitted the original event,
+it would need to also check syslog or implement a different detection mechanism for GPU resets (for example the
+gpu-health-monitor relies on resets fixing the underlying DCGM watch or by having the nvidia-dcgm pod restarted as part
+of the GPU reset workflow).
+
+2. Failed resets: will result in a new unhealthy event from the SysLogsXIDError check with the same impacted entities
+(GPU UUID and PCI ID) as the original health event and a RESTART_VM recommended action. Note that this flow will be
+triggered regardless of which health-monitor emitted the original COMPONENT_RESET event. This serves as a fallback
+where we will reboot a node if a GPU reset fails. This will result in the node being cordoned due to 2 events which are
+the original XID event and this subsequent GPU reset failed event. The syslog-health-monitor has logic to clear all
+unhealthy events for each of its checks in response to a reboot by sending a healthy event with empty impacted entities.
+As a result, we should expect that the node will be uncordoned after the reboot completes.
+
+Example event:
+
+	{
+	  createdAt: ISODate('2026-04-30T10:46:50.263Z'),
+	  healthevent: {
+	    agent: 'syslog-health-monitor',
+	    componentclass: 'GPU',
+	    checkname: 'SysLogsXIDError',
+	    isfatal: true,
+	    ishealthy: false,
+	    message: ‘GPU reset failed, proceeding with a node reboot',
+	    recommendedaction: RESTART_VM,
+	    errorcode: [
+	      'GPU_RESET_FAILURE'
+	    ],
+	    entitiesimpacted: [
+	      {
+	        entitytype: 'PCI',
+	        entityvalue: '000b:00:00'
+	      },
+	      {
+	        entitytype: 'GPU_UUID',
+	        entityvalue: 'GPU-123’
+	      }
+	    ],
+	    nodename: ‘node-123’,
+	  }
+	}
+
+Notes:
+- A follow-up unhealthy event is required to trigger a full drain in node-drainer because the original COMPONENT_RESET
+event would've done a partial drain only against pods using the GPU needing reset.
+- If a burst of XIDs occur with both COMPONENT_RESET and RESTART_VM recommended actions and the GPU reset fails, this
+logic is not necessary because a reboot would already be triggered. We will rely on the existing fault-remediation
+de-duplication logic to only process one of the reboots.
+- This logic is meant as a fallback when there are one of more XIDs with COMPONENT_RESET recommended actions which all
+result in failed GPU resets. When this logic is triggered, the following steps should be followed:
+  - Fix the underlying cause for the GPU reset failure.
+  - If the reset failure is isolated to a given XID, override the recommended action from COMPONENT_RESET to RESTART_VM.
+  - If the GPU reset failure is not unique to a specific XID error, disable the GPU reset feature to always reboot.
+*/
+func (xidHandler *XIDHandler) createHealthEventGPUResetEvent(uuid string, success bool) (*pb.HealthEvents, error) {
 	gpuInfo, err := xidHandler.metadataReader.GetInfoByUUID(uuid)
 	// There's no point in sending a healthy HealthEvent with only GPU UUID and not PCI because that healthy HealthEvent
 	// will not match all impacted entities tracked by the fault-quarantine-module so we will return an error rather than
@@ -274,6 +337,7 @@ func (xidHandler *XIDHandler) createHealthEventGPUResetEvent(uuid string) (*pb.H
 
 	normPCI := xidHandler.normalizePCI(gpuInfo.PCIAddress)
 	entities := getDefaultImpactedEntities(normPCI, uuid)
+
 	event := &pb.HealthEvent{
 		Version:            1,
 		Agent:              xidHandler.defaultAgentName,
@@ -281,11 +345,21 @@ func (xidHandler *XIDHandler) createHealthEventGPUResetEvent(uuid string) (*pb.H
 		ComponentClass:     xidHandler.defaultComponentClass,
 		GeneratedTimestamp: timestamppb.New(time.Now()),
 		EntitiesImpacted:   entities,
-		Message:            healthyHealthEventMessage,
-		IsFatal:            false,
-		IsHealthy:          true,
 		NodeName:           xidHandler.nodeName,
-		RecommendedAction:  pb.RecommendedAction_NONE,
+		ProcessingStrategy: xidHandler.processingStrategy,
+	}
+
+	if success {
+		event.Message = healthyHealthEventMessage
+		event.IsFatal = false
+		event.IsHealthy = true
+		event.RecommendedAction = pb.RecommendedAction_NONE
+	} else {
+		event.ErrorCode = []string{gpuResetFailureErrorCode}
+		event.Message = gpuResetFailureMessage
+		event.IsFatal = true
+		event.IsHealthy = false
+		event.RecommendedAction = pb.RecommendedAction_RESTART_VM
 	}
 
 	return &pb.HealthEvents{

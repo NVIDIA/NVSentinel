@@ -442,6 +442,9 @@ test_xid_monitoring_syslog_gpu_reset() {
 
     log "Selected GPU node: $gpu_node (has healthy syslog-health-monitor)"
 
+    local initial_boot_id
+    initial_boot_id=$(get_boot_id "$gpu_node")
+    log "Original boot ID: $initial_boot_id"
 
     local dcgm_pod
     dcgm_pod=$(kubectl get pods -n gpu-operator -l app=nvidia-dcgm \
@@ -474,6 +477,16 @@ test_xid_monitoring_syslog_gpu_reset() {
 
     log "Waiting for node to GPU reset and recover..."
     wait_for_gpu_reset "$gpu_node" "$uuid" "$current_ts"
+
+    # If the GPU reset job fails, we will write a syslog event which results in a new unhealthy health event with a
+    # RESTART_VM recommended action. We will confirm the node bootID does not change during the test execution to
+    # ensure that a GPU reset and not a reboot recovered the node.
+    local final_boot_id
+    final_boot_id=$(get_boot_id "$gpu_node")
+    if [[ "$final_boot_id" != "$initial_boot_id" ]]; then
+        error "Boot ID changed during GPU reset. Original: $initial_boot_id, Final: $final_boot_id"
+    fi
+    log "Boot ID unchanged: $final_boot_id"
 
     log "Test 3 PASSED ✓"
 }
