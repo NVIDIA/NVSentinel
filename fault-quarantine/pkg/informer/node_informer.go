@@ -22,6 +22,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -33,6 +34,7 @@ import (
 )
 
 const (
+	GpuNodeLabel                  = "nvidia.com/gpu.present"
 	quarantineAnnotationIndexName = "quarantineAnnotation"
 )
 
@@ -70,7 +72,13 @@ func NewNodeInformer(clientset kubernetes.Interface,
 		clientset: clientset,
 	}
 
-	informerFactory := informers.NewSharedInformerFactory(clientset, resyncPeriod)
+	informerFactory := informers.NewSharedInformerFactoryWithOptions(
+		clientset,
+		resyncPeriod,
+		informers.WithTweakListOptions(func(options *metav1.ListOptions) {
+			options.LabelSelector = GpuNodeLabel
+		}),
+	)
 
 	nodeInformerObj := informerFactory.Core().V1().Nodes()
 	ni.informer = nodeInformerObj.Informer()
