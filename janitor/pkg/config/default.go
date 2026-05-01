@@ -32,6 +32,10 @@ const (
 	HostDevPath            = "/dev"
 	HostDevLogVolumeName   = "dev-log"
 	HostDevLogPath         = "/run/systemd/journal/dev-log"
+	DriverRootVolumeName   = "driver-root"
+	DriverRootPath         = "/run/nvidia/driver"
+	HostSysVolumeName      = "host-sys"
+	HostSysPath            = "/sys"
 	WriteSyslogEventEnvVar = "WRITE_SYSLOG_EVENT"
 )
 
@@ -215,6 +219,22 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 								},
 							},
 						},
+						{
+							Name: DriverRootVolumeName,
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: DriverRootPath,
+								},
+							},
+						},
+						{
+							Name: HostSysVolumeName,
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: HostSysPath,
+								},
+							},
+						},
 					},
 					Containers: []corev1.Container{
 						{
@@ -223,6 +243,14 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 							ImagePullPolicy: corev1.PullAlways,
 							Resources:       *containerResources,
 							Env: []corev1.EnvVar{
+								{
+									Name:  "NVIDIA_VISIBLE_DEVICES",
+									Value: "void",
+								},
+								{
+									Name:  "DRIVER_ROOT",
+									Value: DriverRootPath,
+								},
 								{
 									Name:  WriteSyslogEventEnvVar,
 									Value: strconv.FormatBool(writeSyslogEvent),
@@ -237,6 +265,14 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 									Name:      HostDevLogVolumeName,
 									MountPath: HostDevLogPath,
 								},
+								{
+									Name:      DriverRootVolumeName,
+									MountPath: DriverRootPath,
+								},
+								{
+									Name:      HostSysVolumeName,
+									MountPath: DriverRootPath + HostSysPath,
+								},
 							},
 							SecurityContext: &corev1.SecurityContext{
 								Privileged: ptr.To(true),
@@ -244,7 +280,6 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 						},
 					},
 					RestartPolicy:    corev1.RestartPolicyOnFailure,
-					HostNetwork:      true,
 					ImagePullSecrets: imagePullSecrets,
 					Tolerations: []corev1.Toleration{
 						{Operator: corev1.TolerationOpExists},

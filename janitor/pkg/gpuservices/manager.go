@@ -87,6 +87,12 @@ var Registry = map[string]ManagerSpec{
 				EnabledValue:  "true",
 				DisabledValue: "false",
 			},
+			{
+				AppSelector:   map[string]string{"app": "gpu-feature-discovery"},
+				NodeLabel:     "nvidia.com/gpu.deploy.gpu-feature-discovery",
+				EnabledValue:  "true",
+				DisabledValue: "false",
+			},
 		},
 		TeardownTimeout: 5 * time.Minute,
 		RestoreTimeout:  10 * time.Minute,
