@@ -159,31 +159,42 @@ func TestParseGPUResetLine(t *testing.T) {
 	xidHandler := &XIDHandler{}
 
 	testCases := []struct {
-		name  string
-		line  string
-		gpuId string
+		name    string
+		line    string
+		gpuId   string
+		success bool
 	}{
 		{
-			name:  "Valid GPU Reset Line",
-			line:  "GPU reset executed: GPU-123",
-			gpuId: "GPU-123",
+			name:    "Valid GPU Reset Line Success",
+			line:    "GPU reset executed: GPU-123, success: true",
+			gpuId:   "GPU-123",
+			success: true,
 		},
 		{
-			name:  "Invalid GPU Reset Line",
-			line:  "GPU reset executed:",
-			gpuId: "",
+			name:    "Valid GPU Reset Line Failure",
+			line:    "GPU reset executed: GPU-123, success: false",
+			gpuId:   "GPU-123",
+			success: false,
 		},
 		{
-			name:  "XID Log Line GPU",
-			line:  "NVRM: GPU at PCI:0000:00:08.0: GPU-123",
-			gpuId: "",
+			name:    "Invalid GPU Reset Line",
+			line:    "GPU reset executed:",
+			gpuId:   "",
+			success: false,
+		},
+		{
+			name:    "XID Log Line GPU",
+			line:    "NVRM: GPU at PCI:0000:00:08.0: GPU-123",
+			gpuId:   "",
+			success: false,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			gpuId := xidHandler.parseGPUResetLine(tc.line)
+			gpuId, success := xidHandler.parseGPUResetLine(tc.line)
 			assert.Equal(t, tc.gpuId, gpuId)
+			assert.Equal(t, tc.success, success)
 		})
 	}
 }
@@ -333,7 +344,7 @@ func TestProcessLine(t *testing.T) {
 		},
 		{
 			name:    "Valid GPU Reset Message",
-			message: "GPU reset executed: GPU-123",
+			message: "GPU reset executed: GPU-123, success: true",
 			setupHandler: func() *XIDHandler {
 				h, _ := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check", "", metadataFile, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 				return h
@@ -359,11 +370,53 @@ func TestProcessLine(t *testing.T) {
 							EntityValue: "GPU-123",
 						},
 					},
-					Message:           healthyHealthEventMessage,
-					IsFatal:           false,
-					IsHealthy:         true,
-					NodeName:          "test-node",
-					RecommendedAction: pb.RecommendedAction_NONE,
+					Message:            healthyHealthEventMessage,
+					IsFatal:            false,
+					IsHealthy:          true,
+					NodeName:           "test-node",
+					RecommendedAction:  pb.RecommendedAction_NONE,
+					ProcessingStrategy: pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+				}
+				assert.NotNil(t, event.GeneratedTimestamp)
+				event.GeneratedTimestamp = nil
+				assert.Equal(t, expectedEvent, event)
+			},
+		},
+		{
+			name:    "GPU Reset Failure Message",
+			message: "GPU reset executed: GPU-123, success: false",
+			setupHandler: func() *XIDHandler {
+				h, _ := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check", "", metadataFile, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+				return h
+			},
+			expectEvent: true,
+			expectError: false,
+			validateEvent: func(t *testing.T, events *pb.HealthEvents) {
+				require.NotNil(t, events)
+				require.Len(t, events.Events, 1)
+				event := events.Events[0]
+				expectedEvent := &pb.HealthEvent{
+					Version:        1,
+					Agent:          "test-agent",
+					CheckName:      "xid-check",
+					ComponentClass: "GPU",
+					EntitiesImpacted: []*pb.Entity{
+						{
+							EntityType:  "PCI",
+							EntityValue: "0000:00:08",
+						},
+						{
+							EntityType:  "GPU_UUID",
+							EntityValue: "GPU-123",
+						},
+					},
+					ErrorCode:          []string{gpuResetFailureErrorCode},
+					Message:            gpuResetFailureMessage,
+					IsFatal:            true,
+					IsHealthy:          false,
+					NodeName:           "test-node",
+					RecommendedAction:  pb.RecommendedAction_RESTART_VM,
+					ProcessingStrategy: pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 				}
 				assert.NotNil(t, event.GeneratedTimestamp)
 				event.GeneratedTimestamp = nil
@@ -372,7 +425,7 @@ func TestProcessLine(t *testing.T) {
 		},
 		{
 			name:    "Valid GPU Reset Message with Metadata Collector not Initialized",
-			message: "GPU reset executed: GPU-123",
+			message: "GPU reset executed: GPU-123, success: true",
 			setupHandler: func() *XIDHandler {
 				h, _ := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check", "", "/tmp/metadata.json", pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 				return h
@@ -382,7 +435,7 @@ func TestProcessLine(t *testing.T) {
 		},
 		{
 			name:    "Valid GPU Reset Message with Metadata Collector missing GPU UUID",
-			message: "GPU reset executed: GPU-456",
+			message: "GPU reset executed: GPU-456, success: true",
 			setupHandler: func() *XIDHandler {
 				h, _ := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check", "", metadataFile, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 				return h
@@ -392,7 +445,7 @@ func TestProcessLine(t *testing.T) {
 		},
 		{
 			name:    "Valid GPU Reset Message with Metadata Collector not containing PCI",
-			message: "GPU reset executed: GPU-123",
+			message: "GPU reset executed: GPU-123, success: true",
 			setupHandler: func() *XIDHandler {
 				h, _ := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check", "", metadataFileMissingPCI, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 				return h

@@ -147,6 +147,7 @@ gpuResetController:
       critical: "true"
   cspProviderHost: janitor-provider.nvsentinel.svc.cluster.local:50054
   resetJob:
+    writeSysLogEvent: true
     runtimeClassName: "nvidia"
     imageConfig:
       image: "alpine:latest"
@@ -233,7 +234,7 @@ gpuResetController:
 		},
 	}
 	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", imagePullSecrets,
-		resourceRequirements, "nvidia")
+		resourceRequirements, "nvidia", true)
 	assert.NoError(t, err)
 	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
 
@@ -300,7 +301,7 @@ gpuResetController:
 	assert.True(t, config.GPUReset.Enabled)
 
 	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
-		ResourceRequirements{}, "")
+		ResourceRequirements{}, "", true)
 	assert.NoError(t, err)
 	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
 
@@ -351,7 +352,7 @@ gpuResetController:
 	assert.True(t, config.GPUReset.Enabled)
 
 	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
-		ResourceRequirements{}, "")
+		ResourceRequirements{}, "", true)
 	assert.NoError(t, err)
 	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
 
@@ -393,6 +394,58 @@ gpuResetController:
 	config, err := LoadConfig(configPath, testNamespace)
 	require.Error(t, err)
 	require.Nil(t, config)
+}
+
+func TestLoadConfig_GPUResetEnabledWriteSysLogEventFalse(t *testing.T) {
+	// Create a temporary config file
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "janitor-config.yaml")
+
+	configContent := `
+global:
+  timeout: 30m
+  manualMode: true
+  nodes:
+    exclusions:
+      - matchLabels:
+          environment: production
+          critical: "true"
+  cspProviderHost: janitor-provider.nvsentinel.svc.cluster.local:50051
+
+rebootNodeController:
+  enabled: true
+
+terminateNodeController:
+  enabled: true
+
+gpuResetController:
+  enabled: true
+  resetJob:
+    writeSysLogEvent: false
+    runtimeClassName: ""
+    imageConfig:
+      image: "alpine:latest"
+  serviceManager:
+    name: "gpu-operator"
+`
+
+	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	require.NoError(t, err)
+
+	// Load the config
+	config, err := LoadConfig(configPath, testNamespace)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+
+	// Verify GPUReset config
+	assert.True(t, config.GPUReset.Enabled)
+
+	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
+		ResourceRequirements{}, "", false)
+	assert.NoError(t, err)
+	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
+
+	assert.Equal(t, gpuservices.Manager{Name: "gpu-operator"}, config.GPUReset.ServiceManager)
 }
 
 func TestLoadConfig_GPUResetInvalidResources(t *testing.T) {
