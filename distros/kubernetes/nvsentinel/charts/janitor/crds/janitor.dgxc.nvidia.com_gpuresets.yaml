@@ -28,11 +28,11 @@ spec:
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - description: The target node for the GPU reset
+    - description: Target node for GPU reset
       jsonPath: .spec.nodeName
       name: Node
       type: string
-    - description: The current status of the reset
+    - description: Current status of reset
       jsonPath: .status.phase
       name: Status
       type: string

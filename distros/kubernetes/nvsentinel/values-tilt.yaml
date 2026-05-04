@@ -3777,6 +3777,7 @@ janitor:
               enabledValue: "true"
               disabledValue: "false"
         resetJob:
+          writeSysLogEvent: false
           runtimeClassName: ""
           image:
             repository: "public.ecr.aws/docker/library/alpine"

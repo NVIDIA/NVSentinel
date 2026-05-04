@@ -25,6 +25,7 @@ import (
 	"github.com/spf13/viper"
 	batchv1 "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	"github.com/nvidia/nvsentinel/janitor/pkg/gpuservices"
 )
@@ -113,6 +114,7 @@ type ResetJobConfig struct {
 	ImageConfig      ImageConfig          `mapstructure:"imageConfig" json:"imageConfig"`
 	Resources        ResourceRequirements `mapstructure:"resources" json:"resources"`
 	RuntimeClassName string               `mapstructure:"runtimeClassName" json:"runtimeClassName"`
+	WriteSysLogEvent *bool                `mapstructure:"writeSysLogEvent" json:"writeSysLogEvent"`
 }
 
 type ResourceRequirements struct {
@@ -175,9 +177,15 @@ func LoadConfig(configPath string, namespace string) (*Config, error) {
 			return nil, fmt.Errorf("ResetJob.ImageConfig.Image is required but not set")
 		}
 
-		jobTemplate, err := getDefaultGPUResetJobTemplate(namespace,
-			config.GPUReset.ResetJob.ImageConfig.Image, config.GPUReset.ResetJob.ImageConfig.ImagePullSecrets,
-			config.GPUReset.ResetJob.Resources, config.GPUReset.ResetJob.RuntimeClassName)
+		if config.GPUReset.ResetJob.WriteSysLogEvent == nil {
+			config.GPUReset.ResetJob.WriteSysLogEvent = ptr.To(true)
+		}
+
+		resetJobConfig := config.GPUReset.ResetJob
+
+		jobTemplate, err := getDefaultGPUResetJobTemplate(namespace, resetJobConfig.ImageConfig.Image,
+			resetJobConfig.ImageConfig.ImagePullSecrets, resetJobConfig.Resources, resetJobConfig.RuntimeClassName,
+			*resetJobConfig.WriteSysLogEvent)
 		if err != nil {
 			return nil, err
 		}
