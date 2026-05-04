@@ -20,8 +20,10 @@
 package discovery
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -80,6 +82,10 @@ func DiscoverDevices(reader sysfs.Reader, exclusionRegex string) (*DiscoveryResu
 
 	entries, err := reader.ListDirs(ibPath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return &DiscoveryResult{}, nil
+		}
+
 		return nil, fmt.Errorf("failed to list IB devices at %s: %w", ibPath, err)
 	}
 

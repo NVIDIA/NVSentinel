@@ -667,7 +667,7 @@ func TestGpuHealthMonitorStoreOnlyEvents(t *testing.T) {
 		require.NoError(t, err, "failed to create kubernetes client")
 
 		originalArgs, err := helpers.UpdateDaemonSetArgs(ctx, t, client, GPUHealthMonitorDaemonSetName, GPUHealthMonitorContainerName, map[string]string{
-			"--processing-strategy": "STORE_ONLY"})
+			"--processing-strategy": "STORE_ONLY"}, true)
 		require.NoError(t, err, "failed to update GPU health monitor processing strategy")
 
 		gpuHealthMonitorPod, err := helpers.GetDaemonSetPodOnWorkerNode(ctx, t, client, GPUHealthMonitorDaemonSetName, "gpu-health-monitor-dcgm-4.x")

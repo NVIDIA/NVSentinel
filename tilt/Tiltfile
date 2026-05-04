@@ -141,6 +141,7 @@ include('../health-monitors/csp-health-monitor/Tiltfile')
 include('../health-monitors/kubernetes-object-monitor/Tiltfile')
 include('../health-monitors/syslog-health-monitor/Tiltfile')
 include('../health-monitors/slurm-drain-monitor/Tiltfile')
+include('../health-monitors/nic-health-monitor/Tiltfile')
 include('../labeler/Tiltfile')
 include('../log-collector/Tiltfile')
 include('../preflight/Tiltfile')
@@ -356,6 +357,17 @@ k8s_resource(
 k8s_resource(
     'syslog-health-monitor-regular',
     resource_deps=['platform-connectors']
+)
+
+k8s_resource(
+    'nic-health-monitor',
+    resource_deps=['platform-connectors', 'nic-metadata-stub']
+)
+
+local_resource(
+    'nic-metadata-stub',
+    cmd='./inject-nic-metadata-stub.sh',
+    resource_deps=['platform-connectors', 'labeler'],
 )
 
 k8s_resource(

@@ -178,7 +178,9 @@ global:
     enabled: false
   slurmDrainMonitor:
     enabled: false
-    
+  nicHealthMonitor:
+    enabled: false
+
 # Network policy configuration
 # The metrics-access network policy restricts ingress to metrics ports only.
 # This can block other services (e.g., cert-manager webhook) when deployed

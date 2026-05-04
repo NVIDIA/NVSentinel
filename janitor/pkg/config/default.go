@@ -16,6 +16,7 @@ package config
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -26,11 +27,12 @@ import (
 )
 
 const (
-	GPUResetContainerName = "gpu-reset"
-	HostDevVolumeName     = "host-dev"
-	HostDevPath           = "/dev"
-	HostDevLogVolumeName  = "dev-log"
-	HostDevLogPath        = "/run/systemd/journal/dev-log"
+	GPUResetContainerName  = "gpu-reset"
+	HostDevVolumeName      = "host-dev"
+	HostDevPath            = "/dev"
+	HostDevLogVolumeName   = "dev-log"
+	HostDevLogPath         = "/run/systemd/journal/dev-log"
+	WriteSyslogEventEnvVar = "WRITE_SYSLOG_EVENT"
 )
 
 func applyConfigDefaults(config *Config) {
@@ -178,7 +180,7 @@ func getImagePullSecrets(imagePullSecrets []ImagePullSecret) []corev1.LocalObjec
 
 // getDefaultGPUResetJobTemplate returns the default JobTemplateSpec for GPU reset jobs.
 func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []ImagePullSecret,
-	resources ResourceRequirements, runtimeClassName string) (*batchv1.JobTemplateSpec, error) {
+	resources ResourceRequirements, runtimeClassName string, writeSyslogEvent bool) (*batchv1.JobTemplateSpec, error) {
 	imagePullSecrets := getImagePullSecrets(secrets)
 
 	containerResources, err := getResources(resources)
@@ -220,6 +222,12 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 							Image:           image,
 							ImagePullPolicy: corev1.PullAlways,
 							Resources:       *containerResources,
+							Env: []corev1.EnvVar{
+								{
+									Name:  WriteSyslogEventEnvVar,
+									Value: strconv.FormatBool(writeSyslogEvent),
+								},
+							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
 									Name:      HostDevVolumeName,

@@ -25,6 +25,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	batchv1 "k8s.io/api/batch/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -181,6 +182,26 @@ func TestGPUReset(t *testing.T) {
 			}
 		}
 		assert.True(t, foundCompleteCondition, "Did not find Complete condition on CR", gpuReset.GetName())
+
+		// We explicitly set writeSysLogEvent to false in values-tilt.yaml to test that the Helm chart values
+		// propagate to the WRITE_SYSLOG_EVENT environment variable. Note that if the value isn't set in the Janitor
+		// configmap, we will default to true so setting false ensures the value is consumed from Helm.
+		jobName, _, _ := unstructured.NestedString(gpuReset.Object, "status", "jobRef", "name")
+		jobNamespace, _, _ := unstructured.NestedString(gpuReset.Object, "status", "jobRef", "namespace")
+		assert.NotEmpty(t, jobName, "expected jobName in GPUReset status")
+		assert.NotEmpty(t, jobNamespace, "expected jobNamespace in GPUReset status")
+		var resetJob batchv1.Job
+		jobErr := client.Resources().Get(ctx, jobName, jobNamespace, &resetJob)
+		assert.NoError(t, jobErr, "failed to get GPU reset job")
+		var foundEnvVar bool
+		for _, envVar := range resetJob.Spec.Template.Spec.Containers[0].Env {
+			if envVar.Name == "WRITE_SYSLOG_EVENT" {
+				assert.Equal(t, "false", envVar.Value, "WRITE_SYSLOG_EVENT should be false in GPU reset job")
+				foundEnvVar = true
+				break
+			}
+		}
+		assert.True(t, foundEnvVar, "WRITE_SYSLOG_EVENT not found in GPU reset job")
 
 		// ensure gpu-operator pods are restored
 		newDCGMPod, err := helpers.GetPodOnWorkerNode(ctx, t, client, "gpu-operator", "nvidia-dcgm")

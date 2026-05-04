@@ -53,7 +53,7 @@ require (
 	github.com/prometheus/procfs v0.19.2 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	go.uber.org/zap v1.27.1 // indirect
+	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/net v0.53.0 // indirect
