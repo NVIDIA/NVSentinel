@@ -2650,12 +2650,18 @@ func waitForDaemonSetRollout(ctx context.Context, t *testing.T, client klient.Cl
 
 // UpdateDaemonSetArgs updates the daemonset with the specified arguments and completes the rollout.
 // Returns the original args slice that can be used with RestoreDaemonSetArgs to rollback the changes.
+// UpdateDaemonSetArgs updates the args on a DaemonSet container and
+// returns the original args. When waitForRollout is true, blocks until
+// the full rollout completes. Pass false when the caller will restart
+// specific pods manually.
 func UpdateDaemonSetArgs(ctx context.Context, t *testing.T,
-	client klient.Client, daemonsetName string, containerName string,
-	args map[string]string) ([]string, error) {
+	client klient.Client, daemonsetName, containerName string,
+	args map[string]string, waitForRollout bool,
+) ([]string, error) {
 	t.Helper()
 
-	t.Logf("Updating daemonset %s/%s with args %v", NVSentinelNamespace, daemonsetName, args)
+	t.Logf("Updating daemonset %s/%s with args %v (wait=%v)",
+		NVSentinelNamespace, daemonsetName, args, waitForRollout)
 
 	var originalArgs []string
 
@@ -2665,35 +2671,28 @@ func UpdateDaemonSetArgs(ctx context.Context, t *testing.T,
 			return err
 		}
 
-		containers := daemonSet.Spec.Template.Spec.Containers
-		containerFound := false
+		for i := range daemonSet.Spec.Template.Spec.Containers {
+			if daemonSet.Spec.Template.Spec.Containers[i].Name == containerName {
+				originalArgs = make([]string, len(daemonSet.Spec.Template.Spec.Containers[i].Args))
+				copy(originalArgs, daemonSet.Spec.Template.Spec.Containers[i].Args)
 
-		for i := range containers {
-			if containers[i].Name == containerName {
-				// Capture original args before modification
-				originalArgs = make([]string, len(containers[i].Args))
-				copy(originalArgs, containers[i].Args)
+				setArgsOnContainer(t, &daemonSet.Spec.Template.Spec.Containers[i], args)
 
-				setArgsOnContainer(t, &containers[i], args)
-
-				containerFound = true
-
-				break
+				return client.Resources().Update(ctx, daemonSet)
 			}
 		}
 
-		if !containerFound {
-			return fmt.Errorf("container %q not found in daemonset %s/%s", containerName, NVSentinelNamespace, daemonsetName)
-		}
-
-		return client.Resources().Update(ctx, daemonSet)
+		return fmt.Errorf("container %q not found in daemonset %s/%s",
+			containerName, NVSentinelNamespace, daemonsetName)
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	t.Logf("Waiting for daemonset %s/%s rollout to complete", NVSentinelNamespace, daemonsetName)
-	waitForDaemonSetRollout(ctx, t, client, daemonsetName)
+	if waitForRollout {
+		t.Logf("Waiting for daemonset %s/%s rollout to complete", NVSentinelNamespace, daemonsetName)
+		waitForDaemonSetRollout(ctx, t, client, daemonsetName)
+	}
 
 	return originalArgs, nil
 }

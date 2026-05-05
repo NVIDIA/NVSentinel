@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,10 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM nvcr.io/nvidia/cuda:13.2.1-runtime-ubuntu24.04
-
-COPY gpu-reset/gpu_reset.sh /usr/local/bin/gpu_reset.sh
-
-RUN chmod +x /usr/local/bin/gpu_reset.sh
-
-ENTRYPOINT ["/usr/local/bin/gpu_reset.sh"]
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nic-health-monitor.fullname" . }}
+  labels:
+    {{- include "nic-health-monitor.labels" . | nindent 4 }}
+data:
+  config.toml: |
+    nicExclusionRegex = "{{ .Values.nicExclusionRegex }}"
+    nicInclusionRegexOverride = "{{ .Values.nicInclusionRegexOverride }}"
+    sysClassNetPath = "{{ .Values.sysClassNetPath }}"
+    sysClassInfinibandPath = "{{ .Values.sysClassInfinibandPath }}"

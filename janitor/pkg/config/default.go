@@ -16,6 +16,7 @@ package config
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -26,11 +27,16 @@ import (
 )
 
 const (
-	GPUResetContainerName = "gpu-reset"
-	HostDevVolumeName     = "host-dev"
-	HostDevPath           = "/dev"
-	HostDevLogVolumeName  = "dev-log"
-	HostDevLogPath        = "/run/systemd/journal/dev-log"
+	GPUResetContainerName  = "gpu-reset"
+	HostDevVolumeName      = "host-dev"
+	HostDevPath            = "/dev"
+	HostDevLogVolumeName   = "dev-log"
+	HostDevLogPath         = "/run/systemd/journal/dev-log"
+	DriverRootVolumeName   = "driver-root"
+	DriverRootPath         = "/run/nvidia/driver"
+	HostSysVolumeName      = "host-sys"
+	HostSysPath            = "/sys"
+	WriteSyslogEventEnvVar = "WRITE_SYSLOG_EVENT"
 )
 
 func applyConfigDefaults(config *Config) {
@@ -178,7 +184,7 @@ func getImagePullSecrets(imagePullSecrets []ImagePullSecret) []corev1.LocalObjec
 
 // getDefaultGPUResetJobTemplate returns the default JobTemplateSpec for GPU reset jobs.
 func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []ImagePullSecret,
-	resources ResourceRequirements, runtimeClassName string) (*batchv1.JobTemplateSpec, error) {
+	resources ResourceRequirements, runtimeClassName string, writeSyslogEvent bool) (*batchv1.JobTemplateSpec, error) {
 	imagePullSecrets := getImagePullSecrets(secrets)
 
 	containerResources, err := getResources(resources)
@@ -213,6 +219,22 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 								},
 							},
 						},
+						{
+							Name: DriverRootVolumeName,
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: DriverRootPath,
+								},
+							},
+						},
+						{
+							Name: HostSysVolumeName,
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: HostSysPath,
+								},
+							},
+						},
 					},
 					Containers: []corev1.Container{
 						{
@@ -220,6 +242,20 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 							Image:           image,
 							ImagePullPolicy: corev1.PullAlways,
 							Resources:       *containerResources,
+							Env: []corev1.EnvVar{
+								{
+									Name:  "NVIDIA_VISIBLE_DEVICES",
+									Value: "void",
+								},
+								{
+									Name:  "DRIVER_ROOT",
+									Value: DriverRootPath,
+								},
+								{
+									Name:  WriteSyslogEventEnvVar,
+									Value: strconv.FormatBool(writeSyslogEvent),
+								},
+							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
 									Name:      HostDevVolumeName,
@@ -229,6 +265,14 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 									Name:      HostDevLogVolumeName,
 									MountPath: HostDevLogPath,
 								},
+								{
+									Name:      DriverRootVolumeName,
+									MountPath: DriverRootPath,
+								},
+								{
+									Name:      HostSysVolumeName,
+									MountPath: DriverRootPath + HostSysPath,
+								},
 							},
 							SecurityContext: &corev1.SecurityContext{
 								Privileged: ptr.To(true),
@@ -236,7 +280,6 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 						},
 					},
 					RestartPolicy:    corev1.RestartPolicyOnFailure,
-					HostNetwork:      true,
 					ImagePullSecrets: imagePullSecrets,
 					Tolerations: []corev1.Toleration{
 						{Operator: corev1.TolerationOpExists},

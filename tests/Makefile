@@ -21,7 +21,7 @@
 
 # E2E Tests module configuration
 IS_GO_MODULE := 1
-TEST_EXTRA_FLAGS := -timeout 45m -count 1 -failfast
+TEST_EXTRA_FLAGS := -timeout 60m -count 1 -failfast
 
 # Database-aware test tags:
 # - USE_POSTGRESQL=1: excludes mongodb-only tests (e.g., health_events_analyzer_test.go)
