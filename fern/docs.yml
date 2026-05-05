@@ -5,8 +5,12 @@
 
 instances:
   - url: nvsentinel.docs.buildwithfern.com/nvsentinel
+    custom-domain: docs.nvidia.com/nvsentinel
 
 title: NVIDIA NVSentinel Documentation
+
+metadata:
+  canonical-host: "docs.nvidia.com/nvsentinel"
 
 products:
   - display-name: NVSentinel
