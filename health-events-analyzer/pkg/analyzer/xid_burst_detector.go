@@ -32,13 +32,19 @@ type XidBurstDetectorConfig struct {
 	BurstThreshold int           // Number of bursts required to trigger (default: 2 for tests, 5 for prod)
 }
 
-// XidBurstDetector tracks GPU XID errors per node and detects burst patterns
+// XidBurstDetector tracks GPU XID errors per (node, GPU) and detects burst patterns.
 // This implements the same logic as the MongoDB RepeatedXidError aggregation pipeline
 // but in Go code, making it compatible with PostgreSQL.
 //
 // The detector identifies when the same GPU XID error code appears in multiple
-// "bursts" of errors. A burst is defined as a sequence of errors within 3 minutes
-// of each other, with special handling for "sticky" XIDs that extend burst windows.
+// "bursts" of errors on the same physical GPU. A burst is defined as a sequence
+// of errors within 3 minutes of each other, with special handling for "sticky"
+// XIDs that extend burst windows.
+//
+// Events are grouped per (nodeName, gpuUUID) so that bursts from different GPUs
+// on the same node are never combined. This mirrors the MongoDB aggregation
+// pipeline which uses $setIntersection on the GPU_UUID entity to ensure all
+// events in a correlated group share the same GPU.
 //
 // Configuration matches MongoDB pipeline:
 // - burstWindow: 180 seconds (3 minutes) - max gap within a burst
@@ -46,19 +52,27 @@ type XidBurstDetectorConfig struct {
 // - lookbackWindow: 86400 seconds (24 hours) - how far back to keep events
 // - burstThreshold: 5 - number of bursts required to trigger
 type XidBurstDetector struct {
-	mu             sync.RWMutex
-	nodeEvents     map[string]*NodeXidHistory // nodeName -> history
-	burstWindow    time.Duration              // 3 minutes - max gap within a burst
-	stickyWindow   time.Duration              // 3 hours - sticky XID continuation window
-	lookbackWindow time.Duration              // 24 hours - how far back to keep events
-	burstThreshold int                        // 5 - number of bursts required to trigger
-	stickyXids     map[string]bool            // XIDs that are "sticky" (74, 79, 95, 109, 119)
+	mu sync.RWMutex
+	// nodeEvents is keyed by nodeName, with an inner map keyed by gpuKey
+	// (the GPU UUID / ordinal string). The empty string "" is used as a
+	// fallback bucket for events that do not carry a GPU entity.
+	nodeEvents     map[string]map[string]*NodeXidHistory
+	burstWindow    time.Duration   // 3 minutes - max gap within a burst
+	stickyWindow   time.Duration   // 3 hours - sticky XID continuation window
+	lookbackWindow time.Duration   // 24 hours - how far back to keep events
+	burstThreshold int             // 5 - number of bursts required to trigger
+	stickyXids     map[string]bool // XIDs that are "sticky" (74, 79, 95, 109, 119)
 }
 
-// NodeXidHistory tracks XID error events for a single node
+// NodeXidHistory tracks XID error events for a single (node, GPU) pair.
 type NodeXidHistory struct {
 	events []XidEvent
 }
+
+// unknownGPUKey is used when an event has no GPU / GPU_UUID entity attached.
+// Events without a GPU identifier are tracked together in this bucket to avoid
+// dropping them, but they will never cross-contaminate per-GPU buckets.
+const unknownGPUKey = ""
 
 // XidEvent represents a single GPU XID error event
 type XidEvent struct {
@@ -101,7 +115,7 @@ func NewXidBurstDetectorWithConfig(cfg XidBurstDetectorConfig) *XidBurstDetector
 		"burstThreshold", cfg.BurstThreshold)
 
 	return &XidBurstDetector{
-		nodeEvents:     make(map[string]*NodeXidHistory),
+		nodeEvents:     make(map[string]map[string]*NodeXidHistory),
 		burstWindow:    cfg.BurstWindow,
 		stickyWindow:   cfg.StickyWindow,
 		lookbackWindow: cfg.LookbackWindow,
@@ -323,39 +337,61 @@ func checkLteOperator(val map[string]interface{}) time.Duration {
 }
 
 // ProcessEvent analyzes a new XID error event and determines if it should trigger
-// a RepeatedXidError alert. Returns true if the same XID appears in burstThreshold+ bursts.
+// a RepeatedXidError alert. Event history is tracked per (node, GPU), so the
+// same XID must recur in burstThreshold+ distinct bursts on the *same* GPU for
+// this method to return true.
+//
+// Returns (shouldTrigger, burstCount) for the GPU with the highest burst count
+// observed in this event. If the event impacts multiple GPUs, each GPU's
+// history is updated and evaluated independently; a trigger on any one GPU is
+// sufficient to return shouldTrigger=true.
 func (d *XidBurstDetector) ProcessEvent(event *protos.HealthEvent) (shouldTrigger bool, burstCount int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	nodeName := event.NodeName
 	if len(event.ErrorCode) == 0 {
 		return false, 0
 	}
 
+	nodeName := event.NodeName
 	xidCode := event.ErrorCode[0]
 	timestamp := time.Unix(event.GeneratedTimestamp.Seconds, 0)
+	gpuIDs := extractGPUIDs(event.EntitiesImpacted)
 
-	// Get or create node history
-	history := d.getOrCreateHistory(nodeName)
+	// Group by each GPU the event impacts. If none, fall back to the
+	// unknown-GPU bucket so we still observe (and can alert on) bursts
+	// coming from events that lack GPU attribution.
+	gpuKeys := gpuIDs
+	if len(gpuKeys) == 0 {
+		gpuKeys = []string{unknownGPUKey}
+	}
 
-	// Add new event
 	xidEvent := XidEvent{
 		timestamp: timestamp,
 		errorCode: xidCode,
-		gpuIDs:    extractGPUIDs(event.EntitiesImpacted),
+		gpuIDs:    gpuIDs,
 	}
-	history.events = append(history.events, xidEvent)
 
-	// Clean up old events (older than lookback window)
-	d.cleanupOldEvents(history, timestamp)
+	maxBursts := 0
+	triggered := false
 
-	// Detect bursts using same logic as MongoDB pipeline
-	bursts := d.detectBursts(history, xidCode)
+	for _, gpuKey := range gpuKeys {
+		history := d.getOrCreateHistory(nodeName, gpuKey)
+		history.events = append(history.events, xidEvent)
 
-	// Trigger if we see the same XID code in burstThreshold+ different bursts
-	// Default threshold is 5, matching MongoDB pipeline
-	return len(bursts) >= d.burstThreshold, len(bursts)
+		d.cleanupOldEvents(history, timestamp)
+
+		bursts := d.detectBursts(history, xidCode)
+		if len(bursts) > maxBursts {
+			maxBursts = len(bursts)
+		}
+
+		if len(bursts) >= d.burstThreshold {
+			triggered = true
+		}
+	}
+
+	return triggered, maxBursts
 }
 
 // detectBursts identifies burst patterns in the event history for a specific XID code
@@ -460,17 +496,36 @@ func (b *Burst) hasXid(xidCode string) bool {
 	return b.xidCodes[xidCode]
 }
 
-// extractGPUIDs extracts GPU entity values from the entities impacted list
+// extractGPUIDs returns the deduplicated set of GPU UUIDs affected by this
+// event. Only "GPU_UUID" entities are considered - that is the entity type
+// emitted by every production monitor that reports GPU-level XID errors and
+// is what the MongoDB aggregation pipeline keys on. Events that carry "GPU"
+// ordinal entries alongside "GPU_UUID" would otherwise be double-counted
+// (once per key) for a single physical GPU.
+//
+// Deduplication also guards against the same UUID appearing twice in a
+// single event's entity list, which would cause the same XID event to be
+// appended to the same history bucket more than once.
 func extractGPUIDs(entities []*protos.Entity) []string {
-	var gpuIDs []string
+	var (
+		uuids []string
+		seen  = make(map[string]struct{})
+	)
 
 	for _, entity := range entities {
-		if entity.EntityType == "GPU" {
-			gpuIDs = append(gpuIDs, entity.EntityValue)
+		if entity == nil || entity.EntityType != "GPU_UUID" {
+			continue
 		}
+
+		if _, ok := seen[entity.EntityValue]; ok {
+			continue
+		}
+
+		seen[entity.EntityValue] = struct{}{}
+		uuids = append(uuids, entity.EntityValue)
 	}
 
-	return gpuIDs
+	return uuids
 }
 
 // cleanupOldEvents removes events older than the lookback window
@@ -487,34 +542,71 @@ func (d *XidBurstDetector) cleanupOldEvents(history *NodeXidHistory, currentTime
 	history.events = validEvents
 }
 
-// getOrCreateHistory gets the event history for a node, creating it if it doesn't exist
-func (d *XidBurstDetector) getOrCreateHistory(nodeName string) *NodeXidHistory {
-	if history, exists := d.nodeEvents[nodeName]; exists {
+// getOrCreateHistory gets the event history for a (node, GPU) pair, creating
+// it (and its parent node map) if it doesn't exist.
+func (d *XidBurstDetector) getOrCreateHistory(nodeName, gpuKey string) *NodeXidHistory {
+	gpuHistories, exists := d.nodeEvents[nodeName]
+	if !exists {
+		gpuHistories = make(map[string]*NodeXidHistory)
+		d.nodeEvents[nodeName] = gpuHistories
+	}
+
+	if history, exists := gpuHistories[gpuKey]; exists {
 		return history
 	}
 
 	history := &NodeXidHistory{events: make([]XidEvent, 0)}
-	d.nodeEvents[nodeName] = history
+	gpuHistories[gpuKey] = history
 
 	return history
 }
 
-// GetBurstStats returns statistics about current burst tracking (for observability)
+// GetBurstStats returns total tracked event counts per node across all GPUs
+// (for observability). The map is keyed by nodeName.
 func (d *XidBurstDetector) GetBurstStats() map[string]int {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
 	stats := make(map[string]int)
-	for nodeName, history := range d.nodeEvents {
-		stats[nodeName] = len(history.events)
+
+	for nodeName, gpuHistories := range d.nodeEvents {
+		total := 0
+		for _, history := range gpuHistories {
+			total += len(history.events)
+		}
+
+		stats[nodeName] = total
 	}
 
 	return stats
 }
 
-// ClearNodeHistory clears all XID event history for a specific node.
-// This should be called when a healthy event is received for the node,
-// indicating that the GPU issues have been resolved and we should start fresh.
+// GetPerGPUBurstStats returns tracked event counts keyed by (nodeName, gpuKey).
+// The outer map is keyed by nodeName; the inner map is keyed by the GPU UUID
+// (or ordinal string) extracted from the event's entities. The empty-string
+// inner key is used for events that did not carry a GPU entity.
+func (d *XidBurstDetector) GetPerGPUBurstStats() map[string]map[string]int {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	stats := make(map[string]map[string]int, len(d.nodeEvents))
+
+	for nodeName, gpuHistories := range d.nodeEvents {
+		perGPU := make(map[string]int, len(gpuHistories))
+		for gpuKey, history := range gpuHistories {
+			perGPU[gpuKey] = len(history.events)
+		}
+
+		stats[nodeName] = perGPU
+	}
+
+	return stats
+}
+
+// ClearNodeHistory clears all XID event history for a specific node across
+// every GPU. This should be called when a healthy event is received for the
+// node, indicating that the GPU issues have been resolved and we should start
+// fresh.
 func (d *XidBurstDetector) ClearNodeHistory(nodeName string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

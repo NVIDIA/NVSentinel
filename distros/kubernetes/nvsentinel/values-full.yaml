@@ -339,7 +339,13 @@ platformConnector:
         - "cloud.google.com/gce-topology-block"
         - "cloud.google.com/gce-topology-host"
         - "cloud.google.com/gce-topology-subblock"
-    
+        # Topograph-applied topology labels (present when Topograph is deployed in the cluster;
+        # see https://github.com/NVIDIA/topograph/blob/main/docs/reference/node-labels.md)
+        - "network.topology.nvidia.com/accelerator"
+        - "network.topology.nvidia.com/leaf"
+        - "network.topology.nvidia.com/spine"
+        - "network.topology.nvidia.com/core"
+
     # Property overrides configuration
     # Uses CEL expressions to modify health event properties
     # Allows operators to suppress errors or change recommended actions
