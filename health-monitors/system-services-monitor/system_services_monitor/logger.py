@@ -45,8 +45,21 @@ _LEVEL_MAP: Final[dict[str, int]] = {
 
 
 def _parse_log_level(level: str) -> int:
-    """Convert a string log level to a logging constant."""
-    return _LEVEL_MAP.get(level.lower().strip(), logging.INFO)
+    """Convert a string log level to a logging constant.
+
+    Accepted keys (case-insensitive, whitespace-stripped): ``debug``, ``info``,
+    ``warn``, ``warning``, ``error``, ``critical``. Unknown values fall back to
+    ``logging.INFO`` after emitting a warning on stderr, since this function is
+    called before the structured logger is configured.
+    """
+    normalized = level.lower().strip()
+    if normalized not in _LEVEL_MAP:
+        print(
+            f"[logger] Unknown log level {level!r}; defaulting to INFO. "
+            f"Valid values: {sorted(_LEVEL_MAP.keys())}",
+            file=sys.stderr,
+        )
+    return _LEVEL_MAP.get(normalized, logging.INFO)
 
 
 def _make_module_version_injector(
@@ -73,7 +86,9 @@ def set_default_structured_logger_with_level(module: str, version: str, level: s
     Args:
         module: The name of the module/application using the logger.
         version: The version of the module/application (e.g., "v1.0.0").
-        level: The log level as a string (e.g., "debug", "info", "warn", "error").
+        level: The log level as a string — one of "debug", "info", "warn",
+               "warning", "error", "critical". Case-insensitive; unknown values
+               default to INFO with a stderr warning.
     """
     log_level = _parse_log_level(level)
 

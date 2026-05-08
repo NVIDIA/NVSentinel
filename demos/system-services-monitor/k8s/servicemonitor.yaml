@@ -82,12 +82,12 @@ spec:
               {{ $labels.gpu_index }} on {{ $labels.node }}.
               Check nvidia-smi -q for fabric.state and fabric.status.
 
-        # Critical: GPU systemd service down
+        # Warning: GPU systemd service down (non-fatal per PR classification).
         - alert: GPUServiceDown
           expr: nvidia_service_up == 0
           for: 3m
           labels:
-            severity: critical
+            severity: warning
             component: system-services-monitor
           annotations:
             summary: "{{ $labels.service_name }} down on {{ $labels.node }}"

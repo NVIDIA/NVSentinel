@@ -20,6 +20,7 @@ and send them to the platform-connector via gRPC over a Unix domain socket.
 
 import dataclasses
 import logging as log
+import threading
 from time import sleep
 from typing import List
 
@@ -60,6 +61,10 @@ class PlatformConnectorEventProcessor(CallbackInterface):
         self._component_class = "INFRASTRUCTURE"
         self._processing_strategy = processing_strategy
         self.entity_cache: dict[str, CachedEntityState] = {}
+        # Guards entity_cache read/decide/write against overlapping callback
+        # invocations under a ThreadPoolExecutor (TOCTOU race — duplicate
+        # HealthEvent emissions while send_health_event_with_retries blocks).
+        self._cache_lock = threading.Lock()
 
     def _build_cache_key(self, check_name: str, entities_impacted: List[dict]) -> str:
         """Build a cache key from check name and impacted entities."""
@@ -94,50 +99,68 @@ class PlatformConnectorEventProcessor(CallbackInterface):
             health_events = []
             pending_cache_updates: dict[str, CachedEntityState] = {}
 
-            for result in results:
-                cache_key = self._build_cache_key(result.check_name, result.entities_impacted)
-                cached = self.entity_cache.get(cache_key)
+            # Snapshot the cache state and decide which events to send under a
+            # single lock so overlapping callbacks (e.g. from a
+            # ThreadPoolExecutor) don't both observe the same stale entry and
+            # emit duplicate HealthEvents while one of them blocks in
+            # send_health_event_with_retries (~26 s worst case).
+            with self._cache_lock:
+                for result in results:
+                    cache_key = self._build_cache_key(result.check_name, result.entities_impacted)
+                    cached = self.entity_cache.get(cache_key)
 
-                # Only send if state changed (or first observation)
-                if cached is None or cached.is_fatal != result.is_fatal or cached.is_healthy != result.is_healthy:
-                    entities = [
-                        platformconnector_pb2.Entity(entityType=e["entityType"], entityValue=e["entityValue"])
-                        for e in result.entities_impacted
-                    ]
+                    # Only send if state changed (or first observation)
+                    if cached is None or cached.is_fatal != result.is_fatal or cached.is_healthy != result.is_healthy:
+                        entities = [
+                            platformconnector_pb2.Entity(entityType=e["entityType"], entityValue=e["entityValue"])
+                            for e in result.entities_impacted
+                        ]
 
-                    recommended_action = self._get_recommended_action(result)
+                        recommended_action = self._get_recommended_action(result)
 
-                    health_event = platformconnector_pb2.HealthEvent(
-                        version=self._version,
-                        agent=self._agent,
-                        componentClass=self._component_class,
-                        checkName=result.check_name,
-                        isFatal=result.is_fatal,
-                        isHealthy=result.is_healthy,
-                        message=result.message,
-                        recommendedAction=recommended_action,
-                        errorCode=result.error_codes,
-                        entitiesImpacted=entities,
-                        metadata=result.metadata or {},
-                        generatedTimestamp=timestamp,
-                        nodeName=self._node_name,
-                        processingStrategy=self._processing_strategy,
-                    )
-                    health_events.append(health_event)
-                    pending_cache_updates[cache_key] = CachedEntityState(
-                        is_fatal=result.is_fatal, is_healthy=result.is_healthy
-                    )
+                        health_event = platformconnector_pb2.HealthEvent(
+                            version=self._version,
+                            agent=self._agent,
+                            componentClass=self._component_class,
+                            checkName=result.check_name,
+                            isFatal=result.is_fatal,
+                            isHealthy=result.is_healthy,
+                            message=result.message,
+                            recommendedAction=recommended_action,
+                            errorCode=result.error_codes,
+                            entitiesImpacted=entities,
+                            metadata=result.metadata or {},
+                            generatedTimestamp=timestamp,
+                            nodeName=self._node_name,
+                            processingStrategy=self._processing_strategy,
+                        )
+                        health_events.append(health_event)
+                        pending_cache_updates[cache_key] = CachedEntityState(
+                            is_fatal=result.is_fatal, is_healthy=result.is_healthy
+                        )
+                        # Reserve the decision immediately so a concurrent
+                        # callback observing the same check result skips it
+                        # instead of re-emitting a duplicate HealthEvent while
+                        # the gRPC call below is in flight.
+                        self.entity_cache[cache_key] = pending_cache_updates[cache_key]
 
             log.debug(f"health events to send: {len(health_events)}")
             if len(health_events):
                 try:
                     if self.send_health_event_with_retries(health_events):
-                        # Only update cache after successful send
                         for key, state in pending_cache_updates.items():
-                            self.entity_cache[key] = state
                             log.info(f"Updated cache for key {key} with value {state} after successful send")
+                    else:
+                        # Send failed after retries -- roll back the reservations
+                        # so the next cycle re-attempts these events.
+                        with self._cache_lock:
+                            for key in pending_cache_updates:
+                                self.entity_cache.pop(key, None)
                 except Exception as e:
                     log.error(f"Exception while sending health events: {e}")
+                    with self._cache_lock:
+                        for key in pending_cache_updates:
+                            self.entity_cache.pop(key, None)
 
     def send_health_event_with_retries(self, health_events: list[platformconnector_pb2.HealthEvent]) -> bool:
         """Send health events to the platform connector with retries.
