@@ -78,7 +78,7 @@ func TestStaleResumeTokenRecovery(t *testing.T) {
 		// and left the token in MongoDB, we clear it before starting.
 		restConfig := client.RESTConfig()
 		t.Log("Cleaning up any leftover stale resume token from previous runs")
-		helpers.DeleteResumeToken(ctx, t, restConfig, mongoPod, "fault-remediation")
+		helpers.DeleteResumeToken(ctx, t, restConfig, client, mongoPod, "fault-remediation")
 
 		// Force a fresh rollout to ensure fault-remediation is healthy.
 		// A previous failed run may have left a stuck rollout with a
@@ -98,9 +98,9 @@ func TestStaleResumeTokenRecovery(t *testing.T) {
 
 		// Step 1: Insert a stale resume token
 		t.Log("Step 1: Inserting stale resume token for fault-remediation")
-		helpers.InsertStaleResumeToken(ctx, t, restConfig, mongoPod, "fault-remediation")
+		helpers.InsertStaleResumeToken(ctx, t, restConfig, client, mongoPod, "fault-remediation")
 
-		tokenDoc := helpers.GetResumeTokenDoc(ctx, t, restConfig, mongoPod, "fault-remediation")
+		tokenDoc := helpers.GetResumeTokenDoc(ctx, t, restConfig, client, mongoPod, "fault-remediation")
 		require.NotContains(t, tokenDoc, "NOT_FOUND", "stale token should have been inserted")
 		t.Logf("Stale resume token inserted: %s", tokenDoc)
 
@@ -119,7 +119,7 @@ func TestStaleResumeTokenRecovery(t *testing.T) {
 		// After recovery the module should have deleted the bad token and
 		// saved a fresh one (or no token if no events were processed yet).
 		t.Log("Step 3: Verifying stale token was cleaned up")
-		tokenDoc = helpers.GetResumeTokenDoc(ctx, t, restConfig, mongoPod, "fault-remediation")
+		tokenDoc = helpers.GetResumeTokenDoc(ctx, t, restConfig, client, mongoPod, "fault-remediation")
 		assert.NotContains(t, tokenDoc,
 			helpers.StaleTokenMarker,
 			"the original stale token should have been deleted during recovery")
@@ -137,7 +137,7 @@ func TestStaleResumeTokenRecovery(t *testing.T) {
 		// This mirrors the Setup cleanup so the cluster is left healthy
 		// regardless of whether the test passed or failed.
 		t.Log("Teardown: Cleaning up stale token and restarting fault-remediation")
-		helpers.DeleteResumeToken(ctx, t, restConfig, mongoPod, "fault-remediation")
+		helpers.DeleteResumeToken(ctx, t, restConfig, client, mongoPod, "fault-remediation")
 
 		err = helpers.RestartDeployment(ctx, t, client, "fault-remediation", helpers.NVSentinelNamespace)
 		if err != nil {

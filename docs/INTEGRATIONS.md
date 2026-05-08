@@ -735,6 +735,21 @@ userNamespaces:
 
 **Configuration Location:** `distros/kubernetes/nvsentinel/charts/node-drainer/values.yaml`
 
+## Topology Awareness (Topograph)
+
+When [Topograph](https://github.com/NVIDIA/topograph) is deployed in the cluster, it applies four node labels describing the physical network topology:
+
+- `network.topology.nvidia.com/accelerator` — NVLink domain (clique) ID
+- `network.topology.nvidia.com/leaf` — leaf switch identifier
+- `network.topology.nvidia.com/spine` — spine switch identifier
+- `network.topology.nvidia.com/core` — core switch identifier
+
+These keys are included by default in the Metadata Augmentor's `allowedLabels`, so NVSentinel automatically propagates them into health event metadata on clusters where Topograph has applied them. On clusters without Topograph, the labels are absent and the Metadata Augmentor simply skips them — no configuration change is required either way.
+
+Downstream consumers of NVSentinel events (fault-quarantine CEL rules, remediation custom resources, dashboards, blast-radius analysis) can then reason about topological locality. For example, a CEL rule can compare the `network.topology.nvidia.com/accelerator` value across a set of recent events to determine whether a fault is isolated to a single NVLink domain or spans multiple.
+
+The authoritative reference for these labels — value semantics, hashing behavior for long identifiers, and provider matrix — is [topograph's `docs/reference/node-labels.md`](https://github.com/NVIDIA/topograph/blob/main/docs/reference/node-labels.md).
+
 ## Error Code Mapping Reference
 
 NVSentinel maps DCGM error codes to recommended actions using a canonical CSV file.
