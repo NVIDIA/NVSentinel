@@ -1,0 +1,137 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+navigation:
+  - section: Getting Started
+    contents:
+      - page: Overview
+        path: v1.4.0-content/OVERVIEW.md
+      - page: Integrations
+        path: v1.4.0-content/INTEGRATIONS.md
+
+  - section: Architecture
+    contents:
+      - page: Data Flow
+        path: v1.4.0-content/DATA_FLOW.md
+      - page: External Datastore
+        path: v1.4.0-content/external-datastore.md
+
+  - section: Components
+    contents:
+      - page: GPU Health Monitor
+        path: v1.4.0-content/gpu-health-monitor.md
+      - page: Syslog Health Monitor
+        path: v1.4.0-content/syslog-health-monitor.md
+      - page: CSP Health Monitor IAM
+        path: v1.4.0-content/csp-health-monitor-iam.md
+      - section: NIC Health Monitor
+        contents:
+          - page: Overview
+            path: v1.4.0-content/nic-health-monitor/Overview.md
+          - page: Link State Detection
+            path: v1.4.0-content/nic-health-monitor/link-state-detection.md
+          - page: Link Counter Detection
+            path: v1.4.0-content/nic-health-monitor/link-counter-detection.md
+          - page: Syslog Detection and Correlation
+            path: v1.4.0-content/nic-health-monitor/syslog-detection-correlation.md
+      - page: Kubernetes Object Monitor
+        path: v1.4.0-content/kubernetes-object-monitor.md
+      - page: Event Exporter
+        path: v1.4.0-content/event-exporter.md
+      - page: Metadata Collector
+        path: v1.4.0-content/metadata-collector.md
+      - page: Labeler
+        path: v1.4.0-content/labeler.md
+      - page: Platform Connectors
+        path: v1.4.0-content/platform-connectors.md
+      - page: Preflight
+        path: v1.4.0-content/preflight.md
+      - page: State Manager
+        path: v1.4.0-content/state-manager.md
+      - page: Node Drainer
+        path: v1.4.0-content/node-drainer.md
+      - page: Fault Quarantine
+        path: v1.4.0-content/fault-quarantine.md
+      - page: Fault Remediation
+        path: v1.4.0-content/fault-remediation.md
+      - page: Circuit Breaker
+        path: v1.4.0-content/circuit-breaker.md
+      - page: Cancelling Breakfix
+        path: v1.4.0-content/cancelling-breakfix.md
+      - page: Log Collection
+        path: v1.4.0-content/log-collection.md
+      - page: Monitoring Critical Operators
+        path: v1.4.0-content/monitoring-critical-operators.md
+      - page: PostgreSQL Provider
+        path: v1.4.0-content/postgresql-provider.md
+
+  - section: Observability
+    contents:
+      - page: Metrics Reference
+        path: v1.4.0-content/METRICS.md
+      - page: Distributed Tracing
+        path: v1.4.0-content/tracing.md
+      - page: Audit Logging
+        path: v1.4.0-content/audit-logging.md
+
+  - section: Configuration
+    contents:
+      - page: GPU Health Monitor
+        path: v1.4.0-content/configuration/gpu-health-monitor.md
+      - page: Syslog Health Monitor
+        path: v1.4.0-content/configuration/syslog-health-monitor.md
+      - page: CSP Health Monitor
+        path: v1.4.0-content/configuration/csp-health-monitor.md
+      - page: Kubernetes Object Monitor
+        path: v1.4.0-content/configuration/kubernetes-object-monitor.md
+      - page: Fault Quarantine
+        path: v1.4.0-content/configuration/fault-quarantine.md
+      - page: Node Drainer
+        path: v1.4.0-content/configuration/node-drainer.md
+      - page: Fault Remediation
+        path: v1.4.0-content/configuration/fault-remediation.md
+      - page: Event Exporter
+        path: v1.4.0-content/configuration/event-exporter.md
+      - page: Metadata Collector
+        path: v1.4.0-content/configuration/metadata-collector.md
+      - page: Labeler
+        path: v1.4.0-content/configuration/labeler.md
+      - page: Platform Connectors
+        path: v1.4.0-content/configuration/platform-connectors.md
+      - page: Preflight
+        path: v1.4.0-content/configuration/preflight.md
+      - page: MongoDB Store
+        path: v1.4.0-content/configuration/mongodb-store.md
+
+  - section: Runbooks
+    contents:
+      - page: Circuit Breaker
+        path: v1.4.0-content/runbooks/circuit-breaker.md
+      - page: Cordoned Nodes
+        path: v1.4.0-content/runbooks/cordoned-nodes.md
+      - page: CSP Health Monitor IAM
+        path: v1.4.0-content/runbooks/csp-health-monitor-iam.md
+      - page: Datastore Connection
+        path: v1.4.0-content/runbooks/datastore-connection.md
+      - page: Driver Upgrades
+        path: v1.4.0-content/runbooks/driver-upgrades.md
+      - page: GPU Monitor DCGM Failures
+        path: v1.4.0-content/runbooks/gpu-monitor-dcgm-failures.md
+      - page: Health Event Analyzer High Error Rate
+        path: v1.4.0-content/runbooks/health-event-analyzer-high-error-rate.md
+      - page: Health Monitor UDS Failures
+        path: v1.4.0-content/runbooks/health-monitor-uds-failures.md
+      - page: Log Collection Job Failures
+        path: v1.4.0-content/runbooks/log-collection-job-failures.md
+      - page: Log Rotation Failures
+        path: v1.4.0-content/runbooks/log-rotation-failures.md
+      - page: MongoDB Connection Error
+        path: v1.4.0-content/runbooks/mongodb-connection-error.md
+      - page: Node Conditions
+        path: v1.4.0-content/runbooks/node-conditions.md
+      - page: Node Condition Update Failures
+        path: v1.4.0-content/runbooks/node-condition-update-failures.md
+      - page: Node Event Creation Failures
+        path: v1.4.0-content/runbooks/node-event-creation-failures.md
+      - page: Stale Events
+        path: v1.4.0-content/runbooks/stale-events.md
