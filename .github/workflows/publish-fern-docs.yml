@@ -33,6 +33,7 @@ jobs:
 
       - name: Checkout frozen version content
         run: |
+          set -o pipefail
           for version_file in fern/versions/v*.yml; do
             version=$(basename "$version_file" .yml)
             if git rev-parse "$version" >/dev/null 2>&1; then
