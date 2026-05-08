@@ -1,10 +1,10 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: system-service-monitor
+  name: system-services-monitor
   namespace: nvsentinel
   labels:
-    app.kubernetes.io/name: system-service-monitor
+    app.kubernetes.io/name: system-services-monitor
     app.kubernetes.io/instance: nvsentinel
     app.kubernetes.io/component: metrics
 data:

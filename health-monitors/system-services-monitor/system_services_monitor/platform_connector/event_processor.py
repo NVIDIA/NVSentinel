@@ -26,8 +26,8 @@ from typing import List
 import grpc
 from google.protobuf.timestamp_pb2 import Timestamp
 
-from system_service_monitor.checkers.types import CallbackInterface, CheckResult
-from system_service_monitor.protos import (
+from system_services_monitor.checkers.types import CallbackInterface, CheckResult
+from system_services_monitor.protos import (
     health_event_pb2 as platformconnector_pb2,
     health_event_pb2_grpc as platformconnector_pb2_grpc,
 )
@@ -56,7 +56,7 @@ class PlatformConnectorEventProcessor(CallbackInterface):
         self._socket_path = socket_path
         self._node_name = node_name
         self._version = 1
-        self._agent = "system-service-monitor"
+        self._agent = "system-services-monitor"
         self._component_class = "INFRASTRUCTURE"
         self._processing_strategy = processing_strategy
         self.entity_cache: dict[str, CachedEntityState] = {}

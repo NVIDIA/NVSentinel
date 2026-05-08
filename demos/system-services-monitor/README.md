@@ -23,7 +23,7 @@ NVIDIA Fabric Manager can fail and stay broken for weeks undetected. NVSentinel'
 
 ```bash
 # Build
-docker build -t system-service-monitor:latest .
+docker build -t system-services-monitor:latest .
 
 # Deploy (assumes nvsentinel namespace exists)
 kubectl apply -f k8s/rbac.yaml
@@ -32,12 +32,12 @@ kubectl apply -f k8s/daemonset.yaml
 kubectl apply -f k8s/servicemonitor.yaml
 
 # Verify
-kubectl get ds -n nvsentinel system-service-monitor
+kubectl get ds -n nvsentinel system-services-monitor
 
 # Port-forward to a specific node's pod
 NODE=<node-name>
 POD=$(kubectl get pod -n nvsentinel -o wide --field-selector spec.nodeName=${NODE} \
-  -l app=system-service-monitor -o jsonpath='{.items[0].metadata.name}')
+  -l app=system-services-monitor -o jsonpath='{.items[0].metadata.name}')
 kubectl port-forward -n nvsentinel pod/${POD} 9101:9101
 curl -s localhost:9101/metrics | grep fabric_manager_up
 ```
@@ -73,4 +73,4 @@ All settings via ConfigMap environment variables. See `k8s/configmap.yaml`.
 
 ## Relationship to NVSentinel
 
-This is a **standalone companion tool** that exposes Prometheus metrics and alerts. It does not integrate with NVSentinel's gRPC event pipeline or remediation workflow. See the native `health-monitors/system-service-monitor/` for an integrated version that emits HealthEvents to platform-connector.
+This is a **standalone companion tool** that exposes Prometheus metrics and alerts. It does not integrate with NVSentinel's gRPC event pipeline or remediation workflow. See the native `health-monitors/system-services-monitor/` for an integrated version that emits HealthEvents to platform-connector.

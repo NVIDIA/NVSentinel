@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "system-service-monitor"
+name = "system-services-monitor"
 version = "0.1.0"
 description = "GPU node health monitor for Fabric Manager and infrastructure failures"
 authors = ["Community Contributors"]
@@ -25,7 +25,7 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
-system_service_monitor = "system_service_monitor.cli:cli"
+system_services_monitor = "system_services_monitor.cli:cli"
 
 [tool.black]
 line-length = 120
@@ -45,7 +45,7 @@ exclude = '''
     | build
     | dist
   )/
-  | system_service_monitor/protos
+  | system_services_monitor/protos
 
 )
 '''
@@ -65,5 +65,5 @@ exclude_also = [
 ]
 omit = [
     "tests/*",
-    "system_service_monitor/protos/*"
+    "system_services_monitor/protos/*"
 ]

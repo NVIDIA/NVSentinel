@@ -8,11 +8,11 @@ Per [ADR-030](../../docs/designs/030-fabric-manager-monitor-scope.md), this moni
 
 | Signal | Owner | Rationale |
 |---|---|---|
-| FM service up/down | **system-service-monitor** | systemd state, not a DCGM field |
-| FM flap detection | **system-service-monitor** | restart counting, not DCGM |
-| Per-GPU fabric state | **system-service-monitor** | nvidia-smi fabric.state/status |
-| CUDA context validity | **system-service-monitor** | active probe, not passive telemetry |
-| GPU service lifecycle | **system-service-monitor** | systemd, not DCGM |
+| FM service up/down | **system-services-monitor** | systemd state, not a DCGM field |
+| FM flap detection | **system-services-monitor** | restart counting, not DCGM |
+| Per-GPU fabric state | **system-services-monitor** | nvidia-smi fabric.state/status |
+| CUDA context validity | **system-services-monitor** | active probe, not passive telemetry |
+| GPU service lifecycle | **system-services-monitor** | systemd, not DCGM |
 | PCIe link health | gpu-health-monitor | DCGM_HEALTH_WATCH_PCIE |
 | NVLink bandwidth/errors | gpu-health-monitor | DCGM_HEALTH_WATCH_NVLINK |
 | Clock throttling | gpu-health-monitor | DCGM_FI_DEV_CLOCK_THROTTLE_REASONS |
@@ -64,7 +64,7 @@ The `FabricStateUnhealthy` check classifies per-GPU fabric failures into three s
 All options are available as CLI flags:
 
 ```
-system_service_monitor \
+system_services_monitor \
   --platform-connector-socket /run/nvsentinel/platform-connector.sock \
   --port 9101 \
   --poll-interval 30 \
@@ -82,7 +82,7 @@ Environment variables:
 
 ## Deployment
 
-The system-service-monitor runs as a DaemonSet on GPU nodes, alongside the existing gpu-health-monitor. It requires:
+The system-services-monitor runs as a DaemonSet on GPU nodes, alongside the existing gpu-health-monitor. It requires:
 
 - Host PID namespace access (`hostPID: true`) for nsenter into host systemd
 - Platform-connector Unix socket mounted as a volume
@@ -91,7 +91,7 @@ The system-service-monitor runs as a DaemonSet on GPU nodes, alongside the exist
 
 Health events flow through the standard NVSentinel pipeline:
 
-1. **system-service-monitor** detects failure, sends `HealthEvent` to platform-connector
+1. **system-services-monitor** detects failure, sends `HealthEvent` to platform-connector
 2. **platform-connector** writes event to MongoDB and forwards to fault-quarantine
 3. **fault-quarantine** cordons/labels the node based on event severity
 4. **fault-remediation** executes the recommended action (RESTART_BM for fatal infra failures)
@@ -124,7 +124,7 @@ On GKE COS, FM health should be inferred from two sources:
 When deploying on GKE with COS:
 
 ```
-system_service_monitor \
+system_services_monitor \
   --platform-connector-socket /run/nvsentinel/platform-connector.sock \
   --disable-fabric-check \
   --enable-cuda-validation \

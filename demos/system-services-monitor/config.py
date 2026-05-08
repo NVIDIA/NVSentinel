@@ -27,25 +27,17 @@ class MonitorConfig:
 
     # Check toggles
     enable_fabric_check: bool = True
-    enable_pcie_check: bool = True
-    enable_clock_check: bool = True
-    enable_nvlink_check: bool = True
     enable_cuda_validation: bool = False  # off by default (resource intensive)
 
     # CUDA validation runs at a slower cadence
     cuda_validation_interval: int = 600  # seconds
 
-    # DCGM exporter endpoint for NVLink metrics
-    dcgm_exporter_url: str = "http://localhost:9400"
-
-    # Clock throttle threshold (ratio of current/max)
-    clock_throttle_ratio: float = 0.85
-
-    # Services to monitor (besides fabric manager)
+    # Services to monitor (besides fabric manager).
+    # nv-hostengine is monitored by gpu-health-monitor via
+    # GpuDcgmConnectivityFailure; not duplicated here.
     gpu_services: list = field(default_factory=lambda: [
         "nvidia-fabricmanager",
         "nvidia-persistenced",
-        "nv-hostengine",
     ])
 
     @classmethod
@@ -63,13 +55,8 @@ class MonitorConfig:
             flap_window=int(os.environ.get("FLAP_WINDOW", "600")),
             flap_threshold=int(os.environ.get("FLAP_THRESHOLD", "3")),
             enable_fabric_check=_bool(os.environ.get("ENABLE_FABRIC_CHECK", "true")),
-            enable_pcie_check=_bool(os.environ.get("ENABLE_PCIE_CHECK", "true")),
-            enable_clock_check=_bool(os.environ.get("ENABLE_CLOCK_CHECK", "true")),
-            enable_nvlink_check=_bool(os.environ.get("ENABLE_NVLINK_CHECK", "true")),
             enable_cuda_validation=_bool(os.environ.get("ENABLE_CUDA_VALIDATION", "false")),
             cuda_validation_interval=int(os.environ.get("CUDA_VALIDATION_INTERVAL", "600")),
-            dcgm_exporter_url=os.environ.get("DCGM_EXPORTER_URL", "http://localhost:9400"),
-            clock_throttle_ratio=float(os.environ.get("CLOCK_THROTTLE_RATIO", "0.85")),
         )
 
         services_env = os.environ.get("GPU_SERVICES")

@@ -2,6 +2,11 @@
 
 Runs a periodic check loop across all enabled health checks, exposes
 Prometheus metrics on the configured port, and computes overall node health.
+
+Scope (per ADR-030): this demo covers non-DCGM signals only. PCIe
+downtraining, NVLink bandwidth/CRC, and GPU clock throttling are already
+surfaced by NVSentinel's gpu-health-monitor via DCGM and are intentionally
+NOT duplicated here.
 """
 
 import logging
@@ -19,27 +24,18 @@ from metrics import (
     fabric_manager_restarts_total,
     fabric_manager_last_healthy_seconds,
     nvidia_service_up,
-    pcie_link_width,
-    pcie_link_gen,
-    pcie_link_degraded,
-    nvlink_fabric_healthy,
     cuda_validation_passed,
-    gpu_clock_throttled,
-    gpu_clock_ratio,
     health_check_duration_seconds,
     health_check_errors_total,
 )
 from checks.service_check import ServiceChecker
-from checks.pcie_check import PCIeChecker
-from checks.clock_check import ClockChecker
-from checks.fabric_check import NVLinkFabricChecker
 from checks.cuda_validation import CUDAValidator
 
 logger = logging.getLogger(__name__)
 
 
-class FabricManagerMonitor:
-    """Orchestrates all health checks and exposes Prometheus metrics."""
+class SystemServicesMonitor:
+    """Orchestrates system-service health checks and exposes Prometheus metrics."""
 
     def __init__(self, config: MonitorConfig):
         self.config = config
@@ -52,14 +48,10 @@ class FabricManagerMonitor:
             flap_window=config.flap_window,
             flap_threshold=config.flap_threshold,
         )
-        self._pcie_checker = PCIeChecker()
-        self._clock_checker = ClockChecker(throttle_ratio=config.clock_throttle_ratio)
-        self._nvlink_checker = NVLinkFabricChecker(dcgm_url=config.dcgm_exporter_url)
         self._cuda_validator = CUDAValidator()
 
         # Track state for cross-check correlation
         self._fabric_manager_down = False
-        self._nvlink_bandwidth_zero = False
 
     def run(self):
         """Start metrics server and enter the check loop."""
@@ -111,11 +103,6 @@ class FabricManagerMonitor:
                     if fm_status.active:
                         fabric_manager_last_healthy_seconds.labels(node).set(time.time())
 
-                    # Update restart counter (set to current total — Counter only goes up)
-                    if fm_status.n_restarts > 0:
-                        # We use _total suffix via Counter; increment by delta
-                        pass  # Counter tracks via flap detection instead
-
                     if fm_status.flapping:
                         logger.warning("Fabric Manager is flapping on %s", node)
 
@@ -142,74 +129,7 @@ class FabricManagerMonitor:
                     logger.exception("Service check failed")
                     health_check_errors_total.labels("services").inc()
 
-        # --- Check 3: PCIe ---
-        if self.config.enable_pcie_check:
-            with health_check_duration_seconds.labels("pcie").time():
-                try:
-                    pcie_results = self._pcie_checker.check()
-                    for pcie in pcie_results:
-                        gpu = str(pcie.gpu_index)
-                        pcie_link_width.labels(node, gpu).set(pcie.link_width_current)
-                        pcie_link_gen.labels(node, gpu).set(pcie.link_gen_current)
-                        pcie_link_degraded.labels(node, gpu).set(1 if pcie.degraded else 0)
-                        if pcie.degraded:
-                            logger.warning(
-                                "PCIe degraded on %s GPU %s: Gen%d x%d (max Gen%d x%d)",
-                                node, gpu, pcie.link_gen_current, pcie.link_width_current,
-                                pcie.link_gen_max, pcie.link_width_max,
-                            )
-                            overall_healthy = False
-                except Exception:
-                    logger.exception("PCIe check failed")
-                    health_check_errors_total.labels("pcie").inc()
-
-        # --- Check 6: Clocks ---
-        if self.config.enable_clock_check:
-            with health_check_duration_seconds.labels("clocks").time():
-                try:
-                    clock_results = self._clock_checker.check()
-                    for clk in clock_results:
-                        gpu = str(clk.gpu_index)
-                        gpu_clock_throttled.labels(node, gpu).set(1 if clk.throttled else 0)
-                        gpu_clock_ratio.labels(node, gpu).set(clk.clock_ratio)
-                        if clk.throttled:
-                            logger.warning(
-                                "GPU %s throttled on %s: %d/%d MHz (ratio=%.2f, reasons=%s)",
-                                gpu, node, clk.graphics_clock_current,
-                                clk.graphics_clock_max, clk.clock_ratio, clk.throttle_reasons,
-                            )
-                except Exception:
-                    logger.exception("Clock check failed")
-                    health_check_errors_total.labels("clocks").inc()
-
-        # --- Check 4: NVLink ---
-        if self.config.enable_nvlink_check:
-            with health_check_duration_seconds.labels("nvlink").time():
-                try:
-                    nvlink_status = self._nvlink_checker.check()
-                    self._nvlink_bandwidth_zero = nvlink_status.bandwidth_zero
-
-                    # False-positive mitigation: only flag unhealthy when
-                    # NVLink has CRC errors OR bandwidth is zero AND FM is down
-                    fabric_nvlink_degraded = (
-                        not nvlink_status.healthy
-                        or (nvlink_status.bandwidth_zero and self._fabric_manager_down)
-                    )
-                    nvlink_fabric_healthy.labels(node).set(0 if fabric_nvlink_degraded else 1)
-
-                    if fabric_nvlink_degraded and not self._in_grace_period():
-                        logger.error(
-                            "NVLink fabric degraded on %s (crc_errors=%.0f, bw_zero=%s, fm_down=%s)",
-                            node, nvlink_status.crc_error_count,
-                            nvlink_status.bandwidth_zero, self._fabric_manager_down,
-                        )
-                        overall_healthy = False
-
-                except Exception:
-                    logger.exception("NVLink check failed")
-                    health_check_errors_total.labels("nvlink").inc()
-
-        # --- Check 5: CUDA validation (slower cadence) ---
+        # --- Check 3: CUDA validation (slower cadence) ---
         if self.config.enable_cuda_validation:
             now = time.monotonic()
             if (now - self._last_cuda_check) >= self.config.cuda_validation_interval:
@@ -234,9 +154,13 @@ class FabricManagerMonitor:
             gpu_node_health_up.labels(node).set(1 if overall_healthy else 0)
 
 
+# Backwards-compat alias
+FabricManagerMonitor = SystemServicesMonitor
+
+
 def main():
     config = MonitorConfig.from_env()
-    monitor = FabricManagerMonitor(config)
+    monitor = SystemServicesMonitor(config)
     monitor.run()
 
 

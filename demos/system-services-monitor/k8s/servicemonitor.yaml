@@ -2,17 +2,17 @@
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: system-service-monitor
+  name: system-services-monitor
   namespace: nvsentinel
   labels:
-    app.kubernetes.io/name: system-service-monitor
+    app.kubernetes.io/name: system-services-monitor
     app.kubernetes.io/instance: nvsentinel
     app.kubernetes.io/component: metrics
     release: prometheus  # Required for Prometheus Operator discovery
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: system-service-monitor
+      app.kubernetes.io/name: system-services-monitor
       app.kubernetes.io/instance: nvsentinel
       app.kubernetes.io/component: metrics
   namespaceSelector:
@@ -30,10 +30,10 @@ spec:
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
-  name: system-service-monitor
+  name: system-services-monitor
   namespace: nvsentinel
   labels:
-    app.kubernetes.io/name: system-service-monitor
+    app.kubernetes.io/name: system-services-monitor
     app.kubernetes.io/instance: nvsentinel
     release: prometheus
 spec:
@@ -46,7 +46,7 @@ spec:
           for: 5m
           labels:
             severity: critical
-            component: system-service-monitor
+            component: system-services-monitor
           annotations:
             summary: "Fabric Manager down on {{ $labels.node }}"
             description: >-
@@ -61,7 +61,7 @@ spec:
           for: 5m
           labels:
             severity: warning
-            component: system-service-monitor
+            component: system-services-monitor
           annotations:
             summary: "Fabric Manager flapping on {{ $labels.node }}"
             description: >-
@@ -74,7 +74,7 @@ spec:
           for: 5m
           labels:
             severity: critical
-            component: system-service-monitor
+            component: system-services-monitor
           annotations:
             summary: "Fabric state unhealthy on {{ $labels.node }} GPU {{ $labels.gpu_index }}"
             description: >-
@@ -88,7 +88,7 @@ spec:
           for: 3m
           labels:
             severity: critical
-            component: system-service-monitor
+            component: system-services-monitor
           annotations:
             summary: "{{ $labels.service_name }} down on {{ $labels.node }}"
             description: >-
@@ -101,7 +101,7 @@ spec:
           for: 5m
           labels:
             severity: critical
-            component: system-service-monitor
+            component: system-services-monitor
           annotations:
             summary: "CUDA validation failed on {{ $labels.node }}"
             description: >-

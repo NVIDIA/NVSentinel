@@ -4,7 +4,7 @@ All metrics are defined in one place for consistency.
 Port 9101 to avoid conflict with NVSentinel's 2112.
 """
 
-from prometheus_client import Gauge, Counter, Histogram, Info
+from prometheus_client import Gauge, Counter, Histogram
 
 
 # --- Overall node health ---
@@ -38,47 +38,11 @@ nvidia_service_up = Gauge(
     ["node", "service_name"],
 )
 
-# --- PCIe link health ---
-pcie_link_width = Gauge(
-    "pcie_link_width",
-    "Current PCIe link width",
-    ["node", "gpu"],
-)
-pcie_link_gen = Gauge(
-    "pcie_link_gen",
-    "Current PCIe link generation",
-    ["node", "gpu"],
-)
-pcie_link_degraded = Gauge(
-    "pcie_link_degraded",
-    "PCIe link degraded (1=degraded, 0=normal)",
-    ["node", "gpu"],
-)
-
-# --- NVLink fabric ---
-nvlink_fabric_healthy = Gauge(
-    "nvlink_fabric_healthy",
-    "NVLink fabric health (1=healthy, 0=degraded)",
-    ["node"],
-)
-
 # --- CUDA validation ---
 cuda_validation_passed = Gauge(
     "cuda_validation_passed",
     "CUDA validation result (1=passed, 0=failed)",
     ["node"],
-)
-
-# --- Clock throttling ---
-gpu_clock_throttled = Gauge(
-    "gpu_clock_throttled",
-    "GPU clock throttled (1=throttled, 0=normal)",
-    ["node", "gpu"],
-)
-gpu_clock_ratio = Gauge(
-    "gpu_clock_ratio",
-    "GPU clock ratio (current/max, 1.0=full speed)",
-    ["node", "gpu"],
 )
 
 # --- Check infrastructure ---

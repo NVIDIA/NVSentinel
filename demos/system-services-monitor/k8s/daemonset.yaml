@@ -1,25 +1,25 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: system-service-monitor
+  name: system-services-monitor
   namespace: nvsentinel
   labels:
-    app.kubernetes.io/name: system-service-monitor
+    app.kubernetes.io/name: system-services-monitor
     app.kubernetes.io/instance: nvsentinel
     app.kubernetes.io/component: metrics
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: system-service-monitor
+      app.kubernetes.io/name: system-services-monitor
       app.kubernetes.io/instance: nvsentinel
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: system-service-monitor
+        app.kubernetes.io/name: system-services-monitor
         app.kubernetes.io/instance: nvsentinel
         app.kubernetes.io/component: metrics
     spec:
-      serviceAccountName: system-service-monitor
+      serviceAccountName: system-services-monitor
       hostPID: true  # Required for nsenter to check host systemd services and nvidia-smi
       nodeSelector:
         # Matches any node with NVIDIA GPUs (set by GPU Feature Discovery)
@@ -30,10 +30,10 @@ spec:
           effect: NoSchedule
       containers:
         - name: monitor
-          image: system-service-monitor:0.1.0  # pin to specific version
+          image: system-services-monitor:0.1.0  # pin to specific version
           envFrom:
             - configMapRef:
-                name: system-service-monitor
+                name: system-services-monitor
           env:
             - name: NODE_NAME
               valueFrom:
@@ -72,15 +72,15 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: system-service-monitor
+  name: system-services-monitor
   namespace: nvsentinel
   labels:
-    app.kubernetes.io/name: system-service-monitor
+    app.kubernetes.io/name: system-services-monitor
     app.kubernetes.io/instance: nvsentinel
     app.kubernetes.io/component: metrics
 spec:
   selector:
-    app.kubernetes.io/name: system-service-monitor
+    app.kubernetes.io/name: system-services-monitor
     app.kubernetes.io/instance: nvsentinel
   ports:
     - name: metrics

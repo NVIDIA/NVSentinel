@@ -28,7 +28,7 @@ ENV POETRY_NO_INTERACTION=1 \
 
 WORKDIR /app
 
-COPY health-monitors/system-service-monitor/ .
+COPY health-monitors/system-services-monitor/ .
 # Set package version from build arg (strip 'v' prefix for PEP 440 compliance)
 RUN poetry version $(echo "${VERSION}" | sed 's/^v//')
 RUN --mount=type=cache,target=/tmp/poetry_cache \
@@ -51,6 +51,6 @@ ENV PYTHONUNBUFFERED=1
 COPY --from=build /app/dist/*.whl ./
 COPY --from=build /app/constraints.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install ./system_service_monitor*.whl --constraint constraints.txt
+    pip install ./system_services_monitor*.whl --constraint constraints.txt
 
-ENTRYPOINT ["system_service_monitor"]
+ENTRYPOINT ["system_services_monitor"]
