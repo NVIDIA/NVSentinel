@@ -38,6 +38,10 @@ products:
 redirects:
   - source: "/nvsentinel/index.html"
     destination: "/nvsentinel/"
+  - source: "/nvsentinel/dev/"
+    destination: "/nvsentinel/latest/"
+  - source: "/nvsentinel/dev"
+    destination: "/nvsentinel/latest/"
   - source: "/nvsentinel/dev/index.html"
     destination: "/nvsentinel/latest/"
 

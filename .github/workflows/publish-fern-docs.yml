@@ -40,7 +40,8 @@ jobs:
               git archive "$version" -- docs/ | tar -x --strip-components=1 -C "fern/versions/${version}-content"
               echo "Extracted docs from $version"
             else
-              echo "::warning::Tag $version not found — skipping content checkout"
+              echo "::error::Tag $version not found — cannot pin frozen docs content"
+              exit 1
             fi
           done
 
