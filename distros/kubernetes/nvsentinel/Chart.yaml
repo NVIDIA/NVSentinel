@@ -76,3 +76,6 @@ dependencies:
   - name: slurm-drain-monitor
     version: "0.1.0"
     condition: global.slurmDrainMonitor.enabled
+  - name: nic-health-monitor
+    version: "0.1.0"
+    condition: global.nicHealthMonitor.enabled

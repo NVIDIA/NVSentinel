@@ -33,13 +33,14 @@ const (
 )
 
 type GPUMetadata struct {
-	Version       string   `json:"version"`
-	Timestamp     string   `json:"timestamp"`
-	NodeName      string   `json:"node_name"`
-	DriverVersion string   `json:"driver_version"`
-	ChassisSerial *string  `json:"chassis_serial"`
-	GPUs          []GPU    `json:"gpus"`
-	NVSwitches    []string `json:"nvswitches"`
+	Version       string              `json:"version"`
+	Timestamp     string              `json:"timestamp"`
+	NodeName      string              `json:"node_name"`
+	DriverVersion string              `json:"driver_version"`
+	ChassisSerial *string             `json:"chassis_serial"`
+	GPUs          []GPU               `json:"gpus"`
+	NVSwitches    []string            `json:"nvswitches"`
+	NICTopology   map[string][]string `json:"nic_topology,omitempty"`
 }
 
 type GPU struct {
@@ -49,6 +50,7 @@ type GPU struct {
 	SerialNumber string   `json:"serial_number"`
 	DeviceName   string   `json:"device_name"`
 	NVLinks      []NVLink `json:"nvlinks"`
+	NUMANode     int      `json:"numa_node"`
 }
 
 type NVLink struct {
@@ -106,6 +108,48 @@ func CreateTestMetadata(nodeName string) *GPUMetadata {
 			},
 		},
 		NVSwitches: []string{"0000:c3:00.0"},
+	}
+}
+
+// CreateNICTestMetadata returns a GPUMetadata blob modeled after a
+// DGX A100 (8× A100-SXM4-80GB) with NICTopology matching the fake
+// sysfs tree created by CreateFakeSysfsTree.
+func CreateNICTestMetadata(nodeName string) *GPUMetadata {
+	chassisSerial := "TEST-NIC-CHASSIS-001"
+
+	return &GPUMetadata{
+		Version:       "1.0",
+		Timestamp:     time.Now().UTC().Format(time.RFC3339),
+		NodeName:      nodeName,
+		ChassisSerial: &chassisSerial,
+		DriverVersion: "590.48.01",
+		GPUs:          nicTestGPUs(),
+		NICTopology: map[string][]string{
+			"mlx5_0": {"PXB", "PXB", "SYS", "SYS", "SYS", "SYS", "SYS", "SYS"},
+			"mlx5_1": {"PXB", "PXB", "SYS", "SYS", "SYS", "SYS", "SYS", "SYS"},
+			"mlx5_2": {"SYS", "SYS", "PXB", "PXB", "SYS", "SYS", "SYS", "SYS"},
+			"mlx5_3": {"SYS", "SYS", "PXB", "PXB", "SYS", "SYS", "SYS", "SYS"},
+			"mlx5_4": {"SYS", "SYS", "SYS", "SYS", "PXB", "PXB", "SYS", "SYS"},
+			"mlx5_5": {"SYS", "SYS", "SYS", "SYS", "PXB", "PXB", "SYS", "SYS"},
+			"mlx5_6": {"SYS", "SYS", "SYS", "SYS", "SYS", "SYS", "PXB", "PXB"},
+			"mlx5_7": {"SYS", "SYS", "SYS", "SYS", "SYS", "SYS", "PXB", "PXB"},
+			"mlx5_8": {"PXB", "PXB", "SYS", "SYS", "SYS", "SYS", "SYS", "SYS"},
+		},
+	}
+}
+
+func nicTestGPUs() []GPU {
+	const name = "NVIDIA A100-SXM4-80GB"
+
+	return []GPU{
+		{GPUID: 0, UUID: "GPU-0", PCIAddress: "0000:0f:00.0", DeviceName: name, NUMANode: 3},
+		{GPUID: 1, UUID: "GPU-1", PCIAddress: "0000:15:00.0", DeviceName: name, NUMANode: 3},
+		{GPUID: 2, UUID: "GPU-2", PCIAddress: "0000:50:00.0", DeviceName: name, NUMANode: 1},
+		{GPUID: 3, UUID: "GPU-3", PCIAddress: "0000:53:00.0", DeviceName: name, NUMANode: 1},
+		{GPUID: 4, UUID: "GPU-4", PCIAddress: "0000:8c:00.0", DeviceName: name, NUMANode: 7},
+		{GPUID: 5, UUID: "GPU-5", PCIAddress: "0000:91:00.0", DeviceName: name, NUMANode: 7},
+		{GPUID: 6, UUID: "GPU-6", PCIAddress: "0000:d6:00.0", DeviceName: name, NUMANode: 5},
+		{GPUID: 7, UUID: "GPU-7", PCIAddress: "0000:da:00.0", DeviceName: name, NUMANode: 5},
 	}
 }
 

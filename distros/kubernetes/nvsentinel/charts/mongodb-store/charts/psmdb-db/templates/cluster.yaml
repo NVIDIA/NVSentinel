@@ -9,8 +9,10 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
 {{ include "psmdb-database.labels" . | indent 4 }}
+  {{- if .Values.finalizers }}
   finalizers:
 {{ .Values.finalizers | toYaml | indent 4 }}
+  {{- end }}
 spec:
   crVersion: {{ .Values.crVersion }}
   pause: {{ .Values.pause }}

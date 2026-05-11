@@ -163,10 +163,13 @@ DURATION=$(printf "%.3f" "$DURATION_RAW")
 
 if [ "$FINAL_EXIT_STATUS" -ne 0 ]; then
   log "FAILED: GPU reset workflow failed in ${DURATION}s."
+  SYSLOG_SUCCESS="false"
 else
   log "SUCCESS: GPU reset workflow completed in ${DURATION}s."
+  SYSLOG_SUCCESS="true"
+fi
 
-  # Write "GPU reset executed" message to notify syslog-health-monitor of GPU reset success
+if [ "${WRITE_SYSLOG_EVENT:-true}" = "true" ]; then
   ORIGINAL_IFS=$IFS
   IFS=','
   for UUID in $TARGET_UUIDS; do
@@ -177,11 +180,13 @@ else
       continue
     fi
 
-    log "Writing reset success for ${UUID} to syslog"
-    logger -p daemon.err "GPU reset executed: ${UUID}"
+    log "Writing reset result for ${UUID} to syslog (success: ${SYSLOG_SUCCESS})"
+    logger -p daemon.err "GPU reset executed: ${UUID}, success: ${SYSLOG_SUCCESS}"
 
   done
   IFS=$ORIGINAL_IFS
+else
+  log "Skipping writing reset result (success: ${SYSLOG_SUCCESS}) to syslog: WRITE_SYSLOG_EVENT is not true"
 fi
 
 exit "$FINAL_EXIT_STATUS"

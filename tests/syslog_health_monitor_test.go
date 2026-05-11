@@ -87,16 +87,95 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 		return ctx
 	})
 
-	feature.Assess("Inject GPU reset event", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("Inject successful GPU reset event", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
 
 		nodeName := ctx.Value(keySyslogNodeName).(string)
 		gpuResetMessages := []string{
-			"kernel: [16450076.435595] GPU reset executed: GPU-22222222-2222-2222-2222-222222222222",
+			"kernel: [16450076.435595] GPU reset executed: GPU-22222222-2222-2222-2222-222222222222, success: true",
 		}
 
 		helpers.InjectSyslogMessages(t, helpers.StubJournalHTTPPort, gpuResetMessages)
+
+		t.Logf("Waiting for SysLogsXIDError condition to be cleared from node %s", nodeName)
+		require.Eventually(t, func() bool {
+			condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName,
+				"SysLogsXIDError", "SysLogsXIDErrorIsHealthy")
+			if err != nil {
+				return false
+			}
+			return condition != nil && condition.Status == v1.ConditionFalse
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "SysLogsXIDError condition should be cleared")
+
+		return ctx
+	})
+
+	feature.Assess("Inject XID error requiring GPU reset", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		nodeName := ctx.Value(keySyslogNodeName).(string)
+		xidMessages := []string{
+			"kernel: [16450076.435595] NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU1 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8).",
+		}
+		expectedSequencePatterns := []string{
+			`ErrorCode:119 PCI:0002:00:00 GPU_UUID:GPU-22222222-2222-2222-2222-222222222222 kernel:.*?NVRM: Xid \(PCI:0002:00:00\): 119.*?Recommended Action=COMPONENT_RESET`,
+		}
+
+		helpers.InjectSyslogMessages(t, helpers.StubJournalHTTPPort, xidMessages)
+
+		t.Log("Verifying node condition contains XID error with GPU UUID using regex pattern")
+		require.Eventually(t, func() bool {
+			return helpers.VerifyNodeConditionMatchesSequence(t, ctx, client, nodeName,
+				"SysLogsXIDError", "SysLogsXIDErrorIsNotHealthy", expectedSequencePatterns)
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "Node condition should contain XID error with GPU UUID")
+
+		return ctx
+	})
+
+	feature.Assess("Inject failed GPU reset event", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		nodeName := ctx.Value(keySyslogNodeName).(string)
+		gpuResetMessages := []string{
+			"kernel: [16450076.435595] GPU reset executed: GPU-22222222-2222-2222-2222-222222222222, success: false",
+		}
+
+		helpers.InjectSyslogMessages(t, helpers.StubJournalHTTPPort, gpuResetMessages)
+
+		expectedSequencePatterns := []string{
+			`ErrorCode:119 PCI:0002:00:00 GPU_UUID:GPU-22222222-2222-2222-2222-222222222222 kernel:.*?NVRM: Xid \(PCI:0002:00:00\): 119.*?Recommended Action=COMPONENT_RESET`,
+			"ErrorCode:GPU_RESET_FAILURE PCI:0002:00:00 GPU_UUID:GPU-22222222-2222-2222-2222-222222222222 GPU reset failed, proceeding with a node reboot.*?Recommended Action=RESTART_VM",
+		}
+
+		t.Log("Verifying node condition contains 2 health events for the original XID error and a failed GPU reset")
+		require.Eventually(t, func() bool {
+			return helpers.VerifyNodeConditionMatchesSequence(t, ctx, client, nodeName,
+				"SysLogsXIDError", "SysLogsXIDErrorIsNotHealthy", expectedSequencePatterns)
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "Node condition should contain XID error and failed GPU reset condition")
+
+		return ctx
+	})
+
+	feature.Assess("Simulating healthy event from SysLogsXIDError post reboot", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		nodeName := ctx.Value(keySyslogNodeName).(string)
+
+		t.Logf("Sending healthy SysLogsXIDError event to clear all errors")
+		healthyEvent := helpers.NewHealthEvent(nodeName).
+			WithCheckName("SysLogsXIDError").
+			WithAgent("syslog-health-monitor").
+			WithComponentClass("GPU").
+			WithHealthy(true).
+			WithFatal(false).
+			WithMessage("No Health Failures").
+			WithEntitiesImpacted([]helpers.EntityImpacted{}) // Empty entities clears all
+
+		helpers.SendHealthEvent(ctx, t, healthyEvent)
 
 		t.Logf("Waiting for SysLogsXIDError condition to be cleared from node %s", nodeName)
 		require.Eventually(t, func() bool {

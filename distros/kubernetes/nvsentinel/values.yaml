@@ -178,7 +178,9 @@ global:
     enabled: false
   slurmDrainMonitor:
     enabled: false
-    
+  nicHealthMonitor:
+    enabled: false
+
 # Network policy configuration
 # The metrics-access network policy restricts ingress to metrics ports only.
 # This can block other services (e.g., cert-manager webhook) when deployed
@@ -277,7 +279,13 @@ platformConnector:
         - "cloud.google.com/gce-topology-block"
         - "cloud.google.com/gce-topology-host"
         - "cloud.google.com/gce-topology-subblock"
-    
+        # Topograph-applied topology labels (present when Topograph is deployed in the cluster;
+        # see https://github.com/NVIDIA/topograph/blob/main/docs/reference/node-labels.md)
+        - "network.topology.nvidia.com/accelerator"
+        - "network.topology.nvidia.com/leaf"
+        - "network.topology.nvidia.com/spine"
+        - "network.topology.nvidia.com/core"
+
     # Property overrides - uses CEL expressions to override event properties
     OverrideTransformer:
       rules: []

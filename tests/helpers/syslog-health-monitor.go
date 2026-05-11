@@ -40,7 +40,7 @@ func SetUpSyslogHealthMonitor(ctx context.Context, t *testing.T,
 	var originalArgs []string
 
 	if args != nil {
-		originalArgs, err = UpdateDaemonSetArgs(ctx, t, client, SyslogDaemonSetName, SyslogContainerName, args)
+		originalArgs, err = UpdateDaemonSetArgs(ctx, t, client, SyslogDaemonSetName, SyslogContainerName, args, true)
 		require.NoError(t, err, "failed to update syslog health monitor processing strategy")
 	}
 

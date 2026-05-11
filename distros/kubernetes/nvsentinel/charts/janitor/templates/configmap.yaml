@@ -85,6 +85,7 @@ data:
       {{- end }}
       {{- if .Values.config.controllers.gpuReset.resetJob }}
       resetJob:
+        writeSysLogEvent: "{{ .Values.config.controllers.gpuReset.resetJob.writeSysLogEvent }}"
         runtimeClassName: "{{ .Values.config.controllers.gpuReset.resetJob.runtimeClassName }}"
         imageConfig:
           image: "{{ .Values.config.controllers.gpuReset.resetJob.image.repository }}:{{ .Values.config.controllers.gpuReset.resetJob.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"

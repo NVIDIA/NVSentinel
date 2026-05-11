@@ -110,7 +110,7 @@ func runCollector(ctx context.Context) error {
 
 	slog.Info("Collecting GPU metadata")
 
-	metadataCollector := collector.NewCollector(nvmlWrapper)
+	metadataCollector := collector.NewCollector(nvmlWrapper, collector.NewDefaultTopoCollector())
 
 	metadata, err := metadataCollector.Collect(ctx)
 	if err != nil {

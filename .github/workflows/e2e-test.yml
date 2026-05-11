@@ -69,6 +69,16 @@ jobs:
           - arch: amd64
             runner: ${{ vars.RUNNER_ARCH_LARGE_AMD64 || 'linux-amd64-cpu32' }}
             arch_name: "AMD64"
+            datastore: "mongodb-percona"
+            datastore_name: "MongoDB (Percona)"
+          - arch: arm64
+            runner: ${{ vars.RUNNER_ARCH_LARGE_ARM64 || 'linux-arm64-cpu32' }}
+            arch_name: "ARM64"
+            datastore: "mongodb-percona"
+            datastore_name: "MongoDB (Percona)"
+          - arch: amd64
+            runner: ${{ vars.RUNNER_ARCH_LARGE_AMD64 || 'linux-amd64-cpu32' }}
+            arch_name: "AMD64"
             datastore: "postgresql"
             datastore_name: "PostgreSQL"
           - arch: arm64
@@ -168,6 +178,8 @@ jobs:
           USE_POSTGRESQL: ${{ matrix.datastore == 'postgresql' && '1' || '0' }}
           # Disable TLS for no-TLS MongoDB tests
           DISABLE_TLS: ${{ matrix.datastore == 'mongodb-no-tls' && '1' || '0' }}
+          # Use Percona operator instead of Bitnami for Percona MongoDB tests
+          USE_PERCONA: ${{ matrix.datastore == 'mongodb-percona' && '1' || '0' }}
           # Set architecture-specific test tags (mongodb tag applies to all MongoDB variants)
           TEST_TAGS: ${{ matrix.arch }}_group${{ contains(matrix.datastore, 'mongodb') && ',mongodb' || '' }}
         run: |

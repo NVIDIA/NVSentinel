@@ -71,6 +71,25 @@ global:
     insecure: true       # Set to false if the collector endpoint uses TLS
 ```
 
+For full details, see [Distributed Tracing](../tracing.md).
+
+### Audit logging
+
+Enable file-based audit logs of HTTP write operations (POST, PUT, PATCH, DELETE) to the Kubernetes and CSP APIs, with rotation and optional request-body capture.
+
+```yaml
+global:
+  auditLogging:
+    enabled: true
+    logRequestBody: false
+    maxSizeMB: 100
+    maxBackups: 7
+    maxAgeDays: 30
+    compress: true
+```
+
+For full details, see [Audit Logging](../audit-logging.md).
+
 ## Module-Specific Configuration
 
 Each module has additional configuration options documented in its dedicated guide:
