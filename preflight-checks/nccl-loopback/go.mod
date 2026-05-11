@@ -7,7 +7,7 @@ toolchain go1.26.2
 require (
 	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/nvidia/nvsentinel/data-models v0.0.0
-	google.golang.org/grpc v1.80.0
+	google.golang.org/grpc v1.81.0
 	google.golang.org/protobuf v1.36.11
 	k8s.io/apimachinery v0.35.4
 )
