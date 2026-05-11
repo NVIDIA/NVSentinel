@@ -3814,6 +3814,13 @@ labeler:
   # Uncomment to test custom kata detection:
   # kataLabelOverride: "io.katacontainers.config.runtime.oci_runtime"
 
+syslog-health-monitor:
+  enabledChecks:
+    - SysLogsXIDError
+    - SysLogsSXIDError
+    - SysLogsGPUFallenOff
+    - SysLogsNICDriverError
+
 csp-health-monitor:
   logLevel: debug
   cspName: "gcp" # this will be updated to aws as well dynamically during tests 
