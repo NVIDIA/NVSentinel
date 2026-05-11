@@ -31,7 +31,6 @@ enabledChecks:
   - SysLogsXIDError
   - SysLogsSXIDError
   - SysLogsGPUFallenOff
-  - SysLogsNICDriverError
 
 # XID (GPU error) analyzer sidecar configuration
 xidSideCar:
