@@ -57,6 +57,16 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 		ctx = context.WithValue(ctx, keyStopChan, stopChan)
 		ctx = context.WithValue(ctx, keyOriginalArgs, originalArgs)
 
+		healthyEvent := helpers.NewHealthEvent(testNodeName).
+			WithAgent("syslog-health-monitor").
+			WithCheckName("SysLogsNICDriverError").
+			WithComponentClass("NIC").
+			WithHealthy(true).
+			WithFatal(false).
+			WithMessage("No Health Failures").
+			WithEntitiesImpacted([]helpers.EntityImpacted{})
+		helpers.SendHealthEvent(ctx, t, healthyEvent)
+
 		return ctx
 	})
 
@@ -628,6 +638,148 @@ func TestSyslogHealthMonitorStoreOnlyStrategy(t *testing.T) {
 		originalArgs, _ := ctx.Value(keyOriginalArgs).([]string)
 
 		helpers.TearDownSyslogHealthMonitor(ctx, t, client, nodeName, stopChan, originalArgs, syslogPod)
+
+		return ctx
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+// TestSyslogHealthMonitorNICDriverDetection verifies the SysLogsNICDriverError
+// check emits fatal node conditions and non-fatal Kubernetes events from
+// kernel log lines.
+func TestSyslogHealthMonitorNICDriverDetection(t *testing.T) {
+	feature := features.New("Syslog Health Monitor - NIC Driver Detection").
+		WithLabel("suite", "syslog-health-monitor").
+		WithLabel("component", "nic-driver-detection")
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		testNodeName, syslogPod, stopChan, originalArgs := helpers.SetUpSyslogHealthMonitor(ctx, t, client, nil, false)
+
+		ctx = context.WithValue(ctx, keySyslogNodeName, testNodeName)
+		ctx = context.WithValue(ctx, keySyslogPodName, syslogPod.Name)
+		ctx = context.WithValue(ctx, keyStopChan, stopChan)
+		ctx = context.WithValue(ctx, keyOriginalArgs, originalArgs)
+
+		return ctx
+	})
+
+	feature.Assess("Inject all fatal NIC driver patterns", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		nodeName := ctx.Value(keySyslogNodeName).(string)
+		messages := []string{
+			"kernel: [   66.816635] mlx5_core 0000:03:00.0: wait_func:964:(pid 112): ENABLE_HCA(0x104) timeout. Will cause a leak of a command resource",
+			"kernel: [   17.982092] mlx5_core 0000:41:00.0: poll_health:852:(pid 0): device's health compromised - reached miss count",
+			"kernel: [   17.982217] mlx5_core 0000:41:00.0: print_health_info:458:(pid 0): synd 0x8: unrecoverable hardware error",
+		}
+		expectedPatterns := []string{
+			`ErrorCode:cmd_exec_timeout kernel:.*?mlx5_core 0000:03:00\.0: wait_func:964:\(pid 112\): ENABLE_HCA\(0x104\) timeout\. Will cause a leak of a command resource.*?Recommended Action=REPLACE_VM`,
+			`ErrorCode:health_poll_failed kernel:.*?mlx5_core 0000:41:00\.0: poll_health:852:\(pid 0\): device's health compromised - reached miss count.*?Recommended Action=REPLACE_VM`,
+			`ErrorCode:unrecoverable_err kernel:.*?mlx5_core 0000:41:00\.0: print_health_info:458:\(pid 0\): synd 0x8: unrecoverable hardware error.*?Recommended Action=REPLACE_VM`,
+		}
+
+		helpers.InjectSyslogMessages(t, helpers.StubJournalHTTPPort, messages)
+
+		t.Log("Verifying SysLogsNICDriverError condition contains all fatal NIC driver patterns")
+		require.Eventually(t, func() bool {
+			return helpers.VerifyNodeConditionMatchesSequence(t, ctx, client, nodeName,
+				"SysLogsNICDriverError", "SysLogsNICDriverErrorIsNotHealthy", expectedPatterns)
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+			"Node condition should contain all fatal NIC driver patterns")
+
+		return ctx
+	})
+
+	feature.Assess("Inject all non-fatal NIC driver patterns", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		nodeName := ctx.Value(keySyslogNodeName).(string)
+		messages := []string{
+			"kernel: [123.456792] NETDEV WATCHDOG: eth0 (mlx5_core): transmit queue timed out",
+			"kernel: Jan 21 11:18:36 kernel: mlx5_core 0000:01:00.0: mlx5_pcie_event:326:(pid 165): Detected insufficient power on the PCIe slot (27W).",
+			"kernel: [123.456794] mlx5_core 0000:5c:00.0: Port module event[error]: module 0, Cable error, High Temperature",
+			"kernel: [123.456795] mlx5_core 0000:d2:00.0: mlx5_cmd_out_err:838:(pid 1441871): ACCESS_REG(0x805) op_mod(0x1) failed, status bad operation(0x2), syndrome (0x305684), err(-22)",
+			"kernel: [    8.951695] mlx5_core 0000:63:00.1: Port module event: module 1, Cable unplugged",
+		}
+		expectedEventPatterns := []string{
+			`ErrorCode:netdev_watchdog kernel:.*NETDEV WATCHDOG: eth0 \(mlx5_core\): transmit queue timed out.*Recommended Action=NONE`,
+			`ErrorCode:pci_power_insufficient kernel:.*mlx5_core 0000:01:00\.0: mlx5_pcie_event:326:\(pid 165\): Detected insufficient power on the PCIe slot \(27W\).*Recommended Action=NONE`,
+			`ErrorCode:port_module_high_temp kernel:.*mlx5_core 0000:5c:00\.0: Port module event\[error\]: module 0, Cable error, High Temperature.*Recommended Action=NONE`,
+			`ErrorCode:access_reg_failed kernel:.*mlx5_core 0000:d2:00\.0: mlx5_cmd_out_err:838:\(pid 1441871\): ACCESS_REG\(0x805\) op_mod\(0x1\) failed.*Recommended Action=NONE`,
+			`ErrorCode:module_unplugged kernel:.*mlx5_core 0000:63:00\.1: Port module event: module 1, Cable unplugged.*Recommended Action=NONE`,
+		}
+
+		helpers.InjectSyslogMessages(t, helpers.StubJournalHTTPPort, messages)
+
+		t.Log("Verifying SysLogsNICDriverError Kubernetes events contain all non-fatal NIC driver patterns")
+		require.Eventually(t, func() bool {
+			return helpers.VerifyEventsMatchPatterns(t, ctx, client, nodeName,
+				"SysLogsNICDriverError", "SysLogsNICDriverErrorIsNotHealthy", expectedEventPatterns)
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+			"Node events should contain all non-fatal NIC driver patterns")
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		if stopChanVal := ctx.Value(keyStopChan); stopChanVal != nil {
+			t.Log("Stopping port-forward")
+			close(stopChanVal.(chan struct{}))
+		}
+
+		client, err := c.NewClient()
+		if err != nil {
+			t.Logf("Warning: failed to create client for teardown: %v", err)
+			return ctx
+		}
+
+		nodeNameVal := ctx.Value(keySyslogNodeName)
+		if nodeNameVal == nil {
+			t.Log("Skipping teardown: nodeName not set (setup likely failed early)")
+			return ctx
+		}
+		nodeName := nodeNameVal.(string)
+
+		if originalArgs, ok := ctx.Value(keyOriginalArgs).([]string); ok && originalArgs != nil {
+			helpers.RestoreDaemonSetArgs(ctx, t, client, helpers.SyslogDaemonSetName,
+				helpers.SyslogContainerName, originalArgs)
+		}
+
+		t.Logf("Sending healthy SysLogsNICDriverError event to clear condition on node %s", nodeName)
+		healthyEvent := helpers.NewHealthEvent(nodeName).
+			WithAgent("syslog-health-monitor").
+			WithCheckName("SysLogsNICDriverError").
+			WithComponentClass("NIC").
+			WithHealthy(true).
+			WithFatal(false).
+			WithMessage("No Health Failures").
+			WithEntitiesImpacted([]helpers.EntityImpacted{})
+		helpers.SendHealthEvent(ctx, t, healthyEvent)
+
+		require.Eventually(t, func() bool {
+			condition, conditionErr := helpers.CheckNodeConditionExists(ctx, client, nodeName,
+				"SysLogsNICDriverError", "SysLogsNICDriverErrorIsHealthy")
+			if conditionErr != nil {
+				t.Logf("Failed to check node condition: %v", conditionErr)
+				return false
+			}
+			return condition != nil && condition.Status == v1.ConditionFalse
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+			"SysLogsNICDriverError condition should be cleared")
+
+		t.Logf("Cleaning up metadata from node %s", nodeName)
+		helpers.DeleteMetadata(t, ctx, client, helpers.NVSentinelNamespace, nodeName)
+
+		t.Logf("Removing ManagedByNVSentinel label from node %s", nodeName)
+		if err := helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, nodeName); err != nil {
+			t.Logf("Warning: failed to remove ManagedByNVSentinel label: %v", err)
+		}
 
 		return ctx
 	})
