@@ -308,7 +308,7 @@ The taint **value** is the `metadata.name` of the owning `ExternalRemediationReq
 
 The taint is the *single source of truth* for "this node is not owned by NVSentinel right now." Any other NVSentinel component that takes destructive action MUST refuse to act on a node carrying any taint with this key, regardless of value. `node-drainer` and `fault-quarantine` get a one-line check; `fault-remediation` already keys off node selection logic and inherits the same guard.
 
-**At most one active ERR per node.** Because the `(key, effect)` tuple is unique on a Node, only one ERR can have its release taint applied at a time. `fault-remediation` MUST check for an existing active (non-terminal) ERR on the node before creating a new one; if one is present, the new event is dropped at deduplication or merged into the existing ERR's history (TBD by `fault-remediation` policy), rather than producing a second concurrent ERR with a competing taint value.
+**Single active ERR per node.** Because the `(key, effect)` taint tuple is unique on a Node, only one ERR can have its release taint applied at a time. This invariant is enforced by `fault-remediation`'s existing equivalence-group machinery (see the *`fault-remediation` integration* section): ERRs declare their own equivalence group and a status checker, and the existing "skip CR creation when a CR for a matching group is in progress" logic prevents a second concurrent ERR from ever being created. No new dedup code is required in the ERR reconciler.
 
 **Idempotency:** taint application uses a server-side patch. The ERR reconciler verifies both key AND value match its own ERR name before treating the taint as "its own" — protecting against drift from a previous, no-longer-existing ERR.
 
@@ -381,7 +381,12 @@ ERR construction details:
 - `metadata.ownerReferences` is set to the originating EF if and only if the source health event carries a label `nvsentinel.nvidia.com/source-ef` (added by the EF reconciler when emitting); otherwise the ERR is standalone.
 - `spec.HealthEvent` is a full copy of the triaged event.
 
-**At most one active ERR per node.** Before creating, `fault-remediation` MUST check for an existing active (non-terminal) ERR targeting the same `spec.nodeName`. The cheapest implementation is a label-indexed list of ERRs by node, filtered to those whose `ExternalRemediationComplete` is `Unknown`. If one is found, the deduplication policy decides whether to attach the new event to that ERR's history or drop it; in either case a second ERR is not created. This invariant exists because the release taint's `(key, effect)` tuple is unique on the Node — a second ERR with a different taint value would silently overwrite the first.
+**Equivalence-group integration.** ERR creation goes through the same `latestFaultRemediationState`-annotation + `ShouldSkipCRCreation` machinery as existing maintenance CRs (`RebootNode`, `GPUReset`, etc.) — see `fault-remediation/pkg/reconciler/reconciler.go` `shouldCreateCRForGroup`. Two pieces are added:
+
+1. **Equivalence group declared in the TOML config** for the external-remediation action, e.g. `equivalenceGroup: "external-remediation"`. Cross-kind supersedence (e.g. `external-remediation` superseded by `restart`, or vice versa) can be declared the same way as today, so a node with an in-flight RebootNode does not get a second concurrent ERR, and a node with an in-flight ERR does not get a concurrent maintenance CR.
+2. **A status checker for `ExternalRemediationRequest`** plugging into the existing `StatusChecker` interface: returns `ShouldSkip=true` when the ERR's `ExternalRemediationComplete` condition is `Unknown` (in-flight); `false` once it is terminal (`True` or `False`), at which point the entry is pruned from the annotation as usual.
+
+This gets the "single active ERR per node" invariant for free — it falls out of the existing skip logic, no bespoke deduplication code in the ERR reconciler.
 
 `fault-remediation` does **not** create both an ERR and a maintenance CR for the same event — the equivalence group declares one or the other.
 
