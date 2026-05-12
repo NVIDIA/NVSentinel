@@ -196,6 +196,8 @@ initContainers:
         value: "250"
       - name: MESSAGE_SIZES
         value: "256M"
+      - name: NODES_PER_GROUP
+        value: "8"
       - name: NCCL_DEBUG
         value: "INFO"
       - name: NCCL_DEBUG_SUBSYS
@@ -219,6 +221,39 @@ initContainers:
         value: "300"
       - name: MESSAGE_SIZES
         value: "16G"
+      - name: NODES_PER_GROUP
+        value: "8"
+      - name: CHECK_MODE
+        value: "collectives"
+      - name: NCCL_DEBUG
+        value: "INFO"
+      - name: NCCL_DEBUG_SUBSYS
+        value: "INIT,NET"
+    volumeMounts:
+      - name: nvsentinel-socket
+        mountPath: /var/run
+
+  # DeepEP group benchmark - validates internode dispatch/combine bandwidth.
+  # Disabled by default; select it per pod with the preflight-checks annotation.
+  - name: preflight-deepep-group
+    defaultEnabled: false
+    image:
+      repository: ghcr.io/nvidia/nvsentinel/preflight-nccl-group
+      tag: ""
+    securityContext:
+      capabilities:
+        add: ["IPC_LOCK"]
+    env:
+      - name: CHECK_MODE
+        value: "deepep"
+      - name: NODES_PER_GROUP
+        value: "8"
+      - name: DEEPEP_DISPATCH_THRESHOLD_GBPS
+        value: "45"
+      - name: DEEPEP_COMBINE_THRESHOLD_GBPS
+        value: "49"
+      - name: DEEPEP_TOTAL_THRESHOLD_GBPS
+        value: "47"
       - name: NCCL_DEBUG
         value: "INFO"
       - name: NCCL_DEBUG_SUBSYS

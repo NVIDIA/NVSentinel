@@ -27,6 +27,11 @@ DEFAULT_MESSAGE_SIZES = "16G"
 DEFAULT_BENCHMARK_ITERS = 10
 DEFAULT_WARMUP_ITERS = 3
 DEFAULT_REDUCE_OP = "sum"
+DEFAULT_CHECK_MODE = "collectives"
+DEFAULT_NODES_PER_GROUP = 8
+DEFAULT_DEEPEP_DISPATCH_THRESHOLD_GBPS = 45.0
+DEFAULT_DEEPEP_COMBINE_THRESHOLD_GBPS = 49.0
+DEFAULT_DEEPEP_TOTAL_THRESHOLD_GBPS = 47.0
 
 
 @dataclass
@@ -46,6 +51,11 @@ class Config:
         pod_name: Pod name (used to determine rank).
         processing_strategy: How downstream modules handle the event.
         reduce_op: Reduction operation (sum/prod/min/max/avg).
+        check_mode: Which grouped benchmark to run (collectives or deepep).
+        nodes_per_group: Maximum nodes per subgroup. Must be 4 or 8.
+        deepep_dispatch_threshold_gbps: Minimum DeepEP dispatch bandwidth.
+        deepep_combine_threshold_gbps: Minimum DeepEP combine bandwidth.
+        deepep_total_threshold_gbps: Minimum DeepEP total bandwidth.
     """
 
     gang_config_dir: str
@@ -60,6 +70,11 @@ class Config:
     node_name: str
     pod_name: str
     processing_strategy: int
+    check_mode: str
+    nodes_per_group: int
+    deepep_dispatch_threshold_gbps: float
+    deepep_combine_threshold_gbps: float
+    deepep_total_threshold_gbps: float
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -88,6 +103,24 @@ class Config:
         benchmark_iters = _parse_int("BENCHMARK_ITERS", DEFAULT_BENCHMARK_ITERS)
         warmup_iters = _parse_int("WARMUP_ITERS", DEFAULT_WARMUP_ITERS, min_value=0)
         reduce_op = os.getenv("NCCL_REDUCE_OP", DEFAULT_REDUCE_OP)
+        check_mode = os.getenv("CHECK_MODE", DEFAULT_CHECK_MODE).lower().strip()
+        if check_mode not in ("collectives", "deepep"):
+            raise ValueError(f"Invalid CHECK_MODE: {check_mode}")
+        nodes_per_group = _parse_int("NODES_PER_GROUP", DEFAULT_NODES_PER_GROUP)
+        if nodes_per_group not in (4, 8):
+            raise ValueError(f"NODES_PER_GROUP must be 4 or 8, got {nodes_per_group}")
+        deepep_dispatch_threshold_gbps = _parse_float(
+            "DEEPEP_DISPATCH_THRESHOLD_GBPS",
+            DEFAULT_DEEPEP_DISPATCH_THRESHOLD_GBPS,
+        )
+        deepep_combine_threshold_gbps = _parse_float(
+            "DEEPEP_COMBINE_THRESHOLD_GBPS",
+            DEFAULT_DEEPEP_COMBINE_THRESHOLD_GBPS,
+        )
+        deepep_total_threshold_gbps = _parse_float(
+            "DEEPEP_TOTAL_THRESHOLD_GBPS",
+            DEFAULT_DEEPEP_TOTAL_THRESHOLD_GBPS,
+        )
 
         connector_socket = os.getenv("PLATFORM_CONNECTOR_SOCKET", "")
         node_name = os.getenv("NODE_NAME", "")
@@ -119,6 +152,11 @@ class Config:
             node_name=node_name,
             pod_name=pod_name,
             processing_strategy=processing_strategy,
+            check_mode=check_mode,
+            nodes_per_group=nodes_per_group,
+            deepep_dispatch_threshold_gbps=deepep_dispatch_threshold_gbps,
+            deepep_combine_threshold_gbps=deepep_combine_threshold_gbps,
+            deepep_total_threshold_gbps=deepep_total_threshold_gbps,
         )
 
 

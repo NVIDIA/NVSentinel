@@ -34,19 +34,16 @@ class TestParseFloat:
             assert _parse_float("TEST_VAR", 0.0) == 3.14
 
     def test_rejects_non_numeric(self) -> None:
-        with patch.dict(os.environ, {"TEST_VAR": "abc"}):
-            with pytest.raises(ValueError, match="Invalid TEST_VAR"):
-                _parse_float("TEST_VAR", 0.0)
+        with patch.dict(os.environ, {"TEST_VAR": "abc"}), pytest.raises(ValueError, match="Invalid TEST_VAR"):
+            _parse_float("TEST_VAR", 0.0)
 
     def test_rejects_zero(self) -> None:
-        with patch.dict(os.environ, {"TEST_VAR": "0"}):
-            with pytest.raises(ValueError, match="must be positive"):
-                _parse_float("TEST_VAR", 1.0)
+        with patch.dict(os.environ, {"TEST_VAR": "0"}), pytest.raises(ValueError, match="must be positive"):
+            _parse_float("TEST_VAR", 1.0)
 
     def test_rejects_negative(self) -> None:
-        with patch.dict(os.environ, {"TEST_VAR": "-5.0"}):
-            with pytest.raises(ValueError, match="must be positive"):
-                _parse_float("TEST_VAR", 1.0)
+        with patch.dict(os.environ, {"TEST_VAR": "-5.0"}), pytest.raises(ValueError, match="must be positive"):
+            _parse_float("TEST_VAR", 1.0)
 
 
 class TestParseInt:
@@ -61,14 +58,12 @@ class TestParseInt:
             assert _parse_int("TEST_VAR", 0) == 20
 
     def test_rejects_non_numeric(self) -> None:
-        with patch.dict(os.environ, {"TEST_VAR": "xyz"}):
-            with pytest.raises(ValueError, match="Invalid TEST_VAR"):
-                _parse_int("TEST_VAR", 0)
+        with patch.dict(os.environ, {"TEST_VAR": "xyz"}), pytest.raises(ValueError, match="Invalid TEST_VAR"):
+            _parse_int("TEST_VAR", 0)
 
     def test_rejects_zero(self) -> None:
-        with patch.dict(os.environ, {"TEST_VAR": "0"}):
-            with pytest.raises(ValueError, match="must be >= 1"):
-                _parse_int("TEST_VAR", 1)
+        with patch.dict(os.environ, {"TEST_VAR": "0"}), pytest.raises(ValueError, match="must be >= 1"):
+            _parse_int("TEST_VAR", 1)
 
 
 class TestConfigFromEnv:
@@ -87,11 +82,16 @@ class TestConfigFromEnv:
     def test_loads_with_defaults(self, base_env: dict[str, str]) -> None:
         with patch.dict(os.environ, base_env, clear=True):
             cfg = Config.from_env()
-            assert cfg.bw_threshold_gbps == 100.0
+            assert cfg.bw_threshold_gbps == 300.0
             assert cfg.gang_timeout_seconds == 600
-            assert cfg.message_sizes == "4G,8G"
-            assert cfg.benchmark_iters == 20
-            assert cfg.warmup_iters == 5
+            assert cfg.message_sizes == "16G"
+            assert cfg.benchmark_iters == 10
+            assert cfg.warmup_iters == 3
+            assert cfg.check_mode == "collectives"
+            assert cfg.nodes_per_group == 8
+            assert cfg.deepep_dispatch_threshold_gbps == 45.0
+            assert cfg.deepep_combine_threshold_gbps == 49.0
+            assert cfg.deepep_total_threshold_gbps == 47.0
             assert cfg.skip_bandwidth_check is False
 
     def test_loads_custom_values(self, base_env: dict[str, str]) -> None:
@@ -102,6 +102,11 @@ class TestConfigFromEnv:
             "BENCHMARK_ITERS": "10",
             "WARMUP_ITERS": "3",
             "SKIP_BANDWIDTH_CHECK": "true",
+            "CHECK_MODE": "deepep",
+            "NODES_PER_GROUP": "4",
+            "DEEPEP_DISPATCH_THRESHOLD_GBPS": "40",
+            "DEEPEP_COMBINE_THRESHOLD_GBPS": "41",
+            "DEEPEP_TOTAL_THRESHOLD_GBPS": "42",
         }
         with patch.dict(os.environ, env, clear=True):
             cfg = Config.from_env()
@@ -110,6 +115,11 @@ class TestConfigFromEnv:
             assert cfg.benchmark_iters == 10
             assert cfg.warmup_iters == 3
             assert cfg.skip_bandwidth_check is True
+            assert cfg.check_mode == "deepep"
+            assert cfg.nodes_per_group == 4
+            assert cfg.deepep_dispatch_threshold_gbps == 40.0
+            assert cfg.deepep_combine_threshold_gbps == 41.0
+            assert cfg.deepep_total_threshold_gbps == 42.0
 
     def test_raises_without_connector_socket(self, base_env: dict[str, str]) -> None:
         env = {**base_env}
@@ -121,16 +131,14 @@ class TestConfigFromEnv:
     def test_raises_without_node_name(self, base_env: dict[str, str]) -> None:
         env = {**base_env}
         del env["NODE_NAME"]
-        with patch.dict(os.environ, env, clear=True):
-            with pytest.raises(ValueError, match="NODE_NAME"):
-                Config.from_env()
+        with patch.dict(os.environ, env, clear=True), pytest.raises(ValueError, match="NODE_NAME"):
+            Config.from_env()
 
     def test_raises_without_pod_name(self, base_env: dict[str, str]) -> None:
         env = {**base_env}
         del env["POD_NAME"]
-        with patch.dict(os.environ, env, clear=True):
-            with pytest.raises(ValueError, match="POD_NAME"):
-                Config.from_env()
+        with patch.dict(os.environ, env, clear=True), pytest.raises(ValueError, match="POD_NAME"):
+            Config.from_env()
 
     def test_raises_with_invalid_processing_strategy(self, base_env: dict[str, str]) -> None:
         env = {**base_env, "PROCESSING_STRATEGY": "INVALID_STRATEGY"}

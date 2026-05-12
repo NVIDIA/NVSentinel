@@ -45,7 +45,7 @@ from importlib.metadata import PackageNotFoundError, version
 import torch.distributed as dist
 
 from . import otel_metrics
-from .benchmark import Benchmark, BenchmarkResult, parse_size
+from .benchmark import Benchmark, BenchmarkResult, DeepEPBenchmarkResult, parse_size
 from .config import Config
 from .errors import NCCLError
 from .health import HealthReporter
@@ -101,7 +101,7 @@ def run() -> int:
     exit_code = _run_benchmark_flow(cfg)
 
     otel_metrics.emit_check_result(
-        check_name="nccl-group",
+        check_name=cfg.check_mode,
         passed=exit_code == 0,
         attributes={
             "node": cfg.node_name,
@@ -120,6 +120,7 @@ def _run_benchmark_flow(cfg: Config) -> int:
     # Set NCCL defaults if not already set by the container env.
     if "NCCL_DEBUG" not in os.environ:
         os.environ["NCCL_DEBUG"] = "INFO"
+    os.environ["NODES_PER_GROUP"] = str(cfg.nodes_per_group)
 
     try:
         log.info("Initializing NCCL process group", extra={"backend": "nccl"})
@@ -173,6 +174,9 @@ def _run_benchmark(cfg: Config, rank: int) -> int:
     Returns:
         Exit code.
     """
+    if cfg.check_mode == "deepep":
+        return _run_deepep_benchmark(cfg, rank)
+
     try:
         message_sizes = [parse_size(s) for s in cfg.message_sizes.split(",")]
     except ValueError as err:
@@ -222,7 +226,7 @@ def _run_benchmark(cfg: Config, rank: int) -> int:
         )
 
     if passed:
-        return _handle_success(cfg, result)
+        return _handle_collectives_success(cfg, result)
 
     return _handle_failure(
         cfg,
@@ -232,7 +236,72 @@ def _run_benchmark(cfg: Config, rank: int) -> int:
     )
 
 
-def _handle_success(cfg: Config, result: BenchmarkResult) -> int:
+def _run_deepep_benchmark(cfg: Config, rank: int) -> int:
+    """Run the grouped DeepEP benchmark and report results."""
+    log.info(
+        "Running DeepEP group benchmark",
+        extra={
+            "rank": rank,
+            "world_size": dist.get_world_size(),
+            "dispatch_threshold_gbps": cfg.deepep_dispatch_threshold_gbps,
+            "combine_threshold_gbps": cfg.deepep_combine_threshold_gbps,
+            "total_threshold_gbps": cfg.deepep_total_threshold_gbps,
+            "nodes_per_group": cfg.nodes_per_group,
+        },
+    )
+
+    benchmark = Benchmark(
+        threshold_gbps=cfg.bw_threshold_gbps,
+        iters=cfg.benchmark_iters,
+        warmup=cfg.warmup_iters,
+        reduce_op=cfg.reduce_op,
+    )
+    try:
+        result = benchmark.run_deepep(
+            dispatch_threshold_gbps=cfg.deepep_dispatch_threshold_gbps,
+            combine_threshold_gbps=cfg.deepep_combine_threshold_gbps,
+            total_threshold_gbps=cfg.deepep_total_threshold_gbps,
+        )
+    except Exception as err:
+        log.error("DeepEP benchmark execution failed", extra={"error": str(err)})
+        if rank == 0:
+            return _handle_failure(
+                cfg,
+                NCCLError.DEEPEP_GROUP_FAILED,
+                f"DeepEP group benchmark failed: {err}",
+            )
+        return NCCLError.DEEPEP_GROUP_FAILED.value.exit_code
+
+    passed = result.passed or cfg.skip_bandwidth_check
+    if rank != 0:
+        return NCCLError.SUCCESS.value.exit_code if passed else NCCLError.DEEPEP_GROUP_BW_DEGRADED.value.exit_code
+
+    if cfg.skip_bandwidth_check and not result.passed:
+        log.info(
+            "DeepEP group check PASSED (bandwidth check skipped)",
+            extra={
+                "total_bw_gbps": round(result.min_total_bw, 2),
+                "dispatch_bw_gbps": round(result.min_dispatch_bw, 2),
+                "combine_bw_gbps": round(result.min_combine_bw, 2),
+            },
+        )
+
+    if passed:
+        return _handle_deepep_success(cfg, result)
+
+    return _handle_failure(
+        cfg,
+        NCCLError.DEEPEP_GROUP_BW_DEGRADED,
+        (
+            "DeepEP group bandwidth below threshold: "
+            f"total={result.min_total_bw:.2f}/{cfg.deepep_total_threshold_gbps:.2f} GB/s, "
+            f"dispatch={result.min_dispatch_bw:.2f}/{cfg.deepep_dispatch_threshold_gbps:.2f} GB/s, "
+            f"combine={result.min_combine_bw:.2f}/{cfg.deepep_combine_threshold_gbps:.2f} GB/s"
+        ),
+    )
+
+
+def _handle_collectives_success(cfg: Config, result: BenchmarkResult) -> int:
     """Handle successful benchmark completion.
 
     Args:
@@ -250,11 +319,7 @@ def _handle_success(cfg: Config, result: BenchmarkResult) -> int:
     log.info("NCCL group collectives check PASSED", extra={"details": message})
 
     try:
-        reporter = HealthReporter(
-            socket_path=cfg.connector_socket,
-            node_name=cfg.node_name,
-            processing_strategy=cfg.processing_strategy,
-        )
+        reporter = _health_reporter(cfg)
         reporter.send_success(message)
     except RuntimeError as err:
         log.error(
@@ -264,6 +329,47 @@ def _handle_success(cfg: Config, result: BenchmarkResult) -> int:
         return NCCLError.HEALTH_REPORT_FAILED.value.exit_code
 
     return NCCLError.SUCCESS.value.exit_code
+
+
+def _handle_deepep_success(cfg: Config, result: DeepEPBenchmarkResult) -> int:
+    """Handle successful DeepEP benchmark completion."""
+    message = (
+        f"DeepEP group bandwidth passed across {len(result.groups)} groups: "
+        f"total={result.min_total_bw:.2f} GB/s, "
+        f"dispatch={result.min_dispatch_bw:.2f} GB/s, "
+        f"combine={result.min_combine_bw:.2f} GB/s"
+    )
+
+    log.info("DeepEP group check PASSED", extra={"details": message})
+
+    try:
+        reporter = _health_reporter(cfg)
+        reporter.send_success(message)
+    except RuntimeError as err:
+        log.error(
+            "Failed to send health event",
+            extra={"error": str(err)},
+        )
+        return NCCLError.HEALTH_REPORT_FAILED.value.exit_code
+
+    return NCCLError.SUCCESS.value.exit_code
+
+
+def _health_reporter(cfg: Config) -> HealthReporter:
+    """Build the health reporter for the configured check mode."""
+    if cfg.check_mode == "deepep":
+        return HealthReporter(
+            socket_path=cfg.connector_socket,
+            node_name=cfg.node_name,
+            processing_strategy=cfg.processing_strategy,
+            agent="preflight-deepep-group",
+            check_name="DeepEPGroupTest",
+        )
+    return HealthReporter(
+        socket_path=cfg.connector_socket,
+        node_name=cfg.node_name,
+        processing_strategy=cfg.processing_strategy,
+    )
 
 
 def _handle_failure(cfg: Config, error: NCCLError, message: str) -> int:
@@ -280,11 +386,7 @@ def _handle_failure(cfg: Config, error: NCCLError, message: str) -> int:
     log.error("NCCL group collectives check FAILED", extra={"details": message})
 
     try:
-        reporter = HealthReporter(
-            socket_path=cfg.connector_socket,
-            node_name=cfg.node_name,
-            processing_strategy=cfg.processing_strategy,
-        )
+        reporter = _health_reporter(cfg)
         reporter.send_failure(error, message)
     except RuntimeError as err:
         log.error(

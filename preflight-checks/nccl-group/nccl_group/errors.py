@@ -67,6 +67,18 @@ class NCCLError(Enum):
         is_fatal=True,
         recommended_action=pb.RecommendedAction.CONTACT_SUPPORT,
     )
+    DEEPEP_GROUP_BW_DEGRADED = ErrorDef(
+        exit_code=1,
+        error_code="DEEPEP_GROUP_BW_DEGRADED",
+        is_fatal=True,
+        recommended_action=pb.RecommendedAction.CONTACT_SUPPORT,
+    )
+    DEEPEP_GROUP_FAILED = ErrorDef(
+        exit_code=1,
+        error_code="DEEPEP_GROUP_FAILED",
+        is_fatal=True,
+        recommended_action=pb.RecommendedAction.CONTACT_SUPPORT,
+    )
 
     # Infrastructure-related errors (no remediation)
     GANG_CONFIG_ERROR = ErrorDef(

@@ -44,6 +44,9 @@ class HealthReporter:
         socket_path: str,
         node_name: str,
         processing_strategy: int,
+        *,
+        agent: str = AGENT,
+        check_name: str = CHECK_NAME,
     ) -> None:
         """Initialize the reporter.
 
@@ -51,10 +54,14 @@ class HealthReporter:
             socket_path: Unix socket path for Platform Connector.
             node_name: Kubernetes node name for health events.
             processing_strategy: ProcessingStrategy enum value.
+            agent: Health event agent name.
+            check_name: Health event check name.
         """
         self._socket_path = socket_path.removeprefix("unix://")
         self._node_name = node_name
         self._processing_strategy = processing_strategy
+        self._agent = agent
+        self._check_name = check_name
 
     def send_success(self, message: str) -> None:
         """Send a successful health event.
@@ -126,9 +133,9 @@ class HealthReporter:
 
         return pb.HealthEvent(
             version=1,
-            agent=self.AGENT,
+            agent=self._agent,
             componentClass=self.COMPONENT_CLASS,
-            checkName=self.CHECK_NAME,
+            checkName=self._check_name,
             isFatal=is_fatal,
             isHealthy=is_healthy,
             message=message,

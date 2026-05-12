@@ -12,13 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""NCCL group collectives benchmark implementation.
+"""NCCL group benchmark implementation.
 
 This module validates all-reduce, reduce-scatter, and all-gather within
 contiguous node groups. Jobs with eight or fewer nodes use one group; larger
-jobs are split into eight-node groups to match node-sanity coverage.
+jobs are split into groups to match node-sanity coverage. It also supports
+DeepEP internode benchmarks over the same grouped process topology.
 """
 
+import importlib
 import logging
 import os
 from dataclasses import dataclass
@@ -38,6 +40,13 @@ REDUCE_OPS: Final[dict[str, dist.ReduceOp]] = {
     "max": dist.ReduceOp.MAX,
     "avg": dist.ReduceOp.AVG,
 }
+
+_DEEPEP_NUM_TOKENS: Final = 8192
+_DEEPEP_HIDDEN_DIM: Final = 3072
+_DEEPEP_NUM_EXPERTS: Final = 128
+_DEEPEP_TOPK: Final = 8
+_DEEPEP_WARMUP_ITERATIONS: Final = 10
+_DEEPEP_ITERATIONS: Final = 50
 
 
 @dataclass
@@ -78,6 +87,37 @@ class BenchmarkResult:
     collectives: list[CollectiveResult]
     passed: bool
     min_bus_bw: float
+
+
+@dataclass
+class DeepEPResult:
+    """Result of one grouped DeepEP benchmark."""
+
+    group_id: int
+    total_bw_gbps: float
+    dispatch_bw_gbps: float
+    combine_bw_gbps: float
+    layout_ms: float
+    dispatch_ms: float
+    combine_ms: float
+    rdma_bytes_per_iter: int
+    passed: bool
+    error: str | None = None
+
+
+@dataclass
+class DeepEPBenchmarkResult:
+    """Result of the complete DeepEP benchmark run."""
+
+    world_size: int
+    dispatch_threshold_gbps: float
+    combine_threshold_gbps: float
+    total_threshold_gbps: float
+    groups: list[DeepEPResult]
+    passed: bool
+    min_total_bw: float
+    min_dispatch_bw: float
+    min_combine_bw: float
 
 
 @dataclass(frozen=True)
@@ -275,6 +315,114 @@ class Benchmark:
             min_bus_bw=min_bus_bw if min_bus_bw != float("inf") else 0.0,
         )
 
+    def run_deepep(
+        self,
+        *,
+        dispatch_threshold_gbps: float,
+        combine_threshold_gbps: float,
+        total_threshold_gbps: float,
+    ) -> DeepEPBenchmarkResult:
+        """Run grouped DeepEP internode benchmarks."""
+        if not dist.is_initialized():
+            raise RuntimeError("Distributed not initialized")
+
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        gpus_per_node = int(os.environ.get("NPROCS_PER_NODE", 8))
+        num_nodes = world_size // gpus_per_node if gpus_per_node > 0 else 1
+
+        torch.cuda.set_device(local_rank)
+        dist.barrier()
+
+        if rank == 0:
+            log.info(
+                "Starting DeepEP group benchmark",
+                extra={
+                    "num_nodes": num_nodes,
+                    "gpus_per_node": gpus_per_node,
+                    "world_size": world_size,
+                    "dispatch_threshold_gbps": dispatch_threshold_gbps,
+                    "combine_threshold_gbps": combine_threshold_gbps,
+                    "total_threshold_gbps": total_threshold_gbps,
+                },
+            )
+
+        groups = _create_groups(num_nodes, gpus_per_node)
+        node_id = rank // gpus_per_node
+        results: list[DeepEPResult] = []
+        all_passed = True
+        min_total_bw = float("inf")
+        min_dispatch_bw = float("inf")
+        min_combine_bw = float("inf")
+
+        for group in groups:
+            participating = group.contains_node(node_id)
+            local_result = _LocalDeepEPResult()
+            if participating:
+                local_result = _benchmark_deepep_internode(group.process_group, local_rank)
+
+            error_flag = _global_max_int(1 if local_result.error else 0, local_rank)
+            total_bw = _global_max(local_result.total_bw_gbps, local_rank)
+            dispatch_bw = _global_max(local_result.dispatch_bw_gbps, local_rank)
+            combine_bw = _global_max(local_result.combine_bw_gbps, local_rank)
+            layout_ms = _global_max(local_result.layout_ms, local_rank)
+            dispatch_ms = _global_max(local_result.dispatch_ms, local_rank)
+            combine_ms = _global_max(local_result.combine_ms, local_rank)
+            rdma_bytes = _global_max_int(local_result.rdma_bytes_per_iter, local_rank)
+            error = "error" if error_flag else None
+
+            passed = (
+                error_flag == 0
+                and dispatch_bw >= dispatch_threshold_gbps
+                and combine_bw >= combine_threshold_gbps
+                and total_bw >= total_threshold_gbps
+            )
+            result = DeepEPResult(
+                group_id=group.group_id,
+                total_bw_gbps=total_bw,
+                dispatch_bw_gbps=dispatch_bw,
+                combine_bw_gbps=combine_bw,
+                layout_ms=layout_ms,
+                dispatch_ms=dispatch_ms,
+                combine_ms=combine_ms,
+                rdma_bytes_per_iter=rdma_bytes,
+                passed=passed,
+                error=error,
+            )
+            results.append(result)
+            all_passed = all_passed and result.passed
+            min_total_bw = min(min_total_bw, total_bw)
+            min_dispatch_bw = min(min_dispatch_bw, dispatch_bw)
+            min_combine_bw = min(min_combine_bw, combine_bw)
+
+            if rank == 0:
+                log.info(
+                    "DeepEP group result",
+                    extra={
+                        "group_id": result.group_id,
+                        "total_bw_gbps": round(result.total_bw_gbps, 2),
+                        "dispatch_bw_gbps": round(result.dispatch_bw_gbps, 2),
+                        "combine_bw_gbps": round(result.combine_bw_gbps, 2),
+                        "rdma_bytes_per_iter": result.rdma_bytes_per_iter,
+                        "passed": result.passed,
+                        "error": result.error,
+                    },
+                )
+            dist.barrier()
+
+        return DeepEPBenchmarkResult(
+            world_size=world_size,
+            dispatch_threshold_gbps=dispatch_threshold_gbps,
+            combine_threshold_gbps=combine_threshold_gbps,
+            total_threshold_gbps=total_threshold_gbps,
+            groups=results,
+            passed=all_passed,
+            min_total_bw=min_total_bw if min_total_bw != float("inf") else 0.0,
+            min_dispatch_bw=min_dispatch_bw if min_dispatch_bw != float("inf") else 0.0,
+            min_combine_bw=min_combine_bw if min_combine_bw != float("inf") else 0.0,
+        )
+
     def _run_collective(
         self,
         op: str,
@@ -299,16 +447,25 @@ class Benchmark:
         tensor = torch.randn(num_elements, dtype=torch.bfloat16, device=f"cuda:{local_rank}")
 
         if op == "all_reduce":
-            collective_fn = lambda: dist.all_reduce(tensor, op=self._reduce_op, group=group)
+
+            def collective_fn() -> None:
+                dist.all_reduce(tensor, op=self._reduce_op, group=group)
+
             bw_factor = 2 * (group_size - 1) / group_size
         elif op == "reduce_scatter":
             out = torch.empty(num_elements // group_size, dtype=torch.bfloat16, device=f"cuda:{local_rank}")
-            collective_fn = lambda: dist.reduce_scatter_tensor(out, tensor, group=group)
+
+            def collective_fn() -> None:
+                dist.reduce_scatter_tensor(out, tensor, group=group)
+
             bw_factor = (group_size - 1) / group_size
         elif op == "all_gather":
             inp = torch.randn(num_elements // group_size, dtype=torch.bfloat16, device=f"cuda:{local_rank}")
             out = torch.empty(num_elements, dtype=torch.bfloat16, device=f"cuda:{local_rank}")
-            collective_fn = lambda: dist.all_gather_into_tensor(out, inp, group=group)
+
+            def collective_fn() -> None:
+                dist.all_gather_into_tensor(out, inp, group=group)
+
             bw_factor = (group_size - 1) / group_size
         else:
             raise ValueError(f"Unknown collective op: {op}")
@@ -337,6 +494,8 @@ def _create_groups(num_nodes: int, gpus_per_node: int) -> list[GroupSpec]:
     if num_nodes <= 0:
         return []
     nodes_per_group = int(os.environ.get("NODES_PER_GROUP", "8"))
+    if nodes_per_group not in (4, 8):
+        raise ValueError(f"NODES_PER_GROUP must be 4 or 8, got {nodes_per_group}")
     if num_nodes <= nodes_per_group:
         node_ranges = [(0, num_nodes - 1)]
     elif num_nodes % nodes_per_group == 0:
@@ -361,6 +520,153 @@ def _create_groups(num_nodes: int, gpus_per_node: int) -> list[GroupSpec]:
     return groups
 
 
+@dataclass
+class _LocalDeepEPResult:
+    """Local DeepEP measurement before global aggregation."""
+
+    total_bw_gbps: float = -1.0
+    dispatch_bw_gbps: float = -1.0
+    combine_bw_gbps: float = -1.0
+    layout_ms: float = -1.0
+    dispatch_ms: float = -1.0
+    combine_ms: float = -1.0
+    rdma_bytes_per_iter: int = 0
+    error: str | None = None
+
+
+def _benchmark_deepep_internode(
+    group: dist.ProcessGroup,
+    local_rank: int,
+) -> _LocalDeepEPResult:
+    """Benchmark DeepEP internode dispatch/combine over one process group."""
+    try:
+        deep_ep = importlib.import_module("deep_ep")
+    except ImportError:
+        return _LocalDeepEPResult(error="import")
+
+    try:
+        buffer = deep_ep.Buffer(
+            group=group,
+            num_nvl_bytes=1024 * 1024 * 1024,
+            num_rdma_bytes=256 * 1024 * 1024,
+            low_latency_mode=False,
+        )
+    except Exception as err:  # noqa: BLE001
+        return _LocalDeepEPResult(error=f"buffer: {err}")
+
+    tensor = torch.randn(
+        _DEEPEP_NUM_TOKENS,
+        _DEEPEP_HIDDEN_DIM,
+        device=f"cuda:{local_rank}",
+        dtype=torch.bfloat16,
+    )
+    topk_idx = torch.randint(
+        0,
+        _DEEPEP_NUM_EXPERTS,
+        (_DEEPEP_NUM_TOKENS, _DEEPEP_TOPK),
+        device=f"cuda:{local_rank}",
+        dtype=torch.int64,
+    )
+    topk_weights = torch.rand(
+        _DEEPEP_NUM_TOKENS,
+        _DEEPEP_TOPK,
+        device=f"cuda:{local_rank}",
+        dtype=torch.float32,
+    )
+
+    for _ in range(_DEEPEP_WARMUP_ITERATIONS):
+        (
+            num_tokens_per_rank,
+            num_tokens_per_rdma_rank,
+            num_tokens_per_expert,
+            is_token_in_rank,
+            _,
+        ) = buffer.get_dispatch_layout(topk_idx, _DEEPEP_NUM_EXPERTS)
+        recv_x, _, recv_topk_weights, _, handle, _ = buffer.dispatch(
+            tensor,
+            None,
+            num_tokens_per_rank,
+            num_tokens_per_rdma_rank,
+            is_token_in_rank,
+            num_tokens_per_expert,
+            topk_idx,
+            topk_weights,
+        )
+        if recv_x is not None and recv_x.size(0) > 0:
+            combine_x = torch.randn_like(recv_x)
+            _, _, _ = buffer.combine(combine_x, handle, recv_topk_weights)
+        torch.cuda.synchronize()
+
+    layout_start = torch.cuda.Event(enable_timing=True)
+    layout_end = torch.cuda.Event(enable_timing=True)
+    dispatch_start = torch.cuda.Event(enable_timing=True)
+    dispatch_end = torch.cuda.Event(enable_timing=True)
+    combine_start = torch.cuda.Event(enable_timing=True)
+    combine_end = torch.cuda.Event(enable_timing=True)
+
+    total_layout_ms = 0.0
+    total_dispatch_ms = 0.0
+    total_combine_ms = 0.0
+    total_rdma_tokens = 0
+
+    for _ in range(_DEEPEP_ITERATIONS):
+        layout_start.record()
+        (
+            num_tokens_per_rank,
+            num_tokens_per_rdma_rank,
+            num_tokens_per_expert,
+            is_token_in_rank,
+            _,
+        ) = buffer.get_dispatch_layout(topk_idx, _DEEPEP_NUM_EXPERTS)
+        layout_end.record()
+        layout_end.synchronize()
+        total_layout_ms += layout_start.elapsed_time(layout_end)
+
+        if num_tokens_per_rdma_rank is not None:
+            total_rdma_tokens += int(num_tokens_per_rdma_rank.sum().item())
+
+        dispatch_start.record()
+        recv_x, _, recv_topk_weights, _, handle, _ = buffer.dispatch(
+            tensor,
+            None,
+            num_tokens_per_rank,
+            num_tokens_per_rdma_rank,
+            is_token_in_rank,
+            num_tokens_per_expert,
+            topk_idx,
+            topk_weights,
+        )
+        dispatch_end.record()
+        dispatch_end.synchronize()
+        total_dispatch_ms += dispatch_start.elapsed_time(dispatch_end)
+
+        if recv_x is not None and recv_x.size(0) > 0:
+            combine_x = torch.randn_like(recv_x)
+            combine_start.record()
+            _, _, _ = buffer.combine(combine_x, handle, recv_topk_weights)
+            combine_end.record()
+            combine_end.synchronize()
+            total_combine_ms += combine_start.elapsed_time(combine_end)
+
+    bytes_per_token = _DEEPEP_HIDDEN_DIM * 2
+    rdma_bytes_per_iter = (total_rdma_tokens // _DEEPEP_ITERATIONS) * bytes_per_token
+    total_rdma_bytes = total_rdma_tokens * bytes_per_token * 2
+    total_ms = total_layout_ms + total_dispatch_ms + total_combine_ms
+    dispatch_bw = (total_rdma_tokens * bytes_per_token) / (total_dispatch_ms / 1000) / 1e9 if total_dispatch_ms else 0.0
+    combine_bw = (total_rdma_tokens * bytes_per_token) / (total_combine_ms / 1000) / 1e9 if total_combine_ms else 0.0
+    total_bw = total_rdma_bytes / (total_ms / 1000) / 1e9 if total_ms else 0.0
+
+    return _LocalDeepEPResult(
+        total_bw_gbps=_group_median(total_bw, group, local_rank),
+        dispatch_bw_gbps=_group_median(dispatch_bw, group, local_rank),
+        combine_bw_gbps=_group_median(combine_bw, group, local_rank),
+        layout_ms=_group_median(total_layout_ms, group, local_rank),
+        dispatch_ms=_group_median(total_dispatch_ms, group, local_rank),
+        combine_ms=_group_median(total_combine_ms, group, local_rank),
+        rdma_bytes_per_iter=rdma_bytes_per_iter,
+    )
+
+
 def _group_median(
     local_bandwidth_gbps: float,
     group: dist.ProcessGroup,
@@ -382,3 +688,10 @@ def _global_max(value: float, local_rank: int) -> float:
     tensor = torch.tensor([value], device=f"cuda:{local_rank}")
     dist.all_reduce(tensor, op=dist.ReduceOp.MAX)
     return float(tensor.item())
+
+
+def _global_max_int(value: int, local_rank: int) -> int:
+    """Return the maximum integer scalar across the global process group."""
+    tensor = torch.tensor([value], device=f"cuda:{local_rank}", dtype=torch.int64)
+    dist.all_reduce(tensor, op=dist.ReduceOp.MAX)
+    return int(tensor.item())
