@@ -233,9 +233,9 @@ initContainers:
       - name: nvsentinel-socket
         mountPath: /var/run
 
-  # DeepEP group benchmarks - validate dispatch/combine bandwidth.
+  # DeepEP benchmarks - validate dispatch/combine bandwidth.
   # Disabled by default; select one per pod with the preflight-checks annotation.
-  - name: preflight-deepep-group-of-4
+  - name: preflight-deepep-per-node
     defaultEnabled: false
     image:
       repository: ghcr.io/nvidia/nvsentinel/preflight-nccl-group
@@ -245,9 +245,9 @@ initContainers:
         add: ["IPC_LOCK"]
     env:
       - name: CHECK_MODE
-        value: "deepep"
+        value: "deepep-per-node"
       - name: NODES_PER_GROUP
-        value: "4"
+        value: "1"
       - name: DEEPEP_DISPATCH_THRESHOLD_GBPS
         value: "45"
       - name: DEEPEP_COMBINE_THRESHOLD_GBPS
@@ -289,7 +289,7 @@ initContainers:
       - name: nvsentinel-socket
         mountPath: /var/run
 
-  - name: preflight-deepep-per-node
+  - name: preflight-deepep-group-of-4
     defaultEnabled: false
     image:
       repository: ghcr.io/nvidia/nvsentinel/preflight-nccl-group
@@ -299,9 +299,9 @@ initContainers:
         add: ["IPC_LOCK"]
     env:
       - name: CHECK_MODE
-        value: "deepep-per-node"
+        value: "deepep"
       - name: NODES_PER_GROUP
-        value: "1"
+        value: "4"
       - name: DEEPEP_DISPATCH_THRESHOLD_GBPS
         value: "45"
       - name: DEEPEP_COMBINE_THRESHOLD_GBPS
