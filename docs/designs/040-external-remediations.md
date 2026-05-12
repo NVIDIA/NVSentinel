@@ -141,7 +141,7 @@ status:
       observedGeneration: 1
       lastTransitionTime: "2026-05-11T20:14:09Z"
       reason: ReleaseTaintApplied
-      message: Applied taint nvsentinel.nvidia.com/external-remediation:NoSchedule to node-01.example-cluster.internal; node released to external system.
+      message: Applied taint nvsentinel.nvidia.com/external-remediation=gpu0-xid79-node-01:NoSchedule to node-01.example-cluster.internal; node released to external system.
     - type: ExternalRemediationComplete
       status: "Unknown"
       observedGeneration: 1
@@ -298,17 +298,52 @@ All conditions are append-or-update in place via the `SetCondition` helper, whic
    - Done; no further work.
 4. Otherwise (`ExternalRemediationComplete` is still `Unknown`): no-op until the external system writes a terminal value.
 
-**Release taint** (configurable via Helm values):
+**Release taint** (key configurable via Helm values):
 
 ```
-nvsentinel.nvidia.com/external-remediation:NoSchedule
+nvsentinel.nvidia.com/external-remediation=<err-name>:NoSchedule
 ```
 
-The taint is the *single source of truth* for "this node is not owned by NVSentinel right now." Any other NVSentinel component that takes destructive action MUST refuse to act on a node carrying this taint. `node-drainer` and `fault-quarantine` get a one-line check; `fault-remediation` already keys off node selection logic and inherits the same guard.
+The taint **value** is the `metadata.name` of the owning `ExternalRemediationRequest` — the same deterministic hash used by `fault-remediation` when constructing the ERR. This is the only piece of node-side metadata the design adds; no Node labels or annotations are created. The taint carries both the operational guard ("don't act on this node") and the correlation key ("which ERR owns the release") in one place.
 
-**Idempotency:** taint application uses a patch with a server-side `if-not-present` semantics — applying the same taint twice is a no-op. Condition transitions check the existing condition status before updating, so reconcile-storm conditions don't flap.
+The taint is the *single source of truth* for "this node is not owned by NVSentinel right now." Any other NVSentinel component that takes destructive action MUST refuse to act on a node carrying any taint with this key, regardless of value. `node-drainer` and `fault-quarantine` get a one-line check; `fault-remediation` already keys off node selection logic and inherits the same guard.
 
-**Node deletion:** if `spec.nodeName` no longer exists at reconcile time, the reconciler logs and treats the taint operation as complete. The ERR object remains until the external system acknowledges via `ExternalRemediationComplete`; if the external system never acknowledges, the ERR persists indefinitely (visible via age metric).
+**At most one active ERR per node.** Because the `(key, effect)` tuple is unique on a Node, only one ERR can have its release taint applied at a time. `fault-remediation` MUST check for an existing active (non-terminal) ERR on the node before creating a new one; if one is present, the new event is dropped at deduplication or merged into the existing ERR's history (TBD by `fault-remediation` policy), rather than producing a second concurrent ERR with a competing taint value.
+
+**Idempotency:** taint application uses a server-side patch. The ERR reconciler verifies both key AND value match its own ERR name before treating the taint as "its own" — protecting against drift from a previous, no-longer-existing ERR.
+
+**Node deletion:** if `spec.nodeName` no longer exists at reconcile time, the reconciler logs and treats the taint operation as complete. The ERR object remains until the external system writes a terminal value to `ExternalRemediationComplete`; if the external system never acknowledges, the ERR persists with `ExternalRemediationComplete=Unknown` (visible via age metric).
+
+### Discovery from the Node side
+
+An operator who notices a tainted node finds the originating ERR by reading the taint value. With no Node labels or annotations, all discovery flows through the taint:
+
+```bash
+# 1. See the ERR name embedded in the taint value
+kubectl describe node <node-name>
+# Taints: nvsentinel.nvidia.com/external-remediation=gpu0-xid79-node-01:NoSchedule
+
+# Or extract just that value:
+kubectl get node <node-name> -o jsonpath=\
+  '{.spec.taints[?(@.key=="nvsentinel.nvidia.com/external-remediation")].value}'
+
+# 2. Fetch the ERR (default namespace: nvsentinel; if customised, search with -A)
+kubectl get externalremediationrequest -A | grep <err-name>
+kubectl get externalremediationrequest -n nvsentinel <err-name> -o yaml
+```
+
+To enumerate every node currently under external remediation:
+
+```bash
+kubectl get nodes -o json | jq -r '
+  .items[]
+  | select(.spec.taints[]?.key == "nvsentinel.nvidia.com/external-remediation")
+  | [.metadata.name,
+     (.spec.taints[] | select(.key=="nvsentinel.nvidia.com/external-remediation") | .value)]
+  | @tsv'
+```
+
+The trade-off vs. duplicating the ERR name to a Node label is explicit: filtering nodes via `kubectl get nodes -l …` is unavailable; operators use the jq query above. Given how rarely this enumeration is needed in practice, the cost of maintaining a parallel Node label was judged not worth it.
 
 ### EF reconciler
 
@@ -340,11 +375,13 @@ When `fault-remediation` creates an ERR triggered by an EF-emitted health event,
 
 ERR construction details:
 
-- `metadata.name` is a deterministic hash of `(nodeName, healthEvent.id)` so repeated reconciles of the same event do not create duplicate ERRs.
+- `metadata.name` is a deterministic hash of `(nodeName, healthEvent.id)` so repeated reconciles of the same event do not create duplicate ERRs. The name **also** becomes the value of the release taint applied by the ERR reconciler — so it MUST be a valid Kubernetes taint value (≤ 63 chars, alphanum + `.`, `-`, `_`).
 - `metadata.namespace` is the configured ERR namespace (default: `nvsentinel`).
-- `metadata.labels` include `nvsentinel.nvidia.com/node`, `…/component-class`, and `…/recommended-action` for observability.
+- `metadata.labels` include `nvsentinel.nvidia.com/node`, `…/component-class`, and `…/recommended-action` for observability inside the ERR API (these do NOT propagate to the Node — see "Discovery from the Node side" in the ERR reconciler section for the rationale).
 - `metadata.ownerReferences` is set to the originating EF if and only if the source health event carries a label `nvsentinel.nvidia.com/source-ef` (added by the EF reconciler when emitting); otherwise the ERR is standalone.
 - `spec.HealthEvent` is a full copy of the triaged event.
+
+**At most one active ERR per node.** Before creating, `fault-remediation` MUST check for an existing active (non-terminal) ERR targeting the same `spec.nodeName`. The cheapest implementation is a label-indexed list of ERRs by node, filtered to those whose `ExternalRemediationComplete` is `Unknown`. If one is found, the deduplication policy decides whether to attach the new event to that ERR's history or drop it; in either case a second ERR is not created. This invariant exists because the release taint's `(key, effect)` tuple is unique on the Node — a second ERR with a different taint value would silently overwrite the first.
 
 `fault-remediation` does **not** create both an ERR and a maintenance CR for the same event — the equivalence group declares one or the other.
 
@@ -510,7 +547,7 @@ External systems must NOT be granted write access to `nodes` through the externa
 
 ### Ownership definition
 
-A node is **owned by NVSentinel** if and only if it does *not* carry the release taint `nvsentinel.nvidia.com/external-remediation:NoSchedule`. This is the operational definition; the CRD conditions describe state transitions around it but do not redefine ownership. NVSentinel components MUST refuse to take destructive action on a tainted node.
+A node is **owned by NVSentinel** if and only if it does *not* carry any taint with key `nvsentinel.nvidia.com/external-remediation` and effect `NoSchedule`. The taint's *value* identifies the owning `ExternalRemediationRequest` and is used for operator-side discovery; the ownership invariant itself is keyed on the taint's existence, regardless of value. NVSentinel components MUST refuse to take destructive action on a tainted node.
 
 ### Failure modes
 
