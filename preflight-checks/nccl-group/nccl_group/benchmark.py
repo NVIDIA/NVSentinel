@@ -321,6 +321,7 @@ class Benchmark:
         dispatch_threshold_gbps: float,
         combine_threshold_gbps: float,
         total_threshold_gbps: float,
+        per_node: bool = False,
     ) -> DeepEPBenchmarkResult:
         """Run grouped DeepEP internode benchmarks."""
         if not dist.is_initialized():
@@ -342,13 +343,14 @@ class Benchmark:
                     "num_nodes": num_nodes,
                     "gpus_per_node": gpus_per_node,
                     "world_size": world_size,
+                    "per_node": per_node,
                     "dispatch_threshold_gbps": dispatch_threshold_gbps,
                     "combine_threshold_gbps": combine_threshold_gbps,
                     "total_threshold_gbps": total_threshold_gbps,
                 },
             )
 
-        groups = _create_groups(num_nodes, gpus_per_node)
+        groups = _create_groups(num_nodes, gpus_per_node, nodes_per_group_override=1 if per_node else None)
         node_id = rank // gpus_per_node
         results: list[DeepEPResult] = []
         all_passed = True
@@ -360,7 +362,7 @@ class Benchmark:
             participating = group.contains_node(node_id)
             local_result = _LocalDeepEPResult()
             if participating:
-                local_result = _benchmark_deepep_internode(group.process_group, local_rank)
+                local_result = _benchmark_deepep(group.process_group, local_rank, per_node=per_node)
 
             error_flag = _global_max_int(1 if local_result.error else 0, local_rank)
             total_bw = _global_max(local_result.total_bw_gbps, local_rank)
@@ -489,13 +491,18 @@ class Benchmark:
         return _group_median(local_bus_bw, group, local_rank)
 
 
-def _create_groups(num_nodes: int, gpus_per_node: int) -> list[GroupSpec]:
+def _create_groups(
+    num_nodes: int,
+    gpus_per_node: int,
+    *,
+    nodes_per_group_override: int | None = None,
+) -> list[GroupSpec]:
     """Create contiguous process groups for grouped collective checks."""
     if num_nodes <= 0:
         return []
-    nodes_per_group = int(os.environ.get("NODES_PER_GROUP", "8"))
-    if nodes_per_group not in (4, 8):
-        raise ValueError(f"NODES_PER_GROUP must be 4 or 8, got {nodes_per_group}")
+    nodes_per_group = nodes_per_group_override or int(os.environ.get("NODES_PER_GROUP", "8"))
+    if nodes_per_group not in (1, 2, 4, 8):
+        raise ValueError(f"NODES_PER_GROUP must be 1, 2, 4, or 8, got {nodes_per_group}")
     if num_nodes <= nodes_per_group:
         node_ranges = [(0, num_nodes - 1)]
     elif num_nodes % nodes_per_group == 0:
@@ -534,11 +541,13 @@ class _LocalDeepEPResult:
     error: str | None = None
 
 
-def _benchmark_deepep_internode(
+def _benchmark_deepep(
     group: dist.ProcessGroup,
     local_rank: int,
+    *,
+    per_node: bool,
 ) -> _LocalDeepEPResult:
-    """Benchmark DeepEP internode dispatch/combine over one process group."""
+    """Benchmark DeepEP dispatch/combine over one process group."""
     try:
         deep_ep = importlib.import_module("deep_ep")
     except ImportError:
@@ -547,8 +556,8 @@ def _benchmark_deepep_internode(
     try:
         buffer = deep_ep.Buffer(
             group=group,
-            num_nvl_bytes=1024 * 1024 * 1024,
-            num_rdma_bytes=256 * 1024 * 1024,
+            num_nvl_bytes=256 * 1024 * 1024 if per_node else 1024 * 1024 * 1024,
+            num_rdma_bytes=0 if per_node else 256 * 1024 * 1024,
             low_latency_mode=False,
         )
     except Exception as err:  # noqa: BLE001
@@ -575,13 +584,11 @@ def _benchmark_deepep_internode(
     )
 
     for _ in range(_DEEPEP_WARMUP_ITERATIONS):
-        (
-            num_tokens_per_rank,
-            num_tokens_per_rdma_rank,
-            num_tokens_per_expert,
-            is_token_in_rank,
-            _,
-        ) = buffer.get_dispatch_layout(topk_idx, _DEEPEP_NUM_EXPERTS)
+        layout = buffer.get_dispatch_layout(topk_idx, _DEEPEP_NUM_EXPERTS)
+        num_tokens_per_rank = layout[0]
+        num_tokens_per_rdma_rank = None if per_node else layout[1]
+        num_tokens_per_expert = layout[2]
+        is_token_in_rank = layout[3]
         recv_x, _, recv_topk_weights, _, handle, _ = buffer.dispatch(
             tensor,
             None,
@@ -611,18 +618,18 @@ def _benchmark_deepep_internode(
 
     for _ in range(_DEEPEP_ITERATIONS):
         layout_start.record()
-        (
-            num_tokens_per_rank,
-            num_tokens_per_rdma_rank,
-            num_tokens_per_expert,
-            is_token_in_rank,
-            _,
-        ) = buffer.get_dispatch_layout(topk_idx, _DEEPEP_NUM_EXPERTS)
+        layout = buffer.get_dispatch_layout(topk_idx, _DEEPEP_NUM_EXPERTS)
+        num_tokens_per_rank = layout[0]
+        num_tokens_per_rdma_rank = None if per_node else layout[1]
+        num_tokens_per_expert = layout[2]
+        is_token_in_rank = layout[3]
         layout_end.record()
         layout_end.synchronize()
         total_layout_ms += layout_start.elapsed_time(layout_end)
 
-        if num_tokens_per_rdma_rank is not None:
+        if per_node:
+            total_rdma_tokens += int(num_tokens_per_rank.sum().item())
+        elif num_tokens_per_rdma_rank is not None:
             total_rdma_tokens += int(num_tokens_per_rdma_rank.sum().item())
 
         dispatch_start.record()

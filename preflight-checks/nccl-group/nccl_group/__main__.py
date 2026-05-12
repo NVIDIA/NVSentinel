@@ -174,7 +174,7 @@ def _run_benchmark(cfg: Config, rank: int) -> int:
     Returns:
         Exit code.
     """
-    if cfg.check_mode == "deepep":
+    if cfg.check_mode in ("deepep", "deepep-per-node"):
         return _run_deepep_benchmark(cfg, rank)
 
     try:
@@ -247,6 +247,7 @@ def _run_deepep_benchmark(cfg: Config, rank: int) -> int:
             "combine_threshold_gbps": cfg.deepep_combine_threshold_gbps,
             "total_threshold_gbps": cfg.deepep_total_threshold_gbps,
             "nodes_per_group": cfg.nodes_per_group,
+            "per_node": cfg.check_mode == "deepep-per-node",
         },
     )
 
@@ -261,6 +262,7 @@ def _run_deepep_benchmark(cfg: Config, rank: int) -> int:
             dispatch_threshold_gbps=cfg.deepep_dispatch_threshold_gbps,
             combine_threshold_gbps=cfg.deepep_combine_threshold_gbps,
             total_threshold_gbps=cfg.deepep_total_threshold_gbps,
+            per_node=cfg.check_mode == "deepep-per-node",
         )
     except Exception as err:
         log.error("DeepEP benchmark execution failed", extra={"error": str(err)})
@@ -357,12 +359,20 @@ def _handle_deepep_success(cfg: Config, result: DeepEPBenchmarkResult) -> int:
 
 def _health_reporter(cfg: Config) -> HealthReporter:
     """Build the health reporter for the configured check mode."""
+    if cfg.check_mode == "deepep-per-node":
+        return HealthReporter(
+            socket_path=cfg.connector_socket,
+            node_name=cfg.node_name,
+            processing_strategy=cfg.processing_strategy,
+            agent="preflight-deepep-per-node",
+            check_name="DeepEPPerNodeTest",
+        )
     if cfg.check_mode == "deepep":
         return HealthReporter(
             socket_path=cfg.connector_socket,
             node_name=cfg.node_name,
             processing_strategy=cfg.processing_strategy,
-            agent="preflight-deepep-group",
+            agent=f"preflight-deepep-group-of-{cfg.nodes_per_group}",
             check_name="DeepEPGroupTest",
         )
     return HealthReporter(

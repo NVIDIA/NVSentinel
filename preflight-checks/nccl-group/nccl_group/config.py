@@ -51,8 +51,9 @@ class Config:
         pod_name: Pod name (used to determine rank).
         processing_strategy: How downstream modules handle the event.
         reduce_op: Reduction operation (sum/prod/min/max/avg).
-        check_mode: Which grouped benchmark to run (collectives or deepep).
-        nodes_per_group: Maximum nodes per subgroup. Must be 4 or 8.
+        check_mode: Which grouped benchmark to run (collectives, deepep, or
+            deepep-per-node).
+        nodes_per_group: Maximum nodes per subgroup. Must be 1, 2, 4, or 8.
         deepep_dispatch_threshold_gbps: Minimum DeepEP dispatch bandwidth.
         deepep_combine_threshold_gbps: Minimum DeepEP combine bandwidth.
         deepep_total_threshold_gbps: Minimum DeepEP total bandwidth.
@@ -104,11 +105,11 @@ class Config:
         warmup_iters = _parse_int("WARMUP_ITERS", DEFAULT_WARMUP_ITERS, min_value=0)
         reduce_op = os.getenv("NCCL_REDUCE_OP", DEFAULT_REDUCE_OP)
         check_mode = os.getenv("CHECK_MODE", DEFAULT_CHECK_MODE).lower().strip()
-        if check_mode not in ("collectives", "deepep"):
+        if check_mode not in ("collectives", "deepep", "deepep-per-node"):
             raise ValueError(f"Invalid CHECK_MODE: {check_mode}")
         nodes_per_group = _parse_int("NODES_PER_GROUP", DEFAULT_NODES_PER_GROUP)
-        if nodes_per_group not in (4, 8):
-            raise ValueError(f"NODES_PER_GROUP must be 4 or 8, got {nodes_per_group}")
+        if nodes_per_group not in (1, 2, 4, 8):
+            raise ValueError(f"NODES_PER_GROUP must be 1, 2, 4, or 8, got {nodes_per_group}")
         deepep_dispatch_threshold_gbps = _parse_float(
             "DEEPEP_DISPATCH_THRESHOLD_GBPS",
             DEFAULT_DEEPEP_DISPATCH_THRESHOLD_GBPS,

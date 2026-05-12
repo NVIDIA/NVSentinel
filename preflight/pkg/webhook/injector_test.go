@@ -784,7 +784,9 @@ func TestSelectInitContainers(t *testing.T) {
 			{Container: corev1.Container{Name: "preflight-nccl-allreduce", Image: "nccl:latest"}, DefaultEnabled: &f},
 			{Container: corev1.Container{Name: "preflight-nccl-pairwise", Image: "nccl:latest"}, DefaultEnabled: &f},
 			{Container: corev1.Container{Name: "preflight-nccl-group", Image: "nccl:latest"}, DefaultEnabled: &f},
-			{Container: corev1.Container{Name: "preflight-deepep-group", Image: "nccl:latest"}, DefaultEnabled: &f},
+			{Container: corev1.Container{Name: "preflight-deepep-group-of-4", Image: "nccl:latest"}, DefaultEnabled: &f},
+			{Container: corev1.Container{Name: "preflight-deepep-group-of-2", Image: "nccl:latest"}, DefaultEnabled: &f},
+			{Container: corev1.Container{Name: "preflight-deepep-per-node", Image: "nccl:latest"}, DefaultEnabled: &f},
 		}
 		return cfg
 	}
@@ -820,16 +822,18 @@ func TestSelectInitContainers(t *testing.T) {
 		injector := NewInjector(cfg, nil)
 		pod := gpuPod()
 		pod.Annotations = map[string]string{
-			PreflightChecksAnnotation: "preflight-nccl-allreduce,preflight-nccl-pairwise,preflight-nccl-group,preflight-deepep-group",
+			PreflightChecksAnnotation: "preflight-nccl-allreduce,preflight-nccl-pairwise,preflight-nccl-group,preflight-deepep-group-of-4,preflight-deepep-group-of-2,preflight-deepep-per-node",
 		}
 
 		selected, err := injector.selectInitContainers(pod)
 		require.NoError(t, err)
-		require.Len(t, selected, 4)
+		require.Len(t, selected, 6)
 		assert.Equal(t, "preflight-nccl-allreduce", selected[0].Name)
 		assert.Equal(t, "preflight-nccl-pairwise", selected[1].Name)
 		assert.Equal(t, "preflight-nccl-group", selected[2].Name)
-		assert.Equal(t, "preflight-deepep-group", selected[3].Name)
+		assert.Equal(t, "preflight-deepep-group-of-4", selected[3].Name)
+		assert.Equal(t, "preflight-deepep-group-of-2", selected[4].Name)
+		assert.Equal(t, "preflight-deepep-per-node", selected[5].Name)
 	})
 
 	t.Run("empty annotation disables all checks", func(t *testing.T) {
@@ -930,7 +934,9 @@ func TestSelectInitContainers(t *testing.T) {
 		assert.Contains(t, err.Error(), "preflight-nccl-allreduce")
 		assert.Contains(t, err.Error(), "preflight-nccl-pairwise")
 		assert.Contains(t, err.Error(), "preflight-nccl-group")
-		assert.Contains(t, err.Error(), "preflight-deepep-group")
+		assert.Contains(t, err.Error(), "preflight-deepep-group-of-4")
+		assert.Contains(t, err.Error(), "preflight-deepep-group-of-2")
+		assert.Contains(t, err.Error(), "preflight-deepep-per-node")
 	})
 }
 

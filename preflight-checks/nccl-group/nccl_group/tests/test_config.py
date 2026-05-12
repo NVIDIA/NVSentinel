@@ -121,6 +121,17 @@ class TestConfigFromEnv:
             assert cfg.deepep_combine_threshold_gbps == 41.0
             assert cfg.deepep_total_threshold_gbps == 42.0
 
+    def test_loads_deepep_per_node_mode(self, base_env: dict[str, str]) -> None:
+        env = {
+            **base_env,
+            "CHECK_MODE": "deepep-per-node",
+            "NODES_PER_GROUP": "1",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            cfg = Config.from_env()
+            assert cfg.check_mode == "deepep-per-node"
+            assert cfg.nodes_per_group == 1
+
     def test_raises_without_connector_socket(self, base_env: dict[str, str]) -> None:
         env = {**base_env}
         del env["PLATFORM_CONNECTOR_SOCKET"]
