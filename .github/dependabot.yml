@@ -89,6 +89,8 @@ updates:
       - "/log-collector"
       - "/preflight-checks/dcgm-diag"
       - "/preflight-checks/nccl-allreduce"
+      - "/preflight-checks/nccl-pairwise"
+      - "/preflight-checks/nccl-group"
     target-branch: "main"
     schedule:
       interval: "weekly"
@@ -107,6 +109,8 @@ updates:
       - "/metadata-collector"
       - "/preflight-checks/dcgm-diag"
       - "/preflight-checks/nccl-allreduce"
+      - "/preflight-checks/nccl-pairwise"
+      - "/preflight-checks/nccl-group"
       - "/preflight-checks/nccl-loopback"
       - "/tests/scale-tests/event-generator"
       - "/tilt/csp-api-mock"

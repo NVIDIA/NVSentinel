@@ -181,6 +181,52 @@ initContainers:
       - name: nvsentinel-socket
         mountPath: /var/run
 
+  # NCCL pairwise test - validates pair bandwidth between every node pair.
+  # Disabled by default; select it per pod with the preflight-checks annotation.
+  - name: preflight-nccl-pairwise
+    defaultEnabled: false
+    image:
+      repository: ghcr.io/nvidia/nvsentinel/preflight-nccl-pairwise
+      tag: ""
+    securityContext:
+      capabilities:
+        add: ["IPC_LOCK"]
+    env:
+      - name: BW_THRESHOLD_GBPS
+        value: "250"
+      - name: MESSAGE_SIZES
+        value: "256M"
+      - name: NCCL_DEBUG
+        value: "INFO"
+      - name: NCCL_DEBUG_SUBSYS
+        value: "INIT,NET"
+    volumeMounts:
+      - name: nvsentinel-socket
+        mountPath: /var/run
+
+  # NCCL group collectives - validates all-reduce, reduce-scatter, and all-gather.
+  # Disabled by default; select it per pod with the preflight-checks annotation.
+  - name: preflight-nccl-group
+    defaultEnabled: false
+    image:
+      repository: ghcr.io/nvidia/nvsentinel/preflight-nccl-group
+      tag: ""
+    securityContext:
+      capabilities:
+        add: ["IPC_LOCK"]
+    env:
+      - name: BW_THRESHOLD_GBPS
+        value: "300"
+      - name: MESSAGE_SIZES
+        value: "16G"
+      - name: NCCL_DEBUG
+        value: "INFO"
+      - name: NCCL_DEBUG_SUBSYS
+        value: "INIT,NET"
+    volumeMounts:
+      - name: nvsentinel-socket
+        mountPath: /var/run
+
 # Fabric-specific NCCL configuration.
 #
 # In production, the webhook automatically copies NCCL env vars and volume

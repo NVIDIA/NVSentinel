@@ -782,6 +782,8 @@ func TestSelectInitContainers(t *testing.T) {
 			{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
 			{Container: corev1.Container{Name: "preflight-nccl-loopback", Image: "nccl:latest"}},
 			{Container: corev1.Container{Name: "preflight-nccl-allreduce", Image: "nccl:latest"}, DefaultEnabled: &f},
+			{Container: corev1.Container{Name: "preflight-nccl-pairwise", Image: "nccl:latest"}, DefaultEnabled: &f},
+			{Container: corev1.Container{Name: "preflight-nccl-group", Image: "nccl:latest"}, DefaultEnabled: &f},
 		}
 		return cfg
 	}
@@ -817,13 +819,15 @@ func TestSelectInitContainers(t *testing.T) {
 		injector := NewInjector(cfg, nil)
 		pod := gpuPod()
 		pod.Annotations = map[string]string{
-			PreflightChecksAnnotation: "preflight-nccl-allreduce",
+			PreflightChecksAnnotation: "preflight-nccl-allreduce,preflight-nccl-pairwise,preflight-nccl-group",
 		}
 
 		selected, err := injector.selectInitContainers(pod)
 		require.NoError(t, err)
-		require.Len(t, selected, 1)
+		require.Len(t, selected, 3)
 		assert.Equal(t, "preflight-nccl-allreduce", selected[0].Name)
+		assert.Equal(t, "preflight-nccl-pairwise", selected[1].Name)
+		assert.Equal(t, "preflight-nccl-group", selected[2].Name)
 	})
 
 	t.Run("empty annotation disables all checks", func(t *testing.T) {
@@ -922,6 +926,8 @@ func TestSelectInitContainers(t *testing.T) {
 		assert.Contains(t, err.Error(), "preflight-dcgm-diag")
 		assert.Contains(t, err.Error(), "preflight-nccl-loopback")
 		assert.Contains(t, err.Error(), "preflight-nccl-allreduce")
+		assert.Contains(t, err.Error(), "preflight-nccl-pairwise")
+		assert.Contains(t, err.Error(), "preflight-nccl-group")
 	})
 }
 
@@ -1204,8 +1210,8 @@ func testConfig() *config.Config {
 			GPUResourceNames:       []string{"nvidia.com/gpu"},
 			NetworkResourceNames:   []string{"vpc.amazonaws.com/efa"},
 			InitContainerPlacement: config.PlacementAppend,
-			ConnectorSocket:    "/var/run/nvsentinel/nvsentinel.sock",
-			ProcessingStrategy: "EXECUTE_REMEDIATION",
+			ConnectorSocket:        "/var/run/nvsentinel/nvsentinel.sock",
+			ProcessingStrategy:     "EXECUTE_REMEDIATION",
 		},
 	}
 }

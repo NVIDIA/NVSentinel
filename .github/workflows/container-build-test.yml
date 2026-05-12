@@ -70,6 +70,10 @@ jobs:
             make_command: 'make -C preflight-checks/dcgm-diag docker-build'
           - component: preflight-nccl-allreduce
             make_command: 'make -C preflight-checks/nccl-allreduce docker-build'
+          - component: preflight-nccl-pairwise
+            make_command: 'make -C preflight-checks/nccl-pairwise docker-build'
+          - component: preflight-nccl-group
+            make_command: 'make -C preflight-checks/nccl-group docker-build'
           - component: preflight-nccl-loopback
             make_command: 'make -C preflight-checks/nccl-loopback docker-build'
           # Metadata Collector (Docker-based)

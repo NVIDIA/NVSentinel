@@ -92,6 +92,8 @@ jobs:
           - nvsentinel/preflight-dcgm-diag
           - nvsentinel/nic-health-monitor
           - nvsentinel/preflight-nccl-allreduce
+          - nvsentinel/preflight-nccl-pairwise
+          - nvsentinel/preflight-nccl-group
 
     steps:
       - name: Delete untagged images for ${{ matrix.package }}
