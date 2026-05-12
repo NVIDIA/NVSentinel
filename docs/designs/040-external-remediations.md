@@ -1,0 +1,532 @@
+# ADR-040: API — External Remediations (EF / ERR)
+
+## Context
+
+NVSentinel is the primary owner of nodes in the clusters where it operates: when a node joins, NVSentinel owns it, and any cordon/drain/reboot/terminate flows through NVSentinel's pipeline (health-monitor → fault-quarantine → node-drainer → fault-remediation).
+
+External breakfix systems — automated orchestrators driving CSP-side repair, RMA workflows, hardware swaps, or human operators performing manual maintenance — also have authority to perform destructive actions on the same nodes. Today these systems coordinate with NVSentinel ad-hoc, through side channels and operator knowledge.
+
+A node must be owned by **exactly one** system at any point in time. Without a formal protocol, NVSentinel and an external system can both decide to act on the same node and race — duplicating remediation work, fighting over taints, or interleaving operations that corrupt cluster state.
+
+The two crossing points needed are:
+
+1. **NVSentinel-detected fault that an external system must fix.** NVSentinel's triage maps a known failure mode to a remediation that NVSentinel cannot perform itself (e.g. CSP-side repair, RMA). NVSentinel needs to signal "this node is yours" and stop touching it.
+2. **External-detected fault that NVSentinel must prepare for.** An external system observes a fault NVSentinel can't see (e.g. a CSP-scheduled maintenance window, an out-of-band monitoring signal, an operator-driven request). The external system needs NVSentinel to cordon and drain the node, then transfer ownership.
+
+The same protocol must work for human operators preparing nodes for manual remediation. Multiple bespoke entry points (one per external system) would not. The design must be agnostic to which external system is on the other side — NVSentinel cannot make assumptions about how, when, or whether an external system completes its work.
+
+## Decision
+
+Introduce two namespaced CRDs in the existing `nvsentinel.nvidia.com/v1alpha1` API group, plus two new reconcilers and one integration point in `fault-remediation`:
+
+| CRD | Created by | Role |
+| --- | --- | --- |
+| `ExternalRemediationRequest` (ERR) | NVSentinel (`fault-remediation` or `ExternalFault` reconciler) | **Exit door.** Taints the node and signals "NVSentinel has released the node." External system reads this to know it can begin work, and writes a completion condition back when done. |
+| `ExternalFault` (EF) | External system | **Entry door.** External system declares "this node has a fault I need to take ownership of." Triggers the standard NVSentinel pipeline (quarantine → drain → fault-remediation), which produces an ERR. |
+
+Both CRD specs are a `datamodels.HealthEvent` (the same proto already emitted by every health-monitor and consumed by every downstream stage — see `data-models/protobufs/health_event.proto`). All coordination state lives in `status.conditions`. There is exactly **one** entry point into external ownership (EF) and exactly **one** exit point (ERR); every external system speaks the same protocol.
+
+EF creation always results in ERR creation by routing through the normal pipeline with `recommendedAction = CUSTOM` (per [ADR-036](036-custom-remediation-actions.md)). The EF reconciler does not create the ERR directly — that keeps a single, well-tested code path responsible for materialising release requests.
+
+## Implementation
+
+### Module layout
+
+The two reconcilers and their CRD types live alongside the existing maintenance reconcilers in `janitor/`:
+
+```
+janitor/
+├── api/v1alpha1/
+│   ├── externalfault_types.go            (new)
+│   ├── externalremediationrequest_types.go (new)
+│   ├── gpureset_types.go                  (existing)
+│   ├── rebootnode_types.go                (existing)
+│   ├── terminatenode_types.go             (existing)
+│   └── groupversion_info.go               (existing — already nvsentinel.nvidia.com/v1alpha1)
+└── pkg/controller/
+    ├── externalfault_controller.go        (new)
+    ├── externalremediationrequest_controller.go (new)
+    └── ...
+```
+
+Generated CRD YAML is committed to the existing `distros/kubernetes/nvsentinel/charts/janitor/crds/` directory.
+
+### API: `ExternalRemediationRequest`
+
+```go
+// ERR condition types
+const (
+    // NVSentinelOwnershipReleased indicates the ERR reconciler has tainted the node and
+    // released it to the external system. Set by NVSentinel.
+    ERROwnershipReleasedCondition = "NVSentinelOwnershipReleased"
+
+    // ExternalRemediationComplete indicates the external system has finished its work
+    // and is returning the node to NVSentinel. Set by the external system.
+    ERRRemediationCompleteCondition = "ExternalRemediationComplete"
+)
+
+type ExternalRemediationRequestSpec struct {
+    // HealthEvent that triggered this remediation request. Carried through from
+    // fault-remediation (NVSentinel-detected path) or from the EF spec (external-
+    // detected path).
+    // +kubebuilder:validation:Required
+    *HealthEvent `json:",inline"`
+}
+
+type ExternalRemediationRequestStatus struct {
+    // Conditions represent the latest available observations of the object's state.
+    // +optional
+    Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Namespaced,shortName=err,categories=nvsentinel
+// +kubebuilder:printcolumn:name="Node",type="string",JSONPath=".spec.nodeName"
+// +kubebuilder:printcolumn:name="OwnershipReleased",type="string",JSONPath=".status.conditions[?(@.type=='NVSentinelOwnershipReleased')].status"
+// +kubebuilder:printcolumn:name="RemediationComplete",type="string",JSONPath=".status.conditions[?(@.type=='ExternalRemediationComplete')].status"
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+type ExternalRemediationRequest struct {
+    metav1.TypeMeta   `json:",inline"`
+    metav1.ObjectMeta `json:"metadata,omitempty"`
+
+    Spec   ExternalRemediationRequestSpec   `json:"spec,omitempty"`
+    Status ExternalRemediationRequestStatus `json:"status,omitempty"`
+}
+```
+
+`HealthEvent` in the spec is the CRD-friendly mirror of `datamodels.HealthEvent`. Because the existing proto generator does not emit kubebuilder markers, the mirror struct lives in `janitor/api/v1alpha1/healthevent.go` and is round-tripped to/from the proto type by a thin conversion helper in `commons/pkg/healthevent`.
+
+Concrete shape from `kubectl get externalremediationrequest -o yaml`:
+
+```yaml
+apiVersion: nvsentinel.nvidia.com/v1alpha1
+kind: ExternalRemediationRequest
+metadata:
+  creationTimestamp: "2026-05-11T21:16:02Z"
+  generation: 1
+  labels:
+    nvsentinel.nvidia.com/component-class: gpu
+    nvsentinel.nvidia.com/node: node-01.example-cluster.internal
+    nvsentinel.nvidia.com/recommended-action: external-remediation
+  name: gpu0-xid79-node-01
+  namespace: nvsentinel
+spec:
+  agent: gpu-health-monitor
+  checkName: nvml-xid-79
+  componentClass: gpu
+  customRecommendedAction: external-remediation
+  entitiesImpacted:
+    - {entityType: GPU,  entityValue: "0"}
+    - {entityType: PCIE, entityValue: "0000:18:00.0"}
+  errorCode: [XID-79]
+  generatedTimestamp: "2026-05-11T20:14:07Z"
+  id: he-7f0b3e2c-1cab-4d22-9a96-2d5b3a8ee2f1
+  isFatal: true
+  isHealthy: false
+  message: GPU fell off the bus (XID 79) on /dev/nvidia0; node requires hardware-level repair.
+  metadata:
+    cluster: example-cluster-01
+    cudaVersion: "12.4"
+    driverVersion: 550.144.03
+    serialNumber: "1320820063748"
+  nodeName: node-01.example-cluster.internal
+  processingStrategy: EXECUTE_REMEDIATION
+  recommendedAction: CUSTOM
+  version: 1
+status:
+  conditions:
+    - type: NVSentinelOwnershipReleased
+      status: "True"
+      observedGeneration: 1
+      lastTransitionTime: "2026-05-11T20:14:09Z"
+      reason: ReleaseTaintApplied
+      message: Applied taint nvsentinel.nvidia.com/external-remediation:NoSchedule to node-01.example-cluster.internal; node released to external system.
+    - type: ExternalRemediationComplete
+      status: "False"
+      observedGeneration: 1
+      lastTransitionTime: "2026-05-11T20:14:09Z"
+      reason: AwaitingExternalSystem
+      message: Waiting for external system to set ExternalRemediationComplete=True.
+```
+
+### API: `ExternalFault`
+
+```go
+// EF condition types
+const (
+    // FaultReported indicates the EF reconciler has emitted a CUSTOM health event into
+    // the NVSentinel pipeline. Set by NVSentinel.
+    EFFaultReportedCondition = "FaultReported"
+
+    // ExternalRemediationComplete is propagated up from the owning ERR. Set by NVSentinel.
+    EFRemediationCompleteCondition = "ExternalRemediationComplete"
+
+    // FaultCleared indicates the EF reconciler has emitted a healthy event that will
+    // unquarantine the node. Set by NVSentinel.
+    EFFaultClearedCondition = "FaultCleared"
+)
+
+type ExternalFaultSpec struct {
+    // HealthEvent describing the externally-detected fault. Recommended action is
+    // typically CUSTOM with customRecommendedAction=external-remediation; the EF
+    // reconciler does not validate this and treats any HealthEvent as a request to
+    // run the node through the standard pipeline.
+    // +kubebuilder:validation:Required
+    *HealthEvent `json:",inline"`
+}
+
+type ExternalFaultStatus struct {
+    Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Namespaced,shortName=ef,categories=nvsentinel
+// +kubebuilder:printcolumn:name="Node",type="string",JSONPath=".spec.nodeName"
+// +kubebuilder:printcolumn:name="FaultReported",type="string",JSONPath=".status.conditions[?(@.type=='FaultReported')].status"
+// +kubebuilder:printcolumn:name="RemediationComplete",type="string",JSONPath=".status.conditions[?(@.type=='ExternalRemediationComplete')].status"
+// +kubebuilder:printcolumn:name="FaultCleared",type="string",JSONPath=".status.conditions[?(@.type=='FaultCleared')].status"
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+type ExternalFault struct {
+    metav1.TypeMeta   `json:",inline"`
+    metav1.ObjectMeta `json:"metadata,omitempty"`
+
+    Spec   ExternalFaultSpec   `json:"spec,omitempty"`
+    Status ExternalFaultStatus `json:"status,omitempty"`
+}
+```
+
+`kubectl get externalfault -o yaml`:
+
+```yaml
+apiVersion: nvsentinel.nvidia.com/v1alpha1
+kind: ExternalFault
+metadata:
+  creationTimestamp: "2026-05-11T21:16:02Z"
+  generation: 1
+  labels:
+    nvsentinel.nvidia.com/external-source: csp-events
+    nvsentinel.nvidia.com/fault-class: csp-maintenance
+    nvsentinel.nvidia.com/node: node-02.example-cluster.internal
+  name: csp-maintenance-node-02
+  namespace: nvsentinel
+spec:
+  agent: external-orchestrator
+  checkName: csp-scheduled-maintenance
+  componentClass: node
+  customRecommendedAction: external-remediation
+  entitiesImpacted:
+    - {entityType: Node, entityValue: node-02.example-cluster.internal}
+  errorCode: [CSP-MAINT-EBS-RETIRE]
+  generatedTimestamp: "2026-05-11T20:14:07Z"
+  id: he-ext-c6d92aa1-2f6e-4e8b-9e3d-b75f86b1aaaa
+  isFatal: false
+  isHealthy: false
+  message: CSP scheduled maintenance window 2026-05-13T03:00Z to 2026-05-13T07:00Z; node must be drained before window.
+  metadata:
+    cluster: example-cluster-01
+    cspEventId: evt-0a9bc8e74e2c2c10c
+    maintenanceWindowEnd: "2026-05-13T07:00:00Z"
+    maintenanceWindowStart: "2026-05-13T03:00:00Z"
+    source: csp-events
+  nodeName: node-02.example-cluster.internal
+  processingStrategy: EXECUTE_REMEDIATION
+  recommendedAction: CUSTOM
+  version: 1
+status:
+  conditions:
+    - type: FaultReported
+      status: "True"
+      observedGeneration: 1
+      lastTransitionTime: "2026-05-11T20:14:08Z"
+      reason: HealthEventEmitted
+      message: Submitted CUSTOM health event he-ext-c6d92aa1-2f6e-4e8b-9e3d-b75f86b1aaaa to platform-connector on node node-02.example-cluster.internal.
+    - type: ExternalRemediationComplete
+      status: "False"
+      observedGeneration: 1
+      lastTransitionTime: "2026-05-11T20:14:08Z"
+      reason: AwaitingExternalRemediation
+      message: Waiting for owning ExternalRemediationRequest to report ExternalRemediationComplete=True.
+    - type: FaultCleared
+      status: "False"
+      observedGeneration: 1
+      lastTransitionTime: "2026-05-11T20:14:08Z"
+      reason: FaultActive
+      message: Fault is active; node has not been returned to NVSentinel ownership.
+```
+
+### Condition state machines
+
+**ExternalRemediationRequest:**
+
+| Condition | Status | Set by | Trigger | Side effect |
+| --- | --- | --- | --- | --- |
+| `NVSentinelOwnershipReleased` | `False` (implicit, absent) | — | At creation | Reconciler enqueues |
+| `NVSentinelOwnershipReleased` | `True` | ERR reconciler | After release taint applied to `spec.nodeName` | External system may now act |
+| `ExternalRemediationComplete` | `False` (implicit) | — | At creation | Awaiting external system |
+| `ExternalRemediationComplete` | `True` | **External system** | After remediation finishes | ERR reconciler removes taint and, if EF owner, propagates condition |
+
+**ExternalFault:**
+
+| Condition | Status | Set by | Trigger | Side effect |
+| --- | --- | --- | --- | --- |
+| `FaultReported` | `True` | EF reconciler | After health event emitted to platform-connector | NVSentinel pipeline runs; ERR created by fault-remediation |
+| `ExternalRemediationComplete` | `True` | ERR reconciler (propagation) | When the owning ERR completes | EF reconciler emits healthy event |
+| `FaultCleared` | `True` | EF reconciler | After healthy event acknowledged | Node returns to normal NVSentinel ownership |
+
+All conditions are append-or-update in place (`SetCondition` helper modelled after `janitor/api/v1alpha1/rebootnode_types.go`). Conditions never regress from `True` to `False` for the same generation.
+
+### ERR reconciler
+
+**Watches:** `ExternalRemediationRequest` (primary); `Node` (secondary, to detect taint drift).
+
+**Reconcile loop:**
+
+1. If `Status.Conditions[NVSentinelOwnershipReleased]` is not yet `True`:
+   - Apply the configured release taint to `spec.nodeName` (idempotent).
+   - Set `NVSentinelOwnershipReleased=True` with `reason=ReleaseTaintApplied`.
+   - Requeue.
+2. If `Status.Conditions[ExternalRemediationComplete]` is `True`:
+   - Remove the release taint from `spec.nodeName` (idempotent; tolerate missing taint).
+   - If this ERR has an `ownerReference` of kind `ExternalFault`, write `ExternalRemediationComplete=True` to that EF's status.
+   - Done; no further work.
+3. Otherwise, no-op until status changes.
+
+**Release taint** (configurable via Helm values):
+
+```
+nvsentinel.nvidia.com/external-remediation:NoSchedule
+```
+
+The taint is the *single source of truth* for "this node is not owned by NVSentinel right now." Any other NVSentinel component that takes destructive action MUST refuse to act on a node carrying this taint. `node-drainer` and `fault-quarantine` get a one-line check; `fault-remediation` already keys off node selection logic and inherits the same guard.
+
+**Idempotency:** taint application uses a patch with a server-side `if-not-present` semantics — applying the same taint twice is a no-op. Condition transitions check the existing condition status before updating, so reconcile-storm conditions don't flap.
+
+**Node deletion:** if `spec.nodeName` no longer exists at reconcile time, the reconciler logs and treats the taint operation as complete. The ERR object remains until the external system acknowledges via `ExternalRemediationComplete`; if the external system never acknowledges, the ERR persists indefinitely (visible via age metric).
+
+### EF reconciler
+
+**Watches:** `ExternalFault` (primary).
+
+**Reconcile loop:**
+
+1. If `Status.Conditions[FaultReported]` is not yet `True`:
+   - Submit `spec.HealthEvent` to the platform-connector running on `spec.nodeName` via the existing gRPC client (`platform-connectors/pkg/client`).
+   - Set `FaultReported=True` with `reason=HealthEventEmitted`. Include the event ID in the message.
+   - Requeue.
+2. If `Status.Conditions[ExternalRemediationComplete]` is `True` and `FaultCleared` is not yet `True`:
+   - Submit a healthy companion event to the platform-connector — same `id` family, same `nodeName`, `isHealthy=true`, `recommendedAction=NONE`.
+   - Set `FaultCleared=True` with `reason=NodeReturnedToNVSentinel`.
+3. Otherwise, no-op.
+
+The EF reconciler does **not** create the ERR directly. Instead, the `CUSTOM` recommendedAction in the emitted health event flows through the standard pipeline; `fault-remediation` produces the ERR. This keeps one well-tested code path responsible for materialising release requests.
+
+When `fault-remediation` creates an ERR triggered by an EF-emitted health event, it sets an `ownerReference` on the ERR pointing to the EF. The ERR reconciler uses this owner reference to propagate `ExternalRemediationComplete` back.
+
+### `fault-remediation` integration
+
+`fault-remediation` already uses `GetEffectiveActionName(he)` (per ADR-036) to resolve the action name for routing. To produce ERRs:
+
+- **`fault-remediation/pkg/common/equivalence_groups.go`** — extend the equivalence-group config schema so a group can declare `produces: ExternalRemediationRequest` in addition to (or instead of) a maintenance-CR template.
+- **`fault-remediation/pkg/remediation/remediation.go`** — `CreateMaintenanceResource` branches on the produces type; for `ExternalRemediationRequest`, build the ERR struct from the triaged HealthEvent and create it via the dynamic client.
+
+ERR construction details:
+
+- `metadata.name` is a deterministic hash of `(nodeName, healthEvent.id)` so repeated reconciles of the same event do not create duplicate ERRs.
+- `metadata.namespace` is the configured ERR namespace (default: `nvsentinel`).
+- `metadata.labels` include `nvsentinel.nvidia.com/node`, `…/component-class`, and `…/recommended-action` for observability.
+- `metadata.ownerReferences` is set to the originating EF if and only if the source health event carries a label `nvsentinel.nvidia.com/source-ef` (added by the EF reconciler when emitting); otherwise the ERR is standalone.
+- `spec.HealthEvent` is a full copy of the triaged event.
+
+`fault-remediation` does **not** create both an ERR and a maintenance CR for the same event — the equivalence group declares one or the other.
+
+### Sequence diagrams
+
+**NVSentinel-detected fault → external remediation:**
+
+```mermaid
+sequenceDiagram
+    participant HM as health-monitor
+    participant FQ as fault-quarantine
+    participant ND as node-drainer
+    participant FR as fault-remediation
+    participant ERR as ExternalRemediationRequest
+    participant RC as ERR Reconciler
+    participant N as Node
+    participant EXT as External System
+
+    HM->>FQ: HealthEvent (e.g. XID 79)
+    Note over FQ: recommendedAction CUSTOM
+    FQ->>N: cordon + apply fault-quarantine taint
+    FQ->>ND: drained event
+    ND->>N: evict workload
+    ND->>FR: drained event
+    FR->>ERR: create (spec = HealthEvent)
+    RC->>N: apply release taint
+    RC->>ERR: NVSentinelOwnershipReleased=True
+    Note over EXT: external system watches ERR; sees OwnershipReleased
+    EXT->>N: perform remediation (RMA, manual fix, …)
+    EXT->>ERR: ExternalRemediationComplete=True
+    RC->>N: remove release taint
+    Note over HM,N: existing health-monitors emit healthy events
+    HM->>FQ: healthy HealthEvent
+    FQ->>N: remove fault-quarantine taint, uncordon
+```
+
+**Externally-detected fault → NVSentinel pipeline → external remediation:**
+
+```mermaid
+sequenceDiagram
+    participant EXT as External System
+    participant EF as ExternalFault
+    participant EFR as EF Reconciler
+    participant PC as platform-connector
+    participant FQ as fault-quarantine
+    participant ND as node-drainer
+    participant FR as fault-remediation
+    participant ERR as ExternalRemediationRequest
+    participant ERRR as ERR Reconciler
+    participant N as Node
+
+    EXT->>EF: create (spec = HealthEvent)
+    EFR->>PC: HealthEventOccurredV1 (CUSTOM)
+    EFR->>EF: FaultReported=True
+    PC->>FQ: HealthEvent
+    FQ->>N: cordon + fault-quarantine taint
+    FQ->>ND: drained event
+    ND->>N: evict workload
+    ND->>FR: drained event
+    FR->>ERR: create (ownerRef=EF, spec=HealthEvent)
+    ERRR->>N: apply release taint
+    ERRR->>ERR: NVSentinelOwnershipReleased=True
+    Note over EXT: external system watches ERR; sees OwnershipReleased
+    EXT->>N: perform remediation
+    EXT->>ERR: ExternalRemediationComplete=True
+    ERRR->>N: remove release taint
+    ERRR->>EF: propagate ExternalRemediationComplete=True
+    EFR->>PC: healthy HealthEvent
+    EFR->>EF: FaultCleared=True
+    PC->>FQ: healthy event → remove fault-quarantine taint, uncordon
+```
+
+### RBAC
+
+**ERR reconciler ServiceAccount:**
+
+- `externalremediationrequests` — get, list, watch, update (status only)
+- `externalfaults` — get, list, watch, patch (status only; for propagation)
+- `nodes` — get, list, watch, patch (for taint apply/remove)
+- `events` — create
+
+**EF reconciler ServiceAccount:**
+
+- `externalfaults` — get, list, watch, update (status only)
+- gRPC client credentials to reach the platform-connector (already provisioned for other NVSentinel components)
+- `events` — create
+
+**External system ServiceAccount:**
+
+- `externalfaults` — create, get, list, watch
+- `externalremediationrequests` — get, list, watch, patch (status only)
+
+External systems must NOT be granted write access to `nodes` through the external-remediation flow — node operations are mediated by the ERR reconciler via the release taint. External systems may carry separate node-level access if they choose to create in-cluster remediation CRs (e.g. `GPUReset`) as part of their workflow, but that is a separate authorisation surface.
+
+### Observability
+
+**Metrics** (Prometheus, namespace `nvsentinel_external_remediation`):
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `err_total` | Counter | `phase` | ERRs entered each phase (`created`, `released`, `completed`) |
+| `ef_total` | Counter | `phase` | EFs entered each phase (`created`, `reported`, `cleared`) |
+| `err_open` | Gauge | `node`, `recommended_action` | Open ERRs with `ExternalRemediationComplete=False` |
+| `err_age_seconds` | Histogram | `recommended_action` | Time from ERR creation to `ExternalRemediationComplete=True` |
+| `taint_apply_latency_seconds` | Histogram | — | Time from ERR creation to release taint applied |
+| `health_event_emit_failures_total` | Counter | `source` (`ef-reconciler`) | gRPC failures emitting to platform-connector |
+
+**Events** (Kubernetes events on the EF / ERR object):
+
+- `ReleaseTaintApplied`, `ReleaseTaintRemoved`, `OwnershipPropagated` (ERR)
+- `HealthEventEmitted`, `HealthyEventEmitted`, `EmitFailed` (EF)
+
+**Tracing:** EF reconciler propagates an OTEL span ID into the emitted health event's `metadata.spanIds` so the full externally-originated lifecycle is observable end-to-end alongside health-monitor-originated events.
+
+## Rationale
+
+- **Single coordination surface.** Two CRDs, two reconcilers, and one integration point in `fault-remediation`. Any external system — automated orchestrator, human operator, future integration — speaks the same protocol. No bespoke per-system entry/exit.
+- **Reuses the existing pipeline.** EFs do not bypass `fault-quarantine` or `node-drainer`; the same quarantine/drain that protects NVSentinel-detected faults protects external-detected ones. Adding a new external system requires zero changes to those stages.
+- **CRDs are debuggable.** Operators can `kubectl get err,ef -A` to see every node currently outside NVSentinel ownership and the reason. Status conditions surface the exact step the handoff is on.
+- **Plugs into ADR-036.** The `CUSTOM` recommended action and `GetEffectiveActionName` resolution already exist; this ADR layers the ERR-producing branch on top of that machinery rather than introducing a parallel routing path.
+- **Asynchronous by design.** Remediation can take hours to weeks (RMA, replacement parts, scheduled CSP windows). The protocol does not require either system to be online for the other to progress.
+
+## Consequences
+
+### Positive
+
+- Clear, enforceable ownership invariant: **a node is owned by NVSentinel iff it does not carry the release taint.**
+- One protocol for all external integrations, present and future.
+- Standard Kubernetes patterns throughout (CRDs, conditions, ownerReferences, RBAC) — no custom RPCs, no shared databases.
+- Cascade delete: deleting an EF cleans up its owned ERR automatically.
+
+### Negative
+
+- Two new CRDs and two new reconcilers to operate and monitor.
+- Asynchronous handshake adds latency vs. direct RPC (typically seconds, but bounded by reconcile poll intervals).
+- External systems must be granted CRD access in the cluster — this is a new authorisation surface for cluster admins to reason about.
+
+### Mitigations
+
+- The asynchronous latency is dominated by quarantine + drain (already in the pipeline), so the additional ERR/EF reconciliation contributes a small fraction of total handoff time.
+- RBAC is intentionally minimal: external systems get write access to EFs (their object) and status-only patch access to ERRs (the system's response). No node-level access is granted via this flow.
+- Observability (metrics, events, tracing) gives operators the same level of insight as the existing NVSentinel pipeline.
+
+## Alternatives Considered
+
+### Direct gRPC API between an external system and NVSentinel
+
+**Rejected** because: bespoke per-external-system surface; not debuggable with `kubectl`; doesn't extend to human operators without building a CLI; would require parallel infrastructure (TLS, service accounts, load balancing) that the CRD path inherits from Kubernetes for free.
+
+### Reuse existing maintenance CRs (RebootNode, TerminateNode, GPUReset)
+
+**Rejected** because: those CRs encode specific in-cluster actions performed by the janitor, not generic ownership transfer. An external system performing an RMA isn't doing "reboot" or "terminate" — it's doing arbitrary work that NVSentinel doesn't model. Forcing this through existing CRs would muddy their semantics. External systems remain free to create those CRs directly when in-cluster remediation is part of their workflow.
+
+### Just use a taint, no CRDs
+
+**Rejected** because: a taint by itself has no acknowledgment signal. The external system has no way to communicate "I'm done" back to NVSentinel except by removing the taint (which it shouldn't be authorised to do directly on the node API), or via metadata on the node object (which has the same authorisation problem). CRDs give a purpose-built object for the external system to write to.
+
+### Single CRD with a `direction` field instead of EF and ERR
+
+**Rejected** because: the two directions have asymmetric responsibilities and condition lifecycles. Conflating them would force every reconciler and every consumer to branch on the direction field, and the asymmetric RBAC (external system creates EFs but only patches ERR status) would be expressed via field-level admission rather than separate kinds. Two kinds are clearer and idiomatic.
+
+## Notes
+
+### Ownership definition
+
+A node is **owned by NVSentinel** if and only if it does *not* carry the release taint `nvsentinel.nvidia.com/external-remediation:NoSchedule`. This is the operational definition; the CRD conditions describe state transitions around it but do not redefine ownership. NVSentinel components MUST refuse to take destructive action on a tainted node.
+
+### Failure modes
+
+- **External system never sets `ExternalRemediationComplete`.** No timeout. NVSentinel makes no assumptions about how, when, or whether an external system completes its work. The ERR persists, the node stays tainted, `err_age_seconds` grows, and operators are notified via existing alert rules on ERR age.
+- **Node deleted while ERR is open.** ERR reconciler logs and treats taint operations as no-ops. The ERR remains so the external system can still acknowledge completion (which is then a no-op against the missing node). Cascade delete via the owning EF (if any) cleans up.
+- **Duplicate EFs for the same node.** Permitted. Each EF independently emits its own health event and produces its own ERR (deterministic name = hash of `node + event.id` deduplicates only same-event resubmissions, not distinct events).
+- **ERR created without a matching EF.** Normal — this is the NVSentinel-detected fault path. ERR has no `ownerReference` of kind `ExternalFault`; reconciler skips the propagation step.
+- **Race between EF reconciler emitting the healthy event and the existing fault-quarantine unquarantine path.** Fault-quarantine's normal handling of healthy events is idempotent; double-clearing is a no-op.
+
+### Non-goals
+
+- **External-system implementation.** External systems create EFs and patch ERR conditions; their internal logic is out of scope for this ADR.
+- **New remediation actions.** This ADR uses the existing `CUSTOM` action from ADR-036; it does not extend the action set.
+- **In-cluster remediation CRs.** External systems that need to trigger in-cluster operations (GPUReset, RebootNode, TerminateNode) create those CRs directly as part of their remediation. This ADR does not change those flows.
+- **Standalone-ERR garbage collection.** Standalone ERRs (no EF owner) are not auto-collected by this design; a follow-up ADR will cover TTL/GC policy if it becomes necessary in operation.
+
+### Migration
+
+No migration required — this is a pure addition. Existing flows that do not declare `produces: ExternalRemediationRequest` in their equivalence-group config continue to behave exactly as today.
+
+## References
+
+- Tracking issue: [#1276](https://github.com/NVIDIA/NVSentinel/issues/1276) — the capability gap this ADR addresses.
+- [ADR-036: Custom Remediation Actions](036-custom-remediation-actions.md) — the `CUSTOM` recommendedAction this ADR builds on.
+- [HealthEvent proto](../../data-models/protobufs/health_event.proto) — the source-of-truth schema for the CRD spec.
+- [RebootNode CRD](../../janitor/api/v1alpha1/rebootnode_types.go) — pattern reference for condition-driven CRDs in this repo.
