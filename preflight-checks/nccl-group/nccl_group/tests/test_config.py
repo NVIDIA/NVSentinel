@@ -89,9 +89,9 @@ class TestConfigFromEnv:
             assert cfg.warmup_iters == 3
             assert cfg.check_mode == "collectives"
             assert cfg.nodes_per_group == 8
-            assert cfg.deepep_dispatch_threshold_gbps == 45.0
-            assert cfg.deepep_combine_threshold_gbps == 49.0
-            assert cfg.deepep_total_threshold_gbps == 47.0
+            assert cfg.deepep_dispatch_threshold_gbps == 50.0
+            assert cfg.deepep_combine_threshold_gbps == 50.0
+            assert cfg.deepep_total_threshold_gbps == 150.0
             assert cfg.skip_bandwidth_check is False
 
     def test_loads_custom_values(self, base_env: dict[str, str]) -> None:

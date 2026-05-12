@@ -1708,11 +1708,11 @@ preflight:
         - name: NODES_PER_GROUP
           value: "1"
         - name: DEEPEP_DISPATCH_THRESHOLD_GBPS
-          value: "45"
+          value: "50"  # TODO(jin): tune it
         - name: DEEPEP_COMBINE_THRESHOLD_GBPS
-          value: "49"
+          value: "50"  # TODO(jin): tune it
         - name: DEEPEP_TOTAL_THRESHOLD_GBPS
-          value: "47"
+          value: "150"  # TODO(jin): tune it
         - name: NCCL_DEBUG
           value: "INFO"
         - name: NCCL_DEBUG_SUBSYS
@@ -1733,11 +1733,11 @@ preflight:
         - name: NODES_PER_GROUP
           value: "2"
         - name: DEEPEP_DISPATCH_THRESHOLD_GBPS
-          value: "45"
+          value: "50"  # TODO(jin): tune it
         - name: DEEPEP_COMBINE_THRESHOLD_GBPS
-          value: "49"
+          value: "50"  # TODO(jin): tune it
         - name: DEEPEP_TOTAL_THRESHOLD_GBPS
-          value: "47"
+          value: "150"  # TODO(jin): tune it
         - name: NCCL_DEBUG
           value: "INFO"
         - name: NCCL_DEBUG_SUBSYS
@@ -1758,11 +1758,11 @@ preflight:
         - name: NODES_PER_GROUP
           value: "4"
         - name: DEEPEP_DISPATCH_THRESHOLD_GBPS
-          value: "45"
+          value: "50"  # TODO(jin): tune it
         - name: DEEPEP_COMBINE_THRESHOLD_GBPS
-          value: "49"
+          value: "50"  # TODO(jin): tune it
         - name: DEEPEP_TOTAL_THRESHOLD_GBPS
-          value: "47"
+          value: "150"  # TODO(jin): tune it
         - name: NCCL_DEBUG
           value: "INFO"
         - name: NCCL_DEBUG_SUBSYS
