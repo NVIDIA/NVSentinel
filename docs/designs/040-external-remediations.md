@@ -143,11 +143,11 @@ status:
       reason: ReleaseTaintApplied
       message: Applied taint nvsentinel.nvidia.com/external-remediation:NoSchedule to node-01.example-cluster.internal; node released to external system.
     - type: ExternalRemediationComplete
-      status: "False"
+      status: "Unknown"
       observedGeneration: 1
       lastTransitionTime: "2026-05-11T20:14:09Z"
       reason: AwaitingExternalSystem
-      message: Waiting for external system to set ExternalRemediationComplete=True.
+      message: Waiting for external system to set ExternalRemediationComplete=True (success) or False (failure).
 ```
 
 ### API: `ExternalFault`
@@ -243,13 +243,13 @@ status:
       reason: HealthEventEmitted
       message: Submitted CUSTOM health event he-ext-c6d92aa1-2f6e-4e8b-9e3d-b75f86b1aaaa to platform-connector on node node-02.example-cluster.internal.
     - type: ExternalRemediationComplete
-      status: "False"
+      status: "Unknown"
       observedGeneration: 1
       lastTransitionTime: "2026-05-11T20:14:08Z"
       reason: AwaitingExternalRemediation
-      message: Waiting for owning ExternalRemediationRequest to report ExternalRemediationComplete=True.
+      message: Waiting for owning ExternalRemediationRequest to resolve.
     - type: FaultCleared
-      status: "False"
+      status: "Unknown"
       observedGeneration: 1
       lastTransitionTime: "2026-05-11T20:14:08Z"
       reason: FaultActive
@@ -258,24 +258,28 @@ status:
 
 ### Condition state machines
 
+`True` and `False` are **terminal** states for every condition on these CRDs. Conditions in flight are represented by `Unknown`; once a condition lands on `True` (the named state has been achieved) or `False` (it cannot be achieved), it does not transition again for the same generation. This matches the convention already established by `RebootNode`, `GPUReset`, and `TerminateNode`.
+
+The reconcilers call `SetInitialConditions` on first reconcile, writing every condition as `Unknown` with `reason: Initializing` (modelled after `janitor/api/v1alpha1/rebootnode_types.go`).
+
 **ExternalRemediationRequest:**
 
-| Condition | Status | Set by | Trigger | Side effect |
+| Condition | Initial | Terminal `True` | Terminal `False` | Set by |
 | --- | --- | --- | --- | --- |
-| `NVSentinelOwnershipReleased` | `False` (implicit, absent) | — | At creation | Reconciler enqueues |
-| `NVSentinelOwnershipReleased` | `True` | ERR reconciler | After release taint applied to `spec.nodeName` | External system may now act |
-| `ExternalRemediationComplete` | `False` (implicit) | — | At creation | Awaiting external system |
-| `ExternalRemediationComplete` | `True` | **External system** | After remediation finishes | ERR reconciler removes taint and, if EF owner, propagates condition |
+| `NVSentinelOwnershipReleased` | `Unknown` (`Initializing`) | Release taint applied to `spec.nodeName` | Permanent failure to apply taint (retries exhausted, e.g. invalid configuration) | ERR reconciler |
+| `ExternalRemediationComplete` | `Unknown` (`AwaitingExternalSystem`) | External system reports remediation succeeded | External system reports remediation failed (e.g. RMA declined, repair unsuccessful, external system gave up) | **External system** |
+
+Both `True` and `False` on `ExternalRemediationComplete` are meaningful, terminal outcomes — they trigger the same ERR reconciler behaviour: remove the release taint and propagate the value (unchanged) to any owning EF. If the underlying fault is still present after a `False` outcome, NVSentinel's existing health-monitors will re-detect it and re-trigger the standard pipeline, producing a fresh ERR. This is the desired self-healing path: the external system's failure does not strand the node in tainted limbo.
 
 **ExternalFault:**
 
-| Condition | Status | Set by | Trigger | Side effect |
+| Condition | Initial | Terminal `True` | Terminal `False` | Set by |
 | --- | --- | --- | --- | --- |
-| `FaultReported` | `True` | EF reconciler | After health event emitted to platform-connector | NVSentinel pipeline runs; ERR created by fault-remediation |
-| `ExternalRemediationComplete` | `True` | ERR reconciler (propagation) | When the owning ERR completes | EF reconciler emits healthy event |
-| `FaultCleared` | `True` | EF reconciler | After healthy event acknowledged | Node returns to normal NVSentinel ownership |
+| `FaultReported` | `Unknown` (`Initializing`) | Health event submitted to platform-connector | Submission failed after retry budget exhausted | EF reconciler |
+| `ExternalRemediationComplete` | `Unknown` | Owning ERR resolved with `True` | Owning ERR resolved with `False` | ERR reconciler (propagation) |
+| `FaultCleared` | `Unknown` (`FaultActive`) | Healthy event submitted to platform-connector | Submission failed after retry budget exhausted | EF reconciler |
 
-All conditions are append-or-update in place (`SetCondition` helper modelled after `janitor/api/v1alpha1/rebootnode_types.go`). Conditions never regress from `True` to `False` for the same generation.
+All conditions are append-or-update in place via the `SetCondition` helper, which short-circuits no-op updates so reconcile storms don't flap `lastTransitionTime`.
 
 ### ERR reconciler
 
@@ -283,15 +287,16 @@ All conditions are append-or-update in place (`SetCondition` helper modelled aft
 
 **Reconcile loop:**
 
-1. If `Status.Conditions[NVSentinelOwnershipReleased]` is not yet `True`:
+1. On first reconcile, call `SetInitialConditions`: write `NVSentinelOwnershipReleased=Unknown (Initializing)` and `ExternalRemediationComplete=Unknown (AwaitingExternalSystem)`.
+2. If `NVSentinelOwnershipReleased` is `Unknown`:
    - Apply the configured release taint to `spec.nodeName` (idempotent).
-   - Set `NVSentinelOwnershipReleased=True` with `reason=ReleaseTaintApplied`.
-   - Requeue.
-2. If `Status.Conditions[ExternalRemediationComplete]` is `True`:
+   - On success: set `NVSentinelOwnershipReleased=True` with `reason=ReleaseTaintApplied`.
+   - On permanent failure (retry budget exhausted): set `NVSentinelOwnershipReleased=False` with `reason=ReleaseTaintFailed`. The ERR is now in a terminal failed state; no further reconciliation work, but the object remains so the failure is visible to operators.
+3. If `ExternalRemediationComplete` has resolved to `True` or `False` (either terminal):
    - Remove the release taint from `spec.nodeName` (idempotent; tolerate missing taint).
-   - If this ERR has an `ownerReference` of kind `ExternalFault`, write `ExternalRemediationComplete=True` to that EF's status.
+   - If this ERR has an `ownerReference` of kind `ExternalFault`, propagate the same value (`True` or `False`) to the EF's `ExternalRemediationComplete` condition.
    - Done; no further work.
-3. Otherwise, no-op until status changes.
+4. Otherwise (`ExternalRemediationComplete` is still `Unknown`): no-op until the external system writes a terminal value.
 
 **Release taint** (configurable via Helm values):
 
@@ -311,14 +316,16 @@ The taint is the *single source of truth* for "this node is not owned by NVSenti
 
 **Reconcile loop:**
 
-1. If `Status.Conditions[FaultReported]` is not yet `True`:
+1. On first reconcile, call `SetInitialConditions`: write `FaultReported=Unknown (Initializing)`, `ExternalRemediationComplete=Unknown`, `FaultCleared=Unknown (FaultActive)`.
+2. If `FaultReported` is `Unknown`:
    - Submit `spec.HealthEvent` to the platform-connector running on `spec.nodeName` via the existing gRPC client (`platform-connectors/pkg/client`).
-   - Set `FaultReported=True` with `reason=HealthEventEmitted`. Include the event ID in the message.
-   - Requeue.
-2. If `Status.Conditions[ExternalRemediationComplete]` is `True` and `FaultCleared` is not yet `True`:
-   - Submit a healthy companion event to the platform-connector — same `id` family, same `nodeName`, `isHealthy=true`, `recommendedAction=NONE`.
-   - Set `FaultCleared=True` with `reason=NodeReturnedToNVSentinel`.
-3. Otherwise, no-op.
+   - On success: set `FaultReported=True` with `reason=HealthEventEmitted`. Include the event ID in the message.
+   - On permanent failure (retry budget exhausted): set `FaultReported=False` with `reason=HealthEventEmitFailed`. Terminal failed state.
+3. If `ExternalRemediationComplete` is terminal (`True` or `False`) and `FaultCleared` is `Unknown`:
+   - Submit a healthy companion event to the platform-connector — same `id` family, same `nodeName`, `isHealthy=true`, `recommendedAction=NONE`. (Emit the healthy event regardless of whether `ExternalRemediationComplete` was `True` or `False`; existing health-monitors will re-detect any still-present fault.)
+   - On success: set `FaultCleared=True` with `reason=NodeReturnedToNVSentinel`.
+   - On permanent failure: set `FaultCleared=False` with `reason=HealthEventEmitFailed`.
+4. Otherwise, no-op.
 
 The EF reconciler does **not** create the ERR directly. Instead, the `CUSTOM` recommendedAction in the emitted health event flows through the standard pipeline; `fault-remediation` produces the ERR. This keeps one well-tested code path responsible for materialising release requests.
 
@@ -507,7 +514,8 @@ A node is **owned by NVSentinel** if and only if it does *not* carry the release
 
 ### Failure modes
 
-- **External system never sets `ExternalRemediationComplete`.** No timeout. NVSentinel makes no assumptions about how, when, or whether an external system completes its work. The ERR persists, the node stays tainted, `err_age_seconds` grows, and operators are notified via existing alert rules on ERR age.
+- **External system never sets `ExternalRemediationComplete`.** No timeout. NVSentinel makes no assumptions about how, when, or whether an external system completes its work. The ERR persists with `ExternalRemediationComplete=Unknown`, the node stays tainted, `err_age_seconds` grows, and operators are notified via existing alert rules on ERR age.
+- **External system sets `ExternalRemediationComplete=False`.** A legitimate terminal outcome meaning "I tried, couldn't fix it." Treated symmetrically with `True` for taint removal and propagation. If the underlying fault is still present, the existing health-monitors will re-detect it and re-trigger the standard pipeline (producing a fresh ERR). This is the desired self-healing path when external remediation fails.
 - **Node deleted while ERR is open.** ERR reconciler logs and treats taint operations as no-ops. The ERR remains so the external system can still acknowledge completion (which is then a no-op against the missing node). Cascade delete via the owning EF (if any) cleans up.
 - **Duplicate EFs for the same node.** Permitted. Each EF independently emits its own health event and produces its own ERR (deterministic name = hash of `node + event.id` deduplicates only same-event resubmissions, not distinct events).
 - **ERR created without a matching EF.** Normal — this is the NVSentinel-detected fault path. ERR has no `ownerReference` of kind `ExternalFault`; reconciler skips the propagation step.
