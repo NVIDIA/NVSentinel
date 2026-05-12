@@ -422,6 +422,96 @@ This gets the "single active ERR per node" invariant for free — it falls out o
 
 `fault-remediation` does **not** create both an ERR and a maintenance CR for the same event — the equivalence group declares one or the other.
 
+### Validation
+
+Bad inputs at the EF API boundary cannot be allowed to result in stuck-state CRs that need operator cleanup. An EF whose embedded `HealthEvent` is informational (`isHealthy=true`), observability-only (`processingStrategy=STORE_ONLY`), or carries a `customRecommendedAction` that isn't mapped to an ERR-producing equivalence group in the loaded TOML config will *never* produce an ERR. Without validation, such an EF would sit in `FaultReported=Unknown` indefinitely, indistinguishable from the legitimate "blocked on superseding equivalence group" wait described in the EF reconciler section.
+
+Validation is layered in three places, modelled directly on the existing `janitor/pkg/webhook/v1alpha1/janitor_webhook.go` for `RebootNode` / `TerminateNode` / `GPUReset`.
+
+| Layer | Static field shape | EF-specific tightening | Dynamic (TOML / cluster state) |
+| --- | --- | --- | --- |
+| **CRD schema** (auto-generated from proto) | ✅ field types, enum values declared in proto | ❌ proto can't express "isHealthy must be `false`" | ❌ |
+| **Validating webhook** | ✅ defence-in-depth | ✅ | ✅ |
+| **Reconciler** | safety net | safety net | safety net |
+
+#### Layer 1: CRD schema (proto-driven)
+
+Whatever static structural rules `HealthEvent` and `Condition` declare in `health_event.proto` and `external_remediation.proto` — required fields, field types, enum members — flow through to the CRD schema automatically via `protoc-gen-crd`. The API server enforces them at admission time. No hand-maintenance.
+
+#### Layer 2: Validating admission webhook
+
+A `ValidateCreate`/`ValidateUpdate` webhook for `ExternalFault`, registered alongside the existing janitor webhooks (same Deployment, same cert-manager-provisioned cert, `failurePolicy=fail`):
+
+```go
+// +kubebuilder:webhook:path=/validate-nvsentinel-nvidia-com-v1alpha1-externalfault,
+//   mutating=false,failurePolicy=fail,sideEffects=None,
+//   groups=nvsentinel.nvidia.com,resources=externalfaults,
+//   verbs=create;update,versions=v1alpha1,name=vexternalfault-v1alpha1.kb.io,
+//   admissionReviewVersions=v1
+
+func (v *externalFaultValidator) ValidateCreate(ctx context.Context, obj *ExternalFault) (
+    admission.Warnings, error) {
+
+    // (a) Controller enabled
+    if !v.Config.ExternalFault.Enabled {
+        return nil, fmt.Errorf("ExternalFault controller is disabled in configuration")
+    }
+
+    he := obj.Spec  // proto-generated HealthEvent
+
+    // (b) HealthEvent shape — defence-in-depth over the proto-derived CRD schema
+    if he.GetNodeName() == "" {
+        return nil, fmt.Errorf("spec.nodeName is required")
+    }
+    if he.GetIsHealthy() {
+        return nil, fmt.Errorf("spec.isHealthy must be false on an ExternalFault — " +
+            "ExternalFault is for declaring unhealthy state to NVSentinel")
+    }
+    if he.GetProcessingStrategy() == protos.ProcessingStrategy_STORE_ONLY {
+        return nil, fmt.Errorf("spec.processingStrategy=STORE_ONLY is not valid on an " +
+            "ExternalFault — observability-only events do not trigger remediation")
+    }
+    if he.GetRecommendedAction() != protos.RecommendedAction_CUSTOM {
+        return nil, fmt.Errorf("spec.recommendedAction must be CUSTOM on an ExternalFault")
+    }
+    if he.GetCustomRecommendedAction() == "" {
+        return nil, fmt.Errorf("spec.customRecommendedAction is required when " +
+            "recommendedAction=CUSTOM")
+    }
+
+    // (c) Dynamic: the action name maps to an ERR-producing equivalence group in
+    //     the loaded fault-remediation TOML.
+    if !v.RemediationActions.ProducesERR(he.GetCustomRecommendedAction()) {
+        return nil, fmt.Errorf("customRecommendedAction %q is not configured to produce "+
+            "an ExternalRemediationRequest in this cluster's fault-remediation config",
+            he.GetCustomRecommendedAction())
+    }
+
+    // (d) Target node exists. Mirrors janitor_webhook.go validateNodeForCreate.
+    if err := v.validateNode(ctx, he.GetNodeName()); err != nil {
+        return nil, err
+    }
+
+    // (e) No other non-terminal EF for the same node. Mirrors janitor's
+    //     validateNoActiveReboot pattern — closes the second-EF-for-same-node case.
+    if err := v.validateNoActiveEFForNode(ctx, he.GetNodeName()); err != nil {
+        return nil, err
+    }
+
+    return nil, nil
+}
+```
+
+The webhook needs access to the loaded fault-remediation TOML to answer `ProducesERR(actionName)`. The simplest delivery is the existing config-loader being passed into the webhook constructor at startup (same shape janitor uses for its `Config` field). Hot-reload of the TOML invalidates the webhook's cached action map.
+
+`failurePolicy=fail` means the API server rejects EF create/update when the webhook is unreachable. This is the same posture the existing janitor webhooks take.
+
+There is **no** webhook for `ExternalRemediationRequest`. ERR is internally produced by `fault-remediation`, never directly by an external system; its inputs are already validated upstream (by the EF webhook for external-detected faults, by the HealthEvent platform-connector validation for NVSentinel-detected faults). Adding a webhook to ERR would block legitimate fault-remediation writes during webhook outages.
+
+#### Layer 3: Reconciler safety net
+
+The EF reconciler re-validates on first reconcile before emitting the HealthEvent — same checks (b)–(c) above. This catches EFs that slipped past the webhook (upgrade scenarios where the webhook wasn't yet deployed; misconfigured `failurePolicy=Ignore`; future schema changes). On failure, the reconciler sets `FaultReported=False` with `reason=InvalidHealthEvent` and a message describing the validation error — terminal, visible to operators, no further reconciliation.
+
 ### Sequence diagrams
 
 **NVSentinel-detected fault → external remediation:**
@@ -471,21 +561,23 @@ sequenceDiagram
     participant N as Node
 
     EXT->>EF: create (spec = HealthEvent)
+    Note over EFR: validation webhook gates create
     EFR->>PC: HealthEventOccurredV1 (CUSTOM)
-    EFR->>EF: FaultReported=True
     PC->>FQ: HealthEvent
     FQ->>N: cordon + fault-quarantine taint
     FQ->>ND: drained event
     ND->>N: evict workload
     ND->>FR: drained event
     FR->>ERR: create (ownerRef=EF, spec=HealthEvent)
+    EFR->>ERR: observes ERR (ownerRef → me)
+    EFR->>EF: producedERR=<name>, FaultReported=True
     ERRR->>N: apply release taint
     ERRR->>ERR: NVSentinelOwnershipReleased=True
     Note over EXT: external system watches ERR; sees OwnershipReleased
     EXT->>N: perform remediation
-    EXT->>ERR: ExternalRemediationComplete=True
+    EXT->>ERR: ExternalRemediationComplete=True/False
     ERRR->>N: remove release taint
-    ERRR->>EF: propagate ExternalRemediationComplete=True
+    ERRR->>EF: propagate ExternalRemediationComplete
     EFR->>PC: healthy HealthEvent
     EFR->>EF: FaultCleared=True
     PC->>FQ: healthy event → remove fault-quarantine taint, uncordon
@@ -503,8 +595,14 @@ sequenceDiagram
 **EF reconciler ServiceAccount:**
 
 - `externalfaults` — get, list, watch, update (status only)
+- `externalremediationrequests` — get, list, watch (for the ownerRef-indexed lookup the reconciler uses to discover its produced ERR)
 - gRPC client credentials to reach the platform-connector (already provisioned for other NVSentinel components)
 - `events` — create
+
+**EF validating webhook ServiceAccount** (typically the same ServiceAccount as the EF reconciler, since they run in the same Deployment):
+
+- `nodes` — get (for the target-node-existence check)
+- `externalfaults` — list (for the no-active-EF-for-node dedup check)
 
 **External system ServiceAccount:**
 
@@ -525,6 +623,7 @@ External systems must NOT be granted write access to `nodes` through the externa
 | `err_age_seconds` | Histogram | `recommended_action` | Time from ERR creation to `ExternalRemediationComplete=True` |
 | `taint_apply_latency_seconds` | Histogram | — | Time from ERR creation to release taint applied |
 | `health_event_emit_failures_total` | Counter | `source` (`ef-reconciler`) | gRPC failures emitting to platform-connector |
+| `ef_webhook_rejections_total` | Counter | `reason` (one of: `disabled`, `bad_health_event`, `unknown_action`, `node_not_found`, `duplicate_ef`) | EF create/update rejections by the validating webhook |
 
 **Events** (Kubernetes events on the EF / ERR object):
 
