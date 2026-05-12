@@ -182,6 +182,17 @@ Also in `data-models/protobufs/external_remediation.proto`:
 ```protobuf
 message ExternalFaultStatus {
   repeated Condition conditions = 1;
+
+  // producedERR is the metadata.name of the ExternalRemediationRequest this
+  // EF caused fault-remediation to create. Empty until the EF reconciler
+  // observes an ERR with ownerReferences pointing to this EF. Operators
+  // can follow the chain via:
+  //
+  //   kubectl get ef <name> -o jsonpath='{.status.producedERR}'
+  //
+  // and then `kubectl get err <producedERR>` in the configured ERR
+  // namespace.
+  string produced_err = 2;
 }
 
 message ExternalFault {
@@ -248,13 +259,14 @@ spec:
   recommendedAction: CUSTOM
   version: 1
 status:
+  producedERR: csp-maint-node-02
   conditions:
     - type: FaultReported
       status: "True"
       observedGeneration: 1
       lastTransitionTime: "2026-05-11T20:14:08Z"
-      reason: HealthEventEmitted
-      message: Submitted CUSTOM health event he-ext-c6d92aa1-2f6e-4e8b-9e3d-b75f86b1aaaa to platform-connector on node node-02.example-cluster.internal.
+      reason: ERRObserved
+      message: ExternalRemediationRequest csp-maint-node-02 observed in namespace nvsentinel (ownerReferences point to this ExternalFault).
     - type: ExternalRemediationComplete
       status: "Unknown"
       observedGeneration: 1
@@ -288,9 +300,11 @@ Both `True` and `False` on `ExternalRemediationComplete` are meaningful, termina
 
 | Condition | Initial | Terminal `True` | Terminal `False` | Set by |
 | --- | --- | --- | --- | --- |
-| `FaultReported` | `Unknown` (`Initializing`) | Health event submitted to platform-connector | Submission failed after retry budget exhausted | EF reconciler |
+| `FaultReported` | `Unknown` (`Initializing`) | An ERR with `ownerReferences` pointing to this EF has been observed by the EF reconciler — i.e. the fault made it through the pipeline and produced a remediation request | The reconciler has given up emitting (only set on explicit operator action, e.g. EF deletion or invalid-health-event detection — see *Validation* section) | EF reconciler |
 | `ExternalRemediationComplete` | `Unknown` | Owning ERR resolved with `True` | Owning ERR resolved with `False` | ERR reconciler (propagation) |
 | `FaultCleared` | `Unknown` (`FaultActive`) | Healthy event submitted to platform-connector | Submission failed after retry budget exhausted | EF reconciler |
+
+`FaultReported=True` is a stronger guarantee than "the gRPC call succeeded" — it means an ERR exists and the rest of the protocol can proceed. While `FaultReported=Unknown`, the EF reconciler re-emits the underlying HealthEvent on each reconcile (idempotent — deterministic ERR naming + fault-remediation's equivalence-group skip mean repeated submissions produce at most one ERR). This is exactly what an operator wants to see when, say, a `RebootNode` CR is in-flight on the target node and the EF's event is being temporarily blocked by cross-kind supersedence: status reflects "still waiting" rather than misleading "reported successfully."
 
 All conditions are append-or-update in place via the `SetCondition` helper, which short-circuits no-op updates so reconcile storms don't flap `lastTransitionTime`.
 
@@ -360,24 +374,29 @@ The trade-off vs. duplicating the ERR name to a Node label is explicit: filterin
 
 ### EF reconciler
 
-**Watches:** `ExternalFault` (primary).
+**Watches:** `ExternalFault` (primary); `ExternalRemediationRequest` keyed by `ownerReferences[].uid` (secondary, to detect ERR creation).
 
 **Reconcile loop:**
 
 1. On first reconcile, call `SetInitialConditions`: write `FaultReported=Unknown (Initializing)`, `ExternalRemediationComplete=Unknown`, `FaultCleared=Unknown (FaultActive)`.
-2. If `FaultReported` is `Unknown`:
-   - Submit `spec.HealthEvent` to the platform-connector running on `spec.nodeName` via the existing gRPC client (`platform-connectors/pkg/client`).
-   - On success: set `FaultReported=True` with `reason=HealthEventEmitted`. Include the event ID in the message.
-   - On permanent failure (retry budget exhausted): set `FaultReported=False` with `reason=HealthEventEmitFailed`. Terminal failed state.
+2. **Observe-then-act for `FaultReported`:**
+   - List ERRs in the configured ERR namespace whose `ownerReferences` point to this EF (cheap via the ownerRef indexer).
+   - **If an ERR is found**:
+     - Write `status.producedERR = <err.metadata.name>`.
+     - Set `FaultReported=True` with `reason=ERRObserved` and a message naming the ERR.
+     - Continue to step 3.
+   - **If no ERR is found** and `FaultReported` is still `Unknown`:
+     - Submit `spec.HealthEvent` to the platform-connector running on `spec.nodeName` via the existing gRPC client (`platform-connectors/pkg/client`). Idempotent — `fault-remediation` deterministically names the ERR from `(nodeName, healthEvent.id)`, and its equivalence-group skip logic ensures repeated submissions produce at most one ERR.
+     - Requeue with backoff (controller-runtime defaults). On the next reconcile, the ERR may or may not exist yet — if not, we re-emit.
 3. If `ExternalRemediationComplete` is terminal (`True` or `False`) and `FaultCleared` is `Unknown`:
    - Submit a healthy companion event to the platform-connector — same `id` family, same `nodeName`, `isHealthy=true`, `recommendedAction=NONE`. (Emit the healthy event regardless of whether `ExternalRemediationComplete` was `True` or `False`; existing health-monitors will re-detect any still-present fault.)
    - On success: set `FaultCleared=True` with `reason=NodeReturnedToNVSentinel`.
    - On permanent failure: set `FaultCleared=False` with `reason=HealthEventEmitFailed`.
 4. Otherwise, no-op.
 
-The EF reconciler does **not** create the ERR directly. Instead, the `CUSTOM` recommendedAction in the emitted health event flows through the standard pipeline; `fault-remediation` produces the ERR. This keeps one well-tested code path responsible for materialising release requests.
+The EF reconciler does **not** create the ERR directly. The `CUSTOM` recommendedAction in the emitted health event flows through the standard pipeline; `fault-remediation` produces the ERR. The forward pointer `status.producedERR` and the corresponding `FaultReported=True` transition are set by the EF reconciler when it *observes* the ERR — not at submission time. This means a HealthEvent that fault-remediation deduplicates or skips (because the node already has an in-flight maintenance CR for a superseding equivalence group, or because validation rejects the event) leaves the EF in `FaultReported=Unknown` rather than misleadingly `True`. Operators see exactly what is true: the fault has been reported into the pipeline, but no remediation has been produced yet. The reconciler retries on backoff until either an ERR appears or the EF is deleted.
 
-When `fault-remediation` creates an ERR triggered by an EF-emitted health event, it sets an `ownerReference` on the ERR pointing to the EF. The ERR reconciler uses this owner reference to propagate `ExternalRemediationComplete` back.
+When `fault-remediation` creates an ERR triggered by an EF-emitted health event, it sets an `ownerReference` on the ERR pointing to the EF. The ERR reconciler uses this owner reference to propagate `ExternalRemediationComplete` back to the EF when remediation finishes.
 
 ### `fault-remediation` integration
 
@@ -571,6 +590,7 @@ A node is **owned by NVSentinel** if and only if it does *not* carry any taint w
 
 - **External system never sets `ExternalRemediationComplete`.** No timeout. NVSentinel makes no assumptions about how, when, or whether an external system completes its work. The ERR persists with `ExternalRemediationComplete=Unknown`, the node stays tainted, `err_age_seconds` grows, and operators are notified via existing alert rules on ERR age.
 - **External system sets `ExternalRemediationComplete=False`.** A legitimate terminal outcome meaning "I tried, couldn't fix it." Treated symmetrically with `True` for taint removal and propagation. If the underlying fault is still present, the existing health-monitors will re-detect it and re-trigger the standard pipeline (producing a fresh ERR). This is the desired self-healing path when external remediation fails.
+- **EF sits in `FaultReported=Unknown` indefinitely.** Expected when fault-remediation is currently skipping the EF's HealthEvent due to a superseding equivalence-group entry on the same node (e.g. a `RebootNode` CR is mid-reboot). The EF reconciler re-emits on backoff; once the blocking CR completes and its entry is pruned from `latestFaultRemediationState`, the next emission produces the ERR and `FaultReported` flips to `True`. Operators see this state accurately in the EF status, and `ef_age_seconds` exposes it for alerting.
 - **Node deleted while ERR is open.** ERR reconciler logs and treats taint operations as no-ops. The ERR remains so the external system can still acknowledge completion (which is then a no-op against the missing node). Cascade delete via the owning EF (if any) cleans up.
 - **Duplicate EFs for the same node.** Permitted. Each EF independently emits its own health event and produces its own ERR (deterministic name = hash of `node + event.id` deduplicates only same-event resubmissions, not distinct events).
 - **ERR created without a matching EF.** Normal — this is the NVSentinel-detected fault path. ERR has no `ownerReference` of kind `ExternalFault`; reconciler skips the propagation step.
