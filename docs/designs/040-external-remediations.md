@@ -10,14 +10,14 @@ A node must be owned by **exactly one** system at any point in time. Without a f
 
 The two crossing points needed are:
 
-1. **NVSentinel-detected fault that an external system must fix.** NVSentinel's triage maps a known failure mode to a remediation that NVSentinel cannot perform itself (e.g. CSP-side repair, RMA). NVSentinel needs to signal "this node is yours" and stop touching it.
+1. **NVSentinel-detected fault that an external system must fix.** NVSentinel's triage maps a known failure mode to a remediation that NVSentinel cannot perform itself (e.g. CSP-side repair, RMA). NVSentinel needs to signal "I no longer own this node" and stop attempting remediations.
 2. **External-detected fault that NVSentinel must prepare for.** An external system observes a fault NVSentinel can't see (e.g. a CSP-scheduled maintenance window, an out-of-band monitoring signal, an operator-driven request). The external system needs NVSentinel to cordon and drain the node, then transfer ownership.
 
 The same protocol must work for human operators preparing nodes for manual remediation. Multiple bespoke entry points (one per external system) would not. The design must be agnostic to which external system is on the other side — NVSentinel cannot make assumptions about how, when, or whether an external system completes its work.
 
 ## Decision
 
-Introduce two namespaced CRDs in the existing `nvsentinel.nvidia.com/v1alpha1` API group, plus two new reconcilers and one integration point in `fault-remediation`:
+Introduce two CRDs in the existing `nvsentinel.nvidia.com/v1alpha1` API group, plus two new reconcilers and one integration point in `fault-remediation`:
 
 | CRD | Created by | Role |
 | --- | --- | --- |
@@ -647,7 +647,6 @@ External systems must NOT be granted write access to `nodes` through the externa
 - Clear, enforceable ownership invariant: **a node is owned by NVSentinel iff it does not carry the release taint.**
 - One protocol for all external integrations, present and future.
 - Standard Kubernetes patterns throughout (CRDs, conditions, ownerReferences, RBAC) — no custom RPCs, no shared databases.
-- Cascade delete: deleting an EF cleans up its owned ERR automatically.
 
 ### Negative
 
