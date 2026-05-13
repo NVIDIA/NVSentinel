@@ -294,7 +294,7 @@ The reconcilers call `SetInitialConditions` on first reconcile, writing every co
 | `NVSentinelOwnershipReleased` | `Unknown` (`Initializing`) | Release taint applied to `spec.nodeName` | Permanent failure to apply taint (retries exhausted, e.g. invalid configuration) | ERR reconciler |
 | `ExternalRemediationComplete` | `Unknown` (`AwaitingExternalSystem`) | External system reports remediation succeeded | External system reports remediation failed (e.g. RMA declined, repair unsuccessful, external system gave up) | **External system** |
 
-Both `True` and `False` on `ExternalRemediationComplete` are meaningful, terminal outcomes — they trigger the same ERR reconciler behaviour: remove the release taint and propagate the value (unchanged) to any owning EF. If the underlying fault is still present after a `False` outcome, NVSentinel's existing health-monitors will re-detect it and re-trigger the standard pipeline, producing a fresh ERR. This is the desired self-healing path: the external system's failure does not strand the node in tainted limbo.
+[[REVIEW: I'm not sure that this is being described correctly. our two scenarios: err from an ef and err from a health-monitor. for the health-monitor i think this is easier, we have the same behavior that currently exists for internal remediations like rebootnode, if it didn't work we don't attempt more rememdiations and flag it for a human to look at. i think its a bit harder for an err from an ef, since we can't clear the fault because nvsentinel doesn't know if the fault exists or not. i think it would be bad for nvsentinel to clear the fault since that would return the node back to schedulable, but we also need a way for someone to "retrigger" an err on failure if desired. because i think we get into a weird situation where we can't clear the ef and also can't submit new faults to the node because the first ef is "claiming" the node]]Both `True` and `False` on `ExternalRemediationComplete` are meaningful, terminal outcomes — they trigger the same ERR reconciler behaviour: remove the release taint and propagate the value (unchanged) to any owning EF. If the underlying fault is still present after a `False` outcome, NVSentinel's existing health-monitors will re-detect it and re-trigger the standard pipeline, producing a fresh ERR. This is the desired self-healing path: the external system's failure does not strand the node in tainted limbo.
 
 **ExternalFault:**
 
@@ -304,7 +304,7 @@ Both `True` and `False` on `ExternalRemediationComplete` are meaningful, termina
 | `ExternalRemediationComplete` | `Unknown` | Owning ERR resolved with `True` | Owning ERR resolved with `False` | ERR reconciler (propagation) |
 | `FaultCleared` | `Unknown` (`FaultActive`) | Healthy event submitted to platform-connector | Submission failed after retry budget exhausted | EF reconciler |
 
-`FaultReported=True` is a stronger guarantee than "the gRPC call succeeded" — it means an ERR exists and the rest of the protocol can proceed. While `FaultReported=Unknown`, the EF reconciler re-emits the underlying HealthEvent on each reconcile (idempotent — deterministic ERR naming + fault-remediation's equivalence-group skip mean repeated submissions produce at most one ERR). This is exactly what an operator wants to see when, say, a `RebootNode` CR is in-flight on the target node and the EF's event is being temporarily blocked by cross-kind supersedence: status reflects "still waiting" rather than misleading "reported successfully."
+`FaultReported=True` is a stronger guarantee than "the gRPC call to the platform-connector succeeded" — it means an ERR exists and the rest of the protocol can proceed. While `FaultReported=Unknown`, the EF reconciler re-emits the underlying HealthEvent on each reconcile (idempotent — deterministic ERR naming + fault-remediation's equivalence-group skip mean repeated submissions produce at most one ERR). This is exactly what an operator wants to see when, say, a `RebootNode` CR is in-flight on the target node and the EF's event is being temporarily blocked by cross-kind supersedence: status reflects "still waiting" rather than misleading "reported successfully."
 
 All conditions are append-or-update in place via the `SetCondition` helper, which short-circuits no-op updates so reconcile storms don't flap `lastTransitionTime`.
 
@@ -424,7 +424,7 @@ This gets the "single active ERR per node" invariant for free — it falls out o
 
 ### Validation
 
-Bad inputs at the EF API boundary cannot be allowed to result in stuck-state CRs that need operator cleanup. An EF whose embedded `HealthEvent` is informational (`isHealthy=true`), observability-only (`processingStrategy=STORE_ONLY`), or carries a `customRecommendedAction` that isn't mapped to an ERR-producing equivalence group in the loaded TOML config will *never* produce an ERR. Without validation, such an EF would sit in `FaultReported=Unknown` indefinitely, indistinguishable from the legitimate "blocked on superseding equivalence group" wait described in the EF reconciler section.
+[[REVIEW: I dont think theres any way for us to read the equivalence group config in fq's toml file. so we can't use that. the other two options are fine though]]Bad inputs at the EF API boundary cannot be allowed to result in stuck-state CRs that need operator cleanup. An EF whose embedded `HealthEvent` is informational (`isHealthy=true`), observability-only (`processingStrategy=STORE_ONLY`), or carries a `customRecommendedAction` that isn't mapped to an ERR-producing equivalence group in the loaded TOML config will *never* produce an ERR. Without validation, such an EF would sit in `FaultReported=Unknown` indefinitely, indistinguishable from the legitimate "blocked on superseding equivalence group" wait described in the EF reconciler section.
 
 Validation is layered in three places, modelled directly on the existing `janitor/pkg/webhook/v1alpha1/janitor_webhook.go` for `RebootNode` / `TerminateNode` / `GPUReset`.
 
@@ -536,7 +536,7 @@ sequenceDiagram
     FR->>ERR: create (spec = HealthEvent)
     RC->>N: apply release taint
     RC->>ERR: NVSentinelOwnershipReleased=True
-    Note over EXT: external system watches ERR; sees OwnershipReleased
+    Note over EXT: external system watches ERR, sees OwnershipReleased
     EXT->>N: perform remediation (RMA, manual fix, …)
     EXT->>ERR: ExternalRemediationComplete=True
     RC->>N: remove release taint
@@ -573,7 +573,7 @@ sequenceDiagram
     EFR->>EF: producedERR=<name>, FaultReported=True
     ERRR->>N: apply release taint
     ERRR->>ERR: NVSentinelOwnershipReleased=True
-    Note over EXT: external system watches ERR; sees OwnershipReleased
+    Note over EXT: external system watches ERR, sees OwnershipReleased
     EXT->>N: perform remediation
     EXT->>ERR: ExternalRemediationComplete=True/False
     ERRR->>N: remove release taint
@@ -684,7 +684,7 @@ External systems must NOT be granted write access to `nodes` through the externa
 
 A node is **owned by NVSentinel** if and only if it does *not* carry any taint with key `nvsentinel.nvidia.com/external-remediation` and effect `NoSchedule`. The taint's *value* identifies the owning `ExternalRemediationRequest` and is used for operator-side discovery; the ownership invariant itself is keyed on the taint's existence, regardless of value. NVSentinel components MUST refuse to take destructive action on a tainted node.
 
-### Failure modes
+[[REVIEW: we need to revisit these later]]### Failure modes
 
 - **External system never sets `ExternalRemediationComplete`.** No timeout. NVSentinel makes no assumptions about how, when, or whether an external system completes its work. The ERR persists with `ExternalRemediationComplete=Unknown`, the node stays tainted, `err_age_seconds` grows, and operators are notified via existing alert rules on ERR age.
 - **External system sets `ExternalRemediationComplete=False`.** A legitimate terminal outcome meaning "I tried, couldn't fix it." Treated symmetrically with `True` for taint removal and propagation. If the underlying fault is still present, the existing health-monitors will re-detect it and re-trigger the standard pipeline (producing a fresh ERR). This is the desired self-healing path when external remediation fails.
