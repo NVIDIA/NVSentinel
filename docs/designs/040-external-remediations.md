@@ -639,12 +639,12 @@ External systems must NOT be granted write access to `nodes` through the externa
 | --- | --- | --- | --- |
 | `err_total` | Counter | `phase` | ERRs entered each phase (`created`, `released`, `completed`) |
 | `ef_total` | Counter | `phase` | EFs entered each phase (`created`, `reported`, `cleared`) |
-| `err_open` | Gauge | `node`, `recommended_action` | Open ERRs with `ExternalRemediationComplete=False` |
+| `err_open` | Gauge | `node`, `recommended_action` | Open ERRs (i.e. with `ExternalRemediationComplete=Unknown` — neither succeeded nor failed yet) |
 | `err_age_seconds` | Histogram | `recommended_action` | Time from ERR creation to `ExternalRemediationComplete=True` |
 | `taint_apply_latency_seconds` | Histogram | — | Time from ERR creation to release taint applied |
 | `health_event_emit_failures_total` | Counter | `source` (`ef-reconciler`) | gRPC failures emitting to platform-connector |
 | `ef_webhook_rejections_total` | Counter | `reason` (one of: `disabled`, `bad_health_event`, `node_not_found`, `duplicate_ef`) | EF create/update rejections by the validating webhook |
-| `unknown_remediation_action_total` | Counter | `action`, `source` (`ef-reconciler`, `fault-remediation`) | EFs / health events carrying a `customRecommendedAction` not registered in fault-remediation's config — exposes the "bad action name, stuck at `FaultReported=Unknown`" case the webhook cannot catch |
+| `unknown_remediation_action_total` | Counter | `action` | Health events carrying a `customRecommendedAction` not registered in fault-remediation's config — exposes the "bad action name, EF stuck at `FaultReported=Unknown`" case that admission-time validation cannot catch. Emitted by `fault-remediation` itself (the only component with the config) every time `equivalence_groups.go` `GetGroupConfigForEvent` returns its existing "Action not found in remediation configuration" warning. |
 
 **Events** (Kubernetes events on the EF / ERR object):
 
