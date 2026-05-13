@@ -572,7 +572,7 @@ sequenceDiagram
     participant N as Node
 
     EXT->>EF: create (spec = HealthEvent)
-    Note over EFR: validation webhook gates create
+    Note over EF: validating webhook gates create
     EFR->>PC: HealthEventOccurredV1 (CUSTOM)
     PC->>FQ: HealthEvent
     FQ->>N: cordon + fault-quarantine taint
@@ -586,12 +586,21 @@ sequenceDiagram
     ERRR->>ERR: NVSentinelOwnershipReleased=True
     Note over EXT: external system watches ERR, sees OwnershipReleased
     EXT->>N: perform remediation
-    EXT->>ERR: ExternalRemediationComplete=True/False
-    ERRR->>N: remove release taint
-    ERRR->>EF: propagate ExternalRemediationComplete
-    EFR->>PC: healthy HealthEvent
-    EFR->>EF: FaultCleared=True
-    PC->>FQ: healthy event → remove fault-quarantine taint, uncordon
+    alt remediation succeeded
+        EXT->>ERR: ExternalRemediationComplete=True
+        ERRR->>N: remove release taint
+        ERRR->>EF: propagate ExternalRemediationComplete=True
+        EFR->>PC: healthy HealthEvent
+        EFR->>EF: FaultCleared=True
+        PC->>FQ: healthy event → remove fault-quarantine taint, uncordon
+    else remediation failed
+        EXT->>ERR: ExternalRemediationComplete=False
+        ERRR->>N: remove release taint
+        ERRR->>EF: propagate ExternalRemediationComplete=False
+        EFR->>EF: FaultCleared=False (ExternalRemediationFailed)
+        Note over N: fault-quarantine taint stays;<br/>node remains unschedulable
+        Note over EXT,EF: retry path: external system creates a new EF<br/>(old EF/ERR are terminal; webhook permits)
+    end
 ```
 
 ### RBAC
