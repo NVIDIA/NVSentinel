@@ -313,9 +313,9 @@ During the brief window between the old release taint being removed and the new 
 
 | Condition | Initial | Terminal `True` | Terminal `False` | Set by |
 | --- | --- | --- | --- | --- |
-| `FaultReported` | `Unknown` (`Initializing`) | An ERR with `ownerReferences` pointing to this EF has been observed by the EF reconciler — i.e. the fault made it through the pipeline and produced a remediation request | The reconciler has given up emitting (only set on explicit operator action, e.g. EF deletion or invalid-health-event detection — see *Validation* section) | EF reconciler |
+| `FaultReported` | `Unknown` (`Initializing`) | An ERR with `ownerReferences` pointing to this EF has been observed by the EF reconciler — i.e. the fault made it through the pipeline and produced a remediation request | Set only by the Layer 3 reconciler safety net when the embedded HealthEvent fails validation that slipped past the webhook (reason `InvalidHealthEvent`; see *Validation* section). No retry-budget exhaustion path — the reconciler retries indefinitely while `Unknown`. | EF reconciler |
 | `ExternalRemediationComplete` | `Unknown` | Owning ERR resolved with `True` | Owning ERR resolved with `False` | ERR reconciler (propagation) |
-| `FaultCleared` | `Unknown` (`FaultActive`) | Healthy event submitted to platform-connector — node returning to NVSentinel ownership | Either: external system reported `ExternalRemediationComplete=False` (terminal external failure; node remains quarantined, see narrative below); OR healthy-event submission failed after retry budget exhausted | EF reconciler |
+| `FaultCleared` | `Unknown` (`FaultActive`) | Healthy event submitted to platform-connector — node returning to NVSentinel ownership | Either: external system reported `ExternalRemediationComplete=False` (terminal external failure; node remains quarantined, see narrative below); OR healthy-event submission persistently failed | EF reconciler |
 
 `FaultReported=True` is a stronger guarantee than "the gRPC call to the platform-connector succeeded" — it means an ERR exists and the rest of the protocol can proceed. While `FaultReported=Unknown`, the EF reconciler re-emits the underlying HealthEvent on each reconcile (idempotent — deterministic ERR naming + fault-remediation's equivalence-group skip mean repeated submissions produce at most one ERR). This is exactly what an operator wants to see when, say, a `RebootNode` CR is in-flight on the target node and the EF's event is being temporarily blocked by cross-kind supersedence: status reflects "still waiting" rather than misleading "reported successfully."
 
@@ -331,7 +331,7 @@ All conditions are append-or-update in place via the `SetCondition` helper, whic
 2. If `NVSentinelOwnershipReleased` is `Unknown`:
    - Apply the configured release taint to `spec.nodeName` (idempotent).
    - On success: set `NVSentinelOwnershipReleased=True` with `reason=ReleaseTaintApplied`.
-   - On permanent failure (retry budget exhausted): set `NVSentinelOwnershipReleased=False` with `reason=ReleaseTaintFailed`. The ERR is now in a terminal failed state; no further reconciliation work, but the object remains so the failure is visible to operators.
+   - On persistent failure (e.g. an unrecoverable API-server error such as a missing RBAC grant): set `NVSentinelOwnershipReleased=False` with `reason=ReleaseTaintFailed`. The ERR is now in a terminal failed state; no further reconciliation work, but the object remains so the failure is visible to operators. Transient errors continue to retry via the standard controller-runtime backoff.
 3. If `ExternalRemediationComplete` has resolved to `True` or `False` (either terminal):
    - Remove the release taint from `spec.nodeName` (idempotent; tolerate missing taint).
    - If this ERR has an `ownerReference` of kind `ExternalFault`, propagate the same value (`True` or `False`) to the EF's `ExternalRemediationComplete` condition.
@@ -399,7 +399,7 @@ The trade-off vs. duplicating the ERR name to a Node label is explicit: filterin
      - Set `FaultReported=True` with `reason=ERRObserved` and a message naming the ERR.
      - Continue to step 3.
    - **If no ERR is found** and `FaultReported` is still `Unknown`:
-     - Submit `spec.HealthEvent` to the platform-connector running on `spec.nodeName` via the existing gRPC client (`platform-connectors/pkg/client`). Idempotent — `fault-remediation` deterministically names the ERR from `(nodeName, healthEvent.id)`, and its equivalence-group skip logic ensures repeated submissions produce at most one ERR.
+     - Submit the EF's `spec` (the inlined `HealthEvent`) to the platform-connector running on `spec.nodeName` via the existing gRPC client (`platform-connectors/pkg/client`). Idempotent — `fault-remediation` deterministically names the ERR from `(nodeName, healthEvent.id)`, and its equivalence-group skip logic ensures repeated submissions produce at most one ERR.
      - Requeue with backoff (controller-runtime defaults). On the next reconcile, the ERR may or may not exist yet — if not, we re-emit.
 3. If `ExternalRemediationComplete=True` and `FaultCleared` is `Unknown`:
    - Submit a healthy companion event to the platform-connector — same `id` family, same `nodeName`, `isHealthy=true`, `recommendedAction=NONE`. This clears fault-quarantine and returns the node to schedulable.
@@ -428,7 +428,7 @@ ERR construction details:
 - `metadata.namespace` is the configured ERR namespace (default: `nvsentinel`).
 - `metadata.labels` include `nvsentinel.nvidia.com/node`, `…/component-class`, and `…/recommended-action` for observability inside the ERR API (these do NOT propagate to the Node — see "Discovery from the Node side" in the ERR reconciler section for the rationale).
 - `metadata.ownerReferences` is set to the originating EF if and only if the source health event carries a label `nvsentinel.nvidia.com/source-ef` (added by the EF reconciler when emitting); otherwise the ERR is standalone.
-- `spec.HealthEvent` is a full copy of the triaged event.
+- `spec` (the inlined `HealthEvent`) is a full copy of the triaged event.
 
 **Equivalence-group integration.** ERR creation goes through the same `latestFaultRemediationState`-annotation + `ShouldSkipCRCreation` machinery as existing maintenance CRs (`RebootNode`, `GPUReset`, etc.) — see `fault-remediation/pkg/reconciler/reconciler.go` `shouldCreateCRForGroup`. Two pieces are added:
 
@@ -672,7 +672,7 @@ External systems must NOT be granted write access to `nodes` through the externa
 ### Negative
 
 - Two new CRDs and two new reconcilers to operate and monitor.
-- Asynchronous handshake adds latency vs. direct RPC (typically seconds, but bounded by reconcile poll intervals).
+- Asynchronous handshake adds latency vs. direct RPC (typically seconds, but bounded by controller-runtime reconcile backoff).
 - External systems must be granted CRD access in the cluster — this is a new authorisation surface for cluster admins to reason about.
 
 ### Mitigations
