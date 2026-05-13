@@ -424,15 +424,17 @@ This gets the "single active ERR per node" invariant for free — it falls out o
 
 ### Validation
 
-[[REVIEW: I dont think theres any way for us to read the equivalence group config in fq's toml file. so we can't use that. the other two options are fine though]]Bad inputs at the EF API boundary cannot be allowed to result in stuck-state CRs that need operator cleanup. An EF whose embedded `HealthEvent` is informational (`isHealthy=true`), observability-only (`processingStrategy=STORE_ONLY`), or carries a `customRecommendedAction` that isn't mapped to an ERR-producing equivalence group in the loaded TOML config will *never* produce an ERR. Without validation, such an EF would sit in `FaultReported=Unknown` indefinitely, indistinguishable from the legitimate "blocked on superseding equivalence group" wait described in the EF reconciler section.
+Bad inputs at the EF API boundary cannot be allowed to result in stuck-state CRs that need operator cleanup. An EF whose embedded `HealthEvent` is informational (`isHealthy=true`) or observability-only (`processingStrategy=STORE_ONLY`) would never produce an ERR — and without validation would sit in `FaultReported=Unknown` indefinitely, indistinguishable from the legitimate "blocked on superseding equivalence group" wait described in the EF reconciler section.
 
 Validation is layered in three places, modelled directly on the existing `janitor/pkg/webhook/v1alpha1/janitor_webhook.go` for `RebootNode` / `TerminateNode` / `GPUReset`.
 
-| Layer | Static field shape | EF-specific tightening | Dynamic (TOML / cluster state) |
+| Layer | Static field shape | EF-specific tightening | Cluster state |
 | --- | --- | --- | --- |
 | **CRD schema** (auto-generated from proto) | ✅ field types, enum values declared in proto | ❌ proto can't express "isHealthy must be `false`" | ❌ |
-| **Validating webhook** | ✅ defence-in-depth | ✅ | ✅ |
+| **Validating webhook** | ✅ defence-in-depth | ✅ | ✅ (node existence, no-active-EF-for-node) |
 | **Reconciler** | safety net | safety net | safety net |
+
+Note: there is one class of bad input the layered validation cannot catch — `customRecommendedAction` values not registered in fault-remediation's TOML config. The webhook lives in a different process from fault-remediation and has no access to that config, so it cannot validate the action name's correctness at admission. EFs carrying such values flow through admission, get emitted as health events, and are silently skipped by fault-remediation's lookup ("Action not found in remediation configuration") — leaving the EF stuck at `FaultReported=Unknown`. Operators rely on the `ef_age_seconds` alert (and fault-remediation's own warning log) to detect these cases. Mitigation is procedural: register custom actions in fault-remediation's TOML before any external system starts emitting them. This is the same coupling that already exists for ADR-036 custom actions.
 
 #### Layer 1: CRD schema (proto-driven)
 
@@ -479,20 +481,12 @@ func (v *externalFaultValidator) ValidateCreate(ctx context.Context, obj *Extern
             "recommendedAction=CUSTOM")
     }
 
-    // (c) Dynamic: the action name maps to an ERR-producing equivalence group in
-    //     the loaded fault-remediation TOML.
-    if !v.RemediationActions.ProducesERR(he.GetCustomRecommendedAction()) {
-        return nil, fmt.Errorf("customRecommendedAction %q is not configured to produce "+
-            "an ExternalRemediationRequest in this cluster's fault-remediation config",
-            he.GetCustomRecommendedAction())
-    }
-
-    // (d) Target node exists. Mirrors janitor_webhook.go validateNodeForCreate.
+    // (c) Target node exists. Mirrors janitor_webhook.go validateNodeForCreate.
     if err := v.validateNode(ctx, he.GetNodeName()); err != nil {
         return nil, err
     }
 
-    // (e) No other non-terminal EF for the same node. Mirrors janitor's
+    // (d) No other non-terminal EF for the same node. Mirrors janitor's
     //     validateNoActiveReboot pattern — closes the second-EF-for-same-node case.
     if err := v.validateNoActiveEFForNode(ctx, he.GetNodeName()); err != nil {
         return nil, err
@@ -502,7 +496,7 @@ func (v *externalFaultValidator) ValidateCreate(ctx context.Context, obj *Extern
 }
 ```
 
-The webhook needs access to the loaded fault-remediation TOML to answer `ProducesERR(actionName)`. The simplest delivery is the existing config-loader being passed into the webhook constructor at startup (same shape janitor uses for its `Config` field). Hot-reload of the TOML invalidates the webhook's cached action map.
+The webhook deliberately does NOT validate that `customRecommendedAction` is a known action in fault-remediation's config — it doesn't have access to that config (different process, different ConfigMap), and reaching across to read it would couple the janitor process to fault-remediation's deployment in ways neither component currently assumes. The trade-off is documented above: bad action names produce a stuck `FaultReported=Unknown`, surfaced via metric.
 
 `failurePolicy=fail` means the API server rejects EF create/update when the webhook is unreachable. This is the same posture the existing janitor webhooks take.
 
@@ -510,7 +504,7 @@ There is **no** webhook for `ExternalRemediationRequest`. ERR is internally prod
 
 #### Layer 3: Reconciler safety net
 
-The EF reconciler re-validates on first reconcile before emitting the HealthEvent — same checks (b)–(c) above. This catches EFs that slipped past the webhook (upgrade scenarios where the webhook wasn't yet deployed; misconfigured `failurePolicy=Ignore`; future schema changes). On failure, the reconciler sets `FaultReported=False` with `reason=InvalidHealthEvent` and a message describing the validation error — terminal, visible to operators, no further reconciliation.
+The EF reconciler re-validates the HealthEvent shape (the same (b) checks above) on first reconcile before emitting. This catches EFs that slipped past the webhook (upgrade scenarios where the webhook wasn't yet deployed; misconfigured `failurePolicy=Ignore`; future schema changes). On failure, the reconciler sets `FaultReported=False` with `reason=InvalidHealthEvent` and a message describing the validation error — terminal, visible to operators, no further reconciliation.
 
 ### Sequence diagrams
 
@@ -623,7 +617,8 @@ External systems must NOT be granted write access to `nodes` through the externa
 | `err_age_seconds` | Histogram | `recommended_action` | Time from ERR creation to `ExternalRemediationComplete=True` |
 | `taint_apply_latency_seconds` | Histogram | — | Time from ERR creation to release taint applied |
 | `health_event_emit_failures_total` | Counter | `source` (`ef-reconciler`) | gRPC failures emitting to platform-connector |
-| `ef_webhook_rejections_total` | Counter | `reason` (one of: `disabled`, `bad_health_event`, `unknown_action`, `node_not_found`, `duplicate_ef`) | EF create/update rejections by the validating webhook |
+| `ef_webhook_rejections_total` | Counter | `reason` (one of: `disabled`, `bad_health_event`, `node_not_found`, `duplicate_ef`) | EF create/update rejections by the validating webhook |
+| `unknown_remediation_action_total` | Counter | `action`, `source` (`ef-reconciler`, `fault-remediation`) | EFs / health events carrying a `customRecommendedAction` not registered in fault-remediation's config — exposes the "bad action name, stuck at `FaultReported=Unknown`" case the webhook cannot catch |
 
 **Events** (Kubernetes events on the EF / ERR object):
 
