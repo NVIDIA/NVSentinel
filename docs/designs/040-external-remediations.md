@@ -419,8 +419,8 @@ When `fault-remediation` creates an ERR triggered by an EF-emitted health event,
 
 `fault-remediation` already uses `GetEffectiveActionName(he)` (per ADR-036) to resolve the action name for routing. To produce ERRs:
 
-- **`fault-remediation/pkg/common/equivalence_groups.go`** — extend the equivalence-group config schema so a group can declare `produces: ExternalRemediationRequest` in addition to (or instead of) a maintenance-CR template.
-- **`fault-remediation/pkg/remediation/remediation.go`** — `CreateMaintenanceResource` branches on the produces type; for `ExternalRemediationRequest`, build the ERR struct from the triaged HealthEvent and create it via the dynamic client.
+- **TOML config** — declare the external-remediation action's `MaintenanceResource` with `apiGroup: "nvsentinel.nvidia.com"` and `kind: "ExternalRemediationRequest"`. No schema extension is needed; this reuses the same `apiGroup` + `kind` knobs that already route the reboot action to `janitor.dgxc.nvidia.com` / `RebootNode`.
+- **`fault-remediation/pkg/remediation/remediation.go`** — `CreateMaintenanceResource` already builds the maintenance CR from `apiGroup` + `kind` via the dynamic client. The branch for `ExternalRemediationRequest` mostly falls out of the existing template-render path; only the ERR-specific fields (ownerRef wiring, labels) need explicit handling.
 
 ERR construction details:
 
@@ -725,7 +725,7 @@ A node is **owned by NVSentinel** if and only if it does *not* carry any taint w
 
 ### Migration
 
-No migration required — this is a pure addition. Existing flows that do not declare `produces: ExternalRemediationRequest` in their equivalence-group config continue to behave exactly as today.
+No migration required — this is a pure addition. Existing `MaintenanceResource` entries continue to route to whatever `apiGroup`+`kind` they already declare; only TOML entries explicitly pointing at `nvsentinel.nvidia.com / ExternalRemediationRequest` produce ERRs.
 
 ## References
 
