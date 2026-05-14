@@ -46,7 +46,7 @@ Of the ten tools from `gpu-mcp-server`, **nine ship as Working** against the sto
 | `pod_gpu_allocation` | Pure K8s API: `corev1.Pods(ns).List(ctx, ...)` filtered to pods with `nvidia.com/gpu` resource requests > 0; GPU UUIDs resolved from `NVIDIA_VISIBLE_DEVICES` env var when present. | Working | n/a |
 | `pod_failure` | Store: `FindHealthEventsByQuery(ctx, query.New().Build(...))` filtered by `entitiesImpacted` carrying the pod identity + K8s API `Pods().Get(...)`, `Events().List(...)`. | Working | n/a |
 | `analyze_xid` | Store: `FindHealthEventsByQuery(...)` filtered by `errorCode` containing the requested numeric XID code (e.g., `"13"`, `"74"`). XID emission confirmed at `health-monitors/syslog-health-monitor/pkg/xid/xid_handler.go` (assignment `ErrorCode: []string{xidResp.Result.DecodedXIDStr}`). | Working | n/a |
-| `get_nvlink_topology` | Topology lives in `data-models/pkg/model/gpu_metadata.go` `NVLink struct {LinkID, RemotePCIAddress, RemoteLinkID}`, loaded by `syslog-health-monitor` from a per-node JSON file at runtime (`os.ReadFile(r.path)` in `health-monitors/syslog-health-monitor/pkg/metadata/reader.go:69`). **Not persisted to the store.** A centralized read-only `mcp-server` cannot reach per-node files. | **Stub** | See § 6 — needs a monitor extension that persists per-node NVLink topology into the store (or a dedicated topology collection) before the tool can return real data. |
+| `get_nvlink_topology` | Topology lives in `data-models/pkg/model/gpu_metadata.go` `NVLink struct {LinkID, RemotePCIAddress, RemoteLinkID}`, loaded by `syslog-health-monitor` from a per-node JSON file at runtime (`os.ReadFile(r.path)` in `health-monitors/syslog-health-monitor/pkg/metadata/reader.go:69`). **Not persisted to the store.** A centralized read-only `mcp-server` cannot reach per-node files. | **Stub** | See § 6 — needs a monitor extension to persist topology into the store. No tracking GitHub issue filed (donor direction); stub envelope's `needed_monitor_extension` explains the gap inline. |
 | `explain_failure` | Store: `FindHealthEventsByNode(ctx, node)` time-windowed + ported `pkg/tools/incidents.go` `Match([]HealthEvent) []Incident` pattern matcher → narrative + severity. | Working | n/a |
 | `get_incident_report` | Store: `FindHealthEventsByQuery(...)` filtered by `agent==health-events-analyzer` for the incident id (carried in `HealthEvent.id` or `metadata` per analyzer convention) + related raw events for `RelatedEvents` enrichment. | Working | n/a |
 | `get_gpu_timeline` | Store: `FindHealthEventsByQuery(...)` with node filter + `generatedTimestamp` range (`google.protobuf.Timestamp`, nanosecond precision in proto3). Result sorted ascending by timestamp. | Working | n/a |
@@ -148,7 +148,9 @@ These were assumed in the spec but the audit confirms they do not exist in NVSen
 
 ---
 
-## 6. Companion-issue placeholders
+## 6. Companion issue draft (filing deferred)
+
+Per donor direction (2026-05-14), **no GitHub issue is filed against `NVIDIA/NVSentinel` as part of this PR**. The draft below remains in the audit as supporting material — if NVSentinel maintainers ask for a tracking issue during PR review, this content can be used directly. The stub tool (`mcp-server/pkg/tools/get_nvlink_topology.go`, Task 15) leaves `tracking_issue` empty and explains the gap inline in `needed_monitor_extension`, referencing this AUDIT.md section by relative file path.
 
 ### 6.1 Issue draft — Surface NVLink topology in the HealthEvents stream
 
@@ -175,7 +177,7 @@ These were assumed in the spec but the audit confirms they do not exist in NVSen
 >
 > **Caller in this donation PR:** `mcp-server/pkg/tools/get_nvlink_topology.go` ships as a stub returning the `NVSENTINEL_DATA_GAP` envelope (per design spec § 6.3) with this issue URL in `tracking_issue`. The stub will be swapped for the real implementation in a follow-up PR once one of the options above lands.
 
-**Resolution of the URL into the tool code:** Once the user approves the `gh issue create` batch (per the hard rules in the receiving session's CLAUDE.md), the issue URL is recorded in this AUDIT.md (separate commit) and substituted into `mcp-server/pkg/tools/get_nvlink_topology.go` `tracking_issue` constant.
+**Resolution:** No issue filed in this PR (donor direction). If maintainers request one during review, this body can be filed verbatim via `gh issue create --repo NVIDIA/NVSentinel --label "mcp,enhancement" --title "feat(monitors): persist NVLink topology into HealthEvents (or a dedicated metadata collection)" --body-file mcp-server/AUDIT.md` (after a quick excerpt of just § 6.1). The resulting URL would then be substituted into `mcp-server/pkg/tools/get_nvlink_topology.go`'s `tracking_issue` constant in a follow-up commit.
 
 ---
 
