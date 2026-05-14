@@ -165,6 +165,7 @@ func (s *Server) registerTools() error {
 	s.registerGetIncidentReportTool()
 	s.registerAnalyzeXIDTool()
 	s.registerGetNVLinkTopologyTool()
+	s.registerGetGPUTimelineTool()
 
 	return nil
 }
@@ -547,6 +548,53 @@ func (s *Server) registerGetNVLinkTopologyTool() {
 		fallback, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
 			return mcpgo.NewToolResultErrorFromErr("marshal get_nvlink_topology response", err), nil
+		}
+
+		return mcpgo.NewToolResultStructured(out, string(fallback)), nil
+	})
+}
+
+// registerGetGPUTimelineTool wires the get_gpu_timeline MCP tool. It
+// returns the chronologically-ordered list of health events for a node,
+// optionally narrowed to one GPU, within a time window.
+func (s *Server) registerGetGPUTimelineTool() {
+	handler := tools.NewGetGPUTimelineHandler(s.store)
+
+	tool := mcpgo.NewTool(
+		"get_gpu_timeline",
+		mcpgo.WithDescription(
+			"Return health events for a node in chronological order (ascending by store insertion "+
+				"time), optionally narrowed to one GPU UUID and a time window in minutes.",
+		),
+		mcpgo.WithString(
+			"node",
+			mcpgo.Required(),
+			mcpgo.Description("Kubernetes node name."),
+		),
+		mcpgo.WithString(
+			"gpu_uuid",
+			mcpgo.Description("Optional GPU UUID; when set, only events mentioning this GPU appear."),
+		),
+		mcpgo.WithNumber(
+			"since_minutes",
+			mcpgo.Description("Time window in minutes (default 60)."),
+		),
+	)
+
+	s.mcpServer.AddTool(tool, func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		var in tools.GetGPUTimelineInput
+		if err := req.BindArguments(&in); err != nil {
+			return mcpgo.NewToolResultErrorFromErr("invalid arguments", err), nil
+		}
+
+		out, err := handler.Handle(ctx, in)
+		if err != nil {
+			return mcpgo.NewToolResultErrorFromErr("get_gpu_timeline failed", err), nil
+		}
+
+		fallback, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			return mcpgo.NewToolResultErrorFromErr("marshal get_gpu_timeline response", err), nil
 		}
 
 		return mcpgo.NewToolResultStructured(out, string(fallback)), nil
