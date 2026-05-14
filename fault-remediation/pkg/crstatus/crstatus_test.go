@@ -36,7 +36,7 @@ func TestCheckCondition(t *testing.T) {
 	tests := []struct {
 		name     string
 		cr       *unstructured.Unstructured
-		expected bool
+		expected CRState
 	}{
 		{
 			name: "no status returns skip - in progress",
@@ -45,7 +45,7 @@ func TestCheckCondition(t *testing.T) {
 					"metadata": map[string]any{"name": "test-cr"},
 				},
 			},
-			expected: true,
+			expected: CRStateInProgress,
 		},
 		{
 			name: "condition true returns allow create - success",
@@ -61,7 +61,7 @@ func TestCheckCondition(t *testing.T) {
 					},
 				},
 			},
-			expected: false,
+			expected: CRStateSucceeded,
 		},
 		{
 			name: "condition false returns allow create - failed",
@@ -77,7 +77,7 @@ func TestCheckCondition(t *testing.T) {
 					},
 				},
 			},
-			expected: false,
+			expected: CRStateFailed,
 		},
 		{
 			name: "condition unknown returns skip - in progress",
@@ -93,7 +93,7 @@ func TestCheckCondition(t *testing.T) {
 					},
 				},
 			},
-			expected: true,
+			expected: CRStateInProgress,
 		},
 		{
 			name: "condition not found returns skip - in progress",
@@ -109,7 +109,7 @@ func TestCheckCondition(t *testing.T) {
 					},
 				},
 			},
-			expected: true,
+			expected: CRStateInProgress,
 		},
 	}
 

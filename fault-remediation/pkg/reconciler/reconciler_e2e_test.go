@@ -153,11 +153,11 @@ func (m *MockChangeStreamWatcher) GetCallCounts() (int, int, int, int) {
 
 // MockHealthEventStore provides a mock implementation of datastore.HealthEventStore for testing
 type MockHealthEventStore struct {
-	UpdateHealthEventStatusFn          func(ctx context.Context, id string, status datastore.HealthEventStatus) error
-	FindHealthEventsByQueryFn          func(ctx context.Context, builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error)
-	FindHealthEventsByQueryBatchedFn   func(ctx context.Context, builder datastore.QueryBuilder, batchSize int, fn func([]datastore.HealthEventWithStatus) error) error
-	updateCalled                       int
-	findHealthEventsByQueryCalls       int
+	UpdateHealthEventStatusFn        func(ctx context.Context, id string, status datastore.HealthEventStatus) error
+	FindHealthEventsByQueryFn        func(ctx context.Context, builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error)
+	FindHealthEventsByQueryBatchedFn func(ctx context.Context, builder datastore.QueryBuilder, batchSize int, fn func([]datastore.HealthEventWithStatus) error) error
+	updateCalled                     int
+	findHealthEventsByQueryCalls     int
 }
 
 // UpdateHealthEventStatus updates a health event status (mock implementation)
@@ -497,7 +497,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		updateRebootNodeStatus(ctx, t, firstCRName, "InProgress")
 
 		// Event 2: Should be skipped
-		shouldCreateCR, existingCR, err := r.checkExistingCRStatus(ctx, event1.HealthEventWithStatus.HealthEvent, groupConfig)
+		shouldCreateCR, existingCR, _, err := r.checkExistingCRStatus(ctx, event1.HealthEventWithStatus.HealthEvent, time.Now(), groupConfig)
 		assert.NoError(t, err)
 		assert.False(t, shouldCreateCR, "Second event should be skipped")
 		assert.Equal(t, firstCRName, existingCR)
@@ -558,7 +558,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		updateRebootNodeStatus(ctx, t, firstCRName, "Failed")
 
 		// Event 2: Should create new CR after cleanup
-		shouldCreateCR, _, err := r.checkExistingCRStatus(ctx, event1.HealthEventWithStatus.HealthEvent, groupConfig)
+		shouldCreateCR, _, _, err := r.checkExistingCRStatus(ctx, event1.HealthEventWithStatus.HealthEvent, time.Now(), groupConfig)
 		assert.NoError(t, err)
 		assert.True(t, shouldCreateCR, "Should allow retry after CR failed")
 
@@ -662,7 +662,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 			event2Health)
 		assert.NoError(t, err)
 
-		shouldCreateCR, existingCR, err := r.checkExistingCRStatus(ctx, event2Health, groupConfig2)
+		shouldCreateCR, existingCR, _, err := r.checkExistingCRStatus(ctx, event2Health, time.Now(), groupConfig2)
 		assert.NoError(t, err)
 		assert.False(t, shouldCreateCR, "RESTART_BM should be deduplicated with RESTART_VM (same group)")
 		assert.Equal(t, firstCRName, existingCR)
@@ -747,7 +747,7 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event2)
 	assert.NoError(t, err)
-	shouldCreate, existingCR, err := r.checkExistingCRStatus(ctx, event2, groupConfig)
+	shouldCreate, existingCR, _, err := r.checkExistingCRStatus(ctx, event2, time.Now(), groupConfig)
 	assert.NoError(t, err)
 	assert.False(t, shouldCreate, "RESTART_VM should be skipped (same group as RESTART_BM)")
 	assert.Equal(t, crName1, existingCR)
@@ -757,7 +757,7 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, crName1, state.EquivalenceGroups["restart"].MaintenanceCR)
 
-	// Event 3: CR succeeds - subsequent event should be created
+	// Event 3: CR succeeds - subsequent equivalent event should be marked covered, not retried
 	updateRebootNodeStatus(ctx, t, crName1, "Succeeded")
 
 	event3 := &protos.HealthEvent{
@@ -767,9 +767,11 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event3)
 	assert.NoError(t, err)
-	shouldCreate, _, err = r.checkExistingCRStatus(ctx, event3, groupConfig)
+	shouldCreate, _, remediatedByExistingCR, err := r.checkExistingCRStatus(ctx, event3, time.Now().Add(-time.Minute),
+		groupConfig)
 	assert.NoError(t, err)
-	assert.True(t, shouldCreate, "RESTART_BM should be skipped (CR succeeded)")
+	assert.False(t, shouldCreate, "RESTART_BM should be skipped (CR succeeded)")
+	assert.True(t, remediatedByExistingCR, "successful existing CR should cover equivalent event")
 
 	// Event 4: CR fails - annotation cleaned, retry allowed
 	updateRebootNodeStatus(ctx, t, crName1, "Failed")
@@ -781,7 +783,7 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event4)
 	assert.NoError(t, err)
-	shouldCreate, _, err = r.checkExistingCRStatus(ctx, event4, groupConfig)
+	shouldCreate, _, _, err = r.checkExistingCRStatus(ctx, event4, time.Now(), groupConfig)
 	assert.NoError(t, err)
 	assert.True(t, shouldCreate, "Should allow retry after failure")
 
@@ -899,7 +901,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	assert.NoError(t, err)
 	shouldSkip := r.shouldSkipEvent(ctx, event2, groupConfig)
 	assert.False(t, shouldSkip, "Shouldn't valid health event")
-	shouldCreate, existingCR, err := r.checkExistingCRStatus(ctx, event2.HealthEvent, groupConfig)
+	shouldCreate, existingCR, _, err := r.checkExistingCRStatus(ctx, event2.HealthEvent, time.Now(), groupConfig)
 	assert.NoError(t, err)
 	assert.False(t, shouldCreate, "COMPONENT_RESET should be skipped (same group as RESTART_BM)")
 	assert.Equal(t, crName1, existingCR)
@@ -910,7 +912,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	assert.Equal(t, crName1, state.EquivalenceGroups["restart"].MaintenanceCR)
 	assert.Equal(t, "RESTART_BM", state.EquivalenceGroups["restart"].ActionName)
 
-	// Event 3: COMPONENT_RESET in group reset with superseding group restart should be created after CR-1 succeeds
+	// Event 3: COMPONENT_RESET in group reset with superseding group restart should be covered after CR-1 succeeds
 	updateRebootNodeStatus(ctx, t, crName1, "Succeeded")
 
 	event3 := &protos.HealthEvent{
@@ -926,9 +928,11 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event3)
 	assert.NoError(t, err)
-	shouldCreate, _, err = r.checkExistingCRStatus(ctx, event3, groupConfig)
+	shouldCreate, _, remediatedByExistingCR, err := r.checkExistingCRStatus(ctx, event3, time.Now().Add(-time.Minute),
+		groupConfig)
 	assert.NoError(t, err)
-	assert.True(t, shouldCreate, "COMPONENT_RESET should be created (CR succeeded)")
+	assert.False(t, shouldCreate, "COMPONENT_RESET should be skipped (superseding CR succeeded)")
+	assert.True(t, remediatedByExistingCR, "successful superseding CR should cover reset event")
 
 	// Event 4: COMPONENT_RESET in group reset with superseding group restart should be created after CR-1 fails
 	updateRebootNodeStatus(ctx, t, crName1, "Failed")
@@ -946,7 +950,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event4)
 	assert.NoError(t, err)
-	shouldCreate, _, err = r.checkExistingCRStatus(ctx, event4, groupConfig)
+	shouldCreate, _, _, err = r.checkExistingCRStatus(ctx, event4, time.Now(), groupConfig)
 	assert.NoError(t, err)
 	assert.True(t, shouldCreate, "Should allow retry after failure")
 
@@ -999,7 +1003,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event6)
 	assert.NoError(t, err)
-	shouldCreate, existingCR, err = r.checkExistingCRStatus(ctx, event6, groupConfig)
+	shouldCreate, existingCR, _, err = r.checkExistingCRStatus(ctx, event6, time.Now(), groupConfig)
 	assert.NoError(t, err)
 	assert.False(t, shouldCreate, "COMPONENT_RESET should be skipped (same group as previous COMPONENT_RESET)")
 	assert.Equal(t, crName2, existingCR)
@@ -1029,7 +1033,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event7.HealthEvent)
 	assert.NoError(t, err)
-	shouldCreate, existingCR, err = r.checkExistingCRStatus(ctx, event7.HealthEvent, groupConfig)
+	shouldCreate, existingCR, _, err = r.checkExistingCRStatus(ctx, event7.HealthEvent, time.Now(), groupConfig)
 	assert.NoError(t, err)
 	assert.True(t, shouldCreate, "COMPONENT_RESET should be allowed (different group as previous COMPONENT_RESET)")
 
@@ -1069,7 +1073,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event8)
 	assert.NoError(t, err)
-	shouldCreate, existingCR, err = r.checkExistingCRStatus(ctx, event8, groupConfig)
+	shouldCreate, existingCR, _, err = r.checkExistingCRStatus(ctx, event8, time.Now(), groupConfig)
 	assert.NoError(t, err)
 	assert.True(t, shouldCreate, "COMPONENT_RESET should be allowed (same group as previous "+
 		"COMPONENT_RESET that completed)")
@@ -1339,9 +1343,9 @@ func createCustomActionQuarantineEvent(eventID, nodeName, customAction string) d
 				"nodequarantined": model.Quarantined,
 			},
 			"healthevent": map[string]interface{}{
-				"nodename":                  nodeName,
-				"recommendedaction":         int32(protos.RecommendedAction_CUSTOM),
-				"customrecommendedaction":   customAction,
+				"nodename":                nodeName,
+				"recommendedaction":       int32(protos.RecommendedAction_CUSTOM),
+				"customrecommendedaction": customAction,
 			},
 		},
 	}
