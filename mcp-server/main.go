@@ -31,6 +31,8 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
+	"github.com/nvidia/nvsentinel/mcp-server/pkg/mcp"
+	"github.com/nvidia/nvsentinel/mcp-server/pkg/store"
 )
 
 const serviceName = "mcp-server"
@@ -66,8 +68,9 @@ func main() {
 }
 
 func run() error {
-	httpPort := flag.String("port", "8080", "MCP HTTP/SSE listen port (wired in Task 4)")
+	mcpAddr := flag.String("mcp-addr", ":8080", "MCP streamable-HTTP listen address (e.g. :8080)")
 	metricsPort := flag.String("metrics-port", "9090", "Prometheus metrics and health probe listen port")
+	authToken := flag.String("auth-token", "", "Bearer token required for /mcp access; empty disables auth")
 
 	flag.Parse()
 
@@ -77,6 +80,22 @@ func run() error {
 	metricsServer, err := CreateMetricsServer(*metricsPort)
 	if err != nil {
 		return fmt.Errorf("create metrics server: %w", err)
+	}
+
+	// TODO(Task 6+): replace store.NewFakeReader() with a real
+	// store.DataStoreReader built from the store-client provider registry
+	// (see event-exporter/pkg/initializer for the pattern). Tool tasks 6-16
+	// also wire k8sClient via in-cluster config + kubernetes.NewForConfig.
+	mcpServer, err := mcp.New(mcp.Config{
+		Version:   version,
+		GitCommit: commit,
+		HTTPAddr:  *mcpAddr,
+		AuthToken: *authToken,
+		Store:     store.NewFakeReader(),
+		K8sClient: nil,
+	})
+	if err != nil {
+		return fmt.Errorf("create mcp server: %w", err)
 	}
 
 	g, gCtx := errgroup.WithContext(ctx)
@@ -92,13 +111,29 @@ func run() error {
 	})
 
 	g.Go(func() error {
-		slog.Info("MCP transport not yet wired (Task 4)", "reserved_port", *httpPort)
-		<-gCtx.Done()
+		slog.Info("MCP server starting", "addr", *mcpAddr, "auth", *authToken != "")
+
+		if err := mcpServer.Run(gCtx); err != nil {
+			if gCtx.Err() != nil {
+				slog.Info("MCP server stopped on context cancellation")
+				return nil
+			}
+
+			slog.Error("MCP server failed", "error", err)
+
+			return fmt.Errorf("mcp server: %w", err)
+		}
 
 		return nil
 	})
 
-	if waitErr := g.Wait(); waitErr != nil && gCtx.Err() == nil {
+	waitErr := g.Wait()
+
+	if shutdownErr := mcpServer.Shutdown(); shutdownErr != nil {
+		slog.Warn("MCP server shutdown returned error", "error", shutdownErr)
+	}
+
+	if waitErr != nil && gCtx.Err() == nil {
 		return fmt.Errorf("server group: %w", waitErr)
 	}
 
