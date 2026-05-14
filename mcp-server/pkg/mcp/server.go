@@ -164,6 +164,7 @@ func (s *Server) registerTools() error {
 	s.registerExplainFailureTool()
 	s.registerGetIncidentReportTool()
 	s.registerAnalyzeXIDTool()
+	s.registerGetNVLinkTopologyTool()
 
 	return nil
 }
@@ -505,6 +506,47 @@ func (s *Server) registerAnalyzeXIDTool() {
 		fallback, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
 			return mcpgo.NewToolResultErrorFromErr("marshal analyze_xid response", err), nil
+		}
+
+		return mcpgo.NewToolResultStructured(out, string(fallback)), nil
+	})
+}
+
+// registerGetNVLinkTopologyTool wires the get_nvlink_topology MCP tool as a
+// stub. Per AUDIT § 3, NVSentinel does not persist NVLink topology in the
+// store; the tool returns the NVSENTINEL_DATA_GAP envelope until a monitor
+// extension lands (AUDIT § 6.1).
+func (s *Server) registerGetNVLinkTopologyTool() {
+	handler := tools.NewGetNVLinkTopologyHandler()
+
+	tool := mcpgo.NewTool(
+		"get_nvlink_topology",
+		mcpgo.WithDescription(
+			"Return the NVLink topology for a node. STUB: NVSentinel does not yet persist "+
+				"per-node NVLink topology in its store. The tool returns a structured "+
+				"NVSENTINEL_DATA_GAP envelope so MCP clients can detect the gap.",
+		),
+		mcpgo.WithString(
+			"node",
+			mcpgo.Required(),
+			mcpgo.Description("Kubernetes node name."),
+		),
+	)
+
+	s.mcpServer.AddTool(tool, func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		var in tools.GetNVLinkTopologyInput
+		if err := req.BindArguments(&in); err != nil {
+			return mcpgo.NewToolResultErrorFromErr("invalid arguments", err), nil
+		}
+
+		out, err := handler.Handle(ctx, in)
+		if err != nil {
+			return mcpgo.NewToolResultErrorFromErr("get_nvlink_topology failed", err), nil
+		}
+
+		fallback, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			return mcpgo.NewToolResultErrorFromErr("marshal get_nvlink_topology response", err), nil
 		}
 
 		return mcpgo.NewToolResultStructured(out, string(fallback)), nil
