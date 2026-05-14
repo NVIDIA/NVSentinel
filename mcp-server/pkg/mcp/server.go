@@ -30,6 +30,7 @@ import (
 	mcpgoserver "github.com/mark3labs/mcp-go/server"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/nvidia/nvsentinel/mcp-server/pkg/prompts"
 	"github.com/nvidia/nvsentinel/mcp-server/pkg/store"
 )
 
@@ -101,6 +102,7 @@ func New(cfg Config) (*Server, error) {
 	mcpServer := mcpgoserver.NewMCPServer(
 		"nvsentinel-mcp-server",
 		version,
+		mcpgoserver.WithPromptCapabilities(true),
 	)
 
 	s := &Server{
@@ -116,6 +118,8 @@ func New(cfg Config) (*Server, error) {
 	if err := s.registerTools(); err != nil {
 		return nil, fmt.Errorf("mcp: register tools: %w", err)
 	}
+
+	s.registerPrompts()
 
 	return s, nil
 }
@@ -154,4 +158,13 @@ func (s *Server) registerTools() error {
 	// plan; each adds an s.mcpServer.AddTool(...) call with a handler that
 	// reads from s.store and/or s.k8sClient.
 	return nil
+}
+
+// registerPrompts attaches every prompt in the donated prompts.Library to the
+// mcp-go server. Prompts are static templates, so the registration is a
+// straight iteration with no per-call setup.
+func (s *Server) registerPrompts() {
+	for _, promptDef := range prompts.Library {
+		s.mcpServer.AddPrompt(promptDef.ToMCPPrompt(), promptDef.BuildHandler())
+	}
 }
