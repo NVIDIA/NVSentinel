@@ -159,6 +159,7 @@ func (s *Server) registerTools() error {
 	s.registerGPUInventoryTool()
 	s.registerGPUHealthTool()
 	s.registerDescribeGPUNodeTool()
+	s.registerPodGPUAllocationTool()
 
 	return nil
 }
@@ -278,6 +279,48 @@ func (s *Server) registerDescribeGPUNodeTool() {
 		fallback, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
 			return mcpgo.NewToolResultErrorFromErr("marshal describe_gpu_node response", err), nil
+		}
+
+		return mcpgo.NewToolResultStructured(out, string(fallback)), nil
+	})
+}
+
+// registerPodGPUAllocationTool wires the pod_gpu_allocation MCP tool. It
+// lists pods requesting GPUs across an optional namespace/node scope and
+// resolves their assigned UUIDs from NVIDIA_VISIBLE_DEVICES.
+func (s *Server) registerPodGPUAllocationTool() {
+	handler := tools.NewPodGPUAllocationHandler(s.k8sClient)
+
+	tool := mcpgo.NewTool(
+		"pod_gpu_allocation",
+		mcpgo.WithDescription(
+			"List pods requesting GPUs across an optional namespace and/or node scope, with "+
+				"the per-pod GPU request count and (when available) the resolved GPU UUIDs.",
+		),
+		mcpgo.WithString(
+			"namespace",
+			mcpgo.Description("Optional namespace; empty lists across all namespaces."),
+		),
+		mcpgo.WithString(
+			"node",
+			mcpgo.Description("Optional node name; empty lists across all nodes."),
+		),
+	)
+
+	s.mcpServer.AddTool(tool, func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		var in tools.PodGPUAllocationInput
+		if err := req.BindArguments(&in); err != nil {
+			return mcpgo.NewToolResultErrorFromErr("invalid arguments", err), nil
+		}
+
+		out, err := handler.Handle(ctx, in)
+		if err != nil {
+			return mcpgo.NewToolResultErrorFromErr("pod_gpu_allocation failed", err), nil
+		}
+
+		fallback, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			return mcpgo.NewToolResultErrorFromErr("marshal pod_gpu_allocation response", err), nil
 		}
 
 		return mcpgo.NewToolResultStructured(out, string(fallback)), nil
