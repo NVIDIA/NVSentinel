@@ -161,6 +161,7 @@ func (s *Server) registerTools() error {
 	s.registerDescribeGPUNodeTool()
 	s.registerPodGPUAllocationTool()
 	s.registerPodFailureTool()
+	s.registerExplainFailureTool()
 
 	return nil
 }
@@ -367,6 +368,55 @@ func (s *Server) registerPodFailureTool() {
 		fallback, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
 			return mcpgo.NewToolResultErrorFromErr("marshal pod_failure response", err), nil
+		}
+
+		return mcpgo.NewToolResultStructured(out, string(fallback)), nil
+	})
+}
+
+// registerExplainFailureTool wires the explain_failure MCP tool. It runs
+// the donated pattern matcher over recent events for a node (optionally
+// narrowed to one GPU) and returns a short narrative plus the full list of
+// scored pattern matches.
+func (s *Server) registerExplainFailureTool() {
+	handler := tools.NewExplainFailureHandler(s.store)
+
+	tool := mcpgo.NewTool(
+		"explain_failure",
+		mcpgo.WithDescription(
+			"Diagnose recent failures on a GPU node by running the donated pattern matcher "+
+				"over store events in the last N minutes. Returns a human narrative plus the "+
+				"full sorted list of matched patterns with confidence and recommendations.",
+		),
+		mcpgo.WithString(
+			"node",
+			mcpgo.Required(),
+			mcpgo.Description("Kubernetes node name to diagnose."),
+		),
+		mcpgo.WithString(
+			"gpu_uuid",
+			mcpgo.Description("Optional GPU UUID; when set, only events mentioning this GPU are considered."),
+		),
+		mcpgo.WithNumber(
+			"since_minutes",
+			mcpgo.Description("Time window in minutes (default 60)."),
+		),
+	)
+
+	s.mcpServer.AddTool(tool, func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		var in tools.ExplainFailureInput
+		if err := req.BindArguments(&in); err != nil {
+			return mcpgo.NewToolResultErrorFromErr("invalid arguments", err), nil
+		}
+
+		out, err := handler.Handle(ctx, in)
+		if err != nil {
+			return mcpgo.NewToolResultErrorFromErr("explain_failure failed", err), nil
+		}
+
+		fallback, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			return mcpgo.NewToolResultErrorFromErr("marshal explain_failure response", err), nil
 		}
 
 		return mcpgo.NewToolResultStructured(out, string(fallback)), nil
