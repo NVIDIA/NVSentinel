@@ -66,9 +66,9 @@ jobs:
           for version_file in fern/versions/v*.yml; do
             [ -f "$version_file" ] || continue
             version=$(basename "$version_file" .yml)
-            if git rev-parse "$version" >/dev/null 2>&1; then
+            if git rev-parse -q --verify "refs/tags/$version" >/dev/null 2>&1; then
               mkdir -p "fern/versions/${version}-content"
-              git archive "$version" -- docs/ | tar -x --strip-components=1 -C "fern/versions/${version}-content"
+              git archive "refs/tags/$version" -- docs/ | tar -x --strip-components=1 -C "fern/versions/${version}-content"
               echo "Extracted docs from $version"
             else
               echo "::warning::Tag $version not found — skipping content checkout"
