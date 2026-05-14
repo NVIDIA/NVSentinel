@@ -160,6 +160,7 @@ func (s *Server) registerTools() error {
 	s.registerGPUHealthTool()
 	s.registerDescribeGPUNodeTool()
 	s.registerPodGPUAllocationTool()
+	s.registerPodFailureTool()
 
 	return nil
 }
@@ -321,6 +322,51 @@ func (s *Server) registerPodGPUAllocationTool() {
 		fallback, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
 			return mcpgo.NewToolResultErrorFromErr("marshal pod_gpu_allocation response", err), nil
+		}
+
+		return mcpgo.NewToolResultStructured(out, string(fallback)), nil
+	})
+}
+
+// registerPodFailureTool wires the pod_failure MCP tool. It pairs a pod's
+// K8s Pod and Event objects with NVSentinel store health events that name
+// the pod in entitiesImpacted.
+func (s *Server) registerPodFailureTool() {
+	handler := tools.NewPodFailureHandler(s.store, s.k8sClient)
+
+	tool := mcpgo.NewTool(
+		"pod_failure",
+		mcpgo.WithDescription(
+			"Diagnose a failing pod: phase + restart count from the Kubernetes API, "+
+				"K8s Events scoped to the pod, and NVSentinel store health events that name "+
+				"the pod in entitiesImpacted.",
+		),
+		mcpgo.WithString(
+			"pod",
+			mcpgo.Required(),
+			mcpgo.Description("Pod name to diagnose."),
+		),
+		mcpgo.WithString(
+			"namespace",
+			mcpgo.Required(),
+			mcpgo.Description("Pod namespace."),
+		),
+	)
+
+	s.mcpServer.AddTool(tool, func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		var in tools.PodFailureInput
+		if err := req.BindArguments(&in); err != nil {
+			return mcpgo.NewToolResultErrorFromErr("invalid arguments", err), nil
+		}
+
+		out, err := handler.Handle(ctx, in)
+		if err != nil {
+			return mcpgo.NewToolResultErrorFromErr("pod_failure failed", err), nil
+		}
+
+		fallback, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			return mcpgo.NewToolResultErrorFromErr("marshal pod_failure response", err), nil
 		}
 
 		return mcpgo.NewToolResultStructured(out, string(fallback)), nil
