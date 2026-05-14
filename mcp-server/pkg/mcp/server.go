@@ -24,14 +24,17 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	mcpgoserver "github.com/mark3labs/mcp-go/server"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/nvidia/nvsentinel/mcp-server/pkg/prompts"
 	"github.com/nvidia/nvsentinel/mcp-server/pkg/store"
+	"github.com/nvidia/nvsentinel/mcp-server/pkg/tools"
 )
 
 // Config carries everything Server needs from the caller. The zero value is
@@ -150,14 +153,51 @@ func (s *Server) Shutdown() error {
 }
 
 // registerTools is the single place tool definitions are attached to the
-// mcp-go server. Tool tasks 6-16 of the merge plan each add an
-// s.mcpServer.AddTool(...) call here; until then this is intentionally a
-// no-op so the transport can be exercised end-to-end without tools.
+// mcp-go server. Each tool task in the merge plan adds one registration
+// helper below and a call from registerTools.
 func (s *Server) registerTools() error {
-	// Tool registrations live here. See tasks 6-16 of the donation merge
-	// plan; each adds an s.mcpServer.AddTool(...) call with a handler that
-	// reads from s.store and/or s.k8sClient.
+	s.registerGPUInventoryTool()
+
 	return nil
+}
+
+// registerGPUInventoryTool wires the gpu_inventory MCP tool. It returns the
+// per-node list of GPUs derived from health events (entitiesImpacted of type
+// GPU), collapsed to the latest event per UUID.
+func (s *Server) registerGPUInventoryTool() {
+	handler := tools.NewGPUInventoryHandler(s.store)
+
+	tool := mcpgo.NewTool(
+		"gpu_inventory",
+		mcpgo.WithDescription(
+			"List GPUs observed in NVSentinel's health-event stream for a given Kubernetes node, "+
+				"with the latest event per GPU (status, message, error codes).",
+		),
+		mcpgo.WithString(
+			"node",
+			mcpgo.Required(),
+			mcpgo.Description("Kubernetes node name to query."),
+		),
+	)
+
+	s.mcpServer.AddTool(tool, func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		var in tools.GPUInventoryInput
+		if err := req.BindArguments(&in); err != nil {
+			return mcpgo.NewToolResultErrorFromErr("invalid arguments", err), nil
+		}
+
+		out, err := handler.Handle(ctx, in)
+		if err != nil {
+			return mcpgo.NewToolResultErrorFromErr("gpu_inventory failed", err), nil
+		}
+
+		fallback, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			return mcpgo.NewToolResultErrorFromErr("marshal gpu_inventory response", err), nil
+		}
+
+		return mcpgo.NewToolResultStructured(out, string(fallback)), nil
+	})
 }
 
 // registerPrompts attaches every prompt in the donated prompts.Library to the
