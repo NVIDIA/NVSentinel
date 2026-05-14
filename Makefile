@@ -53,6 +53,7 @@ GO_MODULES := \
 	janitor \
 	metadata-collector \
 	event-exporter \
+	mcp-server \
 	store-client \
 	commons
 
@@ -474,6 +475,11 @@ lint-test-metadata-collector:
 lint-test-event-exporter:
 	@echo "Linting and testing event-exporter..."
 	$(MAKE) -C event-exporter lint-test
+
+.PHONY: lint-test-mcp-server
+lint-test-mcp-server:
+	@echo "Linting and testing mcp-server..."
+	$(MAKE) -C mcp-server lint-test
 
 # Python module lint-test targets (non-health-monitors)
 # Currently no non-health-monitor Python modules

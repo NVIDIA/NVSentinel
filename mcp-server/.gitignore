@@ -1,0 +1,9 @@
+# Compiled binaries
+/mcp-server
+/bin/
+
+# Test output
+coverage.txt
+coverage.xml
+report.xml
+code-quality-report.json
