@@ -232,13 +232,15 @@ func findNodeCondition(node *corev1.Node,
 // aggregateEventMessages builds the consolidated message list for a node condition.
 // Events are pre-filtered by buildConditionEventsMap to IsHealthy || IsFatal,
 // so !IsHealthy here implies IsFatal && !IsHealthy (a fatal fault event).
+// Healthy events with entities forward ErrorCode to the scoped clearer; an
+// empty ErrorCode preserves the legacy "clear everything on the entity" path.
 func (r *K8sConnector) aggregateEventMessages(messages []string, events []*protos.HealthEvent) []string {
 	for _, event := range events {
 		switch {
 		case !event.IsHealthy:
 			messages = r.addMessageIfNotExist(messages, event)
 		case len(event.EntitiesImpacted) > 0:
-			messages = r.removeImpactedEntitiesMessages(messages, event.EntitiesImpacted)
+			messages = r.removeImpactedEntitiesMessagesScoped(messages, event.EntitiesImpacted, event.ErrorCode)
 		default: // healthy event with no impacted entities — full recovery, clear all messages
 			messages = []string{}
 		}
@@ -349,8 +351,15 @@ func deduplicateMessagesByIdentity(messages []string) []string {
 	return result
 }
 
-func (r *K8sConnector) removeImpactedEntitiesMessages(messages []string,
-	entities []*protos.Entity) []string {
+// removeImpactedEntitiesMessagesScoped removes messages that mention any
+// supplied entity. When errorCodes is non-empty, the message must also carry
+// a matching ErrorCode token; this prevents an "X cancels Y" rule from
+// clearing an unrelated fault Z on the same entity.
+func (r *K8sConnector) removeImpactedEntitiesMessagesScoped(
+	messages []string,
+	entities []*protos.Entity,
+	errorCodes []string,
+) []string {
 	var newMessages []string
 
 	for _, msg := range messages {
@@ -365,12 +374,33 @@ func (r *K8sConnector) removeImpactedEntitiesMessages(messages []string,
 			}
 		}
 
+		if entityFound && !messageMatchesAnyErrorCode(msg, errorCodes) {
+			entityFound = false
+		}
+
 		if !entityFound {
 			newMessages = append(newMessages, msg)
 		}
 	}
 
 	return newMessages
+}
+
+// messageMatchesAnyErrorCode reports whether msg carries one of errorCodes.
+// An empty errorCodes slice matches every message.
+func messageMatchesAnyErrorCode(msg string, errorCodes []string) bool {
+	if len(errorCodes) == 0 {
+		return true
+	}
+
+	for _, code := range errorCodes {
+		token := fmt.Sprintf("ErrorCode:%s ", code)
+		if strings.Contains(msg, token) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, nodeName string) error {

@@ -524,8 +524,86 @@ func TestRemoveImpactedEntitiesMessages(t *testing.T) {
 	}
 
 	for i, test := range tests {
-		result := k8sConnector.removeImpactedEntitiesMessages(test.messages, convertToEntityPointers(test.EntitiesImpacted))
+		result := k8sConnector.removeImpactedEntitiesMessagesScoped(
+			test.messages, convertToEntityPointers(test.EntitiesImpacted), nil,
+		)
 		assert.Equal(t, test.expected, result, "Test %d", i)
+	}
+}
+
+// TestRemoveImpactedEntitiesMessagesScoped covers the cancellation path where
+// a healthy event carries an ErrorCode that should narrow the clearer to a
+// specific fault, leaving unrelated faults on the same entity intact.
+func TestRemoveImpactedEntitiesMessagesScoped(t *testing.T) {
+	tests := []struct {
+		name       string
+		messages   []string
+		entities   []protos.Entity
+		errorCodes []string
+		expected   []string
+	}{
+		{
+			name: "empty errorCodes preserves legacy behaviour: clear all matching entities",
+			messages: []string{
+				"ErrorCode:163 GPU:0 boom Recommended Action=RESTART_VM;",
+				"ErrorCode:98 GPU:0 unrelated Recommended Action=RESTART_VM;",
+				"ErrorCode:163 GPU:1 boom Recommended Action=RESTART_VM;",
+			},
+			entities:   []protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+			errorCodes: nil,
+			expected: []string{
+				"ErrorCode:163 GPU:1 boom Recommended Action=RESTART_VM;",
+			},
+		},
+		{
+			name: "scoped clear: only matching ErrorCode on matching entity is removed",
+			messages: []string{
+				"ErrorCode:163 GPU:0 boom Recommended Action=RESTART_VM;",
+				"ErrorCode:98 GPU:0 unrelated Recommended Action=RESTART_VM;",
+				"ErrorCode:163 GPU:1 boom Recommended Action=RESTART_VM;",
+			},
+			entities:   []protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+			errorCodes: []string{"163"},
+			expected: []string{
+				"ErrorCode:98 GPU:0 unrelated Recommended Action=RESTART_VM;",
+				"ErrorCode:163 GPU:1 boom Recommended Action=RESTART_VM;",
+			},
+		},
+		{
+			name: "scoped clear: non-matching ErrorCode keeps every message",
+			messages: []string{
+				"ErrorCode:163 GPU:0 boom Recommended Action=RESTART_VM;",
+				"ErrorCode:98 GPU:0 unrelated Recommended Action=RESTART_VM;",
+			},
+			entities:   []protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+			errorCodes: []string{"999"},
+			expected: []string{
+				"ErrorCode:163 GPU:0 boom Recommended Action=RESTART_VM;",
+				"ErrorCode:98 GPU:0 unrelated Recommended Action=RESTART_VM;",
+			},
+		},
+		{
+			name: "scoped clear: multiple errorCodes all considered",
+			messages: []string{
+				"ErrorCode:163 GPU:0 boom Recommended Action=RESTART_VM;",
+				"ErrorCode:43 GPU:0 boom Recommended Action=RESTART_VM;",
+				"ErrorCode:98 GPU:0 unrelated Recommended Action=RESTART_VM;",
+			},
+			entities:   []protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+			errorCodes: []string{"163", "43"},
+			expected: []string{
+				"ErrorCode:98 GPU:0 unrelated Recommended Action=RESTART_VM;",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := k8sConnector.removeImpactedEntitiesMessagesScoped(
+				tc.messages, convertToEntityPointers(tc.entities), tc.errorCodes,
+			)
+			assert.Equal(t, tc.expected, result)
+		})
 	}
 }
 

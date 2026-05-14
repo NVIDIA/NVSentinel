@@ -24,6 +24,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/cancellation"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/common"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/metadata"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid/metrics"
@@ -34,6 +35,10 @@ const (
 	healthyHealthEventMessage = "No Health Failures"
 	gpuResetFailureErrorCode  = "GPU_RESET_FAILURE"
 	gpuResetFailureMessage    = "GPU reset failed, proceeding with a node reboot"
+
+	// cancelSourceErrorCodeMetadataKey records the error code that triggered
+	// a synthetic cancellation event, for correlation downstream.
+	cancelSourceErrorCodeMetadataKey = "nvsentinel.nvidia.com/cancel-source-error-code"
 )
 
 func NewXIDHandler(nodeName, defaultAgentName,
@@ -65,6 +70,12 @@ func NewXIDHandler(nodeName, defaultAgentName,
 		parser:                xidParser,
 		metadataReader:        metadataReader,
 	}, nil
+}
+
+// SetCancellationResolver attaches a Resolver to the handler. A nil or empty
+// resolver disables synthetic event emission. Call once at startup.
+func (xidHandler *XIDHandler) SetCancellationResolver(resolver cancellation.Resolver) {
+	xidHandler.cancellations = resolver
 }
 
 func (xidHandler *XIDHandler) ProcessLine(message string) (*pb.HealthEvents, error) {
@@ -255,9 +266,74 @@ func (xidHandler *XIDHandler) createHealthEventFromResponse(
 		ProcessingStrategy: xidHandler.processingStrategy,
 	}
 
+	events := []*pb.HealthEvent{event}
+	events = append(events, xidHandler.buildCancellationEvents(xidResp.Result.DecodedXIDStr, entities, event)...)
+
 	return &pb.HealthEvents{
 		Version: 1,
-		Events:  []*pb.HealthEvent{event},
+		Events:  events,
+	}
+}
+
+// buildCancellationEvents returns synthetic healthy events for every target
+// the configured rule maps sourceErrorCode to, or nil when no rule matches.
+func (xidHandler *XIDHandler) buildCancellationEvents(
+	sourceErrorCode string,
+	entities []*pb.Entity,
+	source *pb.HealthEvent,
+) []*pb.HealthEvent {
+	targets := xidHandler.cancellations[sourceErrorCode]
+	if len(targets) == 0 {
+		return nil
+	}
+
+	synthetic := make([]*pb.HealthEvent, 0, len(targets))
+
+	for _, target := range targets {
+		synthetic = append(synthetic, xidHandler.buildCancellationEvent(target, entities, source))
+
+		metrics.CancellationsEmittedMetric.WithLabelValues(
+			xidHandler.checkName, sourceErrorCode, target,
+		).Inc()
+	}
+
+	return synthetic
+}
+
+// buildCancellationEvent constructs one synthetic healthy event scoped to
+// targetErrorCode on the same entities as source.
+func (xidHandler *XIDHandler) buildCancellationEvent(
+	targetErrorCode string,
+	entities []*pb.Entity,
+	source *pb.HealthEvent,
+) *pb.HealthEvent {
+	clonedEntities := make([]*pb.Entity, len(entities))
+	for i, e := range entities {
+		clonedEntities[i] = &pb.Entity{EntityType: e.EntityType, EntityValue: e.EntityValue}
+	}
+
+	srcCode := ""
+	if len(source.ErrorCode) > 0 {
+		srcCode = source.ErrorCode[0]
+	}
+
+	return &pb.HealthEvent{
+		Version:            source.Version,
+		Agent:              source.Agent,
+		CheckName:          source.CheckName,
+		ComponentClass:     source.ComponentClass,
+		GeneratedTimestamp: timestamppb.New(time.Now()),
+		EntitiesImpacted:   clonedEntities,
+		Message:            fmt.Sprintf("Cancelled by %s error code %s", source.CheckName, srcCode),
+		IsFatal:            false,
+		IsHealthy:          true,
+		NodeName:           source.NodeName,
+		RecommendedAction:  pb.RecommendedAction_NONE,
+		ErrorCode:          []string{targetErrorCode},
+		Metadata: map[string]string{
+			cancelSourceErrorCodeMetadataKey: srcCode,
+		},
+		ProcessingStrategy: source.ProcessingStrategy,
 	}
 }
 

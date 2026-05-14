@@ -37,6 +37,12 @@ const (
 	NICDriverErrorCheck = "SysLogsNICDriverError"
 )
 
+// CancellationSupportedChecks lists checks whose handler attaches a Resolver.
+// Append here when wiring SetCancellationResolver into a new handler.
+var CancellationSupportedChecks = []string{
+	XIDErrorCheck,
+}
+
 // syslogMonitorState represents the persistent state of the syslog monitor
 type syslogMonitorState struct {
 	Version          int               `json:"version"`

@@ -29,6 +29,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/cancellation"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/gpufallen"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/nicdriver"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/sxid"
@@ -36,7 +37,7 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid"
 )
 
-// NewSyslogMonitor creates a new SyslogMonitor instance.
+// NewSyslogMonitor creates a new SyslogMonitor instance. cancellationsCfg may be nil.
 //
 // platformConnectorTarget is the gRPC target used to dial pcClient
 // (e.g. "unix:///var/run/nvsentinel.sock"). Pass it through here so the
@@ -57,6 +58,7 @@ func NewSyslogMonitor(
 	processingStrategy pb.ProcessingStrategy,
 	nicDriverConfigPath string,
 	sysfsRoot string,
+	cancellationsCfg *cancellation.Config,
 	platformConnectorTarget string,
 ) (*SyslogMonitor, error) {
 	return NewSyslogMonitorWithFactory(nodeName, checks, pcClient, defaultAgentName,
@@ -64,6 +66,7 @@ func NewSyslogMonitor(
 		xidAnalyserEndpoint, metadataPath,
 		processingStrategy,
 		nicDriverConfigPath, sysfsRoot,
+		cancellationsCfg,
 		platformConnectorTarget,
 	)
 }
@@ -85,6 +88,7 @@ func NewSyslogMonitorWithFactory(
 	processingStrategy pb.ProcessingStrategy,
 	nicDriverConfigPath string,
 	sysfsRoot string,
+	cancellationsCfg *cancellation.Config,
 	platformConnectorTarget string,
 ) (*SyslogMonitor, error) {
 	// Load state from file
@@ -120,7 +124,7 @@ func NewSyslogMonitorWithFactory(
 
 	if err := initHandlers(sm, checks, nodeName, defaultAgentName, defaultComponentClass,
 		xidAnalyserEndpoint, metadataPath, processingStrategy,
-		nicDriverConfigPath, sysfsRoot); err != nil {
+		nicDriverConfigPath, sysfsRoot, cancellationsCfg); err != nil {
 		return nil, err
 	}
 
@@ -146,11 +150,12 @@ func initHandlers(
 	processingStrategy pb.ProcessingStrategy,
 	nicDriverConfigPath string,
 	sysfsRoot string,
+	cancellationsCfg *cancellation.Config,
 ) error {
 	for _, check := range checks {
 		handler, err := initHandlerForCheck(check, nodeName, defaultAgentName, defaultComponentClass,
 			xidAnalyserEndpoint, metadataPath, processingStrategy,
-			nicDriverConfigPath, sysfsRoot)
+			nicDriverConfigPath, sysfsRoot, cancellationsCfg)
 		if err != nil {
 			return err
 		}
@@ -177,6 +182,7 @@ func initHandlerForCheck(
 	processingStrategy pb.ProcessingStrategy,
 	nicDriverConfigPath string,
 	sysfsRoot string,
+	cancellationsCfg *cancellation.Config,
 ) (types.Handler, error) {
 	switch check.Name {
 	case XIDErrorCheck:
@@ -186,6 +192,8 @@ func initHandlerForCheck(
 			slog.Error("Error initializing XID handler", "error", err.Error())
 			return nil, fmt.Errorf("failed to initialize XID handler: %w", err)
 		}
+
+		h.SetCancellationResolver(cancellation.NewResolver(cancellationsCfg.FindCheck(check.Name)))
 
 		return h, nil
 	case SXIDErrorCheck:

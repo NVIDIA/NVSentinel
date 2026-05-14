@@ -70,7 +70,7 @@ func TestHealthEventsAnnotationMap_AddOrUpdateEvent(t *testing.T) {
 			expectedCount: 3, // Each entity tracked separately
 		},
 		{
-			name: "duplicate event should not be added",
+			name: "duplicate event with same entity and error code should not be added",
 			events: []*protos.HealthEvent{
 				{
 					Agent:          "gpu-health-monitor",
@@ -91,14 +91,49 @@ func TestHealthEventsAnnotationMap_AddOrUpdateEvent(t *testing.T) {
 					NodeName:       "node1",
 					IsFatal:        true,
 					IsHealthy:      false,
-					ErrorCode:      []string{"63"}, // Different error code, but same key
+					ErrorCode:      []string{"62"}, // Same entity AND same error code
 					EntitiesImpacted: []*protos.Entity{
-						{EntityType: "GPU", EntityValue: "1"}, // Same entity
+						{EntityType: "GPU", EntityValue: "1"},
 					},
 				},
 			},
 			expectedAdded: []bool{true, false},
 			expectedCount: 1,
+		},
+		{
+			// ErrorCode is part of the identity so distinct error codes on the
+			// same entity are tracked independently. This lets a later
+			// cancellation event scoped to one error code clear that fault
+			// without disturbing the other.
+			name: "different error codes on same entity should be tracked separately",
+			events: []*protos.HealthEvent{
+				{
+					Agent:          "gpu-health-monitor",
+					ComponentClass: "GPU",
+					CheckName:      "GpuXidError",
+					NodeName:       "node1",
+					IsFatal:        true,
+					IsHealthy:      false,
+					ErrorCode:      []string{"62"},
+					EntitiesImpacted: []*protos.Entity{
+						{EntityType: "GPU", EntityValue: "1"},
+					},
+				},
+				{
+					Agent:          "gpu-health-monitor",
+					ComponentClass: "GPU",
+					CheckName:      "GpuXidError",
+					NodeName:       "node1",
+					IsFatal:        true,
+					IsHealthy:      false,
+					ErrorCode:      []string{"63"},
+					EntitiesImpacted: []*protos.Entity{
+						{EntityType: "GPU", EntityValue: "1"},
+					},
+				},
+			},
+			expectedAdded: []bool{true, true},
+			expectedCount: 2,
 		},
 		{
 			name: "different entities should be tracked separately",
@@ -696,5 +731,174 @@ func TestHealthEventsAnnotationMap_MarshalJSONDeduplication(t *testing.T) {
 		if len(eventsArray[0].EntitiesImpacted) != 2 {
 			t.Errorf("Expected 2 entities in event, got %d", len(eventsArray[0].EntitiesImpacted))
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ErrorCode-aware matching tests
+// ---------------------------------------------------------------------------
+
+func unhealthyXIDEventOnGPU(checkName string, errorCode string, gpu string) *protos.HealthEvent {
+	return &protos.HealthEvent{
+		Version:        1,
+		Agent:          "syslog-health-monitor",
+		ComponentClass: "GPU",
+		CheckName:      checkName,
+		NodeName:       "node1",
+		IsFatal:        true,
+		IsHealthy:      false,
+		ErrorCode:      []string{errorCode},
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU", EntityValue: gpu},
+		},
+	}
+}
+
+// TestRemoveEvent_EntityOnlyHealthyEventClearsAllErrorCodes verifies that an
+// entity-only healthy event (no ErrorCode), as emitted by real recovery
+// observations like a successful GPU reset, still clears every prior fault
+// code on the matching entity.
+func TestRemoveEvent_EntityOnlyHealthyEventClearsAllErrorCodes(t *testing.T) {
+	hem := NewHealthEventsAnnotationMap()
+	hem.AddOrUpdateEvent(unhealthyXIDEventOnGPU("SysLogsXIDError", "163", "GPU-1"))
+	hem.AddOrUpdateEvent(unhealthyXIDEventOnGPU("SysLogsXIDError", "98", "GPU-1"))
+
+	if got := hem.Count(); got != 2 {
+		t.Fatalf("setup: expected 2 stored keys, got %d", got)
+	}
+
+	healthy := &protos.HealthEvent{
+		Version:        1,
+		Agent:          "syslog-health-monitor",
+		ComponentClass: "GPU",
+		CheckName:      "SysLogsXIDError",
+		NodeName:       "node1",
+		IsHealthy:      true,
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU", EntityValue: "GPU-1"},
+		},
+		// no ErrorCode → real component-recovery event
+	}
+
+	removed := hem.RemoveEvent(healthy)
+	if removed != 2 {
+		t.Errorf("removed = %d, want 2 (entity-only healthy event must clear every code)", removed)
+	}
+
+	if !hem.IsEmpty() {
+		t.Errorf("map should be empty after entity-only recovery, count=%d", hem.Count())
+	}
+}
+
+// TestRemoveEvent_ScopedHealthyEventClearsOnlyMatchingErrorCode covers the
+// synthetic cancellation event path: a healthy event scoped to a specific
+// ErrorCode must clear only the matching prior fault.
+func TestRemoveEvent_ScopedHealthyEventClearsOnlyMatchingErrorCode(t *testing.T) {
+	hem := NewHealthEventsAnnotationMap()
+	hem.AddOrUpdateEvent(unhealthyXIDEventOnGPU("SysLogsXIDError", "163", "GPU-1"))
+	hem.AddOrUpdateEvent(unhealthyXIDEventOnGPU("SysLogsXIDError", "98", "GPU-1"))
+
+	cancellation := &protos.HealthEvent{
+		Version:        1,
+		Agent:          "syslog-health-monitor",
+		ComponentClass: "GPU",
+		CheckName:      "SysLogsXIDError",
+		NodeName:       "node1",
+		IsHealthy:      true,
+		ErrorCode:      []string{"163"},
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU", EntityValue: "GPU-1"},
+		},
+	}
+
+	removed := hem.RemoveEvent(cancellation)
+	if removed != 1 {
+		t.Errorf("removed = %d, want 1 (only XID 163 should be cleared)", removed)
+	}
+
+	if hem.Count() != 1 {
+		t.Errorf("Count() = %d, want 1 (XID 98 must remain active)", hem.Count())
+	}
+
+	// XID 98 is still findable.
+	stillStored := unhealthyXIDEventOnGPU("SysLogsXIDError", "98", "GPU-1")
+	if _, found := hem.GetEvent(stillStored); !found {
+		t.Errorf("XID 98 entry was incorrectly cleared by a XID-163-scoped cancellation")
+	}
+}
+
+// TestRemoveEvent_ScopedHealthyEventWithNonMatchingErrorCodeClearsNothing
+// guards against a misconfigured rule clearing an unrelated active fault.
+func TestRemoveEvent_ScopedHealthyEventWithNonMatchingErrorCodeClearsNothing(t *testing.T) {
+	hem := NewHealthEventsAnnotationMap()
+	hem.AddOrUpdateEvent(unhealthyXIDEventOnGPU("SysLogsXIDError", "163", "GPU-1"))
+
+	cancellation := &protos.HealthEvent{
+		Version:        1,
+		Agent:          "syslog-health-monitor",
+		ComponentClass: "GPU",
+		CheckName:      "SysLogsXIDError",
+		NodeName:       "node1",
+		IsHealthy:      true,
+		ErrorCode:      []string{"999"},
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU", EntityValue: "GPU-1"},
+		},
+	}
+
+	removed := hem.RemoveEvent(cancellation)
+	if removed != 0 {
+		t.Errorf("removed = %d, want 0 (non-matching ErrorCode must not clear)", removed)
+	}
+
+	if hem.Count() != 1 {
+		t.Errorf("Count() = %d, want 1 (the original fault must remain)", hem.Count())
+	}
+}
+
+// Distinct error codes on the same entity stored under distinct keys means an
+// incoming healthy event with empty ErrorCode still finds them via the
+// asymmetric matching rule, and only one of them when scoped.
+func TestGetEvent_AsymmetricErrorCodeMatching(t *testing.T) {
+	hem := NewHealthEventsAnnotationMap()
+	hem.AddOrUpdateEvent(unhealthyXIDEventOnGPU("SysLogsXIDError", "163", "GPU-1"))
+	hem.AddOrUpdateEvent(unhealthyXIDEventOnGPU("SysLogsXIDError", "98", "GPU-1"))
+
+	// Empty ErrorCode → matches any stored key for the entity.
+	any := &protos.HealthEvent{
+		Version:        1,
+		Agent:          "syslog-health-monitor",
+		ComponentClass: "GPU",
+		CheckName:      "SysLogsXIDError",
+		NodeName:       "node1",
+		IsHealthy:      true,
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU", EntityValue: "GPU-1"},
+		},
+	}
+	if _, found := hem.GetEvent(any); !found {
+		t.Errorf("empty-ErrorCode healthy event must match a stored key for the entity")
+	}
+
+	// Scoped to "98" → matches only that one.
+	scoped := &protos.HealthEvent{
+		Version:        1,
+		Agent:          "syslog-health-monitor",
+		ComponentClass: "GPU",
+		CheckName:      "SysLogsXIDError",
+		NodeName:       "node1",
+		IsHealthy:      true,
+		ErrorCode:      []string{"98"},
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU", EntityValue: "GPU-1"},
+		},
+	}
+	got, found := hem.GetEvent(scoped)
+	if !found {
+		t.Fatalf("scoped healthy event must match the stored key with ErrorCode 98")
+	}
+
+	if got.ErrorCode[0] != "98" {
+		t.Errorf("matched event ErrorCode = %v, want [98]", got.ErrorCode)
 	}
 }

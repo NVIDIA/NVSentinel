@@ -35,6 +35,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/commons/pkg/stringutil"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/cancellation"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/common"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/gpufallen"
 	fd "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/syslog-monitor"
@@ -74,10 +75,12 @@ var (
 		"Path to GPU metadata JSON file.")
 	processingStrategyFlag = flag.String("processing-strategy", "EXECUTE_REMEDIATION",
 		"Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY")
-	nicDriverConfigPath = flag.String("nic-driver-config", "/etc/nic-driver-syslog/config.toml",
+	nicDriverConfigPath = flag.String("nic-driver-config", "/etc/syslog-health-monitor/nic-driver.toml",
 		"Path to NIC driver syslog pattern config (TOML). Used only when SysLogsNICDriverError is in --checks.")
 	sysfsRoot = flag.String("sysfs-root", "/nvsentinel/sys",
 		"Root path for sysfs reads (BDF→driver resolution). Typically a container mount point.")
+	cancellationsConfigPath = flag.String("cancellations-config", "/etc/syslog-health-monitor/cancellations.toml",
+		"Path to per-monitor cancellation rules (TOML). Missing file is treated as no rules.")
 )
 
 var checks []fd.CheckDefinition
@@ -317,6 +320,28 @@ func createSyslogMonitor(
 
 	slog.Info("Creating syslog monitor", "checksCount", len(list))
 
+	cancellationsCfg, err := cancellation.LoadConfig(*cancellationsConfigPath)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to load cancellations config %s: %w", *cancellationsConfigPath, err)
+	}
+
+	if err := cancellation.ValidateSupportedChecks(cancellationsCfg, fd.CancellationSupportedChecks); err != nil {
+		return nil, 0, fmt.Errorf("cancellations config %s validation failed: %w", *cancellationsConfigPath, err)
+	}
+
+	enabledCheckNames := make([]string, 0, len(list))
+	for _, c := range list {
+		enabledCheckNames = append(enabledCheckNames, c.Name)
+	}
+
+	if err := cancellation.ValidateAgainstEnabledChecks(cancellationsCfg, enabledCheckNames); err != nil {
+		return nil, 0, fmt.Errorf("cancellations config %s validation failed: %w", *cancellationsConfigPath, err)
+	}
+
+	slog.Info("Loaded cancellations config",
+		"path", *cancellationsConfigPath,
+		"checksConfigured", len(cancellationsCfg.Checks))
+
 	monitor, err := fd.NewSyslogMonitor(
 		nodeName,
 		list,
@@ -330,6 +355,7 @@ func createSyslogMonitor(
 		processingStrategy,
 		*nicDriverConfigPath,
 		*sysfsRoot,
+		cancellationsCfg,
 		*platformConnectorSocket,
 	)
 	if err != nil {
