@@ -158,6 +158,7 @@ func (s *Server) Shutdown() error {
 func (s *Server) registerTools() error {
 	s.registerGPUInventoryTool()
 	s.registerGPUHealthTool()
+	s.registerDescribeGPUNodeTool()
 
 	return nil
 }
@@ -238,6 +239,45 @@ func (s *Server) registerGPUHealthTool() {
 		fallback, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
 			return mcpgo.NewToolResultErrorFromErr("marshal gpu_health response", err), nil
+		}
+
+		return mcpgo.NewToolResultStructured(out, string(fallback)), nil
+	})
+}
+
+// registerDescribeGPUNodeTool wires the describe_gpu_node MCP tool. It pairs
+// the latest store event for a node with a flattened Kubernetes Node
+// description (labels, taints, conditions, GPU capacity).
+func (s *Server) registerDescribeGPUNodeTool() {
+	handler := tools.NewDescribeGPUNodeHandler(s.store, s.k8sClient)
+
+	tool := mcpgo.NewTool(
+		"describe_gpu_node",
+		mcpgo.WithDescription(
+			"Describe a GPU node by pairing NVSentinel's latest health event with the "+
+				"Kubernetes Node object (labels, taints, conditions, GPU capacity).",
+		),
+		mcpgo.WithString(
+			"node",
+			mcpgo.Required(),
+			mcpgo.Description("Kubernetes node name to describe."),
+		),
+	)
+
+	s.mcpServer.AddTool(tool, func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		var in tools.DescribeGPUNodeInput
+		if err := req.BindArguments(&in); err != nil {
+			return mcpgo.NewToolResultErrorFromErr("invalid arguments", err), nil
+		}
+
+		out, err := handler.Handle(ctx, in)
+		if err != nil {
+			return mcpgo.NewToolResultErrorFromErr("describe_gpu_node failed", err), nil
+		}
+
+		fallback, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			return mcpgo.NewToolResultErrorFromErr("marshal describe_gpu_node response", err), nil
 		}
 
 		return mcpgo.NewToolResultStructured(out, string(fallback)), nil
