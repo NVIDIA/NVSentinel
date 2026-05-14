@@ -162,6 +162,7 @@ func (s *Server) registerTools() error {
 	s.registerPodGPUAllocationTool()
 	s.registerPodFailureTool()
 	s.registerExplainFailureTool()
+	s.registerGetIncidentReportTool()
 
 	return nil
 }
@@ -417,6 +418,47 @@ func (s *Server) registerExplainFailureTool() {
 		fallback, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
 			return mcpgo.NewToolResultErrorFromErr("marshal explain_failure response", err), nil
+		}
+
+		return mcpgo.NewToolResultStructured(out, string(fallback)), nil
+	})
+}
+
+// registerGetIncidentReportTool wires the get_incident_report MCP tool. It
+// looks up the analyzer-synthesized event with the requested incident_id,
+// pairs it with same-node related events around the incident time, and
+// surfaces pattern-matched recommendations.
+func (s *Server) registerGetIncidentReportTool() {
+	handler := tools.NewGetIncidentReportHandler(s.store)
+
+	tool := mcpgo.NewTool(
+		"get_incident_report",
+		mcpgo.WithDescription(
+			"Look up a single NVSentinel-synthesized incident by id, returning the title, "+
+				"severity, affected nodes/GPUs, related raw events, and recommended actions "+
+				"from the donated pattern matcher.",
+		),
+		mcpgo.WithString(
+			"incident_id",
+			mcpgo.Required(),
+			mcpgo.Description("The HealthEvent.id of the analyzer-synthesized incident event."),
+		),
+	)
+
+	s.mcpServer.AddTool(tool, func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		var in tools.GetIncidentReportInput
+		if err := req.BindArguments(&in); err != nil {
+			return mcpgo.NewToolResultErrorFromErr("invalid arguments", err), nil
+		}
+
+		out, err := handler.Handle(ctx, in)
+		if err != nil {
+			return mcpgo.NewToolResultErrorFromErr("get_incident_report failed", err), nil
+		}
+
+		fallback, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			return mcpgo.NewToolResultErrorFromErr("marshal get_incident_report response", err), nil
 		}
 
 		return mcpgo.NewToolResultStructured(out, string(fallback)), nil
