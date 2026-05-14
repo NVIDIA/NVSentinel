@@ -163,6 +163,7 @@ func (s *Server) registerTools() error {
 	s.registerPodFailureTool()
 	s.registerExplainFailureTool()
 	s.registerGetIncidentReportTool()
+	s.registerAnalyzeXIDTool()
 
 	return nil
 }
@@ -459,6 +460,51 @@ func (s *Server) registerGetIncidentReportTool() {
 		fallback, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
 			return mcpgo.NewToolResultErrorFromErr("marshal get_incident_report response", err), nil
+		}
+
+		return mcpgo.NewToolResultStructured(out, string(fallback)), nil
+	})
+}
+
+// registerAnalyzeXIDTool wires the analyze_xid MCP tool. It queries the
+// store for events tagged with the requested XID code, attributes them to
+// nodes/GPUs, and pairs with the matching donor pattern (xid_79_bus_error,
+// nvlink_failure, ecc_failure, etc.).
+func (s *Server) registerAnalyzeXIDTool() {
+	handler := tools.NewAnalyzeXIDHandler(s.store)
+
+	tool := mcpgo.NewTool(
+		"analyze_xid",
+		mcpgo.WithDescription(
+			"Look up every NVSentinel health event tagged with a given numeric XID code "+
+				"(e.g., 79 for GPU bus fall-off, 74 for NVLink, 48/63/64 for ECC). Returns "+
+				"affected nodes/GPUs, recent events, and the matching diagnostic pattern.",
+		),
+		mcpgo.WithNumber(
+			"xid_code",
+			mcpgo.Required(),
+			mcpgo.Description("Numeric XID code to look up (positive integer)."),
+		),
+		mcpgo.WithString(
+			"node",
+			mcpgo.Description("Optional node name to narrow the search to one node."),
+		),
+	)
+
+	s.mcpServer.AddTool(tool, func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		var in tools.AnalyzeXIDInput
+		if err := req.BindArguments(&in); err != nil {
+			return mcpgo.NewToolResultErrorFromErr("invalid arguments", err), nil
+		}
+
+		out, err := handler.Handle(ctx, in)
+		if err != nil {
+			return mcpgo.NewToolResultErrorFromErr("analyze_xid failed", err), nil
+		}
+
+		fallback, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			return mcpgo.NewToolResultErrorFromErr("marshal analyze_xid response", err), nil
 		}
 
 		return mcpgo.NewToolResultStructured(out, string(fallback)), nil
