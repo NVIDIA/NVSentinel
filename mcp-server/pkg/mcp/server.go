@@ -157,6 +157,7 @@ func (s *Server) Shutdown() error {
 // helper below and a call from registerTools.
 func (s *Server) registerTools() error {
 	s.registerGPUInventoryTool()
+	s.registerGPUHealthTool()
 
 	return nil
 }
@@ -194,6 +195,49 @@ func (s *Server) registerGPUInventoryTool() {
 		fallback, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
 			return mcpgo.NewToolResultErrorFromErr("marshal gpu_inventory response", err), nil
+		}
+
+		return mcpgo.NewToolResultStructured(out, string(fallback)), nil
+	})
+}
+
+// registerGPUHealthTool wires the gpu_health MCP tool. It returns per-GPU
+// health summaries (latest state plus event-count aggregates) for a node,
+// optionally narrowed to a single GPU UUID.
+func (s *Server) registerGPUHealthTool() {
+	handler := tools.NewGPUHealthHandler(s.store)
+
+	tool := mcpgo.NewTool(
+		"gpu_health",
+		mcpgo.WithDescription(
+			"Summarise health for GPUs on a node: latest event state plus per-GPU aggregate "+
+				"event and unhealthy-event counts. Optionally narrow to a single GPU UUID.",
+		),
+		mcpgo.WithString(
+			"node",
+			mcpgo.Required(),
+			mcpgo.Description("Kubernetes node name to query."),
+		),
+		mcpgo.WithString(
+			"gpu_uuid",
+			mcpgo.Description("Optional GPU UUID; when set, the response contains at most one entry."),
+		),
+	)
+
+	s.mcpServer.AddTool(tool, func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		var in tools.GPUHealthInput
+		if err := req.BindArguments(&in); err != nil {
+			return mcpgo.NewToolResultErrorFromErr("invalid arguments", err), nil
+		}
+
+		out, err := handler.Handle(ctx, in)
+		if err != nil {
+			return mcpgo.NewToolResultErrorFromErr("gpu_health failed", err), nil
+		}
+
+		fallback, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			return mcpgo.NewToolResultErrorFromErr("marshal gpu_health response", err), nil
 		}
 
 		return mcpgo.NewToolResultStructured(out, string(fallback)), nil
