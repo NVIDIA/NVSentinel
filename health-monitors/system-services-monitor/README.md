@@ -1,6 +1,6 @@
 # System Service Monitor
 
-Health monitor for non-DCGM infrastructure failures on NVIDIA GPU nodes: Fabric Manager service health, per-GPU fabric state, CUDA context validity, and GPU service lifecycle.
+Health monitor for non-DCGM infrastructure failures on NVIDIA GPU nodes: Fabric Manager service health, per-GPU fabric state, and GPU service lifecycle.
 
 ## Scope
 
@@ -11,7 +11,6 @@ Per [ADR-030](../../docs/designs/030-fabric-manager-monitor-scope.md), this moni
 | FM service up/down | **system-services-monitor** | systemd state, not a DCGM field |
 | FM flap detection | **system-services-monitor** | restart counting, not DCGM |
 | Per-GPU fabric state | **system-services-monitor** | nvidia-smi fabric.state/status |
-| CUDA context validity | **system-services-monitor** | active probe, not passive telemetry |
 | GPU service lifecycle | **system-services-monitor** | systemd, not DCGM |
 | PCIe link health | gpu-health-monitor | DCGM_HEALTH_WATCH_PCIE |
 | NVLink bandwidth/errors | gpu-health-monitor | DCGM_HEALTH_WATCH_NVLINK |
@@ -22,14 +21,14 @@ Per [ADR-030](../../docs/designs/030-fabric-manager-monitor-scope.md), this moni
 ```
 +-----------------------------------------------------------+
 |                 SystemServiceWatcher                       |
-|  +----------------+ +--------------------+ +------------+  |
-|  | ServiceChecker | | FabricStateChecker | | CUDAValid. |  |
-|  +-------+--------+ +---------+----------+ +------+-----+  |
-|          |                    |                    |        |
-|          +----------+---------+----+--------------+        |
-|                     |              |                        |
-|              List[CheckResult]     |                        |
-+---------------------+--------------+-----------------------+
+|  +----------------+ +--------------------+                 |
+|  | ServiceChecker | | FabricStateChecker |                 |
+|  +-------+--------+ +---------+----------+                 |
+|          |                    |                            |
+|          +----------+---------+                            |
+|                     |                                      |
+|              List[CheckResult]                             |
++---------------------+--------------------------------------+
                       |
                       v
 +-----------------------------------------------------------+
@@ -47,7 +46,6 @@ Per [ADR-030](../../docs/designs/030-fabric-manager-monitor-scope.md), this moni
 | Fabric Manager down | `FabricManagerServiceDown` | Yes | NODE | nsenter systemctl show |
 | GPU service down | `GpuServiceDown` | No | NODE | nsenter systemctl show |
 | Fabric state unhealthy | `FabricStateUnhealthy` | Yes | GPU | nsenter nvidia-smi fabric.state |
-| CUDA validation | `CudaValidationFailed` | Yes | NODE | subprocess torch test |
 
 ### Fabric State Classification
 
@@ -72,7 +70,6 @@ system_services_monitor \
   --flap-window 600 \
   --flap-threshold 3 \
   --enable-fabric-check \
-  --disable-cuda-validation \
   --processing-strategy EXECUTE_REMEDIATION
 ```
 
@@ -127,11 +124,10 @@ When deploying on GKE with COS:
 system_services_monitor \
   --platform-connector-socket /run/nvsentinel/platform-connector.sock \
   --disable-fabric-check \
-  --enable-cuda-validation \
   --processing-strategy EXECUTE_REMEDIATION
 ```
 
-Disable `--fabric-check` (which uses host systemd) and rely on per-GPU fabric state and CUDA validation. The `FabricStateChecker` runs independently and will detect FM failures through `nvidia-smi fabric.state`.
+Disable `--fabric-check` (which uses host systemd) and rely on per-GPU fabric state. The `FabricStateChecker` runs independently and will detect FM failures through `nvidia-smi fabric.state`.
 
 ### Future Work
 

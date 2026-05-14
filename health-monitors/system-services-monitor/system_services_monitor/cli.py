@@ -48,11 +48,6 @@ from system_services_monitor.protos import health_event_pb2 as platformconnector
 @click.option("--flap-threshold", type=int, default=3, help="Restart count within flap window to flag flapping")
 @click.option("--enable-fabric-check/--disable-fabric-check", default=True, help="Enable Fabric Manager service check")
 @click.option(
-    "--enable-cuda-validation/--disable-cuda-validation",
-    default=False,
-    help="Enable CUDA context validation (resource intensive, disabled by default)",
-)
-@click.option(
     "--processing-strategy",
     type=str,
     default="EXECUTE_REMEDIATION",
@@ -68,7 +63,6 @@ def cli(
     flap_window,
     flap_threshold,
     enable_fabric_check,
-    enable_cuda_validation,
     processing_strategy,
     verbose,
 ):
@@ -125,7 +119,6 @@ def cli(
         flap_window=flap_window,
         flap_threshold=flap_threshold,
         enable_fabric_check=enable_fabric_check,
-        enable_cuda_validation=enable_cuda_validation,
     )
 
     watcher.start(exit)

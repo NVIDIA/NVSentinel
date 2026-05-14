@@ -74,13 +74,6 @@ fabric_state_healthy = Gauge(
     labelnames=["node", "gpu_index"],
 )
 
-# --- CUDA validation ---
-cuda_validation_passed = Gauge(
-    "cuda_validation_passed",
-    "CUDA validation result (1=passed, 0=failed)",
-    labelnames=["node"],
-)
-
 # --- Overall node health ---
 gpu_node_health_up = Gauge(
     "gpu_node_health_up",

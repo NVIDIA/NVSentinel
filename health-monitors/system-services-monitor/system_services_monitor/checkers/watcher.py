@@ -19,7 +19,7 @@ callbacks (e.g. PlatformConnectorEventProcessor) with the aggregated
 results. Mirrors the DCGMWatcher pattern from gpu-health-monitor.
 
 Scope (per ADR-030): only checks that DCGM cannot see --
-  FM service health, FM flap detection, fabric state, CUDA context,
+  FM service health, FM flap detection, fabric state,
   GPU service lifecycle. PCIe, NVLink, and clock throttling are
   owned by gpu-health-monitor via pydcgm.
 """
@@ -32,7 +32,6 @@ from threading import Event
 from typing import List
 
 from system_services_monitor import metrics
-from .cuda_validation import CUDAValidator
 from .fabric_state_check import FabricStateChecker
 from .service_check import ServiceChecker
 from .types import CallbackInterface, CheckResult
@@ -58,7 +57,6 @@ class FabricManagerWatcher:
         flap_window: int = 600,
         flap_threshold: int = 3,
         enable_fabric_check: bool = True,
-        enable_cuda_validation: bool = False,
     ) -> None:
         self._poll_interval = poll_interval
         self._callbacks = callbacks
@@ -80,10 +78,6 @@ class FabricManagerWatcher:
             # Per-GPU fabric state query (depends on FM being monitored)
             self._fabric_state_checker = FabricStateChecker()
             self._checkers.append(("fabric_state", self._run_fabric_state_checks))
-
-        if enable_cuda_validation:
-            self._cuda_validator = CUDAValidator()
-            self._checkers.append(("cuda", self._run_cuda_checks))
 
     def _in_grace_period(self) -> bool:
         return (time.monotonic() - self._start_time) < self._boot_grace_period
@@ -242,13 +236,3 @@ class FabricManagerWatcher:
                 )
 
         return self._fabric_state_checker.to_check_results(statuses, self._node_name)
-
-    def _run_cuda_checks(self) -> List[CheckResult]:
-        """Run CUDA validation."""
-        result = self._cuda_validator.check()
-
-        metrics.cuda_validation_passed.labels(self._node_name).set(1 if result.passed else 0)
-        if not result.passed:
-            log.error(f"CUDA validation FAILED on {self._node_name}: {result.errors or result.error}")
-
-        return self._cuda_validator.to_check_results(result, self._node_name)
