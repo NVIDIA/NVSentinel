@@ -30,13 +30,11 @@ hardware telemetry monitoring and service-level health monitoring.
 
 The current PR #891 mixes two categories of health detection in a single monitor:
 
-1. **DCGM-visible device health** — PCIe link state, NVLink bandwidth, clock
-   throttle reasons. These signals are available through DCGM field IDs that
-   `gpu-health-monitor` already has access to via `pydcgm`.
+1. **DCGM-visible device health** — already available through `pydcgm` in
+   `gpu-health-monitor`.
 
 2. **Non-DCGM service health** — Fabric Manager process state, FM responsiveness,
-   CUDA context validity, GPU service lifecycle. These are not exposed through
-   DCGM health watches.
+   GPU service lifecycle. These are not exposed through DCGM health watches.
 
 Reimplementing DCGM-visible signals via HTTP scraping of the DCGM exporter creates
 a second collection path for the same underlying data, with different polling
@@ -92,23 +90,11 @@ Adopt **Option B: Scope split**.
 
 ### Answer to review question 1
 
-**Yes. PCIe and NVLink checks should extend `gpu-health-monitor`, not be
-reimplemented in `fabric-manager-monitor` via DCGM exporter HTTP scraping.**
+**Yes. DCGM-visible signals should remain in `gpu-health-monitor` via the
+existing `pydcgm` path, not be reimplemented in `fabric-manager-monitor`.**
 
-`gpu-health-monitor` already polls DCGM via `pydcgm`. The DCGM field IDs for
-degradation detection are:
-
-| Signal | DCGM Field ID | Current Watch |
-|--------|---------------|---------------|
-| PCIe link generation | `DCGM_FI_DEV_PCIE_LINK_GEN` | `DCGM_HEALTH_WATCH_PCIE` (fatal only) |
-| PCIe link width | `DCGM_FI_DEV_PCIE_LINK_WIDTH` | `DCGM_HEALTH_WATCH_PCIE` (fatal only) |
-| NVLink bandwidth | `DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL` | `DCGM_HEALTH_WATCH_NVLINK` (fatal only) |
-| NVLink error counters | `DCGM_FI_DEV_NVLINK_*_ERRORS` | `DCGM_HEALTH_WATCH_NVLINK` (fatal only) |
-| Clock throttle reasons | `DCGM_FI_DEV_CLOCK_THROTTLE_REASONS` | None |
-
-The existing health watches catch fatal errors. Extending the `pydcgm` polling loop
-to evaluate these field IDs against baselines enables degradation detection without
-a second collection path.
+Any future degradation-detection work on those signals belongs in
+`gpu-health-monitor` and is out of scope for this PR.
 
 ### Answer to review question 2
 
@@ -119,10 +105,9 @@ DCGM monitors per-GPU device metrics. It does not monitor:
 - Whether the Fabric Manager process is running
 - Whether FM has hung or is in a crashloop
 - Whether the fabric orchestration state is stuck ("In Progress" indefinitely)
-- Whether a CUDA context can be created on a given GPU (driver/runtime wedge)
 
-These require active probing (systemd queries, CUDA allocation tests) that do not
-belong in a passive DCGM polling loop.
+These require active probing (systemd queries) that does not belong in a
+passive DCGM polling loop.
 
 ## Signal Ownership
 
@@ -135,7 +120,6 @@ belong in a passive DCGM polling loop.
 | FM responsiveness | FM-specific probe | `fabric-manager-monitor` |
 | FM crashloop/flapping | Restart count + time window | `fabric-manager-monitor` |
 | Fabric state stuck | `nvidia-smi` fabric.state | `fabric-manager-monitor` |
-| CUDA context validity | Active `cuInit`/`cudaMalloc` probe | `fabric-manager-monitor` |
 | GPU service lifecycle | `nsenter` + systemd | `fabric-manager-monitor` |
 
 ## Implementation
@@ -150,11 +134,10 @@ belong in a passive DCGM polling loop.
 │  │  gpu-health-monitor  │    │  fabric-manager-monitor  │   │
 │  │                      │    │                          │   │
 │  │  DCGM via pydcgm:    │    │  Non-DCGM active probes: │   │
-│  │  - PCIe link gen/wid │    │  - FM systemd state      │   │
-│  │  - NVLink bandwidth  │    │  - FM restart frequency  │   │
-│  │  - NVLink errors     │    │  - Fabric state query    │   │
-│  │  - Clock throttle    │    │  - CUDA context probe    │   │
-│  │  - XID errors        │    │  - GPU svc lifecycle     │   │
+│  │  - existing watches  │    │  - FM systemd state      │   │
+│  │  - XID errors        │    │  - FM restart frequency  │   │
+│  │                      │    │  - Fabric state query    │   │
+│  │                      │    │  - GPU svc lifecycle     │   │
 │  │                      │    │                          │   │
 │  │  State caching ──────│──┐ │  State caching ──────────│─┐ │
 │  └──────────┬───────────┘  │ └──────────┬───────────────┘ │ │
@@ -173,16 +156,10 @@ belong in a passive DCGM polling loop.
 
 Reuse the existing health event envelope. No new transport model required.
 
-**Device health events** from `gpu-health-monitor`:
-- `PCIE_LINK_DEGRADED` — link gen or width below expected baseline
-- `NVLINK_DEGRADED` — bandwidth below threshold or error count above threshold
-- `CLOCK_THROTTLED` — non-idle throttle reason active (exclude idle bitmask `0x1`)
-
 **Service health events** from `fabric-manager-monitor`:
 - `FM_DOWN` — FM service not running
 - `FM_UNRESPONSIVE` — FM running but fabric state stuck
 - `FM_FLAPPING` — restart count exceeds threshold in time window
-- `CUDA_CONTEXT_INVALID` — `cuInit`/`cudaMalloc` probe fails
 
 Both monitors emit state transitions only (via state caching). Both use the
 existing gRPC transport secured per ADR-029.
@@ -191,8 +168,6 @@ existing gRPC transport secured per ADR-029.
 
 - **Boot grace period** (default 300s): Suppress alerts during node startup
 - **Flap detection**: Track FM restart frequency within configurable window
-- **GPU idle filter**: Exclude idle throttle reason `0x0000000000000001`
-- **NVLink correlation**: Bandwidth-zero flagged only when correlated with FM down
 
 ## Implementation Plan
 
@@ -206,23 +181,12 @@ Retain:
 - FM systemd health checks
 - FM flap detection
 - Fabric state query
-- CUDA context validity probe
 - GPU service lifecycle checks
 - gRPC client, state caching, structlog, Click CLI
 
 Target: ~500-800 LOC (down from 4,432).
 
-### Phase 2: Extend `gpu-health-monitor`
-
-Add DCGM field ID subscriptions for:
-- `DCGM_FI_DEV_PCIE_LINK_GEN` / `DCGM_FI_DEV_PCIE_LINK_WIDTH`
-- `DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL` / NVLink error counters
-- `DCGM_FI_DEV_CLOCK_THROTTLE_REASONS`
-
-Implement threshold evaluation in the existing polling loop. Emit health events
-through existing gRPC path with state caching.
-
-### Phase 3: Integration testing
+### Phase 2: Integration testing
 
 - Device-level faults handled only by `gpu-health-monitor`
 - Service-level faults handled only by `fabric-manager-monitor`
@@ -232,17 +196,7 @@ through existing gRPC path with state caching.
 
 ## Open Questions
 
-1. **Clock throttling ownership**: If `DCGM_FI_DEV_CLOCK_THROTTLE_REASONS` is
-   reliably available through the existing `pydcgm` path, clock throttling moves
-   to `gpu-health-monitor`. If not, it stays in `fabric-manager-monitor` as an
-   `nvidia-smi` query. Needs validation against current DCGM version in NVSentinel.
-
-2. **CUDA context probe implementation**: The current PR #891 uses a subprocess
-   `torch` test. If a lighter probe (`cuInit` via ctypes or `pynvml`) is preferred,
-   the implementation can be adjusted. The probe mechanism is orthogonal to the
-   scope split.
-
-3. **FM readiness definition**: Is FM readiness determined from systemd active
+1. **FM readiness definition**: Is FM readiness determined from systemd active
    state alone, or should it include a local API/socket probe? Active + responsive
    is preferred over active-only if FM exposes a health endpoint.
 
@@ -257,5 +211,3 @@ through existing gRPC path with state caching.
 
 ### Negative
 - PR #891 must be refactored into two smaller changes
-- Phase 2 (`gpu-health-monitor` extension) requires changes to existing code
-- CUDA context probe placement may need further discussion
