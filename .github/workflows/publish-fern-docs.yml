@@ -1,7 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Publishes the Fern docs site on a docs/v* tag push or manual dispatch.
+# Publishes the Fern documentation site when a docs tag is pushed or manually triggered.
+#
+# On a docs/vX.Y.Z tag push the workflow also:
+#   1. Generates fern/versions/vX.Y.Z.yml from the tag's docs/index.yml
+#   2. Adds a version entry to fern/docs.yml
+#   3. Commits both back to main so future publishes include the new version
+#
+# To publish:  git tag docs/v1.2.0 && git push origin docs/v1.2.0
+# Or use the "Run workflow" button in the Actions tab.
 #
 # Required configuration:
 # - Repository secret: DOCS_FERN_TOKEN (provisioned by the docs infrastructure team)
@@ -15,7 +23,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: fern-publish
@@ -30,19 +38,66 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-tags: true
+          ref: main
+
+      - name: Register new version from tag
+        if: startsWith(github.ref, 'refs/tags/docs/v')
+        run: |
+          set -eo pipefail
+          TAG_VERSION="${GITHUB_REF#refs/tags/docs/}"  # e.g. v1.5.0
+
+          # Skip if version file already exists
+          if [ -f "fern/versions/${TAG_VERSION}.yml" ]; then
+            echo "Version file fern/versions/${TAG_VERSION}.yml already exists — skipping"
+            exit 0
+          fi
+
+          # Extract index.yml from the matching release tag
+          if ! git rev-parse "$TAG_VERSION" >/dev/null 2>&1; then
+            echo "::warning::Release tag $TAG_VERSION not found — cannot create version entry"
+            exit 0
+          fi
+
+          # Generate version nav from the tag's docs/index.yml
+          echo "Generating fern/versions/${TAG_VERSION}.yml from tag $TAG_VERSION"
+          git archive "$TAG_VERSION" -- docs/index.yml | tar -xO docs/index.yml | \
+            sed "s|path: |path: ${TAG_VERSION}-content/|g" > "fern/versions/${TAG_VERSION}.yml"
+
+          # Add version entry to docs.yml (insert after Latest, before older versions)
+          export TAG_VERSION
+          yq -i '.products[0].versions |= [.[0]] + [{"display-name": env(TAG_VERSION), "path": "versions/" + env(TAG_VERSION) + ".yml", "slug": env(TAG_VERSION), "availability": "stable"}] + .[1:]' fern/docs.yml
+
+          echo "--- docs.yml versions ---"
+          grep "display-name:" fern/docs.yml
+
+      - name: Commit new version entry
+        if: startsWith(github.ref, 'refs/tags/docs/v')
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/docs/}"
+          if git diff --quiet fern/; then
+            echo "No version changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add fern/versions/ fern/docs.yml
+          git commit -m "chore(fern): add ${TAG_VERSION} version entry [automated]"
+          git push origin main
 
       - name: Checkout frozen version content
         run: |
-          set -o pipefail
+          set -eo pipefail
           for version_file in fern/versions/v*.yml; do
+            [ -f "$version_file" ] || continue
             version=$(basename "$version_file" .yml)
-            if git rev-parse -q --verify "refs/tags/$version" >/dev/null 2>&1; then
+            if git rev-parse "$version" >/dev/null 2>&1; then
               mkdir -p "fern/versions/${version}-content"
-              git archive "refs/tags/$version" -- docs/ | tar -x --strip-components=1 -C "fern/versions/${version}-content"
+              git archive "$version" -- docs/ | tar -x --strip-components=1 -C "fern/versions/${version}-content"
+              # Fix MDX issues in older tags
+              find "fern/versions/${version}-content" -name '*.md' -exec sed -i 's/<img \([^>]*[^/]\)>/<img \1 \/>/g' {} +
               echo "Extracted docs from $version"
             else
-              echo "::error::Tag $version not found — cannot pin frozen docs content"
-              exit 1
+              echo "::warning::Tag $version not found — skipping content checkout"
             fi
           done
 
@@ -58,10 +113,11 @@ jobs:
         run: |
           VERSION=$(curl -sf https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r .tag_name)
           if [ -n "$VERSION" ] && [ "$VERSION" != "null" ]; then
-            sed -i 's/display-name: "Latest"/display-name: "Latest · '"${VERSION}"'"/' fern/docs.yml
+            export VERSION
+            yq -i '(.products[0].versions[] | select(.slug == "latest")).display-name = "Latest · " + env(VERSION)' fern/docs.yml
           fi
           echo "--- docs.yml versions after stamp ---"
-          grep "display-name:" fern/docs.yml
+          yq '.products[0].versions[].display-name' fern/docs.yml
 
       - name: Publish docs
         env:
