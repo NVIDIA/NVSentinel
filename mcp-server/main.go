@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -27,15 +28,23 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/sync/errgroup"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/mcp-server/pkg/mcp"
 	"github.com/nvidia/nvsentinel/mcp-server/pkg/store"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	_ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers"
 )
 
-const serviceName = "mcp-server"
+const (
+	serviceName           = "mcp-server"
+	datastoreInitTimeout  = 30 * time.Second
+	datastoreCloseTimeout = 10 * time.Second
+)
 
 var (
 	version = "dev"
@@ -71,6 +80,9 @@ func run() error {
 	mcpAddr := flag.String("mcp-addr", ":8080", "MCP streamable-HTTP listen address (e.g. :8080)")
 	metricsPort := flag.String("metrics-port", "9090", "Prometheus metrics and health probe listen port")
 	authToken := flag.String("auth-token", "", "Bearer token required for /mcp access; empty disables auth")
+	useFakeStore := flag.Bool("use-fake-store", false,
+		"Use an in-memory FakeReader instead of connecting to a real datastore "+
+			"(local development only; not for production).")
 
 	flag.Parse()
 
@@ -82,17 +94,24 @@ func run() error {
 		return fmt.Errorf("create metrics server: %w", err)
 	}
 
-	// TODO(Task 6+): replace store.NewFakeReader() with a real
-	// store.DataStoreReader built from the store-client provider registry
-	// (see event-exporter/pkg/initializer for the pattern). Tool tasks 6-16
-	// also wire k8sClient via in-cluster config + kubernetes.NewForConfig.
+	reader, closeStore, err := initStoreReader(ctx, *useFakeStore)
+	if err != nil {
+		return fmt.Errorf("init store reader: %w", err)
+	}
+	defer closeStoreSafely(closeStore)
+
+	k8sClient, err := initK8sClient()
+	if err != nil {
+		return fmt.Errorf("init k8s client: %w", err)
+	}
+
 	mcpServer, err := mcp.New(mcp.Config{
 		Version:   version,
 		GitCommit: commit,
 		HTTPAddr:  *mcpAddr,
 		AuthToken: *authToken,
-		Store:     store.NewFakeReader(),
-		K8sClient: nil,
+		Store:     reader,
+		K8sClient: k8sClient,
 	})
 	if err != nil {
 		return fmt.Errorf("create mcp server: %w", err)
@@ -111,7 +130,7 @@ func run() error {
 	})
 
 	g.Go(func() error {
-		slog.Info("MCP server starting", "addr", *mcpAddr, "auth", *authToken != "")
+		slog.Info("MCP server starting", "addr", *mcpAddr, "auth", *authToken != "", "k8s", k8sClient != nil)
 
 		if err := mcpServer.Run(gCtx); err != nil {
 			if gCtx.Err() != nil {
@@ -153,4 +172,72 @@ func CreateMetricsServer(port string) (server.Server, error) {
 		server.WithSimpleHealth(),
 		server.WithHandler("/metrics", promhttp.Handler()),
 	), nil
+}
+
+// initStoreReader builds the store.Reader the MCP server reads from. With
+// --use-fake-store, returns an in-memory FakeReader. Without, loads the
+// datastore config from env vars and constructs the real DataStoreReader
+// against the configured provider (Mongo or Postgres, picked by env).
+func initStoreReader(ctx context.Context, useFake bool) (store.Reader, func(context.Context) error, error) {
+	if useFake {
+		slog.Warn("Using FakeReader; all tools will return empty data (dev mode only)")
+
+		return store.NewFakeReader(), func(context.Context) error { return nil }, nil
+	}
+
+	cfg, err := datastore.LoadDatastoreConfig()
+	if err != nil {
+		return nil, nil, fmt.Errorf("load datastore config: %w", err)
+	}
+
+	initCtx, cancel := context.WithTimeout(ctx, datastoreInitTimeout)
+	defer cancel()
+
+	ds, err := datastore.NewDataStore(initCtx, *cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("new datastore: %w", err)
+	}
+
+	slog.Info("Datastore initialized", "provider", ds.Provider())
+
+	return store.NewDataStoreReader(ds.HealthEventStore()), ds.Close, nil
+}
+
+// initK8sClient builds an in-cluster Kubernetes client. When the binary is
+// run outside a cluster (rest.ErrNotInCluster), the function returns a nil
+// clientset rather than an error: K8s-dependent tools then return a
+// structured "k8s API not configured" warning per their handler contract.
+func initK8sClient() (kubernetes.Interface, error) {
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		if errors.Is(err, rest.ErrNotInCluster) {
+			slog.Warn("Not running in a cluster; K8s API tools will be disabled")
+
+			return nil, nil //nolint:nilnil // documented "disabled" signal — callers handle nil
+		}
+
+		return nil, fmt.Errorf("in-cluster config: %w", err)
+	}
+
+	c, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("new k8s client: %w", err)
+	}
+
+	return c, nil
+}
+
+// closeStoreSafely runs the datastore close callback with a bounded timeout
+// so a hung connection cannot block process shutdown indefinitely.
+func closeStoreSafely(closeFn func(context.Context) error) {
+	if closeFn == nil {
+		return
+	}
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), datastoreCloseTimeout)
+	defer cancel()
+
+	if err := closeFn(closeCtx); err != nil {
+		slog.Warn("datastore close returned error", "error", err)
+	}
 }
