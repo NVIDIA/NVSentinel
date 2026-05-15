@@ -247,8 +247,8 @@ func TestGPUHealthCheckPrompt(t *testing.T) {
 		result := p.RenderTemplate(map[string]string{})
 		assert.Contains(t, result, "all nodes")
 		assert.Contains(t, result, "GPU Health Check")
-		assert.Contains(t, result, "get_gpu_inventory")
-		assert.Contains(t, result, "get_gpu_health")
+		assert.Contains(t, result, "gpu_inventory")
+		assert.Contains(t, result, "gpu_health")
 	})
 
 	t.Run("custom node value", func(t *testing.T) {
@@ -266,7 +266,7 @@ func TestDiagnoseXIDErrorsPrompt(t *testing.T) {
 		result := p.RenderTemplate(map[string]string{})
 		assert.Contains(t, result, "24h")
 		assert.Contains(t, result, "XID Error Diagnosis")
-		assert.Contains(t, result, "analyze_xid_errors")
+		assert.Contains(t, result, "analyze_xid")
 	})
 
 	t.Run("custom time_range", func(t *testing.T) {
@@ -283,10 +283,10 @@ func TestGPUTriagePrompt(t *testing.T) {
 		result := p.RenderTemplate(map[string]string{})
 		assert.Contains(t, result, "cluster-wide")
 		assert.Contains(t, result, "GPU Triage Report")
-		assert.Contains(t, result, "get_gpu_inventory")
-		assert.Contains(t, result, "get_gpu_health")
-		assert.Contains(t, result, "analyze_xid_errors")
-		assert.Contains(t, result, "get_pod_gpu_allocation")
+		assert.Contains(t, result, "gpu_inventory")
+		assert.Contains(t, result, "gpu_health")
+		assert.Contains(t, result, "analyze_xid")
+		assert.Contains(t, result, "pod_gpu_allocation")
 	})
 
 	t.Run("with incident_id", func(t *testing.T) {

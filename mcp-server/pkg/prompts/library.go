@@ -41,11 +41,11 @@ Please perform a comprehensive GPU health assessment on {{node}}.
 ### Workflow
 
 1. **Inventory Check**
-   - Use the ` + "`get_gpu_inventory`" + ` tool to list all GPUs
+   - Use the ` + "`gpu_inventory`" + ` tool to list all GPUs
    - Note GPU models, memory sizes, and current utilization
 
 2. **Health Assessment**
-   - Use the ` + "`get_gpu_health`" + ` tool to get health scores
+   - Use the ` + "`gpu_health`" + ` tool to get health scores
    - Check temperature, power, memory, and ECC status
    - Flag any GPUs with health score below 90
 
@@ -82,7 +82,7 @@ Please analyze NVIDIA XID errors from the last {{time_range}}.
 ### Workflow
 
 1. **Error Collection**
-   - Use the ` + "`analyze_xid_errors`" + ` tool to parse kernel logs
+   - Use the ` + "`analyze_xid`" + ` tool to parse kernel logs
    - Collect all XID errors with timestamps
 
 2. **Error Classification**
@@ -154,7 +154,7 @@ var GPUTriage = PromptDef{
 
 ### Step 1: Hardware Inventory
 
-Use ` + "`get_gpu_inventory`" + ` to collect:
+Use ` + "`gpu_inventory`" + ` to collect:
 - GPU count and models
 - Memory capacity and current usage
 - Temperature and power readings
@@ -162,7 +162,7 @@ Use ` + "`get_gpu_inventory`" + ` to collect:
 
 ### Step 2: Health Assessment
 
-Use ` + "`get_gpu_health`" + ` to evaluate:
+Use ` + "`gpu_health`" + ` to evaluate:
 - Health scores for each GPU
 - Temperature status (normal/warning/critical)
 - Power consumption vs limits
@@ -171,14 +171,14 @@ Use ` + "`get_gpu_health`" + ` to evaluate:
 
 ### Step 3: Error Analysis
 
-Use ` + "`analyze_xid_errors`" + ` to check:
+Use ` + "`analyze_xid`" + ` to check:
 - Recent XID errors in kernel logs
 - Error frequency and patterns
 - Correlation with specific GPUs
 
 ### Step 4: Workload Correlation (if K8s available)
 
-Use ` + "`get_pod_gpu_allocation`" + ` to identify:
+Use ` + "`pod_gpu_allocation`" + ` to identify:
 - Pods currently using GPUs
 - Resource requests vs actual usage
 - Any pods in error state
