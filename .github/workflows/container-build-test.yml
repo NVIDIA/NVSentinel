@@ -141,6 +141,8 @@ jobs:
             path: .
           - module: event-exporter
             path: .
+          - module: mcp-server
+            path: .
           - module: plugins/slinky-drainer
             path: .
           - module: preflight

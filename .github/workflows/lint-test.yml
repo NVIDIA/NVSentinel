@@ -169,6 +169,7 @@ jobs:
         component:
           - platform-connectors
           - event-exporter
+          - mcp-server
           - store-client
           - commons
           - data-models
