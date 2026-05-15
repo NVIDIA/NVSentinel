@@ -103,7 +103,7 @@ func (h *PodFailureHandler) Handle(ctx context.Context, in PodFailureInput) (Pod
 
 	out := PodFailureOutput{
 		APIVersion: podFailureAPIVersion,
-		Status:     "success",
+		Status:     successStatus,
 		Pod:        pod.Name,
 		Namespace:  pod.Namespace,
 		Node:       pod.Spec.NodeName,
@@ -174,7 +174,9 @@ func (h *PodFailureHandler) listPodEvents(ctx context.Context, in PodFailureInpu
 	return out, nil
 }
 
-func (h *PodFailureHandler) relatedStoreEvents(ctx context.Context, in PodFailureInput, node string) ([]EventSummary, string, error) {
+func (h *PodFailureHandler) relatedStoreEvents(
+	ctx context.Context, in PodFailureInput, node string,
+) ([]EventSummary, string, error) {
 	if node == "" {
 		return nil, "pod has no assigned node; skipping store events", nil
 	}

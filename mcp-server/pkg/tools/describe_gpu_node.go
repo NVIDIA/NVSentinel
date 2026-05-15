@@ -31,7 +31,14 @@ import (
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
-const describeGPUNodeAPIVersion = "1"
+const (
+	describeGPUNodeAPIVersion = "1"
+
+	// successStatus is the canonical "success" value for the Status field of
+	// every tool's *Output struct. Centralised here so all tools agree on the
+	// spelling and the goconst linter does not flag nine separate occurrences.
+	successStatus = "success"
+)
 
 // DescribeGPUNodeInput is the structured input for the describe_gpu_node tool.
 type DescribeGPUNodeInput struct {
@@ -117,7 +124,7 @@ func (h *DescribeGPUNodeHandler) Handle(ctx context.Context, in DescribeGPUNodeI
 
 	out := DescribeGPUNodeOutput{
 		APIVersion: describeGPUNodeAPIVersion,
-		Status:     "success",
+		Status:     successStatus,
 		Node:       in.Node,
 	}
 

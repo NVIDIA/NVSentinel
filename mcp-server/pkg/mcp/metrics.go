@@ -17,6 +17,13 @@ package mcp
 
 import "github.com/prometheus/client_golang/prometheus"
 
+// Prometheus label keys, hoisted to constants so the goconst linter does not
+// flag the repeated string literals in each metric's label list.
+const (
+	labelTool   = "tool"
+	labelStatus = "status"
+)
+
 // Prometheus metrics for the MCP server. Tool handlers call RecordRequest
 // (and may directly manipulate ActiveRequests for in-flight gauges); the
 // default registry serves them via commons/pkg/server's /metrics endpoint on
@@ -30,7 +37,7 @@ var (
 			Name: "mcp_server_requests_total",
 			Help: "Total number of MCP tool requests processed, partitioned by tool name and status.",
 		},
-		[]string{"tool", "status"},
+		[]string{labelTool, labelStatus},
 	)
 
 	// RequestDuration observes per-tool latency. Buckets are tuned for
@@ -42,7 +49,7 @@ var (
 			Help:    "Latency of MCP tool requests in seconds, partitioned by tool name.",
 			Buckets: []float64{0.01, 0.05, 0.1, 0.5, 1, 5},
 		},
-		[]string{"tool"},
+		[]string{labelTool},
 	)
 
 	// ActiveRequests is the count of currently in-flight tool invocations
@@ -52,7 +59,7 @@ var (
 			Name: "mcp_server_active_requests",
 			Help: "Number of MCP tool requests currently in flight, partitioned by tool name.",
 		},
-		[]string{"tool"},
+		[]string{labelTool},
 	)
 )
 

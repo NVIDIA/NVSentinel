@@ -62,6 +62,7 @@ func (p *PromptDef) ToMCPPrompt() mcp.Prompt {
 		if arg.Required {
 			argOpts = append(argOpts, mcp.RequiredArgument())
 		}
+
 		opts = append(opts, mcp.WithArgument(arg.Name, argOpts...))
 	}
 
@@ -75,6 +76,7 @@ func (p *PromptDef) ToMCPPrompt() mcp.Prompt {
 // left unchanged in the output.
 func (p *PromptDef) RenderTemplate(args map[string]string) string {
 	result := p.Template
+
 	for key, value := range args {
 		placeholder := "{{" + key + "}}"
 		result = strings.ReplaceAll(result, placeholder, value)
@@ -90,6 +92,7 @@ func (p *PromptDef) RenderTemplate(args map[string]string) string {
 			}
 		}
 	}
+
 	return strings.TrimSpace(result)
 }
 

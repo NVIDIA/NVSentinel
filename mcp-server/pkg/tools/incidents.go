@@ -42,6 +42,12 @@ const (
 	PriorityLow    = "low"
 )
 
+// drainNodeCommand is the canonical kubectl drain invocation embedded in every
+// pattern recommendation that asks for node evacuation. Hoisted to a constant
+// because it repeats four times across pattern recommendations and the
+// goconst linter (rightly) flags the repetition.
+const drainNodeCommand = "kubectl drain {{.Node}} --ignore-daemonsets --delete-emptydir-data"
+
 // Recommendation is an actionable step a pattern attaches to its matches.
 // Templates may use {{.Node}}, {{.PodName}}, {{.Namespace}}, {{.GPUUUID}}
 // placeholders; substitution is the responsibility of callers (Task 12's
@@ -105,10 +111,25 @@ var KnownIncidentPatterns = []FailurePattern{
 		},
 		NotYourCode: true,
 		Recommendations: []Recommendation{
-			{Action: "DRAIN NODE IMMEDIATELY - GPU hardware failure", Command: "kubectl drain {{.Node}} --ignore-daemonsets --delete-emptydir-data", Priority: PriorityHigh},
-			{Action: "Check PCIe bus status", Command: "lspci -vvv | grep -A20 'NVIDIA'", Priority: PriorityHigh},
-			{Action: "Check dmesg for PCIe errors", Command: "dmesg | grep -i 'pci\\|nvidia' | tail -50", Priority: PriorityHigh},
-			{Action: "Schedule GPU replacement - hardware failure confirmed", Priority: PriorityHigh},
+			{
+				Action:   "DRAIN NODE IMMEDIATELY - GPU hardware failure",
+				Command:  drainNodeCommand,
+				Priority: PriorityHigh,
+			},
+			{
+				Action:   "Check PCIe bus status",
+				Command:  "lspci -vvv | grep -A20 'NVIDIA'",
+				Priority: PriorityHigh,
+			},
+			{
+				Action:   "Check dmesg for PCIe errors",
+				Command:  "dmesg | grep -i 'pci\\|nvidia' | tail -50",
+				Priority: PriorityHigh,
+			},
+			{
+				Action:   "Schedule GPU replacement - hardware failure confirmed",
+				Priority: PriorityHigh,
+			},
 		},
 	},
 	{
@@ -118,10 +139,25 @@ var KnownIncidentPatterns = []FailurePattern{
 		MessagePhrases: []string{"NVLink", "interconnect"},
 		NotYourCode:    true,
 		Recommendations: []Recommendation{
-			{Action: "Check NVLink topology and status", Command: "nvidia-smi nvlink -s", Priority: PriorityHigh},
-			{Action: "Inspect NVLink error counters", Command: "nvidia-smi nvlink -e", Priority: PriorityHigh},
-			{Action: "Drain node if multi-GPU workload affected", Command: "kubectl drain {{.Node}} --ignore-daemonsets --delete-emptydir-data", Priority: PriorityMedium},
-			{Action: "Check physical NVLink cable connections", Priority: PriorityMedium},
+			{
+				Action:   "Check NVLink topology and status",
+				Command:  "nvidia-smi nvlink -s",
+				Priority: PriorityHigh,
+			},
+			{
+				Action:   "Inspect NVLink error counters",
+				Command:  "nvidia-smi nvlink -e",
+				Priority: PriorityHigh,
+			},
+			{
+				Action:   "Drain node if multi-GPU workload affected",
+				Command:  drainNodeCommand,
+				Priority: PriorityMedium,
+			},
+			{
+				Action:   "Check physical NVLink cable connections",
+				Priority: PriorityMedium,
+			},
 		},
 	},
 	{
@@ -130,9 +166,21 @@ var KnownIncidentPatterns = []FailurePattern{
 		XIDCodes:    []int{48, 63, 64, 68, 69, 8, 92},
 		NotYourCode: true,
 		Recommendations: []Recommendation{
-			{Action: "DRAIN NODE IMMEDIATELY - Memory corruption detected", Command: "kubectl drain {{.Node}} --ignore-daemonsets --delete-emptydir-data", Priority: PriorityHigh},
-			{Action: "Check ECC error counts", Command: "nvidia-smi -q -d ECC", Priority: PriorityHigh},
-			{Action: "Schedule GPU replacement", Command: "kubectl label node {{.Node}} gpu-health=degraded", Priority: PriorityMedium},
+			{
+				Action:   "DRAIN NODE IMMEDIATELY - Memory corruption detected",
+				Command:  drainNodeCommand,
+				Priority: PriorityHigh,
+			},
+			{
+				Action:   "Check ECC error counts",
+				Command:  "nvidia-smi -q -d ECC",
+				Priority: PriorityHigh,
+			},
+			{
+				Action:   "Schedule GPU replacement",
+				Command:  "kubectl label node {{.Node}} gpu-health=degraded",
+				Priority: PriorityMedium,
+			},
 		},
 	},
 	{
@@ -141,9 +189,20 @@ var KnownIncidentPatterns = []FailurePattern{
 		MessagePhrases: []string{"OOMKilled", "out of memory", "CUDA out of memory"},
 		NotYourCode:    false,
 		Recommendations: []Recommendation{
-			{Action: "Review pod memory limits and GPU memory usage", Command: "kubectl describe pod {{.PodName}} -n {{.Namespace}}", Priority: PriorityHigh},
-			{Action: "Check application memory allocation patterns", Command: "kubectl logs {{.PodName}} -n {{.Namespace}} --previous | tail -100", Priority: PriorityMedium},
-			{Action: "Consider increasing GPU memory request or optimizing model", Priority: PriorityMedium},
+			{
+				Action:   "Review pod memory limits and GPU memory usage",
+				Command:  "kubectl describe pod {{.PodName}} -n {{.Namespace}}",
+				Priority: PriorityHigh,
+			},
+			{
+				Action:   "Check application memory allocation patterns",
+				Command:  "kubectl logs {{.PodName}} -n {{.Namespace}} --previous | tail -100",
+				Priority: PriorityMedium,
+			},
+			{
+				Action:   "Consider increasing GPU memory request or optimizing model",
+				Priority: PriorityMedium,
+			},
 		},
 	},
 	{
@@ -153,9 +212,21 @@ var KnownIncidentPatterns = []FailurePattern{
 		MessagePhrases: []string{"thermal", "overheating", "temperature"},
 		NotYourCode:    true,
 		Recommendations: []Recommendation{
-			{Action: "Check node cooling and airflow", Command: "kubectl describe node {{.Node}} | grep -A5 'Conditions'", Priority: PriorityHigh},
-			{Action: "Drain node for cooling investigation", Command: "kubectl drain {{.Node}} --ignore-daemonsets --delete-emptydir-data", Priority: PriorityHigh},
-			{Action: "Check GPU temperature and throttling", Command: "nvidia-smi -q -d TEMPERATURE,PERFORMANCE", Priority: PriorityMedium},
+			{
+				Action:   "Check node cooling and airflow",
+				Command:  "kubectl describe node {{.Node}} | grep -A5 'Conditions'",
+				Priority: PriorityHigh,
+			},
+			{
+				Action:   "Drain node for cooling investigation",
+				Command:  drainNodeCommand,
+				Priority: PriorityHigh,
+			},
+			{
+				Action:   "Check GPU temperature and throttling",
+				Command:  "nvidia-smi -q -d TEMPERATURE,PERFORMANCE",
+				Priority: PriorityMedium,
+			},
 		},
 	},
 }

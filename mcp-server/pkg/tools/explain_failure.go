@@ -92,7 +92,7 @@ func (h *ExplainFailureHandler) Handle(ctx context.Context, in ExplainFailureInp
 
 	return ExplainFailureOutput{
 		APIVersion:       explainFailureAPIVersion,
-		Status:           "success",
+		Status:           successStatus,
 		Node:             in.Node,
 		GPUUUID:          in.GPUUUID,
 		SinceMinutes:     since,
@@ -105,7 +105,9 @@ func (h *ExplainFailureHandler) Handle(ctx context.Context, in ExplainFailureInp
 // filterEventsForExplain narrows the event slice to events within the time
 // window and (when gpuUUID is set) events that mention the GPU via
 // entitiesImpacted.
-func filterEventsForExplain(events []datastore.HealthEventWithStatus, cutoff time.Time, gpuUUID string) []datastore.HealthEventWithStatus {
+func filterEventsForExplain(
+	events []datastore.HealthEventWithStatus, cutoff time.Time, gpuUUID string,
+) []datastore.HealthEventWithStatus {
 	out := make([]datastore.HealthEventWithStatus, 0, len(events))
 
 	for i := range events {

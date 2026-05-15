@@ -76,7 +76,9 @@ func NewPodGPUAllocationHandler(k kubernetes.Interface) *PodGPUAllocationHandler
 // Pods on the same node that do not request GPUs are filtered out at the
 // resource-summing stage. Results are sorted by namespace and pod name for
 // stable output.
-func (h *PodGPUAllocationHandler) Handle(ctx context.Context, in PodGPUAllocationInput) (PodGPUAllocationOutput, error) {
+func (h *PodGPUAllocationHandler) Handle(
+	ctx context.Context, in PodGPUAllocationInput,
+) (PodGPUAllocationOutput, error) {
 	if h.k8sClient == nil {
 		return PodGPUAllocationOutput{}, errors.New("pod_gpu_allocation: k8s API not configured")
 	}
@@ -119,7 +121,7 @@ func (h *PodGPUAllocationHandler) Handle(ctx context.Context, in PodGPUAllocatio
 
 	return PodGPUAllocationOutput{
 		APIVersion:  podGPUAllocationAPIVersion,
-		Status:      "success",
+		Status:      successStatus,
 		Allocations: allocations,
 	}, nil
 }
@@ -130,6 +132,7 @@ func (h *PodGPUAllocationHandler) Handle(ctx context.Context, in PodGPUAllocatio
 // GPU requests separately.
 func totalGPURequest(pod *corev1.Pod) int {
 	total := 0
+
 	for _, c := range pod.Spec.Containers {
 		if q, ok := c.Resources.Requests[gpuResourceName]; ok {
 			total += int(q.Value())
@@ -146,20 +149,7 @@ func visibleGPUsFromPod(pod *corev1.Pod) []string {
 	seen := map[string]struct{}{}
 
 	for _, c := range pod.Spec.Containers {
-		for _, env := range c.Env {
-			if env.Name != "NVIDIA_VISIBLE_DEVICES" || env.Value == "" {
-				continue
-			}
-
-			for _, v := range strings.Split(env.Value, ",") {
-				v = strings.TrimSpace(v)
-				if v == "" || v == "all" || v == "none" || v == "void" {
-					continue
-				}
-
-				seen[v] = struct{}{}
-			}
-		}
+		collectVisibleDevices(c.Env, seen)
 	}
 
 	if len(seen) == 0 {
@@ -174,4 +164,25 @@ func visibleGPUsFromPod(pod *corev1.Pod) []string {
 	sort.Strings(out)
 
 	return out
+}
+
+// collectVisibleDevices walks a container's env vars and records every valid
+// UUID from NVIDIA_VISIBLE_DEVICES into seen. Extracted from visibleGPUsFromPod
+// to keep its cyclomatic complexity under the cyclop limit; the same logic
+// was previously inlined as nested for/if statements.
+func collectVisibleDevices(envs []corev1.EnvVar, seen map[string]struct{}) {
+	for _, env := range envs {
+		if env.Name != "NVIDIA_VISIBLE_DEVICES" || env.Value == "" {
+			continue
+		}
+
+		for _, v := range strings.Split(env.Value, ",") {
+			v = strings.TrimSpace(v)
+			if v == "" || v == "all" || v == "none" || v == "void" {
+				continue
+			}
+
+			seen[v] = struct{}{}
+		}
+	}
 }

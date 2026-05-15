@@ -84,7 +84,7 @@ func (h *AnalyzeXIDHandler) Handle(ctx context.Context, in AnalyzeXIDInput) (Ana
 
 	out := AnalyzeXIDOutput{
 		APIVersion: analyzeXIDAPIVersion,
-		Status:     "success",
+		Status:     successStatus,
 		XIDCode:    in.XIDCode,
 		EventCount: len(matching),
 	}

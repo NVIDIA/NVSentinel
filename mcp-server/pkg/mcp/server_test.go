@@ -13,6 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Tests for the mcp.Server constructor and tool registration glue. Handler
+// behaviour lives in pkg/tools/*_test.go; this file is intentionally scoped
+// to the wiring layer.
 package mcp
 
 import (

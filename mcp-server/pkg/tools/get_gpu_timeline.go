@@ -121,7 +121,7 @@ func (h *GetGPUTimelineHandler) Handle(ctx context.Context, in GetGPUTimelineInp
 
 	return GetGPUTimelineOutput{
 		APIVersion:   getGPUTimelineAPIVersion,
-		Status:       "success",
+		Status:       successStatus,
 		Node:         in.Node,
 		GPUUUID:      in.GPUUUID,
 		SinceMinutes: since,

@@ -67,7 +67,9 @@ func NewDataStoreReader(store datastore.HealthEventStore) *DataStoreReader {
 }
 
 // EventsByNode implements Reader.EventsByNode.
-func (d *DataStoreReader) EventsByNode(ctx context.Context, nodeName string) ([]datastore.HealthEventWithStatus, error) {
+func (d *DataStoreReader) EventsByNode(
+	ctx context.Context, nodeName string,
+) ([]datastore.HealthEventWithStatus, error) {
 	events, err := d.store.FindHealthEventsByNode(ctx, nodeName)
 	if err != nil {
 		return nil, fmt.Errorf("store: events by node %q: %w", nodeName, err)
@@ -78,7 +80,9 @@ func (d *DataStoreReader) EventsByNode(ctx context.Context, nodeName string) ([]
 
 // LatestEventForNode implements Reader.LatestEventForNode. A nil result from
 // the underlying store is translated to ErrNotFound.
-func (d *DataStoreReader) LatestEventForNode(ctx context.Context, nodeName string) (*datastore.HealthEventWithStatus, error) {
+func (d *DataStoreReader) LatestEventForNode(
+	ctx context.Context, nodeName string,
+) (*datastore.HealthEventWithStatus, error) {
 	event, err := d.store.FindLatestEventForNode(ctx, nodeName)
 	if err != nil {
 		return nil, fmt.Errorf("store: latest event for node %q: %w", nodeName, err)
@@ -92,7 +96,9 @@ func (d *DataStoreReader) LatestEventForNode(ctx context.Context, nodeName strin
 }
 
 // EventsByQuery implements Reader.EventsByQuery.
-func (d *DataStoreReader) EventsByQuery(ctx context.Context, builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error) {
+func (d *DataStoreReader) EventsByQuery(
+	ctx context.Context, builder datastore.QueryBuilder,
+) ([]datastore.HealthEventWithStatus, error) {
 	events, err := d.store.FindHealthEventsByQuery(ctx, builder)
 	if err != nil {
 		return nil, fmt.Errorf("store: events by query: %w", err)
@@ -127,6 +133,7 @@ func NewFakeReader() *FakeReader {
 func (f *FakeReader) SeedNodeEvents(node string, events ...datastore.HealthEventWithStatus) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	f.byNode[node] = append(f.byNode[node], events...)
 }
 
@@ -135,6 +142,7 @@ func (f *FakeReader) SeedNodeEvents(node string, events ...datastore.HealthEvent
 func (f *FakeReader) SetNextQueryResult(events ...datastore.HealthEventWithStatus) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	f.nextQueryResult = append([]datastore.HealthEventWithStatus{}, events...)
 }
 
@@ -180,7 +188,9 @@ func (f *FakeReader) LatestEventForNode(_ context.Context, node string) (*datast
 // EventsByQuery implements Reader.EventsByQuery. It records the received
 // builder for test assertions and returns the result primed by
 // SetNextQueryResult.
-func (f *FakeReader) EventsByQuery(_ context.Context, builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error) {
+func (f *FakeReader) EventsByQuery(
+	_ context.Context, builder datastore.QueryBuilder,
+) ([]datastore.HealthEventWithStatus, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 

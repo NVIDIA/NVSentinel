@@ -211,6 +211,7 @@ func GetPromptByName(name string) (*PromptDef, bool) {
 			return &Library[i], true
 		}
 	}
+
 	return nil, false
 }
 
@@ -220,5 +221,6 @@ func GetAllPromptNames() []string {
 	for i, p := range Library {
 		names[i] = p.Name
 	}
+
 	return names
 }

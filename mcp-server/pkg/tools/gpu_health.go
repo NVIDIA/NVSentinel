@@ -24,6 +24,7 @@ import (
 
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/mcp-server/pkg/store"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 const gpuHealthAPIVersion = "1"
@@ -86,35 +87,7 @@ func (h *GPUHealthHandler) Handle(ctx context.Context, in GPUHealthInput) (GPUHe
 	byUUID := map[string]*GPUHealthEntry{}
 
 	for _, ews := range events {
-		he, ok := ews.HealthEvent.(*protos.HealthEvent)
-		if !ok || he == nil {
-			continue
-		}
-
-		for _, uuid := range gpuUUIDsFromEvent(he) {
-			if in.GPUUUID != "" && uuid != in.GPUUUID {
-				continue
-			}
-
-			entry, found := byUUID[uuid]
-			if !found {
-				entry = &GPUHealthEntry{UUID: uuid}
-				byUUID[uuid] = entry
-			}
-
-			entry.EventCount++
-			if !he.GetIsHealthy() {
-				entry.UnhealthyEventCount++
-			}
-
-			if ews.CreatedAt.After(entry.LastEventTime) {
-				entry.LastEventTime = ews.CreatedAt
-				entry.Healthy = he.GetIsHealthy()
-				entry.LastMessage = he.GetMessage()
-				entry.LastCheck = he.GetCheckName()
-				entry.ErrorCodes = append([]string{}, he.GetErrorCode()...)
-			}
-		}
+		accumulateGPUHealthEvent(byUUID, ews, in.GPUUUID)
 	}
 
 	gpus := make([]GPUHealthEntry, 0, len(byUUID))
@@ -126,9 +99,49 @@ func (h *GPUHealthHandler) Handle(ctx context.Context, in GPUHealthInput) (GPUHe
 
 	return GPUHealthOutput{
 		APIVersion: gpuHealthAPIVersion,
-		Status:     "success",
+		Status:     successStatus,
 		Node:       in.Node,
 		GPUCount:   len(gpus),
 		GPUs:       gpus,
 	}, nil
+}
+
+// accumulateGPUHealthEvent folds a single stored event into the per-UUID
+// aggregate map. Extracted from Handle to keep that function under the cyclop
+// limit; the same logic was previously inlined as a nested for/if cascade.
+// When filterUUID is non-empty, only that UUID's bucket is updated.
+func accumulateGPUHealthEvent(
+	byUUID map[string]*GPUHealthEntry,
+	ews datastore.HealthEventWithStatus,
+	filterUUID string,
+) {
+	he, ok := ews.HealthEvent.(*protos.HealthEvent)
+	if !ok || he == nil {
+		return
+	}
+
+	for _, uuid := range gpuUUIDsFromEvent(he) {
+		if filterUUID != "" && uuid != filterUUID {
+			continue
+		}
+
+		entry, found := byUUID[uuid]
+		if !found {
+			entry = &GPUHealthEntry{UUID: uuid}
+			byUUID[uuid] = entry
+		}
+
+		entry.EventCount++
+		if !he.GetIsHealthy() {
+			entry.UnhealthyEventCount++
+		}
+
+		if ews.CreatedAt.After(entry.LastEventTime) {
+			entry.LastEventTime = ews.CreatedAt
+			entry.Healthy = he.GetIsHealthy()
+			entry.LastMessage = he.GetMessage()
+			entry.LastCheck = he.GetCheckName()
+			entry.ErrorCodes = append([]string{}, he.GetErrorCode()...)
+		}
+	}
 }

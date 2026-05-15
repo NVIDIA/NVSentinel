@@ -76,7 +76,9 @@ func NewGetIncidentReportHandler(r store.Reader) *GetIncidentReportHandler {
 // incident_id, derives the report's structured fields, and pairs the result
 // with recommendations from MatchIncidents over same-node events around the
 // incident time.
-func (h *GetIncidentReportHandler) Handle(ctx context.Context, in GetIncidentReportInput) (GetIncidentReportOutput, error) {
+func (h *GetIncidentReportHandler) Handle(
+	ctx context.Context, in GetIncidentReportInput,
+) (GetIncidentReportOutput, error) {
 	if in.IncidentID == "" {
 		return GetIncidentReportOutput{}, errors.New("get_incident_report: incident_id is required")
 	}
@@ -88,7 +90,7 @@ func (h *GetIncidentReportHandler) Handle(ctx context.Context, in GetIncidentRep
 
 	out := GetIncidentReportOutput{
 		APIVersion: getIncidentReportAPIVersion,
-		Status:     "success",
+		Status:     successStatus,
 		IncidentID: in.IncidentID,
 		Title:      truncate(incidentEvt.GetMessage(), getIncidentReportTitleMaxLen),
 		Severity:   severityFor(incidentEvt),
@@ -130,7 +132,9 @@ func (h *GetIncidentReportHandler) Handle(ctx context.Context, in GetIncidentRep
 // events with the given id. The store backend implements the actual lookup
 // (Mongo or Postgres); this helper picks the first matching event from the
 // result.
-func (h *GetIncidentReportHandler) findIncidentEvent(ctx context.Context, id string) (datastore.HealthEventWithStatus, *protos.HealthEvent, error) {
+func (h *GetIncidentReportHandler) findIncidentEvent(
+	ctx context.Context, id string,
+) (datastore.HealthEventWithStatus, *protos.HealthEvent, error) {
 	builder := query.New().Build(query.And(
 		query.Eq("healthevent.agent", healthEventsAnalyzerAgent),
 		query.Eq("healthevent.id", id),
@@ -154,7 +158,11 @@ func (h *GetIncidentReportHandler) findIncidentEvent(ctx context.Context, id str
 // window of the incident's CreatedAt, excluding the incident event itself.
 // The window cap is a sensible default; a future enhancement could make it
 // configurable.
-func (h *GetIncidentReportHandler) relatedEvents(ctx context.Context, incidentEvent datastore.HealthEventWithStatus, incidentEvt *protos.HealthEvent) ([]datastore.HealthEventWithStatus, error) {
+func (h *GetIncidentReportHandler) relatedEvents(
+	ctx context.Context,
+	incidentEvent datastore.HealthEventWithStatus,
+	incidentEvt *protos.HealthEvent,
+) ([]datastore.HealthEventWithStatus, error) {
 	node := incidentEvt.GetNodeName()
 	if node == "" {
 		return nil, nil
@@ -165,18 +173,15 @@ func (h *GetIncidentReportHandler) relatedEvents(ctx context.Context, incidentEv
 		return nil, fmt.Errorf("get_incident_report: events by node: %w", err)
 	}
 
-	earliest := incidentEvent.CreatedAt.Add(-time.Duration(getIncidentReportWindowSecs) * time.Second)
-	latest := incidentEvent.CreatedAt.Add(time.Duration(getIncidentReportWindowSecs) * time.Second)
+	window := time.Duration(getIncidentReportWindowSecs) * time.Second
+	earliest := incidentEvent.CreatedAt.Add(-window)
+	latest := incidentEvent.CreatedAt.Add(window)
 
 	out := make([]datastore.HealthEventWithStatus, 0, len(all))
 
 	for i := range all {
 		ews := all[i]
-		if ews.CreatedAt.Before(earliest) || ews.CreatedAt.After(latest) {
-			continue
-		}
-
-		if he, ok := ews.HealthEvent.(*protos.HealthEvent); ok && he != nil && he.GetId() == incidentEvt.GetId() && he.GetAgent() == healthEventsAnalyzerAgent {
+		if !inWindowAndDistinct(ews, incidentEvt, earliest, latest) {
 			continue
 		}
 
@@ -188,6 +193,31 @@ func (h *GetIncidentReportHandler) relatedEvents(ctx context.Context, incidentEv
 	}
 
 	return out, nil
+}
+
+// inWindowAndDistinct reports whether the candidate event falls inside the
+// [earliest, latest] window and is not the analyzer-synthesized incident
+// event itself. Extracted from relatedEvents to keep that function under the
+// cyclop limit.
+func inWindowAndDistinct(
+	ews datastore.HealthEventWithStatus,
+	incidentEvt *protos.HealthEvent,
+	earliest, latest time.Time,
+) bool {
+	if ews.CreatedAt.Before(earliest) || ews.CreatedAt.After(latest) {
+		return false
+	}
+
+	he, ok := ews.HealthEvent.(*protos.HealthEvent)
+	if !ok || he == nil {
+		return true
+	}
+
+	if he.GetId() == incidentEvt.GetId() && he.GetAgent() == healthEventsAnalyzerAgent {
+		return false
+	}
+
+	return true
 }
 
 func severityFor(he *protos.HealthEvent) string {

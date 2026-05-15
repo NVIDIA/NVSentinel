@@ -129,7 +129,7 @@ func (h *GPUInventoryHandler) Handle(ctx context.Context, in GPUInventoryInput) 
 
 	return GPUInventoryOutput{
 		APIVersion: gpuInventoryAPIVersion,
-		Status:     "success",
+		Status:     successStatus,
 		Node:       in.Node,
 		GPUCount:   len(gpus),
 		GPUs:       gpus,

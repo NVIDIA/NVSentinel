@@ -75,7 +75,9 @@ func NewGetNVLinkTopologyHandler() *GetNVLinkTopologyHandler {
 // per donor direction (AUDIT.md § 6), no GitHub issue is filed in this
 // PR. If maintainers request one during review, it can be filed using
 // the body in AUDIT.md § 6.1 and substituted here.
-func (h *GetNVLinkTopologyHandler) Handle(_ context.Context, in GetNVLinkTopologyInput) (GetNVLinkTopologyOutput, error) {
+func (h *GetNVLinkTopologyHandler) Handle(
+	_ context.Context, in GetNVLinkTopologyInput,
+) (GetNVLinkTopologyOutput, error) {
 	if in.Node == "" {
 		return GetNVLinkTopologyOutput{}, errors.New("get_nvlink_topology: node is required")
 	}

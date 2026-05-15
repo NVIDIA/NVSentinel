@@ -111,17 +111,9 @@ func (h *HTTPServer) ListenAndServe(ctx context.Context) error {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	useTLS := h.tlsConfig != nil && h.tlsConfig.Enabled()
-	if useTLS {
-		reloader, err := newCertReloader(h.tlsConfig.CertFile, h.tlsConfig.KeyFile)
-		if err != nil {
-			return fmt.Errorf("TLS setup: %w", err)
-		}
-
-		h.httpServer.TLSConfig = &tls.Config{
-			GetCertificate: reloader.GetCertificate,
-			MinVersion:     tls.VersionTLS12,
-		}
+	useTLS, err := h.configureTLS()
+	if err != nil {
+		return err
 	}
 
 	proto := "HTTP"
@@ -134,7 +126,9 @@ func (h *HTTPServer) ListenAndServe(ctx context.Context) error {
 	// Bind the listener up front so close(h.ready) only fires when the
 	// socket is actually reachable. Doing this inside the serving goroutine
 	// would race with health probes.
-	ln, err := net.Listen("tcp", h.addr)
+	lc := net.ListenConfig{}
+
+	ln, err := lc.Listen(ctx, "tcp", h.addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", h.addr, err)
 	}
@@ -159,6 +153,28 @@ func (h *HTTPServer) ListenAndServe(ctx context.Context) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+// configureTLS conditionally installs TLS on h.httpServer. Returns (useTLS,
+// err). Extracted from ListenAndServe to keep that function under the cyclop
+// limit; the donor's port of this code put the TLS branch inline.
+func (h *HTTPServer) configureTLS() (bool, error) {
+	useTLS := h.tlsConfig != nil && h.tlsConfig.Enabled()
+	if !useTLS {
+		return false, nil
+	}
+
+	reloader, err := newCertReloader(h.tlsConfig.CertFile, h.tlsConfig.KeyFile)
+	if err != nil {
+		return false, fmt.Errorf("TLS setup: %w", err)
+	}
+
+	h.httpServer.TLSConfig = &tls.Config{
+		GetCertificate: reloader.GetCertificate,
+		MinVersion:     tls.VersionTLS12,
+	}
+
+	return true, nil
 }
 
 // Ready returns a channel that is closed once the listener is bound. Tests
@@ -192,7 +208,7 @@ func (h *HTTPServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	if err := json.NewEncoder(w).Encode(map[string]string{"status": "healthy"}); err != nil {
+	if err := json.NewEncoder(w).Encode(map[string]string{labelStatus: "healthy"}); err != nil {
 		slog.Error("failed to encode healthz response", "error", err)
 	}
 }
@@ -209,7 +225,7 @@ func (h *HTTPServer) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	if err := json.NewEncoder(w).Encode(map[string]string{"status": "ready"}); err != nil {
+	if err := json.NewEncoder(w).Encode(map[string]string{labelStatus: "ready"}); err != nil {
 		slog.Error("failed to encode readyz response", "error", err)
 	}
 }

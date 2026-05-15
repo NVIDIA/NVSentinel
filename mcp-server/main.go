@@ -117,10 +117,36 @@ func run() error {
 		return fmt.Errorf("create mcp server: %w", err)
 	}
 
+	waitErr, gCtxErr := runServers(ctx, metricsServer, mcpServer, *metricsPort, *mcpAddr, *authToken, k8sClient)
+
+	if shutdownErr := mcpServer.Shutdown(); shutdownErr != nil {
+		slog.Warn("MCP server shutdown returned error", "error", shutdownErr)
+	}
+
+	if waitErr != nil && gCtxErr == nil {
+		return fmt.Errorf("server group: %w", waitErr)
+	}
+
+	slog.Info("Shutdown complete")
+
+	return nil
+}
+
+// runServers wires the metrics and MCP servers into an errgroup and blocks
+// until both return. It exists to keep run() under the cyclop limit; the
+// returned gCtxErr is g's derived context error at completion, used by run()
+// to distinguish graceful shutdown from a real failure.
+func runServers(
+	ctx context.Context,
+	metricsServer server.Server,
+	mcpServer *mcp.Server,
+	metricsPort, mcpAddr, authToken string,
+	k8sClient kubernetes.Interface,
+) (waitErr, gCtxErr error) {
 	g, gCtx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
-		slog.Info("Starting metrics and health server", "port", *metricsPort)
+		slog.Info("Starting metrics and health server", "port", metricsPort)
 
 		if err := metricsServer.Serve(gCtx); err != nil {
 			slog.Error("Metrics server failed - continuing without metrics", "error", err)
@@ -130,12 +156,12 @@ func run() error {
 	})
 
 	g.Go(func() error {
-		slog.Info("MCP server starting", "addr", *mcpAddr, "auth", *authToken != "", "k8s", k8sClient != nil)
+		slog.Info("MCP server starting", "addr", mcpAddr, "auth", authToken != "", "k8s", k8sClient != nil)
 
 		if err := mcpServer.Run(gCtx); err != nil {
 			if gCtx.Err() != nil {
 				slog.Info("MCP server stopped on context cancellation")
-				return nil
+				return nil //nolint:nilerr // context cancellation is not an error
 			}
 
 			slog.Error("MCP server failed", "error", err)
@@ -146,19 +172,7 @@ func run() error {
 		return nil
 	})
 
-	waitErr := g.Wait()
-
-	if shutdownErr := mcpServer.Shutdown(); shutdownErr != nil {
-		slog.Warn("MCP server shutdown returned error", "error", shutdownErr)
-	}
-
-	if waitErr != nil && gCtx.Err() == nil {
-		return fmt.Errorf("server group: %w", waitErr)
-	}
-
-	slog.Info("Shutdown complete")
-
-	return nil
+	return g.Wait(), gCtx.Err()
 }
 
 func CreateMetricsServer(port string) (server.Server, error) {
