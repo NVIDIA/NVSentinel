@@ -1,0 +1,147 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "mcp-server.fullname" . }}
+  labels:
+    {{- include "mcp-server.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "mcp-server.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "mcp-server.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "mcp-server.fullname" . }}
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: mcp-server
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          args:
+            - "--mcp-addr=:{{ .Values.mcpPort }}"
+            - "--metrics-port={{ .Values.global.metricsPort }}"
+          ports:
+            - name: mcp
+              containerPort: {{ .Values.mcpPort }}
+            - name: metrics
+              containerPort: {{ .Values.global.metricsPort }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          env:
+            - name: APP_NAME
+              value: {{ .Chart.Name | quote }}
+            {{- if .Values.authToken.secretName }}
+            - name: MCP_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.authToken.secretName }}
+                  key: {{ .Values.authToken.secretKey }}
+            {{- end }}
+            {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+            - name: POSTGRESQL_CLIENT_CERT_MOUNT_PATH
+              value: "/etc/ssl/client-certs"
+            {{- else if .Values.mongodbStore.clientCertMountPath }}
+            - name: MONGODB_CLIENT_CERT_PATH
+              value: {{ printf "%s/tls.crt" .Values.mongodbStore.clientCertMountPath | quote }}
+            - name: MONGODB_CLIENT_KEY_PATH
+              value: {{ printf "%s/tls.key" .Values.mongodbStore.clientCertMountPath | quote }}
+            - name: MONGODB_CA_CERT_PATH
+              value: {{ printf "%s/ca.crt" .Values.mongodbStore.clientCertMountPath | quote }}
+            {{- else if include "nvsentinel.mongodb.certMountPathFromMongoStore" . | trim }}
+            {{- $mongoCertMount := include "nvsentinel.mongodb.certMountPathFromMongoStore" . | trim }}
+            - name: MONGODB_CLIENT_CERT_PATH
+              value: {{ printf "%s/tls.crt" $mongoCertMount | quote }}
+            - name: MONGODB_CLIENT_KEY_PATH
+              value: {{ printf "%s/tls.key" $mongoCertMount | quote }}
+            - name: MONGODB_CA_CERT_PATH
+              value: {{ printf "%s/ca.crt" $mongoCertMount | quote }}
+            {{- end }}
+            {{- if .Values.global.tracing.enabled }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.global.tracing.endpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: {{ .Values.global.tracing.insecure | quote }}
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ if .Values.global.datastore }}{{ .Release.Name }}-datastore-config{{ else }}mongodb-config{{ end }}
+                optional: true
+            {{- include "nvsentinel.datastore.secretEnvFrom" . | nindent 12 }}
+          volumeMounts:
+            {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+            - name: client-certs-fixed
+              mountPath: /etc/ssl/client-certs
+              readOnly: true
+            {{- else if and (eq (include "nvsentinel.mongodb.hasCertVolume" .) "true") (include "nvsentinel.mongodb.certMountPathFromMongoStore" . | trim) }}
+            - name: mongo-app-client-cert
+              mountPath: {{ include "nvsentinel.mongodb.certMountPathFromMongoStore" . | trim }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+        - name: client-certs-fixed
+          emptyDir: {}
+        {{- else }}
+        {{- include "nvsentinel.mongodb.certVolume" . | nindent 8 }}
+        {{- end }}
+      restartPolicy: Always
+      {{- with (.Values.global.systemNodeSelector | default .Values.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.global.affinity | default .Values.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.global.systemNodeTolerations | default .Values.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
