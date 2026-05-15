@@ -4,13 +4,13 @@
 
 NVSentinel is the primary owner of nodes in the clusters where it operates: when a node joins, NVSentinel owns it, and any cordon/drain/reboot/terminate flows through NVSentinel's pipeline (health-monitor → fault-quarantine → node-drainer → fault-remediation).
 
-External breakfix systems — automated orchestrators driving CSP-side repair, RMA workflows, hardware swaps, or human operators performing manual maintenance — also have authority to perform destructive actions on the same nodes. Today these systems coordinate with NVSentinel ad-hoc, through side channels and operator knowledge.
+External breakfix systems — automated orchestrators driving CSP-side repair, long-running workflows, hardware swaps, or human operators performing manual maintenance — also have authority to perform destructive actions on the same nodes. Today these systems coordinate with NVSentinel ad-hoc, through side channels and operator knowledge.
 
 A node must be owned by **exactly one** system at any point in time. Without a formal protocol, NVSentinel and an external system can both decide to act on the same node and race — duplicating remediation work, fighting over taints, or interleaving operations that corrupt cluster state.
 
 The two crossing points needed are:
 
-1. **NVSentinel-detected fault that an external system must fix.** NVSentinel's triage maps a known failure mode to a remediation that NVSentinel cannot perform itself (e.g. CSP-side repair, RMA). NVSentinel needs to signal "I no longer own this node" and stop attempting remediations.
+1. **NVSentinel-detected fault that an external system must fix.** NVSentinel's triage maps a known failure mode to a remediation that NVSentinel cannot perform itself (e.g. CSP-side repair, long-running workflows). NVSentinel needs to signal "I no longer own this node" and stop attempting remediations.
 2. **External-detected fault that NVSentinel must prepare for.** An external system observes a fault NVSentinel can't see (e.g. a CSP-scheduled maintenance window, an out-of-band monitoring signal, an operator-driven request). The external system needs NVSentinel to cordon and drain the node, then transfer ownership.
 
 The same protocol must work for human operators preparing nodes for manual remediation. Multiple bespoke entry points (one per external system) would not. The design must be agnostic to which external system is on the other side — NVSentinel cannot make assumptions about how, when, or whether an external system completes its work.
@@ -292,7 +292,7 @@ The reconcilers call `SetInitialConditions` on first reconcile, writing every co
 | Condition | Initial | Terminal `True` | Terminal `False` | Set by |
 | --- | --- | --- | --- | --- |
 | `NVSentinelOwnershipReleased` | `Unknown` (`Initializing`) | Release taint applied to `spec.nodeName` | Permanent failure to apply taint (retries exhausted, e.g. invalid configuration) | ERR reconciler |
-| `ExternalRemediationComplete` | `Unknown` (`AwaitingExternalSystem`) | External system reports remediation succeeded | External system reports remediation failed (e.g. RMA declined, repair unsuccessful, external system gave up) | **External system** |
+| `ExternalRemediationComplete` | `Unknown` (`AwaitingExternalSystem`) | External system reports remediation succeeded | External system reports remediation failed (e.g. repair unsuccessful, external system gave up) | **External system** |
 
 Both `True` and `False` on `ExternalRemediationComplete` are meaningful, terminal outcomes from the external system's perspective. The ERR reconciler treats them symmetrically: remove the release taint, propagate the value to the owning EF (if any). What happens *after* the propagation differs by source — the two cases are described below.
 
@@ -548,7 +548,7 @@ sequenceDiagram
     RC->>N: apply release taint
     RC->>ERR: NVSentinelOwnershipReleased=True
     Note over EXT: external system watches ERR, sees OwnershipReleased
-    EXT->>N: perform remediation (RMA, manual fix, …)
+    EXT->>N: perform remediation (repair, manual fix, …)
     EXT->>ERR: ExternalRemediationComplete=True
     RC->>N: remove release taint
     Note over HM,N: existing health-monitors emit healthy events
@@ -659,7 +659,7 @@ External systems must NOT be granted write access to `nodes` through the externa
 - **Reuses the existing pipeline.** EFs do not bypass `fault-quarantine` or `node-drainer`; the same quarantine/drain that protects NVSentinel-detected faults protects external-detected ones. Adding a new external system requires zero changes to those stages.
 - **CRDs are debuggable.** Operators can `kubectl get err,ef -A` to see every node currently outside NVSentinel ownership and the reason. Status conditions surface the exact step the handoff is on.
 - **Plugs into ADR-036.** The `CUSTOM` recommended action and `GetEffectiveActionName` resolution already exist; this ADR layers the ERR-producing branch on top of that machinery rather than introducing a parallel routing path.
-- **Asynchronous by design.** Remediation can take hours to weeks (RMA, replacement parts, scheduled CSP windows). The protocol does not require either system to be online for the other to progress.
+- **Asynchronous by design.** Remediation can take hours to weeks (replacement parts, scheduled CSP windows). The protocol does not require either system to be online for the other to progress.
 
 ## Consequences
 
@@ -689,7 +689,7 @@ External systems must NOT be granted write access to `nodes` through the externa
 
 ### Reuse existing maintenance CRs (RebootNode, TerminateNode, GPUReset)
 
-**Rejected** because: those CRs encode specific in-cluster actions performed by the janitor, not generic ownership transfer. An external system performing an RMA isn't doing "reboot" or "terminate" — it's doing arbitrary work that NVSentinel doesn't model. Forcing this through existing CRs would muddy their semantics. External systems remain free to create those CRs directly when in-cluster remediation is part of their workflow.
+**Rejected** because: those CRs encode specific in-cluster actions performed by the janitor, not generic ownership transfer. An external system performing a long-running operation isn't doing "reboot" or "terminate" — it's doing arbitrary work that NVSentinel doesn't model. Forcing this through existing CRs would muddy their semantics. External systems remain free to create those CRs directly when in-cluster remediation is part of their workflow.
 
 ### Just use a taint, no CRDs
 
