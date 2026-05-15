@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 # nsenter is in util-linux (already in slim), but ensure it's available
 RUN apt-get update && apt-get install -y --no-install-recommends \

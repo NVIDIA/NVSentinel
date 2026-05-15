@@ -14,7 +14,7 @@
 
 ARG VERSION="0.1.0"
 
-FROM public.ecr.aws/docker/library/python:3.10-bookworm AS build
+FROM public.ecr.aws/docker/library/python:3.13-bookworm AS build
 
 ARG VERSION
 
@@ -36,7 +36,7 @@ RUN --mount=type=cache,target=/tmp/poetry_cache \
 RUN poetry export --format requirements.txt --output constraints.txt --without-hashes
 
 
-FROM public.ecr.aws/docker/library/python:3.10-slim-bookworm AS runtime
+FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm AS runtime
 
 # util-linux provides nsenter for inspecting host systemd services
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
