@@ -69,7 +69,7 @@ jobs:
             if git show-ref --verify --quiet "refs/tags/${version}"; then
               mkdir -p "fern/versions/${version}-content"
               git archive "refs/tags/${version}" -- docs/ | tar -x --strip-components=1 -C "fern/versions/${version}-content"
-              find "fern/versions/${version}-content" -name '*.md' -print0 | xargs -0 sed -i \
+              find "fern/versions/${version}-content" -name '*.md' -print0 | xargs -0 -r sed -i \
                 -e 's/{/\\{/g' \
                 -e 's/}/\\}/g' \
                 -e 's/</\&lt;/g'

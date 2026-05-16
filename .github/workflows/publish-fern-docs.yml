@@ -150,7 +150,7 @@ jobs:
             if git show-ref --verify --quiet "refs/tags/${version}"; then
               mkdir -p "fern/versions/${version}-content"
               git archive "refs/tags/${version}" -- docs/ | tar -x --strip-components=1 -C "fern/versions/${version}-content"
-              find "fern/versions/${version}-content" -name '*.md' -print0 | xargs -0 sed -i \
+              find "fern/versions/${version}-content" -name '*.md' -print0 | xargs -0 -r sed -i \
                 -e 's/{/\\{/g' \
                 -e 's/}/\\}/g' \
                 -e 's/</\&lt;/g'
@@ -162,9 +162,11 @@ jobs:
           done
 
       - name: Stamp version in docs.yml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cp fern/docs.yml /tmp/docs.yml.preStamp
-          VERSION=$(curl -sf https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r .tag_name || true)
+          VERSION=$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name 2>/dev/null || true)
           if [ -n "$VERSION" ] && [ "$VERSION" != "null" ]; then
             export VERSION
             yq -i '(.products[0].versions[] | select(.slug == "latest")).display-name = "Latest · " + env(VERSION)' fern/docs.yml
