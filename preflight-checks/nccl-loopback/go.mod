@@ -8,8 +8,8 @@ require (
 	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/nvidia/nvsentinel/data-models v0.0.0
 	google.golang.org/grpc v1.81.1
-	google.golang.org/protobuf v1.36.11
-	k8s.io/apimachinery v0.35.4
+	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
+	k8s.io/apimachinery v0.36.1
 )
 
 require (
@@ -23,7 +23,7 @@ require (
 	golang.org/x/text v0.36.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260401024825-9d38bb4040a9 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
-	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4 // indirect
+	k8s.io/utils v0.0.0-20260210185600-b8788abfbbc2 // indirect
 )
 
 replace github.com/nvidia/nvsentinel/commons => ../../commons
