@@ -91,6 +91,18 @@ func TestNICHealthMonitorRoCEStateDetection(t *testing.T) {
 		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName,
 			ethCheckName, "RoCE port mlx5_8 port 1", "", corev1.ConditionTrue)
 
+		t.Log("Verifying fatal EthernetStateCheck cordons the node")
+		helpers.AssertQuarantineState(ctx, t, client, nodeName, helpers.QuarantineAssertion{
+			ExpectCordoned: true,
+			AnnotationChecks: []helpers.AnnotationCheck{
+				{
+					Key:         helpers.QuarantineHealthEventAnnotationKey,
+					Pattern:     "EthernetStateCheck",
+					ShouldExist: true,
+				},
+			},
+		})
+
 		return ctx
 	})
 
@@ -108,6 +120,14 @@ func TestNICHealthMonitorRoCEStateDetection(t *testing.T) {
 		t.Log("Verifying EthernetStateCheck condition returns to False (healthy)")
 		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName,
 			ethCheckName, "", "", corev1.ConditionFalse)
+
+		t.Log("Verifying EthernetStateCheck recovery uncordons the node")
+		helpers.AssertQuarantineState(ctx, t, client, nodeName, helpers.QuarantineAssertion{
+			ExpectCordoned: false,
+			AnnotationChecks: []helpers.AnnotationCheck{
+				{Key: helpers.QuarantineHealthEventAnnotationKey, ShouldExist: false},
+			},
+		})
 
 		return ctx
 	})
@@ -182,6 +202,18 @@ func TestNICHealthMonitorIBStateDetection(t *testing.T) {
 		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName,
 			ibCheckName, "Port mlx5_0 port 1", "", corev1.ConditionTrue)
 
+		t.Log("Verifying fatal InfiniBandStateCheck cordons the node")
+		helpers.AssertQuarantineState(ctx, t, client, nodeName, helpers.QuarantineAssertion{
+			ExpectCordoned: true,
+			AnnotationChecks: []helpers.AnnotationCheck{
+				{
+					Key:         helpers.QuarantineHealthEventAnnotationKey,
+					Pattern:     "InfiniBandStateCheck",
+					ShouldExist: true,
+				},
+			},
+		})
+
 		return ctx
 	})
 
@@ -199,6 +231,14 @@ func TestNICHealthMonitorIBStateDetection(t *testing.T) {
 		t.Log("Verifying InfiniBandStateCheck condition returns to False (healthy)")
 		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName,
 			ibCheckName, "", "", corev1.ConditionFalse)
+
+		t.Log("Verifying InfiniBandStateCheck recovery uncordons the node")
+		helpers.AssertQuarantineState(ctx, t, client, nodeName, helpers.QuarantineAssertion{
+			ExpectCordoned: false,
+			AnnotationChecks: []helpers.AnnotationCheck{
+				{Key: helpers.QuarantineHealthEventAnnotationKey, ShouldExist: false},
+			},
+		})
 
 		return ctx
 	})
@@ -606,7 +646,7 @@ func TestNICHealthMonitorMultipleDownRecoveryCycles(t *testing.T) {
 				nodeName, "mlx5_0", "1", "4: ACTIVE", "5: LinkUp")
 
 			helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName,
-			ibCheckName, "", "", corev1.ConditionFalse)
+				ibCheckName, "", "", corev1.ConditionFalse)
 		}
 
 		return ctx

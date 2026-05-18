@@ -226,3 +226,26 @@ func TestFindAllPrefixMatches(t *testing.T) {
 		})
 	}
 }
+
+func TestIsEmptyValue(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "empty string", value: "", want: true},
+		{name: "whitespace", value: " \n\t ", want: true},
+		{name: "empty JSON array", value: "[]", want: true},
+		{name: "empty JSON array with whitespace", value: "  []\n", want: true},
+		{name: "non-empty JSON array", value: `[{"checkName":"GpuXidError"}]`, want: false},
+		{name: "non-array value", value: "value", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsEmptyValue(tt.value); got != tt.want {
+				t.Fatalf("IsEmptyValue(%q) = %v, want %v", tt.value, got, tt.want)
+			}
+		})
+	}
+}

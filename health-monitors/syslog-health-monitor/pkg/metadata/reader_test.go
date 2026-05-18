@@ -332,18 +332,21 @@ func TestReaderMalformedJSON(t *testing.T) {
 	require.Contains(t, err.Error(), "failed to parse metadata JSON")
 }
 
-func TestReaderErrorCaching(t *testing.T) {
-	reader := NewReader("/nonexistent/file.json")
+func TestReaderRetriesAfterLoadFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	metadataFile := filepath.Join(tmpDir, "gpu_metadata.json")
+	reader := NewReader(metadataFile)
 
-	_, err1 := reader.GetGPUByPCI("0000:17:00.0")
-	_, err2 := reader.GetGPUByPCI("0000:65:00.0")
+	_, err := reader.GetGPUByPCI("0000:17:00.0")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "failed to load metadata for PCI lookup 0000:17:00.0")
+	require.Contains(t, err.Error(), "failed to read metadata file")
 
-	require.Error(t, err1)
-	require.Error(t, err2)
-	require.Contains(t, err1.Error(), "failed to load metadata for PCI lookup 0000:17:00.0")
-	require.Contains(t, err2.Error(), "failed to load metadata for PCI lookup 0000:65:00.0")
-	require.Contains(t, err1.Error(), "failed to read metadata file")
-	require.Contains(t, err2.Error(), "failed to read metadata file")
+	require.NoError(t, os.WriteFile(metadataFile, []byte(testMetadataJSON), 0600))
+
+	gpu, err := reader.GetGPUByPCI("0000:65:00.0")
+	require.NoError(t, err)
+	require.Equal(t, "GPU-11111111-1111-1111-1111-111111111111", gpu.UUID)
 }
 
 func TestGetGPUByNVSwitchLinkErrorWrapping(t *testing.T) {
