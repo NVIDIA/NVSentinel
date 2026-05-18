@@ -28,8 +28,8 @@ import (
 type Reader struct {
 	path string
 
-	once    sync.Once
-	loadErr error
+	mu     sync.Mutex
+	loaded bool
 
 	metadata *model.GPUMetadata
 
@@ -50,11 +50,20 @@ func NewReader(path string) *Reader {
 }
 
 func (r *Reader) ensureLoaded() error {
-	r.once.Do(func() {
-		r.loadErr = r.load()
-	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-	return r.loadErr
+	if r.loaded {
+		return nil
+	}
+
+	if err := r.load(); err != nil {
+		return err
+	}
+
+	r.loaded = true
+
+	return nil
 }
 
 func (r *Reader) load() error {
