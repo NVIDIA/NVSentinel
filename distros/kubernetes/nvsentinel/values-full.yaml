@@ -1726,7 +1726,7 @@ preflight:
   # GANG DISCOVERY
   #
   # Identifies pods belonging to the same scheduling group for multi-node checks.
-  # Default (empty): K8s 1.35+ native WorkloadRef API.
+  # Default (empty): K8s 1.36+ native schedulingGroup API.
   # For PodGroup-based schedulers, set name and other fields.
   # See: docs/configuration/preflight.md#gang-discovery
   ##############################################################################

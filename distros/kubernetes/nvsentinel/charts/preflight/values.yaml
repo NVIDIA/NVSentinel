@@ -269,7 +269,7 @@ networkResourceNames:
   - "networking.gke.io.networks/gpu-nic7.IP"
 
 # Gang discovery configuration for multi-node preflight checks.
-# Default (empty): K8s 1.35+ native WorkloadRef API
+# Default (empty): K8s 1.36+ native schedulingGroup API
 # For PodGroup-based schedulers, set name and other fields:
 gangDiscovery: {}
   # name: "volcano"

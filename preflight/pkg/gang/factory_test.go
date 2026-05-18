@@ -31,14 +31,14 @@ func TestNewDiscovererFromConfig(t *testing.T) {
 
 	// Create REST mapper with required GVKs registered
 	restMapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{
-		{Group: "scheduling.k8s.io", Version: "v1alpha1"},
+		{Group: "scheduling.k8s.io", Version: "v1alpha2"},
 		{Group: "scheduling.volcano.sh", Version: "v1beta1"},
 	})
-	// K8s 1.35+ native Workload API
+	// K8s 1.36+ native PodGroup API
 	restMapper.Add(schema.GroupVersionKind{
 		Group:   "scheduling.k8s.io",
-		Version: "v1alpha1",
-		Kind:    "Workload",
+		Version: "v1alpha2",
+		Kind:    "PodGroup",
 	}, meta.RESTScopeNamespace)
 	// Volcano PodGroup
 	restMapper.Add(schema.GroupVersionKind{

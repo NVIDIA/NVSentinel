@@ -177,7 +177,3 @@ func (t *TerminateNode) SetCompletionTime() {
 		t.Status.CompletionTime = &now
 	}
 }
-
-func init() {
-	SchemeBuilder.Register(&TerminateNode{}, &TerminateNodeList{})
-}

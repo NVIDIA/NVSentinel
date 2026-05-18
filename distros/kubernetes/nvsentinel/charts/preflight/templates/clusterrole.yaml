@@ -36,9 +36,9 @@ rules:
   - apiGroups: [{{ .Values.gangDiscovery.podGroupGVR.group | quote }}]
     resources: [{{ .Values.gangDiscovery.podGroupGVR.resource | quote }}]
   {{- else }}
-  # K8s 1.35+ Workload API for native gang scheduling (default)
+  # K8s 1.36+ PodGroup API for native gang scheduling (default)
   - apiGroups: ["scheduling.k8s.io"]
-    resources: ["workloads"]
+    resources: ["podgroups"]
   {{- end }}
     verbs: ["get", "list", "watch"]
 

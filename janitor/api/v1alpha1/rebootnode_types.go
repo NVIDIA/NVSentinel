@@ -188,7 +188,3 @@ func (r *RebootNode) SetCompletionTime() {
 		r.Status.CompletionTime = &now
 	}
 }
-
-func init() {
-	SchemeBuilder.Register(&RebootNode{}, &RebootNodeList{})
-}
