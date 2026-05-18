@@ -351,6 +351,47 @@ func deduplicateMessagesByIdentity(messages []string) []string {
 	return result
 }
 
+// entityMatchesMessage reports whether msg contains the entity token, handling
+// both exact matches and truncated tokens. Prefix matching only activates when
+// there is evidence of truncation (token ends with "..." or the message was
+// byte-truncated before the Recommended Action marker) to prevent false
+// positives against complete but shorter entity values.
+func entityMatchesMessage(msg string, entity *protos.Entity) bool {
+	fullToken := fmt.Sprintf("%s:%s ", entity.EntityType, entity.EntityValue)
+	if strings.Contains(msg, fullToken) {
+		return true
+	}
+
+	prefix := msg
+
+	hasRecommendedAction := false
+	if raIdx := strings.LastIndex(msg, recommendedActionMarker); raIdx >= 0 {
+		hasRecommendedAction = true
+		prefix = msg[:raIdx]
+	}
+
+	entityToken := fmt.Sprintf("%s:%s", entity.EntityType, entity.EntityValue)
+	typePrefix := entity.EntityType + ":"
+
+	tokens := strings.Fields(prefix)
+
+	for i, tok := range tokens {
+		if !strings.HasPrefix(tok, typePrefix) {
+			continue
+		}
+
+		isTruncated := strings.HasSuffix(tok, truncationSuffix) || (!hasRecommendedAction && i == len(tokens)-1)
+
+		candidate := strings.TrimSuffix(tok, truncationSuffix)
+
+		if isTruncated && len(candidate) > len(typePrefix) && strings.HasPrefix(entityToken, candidate) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // removeImpactedEntitiesMessagesScoped removes messages that mention any
 // supplied entity. When errorCodes is non-empty, the message must also carry
 // a matching ErrorCode token; this prevents an "X cancels Y" rule from
@@ -366,9 +407,7 @@ func (r *K8sConnector) removeImpactedEntitiesMessagesScoped(
 		entityFound := false
 
 		for _, entity := range entities {
-			entityPrefix := fmt.Sprintf("%s:%s ", entity.EntityType, entity.EntityValue)
-
-			if strings.Contains(msg, entityPrefix) {
+			if entityMatchesMessage(msg, entity) {
 				entityFound = true
 				break
 			}
@@ -817,9 +856,67 @@ func totalMessageLength(messages []string) int {
 	return total
 }
 
-// compactMessageField truncates the message content before the Recommended Action
-// suffix to maxLen bytes, preserving the Recommended Action suffix needed for
-// recovery matching.
+// isStructuredEntityToken reports whether a whitespace-delimited token matches
+// the TYPE:VALUE pattern produced by constructHealthEventMessage.
+func isStructuredEntityToken(token string) bool {
+	if strings.HasPrefix(token, "ErrorCode:") {
+		return false
+	}
+
+	colonIdx := strings.Index(token, ":")
+
+	return colonIdx > 0 && colonIdx < len(token)-1
+}
+
+func splitIdentityAndDiagnostic(beforeRA string) (string, string) {
+	tokens := strings.Fields(beforeRA)
+
+	var identityEnd int
+
+	for i, tok := range tokens {
+		if strings.HasPrefix(tok, "ErrorCode:") || isStructuredEntityToken(tok) {
+			identityEnd = i + 1
+		} else {
+			break
+		}
+	}
+
+	return strings.Join(tokens[:identityEnd], " "), strings.Join(tokens[identityEnd:], " ")
+}
+
+func truncateWithSuffix(text string, maxLen int) string {
+	if maxLen <= len(truncationSuffix) {
+		return truncationSuffix
+	}
+
+	if len(text) > maxLen-len(truncationSuffix) {
+		return text[:maxLen-len(truncationSuffix)] + truncationSuffix
+	}
+
+	return text
+}
+
+func compactMessagePrefix(identityPrefix, diagnosticText string, maxLen int) string {
+	if identityPrefix == "" {
+		return truncateWithSuffix(diagnosticText, maxLen)
+	}
+
+	if len(identityPrefix) >= maxLen {
+		return identityPrefix + " " + truncationSuffix
+	}
+
+	available := maxLen - len(identityPrefix) - 1 // -1 for space between identity and diagnostic
+	if available <= 0 || diagnosticText == "" {
+		return identityPrefix + " " + truncationSuffix
+	}
+
+	return identityPrefix + " " + truncateWithSuffix(diagnosticText, available)
+}
+
+// compactMessageField truncates the diagnostic free-text while preserving
+// identity tokens (ErrorCode and entity tokens) and the Recommended Action
+// suffix needed for recovery matching. Identity tokens are never byte-truncated;
+// maxLen is treated as a target for diagnostic text compaction only.
 //
 // Input format:  "ErrorCode:X GPU:3 PCI:addr <diagnostic text> Recommended Action=Y"
 // Output format: "ErrorCode:X GPU:3 PCI:addr <truncated>... Recommended Action=Y"
@@ -836,7 +933,9 @@ func compactMessageField(msg string, maxLen int) string {
 		return msg
 	}
 
-	return beforeRA[:maxLen] + truncationSuffix + " " + raPart
+	identityPrefix, diagnosticText := splitIdentityAndDiagnostic(beforeRA)
+
+	return compactMessagePrefix(identityPrefix, diagnosticText, maxLen) + " " + raPart
 }
 
 // truncateNodeConditionMessage builds the node condition message while respecting the max node condition

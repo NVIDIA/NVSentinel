@@ -657,7 +657,9 @@ func TestSyslogHealthMonitorNICDriverDetection(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
 
-		testNodeName, syslogPod, stopChan, originalArgs := helpers.SetUpSyslogHealthMonitor(ctx, t, client, nil, false)
+		// ManagedByNVSentinel=true is required for the fault-quarantine
+		// syslog ruleset to cordon this test node.
+		testNodeName, syslogPod, stopChan, originalArgs := helpers.SetUpSyslogHealthMonitor(ctx, t, client, nil, true)
 
 		ctx = context.WithValue(ctx, keySyslogNodeName, testNodeName)
 		ctx = context.WithValue(ctx, keySyslogPodName, syslogPod.Name)
@@ -691,6 +693,18 @@ func TestSyslogHealthMonitorNICDriverDetection(t *testing.T) {
 				"SysLogsNICDriverError", "SysLogsNICDriverErrorIsNotHealthy", expectedPatterns)
 		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
 			"Node condition should contain all fatal NIC driver patterns")
+
+		t.Log("Verifying fatal NIC driver syslog event cordons the node")
+		helpers.AssertQuarantineState(ctx, t, client, nodeName, helpers.QuarantineAssertion{
+			ExpectCordoned: true,
+			AnnotationChecks: []helpers.AnnotationCheck{
+				{
+					Key:         helpers.QuarantineHealthEventAnnotationKey,
+					Pattern:     "cmd_exec_timeout",
+					ShouldExist: true,
+				},
+			},
+		})
 
 		return ctx
 	})
@@ -772,6 +786,14 @@ func TestSyslogHealthMonitorNICDriverDetection(t *testing.T) {
 			return condition != nil && condition.Status == v1.ConditionFalse
 		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
 			"SysLogsNICDriverError condition should be cleared")
+
+		t.Logf("Verifying node %s is uncordoned after SysLogsNICDriverError recovery", nodeName)
+		helpers.AssertQuarantineState(ctx, t, client, nodeName, helpers.QuarantineAssertion{
+			ExpectCordoned: false,
+			AnnotationChecks: []helpers.AnnotationCheck{
+				{Key: helpers.QuarantineHealthEventAnnotationKey, ShouldExist: false},
+			},
+		})
 
 		t.Logf("Cleaning up metadata from node %s", nodeName)
 		helpers.DeleteMetadata(t, ctx, client, helpers.NVSentinelNamespace, nodeName)

@@ -66,11 +66,13 @@ jobs:
           for version_file in fern/versions/v*.yml; do
             [ -f "$version_file" ] || continue
             version=$(basename "$version_file" .yml)
-            if git rev-parse -q --verify "refs/tags/$version" >/dev/null 2>&1; then
+            if git show-ref --verify --quiet "refs/tags/${version}"; then
               mkdir -p "fern/versions/${version}-content"
-              git archive "refs/tags/$version" -- docs/ | tar -x --strip-components=1 -C "fern/versions/${version}-content"
-              # Fix MDX issues in older tags
-              find "fern/versions/${version}-content" -name '*.md' -exec sed -i 's/<img \([^>]*[^/]\)>/<img \1 \/>/g' {} +
+              git archive "refs/tags/${version}" -- docs/ | tar -x --strip-components=1 -C "fern/versions/${version}-content"
+              find "fern/versions/${version}-content" -name '*.md' -print0 | xargs -0 -r sed -i \
+                -e 's/{/\\{/g' \
+                -e 's/}/\\}/g' \
+                -e 's/</\&lt;/g'
               echo "Extracted docs from $version"
             else
               echo "::warning::Tag $version not found — skipping content checkout"
