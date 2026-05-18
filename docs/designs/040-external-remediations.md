@@ -733,3 +733,42 @@ No migration required — this is a pure addition. Existing `MaintenanceResource
 - [ADR-036: Custom Remediation Actions](036-custom-remediation-actions.md) — the `CUSTOM` recommendedAction this ADR builds on.
 - [HealthEvent proto](../../data-models/protobufs/health_event.proto) — the source-of-truth schema for the CRD spec.
 - [RebootNode CRD](../../janitor/api/v1alpha1/rebootnode_types.go) — pattern reference for condition-driven CRDs in this repo.
+
+## Appendix A: Alternative module placement — EF reconciler in `csp-health-monitor`
+
+This ADR places both the EF reconciler and the ERR reconciler in `janitor/`. An alternative considered during design was to put the EF reconciler in `health-monitors/csp-health-monitor/` instead, with only the ERR reconciler remaining in `janitor/`. This appendix documents that option for completeness; the main design does not adopt it.
+
+### Conceptual argument
+
+`csp-health-monitor` is the existing "external signal → HealthEvent" component. Its CSP poller packages (`pkg/csp/aws`, `pkg/csp/gcp`) read out-of-cluster signals (AWS Health Dashboard events, GCP scheduled-maintenance metadata, etc.) and emit HealthEvents into the platform-connector. The EF reconciler does the same shape of work, just with a different input source: it observes EF objects (a signal injected by an external system) and emits HealthEvents. By this framing:
+
+- **Health-monitors** are the boundary for *signal ingestion* — anything that turns an external observation into a HealthEvent.
+- **Janitor** is the boundary for *remediation actions* — anything that orchestrates node state changes (taints, reboots, drains, terminations).
+
+The EF reconciler fits the first role; the ERR reconciler fits the second. Splitting them across the two components mirrors that conceptual split.
+
+### Structural cost
+
+`csp-health-monitor` today is **not** a controller-runtime application. Its `main.go` runs `golang.org/x/sync/errgroup`-driven pollers; there is no `ctrl.NewManager`, no `Reconciler` implementation, no CRD scheme registration, no webhook infrastructure. Its Helm chart at `distros/kubernetes/nvsentinel/charts/csp-health-monitor/` is `Deployment` + `ServiceAccount` + `ClusterRole`/`ClusterRoleBinding` + `ConfigMap`. There is no `Service`, no `Certificate`, no `ValidatingWebhookConfiguration`.
+
+Adopting this alternative would require introducing the following in `csp-health-monitor`:
+
+1. **controller-runtime Manager bootstrap** in `cmd/csp-health-monitor/main.go`, run inside the existing errgroup alongside the CSP pollers. Adds `sigs.k8s.io/controller-runtime` as a direct dependency.
+2. **Scheme registration** for the new CRD types (proto-generated `ExternalFault` and `ExternalRemediationRequest`) — a small `AddToScheme` helper, shared with `janitor` via a common package.
+3. **EF reconciler** in `health-monitors/csp-health-monitor/pkg/controller/externalfault_controller.go`.
+4. **EF validating webhook** in `health-monitors/csp-health-monitor/pkg/webhook/v1alpha1/external_fault_webhook.go`, with all the supporting Helm chart objects: cert-manager `Certificate`, webhook-serving `Service`, `ValidatingWebhookConfiguration`, plus `Deployment` modifications (webhook port, cert volume mount, readiness probe).
+5. **New RBAC**: the `csp-health-monitor` ServiceAccount gains `externalfaults` (get, list, watch, update status), `externalremediationrequests` (get, list, watch — for the ownerRef-indexed lookup), `nodes` (get — for the webhook's node-existence check), and `events` (create).
+6. **CRD chart location** decision: the EF CRD and the ERR CRD are tightly coupled (ERR has an ownerRef pointing at EF; the EF reconciler watches for ERR existence). Two reasonable shapes:
+   - Both CRDs stay in the `janitor` chart; `csp-health-monitor` consumes them at runtime but does not ship them. Operationally simple, but slightly awkward — `janitor`'s chart ships a CRD whose reconciler lives elsewhere.
+   - Move both CRDs to a new shared chart (e.g. `external-remediation-crds`) that both `janitor` and `csp-health-monitor` charts depend on. Cleanest, but adds a new chart.
+
+`janitor`, by contrast, already has all of the above in place for `RebootNode`/`GPUReset`/`TerminateNode`. Plugging EF in there is mostly net-new files in patterns the module already follows.
+
+### Why this ADR does not adopt the alternative
+
+The conceptual win (signal-ingestion vs. remediation separation) does not outweigh the structural cost of standing up controller-runtime, scheme registration, and the webhook bundle inside a component that is currently a polling Deployment. Two further considerations:
+
+- **EF/ERR coupling.** The two CRDs and their reconcilers are tightly coupled (ownerRef, condition propagation, terminal-state-clears-dedup interaction). Co-locating them in `janitor` keeps the implementation surface small and the reasoning local.
+- **Webhook adjacency.** The EF webhook reuses `janitor`'s existing cert-manager `Certificate` and webhook `Service` — no new TLS plumbing needed. Splitting the webhook away from those existing wires is overhead that only pays back if other CRD-based reconcilers eventually land in `csp-health-monitor`.
+
+If a future ADR adds more CRD-watching behaviour to `csp-health-monitor` (e.g. a generic external-signal CRD distinct from EF), the structural cost amortizes and the placement choice should be revisited.
