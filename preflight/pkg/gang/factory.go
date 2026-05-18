@@ -63,11 +63,11 @@ func NewDiscovererFromConfig(
 ) (GangDiscoverer, error) {
 	switch detectDiscoveryType(cfg) {
 	case discoveryTypeKubernetes:
-		if err := validateGVK(restMapper, discoverer.WorkloadGVK); err != nil {
-			return nil, fmt.Errorf("kubernetes native Workload API not available (requires K8s 1.35+): %w", err)
+		if err := validateGVK(restMapper, discoverer.PodGroupGVK); err != nil {
+			return nil, fmt.Errorf("kubernetes native PodGroup API not available (requires K8s 1.36+): %w", err)
 		}
 
-		return discoverer.NewWorkloadRefDiscoverer(c), nil
+		return discoverer.NewKubernetesDiscoverer(c), nil
 
 	case discoveryTypePodGroup:
 		gvr := schema.GroupVersionResource{
