@@ -34,7 +34,7 @@ EF creation always results in ERR creation by routing through the normal pipelin
 
 The CRD types are defined in proto and generated via the existing `protoc-gen-crd` plugin (the same plugin that generates `HealthEventResource` today — see `data-models/protobufs/health_event.proto` line 121). The reconcilers live alongside the existing maintenance reconcilers in `janitor/`.
 
-```
+```text
 data-models/
 ├── protobufs/
 │   ├── health_event.proto                 (existing — already defines HealthEvent)
@@ -340,7 +340,7 @@ All conditions are append-or-update in place via the `SetCondition` helper, whic
 
 **Release taint** (key configurable via Helm values):
 
-```
+```text
 nvsentinel.nvidia.com/external-remediation=<err-name>:NoSchedule
 ```
 
