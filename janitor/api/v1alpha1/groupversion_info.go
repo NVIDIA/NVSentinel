@@ -45,5 +45,6 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&TerminateNodeList{},
 	)
 	metav1.AddToGroupVersion(scheme, GroupVersion)
+
 	return nil
 }

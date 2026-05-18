@@ -31,5 +31,6 @@ var (
 func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(GroupVersion, &DrainRequest{}, &DrainRequestList{})
 	metav1.AddToGroupVersion(scheme, GroupVersion)
+
 	return nil
 }

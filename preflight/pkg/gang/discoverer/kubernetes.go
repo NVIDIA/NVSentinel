@@ -187,6 +187,7 @@ func (w *KubernetesDiscoverer) getPodGroupMinCount(
 	if err != nil {
 		return 0, fmt.Errorf("failed to get gang minCount from PodGroup %s/%s: %w", namespace, name, err)
 	}
+
 	if found {
 		return int(minCount), nil
 	}
