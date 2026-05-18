@@ -81,3 +81,14 @@ nicDriverDetection:
       enabled: false
     - name: module_unplugged
       enabled: false
+
+# Per-check cancellation rules: when the check observes `onErrorCode`, emit
+# synthetic healthy events for each `cancelErrorCodes` entry on the same
+# entities. Override or extend per-cluster as needed.
+cancellations:
+  - name: SysLogsXIDError
+    enabled: true
+    rules:
+      # XID 162 (PSHC re-engaged) implies recovery from XID 163 (PSHC disengaged).
+      - onErrorCode: "162"
+        cancelErrorCodes: ["163"]

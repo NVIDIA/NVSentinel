@@ -29,6 +29,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	corev1 "k8s.io/api/core/v1"
 
+	annotationutil "github.com/nvidia/nvsentinel/commons/pkg/annotation"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
@@ -526,6 +527,10 @@ func (r *Reconciler) handleEvent(
 	annotations, quarantineAnnotationExists := r.hasExistingQuarantine(ctx, event.HealthEvent.NodeName)
 
 	if quarantineAnnotationExists {
+		slog.DebugContext(ctx, "Node already has active quarantine annotation, skipping fresh quarantine",
+			"node", event.HealthEvent.NodeName,
+			"checkName", event.HealthEvent.CheckName)
+
 		return r.handleAlreadyQuarantinedNode(ctx, event.HealthEvent, ruleSetEvals)
 	}
 
@@ -596,7 +601,11 @@ func (r *Reconciler) hasExistingQuarantine(ctx context.Context, nodeName string)
 
 	annotationVal, exists := annotations[common.QuarantineHealthEventAnnotationKey]
 
-	return annotations, exists && annotationVal != ""
+	return annotations, exists && !isEmptyHealthEventAnnotation(annotationVal)
+}
+
+func isEmptyHealthEventAnnotation(annotationVal string) bool {
+	return annotationutil.IsEmptyValue(annotationVal)
 }
 
 func (r *Reconciler) sourceDocIDsFromAnnotation(ctx context.Context, nodeName string) []string {

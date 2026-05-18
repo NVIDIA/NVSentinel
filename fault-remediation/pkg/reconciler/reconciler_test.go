@@ -65,15 +65,38 @@ func (m *MockK8sClient) GetStatusChecker() crstatus.CRStatusCheckerInterface {
 
 type mockStatusChecker struct {
 	shouldSkip []bool
+	states     []crstatus.CRState
+	stateByCR  map[string]crstatus.CRState
 	callCount  int
 }
 
 func (statusChecker *mockStatusChecker) ShouldSkipCRCreation(context.Context, string, string) bool {
+	return statusChecker.GetCRState(context.Background(), "", "") != crstatus.CRStateFailed
+}
+
+func (statusChecker *mockStatusChecker) GetCRState(_ context.Context, _ string, crName string) crstatus.CRState {
+	if statusChecker.stateByCR != nil {
+		return statusChecker.stateByCR[crName]
+	}
+
+	if statusChecker.states != nil {
+		state := statusChecker.states[statusChecker.callCount]
+		if statusChecker.callCount < len(statusChecker.states)-1 {
+			statusChecker.callCount++
+		}
+
+		return state
+	}
+
 	shouldSkip := statusChecker.shouldSkip[statusChecker.callCount]
 	if statusChecker.callCount < len(statusChecker.shouldSkip)-1 {
 		statusChecker.callCount++
 	}
-	return shouldSkip
+	if shouldSkip {
+		return crstatus.CRStateInProgress
+	}
+
+	return crstatus.CRStateFailed
 }
 
 func (m *MockK8sClient) GetConfig() *config.TomlConfig {
@@ -124,7 +147,9 @@ func (w *MockCRStatusCheckerWrapper) IsSuccessful(ctx context.Context, crName st
 }
 
 type MockNodeAnnotationManager struct {
-	existingCRs map[string]string
+	existingCRs       map[string]string
+	existingCRCreated time.Time
+	createdByGroup    map[string]time.Time
 }
 
 func (m *MockNodeAnnotationManager) GetRemediationState(ctx context.Context, nodeName string) (*annotation.RemediationStateAnnotation, *corev1.Node, error) {
@@ -137,10 +162,18 @@ func (m *MockNodeAnnotationManager) GetRemediationState(ctx context.Context, nod
 	annotationState := &annotation.RemediationStateAnnotation{
 		EquivalenceGroups: make(map[string]annotation.EquivalenceGroupState),
 	}
+	createdAt := m.existingCRCreated
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
 	for groupName, crName := range m.existingCRs {
+		groupCreatedAt := createdAt
+		if createdAtForGroup, ok := m.createdByGroup[groupName]; ok {
+			groupCreatedAt = createdAtForGroup
+		}
 		annotationState.EquivalenceGroups[groupName] = annotation.EquivalenceGroupState{
 			MaintenanceCR: crName,
-			CreatedAt:     time.Now(),
+			CreatedAt:     groupCreatedAt,
 		}
 	}
 	return annotationState, nil, nil
@@ -932,11 +965,17 @@ func TestCRBasedDeduplication(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name                   string
-		existingCRs            map[string]string
-		shouldSkipCRCreation   []bool // if nil we will not provide a StatusChecker instances
-		groupConfig            *common.EquivalenceGroupConfig
-		expectedShouldCreateCR bool
+		name                      string
+		existingCRs               map[string]string
+		shouldSkipCRCreation      []bool // if nil we will not provide a StatusChecker instances
+		crStates                  []crstatus.CRState
+		crStateByName             map[string]crstatus.CRState
+		groupConfig               *common.EquivalenceGroupConfig
+		eventCreatedAt            time.Time
+		remediationCreatedAt      time.Time
+		remediationCreatedByGroup map[string]time.Time
+		expectedShouldCreateCR    bool
+		expectedRemediated        bool
 	}{
 		{
 			name:                   "NoStatusChecker_AllowRemediation",
@@ -994,12 +1033,50 @@ func TestCRBasedDeduplication(t *testing.T) {
 			groupConfig:            getGroupConfig("restart", []string{"reset-GPU-123"}),
 			expectedShouldCreateCR: true,
 		},
+		{
+			name:                   "CRSucceeded_SameSession_MarksRemediated",
+			existingCRs:            map[string]string{"restart": "maintenance-node-123"},
+			crStates:               []crstatus.CRState{crstatus.CRStateSucceeded},
+			groupConfig:            getGroupConfig("restart", nil),
+			eventCreatedAt:         time.Date(2026, 5, 14, 10, 0, 0, 0, time.UTC),
+			remediationCreatedAt:   time.Date(2026, 5, 14, 10, 1, 0, 0, time.UTC),
+			expectedShouldCreateCR: false,
+			expectedRemediated:     true,
+		},
+		{
+			name:                   "CRSucceeded_FutureSession_AllowsRemediation",
+			existingCRs:            map[string]string{"restart": "maintenance-node-123"},
+			crStates:               []crstatus.CRState{crstatus.CRStateSucceeded},
+			groupConfig:            getGroupConfig("restart", nil),
+			eventCreatedAt:         time.Date(2026, 5, 14, 10, 10, 1, 0, time.UTC),
+			remediationCreatedAt:   time.Date(2026, 5, 14, 10, 0, 0, 0, time.UTC),
+			expectedShouldCreateCR: true,
+			expectedRemediated:     false,
+		},
+		{
+			name:        "MultipleMatchingGroups_NewestStateEvaluatedFirst",
+			existingCRs: map[string]string{"restart": "maintenance-restart", "reset-GPU-123": "maintenance-reset"},
+			crStateByName: map[string]crstatus.CRState{
+				"maintenance-restart": crstatus.CRStateFailed,
+				"maintenance-reset":   crstatus.CRStateInProgress,
+			},
+			groupConfig:            getGroupConfig("reset-GPU-123", []string{"restart"}),
+			eventCreatedAt:         time.Date(2026, 5, 14, 10, 0, 0, 0, time.UTC),
+			expectedShouldCreateCR: false,
+			expectedRemediated:     false,
+			remediationCreatedByGroup: map[string]time.Time{
+				"restart":       time.Date(2026, 5, 14, 10, 0, 0, 0, time.UTC),
+				"reset-GPU-123": time.Date(2026, 5, 14, 10, 1, 0, 0, time.UTC),
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mockAnnotationManager := &MockNodeAnnotationManager{
-				existingCRs: tt.existingCRs,
+				existingCRs:       tt.existingCRs,
+				existingCRCreated: tt.remediationCreatedAt,
+				createdByGroup:    tt.remediationCreatedByGroup,
 			}
 
 			mockK8sClient := &MockK8sClient{
@@ -1011,6 +1088,16 @@ func TestCRBasedDeduplication(t *testing.T) {
 					shouldSkip: tt.shouldSkipCRCreation,
 				}
 			}
+			if tt.crStates != nil {
+				mockK8sClient.mockStatusChecker = &mockStatusChecker{
+					states: tt.crStates,
+				}
+			}
+			if tt.crStateByName != nil {
+				mockK8sClient.mockStatusChecker = &mockStatusChecker{
+					stateByCR: tt.crStateByName,
+				}
+			}
 
 			cfg := ReconcilerConfig{RemediationClient: mockK8sClient}
 			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
@@ -1018,10 +1105,216 @@ func TestCRBasedDeduplication(t *testing.T) {
 			healthEvent := &protos.HealthEvent{
 				NodeName: "test-node",
 			}
-			shouldCreateCR, _, err := r.checkExistingCRStatus(ctx, healthEvent, tt.groupConfig)
+			shouldCreateCR, _, remediated, err := r.checkExistingCRStatus(ctx, healthEvent, tt.eventCreatedAt, tt.groupConfig)
 			assert.NoError(t, err)
 			assert.Equal(t, tt.expectedShouldCreateCR, shouldCreateCR)
+			assert.Equal(t, tt.expectedRemediated, remediated)
 		})
+	}
+}
+
+func TestCloseStaleEquivalentEvents(t *testing.T) {
+	ctx := context.Background()
+	nodeName := "test-node"
+
+	tests := []struct {
+		name              string
+		status            model.Status
+		state             *annotation.RemediationStateAnnotation
+		rawEvents         []datastore.Event
+		expectedUpdates   map[string]bool
+		expectTimestamp   bool
+		unexpectedUpdates []string
+	}{
+		{
+			name:   "UnQuarantined closes only equivalent restart events as remediated",
+			status: model.UnQuarantined,
+			// This annotation is what fault-remediation writes when it creates a maintenance CR.
+			// In production this means "there is/was a restart remediation covering this node".
+			// When fault-quarantine later unquarantines the node, skipped stale events in the
+			// same equivalence group should be closed so cold start cannot replay them.
+			state: &annotation.RemediationStateAnnotation{
+				EquivalenceGroups: map[string]annotation.EquivalenceGroupState{
+					"restart": {MaintenanceCR: "maintenance-test-node-event-a", ActionName: "RESTART_BM"},
+				},
+			},
+			// event-a is the stale event: it needs RESTART_BM, which maps to the restart group,
+			// so the prior restart CR covers it. event-contact-support is intentionally unrelated:
+			// it has no configured remediation group and must not be swept up by node-level cleanup.
+			rawEvents: []datastore.Event{
+				testRawHealthEvent("event-a", nodeName, protos.RecommendedAction_RESTART_BM),
+				testRawHealthEvent("event-contact-support", nodeName, protos.RecommendedAction_CONTACT_SUPPORT),
+			},
+			expectedUpdates: map[string]bool{
+				"event-a": true,
+			},
+			expectTimestamp:   true,
+			unexpectedUpdates: []string{"event-contact-support"},
+		},
+		{
+			name:   "Cancelled closes equivalent restart events as not remediated",
+			status: model.Cancelled,
+			// Cancelled is the external/manual cancellation path, for example someone
+			// manually uncordoned the node. Unlike UnQuarantined, it does not prove the
+			// fault was remediated. FR still needs a durable terminal value so cold start
+			// does not replay the stale event, but that value must be faultremediated=false.
+			state: &annotation.RemediationStateAnnotation{
+				EquivalenceGroups: map[string]annotation.EquivalenceGroupState{
+					"restart": {MaintenanceCR: "maintenance-test-node-event-a", ActionName: "RESTART_BM"},
+				},
+			},
+			rawEvents: []datastore.Event{
+				testRawHealthEvent("event-a", nodeName, protos.RecommendedAction_RESTART_BM),
+			},
+			// expectedUpdates maps event ID -> expected healtheventstatus.faultremediated value.
+			// false here means "terminal, but not successfully remediated".
+			expectedUpdates: map[string]bool{
+				"event-a": false,
+			},
+		},
+		{
+			name:   "No remediation state does not close events",
+			status: model.UnQuarantined,
+			// Without a remediation annotation, FR has no equivalence-group evidence that an
+			// earlier maintenance CR covered these events. The cleanup must therefore do nothing.
+			state: &annotation.RemediationStateAnnotation{
+				EquivalenceGroups: map[string]annotation.EquivalenceGroupState{},
+			},
+			rawEvents: []datastore.Event{
+				testRawHealthEvent("event-a", nodeName, protos.RecommendedAction_RESTART_BM),
+			},
+			expectedUpdates: map[string]bool{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			updates := make(map[string]datastore.HealthEventStatus)
+			mockStore := &MockHealthEventStore{
+				FindHealthEventsByQueryBatchedFn: func(_ context.Context, _ datastore.QueryBuilder, _ int,
+					fn func([]datastore.HealthEventWithStatus) error) error {
+					batch := make([]datastore.HealthEventWithStatus, 0, len(tt.rawEvents))
+					for _, rawEvent := range tt.rawEvents {
+						batch = append(batch, datastore.HealthEventWithStatus{RawEvent: rawEvent})
+					}
+
+					return fn(batch)
+				},
+				UpdateHealthEventStatusFn: func(_ context.Context, id string, status datastore.HealthEventStatus) error {
+					updates[id] = status
+					return nil
+				},
+			}
+
+			mockK8sClient := &MockK8sClient{}
+			cfg := ReconcilerConfig{RemediationClient: mockK8sClient}
+			r := NewFaultRemediationReconciler(nil, nil, mockStore, cfg, false)
+
+			err := r.closeStaleEquivalentEvents(ctx, nodeName, tt.status, tt.state, mockStore)
+			assert.NoError(t, err)
+
+			assert.Len(t, updates, len(tt.expectedUpdates))
+			for id, expectedRemediated := range tt.expectedUpdates {
+				status, ok := updates[id]
+				assert.True(t, ok, "expected update for %s", id)
+				assert.NotNil(t, status.FaultRemediated)
+				assert.Equal(t, expectedRemediated, *status.FaultRemediated)
+				if tt.expectTimestamp {
+					assert.NotNil(t, status.LastRemediationTimestamp)
+				} else {
+					assert.Nil(t, status.LastRemediationTimestamp)
+				}
+			}
+
+			for _, id := range tt.unexpectedUpdates {
+				_, ok := updates[id]
+				assert.False(t, ok, "did not expect update for %s", id)
+			}
+		})
+	}
+}
+
+func TestUnsupportedActionSkipMarksEventTerminal(t *testing.T) {
+	ctx := context.Background()
+	nodeName := "test-node"
+	eventID := "unsupported-event"
+	updated := false
+
+	// CONTACT_SUPPORT is not configured as a maintenance action for FR. That is an
+	// intentional skip, but it still needs a durable terminal status; otherwise cold
+	// start will keep replaying the same unsupported event because faultremediated is nil.
+	mockK8sClient := &MockK8sClient{}
+	cfg := ReconcilerConfig{
+		RemediationClient: mockK8sClient,
+		StateManager: &statemanager.MockStateManager{
+			UpdateNVSentinelStateNodeLabelFn: func(context.Context, string,
+				statemanager.NVSentinelStateLabelValue, bool) (bool, error) {
+				return true, nil
+			},
+		},
+	}
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
+	mockWatcher := &MockChangeStreamWatcher{}
+	mockStore := &MockHealthEventStore{
+		UpdateHealthEventStatusFn: func(_ context.Context, id string, status datastore.HealthEventStatus) error {
+			assert.Equal(t, eventID, id)
+			assert.NotNil(t, status.FaultRemediated)
+			assert.False(t, *status.FaultRemediated)
+			updated = true
+
+			return nil
+		},
+	}
+	healthEventDoc := &events.HealthEventDoc{
+		ID: eventID,
+		HealthEventWithStatus: model.HealthEventWithStatus{
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          nodeName,
+				RecommendedAction: protos.RecommendedAction_CONTACT_SUPPORT,
+			},
+			HealthEventStatus: &protos.HealthEventStatus{},
+		},
+	}
+	eventWithToken := datastore.EventWithToken{
+		Event:       testRawHealthEvent(eventID, nodeName, protos.RecommendedAction_CONTACT_SUPPORT),
+		ResumeToken: []byte("resume-token"),
+	}
+
+	_, err, done := r.trySkipEvent(ctx, healthEventDoc, nil, eventWithToken, mockWatcher, mockStore, nodeName)
+	assert.True(t, done)
+	assert.NoError(t, err)
+	assert.True(t, updated)
+	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
+	assert.Equal(t, 1, markProcessedCount)
+}
+
+func testRawHealthEvent(id, nodeName string, action protos.RecommendedAction) datastore.Event {
+	return datastore.Event{
+		"_id": id,
+		"healthevent": map[string]interface{}{
+			"version":           1,
+			"agent":             "test-agent",
+			"componentclass":    "GPU",
+			"checkname":         "test-check",
+			"isfatal":           true,
+			"ishealthy":         false,
+			"message":           "test event",
+			"recommendedaction": int32(action),
+			"errorcode":         []interface{}{"REPRO"},
+			"entitiesimpacted": []interface{}{
+				map[string]interface{}{
+					"entitytype":  "GPU_UUID",
+					"entityvalue": "GPU-test",
+				},
+			},
+			"nodename": nodeName,
+		},
+		"healtheventstatus": map[string]interface{}{
+			"nodequarantined": string(model.AlreadyQuarantined),
+			"userpodsevictionstatus": map[string]interface{}{
+				"status": string(model.AlreadyDrained),
+			},
+		},
 	}
 }
 

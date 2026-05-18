@@ -17,7 +17,6 @@ package trigger
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 
@@ -190,7 +189,7 @@ func TestNewEngine(t *testing.T) {
 	mUDSClient := new(MockUDSClient)
 	mockClient := createMockClientWithReadyNodes()
 
-	engine := NewEngine(cfg, mStore, mUDSClient, mockClient, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+	engine := NewEngine(cfg, mStore, mUDSClient, "tcp://test", mockClient, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 
 	assert.NotNil(t, engine)
 	assert.Equal(t, cfg, engine.config)
@@ -204,7 +203,7 @@ func TestMapMaintenanceEventToHealthEvent(t *testing.T) {
 	cfg := newTestConfig()
 	mStore := new(MockDatastore)     // Not strictly needed for this func, but engine needs it
 	mUDSClient := new(MockUDSClient) // Not strictly needed for this func, but engine needs it
-	engine := NewEngine(cfg, mStore, mUDSClient, nil, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+	engine := NewEngine(cfg, mStore, mUDSClient, "tcp://test", nil, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 
 	tests := []struct {
 		name          string
@@ -355,51 +354,6 @@ func TestMapMaintenanceEventToHealthEvent(t *testing.T) {
 				}
 				assert.Equal(t, tc.expectedEvent, actualEvent)
 			}
-		})
-	}
-}
-
-func TestIsRetryableGRPCError(t *testing.T) {
-	tests := []struct {
-		name   string
-		err    error
-		expect bool
-	}{
-		{
-			name:   "Nil error",
-			err:    nil,
-			expect: false,
-		},
-		{
-			name:   "Non-gRPC error",
-			err:    errors.New("some random error"),
-			expect: false,
-		},
-		{
-			name:   "gRPC Unavailable error",
-			err:    status.Error(codes.Unavailable, "server unavailable"),
-			expect: true,
-		},
-		{
-			name:   "gRPC Internal error",
-			err:    status.Error(codes.Internal, "internal server error"),
-			expect: false,
-		},
-		{
-			name:   "gRPC DeadlineExceeded error",
-			err:    status.Error(codes.DeadlineExceeded, "deadline exceeded"),
-			expect: false,
-		},
-		{
-			name:   "gRPC NotFound error",
-			err:    status.Error(codes.NotFound, "not found"),
-			expect: false,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.expect, isRetryableGRPCError(tc.err))
 		})
 	}
 }
@@ -577,7 +531,7 @@ func TestProcessAndSendTrigger(t *testing.T) {
 					Times(udsMaxRetries)
 			},
 			expectError:           true,
-			expectedErrorContains: fmt.Sprintf("failed to send health event after %d retries (timeout)", udsMaxRetries),
+			expectedErrorContains: "timed out waiting for the condition",
 			verifyMocks: func(t *testing.T, mStore *MockDatastore, mUDSClient *MockUDSClient) {
 				mUDSClient.AssertExpectations(t)
 				mStore.AssertNotCalled(t, "UpdateEventStatus", mock.Anything, mock.Anything, mock.Anything)
@@ -612,7 +566,7 @@ func TestProcessAndSendTrigger(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			mStore := new(MockDatastore)
 			mUDSClient := new(MockUDSClient)
-			engine := NewEngine(cfg, mStore, mUDSClient, nil, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+			engine := NewEngine(cfg, mStore, mUDSClient, "tcp://test", nil, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 
 			tc.setupMocks(mStore, mUDSClient, tc.event, tc.targetDBStatus)
 
@@ -793,7 +747,7 @@ func TestCheckAndTriggerEvents(t *testing.T) {
 			mStore := new(MockDatastore)
 			mUDSClient := new(MockUDSClient)
 			mockClient := createMockClientWithReadyNodes("node-q1", "node-h1", "q-no-node")
-			engine := NewEngine(cfg, mStore, mUDSClient, mockClient, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+			engine := NewEngine(cfg, mStore, mUDSClient, "tcp://test", mockClient, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 
 			if tc.setupMocks != nil {
 				tc.setupMocks(mStore, mUDSClient)
@@ -839,7 +793,7 @@ func TestHealthyTriggerWaitsForNodeReady(t *testing.T) {
 	mUDSClient.On("HealthEventOccurredV1", mock.Anything, mock.Anything, mock.Anything).Return(&emptypb.Empty{}, nil).Once()
 	mStore.On("UpdateEventStatus", mock.AnythingOfType("*context.timerCtx"), healthyEvent.EventID, model.StatusHealthyTriggered).Return(nil).Once()
 
-	engine := NewEngine(cfg, mStore, mUDSClient, mockClient, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+	engine := NewEngine(cfg, mStore, mUDSClient, "tcp://test", mockClient, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 	engine.monitorInterval = 3 * time.Second
 
 	err := engine.checkAndTriggerEvents(ctx)

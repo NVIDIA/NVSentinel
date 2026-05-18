@@ -37,6 +37,12 @@ const (
 	NICDriverErrorCheck = "SysLogsNICDriverError"
 )
 
+// CancellationSupportedChecks lists checks whose handler attaches a Resolver.
+// Append here when wiring SetCancellationResolver into a new handler.
+var CancellationSupportedChecks = []string{
+	XIDErrorCheck,
+}
+
 // syslogMonitorState represents the persistent state of the syslog monitor
 type syslogMonitorState struct {
 	Version          int               `json:"version"`
@@ -65,6 +71,17 @@ type SyslogMonitor struct {
 	checkToHandlerMap map[string]types.Handler
 	// Endpoint to the XID analyser service
 	xidAnalyserEndpoint string
+	// gRPC target string used to dial pcClient, set at construction.
+	// "" disables the healthpub gate.
+	platformConnectorTarget string
+	// Non-empty when handleBootIDChange detected a reboot but at least
+	// one post-reboot healthy event was deferred (PC unavailable). Holds
+	// the new BootID to be persisted once tryFlushPostRebootBootIDClear
+	// successfully delivers all events. Run() retries the flush at the
+	// top of every poll cycle, bounding recovery to one polling cadence
+	// after PC returns. Single-goroutine access (Run() is serialised by
+	// main's ticker loop), so no mutex is required.
+	pendingPostRebootBootID string
 }
 
 // CheckDefinition matches the structure of each check in the YAML config file

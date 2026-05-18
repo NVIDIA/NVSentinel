@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -67,6 +68,7 @@ func SetUpNICHealthMonitor(ctx context.Context, t *testing.T,
 	// platform connector
 	t.Logf("Clearing stale NIC conditions from node %s", testNodeName)
 	clearNICConditions(ctx, t, testNodeName)
+	waitForNICCleanupComplete(ctx, t, client, testNodeName)
 
 	configSnapshot, err := BackupConfigMap(ctx, client, NICHealthMonitorConfigMapName, NVSentinelNamespace)
 	require.NoError(t, err, "failed to backup NIC monitor ConfigMap")
@@ -142,16 +144,27 @@ func TearDownNICHealthMonitor(ctx context.Context, t *testing.T,
 	}
 
 	if state.NodeName != "" {
-		CleanupFakeSysfs(t, ctx, client, NVSentinelNamespace, state.NodeName)
-
-		// Re-inject stub metadata so the pod that starts after the
-		// no-wait args restoration has valid metadata and doesn't
-		// CrashLoopBackOff, blocking subsequent tests.
+		// Re-inject stub metadata and restart the pod after restoring the
+		// production config/args. This ensures the monitor is no longer
+		// reading fake sysfs before that tree is removed below.
 		stubMeta := CreateNICTestMetadata(state.NodeName)
 		InjectMetadata(t, ctx, client, NVSentinelNamespace, state.NodeName, stubMeta)
 
+		restartNICMonitorPodAfterRestore(ctx, t, client, state.NodeName)
+
+		CleanupFakeSysfs(t, ctx, client, NVSentinelNamespace, state.NodeName)
+
 		t.Logf("Clearing stale NIC conditions from node %s", state.NodeName)
 		clearNICConditions(ctx, t, state.NodeName)
+
+		t.Logf("Waiting for node %s to be uncordoned after NIC condition cleanup", state.NodeName)
+		AssertQuarantineState(ctx, t, client, state.NodeName, QuarantineAssertion{
+			ExpectCordoned: false,
+			AnnotationChecks: []AnnotationCheck{
+				{Key: QuarantineHealthEventAnnotationKey, ShouldExist: false},
+			},
+		})
+		waitForNICCleanupComplete(ctx, t, client, state.NodeName)
 
 		t.Logf("Removing ManagedByNVSentinel label from node %s", state.NodeName)
 
@@ -159,6 +172,14 @@ func TearDownNICHealthMonitor(ctx context.Context, t *testing.T,
 			t.Logf("Warning: failed to remove label: %v", err)
 		}
 	}
+}
+
+func restartNICMonitorPodAfterRestore(ctx context.Context, t *testing.T, client klient.Client, nodeName string) {
+	t.Helper()
+	t.Logf("Restarting NIC monitor pod on node %s after restoring config", nodeName)
+
+	deleteNICMonitorPodOnNode(ctx, t, client, nodeName)
+	WaitForDaemonSetPodRunning(ctx, t, client, NVSentinelNamespace, NICHealthMonitorDaemonSetName, nodeName)
 }
 
 // CreateFakeSysfsTree creates the full fake sysfs tree on the target node.
@@ -393,10 +414,7 @@ func hostPathType(t corev1.HostPathType) *corev1.HostPathType { return &t }
 func clearNICConditions(ctx context.Context, t *testing.T, nodeName string) {
 	t.Helper()
 
-	for _, checkName := range []string{
-		"InfiniBandStateCheck", "EthernetStateCheck",
-		"InfiniBandDegradationCheck", "EthernetDegradationCheck",
-	} {
+	for _, checkName := range nicConditionCheckNames() {
 		event := NewHealthEvent(nodeName).
 			WithAgent("nic-health-monitor").
 			WithCheckName(checkName).
@@ -408,6 +426,105 @@ func clearNICConditions(ctx context.Context, t *testing.T, nodeName string) {
 		event.EntitiesImpacted = []EntityImpacted{}
 		SendHealthEvent(ctx, t, event)
 	}
+}
+
+func nicConditionCheckNames() []string {
+	return []string{
+		"InfiniBandStateCheck",
+		"EthernetStateCheck",
+		"InfiniBandDegradationCheck",
+		"EthernetDegradationCheck",
+	}
+}
+
+func waitForNICCleanupComplete(ctx context.Context, t *testing.T, client klient.Client, nodeName string) {
+	t.Helper()
+	t.Logf("Waiting for NIC cleanup to converge on node %s", nodeName)
+
+	require.Eventually(t, func() bool {
+		node, err := GetNodeByName(ctx, client, nodeName)
+		if err != nil {
+			t.Logf("failed to get node %s: %v", nodeName, err)
+			return false
+		}
+
+		return nicCleanupComplete(t, node)
+	}, EventuallyWaitTimeout, WaitInterval, "NIC cleanup should complete on node %s", nodeName)
+
+	require.Never(t, func() bool {
+		node, err := GetNodeByName(ctx, client, nodeName)
+		if err != nil {
+			t.Logf("failed to get node %s during stability check: %v", nodeName, err)
+			return false
+		}
+
+		return !nicCleanupComplete(t, node)
+	}, NeverWaitTimeout, WaitInterval, "NIC cleanup should remain stable on node %s", nodeName)
+}
+
+func nicCleanupComplete(t *testing.T, node *corev1.Node) bool {
+	t.Helper()
+
+	if node.Spec.Unschedulable {
+		t.Logf("node %s is still cordoned", node.Name)
+		return false
+	}
+
+	return nicQuarantineMetadataCleared(t, node) && nicConditionsHealthy(t, node)
+}
+
+func nicQuarantineMetadataCleared(t *testing.T, node *corev1.Node) bool {
+	t.Helper()
+
+	if node.Annotations != nil {
+		if value := node.Annotations[QuarantineHealthEventAnnotationKey]; quarantineAnnotationHasActiveEvents(value) {
+			t.Logf("node %s still has quarantine annotation: %s", node.Name, value)
+			return false
+		}
+
+		if value := node.Annotations[QuarantineHealthEventIsCordonedAnnotationKey]; !isEmptyAnnotationValue(value) {
+			t.Logf("node %s still has quarantine cordon annotation: %s", node.Name, value)
+			return false
+		}
+	}
+
+	if node.Labels != nil {
+		if value := node.Labels[statemanager.NVSentinelStateLabelKey]; value != "" {
+			t.Logf("node %s still has NVSentinel state label: %s", node.Name, value)
+			return false
+		}
+	}
+
+	return true
+}
+
+func quarantineAnnotationHasActiveEvents(value string) bool {
+	return !isEmptyAnnotationValue(value)
+}
+
+func nicConditionsHealthy(t *testing.T, node *corev1.Node) bool {
+	t.Helper()
+
+	for _, checkName := range nicConditionCheckNames() {
+		if !nicConditionHealthy(t, node, checkName) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func nicConditionHealthy(t *testing.T, node *corev1.Node, checkName string) bool {
+	t.Helper()
+
+	for _, condition := range node.Status.Conditions {
+		if condition.Type == corev1.NodeConditionType(checkName) && condition.Status == corev1.ConditionTrue {
+			t.Logf("node %s still has unhealthy NIC condition %s: %s", node.Name, checkName, condition.Message)
+			return false
+		}
+	}
+
+	return true
 }
 
 // deleteNICMonitorPodOnNode finds and deletes the NIC monitor pod on

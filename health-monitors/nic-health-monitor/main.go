@@ -145,7 +145,8 @@ func run() error {
 			"InfiniBandStateCheck, InfiniBandDegradationCheck, EthernetStateCheck, EthernetDegradationCheck")
 	}
 
-	nicMonitor := monitor.NewNICHealthMonitor(rc.nodeName, client, enabledChecks, rc.statePollingInterval)
+	nicMonitor := monitor.NewNICHealthMonitor(rc.nodeName, client, *platformConnectorSocket,
+		enabledChecks, rc.statePollingInterval)
 
 	return runServerAndLoops(ctx, rc, nicMonitor)
 }

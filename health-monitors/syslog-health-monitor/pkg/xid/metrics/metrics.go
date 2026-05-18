@@ -45,6 +45,15 @@ var (
 			Buckets: prometheus.DefBuckets,
 		},
 	)
+
+	// CancellationsEmittedMetric counts synthetic cancellation events.
+	CancellationsEmittedMetric = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "syslog_health_monitor_cancellations_emitted_total",
+			Help: "Total number of synthetic cancellation health events emitted by configured rules",
+		},
+		[]string{"check", "source_error_code", "target_error_code"},
+	)
 )
 
 // PreInitialize materializes XidCounterMetric at zero for the local node and

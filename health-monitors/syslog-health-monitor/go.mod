@@ -13,9 +13,8 @@ require (
 	github.com/stretchr/testify v1.11.1
 	github.com/thedatashed/xlsxreader v1.2.8
 	golang.org/x/sync v0.20.0
-	google.golang.org/grpc v1.81.0
+	google.golang.org/grpc v1.81.1
 	google.golang.org/protobuf v1.36.11
-	k8s.io/apimachinery v0.35.4
 )
 
 require (
@@ -70,6 +69,7 @@ require (
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/api v0.35.4 // indirect
+	k8s.io/apimachinery v0.35.4 // indirect
 	k8s.io/client-go v0.35.4 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20251125145642-4e65d59e963e // indirect

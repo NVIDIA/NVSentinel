@@ -18,6 +18,7 @@ import (
 	"regexp"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/cancellation"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/metadata"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid/parser"
 )
@@ -37,4 +38,7 @@ type XIDHandler struct {
 	pciToGPUUUID   map[string]string
 	parser         parser.Parser
 	metadataReader *metadata.Reader
+
+	// cancellations is the per-check rule map; nil disables emission.
+	cancellations cancellation.Resolver
 }

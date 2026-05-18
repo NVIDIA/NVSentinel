@@ -609,9 +609,8 @@ syslog-health-monitor:
 
 ```yaml
 # health-events-analyzer/values.yaml additions
-enableRepeatedNICLinkFlapRule: true
+enableRepeatedNICDriverErrorRule: true
 enableRepeatedNICDegradationRule: true
-enableNICDriverErrorCorrelationRule: true
 ```
 
 ### 8.3 NIC Driver Pattern Configuration
@@ -769,113 +768,56 @@ The following patterns are monitored in the kernel ring buffer (dmesg/kmsg):
 
 ---
 
-## Appendix B: Health Events Analyzer Rules for NIC Monitoring (Optional)
+## Appendix B: Health Events Analyzer Rules for NIC Monitoring
 
-The following example rules show how the Health Events Analyzer *could* implement NIC-specific correlation logic. These rules are **optional** and follow the same pattern as the existing XID correlation rules.
+The Health Events Analyzer should only add value where the raw monitors do not already emit a deterministic fatal event. Fatal NIC state/counter events and fatal NIC driver syslog patterns already trigger remediation directly, so repeated rules are limited to **non-fatal recurrence signals** and use `CONTACT_SUPPORT`.
 
-> **Design Note**: Following gpud's design, the primary health determination is via **port state monitoring** (link-state-detection), not kernel log events or analyzer rules. These rules provide optional diagnostic correlation, not automatic remediation triggers.
+> **Design Note**: The count threshold of 3 is externally grounded by the Linux mlx5 health-poll miss threshold (`MAX_MISSES = 3`) and gpud's InfiniBand flap threshold of 3 reverts-to-active. The 1-hour window is an NVSentinel operational choice to catch clustered recurrence while avoiding stale daily maintenance or boot noise.
 
-### B.1 Link Flap Detection Rule
+### B.1 Minimal Repeated NIC Escalation Rules
 
-```toml
-[[rules]]
-name = "RepeatedNICLinkFlap"
-description = "Detect if link_downed occurred 3+ times within 10 minutes on same NIC port"
-recommended_action = "REPLACE_VM"
-message = "NIC port flapping detected - unstable hardware/cable"
-evaluate_rule = {{ .Values.enableRepeatedNICLinkFlapRule }}
-stage = [
-  # Match events from last 10 minutes
-  '''
-  {
-    "$match": {
-      "$expr": {
-        "$and": [
-          {"$gte": ["$healthevent.generatedtimestamp.seconds", {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 600]}]},
-          {"$lte": ["$healthevent.generatedtimestamp.seconds", "this.healthevent.generatedtimestamp.seconds"]}
-        ]
-      }
-    }
-  }
-  ''',
-  # Filter for NIC health events with link_downed on same node and port
-  '''
-  {
-    "$match": {
-      "healthevent.agent": "nic-health-monitor",
-      "healthevent.nodename": "this.healthevent.nodename",
-      "healthevent.message": {"$regex": "link_downed"},
-      "$expr": {
-        "$gt": [
-          {"$size": {"$setIntersection": [
-            {"$map": {"input": {"$filter": {"input": {"$ifNull": ["$healthevent.entitiesimpacted", []]}, "cond": {"$eq": ["$$this.entitytype", "NICPort"]}}}, "in": "$$this.entityvalue"}},
-            {"$map": {"input": {"$filter": {"input": "this.healthevent.entitiesimpacted", "cond": {"$eq": ["$$this.entitytype", "NICPort"]}}}, "in": "$$this.entityvalue"}}
-          ]}},
-          0
-        ]
-      }
-    }
-  }
-  ''',
-  '{"$count": "count"}',
-  '{"$match": {"count": {"$gte": 3}}}'
-]
-```
+`RepeatedNICDriverError`:
 
-### B.2 Repeated NIC Degradation Escalation Rule
+- Input events: `syslog-health-monitor`, `SysLogsNICDriverError`, `IsFatal=false`.
+- Included pattern names: `netdev_watchdog`, `port_module_high_temp`, `pci_power_insufficient`, `module_unplugged`.
+- Grouping: same node + same `errorcode[0]` pattern name.
+- Threshold: 3 events in 1 hour.
+- Action: `CONTACT_SUPPORT`.
+- Purpose: escalate repeated driver/firmware diagnostic warnings when auto-recovery or environmental stabilization is failing.
 
-```toml
-[[rules]]
-name = "RepeatedNICDegradation"
-description = "Escalate to fatal if 5+ non-fatal NIC degradation events in 24 hours on same port"
-recommended_action = "REPLACE_VM"
-message = "Repeated NIC degradation indicates hardware issue"
-evaluate_rule = {{ .Values.enableRepeatedNICDegradationRule }}
-stage = [
-  # Match non-fatal NIC events from last 24 hours on same node/port
-  '''
-  {
-    "$match": {
-      "$expr": {
-        "$and": [
-          {"$gte": ["$healthevent.generatedtimestamp.seconds", {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}]},
-          {"$lte": ["$healthevent.generatedtimestamp.seconds", "this.healthevent.generatedtimestamp.seconds"]}
-        ]
-      }
-    }
-  }
-  ''',
-  '''
-  {
-    "$match": {
-      "healthevent.agent": "nic-health-monitor",
-      "healthevent.isfatal": false,
-      "healthevent.ishealthy": false,
-      "healthevent.nodename": "this.healthevent.nodename",
-      "$expr": {
-        "$gt": [
-          {"$size": {"$setIntersection": [
-            {"$map": {"input": {"$filter": {"input": {"$ifNull": ["$healthevent.entitiesimpacted", []]}, "cond": {"$eq": ["$$this.entitytype", "NICPort"]}}}, "in": "$$this.entityvalue"}},
-            {"$map": {"input": {"$filter": {"input": "this.healthevent.entitiesimpacted", "cond": {"$eq": ["$$this.entitytype", "NICPort"]}}}, "in": "$$this.entityvalue"}}
-          ]}},
-          0
-        ]
-      }
-    }
-  }
-  ''',
-  '{"$count": "count"}',
-  '{"$match": {"count": {"$gte": 5}}}'
-]
-```
+`RepeatedNICDegradation`:
+
+- Input events: `nic-health-monitor`, `InfiniBandDegradationCheck` or `EthernetDegradationCheck`, `IsFatal=false`, `IsHealthy=false`.
+- Grouping: same node + same `NIC` + same `NICPort`.
+- Threshold: 3 events in 1 hour.
+- Action: `CONTACT_SUPPORT`.
+- Purpose: escalate repeated non-fatal counter degradation on the same physical port.
+
+`access_reg_failed` is intentionally excluded from `RepeatedNICDriverError`. Public gpud context identifies repeated `mlx5_cmd_out_err.*ACCESS_REG.*failed` messages as restricted-PF/query noise on some systems, not a standalone hardware recurrence signal.
+
+Fatal syslog patterns are also intentionally excluded:
+
+- `cmd_exec_timeout`
+- `health_poll_failed`
+- `unrecoverable_err`
+
+Those are already emitted as fatal by the syslog health monitor and do not need analyzer-side repeat detection.
+
+### B.2 External Source Basis
+
+- Linux mlx5 health poll uses `MAX_MISSES = 3` and logs `device's health compromised - reached miss count`: [Linux mlx5 `health.c`](https://raw.githubusercontent.com/torvalds/linux/master/drivers/net/ethernet/mellanox/mlx5/core/health.c).
+- Linux mlx5 command timeout logs `timeout. Will cause a leak of a command resource`: [Linux mlx5 `cmd.c`](https://raw.githubusercontent.com/torvalds/linux/master/drivers/net/ethernet/mellanox/mlx5/core/cmd.c).
+- Linux mlx5 async events log `High Temperature`, `Cable unplugged`, and insufficient PCIe slot power: [Linux mlx5 `events.c`](https://raw.githubusercontent.com/torvalds/linux/master/drivers/net/ethernet/mellanox/mlx5/core/events.c).
+- Linux mlx5 TX timeout has a devlink health reporter recovery path: [Linux mlx5 `reporter_tx.c`](https://raw.githubusercontent.com/torvalds/linux/master/drivers/net/ethernet/mellanox/mlx5/core/en/reporter_tx.c).
+- gpud uses 3 reverts-to-active as the InfiniBand port-flap threshold: [leptonai/gpud#971](https://github.com/leptonai/gpud/pull/971).
+- gpud ACCESS_REG context identifies `mlx5_cmd_out_err.*ACCESS_REG.*failed` as restricted-device/query noise: [leptonai/gpud#1164](https://github.com/leptonai/gpud/issues/1164).
 
 ### B.3 Configuration in values.yaml
 
-These rules would be added to the `health-events-analyzer` Helm chart values:
+These rules are configured in the `health-events-analyzer` Helm chart values:
 
 ```yaml
-# health-events-analyzer/values.yaml additions
-enableRepeatedNICLinkFlapRule: true
+enableRepeatedNICDriverErrorRule: true
 enableRepeatedNICDegradationRule: true
 ```
 

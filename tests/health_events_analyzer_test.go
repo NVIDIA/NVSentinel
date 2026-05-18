@@ -142,6 +142,115 @@ func TestMultipleRemediationsNotTriggered(t *testing.T) {
 	testEnv.Test(t, feature.Feature())
 }
 
+func TestRepeatedNICRules_RepeatedNonFatalSignals_TriggersExpectedEscalations(t *testing.T) {
+	feature := features.New("TestRepeatedNICRules_RepeatedNonFatalSignals_TriggersExpectedEscalations").
+		WithLabel("suite", "health-event-analyzer")
+
+	var testCtx *helpers.HealthEventsAnalyzerTestContext
+	var testNodeName string
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		testNodeName = helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
+
+		var newCtx context.Context
+		newCtx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
+
+		return newCtx
+	})
+
+	feature.Assess("Repeated selected non-fatal NIC driver errors trigger analyzer escalation", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create client")
+
+		for range 3 {
+			helpers.SendHealthEvent(ctx, t, helpers.NewHealthEvent(testNodeName).
+				WithAgent(helpers.SYSLOG_HEALTH_MONITOR_AGENT).
+				WithCheckName("SysLogsNICDriverError").
+				WithComponentClass("NIC").
+				WithEntitiesImpacted([]helpers.EntityImpacted{}).
+				WithFatal(false).
+				WithHealthy(false).
+				WithErrorCode("access_reg_failed").
+				WithMessage("mlx5_cmd_out_err: ACCESS_REG failed").
+				WithRecommendedAction(int(pb.RecommendedAction_NONE)).
+				WithProcessingStrategy(int(pb.ProcessingStrategy_EXECUTE_REMEDIATION)))
+		}
+
+		helpers.EnsureNodeConditionNotPresent(ctx, t, client, testNodeName, "RepeatedNICDriverError")
+
+		for range 3 {
+			helpers.SendHealthEvent(ctx, t, helpers.NewHealthEvent(testNodeName).
+				WithAgent(helpers.SYSLOG_HEALTH_MONITOR_AGENT).
+				WithCheckName("SysLogsNICDriverError").
+				WithComponentClass("NIC").
+				WithEntitiesImpacted([]helpers.EntityImpacted{}).
+				WithFatal(false).
+				WithHealthy(false).
+				WithErrorCode("netdev_watchdog").
+				WithMessage("NETDEV WATCHDOG: eth0 (mlx5_core): transmit queue 0 timed out").
+				WithRecommendedAction(int(pb.RecommendedAction_NONE)).
+				WithProcessingStrategy(int(pb.ProcessingStrategy_EXECUTE_REMEDIATION)))
+		}
+
+		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, testNodeName, "RepeatedNICDriverError",
+			"ErrorCode:netdev_watchdog;Recommended Action=CONTACT_SUPPORT;",
+			"RepeatedNICDriverErrorIsNotHealthy", v1.ConditionTrue)
+
+		return ctx
+	})
+
+	feature.Assess("Repeated non-fatal NIC degradation on same port triggers analyzer escalation", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create client")
+
+		port1Entities := []helpers.EntityImpacted{
+			{EntityType: "NIC", EntityValue: "mlx5_0"},
+			{EntityType: "NICPort", EntityValue: "1"},
+		}
+		port2Entities := []helpers.EntityImpacted{
+			{EntityType: "NIC", EntityValue: "mlx5_0"},
+			{EntityType: "NICPort", EntityValue: "2"},
+		}
+
+		for range 2 {
+			helpers.SendNICDegradationEvent(ctx, t, testNodeName, port1Entities)
+		}
+
+		helpers.SendNICDegradationEvent(ctx, t, testNodeName, port2Entities)
+		helpers.EnsureNodeConditionNotPresent(ctx, t, client, testNodeName, "RepeatedNICDegradation")
+
+		helpers.SendNICDegradationEvent(ctx, t, testNodeName, port1Entities)
+		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, testNodeName, "RepeatedNICDegradation",
+			"NIC:mlx5_0;NICPort:1;Recommended Action=CONTACT_SUPPORT;",
+			"RepeatedNICDegradationIsNotHealthy", v1.ConditionTrue)
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		helpers.SendNICDriverHealthyEvent(ctx, t, testNodeName)
+		for _, entities := range [][]helpers.EntityImpacted{
+			{
+				{EntityType: "NIC", EntityValue: "mlx5_0"},
+				{EntityType: "NICPort", EntityValue: "1"},
+			},
+			{
+				{EntityType: "NIC", EntityValue: "mlx5_0"},
+				{EntityType: "NICPort", EntityValue: "2"},
+			},
+		} {
+			helpers.SendNICDegradationHealthyEvent(ctx, t, testNodeName, entities)
+		}
+
+		return helpers.TeardownHealthEventsAnalyzer(ctx, t, c, testNodeName, testCtx.ConfigMapBackup)
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
 func TestRepeatedXIDOnSameGPU(t *testing.T) {
 	// Works with both MongoDB ($setWindowFields pipeline) and PostgreSQL (XidBurstDetector).
 	feature := features.New("TestRepeatedXIDOnSameGPU").

@@ -126,7 +126,8 @@ This monitor uses a binary severity model based on **workload impact**:
 │  ┌─────────────────────────────────────────────────────────────────────────┐    │
 │  │            HEALTH EVENTS ANALYZER (Escalation Rules)                     │    │
 │  ├─────────────────────────────────────────────────────────────────────────┤    │
-│  │  • RepeatedNICDegradation: "5+ non-fatal events in 24h → FATAL"         │    │
+│  │  • RepeatedNICDegradation: "3 non-fatal degradation events on           │    │
+│  │    same NIC port in 1h → CONTACT_SUPPORT"                               │    │
 │  │  • Pattern detection across time windows                                 │    │
 │  └─────────────────────────────────────────────────────────────────────────┘    │
 │                                                                                  │
@@ -307,7 +308,7 @@ The Degradation Monitor follows NVSentinel's established architectural pattern w
 |-----------------------------|--------------------------------------------|--------------------------------------------------------------|
 | **Raw Event Reporting**     | Each threshold violation → immediate event | Enables centralized correlation with full historical context |
 | **Centralized Correlation** | Health Events Analyzer MongoDB pipelines   | Flexible, configurable rules without monitor code changes    |
-| **Temporal Correlation**    | Analyzer rules with time windows           | Detects patterns like "5 degradation events in 24 hours"     |
+| **Temporal Correlation**    | Analyzer rules with time windows           | Detects repeated non-fatal port degradation                  |
 
 ### 3.2 Component Responsibilities
 
@@ -317,6 +318,8 @@ The Degradation Monitor follows NVSentinel's established architectural pattern w
 | **Health Events Analyzer**                 | Correlate events, detect patterns, escalate severity                                                                         | Direct hardware access                                     |
 
 > **Local State Persistence**: The Degradation Check maintains a persistent state file on the node (hostPath-backed) containing per-counter snapshots (value + timestamp), per-counter breach flags, and the host boot ID. This enables the monitor to (1) compute accurate deltas and **precise velocity rates** by holding the persisted snapshot for the configured velocity window and computing the rate over the real elapsed time — so a `120/hour` threshold is observed over a one-hour window rather than extrapolated from a single 1s sample; (2) seamlessly resume velocity windows after a pod restart because the snapshot timestamp survives the restart; (3) emit recovery events (`IsHealthy=true`) when counters are reset by an administrator, by retaining the breach flag across restarts; and (4) detect host reboots to **clear all state and emit healthy baseline events** for all ports and counters, since the node may have had NICs replaced during maintenance. This local state is strictly operational — all correlation and pattern detection remains centralized in the Health Events Analyzer.
+
+**Analyzer Escalation**: The Health Events Analyzer only escalates repeated **non-fatal** degradation events. The `RepeatedNICDegradation` rule triggers when 3 non-fatal `InfiniBandDegradationCheck` or `EthernetDegradationCheck` events occur on the same `NIC` + `NICPort` within 1 hour, and recommends `CONTACT_SUPPORT`. Fatal counters still emit `REPLACE_VM` directly from the monitor on first breach.
 
 ### 3.3 Degradation Check Data Flow (1s polling interval)
 
@@ -1172,14 +1175,14 @@ After all counters evaluated:
 
 The monitor validates configuration at startup:
 
-| Validation            | Requirement                           | Action on Failure         |
-|-----------------------|---------------------------------------|---------------------------|
-| Counter selection     | Allowed `name`/`path` pair            | Reject configuration      |
-| Counter path exists   | Path must be readable in sysfs        | Log warning, skip counter |
-| Threshold is positive | threshold >= 0                        | Reject configuration      |
-| velocityUnit valid    | Must be `second`, `minute`, or `hour` | Reject configuration      |
-| thresholdType valid   | Must be `delta` or `velocity`         | Reject configuration      |
-| Unique counter names  | No duplicate `name` fields            | Reject configuration      |
+| Validation           | Requirement                               | Action on Failure         |
+|----------------------|-------------------------------------------|---------------------------|
+| Counter selection    | Allowed `name` resolved to hardcoded path | Reject configuration      |
+| Counter path exists  | Internal path must be readable in sysfs   | Log warning, skip counter |
+| Threshold is valid   | finite threshold >= 0                     | Reject configuration      |
+| velocityUnit valid   | Must be `second`, `minute`, or `hour`     | Reject configuration      |
+| thresholdType valid  | Must be `delta` or `velocity`             | Reject configuration      |
+| Unique counter names | No duplicate `name` fields                | Reject configuration      |
 
 ---
 
@@ -1282,8 +1285,9 @@ For kernel log pattern details (fatal and non-fatal classifications, regex patte
 | **Port State Changes** (link-state-detection) | `true`  | `REPLACE_VM`       | Fatal NIC condition detected       |
 | **Fatal Counters** (link-counter-detection)   | `true`  | `REPLACE_VM`       | Fatal NIC condition detected       |
 | **Diagnostic Logs**                           | `false` | `NONE`             | Evidence/context for investigation |
+| **Repeated Non-Fatal Counter Degradation**    | `true`  | `CONTACT_SUPPORT`  | Operator escalation                |
 
-> **Key Insight**: Deterministically fatal events in logs (cmd_exec timeout, etc.) are **Fatal (`IsFatal=true`)** with `RecommendedAction_REPLACE_VM`. Diagnostic logs (insufficient power, High Temperature, module absent) are **Non-Fatal (`IsFatal=false`)**. State and counter conditions are also **Fatal (`IsFatal=true`)** with `RecommendedAction_REPLACE_VM`.
+> **Key Insight**: Deterministically fatal events in logs (cmd_exec timeout, etc.) are **Fatal (`IsFatal=true`)** with `RecommendedAction_REPLACE_VM`. Diagnostic logs (insufficient power, High Temperature, module absent) are **Non-Fatal (`IsFatal=false`)**. State and fatal counter conditions are **Fatal (`IsFatal=true`)** with `RecommendedAction_REPLACE_VM`. Repeated non-fatal counter degradation is an analyzer-generated `CONTACT_SUPPORT` escalation, not automatic remediation.
 
 ---
 
@@ -1304,7 +1308,7 @@ For kernel log pattern details (fatal and non-fatal classifications, regex patte
 ### Vendor Monitoring Guides
 7. [InfiniBand Errors Dashboard - HPE ClusterStor](https://support.hpe.com/hpesc/public/docDisplay?docId=sd00001143en_us&page=GUID-35D4C04D-E65E-45A7-A870-72F9659DE565.html&docLocale=en_US)
 8. [HPC Clusters Using InfiniBand on IBM Power Systems - IBM Redbooks](https://www.redbooks.ibm.com/redbooks/pdfs/sg247767.pdf)
-9. [NVIDIA UFM InfiniBand Port Counters](https://docs.nvidia.com/networking/display/ufmsdnappumv4184/InfiniBand+Port+Counters)
+9. [NVIDIA UFM InfiniBand Port Counters](https://docs.nvidia.com/networking/display/ufmsdnappumv41814/infiniband-port-counters)
 10. [NVIDIA DOCA Telemetry Service Guide](https://docs.nvidia.com/doca/archive/2-9-3/doca+telemetry+service+guide/index.html)
 11. [NVIDIA UFM Telemetry - InfiniBand Cluster Bring-Up](https://docs.nvidia.com/networking/display/infinibandclusterbringupprocedure/UFM+Telemetry)
 

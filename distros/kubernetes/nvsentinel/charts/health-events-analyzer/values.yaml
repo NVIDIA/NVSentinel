@@ -59,6 +59,8 @@ enableXID74Reg3UnexpectedErrorRule: true
 enableXID74Reg3Bit18SetRule: true
 enableXID74Reg4HardwareIssueRule: true
 enableXID74Reg4ECCErrorRule: true
+enableRepeatedNICDriverErrorRule: true
+enableRepeatedNICDegradationRule: true
 
 # Client certificate mount path for database connections
 clientCertMountPath: /etc/ssl/client-certs
@@ -136,54 +138,70 @@ config: |
       }
     }
     ''',
+      # Gate current event: only XID events carry GPU_UUID entities; without
+      # this guard, non-GPU events (e.g. NIC diagnostics) would reach the
+      # $setIntersection stage below and hit "$size on null".
       '''
     {
       "$match": {
-      "$expr": {
-          "$ne": [
-            "this.healthevent.errorcode.0",
-            "31"
+        "$expr": {
+          "$and": [
+            {"$eq": ["this.healthevent.checkname", "SysLogsXIDError"]},
+            {
+              "$ne": [
+                "this.healthevent.errorcode.0",
+                "31"
+              ]
+            }
           ]
         }
       }
     }
     ''',
+    # Candidate docs must also be XID events so non-XID unhealthy events on
+    # the same node are not merged into GPU burst counts.
     '''
     {
       "$match": {
+        "healthevent.checkname": "SysLogsXIDError",
         "healthevent.ishealthy": false,
         "healthevent.nodename": "this.healthevent.nodename",
         "$expr": {
-          "$gt": [
+          "$and": [
+            {"$ne": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, "31"]},
             {
-              "$size": {
-                "$setIntersection": [
-                  {
-                    "$map": {
-                      "input": {
-                        "$filter": {
-                          "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
-                          "cond": {"$eq": ["$$this.entitytype", "GPU_UUID"]}
+              "$gt": [
+                {
+                  "$size": {
+                    "$setIntersection": [
+                      {
+                        "$map": {
+                          "input": {
+                            "$filter": {
+                              "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
+                              "cond": {"$eq": ["$$this.entitytype", "GPU_UUID"]}
+                            }
+                          },
+                          "in": "$$this.entityvalue"
                         }
                       },
-                      "in": "$$this.entityvalue"
-                    }
-                  },
-                  {
-                    "$map": {
-                      "input": {
-                        "$filter": {
-                          "input": "this.healthevent.entitiesimpacted",
-                          "cond": {"$eq": ["$$this.entitytype", "GPU_UUID"]}
+                      {
+                        "$map": {
+                          "input": {
+                            "$filter": {
+                              "input": "this.healthevent.entitiesimpacted",
+                              "cond": {"$eq": ["$$this.entitytype", "GPU_UUID"]}
+                            }
+                          },
+                          "in": "$$this.entityvalue"
                         }
-                      },
-                      "in": "$$this.entityvalue"
-                    }
+                      }
+                    ]
                   }
-                ]
-              }
-            },
-            0
+                },
+                0
+              ]
+            }
           ]
         }
       }
@@ -1755,6 +1773,231 @@ config: |
       ''',
       '{"$count": "count"}',
       '{"$match": {"count": {"$gte": 2}}}'
+    ]
+
+    [[rules]]
+    name = "RepeatedNICDriverError"
+    description = "Detect if a selected non-fatal NIC driver kernel-log pattern occurs 3 or more times on the same node within 1 hour"
+    recommended_action = "CONTACT_SUPPORT"
+    message = "Repeated non-fatal NIC driver kernel-log error of the same type on this node - auto-recovery is failing or hardware is unstable; investigate driver, firmware, cooling, power, or cabling"
+    evaluate_rule = {{ .Values.enableRepeatedNICDriverErrorRule }}
+    stage = [
+      '''
+      {
+        "$match": {
+          "$expr": {
+            "$and": [
+              {
+                "$gte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 3600]}
+                ]
+              },
+              {
+                "$lte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  "this.healthevent.generatedtimestamp.seconds"
+                ]
+              }
+            ]
+          }
+        }
+      }
+      ''',
+      '''
+      {
+        "$match": {
+          "$expr": {
+            "$and": [
+              {"$eq": ["this.healthevent.agent", "syslog-health-monitor"]},
+              {"$eq": ["this.healthevent.checkname", "SysLogsNICDriverError"]},
+              {"$eq": ["this.healthevent.isfatal", false]},
+              {"$eq": ["this.healthevent.ishealthy", false]},
+              {
+                "$in": [
+                  "this.healthevent.errorcode.0",
+                  ["netdev_watchdog", "port_module_high_temp", "pci_power_insufficient", "module_unplugged"]
+                ]
+              }
+            ]
+          }
+        }
+      }
+      ''',
+      '''
+      {
+        "$match": {
+          "healthevent.agent": "syslog-health-monitor",
+          "healthevent.checkname": "SysLogsNICDriverError",
+          "healthevent.isfatal": false,
+          "healthevent.ishealthy": false,
+          "healthevent.nodename": "this.healthevent.nodename",
+          "$expr": {
+            "$eq": [
+              {"$arrayElemAt": ["$healthevent.errorcode", 0]},
+              "this.healthevent.errorcode.0"
+            ]
+          }
+        }
+      }
+      ''',
+      '{"$count": "count"}',
+      '{"$match": {"count": {"$gte": 3}}}'
+    ]
+
+    [[rules]]
+    name = "RepeatedNICDegradation"
+    description = "Detect if non-fatal NIC counter degradation events occur 3 or more times on the same NIC port within 1 hour"
+    recommended_action = "CONTACT_SUPPORT"
+    message = "Repeated non-fatal NIC port degradation on the same port - counter has cleared and re-tripped, or multiple non-fatal counters are degrading; investigate physical layer, cable, optics, or adapter"
+    evaluate_rule = {{ .Values.enableRepeatedNICDegradationRule }}
+    stage = [
+      '''
+      {
+        "$match": {
+          "$expr": {
+            "$and": [
+              {
+                "$gte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 3600]}
+                ]
+              },
+              {
+                "$lte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  "this.healthevent.generatedtimestamp.seconds"
+                ]
+              }
+            ]
+          }
+        }
+      }
+      ''',
+      '''
+      {
+        "$match": {
+          "$expr": {
+            "$and": [
+              {"$eq": ["this.healthevent.agent", "nic-health-monitor"]},
+              {"$eq": ["this.healthevent.isfatal", false]},
+              {"$eq": ["this.healthevent.ishealthy", false]},
+              {
+                "$in": [
+                  "this.healthevent.checkname",
+                  ["InfiniBandDegradationCheck", "EthernetDegradationCheck"]
+                ]
+              }
+            ]
+          }
+        }
+      }
+      ''',
+      '''
+      {
+        "$match": {
+          "healthevent.agent": "nic-health-monitor",
+          "healthevent.checkname": {"$in": ["InfiniBandDegradationCheck", "EthernetDegradationCheck"]},
+          "healthevent.isfatal": false,
+          "healthevent.ishealthy": false,
+          "healthevent.nodename": "this.healthevent.nodename"
+        }
+      }
+      ''',
+      '''
+      {
+        "$addFields": {
+          "nicValue": {
+            "$arrayElemAt": [
+              {
+                "$map": {
+                  "input": {
+                    "$filter": {
+                      "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
+                      "cond": {"$eq": ["$$this.entitytype", "NIC"]}
+                    }
+                  },
+                  "in": "$$this.entityvalue"
+                }
+              },
+              0
+            ]
+          },
+          "nicPortValue": {
+            "$arrayElemAt": [
+              {
+                "$map": {
+                  "input": {
+                    "$filter": {
+                      "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
+                      "cond": {"$eq": ["$$this.entitytype", "NICPort"]}
+                    }
+                  },
+                  "in": "$$this.entityvalue"
+                }
+              },
+              0
+            ]
+          }
+        }
+      }
+      ''',
+      '''
+      {
+        "$match": {
+          "$expr": {
+            "$and": [
+              {"$ne": ["$nicValue", null]},
+              {"$ne": ["$nicPortValue", null]},
+              {
+                "$eq": [
+                  "$nicValue",
+                  {
+                    "$arrayElemAt": [
+                      {
+                        "$map": {
+                          "input": {
+                            "$filter": {
+                              "input": "this.healthevent.entitiesimpacted",
+                              "cond": {"$eq": ["$$this.entitytype", "NIC"]}
+                            }
+                          },
+                          "in": "$$this.entityvalue"
+                        }
+                      },
+                      0
+                    ]
+                  }
+                ]
+              },
+              {
+                "$eq": [
+                  "$nicPortValue",
+                  {
+                    "$arrayElemAt": [
+                      {
+                        "$map": {
+                          "input": {
+                            "$filter": {
+                              "input": "this.healthevent.entitiesimpacted",
+                              "cond": {"$eq": ["$$this.entitytype", "NICPort"]}
+                            }
+                          },
+                          "in": "$$this.entityvalue"
+                        }
+                      },
+                      0
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+      ''',
+      '{"$count": "count"}',
+      '{"$match": {"count": {"$gte": 3}}}'
     ]
 
     [[rules]]

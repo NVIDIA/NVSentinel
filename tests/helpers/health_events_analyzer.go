@@ -16,6 +16,7 @@ package helpers
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"testing"
 
@@ -172,6 +173,28 @@ func clearHealthEventsAnalyzerConditions(ctx context.Context, t *testing.T, node
 
 	event.EntitiesImpacted = []EntityImpacted{}
 	SendHealthEvent(ctx, t, event)
+
+	event = NewHealthEvent(nodeName).
+		WithAgent(HEALTH_EVENTS_ANALYZER_AGENT).
+		WithHealthy(true).
+		WithFatal(false).
+		WithMessage("No health failures").
+		WithComponentClass("NIC").
+		WithCheckName("RepeatedNICDriverError")
+
+	event.EntitiesImpacted = []EntityImpacted{}
+	SendHealthEvent(ctx, t, event)
+
+	event = NewHealthEvent(nodeName).
+		WithAgent(HEALTH_EVENTS_ANALYZER_AGENT).
+		WithHealthy(true).
+		WithFatal(false).
+		WithMessage("No health failures").
+		WithComponentClass("NIC").
+		WithCheckName("RepeatedNICDegradation")
+
+	event.EntitiesImpacted = []EntityImpacted{}
+	SendHealthEvent(ctx, t, event)
 }
 
 func TriggerMultipleRemediationsCycle(ctx context.Context, t *testing.T, client klient.Client, nodeName string) {
@@ -246,6 +269,85 @@ func TeardownHealthEventsAnalyzer(ctx context.Context, t *testing.T,
 	}
 
 	return ctx
+}
+
+// SendNICDegradationEvent sends a non-fatal InfiniBandDegradationCheck health event for the given NIC/port entities.
+func SendNICDegradationEvent(
+	ctx context.Context,
+	t *testing.T,
+	nodeName string,
+	entities []EntityImpacted,
+) {
+	t.Helper()
+
+	nic, port := nicAndPortFromEntities(entities)
+
+	SendHealthEvent(ctx, t, NewHealthEvent(nodeName).
+		WithAgent("nic-health-monitor").
+		WithCheckName("InfiniBandDegradationCheck").
+		WithComponentClass("NIC").
+		WithEntitiesImpacted(entities).
+		WithFatal(false).
+		WithHealthy(false).
+		WithMessage(fmt.Sprintf(
+			"Port %s port %s: symbol_error - PHY bit errors before FEC (value=11, delta=11, rate=11.00/sec)",
+			nic, port)).
+		WithRecommendedAction(int(pb.RecommendedAction_NONE)).
+		WithProcessingStrategy(int(pb.ProcessingStrategy_EXECUTE_REMEDIATION)))
+}
+
+// SendNICDriverHealthyEvent sends a healthy SysLogsNICDriverError event to clear the NIC driver error condition.
+func SendNICDriverHealthyEvent(ctx context.Context, t *testing.T, nodeName string) {
+	t.Helper()
+
+	SendHealthEvent(ctx, t, NewHealthEvent(nodeName).
+		WithAgent(SYSLOG_HEALTH_MONITOR_AGENT).
+		WithCheckName("SysLogsNICDriverError").
+		WithComponentClass("NIC").
+		WithEntitiesImpacted([]EntityImpacted{}).
+		WithFatal(false).
+		WithHealthy(true).
+		WithMessage("No health failures").
+		WithRecommendedAction(int(pb.RecommendedAction_NONE)).
+		WithProcessingStrategy(int(pb.ProcessingStrategy_EXECUTE_REMEDIATION)))
+}
+
+// SendNICDegradationHealthyEvent sends a healthy InfiniBandDegradationCheck event to clear the
+// NIC degradation condition.
+func SendNICDegradationHealthyEvent(
+	ctx context.Context,
+	t *testing.T,
+	nodeName string,
+	entities []EntityImpacted,
+) {
+	t.Helper()
+
+	SendHealthEvent(ctx, t, NewHealthEvent(nodeName).
+		WithAgent("nic-health-monitor").
+		WithCheckName("InfiniBandDegradationCheck").
+		WithComponentClass("NIC").
+		WithEntitiesImpacted(entities).
+		WithFatal(false).
+		WithHealthy(true).
+		WithMessage("No health failures").
+		WithRecommendedAction(int(pb.RecommendedAction_NONE)).
+		WithProcessingStrategy(int(pb.ProcessingStrategy_EXECUTE_REMEDIATION)))
+}
+
+func nicAndPortFromEntities(entities []EntityImpacted) (string, string) {
+	nic := "mlx5_0"
+	port := "1"
+
+	for _, entity := range entities {
+		switch entity.EntityType {
+		case "NIC":
+			nic = entity.EntityValue
+		case "NICPort":
+			port = entity.EntityValue
+		}
+	}
+
+	return nic, port
 }
 
 // restoreHealthEventsAnalyzerConfig restores the health-events-analyzer config from backup and restarts the deployment.

@@ -28,6 +28,13 @@ health_events_insertion_to_uds_error = Counter(
     "health_events_insertion_to_uds_error", "Total number of failed insertions of health events to UDS"
 )
 
+# Operator-visible signal that platform-connector was unavailable on this node,
+# distinct from a true gRPC RPC error.
+health_events_insertion_skipped_pc_unavailable = Counter(
+    "health_events_insertion_skipped_pc_unavailable",
+    "Total number of health-event sends skipped because the platform-connector Unix socket was missing",
+)
+
 dcgm_health_active_events = Gauge(
     "dcgm_health_active_events",
     "Active health events by watch type and GPU",

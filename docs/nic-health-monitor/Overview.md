@@ -102,9 +102,9 @@ The NIC Health Monitor follows NVSentinel's established architectural pattern:
 |----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------|--------------------------------------------|
 | **NIC Health Monitor**     | Detect UP/DOWN transitions, counter threshold violations, emit recovery events on admin counter resets, emit healthy baselines after host reboot | `sysfs` state files, counters | Raw + recovery events → Platform Connector |
 | **Syslog Health Monitor**  | Detect driver/firmware events from kernel logs                                                                                                   | `journald`/`dmesg`            | Raw events → Platform Connector            |
-| **Health Events Analyzer** | Correlate events, detect patterns, escalate to fatal                                                                                             | MongoDB                       | Correlated events → Platform Connector     |
+| **Health Events Analyzer** | Correlate events, detect repeated non-fatal patterns, escalate for operator review                                                               | MongoDB                       | Correlated events → Platform Connector     |
 
-> **Design Principle**: Health monitors report **raw events as-is**. All aggregation, correlation, link flap detection, and stabilization window logic is handled centrally by the **Health Events Analyzer** using configurable MongoDB aggregation rules. Each monitor maintains **minimal persistent local state** on the node (via hostPath-backed state files) to survive pod restarts — port state snapshots, counter snapshots, breach flags, known device lists, and boot ID for the NIC monitor; journal cursors and boot ID for the syslog monitor. This local state is strictly for delta/velocity calculation, health boundary transition detection, recovery event emission, and resumption; it is not used for correlation or pattern detection.
+> **Design Principle**: Health monitors report **raw events as-is**. Aggregation, correlation, repeated non-fatal degradation/syslog detection, and stabilization window logic is handled centrally by the **Health Events Analyzer** using configurable MongoDB aggregation rules. Each monitor maintains **minimal persistent local state** on the node (via hostPath-backed state files) to survive pod restarts — port state snapshots, counter snapshots, breach flags, known device lists, and boot ID for the NIC monitor; journal cursors and boot ID for the syslog monitor. This local state is strictly for delta/velocity calculation, health boundary transition detection, recovery event emission, and resumption; it is not used for correlation or pattern detection.
 
 ### Binary Severity Model
 
@@ -184,11 +184,11 @@ This monitor uses a binary severity model based on **workload impact**:
 
 1. **Deterministic failure thresholds** from IBTA specifications, cloud provider heuristics (Azure, AWS), and vendor documentation
 2. **Allowlisted counter configuration** - operators can choose from NIC-relevant counters, set custom thresholds (delta or velocity-based), and configure fatal/non-fatal severity per counter
-3. **Rate-based degradation detection** via centralized Health Events Analyzer rules
+3. **Rate-based degradation detection** via NIC monitor counter thresholds, with repeated non-fatal escalation handled centrally by Health Events Analyzer rules
 4. **Pre-failure prediction** by detecting BER climbing before FEC exhaustion (IBTA 10E-12 BER threshold: 120 errors/hour)
 5. **Kernel log monitoring** integrated into the existing syslog-health-monitor with NIC-specific check patterns
 6. **Centralized event correlation** via Health Events Analyzer MongoDB aggregation pipelines
-7. **Link flap detection** via Health Events Analyzer rules (e.g., "link_downed 3+ times in 10 minutes")
+7. **Repeated non-fatal degradation/syslog escalation** via Health Events Analyzer rules (see [Syslog Detection & Correlation, Appendix B](./syslog-detection-correlation.md#appendix-b-health-events-analyzer-rules-for-nic-monitoring) for thresholds and external sources)
 8. **Persistent local state** shared across state and counter checks — port state snapshots and known device list (state recovery and device disappearance detection across restarts), counter snapshots with per-counter timestamps (precise velocity calculation), breach flags (recovery event emission after admin counter resets), and boot ID (clear all state and emit healthy baselines on host reboot, since NICs may have been replaced)
 9. **Zero-configuration NIC role classification** via a two-level decision (NUMA locality + `nvidia-smi topo -m` matrix, consumed from the NVSentinel metadata collector's `gpu_metadata.json`). Works across x86 DGX/HGX (A100, H100, L40S), Grace-based superchips (GB200, GH200), and OEM/cloud platforms. See [Link State Detection, Section 4](./link-state-detection.md#4-management-nic-exclusion-and-uncabled-port-detection).
 

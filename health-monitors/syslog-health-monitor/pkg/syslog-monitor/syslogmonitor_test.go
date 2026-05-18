@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -307,7 +308,7 @@ func TestNewSyslogMonitor(t *testing.T) {
 	filePath := testStateFile
 
 	monitor, err := NewSyslogMonitor(args.NodeName,
-		args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, filePath, "http://localhost:8080", "/tmp/metadata.json", pb.ProcessingStrategy_STORE_ONLY, "", "")
+		args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, filePath, "http://localhost:8080", "/tmp/metadata.json", pb.ProcessingStrategy_STORE_ONLY, "", "", nil, "tcp://test")
 	assert.NoError(t, err)
 	assert.NotNil(t, monitor)
 	assert.Equal(t, args.NodeName, monitor.nodeName)
@@ -327,7 +328,7 @@ func TestNewSyslogMonitor(t *testing.T) {
 
 	filePath = testStateFile2
 	monitor, err = NewSyslogMonitorWithFactory(args.NodeName,
-		args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, filePath, fakeJournalFactory, "http://localhost:8080", "/tmp/metadata.json", pb.ProcessingStrategy_EXECUTE_REMEDIATION, "", "")
+		args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, filePath, fakeJournalFactory, "http://localhost:8080", "/tmp/metadata.json", pb.ProcessingStrategy_EXECUTE_REMEDIATION, "", "", nil, "tcp://test")
 	assert.NoError(t, err)
 	assert.NotNil(t, monitor)
 	assert.Equal(t, fakeJournalFactory, monitor.journalFactory)
@@ -401,6 +402,8 @@ func TestJournalProcessingLogic(t *testing.T) {
 		"/tmp/metadata.json",
 		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 		"", "",
+		nil,
+		"tcp://test",
 	)
 	assert.NoError(t, err)
 
@@ -505,6 +508,8 @@ func TestJournalStateManagement(t *testing.T) {
 		"/tmp/metadata.json",
 		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 		"", "",
+		nil,
+    "tcp://test",
 	)
 	assert.NoError(t, err)
 
@@ -538,6 +543,8 @@ func TestJournalStateManagement(t *testing.T) {
 		"/tmp/metadata.json",
 		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 		"", "",
+		nil,
+    "tcp://test",
 	)
 	assert.NoError(t, err)
 
@@ -587,6 +594,8 @@ func TestBootIDChangeHandling(t *testing.T) {
 		"/tmp/metadata.json",
 		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 		"", "",
+		nil,
+		"tcp://test",
 	)
 	assert.NoError(t, err)
 
@@ -594,6 +603,112 @@ func TestBootIDChangeHandling(t *testing.T) {
 	if exists {
 		assert.Empty(t, cursor, "Cursor should be cleared after boot ID change")
 	}
+}
+
+// TestBootIDChange_StateNotPersistedWhenSendSkipped: when the
+// platform-connector socket is missing, post-reboot healthy sends are
+// skipped via the healthpub gate; the new BootID must NOT be persisted
+// to disk so a subsequent retry can re-deliver. Once the socket
+// appears, a single Run() call must drain the pending flush and
+// persist the new BootID.
+func TestBootIDChange_StateNotPersistedWhenSendSkipped(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFilePath := tmpDir + "/state.json"
+	socketPathTest := tmpDir + "/no.sock"
+
+	oldBootID := "old-boot-id"
+	initialState := syslogMonitorState{
+		BootID:           oldBootID,
+		CheckLastCursors: map[string]string{XIDErrorCheck: "old-cursor"},
+	}
+	stateData, err := json.Marshal(initialState)
+	assert.NoError(t, err)
+	assert.NoError(t, os.WriteFile(stateFilePath, stateData, 0o644))
+
+	check := CheckDefinition{Name: XIDErrorCheck, JournalPath: TEST_JOURNAL_PATH}
+	mockJournal := &MockJournal{
+		Entries:         []MockJournalEntry{{Message: "entry1", Cursor: "cursor-1", BootID: "new-boot-id"}},
+		CurrentPosition: -1,
+		TestBootID:      "new-boot-id",
+	}
+	mockFactory := NewMockJournalFactory()
+	mockFactory.JournalsByPath[check.JournalPath] = mockJournal
+
+	// unix:// target whose socket file does not exist so the gate fires.
+	sm, err := NewSyslogMonitorWithFactory(
+		TEST_NODE,
+		[]CheckDefinition{check},
+		&mockPlatformConnectorClient{},
+		TEST_AGENT,
+		TEST_COMPONENT,
+		"60s",
+		stateFilePath,
+		mockFactory,
+		"http://localhost:8080",
+		"/tmp/metadata.json",
+		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		"", "",
+		nil,
+		"unix://"+socketPathTest,
+	)
+	assert.NoError(t, err, "monitor must construct successfully even when send is skipped")
+	assert.NotNil(t, sm)
+
+	// fetchCurrentBootID reads the kernel boot-id; capture it from the
+	// constructor so the test is independent of the host's UUID.
+	expectedBootID := sm.currentBootID
+	require.NotEmpty(t, expectedBootID, "test prerequisite: kernel boot-id must be readable")
+	require.NotEqual(t, oldBootID, expectedBootID)
+
+	// In-memory cursors are cleared regardless of persistence.
+	cursor, exists := sm.checkLastCursors[check.Name]
+	if exists {
+		assert.Empty(t, cursor, "in-memory cursor should be cleared")
+	}
+
+	// On-disk state must still hold the OLD BootID.
+	loaded := readState(t, stateFilePath)
+	assert.Equal(t, oldBootID, loaded.BootID,
+		"BootID must remain old on disk when post-reboot healthy events were skipped")
+	assert.Equal(t, expectedBootID, sm.pendingPostRebootBootID,
+		"pendingPostRebootBootID must hold the current bootID for retry")
+
+	// Run() with the socket still missing must NOT persist the new
+	// BootID. Previously this was a regression: executeCheck →
+	// saveCurrentState would overwrite on-disk BootID with
+	// sm.currentBootID, breaking the retry guarantee after one cycle.
+	assert.NoError(t, sm.Run())
+
+	loaded = readState(t, stateFilePath)
+	assert.Equal(t, oldBootID, loaded.BootID,
+		"BootID must remain old on disk after Run() while flush is still pending")
+	assert.Equal(t, expectedBootID, sm.pendingPostRebootBootID,
+		"pendingPostRebootBootID must remain set after deferred Run()")
+
+	// Make the socket appear and call Run(); the pending flush should
+	// drain and persist the new BootID within one cycle.
+	require.NoError(t, os.WriteFile(socketPathTest, nil, 0o644))
+
+	assert.NoError(t, sm.Run())
+
+	loaded = readState(t, stateFilePath)
+	assert.Equal(t, expectedBootID, loaded.BootID,
+		"BootID must be persisted within one Run() after socket appears")
+	assert.Empty(t, sm.pendingPostRebootBootID,
+		"pendingPostRebootBootID must clear after successful flush")
+}
+
+// readState helper for the bootID-flush test.
+func readState(t *testing.T, stateFilePath string) syslogMonitorState {
+	t.Helper()
+
+	persisted, err := os.ReadFile(stateFilePath)
+	require.NoError(t, err)
+
+	var loaded syslogMonitorState
+	require.NoError(t, json.Unmarshal(persisted, &loaded))
+
+	return loaded
 }
 
 // TestRunMultipleChecks tests running multiple checks in sequence
@@ -638,6 +753,8 @@ func TestRunMultipleChecks(t *testing.T) {
 		"/tmp/metadata.json",
 		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 		"", "",
+		nil,
+		"tcp://test",
 	)
 	assert.NoError(t, err)
 
@@ -680,6 +797,8 @@ func TestGPUFallenOffHandlerInitialization(t *testing.T) {
 		"/tmp/metadata.json",
 		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 		"", "",
+		nil,
+		"tcp://test",
 	)
 	assert.NoError(t, err)
 	assert.NotNil(t, sm.checkToHandlerMap[GPUFallenOffCheck], "GPU Fallen Off handler should be initialized")

@@ -332,6 +332,8 @@ func TestScaleHealthEvents(t *testing.T) {
 			helpers.RestoreFQDeployment(ctx, t, client, originalDeployment)
 		}
 
+		helpers.RestoreQuarantineConfig(ctx, t, c)
+
 		originalCBState := ctx.Value(keyOriginalCBState).(string)
 		if originalCBState != "" {
 			helpers.SetCircuitBreakerState(ctx, t, c, originalCBState, string(cursorModeResume))

@@ -15,6 +15,7 @@
 package config
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -147,6 +148,27 @@ func TestValidateCounter_AllowedCounterSelections(t *testing.T) {
 		c.Name = name
 		assert.NoError(t, validateCounter(&c), "counter %q should be valid", name)
 		assert.NotEmpty(t, c.Path, "counter %q should get a path from code definitions", name)
+	}
+}
+
+func TestValidateCounter_InvalidThresholdValue(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		threshold float64
+	}{
+		{name: "negative", threshold: -1},
+		{name: "NaN", threshold: math.NaN()},
+		{name: "positive infinity", threshold: math.Inf(1)},
+		{name: "negative infinity", threshold: math.Inf(-1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validDeltaCounter()
+			c.Threshold = tc.threshold
+
+			err := validateCounter(&c)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "threshold")
+		})
 	}
 }
 

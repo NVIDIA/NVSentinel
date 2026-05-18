@@ -14,6 +14,7 @@
 
 import dataclasses
 import logging as log
+import os
 from gpu_health_monitor.dcgm_watcher import types as dcgmtypes
 from gpu_health_monitor.metadata import MetadataReader
 from threading import Event
@@ -308,15 +309,44 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
 
         return platformconnector_pb2.RecommendedAction.CONTACT_SUPPORT
 
+    def _is_platform_connector_socket_present(self) -> bool:
+        # platform-connector removes the socket file on shutdown and on
+        # startup before binding, so file-presence is a faithful proxy
+        # for "PC is up" on this node.
+        return os.path.exists(self._socket_path)
+
     def send_health_event_with_retries(self, health_events: list[platformconnector_pb2.HealthEvent]) -> bool:
         """Send health events to the platform connector with retries.
 
+        If the platform-connector Unix socket is absent at send time the send
+        is skipped immediately (no gRPC call, no buffering, no cache mutation)
+        and `False` is returned. The caller's cache must be left untouched so
+        the next poll re-emits with a fresh `generatedTimestamp`.
+
         Returns:
-            True if the send was successful, False if all retries were exhausted.
-            Cache updates should only be performed by the caller when this returns True.
+            True on success. False if the socket was missing or all retries
+            were exhausted. Callers must update their cache only on True.
         """
+        if not self._is_platform_connector_socket_present():
+            metrics.health_events_insertion_skipped_pc_unavailable.inc()
+            log.warning(
+                "Platform-connector socket %s is missing; skipping send.",
+                self._socket_path,
+            )
+            return False
+
         delay = INITIAL_DELAY
-        for _ in range(MAX_RETRIES):
+        for attempt in range(MAX_RETRIES):
+            # Re-check between retries so a connector that disappears
+            # mid-flight short-circuits instead of burning the budget.
+            if attempt > 0 and not self._is_platform_connector_socket_present():
+                metrics.health_events_insertion_skipped_pc_unavailable.inc()
+                log.warning(
+                    "Platform-connector socket %s disappeared mid-retry; aborting send.",
+                    self._socket_path,
+                )
+                return False
+
             with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
                 stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
                 try:

@@ -24,6 +24,7 @@ from typing import Any
 from concurrent import futures
 from gpu_health_monitor.dcgm_watcher import types as dcgmtypes
 from gpu_health_monitor.platform_connector import platform_connector
+from gpu_health_monitor.platform_connector import metrics as pc_metrics
 
 from gpu_health_monitor.protos import (
     health_event_pb2 as platformconnector_pb2,
@@ -1316,3 +1317,183 @@ class TestPlatformConnectors(unittest.TestCase):
             platform_connector.INITIAL_DELAY = original_initial_delay
             if os.path.exists(state_file_path):
                 os.unlink(state_file_path)
+
+    def test_send_skipped_when_socket_missing_dcgm_connectivity_failure(self) -> None:
+        """Socket missing -> dcgm_connectivity_failed must skip without invoking gRPC,
+        leave entity_cache empty, and increment the skip counter.
+        """
+        tmpdir = tempfile.mkdtemp(prefix="ghm_no_socket_")
+        nonexistent_socket = os.path.join(tmpdir, "nvsentinel.sock")
+        assert not os.path.exists(nonexistent_socket)
+
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix="_test_state") as f:
+            f.write("test_boot_id")
+            state_file_path = f.name
+
+        metadata_path = metadata_file()
+
+        original_max_retries = platform_connector.MAX_RETRIES
+        original_initial_delay = platform_connector.INITIAL_DELAY
+        platform_connector.MAX_RETRIES = 3
+        platform_connector.INITIAL_DELAY = 1
+
+        try:
+            stop_event = Event()
+            platform_connector_processor = platform_connector.PlatformConnectorEventProcessor(
+                socket_path=nonexistent_socket,
+                node_name=node_name,
+                exit=stop_event,
+                dcgm_errors_info_dict={},
+                state_file_path=state_file_path,
+                metadata_path=metadata_path,
+                processing_strategy=platformconnector_pb2.STORE_ONLY,
+            )
+
+            before_skipped = pc_metrics.health_events_insertion_skipped_pc_unavailable._value.get()
+            cache_key = platform_connector_processor._build_cache_key("GpuDcgmConnectivityFailure", "DCGM", "ALL")
+            assert cache_key not in platform_connector_processor.entity_cache
+
+            start = time.monotonic()
+            platform_connector_processor.dcgm_connectivity_failed()
+            elapsed = time.monotonic() - start
+
+            # Gate must short-circuit; retry budget would be ~4.75s.
+            assert elapsed < 1.0, f"expected fast-skip, took {elapsed:.2f}s"
+
+            assert cache_key not in platform_connector_processor.entity_cache
+            after_skipped = pc_metrics.health_events_insertion_skipped_pc_unavailable._value.get()
+            assert after_skipped == before_skipped + 1
+        finally:
+            platform_connector.MAX_RETRIES = original_max_retries
+            platform_connector.INITIAL_DELAY = original_initial_delay
+            for p in (state_file_path, metadata_path):
+                if os.path.exists(p):
+                    os.unlink(p)
+            if os.path.exists(tmpdir):
+                os.rmdir(tmpdir)
+
+    def test_send_skipped_when_socket_missing_health_event_occurred(self) -> None:
+        """Same gate must apply to the per-watch publishing path.
+
+        We pre-seed the connectivity cache key as healthy so
+        clear_dcgm_connectivity_failure short-circuits and only the
+        per-watch unhealthy InforomWatch event triggers a publish — that
+        gives us exactly one skip to assert against.
+        """
+        tmpdir = tempfile.mkdtemp(prefix="ghm_no_socket_")
+        nonexistent_socket = os.path.join(tmpdir, "nvsentinel.sock")
+        assert not os.path.exists(nonexistent_socket)
+
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix="_test_state") as f:
+            f.write("test_boot_id")
+            state_file_path = f.name
+
+        metadata_path = metadata_file()
+
+        original_max_retries = platform_connector.MAX_RETRIES
+        original_initial_delay = platform_connector.INITIAL_DELAY
+        platform_connector.MAX_RETRIES = 3
+        platform_connector.INITIAL_DELAY = 1
+
+        try:
+            watcher = dcgm.DCGMWatcher(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                callbacks=[],
+                dcgm_k8s_service_enabled=False,
+            )
+            stop_event = Event()
+            dcgm_errors_info_dict = {"DCGM_FR_CORRUPT_INFOROM": "COMPONENT_RESET"}
+
+            platform_connector_processor = platform_connector.PlatformConnectorEventProcessor(
+                socket_path=nonexistent_socket,
+                node_name=node_name,
+                exit=stop_event,
+                dcgm_errors_info_dict=dcgm_errors_info_dict,
+                state_file_path=state_file_path,
+                metadata_path=metadata_path,
+                processing_strategy=platformconnector_pb2.STORE_ONLY,
+            )
+
+            # Pre-seed connectivity cache as healthy so the clear path
+            # is suppressed; only the per-watch publish path runs.
+            connectivity_key = platform_connector_processor._build_cache_key(
+                "GpuDcgmConnectivityFailure", "DCGM", "ALL"
+            )
+            platform_connector_processor.entity_cache[connectivity_key] = platform_connector.EntityCacheEntry()
+
+            dcgm_health_events = watcher._get_health_status_dict()
+            dcgm_health_events["DCGM_HEALTH_WATCH_INFOROM"] = dcgmtypes.HealthDetails(
+                status=dcgmtypes.HealthStatus.FAIL,
+                entity_failures={
+                    0: dcgm.types.ErrorDetails(
+                        code="DCGM_FR_CORRUPT_INFOROM",
+                        message="A corrupt InfoROM has been detected in GPU 0.",
+                    )
+                },
+            )
+
+            before_skipped = pc_metrics.health_events_insertion_skipped_pc_unavailable._value.get()
+            gpu_cache_key = platform_connector_processor._build_cache_key("GpuInforomWatch", "GPU", "0")
+            assert gpu_cache_key not in platform_connector_processor.entity_cache
+
+            start = time.monotonic()
+            platform_connector_processor.health_event_occurred(dcgm_health_events, [0])
+            elapsed = time.monotonic() - start
+
+            assert elapsed < 1.0, f"expected fast-skip, took {elapsed:.2f}s"
+            assert gpu_cache_key not in platform_connector_processor.entity_cache
+            after_skipped = pc_metrics.health_events_insertion_skipped_pc_unavailable._value.get()
+            assert after_skipped - before_skipped == 1
+        finally:
+            platform_connector.MAX_RETRIES = original_max_retries
+            platform_connector.INITIAL_DELAY = original_initial_delay
+            for p in (state_file_path, metadata_path):
+                if os.path.exists(p):
+                    os.unlink(p)
+            if os.path.exists(tmpdir):
+                os.rmdir(tmpdir)
+
+    def test_send_proceeds_normally_when_socket_present(self) -> None:
+        """Happy path: gate must NOT skip when the socket exists."""
+        healthEventProcessor = PlatformConnectorServicer()
+        server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+        platformconnector_pb2_grpc.add_PlatformConnectorServicer_to_server(healthEventProcessor, server)
+        server.add_insecure_port(f"unix://{socket_path}")
+        server.start()
+
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix="_test_state") as f:
+            f.write("test_boot_id")
+            state_file_path = f.name
+
+        metadata_path = metadata_file()
+
+        try:
+            stop_event = Event()
+            platform_connector_processor = platform_connector.PlatformConnectorEventProcessor(
+                socket_path=socket_path,
+                node_name=node_name,
+                exit=stop_event,
+                dcgm_errors_info_dict={},
+                state_file_path=state_file_path,
+                metadata_path=metadata_path,
+                processing_strategy=platformconnector_pb2.STORE_ONLY,
+            )
+
+            before_skipped = pc_metrics.health_events_insertion_skipped_pc_unavailable._value.get()
+            platform_connector_processor.dcgm_connectivity_failed()
+            time.sleep(1)
+
+            cache_key = platform_connector_processor._build_cache_key("GpuDcgmConnectivityFailure", "DCGM", "ALL")
+            assert cache_key in platform_connector_processor.entity_cache
+            assert healthEventProcessor.health_events is not None
+            assert len(healthEventProcessor.health_events) == 1
+            assert healthEventProcessor.health_events[0].checkName == "GpuDcgmConnectivityFailure"
+
+            after_skipped = pc_metrics.health_events_insertion_skipped_pc_unavailable._value.get()
+            assert after_skipped == before_skipped
+        finally:
+            server.stop(0)
+            for p in (state_file_path, metadata_path):
+                if os.path.exists(p):
+                    os.unlink(p)

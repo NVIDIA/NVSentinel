@@ -19,21 +19,18 @@ package monitor
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"strings"
 	"time"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-	"k8s.io/apimachinery/pkg/util/wait"
-
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/checks"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/metrics"
 )
+
+const agentName = "nic-health-monitor"
 
 // CounterPollingInterval is the fixed cadence for counter checks. It is
 // intentionally not user-configurable: counter snapshots want a fast
@@ -48,7 +45,7 @@ const CounterPollingInterval = time.Second
 // category has its own polling loop so the two cadences are independent.
 type NICHealthMonitor struct {
 	nodeName string
-	pcClient pb.PlatformConnectorClient
+	pub      *healthpub.Publisher
 
 	stateChecks   []checks.Check
 	counterChecks []checks.Check
@@ -56,18 +53,20 @@ type NICHealthMonitor struct {
 	stateInterval time.Duration
 }
 
-// NewNICHealthMonitor constructs a NICHealthMonitor. The allChecks slice
-// is automatically partitioned into state and counter categories based
-// on each check's name.
+// NewNICHealthMonitor constructs a NICHealthMonitor. The allChecks
+// slice is automatically partitioned into state and counter categories
+// based on each check's name. target must match the gRPC target string
+// used to dial pcClient (typically "unix:///var/run/nvsentinel.sock").
 func NewNICHealthMonitor(
 	nodeName string,
 	pcClient pb.PlatformConnectorClient,
+	target string,
 	allChecks []checks.Check,
 	stateInterval time.Duration,
 ) *NICHealthMonitor {
 	m := &NICHealthMonitor{
 		nodeName:      nodeName,
-		pcClient:      pcClient,
+		pub:           healthpub.New(pcClient, target, agentName),
 		stateInterval: stateInterval,
 	}
 
@@ -129,7 +128,7 @@ func (m *NICHealthMonitor) runChecks(ctx context.Context, checkList []checks.Che
 
 		batch := &pb.HealthEvents{Version: 1, Events: events}
 
-		if err := m.sendWithRetry(ctx, batch, 5, 2*time.Second); err != nil {
+		if err := m.pub.Publish(ctx, batch); err != nil {
 			slog.Error("Failed to send health events",
 				"check", chk.Name(), "error", err)
 
@@ -161,57 +160,6 @@ func (m *NICHealthMonitor) runChecks(ctx context.Context, checkList []checks.Che
 		Observe(time.Since(start).Seconds())
 
 	return nil
-}
-
-// sendWithRetry wraps the HealthEventOccurredV1 RPC in bounded exponential
-// backoff. Only transient errors (Unavailable, DeadlineExceeded, broken
-// connection) are retried. The context is used for the RPC calls so
-// shutdown can cancel in-flight sends.
-func (m *NICHealthMonitor) sendWithRetry(
-	ctx context.Context, batch *pb.HealthEvents, maxRetries int, retryDelay time.Duration,
-) error {
-	backoff := wait.Backoff{
-		Steps:    maxRetries,
-		Duration: retryDelay,
-		Factor:   1.5,
-		Jitter:   0.1,
-	}
-
-	return wait.ExponentialBackoffWithContext(ctx, backoff, func(ctx context.Context) (bool, error) {
-		_, err := m.pcClient.HealthEventOccurredV1(ctx, batch)
-		if err == nil {
-			return true, nil
-		}
-
-		if isRetryable(err) {
-			slog.Warn("Retryable error sending health event, will retry", "error", err)
-			return false, nil
-		}
-
-		slog.Error("Non-retryable error sending health event", "error", err)
-
-		return false, fmt.Errorf("non-retryable error: %w", err)
-	})
-}
-
-// isRetryable reports whether a gRPC error is transient.
-func isRetryable(err error) bool {
-	if s, ok := status.FromError(err); ok {
-		if s.Code() == codes.Unavailable || s.Code() == codes.DeadlineExceeded {
-			return true
-		}
-	}
-
-	if errors.Is(err, io.EOF) {
-		return true
-	}
-
-	msg := err.Error()
-	if strings.Contains(msg, "connection reset by peer") || strings.Contains(msg, "broken pipe") {
-		return true
-	}
-
-	return false
 }
 
 // formatEntities produces a compact "NIC=mlx5_0, NICPort=1" string for logs.

@@ -31,6 +31,15 @@ type CRStatusChecker struct {
 	dryRun             bool
 }
 
+type CRState string
+
+const (
+	CRStateNotFound   CRState = "NotFound"
+	CRStateInProgress CRState = "InProgress"
+	CRStateSucceeded  CRState = "Succeeded"
+	CRStateFailed     CRState = "Failed"
+)
+
 func NewCRStatusChecker(
 	client client.Client,
 	remediationActions map[string]config.MaintenanceResource,
@@ -43,17 +52,22 @@ func NewCRStatusChecker(
 	}
 }
 
-// ShouldSkipCRCreation returns true if the CR exists and is not in a terminal state otherwise returns false.
+// ShouldSkipCRCreation returns true if an existing CR should suppress creation of a new CR.
 func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, actionName string, crName string) bool {
+	state := c.GetCRState(ctx, actionName, crName)
+	return state == CRStateInProgress || state == CRStateSucceeded
+}
+
+func (c *CRStatusChecker) GetCRState(ctx context.Context, actionName string, crName string) CRState {
 	resource, exists := c.remediationActions[actionName]
 	if !exists {
 		slog.ErrorContext(ctx, "No remediation configuration found for action", "action", actionName)
-		return false
+		return CRStateNotFound
 	}
 
 	if c.dryRun {
 		slog.InfoContext(ctx, "DRY-RUN: CR doesn't exist (dry-run mode)", "crName", crName, "action", actionName)
-		return false
+		return CRStateNotFound
 	}
 
 	gvk := schema.GroupVersionKind{
@@ -69,26 +83,33 @@ func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, actionName s
 
 	if err := c.client.Get(ctx, key, obj); err != nil {
 		slog.WarnContext(ctx, "Failed to get CR, allowing create", "crName", crName, "gvk", gvk.String(), "error", err)
-		return false
+		return CRStateNotFound
 	}
 
 	return c.checkCondition(obj, resource)
 }
 
-func (c *CRStatusChecker) checkCondition(obj *unstructured.Unstructured, resource config.MaintenanceResource) bool {
+func (c *CRStatusChecker) checkCondition(obj *unstructured.Unstructured, resource config.MaintenanceResource) CRState {
 	status, found, err := unstructured.NestedMap(obj.Object, "status")
 	if err != nil || !found {
-		return true
+		return CRStateInProgress
 	}
 
 	conditions, found, err := unstructured.NestedSlice(status, "conditions")
 	if err != nil || !found {
-		return true
+		return CRStateInProgress
 	}
 
 	conditionStatus := c.findConditionStatus(conditions, resource.CompleteConditionType)
 
-	return !c.isTerminal(conditionStatus)
+	switch conditionStatus {
+	case "True":
+		return CRStateSucceeded
+	case "False":
+		return CRStateFailed
+	default:
+		return CRStateInProgress
+	}
 }
 
 func (c *CRStatusChecker) findConditionStatus(conditions []any, completeConditionType string) string {
@@ -106,8 +127,4 @@ func (c *CRStatusChecker) findConditionStatus(conditions []any, completeConditio
 	}
 
 	return ""
-}
-
-func (c *CRStatusChecker) isTerminal(conditionStatus string) bool {
-	return conditionStatus == "True" || conditionStatus == "False"
 }

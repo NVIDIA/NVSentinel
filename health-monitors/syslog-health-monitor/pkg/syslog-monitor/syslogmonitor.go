@@ -23,15 +23,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"k8s.io/apimachinery/pkg/util/wait"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/cancellation"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/gpufallen"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/nicdriver"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/sxid"
@@ -39,7 +37,14 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid"
 )
 
-// NewSyslogMonitor creates a new SyslogMonitor instance
+// NewSyslogMonitor creates a new SyslogMonitor instance. cancellationsCfg may be nil.
+//
+// platformConnectorTarget is the gRPC target used to dial pcClient
+// (e.g. "unix:///var/run/nvsentinel.sock"). Pass it through here so the
+// shared healthpub publisher's socket-existence gate is active from the
+// first send (in particular, the post-reboot healthy events emitted by
+// handleBootIDChange during construction). An empty string disables
+// the gate.
 func NewSyslogMonitor(
 	nodeName string,
 	checks []CheckDefinition,
@@ -53,16 +58,22 @@ func NewSyslogMonitor(
 	processingStrategy pb.ProcessingStrategy,
 	nicDriverConfigPath string,
 	sysfsRoot string,
+	cancellationsCfg *cancellation.Config,
+	platformConnectorTarget string,
 ) (*SyslogMonitor, error) {
 	return NewSyslogMonitorWithFactory(nodeName, checks, pcClient, defaultAgentName,
 		defaultComponentClass, pollingInterval, stateFilePath, GetDefaultJournalFactory(),
 		xidAnalyserEndpoint, metadataPath,
 		processingStrategy,
 		nicDriverConfigPath, sysfsRoot,
+		cancellationsCfg,
+		platformConnectorTarget,
 	)
 }
 
-// NewSyslogMonitorWithFactory creates a new SyslogMonitor instance with a specific journal factory
+// NewSyslogMonitorWithFactory creates a new SyslogMonitor instance with
+// a specific journal factory. See NewSyslogMonitor for the meaning of
+// platformConnectorTarget.
 func NewSyslogMonitorWithFactory(
 	nodeName string,
 	checks []CheckDefinition,
@@ -77,6 +88,8 @@ func NewSyslogMonitorWithFactory(
 	processingStrategy pb.ProcessingStrategy,
 	nicDriverConfigPath string,
 	sysfsRoot string,
+	cancellationsCfg *cancellation.Config,
+	platformConnectorTarget string,
 ) (*SyslogMonitor, error) {
 	// Load state from file
 	state, err := loadState(stateFilePath)
@@ -93,24 +106,25 @@ func NewSyslogMonitorWithFactory(
 	}
 
 	sm := &SyslogMonitor{
-		nodeName:              nodeName,
-		checks:                checks,
-		pcClient:              pcClient,
-		defaultAgentName:      defaultAgentName,
-		defaultComponentClass: defaultComponentClass,
-		processingStrategy:    processingStrategy,
-		pollingInterval:       pollingInterval,
-		checkLastCursors:      state.CheckLastCursors,
-		journalFactory:        journalFactory,
-		currentBootID:         currentBootID,
-		stateFilePath:         stateFilePath,
-		checkToHandlerMap:     make(map[string]types.Handler),
-		xidAnalyserEndpoint:   xidAnalyserEndpoint,
+		nodeName:                nodeName,
+		checks:                  checks,
+		pcClient:                pcClient,
+		defaultAgentName:        defaultAgentName,
+		defaultComponentClass:   defaultComponentClass,
+		processingStrategy:      processingStrategy,
+		pollingInterval:         pollingInterval,
+		checkLastCursors:        state.CheckLastCursors,
+		journalFactory:          journalFactory,
+		currentBootID:           currentBootID,
+		stateFilePath:           stateFilePath,
+		checkToHandlerMap:       make(map[string]types.Handler),
+		xidAnalyserEndpoint:     xidAnalyserEndpoint,
+		platformConnectorTarget: platformConnectorTarget,
 	}
 
 	if err := initHandlers(sm, checks, nodeName, defaultAgentName, defaultComponentClass,
 		xidAnalyserEndpoint, metadataPath, processingStrategy,
-		nicDriverConfigPath, sysfsRoot); err != nil {
+		nicDriverConfigPath, sysfsRoot, cancellationsCfg); err != nil {
 		return nil, err
 	}
 
@@ -136,11 +150,12 @@ func initHandlers(
 	processingStrategy pb.ProcessingStrategy,
 	nicDriverConfigPath string,
 	sysfsRoot string,
+	cancellationsCfg *cancellation.Config,
 ) error {
 	for _, check := range checks {
 		handler, err := initHandlerForCheck(check, nodeName, defaultAgentName, defaultComponentClass,
 			xidAnalyserEndpoint, metadataPath, processingStrategy,
-			nicDriverConfigPath, sysfsRoot)
+			nicDriverConfigPath, sysfsRoot, cancellationsCfg)
 		if err != nil {
 			return err
 		}
@@ -167,6 +182,7 @@ func initHandlerForCheck(
 	processingStrategy pb.ProcessingStrategy,
 	nicDriverConfigPath string,
 	sysfsRoot string,
+	cancellationsCfg *cancellation.Config,
 ) (types.Handler, error) {
 	switch check.Name {
 	case XIDErrorCheck:
@@ -176,6 +192,8 @@ func initHandlerForCheck(
 			slog.Error("Error initializing XID handler", "error", err.Error())
 			return nil, fmt.Errorf("failed to initialize XID handler: %w", err)
 		}
+
+		h.SetCancellationResolver(cancellation.NewResolver(cancellationsCfg.FindCheck(check.Name)))
 
 		return h, nil
 	case SXIDErrorCheck:
@@ -210,9 +228,33 @@ func initHandlerForCheck(
 	}
 }
 
-// Run executes all configured checks
+// Run executes all configured checks. If a previous bootID-change had
+// to defer its healthy events because platform-connector was missing,
+// retry that flush first so recovery is bounded by one polling cadence
+// after PC returns rather than by process lifetime.
+//
+// When the flush is still deferred at the end of this attempt the rest
+// of the cycle is skipped: executeCheck calls saveCurrentState which
+// would otherwise persist sm.currentBootID (the new BootID) and clobber
+// the on-disk old BootID, silently breaking the "retry until delivered"
+// guarantee. The next Run() retries the flush.
 func (sm *SyslogMonitor) Run() error {
 	var jointError error = nil
+
+	if err := sm.tryFlushPostRebootBootIDClear(); err != nil {
+		slog.Error("Pending post-reboot bootID flush failed",
+			"error", err)
+
+		jointError = errors.Join(jointError, err)
+	}
+
+	if sm.pendingPostRebootBootID != "" {
+		slog.Warn("Skipping check execution: post-reboot bootID flush still pending. " +
+			"Will retry on next cycle; not running checks to avoid persisting the new " +
+			"BootID before the post-reboot healthy events have been delivered.")
+
+		return jointError
+	}
 
 	for _, check := range sm.checks {
 		err := sm.executeCheck(check)
@@ -363,45 +405,98 @@ func fetchCurrentBootID() (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-// handleBootIDChange handles system reboot detection and cursor reset
+// handleBootIDChange handles system reboot detection and cursor reset.
+//
+// On reboot the journal cursors persisted on disk no longer point at
+// valid offsets, so we clear them and emit one healthy event per check
+// to clear any stuck quarantine state in fault-quarantine.
+//
+// The new BootID is persisted to disk only after every healthy event
+// has been delivered. If any send is skipped (platform-connector
+// socket missing), sm.pendingPostRebootBootID is left set so Run()
+// retries the flush at the top of each poll cycle, bounding recovery
+// to one polling cadence after PC returns.
 func (sm *SyslogMonitor) handleBootIDChange(oldBootID, newBootID string) error {
-	if oldBootID != newBootID {
-		slog.Info("Detected bootID change",
-			"oldBootID", oldBootID,
-			"newBootID", newBootID)
-
-		// Clear all cursors on reboot since journal cursors become invalid
-		for checkName := range sm.checkLastCursors {
-			delete(sm.checkLastCursors, checkName)
-		}
-
-		// Save updated state
-		state := syslogMonitorState{
-			Version:          stateFileVersion,
-			BootID:           newBootID,
-			CheckLastCursors: sm.checkLastCursors,
-		}
-
-		if err := saveState(sm.stateFilePath, state); err != nil {
-			return fmt.Errorf("failed to save state after boot ID change: %w", err)
-		}
-
-		slog.Info("Cleared all cursors due to system reboot")
-
-		for _, check := range sm.checks {
-			message := "No Health Failures"
-			errRes := types.ErrorResolution{
-				RecommendedAction: pb.RecommendedAction_NONE,
-			}
-
-			healthEvents := sm.prepareHealthEventWithAction(check, message, true, errRes)
-			if err := sm.sendHealthEventWithRetry(healthEvents, 5, 2*time.Second); err != nil {
-				return fmt.Errorf("failed to send health event: %w", err)
-			}
-
-			slog.Info("Published healthy event after system reboot", "check", check.Name)
-		}
+	if oldBootID == newBootID {
+		return nil
 	}
+
+	slog.Info("Detected bootID change",
+		"oldBootID", oldBootID,
+		"newBootID", newBootID)
+
+	// Clear cursors in memory so the rest of this process polls the
+	// journal from its current position. Persistence is deferred to
+	// tryFlushPostRebootBootIDClear, conditional on all sends landing.
+	for checkName := range sm.checkLastCursors {
+		delete(sm.checkLastCursors, checkName)
+	}
+
+	sm.pendingPostRebootBootID = newBootID
+
+	return sm.tryFlushPostRebootBootIDClear()
+}
+
+// tryFlushPostRebootBootIDClear emits one healthy event per check for
+// the pending bootID change and persists the new BootID + cleared
+// cursors only when all events land. On a healthpub-skip
+// (ErrPlatformConnectorUnavailable) the pending flag is left set so
+// the next call retries; on any other send error the function returns
+// fatal — that surface bubbles up to Run() which the main ticker loop
+// already retries with backoff.
+//
+// Idempotent and safe to call repeatedly. A no-op when there is no
+// pending bootID change.
+func (sm *SyslogMonitor) tryFlushPostRebootBootIDClear() error {
+	if sm.pendingPostRebootBootID == "" {
+		return nil
+	}
+
+	allDelivered := true
+
+	for _, check := range sm.checks {
+		message := "No Health Failures"
+		errRes := types.ErrorResolution{
+			RecommendedAction: pb.RecommendedAction_NONE,
+		}
+
+		healthEvents := sm.prepareHealthEventWithAction(check, message, true, errRes)
+		if err := sm.sendHealthEventWithRetry(healthEvents, 5, 2*time.Second); err != nil {
+			if errors.Is(err, healthpub.ErrPlatformConnectorUnavailable) {
+				slog.Warn("Deferring post-reboot healthy event: platform-connector unavailable.",
+					"check", check.Name)
+
+				allDelivered = false
+
+				continue
+			}
+
+			return fmt.Errorf("failed to send health event: %w", err)
+		}
+
+		slog.Info("Published healthy event after system reboot", "check", check.Name)
+	}
+
+	if !allDelivered {
+		slog.Warn("Post-reboot healthy events deferred; will retry on next poll cycle.")
+
+		return nil
+	}
+
+	state := syslogMonitorState{
+		Version:          stateFileVersion,
+		BootID:           sm.pendingPostRebootBootID,
+		CheckLastCursors: sm.checkLastCursors,
+	}
+
+	if err := saveState(sm.stateFilePath, state); err != nil {
+		return fmt.Errorf("failed to save state after boot ID change: %w", err)
+	}
+
+	slog.Info("Cleared all cursors due to system reboot",
+		"bootID", sm.pendingPostRebootBootID)
+
+	sm.pendingPostRebootBootID = ""
 
 	return nil
 }
@@ -1012,67 +1107,33 @@ func (sm *SyslogMonitor) prepareHealthEventWithAction(
 	}
 }
 
-// sendHealthEventWithRetry sends health events to platform connector with retry logic
+// sendHealthEventWithRetry forwards health events via the shared
+// healthpub publisher. The publisher is built per call so tests that
+// swap sm.pcClient after construction take effect.
 func (sm *SyslogMonitor) sendHealthEventWithRetry(healthEvents *pb.HealthEvents,
 	maxRetries int, retryDelay time.Duration) error {
 	slog.Info("Attempting to send health event", "events", healthEvents)
 
-	backoff := wait.Backoff{
-		Steps:    maxRetries,
-		Duration: retryDelay,
-		Factor:   1.5,
-		Jitter:   0.1,
-	}
+	pub := healthpub.New(sm.pcClient, sm.platformConnectorTarget, sm.defaultAgentName,
+		healthpub.WithRetryPolicy(maxRetries, retryDelay, 1.5, 0.1))
 
-	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
-		_, err := sm.pcClient.HealthEventOccurredV1(context.Background(), healthEvents)
-		if err == nil {
-			slog.Info("Successfully sent health events", "events", healthEvents)
-			return true, nil
+	if err := pub.Publish(context.Background(), healthEvents); err != nil {
+		if errors.Is(err, healthpub.ErrPlatformConnectorUnavailable) {
+			slog.Warn("Skipped health event send: platform-connector unavailable. "+
+				"Next poll will re-evaluate and re-stamp.",
+				"events", healthEvents)
+
+			return fmt.Errorf("failed all attempts to send health events: %w", err)
 		}
 
-		if isRetryableError(err) {
-			slog.Warn("Retryable error sending health event, will retry", "error", err)
-			return false, nil
-		}
-
-		slog.Error("Non-retryable error sending health event", "error", err)
-
-		return false, fmt.Errorf("non-retryable error sending health event: %w", err)
-	})
-	if err != nil {
 		slog.Error("All retry attempts to send health event failed", "error", err)
+
 		return fmt.Errorf("failed all attempts to send health events: %w", err)
 	}
 
+	slog.Info("Successfully sent health events", "events", healthEvents)
+
 	return nil
-}
-
-// isRetryableError determines if an error is retryable
-func isRetryableError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	if s, ok := status.FromError(err); ok {
-		if s.Code() == codes.Unavailable || s.Code() == codes.DeadlineExceeded {
-			return true
-		}
-	}
-
-	if _, ok := err.(interface{ Temporary() bool }); ok {
-		return true
-	}
-
-	if errors.Is(err, io.EOF) {
-		return true
-	}
-
-	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
-		return true
-	}
-
-	return false
 }
 
 func (sm *SyslogMonitor) handleSingleLine(check CheckDefinition, lineToEvaluate string) error {

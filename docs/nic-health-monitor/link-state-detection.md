@@ -9,7 +9,7 @@
 3. [State Monitoring Specification](#3-state-monitoring-specification)
 4. [Management NIC Exclusion, NIC Role Classification, and Uncabled Port Detection](#4-management-nic-exclusion-and-uncabled-port-detection)
 5. [Device Discovery and Parsing](#5-device-discovery-and-parsing)
-6. [State Change and Flap Detection](#6-state-change-and-flap-detection)
+6. [State Change Handling](#6-state-change-handling)
 7. [Device Disappearance Handling](#7-device-disappearance-handling)
 8. [SR-IOV Virtual Function Handling](#8-sr-iov-virtual-function-handling)
 9. [RoCE State Monitoring](#9-roce-state-monitoring)
@@ -94,7 +94,7 @@ This monitor uses a binary severity model based on **workload impact**:
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
 │  │            HEALTH EVENTS ANALYZER (Correlation Rules)                │   │
 │  ├─────────────────────────────────────────────────────────────────────┤   │
-│  │  • Link Flap Detection: "link_downed 3+ times in 10 min"            │   │
+│  │  • Repeated non-fatal NIC degradation/syslog escalation              │   │
 │  │  • Stabilization Windows: Prevent alert blinking                     │   │
 │  │  • Cross-node correlation: Detect fabric-wide issues                 │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
@@ -204,12 +204,14 @@ Emits: Raw STATE_CHANGE events → Platform Connector → MongoDB
 │                 ▼                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────────┐  │
 │  │                    HEALTH EVENTS ANALYZER                                │  │
-│  │                    (Link Flap Detection)                                 │  │
+│  │                    (Repeated Non-Fatal Escalation)                       │  │
 │  │                    ══════════════════════                                │  │
 │  │                                                                          │  │
-│  │  NIC STATE CORRELATION RULES:                                            │  │
-│  │  • RepeatedNICLinkFlap: "link_downed 3+ times in 10 min → REPLACE_VM"    │  │
-│  │  • NICStabilizationWindow: Prevent flapping (similar to sticky XID)      │  │
+│  │  NIC CORRELATION RULES:                                                  │  │
+│  │  • RepeatedNICDegradation: 3 non-fatal degradation events in 1h          │  │
+│  │    (same NIC + same NICPort)                                             │  │
+│  │  • RepeatedNICDriverError: 3 selected non-fatal syslog events in 1h      │  │
+│  │    (same node + same pattern)                                             │  │
 │  └──────────────────────────────────────────────────────────────────────────┘  │
 │                                                                                │
 └────────────────────────────────────────────────────────────────────────────────┘
@@ -640,71 +642,28 @@ The monitor detects Mellanox devices using the following logic:
 
 ---
 
-## 6. State Change and Flap Detection
+## 6. State Change Handling
 
-The NIC Health Monitor reports **health boundary events** — one event per port when the port transitions between healthy and unhealthy states. Intermediate transitions (e.g., DOWN/Disabled → DOWN/Polling) are suppressed. The **Health Events Analyzer** performs pattern detection to distinguish between persistent drops and transient flapping.
+The NIC Health Monitor reports **health boundary events** — one event per port when the port transitions between healthy and unhealthy states. Intermediate transitions (e.g., DOWN/Disabled → DOWN/Polling) are suppressed. Port `DOWN` state and fatal counter signals are remediation triggers on first occurrence; repeated analyzer rules are reserved for non-fatal degradation/syslog recurrence.
 
 ### 6.1 Architecture
 
 1. NIC Health Monitor reports health boundary crossings (healthy→fatal, fatal→healthy)
 2. Events flow to MongoDB via Platform Connector
-3. Health Events Analyzer applies correlation rules to detect patterns
+3. Health Events Analyzer applies correlation rules only for repeated non-fatal NIC signals
 
-### 6.2 Port Drop Detection (Analyzer Rule: `NICPortDrop`)
+### 6.2 Port Down and Fatal Counter Handling
 
-An InfiniBand port is marked as "Dropped" when the Analyzer detects:
-- The port has been reporting `state=DOWN` for at least 4 minutes
-- No `link_downed` delta events during this period (indicating no recovery attempts)
+Port `DOWN` state changes, `link_downed` counter increments, and other fatal NIC counters emit fatal events directly from the NIC Health Monitor with `RecommendedAction_REPLACE_VM`. They do not require an analyzer-side repeated flap rule.
 
-### 6.3 Port Flap Detection (Analyzer Rule: `RepeatedNICLinkFlap`)
+### 6.3 Repeated Non-Fatal Escalation
 
-An InfiniBand port is marked as "Flapping" (**Severity: FATAL**) when the Analyzer detects:
-- 3+ `link_downed` events within 10 minutes on the same NICPort entity
-- This indicates repeated DOWN→ACTIVE transitions (unstable hardware)
+The Health Events Analyzer escalates only repeated non-fatal NIC signals:
 
-### 6.4 Link Flap Detection Diagram
+- `RepeatedNICDegradation`: 3 non-fatal `InfiniBandDegradationCheck` or `EthernetDegradationCheck` events on the same `NIC` + `NICPort` within 1 hour.
+- `RepeatedNICDriverError`: 3 selected non-fatal `SysLogsNICDriverError` events of the same pattern on the same node within 1 hour.
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                         LINK FLAP DETECTION FLOW                                 │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                  │
-│  TIME        NIC STATE           RAW EVENTS SENT                                 │
-│  ────        ─────────           ───────────────                                 │
-│                                                                                  │
-│  T+0:00      ACTIVE              (baseline)                                      │
-│  T+1:30      DOWN ────────────►  Event: link_downed, mlx5_0_port1               │
-│  T+1:45      ACTIVE              (recovered)                                     │
-│  T+4:20      DOWN ────────────►  Event: link_downed, mlx5_0_port1               │
-│  T+4:35      ACTIVE              (recovered)                                     │
-│  T+7:10      DOWN ────────────►  Event: link_downed, mlx5_0_port1               │
-│              │                                                                   │
-│              │   ┌─────────────────────────────────────────────────────────┐    │
-│              └──►│        HEALTH EVENTS ANALYZER                           │    │
-│                  │                                                          │    │
-│                  │  Query: SELECT COUNT(*) FROM health_events              │    │
-│                  │         WHERE agent = 'nic-health-monitor'              │    │
-│                  │         AND message LIKE '%link_downed%'                │    │
-│                  │         AND entity = 'mlx5_0_port1'                     │    │
-│                  │         AND timestamp > NOW() - 10 minutes              │    │
-│                  │                                                          │    │
-│                  │  Result: 3 events                                        │    │
-│                  │                                                          │    │
-│                  │  Rule: RepeatedNICLinkFlap                               │    │
-│                  │        IF count >= 3 THEN FATAL                         │    │
-│                  │                                                          │    │
-│                  │  ┌─────────────────────────────────────────────────┐    │    │
-│                  │  │  OUTPUT: FATAL EVENT                            │    │    │
-│                  │  │  Message: "NIC port flapping detected"          │    │    │
-│                  │  │  RecommendedAction: REPLACE_VM                  │    │    │
-│                  │  │  Entity: mlx5_0_port1                           │    │    │
-│                  │  └─────────────────────────────────────────────────┘    │    │
-│                  └─────────────────────────────────────────────────────────┘    │
-│                                                                                  │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
-
-> **Effect**: The Analyzer emits a new fatal event with `RecommendedAction_REPLACE_VM`. The stabilization window logic (similar to sticky XID) can be implemented as an Analyzer rule to prevent rapid re-alerting.
+Both analyzer rules use `CONTACT_SUPPORT`. See [Syslog Detection & Correlation, Appendix B](./syslog-detection-correlation.md#appendix-b-health-events-analyzer-rules-for-nic-monitoring) for exact rule definitions and external source citations.
 
 ---
 
@@ -1134,13 +1093,12 @@ The key question: **"Will the workload fail because of this?"**
 
 ### Fatal State Conditions (IsFatal = true)
 
-| Condition                     | Recommended Action               | Rationale                                                  |
-|-------------------------------|----------------------------------|------------------------------------------------------------|
-| **NIC state = DOWN**          | **RecommendedAction_REPLACE_VM** | No network connectivity, workloads will timeout            |
-| **Device disappeared**        | **RecommendedAction_REPLACE_VM** | Hardware failure, immediate job failure                    |
-| **phys_state = Disabled**     | **RecommendedAction_REPLACE_VM** | Port disabled, no communication possible                   |
-| **Uncabled port anomaly**     | **RecommendedAction_REPLACE_VM** | Card has fewer active ports than peers (homogeneity check) |
-| **Port flapping (3+ cycles)** | **RecommendedAction_REPLACE_VM** | Intermittent hardware/cable instability                    |
+| Condition                 | Recommended Action               | Rationale                                                  |
+|---------------------------|----------------------------------|------------------------------------------------------------|
+| **NIC state = DOWN**      | **RecommendedAction_REPLACE_VM** | No network connectivity, workloads will timeout            |
+| **Device disappeared**    | **RecommendedAction_REPLACE_VM** | Hardware failure, immediate job failure                    |
+| **phys_state = Disabled** | **RecommendedAction_REPLACE_VM** | Port disabled, no communication possible                   |
+| **Uncabled port anomaly** | **RecommendedAction_REPLACE_VM** | Card has fewer active ports than peers (homogeneity check) |
 
 ### Non-Fatal State Conditions (IsFatal = false)
 
@@ -1161,6 +1119,10 @@ The key question: **"Will the workload fail because of this?"**
 ### Driver/Firmware Logs
 
 For kernel log pattern details (fatal and non-fatal classifications, regex patterns, log line examples, and kernel source references), see [Syslog Detection & Correlation](./syslog-detection-correlation.md). This document focuses on link state detection; syslog monitoring is covered in its own dedicated document to keep each document focused on a single problem.
+
+### Repeated Non-Fatal Analyzer Escalation
+
+Repeated non-fatal NIC degradation and selected non-fatal NIC driver syslog signals are escalated by the Health Events Analyzer with `CONTACT_SUPPORT`, not immediate `REPLACE_VM`. Use `RepeatedNICDegradation` for repeated degradation on the same `NIC` + `NICPort`, and `RepeatedNICDriverError` for repeated selected syslog patterns on the same node.
 
 ### State Detection Paths
 

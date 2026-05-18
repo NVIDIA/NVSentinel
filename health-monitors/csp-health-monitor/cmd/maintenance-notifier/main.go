@@ -229,7 +229,9 @@ func run() error {
 
 		slog.Info("Event handling strategy configured", "processingStrategy", appCfg.processingStrategy)
 
-		engine := trigger.NewEngine(cfg, store, platformConnectorClient, k8sClient, pb.ProcessingStrategy(value))
+		engine := trigger.NewEngine(cfg, store, platformConnectorClient,
+			fmt.Sprintf("unix:%s", appCfg.udsPath),
+			k8sClient, pb.ProcessingStrategy(value))
 
 		slog.Info("Trigger engine starting...")
 		engine.Start(gCtx)

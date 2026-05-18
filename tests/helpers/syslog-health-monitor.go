@@ -29,6 +29,35 @@ const (
 	SyslogDaemonSetName = "syslog-health-monitor-regular"
 )
 
+// ReplaceConfigMapFromBackup restores a ConfigMap from a BackupConfigMap blob.
+func ReplaceConfigMapFromBackup(
+	ctx context.Context, c klient.Client, backup []byte, name, namespace string,
+) error {
+	return createConfigMapFromBytes(ctx, c, backup, name, namespace)
+}
+
+const (
+	SyslogConfigMapName          = "syslog-health-monitor-config"
+	SyslogCancellationsConfigKey = "cancellations.toml"
+)
+
+// Mirror of cancellation.CancellationRule for tests; avoids importing the
+// syslog-health-monitor module from the tests/ go.mod.
+type SyslogCancellationRule struct {
+	OnErrorCode      string   `toml:"onErrorCode"`
+	CancelErrorCodes []string `toml:"cancelErrorCodes"`
+}
+
+type SyslogCheckCancellations struct {
+	Name    string                   `toml:"name"`
+	Enabled bool                     `toml:"enabled"`
+	Rules   []SyslogCancellationRule `toml:"cancellations"`
+}
+
+type SyslogCancellationsConfig struct {
+	Checks []SyslogCheckCancellations `toml:"checks"`
+}
+
 // helper function to set up syslog health monitor and port forward to it.
 // Returns the node name, pod, stop channel, and original args (for restoration during teardown).
 func SetUpSyslogHealthMonitor(ctx context.Context, t *testing.T,
@@ -125,4 +154,18 @@ func TearDownSyslogHealthMonitor(ctx context.Context, t *testing.T, client klien
 	if err != nil {
 		t.Logf("Warning: failed to remove label: %v", err)
 	}
+}
+
+// SetSyslogCancellationRules overwrites the cancellations.toml key. Caller
+// must BackupConfigMap before and restart the pod after.
+func SetSyslogCancellationRules(
+	ctx context.Context, c klient.Client, checks []SyslogCheckCancellations,
+) error {
+	return UpdateConfigMapTOMLField(ctx, c,
+		SyslogConfigMapName, NVSentinelNamespace, SyslogCancellationsConfigKey,
+		func(cfg *SyslogCancellationsConfig) error {
+			cfg.Checks = checks
+			return nil
+		},
+	)
 }

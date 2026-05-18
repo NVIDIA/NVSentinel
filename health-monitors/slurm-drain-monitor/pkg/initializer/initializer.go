@@ -156,7 +156,7 @@ func initConnAndClients(ctx context.Context, params Params) (
 		return nil, nil, nil, nil, fmt.Errorf("failed to create parser: %w", err)
 	}
 
-	pub := publisher.New(pcClient, pb.ProcessingStrategy(strategyValue))
+	pub := publisher.New(pcClient, params.PlatformConnectorSocket, pb.ProcessingStrategy(strategyValue))
 
 	return conn, pr, pub, cfg, nil
 }
