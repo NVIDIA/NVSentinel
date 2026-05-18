@@ -6,7 +6,7 @@ toolchain go1.26.2
 
 require (
 	github.com/nvidia/nvsentinel/data-models v0.0.0
-	google.golang.org/grpc v1.81.0
+	google.golang.org/grpc v1.81.1
 	google.golang.org/protobuf v1.36.11
 )
 
