@@ -130,6 +130,7 @@ func InitTracing(serviceName string) error {
 
 	tracer = otel.Tracer(serviceName)
 
+	//nolint:gosec // Endpoint is configuration data logged as structured context.
 	slog.Info("OpenTelemetry tracing initialized", "endpoint", endpoint)
 
 	return nil

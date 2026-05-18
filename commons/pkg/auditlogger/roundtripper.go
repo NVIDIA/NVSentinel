@@ -68,7 +68,11 @@ func (rt *AuditingRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 		if readErr == nil {
 			body = string(bodyBytes)
 		} else {
-			slog.Error("audit: failed to read request body", "method", req.Method, "url", req.URL.String(), "error", readErr)
+			//nolint:gosec // URL is emitted as structured audit context.
+			slog.Error("audit: failed to read request body",
+				"method", req.Method,
+				"url", req.URL.String(),
+				"error", readErr)
 		}
 	}
 

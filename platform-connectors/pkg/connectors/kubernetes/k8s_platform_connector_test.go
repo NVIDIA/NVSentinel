@@ -595,6 +595,39 @@ func TestRemoveImpactedEntitiesMessagesScoped(t *testing.T) {
 				"ErrorCode:98 GPU:0 unrelated Recommended Action=RESTART_VM;",
 			},
 		},
+		{
+			name: "Tier 1 truncated entity cleared by healthy event",
+			messages: []string{
+				"ErrorCode:POD_STUCK_AFTER_DELETION v1/Pod:prod/61f345d08c9a432a-134... Recommended Action=RESTART_VM;",
+				"ErrorCode:48 GPU:1 some error Recommended Action=DRAIN;",
+			},
+			entities:   []protos.Entity{{EntityType: "v1/Pod", EntityValue: "prod/61f345d08c9a432a-134a464884734f90"}},
+			errorCodes: []string{"POD_STUCK_AFTER_DELETION"},
+			expected: []string{
+				"ErrorCode:48 GPU:1 some error Recommended Action=DRAIN;",
+			},
+		},
+		{
+			name: "Tier 2 byte-truncated entity cleared by healthy event",
+			messages: []string{
+				"ErrorCode:POD_STUCK v1/Pod:prod/61f345d08c9a432a-134",
+			},
+			entities:   []protos.Entity{{EntityType: "v1/Pod", EntityValue: "prod/61f345d08c9a432a-134a464884734f90"}},
+			errorCodes: nil,
+			expected:   nil,
+		},
+		{
+			name: "complete shorter entity NOT falsely cleared by longer entity healthy event",
+			messages: []string{
+				"ErrorCode:48 v1/Pod:prod/app-a error Recommended Action=DRAIN;",
+				"ErrorCode:48 v1/Pod:prod/app-abcdef error Recommended Action=DRAIN;",
+			},
+			entities:   []protos.Entity{{EntityType: "v1/Pod", EntityValue: "prod/app-abcdef"}},
+			errorCodes: nil,
+			expected: []string{
+				"ErrorCode:48 v1/Pod:prod/app-a error Recommended Action=DRAIN;",
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -1719,10 +1752,10 @@ func TestCompactMessageField(t *testing.T) {
 			expected: "ErrorCode:DCGM_FR_NVLINK_DOWN GPU:3 Link down Recommended Action=RESTART_VM",
 		},
 		{
-			name:     "Long message - truncated to maxLen",
+			name:     "Long diagnostic - only diagnostic text truncated",
 			msg:      "ErrorCode:DCGM_FR_NVLINK_DOWN GPU:3 GPU 3's NvLink link 0 is currently down Check DCGM and system logs for errors. Reset GPU. Restart DCGM. Rerun diagnostics. Recommended Action=RESTART_VM",
 			maxLen:   80,
-			expected: "ErrorCode:DCGM_FR_NVLINK_DOWN GPU:3 GPU 3's NvLink link 0 is currently down Chec... Recommended Action=RESTART_VM",
+			expected: "ErrorCode:DCGM_FR_NVLINK_DOWN GPU:3 GPU 3's NvLink link 0 is currently down C... Recommended Action=RESTART_VM",
 		},
 		{
 			name:     "No Recommended Action marker - returned as-is",
@@ -1731,10 +1764,22 @@ func TestCompactMessageField(t *testing.T) {
 			expected: "some unstructured message without the marker",
 		},
 		{
-			name:     "Message with multiple entities - truncated to maxLen",
+			name:     "Multiple entities preserved - only diagnostic truncated",
 			msg:      "ErrorCode:DCGM_FR_NVLINK_DOWN GPU:3 PCI:0000:c4:00.0 GPU_UUID:GPU-8614c5d9-371d-1d8a-9bab-78d0434427ec GPU 3's NvLink link 0 is currently down Check DCGM and system logs for errors. Recommended Action=RESTART_VM",
 			maxLen:   128,
-			expected: "ErrorCode:DCGM_FR_NVLINK_DOWN GPU:3 PCI:0000:c4:00.0 GPU_UUID:GPU-8614c5d9-371d-1d8a-9bab-78d0434427ec GPU 3's NvLink link 0 is ... Recommended Action=RESTART_VM",
+			expected: "ErrorCode:DCGM_FR_NVLINK_DOWN GPU:3 PCI:0000:c4:00.0 GPU_UUID:GPU-8614c5d9-371d-1d8a-9bab-78d0434427ec GPU 3's NvLink link 0 ... Recommended Action=RESTART_VM",
+		},
+		{
+			name:     "Identity exceeds maxLen - full identity preserved with no diagnostic",
+			msg:      "ErrorCode:POD_STUCK_AFTER_DELETION v1/Pod:prod/61f345d08c9a432a-134a464884734f90 Pod is stuck after deletion timeout Recommended Action=RESTART_VM",
+			maxLen:   72,
+			expected: "ErrorCode:POD_STUCK_AFTER_DELETION v1/Pod:prod/61f345d08c9a432a-134a464884734f90 ... Recommended Action=RESTART_VM",
+		},
+		{
+			name:     "Short entity types - identity fits within maxLen",
+			msg:      "ErrorCode:48 GPU:0 Xid error 48 on GPU 0 with some extra diagnostic text that makes it long Recommended Action=DRAIN",
+			maxLen:   72,
+			expected: "ErrorCode:48 GPU:0 Xid error 48 on GPU 0 with some extra diagnostic t... Recommended Action=DRAIN",
 		},
 	}
 
@@ -1747,6 +1792,114 @@ func TestCompactMessageField(t *testing.T) {
 				assert.Contains(t, result, recommendedActionMarker,
 					"Recommended Action must always be preserved")
 			}
+		})
+	}
+}
+
+func TestIsStructuredEntityToken(t *testing.T) {
+	tests := []struct {
+		token    string
+		expected bool
+	}{
+		{"GPU:0", true},
+		{"PCI:0000:c1:00.0", true},
+		{"v1/Pod:prod/my-pod-name", true},
+		{"NIC:mlx5_0", true},
+		{"NVSWITCH:0", true},
+		{"IB:mlx5_0", true},
+		{"GPU_UUID:GPU-8614c5d9-371d-1d8a-9bab-78d0434427ec", true},
+		{"ErrorCode:48", false},
+		{"ErrorCode:DCGM_FR_NVLINK_DOWN", false},
+		{"novalue:", false},
+		{":nokey", false},
+		{"nocolon", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.token, func(t *testing.T) {
+			assert.Equal(t, tc.expected, isStructuredEntityToken(tc.token))
+		})
+	}
+}
+
+func TestEntityMatchesMessage(t *testing.T) {
+	tests := []struct {
+		name     string
+		msg      string
+		entity   *protos.Entity
+		expected bool
+	}{
+		{
+			name:     "Exact match with trailing space",
+			msg:      "ErrorCode:48 GPU:0 Xid error Recommended Action=DRAIN",
+			entity:   &protos.Entity{EntityType: "GPU", EntityValue: "0"},
+			expected: true,
+		},
+		{
+			name:     "Exact match - PCI address",
+			msg:      "ErrorCode:48 GPU:0 PCI:0000:c1:00.0 Xid error Recommended Action=DRAIN",
+			entity:   &protos.Entity{EntityType: "PCI", EntityValue: "0000:c1:00.0"},
+			expected: true,
+		},
+		{
+			name:     "No match - different entity value",
+			msg:      "ErrorCode:48 GPU:0 Xid error Recommended Action=DRAIN",
+			entity:   &protos.Entity{EntityType: "GPU", EntityValue: "1"},
+			expected: false,
+		},
+		{
+			name:     "No match - different entity type",
+			msg:      "ErrorCode:48 GPU:0 Xid error Recommended Action=DRAIN",
+			entity:   &protos.Entity{EntityType: "NIC", EntityValue: "0"},
+			expected: false,
+		},
+		{
+			name:     "Tier 1 truncated match - entity ends with ...",
+			msg:      "ErrorCode:POD_STUCK v1/Pod:prod/61f345d08c9a432a-134... Recommended Action=RESTART_VM",
+			entity:   &protos.Entity{EntityType: "v1/Pod", EntityValue: "prod/61f345d08c9a432a-134a464884734f90"},
+			expected: true,
+		},
+		{
+			name:     "Tier 2 truncated match - entity is last token (byte-truncated)",
+			msg:      "ErrorCode:POD_STUCK v1/Pod:prod/61f345d08c9a432a-134",
+			entity:   &protos.Entity{EntityType: "v1/Pod", EntityValue: "prod/61f345d08c9a432a-134a464884734f90"},
+			expected: true,
+		},
+		{
+			name:     "False positive guard - complete shorter entity must NOT match longer",
+			msg:      "ErrorCode:48 v1/Pod:prod/app-a Xid error Recommended Action=DRAIN",
+			entity:   &protos.Entity{EntityType: "v1/Pod", EntityValue: "prod/app-abcdef"},
+			expected: false,
+		},
+		{
+			name:     "False positive guard - complete shorter entity before Recommended Action must NOT match longer",
+			msg:      "ErrorCode:48 v1/Pod:prod/app-a Recommended Action=DRAIN",
+			entity:   &protos.Entity{EntityType: "v1/Pod", EntityValue: "prod/app-abcdef"},
+			expected: false,
+		},
+		{
+			name:     "Entity type prefix only with no value - no match",
+			msg:      "ErrorCode:48 GPU: Xid error Recommended Action=DRAIN",
+			entity:   &protos.Entity{EntityType: "GPU", EntityValue: "0"},
+			expected: false,
+		},
+		{
+			name:     "Truncated PCI address match",
+			msg:      "ErrorCode:48 GPU:3 PCI:0000:c4:00... Recommended Action=RESTART_VM",
+			entity:   &protos.Entity{EntityType: "PCI", EntityValue: "0000:c4:00.0"},
+			expected: true,
+		},
+		{
+			name:     "GPU type should not match GPU_UUID type",
+			msg:      "ErrorCode:48 GPU_UUID:GPU-8614c5d9-371d... Recommended Action=DRAIN",
+			entity:   &protos.Entity{EntityType: "GPU", EntityValue: "UUID:GPU-8614c5d9-371d"},
+			expected: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, entityMatchesMessage(tc.msg, tc.entity))
 		})
 	}
 }

@@ -46,3 +46,10 @@ func FindAllPrefixMatches(annotations map[string]string, prefixes []string) map[
 
 	return matches
 }
+
+// IsEmptyValue reports whether an annotation value should be treated as absent.
+// Kubernetes annotations are strings; some controllers serialize an empty list as "[]".
+func IsEmptyValue(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	return trimmed == "" || trimmed == "[]"
+}
