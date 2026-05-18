@@ -590,6 +590,12 @@ node-drainer:
   # Default: 5 minutes
   notReadyTimeoutMinutes: 5
 
+  # Flag to restrict draining to GPU workloads
+  # If enabled, only pods with the metadata-collector device annotation
+  # (indicating assigned GPU devices) are eligible for draining
+  # Default: false if not specified
+  drainGPUPods: false
+
   # Namespace-specific eviction strategies
   # Define how pods in different namespaces should be evicted
   # Multiple rules can be defined with namespace patterns

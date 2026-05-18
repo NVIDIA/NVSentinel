@@ -55,6 +55,12 @@ deleteAfterTimeoutMinutes: 60
 # Default: 5 minutes if not specified (validated in config.go)
 notReadyTimeoutMinutes: 5
 
+# Flag to restrict draining to GPU workloads
+# If enabled, only pods with the metadata-collector device annotation
+# (indicating assigned GPU devices) are eligible for draining
+# Default: false if not specified
+drainGPUPods: false
+
 # User namespace configuration with eviction modes
 # Defines how pods in different namespaces should be evicted during node drain
 # Each entry specifies a namespace pattern and its corresponding eviction mode

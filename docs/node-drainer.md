@@ -49,6 +49,7 @@ node-drainer:
   systemNamespaces: "^(nvsentinel|kube-system|gpu-operator)$"  # Namespaces to skip
   deleteAfterTimeoutMinutes: 60      # Force delete after this timeout
   notReadyTimeoutMinutes: 5          # Timeout for stuck pods
+  drainGPUPods: false                # Only drain pods requesting GPU
   
   userNamespaces:
     - name: "*"                      # Pattern matching namespaces
@@ -81,6 +82,7 @@ The module supports three eviction modes for different workload types:
 - **System Namespaces**: Regex pattern for namespaces to skip (system pods)
 - **Delete Timeout**: Minutes to wait before force deleting pods
 - **Not Ready Timeout**: Minutes before considering a pod stuck
+- **Drain GPU Pods**: When enabled, only drains pods requesting GPU resources; CPU-only workloads remain on the node
 - **User Namespaces**: Define eviction mode per namespace pattern (supports `*` wildcard)
 - **Partial Drain**: Enable or disable partial drain functionality
 
@@ -109,3 +111,6 @@ Automatically resumes drain operations after restarts - queries datastore for in
 
 ### Partial Drain Functionality
 For GPU faults that can be remediated with a GPU reset, the Node Drainer will only drain pods which are leveraging the unhealthy GPU. For GPU faults that require a node reboot, all pods on the given node in the configured namespaces will be drained.
+
+### GPU-Only Draining
+When `drainGPUPods: true` is set, the Node Drainer filters pod eviction to only target workloads that request GPU resources. The feature detects GPU resources using device annotations provided by the Metadata Collector, which tracks GPU allocation across the cluster. Default is `false`.

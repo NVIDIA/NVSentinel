@@ -229,6 +229,7 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 		expectError                     bool
 		expectedNodeLabel               *string
 		numReconciles                   int
+		enableDrainGPUPods              bool
 		validateFunc                    func(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, err error)
 	}{
 		{
@@ -258,6 +259,114 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 					}
 					return activePodsCount == 0
 				}, 30*time.Second, 1*time.Second, "pods should be evicted")
+			},
+		},
+		{
+			name:               "DrainGPUPods enabled only evicts GPU workloads",
+			nodeName:           "gpu-drain-node",
+			namespaces:         []string{"immediate-test"},
+			nodeQuarantined:    model.Quarantined,
+			enableDrainGPUPods: true,
+			existingNodeLabels: map[string]string{
+				statemanager.NVSentinelStateLabelKey: string(statemanager.QuarantinedLabelValue),
+			},
+			pods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "gpu-pod-1",
+						Namespace: "immediate-test",
+						Annotations: map[string]string{
+							model.PodDeviceAnnotationName: "{\"devices\":{\"nvidia.com/gpu\":[\"GPU-123\"]}}",
+						},
+					},
+					Spec: v1.PodSpec{
+						NodeName: "gpu-drain-node",
+						Containers: []v1.Container{{
+							Name:  "gpu-container",
+							Image: "nvidia/cuda:latest",
+							Resources: v1.ResourceRequirements{
+								Limits: v1.ResourceList{
+									v1.ResourceName("nvidia.com/gpu"): resource.MustParse("1"),
+								},
+							},
+						}},
+					},
+					Status: v1.PodStatus{Phase: v1.PodRunning},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "cpu-pod-1",
+						Namespace: "immediate-test",
+					},
+					Spec: v1.PodSpec{
+						NodeName: "gpu-drain-node",
+						Containers: []v1.Container{{
+							Name:  "cpu-container",
+							Image: "nginx",
+						}},
+					},
+					Status: v1.PodStatus{Phase: v1.PodRunning},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "gpu-pod-2",
+						Namespace: "immediate-test",
+						Annotations: map[string]string{
+							model.PodDeviceAnnotationName: "{\"devices\":{\"nvidia.com/gpu\":[\"GPU-456\"]}}",
+						},
+					},
+					Spec: v1.PodSpec{
+						NodeName: "gpu-drain-node",
+						Containers: []v1.Container{{
+							Name:  "gpu-container",
+							Image: "pytorch:latest",
+							Resources: v1.ResourceRequirements{
+								Limits: v1.ResourceList{
+									v1.ResourceName("nvidia.com/gpu"): resource.MustParse("2"),
+								},
+							},
+						}},
+					},
+					Status: v1.PodStatus{Phase: v1.PodRunning},
+				},
+			},
+			expectError:       true,
+			expectedNodeLabel: ptr.To(string(statemanager.DrainingLabelValue)),
+			validateFunc: func(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, err error) {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "immediate eviction completed, requeuing for status verification")
+
+				// Verify GPU pods are evicted but CPU pod is preserved
+				expectDeletedForPods := map[string]bool{
+					"gpu-pod-1": true,  // Has GPU-123, eligible to be evicted
+					"cpu-pod-1": false, // preserved
+					"gpu-pod-2": true,  // Has GPU-456, eligible to be evicted
+				}
+
+				for podName, expectDeleted := range expectDeletedForPods {
+					pod, err := client.CoreV1().Pods("immediate-test").Get(ctx, podName, metav1.GetOptions{})
+					require.NoError(t, err, "Pod %s should exist", podName)
+
+					if expectDeleted {
+						assert.NotNil(t, pod.DeletionTimestamp, "GPU pod %s should be marked for deletion", podName)
+					} else {
+						assert.Nil(t, pod.DeletionTimestamp, "CPU pod %s should NOT be marked for deletion", podName)
+					}
+				}
+
+				// Verify that eventually only CPU pod remains (GPU pods evicted)
+				require.Eventually(t, func() bool {
+					pods, _ := client.CoreV1().Pods("immediate-test").List(ctx, metav1.ListOptions{})
+					remainingPods := 0
+					for _, pod := range pods.Items {
+						if pod.DeletionTimestamp == nil {
+							remainingPods++
+							// Verify remaining pod is CPU pod
+							assert.Equal(t, "cpu-pod-1", pod.Name, "Only CPU pod should remain")
+						}
+					}
+					return remainingPods == 1
+				}, 30*time.Second, 1*time.Second, "only CPU pod should remain after GPU pods evicted")
 			},
 		},
 		{
@@ -737,7 +846,7 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 				{Name: "immediate-*", Mode: config.ModeImmediateEvict},
 				{Name: "completion-*", Mode: config.ModeAllowCompletion},
 				{Name: "timeout-*", Mode: config.ModeDeleteAfterTimeout},
-			}, false)
+			}, false, tt.enableDrainGPUPods)
 
 			nodeLabels := tt.existingNodeLabels
 			if nodeLabels == nil {
@@ -1198,7 +1307,7 @@ type testSetup struct {
 	mockDB            *mockDataStore
 }
 
-func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun bool) *testSetup {
+func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun bool, drainGPUPods ...bool) *testSetup {
 	t.Helper()
 	ctx := t.Context()
 
@@ -1210,11 +1319,17 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 	client, err := kubernetes.NewForConfig(cfg)
 	require.NoError(t, err)
 
+	enableDrainGPUPods := false
+	if len(drainGPUPods) > 0 {
+		enableDrainGPUPods = drainGPUPods[0]
+	}
+
 	tomlConfig := config.TomlConfig{
 		EvictionTimeoutInSeconds:  config.Duration{Duration: 30 * time.Second},
 		SystemNamespaces:          "kube-*",
 		DeleteAfterTimeoutMinutes: 5,
 		NotReadyTimeoutMinutes:    2,
+		DrainGPUPods:              enableDrainGPUPods,
 		UserNamespaces:            userNamespaces,
 		PartialDrainEnabled:       true,
 	}
@@ -1237,7 +1352,7 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 		StateManager: statemanager.NewStateManager(client),
 	}
 
-	informersInstance, err := informers.NewInformers(client, 1*time.Minute, ptr.To(2), dryRun)
+	informersInstance, err := informers.NewInformers(client, 1*time.Minute, ptr.To(2), enableDrainGPUPods, dryRun)
 	require.NoError(t, err)
 
 	go func() { _ = informersInstance.Run(ctx) }()
@@ -1311,6 +1426,7 @@ func setupCustomDrainTest(t *testing.T, customDrainConfig config.CustomDrainConf
 		SystemNamespaces:          "kube-*",
 		DeleteAfterTimeoutMinutes: 5,
 		NotReadyTimeoutMinutes:    2,
+		DrainGPUPods:              false,
 		CustomDrain:               customDrainConfig,
 		PartialDrainEnabled:       true,
 	}
@@ -1332,7 +1448,7 @@ func setupCustomDrainTest(t *testing.T, customDrainConfig config.CustomDrainConf
 		StateManager: statemanager.NewStateManager(client),
 	}
 
-	informersInstance, err := informers.NewInformers(client, 1*time.Minute, ptr.To(2), false)
+	informersInstance, err := informers.NewInformers(client, 1*time.Minute, ptr.To(2), false, false)
 	require.NoError(t, err)
 
 	go func() { _ = informersInstance.Run(ctx) }()
@@ -2041,6 +2157,7 @@ func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {
 		SystemNamespaces:          "kube-*",
 		DeleteAfterTimeoutMinutes: 5,
 		NotReadyTimeoutMinutes:    2,
+		DrainGPUPods:              false,
 		CustomDrain:               customDrainCfg,
 		UserNamespaces: []config.UserNamespace{
 			{Name: "*", Mode: config.ModeImmediateEvict},
@@ -2065,7 +2182,7 @@ func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {
 		StateManager: statemanager.NewStateManager(client),
 	}
 
-	informersInstance, err := informers.NewInformers(client, 1*time.Minute, ptr.To(2), false)
+	informersInstance, err := informers.NewInformers(client, 1*time.Minute, ptr.To(2), false, false)
 	require.NoError(t, err)
 
 	go func() { _ = informersInstance.Run(ctx) }()

@@ -62,6 +62,7 @@ type TomlConfig struct {
 	DeleteAfterTimeoutMinutes int      `toml:"deleteAfterTimeoutMinutes"`
 	// NotReadyTimeoutMinutes is the time after which a pod in NotReady state is considered stuck
 	NotReadyTimeoutMinutes int               `toml:"notReadyTimeoutMinutes"`
+	DrainGPUPods           bool              `toml:"drainGPUPods"`
 	UserNamespaces         []UserNamespace   `toml:"userNamespaces"`
 	CustomDrain            CustomDrainConfig `toml:"customDrain"`
 	PartialDrainEnabled    bool              `toml:"partialDrainEnabled"`

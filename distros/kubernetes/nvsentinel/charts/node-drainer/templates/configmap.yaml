@@ -25,6 +25,7 @@ data:
     systemNamespaces = {{ .Values.systemNamespaces | quote }}
     deleteAfterTimeoutMinutes = {{ .Values.deleteAfterTimeoutMinutes }}
     notReadyTimeoutMinutes = {{ .Values.notReadyTimeoutMinutes }}
+    drainGPUPods = {{ .Values.drainGPUPods }}
     partialDrainEnabled = {{ .Values.partialDrainEnabled }}
     
     {{- range .Values.userNamespaces }}

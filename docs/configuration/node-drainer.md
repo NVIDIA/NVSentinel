@@ -96,6 +96,29 @@ node-drainer:
 
 When a pod has been in NotReady state for longer than this timeout, it is excluded from the list of pods to evict. This prevents attempting to evict pods that are already unhealthy and unlikely to respond to eviction requests.
 
+### GPU-Only Draining
+
+If enabled, the node-drainer filters pod eviction to only target workloads that request GPU resources.
+
+```yaml
+node-drainer:
+  drainGPUPods: false
+```
+
+The node-drainer detects GPU resource requests through device annotations added to pods by the metadata-collector. Pods with device annotations are identified as GPU workloads and eligible for eviction.
+
+Device annotations are added to pods requesting GPU resources by metadata-collector with the format:
+```yaml
+annotations:
+	  dgxc.nvidia.com/devices: '{"devices":{"nvidia.com/gpu":["GPU-123"]}}'
+```
+
+#### Behavior
+
+- **When enabled (`true`)**: Only pods with GPU device annotations are evicted during drain operations
+- **When disabled (`false`)**: All eligible pods in configured namespaces are evicted (default behavior)
+- Pods without GPU requests are preserved, maintaining critical infrastructure services
+
 ## User Namespaces
 
 Defines eviction behavior for user workloads based on namespace patterns.

@@ -103,11 +103,12 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 		SystemNamespaces:          "kube-*",
 		DeleteAfterTimeoutMinutes: 5,
 		NotReadyTimeoutMinutes:    2,
+		DrainGPUPods:              false,
 		UserNamespaces:            userNamespaces,
 		PartialDrainEnabled:       partialDrainEnabled,
 	}
 
-	informersInstance, err := informers.NewInformers(client, 1*time.Minute, ptr.To(2), dryRun)
+	informersInstance, err := informers.NewInformers(client, 1*time.Minute, ptr.To(2), false, dryRun)
 	require.NoError(t, err)
 	go func() { _ = informersInstance.Run(ctx) }()
 	require.Eventually(t, informersInstance.HasSynced, 30*time.Second, 1*time.Second)
