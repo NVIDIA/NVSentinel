@@ -3,11 +3,15 @@
 
 # Publishes the Fern documentation site on release tag push or manual dispatch.
 #
-# On a vX.Y.Z release tag push the workflow also:
+# Manual dispatch accepts an optional `tag` input:
+#   - empty: resolves to the latest GitHub release tag
+#   - explicit (e.g. v1.5.0): publishes that tag
+#
+# On a vX.Y.Z release tag (push or dispatch), the workflow also:
 #   1. Generates fern/versions/vX.Y.Z.yml from the tag's docs/index.yml
 #   2. Adds a version entry to fern/docs.yml
 #   3. Prunes older versions to keep only the 3 most recent (plus Latest)
-#   4. Commits changes back to main so future publishes include the new version
+#   4. Opens a PR to persist registry changes back to main (after publish)
 #
 # Pre-release tags (e.g. v1.6.0-rc1) trigger publish but skip version registration.
 #
@@ -20,10 +24,16 @@ on:
   push:
     tags:
       - "v[0-9]*.[0-9]*.[0-9]*"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. v1.5.0). Leave empty to use the latest GitHub release tag."
+        required: false
+        type: string
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: fern-publish
@@ -40,18 +50,54 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
-          fetch-tags: true
           ref: main
+          fetch-tags: true
 
-      - name: Register new version from tag
-        if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')
+      - name: Resolve target tag
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -eo pipefail
-          TAG_VERSION="${GITHUB_REF#refs/tags/}"  # e.g. v1.5.0
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          elif [ -n "${INPUT_TAG}" ]; then
+            TAG="${INPUT_TAG}"
+          else
+            TAG=$(gh release view --repo "${GITHUB_REPOSITORY}" --json tagName -q .tagName)
+            if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+              echo "::error::Could not determine latest release tag"
+              exit 1
+            fi
+          fi
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
+            echo "::error::Tag '${TAG}' is not a valid semver tag (expected vMAJOR.MINOR.PATCH[-PRERELEASE])"
+            exit 1
+          fi
+          if ! git show-ref --verify --quiet "refs/tags/${TAG}"; then
+            echo "::error::Tag '${TAG}' does not exist in this repository"
+            exit 1
+          fi
+          if [[ "$TAG" == *-* ]]; then
+            IS_RELEASE=false
+          else
+            IS_RELEASE=true
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "is_release=$IS_RELEASE" >> "$GITHUB_OUTPUT"
+          echo "Resolved target tag: $TAG (is_release=$IS_RELEASE)"
+
+      - name: Register new version from tag
+        if: steps.resolve.outputs.is_release == 'true'
+        env:
+          TAG_VERSION: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -eo pipefail
 
           # Skip if version file already exists
           if [ -f "fern/versions/${TAG_VERSION}.yml" ]; then
-            echo "Version file fern/versions/${TAG_VERSION}.yml already exists — skipping"
+            echo "Version ${TAG_VERSION} already registered — skipping"
             exit 0
           fi
 
@@ -62,13 +108,16 @@ jobs:
 
           # Add version entry to docs.yml (insert after Latest, before older versions)
           export TAG_VERSION
-          yq -i '.products[0].versions |= [.[0]] + [{"display-name": env(TAG_VERSION), "path": "versions/" + env(TAG_VERSION) + ".yml", "slug": env(TAG_VERSION), "availability": "stable"}] + .[1:]' fern/docs.yml
+          EXPR='.products[0].versions |= [.[0]] + [{"display-name": env(TAG_VERSION),'
+          EXPR+=' "path": "versions/" + env(TAG_VERSION) + ".yml",'
+          EXPR+=' "slug": env(TAG_VERSION), "availability": "stable"}] + .[1:]'
+          yq -i "$EXPR" fern/docs.yml
 
           echo "--- docs.yml versions after insert ---"
           yq '.products[0].versions[].display-name' fern/docs.yml
 
       - name: Prune old versions
-        if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')
+        if: steps.resolve.outputs.is_release == 'true'
         run: |
           set -eo pipefail
           KEEP=$((MAX_VERSIONS + 1))  # +1 for the Latest entry at index 0
@@ -81,7 +130,7 @@ jobs:
           fi
 
           # Remove excess entries from the end (oldest) and their version files
-          PRUNED=$(yq ".products[0].versions[$KEEP:].[].slug" fern/docs.yml)
+          PRUNED=$(yq ".products[0].versions[$KEEP:][].slug" fern/docs.yml)
           yq -i ".products[0].versions |= .[:$KEEP]" fern/docs.yml
 
           for slug in $PRUNED; do
@@ -92,36 +141,40 @@ jobs:
           echo "--- docs.yml versions after prune ---"
           yq '.products[0].versions[].display-name' fern/docs.yml
 
-      - name: Commit version changes
-        if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')
-        run: |
-          TAG_VERSION="${GITHUB_REF#refs/tags/}"
-          if git diff --quiet fern/ && [ -z "$(git ls-files --deleted fern/)" ]; then
-            echo "No version changes to commit"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add fern/versions/ fern/docs.yml
-          git commit -m "chore(fern): register ${TAG_VERSION}, keep latest ${MAX_VERSIONS} versions [automated]"
-          git push origin main
-
       - name: Checkout frozen version content
         run: |
           set -eo pipefail
           for version_file in fern/versions/v*.yml; do
             [ -f "$version_file" ] || continue
             version=$(basename "$version_file" .yml)
-            if git rev-parse -q --verify "refs/tags/$version" >/dev/null 2>&1; then
+            if git show-ref --verify --quiet "refs/tags/${version}"; then
               mkdir -p "fern/versions/${version}-content"
-              git archive "refs/tags/$version" -- docs/ | tar -x --strip-components=1 -C "fern/versions/${version}-content"
-              # Fix MDX issues in older tags
-              find "fern/versions/${version}-content" -name '*.md' -exec sed -i 's/<img \([^>]*[^/]\)>/<img \1 \/>/g' {} +
+              git archive "refs/tags/${version}" -- docs/ | tar -x --strip-components=1 -C "fern/versions/${version}-content"
+              find "fern/versions/${version}-content" -name '*.md' -print0 | xargs -0 -r sed -i \
+                -e 's/{/\\{/g' \
+                -e 's/}/\\}/g' \
+                -e 's/</\&lt;/g'
               echo "Extracted docs from $version"
             else
-              echo "::warning::Tag $version not found — skipping content checkout"
+              echo "::error::Tag $version not found — cannot pin frozen docs content"
+              exit 1
             fi
           done
+
+      - name: Stamp version in docs.yml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp fern/docs.yml /tmp/docs.yml.preStamp
+          VERSION=$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name 2>/dev/null || true)
+          if [ -n "$VERSION" ] && [ "$VERSION" != "null" ]; then
+            export VERSION
+            yq -i '(.products[0].versions[] | select(.slug == "latest")).display-name = "Latest · " + env(VERSION)' fern/docs.yml
+          else
+            echo "::warning::Could not resolve latest GitHub release tag; continuing without stamping"
+          fi
+          echo "--- docs.yml versions after stamp ---"
+          yq '.products[0].versions[].display-name' fern/docs.yml
 
       - name: Setup Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
@@ -130,16 +183,6 @@ jobs:
 
       - name: Install Fern CLI
         run: npm install -g fern-api@$(jq -r .version fern/fern.config.json)
-
-      - name: Stamp version in docs.yml
-        run: |
-          VERSION=$(curl -sf https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r .tag_name)
-          if [ -n "$VERSION" ] && [ "$VERSION" != "null" ]; then
-            export VERSION
-            yq -i '(.products[0].versions[] | select(.slug == "latest")).display-name = "Latest · " + env(VERSION)' fern/docs.yml
-          fi
-          echo "--- docs.yml versions after stamp ---"
-          yq '.products[0].versions[].display-name' fern/docs.yml
 
       - name: Publish docs
         env:
@@ -152,3 +195,25 @@ jobs:
           if [ -n "$URL" ]; then
             echo "### Published: [$URL]($URL)" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Restore unstamped docs.yml for persistence
+        if: steps.resolve.outputs.is_release == 'true'
+        run: cp /tmp/docs.yml.preStamp fern/docs.yml
+
+      - name: Open PR for version registry changes
+        if: steps.resolve.outputs.is_release == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v8.1.1
+        with:
+          base: main
+          branch: chore/fern-register-${{ steps.resolve.outputs.tag }}
+          delete-branch: true
+          sign-commits: true
+          commit-message: "chore(fern): register ${{ steps.resolve.outputs.tag }}, keep latest ${{ env.MAX_VERSIONS }} versions [automated]"
+          title: "chore(fern): register ${{ steps.resolve.outputs.tag }}"
+          body: |
+            Automated registration of `${{ steps.resolve.outputs.tag }}` in the Fern docs versions registry.
+
+            Generated by the `Publish Fern Docs` workflow.
+          add-paths: |
+            fern/versions/v*.yml
+            fern/docs.yml
