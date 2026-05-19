@@ -6,12 +6,9 @@
 instances:
   - url: nvsentinel.docs.buildwithfern.com/nvsentinel
     custom-domain: docs.nvidia.com/nvsentinel
-
 title: NVIDIA NVSentinel Documentation
-
 metadata:
   canonical-host: "docs.nvidia.com/nvsentinel"
-
 products:
   - display-name: NVSentinel
     slug: /
@@ -22,6 +19,10 @@ products:
         path: ../docs/index.yml
         slug: latest
         availability: stable
+      - display-name: v1.5.1
+        path: versions/v1.5.1.yml
+        slug: v1.5.1
+        availability: stable
       - display-name: "v1.4.0"
         path: versions/v1.4.0.yml
         slug: v1.4.0
@@ -30,11 +31,6 @@ products:
         path: versions/v1.3.0.yml
         slug: v1.3.0
         availability: stable
-      - display-name: "v1.2.0"
-        path: versions/v1.2.0.yml
-        slug: v1.2.0
-        availability: stable
-
 redirects:
   - source: "/nvsentinel/index.html"
     destination: "/nvsentinel/"
@@ -44,14 +40,11 @@ redirects:
     destination: "/nvsentinel/latest/"
   - source: "/nvsentinel/dev/index.html"
     destination: "/nvsentinel/latest/"
-
 # GitHub repository link in navbar
 navbar-links:
   - type: github
     value: https://github.com/NVIDIA/NVSentinel
-
 footer: ./components/CustomFooter.tsx
-
 layout:
   searchbar-placement: header
   page-width: 1376px
@@ -59,12 +52,10 @@ layout:
   content-width: 812px
   tabs-placement: header
   hide-feedback: true
-
 experimental:
   mdx-components:
     - ./components
   basepath-aware: true
-
 colors:
   accentPrimary:
     dark: '#76B900'
@@ -72,20 +63,16 @@ colors:
   background:
     light: '#FFFFFF'
     dark: '#000000'
-
 theme:
   page-actions: toolbar
   footer-nav: minimal
-
 logo:
   dark: ./assets/NVIDIA_dark.svg
   light: ./assets/NVIDIA_light.svg
   height: 20
   href: /nvsentinel
   right-text: Documentation
-
 favicon: ./assets/NVIDIA_symbol.svg
-
 js:
   - url: https://assets.adobedtm.com/5d4962a43b79/c1061d2c5e7b/launch-191c2462b890.min.js
     strategy: beforeInteractive
