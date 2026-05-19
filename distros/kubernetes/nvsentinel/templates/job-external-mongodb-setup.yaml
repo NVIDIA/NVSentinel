@@ -24,9 +24,8 @@ inside the mongodb-store subchart instead.
 {{- $useExternalMongodb := and .Values.global.datastore
                                (eq .Values.global.datastore.provider "mongodb")
                                (not .Values.global.mongodbStore.enabled) }}
-{{- if $useExternalMongodb }}
-
 {{- $setupJob := ((.Values.global.datastore).setupJob) | default dict }}
+{{- if and $useExternalMongodb (ne ($setupJob.enabled | toString) "false") }}
 {{- $image := ($setupJob.image) | default dict }}
 {{- $imageRepo := $image.repository | default "ghcr.io/rtsp/docker-mongosh" }}
 {{- $imageTag := $image.tag | default "2.5.2" }}

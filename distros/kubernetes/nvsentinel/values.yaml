@@ -87,6 +87,7 @@ global:
   #   # The setup job creates required collections and indexes in the external MongoDB.
   #   # It runs once on install/upgrade when using an external DB.
   #   setupJob:
+  #     enabled: true  # Set to false to skip the setup job entirely
   #     image:
   #       repository: ghcr.io/rtsp/docker-mongosh
   #       tag: "2.5.2"
