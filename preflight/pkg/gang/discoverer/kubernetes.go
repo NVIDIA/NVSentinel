@@ -207,6 +207,7 @@ func (w *WorkloadRefDiscoverer) isPeerMatch(p *unstructured.Unstructured, worklo
 	}
 
 	phase, _, _ := unstructured.NestedString(p.Object, "status", "phase")
+
 	return phase == string(corev1.PodRunning) || phase == string(corev1.PodPending)
 }
 
@@ -259,11 +260,13 @@ func (w *WorkloadRefDiscoverer) getPodWorkloadRef(ctx context.Context, namespace
 
 	pod := &unstructured.Unstructured{}
 	pod.SetGroupVersionKind(podGVK)
+
 	if err := w.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, pod); err != nil {
 		slog.Debug("Failed to get Pod while checking workloadRef",
 			"namespace", namespace,
 			"name", name,
 			"error", err)
+
 		return "", ""
 	}
 
@@ -281,6 +284,7 @@ func formatWorkloadRefGangID(namespace, workloadName, podGroup string) string {
 func getUnstructuredWorkloadRef(pod *unstructured.Unstructured) (string, string) {
 	workloadName, _, _ := unstructured.NestedString(pod.Object, "spec", "workloadRef", "name")
 	podGroup, _, _ := unstructured.NestedString(pod.Object, "spec", "workloadRef", "podGroup")
+
 	return workloadName, podGroup
 }
 
