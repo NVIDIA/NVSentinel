@@ -6,7 +6,7 @@
 
 GPU failures during training waste compute time. Running diagnostics before the workload starts catches bad GPUs early.
 
-Gang-wide NCCL tests require discovering all pods in a gang. Kubernetes 1.36 uses `spec.schedulingGroup` as a native gang identifier, but users may also use Volcano, Kueue, or other schedulers with their own mechanisms.
+Gang-wide NCCL tests require discovering all pods in a gang. Kubernetes 1.35 exposes native gang membership through `spec.workloadRef`; Kubernetes 1.36 uses `spec.schedulingGroup`. Users may also use Volcano, Kueue, or other schedulers with their own mechanisms.
 
 ### Distinction from Health Monitors
 
@@ -28,7 +28,7 @@ Implement a MutatingAdmissionWebhook that injects preflight check init container
 ### Key points
 
 - Injection trigger: GPU resources (extended resources or DRA claims) + namespace
-- Gang discovery: Pluggable (supports `schedulingGroup`; can be extended to Volcano, Kueue .etc.)
+- Gang discovery: Pluggable (supports native Kubernetes `workloadRef` / `schedulingGroup`; can be extended to Volcano, Kueue .etc.)
 - Resource detection: Configurable lists for extended resource names and DRA device classes
 
 ## Architecture
@@ -370,7 +370,7 @@ Each pod runs `torchrun` independently. No MPI, no `pods/exec`, no special RBAC.
 - NCCL algorithm/protocol issues
 
 **Requirements:**
-- Gang discovery (`schedulingGroup`, Volcano, or Kueue)
+- Gang discovery (native Kubernetes `workloadRef` / `schedulingGroup`, Volcano, or Kueue)
 - Network device allocation (InfiniBand NICs)
 - NCCL topology file (auto-detected or user-provided)
 
@@ -427,11 +427,12 @@ type PeerInfo struct {
 | Scheduler       | Discovery chain                                                          |
 |-----------------|--------------------------------------------------------------------------|
 | K8s 1.36 native | Pod → `spec.schedulingGroup` → list pods with same PodGroup              |
+| K8s 1.35 native | Pod → `spec.workloadRef` → list pods with same Workload / PodGroup       |
 | Volcano         | Pod → `volcano.sh/pod-group` annotation → list pods with same annotation |
 | Kueue           | Pod → `kueue.x-k8s.io/workload-name` label → list pods with same label   |
 | Label-based     | Pod → configurable labels → list pods with same labels                   |
 
-Controller selects implementation based on Helm config. If no gang identifier found, pod is treated as singleton (skip gang-wide tests).
+Controller selects implementation based on Helm config. With empty `gangDiscovery`, native Kubernetes discovery prefers the 1.36 PodGroup API when available and falls back to the 1.35 Workload API. If no gang identifier is found, the pod is treated as singleton (skip gang-wide tests).
 
 ### Gang Coordination
 
@@ -496,7 +497,8 @@ rules:
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
   # Additional rules based on gang discoverer:
-  # schedulingGroup: scheduling.k8s.io/podgroups (get)
+  # Native K8s 1.36 schedulingGroup: scheduling.k8s.io/podgroups (get)
+  # Native K8s 1.35 workloadRef: scheduling.k8s.io/workloads (get)
   # Volcano: scheduling.volcano.sh/podgroups (get)
   # Kueue: kueue.x-k8s.io/workloads (get)
 ```
@@ -673,8 +675,8 @@ preflight-injector:
   
   # Gang discovery configuration
   gangDiscovery:
-    # Options: schedulingGroup, volcano, kueue, labels
-    method: "schedulingGroup"
+    # Options: native Kubernetes, volcano, kueue, labels
+    method: "kubernetes"
     # For label-based discovery:
     # labels:
     #   gangIdLabel: "app.kubernetes.io/gang-id"
@@ -783,14 +785,14 @@ All GPU pods in listed namespaces get the configured checks.
 - Requires DCGM hostengine DaemonSet for diag checks
 - Webhook downtime blocks pod creation (if `failurePolicy: Fail`)
 - NCCL tests require network device plugins (InfiniBand/RDMA) to be configured
-- Gang-wide NCCL tests require K8s 1.36+ (`schedulingGroup`)
+- Gang-wide NCCL tests require a gang discovery source (native K8s 1.35+ `workloadRef`, native K8s 1.36+ `schedulingGroup`, or a configured PodGroup-style scheduler)
 
 ### Mitigations
 - **Latency**: Use DCGM level 1 (~30s) vs level 2 (~2-3min); skip expensive checks for non-critical workloads
 - **DCGM dependency**: Most GPU clusters already run DCGM for monitoring; expose as Service
 - **Webhook availability**: HA deployment (replicas, PDB); `failurePolicy: Ignore` for graceful degradation
 - **Network resources**: NCCL tests skipped if network devices unavailable; DCGM diag runs regardless
-- **K8s version**: NCCL loopback (single-node) works without `schedulingGroup`; gang tests are opt-in
+- **K8s version**: NCCL loopback (single-node) works without native gang APIs; gang tests are opt-in and can use native Kubernetes or configured scheduler-specific discovery
 
 ## Alternatives Considered
 

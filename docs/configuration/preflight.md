@@ -181,11 +181,13 @@ Gang discovery identifies pods that belong to the same scheduling group so multi
 
 Two discovery mechanisms are supported:
 
-### Native Kubernetes (1.36+): schedulingGroup
+### Native Kubernetes: schedulingGroup / workloadRef
+
+The default when `gangDiscovery` is left empty (`{}`). Preflight first uses the Kubernetes 1.36 native PodGroup API when available, then falls back to the Kubernetes 1.35 native Workload API.
 
 > The `PodGroup` resource (`scheduling.k8s.io/v1alpha2`) and `spec.schedulingGroup` are alpha in Kubernetes 1.36 and disabled by default. Enable the `GenericWorkload` feature gate on the API server and scheduler to use this path.
 
-The default when `gangDiscovery` is left empty (`{}`). Each pod links to a `PodGroup` resource via `spec.schedulingGroup`:
+In Kubernetes 1.36, each pod links to a `PodGroup` resource via `spec.schedulingGroup`:
 
 ```yaml
 spec:
@@ -207,6 +209,32 @@ spec:
 ```
 
 No `gangDiscovery` configuration is needed for this path.
+
+In Kubernetes 1.35, each pod links to a native `Workload` resource via `spec.workloadRef`:
+
+```yaml
+spec:
+  workloadRef:
+    name: training-job-workload
+    podGroup: workers
+```
+
+The Workload object contains pod groups and gang policy:
+
+```yaml
+apiVersion: scheduling.k8s.io/v1alpha1
+kind: Workload
+metadata:
+  name: training-job-workload
+spec:
+  podGroups:
+    - name: workers
+      policy:
+        gang:
+          minCount: 2
+```
+
+No `gangDiscovery` configuration is needed for this fallback path either.
 
 ### PodGroup-based schedulers (Volcano, Run:ai / OSMO, and similar)
 
