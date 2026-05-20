@@ -196,13 +196,19 @@ All conditions are append-or-update in place via the `SetCondition` helper, whic
 
 1. On first reconcile, call `SetInitialConditions`: write `NVSentinelOwnershipReleased=Unknown (Initializing)` and `ExternalRemediationComplete=Unknown (AwaitingExternalSystem)`.
 2. If `NVSentinelOwnershipReleased` is `Unknown`:
-   - Apply the configured release taint to `spec.nodeName` (idempotent).
-   - Set the `nvsentinel.nvidia.com/monitoring.active=false` label on `spec.nodeName` to tear down NVSentinel's own health monitors for the duration of external remediation (see "Health-monitor teardown" below).
+   - In a **single PATCH** against `spec.nodeName`, both:
+     - Apply the configured release taint (idempotent).
+     - Set the `nvsentinel.nvidia.com/monitoring.active=false` label.
+
+     Combining the two mutations into one API call eliminates the inconsistency window where the node would carry one but not the other. The release taint is the operational guard for scheduling and downstream NVSentinel components; the label is the trigger for health-monitor teardown (see "Health-monitor teardown" below).
    - On success: set `NVSentinelOwnershipReleased=True` with `reason=ReleaseTaintApplied`.
    - On persistent failure: set `NVSentinelOwnershipReleased=False` with `reason=ReleaseTaintFailed`. The ERR is now in a terminal failed state; no further reconciliation work, but the object remains so the failure is visible to operators. Transient errors continue to retry via the standard controller-runtime backoff.
 3. If `ExternalRemediationComplete` has resolved to `True` or `False` (either terminal):
-   - Remove the release taint from `spec.nodeName` (idempotent; tolerate missing taint). Verify both key AND value match this ERR's name before removing — protects against drift from a previous, no-longer-existing ERR.
-   - Remove the `nvsentinel.nvidia.com/monitoring.active` label from `spec.nodeName` (idempotent), allowing DaemonSet monitor pods to be re-scheduled and cluster-scope monitors to resume emitting events for the node.
+   - In a **single PATCH** against `spec.nodeName`, both:
+     - Remove the release taint (idempotent; tolerate missing taint). Verify both key AND value match this ERR's name on the taint before removing — protects against drift from a previous, no-longer-existing ERR.
+     - Remove the `nvsentinel.nvidia.com/monitoring.active` label (idempotent; tolerate missing label).
+
+     Atomicity matters in this direction too — no window where the taint is gone but the label still holds monitors off, or vice versa.
    - Done; no further work.
 4. Otherwise (`ExternalRemediationComplete` is still `Unknown`): no-op until the external system writes a terminal value.
 
@@ -247,6 +253,8 @@ The `NotIn` operator is deliberate over a strict `nodeSelector: monitoring.activ
 **Cluster-scope monitors** (csp-health-monitor, kubernetes-object-monitor, slurm-drain-monitor) run as Deployments and target nodes by name from outside the node. They cannot be evicted from a node — they do not run on it. Instead, each cluster-scope monitor reads the target node's labels from its Kubernetes informer and skips emission for nodes carrying `nvsentinel.nvidia.com/monitoring.active=false`. A shared helper in `commons/pkg/` provides the lookup so the check is centralized; per-monitor code calls into it before emitting events for a given node.
 
 Both mechanisms key off the same label, so operators have a single signal to inspect when debugging "why isn't this node being monitored" questions.
+
+**Eviction is asynchronous.** The DaemonSet controller begins evicting monitor pods when the `monitoring.active=false` label is applied, but actual pod termination respects each pod's `terminationGracePeriodSeconds` — typically a few seconds. The ERR reconciler does NOT wait for eviction to complete before setting `NVSentinelOwnershipReleased=True`; the condition flips as soon as the patch lands. Monitor pods may emit a few last health events for the released node during the eviction window. Those events are filtered downstream by the release-taint guard and do not trigger NVSentinel action; they may, however, appear briefly in the event store and observability surfaces. The release taint itself takes effect immediately on patch landing, so destructive scheduling decisions are blocked from `T0`. Cluster-scope monitors stop emitting immediately on label flip — no pod eviction is involved for them, so no analogous window exists.
 
 **Trade-off: observability loss during external remediation.** For the duration of external remediation, NVSentinel cannot see what is happening on the node from its own monitors. For long-running remediations (RMA-class, days to weeks), this is a real cost. The external system is expected to provide its own observability for the duration.
 
