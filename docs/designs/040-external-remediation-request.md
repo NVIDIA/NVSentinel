@@ -197,10 +197,12 @@ All conditions are append-or-update in place via the `SetCondition` helper, whic
 1. On first reconcile, call `SetInitialConditions`: write `NVSentinelOwnershipReleased=Unknown (Initializing)` and `ExternalRemediationComplete=Unknown (AwaitingExternalSystem)`.
 2. If `NVSentinelOwnershipReleased` is `Unknown`:
    - Apply the configured release taint to `spec.nodeName` (idempotent).
+   - Set the `nvsentinel.nvidia.com/monitoring.active=false` label on `spec.nodeName` to tear down NVSentinel's own health monitors for the duration of external remediation (see "Health-monitor teardown" below).
    - On success: set `NVSentinelOwnershipReleased=True` with `reason=ReleaseTaintApplied`.
    - On persistent failure: set `NVSentinelOwnershipReleased=False` with `reason=ReleaseTaintFailed`. The ERR is now in a terminal failed state; no further reconciliation work, but the object remains so the failure is visible to operators. Transient errors continue to retry via the standard controller-runtime backoff.
 3. If `ExternalRemediationComplete` has resolved to `True` or `False` (either terminal):
    - Remove the release taint from `spec.nodeName` (idempotent; tolerate missing taint). Verify both key AND value match this ERR's name before removing — protects against drift from a previous, no-longer-existing ERR.
+   - Remove the `nvsentinel.nvidia.com/monitoring.active` label from `spec.nodeName` (idempotent), allowing DaemonSet monitor pods to be re-scheduled and cluster-scope monitors to resume emitting events for the node.
    - Done; no further work.
 4. Otherwise (`ExternalRemediationComplete` is still `Unknown`): no-op until the external system writes a terminal value.
 
@@ -210,11 +212,45 @@ All conditions are append-or-update in place via the `SetCondition` helper, whic
 nvsentinel.nvidia.com/external-remediation=<err-name>:NoSchedule
 ```
 
-The taint **value** is the `metadata.name` of the owning `ExternalRemediationRequest` — the same deterministic hash used by `fault-remediation` when constructing the ERR. This is the only piece of node-side metadata the design adds; no Node labels or annotations are created. The taint carries both the operational guard ("don't act on this node") and the correlation key ("which ERR owns the release") in one place.
+The taint **value** is the `metadata.name` of the owning `ExternalRemediationRequest` — the same deterministic hash used by `fault-remediation` when constructing the ERR. The taint carries both the operational guard ("don't act on this node") and the correlation key ("which ERR owns the release") in one place. No Node label or annotation duplicates the ERR identity — all discovery flows through the taint value (see "Discovery from the Node side" below). The ERR reconciler does separately manage a `nvsentinel.nvidia.com/monitoring.active` label on the node to coordinate health-monitor teardown (see the dedicated subsection below); that label is independent of discovery and carries no ERR identity.
 
 The taint is the *single source of truth* for "this node is not owned by NVSentinel right now." Any other NVSentinel component that mutates the target node's quarantine, drain, or remediation state — applying or removing taints, cordoning or uncordoning, creating or completing maintenance CRs, modifying NVSentinel-managed annotations — MUST refuse to take that action on a node carrying any taint with key `nvsentinel.nvidia.com/external-remediation`, regardless of value. `node-drainer` and `fault-quarantine` get a small guard; `fault-remediation` inherits the same guard through its existing node-selection logic. Health events for such nodes continue to be observed, recorded, and exported as usual; the guard applies only to state-changing actions.
 
 **Single active ERR per node.** Because the `(key, effect)` taint tuple is unique on a Node, only one ERR can have its release taint applied at a time. This invariant is enforced by `fault-remediation`'s existing equivalence-group machinery (see the *`fault-remediation` integration* section): ERRs declare their own equivalence group and a status checker, and the existing "skip CR creation when a CR for a matching group is in progress" logic prevents a second concurrent ERR from ever being created. No new dedup code is required in the ERR reconciler.
+
+**Health-monitor teardown.** While an ERR holds the release taint on a node, NVSentinel's own health monitors should not run on or emit events for that node. The external system is in full control of the node, and any events NVSentinel produces during that window would either be misleading (the symptoms a monitor observes may be artifacts of the external system's work) or actively harmful (a healthy event could prematurely clear fault-quarantine state while the external system is still mid-flight).
+
+The ERR reconciler manages a single Node label, `nvsentinel.nvidia.com/monitoring.active`, alongside the release taint:
+
+- **Value `"false"`** — monitors should be off for this node. Set by the ERR reconciler atomically with the release taint apply (step 2 of the reconcile loop).
+- **Absence (or any other value)** — monitors run normally. The default state; restored by the ERR reconciler when the release taint is removed (step 3).
+
+Monitors consume the label in two different shapes depending on whether they run per-node or cluster-wide:
+
+**DaemonSet monitors** (gpu-health-monitor, syslog-health-monitor, nic-health-monitor) carry a `nodeAffinity` clause requiring the label to NOT be `"false"`:
+
+```yaml
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: nvsentinel.nvidia.com/monitoring.active
+          operator: NotIn
+          values: ["false"]
+```
+
+The DaemonSet controller re-evaluates affinity continuously for its pods and evicts the pod from any node where the label flips to `"false"`. When the label is removed (or set to any other value) on terminal ERR completion, the DaemonSet controller re-schedules the pod automatically.
+
+The `NotIn` operator is deliberate over a strict `nodeSelector: monitoring.active: "true"` match — `NotIn` matches nodes where the label is absent (default), which means new nodes joining the cluster receive monitor pods without any bootstrap labeling step. Only nodes the ERR reconciler explicitly marked `"false"` are excluded.
+
+**Cluster-scope monitors** (csp-health-monitor, kubernetes-object-monitor, slurm-drain-monitor) run as Deployments and target nodes by name from outside the node. They cannot be evicted from a node — they do not run on it. Instead, each cluster-scope monitor reads the target node's labels from its Kubernetes informer and skips emission for nodes carrying `nvsentinel.nvidia.com/monitoring.active=false`. A shared helper in `commons/pkg/` provides the lookup so the check is centralized; per-monitor code calls into it before emitting events for a given node.
+
+Both mechanisms key off the same label, so operators have a single signal to inspect when debugging "why isn't this node being monitored" questions.
+
+**Trade-off: observability loss during external remediation.** For the duration of external remediation, NVSentinel cannot see what is happening on the node from its own monitors. For long-running remediations (RMA-class, days to weeks), this is a real cost. The external system is expected to provide its own observability for the duration.
+
+**Trade-off: cold-start churn on monitor resumption.** When the label is removed and DaemonSet pods are re-scheduled, they cold-start and emit fresh events based on the current node state. If the underlying fault is still present, this re-triggers the pipeline and may produce a new ERR. This is the desired self-healing behaviour — operators should expect a brief flurry of events at the moment of monitor resumption.
 
 **Idempotency:** taint application uses a server-side patch. The ERR reconciler verifies both key AND value match its own ERR name before treating the taint as "its own" — protecting against drift from a previous, no-longer-existing ERR.
 
@@ -293,13 +329,14 @@ sequenceDiagram
     ND->>N: evict workload
     ND->>FR: drained event
     FR->>ERR: create (spec = HealthEvent)
-    RC->>N: apply release taint
+    RC->>N: apply release taint + set monitoring.active=false label
+    Note over HM,N: DaemonSet monitors evicted;<br/>cluster-scope monitors skip this node
     RC->>ERR: NVSentinelOwnershipReleased=True
     Note over EXT: external system watches ERR, sees OwnershipReleased
     EXT->>N: perform remediation (RMA, manual fix, …)
     EXT->>ERR: ExternalRemediationComplete=True/False
-    RC->>N: remove release taint
-    Note over HM,N: existing health-monitors emit events
+    RC->>N: remove release taint + remove monitoring.active label
+    Note over HM,N: DaemonSet monitors re-scheduled;<br/>cluster-scope monitors resume emitting
     HM->>FQ: subsequent HealthEvent (healthy or unhealthy)
     Note over FQ,N: FQ acts normally now that release taint is gone
 ```
