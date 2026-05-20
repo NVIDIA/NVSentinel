@@ -72,7 +72,7 @@ func NewDiscovererFromConfig(
 		}
 
 		return nil, fmt.Errorf(
-			"kubernetes native gang API not available (requires K8s 1.35+ Workload or K8s 1.36+ PodGroup)",
+			"kubernetes native gang API not available (requires K8s 1.35 Workload or K8s 1.36+ PodGroup)",
 		)
 
 	case discoveryTypePodGroup:

@@ -35,7 +35,7 @@ var PodGroupGVK = schema.GroupVersionKind{
 	Kind:    "PodGroup",
 }
 
-// WorkloadGVK is the GroupVersionKind for K8s 1.35+ Workload resources.
+// WorkloadGVK is the GroupVersionKind for K8s 1.35 Workload resources.
 var WorkloadGVK = schema.GroupVersionKind{
 	Group:   "scheduling.k8s.io",
 	Version: "v1alpha1",
@@ -54,7 +54,7 @@ var podListGVK = schema.GroupVersionKind{
 	Kind:    "PodList",
 }
 
-// WorkloadRefDiscoverer discovers gang members using K8s 1.35+ native workloadRef.
+// WorkloadRefDiscoverer discovers gang members using K8s 1.35 native workloadRef.
 // Pods are linked to Workloads via spec.workloadRef:
 //
 //	spec:
@@ -244,9 +244,9 @@ func (w *WorkloadRefDiscoverer) getWorkloadMinCount(
 			continue
 		}
 
-		minCount, found, _ := unstructured.NestedInt64(pg, "policy", "gang", "minCount")
+		minCount, found, _ := nestedInt(pg, "policy", "gang", "minCount")
 		if found {
-			return int(minCount), nil
+			return minCount, nil
 		}
 	}
 
@@ -436,16 +436,38 @@ func (w *KubernetesDiscoverer) getPodGroupMinCount(
 		return 0, fmt.Errorf("failed to get PodGroup %s/%s: %w", namespace, name, err)
 	}
 
-	minCount, found, err := unstructured.NestedInt64(podGroup.Object, "spec", "schedulingPolicy", "gang", "minCount")
+	minCount, found, err := nestedInt(podGroup.Object, "spec", "schedulingPolicy", "gang", "minCount")
 	if err != nil {
 		return 0, fmt.Errorf("failed to get gang minCount from PodGroup %s/%s: %w", namespace, name, err)
 	}
 
 	if found {
-		return int(minCount), nil
+		return minCount, nil
 	}
 
 	return 0, nil
+}
+
+func nestedInt(obj map[string]any, fields ...string) (int, bool, error) {
+	value, found, err := unstructured.NestedFieldNoCopy(obj, fields...)
+	if err != nil || !found {
+		return 0, found, err
+	}
+
+	switch v := value.(type) {
+	case int:
+		return v, true, nil
+	case int32:
+		return int(v), true, nil
+	case int64:
+		return int(v), true, nil
+	case float32:
+		return int(v), true, nil
+	case float64:
+		return int(v), true, nil
+	default:
+		return 0, true, fmt.Errorf("field %q is non-numeric type %T", fields, value)
+	}
 }
 
 // getSchedulingPodGroupName extracts schedulingGroup.podGroupName from a pod.

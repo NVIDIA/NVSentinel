@@ -497,8 +497,9 @@ rules:
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
   # Additional rules based on gang discoverer:
-  # Native K8s 1.36 schedulingGroup: scheduling.k8s.io/podgroups (get)
-  # Native K8s 1.35 workloadRef: scheduling.k8s.io/workloads (get)
+  # Default native K8s discovery:
+  #   - K8s 1.36 schedulingGroup: scheduling.k8s.io/podgroups (get/list/watch)
+  #   - K8s 1.35 workloadRef: scheduling.k8s.io/workloads (get/list/watch)
   # Volcano: scheduling.volcano.sh/podgroups (get)
   # Kueue: kueue.x-k8s.io/workloads (get)
 ```
@@ -785,7 +786,7 @@ All GPU pods in listed namespaces get the configured checks.
 - Requires DCGM hostengine DaemonSet for diag checks
 - Webhook downtime blocks pod creation (if `failurePolicy: Fail`)
 - NCCL tests require network device plugins (InfiniBand/RDMA) to be configured
-- Gang-wide NCCL tests require a gang discovery source (native K8s 1.35+ `workloadRef`, native K8s 1.36+ `schedulingGroup`, or a configured PodGroup-style scheduler)
+- Gang-wide NCCL tests require a gang discovery source (native K8s 1.35 `workloadRef`, native K8s 1.36+ `schedulingGroup`, or a configured PodGroup-style scheduler)
 
 ### Mitigations
 - **Latency**: Use DCGM level 1 (~30s) vs level 2 (~2-3min); skip expensive checks for non-critical workloads
