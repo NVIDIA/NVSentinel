@@ -14,14 +14,12 @@ products:
     slug: /
     path: ../docs/index.yml
     versions:
-      # display-name is stamped by publish-fern-docs.yml at publish time
-      - display-name: "Latest"
-        path: ../docs/index.yml
-        slug: latest
-        availability: stable
+      # The newest entry is stamped "Latest · vX.Y.Z" by publish-fern-docs.yml at publish time.
+      # All versions serve frozen content from their git tag.
       - display-name: v1.6.0
         path: versions/v1.6.0.yml
         slug: v1.6.0
+        availability: stable
       - display-name: v1.5.1
         path: versions/v1.5.1.yml
         slug: v1.5.1
@@ -37,12 +35,10 @@ products:
 redirects:
   - source: "/nvsentinel/index.html"
     destination: "/nvsentinel/"
-  - source: "/nvsentinel/dev/"
-    destination: "/nvsentinel/latest/"
-  - source: "/nvsentinel/dev"
-    destination: "/nvsentinel/latest/"
-  - source: "/nvsentinel/dev/index.html"
-    destination: "/nvsentinel/latest/"
+  - source: "/nvsentinel/latest/:path*"
+    destination: "/nvsentinel/:path*"
+  - source: "/nvsentinel/dev/:path*"
+    destination: "/nvsentinel/:path*"
 # GitHub repository link in navbar
 navbar-links:
   - type: github
