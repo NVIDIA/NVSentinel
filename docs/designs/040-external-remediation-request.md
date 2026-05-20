@@ -330,13 +330,13 @@ sequenceDiagram
     ND->>FR: drained event
     FR->>ERR: create (spec = HealthEvent)
     RC->>N: apply release taint + set monitoring.active=false label
-    Note over HM,N: DaemonSet monitors evicted;<br/>cluster-scope monitors skip this node
+    Note over HM,N: DaemonSet monitors evicted, cluster-scope monitors skip this node
     RC->>ERR: NVSentinelOwnershipReleased=True
     Note over EXT: external system watches ERR, sees OwnershipReleased
     EXT->>N: perform remediation (RMA, manual fix, …)
     EXT->>ERR: ExternalRemediationComplete=True/False
     RC->>N: remove release taint + remove monitoring.active label
-    Note over HM,N: DaemonSet monitors re-scheduled;<br/>cluster-scope monitors resume emitting
+    Note over HM,N: DaemonSet monitors re-scheduled, cluster-scope monitors resume emitting
     HM->>FQ: subsequent HealthEvent (healthy or unhealthy)
     Note over FQ,N: FQ acts normally now that release taint is gone
 ```
