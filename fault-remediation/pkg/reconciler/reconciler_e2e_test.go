@@ -29,7 +29,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -440,6 +442,11 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		require.NoError(t, err)
 		assert.Contains(t, state.EquivalenceGroups, "restart")
 		assert.NotEmpty(t, state.EquivalenceGroups["restart"].MaintenanceCR)
+		assert.Equal(t, protos.RecommendedAction_RESTART_BM.String(), state.EquivalenceGroups["restart"].ActionName)
+		assert.Equal(t, "janitor.dgxc.nvidia.com", state.EquivalenceGroups["restart"].ApiGroup)
+		assert.Equal(t, "v1alpha1", state.EquivalenceGroups["restart"].Version)
+		assert.Equal(t, "RebootNode", state.EquivalenceGroups["restart"].Kind)
+		assert.Empty(t, state.EquivalenceGroups["restart"].Namespace)
 		assert.WithinDuration(t, time.Now(), state.EquivalenceGroups["restart"].CreatedAt, 5*time.Second)
 
 		// Verify CR was actually created
@@ -1129,6 +1136,120 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	_ = testDynamic.Resource(rebootNodeGVR).Delete(ctx, crName1, metav1.DeleteOptions{})
 	_ = testDynamic.Resource(gpuResetGVR).Delete(ctx, crName2, metav1.DeleteOptions{})
 	_ = testDynamic.Resource(gpuResetGVR).Delete(ctx, crName3, metav1.DeleteOptions{})
+}
+
+func TestExistingCRStatusUsesStoredGVKAnnotation_E2E(t *testing.T) {
+	ctx := testContext
+
+	nodeName := "test-node-stored-gvk-e2e"
+	createTestNode(ctx, nodeName, nil, map[string]string{"test": "label"})
+	defer func() {
+		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	rebootNodeGVR := schema.GroupVersionResource{
+		Group:    "janitor.dgxc.nvidia.com",
+		Version:  "v1alpha1",
+		Resource: "rebootnodes",
+	}
+	gpuResetGVR := schema.GroupVersionResource{
+		Group:    "janitor.dgxc.nvidia.com",
+		Version:  "v1alpha1",
+		Resource: "gpuresets",
+	}
+	existingCRName := "maintenance-" + nodeName + "-existing"
+
+	existingRebootNode := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "janitor.dgxc.nvidia.com/v1alpha1",
+		"kind":       "RebootNode",
+		"metadata": map[string]interface{}{
+			"name": existingCRName,
+		},
+		"spec": map[string]interface{}{
+			"nodeName": nodeName,
+			"force":    false,
+		},
+	}}
+	_, err := testDynamic.Resource(rebootNodeGVR).Create(ctx, existingRebootNode, metav1.CreateOptions{})
+	require.NoError(t, err)
+	defer func() {
+		_ = testDynamic.Resource(rebootNodeGVR).Delete(ctx, existingCRName, metav1.DeleteOptions{})
+		_ = testDynamic.Resource(gpuResetGVR).Delete(ctx, "maintenance-"+nodeName+"-event-uses-stored-gvk",
+			metav1.DeleteOptions{})
+	}()
+
+	driftedRemediationActions := map[string]config.MaintenanceResource{
+		protos.RecommendedAction_RESTART_BM.String(): {
+			ApiGroup:              "janitor.dgxc.nvidia.com",
+			Version:               "v1alpha1",
+			Kind:                  "GPUReset",
+			TemplateFileName:      "gpureset-template.yaml",
+			CompleteConditionType: "NodeReady",
+			EquivalenceGroup:      "restart",
+		},
+	}
+	remediationClient, err := createTestRemediationClient(false, driftedRemediationActions)
+	require.NoError(t, err)
+
+	cfg := ReconcilerConfig{
+		RemediationClient: remediationClient,
+		StateManager:      statemanager.NewStateManager(testClient),
+		UpdateMaxRetries:  3,
+		UpdateRetryDelay:  100 * time.Millisecond,
+	}
+	r := &FaultRemediationReconciler{
+		Config:            cfg,
+		annotationManager: cfg.RemediationClient.GetAnnotationManager(),
+	}
+
+	err = r.annotationManager.UpdateRemediationState(
+		ctx,
+		nodeName,
+		"restart",
+		existingCRName,
+		protos.RecommendedAction_RESTART_BM.String(),
+		annotation.MaintenanceResourceReference{
+			ApiGroup: "janitor.dgxc.nvidia.com",
+			Version:  "v1alpha1",
+			Kind:     "RebootNode",
+		},
+	)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		state, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
+		if err != nil {
+			return false
+		}
+
+		groupState, ok := state.EquivalenceGroups["restart"]
+		return ok && groupState.MaintenanceCR == existingCRName && groupState.Kind == "RebootNode"
+	}, 5*time.Second, 100*time.Millisecond, "stored RebootNode reference should be visible before handling event")
+
+	healthEventDoc := &events.HealthEventDoc{
+		ID: "event-uses-stored-gvk",
+		HealthEventWithStatus: model.HealthEventWithStatus{
+			CreatedAt: time.Now(),
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          nodeName,
+				RecommendedAction: protos.RecommendedAction_RESTART_BM,
+			},
+			HealthEventStatus: &protos.HealthEventStatus{},
+		},
+	}
+
+	_, err = r.handleRemediationEvent(ctx, healthEventDoc, datastore.EventWithToken{}, nil, &MockHealthEventStore{})
+	require.NoError(t, err)
+
+	state, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
+	require.NoError(t, err)
+	require.Contains(t, state.EquivalenceGroups, "restart")
+	assert.Equal(t, existingCRName, state.EquivalenceGroups["restart"].MaintenanceCR)
+	assert.Equal(t, "RebootNode", state.EquivalenceGroups["restart"].Kind)
+
+	_, err = testDynamic.Resource(gpuResetGVR).Get(ctx, "maintenance-"+nodeName+"-event-uses-stored-gvk",
+		metav1.GetOptions{})
+	assert.True(t, apierrors.IsNotFound(err),
+		"current config points at GPUReset, but stored RebootNode reference should suppress creation")
 }
 
 // TestFullReconcilerWithMockedMongoDB tests the entire reconciler flow
