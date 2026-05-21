@@ -1001,7 +1001,24 @@ func (r *FaultRemediationReconciler) evaluateExistingCR(
 	nodeName string,
 ) existingCRDecision {
 	crName := groupState.state.MaintenanceCR
-	crState := statusChecker.GetCRState(ctx, groupState.state.ActionName, crName)
+
+	resourceRef, ok := resourceReferenceFromState(groupState.state)
+	if !ok {
+		slog.WarnContext(ctx, "Stored remediation state is missing CR GVK, allowing retry",
+			"node", nodeName, "crName", crName, "group", groupState.name)
+
+		return existingCRDecision{shouldCreate: true, removeGroup: true}
+	}
+
+	completeConditionType, ok := r.completeConditionTypeForStoredState(groupState.state)
+	if !ok {
+		slog.WarnContext(ctx, "Stored remediation state has no completion condition config, allowing retry",
+			"node", nodeName, "crName", crName, "group", groupState.name, "action", groupState.state.ActionName)
+
+		return existingCRDecision{shouldCreate: true, removeGroup: true}
+	}
+
+	crState := statusChecker.GetCRStateForReference(ctx, crName, resourceRef, completeConditionType)
 
 	switch crState {
 	case crstatus.CRStateInProgress:
@@ -1019,6 +1036,42 @@ func (r *FaultRemediationReconciler) evaluateExistingCR(
 
 		return existingCRDecision{shouldCreate: true, removeGroup: true}
 	}
+}
+
+func resourceReferenceFromState(
+	groupState annotation.EquivalenceGroupState,
+) (annotation.MaintenanceResourceReference, bool) {
+	resourceRef := annotation.MaintenanceResourceReference{
+		Namespace: groupState.Namespace,
+		Version:   groupState.Version,
+		ApiGroup:  groupState.ApiGroup,
+		Kind:      groupState.Kind,
+	}
+	if resourceRef.ApiGroup == "" || resourceRef.Version == "" || resourceRef.Kind == "" {
+		return annotation.MaintenanceResourceReference{}, false
+	}
+
+	return resourceRef, true
+}
+
+func (r *FaultRemediationReconciler) completeConditionTypeForStoredState(
+	groupState annotation.EquivalenceGroupState,
+) (string, bool) {
+	if r.Config.RemediationClient == nil {
+		return "", false
+	}
+
+	remediationConfig := r.Config.RemediationClient.GetConfig()
+	if remediationConfig == nil {
+		return "", false
+	}
+
+	resource, exists := remediationConfig.RemediationActions[groupState.ActionName]
+	if !exists {
+		return "", false
+	}
+
+	return resource.CompleteConditionType, true
 }
 
 func (r *FaultRemediationReconciler) evaluateSucceededCR(

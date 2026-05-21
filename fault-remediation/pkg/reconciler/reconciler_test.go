@@ -45,6 +45,7 @@ type MockK8sClient struct {
 	runLogCollectorJobFn      func(ctx context.Context, nodeName string) (ctrl.Result, error)
 	annotationManagerOverride annotation.NodeAnnotationManagerInterface
 	mockStatusChecker         *mockStatusChecker
+	configOverride            *config.TomlConfig
 }
 
 func (m *MockK8sClient) CreateMaintenanceResource(ctx context.Context, healthEventData *events.HealthEventData, groupConfig *common.EquivalenceGroupConfig) (string, error) {
@@ -64,11 +65,12 @@ func (m *MockK8sClient) GetStatusChecker() crstatus.CRStatusCheckerInterface {
 }
 
 type mockStatusChecker struct {
-	getCRStateFn func(context.Context, string, string) crstatus.CRState
-	shouldSkip   []bool
-	states       []crstatus.CRState
-	stateByCR    map[string]crstatus.CRState
-	callCount    int
+	getCRStateFn             func(context.Context, string, string) crstatus.CRState
+	getCRStateForReferenceFn func(context.Context, string, annotation.MaintenanceResourceReference, string) crstatus.CRState
+	shouldSkip               []bool
+	states                   []crstatus.CRState
+	stateByCR                map[string]crstatus.CRState
+	callCount                int
 }
 
 func (statusChecker *mockStatusChecker) ShouldSkipCRCreation(context.Context, string, string) bool {
@@ -80,6 +82,23 @@ func (statusChecker *mockStatusChecker) GetCRState(ctx context.Context, actionNa
 		return statusChecker.getCRStateFn(ctx, actionName, crName)
 	}
 
+	return statusChecker.nextState(crName)
+}
+
+func (statusChecker *mockStatusChecker) GetCRStateForReference(
+	ctx context.Context,
+	crName string,
+	resourceRef annotation.MaintenanceResourceReference,
+	completeConditionType string,
+) crstatus.CRState {
+	if statusChecker.getCRStateForReferenceFn != nil {
+		return statusChecker.getCRStateForReferenceFn(ctx, crName, resourceRef, completeConditionType)
+	}
+
+	return statusChecker.nextState(crName)
+}
+
+func (statusChecker *mockStatusChecker) nextState(crName string) crstatus.CRState {
 	if statusChecker.stateByCR != nil {
 		return statusChecker.stateByCR[crName]
 	}
@@ -105,19 +124,25 @@ func (statusChecker *mockStatusChecker) GetCRState(ctx context.Context, actionNa
 }
 
 func (m *MockK8sClient) GetConfig() *config.TomlConfig {
+	if m.configOverride != nil {
+		return m.configOverride
+	}
+
 	return &config.TomlConfig{
 		RemediationActions: map[string]config.MaintenanceResource{
 			protos.RecommendedAction_RESTART_BM.String(): {
-				EquivalenceGroup: "restart",
-				ApiGroup:         "janitor.dgxc.nvidia.com",
-				Version:          "v1alpha1",
-				Kind:             "RebootNode",
+				EquivalenceGroup:      "restart",
+				ApiGroup:              "janitor.dgxc.nvidia.com",
+				Version:               "v1alpha1",
+				Kind:                  "RebootNode",
+				CompleteConditionType: "NodeReady",
 			},
 			protos.RecommendedAction_COMPONENT_RESET.String(): {
-				EquivalenceGroup: "restart",
-				ApiGroup:         "janitor.dgxc.nvidia.com",
-				Version:          "v1alpha1",
-				Kind:             "RebootNode",
+				EquivalenceGroup:      "restart",
+				ApiGroup:              "janitor.dgxc.nvidia.com",
+				Version:               "v1alpha1",
+				Kind:                  "RebootNode",
+				CompleteConditionType: "NodeReady",
 			},
 		},
 	}
@@ -184,10 +209,17 @@ func (m *MockNodeAnnotationManager) GetRemediationState(ctx context.Context, nod
 		if createdAtForGroup, ok := m.createdByGroup[groupName]; ok {
 			groupCreatedAt = createdAtForGroup
 		}
+		actionName := m.actionByGroup[groupName]
+		if actionName == "" {
+			actionName = protos.RecommendedAction_RESTART_BM.String()
+		}
 		annotationState.EquivalenceGroups[groupName] = annotation.EquivalenceGroupState{
 			MaintenanceCR: crName,
 			CreatedAt:     groupCreatedAt,
-			ActionName:    m.actionByGroup[groupName],
+			ActionName:    actionName,
+			ApiGroup:      "janitor.dgxc.nvidia.com",
+			Version:       "v1alpha1",
+			Kind:          "RebootNode",
 		}
 	}
 	return annotationState, nil, nil
@@ -1016,11 +1048,15 @@ func TestHandleRemediationEventEnsuresGVKBeforeStatusCheck(t *testing.T) {
 	mockK8sClient := &MockK8sClient{
 		annotationManagerOverride: mockAnnotationManager,
 		mockStatusChecker: &mockStatusChecker{
-			getCRStateFn: func(_ context.Context, actionName string, crName string) crstatus.CRState {
+			getCRStateForReferenceFn: func(_ context.Context, crName string,
+				resourceRef annotation.MaintenanceResourceReference, completeConditionType string) crstatus.CRState {
 				statusChecked = true
 				assert.True(t, ensureCalled, "GVK annotation should be ensured before CR status checks")
-				assert.Equal(t, protos.RecommendedAction_RESTART_BM.String(), actionName)
 				assert.Equal(t, "existing-cr", crName)
+				assert.Equal(t, "janitor.dgxc.nvidia.com", resourceRef.ApiGroup)
+				assert.Equal(t, "v1alpha1", resourceRef.Version)
+				assert.Equal(t, "RebootNode", resourceRef.Kind)
+				assert.Equal(t, "NodeReady", completeConditionType)
 
 				return crstatus.CRStateInProgress
 			},
@@ -1047,6 +1083,53 @@ func TestHandleRemediationEventEnsuresGVKBeforeStatusCheck(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, ensureCalled)
 	assert.True(t, statusChecked)
+}
+
+func TestEvaluateExistingCRUsesStoredReference(t *testing.T) {
+	ctx := context.Background()
+	statusChecker := &mockStatusChecker{
+		getCRStateForReferenceFn: func(_ context.Context, crName string,
+			resourceRef annotation.MaintenanceResourceReference, completeConditionType string) crstatus.CRState {
+			assert.Equal(t, "stored-cr", crName)
+			assert.Equal(t, "stored.example.com", resourceRef.ApiGroup)
+			assert.Equal(t, "v9", resourceRef.Version)
+			assert.Equal(t, "StoredMaintenance", resourceRef.Kind)
+			assert.Equal(t, "stored-namespace", resourceRef.Namespace)
+			assert.Equal(t, "NodeReady", completeConditionType)
+
+			return crstatus.CRStateInProgress
+		},
+	}
+	mockK8sClient := &MockK8sClient{
+		mockStatusChecker: statusChecker,
+		configOverride: &config.TomlConfig{
+			RemediationActions: map[string]config.MaintenanceResource{
+				protos.RecommendedAction_RESTART_BM.String(): {
+					ApiGroup:              "config.example.com",
+					Version:               "v1",
+					Kind:                  "ConfigMaintenance",
+					Namespace:             "config-namespace",
+					CompleteConditionType: "NodeReady",
+				},
+			},
+		},
+	}
+	r := NewFaultRemediationReconciler(nil, nil, nil, ReconcilerConfig{RemediationClient: mockK8sClient}, false)
+
+	decision := r.evaluateExistingCR(ctx, statusChecker, namedEquivalenceGroupState{
+		name: "restart",
+		state: annotation.EquivalenceGroupState{
+			MaintenanceCR: "stored-cr",
+			ActionName:    protos.RecommendedAction_RESTART_BM.String(),
+			ApiGroup:      "stored.example.com",
+			Version:       "v9",
+			Kind:          "StoredMaintenance",
+			Namespace:     "stored-namespace",
+		},
+	}, time.Now(), "test-node")
+
+	assert.False(t, decision.shouldCreate)
+	assert.Equal(t, "stored-cr", decision.crName)
 }
 
 func TestCRBasedDeduplication(t *testing.T) {

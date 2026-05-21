@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 )
 
@@ -65,31 +66,55 @@ func (c *CRStatusChecker) GetCRState(ctx context.Context, actionName string, crN
 		return CRStateNotFound
 	}
 
+	resourceRef := annotation.MaintenanceResourceReference{
+		Namespace: resource.Namespace,
+		Version:   resource.Version,
+		ApiGroup:  resource.ApiGroup,
+		Kind:      resource.Kind,
+	}
+
+	return c.GetCRStateForReference(ctx, crName, resourceRef, resource.CompleteConditionType)
+}
+
+func (c *CRStatusChecker) GetCRStateForReference(
+	ctx context.Context,
+	crName string,
+	resourceRef annotation.MaintenanceResourceReference,
+	completeConditionType string,
+) CRState {
 	if c.dryRun {
-		slog.InfoContext(ctx, "DRY-RUN: CR doesn't exist (dry-run mode)", "crName", crName, "action", actionName)
+		slog.InfoContext(ctx, "DRY-RUN: CR doesn't exist (dry-run mode)", "crName", crName)
 		return CRStateNotFound
 	}
 
 	gvk := schema.GroupVersionKind{
-		Group:   resource.ApiGroup,
-		Version: resource.Version,
-		Kind:    resource.Kind,
+		Group:   resourceRef.ApiGroup,
+		Version: resourceRef.Version,
+		Kind:    resourceRef.Kind,
+	}
+	if gvk.Group == "" || gvk.Version == "" || gvk.Kind == "" {
+		slog.WarnContext(ctx, "Stored CR reference is missing GVK, allowing create", "crName", crName)
+		return CRStateNotFound
 	}
 
 	obj := &unstructured.Unstructured{}
 	obj.SetGroupVersionKind(gvk)
 
-	key := client.ObjectKey{Name: crName, Namespace: resource.Namespace}
+	key := client.ObjectKey{Name: crName, Namespace: resourceRef.Namespace}
 
 	if err := c.client.Get(ctx, key, obj); err != nil {
 		slog.WarnContext(ctx, "Failed to get CR, allowing create", "crName", crName, "gvk", gvk.String(), "error", err)
 		return CRStateNotFound
 	}
 
-	return c.checkCondition(obj, resource)
+	return c.checkConditionType(obj, completeConditionType)
 }
 
 func (c *CRStatusChecker) checkCondition(obj *unstructured.Unstructured, resource config.MaintenanceResource) CRState {
+	return c.checkConditionType(obj, resource.CompleteConditionType)
+}
+
+func (c *CRStatusChecker) checkConditionType(obj *unstructured.Unstructured, completeConditionType string) CRState {
 	status, found, err := unstructured.NestedMap(obj.Object, "status")
 	if err != nil || !found {
 		return CRStateInProgress
@@ -100,7 +125,7 @@ func (c *CRStatusChecker) checkCondition(obj *unstructured.Unstructured, resourc
 		return CRStateInProgress
 	}
 
-	conditionStatus := c.findConditionStatus(conditions, resource.CompleteConditionType)
+	conditionStatus := c.findConditionStatus(conditions, completeConditionType)
 
 	switch conditionStatus {
 	case "True":

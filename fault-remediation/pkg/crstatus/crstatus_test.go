@@ -15,11 +15,14 @@
 package crstatus
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 )
 
@@ -119,4 +122,45 @@ func TestCheckCondition(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestGetCRStateForReferenceUsesStoredReference(t *testing.T) {
+	storedCR := &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "stored.example.com/v9",
+			"kind":       "StoredMaintenance",
+			"metadata": map[string]any{
+				"name":      "stored-cr",
+				"namespace": "stored-namespace",
+			},
+			"status": map[string]any{
+				"conditions": []any{
+					map[string]any{
+						"type":   "NodeReady",
+						"status": "True",
+					},
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithObjects(storedCR).Build()
+	checker := NewCRStatusChecker(fakeClient, map[string]config.MaintenanceResource{
+		"RESTART_BM": {
+			ApiGroup:              "config.example.com",
+			Version:               "v1",
+			Kind:                  "ConfigMaintenance",
+			Namespace:             "config-namespace",
+			CompleteConditionType: "NodeReady",
+		},
+	}, false)
+
+	state := checker.GetCRStateForReference(context.Background(), "stored-cr", annotation.MaintenanceResourceReference{
+		ApiGroup:  "stored.example.com",
+		Version:   "v9",
+		Kind:      "StoredMaintenance",
+		Namespace: "stored-namespace",
+	}, "NodeReady")
+
+	assert.Equal(t, CRStateSucceeded, state)
 }
