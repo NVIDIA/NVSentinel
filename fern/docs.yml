@@ -6,6 +6,7 @@
 instances:
   - url: nvsentinel.docs.buildwithfern.com/nvsentinel
     custom-domain: docs.nvidia.com/nvsentinel
+    multi-source: true
 
 title: NVIDIA NVSentinel Documentation
 

@@ -39,7 +39,7 @@ jobs:
       github.event.pull_request.user.login == 'dependabot[bot]' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.event.pull_request.head.ref, 'dependabot/go_modules/')
-    runs-on: linux-amd64-cpu8
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: read
