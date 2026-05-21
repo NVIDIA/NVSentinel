@@ -55,7 +55,7 @@ type Config struct {
 	// AuthToken, when non-empty, requires every /mcp request to carry an
 	// "Authorization: Bearer <token>" header. Empty disables auth (only
 	// appropriate for in-cluster networking with NetworkPolicy enforcement).
-	AuthToken string
+	AuthToken string `json:"-"`
 
 	// Store is the read-only health-event view tools depend on. Required.
 	Store store.Reader
