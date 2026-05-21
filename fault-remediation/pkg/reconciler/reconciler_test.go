@@ -65,24 +65,11 @@ func (m *MockK8sClient) GetStatusChecker() crstatus.CRStatusCheckerInterface {
 }
 
 type mockStatusChecker struct {
-	getCRStateFn             func(context.Context, string, string) crstatus.CRState
 	getCRStateForReferenceFn func(context.Context, string, annotation.MaintenanceResourceReference, string) crstatus.CRState
 	shouldSkip               []bool
 	states                   []crstatus.CRState
 	stateByCR                map[string]crstatus.CRState
 	callCount                int
-}
-
-func (statusChecker *mockStatusChecker) ShouldSkipCRCreation(context.Context, string, string) bool {
-	return statusChecker.GetCRState(context.Background(), "", "") != crstatus.CRStateFailed
-}
-
-func (statusChecker *mockStatusChecker) GetCRState(ctx context.Context, actionName string, crName string) crstatus.CRState {
-	if statusChecker.getCRStateFn != nil {
-		return statusChecker.getCRStateFn(ctx, actionName, crName)
-	}
-
-	return statusChecker.nextState(crName)
 }
 
 func (statusChecker *mockStatusChecker) GetCRStateForReference(

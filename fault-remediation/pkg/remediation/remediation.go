@@ -127,7 +127,6 @@ func NewRemediationClient(
 
 	ctrlRuntimeRemediationClient.statusChecker = crstatus.NewCRStatusChecker(
 		client,
-		remediationConfig.RemediationActions,
 		dryRun,
 	)
 

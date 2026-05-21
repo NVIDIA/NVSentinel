@@ -23,18 +23,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
-	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 )
 
 func TestCheckCondition(t *testing.T) {
-	testResource := config.MaintenanceResource{
-		CompleteConditionType: "Completed",
-	}
-	cfg := map[string]config.MaintenanceResource{
-		"test": testResource,
-	}
+	completeConditionType := "Completed"
 
-	checker := NewCRStatusChecker(nil, cfg, false)
+	checker := NewCRStatusChecker(nil, false)
 
 	tests := []struct {
 		name     string
@@ -118,7 +112,7 @@ func TestCheckCondition(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := checker.checkCondition(tt.cr, testResource)
+			result := checker.checkConditionType(tt.cr, completeConditionType)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -145,15 +139,7 @@ func TestGetCRStateForReferenceUsesStoredReference(t *testing.T) {
 	}
 
 	fakeClient := fake.NewClientBuilder().WithObjects(storedCR).Build()
-	checker := NewCRStatusChecker(fakeClient, map[string]config.MaintenanceResource{
-		"RESTART_BM": {
-			ApiGroup:              "config.example.com",
-			Version:               "v1",
-			Kind:                  "ConfigMaintenance",
-			Namespace:             "config-namespace",
-			CompleteConditionType: "NodeReady",
-		},
-	}, false)
+	checker := NewCRStatusChecker(fakeClient, false)
 
 	state := checker.GetCRStateForReference(context.Background(), "stored-cr", annotation.MaintenanceResourceReference{
 		ApiGroup:  "stored.example.com",

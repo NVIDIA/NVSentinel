@@ -23,13 +23,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
-	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 )
 
 type CRStatusChecker struct {
-	client             client.Client
-	remediationActions map[string]config.MaintenanceResource
-	dryRun             bool
+	client client.Client
+	dryRun bool
 }
 
 type CRState string
@@ -43,37 +41,12 @@ const (
 
 func NewCRStatusChecker(
 	client client.Client,
-	remediationActions map[string]config.MaintenanceResource,
 	dryRun bool,
 ) *CRStatusChecker {
 	return &CRStatusChecker{
-		client:             client,
-		remediationActions: remediationActions,
-		dryRun:             dryRun,
+		client: client,
+		dryRun: dryRun,
 	}
-}
-
-// ShouldSkipCRCreation returns true if an existing CR should suppress creation of a new CR.
-func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, actionName string, crName string) bool {
-	state := c.GetCRState(ctx, actionName, crName)
-	return state == CRStateInProgress || state == CRStateSucceeded
-}
-
-func (c *CRStatusChecker) GetCRState(ctx context.Context, actionName string, crName string) CRState {
-	resource, exists := c.remediationActions[actionName]
-	if !exists {
-		slog.ErrorContext(ctx, "No remediation configuration found for action", "action", actionName)
-		return CRStateNotFound
-	}
-
-	resourceRef := annotation.MaintenanceResourceReference{
-		Namespace: resource.Namespace,
-		Version:   resource.Version,
-		ApiGroup:  resource.ApiGroup,
-		Kind:      resource.Kind,
-	}
-
-	return c.GetCRStateForReference(ctx, crName, resourceRef, resource.CompleteConditionType)
 }
 
 func (c *CRStatusChecker) GetCRStateForReference(
@@ -108,10 +81,6 @@ func (c *CRStatusChecker) GetCRStateForReference(
 	}
 
 	return c.checkConditionType(obj, completeConditionType)
-}
-
-func (c *CRStatusChecker) checkCondition(obj *unstructured.Unstructured, resource config.MaintenanceResource) CRState {
-	return c.checkConditionType(obj, resource.CompleteConditionType)
 }
 
 func (c *CRStatusChecker) checkConditionType(obj *unstructured.Unstructured, completeConditionType string) CRState {
