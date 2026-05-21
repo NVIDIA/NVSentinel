@@ -6,18 +6,24 @@
 instances:
   - url: nvsentinel.docs.buildwithfern.com/nvsentinel
     custom-domain: docs.nvidia.com/nvsentinel
+
 title: NVIDIA NVSentinel Documentation
+
+global-theme: nvidia
+
 metadata:
   canonical-host: "docs.nvidia.com/nvsentinel"
+
 products:
   - display-name: NVSentinel
     slug: /
     path: ../docs/index.yml
     versions:
-      # display-name is stamped by publish-fern-docs.yml at publish time
-      - display-name: "Latest"
-        path: ../docs/index.yml
-        slug: latest
+      # The newest entry is stamped "Latest · vX.Y.Z" by publish-fern-docs.yml at publish time.
+      # All versions serve frozen content from their git tag.
+      - display-name: v1.6.0
+        path: versions/v1.6.0.yml
+        slug: v1.6.0
         availability: stable
       - display-name: v1.5.1
         path: versions/v1.5.1.yml
@@ -31,50 +37,19 @@ products:
         path: versions/v1.3.0.yml
         slug: v1.3.0
         availability: stable
+
 redirects:
   - source: "/nvsentinel/index.html"
     destination: "/nvsentinel/"
-  - source: "/nvsentinel/dev/"
-    destination: "/nvsentinel/latest/"
-  - source: "/nvsentinel/dev"
-    destination: "/nvsentinel/latest/"
-  - source: "/nvsentinel/dev/index.html"
-    destination: "/nvsentinel/latest/"
-# GitHub repository link in navbar
+  - source: "/nvsentinel/latest/:path*"
+    destination: "/nvsentinel/:path*"
+  - source: "/nvsentinel/dev/:path*"
+    destination: "/nvsentinel/:path*"
+
+logo:
+  href: /nvsentinel
+  right-text: Documentation
+
 navbar-links:
   - type: github
     value: https://github.com/NVIDIA/NVSentinel
-footer: ./components/CustomFooter.tsx
-layout:
-  searchbar-placement: header
-  page-width: 1376px
-  sidebar-width: 248px
-  content-width: 812px
-  tabs-placement: header
-  hide-feedback: true
-experimental:
-  mdx-components:
-    - ./components
-  basepath-aware: true
-colors:
-  accentPrimary:
-    dark: '#76B900'
-    light: '#76B900'
-  background:
-    light: '#FFFFFF'
-    dark: '#000000'
-theme:
-  page-actions: toolbar
-  footer-nav: minimal
-logo:
-  dark: ./assets/NVIDIA_dark.svg
-  light: ./assets/NVIDIA_light.svg
-  height: 20
-  href: /nvsentinel
-  right-text: Documentation
-favicon: ./assets/NVIDIA_symbol.svg
-js:
-  - url: https://assets.adobedtm.com/5d4962a43b79/c1061d2c5e7b/launch-191c2462b890.min.js
-    strategy: beforeInteractive
-css:
-  - ./main.css

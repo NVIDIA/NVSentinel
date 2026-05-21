@@ -140,7 +140,7 @@ Deletes the KIND cluster and cleans up local Docker images.
    - Annotates nodes with cordon reason (skips if already set by another controller)
    - Waits for scheduler signals (pod conditions)
    - Deletes pods after confirmation
-   - Removes annotation if it was set by slinky-drainer (identified by `[J] [NVSentinel]` prefix)
+   - Removes annotation if it was set by slinky-drainer (identified by `[T] [NVSentinel]` prefix)
    - Updates CR status
 
 2. **Mock Slurm Operator** (`plugins/mock-slurm-operator/`)

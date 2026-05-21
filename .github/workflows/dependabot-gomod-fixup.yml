@@ -1,0 +1,144 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Purpose: normalize Dependabot Go module updates so CI can merge clean dependency-only PRs.
+# Contract: only runs for same-repository Dependabot gomod PRs, refuses non-go.mod/go.sum
+# changes, and only commits generated Go module cleanup.
+
+name: Dependabot Go Mod Fixup
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gomod-fixup:
+    name: Sync Go module files
+    if: >
+      github.repository == 'nvidia/nvsentinel' &&
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'dependabot/go_modules/')
+    runs-on: linux-amd64-cpu8
+    permissions:
+      contents: write
+      pull-requests: read
+    timeout-minutes: 30
+    steps:
+      - name: Guard dependency-only PR
+        id: dependency-only
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          script: |
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+
+            const disallowed = files
+              .map((file) => file.filename)
+              .filter((name) => !/(^|\/)go\.(mod|sum)$/.test(name));
+
+            if (disallowed.length > 0) {
+              core.notice(`Skipping gomod fixup because this PR changes non-module files: ${disallowed.join(', ')}`);
+              core.setOutput('skip', 'true');
+              return;
+            }
+
+            core.setOutput('skip', 'false');
+
+      - name: Checkout Dependabot branch
+        if: steps.dependency-only.outputs.skip != 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
+
+      - name: Read Go version
+        if: steps.dependency-only.outputs.skip != 'true'
+        id: go-version
+        run: |
+          GO_VERSION=$(awk -F"'" '/^[[:space:]]*go:/ { print $2; exit }' .versions.yaml)
+          echo "version=${GO_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        if: steps.dependency-only.outputs.skip != 'true'
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00  # v6.0.0
+        with:
+          go-version: ${{ steps.go-version.outputs.version }}
+          cache: true
+          cache-dependency-path: |
+            **/go.sum
+            **/go.mod
+
+      - name: Sync and tidy Go modules
+        if: steps.dependency-only.outputs.skip != 'true'
+        run: |
+          make dependencies-sync
+
+          for attempt in 1 2 3; do
+            make go-mod-tidy-all
+            if make gomod-lint; then
+              exit 0
+            fi
+            echo "go.mod validation still needed cleanup after attempt ${attempt}; retrying"
+          done
+
+          make gomod-lint
+
+      - name: Guard generated changes
+        if: steps.dependency-only.outputs.skip != 'true'
+        run: |
+          changed=$(git status --porcelain --untracked-files=no)
+          if [ -z "$changed" ]; then
+            echo "No Go module fixup changes needed."
+            exit 0
+          fi
+
+          bad=$(git diff --name-only | grep -Ev '(^|/)go\.(mod|sum)$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::Refusing to commit non-module changes:"
+            echo "$bad"
+            exit 1
+          fi
+
+      - name: Commit Go module fixups
+        if: steps.dependency-only.outputs.skip != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if [ -z "$(git status --porcelain --untracked-files=no)" ]; then
+            echo "No Go module fixup changes needed."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -- ':(glob)**/go.mod' ':(glob)**/go.sum'
+          git commit -m "chore: tidy Dependabot Go module updates"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${HEAD_REF}"
