@@ -18,14 +18,15 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"testing"
+	"time"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"testing"
-	"time"
 )
 
 func TestGetRemediationState(t *testing.T) {
@@ -140,6 +141,12 @@ func TestUpdateRemediationState(t *testing.T) {
 	crName := "reboot"
 	nodeName := "node"
 	actionName := "reboot-action"
+	resourceRef := MaintenanceResourceReference{
+		Namespace: "dgxc-janitor",
+		Version:   "v1alpha1",
+		ApiGroup:  "janitor.dgxc.nvidia.com",
+		Kind:      "RebootNode",
+	}
 	node := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        nodeName,
@@ -150,7 +157,7 @@ func TestUpdateRemediationState(t *testing.T) {
 	annotationManager := NodeAnnotationManager{
 		client: client,
 	}
-	err := annotationManager.UpdateRemediationState(context.TODO(), nodeName, group, crName, actionName)
+	err := annotationManager.UpdateRemediationState(context.TODO(), nodeName, group, crName, actionName, resourceRef)
 	assert.NoError(t, err)
 
 	state, _, err := annotationManager.GetRemediationState(context.TODO(), nodeName)
@@ -159,6 +166,102 @@ func TestUpdateRemediationState(t *testing.T) {
 	assert.Contains(t, state.EquivalenceGroups, group)
 	assert.Equal(t, crName, state.EquivalenceGroups[group].MaintenanceCR)
 	assert.Equal(t, actionName, state.EquivalenceGroups[group].ActionName)
+	assert.Equal(t, resourceRef.Namespace, state.EquivalenceGroups[group].Namespace)
+	assert.Equal(t, resourceRef.Version, state.EquivalenceGroups[group].Version)
+	assert.Equal(t, resourceRef.ApiGroup, state.EquivalenceGroups[group].ApiGroup)
+	assert.Equal(t, resourceRef.Kind, state.EquivalenceGroups[group].Kind)
+}
+
+func TestEnsureRemediationStateGVKBackfillsLegacyState(t *testing.T) {
+	nodeName := "node"
+	createdAt := time.Now().Add(-time.Hour).UTC()
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: nodeName,
+			Annotations: map[string]string{
+				AnnotationKey: fmt.Sprintf(`{
+				  "equivalenceGroups": {
+					"restart": {
+					  "maintenanceCR": "reboot-cr",
+					  "createdAt": "%s",
+					  "actionName": "RESTART_BM"
+					}
+				  }
+				}`, createdAt.Format(time.RFC3339Nano)),
+			},
+		},
+	}
+
+	resourceRef := MaintenanceResourceReference{
+		Namespace: "dgxc-janitor",
+		Version:   "v1alpha1",
+		ApiGroup:  "janitor.dgxc.nvidia.com",
+		Kind:      "RebootNode",
+	}
+	client := fake.NewClientBuilder().WithObjects(node).Build()
+	annotationManager := NodeAnnotationManager{client: client}
+
+	err := annotationManager.EnsureRemediationStateGVK(context.TODO(), nodeName, map[string]MaintenanceResourceReference{
+		"RESTART_BM": resourceRef,
+	})
+	require.NoError(t, err)
+
+	state, _, err := annotationManager.GetRemediationState(context.TODO(), nodeName)
+	require.NoError(t, err)
+
+	groupState := state.EquivalenceGroups["restart"]
+	assert.Equal(t, "reboot-cr", groupState.MaintenanceCR)
+	assert.Equal(t, "RESTART_BM", groupState.ActionName)
+	assert.Equal(t, createdAt.Unix(), groupState.CreatedAt.Unix())
+	assert.Equal(t, resourceRef.Namespace, groupState.Namespace)
+	assert.Equal(t, resourceRef.Version, groupState.Version)
+	assert.Equal(t, resourceRef.ApiGroup, groupState.ApiGroup)
+	assert.Equal(t, resourceRef.Kind, groupState.Kind)
+}
+
+func TestEnsureRemediationStateGVKDoesNotOverwriteExistingReference(t *testing.T) {
+	nodeName := "node"
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: nodeName,
+			Annotations: map[string]string{
+				AnnotationKey: `{
+				  "equivalenceGroups": {
+					"restart": {
+					  "maintenanceCR": "reboot-cr",
+					  "actionName": "RESTART_BM",
+					  "namespace": "old-namespace",
+					  "apiGroup": "old.example.com",
+					  "version": "v1",
+					  "kind": "OldKind"
+					}
+				  }
+				}`,
+			},
+		},
+	}
+
+	client := fake.NewClientBuilder().WithObjects(node).Build()
+	annotationManager := NodeAnnotationManager{client: client}
+
+	err := annotationManager.EnsureRemediationStateGVK(context.TODO(), nodeName, map[string]MaintenanceResourceReference{
+		"RESTART_BM": {
+			Namespace: "new-namespace",
+			Version:   "v2",
+			ApiGroup:  "new.example.com",
+			Kind:      "NewKind",
+		},
+	})
+	require.NoError(t, err)
+
+	state, _, err := annotationManager.GetRemediationState(context.TODO(), nodeName)
+	require.NoError(t, err)
+
+	groupState := state.EquivalenceGroups["restart"]
+	assert.Equal(t, "old-namespace", groupState.Namespace)
+	assert.Equal(t, "old.example.com", groupState.ApiGroup)
+	assert.Equal(t, "v1", groupState.Version)
+	assert.Equal(t, "OldKind", groupState.Kind)
 }
 
 func TestClearRemediationState(t *testing.T) {
@@ -290,9 +393,11 @@ func TestConcurrentUpdateAndRemoveGroupsFromState(t *testing.T) {
 	const iterations = 100
 	for i := 0; i < iterations; i++ {
 		// Reset state each iteration
-		err := annotationManager.UpdateRemediationState(context.TODO(), nodeName, "existing-group-1", "old-cr-1", "RESTART_BM")
+		err := annotationManager.UpdateRemediationState(context.TODO(), nodeName, "existing-group-1", "old-cr-1",
+			"RESTART_BM", MaintenanceResourceReference{})
 		require.NoError(t, err)
-		err = annotationManager.UpdateRemediationState(context.TODO(), nodeName, "existing-group-2", "old-cr-2", "COMPONENT_RESET")
+		err = annotationManager.UpdateRemediationState(context.TODO(), nodeName, "existing-group-2", "old-cr-2",
+			"COMPONENT_RESET", MaintenanceResourceReference{})
 		require.NoError(t, err)
 
 		var wg sync.WaitGroup
@@ -305,7 +410,8 @@ func TestConcurrentUpdateAndRemoveGroupsFromState(t *testing.T) {
 
 		go func() {
 			defer wg.Done()
-			_ = annotationManager.UpdateRemediationState(context.TODO(), nodeName, "new-group", "new-cr", "COMPONENT_RESET")
+			_ = annotationManager.UpdateRemediationState(context.TODO(), nodeName, "new-group", "new-cr",
+				"COMPONENT_RESET", MaintenanceResourceReference{})
 		}()
 
 		wg.Wait()

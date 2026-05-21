@@ -220,7 +220,8 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, 
 	templateData := templateDataFromEvent(healthEvent, healthEventID, traceID, tracing.SpanIDFromSpan(span),
 		recommendedActionName, groupConfig.ImpactedEntityScopeValue, maintenanceResource)
 
-	actualCRName, err := c.createMaintenanceCR(ctx, selectedTemplate, templateData, actionKey, node, healthEventData)
+	actualCRName, resourceRef, err := c.createMaintenanceCR(ctx, selectedTemplate, templateData, actionKey, node,
+		healthEventData)
 	if err != nil {
 		tracing.RecordError(span, err)
 		span.SetAttributes(
@@ -232,7 +233,7 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, 
 	}
 
 	if err := c.updateRemediationAnnotationIfNeeded(ctx, healthEvent.NodeName, groupConfig.EffectiveEquivalenceGroup,
-		actualCRName, recommendedActionName); err != nil {
+		actualCRName, recommendedActionName, resourceRef); err != nil {
 		tracing.RecordError(span, err)
 		span.SetAttributes(
 			attribute.String("fault_remediation.error.type", "update_remediation_annotation_error"),
@@ -273,7 +274,7 @@ func templateDataFromEvent(healthEvent *protos.HealthEvent, healthEventID, trace
 // createMaintenanceCR renders the template, sets owner ref, and creates the maintenance CR.
 func (c *FaultRemediationClient) createMaintenanceCR(ctx context.Context, selectedTemplate *template.Template,
 	templateData TemplateData, actionKey string, node *corev1.Node, healthEventData *events.HealthEventData,
-) (string, error) {
+) (string, annotation.MaintenanceResourceReference, error) {
 	ctx, span := tracing.StartSpan(ctx, "fault_remediation.create_maintenance_cr")
 	defer span.End()
 
@@ -291,7 +292,20 @@ func (c *FaultRemediationClient) createMaintenanceCR(ctx context.Context, select
 		)
 		slog.ErrorContext(ctx, "Failed to render maintenance template", "template", actionKey, "error", err)
 
-		return "", fmt.Errorf("error rendering maintenance template: %w", err)
+		return "", annotation.MaintenanceResourceReference{}, fmt.Errorf("error rendering maintenance template: %w", err)
+	}
+
+	resourceRef, err := maintenanceResourceReferenceFromObject(maintenance)
+	if err != nil {
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("fault_remediation.error.type", "rendered_maintenance_reference_error"),
+			attribute.String("fault_remediation.error.message", err.Error()),
+		)
+		slog.ErrorContext(ctx, "Rendered maintenance template is missing resource identity",
+			"template", actionKey, "error", err)
+
+		return "", annotation.MaintenanceResourceReference{}, err
 	}
 
 	slog.DebugContext(ctx, "Generated YAML from template", "template", actionKey, "yaml", yamlStr)
@@ -309,7 +323,7 @@ func (c *FaultRemediationClient) createMaintenanceCR(ctx context.Context, select
 			slog.InfoContext(ctx, "Maintenance CR already exists for node, treating as success",
 				"CR", maintenance.GetName(), "node", healthEventData.HealthEvent.NodeName)
 
-			return maintenance.GetName(), nil
+			return maintenance.GetName(), resourceRef, nil
 		}
 
 		tracing.RecordError(span, err)
@@ -318,7 +332,7 @@ func (c *FaultRemediationClient) createMaintenanceCR(ctx context.Context, select
 			attribute.String("fault_remediation.error.message", err.Error()),
 		)
 
-		return "", fmt.Errorf("failed to create maintenance CR: %w", err)
+		return "", annotation.MaintenanceResourceReference{}, fmt.Errorf("failed to create maintenance CR: %w", err)
 	} else if healthEventData.HealthEventStatus != nil && healthEventData.HealthEventStatus.DrainFinishTimestamp != nil {
 		duration := time.Since(healthEventData.HealthEventStatus.DrainFinishTimestamp.AsTime()).Seconds()
 		if duration > 0 {
@@ -332,13 +346,33 @@ func (c *FaultRemediationClient) createMaintenanceCR(ctx context.Context, select
 	slog.InfoContext(ctx, "Created Maintenance CR successfully",
 		"crName", maintenance.GetName(), "node", healthEventData.HealthEvent.NodeName, "template", actionKey)
 
-	return maintenance.GetName(), nil
+	return maintenance.GetName(), resourceRef, nil
+}
+
+func maintenanceResourceReferenceFromObject(
+	maintenance *unstructured.Unstructured,
+) (annotation.MaintenanceResourceReference, error) {
+	gvk := maintenance.GroupVersionKind()
+	resourceRef := annotation.MaintenanceResourceReference{
+		Namespace: maintenance.GetNamespace(),
+		Version:   gvk.Version,
+		ApiGroup:  gvk.Group,
+		Kind:      gvk.Kind,
+	}
+	if resourceRef.ApiGroup == "" || resourceRef.Version == "" || resourceRef.Kind == "" {
+		return annotation.MaintenanceResourceReference{}, fmt.Errorf(
+			"rendered maintenance CR must set apiVersion group, version, and kind",
+		)
+	}
+
+	return resourceRef, nil
 }
 
 // updateRemediationAnnotationIfNeeded updates node remediation state when equivalence group
 // and annotation manager are set.
 func (c *FaultRemediationClient) updateRemediationAnnotationIfNeeded(ctx context.Context, nodeName string,
 	effectiveEquivalenceGroup string, actualCRName, recommendedActionName string,
+	resourceRef annotation.MaintenanceResourceReference,
 ) error {
 	if effectiveEquivalenceGroup == "" || c.annotationManager == nil {
 		return nil
@@ -354,7 +388,7 @@ func (c *FaultRemediationClient) updateRemediationAnnotationIfNeeded(ctx context
 	)
 
 	err := c.annotationManager.UpdateRemediationState(ctx, nodeName, effectiveEquivalenceGroup,
-		actualCRName, recommendedActionName)
+		actualCRName, recommendedActionName, resourceRef)
 	if err != nil {
 		slog.WarnContext(ctx, "Failed to update node annotation", "node", nodeName, "error", err)
 		tracing.RecordError(span, err)

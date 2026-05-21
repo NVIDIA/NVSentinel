@@ -41,6 +41,7 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/events"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/metrics"
@@ -468,6 +469,19 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 		return res, err
 	}
 
+	if err := r.ensureRemediationStateGVK(ctx, nodeName); err != nil {
+		metrics.ProcessingErrors.WithLabelValues("annotation_gvk_update_error", nodeName).Inc()
+		slog.ErrorContext(ctx, "Error ensuring remediation state GVK annotation", "node", nodeName, "error", err)
+
+		span.SetAttributes(
+			attribute.String("fault_remediation.error.type", "annotation_gvk_update_error"),
+			attribute.String("fault_remediation.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
+
+		return ctrl.Result{}, fmt.Errorf("error ensuring remediation state GVK annotation: %w", err)
+	}
+
 	shouldCreateCR, existingCR, existingCRRemediated, err := r.checkExistingCRStatus(ctx, healthEvent,
 		healthEventWithStatus.CreatedAt, groupConfig)
 	if err != nil {
@@ -501,6 +515,40 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 	metrics.EventsProcessed.WithLabelValues(metrics.CRStatusCreated, nodeName).Inc()
 
 	return r.markProcessedOrError(ctx, watcherInstance, eventWithToken, nodeName)
+}
+
+func (r *FaultRemediationReconciler) ensureRemediationStateGVK(ctx context.Context, nodeName string) error {
+	if r.annotationManager == nil || r.Config.RemediationClient == nil {
+		return nil
+	}
+
+	remediationConfig := r.Config.RemediationClient.GetConfig()
+	if remediationConfig == nil || len(remediationConfig.RemediationActions) == 0 {
+		return nil
+	}
+
+	resourceRefs := maintenanceResourceReferences(remediationConfig.RemediationActions)
+	if len(resourceRefs) == 0 {
+		return nil
+	}
+
+	return r.annotationManager.EnsureRemediationStateGVK(ctx, nodeName, resourceRefs)
+}
+
+func maintenanceResourceReferences(
+	remediationActions map[string]config.MaintenanceResource,
+) map[string]annotation.MaintenanceResourceReference {
+	resourceRefs := make(map[string]annotation.MaintenanceResourceReference, len(remediationActions))
+	for actionName, resource := range remediationActions {
+		resourceRefs[actionName] = annotation.MaintenanceResourceReference{
+			Namespace: resource.Namespace,
+			Version:   resource.Version,
+			ApiGroup:  resource.ApiGroup,
+			Kind:      resource.Kind,
+		}
+	}
+
+	return resourceRefs
 }
 
 // trySkipEvent returns (result, err, true) when the event should be skipped; otherwise (zero, nil, false).
