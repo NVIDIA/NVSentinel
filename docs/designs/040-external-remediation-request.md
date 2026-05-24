@@ -23,10 +23,10 @@ Introduce a new CRD, `ExternalRemediationRequest` (ERR), in the existing `nvsent
 - Created by `fault-remediation` when triage maps a fault to the `CUSTOM` recommended action (per [ADR-036](036-custom-remediation-actions.md)) with a `customRecommendedAction` configured to produce an ERR.
 - The ERR's `spec.healthEvent` carries the triaged `HealthEvent` — the same `datamodels.HealthEvent` proto already emitted by every health-monitor and consumed by every downstream stage. `spec` is a small wrapper struct so future ERR-specific fields can be added without modifying the `HealthEvent` proto.
 - The ERR reconciler applies a release taint to the target node and sets `NVSentinelOwnershipReleased=True`. From that moment, an external system is responsible for the node.
-- The external system, observing the ERR, performs its remediation and writes `ExternalRemediationComplete=True` (success) or `False` (failure) back to the ERR's status.
-- The ERR reconciler removes the release taint and restores the node label that gates health-monitor scheduling/emission (see *Controlling health event generation* below) on either terminal value, returning the node to NVSentinel ownership and re-enabling monitor observation.
+- The external system, observing the ERR, performs its remediation and writes `ExternalRemediationComplete=True` (success) or `False` (failure / gave up) back to the ERR's status.
+- On `True`, the ERR reconciler removes the release taint and restores the node label that gates health-monitor scheduling/emission (see *Controlling health event generation* below), returning the node to NVSentinel ownership. On `False`, the ERR reconciler intentionally leaves the node released — when the external system has stopped, NVSentinel has no signal about what state the node was left in, so returning it to user workloads on that signal would be unsafe. The ERR stays live; the external system may resume work and patch `True` later, or an operator may force release via `kubectl delete err` (handled by a cleanup finalizer on every ERR).
 
-Coordination state lives in `status.conditions` only. The ERR object is the single coordination artifact between NVSentinel and the external party for the duration of the handoff.
+Coordination state lives in `status.conditions` only. The ERR object is the single coordination artifact between NVSentinel and the external party for the duration of the handoff. A cleanup finalizer (`nvsentinel.nvidia.com/external-remediation-cleanup`) on every ERR guarantees that operator-initiated `kubectl delete err` always returns the node to NVSentinel cleanly.
 
 ## Implementation
 
@@ -130,6 +130,8 @@ apiVersion: nvsentinel.nvidia.com/v1alpha1
 kind: ExternalRemediationRequest
 metadata:
   creationTimestamp: "2026-05-11T21:16:02Z"
+  finalizers:
+    - nvsentinel.nvidia.com/external-remediation-cleanup
   generation: 1
   labels:
     nvsentinel.nvidia.com/component-class: gpu
@@ -179,21 +181,19 @@ status:
 
 ### Condition state machine
 
-`True` and `False` are **terminal** states for both conditions. Conditions in flight are represented by `Unknown`; once a condition lands on `True` (the named state has been achieved) or `False` (it cannot be achieved), it does not transition again for the same generation. This matches the convention already established by `RebootNode`, `GPUReset`, and `TerminateNode`.
-
-The reconciler calls `SetInitialConditions` on first reconcile, writing every condition as `Unknown` with `reason: Initializing` (modelled after `janitor/api/v1alpha1/rebootnode_types.go`).
+`True` and `False` are terminal states for both conditions, with one explicit exception described below. Conditions in flight are represented by `Unknown`; the reconciler calls `SetInitialConditions` on first reconcile, writing every condition as `Unknown` with `reason: Initializing` (modelled after `janitor/api/v1alpha1/rebootnode_types.go`).
 
 | Condition | Initial | Terminal `True` | Terminal `False` | Set by |
 | --- | --- | --- | --- | --- |
-| `NVSentinelOwnershipReleased` | `Unknown` (`Initializing`) | Release taint applied to `spec.healthEvent.nodeName` | Persistent failure to apply taint (e.g. unrecoverable API-server error such as a missing RBAC grant) | ERR reconciler |
-| `ExternalRemediationComplete` | `Unknown` (`AwaitingExternalSystem`) | External system reports remediation succeeded | External system reports remediation failed (e.g. RMA declined, repair unsuccessful, external system gave up) | **External system** |
+| `NVSentinelOwnershipReleased` | `Unknown` (`Initializing`) | Release taint applied to `spec.healthEvent.nodeName`. Strictly terminal — does not transition again. | Persistent failure to apply taint (e.g. unrecoverable API-server error such as a missing RBAC grant). Strictly terminal. | ERR reconciler |
+| `ExternalRemediationComplete` | `Unknown` (`AwaitingExternalSystem`) | External system reports remediation succeeded. Strictly terminal. ERR reconciler runs node-cleanup on this transition. | External system reports remediation failed or gave up. **Not strictly terminal** — see the re-transition note below. | **External system** |
 
-Both `True` and `False` on `ExternalRemediationComplete` are meaningful, terminal outcomes from the external system's perspective. The ERR reconciler treats them symmetrically: remove the release taint, restore `monitoring.active=true` (re-enabling monitor scheduling and emission — see *Controlling health event generation* below), and leave the rest of the system to handle whatever follows. Specifically:
+The behaviour on `ExternalRemediationComplete` is intentionally asymmetric:
 
-- On `True`: the external system has reported success. Once monitor pods are re-scheduled (typically within seconds of the label restoration), NVSentinel's health-monitors observe the node and either emit a healthy event (clearing fault-quarantine state and returning the node to service) or re-detect the same fault (re-triggering the pipeline and producing a fresh ERR).
-- On `False`: the external system has reported "I tried, couldn't fix it." The same downstream path applies once monitors resume — they decide. If the underlying fault is still present, a new ERR will be produced via the standard pipeline. If the fault is gone (the external system gave up but the issue resolved separately), the node returns to service naturally.
+- **On `True`**: the external system has reported success. The ERR reconciler removes the release taint and restores `monitoring.active=true`, returning the node to NVSentinel ownership. Once monitor pods are re-scheduled (typically within seconds), health-monitors either emit a healthy event (clearing fault-quarantine state and returning the node to service) or re-detect the same fault (re-triggering the pipeline and producing a fresh ERR).
+- **On `False`**: the external system has reported failure or has stopped. The ERR reconciler **does nothing** to the node — the release taint stays, `monitoring.active` stays `"false"`, the node remains released. NVSentinel does not attempt to return the node to regular service on `False`; the external system may have left the node in an arbitrary state (mid-RMA, partial repair, etc.) that would be unsafe for user workloads. The ERR remains live, claiming the node, until either the external system retries (see below) or an operator forces release (see *Operator-driven release* in the ERR reconciler section).
 
-This is symmetric to how the existing `RebootNode` / `GPUReset` CRs interact with the rest of the system: a failed remediation is followed either by re-detection (if the fault persists) or by silent recovery (if it doesn't). No special action is needed from the ERR reconciler beyond removing the taint and restoring the label.
+**Re-transition exception (`False` → `True`).** Because `False` indicates the external system has stopped *but might come back*, the external system may patch `ExternalRemediationComplete=False` → `True` later if they end up fixing the node. The ERR reconciler observes the change and runs the normal `True` cleanup path. This is the only allowed re-transition in this design: `True` never transitions, `NVSentinelOwnershipReleased` is strictly terminal in both directions.
 
 All conditions are append-or-update in place via the `SetCondition` helper, which short-circuits no-op updates so reconcile storms don't flap `lastTransitionTime`.
 
@@ -203,8 +203,18 @@ All conditions are append-or-update in place via the `SetCondition` helper, whic
 
 **Reconcile loop:**
 
-1. On first reconcile, call `SetInitialConditions`: write `NVSentinelOwnershipReleased=Unknown (Initializing)` and `ExternalRemediationComplete=Unknown (AwaitingExternalSystem)`.
-2. If `NVSentinelOwnershipReleased` is `Unknown`:
+1. On first reconcile:
+   - Ensure the finalizer `nvsentinel.nvidia.com/external-remediation-cleanup` is present on `metadata.finalizers`. Add it if absent. This is what gates operator-initiated deletion through the cleanup path described in *Operator-driven release* below.
+   - Call `SetInitialConditions`: write `NVSentinelOwnershipReleased=Unknown (Initializing)` and `ExternalRemediationComplete=Unknown (AwaitingExternalSystem)`.
+2. If `metadata.deletionTimestamp` is set (operator-initiated delete):
+   - In a **single PATCH** against `spec.healthEvent.nodeName`, both:
+     - Remove the release taint if present (idempotent; verify key AND value match this ERR's name).
+     - Set the `nvsentinel.dgxc.nvidia.com/monitoring.active` label back to `"true"`.
+
+     The PATCH is a no-op if the node was already cleaned up by an earlier `ExternalRemediationComplete=True` transition.
+   - Remove the finalizer. Once removed, Kubernetes garbage-collects the ERR.
+   - Done.
+3. If `NVSentinelOwnershipReleased` is `Unknown`:
    - In a **single PATCH** against `spec.healthEvent.nodeName`, both:
      - Apply the configured release taint (idempotent).
      - Set the `nvsentinel.dgxc.nvidia.com/monitoring.active` label to `"false"` (flipped from its default `"true"`), gating health-monitor scheduling and emission — see *Controlling health event generation* below.
@@ -212,14 +222,17 @@ All conditions are append-or-update in place via the `SetCondition` helper, whic
      Combining the two mutations into one API call eliminates the inconsistency window where the node would carry one but not the other.
    - On success: set `NVSentinelOwnershipReleased=True` with `reason=ReleaseTaintApplied`.
    - On persistent failure: set `NVSentinelOwnershipReleased=False` with `reason=ReleaseTaintFailed`. The ERR is now in a terminal failed state; no further reconciliation work, but the object remains so the failure is visible to operators. Transient errors continue to retry via the standard controller-runtime backoff.
-3. If `ExternalRemediationComplete` has resolved to `True` or `False` (either terminal):
+4. If `ExternalRemediationComplete=True`:
    - In a **single PATCH** against `spec.healthEvent.nodeName`, both:
      - Remove the release taint (idempotent; tolerate missing taint). Verify both key AND value match this ERR's name on the taint before removing — protects against drift from a previous, no-longer-existing ERR.
      - Set the `nvsentinel.dgxc.nvidia.com/monitoring.active` label back to `"true"`, restoring the default value managed by `node-labeler` — see *Controlling health event generation* below.
 
      Atomicity matters in this direction too — no window where the taint is gone but the label still holds monitors off, or vice versa.
-   - Done; no further work.
-4. Otherwise (`ExternalRemediationComplete` is still `Unknown`): no-op until the external system writes a terminal value.
+   - Done. The ERR remains in the cluster as a historical record (finalizer still attached). The operator can delete it whenever they no longer need the record; the deletion-handling step above runs idempotently and removes the finalizer.
+5. If `ExternalRemediationComplete=False`:
+   - **No state changes on the node.** The release taint stays; `monitoring.active` stays `"false"`. The node remains released to the external system, which may continue working on it.
+   - Done for now. The reconciler re-enters either when the external system patches `ExternalRemediationComplete=True` (in which case step 4 fires), or when the operator deletes the ERR (in which case step 2 fires).
+6. Otherwise (`ExternalRemediationComplete` is still `Unknown`): no-op until the external system writes a terminal value.
 
 **Release taint** (key configurable via Helm values):
 
@@ -235,7 +248,17 @@ The taint is the *single source of truth* for "this node is not owned by NVSenti
 
 **Idempotency:** taint application uses a server-side patch. The ERR reconciler verifies both key AND value match its own ERR name before treating the taint as "its own" — protecting against drift from a previous, no-longer-existing ERR.
 
-**Node deletion:** if `spec.healthEvent.nodeName` no longer exists at reconcile time, the reconciler logs and treats the taint operation as complete. The ERR object remains until the external system writes a terminal value to `ExternalRemediationComplete`; if the external system never acknowledges, the ERR persists with `ExternalRemediationComplete=Unknown` (visible via the open-ERR gauge — see Observability).
+**Node deletion:** if `spec.healthEvent.nodeName` no longer exists at reconcile time, the reconciler logs and treats taint and label operations as no-ops. The ERR object remains until the external system writes `ExternalRemediationComplete=True` or until an operator deletes it. If the external system never acknowledges, the ERR persists with `ExternalRemediationComplete=Unknown` (visible via the open-ERR gauge — see Observability); the operator escape hatch below is how that state is reclaimed.
+
+**Operator-driven release.** Because `ExternalRemediationComplete=False` (or persistent `Unknown`) intentionally leaves the node released — NVSentinel does not infer that the external system has given up — there must be an explicit operator-facing knob to force the node back into NVSentinel ownership. The mechanism is a finalizer (`nvsentinel.nvidia.com/external-remediation-cleanup`) added to every ERR by the reconciler on first reconcile. The operator-facing workflow:
+
+```bash
+kubectl delete err <name> -n nvsentinel
+```
+
+When the operator runs this command, Kubernetes sets `metadata.deletionTimestamp` on the ERR but does not garbage-collect it because the finalizer is present. The reconciler observes the `deletionTimestamp`, runs the cleanup PATCH against the node (remove release taint, restore `monitoring.active=true`) — idempotent against state from an earlier `ExternalRemediationComplete=True` transition — and then removes the finalizer. Kubernetes garbage-collects the ERR once the finalizer is gone.
+
+The finalizer makes the cleanup PATCH a controlled, traceable transition rather than a silent side effect of object deletion. It also defends against accidental `kubectl delete --all err` — every deletion goes through the reconciler, gets logged, and emits a `ReleaseTaintRemoved` event with the operator-initiated reason. This is the only way to reclaim a node held by a stalled or failed ERR; the design intentionally provides no automatic timeout.
 
 ### Controlling health event generation
 
@@ -326,7 +349,7 @@ ERR construction details:
 **Equivalence-group integration.** ERR creation goes through the same `latestFaultRemediationState`-annotation + `ShouldSkipCRCreation` machinery as existing maintenance CRs (`RebootNode`, `GPUReset`, etc.) — see `fault-remediation/pkg/reconciler/reconciler.go` `shouldCreateCRForGroup`. Two pieces are added:
 
 1. **Equivalence group declared in the TOML config** for the external-remediation action, e.g. `equivalenceGroup: "external-remediation"`. Cross-kind supersedence (e.g. `external-remediation` superseded by `restart`, or vice versa) can be declared the same way as today, so a node with an in-flight `RebootNode` does not get a concurrent ERR, and a node with an in-flight ERR does not get a concurrent maintenance CR. The `external-remediation` action MUST NOT declare an `impactedEntityScope`; the release taint is node-scoped, so only one ERR can hold ownership of a node at a time. Per-component differentiation via `impactedEntityScope` (the way `GPUReset` does it) would produce multiple concurrent ERRs whose taints would collide. With the monitor-teardown mechanism in place (see *Controlling health event generation* below), NVSentinel's monitors aren't producing events for a released node anyway — but if events arrive from outside the standard pipeline while an ERR is open, they resolve to the same `external-remediation` equivalence group and are skipped at `fault-remediation`. Once monitor pods resume after terminal completion and the label is restored, any underlying faults that remain are re-detected and produce a fresh ERR through the standard pipeline.
-2. **A status checker for `ExternalRemediationRequest`** plugging into the existing `StatusChecker` interface: returns `ShouldSkip=true` when the ERR's `ExternalRemediationComplete` condition is `Unknown` (in-flight); `false` once it is terminal (`True` or `False`), at which point the entry is pruned from the annotation as usual.
+2. **A status checker for `ExternalRemediationRequest`** plugging into the existing `StatusChecker` interface: returns `ShouldSkip=true` while the ERR is still claiming the node — `ExternalRemediationComplete=Unknown` (in-flight) **or** `ExternalRemediationComplete=False` (failed-but-still-released, see *Condition state machine*). Returns `ShouldSkip=false` only when `ExternalRemediationComplete=True`, at which point the entry is pruned from the `latestFaultRemediationState` annotation as usual. If the operator deletes the ERR via the finalizer escape hatch, the ERR object disappears entirely and the corresponding annotation entry is treated as missing on the next reconcile — same effect.
 
 This gets the "single active ERR per node" invariant for free — it falls out of the existing skip logic, no bespoke deduplication code in the ERR reconciler.
 
@@ -357,11 +380,18 @@ sequenceDiagram
     RC->>ERR: NVSentinelOwnershipReleased=True
     Note over EXT: external system watches ERR, sees OwnershipReleased
     EXT->>N: perform remediation (RMA, manual fix, …)
-    EXT->>ERR: ExternalRemediationComplete=True/False
-    RC->>N: remove release taint + set monitoring.active=true (single PATCH)
-    Note over HM,N: DaemonSet monitors re-scheduled, cluster-scope monitors resume emitting
-    HM->>FQ: subsequent HealthEvent (healthy or unhealthy)
-    Note over FQ,N: FQ acts normally now that release taint is gone
+    alt external system succeeds
+        EXT->>ERR: ExternalRemediationComplete=True
+        RC->>N: remove release taint + set monitoring.active=true (single PATCH)
+        Note over HM,N: DaemonSet monitors re-scheduled, cluster-scope monitors resume emitting
+        HM->>FQ: subsequent HealthEvent (healthy or unhealthy)
+        Note over FQ,N: FQ acts normally now that release taint is gone
+    else external system fails or stalls
+        EXT->>ERR: ExternalRemediationComplete=False (or never set)
+        Note over RC,N: no node mutation, release taint stays, monitors stay off
+        Note over EXT: external system may retry later by patching back to True
+        Note over ERR: operator can force release via kubectl delete err
+    end
 ```
 
 ### Observability
@@ -370,16 +400,16 @@ sequenceDiagram
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
-| `err_total` | Counter | `phase` (`created`, `released`, `completed`); `result` (`success`, `failure`; empty when `phase=created`) | ERRs entered each phase. `released` with `result=failure` indicates a persistent taint-apply failure (`NVSentinelOwnershipReleased=False`); `completed` with `result=failure` indicates the external system reported `ExternalRemediationComplete=False`. |
-| `err_open` | Gauge | `node`, `recommended_action` | Open ERRs — `ExternalRemediationComplete=Unknown`, neither succeeded nor failed yet. Operators alert on persistence (an ERR open longer than the expected external-remediation SLO) and on aggregate counts (>N nodes simultaneously released to external systems may itself warrant attention). |
-| `err_age_seconds` | Histogram | `recommended_action`, `result` (`success`, `failure`) | Time from ERR creation to terminal `ExternalRemediationComplete`. Tracked separately for success and failure resolutions so operators can see SLO distributions for each outcome. |
+| `err_total` | Counter | `phase` (`created`, `released`, `external_response`, `closed`); `result` (`success`, `failure`, `operator_deleted`; empty when `phase=created`) | ERRs entered each phase. `released` with `result=failure` indicates a persistent taint-apply failure (`NVSentinelOwnershipReleased=False`). `external_response` is incremented whenever the external system writes to `ExternalRemediationComplete` — `result=success` on `True`, `result=failure` on `False`. `closed` counts terminal transitions that returned the node to NVSentinel — `result=success` for `ExternalRemediationComplete=True` driven cleanup, `result=operator_deleted` for finalizer-driven cleanup after `kubectl delete err`. Note that `ExternalRemediationComplete=False` does NOT advance to `closed` on its own — the node remains released. |
+| `err_open` | Gauge | `node`, `recommended_action`, `state` (`awaiting`, `failed`) | ERRs currently claiming a node — release taint applied, `monitoring.active=false`, node held outside NVSentinel ownership. `state=awaiting` corresponds to `ExternalRemediationComplete=Unknown` (external system has not responded yet); `state=failed` corresponds to `ExternalRemediationComplete=False` (external system reported failure or has stopped). Both states are open from NVSentinel's perspective and both require external-system action (retry → `True`) or operator action (`kubectl delete err`) to release. Operators alert on aggregate `err_open` regardless of state (>N nodes held externally may warrant attention) and on `state=failed` persistence (a failed ERR sitting longer than the expected operator-response SLO indicates a stuck handoff). |
+| `err_age_seconds` | Histogram | `recommended_action`, `result` (`success`, `operator_deleted`) | Time from ERR creation to closure (cleanup PATCH applied, node returned to NVSentinel). `success` covers the `ExternalRemediationComplete=True` driven cleanup path; `operator_deleted` covers the finalizer-driven path. ERRs that the external system marks `False` but the operator never reclaims do not contribute to this histogram — they are visible via `err_open{state="failed"}` instead. |
 | `unknown_remediation_action_total` | Counter | `action` | Health events carrying a `customRecommendedAction` not registered in fault-remediation's config — exposes the "bad action name, no ERR ever produced" case. Emitted by `fault-remediation` itself (the only component with the config) every time `equivalence_groups.go` `GetGroupConfigForEvent` returns its existing "Action not found in remediation configuration" warning. |
 
 In addition to the metrics above, the ERR reconciler exposes `controller_runtime_reconcile_errors_total{controller}` and `controller_runtime_reconcile_total{controller, result}` for free via the controller-runtime library — operators get reconcile-loop error rates and per-controller throughput without further plumbing. The standard kubebuilder dashboards work as-is.
 
 **Events** (Kubernetes events on the ERR object):
 
-- `ReleaseTaintApplied`, `ReleaseTaintFailed`, `ReleaseTaintRemoved`
+- `ReleaseTaintApplied`, `ReleaseTaintFailed`, `ReleaseTaintRemoved` (with reason — `ExternalRemediationComplete=True` driven, or operator-initiated finalizer cleanup), `OperatorDeleteRequested` (emitted when `deletionTimestamp` is first observed, before cleanup runs)
 
 **Tracing:** the ERR reconciler propagates the OTEL span ID from the triaged HealthEvent's `metadata.spanIds` through its reconcile loop, so the full lifecycle from health-monitor emission to ERR completion is observable end-to-end alongside health-monitor-originated events.
 
@@ -441,12 +471,13 @@ In addition to the metrics above, the ERR reconciler exposes `controller_runtime
 
 A node is **owned by NVSentinel** if and only if it does *not* carry any taint with key `nvsentinel.nvidia.com/external-remediation` and effect `NoSchedule`. The taint's *value* identifies the owning `ExternalRemediationRequest` and is used for operator-side discovery; the ownership invariant itself is keyed on the taint's existence, regardless of value. NVSentinel components MUST refuse to take destructive action on a tainted node.
 
+Ownership is transferred back to NVSentinel by exactly two events: (1) the external system writing `ExternalRemediationComplete=True` on the ERR, or (2) an operator running `kubectl delete err <name>` to invoke the finalizer-driven cleanup path. `ExternalRemediationComplete=False` is **not** a transfer event — it signals failure on the external system's side but leaves ownership with them until one of the two transfer events occurs.
+
 ### Failure modes
 
-- **External system never sets `ExternalRemediationComplete`.** No timeout. NVSentinel makes no assumptions about how, when, or whether an external system completes its work. The ERR persists with `ExternalRemediationComplete=Unknown`, the node stays tainted, `err_open` shows the ERR as in-flight for the affected node, and operators are notified via alerts on `err_open` persistence (e.g. an ERR open longer than the expected external-remediation SLO).
-- **External system sets `ExternalRemediationComplete=False`.** A legitimate terminal outcome meaning "I tried, couldn't fix it." Release taint removed and `monitoring.active=true` restored; once monitor pods are re-scheduled (typically within seconds), a persistent fault is re-detected and the pipeline produces a fresh ERR. Self-healing without operator action — same behaviour pattern as a failed `RebootNode` CR.
-- **Node deleted while ERR is open.** ERR reconciler logs and treats taint operations as no-ops. The ERR object remains so the external system can still acknowledge completion (which is then a no-op against the missing node). The ERR is GC'd by the standalone-ERR TTL policy (deferred to a follow-up ADR — see Non-goals).
-- **Multiple distinct faults on a node arriving while an ERR is in flight.** Primary defense is monitor teardown: with `monitoring.active=false` on the node, NVSentinel's own monitors aren't emitting events for it. The equivalence-group skip at `fault-remediation` is a defense-in-depth backstop for any event that does slip through (a final emission during the eviction window, or an event from outside the standard pipeline). Either way, only the first event's `HealthEvent` is captured in the ERR spec. After the ERR completes, the release taint is removed, and `monitoring.active=true` is restored, monitor pods resume — any persistent faults are then re-detected and produce a fresh ERR.
+- **External system stops progressing (never sets `ExternalRemediationComplete`, or sets `ExternalRemediationComplete=False`).** No timeout. NVSentinel intentionally does not return the node to service on its own in either case — when the external system has stopped, NVSentinel has no signal about what state the node was left in (mid-RMA, partial repair, hardware swapped but not validated, …). Returning the node to user workloads on that signal would be unsafe. The ERR therefore stays live, the release taint stays applied, `monitoring.active` stays `"false"`, and the node remains released to the external system, which may resume work and patch `ExternalRemediationComplete=True` if they end up fixing it. From NVSentinel's side, `err_open{state="awaiting"}` (Unknown) and `err_open{state="failed"}` (False) make the situation visible to operators. Operators alert on persistence (an ERR open longer than the expected external-remediation SLO) and use `kubectl delete err <name>` — backed by the finalizer-driven cleanup path (see *Operator-driven release*) — to force the node back into NVSentinel ownership when they have separately confirmed the node is safe to return.
+- **Node deleted while ERR is open.** ERR reconciler logs and treats taint and label operations as no-ops. The ERR object remains so the external system can still acknowledge completion (which is then a no-op against the missing node). Operators can also reclaim the ERR object itself via `kubectl delete err <name>`; the finalizer-driven cleanup path runs cleanly even with the node already gone (the cleanup PATCH no-ops, the finalizer is removed, and the ERR is garbage-collected).
+- **Multiple distinct faults on a node arriving while an ERR is in flight.** Primary defense is monitor teardown: with `monitoring.active=false` on the node, NVSentinel's own monitors aren't emitting events for it. The equivalence-group skip at `fault-remediation` is a defense-in-depth backstop for any event that does slip through (a final emission during the eviction window, or an event from outside the standard pipeline). Either way, only the first event's `HealthEvent` is captured in the ERR spec. Once the ERR is closed — either by `ExternalRemediationComplete=True` driven cleanup or by operator-initiated `kubectl delete err` — the release taint is removed, `monitoring.active=true` is restored, and monitor pods resume. Any persistent faults are then re-detected and produce a fresh ERR through the standard pipeline.
 - **Health event (healthy or unhealthy) arrives at fault-quarantine while an ERR is in flight.** Defense in depth: with monitor teardown in place, this should be rare (most events from NVSentinel's own monitors are stopped at the source). If one does arrive, fault-quarantine's release-taint guard refuses to act on the release-tainted node, regardless of event polarity. The event is stored as a historical record but causes no state change. The ERR remains the only authority for transitioning the node out of "released" state. After the release taint is removed and monitors resume, the next observation drives fault-quarantine's state transition normally.
 
 ### Non-goals
