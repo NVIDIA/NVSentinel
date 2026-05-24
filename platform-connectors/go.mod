@@ -6,7 +6,7 @@ toolchain go1.26.2
 
 require (
 	github.com/golang/protobuf v1.5.4
-	github.com/google/cel-go v0.28.0
+	github.com/google/cel-go v0.28.1
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/nvidia/nvsentinel/data-models v0.0.0
