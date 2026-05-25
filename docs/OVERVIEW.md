@@ -25,7 +25,7 @@ NVSentinel is built as a set of independent modules that coordinate through a sh
 
 **Platform connectors** receive health events via gRPC, validate them, persist them to the data store, and update Kubernetes node conditions.
 
-**Preflight** (optional) is not part of the health-event pipeline. A mutating webhook injects GPU diagnostic init containers at pod admission so bad hardware is caught before the workload starts. Multi-node checks can use **gang discovery** (native Workload API or PodGroup-style schedulers) and ConfigMap coordination. See [Preflight configuration](./configuration/preflight.md) and [ADR-026](./designs/026-preflight-checks.md).
+**Preflight** (optional) is not part of the health-event pipeline. A mutating webhook injects GPU diagnostic init containers at pod admission so bad hardware is caught before the workload starts. Multi-node checks can use **gang discovery** (native Kubernetes gang APIs or PodGroup-style schedulers) and ConfigMap coordination. See [Preflight configuration](./configuration/preflight.md) and [ADR-026](./designs/026-preflight-checks.md).
 
 **Core modules** watch the data store for new events and act independently:
 

@@ -47,7 +47,6 @@ type testEnvContext struct {
 	ctx    context.Context
 }
 
-
 func TestReconcile_FullDrainCycle(t *testing.T) {
 	tc := setupTestEnv(t, "drain-full-cycle")
 
@@ -65,7 +64,7 @@ func TestReconcile_FullDrainCycle(t *testing.T) {
 		Reason:           "GPU has fallen off the bus",
 	})
 
-	assertNodeAnnotation(t, tc, node.Name, "[J] [NVSentinel] 79 GPU:0 - GPU has fallen off the bus")
+	assertNodeAnnotation(t, tc, node.Name, "[T] [NVSentinel] 79 GPU:0 - GPU has fallen off the bus")
 
 	// Simulate DRAINING state: Slurm accepted drain but jobs still running.
 	markPodDraining(t, tc, pod.Name, pod.Namespace)
@@ -80,7 +79,7 @@ func TestReconcile_FullDrainCycle(t *testing.T) {
 	waitForPodDeletion(t, tc, pod.Name, pod.Namespace)
 
 	// Annotation stays while node is still in draining state.
-	assertNodeAnnotation(t, tc, node.Name, "[J] [NVSentinel] 79 GPU:0 - GPU has fallen off the bus")
+	assertNodeAnnotation(t, tc, node.Name, "[T] [NVSentinel] 79 GPU:0 - GPU has fallen off the bus")
 
 	// Simulate remediation success by removing the label (as statemanager would).
 	removeNodeLabel(t, tc, node.Name, nvsentinelStateLabelKey)
@@ -118,7 +117,7 @@ func TestReconcile_DrainingPodNotDeleted(t *testing.T) {
 		Reason:    "GPU has fallen off the bus",
 	})
 
-	assertNodeAnnotation(t, tc, node.Name, "[J] [NVSentinel] 79 - GPU has fallen off the bus")
+	assertNodeAnnotation(t, tc, node.Name, "[T] [NVSentinel] 79 - GPU has fallen off the bus")
 
 	// Set pod to DRAINING: Drain flag set but node is still busy (Allocated).
 	markPodDraining(t, tc, pod.Name, pod.Namespace)

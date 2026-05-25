@@ -1,0 +1,143 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Purpose: keep new issues in the triage queue and infer a first area label.
+# Contract: issue templates and label names should stay aligned with the area/*
+# taxonomy in .github/labeler.yml; manual runs are intentionally unsupported.
+
+name: Issue Triage
+
+on:
+  issues:
+    types: [opened, labeled]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.issue.number || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  triage:
+    name: Auto-triage issues
+    if: github.repository == 'nvidia/nvsentinel'
+    runs-on: linux-amd64-cpu8
+    permissions:
+      contents: read
+      issues: write
+    timeout-minutes: 5
+    steps:
+      - name: Add needs-triage on new issue
+        if: github.event.action == 'opened'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          script: |
+            const labels = context.payload.issue.labels.map((label) => label.name);
+            if (!labels.includes('needs-triage')) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                labels: ['needs-triage'],
+              });
+            }
+
+      - name: Infer area label on new issue
+        if: github.event.action == 'opened'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          script: |
+            const title = context.payload.issue.title || '';
+            const body = context.payload.issue.body || '';
+            const existingLabels = new Set(context.payload.issue.labels.map((label) => label.name));
+
+            const componentLabels = new Map([
+              ['health monitor', 'area/health-monitors'],
+              ['core service', 'area/core'],
+              ['fault management', 'area/fault-management'],
+              ['deployment/config', 'area/deployment'],
+              ['api/interface', 'area/api'],
+              ['preflight', 'area/preflight'],
+              ['plugins', 'area/plugins'],
+            ]);
+
+            const textRules = [
+              { pattern: /\b(syslog|xid|health monitor|dcgm|nic monitor|object monitor|csp monitor)\b/i, label: 'area/health-monitors' },
+              { pattern: /\b(fault|quarantine|remediation|drain|cordon|reset)\b/i, label: 'area/fault-management' },
+              { pattern: /\b(helm|chart|tilt|kind|kubernetes|install|deployment|config|values)\b/i, label: 'area/deployment' },
+              { pattern: /\b(preflight|nccl|dcgm diag)\b/i, label: 'area/preflight' },
+              { pattern: /\b(plugin|slinky|slurm)\b/i, label: 'area/plugins' },
+              { pattern: /\b(api|interface|proto|protobuf)\b/i, label: 'area/api' },
+              { pattern: /\b(ci|workflow|github actions|dependabot)\b/i, label: 'area/ci' },
+              { pattern: /\b(doc|documentation|readme|fern)\b/i, label: 'area/docs' },
+              { pattern: /\b(test|e2e|uat|integration)\b/i, label: 'area/tests' },
+            ];
+
+            function componentFromTemplate() {
+              const match = body.match(/^###\s+(Component|Category)\s*$[\r\n]+(?:[\r\n]*)([^\r\n]+)/im);
+              if (!match) {
+                return null;
+              }
+              return componentLabels.get(match[2].trim().toLowerCase()) || null;
+            }
+
+            function inferFromText(text) {
+              for (const rule of textRules) {
+                if (rule.pattern.test(text)) {
+                  return rule.label;
+                }
+              }
+              return null;
+            }
+
+            let areaLabel = [...existingLabels].find((label) => label.startsWith('area/'));
+            if (!areaLabel) {
+              areaLabel = componentFromTemplate() || inferFromText(`${title}\n${body}`);
+            }
+
+            if (!areaLabel || existingLabels.has(areaLabel)) {
+              return;
+            }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: [areaLabel],
+            });
+
+      - name: Remove needs-triage when triaged
+        if: >-
+          github.event.action == 'labeled' &&
+          github.event.label.name != 'needs-triage'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          script: |
+            const { data: labels } = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const hasNeedsTriage = labels.some((label) => label.name === 'needs-triage');
+            const hasPriority = labels.some((label) => label.name.startsWith('priority/'));
+
+            if (hasNeedsTriage && hasPriority) {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                name: 'needs-triage',
+              });
+            }

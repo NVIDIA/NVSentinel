@@ -1,0 +1,104 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Purpose: apply path-based area labels and a size/* label to PRs.
+# Contract: depends on .github/labeler.yml for path rules and runs from trusted
+# pull-request/[0-9]+ branches copied by copy-pr-bot.
+
+name: Auto-Label PRs
+
+on:
+  push:
+    branches:
+      - "pull-request/[0-9]+"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  label:
+    name: Label PRs
+    if: github.repository == 'nvidia/nvsentinel'
+    runs-on: linux-amd64-cpu8
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    timeout-minutes: 5
+    steps:
+      - name: Extract PR number
+        id: pr
+        run: echo "number=${GITHUB_REF_NAME#pull-request/}" >> "$GITHUB_OUTPUT"
+
+      - name: Label by path
+        uses: actions/labeler@f27b608878404679385c85cfa523b85ccb86e213  # v6.1.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          pr-number: ${{ steps.pr.outputs.number }}
+          sync-labels: false
+
+      - name: Label by size
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: Number('${{ steps.pr.outputs.number }}'),
+            });
+
+            const changes = pr.additions + pr.deletions;
+            let size;
+            if (changes < 10) {
+              size = 'size/XS';
+            } else if (changes < 50) {
+              size = 'size/S';
+            } else if (changes < 200) {
+              size = 'size/M';
+            } else if (changes < 500) {
+              size = 'size/L';
+            } else {
+              size = 'size/XL';
+            }
+
+            const sizeLabels = ['size/XS', 'size/S', 'size/M', 'size/L', 'size/XL'];
+            const { data: labels } = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number('${{ steps.pr.outputs.number }}'),
+            });
+
+            for (const label of labels) {
+              if (sizeLabels.includes(label.name) && label.name !== size) {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: Number('${{ steps.pr.outputs.number }}'),
+                  name: label.name,
+                });
+              }
+            }
+
+            if (!labels.some((label) => label.name === size)) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: Number('${{ steps.pr.outputs.number }}'),
+                labels: [size],
+              });
+            }

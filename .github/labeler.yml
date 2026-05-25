@@ -1,0 +1,81 @@
+# Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Purpose: path rules consumed by actions/labeler in workflows/labeler.yml.
+# Contract: area/* labels here should stay in sync with issue-triage.yml so
+# issue and PR automation use the same taxonomy.
+
+area/ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+          - "scripts/**"
+
+area/docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "fern/**"
+          - "**/*.md"
+
+area/deployment:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "distros/**"
+          - "deployments/**"
+          - "Tiltfile"
+          - ".ctlptl.yaml"
+
+area/health-monitors:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "health-monitors/**"
+
+area/fault-management:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "fault-quarantine/**"
+          - "fault-remediation/**"
+          - "node-drainer/**"
+          - "gpu-reset/**"
+
+area/preflight:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "preflight/**"
+          - "preflight-checks/**"
+
+area/core:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "commons/**"
+          - "data-models/**"
+          - "store-client/**"
+          - "platform-connectors/**"
+
+area/api:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "api/**"
+          - "**/*.proto"
+
+area/plugins:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "plugins/**"
+
+area/tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "tests/**"

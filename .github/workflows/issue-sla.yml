@@ -1,0 +1,149 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Purpose: flag open issues that are outside NVSentinel's issue SLA policy.
+# Contract: priority labels are priority/P0, priority/P1, priority/P2; issues
+# without one of those labels are unprioritized and must be prioritized within
+# seven calendar days. P2 has no fix SLA commitment.
+
+name: Issue SLA Check
+
+on:
+  schedule:
+    - cron: "0 8 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  issue-sla:
+    name: Check issue SLA
+    if: github.repository == 'nvidia/nvsentinel'
+    runs-on: linux-amd64-cpu8
+    permissions:
+      issues: write
+    timeout-minutes: 10
+    steps:
+      - name: Check open issues
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          script: |
+            const msPerDay = 86400000;
+            const now = Date.now();
+            const slaLabel = 'sla/breached';
+            const skipLabels = new Set(['lifecycle/frozen', 'blocked', 'external-dependency']);
+            const prioritySlaDays = new Map([
+              ['priority/P0', 30],
+              ['priority/P1', 183],
+            ]);
+            const priorityLabels = ['priority/P0', 'priority/P1', 'priority/P2'];
+
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+
+            const marker = '<!-- nvsentinel-issue-sla -->';
+            let breachedCount = 0;
+
+            for (const issue of issues) {
+              if (issue.pull_request) {
+                continue;
+              }
+
+              const labels = issue.labels.map((label) => label.name);
+              const priority = priorityLabels.find((label) => labels.includes(label));
+              const slaDays = priority ? prioritySlaDays.get(priority) : 7;
+              const ageDays = Math.floor((now - new Date(issue.created_at).getTime()) / msPerDay);
+              const isExempt = labels.some((label) => skipLabels.has(label));
+              const isBreached = !isExempt && priority !== 'priority/P2' && ageDays >= slaDays;
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                per_page: 100,
+              });
+              const existing = comments.find((comment) =>
+                comment.user.type === 'Bot' && comment.body.includes(marker)
+              );
+
+              if (!isBreached) {
+                if (labels.includes(slaLabel)) {
+                  await github.rest.issues.removeLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    name: slaLabel,
+                  });
+                }
+                if (existing) {
+                  await github.rest.issues.deleteComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: existing.id,
+                  });
+                }
+                continue;
+              }
+
+              breachedCount += 1;
+              const reason = priority
+                ? `${priority.replace('priority/', '')} fix SLA is ${slaDays} calendar days`
+                : 'unprioritized issues must be prioritized within 7 calendar days';
+
+              if (!labels.includes(slaLabel)) {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  labels: [slaLabel],
+                });
+              }
+              const body = [
+                marker,
+                `This issue is outside the NVSentinel issue SLA: ${reason}.`,
+                '',
+                `Current age: ${ageDays} calendar days.`,
+                '',
+                'Please update the priority/status or add `lifecycle/frozen`, `blocked`, or `external-dependency` if this should be exempt.',
+              ].join('\n');
+
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: existing.id,
+                  body,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body,
+                });
+              }
+            }
+
+            core.summary
+              .addHeading('Issue SLA Check')
+              .addRaw(`Breached issues: ${breachedCount}`)
+              .write();

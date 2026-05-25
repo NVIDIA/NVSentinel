@@ -28,6 +28,15 @@ body:
         - label: I can reproduce this issue
           required: true
 
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      description: By submitting this issue, you agree to follow our [Code of Conduct](https://github.com/NVIDIA/NVSentinel/blob/main/CODE_OF_CONDUCT.md).
+      options:
+        - label: I agree to follow NVSentinel's Code of Conduct
+          required: true
+
   - type: textarea
     id: description
     attributes:
@@ -45,6 +54,8 @@ body:
         - Core Service
         - Fault Management
         - Deployment/Config
+        - Preflight
+        - Plugins
         - Other
     validations:
       required: true

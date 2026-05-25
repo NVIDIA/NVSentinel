@@ -177,7 +177,3 @@ type GPUResetList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []GPUReset `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&GPUReset{}, &GPUResetList{})
-}

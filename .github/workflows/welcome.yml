@@ -1,0 +1,144 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Purpose: welcome first-time human issue and PR authors.
+# Contract: skips bot users and checks existing comments before posting so
+# reruns do not create duplicate welcome messages. PR welcomes run from trusted
+# pull-request/[0-9]+ branches copied by copy-pr-bot.
+
+name: Welcome First-Time Contributors
+
+on:
+  issues:
+    types: [opened]
+  push:
+    branches:
+      - "pull-request/[0-9]+"
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.issue.number || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  welcome:
+    name: Welcome new contributor
+    if: github.repository == 'nvidia/nvsentinel'
+    runs-on: linux-amd64-cpu8
+    permissions:
+      issues: write
+      pull-requests: write
+    timeout-minutes: 5
+    steps:
+      - name: Welcome first-time issue author
+        if: github.event_name == 'issues'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          script: |
+            const author = context.payload.issue.user;
+            const creator = author.login;
+            if (author.type === 'Bot' || creator.endsWith('[bot]')) {
+              return;
+            }
+
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'all',
+              creator,
+              per_page: 100,
+            });
+            const authoredIssues = issues.filter((issue) => !issue.pull_request);
+            const currentIssue = context.payload.issue;
+            const earlierIssue = authoredIssues.some((issue) => {
+              const issueCreated = new Date(issue.created_at).getTime();
+              const currentCreated = new Date(currentIssue.created_at).getTime();
+              return issueCreated < currentCreated ||
+                (issueCreated === currentCreated && issue.number < currentIssue.number);
+            });
+
+            if (!earlierIssue) {
+              const body = [
+                `Welcome to NVSentinel, @${creator}! Thanks for opening your first issue.`,
+                '',
+                'A maintainer will triage this shortly. In the meantime:',
+                `- Check the [Contributing Guide](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/main/CONTRIBUTING.md) for project conventions`,
+                `- Browse existing [labels](https://github.com/${context.repo.owner}/${context.repo.repo}/labels) for related topics`,
+              ].join('\n');
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                per_page: 100,
+              });
+              if (!comments.some((comment) => comment.body.includes(body.split('\n')[0]))) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body,
+                });
+              }
+            }
+
+      - name: Welcome first-time PR author
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/pull-request/')
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          script: |
+            const prNumber = Number(process.env.GITHUB_REF_NAME.replace('pull-request/', ''));
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const author = pr.user;
+            const creator = author.login;
+            if (author.type === 'Bot' || creator.endsWith('[bot]')) {
+              return;
+            }
+
+            const { data: { total_count } } = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} type:pr author:${creator}`,
+            });
+
+            if (total_count === 1) {
+              const body = [
+                `Welcome to NVSentinel, @${creator}! Thanks for your first pull request.`,
+                '',
+                'Before review, please ensure:',
+                `- All commits are signed off per the [DCO](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/main/CONTRIBUTING.md)`,
+                '- CI checks pass',
+                '- The PR description explains the reason for the change',
+                '',
+                'A maintainer will review this soon.',
+              ].join('\n');
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                per_page: 100,
+              });
+              if (!comments.some((comment) => comment.body.includes(body.split('\n')[0]))) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  body,
+                });
+              }
+            }

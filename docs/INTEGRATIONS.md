@@ -28,7 +28,7 @@ Think of NVSentinel integration in four layers:
 
 5. **Should GPU pods run diagnostics before the workload starts?** → Enable **[Preflight](./configuration/preflight.md)**
    - Opt-in per namespace; webhook injects init-container checks (DCGM, optional NCCL)
-   - Multi-node jobs use **gang discovery** (native Workload API or PodGroup-style schedulers like Volcano and Run:ai)
+   - Multi-node jobs use **gang discovery** (native Kubernetes gang APIs or PodGroup-style schedulers like Volcano and Run:ai)
    - Separate from the MongoDB health-event pipeline (see [Data flow](./DATA_FLOW.md#preflight-optional-admission-checks))
 
 ### Quick Start

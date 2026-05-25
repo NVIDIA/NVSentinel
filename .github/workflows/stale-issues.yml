@@ -1,0 +1,66 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Purpose: mark inactive issues as stale and close them after a grace period.
+# Contract: issue labels named below must exist or be creatable by GitHub; PRs
+# are intentionally excluded from stale handling in this workflow.
+
+name: Stale Issues
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  stale-issues:
+    name: Mark stale issues
+    if: github.repository == 'nvidia/nvsentinel'
+    runs-on: linux-amd64-cpu8
+    permissions:
+      issues: write
+    timeout-minutes: 10
+    steps:
+      - name: Mark and close stale issues
+        uses: actions/stale@b5d41d4e1d5dceea10e7104786b73624c18a190f  # v10.1.0
+        with:
+          stale-issue-message: |
+            This issue has been marked as stale due to 90 days of inactivity.
+            It will be closed in 30 days unless there is new activity.
+
+            To keep this issue open:
+            - Add a comment with an update
+            - Add the `lifecycle/frozen` label
+
+            If this issue is no longer relevant, it's okay to let it close.
+          close-issue-message: |
+            This issue was automatically closed due to inactivity after being marked as stale.
+
+            If you believe this issue is still relevant:
+            - Reopen it with a comment providing updated details or context
+            - Add the `lifecycle/frozen` label to prevent it from being closed again
+          days-before-stale: 90
+          days-before-close: 30
+          stale-issue-label: lifecycle/stale
+          exempt-issue-labels: lifecycle/frozen,priority/critical,bug,security,release-blocker,good first issue
+          days-before-pr-stale: -1
+          days-before-pr-close: -1
+          operations-per-run: 500

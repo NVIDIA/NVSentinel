@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
+	"github.com/nvidia/nvsentinel/preflight/pkg/gang/discoverer"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -31,14 +32,14 @@ func TestNewDiscovererFromConfig(t *testing.T) {
 
 	// Create REST mapper with required GVKs registered
 	restMapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{
-		{Group: "scheduling.k8s.io", Version: "v1alpha1"},
+		{Group: "scheduling.k8s.io", Version: "v1alpha2"},
 		{Group: "scheduling.volcano.sh", Version: "v1beta1"},
 	})
-	// K8s 1.35+ native Workload API
+	// K8s 1.36+ native PodGroup API
 	restMapper.Add(schema.GroupVersionKind{
 		Group:   "scheduling.k8s.io",
-		Version: "v1alpha1",
-		Kind:    "Workload",
+		Version: "v1alpha2",
+		Kind:    "PodGroup",
 	}, meta.RESTScopeNamespace)
 	// Volcano PodGroup
 	restMapper.Add(schema.GroupVersionKind{
@@ -138,4 +139,51 @@ func TestNewDiscovererFromConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNewDiscovererFromConfig_NativeKubernetesVersionSelection(t *testing.T) {
+	fakeClient := fake.NewClientBuilder().Build()
+
+	t.Run("prefers K8s 1.36 PodGroup API when available", func(t *testing.T) {
+		restMapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{
+			{Group: "scheduling.k8s.io", Version: "v1alpha2"},
+			{Group: "scheduling.k8s.io", Version: "v1alpha1"},
+		})
+		restMapper.Add(discoverer.PodGroupGVK, meta.RESTScopeNamespace)
+		restMapper.Add(discoverer.WorkloadGVK, meta.RESTScopeNamespace)
+
+		got, err := NewDiscovererFromConfig(config.GangDiscoveryConfig{}, fakeClient, restMapper)
+		if err != nil {
+			t.Fatalf("NewDiscovererFromConfig() error = %v", err)
+		}
+
+		if _, ok := got.(*discoverer.KubernetesDiscoverer); !ok {
+			t.Fatalf("NewDiscovererFromConfig() = %T, want *discoverer.KubernetesDiscoverer", got)
+		}
+	})
+
+	t.Run("falls back to K8s 1.35 Workload API", func(t *testing.T) {
+		restMapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{
+			{Group: "scheduling.k8s.io", Version: "v1alpha1"},
+		})
+		restMapper.Add(discoverer.WorkloadGVK, meta.RESTScopeNamespace)
+
+		got, err := NewDiscovererFromConfig(config.GangDiscoveryConfig{}, fakeClient, restMapper)
+		if err != nil {
+			t.Fatalf("NewDiscovererFromConfig() error = %v", err)
+		}
+
+		if _, ok := got.(*discoverer.WorkloadRefDiscoverer); !ok {
+			t.Fatalf("NewDiscovererFromConfig() = %T, want *discoverer.WorkloadRefDiscoverer", got)
+		}
+	})
+
+	t.Run("errors when no native K8s gang API is available", func(t *testing.T) {
+		restMapper := meta.NewDefaultRESTMapper(nil)
+
+		_, err := NewDiscovererFromConfig(config.GangDiscoveryConfig{}, fakeClient, restMapper)
+		if err == nil {
+			t.Fatal("NewDiscovererFromConfig() expected error, got nil")
+		}
+	})
 }

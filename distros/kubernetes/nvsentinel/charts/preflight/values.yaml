@@ -269,7 +269,11 @@ networkResourceNames:
   - "networking.gke.io.networks/gpu-nic7.IP"
 
 # Gang discovery configuration for multi-node preflight checks.
-# Default (empty): K8s 1.35+ native WorkloadRef API
+# Default (empty): native Kubernetes gang discovery. Preflight prefers the
+# K8s 1.36+ PodGroup/schedulingGroup API and falls back to the K8s 1.35
+# Workload/workloadRef API when PodGroup is unavailable.
+# Default chart RBAC grants read access to both scheduling.k8s.io/podgroups
+# and scheduling.k8s.io/workloads for this native mode.
 # For PodGroup-based schedulers, set name and other fields:
 gangDiscovery: {}
   # name: "volcano"

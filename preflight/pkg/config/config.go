@@ -93,7 +93,8 @@ type FileConfig struct {
 }
 
 // GangDiscoveryConfig configures gang discovery for PodGroup-based schedulers.
-// If empty (no Name set), defaults to native K8s 1.35+ WorkloadRef API.
+// If empty (no Name set), defaults to native K8s gang APIs: 1.36+ schedulingGroup,
+// falling back to 1.35 workloadRef when PodGroup is unavailable.
 type GangDiscoveryConfig struct {
 	// Name is the discoverer identifier (used in gangID prefix and logging).
 	Name string `yaml:"name,omitempty"`

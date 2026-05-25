@@ -42,7 +42,7 @@ All checks are optional — configure which ones to inject via `initContainers` 
 
 The `preflight-nccl-allreduce` check requires coordination across all nodes in a scheduling gang. Preflight handles this through:
 
-1. **Gang discovery** — identifies which pods belong to the same group using scheduler annotations/labels (Volcano, Run:ai/OSMO, or native Kubernetes WorkloadRef)
+1. **Gang discovery** — identifies which pods belong to the same group using scheduler annotations/labels (Volcano, Run:ai/OSMO) or native Kubernetes APIs (`workloadRef` in 1.35, `schedulingGroup` in 1.36)
 2. **ConfigMap-based coordination** — the gang controller writes peer information (IPs, ranks) into a ConfigMap that init containers poll until all members are registered
 3. **PyTorch distributed bootstrap** — once all peers are known, the check uses `torchrun` to execute a multi-node NCCL all-reduce benchmark
 
