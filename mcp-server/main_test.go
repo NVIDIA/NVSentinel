@@ -40,3 +40,28 @@ func TestCreateMetricsServer_ValidPortReturnsServer(t *testing.T) {
 		t.Fatal("CreateMetricsServer returned nil server with no error")
 	}
 }
+
+func TestResolveAuthToken(t *testing.T) {
+	tests := []struct {
+		name    string
+		flagVal string
+		envVal  string
+		want    string
+	}{
+		{"flag set takes precedence over env", "from-flag", "from-env", "from-flag"},
+		{"empty flag falls back to MCP_AUTH_TOKEN env", "", "from-env", "from-env"},
+		{"both empty disables auth", "", "", ""},
+		{"flag wins even when env is empty", "from-flag", "", "from-flag"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("MCP_AUTH_TOKEN", tc.envVal)
+
+			got := resolveAuthToken(tc.flagVal)
+			if got != tc.want {
+				t.Errorf("resolveAuthToken(%q) with env=%q: got %q, want %q",
+					tc.flagVal, tc.envVal, got, tc.want)
+			}
+		})
+	}
+}

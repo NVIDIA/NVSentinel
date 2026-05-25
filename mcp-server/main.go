@@ -79,12 +79,16 @@ func main() {
 func run() error {
 	mcpAddr := flag.String("mcp-addr", ":8080", "MCP streamable-HTTP listen address (e.g. :8080)")
 	metricsPort := flag.String("metrics-port", "9090", "Prometheus metrics and health probe listen port")
-	authToken := flag.String("auth-token", "", "Bearer token required for /mcp access; empty disables auth")
+	authToken := flag.String("auth-token", "", "Bearer token required for /mcp access; "+
+		"falls back to the MCP_AUTH_TOKEN env var (the Helm chart populates it from authToken.secretName). "+
+		"Empty disables auth.")
 	useFakeStore := flag.Bool("use-fake-store", false,
 		"Use an in-memory FakeReader instead of connecting to a real datastore "+
 			"(local development only; not for production).")
 
 	flag.Parse()
+
+	resolvedAuthToken := resolveAuthToken(*authToken)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -109,7 +113,7 @@ func run() error {
 		Version:   version,
 		GitCommit: commit,
 		HTTPAddr:  *mcpAddr,
-		AuthToken: *authToken,
+		AuthToken: resolvedAuthToken,
 		Store:     reader,
 		K8sClient: k8sClient,
 	})
@@ -117,7 +121,7 @@ func run() error {
 		return fmt.Errorf("create mcp server: %w", err)
 	}
 
-	waitErr, gCtxErr := runServers(ctx, metricsServer, mcpServer, *metricsPort, *mcpAddr, *authToken, k8sClient)
+	waitErr, gCtxErr := runServers(ctx, metricsServer, mcpServer, *metricsPort, *mcpAddr, resolvedAuthToken, k8sClient)
 
 	if shutdownErr := mcpServer.Shutdown(); shutdownErr != nil {
 		slog.Warn("MCP server shutdown returned error", "error", shutdownErr)
@@ -173,6 +177,18 @@ func runServers(
 	})
 
 	return g.Wait(), gCtx.Err()
+}
+
+// resolveAuthToken returns the bearer token guarding the /mcp endpoint. The
+// --auth-token flag wins when set; otherwise the value comes from the
+// MCP_AUTH_TOKEN env var (populated by the Helm chart from
+// .Values.authToken.secretName). An empty result disables auth.
+func resolveAuthToken(flagVal string) string {
+	if flagVal != "" {
+		return flagVal
+	}
+
+	return os.Getenv("MCP_AUTH_TOKEN")
 }
 
 func CreateMetricsServer(port string) (server.Server, error) {

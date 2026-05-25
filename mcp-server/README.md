@@ -40,11 +40,11 @@ kubectl -n nvsentinel get pods -l app.kubernetes.io/name=mcp-server
 kubectl -n nvsentinel logs -l app.kubernetes.io/name=mcp-server --tail=50
 ```
 
-Both `/healthz` and `/readyz` are served by the metrics port and should return 200 within a few seconds of pod start.
+`/healthz` is served by the metrics port and should return 200 within a few seconds of pod start. The Helm chart probes both liveness and readiness against `/healthz`; there is no separate `/readyz` endpoint.
 
 ## Authentication
 
-Bearer-token auth is enforced on `/mcp` (not `/metrics`) when configured. Create a Secret with the token, then pass its name in values:
+Bearer-token auth is enforced on `/mcp` (not `/metrics`) when configured. The chart populates the `MCP_AUTH_TOKEN` env var from the referenced Secret, and `main.go` falls back to it when `--auth-token` is not set on the command line. Create a Secret with the token, then pass its name in values:
 
 ```bash
 kubectl -n nvsentinel create secret generic mcp-server-auth \
@@ -60,6 +60,8 @@ mcpServer:
 ```
 
 Empty `secretName` disables auth — only appropriate inside the cluster with a restrictive NetworkPolicy in front of the Service.
+
+> **TLS limitation (follow-up):** the `pkg/mcp` transport supports TLS termination via `Config.TLS`, but `main.go` does not yet expose `--tls-cert` / `--tls-key` flags and the Helm chart does not mount a cert. The server today serves plain HTTP; bearer-token auth is the only on-path defense. Pair it with mesh mTLS or a NetworkPolicy until the TLS-flag wiring lands.
 
 ## Configuration
 
@@ -109,7 +111,6 @@ The pre-PR acceptance gate is a full end-to-end smoke against a live cluster wit
     ```bash
     kubectl -n nvsentinel port-forward svc/mcp-server 8080:8080 2112:2112 &
     curl -sf http://localhost:2112/healthz
-    curl -sf http://localhost:2112/readyz
     ```
 
 5. **List tools** via MCP JSON-RPC:
