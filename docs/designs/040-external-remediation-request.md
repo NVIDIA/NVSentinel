@@ -24,7 +24,7 @@ Introduce a new CRD, `ExternalRemediationRequest` (ERR), in the existing `nvsent
 - The ERR's `spec.healthEvent` carries the triaged `HealthEvent` — the same `datamodels.HealthEvent` proto already emitted by every health-monitor and consumed by every downstream stage. `spec` is a small wrapper struct so future ERR-specific fields can be added without modifying the `HealthEvent` proto.
 - The ERR reconciler applies a release taint to the target node and sets `NVSentinelOwnershipReleased=True`. From that moment, an external system is responsible for the node.
 - The external system, observing the ERR, performs its remediation and writes `ExternalRemediationComplete=True` (success) or `False` (failure / gave up) back to the ERR's status.
-- On `True`, the ERR reconciler removes the release taint and restores the `nvsentinel.dgxc.nvidia.com/managed` label to `"true"` (see *Controlling health event generation* below), returning the node to NVSentinel ownership. On `False`, the ERR reconciler intentionally leaves the node released — when the external system has stopped, NVSentinel has no signal about what state the node was left in, so returning it to user workloads on that signal would be unsafe. The ERR stays live; the external system may resume work and patch `True` later, or an operator may force release via `kubectl delete err` (handled by a cleanup finalizer on every ERR).
+- On `True`, the ERR reconciler removes the release taint and removes the `nvsentinel.dgxc.nvidia.com/managed` label (see *Controlling health event generation* below), returning the node to NVSentinel ownership. On `False`, the ERR reconciler intentionally leaves the node released — when the external system has stopped, NVSentinel has no signal about what state the node was left in, so returning it to user workloads on that signal would be unsafe. The ERR stays live; the external system may resume work and patch `True` later, or an operator may force release via `kubectl delete err` (handled by a cleanup finalizer on every ERR).
 
 Coordination state lives in `status.conditions` only. The ERR object is the single coordination artifact between NVSentinel and the external party for the duration of the handoff. A cleanup finalizer (`nvsentinel.nvidia.com/external-remediation-cleanup`) on every ERR guarantees that operator-initiated `kubectl delete err` always returns the node to NVSentinel cleanly.
 
@@ -190,7 +190,7 @@ status:
 
 The behaviour on `ExternalRemediationComplete` is intentionally asymmetric:
 
-- **On `True`**: the external system has reported success. The ERR reconciler removes the release taint and restores `managed=true`, returning the node to NVSentinel ownership. Once monitor pods are re-scheduled (typically within seconds), health-monitors either emit a healthy event (clearing fault-quarantine state and returning the node to service) or re-detect the same fault (re-triggering the pipeline and producing a fresh ERR).
+- **On `True`**: the external system has reported success. The ERR reconciler removes the release taint and removes the `managed` label, returning the node to NVSentinel ownership. Once monitor pods are re-scheduled (typically within seconds), health-monitors either emit a healthy event (clearing fault-quarantine state and returning the node to service) or re-detect the same fault (re-triggering the pipeline and producing a fresh ERR).
 - **On `False`**: the external system has reported failure or has stopped. The ERR reconciler **does nothing** to the node — the release taint stays, `managed` stays `"false"`, the node remains released. NVSentinel does not attempt to return the node to regular service on `False`; the external system may have left the node in an arbitrary state (mid-RMA, partial repair, etc.) that would be unsafe for user workloads. The ERR remains live, claiming the node, until either the external system retries (see below) or an operator forces release (see *Operator-driven release* in the ERR reconciler section).
 
 **Re-transition exception (`False` → `True`).** Because `False` indicates the external system has stopped *but might come back*, the external system may patch `ExternalRemediationComplete=False` → `True` later if they end up fixing the node. The ERR reconciler observes the change and runs the normal `True` cleanup path. This is the only allowed re-transition in this design: `True` never transitions, `NVSentinelOwnershipReleased` is strictly terminal in both directions.
@@ -209,7 +209,7 @@ All conditions are append-or-update in place via the `SetCondition` helper, whic
 2. If `metadata.deletionTimestamp` is set (operator-initiated delete):
    - In a **single PATCH** against `spec.healthEvent.nodeName`, both:
      - Remove the release taint if present (idempotent; verify key AND value match this ERR's name).
-     - Set the `nvsentinel.dgxc.nvidia.com/managed` label back to `"true"`.
+     - Remove the `nvsentinel.dgxc.nvidia.com/managed` label if present (idempotent; tolerate already absent).
 
      The PATCH is a no-op if the node was already cleaned up by an earlier `ExternalRemediationComplete=True` transition.
    - Remove the finalizer. Once removed, Kubernetes garbage-collects the ERR.
@@ -225,7 +225,7 @@ All conditions are append-or-update in place via the `SetCondition` helper, whic
 4. If `ExternalRemediationComplete=True`:
    - In a **single PATCH** against `spec.healthEvent.nodeName`, both:
      - Remove the release taint (idempotent; tolerate missing taint). Verify both key AND value match this ERR's name on the taint before removing — protects against drift from a previous, no-longer-existing ERR.
-     - Set the `nvsentinel.dgxc.nvidia.com/managed` label back to `"true"` — see *Controlling health event generation* below.
+     - Remove the `nvsentinel.dgxc.nvidia.com/managed` label (idempotent; tolerate already absent) — see *Controlling health event generation* below.
 
      Atomicity matters in this direction too — no window where the taint is gone but the label still holds monitors off, or vice versa.
    - Done. The ERR remains in the cluster as a historical record (finalizer still attached). The operator can delete it whenever they no longer need the record; the deletion-handling step above runs idempotently and removes the finalizer.
@@ -256,7 +256,7 @@ The taint is the *single source of truth* for "this node is not owned by NVSenti
 kubectl delete err <name> -n nvsentinel
 ```
 
-When the operator runs this command, Kubernetes sets `metadata.deletionTimestamp` on the ERR but does not garbage-collect it because the finalizer is present. The reconciler observes the `deletionTimestamp`, runs the cleanup PATCH against the node (remove release taint, restore `managed="true"`) — idempotent against state from an earlier `ExternalRemediationComplete=True` transition — and then removes the finalizer. Kubernetes garbage-collects the ERR once the finalizer is gone.
+When the operator runs this command, Kubernetes sets `metadata.deletionTimestamp` on the ERR but does not garbage-collect it because the finalizer is present. The reconciler observes the `deletionTimestamp`, runs the cleanup PATCH against the node (remove release taint, remove `managed` label) — idempotent against state from an earlier `ExternalRemediationComplete=True` transition — and then removes the finalizer. Kubernetes garbage-collects the ERR once the finalizer is gone.
 
 The finalizer makes the cleanup PATCH a controlled, traceable transition rather than a silent side effect of object deletion. It also defends against accidental `kubectl delete --all err` — every deletion goes through the reconciler, gets logged, and emits a `ReleaseTaintRemoved` event with the operator-initiated reason. This is the only way to reclaim a node held by a stalled or failed ERR; the design intentionally provides no automatic timeout.
 
@@ -266,27 +266,26 @@ While an ERR holds the release taint on a node, NVSentinel's own health monitors
 
 #### The coordinating label
 
-A single Node label is the coordination point between the ERR reconciler, `node-labeler`, and every monitor: **`nvsentinel.dgxc.nvidia.com/managed`**.
+A single Node label gates monitor behaviour: **`nvsentinel.dgxc.nvidia.com/managed`**.
 
 | Value | Meaning |
 | --- | --- |
-| `"true"` | NVSentinel actively manages this node. `node-labeler` stamps and maintains its detection labels (`dcgm.version`, `driver.installed`, `kata.enabled`); DaemonSet monitors are scheduled by virtue of those labels matching their selectors; cluster-scope monitors emit events for this node. |
-| `"false"` | NVSentinel does not manage this node. `node-labeler` removes any detection labels it previously stamped and refrains from stamping new ones; DaemonSet monitors evict because their selectors no longer match; cluster-scope monitors observe the value and skip emission. |
-| absent | `node-labeler` has not yet decided. On first observation, `node-labeler` evaluates a CEL eligibility expression from its chart values; if eligible, writes `"true"` and proceeds to stamp detection labels; if not, leaves the node alone entirely. |
+| `"false"` | Node is opted out. `node-labeler` removes its detection labels (`dcgm.version`, `driver.installed`, `kata.enabled`) and refrains from re-stamping them; DaemonSet monitors evict because their selectors no longer match; cluster-scope monitors observe the value and skip emission. Set by the ERR reconciler atomically with the release taint, or by an operator who wants to opt a node out manually. |
+| absent or anything else | Default state. `node-labeler` stamps detection labels per its existing detection logic; DaemonSet monitors are scheduled; cluster-scope monitors emit. New nodes joining the cluster start here — no setup is required. |
 
-The `managed` label is the single source of truth for "should NVSentinel be touching this node?" — covering both operator opt-out and ERR-driven release in one mechanism. It replaces the previous `k8saas.nvidia.com/ManagedByNVSentinel=false` opt-out signal; nodes today carrying the legacy opt-out are honoured during a transition period via `node-labeler`'s CEL eligibility expression (see below), so existing operator workflows continue to behave as expected.
+The label has exactly one job: signal "this node is opted out, leave it alone." The ERR reconciler is the only programmatic writer; operators may also write `"false"` manually for opt-out, and remove the label to revert. There is no bootstrap step — absence is treated as "managed by default," so node-labeler never needs to stamp `managed` itself.
 
 #### `node-labeler` is the central gate
 
-`node-labeler` (an existing NVSentinel `Deployment`) already stamps detection labels onto Nodes — `nvsentinel.dgxc.nvidia.com/dcgm.version` (`3.x` or `4.x`), `nvsentinel.dgxc.nvidia.com/driver.installed`, `nvsentinel.dgxc.nvidia.com/kata.enabled` — based on probes against the node's hardware and configuration. Those labels are referenced by the DaemonSet monitors' existing `nodeSelector`s as deploy gates. The redesign extends `node-labeler` to make all of its label-writing behaviour conditional on `managed`:
+`node-labeler` (an existing NVSentinel `Deployment`) already stamps detection labels onto Nodes — `nvsentinel.dgxc.nvidia.com/dcgm.version` (`3.x` or `4.x`), `nvsentinel.dgxc.nvidia.com/driver.installed`, `nvsentinel.dgxc.nvidia.com/kata.enabled` — based on probes against the node's hardware and configuration. Those labels are referenced by the DaemonSet monitors' existing `nodeSelector`s as deploy gates. The redesign extends `node-labeler` to make those detection-label writes conditional on `managed`:
 
-- **Watches** the `managed` label alongside its existing informer set.
-- **Bootstrap** (label absent): evaluates a configurable CEL eligibility expression from chart values. If eligible, writes `managed="true"` and proceeds with normal detection-label stamping. If not eligible, leaves the node alone — no `managed` write, no detection-label stamping. The default expression honours the legacy `k8saas.nvidia.com/ManagedByNVSentinel=false` opt-out (nodes carrying it are treated as ineligible). Operators can replace the expression at any time by changing chart values; the label name is referenced **only in chart values**, never in `node-labeler`'s Go code.
-- **Active** (`managed="true"`): stamps and maintains detection labels per its existing detection logic. No behaviour change from today.
-- **Suspended** (`managed="false"`): removes any detection labels it previously stamped on this node and refrains from re-stamping them while `managed="false"` persists. The labels stay absent until `managed` flips back to `"true"`.
-- **Idempotent on `managed`.** `node-labeler` writes `managed` only when it is absent. It never overwrites an existing value, including `"false"`. This is what lets the ERR reconciler safely write `"false"` without `node-labeler` immediately flipping it back.
+- On every reconcile of a Node, `node-labeler` reads the `managed` label first.
+- If `managed="false"`: remove any detection labels previously stamped on this node and skip any new detection-label work. The labels stay absent until `managed="false"` is removed (or changed to anything else).
+- Otherwise (label absent or any other value): proceed with normal detection-label stamping based on probes. This matches `node-labeler`'s existing behaviour today — no change for the common case.
 
-The semantic frame: `managed` is the *intent* signal. The detection labels are *facts about the node*, but `node-labeler`'s decision to stamp them is gated on intent — "should `node-labeler` do anything to this node?" — rather than purely on the underlying facts. This conflates fact and intent on the detection label names, which is a known trade-off (see below), accepted because today `node-labeler` is the sole writer of those labels and the monitor charts are the only readers.
+`node-labeler` does not write `managed` itself. It only reads it.
+
+The semantic frame: `managed="false"` is an *opt-out intent* signal. node-labeler's detection labels are *facts about the node*, but node-labeler's decision to maintain them is gated on intent — "should node-labeler do anything to this node?" — rather than purely on the underlying facts. Conflating fact and intent on the detection-label names is a known trade-off (see below), accepted because today node-labeler is the sole writer of those labels and the DaemonSet monitor charts are the only readers.
 
 #### DaemonSet monitors: implicit eviction via existing selectors
 
@@ -299,35 +298,24 @@ DaemonSet monitor `nodeSelector`s already gate on `node-labeler`-managed detecti
 | `nic-health-monitor` | `nvsentinel.dgxc.nvidia.com/driver.installed` |
 | `metadata-collector` | `nvsentinel.dgxc.nvidia.com/driver.installed` (also `nvidia.com/gpu.present`, set by the GPU operator, unaffected) |
 
-When `node-labeler` removes those detection labels in response to `managed="false"`, the DaemonSet controller re-evaluates the selectors, finds no match, and *promptly* deletes the affected pods (per the [Kubernetes DaemonSet documentation](https://kubernetes.io/docs/concepts/workloads/controllers/daemonset/#updating-a-daemonset)). When labels return, the DaemonSet controller schedules pods again. Empirically this end-to-end (label flip → labeler reconcile → label removal → DaemonSet evict) completes within seconds.
+When `node-labeler` removes those detection labels in response to `managed="false"`, the DaemonSet controller re-evaluates the selectors, finds no match, and *promptly* deletes the affected pods (per the [Kubernetes DaemonSet documentation](https://kubernetes.io/docs/concepts/workloads/controllers/daemonset/#updating-a-daemonset)). When the `managed="false"` label is later removed and node-labeler restamps the detection labels, the DaemonSet controller schedules pods again. Empirically this end-to-end (label flip → labeler reconcile → detection-label removal → DaemonSet evict) completes within seconds.
 
 `metadata-collector` is included in the list above for completeness: it gates on `driver.installed` AND `nvidia.com/gpu.present`. When `driver.installed` is withheld, the AND fails and `metadata-collector` is evicted too. This is the desired behaviour during external remediation — NVSentinel's collection should also stop on a released node.
 
 #### Cluster-scope monitors: code-level emission gating
 
-Cluster-scope monitors (`csp-health-monitor`, `kubernetes-object-monitor`, `slurm-drain-monitor`) run as `Deployment`s, not DaemonSets, and target nodes by name from outside the node. They cannot be evicted from a node because they do not run on it. Instead, each cluster-scope monitor reads the target node's `managed` label from its Kubernetes informer cache and skips emission when `managed!="true"` (covers both `managed="false"` and absent).
+Cluster-scope monitors (`csp-health-monitor`, `kubernetes-object-monitor`, `slurm-drain-monitor`) run as `Deployment`s, not DaemonSets, and target nodes by name from outside the node. They cannot be evicted from a node because they do not run on it. Instead, each cluster-scope monitor reads the target node's `managed` label from its Kubernetes informer cache and skips emission when `managed="false"`. Any other state (label absent, label set to `"true"`, or any other value) means the cluster-scope monitor emits as usual.
 
-A shared helper in `commons/pkg/` provides the lookup so the check is centralized; each cluster-scope monitor calls into it before emitting events for a given node. The check is part of the emission code path, not the scrape/poll loop — monitors keep observing, they just refuse to emit for nodes that aren't actively managed.
+A shared helper in `commons/pkg/` provides the lookup so the check is centralized; each cluster-scope monitor calls into it before emitting events for a given node. The check is part of the emission code path, not the scrape/poll loop — monitors keep observing, they just refuse to emit for nodes that are explicitly opted out.
 
 #### ERR reconciler interaction
 
-The ERR reconciler flips `managed` as part of the same `PATCH` operations that apply and remove the release taint (see reconcile loop in the *ERR reconciler* section above):
+The ERR reconciler is the only programmatic writer of `managed`. It writes the label as part of the same `PATCH` operations that apply and remove the release taint (see reconcile loop in the *ERR reconciler* section above):
 
 - **Apply path**: single PATCH applies the release taint and sets `managed="false"`. Both mutations land atomically; on the next `node-labeler` reconcile (typically <1s), detection labels are removed and DaemonSet pods evict.
-- **Cleanup path** (on `ExternalRemediationComplete=True` or operator-initiated deletion): single PATCH removes the release taint and sets `managed="true"`. `node-labeler` resumes stamping detection labels, DaemonSet monitors are re-scheduled, cluster-scope monitors resume emission.
+- **Cleanup path** (on `ExternalRemediationComplete=True` or operator-initiated deletion): single PATCH removes the release taint and *removes* the `managed` label entirely. node-labeler observes the removal, treats the node as default-managed again, and resumes stamping detection labels. DaemonSet monitors re-schedule, cluster-scope monitors resume emission.
 
-The reconciler always writes a concrete value (`"true"` or `"false"`), never removes the label.
-
-#### Two-writer coordination
-
-Both `node-labeler` and the ERR reconciler write to the same `managed` label. The coordination rule that keeps them from colliding:
-
-- `node-labeler` writes `managed` only when the label is **absent** AND CEL eligibility passes. Once any value is present, `node-labeler` defers.
-- The ERR reconciler always writes a concrete value (`"true"` or `"false"`), never removes the label. After one ERR cycle the label is permanent (until the node is deleted), and `node-labeler` never re-enters the `managed`-write path.
-
-This is a "first writer wins, then deferral" pattern. Initial bootstrap is owned by `node-labeler`; the lifetime of the `managed` value after that is owned by the ERR reconciler (or by an operator manually patching it for opt-out purposes).
-
-`node-labeler`'s gating of *detection-label* writes (`dcgm.version`, `driver.installed`, `kata.enabled`) on `managed` runs independently and continuously — it is the active enforcer of "should detection labels be present right now?" on every reconcile. The ERR reconciler does not touch detection labels directly; it only flips `managed` and lets `node-labeler` propagate.
+The reconciler removes the label on cleanup (rather than writing `"true"`) because absence is the default-managed state — leaving no trace once external remediation is complete is cleaner than leaving a now-meaningless `managed="true"` annotation on the node.
 
 #### Eviction is asynchronous
 
@@ -342,11 +330,11 @@ The ERR reconciler does **NOT** wait for either component to complete before set
 
 **Observability loss during external remediation.** For the duration of external remediation, NVSentinel cannot see what is happening on the node from its own monitors. For long-running remediations (days to weeks), this is a real cost. The external system is expected to provide its own observability for the duration.
 
-**Cold-start churn on monitor resumption.** When `managed` flips back to `"true"` and `node-labeler` re-stamps detection labels, DaemonSet pods are re-scheduled and cold-start, emitting fresh events based on the current node state. If the underlying fault is still present, this re-triggers the pipeline and may produce a new ERR. This is the desired self-healing behaviour — operators should expect a brief flurry of events at the moment of monitor resumption.
+**Cold-start churn on monitor resumption.** When the `managed` label is removed on cleanup and `node-labeler` re-stamps detection labels, DaemonSet pods are re-scheduled and cold-start, emitting fresh events based on the current node state. If the underlying fault is still present, this re-triggers the pipeline and may produce a new ERR. This is the desired self-healing behaviour — operators should expect a brief flurry of events at the moment of monitor resumption.
 
-**Detection labels gated on intent, not just fact.** `node-labeler` removes labels named for facts about the node (`dcgm.version`, `driver.installed`, `kata.enabled`) in response to the `managed` *intent* signal, not in response to changes in the underlying facts. Today this is safe — `node-labeler` is the sole writer of these labels and the DaemonSet monitor charts are the only readers, so the conflation is fully contained. A future component that wants to read `driver.installed` as a true factual signal about the node would observe stale-when-managed=false state; such a component would need either a different signal source (probe the node directly, query a node-info API) or a layered check (`managed="true"` AND `driver.installed="true"`). This trade-off was accepted because the alternative — introducing a separate "deploy-gate" label per monitor — would multiply the surface area without changing the underlying mechanism.
+**Detection labels gated on opt-out intent, not just fact.** `node-labeler` removes labels named for facts about the node (`dcgm.version`, `driver.installed`, `kata.enabled`) in response to the `managed="false"` *opt-out intent* signal, not in response to changes in the underlying facts. The cleaner framing is "should node-labeler do anything to this node?" — but the detection labels still carry factual names, so a future component that wants to read `driver.installed` as a true factual signal would observe stale-when-`managed="false"` state. Such a component would need either a different signal source (probe the node directly, query a node-info API) or a layered check (`managed!="false"` AND `driver.installed="true"`). The trade-off was accepted because the alternative — introducing a separate "deploy-gate" label per monitor — would multiply the surface area without changing the underlying mechanism. Today node-labeler is the sole writer of these labels and the DaemonSet monitor charts are the only readers, so the conflation is fully contained.
 
-**Operator opt-out unified.** The previous opt-out (`k8saas.nvidia.com/ManagedByNVSentinel=false`) is subsumed by `managed="false"`. `node-labeler`'s CEL eligibility expression defaults to treating the legacy label as a non-eligibility signal during a transition period, so existing operator workflows are unaffected — nodes already carrying `ManagedByNVSentinel=false` continue to be left alone (no `managed` write, no detection labels, no monitor scheduling). Operators may migrate to writing `managed="false"` directly at their convenience; the expression itself is a chart-values change.
+**Operator-driven opt-out.** Operators wanting to opt a node out of NVSentinel management *without* an ERR write `managed="false"` directly on the node. To revert, they remove the label. Behaviour is identical to ERR-driven opt-out: detection labels removed by node-labeler, monitors evicted/silenced. This gives operators a simple, ad-hoc opt-out without needing to create an ERR.
 
 ### `fault-remediation` integration
 
@@ -397,7 +385,7 @@ sequenceDiagram
     EXT->>N: perform remediation (RMA, manual fix, …)
     alt external system succeeds
         EXT->>ERR: ExternalRemediationComplete=True
-        RC->>N: remove release taint + set managed=true (single PATCH)
+        RC->>N: remove release taint + remove managed label (single PATCH)
         Note over HM,N: node-labeler restamps detection labels, DaemonSet monitors re-scheduled, cluster-scope monitors resume emitting
         HM->>FQ: subsequent HealthEvent (healthy or unhealthy)
         Note over FQ,N: FQ acts normally now that release taint is gone
@@ -492,7 +480,7 @@ Ownership is transferred back to NVSentinel by exactly two events: (1) the exter
 
 - **External system stops progressing (never sets `ExternalRemediationComplete`, or sets `ExternalRemediationComplete=False`).** No timeout. NVSentinel intentionally does not return the node to service on its own in either case — when the external system has stopped, NVSentinel has no signal about what state the node was left in (mid-RMA, partial repair, hardware swapped but not validated, …). Returning the node to user workloads on that signal would be unsafe. The ERR therefore stays live, the release taint stays applied, `managed` stays `"false"`, and the node remains released to the external system, which may resume work and patch `ExternalRemediationComplete=True` if they end up fixing it. From NVSentinel's side, `err_open{state="awaiting"}` (Unknown) and `err_open{state="failed"}` (False) make the situation visible to operators. Operators alert on persistence (an ERR open longer than the expected external-remediation SLO) and use `kubectl delete err <name>` — backed by the finalizer-driven cleanup path (see *Operator-driven release*) — to force the node back into NVSentinel ownership when they have separately confirmed the node is safe to return.
 - **Node deleted while ERR is open.** ERR reconciler logs and treats taint and label operations as no-ops. The ERR object remains so the external system can still acknowledge completion (which is then a no-op against the missing node). Operators can also reclaim the ERR object itself via `kubectl delete err <name>`; the finalizer-driven cleanup path runs cleanly even with the node already gone (the cleanup PATCH no-ops, the finalizer is removed, and the ERR is garbage-collected).
-- **Multiple distinct faults on a node arriving while an ERR is in flight.** Primary defense is monitor teardown: with `managed=false` on the node, NVSentinel's own monitors aren't emitting events for it. The equivalence-group skip at `fault-remediation` is a defense-in-depth backstop for any event that does slip through (a final emission during the eviction window, or an event from outside the standard pipeline). Either way, only the first event's `HealthEvent` is captured in the ERR spec. Once the ERR is closed — either by `ExternalRemediationComplete=True` driven cleanup or by operator-initiated `kubectl delete err` — the release taint is removed, `managed=true` is restored, and monitor pods resume. Any persistent faults are then re-detected and produce a fresh ERR through the standard pipeline.
+- **Multiple distinct faults on a node arriving while an ERR is in flight.** Primary defense is monitor teardown: with `managed=false` on the node, NVSentinel's own monitors aren't emitting events for it. The equivalence-group skip at `fault-remediation` is a defense-in-depth backstop for any event that does slip through (a final emission during the eviction window, or an event from outside the standard pipeline). Either way, only the first event's `HealthEvent` is captured in the ERR spec. Once the ERR is closed — either by `ExternalRemediationComplete=True` driven cleanup or by operator-initiated `kubectl delete err` — the release taint is removed, the `managed` label is removed, node-labeler restamps the detection labels, and monitor pods resume. Any persistent faults are then re-detected and produce a fresh ERR through the standard pipeline.
 - **Health event (healthy or unhealthy) arrives at fault-quarantine while an ERR is in flight.** Defense in depth: with monitor teardown in place, this should be rare (most events from NVSentinel's own monitors are stopped at the source). If one does arrive, fault-quarantine's release-taint guard refuses to act on the release-tainted node, regardless of event polarity. The event is stored as a historical record but causes no state change. The ERR remains the only authority for transitioning the node out of "released" state. After the release taint is removed and monitors resume, the next observation drives fault-quarantine's state transition normally.
 
 ### Non-goals
