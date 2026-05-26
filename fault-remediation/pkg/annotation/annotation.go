@@ -96,6 +96,10 @@ func (m *NodeAnnotationManager) GetRemediationState(
 // UpdateRemediationState updates the node annotation with new remediation state
 func (m *NodeAnnotationManager) UpdateRemediationState(ctx context.Context, nodeName string,
 	group string, crName string, actionName string, resourceRef MaintenanceResourceReference) error {
+	if err := validateMaintenanceResourceReference(resourceRef); err != nil {
+		return fmt.Errorf("invalid maintenance resource reference for node %s group %s: %w", nodeName, group, err)
+	}
+
 	err := retry.RetryOnConflict(conflictBackoff, func() error {
 		// Get current state
 		state, node, err := m.GetRemediationState(ctx, nodeName)
@@ -111,7 +115,7 @@ func (m *NodeAnnotationManager) UpdateRemediationState(ctx context.Context, node
 			ActionName:    actionName,
 			Namespace:     resourceRef.Namespace,
 			Version:       resourceRef.Version,
-			ApiGroup:      resourceRef.ApiGroup,
+			APIGroup:      resourceRef.APIGroup,
 			Kind:          resourceRef.Kind,
 		}
 
@@ -147,11 +151,12 @@ func (m *NodeAnnotationManager) UpdateRemediationState(ctx context.Context, node
 }
 
 // EnsureRemediationStateGVK backfills concrete resource identity for legacy
-// annotation entries using the resourceRefs map, if and only if the GVK is not already set.
+// annotation entries using resourceRefsByAction, if and only if the GVK is not already set.
+// The map must be keyed by ActionName.
 func (m *NodeAnnotationManager) EnsureRemediationStateGVK(
 	ctx context.Context,
 	nodeName string,
-	resourceRefs map[string]MaintenanceResourceReference,
+	resourceRefsByAction map[string]MaintenanceResourceReference,
 ) error {
 	err := retry.RetryOnConflict(conflictBackoff, func() error {
 		state, node, err := m.GetRemediationState(ctx, nodeName)
@@ -163,7 +168,7 @@ func (m *NodeAnnotationManager) EnsureRemediationStateGVK(
 		changed := false
 
 		for group, groupState := range state.EquivalenceGroups {
-			resourceRef, exists := resourceRefs[groupState.ActionName]
+			resourceRef, exists := resourceRefsByAction[groupState.ActionName]
 			if !exists {
 				continue
 			}
@@ -207,14 +212,22 @@ func (m *NodeAnnotationManager) EnsureRemediationStateGVK(
 	return nil
 }
 
+func validateMaintenanceResourceReference(resourceRef MaintenanceResourceReference) error {
+	if resourceRef.APIGroup == "" || resourceRef.Version == "" || resourceRef.Kind == "" {
+		return fmt.Errorf("apiGroup, version, and kind must be non-empty")
+	}
+
+	return nil
+}
+
 func backfillResourceReference(
 	groupState *EquivalenceGroupState,
 	resourceRef MaintenanceResourceReference,
 ) bool {
 	changed := false
 
-	if groupState.ApiGroup == "" && resourceRef.ApiGroup != "" {
-		groupState.ApiGroup = resourceRef.ApiGroup
+	if groupState.APIGroup == "" && resourceRef.APIGroup != "" {
+		groupState.APIGroup = resourceRef.APIGroup
 		changed = true
 	}
 

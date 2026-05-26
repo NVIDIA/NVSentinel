@@ -527,28 +527,28 @@ func (r *FaultRemediationReconciler) ensureRemediationStateGVK(ctx context.Conte
 		return nil
 	}
 
-	resourceRefs := maintenanceResourceReferences(remediationConfig.RemediationActions)
-	if len(resourceRefs) == 0 {
+	resourceRefsByAction := maintenanceResourceReferences(remediationConfig.RemediationActions)
+	if len(resourceRefsByAction) == 0 {
 		return nil
 	}
 
-	return r.annotationManager.EnsureRemediationStateGVK(ctx, nodeName, resourceRefs)
+	return r.annotationManager.EnsureRemediationStateGVK(ctx, nodeName, resourceRefsByAction)
 }
 
 func maintenanceResourceReferences(
 	remediationActions map[string]config.MaintenanceResource,
 ) map[string]annotation.MaintenanceResourceReference {
-	resourceRefs := make(map[string]annotation.MaintenanceResourceReference, len(remediationActions))
+	resourceRefsByAction := make(map[string]annotation.MaintenanceResourceReference, len(remediationActions))
 	for actionName, resource := range remediationActions {
-		resourceRefs[actionName] = annotation.MaintenanceResourceReference{
+		resourceRefsByAction[actionName] = annotation.MaintenanceResourceReference{
 			Namespace: resource.Namespace,
 			Version:   resource.Version,
-			ApiGroup:  resource.ApiGroup,
+			APIGroup:  resource.ApiGroup,
 			Kind:      resource.Kind,
 		}
 	}
 
-	return resourceRefs
+	return resourceRefsByAction
 }
 
 // trySkipEvent returns (result, err, true) when the event should be skipped; otherwise (zero, nil, false).
@@ -1044,10 +1044,10 @@ func resourceReferenceFromState(
 	resourceRef := annotation.MaintenanceResourceReference{
 		Namespace: groupState.Namespace,
 		Version:   groupState.Version,
-		ApiGroup:  groupState.ApiGroup,
+		APIGroup:  groupState.APIGroup,
 		Kind:      groupState.Kind,
 	}
-	if resourceRef.ApiGroup == "" || resourceRef.Version == "" || resourceRef.Kind == "" {
+	if resourceRef.APIGroup == "" || resourceRef.Version == "" || resourceRef.Kind == "" {
 		return annotation.MaintenanceResourceReference{}, false
 	}
 
@@ -1068,6 +1068,9 @@ func (r *FaultRemediationReconciler) completeConditionTypeForStoredState(
 
 	resource, exists := remediationConfig.RemediationActions[groupState.ActionName]
 	if !exists {
+		return "", false
+	}
+	if strings.TrimSpace(resource.CompleteConditionType) == "" {
 		return "", false
 	}
 

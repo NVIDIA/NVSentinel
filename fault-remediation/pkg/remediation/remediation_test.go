@@ -433,7 +433,7 @@ spec:
 	groupState := state.EquivalenceGroups["restart"]
 	assert.Equal(t, crName, groupState.MaintenanceCR)
 	assert.Equal(t, "rendered-namespace", groupState.Namespace)
-	assert.Equal(t, "rendered.example.com", groupState.ApiGroup)
+	assert.Equal(t, "rendered.example.com", groupState.APIGroup)
 	assert.Equal(t, "v2", groupState.Version)
 	assert.Equal(t, "RenderedMaintenance", groupState.Kind)
 }

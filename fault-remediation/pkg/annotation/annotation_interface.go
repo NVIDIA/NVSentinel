@@ -37,10 +37,12 @@ type NodeAnnotationManagerInterface interface {
 		actionName string,
 		resourceRef MaintenanceResourceReference,
 	) error
+	// EnsureRemediationStateGVK backfills legacy annotation entries using
+	// resource references keyed by ActionName.
 	EnsureRemediationStateGVK(
 		ctx context.Context,
 		nodeName string,
-		resourceRefs map[string]MaintenanceResourceReference,
+		resourceRefsByAction map[string]MaintenanceResourceReference,
 	) error
 	ClearRemediationState(ctx context.Context, nodeName string) error
 	RemoveGroupsFromState(ctx context.Context, nodeName string, groups []string) error
@@ -56,7 +58,7 @@ type RemediationStateAnnotation struct {
 type MaintenanceResourceReference struct {
 	Namespace string
 	Version   string
-	ApiGroup  string
+	APIGroup  string
 	Kind      string
 }
 
@@ -72,6 +74,6 @@ type EquivalenceGroupState struct {
 	// Concrete resource identity for the CR that was created.
 	Namespace string `json:"namespace,omitempty"`
 	Version   string `json:"version,omitempty"`
-	ApiGroup  string `json:"apiGroup,omitempty"`
+	APIGroup  string `json:"apiGroup,omitempty"`
 	Kind      string `json:"kind,omitempty"`
 }

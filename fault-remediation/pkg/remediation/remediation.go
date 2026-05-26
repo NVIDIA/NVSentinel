@@ -355,10 +355,10 @@ func maintenanceResourceReferenceFromObject(
 	resourceRef := annotation.MaintenanceResourceReference{
 		Namespace: maintenance.GetNamespace(),
 		Version:   gvk.Version,
-		ApiGroup:  gvk.Group,
+		APIGroup:  gvk.Group,
 		Kind:      gvk.Kind,
 	}
-	if resourceRef.ApiGroup == "" || resourceRef.Version == "" || resourceRef.Kind == "" {
+	if resourceRef.APIGroup == "" || resourceRef.Version == "" || resourceRef.Kind == "" {
 		return annotation.MaintenanceResourceReference{}, fmt.Errorf(
 			"rendered maintenance CR must set apiVersion group, version, and kind",
 		)

@@ -174,7 +174,7 @@ type MockNodeAnnotationManager struct {
 	existingCRCreated time.Time
 	createdByGroup    map[string]time.Time
 	actionByGroup     map[string]string
-	ensureGVKFn       func(ctx context.Context, nodeName string, resourceRefs map[string]annotation.MaintenanceResourceReference) error
+	ensureGVKFn       func(ctx context.Context, nodeName string, resourceRefsByAction map[string]annotation.MaintenanceResourceReference) error
 }
 
 func (m *MockNodeAnnotationManager) GetRemediationState(ctx context.Context, nodeName string) (*annotation.RemediationStateAnnotation, *corev1.Node, error) {
@@ -204,7 +204,7 @@ func (m *MockNodeAnnotationManager) GetRemediationState(ctx context.Context, nod
 			MaintenanceCR: crName,
 			CreatedAt:     groupCreatedAt,
 			ActionName:    actionName,
-			ApiGroup:      "janitor.dgxc.nvidia.com",
+			APIGroup:      "janitor.dgxc.nvidia.com",
 			Version:       "v1alpha1",
 			Kind:          "RebootNode",
 		}
@@ -220,10 +220,10 @@ func (m *MockNodeAnnotationManager) UpdateRemediationState(ctx context.Context, 
 func (m *MockNodeAnnotationManager) EnsureRemediationStateGVK(
 	ctx context.Context,
 	nodeName string,
-	resourceRefs map[string]annotation.MaintenanceResourceReference,
+	resourceRefsByAction map[string]annotation.MaintenanceResourceReference,
 ) error {
 	if m.ensureGVKFn != nil {
-		return m.ensureGVKFn(ctx, nodeName, resourceRefs)
+		return m.ensureGVKFn(ctx, nodeName, resourceRefsByAction)
 	}
 
 	return nil
@@ -1022,11 +1022,11 @@ func TestHandleRemediationEventEnsuresGVKBeforeStatusCheck(t *testing.T) {
 		ensureGVKFn: func(
 			_ context.Context,
 			gotNodeName string,
-			resourceRefs map[string]annotation.MaintenanceResourceReference,
+			resourceRefsByAction map[string]annotation.MaintenanceResourceReference,
 		) error {
 			ensureCalled = true
 			assert.Equal(t, nodeName, gotNodeName)
-			assert.Equal(t, "RebootNode", resourceRefs[protos.RecommendedAction_RESTART_BM.String()].Kind)
+			assert.Equal(t, "RebootNode", resourceRefsByAction[protos.RecommendedAction_RESTART_BM.String()].Kind)
 
 			return nil
 		},
@@ -1040,7 +1040,7 @@ func TestHandleRemediationEventEnsuresGVKBeforeStatusCheck(t *testing.T) {
 				statusChecked = true
 				assert.True(t, ensureCalled, "GVK annotation should be ensured before CR status checks")
 				assert.Equal(t, "existing-cr", crName)
-				assert.Equal(t, "janitor.dgxc.nvidia.com", resourceRef.ApiGroup)
+				assert.Equal(t, "janitor.dgxc.nvidia.com", resourceRef.APIGroup)
 				assert.Equal(t, "v1alpha1", resourceRef.Version)
 				assert.Equal(t, "RebootNode", resourceRef.Kind)
 				assert.Equal(t, "NodeReady", completeConditionType)
@@ -1078,7 +1078,7 @@ func TestEvaluateExistingCRUsesStoredReference(t *testing.T) {
 		getCRStateForReferenceFn: func(_ context.Context, crName string,
 			resourceRef annotation.MaintenanceResourceReference, completeConditionType string) crstatus.CRState {
 			assert.Equal(t, "stored-cr", crName)
-			assert.Equal(t, "stored.example.com", resourceRef.ApiGroup)
+			assert.Equal(t, "stored.example.com", resourceRef.APIGroup)
 			assert.Equal(t, "v9", resourceRef.Version)
 			assert.Equal(t, "StoredMaintenance", resourceRef.Kind)
 			assert.Equal(t, "stored-namespace", resourceRef.Namespace)
@@ -1108,7 +1108,7 @@ func TestEvaluateExistingCRUsesStoredReference(t *testing.T) {
 		state: annotation.EquivalenceGroupState{
 			MaintenanceCR: "stored-cr",
 			ActionName:    protos.RecommendedAction_RESTART_BM.String(),
-			ApiGroup:      "stored.example.com",
+			APIGroup:      "stored.example.com",
 			Version:       "v9",
 			Kind:          "StoredMaintenance",
 			Namespace:     "stored-namespace",
@@ -1117,6 +1117,26 @@ func TestEvaluateExistingCRUsesStoredReference(t *testing.T) {
 
 	assert.False(t, decision.shouldCreate)
 	assert.Equal(t, "stored-cr", decision.crName)
+}
+
+func TestCompleteConditionTypeForStoredStateRejectsEmptyConfig(t *testing.T) {
+	mockK8sClient := &MockK8sClient{
+		configOverride: &config.TomlConfig{
+			RemediationActions: map[string]config.MaintenanceResource{
+				protos.RecommendedAction_RESTART_BM.String(): {
+					CompleteConditionType: " ",
+				},
+			},
+		},
+	}
+	r := NewFaultRemediationReconciler(nil, nil, nil, ReconcilerConfig{RemediationClient: mockK8sClient}, false)
+
+	completeConditionType, ok := r.completeConditionTypeForStoredState(annotation.EquivalenceGroupState{
+		ActionName: protos.RecommendedAction_RESTART_BM.String(),
+	})
+
+	assert.False(t, ok)
+	assert.Empty(t, completeConditionType)
 }
 
 func TestCRBasedDeduplication(t *testing.T) {

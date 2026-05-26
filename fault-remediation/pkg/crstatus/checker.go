@@ -18,6 +18,7 @@ import (
 	"context"
 	"log/slog"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -49,6 +50,7 @@ func NewCRStatusChecker(
 	}
 }
 
+// GetCRStateForReference fetches the stored maintenance CR reference and returns its current remediation state.
 func (c *CRStatusChecker) GetCRStateForReference(
 	ctx context.Context,
 	crName string,
@@ -61,7 +63,7 @@ func (c *CRStatusChecker) GetCRStateForReference(
 	}
 
 	gvk := schema.GroupVersionKind{
-		Group:   resourceRef.ApiGroup,
+		Group:   resourceRef.APIGroup,
 		Version: resourceRef.Version,
 		Kind:    resourceRef.Kind,
 	}
@@ -76,8 +78,14 @@ func (c *CRStatusChecker) GetCRStateForReference(
 	key := client.ObjectKey{Name: crName, Namespace: resourceRef.Namespace}
 
 	if err := c.client.Get(ctx, key, obj); err != nil {
-		slog.WarnContext(ctx, "Failed to get CR, allowing create", "crName", crName, "gvk", gvk.String(), "error", err)
-		return CRStateNotFound
+		if apierrors.IsNotFound(err) {
+			slog.InfoContext(ctx, "Stored CR was not found", "crName", crName, "gvk", gvk.String())
+			return CRStateNotFound
+		}
+
+		slog.ErrorContext(ctx, "Failed to get CR, keeping create blocked",
+			"crName", crName, "gvk", gvk.String(), "error", err)
+		return CRStateInProgress
 	}
 
 	return c.checkConditionType(obj, completeConditionType)

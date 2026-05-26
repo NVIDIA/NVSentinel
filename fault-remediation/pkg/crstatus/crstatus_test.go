@@ -16,11 +16,14 @@ package crstatus
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
 )
@@ -142,11 +145,35 @@ func TestGetCRStateForReferenceUsesStoredReference(t *testing.T) {
 	checker := NewCRStatusChecker(fakeClient, false)
 
 	state := checker.GetCRStateForReference(context.Background(), "stored-cr", annotation.MaintenanceResourceReference{
-		ApiGroup:  "stored.example.com",
+		APIGroup:  "stored.example.com",
 		Version:   "v9",
 		Kind:      "StoredMaintenance",
 		Namespace: "stored-namespace",
 	}, "NodeReady")
 
 	assert.Equal(t, CRStateSucceeded, state)
+}
+
+func TestGetCRStateForReferenceBlocksOnGetError(t *testing.T) {
+	fakeClient := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(
+			_ context.Context,
+			_ client.WithWatch,
+			_ client.ObjectKey,
+			_ client.Object,
+			_ ...client.GetOption,
+		) error {
+			return fmt.Errorf("api server unavailable")
+		},
+	}).Build()
+	checker := NewCRStatusChecker(fakeClient, false)
+
+	state := checker.GetCRStateForReference(context.Background(), "stored-cr", annotation.MaintenanceResourceReference{
+		APIGroup:  "stored.example.com",
+		Version:   "v9",
+		Kind:      "StoredMaintenance",
+		Namespace: "stored-namespace",
+	}, "NodeReady")
+
+	assert.Equal(t, CRStateInProgress, state)
 }

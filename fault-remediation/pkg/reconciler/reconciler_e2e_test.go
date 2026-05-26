@@ -443,7 +443,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		assert.Contains(t, state.EquivalenceGroups, "restart")
 		assert.NotEmpty(t, state.EquivalenceGroups["restart"].MaintenanceCR)
 		assert.Equal(t, protos.RecommendedAction_RESTART_BM.String(), state.EquivalenceGroups["restart"].ActionName)
-		assert.Equal(t, "janitor.dgxc.nvidia.com", state.EquivalenceGroups["restart"].ApiGroup)
+		assert.Equal(t, "janitor.dgxc.nvidia.com", state.EquivalenceGroups["restart"].APIGroup)
 		assert.Equal(t, "v1alpha1", state.EquivalenceGroups["restart"].Version)
 		assert.Equal(t, "RebootNode", state.EquivalenceGroups["restart"].Kind)
 		assert.Empty(t, state.EquivalenceGroups["restart"].Namespace)
@@ -1209,7 +1209,7 @@ func TestExistingCRStatusUsesStoredGVKAnnotation_E2E(t *testing.T) {
 		existingCRName,
 		protos.RecommendedAction_RESTART_BM.String(),
 		annotation.MaintenanceResourceReference{
-			ApiGroup: "janitor.dgxc.nvidia.com",
+			APIGroup: "janitor.dgxc.nvidia.com",
 			Version:  "v1alpha1",
 			Kind:     "RebootNode",
 		},
