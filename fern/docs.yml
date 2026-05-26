@@ -7,14 +7,10 @@ instances:
   - url: nvsentinel.docs.buildwithfern.com/nvsentinel
     custom-domain: docs.nvidia.com/nvsentinel
     multi-source: true
-
 title: NVIDIA NVSentinel Documentation
-
 global-theme: nvidia
-
 metadata:
   canonical-host: "docs.nvidia.com/nvsentinel"
-
 products:
   - display-name: NVSentinel
     slug: /
@@ -34,11 +30,6 @@ products:
         path: versions/v1.4.0.yml
         slug: v1.4.0
         availability: stable
-      - display-name: "v1.3.0"
-        path: versions/v1.3.0.yml
-        slug: v1.3.0
-        availability: stable
-
 redirects:
   - source: "/nvsentinel/index.html"
     destination: "/nvsentinel/"
@@ -46,11 +37,9 @@ redirects:
     destination: "/nvsentinel/:path*"
   - source: "/nvsentinel/dev/:path*"
     destination: "/nvsentinel/:path*"
-
 logo:
   href: /nvsentinel
   right-text: Documentation
-
 navbar-links:
   - type: github
     value: https://github.com/NVIDIA/NVSentinel
