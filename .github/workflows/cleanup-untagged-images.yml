@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: Cleanup Untagged Container Images
+name: Cleanup Container Images
 
 on:
   # Run daily at midnight UTC
@@ -30,9 +30,9 @@ on:
           - 'true'
           - 'false'
       cut_off:
-        description: 'Delete images older than this (e.g., 1h, 1d, 7d, 30d)'
+        description: 'Delete images older than this (e.g., 1h, 1d, 7d, 30 days)'
         required: true
-        default: '30d'
+        default: '30 days'
         type: string
 
 concurrency:
@@ -44,8 +44,8 @@ permissions:
   contents: read
 
 jobs:
-  cleanup-untagged-images:
-    name: Cleanup Untagged Images
+  cleanup-container-images:
+    name: Cleanup Container Images
     runs-on: linux-amd64-cpu32
     if: github.repository == 'NVIDIA/NVSentinel'
     timeout-minutes: 30
@@ -56,8 +56,10 @@ jobs:
         package:
           - nvsentinel
           - nvsentinel/platform-connectors
+          - nvsentinel/plugins-slinky-drainer
           - nvsentinel-platform-connectors
           - nvsentinel/gpu-health-monitor
+          - nvsentinel/gpu-reset
           - nvsentinel/syslog-health-monitor
           - nvsentinel/csp-health-monitor
           - nvsentinel-gpu-health-monitor
@@ -79,6 +81,7 @@ jobs:
           - nvsentinel/log-collector
           - nvsentinel/file-server-cleanup
           - nvsentinel/janitor
+          - nvsentinel/janitor-provider
           - nvsentinel/health-events-analyzer
           - nvsentinel/maintenance-notifier
           - nvsentinel/event-exporter
@@ -92,6 +95,7 @@ jobs:
           - nvsentinel/preflight-dcgm-diag
           - nvsentinel/nic-health-monitor
           - nvsentinel/preflight-nccl-allreduce
+          - nvsentinel/preflight-nccl-loopback
 
     steps:
       - name: Delete untagged images for ${{ matrix.package }}
@@ -100,12 +104,23 @@ jobs:
           account: NVIDIA
           token: ${{ secrets.GITHUB_TOKEN }}
           image-names: ${{ matrix.package }}
-          cut-off: ${{ github.event.inputs.cut_off || '30d' }}
+          cut-off: ${{ github.event.inputs.cut_off || '30 days' }}
           # Keep at least 5 most recent untagged versions as safety buffer
           keep-n-most-recent: 5
-          dry-run: ${{ github.event.inputs.dry_run || 'true' }}
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'false' }}
           # Only target untagged images - preserve all tagged releases
           tag-selection: untagged
           # Use updated_at timestamp for age calculation
           timestamp-to-use: updated_at
+
+      - name: Delete old main branch images for ${{ matrix.package }}
+        uses: dataaxiom/ghcr-cleanup-action@v1.2.1
+        with:
+          owner: NVIDIA
+          package: ${{ matrix.package }}
+          delete-tags: main-*
+          older-than: ${{ github.event.inputs.cut_off || '30 days' }}
+          keep-n-tagged: 10
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'false' }}
+          validate: true
 
