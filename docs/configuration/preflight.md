@@ -181,11 +181,36 @@ Gang discovery identifies pods that belong to the same scheduling group so multi
 
 Two discovery mechanisms are supported:
 
-### Native Kubernetes (1.35+): workloadRef
+### Native Kubernetes: schedulingGroup / workloadRef
 
-> The `Workload` resource (`scheduling.k8s.io/v1alpha1`) and `spec.workloadRef` are alpha in Kubernetes 1.35 and disabled by default. Enable the `GenericWorkload` feature gate on the API server and scheduler to use this path.
+The default when `gangDiscovery` is left empty (`{}`). Preflight first uses the Kubernetes 1.36 native PodGroup API when available, then falls back to the Kubernetes 1.35 native Workload API.
 
-The default when `gangDiscovery` is left empty (`{}`). Each pod links to a `Workload` resource via `spec.workloadRef`:
+> The `PodGroup` resource (`scheduling.k8s.io/v1alpha2`) and `spec.schedulingGroup` are alpha in Kubernetes 1.36 and disabled by default. Enable the `GenericWorkload` feature gate on the API server and scheduler to use this path.
+
+In Kubernetes 1.36, each pod links to a `PodGroup` resource via `spec.schedulingGroup`:
+
+```yaml
+spec:
+  schedulingGroup:
+    podGroupName: training-workers
+```
+
+The PodGroup object contains a gang policy with `minCount`:
+
+```yaml
+apiVersion: scheduling.k8s.io/v1alpha2
+kind: PodGroup
+metadata:
+  name: training-workers
+spec:
+  schedulingPolicy:
+    gang:
+      minCount: 2
+```
+
+No `gangDiscovery` configuration is needed for this path.
+
+In Kubernetes 1.35, each pod links to a native `Workload` resource via `spec.workloadRef`:
 
 ```yaml
 spec:
@@ -194,7 +219,7 @@ spec:
     podGroup: workers
 ```
 
-The Workload object contains a gang policy with `minCount`:
+The Workload object contains pod groups and gang policy:
 
 ```yaml
 apiVersion: scheduling.k8s.io/v1alpha1
@@ -209,7 +234,11 @@ spec:
           minCount: 2
 ```
 
-No `gangDiscovery` configuration is needed for this path.
+No `gangDiscovery` configuration is needed for this fallback path either.
+
+The default chart RBAC grants read access to both native resources:
+`scheduling.k8s.io/podgroups` for Kubernetes 1.36 and
+`scheduling.k8s.io/workloads` for Kubernetes 1.35.
 
 ### PodGroup-based schedulers (Volcano, Run:ai / OSMO, and similar)
 

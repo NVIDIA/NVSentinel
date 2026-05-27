@@ -28,14 +28,33 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// WorkloadGVK is the GroupVersionKind for K8s 1.35+ Workload resources.
+// PodGroupGVK is the GroupVersionKind for K8s native PodGroup resources.
+var PodGroupGVK = schema.GroupVersionKind{
+	Group:   "scheduling.k8s.io",
+	Version: "v1alpha2",
+	Kind:    "PodGroup",
+}
+
+// WorkloadGVK is the GroupVersionKind for K8s 1.35 Workload resources.
 var WorkloadGVK = schema.GroupVersionKind{
 	Group:   "scheduling.k8s.io",
 	Version: "v1alpha1",
 	Kind:    "Workload",
 }
 
-// WorkloadRefDiscoverer discovers gang members using K8s 1.35+ native workloadRef.
+var podGVK = schema.GroupVersionKind{
+	Group:   "",
+	Version: "v1",
+	Kind:    "Pod",
+}
+
+var podListGVK = schema.GroupVersionKind{
+	Group:   "",
+	Version: "v1",
+	Kind:    "PodList",
+}
+
+// WorkloadRefDiscoverer discovers gang members using K8s 1.35 native workloadRef.
 // Pods are linked to Workloads via spec.workloadRef:
 //
 //	spec:
@@ -59,15 +78,13 @@ func (w *WorkloadRefDiscoverer) Name() string {
 
 // CanHandle returns true if the pod has a workloadRef.
 func (w *WorkloadRefDiscoverer) CanHandle(pod *corev1.Pod) bool {
-	// Check if pod has workloadRef in spec
-	// Note: As of K8s 1.35, workloadRef is a new field in PodSpec
-	return getWorkloadRefName(pod) != ""
+	workloadName, _ := w.getPodWorkloadRef(context.Background(), pod.Namespace, pod.Name)
+	return workloadName != ""
 }
 
 // ExtractGangID extracts the gang identifier from a pod's workloadRef.
 func (w *WorkloadRefDiscoverer) ExtractGangID(pod *corev1.Pod) string {
-	workloadName := getWorkloadRefName(pod)
-	podGroup := getWorkloadRefPodGroup(pod)
+	workloadName, podGroup := w.getPodWorkloadRef(context.Background(), pod.Namespace, pod.Name)
 
 	if workloadName == "" {
 		return ""
@@ -85,13 +102,12 @@ func (w *WorkloadRefDiscoverer) DiscoverPeers(
 	ctx context.Context,
 	pod *corev1.Pod,
 ) (*types.GangInfo, error) {
-	if !w.CanHandle(pod) {
+	workloadName, podGroup := w.getPodWorkloadRef(ctx, pod.Namespace, pod.Name)
+	if workloadName == "" {
 		return nil, nil
 	}
 
-	workloadName := getWorkloadRefName(pod)
-	podGroup := getWorkloadRefPodGroup(pod)
-	gangID := w.ExtractGangID(pod)
+	gangID := formatWorkloadRefGangID(pod.Namespace, workloadName, podGroup)
 
 	slog.Info("Discovering workloadRef gang",
 		"pod", pod.Name,
@@ -149,8 +165,10 @@ func (w *WorkloadRefDiscoverer) findPeers(
 	ctx context.Context,
 	namespace, workloadName, podGroup string,
 ) ([]types.PeerInfo, error) {
-	var podList corev1.PodList
-	if err := w.client.List(ctx, &podList, client.InNamespace(namespace)); err != nil {
+	podList := &unstructured.UnstructuredList{}
+	podList.SetGroupVersionKind(podListGVK)
+
+	if err := w.client.List(ctx, podList, client.InNamespace(namespace)); err != nil {
 		return nil, fmt.Errorf("failed to list pods in namespace %s: %w", namespace, err)
 	}
 
@@ -163,11 +181,14 @@ func (w *WorkloadRefDiscoverer) findPeers(
 			continue
 		}
 
+		podIP, _, _ := unstructured.NestedString(p.Object, "status", "podIP")
+		nodeName, _, _ := unstructured.NestedString(p.Object, "spec", "nodeName")
+
 		peers = append(peers, types.PeerInfo{
-			PodName:   p.Name,
-			PodIP:     p.Status.PodIP,
-			NodeName:  p.Spec.NodeName,
-			Namespace: p.Namespace,
+			PodName:   p.GetName(),
+			PodIP:     podIP,
+			NodeName:  nodeName,
+			Namespace: p.GetNamespace(),
 		})
 	}
 
@@ -175,17 +196,19 @@ func (w *WorkloadRefDiscoverer) findPeers(
 }
 
 // isPeerMatch checks if a pod matches the workloadRef criteria.
-func (w *WorkloadRefDiscoverer) isPeerMatch(p *corev1.Pod, workloadName, podGroup string) bool {
-	pWorkloadName := getWorkloadRefName(p)
+func (w *WorkloadRefDiscoverer) isPeerMatch(p *unstructured.Unstructured, workloadName, podGroup string) bool {
+	pWorkloadName, pPodGroup := getUnstructuredWorkloadRef(p)
 	if pWorkloadName != workloadName {
 		return false
 	}
 
-	if podGroup != "" && getWorkloadRefPodGroup(p) != podGroup {
+	if podGroup != "" && pPodGroup != podGroup {
 		return false
 	}
 
-	return p.Status.Phase == corev1.PodRunning || p.Status.Phase == corev1.PodPending
+	phase, _, _ := unstructured.NestedString(p.Object, "status", "phase")
+
+	return phase == string(corev1.PodRunning) || phase == string(corev1.PodPending)
 }
 
 // getWorkloadMinCount retrieves the minCount from a Workload's podGroup gang policy.
@@ -215,36 +238,243 @@ func (w *WorkloadRefDiscoverer) getWorkloadMinCount(
 			continue
 		}
 
-		// If podGroup specified, match it; otherwise take first one
+		// If podGroup specified, match it; otherwise take first one.
 		pgName, _, _ := unstructured.NestedString(pg, "name")
 		if podGroup != "" && pgName != podGroup {
 			continue
 		}
 
-		minCount, found, _ := unstructured.NestedInt64(pg, "policy", "gang", "minCount")
+		minCount, found, _ := nestedInt(pg, "policy", "gang", "minCount")
 		if found {
-			return int(minCount), nil
+			return minCount, nil
 		}
 	}
 
 	return 0, nil
 }
 
-// getWorkloadRefName extracts workloadRef.name from a pod.
-// Returns empty string if not present.
-func getWorkloadRefName(pod *corev1.Pod) string {
-	if pod.Spec.WorkloadRef != nil {
-		return pod.Spec.WorkloadRef.Name
+func (w *WorkloadRefDiscoverer) getPodWorkloadRef(ctx context.Context, namespace, name string) (string, string) {
+	if namespace == "" || name == "" {
+		return "", ""
 	}
 
-	return ""
+	pod := &unstructured.Unstructured{}
+	pod.SetGroupVersionKind(podGVK)
+
+	if err := w.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, pod); err != nil {
+		slog.Debug("Failed to get Pod while checking workloadRef",
+			"namespace", namespace,
+			"name", name,
+			"error", err)
+
+		return "", ""
+	}
+
+	return getUnstructuredWorkloadRef(pod)
 }
 
-// getWorkloadRefPodGroup extracts workloadRef.podGroup from a pod.
+func formatWorkloadRefGangID(namespace, workloadName, podGroup string) string {
+	if podGroup != "" {
+		return fmt.Sprintf("kubernetes-%s-%s-%s", namespace, workloadName, podGroup)
+	}
+
+	return fmt.Sprintf("kubernetes-%s-%s", namespace, workloadName)
+}
+
+func getUnstructuredWorkloadRef(pod *unstructured.Unstructured) (string, string) {
+	workloadName, _, _ := unstructured.NestedString(pod.Object, "spec", "workloadRef", "name")
+	podGroup, _, _ := unstructured.NestedString(pod.Object, "spec", "workloadRef", "podGroup")
+
+	return workloadName, podGroup
+}
+
+// KubernetesDiscoverer discovers gang members using K8s native schedulingGroup.
+// Pods are linked to PodGroups via spec.schedulingGroup:
+//
+//	spec:
+//	  schedulingGroup:
+//	    podGroupName: training-workers
+type KubernetesDiscoverer struct {
+	client client.Client
+}
+
+// NewKubernetesDiscoverer creates a new native Kubernetes gang discoverer.
+func NewKubernetesDiscoverer(c client.Client) *KubernetesDiscoverer {
+	return &KubernetesDiscoverer{
+		client: c,
+	}
+}
+
+func (w *KubernetesDiscoverer) Name() string {
+	return "kubernetes"
+}
+
+// CanHandle returns true if the pod has a schedulingGroup.
+func (w *KubernetesDiscoverer) CanHandle(pod *corev1.Pod) bool {
+	return getSchedulingPodGroupName(pod) != ""
+}
+
+// ExtractGangID extracts the gang identifier from a pod's schedulingGroup.
+func (w *KubernetesDiscoverer) ExtractGangID(pod *corev1.Pod) string {
+	podGroup := getSchedulingPodGroupName(pod)
+
+	if podGroup == "" {
+		return ""
+	}
+
+	return fmt.Sprintf("kubernetes-%s-%s", pod.Namespace, podGroup)
+}
+
+// DiscoverPeers finds all pods with the same schedulingGroup.
+func (w *KubernetesDiscoverer) DiscoverPeers(
+	ctx context.Context,
+	pod *corev1.Pod,
+) (*types.GangInfo, error) {
+	if !w.CanHandle(pod) {
+		return nil, nil
+	}
+
+	podGroup := getSchedulingPodGroupName(pod)
+	gangID := w.ExtractGangID(pod)
+
+	slog.Info("Discovering schedulingGroup gang",
+		"pod", pod.Name,
+		"namespace", pod.Namespace,
+		"podGroup", podGroup,
+		"gangID", gangID)
+
+	expectedMinCount := w.fetchExpectedMinCount(ctx, pod.Namespace, podGroup)
+
+	peers, err := w.findPeers(ctx, pod.Namespace, podGroup)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(peers) == 0 {
+		return nil, nil
+	}
+
+	if expectedMinCount == 0 {
+		expectedMinCount = len(peers)
+	}
+
+	slog.Info("Discovered schedulingGroup gang",
+		"gangID", gangID,
+		"podGroup", podGroup,
+		"expectedMinCount", expectedMinCount,
+		"discoveredPeers", len(peers))
+
+	return &types.GangInfo{
+		GangID:           gangID,
+		ExpectedMinCount: expectedMinCount,
+		Peers:            peers,
+	}, nil
+}
+
+// fetchExpectedMinCount retrieves expected count, logging any errors.
+func (w *KubernetesDiscoverer) fetchExpectedMinCount(
+	ctx context.Context,
+	namespace, podGroup string,
+) int {
+	count, err := w.getPodGroupMinCount(ctx, namespace, podGroup)
+	if err != nil {
+		slog.Warn("Failed to get PodGroup minCount, will use discovered pod count",
+			"error", err)
+	}
+
+	return count
+}
+
+// findPeers lists pods matching the schedulingGroup.
+func (w *KubernetesDiscoverer) findPeers(
+	ctx context.Context,
+	namespace, podGroup string,
+) ([]types.PeerInfo, error) {
+	var podList corev1.PodList
+	if err := w.client.List(ctx, &podList, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("failed to list pods in namespace %s: %w", namespace, err)
+	}
+
+	var peers []types.PeerInfo
+
+	for i := range podList.Items {
+		p := &podList.Items[i]
+
+		if !w.isPeerMatch(p, podGroup) {
+			continue
+		}
+
+		peers = append(peers, types.PeerInfo{
+			PodName:   p.Name,
+			PodIP:     p.Status.PodIP,
+			NodeName:  p.Spec.NodeName,
+			Namespace: p.Namespace,
+		})
+	}
+
+	return peers, nil
+}
+
+// isPeerMatch checks if a pod matches the schedulingGroup criteria.
+func (w *KubernetesDiscoverer) isPeerMatch(p *corev1.Pod, podGroup string) bool {
+	if getSchedulingPodGroupName(p) != podGroup {
+		return false
+	}
+
+	return p.Status.Phase == corev1.PodRunning || p.Status.Phase == corev1.PodPending
+}
+
+// getPodGroupMinCount retrieves the minCount from a PodGroup's gang policy.
+func (w *KubernetesDiscoverer) getPodGroupMinCount(
+	ctx context.Context,
+	namespace, name string,
+) (int, error) {
+	podGroup := &unstructured.Unstructured{}
+	podGroup.SetGroupVersionKind(PodGroupGVK)
+
+	if err := w.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, podGroup); err != nil {
+		return 0, fmt.Errorf("failed to get PodGroup %s/%s: %w", namespace, name, err)
+	}
+
+	minCount, found, err := nestedInt(podGroup.Object, "spec", "schedulingPolicy", "gang", "minCount")
+	if err != nil {
+		return 0, fmt.Errorf("failed to get gang minCount from PodGroup %s/%s: %w", namespace, name, err)
+	}
+
+	if found {
+		return minCount, nil
+	}
+
+	return 0, nil
+}
+
+func nestedInt(obj map[string]any, fields ...string) (int, bool, error) {
+	value, found, err := unstructured.NestedFieldNoCopy(obj, fields...)
+	if err != nil || !found {
+		return 0, found, err
+	}
+
+	switch v := value.(type) {
+	case int:
+		return v, true, nil
+	case int32:
+		return int(v), true, nil
+	case int64:
+		return int(v), true, nil
+	case float32:
+		return int(v), true, nil
+	case float64:
+		return int(v), true, nil
+	default:
+		return 0, true, fmt.Errorf("field %q is non-numeric type %T", fields, value)
+	}
+}
+
+// getSchedulingPodGroupName extracts schedulingGroup.podGroupName from a pod.
 // Returns empty string if not present.
-func getWorkloadRefPodGroup(pod *corev1.Pod) string {
-	if pod.Spec.WorkloadRef != nil {
-		return pod.Spec.WorkloadRef.PodGroup
+func getSchedulingPodGroupName(pod *corev1.Pod) string {
+	if pod.Spec.SchedulingGroup != nil && pod.Spec.SchedulingGroup.PodGroupName != nil {
+		return *pod.Spec.SchedulingGroup.PodGroupName
 	}
 
 	return ""

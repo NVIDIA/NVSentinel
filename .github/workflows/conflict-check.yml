@@ -1,0 +1,101 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Purpose: detect open PRs that no longer merge cleanly with main.
+# Contract: sweeps all PRs after main moves/manual dispatch and checks only the
+# copied PR on pull-request/[0-9]+ pushes; labels conflicts with needs-rebase
+# and removes that label once GitHub reports the PR mergeable.
+
+name: PR Merge Conflict Check
+
+on:
+  push:
+    branches:
+      - main
+      - "pull-request/[0-9]+"
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  conflicts:
+    name: Check open PRs for conflicts
+    if: github.repository == 'nvidia/nvsentinel'
+    runs-on: linux-amd64-cpu8
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    timeout-minutes: 10
+    steps:
+      - name: Check mergeable state
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          script: |
+            const label = 'needs-rebase';
+            const prBranch = context.ref.match(/^refs\/heads\/pull-request\/([0-9]+)$/);
+            const prs = prBranch
+              ? [(await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: Number(prBranch[1]),
+                })).data]
+              : await github.paginate(github.rest.pulls.list, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  state: 'open',
+                  per_page: 100,
+                });
+
+            for (const pr of prs) {
+              const { data: full } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+              });
+
+              const hasLabel = full.labels.some((item) => item.name === label);
+
+              if (full.mergeable === null) {
+                core.info(`PR #${pr.number}: mergeable is null, skipping until GitHub computes it`);
+                continue;
+              }
+
+              if (full.mergeable === false && !hasLabel) {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  labels: [label],
+                });
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  body: `@${pr.user.login} this PR now has merge conflicts with \`main\`. Please rebase to resolve them.`,
+                });
+              } else if (full.mergeable === true && hasLabel) {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  name: label,
+                });
+              }
+            }

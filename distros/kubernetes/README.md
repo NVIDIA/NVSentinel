@@ -118,7 +118,7 @@ global:
 
 #### Preflight
 
-GPU startup checks via a **mutating admission webhook** (DCGM diagnostics; optional NCCL tests). Disabled by default. Requires namespaces to be labeled for injection (for example `nvsentinel.nvidia.com/preflight=enabled`). Multi-node checks use **gang discovery** (native Workload API or PodGroup-style schedulers like Volcano and Run:ai) and ConfigMap coordination. See the [Preflight configuration guide](../../docs/configuration/preflight.md) for details.
+GPU startup checks via a **mutating admission webhook** (DCGM diagnostics; optional NCCL tests). Disabled by default. Requires namespaces to be labeled for injection (for example `nvsentinel.nvidia.com/preflight=enabled`). Multi-node checks use **gang discovery** (native Kubernetes gang APIs or PodGroup-style schedulers like Volcano and Run:ai) and ConfigMap coordination. See the [Preflight configuration guide](../../docs/configuration/preflight.md) for details.
 
 ```yaml
 global:

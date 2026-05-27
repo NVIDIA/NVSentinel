@@ -27,36 +27,39 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func makePodWithWorkloadRef(ns, workload, podGroup string) *corev1.Pod {
+func stringPtr(s string) *string {
+	return &s
+}
+
+func makePodWithSchedulingGroup(ns, podGroup string) *corev1.Pod {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns},
 	}
 
-	if workload != "" {
-		pod.Spec.WorkloadRef = &corev1.WorkloadReference{
-			Name:     workload,
-			PodGroup: podGroup,
+	if podGroup != "" {
+		pod.Spec.SchedulingGroup = &corev1.PodSchedulingGroup{
+			PodGroupName: stringPtr(podGroup),
 		}
 	}
 
 	return pod
 }
 
-func TestWorkloadRefDiscoverer_CanHandle(t *testing.T) {
-	d := NewWorkloadRefDiscoverer(nil)
+func TestKubernetesDiscoverer_CanHandle(t *testing.T) {
+	d := NewKubernetesDiscoverer(nil)
 
 	tests := []struct {
 		name     string
-		workload string
+		podGroup string
 		want     bool
 	}{
-		{"has workloadRef", "my-workload", true},
-		{"no workloadRef", "", false},
+		{"has schedulingGroup", "my-podgroup", true},
+		{"no schedulingGroup", "", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pod := makePodWithWorkloadRef("ns", tt.workload, "")
+			pod := makePodWithSchedulingGroup("ns", tt.podGroup)
 
 			if got := d.CanHandle(pod); got != tt.want {
 				t.Errorf("CanHandle() = %v, want %v", got, tt.want)
@@ -65,24 +68,22 @@ func TestWorkloadRefDiscoverer_CanHandle(t *testing.T) {
 	}
 }
 
-func TestWorkloadRefDiscoverer_ExtractGangID(t *testing.T) {
-	d := NewWorkloadRefDiscoverer(nil)
+func TestKubernetesDiscoverer_ExtractGangID(t *testing.T) {
+	d := NewKubernetesDiscoverer(nil)
 
 	tests := []struct {
 		name     string
 		ns       string
-		workload string
 		podGroup string
 		want     string
 	}{
-		{"workload only", "ml", "train", "", "kubernetes-ml-train"},
-		{"workload with podGroup", "ml", "train", "workers", "kubernetes-ml-train-workers"},
-		{"no workloadRef", "ml", "", "", ""},
+		{"has podGroup", "ml", "train-workers", "kubernetes-ml-train-workers"},
+		{"no schedulingGroup", "ml", "", ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pod := makePodWithWorkloadRef(tt.ns, tt.workload, tt.podGroup)
+			pod := makePodWithSchedulingGroup(tt.ns, tt.podGroup)
 
 			if got := d.ExtractGangID(pod); got != tt.want {
 				t.Errorf("ExtractGangID() = %q, want %q", got, tt.want)
@@ -91,8 +92,8 @@ func TestWorkloadRefDiscoverer_ExtractGangID(t *testing.T) {
 	}
 }
 
-func TestWorkloadRefDiscoverer_Name(t *testing.T) {
-	d := NewWorkloadRefDiscoverer(nil)
+func TestKubernetesDiscoverer_Name(t *testing.T) {
+	d := NewKubernetesDiscoverer(nil)
 
 	if got := d.Name(); got != "kubernetes" {
 		t.Errorf("Name() = %q, want %q", got, "kubernetes")
@@ -101,22 +102,18 @@ func TestWorkloadRefDiscoverer_Name(t *testing.T) {
 
 // --- DiscoverPeers tests ---
 
-func makeWorkloadCRD(namespace, name string, podGroups []map[string]any) *unstructured.Unstructured {
+func makeNativePodGroup(namespace, name string, minCount int64) *unstructured.Unstructured {
 	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(WorkloadGVK)
+	obj.SetGroupVersionKind(PodGroupGVK)
 	obj.SetNamespace(namespace)
 	obj.SetName(name)
-	if podGroups != nil {
-		pgSlice := make([]any, len(podGroups))
-		for i, pg := range podGroups {
-			pgSlice[i] = pg
-		}
-		_ = unstructured.SetNestedSlice(obj.Object, pgSlice, "spec", "podGroups")
+	if minCount > 0 {
+		_ = unstructured.SetNestedField(obj.Object, minCount, "spec", "schedulingPolicy", "gang", "minCount")
 	}
 	return obj
 }
 
-func makeWorkloadPod(name, namespace, workload, podGroup, ip string, phase corev1.PodPhase) *corev1.Pod {
+func makeSchedulingGroupPod(name, namespace, podGroup, ip string, phase corev1.PodPhase) *corev1.Pod {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -130,31 +127,28 @@ func makeWorkloadPod(name, namespace, workload, podGroup, ip string, phase corev
 			PodIP: ip,
 		},
 	}
-	if workload != "" {
-		pod.Spec.WorkloadRef = &corev1.WorkloadReference{
-			Name:     workload,
-			PodGroup: podGroup,
+	if podGroup != "" {
+		pod.Spec.SchedulingGroup = &corev1.PodSchedulingGroup{
+			PodGroupName: stringPtr(podGroup),
 		}
 	}
 	return pod
 }
 
-func TestWorkloadRefDiscoverer_DiscoverPeers(t *testing.T) {
-	t.Run("discovers peers by workloadRef", func(t *testing.T) {
-		workload := makeWorkloadCRD("default", "train", []map[string]any{
-			{"name": "workers", "policy": map[string]any{"gang": map[string]any{"minCount": int64(3)}}},
-		})
+func TestKubernetesDiscoverer_DiscoverPeers(t *testing.T) {
+	t.Run("discovers peers by schedulingGroup", func(t *testing.T) {
+		podGroup := makeNativePodGroup("default", "train-workers", 3)
 		pods := []runtime.Object{
-			makeWorkloadPod("w-0", "default", "train", "workers", "10.0.0.1", corev1.PodRunning),
-			makeWorkloadPod("w-1", "default", "train", "workers", "10.0.0.2", corev1.PodRunning),
-			makeWorkloadPod("w-2", "default", "train", "workers", "10.0.0.3", corev1.PodPending),
-			makeWorkloadPod("other", "default", "other-workload", "", "10.0.0.4", corev1.PodRunning),
+			makeSchedulingGroupPod("w-0", "default", "train-workers", "10.0.0.1", corev1.PodRunning),
+			makeSchedulingGroupPod("w-1", "default", "train-workers", "10.0.0.2", corev1.PodRunning),
+			makeSchedulingGroupPod("w-2", "default", "train-workers", "10.0.0.3", corev1.PodPending),
+			makeSchedulingGroupPod("other", "default", "other-podgroup", "10.0.0.4", corev1.PodRunning),
 		}
 
-		c := fake.NewClientBuilder().WithRuntimeObjects(append(pods, workload)...).Build()
-		d := NewWorkloadRefDiscoverer(c)
+		c := fake.NewClientBuilder().WithRuntimeObjects(append(pods, podGroup)...).Build()
+		d := NewKubernetesDiscoverer(c)
 
-		info, err := d.DiscoverPeers(context.Background(), makeWorkloadPod("w-0", "default", "train", "workers", "10.0.0.1", corev1.PodRunning))
+		info, err := d.DiscoverPeers(context.Background(), makeSchedulingGroupPod("w-0", "default", "train-workers", "10.0.0.1", corev1.PodRunning))
 		require.NoError(t, err)
 		require.NotNil(t, info)
 		assert.Len(t, info.Peers, 3)
@@ -163,33 +157,33 @@ func TestWorkloadRefDiscoverer_DiscoverPeers(t *testing.T) {
 	})
 
 	t.Run("no matching pods returns nil", func(t *testing.T) {
-		workload := makeWorkloadCRD("default", "train", nil)
-		c := fake.NewClientBuilder().WithRuntimeObjects(workload).Build()
-		d := NewWorkloadRefDiscoverer(c)
+		podGroup := makeNativePodGroup("default", "train-workers", 0)
+		c := fake.NewClientBuilder().WithRuntimeObjects(podGroup).Build()
+		d := NewKubernetesDiscoverer(c)
 
-		info, err := d.DiscoverPeers(context.Background(), makeWorkloadPod("w-0", "default", "train", "workers", "10.0.0.1", corev1.PodRunning))
+		info, err := d.DiscoverPeers(context.Background(), makeSchedulingGroupPod("w-0", "default", "train-workers", "10.0.0.1", corev1.PodRunning))
 		require.NoError(t, err)
 		assert.Nil(t, info)
 	})
 
-	t.Run("workload not found falls back to discovered count", func(t *testing.T) {
+	t.Run("podGroup not found falls back to discovered count", func(t *testing.T) {
 		pods := []runtime.Object{
-			makeWorkloadPod("w-0", "default", "missing", "workers", "10.0.0.1", corev1.PodRunning),
-			makeWorkloadPod("w-1", "default", "missing", "workers", "10.0.0.2", corev1.PodRunning),
+			makeSchedulingGroupPod("w-0", "default", "missing", "10.0.0.1", corev1.PodRunning),
+			makeSchedulingGroupPod("w-1", "default", "missing", "10.0.0.2", corev1.PodRunning),
 		}
 		c := fake.NewClientBuilder().WithRuntimeObjects(pods...).Build()
-		d := NewWorkloadRefDiscoverer(c)
+		d := NewKubernetesDiscoverer(c)
 
-		info, err := d.DiscoverPeers(context.Background(), makeWorkloadPod("w-0", "default", "missing", "workers", "10.0.0.1", corev1.PodRunning))
+		info, err := d.DiscoverPeers(context.Background(), makeSchedulingGroupPod("w-0", "default", "missing", "10.0.0.1", corev1.PodRunning))
 		require.NoError(t, err)
 		require.NotNil(t, info)
 		assert.Len(t, info.Peers, 2)
 		assert.Equal(t, 2, info.ExpectedMinCount, "should fall back to discovered peer count")
 	})
 
-	t.Run("pod without workloadRef returns nil", func(t *testing.T) {
+	t.Run("pod without schedulingGroup returns nil", func(t *testing.T) {
 		c := fake.NewClientBuilder().Build()
-		d := NewWorkloadRefDiscoverer(c)
+		d := NewKubernetesDiscoverer(c)
 
 		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default"}}
 		info, err := d.DiscoverPeers(context.Background(), pod)

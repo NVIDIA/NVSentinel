@@ -1,0 +1,77 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Documentation Update
+description: Request corrections or updates to existing NVSentinel documentation
+title: "[Docs]: "
+labels: ["area/docs", "needs-triage"]
+
+body:
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      description: Please review existing [documentation issues](https://github.com/NVIDIA/NVSentinel/issues?q=is%3Aopen+is%3Aissue+label%3Aarea%2Fdocs) before submitting.
+      options:
+        - label: I searched existing documentation and open documentation issues
+          required: true
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      description: By submitting this issue, you agree to follow our [Code of Conduct](https://github.com/NVIDIA/NVSentinel/blob/main/CODE_OF_CONDUCT.md).
+      options:
+        - label: I agree to follow NVSentinel's Code of Conduct
+          required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: How important is this documentation update?
+      options:
+        - Critical (currently preventing usage)
+        - High
+        - Medium
+        - Low (would be nice)
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Documentation Location
+      description: Link to the existing docs or source that needs correction.
+      placeholder: https://github.com/NVIDIA/NVSentinel/blob/main/docs/OVERVIEW.md
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is incorrect, outdated, unclear, or missing from the current documentation?
+      placeholder: The docs say to use one configuration key, but the Helm chart uses another.
+    validations:
+      required: true
+
+  - type: textarea
+    id: correction
+    attributes:
+      label: Proposed Correction
+      description: Optional. Suggest the wording or technical change you expect.
+      placeholder: Replace the old configuration key with the current value and add a short example.
+    validations:
+      required: false

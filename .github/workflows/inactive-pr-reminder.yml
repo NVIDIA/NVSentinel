@@ -1,0 +1,93 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Purpose: nudge PR authors before stale automation or reviewer drift kicks in.
+# Contract: runs on a schedule/manual trigger, skips frozen/do-not-merge PRs,
+# and posts at most one bot reminder per PR by checking existing comments.
+
+name: Inactive PR Reminder
+
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  remind:
+    name: Nudge inactive PRs
+    if: github.repository == 'nvidia/nvsentinel'
+    runs-on: linux-amd64-cpu8
+    permissions:
+      pull-requests: write
+    timeout-minutes: 10
+    steps:
+      - name: Check for inactive PRs
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          script: |
+            const now = new Date();
+            const msPerDay = 86400000;
+            const skipLabels = ['lifecycle/frozen', 'do-not-merge'];
+
+            const prs = await github.paginate(github.rest.pulls.list, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              sort: 'updated',
+              direction: 'asc',
+              per_page: 100,
+            });
+
+            for (const pr of prs) {
+              if (pr.labels.some((label) => skipLabels.includes(label.name))) {
+                continue;
+              }
+
+              const updated = new Date(pr.updated_at);
+              const daysInactive = Math.floor((now - updated) / msPerDay);
+
+              if (daysInactive < 14 || daysInactive >= 30) {
+                continue;
+              }
+
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                per_page: 100,
+              });
+
+              const alreadyReminded = comments.some((comment) =>
+                comment.user.type === 'Bot' &&
+                comment.body.includes('has been inactive for')
+              );
+
+              if (alreadyReminded) {
+                continue;
+              }
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body: `@${pr.user.login} this PR has been inactive for ${daysInactive} days. Do you need help finishing it, or should we close it for now? Feel free to reopen anytime.`,
+              });
+            }

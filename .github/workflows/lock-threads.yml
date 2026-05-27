@@ -1,0 +1,115 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Purpose: lock long-closed issues and PRs to prevent late thread drift.
+# Contract: processes all closed issues/PRs through pagination and only locks
+# unlocked threads inactive for the configured number of days (90 days).
+
+name: Lock Stale Threads
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lock:
+    name: Lock closed threads
+    if: github.repository == 'nvidia/nvsentinel'
+    runs-on: linux-amd64-cpu8
+    permissions:
+      issues: write
+      pull-requests: write
+    timeout-minutes: 10
+    steps:
+      - name: Lock inactive closed issues and PRs
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          script: |
+            const now = new Date();
+            const msPerDay = 86400000;
+            const inactiveDays = 90;  // lock threads inactive for 90 days
+
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'closed',
+              sort: 'updated',
+              direction: 'asc',
+              per_page: 100,
+            });
+
+            for (const issue of issues) {
+              if (issue.locked || issue.pull_request) {
+                continue;
+              }
+
+              const updated = new Date(issue.updated_at);
+              if ((now - updated) / msPerDay < inactiveDays) {
+                continue;
+              }
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: 'This issue has been automatically locked since it has been closed for 90 days with no further activity. Please open a new issue for related concerns.',
+              });
+              await github.rest.issues.lock({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                lock_reason: 'resolved',
+              });
+            }
+
+            const prs = await github.paginate(github.rest.pulls.list, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'closed',
+              sort: 'updated',
+              direction: 'asc',
+              per_page: 100,
+            });
+
+            for (const pr of prs) {
+              if (pr.locked) {
+                continue;
+              }
+
+              const updated = new Date(pr.updated_at);
+              if ((now - updated) / msPerDay < inactiveDays) {
+                continue;
+              }
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body: 'This pull request has been automatically locked since it has been closed for 90 days with no further activity. Please open a new pull request for related changes.',
+              });
+              await github.rest.issues.lock({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                lock_reason: 'resolved',
+              });
+            }

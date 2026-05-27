@@ -42,7 +42,7 @@ const (
 	drainCompleteConditionType       = "DrainComplete"
 	slurmNodeStateDrainConditionType = "SlurmNodeStateDrain"
 	annotationKey                    = "nodeset.slinky.slurm.net/node-cordon-reason"
-	annotationPrefix                 = "[J] [NVSentinel]"
+	annotationPrefix                 = "[T] [NVSentinel]"
 	nvsentinelStateLabelKey          = "dgxc.nvidia.com/nvsentinel-state"
 	drainRequestFinalizer            = "nvsentinel.nvidia.com/slinky-drainer"
 

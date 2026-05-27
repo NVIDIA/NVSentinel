@@ -2103,6 +2103,241 @@ func TestHandleColdStart_CancellationFlow(t *testing.T) {
 	_ = testDynamic.Resource(gvr).Delete(ctx, crName, metav1.DeleteOptions{})
 }
 
+// TestCancellationEvent_WritesCompletionMarker verifies that handleCancellationEvent writes
+// faultRemediated=true to the health event store, making cold start self-terminating for
+// cancellation events.
+func TestCancellationEvent_WritesCompletionMarker(t *testing.T) {
+	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := testutils.GenerateTestNodeName("test-cancel-marker")
+	createTestNode(ctx, nodeName, nil, map[string]string{"test": "label"})
+	defer func() {
+		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	cleanupNodeAnnotations(ctx, t, nodeName)
+
+	gvr := schema.GroupVersionResource{
+		Group:    "janitor.dgxc.nvidia.com",
+		Version:  "v1alpha1",
+		Resource: "rebootnodes",
+	}
+
+	remediationClient, err := createTestRemediationClient(false, restartRemediationActions)
+	require.NoError(t, err)
+
+	var capturedStatuses []datastore.HealthEventStatus
+	var capturedIDs []string
+	var mu sync.Mutex
+
+	localStore := &MockHealthEventStore{}
+	localStore.UpdateHealthEventStatusFn = func(ctx context.Context, id string, status datastore.HealthEventStatus) error {
+		mu.Lock()
+		capturedIDs = append(capturedIDs, id)
+		capturedStatuses = append(capturedStatuses, status)
+		mu.Unlock()
+		return nil
+	}
+
+	localWatcher := NewMockChangeStreamWatcher()
+	cfg := ReconcilerConfig{
+		RemediationClient: remediationClient,
+		StateManager:      statemanager.NewStateManager(testClient),
+		UpdateMaxRetries:  3,
+		UpdateRetryDelay:  100 * time.Millisecond,
+	}
+	localReconciler := NewFaultRemediationReconciler(nil, localWatcher, localStore, cfg, false)
+
+	// Pre-set the node state to match what fault-quarantine + node-drainer would have done.
+	_, err = cfg.StateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName,
+		statemanager.QuarantinedLabelValue, false)
+	require.NoError(t, err)
+	_, err = cfg.StateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName,
+		statemanager.DrainingLabelValue, false)
+	require.NoError(t, err)
+	_, err = cfg.StateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName,
+		statemanager.DrainSucceededLabelValue, false)
+	require.NoError(t, err)
+
+	// Step 1: Send a quarantine event to establish remediation state
+	t.Log("Step 1: Processing quarantine event to create CR and annotation")
+	eventID := "cancel-marker-event-1"
+	quarantineEvent := createQuarantineEvent(eventID, nodeName, protos.RecommendedAction_RESTART_BM)
+	quarantineEventToken := datastore.EventWithToken{
+		Event:       map[string]interface{}(quarantineEvent),
+		ResumeToken: []byte("cancel-marker-token-1"),
+	}
+	_, err = localReconciler.Reconcile(ctx, &quarantineEventToken)
+	require.NoError(t, err)
+
+	var crName string
+	require.Eventually(t, func() bool {
+		state, _, err := localReconciler.annotationManager.GetRemediationState(ctx, nodeName)
+		if err != nil {
+			return false
+		}
+		if grp, ok := state.EquivalenceGroups["restart"]; ok {
+			crName = grp.MaintenanceCR
+			return crName != ""
+		}
+		return false
+	}, 5*time.Second, 100*time.Millisecond, "CR and annotation should be created")
+
+	mu.Lock()
+	capturedIDs = nil
+	capturedStatuses = nil
+	mu.Unlock()
+
+	// Step 2: Send the cancellation event and capture only the cancellation store updates.
+	t.Log("Step 2: Sending cancellation event and capturing store updates")
+	cancelledEvent := createCancelledEvent(eventID, nodeName, protos.RecommendedAction_RESTART_BM)
+	cancelledEventToken := datastore.EventWithToken{
+		Event:       map[string]interface{}(cancelledEvent),
+		ResumeToken: []byte("cancel-marker-token-2"),
+	}
+	_, err = localReconciler.Reconcile(ctx, &cancelledEventToken)
+	require.NoError(t, err)
+
+	// Step 3: Wait for remediation state to be cleared (proves cancellation was processed)
+	require.Eventually(t, func() bool {
+		node, err := testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		_, hasAnnotation := node.Annotations[annotation.AnnotationKey]
+		return !hasAnnotation
+	}, 5*time.Second, 100*time.Millisecond, "Remediation annotation should be cleared")
+
+	// Step 4: Verify that UpdateHealthEventStatus was called with FaultRemediated=true
+	t.Log("Step 4: Verifying completion marker was written")
+	mu.Lock()
+	defer mu.Unlock()
+
+	require.NotEmpty(t, capturedStatuses, "UpdateHealthEventStatus should have been called for cancellation")
+
+	var foundCompletionMarker bool
+	for i, status := range capturedStatuses {
+		if capturedIDs[i] == eventID && status.FaultRemediated != nil && *status.FaultRemediated {
+			foundCompletionMarker = true
+			t.Logf("Completion marker written for event ID: %s (FaultRemediated=true)", capturedIDs[i])
+			assert.NotNil(t, status.LastRemediationTimestamp,
+				"LastRemediationTimestamp should be set when FaultRemediated=true")
+			break
+		}
+	}
+	require.True(t, foundCompletionMarker,
+		"handleCancellationEvent must write FaultRemediated=true for the cancelled event")
+
+	_ = testDynamic.Resource(gvr).Delete(ctx, crName, metav1.DeleteOptions{})
+}
+
+// TestColdStartCancellationQueryRequiresCompletionMarker verifies that the cold start
+// cancellation query includes the same completion gate as the remediation query leg.
+// Without this faultremediated==nil predicate, every historical cancellation can replay
+// on every restart.
+func TestColdStartCancellationQueryRequiresCompletionMarker(t *testing.T) {
+	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
+	defer cancel()
+
+	var capturedQuery map[string]interface{}
+	coldStartCallCount := 0
+
+	localStore := &MockHealthEventStore{}
+	localStore.FindHealthEventsByQueryBatchedFn = func(_ context.Context, builder datastore.QueryBuilder, _ int, fn func([]datastore.HealthEventWithStatus) error) error {
+		coldStartCallCount++
+		capturedQuery = builder.ToMongo()
+		return fn([]datastore.HealthEventWithStatus{})
+	}
+
+	remediationClient, err := createTestRemediationClient(false, restartRemediationActions)
+	require.NoError(t, err)
+	cfg := ReconcilerConfig{
+		RemediationClient: remediationClient,
+		StateManager:      statemanager.NewStateManager(testClient),
+		UpdateMaxRetries:  3,
+		UpdateRetryDelay:  100 * time.Millisecond,
+	}
+	localReconciler := NewFaultRemediationReconciler(nil, NewMockChangeStreamWatcher(), localStore, cfg, false)
+
+	localReconciler.HandleColdStart(ctx)
+
+	assert.Equal(t, 1, coldStartCallCount,
+		"Cold start should query the store exactly once")
+	require.NotNil(t, capturedQuery, "Cold start query should be captured")
+	require.True(t, coldStartCancellationQueryHasCompletionGate(capturedQuery),
+		"Cold start cancellation query must include faultremediated==nil gate")
+}
+
+func coldStartCancellationQueryHasCompletionGate(q map[string]interface{}) bool {
+	orConditions, ok := q["$or"].([]interface{})
+	if !ok {
+		return false
+	}
+
+	for _, rawCondition := range orConditions {
+		condition, ok := rawCondition.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		if isCancellationQueryLeg(condition) && hasFaultRemediatedNilGate(condition) {
+			return true
+		}
+
+		andConditions, ok := condition["$and"].([]interface{})
+		if !ok {
+			continue
+		}
+
+		hasCancellationFilter := false
+		hasCompletionGate := false
+		for _, rawAndCondition := range andConditions {
+			andCondition, ok := rawAndCondition.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			hasCancellationFilter = hasCancellationFilter || isCancellationQueryLeg(andCondition)
+			hasCompletionGate = hasCompletionGate || hasFaultRemediatedNilGate(andCondition)
+		}
+		if hasCancellationFilter && hasCompletionGate {
+			return true
+		}
+	}
+
+	return false
+}
+
+func isCancellationQueryLeg(condition map[string]interface{}) bool {
+	nodeQuarantined, ok := condition["healtheventstatus.nodequarantined"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+
+	values, ok := nodeQuarantined["$in"].([]interface{})
+	if !ok {
+		return false
+	}
+
+	foundUnquarantined := false
+	foundCancelled := false
+	for _, value := range values {
+		switch value {
+		case string(model.UnQuarantined):
+			foundUnquarantined = true
+		case string(model.Cancelled):
+			foundCancelled = true
+		}
+	}
+
+	return foundUnquarantined && foundCancelled
+}
+
+func hasFaultRemediatedNilGate(condition map[string]interface{}) bool {
+	value, ok := condition["healtheventstatus.faultremediated"]
+	return ok && value == nil
+}
+
 // TestCustomAction_E2E tests the full reconciler flow with a custom remediation action.
 // Exercises the complete path: raw MongoDB event → Reconcile → GetEffectiveActionName
 // → template rendering → CR creation.

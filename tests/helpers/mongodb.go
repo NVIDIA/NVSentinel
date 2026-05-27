@@ -74,6 +74,21 @@ func GetMongoDBPrimaryPodName(
 ) string {
 	t.Helper()
 
+	podName, found := TryGetMongoDBPrimaryPodName(ctx, t, client)
+	require.True(t, found, "no running MongoDB pod found in namespace %s", NVSentinelNamespace)
+
+	return podName
+}
+
+// TryGetMongoDBPrimaryPodName returns the writable primary MongoDB pod if this
+// test environment is backed by MongoDB. PostgreSQL-backed e2e jobs do not
+// deploy MongoDB, so callers that support both datastores can use the boolean
+// return value to skip MongoDB-specific assertions.
+func TryGetMongoDBPrimaryPodName(
+	ctx context.Context, t *testing.T, client klient.Client,
+) (string, bool) {
+	t.Helper()
+
 	for _, flavor := range []mongoDBFlavor{perconaFlavor, bitnamiFlavor} {
 		pods := &v1.PodList{}
 		err := client.Resources().List(ctx, pods, func(opts *metav1.ListOptions) {
@@ -98,19 +113,19 @@ func GetMongoDBPrimaryPodName(
 		for _, pod := range runningPods {
 			if strings.HasSuffix(pod.Name, "-0") {
 				t.Logf("Found primary MongoDB pod: %s (flavor: %s)", pod.Name, flavor.ContainerName)
-				return pod.Name
+				return pod.Name, true
 			}
 		}
 
 		// Fallback: return any running pod (shouldn't happen with 3-node RS).
 		t.Logf("Found running MongoDB pod (no -0 ordinal): %s (flavor: %s)", runningPods[0].Name, flavor.ContainerName)
 
-		return runningPods[0].Name
+		return runningPods[0].Name, true
 	}
 
-	require.Fail(t, "no running MongoDB pod found in namespace %s", NVSentinelNamespace)
+	t.Logf("No running MongoDB pod found in namespace %s", NVSentinelNamespace)
 
-	return ""
+	return "", false
 }
 
 // detectMongoDBFlavor determines whether the given pod belongs to a Bitnami or
@@ -320,4 +335,39 @@ func GetResumeTokenDoc(
 	stdout, _ := ExecMongosh(ctx, t, restConfig, client, mongoPod, js)
 
 	return strings.TrimSpace(stdout)
+}
+
+// CancelledHealthEventFaultRemediated returns true when the matching cancelled
+// HealthEvent document has the faultRemediated completion marker set to true.
+func CancelledHealthEventFaultRemediated(
+	ctx context.Context,
+	t *testing.T,
+	restConfig *rest.Config,
+	client klient.Client,
+	mongoPod, nodeName, message string,
+) bool {
+	t.Helper()
+
+	js := fmt.Sprintf(`
+		db = db.getSiblingDB("%s");
+		const doc = db.HealthEvents.findOne({
+			"healthevent.nodename": %q,
+			"healthevent.message": %q,
+			"healtheventstatus.nodequarantined": "Cancelled"
+		});
+		if (doc && doc.healtheventstatus &&
+			doc.healtheventstatus.faultremediated &&
+			doc.healtheventstatus.faultremediated.value === true) {
+			print("FAULT_REMEDIATED_TRUE");
+		} else {
+			print("NOT_READY");
+			if (doc) {
+				printjson(doc.healtheventstatus);
+			}
+		}
+	`, MongoDBDatabase, nodeName, message)
+
+	stdout, _ := ExecMongosh(ctx, t, restConfig, client, mongoPod, js)
+
+	return strings.Contains(stdout, "FAULT_REMEDIATED_TRUE")
 }

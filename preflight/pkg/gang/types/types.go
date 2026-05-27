@@ -43,7 +43,7 @@ type GangInfo struct {
 
 	// ExpectedMinCount is the total number of pods expected in the gang.
 	// This may be known from scheduler CRDs (e.g., Volcano's minMember,
-	// K8s Workload's minCount).
+	// K8s PodGroup's minCount, or K8s Workload's minCount).
 	ExpectedMinCount int
 
 	// Peers contains information about all discovered gang members.
@@ -51,7 +51,7 @@ type GangInfo struct {
 }
 
 // GangDiscoverer discovers all pods belonging to the same gang.
-// Different schedulers (Volcano, Kueue, native K8s workloadRef) have different
+// Different schedulers (Volcano, Kueue, native K8s workloadRef/schedulingGroup) have different
 // mechanisms for identifying gang members.
 type GangDiscoverer interface {
 	// Name returns the discoverer name (for logging/metrics).

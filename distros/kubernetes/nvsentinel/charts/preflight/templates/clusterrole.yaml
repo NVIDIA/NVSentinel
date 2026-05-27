@@ -24,22 +24,28 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
-  
+
   # ConfigMaps for gang coordination
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  
+
   # Gang discovery API - dynamically generated based on gangDiscovery config
   {{- if .Values.gangDiscovery.podGroupGVR }}
   # PodGroup-based scheduler ({{ .Values.gangDiscovery.name | default "custom" }})
   - apiGroups: [{{ .Values.gangDiscovery.podGroupGVR.group | quote }}]
     resources: [{{ .Values.gangDiscovery.podGroupGVR.resource | quote }}]
+    verbs: ["get", "list", "watch"]
   {{- else }}
-  # K8s 1.35+ Workload API for native gang scheduling (default)
+  # K8s 1.36+ PodGroup API for native gang scheduling (default)
+  - apiGroups: ["scheduling.k8s.io"]
+    resources: ["podgroups"]
+    verbs: ["get", "list", "watch"]
+
+  # K8s 1.35 Workload API for native gang scheduling fallback (default)
   - apiGroups: ["scheduling.k8s.io"]
     resources: ["workloads"]
-  {{- end }}
     verbs: ["get", "list", "watch"]
+  {{- end }}
 
 {{- end }}
