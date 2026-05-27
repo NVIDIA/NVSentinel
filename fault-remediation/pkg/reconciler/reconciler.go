@@ -1070,6 +1070,7 @@ func (r *FaultRemediationReconciler) completeConditionTypeForStoredState(
 	if !exists {
 		return "", false
 	}
+
 	if strings.TrimSpace(resource.CompleteConditionType) == "" {
 		return "", false
 	}

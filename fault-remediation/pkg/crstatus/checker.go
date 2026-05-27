@@ -85,6 +85,7 @@ func (c *CRStatusChecker) GetCRStateForReference(
 
 		slog.ErrorContext(ctx, "Failed to get CR, keeping create blocked",
 			"crName", crName, "gvk", gvk.String(), "error", err)
+
 		return CRStateInProgress
 	}
 

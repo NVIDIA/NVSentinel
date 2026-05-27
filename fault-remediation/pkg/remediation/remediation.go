@@ -352,6 +352,7 @@ func maintenanceResourceReferenceFromObject(
 	maintenance *unstructured.Unstructured,
 ) (annotation.MaintenanceResourceReference, error) {
 	gvk := maintenance.GroupVersionKind()
+
 	resourceRef := annotation.MaintenanceResourceReference{
 		Namespace: maintenance.GetNamespace(),
 		Version:   gvk.Version,
