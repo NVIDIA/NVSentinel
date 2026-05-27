@@ -114,7 +114,7 @@ jobs:
           timestamp-to-use: updated_at
 
       - name: Delete old main branch images for ${{ matrix.package }}
-        uses: dataaxiom/ghcr-cleanup-action@v1.2.1
+        uses: dataaxiom/ghcr-cleanup-action@f092b48ba3b604b2a83690dc4b2bbb3392e1045f  # v1.2.1
         with:
           owner: NVIDIA
           package: ${{ matrix.package }}
