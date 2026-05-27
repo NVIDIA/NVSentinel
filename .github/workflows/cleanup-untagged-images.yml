@@ -30,7 +30,7 @@ on:
           - 'true'
           - 'false'
       cut_off:
-        description: 'Delete images older than this (e.g., 1h, 1d, 7d, 30 days)'
+        description: 'Delete images older than this (e.g., 1 day, 7 days, 30 days)'
         required: true
         default: '30 days'
         type: string
