@@ -547,13 +547,19 @@ func TestManualUncordonWithFaultRemediation(t *testing.T) {
 		WithLabel("suite", "fault-management-manual-intervention-fr")
 
 	var testCtx *helpers.RemediationTestContext
+	var mongoPod string
 	var podNames []string
 	testNamespace := "immediate-test"
+	const cancellationMarkerMessage = "XID 79 fatal error for FR cancellation marker"
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		var newCtx context.Context
 		newCtx, testCtx = helpers.SetupFaultRemediationTest(ctx, t, c, testNamespace)
 		newCtx = helpers.ApplyNodeDrainerConfig(newCtx, t, c, "data/nd-all-modes.yaml")
+
+		client, err := c.NewClient()
+		require.NoError(t, err)
+		mongoPod, _ = helpers.TryGetMongoDBPrimaryPodName(ctx, t, client)
 
 		return newCtx
 	})
@@ -569,7 +575,7 @@ func TestManualUncordonWithFaultRemediation(t *testing.T) {
 		t.Log("Sending fatal health event to trigger quarantine")
 		fatalEvent := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("79").
-			WithMessage("XID 79 fatal error").
+			WithMessage(cancellationMarkerMessage).
 			WithRecommendedAction(24)
 		helpers.SendHealthEvent(ctx, t, fatalEvent)
 
@@ -635,6 +641,25 @@ func TestManualUncordonWithFaultRemediation(t *testing.T) {
 			_, exists := node.Annotations["latestFaultRemediationState"]
 			return !exists
 		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "FR should clear remediation state annotation")
+
+		return ctx
+	})
+
+	feature.Assess("verify FR marks cancelled event remediated", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		if mongoPod == "" {
+			t.Log("Skipping direct faultRemediated MongoDB assertion for non-MongoDB datastore")
+			return ctx
+		}
+
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		t.Log("Waiting for FR to write faultRemediated=true on the Cancelled HealthEvent")
+		require.Eventually(t, func() bool {
+			return helpers.CancelledHealthEventFaultRemediated(ctx, t, client.RESTConfig(), client, mongoPod,
+				testCtx.NodeName, cancellationMarkerMessage)
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+			"FR should write faultRemediated=true for the cancelled HealthEvent")
 
 		return ctx
 	})
