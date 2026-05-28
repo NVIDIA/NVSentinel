@@ -22,7 +22,7 @@ include ../../make/common.mk
 include ../../make/python.mk
 include ../../make/docker.mk
 
-PYTORCH_VERSION ?= 25.01-py3
+PYTORCH_VERSION ?= 26.04-py3
 IMAGE_NAME := preflight-nccl-allreduce
 
 .PHONY: all

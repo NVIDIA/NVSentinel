@@ -49,7 +49,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get install -y --no-install-recommends \
         apt-transport-https \
         ca-certificates \
-        gnupg \
         python3-pip && \
     rm -rf /var/lib/apt/lists/*
 

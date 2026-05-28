@@ -22,8 +22,8 @@
 
 # PyTorch version determines CUDA runtime version - must match cluster's GPU driver
 # See: https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html#id4
-#   26.03-py3 = CUDA 13.2 (Ubuntu 24.04, Python 3.12)
-ARG PYTORCH_VERSION=26.03-py3
+#   26.04-py3 = CUDA 13.2.1 (Ubuntu 24.04, Python 3.12)
+ARG PYTORCH_VERSION=26.04-py3
 ARG VERSION="0.1.0"
 
 # =============================================================================
@@ -66,6 +66,8 @@ RUN poetry export --format requirements.txt --output constraints.txt --without-h
 FROM nvcr.io/nvidia/pytorch:${PYTORCH_VERSION} AS runtime
 
 ARG VERSION
+
+RUN rm -f /usr/local/bin/uv /usr/local/bin/uvx
 
 # Remove the NGC image's bundled EFA/OFI-NCCL stack and stale RDMA libs.
 # On AWS, the host's /opt/amazon is mounted at runtime and provides the
