@@ -50,25 +50,55 @@ func validate(cfg *Config) error {
 
 		policyNames[policy.Name] = true
 
-		if policy.Resource.Version == "" {
-			return fmt.Errorf("policy %q: resource.version is required", policy.Name)
+		if err := validatePolicy(policy); err != nil {
+			return err
 		}
+	}
 
-		if policy.Resource.Kind == "" {
-			return fmt.Errorf("policy %q: resource.kind is required", policy.Name)
-		}
+	return nil
+}
 
-		if policy.Predicate.Expression == "" {
-			return fmt.Errorf("policy %q: predicate.expression is required", policy.Name)
-		}
+func validatePolicy(policy Policy) error {
+	if policy.Resource.Version == "" {
+		return fmt.Errorf("policy %q: resource.version is required", policy.Name)
+	}
 
-		if policy.HealthEvent.ComponentClass == "" {
-			return fmt.Errorf("policy %q: healthEvent.componentClass is required", policy.Name)
-		}
+	if policy.Resource.Kind == "" {
+		return fmt.Errorf("policy %q: resource.kind is required", policy.Name)
+	}
 
-		if policy.HealthEvent.Message == "" {
-			return fmt.Errorf("policy %q: healthEvent.message is required", policy.Name)
-		}
+	if policy.Predicate.Expression == "" {
+		return fmt.Errorf("policy %q: predicate.expression is required", policy.Name)
+	}
+
+	if policy.HealthEvent.ComponentClass == "" {
+		return fmt.Errorf("policy %q: healthEvent.componentClass is required", policy.Name)
+	}
+
+	if policy.HealthEvent.Message == "" {
+		return fmt.Errorf("policy %q: healthEvent.message is required", policy.Name)
+	}
+
+	if err := validateBehaviourOverrides(policy.Name, "quarantineOverrides",
+		policy.HealthEvent.QuarantineOverrides); err != nil {
+		return err
+	}
+
+	if err := validateBehaviourOverrides(policy.Name, "drainOverrides",
+		policy.HealthEvent.DrainOverrides); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validateBehaviourOverrides(policyName, fieldName string, overrides *BehaviourOverridesSpec) error {
+	if overrides == nil {
+		return nil
+	}
+
+	if overrides.Force && overrides.Skip {
+		return fmt.Errorf("policy %q: healthEvent.%s cannot set both force and skip", policyName, fieldName)
 	}
 
 	return nil

@@ -41,13 +41,20 @@ type AssociationSpec struct {
 }
 
 type HealthEventSpec struct {
-	ComponentClass    string   `toml:"componentClass"`
-	IsFatal           bool     `toml:"isFatal"`
-	Message           string   `toml:"message"`
-	RecommendedAction string   `toml:"recommendedAction"`
-	ErrorCode         []string `toml:"errorCode"`
+	ComponentClass      string                  `toml:"componentClass"`
+	IsFatal             bool                    `toml:"isFatal"`
+	Message             string                  `toml:"message"`
+	RecommendedAction   string                  `toml:"recommendedAction"`
+	ErrorCode           []string                `toml:"errorCode"`
+	QuarantineOverrides *BehaviourOverridesSpec `toml:"quarantineOverrides,omitempty"`
+	DrainOverrides      *BehaviourOverridesSpec `toml:"drainOverrides,omitempty"`
 	// override the processing strategy for the policy
 	ProcessingStrategy string `toml:"processingStrategy"`
+}
+
+type BehaviourOverridesSpec struct {
+	Force bool `toml:"force"`
+	Skip  bool `toml:"skip"`
 }
 
 func (r *ResourceSpec) GVK() string {

@@ -80,20 +80,25 @@ func (p *Publisher) PublishHealthEvent(ctx context.Context,
 		}
 	}
 
+	quarantineOverrides := behaviourOverridesFromSpec(policy.HealthEvent.QuarantineOverrides)
+	drainOverrides := behaviourOverridesFromSpec(policy.HealthEvent.DrainOverrides)
+
 	event := &pb.HealthEvent{
-		Version:            1,
-		Agent:              agentName,
-		CheckName:          policy.Name,
-		ComponentClass:     policy.HealthEvent.ComponentClass,
-		GeneratedTimestamp: timestamppb.New(time.Now()),
-		Message:            policy.HealthEvent.Message,
-		IsFatal:            policy.HealthEvent.IsFatal,
-		IsHealthy:          isHealthy,
-		NodeName:           nodeName,
-		RecommendedAction:  mapRecommendedAction(policy.HealthEvent.RecommendedAction),
-		ErrorCode:          policy.HealthEvent.ErrorCode,
-		ProcessingStrategy: strategy,
-		EntitiesImpacted:   entitiesImpacted,
+		Version:             1,
+		Agent:               agentName,
+		CheckName:           policy.Name,
+		ComponentClass:      policy.HealthEvent.ComponentClass,
+		GeneratedTimestamp:  timestamppb.New(time.Now()),
+		Message:             policy.HealthEvent.Message,
+		IsFatal:             policy.HealthEvent.IsFatal,
+		IsHealthy:           isHealthy,
+		NodeName:            nodeName,
+		RecommendedAction:   mapRecommendedAction(policy.HealthEvent.RecommendedAction),
+		ErrorCode:           policy.HealthEvent.ErrorCode,
+		ProcessingStrategy:  strategy,
+		EntitiesImpacted:    entitiesImpacted,
+		QuarantineOverrides: quarantineOverrides,
+		DrainOverrides:      drainOverrides,
 	}
 
 	healthEvents := &pb.HealthEvents{
@@ -112,4 +117,15 @@ func mapRecommendedAction(action string) pb.RecommendedAction {
 	}
 
 	return pb.RecommendedAction_CONTACT_SUPPORT
+}
+
+func behaviourOverridesFromSpec(spec *config.BehaviourOverridesSpec) *pb.BehaviourOverrides {
+	if spec == nil {
+		return nil
+	}
+
+	return &pb.BehaviourOverrides{
+		Force: spec.Force,
+		Skip:  spec.Skip,
+	}
 }

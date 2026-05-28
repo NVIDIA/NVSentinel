@@ -53,6 +53,24 @@ data:
         {{- if .healthEvent.processingStrategy }}
         processingStrategy = {{ .healthEvent.processingStrategy | quote }}
         {{- end }}
+        {{- if .healthEvent.quarantineOverrides }}
+        [policies.healthEvent.quarantineOverrides]
+          {{- if hasKey .healthEvent.quarantineOverrides "force" }}
+          force = {{ .healthEvent.quarantineOverrides.force }}
+          {{- end }}
+          {{- if hasKey .healthEvent.quarantineOverrides "skip" }}
+          skip = {{ .healthEvent.quarantineOverrides.skip }}
+          {{- end }}
+        {{- end }}
+        {{- if .healthEvent.drainOverrides }}
+        [policies.healthEvent.drainOverrides]
+          {{- if hasKey .healthEvent.drainOverrides "force" }}
+          force = {{ .healthEvent.drainOverrides.force }}
+          {{- end }}
+          {{- if hasKey .healthEvent.drainOverrides "skip" }}
+          skip = {{ .healthEvent.drainOverrides.skip }}
+          {{- end }}
+        {{- end }}
     
     {{- end }}
 

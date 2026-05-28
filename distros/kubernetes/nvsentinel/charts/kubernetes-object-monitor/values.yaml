@@ -50,6 +50,14 @@ policies:
       recommendedAction: CONTACT_SUPPORT
       errorCode:
         - NODE_NOT_READY
+      # Optional behavior overrides for this policy's generated HealthEvents.
+      # Set either force or skip, never both in the same override block.
+      # quarantineOverrides:
+      #   force: true  # Force node cordon even if normal quarantine rules would not.
+      #   skip: true   # Skip node cordon for this health event.
+      # drainOverrides:
+      #   force: true  # Force immediate pod eviction regardless of namespace drain mode.
+      #   skip: true   # Skip pod eviction and mark the event as already drained.
 
   # Example: Monitor a custom resource (e.g., a GPU Job)
   # Uncomment and modify to monitor your own custom resources
@@ -89,6 +97,8 @@ policies:
   #     recommendedAction: CONTACT_SUPPORT
   #     errorCode:
   #       - GPU_JOB_FAILED
+  #     drainOverrides:
+  #       skip: true
 
 resources:
   requests:

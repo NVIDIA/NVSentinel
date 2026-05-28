@@ -134,7 +134,15 @@ healthEvent:
   recommendedAction: CONTACT_SUPPORT  # Action hint
   errorCode:
     - NODE_NOT_READY            # Error codes for classification
+  quarantineOverrides:          # Optional: override node cordon behavior
+    force: true                 # Or use skip: true; do not set both
+  drainOverrides:               # Optional: override pod eviction behavior
+    skip: true                  # Or use force: true; do not set both
 ```
+
+For each override block, `force` and `skip` are mutually exclusive. Use `force`
+when this policy should perform the action regardless of normal rules, or `skip`
+when this policy should bypass the action.
 
 ## Key Features
 

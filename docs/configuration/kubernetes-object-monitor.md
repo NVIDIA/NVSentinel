@@ -83,6 +83,10 @@ kubernetes-object-monitor:
         recommendedAction: CONTACT_SUPPORT
         errorCode:
           - ERROR_CODE
+        quarantineOverrides:
+          force: true  # Or use skip: true; do not set both
+        drainOverrides:
+          skip: true   # Or use force: true; do not set both
 ```
 
 ### Parameters
@@ -134,6 +138,12 @@ Action code from health event proto (see [health_event.proto](https://github.com
 
 ##### errorCode
 Array of error code strings for categorization and filtering.
+
+##### quarantineOverrides
+Optional behavior override for fault-quarantine. `force` forces node cordoning regardless of normal rules; `skip` skips node cordoning for the generated health event. Set at most one of `force` or `skip`.
+
+##### drainOverrides
+Optional behavior override for node-drainer. `force` forces immediate pod eviction regardless of configured namespace drain modes; `skip` skips pod eviction and marks the event as already drained. Set at most one of `force` or `skip`.
 
 ## CEL Expressions
 
