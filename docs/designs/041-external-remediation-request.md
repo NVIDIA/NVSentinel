@@ -1,4 +1,4 @@
-# ADR-040: API — External Remediation Request (ERR)
+# ADR-041: API — External Remediation Request (ERR)
 
 ## Context
 
