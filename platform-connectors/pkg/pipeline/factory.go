@@ -22,7 +22,11 @@ import (
 	"log/slog"
 )
 
-type Factory func(cfg *Config) (Transformer, error)
+type Options struct {
+	KubeconfigPath string
+}
+
+type Factory func(cfg *Config, opts Options) (Transformer, error)
 
 var registry = map[string]Factory{}
 
@@ -30,19 +34,19 @@ func Register(name string, factory Factory) {
 	registry[name] = factory
 }
 
-func Create(cfg *Config) (Transformer, error) {
+func Create(cfg *Config, opts Options) (Transformer, error) {
 	factory, ok := registry[cfg.Name]
 	if !ok {
 		return nil, fmt.Errorf("unknown transformer: %s", cfg.Name)
 	}
 
-	return factory(cfg)
+	return factory(cfg, opts)
 }
 
 // NewFromConfigs creates a Pipeline from a slice of transformer configurations.
 // Disabled transformers are skipped. Returns an error if any enabled transformer
 // fails to initialize.
-func NewFromConfigs(ctx context.Context, configs []Config) (*Pipeline, error) {
+func NewFromConfigs(ctx context.Context, configs []Config, opts Options) (*Pipeline, error) {
 	var transformers []Transformer
 
 	for _, cfg := range configs {
@@ -51,7 +55,7 @@ func NewFromConfigs(ctx context.Context, configs []Config) (*Pipeline, error) {
 			continue
 		}
 
-		t, err := Create(&cfg)
+		t, err := Create(&cfg, opts)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create transformer %s: %w", cfg.Name, err)
 		}

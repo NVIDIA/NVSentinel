@@ -20,7 +20,7 @@ Without Platform Connectors, health monitors would need to directly integrate wi
 
 ## How It Works
 
-Platform Connectors runs as a deployment in the cluster:
+Platform Connectors typically runs as a deployment in the cluster:
 
 1. Exposes gRPC service for health monitors to send events
 2. Receives health events via gRPC (`HealthEventOccurredV1` API)
@@ -82,6 +82,20 @@ platformConnector:
 - **Kubernetes API Rate Limits**: Configure QPS and burst for Kubernetes API calls
 
 For complete configuration reference, see [Platform Connectors Configuration](configuration/platform-connectors.md).
+
+### Kubernetes Authentication Modes
+
+Platform Connectors supports two Kubernetes authentication modes:
+
+- **In-cluster (default)**: Uses the pod ServiceAccount via `InClusterConfig()`
+- **Out-of-cluster**: Uses an explicit kubeconfig file via `--kubeconfig=/path/to/kubeconfig`
+
+The `--kubeconfig` flag is intended for host-managed deployments, such as running `platform-connectors` under `systemd` alongside the other runtime components. When set, both the Kubernetes connector and `MetadataAugmentor` use that kubeconfig.
+
+Example host-managed invocation:
+```bash
+platform-connectors --socket=/var/run/nvsentinel.sock --config=/etc/config/config.json --kubeconfig=/var/lib/kubelet/kubeconfig
+```
 
 ## What It Does
 

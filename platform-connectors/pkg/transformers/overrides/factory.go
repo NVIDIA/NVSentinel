@@ -26,7 +26,7 @@ func init() {
 	pipeline.Register("OverrideTransformer", newFromConfig)
 }
 
-func newFromConfig(cfg *pipeline.Config) (pipeline.Transformer, error) {
+func newFromConfig(cfg *pipeline.Config, _ pipeline.Options) (pipeline.Transformer, error) {
 	if cfg.ConfigPath == "" {
 		return nil, fmt.Errorf("config path required for OverrideTransformer")
 	}

@@ -108,6 +108,7 @@ func initializeK8sConnector(
 	ctx context.Context,
 	config map[string]interface{},
 	stopCh chan struct{},
+	kubeconfigPath string,
 ) (*ringbuffer.RingBuffer, error) {
 	k8sRingBuffer := ringbuffer.NewRingBuffer("kubernetes", ctx)
 	server.InitializeAndAttachRingBufferForConnectors(k8sRingBuffer)
@@ -141,8 +142,9 @@ func initializeK8sConnector(
 		CompactedHealthEventMsgLen:    compactedEventMsgLen,
 	}
 
-	k8sConnector, _, err := kubernetes.InitializeK8sConnector(ctx, k8sRingBuffer, qps, int(burst),
-		stopCh, k8sConnectorCfg)
+	k8sConnector, _, err := kubernetes.InitializeK8sConnector(
+		ctx, k8sRingBuffer, qps, int(burst), stopCh, k8sConnectorCfg, kubeconfigPath,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize K8sConnector: %w", err)
 	}
@@ -177,7 +179,7 @@ func initializeDatabaseStoreConnector(
 	return storeConnector, nil
 }
 
-func initializePipeline(ctx context.Context, config map[string]any) (*pipeline.Pipeline, error) {
+func initializePipeline(ctx context.Context, config map[string]any, opts pipeline.Options) (*pipeline.Pipeline, error) {
 	pipelineCfg, ok := config["pipeline"].([]any)
 	if !ok || len(pipelineCfg) == 0 {
 		slog.ErrorContext(ctx, "No pipeline configuration found, events will not be transformed")
@@ -214,7 +216,7 @@ func initializePipeline(ctx context.Context, config map[string]any) (*pipeline.P
 		})
 	}
 
-	return pipeline.NewFromConfigs(ctx, transformerConfigs)
+	return pipeline.NewFromConfigs(ctx, transformerConfigs, opts)
 }
 
 func startGRPCServer(
@@ -301,6 +303,7 @@ func initializeConnectors(
 	config map[string]interface{},
 	stopCh chan struct{},
 	databaseClientCertMountPath string,
+	kubeconfigPath string,
 ) (*ringbuffer.RingBuffer, *store.DatabaseStoreConnector, *grpcsink.GRPCSinkConnector, error) {
 	var (
 		k8sRingBuffer     *ringbuffer.RingBuffer
@@ -310,7 +313,7 @@ func initializeConnectors(
 	)
 
 	if config["enableK8sPlatformConnector"] == True {
-		k8sRingBuffer, err = initializeK8sConnector(ctx, config, stopCh)
+		k8sRingBuffer, err = initializeK8sConnector(ctx, config, stopCh, kubeconfigPath)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to initialize K8s connector: %w", err)
 		}
@@ -383,12 +386,14 @@ type platformConnectorConfig struct {
 	configFilePath              string
 	metricsPort                 int
 	databaseClientCertMountPath string
+	kubeconfigPath              string
 }
 
 func parseFlags() (*platformConnectorConfig, error) {
 	socket := flag.String("socket", "", "unix socket path")
 	configFilePath := flag.String("config", "/etc/config/config.json", "path to the config file")
 	metricsPort := flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
+	kubeconfigPath := flag.String("kubeconfig", "", "path to a kubeconfig file for out-of-cluster Kubernetes auth")
 
 	// Register database certificate flags using common package
 	certConfig := flags.RegisterDatabaseCertFlags()
@@ -409,6 +414,7 @@ func parseFlags() (*platformConnectorConfig, error) {
 		configFilePath:              *configFilePath,
 		metricsPort:                 portInt,
 		databaseClientCertMountPath: certConfig.ResolveCertPath(),
+		kubeconfigPath:              *kubeconfigPath,
 	}, nil
 }
 
@@ -470,18 +476,26 @@ func run() error {
 
 	defer cancel()
 
+	if cfg.kubeconfigPath == "" {
+		slog.InfoContext(ctx, "Using in-cluster Kubernetes authentication")
+	} else {
+		slog.InfoContext(ctx, "Using explicit kubeconfig for Kubernetes authentication", "path", cfg.kubeconfigPath)
+	}
+
 	config, err := loadConfig(cfg.configFilePath)
 	if err != nil {
 		return err
 	}
 
 	k8sRingBuffer, storeConnector, grpcSinkConnector, err := initializeConnectors(ctx,
-		config, stopCh, cfg.databaseClientCertMountPath)
+		config, stopCh, cfg.databaseClientCertMountPath, cfg.kubeconfigPath)
 	if err != nil {
 		return fmt.Errorf("failed to initialize connectors: %w", err)
 	}
 
-	pipeline, err := initializePipeline(ctx, config)
+	pipeline, err := initializePipeline(ctx, config, pipeline.Options{
+		KubeconfigPath: cfg.kubeconfigPath,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize pipeline: %w", err)
 	}

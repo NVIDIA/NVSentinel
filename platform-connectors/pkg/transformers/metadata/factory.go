@@ -21,8 +21,8 @@ import (
 	"fmt"
 
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/kubeconfig"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
 )
 
@@ -30,8 +30,8 @@ func init() {
 	pipeline.Register("MetadataAugmentor", newFromConfig)
 }
 
-func newFromConfig(cfg *pipeline.Config) (pipeline.Transformer, error) {
-	k8sConfig, err := rest.InClusterConfig()
+func newFromConfig(cfg *pipeline.Config, opts pipeline.Options) (pipeline.Transformer, error) {
+	k8sConfig, err := kubeconfig.Load(opts.KubeconfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get Kubernetes configuration: %w", err)
 	}

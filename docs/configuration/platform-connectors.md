@@ -209,3 +209,24 @@ platformConnector:
     qps: 10.0
     burst: 20
 ```
+
+## Kubernetes Authentication
+
+Platform Connectors uses in-cluster Kubernetes authentication by default. In that mode it authenticates with the pod ServiceAccount and no extra flags are required.
+
+For host-managed deployments, pass a kubeconfig file explicitly:
+
+```bash
+platform-connectors \
+  --socket=/var/run/nvsentinel.sock \
+  --config=/etc/config/config.json \
+  --kubeconfig=/var/lib/kubelet/kubeconfig
+```
+
+When `--kubeconfig` is set:
+- The Kubernetes connector uses that kubeconfig instead of `InClusterConfig()`
+- `MetadataAugmentor` uses the same kubeconfig for node metadata lookups
+
+When `--kubeconfig` is unset, existing in-cluster behavior is unchanged.
+
+The bundled Helm chart continues to rely on in-cluster authentication and does not need to set this flag.

@@ -22,10 +22,10 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/kubeconfig"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 )
 
@@ -67,6 +67,7 @@ func NewK8sConnector(
 
 func InitializeK8sConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuffer,
 	qps float32, burst int, stopCh <-chan struct{}, cfg K8sConnectorConfig,
+	kubeconfigPath string,
 ) (*K8sConnector, kubernetes.Interface, error) {
 	if cfg.MaxNodeConditionMessageLength <= 0 {
 		return nil, nil, fmt.Errorf("maxNodeConditionMessageLength must be greater than 0, got %d",
@@ -78,10 +79,9 @@ func InitializeK8sConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuff
 			cfg.CompactedHealthEventMsgLen)
 	}
 
-	// Create the in-cluster config
-	config, err := rest.InClusterConfig()
+	config, err := kubeconfig.Load(kubeconfigPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("error creating in-cluster config: %w", err)
+		return nil, nil, err
 	}
 
 	config.Burst = burst
