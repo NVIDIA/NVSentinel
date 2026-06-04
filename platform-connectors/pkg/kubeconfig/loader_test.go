@@ -55,11 +55,12 @@ func TestLoadReturnsPathErrorForMissingFile(t *testing.T) {
 	require.ErrorContains(t, err, "/path/does/not/exist")
 }
 
-func TestLoadFallsBackToInClusterConfig(t *testing.T) {
+func TestLoadReturnsErrorWhenNoConfigSourcesAvailable(t *testing.T) {
 	t.Setenv("KUBERNETES_SERVICE_HOST", "")
 	t.Setenv("KUBERNETES_SERVICE_PORT", "")
+	t.Setenv("HOME", t.TempDir())
 
 	_, err := Load("")
 	require.Error(t, err)
-	require.ErrorContains(t, err, "in-cluster")
+	require.ErrorContains(t, err, "no configuration has been provided")
 }

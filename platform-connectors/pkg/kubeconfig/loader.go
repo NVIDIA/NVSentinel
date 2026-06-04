@@ -23,19 +23,14 @@ import (
 )
 
 // Load returns a Kubernetes REST config from an explicit kubeconfig path when provided,
-// otherwise it falls back to standard in-cluster configuration.
+// or lets client-go resolve the implicit configuration when the path is empty.
 func Load(path string) (*rest.Config, error) {
-	if path == "" {
-		config, err := rest.InClusterConfig()
-		if err != nil {
+	config, err := clientcmd.BuildConfigFromFlags("", path)
+	if err != nil {
+		if path == "" {
 			return nil, fmt.Errorf("error creating in-cluster config: %w", err)
 		}
 
-		return config, nil
-	}
-
-	config, err := clientcmd.BuildConfigFromFlags("", path)
-	if err != nil {
 		return nil, fmt.Errorf("error loading kubeconfig %q: %w", path, err)
 	}
 
