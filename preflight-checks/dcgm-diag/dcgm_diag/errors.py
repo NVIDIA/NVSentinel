@@ -66,3 +66,17 @@ def get_recommended_action(error_code: int) -> int:
     if name:
         return _load_name_to_action().get(name, pb.RecommendedAction.CONTACT_SUPPORT)
     return pb.RecommendedAction.CONTACT_SUPPORT
+
+
+def resolve_recommended_action(is_healthy: bool, error_code: int) -> int:
+    """Resolve the recommended action for a diagnostic result.
+
+    Healthy results need no action. Failures with a known DCGM error code use the CSV
+    mapping (which may itself be NONE, e.g. DCGM_FR_XID_ERROR); failures without a
+    specific code fall back to CONTACT_SUPPORT.
+    """
+    if is_healthy:
+        return pb.RecommendedAction.NONE
+    if error_code:
+        return get_recommended_action(error_code)
+    return pb.RecommendedAction.CONTACT_SUPPORT

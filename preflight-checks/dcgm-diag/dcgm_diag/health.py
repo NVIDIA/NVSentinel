@@ -18,7 +18,7 @@ from time import sleep
 import grpc
 from google.protobuf.timestamp_pb2 import Timestamp
 
-from .errors import get_error_name, get_recommended_action
+from .errors import get_error_name, resolve_recommended_action
 from .protos import health_event_pb2 as pb
 from .protos import health_event_pb2_grpc as pb_grpc
 
@@ -54,13 +54,13 @@ class HealthReporter:
         error_code: int = 0,
         test_name: str = "",
     ) -> None:
-        """Send a single health event for one GPU."""
-        if is_healthy:
-            recommended_action = pb.RecommendedAction.NONE
-        elif error_code:
-            recommended_action = get_recommended_action(error_code)
-        else:
-            recommended_action = pb.RecommendedAction.CONTACT_SUPPORT
+        """Send a single health event for one GPU.
+
+        ``is_fatal`` is emitted as given; the caller is responsible for deciding
+        fatality. The recommended action shown in the event is resolved from the
+        result so it stays consistent with that decision.
+        """
+        recommended_action = resolve_recommended_action(is_healthy, error_code)
 
         # checkName: "DcgmDiagnostic" or "DcgmDiagnosticMemory" if test_name specified
         check_name = (

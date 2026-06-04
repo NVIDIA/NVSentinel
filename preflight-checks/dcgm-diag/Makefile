@@ -22,7 +22,7 @@ include ../../make/common.mk
 include ../../make/python.mk
 include ../../make/docker.mk
 
-DCGM_VERSION ?= 4.2.3-1-ubuntu22.04
+DCGM_VERSION ?= 4.5.2-1-ubuntu22.04
 IMAGE_NAME := preflight-dcgm-diag
 
 .PHONY: all
