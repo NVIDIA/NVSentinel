@@ -34,7 +34,7 @@ func TestSidecarParser_WaitUntilReady_ImmediatelyReady(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := NewSidecarParser(server.URL, "test-node", "570.148.08")
+	p := NewSidecarParser(server.URL, "test-node", func() string { return "570.148.08" })
 	err := p.WaitUntilReady(context.Background(), 5, 100*time.Millisecond)
 	assert.NoError(t, err)
 }
@@ -63,7 +63,7 @@ func TestSidecarParser_WaitUntilReady_BecomesReadyAfterDelay(t *testing.T) {
 		}
 	}()
 
-	p := NewSidecarParser(fmt.Sprintf("http://%s", addr), "test-node", "570.148.08")
+	p := NewSidecarParser(fmt.Sprintf("http://%s", addr), "test-node", func() string { return "570.148.08" })
 	err = p.WaitUntilReady(context.Background(), 15, 200*time.Millisecond)
 	assert.NoError(t, err)
 }
@@ -78,7 +78,7 @@ func TestSidecarParser_WaitUntilReady_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	p := NewSidecarParser(fmt.Sprintf("http://%s", addr), "test-node", "570.148.08")
+	p := NewSidecarParser(fmt.Sprintf("http://%s", addr), "test-node", func() string { return "570.148.08" })
 	err = p.WaitUntilReady(ctx, 30, 200*time.Millisecond)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "context")
@@ -91,7 +91,7 @@ func TestSidecarParser_WaitUntilReady_ExhaustsRetries(t *testing.T) {
 	addr := listener.Addr().String()
 	listener.Close()
 
-	p := NewSidecarParser(fmt.Sprintf("http://%s", addr), "test-node", "570.148.08")
+	p := NewSidecarParser(fmt.Sprintf("http://%s", addr), "test-node", func() string { return "570.148.08" })
 	err = p.WaitUntilReady(context.Background(), 3, 100*time.Millisecond)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not ready after 3 attempts")
@@ -230,7 +230,7 @@ func TestSidecarParser_Parse(t *testing.T) {
 			}))
 			defer server.Close()
 
-			parser := NewSidecarParser(server.URL, "test-node", "570.148.08")
+			parser := NewSidecarParser(server.URL, "test-node", func() string { return "570.148.08" })
 
 			result, err := parser.Parse(tc.message)
 

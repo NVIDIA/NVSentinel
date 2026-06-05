@@ -31,13 +31,14 @@ func TestCSVParser_Parse(t *testing.T) {
 	}
 	require.NotEmpty(t, errorResolutionMap, "XID error resolution map should not be empty")
 
-	nvl5Rules, err := common.GetNVL5DecodingRules("570.148.08")
+	nvl5Rules, err := common.GetNVL5DecodingRules()
 	if err != nil {
 		t.Fatalf("Failed to load embedded XID mapping: %v", err)
 	}
 	require.NotEmpty(t, nvl5Rules, "XID error resolution map should not be empty")
 
-	parser := NewCSVParser("test-node", errorResolutionMap, nvl5Rules)
+	// Pre-R575 driver so NVL5 matching uses the V1 IntrInfo patterns.
+	parser := NewCSVParser("test-node", errorResolutionMap, nvl5Rules, func() string { return "570.148.08" })
 
 	testCases := []struct {
 		name              string
@@ -221,6 +222,57 @@ func TestCSVParser_Parse(t *testing.T) {
 
 			assert.Empty(t, result.Result.Driver, "Driver should be empty as requested")
 			assert.Empty(t, result.Error, "Error field should be empty for successful parse")
+		})
+	}
+}
+
+// TestCSVParser_NVL5PerMessageDriverVersionSelection verifies that a single
+// CSVParser selects the V1 vs V2 NVL5 IntrInfo pattern per message based on the
+// driver version resolved at parse time (not snapshotted at construction). The
+// same parser instance must decode the same message differently as the live
+// driver version changes.
+func TestCSVParser_NVL5PerMessageDriverVersionSelection(t *testing.T) {
+	errorResolutionMap, err := common.LoadErrorResolutionMap()
+	require.NoError(t, err)
+
+	nvl5Rules, err := common.GetNVL5DecodingRules()
+	require.NoError(t, err)
+
+	// intrInfo=0x00000082 matches the V1 IntrInfo pattern for XID 145 RLW_REMAP
+	// (RESET_GPU -> COMPONENT_RESET) but matches no V2 pattern.
+	msgMatchesV1 := "NVRM: Xid (PCI:0000:00:08.0): 145, RLW_REMAP Nonfatal XC1 i0 Link 10 " +
+		"(0x00000082 0x00000040 0x00000000 0x00000000 0x00000000 0x00000000)"
+	// intrInfo=0x00000004 matches the V2 pattern but no V1 pattern.
+	msgMatchesV2 := "NVRM: Xid (PCI:0000:00:08.0): 145, RLW_REMAP Nonfatal XC1 i0 Link 10 " +
+		"(0x00000004 0x00000040 0x00000000 0x00000000 0x00000000 0x00000000)"
+
+	// Single parser instance whose driver version is mutated between calls.
+	driverVersion := ""
+	parser := NewCSVParser("test-node", errorResolutionMap, nvl5Rules, func() string { return driverVersion })
+
+	cases := []struct {
+		name           string
+		driver         string
+		message        string
+		wantResolution pb.RecommendedAction
+	}{
+		{"pre-R575 matches V1", "570.148.08", msgMatchesV1, pb.RecommendedAction_COMPONENT_RESET},
+		{"pre-R575 does not match V2", "570.148.08", msgMatchesV2, pb.RecommendedAction_NONE},
+		{"R575+ matches V2", "580.105.08", msgMatchesV2, pb.RecommendedAction_COMPONENT_RESET},
+		{"R575+ does not match V1", "580.105.08", msgMatchesV1, pb.RecommendedAction_NONE},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			driverVersion = tc.driver
+
+			result, parseErr := parser.Parse(tc.message)
+			require.NoError(t, parseErr)
+			require.NotNil(t, result)
+			require.True(t, result.Success)
+
+			assert.Equal(t, tc.wantResolution.String(), result.Result.Resolution,
+				"driver %q on same parser should select the matching NVL5 pattern", tc.driver)
 		})
 	}
 }

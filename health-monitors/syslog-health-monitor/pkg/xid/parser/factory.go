@@ -24,7 +24,7 @@ import (
 // ParserConfig holds configuration for parser creation
 type ParserConfig struct {
 	NodeName            string
-	DriverVersion       string
+	DriverVersionFn     func() string
 	XidAnalyserEndpoint string
 	SidecarEnabled      bool
 }
@@ -38,7 +38,7 @@ func CreateParser(config ParserConfig) (Parser, error) {
 
 		slog.Info("Creating sidecar parser", "endpoint", config.XidAnalyserEndpoint)
 
-		return NewSidecarParser(config.XidAnalyserEndpoint, config.NodeName, config.DriverVersion), nil
+		return NewSidecarParser(config.XidAnalyserEndpoint, config.NodeName, config.DriverVersionFn), nil
 	}
 
 	slog.Info("Creating Excel parser with embedded mapping file")
@@ -48,7 +48,7 @@ func CreateParser(config ParserConfig) (Parser, error) {
 		return nil, fmt.Errorf("failed to load XID error resolution map from embedded Excel file: %w", err)
 	}
 
-	nvl5Rules, err := common.GetNVL5DecodingRules(config.DriverVersion)
+	nvl5Rules, err := common.GetNVL5DecodingRules()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load NVL5 decoding rules from embedded Excel file: %w", err)
 	}
@@ -57,5 +57,5 @@ func CreateParser(config ParserConfig) (Parser, error) {
 		"errorResolutionCount", len(errorResolutionMap),
 		"nvl5RuleTypes", len(nvl5Rules))
 
-	return NewCSVParser(config.NodeName, errorResolutionMap, nvl5Rules), nil
+	return NewCSVParser(config.NodeName, errorResolutionMap, nvl5Rules, config.DriverVersionFn), nil
 }

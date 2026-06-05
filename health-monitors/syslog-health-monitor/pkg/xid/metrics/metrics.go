@@ -54,6 +54,17 @@ var (
 		},
 		[]string{"check", "source_error_code", "target_error_code"},
 	)
+
+	// XidEmptyDriverVersion counts XID decode requests issued with an empty driver
+	// version. A non-zero value means NVL5 (R575+) decoding may be selecting the
+	// wrong (V1) table, typically because GPU metadata was not yet populated.
+	XidEmptyDriverVersion = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "syslog_health_monitor_xid_empty_driver_version_total",
+			Help: "Total number of XID decode requests issued with an empty driver version",
+		},
+		[]string{"node"},
+	)
 )
 
 // PreInitialize materializes XidCounterMetric at zero for the local node and

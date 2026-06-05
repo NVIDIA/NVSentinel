@@ -136,43 +136,34 @@ func TestMapActionStringToProto(t *testing.T) {
 }
 
 func TestGetNVL5DecodingRules(t *testing.T) {
-	// Load rules for both driver version ranges
-	rulesV1, err := GetNVL5DecodingRules("570.148.08") // Pre-R575: uses Column C
-	assert.NoError(t, err)
-	rulesV2, err := GetNVL5DecodingRules("580.0.0") // R575+: uses Column D
+	// Rules carry both V1 and V2 IntrInfo patterns; selection happens per message.
+	rules, err := GetNVL5DecodingRules()
 	assert.NoError(t, err)
 
 	// Verify all NVL5 XIDs (144-150) are loaded
 	for xid := 144; xid <= 150; xid++ {
-		assert.Contains(t, rulesV1, xid)
-		assert.Contains(t, rulesV2, xid)
+		assert.Contains(t, rules, xid)
 	}
 
 	// Test concrete values from xlsx for XID 145
-	assert.Len(t, rulesV1[145], 33, "XID 145 should have 33 rules")
+	assert.Len(t, rules[145], 33, "XID 145 should have 33 rules")
 
 	// Verify first rule (RLW_CTRL) - concrete values from xlsx
-	rule0V1 := rulesV1[145][0]
-	assert.Equal(t, 145, rule0V1.XIDNumber)
-	assert.Equal(t, "RLW_CTRL", rule0V1.Mnemonic)
-	assert.Equal(t, "Non-fatal", rule0V1.Severity)
-	assert.Equal(t, "IGNORE", rule0V1.Resolution)
-	assert.Equal(t, "------000000----------0001100010", rule0V1.IntrInfoBinary) // V1 pattern
-	assert.Equal(t, []string{"0x80000000"}, rule0V1.ErrorStatusHex)
-
-	// Verify same rule uses different IntrInfoBinary in V2
-	rule0V2 := rulesV2[145][0]
-	assert.Equal(t, "------000000-------------0000011", rule0V2.IntrInfoBinary) // V2 pattern
-	assert.Equal(t, rule0V1.Mnemonic, rule0V2.Mnemonic)                         // Same mnemonic
-	assert.Equal(t, rule0V1.Resolution, rule0V2.Resolution)                     // Same resolution
+	rule0 := rules[145][0]
+	assert.Equal(t, 145, rule0.XIDNumber)
+	assert.Equal(t, "RLW_CTRL", rule0.Mnemonic)
+	assert.Equal(t, "Non-fatal", rule0.Severity)
+	assert.Equal(t, "IGNORE", rule0.Resolution)
+	assert.Equal(t, "------000000----------0001100010", rule0.IntrInfoBinaryV1) // V1 pattern (Column C)
+	assert.Equal(t, "------000000-------------0000011", rule0.IntrInfoBinaryV2)  // V2 pattern (Column D)
+	assert.Equal(t, []string{"0x80000000"}, rule0.ErrorStatusHex)
 
 	// Verify second rule (RLW_REMAP with XID_154_EVAL)
-	rule1V1 := rulesV1[145][1]
-	assert.Equal(t, "RLW_REMAP", rule1V1.Mnemonic)
-	assert.Equal(t, "XID_154_EVAL", rule1V1.Resolution)
-	assert.Equal(t, "------000000----------0010000010", rule1V1.IntrInfoBinary) // V1
-	rule1V2 := rulesV2[145][1]
-	assert.Equal(t, "------000000-------------0000100", rule1V2.IntrInfoBinary) // V2
+	rule1 := rules[145][1]
+	assert.Equal(t, "RLW_REMAP", rule1.Mnemonic)
+	assert.Equal(t, "XID_154_EVAL", rule1.Resolution)
+	assert.Equal(t, "------000000----------0010000010", rule1.IntrInfoBinaryV1) // V1
+	assert.Equal(t, "------000000-------------0000100", rule1.IntrInfoBinaryV2)  // V2
 }
 
 func TestIsDriverVersionR575OrNewer(t *testing.T) {

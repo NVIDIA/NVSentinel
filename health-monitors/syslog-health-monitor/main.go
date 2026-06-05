@@ -451,7 +451,7 @@ func waitForSidecarIfEnabled(ctx context.Context, nodeName string) error {
 		return nil
 	}
 
-	sidecar := parser.NewSidecarParser(*xidAnalyserEndpoint, nodeName, "")
+	sidecar := parser.NewSidecarParser(*xidAnalyserEndpoint, nodeName, func() string { return "" })
 
 	if err := sidecar.WaitUntilReady(ctx, 30, 2*time.Second); err != nil {
 		return fmt.Errorf("sidecar readiness check failed: %w", err)

@@ -74,18 +74,30 @@ type CSVParser struct {
 	nodeName           string
 	errorResolutionMap map[int]types.ErrorResolution
 	nvl5Rules          map[int][]common.NVL5DecodingRule
+	driverVersionFn    func() string
 }
 
-// NewCSVParser creates a new CSV parser with error resolution mapping
+// NewCSVParser creates a new CSV parser with error resolution mapping.
+//
+// driverVersionFn is invoked per message to decide whether to match against the
+// V1 (driver < R575) or V2 (driver >= R575) NVL5 IntrInfo pattern. It is resolved
+// lazily (rather than snapshotted) so a driver version that becomes available
+// after startup is honored without a restart.
 func NewCSVParser(
 	nodeName string,
 	errorResolutionMap map[int]types.ErrorResolution,
 	nvl5Rules map[int][]common.NVL5DecodingRule,
+	driverVersionFn func() string,
 ) *CSVParser {
+	if driverVersionFn == nil {
+		driverVersionFn = func() string { return "" }
+	}
+
 	return &CSVParser{
 		nodeName:           nodeName,
 		errorResolutionMap: errorResolutionMap,
 		nvl5Rules:          nvl5Rules,
+		driverVersionFn:    driverVersionFn,
 	}
 }
 
@@ -130,13 +142,15 @@ func (p *CSVParser) parseNVL5XID(message string) (*Response, error) {
 		return nil, nil
 	}
 
+	useV2 := common.IsDriverVersionR575OrNewer(p.driverVersionFn())
+
 	var ruleMnemonic string
 
 	var recommendedAction pb.RecommendedAction
 
 	for _, rule := range rules {
-		if p.matchesNVL5Rule(rule, intrInfo, errorStatusStr) {
-			slog.Debug("Found matching NVL5 rule", "xidCode", xidCode)
+		if p.matchesNVL5Rule(rule, intrInfo, errorStatusStr, useV2) {
+			slog.Debug("Found matching NVL5 rule", "xidCode", xidCode, "useV2", useV2)
 
 			recommendedAction = common.MapActionStringToProto(rule.Resolution)
 			ruleMnemonic = rule.Mnemonic
@@ -257,7 +271,9 @@ func (p *CSVParser) getRecommendedActionForXid(xidCode int, message string) pb.R
 	return recommendedAction
 }
 
-func (p *CSVParser) matchesNVL5Rule(rule common.NVL5DecodingRule, intrInfo int64, errorStatusStr string) bool {
+func (p *CSVParser) matchesNVL5Rule(
+	rule common.NVL5DecodingRule, intrInfo int64, errorStatusStr string, useV2 bool,
+) bool {
 	foundMatch := false
 	allEmpty := true
 
@@ -278,7 +294,12 @@ func (p *CSVParser) matchesNVL5Rule(rule common.NVL5DecodingRule, intrInfo int64
 		return false
 	}
 
-	return p.doesXIDIntrInfoMatchRule(rule.IntrInfoBinary, intrInfo)
+	intrInfoPattern := rule.IntrInfoBinaryV1
+	if useV2 {
+		intrInfoPattern = rule.IntrInfoBinaryV2
+	}
+
+	return p.doesXIDIntrInfoMatchRule(intrInfoPattern, intrInfo)
 }
 
 func (p *CSVParser) doesXIDIntrInfoMatchRule(intrinfoBinaryPattern string, intrInfoInMessage int64) bool {

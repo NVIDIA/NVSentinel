@@ -48,11 +48,20 @@ func NewXIDHandler(nodeName, defaultAgentName,
 	metadataReader := metadata.NewReader(metadataPath)
 	driverVersion := metadataReader.GetDriverVersion()
 
+	if driverVersion == "" {
+		slog.Warn("GPU driver version unavailable at XID handler startup; "+
+			"NVL5 decoding may be inaccurate until GPU metadata is populated",
+			"check", checkName, "metadataPath", metadataPath)
+	} else {
+		slog.Info("Resolved GPU driver version for XID handler",
+			"check", checkName, "driverVersion", driverVersion)
+	}
+
 	config := parser.ParserConfig{
 		NodeName:            nodeName,
 		XidAnalyserEndpoint: xidAnalyserEndpoint,
 		SidecarEnabled:      xidAnalyserEndpoint != "",
-		DriverVersion:       driverVersion,
+		DriverVersionFn:     metadataReader.GetDriverVersion,
 	}
 
 	xidParser, err := parser.CreateParser(config)

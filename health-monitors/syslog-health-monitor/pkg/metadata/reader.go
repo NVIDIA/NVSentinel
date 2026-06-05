@@ -80,10 +80,17 @@ func (r *Reader) load() error {
 	r.metadata = &metadata
 	r.buildMaps()
 
-	slog.Info("GPU metadata loaded",
-		"gpus", len(metadata.GPUs),
-		"nvswitches", len(metadata.NVSwitches),
-		"chassis_serial", metadata.ChassisSerial != nil)
+	if r.loaded {
+		slog.Debug("GPU metadata reloaded",
+			"gpus", len(metadata.GPUs),
+			"driver_version", metadata.DriverVersion)
+	} else {
+		slog.Info("GPU metadata loaded",
+			"gpus", len(metadata.GPUs),
+			"nvswitches", len(metadata.NVSwitches),
+			"chassis_serial", metadata.ChassisSerial != nil,
+			"driver_version", metadata.DriverVersion)
+	}
 
 	return nil
 }
@@ -171,9 +178,29 @@ func (r *Reader) GetChassisSerial() *string {
 	return r.metadata.ChassisSerial
 }
 
+// GetDriverVersion returns the GPU driver version from the metadata file.
+//
+// Unlike the other accessors, the driver version is typically consumed early
+// (e.g. when constructing the XID parser) and may still be empty if the
+// metadata-collector has not finished writing the file yet. Permanently caching
+// that empty value is dangerous: the XID sidecar would keep receiving an empty
+// driver_version and silently fall back to the wrong (V1) NVL5 decode table for
+// R575+ drivers, mis-classifying errors. To avoid that, re-attempt a load
+// whenever the cached driver version is still empty. Once a non-empty value is
+// observed it is cached like every other field.
 func (r *Reader) GetDriverVersion() string {
-	if err := r.ensureLoaded(); err != nil {
-		return ""
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.loaded || r.metadata == nil || r.metadata.DriverVersion == "" {
+		if err := r.load(); err != nil {
+			slog.Warn("Failed to load GPU metadata for driver version",
+				"path", r.path, "error", err)
+
+			return ""
+		}
+
+		r.loaded = true
 	}
 
 	return r.metadata.DriverVersion
