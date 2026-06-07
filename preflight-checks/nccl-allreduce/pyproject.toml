@@ -23,7 +23,7 @@ packages = [{include = "nccl_allreduce"}]
 python = "^3.10"
 grpcio = "^1.74.0"
 protobuf = ">=6.31.1,<8.0.0"
-structlog = "^25.1.0"
+structlog = ">=25.1,<27.0"
 # torch is provided by the base image, not installed via poetry
 
 [tool.poetry.group.dev.dependencies]

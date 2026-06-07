@@ -10,7 +10,7 @@ python = "^3.10"
 grpcio = "^1.74.0"
 protobuf = ">=6.31.1,<8.0.0"
 pynvml = ">=12,<14"
-structlog = "^25.1.0"
+structlog = ">=25.1,<27.0"
 
 [tool.poetry.group.dev.dependencies]
 black = "^26.3.1"
