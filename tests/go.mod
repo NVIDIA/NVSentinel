@@ -13,7 +13,7 @@ require (
 	github.com/nvidia/nvsentinel/data-models v0.0.0
 	github.com/nvidia/nvsentinel/fault-remediation v0.0.0
 	github.com/prometheus/client_golang v1.23.2
-	github.com/prometheus/common v0.68.0
+	github.com/prometheus/common v0.68.1
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/zap v1.28.0
 	go.yaml.in/yaml/v2 v2.4.4
