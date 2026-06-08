@@ -126,6 +126,32 @@ class MetadataReader:
         log.debug(f"GPU {gpu_id} not found in metadata")
         return None
 
+    def get_slowdown_tlimit_c(self, gpu_id: int) -> Optional[int]:
+        """Return NVML slowdown T.Limit offset (°C) for the GPU, if published."""
+        self._ensure_loaded()
+
+        if not self._metadata:
+            return None
+
+        gpus = self._metadata.get("gpus", [])
+        for gpu in gpus:
+            if gpu.get("gpu_id") == gpu_id:
+                raw = gpu.get("slowdown_tlimit_c")
+                if raw is None:
+                    log.warning(f"GPU {gpu_id} has no slowdown_tlimit_c")
+                    return None
+                try:
+                    return int(raw)
+                except (ValueError, TypeError):
+                    log.warning(
+                        "GPU %s slowdown_tlimit_c value %r is not a valid integer; treating as missing",
+                        gpu_id,
+                        raw,
+                    )
+                    return None
+
+        return None
+
     def get_chassis_serial(self) -> Optional[str]:
         """Get chassis serial number.
 

@@ -27,6 +27,11 @@ dcgm:
     # DCGM service port
     port: 5555
 
+# DCGM field-level monitoring feature flags
+dcgmFieldsMonitoring:
+  # Enable GpuThermalMarginWatch (DCGM field 153 / GPU T.Limit margin monitoring)
+  gpuTempLimitMonitoringEnabled: true
+
 # Use host networking for GPU health monitor pods
 # Required for accessing host-level GPU metrics
 useHostNetworking: false

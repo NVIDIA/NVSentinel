@@ -15,7 +15,9 @@
 package nvml
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -24,6 +26,53 @@ import (
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 )
+
+func slowdownTLimitC(device nvml.Device) *int {
+	fields := []nvml.FieldValue{{FieldId: nvml.FI_DEV_TEMPERATURE_SLOWDOWN_TLIMIT}}
+	if ret := device.GetFieldValues(fields); ret != nvml.SUCCESS {
+		slog.Error("NVML GetFieldValues failed",
+			"field_id", nvml.FI_DEV_TEMPERATURE_SLOWDOWN_TLIMIT,
+			"error", nvml.ErrorString(ret))
+
+		return nil
+	}
+
+	field := fields[0]
+
+	ret := nvml.Return(field.NvmlReturn) //nolint:gosec // G115: NVML status code, always fits int32
+	if ret != nvml.SUCCESS {
+		slog.Error("NVML field read failed",
+			"field_id", field.FieldId,
+			"error", nvml.ErrorString(ret))
+
+		return nil
+	}
+
+	if field.ValueType != uint32(nvml.VALUE_TYPE_SIGNED_INT) {
+		slog.Error("NVML field has unexpected value type",
+			"field_id", field.FieldId,
+			"value_type", field.ValueType)
+
+		return nil
+	}
+
+	// field.Value is NVML's 8-byte value union; a SIGNED_INT field occupies the
+	// first 4 bytes in host byte order. Decode directly into a signed int32 so
+	// there is no unsigned->signed reinterpretation (e.g. H100 reports -2).
+	var raw int32
+	if err := binary.Read(bytes.NewReader(field.Value[:4]), binary.NativeEndian, &raw); err != nil {
+		slog.Error("failed to decode NVML slowdown TLIMIT field value",
+			"field_id", field.FieldId,
+			"error", err)
+
+		return nil
+	}
+
+	val := int(raw)
+	slog.Info("NVML slowdown TLIMIT field value", "field_id", field.FieldId, "value", val)
+
+	return &val
+}
 
 type NVMLWrapper struct{}
 
@@ -92,6 +141,8 @@ func (w *NVMLWrapper) GetGPUInfo(index int) (*model.GPUInfo, error) {
 	}
 
 	gpuInfo.DeviceName = name
+
+	gpuInfo.SlowdownTLimitC = slowdownTLimitC(device)
 
 	return gpuInfo, nil
 }

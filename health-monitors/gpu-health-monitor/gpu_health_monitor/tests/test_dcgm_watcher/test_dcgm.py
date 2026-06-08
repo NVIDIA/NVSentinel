@@ -13,10 +13,12 @@
 # limitations under the License.
 
 from gpu_health_monitor.dcgm_watcher import dcgm
+from gpu_health_monitor.metadata import MetadataReader
 from unittest.mock import MagicMock, patch
-import dcgm_structs, dcgm_errors, dcgm_fields, dcgm_field_helpers
+import dcgm_structs, dcgm_errors, dcgm_fields
 from threading import Event, Thread
 from ctypes import pointer
+import json
 import pytest
 
 
@@ -37,6 +39,17 @@ class FakeEventProcessorInTest(dcgm.types.CallbackInterface):
 
 
 class TestDCGMHealthChecks:
+    def _make_thermal_margin_watcher(self, metadata_reader: MetadataReader) -> dcgm.DCGMWatcher:
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            thermal_margin_enabled=True,
+            metadata_reader=metadata_reader,
+        )
+        watcher._field_group = MagicMock()
+        return watcher
 
     def _get_pcie_incident(self, group_id, entity_id):
         incident = dcgm_structs.c_dcgmIncidentInfo_t()
@@ -92,6 +105,97 @@ class TestDCGMHealthChecks:
         for _, val in health_status_dict.items():
             assert val.status == dcgm.types.HealthStatus.PASS
             assert val.entity_failures == {}
+
+    def test_evaluate_gpu_thermal_margin_skips_when_no_threshold(self):
+        """No GPU has threshold → returns None (watch not published)."""
+        metadata_reader = MagicMock()
+        metadata_reader.get_slowdown_tlimit_c.return_value = None
+        watcher = self._make_thermal_margin_watcher(metadata_reader)
+        dcgm_group_mock = MagicMock()
+        dcgm_group_mock.samples.GetLatest.return_value = MagicMock(
+            values={0: {dcgm.DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"].field_id: [MagicMock(value=43)]}}
+        )
+
+        assert watcher._evaluate_gpu_thermal_margin(dcgm_group_mock, [0]) is None
+
+    def test_evaluate_gpu_thermal_margin_lifecycle(self, tmp_path):
+        """Covers: PASS → FAIL → PASS lifecycle.
+
+        Uses realistic negative offset values matching actual field semantics:
+        - slowdown_tlimit_c=-2 is a signed negative offset (HW slowdown kicks in at T.Max - 2°C)
+        - margin=-1 means GPU is 1°C below T.Max (near but not at slowdown)
+        - violation occurs when margin < slowdown_tlimit_c (i.e., -1 < -2 is False, but -3 < -2 is True)
+        """
+        field_id = dcgm.DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"].field_id
+        violation_code = dcgm.DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"].violation_code
+
+        metadata_path = tmp_path / "gpu_metadata.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "version": "1.0",
+                    "gpus": [
+                        {"gpu_id": 0, "uuid": "GPU-0", "pci_address": "0000:01:00.0", "slowdown_tlimit_c": -2},
+                    ],
+                }
+            )
+        )
+        reader = MetadataReader(str(metadata_path))
+        watcher = self._make_thermal_margin_watcher(reader)
+        dcgm_group_mock = MagicMock()
+
+        # Phase 1: Healthy (margin=-1 > threshold=-2) → PASS
+        dcgm_group_mock.samples.GetLatest.return_value = MagicMock(values={0: {field_id: [MagicMock(value=-1)]}})
+        healthy = watcher._evaluate_gpu_thermal_margin(dcgm_group_mock, [0])
+        assert healthy.status == dcgm.types.HealthStatus.PASS
+        assert healthy.entity_failures == {}
+
+        # Phase 2: Violation (margin=-3 < threshold=-2) → FAIL
+        dcgm_group_mock.samples.GetLatest.return_value = MagicMock(values={0: {field_id: [MagicMock(value=-3)]}})
+        triggered = watcher._evaluate_gpu_thermal_margin(dcgm_group_mock, [0])
+        assert triggered.status == dcgm.types.HealthStatus.FAIL
+        assert triggered.entity_failures[0].code == violation_code
+
+        # Phase 3: Adjust threshold to clear violation → PASS
+        reader._metadata["gpus"][0]["slowdown_tlimit_c"] = -4
+        cleared = watcher._evaluate_gpu_thermal_margin(dcgm_group_mock, [0])
+        assert cleared.status == dcgm.types.HealthStatus.PASS
+        assert cleared.entity_failures == {}
+
+    def test_evaluate_gpu_thermal_margin_mixed_gpus(self, tmp_path):
+        """Test mixed scenario: GPU 0 passes, GPU 1 fails."""
+        field_id = dcgm.DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"].field_id
+        violation_code = dcgm.DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"].violation_code
+
+        metadata_path = tmp_path / "gpu_metadata.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "version": "1.0",
+                    "gpus": [
+                        {"gpu_id": 0, "uuid": "GPU-0", "pci_address": "0000:01:00.0", "slowdown_tlimit_c": -2},
+                        {"gpu_id": 1, "uuid": "GPU-1", "pci_address": "0000:02:00.0", "slowdown_tlimit_c": -2},
+                    ],
+                }
+            )
+        )
+        reader = MetadataReader(str(metadata_path))
+        watcher = self._make_thermal_margin_watcher(reader)
+        dcgm_group_mock = MagicMock()
+
+        # GPU 0: margin=-1 (healthy), GPU 1: margin=-3 (violation)
+        dcgm_group_mock.samples.GetLatest.return_value = MagicMock(
+            values={
+                0: {field_id: [MagicMock(value=-1)]},
+                1: {field_id: [MagicMock(value=-3)]},
+            }
+        )
+        result = watcher._evaluate_gpu_thermal_margin(dcgm_group_mock, [0, 1])
+
+        assert result.status == dcgm.types.HealthStatus.FAIL
+        assert 0 not in result.entity_failures  # GPU 0 passed
+        assert 1 in result.entity_failures  # GPU 1 failed
+        assert result.entity_failures[1].code == violation_code
 
     @patch("pydcgm.DcgmGroup.__new__")
     def test_dcgm_create_group(self, mock_dcgm_group):

@@ -44,13 +44,14 @@ type GPUMetadata struct {
 }
 
 type GPU struct {
-	GPUID        int      `json:"gpu_id"`
-	UUID         string   `json:"uuid"`
-	PCIAddress   string   `json:"pci_address"`
-	SerialNumber string   `json:"serial_number"`
-	DeviceName   string   `json:"device_name"`
-	NVLinks      []NVLink `json:"nvlinks"`
-	NUMANode     int      `json:"numa_node"`
+	GPUID           int      `json:"gpu_id"`
+	UUID            string   `json:"uuid"`
+	PCIAddress      string   `json:"pci_address"`
+	SerialNumber    string   `json:"serial_number"`
+	DeviceName      string   `json:"device_name"`
+	NVLinks         []NVLink `json:"nvlinks"`
+	NUMANode        int      `json:"numa_node"`
+	SlowdownTLimitC *int     `json:"slowdown_tlimit_c,omitempty"`
 }
 
 type NVLink struct {

@@ -45,6 +45,10 @@ type GPUInfo struct {
 	// was not available (e.g., older driver or single-socket system).
 	// Consumed by the NIC Health Monitor for management-NIC exclusion.
 	NUMANode int `json:"numa_node"`
+
+	// SlowdownTLimitC is the signed HW slowdown T.Limit offset (°C) from
+	// NVML_FI_DEV_TEMPERATURE_SLOWDOWN_TLIMIT. Omitted when unsupported.
+	SlowdownTLimitC *int `json:"slowdown_tlimit_c,omitempty"`
 }
 
 type NVLink struct {

@@ -26,6 +26,9 @@ data:
     [dcgm]
     PollIntervalSeconds = 15
 
+    [dcgmfieldsmonitoring]
+    gputemplimitmonitoringenabled = {{ .Values.dcgmFieldsMonitoring.gpuTempLimitMonitoringEnabled }}
+
     [eventprocessors.kubernetes]
     ConflictRetryCount = 10
 

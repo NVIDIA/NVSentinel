@@ -22,6 +22,7 @@ import csv
 from .dcgm_watcher import dcgm
 from .platform_connector import platform_connector
 from . import metrics
+from gpu_health_monitor.metadata import MetadataReader
 from gpu_health_monitor.protos import health_event_pb2 as platformconnector_pb2
 from gpu_health_monitor.logger import set_default_structured_logger_with_level
 
@@ -149,6 +150,15 @@ def cli(
             )
         )
 
+    thermal_margin_enabled = False
+    if config.has_section("dcgmfieldsmonitoring"):
+        thermal_margin_enabled = config["dcgmfieldsmonitoring"].getboolean(
+            "gputemplimitmonitoringenabled", fallback=False
+        )
+        log.info("GpuThermalMarginWatch field monitor: enabled=%s", thermal_margin_enabled)
+
+    metadata_reader = MetadataReader(metadata_path) if thermal_margin_enabled else None
+
     prom_server, t = start_http_server(port)
 
     def process_exit_signal(signum, frame):
@@ -164,6 +174,8 @@ def cli(
         poll_interval_seconds=int(dcgm_config["PollIntervalSeconds"]),
         callbacks=enabled_event_processors,
         dcgm_k8s_service_enabled=dcgm_k8s_service_enabled,
+        thermal_margin_enabled=thermal_margin_enabled,
+        metadata_reader=metadata_reader,
     )
     dcgm_watcher.start([], exit)
 

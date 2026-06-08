@@ -34,6 +34,15 @@ class HealthDetails:
     entity_failures: dict[int, ErrorDetails]
 
 
+@dataclasses.dataclass(frozen=True)
+class DCGMFieldMonitor:
+    """Configuration for a DCGM field-based health monitor."""
+
+    field_id: int
+    watch_name: str
+    violation_code: str
+
+
 @dataclasses.dataclass(order=True)
 class FieldDetails:
     field_id: str
