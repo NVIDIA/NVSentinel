@@ -48,7 +48,7 @@ NVSentinel supports MongoDB and PostgreSQL as database backends. Both provide ch
 
 ```bash
 helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
-  --version v1.8.0 \
+  --version v1.9.0 \
   --namespace nvsentinel \
   --create-namespace
 ```
