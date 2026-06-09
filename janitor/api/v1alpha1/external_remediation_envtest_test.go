@@ -43,8 +43,7 @@ var _ = Describe("ExternalRemediationRequest JSON wire format", func() {
 				Kind:       "ExternalRemediationRequest",
 			},
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "envtest-err-1",
-				Namespace: "default",
+				Name: "envtest-err-1",
 			},
 			Spec: &protos.ExternalRemediationRequestSpec{
 				HealthEvent: &protos.HealthEvent{
@@ -85,7 +84,7 @@ var _ = Describe("ExternalRemediationRequest JSON wire format", func() {
 			"status patch with Condition.LastTransitionTime must not be rejected by CRD validation")
 
 		var got ExternalRemediationRequest
-		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: errObj.Name, Namespace: errObj.Namespace}, &got)).To(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: errObj.Name}, &got)).To(Succeed())
 
 		Expect(got.Status).NotTo(BeNil())
 		Expect(got.Status.Conditions).To(HaveLen(1))

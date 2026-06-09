@@ -317,12 +317,12 @@ const file_external_remediation_proto_rawDesc = "" +
 	" ExternalRemediationRequestStatus\x125\n" +
 	"\n" +
 	"conditions\x18\x01 \x03(\v2\x15.datamodels.ConditionR\n" +
-	"conditions\"\xa8\x02\n" +
+	"conditions\"\xaa\x02\n" +
 	"\x1aExternalRemediationRequest\x12>\n" +
 	"\x04spec\x18\x01 \x01(\v2*.datamodels.ExternalRemediationRequestSpecR\x04spec\x12D\n" +
-	"\x06status\x18\x02 \x01(\v2,.datamodels.ExternalRemediationRequestStatusR\x06status:\x83\x01\xaa\xa8\xfd\x97\x02}\n" +
+	"\x06status\x18\x02 \x01(\v2,.datamodels.ExternalRemediationRequestStatusR\x06status:\x85\x01\xaa\xa8\xfd\x97\x02\x7f\n" +
 	"\x15nvsentinel.nvidia.com\x12\x1aExternalRemediationRequest\x1a\x1aexternalremediationrequest\"\x1bexternalremediationrequests*\x03err2\n" +
-	"nvsentinelB5Z3github.com/nvidia/nvsentinel/data-models/pkg/protosb\x06proto3"
+	"nvsentinel@\x01B5Z3github.com/nvidia/nvsentinel/data-models/pkg/protosb\x06proto3"
 
 var (
 	file_external_remediation_proto_rawDescOnce sync.Once

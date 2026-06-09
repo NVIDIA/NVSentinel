@@ -37,9 +37,8 @@ func errWithTimestamp(at time.Time) *ExternalRemediationRequest {
 			Kind:       "ExternalRemediationRequest",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "err-roundtrip",
-			Namespace: "nvsentinel",
-			Labels:    map[string]string{"node": "node-1"},
+			Name:   "err-roundtrip",
+			Labels: map[string]string{"node": "node-1"},
 		},
 		Spec: &protos.ExternalRemediationRequestSpec{
 			HealthEvent: &protos.HealthEvent{

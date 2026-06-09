@@ -88,7 +88,11 @@ message ExternalRemediationRequest {
     plural: "externalremediationrequests",
     singular: "externalremediationrequest",
     short_names: ["err"],
-    categories: ["nvsentinel"]
+    categories: ["nvsentinel"],
+    // Cluster-scoped to match the other remediation CRDs (RebootNode,
+    // TerminateNode, GPUReset) — an ERR represents a node-level claim and
+    // operators interact with it by node name, not by namespace.
+    scope: ST_CLUSTER
   };
   ExternalRemediationRequestSpec spec = 1;
   ExternalRemediationRequestStatus status = 2;
