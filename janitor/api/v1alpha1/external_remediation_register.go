@@ -15,13 +15,13 @@
 package v1alpha1
 
 import (
+	"google.golang.org/protobuf/proto"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"google.golang.org/protobuf/proto"
 
-	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/commons/pkg/managed"
+	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 // NVSentinelGroupVersion is the GroupVersion used by ExternalRemediationRequest.

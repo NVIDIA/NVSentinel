@@ -85,7 +85,7 @@ func TestAddNVSentinelToScheme_DoesNotConflictWithJanitorScheme(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, AddToScheme(scheme))          // janitor.dgxc.nvidia.com
+	require.NoError(t, AddToScheme(scheme))           // janitor.dgxc.nvidia.com
 	require.NoError(t, AddNVSentinelToScheme(scheme)) // nvsentinel.nvidia.com
 
 	// Both groups should resolve independently.
