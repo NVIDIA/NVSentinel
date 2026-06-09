@@ -123,16 +123,18 @@ func (e *ExternalRemediationRequest) DeepCopyInto(out *ExternalRemediationReques
 	out.TypeMeta = e.TypeMeta
 	e.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
 
+	// proto.Clone returns proto.Message but the runtime type is always the same
+	// concrete type as the input. The unchecked assertion is the standard pattern
+	// — a failed assertion would indicate proto runtime corruption and panicking
+	// is the right response (controller-runtime recovers and re-queues). The
+	// previous guarded form silently produced a broken deep copy if the
+	// assertion failed, which would violate runtime.Object's contract.
 	if e.Spec != nil {
-		if spec, ok := proto.Clone(e.Spec).(*protos.ExternalRemediationRequestSpec); ok {
-			out.Spec = spec
-		}
+		out.Spec = proto.Clone(e.Spec).(*protos.ExternalRemediationRequestSpec)
 	}
 
 	if e.Status != nil {
-		if status, ok := proto.Clone(e.Status).(*protos.ExternalRemediationRequestStatus); ok {
-			out.Status = status
-		}
+		out.Status = proto.Clone(e.Status).(*protos.ExternalRemediationRequestStatus)
 	}
 }
 
