@@ -68,6 +68,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(janitordgxcnvidiacomv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(janitordgxcnvidiacomv1alpha1.AddNVSentinelToScheme(scheme))
 }
 
 // runFlags holds all CLI flags for the janitor process.

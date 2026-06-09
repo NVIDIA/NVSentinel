@@ -145,3 +145,27 @@ rules:
   - gpuresets/finalizers
   verbs:
   - update
+- apiGroups:
+  - nvsentinel.nvidia.com
+  resources:
+  - externalremediationrequests
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+  - patch
+- apiGroups:
+  - nvsentinel.nvidia.com
+  resources:
+  - externalremediationrequests/status
+  verbs:
+  - get
+  - update
+  - patch
+- apiGroups:
+  - nvsentinel.nvidia.com
+  resources:
+  - externalremediationrequests/finalizers
+  verbs:
+  - update

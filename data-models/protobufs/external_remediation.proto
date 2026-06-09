@@ -1,0 +1,95 @@
+// Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+package datamodels;
+
+import "google/protobuf/timestamp.proto";
+import "health_event.proto";
+import "github.com/yandex/protoc-gen-crd/library/go/k8s/protoc_gen_crd/proto/crd.proto";
+
+option go_package = "github.com/nvidia/nvsentinel/data-models/pkg/protos";
+
+// Condition is the wire equivalent of metav1.Condition. The janitor/pkg/condition
+// adapter package converts between this proto representation and metav1.Condition
+// at the controller boundary so existing controller-runtime helpers
+// (meta.SetStatusCondition, meta.IsStatusConditionTrue) continue to work.
+message Condition {
+  // type is the condition type (e.g. "NVSentinelOwnershipReleased",
+  // "ExternalRemediationComplete").
+  string type = 1;
+
+  // status is one of "True", "False", "Unknown".
+  string status = 2;
+
+  // observedGeneration is the .metadata.generation that the condition was set
+  // based upon.
+  int64 observedGeneration = 3;
+
+  // lastTransitionTime is the last time the condition transitioned from one
+  // status to another.
+  google.protobuf.Timestamp lastTransitionTime = 4;
+
+  // reason contains a programmatic identifier indicating the reason for the
+  // condition's last transition (e.g. "ReleaseTaintApplied",
+  // "AwaitingExternalSystem", "ReleaseTaintFailed").
+  string reason = 5;
+
+  // message is a human-readable message indicating details about the
+  // transition.
+  string message = 6;
+}
+
+// ExternalRemediationRequestSpec is the desired state of an ERR. The
+// HealthEvent describes the fault that produced the ERR. The wrapper struct
+// leaves room for future ERR-specific spec fields (priority, expected duration,
+// external-system hints) without requiring changes to the HealthEvent proto.
+message ExternalRemediationRequestSpec {
+  // healthEvent is a full copy of the triaged HealthEvent that produced this
+  // ERR. Reuses the existing HealthEvent message by reference; adding a field
+  // to HealthEvent propagates here automatically.
+  HealthEvent healthEvent = 1;
+}
+
+// ExternalRemediationRequestStatus is the observed state of an ERR. Status
+// transitions are driven by the ERR reconciler (NVSentinelOwnershipReleased)
+// and the external system (ExternalRemediationComplete) — see ADR-040 for the
+// condition state machine.
+message ExternalRemediationRequestStatus {
+  // conditions represent the latest available observations of the ERR's
+  // current state. See ADR-040 for the canonical type names and reasons.
+  repeated Condition conditions = 1;
+}
+
+// ExternalRemediationRequest is the exit door from NVSentinel ownership.
+// Created by fault-remediation when triage maps a fault to the CUSTOM
+// recommended action (per ADR-036) with a customRecommendedAction configured
+// to produce an ERR.
+//
+// See ADR-040 (docs/designs/040-external-remediation-request.md) for the full
+// design including the asymmetric ExternalRemediationComplete=True vs False
+// handling, the cleanup finalizer, the release taint, and the
+// nvsentinel.dgxc.nvidia.com/managed label coordination mechanism.
+message ExternalRemediationRequest {
+  option (protoc_gen_crd.k8s_crd) = {
+    api_group: "nvsentinel.nvidia.com",
+    kind: "ExternalRemediationRequest",
+    plural: "externalremediationrequests",
+    singular: "externalremediationrequest",
+    short_names: ["err"],
+    categories: ["nvsentinel"]
+  };
+  ExternalRemediationRequestSpec spec = 1;
+  ExternalRemediationRequestStatus status = 2;
+}
