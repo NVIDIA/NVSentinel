@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: system-services-monitor
+  namespace: nvsentinel
+  labels:
+    app.kubernetes.io/name: system-services-monitor
+    app.kubernetes.io/instance: nvsentinel
+    app.kubernetes.io/component: metrics
+data:
+  CHECK_INTERVAL: "30"
+  METRICS_PORT: "9101"
+  BOOT_GRACE_PERIOD: "300"
+  FLAP_WINDOW: "600"
+  FLAP_THRESHOLD: "3"
+  ENABLE_FABRIC_CHECK: "true"
+  ENABLE_CUDA_VALIDATION: "false"
+  LOG_LEVEL: "INFO"
