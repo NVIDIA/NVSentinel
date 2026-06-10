@@ -39,7 +39,7 @@ package managed
 
 import (
 	"context"
-	"log/slog"
+	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	listersv1 "k8s.io/client-go/listers/core/v1"
@@ -60,33 +60,34 @@ const (
 // informer-backed NodeLister so it can be invoked on the emission hot path
 // without round-tripping to the apiserver.
 //
-// Returns false when:
-//   - the label is absent, or set to any value other than "false";
-//   - the Node is not in the cache (defensive: a stale or empty cache must
-//     never silence a monitor for a node we don't know about);
-//   - the lookup fails for any other reason (logged at ERROR for visibility).
+// Returns (true, nil) when the label is "false" and the node is in the cache.
+// Returns (false, nil) when:
+//   - the label is absent or set to any value other than "false";
+//   - the Node is not in the cache (cache miss is benign — informer warmup
+//     or post-deletion lookup);
+//   - the lister or nodeName argument is empty.
 //
-// The non-error fail-open is deliberate: ADR-040 calls out that the safe
-// default is "keep observing the node." A lookup failure should produce a
-// log line for operator attention but not change behaviour.
-func IsNodeOptedOut(ctx context.Context, nodeLister listersv1.NodeLister, nodeName string) bool {
+// Returns (false, err) for any other lister error. Callers MUST decide their
+// own failure policy: a reconciler should requeue (controller-runtime handles
+// backoff), but an event publisher that cannot retry should fail closed (drop
+// the event) — fail-open here would re-emit events for a node that may be
+// under active external remediation, which is exactly the contract this label
+// is meant to enforce.
+func IsNodeOptedOut(ctx context.Context, nodeLister listersv1.NodeLister, nodeName string) (bool, error) {
 	if nodeLister == nil || nodeName == "" {
-		return false
+		return false, nil
 	}
 
 	node, err := nodeLister.Get(nodeName)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			// Stale or empty cache for this node — fail open. No log spam: this
+			// Stale or empty cache for this node — treat as not-opted-out. This
 			// is expected during informer warmup and after node deletion.
-			return false
+			return false, nil
 		}
 
-		slog.ErrorContext(ctx, "managed-label lookup failed; falling back to managed (fail-open)",
-			"node", nodeName, "error", err)
-
-		return false
+		return false, fmt.Errorf("looking up managed label for node %q: %w", nodeName, err)
 	}
 
-	return node.Labels[ManagedLabelKey] == ManagedLabelValueFalse
+	return node.Labels[ManagedLabelKey] == ManagedLabelValueFalse, nil
 }

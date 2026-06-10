@@ -16,12 +16,14 @@ package managed
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
 	listersv1 "k8s.io/client-go/listers/core/v1"
 )
@@ -50,6 +52,15 @@ func node(name string, labels map[string]string) *corev1.Node {
 		},
 	}
 }
+
+// errLister implements listersv1.NodeLister and always returns a non-NotFound
+// error from Get. Used to exercise the error-propagation branch of
+// IsNodeOptedOut, which informer-backed listers can't easily produce
+// organically.
+type errLister struct{ err error }
+
+func (l errLister) List(labels.Selector) ([]*corev1.Node, error) { return nil, l.err }
+func (l errLister) Get(string) (*corev1.Node, error)             { return nil, l.err }
 
 func TestIsNodeOptedOut(t *testing.T) {
 	t.Parallel()
@@ -97,13 +108,13 @@ func TestIsNodeOptedOut(t *testing.T) {
 			want:     false,
 		},
 		{
-			name:     "node not in cache -> NOT opted out (fail-open)",
+			name:     "node not in cache -> NOT opted out (benign cache miss)",
 			nodes:    []*corev1.Node{node("n1", map[string]string{ManagedLabelKey: "false"})},
 			nodeName: "missing",
 			want:     false,
 		},
 		{
-			name:     "empty cache -> NOT opted out (fail-open)",
+			name:     "empty cache -> NOT opted out (benign cache miss)",
 			nodes:    nil,
 			nodeName: "n1",
 			want:     false,
@@ -115,7 +126,8 @@ func TestIsNodeOptedOut(t *testing.T) {
 			t.Parallel()
 
 			lister := listerWith(t, tt.nodes...)
-			got := IsNodeOptedOut(context.Background(), lister, tt.nodeName)
+			got, err := IsNodeOptedOut(context.Background(), lister, tt.nodeName)
+			require.NoError(t, err, "happy and benign-miss paths must not return an error")
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -124,14 +136,30 @@ func TestIsNodeOptedOut(t *testing.T) {
 func TestIsNodeOptedOut_NilLister(t *testing.T) {
 	t.Parallel()
 
-	assert.False(t, IsNodeOptedOut(context.Background(), nil, "n1"),
-		"nil lister must fail open, not panic")
+	got, err := IsNodeOptedOut(context.Background(), nil, "n1")
+	require.NoError(t, err)
+	assert.False(t, got, "nil lister must return false, not panic")
 }
 
 func TestIsNodeOptedOut_EmptyNodeName(t *testing.T) {
 	t.Parallel()
 
 	lister := listerWith(t)
-	assert.False(t, IsNodeOptedOut(context.Background(), lister, ""),
-		"empty node name must fail open, not query the cache")
+
+	got, err := IsNodeOptedOut(context.Background(), lister, "")
+	require.NoError(t, err)
+	assert.False(t, got, "empty node name must return false without querying the cache")
+}
+
+// TestIsNodeOptedOut_LookupError exercises the error-propagation path: a
+// non-NotFound lister error must bubble up wrapped so callers can decide
+// their own failure policy (requeue vs fail-closed).
+func TestIsNodeOptedOut_LookupError(t *testing.T) {
+	t.Parallel()
+
+	want := errors.New("transient apiserver hiccup")
+	got, err := IsNodeOptedOut(context.Background(), errLister{err: want}, "n1")
+	assert.False(t, got, "must not claim a definitive answer when the lookup failed")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, want, "wrapped error must preserve the original cause")
 }
