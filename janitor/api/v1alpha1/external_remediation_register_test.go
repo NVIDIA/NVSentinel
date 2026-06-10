@@ -36,9 +36,9 @@ func newERR() *ExternalRemediationRequest {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "gpu0-xid79-node-01",
 			Labels: map[string]string{
-				"nvsentinel.nvidia.com/node": "node-01.example-cluster.internal",
+				"nvsentinel.dgxc.nvidia.com/node": "node-01.example-cluster.internal",
 			},
-			Finalizers: []string{"nvsentinel.nvidia.com/external-remediation-cleanup"},
+			Finalizers: []string{"nvsentinel.dgxc.nvidia.com/external-remediation-cleanup"},
 		},
 		Spec: &protos.ExternalRemediationRequestSpec{
 			HealthEvent: &protos.HealthEvent{
