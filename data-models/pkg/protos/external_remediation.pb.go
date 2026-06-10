@@ -137,14 +137,14 @@ func (x *Condition) GetMessage() string {
 	return ""
 }
 
-// ExternalRemediationRequestSpec is the desired state of an ERR. The
-// HealthEvent describes the fault that produced the ERR. The wrapper struct
-// leaves room for future ERR-specific spec fields (priority, expected duration,
+// ExternalRemediationRequestSpec is the desired state of an ExtRR. The
+// HealthEvent describes the fault that produced the ExtRR. The wrapper struct
+// leaves room for future ExtRR-specific spec fields (priority, expected duration,
 // external-system hints) without requiring changes to the HealthEvent proto.
 type ExternalRemediationRequestSpec struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// healthEvent is a full copy of the triaged HealthEvent that produced this
-	// ERR. Reuses the existing HealthEvent message by reference; adding a field
+	// ExtRR. Reuses the existing HealthEvent message by reference; adding a field
 	// to HealthEvent propagates here automatically.
 	HealthEvent   *HealthEvent `protobuf:"bytes,1,opt,name=healthEvent,proto3" json:"healthEvent,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -188,13 +188,13 @@ func (x *ExternalRemediationRequestSpec) GetHealthEvent() *HealthEvent {
 	return nil
 }
 
-// ExternalRemediationRequestStatus is the observed state of an ERR. Status
-// transitions are driven by the ERR reconciler (NVSentinelOwnershipReleased)
+// ExternalRemediationRequestStatus is the observed state of an ExtRR. Status
+// transitions are driven by the ExtRR reconciler (NVSentinelOwnershipReleased)
 // and the external system (ExternalRemediationComplete) — see ADR-040 for the
 // condition state machine.
 type ExternalRemediationRequestStatus struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// conditions represent the latest available observations of the ERR's
+	// conditions represent the latest available observations of the ExtRR's
 	// current state. See ADR-040 for the canonical type names and reasons.
 	Conditions    []*Condition `protobuf:"bytes,1,rep,name=conditions,proto3" json:"conditions,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -241,7 +241,7 @@ func (x *ExternalRemediationRequestStatus) GetConditions() []*Condition {
 // ExternalRemediationRequest is the exit door from NVSentinel ownership.
 // Created by fault-remediation when triage maps a fault to the CUSTOM
 // recommended action (per ADR-036) with a customRecommendedAction configured
-// to produce an ERR.
+// to produce an ExtRR.
 //
 // See ADR-040 (docs/designs/040-external-remediation-request.md) for the full
 // design including the asymmetric ExternalRemediationComplete=True vs False
@@ -317,11 +317,11 @@ const file_external_remediation_proto_rawDesc = "" +
 	" ExternalRemediationRequestStatus\x125\n" +
 	"\n" +
 	"conditions\x18\x01 \x03(\v2\x15.datamodels.ConditionR\n" +
-	"conditions\"\xaa\x02\n" +
+	"conditions\"\xad\x02\n" +
 	"\x1aExternalRemediationRequest\x12>\n" +
 	"\x04spec\x18\x01 \x01(\v2*.datamodels.ExternalRemediationRequestSpecR\x04spec\x12D\n" +
-	"\x06status\x18\x02 \x01(\v2,.datamodels.ExternalRemediationRequestStatusR\x06status:\x85\x01\xaa\xa8\xfd\x97\x02\x7f\n" +
-	"\x15nvsentinel.nvidia.com\x12\x1aExternalRemediationRequest\x1a\x1aexternalremediationrequest\"\x1bexternalremediationrequests*\x03err2\n" +
+	"\x06status\x18\x02 \x01(\v2,.datamodels.ExternalRemediationRequestStatusR\x06status:\x88\x01\xaa\xa8\xfd\x97\x02\x81\x01\n" +
+	"\x15nvsentinel.nvidia.com\x12\x1aExternalRemediationRequest\x1a\x1aexternalremediationrequest\"\x1bexternalremediationrequests*\x05extrr2\n" +
 	"nvsentinel@\x01B5Z3github.com/nvidia/nvsentinel/data-models/pkg/protosb\x06proto3"
 
 var (

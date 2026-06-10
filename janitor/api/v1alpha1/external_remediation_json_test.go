@@ -27,17 +27,17 @@ import (
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
-// errWithTimestamp returns an ERR whose Condition carries a non-zero
+// extrrWithTimestamp returns an ExtRR whose Condition carries a non-zero
 // LastTransitionTime, the case where default encoding/json marshalling
 // diverges from the CRD-required RFC3339 string form.
-func errWithTimestamp(at time.Time) *ExternalRemediationRequest {
+func extrrWithTimestamp(at time.Time) *ExternalRemediationRequest {
 	return &ExternalRemediationRequest{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "nvsentinel.nvidia.com/v1",
 			Kind:       "ExternalRemediationRequest",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   "err-roundtrip",
+			Name:   "extrr-roundtrip",
 			Labels: map[string]string{"node": "node-1"},
 		},
 		Spec: &protos.ExternalRemediationRequestSpec{
@@ -67,7 +67,7 @@ func TestERR_MarshalJSON_EmitsRFC3339Timestamp(t *testing.T) {
 	t.Parallel()
 
 	at := time.Date(2026, 6, 5, 15, 30, 45, 0, time.UTC)
-	in := errWithTimestamp(at)
+	in := extrrWithTimestamp(at)
 
 	b, err := json.Marshal(in)
 	require.NoError(t, err)
@@ -94,7 +94,7 @@ func TestERR_JSONRoundTrip_PreservesAllFields(t *testing.T) {
 	t.Parallel()
 
 	at := time.Date(2026, 6, 5, 15, 30, 45, 123_000_000, time.UTC) // RFC3339 has nanosecond precision
-	in := errWithTimestamp(at)
+	in := extrrWithTimestamp(at)
 
 	b, err := json.Marshal(in)
 	require.NoError(t, err)
@@ -233,8 +233,8 @@ func TestERRList_JSONRoundTrip(t *testing.T) {
 		},
 		ListMeta: metav1.ListMeta{ResourceVersion: "42"},
 		Items: []ExternalRemediationRequest{
-			*errWithTimestamp(at),
-			*errWithTimestamp(at.Add(time.Minute)),
+			*extrrWithTimestamp(at),
+			*extrrWithTimestamp(at.Add(time.Minute)),
 		},
 	}
 

@@ -37,13 +37,13 @@ import (
 
 var _ = Describe("ExternalRemediationRequest JSON wire format", func() {
 	It("round-trips through the apiserver with a non-zero Condition.LastTransitionTime", func() {
-		errObj := &ExternalRemediationRequest{
+		extrrObj := &ExternalRemediationRequest{
 			TypeMeta: metav1.TypeMeta{
 				APIVersion: "nvsentinel.nvidia.com/v1",
 				Kind:       "ExternalRemediationRequest",
 			},
 			ObjectMeta: metav1.ObjectMeta{
-				Name: "envtest-err-1",
+				Name: "envtest-extrr-1",
 			},
 			Spec: &protos.ExternalRemediationRequestSpec{
 				HealthEvent: &protos.HealthEvent{
@@ -56,18 +56,18 @@ var _ = Describe("ExternalRemediationRequest JSON wire format", func() {
 			},
 		}
 
-		Expect(k8sClient.Create(ctx, errObj)).To(Succeed(),
-			"creating an ERR through the apiserver must succeed (CRD must accept the spec shape)")
+		Expect(k8sClient.Create(ctx, extrrObj)).To(Succeed(),
+			"creating an ExtRR through the apiserver must succeed (CRD must accept the spec shape)")
 
 		DeferCleanup(func() {
-			_ = k8sClient.Delete(ctx, errObj)
+			_ = k8sClient.Delete(ctx, extrrObj)
 		})
 
 		// Status patch with a Condition that carries a Timestamp — the path
 		// that previously 422'd because encoding/json was emitting
 		// {seconds, nanos} for the timestamp instead of an RFC3339 string.
 		at := time.Date(2026, 6, 5, 16, 0, 0, 0, time.UTC)
-		patched := errObj.DeepCopy()
+		patched := extrrObj.DeepCopy()
 		patched.Status = &protos.ExternalRemediationRequestStatus{
 			Conditions: []*protos.Condition{
 				{
@@ -80,11 +80,11 @@ var _ = Describe("ExternalRemediationRequest JSON wire format", func() {
 			},
 		}
 
-		Expect(k8sClient.Status().Patch(ctx, patched, client.MergeFrom(errObj))).To(Succeed(),
+		Expect(k8sClient.Status().Patch(ctx, patched, client.MergeFrom(extrrObj))).To(Succeed(),
 			"status patch with Condition.LastTransitionTime must not be rejected by CRD validation")
 
 		var got ExternalRemediationRequest
-		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: errObj.Name}, &got)).To(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: extrrObj.Name}, &got)).To(Succeed())
 
 		Expect(got.Status).NotTo(BeNil())
 		Expect(got.Status.Conditions).To(HaveLen(1))

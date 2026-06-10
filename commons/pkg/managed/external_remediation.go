@@ -14,34 +14,34 @@
 
 package managed
 
-// ERR identity constants. These describe the ExternalRemediationRequest CRD
+// ExtRR identity constants. These describe the ExternalRemediationRequest CRD
 // from ADR-040 and are referenced from three independent code paths:
 //
 //   - janitor: registers the CRD on the scheme, applies and removes the
 //     release taint during reconciliation.
-//   - fault-remediation/crstatus: detects ERR resources to apply the asymmetric
-//     completion semantics in StatusChecker.
-//   - fault-remediation/remediation: constructs ERR CRs from the
+//   - fault-remediation/crstatus: detects ExtRR resources to apply the
+//     asymmetric completion semantics in StatusChecker.
+//   - fault-remediation/remediation: constructs ExtRR CRs from the
 //     EXTERNAL_REMEDIATION action template.
 //
 // Keeping the strings in one place prevents drift between the apply side and
 // the observe side — a typo would silently break the dispatcher's predicate.
 const (
-	ERRApiGroup = "nvsentinel.nvidia.com"
-	ERRVersion  = "v1"
-	ERRKind     = "ExternalRemediationRequest"
+	ExtRRApiGroup = "nvsentinel.nvidia.com"
+	ExtRRVersion  = "v1"
+	ExtRRKind     = "ExternalRemediationRequest"
 
-	// ReleaseTaintKey is the taint the ERR reconciler applies during its
+	// ReleaseTaintKey is the taint the ExtRR reconciler applies during its
 	// apply path to release NVSentinel's ownership of the node. The taint
-	// value carries the ERR CR's name so the cleanup path can find and
+	// value carries the ExtRR CR's name so the cleanup path can find and
 	// remove only its own taint, even if other controllers apply taints to
 	// the same node.
 	ReleaseTaintKey = "nvsentinel.nvidia.com/external-remediation"
 )
 
-// IsERRResource reports whether (apiGroup, kind) identify an
+// IsExtRRResource reports whether (apiGroup, kind) identify an
 // ExternalRemediationRequest. Used by fault-remediation to branch into the
 // ADR-040 asymmetric semantics for status and construction.
-func IsERRResource(apiGroup, kind string) bool {
-	return apiGroup == ERRApiGroup && kind == ERRKind
+func IsExtRRResource(apiGroup, kind string) bool {
+	return apiGroup == ExtRRApiGroup && kind == ExtRRKind
 }

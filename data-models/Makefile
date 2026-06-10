@@ -59,10 +59,10 @@ PROTOC_GEN_CRD_VERSION ?= $(shell yq '.protobuf.protoc_gen_crd' ../.versions.yam
 CRD_OUT_DIR = ../distros/kubernetes/nvsentinel/charts/k8s-datastore/crds
 CRD_FILE = $(CRD_OUT_DIR)/health_event.crd.yaml
 
-# ERR CRD lands in the janitor chart, not k8s-datastore, because the ERR
+# ExtRR CRD lands in the janitor chart, not k8s-datastore, because the ExtRR
 # reconciler ships with janitor.
-ERR_CRD_OUT_DIR = ../distros/kubernetes/nvsentinel/charts/janitor/crds
-ERR_CRD_FILE = $(ERR_CRD_OUT_DIR)/external_remediation.crd.yaml
+EXTRR_CRD_OUT_DIR = ../distros/kubernetes/nvsentinel/charts/janitor/crds
+EXTRR_CRD_FILE = $(EXTRR_CRD_OUT_DIR)/external_remediation.crd.yaml
 
 # Path to vendored crd.proto
 PROTO_OPTIONS = vendor/github.com/yandex/protoc-gen-crd/library/go/k8s/protoc_gen_crd/proto/crd.proto
@@ -111,20 +111,20 @@ $(CRD_FILE): vendor-proto protobufs/health_event.proto install-plugin-remote
 # also produces a stray health_event.crd.yaml here — the canonical
 # HealthEventResource CRD lives in the k8s-datastore chart, not janitor, so we
 # remove the duplicate after generation.
-$(ERR_CRD_FILE): vendor-proto protobufs/external_remediation.proto protobufs/health_event.proto install-plugin-remote
-	@echo "Generating CRD YAML at $(ERR_CRD_FILE)..."
-	mkdir -p $(ERR_CRD_OUT_DIR)
-	$(call PROTOC_CRD_CMD,$(ERR_CRD_OUT_DIR)) external_remediation.proto
-	@rm -f $(ERR_CRD_OUT_DIR)/health_event.crd.yaml
-	@ls -l $(ERR_CRD_FILE) || (echo "ERR CRD file not generated!" && exit 1)
+$(EXTRR_CRD_FILE): vendor-proto protobufs/external_remediation.proto protobufs/health_event.proto install-plugin-remote
+	@echo "Generating CRD YAML at $(EXTRR_CRD_FILE)..."
+	mkdir -p $(EXTRR_CRD_OUT_DIR)
+	$(call PROTOC_CRD_CMD,$(EXTRR_CRD_OUT_DIR)) external_remediation.proto
+	@rm -f $(EXTRR_CRD_OUT_DIR)/health_event.crd.yaml
+	@ls -l $(EXTRR_CRD_FILE) || (echo "ExtRR CRD file not generated!" && exit 1)
 
 .PHONY: compile-crd-server
-compile-crd-server: $(CRD_FILE) $(ERR_CRD_FILE)
+compile-crd-server: $(CRD_FILE) $(EXTRR_CRD_FILE)
 
 # Clean generated CRD YAML
 .PHONY: crd-clean
 crd-clean:
-	rm -f $(CRD_FILE) $(ERR_CRD_FILE)
+	rm -f $(CRD_FILE) $(EXTRR_CRD_FILE)
 
 # Generate Go protobuf files for data-models (shared across all Go modules)
 .PHONY: protos-generate

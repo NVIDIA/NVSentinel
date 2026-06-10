@@ -21,14 +21,14 @@
 //   - absent or any value other than "false" -> NVSentinel manages the node
 //     normally (the common case).
 //   - "false" -> an external system owns this node. NVSentinel must
-//     stop reconciling against it: the ERR reconciler keeps off, node-labeler
+//     stop reconciling against it: the ExtRR reconciler keeps off, node-labeler
 //     strips its detection labels (causing DaemonSet monitors to evict via
 //     their nodeSelectors), and cluster-scope monitors skip emission for
 //     events targeting the node.
 //
 // Three places consume this constant:
 //
-//   - janitor's ERR reconciler writes the label as part of its apply path
+//   - janitor's ExtRR reconciler writes the label as part of its apply path
 //     and removes it during cleanup.
 //   - labeler reads it to gate its detection-label stamping (JSC-89).
 //   - cluster-scope monitors (csp-health-monitor, kubernetes-object-monitor,
