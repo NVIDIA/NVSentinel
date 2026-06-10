@@ -63,7 +63,7 @@ func extrrWithTimestamp(at time.Time) *ExternalRemediationRequest {
 	}
 }
 
-func TestERR_MarshalJSON_EmitsRFC3339Timestamp(t *testing.T) {
+func TestExtRR_MarshalJSON_EmitsRFC3339Timestamp(t *testing.T) {
 	t.Parallel()
 
 	at := time.Date(2026, 6, 5, 15, 30, 45, 0, time.UTC)
@@ -90,7 +90,7 @@ func TestERR_MarshalJSON_EmitsRFC3339Timestamp(t *testing.T) {
 	assert.Contains(t, got, `"status":{`)
 }
 
-func TestERR_JSONRoundTrip_PreservesAllFields(t *testing.T) {
+func TestExtRR_JSONRoundTrip_PreservesAllFields(t *testing.T) {
 	t.Parallel()
 
 	at := time.Date(2026, 6, 5, 15, 30, 45, 123_000_000, time.UTC) // RFC3339 has nanosecond precision
@@ -133,7 +133,7 @@ func TestERR_JSONRoundTrip_PreservesAllFields(t *testing.T) {
 		wantCond.LastTransitionTime.AsTime(), gotCond.LastTransitionTime.AsTime())
 }
 
-func TestERR_MarshalJSON_NilSpecAndStatusOmitted(t *testing.T) {
+func TestExtRR_MarshalJSON_NilSpecAndStatusOmitted(t *testing.T) {
 	t.Parallel()
 
 	in := &ExternalRemediationRequest{
@@ -152,7 +152,7 @@ func TestERR_MarshalJSON_NilSpecAndStatusOmitted(t *testing.T) {
 	assert.NotContains(t, got, `"status"`, "nil Status must be omitted, not emitted as null")
 }
 
-func TestERR_UnmarshalJSON_NullSpecAndStatusBecomeNil(t *testing.T) {
+func TestExtRR_UnmarshalJSON_NullSpecAndStatusBecomeNil(t *testing.T) {
 	t.Parallel()
 
 	// Server may return spec or status as JSON null.
@@ -171,7 +171,7 @@ func TestERR_UnmarshalJSON_NullSpecAndStatusBecomeNil(t *testing.T) {
 	assert.Nil(t, out.Status, "null status must unmarshal to nil pointer")
 }
 
-func TestERR_UnmarshalJSON_DiscardsUnknownProtoFields(t *testing.T) {
+func TestExtRR_UnmarshalJSON_DiscardsUnknownProtoFields(t *testing.T) {
 	t.Parallel()
 
 	// Simulate a server adding a new field to the proto we don't yet know about.
@@ -195,7 +195,7 @@ func TestERR_UnmarshalJSON_DiscardsUnknownProtoFields(t *testing.T) {
 	assert.Equal(t, "n-x", out.Spec.HealthEvent.NodeName)
 }
 
-func TestERR_UnmarshalJSON_RejectsLegacyObjectTimestamp(t *testing.T) {
+func TestExtRR_UnmarshalJSON_RejectsLegacyObjectTimestamp(t *testing.T) {
 	t.Parallel()
 
 	// The old (broken) wire form — protojson should refuse to unmarshal this.

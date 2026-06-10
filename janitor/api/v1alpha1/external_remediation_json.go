@@ -55,11 +55,11 @@ var protojsonUnmarshalOpts = protojson.UnmarshalOptions{DiscardUnknown: true}
 // (google.protobuf.Duration, etc.) get the correct behavior for free since
 // protojson handles them all canonically.
 
-// errJSONEnvelope mirrors the wire shape of the wrapper but pre-encodes Spec
+// extrrJSONEnvelope mirrors the wire shape of the wrapper but pre-encodes Spec
 // and Status as opaque JSON blobs so they can be produced by protojson
 // (marshal) or fed to protojson (unmarshal). TypeMeta and ObjectMeta are
 // standard k8s types handled by encoding/json.
-type errJSONEnvelope struct {
+type extrrJSONEnvelope struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 	Spec              json.RawMessage `json:"spec,omitempty"`
@@ -72,7 +72,7 @@ type errJSONEnvelope struct {
 // rather than the {seconds, nanos} reflection-default form, matching the
 // CRD's OpenAPI schema.
 func (e *ExternalRemediationRequest) MarshalJSON() ([]byte, error) {
-	out := errJSONEnvelope{
+	out := extrrJSONEnvelope{
 		TypeMeta:   e.TypeMeta,
 		ObjectMeta: e.ObjectMeta,
 	}
@@ -103,7 +103,7 @@ func (e *ExternalRemediationRequest) MarshalJSON() ([]byte, error) {
 // protojson with DiscardUnknown enabled so that forward-compat field
 // additions on the server side don't break older clients.
 func (e *ExternalRemediationRequest) UnmarshalJSON(data []byte) error {
-	var in errJSONEnvelope
+	var in extrrJSONEnvelope
 	if err := json.Unmarshal(data, &in); err != nil {
 		return fmt.Errorf("unmarshal ExternalRemediationRequest envelope: %w", err)
 	}
@@ -136,9 +136,9 @@ func (e *ExternalRemediationRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// errListJSONEnvelope mirrors the wire shape of ExternalRemediationRequestList.
+// extrrListJSONEnvelope mirrors the wire shape of ExternalRemediationRequestList.
 // Items are deserialised via the per-item UnmarshalJSON above.
-type errListJSONEnvelope struct {
+type extrrListJSONEnvelope struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []ExternalRemediationRequest `json:"items"`
@@ -148,7 +148,7 @@ type errListJSONEnvelope struct {
 // which in turn applies protojson to Spec / Status. ListMeta uses
 // encoding/json as it is a standard k8s type.
 func (l *ExternalRemediationRequestList) MarshalJSON() ([]byte, error) {
-	return json.Marshal(&errListJSONEnvelope{
+	return json.Marshal(&extrrListJSONEnvelope{
 		TypeMeta: l.TypeMeta,
 		ListMeta: l.ListMeta,
 		Items:    l.Items,
@@ -158,7 +158,7 @@ func (l *ExternalRemediationRequestList) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON deserialises the envelope and delegates each item to
 // ExternalRemediationRequest.UnmarshalJSON.
 func (l *ExternalRemediationRequestList) UnmarshalJSON(data []byte) error {
-	var in errListJSONEnvelope
+	var in extrrListJSONEnvelope
 	if err := json.Unmarshal(data, &in); err != nil {
 		return fmt.Errorf("unmarshal ExternalRemediationRequestList: %w", err)
 	}
