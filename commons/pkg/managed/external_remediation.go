@@ -30,13 +30,6 @@ const (
 	ExtRRApiGroup = "nvsentinel.dgxc.nvidia.com"
 	ExtRRVersion  = "v1"
 	ExtRRKind     = "ExternalRemediationRequest"
-
-	// ReleaseTaintKey is the taint the ExtRR reconciler applies during its
-	// apply path to release NVSentinel's ownership of the node. The taint
-	// value carries the ExtRR CR's name so the cleanup path can find and
-	// remove only its own taint, even if other controllers apply taints to
-	// the same node.
-	ReleaseTaintKey = "nvsentinel.dgxc.nvidia.com/external-remediation"
 )
 
 // IsExtRRResource reports whether (apiGroup, kind) identify an
