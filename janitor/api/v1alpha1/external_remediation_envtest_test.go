@@ -27,8 +27,8 @@ import (
 )
 
 // This envtest spec is the acceptance test for the protojson marshalling fix.
-// It exercises the full path that JSC-80 unit tests never touched: the wrapper
-// is created via the API server, then a status PATCH carrying a
+// It exercises the full apiserver path that pure unit tests can't reach: the
+// wrapper is created via the API server, then a status PATCH carrying a
 // LastTransitionTime is applied. Without the custom MarshalJSON/UnmarshalJSON
 // in external_remediation_json.go this would fail CRD validation with HTTP 422
 // ("status.conditions[0].lastTransitionTime: Invalid value: 'object': must be

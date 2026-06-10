@@ -30,10 +30,9 @@
 //
 //   - janitor's ExtRR reconciler writes the label as part of its apply path
 //     and removes it during cleanup.
-//   - labeler reads it to gate its detection-label stamping (JSC-89).
+//   - labeler reads it to gate its detection-label stamping.
 //   - cluster-scope monitors (csp-health-monitor, kubernetes-object-monitor,
-//     slurm-drain-monitor) read it via IsNodeOptedOut before emitting events
-//     (JSC-90).
+//     slurm-drain-monitor) read it via IsNodeOptedOut before emitting events.
 //
 // The literal string MUST NOT appear in NVSentinel Go code anywhere else.
 package managed
