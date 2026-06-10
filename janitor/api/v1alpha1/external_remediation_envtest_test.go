@@ -39,7 +39,7 @@ var _ = Describe("ExternalRemediationRequest JSON wire format", func() {
 	It("round-trips through the apiserver with a non-zero Condition.LastTransitionTime", func() {
 		extrrObj := &ExternalRemediationRequest{
 			TypeMeta: metav1.TypeMeta{
-				APIVersion: "nvsentinel.nvidia.com/v1",
+				APIVersion: "nvsentinel.dgxc.nvidia.com/v1",
 				Kind:       "ExternalRemediationRequest",
 			},
 			ObjectMeta: metav1.ObjectMeta{

@@ -27,7 +27,7 @@ package managed
 // Keeping the strings in one place prevents drift between the apply side and
 // the observe side — a typo would silently break the dispatcher's predicate.
 const (
-	ExtRRApiGroup = "nvsentinel.nvidia.com"
+	ExtRRApiGroup = "nvsentinel.dgxc.nvidia.com"
 	ExtRRVersion  = "v1"
 	ExtRRKind     = "ExternalRemediationRequest"
 

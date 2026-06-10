@@ -146,7 +146,7 @@ rules:
   verbs:
   - update
 - apiGroups:
-  - nvsentinel.nvidia.com
+  - nvsentinel.dgxc.nvidia.com
   resources:
   - externalremediationrequests
   verbs:
@@ -156,7 +156,7 @@ rules:
   - update
   - patch
 - apiGroups:
-  - nvsentinel.nvidia.com
+  - nvsentinel.dgxc.nvidia.com
   resources:
   - externalremediationrequests/status
   verbs:
@@ -164,7 +164,7 @@ rules:
   - update
   - patch
 - apiGroups:
-  - nvsentinel.nvidia.com
+  - nvsentinel.dgxc.nvidia.com
   resources:
   - externalremediationrequests/finalizers
   verbs:

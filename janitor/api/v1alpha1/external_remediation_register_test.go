@@ -30,7 +30,7 @@ import (
 func newERR() *ExternalRemediationRequest {
 	return &ExternalRemediationRequest{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: "nvsentinel.nvidia.com/v1",
+			APIVersion: "nvsentinel.dgxc.nvidia.com/v1",
 			Kind:       "ExternalRemediationRequest",
 		},
 		ObjectMeta: metav1.ObjectMeta{
@@ -85,14 +85,14 @@ func TestAddNVSentinelToScheme_DoesNotConflictWithJanitorScheme(t *testing.T) {
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, AddToScheme(scheme))           // janitor.dgxc.nvidia.com
-	require.NoError(t, AddNVSentinelToScheme(scheme)) // nvsentinel.nvidia.com
+	require.NoError(t, AddNVSentinelToScheme(scheme)) // nvsentinel.dgxc.nvidia.com
 
 	// Both groups should resolve independently.
 	_, err := scheme.New(GroupVersion.WithKind("RebootNode"))
 	require.NoError(t, err, "RebootNode (janitor.dgxc.nvidia.com) must still resolve")
 
 	_, err = scheme.New(NVSentinelGroupVersion.WithKind("ExternalRemediationRequest"))
-	require.NoError(t, err, "ExternalRemediationRequest (nvsentinel.nvidia.com) must resolve")
+	require.NoError(t, err, "ExternalRemediationRequest (nvsentinel.dgxc.nvidia.com) must resolve")
 }
 
 func TestExternalRemediationRequest_DeepCopyObject_NilSafe(t *testing.T) {
@@ -165,7 +165,7 @@ func TestExternalRemediationRequestList_DeepCopy_FieldFidelity(t *testing.T) {
 
 	original := &ExternalRemediationRequestList{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: "nvsentinel.nvidia.com/v1",
+			APIVersion: "nvsentinel.dgxc.nvidia.com/v1",
 			Kind:       "ExternalRemediationRequestList",
 		},
 		Items: []ExternalRemediationRequest{*newERR(), *newERR()},

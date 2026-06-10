@@ -33,7 +33,7 @@ import (
 func extrrWithTimestamp(at time.Time) *ExternalRemediationRequest {
 	return &ExternalRemediationRequest{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: "nvsentinel.nvidia.com/v1",
+			APIVersion: "nvsentinel.dgxc.nvidia.com/v1",
 			Kind:       "ExternalRemediationRequest",
 		},
 		ObjectMeta: metav1.ObjectMeta{
@@ -83,7 +83,7 @@ func TestExtRR_MarshalJSON_EmitsRFC3339Timestamp(t *testing.T) {
 		"timestamp must NOT be emitted as the reflection-default {seconds, nanos} object")
 
 	// Sanity: top-level shape still looks like a k8s object.
-	assert.Contains(t, got, `"apiVersion":"nvsentinel.nvidia.com/v1"`)
+	assert.Contains(t, got, `"apiVersion":"nvsentinel.dgxc.nvidia.com/v1"`)
 	assert.Contains(t, got, `"kind":"ExternalRemediationRequest"`)
 	assert.Contains(t, got, `"metadata":{`)
 	assert.Contains(t, got, `"spec":{`)
@@ -138,7 +138,7 @@ func TestExtRR_MarshalJSON_NilSpecAndStatusOmitted(t *testing.T) {
 
 	in := &ExternalRemediationRequest{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: "nvsentinel.nvidia.com/v1",
+			APIVersion: "nvsentinel.dgxc.nvidia.com/v1",
 			Kind:       "ExternalRemediationRequest",
 		},
 		ObjectMeta: metav1.ObjectMeta{Name: "no-spec-no-status"},
@@ -157,7 +157,7 @@ func TestExtRR_UnmarshalJSON_NullSpecAndStatusBecomeNil(t *testing.T) {
 
 	// Server may return spec or status as JSON null.
 	input := `{
-        "apiVersion": "nvsentinel.nvidia.com/v1",
+        "apiVersion": "nvsentinel.dgxc.nvidia.com/v1",
         "kind": "ExternalRemediationRequest",
         "metadata": {"name": "null-spec"},
         "spec": null,
@@ -176,7 +176,7 @@ func TestExtRR_UnmarshalJSON_DiscardsUnknownProtoFields(t *testing.T) {
 
 	// Simulate a server adding a new field to the proto we don't yet know about.
 	input := `{
-        "apiVersion": "nvsentinel.nvidia.com/v1",
+        "apiVersion": "nvsentinel.dgxc.nvidia.com/v1",
         "kind": "ExternalRemediationRequest",
         "metadata": {"name": "forward-compat"},
         "spec": {
@@ -200,7 +200,7 @@ func TestExtRR_UnmarshalJSON_RejectsLegacyObjectTimestamp(t *testing.T) {
 
 	// The old (broken) wire form — protojson should refuse to unmarshal this.
 	input := `{
-        "apiVersion": "nvsentinel.nvidia.com/v1",
+        "apiVersion": "nvsentinel.dgxc.nvidia.com/v1",
         "kind": "ExternalRemediationRequest",
         "metadata": {"name": "legacy-shape"},
         "status": {
@@ -228,7 +228,7 @@ func TestERRList_JSONRoundTrip(t *testing.T) {
 	at := time.Date(2026, 6, 5, 15, 30, 45, 0, time.UTC)
 	in := &ExternalRemediationRequestList{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: "nvsentinel.nvidia.com/v1",
+			APIVersion: "nvsentinel.dgxc.nvidia.com/v1",
 			Kind:       "ExternalRemediationRequestList",
 		},
 		ListMeta: metav1.ListMeta{ResourceVersion: "42"},

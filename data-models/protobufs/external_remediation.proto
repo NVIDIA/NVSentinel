@@ -83,7 +83,7 @@ message ExternalRemediationRequestStatus {
 // nvsentinel.dgxc.nvidia.com/managed label coordination mechanism.
 message ExternalRemediationRequest {
   option (protoc_gen_crd.k8s_crd) = {
-    api_group: "nvsentinel.nvidia.com",
+    api_group: "nvsentinel.dgxc.nvidia.com",
     kind: "ExternalRemediationRequest",
     plural: "externalremediationrequests",
     singular: "externalremediationrequest",
