@@ -245,6 +245,11 @@ incluster-file-server:
   logCleanup:
     enabled: false
 
+# Subchart-specific configuration for gpu-health-monitor
+gpu-health-monitor:
+  dcgmFieldsMonitoring:
+    gpuTempLimitStoreOnly: false
+
 # Override log levels for all modules during testing
 fault-quarantine:
   logLevel: debug
