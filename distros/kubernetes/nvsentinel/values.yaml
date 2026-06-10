@@ -190,6 +190,8 @@ global:
     enabled: false
   nicHealthMonitor:
     enabled: false
+  systemServicesMonitor:
+    enabled: false
 
 # Network policy configuration
 # The metrics-access network policy restricts ingress to metrics ports only.
