@@ -1,4 +1,6 @@
-# System Services Monitor Makefile (STUB — real impl lands in PR #3)
+# System Services Monitor Makefile
+# Individual module build and test targets (Python module)
+
 # Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,37 +16,100 @@
 # limitations under the License.
 
 # =============================================================================
-# STUB MAKEFILE
+# MODULE-SPECIFIC CONFIGURATION
 # =============================================================================
-# This is the CI-wiring half of the system-services-monitor split (#891 of 5).
-# It registers the matrix entry in container-build-test.yml so that the
-# follow-up implementation PR's first CI run lands on the real matrix row
-# rather than being backfilled afterwards.
-#
-# The real Makefile (with make/python.mk + make/docker.mk includes, Poetry
-# setup, lint/test/docker-publish targets, etc.) lands together with the
-# Python implementation in PR #3.
 
-.PHONY: all lint-test docker-build docker-publish help
+# Python module configuration
+IS_GO_MODULE := 0
+HAS_DOCKER := 1
 
+# Python package name (with underscores, not hyphens)
+PYTHON_PACKAGE_NAME := system_services_monitor
+
+# system-services-monitor specific settings (Python module)
+CLEAN_EXTRA_FILES := system_services_monitor.egg-info
+DOCKER_EXTRA_ARGS :=
+
+# =============================================================================
+# INCLUDE SHARED DEFINITIONS
+# =============================================================================
+
+include ../../make/common.mk
+include ../../make/python.mk
+include ../../make/docker.mk
+
+# =============================================================================
+# DEFAULT TARGET
+# =============================================================================
+
+.PHONY: all
 all: lint-test
 
-lint-test:
-	@echo "system-services-monitor: lint-test stub — real impl in PR #3 of #891 split"
+# =============================================================================
+# PYTHON-SPECIFIC DEVELOPMENT TARGETS
+# =============================================================================
 
-docker-build:
-	@echo "system-services-monitor: docker-build stub — real impl in PR #3 of #891 split"
+.PHONY: setup shell deps deps-show format
+setup:
+	@echo "Setting up Poetry environment for $(MODULE_NAME)..."
+	poetry config virtualenvs.in-project true
+	poetry install
 
-docker-publish:
-	@echo "system-services-monitor: docker-publish stub — real impl in PR #3 of #891 split"
+shell:
+	@echo "Opening Poetry shell for $(MODULE_NAME)..."
+	poetry shell
 
+deps:
+	@echo "Updating dependencies for $(MODULE_NAME)..."
+	poetry update
+
+deps-show:
+	@echo "Showing dependencies for $(MODULE_NAME)..."
+	poetry show
+
+format:
+	@echo "Running Black formatter on $(MODULE_NAME)..."
+	poetry run black .
+
+# =============================================================================
+# MODULE HELP
+# =============================================================================
+
+.PHONY: help
 help:
-	@echo "system-services-monitor — STUB Makefile"
+	@echo "System Services Monitor Makefile - Using nvsentinel make/*.mk standards (Python)"
 	@echo ""
-	@echo "This Makefile contains stub targets only. The real targets land"
-	@echo "together with the Python implementation in PR #3 of the #891 split."
+	@echo "This is a Python module that monitors non-DCGM service health on GPU nodes."
 	@echo ""
-	@echo "Available stub targets:"
-	@echo "  lint-test       - returns 0 (stub)"
-	@echo "  docker-build    - returns 0 (stub)"
-	@echo "  docker-publish  - returns 0 (stub)"
+	@echo "Configuration (environment variables):"
+	@echo "  MODULE_NAME=$(MODULE_NAME)"
+	@echo "  REPO_ROOT=$(REPO_ROOT)"
+	@echo "  CONTAINER_REGISTRY=$(CONTAINER_REGISTRY)"
+	@echo "  CONTAINER_ORG=$(CONTAINER_ORG)"
+	@echo "  SAFE_REF_NAME=$(SAFE_REF_NAME)"
+	@echo "  PLATFORMS=$(PLATFORMS)"
+	@echo "  HAS_DOCKER=$(HAS_DOCKER)"
+	@echo ""
+	@echo "Main targets:"
+	@echo "  all        - Run lint-test (standardized default)"
+	@echo "  lint-test  - Run full lint and test suite (Python with Poetry)"
+	@echo ""
+	@echo "Individual targets:"
+	@echo "  setup      - Set up Poetry environment"
+	@echo "  lint       - Run Black formatter check"
+	@echo "  format     - Run Black formatter"
+	@echo "  test       - Run tests with coverage"
+	@echo "  coverage   - Generate coverage reports"
+	@echo "  build      - Build Python package"
+	@echo ""
+	@echo "Docker targets:"
+	@echo "  docker-build   - Build Docker image (local)"
+	@echo "  docker-publish - Build and publish Docker image (CI/production)"
+	@echo "  setup-buildx   - Setup Docker buildx builder"
+	@echo ""
+	@echo "Development targets:"
+	@echo "  shell      - Open Poetry shell"
+	@echo "  deps       - Update dependencies"
+	@echo "  deps-show  - Show dependencies"
+	@echo "  clean      - Clean build artifacts and reports"
+	@echo "  help       - Show this help message"
