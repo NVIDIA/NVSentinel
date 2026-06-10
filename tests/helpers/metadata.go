@@ -60,6 +60,32 @@ type NVLink struct {
 	RemoteLinkID     int    `json:"remote_link_id"`
 }
 
+// GpuThermalMarginMetadata builds a minimal gpu_metadata.json describing a single
+// GPU with the given HW-slowdown threshold, for GpuThermalMarginWatch tests.
+// metadata-collector does not run on GPU-less CI nodes, so the test seeds this
+// file itself.
+func GpuThermalMarginMetadata(nodeName string, gpuID, slowdownTLimitC int) *GPUMetadata {
+	slowdown := slowdownTLimitC
+
+	return &GPUMetadata{
+		Version:       "1.0",
+		Timestamp:     "2025-01-01T00:00:00Z",
+		NodeName:      nodeName,
+		DriverVersion: "570.148.08",
+		GPUs: []GPU{
+			{
+				GPUID:           gpuID,
+				UUID:            "GPU-00000000-0000-0000-0000-000000000000",
+				PCIAddress:      "0000:00:00.0",
+				DeviceName:      "Test GPU",
+				NVLinks:         []NVLink{},
+				SlowdownTLimitC: &slowdown,
+			},
+		},
+		NVSwitches: []string{},
+	}
+}
+
 func CreateTestMetadata(nodeName string) *GPUMetadata {
 	chassisSerial := "TEST-CHASSIS-12345"
 

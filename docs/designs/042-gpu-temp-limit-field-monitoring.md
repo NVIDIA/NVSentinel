@@ -80,8 +80,6 @@ Runtime watches field 153 in `DCGMWatcher`; thresholds come from `gpu_metadata.j
 
 `gpu-health-monitor` has DCGM only (no NVML). `metadata-collector` already `nvml.Init()`s and writes `gpu_metadata.json`. `go-nvml v0.13.0-1` provides `Device.GetFieldValues` and constant 194.
 
-Do **not** use `Device.GetTemperatureThreshold(TEMPERATURE_THRESHOLD_SLOWDOWN)` for this ADR. That API returns an unsigned absolute temperature threshold, for example `89 °C` on the observed H100 nodes, while `GpuThermalMarginWatch` needs the signed slowdown T.Limit offset such as `-2 °C`. NVML also documents the `NVML_FI_DEV_TEMPERATURE_*_TLIMIT` field-value path as the replacement for these thresholds on Ada and later architectures.
-
 1. **`metadata-collector/pkg/nvml/wrapper.go`** — in `GetGPUInfo`, query field 194 with `Device.GetFieldValues`, require `NvmlReturn == SUCCESS`, require `VALUE_TYPE_SIGNED_INT`, decode the signed little-endian int, and set pointer nil when unsupported (A100, old drivers).
 2. **`data-models/pkg/model` `GPUInfo`** — add `SlowdownTLimitC *int` (`omitempty`; absent ≠ zero — `0` is a valid margin).
 3. **`gpu-health-monitor/metadata/reader.py`** — `get_slowdown_tlimit_c`; `None` means the GPU is not eligible for `GpuThermalMarginWatch` on that poll. The reader lazy-loads metadata, and missing thresholds are observable via `gpu_temp_limit_slowdown_threshold_missing_total`.

@@ -31,6 +31,9 @@ dcgm:
 dcgmFieldsMonitoring:
   # Enable GpuThermalMarginWatch (DCGM field 153 / GPU T.Limit margin monitoring)
   gpuTempLimitMonitoringEnabled: true
+  # Dry-run for GpuThermalMarginWatch. When true, this check's
+  # events are emitted with processingStrategy=STORE_ONLY
+  gpuTempLimitStoreOnly: false
 
 # Use host networking for GPU health monitor pods
 # Required for accessing host-level GPU metrics

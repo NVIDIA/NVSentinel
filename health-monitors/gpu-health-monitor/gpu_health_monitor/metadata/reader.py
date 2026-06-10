@@ -36,6 +36,7 @@ class MetadataReader:
         self._metadata = None
         self._lock = threading.RLock()
         self._loaded = False
+        self._missing_warned = False
 
     def _ensure_loaded(self):
         """Load metadata on first use (lazy loading).
@@ -54,6 +55,7 @@ class MetadataReader:
                 with open(self._path, "r") as f:
                     self._metadata = json.load(f)
                 self._loaded = True
+                self._missing_warned = False
                 gpu_count = len(self._metadata.get("gpus", []))
                 chassis = self._metadata.get("chassis_serial")
                 log.info(
@@ -61,9 +63,16 @@ class MetadataReader:
                     f"{gpu_count} GPUs, chassis_serial={'present' if chassis else 'absent'}"
                 )
             except FileNotFoundError:
-                log.warning(f"Metadata file not found: {self._path}, continuing without metadata enrichment")
+                # The metadata file may not exist yet if gpu-health-monitor starts before
+                # the metadata-collector writes it. Treat as transient: serve empty metadata
+                # for now but stay "unloaded" so a later access reloads it once the file
+                # appears (otherwise we permanently lose enrichment/visibility on this node).
+                if not self._missing_warned:
+                    log.warning(f"Metadata file not found: {self._path}, will retry on next access")
+                    self._missing_warned = True
                 self._metadata = {}
-                self._loaded = True
+                # Intentionally do NOT set self._loaded = True, so the next access retries.
+                return
             except Exception as e:
                 # Handles JSON decode errors, permission errors, etc.
                 log.error(f"Error loading metadata from {self._path}: {e}")

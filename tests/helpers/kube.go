@@ -2829,6 +2829,29 @@ func buildNodePattern(nodeName string) string {
 	return "^" + regexp.QuoteMeta(nodeName) + "$"
 }
 
+// RestartDaemonSetPodOnNode force-deletes the named DaemonSet pod and waits for
+// the DaemonSet's replacement on the same node to be Running and Ready, returning
+// the new pod's name. Useful when a config/metadata file is only read at pod
+// startup, so an injected change takes effect only after a restart.
+func RestartDaemonSetPodOnNode(
+	ctx context.Context, t *testing.T, client klient.Client,
+	namespace, dsName, podPrefix, nodeName, oldPodName string,
+) string {
+	t.Helper()
+
+	t.Logf("Restarting pod %s on node %s", oldPodName, nodeName)
+	// Force-delete (grace 0) so the old pod leaves the API before we look for its
+	// replacement, then wait for the new DaemonSet pod to be Running and Ready.
+	err := DeletePod(ctx, t, client, namespace, oldPodName, true)
+	require.NoError(t, err, "failed to delete pod %s", oldPodName)
+
+	newPod, err := GetDaemonSetPodOnWorkerNode(ctx, t, client, dsName, podPrefix, nodeName)
+	require.NoError(t, err, "failed to get restarted pod for DaemonSet %s", dsName)
+	t.Logf("Pod restarted: %s -> %s", oldPodName, newPod.Name)
+
+	return newPod.Name
+}
+
 // GetDaemonSetPodOnWorkerNode returns the running and ready pod for a daemonset.
 // If nodeName is empty, it finds a pod on any worker node (node name containing "worker").
 // If nodeName is specified, it finds the pod on that exact node.

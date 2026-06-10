@@ -52,6 +52,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         state_file_path: str,
         metadata_path: str,
         processing_strategy: platformconnector_pb2.ProcessingStrategy,
+        store_only_checks: frozenset[str] = frozenset(),
     ) -> None:
         self._exit = exit
         self._socket_path = socket_path
@@ -66,6 +67,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self.entity_cache: dict[str, EntityCacheEntry] = {}
         self._metadata_reader = MetadataReader(metadata_path)
         self._processing_strategy = processing_strategy
+        self._store_only_checks = store_only_checks
 
     def read_old_system_bootid_from_state_file(self) -> str:
         bootid = ""
@@ -149,6 +151,14 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
 
             for watch_name, details in health_details.items():
                 check_name = self._convert_dcgm_watch_name_to_check_name(watch_name)
+                # Observe-only checks are forced to STORE_ONLY; all others use the
+                # process-wide strategy. Applied to both the unhealthy and the
+                # clearing event so fault-quarantine sees a consistent strategy.
+                effective_strategy = (
+                    platformconnector_pb2.STORE_ONLY
+                    if check_name in self._store_only_checks
+                    else self._processing_strategy
+                )
                 message = (
                     f"GPU {self._get_dcgm_watch(watch_name)} watch reported no errors"
                     if details.status == dcgmtypes.HealthStatus.PASS
@@ -232,7 +242,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                     recommendedAction=recommended_action,
                                     nodeName=self._node_name,
                                     metadata=event_metadata,
-                                    processingStrategy=self._processing_strategy,
+                                    processingStrategy=effective_strategy,
                                 )
                             )
                             pending_metric_updates.append((check_name, gpu_id, 1))
@@ -281,7 +291,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                     recommendedAction=platformconnector_pb2.NONE,
                                     nodeName=self._node_name,
                                     metadata=event_metadata,
-                                    processingStrategy=self._processing_strategy,
+                                    processingStrategy=effective_strategy,
                                 )
                             )
                             if had_errors:

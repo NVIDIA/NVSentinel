@@ -63,54 +63,6 @@ const violatingSlowdownTLimitC = 200
 // until the threshold is overridden in a violation scenario.
 const realSlowdownTLimitC = -2
 
-// restartGPUHealthMonitor deletes the gpu-health-monitor pod on nodeName and
-// waits for the DaemonSet's replacement to be Running, returning its name. The
-// monitor only reads gpu_metadata.json once at startup (MetadataReader does not
-// hot-reload), so a restart is how an injected metadata change takes effect.
-func restartGPUHealthMonitor(ctx context.Context, t *testing.T, c *envconf.Config, nodeName, oldPodName string) string {
-	t.Helper()
-
-	client, err := c.NewClient()
-	require.NoError(t, err, "failed to create kubernetes client")
-
-	t.Logf("Restarting GPU health monitor pod %s on node %s", oldPodName, nodeName)
-	// Force-delete (grace 0) so the old pod leaves the API before we look for its
-	// replacement, then wait for the new DaemonSet pod to be Running and Ready.
-	err = helpers.DeletePod(ctx, t, client, helpers.NVSentinelNamespace, oldPodName, true)
-	require.NoError(t, err, "failed to delete GPU health monitor pod %s", oldPodName)
-
-	newPod, err := helpers.GetDaemonSetPodOnWorkerNode(ctx, t, client,
-		GPUHealthMonitorDaemonSetName, "gpu-health-monitor", nodeName)
-	require.NoError(t, err, "failed to get restarted GPU health monitor pod")
-	t.Logf("GPU health monitor restarted: %s -> %s", oldPodName, newPod.Name)
-	return newPod.Name
-}
-
-// thermalMarginMetadata builds a minimal gpu_metadata.json describing the single
-// fixture GPU (id 0) with the given HW-slowdown threshold. metadata-collector
-// does not run on GPU-less CI nodes, so the test seeds this file itself.
-func thermalMarginMetadata(nodeName string, gpuID, slowdownTLimitC int) *helpers.GPUMetadata {
-	slowdown := slowdownTLimitC
-
-	return &helpers.GPUMetadata{
-		Version:       "1.0",
-		Timestamp:     "2025-01-01T00:00:00Z",
-		NodeName:      nodeName,
-		DriverVersion: "570.148.08",
-		GPUs: []helpers.GPU{
-			{
-				GPUID:           gpuID,
-				UUID:            "GPU-00000000-0000-0000-0000-000000000000",
-				PCIAddress:      "0000:00:00.0",
-				DeviceName:      "Test GPU",
-				NVLinks:         []helpers.NVLink{},
-				SlowdownTLimitC: &slowdown,
-			},
-		},
-		NVSwitches: []string{},
-	}
-}
-
 // TestGPUHealthMonitorThermalMarginViolationLifecycle drives the
 // GpuThermalMarginWatch FAIL -> clear lifecycle by overriding the per-GPU HW
 // slowdown threshold (slowdown_tlimit_c) published in gpu_metadata.json, rather
@@ -157,13 +109,14 @@ func TestGPUHealthMonitorThermalMarginViolationLifecycle(t *testing.T) {
 		// offset). Capture it so the assess phases can flip the threshold and
 		// teardown can restore it.
 		gpuID = 0
-		baseline := thermalMarginMetadata(testNodeName, gpuID, realSlowdownTLimitC)
+		baseline := helpers.GpuThermalMarginMetadata(testNodeName, gpuID, realSlowdownTLimitC)
 		originalMetadataJSON, err = json.Marshal(baseline)
 		require.NoError(t, err, "failed to marshal baseline metadata")
 
 		t.Logf("Seeding baseline metadata with slowdown_tlimit_c=%dC for GPU %d and restarting", realSlowdownTLimitC, gpuID)
 		helpers.InjectMetadata(t, ctx, client, helpers.NVSentinelNamespace, testNodeName, baseline)
-		podName = restartGPUHealthMonitor(ctx, t, c, testNodeName, podName)
+		podName = helpers.RestartDaemonSetPodOnNode(ctx, t, client, helpers.NVSentinelNamespace,
+			GPUHealthMonitorDaemonSetName, "gpu-health-monitor", testNodeName, podName)
 
 		t.Logf("Setting ManagedByNVSentinel=false on node %s", testNodeName)
 		err = helpers.SetNodeManagedByNVSentinel(ctx, client, testNodeName, false)
@@ -197,18 +150,12 @@ func TestGPUHealthMonitorThermalMarginViolationLifecycle(t *testing.T) {
 
 		t.Logf("Injecting metadata with slowdown_tlimit_c=%dC for GPU %d and restarting", high, gpuID)
 		helpers.InjectMetadata(t, ctx, client, helpers.NVSentinelNamespace, testNodeName, &violating)
-		podName = restartGPUHealthMonitor(ctx, t, c, testNodeName, podName)
+		podName = helpers.RestartDaemonSetPodOnNode(ctx, t, client, helpers.NVSentinelNamespace,
+			GPUHealthMonitorDaemonSetName, "gpu-health-monitor", testNodeName, podName)
 
-		require.Eventually(t, func() bool {
-			condition, err := helpers.CheckNodeConditionExists(ctx, client, testNodeName,
-				"GpuThermalMarginWatch", "GpuThermalMarginWatchIsNotHealthy")
-			if err != nil || condition == nil {
-				return false
-			}
-
-			t.Logf("GpuThermalMarginWatch condition - Status: %s, Message: %s", condition.Status, condition.Message)
-			return condition.Status == v1.ConditionTrue
-		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "GpuThermalMarginWatch fatal condition should appear")
+		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, testNodeName,
+			"GpuThermalMarginWatch", "ErrorCode:GPU_TEMP_HW_SLOWDOWN_VIOLATION",
+			"GpuThermalMarginWatchIsNotHealthy", v1.ConditionTrue)
 
 		return ctx
 	})
@@ -225,18 +172,11 @@ func TestGPUHealthMonitorThermalMarginViolationLifecycle(t *testing.T) {
 
 		t.Logf("Restoring original metadata for GPU %d and restarting", gpuID)
 		helpers.InjectMetadata(t, ctx, client, helpers.NVSentinelNamespace, testNodeName, &original)
-		podName = restartGPUHealthMonitor(ctx, t, c, testNodeName, podName)
+		podName = helpers.RestartDaemonSetPodOnNode(ctx, t, client, helpers.NVSentinelNamespace,
+			GPUHealthMonitorDaemonSetName, "gpu-health-monitor", testNodeName, podName)
 
-		require.Eventually(t, func() bool {
-			condition, err := helpers.CheckNodeConditionExists(ctx, client, testNodeName,
-				"GpuThermalMarginWatch", "GpuThermalMarginWatchIsHealthy")
-			if err != nil || condition == nil {
-				return false
-			}
-
-			t.Logf("GpuThermalMarginWatch condition - Status: %s, Reason: %s", condition.Status, condition.Reason)
-			return condition.Status == v1.ConditionFalse
-		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "GpuThermalMarginWatch condition should clear")
+		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, testNodeName,
+			"GpuThermalMarginWatch", "", "GpuThermalMarginWatchIsHealthy", v1.ConditionFalse)
 
 		return ctx
 	})

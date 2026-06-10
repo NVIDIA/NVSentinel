@@ -150,6 +150,32 @@ def test_file_not_found():
     assert serial is None
 
 
+def test_file_appears_after_initial_miss(sample_metadata):
+    """Metadata written after the first (missing) access must be picked up.
+
+    Regression for the startup race where gpu-health-monitor reads the metadata
+    file before metadata-collector has written it. A missing file must NOT latch
+    the reader as 'loaded'; a later access should reload once the file appears.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "gpu_metadata.json")
+
+        reader = MetadataReader(path)
+
+        # First access: file absent -> graceful None, and reader stays unloaded.
+        assert reader.get_gpu_uuid(0) is None
+        assert reader._loaded is False
+
+        # metadata-collector writes the file after the monitor already started.
+        with open(path, "w") as f:
+            json.dump(sample_metadata, f)
+
+        # Next access must reload and surface the real data.
+        assert reader.get_gpu_uuid(0) == "GPU-00000000-0000-0000-0000-000000000000"
+        assert reader._loaded is True
+        assert reader.get_slowdown_tlimit_c(0) is None  # not present in sample, but no crash
+
+
 def test_malformed_json():
     """Test graceful handling of malformed JSON."""
     with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:

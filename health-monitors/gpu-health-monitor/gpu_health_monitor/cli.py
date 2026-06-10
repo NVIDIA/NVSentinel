@@ -36,6 +36,7 @@ def _init_event_processor(
     state_file_path: str,
     metadata_path: str,
     processing_strategy: platformconnector_pb2.ProcessingStrategy,
+    store_only_checks: frozenset[str],
 ):
     platform_connector_config = config["eventprocessors.platformconnector"]
     match event_processor_name:
@@ -48,6 +49,7 @@ def _init_event_processor(
                 state_file_path=state_file_path,
                 metadata_path=metadata_path,
                 processing_strategy=processing_strategy,
+                store_only_checks=store_only_checks,
             )
         case _:
             log.fatal(f"Unknown event processor {event_processor_name}")
@@ -134,6 +136,26 @@ def cli(
     metrics.set_flag("dcgm_k8s_service_enabled", dcgm_k8s_service_enabled)
 
     log.info("Initialization completed")
+
+    thermal_margin_enabled = False
+    thermal_margin_store_only = False
+    if config.has_section("dcgmfieldsmonitoring"):
+        thermal_margin_enabled = config["dcgmfieldsmonitoring"].getboolean(
+            "gputemplimitmonitoringenabled", fallback=False
+        )
+        thermal_margin_store_only = config["dcgmfieldsmonitoring"].getboolean("gputemplimitstoreonly", fallback=False)
+        log.info(
+            "GpuThermalMarginWatch field monitor: enabled=%s store_only=%s",
+            thermal_margin_enabled,
+            thermal_margin_store_only,
+        )
+
+    # Per-check observe-only set: when store-only is enabled the new
+    # GpuThermalMarginWatch emits STORE_ONLY events (persisted + exported as
+    # metrics but excluded from the remediation pipeline, so no node condition
+    # or cordon) while every other DCGM check keeps the process-wide strategy.
+    store_only_checks = frozenset({"GpuThermalMarginWatch"}) if thermal_margin_store_only else frozenset()
+
     enabled_event_processor_names = cli_config["EnabledEventProcessors"].split(",")
     enabled_event_processors = []
     for event_processor in enabled_event_processor_names:
@@ -147,15 +169,9 @@ def cli(
                 state_file_path,
                 metadata_path,
                 processing_strategy_value,
+                store_only_checks,
             )
         )
-
-    thermal_margin_enabled = False
-    if config.has_section("dcgmfieldsmonitoring"):
-        thermal_margin_enabled = config["dcgmfieldsmonitoring"].getboolean(
-            "gputemplimitmonitoringenabled", fallback=False
-        )
-        log.info("GpuThermalMarginWatch field monitor: enabled=%s", thermal_margin_enabled)
 
     metadata_reader = MetadataReader(metadata_path) if thermal_margin_enabled else None
 
