@@ -18,17 +18,17 @@ import (
 	"context"
 	"log/slog"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
 )
 
 type CRStatusChecker struct {
-	client             client.Client
-	remediationActions map[string]config.MaintenanceResource
-	dryRun             bool
+	client client.Client
+	dryRun bool
 }
 
 type CRState string
@@ -42,54 +42,57 @@ const (
 
 func NewCRStatusChecker(
 	client client.Client,
-	remediationActions map[string]config.MaintenanceResource,
 	dryRun bool,
 ) *CRStatusChecker {
 	return &CRStatusChecker{
-		client:             client,
-		remediationActions: remediationActions,
-		dryRun:             dryRun,
+		client: client,
+		dryRun: dryRun,
 	}
 }
 
-// ShouldSkipCRCreation returns true if an existing CR should suppress creation of a new CR.
-func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, actionName string, crName string) bool {
-	state := c.GetCRState(ctx, actionName, crName)
-	return state == CRStateInProgress || state == CRStateSucceeded
-}
-
-func (c *CRStatusChecker) GetCRState(ctx context.Context, actionName string, crName string) CRState {
-	resource, exists := c.remediationActions[actionName]
-	if !exists {
-		slog.ErrorContext(ctx, "No remediation configuration found for action", "action", actionName)
-		return CRStateNotFound
-	}
-
+// GetCRStateForReference fetches the stored maintenance CR reference and returns its current remediation state.
+func (c *CRStatusChecker) GetCRStateForReference(
+	ctx context.Context,
+	crName string,
+	resourceRef annotation.MaintenanceResourceReference,
+	completeConditionType string,
+) CRState {
 	if c.dryRun {
-		slog.InfoContext(ctx, "DRY-RUN: CR doesn't exist (dry-run mode)", "crName", crName, "action", actionName)
+		slog.InfoContext(ctx, "DRY-RUN: CR doesn't exist (dry-run mode)", "crName", crName)
 		return CRStateNotFound
 	}
 
 	gvk := schema.GroupVersionKind{
-		Group:   resource.ApiGroup,
-		Version: resource.Version,
-		Kind:    resource.Kind,
+		Group:   resourceRef.APIGroup,
+		Version: resourceRef.Version,
+		Kind:    resourceRef.Kind,
+	}
+	if gvk.Group == "" || gvk.Version == "" || gvk.Kind == "" {
+		slog.WarnContext(ctx, "Stored CR reference is missing GVK, allowing create", "crName", crName)
+		return CRStateNotFound
 	}
 
 	obj := &unstructured.Unstructured{}
 	obj.SetGroupVersionKind(gvk)
 
-	key := client.ObjectKey{Name: crName, Namespace: resource.Namespace}
+	key := client.ObjectKey{Name: crName, Namespace: resourceRef.Namespace}
 
 	if err := c.client.Get(ctx, key, obj); err != nil {
-		slog.WarnContext(ctx, "Failed to get CR, allowing create", "crName", crName, "gvk", gvk.String(), "error", err)
-		return CRStateNotFound
+		if apierrors.IsNotFound(err) {
+			slog.InfoContext(ctx, "Stored CR was not found", "crName", crName, "gvk", gvk.String())
+			return CRStateNotFound
+		}
+
+		slog.ErrorContext(ctx, "Failed to get CR, keeping create blocked",
+			"crName", crName, "gvk", gvk.String(), "error", err)
+
+		return CRStateInProgress
 	}
 
-	return c.checkCondition(obj, resource)
+	return c.checkConditionType(obj, completeConditionType)
 }
 
-func (c *CRStatusChecker) checkCondition(obj *unstructured.Unstructured, resource config.MaintenanceResource) CRState {
+func (c *CRStatusChecker) checkConditionType(obj *unstructured.Unstructured, completeConditionType string) CRState {
 	status, found, err := unstructured.NestedMap(obj.Object, "status")
 	if err != nil || !found {
 		return CRStateInProgress
@@ -100,7 +103,7 @@ func (c *CRStatusChecker) checkCondition(obj *unstructured.Unstructured, resourc
 		return CRStateInProgress
 	}
 
-	conditionStatus := c.findConditionStatus(conditions, resource.CompleteConditionType)
+	conditionStatus := c.findConditionStatus(conditions, completeConditionType)
 
 	switch conditionStatus {
 	case "True":

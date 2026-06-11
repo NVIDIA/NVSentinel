@@ -18,9 +18,10 @@ package crstatus
 
 import (
 	"context"
+
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
 )
 
 type CRStatusCheckerInterface interface {
-	ShouldSkipCRCreation(context.Context, string, string) bool
-	GetCRState(context.Context, string, string) CRState
+	GetCRStateForReference(context.Context, string, annotation.MaintenanceResourceReference, string) CRState
 }

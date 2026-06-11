@@ -29,7 +29,21 @@ const (
 // NodeAnnotationManagerInterface defines the interface for managing node annotations
 type NodeAnnotationManagerInterface interface {
 	GetRemediationState(ctx context.Context, nodeName string) (*RemediationStateAnnotation, *corev1.Node, error)
-	UpdateRemediationState(ctx context.Context, nodeName string, group string, crName string, actionName string) error
+	UpdateRemediationState(
+		ctx context.Context,
+		nodeName string,
+		group string,
+		crName string,
+		actionName string,
+		resourceRef MaintenanceResourceReference,
+	) error
+	// EnsureRemediationStateGVK backfills legacy annotation entries using
+	// resource references keyed by ActionName.
+	EnsureRemediationStateGVK(
+		ctx context.Context,
+		nodeName string,
+		resourceRefsByAction map[string]MaintenanceResourceReference,
+	) error
 	ClearRemediationState(ctx context.Context, nodeName string) error
 	RemoveGroupsFromState(ctx context.Context, nodeName string, groups []string) error
 }
@@ -39,12 +53,27 @@ type RemediationStateAnnotation struct {
 	EquivalenceGroups map[string]EquivalenceGroupState `json:"equivalenceGroups"`
 }
 
+// MaintenanceResourceReference is the concrete object identity needed to find
+// a created maintenance CR without re-deriving its GVK from current config.
+type MaintenanceResourceReference struct {
+	Namespace string
+	Version   string
+	APIGroup  string
+	Kind      string
+}
+
 // EquivalenceGroupState represents the state of a single equivalence group
 type EquivalenceGroupState struct {
 	MaintenanceCR string    `json:"maintenanceCR"`
 	CreatedAt     time.Time `json:"createdAt"`
 
-	// Action that created the CR (e.g., "RESTART_BM")
-	// Required to look up the corresponding MaintenanceResource from the TomlConfig
+	// Action that created the CR (e.g., "RESTART_BM"). Kept as provenance
+	// and to resolve legacy annotations that predate the concrete resource fields.
 	ActionName string `json:"actionName"`
+
+	// Concrete resource identity for the CR that was created.
+	Namespace string `json:"namespace,omitempty"`
+	Version   string `json:"version,omitempty"`
+	APIGroup  string `json:"apiGroup,omitempty"`
+	Kind      string `json:"kind,omitempty"`
 }

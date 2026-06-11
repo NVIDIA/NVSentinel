@@ -95,7 +95,11 @@ func (m *NodeAnnotationManager) GetRemediationState(
 
 // UpdateRemediationState updates the node annotation with new remediation state
 func (m *NodeAnnotationManager) UpdateRemediationState(ctx context.Context, nodeName string,
-	group string, crName string, actionName string) error {
+	group string, crName string, actionName string, resourceRef MaintenanceResourceReference) error {
+	if err := validateMaintenanceResourceReference(resourceRef); err != nil {
+		return fmt.Errorf("invalid maintenance resource reference for node %s group %s: %w", nodeName, group, err)
+	}
+
 	err := retry.RetryOnConflict(conflictBackoff, func() error {
 		// Get current state
 		state, node, err := m.GetRemediationState(ctx, nodeName)
@@ -109,6 +113,10 @@ func (m *NodeAnnotationManager) UpdateRemediationState(ctx context.Context, node
 			MaintenanceCR: crName,
 			CreatedAt:     time.Now().UTC(),
 			ActionName:    actionName,
+			Namespace:     resourceRef.Namespace,
+			Version:       resourceRef.Version,
+			APIGroup:      resourceRef.APIGroup,
+			Kind:          resourceRef.Kind,
 		}
 
 		// Marshal to JSON
@@ -140,6 +148,105 @@ func (m *NodeAnnotationManager) UpdateRemediationState(ctx context.Context, node
 	}
 
 	return nil
+}
+
+// EnsureRemediationStateGVK backfills concrete resource identity for legacy
+// annotation entries using resourceRefsByAction, if and only if the GVK is not already set.
+// The map must be keyed by ActionName.
+func (m *NodeAnnotationManager) EnsureRemediationStateGVK(
+	ctx context.Context,
+	nodeName string,
+	resourceRefsByAction map[string]MaintenanceResourceReference,
+) error {
+	err := retry.RetryOnConflict(conflictBackoff, func() error {
+		state, node, err := m.GetRemediationState(ctx, nodeName)
+		if err != nil {
+			slog.WarnContext(ctx, "Failed to get current remediation state", "node", nodeName, "error", err)
+			return err
+		}
+
+		changed := false
+
+		for group, groupState := range state.EquivalenceGroups {
+			resourceRef, exists := resourceRefsByAction[groupState.ActionName]
+			if !exists {
+				continue
+			}
+
+			updatedGroupState := groupState
+			if backfillResourceReference(&updatedGroupState, resourceRef) {
+				state.EquivalenceGroups[group] = updatedGroupState
+				changed = true
+			}
+		}
+
+		if !changed {
+			return nil
+		}
+
+		stateJSON, err := json.Marshal(state)
+		if err != nil {
+			return err
+		}
+
+		updatedNode := node.DeepCopy()
+		if updatedNode.Annotations == nil {
+			updatedNode.Annotations = map[string]string{}
+		}
+
+		updatedNode.Annotations[AnnotationKey] = string(stateJSON)
+
+		if err = m.client.Update(ctx, updatedNode); err != nil {
+			return err
+		}
+
+		slog.InfoContext(ctx, "Backfilled remediation state annotation GVK for node",
+			"node", nodeName)
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to ensure remediation state GVK for node %s: %w", nodeName, err)
+	}
+
+	return nil
+}
+
+func validateMaintenanceResourceReference(resourceRef MaintenanceResourceReference) error {
+	if resourceRef.APIGroup == "" || resourceRef.Version == "" || resourceRef.Kind == "" {
+		return fmt.Errorf("apiGroup, version, and kind must be non-empty")
+	}
+
+	return nil
+}
+
+func backfillResourceReference(
+	groupState *EquivalenceGroupState,
+	resourceRef MaintenanceResourceReference,
+) bool {
+	changed := false
+
+	if groupState.APIGroup == "" && resourceRef.APIGroup != "" {
+		groupState.APIGroup = resourceRef.APIGroup
+		changed = true
+	}
+
+	if groupState.Version == "" && resourceRef.Version != "" {
+		groupState.Version = resourceRef.Version
+		changed = true
+	}
+
+	if groupState.Kind == "" && resourceRef.Kind != "" {
+		groupState.Kind = resourceRef.Kind
+		changed = true
+	}
+
+	if groupState.Namespace == "" && resourceRef.Namespace != "" {
+		groupState.Namespace = resourceRef.Namespace
+		changed = true
+	}
+
+	return changed
 }
 
 // ClearRemediationState removes the remediation state annotation from a node

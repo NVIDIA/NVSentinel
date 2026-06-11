@@ -361,6 +361,83 @@ spec:
 	}
 }
 
+func TestCreateMaintenanceResourceStoresRenderedObjectReference(t *testing.T) {
+	tempDir := t.TempDir()
+	templateContent := `apiVersion: rendered.example.com/v2
+kind: RenderedMaintenance
+metadata:
+  name: maintenance-{{.NodeName}}-{{.HealthEventID}}
+  namespace: rendered-namespace
+spec:
+  nodeName: {{.NodeName}}`
+	require.NoError(t, os.WriteFile(filepath.Join(tempDir, "rendered-template.yaml"), []byte(templateContent), 0644))
+
+	nodeName := "test-node-rendered-reference"
+	fakeClient := fake.NewClientBuilder().
+		WithObjects(&corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: nodeName,
+			},
+		}).
+		Build()
+
+	remediationConfig := config.TomlConfig{
+		Template: config.Template{
+			MountPath: tempDir,
+		},
+		RemediationActions: map[string]config.MaintenanceResource{
+			protos.RecommendedAction_RESTART_BM.String(): {
+				Namespace:             "configured-namespace",
+				Version:               "v1",
+				ApiGroup:              "configured.example.com",
+				Kind:                  "ConfiguredMaintenance",
+				CompleteConditionType: "Complete",
+				TemplateFileName:      "rendered-template.yaml",
+				EquivalenceGroup:      "restart",
+			},
+		},
+	}
+	remediationClient, err := NewRemediationClient(fakeClient, false, remediationConfig)
+	require.NoError(t, err)
+
+	healthEventData := &events.HealthEventData{
+		ID: "event-rendered-reference",
+		HealthEventWithStatus: model.HealthEventWithStatus{
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          nodeName,
+				RecommendedAction: protos.RecommendedAction_RESTART_BM,
+			},
+		},
+	}
+	groupConfig, err := common.GetGroupConfigForEvent(remediationConfig.RemediationActions,
+		healthEventData.HealthEvent)
+	require.NoError(t, err)
+
+	crName, err := remediationClient.CreateMaintenanceResource(context.Background(), healthEventData, groupConfig)
+	require.NoError(t, err)
+
+	renderedObject := &unstructured.Unstructured{}
+	renderedObject.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "rendered.example.com",
+		Version: "v2",
+		Kind:    "RenderedMaintenance",
+	})
+	require.NoError(t, fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      crName,
+		Namespace: "rendered-namespace",
+	}, renderedObject))
+
+	state, _, err := remediationClient.GetAnnotationManager().GetRemediationState(context.Background(), nodeName)
+	require.NoError(t, err)
+
+	groupState := state.EquivalenceGroups["restart"]
+	assert.Equal(t, crName, groupState.MaintenanceCR)
+	assert.Equal(t, "rendered-namespace", groupState.Namespace)
+	assert.Equal(t, "rendered.example.com", groupState.APIGroup)
+	assert.Equal(t, "v2", groupState.Version)
+	assert.Equal(t, "RenderedMaintenance", groupState.Kind)
+}
+
 func TestRunLogCollectorJob(t *testing.T) {
 	eventId := "12345"
 	jobNamespace := "test"

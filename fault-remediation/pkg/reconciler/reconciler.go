@@ -41,6 +41,7 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/events"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/metrics"
@@ -468,6 +469,19 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 		return res, err
 	}
 
+	if err := r.ensureRemediationStateGVK(ctx, nodeName); err != nil {
+		metrics.ProcessingErrors.WithLabelValues("annotation_gvk_update_error", nodeName).Inc()
+		slog.ErrorContext(ctx, "Error ensuring remediation state GVK annotation", "node", nodeName, "error", err)
+
+		span.SetAttributes(
+			attribute.String("fault_remediation.error.type", "annotation_gvk_update_error"),
+			attribute.String("fault_remediation.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
+
+		return ctrl.Result{}, fmt.Errorf("error ensuring remediation state GVK annotation: %w", err)
+	}
+
 	shouldCreateCR, existingCR, existingCRRemediated, err := r.checkExistingCRStatus(ctx, healthEvent,
 		healthEventWithStatus.CreatedAt, groupConfig)
 	if err != nil {
@@ -501,6 +515,40 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 	metrics.EventsProcessed.WithLabelValues(metrics.CRStatusCreated, nodeName).Inc()
 
 	return r.markProcessedOrError(ctx, watcherInstance, eventWithToken, nodeName)
+}
+
+func (r *FaultRemediationReconciler) ensureRemediationStateGVK(ctx context.Context, nodeName string) error {
+	if r.annotationManager == nil || r.Config.RemediationClient == nil {
+		return nil
+	}
+
+	remediationConfig := r.Config.RemediationClient.GetConfig()
+	if remediationConfig == nil || len(remediationConfig.RemediationActions) == 0 {
+		return nil
+	}
+
+	resourceRefsByAction := maintenanceResourceReferences(remediationConfig.RemediationActions)
+	if len(resourceRefsByAction) == 0 {
+		return nil
+	}
+
+	return r.annotationManager.EnsureRemediationStateGVK(ctx, nodeName, resourceRefsByAction)
+}
+
+func maintenanceResourceReferences(
+	remediationActions map[string]config.MaintenanceResource,
+) map[string]annotation.MaintenanceResourceReference {
+	resourceRefsByAction := make(map[string]annotation.MaintenanceResourceReference, len(remediationActions))
+	for actionName, resource := range remediationActions {
+		resourceRefsByAction[actionName] = annotation.MaintenanceResourceReference{
+			Namespace: resource.Namespace,
+			Version:   resource.Version,
+			APIGroup:  resource.ApiGroup,
+			Kind:      resource.Kind,
+		}
+	}
+
+	return resourceRefsByAction
 }
 
 // trySkipEvent returns (result, err, true) when the event should be skipped; otherwise (zero, nil, false).
@@ -953,7 +1001,24 @@ func (r *FaultRemediationReconciler) evaluateExistingCR(
 	nodeName string,
 ) existingCRDecision {
 	crName := groupState.state.MaintenanceCR
-	crState := statusChecker.GetCRState(ctx, groupState.state.ActionName, crName)
+
+	resourceRef, ok := resourceReferenceFromState(groupState.state)
+	if !ok {
+		slog.WarnContext(ctx, "Stored remediation state is missing CR GVK, allowing retry",
+			"node", nodeName, "crName", crName, "group", groupState.name)
+
+		return existingCRDecision{shouldCreate: true, removeGroup: true}
+	}
+
+	completeConditionType, ok := r.completeConditionTypeForStoredState(groupState.state)
+	if !ok {
+		slog.WarnContext(ctx, "Stored remediation state has no completion condition config, allowing retry",
+			"node", nodeName, "crName", crName, "group", groupState.name, "action", groupState.state.ActionName)
+
+		return existingCRDecision{shouldCreate: true, removeGroup: true}
+	}
+
+	crState := statusChecker.GetCRStateForReference(ctx, crName, resourceRef, completeConditionType)
 
 	switch crState {
 	case crstatus.CRStateInProgress:
@@ -971,6 +1036,46 @@ func (r *FaultRemediationReconciler) evaluateExistingCR(
 
 		return existingCRDecision{shouldCreate: true, removeGroup: true}
 	}
+}
+
+func resourceReferenceFromState(
+	groupState annotation.EquivalenceGroupState,
+) (annotation.MaintenanceResourceReference, bool) {
+	resourceRef := annotation.MaintenanceResourceReference{
+		Namespace: groupState.Namespace,
+		Version:   groupState.Version,
+		APIGroup:  groupState.APIGroup,
+		Kind:      groupState.Kind,
+	}
+	if resourceRef.APIGroup == "" || resourceRef.Version == "" || resourceRef.Kind == "" {
+		return annotation.MaintenanceResourceReference{}, false
+	}
+
+	return resourceRef, true
+}
+
+func (r *FaultRemediationReconciler) completeConditionTypeForStoredState(
+	groupState annotation.EquivalenceGroupState,
+) (string, bool) {
+	if r.Config.RemediationClient == nil {
+		return "", false
+	}
+
+	remediationConfig := r.Config.RemediationClient.GetConfig()
+	if remediationConfig == nil {
+		return "", false
+	}
+
+	resource, exists := remediationConfig.RemediationActions[groupState.ActionName]
+	if !exists {
+		return "", false
+	}
+
+	if strings.TrimSpace(resource.CompleteConditionType) == "" {
+		return "", false
+	}
+
+	return resource.CompleteConditionType, true
 }
 
 func (r *FaultRemediationReconciler) evaluateSucceededCR(

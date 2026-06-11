@@ -105,35 +105,51 @@ This function will filter the RemediationStateAnnotation to only include the Equ
 event. Specifically, we will only return the EquivalenceGroupState on the annotation for groups which match the
 EffectiveEquivalenceGroup or any SupersedingEquivalenceGroups for the given HealthEvent. For example, if the current
 HealthEvent has EffectiveEquivalenceGroup=reset-GPU-123 and SupersedingEquivalenceGroups=["restart"] and then
-RemediationStateAnnotation state annotation on the node is
+RemediationStateAnnotation state annotation on the node is (namespace omitted because these example CRs are
+cluster-scoped)
 
 	"restart": {
 	  "maintenanceCR": "maintenance-123",
-	  "createdAt": "2025-11-13T17:18:32.163469826Z"
-	  "actionName", "RESTART_VM",
+	  "createdAt": "2025-11-13T17:18:32.163469826Z",
+	  "actionName": "RESTART_VM",
+	  "apiGroup": "janitor.dgxc.nvidia.com",
+	  "version": "v1alpha1",
+	  "kind": "RebootNode",
 	},
 	"reset-GPU-123": {
 	  "maintenanceCR": "maintenance-456",
-	  "createdAt": "2025-11-13T17:18:32.163469826Z"
-	  "actionName", "COMPONENT_RESET",
+	  "createdAt": "2025-11-13T17:18:32.163469826Z",
+	  "actionName": "COMPONENT_RESET",
+	  "apiGroup": "janitor.dgxc.nvidia.com",
+	  "version": "v1alpha1",
+	  "kind": "GPUReset",
 	},
 	"reset-GPU-456": {
 	  "maintenanceCR": "maintenance-789",
-	  "createdAt": "2025-11-13T17:18:32.163469826Z"
-	  "actionName", "COMPONENT_RESET",
+	  "createdAt": "2025-11-13T17:18:32.163469826Z",
+	  "actionName": "COMPONENT_RESET",
+	  "apiGroup": "janitor.dgxc.nvidia.com",
+	  "version": "v1alpha1",
+	  "kind": "GPUReset",
 	}
 
 We will return the following EquivalenceGroupStates which match our current event:
 
 	"restart": {
 	  "maintenanceCR": "maintenance-123",
-	  "createdAt": "2025-11-13T17:18:32.163469826Z"
-	  "actionName", "RESTART_VM",
+	  "createdAt": "2025-11-13T17:18:32.163469826Z",
+	  "actionName": "RESTART_VM",
+	  "apiGroup": "janitor.dgxc.nvidia.com",
+	  "version": "v1alpha1",
+	  "kind": "RebootNode",
 	},
 	"reset-GPU-123": {
 	  "maintenanceCR": "maintenance-456",
-	  "createdAt": "2025-11-13T17:18:32.163469826Z"
-	  "actionName", "COMPONENT_RESET",
+	  "createdAt": "2025-11-13T17:18:32.163469826Z",
+	  "actionName": "COMPONENT_RESET",
+	  "apiGroup": "janitor.dgxc.nvidia.com",
+	  "version": "v1alpha1",
+	  "kind": "GPUReset",
 	}
 
 We will validate that both maintenance-123 and maintenance-456 are not in-progress prior to creating a new maintenance
