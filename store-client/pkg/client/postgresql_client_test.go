@@ -16,8 +16,11 @@ package client
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 // TestPostgreSQLClient_BasicOperations tests basic CRUD operations
@@ -204,6 +207,59 @@ func TestBuildUpdateClause(t *testing.T) {
 				t.Errorf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestUpdateDocumentOffsetsWherePlaceholdersAfterUpdateArgs(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sql mock: %v", err)
+	}
+	defer db.Close()
+
+	client := &PostgreSQLClient{
+		db:    db,
+		table: "health_events",
+	}
+
+	filter := map[string]interface{}{
+		"status": "old",
+	}
+	update := map[string]interface{}{
+		"$set": map[string]interface{}{
+			"status": "new",
+		},
+	}
+
+	expectedSQL := "UPDATE health_events SET document = jsonb_set(document, '{status}', $1), updated_at = NOW() " +
+		"WHERE document->>'status' = $2"
+	mock.ExpectExec(regexp.QuoteMeta(expectedSQL)).
+		WithArgs(`"new"`, "old").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	result, err := client.UpdateDocument(context.Background(), filter, update)
+	if err != nil {
+		t.Fatalf("UpdateDocument returned error: %v", err)
+	}
+
+	if result.MatchedCount != 1 || result.ModifiedCount != 1 {
+		t.Fatalf("expected one matched and modified document, got matched=%d modified=%d",
+			result.MatchedCount, result.ModifiedCount)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestAdjustParameterNumbersHandlesMultiDigitPlaceholders(t *testing.T) {
+	client := &PostgreSQLClient{}
+
+	clause := "document->>'field1' = $1 AND document->>'field10' = $10"
+	expected := "document->>'field1' = $3 AND document->>'field10' = $12"
+
+	if got := client.adjustParameterNumbers(clause, 2); got != expected {
+		t.Fatalf("expected %q, got %q", expected, got)
 	}
 }
 
