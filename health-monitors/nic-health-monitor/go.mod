@@ -9,7 +9,7 @@ require (
 	github.com/nvidia/nvsentinel/data-models v0.0.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
-	golang.org/x/sync v0.20.0
+	golang.org/x/sync v0.21.0
 	google.golang.org/grpc v1.81.1
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 )
