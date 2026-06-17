@@ -384,6 +384,7 @@ func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2ERec
 				if genTs := healthEventWithStatus.HealthEvent.GetGeneratedTimestamp(); genTs != nil {
 					eventwatcher.EmitRemediationDuration(
 						healthEventWithStatus.HealthEvent.GetNodeName(),
+						healthEventWithStatus.HealthEvent.GetRecommendedAction().String(),
 						genTs.AsTime(),
 						nil, nil,
 					)
@@ -5369,6 +5370,61 @@ func getHistogramSampleSum(t *testing.T, histogram prometheus.Histogram) float64
 	return metric.Histogram.GetSampleSum()
 }
 
+// getHistogramVecCount returns the total sample count across all label values
+// of a HistogramVec.
+func getHistogramVecCount(t *testing.T, vec *prometheus.HistogramVec) uint64 {
+	t.Helper()
+	ch := make(chan prometheus.Metric, 256)
+	vec.Collect(ch)
+	close(ch)
+
+	var total uint64
+
+	for m := range ch {
+		metric := &dto.Metric{}
+		require.NoError(t, m.Write(metric))
+		total += metric.Histogram.GetSampleCount()
+	}
+
+	return total
+}
+
+// getHistogramVecSampleSum returns the total sample sum across all label values
+// of a HistogramVec.
+func getHistogramVecSampleSum(t *testing.T, vec *prometheus.HistogramVec) float64 {
+	t.Helper()
+	ch := make(chan prometheus.Metric, 256)
+	vec.Collect(ch)
+	close(ch)
+
+	var total float64
+
+	for m := range ch {
+		metric := &dto.Metric{}
+		require.NoError(t, m.Write(metric))
+		total += metric.Histogram.GetSampleSum()
+	}
+
+	return total
+}
+
+// getHistogramVecChildCount returns the sample count recorded for a specific
+// value of the "recommended_action" label on a HistogramVec.
+func getHistogramVecChildCount(t *testing.T, vec *prometheus.HistogramVec, recommendedAction string) uint64 {
+	t.Helper()
+
+	observer, err := vec.GetMetricWithLabelValues(recommendedAction)
+	require.NoError(t, err)
+
+	histogram, ok := observer.(prometheus.Histogram)
+	require.True(t, ok, "expected HistogramVec child to implement prometheus.Histogram")
+
+	metric := &dto.Metric{}
+	require.NoError(t, histogram.Write(metric))
+
+	return metric.Histogram.GetSampleCount()
+}
+
 // TestMetrics_NodeRemediationDuration verifies that NodeRemediationDurationSeconds metric
 // is recorded when EmitRemediationDuration is called after a node is unquarantined.
 func TestMetrics_NodeRemediationDuration(t *testing.T) {
@@ -5402,8 +5458,8 @@ func TestMetrics_NodeRemediationDuration(t *testing.T) {
 
 	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
-	beforeRemediationCount := getHistogramCount(t, metrics.NodeRemediationDurationSeconds)
-	beforeRemediationSum := getHistogramSampleSum(t, metrics.NodeRemediationDurationSeconds)
+	beforeRemediationCount := getHistogramVecCount(t, metrics.NodeRemediationDurationSeconds)
+	beforeRemediationSum := getHistogramVecSampleSum(t, metrics.NodeRemediationDurationSeconds)
 
 	generatedTime := time.Now().Add(-10 * time.Second)
 
@@ -5479,11 +5535,11 @@ func TestMetrics_NodeRemediationDuration(t *testing.T) {
 	}, statusCheckTimeout, statusCheckPollInterval, "Status should be UnQuarantined")
 
 	require.Eventually(t, func() bool {
-		return getHistogramCount(t, metrics.NodeRemediationDurationSeconds) > beforeRemediationCount
+		return getHistogramVecCount(t, metrics.NodeRemediationDurationSeconds) > beforeRemediationCount
 	}, statusCheckTimeout, statusCheckPollInterval, "NodeRemediationDurationSeconds should be recorded")
 
-	afterRemediationCount := getHistogramCount(t, metrics.NodeRemediationDurationSeconds)
-	afterRemediationSum := getHistogramSampleSum(t, metrics.NodeRemediationDurationSeconds)
+	afterRemediationCount := getHistogramVecCount(t, metrics.NodeRemediationDurationSeconds)
+	afterRemediationSum := getHistogramVecSampleSum(t, metrics.NodeRemediationDurationSeconds)
 
 	assert.Equal(t, beforeRemediationCount+1, afterRemediationCount,
 		"NodeRemediationDurationSeconds histogram should record exactly one observation")
@@ -5497,23 +5553,155 @@ func TestMetrics_NodeRemediationDuration(t *testing.T) {
 	t.Logf("NodeRemediationDurationSeconds recorded: %.2fs", observedDuration)
 }
 
+// TestMetrics_NodeRemediationDurationRecommendedActionLabel verifies that the
+// NodeRemediationDurationSeconds metric is recorded against the correct
+// recommended_action label value derived from the health event.
+func TestMetrics_NodeRemediationDurationRecommendedActionLabel(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := "metrics-remediation-action-" + generateShortTestID()
+	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.RuleSet{
+			{
+				Enabled:  true,
+				Name:     "gpu-xid-critical-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError' && event.isFatal == true"},
+					},
+				},
+				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	actionLabel := protos.RecommendedAction_RESTART_BM.String()
+
+	beforeActionCount := getHistogramVecChildCount(t, metrics.NodeRemediationDurationSeconds, actionLabel)
+	beforeNoneCount := getHistogramVecChildCount(t, metrics.NodeRemediationDurationSeconds,
+		protos.RecommendedAction_NONE.String())
+
+	generatedTime := time.Now().Add(-10 * time.Second)
+
+	t.Log("Sending unhealthy event to quarantine node")
+	eventID1 := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: datastore.Event{
+		"operationType": "insert",
+		"fullDocument": datastore.Event{
+			"_id": eventID1,
+			"healtheventstatus": datastore.Event{
+				"nodequarantined": model.StatusInProgress,
+			},
+			"healthevent": datastore.Event{
+				"nodename":          nodeName,
+				"agent":             "gpu-health-monitor",
+				"componentclass":    "GPU",
+				"checkname":         "GpuXidError",
+				"version":           uint32(1),
+				"ishealthy":         false,
+				"isfatal":           true,
+				"recommendedaction": int32(protos.RecommendedAction_RESTART_BM),
+				"generatedtimestamp": datastore.Event{
+					"seconds": generatedTime.Unix(),
+					"nanos":   int32(generatedTime.Nanosecond()),
+				},
+				"entitiesimpacted": []interface{}{
+					datastore.Event{"entitytype": "GPU", "entityvalue": "0"},
+				},
+			},
+		},
+	}}
+
+	t.Log("Waiting for node to be quarantined")
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		return node.Spec.Unschedulable
+	}, eventuallyTimeout, eventuallyPollInterval, "Node should be quarantined")
+
+	t.Log("Sending healthy event (with recommendedAction) to unquarantine node")
+	eventID2 := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: datastore.Event{
+		"operationType": "insert",
+		"fullDocument": datastore.Event{
+			"_id": eventID2,
+			"healtheventstatus": datastore.Event{
+				"nodequarantined": model.StatusInProgress,
+			},
+			"healthevent": datastore.Event{
+				"nodename":          nodeName,
+				"agent":             "gpu-health-monitor",
+				"componentclass":    "GPU",
+				"checkname":         "GpuXidError",
+				"version":           uint32(1),
+				"ishealthy":         true,
+				"isfatal":           false,
+				"recommendedaction": int32(protos.RecommendedAction_RESTART_BM),
+				"generatedtimestamp": datastore.Event{
+					"seconds": generatedTime.Unix(),
+					"nanos":   int32(generatedTime.Nanosecond()),
+				},
+				"entitiesimpacted": []interface{}{
+					datastore.Event{"entitytype": "GPU", "entityvalue": "0"},
+				},
+			},
+		},
+	}}
+
+	t.Log("Waiting for node to be unquarantined")
+	require.Eventually(t, func() bool {
+		status := getStatus(eventID2)
+		return status != nil && *status == model.UnQuarantined
+	}, statusCheckTimeout, statusCheckPollInterval, "Status should be UnQuarantined")
+
+	require.Eventually(t, func() bool {
+		return getHistogramVecChildCount(t, metrics.NodeRemediationDurationSeconds, actionLabel) > beforeActionCount
+	}, statusCheckTimeout, statusCheckPollInterval,
+		"NodeRemediationDurationSeconds should be recorded for recommended_action="+actionLabel)
+
+	afterActionCount := getHistogramVecChildCount(t, metrics.NodeRemediationDurationSeconds, actionLabel)
+	afterNoneCount := getHistogramVecChildCount(t, metrics.NodeRemediationDurationSeconds,
+		protos.RecommendedAction_NONE.String())
+
+	assert.Equal(t, beforeActionCount+1, afterActionCount,
+		"observation should be recorded under recommended_action=%s", actionLabel)
+	assert.Equal(t, beforeNoneCount, afterNoneCount,
+		"no observation should be recorded under recommended_action=NONE for this event")
+
+	t.Logf("NodeRemediationDurationSeconds recorded under recommended_action=%s", actionLabel)
+}
+
 // TestMetrics_NodeRemediationDurationExcludingDrain verifies that
 // NodeRemediationDurationExcludingDrainSeconds is recorded when both
 // quarantine and drain finish timestamps are provided.
 func TestMetrics_NodeRemediationDurationExcludingDrain(t *testing.T) {
-	beforeEndToEndCount := getHistogramCount(t, metrics.NodeRemediationDurationSeconds)
-	beforeExclDrainCount := getHistogramCount(t, metrics.NodeRemediationDurationExcludingDrainSeconds)
-	beforeExclDrainSum := getHistogramSampleSum(t, metrics.NodeRemediationDurationExcludingDrainSeconds)
+	beforeEndToEndCount := getHistogramVecCount(t, metrics.NodeRemediationDurationSeconds)
+	beforeExclDrainCount := getHistogramVecCount(t, metrics.NodeRemediationDurationExcludingDrainSeconds)
+	beforeExclDrainSum := getHistogramVecSampleSum(t, metrics.NodeRemediationDurationExcludingDrainSeconds)
 
 	genTs := time.Now().Add(-60 * time.Second)
 	quarantineFinish := time.Now().Add(-50 * time.Second)
 	drainFinish := time.Now().Add(-20 * time.Second)
 
-	eventwatcher.EmitRemediationDuration("test-drain-node", genTs, &quarantineFinish, &drainFinish)
+	eventwatcher.EmitRemediationDuration("test-drain-node", "NONE", genTs, &quarantineFinish, &drainFinish)
 
-	afterEndToEndCount := getHistogramCount(t, metrics.NodeRemediationDurationSeconds)
-	afterExclDrainCount := getHistogramCount(t, metrics.NodeRemediationDurationExcludingDrainSeconds)
-	afterExclDrainSum := getHistogramSampleSum(t, metrics.NodeRemediationDurationExcludingDrainSeconds)
+	afterEndToEndCount := getHistogramVecCount(t, metrics.NodeRemediationDurationSeconds)
+	afterExclDrainCount := getHistogramVecCount(t, metrics.NodeRemediationDurationExcludingDrainSeconds)
+	afterExclDrainSum := getHistogramVecSampleSum(t, metrics.NodeRemediationDurationExcludingDrainSeconds)
 
 	assert.Equal(t, beforeEndToEndCount+1, afterEndToEndCount,
 		"NodeRemediationDurationSeconds should record one observation")
@@ -5534,12 +5722,12 @@ func TestMetrics_NodeRemediationDurationExcludingDrain(t *testing.T) {
 // NodeRemediationDurationExcludingDrainSeconds is NOT recorded when
 // quarantine/drain finish timestamps are nil.
 func TestMetrics_NodeRemediationDuration_NoDrainTimestamps(t *testing.T) {
-	beforeExclDrainCount := getHistogramCount(t, metrics.NodeRemediationDurationExcludingDrainSeconds)
+	beforeExclDrainCount := getHistogramVecCount(t, metrics.NodeRemediationDurationExcludingDrainSeconds)
 
 	genTs := time.Now().Add(-15 * time.Second)
-	eventwatcher.EmitRemediationDuration("test-no-drain-node", genTs, nil, nil)
+	eventwatcher.EmitRemediationDuration("test-no-drain-node", "NONE", genTs, nil, nil)
 
-	afterExclDrainCount := getHistogramCount(t, metrics.NodeRemediationDurationExcludingDrainSeconds)
+	afterExclDrainCount := getHistogramVecCount(t, metrics.NodeRemediationDurationExcludingDrainSeconds)
 	assert.Equal(t, beforeExclDrainCount, afterExclDrainCount,
 		"NodeRemediationDurationExcludingDrainSeconds should not be recorded without drain timestamps")
 }
@@ -5581,7 +5769,7 @@ func TestMetrics_FullQuarantineUnquarantineMetricsFlow(t *testing.T) {
 	beforeQuarantined := getCounterVecValue(t, metrics.TotalNodesQuarantined, nodeName)
 	beforeUnquarantined := getCounterVecValue(t, metrics.TotalNodesUnquarantined, nodeName)
 	beforeQuarantineDuration := getHistogramCount(t, metrics.NodeQuarantineDuration)
-	beforeRemediationDuration := getHistogramCount(t, metrics.NodeRemediationDurationSeconds)
+	beforeRemediationDuration := getHistogramVecCount(t, metrics.NodeRemediationDurationSeconds)
 	beforeTaintsApplied := getCounterVecValue(t, metrics.TaintsApplied, "nvidia.com/gpu-xid-error", "NoSchedule")
 	beforeCordonsApplied := getCounterValue(t, metrics.CordonsApplied)
 	beforeTaintsRemoved := getCounterVecValue(t, metrics.TaintsRemoved, "nvidia.com/gpu-xid-error", "NoSchedule")
@@ -5694,7 +5882,7 @@ func TestMetrics_FullQuarantineUnquarantineMetricsFlow(t *testing.T) {
 
 	// --- Phase 3: Remediation duration ---
 	require.Eventually(t, func() bool {
-		return getHistogramCount(t, metrics.NodeRemediationDurationSeconds) > beforeRemediationDuration
+		return getHistogramVecCount(t, metrics.NodeRemediationDurationSeconds) > beforeRemediationDuration
 	}, statusCheckTimeout, statusCheckPollInterval,
 		"NodeRemediationDurationSeconds should be recorded after unquarantine")
 
