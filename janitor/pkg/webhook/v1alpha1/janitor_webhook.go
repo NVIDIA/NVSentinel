@@ -75,6 +75,13 @@ func SetupJanitorWebhookWithManager(mgr ctrl.Manager, cfg *config.Config) error 
 		return err
 	}
 
+	// Register webhook for ExternalRemediationRequest
+	if err := ctrl.NewWebhookManagedBy(mgr, &janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest{}).
+		WithValidator(&extrrValidator{validator}).
+		Complete(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -86,6 +93,9 @@ func SetupJanitorWebhookWithManager(mgr ctrl.Manager, cfg *config.Config) error 
 
 // nolint:lll
 // +kubebuilder:webhook:path=/validate-janitor-dgxc-nvidia-com-v1alpha1-gpureset,mutating=false,failurePolicy=fail,sideEffects=None,groups=janitor.dgxc.nvidia.com,resources=gpuresets,verbs=create;update;delete,versions=v1alpha1,name=vgpureset-v1alpha1.kb.io,admissionReviewVersions=v1
+
+// nolint:lll
+// +kubebuilder:webhook:path=/validate-nvsentinel-dgxc-nvidia-com-v1-externalremediationrequest,mutating=false,failurePolicy=fail,sideEffects=None,groups=nvsentinel.dgxc.nvidia.com,resources=externalremediationrequests,verbs=create;update;delete,versions=v1,name=vextrr-v1.kb.io,admissionReviewVersions=v1
 
 // JanitorCustomValidator struct is responsible for validating all Janitor resources
 // when they are created, updated, or deleted.
@@ -471,4 +481,77 @@ func (v *gpuResetValidator) ValidateDelete(_ context.Context,
 	janitorWebhookLog.Info("Validation for Janitor CR upon deletion", "type", controllerTypeGPUReset, "name", objName)
 
 	return nil, nil
+}
+
+// --- ExternalRemediationRequest typed validator ---
+//
+// The proto-backed wrapper has pointer Spec/Status fields (forced by the
+// proto's embedded sync.Mutex), so the apiserver's CRD schema accepts
+// `spec: null` and similar incomplete objects. This webhook enforces that
+// every ExtRR that lands on the apiserver carries a fully-populated
+// HealthEvent with a non-empty nodeName, so the reconciler can treat those
+// fields as set-by-construction.
+//
+// Unlike RebootNode / TerminateNode / GPUReset, the ExtRR validator has no
+// Config.Enabled gate. ADR-040 specifies ExtRR is an unconditional capability:
+// disabling it would strand any external system already mid-remediation, with
+// no way to release the affected nodes back to NVSentinel ownership.
+
+const controllerTypeExternalRemediationRequest = "ExternalRemediationRequest"
+
+type extrrValidator struct{ *JanitorCustomValidator }
+
+func (v *extrrValidator) ValidateCreate(_ context.Context,
+	obj *janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest) (admission.Warnings, error) {
+	if err := validateExtRRSpec(obj); err != nil {
+		janitorWebhookLog.Info("ExternalRemediationRequest spec validation failed on create",
+			"type", controllerTypeExternalRemediationRequest, "name", obj.GetName(), "error", err.Error())
+
+		return nil, err
+	}
+
+	return nil, nil
+}
+
+func (v *extrrValidator) ValidateUpdate(_ context.Context,
+	oldObj, newObj *janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest) (admission.Warnings, error) {
+	if err := validateExtRRSpec(newObj); err != nil {
+		janitorWebhookLog.Info("ExternalRemediationRequest spec validation failed on update",
+			"type", controllerTypeExternalRemediationRequest, "name", newObj.GetName(), "error", err.Error())
+
+		return nil, err
+	}
+
+	// spec.healthEvent identifies the fault that produced the ExtRR; changing
+	// it after creation would invalidate the release taint value (carries the
+	// ExtRR name) and the reconciler's view of which node it released.
+	if oldObj.Spec != nil && oldObj.Spec.HealthEvent != nil &&
+		oldObj.Spec.HealthEvent.NodeName != newObj.Spec.HealthEvent.NodeName {
+		return nil, fmt.Errorf("nodeName cannot be changed after creation")
+	}
+
+	return nil, nil
+}
+
+func (v *extrrValidator) ValidateDelete(_ context.Context,
+	_ *janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest) (admission.Warnings, error) {
+	return nil, nil
+}
+
+// validateExtRRSpec enforces the contract the reconciler depends on:
+// spec, spec.healthEvent, and spec.healthEvent.nodeName must all be present.
+func validateExtRRSpec(obj *janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest) error {
+	if obj.Spec == nil {
+		return fmt.Errorf("spec is required")
+	}
+
+	if obj.Spec.HealthEvent == nil {
+		return fmt.Errorf("spec.healthEvent is required")
+	}
+
+	if obj.Spec.HealthEvent.NodeName == "" {
+		return fmt.Errorf("spec.healthEvent.nodeName is required and must be non-empty")
+	}
+
+	return nil
 }
