@@ -969,8 +969,7 @@ var _ = Describe("ExternalRemediationRequest Webhook", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		// ExtRR validator is config- and client-independent; it only inspects
-		// the incoming object's spec.
+		// The validator only inspects spec; no Config / Client needed.
 		val = &extrrValidator{&JanitorCustomValidator{}}
 	})
 

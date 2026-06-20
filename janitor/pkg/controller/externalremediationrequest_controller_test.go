@@ -46,10 +46,7 @@ import (
 
 const testExtRRNamespace = "default"
 
-// newExtRRReconciler returns a reconciler bound to the envtest API server.
-// Must only be called from within Ginkgo blocks (BeforeSuite populates cfg).
-// Includes a FakeRecorder with a generous buffer so test specs can pop events
-// off the channel without the recorder blocking the controller.
+// newExtRRReconciler is Ginkgo-only — BeforeSuite populates cfg.
 func newExtRRReconciler() *ExternalRemediationRequestReconciler {
 	c, err := ctrlclient.New(cfg, ctrlclient.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
@@ -61,9 +58,7 @@ func newExtRRReconciler() *ExternalRemediationRequestReconciler {
 	}
 }
 
-// drainEvents pops up to maxN events from the FakeRecorder channel. Used by
-// the observability tests to assert which events fired during a reconcile
-// sequence. Returns whatever's currently in the buffer without blocking.
+// drainEvents non-blockingly drains the FakeRecorder channel.
 func drainEvents(r *ExternalRemediationRequestReconciler) []string {
 	fake, ok := r.Recorder.(*record.FakeRecorder)
 	if !ok {
@@ -82,12 +77,11 @@ func drainEvents(r *ExternalRemediationRequestReconciler) []string {
 	}
 }
 
-// testRecommendedActionLabel matches what production fault-remediation puts on
-// CUSTOM:external-remediation events. Tests should keep this stable so the
-// Prometheus label values in observability assertions match production reality.
+// testRecommendedActionLabel matches what fault-remediation stamps on
+// CUSTOM:external-remediation events, so observability assertions match
+// production label values.
 const testRecommendedActionLabel = "external-remediation"
 
-// newTestExtRR returns a minimal ExternalRemediationRequest object.
 func newTestExtRR(name, nodeName string) *nvsentinelv1.ExternalRemediationRequest {
 	return &nvsentinelv1.ExternalRemediationRequest{
 		TypeMeta: metav1.TypeMeta{
@@ -111,8 +105,7 @@ func newTestExtRR(name, nodeName string) *nvsentinelv1.ExternalRemediationReques
 	}
 }
 
-// reconcileToSteadyState drives Reconcile repeatedly so the multi-pass init
-// (finalizer Update, then status Patch) completes without the test caring
+// reconcileToSteadyState drives the multi-pass init without specs caring
 // about exact pass counts.
 func reconcileToSteadyState(
 	ctx context.Context,
@@ -206,14 +199,11 @@ var _ = Describe("ExternalRemediationRequest Controller", func() {
 	})
 
 	It("removes the cleanup finalizer when the ExtRR is deleted before apply ran (Node missing)", func() {
-		// Deletion-pending before any Node interaction happened. cleanup helper finds
-		// no Node, treats as already-clean, removes finalizer.
 		extrrObj := newTestExtRR("delete-no-apply-extrr-1", "node-never-existed")
 		Expect(r.Client.Create(ctx, extrrObj)).To(Succeed())
 
 		key := ctrlclient.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace}
-		// Drive init only (finalizer + initial conditions). Don't continue further;
-		// the apply path would requeue forever waiting for the missing Node.
+		// Init-only: the apply path would requeue forever waiting for the Node.
 		for i := 0; i < 2; i++ {
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred(), "init pass %d", i+1)
@@ -221,12 +211,9 @@ var _ = Describe("ExternalRemediationRequest Controller", func() {
 
 		Expect(r.Client.Delete(ctx, extrrObj)).To(Succeed())
 
-		// One reconcile to run cleanup + remove the finalizer.
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
 
-		// ExtRR must be fully gone now — apiserver garbage-collects once the
-		// finalizer is removed.
 		var got nvsentinelv1.ExternalRemediationRequest
 		err = r.Client.Get(ctx, key, &got)
 		Expect(apierrors.IsNotFound(err)).To(BeTrue(),
@@ -243,9 +230,8 @@ var _ = Describe("ExternalRemediationRequest Controller", func() {
 	})
 })
 
-// prepareReleased drives an ExtRR through init + apply so the Node has taint+label
-// and the ExtRR has NVSentinelOwnershipReleased=True. Tests that need a "post-
-// applied" starting state call this first. Returns the ExtRR's ObjectKey.
+// prepareReleased drives an ExtRR through init + apply, leaving it at
+// NVSentinelOwnershipReleased=True for post-applied tests to extend.
 func prepareReleased(
 	ctx context.Context, r *ExternalRemediationRequestReconciler,
 	extrrName, nodeName string,
@@ -267,9 +253,8 @@ func prepareReleased(
 	return key
 }
 
-// setExternalRemediationComplete sets the ExternalRemediationComplete condition
-// to the given status by issuing a status subresource patch — simulates the
-// external system reporting completion to the ExtRR.
+// setExternalRemediationComplete simulates the external system reporting
+// completion via a status subresource patch.
 func setExternalRemediationComplete(
 	ctx context.Context, c ctrlclient.Client,
 	extrrObj *nvsentinelv1.ExternalRemediationRequest,
@@ -297,7 +282,6 @@ func setExternalRemediationComplete(
 		}
 	}
 
-	// Find or replace ExternalRemediationComplete.
 	replaced := false
 
 	for i := range conds {
@@ -361,13 +345,11 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 			DeferCleanup(forceFinalizerRemovalByKey, ctx, r, key)
 			DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
 
-			// External system reports success.
 			setExternalRemediationComplete(ctx, r.Client,
 				&nvsentinelv1.ExternalRemediationRequest{ObjectMeta: metav1.ObjectMeta{
 					Name: key.Name, Namespace: key.Namespace,
 				}}, "True", "ExternalRemediationSucceeded")
 
-			// One reconcile to run branch 4.
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -378,7 +360,6 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 			Expect(node.Labels).NotTo(HaveKey(managed.ManagedLabelKey),
 				"managed label must be removed entirely (absence is the default-managed state)")
 
-			// ExtRR stays in the cluster as a historical record with the finalizer attached.
 			var got nvsentinelv1.ExternalRemediationRequest
 			Expect(r.Client.Get(ctx, key, &got)).To(Succeed())
 			Expect(controllerutil.ContainsFinalizer(&got, ExternalRemediationFinalizer)).To(BeTrue(),
@@ -396,7 +377,6 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 					Name: key.Name, Namespace: key.Namespace,
 				}}, "True", "ExternalRemediationSucceeded")
 
-			// First reconcile: cleanup happens.
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -404,7 +384,6 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 			Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &nodeAfterCleanup)).To(Succeed())
 			rvAfterCleanup := nodeAfterCleanup.ResourceVersion
 
-			// Subsequent reconciles re-enter branch 4 but should short-circuit (nothing to remove).
 			for i := 0; i < 3; i++ {
 				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 				Expect(err).NotTo(HaveOccurred())
@@ -417,16 +396,12 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 		})
 
 		It("leaves a foreign taint in place when another ExtRR claims the node (drift on cleanup)", func() {
-			// Drive an ExtRR to released, then sneak in a second taint with a different
-			// value, then trigger Complete=True. The cleanup must remove the matching
-			// taint and label but leave the foreign taint untouched.
 			nodeName := "node-true-drift-1"
 			key := prepareReleased(ctx, r, "true-drift-extrr-1", nodeName)
 			DeferCleanup(forceFinalizerRemovalByKey, ctx, r, key)
 			DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
 
-			// Manually mutate the node: replace our taint with one owned by a hypothetical other ExtRR.
-			// This simulates a drift state — should not happen in practice, but the helper must be safe.
+			// Rewrite the taint value to simulate a foreign owner.
 			var node corev1.Node
 			Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &node)).To(Succeed())
 
@@ -467,17 +442,14 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 				ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			})).To(Succeed())
 
-			// One reconcile to handle branch 2 — cleanup + finalizer remove.
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Node should be clean.
 			var node corev1.Node
 			Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &node)).To(Succeed())
 			Expect(findTaintByKey(node.Spec.Taints, ReleaseTaintKey)).To(BeNil())
 			Expect(node.Labels).NotTo(HaveKey(managed.ManagedLabelKey))
 
-			// ExtRR should be garbage-collected.
 			var got nvsentinelv1.ExternalRemediationRequest
 			err = r.Client.Get(ctx, key, &got)
 			Expect(apierrors.IsNotFound(err)).To(BeTrue(),
@@ -489,7 +461,6 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 			key := prepareReleased(ctx, r, "stack-extrr-1", nodeName)
 			DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
 
-			// First: external system reports success → branch 4 cleans up.
 			setExternalRemediationComplete(ctx, r.Client,
 				&nvsentinelv1.ExternalRemediationRequest{ObjectMeta: metav1.ObjectMeta{
 					Name: key.Name, Namespace: key.Namespace,
@@ -497,7 +468,6 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Then: operator deletes the (already-clean) ExtRR.
 			Expect(r.Client.Delete(ctx, &nvsentinelv1.ExternalRemediationRequest{
 				ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			})).To(Succeed())
@@ -509,13 +479,11 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Node was already clean: cleanup helper short-circuits, no PATCH.
 			var nodeAfter corev1.Node
 			Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &nodeAfter)).To(Succeed())
 			Expect(nodeAfter.ResourceVersion).To(Equal(rvBeforeDel),
 				"already-clean cleanup must NOT re-PATCH the Node")
 
-			// ExtRR is garbage-collected.
 			var got nvsentinelv1.ExternalRemediationRequest
 			err = r.Client.Get(ctx, key, &got)
 			Expect(apierrors.IsNotFound(err)).To(BeTrue(),
@@ -598,14 +566,12 @@ var _ = Describe("ExternalRemediationRequest Controller asymmetric False handlin
 				Name: key.Name, Namespace: key.Namespace,
 			}}, "False", "ExternalRemediationFailed")
 
-		// One reconcile to run branch 5.
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
 
 		var nodeAfter corev1.Node
 		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &nodeAfter)).To(Succeed())
 
-		// Critical guarantee: branch 5 must NOT touch the Node.
 		Expect(nodeAfter.ResourceVersion).To(Equal(rvBefore),
 			"branch 5 must NOT PATCH the Node — taint+label remain because operator has no signal what state the external system left the node in")
 		taint := findTaintByKey(nodeAfter.Spec.Taints, ReleaseTaintKey)
@@ -626,7 +592,6 @@ var _ = Describe("ExternalRemediationRequest Controller asymmetric False handlin
 				Name: key.Name, Namespace: key.Namespace,
 			}}, "False", "ExternalRemediationFailed")
 
-		// First reconcile to settle into branch 5.
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -634,7 +599,6 @@ var _ = Describe("ExternalRemediationRequest Controller asymmetric False handlin
 		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &nodeBaseline)).To(Succeed())
 		rvBaseline := nodeBaseline.ResourceVersion
 
-		// Subsequent reconciles must not PATCH the Node.
 		for i := 0; i < 3; i++ {
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
@@ -652,7 +616,6 @@ var _ = Describe("ExternalRemediationRequest Controller asymmetric False handlin
 		DeferCleanup(forceFinalizerRemovalByKey, ctx, r, key)
 		DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
 
-		// Failure path: external system reports False.
 		setExternalRemediationComplete(ctx, r.Client,
 			&nvsentinelv1.ExternalRemediationRequest{ObjectMeta: metav1.ObjectMeta{
 				Name: key.Name, Namespace: key.Namespace,
@@ -660,13 +623,12 @@ var _ = Describe("ExternalRemediationRequest Controller asymmetric False handlin
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
 
-		// Verify taint+label still present (branch 5 left them alone).
 		var nodeAtFalse corev1.Node
 		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &nodeAtFalse)).To(Succeed())
 		Expect(findTaintByKey(nodeAtFalse.Spec.Taints, ReleaseTaintKey)).NotTo(BeNil())
 		Expect(nodeAtFalse.Labels).To(HaveKeyWithValue(managed.ManagedLabelKey, managed.ManagedLabelValueFalse))
 
-		// Retry: external system now reports True. Branch 4 must fire and clean up.
+		// True retry → branch 4 cleanup.
 		setExternalRemediationComplete(ctx, r.Client,
 			&nvsentinelv1.ExternalRemediationRequest{ObjectMeta: metav1.ObjectMeta{
 				Name: key.Name, Namespace: key.Namespace,
@@ -693,7 +655,6 @@ var _ = Describe("ExternalRemediationRequest Controller asymmetric False handlin
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
 
-		// Operator forces release.
 		Expect(r.Client.Delete(ctx, &nvsentinelv1.ExternalRemediationRequest{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 		})).To(Succeed())
@@ -771,8 +732,7 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &nodeAfterApply)).To(Succeed())
 		rvAfterApply := nodeAfterApply.ResourceVersion
 
-		// Reconcile several more times. With Released=True the dispatcher falls through to
-		// branch 6 (no-op), so the Node's ResourceVersion must not advance.
+		// With Released=True the dispatcher falls through to the no-op branch.
 		for i := 0; i < 3; i++ {
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
@@ -786,8 +746,7 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 
 	It("recovers cleanly when a prior reconcile patched the Node but failed to transition the condition", func() {
 		nodeName := "node-recover-1"
-		// Pre-apply the taint + label as if a prior reconcile succeeded then crashed
-		// before status was written. Verifies the already-applied detection.
+		// Pre-apply: simulate a reconcile that PATCHed the Node then crashed.
 		Expect(r.Client.Create(ctx, newTestNode(nodeName,
 			map[string]string{managed.ManagedLabelKey: managed.ManagedLabelValueFalse},
 			[]corev1.Taint{{Key: ReleaseTaintKey, Value: "recover-extrr-1", Effect: corev1.TaintEffectNoSchedule}}))).
@@ -815,14 +774,12 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 
 		key := ctrlclient.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace}
 
-		// reconcileInitialize uses two passes (finalizer Update, then status Patch).
-		// Drive both to completion before checking branch 3 behavior.
+		// Drive the two init passes (finalizer + status) before hitting the apply branch.
 		for i := 0; i < 2; i++ {
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred(), "init pass %d", i+1)
 		}
 
-		// Third reconcile hits branch 3, finds the Node missing, requeues.
 		result, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred(), "missing Node must not propagate as a reconcile error")
 		Expect(result.RequeueAfter).To(Equal(nodeMissingRequeue), "missing Node must requeue, not fail")
@@ -835,14 +792,11 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 		Expect(released.Reason).To(Equal(reasonInitializing))
 	})
 
-	// The empty-nodeName failure mode is enforced by the validating webhook
-	// (see pkg/webhook/v1alpha1) — the apiserver rejects creation of an
-	// ExtRR without spec.healthEvent.nodeName, so the reconciler never sees
-	// one. Exercised in the webhook test suite, not here.
+	// Empty-nodeName rejection is covered by the webhook test suite.
 
 	It("transitions to False when the Node is already tainted by a different ExtRR (drift)", func() {
 		nodeName := "node-drift-1"
-		// Pre-apply the taint with a DIFFERENT ExtRR's name as the value.
+		// Pre-apply a taint with a DIFFERENT ExtRR's name.
 		Expect(r.Client.Create(ctx, newTestNode(nodeName, nil,
 			[]corev1.Taint{{Key: ReleaseTaintKey, Value: "some-other-err", Effect: corev1.TaintEffectNoSchedule}}))).
 			To(Succeed())
@@ -862,7 +816,6 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 			"drift message must identify the existing taint owner")
 		Expect(released.Message).To(ContainSubstring(nodeName))
 
-		// Node taint must be unchanged — we don't overwrite another ExtRR's claim.
 		var node corev1.Node
 		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &node)).To(Succeed())
 		taint := findTaintByKey(node.Spec.Taints, ReleaseTaintKey)
@@ -874,16 +827,14 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 	It("transitions to False when the Node patch is forbidden by RBAC", func() {
 		nodeName := "node-rbac-1"
 
-		// Build a watch-capable client for both the test setup and the interceptor
-		// wrap; the interceptor requires WithWatch, not the plain Client interface.
+		// interceptor.NewClient requires WithWatch, not the plain Client interface.
 		baseClient, err := ctrlclient.NewWithWatch(cfg, ctrlclient.Options{Scheme: scheme.Scheme})
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(baseClient.Create(ctx, newTestNode(nodeName, nil, nil))).To(Succeed())
 		DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
 
-		// Wrap the reconciler's client with an interceptor that turns Node PATCHes
-		// into HTTP 403 Forbidden, simulating a missing RBAC binding.
+		// Intercept Node PATCHes with 403 to simulate a missing RBAC binding.
 		r.Client = interceptor.NewClient(baseClient, interceptor.Funcs{
 			Patch: func(ctx context.Context, c ctrlclient.WithWatch, obj ctrlclient.Object,
 				patch ctrlclient.Patch, opts ...ctrlclient.PatchOption,
@@ -911,8 +862,6 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 	})
 })
 
-// TestExtRRReconciler_NeedsInitialization is a pure-unit test (no envtest needed),
-// so it runs as a plain testing.T function alongside the ginkgo specs.
 func TestExtRRReconciler_NeedsInitialization(t *testing.T) {
 	r := &ExternalRemediationRequestReconciler{}
 
@@ -962,23 +911,16 @@ func TestExtRRReconciler_NeedsInitialization(t *testing.T) {
 	})
 }
 
-// deleteExtRRForCleanup removes the cleanup finalizer and deletes the ExtRR so the
-// next test starts clean. Used as a DeferCleanup target.
 func deleteExtRRForCleanup(ctx context.Context, r *ExternalRemediationRequestReconciler, extrrObj *nvsentinelv1.ExternalRemediationRequest) {
 	forceFinalizerRemoval(ctx, r, extrrObj)
 }
 
-// forceFinalizerRemoval strips the cleanup finalizer (if present) and ensures
-// the object is fully deleted from the API server so tests don't bleed state.
 func forceFinalizerRemoval(ctx context.Context, r *ExternalRemediationRequestReconciler, extrrObj *nvsentinelv1.ExternalRemediationRequest) {
 	forceFinalizerRemovalByKey(ctx, r, ctrlclient.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace})
 }
 
-// forceFinalizerRemovalByKey is the same as forceFinalizerRemoval but takes a
-// key directly — used by resolution-path tests where the test no longer holds
-// a live ExtRR pointer (the object may be mid-deletion or fully garbage-collected).
-// Errors during cleanup are logged to GinkgoWriter (not silently swallowed) so a
-// flaky shared-state failure leaves a breadcrumb in the test output.
+// forceFinalizerRemovalByKey strips the finalizer + deletes; errors go to
+// GinkgoWriter so a flaky shared-state failure leaves a breadcrumb.
 func forceFinalizerRemovalByKey(ctx context.Context, r *ExternalRemediationRequestReconciler, key ctrlclient.ObjectKey) {
 	var fresh nvsentinelv1.ExternalRemediationRequest
 	if err := r.Client.Get(ctx, key, &fresh); err != nil {
@@ -1000,8 +942,6 @@ func forceFinalizerRemovalByKey(ctx context.Context, r *ExternalRemediationReque
 	}
 }
 
-// newTestNode returns a minimal corev1.Node usable from envtest. labels/taints
-// are optional; pass nil to start clean.
 func newTestNode(name string, labels map[string]string, taints []corev1.Taint) *corev1.Node {
 	return &corev1.Node{
 		TypeMeta: metav1.TypeMeta{
@@ -1018,8 +958,6 @@ func newTestNode(name string, labels map[string]string, taints []corev1.Taint) *
 	}
 }
 
-// deleteNodeForCleanup removes a Node so tests don't bleed state. Used as a
-// DeferCleanup target. Errors are logged to GinkgoWriter.
 func deleteNodeForCleanup(ctx context.Context, r *ExternalRemediationRequestReconciler, nodeName string) {
 	var node corev1.Node
 	if err := r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &node); err != nil {
@@ -1035,7 +973,6 @@ func deleteNodeForCleanup(ctx context.Context, r *ExternalRemediationRequestReco
 	}
 }
 
-// findExtRRCondition returns the proto Condition with the given type, or nil.
 func findExtRRCondition(extrrObj *nvsentinelv1.ExternalRemediationRequest, condType string) *protos.Condition {
 	if extrrObj.Status == nil {
 		return nil
@@ -1050,9 +987,7 @@ func findExtRRCondition(extrrObj *nvsentinelv1.ExternalRemediationRequest, condT
 	return nil
 }
 
-// snapshotConditions returns a stable string representation of the ExtRR's
-// status conditions, sidestepping proto-message equality quirks
-// (sync.Mutex in protoimpl.MessageState).
+// snapshotConditions sidesteps proto-message equality quirks (sync.Mutex).
 func snapshotConditions(extrrObj *nvsentinelv1.ExternalRemediationRequest) string {
 	if extrrObj.Status == nil {
 		return ""
@@ -1092,8 +1027,7 @@ var _ = Describe("ExternalRemediationRequest Controller observability", func() {
 			janitormetrics.ExtRRPhaseCreated, janitormetrics.ExtRRResultNone))
 
 		key := ctrlclient.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace}
-		// Drive multiple reconciles; setInitialConditions only fires the
-		// counter on the pass that actually writes them.
+		// setInitialConditions only fires the counter on the pass that writes.
 		for i := 0; i < 3; i++ {
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
@@ -1129,9 +1063,7 @@ var _ = Describe("ExternalRemediationRequest Controller observability", func() {
 			nodeName, testRecommendedActionLabel, janitormetrics.ExtRROpenStateAwaiting)) - openBefore).
 			To(BeNumerically("==", 1.0))
 
-		// Re-reconcile to confirm we don't double-count once the condition has
-		// transitioned to True (the dispatcher exits branch 3 and stops calling
-		// the transition helpers).
+		// Re-reconciles must not double-count once Released=True.
 		for i := 0; i < 3; i++ {
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
@@ -1146,7 +1078,7 @@ var _ = Describe("ExternalRemediationRequest Controller observability", func() {
 
 	It("increments released{failure} + emits ReleaseTaintFailed on drift", func() {
 		nodeName := "node-obs-drift-1"
-		// Pre-existing taint with a DIFFERENT ExtRR's name.
+		// Pre-existing taint owned by a foreign ExtRR.
 		Expect(r.Client.Create(ctx, newTestNode(nodeName, nil,
 			[]corev1.Taint{{Key: ReleaseTaintKey, Value: "foreign-owner", Effect: corev1.TaintEffectNoSchedule}}))).
 			To(Succeed())
@@ -1176,9 +1108,7 @@ var _ = Describe("ExternalRemediationRequest Controller observability", func() {
 		DeferCleanup(forceFinalizerRemovalByKey, ctx, r, key)
 		DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
 
-		// Drain events fired during the apply phase; we only want to assert
-		// the close-phase events here.
-		drainEvents(r)
+		drainEvents(r) // discard apply-phase events
 
 		closedBefore := testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
 			janitormetrics.ExtRRPhaseClosed, janitormetrics.ExtRRResultSuccess))
@@ -1199,17 +1129,13 @@ var _ = Describe("ExternalRemediationRequest Controller observability", func() {
 		Expect(testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
 			janitormetrics.ExtRRPhaseExternalResponse, janitormetrics.ExtRRResultSuccess)) - extRespBefore).
 			To(BeNumerically("==", 1.0))
-		// err_age_seconds Observe is called unconditionally inside recordClose,
-		// which only runs when the closed{success} counter above increments.
-		// Asserting it here would require a per-label-tuple histogram-count
-		// getter that doesn't exist in testutil; the counter check above is
-		// sufficient proof that the histogram observation also fired.
+		// ExtRRAgeSeconds is co-emitted inside recordClose, gated on the same
+		// counter; testutil has no per-label-tuple histogram getter to assert.
 
 		events := drainEvents(r)
 		Expect(events).To(ContainElement(ContainSubstring(eventReasonReleaseTaintRemoved)))
 		Expect(events).To(ContainElement(ContainSubstring(closeReasonExternalRemediationCompleteTrue)))
 
-		// Subsequent reconciles should NOT double-count; reconcileCleanup is idempotent.
 		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(

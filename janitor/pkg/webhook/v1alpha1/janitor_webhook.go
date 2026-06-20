@@ -485,17 +485,12 @@ func (v *gpuResetValidator) ValidateDelete(_ context.Context,
 
 // --- ExternalRemediationRequest typed validator ---
 //
-// The proto-backed wrapper has pointer Spec/Status fields (forced by the
-// proto's embedded sync.Mutex), so the apiserver's CRD schema accepts
-// `spec: null` and similar incomplete objects. This webhook enforces that
-// every ExtRR that lands on the apiserver carries a fully-populated
-// HealthEvent with a non-empty nodeName, so the reconciler can treat those
-// fields as set-by-construction.
+// Spec/Status are pointer fields (the proto's embedded sync.Mutex forces it),
+// so the apiserver schema accepts `spec: null`. This webhook closes that gap
+// so the reconciler can treat HealthEvent/NodeName as set-by-construction.
 //
-// Unlike RebootNode / TerminateNode / GPUReset, the ExtRR validator has no
-// Config.Enabled gate. ADR-040 specifies ExtRR is an unconditional capability:
-// disabling it would strand any external system already mid-remediation, with
-// no way to release the affected nodes back to NVSentinel ownership.
+// No Config.Enabled gate (unlike the sibling validators): disabling ExtRR
+// would strand any external system mid-remediation per ADR-040.
 
 const controllerTypeExternalRemediationRequest = "ExternalRemediationRequest"
 
@@ -522,9 +517,8 @@ func (v *extrrValidator) ValidateUpdate(_ context.Context,
 		return nil, err
 	}
 
-	// spec.healthEvent identifies the fault that produced the ExtRR; changing
-	// it after creation would invalidate the release taint value (carries the
-	// ExtRR name) and the reconciler's view of which node it released.
+	// nodeName is immutable: the release taint value carries the ExtRR's
+	// name, so swapping nodes would orphan one.
 	if oldObj.Spec != nil && oldObj.Spec.HealthEvent != nil &&
 		oldObj.Spec.HealthEvent.NodeName != newObj.Spec.HealthEvent.NodeName {
 		return nil, fmt.Errorf("nodeName cannot be changed after creation")
@@ -538,8 +532,6 @@ func (v *extrrValidator) ValidateDelete(_ context.Context,
 	return nil, nil
 }
 
-// validateExtRRSpec enforces the contract the reconciler depends on:
-// spec, spec.healthEvent, and spec.healthEvent.nodeName must all be present.
 func validateExtRRSpec(obj *janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest) error {
 	if obj.Spec == nil {
 		return fmt.Errorf("spec is required")

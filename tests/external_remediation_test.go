@@ -32,20 +32,12 @@ import (
 )
 
 const (
-	// releaseTaintKey is the taint the ExtRR reconciler applies; tests assert
-	// its presence/absence on the target Node.
 	releaseTaintKey = "nvsentinel.dgxc.nvidia.com/external-remediation"
-
-	// managedLabelKey is the opt-out label the ExtRR reconciler sets to
-	// "false" on the released node.
 	managedLabelKey = "nvsentinel.dgxc.nvidia.com/managed"
 )
 
-// TestExtRRWebhookRejectsInvalidSpec verifies the validating admission webhook
-// rejects ExtRRs missing required spec fields. Each rejection path is also
-// covered by unit tests; this proves the webhook is wired correctly in the
-// deployed chart (cert, service, registration) and that the apiserver actually
-// invokes it.
+// TestExtRRWebhookRejectsInvalidSpec proves the webhook is wired through the
+// chart (cert + service + registration) and the apiserver invokes it.
 func TestExtRRWebhookRejectsInvalidSpec(t *testing.T) {
 	feature := features.New("TestExtRRWebhookRejectsInvalidSpec").
 		WithLabel("suite", "webhook").
@@ -113,10 +105,7 @@ func TestExtRRWebhookRejectsInvalidSpec(t *testing.T) {
 	testEnv.Test(t, feature.Feature())
 }
 
-// TestExtRRLifecycleHappyPath drives the full ADR-040 happy path against a
-// deployed reconciler: apply → release taint + managed=false → Complete=True
-// → cleanup → garbage collection. Proves the chart-installed system works
-// end-to-end (RBAC, manifest correctness, reconciler boot).
+// TestExtRRLifecycleHappyPath: apply → release → Complete=True → Node scrubbed.
 func TestExtRRLifecycleHappyPath(t *testing.T) {
 	feature := features.New("TestExtRRLifecycleHappyPath").
 		WithLabel("suite", "lifecycle").
@@ -167,9 +156,8 @@ func TestExtRRLifecycleHappyPath(t *testing.T) {
 			require.NoError(t, helpers.SetExtRRComplete(ctx, client, crName,
 				"True", "RemediationSucceeded", "node returned to service"))
 
-			// Per ADR-040: the reconciler removes the taint+label but leaves
-			// the ExtRR alive (finalizer still attached). Garbage collection
-			// only happens on operator delete.
+			// Per ADR-040 the ExtRR stays alive after cleanup; assert the Node
+			// state, not CR garbage collection.
 			helpers.WaitForNodeReleaseStateCleared(ctx, t, client, nodeName)
 
 			cur := &unstructured.Unstructured{}
@@ -192,8 +180,7 @@ func TestExtRRLifecycleHappyPath(t *testing.T) {
 		}
 
 		_ = helpers.DeleteAllCRs(ctx, t, client, helpers.ExternalRemediationRequestGVK)
-		// Scrub directly in case the finalizer-driven cleanup didn't complete
-		// (e.g. mid-test failure left the Node tainted/labeled). Idempotent.
+		// Belt-and-suspenders in case the finalizer-driven cleanup didn't complete.
 		if nodeName != "" {
 			if err := helpers.ScrubExtRRStateFromNode(ctx, client, nodeName); err != nil {
 				t.Logf("ScrubExtRRStateFromNode(%s): %v", nodeName, err)
@@ -206,10 +193,8 @@ func TestExtRRLifecycleHappyPath(t *testing.T) {
 	testEnv.Test(t, feature.Feature())
 }
 
-// TestExtRRAsymmetricFalse verifies the ADR-040 invariant that
-// ExternalRemediationComplete=False does NOT trigger cleanup — the node stays
-// released until either the external system retries with True or an operator
-// deletes the ExtRR.
+// TestExtRRAsymmetricFalse: ADR-040 Complete=False is a no-op; only a True
+// retry or operator delete closes the ExtRR.
 func TestExtRRAsymmetricFalse(t *testing.T) {
 	feature := features.New("TestExtRRAsymmetricFalse").
 		WithLabel("suite", "lifecycle").
@@ -243,16 +228,11 @@ func TestExtRRAsymmetricFalse(t *testing.T) {
 			require.NoError(t, helpers.SetExtRRComplete(ctx, client, crName,
 				"False", "RemediationFailed", "external system gave up"))
 
-			// Give the reconciler a chance to (incorrectly) act on the False.
-			// The reconciler should see the False, no-op, and the node should
-			// remain in the released state. We poll briefly to confirm the
-			// state is stable.
 			node, err := helpers.GetNodeByName(ctx, client, nodeName)
 			require.NoError(t, err)
 			assertNodeHasReleaseTaint(t, node, crName)
 			assert.Equal(t, "false", node.Labels[managedLabelKey])
 
-			// ExtRR must still exist (no cleanup ran).
 			cur := &unstructured.Unstructured{}
 			cur.SetGroupVersionKind(helpers.ExternalRemediationRequestGVK)
 			require.NoError(t, client.Resources().Get(ctx, crName, "", cur),
@@ -269,8 +249,7 @@ func TestExtRRAsymmetricFalse(t *testing.T) {
 			require.NoError(t, helpers.SetExtRRComplete(ctx, client, crName,
 				"True", "RemediationSucceeded", "external system retry succeeded"))
 
-			// True after False follows branch 4 — same contract as the happy
-			// path: taint+label come off, ExtRR stays as historical record.
+			// True after False follows the same Node-cleanup + ExtRR-stays contract.
 			helpers.WaitForNodeReleaseStateCleared(ctx, t, client, nodeName)
 
 			cur := &unstructured.Unstructured{}
@@ -288,8 +267,7 @@ func TestExtRRAsymmetricFalse(t *testing.T) {
 		}
 
 		_ = helpers.DeleteAllCRs(ctx, t, client, helpers.ExternalRemediationRequestGVK)
-		// Scrub directly in case the finalizer-driven cleanup didn't complete
-		// (e.g. mid-test failure left the Node tainted/labeled). Idempotent.
+		// Belt-and-suspenders in case the finalizer-driven cleanup didn't complete.
 		if nodeName != "" {
 			if err := helpers.ScrubExtRRStateFromNode(ctx, client, nodeName); err != nil {
 				t.Logf("ScrubExtRRStateFromNode(%s): %v", nodeName, err)
@@ -302,9 +280,8 @@ func TestExtRRAsymmetricFalse(t *testing.T) {
 	testEnv.Test(t, feature.Feature())
 }
 
-// TestExtRROperatorDeleteEscape exercises the `kubectl delete extrr` path:
-// the finalizer must drive node cleanup before the object is garbage-collected,
-// so operators can reclaim a stalled-at-False ExtRR without leaking taints.
+// TestExtRROperatorDeleteEscape: kubectl delete on a stalled-at-False ExtRR
+// must drive node cleanup before the apiserver garbage-collects it.
 func TestExtRROperatorDeleteEscape(t *testing.T) {
 	feature := features.New("TestExtRROperatorDeleteEscape").
 		WithLabel("suite", "lifecycle").
@@ -374,11 +351,8 @@ func TestExtRROperatorDeleteEscape(t *testing.T) {
 	testEnv.Test(t, feature.Feature())
 }
 
-// TestExtRRForeignTaintDrift verifies the drift-safety contract: when the
-// target Node already carries the release taint at the right key but with a
-// different ExtRR's name as value (i.e. another ExtRR already owns the node),
-// the new ExtRR must transition to NVSentinelOwnershipReleased=False and the
-// foreign taint must be left in place.
+// TestExtRRForeignTaintDrift: a fresh ExtRR for a Node already tainted by
+// another ExtRR transitions to Released=False and leaves the foreign taint.
 func TestExtRRForeignTaintDrift(t *testing.T) {
 	feature := features.New("TestExtRRForeignTaintDrift").
 		WithLabel("suite", "drift").
@@ -397,7 +371,7 @@ func TestExtRRForeignTaintDrift(t *testing.T) {
 		nodeName, err = helpers.GetRealNodeName(ctx, client)
 		require.NoError(t, err)
 
-		// Create the foreign-owner ExtRR first; let it land its taint.
+		// Land the foreign-owner taint first.
 		_, err = helpers.CreateExtRRCR(ctx, client, foreignOwnerCR, nodeName, "foreign")
 		require.NoError(t, err)
 		helpers.WaitForExtRRCondition(ctx, t, client, foreignOwnerCR,
@@ -423,7 +397,6 @@ func TestExtRRForeignTaintDrift(t *testing.T) {
 			assert.Equal(t, "ReleaseTaintFailed", cond["reason"],
 				"drift case must surface ReleaseTaintFailed reason")
 
-			// Foreign taint must still belong to the original owner.
 			node, err := helpers.GetNodeByName(ctx, client, nodeName)
 			require.NoError(t, err)
 			assertNodeHasReleaseTaint(t, node, foreignOwnerCR)
@@ -438,8 +411,7 @@ func TestExtRRForeignTaintDrift(t *testing.T) {
 		}
 
 		_ = helpers.DeleteAllCRs(ctx, t, client, helpers.ExternalRemediationRequestGVK)
-		// Scrub directly in case the finalizer-driven cleanup didn't complete
-		// (e.g. mid-test failure left the Node tainted/labeled). Idempotent.
+		// Belt-and-suspenders in case the finalizer-driven cleanup didn't complete.
 		if nodeName != "" {
 			if err := helpers.ScrubExtRRStateFromNode(ctx, client, nodeName); err != nil {
 				t.Logf("ScrubExtRRStateFromNode(%s): %v", nodeName, err)
@@ -452,8 +424,6 @@ func TestExtRRForeignTaintDrift(t *testing.T) {
 	testEnv.Test(t, feature.Feature())
 }
 
-// assertNodeHasReleaseTaint fails the test unless the Node has the release
-// taint at the canonical key with the expected ExtRR's name as the value.
 func assertNodeHasReleaseTaint(t *testing.T, node *corev1.Node, expectedOwner string) {
 	t.Helper()
 
@@ -468,8 +438,6 @@ func assertNodeHasReleaseTaint(t *testing.T, node *corev1.Node, expectedOwner st
 	t.Fatalf("expected release taint %q on node %q, not present", releaseTaintKey, node.Name)
 }
 
-// assertNodeHasNoReleaseTaint fails the test if the release taint is still on
-// the Node.
 func assertNodeHasNoReleaseTaint(t *testing.T, node *corev1.Node) {
 	t.Helper()
 

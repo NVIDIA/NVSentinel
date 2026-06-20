@@ -1094,10 +1094,8 @@ func CreateGPUResetCR(ctx context.Context, c klient.Client, nodeName string, crN
 	return gpuReset, nil
 }
 
-// CreateExtRRCR creates an ExternalRemediationRequest custom resource with a
-// valid spec.healthEvent.nodeName and id. Returns the created CR on success,
-// or the apiserver error (e.g. webhook rejection) on failure so callers can
-// inspect it.
+// CreateExtRRCR returns the apiserver error verbatim so callers can inspect
+// webhook rejections.
 func CreateExtRRCR(ctx context.Context, c klient.Client, crName, nodeName, healthEventID string,
 ) (*unstructured.Unstructured, error) {
 	extrr := newExtRR(crName, nodeName, healthEventID)
@@ -1108,9 +1106,7 @@ func CreateExtRRCR(ctx context.Context, c klient.Client, crName, nodeName, healt
 	return extrr, nil
 }
 
-// CreateMalformedExtRR creates an ExternalRemediationRequest from a caller-
-// provided spec map so tests can exercise the webhook's rejection paths
-// (nil spec, missing healthEvent, empty nodeName, ...).
+// CreateMalformedExtRR lets tests exercise the webhook's rejection paths.
 func CreateMalformedExtRR(ctx context.Context, c klient.Client, crName string,
 	spec map[string]interface{}) (*unstructured.Unstructured, error) {
 	extrr := &unstructured.Unstructured{}
@@ -1130,9 +1126,8 @@ func CreateMalformedExtRR(ctx context.Context, c klient.Client, crName string,
 	return extrr, nil
 }
 
-// SetExtRRComplete sets the ExternalRemediationComplete status condition to
-// the given value via the status subresource. Used by tests to simulate an
-// external system reporting completion (True or False).
+// SetExtRRComplete simulates the external system patching
+// ExternalRemediationComplete via the status subresource.
 func SetExtRRComplete(ctx context.Context, c klient.Client, crName, status, reason, message string) error {
 	cur := &unstructured.Unstructured{}
 	cur.SetGroupVersionKind(ExternalRemediationRequestGVK)
@@ -1181,9 +1176,7 @@ func SetExtRRComplete(ctx context.Context, c klient.Client, crName, status, reas
 	return nil
 }
 
-// WaitForExtRRCondition polls until the named ExtRR has the given condition
-// type with the given status (e.g. NVSentinelOwnershipReleased=True). Returns
-// the matching CR for further assertions, or fails the test on timeout.
+// WaitForExtRRCondition fails the test on timeout.
 func WaitForExtRRCondition(ctx context.Context, t *testing.T, c klient.Client,
 	crName, conditionType, conditionStatus string) *unstructured.Unstructured {
 	t.Helper()
@@ -1217,8 +1210,9 @@ func WaitForExtRRCondition(ctx context.Context, t *testing.T, c klient.Client,
 	return resultCR
 }
 
-// WaitForExtRRGone polls until the ExtRR with the given name is no longer in
-// the apiserver. Used to assert finalizer cleanup completes.
+// WaitForExtRRGone asserts the finalizer-driven garbage collection completes;
+// use only after an explicit operator delete (per ADR-040, Complete=True alone
+// does NOT delete the ExtRR — use WaitForNodeReleaseStateCleared instead).
 func WaitForExtRRGone(ctx context.Context, t *testing.T, c klient.Client, crName string) {
 	t.Helper()
 
@@ -1232,12 +1226,9 @@ func WaitForExtRRGone(ctx context.Context, t *testing.T, c klient.Client, crName
 		"ExtRR %q should be garbage-collected after finalizer cleanup", crName)
 }
 
-// WaitForNodeReleaseStateCleared polls until the given Node has neither the
-// ExtRR release taint nor the managed=false label. Used after the external
-// system sets ExternalRemediationComplete=True — per ADR-040 the reconciler
-// scrubs the Node but the ExtRR itself stays alive as a historical record
-// (its finalizer is only removed when an operator deletes the ExtRR), so the
-// test must wait on the Node, not on CR garbage collection.
+// WaitForNodeReleaseStateCleared polls until the release taint and managed
+// label are absent from the Node. Used after Complete=True — per ADR-040
+// the ExtRR itself stays alive, so the test must observe the Node, not GC.
 func WaitForNodeReleaseStateCleared(ctx context.Context, t *testing.T, c klient.Client, nodeName string) {
 	t.Helper()
 
@@ -1263,11 +1254,9 @@ func WaitForNodeReleaseStateCleared(ctx context.Context, t *testing.T, c klient.
 		"node %q release taint + managed=false label should be cleared after ExtRR cleanup", nodeName)
 }
 
-// ScrubExtRRStateFromNode removes the release taint and managed=false label
-// from the given Node, regardless of which ExtRR (if any) owns them. Used as
-// a belt-and-suspenders cleanup on e2e tests so a failure mid-test doesn't
-// leak state into subsequent tests sharing the same Node. Idempotent: returns
-// nil if nothing needed to change.
+// ScrubExtRRStateFromNode is the e2e teardown's belt-and-suspenders: it
+// removes the release taint and managed label irrespective of ownership so a
+// mid-test failure can't leak state to the next test.
 func ScrubExtRRStateFromNode(ctx context.Context, c klient.Client, nodeName string) error {
 	node, err := GetNodeByName(ctx, c, nodeName)
 	if err != nil {

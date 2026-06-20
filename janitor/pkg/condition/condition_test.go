@@ -26,8 +26,7 @@ import (
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
-// fixedTime is a deterministic timestamp used across tests so equality
-// comparisons don't flap on clock skew.
+// fixedTime keeps equality comparisons stable across tests.
 var fixedTime = time.Date(2026, 5, 11, 20, 14, 9, 0, time.UTC)
 
 func TestToMetav1_PopulatedFields(t *testing.T) {
@@ -113,9 +112,8 @@ func TestFromMetav1_ZeroTimeProducesNilTimestamp(t *testing.T) {
 	assert.Nil(t, got.LastTransitionTime, "zero metav1.Time should round-trip to nil proto Timestamp")
 }
 
-// TestRoundTrip_ProtoToMetav1ToProto verifies that a proto Condition survives
-// a full round-trip through metav1.Condition and back without losing data.
-// This is the property the controller boundary depends on.
+// TestRoundTrip_ProtoToMetav1ToProto guards the property the controller
+// boundary depends on: proto → metav1 → proto preserves all fields.
 func TestRoundTrip_ProtoToMetav1ToProto(t *testing.T) {
 	t.Parallel()
 
@@ -140,7 +138,6 @@ func TestRoundTrip_ProtoToMetav1ToProto(t *testing.T) {
 	assert.Equal(t, original.LastTransitionTime.AsTime(), roundTripped.LastTransitionTime.AsTime())
 }
 
-// TestRoundTrip_Metav1ToProtoToMetav1 verifies the other direction.
 func TestRoundTrip_Metav1ToProtoToMetav1(t *testing.T) {
 	t.Parallel()
 
@@ -215,9 +212,7 @@ func TestFromMetav1Slice_NilInputReturnsNil(t *testing.T) {
 	assert.Nil(t, got)
 }
 
-// TestSliceRoundTrip exercises the full slice round-trip path that
-// controllers use when reading status conditions, manipulating them via
-// meta.SetStatusCondition, and writing them back.
+// TestSliceRoundTrip exercises the controller's read-modify-write path.
 func TestSliceRoundTrip(t *testing.T) {
 	t.Parallel()
 

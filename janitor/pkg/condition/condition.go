@@ -12,11 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package condition converts between proto Condition (the wire format on
-// ExternalRemediationRequest.status) and metav1.Condition (what
-// controller-runtime helpers like meta.SetStatusCondition operate on).
-// Conversion at the controller boundary keeps the proto authoritative on the
-// apiserver while reconciler code uses the standard helpers.
+// Package condition adapts proto Condition (wire format) to metav1.Condition
+// (what controller-runtime's meta.SetStatusCondition operates on).
 package condition
 
 import (
@@ -26,8 +23,6 @@ import (
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
-// ToMetav1 converts a proto Condition to metav1.Condition. The proto's status
-// is a string; this conversion preserves it as-is.
 func ToMetav1(c *protos.Condition) metav1.Condition {
 	if c == nil {
 		return metav1.Condition{}
@@ -48,8 +43,6 @@ func ToMetav1(c *protos.Condition) metav1.Condition {
 	}
 }
 
-// FromMetav1 converts a metav1.Condition back to a proto Condition pointer
-// for storage in ExternalRemediationRequestStatus.Conditions.
 func FromMetav1(c metav1.Condition) *protos.Condition {
 	var lastTransition *timestamppb.Timestamp
 	if !c.LastTransitionTime.IsZero() {
@@ -66,8 +59,7 @@ func FromMetav1(c metav1.Condition) *protos.Condition {
 	}
 }
 
-// ToMetav1Slice converts a slice of proto Conditions to []metav1.Condition.
-// Nil entries are skipped.
+// ToMetav1Slice skips nil entries.
 func ToMetav1Slice(in []*protos.Condition) []metav1.Condition {
 	if in == nil {
 		return nil
@@ -85,7 +77,6 @@ func ToMetav1Slice(in []*protos.Condition) []metav1.Condition {
 	return out
 }
 
-// FromMetav1Slice converts a slice of metav1.Conditions back to proto.
 func FromMetav1Slice(in []metav1.Condition) []*protos.Condition {
 	if in == nil {
 		return nil

@@ -46,9 +46,7 @@ import (
 )
 
 const (
-	// ExternalRemediationFinalizer guarantees node cleanup runs before the
-	// ExtRR is deleted. Per ADR-040 this is the only mechanism by which
-	// operators reclaim a node held by a stalled or failed external system.
+	// ExternalRemediationFinalizer gates node cleanup before the ExtRR is GC'd.
 	ExternalRemediationFinalizer = "nvsentinel.dgxc.nvidia.com/external-remediation-cleanup"
 
 	ConditionNVSentinelOwnershipReleased = "NVSentinelOwnershipReleased"
@@ -57,10 +55,8 @@ const (
 	reasonInitializing           = "Initializing"
 	reasonAwaitingExternalSystem = "AwaitingExternalSystem"
 
-	// ReleaseTaintKey is the taint key the reconciler applies to release a
-	// Node from NVSentinel ownership. The taint's value carries the owning
-	// ExtRR's metadata.name so cleanup can find only its own taint and
-	// `kubectl describe node` surfaces the ExtRR responsible.
+	// ReleaseTaintKey is applied to release a Node from NVSentinel ownership.
+	// The value carries the owning ExtRR's metadata.name so cleanup is drift-safe.
 	ReleaseTaintKey = "nvsentinel.dgxc.nvidia.com/external-remediation"
 
 	ReasonReleaseTaintApplied = "ReleaseTaintApplied"
@@ -71,34 +67,21 @@ const (
 	eventReasonReleaseTaintRemoved   = "ReleaseTaintRemoved"
 	eventReasonOperatorDeleteRequest = "OperatorDeleteRequested"
 
-	// Close-reason qualifiers appended to the ReleaseTaintRemoved event
-	// message so the same event reason disambiguates which cleanup path
-	// closed the ExtRR.
+	// closeReason* qualifiers disambiguate which cleanup path closed the ExtRR
+	// in the ReleaseTaintRemoved event message.
 	closeReasonExternalRemediationCompleteTrue = "ExternalRemediationCompleteTrue"
 	closeReasonOperatorInitiated               = "OperatorInitiated"
 
-	// extrrNodeNameIndexKey is the field-indexer key for looking up ExtRRs by
-	// their target node. Registered in SetupWithManager so the Node watch's
-	// mapper does an O(1) indexed list instead of scanning every ExtRR on
-	// every Node event.
 	extrrNodeNameIndexKey = "spec.healthEvent.nodeName"
 )
 
-// ExternalRemediationRequestReconciler implements the six-branch ADR-040
-// state machine driven by the deletion timestamp and the two status
-// conditions on the ExtRR.
+// ExternalRemediationRequestReconciler implements the ADR-040 state machine.
 type ExternalRemediationRequestReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	// Recorder is auto-populated by SetupWithManager; tests may inject a
-	// record.NewFakeRecorder before SetupWithManager runs.
+	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 }
 
-// labelValueUnknown is the metric-label fallback when no action mapping is
-// available. The validating webhook guarantees Spec.HealthEvent.NodeName is
-// populated so the node label always has a concrete value; this fallback
-// only kicks in for the recommendedAction label when model lookup yields "".
 const labelValueUnknown = "unknown"
 
 func recommendedActionLabel(extrrObj *nvsentinelv1.ExternalRemediationRequest) string {
@@ -113,8 +96,6 @@ func extrrNodeLabel(extrrObj *nvsentinelv1.ExternalRemediationRequest) string {
 	return extrrObj.Spec.HealthEvent.NodeName
 }
 
-// emitEvent tolerates a nil Recorder so tests can construct the reconciler
-// without one.
 func (r *ExternalRemediationRequestReconciler) emitEvent(
 	extrrObj *nvsentinelv1.ExternalRemediationRequest, eventType, reason, message string,
 ) {
@@ -132,21 +113,16 @@ func (r *ExternalRemediationRequestReconciler) emitEvent(
 // +kubebuilder:rbac:groups=nvsentinel.dgxc.nvidia.com,resources=externalremediationrequests/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;patch
 
-// Reconcile drives the ExtRR through its lifecycle. The OTEL span links to
-// the originating health-monitor trace via the trace-id / span-id annotations
-// fault-remediation stamps on the ExtRR.
+// Reconcile drives the ExtRR through its lifecycle. The OTEL span is linked to
+// the upstream health-monitor trace via annotations stamped by fault-remediation.
 func (r *ExternalRemediationRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var extrr nvsentinelv1.ExternalRemediationRequest
 	if err := r.Get(ctx, req.NamespacedName, &extrr); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// The validating webhook (failurePolicy=Fail) enforces that Spec and
-	// Spec.HealthEvent are populated. This belt-and-suspenders check survives
-	// webhook outages (cert rotation, deployment race) so a poison-pill object
-	// can't crashloop the controller. An ExtRR with nil Spec also can't have
-	// had a finalizer applied (reconcileInitialize would have crashed), so
-	// the apiserver garbage-collects it without our help.
+	// Belt-and-suspenders: the validating webhook normally guarantees these,
+	// but a webhook outage shouldn't crashloop the controller.
 	if extrr.Spec == nil || extrr.Spec.HealthEvent == nil || extrr.Spec.HealthEvent.NodeName == "" {
 		slog.ErrorContext(ctx, "ExternalRemediationRequest missing required spec fields; webhook bypass?",
 			"name", extrr.Name, "namespace", extrr.Namespace)
@@ -184,9 +160,8 @@ func (r *ExternalRemediationRequestReconciler) Reconcile(ctx context.Context, re
 	return result, dispatchErr
 }
 
-// needsInitialization returns true if the cleanup finalizer or either initial
-// status condition is absent. Checks only presence, never values, so
-// conditions set by the external system survive re-entry.
+// needsInitialization is presence-only — values set by the external system
+// (e.g. Complete=True) survive re-entry.
 func (r *ExternalRemediationRequestReconciler) needsInitialization(
 	extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) bool {
@@ -206,10 +181,9 @@ func (r *ExternalRemediationRequestReconciler) needsInitialization(
 	return false
 }
 
-// reconcileInitialize attaches the cleanup finalizer (one API call) and seeds
-// the initial Unknown conditions (a second, status-subresource API call). A
-// partially-initialized ExtRR is recovered cleanly on re-reconcile because
-// each step only writes what's missing.
+// reconcileInitialize adds the finalizer then seeds initial Unknown conditions
+// across two passes. Each step writes only what's missing, so a partial
+// initialization recovers cleanly on re-reconcile.
 func (r *ExternalRemediationRequestReconciler) reconcileInitialize(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
@@ -222,8 +196,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileInitialize(
 		}
 
 		slog.InfoContext(ctx, "Added cleanup finalizer to ExternalRemediationRequest", "name", extrrObj.Name)
-		// controller-runtime's own-kind watch re-enqueues this object after
-		// the metadata Update; the next reconcile will write initial conditions.
+		// The own-kind watch re-enqueues on this metadata Update; no requeue needed.
 		return ctrl.Result{}, nil
 	}
 
@@ -233,18 +206,13 @@ func (r *ExternalRemediationRequestReconciler) reconcileInitialize(
 	}
 
 	if changed {
-		// First time the initial conditions actually landed for this ExtRR —
-		// count exactly once even if reconcileInitialize is invoked again
-		// (idempotent setInitialConditions short-circuits on re-entry).
+		// Fire created exactly once across re-reconciles.
 		metrics.GlobalMetrics.IncExtRRTotal(metrics.ExtRRPhaseCreated, metrics.ExtRRResultNone)
 	}
 
 	return ctrl.Result{}, nil
 }
 
-// setInitialConditions seeds the two initial Unknown conditions if absent;
-// existing conditions are preserved. Returns (true, nil) when conditions
-// were actually written.
 func (r *ExternalRemediationRequestReconciler) setInitialConditions(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (bool, error) {
@@ -281,8 +249,7 @@ func (r *ExternalRemediationRequestReconciler) setInitialConditions(
 	return r.patchStatusConditions(ctx, extrrObj, conditions)
 }
 
-// dispatch is the six-branch ADR-040 state machine. Branch 1 (init) runs
-// before dispatch; branches map below.
+// dispatch routes to one of the five non-init ADR-040 branches.
 func (r *ExternalRemediationRequestReconciler) dispatch(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
@@ -290,45 +257,32 @@ func (r *ExternalRemediationRequestReconciler) dispatch(
 
 	switch {
 	case !extrrObj.DeletionTimestamp.IsZero():
-		// Branch 2: deletion — cleanup, then drop the finalizer.
 		return r.reconcileCleanupOnDeletion(ctx, extrrObj)
 
 	case meta.IsStatusConditionPresentAndEqual(conds, ConditionNVSentinelOwnershipReleased, metav1.ConditionUnknown):
-		// Branch 3: apply path — release taint + managed=false label.
 		return r.reconcileApply(ctx, extrrObj)
 
 	case meta.IsStatusConditionTrue(conds, ConditionExternalRemediationComplete):
-		// Branch 4: external system reported success — cleanup; ExtRR stays as a historical record.
 		return r.reconcileCleanupAfterComplete(ctx, extrrObj)
 
 	case meta.IsStatusConditionFalse(conds, ConditionExternalRemediationComplete):
-		// Branch 5: external system reported failure — asymmetric no-op per ADR-040.
 		return r.reconcileNoOpOnFalse(ctx, extrrObj)
 
 	default:
-		// Branch 6: released, awaiting the external system.
+		// Released, awaiting the external system.
 		return ctrl.Result{}, nil
 	}
 }
 
-// nodeMissingRequeue covers the cluster-autoscaler / kubelet-registration
-// race where the target Node may show up shortly.
+// nodeMissingRequeue covers the cluster-autoscaler / kubelet-registration race.
 const nodeMissingRequeue = 30 * time.Second
 
-// reconcileApply (branch 3) takes a fresh ExtRR to released state via a
-// single strategic-merge PATCH on the target Node (release taint +
-// managed=false label) then transitions NVSentinelOwnershipReleased=True.
+// reconcileApply applies the release taint + managed=false in one PATCH then
+// transitions NVSentinelOwnershipReleased. Failure modes per ADR-040: drift /
+// RBAC forbidden → terminal False; Node not found → transient requeue;
+// already-applied → idempotent fast path.
 //
-// Failure modes per ADR-040: drift (taint at our key with a different value)
-// / RBAC forbidden → persistent failure (transition to False). Node not
-// found → transient, requeue. Taint already at our value → idempotent fast
-// path. spec.healthEvent.nodeName is guaranteed non-empty by the validating
-// webhook.
-//
-// Branches share node-and-extrr state, so the inline switch reads better than
-// a fan-out into single-use helpers — hence the cyclop nolint below.
-//
-//nolint:cyclop // distinct apiserver failure modes; see doc above.
+//nolint:cyclop // distinct apiserver failure modes; inline switch reads cleaner.
 func (r *ExternalRemediationRequestReconciler) reconcileApply(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
@@ -356,8 +310,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileApply(
 
 			return ctrl.Result{}, r.transitionToReleaseFailure(ctx, extrrObj, msg)
 		}
-		// Taint already in place with our name — verify the label is also present,
-		// then transition the condition without issuing a redundant PATCH.
+		// Idempotent fast path — no PATCH needed if both taint and label match.
 		if node.Labels[managed.ManagedLabelKey] == managed.ManagedLabelValueFalse {
 			slog.InfoContext(ctx, "release taint and managed=false label already in place; transitioning condition",
 				"extrr", extrrObj.Name, "node", nodeName)
@@ -367,7 +320,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileApply(
 
 			return ctrl.Result{}, r.transitionToReleaseSuccess(ctx, extrrObj, msg)
 		}
-		// Taint is right but the label is missing — patch only the label below.
+		// Taint matches but label is missing — fall through to patch the label.
 	}
 
 	nodeToUpdate := node.DeepCopy()
@@ -407,9 +360,8 @@ func (r *ExternalRemediationRequestReconciler) reconcileApply(
 	return ctrl.Result{}, r.transitionToReleaseSuccess(ctx, extrrObj, msg)
 }
 
-// transitionToReleaseSuccess marks the apply path complete. Metric / event
-// emissions are gated on the status patch actually mutating state, so
-// re-reconciles don't double-fire.
+// transitionToReleaseSuccess gates metric/event emission on the status patch
+// actually mutating state so re-reconciles don't double-fire.
 func (r *ExternalRemediationRequestReconciler) transitionToReleaseSuccess(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest, message string,
 ) error {
@@ -430,9 +382,9 @@ func (r *ExternalRemediationRequestReconciler) transitionToReleaseSuccess(
 	return nil
 }
 
-// transitionToReleaseFailure marks the apply path persistently failed (drift,
-// forbidden, missing nodeName). Intentionally skips err_open — the ExtRR is
-// terminal-failure, not in-flight; failure tracking is err_total{released,failure}.
+// transitionToReleaseFailure records terminal failure (drift / forbidden).
+// Skips ExtRROpen — these ExtRRs aren't in-flight, just counted under
+// released{failure}.
 func (r *ExternalRemediationRequestReconciler) transitionToReleaseFailure(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest, message string,
 ) error {
@@ -451,10 +403,8 @@ func (r *ExternalRemediationRequestReconciler) transitionToReleaseFailure(
 	return nil
 }
 
-// reconcileCleanupAfterComplete (branch 4) removes the taint+label after the
-// external system reports success. The ExtRR stays as a historical record
-// (finalizer still attached); TTL or `kubectl delete extrr` removes it later.
-// Observability fires only on the pass that actually mutates state.
+// reconcileCleanupAfterComplete scrubs the Node when Complete=True; the ExtRR
+// stays as a historical record until an operator deletes it.
 func (r *ExternalRemediationRequestReconciler) reconcileCleanupAfterComplete(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
@@ -465,29 +415,21 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanupAfterComplete(
 
 	if changed {
 		r.recordClose(extrrObj, metrics.ExtRRResultSuccess, closeReasonExternalRemediationCompleteTrue)
-		// external_response{success} is co-emitted with closed{success} because
-		// the True observation and our cleanup PATCH happen on the same reconcile
-		// pass for the first time only. Drift cases (Released=False + Complete=True)
-		// are deliberately uncounted here: cleanup is a no-op so `changed` is false,
-		// and a "we observed success but couldn't act on it" event is more
-		// noise than signal on the dashboards.
+		// external_response co-emits with closed only on the pass that
+		// actually scrubbed; drift cases are deliberately uncounted.
 		metrics.GlobalMetrics.IncExtRRTotal(metrics.ExtRRPhaseExternalResponse, metrics.ExtRRResultSuccess)
 	}
 
 	return ctrl.Result{}, nil
 }
 
-// reconcileCleanupOnDeletion (branch 2) runs when `kubectl delete extrr` sets
-// the DeletionTimestamp. Cleanup PATCH then finalizer removal so the
-// apiserver can garbage-collect the ExtRR. Idempotent against branch-4
-// post-True state — if cleanup already ran, we skip straight to the
-// finalizer; the operator_deleted close counter only fires when this path
-// actually performed the cleanup.
+// reconcileCleanupOnDeletion runs the cleanup PATCH then drops the finalizer.
+// Idempotent against post-Complete=True state: operator_deleted only fires
+// when this path actually performed the cleanup PATCH.
 func (r *ExternalRemediationRequestReconciler) reconcileCleanupOnDeletion(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(extrrObj, ExternalRemediationFinalizer) {
-		// Finalizer already gone — nothing left for us to do.
 		return ctrl.Result{}, nil
 	}
 
@@ -517,9 +459,8 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanupOnDeletion(
 	return ctrl.Result{}, nil
 }
 
-// recordClose emits the metrics + event triple that fires on every ExtRR close.
-// result is one of metrics.ExtRRResult{Success,OperatorDeleted}; closeReason
-// disambiguates which path closed it in the human-readable event message.
+// recordClose emits the close metric, decrements ExtRROpen, observes age,
+// and emits the ReleaseTaintRemoved event.
 func (r *ExternalRemediationRequestReconciler) recordClose(
 	extrrObj *nvsentinelv1.ExternalRemediationRequest, result, closeReason string,
 ) {
@@ -538,17 +479,11 @@ func (r *ExternalRemediationRequestReconciler) recordClose(
 		fmt.Sprintf("release taint and managed=false label removed (%s)", closeReason))
 }
 
-// reconcileCleanup is the shared cleanup PATCH. Removes the release taint
-// only if its value matches this ExtRR's name (drift-safe — another ExtRR's
-// taint is left in place) and deletes the managed label entirely (per
-// ADR-040, absence rather than "true" so there's no rotting hint). Returns
-// (true, nil) when the PATCH actually mutated the Node; (false, nil) when
-// there was nothing to clean (taint absent, label absent, or Node gone).
+// reconcileCleanup removes the release taint only when its value matches this
+// ExtRR (drift-safe — a foreign taint is left alone) and deletes the managed
+// label. Returns true when the PATCH mutated the Node.
 //
-// Same dispatch-over-drift-cases shape as reconcileApply — inline branches
-// read better than fanning out into single-use helpers.
-//
-//nolint:cyclop // dispatch over drift cases; see doc above.
+//nolint:cyclop // dispatch over drift cases; inline switch reads cleaner.
 func (r *ExternalRemediationRequestReconciler) reconcileCleanup(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (bool, error) {
@@ -575,8 +510,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanup(
 			nodeToUpdate.Spec.Taints = removeTaintByKey(nodeToUpdate.Spec.Taints, ReleaseTaintKey)
 			changed = true
 		default:
-			// Drift: another ExtRR claims the taint. Leave it alone — that ExtRR's
-			// own cleanup path will remove it. Logging only; not an error.
+			// Drift: foreign ExtRR owns the taint; its own cleanup will remove it.
 			slog.WarnContext(ctx, "release taint owned by a different ExtRR; leaving in place during cleanup",
 				"extrr", extrrObj.Name, "node", nodeName, "existing_owner", existing.Value)
 		}
@@ -602,13 +536,9 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanup(
 	return true, nil
 }
 
-// reconcileNoOpOnFalse (branch 5) is the asymmetric half of ADR-040.
-// ExternalRemediationComplete=False means the external system gave up
-// without telling us what state the node is in (mid-RMA, partial repair,
-// unvalidated swap, ...) — returning it to workloads would be unsafe.
-// The taint+label STAY. The node remains released until the external system
-// retries with True (→ branch 4) or an operator deletes the ExtRR (→
-// branch 2). This function deliberately mutates nothing.
+// reconcileNoOpOnFalse is the asymmetric half of ADR-040: Complete=False
+// leaves the node released because the external system didn't tell us what
+// state it left the node in. Only a True retry or operator delete closes it.
 func (r *ExternalRemediationRequestReconciler) reconcileNoOpOnFalse(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
@@ -631,8 +561,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileNoOpOnFalse(
 	return ctrl.Result{}, nil
 }
 
-// removeTaintByKey returns a new slice with the matching key removed. Fresh
-// backing array — callers can patch the result without aliasing the input.
+// removeTaintByKey allocates a fresh slice — safe to patch without aliasing.
 func removeTaintByKey(taints []corev1.Taint, key string) []corev1.Taint {
 	out := make([]corev1.Taint, 0, len(taints))
 
@@ -645,8 +574,8 @@ func removeTaintByKey(taints []corev1.Taint, key string) []corev1.Taint {
 	return out
 }
 
-// findTaintByKey returns a pointer into the input slice — callers must not
-// mutate in place if the slice will be patched later.
+// findTaintByKey returns a pointer into the input slice — don't mutate in place
+// if the slice will be patched later.
 func findTaintByKey(taints []corev1.Taint, key string) *corev1.Taint {
 	for i := range taints {
 		if taints[i].Key == key {
@@ -657,8 +586,6 @@ func findTaintByKey(taints []corev1.Taint, key string) *corev1.Taint {
 	return nil
 }
 
-// transitionReleased sets NVSentinelOwnershipReleased via a status-subresource
-// merge patch. Returns (true, nil) when the patch actually mutated state.
 func (r *ExternalRemediationRequestReconciler) transitionReleased(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 	status metav1.ConditionStatus, reason, message string,
@@ -676,8 +603,7 @@ func (r *ExternalRemediationRequestReconciler) transitionReleased(
 	return r.patchStatusConditions(ctx, extrrObj, conditions)
 }
 
-// statusConditions returns the conditions as []metav1.Condition, nil-safe on
-// a freshly-created ExtRR with no status.
+// statusConditions is nil-safe for a freshly-created ExtRR with no Status yet.
 func statusConditions(extrrObj *nvsentinelv1.ExternalRemediationRequest) []metav1.Condition {
 	if extrrObj.Status == nil {
 		return nil
@@ -686,17 +612,11 @@ func statusConditions(extrrObj *nvsentinelv1.ExternalRemediationRequest) []metav
 	return condition.ToMetav1Slice(extrrObj.Status.Conditions)
 }
 
-// patchStatusConditions writes conditions via a status-subresource merge
-// patch. Re-fetches first to narrow the conflict window with concurrent
-// writers (e.g. an external system patching ExternalRemediationComplete).
-// Returns (true, nil) when the patch actually mutated state.
-//
-// MergeFrom generates a JSON merge patch, which replaces the entire
-// conditions array. A concurrent writer that flips ExternalRemediationComplete
-// between our Get and our Patch will have that update clobbered; the next
-// reconcile re-observes and converges. Server-side apply with a field manager
-// would close this race entirely but isn't worth the migration cost given
-// (a) the rarity of concurrent status writers and (b) the convergence guarantee.
+// patchStatusConditions re-fetches before patching to narrow the conflict
+// window with the external system writing ExternalRemediationComplete. The
+// MergeFrom patch replaces the whole conditions array — a concurrent write
+// in the gap gets clobbered, but the next reconcile re-observes and
+// converges. SSA would close this race but isn't worth the migration.
 func (r *ExternalRemediationRequestReconciler) patchStatusConditions(
 	ctx context.Context,
 	extrrObj *nvsentinelv1.ExternalRemediationRequest,
@@ -727,14 +647,11 @@ func (r *ExternalRemediationRequestReconciler) patchStatusConditions(
 	return true, nil
 }
 
-// SetupWithManager wires the ExtRR controller and a secondary Node watch
-// (mapped to ExtRRs by spec.healthEvent.nodeName) so taint or label drift on
-// the released node re-enqueues the owning ExtRR.
+// SetupWithManager wires the controller, the Node watch that re-enqueues on
+// taint/label drift, and the field indexer on spec.healthEvent.nodeName.
 func (r *ExternalRemediationRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Recorder == nil {
-		// nolint:staticcheck // SA1019: GetEventRecorderFor returns the core/v1
-		// events recorder all sibling reconcilers in this package use; the
-		// migration to events.k8s.io/v1 is a project-wide change.
+		// nolint:staticcheck // SA1019: project-wide events.k8s.io migration pending.
 		r.Recorder = mgr.GetEventRecorderFor("externalremediationrequest-controller")
 	}
 
@@ -758,9 +675,8 @@ func (r *ExternalRemediationRequestReconciler) SetupWithManager(mgr ctrl.Manager
 		Complete(r)
 }
 
-// indexExtRRByNodeName extracts spec.healthEvent.nodeName for the field
-// indexer. Returns nil for malformed ExtRRs (no Spec / HealthEvent) so the
-// indexer doesn't crash if the webhook ever lets one through.
+// indexExtRRByNodeName returns nil for malformed ExtRRs so a webhook bypass
+// can't crash the indexer.
 func indexExtRRByNodeName(o client.Object) []string {
 	extrr, ok := o.(*nvsentinelv1.ExternalRemediationRequest)
 	if !ok || extrr.Spec == nil || extrr.Spec.HealthEvent == nil || extrr.Spec.HealthEvent.NodeName == "" {
@@ -770,10 +686,9 @@ func indexExtRRByNodeName(o client.Object) []string {
 	return []string{extrr.Spec.HealthEvent.NodeName}
 }
 
-// nodeReleaseStateChangedPredicate drops Node events that don't touch the
-// release-state surface (the managed label and the release taint). Nodes
-// churn constantly via kubelet heartbeats and status updates; without this
-// filter, every ExtRR re-reconciles on every kubelet sync.
+// nodeReleaseStateChangedPredicate drops Node updates outside the release
+// surface (managed label + release taint), so kubelet heartbeats don't
+// re-enqueue every ExtRR on every sync.
 func nodeReleaseStateChangedPredicate() predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc:  func(_ event.CreateEvent) bool { return true },
@@ -810,10 +725,8 @@ func nodeReleaseStateChangedPredicate() predicate.Predicate {
 	}
 }
 
-// mapNodeToExtRRs enqueues every ExtRR whose spec.healthEvent.nodeName matches
-// the given Node. Uses the field-indexer registered in SetupWithManager so
-// the lookup is bounded by the number of ExtRRs targeting this Node (typically
-// 0 or 1), not the total ExtRR population.
+// mapNodeToExtRRs uses the field indexer so each lookup is bounded by the
+// ExtRRs targeting this Node, not the total ExtRR population.
 func (r *ExternalRemediationRequestReconciler) mapNodeToExtRRs(ctx context.Context, obj client.Object) []ctrl.Request {
 	node, ok := obj.(*corev1.Node)
 	if !ok {
