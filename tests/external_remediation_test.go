@@ -159,7 +159,7 @@ func TestExtRRLifecycleHappyPath(t *testing.T) {
 			return ctx
 		})
 
-	feature.Assess("Complete=True triggers cleanup; ExtRR garbage-collected",
+	feature.Assess("Complete=True scrubs the Node; ExtRR stays as historical record",
 		func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			client, err := c.NewClient()
 			require.NoError(t, err)
@@ -167,13 +167,20 @@ func TestExtRRLifecycleHappyPath(t *testing.T) {
 			require.NoError(t, helpers.SetExtRRComplete(ctx, client, crName,
 				"True", "RemediationSucceeded", "node returned to service"))
 
-			helpers.WaitForExtRRGone(ctx, t, client, crName)
+			// Per ADR-040: the reconciler removes the taint+label but leaves
+			// the ExtRR alive (finalizer still attached). Garbage collection
+			// only happens on operator delete.
+			helpers.WaitForNodeReleaseStateCleared(ctx, t, client, nodeName)
 
-			node, err := helpers.GetNodeByName(ctx, client, nodeName)
-			require.NoError(t, err)
-			assertNodeHasNoReleaseTaint(t, node)
-			_, hasLabel := node.Labels[managedLabelKey]
-			assert.False(t, hasLabel, "managed label must be removed after cleanup")
+			cur := &unstructured.Unstructured{}
+			cur.SetGroupVersionKind(helpers.ExternalRemediationRequestGVK)
+			require.NoError(t, client.Resources().Get(ctx, crName, "", cur),
+				"ExtRR must remain in the cluster as a historical record after Complete=True")
+
+			finalizers, _, _ := unstructured.NestedStringSlice(cur.Object, "metadata", "finalizers")
+			assert.Contains(t, finalizers,
+				"nvsentinel.dgxc.nvidia.com/external-remediation-cleanup",
+				"cleanup finalizer must remain attached after Complete=True cleanup")
 
 			return ctx
 		})
@@ -254,7 +261,7 @@ func TestExtRRAsymmetricFalse(t *testing.T) {
 			return ctx
 		})
 
-	feature.Assess("Complete=True (retry) closes the ExtRR after a False",
+	feature.Assess("Complete=True (retry) scrubs the Node after a False",
 		func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			client, err := c.NewClient()
 			require.NoError(t, err)
@@ -262,11 +269,14 @@ func TestExtRRAsymmetricFalse(t *testing.T) {
 			require.NoError(t, helpers.SetExtRRComplete(ctx, client, crName,
 				"True", "RemediationSucceeded", "external system retry succeeded"))
 
-			helpers.WaitForExtRRGone(ctx, t, client, crName)
+			// True after False follows branch 4 — same contract as the happy
+			// path: taint+label come off, ExtRR stays as historical record.
+			helpers.WaitForNodeReleaseStateCleared(ctx, t, client, nodeName)
 
-			node, err := helpers.GetNodeByName(ctx, client, nodeName)
-			require.NoError(t, err)
-			assertNodeHasNoReleaseTaint(t, node)
+			cur := &unstructured.Unstructured{}
+			cur.SetGroupVersionKind(helpers.ExternalRemediationRequestGVK)
+			require.NoError(t, client.Resources().Get(ctx, crName, "", cur),
+				"ExtRR must remain after Complete=True retry following an earlier False")
 
 			return ctx
 		})

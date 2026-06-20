@@ -1232,6 +1232,37 @@ func WaitForExtRRGone(ctx context.Context, t *testing.T, c klient.Client, crName
 		"ExtRR %q should be garbage-collected after finalizer cleanup", crName)
 }
 
+// WaitForNodeReleaseStateCleared polls until the given Node has neither the
+// ExtRR release taint nor the managed=false label. Used after the external
+// system sets ExternalRemediationComplete=True — per ADR-040 the reconciler
+// scrubs the Node but the ExtRR itself stays alive as a historical record
+// (its finalizer is only removed when an operator deletes the ExtRR), so the
+// test must wait on the Node, not on CR garbage collection.
+func WaitForNodeReleaseStateCleared(ctx context.Context, t *testing.T, c klient.Client, nodeName string) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		node, err := GetNodeByName(ctx, c, nodeName)
+		if err != nil {
+			t.Logf("get node %q: %v", nodeName, err)
+			return false
+		}
+
+		for _, taint := range node.Spec.Taints {
+			if taint.Key == "nvsentinel.dgxc.nvidia.com/external-remediation" {
+				return false
+			}
+		}
+
+		if _, hasLabel := node.Labels["nvsentinel.dgxc.nvidia.com/managed"]; hasLabel {
+			return false
+		}
+
+		return true
+	}, EventuallyWaitTimeout, WaitInterval,
+		"node %q release taint + managed=false label should be cleared after ExtRR cleanup", nodeName)
+}
+
 // ScrubExtRRStateFromNode removes the release taint and managed=false label
 // from the given Node, regardless of which ExtRR (if any) owns them. Used as
 // a belt-and-suspenders cleanup on e2e tests so a failure mid-test doesn't
