@@ -1088,10 +1088,7 @@ func (r *FaultRemediationReconciler) parseHealthEvent(ctx context.Context, event
 		metrics.ProcessingErrors.WithLabelValues("extract_id_error", "unknown").Inc()
 		slog.ErrorContext(ctx, "Error extracting document ID", "error", err)
 
-		if markErr := watcherInstance.MarkProcessed(context.Background(), eventWithToken.ResumeToken); markErr != nil {
-			metrics.ProcessingErrors.WithLabelValues("mark_processed_error", "unknown").Inc()
-			slog.Error("Error updating resume token", "error", markErr)
-		}
+		_ = safeMarkProcessed(context.Background(), watcherInstance, eventWithToken.ResumeToken, "unknown")
 
 		return result, fmt.Errorf("error extracting document ID: %w", err)
 	}

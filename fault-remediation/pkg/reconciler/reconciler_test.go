@@ -1534,3 +1534,20 @@ func TestDeletedNodeCancellationEventMarkedTerminal(t *testing.T) {
 	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
 	assert.Equal(t, 1, markProcessedCount, "expected resume token to be marked processed")
 }
+
+func TestParseHealthEventShouldNotMarkColdStartEventProcessedIfDocumentIDExtractionFails(t *testing.T) {
+	ctx := context.Background()
+	nodeName := "cold-start-node"
+	event := testRawHealthEvent("cold-start-event", nodeName, protos.RecommendedAction_RESTART_BM)
+	delete(event, "_id")
+
+	eventWithToken := datastore.EventWithToken{Event: event}
+	mockWatcher := &MockChangeStreamWatcher{}
+	reconciler := &FaultRemediationReconciler{}
+
+	_, err := reconciler.parseHealthEvent(ctx, eventWithToken, mockWatcher)
+
+	assert.ErrorContains(t, err, "error extracting document ID")
+	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
+	assert.Equal(t, 0, markProcessedCount, "expected cold-start event without resume token to not be marked processed")
+}
