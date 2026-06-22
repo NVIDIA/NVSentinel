@@ -63,7 +63,7 @@ func (w *NVMLWrapper) CollectNVLinkTopology(
 		}
 
 		if remoteDeviceType != nvml.NVLINK_DEVICE_TYPE_SWITCH {
-			remotePCIStr := convertNVMLCString(remotePCIInfo.BusIdLegacy)
+			remotePCIStr := convertNVMLCString(remotePCIInfo.BusIdLegacy[:])
 			slog.Debug("Remote device is not an NVSwitch, skipping",
 				"gpu_id", index,
 				"link_id", linkID,
@@ -73,7 +73,7 @@ func (w *NVMLWrapper) CollectNVLinkTopology(
 			continue
 		}
 
-		remotePCIStr := convertNVMLCString(remotePCIInfo.BusIdLegacy)
+		remotePCIStr := convertNVMLCString(remotePCIInfo.BusIdLegacy[:])
 		remotePCI := normalizePCIAddress(remotePCIStr)
 
 		slog.Debug("Found NVSwitch connection",
@@ -200,7 +200,7 @@ func getRemoteLinkViaReverseLookup(
 			continue
 		}
 
-		remoteRemotePCI := normalizePCIAddress(convertNVMLCString(remoteRemotePCIInfo.BusIdLegacy))
+		remoteRemotePCI := normalizePCIAddress(convertNVMLCString(remoteRemotePCIInfo.BusIdLegacy[:]))
 		if remoteRemotePCI == localPCI {
 			slog.Debug("Found remote link ID via reverse lookup",
 				"gpu_id", gpuID,
