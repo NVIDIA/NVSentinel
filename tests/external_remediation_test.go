@@ -85,12 +85,24 @@ func TestExtRRWebhookRejectsInvalidSpec(t *testing.T) {
 			require.NoError(t, err)
 
 			crName := "extrr-immutable-node"
-			extrr, err := helpers.CreateExtRRCR(ctx, client, crName, nodeName, "immutability-test")
+			_, err = helpers.CreateExtRRCR(ctx, client, crName, nodeName, "immutability-test")
 			require.NoError(t, err, "valid create must be admitted")
 
-			t.Cleanup(func() { _ = client.Resources().Delete(ctx, extrr) })
+			t.Cleanup(func() {
+				_ = helpers.DeleteAllCRs(ctx, t, client, helpers.ExternalRemediationRequestGVK)
+				_ = helpers.ScrubExtRRStateFromNode(ctx, client, nodeName)
+			})
 
-			// Attempt to flip nodeName via update.
+			// Wait for the reconciler to settle (Released=True → branch 6
+			// no-op). Otherwise the apiserver returns 409 conflict on our
+			// Update — the client's resourceVersion becomes a precondition,
+			// and a stale rv short-circuits the request before admission
+			// webhooks run.
+			helpers.WaitForExtRRCondition(ctx, t, client, crName,
+				"NVSentinelOwnershipReleased", "True")
+
+			extrr := &unstructured.Unstructured{}
+			extrr.SetGroupVersionKind(helpers.ExternalRemediationRequestGVK)
 			require.NoError(t, client.Resources().Get(ctx, crName, "", extrr))
 			require.NoError(t, unstructured.SetNestedField(
 				extrr.Object, "different-node", "spec", "healthEvent", "nodeName"))
