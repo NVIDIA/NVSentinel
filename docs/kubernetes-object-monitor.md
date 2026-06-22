@@ -67,6 +67,7 @@ kubernetes-object-monitor:
         group: batch.example.com
         version: v1alpha1
         kind: GPUJob
+        namespace: gpu-operator  # Optional: restrict informer cache to one namespace
       predicate:
         # Detect when job fails
         expression: |
@@ -93,7 +94,10 @@ resource:
   group: ""              # API group (empty for core resources)
   version: v1            # API version
   kind: Node             # Resource kind
+  # namespace: gpu-operator # Optional, only for namespaced resources
 ```
+
+Leave `namespace` unset to watch all namespaces for that resource kind. For namespaced resources with large object counts, setting it reduces informer cache memory usage. Do not set it for cluster-scoped resources such as `Node`.
 
 #### Predicate (Detection Logic)
 ```yaml

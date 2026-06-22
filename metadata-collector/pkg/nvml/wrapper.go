@@ -126,7 +126,7 @@ func (w *NVMLWrapper) GetGPUInfo(index int) (*model.GPUInfo, error) {
 		return nil, fmt.Errorf("failed to get PCI info for GPU %d: %v", index, nvml.ErrorString(ret))
 	}
 
-	gpuInfo.PCIAddress = normalizePCIAddress(convertNVMLCString(pciInfo.BusIdLegacy))
+	gpuInfo.PCIAddress = normalizePCIAddress(convertNVMLCString(pciInfo.BusIdLegacy[:]))
 
 	serial, ret := device.GetSerial()
 	if ret != nvml.SUCCESS {
@@ -160,7 +160,7 @@ func (w *NVMLWrapper) GetChassisSerial(index int) *string {
 		return nil
 	}
 
-	chassisSerial := convertNVMLCString(platformInfo.ChassisSerialNumber)
+	chassisSerial := convertNVMLCString(platformInfo.ChassisSerialNumber[:])
 	if chassisSerial == "" || chassisSerial == "N/A" {
 		slog.Debug("Chassis serial not available", "index", index)
 		return nil
@@ -190,7 +190,7 @@ func (w *NVMLWrapper) BuildDeviceMap() (map[string]nvml.Device, error) {
 			continue
 		}
 
-		pciStr := convertNVMLCString(pciInfo.BusIdLegacy)
+		pciStr := convertNVMLCString(pciInfo.BusIdLegacy[:])
 		normalizedPCI := normalizePCIAddress(pciStr)
 		deviceMap[normalizedPCI] = device
 
@@ -217,15 +217,15 @@ func (w *NVMLWrapper) GetDriverVersion() (string, error) {
 	return version, nil
 }
 
-func convertNVMLCString(busID [16]uint8) string {
-	b := make([]byte, 0, 16)
+func convertNVMLCString[T ~int8 | ~uint8](chars []T) string {
+	b := make([]byte, 0, len(chars))
 
-	for _, c := range busID {
+	for _, c := range chars {
 		if c == 0 {
 			break
 		}
 
-		b = append(b, c)
+		b = append(b, byte(c))
 	}
 
 	return string(b)

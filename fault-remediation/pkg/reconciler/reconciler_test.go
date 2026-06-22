@@ -24,6 +24,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
@@ -147,12 +149,17 @@ func (w *MockCRStatusCheckerWrapper) IsSuccessful(ctx context.Context, crName st
 }
 
 type MockNodeAnnotationManager struct {
-	existingCRs       map[string]string
-	existingCRCreated time.Time
-	createdByGroup    map[string]time.Time
+	existingCRs            map[string]string
+	existingCRCreated      time.Time
+	createdByGroup         map[string]time.Time
+	getRemediationStateErr error
 }
 
 func (m *MockNodeAnnotationManager) GetRemediationState(ctx context.Context, nodeName string) (*annotation.RemediationStateAnnotation, *corev1.Node, error) {
+	if m.getRemediationStateErr != nil {
+		return nil, nil, m.getRemediationStateErr
+	}
+
 	if m.existingCRs == nil {
 		return &annotation.RemediationStateAnnotation{
 			EquivalenceGroups: make(map[string]annotation.EquivalenceGroupState),
@@ -1434,4 +1441,113 @@ func TestAdaptEvents_ForwardsEvents(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("event was not forwarded through AdaptEvents")
 	}
+}
+
+func nodeNotFoundErr(nodeName string) error {
+	return apierrors.NewNotFound(schema.GroupResource{Group: "", Resource: "nodes"}, nodeName)
+}
+
+func TestDeletedNodeRemediationEventMarkedTerminal(t *testing.T) {
+	ctx := context.Background()
+	nodeName := "deleted-node"
+	eventID := "stale-event-id"
+	updated := false
+
+	mockAnnotation := &MockNodeAnnotationManager{
+		getRemediationStateErr: nodeNotFoundErr(nodeName),
+	}
+	mockK8sClient := &MockK8sClient{
+		annotationManagerOverride: mockAnnotation,
+	}
+	cfg := ReconcilerConfig{RemediationClient: mockK8sClient}
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
+
+	mockWatcher := &MockChangeStreamWatcher{}
+	mockStore := &MockHealthEventStore{
+		UpdateHealthEventStatusFn: func(_ context.Context, id string, status datastore.HealthEventStatus) error {
+			assert.Equal(t, eventID, id)
+			assert.NotNil(t, status.FaultRemediated)
+			assert.False(t, *status.FaultRemediated)
+			updated = true
+			return nil
+		},
+	}
+
+	healthEventDoc := &events.HealthEventDoc{
+		ID: eventID,
+		HealthEventWithStatus: model.HealthEventWithStatus{
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          nodeName,
+				RecommendedAction: protos.RecommendedAction_RESTART_BM,
+			},
+			HealthEventStatus: &protos.HealthEventStatus{},
+		},
+	}
+	eventWithToken := datastore.EventWithToken{
+		Event:       testRawHealthEvent(eventID, nodeName, protos.RecommendedAction_RESTART_BM),
+		ResumeToken: []byte("resume-token"),
+	}
+
+	result, err := r.handleRemediationEvent(ctx, healthEventDoc, eventWithToken, mockWatcher, mockStore)
+	assert.NoError(t, err)
+	assert.True(t, result.IsZero())
+	assert.True(t, updated, "expected faultRemediated=false to be written")
+	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
+	assert.Equal(t, 1, markProcessedCount, "expected resume token to be marked processed")
+}
+
+func TestDeletedNodeCancellationEventMarkedTerminal(t *testing.T) {
+	ctx := context.Background()
+	nodeName := "deleted-node"
+	eventID := "stale-cancel-event-id"
+	updated := false
+
+	mockAnnotation := &MockNodeAnnotationManager{
+		getRemediationStateErr: nodeNotFoundErr(nodeName),
+	}
+	mockK8sClient := &MockK8sClient{
+		annotationManagerOverride: mockAnnotation,
+	}
+	cfg := ReconcilerConfig{RemediationClient: mockK8sClient}
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
+
+	mockWatcher := &MockChangeStreamWatcher{}
+	mockStore := &MockHealthEventStore{
+		UpdateHealthEventStatusFn: func(_ context.Context, id string, status datastore.HealthEventStatus) error {
+			assert.Equal(t, eventID, id)
+			assert.NotNil(t, status.FaultRemediated)
+			assert.True(t, *status.FaultRemediated)
+			updated = true
+			return nil
+		},
+	}
+
+	eventWithToken := datastore.EventWithToken{
+		Event:       testRawHealthEvent(eventID, nodeName, protos.RecommendedAction_RESTART_BM),
+		ResumeToken: []byte("resume-token"),
+	}
+
+	result, err := r.handleCancellationEvent(ctx, nodeName, model.Cancelled, mockWatcher, eventWithToken, mockStore)
+	assert.NoError(t, err)
+	assert.True(t, result.IsZero())
+	assert.True(t, updated, "expected faultRemediated=true to be written")
+	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
+	assert.Equal(t, 1, markProcessedCount, "expected resume token to be marked processed")
+}
+
+func TestParseHealthEventShouldNotMarkColdStartEventProcessedIfDocumentIDExtractionFails(t *testing.T) {
+	ctx := context.Background()
+	nodeName := "cold-start-node"
+	event := testRawHealthEvent("cold-start-event", nodeName, protos.RecommendedAction_RESTART_BM)
+	delete(event, "_id")
+
+	eventWithToken := datastore.EventWithToken{Event: event}
+	mockWatcher := &MockChangeStreamWatcher{}
+	reconciler := &FaultRemediationReconciler{}
+
+	_, err := reconciler.parseHealthEvent(ctx, eventWithToken, mockWatcher)
+
+	assert.ErrorContains(t, err, "error extracting document ID")
+	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
+	assert.Equal(t, 0, markProcessedCount, "expected cold-start event without resume token to not be marked processed")
 }

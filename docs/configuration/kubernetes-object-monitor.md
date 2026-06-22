@@ -71,6 +71,7 @@ kubernetes-object-monitor:
         group: ""
         version: v1
         kind: Node
+        # namespace: gpu-operator  # Optional, only for namespaced resources
       predicate:
         expression: |
           resource.status.conditions.filter(c, c.type == "Ready" && c.status == "False").size() > 0
@@ -108,6 +109,9 @@ API version of the resource (e.g., `v1`, `v1beta1`).
 
 ##### kind
 Kubernetes Kind of the resource (e.g., `Node`, `Pod`, `Deployment`).
+
+##### namespace
+Optional namespace restriction for namespaced resources. When set, the monitor creates the informer cache for this resource kind only in that namespace. Leave unset to watch all namespaces. Do not set this for cluster-scoped resources such as `Node`.
 
 #### predicate
 CEL expression that evaluates to true when the resource is in an unhealthy state. Evaluated with `resource` variable containing the full resource object.
@@ -273,3 +277,4 @@ When adding a new policy for a Custom Resource, ensure the CRD is installed befo
 4. **Fatal vs NonFatal**: Set `isFatal: true` only for errors requiring node quarantine
 5. **Testing**: Use dry-run mode to test policy expressions before production deployment
 6. **Performance**: Avoid expensive operations in predicates (e.g., multiple nested lookups)
+7. **Namespace Scope**: For namespaced resources with many objects, set `resource.namespace` to reduce informer cache memory usage
