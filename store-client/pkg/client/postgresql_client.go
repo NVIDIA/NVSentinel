@@ -406,7 +406,8 @@ func (c *PostgreSQLClient) UpdateDocument(
 	}
 
 	adjustedWhereClause := c.adjustParameterNumbers(whereClause, len(updateArgs))
-	args := append(updateArgs, filterArgs...)
+	args := updateArgs
+	args = append(args, filterArgs...)
 
 	// Build final query
 	//nolint:gosec // G201: table name from config, clauses built with parameterized queries
