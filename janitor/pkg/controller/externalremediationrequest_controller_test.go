@@ -203,15 +203,14 @@ var _ = Describe("ExternalRemediationRequest Controller", func() {
 		Expect(r.Client.Create(ctx, extrrObj)).To(Succeed())
 
 		key := ctrlclient.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace}
-		// Init-only: the apply path would requeue forever waiting for the Node.
-		for i := 0; i < 2; i++ {
-			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
-			Expect(err).NotTo(HaveOccurred(), "init pass %d", i+1)
-		}
+		// One pass to init; don't drive further or the apply path will requeue
+		// forever waiting for the Node.
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
 
 		Expect(r.Client.Delete(ctx, extrrObj)).To(Succeed())
 
-		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
 
 		var got nvsentinelv1.ExternalRemediationRequest
@@ -774,11 +773,9 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 
 		key := ctrlclient.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace}
 
-		// Drive the two init passes (finalizer + status) before hitting the apply branch.
-		for i := 0; i < 2; i++ {
-			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
-			Expect(err).NotTo(HaveOccurred(), "init pass %d", i+1)
-		}
+		// First pass inits; second hits the apply branch and requeues.
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
 
 		result, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred(), "missing Node must not propagate as a reconcile error")

@@ -121,15 +121,6 @@ func (r *ExternalRemediationRequestReconciler) Reconcile(ctx context.Context, re
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Belt-and-suspenders: the validating webhook normally guarantees these,
-	// but a webhook outage shouldn't crashloop the controller.
-	if extrr.Spec == nil || extrr.Spec.HealthEvent == nil || extrr.Spec.HealthEvent.NodeName == "" {
-		slog.ErrorContext(ctx, "ExternalRemediationRequest missing required spec fields; webhook bypass?",
-			"name", extrr.Name, "namespace", extrr.Namespace)
-
-		return ctrl.Result{}, nil
-	}
-
 	annotations := extrr.GetAnnotations()
 
 	ctx, span := tracing.StartSpanWithLinkFromTraceContext(
@@ -181,9 +172,9 @@ func (r *ExternalRemediationRequestReconciler) needsInitialization(
 	return false
 }
 
-// reconcileInitialize adds the finalizer then seeds initial Unknown conditions
-// across two passes. Each step writes only what's missing, so a partial
-// initialization recovers cleanly on re-reconcile.
+// reconcileInitialize adds the finalizer and seeds initial Unknown conditions
+// in a single pass. setInitialConditions re-fetches before patching, so it
+// tolerates the rv bump from the finalizer Update.
 func (r *ExternalRemediationRequestReconciler) reconcileInitialize(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
@@ -196,8 +187,6 @@ func (r *ExternalRemediationRequestReconciler) reconcileInitialize(
 		}
 
 		slog.InfoContext(ctx, "Added cleanup finalizer to ExternalRemediationRequest", "name", extrrObj.Name)
-		// The own-kind watch re-enqueues on this metadata Update; no requeue needed.
-		return ctrl.Result{}, nil
 	}
 
 	changed, err := r.setInitialConditions(ctx, extrrObj)
@@ -269,7 +258,8 @@ func (r *ExternalRemediationRequestReconciler) dispatch(
 		return r.reconcileNoOpOnFalse(ctx, extrrObj)
 
 	default:
-		// Released, awaiting the external system.
+		// Steady state: Released=True awaiting the external system, or
+		// Released=False after a terminal apply failure.
 		return ctrl.Result{}, nil
 	}
 }
@@ -341,7 +331,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileApply(
 
 	if err := r.Patch(ctx, nodeToUpdate, client.StrategicMergeFrom(&node)); err != nil {
 		if apierrors.IsForbidden(err) {
-			msg := fmt.Sprintf("forbidden to patch node %q: %v", nodeName, err)
+			msg := fmt.Sprintf("RBAC forbids patching node %q: %v", nodeName, err)
 			slog.ErrorContext(ctx, "release taint apply forbidden by RBAC",
 				"extrr", extrrObj.Name, "node", nodeName, "error", err)
 
