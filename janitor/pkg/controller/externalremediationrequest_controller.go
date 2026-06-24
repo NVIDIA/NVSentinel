@@ -268,11 +268,10 @@ func (r *ExternalRemediationRequestReconciler) dispatch(
 const nodeMissingRequeue = 30 * time.Second
 
 // reconcileApply applies the release taint + managed=false in one PATCH then
-// transitions NVSentinelOwnershipReleased. Failure modes per ADR-040: drift /
-// RBAC forbidden → terminal False; Node not found → transient requeue;
-// already-applied → idempotent fast path.
-//
-//nolint:cyclop // distinct apiserver failure modes; inline switch reads cleaner.
+// transitions NVSentinelOwnershipReleased. Failure modes per ADR-040: drift
+// → terminal False; Node not found → transient requeue; already-applied →
+// idempotent fast path. Other API errors propagate and controller-runtime
+// requeues with backoff.
 func (r *ExternalRemediationRequestReconciler) reconcileApply(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
@@ -330,14 +329,6 @@ func (r *ExternalRemediationRequestReconciler) reconcileApply(
 	nodeToUpdate.Labels[managed.ManagedLabelKey] = managed.ManagedLabelValueFalse
 
 	if err := r.Patch(ctx, nodeToUpdate, client.StrategicMergeFrom(&node)); err != nil {
-		if apierrors.IsForbidden(err) {
-			msg := fmt.Sprintf("RBAC forbids patching node %q: %v", nodeName, err)
-			slog.ErrorContext(ctx, "release taint apply forbidden by RBAC",
-				"extrr", extrrObj.Name, "node", nodeName, "error", err)
-
-			return ctrl.Result{}, r.transitionToReleaseFailure(ctx, extrrObj, msg)
-		}
-
 		return ctrl.Result{}, fmt.Errorf("patch node %q with release taint + managed=false: %w", nodeName, err)
 	}
 
@@ -372,9 +363,8 @@ func (r *ExternalRemediationRequestReconciler) transitionToReleaseSuccess(
 	return nil
 }
 
-// transitionToReleaseFailure records terminal failure (drift / forbidden).
-// Skips ExtRROpen — these ExtRRs aren't in-flight, just counted under
-// released{failure}.
+// transitionToReleaseFailure records terminal drift failure. Skips ExtRROpen
+// — these ExtRRs aren't in-flight, just counted under released{failure}.
 func (r *ExternalRemediationRequestReconciler) transitionToReleaseFailure(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest, message string,
 ) error {
