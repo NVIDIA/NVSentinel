@@ -30,7 +30,6 @@ const (
 
 const (
 	ExtRRResultSuccess         = "success"
-	ExtRRResultFailure         = "failure"
 	ExtRRResultOperatorDeleted = "operator_deleted"
 	// ExtRRResultNone is the explicit sentinel for phases without an outcome.
 	ExtRRResultNone = ""
@@ -38,14 +37,13 @@ const (
 
 const (
 	ExtRROpenStateAwaiting = "awaiting"
-	ExtRROpenStateFailed   = "failed"
 )
 
 var (
 	// ExtRRTotal phases:
 	//   created           — fresh ExtRR initialised.
-	//   released          — NVSentinelOwnershipReleased flipped. result=success|failure.
-	//   external_response — ExternalRemediationComplete observed. result=success|failure.
+	//   released          — NVSentinelOwnershipReleased=True. result=success.
+	//   external_response — ExternalRemediationComplete=True observed. result=success.
 	//   closed            — cleanup ran. result=success | operator_deleted.
 	ExtRRTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "nvsentinel_external_remediation_total",

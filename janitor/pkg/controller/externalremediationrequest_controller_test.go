@@ -395,41 +395,6 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 				"Node ResourceVersion must not advance after the cleanup PATCH settles")
 		})
 
-		It("leaves a foreign taint in place when another ExtRR claims the node (drift on cleanup)", func() {
-			nodeName := "node-true-drift-1"
-			key := prepareReleased(ctx, r, "true-drift-extrr-1", nodeName)
-			DeferCleanup(forceFinalizerRemovalByKey, ctx, r, key)
-			DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
-
-			// Rewrite the taint value to simulate a foreign owner.
-			var node corev1.Node
-			Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &node)).To(Succeed())
-
-			origNode := node.DeepCopy()
-			for i := range node.Spec.Taints {
-				if node.Spec.Taints[i].Key == ReleaseTaintKey {
-					node.Spec.Taints[i].Value = "foreign-err"
-					break
-				}
-			}
-
-			Expect(r.Client.Patch(ctx, &node, ctrlclient.StrategicMergeFrom(origNode))).To(Succeed())
-
-			setExternalRemediationComplete(ctx, r.Client,
-				&nvsentinelv1.ExternalRemediationRequest{ObjectMeta: metav1.ObjectMeta{
-					Name: key.Name, Namespace: key.Namespace,
-				}}, "True", "ExternalRemediationSucceeded")
-
-			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &node)).To(Succeed())
-			taint := findTaintByKey(node.Spec.Taints, ReleaseTaintKey)
-			Expect(taint).NotTo(BeNil(), "foreign taint must NOT be removed by our cleanup")
-			Expect(taint.Value).To(Equal("foreign-err"))
-			Expect(node.Labels).NotTo(HaveKey(managed.ManagedLabelKey),
-				"label removal is unconditional (cluster-wide semantics)")
-		})
 	})
 
 	Context("branch 2: deletionTimestamp set (operator-driven release)", func() {
@@ -792,36 +757,6 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 
 	// Empty-nodeName rejection is covered by the webhook test suite.
 
-	It("transitions to False when the Node is already tainted by a different ExtRR (drift)", func() {
-		nodeName := "node-drift-1"
-		// Pre-apply a taint with a DIFFERENT ExtRR's name.
-		Expect(r.Client.Create(ctx, newTestNode(nodeName, nil,
-			[]corev1.Taint{{Key: ReleaseTaintKey, Value: "some-other-err", Effect: corev1.TaintEffectNoSchedule}}))).
-			To(Succeed())
-		DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
-
-		extrrObj := newTestExtRR("drift-extrr-1", nodeName)
-		Expect(r.Client.Create(ctx, extrrObj)).To(Succeed())
-		DeferCleanup(deleteExtRRForCleanup, ctx, r, extrrObj)
-
-		key := ctrlclient.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace}
-		got := reconcileToSteadyState(ctx, r, key, 3)
-
-		released := findExtRRCondition(got, ConditionNVSentinelOwnershipReleased)
-		Expect(released.Status).To(Equal("False"), "drift must transition condition to False")
-		Expect(released.Reason).To(Equal(ReasonReleaseTaintFailed))
-		Expect(released.Message).To(ContainSubstring("some-other-err"),
-			"drift message must identify the existing taint owner")
-		Expect(released.Message).To(ContainSubstring(nodeName))
-
-		var node corev1.Node
-		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &node)).To(Succeed())
-		taint := findTaintByKey(node.Spec.Taints, ReleaseTaintKey)
-		Expect(taint).NotTo(BeNil())
-		Expect(taint.Value).To(Equal("some-other-err"), "drift case must NOT overwrite the existing taint")
-		Expect(node.Labels).NotTo(HaveKey(managed.ManagedLabelKey), "drift case must NOT set managed=false")
-	})
-
 	It("requeues without acting when another maintenance resource holds the node lock", func() {
 		nodeName := "node-locked-1"
 		Expect(r.Client.Create(ctx, newTestNode(nodeName, nil, nil))).To(Succeed())
@@ -1085,32 +1020,6 @@ var _ = Describe("ExternalRemediationRequest Controller observability", func() {
 
 		events := drainEvents(r)
 		Expect(events).To(ContainElement(ContainSubstring(eventReasonReleaseTaintApplied)))
-	})
-
-	It("increments released{failure} + emits ReleaseTaintFailed on drift", func() {
-		nodeName := "node-obs-drift-1"
-		// Pre-existing taint owned by a foreign ExtRR.
-		Expect(r.Client.Create(ctx, newTestNode(nodeName, nil,
-			[]corev1.Taint{{Key: ReleaseTaintKey, Value: "foreign-owner", Effect: corev1.TaintEffectNoSchedule}}))).
-			To(Succeed())
-		DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
-
-		failureBefore := testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
-			janitormetrics.ExtRRPhaseReleased, janitormetrics.ExtRRResultFailure))
-
-		extrrObj := newTestExtRR("obs-drift-1", nodeName)
-		Expect(r.Client.Create(ctx, extrrObj)).To(Succeed())
-		DeferCleanup(forceFinalizerRemoval, ctx, r, extrrObj)
-
-		key := ctrlclient.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace}
-		reconcileToSteadyState(ctx, r, key, 3)
-
-		Expect(testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
-			janitormetrics.ExtRRPhaseReleased, janitormetrics.ExtRRResultFailure)) - failureBefore).
-			To(BeNumerically("==", 1.0))
-
-		events := drainEvents(r)
-		Expect(events).To(ContainElement(ContainSubstring(eventReasonReleaseTaintFailed)))
 	})
 
 	It("increments closed{success} + external_response{success} + observes age on True cleanup", func() {

@@ -61,10 +61,8 @@ const (
 	ReleaseTaintKey = "nvsentinel.dgxc.nvidia.com/external-remediation"
 
 	ReasonReleaseTaintApplied = "ReleaseTaintApplied"
-	ReasonReleaseTaintFailed  = "ReleaseTaintFailed"
 
 	eventReasonReleaseTaintApplied   = "ReleaseTaintApplied"
-	eventReasonReleaseTaintFailed    = "ReleaseTaintFailed"
 	eventReasonReleaseTaintRemoved   = "ReleaseTaintRemoved"
 	eventReasonOperatorDeleteRequest = "OperatorDeleteRequested"
 
@@ -275,16 +273,14 @@ const nodeMissingRequeue = 30 * time.Second
 const nodeLockRequeue = 2 * time.Second
 
 // reconcileApply applies the release taint + managed=false in one PATCH then
-// transitions NVSentinelOwnershipReleased. Failure modes per ADR-040: drift
-// → terminal False; Node not found → transient requeue; already-applied →
-// idempotent fast path. Other API errors propagate and controller-runtime
-// requeues with backoff.
+// transitions NVSentinelOwnershipReleased=True. Node not found → transient
+// requeue; already-applied → idempotent fast path. Other API errors propagate
+// and controller-runtime requeues with backoff.
 //
 // Acquires the cross-controller node-level lock before any node mutation so a
 // concurrent RebootNode / TerminateNode / GPUReset can't act on the same node.
-// The lock is released either explicitly on drift (terminal failure) and on
-// Complete=True cleanup, or implicitly via the lease's ownerReference when the
-// ExtRR is deleted.
+// The lock is released on Complete=True cleanup (branch 4) and on operator
+// delete (branch 2); the lease's ownerReference catches the failure case.
 func (r *ExternalRemediationRequestReconciler) reconcileApply(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
@@ -309,29 +305,16 @@ func (r *ExternalRemediationRequestReconciler) reconcileApply(
 		return ctrl.Result{RequeueAfter: nodeLockRequeue}, nil
 	}
 
-	if existing := findTaintByKey(node.Spec.Taints, ReleaseTaintKey); existing != nil {
-		if existing.Value != extrrObj.Name {
-			msg := fmt.Sprintf(
-				"node %q already tainted by ExternalRemediationRequest %q; another ExtRR owns this node",
-				nodeName, existing.Value)
-			slog.WarnContext(ctx, "release taint drift detected",
-				"extrr", extrrObj.Name, "node", nodeName, "existing_owner", existing.Value)
-			// Release the lock — drift is terminal and we never owned the taint.
-			r.NodeLock.CheckUnlock(ctx, extrrObj, nodeName)
+	// We hold the lock, so any taint at our key is ours.
+	if findTaintByKey(node.Spec.Taints, ReleaseTaintKey) != nil &&
+		node.Labels[managed.ManagedLabelKey] == managed.ManagedLabelValueFalse {
+		slog.InfoContext(ctx, "release taint and managed=false label already in place; transitioning condition",
+			"extrr", extrrObj.Name, "node", nodeName)
 
-			return ctrl.Result{}, r.transitionToReleaseFailure(ctx, extrrObj, msg)
-		}
-		// Idempotent fast path — no PATCH needed if both taint and label match.
-		if node.Labels[managed.ManagedLabelKey] == managed.ManagedLabelValueFalse {
-			slog.InfoContext(ctx, "release taint and managed=false label already in place; transitioning condition",
-				"extrr", extrrObj.Name, "node", nodeName)
+		msg := fmt.Sprintf("release taint %s=%s and managed=false label already present on node %q",
+			ReleaseTaintKey, extrrObj.Name, nodeName)
 
-			msg := fmt.Sprintf("release taint %s=%s and managed=false label already present on node %q",
-				ReleaseTaintKey, extrrObj.Name, nodeName)
-
-			return ctrl.Result{}, r.transitionToReleaseSuccess(ctx, extrrObj, msg)
-		}
-		// Taint matches but label is missing — fall through to patch the label.
+		return ctrl.Result{}, r.transitionToReleaseSuccess(ctx, extrrObj, msg)
 	}
 
 	nodeToUpdate := node.DeepCopy()
@@ -381,26 +364,6 @@ func (r *ExternalRemediationRequestReconciler) transitionToReleaseSuccess(
 	metrics.GlobalMetrics.AdjustExtRROpen(extrrNodeLabel(extrrObj), recommendedActionLabel(extrrObj),
 		metrics.ExtRROpenStateAwaiting, 1)
 	r.emitEvent(extrrObj, corev1.EventTypeNormal, eventReasonReleaseTaintApplied, message)
-
-	return nil
-}
-
-// transitionToReleaseFailure records terminal drift failure. Skips ExtRROpen
-// — these ExtRRs aren't in-flight, just counted under released{failure}.
-func (r *ExternalRemediationRequestReconciler) transitionToReleaseFailure(
-	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest, message string,
-) error {
-	changed, err := r.transitionReleased(ctx, extrrObj, metav1.ConditionFalse, ReasonReleaseTaintFailed, message)
-	if err != nil {
-		return err
-	}
-
-	if !changed {
-		return nil
-	}
-
-	metrics.GlobalMetrics.IncExtRRTotal(metrics.ExtRRPhaseReleased, metrics.ExtRRResultFailure)
-	r.emitEvent(extrrObj, corev1.EventTypeWarning, eventReasonReleaseTaintFailed, message)
 
 	return nil
 }
@@ -491,11 +454,9 @@ func (r *ExternalRemediationRequestReconciler) recordClose(
 		fmt.Sprintf("release taint and managed=false label removed (%s)", closeReason))
 }
 
-// reconcileCleanup removes the release taint only when its value matches this
-// ExtRR (drift-safe — a foreign taint is left alone) and deletes the managed
-// label. Returns true when the PATCH mutated the Node.
-//
-//nolint:cyclop // dispatch over drift cases; inline switch reads cleaner.
+// reconcileCleanup removes the release taint and the managed label from the
+// Node. Returns true when the PATCH mutated the Node. The node-level lock
+// guarantees we own the taint at our key, so no value-match check is needed.
 func (r *ExternalRemediationRequestReconciler) reconcileCleanup(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (bool, error) {
@@ -516,16 +477,9 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanup(
 	nodeToUpdate := node.DeepCopy()
 	changed := false
 
-	if existing := findTaintByKey(nodeToUpdate.Spec.Taints, ReleaseTaintKey); existing != nil {
-		switch existing.Value {
-		case extrrObj.Name:
-			nodeToUpdate.Spec.Taints = removeTaintByKey(nodeToUpdate.Spec.Taints, ReleaseTaintKey)
-			changed = true
-		default:
-			// Drift: foreign ExtRR owns the taint; its own cleanup will remove it.
-			slog.WarnContext(ctx, "release taint owned by a different ExtRR; leaving in place during cleanup",
-				"extrr", extrrObj.Name, "node", nodeName, "existing_owner", existing.Value)
-		}
+	if findTaintByKey(nodeToUpdate.Spec.Taints, ReleaseTaintKey) != nil {
+		nodeToUpdate.Spec.Taints = removeTaintByKey(nodeToUpdate.Spec.Taints, ReleaseTaintKey)
+		changed = true
 	}
 
 	if _, ok := nodeToUpdate.Labels[managed.ManagedLabelKey]; ok {
