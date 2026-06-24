@@ -29,12 +29,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/event"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
@@ -70,8 +66,6 @@ const (
 	// in the ReleaseTaintRemoved event message.
 	closeReasonExternalRemediationCompleteTrue = "ExternalRemediationCompleteTrue"
 	closeReasonOperatorInitiated               = "OperatorInitiated"
-
-	extrrNodeNameIndexKey = "spec.healthEvent.nodeName"
 )
 
 // ExternalRemediationRequestReconciler implements the ADR-040 state machine.
@@ -613,8 +607,6 @@ func (r *ExternalRemediationRequestReconciler) patchStatusConditions(
 	return true, nil
 }
 
-// SetupWithManager wires the controller, the Node watch that re-enqueues on
-// taint/label drift, and the field indexer on spec.healthEvent.nodeName.
 func (r *ExternalRemediationRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Recorder == nil {
 		// nolint:staticcheck // SA1019: project-wide events.k8s.io migration pending.
@@ -625,101 +617,8 @@ func (r *ExternalRemediationRequestReconciler) SetupWithManager(mgr ctrl.Manager
 		r.NodeLock = distributedlock.NewNodeLock(mgr.GetClient(), r.LockNamespace)
 	}
 
-	if err := mgr.GetFieldIndexer().IndexField(
-		context.Background(),
-		&nvsentinelv1.ExternalRemediationRequest{},
-		extrrNodeNameIndexKey,
-		indexExtRRByNodeName,
-	); err != nil {
-		return fmt.Errorf("registering ExtRR node-name field indexer: %w", err)
-	}
-
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&nvsentinelv1.ExternalRemediationRequest{}).
-		Watches(
-			&corev1.Node{},
-			handler.EnqueueRequestsFromMapFunc(r.mapNodeToExtRRs),
-			builder.WithPredicates(nodeReleaseStateChangedPredicate()),
-		).
 		Named("externalremediationrequest").
 		Complete(r)
-}
-
-// indexExtRRByNodeName returns nil for malformed ExtRRs so a webhook bypass
-// can't crash the indexer.
-func indexExtRRByNodeName(o client.Object) []string {
-	extrr, ok := o.(*nvsentinelv1.ExternalRemediationRequest)
-	if !ok || extrr.Spec == nil || extrr.Spec.HealthEvent == nil || extrr.Spec.HealthEvent.NodeName == "" {
-		return nil
-	}
-
-	return []string{extrr.Spec.HealthEvent.NodeName}
-}
-
-// nodeReleaseStateChangedPredicate drops Node updates outside the release
-// surface (managed label + release taint), so kubelet heartbeats don't
-// re-enqueue every ExtRR on every sync.
-func nodeReleaseStateChangedPredicate() predicate.Predicate {
-	return predicate.Funcs{
-		CreateFunc:  func(_ event.CreateEvent) bool { return true },
-		DeleteFunc:  func(_ event.DeleteEvent) bool { return true },
-		GenericFunc: func(_ event.GenericEvent) bool { return true },
-		UpdateFunc: func(e event.UpdateEvent) bool {
-			oldNode, ok := e.ObjectOld.(*corev1.Node)
-			if !ok {
-				return false
-			}
-
-			newNode, ok := e.ObjectNew.(*corev1.Node)
-			if !ok {
-				return false
-			}
-
-			if oldNode.Labels[managed.ManagedLabelKey] != newNode.Labels[managed.ManagedLabelKey] {
-				return true
-			}
-
-			oldTaint := findTaintByKey(oldNode.Spec.Taints, ReleaseTaintKey)
-			newTaint := findTaintByKey(newNode.Spec.Taints, ReleaseTaintKey)
-
-			if (oldTaint == nil) != (newTaint == nil) {
-				return true
-			}
-
-			if oldTaint != nil && newTaint != nil && oldTaint.Value != newTaint.Value {
-				return true
-			}
-
-			return false
-		},
-	}
-}
-
-// mapNodeToExtRRs uses the field indexer so each lookup is bounded by the
-// ExtRRs targeting this Node, not the total ExtRR population.
-func (r *ExternalRemediationRequestReconciler) mapNodeToExtRRs(ctx context.Context, obj client.Object) []ctrl.Request {
-	node, ok := obj.(*corev1.Node)
-	if !ok {
-		return nil
-	}
-
-	var extrrs nvsentinelv1.ExternalRemediationRequestList
-	if err := r.List(ctx, &extrrs, client.MatchingFields{extrrNodeNameIndexKey: node.Name}); err != nil {
-		slog.ErrorContext(ctx, "listing ExternalRemediationRequests by node-name index",
-			"node", node.Name, "error", err)
-
-		return nil
-	}
-
-	requests := make([]ctrl.Request, 0, len(extrrs.Items))
-	for i := range extrrs.Items {
-		requests = append(requests, ctrl.Request{
-			NamespacedName: client.ObjectKey{
-				Name:      extrrs.Items[i].Name,
-				Namespace: extrrs.Items[i].Namespace,
-			},
-		})
-	}
-
-	return requests
 }
