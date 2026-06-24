@@ -42,6 +42,7 @@ import (
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	nvsentinelv1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/condition"
+	"github.com/nvidia/nvsentinel/janitor/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/janitor/pkg/metrics"
 )
 
@@ -78,8 +79,10 @@ const (
 // ExternalRemediationRequestReconciler implements the ADR-040 state machine.
 type ExternalRemediationRequestReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Scheme        *runtime.Scheme
+	Recorder      record.EventRecorder
+	NodeLock      distributedlock.NodeLock
+	LockNamespace string
 }
 
 const labelValueUnknown = "unknown"
@@ -112,6 +115,7 @@ func (r *ExternalRemediationRequestReconciler) emitEvent(
 // +kubebuilder:rbac:groups=nvsentinel.dgxc.nvidia.com,resources=externalremediationrequests/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=nvsentinel.dgxc.nvidia.com,resources=externalremediationrequests/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;patch
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;delete
 
 // Reconcile drives the ExtRR through its lifecycle. The OTEL span is linked to
 // the upstream health-monitor trace via annotations stamped by fault-remediation.
@@ -267,11 +271,20 @@ func (r *ExternalRemediationRequestReconciler) dispatch(
 // nodeMissingRequeue covers the cluster-autoscaler / kubelet-registration race.
 const nodeMissingRequeue = 30 * time.Second
 
+// nodeLockRequeue matches the sibling janitor controllers' lock-retry cadence.
+const nodeLockRequeue = 2 * time.Second
+
 // reconcileApply applies the release taint + managed=false in one PATCH then
 // transitions NVSentinelOwnershipReleased. Failure modes per ADR-040: drift
 // → terminal False; Node not found → transient requeue; already-applied →
 // idempotent fast path. Other API errors propagate and controller-runtime
 // requeues with backoff.
+//
+// Acquires the cross-controller node-level lock before any node mutation so a
+// concurrent RebootNode / TerminateNode / GPUReset can't act on the same node.
+// The lock is released either explicitly on drift (terminal failure) and on
+// Complete=True cleanup, or implicitly via the lease's ownerReference when the
+// ExtRR is deleted.
 func (r *ExternalRemediationRequestReconciler) reconcileApply(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
@@ -289,6 +302,13 @@ func (r *ExternalRemediationRequestReconciler) reconcileApply(
 		return ctrl.Result{}, fmt.Errorf("get node %q for ExtRR %q: %w", nodeName, extrrObj.Name, err)
 	}
 
+	if !r.NodeLock.LockNode(ctx, extrrObj, nodeName) {
+		slog.InfoContext(ctx, "another maintenance resource holds the node lock; requeueing",
+			"extrr", extrrObj.Name, "node", nodeName)
+
+		return ctrl.Result{RequeueAfter: nodeLockRequeue}, nil
+	}
+
 	if existing := findTaintByKey(node.Spec.Taints, ReleaseTaintKey); existing != nil {
 		if existing.Value != extrrObj.Name {
 			msg := fmt.Sprintf(
@@ -296,6 +316,8 @@ func (r *ExternalRemediationRequestReconciler) reconcileApply(
 				nodeName, existing.Value)
 			slog.WarnContext(ctx, "release taint drift detected",
 				"extrr", extrrObj.Name, "node", nodeName, "existing_owner", existing.Value)
+			// Release the lock — drift is terminal and we never owned the taint.
+			r.NodeLock.CheckUnlock(ctx, extrrObj, nodeName)
 
 			return ctrl.Result{}, r.transitionToReleaseFailure(ctx, extrrObj, msg)
 		}
@@ -400,6 +422,10 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanupAfterComplete(
 		metrics.GlobalMetrics.IncExtRRTotal(metrics.ExtRRPhaseExternalResponse, metrics.ExtRRResultSuccess)
 	}
 
+	// Release the node-level lock — the external system has finished and the
+	// node is back in NVSentinel's hands. CheckUnlock is idempotent.
+	r.NodeLock.CheckUnlock(ctx, extrrObj, extrrObj.Spec.HealthEvent.NodeName)
+
 	return ctrl.Result{}, nil
 }
 
@@ -424,6 +450,12 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanupOnDeletion(
 	if changed {
 		r.recordClose(extrrObj, metrics.ExtRRResultOperatorDeleted, closeReasonOperatorInitiated)
 	}
+
+	// Release the lock before removing the finalizer. K8s GC via the lease's
+	// ownerReference covers the failure case, but the explicit unlock keeps
+	// us consistent with the sibling controllers and shortens the window
+	// where the lease could outlive its owner.
+	r.NodeLock.CheckUnlock(ctx, extrrObj, extrrObj.Spec.HealthEvent.NodeName)
 
 	updated := extrrObj.DeepCopy()
 	controllerutil.RemoveFinalizer(updated, ExternalRemediationFinalizer)
@@ -633,6 +665,10 @@ func (r *ExternalRemediationRequestReconciler) SetupWithManager(mgr ctrl.Manager
 	if r.Recorder == nil {
 		// nolint:staticcheck // SA1019: project-wide events.k8s.io migration pending.
 		r.Recorder = mgr.GetEventRecorderFor("externalremediationrequest-controller")
+	}
+
+	if r.NodeLock == nil {
+		r.NodeLock = distributedlock.NewNodeLock(mgr.GetClient(), r.LockNamespace)
 	}
 
 	if err := mgr.GetFieldIndexer().IndexField(

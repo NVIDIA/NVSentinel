@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,6 +40,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	nvsentinelv1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
+	"github.com/nvidia/nvsentinel/janitor/pkg/distributedlock"
 	janitormetrics "github.com/nvidia/nvsentinel/janitor/pkg/metrics"
 )
 
@@ -53,6 +55,7 @@ func newExtRRReconciler() *ExternalRemediationRequestReconciler {
 		Client:   c,
 		Scheme:   scheme.Scheme,
 		Recorder: record.NewFakeRecorder(64),
+		NodeLock: distributedlock.NewNodeLock(c, testExtRRNamespace),
 	}
 }
 
@@ -817,6 +820,55 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 		Expect(taint).NotTo(BeNil())
 		Expect(taint.Value).To(Equal("some-other-err"), "drift case must NOT overwrite the existing taint")
 		Expect(node.Labels).NotTo(HaveKey(managed.ManagedLabelKey), "drift case must NOT set managed=false")
+	})
+
+	It("requeues without acting when another maintenance resource holds the node lock", func() {
+		nodeName := "node-locked-1"
+		Expect(r.Client.Create(ctx, newTestNode(nodeName, nil, nil))).To(Succeed())
+		DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
+
+		// Pre-create a lease as if a sibling maintenance CR (e.g. RebootNode)
+		// already holds the lock for this node.
+		foreignLease := &coordinationv1.Lease{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      nodeName,
+				Namespace: testExtRRNamespace,
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: "janitor.dgxc.nvidia.com/v1alpha1",
+					Kind:       "RebootNode",
+					Name:       "foreign-reboot",
+					UID:        "foreign-uid",
+				}},
+			},
+		}
+		Expect(r.Client.Create(ctx, foreignLease)).To(Succeed())
+		DeferCleanup(func() { _ = r.Client.Delete(ctx, foreignLease) })
+
+		extrrObj := newTestExtRR("locked-extrr-1", nodeName)
+		Expect(r.Client.Create(ctx, extrrObj)).To(Succeed())
+		DeferCleanup(deleteExtRRForCleanup, ctx, r, extrrObj)
+
+		key := ctrlclient.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace}
+		// Init completes (no Node interaction); second reconcile hits apply,
+		// finds the foreign lock, requeues without acting.
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		result, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred(), "lock contention must not propagate as a reconcile error")
+		Expect(result.RequeueAfter).To(Equal(nodeLockRequeue), "lock contention must requeue with the lock-retry cadence")
+
+		// Released stays Unknown — apply never ran.
+		var got nvsentinelv1.ExternalRemediationRequest
+		Expect(r.Client.Get(ctx, key, &got)).To(Succeed())
+		released := findExtRRCondition(&got, ConditionNVSentinelOwnershipReleased)
+		Expect(released.Status).To(Equal("Unknown"))
+
+		// And the Node is untouched.
+		var node corev1.Node
+		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &node)).To(Succeed())
+		Expect(findTaintByKey(node.Spec.Taints, ReleaseTaintKey)).To(BeNil())
+		Expect(node.Labels).NotTo(HaveKey(managed.ManagedLabelKey))
 	})
 
 })

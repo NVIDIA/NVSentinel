@@ -240,8 +240,9 @@ func run() error {
 	}
 
 	if err = (&controller.ExternalRemediationRequestReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		LockNamespace: podNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		slog.Error("unable to create controller", "controller", "ExternalRemediationRequest", "error", err)
 
