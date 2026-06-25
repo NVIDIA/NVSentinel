@@ -29,13 +29,14 @@ import (
 )
 
 type InitializationParams struct {
-	KubeconfigPath        string
-	DCGMAppLabel          string
-	DriverAppLabel        string
-	GKEInstallerAppLabel  string
-	KataLabel             string
-	AssumeDriverInstalled bool
-	ExpectedDeviceCounts  devicecounts.Config
+	KubeconfigPath               string
+	DCGMAppLabel                 string
+	DriverAppLabel               string
+	GKEInstallerAppLabel         string
+	KataLabel                    string
+	AssumeDriverInstalled        bool
+	RequireDCGMReadyForBootstrap bool
+	ExpectedDeviceCounts         devicecounts.Config
 }
 
 type Components struct {
@@ -60,6 +61,7 @@ func InitializeAll(params InitializationParams) (*Components, error) {
 		params.GKEInstallerAppLabel,
 		params.KataLabel,
 		params.AssumeDriverInstalled,
+		params.RequireDCGMReadyForBootstrap,
 		params.ExpectedDeviceCounts,
 	)
 	if err != nil {

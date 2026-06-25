@@ -23,6 +23,7 @@ import (
 const (
 	StatusSuccess = "success"
 	StatusFailed  = "failed"
+	ClassLabel    = "class"
 
 	SkipReasonEvaluationError = "evaluation_error"
 	SkipReasonMissingSource   = "missing_source"
@@ -61,7 +62,7 @@ var (
 			Name: "labeler_device_count_current",
 			Help: "Current device count observed for a node and device class.",
 		},
-		[]string{"node", "class"},
+		[]string{"node", ClassLabel},
 	)
 
 	// ExpectedDeviceCount records the learned or overridden expected count for a hardware class partition.
@@ -70,7 +71,7 @@ var (
 			Name: "labeler_device_count_expected",
 			Help: "Expected device count for a device class and hardware partition.",
 		},
-		[]string{"class", "partition"},
+		[]string{ClassLabel, "partition"},
 	)
 
 	// DeviceCountSkippedUpdates tracks skipped device-count label updates.
@@ -79,6 +80,6 @@ var (
 			Name: "labeler_device_count_skipped_updates_total",
 			Help: "Total number of skipped device-count label updates.",
 		},
-		[]string{"class", "reason"},
+		[]string{ClassLabel, "reason"},
 	)
 )
