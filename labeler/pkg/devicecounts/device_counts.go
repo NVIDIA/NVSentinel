@@ -124,6 +124,21 @@ func (m *Manager) Enabled() bool {
 	return m != nil && len(m.classes) > 0
 }
 
+// RequiresResourceSlices reports whether any enabled class reads ResourceSlices.
+func (m *Manager) RequiresResourceSlices() bool {
+	if !m.Enabled() {
+		return false
+	}
+
+	for _, class := range m.classes {
+		if class.referencesResourceSlices() {
+			return true
+		}
+	}
+
+	return false
+}
+
 // ClassCount returns the number of compiled device-count classes.
 func (m *Manager) ClassCount() int {
 	return len(m.classes)
@@ -343,8 +358,10 @@ func (m *Manager) evaluateCurrent(
 
 	// Kubernetes labels are strings, but the documented GPU expression uses
 	// int(node.metadata.labels['nvidia.com/gpu.count']). Normalizing numeric
-	// strings avoids CEL runtime conversion gaps for dynamic map values.
-	normalizeNumericNodeLabels(nodeMap)
+	// strings avoids CEL runtime conversion gaps for dynamic map values. Do the
+	// same for resource quantities so device-plugin allocatable counts can use
+	// int(node.status.allocatable['...']).
+	normalizeNumericNodeInputs(nodeMap)
 
 	resourceSliceMaps := make([]map[string]any, 0, len(resourceSlices))
 	for _, resourceSlice := range resourceSlices {
@@ -397,18 +414,30 @@ func celResultToInt(result ref.Val) (int, bool) {
 	}
 }
 
-func normalizeNumericNodeLabels(nodeMap map[string]any) {
+func normalizeNumericNodeInputs(nodeMap map[string]any) {
 	metadata, ok := nodeMap["metadata"].(map[string]any)
+	if ok {
+		if nodeLabels, ok := metadata["labels"].(map[string]any); ok {
+			normalizeNumericMapValues(nodeLabels)
+		}
+	}
+
+	status, ok := nodeMap["status"].(map[string]any)
 	if !ok {
 		return
 	}
 
-	nodeLabels, ok := metadata["labels"].(map[string]any)
-	if !ok {
-		return
+	if allocatable, ok := status["allocatable"].(map[string]any); ok {
+		normalizeNumericMapValues(allocatable)
 	}
 
-	for key, value := range nodeLabels {
+	if capacity, ok := status["capacity"].(map[string]any); ok {
+		normalizeNumericMapValues(capacity)
+	}
+}
+
+func normalizeNumericMapValues(values map[string]any) {
+	for key, value := range values {
 		raw, ok := value.(string)
 		if !ok {
 			continue
@@ -416,7 +445,7 @@ func normalizeNumericNodeLabels(nodeMap map[string]any) {
 
 		parsed, err := strconv.ParseInt(raw, 10, 64)
 		if err == nil {
-			nodeLabels[key] = parsed
+			values[key] = parsed
 		}
 	}
 }

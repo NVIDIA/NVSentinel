@@ -148,7 +148,7 @@ func (e *NodeDrainEvaluator) handleAlreadyQuarantined(ctx context.Context, statu
 
 	nodeName := healthEvent.HealthEvent.NodeName
 
-	isDrained, err := e.isNodeAlreadyDrained(ctx, healthEvent.HealthEvent.Id, partialDrainEntity,
+	isDrained, hasQuarantineAnnotation, err := e.isNodeAlreadyDrained(ctx, healthEvent.HealthEvent.Id, partialDrainEntity,
 		nodeName, healthEventStore)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to check if node is already drained",
@@ -158,6 +158,16 @@ func (e *NodeDrainEvaluator) handleAlreadyQuarantined(ctx context.Context, statu
 		return &DrainActionResult{
 			Action:    ActionWait,
 			WaitDelay: time.Minute,
+		}
+	}
+
+	if !hasQuarantineAnnotation {
+		slog.InfoContext(ctx, "Cancelling stale AlreadyQuarantined event with no active quarantine annotation",
+			"node", nodeName)
+
+		return &DrainActionResult{
+			Action: ActionCancel,
+			Status: model.Cancelled,
 		}
 	}
 
@@ -539,24 +549,25 @@ skip draining for the current event 70bd4fc9ffa9f5eca91c340c and update its stat
 	    }
 */
 func (e *NodeDrainEvaluator) isNodeAlreadyDrained(ctx context.Context, currentEventId string,
-	currentPartialDrainEntity *protos.Entity, nodeName string, healthEventStore datastore.HealthEventStore) (bool, error) {
+	currentPartialDrainEntity *protos.Entity, nodeName string,
+	healthEventStore datastore.HealthEventStore) (bool, bool, error) {
 	node, err := e.informers.GetNode(nodeName)
 	if err != nil {
-		return false, fmt.Errorf("failed to get node %s: %w", nodeName, err)
+		return false, false, fmt.Errorf("failed to get node %s: %w", nodeName, err)
 	}
 
 	quarantineHealthEventAnnotationStr, ok := node.Annotations[common.QuarantineHealthEventAnnotationKey]
 	if !ok {
 		slog.InfoContext(ctx, "No quarantine annotation found for node", "node", nodeName)
 
-		return false, nil
+		return false, false, nil
 	}
 
 	var healthEventsMap annotation.HealthEventsAnnotationMap
 
 	err = healthEventsMap.UnmarshalJSON([]byte(quarantineHealthEventAnnotationStr))
 	if err != nil {
-		return false, fmt.Errorf("failed to unmarshal quarantine annotation for node %s: %w", nodeName, err)
+		return false, true, fmt.Errorf("failed to unmarshal quarantine annotation for node %s: %w", nodeName, err)
 	}
 
 	slog.InfoContext(ctx, "HealthEvents which are part of quarantineHealthEvent annotation",
@@ -577,24 +588,24 @@ func (e *NodeDrainEvaluator) isNodeAlreadyDrained(ctx context.Context, currentEv
 
 		healthEventWithStatus, healthEvent, err := getHealthEventFromId(ctx, id, nodeName, healthEventStore)
 		if err != nil {
-			return false, err
+			return false, true, err
 		}
 		// none of HealthEventStatus, UserPodsEvictionStatus, or Status are ptr values
 		drainCompleted := healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus.Status == datastore.StatusSucceeded
 
 		partialDrainEntity, err := e.shouldExecutePartialDrain(healthEvent)
 		if err != nil {
-			return false, err
+			return false, true, err
 		}
 
 		skipDrain := canSkipDrain(ctx, drainCompleted, partialDrainEntity, currentPartialDrainEntity, id, nodeName)
 		if skipDrain {
-			return true, nil
+			return true, true, nil
 		}
 		// continue checking any other HealthEvents on quarantineHealthEvent annotation
 	}
 
-	return false, nil
+	return false, true, nil
 }
 
 func getHealthEventFromId(ctx context.Context, id string, nodeName string,

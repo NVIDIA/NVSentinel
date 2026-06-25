@@ -811,7 +811,7 @@ func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 		require.Len(t, labeler.informersSynced, 3)
 	})
 
-	t.Run("enabled config creates ResourceSlice informer", func(t *testing.T) {
+	t.Run("node-only enabled config does not create ResourceSlice informer", func(t *testing.T) {
 		labeler, err := NewLabeler(
 			clientset,
 			time.Minute,
@@ -821,6 +821,22 @@ func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 			"",
 			false,
 			testDeviceCountConfig(),
+		)
+		require.NoError(t, err)
+		require.Nil(t, labeler.resourceSliceInformer)
+		require.Len(t, labeler.informersSynced, 3)
+	})
+
+	t.Run("ResourceSlice expression creates ResourceSlice informer", func(t *testing.T) {
+		labeler, err := NewLabeler(
+			clientset,
+			time.Minute,
+			"nvidia-dcgm",
+			"nvidia-driver-daemonset",
+			"nvidia-driver-installer",
+			"",
+			false,
+			testResourceSliceDeviceCountConfig(),
 		)
 		require.NoError(t, err)
 		require.NotNil(t, labeler.resourceSliceInformer)
@@ -877,7 +893,7 @@ func TestLabelerResourceSlicesForNodeFiltersByNodeName(t *testing.T) {
 		"nvidia-driver-installer",
 		"",
 		false,
-		testDeviceCountConfig(),
+		testResourceSliceDeviceCountConfig(),
 	)
 	require.NoError(t, err)
 	require.NotNil(t, labeler.resourceSliceInformer)
@@ -924,6 +940,13 @@ func testDeviceCountConfig() devicecounts.Config {
 			},
 		},
 	}
+}
+
+func testResourceSliceDeviceCountConfig() devicecounts.Config {
+	config := testDeviceCountConfig()
+	config.Classes[0].CurrentExpression = "resourceSlices.size()"
+
+	return config
 }
 
 // TestKataLabelOverrideIsolation verifies that creating multiple labeler instances

@@ -617,7 +617,7 @@ func TestEvaluator_IsNodeAlreadyDrained(t *testing.T) {
 			setup.healthEventStore.healthEvents = tt.healthEventsFromStore
 			setup.healthEventStore.err = tt.healthEventStoreError
 
-			isDrained, err := setup.evaluator.isNodeAlreadyDrained(setup.ctx, tt.currentEventId, tt.partialDrainEntity,
+			isDrained, _, err := setup.evaluator.isNodeAlreadyDrained(setup.ctx, tt.currentEventId, tt.partialDrainEntity,
 				tt.nodeName, setup.healthEventStore)
 
 			if tt.expectError {

@@ -225,6 +225,8 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 		recommendedAction               protos.RecommendedAction
 		entitiesImpacted                []*protos.Entity
 		existingNodeLabels              map[string]string
+		nodeAnnotations                 map[string]string
+		annotationHealthEvents          []*protos.HealthEvent
 		findHealthEventsByQueryResponse []datastore.HealthEventWithStatus
 		expectError                     bool
 		expectedNodeLabel               *string
@@ -698,6 +700,16 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			namespaces:      []string{"test-ns"},
 			nodeQuarantined: model.AlreadyQuarantined,
 			pods:            []*v1.Pod{},
+			annotationHealthEvents: []*protos.HealthEvent{
+				{
+					Id:             "previous-event",
+					NodeName:       "already-drained-node",
+					Agent:          "test-agent",
+					CheckName:      "test-check",
+					ComponentClass: "GPU",
+					Version:        1,
+				},
+			},
 			findHealthEventsByQueryResponse: []datastore.HealthEventWithStatus{
 				{
 					HealthEventStatus: datastore.HealthEventStatus{
@@ -714,6 +726,24 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			expectError: false,
 			validateFunc: func(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, err error) {
 				assert.NoError(t, err)
+			},
+		},
+		{
+			name:              "AlreadyQuarantined with missing quarantine annotation is cancelled as stale",
+			nodeName:          "stale-already-quarantined-node",
+			namespaces:        []string{"test-ns"},
+			nodeQuarantined:   model.AlreadyQuarantined,
+			pods:              []*v1.Pod{},
+			expectError:       false,
+			expectedNodeLabel: ptr.To(""),
+			validateFunc: func(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, err error) {
+				assert.NoError(t, err)
+
+				node, getErr := client.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+				require.NoError(t, getErr)
+
+				_, exists := node.Labels[statemanager.NVSentinelStateLabelKey]
+				assert.False(t, exists, "stale AlreadyQuarantined events should not mutate node state label")
 			},
 		},
 		{
@@ -852,7 +882,14 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			if nodeLabels == nil {
 				nodeLabels = map[string]string{"test-label": "test-value"}
 			}
-			createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, tt.nodeName, nodeLabels, nil)
+			nodeAnnotations := tt.nodeAnnotations
+			if nodeAnnotations == nil && tt.annotationHealthEvents != nil {
+				annotationValue, err := createHealthEventAnnotationsMap(tt.annotationHealthEvents)
+				require.NoError(t, err)
+				nodeAnnotations = map[string]string{common.QuarantineHealthEventAnnotationKey: annotationValue}
+			}
+
+			createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, tt.nodeName, nodeLabels, nodeAnnotations)
 
 			for _, ns := range tt.namespaces {
 				createNamespace(setup.ctx, t, setup.client, ns)

@@ -438,15 +438,60 @@ func (r *Reconciler) ProcessEventGeneric(ctx context.Context,
 
 func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainActionResult,
 	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore, eventID string) error {
-	nodeName := healthEvent.HealthEvent.NodeName
-
 	r.updateDrainSessionTracing(ctx, action, healthEvent)
+
+	if isTerminalAction(action.Action) {
+		return r.executeTerminalAction(ctx, action, healthEvent, event, database, eventID)
+	}
+
+	return r.executeDrainAction(ctx, action, healthEvent, event, database, eventID)
+}
+
+func isTerminalAction(action evaluator.DrainAction) bool {
+	switch action {
+	case evaluator.ActionSkip, evaluator.ActionMarkAlreadyDrained, evaluator.ActionUpdateStatus, evaluator.ActionCancel:
+		return true
+	case evaluator.ActionWait, evaluator.ActionCreateCR, evaluator.ActionEvictImmediate, evaluator.ActionEvictWithTimeout,
+		evaluator.ActionCheckCompletion:
+		return false
+	}
+
+	return false
+}
+
+func (r *Reconciler) executeTerminalAction(ctx context.Context, action *evaluator.DrainActionResult,
+	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore, eventID string) error {
+	nodeName := healthEvent.HealthEvent.NodeName
 
 	switch action.Action {
 	case evaluator.ActionSkip:
 		r.clearEventStatus(eventID, nodeName)
 		return r.executeSkip(ctx, nodeName, healthEvent, event, database)
 
+	case evaluator.ActionMarkAlreadyDrained:
+		return r.handleMarkAlreadyDrained(ctx, eventID, nodeName, healthEvent, event, database, action.Status)
+
+	case evaluator.ActionUpdateStatus:
+		r.clearEventStatus(eventID, nodeName)
+		return r.executeUpdateStatus(ctx, healthEvent, event, database, action.Status)
+
+	case evaluator.ActionCancel:
+		r.clearEventStatus(eventID, nodeName)
+		return r.executeCancelStatus(ctx, healthEvent, event, database, action.Status)
+
+	case evaluator.ActionWait, evaluator.ActionCreateCR, evaluator.ActionEvictImmediate, evaluator.ActionEvictWithTimeout,
+		evaluator.ActionCheckCompletion:
+		return fmt.Errorf("unknown action: %s", action.Action.String())
+	}
+
+	return fmt.Errorf("unknown action: %s", action.Action.String())
+}
+
+func (r *Reconciler) executeDrainAction(ctx context.Context, action *evaluator.DrainActionResult,
+	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore, eventID string) error {
+	nodeName := healthEvent.HealthEvent.NodeName
+
+	switch action.Action {
 	case evaluator.ActionWait:
 		slog.InfoContext(ctx, "Waiting for node",
 			"node", nodeName,
@@ -472,16 +517,11 @@ func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainA
 
 		return r.executeCheckCompletion(ctx, action, healthEvent, action.PartialDrainEntity)
 
-	case evaluator.ActionMarkAlreadyDrained:
-		return r.handleMarkAlreadyDrained(ctx, eventID, nodeName, healthEvent, event, database, action.Status)
-
-	case evaluator.ActionUpdateStatus:
-		r.clearEventStatus(eventID, nodeName)
-		return r.executeUpdateStatus(ctx, healthEvent, event, database, action.Status)
-
-	default:
+	case evaluator.ActionSkip, evaluator.ActionMarkAlreadyDrained, evaluator.ActionUpdateStatus, evaluator.ActionCancel:
 		return fmt.Errorf("unknown action: %s", action.Action.String())
 	}
+
+	return fmt.Errorf("unknown action: %s", action.Action.String())
 }
 
 func (r *Reconciler) updateDrainSessionTracing(
@@ -715,7 +755,7 @@ func (r *Reconciler) executeMarkAlreadyDrained(ctx context.Context,
 		slog.ErrorContext(ctx, "HealthEventStatus is missing UserPodsEvictionStatus",
 			"node", nodeName)
 
-		return errors.New("missing UserPodsEvictionStatus")
+		return fmt.Errorf("missing UserPodsEvictionStatus for node %s", nodeName)
 	}
 
 	podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
@@ -723,6 +763,39 @@ func (r *Reconciler) executeMarkAlreadyDrained(ctx context.Context,
 
 	return r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus,
 		nodeName, metrics.DrainStatusSkipped)
+}
+
+func (r *Reconciler) executeCancelStatus(ctx context.Context,
+	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore, status model.Status) error {
+	ctx, span := tracing.StartSpan(ctx, "node_drainer.execute_cancel_status")
+	defer span.End()
+
+	nodeName := healthEvent.HealthEvent.NodeName
+
+	if healthEvent.HealthEventStatus.UserPodsEvictionStatus == nil {
+		slog.ErrorContext(ctx, "HealthEventStatus is missing UserPodsEvictionStatus",
+			"node", nodeName)
+
+		return errors.New("missing UserPodsEvictionStatus")
+	}
+
+	podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
+	podsEvictionStatus.Status = string(status)
+
+	if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus,
+		nodeName, metrics.DrainStatusCancelled); err != nil {
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("node_drainer.error.type", "update_cancel_status_error"),
+			attribute.String("node_drainer.error.message", err.Error()),
+		)
+
+		return fmt.Errorf("failed to update cancelled status for node %s: %w", nodeName, err)
+	}
+
+	metrics.CancelledEvent.WithLabelValues(nodeName, healthEvent.HealthEvent.CheckName).Inc()
+
+	return nil
 }
 
 func (r *Reconciler) executeUpdateStatus(ctx context.Context, healthEvent model.HealthEventWithStatus,

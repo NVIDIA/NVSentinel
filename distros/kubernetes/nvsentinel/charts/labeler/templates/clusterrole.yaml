@@ -37,6 +37,7 @@ rules:
       - watch
       - patch
       - update
+  {{ if eq (include "labeler.expectedDeviceCountsRequiresResourceSlices" .) "true" }}
   - apiGroups:
       - resource.k8s.io
     resources:
@@ -45,3 +46,4 @@ rules:
       - get
       - list
       - watch
+  {{ end }}

@@ -6,6 +6,21 @@ Expand the name of the chart.
 {{- end }}
 
 {{/*
+Whether expected device-count configuration needs ResourceSlice access.
+*/}}
+{{- define "labeler.expectedDeviceCountsRequiresResourceSlices" -}}
+{{- $requires := false -}}
+{{- if .Values.expectedDeviceCounts.enabled -}}
+{{- range .Values.expectedDeviceCounts.classes }}
+{{- if and .enabled (contains "resourceSlices" (default "" .currentExpression)) -}}
+{{- $requires = true -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $requires -}}
+{{- end }}
+
+{{/*
 Create a default fully qualified app name.
 */}}
 {{- define "labeler.fullname" -}}

@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -146,6 +147,80 @@ func TestExpectedDeviceCountsOverridePrecedence(t *testing.T) {
 	require.True(t, updated)
 	require.Equal(t, "4", node.Labels[testGPUCountCurrentLabel])
 	require.Equal(t, "8", node.Labels[testGPUCountExpectedLabel])
+}
+
+func TestExpectedDeviceCountsFromAllocatableResourceQuantity(t *testing.T) {
+	config := Config{
+		Enabled: true,
+		Classes: []ClassConfig{
+			{
+				Name:    "nic",
+				Enabled: true,
+				Labels: Labels{
+					Current:  testNICCountCurrentLabel,
+					Expected: testNICCountExpectedLabel,
+				},
+				CurrentExpression: "int(node.status.allocatable['nvidia.com/mlnxnics'])",
+			},
+		},
+	}
+
+	node := testNode("node-a", map[string]string{})
+	node.Status.Allocatable = corev1.ResourceList{
+		corev1.ResourceName("nvidia.com/mlnxnics"): resource.MustParse("8"),
+	}
+
+	manager := newTestManager(t, config)
+	updated := manager.ReconcileNodeLabelsInPlace(
+		context.Background(),
+		node,
+		[]*corev1.Node{node},
+		func(*corev1.Node) []*resourcev1.ResourceSlice { return nil },
+	)
+
+	require.True(t, updated)
+	require.Equal(t, "8", node.Labels[testNICCountCurrentLabel])
+	require.Equal(t, "8", node.Labels[testNICCountExpectedLabel])
+}
+
+func TestManagerRequiresResourceSlices(t *testing.T) {
+	t.Run("node-only expression does not require ResourceSlices", func(t *testing.T) {
+		manager := newTestManager(t, Config{
+			Enabled: true,
+			Classes: []ClassConfig{
+				{
+					Name:    "gpu",
+					Enabled: true,
+					Labels: Labels{
+						Current:  testGPUCountCurrentLabel,
+						Expected: testGPUCountExpectedLabel,
+					},
+					CurrentExpression: "int(node.metadata.labels['nvidia.com/gpu.count'])",
+				},
+			},
+		})
+
+		require.False(t, manager.RequiresResourceSlices())
+	})
+
+	t.Run("ResourceSlice expression requires ResourceSlices", func(t *testing.T) {
+		manager := newTestManager(t, Config{
+			Enabled: true,
+			Classes: []ClassConfig{
+				{
+					Name:    "nic",
+					Enabled: true,
+					Labels: Labels{
+						Current:  testNICCountCurrentLabel,
+						Expected: testNICCountExpectedLabel,
+					},
+					CurrentExpression: "resourceSlices.size()",
+				},
+			},
+		})
+
+		require.True(t, manager.RequiresResourceSlices())
+	})
 }
 
 func newTestManager(t *testing.T, config Config) *Manager {

@@ -109,7 +109,7 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	}
 
 	var resourceSliceInformer cache.SharedIndexInformer
-	if deviceCounts.Enabled() {
+	if deviceCounts.RequiresResourceSlices() {
 		resourceSliceInformer = createResourceSliceInformer(clientset, resyncPeriod)
 		informersSynced = append(informersSynced, resourceSliceInformer.HasSynced)
 	}
