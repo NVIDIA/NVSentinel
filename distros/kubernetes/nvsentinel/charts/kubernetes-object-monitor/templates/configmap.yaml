@@ -31,6 +31,9 @@ data:
         group = {{ .resource.group | quote }}
         version = {{ .resource.version | quote }}
         kind = {{ .resource.kind | quote }}
+        {{ if .resource.namespace }}
+        namespace = {{ .resource.namespace | quote }}
+        {{ end }}
       
       [policies.predicate]
         expression = {{ if contains "\n" .predicate.expression }}'''

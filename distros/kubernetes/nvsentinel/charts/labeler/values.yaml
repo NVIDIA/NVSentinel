@@ -42,6 +42,60 @@ kataLabelOverride: ""
 # are installed directly on the host rather than via GPU Operator driver containers.
 assumeDriverInstalled: false
 
+# Expected device count labels
+# When enabled, the labeler writes current/expected device-count labels per configured class.
+# Current counts come from CEL expressions over the node object and associated ResourceSlices.
+# Expected counts are learned per grouping-label partition unless an override matches.
+expectedDeviceCounts:
+  enabled: true
+  classes:
+    - name: gpu
+      enabled: true
+      labels:
+        current: nvsentinel.dgxc.nvidia.com/gpu.count.current
+        expected: nvsentinel.dgxc.nvidia.com/gpu.count.expected
+      groupingLabels:
+        - node.kubernetes.io/instance-type
+        - nvidia.com/gpu.product
+      expectedCountOverrides: []
+      currentExpression: |
+        int(node.metadata.labels['nvidia.com/gpu.count'])
+    - name: nic
+      enabled: true
+      labels:
+        current: nvsentinel.dgxc.nvidia.com/nic.count.current
+        expected: nvsentinel.dgxc.nvidia.com/nic.count.expected
+      groupingLabels:
+        - node.kubernetes.io/instance-type
+      expectedCountOverrides: []
+      currentExpression: |
+        int(node.status.allocatable['nvidia.com/mlnxnics'])
+    # Example AWS RoCE DRA NIC class. Uncomment and adapt per environment.
+    # - name: nic
+    #   enabled: false
+    #   labels:
+    #     current: nvsentinel.dgxc.nvidia.com/nic.count.current
+    #     expected: nvsentinel.dgxc.nvidia.com/nic.count.expected
+    #   groupingLabels:
+    #     - node.kubernetes.io/instance-type
+    #   expectedCountOverrides: []
+    #   currentExpression: |
+    #     sum(resourceSlices
+    #       .filter(rs,
+    #         has(rs.spec.driver) &&
+    #         rs.spec.driver == 'dra.networking.k8s.aws' &&
+    #         has(rs.spec.devices)
+    #       )
+    #       .map(rs, rs.spec.devices
+    #         .filter(d,
+    #           has(d.attributes) &&
+    #           'dra.vpc.amazonaws.com/deviceType' in d.attributes &&
+    #           has(d.attributes['dra.vpc.amazonaws.com/deviceType'].string) &&
+    #           d.attributes['dra.vpc.amazonaws.com/deviceType'].string == 'roce'
+    #         )
+    #         .size()
+    #       ))
+
 resources:
   requests:
     cpu: 100m

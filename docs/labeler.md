@@ -31,8 +31,9 @@ The Labeler runs as a deployment in the cluster:
 2. When pods start on a node, examines container images to extract versions
 3. Updates node labels with detected versions
 4. Watches node labels to detect Kata Container runtime
-5. NVSentinel components read these labels and configure themselves accordingly
-6. Continuously keeps labels synchronized as infrastructure changes
+5. Optionally evaluates configured device-count classes and labels current/expected GPU or NIC counts
+6. NVSentinel components read these labels and configure themselves accordingly
+7. Continuously keeps labels synchronized as infrastructure changes
 
 For example:
 - GPU Health Monitor uses the DCGM version label to select the correct DCGM API version
@@ -51,12 +52,17 @@ labeler:
   
   # Optional: Override the default Kata Containers detection label
   kataLabelOverride: ""  # Custom label to check for Kata runtime
+
+  # Optional: Enable current/expected device-count labels
+  expectedDeviceCounts:
+    enabled: false
 ```
 
 ### Configuration Options
 
 - **Log Level**: Control logging verbosity (info, debug, warn, error)
 - **Kata Label Override**: Specify additional node label to check for Kata Container detection
+- **Expected Device Counts**: Configure device-count classes that derive current and expected count labels from node labels or DRA ResourceSlices
 
 ## Labels Applied
 
@@ -89,6 +95,17 @@ kubectl label nodes <node-name> nvsentinel.dgxc.nvidia.com/driver.installed=true
 **Values**: `true` or `false`
 
 Indicates whether the node is running Kata Containers runtime (detected from node labels).
+
+### Expected Device Counts
+**Labels**:
+- `nvsentinel.dgxc.nvidia.com/gpu.count.current`
+- `nvsentinel.dgxc.nvidia.com/gpu.count.expected`
+- `nvsentinel.dgxc.nvidia.com/nic.count.current`
+- `nvsentinel.dgxc.nvidia.com/nic.count.expected`
+
+**Values**: non-negative integer strings
+
+When enabled, the labeler evaluates configured CEL expressions against the node and associated DRA ResourceSlices. Current labels reflect the observed count. Expected labels come from an override or the maximum learned count among nodes in the same grouping-label partition.
 
 ## Key Features
 

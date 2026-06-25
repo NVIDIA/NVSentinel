@@ -26,6 +26,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	oteltrace "go.opentelemetry.io/otel/trace"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -390,6 +391,12 @@ func (r *FaultRemediationReconciler) handleCancellationEvent(
 
 	remediationState, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			slog.WarnContext(ctx, "Node no longer exists, marking cancellation event as terminal", "node", nodeName)
+
+			return r.markEventTerminalAndProcessed(ctx, healthEventStore, eventWithToken, watcherInstance, nodeName, true)
+		}
+
 		slog.ErrorContext(ctx, "Failed to get remediation state for node",
 			"node", nodeName,
 			"error", err)
@@ -471,6 +478,12 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 	shouldCreateCR, existingCR, existingCRRemediated, err := r.checkExistingCRStatus(ctx, healthEvent,
 		healthEventWithStatus.CreatedAt, groupConfig)
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			slog.WarnContext(ctx, "Node no longer exists, marking remediation event as stale", "node", nodeName)
+
+			return r.markEventTerminalAndProcessed(ctx, healthEventStore, eventWithToken, watcherInstance, nodeName, false)
+		}
+
 		metrics.ProcessingErrors.WithLabelValues("cr_status_check_error", nodeName).Inc()
 		slog.ErrorContext(ctx, "Error checking existing CR status", "node", nodeName, "error", err)
 
@@ -823,6 +836,23 @@ func (r *FaultRemediationReconciler) markProcessedOrError(
 	return ctrl.Result{}, nil
 }
 
+// markEventTerminalAndProcessed writes faultRemediated and advances the change-stream token.
+// Used when the target Node no longer exists so the event is not retried.
+func (r *FaultRemediationReconciler) markEventTerminalAndProcessed(
+	ctx context.Context,
+	healthEventStore datastore.HealthEventStore,
+	eventWithToken datastore.EventWithToken,
+	watcherInstance datastore.ChangeStreamWatcher,
+	nodeName string,
+	remediated bool,
+) (ctrl.Result, error) {
+	if err := r.updateNodeRemediatedStatus(ctx, healthEventStore, eventWithToken, remediated); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	return r.markProcessedOrError(ctx, watcherInstance, eventWithToken, nodeName)
+}
+
 func (r *FaultRemediationReconciler) updateNodeRemediatedStatus(
 	ctx context.Context,
 	healthEventStore datastore.HealthEventStore,
@@ -1058,10 +1088,7 @@ func (r *FaultRemediationReconciler) parseHealthEvent(ctx context.Context, event
 		metrics.ProcessingErrors.WithLabelValues("extract_id_error", "unknown").Inc()
 		slog.ErrorContext(ctx, "Error extracting document ID", "error", err)
 
-		if markErr := watcherInstance.MarkProcessed(context.Background(), eventWithToken.ResumeToken); markErr != nil {
-			metrics.ProcessingErrors.WithLabelValues("mark_processed_error", "unknown").Inc()
-			slog.Error("Error updating resume token", "error", markErr)
-		}
+		_ = safeMarkProcessed(context.Background(), watcherInstance, eventWithToken.ResumeToken, "unknown")
 
 		return result, fmt.Errorf("error extracting document ID: %w", err)
 	}

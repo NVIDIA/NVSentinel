@@ -27,9 +27,14 @@ spec:
       {{- include "labeler.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
+      {{- if or .Values.podAnnotations .Values.expectedDeviceCounts.enabled }}
       annotations:
+        {{- if .Values.expectedDeviceCounts.enabled }}
+        checksum/expected-device-counts-config: {{ include "labeler.expectedDeviceCountsConfig" . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- end }}
       labels:
         {{- include "labeler.labels" . | nindent 8 }}
@@ -64,6 +69,10 @@ spec:
             {{- if .Values.assumeDriverInstalled }}
             - "--assume-driver-installed"
             {{- end }}
+            {{- if .Values.expectedDeviceCounts.enabled }}
+            - "--expected-device-counts-config-file"
+            - "/etc/nvsentinel/labeler/expected-device-counts.toml"
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           ports:
@@ -85,9 +94,17 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
-          {{- if .Values.global.auditLogging.enabled }}
+          {{- if or .Values.global.auditLogging.enabled .Values.expectedDeviceCounts.enabled }}
           volumeMounts:
+            {{- if .Values.expectedDeviceCounts.enabled }}
+            - name: expected-device-counts-config
+              mountPath: /etc/nvsentinel/labeler/expected-device-counts.toml
+              subPath: expected-device-counts.toml
+              readOnly: true
+            {{- end }}
+            {{- if .Values.global.auditLogging.enabled }}
             {{- include "nvsentinel.auditLogging.volumeMount" . | nindent 12 }}
+            {{- end }}
           {{- end }}
           env:
             - name: POD_NAME
@@ -99,9 +116,16 @@ spec:
             {{- if .Values.global.auditLogging.enabled }}
             {{- include "nvsentinel.auditLogging.envVars" . | nindent 12 }}
             {{- end }}
-      {{- if .Values.global.auditLogging.enabled }}
+      {{- if or .Values.global.auditLogging.enabled .Values.expectedDeviceCounts.enabled }}
       volumes:
+        {{- if .Values.expectedDeviceCounts.enabled }}
+        - name: expected-device-counts-config
+          configMap:
+            name: {{ include "labeler.configMapName" . }}
+        {{- end }}
+        {{- if .Values.global.auditLogging.enabled }}
         {{- include "nvsentinel.auditLogging.volume" . | nindent 8 }}
+        {{- end }}
       {{- end }}
       {{- with (.Values.global.systemNodeSelector | default .Values.nodeSelector) }}
       nodeSelector:

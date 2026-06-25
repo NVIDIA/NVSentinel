@@ -64,6 +64,37 @@ skip = true
 	require.True(t, healthEvent.DrainOverrides.Skip)
 }
 
+func TestLoadResourceNamespace(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	tomlConfig := `
+[[policies]]
+name = "operator-pod-unhealthy"
+enabled = true
+
+[policies.resource]
+group = ""
+version = "v1"
+kind = "Pod"
+namespace = "gpu-operator"
+
+[policies.predicate]
+expression = "true"
+
+[policies.healthEvent]
+componentClass = "Software"
+isFatal = true
+message = "operator pod is unhealthy"
+recommendedAction = "CONTACT_SUPPORT"
+errorCode = ["OPERATOR_POD_UNHEALTHY"]
+`
+	require.NoError(t, os.WriteFile(configPath, []byte(tomlConfig), 0o600))
+
+	cfg, err := Load(configPath)
+	require.NoError(t, err)
+	require.Len(t, cfg.Policies, 1)
+	require.Equal(t, "gpu-operator", cfg.Policies[0].Resource.Namespace)
+}
+
 func TestLoadRejectsConflictingBehaviourOverrides(t *testing.T) {
 	tests := []struct {
 		name         string

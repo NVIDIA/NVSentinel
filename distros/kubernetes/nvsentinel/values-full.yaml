@@ -954,6 +954,63 @@ labeler:
   # Leave empty to only check default label
   kataLabelOverride: ""
 
+  # Pre-installed driver configuration
+  # When enabled, the labeler sets nvsentinel.dgxc.nvidia.com/driver.installed=true
+  # on all nodes with nvidia.com/gpu.present=true, skipping driver pod detection.
+  assumeDriverInstalled: false
+
+  # Expected device count labels
+  # Writes current/expected device-count labels from node labels or DRA ResourceSlice data.
+  expectedDeviceCounts:
+    enabled: true
+    classes:
+      - name: gpu
+        enabled: true
+        labels:
+          current: nvsentinel.dgxc.nvidia.com/gpu.count.current
+          expected: nvsentinel.dgxc.nvidia.com/gpu.count.expected
+        groupingLabels:
+          - node.kubernetes.io/instance-type
+          - nvidia.com/gpu.product
+        expectedCountOverrides: []
+        currentExpression: |
+          int(node.metadata.labels['nvidia.com/gpu.count'])
+      - name: nic
+        enabled: true
+        labels:
+          current: nvsentinel.dgxc.nvidia.com/nic.count.current
+          expected: nvsentinel.dgxc.nvidia.com/nic.count.expected
+        groupingLabels:
+          - node.kubernetes.io/instance-type
+        expectedCountOverrides: []
+        currentExpression: |
+          int(node.status.allocatable['nvidia.com/mlnxnics'])
+      # Example AWS RoCE DRA NIC class. Uncomment and adapt per environment.
+      # - name: nic
+      #   enabled: false
+      #   labels:
+      #     current: nvsentinel.dgxc.nvidia.com/nic.count.current
+      #     expected: nvsentinel.dgxc.nvidia.com/nic.count.expected
+      #   groupingLabels:
+      #     - node.kubernetes.io/instance-type
+      #   expectedCountOverrides: []
+      #   currentExpression: |
+      #     sum(resourceSlices
+      #       .filter(rs,
+      #         has(rs.spec.driver) &&
+      #         rs.spec.driver == 'dra.networking.k8s.aws' &&
+      #         has(rs.spec.devices)
+      #       )
+      #       .map(rs, rs.spec.devices
+      #         .filter(d,
+      #           has(d.attributes) &&
+      #           'dra.vpc.amazonaws.com/deviceType' in d.attributes &&
+      #           has(d.attributes['dra.vpc.amazonaws.com/deviceType'].string) &&
+      #           d.attributes['dra.vpc.amazonaws.com/deviceType'].string == 'roce'
+      #         )
+      #         .size()
+      #       ))
+
   # Pod resource limits and requests
   resources:
     requests:
@@ -1114,7 +1171,29 @@ janitor:
     # - gcp: Google Cloud Platform GKE clusters
     # - azure: Microsoft Azure AKS clusters
     # - oci: Oracle Cloud Infrastructure OKE clusters
+    # - generic: Bare-metal / on-premises clusters using privileged reboot Jobs
     provider: "kind"
+    
+    # Generic provider configuration (only needed when provider=generic)
+    generic:
+      # Container image used for the reboot Job
+      rebootImage: "public.ecr.aws/docker/library/busybox:1.37.0"
+      
+      # Use Linux Magic SysRq for an immediate kernel reboot instead of
+      # running chroot /host reboot. Only enable this when target nodes support
+      # Linux Magic SysRq and their kernel/config permissions allow an immediate
+      # reboot through /proc/sysrq-trigger.
+      useSysrqReboot: false
+      
+      # Namespace for reboot Jobs
+      # Leave empty to use the janitor-provider release namespace
+      rebootJobNamespace: ""
+      
+      # TTL in seconds for completed reboot Jobs
+      rebootJobTTLSeconds: 3600
+      
+      # Comma-separated image pull secret names for the reboot Job
+      imagePullSecrets: ""
     
     # AWS-specific configuration (only needed when provider=aws)
     aws:

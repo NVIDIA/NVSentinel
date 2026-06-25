@@ -13,6 +13,10 @@ The labeler automatically manages these node labels:
 | `nvsentinel.dgxc.nvidia.com/dcgm.version` | `3.x`, `4.x` | DCGM major version detected from DCGM pods |
 | `nvsentinel.dgxc.nvidia.com/driver.installed` | `true`, `false` | NVIDIA driver pod status on node |
 | `nvsentinel.dgxc.nvidia.com/kata.enabled` | `true`, `false` | Kata Containers runtime presence |
+| `nvsentinel.dgxc.nvidia.com/gpu.count.current` | non-negative integer | Current GPU count from the configured class expression |
+| `nvsentinel.dgxc.nvidia.com/gpu.count.expected` | non-negative integer | Expected GPU count from override or learned hardware-class baseline |
+| `nvsentinel.dgxc.nvidia.com/nic.count.current` | non-negative integer | Current NIC count from the configured class expression |
+| `nvsentinel.dgxc.nvidia.com/nic.count.expected` | non-negative integer | Expected NIC count from override or learned hardware-class baseline |
 
 ## Configuration Reference
 
@@ -78,6 +82,41 @@ The following label values (case-insensitive) are considered truthy for Kata det
 - `"yes"`
 
 Any other value or missing label results in `kata.enabled=false`.
+
+## Expected Device Counts
+
+Expected device-count labeling is disabled by default. When enabled, the labeler evaluates enabled classes and writes current/expected count labels only when the configured CEL expression returns a valid non-negative integer.
+
+The Helm chart renders this values block into a TOML ConfigMap entry and mounts it into the labeler pod. Because expressions are compiled at startup, Helm also annotates the pod template with a checksum so changes to the ConfigMap roll the Deployment.
+
+```yaml
+labeler:
+  expectedDeviceCounts:
+    enabled: true
+    classes:
+      - name: gpu
+        enabled: true
+        labels:
+          current: nvsentinel.dgxc.nvidia.com/gpu.count.current
+          expected: nvsentinel.dgxc.nvidia.com/gpu.count.expected
+        groupingLabels:
+          - node.kubernetes.io/instance-type
+          - nvidia.com/gpu.product
+        expectedCountOverrides:
+          - matchLabels:
+              nvidia.com/gpu.product: NVIDIA-GB200
+            count: 8
+        currentExpression: |
+          int(node.metadata.labels['nvidia.com/gpu.count'])
+```
+
+The CEL context exposes:
+
+- `node`: the Kubernetes Node object being reconciled.
+- `resourceSlices`: ResourceSlice objects associated with the node.
+- `sum(list<int>)`: helper that returns the sum of a list of integers.
+
+For classes without a matching override, the expected value is learned as the maximum current or existing expected count among nodes with the same configured grouping-label values. Learned expected counts can rise automatically, but do not fall automatically when a node reports fewer devices.
 
 ### Kata Detection Examples
 

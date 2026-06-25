@@ -27,9 +27,10 @@ type Policy struct {
 }
 
 type ResourceSpec struct {
-	Group   string `toml:"group"`
-	Version string `toml:"version"`
-	Kind    string `toml:"kind"`
+	Group     string `toml:"group"`
+	Version   string `toml:"version"`
+	Kind      string `toml:"kind"`
+	Namespace string `toml:"namespace,omitempty"`
 }
 
 type PredicateSpec struct {
@@ -63,6 +64,10 @@ func (r *ResourceSpec) GVK() string {
 	}
 
 	return r.Group + "/" + r.Version + "/" + r.Kind
+}
+
+func (r *ResourceSpec) MatchesNamespace(namespace string) bool {
+	return r.Namespace == "" || r.Namespace == namespace
 }
 
 // ResourceInfo contains the metadata needed to identify a resource in health events.

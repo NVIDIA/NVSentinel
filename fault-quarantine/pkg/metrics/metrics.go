@@ -141,21 +141,23 @@ var (
 	)
 
 	// Node Remediation Duration (end-to-end) Metrics
-	NodeRemediationDurationSeconds = promauto.NewHistogram(
+	NodeRemediationDurationSeconds = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "fault_quarantine_node_remediation_duration_seconds",
 			Help:    "Node remediation time from health event generation to node unquarantine.",
 			Buckets: prometheus.ExponentialBuckets(10, 1.5, 27),
 		},
+		[]string{"recommended_action"},
 	)
 
 	// Node Remediation Duration (excluding node-drainer time) Metrics
-	NodeRemediationDurationExcludingDrainSeconds = promauto.NewHistogram(
+	NodeRemediationDurationExcludingDrainSeconds = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "fault_quarantine_node_remediation_duration_excluding_drain_seconds",
 			Help:    "Node Remediation time excluding node-drainer duration.",
 			Buckets: prometheus.ExponentialBuckets(10, 1.5, 19),
 		},
+		[]string{"recommended_action"},
 	)
 
 	// Event Processing Metrics

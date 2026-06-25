@@ -24,6 +24,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
+	"github.com/nvidia/nvsentinel/labeler/pkg/devicecounts"
 	"github.com/nvidia/nvsentinel/labeler/pkg/labeler"
 )
 
@@ -34,6 +35,7 @@ type InitializationParams struct {
 	GKEInstallerAppLabel  string
 	KataLabel             string
 	AssumeDriverInstalled bool
+	ExpectedDeviceCounts  devicecounts.Config
 }
 
 type Components struct {
@@ -58,6 +60,7 @@ func InitializeAll(params InitializationParams) (*Components, error) {
 		params.GKEInstallerAppLabel,
 		params.KataLabel,
 		params.AssumeDriverInstalled,
+		params.ExpectedDeviceCounts,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("error creating labeler instance: %w", err)

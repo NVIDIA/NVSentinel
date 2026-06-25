@@ -106,13 +106,18 @@ csp:
   # - azure: For Microsoft Azure AKS clusters
   # - oci: For Oracle Cloud Infrastructure OKE clusters
   # - nebius: For Nebius Managed Kubernetes (MK8s) clusters
-  # - generic: For bare-metal / on-premises clusters (reboots via privileged Job running chroot /host reboot)
+  # - generic: For bare-metal / on-premises clusters (reboots via privileged Job)
   provider: "kind"
 
   # Generic provider configuration (only used when provider=generic)
   generic:
     # Container image used for the reboot Job
     rebootImage: "public.ecr.aws/docker/library/busybox:1.37.0"
+    # Use the Linux Magic SysRq trigger for an immediate kernel reboot instead of
+    # running chroot /host reboot. Only enable this when target nodes support
+    # Linux Magic SysRq and their kernel/config permissions allow an immediate
+    # reboot through /proc/sysrq-trigger.
+    useSysrqReboot: false
     # Namespace for reboot Jobs (defaults to the janitor-provider's namespace)
     rebootJobNamespace: ""
     # TTL in seconds for completed reboot Jobs (auto-cleanup)

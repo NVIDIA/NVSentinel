@@ -29,6 +29,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
+	"github.com/nvidia/nvsentinel/labeler/pkg/devicecounts"
 	"github.com/nvidia/nvsentinel/labeler/pkg/initializer"
 	"github.com/nvidia/nvsentinel/labeler/pkg/labeler"
 )
@@ -65,7 +66,8 @@ func main() {
 
 func run() error {
 	kubeconfig, metricsPort, dcgmAppLabel, driverAppLabel,
-		gkeInstallerAppLabel, kataLabel, assumeDriverInstalled := parseFlags()
+		gkeInstallerAppLabel, kataLabel, expectedDeviceCountsConfigFile,
+		assumeDriverInstalled := parseFlags()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -73,6 +75,11 @@ func run() error {
 	portInt, err := strconv.Atoi(*metricsPort)
 	if err != nil {
 		return fmt.Errorf("invalid metrics port: %w", err)
+	}
+
+	expectedDeviceCounts, err := loadExpectedDeviceCountsConfig(*expectedDeviceCountsConfigFile)
+	if err != nil {
+		return fmt.Errorf("load expected device counts config: %w", err)
 	}
 
 	srv := server.NewServer(
@@ -88,6 +95,7 @@ func run() error {
 		GKEInstallerAppLabel:  *gkeInstallerAppLabel,
 		KataLabel:             *kataLabel,
 		AssumeDriverInstalled: *assumeDriverInstalled,
+		ExpectedDeviceCounts:  expectedDeviceCounts,
 	}
 
 	components, err := initializer.InitializeAll(params)
@@ -116,7 +124,7 @@ func run() error {
 
 func parseFlags() (
 	kubeconfig, metricsPort, dcgmAppLabel, driverAppLabel,
-	gkeInstallerAppLabel, kataLabel *string, assumeDriverInstalled *bool,
+	gkeInstallerAppLabel, kataLabel, expectedDeviceCountsConfigFile *string, assumeDriverInstalled *bool,
 ) {
 	kubeconfig = flag.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	metricsPort = flag.String("metrics-port", "2112", "Port to expose Prometheus metrics on")
@@ -127,6 +135,8 @@ func parseFlags() (
 	kataLabel = flag.String("kata-label", "",
 		fmt.Sprintf("Custom node label to check for Kata Containers support. If empty, uses default '%s'",
 			labeler.KataRuntimeDefaultLabel))
+	expectedDeviceCountsConfigFile = flag.String("expected-device-counts-config-file", "",
+		"Path to a TOML expected-device-count configuration file. Empty disables expected device count labels.")
 	assumeDriverInstalled = flag.Bool("assume-driver-installed", false,
 		"Assume GPU drivers are pre-installed on GPU nodes (nvidia.com/gpu.present=true). "+
 			"Sets driver.installed=true unconditionally for those nodes, skipping driver pod detection. "+
@@ -135,4 +145,17 @@ func parseFlags() (
 	flag.Parse()
 
 	return
+}
+
+func loadExpectedDeviceCountsConfig(configFile string) (devicecounts.Config, error) {
+	if configFile == "" {
+		return devicecounts.Config{}, nil
+	}
+
+	config, err := devicecounts.LoadConfig(configFile)
+	if err != nil {
+		return devicecounts.Config{}, fmt.Errorf("load expected device counts config %q: %w", configFile, err)
+	}
+
+	return config, nil
 }

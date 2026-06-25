@@ -82,6 +82,8 @@ spec:
             # Generic provider environment variables
             - name: GENERIC_REBOOT_IMAGE
               value: {{ .Values.csp.generic.rebootImage | quote }}
+            - name: GENERIC_REBOOT_USE_SYSRQ
+              value: {{ .Values.csp.generic.useSysrqReboot | default false | quote }}
             - name: GENERIC_REBOOT_JOB_NAMESPACE
               value: {{ .Values.csp.generic.rebootJobNamespace | default .Release.Namespace | quote }}
             - name: GENERIC_REBOOT_JOB_TTL
