@@ -72,6 +72,17 @@ const (
 	// applyAbandonAfter elapsed with the target Node still missing. Subsequent
 	// reconciles short-circuit; only operator delete drives cleanup from here.
 	applyAbandonedAnnotation = "nvsentinel.dgxc.nvidia.com/apply-abandoned"
+
+	// closeRecordedAnnotation marks that the close-bucket metrics (closed +
+	// external_response + open-1 + age histogram) have already fired for this
+	// ExtRR's lifecycle. Decouples the business event from the Node-PATCH
+	// side effect so terminate-style remediations (Maestro deletes the Node
+	// then signals Complete=True) are still observable.
+	closeRecordedAnnotation = "nvsentinel.dgxc.nvidia.com/close-recorded"
+
+	// annotationValueTrue is the boolean truthy value for the apply-abandoned
+	// and close-recorded markers.
+	annotationValueTrue = "true"
 )
 
 // ExternalRemediationRequestReconciler implements the ADR-040 state machine.
@@ -289,7 +300,7 @@ var applyAbandonAfter = 10 * time.Minute
 func (r *ExternalRemediationRequestReconciler) reconcileApply(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
-	if extrrObj.GetAnnotations()[applyAbandonedAnnotation] == "true" {
+	if extrrObj.GetAnnotations()[applyAbandonedAnnotation] == annotationValueTrue {
 		return ctrl.Result{}, nil
 	}
 
@@ -381,7 +392,7 @@ func (r *ExternalRemediationRequestReconciler) abandonApply(
 		updated.Annotations = map[string]string{}
 	}
 
-	updated.Annotations[applyAbandonedAnnotation] = "true"
+	updated.Annotations[applyAbandonedAnnotation] = annotationValueTrue
 
 	if err := r.Patch(ctx, updated, client.MergeFrom(extrrObj)); err != nil {
 		return fmt.Errorf("stamping apply-abandoned annotation on ExtRR %s: %w", extrrObj.Name, err)
@@ -413,7 +424,11 @@ func (r *ExternalRemediationRequestReconciler) transitionToReleaseSuccess(
 }
 
 // reconcileCleanupAfterComplete scrubs the Node when Complete=True; the ExtRR
-// stays as a historical record until an operator deletes it.
+// stays as a historical record until an operator deletes it. Business
+// metrics (closed + external_response + ExtRROpen-1 + age) fire on first
+// observation of Complete=True regardless of whether the Node still exists,
+// so terminate-style remediations (Maestro deleting the Node as part of the
+// repair) stay observable.
 func (r *ExternalRemediationRequestReconciler) reconcileCleanupAfterComplete(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
@@ -422,11 +437,19 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanupAfterComplete(
 		return ctrl.Result{}, err
 	}
 
-	if changed {
-		r.recordClose(extrrObj, metrics.ExtRRResultSuccess, closeReasonExternalRemediationCompleteTrue)
-		// external_response co-emits with closed only on the pass that
-		// actually scrubbed; drift cases are deliberately uncounted.
+	if extrrObj.GetAnnotations()[closeRecordedAnnotation] != annotationValueTrue {
+		r.recordCloseMetrics(extrrObj, metrics.ExtRRResultSuccess)
 		metrics.GlobalMetrics.IncExtRRTotal(metrics.ExtRRPhaseExternalResponse, metrics.ExtRRResultSuccess)
+
+		if err := r.stampCloseRecorded(ctx, extrrObj); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	if changed {
+		r.emitEvent(extrrObj, corev1.EventTypeNormal, eventReasonReleaseTaintRemoved,
+			fmt.Sprintf("release taint and managed=false label removed (%s)",
+				closeReasonExternalRemediationCompleteTrue))
 	}
 
 	// Release the node-level lock — the external system has finished and the
@@ -437,8 +460,9 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanupAfterComplete(
 }
 
 // reconcileCleanupOnDeletion runs the cleanup PATCH then drops the finalizer.
-// Idempotent against post-Complete=True state: operator_deleted only fires
-// when this path actually performed the cleanup PATCH.
+// The close metric fires on first invocation regardless of whether the cleanup
+// PATCH actually mutated the Node — gated by closeRecordedAnnotation so a
+// previous Complete=True close doesn't get double-counted as operator_deleted.
 func (r *ExternalRemediationRequestReconciler) reconcileCleanupOnDeletion(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
@@ -454,8 +478,18 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanupOnDeletion(
 		return ctrl.Result{}, err
 	}
 
+	if extrrObj.GetAnnotations()[closeRecordedAnnotation] != annotationValueTrue {
+		r.recordCloseMetrics(extrrObj, metrics.ExtRRResultOperatorDeleted)
+
+		if err := r.stampCloseRecorded(ctx, extrrObj); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	if changed {
-		r.recordClose(extrrObj, metrics.ExtRRResultOperatorDeleted, closeReasonOperatorInitiated)
+		r.emitEvent(extrrObj, corev1.EventTypeNormal, eventReasonReleaseTaintRemoved,
+			fmt.Sprintf("release taint and managed=false label removed (%s)",
+				closeReasonOperatorInitiated))
 	}
 
 	// Release the lock before removing the finalizer. K8s GC via the lease's
@@ -478,10 +512,11 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanupOnDeletion(
 	return ctrl.Result{}, nil
 }
 
-// recordClose emits the close metric, decrements ExtRROpen, observes age,
-// and emits the ReleaseTaintRemoved event.
-func (r *ExternalRemediationRequestReconciler) recordClose(
-	extrrObj *nvsentinelv1.ExternalRemediationRequest, result, closeReason string,
+// recordCloseMetrics fires the close counter, decrements ExtRROpen, and
+// observes the age histogram. Idempotency is the caller's responsibility
+// (via closeRecordedAnnotation).
+func (r *ExternalRemediationRequestReconciler) recordCloseMetrics(
+	extrrObj *nvsentinelv1.ExternalRemediationRequest, result string,
 ) {
 	node := extrrNodeLabel(extrrObj)
 	action := recommendedActionLabel(extrrObj)
@@ -493,9 +528,28 @@ func (r *ExternalRemediationRequestReconciler) recordClose(
 		metrics.GlobalMetrics.ObserveExtRRAge(action, result,
 			time.Since(extrrObj.CreationTimestamp.Time).Seconds())
 	}
+}
 
-	r.emitEvent(extrrObj, corev1.EventTypeNormal, eventReasonReleaseTaintRemoved,
-		fmt.Sprintf("release taint and managed=false label removed (%s)", closeReason))
+// stampCloseRecorded patches the closeRecordedAnnotation onto the ExtRR so
+// subsequent reconciles know the close metrics have already fired. Patches
+// extrrObj in place so the caller's ResourceVersion stays fresh for any
+// follow-up Update (e.g. branch 2's finalizer removal).
+func (r *ExternalRemediationRequestReconciler) stampCloseRecorded(
+	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
+) error {
+	base := extrrObj.DeepCopy()
+
+	if extrrObj.Annotations == nil {
+		extrrObj.Annotations = map[string]string{}
+	}
+
+	extrrObj.Annotations[closeRecordedAnnotation] = annotationValueTrue
+
+	if err := r.Patch(ctx, extrrObj, client.MergeFrom(base)); err != nil {
+		return fmt.Errorf("stamping close-recorded annotation on ExtRR %s: %w", extrrObj.Name, err)
+	}
+
+	return nil
 }
 
 // reconcileCleanup removes the release taint and the managed label from the

@@ -1104,6 +1104,53 @@ var _ = Describe("ExternalRemediationRequest Controller observability", func() {
 			To(BeNumerically("==", 1.0), "closed{success} must NOT double-count after cleanup")
 	})
 
+	It("fires closed{success} + external_response{success} on Complete=True even when the Node has been deleted", func() {
+		nodeName := "node-obs-terminate-1"
+		key := prepareReleased(ctx, r, "obs-terminate-1", nodeName)
+		DeferCleanup(forceFinalizerRemovalByKey, ctx, r, key)
+
+		// Simulate Maestro terminating the Node as part of the repair workflow.
+		var node corev1.Node
+		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &node)).To(Succeed())
+		Expect(r.Client.Delete(ctx, &node)).To(Succeed())
+
+		drainEvents(r)
+		closedBefore := testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
+			janitormetrics.ExtRRPhaseClosed, janitormetrics.ExtRRResultSuccess))
+		extRespBefore := testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
+			janitormetrics.ExtRRPhaseExternalResponse, janitormetrics.ExtRRResultSuccess))
+
+		// Maestro signals success after the Node is gone.
+		setExternalRemediationComplete(ctx, r.Client,
+			&nvsentinelv1.ExternalRemediationRequest{ObjectMeta: metav1.ObjectMeta{
+				Name: key.Name, Namespace: key.Namespace,
+			}}, "True", "ExternalRemediationSucceeded")
+
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
+			janitormetrics.ExtRRPhaseClosed, janitormetrics.ExtRRResultSuccess)) - closedBefore).
+			To(BeNumerically("==", 1.0),
+				"closed{success} must fire even when the Node has been deleted")
+		Expect(testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
+			janitormetrics.ExtRRPhaseExternalResponse, janitormetrics.ExtRRResultSuccess)) - extRespBefore).
+			To(BeNumerically("==", 1.0),
+				"external_response{success} must fire even when the Node has been deleted")
+
+		var got nvsentinelv1.ExternalRemediationRequest
+		Expect(r.Client.Get(ctx, key, &got)).To(Succeed())
+		Expect(got.GetAnnotations()).To(HaveKeyWithValue(closeRecordedAnnotation, "true"))
+
+		// Subsequent reconciles must NOT re-fire the metrics.
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
+			janitormetrics.ExtRRPhaseClosed, janitormetrics.ExtRRResultSuccess)) - closedBefore).
+			To(BeNumerically("==", 1.0),
+				"closed{success} must NOT double-count across re-reconciles")
+	})
+
 	It("increments closed{operator_deleted} + emits OperatorDeleteRequested + ReleaseTaintRemoved on delete", func() {
 		nodeName := "node-obs-close-deleted-1"
 		key := prepareReleased(ctx, r, "obs-close-deleted-1", nodeName)
