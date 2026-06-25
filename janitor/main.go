@@ -541,7 +541,12 @@ func registerTTLReconcilers(mgr ctrl.Manager, enabled bool, defaultTTL time.Dura
 		return err
 	}
 
-	slog.Info("TTL reconcilers registered for RebootNode, GPUReset, TerminateNode",
+	if err := setupTTL[*janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest](
+		mgr, "externalremediationrequest-ttl", "ExternalRemediationRequest", defaultTTL); err != nil {
+		return err
+	}
+
+	slog.Info("TTL reconcilers registered for RebootNode, GPUReset, TerminateNode, ExternalRemediationRequest",
 		"default-ttl", defaultTTL)
 
 	return nil
