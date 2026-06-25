@@ -31,6 +31,9 @@ const (
 const (
 	ExtRRResultSuccess         = "success"
 	ExtRRResultOperatorDeleted = "operator_deleted"
+	// ExtRRResultApplyAbandoned is recorded when the apply path gives up
+	// because the target Node never showed up within applyAbandonAfter.
+	ExtRRResultApplyAbandoned = "apply_abandoned"
 	// ExtRRResultNone is the explicit sentinel for phases without an outcome.
 	ExtRRResultNone = ""
 )
@@ -42,7 +45,8 @@ const (
 var (
 	// ExtRRTotal phases:
 	//   created           — fresh ExtRR initialised.
-	//   released          — NVSentinelOwnershipReleased=True. result=success.
+	//   released          — NVSentinelOwnershipReleased=True (result=success),
+	//                       or apply abandoned past timeout (result=apply_abandoned).
 	//   external_response — ExternalRemediationComplete=True observed. result=success.
 	//   closed            — cleanup ran. result=success | operator_deleted.
 	ExtRRTotal = prometheus.NewCounterVec(prometheus.CounterOpts{

@@ -757,6 +757,47 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 
 	// Empty-nodeName rejection is covered by the webhook test suite.
 
+	It("abandons apply (stamps annotation + fires metric) when the Node is missing past the threshold", func() {
+		originalThreshold := applyAbandonAfter
+		applyAbandonAfter = 100 * time.Millisecond
+		DeferCleanup(func() { applyAbandonAfter = originalThreshold })
+
+		extrrObj := newTestExtRR("abandoned-extrr-1", "ghost-node")
+		Expect(r.Client.Create(ctx, extrrObj)).To(Succeed())
+		DeferCleanup(deleteExtRRForCleanup, ctx, r, extrrObj)
+
+		key := ctrlclient.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace}
+		before := testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
+			janitormetrics.ExtRRPhaseReleased, janitormetrics.ExtRRResultApplyAbandoned))
+
+		// Drive reconciles until the abandonment stamps the annotation.
+		Eventually(func() string {
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			var got nvsentinelv1.ExternalRemediationRequest
+			Expect(r.Client.Get(ctx, key, &got)).To(Succeed())
+
+			return got.GetAnnotations()[applyAbandonedAnnotation]
+		}, "2s", "10ms").Should(Equal("true"), "apply must be abandoned once past threshold")
+
+		Expect(testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
+			janitormetrics.ExtRRPhaseReleased, janitormetrics.ExtRRResultApplyAbandoned)) - before).
+			To(BeNumerically("==", 1.0))
+
+		events := drainEvents(r)
+		Expect(events).To(ContainElement(ContainSubstring(eventReasonApplyAbandoned)))
+
+		// Subsequent reconciles short-circuit — no further metric or event.
+		drainEvents(r)
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
+			janitormetrics.ExtRRPhaseReleased, janitormetrics.ExtRRResultApplyAbandoned)) - before).
+			To(BeNumerically("==", 1.0), "subsequent reconciles must not re-fire the metric")
+		Expect(drainEvents(r)).To(BeEmpty())
+	})
+
 	It("requeues without acting when another maintenance resource holds the node lock", func() {
 		nodeName := "node-locked-1"
 		Expect(r.Client.Create(ctx, newTestNode(nodeName, nil, nil))).To(Succeed())
