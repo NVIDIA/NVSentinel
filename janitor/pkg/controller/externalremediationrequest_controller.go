@@ -260,8 +260,7 @@ func (r *ExternalRemediationRequestReconciler) dispatch(
 		return r.reconcileNoOpOnFalse(ctx, extrrObj)
 
 	default:
-		// Steady state: Released=True awaiting the external system, or
-		// Released=False after a terminal apply failure.
+		// Steady state: Released=True awaiting the external system.
 		return ctrl.Result{}, nil
 	}
 }
