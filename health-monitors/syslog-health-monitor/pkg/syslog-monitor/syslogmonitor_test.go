@@ -509,7 +509,7 @@ func TestJournalStateManagement(t *testing.T) {
 		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 		"", "",
 		nil,
-    "tcp://test",
+		"tcp://test",
 	)
 	assert.NoError(t, err)
 
@@ -544,7 +544,7 @@ func TestJournalStateManagement(t *testing.T) {
 		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 		"", "",
 		nil,
-    "tcp://test",
+		"tcp://test",
 	)
 	assert.NoError(t, err)
 
@@ -802,4 +802,36 @@ func TestGPUFallenOffHandlerInitialization(t *testing.T) {
 	)
 	assert.NoError(t, err)
 	assert.NotNil(t, sm.checkToHandlerMap[GPUFallenOffCheck], "GPU Fallen Off handler should be initialized")
+}
+
+// TestConfigureTagFilters_KernelTagAddsFacilityMatch verifies that a check
+// carrying the "-k" tag restricts the journal to kernel entries via a
+// SYSLOG_FACILITY=0 match. This is the filter the kernel-origin checks rely on
+// to keep up with journald; see NVIDIA/NVSentinel#1417.
+func TestConfigureTagFilters_KernelTagAddsFacilityMatch(t *testing.T) {
+	for _, tag := range []string{"-k", "--dmesg"} {
+		t.Run(tag, func(t *testing.T) {
+			sm := &SyslogMonitor{}
+			mock := &MockJournal{}
+			check := CheckDefinition{Name: XIDErrorCheck, Tags: []string{tag}}
+
+			err := sm.configureTagFilters(mock, check)
+			assert.NoError(t, err)
+			assert.Contains(t, mock.MatchFilters, FieldSyslogFacility+"=0",
+				"tag %q should add a kernel-only (SYSLOG_FACILITY=0) journal match", tag)
+		})
+	}
+}
+
+// TestConfigureTagFilters_NoTagsAddsNoMatch verifies that a check with no tags
+// adds no journal match, i.e. it consumes every facility. This is the
+// pre-fix default behavior the kernel-origin checks must no longer rely on.
+func TestConfigureTagFilters_NoTagsAddsNoMatch(t *testing.T) {
+	sm := &SyslogMonitor{}
+	mock := &MockJournal{}
+	check := CheckDefinition{Name: "SomeUserspaceCheck"}
+
+	err := sm.configureTagFilters(mock, check)
+	assert.NoError(t, err)
+	assert.Empty(t, mock.MatchFilters, "a check with no tags should add no journal match")
 }
