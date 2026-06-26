@@ -228,6 +228,11 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("invalid POLL_INTERVAL_SECONDS: %w", err)
 	}
+	// time.NewTicker panics on a zero or negative duration, so reject bad values
+	// before we build the ticker.
+	if pollSeconds <= 0 {
+		return fmt.Errorf("POLL_INTERVAL_SECONDS must be > 0, got %d", pollSeconds)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -517,13 +522,17 @@ instead use the shared publisher **`commons/pkg/healthpub`**, which gives you fo
 - **Exponential-backoff retries** on transient gRPC errors.
 - **Prometheus metrics** (`sends_success`, `sends_skipped_pc_unavailable`, `sends_error`).
 
-Add the dependencies:
+Add the dependency. The `commons` module is only resolvable locally, so you must add the
+`replace` directive **before** fetching it — on a fresh checkout `go get` fails otherwise
+because `github.com/nvidia/nvsentinel/commons@v0.0.0` is not published. Use `go mod edit` to
+add the replace first, then fetch:
 
 ```bash
+go mod edit -replace github.com/nvidia/nvsentinel/commons=../../commons
 go get github.com/nvidia/nvsentinel/commons@v0.0.0
 ```
 
-Add the replace directive to `go.mod`:
+This leaves the following in your `go.mod` (alongside the existing `data-models` replace):
 
 ```go
 replace github.com/nvidia/nvsentinel/commons => ../../commons
