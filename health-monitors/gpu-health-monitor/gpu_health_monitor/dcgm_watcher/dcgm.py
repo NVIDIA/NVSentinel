@@ -12,20 +12,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import dcgm_structs, dcgm_errors, dcgm_fields, dcgmvalue, pydcgm, bisect
+import dcgm_agent, dcgm_structs, dcgm_errors, dcgm_fields, dcgmvalue, pydcgm, bisect
 import logging as log
 from . import types, metrics
 from gpu_health_monitor.metadata import MetadataReader
 from threading import Event
-from ctypes import *
 from functools import partial
 from concurrent.futures import ThreadPoolExecutor
-import subprocess
-import time
 import os
 
 DELAY, MULTIPLIER, MAX_DELAY = 2, 1.5, 120
 DCGM_4_PYTHON_PATH = "/usr/share/datacenter-gpu-manager-4/bindings/python3"
+DCGM_CONNECTION_TYPE_TCP = 1
+
+
+def _run_dcgm_server(port: int, bind_address: str) -> None:
+    """Expose the embedded hostengine over TCP for local DCGM clients.
+
+    DCGM 4.x ships dcgmServerRun in its Python bindings. DCGM 3.3.7 exports
+    the same dcgmEngineRun API but does not include that Python wrapper.
+    """
+    server_run = getattr(dcgm_agent, "dcgmServerRun", None)
+    if server_run is not None:
+        server_run(port, bind_address, DCGM_CONNECTION_TYPE_TCP)
+        return
+
+    fn = dcgm_agent.dcgmFP("dcgmEngineRun")
+    ret = fn(port, bind_address.encode("utf-8"), DCGM_CONNECTION_TYPE_TCP)
+    dcgm_structs._dcgmCheckReturn(ret)
+
 
 # Registry of DCGM field monitors, keyed by config key.
 # To add a new field monitor:
@@ -50,6 +65,7 @@ class DCGMWatcher:
         dcgm_k8s_service_enabled: bool,
         thermal_margin_enabled: bool = False,
         metadata_reader: MetadataReader | None = None,
+        dcgm_mode: str = "remote",
     ) -> None:
         self._addr = addr
         self._poll_interval_seconds = poll_interval_seconds
@@ -57,6 +73,7 @@ class DCGMWatcher:
         self._thermal_margin_enabled = thermal_margin_enabled
         self._metadata_reader = metadata_reader
         self._field_group = None
+        self._dcgm_mode = dcgm_mode
 
         self._health_watches = self._get_available_health_watches()
         log.debug(f"Got available health watches {self._health_watches}")
@@ -340,16 +357,47 @@ class DCGMWatcher:
 
         return margin_details
 
-    def _get_dcgm_handle(self) -> pydcgm.DcgmHandle:
-
-        try:
-            if self._dcgm_k8s_service_enabled:
-                log.info(f"DCGM k8s service enabled. Using {self._addr}")
-            else:
-                log.info(f"DCGM k8s service disabled. Using {self._addr}")
-            dcgm_handle = pydcgm.DcgmHandle(ipAddress=self._addr, opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO)
-            log.info("Successfully created DCGM handle")
+    def _create_dcgm_handle(self) -> pydcgm.DcgmHandle:
+        if self._dcgm_mode == "local-managed":
+            host, port = self._parse_local_dcgm_addr()
+            log.info("Starting in-process embedded DCGM hostengine (local-managed mode)")
+            dcgm_handle = pydcgm.DcgmHandle(opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO)
+            try:
+                _run_dcgm_server(port, host)
+            except Exception:
+                metrics.dcgm_api_failures.labels("dcgm_engine_run").inc()
+                dcgm_handle.Shutdown()
+                raise
+            log.info(f"Successfully started embedded DCGM hostengine listening on {host}:{port}")
             return dcgm_handle
+
+        if self._dcgm_k8s_service_enabled:
+            log.info(f"DCGM k8s service enabled. Using {self._addr}")
+        else:
+            log.info(f"DCGM k8s service disabled. Using {self._addr}")
+        dcgm_handle = pydcgm.DcgmHandle(ipAddress=self._addr, opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO)
+        log.info("Successfully created DCGM handle")
+        return dcgm_handle
+
+    def _parse_local_dcgm_addr(self) -> tuple[str, int]:
+        if ":" not in self._addr:
+            raise ValueError(f"DCGM address must be host:port, got {self._addr}")
+
+        host, port_text = self._addr.rsplit(":", 1)
+        host = host.strip("[]")
+        if host == "localhost":
+            host = "127.0.0.1"
+        if host not in ("127.0.0.1", "::1"):
+            raise ValueError(f"local-managed mode requires a loopback DCGM address, got {self._addr}")
+
+        port = int(port_text)
+        if not 1 <= port <= 65535:
+            raise ValueError(f"DCGM port must be between 1 and 65535, got {port}")
+        return host, port
+
+    def _get_dcgm_handle(self) -> pydcgm.DcgmHandle | None:
+        try:
+            return self._create_dcgm_handle()
         except Exception as e:
             log.error(f"Error creating DCGM handle: {e}")
             metrics.dcgm_api_failures.labels("ErrorInitDCGMHandle").inc()
@@ -459,46 +507,50 @@ class DCGMWatcher:
         gpu_ids = []
 
         # Initial DCGM handle and monitoring setup
-        while not exit.is_set():
-            # Wait for poll interval to allow DCGM initialization
-            log.debug("Waiting till next cycle")
-            exit.wait(self._poll_interval_seconds)
+        try:
+            while not exit.is_set():
+                # Wait for poll interval to allow DCGM initialization
+                log.debug("Waiting till next cycle")
+                if exit.wait(self._poll_interval_seconds):
+                    break
 
-            with metrics.overall_reconcile_loop_time.time():
-                if dcgm_handle is None:
-                    try:
-                        dcgm_handle = self._get_dcgm_handle()
-                        dcgm_group, gpu_ids, gpu_serials = self._initialize_dcgm_monitoring(dcgm_handle)
-                    except Exception as e:
-                        log.error(f"Error getting DCGM handle: {e}")
-                        self._fire_callback_funcs(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])
-                        self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
-                        dcgm_handle = None
-                        dcgm_group = None
-                        gpu_ids = []
-                else:
-                    log.debug("Running health check")
-                    health_status, connectivity_success = self._perform_health_check(dcgm_group)
-
-                    if not connectivity_success:
-                        log.warning("DCGM connectivity failure detected")
-                        self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
-                        dcgm_handle = None
-                        dcgm_group = None
-                        gpu_ids = []
+                with metrics.overall_reconcile_loop_time.time():
+                    if dcgm_handle is None:
+                        try:
+                            dcgm_handle = self._get_dcgm_handle()
+                            dcgm_group, gpu_ids, _gpu_serials = self._initialize_dcgm_monitoring(dcgm_handle)
+                        except Exception as e:
+                            log.error(f"Error getting DCGM handle: {e}")
+                            self._fire_callback_funcs(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])
+                            self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
+                            dcgm_handle = None
+                            dcgm_group = None
+                            gpu_ids = []
                     else:
-                        margin_details = self._evaluate_gpu_thermal_margin(dcgm_group, gpu_ids)
-                        if margin_details is not None:
-                            health_status[DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"].watch_name] = (
-                                margin_details
+                        log.debug("Running health check")
+                        health_status, connectivity_success = self._perform_health_check(dcgm_group)
+
+                        if not connectivity_success:
+                            log.warning("DCGM connectivity failure detected")
+                            self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
+                            self._fire_callback_funcs(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])
+                            dcgm_handle = None
+                            dcgm_group = None
+                            gpu_ids = []
+                        else:
+                            margin_details = self._evaluate_gpu_thermal_margin(dcgm_group, gpu_ids)
+                            if margin_details is not None:
+                                health_status[DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"].watch_name] = (
+                                    margin_details
+                                )
+                            log.debug("Publish DCGM health checks")
+                            self._fire_callback_funcs(
+                                types.CallbackInterface.health_event_occurred.__name__,
+                                [health_status, gpu_ids],
                             )
-                        log.debug("Publish DCGM health checks")
-                        self._fire_callback_funcs(
-                            types.CallbackInterface.health_event_occurred.__name__,
-                            [health_status, gpu_ids],
-                        )
-
-        # Cleanup on exit
-        self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
-
-        self._callback_thread_pool.shutdown(cancel_futures=True)
+        finally:
+            # Shutdown() stops the embedded hostengine and its loopback server.
+            try:
+                self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
+            finally:
+                self._callback_thread_pool.shutdown(cancel_futures=True)

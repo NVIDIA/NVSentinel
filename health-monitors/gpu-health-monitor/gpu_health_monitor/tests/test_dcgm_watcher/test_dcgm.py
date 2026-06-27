@@ -16,7 +16,7 @@ from gpu_health_monitor.dcgm_watcher import dcgm
 from gpu_health_monitor.metadata import MetadataReader
 from unittest.mock import MagicMock, patch
 import dcgm_structs, dcgm_errors, dcgm_fields
-from threading import Event, Thread
+from threading import Event
 from ctypes import pointer
 import json
 import pytest
@@ -443,7 +443,9 @@ class TestDCGMHealthChecks:
             callbacks=[event_processor_test],
             dcgm_k8s_service_enabled=False,
         )
-        exit = Event()
+        exit = MagicMock(spec=Event)
+        exit.is_set.side_effect = [False, False, False, True]
+        exit.wait.side_effect = [False, False, True]
         dcgm_handle_mock = MagicMock()
         mock_dcgm_handle.return_value = dcgm_handle_mock
 
@@ -457,17 +459,105 @@ class TestDCGMHealthChecks:
 
         mock_dcgm_group.return_value = dcgm_group_mock
 
-        watcher_thread = Thread(target=watcher.start, args=([], exit))
         expected_response = watcher._get_health_status_dict()
-        watcher_thread.start()
-        exit.wait(5)  # wait for the watcher to enter the event loop
-        exit.wait(4)
-        exit.wait(3)
-        exit.wait(2)
-        exit.wait(1)
-        exit.set()
-        watcher_thread.join()
+        watcher.start([], exit)
+
         assert event_processor_test.health_details == expected_response
+        assert dcgm_group_mock.health.Check.call_count == 1
+
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm._run_dcgm_server")
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmHandle")
+    def test_local_managed_exposes_in_process_embedded_handle(self, mock_handle, mock_run_server):
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            dcgm_mode="local-managed",
+        )
+
+        handle = watcher._create_dcgm_handle()
+
+        mock_handle.assert_called_once_with(opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO)
+        mock_run_server.assert_called_once_with(5555, "127.0.0.1")
+        assert handle == mock_handle.return_value
+
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm._run_dcgm_server", side_effect=RuntimeError("bind failed"))
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmHandle")
+    def test_local_managed_stops_embedded_handle_when_server_start_fails(self, mock_handle, _mock_run_server):
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            dcgm_mode="local-managed",
+        )
+
+        with pytest.raises(RuntimeError, match="bind failed"):
+            watcher._create_dcgm_handle()
+
+        mock_handle.return_value.Shutdown.assert_called_once()
+
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm._run_dcgm_server")
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmHandle")
+    def test_local_managed_rejects_non_loopback_address(self, mock_handle, mock_run_server):
+        watcher = dcgm.DCGMWatcher(
+            addr="dcgm-hostengine.nvsentinel.svc:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            dcgm_mode="local-managed",
+        )
+
+        with pytest.raises(ValueError, match="requires a loopback DCGM address"):
+            watcher._create_dcgm_handle()
+
+        mock_handle.assert_not_called()
+        mock_run_server.assert_not_called()
+
+    def test_dcgm_3_server_run_compatibility_fallback(self, monkeypatch):
+        engine_run = MagicMock(return_value=0)
+        check_return = MagicMock()
+        agent = MagicMock(spec=["dcgmFP"])
+        agent.dcgmFP.return_value = engine_run
+        monkeypatch.setattr(dcgm, "dcgm_agent", agent)
+        monkeypatch.setattr(dcgm.dcgm_structs, "_dcgmCheckReturn", check_return, raising=False)
+
+        dcgm._run_dcgm_server(5555, "127.0.0.1")
+
+        agent.dcgmFP.assert_called_once_with("dcgmEngineRun")
+        engine_run.assert_called_once_with(5555, b"127.0.0.1", dcgm.DCGM_CONNECTION_TYPE_TCP)
+        check_return.assert_called_once_with(0)
+
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmHandle")
+    def test_remote_mode_connects_to_addr(self, mock_handle):
+        """remote mode connects to the configured DCGM address over the network."""
+        watcher = dcgm.DCGMWatcher(
+            addr="dcgm-hostengine.nvsentinel.svc:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=True,
+            dcgm_mode="remote",
+        )
+
+        handle = watcher._create_dcgm_handle()
+
+        mock_handle.assert_called_once_with(
+            ipAddress="dcgm-hostengine.nvsentinel.svc:5555", opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO
+        )
+        assert handle == mock_handle.return_value
+
+    def test_get_dcgm_handle_returns_none_on_error(self):
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            dcgm_mode="local-managed",
+        )
+        watcher._create_dcgm_handle = MagicMock(side_effect=Exception("boom"))
+
+        assert watcher._get_dcgm_handle() is None
 
     def test_perform_health_check_connectivity_failure_timeout(self):
         """Test that connectivity failure is detected when DCGM health check times out."""

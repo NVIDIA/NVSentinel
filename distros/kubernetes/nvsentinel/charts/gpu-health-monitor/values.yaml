@@ -19,12 +19,28 @@ image:
 
 # DCGM (Data Center GPU Manager) integration configuration
 dcgm:
+  # Source mode. Supported values: operator-service, external-hostengine, embedded-mode.
+  # operator-service: the GPU Operator DCGM service
+  # external-hostengine: an externally owned nv-hostengine
+  # embedded-mode: the GPU health monitor runs an in-process embedded DCGM hostengine
+  # and exposes it on a pod-local loopback listener for DCGM clients such as dcgmi
+  mode: operator-service
+  # DCGM major version used when mode is embedded-mode.
+  embeddedModeVersion: "4.x"
   # Enable DCGM Kubernetes service for GPU metrics collection
   dcgmK8sServiceEnabled: true
+  # GPU Operator DCGM service used by operator-service mode.
   service:
-    # DCGM service endpoint in the cluster
     endpoint: "nvidia-dcgm.gpu-operator.svc"
-    # DCGM service port
+    port: 5555
+  # Externally owned hostengine used by external-hostengine mode.
+  externalHostengine:
+    endpoint: localhost
+    port: 5555
+  # In-process hostengine listener used by embedded-mode. The endpoint must be
+  # localhost, 127.0.0.1, or ::1.
+  embedded:
+    endpoint: localhost
     port: 5555
 
 # DCGM field-level monitoring feature flags
@@ -35,9 +51,26 @@ dcgmFieldsMonitoring:
   # events are emitted with processingStrategy=STORE_ONLY
   gpuTempLimitStoreOnly: true
 
-# Use host networking for GPU health monitor pods
-# Required for accessing host-level GPU metrics
+# Use host networking for GPU health monitor pods. external-hostengine mode
+# enables host networking automatically because the configured endpoint is
+# node-local by contract. This value is an opt-in for other modes.
 useHostNetworking: false
+
+# RuntimeClass for the GPU health monitor pods. Leave empty for operator-service
+# and external-hostengine modes (the monitor connects to a remote hostengine and
+# needs no local GPU access). In embedded-mode the monitor runs an in-process
+# embedded DCGM hostengine, which requires NVML/driver access. This value is
+# required in embedded-mode and is commonly "nvidia".
+runtimeClassName: ""
+
+# Embedded-mode runtime injection (ignored for operator-service and
+# external-hostengine modes). The in-process embedded DCGM hostengine runs inside
+# this pod and needs the NVIDIA Container Toolkit to inject the GPUs and driver.
+# Renders as an env var only when mode=embedded-mode:
+#   - nvidiaVisibleDevices -> NVIDIA_VISIBLE_DEVICES: inject GPUs + driver.
+# Requires runtimeClassName to be set to the NVIDIA RuntimeClass.
+embedded:
+  nvidiaVisibleDevices: "all"
 
 # Additional volume mounts for GPU health monitor (optional)
 additionalVolumeMounts: []

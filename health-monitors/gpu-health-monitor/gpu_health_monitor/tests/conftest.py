@@ -183,6 +183,14 @@ class MockDCGMValue:
     pass
 
 
+class MockDCGMAgent:
+    """Mock DCGM agent module for testing."""
+
+    @staticmethod
+    def dcgmServerRun(port, bind_address, connection_type):
+        return None
+
+
 class MockPyDCGM:
     """Mock PyDCGM module for testing."""
 
@@ -224,6 +232,7 @@ dcgm_structs_mock = MockDCGMModule()
 dcgm_errors_mock = MockDCGMErrors()
 dcgm_fields_mock = MockDCGMFields()
 dcgm_value_mock = MockDCGMValue()
+dcgm_agent_mock = MockDCGMAgent()
 pydcgm_mock = MockPyDCGM()
 dcgm_field_helpers_mock = MagicMock()
 
@@ -231,6 +240,7 @@ sys.modules["dcgm_structs"] = dcgm_structs_mock
 sys.modules["dcgm_errors"] = dcgm_errors_mock
 sys.modules["dcgm_fields"] = dcgm_fields_mock
 sys.modules["dcgmvalue"] = dcgm_value_mock
+sys.modules["dcgm_agent"] = dcgm_agent_mock
 sys.modules["pydcgm"] = pydcgm_mock
 sys.modules["dcgm_field_helpers"] = dcgm_field_helpers_mock
 
@@ -244,6 +254,7 @@ def mock_dcgm_modules():
     dcgm_errors_mock = MockDCGMErrors()
     dcgm_fields_mock = MockDCGMFields()
     dcgm_value_mock = MockDCGMValue()
+    dcgm_agent_mock = MockDCGMAgent()
     pydcgm_mock = MockPyDCGM()
     dcgm_field_helpers_mock = MagicMock()
 
@@ -252,13 +263,22 @@ def mock_dcgm_modules():
     sys.modules["dcgm_errors"] = dcgm_errors_mock
     sys.modules["dcgm_fields"] = dcgm_fields_mock
     sys.modules["dcgmvalue"] = dcgm_value_mock
+    sys.modules["dcgm_agent"] = dcgm_agent_mock
     sys.modules["pydcgm"] = pydcgm_mock
     sys.modules["dcgm_field_helpers"] = dcgm_field_helpers_mock
 
     yield
 
     # Clean up (optional, pytest will handle this anyway)
-    modules_to_remove = ["dcgm_structs", "dcgm_errors", "dcgm_fields", "dcgmvalue", "pydcgm", "dcgm_field_helpers"]
+    modules_to_remove = [
+        "dcgm_structs",
+        "dcgm_errors",
+        "dcgm_fields",
+        "dcgmvalue",
+        "dcgm_agent",
+        "pydcgm",
+        "dcgm_field_helpers",
+    ]
     for module in modules_to_remove:
         if module in sys.modules:
             del sys.modules[module]
