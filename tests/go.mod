@@ -23,7 +23,7 @@ require (
 	k8s.io/utils v0.0.0-20260210185600-b8788abfbbc2
 	sigs.k8s.io/controller-runtime v0.24.1
 	sigs.k8s.io/e2e-framework v0.7.0
-	sigs.k8s.io/kwok v0.7.0
+	sigs.k8s.io/kwok v0.8.0
 	sigs.k8s.io/yaml v1.6.0
 )
 
