@@ -755,6 +755,8 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 		Expect(released.Status).To(Equal("False"))
 		Expect(released.Reason).To(Equal(ReasonNodeNotFound))
 		Expect(released.Message).To(ContainSubstring("does not exist"))
+		Expect(got.Status.CompletionTime).NotTo(BeNil(),
+			"terminal NodeNotFound must stamp CompletionTime so dispatch short-circuits")
 
 		Expect(testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
 			janitormetrics.ExtRRPhaseReleased, janitormetrics.ExtRRResultNodeNotFound)) - before).
@@ -763,8 +765,8 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 		events := drainEvents(r)
 		Expect(events).To(ContainElement(ContainSubstring(eventReasonNodeNotFound)))
 
-		// Subsequent reconciles don't re-enter apply (Released no longer Unknown);
-		// dispatch falls through to steady-state. No further metric, no event.
+		// Subsequent reconciles short-circuit via the CompletionTime check in
+		// dispatch — no further metric, no event.
 		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
@@ -1117,7 +1119,9 @@ var _ = Describe("ExternalRemediationRequest Controller observability", func() {
 
 		var got nvsentinelv1.ExternalRemediationRequest
 		Expect(r.Client.Get(ctx, key, &got)).To(Succeed())
-		Expect(got.GetAnnotations()).To(HaveKeyWithValue(closeRecordedAnnotation, "true"))
+		Expect(got.Status).NotTo(BeNil())
+		Expect(got.Status.CompletionTime).NotTo(BeNil(),
+			"close path must stamp Status.CompletionTime so dispatch short-circuits subsequent reconciles")
 
 		// Subsequent reconciles must NOT re-fire the metrics.
 		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key})

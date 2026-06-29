@@ -70,14 +70,6 @@ const (
 	closeReasonExternalRemediationCompleteTrue = "ExternalRemediationCompleteTrue"
 	closeReasonOperatorInitiated               = "OperatorInitiated"
 
-	// closeRecordedAnnotation marks that the close-bucket metrics (closed +
-	// external_response + open-1 + age histogram) have already fired for this
-	// ExtRR's lifecycle. Decouples the business event from the Node-PATCH
-	// side effect so terminate-style remediations (the external system deletes
-	// the Node then signals Complete=True) are still observable.
-	closeRecordedAnnotation = "nvsentinel.dgxc.nvidia.com/close-recorded"
-
-	annotationValueTrue = "true"
 )
 
 // ExternalRemediationRequestReconciler implements the ADR-040 state machine.
@@ -246,16 +238,29 @@ func (r *ExternalRemediationRequestReconciler) setInitialConditions(
 	return r.patchStatusConditions(ctx, extrrObj, conditions)
 }
 
-// dispatch routes to one of the five non-init ADR-040 branches.
+// dispatch routes to one of the ADR-040 branches. Once Status.CompletionTime
+// is set, the controller is done with this ExtRR — short-circuit to a
+// CheckUnlock-only pass to match the sibling janitor controllers' pattern.
+// Operator delete is the one exception: even after CompletionTime, we still
+// run the finalizer-drop path.
 func (r *ExternalRemediationRequestReconciler) dispatch(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
+	if !extrrObj.DeletionTimestamp.IsZero() {
+		return r.reconcileCleanupOnDeletion(ctx, extrrObj)
+	}
+
+	if extrrObj.Status != nil && extrrObj.Status.CompletionTime != nil {
+		if r.NodeLock.CheckUnlock(ctx, extrrObj, extrrObj.Spec.HealthEvent.NodeName) {
+			return ctrl.Result{RequeueAfter: nodeLockRequeue}, nil
+		}
+
+		return ctrl.Result{}, nil
+	}
+
 	conds := statusConditions(extrrObj)
 
 	switch {
-	case !extrrObj.DeletionTimestamp.IsZero():
-		return r.reconcileCleanupOnDeletion(ctx, extrrObj)
-
 	case meta.IsStatusConditionPresentAndEqual(conds, ConditionNVSentinelOwnershipReleased, metav1.ConditionUnknown):
 		return r.reconcileApply(ctx, extrrObj)
 
@@ -346,8 +351,9 @@ func (r *ExternalRemediationRequestReconciler) reconcileApply(
 }
 
 // transitionToReleaseFailure terminates the apply path when the target Node
-// doesn't exist. Sets NVSentinelOwnershipReleased=False (terminal — dispatch
-// won't re-enter apply); the external system still drives close via
+// doesn't exist. Sets NVSentinelOwnershipReleased=False + Status.CompletionTime
+// in two patches; the CompletionTime stamp short-circuits dispatch on
+// subsequent reconciles. The external system can still drive close via
 // Complete=True or operator delete. There's no useful retry: if the Node
 // isn't there at apply time, waiting won't bring it back.
 func (r *ExternalRemediationRequestReconciler) transitionToReleaseFailure(
@@ -369,6 +375,10 @@ func (r *ExternalRemediationRequestReconciler) transitionToReleaseFailure(
 
 	metrics.GlobalMetrics.IncExtRRTotal(metrics.ExtRRPhaseReleased, metrics.ExtRRResultNodeNotFound)
 	r.emitEvent(extrrObj, corev1.EventTypeWarning, eventReasonNodeNotFound, message)
+
+	if _, err := r.markCompletionTime(ctx, extrrObj); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -400,7 +410,8 @@ func (r *ExternalRemediationRequestReconciler) transitionToReleaseSuccess(
 // metrics (closed + external_response + ExtRROpen-1 + age) fire on first
 // observation of Complete=True regardless of whether the Node still exists,
 // so terminate-style remediations (the external system deleting the Node as
-// part of the repair) stay observable.
+// part of the repair) stay observable. Gated on Status.CompletionTime == nil
+// for idempotency across re-reconciles.
 func (r *ExternalRemediationRequestReconciler) reconcileCleanupAfterComplete(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
@@ -409,11 +420,11 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanupAfterComplete(
 		return ctrl.Result{}, err
 	}
 
-	if extrrObj.GetAnnotations()[closeRecordedAnnotation] != annotationValueTrue {
+	if extrrObj.Status == nil || extrrObj.Status.CompletionTime == nil {
 		r.recordCloseMetrics(extrrObj, metrics.ExtRRResultSuccess)
 		metrics.GlobalMetrics.IncExtRRTotal(metrics.ExtRRPhaseExternalResponse, metrics.ExtRRResultSuccess)
 
-		if err := r.stampCloseRecorded(ctx, extrrObj); err != nil {
+		if _, err := r.markCompletionTime(ctx, extrrObj); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -424,16 +435,14 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanupAfterComplete(
 				closeReasonExternalRemediationCompleteTrue))
 	}
 
-	// Release the node-level lock — the external system has finished and the
-	// node is back in NVSentinel's hands. CheckUnlock is idempotent.
-	r.NodeLock.CheckUnlock(ctx, extrrObj, extrrObj.Spec.HealthEvent.NodeName)
-
+	// Lock release on the next reconcile is handled by the dispatch
+	// short-circuit once CompletionTime is set.
 	return ctrl.Result{}, nil
 }
 
 // reconcileCleanupOnDeletion runs the cleanup PATCH then drops the finalizer.
 // The close metric fires on first invocation regardless of whether the cleanup
-// PATCH actually mutated the Node — gated by closeRecordedAnnotation so a
+// PATCH actually mutated the Node — gated by Status.CompletionTime so a
 // previous Complete=True close doesn't get double-counted as operator_deleted.
 func (r *ExternalRemediationRequestReconciler) reconcileCleanupOnDeletion(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
@@ -450,10 +459,10 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanupOnDeletion(
 		return ctrl.Result{}, err
 	}
 
-	if extrrObj.GetAnnotations()[closeRecordedAnnotation] != annotationValueTrue {
+	if extrrObj.Status == nil || extrrObj.Status.CompletionTime == nil {
 		r.recordCloseMetrics(extrrObj, metrics.ExtRRResultOperatorDeleted)
 
-		if err := r.stampCloseRecorded(ctx, extrrObj); err != nil {
+		if _, err := r.markCompletionTime(ctx, extrrObj); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -486,7 +495,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanupOnDeletion(
 
 // recordCloseMetrics fires the close counter, decrements ExtRROpen, and
 // observes the age histogram. Idempotency is the caller's responsibility
-// (via closeRecordedAnnotation).
+// (via Status.CompletionTime).
 func (r *ExternalRemediationRequestReconciler) recordCloseMetrics(
 	extrrObj *nvsentinelv1.ExternalRemediationRequest, result string,
 ) {
@@ -502,26 +511,40 @@ func (r *ExternalRemediationRequestReconciler) recordCloseMetrics(
 	}
 }
 
-// stampCloseRecorded patches the closeRecordedAnnotation onto the ExtRR so
-// subsequent reconciles know the close metrics have already fired. Patches
-// extrrObj in place so the caller's ResourceVersion stays fresh for any
-// follow-up Update (e.g. branch 2's finalizer removal).
-func (r *ExternalRemediationRequestReconciler) stampCloseRecorded(
+// markCompletionTime stamps Status.CompletionTime via a status-subresource
+// patch if not already set, matching the sibling janitor controllers'
+// terminal-state signal. Idempotent: re-fetches latest, no-ops if CompletionTime
+// was set in the gap. Reflects the new Status back onto extrrObj so the
+// caller's view stays consistent.
+func (r *ExternalRemediationRequestReconciler) markCompletionTime(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
-) error {
-	base := extrrObj.DeepCopy()
-
-	if extrrObj.Annotations == nil {
-		extrrObj.Annotations = map[string]string{}
+) (bool, error) {
+	if extrrObj.Status != nil && extrrObj.Status.CompletionTime != nil {
+		return false, nil
 	}
 
-	extrrObj.Annotations[closeRecordedAnnotation] = annotationValueTrue
-
-	if err := r.Patch(ctx, extrrObj, client.MergeFrom(base)); err != nil {
-		return fmt.Errorf("stamping close-recorded annotation on ExtRR %s: %w", extrrObj.Name, err)
+	var latest nvsentinelv1.ExternalRemediationRequest
+	if err := r.Get(ctx, client.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace}, &latest); err != nil {
+		return false, fmt.Errorf("refreshing ExternalRemediationRequest %s before completion-time patch: %w",
+			extrrObj.Name, err)
 	}
 
-	return nil
+	if latest.Status != nil && latest.Status.CompletionTime != nil {
+		extrrObj.Status = latest.Status
+		return false, nil
+	}
+
+	updated := latest.DeepCopy()
+	updated.SetCompletionTime()
+
+	if err := r.Status().Patch(ctx, updated, client.MergeFrom(&latest)); err != nil {
+		return false, fmt.Errorf("patching CompletionTime on ExternalRemediationRequest %s: %w",
+			extrrObj.Name, err)
+	}
+
+	extrrObj.Status = updated.Status
+
+	return true, nil
 }
 
 // reconcileCleanup removes the release taint and the managed label from the
