@@ -238,24 +238,38 @@ func (r *ExternalRemediationRequestReconciler) setInitialConditions(
 	return r.patchStatusConditions(ctx, extrrObj, conditions)
 }
 
-// dispatch routes to one of the ADR-040 branches. Once Status.CompletionTime
-// is set, the controller is done with this ExtRR — short-circuit to a
-// CheckUnlock-only pass to match the sibling janitor controllers' pattern.
-// Operator delete is the one exception: even after CompletionTime, we still
-// run the finalizer-drop path.
+// dispatch routes to one of the ADR-040 branches and gates active reconciles
+// on the cross-controller node-level lock, matching the sibling janitor
+// controllers' pattern (acquire at the top of every loop, release once
+// CompletionTime is set, retry on transient unlock failure).
+//
+// Three top-level paths:
+//   - DeletionTimestamp set: acquire the lock, run cleanup, release on retry.
+//   - CompletionTime set: try to release the lock, requeue on retry.
+//   - Active: acquire the lock, then dispatch by condition.
 func (r *ExternalRemediationRequestReconciler) dispatch(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
+	nodeName := extrrObj.Spec.HealthEvent.NodeName
+
 	if !extrrObj.DeletionTimestamp.IsZero() {
+		if !r.NodeLock.LockNode(ctx, extrrObj, nodeName) {
+			return ctrl.Result{RequeueAfter: nodeLockRequeue}, nil
+		}
+
 		return r.reconcileCleanupOnDeletion(ctx, extrrObj)
 	}
 
 	if extrrObj.Status != nil && extrrObj.Status.CompletionTime != nil {
-		if r.NodeLock.CheckUnlock(ctx, extrrObj, extrrObj.Spec.HealthEvent.NodeName) {
+		if r.NodeLock.CheckUnlock(ctx, extrrObj, nodeName) {
 			return ctrl.Result{RequeueAfter: nodeLockRequeue}, nil
 		}
 
 		return ctrl.Result{}, nil
+	}
+
+	if !r.NodeLock.LockNode(ctx, extrrObj, nodeName) {
+		return ctrl.Result{RequeueAfter: nodeLockRequeue}, nil
 	}
 
 	conds := statusConditions(extrrObj)
@@ -284,10 +298,8 @@ const nodeLockRequeue = 2 * time.Second
 // Released=False (no retry, see ADR-040); already-applied → idempotent fast
 // path. Other API errors propagate and controller-runtime requeues with backoff.
 //
-// Acquires the cross-controller node-level lock before any node mutation so a
-// concurrent RebootNode / TerminateNode / GPUReset can't act on the same node.
-// The lock is released on Complete=True cleanup (branch 4) and on operator
-// delete (branch 2); the lease's ownerReference catches the failure case.
+// Assumes the caller (dispatch) already acquired the cross-controller
+// node-level lock, so any taint at our key on this Node is ours.
 func (r *ExternalRemediationRequestReconciler) reconcileApply(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
@@ -300,13 +312,6 @@ func (r *ExternalRemediationRequestReconciler) reconcileApply(
 		}
 
 		return ctrl.Result{}, fmt.Errorf("get node %q for ExtRR %q: %w", nodeName, extrrObj.Name, err)
-	}
-
-	if !r.NodeLock.LockNode(ctx, extrrObj, nodeName) {
-		slog.InfoContext(ctx, "another maintenance resource holds the node lock; requeueing",
-			"extrr", extrrObj.Name, "node", nodeName)
-
-		return ctrl.Result{RequeueAfter: nodeLockRequeue}, nil
 	}
 
 	// We hold the lock, so any taint at our key is ours.
@@ -473,11 +478,14 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanupOnDeletion(
 				closeReasonOperatorInitiated))
 	}
 
-	// Release the lock before removing the finalizer. K8s GC via the lease's
-	// ownerReference covers the failure case, but the explicit unlock keeps
-	// us consistent with the sibling controllers and shortens the window
-	// where the lease could outlive its owner.
-	r.NodeLock.CheckUnlock(ctx, extrrObj, extrrObj.Spec.HealthEvent.NodeName)
+	// Release the lock before removing the finalizer. Requeue on transient
+	// unlock failure so we don't strand the lease — K8s GC via the lease's
+	// ownerReference would eventually clean it up, but the explicit unlock
+	// keeps us consistent with the sibling controllers and shortens the
+	// window where the lease could outlive its owner.
+	if r.NodeLock.CheckUnlock(ctx, extrrObj, extrrObj.Spec.HealthEvent.NodeName) {
+		return ctrl.Result{RequeueAfter: nodeLockRequeue}, nil
+	}
 
 	updated := extrrObj.DeepCopy()
 	controllerutil.RemoveFinalizer(updated, ExternalRemediationFinalizer)

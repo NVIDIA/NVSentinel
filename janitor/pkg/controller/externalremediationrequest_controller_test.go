@@ -804,8 +804,8 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 		DeferCleanup(deleteExtRRForCleanup, ctx, r, extrrObj)
 
 		key := ctrlclient.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace}
-		// Init completes (no Node interaction); second reconcile hits apply,
-		// finds the foreign lock, requeues without acting.
+		// Init completes (no Node interaction); second reconcile reaches the
+		// dispatch lock gate, finds the foreign lock, requeues without acting.
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
 
