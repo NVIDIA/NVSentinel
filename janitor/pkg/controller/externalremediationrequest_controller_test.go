@@ -204,8 +204,8 @@ var _ = Describe("ExternalRemediationRequest Controller", func() {
 		Expect(r.Client.Create(ctx, extrrObj)).To(Succeed())
 
 		key := ctrlclient.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace}
-		// One pass to init; don't drive further or the apply path will requeue
-		// forever waiting for the Node.
+		// One pass to init; the next reconcile would terminate Released=False
+		// (NodeNotFound) but we delete first to exercise the cleanup-before-apply path.
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -364,6 +364,9 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 			Expect(r.Client.Get(ctx, key, &got)).To(Succeed())
 			Expect(controllerutil.ContainsFinalizer(&got, ExternalRemediationFinalizer)).To(BeTrue(),
 				"finalizer stays attached on True-driven cleanup (ExtRR is the historical record)")
+			Expect(got.Status).NotTo(BeNil())
+			Expect(got.Status.CompletionTime).NotTo(BeNil(),
+				"Complete=True scrub must stamp Status.CompletionTime")
 		})
 
 		It("does not re-PATCH the Node on subsequent reconciles after cleanup", func() {
@@ -393,6 +396,54 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 			Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &nodeAfterRereconcile)).To(Succeed())
 			Expect(nodeAfterRereconcile.ResourceVersion).To(Equal(rvAfterCleanup),
 				"Node ResourceVersion must not advance after the cleanup PATCH settles")
+		})
+
+		It("releases the node lock and stops emitting metrics/events after CompletionTime is set", func() {
+			nodeName := "node-true-shortcircuit-1"
+			key := prepareReleased(ctx, r, "true-shortcircuit-extrr-1", nodeName)
+			DeferCleanup(forceFinalizerRemovalByKey, ctx, r, key)
+			DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
+
+			// Apply has run — the lock lease should exist under this node's name.
+			leaseKey := ctrlclient.ObjectKey{Name: nodeName, Namespace: testExtRRNamespace}
+			var lease coordinationv1.Lease
+			Expect(r.Client.Get(ctx, leaseKey, &lease)).To(Succeed(),
+				"reconcileApply must acquire the node-lock lease")
+
+			setExternalRemediationComplete(ctx, r.Client,
+				&nvsentinelv1.ExternalRemediationRequest{ObjectMeta: metav1.ObjectMeta{
+					Name: key.Name, Namespace: key.Namespace,
+				}}, "True", "ExternalRemediationSucceeded")
+
+			// First reconcile after Complete=True runs the close path
+			// (scrub + close metrics + markCompletionTime). Drain events here.
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			drainEvents(r)
+
+			closedBefore := testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
+				janitormetrics.ExtRRPhaseClosed, janitormetrics.ExtRRResultSuccess))
+
+			// Subsequent reconciles must short-circuit: CheckUnlock-only.
+			// Drives several to make sure the lease is gone AND no further
+			// metric/event firing occurs.
+			Eventually(func() error {
+				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+				return err
+			}, "2s", "20ms").Should(Succeed())
+
+			err = r.Client.Get(ctx, leaseKey, &lease)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+				"lease must be released after CompletionTime + dispatch short-circuit fires CheckUnlock")
+
+			// closed{success} stays at the snapshot — no double-count.
+			Expect(testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
+				janitormetrics.ExtRRPhaseClosed, janitormetrics.ExtRRResultSuccess))).
+				To(Equal(closedBefore), "closed counter must not refire after CompletionTime is set")
+
+			// And no further events.
+			Expect(drainEvents(r)).To(BeEmpty(),
+				"post-CompletionTime reconciles must be event-free")
 		})
 
 	})
