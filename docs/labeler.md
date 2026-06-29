@@ -123,3 +123,6 @@ Detects and labels nodes using Kata Containers runtime by checking node labels (
 
 ### Dynamic Updates
 Continuously updates labels as infrastructure changes - handles upgrades, pod moves, and runtime changes automatically.
+
+### DCGM Bootstrap Gating
+When `requireDCGMReadyForBootstrap` is enabled, the `nvsentinel.dgxc.nvidia.com/dcgm.version` label is only set after the DCGM pod is ready during the initial bootstrapping of a node. Once the DCGM pod is ready, the annotation `nvsentinel.dgxc.nvidia.com/dcgm-bootstrap-completed` is written to the node which allows the label to be set regardless of DCGM pod readiness.

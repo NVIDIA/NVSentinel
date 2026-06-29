@@ -54,6 +54,15 @@ labeler:
   logLevel: info  # Options: debug, info, warn, error
 ```
 
+## DCGM Bootstrap Gating
+
+Controls whether the DCGM pod must be ready before the DCGM version label is set for the first time on a node.
+
+```yaml
+labeler:
+  requireDCGMReadyForBootstrap: true
+```
+
 ## Kata Containers Detection
 
 Configures detection of Kata Containers runtime on nodes.
