@@ -67,7 +67,7 @@ func main() {
 func run() error {
 	kubeconfig, metricsPort, dcgmAppLabel, driverAppLabel,
 		gkeInstallerAppLabel, kataLabel, expectedDeviceCountsConfigFile,
-		assumeDriverInstalled := parseFlags()
+		assumeDriverInstalled, requireDCGMReadyForBootstrap := parseFlags()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -89,13 +89,14 @@ func run() error {
 	)
 
 	params := initializer.InitializationParams{
-		KubeconfigPath:        *kubeconfig,
-		DCGMAppLabel:          *dcgmAppLabel,
-		DriverAppLabel:        *driverAppLabel,
-		GKEInstallerAppLabel:  *gkeInstallerAppLabel,
-		KataLabel:             *kataLabel,
-		AssumeDriverInstalled: *assumeDriverInstalled,
-		ExpectedDeviceCounts:  expectedDeviceCounts,
+		KubeconfigPath:               *kubeconfig,
+		DCGMAppLabel:                 *dcgmAppLabel,
+		DriverAppLabel:               *driverAppLabel,
+		GKEInstallerAppLabel:         *gkeInstallerAppLabel,
+		KataLabel:                    *kataLabel,
+		AssumeDriverInstalled:        *assumeDriverInstalled,
+		RequireDCGMReadyForBootstrap: *requireDCGMReadyForBootstrap,
+		ExpectedDeviceCounts:         expectedDeviceCounts,
 	}
 
 	components, err := initializer.InitializeAll(params)
@@ -124,7 +125,8 @@ func run() error {
 
 func parseFlags() (
 	kubeconfig, metricsPort, dcgmAppLabel, driverAppLabel,
-	gkeInstallerAppLabel, kataLabel, expectedDeviceCountsConfigFile *string, assumeDriverInstalled *bool,
+	gkeInstallerAppLabel, kataLabel, expectedDeviceCountsConfigFile *string,
+	assumeDriverInstalled, requireDCGMReadyForBootstrap *bool,
 ) {
 	kubeconfig = flag.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	metricsPort = flag.String("metrics-port", "2112", "Port to expose Prometheus metrics on")
@@ -141,6 +143,8 @@ func parseFlags() (
 		"Assume GPU drivers are pre-installed on GPU nodes (nvidia.com/gpu.present=true). "+
 			"Sets driver.installed=true unconditionally for those nodes, skipping driver pod detection. "+
 			"Use for clusters with host-installed drivers.")
+	requireDCGMReadyForBootstrap = flag.Bool("require-dcgm-ready-for-bootstrap", true,
+		"Require the DCGM pod to be ready before setting the DCGM version label for initial bootstrap.")
 
 	flag.Parse()
 
