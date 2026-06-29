@@ -143,6 +143,27 @@ func (r *ExternalRemediationRequestReconciler) Reconcile(ctx context.Context, re
 		return r.reconcileInitialize(ctx, &extrr)
 	}
 
+	// Lock lifecycle matches the sibling janitor controllers: hold the node
+	// lock for the entire pre-completion lifetime, drop it once CompletionTime
+	// is set. Operator-delete still needs the lock (cleanup-on-deletion scrubs
+	// the Node), so "still actively working on this CR" is "not completed OR
+	// being deleted".
+	nodeName := extrr.Spec.HealthEvent.NodeName
+	completed := extrr.Status != nil && extrr.Status.CompletionTime != nil
+	deleting := !extrr.DeletionTimestamp.IsZero()
+
+	if completed && !deleting {
+		if r.NodeLock.CheckUnlock(ctx, &extrr, nodeName) {
+			return ctrl.Result{RequeueAfter: nodeLockRequeue}, nil
+		}
+
+		return ctrl.Result{}, nil
+	}
+
+	if !r.NodeLock.LockNode(ctx, &extrr, nodeName) {
+		return ctrl.Result{RequeueAfter: nodeLockRequeue}, nil
+	}
+
 	result, dispatchErr := r.dispatch(ctx, &extrr)
 	if dispatchErr != nil {
 		tracing.RecordError(span, dispatchErr)
@@ -238,38 +259,14 @@ func (r *ExternalRemediationRequestReconciler) setInitialConditions(
 	return r.patchStatusConditions(ctx, extrrObj, conditions)
 }
 
-// dispatch routes to one of the ADR-040 branches and gates active reconciles
-// on the cross-controller node-level lock, matching the sibling janitor
-// controllers' pattern (acquire at the top of every loop, release once
-// CompletionTime is set, retry on transient unlock failure).
-//
-// Three top-level paths:
-//   - DeletionTimestamp set: acquire the lock, run cleanup, release on retry.
-//   - CompletionTime set: try to release the lock, requeue on retry.
-//   - Active: acquire the lock, then dispatch by condition.
+// dispatch routes to the active ADR-040 branch given the current conditions.
+// Callers (Reconcile) are responsible for the node-lock lifecycle — by the
+// time we get here, the lock is held.
 func (r *ExternalRemediationRequestReconciler) dispatch(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
-	nodeName := extrrObj.Spec.HealthEvent.NodeName
-
 	if !extrrObj.DeletionTimestamp.IsZero() {
-		if !r.NodeLock.LockNode(ctx, extrrObj, nodeName) {
-			return ctrl.Result{RequeueAfter: nodeLockRequeue}, nil
-		}
-
 		return r.reconcileCleanupOnDeletion(ctx, extrrObj)
-	}
-
-	if extrrObj.Status != nil && extrrObj.Status.CompletionTime != nil {
-		if r.NodeLock.CheckUnlock(ctx, extrrObj, nodeName) {
-			return ctrl.Result{RequeueAfter: nodeLockRequeue}, nil
-		}
-
-		return ctrl.Result{}, nil
-	}
-
-	if !r.NodeLock.LockNode(ctx, extrrObj, nodeName) {
-		return ctrl.Result{RequeueAfter: nodeLockRequeue}, nil
 	}
 
 	conds := statusConditions(extrrObj)
