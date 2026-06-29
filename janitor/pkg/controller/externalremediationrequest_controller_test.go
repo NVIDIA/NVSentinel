@@ -732,71 +732,48 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 			"already-applied message should call out the recovery case for operator visibility")
 	})
 
-	It("requeues without transitioning when the target Node does not exist", func() {
+	It("fails Released=False immediately when the target Node does not exist", func() {
 		extrrObj := newTestExtRR("missing-node-extrr-1", "node-does-not-exist")
 		Expect(r.Client.Create(ctx, extrrObj)).To(Succeed())
 		DeferCleanup(deleteExtRRForCleanup, ctx, r, extrrObj)
 
 		key := ctrlclient.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace}
+		before := testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
+			janitormetrics.ExtRRPhaseReleased, janitormetrics.ExtRRResultNodeNotFound))
 
-		// First pass inits; second hits the apply branch and requeues.
+		// First pass inits; second hits the apply branch and terminates immediately.
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
 
 		result, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred(), "missing Node must not propagate as a reconcile error")
-		Expect(result.RequeueAfter).To(Equal(nodeMissingRequeue), "missing Node must requeue, not fail")
+		Expect(result.RequeueAfter).To(BeZero(), "missing Node must terminate, not requeue")
 
 		var got nvsentinelv1.ExternalRemediationRequest
 		Expect(r.Client.Get(ctx, key, &got)).To(Succeed())
 		released := findExtRRCondition(&got, ConditionNVSentinelOwnershipReleased)
-		Expect(released.Status).To(Equal("Unknown"),
-			"missing Node must leave NVSentinelOwnershipReleased Unknown for retry")
-		Expect(released.Reason).To(Equal(reasonInitializing))
-	})
-
-	// Empty-nodeName rejection is covered by the webhook test suite.
-
-	It("abandons apply (stamps annotation + fires metric) when the Node is missing past the threshold", func() {
-		originalThreshold := applyAbandonAfter
-		applyAbandonAfter = 100 * time.Millisecond
-		DeferCleanup(func() { applyAbandonAfter = originalThreshold })
-
-		extrrObj := newTestExtRR("abandoned-extrr-1", "ghost-node")
-		Expect(r.Client.Create(ctx, extrrObj)).To(Succeed())
-		DeferCleanup(deleteExtRRForCleanup, ctx, r, extrrObj)
-
-		key := ctrlclient.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace}
-		before := testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
-			janitormetrics.ExtRRPhaseReleased, janitormetrics.ExtRRResultApplyAbandoned))
-
-		// Drive reconciles until the abandonment stamps the annotation.
-		Eventually(func() string {
-			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
-			Expect(err).NotTo(HaveOccurred())
-
-			var got nvsentinelv1.ExternalRemediationRequest
-			Expect(r.Client.Get(ctx, key, &got)).To(Succeed())
-
-			return got.GetAnnotations()[applyAbandonedAnnotation]
-		}, "2s", "10ms").Should(Equal("true"), "apply must be abandoned once past threshold")
+		Expect(released.Status).To(Equal("False"))
+		Expect(released.Reason).To(Equal(ReasonNodeNotFound))
+		Expect(released.Message).To(ContainSubstring("does not exist"))
 
 		Expect(testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
-			janitormetrics.ExtRRPhaseReleased, janitormetrics.ExtRRResultApplyAbandoned)) - before).
+			janitormetrics.ExtRRPhaseReleased, janitormetrics.ExtRRResultNodeNotFound)) - before).
 			To(BeNumerically("==", 1.0))
 
 		events := drainEvents(r)
-		Expect(events).To(ContainElement(ContainSubstring(eventReasonApplyAbandoned)))
+		Expect(events).To(ContainElement(ContainSubstring(eventReasonNodeNotFound)))
 
-		// Subsequent reconciles short-circuit — no further metric or event.
-		drainEvents(r)
-		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		// Subsequent reconciles don't re-enter apply (Released no longer Unknown);
+		// dispatch falls through to steady-state. No further metric, no event.
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
-			janitormetrics.ExtRRPhaseReleased, janitormetrics.ExtRRResultApplyAbandoned)) - before).
+			janitormetrics.ExtRRPhaseReleased, janitormetrics.ExtRRResultNodeNotFound)) - before).
 			To(BeNumerically("==", 1.0), "subsequent reconciles must not re-fire the metric")
 		Expect(drainEvents(r)).To(BeEmpty())
 	})
+
+	// Empty-nodeName rejection is covered by the webhook test suite.
 
 	It("requeues without acting when another maintenance resource holds the node lock", func() {
 		nodeName := "node-locked-1"

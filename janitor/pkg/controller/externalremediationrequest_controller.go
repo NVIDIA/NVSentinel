@@ -58,30 +58,25 @@ const (
 
 	ReasonReleaseTaintApplied = "ReleaseTaintApplied"
 
+	ReasonNodeNotFound = "NodeNotFound"
+
 	eventReasonReleaseTaintApplied   = "ReleaseTaintApplied"
 	eventReasonReleaseTaintRemoved   = "ReleaseTaintRemoved"
 	eventReasonOperatorDeleteRequest = "OperatorDeleteRequested"
-	eventReasonApplyAbandoned        = "ApplyAbandoned"
+	eventReasonNodeNotFound          = "NodeNotFound"
 
 	// closeReason* qualifiers disambiguate which cleanup path closed the ExtRR
 	// in the ReleaseTaintRemoved event message.
 	closeReasonExternalRemediationCompleteTrue = "ExternalRemediationCompleteTrue"
 	closeReasonOperatorInitiated               = "OperatorInitiated"
 
-	// applyAbandonedAnnotation marks an ExtRR whose apply path gave up after
-	// applyAbandonAfter elapsed with the target Node still missing. Subsequent
-	// reconciles short-circuit; only operator delete drives cleanup from here.
-	applyAbandonedAnnotation = "nvsentinel.dgxc.nvidia.com/apply-abandoned"
-
 	// closeRecordedAnnotation marks that the close-bucket metrics (closed +
 	// external_response + open-1 + age histogram) have already fired for this
 	// ExtRR's lifecycle. Decouples the business event from the Node-PATCH
-	// side effect so terminate-style remediations (Maestro deletes the Node
-	// then signals Complete=True) are still observable.
+	// side effect so terminate-style remediations (the external system deletes
+	// the Node then signals Complete=True) are still observable.
 	closeRecordedAnnotation = "nvsentinel.dgxc.nvidia.com/close-recorded"
 
-	// annotationValueTrue is the boolean truthy value for the apply-abandoned
-	// and close-recorded markers.
 	annotationValueTrue = "true"
 )
 
@@ -276,47 +271,27 @@ func (r *ExternalRemediationRequestReconciler) dispatch(
 	}
 }
 
-// nodeMissingRequeue covers the cluster-autoscaler / kubelet-registration race.
-const nodeMissingRequeue = 30 * time.Second
-
 // nodeLockRequeue matches the sibling janitor controllers' lock-retry cadence.
 const nodeLockRequeue = 2 * time.Second
 
-// applyAbandonAfter bounds how long the apply path retries on a missing Node
-// before giving up. var (not const) so envtests can override the threshold.
-var applyAbandonAfter = 10 * time.Minute
-
 // reconcileApply applies the release taint + managed=false in one PATCH then
-// transitions NVSentinelOwnershipReleased=True. Node not found → transient
-// requeue; already-applied → idempotent fast path. Other API errors propagate
-// and controller-runtime requeues with backoff.
+// transitions NVSentinelOwnershipReleased=True. Node not found → terminal
+// Released=False (no retry, see ADR-040); already-applied → idempotent fast
+// path. Other API errors propagate and controller-runtime requeues with backoff.
 //
 // Acquires the cross-controller node-level lock before any node mutation so a
 // concurrent RebootNode / TerminateNode / GPUReset can't act on the same node.
 // The lock is released on Complete=True cleanup (branch 4) and on operator
 // delete (branch 2); the lease's ownerReference catches the failure case.
-//
-//nolint:cyclop // distinct apiserver failure modes; inline reads cleaner than a fan-out.
 func (r *ExternalRemediationRequestReconciler) reconcileApply(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
-	if extrrObj.GetAnnotations()[applyAbandonedAnnotation] == annotationValueTrue {
-		return ctrl.Result{}, nil
-	}
-
 	nodeName := extrrObj.Spec.HealthEvent.NodeName
 
 	var node corev1.Node
 	if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err != nil {
 		if apierrors.IsNotFound(err) {
-			if time.Since(extrrObj.CreationTimestamp.Time) > applyAbandonAfter {
-				return ctrl.Result{}, r.abandonApply(ctx, extrrObj, nodeName)
-			}
-
-			slog.WarnContext(ctx, "target node not found; requeueing",
-				"extrr", extrrObj.Name, "node", nodeName, "requeueAfter", nodeMissingRequeue)
-
-			return ctrl.Result{RequeueAfter: nodeMissingRequeue}, nil
+			return ctrl.Result{}, r.transitionToReleaseFailure(ctx, extrrObj, nodeName)
 		}
 
 		return ctrl.Result{}, fmt.Errorf("get node %q for ExtRR %q: %w", nodeName, extrrObj.Name, err)
@@ -370,33 +345,30 @@ func (r *ExternalRemediationRequestReconciler) reconcileApply(
 	return ctrl.Result{}, r.transitionToReleaseSuccess(ctx, extrrObj, msg)
 }
 
-// abandonApply gives up on the apply path after applyAbandonAfter elapsed with
-// the Node still missing. Fires the released{apply_abandoned} counter, emits a
-// Warning event, and stamps an annotation so subsequent reconciles short-circuit.
-// The ExtRR's conditions are left as-is; only operator delete drives cleanup
-// from here.
-func (r *ExternalRemediationRequestReconciler) abandonApply(
+// transitionToReleaseFailure terminates the apply path when the target Node
+// doesn't exist. Sets NVSentinelOwnershipReleased=False (terminal — dispatch
+// won't re-enter apply); the external system still drives close via
+// Complete=True or operator delete. There's no useful retry: if the Node
+// isn't there at apply time, waiting won't bring it back.
+func (r *ExternalRemediationRequestReconciler) transitionToReleaseFailure(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest, nodeName string,
 ) error {
-	slog.WarnContext(ctx, "abandoning ExtRR apply: target node missing past threshold",
-		"extrr", extrrObj.Name, "node", nodeName,
-		"age", time.Since(extrrObj.CreationTimestamp.Time), "threshold", applyAbandonAfter)
+	message := fmt.Sprintf("target node %q does not exist", nodeName)
 
-	metrics.GlobalMetrics.IncExtRRTotal(metrics.ExtRRPhaseReleased, metrics.ExtRRResultApplyAbandoned)
-	r.emitEvent(extrrObj, corev1.EventTypeWarning, eventReasonApplyAbandoned,
-		fmt.Sprintf("Node %q not found after %s; abandoning apply. Delete this ExtRR to clear.",
-			nodeName, applyAbandonAfter))
-
-	updated := extrrObj.DeepCopy()
-	if updated.Annotations == nil {
-		updated.Annotations = map[string]string{}
+	changed, err := r.transitionReleased(ctx, extrrObj, metav1.ConditionFalse, ReasonNodeNotFound, message)
+	if err != nil {
+		return err
 	}
 
-	updated.Annotations[applyAbandonedAnnotation] = annotationValueTrue
-
-	if err := r.Patch(ctx, updated, client.MergeFrom(extrrObj)); err != nil {
-		return fmt.Errorf("stamping apply-abandoned annotation on ExtRR %s: %w", extrrObj.Name, err)
+	if !changed {
+		return nil
 	}
+
+	slog.WarnContext(ctx, "target node not found; failing ExtRR apply",
+		"extrr", extrrObj.Name, "node", nodeName)
+
+	metrics.GlobalMetrics.IncExtRRTotal(metrics.ExtRRPhaseReleased, metrics.ExtRRResultNodeNotFound)
+	r.emitEvent(extrrObj, corev1.EventTypeWarning, eventReasonNodeNotFound, message)
 
 	return nil
 }
@@ -427,8 +399,8 @@ func (r *ExternalRemediationRequestReconciler) transitionToReleaseSuccess(
 // stays as a historical record until an operator deletes it. Business
 // metrics (closed + external_response + ExtRROpen-1 + age) fire on first
 // observation of Complete=True regardless of whether the Node still exists,
-// so terminate-style remediations (Maestro deleting the Node as part of the
-// repair) stay observable.
+// so terminate-style remediations (the external system deleting the Node as
+// part of the repair) stay observable.
 func (r *ExternalRemediationRequestReconciler) reconcileCleanupAfterComplete(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {

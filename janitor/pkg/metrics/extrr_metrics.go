@@ -31,9 +31,9 @@ const (
 const (
 	ExtRRResultSuccess         = "success"
 	ExtRRResultOperatorDeleted = "operator_deleted"
-	// ExtRRResultApplyAbandoned is recorded when the apply path gives up
-	// because the target Node never showed up within applyAbandonAfter.
-	ExtRRResultApplyAbandoned = "apply_abandoned"
+	// ExtRRResultNodeNotFound is recorded when the apply path fails because
+	// the target Node doesn't exist at reconcile time. Terminal — no retry.
+	ExtRRResultNodeNotFound = "node_not_found"
 	// ExtRRResultNone is the explicit sentinel for phases without an outcome.
 	ExtRRResultNone = ""
 )
