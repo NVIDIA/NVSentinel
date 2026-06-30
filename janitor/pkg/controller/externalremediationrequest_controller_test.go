@@ -139,27 +139,38 @@ var _ = Describe("ExternalRemediationRequest Controller", func() {
 	})
 
 	It("adds the cleanup finalizer and initial Unknown conditions on a fresh ExtRR", func() {
-		extrrObj := newTestExtRR("fresh-extrr-1", "node-fresh-1")
+		nodeName := "node-fresh-1"
+		Expect(r.Client.Create(ctx, newTestNode(nodeName, nil, nil))).To(Succeed())
+		DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
+
+		extrrObj := newTestExtRR("fresh-extrr-1", nodeName)
 		Expect(r.Client.Create(ctx, extrrObj)).To(Succeed())
 		DeferCleanup(deleteExtRRForCleanup, ctx, r, extrrObj)
 
 		key := ctrlclient.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace}
-		got := reconcileToSteadyState(ctx, r, key, 3)
+		// One pass: seeds the finalizer and Unknown conditions. Subsequent passes
+		// would run apply and transition Released=True; this test is about init only.
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
 
-		Expect(controllerutil.ContainsFinalizer(got, ExternalRemediationFinalizer)).
+		var got nvsentinelv1.ExternalRemediationRequest
+		Expect(r.Client.Get(ctx, key, &got)).To(Succeed())
+		gotPtr := &got
+
+		Expect(controllerutil.ContainsFinalizer(gotPtr, ExternalRemediationFinalizer)).
 			To(BeTrue(), "cleanup finalizer must be added")
 
-		Expect(got.Status).NotTo(BeNil(), "Status must be populated")
-		Expect(got.Status.Conditions).To(HaveLen(2), "two initial conditions expected")
+		Expect(gotPtr.Status).NotTo(BeNil(), "Status must be populated")
+		Expect(gotPtr.Status.Conditions).To(HaveLen(2), "two initial conditions expected")
 
-		released := findExtRRCondition(got, ConditionNVSentinelOwnershipReleased)
+		released := findExtRRCondition(gotPtr, ConditionNVSentinelOwnershipReleased)
 		Expect(released).NotTo(BeNil())
 		Expect(released.Status).To(Equal("Unknown"))
 		Expect(released.Reason).To(Equal(reasonInitializing))
 		Expect(released.Message).NotTo(BeEmpty())
 		Expect(released.LastTransitionTime).NotTo(BeNil())
 
-		complete := findExtRRCondition(got, ConditionExternalRemediationComplete)
+		complete := findExtRRCondition(gotPtr, ConditionExternalRemediationComplete)
 		Expect(complete).NotTo(BeNil())
 		Expect(complete.Status).To(Equal("Unknown"))
 		Expect(complete.Reason).To(Equal(reasonAwaitingExternalSystem))
@@ -168,7 +179,11 @@ var _ = Describe("ExternalRemediationRequest Controller", func() {
 	})
 
 	It("is idempotent on re-reconcile (no LastTransitionTime flap)", func() {
-		extrrObj := newTestExtRR("idempotent-extrr-1", "node-idem-1")
+		nodeName := "node-idem-1"
+		Expect(r.Client.Create(ctx, newTestNode(nodeName, nil, nil))).To(Succeed())
+		DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
+
+		extrrObj := newTestExtRR("idempotent-extrr-1", nodeName)
 		Expect(r.Client.Create(ctx, extrrObj)).To(Succeed())
 		DeferCleanup(deleteExtRRForCleanup, ctx, r, extrrObj)
 

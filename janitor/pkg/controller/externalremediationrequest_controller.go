@@ -546,7 +546,12 @@ func (r *ExternalRemediationRequestReconciler) markCompletionTime(
 			extrrObj.Name, err)
 	}
 
+	// Write back both Status and ResourceVersion: the status patch bumps the
+	// object's resourceVersion, and any subsequent Update on extrrObj (e.g.
+	// the finalizer-removal Update in reconcileCleanupOnDeletion) must carry
+	// the fresh rv to avoid a 409 Conflict.
 	extrrObj.Status = updated.Status
+	extrrObj.ResourceVersion = updated.ResourceVersion
 
 	return true, nil
 }
