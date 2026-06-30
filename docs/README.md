@@ -20,6 +20,12 @@ Understand how data flows through the system - from GPU failure detection to aut
 **For SREs and monitoring teams** (10 min reference)  
 Complete catalog of all Prometheus metrics exposed by NVSentinel components. Use this to build dashboards and alerts.
 
+### [tutorials/](./tutorials/)
+**Step-by-step developer guides**  
+Hands-on walkthroughs for extending NVSentinel. Start with
+[Writing a New Health Monitor](./tutorials/writing-a-health-monitor.md) to build, deploy,
+and verify a custom fault detector end-to-end (no GPU required).
+
 ### [configuration/](./configuration/)
 **Component configuration guides**  
 Detailed setup instructions for each NVSentinel component. Read these when you need to configure specific monitors, connectors, or remediation modules.

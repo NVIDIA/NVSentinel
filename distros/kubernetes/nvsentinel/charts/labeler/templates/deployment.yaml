@@ -69,6 +69,7 @@ spec:
             {{- if .Values.assumeDriverInstalled }}
             - "--assume-driver-installed"
             {{- end }}
+            - "--require-dcgm-ready-for-bootstrap={{ .Values.requireDCGMReadyForBootstrap }}"
             {{- if .Values.expectedDeviceCounts.enabled }}
             - "--expected-device-counts-config-file"
             - "/etc/nvsentinel/labeler/expected-device-counts.toml"
