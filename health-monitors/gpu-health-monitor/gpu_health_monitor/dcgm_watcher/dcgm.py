@@ -364,8 +364,9 @@ class DCGMWatcher:
             dcgm_handle = pydcgm.DcgmHandle(opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO)
             try:
                 _run_dcgm_server(port, host)
-            except Exception:
+            except Exception as e:
                 metrics.dcgm_api_failures.labels("dcgm_engine_run").inc()
+                log.error("Error starting embedded DCGM hostengine: %s", e)
                 dcgm_handle.Shutdown()
                 raise
             log.info(f"Successfully started embedded DCGM hostengine listening on {host}:{port}")

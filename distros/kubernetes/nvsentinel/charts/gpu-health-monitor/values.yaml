@@ -63,15 +63,6 @@ useHostNetworking: false
 # required in embedded-mode and is commonly "nvidia".
 runtimeClassName: ""
 
-# Embedded-mode runtime injection (ignored for operator-service and
-# external-hostengine modes). The in-process embedded DCGM hostengine runs inside
-# this pod and needs the NVIDIA Container Toolkit to inject the GPUs and driver.
-# Renders as an env var only when mode=embedded-mode:
-#   - nvidiaVisibleDevices -> NVIDIA_VISIBLE_DEVICES: inject GPUs + driver.
-# Requires runtimeClassName to be set to the NVIDIA RuntimeClass.
-embedded:
-  nvidiaVisibleDevices: "all"
-
 # Additional volume mounts for GPU health monitor (optional)
 additionalVolumeMounts: []
 

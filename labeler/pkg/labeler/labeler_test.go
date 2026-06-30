@@ -911,7 +911,7 @@ func TestDCGMBootstrapCompleted(t *testing.T) {
 	}
 }
 
-func TestPreserveDCGMVersionLabelWhenPodSourceMissing(t *testing.T) {
+func TestAssumeDCGMAvailableWhenPodSourceMissing(t *testing.T) {
 	tests := []struct {
 		name          string
 		existingLabel string

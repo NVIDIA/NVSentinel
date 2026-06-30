@@ -75,7 +75,7 @@ type Labeler struct {
 	assumeDriverInstalled        bool
 	requireDCGMReadyForBootstrap bool
 	deviceCounts                 *devicecounts.Manager
-	preserveDCGMVersionLabel     bool
+	assumeDCGMAvailable          bool
 }
 
 func (l *Labeler) allInformersSynced() bool {
@@ -92,7 +92,7 @@ func (l *Labeler) allInformersSynced() bool {
 func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	dcgmApp, driverApp, gkeInstallerApp, kataLabelOverride string, assumeDriverInstalled bool,
 	requireDCGMReadyForBootstrap bool, expectedDeviceCounts devicecounts.Config,
-	preserveDCGMVersionLabel bool) (*Labeler, error) {
+	assumeDCGMAvailable bool) (*Labeler, error) {
 	podInformer, err := createPodInformer(clientset, resyncPeriod, dcgmApp, driverApp)
 	if err != nil {
 		return nil, fmt.Errorf("create pod informer: %w", err)
@@ -134,7 +134,7 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		assumeDriverInstalled:        assumeDriverInstalled,
 		requireDCGMReadyForBootstrap: requireDCGMReadyForBootstrap,
 		deviceCounts:                 deviceCounts,
-		preserveDCGMVersionLabel:     preserveDCGMVersionLabel,
+		assumeDCGMAvailable:          assumeDCGMAvailable,
 	}
 
 	if err := l.registerEventHandlers(); err != nil {
@@ -176,7 +176,7 @@ func (l *Labeler) logConfiguration() {
 
 	slog.Info("Labeler created, watching DCGM and driver pods and nodes for kata detection",
 		"requireDCGMReadyForBootstrap", l.requireDCGMReadyForBootstrap,
-		"preserveDCGMVersionLabel", l.preserveDCGMVersionLabel)
+		"assumeDCGMAvailable", l.assumeDCGMAvailable)
 }
 
 func buildKataLabels(kataLabelOverride string) []string {
@@ -433,10 +433,6 @@ func (l *Labeler) reconcileAllNodes() {
 // operator-service delete events where the deleted pod may still be in the
 // informer cache).
 func (l *Labeler) getDCGMVersionForNode(nodeName string, excludePod *v1.Pod) (string, error) {
-	return l.getDCGMVersionFromPodsForNode(nodeName, excludePod)
-}
-
-func (l *Labeler) getDCGMVersionFromPodsForNode(nodeName string, excludePod *v1.Pod) (string, error) {
 	objs, err := l.podInformer.GetIndexer().ByIndex(NodeDCGMIndex, nodeName)
 	if err != nil {
 		return "", fmt.Errorf("failed to get DCGM pods by node index for node %s: %w", nodeName, err)
@@ -800,7 +796,7 @@ func (l *Labeler) updateDCGMLabel(node *v1.Node, dcgmVersion string) bool {
 		return false
 	}
 
-	if dcgmVersion == "" && l.preserveDCGMVersionLabel && normalizeDCGMVersion(node.Labels[DCGMVersionLabel]) != "" {
+	if dcgmVersion == "" && l.assumeDCGMAvailable && normalizeDCGMVersion(node.Labels[DCGMVersionLabel]) != "" {
 		slog.Debug("Preserving existing DCGM version label", "node", node.Name, "version", node.Labels[DCGMVersionLabel])
 		return false
 	}

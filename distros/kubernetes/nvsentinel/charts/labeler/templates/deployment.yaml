@@ -74,8 +74,8 @@ spec:
             - "--expected-device-counts-config-file"
             - "/etc/nvsentinel/labeler/expected-device-counts.toml"
             {{- end }}
-            {{- if eq (include "labeler.preserveDCGMVersionLabel" .) "true" }}
-            - "--preserve-dcgm-version-label"
+            {{- if eq (include "labeler.assumeDCGMAvailable" .) "true" }}
+            - "--assume-dcgm-available"
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

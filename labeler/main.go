@@ -67,7 +67,7 @@ func main() {
 func run() error {
 	kubeconfig, metricsPort, dcgmAppLabel, driverAppLabel,
 		gkeInstallerAppLabel, kataLabel, expectedDeviceCountsConfigFile,
-		preserveDCGMVersionLabel, assumeDriverInstalled, requireDCGMReadyForBootstrap := parseFlags()
+		assumeDCGMAvailable, assumeDriverInstalled, requireDCGMReadyForBootstrap := parseFlags()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -94,7 +94,7 @@ func run() error {
 		DriverAppLabel:               *driverAppLabel,
 		GKEInstallerAppLabel:         *gkeInstallerAppLabel,
 		KataLabel:                    *kataLabel,
-		PreserveDCGMVersionLabel:     *preserveDCGMVersionLabel,
+		AssumeDCGMAvailable:          *assumeDCGMAvailable,
 		AssumeDriverInstalled:        *assumeDriverInstalled,
 		RequireDCGMReadyForBootstrap: *requireDCGMReadyForBootstrap,
 		ExpectedDeviceCounts:         expectedDeviceCounts,
@@ -127,7 +127,7 @@ func run() error {
 func parseFlags() (
 	kubeconfig, metricsPort, dcgmAppLabel, driverAppLabel,
 	gkeInstallerAppLabel, kataLabel, expectedDeviceCountsConfigFile *string,
-	preserveDCGMVersionLabel, assumeDriverInstalled, requireDCGMReadyForBootstrap *bool,
+	assumeDCGMAvailable, assumeDriverInstalled, requireDCGMReadyForBootstrap *bool,
 ) {
 	kubeconfig = flag.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	metricsPort = flag.String("metrics-port", "2112", "Port to expose Prometheus metrics on")
@@ -140,8 +140,8 @@ func parseFlags() (
 			labeler.KataRuntimeDefaultLabel))
 	expectedDeviceCountsConfigFile = flag.String("expected-device-counts-config-file", "",
 		"Path to a TOML expected-device-count configuration file. Empty disables expected device count labels.")
-	preserveDCGMVersionLabel = flag.Bool("preserve-dcgm-version-label", false,
-		"Preserve an existing dcgm.version node label when no DCGM pod source is found.")
+	assumeDCGMAvailable = flag.Bool("assume-dcgm-available", false,
+		"Assume DCGM is available when a valid dcgm.version node label exists and no DCGM pod source is found.")
 	assumeDriverInstalled = flag.Bool("assume-driver-installed", false,
 		"Assume GPU drivers are pre-installed on GPU nodes (nvidia.com/gpu.present=true). "+
 			"Sets driver.installed=true unconditionally for those nodes, skipping driver pod detection. "+

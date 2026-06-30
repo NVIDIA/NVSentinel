@@ -106,13 +106,6 @@ spec:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: spec.nodeName
-            {{- if eq (include "gpu-health-monitor.dcgmMode" .) "embedded-mode" }}
-            # Embedded-mode only: the in-process DCGM hostengine needs the NVIDIA
-            # Container Toolkit to inject the GPUs and driver so it can collect GPU
-            # health. Requires runtimeClassName to be the NVIDIA RuntimeClass.
-            - name: NVIDIA_VISIBLE_DEVICES
-              value: {{ .Values.embedded.nvidiaVisibleDevices | quote }}
-            {{- end }}
       volumes:
         - name: config-vol
           configMap:
