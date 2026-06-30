@@ -19,13 +19,13 @@ Add one DCGM source-mode contract with three modes:
 | --------------------- | ----------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------- |
 | `operator-service`    | GPU Operator DCGM pod/service       | Node `dcgm.version` label derived from DCGM pod image | Connects to configured GPU Operator service                      |
 | `external-hostengine` | External node-local `nv-hostengine` | Existing node `dcgm.version` label                    | Connects to configured hostengine endpoint                       |
-| `embedded-mode`       | GPU health monitor                  | `global.dcgm.embeddedModeVersion` (defaults to `4.x`) | Runs an in-process hostengine with a pod-local loopback listener |
+| `embedded-mode`       | GPU health monitor                  | Existing node `dcgm.version` label                    | Runs an in-process hostengine with a pod-local loopback listener |
 
 `operator-service` remains the default. In `operator-service`, labeler remains the writer of `nvsentinel.dgxc.nvidia.com/dcgm.version` from DCGM pod detection. In `external-hostengine`, the same node label is the scheduling contract, and labeler assumes DCGM is available when a valid label exists but no DCGM pod source exists.
 
 ## Configuration
 
-The primary user-facing knob is `global.dcgm.mode`. In `external-hostengine` mode, operators provide the DCGM major version through the existing `nvsentinel.dgxc.nvidia.com/dcgm.version` node label (`3.x` or `4.x`), which is the same label GPU health monitor already uses for image selection.
+The primary user-facing knob is `global.dcgm.mode`. In `external-hostengine` and `embedded-mode`, operators provide the DCGM major version through the existing `nvsentinel.dgxc.nvidia.com/dcgm.version` node label (`3.x` or `4.x`), which is the same label GPU health monitor already uses for image selection.
 
 ```yaml
 # Existing GPU Operator DCGM service. This is the default.
@@ -53,8 +53,6 @@ global:
 global:
   dcgm:
     mode: embedded-mode
-    # Optional; defaults to 4.x.
-    embeddedModeVersion: 4.x
     # Optional; defaults to localhost:5555 and must remain loopback.
     embedded:
       endpoint: localhost
@@ -63,9 +61,9 @@ gpu-health-monitor:
   runtimeClassName: nvidia
 ```
 
-Each source mode owns its connection settings: `global.dcgm.service.endpoint/port` for `operator-service`, `global.dcgm.externalHostengine.endpoint/port` for `external-hostengine`, and `global.dcgm.embedded.endpoint/port` for `embedded-mode`. The external and embedded settings default to `localhost:5555`; the external endpoint can be overridden, while the embedded endpoint must be `localhost`, `127.0.0.1`, or `::1` because it binds the in-process listener. The embedded monitor itself continues to use the embedded handle directly. `global.dcgm.embeddedModeVersion` defaults to `4.x`, accepts `3.x` or `4.x`, and selects the DCGM-major GPU health monitor image because no hostengine exists yet for labeler to discover.
+Each source mode owns its connection settings: `global.dcgm.service.endpoint/port` for `operator-service`, `global.dcgm.externalHostengine.endpoint/port` for `external-hostengine`, and `global.dcgm.embedded.endpoint/port` for `embedded-mode`. The external and embedded settings default to `localhost:5555`; the external endpoint can be overridden, while the embedded endpoint must be `localhost`, `127.0.0.1`, or `::1` because it binds the in-process listener. The embedded monitor itself continues to use the embedded handle directly.
 
-Embedded-mode runs the DCGM hostengine inside the GPU health monitor container, so the pod needs direct GPU and driver access. `gpu-health-monitor.runtimeClassName` is required and must name the cluster's NVIDIA RuntimeClass (commonly `nvidia`) so the NVIDIA Container Toolkit mounts the GPUs and driver.
+Embedded-mode runs the DCGM hostengine inside GPU health monitor container, so the pod needs direct GPU and driver access. `gpu-health-monitor.runtimeClassName` is required and must name the cluster's NVIDIA RuntimeClass (commonly `nvidia`) so the NVIDIA Container Toolkit mounts the GPUs and driver.
 
 ## Implementation
 
@@ -73,9 +71,9 @@ Embedded-mode runs the DCGM hostengine inside the GPU health monitor container, 
 
 - `operator-service` renders the existing service-backed monitor DaemonSets selected by `dcgm.version`.
 - `external-hostengine` renders the regular remote monitor path with host networking and is selected by the existing node `dcgm.version` label.
-- `embedded-mode` renders the monitor DaemonSet selected by `global.dcgm.embeddedModeVersion` and does not require the node `dcgm.version` label before startup, avoiding a circular dependency.
+- `embedded-mode` renders the regular monitor DaemonSets and is selected by the existing node `dcgm.version` label, just like `external-hostengine`.
 
-In `external-hostengine` mode, the chart sets `--assume-dcgm-available` on labeler. This tells labeler not to remove an existing valid `dcgm.version` label when no DCGM pod is present, which is the expected topology for an externally managed hostengine.
+In `external-hostengine` and `embedded-mode`, the chart sets `--assume-dcgm-available` on labeler. This tells labeler not to remove an existing valid `dcgm.version` label when no DCGM pod is present, which is the expected topology for an externally managed hostengine or an embedded hostengine selected by node label.
 
 ### External Hostengine
 
@@ -94,17 +92,13 @@ No separate discovery workload or Lease is required. If the label is absent, no 
 Labeler resolves the expected DCGM version from DCGM pods when they exist, matching the existing `operator-service` behavior. If no DCGM pod source exists:
 
 - `operator-service` removes a stale `dcgm.version` label, because the operator DCGM pod is the source of truth;
-- `external-hostengine` preserves an existing valid `dcgm.version` label, because that label is the operator-provided version contract for the external hostengine;
-- `embedded-mode` leaves `dcgm.version` absent, because image selection comes from `global.dcgm.embeddedModeVersion` instead of a node label.
-
-In `embedded-mode`, `global.dcgm.embeddedModeVersion` is only a Helm input for selecting the GPU health monitor image; it is not a labeler input and is never copied to the node's `dcgm.version` label.
+- `external-hostengine` and `embedded-mode` preserve an existing valid `dcgm.version` label, because that label is the operator-provided version contract for selecting the matching GPU health monitor image.
 
 ### Embedded Mode
 
 `embedded-mode` runs an in-process embedded DCGM hostengine inside the GPU health monitor process and exposes the same engine on pod-local loopback. It uses the DCGM APIs rather than a separate `nv-hostengine` process.
 
 Runtime behavior:
-
 1. Create the DCGM handle with no IP address (`pydcgm.DcgmHandle(opMode=DCGM_OPERATION_MODE_AUTO)`), which calls `dcgmStartEmbedded` to start the embedded hostengine in-process.
 2. Call `dcgmEngineRun` through the Python bindings to expose that engine on `127.0.0.1:<port>`. GPU health monitor continues using the embedded handle; pod-local tools such as `dcgmi` connect to the loopback listener and therefore operate on the same hostengine cache.
 3. Run the normal health-check loop against the embedded handle.
@@ -116,8 +110,8 @@ Because the embedded engine runs in the monitor's own pod, that pod must have GP
 
 ## Rationale
 
-- Reusing the existing `dcgm.version` node label keeps GPU health monitor image selection consistent across operator-service and external-hostengine modes.
-- Preserving the label in `external-hostengine` avoids requiring a DCGM pod or a separate discovery workload just to keep the selected monitor image running.
+- Reusing the existing `dcgm.version` node label keeps GPU health monitor image selection consistent across all three source modes.
+- Assuming DCGM availability from the label in `external-hostengine` and `embedded-mode` avoids requiring a DCGM pod or a separate discovery workload just to keep the selected monitor image running.
 - `embedded-mode` runs the hostengine in-process via the DCGM API, so there is no child-process lifecycle to manage. The loopback listener is owned by the same hostengine and has the same lifetime as the embedded handle.
 - The mode contract avoids secondary booleans such as "start if missing" or "discovery enabled"; behavior follows directly from the selected mode.
 

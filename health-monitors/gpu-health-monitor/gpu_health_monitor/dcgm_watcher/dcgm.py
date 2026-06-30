@@ -519,6 +519,10 @@ class DCGMWatcher:
                     if dcgm_handle is None:
                         try:
                             dcgm_handle = self._get_dcgm_handle()
+                            if dcgm_handle is None:
+                                self._fire_callback_funcs(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])
+                                self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
+                                continue
                             dcgm_group, gpu_ids, _gpu_serials = self._initialize_dcgm_monitoring(dcgm_handle)
                         except Exception as e:
                             log.error(f"Error getting DCGM handle: {e}")

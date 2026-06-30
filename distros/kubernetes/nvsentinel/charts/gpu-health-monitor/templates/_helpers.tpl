@@ -151,13 +151,3 @@ namespace. An endpoint override does not change this networking contract.
 {{- if or .Values.useHostNetworking (eq (include "gpu-health-monitor.dcgmMode" .) "external-hostengine") -}}true{{- end -}}
 {{- end }}
 
-{{- define "gpu-health-monitor.embeddedModeVersion" -}}
-{{- $version := .Values.dcgm.embeddedModeVersion | default "4.x" -}}
-{{- if and .Values.global .Values.global.dcgm .Values.global.dcgm.embeddedModeVersion -}}
-{{- $version = .Values.global.dcgm.embeddedModeVersion -}}
-{{- end -}}
-{{- if not (has $version (list "3.x" "4.x")) -}}
-{{- fail (printf "unsupported DCGM embedded-mode version %q; expected 3.x or 4.x" $version) -}}
-{{- end -}}
-{{- $version -}}
-{{- end }}

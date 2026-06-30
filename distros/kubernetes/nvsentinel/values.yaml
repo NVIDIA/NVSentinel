@@ -111,8 +111,6 @@ global:
   dcgm:
     # Source mode. Supported values: operator-service, external-hostengine, embedded-mode.
     mode: operator-service
-    # DCGM major version used when mode is embedded-mode.
-    embeddedModeVersion: "4.x"
     # Enable DCGM Kubernetes service integration
     enabled: true
     # GPU Operator DCGM service used by operator-service mode.
