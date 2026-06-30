@@ -69,7 +69,6 @@ const (
 	// in the ReleaseTaintRemoved event message.
 	closeReasonExternalRemediationCompleteTrue = "ExternalRemediationCompleteTrue"
 	closeReasonOperatorInitiated               = "OperatorInitiated"
-
 )
 
 // ExternalRemediationRequestReconciler implements the ADR-040 state machine.
