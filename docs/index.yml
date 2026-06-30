@@ -14,6 +14,11 @@ navigation:
       - page: Integrations
         path: INTEGRATIONS.md
 
+  - section: Tutorials
+    contents:
+      - page: Writing a Health Monitor
+        path: tutorials/writing-a-health-monitor.md
+
   - section: Architecture
     contents:
       - page: Data Flow

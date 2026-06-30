@@ -247,7 +247,7 @@ func (p *CSVParser) getRecommendedActionForXid(xidCode int, message string) pb.R
 		lastOpenParan := strings.LastIndex(message, "(")
 		lastCloseParan := strings.LastIndex(message, ")")
 
-		if lastOpenParan != -1 && lastCloseParan != -1 {
+		if lastOpenParan != -1 && lastCloseParan != -1 && lastOpenParan < lastCloseParan {
 			// recommendations should be "GPU Reset Required", i.e., the string inside the last ()
 			recommendation := message[lastOpenParan+1 : lastCloseParan]
 

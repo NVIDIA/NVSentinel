@@ -42,6 +42,12 @@ kataLabelOverride: ""
 # are installed directly on the host rather than via GPU Operator driver containers.
 assumeDriverInstalled: false
 
+# DCGM bootstrap gating
+# When enabled, the labeler requires the DCGM pod to be ready before setting the DCGM version
+# label during the initial bootstrapping of a node. Once the bootstrap annotation is set, the
+# version label will be set without requiring DCGM pod readiness.
+requireDCGMReadyForBootstrap: true
+
 # Expected device count labels
 # When enabled, the labeler writes current/expected device-count labels per configured class.
 # Current counts come from CEL expressions over the node object and associated ResourceSlices.

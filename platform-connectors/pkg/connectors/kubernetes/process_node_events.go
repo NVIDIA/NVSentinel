@@ -252,16 +252,29 @@ func (r *K8sConnector) aggregateEventMessages(messages []string, events []*proto
 func parseMessages(message string) []string {
 	var messages []string
 
-	if message != "" && message != NoHealthFailureMsg {
-		elementMessages := strings.Split(message, ";")
-		for _, msg := range elementMessages {
-			if msg != "" && msg != truncationSuffix {
-				messages = append(messages, msg)
-			}
+	if message == "" {
+		return nil
+	}
+
+	for _, msg := range strings.Split(message, ";") {
+		if msg == "" || msg == truncationSuffix || isNoHealthFailureMessage(msg) {
+			continue
 		}
+
+		messages = append(messages, msg)
 	}
 
 	return messages
+}
+
+// isNoHealthFailureMessage reports whether msg is the recovery sentinel in any
+// form. The comparison is case-insensitive and tolerates surrounding whitespace
+// so a non-canonical recovery message (different casing, a trailing separator, or
+// one written by an external tool or an older build) is treated as "no fault"
+// instead of being resurrected as a phantom fault that wedges the node condition
+// at Status=True.
+func isNoHealthFailureMessage(msg string) bool {
+	return strings.EqualFold(strings.TrimSpace(msg), NoHealthFailureMsg)
 }
 
 func (r *K8sConnector) addMessageIfNotExist(messages []string, healthEvent *protos.HealthEvent) []string {
