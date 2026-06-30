@@ -39,6 +39,7 @@ const (
 	dcgmServiceName               = "nvidia-dcgm"
 	dcgmOriginalPort              = 5555
 	dcgmBrokenPort                = 1555
+	dcgmBootstrapAnnotation       = "nvsentinel.dgxc.nvidia.com/dcgm-bootstrap-completed"
 	GPUHealthMonitorContainerName = "gpu-health-monitor"
 	GPUHealthMonitorDaemonSetName = "gpu-health-monitor-dcgm-4.x"
 )
@@ -933,6 +934,72 @@ func TestGpuHealthMonitorStoreOnlyEvents(t *testing.T) {
 		return ctx
 
 	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+func TestDCGMBootstrapCompletedAnnotation(t *testing.T) {
+	feature := features.New("GPU Health Monitor - DCGM Bootstrap Completed Annotation").
+		WithLabel("suite", "gpu-health-monitor").
+		WithLabel("component", "dcgm-bootstrap-completed")
+
+	var testNodeName string
+	var dcgmPodName string
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		gpuHealthMonitorPod, err := helpers.GetDaemonSetPodOnWorkerNode(ctx, t, client, GPUHealthMonitorDaemonSetName,
+			"gpu-health-monitor-dcgm-4.x")
+		require.NoError(t, err, "failed to find gpu-health-monitor pod on worker node")
+
+		testNodeName = gpuHealthMonitorPod.Spec.NodeName
+		t.Logf("Using node: %s", testNodeName)
+
+		node, err := helpers.GetNodeByName(ctx, client, testNodeName)
+		require.NoError(t, err, "failed to get node %s", testNodeName)
+		require.NotEmpty(t, node.Annotations[dcgmBootstrapAnnotation],
+			"node %s should have annotation %s set", testNodeName, dcgmBootstrapAnnotation)
+		t.Logf("Node %s has annotation %s: %s", testNodeName, dcgmBootstrapAnnotation,
+			node.Annotations[dcgmBootstrapAnnotation])
+
+		podsOnNode, err := helpers.GetPodsOnNode(ctx, client.Resources(gpuOperatorNamespace), testNodeName)
+		require.NoError(t, err, "failed to list pods on node %s", testNodeName)
+		for _, pod := range podsOnNode {
+			if strings.HasPrefix(pod.Name, dcgmServiceName) {
+				dcgmPodName = pod.Name
+				break
+			}
+		}
+		require.NotEmpty(t, dcgmPodName, "no nvidia-dcgm pod found on node %s", testNodeName)
+		t.Logf("nvidia-dcgm pod on node %s: %s", testNodeName, dcgmPodName)
+
+		ctx = context.WithValue(ctx, keyNodeName, testNodeName)
+		return ctx
+	})
+
+	feature.Assess("bootstrap annotation persists after nvidia-dcgm pod is deleted and restarted",
+		func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			client, err := c.NewClient()
+			require.NoError(t, err, "failed to create kubernetes client")
+
+			t.Logf("Deleting nvidia-dcgm pod %s on node %s", dcgmPodName, testNodeName)
+			err = helpers.DeletePod(ctx, t, client, gpuOperatorNamespace, dcgmPodName, true)
+			require.NoError(t, err, "failed to delete nvidia-dcgm pod %s", dcgmPodName)
+
+			t.Logf("Waiting for replacement nvidia-dcgm pod on node %s to be Running and Ready", testNodeName)
+			helpers.WaitForDaemonSetPodRunning(ctx, t, client, gpuOperatorNamespace, dcgmServiceName, testNodeName)
+
+			t.Logf("Verifying bootstrap annotation is still present on node %s", testNodeName)
+			node, err := helpers.GetNodeByName(ctx, client, testNodeName)
+			require.NoError(t, err, "failed to get node %s", testNodeName)
+			require.NotEmpty(t, node.Annotations[dcgmBootstrapAnnotation],
+				"bootstrap annotation should persist after nvidia-dcgm pod restart on node %s", testNodeName)
+			t.Logf("Bootstrap annotation still present: %s", node.Annotations[dcgmBootstrapAnnotation])
+
+			return ctx
+		})
 
 	testEnv.Test(t, feature.Feature())
 }
