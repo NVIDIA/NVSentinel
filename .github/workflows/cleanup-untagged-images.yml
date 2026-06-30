@@ -82,6 +82,7 @@ jobs:
           - nvsentinel/health-events-analyzer
           - nvsentinel/maintenance-notifier
           - nvsentinel/event-exporter
+          - nvsentinel/mcp-server
           - nvsentinel/kubernetes-object-monitor
           - nvsentinel-log-collector
           - nvsentinel-file-server-cleanup
