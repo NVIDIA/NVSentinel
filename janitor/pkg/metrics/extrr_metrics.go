@@ -45,8 +45,9 @@ const (
 var (
 	// ExtRRTotal phases:
 	//   created           — fresh ExtRR initialised.
-	//   released          — NVSentinelOwnershipReleased=True (result=success),
-	//                       or apply abandoned past timeout (result=apply_abandoned).
+	//   released          — NVSentinelOwnershipReleased transitioned:
+	//                       result=success (taint applied) or
+	//                       result=node_not_found (target node absent at apply time).
 	//   external_response — ExternalRemediationComplete=True observed. result=success.
 	//   closed            — cleanup ran. result=success | operator_deleted.
 	ExtRRTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
