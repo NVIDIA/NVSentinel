@@ -20,9 +20,10 @@ type Rule struct {
 }
 
 type Taint struct {
-	Key    string `toml:"key"`
-	Value  string `toml:"value"`
-	Effect string `toml:"effect"`
+	Key         string `toml:"key"    json:"key"`
+	Value       string `toml:"value"  json:"value"`
+	Effect      string `toml:"effect" json:"effect"`
+	PreExisting bool   `toml:"-"      json:"preExisting"`
 }
 
 type Cordon struct {
