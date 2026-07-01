@@ -80,6 +80,10 @@ type FileConfig struct {
 	ConnectorSocket      string              `yaml:"connectorSocket"`
 	ProcessingStrategy   string              `yaml:"processingStrategy"`
 
+	// GangDiscovery is the cluster-wide default gang discovery configuration.
+	// Per-namespace overrides are expressed as PreflightConfig custom
+	// resources (preflight.nvsentinel.nvidia.com/v1alpha1) via
+	// spec.gangDiscovery, reconciled at runtime into the discoverer resolver.
 	GangDiscovery    GangDiscoveryConfig    `yaml:"gangDiscovery"`
 	GangCoordination GangCoordinationConfig `yaml:"gangCoordination"`
 

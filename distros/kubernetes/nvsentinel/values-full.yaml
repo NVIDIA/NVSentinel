@@ -1881,6 +1881,19 @@ preflight:
     # minCountExpr: "podGroup.spec.minMember"
 
   ##############################################################################
+  # PER-NAMESPACE GANG DISCOVERY (PreflightConfig CRD)
+  #
+  # Per-namespace overrides are runtime objects, not Helm values. Create a
+  # PreflightConfig (preflight.nvsentinel.nvidia.com/v1alpha1) with a
+  # spec.gangDiscovery block in a namespace to override the cluster-wide
+  # gangDiscovery above for that namespace. The
+  # controller reads scheduler PodGroup CRs via an aggregated ClusterRole; grant
+  # access to additional scheduler CRDs with a ClusterRole labeled
+  # preflight.nvsentinel.nvidia.com/aggregate-to-gang-discovery: "true".
+  # See: docs/configuration/preflight.md#gang-discovery
+  ##############################################################################
+
+  ##############################################################################
   # GANG COORDINATION
   #
   # Manages ConfigMaps for multi-node init container coordination.

@@ -39,7 +39,7 @@ type GangController struct {
 	client.Client
 	cfg         *config.Config
 	coordinator *gang.Coordinator
-	discoverer  gang.GangDiscoverer
+	resolver    *gang.DiscovererResolver
 }
 
 // NewGangController creates a new gang controller.
@@ -47,13 +47,13 @@ func NewGangController(
 	cfg *config.Config,
 	client client.Client,
 	coordinator *gang.Coordinator,
-	discoverer gang.GangDiscoverer,
+	resolver *gang.DiscovererResolver,
 ) *GangController {
 	return &GangController{
 		Client:      client,
 		cfg:         cfg,
 		coordinator: coordinator,
-		discoverer:  discoverer,
+		resolver:    resolver,
 	}
 }
 
@@ -126,19 +126,23 @@ func (c *GangController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, nil
 	}
 
+	// Resolve the gang discoverer for this pod's namespace. Namespaces may
+	// override the cluster-wide discoverer to support different schedulers.
+	discoverer := c.resolver.For(pod.Namespace)
+
 	// Check if this pod belongs to a gang
-	if c.discoverer == nil || !c.discoverer.CanHandle(&pod) {
+	if discoverer == nil || !discoverer.CanHandle(&pod) {
 		slog.Info("Pod does not belong to a gang", "pod", pod.Name, "namespace", pod.Namespace)
 		return ctrl.Result{}, nil
 	}
 
-	gangID := c.discoverer.ExtractGangID(&pod)
+	gangID := discoverer.ExtractGangID(&pod)
 	if gangID == "" {
 		slog.Info("Pod does not have a gang ID", "pod", pod.Name, "namespace", pod.Namespace)
 		return ctrl.Result{}, nil
 	}
 
-	gangInfo, err := c.discoverer.DiscoverPeers(ctx, &pod)
+	gangInfo, err := discoverer.DiscoverPeers(ctx, &pod)
 	if err != nil {
 		slog.Error("Failed to discover gang peers",
 			"pod", pod.Name,

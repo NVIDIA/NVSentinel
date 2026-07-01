@@ -144,7 +144,7 @@ func TestGangController_WebhookRegistration(t *testing.T) {
 			&config.Config{},
 			te.mgr.GetClient(),
 			gang.NewCoordinator(te.mgr.GetClient(), gang.DefaultCoordinatorConfig()),
-			newGangDiscoverer("rp-gang", 2),
+			gang.NewResolver(newGangDiscoverer("rp-gang", 2), nil),
 		)
 
 		ctrl.RegisterPod(ctx, webhook.GangRegistration{
@@ -179,7 +179,7 @@ func TestGangController_WebhookRegistration(t *testing.T) {
 			&config.Config{},
 			te.mgr.GetClient(),
 			gang.NewCoordinator(te.mgr.GetClient(), gang.DefaultCoordinatorConfig()),
-			disc,
+			gang.NewResolver(disc, nil),
 		)
 
 		gangCtrl.RegisterPod(ctx, webhook.GangRegistration{
@@ -222,7 +222,7 @@ func TestGangController_EnsureNCCLTopoConfigMap(t *testing.T) {
 	gangCtrl := NewGangController(
 		cfg, te.mgr.GetClient(),
 		gang.NewCoordinator(te.mgr.GetClient(), gang.DefaultCoordinatorConfig()),
-		newGangDiscoverer(gangID, 2),
+		gang.NewResolver(newGangDiscoverer(gangID, 2), nil),
 	)
 
 	registerPod := func(podName string) {
@@ -348,7 +348,7 @@ func setupTestEnv(t *testing.T, ctx context.Context, discoverer gang.GangDiscove
 
 	coord := gang.NewCoordinator(mgr.GetClient(), gang.DefaultCoordinatorConfig())
 	testCfg := &config.Config{}
-	gangCtrl := NewGangController(testCfg, mgr.GetClient(), coord, discoverer)
+	gangCtrl := NewGangController(testCfg, mgr.GetClient(), coord, gang.NewResolver(discoverer, nil))
 
 	skipValidation := true
 	err = ctrl.NewControllerManagedBy(mgr).
@@ -447,7 +447,6 @@ func (te *testEnv) assertNoConfigMaps(t *testing.T, ctx context.Context, namespa
 	require.NoError(t, err)
 	assert.Empty(t, cms.Items, "expected no ConfigMaps")
 }
-
 
 func newTestPod(name, namespace, ip string) *corev1.Pod {
 	return newTestPodWithGangVolume(name, namespace, ip, "")
