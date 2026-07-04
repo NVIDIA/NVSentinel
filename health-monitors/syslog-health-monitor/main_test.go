@@ -32,7 +32,7 @@ func tagsOf(checks []fd.CheckDefinition, name string) ([]string, bool) {
 
 // TestBuildChecksFromFlag_KernelOriginGetKernelFilter verifies the regular
 // (non-Kata) path defaults the kernel-origin checks to the "-k"
-// (SYSLOG_FACILITY=0) filter so they only consume kernel entries.
+// (_TRANSPORT=kernel) filter so they only consume kernel entries.
 // Regression coverage for NVIDIA/NVSentinel#1417.
 func TestBuildChecksFromFlag_KernelOriginGetKernelFilter(t *testing.T) {
 	origChecks, origKata := *checksList, *kataEnabled
@@ -86,7 +86,7 @@ func TestBuildChecksFromFlag_NonKernelCheckHasNoFilter(t *testing.T) {
 // TestApplyKataConfig_OverridesKernelFilterWithContainerdUnit verifies the Kata
 // path filters by the containerd unit instead of "-k": on Kata nodes XIDs
 // surface via the guest kernel relayed through containerd, so a
-// SYSLOG_FACILITY=0 filter would AND with the unit filter and match nothing.
+// _TRANSPORT=kernel filter would AND with the unit filter and match nothing.
 func TestApplyKataConfig_OverridesKernelFilterWithContainerdUnit(t *testing.T) {
 	origChecks, origKata := *checksList, *kataEnabled
 	defer func() { *checksList, *kataEnabled = origChecks, origKata }()

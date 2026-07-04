@@ -199,7 +199,7 @@ func dialPlatformConnector(ctx context.Context, socket string) (*grpc.ClientConn
 
 // kernelOriginChecks lists checks whose source events are emitted by the kernel
 // (NVIDIA driver, NVSwitch, PCI subsystem). They must only consume kernel
-// (SYSLOG_FACILITY=0) journal entries: scanning every facility lets unrelated
+// (_TRANSPORT=kernel) journal entries: scanning every transport lets unrelated
 // high-volume userspace logs (audit, containers) push the read cursor behind
 // journald's retention window, so the segment holding an XID can be vacuumed
 // before the monitor processes it. See NVIDIA/NVSentinel#1417.
@@ -227,7 +227,7 @@ func buildChecksFromFlag() ([]fd.CheckDefinition, error) {
 			JournalPath: "/nvsentinel/var/log/journal/",
 		}
 
-		// Kernel-origin checks only consume kernel (SYSLOG_FACILITY=0) entries by
+		// Kernel-origin checks only consume kernel (_TRANSPORT=kernel) entries by
 		// default so they keep up with journald instead of falling behind under
 		// retention pressure from unrelated logs. See NVIDIA/NVSentinel#1417.
 		if kernelOriginChecks[name] {
@@ -253,8 +253,8 @@ func applyKataConfig(list []fd.CheckDefinition) []fd.CheckDefinition {
 
 	for i := range list {
 		// On Kata nodes XIDs surface via the guest kernel relayed through
-		// containerd, not as host SYSLOG_FACILITY=0 entries, so filter by the
-		// containerd unit and drop any kernel-facility default set in
+		// containerd, not as host _TRANSPORT=kernel entries, so filter by the
+		// containerd unit and drop any kernel-transport default set in
 		// buildChecksFromFlag (the two would AND together and match nothing).
 		// See NVIDIA/NVSentinel#1417.
 		list[i].Tags = []string{"-u containerd.service"}

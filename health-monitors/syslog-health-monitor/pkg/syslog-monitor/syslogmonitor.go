@@ -626,8 +626,10 @@ func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinit
 
 		switch trimmedTag {
 		case "-k", "--dmesg":
-			// Facility 0 is typically KERNEL messages.
-			matchExpr := FieldSyslogFacility + "=0"
+			// Kernel-transport logs (printk + /dev/kmsg), independent of the
+			// syslog facility. This is generic across devices that may not set
+			// SYSLOG_FACILITY=kern, and naturally excludes journal/audit noise.
+			matchExpr := FieldTransport + "=" + TransportKernel
 
 			slog.Info("Adding kernel log filter",
 				"check", check.Name,
@@ -809,7 +811,7 @@ func (sm *SyslogMonitor) resumeFromLastCursor(
 // skipBookmarkedEntryIfPresent advances past lastKnownCursor when a filtered
 // journal read returns the bookmarked entry itself after SeekCursor+Next.
 // systemd may return the entry at the cursor on the first Next() after
-// SeekCursor when journal matches (e.g. SYSLOG_FACILITY=0 for "-k") are active.
+// SeekCursor when journal matches (e.g. _TRANSPORT=kernel for "-k") are active.
 // Without this skip, the last processed kernel XID is re-read every poll cycle.
 func (sm *SyslogMonitor) skipBookmarkedEntryIfPresent(
 	journal Journal, check CheckDefinition, lastKnownCursor string,

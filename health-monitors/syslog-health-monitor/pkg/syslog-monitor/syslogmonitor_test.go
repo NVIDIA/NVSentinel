@@ -821,11 +821,11 @@ func TestGPUFallenOffHandlerInitialization(t *testing.T) {
 	assert.NotNil(t, sm.checkToHandlerMap[GPUFallenOffCheck], "GPU Fallen Off handler should be initialized")
 }
 
-// TestConfigureTagFilters_KernelTagAddsFacilityMatch verifies that a check
-// carrying the "-k" tag restricts the journal to kernel entries via a
-// SYSLOG_FACILITY=0 match. This is the filter the kernel-origin checks rely on
+// TestConfigureTagFilters_KernelTagAddsTransportMatch verifies that a check
+// carrying the "-k" tag restricts the journal to kernel-transport entries via a
+// _TRANSPORT=kernel match. This is the filter the kernel-origin checks rely on
 // to keep up with journald; see NVIDIA/NVSentinel#1417.
-func TestConfigureTagFilters_KernelTagAddsFacilityMatch(t *testing.T) {
+func TestConfigureTagFilters_KernelTagAddsTransportMatch(t *testing.T) {
 	for _, tag := range []string{"-k", "--dmesg"} {
 		t.Run(tag, func(t *testing.T) {
 			sm := &SyslogMonitor{}
@@ -834,8 +834,8 @@ func TestConfigureTagFilters_KernelTagAddsFacilityMatch(t *testing.T) {
 
 			err := sm.configureTagFilters(mock, check)
 			assert.NoError(t, err)
-			assert.Contains(t, mock.MatchFilters, FieldSyslogFacility+"=0",
-				"tag %q should add a kernel-only (SYSLOG_FACILITY=0) journal match", tag)
+			assert.Contains(t, mock.MatchFilters, FieldTransport+"="+TransportKernel,
+				"tag %q should add a kernel-transport (_TRANSPORT=kernel) journal match", tag)
 		})
 	}
 }
@@ -856,7 +856,7 @@ func TestConfigureTagFilters_NoTagsAddsNoMatch(t *testing.T) {
 // TestResumeFromLastCursor_SkipsBookmarkReReadWithFilteredJournal verifies that
 // resuming from a bookmark does not re-read the last processed kernel entry when
 // systemd returns that entry on the first Next() after SeekCursor with matches
-// active (SYSLOG_FACILITY=0 / "-k"). See NVIDIA/NVSentinel#1417.
+// active (_TRANSPORT=kernel / "-k"). See NVIDIA/NVSentinel#1417.
 func TestResumeFromLastCursor_SkipsBookmarkReReadWithFilteredJournal(t *testing.T) {
 	sm := &SyslogMonitor{
 		checkLastCursors: map[string]string{
@@ -869,7 +869,7 @@ func TestResumeFromLastCursor_SkipsBookmarkReReadWithFilteredJournal(t *testing.
 			{Cursor: "xid-cursor", Message: "NVRM: Xid (PCI:0008:06:00): 48"},
 		},
 		CurrentPosition: 0,
-		MatchFilters:    []string{FieldSyslogFacility + "=0"},
+		MatchFilters:    []string{FieldTransport + "=" + TransportKernel},
 	}
 	check := CheckDefinition{Name: XIDErrorCheck, Tags: []string{"-k"}}
 
