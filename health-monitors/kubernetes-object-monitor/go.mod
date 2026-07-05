@@ -6,7 +6,7 @@ toolchain go1.26.3
 
 require (
 	github.com/go-logr/logr v1.4.3
-	github.com/google/cel-go v0.28.1
+	github.com/google/cel-go v0.29.1
 	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/nvidia/nvsentinel/data-models v0.0.0
 	github.com/prometheus/client_golang v1.23.2

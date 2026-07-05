@@ -6,7 +6,7 @@ toolchain go1.26.3
 
 require (
 	github.com/go-logr/logr v1.4.3
-	github.com/google/cel-go v0.28.1
+	github.com/google/cel-go v0.29.1
 	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/stretchr/testify v1.11.1
 	k8s.io/api v0.36.2
