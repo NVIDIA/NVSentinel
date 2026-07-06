@@ -44,6 +44,9 @@ const QuarantineHealthEventAnnotationKey = "quarantineHealthEvent"
 // QuarantineHealthEventIsCordonedAnnotationKey records that fault-quarantine cordoned the node.
 const QuarantineHealthEventIsCordonedAnnotationKey = "quarantineHealthEventIsCordoned"
 
+// QuarantineHealthEventCordonPreExistingAnnotationKey records there was a pre-existing cordon.
+const QuarantineHealthEventCordonPreExistingAnnotationKey = "quarantineHealthEventCordonPreExisting"
+
 type faultQuarantineConfig struct {
 	LabelPrefix    string               `toml:"label-prefix"`
 	CircuitBreaker circuitBreakerConfig `toml:"circuitBreaker"`

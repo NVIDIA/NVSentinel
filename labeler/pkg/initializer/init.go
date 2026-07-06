@@ -34,6 +34,7 @@ type InitializationParams struct {
 	DriverAppLabel               string
 	GKEInstallerAppLabel         string
 	KataLabel                    string
+	AssumeDCGMAvailable          bool
 	AssumeDriverInstalled        bool
 	RequireDCGMReadyForBootstrap bool
 	ExpectedDeviceCounts         devicecounts.Config
@@ -63,6 +64,7 @@ func InitializeAll(params InitializationParams) (*Components, error) {
 		params.AssumeDriverInstalled,
 		params.RequireDCGMReadyForBootstrap,
 		params.ExpectedDeviceCounts,
+		params.AssumeDCGMAvailable,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("error creating labeler instance: %w", err)

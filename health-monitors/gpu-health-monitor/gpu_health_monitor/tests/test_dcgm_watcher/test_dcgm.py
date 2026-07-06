@@ -16,8 +16,9 @@ from gpu_health_monitor.dcgm_watcher import dcgm
 from gpu_health_monitor.metadata import MetadataReader
 from unittest.mock import MagicMock, patch
 import dcgm_structs, dcgm_errors, dcgm_fields
-from threading import Event, Thread
+from threading import Event
 from ctypes import pointer
+import copy
 import json
 import pytest
 
@@ -62,6 +63,27 @@ class TestDCGMHealthChecks:
         incident.entityInfo.entityGroupId = group_id
         incident.entityInfo.entityId = entity_id
         return incident
+
+    def test_unsupported_thermal_margin_field_is_disabled(self, monkeypatch):
+        monkeypatch.delitem(dcgm.DCGM_FIELDS_MONITORING, "gputemplimitmonitoringenabled")
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            thermal_margin_enabled=True,
+            metadata_reader=MagicMock(),
+        )
+        dcgm_group = MagicMock()
+        dcgm_group.GetGpuIds.return_value = [0]
+        watcher._create_dcgm_group_with_all_entities = MagicMock(return_value=dcgm_group)
+        watcher._get_gpu_serial_numbers = MagicMock(return_value={})
+
+        watcher._initialize_dcgm_monitoring(MagicMock())
+
+        assert watcher._thermal_margin_enabled is False
+        dcgm_group.health.Set.assert_called_once_with(dcgm_structs.DCGM_HEALTH_WATCH_ALL)
+        dcgm_group.samples.WatchFields.assert_not_called()
 
     def test_get_available_health_watches(self):
         watcher = dcgm.DCGMWatcher(
@@ -315,6 +337,175 @@ class TestDCGMHealthChecks:
         assert response == expected_response
         assert connectivity_success == True
 
+    def _get_power_throttle_incident(self, group_id, entity_id):
+        """Helper to create a DCGM_FR_CLOCK_THROTTLE_POWER incident for testing."""
+        incident = dcgm_structs.c_dcgmIncidentInfo_t()
+        incident.system = dcgm_structs.DCGM_HEALTH_WATCH_POWER
+        incident.health = dcgm_structs.DCGM_HEALTH_RESULT_WARN
+        incident.error = dcgm_structs.c_dcgmDiagErrorDetail_t()
+        incident.error.msg = f"ErrorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU:{entity_id} Recommended Action=NONE;"
+        incident.error.code = dcgm_errors.DCGM_FR_CLOCK_THROTTLE_POWER
+        incident.entityInfo = dcgm_structs.c_dcgmGroupEntityPair_t()
+        incident.entityInfo.entityGroupId = group_id
+        incident.entityInfo.entityId = entity_id
+        return incident
+
+    def test_perform_health_check_reports_clock_throttle_power(self):
+        """_perform_health_check itself never suppresses; suppression is applied later
+        against the fully assembled health_status (see _suppress_configured_error_codes)."""
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+        )
+        dcgm_group_mock = MagicMock()
+        mock_response = dcgm_structs.c_dcgmHealthResponse_v4
+        mock_response.version = dcgm_structs.dcgmHealthResponse_version4
+        mock_response.overallHealth = dcgm_structs.DCGM_HEALTH_RESULT_WARN
+        mock_response.incidentCount = 1
+        mock_response.incidents = (dcgm_structs.c_dcgmIncidentInfo_t * dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS)()
+        mock_response.incidents[0] = self._get_power_throttle_incident(0, 1)
+        dcgm_group_mock.health.Check.return_value = mock_response()
+
+        response, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
+
+        expected_response = watcher._get_health_status_dict()
+        expected_response["DCGM_HEALTH_WATCH_POWER"] = dcgm.types.HealthDetails(
+            status=dcgm.types.HealthStatus.WARN,
+            entity_failures={
+                1: dcgm.types.ErrorDetails(
+                    code="DCGM_FR_CLOCK_THROTTLE_POWER",
+                    message="ErrorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU:1 Recommended Action=NONE;",
+                )
+            },
+        )
+        assert response == expected_response
+        assert connectivity_success == True
+
+    def test_suppress_configured_error_codes_noop_by_default(self):
+        """With no suppressed_error_codes configured, health_status is left untouched."""
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+        )
+        health_status = watcher._get_health_status_dict()
+        health_status["DCGM_HEALTH_WATCH_POWER"] = dcgm.types.HealthDetails(
+            status=dcgm.types.HealthStatus.WARN,
+            entity_failures={
+                1: dcgm.types.ErrorDetails(
+                    code="DCGM_FR_CLOCK_THROTTLE_POWER",
+                    message="ErrorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU:1 Recommended Action=NONE;",
+                )
+            },
+        )
+        expected = copy.deepcopy(health_status)
+
+        watcher._suppress_configured_error_codes(health_status)
+
+        assert health_status == expected
+
+    def test_suppress_configured_error_codes_clears_matching_dcgm_watch(self):
+        """A DCGM health-watch incident (e.g. GpuPowerWatch) matching a suppressed
+        error code is dropped and the watch reverts to PASS."""
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            suppressed_error_codes=frozenset({"DCGM_FR_CLOCK_THROTTLE_POWER"}),
+        )
+        health_status = watcher._get_health_status_dict()
+        health_status["DCGM_HEALTH_WATCH_POWER"] = dcgm.types.HealthDetails(
+            status=dcgm.types.HealthStatus.WARN,
+            entity_failures={
+                1: dcgm.types.ErrorDetails(
+                    code="DCGM_FR_CLOCK_THROTTLE_POWER",
+                    message="ErrorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU:1 Recommended Action=NONE;",
+                )
+            },
+        )
+
+        watcher._suppress_configured_error_codes(health_status)
+
+        expected_response = watcher._get_health_status_dict()
+        assert health_status == expected_response
+
+    def test_suppress_configured_error_codes_only_suppresses_matching_entities(self):
+        """A genuine (non-suppressed) incident on another GPU/watch must still be reported."""
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            suppressed_error_codes=frozenset({"DCGM_FR_CLOCK_THROTTLE_POWER"}),
+        )
+        health_status = watcher._get_health_status_dict()
+        health_status["DCGM_HEALTH_WATCH_POWER"] = dcgm.types.HealthDetails(
+            status=dcgm.types.HealthStatus.WARN,
+            entity_failures={
+                1: dcgm.types.ErrorDetails(
+                    code="DCGM_FR_CLOCK_THROTTLE_POWER",
+                    message="ErrorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU:1 Recommended Action=NONE;",
+                )
+            },
+        )
+        health_status["DCGM_HEALTH_WATCH_PCIE"] = dcgm.types.HealthDetails(
+            status=dcgm.types.HealthStatus.WARN,
+            entity_failures={
+                2: dcgm.types.ErrorDetails(
+                    code="DCGM_FR_PCI_REPLAY_RATE",
+                    message="Detected more than 8 PCIe replays per minute for GPU 1.",
+                )
+            },
+        )
+
+        watcher._suppress_configured_error_codes(health_status)
+
+        expected_response = watcher._get_health_status_dict()
+        expected_response["DCGM_HEALTH_WATCH_PCIE"] = dcgm.types.HealthDetails(
+            status=dcgm.types.HealthStatus.WARN,
+            entity_failures={
+                2: dcgm.types.ErrorDetails(
+                    code="DCGM_FR_PCI_REPLAY_RATE",
+                    message="Detected more than 8 PCIe replays per minute for GPU 1.",
+                )
+            },
+        )
+        assert health_status == expected_response
+
+    def test_suppress_configured_error_codes_applies_to_custom_field_monitors(self):
+        """Suppression is generalized: it also applies to non-DCGM-health-watch entries
+        such as GpuThermalMarginWatch (custom field monitoring), not just native
+        DCGM health check incidents."""
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            suppressed_error_codes=frozenset({"GPU_TEMP_HW_SLOWDOWN_VIOLATION"}),
+        )
+        health_status = watcher._get_health_status_dict()
+        health_status["DCGM_HEALTH_WATCH_THERMAL_MARGIN"] = dcgm.types.HealthDetails(
+            status=dcgm.types.HealthStatus.WARN,
+            entity_failures={
+                0: dcgm.types.ErrorDetails(
+                    code="GPU_TEMP_HW_SLOWDOWN_VIOLATION",
+                    message="GPU 0 thermal margin below HW slowdown T.Limit",
+                )
+            },
+        )
+
+        watcher._suppress_configured_error_codes(health_status)
+
+        expected_response = watcher._get_health_status_dict()
+        expected_response["DCGM_HEALTH_WATCH_THERMAL_MARGIN"] = dcgm.types.HealthDetails(
+            status=dcgm.types.HealthStatus.PASS, entity_failures={}
+        )
+        assert health_status == expected_response
+
     def _get_nvlink_incident(self, group_id, entity_id, link_id):
         """Helper to create NvLink down incident for testing."""
         incident = dcgm_structs.c_dcgmIncidentInfo_t()
@@ -443,7 +634,9 @@ class TestDCGMHealthChecks:
             callbacks=[event_processor_test],
             dcgm_k8s_service_enabled=False,
         )
-        exit = Event()
+        exit = MagicMock(spec=Event)
+        exit.is_set.side_effect = [False, False, False, True]
+        exit.wait.side_effect = [False, False, True]
         dcgm_handle_mock = MagicMock()
         mock_dcgm_handle.return_value = dcgm_handle_mock
 
@@ -457,17 +650,105 @@ class TestDCGMHealthChecks:
 
         mock_dcgm_group.return_value = dcgm_group_mock
 
-        watcher_thread = Thread(target=watcher.start, args=([], exit))
         expected_response = watcher._get_health_status_dict()
-        watcher_thread.start()
-        exit.wait(5)  # wait for the watcher to enter the event loop
-        exit.wait(4)
-        exit.wait(3)
-        exit.wait(2)
-        exit.wait(1)
-        exit.set()
-        watcher_thread.join()
+        watcher.start([], exit)
+
         assert event_processor_test.health_details == expected_response
+        assert dcgm_group_mock.health.Check.call_count == 1
+
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm._run_dcgm_server")
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmHandle")
+    def test_local_managed_exposes_in_process_embedded_handle(self, mock_handle, mock_run_server):
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            dcgm_mode="local-managed",
+        )
+
+        handle = watcher._create_dcgm_handle()
+
+        mock_handle.assert_called_once_with(opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO)
+        mock_run_server.assert_called_once_with(5555, "127.0.0.1")
+        assert handle == mock_handle.return_value
+
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm._run_dcgm_server", side_effect=RuntimeError("bind failed"))
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmHandle")
+    def test_local_managed_stops_embedded_handle_when_server_start_fails(self, mock_handle, _mock_run_server):
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            dcgm_mode="local-managed",
+        )
+
+        with pytest.raises(RuntimeError, match="bind failed"):
+            watcher._create_dcgm_handle()
+
+        mock_handle.return_value.Shutdown.assert_called_once()
+
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm._run_dcgm_server")
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmHandle")
+    def test_local_managed_rejects_non_loopback_address(self, mock_handle, mock_run_server):
+        watcher = dcgm.DCGMWatcher(
+            addr="dcgm-hostengine.nvsentinel.svc:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            dcgm_mode="local-managed",
+        )
+
+        with pytest.raises(ValueError, match="requires a loopback DCGM address"):
+            watcher._create_dcgm_handle()
+
+        mock_handle.assert_not_called()
+        mock_run_server.assert_not_called()
+
+    def test_dcgm_3_server_run_compatibility_fallback(self, monkeypatch):
+        engine_run = MagicMock(return_value=0)
+        check_return = MagicMock()
+        agent = MagicMock(spec=["dcgmFP"])
+        agent.dcgmFP.return_value = engine_run
+        monkeypatch.setattr(dcgm, "dcgm_agent", agent)
+        monkeypatch.setattr(dcgm.dcgm_structs, "_dcgmCheckReturn", check_return, raising=False)
+
+        dcgm._run_dcgm_server(5555, "127.0.0.1")
+
+        agent.dcgmFP.assert_called_once_with("dcgmEngineRun")
+        engine_run.assert_called_once_with(5555, b"127.0.0.1", dcgm.DCGM_CONNECTION_TYPE_TCP)
+        check_return.assert_called_once_with(0)
+
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmHandle")
+    def test_remote_mode_connects_to_addr(self, mock_handle):
+        """remote mode connects to the configured DCGM address over the network."""
+        watcher = dcgm.DCGMWatcher(
+            addr="dcgm-hostengine.nvsentinel.svc:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=True,
+            dcgm_mode="remote",
+        )
+
+        handle = watcher._create_dcgm_handle()
+
+        mock_handle.assert_called_once_with(
+            ipAddress="dcgm-hostengine.nvsentinel.svc:5555", opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO
+        )
+        assert handle == mock_handle.return_value
+
+    def test_get_dcgm_handle_returns_none_on_error(self):
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            dcgm_mode="local-managed",
+        )
+        watcher._create_dcgm_handle = MagicMock(side_effect=Exception("boom"))
+
+        assert watcher._get_dcgm_handle() is None
 
     def test_perform_health_check_connectivity_failure_timeout(self):
         """Test that connectivity failure is detected when DCGM health check times out."""

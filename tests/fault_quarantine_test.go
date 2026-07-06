@@ -179,6 +179,11 @@ func TestPreCordonedNodeHandling(t *testing.T) {
 		_, exists := node.Annotations["quarantineHealthEvent"]
 		assert.True(t, exists)
 
+		assert.Equal(t, "True", node.Annotations[helpers.QuarantineHealthEventIsCordonedAnnotationKey],
+			"quarantineHealthEventIsCordoned should be True")
+		assert.Equal(t, "True", node.Annotations[helpers.QuarantineHealthEventCordonPreExistingAnnotationKey],
+			"quarantineHealthEventCordonPreExisting should be True since node was pre-cordoned")
+
 		return ctx
 	})
 
@@ -202,10 +207,16 @@ func TestPreCordonedNodeHandling(t *testing.T) {
 				}
 			}
 
-			_, hasAnnotation := node.Annotations["quarantineHealthEvent"]
+			_, hasQuarantineAnnotation := node.Annotations["quarantineHealthEvent"]
+			_, hasIsCordonedAnnotation := node.Annotations[helpers.QuarantineHealthEventIsCordonedAnnotationKey]
+			_, hasCordonPreExistingAnnotation := node.Annotations[helpers.QuarantineHealthEventCordonPreExistingAnnotationKey]
 
-			return !hasFQTaint && !hasAnnotation
+			return !hasFQTaint && !hasQuarantineAnnotation && !hasIsCordonedAnnotation && !hasCordonPreExistingAnnotation
 		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval)
+
+		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+		require.NoError(t, err)
+		assert.True(t, node.Spec.Unschedulable, "pre-existing cordon should be preserved after FQ recovery")
 
 		return ctx
 	})

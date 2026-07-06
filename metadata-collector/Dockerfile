@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM public.ecr.aws/docker/library/golang:1.26.3-trixie AS builder
+FROM public.ecr.aws/docker/library/golang:1.26.4-trixie AS builder
 
 ARG VERSION="dev"
 ARG GIT_COMMIT="none"
@@ -31,7 +31,7 @@ COPY metadata-collector/ .
 
 RUN CGO_ENABLED=1 GOOS=linux go build -a -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${GIT_COMMIT} -X main.date=${BUILD_DATE}" -o metadata-collector main.go
 
-FROM nvcr.io/nvidia/cuda:13.2.1-base-ubuntu22.04
+FROM nvcr.io/nvidia/cuda:13.3.0-base-ubuntu22.04
 
 RUN groupadd -r nvsentinel && useradd -r -g nvsentinel nvsentinel
 

@@ -59,6 +59,13 @@ def _init_event_processor(
 @click.command()
 @click.option("--dcgm-addr", type=str, help="Host:Port where DCGM is running", required=True)
 @click.option(
+    "--dcgm-mode",
+    type=click.Choice(["remote", "local-managed"]),
+    default="remote",
+    show_default=True,
+    help="DCGM connection mode. remote connects to a remote hostengine; local-managed runs an in-process embedded hostengine with a loopback listener.",
+)
+@click.option(
     "--dcgm-error-mapping-config-file", type=click.Path(), help="Path to dcgm errors mapping config file", required=True
 )
 @click.option("--config-file", type=click.Path(), help="Path to config file", required=True)
@@ -82,6 +89,7 @@ def _init_event_processor(
 )
 def cli(
     dcgm_addr,
+    dcgm_mode,
     dcgm_error_mapping_config_file,
     config_file,
     port,
@@ -134,6 +142,7 @@ def cli(
 
     metrics.set_flag("store_only_mode", processing_strategy == "STORE_ONLY")
     metrics.set_flag("dcgm_k8s_service_enabled", dcgm_k8s_service_enabled)
+    metrics.set_flag("dcgm_local_managed", dcgm_mode == "local-managed")
 
     log.info("Initialization completed")
 
@@ -155,6 +164,15 @@ def cli(
     # metrics but excluded from the remediation pipeline, so no node condition
     # or cordon) while every other DCGM check keeps the process-wide strategy.
     store_only_checks = frozenset({"GpuThermalMarginWatch"}) if thermal_margin_store_only else frozenset()
+
+    suppressed_error_codes = frozenset()
+    if config.has_section("dcgmhealthcheck"):
+        suppressed_error_codes_raw = config["dcgmhealthcheck"].get("SuppressedErrorCodes", fallback="")
+        suppressed_error_codes = frozenset(
+            code.strip() for code in suppressed_error_codes_raw.split(",") if code.strip()
+        )
+        if suppressed_error_codes:
+            log.info(f"DCGM error codes suppressed via config: {sorted(suppressed_error_codes)}")
 
     enabled_event_processor_names = cli_config["EnabledEventProcessors"].split(",")
     enabled_event_processors = []
@@ -192,6 +210,8 @@ def cli(
         dcgm_k8s_service_enabled=dcgm_k8s_service_enabled,
         thermal_margin_enabled=thermal_margin_enabled,
         metadata_reader=metadata_reader,
+        dcgm_mode=dcgm_mode,
+        suppressed_error_codes=suppressed_error_codes,
     )
     dcgm_watcher.start([], exit)
 

@@ -566,7 +566,20 @@ func (r *Reconciler) handleEvent(
 
 	taintsToBeApplied := r.collectTaintsToApply(taintAppliedMap)
 
-	annotationsMap := r.prepareAnnotations(ctx, taintsToBeApplied, &labelsMap, &isCordoned)
+	node, err := r.k8sClient.NodeInformer.GetNode(event.HealthEvent.NodeName)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to get node from cache", "node", event.HealthEvent.NodeName, "error", err)
+		metrics.ProcessingErrors.WithLabelValues("get_node_cache_error").Inc()
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("fault_quarantine.error.type", "get_node_cache_error"),
+			attribute.String("fault_quarantine.error.message", err.Error()),
+		)
+
+		return nil
+	}
+
+	annotationsMap := r.prepareAnnotations(ctx, node, taintsToBeApplied, &labelsMap, &isCordoned)
 
 	isNodeQuarantined := len(taintsToBeApplied) > 0 || isCordoned.Load()
 
@@ -860,6 +873,7 @@ func (r *Reconciler) collectTaintsToApply(taintAppliedMap map[keyValTaint]string
 // prepareAnnotations prepares annotations and labels to be applied if any
 func (r *Reconciler) prepareAnnotations(
 	ctx context.Context,
+	node *corev1.Node,
 	taintsToBeApplied []config.Taint,
 	labelsMap *sync.Map,
 	isCordoned *atomic.Bool,
@@ -867,6 +881,8 @@ func (r *Reconciler) prepareAnnotations(
 	annotationsMap := map[string]string{}
 
 	if len(taintsToBeApplied) > 0 {
+		markPreExistingTaints(node, taintsToBeApplied)
+
 		taintsJsonStr, err := json.Marshal(taintsToBeApplied)
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to marshal taints for annotation", "error", err)
@@ -879,8 +895,18 @@ func (r *Reconciler) prepareAnnotations(
 		annotationsMap[common.QuarantineHealthEventIsCordonedAnnotationKey] =
 			common.QuarantineHealthEventIsCordonedAnnotationValueTrue
 
-		labelsMap.LoadOrStore(r.cordonedByLabelKey, common.ServiceName)
-		labelsMap.Store(r.cordonedTimestampLabelKey, time.Now().UTC().Format("2006-01-02T15-04-05Z"))
+		// The cordon-by and cordon-reason labels would have already been set in evaluateRulesets. We will remove
+		// them from the set of labels we're applying if the node has a pre-existing cordon.
+		if node.Spec.Unschedulable {
+			annotationsMap[common.QuarantineHealthEventCordonPreExistingAnnotationKey] =
+				common.QuarantineHealthEventCordonPreExistingAnnotationValue
+
+			labelsMap.Delete(r.cordonedByLabelKey)
+			labelsMap.Delete(r.cordonedReasonLabelKey)
+		} else {
+			labelsMap.LoadOrStore(r.cordonedByLabelKey, common.ServiceName)
+			labelsMap.Store(r.cordonedTimestampLabelKey, time.Now().UTC().Format("2006-01-02T15-04-05Z"))
+		}
 	}
 
 	if len(taintsToBeApplied) > 0 || isCordoned.Load() {
@@ -888,6 +914,20 @@ func (r *Reconciler) prepareAnnotations(
 	}
 
 	return annotationsMap
+}
+
+// markPreExistingTaints sets PreExisting on any taint that already exists with the same key, value, and effect.
+func markPreExistingTaints(node *corev1.Node, taintsToBeApplied []config.Taint) {
+	existingTaints := make(map[config.Taint]bool, len(node.Spec.Taints))
+	for _, t := range node.Spec.Taints {
+		existingTaints[config.Taint{Key: t.Key, Value: t.Value, Effect: string(t.Effect)}] = true
+	}
+
+	for i, t := range taintsToBeApplied {
+		if existingTaints[config.Taint{Key: t.Key, Value: t.Value, Effect: t.Effect}] {
+			taintsToBeApplied[i].PreExisting = true
+		}
+	}
 }
 
 // applyQuarantine applies quarantine actions to a node (taints, cordon, annotations)
@@ -931,18 +971,23 @@ func (r *Reconciler) applyQuarantine(
 
 	slog.DebugContext(ctx, "Added health event annotation successfully", "node", event.HealthEvent.NodeName)
 
-	// Remove manual uncordon annotation if present before applying new quarantine
-	if err := r.cleanupManualUncordonAnnotation(ctx, event.HealthEvent.NodeName, annotations); err != nil {
-		slog.ErrorContext(ctx, "Failed to cleanup manual uncordon annotation",
-			"error", err, "node", event.HealthEvent.NodeName)
-		metrics.ProcessingErrors.WithLabelValues("cleanup_manual_uncordon_annotation_error").Inc()
-		tracing.RecordError(span, err)
-		span.SetAttributes(
-			attribute.String("fault_quarantine.error.type", "cleanup_manual_uncordon_annotation_error"),
-			attribute.String("fault_quarantine.error.message", err.Error()),
-		)
+	// Remove manual uncordon/untaint annotations if present before applying new quarantine
+	for _, annotationKey := range []string{
+		common.QuarantinedNodeUncordonedManuallyAnnotationKey,
+		common.QuarantinedNodeIsUntaintedManuallyAnnotationKey,
+	} {
+		if err := r.cleanupManualAnnotation(ctx, event.HealthEvent.NodeName, annotations, annotationKey); err != nil {
+			slog.ErrorContext(ctx, "Failed to cleanup manual annotation",
+				"error", err, "node", event.HealthEvent.NodeName, "annotation", annotationKey)
+			metrics.ProcessingErrors.WithLabelValues("cleanup_manual_annotation_error").Inc()
+			tracing.RecordError(span, err)
+			span.SetAttributes(
+				attribute.String("fault_quarantine.error.type", "cleanup_manual_annotation_error"),
+				attribute.String("fault_quarantine.error.message", err.Error()),
+			)
 
-		return nil
+			return nil
+		}
 	}
 
 	if !r.config.CircuitBreakerEnabled {
@@ -1395,17 +1440,12 @@ func (r *Reconciler) performUncordon(
 		return true, fmt.Errorf("failed to prepare uncordon params for node %s: %w", event.NodeName, err)
 	}
 
-	if len(taintsToBeRemoved) == 0 && !isUnCordon {
+	if len(taintsToBeRemoved) == 0 && !isUnCordon && len(annotationsToBeRemoved) == 0 {
 		span.SetAttributes(attribute.String("fault_quarantine.event.processing_status", EventProcessingStatusSkipped),
 			attribute.String("fault_quarantine.skip.reason", "No quarantine taints or annotations present to remove"),
 		)
 
 		return false, nil
-	}
-
-	if !isUnCordon {
-		slog.WarnContext(ctx, "Node is not cordoned but has quarantine taints/annotations, proceeding with cleanup",
-			"node", event.NodeName)
 	}
 
 	annotationsToBeRemoved = append(annotationsToBeRemoved, common.QuarantineHealthEventAnnotationKey)
@@ -1426,6 +1466,7 @@ func (r *Reconciler) performUncordon(
 		ctx,
 		event.NodeName,
 		taintsToBeRemoved,
+		isUnCordon,
 		annotationsToBeRemoved,
 		labelsToRemove,
 		labelsMap,
@@ -1469,21 +1510,33 @@ func (r *Reconciler) prepareUncordonParams(
 		annotationsToBeRemoved = append(annotationsToBeRemoved,
 			common.QuarantineHealthEventAppliedTaintsAnnotationKey)
 
-		err := json.Unmarshal([]byte(quarantineAnnotationEventTaintsAppliedStr), &taintsToBeRemoved)
-		if err != nil {
+		var allTaints []config.Taint
+		if err := json.Unmarshal([]byte(quarantineAnnotationEventTaintsAppliedStr), &allTaints); err != nil {
 			return nil, nil, false, nil, fmt.Errorf("failed to unmarshal taints annotation for node %s: %w", event.NodeName, err)
+		}
+
+		for _, t := range allTaints {
+			if !t.PreExisting {
+				taintsToBeRemoved = append(taintsToBeRemoved, t)
+			}
 		}
 	}
 
 	quarantineAnnotationEventIsCordonStr, cordonExists :=
 		annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]
 	if cordonExists && quarantineAnnotationEventIsCordonStr == common.QuarantineHealthEventIsCordonedAnnotationValueTrue {
-		isUnCordon = true
-
 		annotationsToBeRemoved = append(annotationsToBeRemoved,
 			common.QuarantineHealthEventIsCordonedAnnotationKey)
-		labelsMap[r.uncordonedByLabelKey] = common.ServiceName
-		labelsMap[r.uncordonedTimestampLabelKey] = time.Now().UTC().Format("2006-01-02T15-04-05Z")
+
+		cordonPreExistingStr := annotations[common.QuarantineHealthEventCordonPreExistingAnnotationKey]
+		if cordonPreExistingStr == common.QuarantineHealthEventCordonPreExistingAnnotationValue {
+			annotationsToBeRemoved = append(annotationsToBeRemoved,
+				common.QuarantineHealthEventCordonPreExistingAnnotationKey)
+		} else {
+			isUnCordon = true
+			labelsMap[r.uncordonedByLabelKey] = common.ServiceName
+			labelsMap[r.uncordonedTimestampLabelKey] = time.Now().UTC().Format("2006-01-02T15-04-05Z")
+		}
 	}
 
 	return taintsToBeRemoved, annotationsToBeRemoved, isUnCordon, labelsMap, nil
@@ -1534,7 +1587,9 @@ func (r *Reconciler) getNodeQuarantineAnnotations(ctx context.Context, nodeName 
 		common.QuarantineHealthEventAnnotationKey,
 		common.QuarantineHealthEventAppliedTaintsAnnotationKey,
 		common.QuarantineHealthEventIsCordonedAnnotationKey,
+		common.QuarantineHealthEventCordonPreExistingAnnotationKey,
 		common.QuarantinedNodeUncordonedManuallyAnnotationKey,
+		common.QuarantinedNodeIsUntaintedManuallyAnnotationKey,
 	}
 
 	if node.Annotations != nil {
@@ -1550,32 +1605,27 @@ func (r *Reconciler) getNodeQuarantineAnnotations(ctx context.Context, nodeName 
 	return quarantineAnnotations, nil
 }
 
-func (r *Reconciler) cleanupManualUncordonAnnotation(ctx context.Context, nodeName string,
-	annotations map[string]string) error {
-	if _, hasManualUncordon := annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey]; hasManualUncordon {
-		slog.InfoContext(ctx, "Removing manual uncordon annotation from node before applying new quarantine",
-			"node", nodeName)
+func (r *Reconciler) cleanupManualAnnotation(ctx context.Context, nodeName string,
+	annotations map[string]string, annotationKey string) error {
+	if _, exists := annotations[annotationKey]; !exists {
+		return nil
+	}
 
-		updateFn := func(node *corev1.Node) error {
-			if node.Annotations == nil {
-				slog.DebugContext(ctx, "Node has no annotations, manual uncordon annotation already absent", "node", nodeName)
-				return nil
-			}
+	slog.InfoContext(ctx, "Removing manual annotation from node before applying new quarantine",
+		"node", nodeName, "annotation", annotationKey)
 
-			if _, exists := node.Annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey]; !exists {
-				slog.DebugContext(ctx, "Manual uncordon annotation already removed from node", "node", nodeName)
-				return nil
-			}
-
-			delete(node.Annotations, common.QuarantinedNodeUncordonedManuallyAnnotationKey)
-
+	updateFn := func(node *corev1.Node) error {
+		if node.Annotations == nil {
 			return nil
 		}
 
-		if err := r.k8sClient.UpdateNode(ctx, nodeName, updateFn); err != nil {
-			slog.ErrorContext(ctx, "Failed to remove manual uncordon annotation from node", "node", nodeName, "error", err)
-			return fmt.Errorf("failed to remove manual uncordon annotation from node %s: %w", nodeName, err)
-		}
+		delete(node.Annotations, annotationKey)
+
+		return nil
+	}
+
+	if err := r.k8sClient.UpdateNode(ctx, nodeName, updateFn); err != nil {
+		return fmt.Errorf("failed to remove manual annotation %s from node %s: %w", annotationKey, nodeName, err)
 	}
 
 	return nil
@@ -1616,6 +1666,10 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 
 	if _, exists := annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]; exists {
 		annotationsToRemove = append(annotationsToRemove, common.QuarantineHealthEventIsCordonedAnnotationKey)
+	}
+
+	if _, exists := annotations[common.QuarantineHealthEventCordonPreExistingAnnotationKey]; exists {
+		annotationsToRemove = append(annotationsToRemove, common.QuarantineHealthEventCordonPreExistingAnnotationKey)
 	}
 
 	slog.DebugContext(ctx, "Prepared annotations to remove", "node", nodeName, "count", len(annotationsToRemove))
@@ -1708,6 +1762,10 @@ func (r *Reconciler) handleManualUntaint(nodeName string) error {
 
 	if _, exists := annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]; exists {
 		annotationsToRemove = append(annotationsToRemove, common.QuarantineHealthEventIsCordonedAnnotationKey)
+	}
+
+	if _, exists := annotations[common.QuarantineHealthEventCordonPreExistingAnnotationKey]; exists {
+		annotationsToRemove = append(annotationsToRemove, common.QuarantineHealthEventCordonPreExistingAnnotationKey)
 	}
 
 	slog.DebugContext(ctx, "Prepared annotations to remove", "node", nodeName, "count", len(annotationsToRemove))

@@ -219,6 +219,10 @@ func (m *MockHealthEventStore) FindHealthEventsByQuery(ctx context.Context, buil
 	return nil, nil
 }
 
+func (m *MockHealthEventStore) FindLatestHealthEventByQuery(_ context.Context, _ datastore.QueryBuilder) (*datastore.HealthEventWithStatus, error) {
+	return nil, nil
+}
+
 func (m *MockHealthEventStore) FindHealthEventsByQueryBatched(ctx context.Context, builder datastore.QueryBuilder, batchSize int, fn func([]datastore.HealthEventWithStatus) error) error {
 	if m.FindHealthEventsByQueryBatchedFn != nil {
 		return m.FindHealthEventsByQueryBatchedFn(ctx, builder, batchSize, fn)

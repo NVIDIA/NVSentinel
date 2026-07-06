@@ -58,14 +58,17 @@ type PatchOperation struct {
 }
 
 type Injector struct {
-	cfg        *config.Config
-	discoverer gang.GangDiscoverer
+	cfg      *config.Config
+	resolver *gang.DiscovererResolver
 }
 
-func NewInjector(cfg *config.Config, discoverer gang.GangDiscoverer) *Injector {
+// NewInjector constructs an Injector from the preflight config and the
+// namespace-aware gang discoverer resolver used to resolve a pod's gang
+// discoverer at injection time.
+func NewInjector(cfg *config.Config, resolver *gang.DiscovererResolver) *Injector {
 	return &Injector{
-		cfg:        cfg,
-		discoverer: discoverer,
+		cfg:      cfg,
+		resolver: resolver,
 	}
 }
 
@@ -115,6 +118,49 @@ func configuredNames(specs []config.InitContainerSpec) []string {
 	return names
 }
 
+// gangContextForPod resolves the gang discoverer for the pod's namespace and
+// extracts gang context when the pod belongs to a gang. Returns nil when gang
+// coordination is disabled, no discoverer applies, or the pod is not a gang
+// member.
+func (i *Injector) gangContextForPod(pod *corev1.Pod) *GangContext {
+	if !i.cfg.GangCoordination.Enabled {
+		return nil
+	}
+
+	discoverer := i.resolver.For(pod.Namespace)
+	if discoverer == nil {
+		return nil
+	}
+
+	if !discoverer.CanHandle(pod) {
+		slog.Debug("Pod not handled by gang discoverer",
+			"pod", pod.Name,
+			"namespace", pod.Namespace,
+			"discoverer", discoverer.Name())
+
+		return nil
+	}
+
+	gangID := discoverer.ExtractGangID(pod)
+	if gangID == "" {
+		return nil
+	}
+
+	gangCtx := &GangContext{
+		GangID:        gangID,
+		ConfigMapName: gang.ConfigMapName(gangID),
+	}
+
+	slog.Info("Pod is part of a gang",
+		"pod", pod.Name,
+		"namespace", pod.Namespace,
+		"gangID", gangID,
+		"configMap", gangCtx.ConfigMapName,
+		"discoverer", discoverer.Name())
+
+	return gangCtx
+}
+
 func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *GangContext, error) {
 	maxResources := i.findMaxResources(pod)
 	if len(maxResources) == 0 {
@@ -123,30 +169,7 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 	}
 
 	// Check if pod is part of a gang
-	var gangCtx *GangContext
-
-	if i.cfg.GangCoordination.Enabled && i.discoverer != nil {
-		if i.discoverer.CanHandle(pod) {
-			gangID := i.discoverer.ExtractGangID(pod)
-			if gangID != "" {
-				gangCtx = &GangContext{
-					GangID:        gangID,
-					ConfigMapName: gang.ConfigMapName(gangID),
-				}
-				slog.Info("Pod is part of a gang",
-					"pod", pod.Name,
-					"namespace", pod.Namespace,
-					"gangID", gangID,
-					"configMap", gangCtx.ConfigMapName,
-					"discoverer", i.discoverer.Name())
-			}
-		} else {
-			slog.Debug("Pod not handled by gang discoverer",
-				"pod", pod.Name,
-				"namespace", pod.Namespace,
-				"discoverer", i.discoverer.Name())
-		}
-	}
+	gangCtx := i.gangContextForPod(pod)
 
 	selected, err := i.selectInitContainers(pod)
 	if err != nil {

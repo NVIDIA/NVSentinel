@@ -77,6 +77,11 @@ var (
 		Version: "v1alpha1",
 		Kind:    "GPUReset",
 	}
+	ExternalRemediationRequestGVK = schema.GroupVersionKind{
+		Group:   "nvsentinel.dgxc.nvidia.com",
+		Version: "v1",
+		Kind:    "ExternalRemediationRequest",
+	}
 )
 
 func WaitForNodesCordonState(
@@ -1087,6 +1092,226 @@ func CreateGPUResetCR(ctx context.Context, c klient.Client, nodeName string, crN
 	}
 
 	return gpuReset, nil
+}
+
+// CreateExtRRCR returns the apiserver error verbatim so callers can inspect
+// webhook rejections.
+func CreateExtRRCR(ctx context.Context, c klient.Client, crName, nodeName, healthEventID string,
+) (*unstructured.Unstructured, error) {
+	extrr := newExtRR(crName, nodeName, healthEventID)
+	if err := c.Resources().Create(ctx, extrr); err != nil {
+		return nil, err
+	}
+
+	return extrr, nil
+}
+
+// CreateMalformedExtRR lets tests exercise the webhook's rejection paths.
+func CreateMalformedExtRR(ctx context.Context, c klient.Client, crName string,
+	spec map[string]interface{}) (*unstructured.Unstructured, error) {
+	extrr := &unstructured.Unstructured{}
+	extrr.SetGroupVersionKind(ExternalRemediationRequestGVK)
+	extrr.SetName(crName)
+
+	if spec != nil {
+		if err := unstructured.SetNestedField(extrr.Object, spec, "spec"); err != nil {
+			return nil, fmt.Errorf("failed to set spec: %w", err)
+		}
+	}
+
+	if err := c.Resources().Create(ctx, extrr); err != nil {
+		return nil, err
+	}
+
+	return extrr, nil
+}
+
+// SetExtRRComplete simulates the external system patching
+// ExternalRemediationComplete via the status subresource.
+func SetExtRRComplete(ctx context.Context, c klient.Client, crName, status, reason, message string) error {
+	cur := &unstructured.Unstructured{}
+	cur.SetGroupVersionKind(ExternalRemediationRequestGVK)
+
+	if err := c.Resources().Get(ctx, crName, "", cur); err != nil {
+		return fmt.Errorf("get ExtRR %q: %w", crName, err)
+	}
+
+	conditions, _, _ := unstructured.NestedSlice(cur.Object, "status", "conditions")
+	newCondition := map[string]interface{}{
+		"type":               "ExternalRemediationComplete",
+		"status":             status,
+		"reason":             reason,
+		"message":            message,
+		"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+	}
+
+	replaced := false
+
+	for i, cIface := range conditions {
+		cond, ok := cIface.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		if cond["type"] == "ExternalRemediationComplete" {
+			conditions[i] = newCondition
+			replaced = true
+
+			break
+		}
+	}
+
+	if !replaced {
+		conditions = append(conditions, newCondition)
+	}
+
+	if err := unstructured.SetNestedSlice(cur.Object, conditions, "status", "conditions"); err != nil {
+		return fmt.Errorf("set conditions on ExtRR %q: %w", crName, err)
+	}
+
+	if err := c.Resources().UpdateStatus(ctx, cur); err != nil {
+		return fmt.Errorf("update ExtRR %q status: %w", crName, err)
+	}
+
+	return nil
+}
+
+// WaitForExtRRCondition fails the test on timeout.
+func WaitForExtRRCondition(ctx context.Context, t *testing.T, c klient.Client,
+	crName, conditionType, conditionStatus string) *unstructured.Unstructured {
+	t.Helper()
+
+	var resultCR *unstructured.Unstructured
+
+	require.Eventually(t, func() bool {
+		cur := &unstructured.Unstructured{}
+		cur.SetGroupVersionKind(ExternalRemediationRequestGVK)
+
+		if err := c.Resources().Get(ctx, crName, "", cur); err != nil {
+			t.Logf("get ExtRR %q: %v", crName, err)
+			return false
+		}
+
+		cond := GetCRCondition(cur, conditionType)
+		if cond == nil {
+			return false
+		}
+
+		if cond["status"] != conditionStatus {
+			return false
+		}
+
+		resultCR = cur
+
+		return true
+	}, EventuallyWaitTimeout, WaitInterval,
+		"ExtRR %q condition %s should reach status %s", crName, conditionType, conditionStatus)
+
+	return resultCR
+}
+
+// WaitForExtRRGone asserts the finalizer-driven garbage collection completes;
+// use only after an explicit operator delete (per ADR-040, Complete=True alone
+// does NOT delete the ExtRR — use WaitForNodeReleaseStateCleared instead).
+func WaitForExtRRGone(ctx context.Context, t *testing.T, c klient.Client, crName string) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		cur := &unstructured.Unstructured{}
+		cur.SetGroupVersionKind(ExternalRemediationRequestGVK)
+		err := c.Resources().Get(ctx, crName, "", cur)
+
+		return apierrors.IsNotFound(err)
+	}, EventuallyWaitTimeout, WaitInterval,
+		"ExtRR %q should be garbage-collected after finalizer cleanup", crName)
+}
+
+// WaitForNodeReleaseStateCleared polls until the release taint and managed
+// label are absent from the Node. Used after Complete=True — per ADR-040
+// the ExtRR itself stays alive, so the test must observe the Node, not GC.
+func WaitForNodeReleaseStateCleared(ctx context.Context, t *testing.T, c klient.Client, nodeName string) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		node, err := GetNodeByName(ctx, c, nodeName)
+		if err != nil {
+			t.Logf("get node %q: %v", nodeName, err)
+			return false
+		}
+
+		for _, taint := range node.Spec.Taints {
+			if taint.Key == "nvsentinel.dgxc.nvidia.com/external-remediation" {
+				return false
+			}
+		}
+
+		if _, hasLabel := node.Labels["nvsentinel.dgxc.nvidia.com/managed"]; hasLabel {
+			return false
+		}
+
+		return true
+	}, EventuallyWaitTimeout, WaitInterval,
+		"node %q release taint + managed=false label should be cleared after ExtRR cleanup", nodeName)
+}
+
+// ScrubExtRRStateFromNode is the e2e teardown's belt-and-suspenders: it
+// removes the release taint and managed label irrespective of ownership so a
+// mid-test failure can't leak state to the next test.
+func ScrubExtRRStateFromNode(ctx context.Context, c klient.Client, nodeName string) error {
+	node, err := GetNodeByName(ctx, c, nodeName)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+
+		return fmt.Errorf("get node %q for ExtRR scrub: %w", nodeName, err)
+	}
+
+	changed := false
+
+	filtered := node.Spec.Taints[:0]
+	for _, taint := range node.Spec.Taints {
+		if taint.Key == "nvsentinel.dgxc.nvidia.com/external-remediation" {
+			changed = true
+			continue
+		}
+
+		filtered = append(filtered, taint)
+	}
+
+	node.Spec.Taints = filtered
+
+	if _, hasLabel := node.Labels["nvsentinel.dgxc.nvidia.com/managed"]; hasLabel {
+		delete(node.Labels, "nvsentinel.dgxc.nvidia.com/managed")
+
+		changed = true
+	}
+
+	if !changed {
+		return nil
+	}
+
+	return c.Resources().Update(ctx, node)
+}
+
+// newExtRR builds an unstructured ExternalRemediationRequest with a minimal
+// valid spec — the smallest payload the webhook accepts.
+func newExtRR(crName, nodeName, healthEventID string) *unstructured.Unstructured {
+	extrr := &unstructured.Unstructured{}
+	extrr.SetGroupVersionKind(ExternalRemediationRequestGVK)
+	extrr.SetName(crName)
+
+	spec := map[string]interface{}{
+		"healthEvent": map[string]interface{}{
+			"id":                      "he-" + healthEventID,
+			"nodeName":                nodeName,
+			"recommendedAction":       "CUSTOM",
+			"customRecommendedAction": "external-remediation",
+		},
+	}
+	_ = unstructured.SetNestedField(extrr.Object, spec, "spec")
+
+	return extrr
 }
 
 func createConfigMapFromBytes(ctx context.Context, c klient.Client, yamlData []byte, name, namespace string) error {

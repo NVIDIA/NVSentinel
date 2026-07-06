@@ -880,6 +880,16 @@ gpu-health-monitor:
   # Most deployments should use service-based access (false)
   useHostNetworking: false
 
+  # DCGM health check incident suppression
+  # Drops incidents matching specific error codes before they generate a health
+  # event, so they are never persisted or acted on. Useful for high-frequency,
+  # non-actionable flaps (e.g. normal power-cap boost-clock behavior).
+  dcgmHealthCheck:
+    # List of error code names to suppress (native DCGM codes like
+    # DCGM_FR_CLOCK_THROTTLE_POWER, or custom field-monitor codes like
+    # GPU_TEMP_HW_SLOWDOWN_VIOLATION). Empty by default (no suppression).
+    suppressedErrorCodes: []
+
   # Additional volume mounts for GPU health monitor
   # Use when monitor needs access to host files
   # Example:
@@ -1879,6 +1889,19 @@ preflight:
     #   version: "v1beta1"
     #   resource: "podgroups"
     # minCountExpr: "podGroup.spec.minMember"
+
+  ##############################################################################
+  # PER-NAMESPACE GANG DISCOVERY (PreflightConfig CRD)
+  #
+  # Per-namespace overrides are runtime objects, not Helm values. Create a
+  # PreflightConfig (preflight.nvsentinel.nvidia.com/v1alpha1) with a
+  # spec.gangDiscovery block in a namespace to override the cluster-wide
+  # gangDiscovery above for that namespace. The
+  # controller reads scheduler PodGroup CRs via an aggregated ClusterRole; grant
+  # access to additional scheduler CRDs with a ClusterRole labeled
+  # preflight.nvsentinel.nvidia.com/aggregate-to-gang-discovery: "true".
+  # See: docs/configuration/preflight.md#gang-discovery
+  ##############################################################################
 
   ##############################################################################
   # GANG COORDINATION

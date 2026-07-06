@@ -196,9 +196,17 @@ type ExternalRemediationRequestStatus struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// conditions represent the latest available observations of the ExtRR's
 	// current state. See ADR-040 for the canonical type names and reasons.
-	Conditions    []*Condition `protobuf:"bytes,1,rep,name=conditions,proto3" json:"conditions,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Conditions []*Condition `protobuf:"bytes,1,rep,name=conditions,proto3" json:"conditions,omitempty"`
+	// completionTime is set when the reconciler is done with this ExtRR — the
+	// apply terminated (success or NodeNotFound), the close path ran after
+	// Complete=True, or operator-initiated cleanup completed. Once set, the
+	// reconciler short-circuits to a CheckUnlock-only pass on subsequent
+	// reconciles. The TTL reconciler counts the cleanup window from this
+	// timestamp, matching the sibling janitor CRDs (RebootNode, TerminateNode,
+	// GPUReset).
+	CompletionTime *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=completionTime,proto3" json:"completionTime,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ExternalRemediationRequestStatus) Reset() {
@@ -234,6 +242,13 @@ func (*ExternalRemediationRequestStatus) Descriptor() ([]byte, []int) {
 func (x *ExternalRemediationRequestStatus) GetConditions() []*Condition {
 	if x != nil {
 		return x.Conditions
+	}
+	return nil
+}
+
+func (x *ExternalRemediationRequestStatus) GetCompletionTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CompletionTime
 	}
 	return nil
 }
@@ -313,11 +328,12 @@ const file_external_remediation_proto_rawDesc = "" +
 	"\x06reason\x18\x05 \x01(\tR\x06reason\x12\x18\n" +
 	"\amessage\x18\x06 \x01(\tR\amessage\"[\n" +
 	"\x1eExternalRemediationRequestSpec\x129\n" +
-	"\vhealthEvent\x18\x01 \x01(\v2\x17.datamodels.HealthEventR\vhealthEvent\"Y\n" +
+	"\vhealthEvent\x18\x01 \x01(\v2\x17.datamodels.HealthEventR\vhealthEvent\"\x9d\x01\n" +
 	" ExternalRemediationRequestStatus\x125\n" +
 	"\n" +
 	"conditions\x18\x01 \x03(\v2\x15.datamodels.ConditionR\n" +
-	"conditions\"\xb2\x02\n" +
+	"conditions\x12B\n" +
+	"\x0ecompletionTime\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x0ecompletionTime\"\xb2\x02\n" +
 	"\x1aExternalRemediationRequest\x12>\n" +
 	"\x04spec\x18\x01 \x01(\v2*.datamodels.ExternalRemediationRequestSpecR\x04spec\x12D\n" +
 	"\x06status\x18\x02 \x01(\v2,.datamodels.ExternalRemediationRequestStatusR\x06status:\x8d\x01\xaa\xa8\xfd\x97\x02\x86\x01\n" +
@@ -349,13 +365,14 @@ var file_external_remediation_proto_depIdxs = []int32{
 	4, // 0: datamodels.Condition.lastTransitionTime:type_name -> google.protobuf.Timestamp
 	5, // 1: datamodels.ExternalRemediationRequestSpec.healthEvent:type_name -> datamodels.HealthEvent
 	0, // 2: datamodels.ExternalRemediationRequestStatus.conditions:type_name -> datamodels.Condition
-	1, // 3: datamodels.ExternalRemediationRequest.spec:type_name -> datamodels.ExternalRemediationRequestSpec
-	2, // 4: datamodels.ExternalRemediationRequest.status:type_name -> datamodels.ExternalRemediationRequestStatus
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	4, // 3: datamodels.ExternalRemediationRequestStatus.completionTime:type_name -> google.protobuf.Timestamp
+	1, // 4: datamodels.ExternalRemediationRequest.spec:type_name -> datamodels.ExternalRemediationRequestSpec
+	2, // 5: datamodels.ExternalRemediationRequest.status:type_name -> datamodels.ExternalRemediationRequestStatus
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_external_remediation_proto_init() }

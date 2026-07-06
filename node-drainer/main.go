@@ -28,18 +28,13 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
-	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
 	"github.com/nvidia/nvsentinel/commons/pkg/flags"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
-	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/initializer"
-	"github.com/nvidia/nvsentinel/store-client/pkg/client"
-	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
-	"github.com/nvidia/nvsentinel/store-client/pkg/query"
-	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 )
 
 var (
@@ -48,21 +43,6 @@ var (
 	commit  = "none"
 	date    = "unknown"
 )
-
-// dataStoreAdapter adapts client.DatabaseClient to queue.DataStore
-type dataStoreAdapter struct {
-	client.DatabaseClient
-}
-
-func (d *dataStoreAdapter) FindDocument(ctx context.Context, filter interface{},
-	options *client.FindOneOptions) (client.SingleResult, error) {
-	return d.FindOne(ctx, filter, options)
-}
-
-func (d *dataStoreAdapter) FindDocuments(ctx context.Context, filter interface{},
-	options *client.FindOptions) (client.Cursor, error) {
-	return d.Find(ctx, filter, options)
-}
 
 func main() {
 	logger.SetDefaultStructuredLoggerWithTraceCorrelation("node-drainer", version)
@@ -170,7 +150,11 @@ func run() error {
 	// Handle cold start - re-process any events that were in-progress during restart
 	slog.InfoContext(gCtx, "Handling cold start")
 
-	if err := handleColdStart(gCtx, components); err != nil {
+	if err := coldstart.Handle(gCtx, coldstart.Dependencies{
+		QueueManager:     components.QueueManager,
+		DatabaseClient:   components.DatabaseClient,
+		HealthEventStore: components.DataStore.HealthEventStore(),
+	}); err != nil {
 		slog.ErrorContext(gCtx, "Cold start handling failed", "error", err)
 	}
 
@@ -279,95 +263,6 @@ func startEventWatcher(ctx context.Context, components *initializer.Components, 
 			slog.InfoContext(ctx, "Event watcher stopped")
 		}
 	}()
-}
-
-const coldStartBatchSize = 1000
-
-// handleColdStart re-processes events that were in-progress or quarantined during a restart.
-// Events are fetched in bounded batches via FindHealthEventsByQueryBatched to prevent
-// unbounded memory usage. All matching events are loaded (not just latest per node)
-// because a single node can have multiple concurrent partial drains.
-func handleColdStart(ctx context.Context, components *initializer.Components) error {
-	slog.InfoContext(ctx, "Querying for events requiring processing")
-
-	q := query.New().Build(
-		query.Or(
-			// Events that were in-progress
-			query.Eq("healtheventstatus.userpodsevictionstatus.status", string(model.StatusInProgress)),
-
-			// Quarantined events that haven't been processed yet
-			query.And(
-				query.Eq("healtheventstatus.nodequarantined", string(model.Quarantined)),
-				query.In("healtheventstatus.userpodsevictionstatus.status", []interface{}{"", string(model.StatusNotStarted)}),
-			),
-
-			// AlreadyQuarantined events that haven't been processed yet
-			query.And(
-				query.Eq("healtheventstatus.nodequarantined", string(model.AlreadyQuarantined)),
-				query.In("healtheventstatus.userpodsevictionstatus.status", []interface{}{"", string(model.StatusNotStarted)}),
-			),
-		),
-	)
-
-	healthStore := components.DataStore.HealthEventStore()
-	dbAdapter := &dataStoreAdapter{DatabaseClient: components.DatabaseClient}
-
-	err := healthStore.FindHealthEventsByQueryBatched(ctx, q, coldStartBatchSize,
-		func(batch []datastore.HealthEventWithStatus) error {
-			slog.Info("Processing cold start batch", "count", len(batch))
-
-			for _, he := range batch {
-				event := he.RawEvent
-				if len(event) == 0 {
-					slog.ErrorContext(ctx, "RawEvent is empty, skipping cold start event")
-
-					continue
-				}
-
-				parsedEvent, err := eventutil.ParseHealthEventFromEvent(event)
-				if err != nil {
-					slog.ErrorContext(ctx, "Failed to parse health event from cold start event", "error", err)
-
-					continue
-				}
-
-				if parsedEvent.HealthEvent == nil {
-					slog.ErrorContext(ctx, "Health event is nil in cold start event")
-
-					continue
-				}
-
-				nodeName := parsedEvent.HealthEvent.GetNodeName()
-				if nodeName == "" {
-					slog.ErrorContext(ctx, "Node name is empty in cold start event")
-
-					continue
-				}
-
-				documentID, err := utils.ExtractDocumentIDNative(event)
-				if err != nil {
-					slog.ErrorContext(ctx, "Failed to extract document ID from cold start event", "error", err)
-
-					continue
-				}
-
-				if enqueueErr := components.QueueManager.EnqueueEventGeneric(
-					ctx, nodeName, event, dbAdapter, healthStore, documentID); enqueueErr != nil {
-					slog.Error("Failed to enqueue cold start event", "error", enqueueErr, "nodeName", nodeName)
-				} else {
-					slog.InfoContext(ctx, "Re-queued event from cold start", "nodeName", nodeName)
-				}
-			}
-
-			return nil
-		})
-	if err != nil {
-		return fmt.Errorf("failed to process cold start events: %w", err)
-	}
-
-	slog.InfoContext(ctx, "Cold start processing completed")
-
-	return nil
 }
 
 // shutdownComponents handles the shutdown of components

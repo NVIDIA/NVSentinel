@@ -16,6 +16,7 @@ package v1alpha1
 
 import (
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -91,6 +92,21 @@ type ExternalRemediationRequestList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []ExternalRemediationRequest `json:"items"`
+}
+
+// SetCompletionTime stamps Status.CompletionTime with the current time if not
+// already set. Idempotent across re-reconciles. Allocates Status if nil so
+// callers don't need to nil-check before invoking. Mirrors the sibling
+// RebootNode/TerminateNode/GPUReset helper, with *timestamppb.Timestamp in
+// place of *metav1.Time because ExtRR's status type is proto-generated.
+func (e *ExternalRemediationRequest) SetCompletionTime() {
+	if e.Status == nil {
+		e.Status = &protos.ExternalRemediationRequestStatus{}
+	}
+
+	if e.Status.CompletionTime == nil {
+		e.Status.CompletionTime = timestamppb.Now()
+	}
 }
 
 // DeepCopyObject implements runtime.Object.
