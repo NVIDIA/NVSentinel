@@ -159,9 +159,10 @@ class MockDCGMErrors:
     DCGM_FR_PCI_REPLAY_RATE = 1
     DCGM_FR_NVLINK_DOWN = 2
     DCGM_FR_THERMAL_VIOLATIONS = 3
+    DCGM_FR_CLOCK_THROTTLE_POWER = 4
 
-    # Add more error codes as needed by tests (4 manual + 109 generated = 113 total)
-    for i in range(4, 113):
+    # Add more error codes as needed by tests (5 manual + 108 generated = 113 total)
+    for i in range(5, 113):
         locals()[f"DCGM_FR_ERROR_{i}"] = i
 
 
@@ -175,12 +176,22 @@ class MockDCGMFields:
     # Add device field constants as needed
     for i in range(320):  # Mock 320 device fields as expected by tests
         locals()[f"DCGM_FI_DEV_FIELD_{i}"] = i
+    DCGM_FI_DEV_GPU_TEMP_TLIMIT = 153
+    del DCGM_FI_DEV_FIELD_153
 
 
 class MockDCGMValue:
     """Mock DCGM value module for testing."""
 
     pass
+
+
+class MockDCGMAgent:
+    """Mock DCGM agent module for testing."""
+
+    @staticmethod
+    def dcgmServerRun(port, bind_address, connection_type):
+        return None
 
 
 class MockPyDCGM:
@@ -224,6 +235,7 @@ dcgm_structs_mock = MockDCGMModule()
 dcgm_errors_mock = MockDCGMErrors()
 dcgm_fields_mock = MockDCGMFields()
 dcgm_value_mock = MockDCGMValue()
+dcgm_agent_mock = MockDCGMAgent()
 pydcgm_mock = MockPyDCGM()
 dcgm_field_helpers_mock = MagicMock()
 
@@ -231,6 +243,7 @@ sys.modules["dcgm_structs"] = dcgm_structs_mock
 sys.modules["dcgm_errors"] = dcgm_errors_mock
 sys.modules["dcgm_fields"] = dcgm_fields_mock
 sys.modules["dcgmvalue"] = dcgm_value_mock
+sys.modules["dcgm_agent"] = dcgm_agent_mock
 sys.modules["pydcgm"] = pydcgm_mock
 sys.modules["dcgm_field_helpers"] = dcgm_field_helpers_mock
 
@@ -244,6 +257,7 @@ def mock_dcgm_modules():
     dcgm_errors_mock = MockDCGMErrors()
     dcgm_fields_mock = MockDCGMFields()
     dcgm_value_mock = MockDCGMValue()
+    dcgm_agent_mock = MockDCGMAgent()
     pydcgm_mock = MockPyDCGM()
     dcgm_field_helpers_mock = MagicMock()
 
@@ -252,13 +266,22 @@ def mock_dcgm_modules():
     sys.modules["dcgm_errors"] = dcgm_errors_mock
     sys.modules["dcgm_fields"] = dcgm_fields_mock
     sys.modules["dcgmvalue"] = dcgm_value_mock
+    sys.modules["dcgm_agent"] = dcgm_agent_mock
     sys.modules["pydcgm"] = pydcgm_mock
     sys.modules["dcgm_field_helpers"] = dcgm_field_helpers_mock
 
     yield
 
     # Clean up (optional, pytest will handle this anyway)
-    modules_to_remove = ["dcgm_structs", "dcgm_errors", "dcgm_fields", "dcgmvalue", "pydcgm", "dcgm_field_helpers"]
+    modules_to_remove = [
+        "dcgm_structs",
+        "dcgm_errors",
+        "dcgm_fields",
+        "dcgmvalue",
+        "dcgm_agent",
+        "pydcgm",
+        "dcgm_field_helpers",
+    ]
     for module in modules_to_remove:
         if module in sys.modules:
             del sys.modules[module]

@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"tests/helpers"
 
@@ -43,6 +44,14 @@ const (
 	GPUHealthMonitorContainerName = "gpu-health-monitor"
 	GPUHealthMonitorDaemonSetName = "gpu-health-monitor-dcgm-4.x"
 )
+
+// dcgmConnectivityFailureObserveWindow bounds how long we wait for the fatal
+// GpuDcgmConnectivityFailure that the gpu-health-monitor emits on its first
+// poll after its DCGM connection breaks. The monitor polls every 15s
+// (PollIntervalSeconds in the gpu-health-monitor chart configmap), so three
+// poll cycles plus pipeline latency is ample; if nothing shows up by then the
+// connection survived and no fatal is in flight.
+const dcgmConnectivityFailureObserveWindow = 50 * time.Second
 
 const (
 	keyGpuHealthMonitorPodName      contextKey = "gpuHealthMonitorPodName"
@@ -945,6 +954,8 @@ func TestDCGMBootstrapCompletedAnnotation(t *testing.T) {
 
 	var testNodeName string
 	var dcgmPodName string
+	var originalManagedLabel string
+	var hadManagedLabel bool
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
@@ -957,8 +968,20 @@ func TestDCGMBootstrapCompletedAnnotation(t *testing.T) {
 		testNodeName = gpuHealthMonitorPod.Spec.NodeName
 		t.Logf("Using node: %s", testNodeName)
 
+		// Capture original label state so teardown can restore it exactly.
 		node, err := helpers.GetNodeByName(ctx, client, testNodeName)
 		require.NoError(t, err, "failed to get node %s", testNodeName)
+		originalManagedLabel, hadManagedLabel = node.Labels["k8saas.nvidia.com/ManagedByNVSentinel"]
+
+		// Deleting the nvidia-dcgm pod below breaks the gpu-health-monitor's DCGM
+		// connection; its next poll emits a fatal GpuDcgmConnectivityFailure, which
+		// would quarantine this node and leak a cordon into whichever test runs
+		// next. Mark the node unmanaged so fault-quarantine ignores that event.
+		t.Logf("Setting ManagedByNVSentinel=false on node %s (original: present=%v, value=%q)",
+			testNodeName, hadManagedLabel, originalManagedLabel)
+		err = helpers.SetNodeManagedByNVSentinel(ctx, client, testNodeName, false)
+		require.NoError(t, err, "failed to set ManagedByNVSentinel label")
+
 		require.NotEmpty(t, node.Annotations[dcgmBootstrapAnnotation],
 			"node %s should have annotation %s set", testNodeName, dcgmBootstrapAnnotation)
 		t.Logf("Node %s has annotation %s: %s", testNodeName, dcgmBootstrapAnnotation,
@@ -1000,6 +1023,78 @@ func TestDCGMBootstrapCompletedAnnotation(t *testing.T) {
 
 			return ctx
 		})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		if testNodeName == "" {
+			t.Log("Skipping teardown: node not selected (setup likely failed early)")
+			return ctx
+		}
+
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client for teardown")
+
+		// The nvidia-dcgm pod restart leaves the gpu-health-monitor with a stale
+		// DCGM handle, so its next poll emits a fatal GpuDcgmConnectivityFailure.
+		// Before handing the node back as managed, wait for that failure to show
+		// up and for the monitor to reconnect and report healthy again.
+		t.Logf("Waiting up to %v for GpuDcgmConnectivityFailure to appear on node %s",
+			dcgmConnectivityFailureObserveWindow, testNodeName)
+		sawConnectivityFailure := false
+		hadSuccessfulCheck := false
+		ticker := time.NewTicker(helpers.WaitInterval)
+		defer ticker.Stop()
+		deadline := time.After(dcgmConnectivityFailureObserveWindow)
+	observeLoop:
+		for {
+			select {
+			case <-ctx.Done():
+				t.Logf("Context canceled while waiting for GpuDcgmConnectivityFailure on node %s", testNodeName)
+				break observeLoop
+			case <-deadline:
+				break observeLoop
+			case <-ticker.C:
+				condition, checkErr := helpers.CheckNodeConditionExists(ctx, client, testNodeName,
+					"GpuDcgmConnectivityFailure", "GpuDcgmConnectivityFailureIsNotHealthy")
+				if checkErr != nil {
+					t.Logf("Error checking condition: %v", checkErr)
+					continue
+				}
+				hadSuccessfulCheck = true
+				if condition != nil && condition.Status == v1.ConditionTrue {
+					sawConnectivityFailure = true
+					break observeLoop
+				}
+			}
+		}
+		require.True(t, hadSuccessfulCheck,
+			"never got a successful condition check for node %s during observe window", testNodeName)
+
+		if sawConnectivityFailure {
+			t.Logf("Waiting for GpuDcgmConnectivityFailure to become healthy on node %s", testNodeName)
+			helpers.WaitForNodeConditionWithCheckName(ctx, t, client, testNodeName,
+				"GpuDcgmConnectivityFailure", "", "GpuDcgmConnectivityFailureIsHealthy", v1.ConditionFalse)
+		} else {
+			t.Logf("No GpuDcgmConnectivityFailure observed within %v on node %s; "+
+				"gpu-health-monitor connection survived the nvidia-dcgm restart",
+				dcgmConnectivityFailureObserveWindow, testNodeName)
+		}
+
+		t.Logf("Verifying GpuDcgmConnectivityFailure stays healthy on node %s", testNodeName)
+		helpers.EnsureNodeConditionNotPresent(ctx, t, client, testNodeName, "GpuDcgmConnectivityFailure")
+
+		// Restore the original ManagedByNVSentinel label state.
+		if hadManagedLabel {
+			t.Logf("Restoring ManagedByNVSentinel=%s on node %s", originalManagedLabel, testNodeName)
+			require.NoError(t, helpers.SetNodeManagedByNVSentinel(ctx, client, testNodeName, originalManagedLabel == "true"),
+				"failed to restore ManagedByNVSentinel label on node %s", testNodeName)
+		} else {
+			t.Logf("Removing ManagedByNVSentinel label from node %s (was not present before test)", testNodeName)
+			require.NoError(t, helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, testNodeName),
+				"failed to remove ManagedByNVSentinel label from node %s", testNodeName)
+		}
+
+		return ctx
+	})
 
 	testEnv.Test(t, feature.Feature())
 }

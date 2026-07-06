@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strings"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -47,6 +48,9 @@ const (
 	NodeDCGMIndex               = "nodeDCGM"
 	NodeDriverIndex             = "nodeDriver"
 	NodeGKEDriverInstallerIndex = "nodeGKEDriverInstaller"
+	// DCGM major versions used for the dcgm.version label.
+	dcgmVersion3 = "3.x"
+	dcgmVersion4 = "4.x"
 
 	// Label values
 	LabelValueTrue  = "true"
@@ -71,6 +75,7 @@ type Labeler struct {
 	assumeDriverInstalled        bool
 	requireDCGMReadyForBootstrap bool
 	deviceCounts                 *devicecounts.Manager
+	assumeDCGMAvailable          bool
 }
 
 func (l *Labeler) allInformersSynced() bool {
@@ -86,7 +91,8 @@ func (l *Labeler) allInformersSynced() bool {
 // NewLabeler creates a new Labeler instance
 func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	dcgmApp, driverApp, gkeInstallerApp, kataLabelOverride string, assumeDriverInstalled bool,
-	requireDCGMReadyForBootstrap bool, expectedDeviceCounts devicecounts.Config) (*Labeler, error) {
+	requireDCGMReadyForBootstrap bool, expectedDeviceCounts devicecounts.Config,
+	assumeDCGMAvailable bool) (*Labeler, error) {
 	podInformer, err := createPodInformer(clientset, resyncPeriod, dcgmApp, driverApp)
 	if err != nil {
 		return nil, fmt.Errorf("create pod informer: %w", err)
@@ -128,32 +134,49 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		assumeDriverInstalled:        assumeDriverInstalled,
 		requireDCGMReadyForBootstrap: requireDCGMReadyForBootstrap,
 		deviceCounts:                 deviceCounts,
+		assumeDCGMAvailable:          assumeDCGMAvailable,
 	}
 
+	if err := l.registerEventHandlers(); err != nil {
+		return nil, err
+	}
+
+	l.logConfiguration()
+
+	return l, nil
+}
+
+// registerEventHandlers wires up the informer event handlers. The DCGM source
+// lease handlers are only registered when the lease informer is enabled.
+func (l *Labeler) registerEventHandlers() error {
 	if err := l.registerPodEventHandlers(); err != nil {
-		return nil, fmt.Errorf("register pod event handlers: %w", err)
+		return fmt.Errorf("register pod event handlers: %w", err)
 	}
 
 	if err := l.registerNodeEventHandlers(); err != nil {
-		return nil, fmt.Errorf("register node event handlers: %w", err)
+		return fmt.Errorf("register node event handlers: %w", err)
 	}
 
 	if err := l.registerResourceSliceEventHandlers(); err != nil {
-		return nil, fmt.Errorf("register ResourceSlice event handlers: %w", err)
+		return fmt.Errorf("register ResourceSlice event handlers: %w", err)
 	}
 
-	if assumeDriverInstalled {
+	return nil
+}
+
+// logConfiguration emits the labeler's effective configuration at startup.
+func (l *Labeler) logConfiguration() {
+	if l.assumeDriverInstalled {
 		slog.Info("Labeler configured to assume drivers are pre-installed on all GPU nodes")
 	}
 
-	if deviceCounts.Enabled() {
-		slog.Info("Labeler configured to reconcile expected device count labels", "classes", deviceCounts.ClassCount())
+	if l.deviceCounts.Enabled() {
+		slog.Info("Labeler configured to reconcile expected device count labels", "classes", l.deviceCounts.ClassCount())
 	}
 
-	slog.Info("Labeler created, watching DCGM and driver pods, and nodes for kata detection",
-		"requireDCGMReadyForBootstrap", requireDCGMReadyForBootstrap)
-
-	return l, nil
+	slog.Info("Labeler created, watching DCGM and driver pods and nodes for kata detection",
+		"requireDCGMReadyForBootstrap", l.requireDCGMReadyForBootstrap,
+		"assumeDCGMAvailable", l.assumeDCGMAvailable)
 }
 
 func buildKataLabels(kataLabelOverride string) []string {
@@ -405,6 +428,56 @@ func (l *Labeler) reconcileAllNodes() {
 	slog.Info("Completed initial node label reconciliation", "nodeCount", len(nodes))
 }
 
+// getDCGMVersionForNode returns the expected DCGM version for a specific node.
+// excludePod, when non-nil, is skipped during pod-based detection (used for
+// operator-service delete events where the deleted pod may still be in the
+// informer cache).
+func (l *Labeler) getDCGMVersionForNode(nodeName string, excludePod *v1.Pod) (string, error) {
+	objs, err := l.podInformer.GetIndexer().ByIndex(NodeDCGMIndex, nodeName)
+	if err != nil {
+		return "", fmt.Errorf("failed to get DCGM pods by node index for node %s: %w", nodeName, err)
+	}
+
+	node, err := l.getNodeFromCache(nodeName)
+	if err != nil {
+		return "", err
+	}
+
+	requireDCGMReady := l.requireDCGMReadyForBootstrap
+	if node.Annotations != nil && len(node.Annotations[DCGMBootstrapCompletedAnnotation]) > 0 {
+		requireDCGMReady = false
+	}
+
+	for _, obj := range objs {
+		isTarget, pod := isTargetPod(obj, requireDCGMReady, excludePod)
+		if !isTarget {
+			continue
+		}
+
+		for _, container := range pod.Spec.Containers {
+			if dcgm4Regex.MatchString(container.Image) {
+				return dcgmVersion4, nil
+			} else if dcgm3Regex.MatchString(container.Image) {
+				return dcgmVersion3, nil
+			}
+		}
+	}
+
+	return "", nil
+}
+
+// normalizeDCGMVersion validates the dcgm.version label. Anything else is rejected.
+func normalizeDCGMVersion(version string) string {
+	switch strings.TrimSpace(version) {
+	case dcgmVersion3:
+		return dcgmVersion3
+	case dcgmVersion4:
+		return dcgmVersion4
+	default:
+		return ""
+	}
+}
+
 // hasReadyDriverPod checks if any pod in the list is ready, optionally excluding a specific pod
 func hasReadyDriverPod(objs []any, excludePod *v1.Pod) bool {
 	for _, obj := range objs {
@@ -488,43 +561,6 @@ func isKataEnabled(node *v1.Node, kataLabels []string) bool {
 	}
 
 	return false
-}
-
-// getDCGMVersionForNode returns the expected DCGM version for a specific node,
-// excluding a specific pod from consideration (used for delete events)
-func (l *Labeler) getDCGMVersionForNode(nodeName string, excludePod *v1.Pod) (string, error) {
-	objs, err := l.podInformer.GetIndexer().ByIndex(NodeDCGMIndex, nodeName)
-	if err != nil {
-		return "", fmt.Errorf("failed to get DCGM pods by node index for node %s: %w", nodeName, err)
-	}
-
-	node, err := l.getNodeFromCache(nodeName)
-	if err != nil {
-		return "", err
-	}
-
-	requireDCGMReady := l.requireDCGMReadyForBootstrap
-
-	if node.Annotations != nil && len(node.Annotations[DCGMBootstrapCompletedAnnotation]) > 0 {
-		requireDCGMReady = false
-	}
-
-	for _, obj := range objs {
-		isTarget, pod := isTargetPod(obj, requireDCGMReady, excludePod)
-		if !isTarget {
-			continue
-		}
-
-		for _, container := range pod.Spec.Containers {
-			if dcgm4Regex.MatchString(container.Image) {
-				return "4.x", nil
-			} else if dcgm3Regex.MatchString(container.Image) {
-				return "3.x", nil
-			}
-		}
-	}
-
-	return "", nil
 }
 
 func isTargetPod(podObj any, requireReady bool, excludePod *v1.Pod) (bool, *v1.Pod) {
@@ -664,7 +700,7 @@ func (l *Labeler) desiredNodeLabels(nodeName string) (string, string, error) {
 
 	dcgmVersion, err := l.getDCGMVersionForNode(nodeName, nil)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to check DCGM pods for node %s: %w", nodeName, err)
+		return "", "", fmt.Errorf("failed to resolve DCGM version for node %s: %w", nodeName, err)
 	}
 
 	return driverLabel, dcgmVersion, nil
@@ -717,30 +753,10 @@ func (l *Labeler) deviceCountCachedNodes() []*v1.Node {
 }
 
 func (l *Labeler) updateDriverAndDCGMLabels(node *v1.Node, driverLabel, dcgmVersion string) bool {
-	needsUpdate := false
+	needsUpdate := updateDriverLabel(node, driverLabel)
 
-	if node.Labels[DriverInstalledLabel] != driverLabel {
+	if l.updateDCGMLabel(node, dcgmVersion) {
 		needsUpdate = true
-
-		if driverLabel == "" {
-			delete(node.Labels, DriverInstalledLabel)
-			slog.Info("Removing stale driver installed label from node", "node", node.Name)
-		} else {
-			node.Labels[DriverInstalledLabel] = driverLabel
-			slog.Info("Setting driver installed label on node", "node", node.Name)
-		}
-	}
-
-	if node.Labels[DCGMVersionLabel] != dcgmVersion {
-		needsUpdate = true
-
-		if dcgmVersion == "" {
-			delete(node.Labels, DCGMVersionLabel)
-			slog.Info("Removing stale DCGM version label from node", "node", node.Name)
-		} else {
-			node.Labels[DCGMVersionLabel] = dcgmVersion
-			slog.Info("Setting DCGM version label on node", "node", node.Name, "version", dcgmVersion)
-		}
 	}
 
 	if len(node.Labels[DCGMVersionLabel]) > 0 {
@@ -757,6 +773,43 @@ func (l *Labeler) updateDriverAndDCGMLabels(node *v1.Node, driverLabel, dcgmVers
 	}
 
 	return needsUpdate
+}
+
+func updateDriverLabel(node *v1.Node, driverLabel string) bool {
+	if node.Labels[DriverInstalledLabel] == driverLabel {
+		return false
+	}
+
+	if driverLabel == "" {
+		delete(node.Labels, DriverInstalledLabel)
+		slog.Info("Removing stale driver installed label from node", "node", node.Name)
+	} else {
+		node.Labels[DriverInstalledLabel] = driverLabel
+		slog.Info("Setting driver installed label on node", "node", node.Name)
+	}
+
+	return true
+}
+
+func (l *Labeler) updateDCGMLabel(node *v1.Node, dcgmVersion string) bool {
+	if node.Labels[DCGMVersionLabel] == dcgmVersion {
+		return false
+	}
+
+	if dcgmVersion == "" && l.assumeDCGMAvailable && normalizeDCGMVersion(node.Labels[DCGMVersionLabel]) != "" {
+		slog.Debug("Preserving existing DCGM version label", "node", node.Name, "version", node.Labels[DCGMVersionLabel])
+		return false
+	}
+
+	if dcgmVersion == "" {
+		delete(node.Labels, DCGMVersionLabel)
+		slog.Info("Removing stale DCGM version label from node", "node", node.Name)
+	} else {
+		node.Labels[DCGMVersionLabel] = dcgmVersion
+		slog.Info("Setting DCGM version label on node", "node", node.Name, "version", dcgmVersion)
+	}
+
+	return true
 }
 
 func (l *Labeler) resourceSlicesForNode(node *v1.Node) []*resourcev1.ResourceSlice {

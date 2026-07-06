@@ -236,14 +236,6 @@ func TestInjectInitContainers(t *testing.T) {
 			},
 		},
 		{
-			name:          "GPU pod with gang enabled but nil discoverer",
-			cfg:           testGangConfig(),
-			discoverer:    nil,
-			pod:           gpuPod(),
-			expectPatches: true,
-			expectGangCtx: false,
-		},
-		{
 			name: "existing init containers are appended not replaced",
 			cfg:  testConfig(),
 			pod: func() *corev1.Pod {
@@ -484,11 +476,11 @@ func TestInjectInitContainers(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var disc gang.GangDiscoverer
+			var resolver *gang.DiscovererResolver
 			if tt.discoverer != nil {
-				disc = tt.discoverer
+				resolver = gang.NewResolver(tt.discoverer, nil)
 			}
-			injector := NewInjector(tt.cfg, disc)
+			injector := NewInjector(tt.cfg, resolver)
 
 			patches, gangCtx, err := injector.InjectInitContainers(tt.pod)
 			if tt.expectError {
@@ -1227,6 +1219,42 @@ func (m *mockDiscoverer) CanHandle(_ *corev1.Pod) bool       { return m.canHandl
 func (m *mockDiscoverer) ExtractGangID(_ *corev1.Pod) string { return m.gangID }
 func (m *mockDiscoverer) DiscoverPeers(_ context.Context, _ *corev1.Pod) (*types.GangInfo, error) {
 	return nil, nil
+}
+
+// TestInjectInitContainers_NamespaceScopedDiscovery verifies the injector
+// selects the gang discoverer that applies to the pod's namespace, using the
+// resolver's per-namespace overrides and falling back to the default otherwise.
+func TestInjectInitContainers_NamespaceScopedDiscovery_SelectsNamespaceDiscoverer(t *testing.T) {
+	cfg := testGangConfig()
+
+	defaultDisc := &mockDiscoverer{name: "kubernetes", canHandle: true, gangID: "kubernetes-gang"}
+	volcanoDisc := &mockDiscoverer{name: "volcano", canHandle: true, gangID: "volcano-gang"}
+
+	resolver := gang.NewResolver(defaultDisc, map[string]gang.GangDiscoverer{
+		"team-a": volcanoDisc,
+	})
+	injector := NewInjector(cfg, resolver)
+
+	tests := []struct {
+		name         string
+		namespace    string
+		expectGangID string
+	}{
+		{name: "override namespace uses volcano discoverer", namespace: "team-a", expectGangID: "volcano-gang"},
+		{name: "other namespace uses default discoverer", namespace: "team-b", expectGangID: "kubernetes-gang"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pod := gpuPod()
+			pod.Namespace = tt.namespace
+
+			_, gangCtx, err := injector.InjectInitContainers(pod)
+			require.NoError(t, err)
+			require.NotNil(t, gangCtx)
+			assert.Equal(t, tt.expectGangID, gangCtx.GangID)
+		})
+	}
 }
 
 func boolPtr(b bool) *bool { return &b }

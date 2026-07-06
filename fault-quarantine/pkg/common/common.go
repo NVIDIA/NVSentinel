@@ -24,14 +24,16 @@ const (
 
 const (
 	// Annotation keys for storing event on node which causes node to be cordoned or tainted
-	QuarantineHealthEventAnnotationKey                 = "quarantineHealthEvent"
-	QuarantineHealthEventAppliedTaintsAnnotationKey    = "quarantineHealthEventAppliedTaints"
-	QuarantineHealthEventIsCordonedAnnotationKey       = "quarantineHealthEventIsCordoned"
-	QuarantineHealthEventIsCordonedAnnotationValueTrue = "True"
-	QuarantinedNodeUncordonedManuallyAnnotationKey     = "quarantinedNodeUncordonedManually"
-	QuarantinedNodeUncordonedManuallyAnnotationValue   = "True"
-	QuarantinedNodeIsUntaintedManuallyAnnotationKey    = "quarantinedNodeUntaintedManually"
-	QuarantinedNodeIsUntaintedManuallyAnnotationValue  = "True"
+	QuarantineHealthEventAnnotationKey                    = "quarantineHealthEvent"
+	QuarantineHealthEventAppliedTaintsAnnotationKey       = "quarantineHealthEventAppliedTaints"
+	QuarantineHealthEventIsCordonedAnnotationKey          = "quarantineHealthEventIsCordoned"
+	QuarantineHealthEventIsCordonedAnnotationValueTrue    = "True"
+	QuarantineHealthEventCordonPreExistingAnnotationKey   = "quarantineHealthEventCordonPreExisting"
+	QuarantineHealthEventCordonPreExistingAnnotationValue = "True"
+	QuarantinedNodeUncordonedManuallyAnnotationKey        = "quarantinedNodeUncordonedManually"
+	QuarantinedNodeUncordonedManuallyAnnotationValue      = "True"
+	QuarantinedNodeIsUntaintedManuallyAnnotationKey       = "quarantinedNodeUntaintedManually"
+	QuarantinedNodeIsUntaintedManuallyAnnotationValue     = "True"
 
 	ServiceName = "NVSentinel"
 )

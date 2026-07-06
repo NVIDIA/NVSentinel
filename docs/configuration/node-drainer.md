@@ -197,3 +197,102 @@ userNamespaces:
   - name: "inference-*"
     mode: "Immediate"
 ```
+
+#### Example 3: Multi-Tier Application
+
+```yaml
+userNamespaces:
+  - name: "frontend"
+    mode: "Immediate"
+  - name: "batch-jobs"
+    mode: "DeleteAfterTimeout"
+  - name: "database"
+    mode: "AllowCompletion"
+  - name: "*"
+    mode: "AllowCompletion"
+```
+
+### Observe a Drain
+
+On a quarantined node with workloads still scheduled:
+
+```bash
+NODE=<cordoned-node>
+
+kubectl get pods -A --field-selector "spec.nodeName=$NODE" -w
+kubectl get node "$NODE" -L dgxc.nvidia.com/nvsentinel-state
+kubectl get events -n default \
+  --field-selector "involvedObject.kind=Node,involvedObject.name=$NODE"
+```
+
+Node Drainer events are created in the **`default`** namespace (`Type=NodeDraining`,
+`Source=nvsentinel-node-drainer`). Example output for a pod `training-job-0` in namespace
+`batch-jobs` on node `gpu-node-42`:
+
+#### `Immediate`
+
+Pods are evicted via the Eviction API — no Node Drainer event is emitted.
+
+```text
+# kubectl get pods -A --field-selector "spec.nodeName=gpu-node-42"
+NAMESPACE   NAME              READY   STATUS        RESTARTS   AGE
+frontend    inference-api-0   1/1     Terminating   0          2h
+
+# (pod disappears within evictionTimeoutInSeconds)
+
+# kubectl get node gpu-node-42 -L dgxc.nvidia.com/nvsentinel-state
+NAME         STATUS                     ROLES    AGE   VERSION   NVSENTINEL-STATE
+gpu-node-42  Ready,SchedulingDisabled   <none>   30d   v1.29.0   draining
+```
+
+#### `AllowCompletion`
+
+```text
+# kubectl get pods -A --field-selector "spec.nodeName=gpu-node-42"
+NAMESPACE   NAME              READY   STATUS    RESTARTS   AGE
+database    postgres-0        1/1     Running   0          2h
+
+# kubectl get events -n default --field-selector "involvedObject.name=gpu-node-42"
+LAST SEEN   TYPE          REASON                  OBJECT           MESSAGE
+2m          NodeDraining  AwaitingPodCompletion   Node/gpu-node-42 Waiting for following pods to finish: [database/postgres-0]
+```
+
+#### `DeleteAfterTimeout`
+
+```text
+# kubectl get pods -A --field-selector "spec.nodeName=gpu-node-42"
+NAMESPACE   NAME              READY   STATUS    RESTARTS   AGE
+batch-jobs  training-job-0    1/1     Running   0          2h
+
+# kubectl get events -n default --field-selector "involvedObject.name=gpu-node-42"
+LAST SEEN   TYPE          REASON                    OBJECT           MESSAGE
+1m          NodeDraining  WaitingBeforeForceDelete  Node/gpu-node-42 Waiting for following pods to finish: [training-job-0] in namespace: [batch-jobs] or they will be force deleted on: 2026-07-01 18:30:00 +0000 UTC
+```
+
+After the deadline, the pod is force-deleted and `kubectl get pods` shows it gone.
+
+### One-shot AI prompt (per-namespace drain modes)
+
+Paste to an AI coding agent. Replace bracketed parts.
+
+```text
+Create a Helm values overlay for NVSentinel node-drainer per-namespace drain modes.
+
+Modes (exact strings): Immediate, AllowCompletion, DeleteAfterTimeout.
+- Immediate: Eviction API; evictionTimeoutInSeconds as a quoted string (e.g. "60")
+- AllowCompletion: wait for pod exit (terminationGracePeriodSeconds)
+- DeleteAfterTimeout: force-delete after deleteAfterTimeoutMinutes from health-event createdAt
+
+YAML under global.nodeDrainer and node-drainer:
+  global.nodeDrainer.enabled: true
+  node-drainer.evictionTimeoutInSeconds: "60"
+  node-drainer.deleteAfterTimeoutMinutes: [minutes, default 60]
+  node-drainer.systemNamespaces: "^(nvsentinel|kube-system|gpu-operator|gmp-system|network-operator|skyhook)$"
+  node-drainer.userNamespaces (specific globs before "*"; omit customDrain):
+    [ns1] → Immediate     (default: frontend)
+    [ns2] → DeleteAfterTimeout (default: batch-jobs)
+    [ns3] → AllowCompletion  (default: database)
+    *     → AllowCompletion
+
+Output only the values YAML. User applies it with their existing NVSentinel Helm release.
+```

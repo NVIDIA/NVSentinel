@@ -305,6 +305,72 @@ gangDiscovery:
 
 Here membership is determined by a pod label instead of an annotation. The rest of the flow is the same: look up the PodGroup CRD and extract `minCount` via CEL.
 
+### Per-namespace gang discovery
+
+The Helm `gangDiscovery` value sets only the **cluster-wide default**. To make a specific namespace use a different gang-scheduling system (for example, Volcano for one team while everyone else uses native Kubernetes), create a **`PreflightConfig`** custom resource in that namespace. It is reconciled at runtime — no Helm upgrade and no controller restart.
+
+A pod is resolved as follows:
+
+1. If the pod's namespace has a `PreflightConfig` with a `gangDiscovery` block, that discoverer is used.
+2. Otherwise, the cluster-wide `gangDiscovery` Helm value is used as the default.
+
+`PreflightConfig` is namespaced (`preflight.nvsentinel.nvidia.com/v1alpha1`); the object's own namespace is its scope. Its `spec.gangDiscovery` block uses the same schema as the Helm `gangDiscovery` value — an empty block selects native Kubernetes discovery. (`spec` is intentionally a container for per-namespace preflight settings, so future options can be added alongside `gangDiscovery`.)
+
+```yaml
+# team-a uses Volcano; every other namespace uses the cluster-wide default.
+apiVersion: preflight.nvsentinel.nvidia.com/v1alpha1
+kind: PreflightConfig
+metadata:
+  name: default
+  namespace: team-a
+spec:
+  gangDiscovery:
+    name: "volcano"
+    annotationKeys: ["scheduling.k8s.io/group-name"]
+    podGroupGVR:
+      group: "scheduling.volcano.sh"
+      version: "v1beta1"
+      resource: "podgroups"
+    minCountExpr: "podGroup.spec.minMember"
+```
+
+At most one `PreflightConfig` should exist per namespace. If more than one is present, the **oldest** object (tie-broken by name) stays active so an existing working configuration is not disrupted; the additional objects are marked not ready as superseded. Check the resolved state via the object's status:
+
+```console
+$ kubectl -n team-a get preflightconfig
+NAME      DISCOVERER   READY   AGE
+default   volcano      True    10s
+```
+
+Readiness is reported via the `Ready` status condition (the `READY` column above is its status); its message explains why a config is not ready (invalid or superseded). Inspect it with `kubectl -n team-a get preflightconfig default -o yaml` under `.status.conditions`.
+
+#### RBAC (aggregated ClusterRole)
+
+The controller reads scheduler `PodGroup` resources cluster-wide through an **aggregated ClusterRole** (`<release>-gang-discovery`). The chart ships a built-in contributor role covering the native `scheduling.k8s.io` resources plus the default `gangDiscovery.podGroupGVR`. To let the controller read a scheduler CRD that isn't covered (e.g. a namespace registers Volcano but the default is native), apply a `ClusterRole` labeled for aggregation — it is merged in automatically, with no preflight change or restart:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: preflight-gang-discovery-volcano
+  labels:
+    preflight.nvsentinel.nvidia.com/aggregate-to-gang-discovery: "true"
+rules:
+  - apiGroups: ["scheduling.volcano.sh"]
+    resources: ["podgroups"]
+    verbs: ["get", "list", "watch"]
+```
+
+Because `ClusterRole`s are cluster-scoped, creating one is a platform/cluster-admin action — a namespace tenant declares its scheduler via the `PreflightConfig`, while the platform grants the corresponding read access. Aggregation is eventually consistent, so a brief `Forbidden` window after adding a new contributor role is expected; the controller retries.
+
+Each `PreflightConfig` is validated when reconciled: the `gangDiscovery.podGroupGVR` is resolved against the cluster's API RESTMapper (and native specs verify the `scheduling.k8s.io` resources). An invalid or unresolvable config does not disrupt admission — the namespace falls back to the default and the error is surfaced in the object's status.
+
+#### Changing gang discovery configuration
+
+`PreflightConfig` changes take effect on **newly-admitted gangs** and are applied per pod at admission. Avoid editing or deleting a namespace's active `PreflightConfig` (or deleting it so a different one becomes active) **while multi-node preflight gangs are being launched** in that namespace.
+
+The gang ID embeds the discoverer name (`<discoverer>-<namespace>-<podGroup>`), and discovery is resolved per pod. If the effective discoverer for a namespace changes mid-flight, pods of the same gang admitted before and after the change can derive **different gang IDs** and fail to coordinate (peers never converge). Such a gang's `preflight-nccl-allreduce` check then waits until `gangCoordination.timeout` and fails — the pod stays in `Init:Error` and follows the normal NVSentinel quarantine path. This fails safe (no false "healthy" result) but causes a spurious preflight failure, so treat gang discovery config as a namespace setting to change during a quiet window. Adding a *second* `PreflightConfig` is safe — the active (oldest) one is unaffected (see above); the risk is specifically changing or removing the currently-active config.
+
 ## Gang coordination
 
 When `gangCoordination.enabled` is true (default in the preflight chart), the controller coordinates multi-node checks through ConfigMaps:

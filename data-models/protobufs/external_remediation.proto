@@ -70,6 +70,15 @@ message ExternalRemediationRequestStatus {
   // conditions represent the latest available observations of the ExtRR's
   // current state. See ADR-040 for the canonical type names and reasons.
   repeated Condition conditions = 1;
+
+  // completionTime is set when the reconciler is done with this ExtRR — the
+  // apply terminated (success or NodeNotFound), the close path ran after
+  // Complete=True, or operator-initiated cleanup completed. Once set, the
+  // reconciler short-circuits to a CheckUnlock-only pass on subsequent
+  // reconciles. The TTL reconciler counts the cleanup window from this
+  // timestamp, matching the sibling janitor CRDs (RebootNode, TerminateNode,
+  // GPUReset).
+  google.protobuf.Timestamp completionTime = 2;
 }
 
 // ExternalRemediationRequest is the exit door from NVSentinel ownership.

@@ -62,6 +62,22 @@ ConfigMap name.
 {{- end }}
 
 {{/*
+Whether labeler should assume DCGM is available from an existing dcgm.version
+label when no DCGM pod source is present. This is used by external-hostengine
+and embedded-mode, where operators provide the same node label used by GPU
+health monitor scheduling.
+*/}}
+{{- define "labeler.assumeDCGMAvailable" -}}
+{{- $mode := "" -}}
+{{- if and .Values.global .Values.global.dcgm .Values.global.dcgm.mode -}}
+{{- $mode = .Values.global.dcgm.mode -}}
+{{- end -}}
+{{- if has $mode (list "external-hostengine" "embedded-mode") -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/*
 Expected device-count configuration content.
 */}}
 {{- define "labeler.expectedDeviceCountsConfig" -}}

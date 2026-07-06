@@ -39,6 +39,11 @@ dcgm_health_check_unknown_system_skipped = Counter(
     "dcgm_health_check_unknown_system_skipped",
     "Number of DCGM health check incidents skipped due to unrecognized system value",
 )
+dcgm_health_check_suppressed_incidents = Counter(
+    "dcgm_health_check_suppressed_incidents",
+    "Number of DCGM health check incidents suppressed due to a non-actionable error code",
+    labelnames=["error_code"],
+)
 gpu_temp_limit_margin_blank = Counter(
     "gpu_temp_limit_margin_blank",
     "Number of poll cycles where DCGM field 153 (T.Limit) returned a blank value",

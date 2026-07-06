@@ -401,6 +401,7 @@ func (c *FaultQuarantineClient) UnQuarantineNodeAndRemoveAnnotations(
 	ctx context.Context,
 	nodename string,
 	taints []config.Taint,
+	shouldUncordon bool,
 	annotationKeys []string,
 	labelsToRemove []string,
 	labels map[string]string,
@@ -412,7 +413,9 @@ func (c *FaultQuarantineClient) UnQuarantineNodeAndRemoveAnnotations(
 			}
 		}
 
-		c.handleUncordon(ctx, node, labels, nodename)
+		if shouldUncordon {
+			c.handleUncordon(ctx, node, labels, nodename)
+		}
 
 		if len(annotationKeys) > 0 {
 			for _, annotationKey := range annotationKeys {
@@ -527,7 +530,6 @@ func (c *FaultQuarantineClient) HandleManualUncordonCleanup(
 
 // HandleManualUntaintCleanup atomically removes FQ annotations/taints/labels and adds manual untaint annotation
 // This is used when a node is manually untainted while having FQ quarantine state
-// Also uncordons the node to ensure full cleanup
 func (c *FaultQuarantineClient) HandleManualUntaintCleanup(
 	ctx context.Context,
 	nodename string,

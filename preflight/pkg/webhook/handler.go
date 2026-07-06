@@ -48,9 +48,12 @@ type Handler struct {
 	onGangRegister GangRegistrationFunc
 }
 
-func NewHandler(cfg *config.Config, discoverer gang.GangDiscoverer, onGangRegister GangRegistrationFunc) *Handler {
+// NewHandler builds a Handler from the preflight config, the namespace-aware
+// gang discoverer resolver, and the callback invoked to register a pod with its
+// gang after admission.
+func NewHandler(cfg *config.Config, resolver *gang.DiscovererResolver, onGangRegister GangRegistrationFunc) *Handler {
 	return &Handler{
-		injector:       NewInjector(cfg, discoverer),
+		injector:       NewInjector(cfg, resolver),
 		onGangRegister: onGangRegister,
 	}
 }

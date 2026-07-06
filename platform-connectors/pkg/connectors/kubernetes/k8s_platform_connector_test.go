@@ -388,6 +388,14 @@ func TestParseMessages(t *testing.T) {
 		{"message1;", []string{"message1"}},
 		{"message1;message2;", []string{"message1", "message2"}},
 		{"message1;message2;...", []string{"message1", "message2"}},
+		// Recovery sentinel must be recognized in any form so a non-canonical
+		// recovery message is never resurrected as a phantom fault.
+		{NoHealthFailureMsg, nil},
+		{"No health failures", nil},
+		{"No health failures;", nil},
+		{"no health failures", nil},
+		{"  No Health Failures  ", nil},
+		{"No health failures;message2;", []string{"message2"}},
 	}
 
 	for i, test := range tests {

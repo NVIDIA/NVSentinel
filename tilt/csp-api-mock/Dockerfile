@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM public.ecr.aws/docker/library/golang:1.26.3-trixie AS builder
+FROM public.ecr.aws/docker/library/golang:1.26.4-trixie AS builder
 
 WORKDIR /app
 COPY go.mod go.sum ./

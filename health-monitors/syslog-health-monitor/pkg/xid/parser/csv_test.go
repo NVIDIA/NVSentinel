@@ -194,6 +194,20 @@ func TestCSVParser_Parse(t *testing.T) {
 			expectedErrorCode: "154",
 			expectedMetadata:  map[string]string{},
 		},
+		{
+			// Untrusted/garbage syslog line that matches the XID 154 pattern but has its
+			// last ')' before its last '(' (trailing unmatched '('). The parser must not
+			// panic with slice-bounds-out-of-range and must fall back to CONTACT_SUPPORT.
+			name:              "XID 154 with out-of-order parens does not panic",
+			message:           "NVRM: Xid (PCI:0000:01:00): 154 (",
+			expectedSuccess:   true,
+			expectedXIDCode:   154,
+			expectedPCIAddr:   "0000:01:00",
+			expectedAction:    pb.RecommendedAction_CONTACT_SUPPORT,
+			expectedMnemonic:  "XID 154",
+			expectedErrorCode: "154",
+			expectedMetadata:  map[string]string{},
+		},
 	}
 
 	for _, tc := range testCases {

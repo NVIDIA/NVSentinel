@@ -30,6 +30,8 @@ const (
 	FieldMessage        = "MESSAGE"
 	FieldSyslogFacility = "SYSLOG_FACILITY"
 	FieldSystemdUnit    = "_SYSTEMD_UNIT"
+	FieldTransport      = "_TRANSPORT"
+	TransportKernel     = "kernel"
 
 	XIDErrorCheck       = "SysLogsXIDError"
 	SXIDErrorCheck      = "SysLogsSXIDError"

@@ -109,14 +109,23 @@ global:
   # DCGM (Data Center GPU Manager) configuration
   # Used by gpu-health-monitor
   dcgm:
+    # Source mode. Supported values: operator-service, external-hostengine, embedded-mode.
+    mode: operator-service
     # Enable DCGM Kubernetes service integration
     enabled: true
+    # GPU Operator DCGM service used by operator-service mode.
     service:
-      # DCGM hostengine service endpoint
       endpoint: "nvidia-dcgm.gpu-operator.svc"
-      # DCGM hostengine service port
       port: 5555
-
+    # Externally owned hostengine used by external-hostengine mode.
+    externalHostengine:
+      endpoint: localhost
+      port: 5555
+    # In-process hostengine listener used by embedded-mode. The endpoint must be
+    # localhost, 127.0.0.1, or ::1.
+    embedded:
+      endpoint: localhost
+      port: 5555
   # OpenTelemetry tracing configuration
   tracing:
     enabled: false # Enable/disable tracing for all components
@@ -333,4 +342,3 @@ podMonitor:
   # scrapeTimeout: ""  # Scrape timeout (defaults to Prometheus default if not specified)
   # metricsPath: "/metrics"  # Metrics path (defaults to /metrics)
   # labels: {}  # Additional labels for the PodMonitor resource
-  
