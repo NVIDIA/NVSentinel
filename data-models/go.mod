@@ -5,7 +5,7 @@ go 1.26.0
 toolchain go1.26.3
 
 require (
-	google.golang.org/grpc v1.81.1
+	google.golang.org/grpc v1.82.0
 	k8s.io/apimachinery v0.36.2
 )
 
