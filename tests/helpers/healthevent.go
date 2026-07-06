@@ -285,3 +285,15 @@ func SendHealthyEvent(ctx context.Context, t *testing.T, nodeName string) {
 
 	SendHealthEvent(ctx, t, event)
 }
+
+// RecoverEntityFailure sends a healthy event that clears a specific entity/error-code failure
+// (matching the GpuXidError check). Useful for cleaning up entity-level quarantine state.
+func RecoverEntityFailure(ctx context.Context, t *testing.T, nodeName, entityType, entityValue, errorCode string) {
+	t.Helper()
+	SendHealthEvent(ctx, t, NewHealthEvent(nodeName).
+		WithErrorCode(errorCode).
+		WithEntitiesImpacted([]EntityImpacted{{EntityType: entityType, EntityValue: entityValue}}).
+		WithHealthy(true).
+		WithFatal(false).
+		WithMessage("cleanup: clearing "+entityType+entityValue+" failure"))
+}

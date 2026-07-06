@@ -53,10 +53,11 @@
 //	      │                   │                 │
 //	      │                   ▼                 ▼
 //	      │            ┌─────────────┐  ┌──────────────┐
-//	      │            │ remediation-│  │ remediation- │ [TERMINAL]
-//	      │            │ succeeded   │  │   failed     │
+//	      │            │ remediation-│◄─┤ remediation- │
+//	      │            │ succeeded   ├─►│   failed     │
 //	      │            └─────┬───────┘  └──────────────┘
-//	      │                  │
+//	      │                  │   partial-recovery recompute
+//	      │                  │   (recomputed between the two from remaining failures)
 //	      │                  │ Healthy event
 //	      ▼                  ▼
 //	┌──────────────────────────────┐
@@ -68,6 +69,8 @@
 // Notes:
 //   - [NO LABEL]: No nvsentinel-state label present (healthy node)
 //   - [TERMINAL]: Terminal states with no forward transitions
+//   - remediation-succeeded and remediation-failed are terminal for a single failure, but
+//     fault-remediation may recompute between them on a partial recovery (see below)
 //   - All state names match the dgxc.nvidia.com/nvsentinel-state label values
 //   - Label removal (removeStateLabel=true) bypasses all validation
 //
@@ -89,6 +92,12 @@
 //	  remediating → remediation-succeeded        (fault-remediation: success)
 //	  remediating → remediation-failed           (fault-remediation: failure)
 //
+//	Partial-recovery recompute (node stays quarantined by other active failures):
+//	  remediation-failed → remediation-succeeded (fault-remediation: recovered failure was the
+//	                                              only failed one; remaining failures are remediated)
+//	  remediation-succeeded → remediation-failed (fault-remediation: a remaining active failure is
+//	                                              unsupported or failed remediation)
+//
 //	Label Removal (from ANY state):
 //	  * → (no label)               (removeStateLabel=true - supports canceled drains)
 //
@@ -106,8 +115,8 @@
 //	Invalid Transitions:
 //	  drain-succeeded → drain-failed           (cannot reverse drain result)
 //	  drain-failed → remediating               (terminal state - no remediation)
-//	  remediation-succeeded → *                (terminal state)
-//	  remediation-failed → *                   (terminal state)
+//	  remediation-succeeded → * (except remediation-failed via partial-recovery recompute)
+//	  remediation-failed → * (except remediation-succeeded via partial-recovery recompute)
 //
 // # Example Sequences
 //
@@ -138,10 +147,14 @@
 //
 // # Terminal States
 //
-// Three states have no valid forward transitions (only label removal):
+// drain-failed has no valid forward transitions (only label removal):
 //   - drain-failed: Remediation doesn't process failed drains
-//   - remediation-succeeded: Final success state
-//   - remediation-failed: Final failure state
+//
+// remediation-succeeded and remediation-failed are terminal for a single failure. The only
+// forward transition allowed is between the two of them, when fault-remediation recomputes the
+// node label from the remaining active failures during a partial recovery:
+//   - remediation-succeeded: Success state (may be recomputed to remediation-failed)
+//   - remediation-failed: Failure state (may be recomputed to remediation-succeeded)
 package statemanager
 
 import (
@@ -192,8 +205,10 @@ Example label sequences:
     no remediation)
  5. Canceled drain: quarantined → draining → (label removed via healthy event)
 
-Terminal states (drain-failed, remediation-failed, remediation-succeeded) have no valid forward transitions.
-The fault-remediation only consumes drain-succeeded; drain-failed nodes are not remediated.
+drain-failed has no valid forward transitions; fault-remediation only consumes drain-succeeded and does
+not remediate drain-failed nodes. remediation-failed and remediation-succeeded are terminal for a single
+failure, but fault-remediation may recompute between them during a partial recovery (a tracked failure
+clears while the node stays quarantined by other active failures).
 
 State transition validation: UpdateNVSentinelStateNodeLabel validates state transitions for observability (emits
 metrics/errors for unexpected transitions) but does NOT validate when removing labels (removeStateLabel=true). This
@@ -320,13 +335,17 @@ func validateStateTransition(nodeName, currentValue string, exists bool, targetS
 
 	// Define expected transitions based on the normal state machine flow
 	validTransitions := map[NVSentinelStateLabelValue][]NVSentinelStateLabelValue{
-		QuarantinedLabelValue:          {DrainingLabelValue, DrainSucceededLabelValue},
-		DrainingLabelValue:             {DrainSucceededLabelValue, DrainFailedLabelValue},
-		DrainSucceededLabelValue:       {RemediatingLabelValue},
-		DrainFailedLabelValue:          {}, // Terminal state - fault-remediation doesn't consume drain-failed
-		RemediatingLabelValue:          {RemediationSucceededLabelValue, RemediationFailedLabelValue},
-		RemediationSucceededLabelValue: {}, // Terminal state
-		RemediationFailedLabelValue:    {}, // Terminal state
+		QuarantinedLabelValue:    {DrainingLabelValue, DrainSucceededLabelValue},
+		DrainingLabelValue:       {DrainSucceededLabelValue, DrainFailedLabelValue},
+		DrainSucceededLabelValue: {RemediatingLabelValue},
+		DrainFailedLabelValue:    {}, // Terminal state - fault-remediation doesn't consume drain-failed
+		RemediatingLabelValue:    {RemediationSucceededLabelValue, RemediationFailedLabelValue},
+		// remediation-succeeded and remediation-failed are terminal for a single failure, but a
+		// partial recovery (a tracked failure clears while the node stays quarantined) lets
+		// fault-remediation recompute the node label from the remaining active failures, which can
+		// move between the two terminal remediation outcomes.
+		RemediationSucceededLabelValue: {RemediationFailedLabelValue},
+		RemediationFailedLabelValue:    {RemediationSucceededLabelValue},
 	}
 
 	currentState := NVSentinelStateLabelValue(currentValue)

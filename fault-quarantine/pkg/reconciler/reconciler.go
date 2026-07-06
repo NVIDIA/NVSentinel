@@ -470,8 +470,17 @@ func (r *Reconciler) ProcessEvent(
 		*isNodeQuarantined == model.UnQuarantined ||
 		*isNodeQuarantined == model.AlreadyQuarantined {
 		metrics.TotalEventsSuccessfullyProcessed.Inc()
+
+		processingStatus := string(*isNodeQuarantined)
+		// A healthy event that leaves the node quarantined is a partial recovery. It is
+		// propagated as AlreadyQuarantined, so surface the more specific status on the span
+		// instead of the generic wire value.
+		if *isNodeQuarantined == model.AlreadyQuarantined && event.HealthEvent.IsHealthy {
+			processingStatus = EventProcessingStatusPartialRecovery
+		}
+
 		span.SetAttributes(
-			attribute.String("fault_quarantine.event.processing_status", string(*isNodeQuarantined)),
+			attribute.String("fault_quarantine.event.processing_status", processingStatus),
 		)
 	}
 
@@ -656,10 +665,29 @@ func (r *Reconciler) handleAlreadyQuarantinedNode(
 	ctx, span := tracing.StartSpan(ctx, "fault_quarantine.handle_already_quarantined_node")
 	defer span.End()
 
+	if !r.shouldProcessAlreadyQuarantinedEvent(ctx, event, ruleSetEvals) {
+		return nil
+	}
+
+	// Event will modify FQ annotations, proceed with quarantine handling
+	stayQuarantined := r.handleQuarantinedNode(ctx, event, ruleSetEvals)
+
+	return r.resolveAlreadyQuarantinedStatus(ctx, event, stayQuarantined)
+}
+
+// shouldProcessAlreadyQuarantinedEvent decides whether an event for an already-quarantined
+// node will modify FQ annotations and therefore must continue through quarantine handling.
+// Returning false short-circuits processing to avoid unnecessary MongoDB writes and
+// downstream propagation.
+func (r *Reconciler) shouldProcessAlreadyQuarantinedEvent(
+	ctx context.Context,
+	event *protos.HealthEvent,
+	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
+) bool {
+	span := tracing.SpanFromContext(ctx)
+
 	healthEventsAnnotationMap, _, err := r.getHealthEventsFromAnnotation(ctx, event)
 
-	// Only propagate events to ND/FR if they will modify node annotations
-	// Returning nil prevents unnecessary MongoDB writes and downstream processing
 	switch {
 	case err != nil:
 		if errors.Is(err, errNoQuarantineAnnotation) {
@@ -669,7 +697,7 @@ func (r *Reconciler) handleAlreadyQuarantinedNode(
 				attribute.String("fault_quarantine.error.message", err.Error()),
 			)
 
-			return nil
+			return false
 		}
 
 		metrics.ProcessingErrors.WithLabelValues("get_node_annotations_error").Inc()
@@ -679,16 +707,15 @@ func (r *Reconciler) handleAlreadyQuarantinedNode(
 			attribute.String("fault_quarantine.error.message", err.Error()),
 		)
 
-		return nil
+		return false
 	case event.IsHealthy:
-		_, hasExistingCheck := healthEventsAnnotationMap.GetEvent(event)
-		if !hasExistingCheck {
+		if _, hasExistingCheck := healthEventsAnnotationMap.GetEvent(event); !hasExistingCheck {
 			span.SetAttributes(
 				attribute.String("fault_quarantine.event.processing_status", EventProcessingStatusSkipped),
 				attribute.String("fault_quarantine.skip.reason", "No tracking check found for healthy event"),
 			)
 
-			return nil
+			return false
 		}
 	case !r.isForceQuarantine(event) && !r.eventMatchesAnyRule(event, ruleSetEvals):
 		span.SetAttributes(
@@ -696,30 +723,35 @@ func (r *Reconciler) handleAlreadyQuarantinedNode(
 			attribute.String("fault_quarantine.skip.reason", "No rules matched and no force quarantine override specified"),
 		)
 
-		return nil
+		return false
 	}
 
-	// Event will modify FQ annotations, proceed with quarantine handling
-	stayQuarantined := r.handleQuarantinedNode(ctx, event, ruleSetEvals)
+	return true
+}
 
-	// Partial recovery: healthy event that doesn't fully unquarantine the node should
-	// not be propagated to ND/FR
+// resolveAlreadyQuarantinedStatus maps the outcome of quarantine handling to the node
+// quarantine status that should be propagated downstream (or nil to keep it local to FQ).
+func (r *Reconciler) resolveAlreadyQuarantinedStatus(
+	ctx context.Context,
+	event *protos.HealthEvent,
+	stayQuarantined bool,
+) *model.Status {
+	span := tracing.SpanFromContext(ctx)
+
+	// Partial recovery: a healthy event cleared a tracked failure but other failures keep
+	// the node quarantined. Tag it for observability; it still propagates as AlreadyQuarantined.
 	if event.IsHealthy && stayQuarantined {
 		span.SetAttributes(
-			attribute.String("fault_quarantine.event.processing_status", EventProcessingStatusSkipped),
+			attribute.String("fault_quarantine.event.processing_status", EventProcessingStatusPartialRecovery),
 			attribute.String("fault_quarantine.skip.reason", "Node is partially recovered"),
 		)
-
-		return nil
 	}
 
-	var status model.Status
+	status := model.UnQuarantined
 	if stayQuarantined {
-		// Only for an unhealthy event, set status to AlreadyQuarantined and
-		// propagate to ND/FR
+		// Healthy partial recovery and unhealthy events alike keep the node quarantined
+		// and propagate as AlreadyQuarantined.
 		status = model.AlreadyQuarantined
-	} else {
-		status = model.UnQuarantined
 	}
 
 	return &status

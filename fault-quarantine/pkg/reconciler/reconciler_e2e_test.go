@@ -907,11 +907,11 @@ func TestE2E_EntityLevelTracking(t *testing.T) {
 		model.StatusInProgress,
 	)}
 
-	t.Log("Verify status is nil (partial recovery not propagated to ND/FR)")
+	t.Log("Verify status is AlreadyQuarantined for partial recovery")
 	require.Eventually(t, func() bool {
 		status := getStatus(eventID3)
-		return status == nil
-	}, statusCheckTimeout, statusCheckPollInterval, "Status should be nil for partial recovery")
+		return status != nil && *status == model.AlreadyQuarantined
+	}, statusCheckTimeout, statusCheckPollInterval, "Status should be AlreadyQuarantined for partial recovery")
 
 	require.Eventually(t, func() bool {
 		node, _ := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})

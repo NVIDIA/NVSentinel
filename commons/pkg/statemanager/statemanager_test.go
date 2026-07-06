@@ -218,6 +218,9 @@ func TestStateTransitionValidProgression(t *testing.T) {
 		{"Remediating to RemediationSucceeded", string(RemediatingLabelValue), RemediationSucceededLabelValue, true, false},
 		{"Remediating to RemediationFailed", string(RemediatingLabelValue), RemediationFailedLabelValue, true, false},
 		{"Quarantined to DrainSucceeded", string(QuarantinedLabelValue), DrainSucceededLabelValue, true, false},
+		// Partial-recovery recompute between terminal remediation outcomes (fault-remediation)
+		{"RemediationFailed to RemediationSucceeded", string(RemediationFailedLabelValue), RemediationSucceededLabelValue, true, false},
+		{"RemediationSucceeded to RemediationFailed", string(RemediationSucceededLabelValue), RemediationFailedLabelValue, true, false},
 
 		// Unexpected progressions (return error but label is still updated)
 		// This allows callers to emit error metrics while labels reflect reality
