@@ -15,6 +15,7 @@
 package webhook
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -26,6 +27,7 @@ import (
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var supportedHostPathTypes = map[string]corev1.HostPathType{
@@ -77,6 +79,8 @@ func NewInjector(cfg *config.Config, resolver *gang.DiscovererResolver) *Injecto
 type GangContext struct {
 	GangID        string
 	ConfigMapName string
+	// OwnerReference points the gang ConfigMap at its scheduler owner for Kubernetes GC.
+	OwnerReference *metav1.OwnerReference
 	// CheckNames is a comma-separated list of injected check container
 	// names. Annotation order when annotation is present, chart order
 	// when using defaults.
@@ -122,7 +126,7 @@ func configuredNames(specs []config.InitContainerSpec) []string {
 // extracts gang context when the pod belongs to a gang. Returns nil when gang
 // coordination is disabled, no discoverer applies, or the pod is not a gang
 // member.
-func (i *Injector) gangContextForPod(pod *corev1.Pod) *GangContext {
+func (i *Injector) gangContextForPod(ctx context.Context, pod *corev1.Pod) *GangContext {
 	if !i.cfg.GangCoordination.Enabled {
 		return nil
 	}
@@ -151,6 +155,20 @@ func (i *Injector) gangContextForPod(pod *corev1.Pod) *GangContext {
 		ConfigMapName: gang.ConfigMapName(gangID),
 	}
 
+	if ownerResolver, ok := discoverer.(types.GangOwnerResolver); ok {
+		ownerReference, err := ownerResolver.OwnerReference(ctx, pod)
+		if err != nil {
+			slog.Warn("Failed to resolve gang owner reference",
+				"pod", pod.Name,
+				"namespace", pod.Namespace,
+				"gangID", gangID,
+				"discoverer", discoverer.Name(),
+				"error", err)
+		} else {
+			gangCtx.OwnerReference = ownerReference
+		}
+	}
+
 	slog.Info("Pod is part of a gang",
 		"pod", pod.Name,
 		"namespace", pod.Namespace,
@@ -161,7 +179,7 @@ func (i *Injector) gangContextForPod(pod *corev1.Pod) *GangContext {
 	return gangCtx
 }
 
-func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *GangContext, error) {
+func (i *Injector) InjectInitContainers(ctx context.Context, pod *corev1.Pod) ([]PatchOperation, *GangContext, error) {
 	maxResources := i.findMaxResources(pod)
 	if len(maxResources) == 0 {
 		slog.Debug("Pod does not request GPU/network resources, skipping injection")
@@ -169,7 +187,7 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 	}
 
 	// Check if pod is part of a gang
-	gangCtx := i.gangContextForPod(pod)
+	gangCtx := i.gangContextForPod(ctx, pod)
 
 	selected, err := i.selectInitContainers(pod)
 	if err != nil {

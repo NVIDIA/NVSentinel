@@ -482,7 +482,7 @@ func TestInjectInitContainers(t *testing.T) {
 			}
 			injector := NewInjector(tt.cfg, resolver)
 
-			patches, gangCtx, err := injector.InjectInitContainers(tt.pod)
+			patches, gangCtx, err := injector.InjectInitContainers(context.Background(), tt.pod)
 			if tt.expectError {
 				require.Error(t, err)
 				return
@@ -1249,7 +1249,7 @@ func TestInjectInitContainers_NamespaceScopedDiscovery_SelectsNamespaceDiscovere
 			pod := gpuPod()
 			pod.Namespace = tt.namespace
 
-			_, gangCtx, err := injector.InjectInitContainers(pod)
+			_, gangCtx, err := injector.InjectInitContainers(context.Background(), pod)
 			require.NoError(t, err)
 			require.NotNil(t, gangCtx)
 			assert.Equal(t, tt.expectGangID, gangCtx.GangID)

@@ -213,7 +213,7 @@ func (c *GangController) RegisterPod(ctx context.Context, reg webhook.GangRegist
 	// This is needed as one of the schedulers (KAI) that we were targeting
 	// validates the configmap before scheduling even for optional configmap volumes.
 	// https://github.com/NVIDIA/KAI-Scheduler/issues/988
-	if err := c.coordinator.EnsureConfigMap(ctx, reg.Namespace, reg.GangID, 0); err != nil {
+	if err := c.coordinator.EnsureConfigMap(ctx, reg.Namespace, reg.GangID, 0, reg.OwnerReference); err != nil {
 		slog.Error("Failed to ensure gang ConfigMap",
 			"namespace", reg.Namespace,
 			"gangID", reg.GangID,

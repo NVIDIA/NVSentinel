@@ -24,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -107,9 +108,19 @@ func makeNativePodGroup(namespace, name string, minCount int64) *unstructured.Un
 	obj.SetGroupVersionKind(PodGroupGVK)
 	obj.SetNamespace(namespace)
 	obj.SetName(name)
+	obj.SetUID(k8stypes.UID(name + "-uid"))
 	if minCount > 0 {
 		_ = unstructured.SetNestedField(obj.Object, minCount, "spec", "schedulingPolicy", "gang", "minCount")
 	}
+	return obj
+}
+
+func makeNativeWorkload(namespace, name string) *unstructured.Unstructured {
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(WorkloadGVK)
+	obj.SetNamespace(namespace)
+	obj.SetName(name)
+	obj.SetUID(k8stypes.UID(name + "-uid"))
 	return obj
 }
 
@@ -154,6 +165,11 @@ func TestKubernetesDiscoverer_DiscoverPeers(t *testing.T) {
 		assert.Len(t, info.Peers, 3)
 		assert.Equal(t, 3, info.ExpectedMinCount)
 		assert.Equal(t, "kubernetes-default-train-workers", info.GangID)
+		require.NotNil(t, info.OwnerReference)
+		assert.Equal(t, "scheduling.k8s.io/v1alpha2", info.OwnerReference.APIVersion)
+		assert.Equal(t, "PodGroup", info.OwnerReference.Kind)
+		assert.Equal(t, "train-workers", info.OwnerReference.Name)
+		assert.Equal(t, k8stypes.UID("train-workers-uid"), info.OwnerReference.UID)
 	})
 
 	t.Run("no matching pods returns nil", func(t *testing.T) {
@@ -190,4 +206,18 @@ func TestKubernetesDiscoverer_DiscoverPeers(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, info)
 	})
+}
+
+func TestWorkloadRefDiscoverer_OwnerReference(t *testing.T) {
+	workload := makeNativeWorkload("default", "train-workload")
+	c := fake.NewClientBuilder().WithObjects(workload).Build()
+	d := NewWorkloadRefDiscoverer(c)
+
+	ownerRef, err := d.workloadOwnerReference(context.Background(), "default", "train-workload")
+	require.NoError(t, err)
+	require.NotNil(t, ownerRef)
+	assert.Equal(t, "scheduling.k8s.io/v1alpha1", ownerRef.APIVersion)
+	assert.Equal(t, "Workload", ownerRef.Kind)
+	assert.Equal(t, "train-workload", ownerRef.Name)
+	assert.Equal(t, k8stypes.UID("train-workload-uid"), ownerRef.UID)
 }

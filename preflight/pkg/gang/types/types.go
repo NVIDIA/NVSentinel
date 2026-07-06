@@ -19,6 +19,7 @@ import (
 	"context"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // GangConfigVolumeName is the volume name injected by the webhook for gang coordination.
@@ -48,6 +49,10 @@ type GangInfo struct {
 
 	// Peers contains information about all discovered gang members.
 	Peers []PeerInfo
+
+	// OwnerReference identifies the scheduler gang owner for Kubernetes garbage collection.
+	// When set on the coordination ConfigMap, the ConfigMap is deleted with the gang owner.
+	OwnerReference *metav1.OwnerReference
 }
 
 // GangDiscoverer discovers all pods belonging to the same gang.
@@ -70,4 +75,10 @@ type GangDiscoverer interface {
 	// This typically requires listing pods via the Kubernetes API.
 	// Returns nil GangInfo if the pod doesn't belong to a gang.
 	DiscoverPeers(ctx context.Context, pod *corev1.Pod) (*GangInfo, error)
+}
+
+// GangOwnerResolver is optionally implemented by discoverers that can resolve
+// the Kubernetes owner object for a gang without doing full peer discovery.
+type GangOwnerResolver interface {
+	OwnerReference(ctx context.Context, pod *corev1.Pod) (*metav1.OwnerReference, error)
 }
