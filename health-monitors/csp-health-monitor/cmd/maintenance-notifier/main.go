@@ -27,8 +27,11 @@ import (
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	listersv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	met "github.com/nvidia/nvsentinel/commons/pkg/metrics"
@@ -123,6 +126,18 @@ func setupUDSConnection(udsPath string) (*grpc.ClientConn, pb.PlatformConnectorC
 	slog.Info("Sidecar successfully connected to Platform Connector UDS.")
 
 	return conn, pb.NewPlatformConnectorClient(conn), nil
+}
+
+func setupNodeLister(ctx context.Context, k8sClient kubernetes.Interface) (listersv1.NodeLister, error) {
+	factory := informers.NewSharedInformerFactory(k8sClient, 0)
+	nodeInformer := factory.Core().V1().Nodes()
+	factory.Start(ctx.Done())
+
+	if ok := cache.WaitForCacheSync(ctx.Done(), nodeInformer.Informer().HasSynced); !ok {
+		return nil, fmt.Errorf("timed out waiting for node informer cache to sync")
+	}
+
+	return nodeInformer.Lister(), nil
 }
 
 func setupKubernetesClient() (kubernetes.Interface, error) {
@@ -221,6 +236,11 @@ func run() error {
 			return fmt.Errorf("kubernetes client setup failed: %w", err)
 		}
 
+		nodeLister, err := setupNodeLister(gCtx, k8sClient)
+		if err != nil {
+			return fmt.Errorf("node lister setup failed: %w", err)
+		}
+
 		value, ok := pb.ProcessingStrategy_value[appCfg.processingStrategy]
 		if !ok {
 			return fmt.Errorf("invalid processingStrategy %q (expected EXECUTE_REMEDIATION or STORE_ONLY)",
@@ -231,7 +251,7 @@ func run() error {
 
 		engine := trigger.NewEngine(cfg, store, platformConnectorClient,
 			fmt.Sprintf("unix:%s", appCfg.udsPath),
-			k8sClient, pb.ProcessingStrategy(value))
+			k8sClient, nodeLister, pb.ProcessingStrategy(value))
 
 		slog.Info("Trigger engine starting...")
 		engine.Start(gCtx)

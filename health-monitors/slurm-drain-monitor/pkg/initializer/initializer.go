@@ -28,6 +28,10 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
+	listersv1 "k8s.io/client-go/listers/core/v1"
+	toolscache "k8s.io/client-go/tools/cache"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -156,9 +160,35 @@ func initConnAndClients(ctx context.Context, params Params) (
 		return nil, nil, nil, nil, fmt.Errorf("failed to create parser: %w", err)
 	}
 
-	pub := publisher.New(pcClient, params.PlatformConnectorSocket, pb.ProcessingStrategy(strategyValue))
+	nodeLister, err := buildNodeLister(ctx, params.ResyncPeriod)
+	if err != nil {
+		conn.Close()
+
+		return nil, nil, nil, nil, fmt.Errorf("build node lister: %w", err)
+	}
+
+	pub := publisher.New(pcClient, params.PlatformConnectorSocket, nodeLister, pb.ProcessingStrategy(strategyValue))
 
 	return conn, pr, pub, cfg, nil
+}
+
+func buildNodeLister(ctx context.Context, resyncPeriod time.Duration) (listersv1.NodeLister, error) {
+	restConfig := ctrl.GetConfigOrDie()
+
+	k8sClient, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("create kubernetes client for node lister: %w", err)
+	}
+
+	factory := informers.NewSharedInformerFactory(k8sClient, resyncPeriod)
+	nodeInformer := factory.Core().V1().Nodes()
+	factory.Start(ctx.Done())
+
+	if ok := toolscache.WaitForCacheSync(ctx.Done(), nodeInformer.Informer().HasSynced); !ok {
+		return nil, fmt.Errorf("timed out waiting for node informer cache to sync")
+	}
+
+	return nodeInformer.Lister(), nil
 }
 
 func validateRecommendedActions(cfg *config.Config) error {

@@ -27,8 +27,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	listersv1 "k8s.io/client-go/listers/core/v1"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
+	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/datastore"
@@ -62,6 +64,7 @@ type Engine struct {
 	config             *config.Config
 	pollInterval       time.Duration
 	k8sClient          kubernetes.Interface
+	nodeLister         listersv1.NodeLister
 	monitoredNodes     sync.Map // Track which nodes are currently being monitored
 	monitorInterval    time.Duration
 	processingStrategy pb.ProcessingStrategy
@@ -77,6 +80,7 @@ func NewEngine(
 	udsClient pb.PlatformConnectorClient,
 	udsTarget string,
 	k8sClient kubernetes.Interface,
+	nodeLister listersv1.NodeLister,
 	processingStrategy pb.ProcessingStrategy,
 ) *Engine {
 	return &Engine{
@@ -87,6 +91,7 @@ func NewEngine(
 			healthpub.WithRetryPolicy(udsMaxRetries, udsRetryDelay, 1.5, 0.1)),
 		pollInterval:       time.Duration(cfg.MaintenanceEventPollIntervalSeconds) * time.Second,
 		k8sClient:          k8sClient,
+		nodeLister:         nodeLister,
 		monitorInterval:    defaultMonitorInterval,
 		processingStrategy: processingStrategy,
 	}
@@ -241,6 +246,23 @@ func (e *Engine) processAndSendTrigger(
 		metrics.TriggerFailures.WithLabelValues(triggerType, failureReasonMapping).Inc()
 
 		return fmt.Errorf("missing NodeName for %s trigger (EventID: %s)", triggerType, event.EventID)
+	}
+
+	// Skip emission when the node is opted out of NVSentinel management (ADR-040).
+	// Advance DB status so the event is not re-fired on the next poll.
+	if optedOut, err := managed.IsNodeOptedOut(ctx, e.nodeLister, event.NodeName); err != nil {
+		return fmt.Errorf("managed label check failed for node %s: %w", event.NodeName, err)
+	} else if optedOut {
+		slog.Info("Skipping trigger: node is opted out of NVSentinel management",
+			"node", event.NodeName, "triggerType", triggerType, "eventID", event.EventID)
+		metrics.TriggerSkippedManaged.WithLabelValues(triggerType).Inc()
+
+		if dbErr := e.store.UpdateEventStatus(ctx, event.EventID, targetDBStatus); dbErr != nil {
+			slog.Error("Failed to advance event status after managed skip",
+				"eventID", event.EventID, "error", dbErr)
+		}
+
+		return nil
 	}
 
 	slog.Info("Attempting to trigger event",

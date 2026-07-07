@@ -17,12 +17,16 @@ package publisher
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
+	listersv1 "k8s.io/client-go/listers/core/v1"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
+	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/slurm-drain-monitor/pkg/metrics"
 	"github.com/nvidia/nvsentinel/health-monitors/slurm-drain-monitor/pkg/parser"
 )
 
@@ -34,14 +38,17 @@ const (
 // shared healthpub publisher (commons/pkg/healthpub).
 type Publisher struct {
 	pub                *healthpub.Publisher
+	nodeLister         listersv1.NodeLister
 	processingStrategy pb.ProcessingStrategy
 }
 
 // New creates a Publisher. target must match the gRPC target string
 // used to dial client (typically "unix:///var/run/nvsentinel.sock").
-func New(client pb.PlatformConnectorClient, target string, processingStrategy pb.ProcessingStrategy) *Publisher {
+// nodeLister is used to gate emission for nodes opted out of NVSentinel management.
+func New(client pb.PlatformConnectorClient, target string, nodeLister listersv1.NodeLister, processingStrategy pb.ProcessingStrategy) *Publisher {
 	return &Publisher{
 		pub:                healthpub.New(client, target, agentName),
+		nodeLister:         nodeLister,
 		processingStrategy: processingStrategy,
 	}
 }
@@ -52,6 +59,16 @@ func (p *Publisher) PublishDrainEvents(
 	ctx context.Context, reasons []parser.MatchedReason, nodeName string,
 	isHealthy bool, podNamespace, podName string,
 ) error {
+	// Skip emission when the node is opted out of NVSentinel management (ADR-040).
+	if optedOut, err := managed.IsNodeOptedOut(ctx, p.nodeLister, nodeName); err != nil {
+		return fmt.Errorf("managed label check failed for node %s: %w", nodeName, err)
+	} else if optedOut {
+		slog.Info("Skipping drain event emission: node is opted out of NVSentinel management", "node", nodeName)
+		metrics.EmissionsSkippedManaged.Inc()
+
+		return nil
+	}
+
 	entityValue := podName
 	if podNamespace != "" {
 		entityValue = fmt.Sprintf("%s/%s", podNamespace, podName)

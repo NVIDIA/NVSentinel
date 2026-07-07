@@ -30,6 +30,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
+	listersv1 "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/tools/cache"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
@@ -183,13 +185,18 @@ func createMockClientWithNotReadyNode(nodeName string) *k8sfake.Clientset {
 	return k8sfake.NewSimpleClientset(node)
 }
 
+func newEmptyNodeLister() listersv1.NodeLister {
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	return listersv1.NewNodeLister(indexer)
+}
+
 func TestNewEngine(t *testing.T) {
 	cfg := newTestConfig()
 	mStore := new(MockDatastore)
 	mUDSClient := new(MockUDSClient)
 	mockClient := createMockClientWithReadyNodes()
 
-	engine := NewEngine(cfg, mStore, mUDSClient, "tcp://test", mockClient, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+	engine := NewEngine(cfg, mStore, mUDSClient, "tcp://test", mockClient, newEmptyNodeLister(), pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 
 	assert.NotNil(t, engine)
 	assert.Equal(t, cfg, engine.config)
@@ -203,7 +210,7 @@ func TestMapMaintenanceEventToHealthEvent(t *testing.T) {
 	cfg := newTestConfig()
 	mStore := new(MockDatastore)     // Not strictly needed for this func, but engine needs it
 	mUDSClient := new(MockUDSClient) // Not strictly needed for this func, but engine needs it
-	engine := NewEngine(cfg, mStore, mUDSClient, "tcp://test", nil, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+	engine := NewEngine(cfg, mStore, mUDSClient, "tcp://test", nil, newEmptyNodeLister(), pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 
 	tests := []struct {
 		name          string
@@ -566,7 +573,7 @@ func TestProcessAndSendTrigger(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			mStore := new(MockDatastore)
 			mUDSClient := new(MockUDSClient)
-			engine := NewEngine(cfg, mStore, mUDSClient, "tcp://test", nil, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+			engine := NewEngine(cfg, mStore, mUDSClient, "tcp://test", nil, newEmptyNodeLister(), pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 
 			tc.setupMocks(mStore, mUDSClient, tc.event, tc.targetDBStatus)
 
@@ -747,7 +754,7 @@ func TestCheckAndTriggerEvents(t *testing.T) {
 			mStore := new(MockDatastore)
 			mUDSClient := new(MockUDSClient)
 			mockClient := createMockClientWithReadyNodes("node-q1", "node-h1", "q-no-node")
-			engine := NewEngine(cfg, mStore, mUDSClient, "tcp://test", mockClient, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+			engine := NewEngine(cfg, mStore, mUDSClient, "tcp://test", mockClient, newEmptyNodeLister(), pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 
 			if tc.setupMocks != nil {
 				tc.setupMocks(mStore, mUDSClient)
@@ -793,7 +800,7 @@ func TestHealthyTriggerWaitsForNodeReady(t *testing.T) {
 	mUDSClient.On("HealthEventOccurredV1", mock.Anything, mock.Anything, mock.Anything).Return(&emptypb.Empty{}, nil).Once()
 	mStore.On("UpdateEventStatus", mock.AnythingOfType("*context.timerCtx"), healthyEvent.EventID, model.StatusHealthyTriggered).Return(nil).Once()
 
-	engine := NewEngine(cfg, mStore, mUDSClient, "tcp://test", mockClient, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+	engine := NewEngine(cfg, mStore, mUDSClient, "tcp://test", mockClient, newEmptyNodeLister(), pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 	engine.monitorInterval = 3 * time.Second
 
 	err := engine.checkAndTriggerEvents(ctx)

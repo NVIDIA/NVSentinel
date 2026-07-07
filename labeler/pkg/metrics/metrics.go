@@ -82,4 +82,13 @@ var (
 		},
 		[]string{ClassLabel, "reason"},
 	)
+
+	// NodeLabelsSkippedManaged counts reconcile attempts skipped because the node
+	// carries nvsentinel.dgxc.nvidia.com/managed=false (ADR-040 opt-out).
+	NodeLabelsSkippedManaged = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "labeler_node_labels_skipped_managed_total",
+			Help: "Total number of node label reconcile attempts skipped because the node is opted out of NVSentinel management.",
+		},
+	)
 )
