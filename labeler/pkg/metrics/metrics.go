@@ -88,7 +88,7 @@ var (
 	NodeLabelsSkippedManaged = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Name: "labeler_node_labels_skipped_managed_total",
-			Help: "Total number of node label reconcile attempts skipped because the node is opted out of NVSentinel management.",
+			Help: "Node label reconcile attempts skipped because the node is opted out of NVSentinel management.",
 		},
 	)
 )

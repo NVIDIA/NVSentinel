@@ -31,7 +31,6 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	listersv1 "k8s.io/client-go/listers/core/v1"
-	toolscache "k8s.io/client-go/tools/cache"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -183,10 +182,6 @@ func buildNodeLister(ctx context.Context, resyncPeriod time.Duration) (listersv1
 	factory := informers.NewSharedInformerFactory(k8sClient, resyncPeriod)
 	nodeInformer := factory.Core().V1().Nodes()
 	factory.Start(ctx.Done())
-
-	if ok := toolscache.WaitForCacheSync(ctx.Done(), nodeInformer.Informer().HasSynced); !ok {
-		return nil, fmt.Errorf("timed out waiting for node informer cache to sync")
-	}
 
 	return nodeInformer.Lister(), nil
 }

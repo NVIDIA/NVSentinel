@@ -733,7 +733,9 @@ func (l *Labeler) stripDetectionLabels(node *v1.Node) bool {
 	for _, key := range []string{DCGMVersionLabel, DriverInstalledLabel, KataEnabledLabel} {
 		if _, exists := node.Labels[key]; exists {
 			delete(node.Labels, key)
+
 			needsUpdate = true
+
 			slog.Info("Removing detection label from opted-out node", "node", node.Name, "label", key)
 		}
 	}

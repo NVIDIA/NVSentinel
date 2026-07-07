@@ -44,7 +44,10 @@ type Publisher struct {
 // New constructs a Publisher. target must match the gRPC target string
 // used to dial client (typically "unix:///var/run/nvsentinel.sock").
 // nodeLister is used to gate emission for nodes opted out of NVSentinel management.
-func New(client pb.PlatformConnectorClient, target string, nodeLister listersv1.NodeLister, processingStrategy pb.ProcessingStrategy) *Publisher {
+func New(
+	client pb.PlatformConnectorClient, target string,
+	nodeLister listersv1.NodeLister, processingStrategy pb.ProcessingStrategy,
+) *Publisher {
 	return &Publisher{
 		pub:                healthpub.New(client, target, agentName),
 		nodeLister:         nodeLister,

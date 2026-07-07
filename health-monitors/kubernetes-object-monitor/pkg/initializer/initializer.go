@@ -33,7 +33,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	listersv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/rest"
-	toolscache "k8s.io/client-go/tools/cache"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -96,19 +95,11 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 
 	slog.Info("Event handling strategy configured", "processingStrategy", params.ProcessingStrategy)
 
-	restConfig, err := ctrl.GetConfig()
+	pub, err := buildPublisher(ctx, pcClient, params, pb.ProcessingStrategy(strategyValue))
 	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("getting kubeconfig for node lister: %w", err)
+		return nil, err
 	}
-
-	nodeLister, err := buildNodeLister(ctx, restConfig, params.ResyncPeriod)
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("build node lister: %w", err)
-	}
-
-	pub := publisher.New(pcClient, params.PlatformConnectorSocket, nodeLister, pb.ProcessingStrategy(strategyValue))
 
 	mgr, err := createManager(params, cfg.Policies)
 	if err != nil {
@@ -312,7 +303,9 @@ func registerControllers(
 	return nil
 }
 
-func buildNodeLister(ctx context.Context, restCfg *rest.Config, resyncPeriod time.Duration) (listersv1.NodeLister, error) {
+func buildNodeLister(
+	ctx context.Context, restCfg *rest.Config, resyncPeriod time.Duration,
+) (listersv1.NodeLister, error) {
 	k8sClient, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
 		return nil, fmt.Errorf("create kubernetes client for node lister: %w", err)
@@ -322,11 +315,24 @@ func buildNodeLister(ctx context.Context, restCfg *rest.Config, resyncPeriod tim
 	nodeInformer := factory.Core().V1().Nodes()
 	factory.Start(ctx.Done())
 
-	if ok := toolscache.WaitForCacheSync(ctx.Done(), nodeInformer.Informer().HasSynced); !ok {
-		return nil, fmt.Errorf("timed out waiting for node informer cache to sync")
+	return nodeInformer.Lister(), nil
+}
+
+func buildPublisher(
+	ctx context.Context, pcClient pb.PlatformConnectorClient,
+	params Params, strategy pb.ProcessingStrategy,
+) (*publisher.Publisher, error) {
+	restConfig, err := ctrl.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("getting kubeconfig for node lister: %w", err)
 	}
 
-	return nodeInformer.Lister(), nil
+	nodeLister, err := buildNodeLister(ctx, restConfig, params.ResyncPeriod)
+	if err != nil {
+		return nil, fmt.Errorf("build node lister: %w", err)
+	}
+
+	return publisher.New(pcClient, params.PlatformConnectorSocket, nodeLister, strategy), nil
 }
 
 func dialPlatformConnector(socket string) (*grpc.ClientConn, error) {
