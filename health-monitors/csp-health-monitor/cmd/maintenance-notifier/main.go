@@ -31,6 +31,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	listersv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	met "github.com/nvidia/nvsentinel/commons/pkg/metrics"
@@ -127,12 +128,23 @@ func setupUDSConnection(udsPath string) (*grpc.ClientConn, pb.PlatformConnectorC
 	return conn, pb.NewPlatformConnectorClient(conn), nil
 }
 
-func setupNodeLister(ctx context.Context, k8sClient kubernetes.Interface) listersv1.NodeLister {
+func setupNodeLister(ctx context.Context, k8sClient kubernetes.Interface) (listersv1.NodeLister, error) {
 	factory := informers.NewSharedInformerFactory(k8sClient, 0)
-	nodeInformer := factory.Core().V1().Nodes()
+	nodes := factory.Core().V1().Nodes()
+
+	// A SharedInformerFactory only starts informers that were referenced (via
+	// Informer()/Lister()) BEFORE Start is called. Register the node informer
+	// first, otherwise Start launches nothing and the lister cache stays empty
+	// forever, which would silently disable the managed=false gate (fail-open).
+	informer := nodes.Informer()
+
 	factory.Start(ctx.Done())
 
-	return nodeInformer.Lister()
+	if !cache.WaitForCacheSync(ctx.Done(), informer.HasSynced) {
+		return nil, fmt.Errorf("timed out waiting for node informer cache to sync")
+	}
+
+	return nodes.Lister(), nil
 }
 
 func setupKubernetesClient() (kubernetes.Interface, error) {
@@ -245,7 +257,10 @@ func runTriggerEngine(ctx context.Context, appCfg *appConfig, cfg *config.Config
 		return fmt.Errorf("kubernetes client setup failed: %w", err)
 	}
 
-	nodeLister := setupNodeLister(ctx, k8sClient)
+	nodeLister, err := setupNodeLister(ctx, k8sClient)
+	if err != nil {
+		return fmt.Errorf("node lister setup failed: %w", err)
+	}
 
 	value, ok := pb.ProcessingStrategy_value[appCfg.processingStrategy]
 	if !ok {

@@ -33,6 +33,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	listersv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/rest"
+	toolscache "k8s.io/client-go/tools/cache"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -312,10 +313,21 @@ func buildNodeLister(
 	}
 
 	factory := informers.NewSharedInformerFactory(k8sClient, resyncPeriod)
-	nodeInformer := factory.Core().V1().Nodes()
+	nodes := factory.Core().V1().Nodes()
+
+	// A SharedInformerFactory only starts informers that were referenced (via
+	// Informer()/Lister()) BEFORE Start is called. Register the node informer
+	// first, otherwise Start launches nothing and the lister cache stays empty
+	// forever, which would silently disable the managed=false gate (fail-open).
+	informer := nodes.Informer()
+
 	factory.Start(ctx.Done())
 
-	return nodeInformer.Lister(), nil
+	if !toolscache.WaitForCacheSync(ctx.Done(), informer.HasSynced) {
+		return nil, fmt.Errorf("timed out waiting for node informer cache to sync")
+	}
+
+	return nodes.Lister(), nil
 }
 
 func buildPublisher(
