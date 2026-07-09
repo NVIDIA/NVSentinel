@@ -197,22 +197,6 @@ func dialPlatformConnector(ctx context.Context, socket string) (*grpc.ClientConn
 	return conn, nil
 }
 
-// kernelOriginChecks lists checks whose source events are emitted by the kernel
-// (NVIDIA driver, NVSwitch, PCI subsystem). They must only consume kernel
-// (_TRANSPORT=kernel) journal entries: scanning every transport lets unrelated
-// high-volume userspace logs (audit, containers) push the read cursor behind
-// journald's retention window, so the segment holding an XID can be vacuumed
-// before the monitor processes it. See NVIDIA/NVSentinel#1417.
-//
-// On Kata nodes this default is overridden in applyKataConfig, because there the
-// GPU runs in the guest VM and XIDs surface via containerd rather than as host
-// kernel entries.
-var kernelOriginChecks = map[string]bool{
-	fd.XIDErrorCheck:     true,
-	fd.SXIDErrorCheck:    true,
-	fd.GPUFallenOffCheck: true,
-}
-
 func buildChecksFromFlag() ([]fd.CheckDefinition, error) {
 	list := make([]fd.CheckDefinition, 0)
 
@@ -222,19 +206,10 @@ func buildChecksFromFlag() ([]fd.CheckDefinition, error) {
 			continue
 		}
 
-		check := fd.CheckDefinition{
+		list = append(list, fd.CheckDefinition{
 			Name:        name,
 			JournalPath: "/nvsentinel/var/log/journal/",
-		}
-
-		// Kernel-origin checks only consume kernel (_TRANSPORT=kernel) entries by
-		// default so they keep up with journald instead of falling behind under
-		// retention pressure from unrelated logs. See NVIDIA/NVSentinel#1417.
-		if kernelOriginChecks[name] {
-			check.Tags = []string{"-k"}
-		}
-
-		list = append(list, check)
+		})
 	}
 
 	if len(list) == 0 {
@@ -252,12 +227,11 @@ func applyKataConfig(list []fd.CheckDefinition) []fd.CheckDefinition {
 	slog.Info("Kata mode enabled, adding containerd service filter and removing SysLogsSXIDError check")
 
 	for i := range list {
-		// On Kata nodes XIDs surface via the guest kernel relayed through
-		// containerd, not as host _TRANSPORT=kernel entries, so filter by the
-		// containerd unit and drop any kernel-transport default set in
-		// buildChecksFromFlag (the two would AND together and match nothing).
-		// See NVIDIA/NVSentinel#1417.
-		list[i].Tags = []string{"-u containerd.service"}
+		if list[i].Tags == nil {
+			list[i].Tags = []string{"-u containerd.service"}
+		} else {
+			list[i].Tags = append(list[i].Tags, "-u containerd.service")
+		}
 	}
 
 	filtered := make([]fd.CheckDefinition, 0, len(list))

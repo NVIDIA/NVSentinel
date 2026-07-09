@@ -626,10 +626,8 @@ func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinit
 
 		switch trimmedTag {
 		case "-k", "--dmesg":
-			// Kernel-transport logs (printk + /dev/kmsg), independent of the
-			// syslog facility. This is generic across devices that may not set
-			// SYSLOG_FACILITY=kern, and naturally excludes journal/audit noise.
-			matchExpr := FieldTransport + "=" + TransportKernel
+			// Facility 0 is typically KERNEL messages.
+			matchExpr := FieldSyslogFacility + "=0"
 
 			slog.Info("Adding kernel log filter",
 				"check", check.Name,
@@ -800,49 +798,7 @@ func (sm *SyslogMonitor) resumeFromLastCursor(
 		return false, nil
 	}
 
-	ready, err := sm.skipBookmarkedEntryIfPresent(journal, check, lastKnownCursor)
-	if err != nil {
-		return false, err
-	}
-
-	return ready, nil
-}
-
-// skipBookmarkedEntryIfPresent advances past lastKnownCursor when a filtered
-// journal read returns the bookmarked entry itself after SeekCursor+Next.
-// systemd may return the entry at the cursor on the first Next() after
-// SeekCursor when journal matches (e.g. _TRANSPORT=kernel for "-k") are active.
-// Without this skip, the last processed kernel XID is re-read every poll cycle.
-func (sm *SyslogMonitor) skipBookmarkedEntryIfPresent(
-	journal Journal, check CheckDefinition, lastKnownCursor string,
-) (bool, error) {
-	cur, err := journal.GetCursor()
-	if err != nil {
-		return false, fmt.Errorf("check '%s': failed to get cursor after resume advance: %w", check.Name, err)
-	}
-
-	if cur != lastKnownCursor {
-		return true, nil
-	}
-
-	slog.Debug("Skipping bookmarked journal entry re-read after filtered resume",
-		"check", check.Name,
-		"cursor", lastKnownCursor)
-
-	advanced, nextErr := journal.Next()
-	if nextErr != nil && !errors.Is(nextErr, io.EOF) {
-		return false, fmt.Errorf("check '%s': error advancing past bookmarked cursor '%s': %w",
-			check.Name, lastKnownCursor, nextErr)
-	}
-
-	if errors.Is(nextErr, io.EOF) || advanced == 0 {
-		slog.Info("No new entries since last cursor",
-			"check", check.Name,
-			"cursor", lastKnownCursor)
-
-		return false, nil
-	}
-
+	// Journal cursor is now positioned at the first new entry to process.
 	return true, nil
 }
 
