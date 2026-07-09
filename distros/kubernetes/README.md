@@ -36,13 +36,13 @@ helm install prometheus prometheus-community/kube-prometheus-stack \
 ```bash
 # Install with default configuration
 helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
-  --version v1.13.0 \
+  --version v1.13.1 \
   --namespace nvsentinel \
   --create-namespace
 
 # Upgrade to a new version
 helm upgrade nvsentinel oci://ghcr.io/nvidia/nvsentinel \
-  --version v1.13.0 \
+  --version v1.13.1 \
   --namespace nvsentinel
 
 # Uninstall
@@ -326,5 +326,5 @@ For detailed documentation of all available configuration options, see:
 To view all options from the published chart:
 
 ```bash
-helm show values oci://ghcr.io/nvidia/nvsentinel --version v1.13.0
+helm show values oci://ghcr.io/nvidia/nvsentinel --version v1.13.1
 ```
