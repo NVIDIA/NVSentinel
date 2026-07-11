@@ -142,7 +142,11 @@ func run() error {
 		return err
 	}
 
-	srv, portInt, err := createMetricsServer()
+	// Health checker reports unhealthy if the polling loop has not completed
+	// an iteration within 3x the polling interval.
+	healthChecker := server.NewPollingHealthChecker(3 * pollingInterval)
+
+	srv, portInt, err := createMetricsServer(healthChecker)
 	if err != nil {
 		return err
 	}
@@ -164,7 +168,7 @@ func run() error {
 	}
 
 	g.Go(func() error {
-		return runPollingLoop(gCtx, monitor, pollingInterval, checks)
+		return runPollingLoop(gCtx, monitor, pollingInterval, checks, healthChecker)
 	})
 
 	return g.Wait()
@@ -372,7 +376,7 @@ func createSyslogMonitor(
 	return monitor, pollingInterval, nil
 }
 
-func createMetricsServer() (server.Server, int, error) {
+func createMetricsServer(healthChecker *server.PollingHealthChecker) (server.Server, int, error) {
 	portInt, err := strconv.Atoi(*metricsPort)
 	if err != nil {
 		return nil, 0, fmt.Errorf("invalid metrics port: %w", err)
@@ -381,7 +385,7 @@ func createMetricsServer() (server.Server, int, error) {
 	srv := server.NewServer(
 		server.WithPort(portInt),
 		server.WithPrometheusMetrics(),
-		server.WithSimpleHealth(),
+		server.WithHealthCheck(healthChecker),
 	)
 
 	return srv, portInt, nil
@@ -392,6 +396,7 @@ func runPollingLoop(
 	monitor *fd.SyslogMonitor,
 	interval time.Duration,
 	list []fd.CheckDefinition,
+	healthChecker *server.PollingHealthChecker,
 ) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -439,6 +444,7 @@ func runPollingLoop(
 				}
 
 				backoff = 0
+				healthChecker.MarkAlive()
 
 				break
 			}

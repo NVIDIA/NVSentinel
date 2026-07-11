@@ -17,7 +17,7 @@ import click, configparser, signal, sys
 import logging as log
 from importlib.metadata import version as get_package_version
 from threading import Event
-from prometheus_client import start_http_server
+from gpu_health_monitor.healthz import start_server as start_health_server
 import csv
 from .dcgm_watcher import dcgm
 from .platform_connector import platform_connector
@@ -193,7 +193,8 @@ def cli(
 
     metadata_reader = MetadataReader(metadata_path) if thermal_margin_enabled else None
 
-    prom_server, t = start_http_server(port)
+    poll_interval = int(dcgm_config["PollIntervalSeconds"])
+    prom_server, t = start_health_server(port, staleness_seconds=poll_interval * 3)
 
     def process_exit_signal(signum, frame):
         exit.set()
@@ -205,7 +206,7 @@ def cli(
 
     dcgm_watcher = dcgm.DCGMWatcher(
         addr=dcgm_addr,
-        poll_interval_seconds=int(dcgm_config["PollIntervalSeconds"]),
+        poll_interval_seconds=poll_interval,
         callbacks=enabled_event_processors,
         dcgm_k8s_service_enabled=dcgm_k8s_service_enabled,
         thermal_margin_enabled=thermal_margin_enabled,

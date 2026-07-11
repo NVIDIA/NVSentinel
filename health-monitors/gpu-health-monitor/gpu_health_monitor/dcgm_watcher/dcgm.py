@@ -19,6 +19,7 @@ from gpu_health_monitor.metadata import MetadataReader
 from threading import Event
 from functools import partial
 from concurrent.futures import ThreadPoolExecutor
+from gpu_health_monitor.healthz import mark_alive as _mark_alive
 import os
 
 DELAY, MULTIPLIER, MAX_DELAY = 2, 1.5, 120
@@ -588,6 +589,7 @@ class DCGMWatcher:
                                 types.CallbackInterface.health_event_occurred.__name__,
                                 [health_status, gpu_ids],
                             )
+                            _mark_alive()
         finally:
             # Shutdown() stops the embedded hostengine and its loopback server.
             try:
