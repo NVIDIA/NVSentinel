@@ -444,6 +444,7 @@ func runPollingLoop(
 				}
 
 				backoff = 0
+
 				healthChecker.MarkAlive()
 
 				break

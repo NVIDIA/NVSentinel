@@ -79,7 +79,10 @@ func (h *PollingHealthChecker) Healthy(_ context.Context) error {
 	elapsed := time.Duration(monoNow()-h.lastMonoNano.Load()) * time.Nanosecond
 
 	if elapsed > h.stalenessThreshold {
-		return fmt.Errorf("polling loop stale: last iteration %s ago, threshold %s", elapsed.Truncate(time.Second), h.stalenessThreshold)
+		return fmt.Errorf(
+			"polling loop stale: last iteration %s ago, threshold %s",
+			elapsed.Truncate(time.Second), h.stalenessThreshold,
+		)
 	}
 
 	return nil
