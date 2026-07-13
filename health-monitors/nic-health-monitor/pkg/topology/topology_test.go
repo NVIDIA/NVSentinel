@@ -411,6 +411,43 @@ func TestCheckCardHomogeneity(t *testing.T) {
 	assert.Equal(t, RoleCompute, a.Role)
 }
 
+func TestCheckCardHomogeneity_TiedModeIsIndecisive(t *testing.T) {
+	// A 1-active vs 0-active pair has no majority pattern: numerically an
+	// intentionally-idle twin (e.g., a Prime/Aux frontend pair) is
+	// indistinguishable from a failed card, so a tied group must produce
+	// no anomalies rather than guess toward the higher count.
+	path := writeMetadata(t, &model.GPUMetadata{
+		GPUs: []model.GPUInfo{{PCIAddress: "0000:01:00.0", NUMANode: 0}},
+		NICTopology: map[string][]string{
+			"mlx5_0": {"PIX"},
+		},
+	})
+	reader := readerForTest(
+		map[string]int{"mlx5_0": 0},
+		map[string]string{},
+	)
+
+	c, err := LoadFromMetadata(path, reader)
+	require.NoError(t, err)
+
+	cardActive := map[string]int{"0000:a0:00": 1, "0000:a1:00": 0}
+	cardTotal := map[string]int{"0000:a0:00": 1, "0000:a1:00": 1}
+	cardRole := map[string]Role{"0000:a0:00": RoleStorage, "0000:a1:00": RoleStorage}
+
+	anomalies := c.CheckCardHomogeneity(cardActive, cardTotal, cardRole)
+	assert.Empty(t, anomalies, "tied mode means no peer evidence; nothing should be flagged")
+
+	// A decisive majority (two 1-active cards vs one 0-active) still
+	// flags the below-mode card.
+	cardActive["0000:a2:00"] = 1
+	cardTotal["0000:a2:00"] = 1
+	cardRole["0000:a2:00"] = RoleStorage
+
+	anomalies = c.CheckCardHomogeneity(cardActive, cardTotal, cardRole)
+	require.Len(t, anomalies, 1)
+	assert.Contains(t, anomalies, "0000:a1:00")
+}
+
 func TestSummarizeLevels(t *testing.T) {
 	hasCompute, hasStorage, allSYS := summarizeLevels([]string{"PIX", "SYS"})
 	assert.True(t, hasCompute)

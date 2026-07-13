@@ -779,6 +779,64 @@ func TestHandleNotification_OutOfOrderBelowBookmark_DeliversUnseenAndSkipsSeen(t
 	}
 }
 
+func TestHandleNotification_NewerNotifyFetchesExactRowBeforeTimestampCursor(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	ctx := context.Background()
+	tableName := "health_events"
+	changedAt := time.Date(2026, 7, 13, 5, 19, 7, 0, time.UTC)
+	recordID := uuid.New().String()
+
+	watcher := &PostgreSQLChangeStreamWatcher{
+		db:             db,
+		clientName:     "node-drainer",
+		tableName:      tableName,
+		events:         make(chan datastore.EventWithToken, 1),
+		stopCh:         make(chan struct{}),
+		lastEventID:    451,
+		lastTimestamp:  changedAt.Add(time.Second),
+		recentEventIDs: map[int64]time.Time{451: time.Now()},
+		recentEventSeq: []int64{451},
+	}
+
+	notifiedRows := sqlmock.NewRows([]string{"id", "record_id", "operation", "old_values", "new_values", "changed_at"}).
+		AddRow(
+			int64(452),
+			recordID,
+			"UPDATE",
+			sql.NullString{Valid: true, String: `{"document":{"id":"` + recordID + `"}}`},
+			sql.NullString{Valid: true, String: `{"document":{"id":"` + recordID + `","healtheventstatus":{"nodequarantined":"UnQuarantined"}}}`},
+			changedAt,
+		)
+	mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
+		WithArgs(tableName, int64(452)).
+		WillReturnRows(notifiedRows)
+
+	// The normal timestamp cursor would miss the notified row because its changed_at
+	// is behind the current bookmark timestamp.
+	mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
+		WithArgs(tableName, changedAt, int64(452)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "record_id", "operation", "old_values", "new_values", "changed_at"}))
+
+	err = watcher.handleNotification(ctx, &pq.Notification{
+		Extra: `{"id":452,"table":"health_events","operation":"UPDATE"}`,
+	})
+	require.NoError(t, err)
+
+	select {
+	case event := <-watcher.events:
+		assert.Equal(t, []byte("452"), event.ResumeToken)
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected notified changelog row to be delivered")
+	}
+
+	assert.Equal(t, int64(452), watcher.lastEventID)
+	assert.True(t, watcher.hasRecentlySeenEventID(452))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 // TestFilteredEventsDoNotBlockChannel verifies that filtered events
 // don't consume channel buffer space (regression test for potential deadlock).
 func TestFilteredEventsDoNotBlockChannel(t *testing.T) {

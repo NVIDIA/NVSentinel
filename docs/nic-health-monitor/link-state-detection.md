@@ -248,15 +248,15 @@ const (
 
 **Logical State Flow**: `DOWN (1)` → `INIT (2)` → `ARMED (3)` → `ACTIVE (4)`
 
-- **DOWN**: No connectivity (FATAL)
-- **INIT**: Initializing — normal transient state during startup. Every port passes through INIT during boot and Subnet Manager configuration. For **InfiniBand ports**, classified as **Non-Fatal** (`IsFatal=false`) because INIT can persist while waiting for SM configuration. For **Ethernet/RoCE ports**, INIT is a brief sub-second transient during link training and is not reported (logged at DEBUG level only). If an IB port remains stuck in INIT, it won't satisfy the `ACTIVE/LinkUp` condition, causing the card's active port count to fall below its peers, which is caught as a Fatal condition by the card homogeneity check (see Section 4.2).
-- **ARMED**: Waiting for Subnet Manager — same rationale as INIT. For **InfiniBand ports**, classified as **Non-Fatal** (`IsFatal=false`). For **Ethernet/RoCE ports**, this state is rare/transient and is not reported. Prolonged ARMED state on IB is caught by the card homogeneity check.
+- **DOWN**: No connectivity. **Fatal** on a runtime transition from healthy; on the first poll the severity is gated by peer evidence (see Section 3.4 and Section 4.3.2).
+- **INIT**: Initializing — normal transient state during startup. Every port passes through INIT during boot and Subnet Manager configuration. For **InfiniBand ports**, a runtime transition into INIT is classified as **Non-Fatal** (`IsFatal=false`) because INIT can persist while waiting for SM configuration. For **Ethernet/RoCE ports**, INIT is a brief sub-second transient during link training and is not reported (logged at DEBUG level only). A port stuck in INIT does not satisfy the `ACTIVE/LinkUp` condition, so **on the first poll** a card stuck in INIT falls below its role group's decisive mode and is flagged Fatal by the card homogeneity check (see Section 4.3); at runtime the transition remains non-fatal (the homogeneity check does not re-run after the first poll).
+- **ARMED**: Waiting for Subnet Manager — same rationale as INIT. For **InfiniBand ports**, classified as **Non-Fatal** (`IsFatal=false`). For **Ethernet/RoCE ports**, this state is rare/transient and is not reported. As with INIT, a card stuck in ARMED is caught by the homogeneity check on the first poll only.
 - **ACTIVE**: Normal operational state (HEALTHY)
 
 **Physical State Substates**: `Sleep (1)`, `Polling (2)`, `Disabled (3)`, `Training (4)`, `LinkUp (5)`, `LinkErrorRecovery (6)`
 
-- **Polling (2)**: Transient state during link training. Every port passes through Polling when establishing a connection. Classified as **Non-Fatal** (`IsFatal=false`). If a port remains in Polling, it won't count as active in the card homogeneity check, so the card's active port count will fall below the peer mode and be caught as a Fatal anomaly (see Section 4.2).
-- **LinkErrorRecovery (6)**: Active error recovery in progress. Classified as **Non-Fatal** (`IsFatal=false`) because the HCA firmware is actively retrying. If recovery fails and the port remains unhealthy, the card homogeneity check (Section 4.3) escalates to Fatal by detecting fewer active ports than peers.
+- **Polling (2)**: Transient state during link training. Every port passes through Polling when establishing a connection. Classified as **Non-Fatal** (`IsFatal=false`). A port that remains in Polling does not count as active, so **on the first poll** its card falls below the role group's decisive mode and is flagged Fatal by the homogeneity check (Section 4.3); a runtime transition into Polling remains non-fatal. Sustained link instability is additionally covered by the `link_downed` and `link_error_recovery` counter checks (see [Link Counter Detection](./link-counter-detection.md)).
+- **LinkErrorRecovery (6)**: Active error recovery in progress. Classified as **Non-Fatal** (`IsFatal=false`) because the HCA firmware is actively retrying. If recovery fails before the monitor's first poll, the card homogeneity check (Section 4.3) escalates to Fatal by detecting fewer active ports than its role peers; at runtime the transition remains non-fatal and degradation is tracked by the counter checks.
 
 ### 3.3 Diagnostic Commands
 
@@ -293,8 +293,8 @@ cat /sys/class/infiniband/mlx5_0/ports/1/phys_state
    - **First poll after host reboot (boot ID changed — state cleared)**:
      - All persisted state has been discarded (see [Link Counter Detection, Section 6.5](./link-counter-detection.md#65-boot-id-handling))
      - Healthy ports (`ACTIVE/LinkUp`): Emit **healthy event** (`IsHealthy=true`) — this clears any stale FATAL conditions on the platform from the previous boot (the node may have had NICs replaced, cables reseated, etc.)
-     - Unhealthy ports on **anomalous cards**: Emit fatal event as usual
-     - Unhealthy ports on **expected cards**: **Suppressed** (uncabled port, not a failure)
+     - Unhealthy ports on **anomalous cards** (active-port count below the role group's decisive mode, group of ≥2 cards — see Section 4.3): Emit **fatal event** — peer comparison provides positive evidence the port is supposed to be up
+     - Unhealthy ports on **all other cards** — cards at/above their role mode, **singleton role groups**, and groups with a **tied or zero mode**: Log and **suppress** the event. A port that has never been observed healthy carries no evidence it should be up: an uncabled second port or an intentionally-disabled/unprovisioned port (e.g., the unused Aux frontend port on OCI `BM.GPU.H100.8`, left as a singleton after its Prime twin is excluded as the default-route NIC) is numerically indistinguishable from a failure. Without peer evidence the monitor keeps the state local and does not publish an external `HealthEvent`
    - **First poll with no persisted state (fresh node, corrupt/missing state file)**:
      - Same behavior as the reboot case above
    - **First poll with persisted previous state (pod restart, same boot)**:
@@ -477,6 +477,8 @@ Result: 2 Management + 16 Compute + 0 Storage. 18/18 match current algorithm.
 
 Result: 0 Management + 16 Compute + 2 Storage. Matches documented storage NIC layout on OCI H100.
 
+With the default-route check: `mlx5_2` (Prime frontend port, carries `eth0` and the default route) → **Management** (excluded). Result: 1 Management + 16 Compute + 1 Storage — `mlx5_11` (the intentionally-unprovisioned Aux frontend port, `phys_state: Disabled`, no VNIC) becomes a **singleton** Storage group. Singleton groups are exempt from the homogeneity check and their never-seen-healthy DOWN ports are logged and **suppressed** on the first poll (see Section 4.3.2) — this is what prevents a false `REPLACE_VM` and avoids noisy external events for the by-design-idle Aux port on `BM.GPU.H100.8`.
+
 **L40S OCI (2-socket Intel, 4 PCIe GPUs, 6 PF NICs — all Ethernet/RoCE):**
 
 Every NIC shows NODE to some GPUs and SYS to others; no NIC has any PIX or PXB (L40S is PCIe-attached, not SXM — there are no shared PCIe switches). All 6 NICs are Ethernet (RoCE). The link-layer check does not promote any to Compute (no InfiniBand). NODE → Storage for all.
@@ -534,8 +536,10 @@ NICs are grouped by **role** (Compute or Storage, from Section 4.2), then within
 
 1. Group NICs by **physical card** (PCI `bus:device` address — e.g., `0000:47:00` groups `0000:47:00.0` and `0000:47:00.1`)
 2. Count active (`ACTIVE` + `LinkUp`) ports per card
-3. Calculate the **mode** (most common active-port-count) within the role group
-4. Any card with fewer active ports than its role's mode → **FATAL event**
+3. Calculate the **decisive mode** (most common active-port-count) within the role group. A group is **indecisive** — and skipped — when it has fewer than 2 cards (nothing to compare against), when the mode is 0 (every card down — no meaningful pattern), or when the top frequency is **tied** between two distinct counts (no majority; an intentionally-idle card, such as the Aux half of a Prime/Aux frontend pair, is numerically indistinguishable from a failed one)
+4. Any card with fewer active ports than its role's decisive mode → **FATAL event** (card-level), and its unhealthy ports keep their fatal severity on the first poll
+
+**Anomaly membership is the single source of "peer evidence" on the first poll**: a first-poll unhealthy port is fatal **only** when its card is in the anomaly set. Ports on cards at/above the mode, in singleton groups, or in indecisive groups are logged and **suppressed** — without peers there is no evidence the port is supposed to be up, and a false external event is worse than a local diagnostic log (consistent with the fail-safe direction in Section 4.1.2).
 
 #### 4.3.3 Algorithm
 
@@ -546,10 +550,17 @@ For all monitored PF NICs:
   Assign each card's role from its NICs
 
   For each role group (Compute, Storage):
+    If group has < 2 cards: skip (no peers — no evidence either way)
     Calculate mode_active = most common active-port-count in this group
+    If mode_active == 0 or the top frequency is tied: skip (indecisive)
     For each card in this group:
       If card_active_count < mode_active:
+        Mark card ANOMALOUS
         FATAL event: "Card <pci> (<role>) has <n> active ports, expected <mode>"
+
+  For each unhealthy port on the first poll:
+    If its card is ANOMALOUS: emit fatal event (per Section 3 severity rules)
+    Else: suppress external event (no peer evidence the port should be up)
 ```
 
 #### 4.3.4 Field Validation
@@ -573,6 +584,8 @@ If Card A drops to 0 active → 0 < mode 1 → FATAL
 ```
 
 > **Probability analysis**: For the mode to be incorrect (masking real failures), more than half of the cards in a role group would need to be independently failed at startup. With a ~1% per-NIC failure rate, the probability of 4+ out of 8 NICs failing simultaneously is ~0.00003% — effectively impossible.
+>
+> **Singleton and tied groups (field-validated)**: On OCI `BM.GPU.H100.8`, the frontend ConnectX-6 Dx exposes a Prime port (`mlx5_2`/`eth0`, carries the default route and node IP) and an Aux port (`mlx5_11`/`eth1`, no VNIC attached, `phys_state: Disabled` by design — confirmed identical across sibling nodes and against OCI's published shape spec of one frontend NIC + 16 RDMA ports). Default-route exclusion classifies `mlx5_2` as Management, leaving `mlx5_11` a **singleton** Storage group; and even without that exclusion the pair would be a **1-active vs 0-active tie**. Both situations are indecisive: the monitor logs and suppresses the DOWN Aux port instead of publishing a `HealthEvent`. The trade-off is explicit: a genuinely dead lone NIC at first poll is logged but not externally reported — a runtime `ACTIVE → DOWN` transition on the same NIC remains fatal because the monitor then has direct evidence the port was in use.
 
 ### 4.4 Design Decision: Why Speed Degradation Detection Was Removed
 
@@ -644,7 +657,7 @@ The monitor detects Mellanox devices using the following logic:
 
 ## 6. State Change Handling
 
-The NIC Health Monitor reports **health boundary events** — one event per port when the port transitions between healthy and unhealthy states. Intermediate transitions (e.g., DOWN/Disabled → DOWN/Polling) are suppressed. Port `DOWN` state and fatal counter signals are remediation triggers on first occurrence; repeated analyzer rules are reserved for non-fatal degradation/syslog recurrence.
+The NIC Health Monitor reports **health boundary events** — one event per port when the port transitions between healthy and unhealthy states. Intermediate transitions (e.g., DOWN/Disabled → DOWN/Polling) are suppressed. A runtime port `DOWN` transition and fatal counter signals are remediation triggers on first occurrence (first-poll `DOWN` severity is gated by peer evidence — see Section 3.4 and Section 4.3.2); repeated analyzer rules are reserved for non-fatal degradation/syslog recurrence.
 
 ### 6.1 Architecture
 
@@ -691,26 +704,26 @@ On host reboot, all persisted state (including `KnownDevices`) is cleared becaus
 
 **Case 3: Device missing on startup (no persisted state — fresh node, post-reboot, or corrupt state file)**
 
-On the **first poll cycle after startup with no persisted state**, the monitor uses the **card homogeneity check** (see Section 4.2) to detect anomalies without requiring prior state or static configuration. This covers fresh nodes, post-reboot startups (where state was cleared), and corrupt state files. After the first poll, all runtime state changes (cable pulls, link failures, recoveries) are handled by the per-port boundary-crossing transition detection, making repeated homogeneity checks unnecessary:
+On the **first poll cycle after startup with no persisted state**, the monitor uses the **card homogeneity check** (see Section 4.3) to detect anomalies without requiring prior state or static configuration. This covers fresh nodes, post-reboot startups (where state was cleared), and corrupt state files. After the first poll, all runtime state changes (cable pulls, link failures, recoveries) are handled by the per-port boundary-crossing transition detection, making repeated homogeneity checks unnecessary:
 
-1. Group all monitored PF NICs by physical card (PCI `bus:device`)
+1. Group all monitored PF NICs by physical card (PCI `bus:device`), within each role group (Section 4.2)
 2. Count active (`ACTIVE/LinkUp`) ports per card
-3. Calculate the mode (most common active-port-count) across all cards
-4. Any card with fewer active ports than the mode → FATAL event
+3. Calculate the **decisive mode** (most common active-port-count) per role group; groups with fewer than 2 cards, a zero mode, or a tied top frequency are indecisive and skipped (Section 4.3.2)
+4. Any card with fewer active ports than its role group's decisive mode → **FATAL event**; unhealthy ports on all other cards are logged and suppressed (no external `HealthEvent`)
 
 This startup homogeneity check requires no persisted state and works immediately as a fallback. It detects missing ports by comparing against **peer NICs on the same node** rather than against a static expected count.
 
 - Example: 8 single-port NIC cards, 7 are ACTIVE, 1 is DOWN → mode is 1, the DOWN card has 0 active → FATAL
 - Message: "Card 0000:XX:00 has 0 active ports, expected 1 (peer mode)"
 
-> **Why the homogeneity assumption is safe**: Compute fabric NICs are all the same model on GPU cluster nodes (DGX, HGX, or OEM). This approach works for both InfiniBand and Ethernet (RoCE) NICs. Management NICs on separate NUMA nodes are excluded before this check runs (see Section 4.1). For the mode to be incorrect, more than half of the NICs would need to be independently failed at startup — a probability of ~0.00003% for an 8-NIC system.
+> **Why the homogeneity assumption is safe**: Compute fabric NICs are all the same model on GPU cluster nodes (DGX, HGX, or OEM). This approach works for both InfiniBand and Ethernet (RoCE) NICs. Management NICs on separate NUMA nodes are excluded before this check runs (see Section 4.1). For the mode to be incorrect, more than half of the NICs would need to be independently failed at startup — a probability of ~0.00003% for an 8-NIC system. When there is no majority at all (a tie, e.g., one card up and its only peer down), the group is treated as indecisive and nothing is flagged — see the singleton/tied-group discussion in Section 4.3.4.
 
 ### 7.3 Event Classification
 
 | Condition                                                  | Severity  | Recommended Action               |
 |------------------------------------------------------------|-----------|----------------------------------|
 | Device disappeared from `/sys/class/infiniband/` (runtime) | **FATAL** | **RecommendedAction_REPLACE_VM** |
-| Card active ports below peer mode (startup/runtime)        | **FATAL** | **RecommendedAction_REPLACE_VM** |
+| Card active ports below peer mode (startup first poll)     | **FATAL** | **RecommendedAction_REPLACE_VM** |
 
 > **Design Note**: All device disappearances are treated as FATAL because in production environments, unexpected device loss indicates a hardware issue requiring investigation and VM replacement. The monitor does not differentiate between "clean" removals (driver unload) and "dirty" removals (hardware crash).
 
@@ -943,15 +956,15 @@ runtime paths and polling cadence. Both surfaces are documented below.
 **Helm values (YAML)** — covers sysfs mount points and device filtering:
 
 ```yaml
-# Comma-separated regex patterns for NICs to exclude from discovery.
-# Names matching any pattern are dropped before any classification runs.
+# Comma-separated regex patterns for NICs to exclude from normal discovery.
+# Names matching any pattern are dropped unless nicInclusionRegexOverride is set.
 nicExclusionRegex: "^veth.*,^docker.*,^br-.*,^lo$"
 
 # OPTIONAL. When non-empty, bypasses automatic NIC discovery and monitors
 # only IB device names matching these comma-separated regex patterns.
-# The NUMA gate, topology classification, and NicExclusionRegex are all
-# skipped — intended as an emergency override for operators who need to
-# hand-pin a device list. Leave empty for the normal flow.
+# All automatic filters, including vendor, VF, management/NUMA, and
+# NicExclusionRegex, are skipped — intended as an emergency override for
+# operators who need to hand-pin a device list. Leave empty for the normal flow.
 nicInclusionRegexOverride: ""
 
 # sysfs mount points as seen inside the container. The monitor runs with
@@ -1093,19 +1106,21 @@ The key question: **"Will the workload fail because of this?"**
 
 ### Fatal State Conditions (IsFatal = true)
 
-| Condition                 | Recommended Action               | Rationale                                                  |
-|---------------------------|----------------------------------|------------------------------------------------------------|
-| **NIC state = DOWN**      | **RecommendedAction_REPLACE_VM** | No network connectivity, workloads will timeout            |
-| **Device disappeared**    | **RecommendedAction_REPLACE_VM** | Hardware failure, immediate job failure                    |
-| **phys_state = Disabled** | **RecommendedAction_REPLACE_VM** | Port disabled, no communication possible                   |
-| **Uncabled port anomaly** | **RecommendedAction_REPLACE_VM** | Card has fewer active ports than peers (homogeneity check) |
+| Condition                                              | Recommended Action               | Rationale                                                              |
+|--------------------------------------------------------|----------------------------------|------------------------------------------------------------------------|
+| **NIC state = DOWN** (runtime transition from healthy) | **RecommendedAction_REPLACE_VM** | Port was provably in use and lost connectivity; workloads will timeout |
+| **Device disappeared**                                 | **RecommendedAction_REPLACE_VM** | Hardware failure, immediate job failure                                |
+| **phys_state = Disabled** (runtime transition)         | **RecommendedAction_REPLACE_VM** | Port disabled while in use, no communication possible                  |
+| **First-poll DOWN on an anomalous card**               | **RecommendedAction_REPLACE_VM** | Card below its role group's decisive mode — peer evidence of failure   |
+| **Uncabled port anomaly**                              | **RecommendedAction_REPLACE_VM** | Card has fewer active ports than peers (homogeneity check)             |
 
 ### Non-Fatal State Conditions (IsFatal = false)
 
-| Condition                          | Recommended Action         | Rationale                                                                                  |
-|------------------------------------|----------------------------|--------------------------------------------------------------------------------------------|
-| **phys_state = LinkErrorRecovery** | **RecommendedAction_NONE** | HCA firmware actively retrying; escalated to fatal by card homogeneity check if persistent |
-| **phys_state = Polling**           | **RecommendedAction_NONE** | Transient link training; escalated to fatal by card homogeneity check if persistent        |
+| Condition                                            | Recommended Action         | Rationale                                                                                                                                                                                     |
+|------------------------------------------------------|----------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **phys_state = LinkErrorRecovery**                   | **RecommendedAction_NONE** | HCA firmware actively retrying; first-poll card-level homogeneity can still emit a separate fatal anomaly when the card is below its peers                                                    |
+| **phys_state = Polling**                             | **RecommendedAction_NONE** | Transient link training; first-poll card-level homogeneity can still emit a separate fatal anomaly when the card is below its peers                                                           |
+| **First-poll DOWN without peer evidence**            | N/A — no external event    | Never-seen-healthy port on a card in a singleton role group, an indecisive (tied/zero-mode) group, or at/above its role mode — indistinguishable from an uncabled or unprovisioned-by-design port (e.g., OCI H100 Aux frontend port) |
 
 ### Fatal Counters (IsFatal = true)
 
@@ -1128,9 +1143,9 @@ Repeated non-fatal NIC degradation and selected non-fatal NIC driver syslog sign
 
 | Condition                        | Recommended Action               | Path/Source                                                                                                     |
 |----------------------------------|----------------------------------|-----------------------------------------------------------------------------------------------------------------|
-| `state = DOWN`                   | **RecommendedAction_REPLACE_VM** | `/sys/class/infiniband/<dev>/ports/<port>/state`                                                                |
+| `state = DOWN` (runtime, or first-poll on an anomalous card) | **RecommendedAction_REPLACE_VM** | `/sys/class/infiniband/<dev>/ports/<port>/state`; first-poll severity gated by peer evidence (Section 4.3.2) |
 | `phys_state = Disabled`          | **RecommendedAction_REPLACE_VM** | `/sys/class/infiniband/<dev>/ports/<port>/phys_state`                                                           |
-| `phys_state = LinkErrorRecovery` | **RecommendedAction_NONE**       | `/sys/class/infiniband/<dev>/ports/<port>/phys_state` (non-fatal; escalated by homogeneity check if persistent) |
+| `phys_state = LinkErrorRecovery` | **RecommendedAction_NONE**       | `/sys/class/infiniband/<dev>/ports/<port>/phys_state` (non-fatal; first-poll homogeneity may emit a separate card-level fatal anomaly) |
 | Uncabled port anomaly            | **RecommendedAction_REPLACE_VM** | Card homogeneity check (PCI card grouping + mode)                                                               |
 | Device disappeared               | **RecommendedAction_REPLACE_VM** | Device enumeration in `/sys/class/infiniband/`                                                                  |
 

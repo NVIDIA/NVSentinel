@@ -68,7 +68,9 @@ func (c *EthernetDegradationCheck) Name() string {
 
 // Run executes a single Ethernet/RoCE counter degradation poll.
 func (c *EthernetDegradationCheck) Run() ([]*pb.HealthEvent, error) {
-	result, err := discovery.DiscoverDevices(c.reader, c.cfg.NicExclusionRegex)
+	result, err := discovery.DiscoverDevicesWithOverride(
+		c.reader, c.cfg.NicExclusionRegex, c.cfg.NicInclusionRegexOverride,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover devices: %w", err)
 	}
@@ -78,7 +80,7 @@ func (c *EthernetDegradationCheck) Run() ([]*pb.HealthEvent, error) {
 	for i := range result.Devices {
 		dev := &result.Devices[i]
 
-		if !discovery.IsSupportedVendor(dev) {
+		if !dev.IncludedByOverride && !discovery.IsSupportedVendor(dev) {
 			continue
 		}
 

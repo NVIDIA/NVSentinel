@@ -34,14 +34,22 @@ import (
 
 const (
 	quarantineAnnotationIndexName = "quarantineAnnotation"
+
+	// GPUNodeLabel is the default label key used to identify GPU nodes.
+	GPUNodeLabel = "nvidia.com/gpu.present"
+
+	// GPUNodeLabelValue is the default label value that marks a node as GPU-capable.
+	GPUNodeLabelValue = "true"
 )
 
-// NodeInformer watches specific nodes and provides counts.
+// NodeInformer watches all nodes and provides counts.
 type NodeInformer struct {
-	clientset      kubernetes.Interface
-	informer       cache.SharedIndexInformer
-	lister         corelisters.NodeLister
-	informerSynced cache.InformerSynced
+	clientset         kubernetes.Interface
+	informer          cache.SharedIndexInformer
+	lister            corelisters.NodeLister
+	informerSynced    cache.InformerSynced
+	gpuNodeLabelKey   string
+	gpuNodeLabelValue string
 
 	// onQuarantinedNodeDeleted is called when a quarantined node with annotations is deleted
 	onQuarantinedNodeDeleted func(nodeName string)
@@ -64,10 +72,16 @@ func (ni *NodeInformer) GetInformer() cache.SharedIndexInformer {
 }
 
 // NewNodeInformer creates a new NodeInformer that watches all nodes.
+// gpuNodeLabelKey and gpuNodeLabelValue identify which nodes are GPU nodes for the
+// purpose of the circuit breaker denominator in GetNodeCounts(); they do not filter
+// the informer itself, so FQ can still look up and recover any node regardless of
+// whether its GPU label is currently present.
 func NewNodeInformer(clientset kubernetes.Interface,
-	resyncPeriod time.Duration) (*NodeInformer, error) {
+	resyncPeriod time.Duration, gpuNodeLabelKey, gpuNodeLabelValue string) (*NodeInformer, error) {
 	ni := &NodeInformer{
-		clientset: clientset,
+		clientset:         clientset,
+		gpuNodeLabelKey:   gpuNodeLabelKey,
+		gpuNodeLabelValue: gpuNodeLabelValue,
 	}
 
 	informerFactory := informers.NewSharedInformerFactory(clientset, resyncPeriod)
@@ -93,7 +107,8 @@ func NewNodeInformer(clientset kubernetes.Interface,
 		return nil, fmt.Errorf("failed to add event handler: %w", err)
 	}
 
-	slog.Info("NodeInformer created, watching all nodes")
+	slog.Info("NodeInformer created, watching all nodes",
+		"gpuNodeLabelKey", gpuNodeLabelKey, "gpuNodeLabelValue", gpuNodeLabelValue)
 
 	return ni, nil
 }
@@ -148,14 +163,24 @@ func quarantineAnnotationIndexFunc(obj interface{}) ([]string, error) {
 	return []string{}, nil
 }
 
-// GetNodeCounts returns the current counts of total nodes and quarantined nodes.
+// GetNodeCounts returns the count of GPU nodes and the set of quarantined nodes.
+// Only nodes where gpuNodeLabelKey=gpuNodeLabelValue are counted in the total so that
+// the circuit breaker denominator reflects the GPU population, not every node in the
+// cluster. The informer itself watches all nodes so that FQ can still look up and
+// recover a quarantined node even if its GPU label is temporarily absent.
 func (ni *NodeInformer) GetNodeCounts() (totalNodes int, quarantinedNodesMap map[string]bool, err error) {
 	if !ni.HasSynced() {
 		return 0, nil, fmt.Errorf("node informer cache not synced yet")
 	}
 
-	allObjs := ni.informer.GetIndexer().List()
-	total := len(allObjs)
+	gpuSelector := labels.Set{ni.gpuNodeLabelKey: ni.gpuNodeLabelValue}.AsSelector()
+
+	gpuNodes, err := ni.lister.List(gpuSelector)
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to list GPU nodes: %w", err)
+	}
+
+	total := len(gpuNodes)
 
 	quarantinedObjs, err := ni.informer.GetIndexer().ByIndex(quarantineAnnotationIndexName, "quarantined")
 	if err != nil {

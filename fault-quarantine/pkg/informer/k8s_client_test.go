@@ -77,7 +77,7 @@ func setupTestClient(t *testing.T) *FaultQuarantineClient {
 		DryRunMode: false,
 	}
 
-	nodeInformer, err := NewNodeInformer(testClient, 0)
+	nodeInformer, err := NewNodeInformer(testClient, 0, GPUNodeLabel, GPUNodeLabelValue)
 	if err != nil {
 		t.Fatalf("Failed to create NodeInformer: %v", err)
 	}
@@ -111,6 +111,7 @@ func createTestNode(ctx context.Context, t *testing.T, name string, annotations 
 	if labels == nil {
 		labels = make(map[string]string)
 	}
+	labels[GPUNodeLabel] = "true"
 
 	node := &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{

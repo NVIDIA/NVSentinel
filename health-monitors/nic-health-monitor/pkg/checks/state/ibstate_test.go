@@ -54,9 +54,9 @@ type stubDevice struct {
 }
 
 type stubPort struct {
-	state      string
-	physState  string
-	linkLayer  string
+	state     string
+	physState string
+	linkLayer string
 }
 
 func newStubNode() *stubNode {
@@ -99,6 +99,9 @@ func (n *stubNode) wireDirectoryListing(m *sysfs.MockReader) {
 
 		case strings.HasSuffix(path, "/device/net"):
 			return n.listNetDevFor(path)
+
+		case strings.HasSuffix(path, "/device/infiniband"):
+			return n.listIBDeviceForNetDev(path)
 		}
 
 		return nil, nil
@@ -132,6 +135,19 @@ func (n *stubNode) listNetDevFor(path string) ([]string, error) {
 	}
 
 	return []string{d.netDev}, nil
+}
+
+func (n *stubNode) listIBDeviceForNetDev(path string) ([]string, error) {
+	parts := strings.Split(path, "/")
+	iface := parts[len(parts)-3]
+
+	for dev, d := range n.ib {
+		if d != nil && d.netDev == iface {
+			return []string{dev}, nil
+		}
+	}
+
+	return nil, nil
 }
 
 func (n *stubNode) wirePortReads(m *sysfs.MockReader) {
@@ -227,7 +243,13 @@ func freshStateManager(t *testing.T) *statefile.Manager {
 
 // Classifier, using the given reader's PCI NUMA reads to populate
 // gpuNUMASet.
-func buildClassifier(t *testing.T, reader sysfs.Reader, gpuPCIs []string, topo map[string][]string) *topology.Classifier {
+func buildClassifier(
+	t *testing.T,
+	reader sysfs.Reader,
+	gpuPCIs []string,
+	topo map[string][]string,
+	procNetRoutePath ...string,
+) *topology.Classifier {
 	t.Helper()
 
 	gpus := make([]model.GPUInfo, 0, len(gpuPCIs))
@@ -246,10 +268,26 @@ func buildClassifier(t *testing.T, reader sysfs.Reader, gpuPCIs []string, topo m
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, data, 0o644))
 
-	c, err := topology.LoadFromMetadata(path, reader)
+	c, err := topology.LoadFromMetadata(path, reader, procNetRoutePath...)
 	require.NoError(t, err)
 
 	return c
+}
+
+func writeProcNetRoute(t *testing.T, defaultIface string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "route")
+
+	content := "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n"
+	if defaultIface != "" {
+		content += defaultIface + "\t00000000\t01000A0A\t0003\t0\t0\t100\t00000000\t0\t0\t0\n"
+	}
+
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	return path
 }
 
 func TestIBState_NoEventOnFirstHealthyPoll(t *testing.T) {
@@ -275,7 +313,12 @@ func TestIBState_NoEventOnFirstHealthyPoll(t *testing.T) {
 	assert.Empty(t, events, "first poll on a healthy port should not emit events")
 }
 
-func TestIBState_FirstPollDownEmitsFatal(t *testing.T) {
+func TestIBState_FirstPollDownSingletonIsSuppressed(t *testing.T) {
+	// A single card with a never-seen-healthy DOWN port has no peers to
+	// compare against, so there is no evidence the port is supposed to be
+	// up (it may be intentionally disabled/unprovisioned, like the unused
+	// Aux frontend port on OCI BM.GPU.H100.8). The state is logged locally
+	// but no external HealthEvent is emitted.
 	node := newStubNode().addIB("mlx5_0", &stubDevice{
 		pciAddress: "0000:47:00.0",
 		numaNode:   0,
@@ -295,14 +338,61 @@ func TestIBState_FirstPollDownEmitsFatal(t *testing.T) {
 
 	events, err := check.Run()
 	require.NoError(t, err)
-	require.Len(t, events, 1)
+	assert.Empty(t, events, "singleton card has no peer evidence; first-poll DOWN must be suppressed")
+}
 
-	evt := events[0]
-	assert.True(t, evt.IsFatal)
-	assert.False(t, evt.IsHealthy)
-	assert.Equal(t, pb.RecommendedAction_REPLACE_VM, evt.RecommendedAction)
-	assert.Contains(t, evt.Message, "DOWN")
-	assert.Contains(t, evt.Message, "Disabled")
+func TestIBState_FirstPollDownBelowModeStaysFatal(t *testing.T) {
+	// Three single-port compute cards, one DOWN at first poll. The DOWN
+	// card is below the decisive mode (1 active) of its role group —
+	// positive peer evidence of failure — so both the per-port event and
+	// the card homogeneity event must stay fatal.
+	node := newStubNode().
+		addIB("mlx5_0", &stubDevice{
+			pciAddress: "0000:47:00.0", numaNode: 0,
+			ports: map[int]stubPort{1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "InfiniBand"}},
+		}).
+		addIB("mlx5_1", &stubDevice{
+			pciAddress: "0000:48:00.0", numaNode: 0,
+			ports: map[int]stubPort{1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "InfiniBand"}},
+		}).
+		addIB("mlx5_2", &stubDevice{
+			pciAddress: "0000:49:00.0", numaNode: 0,
+			ports: map[int]stubPort{1: {state: "DOWN", physState: "Disabled", linkLayer: "InfiniBand"}},
+		})
+
+	reader := node.reader()
+	classifier := buildClassifier(t, reader,
+		[]string{"0000:0f:00.0"},
+		map[string][]string{"mlx5_0": {"PIX"}, "mlx5_1": {"PIX"}, "mlx5_2": {"PIX"}},
+	)
+
+	check := NewInfiniBandStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, freshStateManager(t), false)
+
+	events, err := check.Run()
+	require.NoError(t, err)
+
+	var portFatal, cardFatal bool
+
+	for _, e := range events {
+		if !e.IsFatal {
+			continue
+		}
+
+		if strings.Contains(e.Message, "active ports, expected") {
+			cardFatal = true
+			continue
+		}
+
+		for _, ent := range e.EntitiesImpacted {
+			if ent.EntityType == checks.EntityTypeNIC && ent.EntityValue == "mlx5_2" {
+				portFatal = true
+			}
+		}
+	}
+
+	assert.True(t, portFatal, "below-mode card's DOWN port must stay fatal on first poll")
+	assert.True(t, cardFatal, "below-mode card must also raise the homogeneity fatal")
 }
 
 func TestIBState_HealthyToUnhealthyBoundaryEmitsEvent(t *testing.T) {
@@ -402,6 +492,48 @@ func TestIBState_ManagementNICIsExcluded(t *testing.T) {
 	assert.Empty(t, events, "Management NIC DOWN should not produce events")
 }
 
+func TestIBState_InclusionOverrideBypassesAllDeviceFilters(t *testing.T) {
+	node := newStubNode().addIB("mlx5_forced", &stubDevice{
+		vendor:     "0x9999",
+		pciAddress: "0000:02:00.1",
+		numaNode:   2,
+		isVF:       true,
+		ports: map[int]stubPort{
+			1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "InfiniBand"},
+		},
+	})
+
+	reader := node.reader()
+	classifier := buildClassifier(t, reader,
+		[]string{"0000:0f:00.0"},
+		map[string][]string{"mlx5_forced": {"SYS"}},
+	)
+	assert.True(t, classifier.IsManagementNIC("mlx5_forced"))
+
+	cfg := &config.Config{
+		NicExclusionRegex:         "^mlx5_forced$",
+		NicInclusionRegexOverride: "^mlx5_forced$",
+	}
+	check := NewInfiniBandStateCheck("node1", reader, cfg,
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, freshStateManager(t), false)
+
+	// Establish a healthy baseline, then verify that the explicitly included
+	// device remains monitored when it crosses into an unhealthy state.
+	events, err := check.Run()
+	require.NoError(t, err)
+	assert.Empty(t, events)
+
+	node.ib["mlx5_forced"].ports[1] = stubPort{
+		state: "DOWN", physState: "Disabled", linkLayer: "InfiniBand",
+	}
+
+	events, err = check.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	assert.True(t, events[0].IsFatal)
+	assert.Contains(t, events[0].Message, "mlx5_forced")
+}
+
 func TestIBState_DeviceDisappearanceEmitsFatal(t *testing.T) {
 	node := newStubNode().
 		addIB("mlx5_0", &stubDevice{
@@ -475,11 +607,5 @@ func TestIBState_ExpectedDownCardSuppressedOnFirstPoll(t *testing.T) {
 
 	events, err := check.Run()
 	require.NoError(t, err)
-	require.NotEmpty(t, events, "expected-down suppression should downgrade, not drop, first-poll events")
-
-	for _, e := range events {
-		assert.False(t, e.IsFatal, "expected-down card should not fire fatal on first poll")
-		assert.Equal(t, pb.RecommendedAction_NONE, e.RecommendedAction,
-			"suppressed event should clear RecommendedAction")
-	}
+	assert.Empty(t, events, "expected-down first-poll ports should be suppressed, not published")
 }

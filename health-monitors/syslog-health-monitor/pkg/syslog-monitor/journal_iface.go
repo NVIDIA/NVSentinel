@@ -18,6 +18,9 @@ type Journal interface {
 	// AddMatch adds a match filter for journal entries
 	AddMatch(match string) error
 
+	// AddDisjunction inserts an OR between the matches added before and after it.
+	AddDisjunction() error
+
 	// Close closes the journal
 	Close() error
 

@@ -17,6 +17,7 @@ package state
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/checks"
@@ -56,6 +57,15 @@ type baseStateCheck struct {
 	previousDevices map[string]bool
 	previousPorts   map[string]portSnapshot
 
+	// anomalousLatch is the set of cards currently reported anomalous
+	// via a FATAL card-homogeneity event. Latched cards stay silent
+	// until they recover (present + decisive group + at/above mode),
+	// which emits the matching card-healthy event. Persisted to the
+	// state file — where it survives pod restarts, reboots, and
+	// discovery-scope changes — so nothing can orphan a card entity
+	// held by fault-quarantine.
+	anomalousLatch map[string]bool
+
 	strategy linkLayerStrategy
 }
 
@@ -66,6 +76,16 @@ type baseStateCheck struct {
 // file reports a boot ID change or when the file is empty — in those
 // cases the check falls back to the first-poll code paths.
 func (b *baseStateCheck) seedFromPersistedState() {
+	// The card-anomaly latch is seeded unconditionally: it survives
+	// boot-ID and scope resets in the state file (an outstanding card
+	// FATAL downstream doesn't stop being outstanding because the node
+	// rebooted or the discovery scope changed), so the recovery event
+	// can be emitted whenever positive evidence finally arrives.
+	b.anomalousLatch = make(map[string]bool)
+	for card := range b.state.AnomalousCardsFor(b.strategy.linkLayer()) {
+		b.anomalousLatch[card] = true
+	}
+
 	if b.emitHealthyBaselines {
 		return
 	}
@@ -97,10 +117,24 @@ func (b *baseStateCheck) seedFromPersistedState() {
 	)
 }
 
+// overrideActive reports whether the explicit inclusion override is
+// configured. While active, discovery returns only operator-pinned
+// devices: peer-group statistics are meaningless (the "group" is just
+// the pinned set), so the card-homogeneity check is skipped and pinned
+// devices are reported unconditionally — explicit operator intent is
+// the evidence that the device is supposed to be up.
+func (b *baseStateCheck) overrideActive() bool {
+	return strings.TrimSpace(b.cfg.NicInclusionRegexOverride) != ""
+}
+
 // shouldMonitor is the device-level filter applied before any port work.
-// VFs are already excluded at the discovery layer; this handles vendor
-// support and management NIC classification.
+// Normal discovery excludes VFs; this handles vendor support and management
+// NIC classification. An explicit inclusion match bypasses every device filter.
 func (b *baseStateCheck) shouldMonitor(dev discovery.IBDevice) bool {
+	if dev.IncludedByOverride {
+		return true
+	}
+
 	if !discovery.IsSupportedVendor(&dev) {
 		slog.Debug("Skipping unsupported vendor", "device", dev.Name, "vendor", dev.Vendor)
 		return false
@@ -125,18 +159,46 @@ func (b *baseStateCheck) portEvent(
 	)
 }
 
-// runCardHomogeneityCheck runs the per-role active-ports mode
-// comparison and emits FATAL events for cards whose active-port count
-// falls below their role's mode. Only called on the first poll.
-func (b *baseStateCheck) runCardHomogeneityCheck(
-	cardActive, cardTotal map[string]int,
+// cardHomogeneityEvents maintains the card-anomaly latch and returns the
+// card-level events for this poll. Called every poll (not just the
+// first) so card events have a full lifecycle — previously the FATAL
+// card event had no recovery counterpart, permanently wedging any
+// quarantine held by the card entity once the underlying ports came
+// back.
+//
+//   - A card that just became anomalous (below its role group's decisive
+//     mode) latches and emits one FATAL REPLACE_VM.
+//   - A latched card that is positively evaluated again (present, group
+//     decisive) and no longer below the mode unlatches and emits one
+//     card-healthy recovery.
+//   - Absent cards and indecisive groups (ties, all-down, <2 peers)
+//     hold the latch: no evidence, no verdict. The latch persists
+//     across reboots and scope changes, so held entries recover
+//     whenever positive evidence finally arrives.
+//   - On baseline runs (host reboot or discovery-scope change) every
+//     healthy evaluated card additionally emits a card-healthy
+//     baseline, clearing stale card entities whose latch was lost
+//     (e.g., a corrupt state file).
+//
+// The anomalies/evaluated maps are computed once per poll by the caller
+// (via classifier.EvaluateCardHomogeneity) and shared with the per-port
+// first-poll severity decision so both views of "peer evidence" agree.
+func (b *baseStateCheck) cardHomogeneityEvents(
+	cardActive map[string]int,
 	cardRole map[string]topology.Role,
+	anomalies map[string]topology.CardAnomaly,
+	evaluated map[string]int,
+	baselineRun bool,
 ) []*pb.HealthEvent {
-	anomalies := b.classifier.CheckCardHomogeneity(cardActive, cardTotal, cardRole)
-
 	var events []*pb.HealthEvent
 
 	for card, a := range anomalies {
+		if b.anomalousLatch[card] {
+			continue // already reported; stay silent until recovery
+		}
+
+		b.anomalousLatch[card] = true
+
 		slog.Warn("Card homogeneity anomaly detected",
 			"card", card, "role", a.Role.String(),
 			"active_ports", a.ActiveSeen, "expected_mode", a.ExpectedModeCount,
@@ -151,7 +213,57 @@ func (b *baseStateCheck) runCardHomogeneityCheck(
 		))
 	}
 
+	healthyEmitted := make(map[string]bool)
+
+	for card := range b.anomalousLatch {
+		mode, judged := evaluated[card]
+		if !judged {
+			continue // absent or indecisive group: hold the latch
+		}
+
+		if _, still := anomalies[card]; still {
+			continue
+		}
+
+		delete(b.anomalousLatch, card)
+
+		healthyEmitted[card] = true
+
+		events = append(events, b.cardHealthyEvent(card, cardRole[card], cardActive[card], mode))
+	}
+
+	if baselineRun {
+		for card, mode := range evaluated {
+			if _, bad := anomalies[card]; bad || healthyEmitted[card] {
+				continue
+			}
+
+			events = append(events, b.cardHealthyEvent(card, cardRole[card], cardActive[card], mode))
+		}
+	}
+
 	return events
+}
+
+// cardHealthyEvent builds the IsHealthy card event used for both latch
+// recoveries and baseline runs. Like port recoveries, downstream
+// consumers treat any healthy event as "clear the stale FATAL on this
+// entity".
+func (b *baseStateCheck) cardHealthyEvent(
+	card string, role topology.Role, active, mode int,
+) *pb.HealthEvent {
+	slog.Info("Card homogeneity healthy",
+		"card", card, "role", role.String(),
+		"active_ports", active, "expected_mode", mode,
+	)
+
+	return checks.NewHealthEvent(
+		b.nodeName, b.strategy.checkName(),
+		fmt.Sprintf("Card %s (%s) healthy: %d active ports meet peer mode %d",
+			card, role.String(), active, mode),
+		checks.DeviceEntities(card),
+		false, true, pb.RecommendedAction_NONE, b.processingStrategy,
+	)
 }
 
 // detectDeviceDisappearance compares the current device set against the
@@ -250,7 +362,15 @@ func (b *baseStateCheck) persistState(
 		devices = append(devices, d)
 	}
 
-	if !b.state.UpdatePortStates(snapshots, devices, linkLayer) {
+	latch := make(map[string]statefile.AnomalousCardFlag, len(b.anomalousLatch))
+	for card := range b.anomalousLatch {
+		latch[card] = statefile.AnomalousCardFlag{LinkLayer: linkLayer}
+	}
+
+	portsChanged := b.state.UpdatePortStates(snapshots, devices, linkLayer)
+	latchChanged := b.state.UpdateAnomalousCards(latch, linkLayer)
+
+	if !portsChanged && !latchChanged {
 		return
 	}
 

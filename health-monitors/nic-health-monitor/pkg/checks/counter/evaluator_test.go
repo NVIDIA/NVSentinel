@@ -193,6 +193,40 @@ func TestEvaluateCounters_DeltaBreachAndLatch(t *testing.T) {
 	assert.Empty(t, events, "latched breach must suppress further events even on more increments")
 }
 
+func TestEvaluateCounters_ScopeChangeRestart_LatchSurvives(t *testing.T) {
+	// After a discovery-scope change the pod restarts with counter
+	// snapshots and breach latches preserved and bootIDChanged=false
+	// (statefile reports the change via ScopeChanged instead — see
+	// Manager.ScopeChanged). A real latched breach must neither emit a
+	// synthetic "healthy after reboot" recovery nor lose its latch.
+	value := uint64(5) // unchanged since the breach fired
+	reader := newReaderFor(&value)
+
+	seededSnapshots := map[string]statefile.CounterSnapshot{
+		"mlx5_0:1:link_downed": {Value: 5, Timestamp: time.Now()},
+	}
+	seededFlags := map[string]statefile.CounterBreachFlag{
+		"mlx5_0:1:link_downed": {Breached: true, CheckName: checks.InfiniBandStateCheckName, IsFatal: true},
+	}
+
+	ev := NewEvaluator(testNode, reader, pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		seededSnapshots, seededFlags, false)
+
+	cfg := []config.CounterConfig{deltaCounter(0)}
+
+	// First poll after the scope-change restart: silence — no synthetic
+	// recovery, no duplicate breach.
+	events := ev.EvaluateCounters(ibDevice(), ibPort(), cfg, checks.InfiniBandDegradationCheckName)
+	assert.Empty(t, events, "scope-change restart must not emit synthetic events for a latched breach")
+
+	// The latch is still armed: only a real admin counter reset produces
+	// the recovery event.
+	value = 0
+	events = ev.EvaluateCounters(ibDevice(), ibPort(), cfg, checks.InfiniBandDegradationCheckName)
+	require.Len(t, events, 1)
+	assert.True(t, events[0].IsHealthy, "latch preserved across scope change must still recover on real reset")
+}
+
 func TestEvaluateCounters_ResetEmitsRecovery(t *testing.T) {
 	value := uint64(0)
 	reader := newReaderFor(&value)

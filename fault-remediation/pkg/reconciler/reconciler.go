@@ -70,6 +70,8 @@ type ReconcilerConfig struct {
 	EnableLogCollector bool
 	UpdateMaxRetries   int
 	UpdateRetryDelay   time.Duration
+	StartFresh         bool
+	ColdStartAfterTime time.Time
 }
 
 // FaultRemediationReconciler reconciles health events from a datastore change stream
@@ -1515,20 +1517,31 @@ func (r *FaultRemediationReconciler) SetupWithManager(ctx context.Context, mgr c
 // via the cold start channel so they get full requeue/retry semantics — the same
 // processing path as live change stream events.
 func (r *FaultRemediationReconciler) HandleColdStart(ctx context.Context) {
+	if r.Config.StartFresh {
+		slog.Info("Skipping cold start because resume-control CREATE was consumed")
+		return
+	}
+
 	slog.Info("Handling cold start: checking for unremediated events")
 
-	q := query.New().Build(
-		query.Or(
-			// Quarantined + drained but not yet remediated
-			unresolvedRemediationReadyEventsCondition(""),
-			// Cancelled/unquarantined events that haven't been marked complete
-			query.And(
-				query.In("healtheventstatus.nodequarantined",
-					[]interface{}{string(model.UnQuarantined), string(model.Cancelled)}),
-				query.Eq("healtheventstatus.faultremediated", nil),
-			),
+	condition := query.Or(
+		// Quarantined + drained but not yet remediated
+		unresolvedRemediationReadyEventsCondition(""),
+		// Cancelled/unquarantined events that haven't been marked complete
+		query.And(
+			query.In("healtheventstatus.nodequarantined",
+				[]interface{}{string(model.UnQuarantined), string(model.Cancelled)}),
+			query.Eq("healtheventstatus.faultremediated", nil),
 		),
 	)
+	if !r.Config.ColdStartAfterTime.IsZero() {
+		condition = query.And(
+			query.Gt("createdAt", r.Config.ColdStartAfterTime),
+			condition,
+		)
+	}
+
+	q := query.New().Build(condition)
 
 	enqueued := 0
 

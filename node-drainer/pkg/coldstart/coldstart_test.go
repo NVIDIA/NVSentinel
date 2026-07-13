@@ -16,6 +16,7 @@ package coldstart
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 
@@ -29,4 +30,12 @@ func TestIsActiveQuarantineStatus(t *testing.T) {
 	assert.False(t, isActiveQuarantineStatus(string(model.Cancelled)))
 	assert.False(t, isActiveQuarantineStatus(string(model.StatusNotStarted)))
 	assert.False(t, isActiveQuarantineStatus(""))
+}
+
+func TestColdStartQuery_WithCutoff(t *testing.T) {
+	cutoff := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+
+	filter := coldStartQuery(cutoff).ToMongo()
+	assert.Equal(t, map[string]interface{}{"$gt": cutoff}, filter["createdAt"])
+	assert.Contains(t, filter, "$or")
 }

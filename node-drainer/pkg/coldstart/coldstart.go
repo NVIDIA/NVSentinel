@@ -38,9 +38,10 @@ const batchSize = 1000
 // Dependencies bundles the collaborators cold start needs. It is intentionally
 // decoupled from initializer.Components so the package stays independently testable.
 type Dependencies struct {
-	QueueManager     queue.EventQueueManager
-	DatabaseClient   client.DatabaseClient
-	HealthEventStore datastore.HealthEventStore
+	QueueManager       queue.EventQueueManager
+	DatabaseClient     client.DatabaseClient
+	HealthEventStore   datastore.HealthEventStore
+	ColdStartAfterTime time.Time
 }
 
 // Handle re-processes events that were in-progress or quarantined during a restart.
@@ -59,7 +60,7 @@ type Dependencies struct {
 func Handle(ctx context.Context, deps Dependencies) error {
 	slog.InfoContext(ctx, "Querying for events requiring processing")
 
-	q := coldStartQuery()
+	q := coldStartQuery(deps.ColdStartAfterTime)
 
 	dbAdapter := &dataStoreAdapter{DatabaseClient: deps.DatabaseClient}
 	resolver := newQuarantineSessionResolver(deps.HealthEventStore)
@@ -88,25 +89,32 @@ func Handle(ctx context.Context, deps Dependencies) error {
 // never processed. Note that this intentionally matches records regardless of whether
 // their quarantine session has since ended; that filtering happens per-event so we can
 // also tombstone stale records (see Handle).
-func coldStartQuery() *query.Builder {
-	return query.New().Build(
-		query.Or(
-			// Events that were in-progress
-			query.Eq("healtheventstatus.userpodsevictionstatus.status", string(model.StatusInProgress)),
+func coldStartQuery(coldStartAfter time.Time) *query.Builder {
+	condition := query.Or(
+		// Events that were in-progress
+		query.Eq("healtheventstatus.userpodsevictionstatus.status", string(model.StatusInProgress)),
 
-			// Quarantined events that haven't been processed yet
-			query.And(
-				query.Eq("healtheventstatus.nodequarantined", string(model.Quarantined)),
-				query.In("healtheventstatus.userpodsevictionstatus.status", []interface{}{"", string(model.StatusNotStarted)}),
-			),
+		// Quarantined events that haven't been processed yet
+		query.And(
+			query.Eq("healtheventstatus.nodequarantined", string(model.Quarantined)),
+			query.In("healtheventstatus.userpodsevictionstatus.status", []interface{}{"", string(model.StatusNotStarted)}),
+		),
 
-			// AlreadyQuarantined events that haven't been processed yet
-			query.And(
-				query.Eq("healtheventstatus.nodequarantined", string(model.AlreadyQuarantined)),
-				query.In("healtheventstatus.userpodsevictionstatus.status", []interface{}{"", string(model.StatusNotStarted)}),
-			),
+		// AlreadyQuarantined events that haven't been processed yet
+		query.And(
+			query.Eq("healtheventstatus.nodequarantined", string(model.AlreadyQuarantined)),
+			query.In("healtheventstatus.userpodsevictionstatus.status", []interface{}{"", string(model.StatusNotStarted)}),
 		),
 	)
+
+	if !coldStartAfter.IsZero() {
+		condition = query.And(
+			query.Gt("createdAt", coldStartAfter),
+			condition,
+		)
+	}
+
+	return query.New().Build(condition)
 }
 
 // processColdStartEvent evaluates a single cold-start candidate: it either tombstones a

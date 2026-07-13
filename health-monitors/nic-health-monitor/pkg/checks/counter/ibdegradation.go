@@ -72,7 +72,9 @@ func (c *InfiniBandDegradationCheck) Name() string {
 // evaluation it merges the evaluator's snapshots and breach flags back
 // into the shared state file and persists if either changed.
 func (c *InfiniBandDegradationCheck) Run() ([]*pb.HealthEvent, error) {
-	result, err := discovery.DiscoverDevices(c.reader, c.cfg.NicExclusionRegex)
+	result, err := discovery.DiscoverDevicesWithOverride(
+		c.reader, c.cfg.NicExclusionRegex, c.cfg.NicInclusionRegexOverride,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover devices: %w", err)
 	}
@@ -82,7 +84,7 @@ func (c *InfiniBandDegradationCheck) Run() ([]*pb.HealthEvent, error) {
 	for i := range result.Devices {
 		dev := &result.Devices[i]
 
-		if !discovery.IsSupportedVendor(dev) {
+		if !dev.IncludedByOverride && !discovery.IsSupportedVendor(dev) {
 			continue
 		}
 

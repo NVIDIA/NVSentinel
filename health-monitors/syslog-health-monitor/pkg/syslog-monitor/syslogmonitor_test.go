@@ -59,6 +59,7 @@ type MockJournal struct {
 	Path            string
 	CurrentPosition int
 	MatchFilters    []string
+	Disjunctions    int
 	Closed          bool
 	TestBootID      string
 	TestCursor      string
@@ -68,6 +69,10 @@ type MockJournal struct {
 	FailGetData     bool
 	FailSeekCursor  bool
 	FailSeekTail    bool
+	// InclusiveSeekCursor simulates systemd behavior with journal matches active:
+	// the first Next() after SeekCursor returns the bookmarked entry itself.
+	InclusiveSeekCursor  bool
+	replayBookmarkOnNext bool
 }
 
 // AddMatch adds a match filter for journal entries
@@ -77,6 +82,17 @@ func (j *MockJournal) AddMatch(match string) error {
 	}
 
 	j.MatchFilters = append(j.MatchFilters, match)
+
+	return nil
+}
+
+// AddDisjunction inserts an OR between journal match groups.
+func (j *MockJournal) AddDisjunction() error {
+	if j.Closed {
+		return errors.New(JOURNAL_CLOSED_ERROR)
+	}
+
+	j.Disjunctions++
 
 	return nil
 }
@@ -165,6 +181,15 @@ func (j *MockJournal) Next() (uint64, error) {
 		return 0, fmt.Errorf("forced Next failure")
 	}
 
+	if j.replayBookmarkOnNext {
+		j.replayBookmarkOnNext = false
+		if j.CurrentPosition >= 0 && j.CurrentPosition < len(j.Entries) {
+			return 1, nil
+		}
+
+		return 0, io.EOF
+	}
+
 	j.CurrentPosition++
 	if j.CurrentPosition >= len(j.Entries) {
 		return 0, io.EOF
@@ -201,6 +226,10 @@ func (j *MockJournal) SeekCursor(cursor string) error {
 	for i, entry := range j.Entries {
 		if entry.Cursor == cursor {
 			j.CurrentPosition = i
+			if j.InclusiveSeekCursor {
+				j.replayBookmarkOnNext = true
+			}
+
 			return nil
 		}
 	}
@@ -509,7 +538,7 @@ func TestJournalStateManagement(t *testing.T) {
 		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 		"", "",
 		nil,
-    "tcp://test",
+		"tcp://test",
 	)
 	assert.NoError(t, err)
 
@@ -544,7 +573,7 @@ func TestJournalStateManagement(t *testing.T) {
 		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 		"", "",
 		nil,
-    "tcp://test",
+		"tcp://test",
 	)
 	assert.NoError(t, err)
 
@@ -802,4 +831,108 @@ func TestGPUFallenOffHandlerInitialization(t *testing.T) {
 	)
 	assert.NoError(t, err)
 	assert.NotNil(t, sm.checkToHandlerMap[GPUFallenOffCheck], "GPU Fallen Off handler should be initialized")
+}
+
+// TestConfigureTagFilters_XIDTagIncludesGPUResetAcknowledgements verifies that
+// the XID reader consumes kernel messages or tagged GPU reset acknowledgements,
+// while still excluding unrelated userspace journal traffic.
+func TestConfigureTagFilters_XIDTagIncludesGPUResetAcknowledgements(t *testing.T) {
+	for _, tag := range []string{"-k", "--dmesg"} {
+		t.Run(tag, func(t *testing.T) {
+			sm := &SyslogMonitor{}
+			mock := &MockJournal{}
+			check := CheckDefinition{Name: XIDErrorCheck, Tags: []string{tag}}
+
+			err := sm.configureTagFilters(mock, check)
+			assert.NoError(t, err)
+			assert.Equal(t, []string{
+				FieldTransport + "=" + TransportKernel,
+				FieldSyslogID + "=" + GPUResetSyslogID,
+			}, mock.MatchFilters)
+			assert.Equal(t, 1, mock.Disjunctions,
+				"kernel and GPU reset identifier matches must be ORed")
+		})
+	}
+}
+
+func TestConfigureTagFilters_NonXIDKernelCheckExcludesGPUResetAcknowledgements(t *testing.T) {
+	sm := &SyslogMonitor{}
+	mock := &MockJournal{}
+	check := CheckDefinition{Name: SXIDErrorCheck, Tags: []string{"-k"}}
+
+	err := sm.configureTagFilters(mock, check)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{FieldTransport + "=" + TransportKernel}, mock.MatchFilters)
+	assert.Zero(t, mock.Disjunctions)
+}
+
+func TestFakeJournal_KernelOrGPUResetIdentifierFilter(t *testing.T) {
+	journal := NewFakeJournal()
+	journal.AddEntry(map[string]string{
+		FieldTransport: "journal",
+		FieldSyslogID:  "unrelated-service",
+	}, "unrelated")
+	journal.AddEntry(map[string]string{
+		FieldTransport: TransportKernel,
+	}, "kernel")
+	journal.AddEntry(map[string]string{
+		FieldTransport: "syslog",
+		FieldSyslogID:  GPUResetSyslogID,
+	}, "gpu-reset")
+
+	assert.NoError(t, journal.AddMatch(FieldTransport+"="+TransportKernel))
+	assert.NoError(t, journal.AddDisjunction())
+	assert.NoError(t, journal.AddMatch(FieldSyslogID+"="+GPUResetSyslogID))
+
+	advanced, err := journal.Next()
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(1), advanced)
+	cursor, err := journal.GetCursor()
+	assert.NoError(t, err)
+	assert.Equal(t, "kernel", cursor)
+
+	advanced, err = journal.Next()
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(1), advanced)
+	cursor, err = journal.GetCursor()
+	assert.NoError(t, err)
+	assert.Equal(t, "gpu-reset", cursor)
+}
+
+// TestConfigureTagFilters_NoTagsAddsNoMatch verifies that a check with no tags
+// adds no journal match, i.e. it consumes every facility. This is the
+// pre-fix default behavior the kernel-origin checks must no longer rely on.
+func TestConfigureTagFilters_NoTagsAddsNoMatch(t *testing.T) {
+	sm := &SyslogMonitor{}
+	mock := &MockJournal{}
+	check := CheckDefinition{Name: "SomeUserspaceCheck"}
+
+	err := sm.configureTagFilters(mock, check)
+	assert.NoError(t, err)
+	assert.Empty(t, mock.MatchFilters, "a check with no tags should add no journal match")
+}
+
+// TestResumeFromLastCursor_SkipsBookmarkReReadWithFilteredJournal verifies that
+// resuming from a bookmark does not re-read the last processed kernel entry when
+// systemd returns that entry on the first Next() after SeekCursor with matches
+// active (_TRANSPORT=kernel / "-k"). See NVIDIA/NVSentinel#1417.
+func TestResumeFromLastCursor_SkipsBookmarkReReadWithFilteredJournal(t *testing.T) {
+	sm := &SyslogMonitor{
+		checkLastCursors: map[string]string{
+			XIDErrorCheck: "xid-cursor",
+		},
+	}
+	journal := &MockJournal{
+		InclusiveSeekCursor: true,
+		Entries: []MockJournalEntry{
+			{Cursor: "xid-cursor", Message: "NVRM: Xid (PCI:0008:06:00): 48"},
+		},
+		CurrentPosition: 0,
+		MatchFilters:    []string{FieldTransport + "=" + TransportKernel},
+	}
+	check := CheckDefinition{Name: XIDErrorCheck, Tags: []string{"-k"}}
+
+	ready, err := sm.resumeFromLastCursor(journal, check, "xid-cursor")
+	assert.NoError(t, err)
+	assert.False(t, ready, "should not re-read the bookmarked kernel XID when no newer entries exist")
 }

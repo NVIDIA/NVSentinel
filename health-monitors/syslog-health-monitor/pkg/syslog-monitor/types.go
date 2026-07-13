@@ -29,8 +29,12 @@ const (
 	FieldBootID         = "_BOOT_ID"
 	FieldMessage        = "MESSAGE"
 	FieldSyslogFacility = "SYSLOG_FACILITY"
+	FieldSyslogID       = "SYSLOG_IDENTIFIER"
 	FieldSystemdUnit    = "_SYSTEMD_UNIT"
+	FieldTransport      = "_TRANSPORT"
+	TransportKernel     = "kernel"
 
+	GPUResetSyslogID    = "nvsentinel-gpu-reset"
 	XIDErrorCheck       = "SysLogsXIDError"
 	SXIDErrorCheck      = "SysLogsSXIDError"
 	GPUFallenOffCheck   = "SysLogsGPUFallenOff"

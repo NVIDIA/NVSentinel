@@ -144,7 +144,8 @@ if [ "${WRITE_SYSLOG_EVENT:-true}" = "true" ]; then
     fi
 
     log "Writing reset result for ${UUID} to syslog (success: ${SYSLOG_SUCCESS})"
-    logger -p daemon.err "GPU reset executed: ${UUID}, success: ${SYSLOG_SUCCESS}"
+    logger -t nvsentinel-gpu-reset -p daemon.err \
+      "GPU reset executed: ${UUID}, success: ${SYSLOG_SUCCESS}"
 
   done
   IFS=$ORIGINAL_IFS

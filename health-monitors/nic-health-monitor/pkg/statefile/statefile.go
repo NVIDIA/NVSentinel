@@ -53,10 +53,35 @@ type MonitorState struct {
 	Version int    `json:"version"`
 	BootID  string `json:"boot_id,omitempty"`
 
+	// Scope fingerprints the discovery configuration (inclusion override
+	// + exclusion regex) the state was recorded under. On Load, a scope
+	// mismatch discards the port/device state (seeding it would fabricate
+	// device-disappearance FATALs when the scope shrinks and bypass
+	// first-poll severity gating when it grows) but PRESERVES counter
+	// snapshots and latched breach flags: counters only reset on a real
+	// reboot or an admin clear, and a scope change is neither.
+	Scope string `json:"scope,omitempty"`
+
 	// State detection state — produced by InfiniBandStateCheck and
 	// EthernetStateCheck. Keys follow the `<device>_<port>` convention.
 	PortStates   map[string]PortStateSnapshot `json:"port_states,omitempty"`
 	KnownDevices []string                     `json:"known_devices,omitempty"`
+
+	// AnomalousCards is the card-homogeneity latch: cards (PCI
+	// bus:device) currently reported below their role group's decisive
+	// mode via a FATAL card event. Keys are "<link_layer>/<card>" so the
+	// IB and Ethernet checks can latch the same physical card (VPI/mixed
+	// cards share a PCI bus:device across function suffixes) without
+	// clobbering each other.
+	//
+	// Unlike port/device state, the latch survives boot-ID and scope
+	// resets: an entry means a card FATAL is outstanding downstream
+	// (e.g., holding a quarantine), which stays true across reboots and
+	// discovery-scope changes. Only the matching card-healthy recovery
+	// (positive evidence: card present, group decisive, at/above mode)
+	// removes an entry — otherwise the downstream card entity could
+	// never clear.
+	AnomalousCards map[string]AnomalousCardFlag `json:"anomalous_cards,omitempty"`
 
 	// Counter detection state — produced by InfiniBandDegradationCheck
 	// and EthernetDegradationCheck. Both maps key on
@@ -75,6 +100,15 @@ type PortStateSnapshot struct {
 	State         string `json:"state"`
 	PhysicalState string `json:"physical_state"`
 	LinkLayer     string `json:"link_layer,omitempty"`
+}
+
+// AnomalousCardFlag marks one latched card-homogeneity anomaly. The
+// LinkLayer tag scopes entries to the state check that owns them (IB vs
+// Ethernet), mirroring PortStateSnapshot; Card carries the PCI
+// bus:device so lookups don't need to parse the composite map key.
+type AnomalousCardFlag struct {
+	Card      string `json:"card,omitempty"`
+	LinkLayer string `json:"link_layer,omitempty"`
 }
 
 // CounterSnapshot stores the value and wall-clock timestamp of a counter
@@ -108,10 +142,22 @@ type Manager struct {
 	state      MonitorState
 	loaded     bool
 
+	// scope is the current discovery-scope fingerprint (see
+	// MonitorState.Scope). Set via SetScope before Load.
+	scope string
+
 	// bootIDChanged captures the result of the most recent Load call so
 	// callers that need to differentiate "fresh node or host reboot"
 	// from "pod restart with persisted state" can query it.
 	bootIDChanged bool
+
+	// scopeChanged is true when the most recent Load discarded the
+	// port/device state because the discovery-scope fingerprint changed.
+	// Deliberately separate from bootIDChanged: state checks treat both
+	// as "emit healthy baselines on the first poll", but counter checks
+	// must react only to real reboots — a scope change neither resets
+	// hardware counters nor clears latched breaches.
+	scopeChanged bool
 }
 
 // NewManager constructs a Manager backed by the default on-host paths.
@@ -127,6 +173,18 @@ func NewManagerWithPaths(statePath, bootIDPath string) *Manager {
 		bootIDPath: bootIDPath,
 		state:      MonitorState{Version: SchemaVersion},
 	}
+}
+
+// SetScope records the discovery-scope fingerprint the monitor is
+// running under. Must be called before Load; port/device state recorded
+// under a different fingerprint is discarded at Load (counter state is
+// preserved — see MonitorState.Scope). An empty scope matches legacy
+// state files that predate the field.
+func (m *Manager) SetScope(scope string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.scope = scope
 }
 
 // Path returns the state file path the Manager is configured to write.
@@ -192,12 +250,27 @@ func (m *Manager) Load() error {
 	}
 
 	if loaded.BootID != currentBootID {
-		slog.Info("Boot ID changed, resetting persisted state",
+		slog.Info("Boot ID changed, resetting persisted state "+
+			"(card-anomaly latch preserved)",
 			"previous_boot_id", loaded.BootID,
 			"current_boot_id", currentBootID,
 		)
 
-		m.resetStateLocked(currentBootID)
+		// The card-anomaly latch survives reboots: it tracks card FATALs
+		// outstanding downstream (e.g., a quarantine annotation), which a
+		// reboot does not clear. If the ports come back healthy, the
+		// seeded latch emits the card-healthy recovery; if the group is
+		// still down/indecisive at boot, the latch holds until positive
+		// evidence arrives. Everything else resets as usual.
+		m.state = MonitorState{
+			Version:        SchemaVersion,
+			BootID:         currentBootID,
+			Scope:          m.scope,
+			AnomalousCards: loaded.AnomalousCards,
+		}
+		m.loaded = true
+		m.bootIDChanged = true
+		m.scopeChanged = false
 
 		return nil
 	}
@@ -213,9 +286,39 @@ func (m *Manager) Load() error {
 		return nil
 	}
 
+	if loaded.Scope != m.scope {
+		slog.Info("Discovery scope changed, resetting port/device state "+
+			"(counter snapshots and breach latches preserved)",
+			"previous_scope", loaded.Scope,
+			"current_scope", m.scope,
+		)
+
+		// PortStates and KnownDevices are intentionally dropped with the
+		// scope: the state checks re-baseline. Counter state survives
+		// (see MonitorState.Scope), and so does the card-anomaly latch —
+		// a scope change (e.g., enabling the inclusion override, whose
+		// mode skips the card lifecycle entirely) must not orphan a card
+		// FATAL that is still holding a quarantine downstream.
+		m.state = MonitorState{
+			Version:          SchemaVersion,
+			BootID:           currentBootID,
+			Scope:            m.scope,
+			AnomalousCards:   loaded.AnomalousCards,
+			CounterSnapshots: loaded.CounterSnapshots,
+			BreachFlags:      loaded.BreachFlags,
+		}
+		m.loaded = true
+		m.bootIDChanged = false
+		m.scopeChanged = true
+
+		return nil
+	}
+
 	m.state = loaded
+	m.state.Scope = m.scope
 	m.loaded = true
 	m.bootIDChanged = false
+	m.scopeChanged = false
 
 	slog.Info("Loaded persisted state",
 		"path", m.path,
@@ -226,13 +329,27 @@ func (m *Manager) Load() error {
 	return nil
 }
 
-// BootIDChanged reports whether the most recent Load treated this as a
-// fresh boot. Must be called after Load.
+// BootIDChanged reports whether the most recent Load discarded the
+// entire persisted state and treated this startup as a fresh boot —
+// missing/corrupt file, boot-ID change, or schema version change.
+// A discovery-scope change is NOT included: it is reported separately
+// via ScopeChanged because counters must not treat it as a reboot.
+// Must be called after Load.
 func (m *Manager) BootIDChanged() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	return m.bootIDChanged
+}
+
+// ScopeChanged reports whether the most recent Load discarded the
+// port/device state because the discovery-scope fingerprint changed
+// (counter state was preserved). Must be called after Load.
+func (m *Manager) ScopeChanged() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.scopeChanged
 }
 
 // PortStatesFor returns a copy of persisted port snapshots whose
@@ -343,6 +460,77 @@ func (m *Manager) portStatesChanged(
 	return false
 }
 
+// anomalousCardKey builds the persisted latch key. Including the link
+// layer keeps the IB and Ethernet checks' entries for the same physical
+// card (VPI/mixed cards share a PCI bus:device) from overwriting each
+// other.
+func anomalousCardKey(linkLayer, card string) string {
+	return linkLayer + "/" + card
+}
+
+// AnomalousCardsFor returns the persisted card-anomaly latch entries
+// whose LinkLayer matches one of the given layers (case-insensitive;
+// empty filter matches everything), keyed by card.
+func (m *Manager) AnomalousCardsFor(layers ...string) map[string]AnomalousCardFlag {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	out := make(map[string]AnomalousCardFlag, len(m.state.AnomalousCards))
+
+	for _, v := range m.state.AnomalousCards {
+		if !matchesLayer(v.LinkLayer, layers) {
+			continue
+		}
+
+		out[v.Card] = v
+	}
+
+	return out
+}
+
+// UpdateAnomalousCards replaces the persisted card-anomaly latch entries
+// matching the provided LinkLayer(s) with the incoming card-keyed set,
+// preserving entries owned by the sibling check (including entries for
+// the same card under the other link layer). Returns true if the state
+// was modified (caller should Save).
+func (m *Manager) UpdateAnomalousCards(
+	cards map[string]AnomalousCardFlag,
+	layers ...string,
+) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.state.AnomalousCards == nil {
+		m.state.AnomalousCards = make(map[string]AnomalousCardFlag, len(cards))
+	}
+
+	changed := false
+
+	for k, v := range m.state.AnomalousCards {
+		if !matchesLayer(v.LinkLayer, layers) {
+			continue
+		}
+
+		if _, keep := cards[v.Card]; !keep {
+			delete(m.state.AnomalousCards, k)
+
+			changed = true
+		}
+	}
+
+	for card, v := range cards {
+		v.Card = card
+
+		key := anomalousCardKey(v.LinkLayer, card)
+		if old, exists := m.state.AnomalousCards[key]; !exists || old != v {
+			m.state.AnomalousCards[key] = v
+			changed = true
+		}
+	}
+
+	return changed
+}
+
 // CounterSnapshots returns a copy of the persisted counter snapshots.
 // Each evaluator seeds its in-memory snapshot map from this on startup
 // so that delta and velocity windows survive pod restarts.
@@ -449,9 +637,11 @@ func (m *Manager) resetStateLocked(bootID string) {
 	m.state = MonitorState{
 		Version: SchemaVersion,
 		BootID:  bootID,
+		Scope:   m.scope,
 	}
 	m.loaded = true
 	m.bootIDChanged = true
+	m.scopeChanged = false
 }
 
 // saveLocked serialises m.state to disk using the atomic-rename pattern:

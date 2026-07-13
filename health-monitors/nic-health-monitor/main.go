@@ -117,12 +117,12 @@ func run() error {
 
 	reader := sysfs.NewReader(rc.cfg.SysClassInfinibandPath, rc.cfg.SysClassNetPath)
 
-	classifier, err := loadClassifier(reader)
+	classifier, err := loadClassifier(reader, rc.cfg)
 	if err != nil {
 		return err
 	}
 
-	stateManager, bootIDChanged := loadStateManager()
+	stateManager, rebooted, scopeChanged := loadStateManager(rc.cfg)
 
 	conn, err := dialWithRetry(ctx, *platformConnectorSocket,
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -138,8 +138,11 @@ func run() error {
 
 	client := pb.NewPlatformConnectorClient(conn)
 
+	// State checks re-baseline after both real reboots and discovery-scope
+	// changes; counter checks only after real reboots — a scope change
+	// neither resets hardware counters nor clears latched breaches.
 	enabledChecks := buildChecks(rc.nodeName, reader, rc.cfg, classifier,
-		rc.processingStrategy, stateManager, bootIDChanged)
+		rc.processingStrategy, stateManager, rebooted || scopeChanged, rebooted)
 	if len(enabledChecks) == 0 {
 		return fmt.Errorf("no checks enabled — set --checks to include at least one of: " +
 			"InfiniBandStateCheck, InfiniBandDegradationCheck, EthernetStateCheck, EthernetDegradationCheck")
@@ -151,29 +154,46 @@ func run() error {
 	return runServerAndLoops(ctx, rc, nicMonitor)
 }
 
+// discoveryScope fingerprints the configuration that decides which
+// devices discovery returns. Port/device state recorded under a
+// different fingerprint must be discarded at load: seeding it would
+// fabricate device-disappearance FATALs when the scope shrinks
+// (inclusion override enabled) and would bypass the first-poll severity
+// gate when it grows (override removed). Counter snapshots and breach
+// latches survive scope changes — see statefile.MonitorState.Scope.
+func discoveryScope(cfg *config.Config) string {
+	return fmt.Sprintf("incl=%s;excl=%s",
+		strings.TrimSpace(cfg.NicInclusionRegexOverride),
+		strings.TrimSpace(cfg.NicExclusionRegex))
+}
+
 // loadStateManager constructs the shared persistent-state Manager and
 // calls Load. Errors are logged and swallowed: per design the monitor
 // continues on a fresh empty state if persistence is unavailable.
 //
-// The returned bootIDChanged flag is true when the loaded state was
-// discarded (missing/corrupt file or host reboot). Checks use it to
-// emit healthy baseline events on their first poll so the platform
-// can clear stale FATAL conditions.
-func loadStateManager() (*statefile.Manager, bool) {
+// rebooted is true when the entire state was discarded (missing/corrupt
+// file or host reboot); scopeChanged is true when only the port/device
+// state was discarded because the discovery scope changed. State checks
+// emit healthy baselines for either; counter checks only for rebooted.
+func loadStateManager(cfg *config.Config) (*statefile.Manager, bool, bool) {
 	mgr := statefile.NewManagerWithPaths(*stateFilePath, *bootIDPath)
+	mgr.SetScope(discoveryScope(cfg))
+
 	if err := mgr.Load(); err != nil {
 		slog.Warn("Could not load state file, starting with empty state",
 			"path", *stateFilePath, "error", err)
 	}
 
-	bootIDChanged := mgr.BootIDChanged()
+	rebooted := mgr.BootIDChanged()
+	scopeChanged := mgr.ScopeChanged()
 
 	slog.Info("State manager initialised",
 		"path", *stateFilePath,
-		"boot_id_changed", bootIDChanged,
+		"boot_id_changed", rebooted,
+		"scope_changed", scopeChanged,
 	)
 
-	return mgr, bootIDChanged
+	return mgr, rebooted, scopeChanged
 }
 
 // parseRuntimeConfig validates flags, loads the on-disk config (with a
@@ -251,15 +271,29 @@ func loadConfigOrDefault(path string) *config.Config {
 
 // loadClassifier wraps topology.LoadFromMetadata with an actionable
 // error that points operators at the metadata-collector DaemonSet.
-func loadClassifier(reader sysfs.Reader) (*topology.Classifier, error) {
+//
+// When the explicit NIC inclusion override is active, missing/invalid
+// metadata degrades to an empty classifier instead of a fatal error:
+// the override exists precisely for situations where the rest of the
+// stack (GPU driver, metadata collector) is broken, and pinned devices
+// bypass topology-based classification anyway.
+func loadClassifier(reader sysfs.Reader, cfg *config.Config) (*topology.Classifier, error) {
 	classifier, err := topology.LoadFromMetadata(*metadataPath, reader)
-	if err != nil {
-		return nil, fmt.Errorf("NIC monitor cannot start without GPU metadata at %s: %w "+
-			"(hint: ensure the metadata-collector DaemonSet is running and has "+
-			"written nic_topology)", *metadataPath, err)
+	if err == nil {
+		return classifier, nil
 	}
 
-	return classifier, nil
+	if strings.TrimSpace(cfg.NicInclusionRegexOverride) != "" {
+		slog.Warn("GPU metadata unavailable — continuing because the NIC inclusion "+
+			"override is active; pinned devices bypass topology classification",
+			"metadata_path", *metadataPath, "error", err)
+
+		return topology.NewOverrideClassifier(reader), nil
+	}
+
+	return nil, fmt.Errorf("NIC monitor cannot start without GPU metadata at %s: %w "+
+		"(hint: ensure the metadata-collector DaemonSet is running and has "+
+		"written nic_topology)", *metadataPath, err)
 }
 
 // runServerAndLoops starts the metrics server alongside the state
@@ -299,6 +333,13 @@ func runServerAndLoops(ctx context.Context, rc *runtimeConfig, nicMonitor *monit
 }
 
 // buildChecks instantiates the enabled checks.
+//
+// stateBaselines drives the state checks' first-poll healthy-baseline
+// behaviour and is true after a reboot OR a discovery-scope change
+// (both discard port/device state). counterBaselines drives the counter
+// evaluators' "healthy after reboot" behaviour and is true ONLY after a
+// real reboot: hardware counters do not reset on a scope change, and
+// latched breaches must survive it.
 func buildChecks(
 	nodeName string,
 	reader sysfs.Reader,
@@ -306,7 +347,7 @@ func buildChecks(
 	classifier *topology.Classifier,
 	processingStrategy pb.ProcessingStrategy,
 	stateManager *statefile.Manager,
-	bootIDChanged bool,
+	stateBaselines, counterBaselines bool,
 ) []checks.Check {
 	var result []checks.Check
 
@@ -320,25 +361,25 @@ func buildChecks(
 		case checks.InfiniBandStateCheckName:
 			result = append(result, state.NewInfiniBandStateCheck(
 				nodeName, reader, cfg, classifier, processingStrategy,
-				stateManager, bootIDChanged,
+				stateManager, stateBaselines,
 			))
 		case checks.InfiniBandDegradationCheckName:
 			if cfg.CounterDetection.Enabled {
 				result = append(result, counter.NewInfiniBandDegradationCheck(
 					nodeName, reader, cfg, processingStrategy,
-					stateManager, bootIDChanged,
+					stateManager, counterBaselines,
 				))
 			}
 		case checks.EthernetStateCheckName:
 			result = append(result, state.NewEthernetStateCheck(
 				nodeName, reader, cfg, classifier, processingStrategy,
-				stateManager, bootIDChanged,
+				stateManager, stateBaselines,
 			))
 		case checks.EthernetDegradationCheckName:
 			if cfg.CounterDetection.Enabled {
 				result = append(result, counter.NewEthernetDegradationCheck(
 					nodeName, reader, cfg, processingStrategy,
-					stateManager, bootIDChanged,
+					stateManager, counterBaselines,
 				))
 			}
 		default:
