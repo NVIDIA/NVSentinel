@@ -53,6 +53,8 @@ spec:
             - {{ include "gpu-health-monitor.dcgmCliMode" . | quote }}
             - --port
             - "{{ .Values.global.metricsPort }}"
+            - --metrics-addr
+            - "{{ .Values.global.metricsAddress | default "0.0.0.0" }}"
             - --verbose
             - {{ .Values.verbose | quote }}
             - --state-file
