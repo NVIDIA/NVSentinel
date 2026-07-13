@@ -29,6 +29,11 @@ func (j *RealJournal) AddMatch(match string) error {
 	return j.journal.AddMatch(match)
 }
 
+// AddDisjunction inserts an OR between journal match groups.
+func (j *RealJournal) AddDisjunction() error {
+	return j.journal.AddDisjunction()
+}
+
 // Close closes the journal
 func (j *RealJournal) Close() error {
 	return j.journal.Close()
