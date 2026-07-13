@@ -361,7 +361,10 @@ func parseProcessingStrategy(s string) (pb.ProcessingStrategy, error) {
 
 // pollingLoop runs fn at interval until ctx is cancelled. If onSuccess
 // is non-nil it is called after each successful iteration.
-func pollingLoop(ctx context.Context, name string, interval time.Duration, fn func(context.Context) error, onSuccess func()) error {
+func pollingLoop(
+	ctx context.Context, name string, interval time.Duration,
+	fn func(context.Context) error, onSuccess func(),
+) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
