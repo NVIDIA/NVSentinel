@@ -370,8 +370,12 @@ def test_has_nvlink_with_nvlink_link_count_zero():
         os.unlink(temp_path)
 
 
-def test_has_nvlink_fallback_to_nvlinks_list():
-    """Without nvlink_link_count, falls back to nvlinks list (old metadata-collector)."""
+def test_has_nvlink_missing_nvlink_link_count_returns_none():
+    """Without nvlink_link_count (old metadata-collector), returns None.
+
+    The legacy nvlinks list only records NVSwitch-connected links and would miss
+    GPU-to-GPU NVLink (e.g., H100 NVL), so it cannot be used as a fallback.
+    """
     metadata = {
         "gpus": [
             {
@@ -392,8 +396,8 @@ def test_has_nvlink_fallback_to_nvlinks_list():
 
     try:
         reader = MetadataReader(temp_path)
-        assert reader.has_nvlink(0) is True
-        assert reader.has_nvlink(1) is False
+        assert reader.has_nvlink(0) is None
+        assert reader.has_nvlink(1) is None
     finally:
         os.unlink(temp_path)
 
@@ -440,8 +444,8 @@ def test_has_nvlink_metadata_unavailable():
     assert reader.has_nvlink(0) is None
 
 
-def test_has_nvlink_invalid_nvlink_link_count_falls_back():
-    """Invalid nvlink_link_count falls back to nvlinks list."""
+def test_has_nvlink_invalid_nvlink_link_count_returns_none():
+    """Invalid nvlink_link_count returns None (fail closed)."""
     metadata = {
         "gpus": [
             {
@@ -458,6 +462,6 @@ def test_has_nvlink_invalid_nvlink_link_count_falls_back():
 
     try:
         reader = MetadataReader(temp_path)
-        assert reader.has_nvlink(0) is True
+        assert reader.has_nvlink(0) is None
     finally:
         os.unlink(temp_path)

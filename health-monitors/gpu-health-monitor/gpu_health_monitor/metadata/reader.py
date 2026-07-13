@@ -184,27 +184,27 @@ class MetadataReader:
         gpus = self._metadata.get("gpus", [])
         for gpu in gpus:
             if gpu.get("gpu_id") == gpu_id:
-                # Prefer nvlink_link_count (authoritative, counts hardware links
-                # regardless of enabled/disabled state).
+                # Use nvlink_link_count (authoritative, counts hardware links
+                # regardless of enabled/disabled state). This field is set by
+                # metadata-collector using NVML GetNvLinkState return codes:
+                # NOT_SUPPORTED on PCIe → 0, SUCCESS on SXM/NVL → >0.
                 nvlink_link_count = gpu.get("nvlink_link_count")
-                if nvlink_link_count is not None:
-                    try:
-                        return int(nvlink_link_count) > 0
-                    except (ValueError, TypeError):
-                        log.warning(
-                            "GPU %s nvlink_link_count value %r is not valid; "
-                            "falling back to nvlinks list",
-                            gpu_id,
-                            nvlink_link_count,
-                        )
-
-                # Fall back to nvlinks list for older metadata-collector versions.
-                nvlinks = gpu.get("nvlinks")
-                if nvlinks is not None:
-                    return len(nvlinks) > 0
-
-                # Neither field present — cannot determine.
-                return None
+                if nvlink_link_count is None:
+                    # Field missing (old metadata-collector). Cannot safely
+                    # determine NVLink capability — the legacy nvlinks list
+                    # only records NVSwitch-connected links and would miss
+                    # GPU-to-GPU NVLink (e.g., H100 NVL).
+                    return None
+                try:
+                    return int(nvlink_link_count) > 0
+                except (ValueError, TypeError):
+                    log.warning(
+                        "GPU %s nvlink_link_count value %r is not valid; "
+                        "treating as unknown",
+                        gpu_id,
+                        nvlink_link_count,
+                    )
+                    return None
 
         log.debug(f"GPU {gpu_id} not found in metadata")
         return None
