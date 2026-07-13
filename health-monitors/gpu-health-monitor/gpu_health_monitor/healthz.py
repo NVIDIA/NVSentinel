@@ -20,6 +20,7 @@ within the staleness threshold. Uses time.monotonic() to avoid
 false positives from NTP clock adjustments.
 """
 
+import socket
 import threading
 import time
 from http.server import ThreadingHTTPServer
@@ -80,13 +81,17 @@ class _HealthMetricsHandler(MetricsHandler):
             super().do_GET()
 
 
-def start_server(port: int, staleness_seconds: float = 300.0) -> tuple[ThreadingHTTPServer, threading.Thread]:
+def start_server(
+    port: int, staleness_seconds: float = 300.0, addr: str = "0.0.0.0"
+) -> tuple[ThreadingHTTPServer, threading.Thread]:
     """Start an HTTP server serving /metrics and /healthz.
 
     Args:
         port: TCP port to listen on.
         staleness_seconds: Maximum seconds between reconcile iterations
             before /healthz returns 503.
+        addr: Address to bind. Defaults to 0.0.0.0 (IPv4). Pass "::" to bind
+            IPv6, which also accepts IPv4-mapped clients on dual-stack nodes.
 
     Returns:
         (ThreadingHTTPServer, daemon Thread) — same interface as
@@ -98,7 +103,13 @@ def start_server(port: int, staleness_seconds: float = 300.0) -> tuple[Threading
     # Reset the grace period to start from server startup, not module import.
     _last_reconcile.mark_alive()
 
-    httpd = ThreadingHTTPServer(("", port), _HealthMetricsHandler)
+    server_cls = ThreadingHTTPServer
+    if ":" in addr:
+        # ThreadingHTTPServer defaults to AF_INET, which cannot bind an IPv6 literal.
+        server_cls = type(
+            "_ThreadingHTTPServerV6", (ThreadingHTTPServer,), {"address_family": socket.AF_INET6}
+        )
+    httpd = server_cls((addr, port), _HealthMetricsHandler)
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
 
