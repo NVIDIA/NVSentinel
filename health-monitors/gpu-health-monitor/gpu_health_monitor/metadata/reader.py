@@ -161,6 +161,54 @@ class MetadataReader:
 
         return None
 
+    def has_nvlink(self, gpu_id: int) -> Optional[bool]:
+        """Check whether the GPU has NVLink hardware.
+
+        Uses the nvlink_link_count field (number of NVLink links the hardware
+        supports, regardless of current link state) when available, falling
+        back to the nvlinks list for older metadata-collector versions.
+
+        Args:
+            gpu_id: The DCGM GPU ID (0, 1, 2, ...).
+
+        Returns:
+            True if the GPU has NVLink hardware.
+            False if the GPU has no NVLink hardware (PCIe GPU).
+            None if the GPU is not found or metadata is unavailable.
+        """
+        self._ensure_loaded()
+
+        if not self._metadata:
+            return None
+
+        gpus = self._metadata.get("gpus", [])
+        for gpu in gpus:
+            if gpu.get("gpu_id") == gpu_id:
+                # Prefer nvlink_link_count (authoritative, counts hardware links
+                # regardless of enabled/disabled state).
+                nvlink_link_count = gpu.get("nvlink_link_count")
+                if nvlink_link_count is not None:
+                    try:
+                        return int(nvlink_link_count) > 0
+                    except (ValueError, TypeError):
+                        log.warning(
+                            "GPU %s nvlink_link_count value %r is not valid; "
+                            "falling back to nvlinks list",
+                            gpu_id,
+                            nvlink_link_count,
+                        )
+
+                # Fall back to nvlinks list for older metadata-collector versions.
+                nvlinks = gpu.get("nvlinks")
+                if nvlinks is not None:
+                    return len(nvlinks) > 0
+
+                # Neither field present — cannot determine.
+                return None
+
+        log.debug(f"GPU {gpu_id} not found in metadata")
+        return None
+
     def get_chassis_serial(self) -> Optional[str]:
         """Get chassis serial number.
 

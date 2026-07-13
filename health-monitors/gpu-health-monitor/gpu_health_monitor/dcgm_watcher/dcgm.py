@@ -176,6 +176,51 @@ class DCGMWatcher:
             if suppressed_gpu_ids and not details.entity_failures:
                 details.status = types.HealthStatus.PASS
 
+    def _suppress_nvlink_down_on_pcie_gpus(self, health_status: dict[str, types.HealthDetails]) -> None:
+        """Suppress DCGM_FR_NVLINK_DOWN for GPUs that have no NVLink hardware.
+
+        On PCIe GPUs (A100 PCIe, A40, L40S, etc.), DCGM reports all NVLink
+        links as down, which is correct hardware state, not a failure. This
+        method checks the GPU metadata to determine whether each GPU has
+        NVLink hardware and suppresses the incident if it does not.
+        """
+        if self._metadata_reader is None:
+            return
+
+        nvlink_watch = "DCGM_HEALTH_WATCH_NVLINK"
+        details = health_status.get(nvlink_watch)
+        if details is None or not details.entity_failures:
+            return
+
+        suppressed_gpu_ids = []
+        for gpu_id, failure in details.entity_failures.items():
+            if failure.code != "DCGM_FR_NVLINK_DOWN":
+                continue
+
+            has_nvlink = self._metadata_reader.has_nvlink(gpu_id)
+            if has_nvlink is None:
+                log.warning(
+                    f"Cannot determine NVLink capability for GPU {gpu_id} "
+                    f"(metadata unavailable); not suppressing DCGM_FR_NVLINK_DOWN"
+                )
+                continue
+
+            if not has_nvlink:
+                log.info(
+                    f"Suppressing DCGM_FR_NVLINK_DOWN for GPU {gpu_id}: "
+                    f"PCIe GPU with no NVLink hardware"
+                )
+                metrics.dcgm_health_check_suppressed_incidents.labels(
+                    "DCGM_FR_NVLINK_DOWN_NO_NVLINK_HW"
+                ).inc()
+                suppressed_gpu_ids.append(gpu_id)
+
+        for gpu_id in suppressed_gpu_ids:
+            del details.entity_failures[gpu_id]
+
+        if suppressed_gpu_ids and not details.entity_failures:
+            details.status = types.HealthStatus.PASS
+
     def _fire_callback_funcs(self, func_name: str, args: list[any]):
         def done_callback(class_name: str, func_name: str, future):
             e = future.exception()
@@ -583,6 +628,7 @@ class DCGMWatcher:
                                     margin_details
                                 )
                             self._suppress_configured_error_codes(health_status)
+                            self._suppress_nvlink_down_on_pcie_gpus(health_status)
                             log.debug("Publish DCGM health checks")
                             self._fire_callback_funcs(
                                 types.CallbackInterface.health_event_occurred.__name__,

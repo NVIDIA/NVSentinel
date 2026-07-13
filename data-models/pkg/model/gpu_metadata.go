@@ -38,7 +38,12 @@ type GPUInfo struct {
 	PCIAddress   string   `json:"pci_address"`
 	SerialNumber string   `json:"serial_number"`
 	DeviceName   string   `json:"device_name"`
-	NVLinks      []NVLink `json:"nvlinks"`
+	NVLinks         []NVLink `json:"nvlinks"`
+	// NVLinkLinkCount is the number of NVLink links the GPU hardware supports,
+	// regardless of current link state. Determined by counting links where
+	// NVML GetNvLinkState returns SUCCESS (vs NOT_SUPPORTED on PCIe GPUs).
+	// Zero means the GPU has no NVLink hardware.
+	NVLinkLinkCount int `json:"nvlink_link_count"`
 
 	// NUMANode is the NUMA Affinity of the GPU, parsed from the
 	// `nvidia-smi topo -m` output. A value of -1 means the information

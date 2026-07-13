@@ -37,6 +37,7 @@ func (w *NVMLWrapper) CollectNVLinkTopology(
 	slog.Debug("Collecting NVLink topology", "gpu_id", index, "pci_address", gpuInfo.PCIAddress)
 
 	nvswitches := make(map[string]struct{})
+	var nvlinkLinkCount int
 
 	for linkID := range nvml.NVLINK_MAX_LINKS {
 		state, ret := device.GetNvLinkState(linkID)
@@ -44,6 +45,11 @@ func (w *NVMLWrapper) CollectNVLinkTopology(
 			slog.Debug("Failed to get NVLink state", "gpu_id", index, "link_id", linkID, "error", nvml.ErrorString(ret))
 			continue
 		}
+
+		// Count all links where GetNvLinkState returns SUCCESS, regardless
+		// of enabled/disabled state. On PCIe GPUs (no NVLink hardware) the
+		// call returns NOT_SUPPORTED and never reaches here.
+		nvlinkLinkCount++
 
 		if state != nvml.FEATURE_ENABLED {
 			slog.Debug("NVLink not enabled", "gpu_id", index, "link_id", linkID)
@@ -98,10 +104,13 @@ func (w *NVMLWrapper) CollectNVLinkTopology(
 		nvswitches[remotePCI] = struct{}{}
 	}
 
+	gpuInfo.NVLinkLinkCount = nvlinkLinkCount
+
 	slog.Info("NVLink topology collection complete",
 		"gpu_id", index,
 		"pci_address", gpuInfo.PCIAddress,
 		"nvlink_count", len(gpuInfo.NVLinks),
+		"nvlink_link_count", nvlinkLinkCount,
 		"nvswitch_count", len(nvswitches))
 
 	return nvswitches, nil

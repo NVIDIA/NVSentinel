@@ -191,7 +191,7 @@ def cli(
             )
         )
 
-    metadata_reader = MetadataReader(metadata_path) if thermal_margin_enabled else None
+    metadata_reader = MetadataReader(metadata_path)
 
     prom_server, t = start_http_server(port)
 

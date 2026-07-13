@@ -50,6 +50,7 @@ type GPU struct {
 	SerialNumber    string   `json:"serial_number"`
 	DeviceName      string   `json:"device_name"`
 	NVLinks         []NVLink `json:"nvlinks"`
+	NVLinkLinkCount int      `json:"nvlink_link_count"`
 	NUMANode        int      `json:"numa_node"`
 	SlowdownTLimitC *int     `json:"slowdown_tlimit_c,omitempty"`
 }

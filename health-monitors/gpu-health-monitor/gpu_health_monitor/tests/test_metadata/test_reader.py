@@ -317,3 +317,147 @@ def test_concurrent_initial_load(metadata_file):
     assert len(results) == 50
     assert all(uuid == "GPU-00000000-0000-0000-0000-000000000000" for uuid in results)
     assert reader._loaded
+
+
+# --- has_nvlink tests ---
+
+
+def test_has_nvlink_with_nvlink_link_count_positive():
+    """GPU with nvlink_link_count > 0 returns True (SXM/NVL GPU)."""
+    metadata = {
+        "gpus": [
+            {
+                "gpu_id": 0,
+                "uuid": "GPU-0",
+                "device_name": "NVIDIA H100 80GB HBM3",
+                "nvlinks": [],
+                "nvlink_link_count": 18,
+            }
+        ]
+    }
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
+        json.dump(metadata, f)
+        temp_path = f.name
+
+    try:
+        reader = MetadataReader(temp_path)
+        assert reader.has_nvlink(0) is True
+    finally:
+        os.unlink(temp_path)
+
+
+def test_has_nvlink_with_nvlink_link_count_zero():
+    """GPU with nvlink_link_count == 0 returns False (PCIe GPU)."""
+    metadata = {
+        "gpus": [
+            {
+                "gpu_id": 0,
+                "uuid": "GPU-0",
+                "device_name": "NVIDIA A100-PCIE-80GB",
+                "nvlinks": [],
+                "nvlink_link_count": 0,
+            }
+        ]
+    }
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
+        json.dump(metadata, f)
+        temp_path = f.name
+
+    try:
+        reader = MetadataReader(temp_path)
+        assert reader.has_nvlink(0) is False
+    finally:
+        os.unlink(temp_path)
+
+
+def test_has_nvlink_fallback_to_nvlinks_list():
+    """Without nvlink_link_count, falls back to nvlinks list (old metadata-collector)."""
+    metadata = {
+        "gpus": [
+            {
+                "gpu_id": 0,
+                "uuid": "GPU-0",
+                "nvlinks": [{"link_id": 0, "remote_pci_address": "0000:01:00.0", "remote_link_id": 1}],
+            },
+            {
+                "gpu_id": 1,
+                "uuid": "GPU-1",
+                "nvlinks": [],
+            },
+        ]
+    }
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
+        json.dump(metadata, f)
+        temp_path = f.name
+
+    try:
+        reader = MetadataReader(temp_path)
+        assert reader.has_nvlink(0) is True
+        assert reader.has_nvlink(1) is False
+    finally:
+        os.unlink(temp_path)
+
+
+def test_has_nvlink_no_fields_returns_none():
+    """GPU with neither nvlink_link_count nor nvlinks returns None."""
+    metadata = {
+        "gpus": [
+            {"gpu_id": 0, "uuid": "GPU-0", "device_name": "NVIDIA A100"}
+        ]
+    }
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
+        json.dump(metadata, f)
+        temp_path = f.name
+
+    try:
+        reader = MetadataReader(temp_path)
+        assert reader.has_nvlink(0) is None
+    finally:
+        os.unlink(temp_path)
+
+
+def test_has_nvlink_gpu_not_found():
+    """Non-existent GPU returns None."""
+    metadata = {
+        "gpus": [
+            {"gpu_id": 0, "uuid": "GPU-0", "nvlinks": [], "nvlink_link_count": 0}
+        ]
+    }
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
+        json.dump(metadata, f)
+        temp_path = f.name
+
+    try:
+        reader = MetadataReader(temp_path)
+        assert reader.has_nvlink(99) is None
+    finally:
+        os.unlink(temp_path)
+
+
+def test_has_nvlink_metadata_unavailable():
+    """Missing metadata file returns None."""
+    reader = MetadataReader("/nonexistent/file.json")
+    assert reader.has_nvlink(0) is None
+
+
+def test_has_nvlink_invalid_nvlink_link_count_falls_back():
+    """Invalid nvlink_link_count falls back to nvlinks list."""
+    metadata = {
+        "gpus": [
+            {
+                "gpu_id": 0,
+                "uuid": "GPU-0",
+                "nvlink_link_count": "invalid",
+                "nvlinks": [{"link_id": 0, "remote_pci_address": "0000:01:00.0", "remote_link_id": 1}],
+            }
+        ]
+    }
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
+        json.dump(metadata, f)
+        temp_path = f.name
+
+    try:
+        reader = MetadataReader(temp_path)
+        assert reader.has_nvlink(0) is True
+    finally:
+        os.unlink(temp_path)

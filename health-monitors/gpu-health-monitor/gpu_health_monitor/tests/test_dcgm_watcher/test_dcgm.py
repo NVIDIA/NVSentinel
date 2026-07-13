@@ -951,3 +951,156 @@ class TestDCGMHandleLeakFix:
             watcher._initialize_dcgm_monitoring(dcgm_handle_mock)
 
         dcgm_group_mock.Delete.assert_called_once()
+
+
+class TestSuppressNvlinkDownOnPcieGpus:
+    """Tests for _suppress_nvlink_down_on_pcie_gpus() which suppresses false positive
+    DCGM_FR_NVLINK_DOWN on GPUs without NVLink hardware (PCIe GPUs)."""
+
+    def _make_watcher(self, metadata_reader=None):
+        return dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            metadata_reader=metadata_reader,
+        )
+
+    def _make_metadata_reader(self, tmp_path, gpus):
+        metadata_path = tmp_path / "gpu_metadata.json"
+        metadata_path.write_text(json.dumps({"gpus": gpus}))
+        return MetadataReader(str(metadata_path))
+
+    def test_suppress_pcie_gpu_no_nvlink(self, tmp_path):
+        """PCIe GPU with nvlink_link_count=0: incident suppressed, watch reverts to PASS."""
+        reader = self._make_metadata_reader(tmp_path, [
+            {"gpu_id": 0, "uuid": "GPU-0", "nvlinks": [], "nvlink_link_count": 0},
+        ])
+        watcher = self._make_watcher(metadata_reader=reader)
+        health_status = watcher._get_health_status_dict()
+        health_status["DCGM_HEALTH_WATCH_NVLINK"] = dcgm.types.HealthDetails(
+            status=dcgm.types.HealthStatus.FAIL,
+            entity_failures={
+                0: dcgm.types.ErrorDetails(
+                    code="DCGM_FR_NVLINK_DOWN",
+                    message="GPU 0's NvLink link 0-11 is currently down",
+                )
+            },
+        )
+
+        watcher._suppress_nvlink_down_on_pcie_gpus(health_status)
+
+        assert health_status["DCGM_HEALTH_WATCH_NVLINK"].status == dcgm.types.HealthStatus.PASS
+        assert len(health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures) == 0
+
+    def test_no_suppress_sxm_gpu_with_nvlink(self, tmp_path):
+        """SXM GPU with nvlink_link_count=18: incident NOT suppressed."""
+        reader = self._make_metadata_reader(tmp_path, [
+            {"gpu_id": 0, "uuid": "GPU-0", "nvlinks": [], "nvlink_link_count": 18},
+        ])
+        watcher = self._make_watcher(metadata_reader=reader)
+        health_status = watcher._get_health_status_dict()
+        health_status["DCGM_HEALTH_WATCH_NVLINK"] = dcgm.types.HealthDetails(
+            status=dcgm.types.HealthStatus.FAIL,
+            entity_failures={
+                0: dcgm.types.ErrorDetails(
+                    code="DCGM_FR_NVLINK_DOWN",
+                    message="GPU 0's NvLink link 5 is currently down",
+                )
+            },
+        )
+
+        watcher._suppress_nvlink_down_on_pcie_gpus(health_status)
+
+        assert health_status["DCGM_HEALTH_WATCH_NVLINK"].status == dcgm.types.HealthStatus.FAIL
+        assert 0 in health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures
+
+    def test_mixed_topology_only_pcie_suppressed(self, tmp_path):
+        """Mixed PCIe + SXM: only PCIe GPU's incident suppressed."""
+        reader = self._make_metadata_reader(tmp_path, [
+            {"gpu_id": 0, "uuid": "GPU-0", "nvlinks": [], "nvlink_link_count": 0},
+            {"gpu_id": 1, "uuid": "GPU-1", "nvlinks": [], "nvlink_link_count": 18},
+        ])
+        watcher = self._make_watcher(metadata_reader=reader)
+        health_status = watcher._get_health_status_dict()
+        health_status["DCGM_HEALTH_WATCH_NVLINK"] = dcgm.types.HealthDetails(
+            status=dcgm.types.HealthStatus.FAIL,
+            entity_failures={
+                0: dcgm.types.ErrorDetails(
+                    code="DCGM_FR_NVLINK_DOWN",
+                    message="GPU 0's NvLink link 0-11 is currently down",
+                ),
+                1: dcgm.types.ErrorDetails(
+                    code="DCGM_FR_NVLINK_DOWN",
+                    message="GPU 1's NvLink link 5 is currently down",
+                ),
+            },
+        )
+
+        watcher._suppress_nvlink_down_on_pcie_gpus(health_status)
+
+        # GPU 0 (PCIe) suppressed, GPU 1 (SXM) still present
+        assert health_status["DCGM_HEALTH_WATCH_NVLINK"].status == dcgm.types.HealthStatus.FAIL
+        assert 0 not in health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures
+        assert 1 in health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures
+
+    def test_no_suppress_when_metadata_unavailable(self):
+        """Metadata file missing: incident NOT suppressed (safety)."""
+        reader = MetadataReader("/nonexistent/file.json")
+        watcher = self._make_watcher(metadata_reader=reader)
+        health_status = watcher._get_health_status_dict()
+        health_status["DCGM_HEALTH_WATCH_NVLINK"] = dcgm.types.HealthDetails(
+            status=dcgm.types.HealthStatus.FAIL,
+            entity_failures={
+                0: dcgm.types.ErrorDetails(
+                    code="DCGM_FR_NVLINK_DOWN",
+                    message="GPU 0's NvLink link 0-11 is currently down",
+                )
+            },
+        )
+        expected = copy.deepcopy(health_status)
+
+        watcher._suppress_nvlink_down_on_pcie_gpus(health_status)
+
+        assert health_status == expected
+
+    def test_no_suppress_when_no_metadata_reader(self):
+        """No metadata reader configured: method returns immediately."""
+        watcher = self._make_watcher(metadata_reader=None)
+        health_status = watcher._get_health_status_dict()
+        health_status["DCGM_HEALTH_WATCH_NVLINK"] = dcgm.types.HealthDetails(
+            status=dcgm.types.HealthStatus.FAIL,
+            entity_failures={
+                0: dcgm.types.ErrorDetails(
+                    code="DCGM_FR_NVLINK_DOWN",
+                    message="GPU 0's NvLink link 0-11 is currently down",
+                )
+            },
+        )
+        expected = copy.deepcopy(health_status)
+
+        watcher._suppress_nvlink_down_on_pcie_gpus(health_status)
+
+        assert health_status == expected
+
+    def test_other_nvlink_error_code_not_affected(self, tmp_path):
+        """DCGM_FR_NVLINK_ERROR_THRESHOLD is NOT suppressed by this method."""
+        reader = self._make_metadata_reader(tmp_path, [
+            {"gpu_id": 0, "uuid": "GPU-0", "nvlinks": [], "nvlink_link_count": 0},
+        ])
+        watcher = self._make_watcher(metadata_reader=reader)
+        health_status = watcher._get_health_status_dict()
+        health_status["DCGM_HEALTH_WATCH_NVLINK"] = dcgm.types.HealthDetails(
+            status=dcgm.types.HealthStatus.FAIL,
+            entity_failures={
+                0: dcgm.types.ErrorDetails(
+                    code="DCGM_FR_NVLINK_ERROR_THRESHOLD",
+                    message="GPU 0 NVLink error threshold exceeded",
+                )
+            },
+        )
+        expected = copy.deepcopy(health_status)
+
+        watcher._suppress_nvlink_down_on_pcie_gpus(health_status)
+
+        assert health_status == expected
