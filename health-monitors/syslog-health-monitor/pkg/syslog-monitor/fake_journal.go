@@ -27,11 +27,12 @@ type FakeJournalEntry struct {
 
 // FakeJournal is a test implementation of the Journal interface
 type FakeJournal struct {
-	Entries         []FakeJournalEntry
-	CurrentPosition int
-	Matches         []string
-	Path            string
-	Closed          bool
+	Entries            []FakeJournalEntry
+	CurrentPosition    int
+	Matches            []string
+	DisjunctionIndexes []int
+	Path               string
+	Closed             bool
 }
 
 // NewFakeJournal creates a new fake journal
@@ -66,6 +67,17 @@ func (j *FakeJournal) AddMatch(match string) error {
 	}
 
 	j.Matches = append(j.Matches, match)
+
+	return nil
+}
+
+// AddDisjunction implements the Journal interface.
+func (j *FakeJournal) AddDisjunction() error {
+	if j.Closed {
+		return fmt.Errorf("journal is closed")
+	}
+
+	j.DisjunctionIndexes = append(j.DisjunctionIndexes, len(j.Matches))
 
 	return nil
 }
@@ -225,9 +237,28 @@ func (j *FakeJournal) SeekTail() error {
 	return nil
 }
 
-// matchesFilters checks if an entry matches all the filters
+// matchesFilters checks if an entry matches any disjunction group. Matches
+// within each group are ANDed, matching systemd journal semantics.
 func (j *FakeJournal) matchesFilters(entry FakeJournalEntry) bool {
-	for _, match := range j.Matches {
+	groupStart := 0
+
+	for _, groupEnd := range append(j.DisjunctionIndexes, len(j.Matches)) {
+		if j.matchesAll(entry, j.Matches[groupStart:groupEnd]) {
+			return true
+		}
+
+		groupStart = groupEnd
+	}
+
+	return false
+}
+
+func (j *FakeJournal) matchesAll(entry FakeJournalEntry, matches []string) bool {
+	if len(matches) == 0 {
+		return false
+	}
+
+	for _, match := range matches {
 		parts := strings.SplitN(match, "=", 2)
 		if len(parts) != 2 {
 			// Invalid match format

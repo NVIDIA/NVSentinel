@@ -53,6 +53,15 @@ func (j *StubJournal) AddMatch(match string) error {
 	return nil
 }
 
+// AddDisjunction inserts an OR between journal match groups.
+func (j *StubJournal) AddDisjunction() error {
+	if j.closed {
+		return errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
+	}
+
+	return nil
+}
+
 // Close closes the journal
 func (j *StubJournal) Close() error {
 	j.closed = true
