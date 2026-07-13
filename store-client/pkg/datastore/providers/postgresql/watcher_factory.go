@@ -50,9 +50,12 @@ func (f *PostgreSQLWatcherFactory) CreateChangeStreamWatcher(
 		return nil, fmt.Errorf("CollectionName (table name) is required for PostgreSQL watcher")
 	}
 
-	if err := client.ResetResumeTokenOnStartIfConfigured(ctx, pgStore.GetDatabaseClient(), client.TokenConfig{
-		ClientName: clientName,
-	}); err != nil {
+	resumeControlDecision, err := client.ResetResumeTokenOnStartIfConfigured(
+		ctx,
+		pgStore.GetDatabaseClient(),
+		client.TokenConfig{ClientName: clientName},
+	)
+	if err != nil {
 		return nil, fmt.Errorf("failed to reset change stream resume token on startup: %w", err)
 	}
 
@@ -73,7 +76,7 @@ func (f *PostgreSQLWatcherFactory) CreateChangeStreamWatcher(
 
 	f.applyPipelineFilter(changeStreamWatcher, config.Pipeline, tableName)
 
-	return NewPostgreSQLChangeStreamWatcherWithUnwrap(changeStreamWatcher), nil
+	return NewPostgreSQLChangeStreamWatcherWithUnwrap(changeStreamWatcher, resumeControlDecision), nil
 }
 
 // applyPipelineFilter applies pipeline filter to the watcher if provided.

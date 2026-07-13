@@ -271,3 +271,13 @@ func (a *AdaptedChangeStreamWatcher) Close(ctx context.Context) error {
 func (a *AdaptedChangeStreamWatcher) Unwrap() client.ChangeStreamWatcher {
 	return a.watcher
 }
+
+// ResumeControlDecision returns the resume-control startup decision for the wrapped watcher.
+func (a *AdaptedChangeStreamWatcher) ResumeControlDecision() client.ResumeControlDecision {
+	decisionWatcher, ok := a.watcher.(client.ChangeStreamWatcherWithResumeControl)
+	if !ok {
+		return client.ResumeControlDecision{}
+	}
+
+	return decisionWatcher.ResumeControlDecision()
+}

@@ -36,7 +36,7 @@ global:
 
 ### Change Stream Resume Tokens
 
-Watcher-based components persist change stream resume tokens so they can resume from the last processed event after a restart. To skip accumulated events and start from the current stream head, scale the component to zero, patch its key in the runtime resume-control ConfigMap from `RESUME` to `CREATE`, then restore its replicas. The component deletes only its own resume token before its watcher starts and writes its key back to `RESUME`.
+Watcher-based components persist change stream resume tokens so they can resume from the last processed event after a restart. To skip accumulated events and start from the current stream head, scale the component to zero, patch its key in the runtime resume-control ConfigMap from `RESUME` to `CREATE`, then restore its replicas. The component deletes only its own resume token, records a cold-start cutoff timestamp, skips startup cold-start recovery for that run, opens its watcher from the current stream head, and writes its key back to `RESUME`. Future restarts still run cold-start recovery, but only for records newer than the recorded cutoff.
 
 Helm does not create the resume-control ConfigMap. Components create it at runtime if it is missing, so GitOps tools such as Argo CD do not revert operator patches to its data.
 When a component starts and its key is missing, it writes its key as `RESUME`; the ConfigMap therefore self-populates with explicit per-component state over time.

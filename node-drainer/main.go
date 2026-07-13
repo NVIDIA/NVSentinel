@@ -147,15 +147,20 @@ func run() error {
 	slog.InfoContext(gCtx, "Starting queue worker")
 	components.QueueManager.Start(gCtx)
 
-	// Handle cold start - re-process any events that were in-progress during restart
-	slog.InfoContext(gCtx, "Handling cold start")
+	// Handle cold start - re-process any events that were in-progress during restart.
+	if components.StartFresh {
+		slog.InfoContext(gCtx, "Skipping cold start because resume-control CREATE was consumed")
+	} else {
+		slog.InfoContext(gCtx, "Handling cold start")
 
-	if err := coldstart.Handle(gCtx, coldstart.Dependencies{
-		QueueManager:     components.QueueManager,
-		DatabaseClient:   components.DatabaseClient,
-		HealthEventStore: components.DataStore.HealthEventStore(),
-	}); err != nil {
-		slog.ErrorContext(gCtx, "Cold start handling failed", "error", err)
+		if err := coldstart.Handle(gCtx, coldstart.Dependencies{
+			QueueManager:       components.QueueManager,
+			DatabaseClient:     components.DatabaseClient,
+			HealthEventStore:   components.DataStore.HealthEventStore(),
+			ColdStartAfterTime: components.ColdStartAfterTime,
+		}); err != nil {
+			slog.ErrorContext(gCtx, "Cold start handling failed", "error", err)
+		}
 	}
 
 	slog.InfoContext(gCtx, "Starting database event watcher")
