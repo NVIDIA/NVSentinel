@@ -551,6 +551,11 @@ class DCGMWatcher:
                     break
 
                 with metrics.overall_reconcile_loop_time.time():
+                    # Mark the loop as alive on every iteration, regardless of
+                    # DCGM connectivity. The liveness probe detects a frozen
+                    # loop, not a failed dependency.
+                    _mark_alive()
+
                     if dcgm_handle is None:
                         try:
                             dcgm_handle = self._get_dcgm_handle()
@@ -589,7 +594,6 @@ class DCGMWatcher:
                                 types.CallbackInterface.health_event_occurred.__name__,
                                 [health_status, gpu_ids],
                             )
-                            _mark_alive()
         finally:
             # Shutdown() stops the embedded hostengine and its loopback server.
             try:

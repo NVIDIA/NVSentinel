@@ -49,6 +49,9 @@ var epoch = time.Now()
 type PollingHealthChecker struct {
 	stalenessThreshold time.Duration
 	lastMonoNano       atomic.Int64
+	// clock returns the current monotonic timestamp in nanoseconds.
+	// Defaults to monoNow; overridden in tests for determinism.
+	clock func() int64
 }
 
 func monoNow() int64 {
@@ -61,22 +64,23 @@ func monoNow() int64 {
 func NewPollingHealthChecker(stalenessThreshold time.Duration) *PollingHealthChecker {
 	hc := &PollingHealthChecker{
 		stalenessThreshold: stalenessThreshold,
+		clock:              monoNow,
 	}
-	hc.lastMonoNano.Store(monoNow())
+	hc.lastMonoNano.Store(hc.clock())
 
 	return hc
 }
 
-// MarkAlive records a successful poll loop iteration. This method is
-// safe to call from any goroutine.
+// MarkAlive records that the polling loop is still running. This method
+// is safe to call from any goroutine.
 func (h *PollingHealthChecker) MarkAlive() {
-	h.lastMonoNano.Store(monoNow())
+	h.lastMonoNano.Store(h.clock())
 }
 
 // Healthy implements HealthChecker. It returns nil if MarkAlive was
 // called within the staleness threshold, or an error otherwise.
 func (h *PollingHealthChecker) Healthy(_ context.Context) error {
-	elapsed := time.Duration(monoNow()-h.lastMonoNano.Load()) * time.Nanosecond
+	elapsed := time.Duration(h.clock()-h.lastMonoNano.Load()) * time.Nanosecond
 
 	if elapsed > h.stalenessThreshold {
 		return fmt.Errorf(
