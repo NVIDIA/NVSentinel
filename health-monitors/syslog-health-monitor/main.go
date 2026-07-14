@@ -441,6 +441,10 @@ func runPollingLoop(
 		case <-ticker.C:
 			slog.Info("Performing scheduled health check run...")
 
+			// Mark alive on every tick so the liveness probe detects a
+			// frozen loop, not a failed dependency retrying in backoff.
+			healthChecker.MarkAlive()
+
 			for {
 				if err := monitor.Run(); err != nil {
 					if backoff == 0 {
@@ -470,8 +474,6 @@ func runPollingLoop(
 				}
 
 				backoff = 0
-
-				healthChecker.MarkAlive()
 
 				break
 			}

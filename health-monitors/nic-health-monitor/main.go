@@ -400,11 +400,12 @@ func parseProcessingStrategy(s string) (pb.ProcessingStrategy, error) {
 	return pb.ProcessingStrategy(value), nil
 }
 
-// pollingLoop runs fn at interval until ctx is cancelled. If onSuccess
-// is non-nil it is called after each successful iteration.
+// pollingLoop runs fn at interval until ctx is cancelled. If onIteration
+// is non-nil it is called after each iteration regardless of success,
+// so that liveness probes detect a frozen loop, not a failed dependency.
 func pollingLoop(
 	ctx context.Context, name string, interval time.Duration,
-	fn func(context.Context) error, onSuccess func(),
+	fn func(context.Context) error, onIteration func(),
 ) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -419,8 +420,10 @@ func pollingLoop(
 		case <-ticker.C:
 			if err := fn(ctx); err != nil {
 				slog.Error("Poll cycle failed", "name", name, "error", err)
-			} else if onSuccess != nil {
-				onSuccess()
+			}
+
+			if onIteration != nil {
+				onIteration()
 			}
 		}
 	}
