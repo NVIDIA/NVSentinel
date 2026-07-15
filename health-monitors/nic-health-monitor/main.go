@@ -299,8 +299,10 @@ func loadClassifier(reader sysfs.Reader, cfg *config.Config) (*topology.Classifi
 // runServerAndLoops starts the metrics server alongside the state
 // polling loop under an errgroup.
 func runServerAndLoops(ctx context.Context, rc *runtimeConfig, nicMonitor *monitor.NICHealthMonitor) error {
-	// Health checker reports unhealthy if neither polling loop has completed
-	// an iteration within 3x the state polling interval.
+	// Health checker reports unhealthy if the state polling loop has not
+	// completed an iteration within 3x the state polling interval. The
+	// counter loop deliberately does not mark it: at its 1s cadence it
+	// would mask a frozen state loop.
 	healthChecker := server.NewPollingHealthChecker(3 * rc.statePollingInterval)
 
 	srv := server.NewServer(
