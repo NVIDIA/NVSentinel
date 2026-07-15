@@ -85,12 +85,27 @@ status:
 Behavior of the status checker:
 
 - **Condition `True`** → repair succeeded; equivalent events are marked covered.
-- **Condition `False`** → repair failed; a new CR may be created (retry).
+- **Condition `False`** → repair failed; NVSentinel drops the group and **creates a new CR to retry**.
+  There is no "terminal failure" state — if a repair is unrecoverable, keep the condition off `True`
+  (leave it `Unknown`/absent) rather than setting `False`, or stop requeueing after your own retry budget.
 - **Condition missing / `Unknown`** → repair in progress; NVSentinel **skips** creating a duplicate CR.
 
-The `equivalenceGroup` field deduplicates concurrent repairs on the same node, and
-`supersedingEquivalenceGroups` lets one action supersede another (e.g. a reboot supersedes a GPU
-reset).
+fault-remediation derives an **effective equivalence group** from the matched action — and, when
+`impactedEntityScope` is set, the impacted entity (e.g. `reset-GPU-123`). It skips creating a new CR
+only while a CR in that effective group (or a superseding group) is in progress or already succeeded;
+it does **not** deduplicate every repair on the node.
+
+`supersedingEquivalenceGroups` lets a broader action cover a narrower one. The **subordinate** action
+lists the group that supersedes it. For example, a node reboot has the same effect as an RMA, so the
+`hardware-rma` action lists `restart`:
+
+```yaml
+hardware-rma:
+  equivalenceGroup: external-rma
+  supersedingEquivalenceGroups: [restart]   # a restart supersedes external-rma
+RESTART_VM:
+  equivalenceGroup: restart                 # must be a defined action with no impactedEntityScope
+```
 
 ---
 
@@ -146,7 +161,7 @@ Key fields:
 
 | Field | Purpose |
 |-------|---------|
-| `equivalenceGroup` | Dedupes concurrent repairs on the same node |
+| `equivalenceGroup` | Base group name; combined with the impacted entity into the effective group used for dedup |
 | `completeConditionType` | Condition `type` fault-remediation waits for |
 | `supersedingEquivalenceGroups` | Optional — e.g. `restart` supersedes `external-rma` |
 | `impactedEntityScope` | Optional — per-entity (e.g. per-GPU) dedup; custom actions may set this |
@@ -183,7 +198,7 @@ Scaffold a controller that:
 status:
   conditions:
     - type: Complete          # must match completeConditionType
-      status: "True"          # or "False" on unrecoverable failure
+      status: "True"          # "True" = done; "False" makes NVSentinel retry with a new CR
       reason: RepairSucceeded
       message: Node hardware repaired and validated
 ```
@@ -191,8 +206,13 @@ status:
 **Golden rules** (same as any NVSentinel plugin):
 
 1. Reconcile is **idempotent** — a no-op once `Complete=True`.
-2. Only set `Complete=True` when the repair is **actually** done; requeue until then.
-3. One CR per health event — NVSentinel manages its lifecycle via the equivalence group.
+2. **Make non-idempotent repairs durably idempotent.** A controller restart (or a retry after a
+   `False` condition, which spawns a fresh CR) can re-run your repair before `Complete=True` is
+   persisted. Guard one-shot side effects (opening a ticket, calling a CSP API) with a durable key
+   such as `spec.healthEventId` or a status phase, so the effect happens **at most once**.
+3. Only set `Complete=True` when the repair is **actually** done; requeue until then. Set
+   `Complete=False` only when you want NVSentinel to retry with a new CR.
+4. One CR per health event — NVSentinel manages its lifecycle via the equivalence group.
 
 Build and push the controller image with Kubebuilder's Makefile, pointing `IMG` at a registry
 **your cluster can pull from**:
@@ -200,7 +220,8 @@ Build and push the controller image with Kubebuilder's Makefile, pointing `IMG` 
 ```bash
 docker login   # once, to authenticate
 
-export IMG=docker.io/<your-user>/[my-remediation]:dev   # or your cluster's private registry
+# Replace YOUR_USER and my-remediation with your Docker Hub user and image name.
+export IMG=docker.io/YOUR_USER/my-remediation:dev   # or your cluster's private registry
 make docker-build docker-push IMG=$IMG
 make install && make deploy IMG=$IMG
 ```
@@ -213,6 +234,10 @@ For a full Kubebuilder scaffold, reconciler walkthrough, and one-shot AI prompt,
 — the pattern is the same (NVSentinel creates the CR and polls a status condition; your controller
 reconciles it and sets completion), even though the upstream stage is node-drainer instead of
 fault-remediation.
+
+For a full working example (custom health monitor, CRD, controller, and Helm values), see the
+[local custom remediation demo](../../demos/local-custom-remediation-demo/README.md) — a memory-pressure
+monitor and reclaim controller on a local KIND cluster (no GPU required).
 
 ---
 
@@ -246,10 +271,11 @@ Controller (standalone Kubebuilder project, any repo):
 - Spec: nodeName (string), action (string), healthEventId (string) — minimal fields from the
   fault-remediation template below.
 - Status: conditions []metav1.Condition with a subresource.
-- Reconciler: idempotent; no-op once Complete=True; run repair once; patch status with
-  Type="Complete", Status="True" (or False on unrecoverable failure) using append-or-update-by-type
-  (meta.SetStatusCondition + Status().Update). RBAC: remediationrequests + status; add any API
-  permissions your repair needs.
+- Reconciler: idempotent; no-op once Complete=True; run the repair at most once (guard non-idempotent
+  side effects with a durable key such as spec.healthEventId so a restart or retry cannot repeat them);
+  patch status with Type="Complete", Status="True" when repaired (or "False" to make NVSentinel retry
+  with a new CR) using append-or-update-by-type (meta.SetStatusCondition + Status().Update).
+  RBAC: remediationrequests + status; add any API permissions your repair needs.
 - Build and push with the generated Dockerfile/Makefile, pointing IMG at a registry your cluster can
   pull from (e.g. docker.io/<your-user>/[my-remediation]:dev or a private registry such as NVCR).
   Run docker login once, then make docker-build docker-push IMG=$IMG. Use a public repo so the
