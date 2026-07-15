@@ -2,7 +2,47 @@
 
 ## Overview
 
-The MongoDB Store module provides persistent storage for health events collected by NVSentinel monitors. It deploys a MongoDB replica set with TLS encryption and authentication. This document covers all Helm configuration options for system administrators.
+The MongoDB Store module provides persistent storage for health events collected by NVSentinel monitors. It deploys a MongoDB replica set with TLS encryption and authentication.
+
+Two in-cluster backends are supported: **Bitnami** (default) and **Percona Operator**. This page covers Helm configuration for both.
+
+## Backend selection
+
+| Backend | Helm flags | Configuration keys |
+| ------- | ---------- | ------------------ |
+| Bitnami (default) | `useBitnami: true`, `usePerconaOperator: false` | `mongodb-store.mongodb.*` |
+| Percona Operator | `useBitnami: false`, `usePerconaOperator: true` | `mongodb-store.psmdb-db.*`, `mongodb-store.psmdb-operator.*` |
+
+Both flags must be set explicitly when switching backends. See [ADR-013: MongoDB Migration from Bitnami](../designs/013-mongodb-bitnami-migration.md) for rationale, Bitnami → Percona migration steps, and licensing.
+
+To use a cloud-managed MongoDB (DocumentDB, Atlas, etc.) instead of in-cluster storage, see [External Datastore](../external-datastore.md).
+
+## Percona Operator
+
+Enable Percona on install or upgrade:
+
+```yaml
+global:
+  mongodbStore:
+    enabled: true
+
+mongodb-store:
+  useBitnami: false
+  usePerconaOperator: true
+```
+
+When Percona is enabled, the replica set is configured under `psmdb-db` instead of `mongodb.*` (see defaults in `distros/kubernetes/nvsentinel/charts/mongodb-store/values.yaml`).
+
+- **Service endpoint:** `mongodb-rs0.<namespace>.svc.cluster.local:27017`
+- **Metrics:** `percona/mongodb_exporter` sidecar on port `9216` (configured in default `psmdb-db` values)
+- **Operator reference:** [Percona Operator for MongoDB](https://docs.percona.com/percona-operator-for-mongodb/)
+
+Verify after install:
+
+```bash
+kubectl get perconaservermongodb -n <namespace>
+kubectl get pods -n <namespace> -l app.kubernetes.io/name=percona-server-mongodb
+```
 
 ## Configuration Reference
 
@@ -16,14 +56,9 @@ global:
     enabled: true
 ```
 
-> Note: Several modules (fault-quarantine, node-drainer, fault-remediation, event-exporter) depend on the datastore. Enable the datastore when using these modules.
-
-
-> Note: cert-manager must be installed in the cluster before deploying mongodb-store.
-
 ### Initialization Job Placement
 
-Configures node placement for initialization jobs.
+Configures node placement for initialization jobs (applies to both backends).
 
 ```yaml
 mongodb-store:
