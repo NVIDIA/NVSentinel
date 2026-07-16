@@ -350,8 +350,8 @@ func buildChecks(
 	processingStrategy pb.ProcessingStrategy,
 	stateManager *statefile.Manager,
 	stateBaselines, counterBaselines bool,
-) []checks.Check {
-	var result []checks.Check
+) []checks.TransactionalCheck {
+	var result []checks.TransactionalCheck
 
 	for _, c := range strings.Split(*checksList, ",") {
 		c = strings.TrimSpace(c)

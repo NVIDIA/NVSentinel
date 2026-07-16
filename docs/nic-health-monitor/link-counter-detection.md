@@ -317,7 +317,7 @@ The Degradation Monitor follows NVSentinel's established architectural pattern w
 | **NIC Health Monitor (Degradation Check)** | Poll sysfs counters, calculate deltas/rates, persist counter snapshots and breach state, emit raw events and recovery events | Aggregation, deduplication, correlation, pattern detection |
 | **Health Events Analyzer**                 | Correlate events, detect patterns, escalate severity                                                                         | Direct hardware access                                     |
 
-> **Local State Persistence**: The Degradation Check maintains a persistent state file on the node (hostPath-backed) containing per-counter snapshots (value + timestamp), per-counter breach flags, and the host boot ID. This enables the monitor to (1) compute accurate deltas and **precise velocity rates** by holding the persisted snapshot for the configured velocity window and computing the rate over the real elapsed time — so a `120/hour` threshold is observed over a one-hour window rather than extrapolated from a single 1s sample; (2) seamlessly resume velocity windows after a pod restart because the snapshot timestamp survives the restart; (3) emit recovery events (`IsHealthy=true`) when counters are reset by an administrator, by retaining the breach flag across restarts; and (4) detect host reboots to **clear all state and emit healthy baseline events** for all ports and counters, since the node may have had NICs replaced during maintenance. This local state is strictly operational — all correlation and pattern detection remains centralized in the Health Events Analyzer.
+> **Local State Persistence**: The Degradation Check maintains a hostPath-backed state file containing per-counter snapshots, breach flags, and the host boot ID. This enables precise velocity windows across pod restarts, recovery events after administrator counter resets, and reboot detection that clears counter/observational state and emits healthy baselines. Outstanding card/device FATAL latches owned by the state checks are preserved until matching recovery evidence arrives. This local state is strictly operational — all correlation and pattern detection remains centralized in the Health Events Analyzer.
 
 **Analyzer Escalation**: The Health Events Analyzer only escalates repeated **non-fatal** degradation events. The `RepeatedNICDegradation` rule triggers when 3 non-fatal `InfiniBandDegradationCheck` or `EthernetDegradationCheck` events occur on the same `NIC` + `NICPort` within 1 hour, and recommends `CONTACT_SUPPORT`. Fatal counters still emit `REPLACE_VM` directly from the monitor on first breach.
 
@@ -549,7 +549,7 @@ Naive Delta = 50 - 1,000,000 = NEGATIVE (or overflow to huge positive)
 | **Driver reload** (`modprobe -r mlx5_core`)    | `current < previous`; syslog monitor reports correlated kernel log | Treat `current` as delta, check for recovery                                                   |
 | **Device reset** (firmware/hardware initiated) | `current < previous`; may correlate with syslog events             | Treat `current` as delta, check for recovery                                                   |
 | **Administrator clear** (CSP/cluster admin)    | `current < previous` (typically to 0); no correlated syslog event  | Treat `current` as delta, **emit recovery event if previously breached**                       |
-| **Host reboot**                                | Boot ID changes; all counters restart from 0                       | Clear all persisted state, emit healthy baselines for all ports and counters (see Section 6.5) |
+| **Host reboot**                                | Boot ID changes; all counters restart from 0                       | Clear counter and observational state, preserve outstanding state-event latches, and emit healthy baselines (see Section 6.5) |
 | **uint64 overflow**                            | `current < previous` (extremely rare)                              | Treat `current` as delta                                                                       |
 
 ### 6.3 Counter Reset Handling Algorithm
@@ -623,24 +623,27 @@ T=25s   Poll:  link_downed = 0       (delta=0, not breached, no event)
 
 ### 6.5 Boot ID Handling
 
-On host reboot, the node may come back with **entirely different hardware** (the CSP may have replaced NICs during maintenance). All kernel-maintained sysfs counters reset to zero, port states are re-established from scratch, and the device set may have changed. All persisted state from the previous boot is **stale** and must be discarded. The monitor must then emit **healthy baseline events** for all ports and counters to clear any stale FATAL conditions on the platform from the previous boot.
+On host reboot, the node may come back with **entirely different hardware** (the CSP may have replaced NICs during maintenance). Kernel-maintained counters, port snapshots, and the observed device set are stale and must be discarded. Outstanding card/device event latches are retained until a matching healthy observation clears them. The monitor emits **healthy baseline events** for all observed ports and counters to clear stale conditions from the previous boot.
 
 **Algorithm:**
 
 1. On startup, read current boot ID from `/proc/sys/kernel/random/boot_id`
 2. Compare to the boot ID stored in the persistent state file
 3. **If boot IDs differ** (host rebooted):
-   - **Clear ALL persisted state**: counter snapshots, breach flags, port states, known devices
-   - Update the stored boot ID and save the empty state
+   - Clear counter snapshots, breach flags, port states, known devices, and partial disappearance miss counts; preserve outstanding card/device FATAL latches
+   - Update the stored boot ID
    - On the **first poll cycle after reboot**, emit baseline events:
      - **State checks**: For every port that is currently `ACTIVE/LinkUp`, emit a **healthy event** (`IsHealthy=true`). This clears any stale FATAL port conditions on the platform from the previous boot. Ports that are currently unhealthy (e.g., `DOWN`, `Disabled`) emit fatal events only when first-poll peer evidence shows the card is anomalous; unhealthy ports without peer evidence are logged and suppressed.
      - **Counter checks**: Emit a **healthy event** (`IsHealthy=true`) for every configured counter. Since counters reset to 0 on reboot and there is no previous value to compute a delta from, all counters are below threshold on the first poll. This clears any stale counter breach conditions on the platform. The first poll also establishes the counter baseline:
        - **Delta counters** evaluate against the new baseline starting from the **second poll** (one polling interval later) — any increment above threshold triggers an unhealthy event.
        - **Velocity counters** wait for their full `velocityUnit` window (1s / 1m / 1h) to elapse against the new baseline before evaluating; they do not extrapolate from a partial sample.
    - Rationale: the node is effectively a fresh machine after reboot — NICs may have been replaced, firmware updated, cables reseated. The platform must be told that all previously-reported conditions are resolved unless new issues are detected on this boot.
-4. **If boot IDs match** (pod restart, same host boot):
-   - Restore all persisted state (counter snapshots, breach flags, port states, known devices)
+4. **If boot IDs match and the discovery scope is unchanged** (pod restart, same host boot):
+   - Restore all persisted state (counter snapshots, breach flags, port/device snapshots, debounce state, and outstanding latches)
    - Resume normal boundary-crossing detection with full context
+5. **If boot IDs match but the discovery scope changed** (`nicExclusionRegex` / `nicInclusionRegexOverride` differ from the persisted scope):
+   - Discard port/device snapshots, known devices, and disappearance miss counts — the state checks re-baseline against the new scope and re-emit healthy baselines
+   - Preserve counter snapshots, breach flags, and outstanding card/device FATAL latches: hardware counters do not reset on a scope change, and an outstanding FATAL held downstream must not be orphaned
 
 > **Consistency with sibling monitors**: This boot ID mechanism matches the pattern used by the GPU health monitor (`--state-file` with boot ID) and the syslog health monitor (`state.json` with `boot_id` and journal cursors).
 
@@ -672,6 +675,7 @@ volumeMounts:
 type MonitorState struct {
     Version          int                          `json:"version"`
     BootID           string                       `json:"boot_id"`
+    Scope            string                       `json:"scope"`
 
     // Counter detection state
     CounterSnapshots map[string]CounterSnapshot   `json:"counter_snapshots"`
@@ -680,6 +684,9 @@ type MonitorState struct {
     // State detection state (port state and device presence)
     PortStates       map[string]PortStateSnapshot `json:"port_states"`
     KnownDevices     []string                     `json:"known_devices"`
+    AnomalousCards   map[string]AnomalousCardFlag `json:"anomalous_cards"`
+    DisappearedDevices map[string]DisappearedDeviceFlag `json:"disappeared_devices"`
+    DeviceMissCounts map[string]DeviceMissCount   `json:"device_miss_counts"`
 }
 
 // CounterSnapshot stores the value and wall-clock timestamp of a counter
@@ -886,7 +893,7 @@ The monitor persists operational state to survive pod restarts. See [Section 6.6
   "breach_flags": {
     "mlx5_0:1:link_downed": {
       "breached": true,
-      "check_name": "InfiniBandStateCheck",
+      "check_name": "InfiniBandDegradationCheck",
       "is_fatal": true,
       "since": "2025-06-15T10:25:00Z"
     }
@@ -895,7 +902,13 @@ The monitor persists operational state to survive pod restarts. See [Section 6.6
     "mlx5_0_1": {"state": "1: DOWN", "physical_state": "3: Disabled", "device": "mlx5_0", "port": 1, "link_layer": "InfiniBand"},
     "mlx5_1_1": {"state": "4: ACTIVE", "physical_state": "5: LinkUp", "device": "mlx5_1", "port": 1, "link_layer": "InfiniBand"}
   },
-  "known_devices": ["mlx5_0", "mlx5_1", "mlx5_2", "mlx5_3"]
+  "known_devices": ["mlx5_0", "mlx5_1", "mlx5_2", "mlx5_3"],
+  "disappeared_devices": {
+    "InfiniBand/mlx5_4": {"device": "mlx5_4", "link_layer": "InfiniBand"}
+  },
+  "device_miss_counts": {
+    "InfiniBand/mlx5_3": {"device": "mlx5_3", "link_layer": "InfiniBand", "count": 2}
+  }
 }
 ```
 
@@ -1092,10 +1105,12 @@ reset of a previously breached counter.
 On startup, before the first poll cycle:
   0. Check boot ID (see Section 6.5):
      IF boot ID changed (host rebooted):
-       - Clear ALL persisted state (snapshots and breach flags)
+       - Clear ALL persisted counter state (snapshots and breach flags)
        - Set reboot_detected = true
      ELSE (pod restart, same boot):
-       - Restore all persisted state
+       - Restore all persisted counter state (counter snapshots and breach
+         flags also survive a same-boot discovery-scope change — only
+         port/device discovery state is scope-sensitive; see Section 6.5)
        - Set reboot_detected = false
 
 For each configured counter (key = <device>:<port>:<counter_name>):
@@ -1107,7 +1122,7 @@ For each configured counter (key = <device>:<port>:<counter_name>):
          - IsFatal = false
          - RecommendedAction = NONE
          - Message = "Counter {name} healthy after reboot on port {device} port {port}"
-         - CheckName: state check name if isFatal, else degradation check name
+         - CheckName: degradation check name
      → Store snapshot = (current_value, now). Continue to next counter.
 
   3. Reset detection (in this priority order):
@@ -1156,9 +1171,7 @@ For each configured counter (key = <device>:<port>:<counter_name>):
          - IsFatal = counter.isFatal
          - RecommendedAction = REPLACE_VM if counter.isFatal, else NONE
          - Message = "{port}: {name} - {description} (value=..., delta=..., rate=...)"
-         - CheckName:
-             isFatal=true  → state check name (InfiniBandStateCheck / EthernetStateCheck)
-             isFatal=false → degradation check name
+         - CheckName: degradation check name
          - ComponentClass = "NIC"
      → Set breached = true in persistent breach flags.
 
@@ -1192,12 +1205,12 @@ The monitor validates configuration at startup:
 
 **Example Event Fields (Fatal - link_downed):**
 
-> **Note**: Fatal counter events use the **state check name** (`InfiniBandStateCheck` / `EthernetStateCheck`) so that all fatal signals for a given NIC type consolidate under a single node condition.
+> **Note**: Fatal counter events retain the **degradation check name** (`InfiniBandDegradationCheck` / `EthernetDegradationCheck`). This keeps the counter breach and its eventual counter-reset recovery under one event identity, separate from link-state conditions.
 
 | Field             | Value                                                                                                                    |
 |-------------------|--------------------------------------------------------------------------------------------------------------------------|
 | Agent             | `nic-health-monitor`                                                                                                     |
-| CheckName         | `InfiniBandStateCheck`                                                                                                   |
+| CheckName         | `InfiniBandDegradationCheck`                                                                                             |
 | ComponentClass    | `NIC`                                                                                                                    |
 | Message           | "Port mlx5_0 port 1: link_downed - Port Training State Machine failed - QP disconnect (value=1, delta=1, rate=0.20/sec)" |
 | IsFatal           | `true`                                                                                                                   |
@@ -1207,7 +1220,7 @@ The monitor validates configuration at startup:
 
 **Example Event Fields (Non-Fatal - Degradation):**
 
-> **Note**: Non-fatal counter events use the **degradation check name** (`InfiniBandDegradationCheck` / `EthernetDegradationCheck`) to keep degradation signals separate from fatal conditions on the node.
+> **Note**: Non-fatal counter events use the same **degradation check identity** as fatal counter events; `IsFatal` and `RecommendedAction` distinguish their severity and routing.
 
 | Field             | Value                                                                                                                              |
 |-------------------|------------------------------------------------------------------------------------------------------------------------------------|
@@ -1227,7 +1240,7 @@ The monitor validates configuration at startup:
 | Field             | Value                                                                                     |
 |-------------------|-------------------------------------------------------------------------------------------|
 | Agent             | `nic-health-monitor`                                                                      |
-| CheckName         | `InfiniBandStateCheck`                                                                    |
+| CheckName         | `InfiniBandDegradationCheck`                                                             |
 | ComponentClass    | `NIC`                                                                                     |
 | Message           | "Counter link_downed recovered on port mlx5_0 port 1"                                     |
 | IsFatal           | `false`                                                                                   |

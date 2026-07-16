@@ -17,6 +17,7 @@ package state
 import (
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -66,7 +67,37 @@ type baseStateCheck struct {
 	// held by fault-quarantine.
 	anomalousLatch map[string]bool
 
+	// disappearedLatch tracks device-level FATALs that still need a healthy
+	// re-enumeration event. deviceMissCounts debounces confirmed enumeration
+	// absences before creating such a FATAL.
+	disappearedLatch map[string]bool
+	deviceMissCounts map[string]int
+
+	// exemptionLogged de-duplicates the informational management-sibling
+	// exemption log: the classification is static for a process lifetime,
+	// so each card is logged once rather than every poll. Logging state
+	// only — deliberately outside the transactional commit.
+	exemptionLogged map[string]bool
+
+	// saveFailed records that the last state-file Save failed, so the
+	// next committed poll retries even when nothing changed. Persistence
+	// bookkeeping only — deliberately outside the transactional commit.
+	saveFailed bool
+
+	pending *statePollCommit
+
 	strategy linkLayerStrategy
+}
+
+const deviceMissThreshold = 3
+
+type statePollCommit struct {
+	devices          map[string]bool
+	ports            map[string]portSnapshot
+	anomalousLatch   map[string]bool
+	disappearedLatch map[string]bool
+	deviceMissCounts map[string]int
+	linkLayer        string
 }
 
 // seedFromPersistedState pre-populates previousPorts and previousDevices
@@ -85,6 +116,14 @@ func (b *baseStateCheck) seedFromPersistedState() {
 	for card := range b.state.AnomalousCardsFor(b.strategy.linkLayer()) {
 		b.anomalousLatch[card] = true
 	}
+
+	b.disappearedLatch = make(map[string]bool)
+	for device := range b.state.DisappearedDevicesFor(b.strategy.linkLayer()) {
+		b.disappearedLatch[device] = true
+	}
+
+	b.deviceMissCounts = b.state.DeviceMissCountsFor(b.strategy.linkLayer())
+	b.exemptionLogged = make(map[string]bool)
 
 	if b.emitHealthyBaselines {
 		return
@@ -115,6 +154,252 @@ func (b *baseStateCheck) seedFromPersistedState() {
 		"port_states", len(b.previousPorts),
 		"known_devices", len(b.previousDevices),
 	)
+}
+
+// portIsHealthy reports whether a port snapshot is fully operational.
+// Both link layers share the same healthy definition.
+func portIsHealthy(snap portSnapshot) bool {
+	return snap.State == checks.IBStateActive && snap.PhysicalState == checks.IBPhysLinkUp
+}
+
+// pollAggregates carries the link-layer-agnostic slice of one poll that
+// the shared event-assembly pipeline consumes.
+type pollAggregates struct {
+	seenDevices     map[string]bool
+	parsedDevices   map[string]bool
+	currentDevices  map[string]bool
+	currentPorts    map[string]portSnapshot
+	cardActive      map[string]int
+	cardTotal       map[string]int
+	cardRole        map[string]topology.Role
+	managementCards map[string]bool
+	uncertain       bool
+}
+
+// buildEvents runs the shared per-poll event pipeline: disappearance
+// handling first (it may retain held devices and adds to discovery
+// uncertainty), then the concrete check's per-port transitions, then
+// port/device lifecycle recoveries and the card-homogeneity lifecycle.
+//
+// Card homogeneity is evaluated every poll: anomalies feed the
+// first-poll per-port severity decision and drive the card-anomaly
+// latch (FATAL on onset, card-healthy on recovery — see
+// cardHomogeneityEvents). It is skipped while the inclusion override is
+// active (peer-group statistics carry no signal over a pinned set, see
+// overrideActive) and while discovery is uncertain (partial reads or
+// held misses would make present cards look anomalous).
+func (b *baseStateCheck) buildEvents(
+	agg pollAggregates,
+	baselineRun bool,
+	portEvents func(anomalousCards map[string]topology.CardAnomaly) []*pb.HealthEvent,
+) []*pb.HealthEvent {
+	disappearanceEvents, heldMissingState := b.detectDeviceDisappearance(
+		agg.seenDevices, agg.currentDevices, agg.currentPorts)
+	discoveryUncertain := agg.uncertain || heldMissingState
+
+	b.exemptManagementSiblingCards(agg)
+
+	var anomalousCards map[string]topology.CardAnomaly
+
+	var evaluatedCards map[string]int
+
+	if !b.overrideActive() && !discoveryUncertain {
+		anomalousCards, evaluatedCards = b.classifier.EvaluateCardHomogeneity(
+			agg.cardActive, agg.cardTotal, agg.cardRole)
+	}
+
+	// Snapshot the disappearance latch before the port pass so devices it
+	// consumes (via consumeDisappearanceRecovery) can be diffed afterwards
+	// and given a device-scoped recovery. Latches added above by
+	// detectDeviceDisappearance survive the pass and never appear in the
+	// diff; latches consumed later by consumeReenumeratedDisappearances
+	// emit their own device event and are still present at diff time.
+	latchedBefore := maps.Clone(b.disappearedLatch)
+
+	events := portEvents(anomalousCards)
+	events = append(events, disappearanceEvents...)
+	events = append(events, b.detectPortDisappearance(agg.currentDevices, agg.currentPorts)...)
+	events = append(events, b.deviceDisappearanceRecoveries(latchedBefore)...)
+	events = append(events, b.consumeReenumeratedDisappearances(agg.parsedDevices, agg.currentDevices)...)
+	events = append(events, b.consumeExemptCardLatches(agg.managementCards)...)
+
+	if !b.overrideActive() && !discoveryUncertain {
+		events = append(events, b.cardHomogeneityEvents(
+			agg.cardActive, agg.cardRole, anomalousCards, evaluatedCards, baselineRun)...)
+	}
+
+	return events
+}
+
+// exemptManagementSiblingCards removes cards that have a management-
+// classified sibling function from the homogeneity inputs. Such a card
+// is frontend plumbing: its active member is the excluded management
+// NIC itself, so peer comparison would misread the remaining (often
+// intentionally uncabled) function as a failure — with the active
+// sibling excluded from counting, the card shows 0 active ports against
+// a decisive peer mode (observed on OCI BM.GPU.L40S.4: eth0 excluded as
+// the default-route NIC left card 0000:5a:00 counting 0 < mode 1,
+// fataling its uncabled aux port on every node of the SKU). Exempt
+// cards keep per-port runtime transition detection; they only opt out
+// of peer-evidence verdicts. VF siblings do not exempt a card — they
+// are skipped by discovery before classification and carry no frontend
+// signal.
+func (b *baseStateCheck) exemptManagementSiblingCards(agg pollAggregates) {
+	for card := range agg.managementCards {
+		if _, tracked := agg.cardTotal[card]; !tracked {
+			continue
+		}
+
+		if !b.exemptionLogged[card] {
+			b.exemptionLogged[card] = true
+
+			slog.Info("Exempting card from peer comparison: sibling function is a management NIC",
+				"card", card, "linkLayer", b.strategy.linkLayer())
+		}
+
+		delete(agg.cardActive, card)
+		delete(agg.cardTotal, card)
+		delete(agg.cardRole, card)
+	}
+}
+
+// consumeExemptCardLatches clears outstanding card-anomaly latches for
+// cards that are exempt from peer comparison (management sibling).
+// Exempt cards are never evaluated again, so a held latch could never
+// recover through cardHomogeneityEvents; the card-healthy event keeps
+// the downstream FATAL from being orphaned. This also self-heals nodes
+// latched before the exemption existed. Runs on the transactional
+// candidate latch, so the clear commits only after publication.
+func (b *baseStateCheck) consumeExemptCardLatches(managementCards map[string]bool) []*pb.HealthEvent {
+	var events []*pb.HealthEvent
+
+	for card := range b.anomalousLatch {
+		if !managementCards[card] {
+			continue
+		}
+
+		delete(b.anomalousLatch, card)
+
+		slog.Info("Clearing card-anomaly latch: card is exempt from peer comparison",
+			"card", card, "linkLayer", b.strategy.linkLayer())
+
+		events = append(events, checks.NewHealthEvent(
+			b.nodeName, b.strategy.checkName(),
+			fmt.Sprintf("Card %s exempt from peer comparison (management NIC sibling); clearing anomaly", card),
+			checks.DeviceEntities(card),
+			false, true, pb.RecommendedAction_NONE, b.processingStrategy,
+		))
+	}
+
+	return events
+}
+
+// consumeDisappearanceRecovery clears and reports a latched device
+// disappearance. It is called only while evaluating a healthy port event; the
+// transactional candidate maps ensure the clear is committed after publish.
+func (b *baseStateCheck) consumeDisappearanceRecovery(device string) bool {
+	if !b.disappearedLatch[device] {
+		return false
+	}
+
+	delete(b.disappearedLatch, device)
+
+	return true
+}
+
+// deviceDisappearanceRecoveries emits a device-level healthy event for
+// every disappearance latch the current poll's port evaluation consumed.
+// The disappearance FATAL is device-scoped (NIC entity only), so its
+// recovery must carry the identical entity set: consumers that require
+// all of a healthy event's entities to match a stored condition entry
+// (platform-connector's node conditions since PR #1468) can never clear
+// the device entry from the port-scoped healthy alone. The port healthy
+// emitted by the transition path still clears any port-scoped
+// conditions; this event clears the device-scoped one.
+func (b *baseStateCheck) deviceDisappearanceRecoveries(latchedBefore map[string]bool) []*pb.HealthEvent {
+	var events []*pb.HealthEvent
+
+	for device := range latchedBefore {
+		if b.disappearedLatch[device] {
+			continue // still latched: not consumed by this poll's port pass
+		}
+
+		slog.Info("Device recovered from disappearance; emitting device-scoped recovery",
+			"device", device, "linkLayer", b.strategy.linkLayer())
+
+		events = append(events, checks.NewHealthEvent(
+			b.nodeName, b.strategy.checkName(),
+			fmt.Sprintf("Device %s re-enumerated in sysfs", device),
+			checks.DeviceEntities(device),
+			false, true, pb.RecommendedAction_NONE, b.processingStrategy,
+		))
+	}
+
+	return events
+}
+
+// consumeReenumeratedDisappearances clears disappearance latches for
+// devices that were fully discovered again but expose no port of this
+// check's link layer, emitting a device-level healthy event so the
+// outstanding FATAL downstream is not orphaned. The per-port recovery
+// path cannot reach such devices — they never produce a healthy port of
+// this layer. This covers a device whose ports were reflashed to the
+// sibling layer while it was absent, and latches created before device
+// tracking became layer-scoped. Absent or unreadable devices are not in
+// parsedDevices and hold the latch: no evidence, no verdict.
+func (b *baseStateCheck) consumeReenumeratedDisappearances(
+	parsedDevices, currentDevices map[string]bool,
+) []*pb.HealthEvent {
+	var events []*pb.HealthEvent
+
+	for device := range b.disappearedLatch {
+		if !parsedDevices[device] || currentDevices[device] {
+			continue
+		}
+
+		delete(b.disappearedLatch, device)
+
+		slog.Info("Latched device re-enumerated without target-layer ports; emitting device recovery",
+			"device", device, "linkLayer", b.strategy.linkLayer())
+
+		events = append(events, checks.NewHealthEvent(
+			b.nodeName, b.strategy.checkName(),
+			fmt.Sprintf("Device %s re-enumerated in sysfs", device),
+			checks.DeviceEntities(device),
+			false, true, pb.RecommendedAction_NONE, b.processingStrategy,
+		))
+	}
+
+	return events
+}
+
+// retainUnreadableDevices treats a device that was enumerated but could not
+// be parsed as unknown, not absent. Its last committed device/port snapshots
+// are carried into the candidate poll so neither disappearance nor a partial
+// read can fabricate a state transition.
+func (b *baseStateCheck) retainUnreadableDevices(
+	unreadable map[string]error,
+	seenDevices, currentDevices map[string]bool,
+	currentPorts map[string]portSnapshot,
+) {
+	for device, err := range unreadable {
+		seenDevices[device] = true
+		delete(b.deviceMissCounts, device)
+
+		if !b.previousDevices[device] {
+			continue
+		}
+
+		currentDevices[device] = true
+		for key, snap := range b.previousPorts {
+			if snap.Device == device {
+				currentPorts[key] = snap
+			}
+		}
+
+		slog.Warn("Retaining last-known NIC state after incomplete sysfs read",
+			"device", device, "linkLayer", b.strategy.linkLayer(), "error", err)
+	}
 }
 
 // overrideActive reports whether the explicit inclusion override is
@@ -269,17 +554,46 @@ func (b *baseStateCheck) cardHealthyEvent(
 // detectDeviceDisappearance compares the current device set against the
 // previous poll's set. Missing devices get a FATAL event with the NIC
 // entity.
-func (b *baseStateCheck) detectDeviceDisappearance(current map[string]bool) []*pb.HealthEvent {
+func (b *baseStateCheck) detectDeviceDisappearance(
+	seenDevices map[string]bool,
+	currentDevices map[string]bool,
+	currentPorts map[string]portSnapshot,
+) ([]*pb.HealthEvent, bool) {
 	if b.previousDevices == nil {
-		return nil
+		return nil, false
 	}
 
 	var events []*pb.HealthEvent
 
+	heldMissingState := false
+
 	for device := range b.previousDevices {
-		if current[device] {
+		if seenDevices[device] {
+			delete(b.deviceMissCounts, device)
 			continue
 		}
+
+		misses := b.deviceMissCounts[device] + 1
+		if misses < deviceMissThreshold {
+			heldMissingState = true
+			b.deviceMissCounts[device] = misses
+			currentDevices[device] = true
+
+			for key, snap := range b.previousPorts {
+				if snap.Device == device {
+					currentPorts[key] = snap
+				}
+			}
+
+			slog.Warn("Device absent from sysfs enumeration; holding last-known state",
+				"device", device, "linkLayer", b.strategy.linkLayer(),
+				"misses", misses, "threshold", deviceMissThreshold)
+
+			continue
+		}
+
+		delete(b.deviceMissCounts, device)
+		b.disappearedLatch[device] = true
 
 		slog.Warn("Device disappeared from sysfs",
 			"device", device, "linkLayer", b.strategy.linkLayer())
@@ -296,7 +610,7 @@ func (b *baseStateCheck) detectDeviceDisappearance(current map[string]bool) []*p
 		))
 	}
 
-	return events
+	return events, heldMissingState
 }
 
 // detectPortDisappearance handles the case where a device is still
@@ -370,12 +684,36 @@ func (b *baseStateCheck) persistState(
 	portsChanged := b.state.UpdatePortStates(snapshots, devices, linkLayer)
 	latchChanged := b.state.UpdateAnomalousCards(latch, linkLayer)
 
-	if !portsChanged && !latchChanged {
+	disappeared := make(map[string]statefile.DisappearedDeviceFlag, len(b.disappearedLatch))
+	for device := range b.disappearedLatch {
+		disappeared[device] = statefile.DisappearedDeviceFlag{LinkLayer: linkLayer}
+	}
+
+	disappearedChanged := b.state.UpdateDisappearedDevices(disappeared, linkLayer)
+	missesChanged := b.state.UpdateDeviceMissCounts(b.deviceMissCounts, linkLayer)
+
+	b.saveState(linkLayer, portsChanged || latchChanged || disappearedChanged || missesChanged)
+}
+
+// saveState writes the shared state file when something changed or when
+// a previous Save failed. saveFailed keeps a failed Save retrying on
+// subsequent polls: the in-memory manager already carries the update, so
+// the change flags stay false on an unchanged next poll and the on-disk
+// state would otherwise remain stale until an unrelated change or a
+// restart.
+func (b *baseStateCheck) saveState(linkLayer string, changed bool) {
+	if !changed && !b.saveFailed {
 		return
 	}
 
 	if err := b.state.Save(); err != nil {
+		b.saveFailed = true
+
 		slog.Warn("Failed to persist state to disk",
 			"linkLayer", linkLayer, "path", b.state.Path(), "error", err)
+
+		return
 	}
+
+	b.saveFailed = false
 }

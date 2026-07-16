@@ -74,6 +74,10 @@ func TestLoad_ScopeChangeDiscardsPortStateKeepsCounters(t *testing.T) {
 	m.UpdateAnomalousCards(map[string]AnomalousCardFlag{
 		"0000:47:00": {LinkLayer: "Ethernet"},
 	}, "Ethernet")
+	m.UpdateDisappearedDevices(map[string]DisappearedDeviceFlag{
+		"mlx5_0": {LinkLayer: "Ethernet"},
+	}, "Ethernet")
+	m.UpdateDeviceMissCounts(map[string]int{"mlx5_1": 2}, "Ethernet")
 	m.UpdateCounterSnapshots(map[string]CounterSnapshot{
 		"mlx5_0:1:link_downed": {Value: 7},
 	})
@@ -89,6 +93,8 @@ func TestLoad_ScopeChangeDiscardsPortStateKeepsCounters(t *testing.T) {
 	assert.False(t, same.BootIDChanged(), "matching scope must keep persisted state")
 	assert.False(t, same.ScopeChanged())
 	assert.Contains(t, same.PortStatesFor(), "mlx5_0_1")
+	assert.Contains(t, same.DisappearedDevicesFor("Ethernet"), "mlx5_0")
+	assert.Equal(t, 2, same.DeviceMissCountsFor("Ethernet")["mlx5_1"])
 
 	// Different scope (inclusion override enabled): port/device state is
 	// discarded, counter state survives, and the two signals are
@@ -111,6 +117,10 @@ func TestLoad_ScopeChangeDiscardsPortStateKeepsCounters(t *testing.T) {
 	assert.Contains(t, changed.AnomalousCardsFor("Ethernet"), "0000:47:00",
 		"the card-anomaly latch must survive a scope change — the new scope "+
 			"may skip the card lifecycle entirely (inclusion override)")
+	assert.Contains(t, changed.DisappearedDevicesFor("Ethernet"), "mlx5_0",
+		"an outstanding disappearance FATAL must survive a scope change")
+	assert.Empty(t, changed.DeviceMissCountsFor("Ethernet"),
+		"partial debounce state must reset with the discovery scope")
 }
 
 func TestLoad_BootIDChangePreservesAnomalousCards(t *testing.T) {
@@ -127,6 +137,10 @@ func TestLoad_BootIDChangePreservesAnomalousCards(t *testing.T) {
 	m.UpdateAnomalousCards(map[string]AnomalousCardFlag{
 		"0000:47:00": {LinkLayer: "Ethernet"},
 	}, "Ethernet")
+	m.UpdateDisappearedDevices(map[string]DisappearedDeviceFlag{
+		"mlx5_0": {LinkLayer: "Ethernet"},
+	}, "Ethernet")
+	m.UpdateDeviceMissCounts(map[string]int{"mlx5_1": 2}, "Ethernet")
 	require.NoError(t, m.Save())
 
 	require.NoError(t, os.WriteFile(bootIDPath, []byte("boot-2\n"), 0o644))
@@ -137,6 +151,32 @@ func TestLoad_BootIDChangePreservesAnomalousCards(t *testing.T) {
 	assert.Empty(t, rebooted.PortStatesFor(), "port state must reset on reboot")
 	assert.Contains(t, rebooted.AnomalousCardsFor("Ethernet"), "0000:47:00",
 		"card-anomaly latch must survive a reboot")
+	assert.Contains(t, rebooted.DisappearedDevicesFor("Ethernet"), "mlx5_0",
+		"an outstanding disappearance FATAL must survive a reboot")
+	assert.Empty(t, rebooted.DeviceMissCountsFor("Ethernet"),
+		"partial debounce state must reset on reboot")
+}
+
+func TestDeviceLifecycleState_MixedLayersDoNotClobber(t *testing.T) {
+	m, _, _ := tempEnv(t, "boot-1")
+	require.NoError(t, m.Load())
+
+	m.UpdateDisappearedDevices(map[string]DisappearedDeviceFlag{
+		"mlx5_0": {LinkLayer: "Ethernet"},
+	}, "Ethernet")
+	m.UpdateDisappearedDevices(map[string]DisappearedDeviceFlag{
+		"mlx5_0": {LinkLayer: "InfiniBand"},
+	}, "InfiniBand")
+	m.UpdateDeviceMissCounts(map[string]int{"mlx5_1": 1}, "Ethernet")
+	m.UpdateDeviceMissCounts(map[string]int{"mlx5_1": 2}, "InfiniBand")
+
+	m.UpdateDisappearedDevices(map[string]DisappearedDeviceFlag{}, "Ethernet")
+	m.UpdateDeviceMissCounts(map[string]int{}, "Ethernet")
+
+	assert.Empty(t, m.DisappearedDevicesFor("Ethernet"))
+	assert.Empty(t, m.DeviceMissCountsFor("Ethernet"))
+	assert.Contains(t, m.DisappearedDevicesFor("InfiniBand"), "mlx5_0")
+	assert.Equal(t, 2, m.DeviceMissCountsFor("InfiniBand")["mlx5_1"])
 }
 
 func TestAnomalousCards_MixedLayerSameCard(t *testing.T) {
