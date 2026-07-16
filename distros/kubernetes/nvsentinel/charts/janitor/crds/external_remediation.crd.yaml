@@ -167,4 +167,14 @@ spec:
                   description: completionTime is set when the reconciler is done with this ExtRR — the apply terminated (success or NodeNotFound), the close path ran after Complete=True, or operator-initiated cleanup completed. Once set, the reconciler short-circuits to a CheckUnlock-only pass on subsequent reconciles. The TTL reconciler counts the cleanup window from this timestamp, matching the sibling janitor CRDs (RebootNode, TerminateNode, GPUReset).
                   format: RFC3339
           description: ExternalRemediationRequest is the exit door from NVSentinel ownership. Created by fault-remediation when triage maps a fault to the CUSTOM recommended action (per ADR-036) with a customRecommendedAction configured to produce an ExtRR. See ADR-040 (docs/designs/040-external-remediation-request.md) for the full design including the asymmetric ExternalRemediationComplete=True vs False handling, the cleanup finalizer, the release taint, and the nvsentinel.dgxc.nvidia.com/managed label coordination mechanism.
-      additionalPrinterColumns: []
+      additionalPrinterColumns:
+        - name: Node
+          type: string
+          jsonPath: .spec.healthEvent.nodeName
+        - name: CheckName
+          type: string
+          jsonPath: .spec.healthEvent.checkName
+        - name: CompletionTime
+          type: string
+          format: date
+          jsonPath: .status.completionTime

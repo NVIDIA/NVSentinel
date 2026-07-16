@@ -101,7 +101,12 @@ message ExternalRemediationRequest {
     // Cluster-scoped to match the other remediation CRDs (RebootNode,
     // TerminateNode, GPUReset) — an ExtRR represents a node-level claim and
     // operators interact with it by node name, not by namespace.
-    scope: ST_CLUSTER
+    scope: ST_CLUSTER,
+    additional_columns: [
+      {name: "Node",           type: CT_STRING, json_path: ".spec.healthEvent.nodeName"},
+      {name: "CheckName",      type: CT_STRING, json_path: ".spec.healthEvent.checkName"},
+      {name: "CompletionTime", type: CT_STRING, format: CF_DATE, json_path: ".status.completionTime"}
+    ]
   };
   ExternalRemediationRequestSpec spec = 1;
   ExternalRemediationRequestStatus status = 2;

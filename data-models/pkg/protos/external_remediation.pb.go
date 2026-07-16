@@ -333,12 +333,15 @@ const file_external_remediation_proto_rawDesc = "" +
 	"\n" +
 	"conditions\x18\x01 \x03(\v2\x15.datamodels.ConditionR\n" +
 	"conditions\x12B\n" +
-	"\x0ecompletionTime\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x0ecompletionTime\"\xb2\x02\n" +
+	"\x0ecompletionTime\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x0ecompletionTime\"\xb2\x03\n" +
 	"\x1aExternalRemediationRequest\x12>\n" +
 	"\x04spec\x18\x01 \x01(\v2*.datamodels.ExternalRemediationRequestSpecR\x04spec\x12D\n" +
-	"\x06status\x18\x02 \x01(\v2,.datamodels.ExternalRemediationRequestStatusR\x06status:\x8d\x01\xaa\xa8\xfd\x97\x02\x86\x01\n" +
+	"\x06status\x18\x02 \x01(\v2,.datamodels.ExternalRemediationRequestStatusR\x06status:\x8d\x02\xaa\xa8\xfd\x97\x02\x86\x02\n" +
 	"\x1anvsentinel.dgxc.nvidia.com\x12\x1aExternalRemediationRequest\x1a\x1aexternalremediationrequest\"\x1bexternalremediationrequests*\x05extrr2\n" +
-	"nvsentinel@\x01B5Z3github.com/nvidia/nvsentinel/data-models/pkg/protosb\x06proto3"
+	"nvsentinel:$\n" +
+	"\x04Node\x10\x03*\x1a.spec.healthEvent.nodeName:*\n" +
+	"\tCheckName\x10\x03*\x1b.spec.healthEvent.checkName:,\n" +
+	"\x0eCompletionTime\x10\x03\x18\x06*\x16.status.completionTime@\x01B5Z3github.com/nvidia/nvsentinel/data-models/pkg/protosb\x06proto3"
 
 var (
 	file_external_remediation_proto_rawDescOnce sync.Once
