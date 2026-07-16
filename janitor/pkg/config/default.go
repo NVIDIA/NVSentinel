@@ -37,6 +37,8 @@ const (
 	HostSysVolumeName      = "host-sys"
 	HostSysPath            = "/sys"
 	WriteSyslogEventEnvVar = "WRITE_SYSLOG_EVENT"
+	NodeNameEnvVar         = "NODE_NAME"
+	UploadURLBaseEnvVar    = "UPLOAD_URL_BASE"
 )
 
 func applyConfigDefaults(config *Config) {
@@ -184,7 +186,8 @@ func getImagePullSecrets(imagePullSecrets []ImagePullSecret) []corev1.LocalObjec
 
 // getDefaultGPUResetJobTemplate returns the default JobTemplateSpec for GPU reset jobs.
 func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []ImagePullSecret,
-	resources ResourceRequirements, runtimeClassName string, writeSyslogEvent bool) (*batchv1.JobTemplateSpec, error) {
+	resources ResourceRequirements, runtimeClassName string, writeSyslogEvent bool,
+	uploadURL string) (*batchv1.JobTemplateSpec, error) {
 	imagePullSecrets := getImagePullSecrets(secrets)
 
 	containerResources, err := getResources(resources)
@@ -290,6 +293,22 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 	}
 	if len(runtimeClassName) > 0 {
 		job.Spec.Template.Spec.RuntimeClassName = &runtimeClassName
+	}
+
+	job.Spec.Template.Spec.Containers[0].Env = append(job.Spec.Template.Spec.Containers[0].Env, corev1.EnvVar{
+		Name: NodeNameEnvVar,
+		ValueFrom: &corev1.EnvVarSource{
+			FieldRef: &corev1.ObjectFieldSelector{
+				FieldPath: "spec.nodeName",
+			},
+		},
+	})
+
+	if uploadURL != "" {
+		job.Spec.Template.Spec.Containers[0].Env = append(job.Spec.Template.Spec.Containers[0].Env, corev1.EnvVar{
+			Name:  UploadURLBaseEnvVar,
+			Value: uploadURL,
+		})
 	}
 
 	return job, nil
