@@ -299,10 +299,16 @@ func loadClassifier(reader sysfs.Reader, cfg *config.Config) (*topology.Classifi
 // runServerAndLoops starts the metrics server alongside the state
 // polling loop under an errgroup.
 func runServerAndLoops(ctx context.Context, rc *runtimeConfig, nicMonitor *monitor.NICHealthMonitor) error {
+	// Health checker reports unhealthy if the state polling loop has not
+	// completed an iteration within 3x the state polling interval. The
+	// counter loop deliberately does not mark it: at its 1s cadence it
+	// would mask a frozen state loop.
+	healthChecker := server.NewPollingHealthChecker(3 * rc.statePollingInterval)
+
 	srv := server.NewServer(
 		server.WithPort(rc.metricsPort),
 		server.WithPrometheusMetrics(),
-		server.WithSimpleHealth(),
+		server.WithHealthCheck(healthChecker),
 	)
 
 	g, gCtx := errgroup.WithContext(ctx)
@@ -318,11 +324,11 @@ func runServerAndLoops(ctx context.Context, rc *runtimeConfig, nicMonitor *monit
 	})
 
 	g.Go(func() error {
-		return pollingLoop(gCtx, "state", rc.statePollingInterval, nicMonitor.RunStateChecks)
+		return pollingLoop(gCtx, "state", rc.statePollingInterval, nicMonitor.RunStateChecks, healthChecker.MarkAlive)
 	})
 
 	g.Go(func() error {
-		return pollingLoop(gCtx, "counter", monitor.CounterPollingInterval, nicMonitor.RunCounterChecks)
+		return pollingLoop(gCtx, "counter", monitor.CounterPollingInterval, nicMonitor.RunCounterChecks, nil)
 	})
 
 	return g.Wait()
@@ -396,8 +402,13 @@ func parseProcessingStrategy(s string) (pb.ProcessingStrategy, error) {
 	return pb.ProcessingStrategy(value), nil
 }
 
-// pollingLoop runs fn at interval until ctx is cancelled.
-func pollingLoop(ctx context.Context, name string, interval time.Duration, fn func(context.Context) error) error {
+// pollingLoop runs fn at interval until ctx is cancelled. If onIteration
+// is non-nil it is called after each iteration regardless of success,
+// so that liveness probes detect a frozen loop, not a failed dependency.
+func pollingLoop(
+	ctx context.Context, name string, interval time.Duration,
+	fn func(context.Context) error, onIteration func(),
+) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -411,6 +422,10 @@ func pollingLoop(ctx context.Context, name string, interval time.Duration, fn fu
 		case <-ticker.C:
 			if err := fn(ctx); err != nil {
 				slog.Error("Poll cycle failed", "name", name, "error", err)
+			}
+
+			if onIteration != nil {
+				onIteration()
 			}
 		}
 	}

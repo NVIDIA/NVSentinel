@@ -19,6 +19,7 @@ from gpu_health_monitor.metadata import MetadataReader
 from threading import Event
 from functools import partial
 from concurrent.futures import ThreadPoolExecutor
+from gpu_health_monitor.healthz import mark_alive as _mark_alive
 import os
 
 DELAY, MULTIPLIER, MAX_DELAY = 2, 1.5, 120
@@ -550,6 +551,11 @@ class DCGMWatcher:
                     break
 
                 with metrics.overall_reconcile_loop_time.time():
+                    # Mark the loop as alive on every iteration, regardless of
+                    # DCGM connectivity. The liveness probe detects a frozen
+                    # loop, not a failed dependency.
+                    _mark_alive()
+
                     if dcgm_handle is None:
                         try:
                             dcgm_handle = self._get_dcgm_handle()
