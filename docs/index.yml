@@ -116,6 +116,8 @@ navigation:
         path: configuration/preflight.md
       - page: MongoDB Store
         path: configuration/mongodb-store.md
+      - page: PostgreSQL Store
+        path: configuration/postgresql-store.md
 
   - section: Runbooks
     contents:

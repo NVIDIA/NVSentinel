@@ -33,11 +33,11 @@ kindV1Alpha4Cluster:
           kind: JoinConfiguration
           nodeRegistration:
             kubeletExtraArgs:
-              node-labels: "nvidia.com/gpu.present=true,nvidia.com/gpu.deploy.dcgm=true,nvidia.com/gpu.deploy.driver=true"
+              node-labels: "nvidia.com/gpu.deploy.dcgm=true,nvidia.com/gpu.deploy.driver=true"
     - role: worker
       kubeadmConfigPatches:
         - |
           kind: JoinConfiguration
           nodeRegistration:
             kubeletExtraArgs:
-              node-labels: "nvidia.com/gpu.present=true,nvidia.com/gpu.deploy.dcgm=true,nvidia.com/gpu.deploy.driver=true"
+              node-labels: "nvidia.com/gpu.deploy.dcgm=true,nvidia.com/gpu.deploy.driver=true"
