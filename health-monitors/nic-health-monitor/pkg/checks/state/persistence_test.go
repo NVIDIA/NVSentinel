@@ -186,12 +186,21 @@ func TestIBState_Persistence_DeviceDisappearanceAcrossRestart(t *testing.T) {
 	require.NoError(t, err)
 
 	// Drop mlx5_1, simulate a fresh pod on the same boot.
+	removedDevice := node.ib["mlx5_1"]
 	delete(node.ib, "mlx5_1")
 
 	mgr2 := reloadManager(t, mgr)
 	secondPod := NewInfiniBandStateCheck("node1", reader, &config.Config{},
 		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr2, false)
 	events, err := secondPod.Run()
+	require.NoError(t, err)
+	assert.Empty(t, events, "first miss after restart must be debounced")
+
+	events, err = secondPod.Run()
+	require.NoError(t, err)
+	assert.Empty(t, events, "second miss after restart must be debounced")
+
+	events, err = secondPod.Run()
 	require.NoError(t, err)
 
 	var disappeared *pb.HealthEvent
@@ -209,6 +218,31 @@ func TestIBState_Persistence_DeviceDisappearanceAcrossRestart(t *testing.T) {
 	require.NotNil(t, disappeared, "new pod should emit a fatal device-disappearance event for mlx5_1")
 	assert.Contains(t, disappeared.Message, "mlx5_1")
 	assert.Contains(t, disappeared.Message, "disappeared")
+
+	// The disappearance latch must survive another pod restart so a healthy
+	// re-enumeration clears the outstanding device-level condition — with
+	// both the port-scoped and the device-scoped (entity-symmetric) healthy.
+	node.ib["mlx5_1"] = removedDevice
+	mgr3 := reloadManager(t, mgr2)
+	thirdPod := NewInfiniBandStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr3, false)
+
+	events, err = thirdPod.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 2)
+
+	deviceScoped := 0
+
+	for _, evt := range events {
+		require.True(t, evt.IsHealthy)
+		assert.Contains(t, evt.Message, "mlx5_1")
+
+		if len(evt.EntitiesImpacted) == 1 {
+			deviceScoped++
+		}
+	}
+
+	assert.Equal(t, 1, deviceScoped, "exactly one recovery must be device-scoped (NIC entity only)")
 }
 
 func TestEthState_Persistence_IBAndEthShareFileWithoutClobber(t *testing.T) {
@@ -872,4 +906,54 @@ func TestEthState_SameScopeRestart_RetainsMemory(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, events, 1, "retained memory must produce the DOWN→ACTIVE recovery event")
 	assert.True(t, events[0].IsHealthy)
+}
+
+// TestPersistState_RetriesAfterFailedSave verifies the dirty-flag retry:
+// a failed Save leaves the in-memory manager updated, so the change
+// detection alone would never re-save on an unchanged poll and the
+// on-disk state would stay stale until an unrelated change or restart.
+func TestPersistState_RetriesAfterFailedSave(t *testing.T) {
+	dir := t.TempDir()
+	// A regular file where the state directory belongs makes Save's
+	// MkdirAll fail deterministically until it is removed.
+	blocker := filepath.Join(dir, "state-dir")
+	require.NoError(t, os.WriteFile(blocker, []byte("blocker"), 0o644))
+
+	statePath := filepath.Join(blocker, "state.json")
+	bootIDPath := filepath.Join(dir, "boot_id")
+	require.NoError(t, os.WriteFile(bootIDPath, []byte("boot-1\n"), 0o644))
+
+	mgr := statefile.NewManagerWithPaths(statePath, bootIDPath)
+	require.NoError(t, mgr.Load())
+
+	node := newStubNode().addIB("mlx5_0", &stubDevice{
+		pciAddress: "0000:47:00.0", numaNode: 0,
+		ports: map[int]stubPort{1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "InfiniBand"}},
+	})
+	reader := node.reader()
+	classifier := buildClassifier(t, reader,
+		[]string{"0000:0f:00.0"}, map[string][]string{"mlx5_0": {"PIX"}})
+	check := NewInfiniBandStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, false)
+
+	// First poll: state changed, Save fails (the blocker file makes the
+	// state directory uncreatable).
+	_, err := check.Run()
+	require.NoError(t, err, "persistence failures must not fail the poll")
+
+	// Unblock before asserting: with the blocker gone, the stat result is
+	// an unambiguous ENOENT for the state file itself rather than an
+	// ENOTDIR artifact of the blocker on the parent path.
+	require.NoError(t, os.Remove(blocker))
+
+	_, statErr := os.Stat(statePath)
+	require.True(t, os.IsNotExist(statErr), "the failed save must not have created the state file")
+
+	// A steady-state poll has no changes, so only the dirty flag can
+	// trigger the retry.
+	_, err = check.Run()
+	require.NoError(t, err)
+
+	_, statErr = os.Stat(statePath)
+	assert.NoError(t, statErr, "an unchanged poll after a failed save must retry persistence")
 }

@@ -83,6 +83,17 @@ type MonitorState struct {
 	// never clear.
 	AnomalousCards map[string]AnomalousCardFlag `json:"anomalous_cards,omitempty"`
 
+	// DisappearedDevices is the device-disappearance latch. It survives
+	// restarts, reboots, and discovery-scope changes because each entry
+	// represents a device-level FATAL still outstanding downstream. A
+	// healthy port observed after re-enumeration removes the matching entry.
+	DisappearedDevices map[string]DisappearedDeviceFlag `json:"disappeared_devices,omitempty"`
+
+	// DeviceMissCounts debounces confirmed enumeration misses. Unlike an
+	// outstanding disappearance FATAL, a partial miss is operational polling
+	// state and is discarded on boot-ID or discovery-scope changes.
+	DeviceMissCounts map[string]DeviceMissCount `json:"device_miss_counts,omitempty"`
+
 	// Counter detection state — produced by InfiniBandDegradationCheck
 	// and EthernetDegradationCheck. Both maps key on
 	// `<device>:<port>:<counter_name>` so the IB and Ethernet checks
@@ -109,6 +120,21 @@ type PortStateSnapshot struct {
 type AnomalousCardFlag struct {
 	Card      string `json:"card,omitempty"`
 	LinkLayer string `json:"link_layer,omitempty"`
+}
+
+// DisappearedDeviceFlag marks a device-level disappearance FATAL that needs
+// a future healthy re-enumeration event to clear it.
+type DisappearedDeviceFlag struct {
+	Device    string `json:"device,omitempty"`
+	LinkLayer string `json:"link_layer,omitempty"`
+}
+
+// DeviceMissCount stores consecutive complete-enumeration polls in which a
+// previously monitored device was absent.
+type DeviceMissCount struct {
+	Device    string `json:"device,omitempty"`
+	LinkLayer string `json:"link_layer,omitempty"`
+	Count     int    `json:"count,omitempty"`
 }
 
 // CounterSnapshot stores the value and wall-clock timestamp of a counter
@@ -251,22 +277,22 @@ func (m *Manager) Load() error {
 
 	if loaded.BootID != currentBootID {
 		slog.Info("Boot ID changed, resetting persisted state "+
-			"(card-anomaly latch preserved)",
+			"(outstanding state-event latches preserved)",
 			"previous_boot_id", loaded.BootID,
 			"current_boot_id", currentBootID,
 		)
 
-		// The card-anomaly latch survives reboots: it tracks card FATALs
-		// outstanding downstream (e.g., a quarantine annotation), which a
-		// reboot does not clear. If the ports come back healthy, the
-		// seeded latch emits the card-healthy recovery; if the group is
-		// still down/indecisive at boot, the latch holds until positive
-		// evidence arrives. Everything else resets as usual.
+		// Card-anomaly and device-disappearance latches survive reboots:
+		// they track FATALs outstanding downstream (e.g., a quarantine
+		// annotation), which a reboot does not clear. If the hardware comes
+		// back healthy, the seeded latch emits the matching recovery. All
+		// observational state resets as usual.
 		m.state = MonitorState{
-			Version:        SchemaVersion,
-			BootID:         currentBootID,
-			Scope:          m.scope,
-			AnomalousCards: loaded.AnomalousCards,
+			Version:            SchemaVersion,
+			BootID:             currentBootID,
+			Scope:              m.scope,
+			AnomalousCards:     loaded.AnomalousCards,
+			DisappearedDevices: loaded.DisappearedDevices,
 		}
 		m.loaded = true
 		m.bootIDChanged = true
@@ -295,17 +321,19 @@ func (m *Manager) Load() error {
 
 		// PortStates and KnownDevices are intentionally dropped with the
 		// scope: the state checks re-baseline. Counter state survives
-		// (see MonitorState.Scope), and so does the card-anomaly latch —
+		// (see MonitorState.Scope), and so do outstanding state-event latches —
 		// a scope change (e.g., enabling the inclusion override, whose
 		// mode skips the card lifecycle entirely) must not orphan a card
-		// FATAL that is still holding a quarantine downstream.
+		// FATAL that is still holding a quarantine downstream. The
+		// disappearance latch is preserved for the same reason.
 		m.state = MonitorState{
-			Version:          SchemaVersion,
-			BootID:           currentBootID,
-			Scope:            m.scope,
-			AnomalousCards:   loaded.AnomalousCards,
-			CounterSnapshots: loaded.CounterSnapshots,
-			BreachFlags:      loaded.BreachFlags,
+			Version:            SchemaVersion,
+			BootID:             currentBootID,
+			Scope:              m.scope,
+			AnomalousCards:     loaded.AnomalousCards,
+			DisappearedDevices: loaded.DisappearedDevices,
+			CounterSnapshots:   loaded.CounterSnapshots,
+			BreachFlags:        loaded.BreachFlags,
 		}
 		m.loaded = true
 		m.bootIDChanged = false
@@ -524,6 +552,115 @@ func (m *Manager) UpdateAnomalousCards(
 		key := anomalousCardKey(v.LinkLayer, card)
 		if old, exists := m.state.AnomalousCards[key]; !exists || old != v {
 			m.state.AnomalousCards[key] = v
+			changed = true
+		}
+	}
+
+	return changed
+}
+
+func linkLayerEntityKey(linkLayer, entity string) string {
+	return linkLayer + "/" + entity
+}
+
+// DisappearedDevicesFor returns outstanding device-disappearance latches for
+// the requested link layer(s), keyed by device name.
+func (m *Manager) DisappearedDevicesFor(layers ...string) map[string]DisappearedDeviceFlag {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	out := make(map[string]DisappearedDeviceFlag, len(m.state.DisappearedDevices))
+	for _, v := range m.state.DisappearedDevices {
+		if matchesLayer(v.LinkLayer, layers) {
+			out[v.Device] = v
+		}
+	}
+
+	return out
+}
+
+// UpdateDisappearedDevices replaces the caller's link-layer slice of the
+// persisted device-disappearance latch while preserving sibling-check entries.
+func (m *Manager) UpdateDisappearedDevices(
+	devices map[string]DisappearedDeviceFlag,
+	layers ...string,
+) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.state.DisappearedDevices == nil {
+		m.state.DisappearedDevices = make(map[string]DisappearedDeviceFlag, len(devices))
+	}
+
+	changed := false
+
+	for k, v := range m.state.DisappearedDevices {
+		if matchesLayer(v.LinkLayer, layers) {
+			if _, keep := devices[v.Device]; !keep {
+				delete(m.state.DisappearedDevices, k)
+
+				changed = true
+			}
+		}
+	}
+
+	for device, v := range devices {
+		v.Device = device
+
+		key := linkLayerEntityKey(v.LinkLayer, device)
+		if old, exists := m.state.DisappearedDevices[key]; !exists || old != v {
+			m.state.DisappearedDevices[key] = v
+			changed = true
+		}
+	}
+
+	return changed
+}
+
+// DeviceMissCountsFor returns consecutive enumeration-miss counts for the
+// requested link layer(s), keyed by device name.
+func (m *Manager) DeviceMissCountsFor(layers ...string) map[string]int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	out := make(map[string]int, len(m.state.DeviceMissCounts))
+	for _, v := range m.state.DeviceMissCounts {
+		if matchesLayer(v.LinkLayer, layers) {
+			out[v.Device] = v.Count
+		}
+	}
+
+	return out
+}
+
+// UpdateDeviceMissCounts replaces the caller's link-layer slice of persisted
+// debounce state while preserving sibling-check entries.
+func (m *Manager) UpdateDeviceMissCounts(counts map[string]int, linkLayer string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.state.DeviceMissCounts == nil {
+		m.state.DeviceMissCounts = make(map[string]DeviceMissCount, len(counts))
+	}
+
+	changed := false
+
+	for k, v := range m.state.DeviceMissCounts {
+		if strings.EqualFold(v.LinkLayer, linkLayer) {
+			if _, keep := counts[v.Device]; !keep {
+				delete(m.state.DeviceMissCounts, k)
+
+				changed = true
+			}
+		}
+	}
+
+	for device, count := range counts {
+		v := DeviceMissCount{Device: device, LinkLayer: linkLayer, Count: count}
+
+		key := linkLayerEntityKey(linkLayer, device)
+		if old, exists := m.state.DeviceMissCounts[key]; !exists || old != v {
+			m.state.DeviceMissCounts[key] = v
 			changed = true
 		}
 	}

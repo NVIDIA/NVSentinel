@@ -17,6 +17,7 @@ package state
 import (
 	"fmt"
 	"log/slog"
+	"maps"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/checks"
@@ -47,6 +48,7 @@ type InfiniBandStateCheck struct {
 }
 
 var _ linkLayerStrategy = (*InfiniBandStateCheck)(nil)
+var _ checks.TransactionalCheck = (*InfiniBandStateCheck)(nil)
 
 func (c *InfiniBandStateCheck) checkName() string { return checks.InfiniBandStateCheckName }
 func (c *InfiniBandStateCheck) linkLayer() string { return ibLinkLayer }
@@ -106,11 +108,14 @@ func (c *InfiniBandStateCheck) Name() string { return checks.InfiniBandStateChec
 // events. It keeps Run's signature small while letting the loop helpers
 // mutate a single struct.
 type ibPollState struct {
-	seenDevices    map[string]bool
-	currentDevices map[string]bool
-	currentPorts   map[string]portSnapshot
-	ibPorts        []discovery.IBPort
-	skippedVFs     int
+	seenDevices        map[string]bool
+	parsedDevices      map[string]bool
+	currentDevices     map[string]bool
+	currentPorts       map[string]portSnapshot
+	managementCards    map[string]bool
+	ibPorts            []discovery.IBPort
+	skippedVFs         int
+	discoveryUncertain bool
 
 	cardActive   map[string]int
 	cardTotal    map[string]int
@@ -121,20 +126,39 @@ type ibPollState struct {
 
 func newIBPollState() *ibPollState {
 	return &ibPollState{
-		seenDevices:    make(map[string]bool),
-		currentDevices: make(map[string]bool),
-		currentPorts:   make(map[string]portSnapshot),
-		ibPorts:        make([]discovery.IBPort, 0),
-		cardActive:     make(map[string]int),
-		cardTotal:      make(map[string]int),
-		cardRole:       make(map[string]topology.Role),
-		portCard:       make(map[string]string),
-		portOverride:   make(map[string]bool),
+		seenDevices:     make(map[string]bool),
+		parsedDevices:   make(map[string]bool),
+		currentDevices:  make(map[string]bool),
+		currentPorts:    make(map[string]portSnapshot),
+		managementCards: make(map[string]bool),
+		ibPorts:         make([]discovery.IBPort, 0),
+		cardActive:      make(map[string]int),
+		cardTotal:       make(map[string]int),
+		cardRole:        make(map[string]topology.Role),
+		portCard:        make(map[string]string),
+		portOverride:    make(map[string]bool),
 	}
 }
 
-// Run executes a single poll cycle and returns the resulting events.
+// Run executes and commits one poll for direct callers. The production
+// monitor uses Prepare/Commit/Discard so publication succeeds before state
+// advances.
 func (c *InfiniBandStateCheck) Run() ([]*pb.HealthEvent, error) {
+	events, err := c.Prepare()
+	if err != nil {
+		return nil, err
+	}
+
+	c.Commit()
+
+	return events, nil
+}
+
+// Prepare observes one poll and stages its candidate state without advancing
+// the committed transition maps or persistent state.
+func (c *InfiniBandStateCheck) Prepare() ([]*pb.HealthEvent, error) {
+	c.Discard()
+
 	result, err := discovery.DiscoverDevicesWithOverride(
 		c.reader, c.cfg.NicExclusionRegex, c.cfg.NicInclusionRegexOverride,
 	)
@@ -142,42 +166,108 @@ func (c *InfiniBandStateCheck) Run() ([]*pb.HealthEvent, error) {
 		return nil, fmt.Errorf("device discovery failed: %w", err)
 	}
 
+	if !result.Complete {
+		if c.previousDevices != nil {
+			return nil, fmt.Errorf("device discovery incomplete: InfiniBand sysfs tree unavailable")
+		}
+
+		// Keep first-poll and reboot-baseline behavior pending until one
+		// complete enumeration succeeds. Nodes without an IB tree stay quiet.
+		return nil, nil
+	}
+
 	metrics.DevicesDiscovered.WithLabelValues(c.nodeName, c.Name()).Set(float64(len(result.Devices)))
 
 	firstPoll := c.previousDevices == nil
+	if firstPoll && len(result.UnreadableDevices) > 0 {
+		// Peer homogeneity and first-seen severity gating both require a full
+		// initial device set. Defer the entire baseline rather than committing
+		// a partial first poll.
+		return nil, nil
+	}
+
 	baselineRun := firstPoll && c.emitHealthyBaselines
 	st := newIBPollState()
 	st.skippedVFs = result.SkippedVFs
+	st.discoveryUncertain = len(result.UnreadableDevices) > 0
+
+	committedAnomalous := c.anomalousLatch
+	committedDisappeared := c.disappearedLatch
+	committedMisses := c.deviceMissCounts
+	c.anomalousLatch = maps.Clone(committedAnomalous)
+	c.disappearedLatch = maps.Clone(committedDisappeared)
+	c.deviceMissCounts = maps.Clone(committedMisses)
 
 	c.collectDevicesAndPorts(result.Devices, st)
+	c.retainUnreadableDevices(
+		result.UnreadableDevices, st.seenDevices, st.currentDevices, st.currentPorts,
+	)
 
 	events := c.buildEventsForPoll(st, firstPoll, baselineRun)
 	c.logDiscoverySummaryIfChanged(st)
 
-	c.previousDevices = st.currentDevices
-	c.previousPorts = st.currentPorts
+	c.pending = &statePollCommit{
+		devices:          st.currentDevices,
+		ports:            st.currentPorts,
+		anomalousLatch:   c.anomalousLatch,
+		disappearedLatch: c.disappearedLatch,
+		deviceMissCounts: c.deviceMissCounts,
+		linkLayer:        ibLinkLayer,
+	}
 
-	// Baseline emission is a one-shot behaviour: subsequent polls must
-	// fall back to normal boundary-crossing semantics.
-	c.emitHealthyBaselines = false
-
-	c.persistState(ibLinkLayer, st.currentDevices, st.currentPorts)
+	c.anomalousLatch = committedAnomalous
+	c.disappearedLatch = committedDisappeared
+	c.deviceMissCounts = committedMisses
 
 	return events, nil
+}
+
+// Commit installs and persists the most recently prepared state.
+func (c *InfiniBandStateCheck) Commit() {
+	if c.pending == nil {
+		return
+	}
+
+	pending := c.pending
+	c.pending = nil
+	c.previousDevices = pending.devices
+	c.previousPorts = pending.ports
+	c.anomalousLatch = pending.anomalousLatch
+	c.disappearedLatch = pending.disappearedLatch
+	c.deviceMissCounts = pending.deviceMissCounts
+	c.emitHealthyBaselines = false
+	c.persistState(pending.linkLayer, pending.devices, pending.ports)
+}
+
+// Discard abandons a prepared poll after check or publication failure.
+func (c *InfiniBandStateCheck) Discard() {
+	c.pending = nil
 }
 
 // collectDevicesAndPorts iterates discovered devices and records the
 // monitored subset in the poll state. VFs are already excluded by
 // discovery; this filters unsupported vendors and management NICs.
+//
+// Device-level lifecycle (disappearance detection and its latch) is
+// scoped to this check's link layer: a device joins currentDevices only
+// while it exposes at least one InfiniBand port. Without this scoping a
+// sibling-layer device (e.g., a pure-RoCE NIC) would be latched by this
+// check on disappearance and could never recover — latch consumption is
+// driven by this layer's port events, which such a device never emits.
 func (c *InfiniBandStateCheck) collectDevicesAndPorts(devices []discovery.IBDevice, st *ibPollState) {
 	for _, dev := range devices {
 		st.seenDevices[dev.Name] = true
+		st.parsedDevices[dev.Name] = true
 
 		if !c.shouldMonitor(dev) {
+			// A management-classified function marks its whole card as
+			// frontend plumbing — see exemptManagementSiblingCards.
+			if c.classifier.IsManagementNIC(dev.Name) {
+				st.managementCards[c.classifier.PCICardOf(dev.Name)] = true
+			}
+
 			continue
 		}
-
-		st.currentDevices[dev.Name] = true
 
 		role := c.classifier.RoleOf(dev.Name)
 		card := c.classifier.PCICardOf(dev.Name)
@@ -186,6 +276,8 @@ func (c *InfiniBandStateCheck) collectDevicesAndPorts(devices []discovery.IBDevi
 			if !discovery.IsIBPort(&port) {
 				continue
 			}
+
+			st.currentDevices[dev.Name] = true
 
 			c.recordPort(st, dev.Name, card, role, port, dev.IncludedByOverride)
 		}
@@ -219,9 +311,8 @@ func (c *InfiniBandStateCheck) recordPort(
 	st.portOverride[key] = includedByOverride
 }
 
-// buildEventsForPoll runs the event-producing logic (per-port transitions,
-// disappearance detection, first-poll homogeneity) and returns the
-// combined event slice.
+// buildEventsForPoll adapts the IB poll state to the shared event
+// pipeline in baseStateCheck.buildEvents.
 //
 // baselineRun is true only on the first poll after a boot-ID change
 // (fresh node, host reboot, corrupt state file). In that mode the
@@ -231,32 +322,22 @@ func (c *InfiniBandStateCheck) recordPort(
 func (c *InfiniBandStateCheck) buildEventsForPoll(
 	st *ibPollState, firstPoll, baselineRun bool,
 ) []*pb.HealthEvent {
-	// Card homogeneity is evaluated every poll: anomalies feed the
-	// first-poll per-port severity decision and drive the card-anomaly
-	// latch (FATAL on onset, card-healthy on recovery — see
-	// cardHomogeneityEvents). Skipped entirely while the inclusion
-	// override is active — the discovered set is just the pinned
-	// devices, so peer-group statistics carry no signal (see
-	// overrideActive).
-	var anomalousCards map[string]topology.CardAnomaly
-
-	var evaluatedCards map[string]int
-
-	if !c.overrideActive() {
-		anomalousCards, evaluatedCards = c.classifier.EvaluateCardHomogeneity(
-			st.cardActive, st.cardTotal, st.cardRole)
+	agg := pollAggregates{
+		seenDevices:     st.seenDevices,
+		parsedDevices:   st.parsedDevices,
+		currentDevices:  st.currentDevices,
+		currentPorts:    st.currentPorts,
+		cardActive:      st.cardActive,
+		cardTotal:       st.cardTotal,
+		cardRole:        st.cardRole,
+		managementCards: st.managementCards,
+		uncertain:       st.discoveryUncertain,
 	}
 
-	events := c.portTransitionEvents(st, firstPoll, baselineRun, anomalousCards)
-	events = append(events, c.detectDeviceDisappearance(st.seenDevices)...)
-	events = append(events, c.detectPortDisappearance(st.currentDevices, st.currentPorts)...)
-
-	if !c.overrideActive() {
-		events = append(events, c.cardHomogeneityEvents(
-			st.cardActive, st.cardRole, anomalousCards, evaluatedCards, baselineRun)...)
-	}
-
-	return events
+	return c.buildEvents(agg, baselineRun,
+		func(anomalousCards map[string]topology.CardAnomaly) []*pb.HealthEvent {
+			return c.portTransitionEvents(st, firstPoll, baselineRun, anomalousCards)
+		})
 }
 
 // portTransitionEvents produces the boundary-crossing events for every
@@ -355,8 +436,8 @@ func (c *InfiniBandStateCheck) logDiscoverySummaryIfChanged(st *ibPollState) {
 
 // evaluatePortTransition decides whether to emit an event for a port
 // given its current and previous snapshots. Intermediate unhealthy→
-// unhealthy changes (e.g., DOWN/Disabled → DOWN/Polling) are suppressed;
-// the monitor only reports boundary crossings.
+// unhealthy changes are suppressed unless severity escalates from non-fatal
+// to fatal; otherwise the monitor reports health-boundary crossings.
 //
 // baselineRun flips the first-seen behaviour for healthy ports from
 // "emit nothing" to "emit a healthy baseline event" so the platform can
@@ -365,31 +446,17 @@ func (c *InfiniBandStateCheck) evaluatePortTransition(
 	current, prev portSnapshot,
 	hasPrev, baselineRun bool,
 ) *pb.HealthEvent {
-	isHealthy := current.State == checks.IBStateActive && current.PhysicalState == checks.IBPhysLinkUp
+	isHealthy := portIsHealthy(current)
+	disappearanceRecovery := isHealthy && c.consumeDisappearanceRecovery(current.Device)
 
 	if !hasPrev {
-		slog.Info("First-seen IB port",
-			"device", current.Device, "port", current.Port,
-			"state", current.State, "physState", current.PhysicalState,
-			"healthy", isHealthy,
-			"baseline_run", baselineRun,
-		)
-
-		if isHealthy {
-			if !baselineRun {
-				return nil
-			}
-
-			return c.healthyBaselineEvent(current)
-		}
-
-		return c.unhealthyPortEvent(current)
+		return c.firstSeenPortEvent(current, isHealthy, baselineRun, disappearanceRecovery)
 	}
 
-	wasHealthy := prev.State == checks.IBStateActive && prev.PhysicalState == checks.IBPhysLinkUp
+	wasHealthy := portIsHealthy(prev)
 
-	if isHealthy == wasHealthy {
-		return nil
+	if isHealthy == wasHealthy && !disappearanceRecovery {
+		return c.escalationEvent(current, prev, isHealthy)
 	}
 
 	slog.Info("IB port state transition",
@@ -404,6 +471,43 @@ func (c *InfiniBandStateCheck) evaluatePortTransition(
 	}
 
 	return c.unhealthyPortEvent(current)
+}
+
+// firstSeenPortEvent handles a port with no previous snapshot. Healthy
+// first-seen ports are silent unless this is a baseline run (boot-ID
+// change) or the port belongs to a device recovering from a latched
+// disappearance; unhealthy ones are classified by severity as usual.
+func (c *InfiniBandStateCheck) firstSeenPortEvent(
+	current portSnapshot,
+	isHealthy, baselineRun, disappearanceRecovery bool,
+) *pb.HealthEvent {
+	slog.Info("First-seen IB port",
+		"device", current.Device, "port", current.Port,
+		"state", current.State, "physState", current.PhysicalState,
+		"healthy", isHealthy,
+		"baseline_run", baselineRun,
+	)
+
+	if !isHealthy {
+		return c.unhealthyPortEvent(current)
+	}
+
+	if !baselineRun && !disappearanceRecovery {
+		return nil
+	}
+
+	return c.healthyBaselineEvent(current)
+}
+
+// escalationEvent emits when a still-unhealthy port escalates from a
+// non-fatal to a fatal sub-state (e.g., DOWN/Polling → DOWN/Disabled);
+// all other unhealthy→unhealthy and steady-state polls stay silent.
+func (c *InfiniBandStateCheck) escalationEvent(current, prev portSnapshot, isHealthy bool) *pb.HealthEvent {
+	if !isHealthy && ibPortIsFatal(current) && !ibPortIsFatal(prev) {
+		return c.unhealthyPortEvent(current)
+	}
+
+	return nil
 }
 
 // healthyBaselineEvent builds the IsHealthy=true event used for both
@@ -428,14 +532,7 @@ func (c *InfiniBandStateCheck) healthyBaselineEvent(current portSnapshot) *pb.He
 // non-fatal intermediate state" to fatal when the card has fewer
 // active ports than its role peers.
 func (c *InfiniBandStateCheck) unhealthyPortEvent(snap portSnapshot) *pb.HealthEvent {
-	isFatal := snap.State == checks.IBStateDown
-
-	switch snap.PhysicalState {
-	case checks.IBPhysDisabled:
-		isFatal = true
-	case checks.IBPhysLinkErrorRecovery, checks.IBPhysPolling:
-		isFatal = false
-	}
+	isFatal := ibPortIsFatal(snap)
 
 	action := pb.RecommendedAction_NONE
 	if isFatal {
@@ -450,4 +547,17 @@ func (c *InfiniBandStateCheck) unhealthyPortEvent(snap portSnapshot) *pb.HealthE
 		snap.Device, snap.Port, snap.State, snap.PhysicalState)
 
 	return c.portEvent(snap.Device, snap.Port, msg, isFatal, false, action)
+}
+
+func ibPortIsFatal(snap portSnapshot) bool {
+	isFatal := snap.State == checks.IBStateDown
+
+	switch snap.PhysicalState {
+	case checks.IBPhysDisabled:
+		isFatal = true
+	case checks.IBPhysLinkErrorRecovery, checks.IBPhysPolling:
+		isFatal = false
+	}
+
+	return isFatal
 }

@@ -30,6 +30,8 @@ Hands-on walkthroughs for extending NVSentinel:
   diagnostic, register it in Helm, and verify it blocks bad GPU pod starts.
 - [Writing a Drain Plugin](./tutorials/writing-a-drain-plugin.md) — replace node-drainer's
   eviction step with a custom controller.
+- [Plugin Custom Remediation](./tutorials/plugin-custom-remediation.md) — extend the
+  fault-remediation stage with your own repair via custom actions and a controller CRD.
 
 ### [configuration/](./configuration/)
 **Component configuration guides**  

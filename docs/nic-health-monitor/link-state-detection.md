@@ -116,7 +116,7 @@ The State Monitor follows NVSentinel's established architectural pattern where:
 
 | Architectural Principle     | Implementation                             | Purpose                                                                   |
 |-----------------------------|--------------------------------------------|---------------------------------------------------------------------------|
-| **Raw Event Reporting**     | Health boundary crossing → immediate event | One event per port per healthy↔fatal transition                           |
+| **Raw Event Reporting**     | Health transition or fatal severity escalation → immediate event | One event per affected entity (port, card, or device) per reportable transition                    |
 | **Centralized Correlation** | Health Events Analyzer MongoDB pipelines   | Flexible, configurable rules without monitor code changes                 |
 | **Temporal Correlation**    | Analyzer rules with time windows           | Detects patterns like "3 link flaps in 10 minutes"                        |
 | **Stabilization Windows**   | Analyzer rules with sticky XID-style logic | Prevents "Alert Blinking" where transient recoveries hide critical issues |
@@ -125,10 +125,10 @@ The State Monitor follows NVSentinel's established architectural pattern where:
 
 | Component                            | Responsibility                                                                                                                              | What It Does NOT Do                                        |
 |--------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------|
-| **NIC Health Monitor (State Check)** | Poll sysfs state files, detect UP/DOWN transitions, persist port state snapshots and known device list, emit raw events and recovery events | Aggregation, deduplication, correlation, pattern detection |
+| **NIC Health Monitor (State Check)** | Poll sysfs state files, detect transitions and confirmed disappearance, persist lifecycle state, emit raw events and recovery events | Aggregation, deduplication, correlation, pattern detection |
 | **Health Events Analyzer**           | Correlate events, detect link flap patterns, escalate severity                                                                              | Direct hardware access                                     |
 
-> **Local State Persistence**: The State Check persists port state snapshots (`state`, `phys_state` per port) and the known device list to the shared NIC health monitor state file (hostPath-backed, see [Link Counter Detection, Section 6.6](./link-counter-detection.md#66-persistent-state-file)). This enables the monitor to (1) emit **recovery events** (`IsHealthy=true`) after pod restart when a previously-DOWN port has been fixed, (2) detect **device disappearance** across pod restarts by comparing the current device list against the persisted known devices, and (3) on **host reboot** (boot ID change), clear all state and emit **healthy baseline events** for all currently-healthy ports to clear stale FATAL conditions on the platform — since the node may have had NICs replaced during maintenance (see [Link Counter Detection, Section 6.5](./link-counter-detection.md#65-boot-id-handling)).
+> **Local State Persistence**: The State Check persists port snapshots, known devices, disappearance debounce counters, and outstanding card/device FATAL latches in the shared hostPath-backed state file (see [Link Counter Detection, Section 6.6](./link-counter-detection.md#66-persistent-state-file)). This enables recovery after pod restart, debounced disappearance detection across restarts, and a matching healthy event when a disappeared device re-enumerates. On host reboot, observational snapshots reset and healthy baselines clear stale port conditions; outstanding card/device latches remain until positive recovery evidence arrives.
 
 ### 2.3 State Check Data Flow (1s polling interval)
 
@@ -145,11 +145,12 @@ Detects:
 └── Physical disabled    → Port administratively or physically disabled
 
 On device disappearance:
-└── Device not in sysfs → Hardware failure (FATAL)
+└── Device absent from 3 complete enumerations → Hardware failure (FATAL)
 
-Persists (to shared state file after each poll cycle):
-├── Port state snapshots → state + phys_state per port (for recovery events)
-└── Known device list    → Device names seen (for disappearance across restarts)
+Persists (after successful event publication, or immediately for a no-event poll):
+├── Port state snapshots       → state + phys_state per port
+├── Known devices/miss counts  → disappearance debounce across same-boot pod restarts (reset on host reboot)
+└── Outstanding event latches  → card/device recovery after restart or reboot
 
 Emits: Raw STATE_CHANGE events → Platform Connector → MongoDB
        Recovery events (IsHealthy=true) when previously-DOWN port recovers
@@ -289,9 +290,9 @@ cat /sys/class/infiniband/mlx5_0/ports/1/phys_state
    - If `state = ACTIVE` AND `phys_state = LinkUp` → **Healthy**
    - Otherwise → **Unhealthy** (the specific state/phys_state combination determines the message)
 
-4. **Emit event only on health boundary crossing:**
+4. **Emit event on a health boundary crossing or fatal severity escalation:**
    - **First poll after host reboot (boot ID changed — state cleared)**:
-     - All persisted state has been discarded (see [Link Counter Detection, Section 6.5](./link-counter-detection.md#65-boot-id-handling))
+     - Observational state has been discarded; outstanding card/device FATAL latches remain pending (see [Link Counter Detection, Section 6.5](./link-counter-detection.md#65-boot-id-handling))
      - Healthy ports (`ACTIVE/LinkUp`): Emit **healthy event** (`IsHealthy=true`) — this clears any stale FATAL conditions on the platform from the previous boot (the node may have had NICs replaced, cables reseated, etc.)
      - Unhealthy ports on **anomalous cards** (active-port count below the role group's decisive mode, group of ≥2 cards — see Section 4.3): Emit **fatal event** — peer comparison provides positive evidence the port is supposed to be up
      - Unhealthy ports on **all other cards** — cards at/above their role mode, **singleton role groups**, and groups with a **tied or zero mode**: Log and **suppress** the event. A port that has never been observed healthy carries no evidence it should be up: an uncabled second port or an intentionally-disabled/unprovisioned port (e.g., the unused Aux frontend port on OCI `BM.GPU.H100.8`, left as a singleton after its Prime twin is excluded as the default-route NIC) is numerically indistinguishable from a failure. Without peer evidence the monitor keeps the state local and does not publish an external `HealthEvent`
@@ -300,10 +301,11 @@ cat /sys/class/infiniband/mlx5_0/ports/1/phys_state
    - **First poll with persisted previous state (pod restart, same boot)**:
      - Compare current health against **persisted** previous state
      - Emit events on boundary crossings as with subsequent polls below (this is the key benefit of persistence — a port that was DOWN before restart and is now ACTIVE triggers a recovery event)
-   - **Subsequent polls**: Only emit when `wasHealthy ≠ isHealthy`
-     - Healthy → Unhealthy: **FATAL event** with consolidated message (e.g., "state DOWN, phys_state Disabled - no connectivity")
+   - **Subsequent polls**: Emit when `wasHealthy ≠ isHealthy`, or when an unhealthy condition escalates from non-fatal to fatal
+     - Healthy → Unhealthy: Emit the event selected by the link-layer severity policy (for example, `DOWN/Disabled` is fatal)
      - Unhealthy → Healthy: **HEALTHY event** (e.g., "healthy (ACTIVE, LinkUp)")
-     - Unhealthy → Unhealthy (e.g., DOWN/Disabled → DOWN/Polling): **No event** — still unhealthy, intermediate transition suppressed
+     - Unhealthy non-fatal → Unhealthy fatal (e.g., `INIT/LinkUp` → `DOWN/Disabled`): Emit the **FATAL escalation**
+     - Other Unhealthy → Unhealthy changes: **No event** — intermediate transition or de-escalation suppressed
      - Healthy → Healthy: **No event** — still healthy
 
 4. **One consolidated event per port per transition:**
@@ -535,9 +537,10 @@ Additionally, compute and storage NICs may have different port counts (e.g., dua
 NICs are grouped by **role** (Compute or Storage, from Section 4.2), then within each role group:
 
 1. Group NICs by **physical card** (PCI `bus:device` address — e.g., `0000:47:00` groups `0000:47:00.0` and `0000:47:00.1`)
-2. Count active (`ACTIVE` + `LinkUp`) ports per card
-3. Calculate the **decisive mode** (most common active-port-count) within the role group. A group is **indecisive** — and skipped — when it has fewer than 2 cards (nothing to compare against), when the mode is 0 (every card down — no meaningful pattern), or when the top frequency is **tied** between two distinct counts (no majority; an intentionally-idle card, such as the Aux half of a Prime/Aux frontend pair, is numerically indistinguishable from a failed one)
-4. Any card with fewer active ports than its role's decisive mode → **FATAL event** (card-level), and its unhealthy ports keep their fatal severity on the first poll
+2. **Exempt cards with a management-classified sibling function**: if any function of a card was classified Management (e.g., it carries the default route), the whole card is frontend plumbing and is removed from peer comparison. Its active member is the excluded management NIC itself, so counting only the monitored remainder would misread an intentionally-uncabled sibling function as a failure. Exempt cards keep per-port runtime transition detection; an outstanding card-anomaly latch on a newly-exempt card is cleared with a card-healthy event so no downstream FATAL is orphaned. (VF siblings do **not** exempt a card — they are filtered by discovery before classification and carry no frontend signal.)
+3. Count active (`ACTIVE` + `LinkUp`) ports per card
+4. Calculate the **decisive mode** (most common active-port-count) within the role group. A group is **indecisive** — and skipped — when it has fewer than 2 cards (nothing to compare against), when the mode is 0 (every card down — no meaningful pattern), or when the top frequency is **tied** between two distinct counts (no majority; an intentionally-idle card, such as the Aux half of a Prime/Aux frontend pair, is numerically indistinguishable from a failed one)
+5. Any card with fewer active ports than its role's decisive mode → **FATAL event** (card-level), and its unhealthy ports keep their fatal severity on the first poll
 
 **Anomaly membership is the single source of "peer evidence" on the first poll**: a first-poll unhealthy port is fatal **only** when its card is in the anomaly set. Ports on cards at/above the mode, in singleton groups, or in indecisive groups are logged and **suppressed** — without peers there is no evidence the port is supposed to be up, and a false external event is worse than a local diagnostic log (consistent with the fail-safe direction in Section 4.1.2).
 
@@ -586,6 +589,8 @@ If Card A drops to 0 active → 0 < mode 1 → FATAL
 > **Probability analysis**: For the mode to be incorrect (masking real failures), more than half of the cards in a role group would need to be independently failed at startup. With a ~1% per-NIC failure rate, the probability of 4+ out of 8 NICs failing simultaneously is ~0.00003% — effectively impossible.
 >
 > **Singleton and tied groups (field-validated)**: On OCI `BM.GPU.H100.8`, the frontend ConnectX-6 Dx exposes a Prime port (`mlx5_2`/`eth0`, carries the default route and node IP) and an Aux port (`mlx5_11`/`eth1`, no VNIC attached, `phys_state: Disabled` by design — confirmed identical across sibling nodes and against OCI's published shape spec of one frontend NIC + 16 RDMA ports). Default-route exclusion classifies `mlx5_2` as Management, leaving `mlx5_11` a **singleton** Storage group; and even without that exclusion the pair would be a **1-active vs 0-active tie**. Both situations are indecisive: the monitor logs and suppresses the DOWN Aux port instead of publishing a `HealthEvent`. The trade-off is explicit: a genuinely dead lone NIC at first poll is logged but not externally reported — a runtime `ACTIVE → DOWN` transition on the same NIC remains fatal because the monitor then has direct evidence the port was in use.
+>
+> **Management-sibling exemption (field-validated)**: On OCI `BM.GPU.L40S.4`, the Prime/Aux pair are two functions of the **same card** (`0000:5a:00.0`/eth0 and `0000:5a:00.1`, uncabled), and the storage role group also contains the RoCE fabric NICs and a second frontend card — so after `mlx5_1`/eth0 is excluded as the default-route NIC, the Aux card is **not** left a singleton: it counts 0 active ports against a decisive peer mode of 1 and would be flagged as failed hardware on every node of the SKU. The card-level exemption in step 2 above covers this: a management sibling removes the whole card from peer comparison, so the Aux port takes the same log-and-suppress path as the H100 case regardless of what else shares its role group.
 
 ### 4.4 Design Decision: Why Speed Degradation Detection Was Removed
 
@@ -657,11 +662,11 @@ The monitor detects Mellanox devices using the following logic:
 
 ## 6. State Change Handling
 
-The NIC Health Monitor reports **health boundary events** — one event per port when the port transitions between healthy and unhealthy states. Intermediate transitions (e.g., DOWN/Disabled → DOWN/Polling) are suppressed. A runtime port `DOWN` transition and fatal counter signals are remediation triggers on first occurrence (first-poll `DOWN` severity is gated by peer evidence — see Section 3.4 and Section 4.3.2); repeated analyzer rules are reserved for non-fatal degradation/syslog recurrence.
+The NIC Health Monitor reports **health boundary events** — one event per port when the port transitions between healthy and unhealthy states. Intermediate unhealthy transitions are suppressed unless the new state escalates the condition from non-fatal to fatal. A runtime port `DOWN` transition and fatal counter signals are remediation triggers on first occurrence (first-poll `DOWN` severity is gated by peer evidence — see Section 3.4 and Section 4.3.2); repeated analyzer rules are reserved for non-fatal degradation/syslog recurrence.
 
 ### 6.1 Architecture
 
-1. NIC Health Monitor reports health boundary crossings (healthy→fatal, fatal→healthy)
+1. NIC Health Monitor reports health boundary crossings and non-fatal→fatal severity escalations
 2. Events flow to MongoDB via Platform Connector
 3. Health Events Analyzer applies correlation rules only for repeated non-fatal NIC signals
 
@@ -692,19 +697,21 @@ Device disappearance is detected through three complementary mechanisms:
 
 **Case 1: Runtime disappearance (monitor has in-memory or persisted state, same boot)**
 
-The monitor tracks devices across polling cycles via an in-memory device set and a persisted `KnownDevices` list (see [Link Counter Detection, Section 6.6](./link-counter-detection.md#66-persistent-state-file)). If a previously-seen device is no longer present in `/sys/class/infiniband/`, a FATAL event is generated immediately with the exact device name.
+The monitor tracks devices across polling cycles via an in-memory device set and persisted lifecycle state (see [Link Counter Detection, Section 6.6](./link-counter-detection.md#66-persistent-state-file)). A previously-seen device must be absent from **three consecutive complete enumerations** before the monitor emits a FATAL event with the exact device name. The first two misses retain the last-known port/device snapshots. If the device directory is still enumerated but its contents cannot be read, the observation is treated as unknown and retained indefinitely rather than misreported as disappearance. If the top-level sysfs tree is temporarily unavailable, the poll does not advance state.
 
-This works both during normal operation (in-memory state from prior poll) and **after pod restart on the same boot** (persisted `KnownDevices` loaded from the state file). Without persistence, a device that disappeared while the pod was restarting would go undetected — the new pod would have no knowledge the device ever existed.
+This works both during normal operation and **after pod restart on the same boot** because the known state and partial miss count are persisted. Once the FATAL is emitted, a separate persisted disappearance latch survives restarts and reboots. A healthy port observed after the device re-enumerates clears that latch and emits **two** recoveries: the port-scoped healthy (clears any port-level conditions) and a **device-scoped healthy whose entity set mirrors the disappearance FATAL's** (NIC entity only) — consumers that require every entity of a healthy event to match a stored condition entry (platform-connector node conditions) could not clear the device entry from the port-scoped healthy alone.
+
+Device lifecycle tracking is **scoped per link layer**: each state check tracks a device only while it exposes at least one port of that check's layer, so removing a pure-IB NIC never produces an Ethernet-check disappearance (and vice versa). If a latched device re-enumerates without any target-layer ports (for example, its ports were reflashed to the sibling layer while it was absent), the check emits a **device-level healthy event** and clears its latch — the per-port recovery path could never reach such a device, and the downstream FATAL must not be orphaned.
 
 - Example: `mlx5_3` was in the persisted `KnownDevices`, but is absent from sysfs on startup → `EntityType: "NIC", EntityValue: "mlx5_3"`
 
 **Case 2: Device missing after host reboot (boot ID changed — state cleared)**
 
-On host reboot, all persisted state (including `KnownDevices`) is cleared because the node may have had NICs replaced (see [Link Counter Detection, Section 6.5](./link-counter-detection.md#65-boot-id-handling)). The monitor cannot compare against prior devices because they may be entirely different hardware. Device disappearance detection after reboot falls through to Case 3 (homogeneity check).
+On host reboot, observational state (`KnownDevices`, port snapshots, and partial miss counts) is cleared because the node may have had NICs replaced. Outstanding card/device FATAL latches are preserved so a healthy replacement or re-enumerated device can clear the downstream condition. New disappearance detection falls through to Case 3.
 
 **Case 3: Device missing on startup (no persisted state — fresh node, post-reboot, or corrupt state file)**
 
-On the **first poll cycle after startup with no persisted state**, the monitor uses the **card homogeneity check** (see Section 4.3) to detect anomalies without requiring prior state or static configuration. This covers fresh nodes, post-reboot startups (where state was cleared), and corrupt state files. After the first poll, all runtime state changes (cable pulls, link failures, recoveries) are handled by the per-port boundary-crossing transition detection, making repeated homogeneity checks unnecessary:
+On the **first complete poll cycle after startup with no persisted observational state**, the monitor uses the **card homogeneity check** (see Section 4.3) to detect anomalies without requiring prior state or static configuration. This covers fresh nodes, post-reboot startups, and corrupt state files. Homogeneity continues on later complete polls for card-latch recovery, but is skipped while discovery is partial or a disappearance miss is still being debounced:
 
 1. Group all monitored PF NICs by physical card (PCI `bus:device`), within each role group (Section 4.2)
 2. Count active (`ACTIVE/LinkUp`) ports per card
@@ -722,10 +729,10 @@ This startup homogeneity check requires no persisted state and works immediately
 
 | Condition                                                  | Severity  | Recommended Action               |
 |------------------------------------------------------------|-----------|----------------------------------|
-| Device disappeared from `/sys/class/infiniband/` (runtime) | **FATAL** | **RecommendedAction_REPLACE_VM** |
+| Device absent for 3 complete runtime polls                 | **FATAL** | **RecommendedAction_REPLACE_VM** |
 | Card active ports below peer mode (startup first poll)     | **FATAL** | **RecommendedAction_REPLACE_VM** |
 
-> **Design Note**: All device disappearances are treated as FATAL because in production environments, unexpected device loss indicates a hardware issue requiring investigation and VM replacement. The monitor does not differentiate between "clean" removals (driver unload) and "dirty" removals (hardware crash).
+> **Design Note**: Confirmed device disappearances are treated as FATAL because unexpected device loss indicates a hardware issue requiring investigation and VM replacement. The debounce distinguishes disappearance from transient enumeration gaps; it does not distinguish a clean driver removal from a hardware crash.
 
 ---
 
@@ -1044,7 +1051,7 @@ The NIC Health Monitor is a **hard consumer** of topology data produced by the N
 
 ### 13.1 State Event Construction
 
-Events are emitted only on **health boundary crossings** — one consolidated event per port per transition. Logical state and physical state are combined into a single message.
+Events are emitted on **health boundary crossings and fatal severity escalations** — one consolidated event per port per reportable transition. Logical state and physical state are combined into a single message.
 
 **Example Event Fields (Fatal - IB Port DOWN):**
 

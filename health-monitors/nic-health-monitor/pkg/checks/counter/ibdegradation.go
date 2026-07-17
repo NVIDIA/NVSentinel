@@ -15,7 +15,6 @@
 package counter
 
 import (
-	"fmt"
 	"log/slog"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -36,7 +35,14 @@ type InfiniBandDegradationCheck struct {
 	cfg       *config.Config
 	state     *statefile.Manager
 	evaluator *Evaluator
+	pending   *Evaluator
+
+	// saveFailed records that the last state-file Save failed, so the
+	// next commit retries even when nothing changed.
+	saveFailed bool
 }
+
+var _ checks.TransactionalCheck = (*InfiniBandDegradationCheck)(nil)
 
 // NewInfiniBandDegradationCheck creates a new InfiniBandDegradationCheck.
 // bootIDChanged is forwarded to the Evaluator so the first poll after a
@@ -68,21 +74,50 @@ func (c *InfiniBandDegradationCheck) Name() string {
 	return checks.InfiniBandDegradationCheckName
 }
 
-// Run executes a single InfiniBand counter degradation poll. After
-// evaluation it merges the evaluator's snapshots and breach flags back
-// into the shared state file and persists if either changed.
+// Run executes and commits one poll for direct callers. The production
+// monitor uses Prepare/Commit/Discard so publication succeeds before state
+// advances.
 func (c *InfiniBandDegradationCheck) Run() ([]*pb.HealthEvent, error) {
-	result, err := discovery.DiscoverDevicesWithOverride(
-		c.reader, c.cfg.NicExclusionRegex, c.cfg.NicInclusionRegexOverride,
-	)
+	events, err := c.Prepare()
 	if err != nil {
-		return nil, fmt.Errorf("failed to discover devices: %w", err)
+		return nil, err
 	}
 
+	c.Commit()
+
+	return events, nil
+}
+
+// Prepare evaluates one poll against a cloned evaluator and stages the
+// resulting counter state without mutating the committed evaluator. The
+// discovery completeness policy lives in prepareCounterPoll.
+func (c *InfiniBandDegradationCheck) Prepare() ([]*pb.HealthEvent, error) {
+	c.Discard()
+
+	candidate, events, err := prepareCounterPoll(c.reader, c.cfg, c.evaluator, c.evaluateDevices)
+	if err != nil {
+		return nil, err
+	}
+
+	if candidate == nil {
+		return nil, nil
+	}
+
+	c.pending = candidate
+
+	return events, nil
+}
+
+// evaluateDevices runs the enabled IB-tree counters for every InfiniBand
+// port on supported (or explicitly pinned) devices against the candidate
+// evaluator.
+func (c *InfiniBandDegradationCheck) evaluateDevices(
+	candidate *Evaluator, devices []discovery.IBDevice,
+) []*pb.HealthEvent {
 	var events []*pb.HealthEvent
 
-	for i := range result.Devices {
-		dev := &result.Devices[i]
+	for i := range devices {
+		dev := &devices[i]
 
 		if !dev.IncludedByOverride && !discovery.IsSupportedVendor(dev) {
 			continue
@@ -95,17 +130,29 @@ func (c *InfiniBandDegradationCheck) Run() ([]*pb.HealthEvent, error) {
 				continue
 			}
 
-			portEvents := c.evaluator.EvaluateCounters(
+			events = append(events, candidate.EvaluateCounters(
 				dev, port, c.cfg.CounterDetection.Counters, c.Name(),
-			)
-			events = append(events, portEvents...)
+			)...)
 		}
 	}
 
-	c.evaluator.ClearBootIDFlag()
-	c.persist()
+	return events
+}
 
-	return events, nil
+// Commit installs and persists the most recently prepared evaluator state.
+func (c *InfiniBandDegradationCheck) Commit() {
+	if c.pending == nil {
+		return
+	}
+
+	c.evaluator = c.pending
+	c.pending = nil
+	c.persist()
+}
+
+// Discard abandons a prepared poll after check or publication failure.
+func (c *InfiniBandDegradationCheck) Discard() {
+	c.pending = nil
 }
 
 // persist writes any changes to the shared state file. Errors are
@@ -115,12 +162,18 @@ func (c *InfiniBandDegradationCheck) persist() {
 	snapshotsChanged := c.state.UpdateCounterSnapshots(c.evaluator.Snapshots())
 	flagsChanged := c.state.UpdateBreachFlags(c.evaluator.BreachFlags())
 
-	if !snapshotsChanged && !flagsChanged {
+	if !snapshotsChanged && !flagsChanged && !c.saveFailed {
 		return
 	}
 
 	if err := c.state.Save(); err != nil {
+		c.saveFailed = true
+
 		slog.Warn("Failed to persist counter state to disk",
 			"check", c.Name(), "error", err)
+
+		return
 	}
+
+	c.saveFailed = false
 }

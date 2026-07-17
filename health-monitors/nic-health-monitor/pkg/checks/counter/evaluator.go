@@ -35,6 +35,7 @@ package counter
 import (
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
 	"time"
 
@@ -134,6 +135,28 @@ func NewEvaluator(
 		ownedKeys:          make(map[string]struct{}),
 		bootIDChanged:      bootIDChanged,
 	}
+}
+
+// Clone returns an independent candidate evaluator for a transactional poll.
+// Reader/configuration dependencies are shared, while every mutable map is
+// copied (values are plain value types, so a shallow maps.Clone is a full
+// copy) so a failed publication can discard the candidate without advancing
+// snapshots, breach latches, reset detection, or boot-baseline state.
+func (e *Evaluator) Clone() *Evaluator {
+	clone := *e
+	clone.snapshots = maps.Clone(e.snapshots)
+	clone.breachFlags = maps.Clone(e.breachFlags)
+	clone.lastPollValues = maps.Clone(e.lastPollValues)
+	clone.ownedKeys = maps.Clone(e.ownedKeys)
+
+	return &clone
+}
+
+// HasState reports whether an evaluator has committed counter history. It is
+// used to distinguish a node that genuinely has no InfiniBand sysfs tree from
+// an incomplete enumeration that would otherwise discard existing state.
+func (e *Evaluator) HasState() bool {
+	return len(e.snapshots) > 0 || len(e.breachFlags) > 0 || len(e.lastPollValues) > 0
 }
 
 // Snapshots returns a copy of this evaluator's owned snapshots so the
@@ -388,10 +411,11 @@ func (e *Evaluator) recordBreach(
 	entities []*pb.Entity,
 	checkName string,
 ) *pb.HealthEvent {
+	// Fatal and non-fatal counter conditions deliberately retain the
+	// degradation check's identity. Reusing the state check name causes an
+	// ACTIVE/LinkUp state recovery to clear a counter-originated condition in
+	// fault-quarantine even though the counter latch remains breached.
 	effectiveCheckName := checkName
-	if counterCfg.IsFatal {
-		effectiveCheckName = fatalCheckName(checkName)
-	}
 
 	device, port := devicePortFromEntities(entities)
 
@@ -494,9 +518,6 @@ func (e *Evaluator) baselineEvent(
 	checkName string,
 ) *pb.HealthEvent {
 	effectiveCheckName := checkName
-	if counterCfg.IsFatal {
-		effectiveCheckName = fatalCheckName(checkName)
-	}
 
 	device, port := devicePortFromEntities(entities)
 	message := fmt.Sprintf("Counter %s healthy after reboot on port %s port %s",
@@ -536,10 +557,10 @@ func (e *Evaluator) isBreached(key string) bool {
 	return ok && flag.Breached
 }
 
-// fatalCheckName maps a degradation check name to its corresponding
-// state check name so that fatal counter events appear under the state
-// check condition on the node, keeping all fatal signals under one
-// check name.
+// fatalCheckName preserves the legacy recovery identity for old persisted
+// breach flags that predate fatal-counter identity separation. New breach and
+// baseline events keep their degradation check name; handleReset uses this
+// mapping only when a legacy flag has no stored CheckName.
 func fatalCheckName(checkName string) string {
 	switch checkName {
 	case checks.InfiniBandDegradationCheckName:

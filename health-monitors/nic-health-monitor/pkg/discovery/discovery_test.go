@@ -15,6 +15,8 @@
 package discovery
 
 import (
+	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -49,6 +51,44 @@ func TestDiscoverDevices_InclusionOverrideHasHighestPriority(t *testing.T) {
 	assert.True(t, result.Devices[0].IsVF)
 	assert.True(t, result.Devices[0].IncludedByOverride)
 	assert.Zero(t, result.SkippedVFs)
+}
+
+func TestDiscoverDevices_ReportsPerDeviceReadFailure(t *testing.T) {
+	readErr := errors.New("transient ports read failure")
+	reader := &sysfs.MockReader{
+		IBBase: "/sys/class/infiniband",
+		ListDirsFunc: func(path string) ([]string, error) {
+			switch path {
+			case "/sys/class/infiniband":
+				return []string{"mlx5_0"}, nil
+			case "/sys/class/infiniband/mlx5_0/ports":
+				return nil, readErr
+			default:
+				return nil, nil
+			}
+		},
+	}
+
+	result, err := DiscoverDevices(reader, "")
+	require.NoError(t, err)
+	assert.True(t, result.Complete)
+	assert.Empty(t, result.Devices)
+	require.Contains(t, result.UnreadableDevices, "mlx5_0")
+	assert.ErrorIs(t, result.UnreadableDevices["mlx5_0"], readErr)
+}
+
+func TestDiscoverDevices_TopLevelNotExistIsIncomplete(t *testing.T) {
+	reader := &sysfs.MockReader{
+		IBBase: "/sys/class/infiniband",
+		ListDirsFunc: func(string) ([]string, error) {
+			return nil, os.ErrNotExist
+		},
+	}
+
+	result, err := DiscoverDevices(reader, "")
+	require.NoError(t, err)
+	assert.False(t, result.Complete)
+	assert.Empty(t, result.Devices)
 }
 
 func TestDiscoverDevices_UsesNormalFiltersWithoutInclusionOverride(t *testing.T) {

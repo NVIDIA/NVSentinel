@@ -57,6 +57,22 @@ type Check interface {
 	Run() ([]*pb.HealthEvent, error)
 }
 
+// TransactionalCheck separates observation/event generation from advancement
+// of the check's committed state. The monitor uses this contract so a failed
+// publication cannot consume a health boundary: Prepare stages the candidate
+// poll state, Commit makes it durable after successful delivery (or immediately
+// for a zero-event poll), and Discard abandons it after an error.
+//
+// Run remains part of Check for direct callers and performs Prepare+Commit in
+// concrete implementations. Production orchestration should prefer this
+// interface whenever it is available.
+type TransactionalCheck interface {
+	Check
+	Prepare() ([]*pb.HealthEvent, error)
+	Commit()
+	Discard()
+}
+
 // CheckCategory indicates whether a check monitors port/device state or
 // counters. The orchestrator runs each category on its own polling loop
 // so counter checks can run on a fixed fast cadence regardless of the

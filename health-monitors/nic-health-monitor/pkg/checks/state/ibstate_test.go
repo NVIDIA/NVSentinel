@@ -16,6 +16,7 @@ package state
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -443,6 +444,187 @@ func TestIBState_HealthyToUnhealthyBoundaryEmitsEvent(t *testing.T) {
 	assert.Empty(t, events)
 }
 
+func TestIBState_UnhealthySeverityEscalationEmitsFatal(t *testing.T) {
+	node := newStubNode().addIB("mlx5_0", &stubDevice{
+		pciAddress: "0000:47:00.0", numaNode: 0,
+		ports: map[int]stubPort{1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "InfiniBand"}},
+	})
+
+	reader := node.reader()
+	classifier := buildClassifier(t, reader,
+		[]string{"0000:0f:00.0"}, map[string][]string{"mlx5_0": {"PIX"}})
+	check := NewInfiniBandStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, freshStateManager(t), false)
+
+	events, err := check.Run()
+	require.NoError(t, err)
+	assert.Empty(t, events)
+
+	node.ib["mlx5_0"].ports[1] = stubPort{state: "INIT", physState: "Polling", linkLayer: "InfiniBand"}
+	events, err = check.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	assert.False(t, events[0].IsFatal)
+
+	node.ib["mlx5_0"].ports[1] = stubPort{state: "DOWN", physState: "Disabled", linkLayer: "InfiniBand"}
+	events, err = check.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	assert.True(t, events[0].IsFatal)
+}
+
+func TestIBState_UnreadableDeviceRetainsLastKnownState(t *testing.T) {
+	node := newStubNode().addIB("mlx5_0", &stubDevice{
+		pciAddress: "0000:47:00.0", numaNode: 0,
+		ports: map[int]stubPort{1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "InfiniBand"}},
+	})
+
+	reader := node.reader()
+	originalListDirs := reader.ListDirsFunc
+	unreadable := false
+	reader.ListDirsFunc = func(path string) ([]string, error) {
+		if unreadable && strings.HasSuffix(path, "/mlx5_0/ports") {
+			return nil, errors.New("transient sysfs read failure")
+		}
+
+		return originalListDirs(path)
+	}
+
+	classifier := buildClassifier(t, reader,
+		[]string{"0000:0f:00.0"}, map[string][]string{"mlx5_0": {"PIX"}})
+	check := NewInfiniBandStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, freshStateManager(t), false)
+
+	events, err := check.Run()
+	require.NoError(t, err)
+	assert.Empty(t, events)
+
+	unreadable = true
+	events, err = check.Run()
+	require.NoError(t, err)
+	assert.Empty(t, events, "an unreadable listed device is unknown, not disappeared")
+
+	unreadable = false
+	node.ib["mlx5_0"].ports[1] = stubPort{state: "DOWN", physState: "Disabled", linkLayer: "InfiniBand"}
+	events, err = check.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 1, "last-known healthy state must survive the incomplete poll")
+	assert.True(t, events[0].IsFatal)
+}
+
+func TestIBState_TopLevelDiscoveryGapDoesNotAdvanceState(t *testing.T) {
+	node := newStubNode().addIB("mlx5_0", &stubDevice{
+		pciAddress: "0000:47:00.0", numaNode: 0,
+		ports: map[int]stubPort{1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "InfiniBand"}},
+	})
+
+	reader := node.reader()
+	originalListDirs := reader.ListDirsFunc
+	unavailable := false
+	reader.ListDirsFunc = func(path string) ([]string, error) {
+		if unavailable && path == reader.IBBase {
+			return nil, os.ErrNotExist
+		}
+
+		return originalListDirs(path)
+	}
+
+	classifier := buildClassifier(t, reader,
+		[]string{"0000:0f:00.0"}, map[string][]string{"mlx5_0": {"PIX"}})
+	check := NewInfiniBandStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, freshStateManager(t), false)
+
+	_, err := check.Run()
+	require.NoError(t, err)
+
+	unavailable = true
+	_, err = check.Run()
+	require.ErrorContains(t, err, "device discovery incomplete")
+
+	unavailable = false
+	node.ib["mlx5_0"].ports[1] = stubPort{
+		state: "DOWN", physState: "Disabled", linkLayer: "InfiniBand",
+	}
+	events, err := check.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 1, "the incomplete poll must not consume the last-known healthy state")
+	assert.True(t, events[0].IsFatal)
+}
+
+func TestIBState_PartialFirstPollPreservesFirstPollSeverityGating(t *testing.T) {
+	node := newStubNode().
+		addIB("mlx5_0", &stubDevice{
+			pciAddress: "0000:47:00.0", numaNode: 0,
+			ports: map[int]stubPort{1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "InfiniBand"}},
+		}).
+		addIB("mlx5_1", &stubDevice{
+			pciAddress: "0000:48:00.0", numaNode: 0,
+			ports: map[int]stubPort{1: {state: "DOWN", physState: "Disabled", linkLayer: "InfiniBand"}},
+		})
+
+	reader := node.reader()
+	classifier := buildClassifier(t, reader,
+		[]string{"0000:0f:00.0"}, map[string][]string{
+			"mlx5_0": {"PIX"}, "mlx5_1": {"NODE"},
+		})
+	originalListDirs := reader.ListDirsFunc
+	partial := true
+	reader.ListDirsFunc = func(path string) ([]string, error) {
+		if partial && strings.HasSuffix(path, "/mlx5_0/ports") {
+			return nil, errors.New("transient initial read failure")
+		}
+
+		return originalListDirs(path)
+	}
+
+	check := NewInfiniBandStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, freshStateManager(t), false)
+
+	events, err := check.Run()
+	require.NoError(t, err)
+	assert.Empty(t, events)
+	assert.Nil(t, check.previousDevices, "a partial initial poll must not become the baseline")
+
+	partial = false
+	events, err = check.Run()
+	require.NoError(t, err)
+	assert.Empty(t, events,
+		"the first complete poll must still apply singleton/peer severity gating")
+}
+
+func TestIBState_DiscardedPollReemitsTransition(t *testing.T) {
+	node := newStubNode().addIB("mlx5_0", &stubDevice{
+		pciAddress: "0000:47:00.0", numaNode: 0,
+		ports: map[int]stubPort{1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "InfiniBand"}},
+	})
+
+	reader := node.reader()
+	classifier := buildClassifier(t, reader,
+		[]string{"0000:0f:00.0"}, map[string][]string{"mlx5_0": {"PIX"}})
+	check := NewInfiniBandStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, freshStateManager(t), false)
+
+	_, err := check.Run()
+	require.NoError(t, err)
+
+	node.ib["mlx5_0"].ports[1] = stubPort{state: "DOWN", physState: "Disabled", linkLayer: "InfiniBand"}
+	events, err := check.Prepare()
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	check.Discard()
+
+	events, err = check.Prepare()
+	require.NoError(t, err)
+	require.Len(t, events, 1, "discarded publication must not consume the transition")
+	assert.True(t, events[0].IsFatal)
+	check.Commit()
+
+	events, err = check.Prepare()
+	require.NoError(t, err)
+	assert.Empty(t, events)
+	check.Commit()
+}
+
 func TestIBState_VFIsSkipped(t *testing.T) {
 	node := newStubNode().addIB("mlx5_vf", &stubDevice{
 		pciAddress: "0000:47:00.2",
@@ -558,9 +740,18 @@ func TestIBState_DeviceDisappearanceEmitsFatal(t *testing.T) {
 	require.NoError(t, err)
 
 	// Remove mlx5_1 from the node and re-poll.
+	removedDevice := node.ib["mlx5_1"]
 	delete(node.ib, "mlx5_1")
 
 	events, err := check.Run()
+	require.NoError(t, err)
+	assert.Empty(t, events, "first miss must retain last-known state")
+
+	events, err = check.Run()
+	require.NoError(t, err)
+	assert.Empty(t, events, "second miss must retain last-known state")
+
+	events, err = check.Run()
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 	assert.True(t, events[0].IsFatal)
@@ -574,6 +765,42 @@ func TestIBState_DeviceDisappearanceEmitsFatal(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "device-level event should include the NIC entity")
+
+	// Re-enumeration as healthy must clear the device-level disappearance
+	// with BOTH scopes: a port-level healthy (clears port conditions) and
+	// a device-level healthy whose entity set mirrors the FATAL's, so
+	// consumers requiring all entities to match can clear the NIC entry.
+	node.ib["mlx5_1"] = removedDevice
+	events, err = check.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 2)
+
+	var sawPortHealthy, sawDeviceHealthy bool
+
+	for _, evt := range events {
+		require.True(t, evt.IsHealthy)
+
+		hasPortEntity := false
+
+		for _, e := range evt.EntitiesImpacted {
+			if e.EntityType == checks.EntityTypePort {
+				hasPortEntity = true
+			}
+		}
+
+		if hasPortEntity {
+			sawPortHealthy = true
+		} else {
+			sawDeviceHealthy = true
+
+			require.Len(t, evt.EntitiesImpacted, 1, "device recovery must carry only the NIC entity")
+			assert.Equal(t, "mlx5_1", evt.EntitiesImpacted[0].EntityValue)
+			assert.Contains(t, evt.Message, "re-enumerated")
+		}
+	}
+
+	assert.True(t, sawPortHealthy, "port-scoped recovery must be emitted")
+	assert.True(t, sawDeviceHealthy, "device-scoped recovery must be emitted")
 }
 
 func TestIBState_ExpectedDownCardSuppressedOnFirstPoll(t *testing.T) {

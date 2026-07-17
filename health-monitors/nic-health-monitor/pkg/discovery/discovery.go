@@ -69,8 +69,10 @@ type IBDevice struct {
 // DiscoveryResult holds the output of device discovery, separating monitored
 // devices from VFs skipped by the normal discovery flow.
 type DiscoveryResult struct {
-	Devices    []IBDevice
-	SkippedVFs int
+	Devices           []IBDevice
+	SkippedVFs        int
+	UnreadableDevices map[string]error
+	Complete          bool
 }
 
 // DiscoverDevices enumerates IB/RoCE devices using the normal discovery flow.
@@ -94,7 +96,15 @@ func DiscoverDevicesWithOverride(
 	entries, err := reader.ListDirs(ibPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return &DiscoveryResult{}, nil
+			// Absence of the top-level tree is normal on nodes without IB/RoCE,
+			// but is an incomplete observation when a caller already has state.
+			// Preserve that distinction instead of reporting a successful empty
+			// enumeration that can fabricate mass-disappearance events.
+			return &DiscoveryResult{
+				Devices:           []IBDevice{},
+				UnreadableDevices: map[string]error{},
+				Complete:          false,
+			}, nil
 		}
 
 		return nil, fmt.Errorf("failed to list IB devices at %s: %w", ibPath, err)
@@ -109,13 +119,19 @@ func DiscoverDevicesWithOverride(
 	inclusionOverrideEnabled := len(inclusions) > 0
 
 	result := &DiscoveryResult{
-		Devices: make([]IBDevice, 0, len(entries)),
+		Devices:           make([]IBDevice, 0, len(entries)),
+		UnreadableDevices: make(map[string]error),
+		Complete:          true,
 	}
 
 	for _, devName := range entries {
-		dev, skippedVF := discoverCandidate(
+		dev, skippedVF, readErr := discoverCandidate(
 			reader, devName, exclusions, inclusions, inclusionOverrideEnabled,
 		)
+		if readErr != nil {
+			result.UnreadableDevices[devName] = readErr
+		}
+
 		if skippedVF {
 			result.SkippedVFs++
 		}
@@ -137,29 +153,29 @@ func discoverCandidate(
 	exclusions []*regexp.Regexp,
 	inclusions []*regexp.Regexp,
 	inclusionOverrideEnabled bool,
-) (*IBDevice, bool) {
+) (*IBDevice, bool, error) {
 	includedByOverride := inclusionOverrideEnabled && matchesAny(devName, inclusions)
 	if inclusionOverrideEnabled && !includedByOverride {
-		return nil, false
+		return nil, false, nil
 	}
 
 	if !inclusionOverrideEnabled && matchesAny(devName, exclusions) {
-		return nil, false
+		return nil, false, nil
 	}
 
 	dev, err := discoverDevice(reader, devName)
 	if err != nil {
 		slog.Debug("Skipping device", "device", devName, "error", err)
 
-		return nil, false
+		return nil, false, err
 	}
 
 	dev.IncludedByOverride = includedByOverride
 	if dev.IsVF && !includedByOverride {
-		return nil, true
+		return nil, true, nil
 	}
 
-	return dev, false
+	return dev, false, nil
 }
 
 // discoverDevice gathers identity and port data for a single IB device.

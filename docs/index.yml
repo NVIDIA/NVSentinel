@@ -22,6 +22,8 @@ navigation:
         path: tutorials/writing-a-preflight-check.md
       - page: Writing a Drain Plugin
         path: tutorials/writing-a-drain-plugin.md
+      - page: Plugin Custom Remediation
+        path: tutorials/plugin-custom-remediation.md
 
   - section: Architecture
     contents:
