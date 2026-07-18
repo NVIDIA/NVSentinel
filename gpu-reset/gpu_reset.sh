@@ -39,8 +39,7 @@ DRIVER_ROOT="${DRIVER_ROOT:-/}"
 NODE_NAME="${NODE_NAME:-unknown-node}"
 START_TIME=$(date +%s.%N)
 BUG_REPORT_TIMESTAMP="${BUG_REPORT_TIMESTAMP:-$(date +%Y%m%d-%H%M%S)}"
-BUG_REPORT_DIR="${BUG_REPORT_DIR:-/var/tmp/nvsentinel-gpu-reset}"
-BUG_REPORT_OUTPUT_FILE=""
+BUG_REPORT_DIR="${BUG_REPORT_DIR:-/var/tmp}"
 
 log() {
   printf "(%s) %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
@@ -50,7 +49,7 @@ nvidia_smi_helper() {
   chroot "$DRIVER_ROOT" nvidia-smi "$@"
 }
 
-driver_root_path() {
+prepend_driver_root() {
   if [ "$DRIVER_ROOT" = "/" ]; then
     printf "%s\n" "$1"
   else
@@ -58,35 +57,31 @@ driver_root_path() {
   fi
 }
 
-safe_path_component() {
-  printf "%s" "$1" | tr -c 'A-Za-z0-9._-' '-'
-}
-
 nvidia_bug_report_helper() {
   chroot "$DRIVER_ROOT" nvidia-bug-report.sh "$@"
 }
 
-collect_nvidia_bug_report() {
-  local safe_node_name
+collect_and_upload_nvidia_bug_report() {
+  local upload_url_base="${UPLOAD_URL_BASE:-}"
   local local_bug_report_dir
   local bug_report_base
-  local bug_report_path
+  local bug_report_file
   local local_bug_report_path
+  local upload_url
 
-  safe_node_name=$(safe_path_component "$NODE_NAME")
-  local_bug_report_dir=$(driver_root_path "$BUG_REPORT_DIR")
+  local_bug_report_dir=$(prepend_driver_root "$BUG_REPORT_DIR")
 
   if ! mkdir -p "$local_bug_report_dir"; then
     log "WARN: Failed to create nvidia-bug-report output directory: $local_bug_report_dir"
     return 1
   fi
 
-  bug_report_base="${BUG_REPORT_DIR}/nvidia-bug-report-${safe_node_name}-${BUG_REPORT_TIMESTAMP}"
-  bug_report_path="${bug_report_base}.log.gz"
-  local_bug_report_path=$(driver_root_path "$bug_report_path")
+  bug_report_base="${BUG_REPORT_DIR%/}/nvidia-bug-report-${NODE_NAME}-${BUG_REPORT_TIMESTAMP}"
+  bug_report_file="nvidia-bug-report-${NODE_NAME}-${BUG_REPORT_TIMESTAMP}.log.gz"
+  local_bug_report_path="${local_bug_report_dir%/}/${bug_report_file}"
 
   log "INFO: Collecting nvidia-bug-report for failed GPU reset..."
-  if ! nvidia_bug_report_helper --output-file "${bug_report_base}.log"; then
+  if ! nvidia_bug_report_helper --safe-mode --output-file "${bug_report_base}.log"; then
     log "WARN: nvidia-bug-report collection failed."
     return 1
   fi
@@ -96,41 +91,20 @@ collect_nvidia_bug_report() {
     return 1
   fi
 
-  BUG_REPORT_OUTPUT_FILE="$local_bug_report_path"
-  log "INFO: nvidia-bug-report collected: $BUG_REPORT_OUTPUT_FILE"
-}
-
-upload_bug_report() {
-  local upload_url_base="${UPLOAD_URL_BASE:-}"
-  local safe_node_name
-  local file_name
-  local upload_url
-
-  if [ -z "$BUG_REPORT_OUTPUT_FILE" ] || [ ! -f "$BUG_REPORT_OUTPUT_FILE" ]; then
-    log "WARN: No nvidia-bug-report artifact is available to upload."
-    return 1
-  fi
+  log "INFO: nvidia-bug-report collected: $local_bug_report_path"
 
   if [ -z "$upload_url_base" ]; then
-    log "INFO: UPLOAD_URL_BASE is not configured; nvidia-bug-report retained locally at $BUG_REPORT_OUTPUT_FILE"
+    log "INFO: UPLOAD_URL_BASE is not configured; nvidia-bug-report retained locally at $local_bug_report_path"
     return 0
   fi
 
-  if ! command -v curl >/dev/null 2>&1; then
-    log "WARN: curl is unavailable; cannot upload nvidia-bug-report."
-    return 1
-  fi
-
-  safe_node_name=$(safe_path_component "$NODE_NAME")
-  file_name=$(basename "$BUG_REPORT_OUTPUT_FILE")
-  upload_url="${upload_url_base%/}/${safe_node_name}/${BUG_REPORT_TIMESTAMP}/${file_name}"
+  upload_url="${upload_url_base%/}/${NODE_NAME}/${BUG_REPORT_TIMESTAMP}/${bug_report_file}"
 
   log "INFO: Uploading nvidia-bug-report to $upload_url"
-  if curl -fsS -X PUT --upload-file "$BUG_REPORT_OUTPUT_FILE" "$upload_url"; then
-    log "INFO: nvidia-bug-report upload complete: $file_name"
+  if curl -fsS --connect-timeout 10 --max-time 120 -X PUT --upload-file "$local_bug_report_path" "$upload_url"; then
+    log "INFO: nvidia-bug-report upload complete: $bug_report_file"
   else
-    log "WARN: Failed to upload nvidia-bug-report: $file_name"
-    return 1
+    log "WARN: Failed to upload nvidia-bug-report: $bug_report_file"
   fi
 }
 
@@ -140,11 +114,7 @@ collect_reset_failure_diagnostics() {
     return 0
   fi
 
-  if collect_nvidia_bug_report; then
-    upload_bug_report || true
-  else
-    log "WARN: Continuing after nvidia-bug-report collection failure."
-  fi
+  collect_and_upload_nvidia_bug_report || log "WARN: Continuing after nvidia-bug-report collection failure."
 }
 
 log "INFO: Using DRIVER_ROOT=$DRIVER_ROOT"

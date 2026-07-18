@@ -258,6 +258,18 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 									Name:  WriteSyslogEventEnvVar,
 									Value: strconv.FormatBool(writeSyslogEvent),
 								},
+								{
+									Name: NodeNameEnvVar,
+									ValueFrom: &corev1.EnvVarSource{
+										FieldRef: &corev1.ObjectFieldSelector{
+											FieldPath: "spec.nodeName",
+										},
+									},
+								},
+								{
+									Name:  UploadURLBaseEnvVar,
+									Value: uploadURL,
+								},
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
@@ -293,22 +305,6 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 	}
 	if len(runtimeClassName) > 0 {
 		job.Spec.Template.Spec.RuntimeClassName = &runtimeClassName
-	}
-
-	job.Spec.Template.Spec.Containers[0].Env = append(job.Spec.Template.Spec.Containers[0].Env, corev1.EnvVar{
-		Name: NodeNameEnvVar,
-		ValueFrom: &corev1.EnvVarSource{
-			FieldRef: &corev1.ObjectFieldSelector{
-				FieldPath: "spec.nodeName",
-			},
-		},
-	})
-
-	if uploadURL != "" {
-		job.Spec.Template.Spec.Containers[0].Env = append(job.Spec.Template.Spec.Containers[0].Env, corev1.EnvVar{
-			Name:  UploadURLBaseEnvVar,
-			Value: uploadURL,
-		})
 	}
 
 	return job, nil
