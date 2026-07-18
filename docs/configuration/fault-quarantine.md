@@ -133,7 +133,8 @@ Rule sets define conditions for quarantining nodes using CEL expressions. Each r
 ```yaml
 fault-quarantine:
   ruleSets:
-    - version: "1"
+    - enabled: true
+      version: "1"
       name: "ruleset-name"
       priority: 100
       
@@ -159,6 +160,9 @@ fault-quarantine:
 ```
 
 ### Parameters
+
+#### enabled
+When `false`, the ruleset is skipped entirely. Use this to turn off a built-in ruleset without removing its definition.
 
 #### version
 Rule set format version for future compatibility.
@@ -225,3 +229,24 @@ ruleSets:
     cordon:
       shouldCordon: true
 ```
+
+### Adding and Modifying Rule Sets
+
+`fault-quarantine.ruleSets` is a **list**. When Helm merges multiple values files (`-f`), lists are replaced entirely — not merged by `name`. A file that sets only one ruleset replaces the whole list; built-in rulesets from [values.yaml](../../distros/kubernetes/nvsentinel/charts/fault-quarantine/values.yaml) are dropped unless you include them again. The chart has no keyed-merge for rulesets.
+
+Copy the default `ruleSets` from values.yaml into your values file, edit the full list, then upgrade:
+
+- **Disable** a ruleset: set `enabled: false` on that entry in your complete list.
+- **Add** a ruleset: append an entry (see [examples above](#example-rule-sets)).
+- **Modify** a ruleset: change `match`, `cordon`, or `taint` on that entry in your complete list.
+
+```bash
+helm upgrade nvsentinel ./distros/kubernetes/nvsentinel \
+  -n nvsentinel \
+  -f my-values.yaml \
+  --wait
+```
+
+The chart renders the list into the `fault-quarantine` ConfigMap (`config.toml`); a config change triggers a pod restart.
+
+Use `global.dryRun: true` to test without cordoning nodes (see [Dry Run Mode](./README.md#dry-run-mode)). Confirm the rollout with `kubectl -n nvsentinel rollout status deployment/fault-quarantine` and check `kubectl -n nvsentinel logs deployment/fault-quarantine`.

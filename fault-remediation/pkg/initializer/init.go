@@ -79,7 +79,9 @@ func InitializeAll(
 
 	slog.Info("Successfully initialized client")
 
-	ds, watcherInstance, healthEventStore, datastoreConfig, err := initDatastoreAndWatcher(ctx, pipeline)
+	ds, watcherInstance, healthEventStore, datastoreConfig, resumeControlDecision, err := initDatastoreAndWatcher(
+		ctx, pipeline,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -99,6 +101,8 @@ func InitializeAll(
 		EnableLogCollector: params.EnableLogCollector,
 		UpdateMaxRetries:   tomlConfig.UpdateRetry.MaxRetries,
 		UpdateRetryDelay:   time.Duration(tomlConfig.UpdateRetry.RetryDelaySeconds) * time.Second,
+		StartFresh:         resumeControlDecision.StartFresh,
+		ColdStartAfterTime: resumeControlDecision.ColdStartCutoff,
 	}
 
 	slog.Info("Initialization completed successfully")
@@ -151,15 +155,23 @@ func initRemediationAndStateManager(
 func initDatastoreAndWatcher(
 	ctx context.Context,
 	pipeline datastore.Pipeline,
-) (datastore.DataStore, datastore.ChangeStreamWatcher, datastore.HealthEventStore, *datastore.DataStoreConfig, error) {
+) (
+	datastore.DataStore,
+	datastore.ChangeStreamWatcher,
+	datastore.HealthEventStore,
+	*datastore.DataStoreConfig,
+	client.ResumeControlDecision,
+	error,
+) {
 	datastoreConfig, err := datastore.LoadDatastoreConfig()
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("failed to load datastore configuration: %w", err)
+		return nil, nil, nil, nil, client.ResumeControlDecision{},
+			fmt.Errorf("failed to load datastore configuration: %w", err)
 	}
 
 	ds, err := datastore.NewDataStore(ctx, *datastoreConfig)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("error initializing datastore: %w", err)
+		return nil, nil, nil, nil, client.ResumeControlDecision{}, fmt.Errorf("error initializing datastore: %w", err)
 	}
 
 	watcherConfig := watcher.WatcherConfig{
@@ -170,10 +182,21 @@ func initDatastoreAndWatcher(
 
 	watcherInstance, err := watcher.CreateChangeStreamWatcher(ctx, ds, watcherConfig)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("error initializing change stream watcher: %w", err)
+		return nil, nil, nil, nil, client.ResumeControlDecision{},
+			fmt.Errorf("error initializing change stream watcher: %w", err)
+	}
+
+	var resumeControlDecision client.ResumeControlDecision
+
+	type resumeControlDecisionProvider interface {
+		ResumeControlDecision() client.ResumeControlDecision
+	}
+
+	if provider, ok := watcherInstance.(resumeControlDecisionProvider); ok {
+		resumeControlDecision = provider.ResumeControlDecision()
 	}
 
 	healthEventStore := ds.HealthEventStore()
 
-	return ds, watcherInstance, healthEventStore, datastoreConfig, nil
+	return ds, watcherInstance, healthEventStore, datastoreConfig, resumeControlDecision, nil
 }

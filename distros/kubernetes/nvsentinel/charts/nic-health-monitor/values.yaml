@@ -47,12 +47,21 @@ enabledChecks:
 # of statePollingInterval.
 statePollingInterval: "1s"
 
-# Regex patterns for NICs to exclude from monitoring (comma-separated)
+# Regex patterns for NICs to exclude from normal discovery (comma-separated).
+# Ignored when nicInclusionRegexOverride is set.
 nicExclusionRegex: "^veth.*,^docker.*,^br-.*,^lo$"
 
 # Override automatic device discovery with an explicit inclusion regex (comma-separated).
-# When set, only NIC devices matching these patterns are monitored; the standard
-# mlx5_* prefix filter, NUMA exclusion, and NicExclusionRegex are all bypassed.
+# When set, only NIC devices matching these patterns are monitored. All automatic
+# filters, including vendor, VF, management/NUMA, and NicExclusionRegex, are bypassed.
+# Pinned devices are reported unconditionally: the first-poll peer-evidence gate and
+# the card-homogeneity check do not apply while the override is active (explicit
+# operator intent replaces peer evidence).
+# Changing this value (or nicExclusionRegex) resets the monitor's persisted
+# port/device state on the next pod start (healthy baselines re-emitted) so scope
+# transitions cannot fabricate device-disappearance events or bypass first-poll
+# severity gating. Counter snapshots and latched breaches are preserved across the
+# reset: counters only clear on a real reboot or an admin counter reset.
 # Leave empty to use the default auto-discovery mechanism.
 nicInclusionRegexOverride: ""
 

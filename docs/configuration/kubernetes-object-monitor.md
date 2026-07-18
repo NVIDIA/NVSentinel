@@ -210,6 +210,59 @@ nodeAssociation:
     lookup('v1', 'Pod', resource.metadata.namespace, resource.spec.podName).spec.nodeName
 ```
 
+## Monitoring by resource kind
+
+Each policy watches one Kubernetes resource type. Set `resource.group`, `resource.version`,
+and `resource.kind` accordingly. Write predicates with the [common CEL patterns](#common-patterns)
+on the `resource` object.
+
+### Node
+
+```yaml
+resource:
+  group: ""
+  version: v1
+  kind: Node
+```
+
+Nodes are cluster-scoped — do not set `resource.namespace`. Do not set `nodeAssociation`; the
+monitor uses the Node name automatically ([ADR-011](../designs/011-kubernetes-object-monitor.md)).
+
+### Pod
+
+```yaml
+resource:
+  group: ""
+  version: v1
+  kind: Pod
+  namespace: default   # optional; omit to watch all namespaces
+```
+
+Pods must include `nodeAssociation` (usually `resource.spec.nodeName`; see
+[direct reference](#direct-field-reference)). Gate predicates so every matched Pod has a
+non-empty node — e.g. `has(resource.spec.nodeName) && resource.spec.nodeName != ""` — so
+unscheduled Pods never match; otherwise the reconciler falls back to the Pod name when
+association is empty. For production DaemonSet operator monitoring, see
+[Monitoring Critical Operators](../monitoring-critical-operators.md).
+
+### Event
+
+```yaml
+resource:
+  group: events.k8s.io
+  version: v1
+  kind: Event
+```
+
+Events must include `nodeAssociation` that resolves the node from the object the event is
+about — typically a `lookup()` on `resource.regarding` ([ADR-011](../designs/011-kubernetes-object-monitor.md)).
+
+### Policy name and output
+
+The policy `name` is sent as the health event `checkName`. Whether that becomes a node
+condition or a Kubernetes Event on the node depends on `isFatal` — see
+[INTEGRATIONS](../INTEGRATIONS.md#condition-vs-event-behavior).
+
 ## Policy Examples
 
 ### Example 1: Node Not Ready
@@ -258,6 +311,101 @@ policies:
       recommendedAction: REPLACE_VM
       errorCode:
         - NODE_NEEDS_REPAIR
+```
+
+### Example 3: Warning Event on Pod
+
+Event objects do not store the node name directly. Resolve the node by looking up the Pod
+referenced by `resource.regarding`.
+
+```yaml
+policies:
+  - name: pod-warning-event
+    enabled: true
+    resource:
+      group: events.k8s.io
+      version: v1
+      kind: Event
+    predicate:
+      # Guard the Pod lookup so a deleted/absent Pod or empty spec.nodeName cannot
+      # fall back to the Event name for node association.
+      expression: |
+        resource.type == 'Warning' &&
+        resource.regarding.kind == 'Pod' &&
+        has(resource.regarding.namespace) &&
+        has(resource.regarding.name) &&
+        (now - timestamp(resource.eventTime)) < duration('10m') &&
+        lookup('v1', 'Pod', resource.regarding.namespace, resource.regarding.name) != null &&
+        has(lookup('v1', 'Pod', resource.regarding.namespace, resource.regarding.name).spec.nodeName) &&
+        lookup('v1', 'Pod', resource.regarding.namespace, resource.regarding.name).spec.nodeName != ""
+    nodeAssociation:
+      expression: |
+        lookup('v1', 'Pod', resource.regarding.namespace, resource.regarding.name).spec.nodeName
+    healthEvent:
+      componentClass: Software
+      isFatal: false
+      message: "Recent Warning event on pod"
+      recommendedAction: CONTACT_SUPPORT
+      errorCode:
+        - POD_WARNING_EVENT
+```
+
+### Example 4: Pod Failed phase
+
+Phase predicate from [Check field value](#common-patterns) plus Pod `nodeAssociation`.
+
+```yaml
+policies:
+  - name: pod-failed-on-node
+    enabled: true
+    resource:
+      group: ""
+      version: v1
+      kind: Pod
+      namespace: default
+    predicate:
+      expression: |
+        has(resource.spec.nodeName) && resource.spec.nodeName != "" &&
+        resource.status.phase == 'Failed'
+    nodeAssociation:
+      expression: resource.spec.nodeName
+    healthEvent:
+      componentClass: Pod
+      isFatal: false
+      message: "Pod entered Failed phase"
+      recommendedAction: CONTACT_SUPPORT
+      errorCode:
+        - POD_FAILED
+```
+
+For a fatal GPU-runtime Event policy, see the `NVMLError` example in
+[ADR-011](../designs/011-kubernetes-object-monitor.md).
+
+### Observe a policy
+
+```bash
+NODE=<test-node>
+
+# Example 4 — Pod exits immediately; the generated Warning events also exercise Example 3
+kubectl run kom-pod-fail --restart=Never -n default --image=busybox \
+  --overrides='{"spec":{"nodeName":"'"$NODE"'","containers":[{"name":"kom-pod-fail","image":"busybox","command":["sh","-c","exit 1"]}]}}'
+
+kubectl logs -n nvsentinel -l app.kubernetes.io/name=kubernetes-object-monitor --tail=30
+
+# Examples 3 & 4 use isFatal: false — verify Node events ([INTEGRATIONS](../INTEGRATIONS.md#using-events-for-non-fatal-errors))
+kubectl get events --field-selector involvedObject.kind=Node,involvedObject.name=$NODE \
+  --sort-by='.lastTimestamp' | tail -10
+
+# Cleanup
+kubectl delete pod kom-pod-fail -n default --ignore-not-found
+```
+
+### One-shot AI prompt
+
+```text
+Create a Helm values overlay for NVSentinel kubernetes-object-monitor policies on Node, Pod, or
+events.k8s.io/v1/Event. Include nodeAssociation for Pod/Event (omit for Node). Output values
+YAML plus kubectl trigger/verify commands.
 ```
 
 ## RBAC Permissions

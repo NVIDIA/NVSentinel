@@ -56,65 +56,126 @@ type IBPort struct {
 
 // IBDevice represents a discovered NIC device.
 type IBDevice struct {
-	Name      string   `json:"name"`   // e.g., "mlx5_0"
-	Vendor    Vendor   `json:"vendor"` // detected from sysfs vendor ID
-	HCAType   string   `json:"hca_type,omitempty"`
-	FWVersion string   `json:"fw_ver,omitempty"`
-	Ports     []IBPort `json:"ports"`
-	IsVF      bool     `json:"is_vf"` // true when `device/physfn` symlink exists
-	NetDev    string   `json:"net_dev,omitempty"`
+	Name               string   `json:"name"`   // e.g., "mlx5_0"
+	Vendor             Vendor   `json:"vendor"` // detected from sysfs vendor ID
+	HCAType            string   `json:"hca_type,omitempty"`
+	FWVersion          string   `json:"fw_ver,omitempty"`
+	Ports              []IBPort `json:"ports"`
+	IsVF               bool     `json:"is_vf"` // true when `device/physfn` symlink exists
+	NetDev             string   `json:"net_dev,omitempty"`
+	IncludedByOverride bool     `json:"-"` // true when selected by the explicit inclusion override
 }
 
-// DiscoveryResult holds the output of DiscoverDevices, separating
-// monitored physical devices from skipped VFs so callers don't need
-// to re-filter.
+// DiscoveryResult holds the output of device discovery, separating monitored
+// devices from VFs skipped by the normal discovery flow.
 type DiscoveryResult struct {
-	Devices    []IBDevice
-	SkippedVFs int
+	Devices           []IBDevice
+	SkippedVFs        int
+	UnreadableDevices map[string]error
+	Complete          bool
 }
 
-// DiscoverDevices enumerates all IB/RoCE devices from sysfs, parsing
-// each device's metadata and ports. SR-IOV VFs are counted but excluded
-// from the returned Devices slice. The exclusionRegex argument is a
-// comma-separated list of regexes that filter device *names*.
+// DiscoverDevices enumerates IB/RoCE devices using the normal discovery flow.
+// SR-IOV VFs are counted but excluded and exclusionRegex filters device names.
 func DiscoverDevices(reader sysfs.Reader, exclusionRegex string) (*DiscoveryResult, error) {
+	return DiscoverDevicesWithOverride(reader, exclusionRegex, "")
+}
+
+// DiscoverDevicesWithOverride enumerates all IB/RoCE devices from sysfs,
+// parsing each device's metadata and ports.
+// When inclusionRegexOverride contains at least one usable pattern, only
+// matching names are returned and all automatic device filters, including
+// exclusionRegex and the VF filter, are bypassed.
+func DiscoverDevicesWithOverride(
+	reader sysfs.Reader,
+	exclusionRegex string,
+	inclusionRegexOverride string,
+) (*DiscoveryResult, error) {
 	ibPath := reader.IBBasePath()
 
 	entries, err := reader.ListDirs(ibPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return &DiscoveryResult{}, nil
+			// Absence of the top-level tree is normal on nodes without IB/RoCE,
+			// but is an incomplete observation when a caller already has state.
+			// Preserve that distinction instead of reporting a successful empty
+			// enumeration that can fabricate mass-disappearance events.
+			return &DiscoveryResult{
+				Devices:           []IBDevice{},
+				UnreadableDevices: map[string]error{},
+				Complete:          false,
+			}, nil
 		}
 
 		return nil, fmt.Errorf("failed to list IB devices at %s: %w", ibPath, err)
 	}
 
 	exclusions := compileRegexList(exclusionRegex)
+	inclusions := compileRegexList(inclusionRegexOverride)
+	// Enable the override only when at least one usable pattern was
+	// compiled. Values such as "," or ",," contain no patterns and must
+	// fall back to normal discovery instead of silently excluding every
+	// device.
+	inclusionOverrideEnabled := len(inclusions) > 0
 
 	result := &DiscoveryResult{
-		Devices: make([]IBDevice, 0, len(entries)),
+		Devices:           make([]IBDevice, 0, len(entries)),
+		UnreadableDevices: make(map[string]error),
+		Complete:          true,
 	}
 
 	for _, devName := range entries {
-		if matchesAny(devName, exclusions) {
-			continue
+		dev, skippedVF, readErr := discoverCandidate(
+			reader, devName, exclusions, inclusions, inclusionOverrideEnabled,
+		)
+		if readErr != nil {
+			result.UnreadableDevices[devName] = readErr
 		}
 
-		dev, err := discoverDevice(reader, devName)
-		if err != nil {
-			slog.Debug("Skipping device", "device", devName, "error", err)
-			continue
-		}
-
-		if dev.IsVF {
+		if skippedVF {
 			result.SkippedVFs++
-			continue
 		}
 
-		result.Devices = append(result.Devices, *dev)
+		if dev != nil {
+			result.Devices = append(result.Devices, *dev)
+		}
 	}
 
 	return result, nil
+}
+
+// discoverCandidate applies the configured discovery scope to one device,
+// parses devices that remain eligible, and reports normal-flow VFs separately
+// so the caller can maintain its skipped count.
+func discoverCandidate(
+	reader sysfs.Reader,
+	devName string,
+	exclusions []*regexp.Regexp,
+	inclusions []*regexp.Regexp,
+	inclusionOverrideEnabled bool,
+) (*IBDevice, bool, error) {
+	includedByOverride := inclusionOverrideEnabled && matchesAny(devName, inclusions)
+	if inclusionOverrideEnabled && !includedByOverride {
+		return nil, false, nil
+	}
+
+	if !inclusionOverrideEnabled && matchesAny(devName, exclusions) {
+		return nil, false, nil
+	}
+
+	dev, err := discoverDevice(reader, devName)
+	if err != nil {
+		slog.Debug("Skipping device", "device", devName, "error", err)
+
+		return nil, false, err
+	}
+
+	dev.IncludedByOverride = includedByOverride
+	if dev.IsVF && !includedByOverride {
+		return nil, true, nil
+	}
+
+	return dev, false, nil
 }
 
 // discoverDevice gathers identity and port data for a single IB device.

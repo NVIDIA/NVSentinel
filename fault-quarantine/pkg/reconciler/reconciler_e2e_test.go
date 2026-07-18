@@ -174,6 +174,7 @@ func createE2ETestNode(ctx context.Context, t *testing.T, name string, annotatio
 	if labels == nil {
 		labels = make(map[string]string)
 	}
+	labels[informer.GPUNodeLabel] = "true"
 
 	node := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -253,7 +254,7 @@ func setupE2EReconciler(t *testing.T, ctx context.Context, tomlConfig config.Tom
 func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2EReconcilerConfig) (*Reconciler, *testutils.MockChangeStreamWatcher, StatusGetter, breaker.CircuitBreaker) {
 	t.Helper()
 
-	nodeInformer, err := informer.NewNodeInformer(e2eTestClient, 0)
+	nodeInformer, err := informer.NewNodeInformer(e2eTestClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue)
 	require.NoError(t, err)
 
 	fqClient := &informer.FaultQuarantineClient{
@@ -491,7 +492,7 @@ func runReconcilerAndQuarantineNode(
 
 	// Create a sub-test context so we can control cleanup separately
 	func() {
-		nodeInformer, err := informer.NewNodeInformer(e2eTestClient, 0)
+		nodeInformer, err := informer.NewNodeInformer(e2eTestClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue)
 		require.NoError(t, err)
 
 		fqClient := &informer.FaultQuarantineClient{
@@ -4197,7 +4198,10 @@ func TestE2E_ConcurrentUnhealthyEvents_WithDelayedInformer(t *testing.T) {
 
 	nodeName := "concurrent-unhealthy-" + generateShortTestID()
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   nodeName,
+			Labels: map[string]string{informer.GPUNodeLabel: "true"},
+		},
 		Spec:       corev1.NodeSpec{Unschedulable: false},
 		Status:     corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}},
 	}
@@ -4228,7 +4232,7 @@ func TestE2E_ConcurrentUnhealthyEvents_WithDelayedInformer(t *testing.T) {
 		},
 	}
 
-	nodeInformer, err := informer.NewNodeInformer(k8sClient, 0)
+	nodeInformer, err := informer.NewNodeInformer(k8sClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue)
 	require.NoError(t, err)
 
 	fqClient := &informer.FaultQuarantineClient{
@@ -4467,7 +4471,10 @@ func TestE2E_ConcurrentHealthyEvents_WithDelayedInformer(t *testing.T) {
 
 	nodeName := "concurrent-recovery-" + generateShortTestID()
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   nodeName,
+			Labels: map[string]string{informer.GPUNodeLabel: "true"},
+		},
 		Spec:       corev1.NodeSpec{Unschedulable: false},
 		Status:     corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}},
 	}
@@ -4493,7 +4500,7 @@ func TestE2E_ConcurrentHealthyEvents_WithDelayedInformer(t *testing.T) {
 	// Resync period of 0 disables periodic re-listing. The informer only updates via watch
 	// events, not by periodically fetching all nodes. This ensures cache staleness is controlled
 	// solely by our delayed watch transport.
-	nodeInformer, err := informer.NewNodeInformer(k8sClient, 0)
+	nodeInformer, err := informer.NewNodeInformer(k8sClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue)
 	require.NoError(t, err)
 
 	fqClient := &informer.FaultQuarantineClient{

@@ -23,7 +23,7 @@ NVSentinel automatically detects, classifies, and remediates hardware and softwa
 ### Installation
 
 ```bash
-NVSENTINEL_VERSION=v1.13.1
+NVSENTINEL_VERSION=v1.14.0
 # Install from GitHub Container Registry
 helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --version "$NVSENTINEL_VERSION" \
@@ -76,7 +76,7 @@ helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
 ### 3. Install NVSentinel
 
 ```bash
-NVSENTINEL_VERSION=v1.13.1
+NVSENTINEL_VERSION=v1.14.0
 
 helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --namespace nvsentinel --create-namespace \

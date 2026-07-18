@@ -432,15 +432,19 @@ fault-quarantine:
   # Also used for uncordon tracking
   labelPrefix: "k8saas.nvidia.com/"
 
-  # Circuit breaker prevents quarantining too many nodes at once
+  # Label selector (key=value) identifying GPU nodes. Override when the cluster uses a
+  # non-standard label key or a value other than "true".
+  gpuNodeLabel: "nvidia.com/gpu.present=true"
+
+  # Circuit breaker prevents quarantining too many GPU nodes at once
   # If the threshold is exceeded, new quarantines are blocked
   # This prevents cascading failures from taking down the entire cluster
   # State is persisted in a ConfigMap and survives restarts
   circuitBreaker:
     # Enable circuit breaker protection
     enabled: true
-    # Maximum percentage of cluster nodes that can be cordoned
-    # Example: 50 means if 50% or more nodes are already cordoned,
+    # Maximum percentage of nvidia.com/gpu.present=true nodes that can be cordoned
+    # Example: 50 means if 50% or more GPU nodes are already cordoned,
     # no new quarantines will be allowed
     # Range: 1-100
     percentage: 50

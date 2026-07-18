@@ -45,15 +45,17 @@ Configure the circuit breaker through your Helm values:
 fault-quarantine:
   circuitBreaker:
     enabled: true      # Enable or disable the protection
-    percentage: 50     # Percentage of nodes that can be cordoned
+    percentage: 50     # Percentage of GPU nodes that can be cordoned
     duration: "5m"     # Time window to monitor
 ```
 
-**Example:** With `percentage: 50` and `duration: "5m"`, if 50% or more of your cluster nodes are cordoned within any 5-minute period, the circuit breaker will trip.
+Only nodes labeled `nvidia.com/gpu.present=true` are included when calculating the threshold.
+
+**Example:** With `percentage: 50` and `duration: "5m"`, if 50% or more of your GPU nodes are cordoned within any 5-minute period, the circuit breaker will trip.
 
 **Recommended Settings:**
-- For production clusters with 10+ nodes: Keep enabled with 50% threshold
-- For small clusters (< 10 nodes): Consider disabling or using a higher percentage
+- For production clusters with 10+ GPU nodes: Keep enabled with 50% threshold
+- For small clusters (< 10 GPU nodes): Consider disabling or using a higher percentage
 
 ## Monitoring the Circuit Breaker
 

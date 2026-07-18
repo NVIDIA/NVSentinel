@@ -17,6 +17,7 @@ package state
 import (
 	"fmt"
 	"log/slog"
+	"maps"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/checks"
@@ -40,6 +41,7 @@ type EthernetStateCheck struct {
 }
 
 var _ linkLayerStrategy = (*EthernetStateCheck)(nil)
+var _ checks.TransactionalCheck = (*EthernetStateCheck)(nil)
 
 func (c *EthernetStateCheck) checkName() string { return checks.EthernetStateCheckName }
 func (c *EthernetStateCheck) linkLayer() string { return ethLinkLayer }
@@ -101,10 +103,13 @@ type ethPortInfo struct {
 
 // ethPollState is the poll-level aggregate for EthernetStateCheck.
 type ethPollState struct {
-	seenDevices    map[string]bool
-	currentDevices map[string]bool
-	currentPorts   map[string]portSnapshot
-	allPorts       []ethPortInfo
+	seenDevices        map[string]bool
+	parsedDevices      map[string]bool
+	currentDevices     map[string]bool
+	currentPorts       map[string]portSnapshot
+	managementCards    map[string]bool
+	allPorts           []ethPortInfo
+	discoveryUncertain bool
 
 	cardActive map[string]int
 	cardTotal  map[string]int
@@ -114,31 +119,75 @@ type ethPollState struct {
 
 func newEthPollState() *ethPollState {
 	return &ethPollState{
-		seenDevices:    make(map[string]bool),
-		currentDevices: make(map[string]bool),
-		currentPorts:   make(map[string]portSnapshot),
-		allPorts:       nil,
-		cardActive:     make(map[string]int),
-		cardTotal:      make(map[string]int),
-		cardRole:       make(map[string]topology.Role),
-		portCard:       make(map[string]string),
+		seenDevices:     make(map[string]bool),
+		parsedDevices:   make(map[string]bool),
+		currentDevices:  make(map[string]bool),
+		currentPorts:    make(map[string]portSnapshot),
+		managementCards: make(map[string]bool),
+		allPorts:        nil,
+		cardActive:      make(map[string]int),
+		cardTotal:       make(map[string]int),
+		cardRole:        make(map[string]topology.Role),
+		portCard:        make(map[string]string),
 	}
 }
 
-// Run executes a single poll cycle.
+// Run executes and commits one poll for direct callers. The production
+// monitor uses Prepare/Commit/Discard so publication succeeds before state
+// advances.
 func (c *EthernetStateCheck) Run() ([]*pb.HealthEvent, error) {
-	result, err := discovery.DiscoverDevices(c.reader, c.cfg.NicExclusionRegex)
+	events, err := c.Prepare()
+	if err != nil {
+		return nil, err
+	}
+
+	c.Commit()
+
+	return events, nil
+}
+
+// Prepare observes one poll and stages its candidate state without advancing
+// the committed transition maps or persistent state.
+func (c *EthernetStateCheck) Prepare() ([]*pb.HealthEvent, error) {
+	c.Discard()
+
+	result, err := discovery.DiscoverDevicesWithOverride(
+		c.reader, c.cfg.NicExclusionRegex, c.cfg.NicInclusionRegexOverride,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("device discovery failed: %w", err)
+	}
+
+	if !result.Complete {
+		if c.previousDevices != nil {
+			return nil, fmt.Errorf("device discovery incomplete: InfiniBand sysfs tree unavailable")
+		}
+
+		return nil, nil
 	}
 
 	metrics.DevicesDiscovered.WithLabelValues(c.nodeName, c.Name()).Set(float64(len(result.Devices)))
 
 	firstPoll := c.previousDevices == nil
+	if firstPoll && len(result.UnreadableDevices) > 0 {
+		return nil, nil
+	}
+
 	baselineRun := firstPoll && c.emitHealthyBaselines
 	st := newEthPollState()
+	st.discoveryUncertain = len(result.UnreadableDevices) > 0
+
+	committedAnomalous := c.anomalousLatch
+	committedDisappeared := c.disappearedLatch
+	committedMisses := c.deviceMissCounts
+	c.anomalousLatch = maps.Clone(committedAnomalous)
+	c.disappearedLatch = maps.Clone(committedDisappeared)
+	c.deviceMissCounts = maps.Clone(committedMisses)
 
 	c.collectDevicesAndPorts(result.Devices, st)
+	c.retainUnreadableDevices(
+		result.UnreadableDevices, st.seenDevices, st.currentDevices, st.currentPorts,
+	)
 	events := c.buildEventsForPoll(st, firstPoll, baselineRun)
 	c.logDiscoverySummaryIfChanged(st)
 
@@ -146,37 +195,80 @@ func (c *EthernetStateCheck) Run() ([]*pb.HealthEvent, error) {
 		c.classifier.LogClassificationSummary()
 	}
 
-	c.previousDevices = st.currentDevices
-	c.previousPorts = st.currentPorts
-	c.emitHealthyBaselines = false
+	c.pending = &statePollCommit{
+		devices:          st.currentDevices,
+		ports:            st.currentPorts,
+		anomalousLatch:   c.anomalousLatch,
+		disappearedLatch: c.disappearedLatch,
+		deviceMissCounts: c.deviceMissCounts,
+		linkLayer:        ethLinkLayer,
+	}
 
-	c.persistState(ethLinkLayer, st.currentDevices, st.currentPorts)
+	c.anomalousLatch = committedAnomalous
+	c.disappearedLatch = committedDisappeared
+	c.deviceMissCounts = committedMisses
 
 	return events, nil
+}
+
+// Commit installs and persists the most recently prepared state.
+func (c *EthernetStateCheck) Commit() {
+	if c.pending == nil {
+		return
+	}
+
+	pending := c.pending
+	c.pending = nil
+	c.previousDevices = pending.devices
+	c.previousPorts = pending.ports
+	c.anomalousLatch = pending.anomalousLatch
+	c.disappearedLatch = pending.disappearedLatch
+	c.deviceMissCounts = pending.deviceMissCounts
+	c.emitHealthyBaselines = false
+	c.persistState(pending.linkLayer, pending.devices, pending.ports)
+}
+
+// Discard abandons a prepared poll after check or publication failure.
+func (c *EthernetStateCheck) Discard() {
+	c.pending = nil
 }
 
 // collectDevicesAndPorts walks the discovered devices. VFs are already
 // excluded by discovery; this filters unsupported vendors and management
 // NICs. seenDevices tracks all physical devices for disappearance detection.
+//
+// Device-level lifecycle (disappearance detection and its latch) is
+// scoped to this check's link layer: a device joins currentDevices only
+// while it exposes at least one Ethernet port. Without this scoping a
+// sibling-layer device (e.g., a pure-IB NIC) would be latched by this
+// check on disappearance and could never recover — latch consumption is
+// driven by this layer's port events, which such a device never emits.
 func (c *EthernetStateCheck) collectDevicesAndPorts(devices []discovery.IBDevice, st *ethPollState) {
 	for _, dev := range devices {
 		st.seenDevices[dev.Name] = true
+		st.parsedDevices[dev.Name] = true
 
 		if !c.shouldMonitor(dev) {
+			// A management-classified function marks its whole card as
+			// frontend plumbing — see exemptManagementSiblingCards.
+			if c.classifier.IsManagementNIC(dev.Name) {
+				st.managementCards[c.classifier.PCICardOf(dev.Name)] = true
+			}
+
 			continue
 		}
 
-		st.currentDevices[dev.Name] = true
-
 		card := c.classifier.PCICardOf(dev.Name)
 		role := c.classifier.RoleOf(dev.Name)
-		st.cardRole[card] = role
 
 		for i := range dev.Ports {
 			p := dev.Ports[i]
 			if !discovery.IsEthernetPort(&p) {
 				continue
 			}
+
+			st.currentDevices[dev.Name] = true
+			st.cardRole[card] = role
 
 			c.recordPort(st, dev, card, p)
 		}
@@ -208,8 +300,8 @@ func (c *EthernetStateCheck) recordPort(
 	st.allPorts = append(st.allPorts, ethPortInfo{dev: dev, port: p, key: key, snap: snap})
 }
 
-// buildEventsForPoll runs the per-port transition evaluation,
-// disappearance checks, and the first-poll homogeneity check.
+// buildEventsForPoll adapts the Ethernet poll state to the shared event
+// pipeline in baseStateCheck.buildEvents.
 //
 // baselineRun is true on the first poll after a boot-ID change and
 // asks the per-port evaluator to emit healthy baselines for every
@@ -217,27 +309,33 @@ func (c *EthernetStateCheck) recordPort(
 func (c *EthernetStateCheck) buildEventsForPoll(
 	st *ethPollState, firstPoll, baselineRun bool,
 ) []*pb.HealthEvent {
-	expectedCards := c.classifier.ExpectedDownCards(st.cardActive, st.cardTotal, st.cardRole)
-	events := c.portTransitionEvents(st, firstPoll, baselineRun, expectedCards)
-	events = append(events, c.detectDeviceDisappearance(st.seenDevices)...)
-	events = append(events, c.detectPortDisappearance(st.currentDevices, st.currentPorts)...)
-
-	if firstPoll {
-		events = append(events, c.runCardHomogeneityCheck(st.cardActive, st.cardTotal, st.cardRole)...)
+	agg := pollAggregates{
+		seenDevices:     st.seenDevices,
+		parsedDevices:   st.parsedDevices,
+		currentDevices:  st.currentDevices,
+		currentPorts:    st.currentPorts,
+		cardActive:      st.cardActive,
+		cardTotal:       st.cardTotal,
+		cardRole:        st.cardRole,
+		managementCards: st.managementCards,
+		uncertain:       st.discoveryUncertain,
 	}
 
-	return events
+	return c.buildEvents(agg, baselineRun,
+		func(anomalousCards map[string]topology.CardAnomaly) []*pb.HealthEvent {
+			return c.portTransitionEvents(st, firstPoll, baselineRun, anomalousCards)
+		})
 }
 
 // portTransitionEvents iterates every recorded port and emits events on
 // health-boundary crossings.
 func (c *EthernetStateCheck) portTransitionEvents(
-	st *ethPollState, firstPoll, baselineRun bool, expectedCards map[string]struct{},
+	st *ethPollState, firstPoll, baselineRun bool, anomalousCards map[string]topology.CardAnomaly,
 ) []*pb.HealthEvent {
 	var events []*pb.HealthEvent
 
 	for _, pi := range st.allPorts {
-		if evt := c.evaluatePortTransition(pi, firstPoll, baselineRun, expectedCards, st.portCard); evt != nil {
+		if evt := c.evaluatePortTransition(pi, firstPoll, baselineRun, anomalousCards, st.portCard); evt != nil {
 			events = append(events, evt)
 		}
 	}
@@ -256,23 +354,38 @@ func (c *EthernetStateCheck) portTransitionEvents(
 func (c *EthernetStateCheck) evaluatePortTransition(
 	pi ethPortInfo,
 	firstPoll, baselineRun bool,
-	expectedCards map[string]struct{},
+	anomalousCards map[string]topology.CardAnomaly,
 	portCard map[string]string,
 ) *pb.HealthEvent {
 	prev, existed := c.previousPorts[pi.key]
 
-	isHealthy := pi.snap.State == checks.IBStateActive && pi.snap.PhysicalState == checks.IBPhysLinkUp
-	wasHealthy := existed && prev.State == checks.IBStateActive && prev.PhysicalState == checks.IBPhysLinkUp
+	isHealthy := portIsHealthy(pi.snap)
+	wasHealthy := existed && portIsHealthy(prev)
+	disappearanceRecovery := isHealthy && c.consumeDisappearanceRecovery(pi.snap.Device)
 
-	if existed && isHealthy == wasHealthy {
-		return nil
+	if existed && isHealthy == wasHealthy && !disappearanceRecovery {
+		return c.escalationEvent(pi, prev, isHealthy, firstPoll, anomalousCards, portCard)
 	}
 
 	if isHealthy {
-		return c.healthyRecoveryEvent(pi, prev, existed, baselineRun)
+		return c.healthyRecoveryEvent(pi, prev, existed, baselineRun, disappearanceRecovery)
 	}
 
-	return c.unhealthyEvent(pi, prev, firstPoll, expectedCards, portCard)
+	return c.unhealthyEvent(pi, prev, firstPoll, anomalousCards, portCard)
+}
+
+// escalationEvent emits when a still-unhealthy port escalates from a
+// non-fatal state to DOWN; other unhealthy→unhealthy and steady-state
+// polls stay silent.
+func (c *EthernetStateCheck) escalationEvent(
+	pi ethPortInfo, prev portSnapshot, isHealthy, firstPoll bool,
+	anomalousCards map[string]topology.CardAnomaly, portCard map[string]string,
+) *pb.HealthEvent {
+	if !isHealthy && ethernetPortIsFatal(pi.snap) && !ethernetPortIsFatal(prev) {
+		return c.unhealthyEvent(pi, prev, firstPoll, anomalousCards, portCard)
+	}
+
+	return nil
 }
 
 // healthyRecoveryEvent returns an IsHealthy=true event for port
@@ -281,9 +394,9 @@ func (c *EthernetStateCheck) evaluatePortTransition(
 // baselineRun is true, in which case it emits a healthy baseline so
 // the platform clears stale FATAL conditions from the previous boot.
 func (c *EthernetStateCheck) healthyRecoveryEvent(
-	pi ethPortInfo, prev portSnapshot, existed, baselineRun bool,
+	pi ethPortInfo, prev portSnapshot, existed, baselineRun, disappearanceRecovery bool,
 ) *pb.HealthEvent {
-	if !existed && !baselineRun {
+	if !existed && !baselineRun && !disappearanceRecovery {
 		return nil
 	}
 
@@ -299,13 +412,31 @@ func (c *EthernetStateCheck) healthyRecoveryEvent(
 	return c.portEvent(pi.snap.Device, pi.snap.Port, msg, false, true, pb.RecommendedAction_NONE)
 }
 
-// unhealthyEvent returns the fatal event for a DOWN transition, or nil
-// when the unhealthy state is a transient non-DOWN (INIT, ARMED).
-// Expected-down first-poll ports are downgraded to non-fatal
-// so the platform sees the state without acting on it.
+func ethernetPortIsFatal(snap portSnapshot) bool {
+	return snap.State == checks.IBStateDown
+}
+
+// unhealthyEvent returns the event for a DOWN transition, or nil when
+// the unhealthy state is a transient non-DOWN (INIT, ARMED) or when a
+// first-poll unhealthy port has no peer evidence of failure.
+//
+// On the first poll, DOWN is fatal only when the emitting card is
+// positively anomalous (active-port count below its role group's
+// decisive mode). A port that has never been observed healthy carries no
+// evidence it is supposed to be up: it may be an uncabled second port or
+// an intentionally-disabled/unprovisioned one (e.g., the unused Aux
+// frontend port on OCI BM.GPU.H100.8, left as a singleton storage card
+// after its Prime twin is excluded as the default-route NIC). Without
+// peer evidence the monitor logs and suppresses the event instead of
+// publishing an external HealthEvent. Runtime healthy→DOWN transitions
+// are always fatal (firstPoll is false once previous state exists).
+//
+// Devices pinned by the explicit inclusion override are never
+// suppressed: the operator asked to watch exactly this device, and that
+// intent replaces peer evidence.
 func (c *EthernetStateCheck) unhealthyEvent(
 	pi ethPortInfo, prev portSnapshot,
-	firstPoll bool, expectedCards map[string]struct{}, portCard map[string]string,
+	firstPoll bool, anomalousCards map[string]topology.CardAnomaly, portCard map[string]string,
 ) *pb.HealthEvent {
 	if pi.snap.State != checks.IBStateDown {
 		slog.Debug("RoCE port in non-ACTIVE state, ignoring",
@@ -314,6 +445,17 @@ func (c *EthernetStateCheck) unhealthyEvent(
 		)
 
 		return nil
+	}
+
+	if firstPoll && !pi.dev.IncludedByOverride {
+		card := portCard[pi.key]
+		if _, anomalous := anomalousCards[card]; !anomalous {
+			slog.Info("Suppressing first-poll unhealthy RoCE port: no peer evidence of failure",
+				"device", pi.snap.Device, "port", pi.snap.Port, "card", card,
+				"state", pi.snap.State, "physState", pi.snap.PhysicalState)
+
+			return nil
+		}
 	}
 
 	metrics.StateCheckErrors.WithLabelValues(
@@ -327,16 +469,6 @@ func (c *EthernetStateCheck) unhealthyEvent(
 		"prevState", prev.State, "newState", pi.snap.State,
 		"prevPhysState", prev.PhysicalState, "newPhysState", pi.snap.PhysicalState,
 	)
-
-	if firstPoll {
-		card := portCard[pi.key]
-		if _, expected := expectedCards[card]; expected {
-			slog.Info("Suppressing first-poll fatal for expected-down RoCE port",
-				"device", pi.snap.Device, "port", pi.snap.Port, "card", card)
-
-			return c.portEvent(pi.snap.Device, pi.snap.Port, msg, false, false, pb.RecommendedAction_NONE)
-		}
-	}
 
 	return c.portEvent(pi.snap.Device, pi.snap.Port, msg, true, false, pb.RecommendedAction_REPLACE_VM)
 }

@@ -48,6 +48,24 @@ func counterDetection(counters ...CounterConfig) CounterDetectionConfig {
 	}
 }
 
+func TestValidateInclusionRegexList_RejectsEmptyPatternList(t *testing.T) {
+	for _, value := range []string{",", ",,", ", ,"} {
+		t.Run(value, func(t *testing.T) {
+			err := validateInclusionRegexList(value)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "at least one non-empty pattern")
+		})
+	}
+}
+
+func TestValidateInclusionRegexList_AllowsUnsetAndUsablePatterns(t *testing.T) {
+	for _, value := range []string{"", "   ", "^mlx5_0$", ", ^mlx5_0$ ,"} {
+		t.Run(value, func(t *testing.T) {
+			assert.NoError(t, validateInclusionRegexList(value))
+		})
+	}
+}
+
 func TestValidateCounterDetection_DisabledSkipsValidation(t *testing.T) {
 	cd := CounterDetectionConfig{
 		Enabled:  false,

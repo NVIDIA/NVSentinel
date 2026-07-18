@@ -58,6 +58,8 @@ The Fault Quarantine module uses CEL (Common Expression Language) to define flex
 
 ## Configuration
 
+See [Fault Quarantine configuration](configuration/fault-quarantine.md) for the full Helm reference, including how to add, modify, and verify rule sets.
+
 Configure the Fault Quarantine module through Helm values:
 
 ```yaml

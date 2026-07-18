@@ -69,6 +69,7 @@ func createTestNode(ctx context.Context, t *testing.T, name string, labels map[s
 	if labels == nil {
 		labels = make(map[string]string)
 	}
+	labels[informer.GPUNodeLabel] = "true"
 
 	node := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -179,7 +180,7 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 				_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 			}()
 
-			nodeInformer, err := informer.NewNodeInformer(testClient, 0)
+			nodeInformer, err := informer.NewNodeInformer(testClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue)
 			if err != nil {
 				t.Fatalf("Failed to create NodeInformer: %v", err)
 			}

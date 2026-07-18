@@ -57,7 +57,7 @@ type FaultQuarantineClient struct {
 }
 
 func NewFaultQuarantineClient(kubeconfig string, dryRun bool,
-	resyncPeriod time.Duration) (*FaultQuarantineClient, error) {
+	resyncPeriod time.Duration, gpuNodeLabelKey, gpuNodeLabelValue string) (*FaultQuarantineClient, error) {
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		return nil, fmt.Errorf("error creating Kubernetes config: %w", err)
@@ -72,7 +72,7 @@ func NewFaultQuarantineClient(kubeconfig string, dryRun bool,
 		return nil, fmt.Errorf("error creating clientset: %w", err)
 	}
 
-	nodeInformer, err := NewNodeInformer(clientset, resyncPeriod)
+	nodeInformer, err := NewNodeInformer(clientset, resyncPeriod, gpuNodeLabelKey, gpuNodeLabelValue)
 	if err != nil {
 		return nil, fmt.Errorf("error creating node informer: %w", err)
 	}
