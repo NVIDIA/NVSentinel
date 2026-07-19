@@ -41,12 +41,22 @@ type GPUInfo struct {
 	NVLinks      []NVLink `json:"nvlinks"`
 
 	// NVLinkLinkCount is the number of NVLink links the GPU hardware supports,
-	// regardless of current link state. Determined by counting links where
-	// NVML GetNvLinkState returns SUCCESS (vs NOT_SUPPORTED on PCIe GPUs).
-	// Zero means the GPU verifiably has no NVLink hardware; nil (field absent
-	// in JSON) means the count could not be collected and consumers must treat
-	// NVLink capability as unknown rather than absent.
+	// regardless of current link state: links where NVML GetNvLinkState returns
+	// SUCCESS. GPUs without NVLink silicon (L40, A40) report zero, but
+	// NVLink-bridge-capable PCIe cards (A100/H100 PCIe) report their bridge
+	// links even when no bridge is installed, so a non-zero count does not
+	// mean NVLink is in use. Zero means verifiably no NVLink hardware; nil
+	// (field absent in JSON) means the count could not be collected and
+	// consumers must treat capability as unknown rather than absent.
 	NVLinkLinkCount *int `json:"nvlink_link_count,omitempty"`
+
+	// NVLinkActiveLinkCount is the number of NVLink links in the ACTIVE
+	// (FEATURE_ENABLED) state at collection time. Zero on an unbridged PCIe
+	// card is normal steady state; zero on an SXM/HGX system usually means
+	// fabric-manager link training had not finished when metadata was
+	// collected, so consumers must not treat zero alone as "NVLink unused" —
+	// cross-check NVLinkLinkCount and the device name. nil means unknown.
+	NVLinkActiveLinkCount *int `json:"nvlink_active_link_count,omitempty"`
 
 	// NUMANode is the NUMA Affinity of the GPU, parsed from the
 	// `nvidia-smi topo -m` output. A value of -1 means the information

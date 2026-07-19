@@ -161,26 +161,61 @@ class MetadataReader:
 
         return None
 
-    def has_nvlink(self, gpu_id: int) -> Optional[bool]:
-        """Check whether the GPU has NVLink hardware.
+    @staticmethod
+    def _as_link_count(value: object, gpu_id: int, field: str) -> Optional[int]:
+        """Validate a link-count field: only a non-negative int is accepted.
 
-        Uses only the nvlink_link_count field: the number of NVLink links the
-        hardware supports, regardless of current link state. There is
-        deliberately no fallback to the legacy nvlinks list — it records only
-        enabled NVSwitch-connected links, so it cannot distinguish "no NVLink
-        hardware" from GPU-to-GPU NVLink (e.g., H100 NVL) or disabled links.
+        Anything else (bool, float, string, negative) is malformed producer
+        output and must read as unknown, never as a confirmed count.
+        """
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            log.warning(
+                "GPU %s %s value %r is not a non-negative integer; treating as unknown",
+                gpu_id,
+                field,
+                value,
+            )
+            return None
+        return value
 
-        Fails closed: any value that does not confirm the capability one way
-        or the other yields None, and callers must not suppress on None.
+    def is_nvlink_down_expected(self, gpu_id: int) -> Optional[bool]:
+        """Check whether an all-NVLink-links-down report is expected steady
+        state for this GPU rather than a fault.
+
+        DCGM's NVLink health watch fires DCGM_FR_NVLINK_DOWN whenever a GPU
+        has NVLink hardware whose links are down. That is normal for:
+          - GPUs with no NVLink silicon at all (L40, A40): nothing to be up.
+          - NVLink-bridge-capable PCIe cards with no bridge installed
+            (A100/H100 PCIe): NVML reports the bridge links (SUCCESS) but
+            they are permanently inactive.
+
+        Decision rule, using metadata collected at startup:
+          - nvlink_active_link_count > 0  → False: NVLink is in use; links
+            going down is a genuine fault.
+          - nvlink_active_link_count == 0 and nvlink_link_count == 0
+            → True: no NVLink hardware exists.
+          - nvlink_active_link_count == 0 and device_name contains "PCIe"
+            → True: unbridged bridge-capable PCIe card; PCIe bridge links
+            train at driver load (no fabric manager), so a zero reading is
+            trustworthy steady state.
+          - nvlink_active_link_count == 0 otherwise → None: on SXM/HGX
+            systems links train via fabric manager after boot, so a zero
+            reading may just mean metadata was collected too early; treat
+            as unknown rather than expected-down.
+
+        Fails closed: missing or malformed counts yield None, and callers
+        must not suppress on None.
 
         Args:
             gpu_id: The DCGM GPU ID (0, 1, 2, ...).
 
         Returns:
-            True if the GPU has NVLink hardware.
-            False if the GPU verifiably has no NVLink hardware (PCIe GPU).
+            True if all links down is verifiably expected for this GPU.
+            False if NVLink is in use and a down report is a genuine fault.
             None if the GPU is not found, metadata is unavailable, or the
-            count is missing or malformed.
+            expectation cannot be established safely.
         """
         self._ensure_loaded()
 
@@ -190,30 +225,21 @@ class MetadataReader:
         gpus = self._metadata.get("gpus", [])
         for gpu in gpus:
             if gpu.get("gpu_id") == gpu_id:
-                # nvlink_link_count is set by metadata-collector using NVML
-                # GetNvLinkState return codes: NOT_SUPPORTED on PCIe → 0,
-                # SUCCESS on SXM/NVL → >0. It is omitted entirely when
-                # collection failed or the collector predates the field.
-                nvlink_link_count = gpu.get("nvlink_link_count")
-                if nvlink_link_count is None:
+                active = self._as_link_count(gpu.get("nvlink_active_link_count"), gpu_id, "nvlink_active_link_count")
+                if active is None:
                     return None
+                if active > 0:
+                    return False
 
-                # Accept only a non-negative integer; anything else (bool,
-                # float, string, negative) is malformed producer output and
-                # must read as unknown, never as "no NVLink hardware".
-                if (
-                    isinstance(nvlink_link_count, bool)
-                    or not isinstance(nvlink_link_count, int)
-                    or nvlink_link_count < 0
-                ):
-                    log.warning(
-                        "GPU %s nvlink_link_count value %r is not a non-negative integer; treating as unknown",
-                        gpu_id,
-                        nvlink_link_count,
-                    )
-                    return None
+                hardware = self._as_link_count(gpu.get("nvlink_link_count"), gpu_id, "nvlink_link_count")
+                if hardware == 0:
+                    return True
 
-                return nvlink_link_count > 0
+                device_name = gpu.get("device_name")
+                if isinstance(device_name, str) and "PCIe" in device_name:
+                    return True
+
+                return None
 
         log.debug(f"GPU {gpu_id} not found in metadata")
         return None

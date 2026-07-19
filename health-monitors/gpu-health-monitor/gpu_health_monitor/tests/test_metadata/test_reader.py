@@ -14,6 +14,7 @@
 
 import json
 import os
+from pathlib import Path
 import tempfile
 import threading
 import pytest
@@ -319,183 +320,124 @@ def test_concurrent_initial_load(metadata_file):
     assert reader._loaded
 
 
-# --- has_nvlink tests ---
+# --- is_nvlink_down_expected tests ---
 
 
-def test_has_nvlink_with_nvlink_link_count_positive() -> None:
-    """GPU with nvlink_link_count > 0 returns True (SXM/NVL GPU)."""
-    metadata = {
-        "gpus": [
-            {
-                "gpu_id": 0,
-                "uuid": "GPU-0",
-                "device_name": "NVIDIA H100 80GB HBM3",
-                "nvlinks": [],
-                "nvlink_link_count": 18,
-            }
-        ]
+A100_PCIE_UNBRIDGED = {
+    "gpu_id": 0,
+    "uuid": "GPU-0",
+    "device_name": "NVIDIA A100 80GB PCIe",
+    "nvlinks": [],
+    "nvlink_link_count": 12,
+    "nvlink_active_link_count": 0,
+}
+
+H100_SXM_TRAINED = {
+    "gpu_id": 0,
+    "uuid": "GPU-0",
+    "device_name": "NVIDIA H100 80GB HBM3",
+    "nvlinks": [],
+    "nvlink_link_count": 18,
+    "nvlink_active_link_count": 18,
+}
+
+L40_NO_NVLINK = {
+    "gpu_id": 0,
+    "uuid": "GPU-0",
+    "device_name": "NVIDIA L40",
+    "nvlinks": [],
+    "nvlink_link_count": 0,
+    "nvlink_active_link_count": 0,
+}
+
+
+def _reader_for(tmp_path: Path, gpus: list[dict]) -> MetadataReader:
+    metadata_path = tmp_path / "gpu_metadata.json"
+    metadata_path.write_text(json.dumps({"gpus": gpus}))
+    return MetadataReader(str(metadata_path))
+
+
+def test_nvlink_down_expected_unbridged_pcie_card(tmp_path: Path) -> None:
+    """A100 PCIe with bridge links present but zero active: expected down.
+
+    This is the live-repro shape: NVML GetNvLinkState returns SUCCESS for
+    links 0-11 (state NOT_ACTIVE) on an unbridged A100 80GB PCIe."""
+    reader = _reader_for(tmp_path, [A100_PCIE_UNBRIDGED])
+    assert reader.is_nvlink_down_expected(0) is True
+
+
+def test_nvlink_down_expected_no_nvlink_silicon(tmp_path: Path) -> None:
+    """L40-class GPU with zero hardware links: expected down."""
+    reader = _reader_for(tmp_path, [L40_NO_NVLINK])
+    assert reader.is_nvlink_down_expected(0) is True
+
+
+def test_nvlink_down_not_expected_active_links(tmp_path: Path) -> None:
+    """SXM GPU with trained links: a down report is a genuine fault."""
+    reader = _reader_for(tmp_path, [H100_SXM_TRAINED])
+    assert reader.is_nvlink_down_expected(0) is False
+
+
+def test_nvlink_down_unknown_sxm_zero_active(tmp_path: Path) -> None:
+    """SXM GPU with hardware links but zero active (fabric manager may not
+    have trained links when metadata was collected): unknown, fail closed."""
+    gpu = dict(H100_SXM_TRAINED, nvlink_active_link_count=0)
+    reader = _reader_for(tmp_path, [gpu])
+    assert reader.is_nvlink_down_expected(0) is None
+
+
+def test_nvlink_down_expected_pcie_name_without_hardware_count(tmp_path: Path) -> None:
+    """PCIe card with zero active links and no hardware count (partial
+    metadata): the PCIe device name is enough to trust the zero."""
+    gpu = {k: v for k, v in A100_PCIE_UNBRIDGED.items() if k != "nvlink_link_count"}
+    reader = _reader_for(tmp_path, [gpu])
+    assert reader.is_nvlink_down_expected(0) is True
+
+
+def test_nvlink_down_unknown_missing_active_count(tmp_path: Path) -> None:
+    """Old metadata-collector without nvlink_active_link_count: unknown."""
+    gpu = {k: v for k, v in A100_PCIE_UNBRIDGED.items() if k != "nvlink_active_link_count"}
+    reader = _reader_for(tmp_path, [gpu])
+    assert reader.is_nvlink_down_expected(0) is None
+
+
+@pytest.mark.parametrize("bad_value", [-1, 0.5, True, "12", "invalid"])
+def test_nvlink_down_unknown_malformed_active_count(tmp_path: Path, bad_value: object) -> None:
+    """Malformed nvlink_active_link_count values: unknown, fail closed."""
+    gpu = dict(A100_PCIE_UNBRIDGED, nvlink_active_link_count=bad_value)
+    reader = _reader_for(tmp_path, [gpu])
+    assert reader.is_nvlink_down_expected(0) is None
+
+
+def test_nvlink_down_unknown_malformed_hardware_count_pcie_name_still_wins(tmp_path: Path) -> None:
+    """Malformed hardware count reads as unknown, but a PCIe device name with
+    zero active links still confirms expected-down."""
+    gpu = dict(A100_PCIE_UNBRIDGED, nvlink_link_count="bogus")
+    reader = _reader_for(tmp_path, [gpu])
+    assert reader.is_nvlink_down_expected(0) is True
+
+
+def test_nvlink_down_unknown_zero_active_no_pcie_name_no_hardware_count(tmp_path: Path) -> None:
+    """Zero active links with neither a zero hardware count nor a PCIe name:
+    unknown, fail closed."""
+    gpu = {
+        "gpu_id": 0,
+        "uuid": "GPU-0",
+        "device_name": "NVIDIA H100 NVL",
+        "nvlinks": [],
+        "nvlink_active_link_count": 0,
     }
-    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
-        json.dump(metadata, f)
-        temp_path = f.name
-
-    try:
-        reader = MetadataReader(temp_path)
-        assert reader.has_nvlink(0) is True
-    finally:
-        os.unlink(temp_path)
+    reader = _reader_for(tmp_path, [gpu])
+    assert reader.is_nvlink_down_expected(0) is None
 
 
-def test_has_nvlink_with_nvlink_link_count_zero() -> None:
-    """GPU with nvlink_link_count == 0 returns False (PCIe GPU)."""
-    metadata = {
-        "gpus": [
-            {
-                "gpu_id": 0,
-                "uuid": "GPU-0",
-                "device_name": "NVIDIA A100-PCIE-80GB",
-                "nvlinks": [],
-                "nvlink_link_count": 0,
-            }
-        ]
-    }
-    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
-        json.dump(metadata, f)
-        temp_path = f.name
-
-    try:
-        reader = MetadataReader(temp_path)
-        assert reader.has_nvlink(0) is False
-    finally:
-        os.unlink(temp_path)
-
-
-def test_has_nvlink_missing_nvlink_link_count_returns_none() -> None:
-    """Without nvlink_link_count (old metadata-collector), returns None.
-
-    The legacy nvlinks list only records NVSwitch-connected links and would miss
-    GPU-to-GPU NVLink (e.g., H100 NVL), so it cannot be used as a fallback.
-    """
-    metadata = {
-        "gpus": [
-            {
-                "gpu_id": 0,
-                "uuid": "GPU-0",
-                "nvlinks": [{"link_id": 0, "remote_pci_address": "0000:01:00.0", "remote_link_id": 1}],
-            },
-            {
-                "gpu_id": 1,
-                "uuid": "GPU-1",
-                "nvlinks": [],
-            },
-        ]
-    }
-    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
-        json.dump(metadata, f)
-        temp_path = f.name
-
-    try:
-        reader = MetadataReader(temp_path)
-        assert reader.has_nvlink(0) is None
-        assert reader.has_nvlink(1) is None
-    finally:
-        os.unlink(temp_path)
-
-
-def test_has_nvlink_no_fields_returns_none() -> None:
-    """GPU with neither nvlink_link_count nor nvlinks returns None."""
-    metadata = {"gpus": [{"gpu_id": 0, "uuid": "GPU-0", "device_name": "NVIDIA A100"}]}
-    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
-        json.dump(metadata, f)
-        temp_path = f.name
-
-    try:
-        reader = MetadataReader(temp_path)
-        assert reader.has_nvlink(0) is None
-    finally:
-        os.unlink(temp_path)
-
-
-def test_has_nvlink_gpu_not_found() -> None:
+def test_nvlink_down_unknown_gpu_not_found(tmp_path: Path) -> None:
     """Non-existent GPU returns None."""
-    metadata = {"gpus": [{"gpu_id": 0, "uuid": "GPU-0", "nvlinks": [], "nvlink_link_count": 0}]}
-    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
-        json.dump(metadata, f)
-        temp_path = f.name
-
-    try:
-        reader = MetadataReader(temp_path)
-        assert reader.has_nvlink(99) is None
-    finally:
-        os.unlink(temp_path)
+    reader = _reader_for(tmp_path, [A100_PCIE_UNBRIDGED])
+    assert reader.is_nvlink_down_expected(99) is None
 
 
-def test_has_nvlink_metadata_unavailable() -> None:
+def test_nvlink_down_unknown_metadata_unavailable() -> None:
     """Missing metadata file returns None."""
     reader = MetadataReader("/nonexistent/file.json")
-    assert reader.has_nvlink(0) is None
-
-
-def test_has_nvlink_invalid_nvlink_link_count_returns_none() -> None:
-    """Invalid nvlink_link_count returns None (fail closed)."""
-    metadata = {
-        "gpus": [
-            {
-                "gpu_id": 0,
-                "uuid": "GPU-0",
-                "nvlink_link_count": "invalid",
-                "nvlinks": [{"link_id": 0, "remote_pci_address": "0000:01:00.0", "remote_link_id": 1}],
-            }
-        ]
-    }
-    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
-        json.dump(metadata, f)
-        temp_path = f.name
-
-    try:
-        reader = MetadataReader(temp_path)
-        assert reader.has_nvlink(0) is None
-    finally:
-        os.unlink(temp_path)
-
-
-def test_has_nvlink_negative_count_returns_none() -> None:
-    """Negative nvlink_link_count is malformed producer output: fail closed."""
-    metadata = {"gpus": [{"gpu_id": 0, "uuid": "GPU-0", "nvlinks": [], "nvlink_link_count": -1}]}
-    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
-        json.dump(metadata, f)
-        temp_path = f.name
-
-    try:
-        reader = MetadataReader(temp_path)
-        assert reader.has_nvlink(0) is None
-    finally:
-        os.unlink(temp_path)
-
-
-def test_has_nvlink_fractional_count_returns_none() -> None:
-    """Fractional nvlink_link_count is malformed producer output: fail closed."""
-    metadata = {"gpus": [{"gpu_id": 0, "uuid": "GPU-0", "nvlinks": [], "nvlink_link_count": 0.5}]}
-    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
-        json.dump(metadata, f)
-        temp_path = f.name
-
-    try:
-        reader = MetadataReader(temp_path)
-        assert reader.has_nvlink(0) is None
-    finally:
-        os.unlink(temp_path)
-
-
-def test_has_nvlink_boolean_count_returns_none() -> None:
-    """Boolean nvlink_link_count is malformed producer output: fail closed."""
-    metadata = {"gpus": [{"gpu_id": 0, "uuid": "GPU-0", "nvlinks": [], "nvlink_link_count": True}]}
-    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
-        json.dump(metadata, f)
-        temp_path = f.name
-
-    try:
-        reader = MetadataReader(temp_path)
-        assert reader.has_nvlink(0) is None
-    finally:
-        os.unlink(temp_path)
+    assert reader.is_nvlink_down_expected(0) is None

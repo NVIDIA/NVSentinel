@@ -179,17 +179,22 @@ class DCGMWatcher:
 
     def _is_nvlink_down_false_positive(self, watch_name: str, gpu_id: int, error_code: str) -> bool:
         """Return True when a DCGM_FR_NVLINK_DOWN incident is a false positive
-        because the GPU has no NVLink hardware.
+        because all NVLink links down is expected steady state for this GPU.
 
-        On PCIe GPUs (A100 PCIe, A40, L40S, etc.), DCGM reports all NVLink
-        links as down, which is correct hardware state, not a failure. The
-        check runs per incident (not on the aggregated entity failure) so a
-        genuine non-NVLINK_DOWN incident on the same GPU and watch is never
+        That holds for GPUs with no NVLink silicon (L40, A40) and for
+        NVLink-bridge-capable PCIe cards with no bridge installed (A100/H100
+        PCIe), where DCGM reports every link as down with RESTART_VM even
+        though nothing is wrong. The expectation logic lives in
+        MetadataReader.is_nvlink_down_expected.
+
+        The check runs per incident (not on the aggregated entity failure) so
+        a genuine non-NVLINK_DOWN incident on the same GPU and watch is never
         dropped alongside the false positive.
 
-        Fails closed: when NVLink capability cannot be confirmed (no metadata
-        reader, metadata unavailable, GPU not found, malformed count) the
-        incident is never suppressed.
+        Fails closed: when the expectation cannot be established (no metadata
+        reader, metadata unavailable, GPU not found, malformed counts, or an
+        SXM system whose links may simply not have trained yet) the incident
+        is never suppressed.
         """
         if watch_name != "DCGM_HEALTH_WATCH_NVLINK" or error_code != "DCGM_FR_NVLINK_DOWN":
             return False
@@ -197,19 +202,22 @@ class DCGMWatcher:
         if self._metadata_reader is None:
             return False
 
-        has_nvlink = self._metadata_reader.has_nvlink(gpu_id)
-        if has_nvlink is None:
+        expected_down = self._metadata_reader.is_nvlink_down_expected(gpu_id)
+        if expected_down is None:
             log.warning(
-                f"Cannot determine NVLink capability for GPU {gpu_id} "
-                f"(metadata unavailable); not suppressing DCGM_FR_NVLINK_DOWN"
+                f"Cannot determine whether NVLink-down is expected for GPU {gpu_id}; "
+                f"not suppressing DCGM_FR_NVLINK_DOWN"
             )
             return False
 
-        if has_nvlink:
+        if not expected_down:
             return False
 
-        log.info(f"Suppressing DCGM_FR_NVLINK_DOWN for GPU {gpu_id}: PCIe GPU with no NVLink hardware")
-        metrics.dcgm_health_check_suppressed_incidents.labels("DCGM_FR_NVLINK_DOWN_NO_NVLINK_HW").inc()
+        log.info(
+            f"Suppressing DCGM_FR_NVLINK_DOWN for GPU {gpu_id}: "
+            f"GPU has no active NVLink links by design (no NVLink hardware or unbridged PCIe card)"
+        )
+        metrics.dcgm_health_check_suppressed_incidents.labels("DCGM_FR_NVLINK_DOWN_NO_ACTIVE_NVLINK").inc()
 
         return True
 
