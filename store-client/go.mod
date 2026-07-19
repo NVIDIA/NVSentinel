@@ -6,7 +6,7 @@ toolchain go1.26.3
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
-	github.com/XSAM/otelsql v0.42.0
+	github.com/XSAM/otelsql v0.43.0
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/go-logr/logr v1.4.3
 	github.com/google/uuid v1.6.0
@@ -85,7 +85,7 @@ require (
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.44.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
