@@ -37,6 +37,7 @@ func (w *NVMLWrapper) CollectNVLinkTopology(
 	slog.Debug("Collecting NVLink topology", "gpu_id", index, "pci_address", gpuInfo.PCIAddress)
 
 	nvswitches := make(map[string]struct{})
+
 	var nvlinkLinkCount int
 
 	for linkID := range nvml.NVLINK_MAX_LINKS {
