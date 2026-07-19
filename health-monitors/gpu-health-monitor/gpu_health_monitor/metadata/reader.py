@@ -205,8 +205,12 @@ class MetadataReader:
             reading may just mean metadata was collected too early; treat
             as unknown rather than expected-down.
 
-        Fails closed: missing or malformed counts yield None, and callers
-        must not suppress on None.
+        Fails closed on the active count: a missing or malformed
+        nvlink_active_link_count always yields None, and callers must not
+        suppress on None. The hardware count is corroborating evidence only:
+        when it is missing or malformed, a PCIe device name still confirms
+        expected-down for a zero active count, because the name and the
+        active count independently establish the unbridged-PCIe case.
 
         Args:
             gpu_id: The DCGM GPU ID (0, 1, 2, ...).
