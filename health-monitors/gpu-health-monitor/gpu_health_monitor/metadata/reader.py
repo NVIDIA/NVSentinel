@@ -164,17 +164,23 @@ class MetadataReader:
     def has_nvlink(self, gpu_id: int) -> Optional[bool]:
         """Check whether the GPU has NVLink hardware.
 
-        Uses the nvlink_link_count field (number of NVLink links the hardware
-        supports, regardless of current link state) when available, falling
-        back to the nvlinks list for older metadata-collector versions.
+        Uses only the nvlink_link_count field: the number of NVLink links the
+        hardware supports, regardless of current link state. There is
+        deliberately no fallback to the legacy nvlinks list — it records only
+        enabled NVSwitch-connected links, so it cannot distinguish "no NVLink
+        hardware" from GPU-to-GPU NVLink (e.g., H100 NVL) or disabled links.
+
+        Fails closed: any value that does not confirm the capability one way
+        or the other yields None, and callers must not suppress on None.
 
         Args:
             gpu_id: The DCGM GPU ID (0, 1, 2, ...).
 
         Returns:
             True if the GPU has NVLink hardware.
-            False if the GPU has no NVLink hardware (PCIe GPU).
-            None if the GPU is not found or metadata is unavailable.
+            False if the GPU verifiably has no NVLink hardware (PCIe GPU).
+            None if the GPU is not found, metadata is unavailable, or the
+            count is missing or malformed.
         """
         self._ensure_loaded()
 
@@ -184,27 +190,30 @@ class MetadataReader:
         gpus = self._metadata.get("gpus", [])
         for gpu in gpus:
             if gpu.get("gpu_id") == gpu_id:
-                # Use nvlink_link_count (authoritative, counts hardware links
-                # regardless of enabled/disabled state). This field is set by
-                # metadata-collector using NVML GetNvLinkState return codes:
-                # NOT_SUPPORTED on PCIe → 0, SUCCESS on SXM/NVL → >0.
+                # nvlink_link_count is set by metadata-collector using NVML
+                # GetNvLinkState return codes: NOT_SUPPORTED on PCIe → 0,
+                # SUCCESS on SXM/NVL → >0. It is omitted entirely when
+                # collection failed or the collector predates the field.
                 nvlink_link_count = gpu.get("nvlink_link_count")
                 if nvlink_link_count is None:
-                    # Field missing (old metadata-collector). Cannot safely
-                    # determine NVLink capability — the legacy nvlinks list
-                    # only records NVSwitch-connected links and would miss
-                    # GPU-to-GPU NVLink (e.g., H100 NVL).
                     return None
-                try:
-                    return int(nvlink_link_count) > 0
-                except (ValueError, TypeError):
+
+                # Accept only a non-negative integer; anything else (bool,
+                # float, string, negative) is malformed producer output and
+                # must read as unknown, never as "no NVLink hardware".
+                if (
+                    isinstance(nvlink_link_count, bool)
+                    or not isinstance(nvlink_link_count, int)
+                    or nvlink_link_count < 0
+                ):
                     log.warning(
-                        "GPU %s nvlink_link_count value %r is not valid; "
-                        "treating as unknown",
+                        "GPU %s nvlink_link_count value %r is not a non-negative integer; treating as unknown",
                         gpu_id,
                         nvlink_link_count,
                     )
                     return None
+
+                return nvlink_link_count > 0
 
         log.debug(f"GPU {gpu_id} not found in metadata")
         return None

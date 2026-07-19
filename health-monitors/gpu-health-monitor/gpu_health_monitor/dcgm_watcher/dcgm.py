@@ -177,50 +177,41 @@ class DCGMWatcher:
             if suppressed_gpu_ids and not details.entity_failures:
                 details.status = types.HealthStatus.PASS
 
-    def _suppress_nvlink_down_on_pcie_gpus(self, health_status: dict[str, types.HealthDetails]) -> None:
-        """Suppress DCGM_FR_NVLINK_DOWN for GPUs that have no NVLink hardware.
+    def _is_nvlink_down_false_positive(self, watch_name: str, gpu_id: int, error_code: str) -> bool:
+        """Return True when a DCGM_FR_NVLINK_DOWN incident is a false positive
+        because the GPU has no NVLink hardware.
 
         On PCIe GPUs (A100 PCIe, A40, L40S, etc.), DCGM reports all NVLink
-        links as down, which is correct hardware state, not a failure. This
-        method checks the GPU metadata to determine whether each GPU has
-        NVLink hardware and suppresses the incident if it does not.
+        links as down, which is correct hardware state, not a failure. The
+        check runs per incident (not on the aggregated entity failure) so a
+        genuine non-NVLINK_DOWN incident on the same GPU and watch is never
+        dropped alongside the false positive.
+
+        Fails closed: when NVLink capability cannot be confirmed (no metadata
+        reader, metadata unavailable, GPU not found, malformed count) the
+        incident is never suppressed.
         """
+        if watch_name != "DCGM_HEALTH_WATCH_NVLINK" or error_code != "DCGM_FR_NVLINK_DOWN":
+            return False
+
         if self._metadata_reader is None:
-            return
+            return False
 
-        nvlink_watch = "DCGM_HEALTH_WATCH_NVLINK"
-        details = health_status.get(nvlink_watch)
-        if details is None or not details.entity_failures:
-            return
+        has_nvlink = self._metadata_reader.has_nvlink(gpu_id)
+        if has_nvlink is None:
+            log.warning(
+                f"Cannot determine NVLink capability for GPU {gpu_id} "
+                f"(metadata unavailable); not suppressing DCGM_FR_NVLINK_DOWN"
+            )
+            return False
 
-        suppressed_gpu_ids = []
-        for gpu_id, failure in details.entity_failures.items():
-            if failure.code != "DCGM_FR_NVLINK_DOWN":
-                continue
+        if has_nvlink:
+            return False
 
-            has_nvlink = self._metadata_reader.has_nvlink(gpu_id)
-            if has_nvlink is None:
-                log.warning(
-                    f"Cannot determine NVLink capability for GPU {gpu_id} "
-                    f"(metadata unavailable); not suppressing DCGM_FR_NVLINK_DOWN"
-                )
-                continue
+        log.info(f"Suppressing DCGM_FR_NVLINK_DOWN for GPU {gpu_id}: PCIe GPU with no NVLink hardware")
+        metrics.dcgm_health_check_suppressed_incidents.labels("DCGM_FR_NVLINK_DOWN_NO_NVLINK_HW").inc()
 
-            if not has_nvlink:
-                log.info(
-                    f"Suppressing DCGM_FR_NVLINK_DOWN for GPU {gpu_id}: "
-                    f"PCIe GPU with no NVLink hardware"
-                )
-                metrics.dcgm_health_check_suppressed_incidents.labels(
-                    "DCGM_FR_NVLINK_DOWN_NO_NVLINK_HW"
-                ).inc()
-                suppressed_gpu_ids.append(gpu_id)
-
-        for gpu_id in suppressed_gpu_ids:
-            del details.entity_failures[gpu_id]
-
-        if suppressed_gpu_ids and not details.entity_failures:
-            details.status = types.HealthStatus.PASS
+        return True
 
     def _fire_callback_funcs(self, func_name: str, args: list[any]):
         def done_callback(class_name: str, func_name: str, future):
@@ -315,7 +306,6 @@ class DCGMWatcher:
                     metrics.dcgm_health_check_unknown_system_skipped.inc()
                     continue
 
-                health_status[watch_name].status = types.HealthStatus(int(incident.health))
                 gpu_id = incident.entityInfo.entityId
                 fallback_error_code = self._error_codes.get(dcgm_errors.DCGM_FR_UNKNOWN, "DCGM_FR_UNKNOWN")
                 error_code = self._error_codes.get(incident.error.code, fallback_error_code)
@@ -324,6 +314,14 @@ class DCGMWatcher:
                 error_msg = incident.error.msg
 
                 log.debug(f"incident.error.code is {incident.error.code} and error msg is {error_msg}")
+
+                # Per-incident suppression: a suppressed incident must neither
+                # degrade the watch status nor land in the accumulator, while
+                # other incidents on the same GPU and watch are kept.
+                if self._is_nvlink_down_false_positive(watch_name, gpu_id, error_code):
+                    continue
+
+                health_status[watch_name].status = types.HealthStatus(int(incident.health))
 
                 # Create a key for accumulating failures per GPU per watch
                 accumulator_key = (watch_name, gpu_id)
@@ -634,7 +632,6 @@ class DCGMWatcher:
                                     margin_details
                                 )
                             self._suppress_configured_error_codes(health_status)
-                            self._suppress_nvlink_down_on_pcie_gpus(health_status)
                             log.debug("Publish DCGM health checks")
                             self._fire_callback_funcs(
                                 types.CallbackInterface.health_event_occurred.__name__,

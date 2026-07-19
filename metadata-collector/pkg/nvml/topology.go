@@ -104,7 +104,10 @@ func (w *NVMLWrapper) CollectNVLinkTopology(
 		nvswitches[remotePCI] = struct{}{}
 	}
 
-	gpuInfo.NVLinkLinkCount = nvlinkLinkCount
+	// Set only on successful collection: the collector appends the GPU even
+	// when this function errors, and a missing field must read as "unknown"
+	// downstream, not as "confirmed no NVLink hardware" (which 0 means).
+	gpuInfo.NVLinkLinkCount = &nvlinkLinkCount
 
 	slog.Info("NVLink topology collection complete",
 		"gpu_id", index,
