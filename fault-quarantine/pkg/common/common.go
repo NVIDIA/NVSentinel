@@ -26,6 +26,7 @@ const (
 	// Annotation keys for storing event on node which causes node to be cordoned or tainted
 	QuarantineHealthEventAnnotationKey                    = "quarantineHealthEvent"
 	QuarantineHealthEventAppliedTaintsAnnotationKey       = "quarantineHealthEventAppliedTaints"
+	QuarantineHealthEventAppliedLabelsAnnotationKey       = "quarantineHealthEventAppliedLabels"
 	QuarantineHealthEventIsCordonedAnnotationKey          = "quarantineHealthEventIsCordoned"
 	QuarantineHealthEventIsCordonedAnnotationValueTrue    = "True"
 	QuarantineHealthEventCordonPreExistingAnnotationKey   = "quarantineHealthEventCordonPreExisting"
