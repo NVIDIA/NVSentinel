@@ -189,7 +189,7 @@ func (i *Informers) FindEvictablePodsInNamespaceAndNode(namespace, nodeName stri
 		}
 	}
 
-	pods = i.filterEvictablePods(pods)
+	pods = i.filterEvictablePods(pods, partialDrainEntity)
 
 	if i.drainGPUPods && partialDrainEntity == nil {
 		pods = i.filterPodsWithGPURequests(pods)
@@ -329,7 +329,7 @@ func areContainersRequestingDevice(containers []v1.Container, resourceNames []st
 	return false
 }
 
-func (i *Informers) filterEvictablePods(pods []*v1.Pod) []*v1.Pod {
+func (i *Informers) filterEvictablePods(pods []*v1.Pod, partialDrainEntity *protos.Entity) []*v1.Pod {
 	filteredPods := []*v1.Pod{}
 
 	for _, pod := range pods {
@@ -344,7 +344,10 @@ func (i *Informers) filterEvictablePods(pods []*v1.Pod) []*v1.Pod {
 			continue
 		}
 
-		if i.isPodStuckInTerminating(pod) || i.isPodNotReady(pod) {
+		// Only skip draining for pods stuck terminating or not ready if we are executing a full drain.
+		// There is no guarantee that a pod in either state does not still have a GPU device handle that
+		// would cause a GPU reset to fail.
+		if partialDrainEntity == nil && (i.isPodStuckInTerminating(pod) || i.isPodNotReady(pod)) {
 			slog.Info("Ignoring pod in namespace on node",
 				"pod", pod.Name,
 				"namespace", pod.Namespace,

@@ -17,6 +17,7 @@ package controller
 import (
 	"context"
 	"strings"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -31,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -1606,3 +1608,45 @@ var _ = Describe("GPUReset Controller", func() {
 		})
 	})
 })
+
+func TestExpectedJobName(t *testing.T) {
+	r := &GPUResetReconciler{}
+
+	cases := []struct {
+		name   string
+		crName string
+	}{
+		{
+			name:   "no truncation",
+			crName: "maintenance-ip-10-1-1-1.us-east-2.compute.internal-abc12345",
+		},
+		{
+			name:   "truncation lands on dot character",
+			crName: "maintenance-ip-10-1-115-210.us-east-2.compute.internal-6fca3f52-abcd1234",
+		},
+		{
+			name:   "truncation lands on alphanumeric character",
+			crName: "maintenance-ip-10-1-115-21.us-east-2.compute.internal-6fca3f52-abcd1234",
+		},
+		{
+			name:   "truncation lands on dash character",
+			crName: "maintenance-abcd-cloud-az61-gpu-worke-abcdef01-6fca3f52-abcd1234",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gr := &v1alpha1.GPUReset{
+				ObjectMeta: metav1.ObjectMeta{Name: tc.crName},
+			}
+			jobName := r.expectedJobName(gr)
+
+			if errs := validation.IsDNS1123Subdomain(jobName); len(errs) != 0 {
+				t.Errorf("job name %q (from CR %q) is not a valid DNS subdomain: %v", jobName, tc.crName, errs)
+			}
+			if len(jobName) > validation.DNS1123LabelMaxLength {
+				t.Errorf("job name %q exceeds max length %d", jobName, validation.DNS1123LabelMaxLength)
+			}
+		})
+	}
+}
