@@ -87,6 +87,21 @@ def _init_event_processor(
     help="Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY",
     required=False,
 )
+@click.option(
+    "--suppress-nvlink-down-unbridged-pcie",
+    type=bool,
+    default=False,
+    required=False,
+    help=(
+        "Operator assertion that bridge-capable PCIe GPUs (A100/H100 PCIe) in this fleet "
+        "run without NVLink bridges by design. When true, DCGM_FR_NVLINK_DOWN is suppressed "
+        "on PCIe-named GPUs whose metadata shows zero active NVLink links. Leave false if "
+        "any pool uses NVLink bridges: an unbridged card and a card whose bridge was dead at "
+        "metadata-collection time are indistinguishable, so enabling this could mask a "
+        "bridge failure present at boot. GPUs with no NVLink silicon (L40, A40) are always "
+        "suppressed regardless of this flag."
+    ),
+)
 def cli(
     dcgm_addr,
     dcgm_mode,
@@ -98,6 +113,7 @@ def cli(
     dcgm_k8s_service_enabled,
     metadata_path,
     processing_strategy,
+    suppress_nvlink_down_unbridged_pcie,
 ):
     exit = Event()
     config = configparser.ConfigParser()
@@ -213,6 +229,7 @@ def cli(
         metadata_reader=metadata_reader,
         dcgm_mode=dcgm_mode,
         suppressed_error_codes=suppressed_error_codes,
+        suppress_unbridged_pcie_nvlink_down=suppress_nvlink_down_unbridged_pcie,
     )
     dcgm_watcher.start([], exit)
 

@@ -15,7 +15,7 @@
 import dcgm_agent, dcgm_structs, dcgm_errors, dcgm_fields, dcgmvalue, pydcgm, bisect
 import logging as log
 from . import types, metrics
-from gpu_health_monitor.metadata import MetadataReader
+from gpu_health_monitor.metadata import MetadataReader, NVLinkDownExpectation
 from threading import Event
 from functools import partial
 from concurrent.futures import ThreadPoolExecutor
@@ -69,6 +69,7 @@ class DCGMWatcher:
         metadata_reader: MetadataReader | None = None,
         dcgm_mode: str = "remote",
         suppressed_error_codes: frozenset[str] | None = None,
+        suppress_unbridged_pcie_nvlink_down: bool = False,
     ) -> None:
         self._addr = addr
         self._poll_interval_seconds = poll_interval_seconds
@@ -84,6 +85,12 @@ class DCGMWatcher:
                 "disabling the optional monitor"
             )
         self._metadata_reader = metadata_reader
+        self._suppress_unbridged_pcie_nvlink_down = suppress_unbridged_pcie_nvlink_down
+        if suppress_unbridged_pcie_nvlink_down:
+            log.info(
+                "Operator opted in to suppressing DCGM_FR_NVLINK_DOWN on unbridged "
+                "bridge-capable PCIe GPUs (zero active NVLink links by design)"
+            )
         self._field_group = None
         self._dcgm_mode = dcgm_mode
 
@@ -181,11 +188,13 @@ class DCGMWatcher:
         """Return True when a DCGM_FR_NVLINK_DOWN incident is a false positive
         because all NVLink links down is expected steady state for this GPU.
 
-        That holds for GPUs with no NVLink silicon (L40, A40) and for
-        NVLink-bridge-capable PCIe cards with no bridge installed (A100/H100
-        PCIe), where DCGM reports every link as down with RESTART_VM even
-        though nothing is wrong. The expectation logic lives in
-        MetadataReader.is_nvlink_down_expected.
+        Two expected-down cases exist (see MetadataReader.classify_nvlink_down):
+          - NO_NVLINK_HARDWARE (L40, A40): unambiguous, always suppressed.
+          - UNBRIDGED_PCIE (A100/H100 PCIe with zero active links): from
+            metadata alone this is indistinguishable from a card whose NVLink
+            bridge was already dead at collection time, so it is suppressed
+            ONLY when the operator has explicitly asserted the fleet runs
+            unbridged PCIe cards (--suppress-nvlink-down-unbridged-pcie).
 
         The check runs per incident (not on the aggregated entity failure) so
         a genuine non-NVLINK_DOWN incident on the same GPU and watch is never
@@ -202,22 +211,28 @@ class DCGMWatcher:
         if self._metadata_reader is None:
             return False
 
-        expected_down = self._metadata_reader.is_nvlink_down_expected(gpu_id)
-        if expected_down is None:
+        expectation = self._metadata_reader.classify_nvlink_down(gpu_id)
+
+        if expectation is NVLinkDownExpectation.NVLINK_IN_USE:
+            return False
+
+        if expectation is NVLinkDownExpectation.UNKNOWN:
             log.warning(
                 f"Cannot determine whether NVLink-down is expected for GPU {gpu_id}; "
                 f"not suppressing DCGM_FR_NVLINK_DOWN"
             )
             return False
 
-        if not expected_down:
+        if expectation is NVLinkDownExpectation.UNBRIDGED_PCIE and not self._suppress_unbridged_pcie_nvlink_down:
+            log.warning(
+                f"GPU {gpu_id} looks like an unbridged bridge-capable PCIe card (zero active NVLink "
+                f"links), but suppressing DCGM_FR_NVLINK_DOWN for this case requires operator opt-in "
+                f"(--suppress-nvlink-down-unbridged-pcie); not suppressing"
+            )
             return False
 
-        log.info(
-            f"Suppressing DCGM_FR_NVLINK_DOWN for GPU {gpu_id}: "
-            f"GPU has no active NVLink links by design (no NVLink hardware or unbridged PCIe card)"
-        )
-        metrics.dcgm_health_check_suppressed_incidents.labels("DCGM_FR_NVLINK_DOWN_NO_ACTIVE_NVLINK").inc()
+        log.info(f"Suppressing DCGM_FR_NVLINK_DOWN for GPU {gpu_id}: {expectation.value}")
+        metrics.dcgm_health_check_suppressed_incidents.labels(f"DCGM_FR_NVLINK_DOWN_{expectation.value.upper()}").inc()
 
         return True
 

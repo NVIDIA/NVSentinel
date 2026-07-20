@@ -958,9 +958,13 @@ class TestDCGMHandleLeakFix:
 
 
 class TestSuppressNvlinkDownOnPcieGpus:
-    """Tests for per-incident suppression of false positive DCGM_FR_NVLINK_DOWN
-    on GPUs whose all-links-down state is expected (no NVLink silicon, or an
-    unbridged NVLink-bridge-capable PCIe card).
+    """Tests for per-incident suppression of false positive DCGM_FR_NVLINK_DOWN.
+
+    Two expected-down cases: GPUs with no NVLink silicon are always
+    suppressed; unbridged bridge-capable PCIe cards are suppressed only with
+    explicit operator opt-in (suppress_unbridged_pcie_nvlink_down), because
+    metadata alone cannot distinguish them from a card whose bridge was dead
+    at collection time.
 
     Suppression happens inside _perform_health_check at incident granularity,
     before incidents are aggregated per (watch, GPU), so genuine co-occurring
@@ -994,13 +998,18 @@ class TestSuppressNvlinkDownOnPcieGpus:
         "nvlink_active_link_count": 0,
     }
 
-    def _make_watcher(self, metadata_reader: Optional[MetadataReader] = None) -> dcgm.DCGMWatcher:
+    def _make_watcher(
+        self,
+        metadata_reader: Optional[MetadataReader] = None,
+        suppress_unbridged_pcie: bool = False,
+    ) -> dcgm.DCGMWatcher:
         return dcgm.DCGMWatcher(
             addr="localhost:5555",
             poll_interval_seconds=10,
             callbacks=[],
             dcgm_k8s_service_enabled=False,
             metadata_reader=metadata_reader,
+            suppress_unbridged_pcie_nvlink_down=suppress_unbridged_pcie,
         )
 
     def _make_metadata_reader(self, tmp_path: Path, gpus: list[dict]) -> MetadataReader:
@@ -1049,11 +1058,39 @@ class TestSuppressNvlinkDownOnPcieGpus:
         assert connectivity_success is True
         return health_status
 
-    def test_suppress_unbridged_pcie_card(self, tmp_path: Path) -> None:
-        """A100 PCIe with bridge links but zero active (the live-repro shape):
-        all NVLINK_DOWN incidents suppressed, watch stays PASS."""
+    def _assert_not_suppressed(self, health_status: dict[str, dcgm.types.HealthDetails]) -> None:
+        details = health_status["DCGM_HEALTH_WATCH_NVLINK"]
+        assert details.status == dcgm.types.HealthStatus.FAIL
+        assert details.entity_failures[0].code == "DCGM_FR_NVLINK_DOWN"
+
+    def test_suppress_no_nvlink_silicon_without_opt_in(self, tmp_path: Path) -> None:
+        """L40-class GPU (zero hardware links): suppressed unconditionally —
+        no operator opt-in required for the unambiguous case."""
+        reader = self._make_metadata_reader(tmp_path, [self.L40_NO_NVLINK])
+        watcher = self._make_watcher(metadata_reader=reader)
+
+        health_status = self._run_health_check(watcher, [self._nvlink_down_incident(0, 0)])
+
+        assert health_status["DCGM_HEALTH_WATCH_NVLINK"].status == dcgm.types.HealthStatus.PASS
+        assert len(health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures) == 0
+
+    def test_no_suppress_unbridged_pcie_by_default(self, tmp_path: Path) -> None:
+        """Unbridged A100 PCIe WITHOUT operator opt-in: NOT suppressed.
+
+        Metadata alone cannot distinguish an unbridged card from one whose
+        bridge was dead at collection time, so the default is fail-safe."""
         reader = self._make_metadata_reader(tmp_path, [self.A100_PCIE_UNBRIDGED])
         watcher = self._make_watcher(metadata_reader=reader)
+
+        health_status = self._run_health_check(watcher, [self._nvlink_down_incident(0, 8)])
+
+        self._assert_not_suppressed(health_status)
+
+    def test_suppress_unbridged_pcie_with_opt_in(self, tmp_path: Path) -> None:
+        """Unbridged A100 PCIe WITH operator opt-in (the live-repro shape):
+        all NVLINK_DOWN incidents suppressed, watch stays PASS."""
+        reader = self._make_metadata_reader(tmp_path, [self.A100_PCIE_UNBRIDGED])
+        watcher = self._make_watcher(metadata_reader=reader, suppress_unbridged_pcie=True)
 
         health_status = self._run_health_check(
             watcher,
@@ -1064,46 +1101,34 @@ class TestSuppressNvlinkDownOnPcieGpus:
         assert health_status["DCGM_HEALTH_WATCH_NVLINK"].status == dcgm.types.HealthStatus.PASS
         assert len(health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures) == 0
 
-    def test_suppress_gpu_without_nvlink_silicon(self, tmp_path: Path) -> None:
-        """L40-class GPU (zero hardware links): NVLINK_DOWN suppressed."""
-        reader = self._make_metadata_reader(tmp_path, [self.L40_NO_NVLINK])
-        watcher = self._make_watcher(metadata_reader=reader)
-
-        health_status = self._run_health_check(watcher, [self._nvlink_down_incident(0, 0)])
-
-        assert health_status["DCGM_HEALTH_WATCH_NVLINK"].status == dcgm.types.HealthStatus.PASS
-        assert len(health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures) == 0
-
     def test_no_suppress_sxm_gpu_with_active_nvlink(self, tmp_path: Path) -> None:
-        """SXM GPU with trained links: incident NOT suppressed."""
+        """SXM GPU with trained links: incident NOT suppressed even with the
+        opt-in enabled."""
         reader = self._make_metadata_reader(tmp_path, [self.H100_SXM_TRAINED])
-        watcher = self._make_watcher(metadata_reader=reader)
+        watcher = self._make_watcher(metadata_reader=reader, suppress_unbridged_pcie=True)
 
         health_status = self._run_health_check(watcher, [self._nvlink_down_incident(0, 5)])
 
-        details = health_status["DCGM_HEALTH_WATCH_NVLINK"]
-        assert details.status == dcgm.types.HealthStatus.FAIL
-        assert details.entity_failures[0].code == "DCGM_FR_NVLINK_DOWN"
+        self._assert_not_suppressed(health_status)
 
     def test_no_suppress_sxm_gpu_zero_active_links(self, tmp_path: Path) -> None:
         """SXM GPU whose metadata shows zero active links (fabric manager may
-        not have trained links at collection time): NOT suppressed — the
-        expectation is unknown, so we fail closed."""
+        not have trained links at collection time): NOT suppressed even with
+        the opt-in enabled — the expectation is UNKNOWN, so we fail closed."""
         gpu = dict(self.H100_SXM_TRAINED, nvlink_active_link_count=0)
         reader = self._make_metadata_reader(tmp_path, [gpu])
-        watcher = self._make_watcher(metadata_reader=reader)
+        watcher = self._make_watcher(metadata_reader=reader, suppress_unbridged_pcie=True)
 
         health_status = self._run_health_check(watcher, [self._nvlink_down_incident(0, 5)])
 
-        details = health_status["DCGM_HEALTH_WATCH_NVLINK"]
-        assert details.status == dcgm.types.HealthStatus.FAIL
-        assert details.entity_failures[0].code == "DCGM_FR_NVLINK_DOWN"
+        self._assert_not_suppressed(health_status)
 
     def test_mixed_topology_only_expected_down_suppressed(self, tmp_path: Path) -> None:
-        """Mixed node: unbridged PCIe GPU suppressed, trained SXM GPU kept."""
+        """Mixed node with opt-in: unbridged PCIe GPU suppressed, trained SXM
+        GPU kept."""
         gpu1 = dict(self.H100_SXM_TRAINED, gpu_id=1, uuid="GPU-1")
         reader = self._make_metadata_reader(tmp_path, [self.A100_PCIE_UNBRIDGED, gpu1])
-        watcher = self._make_watcher(metadata_reader=reader)
+        watcher = self._make_watcher(metadata_reader=reader, suppress_unbridged_pcie=True)
 
         health_status = self._run_health_check(
             watcher,
@@ -1123,7 +1148,7 @@ class TestSuppressNvlinkDownOnPcieGpus:
         first incident's code) would have deleted the whole entry and dropped
         the genuine threshold incident with it."""
         reader = self._make_metadata_reader(tmp_path, [self.A100_PCIE_UNBRIDGED])
-        watcher = self._make_watcher(metadata_reader=reader)
+        watcher = self._make_watcher(metadata_reader=reader, suppress_unbridged_pcie=True)
 
         health_status = self._run_health_check(
             watcher,
@@ -1143,28 +1168,24 @@ class TestSuppressNvlinkDownOnPcieGpus:
     def test_no_suppress_when_metadata_unavailable(self) -> None:
         """Metadata file missing: incident NOT suppressed (fail closed)."""
         reader = MetadataReader("/nonexistent/file.json")
-        watcher = self._make_watcher(metadata_reader=reader)
+        watcher = self._make_watcher(metadata_reader=reader, suppress_unbridged_pcie=True)
 
         health_status = self._run_health_check(watcher, [self._nvlink_down_incident(0, 8)])
 
-        details = health_status["DCGM_HEALTH_WATCH_NVLINK"]
-        assert details.status == dcgm.types.HealthStatus.FAIL
-        assert details.entity_failures[0].code == "DCGM_FR_NVLINK_DOWN"
+        self._assert_not_suppressed(health_status)
 
     def test_no_suppress_when_no_metadata_reader(self) -> None:
         """No metadata reader configured: incident NOT suppressed (fail closed)."""
-        watcher = self._make_watcher(metadata_reader=None)
+        watcher = self._make_watcher(metadata_reader=None, suppress_unbridged_pcie=True)
 
         health_status = self._run_health_check(watcher, [self._nvlink_down_incident(0, 8)])
 
-        details = health_status["DCGM_HEALTH_WATCH_NVLINK"]
-        assert details.status == dcgm.types.HealthStatus.FAIL
-        assert details.entity_failures[0].code == "DCGM_FR_NVLINK_DOWN"
+        self._assert_not_suppressed(health_status)
 
     def test_other_nvlink_error_code_not_suppressed(self, tmp_path: Path) -> None:
         """Non-NVLINK_DOWN codes on an expected-down GPU are never suppressed."""
         reader = self._make_metadata_reader(tmp_path, [self.A100_PCIE_UNBRIDGED])
-        watcher = self._make_watcher(metadata_reader=reader)
+        watcher = self._make_watcher(metadata_reader=reader, suppress_unbridged_pcie=True)
 
         health_status = self._run_health_check(watcher, [self._nvlink_threshold_incident(0)])
 
