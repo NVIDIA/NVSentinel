@@ -95,6 +95,69 @@ errorCode = ["OPERATOR_POD_UNHEALTHY"]
 	require.Equal(t, "gpu-operator", cfg.Policies[0].Resource.Namespace)
 }
 
+func TestLoadCustomRecommendedAction(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	tomlConfig := `
+[[policies]]
+name = "manual-external-remediation"
+enabled = true
+
+[policies.resource]
+group = ""
+version = "v1"
+kind = "Node"
+
+[policies.predicate]
+expression = "true"
+
+[policies.healthEvent]
+componentClass = "GPU"
+isFatal = true
+message = "operator requested external remediation"
+recommendedAction = "CUSTOM"
+customRecommendedAction = "manual-vm-restart"
+errorCode = ["MANUAL_EXTERNAL_REMEDIATION"]
+`
+	require.NoError(t, os.WriteFile(configPath, []byte(tomlConfig), 0o600))
+
+	cfg, err := Load(configPath)
+	require.NoError(t, err)
+	require.Len(t, cfg.Policies, 1)
+
+	healthEvent := cfg.Policies[0].HealthEvent
+	require.Equal(t, "CUSTOM", healthEvent.RecommendedAction)
+	require.Equal(t, "manual-vm-restart", healthEvent.CustomRecommendedAction)
+}
+
+func TestLoadRejectsCustomWithoutCustomRecommendedAction(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	tomlConfig := `
+[[policies]]
+name = "manual-external-remediation"
+enabled = true
+
+[policies.resource]
+group = ""
+version = "v1"
+kind = "Node"
+
+[policies.predicate]
+expression = "true"
+
+[policies.healthEvent]
+componentClass = "GPU"
+isFatal = true
+message = "operator requested external remediation"
+recommendedAction = "CUSTOM"
+errorCode = ["MANUAL_EXTERNAL_REMEDIATION"]
+`
+	require.NoError(t, os.WriteFile(configPath, []byte(tomlConfig), 0o600))
+
+	_, err := Load(configPath)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "customRecommendedAction is required when recommendedAction is CUSTOM")
+}
+
 func TestLoadRejectsConflictingBehaviourOverrides(t *testing.T) {
 	tests := []struct {
 		name         string

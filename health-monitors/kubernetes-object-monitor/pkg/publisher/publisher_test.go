@@ -37,6 +37,32 @@ func (f *fakePlatformConnectorClient) HealthEventOccurredV1(
 	return &emptypb.Empty{}, nil
 }
 
+func TestPublishHealthEventCustomRecommendedAction(t *testing.T) {
+	client := &fakePlatformConnectorClient{}
+	pub := New(client, "passthrough:///platform-connector", pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+
+	policy := &config.Policy{
+		Name: "manual-external-remediation",
+		HealthEvent: config.HealthEventSpec{
+			ComponentClass:          "GPU",
+			IsFatal:                 true,
+			Message:                 "operator requested external remediation",
+			RecommendedAction:       "CUSTOM",
+			CustomRecommendedAction: "manual-vm-restart",
+			ErrorCode:               []string{"MANUAL_EXTERNAL_REMEDIATION"},
+		},
+	}
+
+	err := pub.PublishHealthEvent(context.Background(), policy, "node-1", false, nil)
+	require.NoError(t, err)
+	require.NotNil(t, client.events)
+	require.Len(t, client.events.Events, 1)
+
+	event := client.events.Events[0]
+	require.Equal(t, pb.RecommendedAction_CUSTOM, event.RecommendedAction)
+	require.Equal(t, "manual-vm-restart", event.CustomRecommendedAction)
+}
+
 func TestPublishHealthEventIncludesBehaviourOverrides(t *testing.T) {
 	client := &fakePlatformConnectorClient{}
 	pub := New(client, "passthrough:///platform-connector", pb.ProcessingStrategy_EXECUTE_REMEDIATION)
