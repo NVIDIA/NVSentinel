@@ -44,7 +44,8 @@ func (s *stubRuleSetEvaluator) GetName() string    { return s.name }
 func (s *stubRuleSetEvaluator) GetVersion() string { return "1" }
 func (s *stubRuleSetEvaluator) GetPriority() int   { return 0 }
 
-func TestApplyRuleLabelsForEventContinuesAfterEvaluationError(t *testing.T) {
+// TestApplyRuleLabelsForEvent_EvaluationError_ContinuesToNextEvaluator verifies that later evaluators still apply labels.
+func TestApplyRuleLabelsForEvent_EvaluationError_ContinuesToNextEvaluator(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
