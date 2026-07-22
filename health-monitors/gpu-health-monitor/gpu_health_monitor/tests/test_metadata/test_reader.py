@@ -19,6 +19,12 @@ import tempfile
 import threading
 import pytest
 from gpu_health_monitor.metadata import MetadataReader, NVLinkDownExpectation
+from gpu_health_monitor.tests.nvlink_fixtures import (
+    A100_PCIE_UNBRIDGED,
+    H100_SXM_TRAINED,
+    L40_NO_NVLINK,
+    make_metadata_reader,
+)
 
 
 @pytest.fixture
@@ -323,58 +329,24 @@ def test_concurrent_initial_load(metadata_file):
 # --- classify_nvlink_down tests ---
 
 
-A100_PCIE_UNBRIDGED = {
-    "gpu_id": 0,
-    "uuid": "GPU-0",
-    "device_name": "NVIDIA A100 80GB PCIe",
-    "nvlinks": [],
-    "nvlink_link_count": 12,
-    "nvlink_active_link_count": 0,
-}
-
-H100_SXM_TRAINED = {
-    "gpu_id": 0,
-    "uuid": "GPU-0",
-    "device_name": "NVIDIA H100 80GB HBM3",
-    "nvlinks": [],
-    "nvlink_link_count": 18,
-    "nvlink_active_link_count": 18,
-}
-
-L40_NO_NVLINK = {
-    "gpu_id": 0,
-    "uuid": "GPU-0",
-    "device_name": "NVIDIA L40",
-    "nvlinks": [],
-    "nvlink_link_count": 0,
-    "nvlink_active_link_count": 0,
-}
-
-
-def _reader_for(tmp_path: Path, gpus: list[dict]) -> MetadataReader:
-    metadata_path = tmp_path / "gpu_metadata.json"
-    metadata_path.write_text(json.dumps({"gpus": gpus}))
-    return MetadataReader(str(metadata_path))
-
-
 def test_classify_unbridged_pcie_card(tmp_path: Path) -> None:
     """A100 PCIe with bridge links present but zero active: UNBRIDGED_PCIE.
 
     This is the live-repro shape: NVML GetNvLinkState returns SUCCESS for
     links 0-11 (state NOT_ACTIVE) on an unbridged A100 80GB PCIe."""
-    reader = _reader_for(tmp_path, [A100_PCIE_UNBRIDGED])
+    reader = make_metadata_reader(tmp_path, [A100_PCIE_UNBRIDGED])
     assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNBRIDGED_PCIE
 
 
 def test_classify_no_nvlink_silicon(tmp_path: Path) -> None:
     """L40-class GPU with zero hardware links: NO_NVLINK_HARDWARE."""
-    reader = _reader_for(tmp_path, [L40_NO_NVLINK])
+    reader = make_metadata_reader(tmp_path, [L40_NO_NVLINK])
     assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.NO_NVLINK_HARDWARE
 
 
 def test_classify_active_links_in_use(tmp_path: Path) -> None:
     """SXM GPU with trained links: NVLINK_IN_USE — a down report is genuine."""
-    reader = _reader_for(tmp_path, [H100_SXM_TRAINED])
+    reader = make_metadata_reader(tmp_path, [H100_SXM_TRAINED])
     assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.NVLINK_IN_USE
 
 
@@ -382,7 +354,7 @@ def test_classify_unknown_sxm_zero_active(tmp_path: Path) -> None:
     """SXM GPU with hardware links but zero active (fabric manager may not
     have trained links when metadata was collected): UNKNOWN, fail closed."""
     gpu = dict(H100_SXM_TRAINED, nvlink_active_link_count=0)
-    reader = _reader_for(tmp_path, [gpu])
+    reader = make_metadata_reader(tmp_path, [gpu])
     assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNKNOWN
 
 
@@ -390,14 +362,14 @@ def test_classify_pcie_name_without_hardware_count(tmp_path: Path) -> None:
     """PCIe card with zero active links and no hardware count (partial
     metadata): the PCIe device name still classifies as UNBRIDGED_PCIE."""
     gpu = {k: v for k, v in A100_PCIE_UNBRIDGED.items() if k != "nvlink_link_count"}
-    reader = _reader_for(tmp_path, [gpu])
+    reader = make_metadata_reader(tmp_path, [gpu])
     assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNBRIDGED_PCIE
 
 
 def test_classify_unknown_missing_active_count(tmp_path: Path) -> None:
     """Old metadata-collector without nvlink_active_link_count: UNKNOWN."""
     gpu = {k: v for k, v in A100_PCIE_UNBRIDGED.items() if k != "nvlink_active_link_count"}
-    reader = _reader_for(tmp_path, [gpu])
+    reader = make_metadata_reader(tmp_path, [gpu])
     assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNKNOWN
 
 
@@ -405,7 +377,7 @@ def test_classify_unknown_missing_active_count(tmp_path: Path) -> None:
 def test_classify_unknown_malformed_active_count(tmp_path: Path, bad_value: object) -> None:
     """Malformed nvlink_active_link_count values: UNKNOWN, fail closed."""
     gpu = dict(A100_PCIE_UNBRIDGED, nvlink_active_link_count=bad_value)
-    reader = _reader_for(tmp_path, [gpu])
+    reader = make_metadata_reader(tmp_path, [gpu])
     assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNKNOWN
 
 
@@ -413,7 +385,7 @@ def test_classify_malformed_hardware_count_pcie_name_still_wins(tmp_path: Path) 
     """Malformed hardware count reads as unknown, but a PCIe device name with
     zero active links still classifies as UNBRIDGED_PCIE."""
     gpu = dict(A100_PCIE_UNBRIDGED, nvlink_link_count="bogus")
-    reader = _reader_for(tmp_path, [gpu])
+    reader = make_metadata_reader(tmp_path, [gpu])
     assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNBRIDGED_PCIE
 
 
@@ -427,13 +399,13 @@ def test_classify_unknown_zero_active_no_pcie_name_no_hardware_count(tmp_path: P
         "nvlinks": [],
         "nvlink_active_link_count": 0,
     }
-    reader = _reader_for(tmp_path, [gpu])
+    reader = make_metadata_reader(tmp_path, [gpu])
     assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNKNOWN
 
 
 def test_classify_unknown_gpu_not_found(tmp_path: Path) -> None:
     """Non-existent GPU returns UNKNOWN."""
-    reader = _reader_for(tmp_path, [A100_PCIE_UNBRIDGED])
+    reader = make_metadata_reader(tmp_path, [A100_PCIE_UNBRIDGED])
     assert reader.classify_nvlink_down(99) is NVLinkDownExpectation.UNKNOWN
 
 
