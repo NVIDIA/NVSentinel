@@ -50,6 +50,9 @@ data:
         isFatal = {{ .healthEvent.isFatal }}
         message = {{ .healthEvent.message | quote }}
         recommendedAction = {{ .healthEvent.recommendedAction | quote }}
+        {{- if .healthEvent.customRecommendedAction }}
+        customRecommendedAction = {{ .healthEvent.customRecommendedAction | quote }}
+        {{- end }}
         {{- if .healthEvent.errorCode }}
         errorCode = [{{- range $index, $code := .healthEvent.errorCode }}{{- if $index }}, {{ end }}{{ $code | quote }}{{- end }}]
         {{- end }}
