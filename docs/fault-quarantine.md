@@ -90,6 +90,10 @@ fault-quarantine:
       #   key: "nvidia.com/gpu-error"
       #   value: "fatal"
       #   effect: "NoSchedule"
+      # Optional label configuration
+      # label:
+      #   key: "nvidia.com/gpu-fault"
+      #   value: "active"
 ```
 
 ### Defining CEL Rules
@@ -103,6 +107,7 @@ Rules are defined using rulesets that evaluate CEL expressions. Each ruleset has
 **Actions**: What happens when conditions match
 - `cordon.shouldCordon: true` - Cordon (mark unschedulable) the node
 - `taint` (optional) - Apply Kubernetes taints to the node
+- `label` (optional) - Apply a Kubernetes label until all tracked faults recover
 
 **Configuration options:**
 - **Dry Run**: Test rules without cordoning nodes

@@ -64,14 +64,22 @@ type ReconcilerConfig struct {
 
 type rulesetsConfig struct {
 	TaintConfigMap     map[string]*config.Taint
+	LabelConfigMap     map[string]*config.Label
 	CordonConfigMap    map[string]bool
 	RuleSetPriorityMap map[string]int
+	RuleSetOrderMap    map[string]int
 }
 
 // keyValTaint represents a taint key-value pair used for deduplication and priority tracking
 type keyValTaint struct {
 	Key   string
 	Value string
+}
+
+type selectedLabel struct {
+	Value    string
+	Priority int
+	Order    int
 }
 
 type Reconciler struct {
@@ -82,6 +90,7 @@ type Reconciler struct {
 	eventWatcher          eventwatcher.EventWatcherInterface
 	taintInitKeys         []keyValTaint // Pre-computed taint keys for map initialization
 	taintUpdateMu         sync.Mutex    // Protects taint priority updates
+	labelUpdateMu         sync.Mutex    // Protects label priority updates
 
 	// Label keys
 	cordonedByLabelKey        string
@@ -293,12 +302,19 @@ func (r *Reconciler) setupLabelKeys() {
 // buildRulesetsConfig builds the rulesets configuration maps from TOML config
 func (r *Reconciler) buildRulesetsConfig() rulesetsConfig {
 	taintConfigMap := make(map[string]*config.Taint)
+	labelConfigMap := make(map[string]*config.Label)
 	cordonConfigMap := make(map[string]bool)
 	ruleSetPriorityMap := make(map[string]int)
+	ruleSetOrderMap := make(map[string]int)
 
-	for _, ruleSet := range r.config.TomlConfig.RuleSets {
+	for order, ruleSet := range r.config.TomlConfig.RuleSets {
+		ruleSetOrderMap[ruleSet.Name] = order
 		if ruleSet.Taint.Key != "" {
 			taintConfigMap[ruleSet.Name] = &ruleSet.Taint
+		}
+
+		if ruleSet.Label.Key != "" {
+			labelConfigMap[ruleSet.Name] = &ruleSet.Label
 		}
 
 		if ruleSet.Cordon.ShouldCordon {
@@ -312,8 +328,10 @@ func (r *Reconciler) buildRulesetsConfig() rulesetsConfig {
 
 	return rulesetsConfig{
 		TaintConfigMap:     taintConfigMap,
+		LabelConfigMap:     labelConfigMap,
 		CordonConfigMap:    cordonConfigMap,
 		RuleSetPriorityMap: ruleSetPriorityMap,
+		RuleSetOrderMap:    ruleSetOrderMap,
 	}
 }
 
@@ -540,7 +558,7 @@ func (r *Reconciler) handleEvent(
 			"node", event.HealthEvent.NodeName,
 			"checkName", event.HealthEvent.CheckName)
 
-		return r.handleAlreadyQuarantinedNode(ctx, event.HealthEvent, ruleSetEvals)
+		return r.handleAlreadyQuarantinedNode(ctx, event.HealthEvent, ruleSetEvals, rulesetsConfig)
 	}
 
 	// For healthy events, if there's no existing quarantine annotation,
@@ -564,16 +582,21 @@ func (r *Reconciler) handleEvent(
 		taintEffectPriorityMap[keyVal] = -1
 	}
 
-	var labelsMap sync.Map
+	var (
+		labelsMap        sync.Map
+		appliedLabelsMap sync.Map
+		isCordoned       atomic.Bool
+	)
 
-	var isCordoned atomic.Bool
+	selectedLabels := make(map[string]selectedLabel)
 
 	r.evaluateRulesets(
 		ctx, event, ruleSetEvals, rulesetsConfig,
-		taintAppliedMap, &labelsMap, &isCordoned, taintEffectPriorityMap,
+		taintAppliedMap, &labelsMap, &appliedLabelsMap, selectedLabels, &isCordoned, taintEffectPriorityMap,
 	)
 
 	taintsToBeApplied := r.collectTaintsToApply(taintAppliedMap)
+	labelsToBeApplied := collectLabelsToApply(&appliedLabelsMap)
 
 	node, err := r.k8sClient.NodeInformer.GetNode(event.HealthEvent.NodeName)
 	if err != nil {
@@ -588,9 +611,9 @@ func (r *Reconciler) handleEvent(
 		return nil
 	}
 
-	annotationsMap := r.prepareAnnotations(ctx, node, taintsToBeApplied, &labelsMap, &isCordoned)
+	annotationsMap := r.prepareAnnotations(ctx, node, taintsToBeApplied, labelsToBeApplied, &labelsMap, &isCordoned)
 
-	isNodeQuarantined := len(taintsToBeApplied) > 0 || isCordoned.Load()
+	isNodeQuarantined := len(taintsToBeApplied) > 0 || len(labelsToBeApplied) > 0 || isCordoned.Load()
 
 	// In dry-run mode, always apply annotations for observability even if no actions would be taken
 	if !isNodeQuarantined && !r.config.DryRun {
@@ -603,7 +626,7 @@ func (r *Reconciler) handleEvent(
 	}
 
 	status := r.applyQuarantine(
-		ctx, event, annotations, taintsToBeApplied,
+		ctx, event, annotations, taintsToBeApplied, labelsToBeApplied,
 		annotationsMap, &labelsMap, &isCordoned,
 	)
 
@@ -661,6 +684,7 @@ func (r *Reconciler) handleAlreadyQuarantinedNode(
 	ctx context.Context,
 	event *protos.HealthEvent,
 	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
+	rulesetsConfig rulesetsConfig,
 ) *model.Status {
 	ctx, span := tracing.StartSpan(ctx, "fault_quarantine.handle_already_quarantined_node")
 	defer span.End()
@@ -670,7 +694,7 @@ func (r *Reconciler) handleAlreadyQuarantinedNode(
 	}
 
 	// Event will modify FQ annotations, proceed with quarantine handling
-	stayQuarantined := r.handleQuarantinedNode(ctx, event, ruleSetEvals)
+	stayQuarantined := r.handleQuarantinedNode(ctx, event, ruleSetEvals, rulesetsConfig)
 
 	return r.resolveAlreadyQuarantinedStatus(ctx, event, stayQuarantined)
 }
@@ -765,6 +789,8 @@ func (r *Reconciler) evaluateRulesets(
 	rulesetsConfig rulesetsConfig,
 	taintAppliedMap map[keyValTaint]string,
 	labelsMap *sync.Map,
+	appliedLabelsMap *sync.Map,
+	selectedLabels map[string]selectedLabel,
 	isCordoned *atomic.Bool,
 	taintEffectPriorityMap map[keyValTaint]int,
 ) {
@@ -798,7 +824,9 @@ func (r *Reconciler) evaluateRulesets(
 			switch {
 			case ruleEvaluatedResult == common.RuleEvaluationSuccess:
 				r.handleSuccessfulRuleEvaluation(
-					eval, rulesetsConfig, labelsMap, isCordoned, taintAppliedMap, taintEffectPriorityMap)
+					eval, rulesetsConfig, labelsMap, appliedLabelsMap, selectedLabels,
+					isCordoned, taintAppliedMap, taintEffectPriorityMap,
+				)
 			case err != nil:
 				r.handleRuleEvaluationError(ctx, event.HealthEvent, eval.GetName(), err)
 			default:
@@ -815,6 +843,8 @@ func (r *Reconciler) handleSuccessfulRuleEvaluation(
 	eval evaluator.RuleSetEvaluatorIface,
 	rulesetsConfig rulesetsConfig,
 	labelsMap *sync.Map,
+	appliedLabelsMap *sync.Map,
+	selectedLabels map[string]selectedLabel,
 	isCordoned *atomic.Bool,
 	taintAppliedMap map[keyValTaint]string,
 	taintEffectPriorityMap map[keyValTaint]int,
@@ -839,6 +869,36 @@ func (r *Reconciler) handleSuccessfulRuleEvaluation(
 	if taintConfig != nil {
 		r.updateTaintMaps(eval.GetName(), taintConfig, rulesetsConfig, taintAppliedMap, taintEffectPriorityMap)
 	}
+
+	labelConfig := rulesetsConfig.LabelConfigMap[eval.GetName()]
+	if labelConfig != nil {
+		r.labelUpdateMu.Lock()
+		selectRuleLabel(
+			selectedLabels,
+			*labelConfig,
+			rulesetsConfig.RuleSetPriorityMap[eval.GetName()],
+			rulesetsConfig.RuleSetOrderMap[eval.GetName()],
+		)
+
+		selected := selectedLabels[labelConfig.Key]
+		labelsMap.Store(labelConfig.Key, selected.Value)
+		appliedLabelsMap.Store(labelConfig.Key, config.AppliedLabel{
+			Key:      labelConfig.Key,
+			Value:    selected.Value,
+			Priority: selected.Priority,
+			Order:    selected.Order,
+		})
+		r.labelUpdateMu.Unlock()
+	}
+}
+
+func selectRuleLabel(selected map[string]selectedLabel, candidate config.Label, priority, order int) {
+	current, exists := selected[candidate.Key]
+	if exists && (current.Priority > priority || (current.Priority == priority && current.Order > order)) {
+		return
+	}
+
+	selected[candidate.Key] = selectedLabel{Value: candidate.Value, Priority: priority, Order: order}
 }
 
 // updateTaintMaps updates taint maps with priority-based logic to handle multiple rulesets
@@ -902,11 +962,28 @@ func (r *Reconciler) collectTaintsToApply(taintAppliedMap map[keyValTaint]string
 	return taintsToBeApplied
 }
 
+func collectLabelsToApply(labelsMap *sync.Map) []config.AppliedLabel {
+	labels := []config.AppliedLabel{}
+
+	labelsMap.Range(func(_, value any) bool {
+		label, ok := value.(config.AppliedLabel)
+
+		if ok {
+			labels = append(labels, label)
+		}
+
+		return true
+	})
+
+	return labels
+}
+
 // prepareAnnotations prepares annotations and labels to be applied if any
 func (r *Reconciler) prepareAnnotations(
 	ctx context.Context,
 	node *corev1.Node,
 	taintsToBeApplied []config.Taint,
+	labelsToBeApplied []config.AppliedLabel,
 	labelsMap *sync.Map,
 	isCordoned *atomic.Bool,
 ) map[string]string {
@@ -920,6 +997,15 @@ func (r *Reconciler) prepareAnnotations(
 			slog.ErrorContext(ctx, "Failed to marshal taints for annotation", "error", err)
 		} else {
 			annotationsMap[common.QuarantineHealthEventAppliedTaintsAnnotationKey] = string(taintsJsonStr)
+		}
+	}
+
+	if len(labelsToBeApplied) > 0 {
+		labelsJSON, err := json.Marshal(labelsToBeApplied)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to marshal labels for annotation", "error", err)
+		} else {
+			annotationsMap[common.QuarantineHealthEventAppliedLabelsAnnotationKey] = string(labelsJSON)
 		}
 	}
 
@@ -941,7 +1027,7 @@ func (r *Reconciler) prepareAnnotations(
 		}
 	}
 
-	if len(taintsToBeApplied) > 0 || isCordoned.Load() {
+	if len(taintsToBeApplied) > 0 || len(labelsToBeApplied) > 0 || isCordoned.Load() {
 		labelsMap.Store(string(statemanager.NVSentinelStateLabelKey), string(statemanager.QuarantinedLabelValue))
 	}
 
@@ -968,6 +1054,7 @@ func (r *Reconciler) applyQuarantine(
 	event *model.HealthEventWithStatus,
 	annotations map[string]string,
 	taintsToBeApplied []config.Taint,
+	labelsToBeApplied []config.AppliedLabel,
 	annotationsMap map[string]string,
 	labelsMap *sync.Map,
 	isCordoned *atomic.Bool,
@@ -1051,7 +1138,7 @@ func (r *Reconciler) applyQuarantine(
 
 	slog.DebugContext(ctx, "QuarantineNodeAndSetAnnotations completed successfully", "node", event.HealthEvent.NodeName)
 
-	r.updateQuarantineMetrics(event.HealthEvent.NodeName, taintsToBeApplied, isCordoned)
+	r.updateQuarantineMetrics(event.HealthEvent.NodeName, taintsToBeApplied, labelsToBeApplied, isCordoned)
 
 	status := model.Quarantined
 	if alreadyQuarantined {
@@ -1104,6 +1191,7 @@ func (r *Reconciler) addHealthEventAnnotation(
 func (r *Reconciler) updateQuarantineMetrics(
 	nodeName string,
 	taintsToBeApplied []config.Taint,
+	labelsToBeApplied []config.AppliedLabel,
 	isCordoned *atomic.Bool,
 ) {
 	metrics.TotalNodesQuarantined.WithLabelValues(nodeName).Inc()
@@ -1111,6 +1199,10 @@ func (r *Reconciler) updateQuarantineMetrics(
 
 	for _, taint := range taintsToBeApplied {
 		metrics.TaintsApplied.WithLabelValues(taint.Key, taint.Effect).Inc()
+	}
+
+	for _, label := range labelsToBeApplied {
+		metrics.LabelsApplied.WithLabelValues(label.Key).Inc()
 	}
 
 	if isCordoned.Load() {
@@ -1147,6 +1239,7 @@ func (r *Reconciler) handleUnhealthyEventOnQuarantinedNode(
 	ctx context.Context,
 	event *protos.HealthEvent,
 	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
+	rulesetsConfig rulesetsConfig,
 	healthEventsAnnotationMap *healthEventsAnnotation.HealthEventsAnnotationMap,
 ) bool {
 	if !r.isForceQuarantine(event) && !r.eventMatchesAnyRule(event, ruleSetEvals) {
@@ -1171,13 +1264,91 @@ func (r *Reconciler) handleUnhealthyEventOnQuarantinedNode(
 			"checkName", event.CheckName, "node", event.NodeName)
 	}
 
+	if err := r.applyRuleLabelsForEvent(ctx, event, ruleSetEvals, rulesetsConfig); err != nil {
+		slog.ErrorContext(ctx, "Failed to apply session rule labels for quarantined node",
+			"checkName", event.CheckName, "node", event.NodeName, "error", err)
+		metrics.ProcessingErrors.WithLabelValues("apply_session_rule_labels_error").Inc()
+	}
+
 	return true
+}
+
+func (r *Reconciler) applyRuleLabelsForEvent(
+	ctx context.Context,
+	event *protos.HealthEvent,
+	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
+	rulesetsConfig rulesetsConfig,
+) error {
+	selected := make(map[string]selectedLabel)
+
+	for _, eval := range ruleSetEvals {
+		result, err := eval.Evaluate(event)
+		if err != nil {
+			r.handleRuleEvaluationError(ctx, event, eval.GetName(), err)
+			continue
+		}
+
+		if result != common.RuleEvaluationSuccess {
+			continue
+		}
+
+		labelConfig := rulesetsConfig.LabelConfigMap[eval.GetName()]
+		if labelConfig == nil {
+			continue
+		}
+
+		selectRuleLabel(
+			selected,
+			*labelConfig,
+			rulesetsConfig.RuleSetPriorityMap[eval.GetName()],
+			rulesetsConfig.RuleSetOrderMap[eval.GetName()],
+		)
+	}
+
+	if len(selected) == 0 {
+		return nil
+	}
+
+	appliedLabels := make([]config.AppliedLabel, 0, len(selected))
+	labels := make(map[string]string, len(selected))
+
+	for key, winner := range selected {
+		appliedLabels = append(appliedLabels, config.AppliedLabel{
+			Key:      key,
+			Value:    winner.Value,
+			Priority: winner.Priority,
+			Order:    winner.Order,
+		})
+		labels[key] = winner.Value
+	}
+
+	appliedLabelsJSON, err := json.Marshal(appliedLabels)
+	if err != nil {
+		return fmt.Errorf("marshal session applied labels: %w", err)
+	}
+
+	_, err = r.k8sClient.QuarantineNodeAndSetAnnotations(
+		ctx,
+		event.NodeName,
+		nil,
+		false,
+		map[string]string{
+			common.QuarantineHealthEventAppliedLabelsAnnotationKey: string(appliedLabelsJSON),
+		},
+		labels,
+	)
+	if err != nil {
+		return fmt.Errorf("merge session applied labels: %w", err)
+	}
+
+	return nil
 }
 
 func (r *Reconciler) handleQuarantinedNode(
 	ctx context.Context,
 	event *protos.HealthEvent,
 	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
+	rulesetsConfig rulesetsConfig,
 ) bool {
 	ctx, span := tracing.StartSpan(ctx, "fault_quarantine.handle_quarantined_node")
 	defer span.End()
@@ -1197,7 +1368,9 @@ func (r *Reconciler) handleQuarantinedNode(
 	_, hasExistingCheck := healthEventsAnnotationMap.GetEvent(event)
 
 	if !event.IsHealthy {
-		return r.handleUnhealthyEventOnQuarantinedNode(ctx, event, ruleSetEvals, healthEventsAnnotationMap)
+		return r.handleUnhealthyEventOnQuarantinedNode(
+			ctx, event, ruleSetEvals, rulesetsConfig, healthEventsAnnotationMap,
+		)
 	}
 
 	if !hasExistingCheck {
@@ -1461,7 +1634,7 @@ func (r *Reconciler) performUncordon(
 		"node", event.NodeName)
 
 	// Prepare uncordon parameters
-	taintsToBeRemoved, annotationsToBeRemoved, isUnCordon, labelsMap, err := r.prepareUncordonParams(
+	taintsToBeRemoved, annotationsToBeRemoved, ruleLabelsToRemove, isUnCordon, labelsMap, err := r.prepareUncordonParams(
 		event, annotations)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to prepare uncordon params for node", "node", event.NodeName, "error", err)
@@ -1475,7 +1648,7 @@ func (r *Reconciler) performUncordon(
 		return true, fmt.Errorf("failed to prepare uncordon params for node %s: %w", event.NodeName, err)
 	}
 
-	if len(taintsToBeRemoved) == 0 && !isUnCordon && len(annotationsToBeRemoved) == 0 {
+	if len(taintsToBeRemoved) == 0 && len(ruleLabelsToRemove) == 0 && !isUnCordon && len(annotationsToBeRemoved) == 0 {
 		span.SetAttributes(attribute.String("fault_quarantine.event.processing_status", EventProcessingStatusSkipped),
 			attribute.String("fault_quarantine.skip.reason", "No quarantine taints or annotations present to remove"),
 		)
@@ -1495,6 +1668,9 @@ func (r *Reconciler) performUncordon(
 		r.cordonedReasonLabelKey,
 		r.cordonedTimestampLabelKey,
 		statemanager.NVSentinelStateLabelKey,
+	}
+	for _, label := range ruleLabelsToRemove {
+		labelsToRemove = append(labelsToRemove, label.Key)
 	}
 
 	if err := r.k8sClient.UnQuarantineNodeAndRemoveAnnotations(
@@ -1517,7 +1693,7 @@ func (r *Reconciler) performUncordon(
 		return true, fmt.Errorf("failed to untaint and uncordon node %s: %w", event.NodeName, err)
 	}
 
-	r.updateUncordonMetrics(ctx, event.NodeName, taintsToBeRemoved, isUnCordon)
+	r.updateUncordonMetrics(ctx, event.NodeName, taintsToBeRemoved, ruleLabelsToRemove, isUnCordon)
 
 	span.SetAttributes(
 		attribute.Bool("fault_quarantine.action.uncordon", isUnCordon),
@@ -1531,7 +1707,7 @@ func (r *Reconciler) performUncordon(
 func (r *Reconciler) prepareUncordonParams(
 	event *protos.HealthEvent,
 	annotations map[string]string,
-) ([]config.Taint, []string, bool, map[string]string, error) {
+) ([]config.Taint, []string, []config.Label, bool, map[string]string, error) {
 	var (
 		annotationsToBeRemoved = []string{}
 		taintsToBeRemoved      []config.Taint
@@ -1547,7 +1723,9 @@ func (r *Reconciler) prepareUncordonParams(
 
 		var allTaints []config.Taint
 		if err := json.Unmarshal([]byte(quarantineAnnotationEventTaintsAppliedStr), &allTaints); err != nil {
-			return nil, nil, false, nil, fmt.Errorf("failed to unmarshal taints annotation for node %s: %w", event.NodeName, err)
+			return nil, nil, nil, false, nil, fmt.Errorf(
+				"failed to unmarshal taints annotation for node %s: %w", event.NodeName, err,
+			)
 		}
 
 		for _, t := range allTaints {
@@ -1556,6 +1734,15 @@ func (r *Reconciler) prepareUncordonParams(
 			}
 		}
 	}
+
+	labelsToBeRemoved, labelAnnotationsToRemove, err := appliedLabelsRemovalParams(annotations)
+	if err != nil {
+		return nil, nil, nil, false, nil, fmt.Errorf(
+			"failed to unmarshal labels annotation for node %s: %w", event.NodeName, err,
+		)
+	}
+
+	annotationsToBeRemoved = append(annotationsToBeRemoved, labelAnnotationsToRemove...)
 
 	quarantineAnnotationEventIsCordonStr, cordonExists :=
 		annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]
@@ -1574,13 +1761,14 @@ func (r *Reconciler) prepareUncordonParams(
 		}
 	}
 
-	return taintsToBeRemoved, annotationsToBeRemoved, isUnCordon, labelsMap, nil
+	return taintsToBeRemoved, annotationsToBeRemoved, labelsToBeRemoved, isUnCordon, labelsMap, nil
 }
 
 func (r *Reconciler) updateUncordonMetrics(
 	ctx context.Context,
 	nodeName string,
 	taintsToBeRemoved []config.Taint,
+	labelsToBeRemoved []config.Label,
 	isUnCordon bool,
 ) {
 	metrics.TotalNodesUnquarantined.WithLabelValues(nodeName).Inc()
@@ -1589,6 +1777,10 @@ func (r *Reconciler) updateUncordonMetrics(
 
 	for _, taint := range taintsToBeRemoved {
 		metrics.TaintsRemoved.WithLabelValues(taint.Key, taint.Effect).Inc()
+	}
+
+	for _, label := range labelsToBeRemoved {
+		metrics.LabelsRemoved.WithLabelValues(label.Key).Inc()
 	}
 
 	if isUnCordon {
@@ -1621,6 +1813,7 @@ func (r *Reconciler) getNodeQuarantineAnnotations(ctx context.Context, nodeName 
 	quarantineKeys := []string{
 		common.QuarantineHealthEventAnnotationKey,
 		common.QuarantineHealthEventAppliedTaintsAnnotationKey,
+		common.QuarantineHealthEventAppliedLabelsAnnotationKey,
 		common.QuarantineHealthEventIsCordonedAnnotationKey,
 		common.QuarantineHealthEventCordonPreExistingAnnotationKey,
 		common.QuarantinedNodeUncordonedManuallyAnnotationKey,
@@ -1689,11 +1882,19 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 		"node", nodeName, "annotationCount", len(annotations))
 
 	annotationsToRemove := []string{}
+	labelsToRemove := []string{statemanager.NVSentinelStateLabelKey}
 
 	// Remove the applied taints annotation (but keep the taints themselves on the node)
 	if _, exists := annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey]; exists {
 		annotationsToRemove = append(annotationsToRemove, common.QuarantineHealthEventAppliedTaintsAnnotationKey)
 	}
+
+	labelAnnotationsToRemove, _, err := appliedLabelCleanupParams(annotations)
+	if err != nil {
+		return fmt.Errorf("failed to read applied labels for manually uncordoned node %s: %w", nodeName, err)
+	}
+
+	annotationsToRemove = append(annotationsToRemove, labelAnnotationsToRemove...)
 
 	if _, exists := annotations[common.QuarantineHealthEventAnnotationKey]; exists {
 		annotationsToRemove = append(annotationsToRemove, common.QuarantineHealthEventAnnotationKey)
@@ -1718,7 +1919,7 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 		nodeName,
 		annotationsToRemove,
 		newAnnotations,
-		[]string{statemanager.NVSentinelStateLabelKey},
+		labelsToRemove,
 	); err != nil {
 		slog.ErrorContext(ctx, "Failed to clean up manually uncordoned node", "node", nodeName, "error", err)
 		metrics.ProcessingErrors.WithLabelValues("manual_uncordon_cleanup_error").Inc()
@@ -1786,10 +1987,18 @@ func (r *Reconciler) handleManualUntaint(nodeName string) error {
 		"node", nodeName, "annotationCount", len(annotations))
 
 	annotationsToRemove := []string{}
+	labelsToRemove := []string{statemanager.NVSentinelStateLabelKey}
 
 	if _, exists := annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey]; exists {
 		annotationsToRemove = append(annotationsToRemove, common.QuarantineHealthEventAppliedTaintsAnnotationKey)
 	}
+
+	labelAnnotationsToRemove, _, err := appliedLabelCleanupParams(annotations)
+	if err != nil {
+		return fmt.Errorf("failed to read applied labels for manually untainted node %s: %w", nodeName, err)
+	}
+
+	annotationsToRemove = append(annotationsToRemove, labelAnnotationsToRemove...)
 
 	if _, exists := annotations[common.QuarantineHealthEventAnnotationKey]; exists {
 		annotationsToRemove = append(annotationsToRemove, common.QuarantineHealthEventAnnotationKey)
@@ -1814,7 +2023,7 @@ func (r *Reconciler) handleManualUntaint(nodeName string) error {
 		nodeName,
 		annotationsToRemove,
 		newAnnotations,
-		[]string{statemanager.NVSentinelStateLabelKey},
+		labelsToRemove,
 	); err != nil {
 		slog.ErrorContext(ctx, "Failed to clean up manually untainted node", "node", nodeName, "error", err)
 		metrics.ProcessingErrors.WithLabelValues("manual_untaint_cleanup_error").Inc()
@@ -1855,4 +2064,39 @@ func (r *Reconciler) handleManualUntaint(nodeName string) error {
 	slog.InfoContext(ctx, "Successfully completed manual untaint handling", "node", nodeName)
 
 	return nil
+}
+
+func appliedLabelsRemovalParams(annotations map[string]string) ([]config.Label, []string, error) {
+	appliedLabelsJSON := annotations[common.QuarantineHealthEventAppliedLabelsAnnotationKey]
+	if appliedLabelsJSON == "" {
+		return nil, nil, nil
+	}
+
+	var persistedLabels []config.AppliedLabel
+	if err := json.Unmarshal([]byte(appliedLabelsJSON), &persistedLabels); err != nil {
+		return nil, nil, fmt.Errorf("unmarshal applied labels annotation: %w", err)
+	}
+
+	appliedLabels := make([]config.Label, 0, len(persistedLabels))
+	for _, label := range persistedLabels {
+		appliedLabels = append(appliedLabels, config.Label{Key: label.Key, Value: label.Value})
+	}
+
+	return appliedLabels, []string{common.QuarantineHealthEventAppliedLabelsAnnotationKey}, nil
+}
+
+func appliedLabelCleanupParams(annotations map[string]string) ([]string, []string, error) {
+	appliedLabels, annotationKeys, err := appliedLabelsRemovalParams(annotations)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	keys := make([]string, 0, len(appliedLabels))
+	for _, label := range appliedLabels {
+		if label.Key != "" {
+			keys = append(keys, label.Key)
+		}
+	}
+
+	return annotationKeys, keys, nil
 }

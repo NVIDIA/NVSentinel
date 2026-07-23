@@ -23,6 +23,7 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/discovery"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/statefile"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/sysfs"
+	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/topology"
 )
 
 // EthernetDegradationCheck monitors Ethernet/RoCE counter thresholds.
@@ -30,40 +31,60 @@ import (
 // mlx5 driver exposes for RoCE devices and the interface-level
 // /sys/class/net/<iface>/statistics/carrier_changes counter.
 type EthernetDegradationCheck struct {
-	nodeName  string
-	reader    sysfs.Reader
-	cfg       *config.Config
-	state     *statefile.Manager
-	evaluator *Evaluator
-	pending   *Evaluator
+	nodeName           string
+	reader             sysfs.Reader
+	cfg                *config.Config
+	classifier         *topology.Classifier
+	processingStrategy pb.ProcessingStrategy
+	state              *statefile.Manager
+	evaluator          *Evaluator
+	pending            *Evaluator
 
 	// saveFailed records that the last state-file Save failed, so the
 	// next commit retries even when nothing changed.
 	saveFailed bool
+
+	// firstPollDeferrals counts consecutive polls deferred because the
+	// first enumeration included unreadable devices. Poll bookkeeping,
+	// deliberately outside the transactional commit (like saveFailed).
+	firstPollDeferrals int
 }
 
 var _ checks.TransactionalCheck = (*EthernetDegradationCheck)(nil)
 
 // NewEthernetDegradationCheck creates a new EthernetDegradationCheck.
+// The classifier scopes the check to the same devices the state checks
+// monitor (management NICs excluded).
 func NewEthernetDegradationCheck(
 	nodeName string,
 	reader sysfs.Reader,
 	cfg *config.Config,
+	classifier *topology.Classifier,
 	processingStrategy pb.ProcessingStrategy,
 	state *statefile.Manager,
 	bootIDChanged bool,
 ) *EthernetDegradationCheck {
+	// A baseline owed by a previous pod (deferred/partial window, then
+	// restart) is picked up from the persisted flag; a fresh trigger is
+	// registered so it survives partial-window commits.
+	pendingBaseline := bootIDChanged || state.PendingBaseline(checks.EthernetDegradationCheckName)
+	if pendingBaseline {
+		state.SetPendingBaseline(checks.EthernetDegradationCheckName)
+	}
+
 	evaluator := NewEvaluator(
 		nodeName, reader, processingStrategy,
-		state.CounterSnapshots(), state.BreachFlags(), bootIDChanged,
+		state.CounterSnapshots(), state.BreachFlags(), pendingBaseline,
 	)
 
 	return &EthernetDegradationCheck{
-		nodeName:  nodeName,
-		reader:    reader,
-		cfg:       cfg,
-		state:     state,
-		evaluator: evaluator,
+		nodeName:           nodeName,
+		reader:             reader,
+		cfg:                cfg,
+		classifier:         classifier,
+		processingStrategy: processingStrategy,
+		state:              state,
+		evaluator:          evaluator,
 	}
 }
 
@@ -92,7 +113,7 @@ func (c *EthernetDegradationCheck) Run() ([]*pb.HealthEvent, error) {
 func (c *EthernetDegradationCheck) Prepare() ([]*pb.HealthEvent, error) {
 	c.Discard()
 
-	candidate, events, err := prepareCounterPoll(c.reader, c.cfg, c.evaluator, c.evaluateDevices)
+	candidate, events, err := prepareCounterPoll(c.pollDeps(), c.evaluator, &c.firstPollDeferrals, c.evaluateDevices)
 	if err != nil {
 		return nil, err
 	}
@@ -106,9 +127,22 @@ func (c *EthernetDegradationCheck) Prepare() ([]*pb.HealthEvent, error) {
 	return events, nil
 }
 
+// pollDeps assembles the per-check wiring the shared counter poll needs.
+func (c *EthernetDegradationCheck) pollDeps() counterPollDeps {
+	return counterPollDeps{
+		reader:             c.reader,
+		cfg:                c.cfg,
+		classifier:         c.classifier,
+		nodeName:           c.nodeName,
+		checkName:          c.Name(),
+		processingStrategy: c.processingStrategy,
+	}
+}
+
 // evaluateDevices runs the enabled IB-tree counters plus the net-statistics
-// counters for every Ethernet/RoCE port on supported (or explicitly
-// pinned) devices against the candidate evaluator.
+// counters for every Ethernet/RoCE port on eligible (or explicitly
+// pinned) devices against the candidate evaluator. Eligibility matches
+// the state checks exactly — see checks.EligibleDevice.
 func (c *EthernetDegradationCheck) evaluateDevices(
 	candidate *Evaluator, devices []discovery.IBDevice,
 ) []*pb.HealthEvent {
@@ -117,7 +151,7 @@ func (c *EthernetDegradationCheck) evaluateDevices(
 	for i := range devices {
 		dev := &devices[i]
 
-		if !dev.IncludedByOverride && !discovery.IsSupportedVendor(dev) {
+		if !checks.EligibleDevice(dev, c.classifier) {
 			continue
 		}
 
@@ -147,6 +181,12 @@ func (c *EthernetDegradationCheck) evaluateDevices(
 func (c *EthernetDegradationCheck) Commit() {
 	if c.pending == nil {
 		return
+	}
+
+	// The prepared poll ran the baseline reconciliation when it consumed
+	// the pending flag the committed evaluator still carries.
+	if c.evaluator.BootBaselinePending() && !c.pending.BootBaselinePending() {
+		c.state.ClearPendingBaseline(checks.EthernetDegradationCheckName)
 	}
 
 	c.evaluator = c.pending

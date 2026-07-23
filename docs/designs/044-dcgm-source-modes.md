@@ -71,7 +71,7 @@ Embedded-mode runs the DCGM hostengine inside GPU health monitor container, so t
 
 - `operator-service` renders the existing service-backed monitor DaemonSets selected by `dcgm.version`.
 - `external-hostengine` renders the regular remote monitor path with host networking and is selected by the existing node `dcgm.version` label.
-- `embedded-mode` renders the regular monitor DaemonSets and is selected by the existing node `dcgm.version` label, just like `external-hostengine`.
+- `embedded-mode` renders the regular monitor DaemonSets and is selected by the existing node `dcgm.version` label, just like `external-hostengine`, and sets `privileged: true` on the monitor container.
 
 In `external-hostengine` and `embedded-mode`, the chart sets `--assume-dcgm-available` on labeler. This tells labeler not to remove an existing valid `dcgm.version` label when no DCGM pod is present, which is the expected topology for an externally managed hostengine or an embedded hostengine selected by node label.
 
@@ -99,6 +99,7 @@ Labeler resolves the expected DCGM version from DCGM pods when they exist, match
 `embedded-mode` runs an in-process embedded DCGM hostengine inside the GPU health monitor process and exposes the same engine on pod-local loopback. It uses the DCGM APIs rather than a separate `nv-hostengine` process.
 
 Runtime behavior:
+
 1. Create the DCGM handle with no IP address (`pydcgm.DcgmHandle(opMode=DCGM_OPERATION_MODE_AUTO)`), which calls `dcgmStartEmbedded` to start the embedded hostengine in-process.
 2. Call `dcgmEngineRun` through the Python bindings to expose that engine on `127.0.0.1:<port>`. GPU health monitor continues using the embedded handle; pod-local tools such as `dcgmi` connect to the loopback listener and therefore operate on the same hostengine cache.
 3. Run the normal health-check loop against the embedded handle.
@@ -106,7 +107,7 @@ Runtime behavior:
 
 This starts DCGM the same way `dcgm-exporter` does in embedded deployments (`dcgm.Init(dcgm.Embedded)`), then follows DCGM's own embedded test utility pattern by calling `dcgmEngineRun` for local client access. The CLI selects it via `--dcgm-mode local-managed`, derived in the chart from `global.dcgm.mode=embedded-mode`.
 
-Because the embedded engine runs in the monitor's own pod, that pod must have GPU and driver access: set `runtimeClassName` to the NVIDIA RuntimeClass so the toolkit injects the GPUs and driver.
+Because the embedded engine runs in the monitor's own pod, that pod must have GPU and driver access: set `runtimeClassName` to the NVIDIA RuntimeClass so the toolkit injects the GPUs and driver. The chart additionally sets `privileged: true` on the monitor container in this mode; on toolkits that ignore `NVIDIA_VISIBLE_DEVICES` for unprivileged containers, privileged is what makes the injection happen at all.
 
 ## Rationale
 

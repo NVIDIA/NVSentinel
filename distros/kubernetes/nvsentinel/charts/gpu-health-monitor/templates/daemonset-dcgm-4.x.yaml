@@ -65,6 +65,11 @@ spec:
             - {{ .Values.processingStrategy | quote }}
           securityContext:
             runAsUser: 0
+            {{- if eq (include "gpu-health-monitor.dcgmMode" .) "embedded-mode" }}
+            # Required for NVIDIA container toolkit GPU/driver injection when the
+            # toolkit ignores NVIDIA_VISIBLE_DEVICES for unprivileged containers.
+            privileged: true
+            {{- end }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}-dcgm-4.x"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           resources:

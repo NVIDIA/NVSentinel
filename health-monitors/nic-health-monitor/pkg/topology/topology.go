@@ -44,6 +44,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/sysfs"
@@ -69,6 +70,13 @@ type Classifier struct {
 	// non-empty, classify() treats it as Management. Resolved once at
 	// startup from /proc/net/route + sysfs.
 	defaultRouteDevice string
+
+	// mu guards the lazily-populated caches below. The classifier is
+	// shared between the state and counter polling loops (the counter
+	// checks consult it for management scoping), which run in separate
+	// goroutines — unsynchronized lazy population crashes the process
+	// with "concurrent map read and map write" while the cache is cold.
+	mu sync.RWMutex
 
 	// cachedRoles stores the classifier output for each known IB device
 	// so repeated lookups do not re-read sysfs. Populated lazily on first
@@ -197,12 +205,26 @@ func (c *Classifier) IsManagementNIC(device string) bool {
 }
 
 // RoleOf returns the classification for a device, caching the result.
+// Safe for concurrent use by the state and counter polling loops.
 func (c *Classifier) RoleOf(device string) Role {
+	c.mu.RLock()
+	role, ok := c.cachedRoles[device]
+	c.mu.RUnlock()
+
+	if ok {
+		return role
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Another goroutine may have classified the device while we waited
+	// for the write lock.
 	if role, ok := c.cachedRoles[device]; ok {
 		return role
 	}
 
-	role := c.classify(device)
+	role = c.classify(device)
 	c.cachedRoles[device] = role
 
 	return role
@@ -214,6 +236,8 @@ func (c *Classifier) RoleOf(device string) Role {
 func (c *Classifier) LogClassificationSummary() {
 	var compute, storage, management []string
 
+	c.mu.RLock()
+
 	for device, role := range c.cachedRoles {
 		switch role {
 		case RoleCompute:
@@ -224,6 +248,8 @@ func (c *Classifier) LogClassificationSummary() {
 			management = append(management, device)
 		}
 	}
+
+	c.mu.RUnlock()
 
 	sort.Strings(compute)
 	sort.Strings(storage)
@@ -407,8 +433,20 @@ func (c *Classifier) netIfaceToIBDevice(iface string) string {
 // PCICardOf returns the "bus:device" portion of a NIC's PCI slot (i.e.,
 // the PCI address with the function digit stripped) so ports on the same
 // physical card are grouped together. Falls back to the device name on
-// sysfs errors so the caller still has a usable key.
+// sysfs errors so the caller still has a usable key. Safe for
+// concurrent use by the state and counter polling loops.
 func (c *Classifier) PCICardOf(device string) string {
+	c.mu.RLock()
+	card, ok := c.cachedCards[device]
+	c.mu.RUnlock()
+
+	if ok {
+		return card
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if card, ok := c.cachedCards[device]; ok {
 		return card
 	}
@@ -419,7 +457,7 @@ func (c *Classifier) PCICardOf(device string) string {
 		return device
 	}
 
-	card := addr
+	card = addr
 	if idx := strings.LastIndex(addr, "."); idx > 0 {
 		card = addr[:idx]
 	}

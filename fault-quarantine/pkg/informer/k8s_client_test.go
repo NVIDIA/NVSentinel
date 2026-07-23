@@ -16,6 +16,7 @@ package informer
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"testing"
@@ -30,6 +31,8 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -209,6 +212,61 @@ func TestQuarantineNodeAndSetAnnotations(t *testing.T) {
 	if val, ok := updatedNode.Annotations["test-annotation"]; !ok || val != "test-value" {
 		t.Errorf("Annotation not set correctly")
 	}
+}
+
+func TestQuarantineNodeAndSetAnnotationsMergesAppliedLabelWinners(t *testing.T) {
+	ctx := context.Background()
+	nodeName := testutils.GenerateTestNodeName("test-applied-label-winners")
+
+	createTestNode(ctx, t, nodeName, nil, nil, nil, false)
+	defer func() {
+		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	k8sClient := setupTestClient(t)
+
+	first, err := json.Marshal([]config.AppliedLabel{{
+		Key: "gpu-fault", Value: "critical", Priority: 10, Order: 0,
+	}})
+	require.NoError(t, err)
+	_, err = k8sClient.QuarantineNodeAndSetAnnotations(
+		ctx,
+		nodeName,
+		nil,
+		false,
+		map[string]string{common.QuarantineHealthEventAppliedLabelsAnnotationKey: string(first)},
+		map[string]string{"gpu-fault": "critical"},
+	)
+	require.NoError(t, err)
+
+	second, err := json.Marshal([]config.AppliedLabel{
+		{Key: "gpu-fault", Value: "degraded", Priority: 5, Order: 1},
+		{Key: "network-fault", Value: "active", Priority: 5, Order: 1},
+	})
+	require.NoError(t, err)
+	_, err = k8sClient.QuarantineNodeAndSetAnnotations(
+		ctx,
+		nodeName,
+		nil,
+		false,
+		map[string]string{common.QuarantineHealthEventAppliedLabelsAnnotationKey: string(second)},
+		map[string]string{"gpu-fault": "degraded", "network-fault": "active"},
+	)
+	require.NoError(t, err)
+
+	node, err := testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, "critical", node.Labels["gpu-fault"])
+	assert.Equal(t, "active", node.Labels["network-fault"])
+
+	var applied []config.AppliedLabel
+	require.NoError(t, json.Unmarshal(
+		[]byte(node.Annotations[common.QuarantineHealthEventAppliedLabelsAnnotationKey]), &applied,
+	))
+	assert.ElementsMatch(t, []config.AppliedLabel{
+		{Key: "gpu-fault", Value: "critical", Priority: 10, Order: 0},
+		{Key: "network-fault", Value: "active", Priority: 5, Order: 1},
+	}, applied)
 }
 
 func TestUnQuarantineNodeAndRemoveAnnotations(t *testing.T) {

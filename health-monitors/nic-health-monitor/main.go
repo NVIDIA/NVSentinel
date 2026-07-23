@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -215,7 +216,10 @@ func parseRuntimeConfig() (*runtimeConfig, error) {
 		"processingStrategy", *processingStrategyFlag,
 	)
 
-	cfg := loadConfigOrDefault(*configPath)
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		return nil, err
+	}
 
 	slog.Info("Configuration loaded",
 		"sysClassNetPath", cfg.SysClassNetPath,
@@ -250,23 +254,29 @@ func parseRuntimeConfig() (*runtimeConfig, error) {
 	}, nil
 }
 
-// loadConfigOrDefault reads the TOML config and falls back to in-memory
-// defaults on any error. The fallback preserves current deployments that
-// don't ship the ConfigMap yet.
-func loadConfigOrDefault(path string) *config.Config {
+// loadConfig reads the TOML config. Only a missing file falls back to
+// in-memory defaults — that preserves deployments that don't ship the
+// ConfigMap. Every other error (malformed TOML, invalid regex, invalid
+// counter configuration) fails startup: a silent fallback would disable
+// counter monitoring and drop the discovery-scope regexes while the pod
+// keeps reporting healthy, and the documented contract for invalid
+// configuration is "reject".
+func loadConfig(path string) (*config.Config, error) {
 	cfg, err := config.LoadConfig(path)
 	if err == nil {
-		return cfg
+		return cfg, nil
 	}
 
-	slog.Warn("Failed to load config file, using defaults", "error", err, "path", path)
+	if errors.Is(err, os.ErrNotExist) {
+		slog.Warn("Config file not found, using default configuration", "path", path)
 
-	slog.Info("Using default configuration with CLI flags")
-
-	return &config.Config{
-		SysClassInfinibandPath: "/nvsentinel/sys/class/infiniband",
-		SysClassNetPath:        "/nvsentinel/sys/class/net",
+		return &config.Config{
+			SysClassInfinibandPath: "/nvsentinel/sys/class/infiniband",
+			SysClassNetPath:        "/nvsentinel/sys/class/net",
+		}, nil
 	}
+
+	return nil, fmt.Errorf("invalid configuration at %s (fix or remove the file): %w", path, err)
 }
 
 // loadClassifier wraps topology.LoadFromMetadata with an actionable
@@ -368,9 +378,11 @@ func buildChecks(
 		case checks.InfiniBandDegradationCheckName:
 			if cfg.CounterDetection.Enabled {
 				result = append(result, counter.NewInfiniBandDegradationCheck(
-					nodeName, reader, cfg, processingStrategy,
+					nodeName, reader, cfg, classifier, processingStrategy,
 					stateManager, counterBaselines,
 				))
+			} else {
+				slog.Warn("Skipping requested check: counterDetection.enabled is false", "check", c)
 			}
 		case checks.EthernetStateCheckName:
 			result = append(result, state.NewEthernetStateCheck(
@@ -380,9 +392,11 @@ func buildChecks(
 		case checks.EthernetDegradationCheckName:
 			if cfg.CounterDetection.Enabled {
 				result = append(result, counter.NewEthernetDegradationCheck(
-					nodeName, reader, cfg, processingStrategy,
+					nodeName, reader, cfg, classifier, processingStrategy,
 					stateManager, counterBaselines,
 				))
+			} else {
+				slog.Warn("Skipping requested check: counterDetection.enabled is false", "check", c)
 			}
 		default:
 			slog.Warn("Unknown check, skipping", "check", c)

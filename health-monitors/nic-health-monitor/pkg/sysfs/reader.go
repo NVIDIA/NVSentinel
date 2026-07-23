@@ -100,6 +100,10 @@ func (r *fsReader) ReadNetStatistic(iface, counter string) (uint64, error) {
 	return readUint64(filepath.Join(r.netBase, iface, "statistics", counter))
 }
 
+func (r *fsReader) ReadNetAttribute(iface, attr string) (uint64, error) {
+	return readUint64(filepath.Join(r.netBase, iface, attr))
+}
+
 func readUint64(path string) (uint64, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

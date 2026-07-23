@@ -85,8 +85,9 @@ counterDetection:
   #   hw_counters/: implied_nak_seq_err, local_ack_timeout_err,
   #     out_of_sequence, packet_seq_err, req_transport_retries_exceeded,
   #     rnr_nak_retry_err, roce_slow_restart
-  #   statistics/: carrier_changes, rx_crc_errors, rx_errors,
-  #     rx_missed_errors, tx_carrier_errors, tx_errors
+  #   statistics/: rx_crc_errors, rx_errors, rx_missed_errors,
+  #     tx_carrier_errors, tx_errors
+  #   netdev root (/sys/class/net/<iface>/): carrier_changes
   #
   # Example allowed-counter customization:
   #   - name: rx_missed_errors

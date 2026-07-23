@@ -52,6 +52,17 @@ type stubDevice struct {
 	pciAddress string
 	ports      map[int]stubPort
 	isVF       bool
+
+	// portsUnreadable makes the device enumerable but unparseable: the
+	// ports directory listing fails, so discovery reports it in
+	// UnreadableDevices (exercises the first-poll deferral).
+	portsUnreadable bool
+
+	// attrReadsFail fails the per-port attribute reads (state,
+	// phys_state, link_layer) while the ports directory still lists —
+	// a transient sysfs error mid-poll. Discovery must classify the
+	// device unreadable rather than fabricate empty observations.
+	attrReadsFail bool
 }
 
 type stubPort struct {
@@ -118,6 +129,10 @@ func (n *stubNode) listPortsFor(path string) ([]string, error) {
 		return nil, nil
 	}
 
+	if d.portsUnreadable {
+		return nil, fmt.Errorf("ports directory unreadable for %s", dev)
+	}
+
 	ports := make([]string, 0, len(d.ports))
 	for p := range d.ports {
 		ports = append(ports, strconv.Itoa(p))
@@ -158,6 +173,10 @@ func (n *stubNode) wirePortReads(m *sysfs.MockReader) {
 			return "", nil
 		}
 
+		if d.attrReadsFail {
+			return "", fmt.Errorf("state read failed for %s port %d", device, port)
+		}
+
 		return fmt.Sprintf("4: %s", d.ports[port].state), nil
 	}
 
@@ -167,6 +186,10 @@ func (n *stubNode) wirePortReads(m *sysfs.MockReader) {
 			return "", nil
 		}
 
+		if d.attrReadsFail {
+			return "", fmt.Errorf("phys_state read failed for %s port %d", device, port)
+		}
+
 		return fmt.Sprintf("5: %s", d.ports[port].physState), nil
 	}
 
@@ -174,6 +197,10 @@ func (n *stubNode) wirePortReads(m *sysfs.MockReader) {
 		d := n.ib[device]
 		if d == nil {
 			return "", nil
+		}
+
+		if d.attrReadsFail {
+			return "", fmt.Errorf("link_layer read failed for %s port %d", device, port)
 		}
 
 		return d.ports[port].linkLayer, nil

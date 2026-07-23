@@ -157,6 +157,10 @@ fault-quarantine:
         key: "nvidia.com/gpu-error"
         value: "fatal"
         effect: "NoSchedule"
+
+      label:
+        key: "nvidia.com/gpu-fault"
+        value: "active"
 ```
 
 ### Parameters
@@ -171,7 +175,7 @@ Rule set format version for future compatibility.
 Unique identifier used in logs, metrics, and as part of the cordon-reason label.
 
 #### priority
-Optional integer for resolving conflicts when multiple rule sets apply the same taint key-value pair. Higher values take precedence.
+Optional integer for resolving conflicts when multiple rule sets apply the same taint key-value pair or label key. Higher values take precedence. Label priority is preserved across all matching health events in the same quarantine session; a later lower-priority event cannot downgrade the current label. For labels with equal priority, the later rule set in configuration order wins.
 
 #### match
 Defines conditions that must be satisfied for the rule set to trigger. Supports `all` (AND) and `any` (OR) logic.
@@ -187,6 +191,9 @@ Specifies whether to mark the node as unschedulable when the rule matches.
 
 #### taint
 Optional Kubernetes taint to apply. Taints can prevent pod scheduling or evict existing pods based on the effect.
+
+#### label
+Optional Kubernetes label to apply for the lifetime of the quarantine session. If the key already exists, fault-quarantine overwrites its value. The label, priority, and configuration order are recorded in the `quarantineHealthEventAppliedLabels` node annotation so later events use the same conflict policy. The label is removed after every health event tracked in `quarantineHealthEvent` has recovered. Manual uncordon, manual untaint, and stale-state cleanup remove the tracking annotation but preserve the label itself, mirroring the existing applied-taint behavior. In dry-run mode, the intended label is recorded in annotations for observability, but Kubernetes Node labels are not added, overwritten, or removed.
 
 ### Example Rule Sets
 

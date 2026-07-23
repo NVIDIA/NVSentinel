@@ -1816,7 +1816,7 @@ config: |
               {
                 "$in": [
                   "this.healthevent.errorcode.0",
-                  ["netdev_watchdog", "port_module_high_temp", "pci_power_insufficient", "module_unplugged"]
+                  ["netdev_watchdog", "port_module_high_temp", "pci_power_insufficient", "module_unplugged", "mlx5_tx_timeout_detected", "mlx5_rx_timeout_detected"]
                 ]
               }
             ]

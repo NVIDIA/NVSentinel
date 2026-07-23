@@ -75,12 +75,14 @@ type MonitorState struct {
 	// clobbering each other.
 	//
 	// Unlike port/device state, the latch survives boot-ID and scope
-	// resets: an entry means a card FATAL is outstanding downstream
-	// (e.g., holding a quarantine), which stays true across reboots and
-	// discovery-scope changes. Only the matching card-healthy recovery
-	// (positive evidence: card present, group decisive, at/above mode)
-	// removes an entry — otherwise the downstream card entity could
-	// never clear.
+	// resets at Load: an entry means a card FATAL is outstanding
+	// downstream (e.g., holding a quarantine). Within a boot, only the
+	// matching card-healthy recovery (positive evidence: card present,
+	// group decisive, at/above mode) removes an entry. On a baseline run
+	// (first poll after a reboot or scope change) the check-scoped clear
+	// voids every downstream condition and the latches are dropped with
+	// it — still-anomalous cards immediately re-latch with fresh
+	// entities.
 	AnomalousCards map[string]AnomalousCardFlag `json:"anomalous_cards,omitempty"`
 
 	// DisappearedDevices is the device-disappearance latch. It survives
@@ -88,6 +90,12 @@ type MonitorState struct {
 	// represents a device-level FATAL still outstanding downstream. A
 	// healthy port observed after re-enumeration removes the matching entry.
 	DisappearedDevices map[string]DisappearedDeviceFlag `json:"disappeared_devices,omitempty"`
+
+	// DisappearedPorts is the port-disappearance latch: ports that
+	// vanished from a still-present device and have a port-scoped FATAL
+	// outstanding downstream. A healthy observation of the port after it
+	// reappears removes the entry. Keys are "<link_layer>/<device>_<port>".
+	DisappearedPorts map[string]DisappearedPortFlag `json:"disappeared_ports,omitempty"`
 
 	// DeviceMissCounts debounces confirmed enumeration misses. Unlike an
 	// outstanding disappearance FATAL, a partial miss is operational polling
@@ -100,6 +108,16 @@ type MonitorState struct {
 	// keep distinct entries even when they share a state file.
 	CounterSnapshots map[string]CounterSnapshot   `json:"counter_snapshots,omitempty"`
 	BreachFlags      map[string]CounterBreachFlag `json:"breach_flags,omitempty"`
+
+	// PendingBaselines records, per check name, that a baseline
+	// reconciliation (check-scoped clear + replay) is owed but has not
+	// run yet — the first polls after a reboot can be deferred or
+	// partial while devices are unreadable, and the monitor may commit
+	// partial-window state (which persists the NEW boot ID) before the
+	// clear ever fires. Without this flag a pod restart inside that
+	// window would compare equal boot IDs and silently drop the owed
+	// clear, orphaning the previous boot's conditions downstream.
+	PendingBaselines map[string]bool `json:"pending_baselines,omitempty"`
 }
 
 // PortStateSnapshot captures the last-known state of a port. LinkLayer
@@ -127,6 +145,25 @@ type AnomalousCardFlag struct {
 type DisappearedDeviceFlag struct {
 	Device    string `json:"device,omitempty"`
 	LinkLayer string `json:"link_layer,omitempty"`
+
+	// ObservedThisBoot marks a latch created by the current boot's own
+	// monitoring, as opposed to one carried over from a previous boot.
+	// Baseline reconciliation re-asserts this-boot latches after the
+	// check-scoped clear (their evidence is current) and drops
+	// previous-boot ones with it. Load zeroes the marker when the boot
+	// ID changes so provenance survives pod restarts but never a reboot.
+	ObservedThisBoot bool `json:"observed_this_boot,omitempty"`
+}
+
+// DisappearedPortFlag marks a port-level disappearance FATAL (port gone
+// from a still-present device) that needs a healthy observation of the
+// reappeared port to clear it. ObservedThisBoot has the same semantics
+// as on DisappearedDeviceFlag.
+type DisappearedPortFlag struct {
+	Device           string `json:"device,omitempty"`
+	Port             int    `json:"port,omitempty"`
+	LinkLayer        string `json:"link_layer,omitempty"`
+	ObservedThisBoot bool   `json:"observed_this_boot,omitempty"`
 }
 
 // DeviceMissCount stores consecutive complete-enumeration polls in which a
@@ -150,12 +187,19 @@ type CounterSnapshot struct {
 // state. Breach is latching: once set, it stays set until the counter
 // is reset (admin clear) or the host reboots. The CheckName and IsFatal
 // fields preserve the original event's identity so the recovery event
-// clears the same condition on the platform.
+// clears the same condition on the platform. Device and Port capture
+// the original event's entities so baseline reconciliation can
+// re-assert the breach even when the key is not readable on the
+// reconciliation poll (absent device, missing counter file, vanished
+// netdev) — including interface-level "net:*" keys whose entities are
+// not reconstructible from the key alone.
 type CounterBreachFlag struct {
 	Breached  bool      `json:"breached"`
 	CheckName string    `json:"check_name,omitempty"`
 	IsFatal   bool      `json:"is_fatal,omitempty"`
 	Since     time.Time `json:"since,omitempty"`
+	Device    string    `json:"device,omitempty"`
+	Port      string    `json:"port,omitempty"`
 }
 
 // Manager coordinates reads and writes to the shared state file. A
@@ -282,17 +326,20 @@ func (m *Manager) Load() error {
 			"current_boot_id", currentBootID,
 		)
 
-		// Card-anomaly and device-disappearance latches survive reboots:
-		// they track FATALs outstanding downstream (e.g., a quarantine
-		// annotation), which a reboot does not clear. If the hardware comes
-		// back healthy, the seeded latch emits the matching recovery. All
-		// observational state resets as usual.
+		// Card-anomaly and device/port-disappearance latches survive the
+		// reboot load: they track FATALs outstanding downstream (e.g., a
+		// quarantine annotation), which a reboot does not clear. The first
+		// baseline poll emits the check-scoped clear that voids those
+		// conditions and consumes the latches. Their this-boot provenance
+		// markers are zeroed — whatever they observed belongs to the
+		// previous boot now. All observational state resets as usual.
 		m.state = MonitorState{
 			Version:            SchemaVersion,
 			BootID:             currentBootID,
 			Scope:              m.scope,
 			AnomalousCards:     loaded.AnomalousCards,
-			DisappearedDevices: loaded.DisappearedDevices,
+			DisappearedDevices: stripDeviceBootMarkers(loaded.DisappearedDevices),
+			DisappearedPorts:   stripPortBootMarkers(loaded.DisappearedPorts),
 		}
 		m.loaded = true
 		m.bootIDChanged = true
@@ -325,15 +372,19 @@ func (m *Manager) Load() error {
 		// a scope change (e.g., enabling the inclusion override, whose
 		// mode skips the card lifecycle entirely) must not orphan a card
 		// FATAL that is still holding a quarantine downstream. The
-		// disappearance latch is preserved for the same reason.
+		// disappearance latch is preserved for the same reason, and a
+		// pending baseline reconciliation owed from a reboot must not be
+		// forgotten because the operator changed the scope meanwhile.
 		m.state = MonitorState{
 			Version:            SchemaVersion,
 			BootID:             currentBootID,
 			Scope:              m.scope,
 			AnomalousCards:     loaded.AnomalousCards,
 			DisappearedDevices: loaded.DisappearedDevices,
+			DisappearedPorts:   loaded.DisappearedPorts,
 			CounterSnapshots:   loaded.CounterSnapshots,
 			BreachFlags:        loaded.BreachFlags,
+			PendingBaselines:   loaded.PendingBaselines,
 		}
 		m.loaded = true
 		m.bootIDChanged = false
@@ -617,6 +668,95 @@ func (m *Manager) UpdateDisappearedDevices(
 	return changed
 }
 
+// stripDeviceBootMarkers zeroes the this-boot provenance marker on
+// device-disappearance latches carried across a boot-ID change.
+func stripDeviceBootMarkers(flags map[string]DisappearedDeviceFlag) map[string]DisappearedDeviceFlag {
+	out := make(map[string]DisappearedDeviceFlag, len(flags))
+
+	for k, v := range flags {
+		v.ObservedThisBoot = false
+		out[k] = v
+	}
+
+	return out
+}
+
+// stripPortBootMarkers is stripDeviceBootMarkers for port latches.
+func stripPortBootMarkers(flags map[string]DisappearedPortFlag) map[string]DisappearedPortFlag {
+	out := make(map[string]DisappearedPortFlag, len(flags))
+
+	for k, v := range flags {
+		v.ObservedThisBoot = false
+		out[k] = v
+	}
+
+	return out
+}
+
+// disappearedPortKey builds the persisted key for a port latch. The
+// device_port portion matches the state checks' port key convention.
+func disappearedPortKey(linkLayer, device string, port int) string {
+	return fmt.Sprintf("%s/%s_%d", linkLayer, device, port)
+}
+
+// DisappearedPortsFor returns outstanding port-disappearance latches for
+// the requested link layer(s), keyed by "<device>_<port>".
+func (m *Manager) DisappearedPortsFor(layers ...string) map[string]DisappearedPortFlag {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	out := make(map[string]DisappearedPortFlag, len(m.state.DisappearedPorts))
+
+	for _, v := range m.state.DisappearedPorts {
+		if matchesLayer(v.LinkLayer, layers) {
+			out[fmt.Sprintf("%s_%d", v.Device, v.Port)] = v
+		}
+	}
+
+	return out
+}
+
+// UpdateDisappearedPorts replaces the caller's link-layer slice of the
+// persisted port-disappearance latch while preserving sibling-check
+// entries. The input map is keyed by "<device>_<port>".
+func (m *Manager) UpdateDisappearedPorts(
+	ports map[string]DisappearedPortFlag,
+	layers ...string,
+) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.state.DisappearedPorts == nil {
+		m.state.DisappearedPorts = make(map[string]DisappearedPortFlag, len(ports))
+	}
+
+	changed := false
+
+	incoming := make(map[string]DisappearedPortFlag, len(ports))
+	for _, v := range ports {
+		incoming[disappearedPortKey(v.LinkLayer, v.Device, v.Port)] = v
+	}
+
+	for k, v := range m.state.DisappearedPorts {
+		if matchesLayer(v.LinkLayer, layers) {
+			if _, keep := incoming[k]; !keep {
+				delete(m.state.DisappearedPorts, k)
+
+				changed = true
+			}
+		}
+	}
+
+	for k, v := range incoming {
+		if old, exists := m.state.DisappearedPorts[k]; !exists || old != v {
+			m.state.DisappearedPorts[k] = v
+			changed = true
+		}
+	}
+
+	return changed
+}
+
 // DeviceMissCountsFor returns consecutive enumeration-miss counts for the
 // requested link layer(s), keyed by device name.
 func (m *Manager) DeviceMissCountsFor(layers ...string) map[string]int {
@@ -666,6 +806,39 @@ func (m *Manager) UpdateDeviceMissCounts(counts map[string]int, linkLayer string
 	}
 
 	return changed
+}
+
+// PendingBaseline reports whether the named check still owes a baseline
+// reconciliation (check-scoped clear + replay). Checks consult this at
+// construction so a pod restart inside a deferred/partial baseline
+// window cannot lose the owed clear.
+func (m *Manager) PendingBaseline(check string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.state.PendingBaselines[check]
+}
+
+// SetPendingBaseline records that the named check owes a baseline
+// reconciliation. Persisted on the next Save.
+func (m *Manager) SetPendingBaseline(check string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.state.PendingBaselines == nil {
+		m.state.PendingBaselines = make(map[string]bool)
+	}
+
+	m.state.PendingBaselines[check] = true
+}
+
+// ClearPendingBaseline records that the named check completed its
+// baseline reconciliation. Persisted on the next Save.
+func (m *Manager) ClearPendingBaseline(check string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	delete(m.state.PendingBaselines, check)
 }
 
 // CounterSnapshots returns a copy of the persisted counter snapshots.

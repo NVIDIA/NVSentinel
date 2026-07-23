@@ -42,13 +42,17 @@ type AssociationSpec struct {
 }
 
 type HealthEventSpec struct {
-	ComponentClass      string                  `toml:"componentClass"`
-	IsFatal             bool                    `toml:"isFatal"`
-	Message             string                  `toml:"message"`
-	RecommendedAction   string                  `toml:"recommendedAction"`
-	ErrorCode           []string                `toml:"errorCode"`
-	QuarantineOverrides *BehaviourOverridesSpec `toml:"quarantineOverrides,omitempty"`
-	DrainOverrides      *BehaviourOverridesSpec `toml:"drainOverrides,omitempty"`
+	ComponentClass    string `toml:"componentClass"`
+	IsFatal           bool   `toml:"isFatal"`
+	Message           string `toml:"message"`
+	RecommendedAction string `toml:"recommendedAction"`
+	// CustomRecommendedAction is required when RecommendedAction is "CUSTOM" (ADR-036).
+	// It identifies the action key in fault-remediation's remediationActions config,
+	// which determines which CR is created (e.g. an ExternalRemediationRequest).
+	CustomRecommendedAction string                  `toml:"customRecommendedAction,omitempty"`
+	ErrorCode               []string                `toml:"errorCode"`
+	QuarantineOverrides     *BehaviourOverridesSpec `toml:"quarantineOverrides,omitempty"`
+	DrainOverrides          *BehaviourOverridesSpec `toml:"drainOverrides,omitempty"`
 	// override the processing strategy for the policy
 	ProcessingStrategy string `toml:"processingStrategy"`
 }

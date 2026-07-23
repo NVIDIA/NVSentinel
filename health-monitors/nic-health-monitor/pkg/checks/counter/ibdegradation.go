@@ -23,6 +23,7 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/discovery"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/statefile"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/sysfs"
+	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/topology"
 )
 
 // InfiniBandDegradationCheck monitors InfiniBand counter thresholds for
@@ -30,42 +31,62 @@ import (
 // Evaluator but shares the persistent state file with all sibling
 // checks (state and degradation, IB and Ethernet).
 type InfiniBandDegradationCheck struct {
-	nodeName  string
-	reader    sysfs.Reader
-	cfg       *config.Config
-	state     *statefile.Manager
-	evaluator *Evaluator
-	pending   *Evaluator
+	nodeName           string
+	reader             sysfs.Reader
+	cfg                *config.Config
+	classifier         *topology.Classifier
+	processingStrategy pb.ProcessingStrategy
+	state              *statefile.Manager
+	evaluator          *Evaluator
+	pending            *Evaluator
 
 	// saveFailed records that the last state-file Save failed, so the
 	// next commit retries even when nothing changed.
 	saveFailed bool
+
+	// firstPollDeferrals counts consecutive polls deferred because the
+	// first enumeration included unreadable devices. Poll bookkeeping,
+	// deliberately outside the transactional commit (like saveFailed).
+	firstPollDeferrals int
 }
 
 var _ checks.TransactionalCheck = (*InfiniBandDegradationCheck)(nil)
 
 // NewInfiniBandDegradationCheck creates a new InfiniBandDegradationCheck.
 // bootIDChanged is forwarded to the Evaluator so the first poll after a
-// host reboot emits healthy baselines.
+// host reboot emits the check-scoped clear plus healthy baselines. The
+// classifier scopes the check to the same devices the state checks
+// monitor (management NICs excluded).
 func NewInfiniBandDegradationCheck(
 	nodeName string,
 	reader sysfs.Reader,
 	cfg *config.Config,
+	classifier *topology.Classifier,
 	processingStrategy pb.ProcessingStrategy,
 	state *statefile.Manager,
 	bootIDChanged bool,
 ) *InfiniBandDegradationCheck {
+	// A baseline owed by a previous pod (deferred/partial window, then
+	// restart) is picked up from the persisted flag; a fresh trigger is
+	// registered so it survives partial-window commits.
+	pendingBaseline := bootIDChanged || state.PendingBaseline(checks.InfiniBandDegradationCheckName)
+	if pendingBaseline {
+		state.SetPendingBaseline(checks.InfiniBandDegradationCheckName)
+	}
+
 	evaluator := NewEvaluator(
 		nodeName, reader, processingStrategy,
-		state.CounterSnapshots(), state.BreachFlags(), bootIDChanged,
+		state.CounterSnapshots(), state.BreachFlags(), pendingBaseline,
 	)
 
 	return &InfiniBandDegradationCheck{
-		nodeName:  nodeName,
-		reader:    reader,
-		cfg:       cfg,
-		state:     state,
-		evaluator: evaluator,
+		nodeName:           nodeName,
+		reader:             reader,
+		cfg:                cfg,
+		classifier:         classifier,
+		processingStrategy: processingStrategy,
+		state:              state,
+		evaluator:          evaluator,
 	}
 }
 
@@ -94,7 +115,7 @@ func (c *InfiniBandDegradationCheck) Run() ([]*pb.HealthEvent, error) {
 func (c *InfiniBandDegradationCheck) Prepare() ([]*pb.HealthEvent, error) {
 	c.Discard()
 
-	candidate, events, err := prepareCounterPoll(c.reader, c.cfg, c.evaluator, c.evaluateDevices)
+	candidate, events, err := prepareCounterPoll(c.pollDeps(), c.evaluator, &c.firstPollDeferrals, c.evaluateDevices)
 	if err != nil {
 		return nil, err
 	}
@@ -108,9 +129,22 @@ func (c *InfiniBandDegradationCheck) Prepare() ([]*pb.HealthEvent, error) {
 	return events, nil
 }
 
+// pollDeps assembles the per-check wiring the shared counter poll needs.
+func (c *InfiniBandDegradationCheck) pollDeps() counterPollDeps {
+	return counterPollDeps{
+		reader:             c.reader,
+		cfg:                c.cfg,
+		classifier:         c.classifier,
+		nodeName:           c.nodeName,
+		checkName:          c.Name(),
+		processingStrategy: c.processingStrategy,
+	}
+}
+
 // evaluateDevices runs the enabled IB-tree counters for every InfiniBand
-// port on supported (or explicitly pinned) devices against the candidate
-// evaluator.
+// port on eligible (or explicitly pinned) devices against the candidate
+// evaluator. Eligibility matches the state checks exactly — see
+// checks.EligibleDevice.
 func (c *InfiniBandDegradationCheck) evaluateDevices(
 	candidate *Evaluator, devices []discovery.IBDevice,
 ) []*pb.HealthEvent {
@@ -119,7 +153,7 @@ func (c *InfiniBandDegradationCheck) evaluateDevices(
 	for i := range devices {
 		dev := &devices[i]
 
-		if !dev.IncludedByOverride && !discovery.IsSupportedVendor(dev) {
+		if !checks.EligibleDevice(dev, c.classifier) {
 			continue
 		}
 
@@ -143,6 +177,12 @@ func (c *InfiniBandDegradationCheck) evaluateDevices(
 func (c *InfiniBandDegradationCheck) Commit() {
 	if c.pending == nil {
 		return
+	}
+
+	// The prepared poll ran the baseline reconciliation when it consumed
+	// the pending flag the committed evaluator still carries.
+	if c.evaluator.BootBaselinePending() && !c.pending.BootBaselinePending() {
+		c.state.ClearPendingBaseline(checks.InfiniBandDegradationCheckName)
 	}
 
 	c.evaluator = c.pending

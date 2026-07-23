@@ -68,7 +68,7 @@ circuitBreaker:
   duration: "5m"
 
 # Rule sets for node quarantine actions
-# Each ruleset defines conditions (match) and actions (taint, cordon) to apply when conditions are met
+# Each ruleset defines conditions (match) and actions (taint, label, cordon) to apply when conditions are met
 # Rules are evaluated using CEL (Common Expression Language) expressions
 # Multiple rulesets can be defined and are evaluated in order
 ruleSets:
@@ -112,6 +112,12 @@ ruleSets:
     #   # PreferNoSchedule: Soft version of NoSchedule (scheduler tries to avoid)
     #   # NoExecute: Existing pods without toleration are evicted
     #   effect: "NoSchedule"
+    # Optional: Label configuration for this ruleset
+    # Labels are applied for the lifetime of the quarantine session and removed
+    # only after all tracked health events on the node recover.
+    # label:
+    #   key: "nvidia.com/gpu-fault"
+    #   value: "active"
 
   - enabled: true
     version: "1"

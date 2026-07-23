@@ -212,9 +212,10 @@ func dialPlatformConnector(ctx context.Context, socket string) (*grpc.ClientConn
 // GPU runs in the guest VM and XIDs surface via containerd rather than as host
 // kernel entries.
 var kernelOriginChecks = map[string]bool{
-	fd.XIDErrorCheck:     true,
-	fd.SXIDErrorCheck:    true,
-	fd.GPUFallenOffCheck: true,
+	fd.XIDErrorCheck:       true,
+	fd.SXIDErrorCheck:      true,
+	fd.GPUFallenOffCheck:   true,
+	fd.NICDriverErrorCheck: true,
 }
 
 func buildChecksFromFlag() ([]fd.CheckDefinition, error) {

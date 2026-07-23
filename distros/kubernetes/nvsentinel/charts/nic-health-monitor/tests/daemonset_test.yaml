@@ -1,0 +1,106 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: daemonset
+templates:
+  - templates/daemonset.yaml
+tests:
+  - it: must not add any Linux capability to the monitor (SYS_ADMIN regression guard)
+    set:
+      global.metricsPort: 2112
+      global.initContainerImage.repository: docker.io/bitnamilegacy/os-shell
+      global.initContainerImage.tag: "12-debian-12-r30"
+      global.initContainerImage.pullPolicy: IfNotPresent
+    asserts:
+      - isKind:
+          of: DaemonSet
+      - notExists:
+          path: spec.template.spec.containers[0].securityContext.capabilities.add
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.capabilities.drop
+          value: ["ALL"]
+
+  - it: must run the monitor as non-root
+    set:
+      global.metricsPort: 2112
+      global.initContainerImage.repository: docker.io/bitnamilegacy/os-shell
+      global.initContainerImage.tag: "12-debian-12-r30"
+      global.initContainerImage.pullPolicy: IfNotPresent
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsUser
+          value: 65532
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsGroup
+          value: 65532
+
+  - it: must limit the state-permissions init container to CHOWN
+    set:
+      global.metricsPort: 2112
+      global.initContainerImage.repository: docker.io/bitnamilegacy/os-shell
+      global.initContainerImage.tag: "12-debian-12-r30"
+      global.initContainerImage.pullPolicy: IfNotPresent
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: fix-state-permissions
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.capabilities.drop
+          value: ["ALL"]
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.capabilities.add
+          value: ["CHOWN"]
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.allowPrivilegeEscalation
+          value: false
+
+  - it: must keep the hardened security context
+    set:
+      global.metricsPort: 2112
+      global.initContainerImage.repository: docker.io/bitnamilegacy/os-shell
+      global.initContainerImage.tag: "12-debian-12-r30"
+      global.initContainerImage.pullPolicy: IfNotPresent
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.seccompProfile.type
+          value: RuntimeDefault
+
+  - it: must mount host sysfs and procfs read-only
+    set:
+      global.metricsPort: 2112
+      global.initContainerImage.repository: docker.io/bitnamilegacy/os-shell
+      global.initContainerImage.tag: "12-debian-12-r30"
+      global.initContainerImage.pullPolicy: IfNotPresent
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: sys-vol
+            mountPath: /nvsentinel/sys
+            readOnly: true
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: proc-vol
+            mountPath: /nvsentinel/proc
+            readOnly: true

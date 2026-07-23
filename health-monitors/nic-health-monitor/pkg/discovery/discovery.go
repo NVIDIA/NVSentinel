@@ -180,9 +180,18 @@ func discoverCandidate(
 
 // discoverDevice gathers identity and port data for a single IB device.
 func discoverDevice(reader sysfs.Reader, devName string) (*IBDevice, error) {
+	vendor, err := detectVendor(reader, devName)
+	if err != nil {
+		// An unreadable vendor file must not silently demote the device
+		// to "unsupported vendor" (which would drop it from monitoring
+		// with no disappearance handling); treat the device as an
+		// uncertain observation instead.
+		return nil, fmt.Errorf("device %s: %w", devName, err)
+	}
+
 	dev := &IBDevice{
 		Name:   devName,
-		Vendor: detectVendor(reader, devName),
+		Vendor: vendor,
 		IsVF:   reader.IsVirtualFunction(devName),
 	}
 
@@ -209,48 +218,70 @@ func discoverDevice(reader sysfs.Reader, devName string) (*IBDevice, error) {
 			continue
 		}
 
-		port := readPort(reader, devName, portNum)
+		port, err := readPort(reader, devName, portNum)
+		if err != nil {
+			// A port whose critical attributes cannot be read makes the
+			// whole device an uncertain observation. Reporting it as
+			// parsed would turn the read failure into fabricated health
+			// data: an empty state reads as an unhealthy transition, and
+			// an empty link_layer silently drops the port from its
+			// check's layer — which can fire an undebounced false
+			// port-disappearance FATAL. Unreadable devices instead flow
+			// into the callers' hold-last-known-state machinery.
+			return nil, fmt.Errorf("device %s: %w", devName, err)
+		}
+
 		dev.Ports = append(dev.Ports, port)
 	}
 
 	return dev, nil
 }
 
-// readPort reads the per-port state, phys_state, and link_layer. Missing
-// attributes produce empty strings; the caller decides how to interpret
-// them.
-func readPort(reader sysfs.Reader, device string, port int) IBPort {
+// readPort reads the per-port state, phys_state, and link_layer. A read
+// error on any of these critical attributes fails the port: "" must
+// never double as both "unreadable" and "observed value".
+func readPort(reader sysfs.Reader, device string, port int) (IBPort, error) {
 	p := IBPort{Device: device, Port: port}
 
-	if s, err := reader.ReadIBPortState(device, port); err == nil {
-		p.State = sysfs.ParsePortState(s)
+	s, err := reader.ReadIBPortState(device, port)
+	if err != nil {
+		return p, fmt.Errorf("read port %d state: %w", port, err)
 	}
 
-	if s, err := reader.ReadIBPortPhysState(device, port); err == nil {
-		p.PhysicalState = sysfs.ParsePortState(s)
+	p.State = sysfs.ParsePortState(s)
+
+	s, err = reader.ReadIBPortPhysState(device, port)
+	if err != nil {
+		return p, fmt.Errorf("read port %d phys_state: %w", port, err)
 	}
 
-	if s, err := reader.ReadIBPortLinkLayer(device, port); err == nil {
-		p.LinkLayer = strings.TrimSpace(s)
+	p.PhysicalState = sysfs.ParsePortState(s)
+
+	s, err = reader.ReadIBPortLinkLayer(device, port)
+	if err != nil {
+		return p, fmt.Errorf("read port %d link_layer: %w", port, err)
 	}
 
-	return p
+	p.LinkLayer = strings.TrimSpace(s)
+
+	return p, nil
 }
 
 // detectVendor classifies the IB device's PCI vendor ID. We match only
-// Mellanox (0x15b3) today; everything else is reported as Unknown so the
-// caller can skip it.
-func detectVendor(reader sysfs.Reader, device string) Vendor {
+// Mellanox (0x15b3) today; everything else is reported as Unknown so
+// the caller can skip it. A read error is returned as an error — it is
+// an observation failure, not evidence of an unsupported vendor.
+func detectVendor(reader sysfs.Reader, device string) (Vendor, error) {
 	vendorID, err := reader.ReadIBDeviceField(device, "device/vendor")
 	if err != nil {
-		return VendorUnknown
+		return VendorUnknown, fmt.Errorf("read vendor: %w", err)
 	}
 
 	if strings.TrimSpace(vendorID) == mellanoxPCIVendorID {
-		return VendorMellanox
+		return VendorMellanox, nil
 	}
 
-	return VendorUnknown
+	return VendorUnknown, nil
 }
 
 // firstNetDevForIBDevice returns the first entry in

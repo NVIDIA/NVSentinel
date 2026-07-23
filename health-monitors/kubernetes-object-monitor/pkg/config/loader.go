@@ -17,6 +17,7 @@ import (
 	"fmt"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 func Load(path string) (*Config, error) {
@@ -77,6 +78,12 @@ func validatePolicy(policy Policy) error {
 
 	if policy.HealthEvent.Message == "" {
 		return fmt.Errorf("policy %q: healthEvent.message is required", policy.Name)
+	}
+
+	isCustom := policy.HealthEvent.RecommendedAction == pb.RecommendedAction_CUSTOM.String()
+	if isCustom && policy.HealthEvent.CustomRecommendedAction == "" {
+		return fmt.Errorf("policy %q: healthEvent.customRecommendedAction is required when recommendedAction is CUSTOM",
+			policy.Name)
 	}
 
 	if err := validateBehaviourOverrides(policy.Name, "quarantineOverrides",

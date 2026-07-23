@@ -375,3 +375,44 @@ func newManagerForExisting(t *testing.T, statePath, bootID string) (*Manager, st
 
 	return NewManagerWithPaths(statePath, bootIDPath), statePath, bootIDPath
 }
+
+func TestPendingBaselines_PersistAcrossReloadAndScopeChange(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	bootIDPath := filepath.Join(dir, "boot_id")
+	require.NoError(t, os.WriteFile(bootIDPath, []byte("boot-1\n"), 0o644))
+
+	mgr := NewManagerWithPaths(statePath, bootIDPath)
+	mgr.SetScope("incl=;excl=")
+	require.NoError(t, mgr.Load())
+
+	assert.False(t, mgr.PendingBaseline("InfiniBandStateCheck"))
+
+	mgr.SetPendingBaseline("InfiniBandStateCheck")
+	require.NoError(t, mgr.Save())
+
+	// Same boot, same scope: the owed baseline survives a pod restart.
+	mgr2 := NewManagerWithPaths(statePath, bootIDPath)
+	mgr2.SetScope("incl=;excl=")
+	require.NoError(t, mgr2.Load())
+	assert.True(t, mgr2.PendingBaseline("InfiniBandStateCheck"),
+		"pending baseline must survive a same-boot reload")
+
+	// Same boot, different scope: a pending boot reconciliation must not
+	// be forgotten because the operator changed the discovery scope.
+	mgr3 := NewManagerWithPaths(statePath, bootIDPath)
+	mgr3.SetScope("incl=^mlx5_1$;excl=")
+	require.NoError(t, mgr3.Load())
+	require.True(t, mgr3.ScopeChanged())
+	assert.True(t, mgr3.PendingBaseline("InfiniBandStateCheck"),
+		"pending baseline must survive a scope change")
+
+	mgr3.ClearPendingBaseline("InfiniBandStateCheck")
+	require.NoError(t, mgr3.Save())
+
+	mgr4 := NewManagerWithPaths(statePath, bootIDPath)
+	mgr4.SetScope("incl=^mlx5_1$;excl=")
+	require.NoError(t, mgr4.Load())
+	assert.False(t, mgr4.PendingBaseline("InfiniBandStateCheck"),
+		"a cleared flag must stay cleared after reload")
+}
