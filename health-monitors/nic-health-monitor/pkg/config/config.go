@@ -142,12 +142,17 @@ var counterDefinitions = map[string]counterDefinition{
 		description: "Victim flow oscillation",
 	},
 
-	// /sys/class/net/<iface>/statistics/
+	// /sys/class/net/<iface>/ (netdev-root attribute — carrier_changes
+	// lives beside operstate, NOT under statistics/; the old
+	// "statistics/carrier_changes" path never existed on any kernel, so
+	// this counter silently never worked before the netdev/ path class).
 	"carrier_changes": {
-		path:        "statistics/carrier_changes",
+		path:        "netdev/carrier_changes",
 		isFatal:     false,
 		description: "Link instability - carrier state changes",
 	},
+
+	// /sys/class/net/<iface>/statistics/
 	"rx_crc_errors": {
 		path:        "statistics/rx_crc_errors",
 		isFatal:     false,

@@ -84,6 +84,14 @@ func NewInfiniBandStateCheck(
 	stateManager *statefile.Manager,
 	bootIDChanged bool,
 ) *InfiniBandStateCheck {
+	// A baseline owed by a previous pod (deferred/partial window, then
+	// restart) is picked up from the persisted flag; a fresh trigger is
+	// registered so it survives partial-window commits.
+	pendingBaseline := bootIDChanged || stateManager.PendingBaseline(checks.InfiniBandStateCheckName)
+	if pendingBaseline {
+		stateManager.SetPendingBaseline(checks.InfiniBandStateCheckName)
+	}
+
 	c := &InfiniBandStateCheck{}
 	c.baseStateCheck = baseStateCheck{
 		nodeName:             nodeName,
@@ -92,7 +100,7 @@ func NewInfiniBandStateCheck(
 		processingStrategy:   processingStrategy,
 		classifier:           classifier,
 		state:                stateManager,
-		emitHealthyBaselines: bootIDChanged,
+		emitHealthyBaselines: pendingBaseline,
 		strategy:             c,
 	}
 
@@ -179,23 +187,32 @@ func (c *InfiniBandStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 	metrics.DevicesDiscovered.WithLabelValues(c.nodeName, c.Name()).Set(float64(len(result.Devices)))
 
 	firstPoll := c.previousDevices == nil
-	if firstPoll && len(result.UnreadableDevices) > 0 {
-		// Peer homogeneity and first-seen severity gating both require a full
-		// initial device set. Defer the entire baseline rather than committing
-		// a partial first poll.
+	if firstPoll && len(result.UnreadableDevices) > 0 &&
+		c.deferFirstPoll(len(result.UnreadableDevices)) {
+		// Peer homogeneity and first-seen severity gating both prefer a
+		// full initial device set, so the first poll is deferred — but
+		// only up to the bounded limit (see deferFirstPoll).
 		return nil, nil
 	}
 
-	baselineRun := firstPoll && c.emitHealthyBaselines
+	// The baseline reconciliation (check-scoped clear + replay) waits
+	// for the first COMPLETE enumeration: running it while a device is
+	// unreadable would wipe that device's previous-boot conditions with
+	// nothing able to re-assert them (homogeneity is suppressed while
+	// discovery is uncertain). Until then the check monitors whatever is
+	// readable and the baseline stays owed.
+	baselineRun := c.emitHealthyBaselines && len(result.UnreadableDevices) == 0
 	st := newIBPollState()
 	st.skippedVFs = result.SkippedVFs
 	st.discoveryUncertain = len(result.UnreadableDevices) > 0
 
 	committedAnomalous := c.anomalousLatch
 	committedDisappeared := c.disappearedLatch
+	committedPortLatch := c.disappearedPortLatch
 	committedMisses := c.deviceMissCounts
 	c.anomalousLatch = maps.Clone(committedAnomalous)
 	c.disappearedLatch = maps.Clone(committedDisappeared)
+	c.disappearedPortLatch = maps.Clone(committedPortLatch)
 	c.deviceMissCounts = maps.Clone(committedMisses)
 
 	c.collectDevicesAndPorts(result.Devices, st)
@@ -207,16 +224,19 @@ func (c *InfiniBandStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 	c.logDiscoverySummaryIfChanged(st)
 
 	c.pending = &statePollCommit{
-		devices:          st.currentDevices,
-		ports:            st.currentPorts,
-		anomalousLatch:   c.anomalousLatch,
-		disappearedLatch: c.disappearedLatch,
-		deviceMissCounts: c.deviceMissCounts,
-		linkLayer:        ibLinkLayer,
+		devices:              st.currentDevices,
+		ports:                st.currentPorts,
+		anomalousLatch:       c.anomalousLatch,
+		disappearedLatch:     c.disappearedLatch,
+		disappearedPortLatch: c.disappearedPortLatch,
+		deviceMissCounts:     c.deviceMissCounts,
+		linkLayer:            ibLinkLayer,
+		baselineRan:          baselineRun,
 	}
 
 	c.anomalousLatch = committedAnomalous
 	c.disappearedLatch = committedDisappeared
+	c.disappearedPortLatch = committedPortLatch
 	c.deviceMissCounts = committedMisses
 
 	return events, nil
@@ -234,8 +254,14 @@ func (c *InfiniBandStateCheck) Commit() {
 	c.previousPorts = pending.ports
 	c.anomalousLatch = pending.anomalousLatch
 	c.disappearedLatch = pending.disappearedLatch
+	c.disappearedPortLatch = pending.disappearedPortLatch
 	c.deviceMissCounts = pending.deviceMissCounts
-	c.emitHealthyBaselines = false
+
+	if pending.baselineRan {
+		c.emitHealthyBaselines = false
+		c.state.ClearPendingBaseline(checks.InfiniBandStateCheckName)
+	}
+
 	c.persistState(pending.linkLayer, pending.devices, pending.ports)
 }
 
@@ -355,12 +381,15 @@ func (c *InfiniBandStateCheck) portTransitionEvents(
 		current := st.currentPorts[key]
 		card := st.portCard[key]
 
+		// The baseline poll re-runs first-poll semantics (see
+		// evaluatePortTransition), so its unhealthy re-assertions go
+		// through the same peer-evidence gate.
 		if !st.portOverride[key] &&
-			c.shouldSuppressFirstPollWithoutPeerEvidence(firstPoll, current, port, card, anomalousCards) {
+			c.shouldSuppressFirstPollWithoutPeerEvidence(firstPoll || baselineRun, current, port, card, anomalousCards) {
 			continue
 		}
 
-		evt := c.evaluatePortTransition(current, prev, hasPrev, baselineRun)
+		evt := c.evaluatePortTransition(key, current, prev, hasPrev, baselineRun)
 		if evt == nil {
 			continue
 		}
@@ -443,11 +472,35 @@ func (c *InfiniBandStateCheck) logDiscoverySummaryIfChanged(st *ibPollState) {
 // "emit nothing" to "emit a healthy baseline event" so the platform can
 // clear stale FATAL conditions from the previous boot.
 func (c *InfiniBandStateCheck) evaluatePortTransition(
+	key string,
 	current, prev portSnapshot,
 	hasPrev, baselineRun bool,
 ) *pb.HealthEvent {
 	isHealthy := portIsHealthy(current)
-	disappearanceRecovery := isHealthy && c.consumeDisappearanceRecovery(current.Device)
+
+	var disappearanceRecovery bool
+
+	if isHealthy {
+		// Consume both latch levels independently: a device latch and a
+		// port latch can coexist for the same port.
+		deviceRecovery := c.consumeDisappearanceRecovery(current.Device)
+		portRecovery := c.consumePortDisappearanceRecovery(key)
+		disappearanceRecovery = deviceRecovery || portRecovery
+	}
+
+	if baselineRun {
+		// The baseline poll is the authoritative first observation of
+		// this boot: the check-scoped clear just wiped every prior
+		// condition, so steady states must re-assert themselves rather
+		// than rely on transition edges. Healthy ports emit their
+		// baseline; unhealthy ports were already passed through the
+		// first-poll peer-evidence gate by the caller.
+		if isHealthy {
+			return c.healthyBaselineEvent(current)
+		}
+
+		return c.unhealthyPortEvent(current)
+	}
 
 	if !hasPrev {
 		return c.firstSeenPortEvent(current, isHealthy, baselineRun, disappearanceRecovery)

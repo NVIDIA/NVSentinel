@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -580,4 +581,60 @@ func TestClassify_NoProcRouteDisablesExclusion(t *testing.T) {
 
 	assert.Empty(t, c.defaultRouteDevice)
 	assert.Equal(t, RoleStorage, c.RoleOf("mlx5_0"))
+}
+
+func TestClassifier_ConcurrentUseFromBothPollingLoops(t *testing.T) {
+	// The classifier is shared between the state and counter polling
+	// loops, which run in separate goroutines. Its lazy caches must be
+	// safe under concurrent population — the unsynchronized version
+	// crashed the monitor with "concurrent map read and map write"
+	// during the first polls after startup (found live on nims-iad-dev1).
+	// Run with -race to enforce.
+	reader := &sysfs.MockReader{
+		ReadIBDeviceNUMAFunc: func(string) (int, error) { return 0, nil },
+		ReadPCIAddressFunc:   func(d string) (string, error) { return "0000:47:00." + d[len(d)-1:], nil },
+	}
+
+	path := writeMetadata(t, &model.GPUMetadata{
+		GPUs: []model.GPUInfo{{PCIAddress: "0000:0f:00.0", NUMANode: 0}},
+		NICTopology: map[string][]string{
+			"mlx5_0": {"PIX"}, "mlx5_1": {"PIX"}, "mlx5_2": {"PIX"},
+			"mlx5_3": {"SYS"}, "mlx5_4": {"SYS"}, "mlx5_5": {"NODE"},
+		},
+	})
+
+	c, err := LoadFromMetadata(path, reader)
+	require.NoError(t, err)
+
+	devices := []string{"mlx5_0", "mlx5_1", "mlx5_2", "mlx5_3", "mlx5_4", "mlx5_5"}
+
+	var wg sync.WaitGroup
+
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			for i := 0; i < 100; i++ {
+				for _, d := range devices {
+					c.RoleOf(d)
+					c.IsManagementNIC(d)
+					c.PCICardOf(d)
+				}
+			}
+		}()
+	}
+
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+
+		for i := 0; i < 20; i++ {
+			c.LogClassificationSummary()
+		}
+	}()
+
+	wg.Wait()
 }

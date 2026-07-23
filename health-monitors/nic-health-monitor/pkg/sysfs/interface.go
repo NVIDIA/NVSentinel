@@ -48,6 +48,11 @@ type Reader interface {
 	// ReadNetStatistic reads a uint64 counter from /sys/class/net/<iface>/statistics/<counter>.
 	ReadNetStatistic(iface, counter string) (uint64, error)
 
+	// ReadNetAttribute reads a uint64 attribute from the netdev root,
+	// /sys/class/net/<iface>/<attr> — e.g. carrier_changes, which lives
+	// beside operstate, NOT under statistics/.
+	ReadNetAttribute(iface, attr string) (uint64, error)
+
 	// NUMA / PCI --------------------------------------------------------
 	// ReadIBDeviceNUMANode reads /sys/class/infiniband/<dev>/device/numa_node.
 	ReadIBDeviceNUMANode(device string) (int, error)

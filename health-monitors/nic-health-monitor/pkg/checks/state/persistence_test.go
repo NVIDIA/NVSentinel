@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/checks"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/statefile"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/sysfs"
@@ -121,9 +122,21 @@ func TestIBState_Persistence_BootIDChangedEmitsHealthyBaseline(t *testing.T) {
 
 	events, err := check.Run()
 	require.NoError(t, err)
-	require.Len(t, events, 1, "boot-ID-changed first poll should emit a baseline event per healthy port")
-	assert.True(t, events[0].IsHealthy)
-	assert.Equal(t, pb.RecommendedAction_NONE, events[0].RecommendedAction)
+	require.Len(t, events, 2,
+		"boot-ID-changed first poll: check-scoped clear + a baseline event per healthy port")
+
+	clearEvt := events[0]
+	assert.True(t, clearEvt.IsHealthy)
+	assert.Empty(t, clearEvt.EntitiesImpacted,
+		"the clear carries no entities so downstream wipes every stale condition for this check")
+
+	baseline := events[1]
+	assert.True(t, baseline.IsHealthy)
+	assert.NotEmpty(t, baseline.EntitiesImpacted)
+	assert.Equal(t, pb.RecommendedAction_NONE, baseline.RecommendedAction)
+	assert.True(t,
+		clearEvt.GeneratedTimestamp.AsTime().Before(baseline.GeneratedTimestamp.AsTime()),
+		"the clear must sort strictly before same-batch events under timestamp ordering")
 
 	// Second poll must be back to normal (no duplicate baseline).
 	events, err = check.Run()
@@ -155,7 +168,10 @@ func TestIBState_Persistence_BootIDChangedSuppressesUnhealthyWithoutPeerEvidence
 
 	events, err := check.Run()
 	require.NoError(t, err)
-	assert.Empty(t, events, "singleton card has no peer evidence; post-reboot DOWN should be suppressed")
+	require.Len(t, events, 1,
+		"only the check-scoped clear: a singleton DOWN port has no peer evidence and stays suppressed")
+	assert.True(t, events[0].IsHealthy)
+	assert.Empty(t, events[0].EntitiesImpacted)
 }
 
 func TestIBState_Persistence_DeviceDisappearanceAcrossRestart(t *testing.T) {
@@ -627,6 +643,650 @@ func cardEvents(events []*pb.HealthEvent, card string) []*pb.HealthEvent {
 	return out
 }
 
+// checkScopedClears filters events down to the check-scoped baseline
+// clears: healthy events with no entities, which downstream consumers
+// treat as "every entity of this check recovered".
+func checkScopedClears(events []*pb.HealthEvent) []*pb.HealthEvent {
+	var out []*pb.HealthEvent
+
+	for _, e := range events {
+		if e.IsHealthy && len(e.EntitiesImpacted) == 0 {
+			out = append(out, e)
+		}
+	}
+
+	return out
+}
+
+func TestEthState_BaselineClear_OrderedBeforeSameBatchFatal(t *testing.T) {
+	// A card FATAL that fires on the same baseline poll must never be
+	// wiped by the check-scoped clear. The clear is first in the batch
+	// AND strictly older by GeneratedTimestamp — the platform-connector
+	// re-sorts each batch by timestamp with a non-stable sort, so equal
+	// timestamps would carry no ordering guarantee.
+	mgr, _, _ := newStateManagerForTest(t, "boot-2")
+
+	node := threeCardNode("DOWN", "Disabled")
+	reader := node.reader()
+	classifier := threeCardClassifier(t, reader)
+
+	check := NewEthernetStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, true)
+
+	events, err := check.Run()
+	require.NoError(t, err)
+
+	clears := checkScopedClears(events)
+	require.Len(t, clears, 1)
+	assert.Empty(t, events[0].EntitiesImpacted, "the clear must be first in the batch")
+
+	cardEvts := cardEvents(events, "0000:47:00")
+	require.Len(t, cardEvts, 1, "the below-mode card must FATAL on the baseline poll")
+	require.True(t, cardEvts[0].IsFatal)
+
+	assert.True(t,
+		clears[0].GeneratedTimestamp.AsTime().Before(cardEvts[0].GeneratedTimestamp.AsTime()),
+		"clear must sort strictly before the same-batch FATAL under timestamp ordering")
+}
+
+func TestEthState_BaselineRun_RelatchesStillAnomalousCard(t *testing.T) {
+	// Reboot reconciliation for a card that is broken on BOTH boots: the
+	// clear voids the old-boot FATAL (whose entities may not even exist
+	// any more), the seeded latch is dropped with it, and the still-
+	// anomalous card immediately re-latches with a fresh FATAL carrying
+	// this boot's identity.
+	mgr, statePath, bootIDPath := newStateManagerForTest(t, "boot-1")
+
+	node := threeCardNode("DOWN", "Disabled")
+	reader := node.reader()
+	classifier := threeCardClassifier(t, reader)
+
+	firstBoot := NewEthernetStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, false)
+	events, err := firstBoot.Run()
+	require.NoError(t, err)
+	require.Len(t, cardEvents(events, "0000:47:00"), 1, "precondition: card FATAL latched on boot-1")
+
+	// Host reboots; the card is still broken.
+	require.NoError(t, os.WriteFile(bootIDPath, []byte("boot-2\n"), 0o644))
+
+	mgr2 := statefile.NewManagerWithPaths(statePath, bootIDPath)
+	require.NoError(t, mgr2.Load())
+	require.True(t, mgr2.BootIDChanged())
+	require.Contains(t, mgr2.AnomalousCardsFor(ethLinkLayer), "0000:47:00",
+		"latch survives the reboot load until the baseline clear commits")
+
+	secondBoot := NewEthernetStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr2, true)
+
+	events, err = secondBoot.Run()
+	require.NoError(t, err)
+
+	require.Len(t, checkScopedClears(events), 1)
+
+	cardEvts := cardEvents(events, "0000:47:00")
+	require.Len(t, cardEvts, 1, "still-anomalous card must re-FATAL after the clear")
+	assert.True(t, cardEvts[0].IsFatal)
+	assert.Contains(t, mgr2.AnomalousCardsFor(ethLinkLayer), "0000:47:00",
+		"the fresh FATAL must re-latch")
+}
+
+func TestEthState_FirstPollDeferralIsBounded(t *testing.T) {
+	// One enumerable-but-unreadable device must not disable monitoring
+	// of every readable NIC forever: after FirstPollDeferralLimit
+	// consecutive deferred polls the check proceeds with the readable
+	// subset. The baseline reconciliation (check-scoped clear) must NOT
+	// run on that partial poll — it would wipe the unreadable device's
+	// previous-boot conditions with nothing able to re-assert them — and
+	// instead waits for the first complete enumeration.
+	mgr, _, _ := newStateManagerForTest(t, "boot-2")
+
+	node := newStubNode().
+		addIB("mlx5_0", &stubDevice{
+			pciAddress: "0000:47:00.0", numaNode: 0,
+			ports: map[int]stubPort{1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"}},
+		}).
+		addIB("mlx5_9", &stubDevice{
+			pciAddress: "0000:50:00.0", numaNode: 0,
+			ports:           map[int]stubPort{1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"}},
+			portsUnreadable: true,
+		})
+	reader := node.reader()
+	classifier := buildClassifier(t, reader,
+		[]string{"0000:0f:00.0"},
+		map[string][]string{"mlx5_0": {"PIX"}, "mlx5_9": {"PIX"}},
+	)
+
+	check := NewEthernetStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, true)
+
+	for i := 1; i <= checks.FirstPollDeferralLimit; i++ {
+		events, err := check.Run()
+		require.NoError(t, err)
+		assert.Empty(t, events, "poll %d must be deferred while a device is unreadable", i)
+		assert.Empty(t, mgr.PortStatesFor(ethLinkLayer), "no state may commit while deferred")
+	}
+
+	// The poll after the limit starts monitoring the readable subset but
+	// keeps the baseline reconciliation pending.
+	events, err := check.Run()
+	require.NoError(t, err)
+	assert.Empty(t, checkScopedClears(events),
+		"the clear must NOT fire while a device is unreadable")
+	assert.Contains(t, mgr.PortStatesFor(ethLinkLayer), "mlx5_0_1",
+		"the readable device must be monitored after the limit")
+	assert.True(t, mgr.PendingBaseline(checks.EthernetStateCheckName),
+		"the baseline must stay owed while discovery is partial")
+
+	// The unreadable device recovers: the next poll is the first
+	// complete enumeration and performs the reconciliation.
+	node.ib["mlx5_9"].portsUnreadable = false
+
+	events, err = check.Run()
+	require.NoError(t, err)
+	require.Len(t, checkScopedClears(events), 1,
+		"the clear fires on the first complete enumeration")
+	assert.Empty(t, events[0].EntitiesImpacted, "the clear must be first in the batch")
+	assert.Contains(t, mgr.PortStatesFor(ethLinkLayer), "mlx5_9_1")
+	assert.False(t, mgr.PendingBaseline(checks.EthernetStateCheckName),
+		"the reconciliation must retire the pending flag")
+
+	events, err = check.Run()
+	require.NoError(t, err)
+	assert.Empty(t, events, "the poll after the reconciliation must be silent")
+}
+
+func TestEthState_DelayedBaseline_ReplaysWindowPortFatal(t *testing.T) {
+	// A fault that fires during the partial pre-baseline window must
+	// survive the later check-scoped clear: the reconciliation poll
+	// re-asserts it in the same batch, after the clear.
+	mgr, _, _ := newStateManagerForTest(t, "boot-2")
+
+	node := threeCardNode("ACTIVE", "LinkUp").
+		addIB("mlx5_9", &stubDevice{
+			pciAddress: "0000:50:00.0", numaNode: 0,
+			ports:           map[int]stubPort{1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"}},
+			portsUnreadable: true,
+		})
+	reader := node.reader()
+	classifier := buildClassifier(t, reader,
+		[]string{"0000:0f:00.0"},
+		map[string][]string{
+			"mlx5_0": {"PIX"}, "mlx5_1": {"PIX"}, "mlx5_2": {"PIX"}, "mlx5_9": {"PIX"},
+		},
+	)
+
+	check := NewEthernetStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, true)
+
+	for i := 1; i <= checks.FirstPollDeferralLimit; i++ {
+		_, err := check.Run()
+		require.NoError(t, err)
+	}
+
+	// Partial monitoring starts (no clear yet).
+	events, err := check.Run()
+	require.NoError(t, err)
+	assert.Empty(t, checkScopedClears(events))
+
+	// A runtime fault during the window is reported immediately.
+	node.ib["mlx5_0"].ports[1] = stubPort{state: "DOWN", physState: "Disabled", linkLayer: "Ethernet"}
+
+	events, err = check.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 1, "the window transition must be reported in real time")
+	require.True(t, events[0].IsFatal)
+
+	// The unreadable device recovers: reconciliation clears everything
+	// and re-asserts the still-DOWN port (peer evidence: its card is
+	// below the group mode) plus the card FATAL.
+	node.ib["mlx5_9"].portsUnreadable = false
+
+	events, err = check.Run()
+	require.NoError(t, err)
+
+	clears := checkScopedClears(events)
+	require.Len(t, clears, 1)
+	assert.Empty(t, events[0].EntitiesImpacted, "the clear must be first in the batch")
+
+	var portFatal *pb.HealthEvent
+
+	for _, e := range events {
+		if e.IsFatal && len(e.EntitiesImpacted) == 2 && e.EntitiesImpacted[0].EntityValue == "mlx5_0" {
+			portFatal = e
+		}
+	}
+
+	require.NotNil(t, portFatal, "the window-latched port fault must be re-asserted after the clear")
+	require.Len(t, cardEvents(events, "0000:47:00"), 1, "the anomalous card must FATAL on the reconciliation poll")
+
+	for _, e := range events[1:] {
+		assert.True(t, clears[0].GeneratedTimestamp.AsTime().Before(e.GeneratedTimestamp.AsTime()),
+			"the clear must sort strictly before every re-asserted event")
+	}
+}
+
+func TestEthState_DelayedBaseline_ReplaysWindowDisappearance(t *testing.T) {
+	// A device that disappears during the partial pre-baseline window
+	// carries current-boot evidence: the reconciliation must re-assert
+	// its FATAL after the clear and keep the latch, instead of dropping
+	// it like a previous-boot latch.
+	mgr, _, _ := newStateManagerForTest(t, "boot-2")
+
+	node := newStubNode().
+		addIB("mlx5_0", &stubDevice{
+			pciAddress: "0000:47:00.0", numaNode: 0,
+			ports: map[int]stubPort{1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"}},
+		}).
+		addIB("mlx5_1", &stubDevice{
+			pciAddress: "0000:48:00.0", numaNode: 0,
+			ports: map[int]stubPort{1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"}},
+		}).
+		addIB("mlx5_9", &stubDevice{
+			pciAddress: "0000:50:00.0", numaNode: 0,
+			ports:           map[int]stubPort{1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"}},
+			portsUnreadable: true,
+		})
+	reader := node.reader()
+	classifier := buildClassifier(t, reader,
+		[]string{"0000:0f:00.0"},
+		map[string][]string{"mlx5_0": {"PIX"}, "mlx5_1": {"PIX"}, "mlx5_9": {"PIX"}},
+	)
+
+	check := NewEthernetStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, true)
+
+	for i := 1; i <= checks.FirstPollDeferralLimit+1; i++ {
+		_, err := check.Run()
+		require.NoError(t, err)
+	}
+
+	// mlx5_0 disappears during the window and is FATALed after the
+	// debounce.
+	delete(node.ib, "mlx5_0")
+
+	var disappearance []*pb.HealthEvent
+
+	for i := 0; i < deviceMissThreshold; i++ {
+		events, err := check.Run()
+		require.NoError(t, err)
+
+		disappearance = events
+	}
+
+	require.Len(t, disappearance, 1, "the window disappearance must FATAL after the debounce")
+	require.True(t, disappearance[0].IsFatal)
+
+	// Reconciliation: the clear fires, and the window-latched
+	// disappearance is re-asserted with its latch retained.
+	node.ib["mlx5_9"].portsUnreadable = false
+
+	events, err := check.Run()
+	require.NoError(t, err)
+	require.Len(t, checkScopedClears(events), 1)
+
+	var reasserted *pb.HealthEvent
+
+	for _, e := range events {
+		if e.IsFatal && len(e.EntitiesImpacted) == 1 && e.EntitiesImpacted[0].EntityValue == "mlx5_0" {
+			reasserted = e
+		}
+	}
+
+	require.NotNil(t, reasserted, "the window disappearance must be re-asserted after the clear")
+	assert.Contains(t, mgr.DisappearedDevicesFor(ethLinkLayer), "mlx5_0",
+		"the latch must survive the reconciliation so re-enumeration can still recover it")
+}
+
+func TestEthState_WindowDisappearanceProvenanceSurvivesRestart(t *testing.T) {
+	// The provenance of a window-latched disappearance is persisted, so
+	// a pod restart between the window FATAL and the reconciliation must
+	// not demote the latch to previous-boot state (which the clear would
+	// silently drop while the device is still missing).
+	mgr, statePath, bootIDPath := newStateManagerForTest(t, "boot-2")
+
+	node := newStubNode().
+		addIB("mlx5_0", &stubDevice{
+			pciAddress: "0000:47:00.0", numaNode: 0,
+			ports: map[int]stubPort{1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"}},
+		}).
+		addIB("mlx5_1", &stubDevice{
+			pciAddress: "0000:48:00.0", numaNode: 0,
+			ports: map[int]stubPort{1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"}},
+		}).
+		addIB("mlx5_9", &stubDevice{
+			pciAddress: "0000:50:00.0", numaNode: 0,
+			ports:           map[int]stubPort{1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"}},
+			portsUnreadable: true,
+		})
+	reader := node.reader()
+	classifier := buildClassifier(t, reader,
+		[]string{"0000:0f:00.0"},
+		map[string][]string{"mlx5_0": {"PIX"}, "mlx5_1": {"PIX"}, "mlx5_9": {"PIX"}},
+	)
+
+	firstPod := NewEthernetStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, true)
+
+	for i := 1; i <= checks.FirstPollDeferralLimit+1; i++ {
+		_, err := firstPod.Run()
+		require.NoError(t, err)
+	}
+
+	// mlx5_0 disappears during the window and FATALs after the debounce.
+	delete(node.ib, "mlx5_0")
+
+	for i := 0; i < deviceMissThreshold; i++ {
+		_, err := firstPod.Run()
+		require.NoError(t, err)
+	}
+
+	require.Contains(t, mgr.DisappearedDevicesFor(ethLinkLayer), "mlx5_0",
+		"precondition: window disappearance latched and persisted")
+
+	// Restart before the reconciliation.
+	mgr2 := statefile.NewManagerWithPaths(statePath, bootIDPath)
+	require.NoError(t, mgr2.Load())
+	require.False(t, mgr2.BootIDChanged())
+
+	node.ib["mlx5_9"].portsUnreadable = false
+
+	secondPod := NewEthernetStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr2, false)
+
+	events, err := secondPod.Run()
+	require.NoError(t, err)
+	require.Len(t, checkScopedClears(events), 1)
+
+	var reasserted *pb.HealthEvent
+
+	for _, e := range events {
+		if e.IsFatal && len(e.EntitiesImpacted) == 1 && e.EntitiesImpacted[0].EntityValue == "mlx5_0" {
+			reasserted = e
+		}
+	}
+
+	require.NotNil(t, reasserted,
+		"the restarted pod must still re-assert the window disappearance after the clear")
+	assert.Contains(t, mgr2.DisappearedDevicesFor(ethLinkLayer), "mlx5_0",
+		"the latch must survive the reconciliation")
+}
+
+func TestEthState_PortDisappearance_RecoveryOnReappearance(t *testing.T) {
+	// A port that disappears from a still-present device gets a FATAL;
+	// when it reappears healthy, the latch must produce the matching
+	// recovery. Without the latch the reappeared port is first-seen and
+	// its healthy event would be suppressed, orphaning the FATAL
+	// downstream forever.
+	mgr, _, _ := newStateManagerForTest(t, "boot-1")
+
+	node := newStubNode().addIB("mlx5_0", &stubDevice{
+		pciAddress: "0000:47:00.0", numaNode: 0,
+		ports: map[int]stubPort{
+			1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"},
+			2: {state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"},
+		},
+	})
+	reader := node.reader()
+	classifier := buildClassifier(t, reader,
+		[]string{"0000:0f:00.0"},
+		map[string][]string{"mlx5_0": {"PIX"}},
+	)
+
+	check := NewEthernetStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, false)
+
+	_, err := check.Run()
+	require.NoError(t, err)
+
+	// Port 2 vanishes while the device stays present.
+	delete(node.ib["mlx5_0"].ports, 2)
+
+	events, err := check.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 1, "the missing port must FATAL")
+	require.True(t, events[0].IsFatal)
+	assert.Contains(t, mgr.DisappearedPortsFor(ethLinkLayer), "mlx5_0_2",
+		"the port disappearance must latch")
+
+	// The port reappears healthy: the latch produces the recovery.
+	node.ib["mlx5_0"].ports[2] = stubPort{state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"}
+
+	events, err = check.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 1, "the reappeared port must emit its recovery")
+	assert.True(t, events[0].IsHealthy)
+	require.Len(t, events[0].EntitiesImpacted, 2)
+	assert.Equal(t, "mlx5_0", events[0].EntitiesImpacted[0].EntityValue)
+	assert.Equal(t, "2", events[0].EntitiesImpacted[1].EntityValue)
+	assert.Empty(t, mgr.DisappearedPortsFor(ethLinkLayer), "the latch must be consumed")
+}
+
+func TestEthState_DelayedBaseline_ReplaysWindowPortDisappearance(t *testing.T) {
+	// A port that disappeared during the pre-baseline window and is
+	// still missing at reconciliation must be re-asserted after the
+	// clear, with the latch retained for a later reappearance recovery.
+	mgr, _, _ := newStateManagerForTest(t, "boot-2")
+
+	node := newStubNode().
+		addIB("mlx5_0", &stubDevice{
+			pciAddress: "0000:47:00.0", numaNode: 0,
+			ports: map[int]stubPort{
+				1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"},
+				2: {state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"},
+			},
+		}).
+		addIB("mlx5_9", &stubDevice{
+			pciAddress: "0000:50:00.0", numaNode: 0,
+			ports:           map[int]stubPort{1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"}},
+			portsUnreadable: true,
+		})
+	reader := node.reader()
+	classifier := buildClassifier(t, reader,
+		[]string{"0000:0f:00.0"},
+		map[string][]string{"mlx5_0": {"PIX"}, "mlx5_9": {"PIX"}},
+	)
+
+	check := NewEthernetStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, true)
+
+	for i := 1; i <= checks.FirstPollDeferralLimit+1; i++ {
+		_, err := check.Run()
+		require.NoError(t, err)
+	}
+
+	// Port 2 vanishes during the window.
+	delete(node.ib["mlx5_0"].ports, 2)
+
+	events, err := check.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 1, "precondition: window port disappearance FATALed")
+
+	// Reconciliation with the port still missing.
+	node.ib["mlx5_9"].portsUnreadable = false
+
+	events, err = check.Run()
+	require.NoError(t, err)
+	require.Len(t, checkScopedClears(events), 1)
+
+	var reasserted *pb.HealthEvent
+
+	for _, e := range events {
+		if e.IsFatal && len(e.EntitiesImpacted) == 2 &&
+			e.EntitiesImpacted[0].EntityValue == "mlx5_0" &&
+			e.EntitiesImpacted[1].EntityValue == "2" {
+			reasserted = e
+		}
+	}
+
+	require.NotNil(t, reasserted, "the window port disappearance must be re-asserted after the clear")
+	assert.Contains(t, mgr.DisappearedPortsFor(ethLinkLayer), "mlx5_0_2",
+		"the latch must survive the reconciliation")
+}
+
+func TestEthState_PreviousBootPortLatchDroppedAtReconciliation(t *testing.T) {
+	// A port latch carried over from a previous boot has no current
+	// evidence: the boot-change load zeroes its provenance and the
+	// reconciliation drops it with the clear instead of re-asserting a
+	// stale fault.
+	mgr, statePath, bootIDPath := newStateManagerForTest(t, "boot-1")
+
+	node := newStubNode().addIB("mlx5_0", &stubDevice{
+		pciAddress: "0000:47:00.0", numaNode: 0,
+		ports: map[int]stubPort{
+			1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"},
+			2: {state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"},
+		},
+	})
+	reader := node.reader()
+	classifier := buildClassifier(t, reader,
+		[]string{"0000:0f:00.0"},
+		map[string][]string{"mlx5_0": {"PIX"}},
+	)
+
+	firstBoot := NewEthernetStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, false)
+
+	_, err := firstBoot.Run()
+	require.NoError(t, err)
+
+	delete(node.ib["mlx5_0"].ports, 2)
+
+	events, err := firstBoot.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 1, "precondition: port latch created on boot-1")
+
+	// Host reboots; the port is still missing.
+	require.NoError(t, os.WriteFile(bootIDPath, []byte("boot-2\n"), 0o644))
+
+	mgr2 := statefile.NewManagerWithPaths(statePath, bootIDPath)
+	require.NoError(t, mgr2.Load())
+	require.True(t, mgr2.BootIDChanged())
+	require.Contains(t, mgr2.DisappearedPortsFor(ethLinkLayer), "mlx5_0_2",
+		"the latch survives the reboot load until the reconciliation")
+
+	secondBoot := NewEthernetStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr2, true)
+
+	events, err = secondBoot.Run()
+	require.NoError(t, err)
+	require.Len(t, checkScopedClears(events), 1)
+
+	for _, e := range events {
+		assert.False(t, e.IsFatal,
+			"a previous-boot port latch must be dropped with the clear, not re-asserted: %s", e.Message)
+	}
+
+	assert.Empty(t, mgr2.DisappearedPortsFor(ethLinkLayer),
+		"the previous-boot latch must be gone after the reconciliation")
+}
+
+func TestEthState_TransientAttributeReadErrorHoldsState(t *testing.T) {
+	// A transient failure of the per-port attribute reads (state,
+	// phys_state, link_layer) must be treated as an uncertain
+	// observation, not as empty health values. Before this was fixed, a
+	// link_layer read blip on a multi-port device dropped the port from
+	// its layer and fired an undebounced false port-disappearance
+	// REPLACE_VM.
+	mgr, _, _ := newStateManagerForTest(t, "boot-1")
+
+	node := newStubNode().addIB("mlx5_0", &stubDevice{
+		pciAddress: "0000:47:00.0", numaNode: 0,
+		ports: map[int]stubPort{
+			1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"},
+			2: {state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"},
+		},
+	})
+	reader := node.reader()
+	classifier := buildClassifier(t, reader,
+		[]string{"0000:0f:00.0"},
+		map[string][]string{"mlx5_0": {"PIX"}},
+	)
+
+	check := NewEthernetStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, false)
+
+	_, err := check.Run()
+	require.NoError(t, err)
+	require.Len(t, mgr.PortStatesFor(ethLinkLayer), 2, "precondition: both ports committed healthy")
+
+	// One poll with failing attribute reads: hold last-known state.
+	node.ib["mlx5_0"].attrReadsFail = true
+
+	events, err := check.Run()
+	require.NoError(t, err)
+	assert.Empty(t, events, "an observation failure must not produce health events")
+
+	persisted := mgr.PortStatesFor(ethLinkLayer)
+	require.Len(t, persisted, 2, "both port snapshots must be retained")
+	assert.Equal(t, "ACTIVE", persisted["mlx5_0_1"].State)
+	assert.Equal(t, "ACTIVE", persisted["mlx5_0_2"].State)
+	assert.Empty(t, mgr.DisappearedPortsFor(ethLinkLayer),
+		"no false port-disappearance latch may be created")
+
+	// Reads recover: still no events (nothing actually changed).
+	node.ib["mlx5_0"].attrReadsFail = false
+
+	events, err = check.Run()
+	require.NoError(t, err)
+	assert.Empty(t, events, "recovery of the reads must not fabricate transitions either")
+}
+
+func TestEthState_PendingBaselineSurvivesRestart(t *testing.T) {
+	// A pod restart inside the deferred/partial window persists the NEW
+	// boot ID with the window commits, so the next pod compares equal
+	// boot IDs. The persisted pending-baseline flag is what keeps the
+	// owed reconciliation alive across that restart.
+	mgr, statePath, bootIDPath := newStateManagerForTest(t, "boot-2")
+
+	node := newStubNode().
+		addIB("mlx5_0", &stubDevice{
+			pciAddress: "0000:47:00.0", numaNode: 0,
+			ports: map[int]stubPort{1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"}},
+		}).
+		addIB("mlx5_9", &stubDevice{
+			pciAddress: "0000:50:00.0", numaNode: 0,
+			ports:           map[int]stubPort{1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"}},
+			portsUnreadable: true,
+		})
+	reader := node.reader()
+	classifier := buildClassifier(t, reader,
+		[]string{"0000:0f:00.0"},
+		map[string][]string{"mlx5_0": {"PIX"}, "mlx5_9": {"PIX"}},
+	)
+
+	firstPod := NewEthernetStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, true)
+
+	// Deferred polls plus one partial commit (which persists the new
+	// boot ID alongside the pending flag).
+	for i := 1; i <= checks.FirstPollDeferralLimit+1; i++ {
+		_, err := firstPod.Run()
+		require.NoError(t, err)
+	}
+
+	require.Contains(t, mgr.PortStatesFor(ethLinkLayer), "mlx5_0_1", "window commit must have happened")
+
+	// Restart: same boot ID now, so only the persisted flag carries the
+	// owed baseline.
+	mgr2 := statefile.NewManagerWithPaths(statePath, bootIDPath)
+	require.NoError(t, mgr2.Load())
+	require.False(t, mgr2.BootIDChanged())
+	require.True(t, mgr2.PendingBaseline(checks.EthernetStateCheckName),
+		"the owed baseline must survive the restart via the persisted flag")
+
+	node.ib["mlx5_9"].portsUnreadable = false
+
+	secondPod := NewEthernetStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr2, false)
+
+	events, err := secondPod.Run()
+	require.NoError(t, err)
+	require.Len(t, checkScopedClears(events), 1,
+		"the restarted pod must still perform the owed reconciliation")
+	assert.False(t, mgr2.PendingBaseline(checks.EthernetStateCheckName))
+}
+
 func TestEthState_CardAnomaly_LatchLifecycle(t *testing.T) {
 	// The card-homogeneity event now has a full lifecycle: FATAL once
 	// when the card drops below its role group's decisive mode, silence
@@ -775,10 +1435,12 @@ func TestIBState_CardAnomaly_LatchLifecycle(t *testing.T) {
 
 func TestEthState_OverrideRoundTrip_CardRecoveryNotOrphaned(t *testing.T) {
 	// A card FATAL is outstanding when the operator enables the
-	// inclusion override. Override mode skips the card lifecycle
-	// entirely, so the latch must survive the scope change (and the
-	// override pod's own persistence) for the recovery to be emitted
-	// once the override is removed and the card is healthy again.
+	// inclusion override. The scope change triggers a baseline run whose
+	// check-scoped clear (empty entities) wipes every stale downstream
+	// condition — including the card FATAL — so the latch is consumed by
+	// the clear instead of being carried through the override. When the
+	// override is later removed, the healthy card simply gets its
+	// card-healthy baseline; nothing downstream is orphaned at any step.
 	normalScope := "incl=;excl="
 	pinnedScope := "incl=^mlx5_1$;excl="
 
@@ -797,13 +1459,13 @@ func TestEthState_OverrideRoundTrip_CardRecoveryNotOrphaned(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, cardEvents(events, "0000:47:00"), 1, "precondition: card FATAL latched")
 
-	// Phase 2 (override enabled): scope reset, card lifecycle skipped.
+	// Phase 2 (override enabled): scope reset triggers a baseline run.
 	mgr2 := statefile.NewManagerWithPaths(statePath, bootIDPath)
 	mgr2.SetScope(pinnedScope)
 	require.NoError(t, mgr2.Load())
 	require.True(t, mgr2.ScopeChanged())
 	require.Contains(t, mgr2.AnomalousCardsFor(ethLinkLayer), "0000:47:00",
-		"latch must survive the scope change into override mode")
+		"latch must survive the scope change until the baseline clear commits")
 
 	pinnedCfg := &config.Config{NicInclusionRegexOverride: "^mlx5_1$"}
 	pinnedPod := NewEthernetStateCheck("node1", reader, pinnedCfg,
@@ -812,15 +1474,18 @@ func TestEthState_OverrideRoundTrip_CardRecoveryNotOrphaned(t *testing.T) {
 
 	events, err = pinnedPod.Run()
 	require.NoError(t, err)
+	require.Len(t, checkScopedClears(events), 1,
+		"the baseline run must emit the check-scoped clear that voids the card FATAL downstream")
 	assert.Empty(t, cardEvents(events, "0000:47:00"),
-		"override mode must not emit card events")
-	require.Contains(t, mgr2.AnomalousCardsFor(ethLinkLayer), "0000:47:00",
-		"the override pod's persistence must carry the latch, not clobber it")
+		"override mode must not emit card-entity events")
+	assert.NotContains(t, mgr2.AnomalousCardsFor(ethLinkLayer), "0000:47:00",
+		"the clear voided the downstream FATAL, so the latch must be dropped with it")
 
 	// The card heals while the override is still active.
 	node.ib["mlx5_0"].ports[1] = stubPort{state: "ACTIVE", physState: "LinkUp", linkLayer: "Ethernet"}
 
-	// Phase 3 (override removed): the seeded latch emits the recovery.
+	// Phase 3 (override removed): another baseline run; the healthy card
+	// gets its card-healthy baseline with no stale latch left behind.
 	mgr3 := statefile.NewManagerWithPaths(statePath, bootIDPath)
 	mgr3.SetScope(normalScope)
 	require.NoError(t, mgr3.Load())
@@ -833,9 +1498,10 @@ func TestEthState_OverrideRoundTrip_CardRecoveryNotOrphaned(t *testing.T) {
 	events, err = finalPod.Run()
 	require.NoError(t, err)
 
+	require.Len(t, checkScopedClears(events), 1)
 	cardEvts := cardEvents(events, "0000:47:00")
 	require.Len(t, cardEvts, 1,
-		"the card entity must recover after the override round trip")
+		"the healthy card must get its card-healthy baseline after the override round trip")
 	assert.True(t, cardEvts[0].IsHealthy)
 }
 
@@ -856,7 +1522,9 @@ func TestEthState_BaselineRun_EmitsCardHealthyBaselines(t *testing.T) {
 	events, err := check.Run()
 	require.NoError(t, err)
 
-	require.Len(t, events, 6, "3 port baselines + 3 card-healthy baselines")
+	require.Len(t, events, 7, "check-scoped clear + 3 port baselines + 3 card-healthy baselines")
+	require.Len(t, checkScopedClears(events), 1)
+	assert.Empty(t, events[0].EntitiesImpacted, "the clear must be first in the batch")
 
 	for _, card := range []string{"0000:47:00", "0000:48:00", "0000:49:00"} {
 		evts := cardEvents(events, card)

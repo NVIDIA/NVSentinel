@@ -73,6 +73,27 @@ type baseStateCheck struct {
 	disappearedLatch map[string]bool
 	deviceMissCounts map[string]int
 
+	// disappearedPortLatch tracks port-level disappearance FATALs (port
+	// gone from a still-present device), keyed by portKey. Each entry
+	// needs a healthy observation of the reappeared port to clear it —
+	// without the latch, a reappearing port is first-seen and its
+	// healthy event would be suppressed, orphaning the FATAL downstream.
+	// Persisted (with this-boot provenance) so both the recovery and the
+	// baseline replay survive pod restarts.
+	disappearedPortLatch map[string]statefile.DisappearedPortFlag
+
+	// windowLatchedDisappearances marks device-disappearance latches
+	// observed by the CURRENT BOOT's monitoring (as opposed to latches
+	// carried over from a previous boot). A pending baseline
+	// reconciliation replays marked latches — their evidence is current —
+	// and drops unmarked ones with the clear. Seeded from the persisted
+	// ObservedThisBoot flag so provenance survives pod restarts; the
+	// boot-change load zeroes it. Kept as a side map (not cloned per
+	// poll) deliberately: a stale marker after a Discard is harmless
+	// because the latch itself reverts and re-latches through the normal
+	// path.
+	windowLatchedDisappearances map[string]bool
+
 	// exemptionLogged de-duplicates the informational management-sibling
 	// exemption log: the classification is static for a process lifetime,
 	// so each card is logged once rather than every poll. Logging state
@@ -84,6 +105,11 @@ type baseStateCheck struct {
 	// bookkeeping only — deliberately outside the transactional commit.
 	saveFailed bool
 
+	// firstPollDeferrals counts consecutive polls deferred because the
+	// first enumeration included unreadable devices. Poll bookkeeping,
+	// deliberately outside the transactional commit (like saveFailed).
+	firstPollDeferrals int
+
 	pending *statePollCommit
 
 	strategy linkLayerStrategy
@@ -92,12 +118,19 @@ type baseStateCheck struct {
 const deviceMissThreshold = 3
 
 type statePollCommit struct {
-	devices          map[string]bool
-	ports            map[string]portSnapshot
-	anomalousLatch   map[string]bool
-	disappearedLatch map[string]bool
-	deviceMissCounts map[string]int
-	linkLayer        string
+	devices              map[string]bool
+	ports                map[string]portSnapshot
+	anomalousLatch       map[string]bool
+	disappearedLatch     map[string]bool
+	disappearedPortLatch map[string]statefile.DisappearedPortFlag
+	deviceMissCounts     map[string]int
+	linkLayer            string
+
+	// baselineRan records that this poll performed the baseline
+	// reconciliation (check-scoped clear + replay), so Commit can retire
+	// the pending-baseline flag. Deferred or partial polls leave it
+	// false and the baseline stays owed.
+	baselineRan bool
 }
 
 // seedFromPersistedState pre-populates previousPorts and previousDevices
@@ -118,8 +151,18 @@ func (b *baseStateCheck) seedFromPersistedState() {
 	}
 
 	b.disappearedLatch = make(map[string]bool)
-	for device := range b.state.DisappearedDevicesFor(b.strategy.linkLayer()) {
+	b.windowLatchedDisappearances = make(map[string]bool)
+
+	for device, flag := range b.state.DisappearedDevicesFor(b.strategy.linkLayer()) {
 		b.disappearedLatch[device] = true
+		if flag.ObservedThisBoot {
+			b.windowLatchedDisappearances[device] = true
+		}
+	}
+
+	b.disappearedPortLatch = make(map[string]statefile.DisappearedPortFlag)
+	for _, flag := range b.state.DisappearedPortsFor(b.strategy.linkLayer()) {
+		b.disappearedPortLatch[portKey(flag.Device, flag.Port)] = flag
 	}
 
 	b.deviceMissCounts = b.state.DeviceMissCountsFor(b.strategy.linkLayer())
@@ -176,8 +219,9 @@ type pollAggregates struct {
 	uncertain       bool
 }
 
-// buildEvents runs the shared per-poll event pipeline: disappearance
-// handling first (it may retain held devices and adds to discovery
+// buildEvents runs the shared per-poll event pipeline: the baseline
+// clear first (when this is a baseline run), then disappearance
+// handling (it may retain held devices and adds to discovery
 // uncertainty), then the concrete check's per-port transitions, then
 // port/device lifecycle recoveries and the card-homogeneity lifecycle.
 //
@@ -193,6 +237,14 @@ func (b *baseStateCheck) buildEvents(
 	baselineRun bool,
 	portEvents func(anomalousCards map[string]topology.CardAnomaly) []*pb.HealthEvent,
 ) []*pb.HealthEvent {
+	var clearEvents []*pb.HealthEvent
+
+	if baselineRun {
+		clearEvents = append(clearEvents, b.baselineClearEvent())
+		clearEvents = append(clearEvents, b.reconcileDisappearanceLatches(agg)...)
+		clear(b.anomalousLatch)
+	}
+
 	disappearanceEvents, heldMissingState := b.detectDeviceDisappearance(
 		agg.seenDevices, agg.currentDevices, agg.currentPorts)
 	discoveryUncertain := agg.uncertain || heldMissingState
@@ -216,7 +268,8 @@ func (b *baseStateCheck) buildEvents(
 	// emit their own device event and are still present at diff time.
 	latchedBefore := maps.Clone(b.disappearedLatch)
 
-	events := portEvents(anomalousCards)
+	events := clearEvents
+	events = append(events, portEvents(anomalousCards)...)
 	events = append(events, disappearanceEvents...)
 	events = append(events, b.detectPortDisappearance(agg.currentDevices, agg.currentPorts)...)
 	events = append(events, b.deviceDisappearanceRecoveries(latchedBefore)...)
@@ -226,6 +279,12 @@ func (b *baseStateCheck) buildEvents(
 	if !b.overrideActive() && !discoveryUncertain {
 		events = append(events, b.cardHomogeneityEvents(
 			agg.cardActive, agg.cardRole, anomalousCards, evaluatedCards, baselineRun)...)
+	}
+
+	if baselineRun {
+		// Each event stamps its own time.Now(); guard the clear-first
+		// ordering against backward wall-clock steps.
+		checks.EnsureClearPrecedesBatch(events)
 	}
 
 	return events
@@ -303,6 +362,26 @@ func (b *baseStateCheck) consumeDisappearanceRecovery(device string) bool {
 	}
 
 	delete(b.disappearedLatch, device)
+	delete(b.windowLatchedDisappearances, device)
+
+	return true
+}
+
+// consumePortDisappearanceRecovery clears and reports a latched port
+// disappearance. Called while evaluating a healthy observation of the
+// reappeared port; the transactional candidate map ensures the clear is
+// committed only after publish. Without this, the reappeared port would
+// be first-seen and its healthy event suppressed, orphaning the
+// port-disappearance FATAL downstream.
+func (b *baseStateCheck) consumePortDisappearanceRecovery(key string) bool {
+	if _, latched := b.disappearedPortLatch[key]; !latched {
+		return false
+	}
+
+	delete(b.disappearedPortLatch, key)
+
+	slog.Info("Port recovered from disappearance; emitting recovery",
+		"port_key", key, "linkLayer", b.strategy.linkLayer())
 
 	return true
 }
@@ -358,6 +437,7 @@ func (b *baseStateCheck) consumeReenumeratedDisappearances(
 		}
 
 		delete(b.disappearedLatch, device)
+		delete(b.windowLatchedDisappearances, device)
 
 		slog.Info("Latched device re-enumerated without target-layer ports; emitting device recovery",
 			"device", device, "linkLayer", b.strategy.linkLayer())
@@ -413,21 +493,116 @@ func (b *baseStateCheck) overrideActive() bool {
 }
 
 // shouldMonitor is the device-level filter applied before any port work.
-// Normal discovery excludes VFs; this handles vendor support and management
-// NIC classification. An explicit inclusion match bypasses every device filter.
+// It delegates to the predicate shared with the counter checks so state
+// and counter monitoring can never diverge on device scope.
 func (b *baseStateCheck) shouldMonitor(dev discovery.IBDevice) bool {
-	if dev.IncludedByOverride {
-		return true
+	return checks.EligibleDevice(&dev, b.classifier)
+}
+
+// reconcileDisappearanceLatches handles the device- and port-level
+// disappearance latches on a baseline run. The check-scoped clear just
+// voided every downstream condition this check ever reported, so:
+//
+//   - Latches observed by THIS boot's monitoring (persisted provenance,
+//     survives pod restarts) carry current evidence: their FATALs are
+//     re-asserted right after the clear and the latch is kept — unless
+//     the entity is present again this poll, in which case the port
+//     pass consumes the latch through the normal recovery path.
+//   - Latches carried over from a previous boot are dropped with the
+//     clear; anything still wrong on this boot re-latches through the
+//     normal paths with entities that exist on this boot. This is what
+//     heals conditions whose entities were renamed or removed across
+//     the reboot.
+func (b *baseStateCheck) reconcileDisappearanceLatches(agg pollAggregates) []*pb.HealthEvent {
+	var events []*pb.HealthEvent
+
+	for device := range b.disappearedLatch {
+		if !b.windowLatchedDisappearances[device] {
+			delete(b.disappearedLatch, device)
+			continue
+		}
+
+		if agg.currentDevices[device] {
+			continue // present again: the port pass consumes the latch
+		}
+
+		slog.Info("Baseline run: re-asserting window-latched device disappearance",
+			"device", device, "linkLayer", b.strategy.linkLayer())
+
+		events = append(events, checks.NewHealthEvent(
+			b.nodeName, b.strategy.checkName(),
+			b.strategy.formatDeviceDisappearance(device),
+			checks.DeviceEntities(device),
+			true, false, pb.RecommendedAction_REPLACE_VM, b.processingStrategy,
+		))
 	}
 
-	if !discovery.IsSupportedVendor(&dev) {
-		slog.Debug("Skipping unsupported vendor", "device", dev.Name, "vendor", dev.Vendor)
+	for key, flag := range b.disappearedPortLatch {
+		if !flag.ObservedThisBoot {
+			delete(b.disappearedPortLatch, key)
+			continue
+		}
+
+		if _, present := agg.currentPorts[key]; present {
+			continue // reappeared: the port pass consumes the latch
+		}
+
+		slog.Info("Baseline run: re-asserting window-latched port disappearance",
+			"device", flag.Device, "port", flag.Port, "linkLayer", b.strategy.linkLayer())
+
+		events = append(events, b.portEvent(
+			flag.Device, flag.Port,
+			b.strategy.formatPortDisappearance(flag.Device, flag.Port),
+			true, false, pb.RecommendedAction_REPLACE_VM,
+		))
+	}
+
+	return events
+}
+
+// baselineClearEvent builds the check-scoped clear emitted once per
+// baseline run (host reboot or discovery-scope change). See
+// checks.NewBaselineClearEvent for the downstream semantics and the
+// ordering guarantee.
+func (b *baseStateCheck) baselineClearEvent() *pb.HealthEvent {
+	slog.Info("Baseline run: clearing all prior downstream conditions for this check",
+		"check", b.strategy.checkName(), "linkLayer", b.strategy.linkLayer())
+
+	return checks.NewBaselineClearEvent(
+		b.nodeName, b.strategy.checkName(),
+		"Baseline reset (host reboot or discovery-scope change): "+
+			"clearing all conditions previously reported by this check",
+		b.processingStrategy,
+	)
+}
+
+// deferFirstPoll implements the bounded first-poll deferral. A partial
+// first enumeration cannot seed peer homogeneity or first-seen severity
+// gating, so the first poll is deferred while any device is unreadable —
+// but only for checks.FirstPollDeferralLimit consecutive polls. Beyond
+// that the check proceeds with the readable subset: one permanently
+// unreadable device (e.g., firmware wedged at boot) must not silently
+// disable monitoring of every other NIC forever. Returns true when the
+// caller should skip this poll.
+func (b *baseStateCheck) deferFirstPoll(unreadable int) bool {
+	if b.firstPollDeferrals >= checks.FirstPollDeferralLimit {
+		if b.firstPollDeferrals == checks.FirstPollDeferralLimit {
+			// Log the transition exactly once, not on every poll.
+			b.firstPollDeferrals++
+
+			slog.Warn("First-poll deferral limit reached; proceeding with readable devices only",
+				"check", b.strategy.checkName(), "unreadable_devices", unreadable)
+		}
+
 		return false
 	}
 
-	if b.classifier.IsManagementNIC(dev.Name) {
-		return false
-	}
+	b.firstPollDeferrals++
+
+	metrics.FirstPollDeferred.WithLabelValues(b.nodeName, b.strategy.checkName()).Inc()
+	slog.Warn("Deferring first poll: some devices are unreadable",
+		"check", b.strategy.checkName(), "unreadable_devices", unreadable,
+		"deferrals", b.firstPollDeferrals, "limit", checks.FirstPollDeferralLimit)
 
 	return true
 }
@@ -594,6 +769,7 @@ func (b *baseStateCheck) detectDeviceDisappearance(
 
 		delete(b.deviceMissCounts, device)
 		b.disappearedLatch[device] = true
+		b.windowLatchedDisappearances[device] = true
 
 		slog.Warn("Device disappeared from sysfs",
 			"device", device, "linkLayer", b.strategy.linkLayer())
@@ -633,6 +809,17 @@ func (b *baseStateCheck) detectPortDisappearance(
 
 		if !currentDevices[prev.Device] {
 			continue
+		}
+
+		// Latch the disappearance so a healthy observation of the
+		// reappeared port emits the matching recovery, and so a baseline
+		// reconciliation can re-assert the FATAL while the port is still
+		// missing.
+		b.disappearedPortLatch[key] = statefile.DisappearedPortFlag{
+			Device:           prev.Device,
+			Port:             prev.Port,
+			LinkLayer:        b.strategy.linkLayer(),
+			ObservedThisBoot: true,
 		}
 
 		slog.Warn("Port disappeared from sysfs",
@@ -686,13 +873,22 @@ func (b *baseStateCheck) persistState(
 
 	disappeared := make(map[string]statefile.DisappearedDeviceFlag, len(b.disappearedLatch))
 	for device := range b.disappearedLatch {
-		disappeared[device] = statefile.DisappearedDeviceFlag{LinkLayer: linkLayer}
+		disappeared[device] = statefile.DisappearedDeviceFlag{
+			LinkLayer:        linkLayer,
+			ObservedThisBoot: b.windowLatchedDisappearances[device],
+		}
 	}
 
 	disappearedChanged := b.state.UpdateDisappearedDevices(disappeared, linkLayer)
+
+	portLatch := make(map[string]statefile.DisappearedPortFlag, len(b.disappearedPortLatch))
+	maps.Copy(portLatch, b.disappearedPortLatch)
+	portLatchChanged := b.state.UpdateDisappearedPorts(portLatch, linkLayer)
+
 	missesChanged := b.state.UpdateDeviceMissCounts(b.deviceMissCounts, linkLayer)
 
-	b.saveState(linkLayer, portsChanged || latchChanged || disappearedChanged || missesChanged)
+	b.saveState(linkLayer,
+		portsChanged || latchChanged || disappearedChanged || portLatchChanged || missesChanged)
 }
 
 // saveState writes the shared state file when something changed or when

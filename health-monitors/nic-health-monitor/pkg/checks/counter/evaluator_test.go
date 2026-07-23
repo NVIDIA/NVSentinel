@@ -15,6 +15,7 @@
 package counter
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -856,4 +857,85 @@ func TestEvaluateCounters_BreachMessageContainsCorrectRateUnit(t *testing.T) {
 				"breach message must contain the correct rate unit")
 		})
 	}
+}
+
+func TestEvaluateNetCounters_NetdevRootAttributeCounter(t *testing.T) {
+	// netdev/-class counters (carrier_changes) are read from the netdev
+	// root via ReadNetAttribute, not from statistics/.
+	value := uint64(10)
+	reader := &sysfs.MockReader{
+		ReadNetAttributeFunc: func(iface, attr string) (uint64, error) {
+			require.Equal(t, "eth4", iface)
+			require.Equal(t, "carrier_changes", attr)
+			return value, nil
+		},
+		ReadNetStatisticFunc: func(_, _ string) (uint64, error) {
+			t.Fatal("netdev/ counters must not be read from statistics/")
+			return 0, nil
+		},
+	}
+
+	ev := newEvaluator(t, reader, false)
+	dev := &discovery.IBDevice{Name: testDevice, NetDev: "eth4"}
+	cfg := config.CounterConfig{
+		Name: "carrier_changes", Path: "netdev/carrier_changes",
+		Enabled: true, ThresholdType: "delta", Threshold: 0,
+		Description: "Link instability",
+	}
+
+	events := ev.EvaluateNetCounters(dev, ibPort(), []config.CounterConfig{cfg}, checks.EthernetDegradationCheckName)
+	assert.Empty(t, events, "first read seeds the snapshot")
+
+	value = 12
+
+	events = ev.EvaluateNetCounters(dev, ibPort(), []config.CounterConfig{cfg}, checks.EthernetDegradationCheckName)
+	require.Len(t, events, 1, "the delta must breach")
+	assert.False(t, events[0].IsFatal)
+	assert.Equal(t, []string{"carrier_changes"}, events[0].ErrorCode)
+}
+
+func TestEvaluateCounters_SkipsNetdevRootPaths(t *testing.T) {
+	// The IB-tree loop must skip both net path classes; a netdev/ path
+	// must never be read through ReadIBPortCounter.
+	reader := &sysfs.MockReader{
+		ReadIBPortCounterFunc: func(_ string, _ int, counterPath string) (uint64, error) {
+			require.NotEqual(t, "netdev/carrier_changes", counterPath,
+				"netdev/ counters must not be evaluated by the IB-tree loop")
+			return 0, nil
+		},
+	}
+
+	ev := newEvaluator(t, reader, false)
+	cfg := config.CounterConfig{
+		Name: "carrier_changes", Path: "netdev/carrier_changes",
+		Enabled: true, ThresholdType: "delta", Threshold: 0,
+		Description: "Link instability",
+	}
+
+	events := ev.EvaluateCounters(ibDevice(), ibPort(), []config.CounterConfig{cfg}, checks.InfiniBandDegradationCheckName)
+	assert.Empty(t, events)
+}
+
+func TestUnreadableEnabledCounter_SkippedAndWarnedOnce(t *testing.T) {
+	// An enabled counter whose read fails is skipped (no events, no
+	// snapshot) but must be marked for the one-time warning — a wrong
+	// sysfs path once kept carrier_changes silently unmonitored for the
+	// project's entire history.
+	reader := &sysfs.MockReader{
+		ReadIBPortCounterFunc: func(_ string, _ int, _ string) (uint64, error) {
+			return 0, errors.New("transient EIO")
+		},
+	}
+
+	ev := newEvaluator(t, reader, false)
+	cfg := []config.CounterConfig{deltaCounter(0)}
+
+	events := ev.EvaluateCounters(ibDevice(), ibPort(), cfg, checks.InfiniBandDegradationCheckName)
+	assert.Empty(t, events)
+	assert.True(t, ev.unreadableWarned["mlx5_0:1:link_downed"], "the key must be marked as warned")
+	assert.NotContains(t, ev.snapshots, "mlx5_0:1:link_downed", "a failed read must not seed a snapshot")
+
+	// Repeated failures keep it marked exactly once (warn-once).
+	ev.EvaluateCounters(ibDevice(), ibPort(), cfg, checks.InfiniBandDegradationCheckName)
+	assert.Len(t, ev.unreadableWarned, 1)
 }

@@ -72,6 +72,14 @@ func NewEthernetStateCheck(
 	stateManager *statefile.Manager,
 	bootIDChanged bool,
 ) *EthernetStateCheck {
+	// A baseline owed by a previous pod (deferred/partial window, then
+	// restart) is picked up from the persisted flag; a fresh trigger is
+	// registered so it survives partial-window commits.
+	pendingBaseline := bootIDChanged || stateManager.PendingBaseline(checks.EthernetStateCheckName)
+	if pendingBaseline {
+		stateManager.SetPendingBaseline(checks.EthernetStateCheckName)
+	}
+
 	c := &EthernetStateCheck{}
 	c.baseStateCheck = baseStateCheck{
 		nodeName:             nodeName,
@@ -80,7 +88,7 @@ func NewEthernetStateCheck(
 		processingStrategy:   processingStrategy,
 		classifier:           classifier,
 		state:                stateManager,
-		emitHealthyBaselines: bootIDChanged,
+		emitHealthyBaselines: pendingBaseline,
 		strategy:             c,
 	}
 
@@ -169,19 +177,28 @@ func (c *EthernetStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 	metrics.DevicesDiscovered.WithLabelValues(c.nodeName, c.Name()).Set(float64(len(result.Devices)))
 
 	firstPoll := c.previousDevices == nil
-	if firstPoll && len(result.UnreadableDevices) > 0 {
+	if firstPoll && len(result.UnreadableDevices) > 0 &&
+		c.deferFirstPoll(len(result.UnreadableDevices)) {
 		return nil, nil
 	}
 
-	baselineRun := firstPoll && c.emitHealthyBaselines
+	// The baseline reconciliation (check-scoped clear + replay) waits
+	// for the first COMPLETE enumeration: running it while a device is
+	// unreadable would wipe that device's previous-boot conditions with
+	// nothing able to re-assert them (homogeneity is suppressed while
+	// discovery is uncertain). Until then the check monitors whatever is
+	// readable and the baseline stays owed.
+	baselineRun := c.emitHealthyBaselines && len(result.UnreadableDevices) == 0
 	st := newEthPollState()
 	st.discoveryUncertain = len(result.UnreadableDevices) > 0
 
 	committedAnomalous := c.anomalousLatch
 	committedDisappeared := c.disappearedLatch
+	committedPortLatch := c.disappearedPortLatch
 	committedMisses := c.deviceMissCounts
 	c.anomalousLatch = maps.Clone(committedAnomalous)
 	c.disappearedLatch = maps.Clone(committedDisappeared)
+	c.disappearedPortLatch = maps.Clone(committedPortLatch)
 	c.deviceMissCounts = maps.Clone(committedMisses)
 
 	c.collectDevicesAndPorts(result.Devices, st)
@@ -196,16 +213,19 @@ func (c *EthernetStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 	}
 
 	c.pending = &statePollCommit{
-		devices:          st.currentDevices,
-		ports:            st.currentPorts,
-		anomalousLatch:   c.anomalousLatch,
-		disappearedLatch: c.disappearedLatch,
-		deviceMissCounts: c.deviceMissCounts,
-		linkLayer:        ethLinkLayer,
+		devices:              st.currentDevices,
+		ports:                st.currentPorts,
+		anomalousLatch:       c.anomalousLatch,
+		disappearedLatch:     c.disappearedLatch,
+		disappearedPortLatch: c.disappearedPortLatch,
+		deviceMissCounts:     c.deviceMissCounts,
+		linkLayer:            ethLinkLayer,
+		baselineRan:          baselineRun,
 	}
 
 	c.anomalousLatch = committedAnomalous
 	c.disappearedLatch = committedDisappeared
+	c.disappearedPortLatch = committedPortLatch
 	c.deviceMissCounts = committedMisses
 
 	return events, nil
@@ -223,8 +243,14 @@ func (c *EthernetStateCheck) Commit() {
 	c.previousPorts = pending.ports
 	c.anomalousLatch = pending.anomalousLatch
 	c.disappearedLatch = pending.disappearedLatch
+	c.disappearedPortLatch = pending.disappearedPortLatch
 	c.deviceMissCounts = pending.deviceMissCounts
-	c.emitHealthyBaselines = false
+
+	if pending.baselineRan {
+		c.emitHealthyBaselines = false
+		c.state.ClearPendingBaseline(checks.EthernetStateCheckName)
+	}
+
 	c.persistState(pending.linkLayer, pending.devices, pending.ports)
 }
 
@@ -361,7 +387,32 @@ func (c *EthernetStateCheck) evaluatePortTransition(
 
 	isHealthy := portIsHealthy(pi.snap)
 	wasHealthy := existed && portIsHealthy(prev)
-	disappearanceRecovery := isHealthy && c.consumeDisappearanceRecovery(pi.snap.Device)
+
+	var disappearanceRecovery bool
+
+	if isHealthy {
+		// Consume both latch levels independently: a device latch and a
+		// port latch can coexist for the same port.
+		deviceRecovery := c.consumeDisappearanceRecovery(pi.snap.Device)
+		portRecovery := c.consumePortDisappearanceRecovery(pi.key)
+		disappearanceRecovery = deviceRecovery || portRecovery
+	}
+
+	if baselineRun {
+		// The baseline poll is the authoritative first observation of
+		// this boot: the check-scoped clear just wiped every prior
+		// condition, so steady states must re-assert themselves rather
+		// than rely on transition edges. Healthy ports emit their
+		// baseline; unhealthy ports pass through the first-poll severity
+		// gate (peer evidence via card anomalies, override pins exempt) —
+		// exactly the verdict a fresh first poll would reach for the
+		// same physical state.
+		if isHealthy {
+			return c.healthyRecoveryEvent(pi, prev, existed, true, disappearanceRecovery)
+		}
+
+		return c.unhealthyEvent(pi, prev, true, anomalousCards, portCard)
+	}
 
 	if existed && isHealthy == wasHealthy && !disappearanceRecovery {
 		return c.escalationEvent(pi, prev, isHealthy, firstPoll, anomalousCards, portCard)

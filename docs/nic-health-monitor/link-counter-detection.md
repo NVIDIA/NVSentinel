@@ -344,8 +344,12 @@ When threshold exceeded for the first time, emits a single RAW event with:
 └── Threshold      → e.g., 120/hour
 
 Subsequent polls while breached emit nothing (latching breach). A
-recovery event is emitted only when the counter is reset (admin clear)
-or the host reboots.
+recovery event is emitted when the counter is reset (admin clear), when
+the host reboots, or when the latched key can never be evaluated again
+(its counter was removed from the configuration, or its device is still
+discovered but no longer in monitoring scope — e.g., classified as a
+management NIC); the last case is swept automatically so the downstream
+condition is not orphaned.
 
 Fatal counter thresholds (configurable, defaults shown):
 ├── link_downed (Delta > 0)                    → QP disconnect (FATAL)
@@ -417,7 +421,7 @@ All extended counters are **non-fatal** by default. They indicate congestion, re
 
 - **Standard IB counters**: `/sys/class/infiniband/<dev>/ports/<port>/counters/` (symbol_error, link_downed, local_link_integrity_errors, etc.)
 - **Extended counters (Mellanox)**: `/sys/class/infiniband/<dev>/ports/<port>/hw_counters/` (rnr_nak_retry_err, roce_slow_restart, etc.)
-- **Ethernet stats (RoCE)**: `/sys/class/net/<iface>/statistics/` (carrier_changes)
+- **Ethernet stats (RoCE)**: `/sys/class/net/<iface>/statistics/` (rx/tx error counters) and the netdev root `/sys/class/net/<iface>/` for `carrier_changes` (which lives beside `operstate`, not under `statistics/`)
 
 ### 4.3 Diagnostic Commands
 
@@ -623,7 +627,9 @@ T=25s   Poll:  link_downed = 0       (delta=0, not breached, no event)
 
 ### 6.5 Boot ID Handling
 
-On host reboot, the node may come back with **entirely different hardware** (the CSP may have replaced NICs during maintenance). Kernel-maintained counters, port snapshots, and the observed device set are stale and must be discarded. Outstanding card/device event latches are retained until a matching healthy observation clears them. The monitor emits **healthy baseline events** for all observed ports and counters to clear stale conditions from the previous boot.
+On host reboot, the node may come back with **entirely different hardware** (the CSP may have replaced NICs during maintenance). Kernel-maintained counters, port snapshots, and the observed device set are stale and must be discarded. On the first poll with a **complete enumeration** after the reboot, each check emits a **check-scoped clear** — a healthy event with empty `EntitiesImpacted`, which downstream consumers (platform-connector node conditions and fault-quarantine) treat as "every entity of this check recovered". This is what clears conditions whose entities no longer exist on the new boot (renamed devices, replaced hardware, removed counters); the **per-entity healthy baseline events** that follow re-assert health for the entities that are still observable. The clear is emitted first in the batch and backdated so that consumers ordering events by `GeneratedTimestamp` can never apply it after — and thereby wipe — the same batch's current-boot events.
+
+While any device is enumerable but unreadable, the reconciliation is **deferred** (persisted as a pending flag so it survives pod restarts): running the clear then would wipe the unreadable device's previous-boot conditions with nothing able to re-assert them. Readable devices are monitored normally in the meantime, and the reconciliation poll **replays current truth** in the same batch, right after the clear: still-fatal port states are re-asserted through the first-poll peer-evidence gate; breaches latched during the partial window are re-emitted — from live evaluation when the counter is readable, otherwise from the entity identity persisted with the breach flag (absent device, missing counter file, vanished netdev), with an administratively reset counter consuming its latch instead of replaying it; and device- and port-disappearances detected during the window are re-asserted with their latches retained (window provenance is persisted, so this survives pod restarts). Outstanding card/device/port event latches from the previous boot are consumed by the clear (anything still wrong on the new boot re-latches with fresh entities).
 
 **Algorithm:**
 
@@ -632,7 +638,8 @@ On host reboot, the node may come back with **entirely different hardware** (the
 3. **If boot IDs differ** (host rebooted):
    - Clear counter snapshots, breach flags, port states, known devices, and partial disappearance miss counts; preserve outstanding card/device FATAL latches
    - Update the stored boot ID
-   - On the **first poll cycle after reboot**, emit baseline events:
+   - On the **first poll cycle with a complete enumeration** (deferred while any device is unreadable; the owed reconciliation is persisted across pod restarts), emit baseline events:
+     - **All enabled checks**: Emit one **check-scoped clear** (healthy event, empty `EntitiesImpacted`) as the first event of the batch, wiping every stale condition recorded under the check's name — including conditions for entities that no longer exist on this boot — then replay any faults observed during the pre-reconciliation window so they are not lost with the clear.
      - **State checks**: For every port that is currently `ACTIVE/LinkUp`, emit a **healthy event** (`IsHealthy=true`). This clears any stale FATAL port conditions on the platform from the previous boot. Ports that are currently unhealthy (e.g., `DOWN`, `Disabled`) emit fatal events only when first-poll peer evidence shows the card is anomalous; unhealthy ports without peer evidence are logged and suppressed.
      - **Counter checks**: Emit a **healthy event** (`IsHealthy=true`) for every configured counter. Since counters reset to 0 on reboot and there is no previous value to compute a delta from, all counters are below threshold on the first poll. This clears any stale counter breach conditions on the platform. The first poll also establishes the counter baseline:
        - **Delta counters** evaluate against the new baseline starting from the **second poll** (one polling interval later) — any increment above threshold triggers an unhealthy event.
@@ -1091,15 +1098,20 @@ Allowed counter selections are hardcoded in `pkg/config/config.go`. They include
 
 - Standard IB error/degradation counters under `counters/`, such as `symbol_error`, `link_error_recovery`, `link_downed`, `port_rcv_errors`, `port_xmit_discards`, and `port_xmit_wait`.
 - mlx5/RDMA hardware error, retry, and RoCE congestion counters under `hw_counters/`, such as `rnr_nak_retry_err`, `local_ack_timeout_err`, `req_transport_retries_exceeded`, `out_of_sequence`, and `roce_slow_restart`.
-- Linux interface-level error counters under `statistics/`, such as `carrier_changes`, `rx_errors`, `rx_crc_errors`, `rx_missed_errors`, `tx_errors`, and `tx_carrier_errors`.
+- Linux interface-level error counters under `statistics/` (`rx_errors`, `rx_crc_errors`, `rx_missed_errors`, `tx_errors`, `tx_carrier_errors`) and the netdev-root attribute `carrier_changes`.
 
 ### 10.4 Threshold Processing Algorithm
 
 The evaluator uses **latching breach** semantics: once a counter
 breaches its threshold, the breach flag stays set until the counter is
-reset (`current < previous`) or the host reboots. Polls while a counter
-is already breached emit nothing; recovery events fire only on counter
-reset of a previously breached counter.
+reset (`current < previous`), the host reboots, or the key becomes
+permanently unevaluable (counter removed from the configuration, or the
+device discovered but out of monitoring scope) — the last case emits an
+automatic sweep recovery so the condition cannot be orphaned. Polls
+while a counter is already breached emit nothing. A latch whose device
+is merely **absent** from discovery is deliberately held: absence can be
+a transient firmware reset, and the reboot baseline clear resolves it if
+the device never returns.
 
 ```
 On startup, before the first poll cycle:
@@ -1235,7 +1247,7 @@ The monitor validates configuration at startup:
 
 **Example Event Fields (Recovery - Counter Reset by Admin):**
 
-> **Note**: Recovery events are emitted when a previously breached counter returns below its threshold — typically after an administrator clears the counters. The `CheckName` matches the original breach event to ensure the recovery clears the correct condition.
+> **Note**: Recovery events are emitted when a previously breached counter is reset — typically after an administrator clears the counters. The `CheckName` **and** `ErrorCode` (the counter name) match the original breach event, so the recovery clears exactly its own counter's condition: multiple counters breached on the same port hold independent downstream conditions, and recovering one never clears a sibling's still-active fault. Only the check-scoped baseline clear is deliberately code-less (empty `ErrorCode` = clear everything for the check).
 
 | Field             | Value                                                                                     |
 |-------------------|-------------------------------------------------------------------------------------------|
