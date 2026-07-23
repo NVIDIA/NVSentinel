@@ -39,6 +39,8 @@ DRIVER_ROOT="${DRIVER_ROOT:-/}"
 NODE_NAME="${NODE_NAME:-unknown-node}"
 START_TIME=$(date +%s.%N)
 BUG_REPORT_TIMESTAMP="${BUG_REPORT_TIMESTAMP:-$(date +%Y%m%d-%H%M%S)}"
+# With DRIVER_ROOT=/run/nvidia/driver, this writes to that HostPath mount. The report
+# survives the reset container exiting, but is lost after reboot when /run is cleared.
 BUG_REPORT_DIR="${BUG_REPORT_DIR:-/var/tmp}"
 
 log() {
@@ -105,16 +107,8 @@ collect_and_upload_nvidia_bug_report() {
     log "INFO: nvidia-bug-report upload complete: $bug_report_file"
   else
     log "WARN: Failed to upload nvidia-bug-report: $bug_report_file"
+    return 1
   fi
-}
-
-collect_reset_failure_diagnostics() {
-  if [ "${COLLECT_BUG_REPORT_ON_RESET_FAILURE:-true}" != "true" ]; then
-    log "INFO: Skipping nvidia-bug-report collection: COLLECT_BUG_REPORT_ON_RESET_FAILURE is not true"
-    return 0
-  fi
-
-  collect_and_upload_nvidia_bug_report || log "WARN: Continuing after nvidia-bug-report collection failure."
 }
 
 log "INFO: Using DRIVER_ROOT=$DRIVER_ROOT"
@@ -165,7 +159,7 @@ else
   FINAL_EXIT_STATUS=$RESET_STATUS
   log "ERROR: Reset failed. See details below:"
   sed -e '/All done\./d' -e 's/\.$//' "$RESET_OUTPUT_FILE" | grep . || true
-  collect_reset_failure_diagnostics
+  collect_and_upload_nvidia_bug_report || log "WARN: Continuing after nvidia-bug-report collection failure."
 fi
 
 #------------------------
