@@ -433,8 +433,11 @@ Following gpud's design, kernel log events are classified as **Non-Fatal (`IsFat
 | `health_poll_failed`     | `mlx5_core.*device's health compromised.*reached miss count`   | **Fatal**     | [`health.c`](https://github.com/torvalds/linux/blob/master/drivers/net/ethernet/mellanox/mlx5/core/health.c)                                                       | Firmware heartbeat lost. Device is non-functional. **Always Fatal**.     |
 | `unrecoverable_err`      | `mlx5_core.*unrecoverable hardware error`                      | **Fatal**     | [`health.c`](https://github.com/torvalds/linux/blob/master/drivers/net/ethernet/mellanox/mlx5/core/health.c)                                                       | Hardware admission of failure. **Always Fatal**.                         |
 | `access_reg_failed`      | `mlx5_cmd_out_err.*ACCESS_REG.*failed`                         | **Non-Fatal** | [`cmd.c`](https://github.com/torvalds/linux/blob/master/drivers/net/ethernet/mellanox/mlx5/core/cmd.c)                                                             | Monitoring tool conflict on restricted PFs. **Non-Fatal Noise**.         |
-| `netdev_watchdog`        | `NETDEV WATCHDOG:.*mlx5_core.*transmit queue.*timed out`       | **Non-Fatal** | [`sch_generic.c`](https://github.com/torvalds/linux/blob/master/net/sched/sch_generic.c) (generic kernel mechanism)                                                | TX queue stall with auto-recovery via `mlx5e_tx_timeout`. **Non-Fatal**. |
+| `netdev_watchdog`        | `(NETDEV WATCHDOG.*mlx5_core\|mlx5_core.*NETDEV WATCHDOG).*transmit queue.*timed out` | **Non-Fatal** | [`sch_generic.c`](https://github.com/torvalds/linux/blob/master/net/sched/sch_generic.c) (generic kernel mechanism)                                                | TX queue stall with auto-recovery via `mlx5e_tx_timeout`. **Non-Fatal**. Matches both message orders: kernel commit `e316dd1cf135` (v6.8, backported to 6.6.47/6.1.107) moved the driver prefix in front of `NETDEV WATCHDOG`. |
 | `module_unplugged`       | `mlx5_core.*Port module event.*Cable unplugged`                | **Non-Fatal** | [`events.c`](https://github.com/torvalds/linux/blob/master/drivers/net/ethernet/mellanox/mlx5/core/events.c)                                                       | SFP/transceiver unplugged. Informational (though port will be DOWN).     |
+| `mlx5_tx_timeout_detected` | `mlx5_core.*TX timeout detected`                             | **Non-Fatal** | [`en_main.c`](https://github.com/torvalds/linux/blob/master/drivers/net/ethernet/mellanox/mlx5/core/en_main.c) (`mlx5e_tx_timeout`)                                | Driver-reported TX timeout. Stable across kernel versions (unlike the `NETDEV WATCHDOG` core message) and re-fires each watchdog cycle while a queue stays stuck. Driver attempts auto-recovery. |
+| `mlx5_rx_timeout_detected` | `mlx5_core.*RX timeout on channel`                           | **Non-Fatal** | [`reporter_rx.c`](https://github.com/torvalds/linux/blob/master/drivers/net/ethernet/mellanox/mlx5/core/en/reporter_rx.c) (via `mlx5e_health_report`)              | Driver-reported RX timeout. Same class as the TX variant; known onset flavor of NAPI poll-loop wedges. Driver attempts auto-recovery. |
+| `mlx5_napi_soft_lockup`  | Stateful (see §5.4): `BUG: soft lockup` header + `mlx5e_(poll_ico_cq\|napi_poll)\+0x` | **Fatal**     | [`watchdog.c`](https://github.com/torvalds/linux/blob/master/kernel/watchdog.c) + mlx5 NAPI stack frames                                                          | CPU stuck in the mlx5 NAPI poll loop. Driver is wedged; auto-recovery has failed by definition. Node needs reboot/replacement. **Always Fatal**. |
 
 **Full Log Line Examples:**
 
@@ -446,8 +449,11 @@ Following gpud's design, kernel log events are classified as **Non-Fatal (`IsFat
 | `health_poll_failed`     | `mlx5_core 0000:d2:00.0: poll_health:174: device's health compromised - reached miss count.`                          |
 | `unrecoverable_err`      | `mlx5_core: INFO: synd 0x8: unrecoverable hardware error.`                                                            |
 | `access_reg_failed`      | `mlx5_cmd_out_err:838: ACCESS_REG(0x805) op_mod(0x1) failed, status bad operation(0x2)`                               |
-| `netdev_watchdog`        | `NETDEV WATCHDOG: eth0 (mlx5_core): transmit queue 0 timed out`                                                       |
+| `netdev_watchdog`        | `NETDEV WATCHDOG: eth0 (mlx5_core): transmit queue 0 timed out` (pre-6.8) / `mlx5_core 0000:65:00.0 ens15np0: NETDEV WATCHDOG: CPU: 94: transmit queue 3 timed out 5032 ms` (6.8+) |
 | `module_unplugged`       | `mlx5_core 0000:12:00.0: Port module event: module 0, Cable unplugged`                                                |
+| `mlx5_tx_timeout_detected` | `mlx5_core 0000:65:00.0 ens15np0: TX timeout detected`                                                              |
+| `mlx5_rx_timeout_detected` | `mlx5_core 0000:65:00.0 ens15np0: RX timeout on channel: 20, ICOSQ: 0x1ee0, RQ: 0x1e43, CQ: 0x3ea6`                 |
+| `mlx5_napi_soft_lockup`  | `watchdog: BUG: soft lockup - CPU#94 stuck for 226906s! [swapper/94:0]` followed by `RIP: 0010:mlx5e_poll_ico_cq+0x8b/0x1a0 [mlx5_core]` |
 
 > **Design Note**: While gpud internally treats many of these as non-fatal, NVSentinel escalates **deterministically fatal** signals to Fatal (`IsFatal=true`) to trigger proactive remediation (`REPLACE_VM`) before workload failure cascades. Non-fatal signals remain as `IsFatal=false` for diagnostic correlation.
 
@@ -457,10 +463,10 @@ Patterns are classified according to their operational impact:
 
 | Category                  | Patterns                                                                                             | Severity      | Recommended Action  |
 |---------------------------|------------------------------------------------------------------------------------------------------|---------------|---------------------|
-| **Always Fatal (Device)** | command timeout with resource leak, `health poll failed`, `unrecoverable`                            | **Fatal**     | `REPLACE_VM`        |
-| **Non-Fatal / Evidence**  | `insufficient power`, `High Temperature`, `ACCESS_REG failed`, `module unplugged`, `NETDEV WATCHDOG` | **Non-Fatal** | `NONE` (Diagnostic) |
+| **Always Fatal (Device)** | command timeout with resource leak, `health poll failed`, `unrecoverable`, `mlx5_napi_soft_lockup`   | **Fatal**     | `REPLACE_VM`        |
+| **Non-Fatal / Evidence**  | `insufficient power`, `High Temperature`, `ACCESS_REG failed`, `module unplugged`, `NETDEV WATCHDOG`, `mlx5_tx_timeout_detected`, `mlx5_rx_timeout_detected` | **Non-Fatal** | `NONE` (Diagnostic) |
 
-> **Key Principle**: Kernel logs provide **diagnostic context**, not **remediation triggers**. The decision to drain/replace a node is based on actual port state (via link state detection), not log messages alone.
+> **Key Principle**: Only **deterministic fatal signatures** in kernel logs (command-interface death, firmware heartbeat loss, unrecoverable hardware error, mlx5-attributed NAPI soft lockup) act as remediation triggers. All other kernel log events provide **diagnostic context** only — the decision to drain/replace for those is based on actual port state (via link state detection) or analyzer correlation, not single log messages.
 
 ### 5.3 Diagnostic Commands
 
@@ -476,6 +482,57 @@ journalctl -k | grep -E "(mlx5_core|PCIe)"
 # Watch for real-time NIC driver messages
 journalctl -k -f | grep --line-buffered mlx5_core
 ```
+
+### 5.4 Multi-line Soft Lockup Detection (`mlx5_napi_soft_lockup`)
+
+A kernel soft-lockup report spans many separate journal entries: the header
+line (`watchdog: BUG: soft lockup - CPU#94 stuck for 226906s!`) carries the CPU
+and duration but no driver attribution, while the `RIP:` and call-trace lines
+that attribute the lockup to mlx5 arrive as subsequent entries. No single-line
+regex can match both, so this pattern is implemented as a small stateful
+detector inside the NIC driver handler rather than as an entry in the
+first-match-wins single-line loop:
+
+1. **Arm**: a line matching `BUG: soft lockup - CPU#(\d+) stuck for (\d+)s`
+   opens a bounded window (150 kernel log lines). A newer header re-arms the
+   window and refreshes the captured CPU/duration (the kernel re-reports a
+   persistent lockup with a growing duration).
+2. **Confirm**: within the window, a line matching
+   `mlx5e_(poll_ico_cq|napi_poll)\+0x` — the `RIP:` line or a call-trace
+   frame — confirms mlx5 attribution and emits one **Fatal** event
+   (`REPLACE_VM`). Frames prefixed with `?` (followed by a space) are speculative stack remnants
+   and are ignored; generic frames such as `net_rx_action` never count as
+   evidence, so soft lockups in other drivers are not attributed to the NIC.
+3. **Rate-limit**: the watchdog re-reports a persistent lockup every few tens
+   of seconds; emission is suppressed for 30 minutes after each event.
+
+The window is line-count based (not wall-clock based) so that journal backlog
+replay after a monitor restart behaves identically to live tailing. The kernel
+dump carries no PCI address, so the event is node-scoped (no NIC entity); the
+parsed CPU and duration are attached as event metadata
+(`metadata.cpu`, `metadata.durationSeconds`).
+
+> **Why fatal on first confirmation**: an mlx5-attributed lockup means the
+> driver's own recovery (TX/RX reporters) is not making progress — observed
+> wedges persist for days and clear only on reboot. The `RIP`/non-speculative
+> frame requirement is the false-positive guard; transient generic soft
+> lockups do not carry mlx5 frames at `RIP`.
+>
+> The kernel defines a soft lockup as a failure to reschedule beyond the
+> watchdog threshold — the CPU dumps its stack and *resumes*, so a single
+> report does not by itself prove a permanent wedge
+> ([lockup watchdogs](https://docs.kernel.org/admin-guide/lockup-watchdogs.html)).
+> Two properties bound the risk of acting on the first report anyway:
+> the parsed duration cannot distinguish outcomes at onset (the first report
+> of what becomes a multi-day wedge also says ~26s), and repetition gates
+> never fire on pre-5.13 kernels, which warn once per lockup episode.
+>
+> **Rollout**: like every pattern in this check, `mlx5_napi_soft_lockup`
+> ships disabled in the default chart. When enabling it, start with
+> `processingStrategy: STORE_ONLY` (shadow mode) — events are persisted and
+> observable but drive no cordon or remediation. Graduate to
+> `EXECUTE_REMEDIATION` after the shadow phase shows adequate precision on
+> your fleet's real journals.
 
 ---
 
@@ -717,7 +774,8 @@ The following table shows which hardware failures this monitor detects and how t
 |---------------------|----------------------------------------------------------------|------------------------------|
 | **Firmware freeze** | Kernel log: `timeout. Will cause a leak of a command resource` | All NIC operations stall     |
 | **Driver crash**    | Kernel log: `device's health compromised - reached miss count` | NIC becomes unusable         |
-| **TX stall**        | Kernel log: `NETDEV WATCHDOG`                                  | Network transmission fails   |
+| **TX stall**        | Kernel log: `NETDEV WATCHDOG` / `TX timeout detected`          | Network transmission fails   |
+| **NAPI poll wedge** | Kernel log: `BUG: soft lockup` + mlx5 NAPI stack frames        | CPU pinned at 100%; all network I/O through the NIC hangs (incl. network-backed storage); node may stay `Ready` for days |
 
 ### 10.4 Event Severity Classification
 
@@ -728,7 +786,10 @@ Kernel log events are classified by their determinism of failure:
 | `mlx5_core.*timeout. Will cause a leak`  | **Fatal**     | Control plane broken          | `REPLACE_VM`       |
 | `mlx5_core.*device's health compromised` | **Fatal**     | Firmware heartbeat lost       | `REPLACE_VM`       |
 | `mlx5_core unrecoverable`                | **Fatal**     | Hardware admission of failure | `REPLACE_VM`       |
+| soft lockup + mlx5 NAPI frames (stateful) | **Fatal**    | Driver wedged in NAPI poll    | `REPLACE_VM`       |
 | `NETDEV WATCHDOG`                        | **Non-Fatal** | TX stall with auto-recovery   | `NONE`             |
+| `TX timeout detected`                    | **Non-Fatal** | TX stall (driver-reported)    | `NONE`             |
+| `RX timeout on channel`                  | **Non-Fatal** | RX stall (driver-reported)    | `NONE`             |
 | `Detected insufficient power`            | **Non-Fatal** | Power negotiation status      | `NONE`             |
 | `High Temperature`                       | **Non-Fatal** | Thermal warning               | `NONE`             |
 | `module unplugged`                       | **Non-Fatal** | SFP unplugged                 | `NONE`             |
@@ -749,7 +810,10 @@ The following patterns are monitored in the kernel ring buffer (dmesg/kmsg):
 | `mlx5_core.*timeout\. Will cause a leak of a command resource` | **Fatal**     | Firmware/driver command timeout | `REPLACE_VM`                                                  |
 | `mlx5_core.*device's health compromised.*reached miss count`   | **Fatal**     | Health check missed             | `REPLACE_VM`                                                  |
 | `mlx5_core.*unrecoverable hardware error`                      | **Fatal**     | Hardware error detected         | `REPLACE_VM`                                                  |
-| `NETDEV WATCHDOG:.*mlx5_core.*timed out`                       | **Non-Fatal** | TX queue timeout                | Investigate; persistent stalls caught by link-state-detection |
+| `NETDEV WATCHDOG` + `mlx5_core` (either order) + `timed out`   | **Non-Fatal** | TX queue timeout                | Investigate; persistent stalls caught by link-state-detection |
+| `mlx5_core.*TX timeout detected`                               | **Non-Fatal** | TX queue timeout (driver line)  | Investigate; repeated occurrences escalate via analyzer       |
+| `mlx5_core.*RX timeout on channel`                             | **Non-Fatal** | RX timeout (driver line)        | Investigate; repeated occurrences escalate via analyzer       |
+| `BUG: soft lockup` + `mlx5e_(poll_ico_cq\|napi_poll)+0x` (stateful) | **Fatal** | CPU wedged in mlx5 NAPI poll    | `REPLACE_VM`                                                  |
 | `mlx5_core.*Detected insufficient power`                       | **Non-Fatal** | Power negotiation status        | Investigate; can be transient                                 |
 | `mlx5_core.*Port module event.*High Temp`                      | **Non-Fatal** | Thermal warning                 | Investigate; check cooling                                    |
 | `mlx5_cmd_out_err.*ACCESS_REG.*failed`                         | **Non-Fatal** | Restricted PF access            | Filter/Ignore                                                 |
@@ -779,7 +843,7 @@ The Health Events Analyzer should only add value where the raw monitors do not a
 `RepeatedNICDriverError`:
 
 - Input events: `syslog-health-monitor`, `SysLogsNICDriverError`, `IsFatal=false`.
-- Included pattern names: `netdev_watchdog`, `port_module_high_temp`, `pci_power_insufficient`, `module_unplugged`.
+- Included pattern names: `netdev_watchdog`, `port_module_high_temp`, `pci_power_insufficient`, `module_unplugged`, `mlx5_tx_timeout_detected`, `mlx5_rx_timeout_detected`.
 - Grouping: same node + same `errorcode[0]` pattern name.
 - Threshold: 3 events in 1 hour.
 - Action: `CONTACT_SUPPORT`.

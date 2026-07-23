@@ -81,6 +81,12 @@ nicDriverDetection:
       enabled: false
     - name: module_unplugged
       enabled: false
+    - name: mlx5_tx_timeout_detected
+      enabled: false
+    - name: mlx5_rx_timeout_detected
+      enabled: false
+    - name: mlx5_napi_soft_lockup
+      enabled: false
 
 # Per-check cancellation rules: when the check observes `onErrorCode`, emit
 # synthetic healthy events for each `cancelErrorCodes` entry on the same

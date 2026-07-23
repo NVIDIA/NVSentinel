@@ -39,14 +39,16 @@ func TestBuildChecksFromFlag_KernelOriginGetKernelFilter(t *testing.T) {
 	defer func() { *checksList, *kataEnabled = origChecks, origKata }()
 
 	*kataEnabled = "false"
-	*checksList = fd.XIDErrorCheck + "," + fd.SXIDErrorCheck + "," + fd.GPUFallenOffCheck
+	*checksList = fd.XIDErrorCheck + "," + fd.SXIDErrorCheck + "," + fd.GPUFallenOffCheck +
+		"," + fd.NICDriverErrorCheck
 
 	checks, err := buildChecksFromFlag()
 	if err != nil {
 		t.Fatalf("buildChecksFromFlag: %v", err)
 	}
 
-	for _, name := range []string{fd.XIDErrorCheck, fd.SXIDErrorCheck, fd.GPUFallenOffCheck} {
+	names := []string{fd.XIDErrorCheck, fd.SXIDErrorCheck, fd.GPUFallenOffCheck, fd.NICDriverErrorCheck}
+	for _, name := range names {
 		tags, ok := tagsOf(checks, name)
 		if !ok {
 			t.Fatalf("check %q not built", name)
@@ -55,6 +57,17 @@ func TestBuildChecksFromFlag_KernelOriginGetKernelFilter(t *testing.T) {
 		if len(tags) != 1 || tags[0] != "-k" {
 			t.Errorf("check %q: expected tags [-k], got %v", name, tags)
 		}
+	}
+}
+
+// TestKernelOriginChecks_IncludesNICDriverCheck pins the NIC driver check to
+// the kernel-transport filter: mlx5 driver and soft-lockup lines are kernel
+// entries, and without "-k" the nicdriver soft-lockup detector's line-count
+// window would be consumed by unrelated userspace logs (audit, containers),
+// while userspace lines shaped like kernel dumps could arm or confirm it.
+func TestKernelOriginChecks_IncludesNICDriverCheck(t *testing.T) {
+	if !kernelOriginChecks[fd.NICDriverErrorCheck] {
+		t.Fatalf("kernelOriginChecks must include %q", fd.NICDriverErrorCheck)
 	}
 }
 

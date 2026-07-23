@@ -100,6 +100,20 @@ var (
 		},
 		[]string{"taint_key", "taint_effect"},
 	)
+	LabelsApplied = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "fault_quarantine_labels_applied_total",
+			Help: "Total number of quarantine labels applied to nodes.",
+		},
+		[]string{"label_key"},
+	)
+	LabelsRemoved = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "fault_quarantine_labels_removed_total",
+			Help: "Total number of quarantine labels removed from nodes.",
+		},
+		[]string{"label_key"},
+	)
 	CordonsApplied = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Name: "fault_quarantine_cordons_applied_total",

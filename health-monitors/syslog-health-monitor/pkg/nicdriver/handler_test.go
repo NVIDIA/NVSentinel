@@ -79,8 +79,25 @@ var defaultTestPatterns = []CompiledPattern{
 		HasProcessingStrategy: true,
 	},
 	{
-		Name:                  "netdev_watchdog",
-		Re:                    regexp.MustCompile(`NETDEV WATCHDOG.*mlx5_core.*transmit queue.*timed out`),
+		Name: "netdev_watchdog",
+		Re: regexp.MustCompile(
+			`(NETDEV WATCHDOG.*mlx5_core|mlx5_core.*NETDEV WATCHDOG).*transmit queue.*timed out`),
+		IsFatal:               false,
+		RecommendedAction:     pb.RecommendedAction_NONE,
+		ProcessingStrategy:    pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		HasProcessingStrategy: true,
+	},
+	{
+		Name:                  "mlx5_tx_timeout_detected",
+		Re:                    regexp.MustCompile(`mlx5_core.*TX timeout detected`),
+		IsFatal:               false,
+		RecommendedAction:     pb.RecommendedAction_NONE,
+		ProcessingStrategy:    pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		HasProcessingStrategy: true,
+	},
+	{
+		Name:                  "mlx5_rx_timeout_detected",
+		Re:                    regexp.MustCompile(`mlx5_core.*RX timeout on channel`),
 		IsFatal:               false,
 		RecommendedAction:     pb.RecommendedAction_NONE,
 		ProcessingStrategy:    pb.ProcessingStrategy_EXECUTE_REMEDIATION,
@@ -192,6 +209,21 @@ func TestProcessLine_NonFatalPatterns(t *testing.T) {
 			name:        "netdev_watchdog",
 			message:     "NETDEV WATCHDOG: eth0 (mlx5_core): transmit queue 0 timed out",
 			wantPattern: "netdev_watchdog",
+		},
+		{
+			name:        "netdev_watchdog_post_v6.8_format",
+			message:     "mlx5_core 0000:65:00.0 ens15np0: NETDEV WATCHDOG: CPU: 94: transmit queue 3 timed out 5032 ms",
+			wantPattern: "netdev_watchdog",
+		},
+		{
+			name:        "mlx5_tx_timeout_detected",
+			message:     "mlx5_core 0000:65:00.0 ens15np0: TX timeout detected",
+			wantPattern: "mlx5_tx_timeout_detected",
+		},
+		{
+			name:        "mlx5_rx_timeout_detected",
+			message:     "mlx5_core 0000:65:00.0 ens15np0: RX timeout on channel: 20, ICOSQ: 0x1ee0, RQ: 0x1e43, CQ: 0x3ea6",
+			wantPattern: "mlx5_rx_timeout_detected",
 		},
 		{
 			name:        "pci_power_insufficient",

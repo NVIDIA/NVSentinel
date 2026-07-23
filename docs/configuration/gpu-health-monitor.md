@@ -6,25 +6,35 @@ The GPU Health Monitor module watches GPU health using NVIDIA DCGM (Data Center 
 
 ## DCGM Deployment Modes
 
-DCGM (Data Center GPU Manager) always runs as a DaemonSet with one pod per GPU node. The GPU Health Monitor can connect to DCGM in two modes:
+The GPU Health Monitor supports three DCGM source modes, selected with `global.dcgm.mode`.
 
-### DCGM with Kubernetes Service
+### Operator Service
 
-DCGM DaemonSet exposes a Kubernetes service. GPU Health Monitor pods connect to DCGM on their local node via this service endpoint.
+The GPU Operator runs DCGM as a DaemonSet and exposes it through a Kubernetes service. GPU Health Monitor pods connect to the service endpoint.
 
 **Characteristics:**
 - DCGM runs as a DaemonSet (one pod per GPU node)
 - Kubernetes service provides DNS endpoint for DCGM
 - GPU Health Monitor connects via service DNS name
 
-### DCGM with Host Networking
+### External Hostengine
 
-DCGM DaemonSet uses host networking. GPU Health Monitor pods connect to DCGM via `localhost:5555` on the host network.
+An externally managed hostengine runs on each GPU node. GPU Health Monitor pods use host networking and connect to the configured endpoint, which defaults to `localhost:5555`.
 
 **Characteristics:**
-- DCGM runs as a DaemonSet with `hostNetwork: true`
+- The hostengine lifecycle is managed outside NVSentinel
 - No Kubernetes service needed
-- GPU Health Monitor connects to `localhost:5555`
+- GPU Health Monitor enables host networking automatically
+
+### Embedded Mode
+
+GPU Health Monitor starts an in-process DCGM hostengine and exposes it to pod-local clients on a loopback endpoint.
+
+**Characteristics:**
+- No separate DCGM DaemonSet or service is needed
+- `gpu-health-monitor.runtimeClassName` must name the cluster's NVIDIA RuntimeClass
+- The chart automatically sets `privileged: true` on the GPU Health Monitor container
+- The endpoint must be `localhost`, `127.0.0.1`, or `::1`
 
 ## Configuration Reference
 
@@ -64,70 +74,69 @@ gpu-health-monitor:
 
 ## DCGM Configuration
 
-### DCGM Service Mode
+### Operator Service Mode
 
-Configuration for connecting to DCGM running as a Kubernetes service.
+This is the default mode.
 
 ```yaml
-gpu-health-monitor:
+global:
   dcgm:
-    dcgmK8sServiceEnabled: true
+    mode: operator-service
+    enabled: true
     service:
       endpoint: "nvidia-dcgm.gpu-operator.svc"
       port: 5555
 ```
 
-#### Parameters
-
-##### dcgmK8sServiceEnabled
-Enables connection to DCGM via Kubernetes service. When `true`, uses `service.endpoint` and `service.port`. When `false`, connects to `localhost:5555` (sidecar mode).
-
-##### service.endpoint
-Kubernetes service DNS name for DCGM. Typically the DCGM service deployed by GPU Operator.
-
-##### service.port
-Port where DCGM is listening. Default is `5555`.
-
-#### DCGM Service Examples
-
-##### Example 1: GPU Operator DCGM Service
+To use a service in another namespace, override its endpoint:
 
 ```yaml
-dcgm:
-  dcgmK8sServiceEnabled: true
-  service:
-    endpoint: "nvidia-dcgm.gpu-operator.svc"
-    port: 5555
+global:
+  dcgm:
+    mode: operator-service
+    service:
+      endpoint: "dcgm-service.custom-namespace.svc.cluster.local"
+      port: 5555
 ```
 
-##### Example 2: Custom Namespace DCGM Service
+### External Hostengine Mode
+
+NVSentinel does not deploy the hostengine in this mode. The configured hostengine must already be running and reachable on every selected GPU node.
 
 ```yaml
-dcgm:
-  dcgmK8sServiceEnabled: true
-  service:
-    endpoint: "dcgm-service.custom-namespace.svc.cluster.local"
-    port: 5555
+global:
+  dcgm:
+    mode: external-hostengine
+    externalHostengine:
+      endpoint: localhost
+      port: 5555
 ```
 
-### Host Networking
+GPU Health Monitor enables host networking automatically in this mode.
 
-Enables host network mode for GPU Health Monitor pods.
+### Embedded Mode
+
+```yaml
+global:
+  dcgm:
+    mode: embedded-mode
+    embedded:
+      endpoint: localhost
+      port: 5555
+
+gpu-health-monitor:
+  runtimeClassName: nvidia
+```
+
+`runtimeClassName` is required and must match an NVIDIA RuntimeClass installed in the cluster. The chart automatically sets the GPU Health Monitor container to privileged in embedded mode so the NVIDIA Container Toolkit can provide GPU and driver access; no separate security-context value is required.
+
+### Host Networking Override
+
+`external-hostengine` enables host networking automatically. For other modes, it can be enabled explicitly when required by a custom deployment:
 
 ```yaml
 gpu-health-monitor:
-  useHostNetworking: false
-```
-
-Set to `true` when DCGM is deployed with host networking (`dcgm.dcgmK8sServiceEnabled: false`). In this mode, GPU Health Monitor connects to DCGM via `localhost:5555` on the host network.
-
-#### Example: Host Networking Mode for connecting to DCGM
-
-```yaml
-dcgm:
-  dcgmK8sServiceEnabled: false
-
-useHostNetworking: true
+  useHostNetworking: true
 ```
 
 ## DCGM Health Check Incident Suppression

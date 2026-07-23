@@ -78,10 +78,37 @@ var patternDefinitions = map[string]patternDefinition{
 		description:       "Unrecoverable hardware error (syndrome 0x8)",
 	},
 	"netdev_watchdog": {
-		re:                regexp.MustCompile(`NETDEV WATCHDOG.*mlx5_core.*transmit queue.*timed out`),
+		// Kernel commit e316dd1cf135 (v6.8, backported to 6.6.47/6.1.107) moved the
+		// driver name in front of "NETDEV WATCHDOG", so both orders must match:
+		//   old: NETDEV WATCHDOG: eth0 (mlx5_core): transmit queue 0 timed out
+		//   new: mlx5_core 0000:65:00.0 eth0: NETDEV WATCHDOG: CPU: 5: transmit queue 0 timed out 5032 ms
+		re: regexp.MustCompile(
+			`(NETDEV WATCHDOG.*mlx5_core|mlx5_core.*NETDEV WATCHDOG).*transmit queue.*timed out`),
 		isFatal:           false,
 		recommendedAction: pb.RecommendedAction_NONE,
 		description:       "TX queue timeout - mlx5 driver has auto-recovery",
+	},
+	"mlx5_tx_timeout_detected": {
+		re:                regexp.MustCompile(`mlx5_core.*TX timeout detected`),
+		isFatal:           false,
+		recommendedAction: pb.RecommendedAction_NONE,
+		description:       "mlx5 driver TX timeout - driver attempts auto-recovery",
+	},
+	"mlx5_rx_timeout_detected": {
+		re:                regexp.MustCompile(`mlx5_core.*RX timeout on channel`),
+		isFatal:           false,
+		recommendedAction: pb.RecommendedAction_NONE,
+		description:       "mlx5 driver RX timeout - driver attempts auto-recovery",
+	},
+	softLockupPatternName: {
+		// Confirmation regex for the stateful soft-lockup detector, not a
+		// standalone single-line pattern: it only fires on a non-speculative
+		// mlx5 NAPI stack frame observed shortly after a "BUG: soft lockup"
+		// header line (see softlockup.go).
+		re:                regexp.MustCompile(`mlx5e_(poll_ico_cq|napi_poll)\+0x`),
+		isFatal:           true,
+		recommendedAction: pb.RecommendedAction_REPLACE_VM,
+		description:       "CPU soft lockup in mlx5 NAPI poll loop - NIC driver wedged",
 	},
 	"pci_power_insufficient": {
 		re:                regexp.MustCompile(`mlx5_core.*Detected insufficient power on the PCIe slot`),
