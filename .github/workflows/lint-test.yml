@@ -123,6 +123,9 @@ jobs:
             install_dcgm: 'true'
             python_required: 'true'
             replace_imports: 'false'
+          - component: system-services-monitor
+            python_required: 'true'
+            replace_imports: 'false'
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
