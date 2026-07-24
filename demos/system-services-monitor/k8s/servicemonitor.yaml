@@ -94,16 +94,3 @@ spec:
             description: >-
               NVIDIA service {{ $labels.service_name }} has been down for more
               than 3 minutes on {{ $labels.node }}.
-
-        # Critical: CUDA validation failed
-        - alert: CUDAValidationFailed
-          expr: cuda_validation_passed == 0
-          for: 5m
-          labels:
-            severity: critical
-            component: system-services-monitor
-          annotations:
-            summary: "CUDA validation failed on {{ $labels.node }}"
-            description: >-
-              CUDA context creation or memory test failed on {{ $labels.node }}.
-              One or more GPUs may be in a bad state requiring driver reload or reboot.

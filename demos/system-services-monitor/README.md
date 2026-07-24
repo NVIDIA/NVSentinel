@@ -17,7 +17,8 @@ NVIDIA Fabric Manager can fail and stay broken for weeks undetected. NVSentinel'
 | 1 | **Fabric Manager Service** | FM not running, flapping, error state | `nsenter` + `systemctl` |
 | 2 | **Critical GPU Services** | persistenced dead | `nsenter` + `systemctl` |
 | 3 | **Per-GPU Fabric State** | FM_NOT_STARTED, FM_REGISTRATION_STUCK, FM_FABRIC_ERROR | `nsenter` + `nvidia-smi` |
-| 4 | **CUDA Validation** | Context failures, memory errors | PyTorch subprocess |
+
+> **CUDA validation is not part of this monitor.** Polling CUDA context/memory tests from a long-running daemon contends for GPU memory with active workloads (see the [#891 review](https://github.com/NVIDIA/NVSentinel/pull/891)). The supported form is a preflight init-container that runs once before workloads schedule — see [`preflight-checks/cuda-validation/`](../../preflight-checks/cuda-validation/) (#1384).
 
 ## Quick Start
 
@@ -60,7 +61,6 @@ The ServiceMonitor includes PrometheusRule with alerts:
 - `FabricManagerFlapping` (warning, 5m)
 - `FabricStateUnhealthy` (critical, 5m) -- per-GPU fabric orchestration failure
 - `GPUServiceDown` (critical, 3m)
-- `CUDAValidationFailed` (critical, 5m)
 
 ## Validated On
 

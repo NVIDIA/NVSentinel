@@ -24,12 +24,10 @@ from metrics import (
     fabric_manager_restarts_total,
     fabric_manager_last_healthy_seconds,
     nvidia_service_up,
-    cuda_validation_passed,
     health_check_duration_seconds,
     health_check_errors_total,
 )
 from checks.service_check import ServiceChecker
-from checks.cuda_validation import CUDAValidator
 
 logger = logging.getLogger(__name__)
 
@@ -41,14 +39,12 @@ class SystemServicesMonitor:
         self.config = config
         self._shutdown = Event()
         self._start_time = time.monotonic()
-        self._last_cuda_check = 0.0
 
         # Initialize checkers
         self._service_checker = ServiceChecker(
             flap_window=config.flap_window,
             flap_threshold=config.flap_threshold,
         )
-        self._cuda_validator = CUDAValidator()
 
         # Track state for cross-check correlation
         self._fabric_manager_down = False
@@ -129,22 +125,9 @@ class SystemServicesMonitor:
                     logger.exception("Service check failed")
                     health_check_errors_total.labels("services").inc()
 
-        # --- Check 3: CUDA validation (slower cadence) ---
-        if self.config.enable_cuda_validation:
-            now = time.monotonic()
-            if (now - self._last_cuda_check) >= self.config.cuda_validation_interval:
-                self._last_cuda_check = now
-                with health_check_duration_seconds.labels("cuda").time():
-                    try:
-                        cuda_result = self._cuda_validator.check()
-                        cuda_validation_passed.labels(node).set(1 if cuda_result.passed else 0)
-                        if not cuda_result.passed:
-                            logger.error("CUDA validation FAILED on %s: %s",
-                                         node, cuda_result.errors or cuda_result.error)
-                            overall_healthy = False
-                    except Exception:
-                        logger.exception("CUDA validation failed")
-                        health_check_errors_total.labels("cuda").inc()
+        # GPU context/memory validation is intentionally not polled from this
+        # daemon (it would contend for GPU memory with running workloads). It
+        # runs as a preflight init-container instead — see the demo README.
 
         # --- Overall health ---
         if self._in_grace_period():

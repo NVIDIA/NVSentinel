@@ -27,10 +27,6 @@ class MonitorConfig:
 
     # Check toggles
     enable_fabric_check: bool = True
-    enable_cuda_validation: bool = False  # off by default (resource intensive)
-
-    # CUDA validation runs at a slower cadence
-    cuda_validation_interval: int = 600  # seconds
 
     # Services to monitor (besides fabric manager).
     # nv-hostengine is monitored by gpu-health-monitor via
@@ -55,8 +51,6 @@ class MonitorConfig:
             flap_window=int(os.environ.get("FLAP_WINDOW", "600")),
             flap_threshold=int(os.environ.get("FLAP_THRESHOLD", "3")),
             enable_fabric_check=_bool(os.environ.get("ENABLE_FABRIC_CHECK", "true")),
-            enable_cuda_validation=_bool(os.environ.get("ENABLE_CUDA_VALIDATION", "false")),
-            cuda_validation_interval=int(os.environ.get("CUDA_VALIDATION_INTERVAL", "600")),
         )
 
         services_env = os.environ.get("GPU_SERVICES")

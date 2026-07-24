@@ -32,6 +32,7 @@ spec:
         - name: monitor
           # Pin to a specific semver tag (or @sha256:<digest> in production).
           # Demo image; replace with your registry path when deploying.
+          # 0.1.0 is a demo-local pin, independent of the Helm chart appVersion.
           image: system-services-monitor:0.1.0
           imagePullPolicy: IfNotPresent
           envFrom:

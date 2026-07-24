@@ -38,13 +38,6 @@ nvidia_service_up = Gauge(
     ["node", "service_name"],
 )
 
-# --- CUDA validation ---
-cuda_validation_passed = Gauge(
-    "cuda_validation_passed",
-    "CUDA validation result (1=passed, 0=failed)",
-    ["node"],
-)
-
 # --- Check infrastructure ---
 health_check_duration_seconds = Histogram(
     "health_check_duration_seconds",

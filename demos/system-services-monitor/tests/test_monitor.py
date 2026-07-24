@@ -20,7 +20,6 @@ class TestMonitorConfig:
         assert config.metrics_port == 9101
         assert config.boot_grace_period == 300
         assert config.enable_fabric_check is True
-        assert config.enable_cuda_validation is False
         assert "nvidia-fabricmanager" in config.gpu_services
         # nv-hostengine is covered by gpu-health-monitor / DCGM and must
         # not appear in the default demo service list.
@@ -36,8 +35,6 @@ class TestMonitorConfig:
             "FLAP_WINDOW": "300",
             "FLAP_THRESHOLD": "5",
             "ENABLE_FABRIC_CHECK": "true",
-            "ENABLE_CUDA_VALIDATION": "true",
-            "CUDA_VALIDATION_INTERVAL": "1200",
         }
         with patch.dict(os.environ, env, clear=False):
             config = MonitorConfig.from_env()
@@ -48,8 +45,7 @@ class TestMonitorConfig:
         assert config.node_name == "test-node"
         assert config.boot_grace_period == 120
         assert config.flap_threshold == 5
-        assert config.enable_cuda_validation is True
-        assert config.cuda_validation_interval == 1200
+        assert config.enable_fabric_check is True
 
     def test_custom_gpu_services(self):
         with patch.dict(os.environ, {"GPU_SERVICES": "svc-a, svc-b , svc-c"}, clear=False):
@@ -58,14 +54,14 @@ class TestMonitorConfig:
 
     def test_bool_parsing(self):
         for truthy in ("true", "True", "TRUE", "1", "yes", "Yes"):
-            with patch.dict(os.environ, {"ENABLE_CUDA_VALIDATION": truthy}, clear=False):
+            with patch.dict(os.environ, {"ENABLE_FABRIC_CHECK": truthy}, clear=False):
                 config = MonitorConfig.from_env()
-                assert config.enable_cuda_validation is True
+                assert config.enable_fabric_check is True
 
         for falsy in ("false", "False", "0", "no", ""):
-            with patch.dict(os.environ, {"ENABLE_CUDA_VALIDATION": falsy}, clear=False):
+            with patch.dict(os.environ, {"ENABLE_FABRIC_CHECK": falsy}, clear=False):
                 config = MonitorConfig.from_env()
-                assert config.enable_cuda_validation is False
+                assert config.enable_fabric_check is False
 
 
 class TestSystemServicesMonitor:
@@ -78,7 +74,6 @@ class TestSystemServicesMonitor:
             "node_name": "test-node",
             "boot_grace_period": 0,  # no grace period in tests
             "enable_fabric_check": True,
-            "enable_cuda_validation": False,
         }
         defaults.update(overrides)
         config = MonitorConfig(**defaults)
