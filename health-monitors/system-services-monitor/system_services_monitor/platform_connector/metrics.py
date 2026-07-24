@@ -31,3 +31,8 @@ events_sent_error = Counter(
     "fabric_monitor_events_sent_error",
     "Total number of failed health event sends to platform-connector UDS",
 )
+
+events_sent_skipped_pc_unavailable = Counter(
+    "fabric_monitor_events_sent_skipped_pc_unavailable",
+    "Total number of health event sends skipped because the platform-connector Unix socket was missing",
+)

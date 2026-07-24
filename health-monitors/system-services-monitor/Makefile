@@ -25,6 +25,10 @@ HAS_DOCKER := 1
 
 # Python package name (with underscores, not hyphens)
 PYTHON_PACKAGE_NAME := system_services_monitor
+# Coverage in make/python.mk uses --source=$(MODULE_NAME); common.mk defaults
+# MODULE_NAME to the (hyphenated) directory basename, which does not match the
+# importable package, yielding 0% coverage. Pin it to the package name.
+MODULE_NAME := $(PYTHON_PACKAGE_NAME)
 
 # system-services-monitor specific settings (Python module)
 CLEAN_EXTRA_FILES := system_services_monitor.egg-info

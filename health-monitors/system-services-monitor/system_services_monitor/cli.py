@@ -66,7 +66,7 @@ def cli(
     processing_strategy,
     verbose,
 ):
-    exit = Event()
+    stop_event = Event()
 
     # Resolve node name from CLI or environment
     if node_name is None:
@@ -108,7 +108,7 @@ def cli(
     prom_server, t = start_http_server(port)
 
     def process_exit_signal(signum, frame):
-        exit.set()
+        stop_event.set()
         prom_server.shutdown()
         t.join()
 
@@ -126,7 +126,7 @@ def cli(
         enable_fabric_check=enable_fabric_check,
     )
 
-    watcher.start(exit)
+    watcher.start(stop_event)
 
 
 if __name__ == "__main__":
