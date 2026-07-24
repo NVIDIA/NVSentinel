@@ -36,7 +36,12 @@
 set -eou pipefail
 
 DRIVER_ROOT="${DRIVER_ROOT:-/}"
+NODE_NAME="${NODE_NAME:-unknown-node}"
 START_TIME=$(date +%s.%N)
+BUG_REPORT_TIMESTAMP="${BUG_REPORT_TIMESTAMP:-$(date +%Y%m%d-%H%M%S)}"
+# With DRIVER_ROOT=/run/nvidia/driver, this writes to that HostPath mount. The report
+# survives the reset container exiting, but is lost after reboot when /run is cleared.
+BUG_REPORT_DIR="${BUG_REPORT_DIR:-/var/tmp}"
 
 log() {
   printf "(%s) %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
@@ -44,6 +49,66 @@ log() {
 
 nvidia_smi_helper() {
   chroot "$DRIVER_ROOT" nvidia-smi "$@"
+}
+
+prepend_driver_root() {
+  if [ "$DRIVER_ROOT" = "/" ]; then
+    printf "%s\n" "$1"
+  else
+    printf "%s%s\n" "${DRIVER_ROOT%/}" "$1"
+  fi
+}
+
+nvidia_bug_report_helper() {
+  chroot "$DRIVER_ROOT" nvidia-bug-report.sh "$@"
+}
+
+collect_and_upload_nvidia_bug_report() {
+  local upload_url_base="${UPLOAD_URL_BASE:-}"
+  local local_bug_report_dir
+  local bug_report_base
+  local bug_report_file
+  local local_bug_report_path
+  local upload_url
+
+  local_bug_report_dir=$(prepend_driver_root "$BUG_REPORT_DIR")
+
+  if ! mkdir -p "$local_bug_report_dir"; then
+    log "WARN: Failed to create nvidia-bug-report output directory: $local_bug_report_dir"
+    return 1
+  fi
+
+  bug_report_base="${BUG_REPORT_DIR%/}/nvidia-bug-report-${NODE_NAME}-${BUG_REPORT_TIMESTAMP}"
+  bug_report_file="nvidia-bug-report-${NODE_NAME}-${BUG_REPORT_TIMESTAMP}.log.gz"
+  local_bug_report_path="${local_bug_report_dir%/}/${bug_report_file}"
+
+  log "INFO: Collecting nvidia-bug-report for failed GPU reset..."
+  if ! nvidia_bug_report_helper --safe-mode --output-file "${bug_report_base}.log"; then
+    log "WARN: nvidia-bug-report collection failed."
+    return 1
+  fi
+
+  if [ ! -f "$local_bug_report_path" ]; then
+    log "WARN: nvidia-bug-report completed but output was not found: $local_bug_report_path"
+    return 1
+  fi
+
+  log "INFO: nvidia-bug-report collected: $local_bug_report_path"
+
+  if [ -z "$upload_url_base" ]; then
+    log "INFO: UPLOAD_URL_BASE is not configured; nvidia-bug-report retained locally at $local_bug_report_path"
+    return 0
+  fi
+
+  upload_url="${upload_url_base%/}/${NODE_NAME}/${BUG_REPORT_TIMESTAMP}/${bug_report_file}"
+
+  log "INFO: Uploading nvidia-bug-report to $upload_url"
+  if curl -fsS --connect-timeout 10 --max-time 120 -X PUT --upload-file "$local_bug_report_path" "$upload_url"; then
+    log "INFO: nvidia-bug-report upload complete: $bug_report_file"
+  else
+    log "WARN: Failed to upload nvidia-bug-report: $bug_report_file"
+    return 1
+  fi
 }
 
 log "INFO: Using DRIVER_ROOT=$DRIVER_ROOT"
@@ -87,15 +152,14 @@ echo "${TARGET_UUIDS}" | tr ',' '\n' | sed 's/^/  /'
 log "INFO: Resetting GPUs..."
 
 if nvidia_smi_helper --gpu-reset -i "${TARGET_UUIDS}" > "$RESET_OUTPUT_FILE" 2>&1; then
-  # shellcheck disable=SC2002
-  cat "$RESET_OUTPUT_FILE" | grep -v "All done." | sed -e 's/\.$//' -e 's/^/  /'
+  sed -e '/All done\./d' -e 's/\.$//' -e 's/^/  /' "$RESET_OUTPUT_FILE"
   log "INFO: GPU reset complete."
 else
   RESET_STATUS=$?
   FINAL_EXIT_STATUS=$RESET_STATUS
   log "ERROR: Reset failed. See details below:"
-  # shellcheck disable=SC2002
-  cat "$RESET_OUTPUT_FILE" | grep -v "All done." | sed 's/\.$//' | grep .
+  sed -e '/All done\./d' -e 's/\.$//' "$RESET_OUTPUT_FILE" | grep . || true
+  collect_and_upload_nvidia_bug_report || log "WARN: Continuing after nvidia-bug-report collection failure."
 fi
 
 #------------------------
