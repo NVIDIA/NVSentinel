@@ -33,20 +33,56 @@ from system_services_monitor.protos import health_event_pb2 as platformconnector
     "--platform-connector-socket",
     type=str,
     required=True,
-    help="Unix socket path for gRPC connection to platform-connector",
+    envvar="PLATFORM_CONNECTOR_SOCKET",
+    help="Unix socket path for gRPC connection to platform-connector (env: PLATFORM_CONNECTOR_SOCKET)",
 )
-@click.option("--port", type=int, default=9101, help="Prometheus metrics HTTP server port")
-@click.option("--poll-interval", type=int, default=30, help="Seconds between check cycles")
+@click.option(
+    "--port",
+    type=int,
+    default=9101,
+    envvar="METRICS_PORT",
+    help="Prometheus metrics HTTP server port (env: METRICS_PORT)",
+)
+@click.option(
+    "--poll-interval",
+    type=int,
+    default=30,
+    envvar="CHECK_INTERVAL",
+    help="Seconds between check cycles (env: CHECK_INTERVAL)",
+)
 @click.option(
     "--node-name",
     type=str,
     default=None,
     help="Node name (defaults to NODE_NAME or HOSTNAME env var)",
 )
-@click.option("--boot-grace-period", type=int, default=300, help="Seconds after startup to suppress unhealthy alerts")
-@click.option("--flap-window", type=int, default=600, help="Seconds window for counting service restarts")
-@click.option("--flap-threshold", type=int, default=3, help="Restart count within flap window to flag flapping")
-@click.option("--enable-fabric-check/--disable-fabric-check", default=True, help="Enable Fabric Manager service check")
+@click.option(
+    "--boot-grace-period",
+    type=int,
+    default=300,
+    envvar="BOOT_GRACE_PERIOD",
+    help="Seconds after startup to suppress unhealthy alerts (env: BOOT_GRACE_PERIOD)",
+)
+@click.option(
+    "--flap-window",
+    type=int,
+    default=600,
+    envvar="FLAP_WINDOW",
+    help="Seconds window for counting service restarts (env: FLAP_WINDOW)",
+)
+@click.option(
+    "--flap-threshold",
+    type=int,
+    default=3,
+    envvar="FLAP_THRESHOLD",
+    help="Restart count within flap window to flag flapping (env: FLAP_THRESHOLD)",
+)
+@click.option(
+    "--enable-fabric-check/--disable-fabric-check",
+    default=True,
+    envvar="ENABLE_FABRIC_CHECK",
+    help="Enable Fabric Manager service check (env: ENABLE_FABRIC_CHECK)",
+)
 @click.option(
     "--processing-strategy",
     type=str,
@@ -115,7 +151,7 @@ def cli(
     signal.signal(signal.SIGTERM, process_exit_signal)
     signal.signal(signal.SIGINT, process_exit_signal)
 
-    # Create watcher with enabled checks (scoped to non-DCGM signals per ADR-030)
+    # Create watcher with enabled checks (scoped to non-DCGM signals per ADR-049)
     watcher = FabricManagerWatcher(
         poll_interval=poll_interval,
         callbacks=[event_processor],

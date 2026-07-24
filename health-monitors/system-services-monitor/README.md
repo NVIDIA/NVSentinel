@@ -9,7 +9,7 @@ Documentation has been moved to the repo-wide `docs/` tree per project conventio
 - **CLI flags, environment variables, deployment recipes** --
   [`docs/configuration/system-services-monitor.md`](../../docs/configuration/system-services-monitor.md)
 - **Architectural decision (split from `gpu-health-monitor`)** --
-  [`docs/designs/030-fabric-manager-monitor-scope.md`](../../docs/designs/030-fabric-manager-monitor-scope.md)
+  [`docs/designs/049-system-services-monitor-scope.md`](../../docs/designs/049-system-services-monitor-scope.md)
 - **Pod-level orphan detection for gpu-operator DaemonSets** --
   [`docs/monitoring-critical-operators.md`](../../docs/monitoring-critical-operators.md) (owned by `kubernetes-object-monitor`)
 

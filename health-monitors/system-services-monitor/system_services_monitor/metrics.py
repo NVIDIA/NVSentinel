@@ -60,6 +60,15 @@ fabric_manager_last_healthy_seconds = Gauge(
     labelnames=["node"],
 )
 
+# Cumulative Fabric Manager restart count. Backs the FabricManagerFlapping
+# alert (increase(fabric_manager_restarts_total[10m]) > 3). Incremented by the
+# delta in systemd NRestarts observed between poll cycles.
+fabric_manager_restarts_total = Counter(
+    "fabric_manager_restarts_total",
+    "Total Fabric Manager service restarts observed via systemd NRestarts",
+    labelnames=["node"],
+)
+
 # --- GPU systemd services ---
 nvidia_service_up = Gauge(
     "nvidia_service_up",

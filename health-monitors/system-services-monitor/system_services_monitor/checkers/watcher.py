@@ -18,7 +18,7 @@ Runs non-DCGM health checks on a configurable interval and fires
 callbacks (e.g. PlatformConnectorEventProcessor) with the aggregated
 results. Mirrors the DCGMWatcher pattern from gpu-health-monitor.
 
-Scope (per ADR-030): only checks that DCGM cannot see --
+Scope (per ADR-049): only checks that DCGM cannot see --
   FM service health, FM flap detection, fabric state,
   GPU service lifecycle. PCIe, NVLink, and clock throttling are
   owned by gpu-health-monitor via pydcgm.
@@ -45,7 +45,7 @@ class FabricManagerWatcher:
 
     PCIe link health, NVLink fabric, and clock throttling are intentionally
     excluded -- those signals are DCGM-visible and belong in gpu-health-monitor
-    (see ADR-030).
+    (see ADR-049).
     """
 
     def __init__(
@@ -64,6 +64,10 @@ class FabricManagerWatcher:
         self._boot_grace_period = boot_grace_period
         self._start_time = time.monotonic()
         self._callback_thread_pool = ThreadPoolExecutor()
+        # Last-observed cumulative FM restart count (systemd NRestarts) used to
+        # increment the fabric_manager_restarts_total counter by the per-cycle
+        # delta. Negative deltas (systemd reset / reload) are ignored.
+        self._last_fm_restarts = 0
 
         # Initialize checkers and build the check list based on enabled flags
         self._checkers: List[tuple[str, callable]] = []
@@ -147,6 +151,13 @@ class FabricManagerWatcher:
         metrics.fabric_manager_up.labels(self._node_name).set(1 if fm.active else 0)
         if fm.active:
             metrics.fabric_manager_last_healthy_seconds.labels(self._node_name).set(time.time())
+
+        # Increment the restart counter by the delta in systemd NRestarts since
+        # the last cycle. Backs the FabricManagerFlapping alert.
+        restart_delta = fm.n_restarts - self._last_fm_restarts
+        if restart_delta > 0:
+            metrics.fabric_manager_restarts_total.labels(self._node_name).inc(restart_delta)
+        self._last_fm_restarts = fm.n_restarts
 
         if fm.flapping:
             log.warning(f"Fabric Manager is flapping on {self._node_name}")
