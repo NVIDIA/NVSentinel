@@ -3,7 +3,7 @@
 Runs a periodic check loop across all enabled health checks, exposes
 Prometheus metrics on the configured port, and computes overall node health.
 
-Scope (per ADR-030): this demo covers non-DCGM signals only. PCIe
+Scope (per ADR-049): this demo covers non-DCGM signals only. PCIe
 downtraining, NVLink bandwidth/CRC, and GPU clock throttling are already
 surfaced by NVSentinel's gpu-health-monitor via DCGM and are intentionally
 NOT duplicated here.
