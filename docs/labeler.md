@@ -87,7 +87,7 @@ In GKE clusters with pre-installed drivers, the `nvidia-driver-daemonset` is not
 **Note**: For environments with pre-installed drivers where no `nvidia-driver-installer` pods exist (e.g., custom machine images with pre-baked drivers), use the following command to manually label the node:
 
 ```bash
-kubectl label nodes <node-name> nvsentinel.dgxc.nvidia.com/driver.installed=true
+kubectl label nodes {node-name} nvsentinel.dgxc.nvidia.com/driver.installed=true
 ```
 
 ### Kata Enabled

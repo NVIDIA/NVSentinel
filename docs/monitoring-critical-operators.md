@@ -223,14 +223,14 @@ If you receive these events, investigate the pod status:
 1.  **Check pod status and events:**
     ```bash
     kubectl get pods -n gpu-operator -o wide
-    kubectl describe pod <pod-name> -n gpu-operator
+    kubectl describe pod {pod-name} -n gpu-operator
     ```
 
 2.  **Check container logs (if containers have started):**
     ```bash
-    kubectl logs -n gpu-operator <pod-name>
+    kubectl logs -n gpu-operator {pod-name}
     # For init containers:
-    kubectl logs -n gpu-operator <pod-name> -c <init-container-name>
+    kubectl logs -n gpu-operator {pod-name} -c {init-container-name}
     ```
 
 3.  **Common issues to look for:**
@@ -241,8 +241,8 @@ If you receive these events, investigate the pod status:
 
 4.  **Verify node health:**
     ```bash
-    kubectl get node <node-name>
-    kubectl describe node <node-name>
+    kubectl get node {node-name}
+    kubectl describe node {node-name}
     ```
 
 ### Common Issues
@@ -252,7 +252,7 @@ If you receive these events, investigate the pod status:
 
 1. **Check if the pod matches the policy predicate:**
    ```bash
-   kubectl get pod <pod-name> -n <namespace> -o yaml
+   kubectl get pod {pod-name} -n {namespace} -o yaml
    ```
    Verify the pod is in the correct namespace and meets all predicate conditions.
 
@@ -267,10 +267,10 @@ If you receive these events, investigate the pod status:
 
 1. **Check if the DaemonSet still targets the node:**
    ```bash
-   kubectl get ds <daemonset-name> -n <namespace> -o yaml | grep -A 10 nodeSelector
+   kubectl get ds {daemonset-name} -n {namespace} -o yaml | grep -A 10 nodeSelector
    ```
 
 2. **Check the policy match annotation on the node:**
    ```bash
-   kubectl get node <node-name> -o jsonpath='{.metadata.annotations.nvsentinel\.dgxc\.nvidia\.com/policy-matches}'
+   kubectl get node {node-name} -o jsonpath='{.metadata.annotations.nvsentinel\.dgxc\.nvidia\.com/policy-matches}'
    ```

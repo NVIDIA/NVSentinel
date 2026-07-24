@@ -167,6 +167,10 @@ config:
       resetJob:
         writeSysLogEvent: true
         runtimeClassName: "nvidia"
+        # Optional upload endpoint for nvidia-bug-report artifacts collected after failed GPU resets.
+        # When empty and global.inclusterFileServer.enabled is true, this defaults to the
+        # release's incluster-file-server /upload endpoint.
+        uploadURL: ""
         # imagePullSecrets can be specified under image.imagePullSecrets, otherwise we will
         # fall back to global.imagePullSecrets.
         image:

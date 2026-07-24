@@ -68,12 +68,15 @@ fault-quarantine:
   labelPrefix: "k8saas.nvidia.com/"
 ```
 
-Generated labels:
-- `<labelPrefix>cordon-by` - Service that cordoned the node
-- `<labelPrefix>cordon-reason` - Reason for cordoning
-- `<labelPrefix>cordon-timestamp` - Cordon timestamp (format: 2006-01-02T15-04-05Z)
-- `<labelPrefix>uncordon-by` - Service that uncordoned the node
-- `<labelPrefix>uncordon-timestamp` - Uncordon timestamp (format: 2006-01-02T15-04-05Z)
+### Generated Labels
+
+Labels use the configured `{labelPrefix}` (default `k8saas.nvidia.com/`):
+- `{labelPrefix}cordon-by` — Service that cordoned the node
+- `{labelPrefix}cordon-reason` — Reason for cordoning
+- `{labelPrefix}cordon-timestamp` — Cordon timestamp (format: 2006-01-02T15-04-05Z)
+- `{labelPrefix}uncordon-by` — Service that uncordoned the node
+- `{labelPrefix}uncordon-reason` — Reason for uncordoning
+- `{labelPrefix}uncordon-timestamp` — Uncordon timestamp (format: 2006-01-02T15-04-05Z)
 
 ## Circuit Breaker
 

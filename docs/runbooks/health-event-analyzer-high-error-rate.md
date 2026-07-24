@@ -22,7 +22,7 @@ The Health Events Analyzer (HEA) processes health events from MongoDB and applie
 
 ### Issue 1: Malformed Database Queries in Configuration
 
-The Health Events Analyzer executes rules defined in the configuration file. These rules contain queries written in MongoDB aggregation pipeline syntax. Typos or syntax errors will cause processing failures every time a rule is evaluated for processing event.
+The Health Events Analyzer executes rules defined in the configuration file. These rules contain queries written in MongoDB aggregation pipeline syntax. Typos or syntax errors will cause processing failures every time a rule is evaluated for processing an event.
 
 **Diagnosis:**
 

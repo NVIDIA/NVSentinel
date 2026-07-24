@@ -471,12 +471,12 @@ That's a complete, contract-correct drain plugin. Everything else is packaging a
 
 Kubebuilder already generated a multi-stage, distroless `Dockerfile`. Build and push it with the
 `Makefile` targets, pointing `IMG` at a registry your cluster can pull from (Docker Hub here —
-replace `<dockerhub-user>`):
+replace `{dockerhub-user}`):
 
 ```bash
 docker login   # once, to authenticate
 
-export IMG=docker.io/<dockerhub-user>/demo-drainer:dev
+export IMG=docker.io/{dockerhub-user}/demo-drainer:dev
 make docker-build docker-push IMG=$IMG
 ```
 
@@ -562,7 +562,7 @@ kubectl get pods -n workload -o wide
 Expected (the message names *today*, which is not in the allowed set):
 
 ```text
-DrainDeferred  True  OutsideDrainWindow  <today> is not an allowed drain day; deferring
+DrainDeferred  True  OutsideDrainWindow  {today} is not an allowed drain day; deferring
 ```
 
 **Path 2 — completed (allowed day).** Now allow today. Restarting the manager re-reconciles the
@@ -588,7 +588,7 @@ kubectl get pods -n workload -o wide
 Expected:
 
 ```text
-DrainComplete  True  DrainComplete  Drained 1 pod(s) from <your-node>
+DrainComplete  True  DrainComplete  Drained 1 pod(s) from {your-node}
 ```
 
 > In production node-drainer creates the `DrainRequest` in `nvsentinel`; the cluster-wide
@@ -676,7 +676,7 @@ have evictable pods on the node:
 
 ```bash
 # The node you'll inject the error into (replace with your target GPU node).
-NODE=<your-gpu-node>
+NODE={your-gpu-node}
 
 kubectl create namespace workload
 kubectl create deployment victim --image=nginx --replicas=2 -n workload
@@ -711,10 +711,10 @@ CORDONED:.spec.unschedulable,\
 STATE:.metadata.labels.dgxc\.nvidia\.com/nvsentinel-state"
 ```
 
-Expected `STATE` progression: `<none>` → `quarantined` (fault-quarantine cordoned it) → `draining`
+Expected `STATE` progression: `(none)` → `quarantined` (fault-quarantine cordoned it) → `draining`
 (node-drainer started) → `drain-succeeded`.
 
-node-drainer creates the CR (`drain-<node>-<eventID>` in `nvsentinel`) and your plugin acts on it. The
+node-drainer creates the CR (`drain-{NODE}-{EVENTID}` in `nvsentinel`) and your plugin acts on it. The
 CR is short-lived — node-drainer **deletes it** once your plugin sets `DrainComplete=True` — so watch
 promptly or read the plugin's logs:
 
@@ -763,11 +763,11 @@ maintenance window/SLO, or drain via the Eviction API or a scheduler call instea
 
 A drain plugin reconciles DrainRequest custom resources (group/version
 nvsentinel.nvidia.com/v1alpha1, namespaced). In production node-drainer creates one DrainRequest
-per health event (name drain-<node>-<eventID> in namespace nvsentinel), polls its status, and
+per health event (name drain-{node}-{eventID} in namespace nvsentinel), polls its status, and
 considers the drain done when the controller sets status.conditions[] Type="DrainComplete"
 Status="True".
 
-- Scaffold with: `kubebuilder init --domain nvidia.com --repo github.com/<your-org>/[my-drainer]`
+- Scaffold with: `kubebuilder init --domain nvidia.com --repo github.com/{your-org}/[my-drainer]`
   then `kubebuilder create api --group nvsentinel --version v1alpha1 --kind DrainRequest
   --resource --controller`. The nvidia.com domain + nvsentinel group yields the contract group
   nvsentinel.nvidia.com; define the CRD yourself.
@@ -795,9 +795,9 @@ Status="True".
 - In cmd/main.go read DRAIN_DAYS from the environment (default "Mon,Tue,Wed,Thu,Fri"), parse it with
   ParseDrainDays, and pass the result as the reconciler's DrainDays field; exit non-zero on a parse
   error.
-- Build the image with the generated Dockerfile via `make docker-build docker-push IMG=<your-image>`
+- Build the image with the generated Dockerfile via `make docker-build docker-push IMG={your-image}`
   (distroless, non-root — already scaffolded).
-- Deploy with the generated kustomize harness: `make install` (CRD) and `make deploy IMG=<your-image>`
+- Deploy with the generated kustomize harness: `make install` (CRD) and `make deploy IMG={your-image}`
   (RBAC + manager). Then VERIFY BOTH PATHS INDEPENDENTLY: create a demo Deployment, put its pod
   names in a DrainRequest's spec.podsToDrain, then (1) `kubectl set env` the manager DRAIN_DAYS to a
   day that is NOT today and confirm the request gets DrainDeferred=True and the pods are untouched,

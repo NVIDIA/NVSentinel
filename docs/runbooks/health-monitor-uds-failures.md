@@ -25,7 +25,7 @@ Health monitors (GPU, NVSwitch, syslog, CSP) publish events via gRPC over Unix D
 kubectl get pods -n nvsentinel -l app.kubernetes.io/name=gpu-health-monitor -o wide
 
 # Check health monitor logs for UDS errors
-kubectl logs -n nvsentinel <HEALTH_MONITOR_POD>
+kubectl logs -n nvsentinel {HEALTH_MONITOR_POD}
 ```
 
 Look for:
@@ -37,10 +37,10 @@ Look for:
 
 ```bash
 # Find platform-connector pod on the same node
-kubectl get pods -n nvsentinel -l app.kubernetes.io/name=nvsentinel -o wide | grep <NODE_NAME>
+kubectl get pods -n nvsentinel -l app.kubernetes.io/name=nvsentinel -o wide | grep {NODE_NAME}
 
 # Check platform-connector logs
-kubectl logs -n nvsentinel <PLATFORM_CONNECTOR_POD>
+kubectl logs -n nvsentinel {PLATFORM_CONNECTOR_POD}
 ```
 
 Look for errors:
@@ -100,5 +100,5 @@ Both should be mounted from hostPath at `/var/run/nvsentinel`.
 
 ```bash
 # Watch health monitor logs for successful sends
-kubectl logs -n nvsentinel <GPU_MONITOR_POD> -f
+kubectl logs -n nvsentinel {HEALTH_MONITOR_POD} -f
 ```

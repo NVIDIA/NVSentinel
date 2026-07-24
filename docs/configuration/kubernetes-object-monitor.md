@@ -384,7 +384,7 @@ For a fatal GPU-runtime Event policy, see the `NVMLError` example in
 ### Observe a policy
 
 ```bash
-NODE=<test-node>
+NODE={test-node}
 
 # Example 4 — Pod exits immediately; the generated Warning events also exercise Example 3
 kubectl run kom-pod-fail --restart=Never -n default --image=busybox \
