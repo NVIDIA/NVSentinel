@@ -215,6 +215,14 @@ func (j *FakeJournal) SeekHead() error {
 	return nil
 }
 
+// SeekRealtimeUsec implements the Journal interface
+func (j *FakeJournal) SeekRealtimeUsec(usec uint64) error {
+	// Fake journal has no timestamps; behave like SeekHead.
+	j.CurrentPosition = -1
+
+	return nil
+}
+
 // SeekTail implements the Journal interface
 func (j *FakeJournal) SeekTail() error {
 	// Allow even if closed for test purposes

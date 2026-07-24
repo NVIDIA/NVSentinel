@@ -248,6 +248,18 @@ func (j *MockJournal) SeekHead() error {
 	return nil
 }
 
+// SeekRealtimeUsec seeks to the entry closest to the given realtime timestamp
+func (j *MockJournal) SeekRealtimeUsec(usec uint64) error {
+	if j.Closed {
+		return errors.New(JOURNAL_CLOSED_ERROR)
+	}
+
+	// Mock journal has no timestamps; behave like SeekHead.
+	j.CurrentPosition = -1
+
+	return nil
+}
+
 // SeekTail seeks to the end of the journal
 func (j *MockJournal) SeekTail() error {
 	if j.Closed {

@@ -175,6 +175,18 @@ func (j *StubJournal) SeekHead() error {
 	return nil
 }
 
+// SeekRealtimeUsec seeks to the entry closest to the given realtime timestamp
+func (j *StubJournal) SeekRealtimeUsec(usec uint64) error {
+	if j.closed {
+		return errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
+	}
+
+	// Stub journal has no timestamps; seek to beginning.
+	j.currentPosition = -1
+
+	return nil
+}
+
 // SeekTail seeks to the end of the journal
 // For stub journal, we always set position to -1 (before start) so that
 // Previous() returns EOF and the cursor is saved as "-1", ensuring ALL messages

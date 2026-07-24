@@ -1097,32 +1097,53 @@ func (sm *SyslogMonitor) initializeJournalFromTail(journal Journal, check CheckD
 // A boot filter (_BOOT_ID=<current>) is applied explicitly so that only entries
 // from the current boot are read, even though SeekHead positions at the very
 // beginning of the journal.
+// defaultBootLookbackWindow limits how far back the post-reboot scan reaches.
+// Entries older than this window are skipped to avoid re-processing ancient
+// XIDs that may have already been manually remediated.
+const defaultBootLookbackWindow = 30 * time.Minute
+
 func (sm *SyslogMonitor) initializeJournalFromBootStart(journal Journal, check CheckDefinition) error {
-	slog.Info("Post-reboot: seeking to boot start to process pre-startup entries", "check", check.Name)
+	lookback := defaultBootLookbackWindow
+	seekTarget := time.Now().Add(-lookback)
+
+	slog.Info("Post-reboot: seeking to boot start with lookback window",
+		"check", check.Name,
+		"lookbackWindow", lookback,
+		"seekTarget", seekTarget.Format(time.RFC3339))
 
 	if err := sm.configureBootFilter(journal, check.Name); err != nil {
 		return fmt.Errorf("check '%s': failed to configure boot filter for post-reboot scan: %w", check.Name, err)
 	}
 
-	if err := journal.SeekHead(); err != nil {
-		return fmt.Errorf("check '%s': failed to seek to journal head for post-reboot scan: %w", check.Name, err)
+	// Seek to (now - lookbackWindow) instead of the absolute journal head.
+	// This avoids processing ancient XIDs from earlier in the boot that may
+	// have already been manually remediated, while still capturing XIDs
+	// emitted between boot and monitor startup.
+	seekUsec := seekTarget.UnixMicro()
+	if seekUsec < 0 {
+		seekUsec = 0
+	}
+
+	//nolint:gosec // G115: seekUsec is guarded >= 0 above
+	if err := journal.SeekRealtimeUsec(uint64(seekUsec)); err != nil {
+		return fmt.Errorf("check '%s': failed to seek to lookback target for post-reboot scan: %w", check.Name, err)
 	}
 
 	// Advance to the first matching entry (journal.Next respects match filters).
 	advanced, err := journal.Next()
 	if err != nil && !errors.Is(err, io.EOF) {
-		return fmt.Errorf("check '%s': error advancing from journal head: %w", check.Name, err)
+		return fmt.Errorf("check '%s': error advancing from lookback target: %w", check.Name, err)
 	}
 
 	if errors.Is(err, io.EOF) || advanced == 0 {
-		slog.Info("Post-reboot: no journal entries found for current boot", "check", check.Name)
+		slog.Info("Post-reboot: no journal entries found within lookback window", "check", check.Name)
 
 		// No entries yet; fall back to tail initialization so the next
 		// cycle starts fresh (same as first-install behavior).
 		return sm.initializeJournalFromTail(journal, check)
 	}
 
-	// Process all entries from boot start forward.
+	// Process all entries from the lookback target forward.
 	return sm.processAllEntries(journal, check)
 }
 

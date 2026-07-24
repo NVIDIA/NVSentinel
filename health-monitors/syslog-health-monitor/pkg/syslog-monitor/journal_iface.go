@@ -45,6 +45,10 @@ type Journal interface {
 	// SeekHead seeks to the beginning of the journal
 	SeekHead() error
 
+	// SeekRealtimeUsec seeks to the entry closest to the given realtime
+	// (wallclock) timestamp in microseconds since the Unix epoch.
+	SeekRealtimeUsec(usec uint64) error
+
 	// SeekTail seeks to the end of the journal
 	SeekTail() error
 }

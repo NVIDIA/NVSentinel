@@ -74,6 +74,11 @@ func (j *RealJournal) SeekHead() error {
 	return j.journal.SeekHead()
 }
 
+// SeekRealtimeUsec seeks to the entry closest to the given realtime timestamp
+func (j *RealJournal) SeekRealtimeUsec(usec uint64) error {
+	return j.journal.SeekRealtimeUsec(usec)
+}
+
 // SeekTail seeks to the end of the journal
 func (j *RealJournal) SeekTail() error {
 	return j.journal.SeekTail()
