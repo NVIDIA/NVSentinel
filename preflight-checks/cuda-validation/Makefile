@@ -27,12 +27,34 @@ IMAGE_NAME := preflight-cuda-validation
 all: lint-test
 
 # Lint + test using the system Python (no Poetry: this module is a
-# single-file probe, no package or test suite yet). Performs a syntax
-# check via ast.parse so CI flags any obvious breakage.
+# single-file probe, no package or test suite yet, so the shared
+# python.mk Black+pytest+coverage target does not apply). The
+# preflight-checks-lint-test CI job runs this target directly.
+#
+# Hard gate: byte-compile the probe. py_compile fails on any syntax
+# error, so a broken probe fails CI instead of only failing at
+# container runtime. When pyflakes is present (locally) it also gates
+# on undefined names / unused imports. CI installs Black but not
+# pyflakes/ruff, so Black runs as an advisory format check — the probe
+# is deliberately package-free and reformatting it is out of scope for
+# this CI-registration change.
 .PHONY: lint-test
 lint-test:
-	@echo "Syntax-checking cuda_validation.py..."
-	python3 -c "import ast; ast.parse(open('cuda_validation.py').read())"
+	@echo "Linting $(MODULE_NAME) (single-file probe; no Poetry package/pytest suite)..."
+	python3 -m py_compile cuda_validation.py
+	@if command -v pyflakes >/dev/null 2>&1; then \
+		echo "Running pyflakes..."; \
+		pyflakes cuda_validation.py; \
+	else \
+		echo "pyflakes not installed; skipping (py_compile already gated)"; \
+	fi
+	@if command -v black >/dev/null 2>&1; then \
+		echo "Running black --check (advisory)..."; \
+		black --check --line-length 120 cuda_validation.py \
+			|| echo "::warning::black would reformat cuda_validation.py (advisory, not failing this target)"; \
+	else \
+		echo "black not installed; skipping format check"; \
+	fi
 	@echo "OK"
 
 .PHONY: ci-test
