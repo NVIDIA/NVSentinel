@@ -29,7 +29,6 @@ health monitor is represented as a `HealthEvent`, and every downstream module
 - [HealthEventStatus Lifecycle](#healtheventstatus-lifecycle)
 - [CRD Projection: HealthEventResource](#crd-projection-healtheventresource)
 - [External Remediation Request](#external-remediation-request)
-- [Deduplication](#deduplication)
 - [Tracing Correlation](#tracing-correlation)
 - [Examples](#examples)
 
@@ -84,10 +83,10 @@ end-to-end walkthrough.
 | # | Field | Type | Description | If omitted / zero value |
 |---|-------|------|-------------|------------------------|
 | 1 | `version` | `uint32` | Protocol version. Currently `1`. | Ingestion may reject the event. Always set to `1`. |
-| 2 | `agent` | `string` | Name of the health monitor that produced the event (e.g. `"gpu-health-monitor"`, `"syslog-health-monitor"`, `"csp-health-monitor"`). Used in metrics labels and log correlation. | Metrics and logs lose source attribution. Event is still accepted. |
+| 2 | `agent` | `string` | Name of the health monitor that produced the event (e.g. `"gpu-health-monitor"`, `"syslog-health-monitor"`, `"csp-health-monitor"`). Used in metrics labels, log correlation, and fault-quarantine rule matching for cordon/taint actions. This field should always be set to a stable identifier (e.g., the monitor's deployment name) so that quarantine rules can reliably match on it. | Metrics and logs lose source attribution. Quarantine rules that match on `agent` will not fire. Event is still accepted. |
 | 3 | `componentClass` | `string` | Category of the affected component. Common values: `"GPU"`, `"gce_instance"`, `"EC2"`, `"Software"`, `"NIC"`. Consumed by CEL quarantine rules for filtering. | CEL rules that filter on `componentClass` will not match. Quarantine may not trigger. |
 | 4 | `checkName` | `string` | Identifier of the specific check that fired (e.g. `"xid-check"`, `"sxid-check"`, `"CSPMaintenance"`). The deduplication transformer uses this as its suppression key. | Deduplication cannot suppress repeats. Every poll produces a new actionable event. |
-| 5 | `isFatal` | `bool` | Whether the fault is considered fatal (hardware replacement likely needed). Quarantine rules typically require `isFatal == true` to cordon a node. | Defaults to `false`. Most quarantine rules will not match — the node stays schedulable. |
+| 5 | `isFatal` | `bool` | Whether the fault is considered fatal (remediation required; the node/component can no longer process user workloads). Quarantine rules typically require `isFatal == true` to cordon a node. | Defaults to `false`. Most quarantine rules will not match — the node stays schedulable. |
 | 6 | `isHealthy` | `bool` | `false` for fault events, `true` for recovery events. A recovery event can un-quarantine a node if all active faults have cleared. | Defaults to `false` (treated as a fault). A recovery monitor **must** set this to `true` or it will re-quarantine instead of clearing. |
 | 7 | `message` | `string` | Human-readable description of the fault. Surfaced in Kubernetes node conditions and exported CloudEvents. | Node condition shows an empty message. Operators see the fault but not what it is. |
 | 8 | `recommendedAction` | `RecommendedAction` | Enum directing what remediation should occur. See [RecommendedAction Enum](#recommendedaction-enum). | Defaults to `NONE`. Event is stored but no remediation CR is created. |
@@ -112,7 +111,7 @@ Directs the fault-remediation module on what repair action to trigger.
 |-------|---------|---------|---------------------|
 | `NONE` | 0 | No remediation action recommended | No repair CR created. Storage and cluster mutations (quarantine, drain) remain governed by `processingStrategy`. |
 | `COMPONENT_RESET` | 2 | Reset a specific component (GPU, NIC) | GPU Reset CRD targeting `entitiesImpacted` |
-| `CONTACT_SUPPORT` | 5 | Hardware likely needs RMA | Alert / ticket creation |
+| `CONTACT_SUPPORT` | 5 | Automated remediation not possible; human intervention required | Alert / ticket creation; human action ranges from pod restart to hardware escalation |
 | `RUN_FIELDDIAG` | 6 | Run field diagnostics | Diagnostic job |
 | `RESTART_VM` | 15 | Restart virtual machine | CSP reboot via janitor-provider |
 | `RESTART_BM` | 24 | Reboot bare-metal node | CSP reboot or generic Job-based reboot |
@@ -153,7 +152,7 @@ fault-remediation) may modify cluster state in response to this event.
 **Where strategy is enforced**:
 
 - **Platform connector** normalizes `UNSPECIFIED` → `EXECUTE_REMEDIATION` at ingestion.
-- **Deduplication transformer** downgrades repeated unhealthy events to `STORE_AND_ANALYSE` within a suppression window (see [Deduplication](#deduplication)).
+- **Deduplication transformer** downgrades repeated unhealthy events to `STORE_AND_ANALYSE` within a suppression window (see [ADR-039](./designs/039-health-event-deduplication.md)).
 - **Fault-quarantine** skips events where `processingStrategy != EXECUTE_REMEDIATION`.
 - **Health-events-analyzer** queries for `STORE_AND_ANALYSE` events specifically.
 
@@ -314,9 +313,9 @@ spec/status convention.
 
 ## External Remediation Request
 
-When `recommendedAction == CUSTOM` and the configured action produces an
-`ExternalRemediationRequest` (ExtRR), the full `HealthEvent` is embedded in the
-CRD spec:
+When the configured remediation action produces an
+`ExternalRemediationRequest` (ExtRR) — for any `recommendedAction`, not only
+`CUSTOM` — the full `HealthEvent` is embedded in the CRD spec:
 
 ```protobuf
 message ExternalRemediationRequestSpec {
@@ -333,34 +332,6 @@ carries status conditions for coordination with external repair systems:
 | `ExternalRemediationComplete` | External system | External repair is done; NVSentinel can re-admit the node |
 
 See [ADR-040](./designs/040-external-remediation-request.md) for the full design.
-
----
-
-## Deduplication
-
-The platform connector runs a **Deduplicator** transformer in its ingestion
-pipeline. Within a configurable suppression window, repeated events with the same
-composite key are downgraded. The dedup key consists of:
-
-- `nodeName`
-- `checkName`
-- `entitiesImpacted` (canonicalized order)
-- `errorCode` (sorted)
-- `processingStrategy`
-- `isHealthy`
-
-Duplicate unhealthy events are downgraded:
-
-```
-processingStrategy → STORE_AND_ANALYSE
-```
-
-This prevents a flapping monitor from triggering repeated quarantine/drain/remediation
-cycles. The event is still persisted, exported, and available to the
-health-events-analyzer, but no cluster state changes occur (no cordon, drain, or
-remediation CR creation).
-
-Configuration: see [Platform Connectors configuration](./configuration/platform-connectors.md).
 
 ---
 
