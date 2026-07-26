@@ -96,3 +96,14 @@ verbose: "False"
 # EXECUTE_REMEDIATION: normal behavior; downstream modules may update cluster state.
 # STORE_ONLY: observability-only behavior; event should be persisted/exported but should not modify cluster resources (i.e., no node conditions, no quarantine, no drain, no remediation).
 processingStrategy: EXECUTE_REMEDIATION
+
+# Operator assertion that bridge-capable PCIe GPUs (A100/H100 PCIe) in this
+# fleet run without NVLink bridges by design. When true, DCGM_FR_NVLINK_DOWN
+# is suppressed on PCIe-named GPUs whose metadata shows zero active NVLink
+# links (DCGM otherwise reports the permanently-inactive bridge links as a
+# FATAL fault with RESTART_VM). Leave false if any pool uses NVLink bridges:
+# an unbridged card and a card whose bridge was dead at metadata-collection
+# time are indistinguishable, so enabling this could mask a bridge failure
+# present at boot. GPUs with no NVLink silicon (L40, A40) are always
+# suppressed regardless of this value.
+suppressNvlinkDownOnUnbridgedPcie: "False"
