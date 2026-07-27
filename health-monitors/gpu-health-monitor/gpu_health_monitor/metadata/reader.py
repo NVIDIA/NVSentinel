@@ -12,10 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import enum
 import json
 import logging as log
 import threading
 from typing import Optional
+
+
+class NVLinkDownExpectation(enum.Enum):
+    """Why (or whether) an all-NVLink-links-down report is expected for a GPU.
+
+    NO_NVLINK_HARDWARE and UNBRIDGED_PCIE both mean the down state is
+    expected, but they differ in ambiguity: no-silicon is unambiguous,
+    while an unbridged bridge-capable PCIe card is indistinguishable from
+    a card whose bridge was dead at metadata-collection time, so callers
+    must require explicit operator opt-in before acting on UNBRIDGED_PCIE.
+    """
+
+    NO_NVLINK_HARDWARE = "no_nvlink_hardware"
+    UNBRIDGED_PCIE = "unbridged_pcie"
+    NVLINK_IN_USE = "nvlink_in_use"
+    UNKNOWN = "unknown"
 
 
 class MetadataReader:
@@ -160,6 +177,91 @@ class MetadataReader:
                     return None
 
         return None
+
+    @staticmethod
+    def _as_link_count(value: object, gpu_id: int, field: str) -> Optional[int]:
+        """Validate a link-count field: only a non-negative int is accepted.
+
+        Anything else (bool, float, string, negative) is malformed producer
+        output and must read as unknown, never as a confirmed count.
+        """
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            log.warning(
+                "GPU %s %s value %r is not a non-negative integer; treating as unknown",
+                gpu_id,
+                field,
+                value,
+            )
+            return None
+        return value
+
+    def classify_nvlink_down(self, gpu_id: int) -> NVLinkDownExpectation:
+        """Classify whether an all-NVLink-links-down report is expected
+        steady state for this GPU rather than a fault.
+
+        DCGM's NVLink health watch fires DCGM_FR_NVLINK_DOWN whenever a GPU
+        has NVLink hardware whose links are down. That is normal for:
+          - GPUs with no NVLink silicon at all (L40, A40): nothing to be up.
+          - NVLink-bridge-capable PCIe cards with no bridge installed
+            (A100/H100 PCIe): NVML reports the bridge links (SUCCESS) but
+            they are permanently inactive.
+
+        Decision rule, using metadata collected at startup:
+          - nvlink_active_link_count > 0 → NVLINK_IN_USE: links going down
+            is a genuine fault.
+          - nvlink_active_link_count == 0 and nvlink_link_count == 0
+            → NO_NVLINK_HARDWARE: unambiguous, nothing could ever be up.
+          - nvlink_active_link_count == 0 and device_name contains "PCIe"
+            → UNBRIDGED_PCIE: consistent with an unbridged bridge-capable
+            card, but indistinguishable from a card whose bridge was dead
+            at collection time — callers must require explicit operator
+            opt-in before suppressing on this value.
+          - nvlink_active_link_count == 0 otherwise → UNKNOWN: on SXM/HGX
+            systems links train via fabric manager after boot, so a zero
+            reading may just mean metadata was collected too early.
+
+        Fails closed on the active count: a missing or malformed
+        nvlink_active_link_count always yields UNKNOWN. The hardware count
+        is corroborating evidence only: when it is missing or malformed, a
+        PCIe device name with a zero active count still classifies as
+        UNBRIDGED_PCIE.
+
+        Args:
+            gpu_id: The DCGM GPU ID (0, 1, 2, ...).
+
+        Returns:
+            An NVLinkDownExpectation. UNKNOWN is returned when the GPU is
+            not found, metadata is unavailable, or the expectation cannot
+            be established safely — callers must never suppress on UNKNOWN.
+        """
+        self._ensure_loaded()
+
+        if not self._metadata:
+            return NVLinkDownExpectation.UNKNOWN
+
+        gpus = self._metadata.get("gpus", [])
+        for gpu in gpus:
+            if gpu.get("gpu_id") == gpu_id:
+                active = self._as_link_count(gpu.get("nvlink_active_link_count"), gpu_id, "nvlink_active_link_count")
+                if active is None:
+                    return NVLinkDownExpectation.UNKNOWN
+                if active > 0:
+                    return NVLinkDownExpectation.NVLINK_IN_USE
+
+                hardware = self._as_link_count(gpu.get("nvlink_link_count"), gpu_id, "nvlink_link_count")
+                if hardware == 0:
+                    return NVLinkDownExpectation.NO_NVLINK_HARDWARE
+
+                device_name = gpu.get("device_name")
+                if isinstance(device_name, str) and "PCIe" in device_name:
+                    return NVLinkDownExpectation.UNBRIDGED_PCIE
+
+                return NVLinkDownExpectation.UNKNOWN
+
+        log.debug(f"GPU {gpu_id} not found in metadata")
+        return NVLinkDownExpectation.UNKNOWN
 
     def get_chassis_serial(self) -> Optional[str]:
         """Get chassis serial number.
