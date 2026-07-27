@@ -33,8 +33,9 @@ import (
 	srv "github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp"
-	awsclient "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp/aws"
-	gcpclient "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp/gcp"
+	awsclient    "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp/aws"
+	gcpclient    "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp/gcp"
+	lambdaclient "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp/lambda"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/datastore"
 	eventpkg "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/event"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/metrics"
@@ -161,9 +162,12 @@ func run() error {
 	})
 
 	g.Go(func() error {
+		var store datastore.Store
+
 		slog.Info("Initializing datastore connection...")
 
-		store, err := datastore.NewStore(gCtx, databaseClientCertMountPath)
+		var err error
+		store, err = datastore.NewStore(gCtx, databaseClientCertMountPath)
 		if err != nil {
 			return fmt.Errorf("failed to initialize datastore: %w", err)
 		}
@@ -259,7 +263,24 @@ func initActiveMonitor(
 		return awsMonitor
 	}
 
-	slog.Info("No CSP is explicitly enabled in the configuration (GCP or AWS).")
+	if cfg.Lambda.Enabled {
+		slog.Info("Lambda configuration is enabled.")
+
+		triggerTimeLimit := time.Duration(cfg.TriggerQuarantineWorkflowTimeLimitMinutes) * time.Minute
+		lambdaMonitor, err := lambdaclient.NewClient(ctx, cfg.Lambda, cfg.ClusterName, triggerTimeLimit, kubeconfigPath, store)
+		if err != nil {
+			metrics.CSPMonitorErrors.WithLabelValues(string(lambdaclient.CSPLambda), "init_error").Inc()
+			slog.Error("Failed to initialize Lambda monitor.", "error", err)
+
+			return nil
+		}
+
+		slog.Info("Lambda mock monitor initialized", "eventsFile", cfg.Lambda.MockEventsFilePath)
+
+		return lambdaMonitor
+	}
+
+	slog.Info("No CSP is explicitly enabled in the configuration (GCP, AWS, or Lambda).")
 
 	return nil
 }
