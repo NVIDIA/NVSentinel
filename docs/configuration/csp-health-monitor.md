@@ -160,7 +160,7 @@ How frequently the monitor polls the AWS Health API for maintenance events. Lowe
 #### iamRoleName
 Custom IAM role name for IRSA (IAM Roles for Service Accounts). When set, the ServiceAccount annotation uses this role name directly instead of constructing one from `clusterName`.
 
-If left empty (default), the role name is generated as `<clusterName>-nvsentinel-health-monitor-assume-role-policy`.
+If left empty (default), the role name is generated as `{CLUSTER_NAME}-nvsentinel-health-monitor-assume-role-policy`.
 
 > **Important (EKS)**: AWS IAM role names have a maximum of 64 characters. The default suffix `-nvsentinel-health-monitor-assume-role-policy` is 45 characters, leaving only **19 characters** for the cluster name. If your EKS cluster name exceeds 19 characters, you **must** set `iamRoleName` to a custom value.
 
@@ -212,8 +212,8 @@ Each cloud provider handles IAM identity for the CSP Health Monitor differently:
 
 | Provider | IAM Identity Configuration | Naming Flexibility |
 |----------|---------------------------|-------------------|
-| **GCP**  | `gcp.gcpServiceAccountName` — User provides any GCP Service Account name. The ServiceAccount annotation is built as `<name>@<project>.iam.gserviceaccount.com`. | Fully flexible. No naming convention enforced. |
-| **AWS (EKS)** | `aws.iamRoleName` (optional) — User provides a custom IAM role name. If omitted, the role name defaults to `<clusterName>-nvsentinel-health-monitor-assume-role-policy`. | Flexible when `iamRoleName` is set. The default convention imposes a **19-character cluster name limit** (AWS IAM role names max 64 chars, default suffix is 45 chars). |
+| **GCP**  | `gcp.gcpServiceAccountName` — User provides any GCP Service Account name. The ServiceAccount annotation is built as `{SA_NAME}@{PROJECT}.iam.gserviceaccount.com`. | Fully flexible. No naming convention enforced. |
+| **AWS (EKS)** | `aws.iamRoleName` (optional) — User provides a custom IAM role name. If omitted, the role name defaults to `{CLUSTER_NAME}-nvsentinel-health-monitor-assume-role-policy`. | Flexible when `iamRoleName` is set. The default convention imposes a **19-character cluster name limit** (AWS IAM role names max 64 chars, default suffix is 45 chars). |
 
 > **Recommendation for EKS users**: If your cluster name is longer than 19 characters, always set `aws.iamRoleName` explicitly and create the corresponding IAM role with that name. See [IAM Setup](../csp-health-monitor-iam.md) for detailed instructions.
 

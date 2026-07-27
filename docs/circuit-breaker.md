@@ -117,7 +117,7 @@ kubectl get nodes | grep SchedulingDisabled
 For each cordoned node, check what triggered the cordon:
 
 ```bash
-kubectl describe node <NODE_NAME>
+kubectl describe node {NODE_NAME}
 ```
 
 Look for:

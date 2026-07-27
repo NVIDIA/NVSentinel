@@ -76,7 +76,7 @@ condition:
 ```yaml
 status:
   conditions:
-    - type: <completeConditionType>   # e.g. "Complete"
+    - type: "{completeConditionType}"   # e.g. "Complete"
       status: "True"                  # True = success, False = failed (retry allowed)
       reason: RepairSucceeded
       message: Node hardware repaired and validated
@@ -265,7 +265,7 @@ Health event contract (emit from a health monitor):
   recommendedAction enums only and do not set customRecommendedAction.
 
 Controller (standalone Kubebuilder project, any repo):
-- Scaffold: kubebuilder init --domain example.com --repo github.com/<your-org>/[my-remediation]
+- Scaffold: kubebuilder init --domain example.com --repo github.com/{your-org}/[my-remediation]
   then kubebuilder create api --group remediation --version v1alpha1 --kind RemediationRequest
   --resource --controller.
 - Spec: nodeName (string), action (string), healthEventId (string) — minimal fields from the
@@ -277,7 +277,7 @@ Controller (standalone Kubebuilder project, any repo):
   with a new CR) using append-or-update-by-type (meta.SetStatusCondition + Status().Update).
   RBAC: remediationrequests + status; add any API permissions your repair needs.
 - Build and push with the generated Dockerfile/Makefile, pointing IMG at a registry your cluster can
-  pull from (e.g. docker.io/<your-user>/[my-remediation]:dev or a private registry such as NVCR).
+  pull from (e.g. docker.io/{your-user}/[my-remediation]:dev or a private registry such as NVCR).
   Run docker login once, then make docker-build docker-push IMG=$IMG. Use a public repo so the
   cluster can pull without credentials; for a private registry, add the cluster's imagePullSecret
   to the controller Deployment via config/. Deploy with make install && make deploy IMG=$IMG.
@@ -311,8 +311,8 @@ fault-remediation chart values; exact file/chart path depends on your deployment
   free-form message text into YAML.
 - Use a CRD kind with a regular plural (RemediationRequest -> remediationrequests); irregular
   plurals break fault-remediation's auto-generated RBAC.
-- Deploy the values via your usual NVSentinel Helm upgrade (e.g. helm upgrade <release>
-  <chart> -n nvsentinel --reuse-values -f <overrides>.yaml), then wait for the fault-remediation
+- Deploy the values via your usual NVSentinel Helm upgrade (e.g. helm upgrade {release}
+  {chart} -n nvsentinel --reuse-values -f {overrides}.yaml), then wait for the fault-remediation
   Deployment rollout.
 
 Verification (against a running NVSentinel cluster):

@@ -10,9 +10,9 @@ This documentation is organized into three focused areas:
 
 | Document                                                                | Focus                                       | Key Capabilities                                                                                    |
 |-------------------------------------------------------------------------|---------------------------------------------|-----------------------------------------------------------------------------------------------------|
-| [**Link State Detection**](./link-state-detection.md)                   | UP/DOWN monitoring, device disappearance    | Binary state changes, NIC role classification (compute/storage/management), uncabled port anomalies |
-| [**Link Counter Detection**](./link-counter-detection.md)               | Error rate monitoring, threshold violations | BER tracking, FEC exhaustion prediction, congestion detection                                       |
-| [**Syslog Detection & Correlation**](./syslog-detection-correlation.md) | Kernel log monitoring, repeat failures      | Driver/firmware errors, correlated failure patterns                                                 |
+| [**Link State Detection**](./047-link-state-detection.md)                   | UP/DOWN monitoring, device disappearance    | Binary state changes, NIC role classification (compute/storage/management), uncabled port anomalies |
+| [**Link Counter Detection**](./046-link-counter-detection.md)               | Error rate monitoring, threshold violations | BER tracking, FEC exhaustion prediction, congestion detection                                       |
+| [**Syslog Detection & Correlation**](./048-syslog-detection-correlation.md) | Kernel log monitoring, repeat failures      | Driver/firmware errors, correlated failure patterns                                                 |
 
 ---
 
@@ -131,7 +131,7 @@ This monitor uses a binary severity model based on **workload impact**:
 │  LAYER 1: LINK STATE DETECTION                                             │
 │  ═══════════════════════════════                                           │
 │  • Polling interval: 1 second                                              │
-│  • Data source: /sys/class/infiniband/<dev>/ports/<port>/state, phys_state │
+│  • Data source: /sys/class/infiniband/{dev}/ports/{port}/state, phys_state │
 │  • Detects: Hard DOWN, device disappearance, uncabled port anomalies       │
 │  • Documentation: link-state-detection.md                                  │
 │                                                                            │
@@ -142,7 +142,7 @@ This monitor uses a binary severity model based on **workload impact**:
 │  • Polling interval: 1 second                                              │
 │  • Velocity thresholds gate themselves on the configured velocityUnit      │
 │    (1s / 1m / 1h), so a fast poll is safe for every counter type.          │
-│  • Data source: /sys/class/infiniband/<dev>/ports/<port>/counters/         │
+│  • Data source: /sys/class/infiniband/{dev}/ports/{port}/counters/         │
 │  • Detects: Symbol errors, link flaps, buffer overruns, transport errors   │
 │  • Documentation: link-counter-detection.md                                │
 │                                                                            │
@@ -188,9 +188,9 @@ This monitor uses a binary severity model based on **workload impact**:
 4. **Pre-failure prediction** by detecting BER climbing before FEC exhaustion (IBTA 10E-12 BER threshold: 120 errors/hour)
 5. **Kernel log monitoring** integrated into the existing syslog-health-monitor with NIC-specific check patterns
 6. **Centralized event correlation** via Health Events Analyzer MongoDB aggregation pipelines
-7. **Repeated non-fatal degradation/syslog escalation** via Health Events Analyzer rules (see [Syslog Detection & Correlation, Appendix B](./syslog-detection-correlation.md#appendix-b-health-events-analyzer-rules-for-nic-monitoring) for thresholds and external sources)
+7. **Repeated non-fatal degradation/syslog escalation** via Health Events Analyzer rules (see [Syslog Detection & Correlation, Appendix B](./048-syslog-detection-correlation.md#appendix-b-health-events-analyzer-rules-for-nic-monitoring) for thresholds and external sources)
 8. **Persistent local state** shared across state and counter checks — port/device snapshots, disappearance debounce and outstanding event latches, counter snapshots with per-counter timestamps, breach flags, and boot ID. Observational state resets on reboot and healthy baselines clear stale conditions; outstanding card/device FATAL latches remain until matching recovery evidence arrives.
-9. **Zero-configuration NIC role classification** via a two-level decision (NUMA locality + `nvidia-smi topo -m` matrix, consumed from the NVSentinel metadata collector's `gpu_metadata.json`). Works across x86 DGX/HGX (A100, H100, L40S), Grace-based superchips (GB200, GH200), and OEM/cloud platforms. See [Link State Detection, Section 4](./link-state-detection.md#4-management-nic-exclusion-and-uncabled-port-detection).
+9. **Zero-configuration NIC role classification** via a two-level decision (NUMA locality + `nvidia-smi topo -m` matrix, consumed from the NVSentinel metadata collector's `gpu_metadata.json`). Works across x86 DGX/HGX (A100, H100, L40S), Grace-based superchips (GB200, GH200), and OEM/cloud platforms. See [Link State Detection, Section 4](./047-link-state-detection.md#4-management-nic-exclusion-and-uncabled-port-detection).
 
 ---
 
@@ -202,7 +202,7 @@ This monitor uses a binary severity model based on **workload impact**:
 |-------------------|--------------------------------------------------------------------------------|----------------------------------|
 | **State Monitor** | `state=DOWN` / `phys_state=Disabled` (runtime transition, or first-poll on a card below its role group's decisive mode), device disappeared, uncabled port anomaly | **RecommendedAction_REPLACE_VM** |
 
-> **First-poll severity gate**: A port that has never been observed healthy is fatal only with **peer evidence** — its card's active-port count is below the decisive mode of a ≥2-card role group. Singleton role groups and tied/zero-mode groups are indecisive, so their DOWN ports are logged and suppressed without an external `HealthEvent` (e.g., the intentionally-unprovisioned Aux frontend port on OCI `BM.GPU.H100.8`). See [Link State Detection, Section 4.3](./link-state-detection.md#43-uncabled-port-detection-role-based-card-homogeneity).
+> **First-poll severity gate**: A port that has never been observed healthy is fatal only with **peer evidence** — its card's active-port count is below the decisive mode of a ≥2-card role group. Singleton role groups and tied/zero-mode groups are indecisive, so their DOWN ports are logged and suppressed without an external `HealthEvent` (e.g., the intentionally-unprovisioned Aux frontend port on OCI `BM.GPU.H100.8`). See [Link State Detection, Section 4.3](./047-link-state-detection.md#43-uncabled-port-detection-role-based-card-homogeneity).
 
 ### Counter Detection (Fatal - Defaults)
 
@@ -210,7 +210,7 @@ This monitor uses a binary severity model based on **workload impact**:
 |-------------------------|------------------------------------------------------------------------------------------------------------------------------------|----------------------------------|
 | **Degradation Monitor** | `link_downed` (Delta > 0), `excessive_buffer_overrun_errors` (any), `local_link_integrity_errors` (any), `rnr_nak_retry_err` (any) | **RecommendedAction_REPLACE_VM** |
 
-> **Note**: Counter thresholds are configurable for the hardcoded allowed counter set. Severity and sysfs paths are owned by the monitor definitions. See [Link Counter Detection](./link-counter-detection.md#10-configuration) for customization options.
+> **Note**: Counter thresholds are configurable for the hardcoded allowed counter set. Severity and sysfs paths are owned by the monitor definitions. See [Link Counter Detection](./046-link-counter-detection.md#10-configuration) for customization options.
 
 ### Syslog Detection (Fatal & Non-Fatal)
 
@@ -239,7 +239,7 @@ The NIC Health Monitor emits healthy events (`IsHealthy=true`) in two scenarios 
 | **Port recovery**       | State Monitor       | When a previously-DOWN port transitions to `ACTIVE/LinkUp`, emit recovery event per port                                                                                                                                                                                                                      | Clears stale port FATAL conditions                                                              |
 | **Host reboot**         | Both                | On boot ID change, reset observational state and emit baseline events: healthy events for all `ACTIVE/LinkUp` ports and all counters; fatal events for unhealthy ports only when peer evidence shows the card is anomalous. Outstanding card/device latches are preserved until their matching healthy evidence arrives. | Clears stale conditions without orphaning a previously-published card/device FATAL |
 
-> **Design Note**: Without recovery events, a node marked FATAL would remain stuck after the issue is resolved. Persistent state (see [Link Counter Detection, Section 6.6](./link-counter-detection.md#66-persistent-state-file)) ensures recovery events survive pod restarts. On host reboot, observational state resets and baselines describe the current ports/counters, while outstanding card/device latches survive until positive recovery evidence prevents their downstream conditions from being orphaned.
+> **Design Note**: Without recovery events, a node marked FATAL would remain stuck after the issue is resolved. Persistent state (see [Link Counter Detection, Section 6.6](./046-link-counter-detection.md#66-persistent-state-file)) ensures recovery events survive pod restarts. On host reboot, observational state resets and baselines describe the current ports/counters, while outstanding card/device latches survive until positive recovery evidence prevents their downstream conditions from being orphaned.
 
 ---
 
@@ -254,7 +254,7 @@ The NIC Health Monitor emits healthy events (`IsHealthy=true`) in two scenarios 
 ### Future Work
 
 - **AWS EFA Support**: Device names matching `rdmap\d+s\d+`
-- **Plain Ethernet**: `operstate = down` detection via `/sys/class/net/<interface>/operstate`
+- **Plain Ethernet**: `operstate = down` detection via `/sys/class/net/{interface}/operstate`
 - **TCPXO Support**: TCP Express Offload support
 
 ---
@@ -263,22 +263,22 @@ The NIC Health Monitor emits healthy events (`IsHealthy=true`) in two scenarios 
 
 | Topic                                | Document                                                            | Section      |
 |--------------------------------------|---------------------------------------------------------------------|--------------|
-| UP/DOWN state monitoring             | [Link State Detection](./link-state-detection.md)                   | Section 3    |
-| Device disappearance / PCI checks    | [Link State Detection](./link-state-detection.md)                   | Section 7    |
-| Management NIC exclusion (NUMA)      | [Link State Detection](./link-state-detection.md)                   | Section 4.1  |
-| NIC role classification (topo-based) | [Link State Detection](./link-state-detection.md)                   | Section 4.2  |
-| Metadata collector requirements      | [Link State Detection](./link-state-detection.md)                   | Section 12.2 |
-| Uncabled port detection              | [Link State Detection](./link-state-detection.md)                   | Section 4.3  |
-| SR-IOV VF handling                   | [Link State Detection](./link-state-detection.md)                   | Section 8    |
-| BER/FEC theory                       | [Link Counter Detection](./link-counter-detection.md)               | Section 2    |
-| Counter thresholds                   | [Link Counter Detection](./link-counter-detection.md)               | Section 4    |
-| Counter reset handling               | [Link Counter Detection](./link-counter-detection.md)               | Section 6    |
-| Admin reset recovery events          | [Link Counter Detection](./link-counter-detection.md)               | Section 6.4  |
-| Persistent state file                | [Link Counter Detection](./link-counter-detection.md)               | Section 6.6  |
-| Boot ID handling                     | [Link Counter Detection](./link-counter-detection.md)               | Section 6.5  |
-| Driver error patterns                | [Syslog Detection & Correlation](./syslog-detection-correlation.md) | Section 5    |
-| Repeat failure detection             | [Syslog Detection & Correlation](./syslog-detection-correlation.md) | Section 7    |
-| Health Events Analyzer rules         | [Syslog Detection & Correlation](./syslog-detection-correlation.md) | Appendix B   |
+| UP/DOWN state monitoring             | [Link State Detection](./047-link-state-detection.md)                   | Section 3    |
+| Device disappearance / PCI checks    | [Link State Detection](./047-link-state-detection.md)                   | Section 7    |
+| Management NIC exclusion (NUMA)      | [Link State Detection](./047-link-state-detection.md)                   | Section 4.1  |
+| NIC role classification (topo-based) | [Link State Detection](./047-link-state-detection.md)                   | Section 4.2  |
+| Metadata collector requirements      | [Link State Detection](./047-link-state-detection.md)                   | Section 12.2 |
+| Uncabled port detection              | [Link State Detection](./047-link-state-detection.md)                   | Section 4.3  |
+| SR-IOV VF handling                   | [Link State Detection](./047-link-state-detection.md)                   | Section 8    |
+| BER/FEC theory                       | [Link Counter Detection](./046-link-counter-detection.md)               | Section 2    |
+| Counter thresholds                   | [Link Counter Detection](./046-link-counter-detection.md)               | Section 4    |
+| Counter reset handling               | [Link Counter Detection](./046-link-counter-detection.md)               | Section 6    |
+| Admin reset recovery events          | [Link Counter Detection](./046-link-counter-detection.md)               | Section 6.4  |
+| Persistent state file                | [Link Counter Detection](./046-link-counter-detection.md)               | Section 6.6  |
+| Boot ID handling                     | [Link Counter Detection](./046-link-counter-detection.md)               | Section 6.5  |
+| Driver error patterns                | [Syslog Detection & Correlation](./048-syslog-detection-correlation.md) | Section 5    |
+| Repeat failure detection             | [Syslog Detection & Correlation](./048-syslog-detection-correlation.md) | Section 7    |
+| Health Events Analyzer rules         | [Syslog Detection & Correlation](./048-syslog-detection-correlation.md) | Appendix B   |
 
 ---
 

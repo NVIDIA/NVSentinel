@@ -1,15 +1,15 @@
-### Runbook: Log Collection Job Failures
+# Runbook: Log Collection Job Failures
 
-#### Symptoms
+## Symptoms
 
 - Prometheus alert: `HighLogCollectionFailureRate`
 - Failed log collector jobs visible in Kubernetes
 - Missing diagnostic logs for faulted nodes
 - Metric `fault_remediation_log_collector_jobs_total{status="failure"}` increasing
 
-#### Diagnosis Steps
+## Diagnosis Steps
 
-##### 1. Check Recent Job Status
+### 1. Check Recent Job Status
 
 ```bash
 # List recent log collector jobs
@@ -19,7 +19,7 @@ kubectl get jobs -n nvsentinel -l app=log-collector --sort-by=.metadata.creation
 kubectl get jobs -n nvsentinel -l app=log-collector --field-selector status.successful=0
 ```
 
-##### 2. Examine Job Logs
+### 2. Examine Job Logs
 
 ```bash
 # Get the most recent failed job
@@ -38,7 +38,7 @@ kubectl logs -n nvsentinel $FAILED_POD
 kubectl describe pod -n nvsentinel $FAILED_POD
 ```
 
-##### 3. Check Common Issues
+### 3. Check Common Issues
 
 ```bash
 # Verify nvidia-driver-daemonset is running on the node
@@ -53,9 +53,9 @@ kubectl get svc -n nvsentinel nvsentinel-incluster-file-server
 kubectl get pods -n nvsentinel -l app.kubernetes.io/name=incluster-file-server
 ```
 
-#### Common Failure Causes and Solutions
+## Common Failure Causes and Solutions
 
-##### Issue 1: NVIDIA Driver Pod Not Found
+### Issue 1: NVIDIA Driver Pod Not Found
 
 **Error in logs**:
 ```text
@@ -80,7 +80,7 @@ kubectl describe node $NODE_NAME | grep -A 5 "Taints:"
 kubectl describe node $NODE_NAME | grep nvidia.com/gpu
 ```
 
-##### Issue 2: Timeout Errors
+### Issue 2: Timeout Errors
 
 **Error in logs**:
 ```text
@@ -97,7 +97,7 @@ logCollector:
   collectionTimeout: 1800  # Increase to 30 minutes
 ```
 
-##### Issue 3: Upload Failures
+### Issue 3: Upload Failures
 
 **Error in logs**:
 ```text
@@ -122,7 +122,7 @@ kubectl run -n nvsentinel test-connectivity --rm -it --image=curlimages/curl --r
   curl -v http://nvsentinel-incluster-file-server.nvsentinel.svc.cluster.local/healthz
 ```
 
-##### Issue 4: Permission Errors
+### Issue 4: Permission Errors
 
 **Error in logs**:
 ```text
@@ -146,7 +146,7 @@ kubectl get psp
 kubectl get ns nvsentinel -o yaml | grep -A 5 pod-security
 ```
 
-##### Issue 5: Disk Space Issues on File Server
+### Issue 5: Disk Space Issues on File Server
 
 **Error in logs**:
 ```text
@@ -174,7 +174,7 @@ kubectl exec -n nvsentinel $FILE_SERVER_POD -- find /usr/share/nginx/html -type 
 kubectl patch pvc -n nvsentinel nvsentinel-incluster-file-server-data -p '{"spec":{"resources":{"requests":{"storage":"100Gi"}}}}'
 ```
 
-#### Resolution Steps
+## Resolution Steps
 
 1. **Identify and fix the root cause** using diagnosis steps above
 2. **Manually retry failed collection** (if needed):

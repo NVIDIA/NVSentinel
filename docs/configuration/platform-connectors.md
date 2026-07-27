@@ -221,7 +221,7 @@ platformConnector:
 Enables the deduplication transformer. When disabled, every event that reaches platform-connectors keeps its original processing strategy.
 
 #### suppressionWindow
-Go duration string that controls how long repeated events with the same key are downgraded to `STORE_ONLY`. After the window expires, the next matching event remains `EXECUTE_REMEDIATION`.
+Go duration string that controls how long repeated events with the same key are downgraded to `STORE_AND_ANALYSE`. After the window expires, the next matching event remains `EXECUTE_REMEDIATION`.
 
 #### cleanupInterval
 Go duration string that controls how often the in-memory tracker removes expired keys that have not recurred.

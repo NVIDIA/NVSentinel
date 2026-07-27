@@ -111,7 +111,7 @@ none → quarantined → drain-succeeded → remediating → remediation-succeed
 none → quarantined → draining → drain-failed [TERMINAL]
 ```
 
-**Canceled drain (healthy event):**
+**Cancelled drain (healthy event):**
 ```
 none → quarantined → draining → none
 ```

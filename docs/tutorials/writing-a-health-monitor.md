@@ -166,7 +166,7 @@ Create the module (any module path works):
 
 ```bash
 mkdir demo-health-monitor && cd demo-health-monitor
-go mod init github.com/<your-org>/demo-health-monitor
+go mod init github.com/{your-org}/demo-health-monitor
 ```
 
 Add the two dependencies. They live in subdirectories of the NVSentinel repo and aren't
@@ -401,17 +401,17 @@ ENTRYPOINT ["/demo-health-monitor"]
 ```
 
 Build the image and push it to a registry your cluster can pull from. We use Docker Hub
-here — replace `<dockerhub-user>` with your Docker Hub username. Run from the monitor directory:
+here — replace `{dockerhub-user}` with your Docker Hub username. Run from the monitor directory:
 
 ```bash
 cd demo-health-monitor
 
 docker login     # once, to authenticate to Docker Hub
 
-docker build -t docker.io/<dockerhub-user>/demo-health-monitor:dev .
+docker build -t docker.io/{dockerhub-user}/demo-health-monitor:dev .
 
 # Push so the cluster can pull it.
-docker push docker.io/<dockerhub-user>/demo-health-monitor:dev
+docker push docker.io/{dockerhub-user}/demo-health-monitor:dev
 ```
 
 > If you use a **private** repository, make sure the cluster has the required image pull
@@ -450,7 +450,7 @@ spec:
     spec:
       containers:
         - name: demo-health-monitor
-          image: docker.io/<dockerhub-user>/demo-health-monitor:dev
+          image: docker.io/{dockerhub-user}/demo-health-monitor:dev
           imagePullPolicy: IfNotPresent
           env:
             - name: NODE_NAME
@@ -511,7 +511,7 @@ NetworkReachability  True  NetworkReachabilityIsNotHealthy  dial tcp 192.0.2.1:9
 
 > **Note the inverted semantics:** NVSentinel sets `Status=True` to mean *a fault is present*
 > (and `Status=False` for healthy). The condition `Type` is exactly your `checkName`, and
-> `Reason` is `<checkName>IsNotHealthy` / `<checkName>IsHealthy`. The same condition is visible
+> `Reason` is `{checkName}IsNotHealthy` / `{checkName}IsHealthy`. The same condition is visible
 > under **Conditions** in `kubectl describe node "$NODE"`.
 
 Clear the fault — point `CHECK_TARGET` at a reachable endpoint (`kubernetes.default.svc:443` is
@@ -554,7 +554,7 @@ or "watching <K8s resource>"]. It is a standalone Go program that can live in an
 follow this spec exactly.
 
 - Create a new Go module in its own directory with any module path (e.g.
-  github.com/<your-org>/[my-monitor]). It depends on two NVSentinel modules that are NOT
+  github.com/{your-org}/{my-monitor}). It depends on two NVSentinel modules that are NOT
   published as tagged releases, so fetch them by commit and add one replace so commons can
   resolve data-models:
     export GOTOOLCHAIN=auto
@@ -578,7 +578,7 @@ follow this spec exactly.
   to a registry the cluster can pull from (e.g. Docker Hub), then kubectl apply the DaemonSet
   (image referencing the pushed tag).
 - Show how to verify: a fatal event surfaces as a Kubernetes node condition whose Type equals
-  the checkName (kubectl get node <node> -o jsonpath over .status.conditions; Status=True
+  the checkName (kubectl get node {node} -o jsonpath over .status.conditions; Status=True
   means a fault is present). Stop at the node condition.
 
 Ensure `go mod tidy` and `go build ./...` pass.

@@ -149,10 +149,10 @@ gpu-health-monitor:
     suppressedErrorCodes: []
 ```
 
-#### suppressedErrorCodes
+### suppressedErrorCodes
 List of DCGM error code names (as reported by DCGM, e.g. `DCGM_FR_CLOCK_THROTTLE_POWER`) to suppress. Empty by default (no suppression). Suppression is scoped to the listed error codes only — other incidents on the same health watch (e.g. other `GpuPowerWatch` error codes) are still reported.
 
-#### Example: Suppress power-cap throttle flaps
+### Example: Suppress power-cap throttle flaps
 
 ```yaml
 gpu-health-monitor:
