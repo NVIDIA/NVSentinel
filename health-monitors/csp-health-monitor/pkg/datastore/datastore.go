@@ -33,7 +33,9 @@ import (
 type Store interface {
 	UpsertMaintenanceEvent(ctx context.Context, event *model.MaintenanceEvent) error
 	FindEventsToTriggerQuarantine(ctx context.Context, triggerTimeLimit time.Duration) ([]model.MaintenanceEvent, error)
+	FindEmergencyEventsToTriggerQuarantine(ctx context.Context) ([]model.MaintenanceEvent, error)
 	FindEventsToTriggerHealthy(ctx context.Context, healthyDelay time.Duration) ([]model.MaintenanceEvent, error)
+	FindCancelledEventsToTriggerHealthy(ctx context.Context) ([]model.MaintenanceEvent, error)
 	UpdateEventStatus(ctx context.Context, eventID string, newStatus model.InternalStatus) error
 	GetLastProcessedEventTimestampByCSP(
 		ctx context.Context,
@@ -139,10 +141,24 @@ func (s *DatabaseStore) UpsertMaintenanceEvent(ctx context.Context, event *model
 	filter := map[string]interface{}{"eventId": event.EventID}
 	event.LastUpdatedTimestamp = time.Now().UTC()
 
-	// Since Processor now prepares the event fully, we directly upsert.
-	// The fetchExistingEvent and mergeEvents logic is removed based on the confidence
-	// that each EventID is processed once in its final state by the Processor.
-	slog.Debug("Upserting event directly as prepared by Processor", "eventID", event.EventID)
+	// For MAINTENANCE_COMPLETE events, preserve the original actualEndTime if the
+	// existing event already has one. Without this guard, repeated polls would keep
+	// resetting actualEndTime to now, preventing FindEventsToTriggerHealthy from
+	// ever satisfying the postMaintenanceHealthyDelay window.
+	if event.Status == model.StatusMaintenanceComplete && event.ActualEndTime != nil {
+		var existing model.MaintenanceEvent
+		found, err := client.FindOneWithExists(ctx, s.databaseClient, filter, nil, &existing)
+		if err != nil {
+			slog.Warn("UpsertMaintenanceEvent: failed to fetch existing event; proceeding with new actualEndTime",
+				"eventID", event.EventID, "error", err)
+		} else if found && existing.ActualEndTime != nil {
+			slog.Debug("UpsertMaintenanceEvent: preserving existing actualEndTime",
+				"eventID", event.EventID, "actualEndTime", existing.ActualEndTime)
+			event.ActualEndTime = existing.ActualEndTime
+		}
+	}
+
+	slog.Debug("Upserting event", "eventID", event.EventID, "status", event.Status)
 
 	return s.executeUpsert(ctx, filter, event)
 }
@@ -183,6 +199,62 @@ func (s *DatabaseStore) FindEventsToTriggerQuarantine(
 	}
 
 	slog.Debug("Found events potentially ready for quarantine trigger", "count", len(results))
+
+	return results, nil
+}
+
+// FindCancelledEventsToTriggerHealthy finds CANCELLED events awaiting a HEALTHY trigger.
+// Cancelled events fire immediately (no post-maintenance delay) — the maintenance was
+// aborted, so the node should return to service as soon as we observe the cancellation.
+// If the node was never quarantined for this event, the emitted HEALTHY is a no-op in
+// fault-quarantine (idempotent on the entity set).
+func (s *DatabaseStore) FindCancelledEventsToTriggerHealthy(
+	ctx context.Context,
+) ([]model.MaintenanceEvent, error) {
+	filter := client.BuildStatusFilter("status", model.StatusCancelled)
+
+	cursor, err := s.databaseClient.Find(ctx, filter, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query cancelled events for healthy trigger: %w", err)
+	}
+
+	defer cursor.Close(ctx)
+
+	var results []model.MaintenanceEvent
+	if err := cursor.All(ctx, &results); err != nil {
+		return nil, fmt.Errorf("failed to decode cancelled events for healthy trigger: %w", err)
+	}
+
+	return results, nil
+}
+
+// FindEmergencyEventsToTriggerQuarantine finds DETECTED Lambda EMERGENCY events.
+// These fire immediately on the next poll cycle — no time-window check is applied.
+func (s *DatabaseStore) FindEmergencyEventsToTriggerQuarantine(
+	ctx context.Context,
+) ([]model.MaintenanceEvent, error) {
+	statusFilter := client.BuildStatusFilter("status", model.StatusDetected)
+	urgencyFilter := client.NewFilterBuilder().Eq("metadata.urgency", "EMERGENCY").Build()
+
+	filter := client.NewFilterBuilder().
+		And(statusFilter, urgencyFilter).
+		Build()
+
+	slog.Debug("Querying for emergency quarantine triggers")
+
+	cursor, err := s.databaseClient.Find(ctx, filter, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query emergency quarantine events: %w", err)
+	}
+
+	defer cursor.Close(ctx)
+
+	var results []model.MaintenanceEvent
+	if err := cursor.All(ctx, &results); err != nil {
+		return nil, fmt.Errorf("failed to decode emergency quarantine events: %w", err)
+	}
+
+	slog.Debug("Found emergency events for quarantine trigger", "count", len(results))
 
 	return results, nil
 }
