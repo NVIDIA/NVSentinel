@@ -30,7 +30,7 @@ structlog = ">=25.1,<27.0"
 black = "^26.3.1"
 pytest = "^9.0.0"
 coverage = "^7.13.2"
-ruff = ">=0.11,<0.16"
+ruff = ">=0.11,<0.17"
 
 [build-system]
 requires = ["poetry-core"]

@@ -20,8 +20,8 @@
 - [Appendix A: Quick Reference - Fatal Condition Classification](#appendix-a-quick-reference---fatal-condition-classification)
 
 **Related Documents:**
-- [Link Counter Detection](./link-counter-detection.md) - Counter-based degradation monitoring
-- [Syslog Detection & Correlation](./syslog-detection-correlation.md) - Kernel log monitoring and repeat failure detection
+- [Link Counter Detection](./046-link-counter-detection.md) - Counter-based degradation monitoring
+- [Syslog Detection & Correlation](./048-syslog-detection-correlation.md) - Kernel log monitoring and repeat failure detection
 
 ---
 
@@ -54,7 +54,7 @@ This monitor uses a binary severity model based on **workload impact**:
 
 ### 1.4 State Detection Overview Diagram
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                     LINK STATE DETECTION FLOW                               │
 ├─────────────────────────────────────────────────────────────────────────────┤
@@ -62,11 +62,11 @@ This monitor uses a binary severity model based on **workload impact**:
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
 │  │                     DATA SOURCES (sysfs)                             │   │
 │  ├─────────────────────────────────────────────────────────────────────┤   │
-│  │  /sys/class/infiniband/<dev>/ports/<port>/                          │   │
+│  │  /sys/class/infiniband/{dev}/ports/{port}/                          │   │
 │  │  ├── state           →  Logical state (DOWN, INIT, ARMED, ACTIVE)   │   │
 │  │  └── phys_state      →  Physical state (LinkUp, Disabled, Polling)  │   │
 │  │                                                                      │   │
-│  │  /sys/class/net/<interface>/                                         │   │
+│  │  /sys/class/net/{interface}/                                         │   │
 │  │  └── operstate       →  Interface state (up, down, unknown)         │   │
 │  │                                                                      │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
@@ -128,11 +128,11 @@ The State Monitor follows NVSentinel's established architectural pattern where:
 | **NIC Health Monitor (State Check)** | Poll sysfs state files, detect transitions and confirmed disappearance, persist lifecycle state, emit raw events and recovery events | Aggregation, deduplication, correlation, pattern detection |
 | **Health Events Analyzer**           | Correlate events, detect link flap patterns, escalate severity                                                                              | Direct hardware access                                     |
 
-> **Local State Persistence**: The State Check persists port snapshots, known devices, disappearance debounce counters, outstanding card/device/port FATAL latches (with this-boot provenance), and any owed baseline reconciliation in the shared hostPath-backed state file (see [Link Counter Detection, Section 6.6](./link-counter-detection.md#66-persistent-state-file)). This enables recovery after pod restart, debounced disappearance detection across restarts, and a matching healthy event when a disappeared device re-enumerates — or a disappeared port reappears (port disappearances latch just like device disappearances, so the reappeared port's healthy observation clears the FATAL instead of being suppressed as first-seen). On a baseline run (host reboot or discovery-scope change) each check first emits a **check-scoped clear** — a healthy event with empty entities that wipes every stale downstream condition for the check, including conditions whose devices were renamed or removed — then re-asserts current truth: per-port healthy baselines, still-fatal ports (through the first-poll peer-evidence gate), and window-detected device/port disappearances. The reconciliation waits for the first complete enumeration (monitoring of readable devices starts earlier) and survives pod restarts via persisted pending flags and latch provenance. Previous-boot latches are consumed by the clear; anything still wrong on the new boot re-latches with fresh entities. See [Link Counter Detection, Section 6.5](./link-counter-detection.md#65-boot-id-handling) for the full reconciliation contract.
+> **Local State Persistence**: The State Check persists port snapshots, known devices, disappearance debounce counters, outstanding card/device/port FATAL latches (with this-boot provenance), and any owed baseline reconciliation in the shared hostPath-backed state file (see [Link Counter Detection, Section 6.6](./046-link-counter-detection.md#66-persistent-state-file)). This enables recovery after pod restart, debounced disappearance detection across restarts, and a matching healthy event when a disappeared device re-enumerates — or a disappeared port reappears (port disappearances latch just like device disappearances, so the reappeared port's healthy observation clears the FATAL instead of being suppressed as first-seen). On a baseline run (host reboot or discovery-scope change) each check first emits a **check-scoped clear** — a healthy event with empty entities that wipes every stale downstream condition for the check, including conditions whose devices were renamed or removed — then re-asserts current truth: per-port healthy baselines, still-fatal ports (through the first-poll peer-evidence gate), and window-detected device/port disappearances. The reconciliation waits for the first complete enumeration (monitoring of readable devices starts earlier) and survives pod restarts via persisted pending flags and latch provenance. Previous-boot latches are consumed by the clear; anything still wrong on the new boot re-latches with fresh entities. See [Link Counter Detection, Section 6.5](./046-link-counter-detection.md#65-boot-id-handling) for the full reconciliation contract.
 
 ### 2.3 State Check Data Flow (1s polling interval)
 
-```
+```text
 Reads:
 ├── state          → Logical link state (DOWN, INIT, ARMED, ACTIVE)
 ├── phys_state     → Physical layer state (LinkUp, Disabled, Polling, LinkErrorRecovery)
@@ -159,7 +159,7 @@ Emits: Raw STATE_CHANGE events → Platform Connector → MongoDB
 
 ### 2.4 System Context
 
-```
+```text
 ┌────────────────────────────────────────────────────────────────────────────────┐
 │                      NVSentinel NIC STATE MONITORING                           │
 ├────────────────────────────────────────────────────────────────────────────────┤
@@ -256,7 +256,7 @@ const (
 
 **Physical State Substates**: `Sleep (1)`, `Polling (2)`, `Disabled (3)`, `Training (4)`, `LinkUp (5)`, `LinkErrorRecovery (6)`
 
-- **Polling (2)**: Transient state during link training. Every port passes through Polling when establishing a connection. Classified as **Non-Fatal** (`IsFatal=false`). A port that remains in Polling does not count as active, so **on the first poll** its card falls below the role group's decisive mode and is flagged Fatal by the homogeneity check (Section 4.3); a runtime transition into Polling remains non-fatal. Sustained link instability is additionally covered by the `link_downed` and `link_error_recovery` counter checks (see [Link Counter Detection](./link-counter-detection.md)).
+- **Polling (2)**: Transient state during link training. Every port passes through Polling when establishing a connection. Classified as **Non-Fatal** (`IsFatal=false`). A port that remains in Polling does not count as active, so **on the first poll** its card falls below the role group's decisive mode and is flagged Fatal by the homogeneity check (Section 4.3); a runtime transition into Polling remains non-fatal. Sustained link instability is additionally covered by the `link_downed` and `link_error_recovery` counter checks (see [Link Counter Detection](./046-link-counter-detection.md)).
 - **LinkErrorRecovery (6)**: Active error recovery in progress. Classified as **Non-Fatal** (`IsFatal=false`) because the HCA firmware is actively retrying. If recovery fails before the monitor's first poll, the card homogeneity check (Section 4.3) escalates to Fatal by detecting fewer active ports than its role peers; at runtime the transition remains non-fatal and degradation is tracked by the counter checks.
 
 ### 3.3 Diagnostic Commands
@@ -284,7 +284,7 @@ cat /sys/class/infiniband/mlx5_0/ports/1/phys_state
 
 **Port Health Evaluation Steps:**
 
-1. **Read port state** from `/sys/class/infiniband/<dev>/ports/<port>/state` and `phys_state`
+1. **Read port state** from `/sys/class/infiniband/{dev}/ports/{port}/state` and `phys_state`
 2. **Load previous port state** from persistent state file (or in-memory if available from a prior poll in this pod's lifetime)
 3. **Determine health status:**
    - If `state = ACTIVE` AND `phys_state = LinkUp` → **Healthy**
@@ -292,7 +292,7 @@ cat /sys/class/infiniband/mlx5_0/ports/1/phys_state
 
 4. **Emit event on a health boundary crossing or fatal severity escalation:**
    - **First poll after host reboot (boot ID changed — state cleared)**:
-     - Observational state has been discarded; outstanding card/device FATAL latches remain pending (see [Link Counter Detection, Section 6.5](./link-counter-detection.md#65-boot-id-handling))
+     - Observational state has been discarded; outstanding card/device FATAL latches remain pending (see [Link Counter Detection, Section 6.5](./046-link-counter-detection.md#65-boot-id-handling))
      - Healthy ports (`ACTIVE/LinkUp`): Emit **healthy event** (`IsHealthy=true`) — this clears any stale FATAL conditions on the platform from the previous boot (the node may have had NICs replaced, cables reseated, etc.)
      - Unhealthy ports on **anomalous cards** (active-port count below the role group's decisive mode, group of ≥2 cards — see Section 4.3): Emit **fatal event** — peer comparison provides positive evidence the port is supposed to be up
      - Unhealthy ports on **all other cards** — cards at/above their role mode, **singleton role groups**, and groups with a **tied or zero mode**: Log and **suppress** the event. A port that has never been observed healthy carries no evidence it should be up: an uncabled second port or an intentionally-disabled/unprovisioned port (e.g., the unused Aux frontend port on OCI `BM.GPU.H100.8`, left as a singleton after its Prime twin is excluded as the default-route NIC) is numerically indistinguishable from a failure. Without peer evidence the monitor keeps the state local and does not publish an external `HealthEvent`
@@ -359,7 +359,7 @@ Management NICs on DGX systems are placed on CPU sockets that have **no compute 
 
 1. Read `gpus[].numa_node` from `/var/lib/nvsentinel/gpu_metadata.json` (the metadata collector parses this from the `nvidia-smi topo -m` NUMA Affinity column and publishes it per GPU).
 2. Build `gpu_numa_set` from the distinct `numa_node` values across all GPUs (ignoring -1 / unknown).
-3. For each `mlx5_*` NIC discovered in `/sys/class/infiniband/`, read `/sys/class/infiniband/<dev>/device/numa_node`.
+3. For each `mlx5_*` NIC discovered in `/sys/class/infiniband/`, read `/sys/class/infiniband/{dev}/device/numa_node`.
 4. If `nic_numa ∉ gpu_numa_set` → **exclude** (management NIC on separate socket).
 
 **Edge case — GPU**: If `gpus[].numa_node = -1` (unknown, common in VMs or single-socket systems), that GPU is excluded from the `gpu_numa_set`. If *all* GPUs have -1, the set is empty and the NIC Health Monitor **fails to start** — without GPU NUMA information the NUMA gate cannot distinguish management NICs from compute NICs, and monitoring everything would risk false `REPLACE_VM` on management NIC failures.
@@ -401,7 +401,7 @@ The mapping from NVIDIA topology levels (the `nvmlGpuTopologyLevel_t` enum, disp
 
 **Classification algorithm** (applied per NIC after discovery):
 
-```
+```text
 classify_nic(nic):
     # Step 1: Default route exclusion
     # Catches management NICs that share a NUMA node with GPUs
@@ -435,7 +435,7 @@ classify_nic(nic):
 
 1. **PIX/PXB → Compute**: The topo matrix authoritatively identifies NICs that share a PCIe switch with a GPU. This is the primary signal on SXM systems (DGX/HGX A100, H100).
 
-2. **Default route → Management**: Runs before topology classification. The classifier reads `/proc/net/route` at startup, finds the default route interface, and maps it to an IB device via `/sys/class/net/<iface>/device/infiniband/`. This prevents the management NIC from being monitored as Storage, avoiding false REPLACE_VM for control-plane network failures. If `/proc/net/route` is unavailable or the interface has no IB backing, the check is silently skipped.
+2. **Default route → Management**: Runs before topology classification. The classifier reads `/proc/net/route` at startup, finds the default route interface, and maps it to an IB device via `/sys/class/net/{iface}/device/infiniband/`. This prevents the management NIC from being monitored as Storage, avoiding false REPLACE_VM for control-plane network failures. If `/proc/net/route` is unavailable or the interface has no IB backing, the check is silently skipped.
 
 3. **InfiniBand → Compute**: On platforms where no NIC has PIX/PXB to a GPU (PCIe-only GPUs like L40S, or Grace where GPUs aren't on PCIe), the link layer distinguishes compute fabric NICs (InfiniBand) from storage/management NICs (Ethernet). This is the decisive signal on on-prem L40S and GB200.
 
@@ -546,7 +546,7 @@ NICs are grouped by **role** (Compute or Storage, from Section 4.2), then within
 
 #### 4.3.3 Algorithm
 
-```
+```text
 For all monitored PF NICs:
   Classify each NIC as Compute or Storage (Section 4.2)
   Group by physical card (PCI bus:device)
@@ -569,7 +569,7 @@ For all monitored PF NICs:
 #### 4.3.4 Field Validation
 
 **H100 OCI (compute dual-port + storage single-port):**
-```
+```text
 Compute group (8 cards): all dual-port, 2 active each → mode = 2
 Storage group (2 cards): all single-port, 1 active each → mode = 1
 → No false positives (storage NICs NOT compared against compute mode)
@@ -579,7 +579,7 @@ If storage card drops to 0 active → 0 < mode 1 → FATAL
 ```
 
 **L40 (dual-port compute NICs, 1 port cabled per card):**
-```
+```text
 Compute group (2 cards): Card A (1 active, 1 down), Card B (1 active, 1 down) → mode = 1
 → Uncabled ports NOT flagged (consistent pattern)
 
@@ -598,7 +598,7 @@ The previous design included a speed degradation check that compared the sysfs `
 
 1. **Required per-GPU-type static configuration** (`gpu_port_config`) that doesn't exist for non-DGX systems (L40, T4, cloud VMs, OEM servers)
 2. **Cannot distinguish compute from storage NICs**: On H100 DGX, compute NICs run at 400 Gb/s (InfiniBand) while storage NICs may run at different speeds (Ethernet). Applying the same rate threshold to both causes false positives
-3. **Counter checks already detect the underlying degradation**: When a cable degrades enough to cause speed fallback, the physical layer generates errors. The `symbol_error` and `link_error_recovery` counters (see [Link Counter Detection](./link-counter-detection.md)) detect this degradation before or during the retrain event
+3. **Counter checks already detect the underlying degradation**: When a cable degrades enough to cause speed fallback, the physical layer generates errors. The `symbol_error` and `link_error_recovery` counters (see [Link Counter Detection](./046-link-counter-detection.md)) detect this degradation before or during the retrain event
 4. **Sysfs does not expose the expected/supported speed**: The `rate` file only shows the current negotiated speed, not the maximum supported speed of the NIC or cable
 
 > **Note**: Speed degradation remains a real failure mode in GPU clusters. A 400G link dropping to 200G halves collective operation throughput. However, this is better addressed by counter-based degradation monitoring (Layer 2) which detects the physical signal degradation that causes the speed fallback, rather than by comparing the negotiated speed against a static configuration value.
@@ -618,7 +618,7 @@ The NIC Health Monitor discovers and parses InfiniBand/RoCE devices by iterating
 
 ### 5.2 Device Discovery Diagram
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │                        NIC DEVICE DISCOVERY FLOW                                 │
 ├─────────────────────────────────────────────────────────────────────────────────┤
@@ -652,7 +652,7 @@ The NIC Health Monitor discovers and parses InfiniBand/RoCE devices by iterating
 
 The monitor detects Mellanox devices using the following logic:
 1. Check if device name matches `mlx5_\d+` (Mellanox).
-2. Fallback: Check driver symlink in `/sys/class/infiniband/<dev>/device/driver` for `mlx5_core`.
+2. Fallback: Check driver symlink in `/sys/class/infiniband/{dev}/device/driver` for `mlx5_core`.
 
 | Vendor                 | Detection                              | State Monitoring  | Fatal Detection    |
 |------------------------|----------------------------------------|-------------------|--------------------|
@@ -681,7 +681,7 @@ The Health Events Analyzer escalates only repeated non-fatal NIC signals:
 - `RepeatedNICDegradation`: 3 non-fatal `InfiniBandDegradationCheck` or `EthernetDegradationCheck` events on the same `NIC` + `NICPort` within 1 hour.
 - `RepeatedNICDriverError`: 3 selected non-fatal `SysLogsNICDriverError` events of the same pattern on the same node within 1 hour.
 
-Both analyzer rules use `CONTACT_SUPPORT`. See [Syslog Detection & Correlation, Appendix B](./syslog-detection-correlation.md#appendix-b-health-events-analyzer-rules-for-nic-monitoring) for exact rule definitions and external source citations.
+Both analyzer rules use `CONTACT_SUPPORT`. See [Syslog Detection & Correlation, Appendix B](./048-syslog-detection-correlation.md#appendix-b-health-events-analyzer-rules-for-nic-monitoring) for exact rule definitions and external source citations.
 
 ---
 
@@ -697,7 +697,7 @@ Device disappearance is detected through three complementary mechanisms:
 
 **Case 1: Runtime disappearance (monitor has in-memory or persisted state, same boot)**
 
-The monitor tracks devices across polling cycles via an in-memory device set and persisted lifecycle state (see [Link Counter Detection, Section 6.6](./link-counter-detection.md#66-persistent-state-file)). A previously-seen device must be absent from **three consecutive complete enumerations** before the monitor emits a FATAL event with the exact device name. The first two misses retain the last-known port/device snapshots. If the device directory is still enumerated but its contents cannot be read, the observation is treated as unknown and retained indefinitely rather than misreported as disappearance. If the top-level sysfs tree is temporarily unavailable, the poll does not advance state.
+The monitor tracks devices across polling cycles via an in-memory device set and persisted lifecycle state (see [Link Counter Detection, Section 6.6](./046-link-counter-detection.md#66-persistent-state-file)). A previously-seen device must be absent from **three consecutive complete enumerations** before the monitor emits a FATAL event with the exact device name. The first two misses retain the last-known port/device snapshots. If the device directory is still enumerated but its contents cannot be read, the observation is treated as unknown and retained indefinitely rather than misreported as disappearance. If the top-level sysfs tree is temporarily unavailable, the poll does not advance state.
 
 This works both during normal operation and **after pod restart on the same boot** because the known state and partial miss count are persisted. Once the FATAL is emitted, a separate persisted disappearance latch survives restarts and reboots. A healthy port observed after the device re-enumerates clears that latch and emits **two** recoveries: the port-scoped healthy (clears any port-level conditions) and a **device-scoped healthy whose entity set mirrors the disappearance FATAL's** (NIC entity only) — consumers that require every entity of a healthy event to match a stored condition entry (platform-connector node conditions) could not clear the device entry from the port-scoped healthy alone.
 
@@ -745,7 +745,7 @@ This startup homogeneity check requires no persisted state and works immediately
 > **Note**: Clusters with the **NVIDIA Network Operator** installed will have SR-IOV enabled by default. This applies to both **VM-based** and **baremetal container** environments. In baremetal Kubernetes with SR-IOV, unassigned VFs will still appear as DOWN — the filtering logic applies equally to both deployment types.
 
 **The Problem Without Understanding SR-IOV:**
-```
+```text
 Monitor starts → Sees 34 devices → 16 are DOWN → Generates 16 FATAL alerts!
 But... those 16 devices are supposed to be DOWN. False alarm storm!
 ```
@@ -766,7 +766,7 @@ Unassigned VFs are essentially "empty slots" waiting for workloads. A DOWN VF is
 
 ### 8.3 VF Lifecycle
 
-```
+```text
 STAGE 1: System Boot (SR-IOV Enabled)
 ├── PF created: mlx5_0 → ACTIVE (host uses it)
 ├── VFs created: mlx5_18, mlx5_19, ... → DOWN (waiting for assignment)
@@ -803,7 +803,7 @@ The Linux kernel provides clear indicators in sysfs:
 | `device/physfn` symlink      | Does NOT exist              | EXISTS (points to parent PF) |
 | `device/sriov_totalvfs` file | EXISTS (shows max VF count) | Does NOT exist               |
 
-```
+```text
 # PF Example (mlx5_0):
 /sys/class/infiniband/mlx5_0/device/
 ├── sriov_totalvfs    ← EXISTS (value: 16 = can create 16 VFs)
@@ -817,7 +817,7 @@ The Linux kernel provides clear indicators in sysfs:
 
 ### 8.6 Real Example from Field Validation (34-NIC System)
 
-```
+```text
 ┌────────────────────────────────────────────────────────────────────────┐
 │  Device      State    Type   Alert if DOWN?   Reason                   │
 ├────────────────────────────────────────────────────────────────────────┤
@@ -854,8 +854,8 @@ RoCE (RDMA over Converged Ethernet) devices appear in **both** `/sys/class/net` 
 ### 9.1 GID Table Information (RoCE Routing Diagnostics)
 
 The GID (Global Identifier) table is critical for RoCE routing. Each device exposes GIDs at:
-- `/sys/class/infiniband/<dev>/ports/<port>/gids/<index>`
-- `/sys/class/infiniband/<dev>/ports/<port>/gid_attrs/types/<index>`
+- `/sys/class/infiniband/{dev}/ports/{port}/gids/{index}`
+- `/sys/class/infiniband/{dev}/ports/{port}/gid_attrs/types/{index}`
 
 **GID Types** ([Linux Kernel sysfs ABI](https://www.kernel.org/doc/Documentation/ABI/stable/sysfs-class-infiniband)):
 - `IB/RoCE v1` = InfiniBand and RoCE v1 (GRH-based, layer 2)
@@ -867,7 +867,7 @@ At the API level (`ibv_gid_type`), there are three distinct types:
 - `IBV_GID_TYPE_ROCE_V2` (RoCE v2)
 
 **Example GID table from 34-NIC system:**
-```
+```text
 DEV     PORT  INDEX  GID                                      IPv4           VER   DEV
 mlx5_0  1     0      fe80:0000:0000:0000:ba3f:d2ff:fec3:65c4               v1    eth0
 mlx5_0  1     1      fe80:0000:0000:0000:ba3f:d2ff:fec3:65c4               v2    eth0
@@ -883,8 +883,8 @@ mlx5_1  1     2      0000:0000:0000:0000:0000:ffff:ac10:0120  172.16.1.32  v1   
 - GID type mismatch between peers → connection failures
 
 **Helper Functions:**
-- `getGIDCount`: Enumerates `/sys/class/infiniband/<dev>/ports/<port>/gids/` to count valid GIDs.
-- `getNetDevForIBDevice`: Discovers the network interface (e.g., `eth0`, `rdma4`) associated with an IB device by reading `/sys/class/infiniband/<dev>/device/net/`. This is critical for reading Ethernet statistics on RoCE devices.
+- `getGIDCount`: Enumerates `/sys/class/infiniband/{dev}/ports/{port}/gids/` to count valid GIDs.
+- `getNetDevForIBDevice`: Discovers the network interface (e.g., `eth0`, `rdma4`) associated with an IB device by reading `/sys/class/infiniband/{dev}/device/net/`. This is critical for reading Ethernet statistics on RoCE devices.
 
 ---
 
@@ -899,7 +899,7 @@ mlx5_1  1     2      0000:0000:0000:0000:0000:ffff:ac10:0120  172.16.1.32  v1   
 ### 10.1 Future Work
 
 - **AWS EFA Support**: Device names matching `rdmap\d+s\d+`
-- **Plain Ethernet**: `operstate = down` detection via `/sys/class/net/<interface>/operstate`
+- **Plain Ethernet**: `operstate = down` detection via `/sys/class/net/{interface}/operstate`
 - **TCPXO Support**: TCP Express Offload support
 
 ---
@@ -1140,7 +1140,7 @@ The key question: **"Will the workload fail because of this?"**
 
 ### Driver/Firmware Logs
 
-For kernel log pattern details (fatal and non-fatal classifications, regex patterns, log line examples, and kernel source references), see [Syslog Detection & Correlation](./syslog-detection-correlation.md). This document focuses on link state detection; syslog monitoring is covered in its own dedicated document to keep each document focused on a single problem.
+For kernel log pattern details (fatal and non-fatal classifications, regex patterns, log line examples, and kernel source references), see [Syslog Detection & Correlation](./048-syslog-detection-correlation.md). This document focuses on link state detection; syslog monitoring is covered in its own dedicated document to keep each document focused on a single problem.
 
 ### Repeated Non-Fatal Analyzer Escalation
 
@@ -1150,9 +1150,9 @@ Repeated non-fatal NIC degradation and selected non-fatal NIC driver syslog sign
 
 | Condition                        | Recommended Action               | Path/Source                                                                                                     |
 |----------------------------------|----------------------------------|-----------------------------------------------------------------------------------------------------------------|
-| `state = DOWN` (runtime, or first-poll on an anomalous card) | **RecommendedAction_REPLACE_VM** | `/sys/class/infiniband/<dev>/ports/<port>/state`; first-poll severity gated by peer evidence (Section 4.3.2) |
-| `phys_state = Disabled`          | **RecommendedAction_REPLACE_VM** | `/sys/class/infiniband/<dev>/ports/<port>/phys_state`                                                           |
-| `phys_state = LinkErrorRecovery` | **RecommendedAction_NONE**       | `/sys/class/infiniband/<dev>/ports/<port>/phys_state` (non-fatal; first-poll homogeneity may emit a separate card-level fatal anomaly) |
+| `state = DOWN` (runtime, or first-poll on an anomalous card) | **RecommendedAction_REPLACE_VM** | `/sys/class/infiniband/{dev}/ports/{port}/state`; first-poll severity gated by peer evidence (Section 4.3.2) |
+| `phys_state = Disabled` (runtime transition, or first-poll on an anomalous card) | **RecommendedAction_REPLACE_VM** | `/sys/class/infiniband/{dev}/ports/{port}/phys_state`; first-poll Disabled without peer evidence is suppressed (Section 4.3.2) |
+| `phys_state = LinkErrorRecovery` | **RecommendedAction_NONE**       | `/sys/class/infiniband/{dev}/ports/{port}/phys_state` (non-fatal; first-poll homogeneity may emit a separate card-level fatal anomaly) |
 | Uncabled port anomaly            | **RecommendedAction_REPLACE_VM** | Card homogeneity check (PCI card grouping + mode)                                                               |
 | Device disappeared               | **RecommendedAction_REPLACE_VM** | Device enumeration in `/sys/class/infiniband/`                                                                  |
 

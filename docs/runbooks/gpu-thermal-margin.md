@@ -23,7 +23,7 @@
 ### 1. Confirm the Node Condition
 
 ```bash
-kubectl get node <NODE_NAME> -o json | jq '.status.conditions[] | select(.type=="GpuThermalMarginWatch")'
+kubectl get node {NODE_NAME} -o json | jq '.status.conditions[] | select(.type=="GpuThermalMarginWatch")'
 ```
 
 A live violation shows `"status": "True"`, `"reason": "GpuThermalMarginWatchIsNotHealthy"`, and a message naming the GPU index, the observed margin, and the slowdown threshold. Note the GPU index and PCI/UUID for the steps below.
@@ -34,10 +34,10 @@ The check compares the live margin (field 153) against the slowdown threshold (`
 
 ```bash
 # Live margin to the slowdown limit (field 153) and current temps
-kubectl exec -n nvsentinel <GPU_MONITOR_POD> -- dcgmi dmon -e 153,150,140 -c 1
+kubectl exec -n nvsentinel {GPU_MONITOR_POD} -- dcgmi dmon -e 153,150,140 -c 1
 
 # Or via nvidia-smi on the node
-kubectl exec -n nvsentinel <GPU_MONITOR_POD> -- nvidia-smi -q -d TEMPERATURE -i <GPU_INDEX>
+kubectl exec -n nvsentinel {GPU_MONITOR_POD} -- nvidia-smi -q -d TEMPERATURE -i {GPU_INDEX}
 ```
 
 - If the GPU is genuinely hot (low/negative margin, temperature crossing the slowdown limit), this is a real thermal fault. Go to step 5.
@@ -49,13 +49,13 @@ The threshold is read per GPU from the node's metadata file, populated by the me
 
 ```bash
 # Via the gpu-health-monitor pod, which mounts the metadata file
-kubectl exec -n nvsentinel <GPU_MONITOR_POD> -- cat /var/lib/nvsentinel/gpu_metadata.json | jq '.gpus[] | {gpu_id, slowdown_tlimit_c}'
+kubectl exec -n nvsentinel {GPU_MONITOR_POD} -- cat /var/lib/nvsentinel/gpu_metadata.json | jq '.gpus[] | {gpu_id, slowdown_tlimit_c}'
 ```
 
 - `slowdown_tlimit_c` is a small per-SKU offset (for example, H100 = `-2`). A wildly wrong value (such as a large positive number) will cause false positives. Check the metadata-collector logs on that node:
 
   ```bash
-  kubectl logs -n nvsentinel <METADATA_COLLECTOR_POD> | grep -i "slowdown TLIMIT"
+  kubectl logs -n nvsentinel {METADATA_COLLECTOR_POD} | grep -i "slowdown TLIMIT"
   ```
 
 - If `slowdown_tlimit_c` is absent for a GPU, the check is not active for it. The watcher logs `missing slowdown TLIMIT threshold metadata` and increments `gpu_temp_limit_slowdown_threshold_missing`, and no condition is raised.
@@ -63,7 +63,7 @@ kubectl exec -n nvsentinel <GPU_MONITOR_POD> -- cat /var/lib/nvsentinel/gpu_meta
 ### 4. Check the Watcher's Own Health Metrics
 
 ```bash
-kubectl exec -n nvsentinel <GPU_MONITOR_POD> -- curl -s localhost:2112/metrics | grep -E 'gpu_temp_limit_(margin_blank|slowdown_threshold_missing)|dcgm_field_153|nvsentinel_feature_flag_enabled'
+kubectl exec -n nvsentinel {GPU_MONITOR_POD} -- curl -s localhost:2112/metrics | grep -E 'gpu_temp_limit_(margin_blank|slowdown_threshold_missing)|dcgm_field_153|nvsentinel_feature_flag_enabled'
 ```
 
 - `gpu_temp_limit_margin_blank` rising means field 153 is returning blank or unavailable values (DCGM not reporting margin); the GPU is skipped. Investigate DCGM using the [GPU Monitor DCGM Connectivity Failures](./gpu-monitor-dcgm-failures.md) runbook.
@@ -79,7 +79,7 @@ A genuine `GPU_TEMP_HW_SLOWDOWN_VIOLATION` (`CONTACT_SUPPORT`) indicates the GPU
 2. Reproduce/confirm the thermal fault under load with NVIDIA's DCGM CUDA load generator. The `dcgmproftester` binary ships in the `nvidia-dcgm` pod (for example `/usr/bin/dcgmproftester12`); use whichever versioned binary is installed on the node:
 
    ```bash
-   kubectl exec -n gpu-operator <NVIDIA_DCGM_POD> -- \
+   kubectl exec -n gpu-operator {NVIDIA_DCGM_POD} -- \
      dcgmproftester12 --no-dcgm-validation --max-processes 0 -t 1004 -d 900
    ```
 
@@ -96,10 +96,10 @@ A genuine `GPU_TEMP_HW_SLOWDOWN_VIOLATION` (`CONTACT_SUPPORT`) indicates the GPU
 
    ```bash
    # Sample every 1s to a CSV for the whole run; drop --loop/--filename for a one-shot snapshot
-   kubectl exec -n gpu-operator <NVIDIA_DCGM_POD> -- \
+   kubectl exec -n gpu-operator {NVIDIA_DCGM_POD} -- \
      nvidia-smi \
        --query-gpu=serial,name,timestamp,index,temperature.gpu,temperature.memory,temperature.gpu.tlimit,power.draw,clocks.current.sm,clocks_throttle_reasons.active,utilization.gpu \
-       --format=csv --loop=1 --filename=/tmp/thermal_<NODE_NAME>.csv
+       --format=csv --loop=1 --filename=/tmp/thermal_{NODE_NAME}.csv
    ```
 
    - `temperature.gpu.tlimit` — live margin (°C) to the HW slowdown limit, the same quantity as DCGM field 153. This is the value to watch: shrinking toward 0 is the violation.
@@ -113,7 +113,7 @@ A genuine `GPU_TEMP_HW_SLOWDOWN_VIOLATION` (`CONTACT_SUPPORT`) indicates the GPU
 After the thermal condition is resolved (cooling fixed, or threshold corrected):
 
 ```bash
-kubectl get node <NODE_NAME> -o json | jq '.status.conditions[] | select(.type=="GpuThermalMarginWatch")'
+kubectl get node {NODE_NAME} -o json | jq '.status.conditions[] | select(.type=="GpuThermalMarginWatch")'
 # Expect: "status": "False", "reason": "GpuThermalMarginWatchIsHealthy", "message": "No Health Failures"
 ```
 

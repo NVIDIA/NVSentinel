@@ -2,9 +2,9 @@
 
 NVSentinel detects GPU and hardware failures and exposes them using standard Kubernetes primitives. This document provides a high level overview of how to integrate with NVSentinel for scheduling, monitoring, and remediation purposes. 
 
-### Integration Model
+## Integration Model
 
-Think of NVSentinel integration in four layers:
+Think of NVSentinel integration in five layers:
 
 1. **Is a node bad?** → Check **[Taints](#1-is-a-node-bad-check-taints)**
    - Taints mark nodes with hardware issues
@@ -31,7 +31,7 @@ Think of NVSentinel integration in four layers:
    - Multi-node jobs use **gang discovery** (native Kubernetes gang APIs or PodGroup-style schedulers like Volcano and Run:ai)
    - Separate from the MongoDB health-event pipeline (see [Data flow](./DATA_FLOW.md#preflight-optional-admission-checks))
 
-### Quick Start
+## Quick Start
 
 **For Scheduling Decisions:**
 
@@ -777,14 +777,6 @@ NVSentinel maps DCGM error codes to recommended actions using a canonical CSV fi
 | `DCGM_FR_SXID_ERROR`                | `RESTART_VM`       | `GpuXidError`          |
 
 Full mapping contains 121 error codes. See CSV file for complete reference.
-
-
-## Related Documentation
-
-- [ADR-003: Rule-Based Node Quarantine](./designs/003-rule-based-node-quarantine.md) - CEL-based quarantine rules
-- [ADR-009: Fault Remediation Triggering](./designs/009-fault-remediation-triggering.md) - Remediation workflow
-- [Data Flow Documentation](./DATA_FLOW.md) - End-to-end event flow
-- [Helm Chart Configuration](../distros/kubernetes/README.md) - Deployment configuration
 
 ## Node Status Examples
 

@@ -419,5 +419,5 @@ kubectl exec -i nvsentinel-postgresql-0 -n nvsentinel -- \
 
 For issues or questions:
 1. Check this documentation and troubleshooting section
-2. Review logs: `kubectl logs -n nvsentinel <pod-name>`
+2. Review logs: `kubectl logs -n nvsentinel {pod-name}`
 3. File an issue: https://github.com/nvidia/nvsentinel/issues

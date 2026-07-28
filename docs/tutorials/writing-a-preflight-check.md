@@ -374,7 +374,7 @@ kubectl delete pod preflight-demo-test -n training
 If you contributed the check under `preflight-checks/` in the NVSentinel repo (build context and Makefile differ — see [DEVELOPMENT.md](../../DEVELOPMENT.md#creating-a-new-preflight-check)):
 
 ```bash
-make -C preflight-checks/<your-check> lint-test
+make -C preflight-checks/{your-check} lint-test
 cd tests && go test -tags=amd64_group -run TestPreflightEndToEnd -v ./...
 ```
 

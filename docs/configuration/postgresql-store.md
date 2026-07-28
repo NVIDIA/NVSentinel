@@ -34,7 +34,7 @@ postgresql:
 Full example: `distros/kubernetes/nvsentinel/values-postgresql.yaml`
 
 ```bash
-helm upgrade --install nvsentinel <chart-path> \
+helm upgrade --install nvsentinel {chart-path} \
   -f distros/kubernetes/nvsentinel/values-postgresql.yaml \
   --namespace nvsentinel \
   --create-namespace
@@ -52,8 +52,8 @@ Server TLS, `pg_hba`, and init scripts are under `postgresql.primary.*` (see the
 ## Verify after install
 
 ```bash
-kubectl get statefulset -n <namespace> -l app.kubernetes.io/name=postgresql
-kubectl get pods -n <namespace> -l app.kubernetes.io/name=postgresql
+kubectl get statefulset -n {namespace} -l app.kubernetes.io/name=postgresql
+kubectl get pods -n {namespace} -l app.kubernetes.io/name=postgresql
 ```
 
-In-cluster service hostname is typically `<release-name>-postgresql` (for example `nvsentinel-postgresql` when the release name is `nvsentinel`).
+In-cluster service hostname is typically `{RELEASE_NAME}-postgresql` (for example `nvsentinel-postgresql` when the release name is `nvsentinel`).
