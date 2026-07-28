@@ -579,7 +579,7 @@ func TestPerformRemediationWithFailure(t *testing.T) {
 	assert.Empty(t, crName)
 }
 
-func TestPerformRemediationContinuesWhenLabelUpdatedDespiteValidationError(t *testing.T) {
+func TestPerformRemediation_LabelUpdatedDespiteValidationError_Continues(t *testing.T) {
 	ctx := context.Background()
 	k8sClient := &MockK8sClient{
 		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *events.HealthEventData,
@@ -587,11 +587,11 @@ func TestPerformRemediationContinuesWhenLabelUpdatedDespiteValidationError(t *te
 			return "test-cr-label-validation", nil
 		},
 	}
-	count := 0
+	var requestedStates []statemanager.NVSentinelStateLabelValue
 	stateManager := &statemanager.MockStateManager{
 		UpdateNVSentinelStateNodeLabelFn: func(ctx context.Context, nodeName string,
 			newStateLabelValue statemanager.NVSentinelStateLabelValue, removeStateLabel bool) (bool, error) {
-			count++
+			requestedStates = append(requestedStates, newStateLabelValue)
 			// Simulate unexpected transition validation error AFTER a successful write.
 			return true, fmt.Errorf("unexpected state transition")
 		},
@@ -626,7 +626,10 @@ func TestPerformRemediationContinuesWhenLabelUpdatedDespiteValidationError(t *te
 	crName, err := r.performRemediation(ctx, healthEventDoc, groupConfig)
 	assert.NoError(t, err)
 	assert.Equal(t, "test-cr-label-validation", crName)
-	assert.GreaterOrEqual(t, count, 1)
+	assert.Equal(t, []statemanager.NVSentinelStateLabelValue{
+		statemanager.RemediatingLabelValue,
+		statemanager.RemediationSucceededLabelValue,
+	}, requestedStates)
 }
 
 func TestPerformRemediationWithUpdateNodeStateLabelFailures(t *testing.T) {

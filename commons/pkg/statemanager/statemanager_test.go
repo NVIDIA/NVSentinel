@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -62,7 +63,7 @@ func TestUpdateNVSentinelStateNodeLabelWithNilLabelsMap(t *testing.T) {
 		Spec: v1.NodeSpec{},
 	}
 	_, err := clientSet.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	manager := &stateManager{clientSet: clientSet}
 	nodeModified, err := manager.UpdateNVSentinelStateNodeLabel(ctx, testNodeName, QuarantinedLabelValue, false)
@@ -70,7 +71,7 @@ func TestUpdateNVSentinelStateNodeLabelWithNilLabelsMap(t *testing.T) {
 	assert.NoError(t, err)
 
 	updated, err := clientSet.CoreV1().Nodes().Get(ctx, testNodeName, metav1.GetOptions{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, string(QuarantinedLabelValue), updated.Labels[NVSentinelStateLabelKey])
 }
 
