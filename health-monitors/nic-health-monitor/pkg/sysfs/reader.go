@@ -41,6 +41,14 @@ func NewReader(ibBase, netBase string) Reader {
 func (r *fsReader) IBBasePath() string  { return r.ibBase }
 func (r *fsReader) NetBasePath() string { return r.netBase }
 
+// IBMadBasePath and IBVerbsBasePath derive the sibling MAD/verbs class
+// directories from the IB base. The kernel exposes them alongside
+// /sys/class/infiniband as /sys/class/infiniband_mad and
+// /sys/class/infiniband_verbs, so under a container mount they are
+// simply the IB base with the "_mad"/"_verbs" suffix.
+func (r *fsReader) IBMadBasePath() string   { return r.ibBase + "_mad" }
+func (r *fsReader) IBVerbsBasePath() string { return r.ibBase + "_verbs" }
+
 func (r *fsReader) IBPortPath(device string, port int) string {
 	return filepath.Join(r.ibBase, device, "ports", strconv.Itoa(port))
 }
