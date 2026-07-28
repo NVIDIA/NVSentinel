@@ -241,6 +241,10 @@ func (manager *stateManager) UpdateNVSentinelStateNodeLabel(ctx context.Context,
 			return err
 		}
 
+		if node.Labels == nil {
+			node.Labels = make(map[string]string)
+		}
+
 		currentValue, exists := node.Labels[NVSentinelStateLabelKey]
 
 		if removeStateLabel {

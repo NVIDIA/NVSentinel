@@ -19,6 +19,7 @@ import (
 	"fmt"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
@@ -50,7 +51,12 @@ func ParseHealthEventFromEvent(event datastore.Event) (model.HealthEventWithStat
 		return healthEventWithStatus, fmt.Errorf("health event is nil after unmarshaling")
 	}
 
-	// Set default value for NodeQuarantined if nil (e.g., for new events)
+	// Malformed or partial documents can omit healtheventstatus entirely.
+	if healthEventWithStatus.HealthEventStatus == nil {
+		healthEventWithStatus.HealthEventStatus = &protos.HealthEventStatus{}
+	}
+
+	// Set default value for NodeQuarantined if empty (e.g., for new events)
 	if healthEventWithStatus.HealthEventStatus.NodeQuarantined == "" {
 		healthEventWithStatus.HealthEventStatus.NodeQuarantined = string(model.StatusNotStarted)
 	}

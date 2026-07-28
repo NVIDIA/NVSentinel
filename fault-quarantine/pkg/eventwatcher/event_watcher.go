@@ -179,7 +179,13 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 	w.lastProcessedObjectID.StoreLastProcessedObjectID(eventID)
 
 	traceID := tracing.TraceIDFromMetadata(healthEventWithStatus.HealthEvent.GetMetadata())
-	parentSpanID := tracing.ParentSpanID(healthEventWithStatus.HealthEventStatus.SpanIds, tracing.ServicePlatformConnector)
+
+	var spanIDs map[string]string
+	if healthEventWithStatus.HealthEventStatus != nil {
+		spanIDs = healthEventWithStatus.HealthEventStatus.SpanIds
+	}
+
+	parentSpanID := tracing.ParentSpanID(spanIDs, tracing.ServicePlatformConnector)
 
 	// Short-lived span that marks the exact moment fault-quarantine received the
 	// event. It ends immediately so it appears in the trace backend before

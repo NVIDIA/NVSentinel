@@ -316,11 +316,13 @@ func (r *FaultRemediationReconciler) performRemediation(ctx context.Context,
 	defer span.End()
 
 	// Update state to "remediating"
-	_, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
+	nodeModified, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 		healthEventWithStatus.HealthEvent.NodeName,
 		statemanager.RemediatingLabelValue, false)
 	if err != nil {
-		slog.ErrorContext(ctx, "Error updating node label to remediating", "error", err)
+		slog.ErrorContext(ctx, "Error updating node label to remediating",
+			"error", err,
+			"nodeModified", nodeModified)
 		metrics.ProcessingErrors.WithLabelValues("label_update_error", nodeName).Inc()
 
 		tracing.RecordError(span, err)
@@ -329,7 +331,12 @@ func (r *FaultRemediationReconciler) performRemediation(ctx context.Context,
 			attribute.String("fault_remediation.error.message", err.Error()),
 		)
 
-		return "", fmt.Errorf("error updating node label to remediating: %w", err)
+		// Validation errors are returned AFTER a successful label write so callers can
+		// emit metrics while still reflecting reality. Only abort when the label was
+		// not actually updated (same contract as node-drainer / partial recovery).
+		if !nodeModified {
+			return "", fmt.Errorf("error updating node label to remediating: %w", err)
+		}
 	}
 
 	healthEventData := &events.HealthEventData{
@@ -353,12 +360,13 @@ func (r *FaultRemediationReconciler) performRemediation(ctx context.Context,
 		// don't throw error yet so we can update state
 	}
 
-	_, err = r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
+	nodeModified, err = r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 		healthEventWithStatus.HealthEvent.NodeName,
 		remediationLabelValue, false)
 	if err != nil {
 		slog.ErrorContext(ctx, "Error updating node label",
 			"label", remediationLabelValue,
+			"nodeModified", nodeModified,
 			"error", err)
 		metrics.ProcessingErrors.WithLabelValues("label_update_error", nodeName).Inc()
 		tracing.RecordError(span, err)
@@ -367,7 +375,9 @@ func (r *FaultRemediationReconciler) performRemediation(ctx context.Context,
 			attribute.String("fault_remediation.error.message", err.Error()),
 		)
 
-		return "", errors.Join(createMaintenanceResourceError, err)
+		if !nodeModified {
+			return "", errors.Join(createMaintenanceResourceError, err)
+		}
 	}
 
 	if createMaintenanceResourceError != nil {

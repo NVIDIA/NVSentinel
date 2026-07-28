@@ -1062,8 +1062,6 @@ func (r *Reconciler) applyQuarantine(
 	ctx, span := tracing.StartSpan(ctx, "fault_quarantine.apply_quarantine")
 	defer span.End()
 
-	r.recordCordonEventInCircuitBreaker(event)
-
 	healthEvents := healthEventsAnnotation.NewHealthEventsAnnotationMap()
 	updated := healthEvents.AddOrUpdateEvent(event.HealthEvent)
 
@@ -1135,6 +1133,10 @@ func (r *Reconciler) applyQuarantine(
 
 		return nil
 	}
+
+	// Record only after a successful quarantine write. Counting earlier false-trips
+	// the breaker on API/annotation failures that never cordoned a node.
+	r.recordCordonEventInCircuitBreaker(event)
 
 	slog.DebugContext(ctx, "QuarantineNodeAndSetAnnotations completed successfully", "node", event.HealthEvent.NodeName)
 

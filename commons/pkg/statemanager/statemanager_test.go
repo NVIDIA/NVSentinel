@@ -51,6 +51,29 @@ func newTestStateManager(nodeName string, startingNodeLabels map[string]string) 
 	return ctx, &stateManager{clientSet: clientSet}, nil
 }
 
+func TestUpdateNVSentinelStateNodeLabelWithNilLabelsMap(t *testing.T) {
+	ctx := context.Background()
+	clientSet := fake.NewSimpleClientset()
+	node := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   testNodeName,
+			Labels: nil,
+		},
+		Spec: v1.NodeSpec{},
+	}
+	_, err := clientSet.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
+	assert.NoError(t, err)
+
+	manager := &stateManager{clientSet: clientSet}
+	nodeModified, err := manager.UpdateNVSentinelStateNodeLabel(ctx, testNodeName, QuarantinedLabelValue, false)
+	assert.True(t, nodeModified)
+	assert.NoError(t, err)
+
+	updated, err := clientSet.CoreV1().Nodes().Get(ctx, testNodeName, metav1.GetOptions{})
+	assert.NoError(t, err)
+	assert.Equal(t, string(QuarantinedLabelValue), updated.Labels[NVSentinelStateLabelKey])
+}
+
 func TestUpdateNVSentinelStateNodeLabelWithGetFailure(t *testing.T) {
 	ctx := context.Background()
 	clientSet := fake.NewSimpleClientset()

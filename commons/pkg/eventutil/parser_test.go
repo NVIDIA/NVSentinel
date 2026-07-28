@@ -245,6 +245,27 @@ func TestParseHealthEventFromEvent(t *testing.T) {
 				assert.EqualValues(t, model.StatusNotStarted, result.HealthEventStatus.NodeQuarantined)
 			},
 		},
+		{
+			name: "handle missing healtheventstatus object without panic",
+			event: datastore.Event{
+				"operationType": "insert",
+				"fullDocument": map[string]interface{}{
+					"document": map[string]interface{}{
+						"healthevent": map[string]interface{}{
+							"nodename":       "missing-status-object-node",
+							"checkname":      "GpuXidError",
+							"componentclass": "GPU",
+						},
+					},
+				},
+			},
+			expectError: false,
+			checkResult: func(t *testing.T, result model.HealthEventWithStatus) {
+				assert.Equal(t, "missing-status-object-node", result.HealthEvent.NodeName)
+				require.NotNil(t, result.HealthEventStatus)
+				assert.EqualValues(t, model.StatusNotStarted, result.HealthEventStatus.NodeQuarantined)
+			},
+		},
 	}
 
 	for _, tt := range tests {
