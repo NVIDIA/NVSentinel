@@ -72,6 +72,9 @@ type workerPool struct {
 
 	dispatchCh chan workItem
 	resultCh   chan workResult
+
+	// onResult is an optional test hook invoked for every emitted work result.
+	onResult func(workResult)
 }
 
 func newWorkerPool(
@@ -134,22 +137,23 @@ func (wp *workerPool) worker(ctx context.Context) {
 	for item := range wp.dispatchCh {
 		// Always emit a result for dequeued items so the token writer can observe
 		// cancellation/failure for every sequence and avoid silently dropping work.
-		if err := ctx.Err(); err != nil {
-			wp.resultCh <- workResult{
-				seq:         item.seq,
-				resumeToken: item.resumeToken,
-				err:         err,
-			}
-
-			continue
+		var err error
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = ctxErr
+		} else {
+			err = wp.process(ctx, item.event)
 		}
 
-		err := wp.process(ctx, item.event)
-		wp.resultCh <- workResult{
+		result := workResult{
 			seq:         item.seq,
 			resumeToken: item.resumeToken,
 			err:         err,
 		}
+		if wp.onResult != nil {
+			wp.onResult(result)
+		}
+
+		wp.resultCh <- result
 	}
 }
 

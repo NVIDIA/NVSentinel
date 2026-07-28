@@ -1095,10 +1095,7 @@ func (w *PostgreSQLChangeStreamWatcher) sendEventsToChannel(
 	// in-memory position here to avoid replaying large filtered ranges on restart.
 	if filteredCount > 0 && sentCount == 0 {
 		if err := w.persistCurrentResumePosition(ctx); err != nil {
-			slog.Warn("Failed to persist resume position after filtered-only batch",
-				"client", w.clientName,
-				"filtered", filteredCount,
-				"error", err)
+			return fmt.Errorf("persist resume position after filtered-only batch: %w", err)
 		}
 	}
 

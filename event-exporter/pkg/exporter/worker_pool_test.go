@@ -264,18 +264,32 @@ func TestWorkerPool_CancelEmitsResultsForDequeuedItems(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	const numEvents = 4
+
 	pool := newWorkerPool(2, process, src, cancel)
 
-	go func() {
-		for i := uint64(1); i <= 4; i++ {
-			pool.dispatch(ctx, workItem{
-				seq:         i,
-				resumeToken: []byte(fmt.Sprintf("tok-%d", i)),
-			})
-		}
+	var (
+		resultsMu sync.Mutex
+		results   = make(map[uint64]error, numEvents)
+	)
 
-		pool.closeDispatch()
-	}()
+	pool.onResult = func(r workResult) {
+		resultsMu.Lock()
+		results[r.seq] = r.err
+		resultsMu.Unlock()
+	}
+
+	// Enqueue all work before starting workers so cancel cannot race with dispatch.
+	for i := uint64(1); i <= numEvents; i++ {
+		if !pool.dispatch(ctx, workItem{
+			seq:         i,
+			resumeToken: []byte(fmt.Sprintf("tok-%d", i)),
+		}) {
+			t.Fatalf("failed to dispatch seq %d", i)
+		}
+	}
+
+	pool.closeDispatch()
 
 	done := make(chan error, 1)
 
@@ -298,5 +312,18 @@ func TestWorkerPool_CancelEmitsResultsForDequeuedItems(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("run() hung after cancel; dequeued items likely dropped without results")
+	}
+
+	resultsMu.Lock()
+	defer resultsMu.Unlock()
+
+	if len(results) != numEvents {
+		t.Fatalf("emitted results for %d sequences, want %d (got %#v)", len(results), numEvents, results)
+	}
+
+	for seq := uint64(1); seq <= numEvents; seq++ {
+		if _, ok := results[seq]; !ok {
+			t.Fatalf("missing result for dequeued seq %d", seq)
+		}
 	}
 }
