@@ -60,19 +60,16 @@ func NewPipelineFilter(pipeline interface{}) (*PipelineFilter, error) {
 		return nil, fmt.Errorf("unsupported pipeline type: %T", pipeline)
 	}
 
-	// Process each stage
+	// Process each stage. Fail closed on unparseable stages so a broken pipeline
+	// never silently degrades into an open (match-everything) filter.
 	for _, stage := range stageList {
 		if err := filter.parseStage(stage); err != nil {
-			slog.Warn("Failed to parse pipeline stage, skipping",
-				"error", err,
-				"stage", fmt.Sprintf("%T", stage))
-
-			continue
+			return nil, fmt.Errorf("failed to parse pipeline stage: %w", err)
 		}
 	}
 
 	if len(filter.stages) == 0 {
-		return nil, nil // No valid stages, return nil filter
+		return nil, nil // Empty pipeline, return nil filter
 	}
 
 	return filter, nil
@@ -306,26 +303,38 @@ func (f *PipelineFilter) matchesMapValue(actualValue interface{}, expectedMap ma
 	return true
 }
 
-// matchesOperators processes MongoDB operator expressions
+// matchesOperators processes MongoDB operator expressions.
+// All operators in the map must match (logical AND), matching MongoDB semantics
+// for expressions like {"$gte": 5, "$lte": 10}.
 func (f *PipelineFilter) matchesOperators(actualValue interface{}, operators map[string]interface{}) bool {
+	if len(operators) == 0 {
+		return true
+	}
+
 	for op, opValue := range operators {
+		var matched bool
+
 		switch op {
 		case opIn:
-			return f.matchesIn(actualValue, opValue)
+			matched = f.matchesIn(actualValue, opValue)
 		case opNe:
-			return !f.matchesEqual(actualValue, opValue)
+			matched = !f.matchesEqual(actualValue, opValue)
 		case opEq:
-			return f.matchesEqual(actualValue, opValue)
+			matched = f.matchesEqual(actualValue, opValue)
 		case opGt:
-			return f.matchesGreaterThan(actualValue, opValue)
+			matched = f.matchesGreaterThan(actualValue, opValue)
 		case opGte:
-			return f.matchesGreaterThanOrEqual(actualValue, opValue)
+			matched = f.matchesGreaterThanOrEqual(actualValue, opValue)
 		case opLt:
-			return f.matchesLessThan(actualValue, opValue)
+			matched = f.matchesLessThan(actualValue, opValue)
 		case opLte:
-			return f.matchesLessThanOrEqual(actualValue, opValue)
+			matched = f.matchesLessThanOrEqual(actualValue, opValue)
 		default:
 			slog.Warn("Unsupported operator", "operator", op)
+			return false
+		}
+
+		if !matched {
 			return false
 		}
 	}

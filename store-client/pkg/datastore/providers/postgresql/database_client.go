@@ -1043,10 +1043,10 @@ func (c *PostgreSQLDatabaseClient) NewChangeStreamWatcher(
 		// Create application-side filter as fallback
 		pipelineFilter, err := NewPipelineFilter(pipeline)
 		if err != nil {
-			slog.Warn("Failed to create pipeline filter", "error", err)
-		} else {
-			watcher.pipelineFilter = pipelineFilter
+			return nil, fmt.Errorf("failed to create pipeline filter: %w", err)
 		}
+
+		watcher.pipelineFilter = pipelineFilter
 	}
 
 	// Return the adapter that implements client.ChangeStreamWatcher

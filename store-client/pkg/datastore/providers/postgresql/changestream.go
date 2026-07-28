@@ -1091,6 +1091,17 @@ func (w *PostgreSQLChangeStreamWatcher) sendEventsToChannel(
 		}
 	}
 
+	// Filtered-only batches never reach MarkProcessed, so persist the advanced
+	// in-memory position here to avoid replaying large filtered ranges on restart.
+	if filteredCount > 0 && sentCount == 0 {
+		if err := w.persistCurrentResumePosition(ctx); err != nil {
+			slog.Warn("Failed to persist resume position after filtered-only batch",
+				"client", w.clientName,
+				"filtered", filteredCount,
+				"error", err)
+		}
+	}
+
 	if len(events) > 0 {
 		if w.pipelineFilter != nil {
 			slog.Debug("Sent filtered change events",
@@ -1138,6 +1149,20 @@ func (w *PostgreSQLChangeStreamWatcher) advancePosition(event datastore.EventWit
 	slog.Debug("Advanced position before filtering", "client", w.clientName, "eventID", eventID)
 
 	return eventID
+}
+
+// persistCurrentResumePosition writes the in-memory lastEventID/lastTimestamp bookmark.
+func (w *PostgreSQLChangeStreamWatcher) persistCurrentResumePosition(ctx context.Context) error {
+	w.mu.RLock()
+	eventID := w.lastEventID
+	timestamp := w.lastTimestamp
+	w.mu.RUnlock()
+
+	if eventID <= 0 {
+		return nil
+	}
+
+	return w.saveResumePosition(ctx, timestamp, eventID)
 }
 
 func (w *PostgreSQLChangeStreamWatcher) hasRecentlySeenEventID(eventID int64) bool {

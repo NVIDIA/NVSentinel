@@ -406,3 +406,64 @@ func TestMatchesEvent_RealWorldHealthEventsAnalyzer(t *testing.T) {
 		})
 	}
 }
+
+func TestMatchesOperators_RequiresAllOperators(t *testing.T) {
+	pipeline := []interface{}{
+		map[string]interface{}{
+			"$match": map[string]interface{}{
+				"fullDocument.count": map[string]interface{}{
+					"$gte": 5,
+					"$lte":  10,
+				},
+			},
+		},
+	}
+
+	filter, err := NewPipelineFilter(pipeline)
+	if err != nil {
+		t.Fatalf("NewPipelineFilter() error = %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		count    int
+		expected bool
+	}{
+		{name: "inside range", count: 7, expected: true},
+		{name: "below range", count: 4, expected: false},
+		{name: "above range", count: 11, expected: false},
+		{name: "lower bound", count: 5, expected: true},
+		{name: "upper bound", count: 10, expected: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			event := datastore.EventWithToken{
+				Event: map[string]interface{}{
+					"fullDocument": map[string]interface{}{
+						"count": tt.count,
+					},
+				},
+			}
+
+			if got := filter.MatchesEvent(event); got != tt.expected {
+				t.Fatalf("MatchesEvent(count=%d) = %v, want %v", tt.count, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestNewPipelineFilter_FailsClosedOnUnparseableStage(t *testing.T) {
+	pipeline := []interface{}{
+		"not-a-stage-map",
+	}
+
+	filter, err := NewPipelineFilter(pipeline)
+	if err == nil {
+		t.Fatal("expected error for unparseable pipeline stage, got nil")
+	}
+
+	if filter != nil {
+		t.Fatalf("expected nil filter on parse failure, got %#v", filter)
+	}
+}

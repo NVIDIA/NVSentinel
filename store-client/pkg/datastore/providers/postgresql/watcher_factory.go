@@ -74,7 +74,9 @@ func (f *PostgreSQLWatcherFactory) CreateChangeStreamWatcher(
 		ModeHybrid,
 	)
 
-	f.applyPipelineFilter(changeStreamWatcher, config.Pipeline, tableName)
+	if err := f.applyPipelineFilter(changeStreamWatcher, config.Pipeline, tableName); err != nil {
+		return nil, err
+	}
 
 	return NewPostgreSQLChangeStreamWatcherWithUnwrap(changeStreamWatcher, resumeControlDecision), nil
 }
@@ -84,9 +86,9 @@ func (f *PostgreSQLWatcherFactory) applyPipelineFilter(
 	w *PostgreSQLChangeStreamWatcher,
 	pipeline datastore.Pipeline,
 	tableName string,
-) {
+) error {
 	if len(pipeline) == 0 {
-		return
+		return nil
 	}
 
 	slog.Info("PostgreSQL: Setting up two-layer filtering (server-side SQL + application-side fallback)",
@@ -97,16 +99,14 @@ func (f *PostgreSQLWatcherFactory) applyPipelineFilter(
 
 	pipelineFilter, err := NewPipelineFilter(pipeline)
 	if err != nil {
-		slog.Warn("Failed to create application-side pipeline filter",
-			"error", err,
-			"tableName", tableName)
-
-		return
+		return fmt.Errorf("failed to create application-side pipeline filter for %s: %w", tableName, err)
 	}
 
 	if pipelineFilter != nil {
 		w.pipelineFilter = pipelineFilter
 	}
+
+	return nil
 }
 
 // SupportedProvider returns the provider this factory supports

@@ -153,7 +153,10 @@ func (p *PostgreSQLDataStore) NewChangeStreamWatcher(
 		return nil, fmt.Errorf("failed to reset change stream resume token on startup: %w", err)
 	}
 
-	pipelineFilter := buildPipelineFilter(pipeline, tableName, clientName)
+	pipelineFilter, err := buildPipelineFilter(pipeline, tableName, clientName)
+	if err != nil {
+		return nil, err
+	}
 
 	// Convert PascalCase table name to snake_case for PostgreSQL compatibility
 	snakeCaseTableName := toSnakeCase(tableName)
@@ -208,20 +211,17 @@ func parseWatcherConfig(config interface{}) (string, string, interface{}, error)
 // buildPipelineFilter creates a two-layer pipeline filter for optimal performance:
 // 1. Server-side: SQL WHERE clause (built from raw pipeline in fetchNewChanges)
 // 2. Application-side: PipelineFilter (handles edge cases SQL can't express)
-func buildPipelineFilter(pipeline interface{}, tableName, clientName string) *PipelineFilter {
+// Returns an error when a pipeline was provided but could not be parsed, so callers
+// never silently open the filter to match everything.
+func buildPipelineFilter(pipeline interface{}, tableName, clientName string) (*PipelineFilter, error) {
 	if pipeline == nil {
-		return nil
+		return nil, nil
 	}
 
 	filter, err := NewPipelineFilter(pipeline)
 	if err != nil {
-		slog.Warn("Failed to parse MongoDB pipeline for PostgreSQL filtering",
-			"error", err,
-			"tableName", tableName,
-			"clientName", clientName,
-			"action", "all events will be returned without filtering")
-
-		return nil
+		return nil, fmt.Errorf("failed to parse MongoDB pipeline for PostgreSQL filtering (table=%s client=%s): %w",
+			tableName, clientName, err)
 	}
 
 	if filter != nil {
@@ -231,7 +231,7 @@ func buildPipelineFilter(pipeline interface{}, tableName, clientName string) *Pi
 			"stages", len(filter.stages))
 	}
 
-	return filter
+	return filter, nil
 }
 
 // --- Backward Compatibility Methods for MongoDB-style Type Assertions ---

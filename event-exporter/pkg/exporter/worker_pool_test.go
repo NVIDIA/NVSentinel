@@ -21,6 +21,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 )
@@ -233,5 +234,69 @@ func TestWorkerPool_MarkProcessedError(t *testing.T) {
 
 	if !errors.Is(err, errStore) {
 		t.Fatalf("expected wrapped errStore, got: %v", err)
+	}
+}
+
+// TestWorkerPool_CancelEmitsResultsForDequeuedItems verifies that workers report
+// a result for every dequeued sequence after cancellation instead of silently
+// dropping in-flight work (which would advance resume incorrectly / hang).
+func TestWorkerPool_CancelEmitsResultsForDequeuedItems(t *testing.T) {
+	src := &mockSource{}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	var processCount atomic.Int32
+
+	process := func(ctx context.Context, _ client.Event) error {
+		if processCount.Add(1) == 1 {
+			close(started)
+			<-release
+
+			return errors.New("fatal worker failure")
+		}
+
+		<-ctx.Done()
+
+		return ctx.Err()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pool := newWorkerPool(2, process, src, cancel)
+
+	go func() {
+		for i := uint64(1); i <= 4; i++ {
+			pool.dispatch(ctx, workItem{
+				seq:         i,
+				resumeToken: []byte(fmt.Sprintf("tok-%d", i)),
+			})
+		}
+
+		pool.closeDispatch()
+	}()
+
+	done := make(chan error, 1)
+
+	go func() {
+		done <- pool.run(ctx)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first worker to start")
+	}
+
+	close(release)
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected fatal error from run(), got nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run() hung after cancel; dequeued items likely dropped without results")
 	}
 }

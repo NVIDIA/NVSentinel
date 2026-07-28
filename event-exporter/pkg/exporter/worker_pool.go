@@ -132,8 +132,16 @@ func (wp *workerPool) closeDispatch() {
 // worker picks items from dispatchCh and processes them.
 func (wp *workerPool) worker(ctx context.Context) {
 	for item := range wp.dispatchCh {
-		if ctx.Err() != nil {
-			return
+		// Always emit a result for dequeued items so the token writer can observe
+		// cancellation/failure for every sequence and avoid silently dropping work.
+		if err := ctx.Err(); err != nil {
+			wp.resultCh <- workResult{
+				seq:         item.seq,
+				resumeToken: item.resumeToken,
+				err:         err,
+			}
+
+			continue
 		}
 
 		err := wp.process(ctx, item.event)
@@ -147,13 +155,23 @@ func (wp *workerPool) worker(ctx context.Context) {
 
 // tokenWriter collects results from workers and advances the resume token in order.
 // Returns the first fatal error (a worker failed to process after all retries).
+// After a fatal error it cancels the pool and drains remaining results so workers
+// that still emit cancelled/failed outcomes do not block forever on resultCh.
 func (wp *workerPool) tokenWriter(ctx context.Context) error {
 	tracker := newSequenceTracker()
 
+	var fatalErr error
+
 	for result := range wp.resultCh {
+		if fatalErr != nil {
+			continue
+		}
+
 		if result.err != nil {
 			wp.cancel()
-			return fmt.Errorf("process failed for seq %d: %w", result.seq, result.err)
+			fatalErr = fmt.Errorf("process failed for seq %d: %w", result.seq, result.err)
+
+			continue
 		}
 
 		token := tracker.markCompleted(result.seq, result.resumeToken)
@@ -164,8 +182,9 @@ func (wp *workerPool) tokenWriter(ctx context.Context) error {
 		if err := wp.source.MarkProcessed(ctx, token); err != nil {
 			slog.ErrorContext(ctx, "Failed to mark processed", "error", err)
 			wp.cancel()
+			fatalErr = fmt.Errorf("mark processed: %w", err)
 
-			return fmt.Errorf("mark processed: %w", err)
+			continue
 		}
 
 		metrics.ResumeTokenUpdateTimestamp.SetToCurrentTime()
@@ -175,5 +194,5 @@ func (wp *workerPool) tokenWriter(ctx context.Context) error {
 			"pendingOutOfOrder", tracker.pending())
 	}
 
-	return nil
+	return fatalErr
 }

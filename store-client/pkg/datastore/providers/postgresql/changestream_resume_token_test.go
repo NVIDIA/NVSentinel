@@ -182,6 +182,11 @@ func TestResumeTokenAdvancedEvenForFilteredEvents(t *testing.T) {
 		},
 	}
 
+	// Filtered-only batches persist the advanced resume bookmark.
+	mock.ExpectExec("INSERT INTO resume_tokens").
+		WithArgs(clientName, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
 	// Send events through pipeline filter
 	err = watcher.sendEventsToChannel(ctx, events)
 	require.NoError(t, err)
@@ -549,6 +554,11 @@ func TestMultipleFilteredEventsAdvancePosition(t *testing.T) {
 			ResumeToken: []byte(eventIDStr),
 		}
 	}
+
+	// Filtered-only batch must persist the advanced bookmark.
+	mock.ExpectExec("INSERT INTO resume_tokens").
+		WithArgs(clientName, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// Send all 11 events through the filter
 	err = watcher.sendEventsToChannel(ctx, events)
