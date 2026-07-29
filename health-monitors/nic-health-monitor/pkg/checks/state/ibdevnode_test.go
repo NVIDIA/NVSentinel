@@ -28,6 +28,7 @@ import (
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/checks"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/config"
+	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/statefile"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/sysfs"
 )
 
@@ -157,19 +158,24 @@ func fullCharDevs(node *stubNode) ([]madEntry, []verbsEntry) {
 	return mad, verbs
 }
 
-// singleIBNode returns a stubNode with one compute IB device (mlx5_0)
-// exposing a single ACTIVE/LinkUp InfiniBand port, plus a classifier that
-// keeps it in scope.
-func singleIBNode(t *testing.T) (*stubNode, *charDevFixture) {
-	t.Helper()
-
-	node := newStubNode().addIB("mlx5_0", &stubDevice{
+// singleIBDevice returns the stubDevice used by singleIBNode, so tests
+// that remove/re-add the device between polls can share the definition.
+func singleIBDevice() *stubDevice {
+	return &stubDevice{
 		pciAddress: "0000:47:00.0",
 		numaNode:   0,
 		ports: map[int]stubPort{
 			1: {state: "ACTIVE", physState: "LinkUp", linkLayer: "InfiniBand"},
 		},
-	})
+	}
+}
+
+// singleIBNode returns a stubNode with one compute IB device (mlx5_0)
+// exposing a single ACTIVE/LinkUp InfiniBand port.
+func singleIBNode(t *testing.T) (*stubNode, *charDevFixture) {
+	t.Helper()
+
+	node := newStubNode().addIB("mlx5_0", singleIBDevice())
 	mad, verbs := fullCharDevs(node)
 
 	return node, &charDevFixture{node: node, mad: mad, verbs: verbs}
@@ -180,13 +186,34 @@ func newCharDevCheck(
 ) *InfiniBandCharDeviceCheck {
 	t.Helper()
 
+	return newCharDevCheckWithManager(t, f, reader, freshStateManager(t), bootIDChanged)
+}
+
+func newCharDevCheckWithManager(
+	t *testing.T, f *charDevFixture, reader sysfs.Reader,
+	mgr *statefile.Manager, bootIDChanged bool,
+) *InfiniBandCharDeviceCheck {
+	t.Helper()
+
 	classifier := buildClassifier(t, reader,
 		[]string{"0000:0f:00.0"},
 		map[string][]string{"mlx5_0": {"PIX"}},
 	)
 
 	return NewInfiniBandCharDeviceCheck("node1", reader, &config.Config{},
-		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, freshStateManager(t), bootIDChanged)
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, bootIDChanged)
+}
+
+// runQuietPolls runs the check n times, requiring every poll to emit no
+// events (the debounce window before a fatal fires).
+func runQuietPolls(t *testing.T, check *InfiniBandCharDeviceCheck, n int) {
+	t.Helper()
+
+	for i := 0; i < n; i++ {
+		events, err := check.Run()
+		require.NoError(t, err)
+		assert.Emptyf(t, events, "poll %d of %d should be silent (debounce window)", i+1, n)
+	}
 }
 
 func fatalEvents(events []*pb.HealthEvent) []*pb.HealthEvent {
@@ -213,16 +240,19 @@ func TestIBCharDev_AllPresentHealthy(t *testing.T) {
 	assert.Empty(t, events, "a device with all char devices present must not emit events")
 }
 
-func TestIBCharDev_IssmMissingIsFatal(t *testing.T) {
+func TestIBCharDev_IssmMissingIsFatalAfterDebounce(t *testing.T) {
 	t.Parallel()
 
 	// The production ticket: an ACTIVE/LinkUp InfiniBand port whose issm
 	// character device never materialised, so pods fail with
-	// "lstat /dev/infiniband/issm9: no such file or directory".
+	// "lstat /dev/infiniband/issm9: no such file or directory". The fatal
+	// fires only after charDevMissThreshold consecutive missing polls.
 	_, f := singleIBNode(t)
 	f.mad = dropKind(f.mad, "issm")
 	reader := f.reader()
 	check := newCharDevCheck(t, f, reader, false)
+
+	runQuietPolls(t, check, charDevMissThreshold-1)
 
 	events, err := check.Run()
 	require.NoError(t, err)
@@ -233,8 +263,39 @@ func TestIBCharDev_IssmMissingIsFatal(t *testing.T) {
 	assert.False(t, evt.IsHealthy)
 	assert.Equal(t, pb.RecommendedAction_REPLACE_VM, evt.RecommendedAction)
 	assert.Equal(t, checks.InfiniBandCharDeviceCheckName, evt.CheckName)
+	assert.Equal(t, []string{"issm"}, evt.ErrorCode, "fatal must carry the per-kind error code")
 	assert.Contains(t, evt.Message, "issm")
 	assertPortEntities(t, evt, "mlx5_0", 1)
+
+	// Steady faulted state stays silent.
+	events, err = check.Run()
+	require.NoError(t, err)
+	assert.Empty(t, events, "latched fault must not re-emit")
+}
+
+func TestIBCharDev_OnePollBlipIsSwallowed(t *testing.T) {
+	t.Parallel()
+
+	// A single bad poll (driver teardown between the device-list read and
+	// the class-dir reads) must not fatal: the debounce resets when the
+	// node is observed again.
+	_, f := singleIBNode(t)
+	fullMad := f.mad
+	f.mad = dropKind(f.mad, "issm")
+	reader := f.reader()
+	check := newCharDevCheck(t, f, reader, false)
+
+	events, err := check.Run() // one missing poll — inside the debounce window
+	require.NoError(t, err)
+	assert.Empty(t, events)
+
+	f.mad = fullMad
+
+	for i := 0; i < 2*charDevMissThreshold; i++ {
+		events, err = check.Run()
+		require.NoError(t, err)
+		assert.Empty(t, events, "a one-poll blip must never produce a fatal or recovery")
+	}
 }
 
 func TestIBCharDev_RoCEPortExpectsNoIssm(t *testing.T) {
@@ -258,9 +319,7 @@ func TestIBCharDev_RoCEPortExpectsNoIssm(t *testing.T) {
 	reader := f.reader()
 	check := newCharDevCheck(t, f, reader, false)
 
-	events, err := check.Run()
-	require.NoError(t, err)
-	assert.Empty(t, events, "RoCE-only device must not expect issm")
+	runQuietPolls(t, check, 2*charDevMissThreshold)
 }
 
 func TestIBCharDev_MixedDeviceOnlyIBPortNeedsIssm(t *testing.T) {
@@ -290,9 +349,7 @@ func TestIBCharDev_MixedDeviceOnlyIBPortNeedsIssm(t *testing.T) {
 	reader := f.reader()
 	check := newCharDevCheck(t, f, reader, false)
 
-	events, err := check.Run()
-	require.NoError(t, err)
-	assert.Empty(t, events, "Ethernet port must not require issm on a mixed device")
+	runQuietPolls(t, check, 2*charDevMissThreshold)
 }
 
 func TestIBCharDev_UmadMissingIsFatal(t *testing.T) {
@@ -303,10 +360,13 @@ func TestIBCharDev_UmadMissingIsFatal(t *testing.T) {
 	reader := f.reader()
 	check := newCharDevCheck(t, f, reader, false)
 
+	runQuietPolls(t, check, charDevMissThreshold-1)
+
 	events, err := check.Run()
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 	assert.True(t, events[0].IsFatal)
+	assert.Equal(t, []string{"umad"}, events[0].ErrorCode)
 	assert.Contains(t, events[0].Message, "umad")
 	assertPortEntities(t, events[0], "mlx5_0", 1)
 }
@@ -319,12 +379,15 @@ func TestIBCharDev_UverbsMissingIsFatalWithDeviceEntity(t *testing.T) {
 	reader := f.reader()
 	check := newCharDevCheck(t, f, reader, false)
 
+	runQuietPolls(t, check, charDevMissThreshold-1)
+
 	events, err := check.Run()
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 
 	evt := events[0]
 	assert.True(t, evt.IsFatal)
+	assert.Equal(t, []string{"uverbs"}, evt.ErrorCode)
 	assert.Contains(t, evt.Message, "uverbs")
 	require.Len(t, evt.EntitiesImpacted, 1, "uverbs is a device-level entity")
 	assert.Equal(t, checks.EntityTypeNIC, evt.EntitiesImpacted[0].EntityType)
@@ -340,13 +403,15 @@ func TestIBCharDev_TransitionThenRecoveryThenQuiet(t *testing.T) {
 	reader := f.reader()
 	check := newCharDevCheck(t, f, reader, false)
 
-	// Poll 1: issm missing → one FATAL.
+	runQuietPolls(t, check, charDevMissThreshold-1)
+
+	// Confirmed missing → one FATAL.
 	events, err := check.Run()
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 	assert.True(t, events[0].IsFatal)
 
-	// Poll 2: issm restored → one healthy recovery, no re-emit of the fault.
+	// issm restored → one healthy recovery, no re-emit of the fault.
 	f.mad = fullMad
 	events, err = check.Run()
 	require.NoError(t, err)
@@ -354,12 +419,126 @@ func TestIBCharDev_TransitionThenRecoveryThenQuiet(t *testing.T) {
 	assert.True(t, events[0].IsHealthy)
 	assert.False(t, events[0].IsFatal)
 	assert.Equal(t, pb.RecommendedAction_NONE, events[0].RecommendedAction)
+	assert.Equal(t, []string{"issm"}, events[0].ErrorCode, "recovery must carry the per-kind error code")
 	assertPortEntities(t, events[0], "mlx5_0", 1)
 
-	// Poll 3: steady healthy → silent.
+	// Steady healthy → silent.
 	events, err = check.Run()
 	require.NoError(t, err)
 	assert.Empty(t, events, "steady state must not re-emit")
+}
+
+func TestIBCharDev_DeviceBlipHoldsLatch(t *testing.T) {
+	t.Parallel()
+
+	// The reviewer-reported false-recovery bug: after a fault is latched,
+	// the device momentarily drops out of /sys/class/infiniband (firmware
+	// reset). Its keys leave the expected set — that absence must HOLD the
+	// latch, not emit a "present again" recovery for a fault that never
+	// healed.
+	node, f := singleIBNode(t)
+	f.mad = dropKind(f.mad, "issm")
+	reader := f.reader()
+	check := newCharDevCheck(t, f, reader, false)
+
+	runQuietPolls(t, check, charDevMissThreshold-1)
+
+	events, err := check.Run()
+	require.NoError(t, err)
+	require.Len(t, fatalEvents(events), 1, "fault must latch first")
+
+	// Device disappears from enumeration (discovery still Complete).
+	delete(node.ib, "mlx5_0")
+
+	for i := 0; i < 2; i++ {
+		events, err = check.Run()
+		require.NoError(t, err)
+		assert.Empty(t, events, "device absence must hold the latch, not fabricate a recovery")
+	}
+
+	// Device returns, issm still missing: steady faulted state, silent —
+	// the latch survived the blip.
+	node.ib["mlx5_0"] = singleIBDevice()
+	events, err = check.Run()
+	require.NoError(t, err)
+	assert.Empty(t, events, "still-missing fault must stay latched after the blip, not re-fire")
+
+	// Only a positive observation releases it.
+	f.mad, _ = fullCharDevs(node)
+	events, err = check.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	assert.True(t, events[0].IsHealthy, "recovery requires positive observation")
+}
+
+func TestIBCharDev_LatchSurvivesPodRestart(t *testing.T) {
+	t.Parallel()
+
+	// The recovery-while-pod-down orphan: a fault is latched, the pod
+	// dies, the char device comes back while no monitor is running. The
+	// next pod must seed the latch from the state file and emit the
+	// recovery, or the REPLACE_VM condition would stay on the node until
+	// the next reboot.
+	mgr, statePath, bootIDPath := newStateManagerForTest(t, "boot-1")
+
+	_, f := singleIBNode(t)
+	f.mad = dropKind(f.mad, "issm")
+	reader := f.reader()
+	check := newCharDevCheckWithManager(t, f, reader, mgr, false)
+
+	runQuietPolls(t, check, charDevMissThreshold-1)
+
+	events, err := check.Run()
+	require.NoError(t, err)
+	require.Len(t, fatalEvents(events), 1)
+
+	// Pod restarts on the same boot; the char device healed while it was
+	// down.
+	f.mad, _ = fullCharDevs(f.node)
+
+	mgr2 := statefile.NewManagerWithPaths(statePath, bootIDPath)
+	require.NoError(t, mgr2.Load())
+	require.False(t, mgr2.BootIDChanged())
+
+	check2 := newCharDevCheckWithManager(t, f, reader, mgr2, false)
+
+	events, err = check2.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 1, "restarted pod must emit the recovery for the persisted latch")
+	assert.True(t, events[0].IsHealthy)
+	assert.Equal(t, []string{"issm"}, events[0].ErrorCode)
+}
+
+func TestIBCharDev_NoDuplicateBaselineAfterRestart(t *testing.T) {
+	t.Parallel()
+
+	// Commit must persist the consumed pending-baseline flag: without the
+	// Save, every pod restart within the same boot would re-emit the
+	// baseline clear.
+	mgr, statePath, bootIDPath := newStateManagerForTest(t, "boot-1")
+
+	_, f := singleIBNode(t)
+	reader := f.reader()
+	check := newCharDevCheckWithManager(t, f, reader, mgr, true)
+
+	events, err := check.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 1, "baseline poll emits the check-scoped clear")
+	assert.True(t, events[0].IsHealthy)
+	assert.Empty(t, events[0].EntitiesImpacted)
+
+	// Same boot, new pod: the persisted flag must be consumed.
+	mgr2 := statefile.NewManagerWithPaths(statePath, bootIDPath)
+	require.NoError(t, mgr2.Load())
+	require.False(t, mgr2.BootIDChanged())
+	assert.False(t, mgr2.PendingBaseline(checks.InfiniBandCharDeviceCheckName),
+		"consumed baseline must be persisted by Commit")
+
+	check2 := newCharDevCheckWithManager(t, f, reader, mgr2, false)
+
+	events, err = check2.Run()
+	require.NoError(t, err)
+	assert.Empty(t, events, "restart on the same boot must not re-emit the baseline clear")
 }
 
 func TestIBCharDev_AbiVersionEntryIgnored(t *testing.T) {
@@ -371,9 +550,7 @@ func TestIBCharDev_AbiVersionEntryIgnored(t *testing.T) {
 	reader := f.reader()
 	check := newCharDevCheck(t, f, reader, false)
 
-	events, err := check.Run()
-	require.NoError(t, err)
-	assert.Empty(t, events, "abi_version must not be treated as a char device")
+	runQuietPolls(t, check, 2*charDevMissThreshold)
 }
 
 func TestIBCharDev_ClassDirAbsentIsUncertain(t *testing.T) {
@@ -387,15 +564,17 @@ func TestIBCharDev_ClassDirAbsentIsUncertain(t *testing.T) {
 	reader := f.reader()
 	check := newCharDevCheck(t, f, reader, false)
 
-	events, err := check.Run()
-	require.NoError(t, err)
-	assert.Empty(t, events, "absent class dir must be treated as uncertain, not mass-missing")
+	runQuietPolls(t, check, 2*charDevMissThreshold)
 
 	// When the directory returns (with issm still missing) the fault is
-	// then reported — proving the earlier poll held rather than latched.
+	// then reported after the debounce — proving the earlier polls held
+	// rather than latched.
 	f.madErr = nil
 	f.mad = dropKind(f.mad, "issm")
-	events, err = check.Run()
+
+	runQuietPolls(t, check, charDevMissThreshold-1)
+
+	events, err := check.Run()
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 	assert.True(t, events[0].IsFatal)
@@ -441,12 +620,12 @@ func TestIBCharDev_IncompleteDiscoveryBail(t *testing.T) {
 	require.Error(t, err, "losing the IB tree after seeding state must error")
 }
 
-func TestIBCharDev_BaselineRunClearsThenReasserts(t *testing.T) {
+func TestIBCharDev_BaselineClearThenDebouncedReassert(t *testing.T) {
 	t.Parallel()
 
-	// A reboot (bootIDChanged=true) with issm still missing: the batch must
-	// lead with a check-scoped clear (empty entities) that wipes stale
-	// prior-boot conditions, followed by the current-boot FATAL.
+	// A reboot (bootIDChanged=true) with issm missing and no prior latch:
+	// the first complete poll emits the check-scoped clear; the fault then
+	// confirms through the normal debounce.
 	_, f := singleIBNode(t)
 	f.mad = dropKind(f.mad, "issm")
 	reader := f.reader()
@@ -454,21 +633,63 @@ func TestIBCharDev_BaselineRunClearsThenReasserts(t *testing.T) {
 
 	events, err := check.Run()
 	require.NoError(t, err)
-	require.Len(t, events, 2)
+	require.Len(t, events, 1, "baseline poll emits only the clear (fault not yet confirmed)")
+	assert.True(t, events[0].IsHealthy)
+	assert.Empty(t, events[0].EntitiesImpacted, "baseline clear is check-scoped (no entities)")
+
+	runQuietPolls(t, check, charDevMissThreshold-2)
+
+	events, err = check.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	assert.True(t, events[0].IsFatal, "fault confirms through the debounce after the clear")
+}
+
+func TestIBCharDev_BaselineReassertsLatchedFaultImmediately(t *testing.T) {
+	t.Parallel()
+
+	// A fault confirmed before a reboot: the persisted latch survives, so
+	// the baseline poll emits the clear followed immediately by the
+	// re-asserted FATAL (no debounce — the fault was already confirmed).
+	mgr, statePath, bootIDPath := newStateManagerForTest(t, "boot-1")
+
+	_, f := singleIBNode(t)
+	f.mad = dropKind(f.mad, "issm")
+	reader := f.reader()
+	check := newCharDevCheckWithManager(t, f, reader, mgr, false)
+
+	runQuietPolls(t, check, charDevMissThreshold-1)
+
+	events, err := check.Run()
+	require.NoError(t, err)
+	require.Len(t, fatalEvents(events), 1)
+
+	// Reboot: new manager on the same state file sees a new boot ID.
+	require.NoError(t, os.WriteFile(bootIDPath, []byte("boot-2\n"), 0o644))
+
+	mgr2 := statefile.NewManagerWithPaths(statePath, bootIDPath)
+	require.NoError(t, mgr2.Load())
+	require.True(t, mgr2.BootIDChanged())
+
+	check2 := newCharDevCheckWithManager(t, f, reader, mgr2, mgr2.BootIDChanged())
+
+	events, err = check2.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 2, "baseline must emit clear + immediate re-assert of the latched fault")
 
 	clear := events[0]
 	assert.True(t, clear.IsHealthy, "baseline clear must be healthy")
-	assert.Empty(t, clear.EntitiesImpacted, "baseline clear is check-scoped (no entities)")
+	assert.Empty(t, clear.EntitiesImpacted)
 	assert.True(t, clear.GeneratedTimestamp.AsTime().Before(events[1].GeneratedTimestamp.AsTime()),
 		"clear must sort before the fault it precedes")
 
-	assert.Len(t, fatalEvents(events), 1, "the still-missing issm must be re-asserted")
+	require.Len(t, fatalEvents(events), 1)
+	assert.Equal(t, []string{"issm"}, fatalEvents(events)[0].ErrorCode)
 
-	// The baseline is consumed after the first poll: a subsequent poll is a
-	// normal run with no clear.
-	events, err = check.Run()
+	// The baseline is consumed: a subsequent poll is a quiet steady state.
+	events, err = check2.Run()
 	require.NoError(t, err)
-	assert.Empty(t, events, "second poll must be a normal (non-baseline) steady state")
+	assert.Empty(t, events)
 }
 
 func TestIBCharDev_VirtualFunctionSkipped(t *testing.T) {
@@ -491,9 +712,7 @@ func TestIBCharDev_VirtualFunctionSkipped(t *testing.T) {
 	reader := f.reader()
 	check := newCharDevCheck(t, f, reader, false)
 
-	events, err := check.Run()
-	require.NoError(t, err)
-	assert.Empty(t, events, "VFs are excluded from discovery and must not be checked")
+	runQuietPolls(t, check, 2*charDevMissThreshold)
 }
 
 func TestIBCharDev_UnsupportedVendorExcluded(t *testing.T) {
@@ -517,9 +736,7 @@ func TestIBCharDev_UnsupportedVendorExcluded(t *testing.T) {
 	reader := f.reader()
 	check := newCharDevCheck(t, f, reader, false)
 
-	events, err := check.Run()
-	require.NoError(t, err)
-	assert.Empty(t, events, "unsupported vendor must be out of scope")
+	runQuietPolls(t, check, 2*charDevMissThreshold)
 }
 
 // dropKind removes every mad entry whose directory name starts with the

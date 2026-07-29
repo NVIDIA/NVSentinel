@@ -98,30 +98,41 @@ func TestIBCharDev_RealNodeLayout_FilesystemRepro(t *testing.T) {
 	cfg := &config.Config{NicInclusionRegexOverride: "mlx5_.*"}
 	classifier := topology.NewOverrideClassifier(reader)
 
-	newCheck := func() *InfiniBandCharDeviceCheck {
-		return NewInfiniBandCharDeviceCheck("np-a62cfc8a-1", reader, cfg, classifier,
-			pb.ProcessingStrategy_EXECUTE_REMEDIATION, freshStateManager(t), false)
-	}
+	check := NewInfiniBandCharDeviceCheck("np-a62cfc8a-1", reader, cfg, classifier,
+		pb.ProcessingStrategy_EXECUTE_REMEDIATION, freshStateManager(t), false)
 
 	// Healthy node: every expected char device present → no events. This
 	// also proves the Ethernet mlx5_0 does not trigger a false issm miss.
-	events, err := newCheck().Run()
+	events, err := check.Run()
 	require.NoError(t, err)
 	assert.Empty(t, events, "healthy H100-IB node must emit no events")
 
 	// Reproduce #11021: mlx5_1's issm node is gone (device still present,
 	// port still ACTIVE/LinkUp) — the exact failure the passive port check
-	// misses.
+	// misses. The fatal fires once the miss has been confirmed for
+	// charDevMissThreshold consecutive polls.
 	require.NoError(t, os.RemoveAll(filepath.Join(ibBase+"_mad", "issm1")))
 
-	events, err = newCheck().Run()
+	runQuietPolls(t, check, charDevMissThreshold-1)
+
+	events, err = check.Run()
 	require.NoError(t, err)
 	require.Len(t, events, 1, "missing issm on an IB device must produce one fatal event")
 
 	evt := events[0]
 	assert.True(t, evt.IsFatal)
 	assert.Equal(t, pb.RecommendedAction_REPLACE_VM, evt.RecommendedAction)
+	assert.Equal(t, []string{"issm"}, evt.ErrorCode)
 	assert.Contains(t, evt.Message, "issm")
 	assert.Contains(t, evt.Message, "mlx5_1")
 	assertPortEntities(t, evt, "mlx5_1", 1)
+
+	// Restore the node and confirm a positively-observed recovery.
+	writeFile(t, filepath.Join(ibBase+"_mad", "issm1", "ibdev"), "mlx5_1")
+	writeFile(t, filepath.Join(ibBase+"_mad", "issm1", "port"), "1")
+
+	events, err = check.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	assert.True(t, events[0].IsHealthy, "restored issm must emit a recovery")
 }

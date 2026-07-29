@@ -50,6 +50,15 @@ const (
 	// noPort is the sentinel port used for device-level entries (uverbs),
 	// which are not associated with a specific port.
 	noPort = 0
+
+	// charDevMissThreshold is the number of consecutive polls a character
+	// device must be expected-but-missing before a FATAL is emitted. The
+	// device list and the mad/verbs class directories are read at slightly
+	// different instants, so a driver teardown/reload landing between the
+	// reads can make every node of a device look missing for one poll;
+	// requiring consecutive misses removes that race, mirroring the device
+	// disappearance debounce (deviceMissThreshold).
+	charDevMissThreshold = 3
 )
 
 // charDevKey uniquely identifies an expected or missing character device.
@@ -59,6 +68,21 @@ type charDevKey struct {
 	kind   charDevKind
 	device string
 	port   int
+}
+
+// flagKey renders the persisted statefile key for a charDevKey.
+func (k charDevKey) flagKey() string {
+	return fmt.Sprintf("%s/%s_%d", k.kind, k.device, k.port)
+}
+
+// flagOf converts a charDevKey to its persisted representation.
+func (k charDevKey) flagOf() statefile.MissingCharDeviceFlag {
+	return statefile.MissingCharDeviceFlag{Kind: string(k.kind), Device: k.device, Port: k.port}
+}
+
+// keyOfFlag converts a persisted flag back to a charDevKey.
+func keyOfFlag(f statefile.MissingCharDeviceFlag) charDevKey {
+	return charDevKey{kind: charDevKind(f.Kind), device: f.Device, port: f.Port}
 }
 
 // InfiniBandCharDeviceCheck detects missing InfiniBand character-device
@@ -81,6 +105,14 @@ type charDevKey struct {
 // device that is entirely absent from /sys/class/infiniband is out of
 // scope here — that is the InfiniBandStateCheck's device-disappearance
 // responsibility.
+//
+// Fault handling is latched and debounced: a node must be missing for
+// charDevMissThreshold consecutive polls before the FATAL fires, the
+// resulting latch persists across pod restarts and reboots via
+// pkg/statefile, and it is released only on a positive observation of the
+// node (recovery) or by the baseline clear. A latched key whose device
+// drops out of discovery is HELD, not recovered: absence of the device is
+// not evidence the character device healed.
 type InfiniBandCharDeviceCheck struct {
 	nodeName           string
 	reader             sysfs.Reader
@@ -95,19 +127,38 @@ type InfiniBandCharDeviceCheck struct {
 	// are wiped before current-boot faults are re-asserted.
 	emitHealthyBaselines bool
 
-	// previousMissing is the committed set of currently-missing character
-	// devices; it drives transition (missing↔present) event emission so
-	// steady states do not re-emit every poll. It is in-memory only: a
-	// reboot re-baselines, and a non-reboot pod restart re-discovers the
-	// current state on the first poll.
-	previousMissing map[charDevKey]bool
+	// latched is the committed set of character devices with a
+	// missing-node FATAL outstanding downstream. Seeded from the
+	// persisted statefile latch at construction so a recovery that
+	// happens while the pod is down is still emitted by the next pod.
+	latched map[charDevKey]bool
+
+	// missStreak counts consecutive polls each expected key has been
+	// missing; a FATAL fires when it reaches charDevMissThreshold.
+	// In-memory only: losing it to a restart merely restarts the
+	// debounce, which is the safe direction.
+	missStreak map[charDevKey]int
+
+	// seeded is true once one complete enumeration has succeeded, making
+	// a later incomplete enumeration an error rather than a quiet skip.
+	seeded bool
+
+	// uncertainWarned suppresses the held-poll warning after its first
+	// emission so an IB node without the ib_umad module does not log at
+	// every poll; it resets when a certain observation succeeds.
+	uncertainWarned bool
+
+	// saveFailed keeps a failed statefile Save retrying on subsequent
+	// commits even when nothing else changed.
+	saveFailed bool
 
 	pending *charDevPollCommit
 }
 
 // charDevPollCommit stages a prepared poll until Commit makes it durable.
 type charDevPollCommit struct {
-	missing     map[charDevKey]bool
+	latched     map[charDevKey]bool
+	missStreak  map[charDevKey]int
 	baselineRan bool
 }
 
@@ -131,6 +182,11 @@ func NewInfiniBandCharDeviceCheck(
 		stateManager.SetPendingBaseline(checks.InfiniBandCharDeviceCheckName)
 	}
 
+	latched := make(map[charDevKey]bool)
+	for _, flag := range stateManager.MissingCharDevices() {
+		latched[keyOfFlag(flag)] = true
+	}
+
 	return &InfiniBandCharDeviceCheck{
 		nodeName:             nodeName,
 		reader:               reader,
@@ -139,6 +195,8 @@ func NewInfiniBandCharDeviceCheck(
 		processingStrategy:   processingStrategy,
 		state:                stateManager,
 		emitHealthyBaselines: pendingBaseline,
+		latched:              latched,
+		missStreak:           make(map[charDevKey]int),
 	}
 }
 
@@ -160,7 +218,7 @@ func (c *InfiniBandCharDeviceCheck) Run() ([]*pb.HealthEvent, error) {
 }
 
 // Prepare observes one poll and stages its candidate state without
-// advancing the committed missing-set or persistent state.
+// advancing the committed latch or persistent state.
 func (c *InfiniBandCharDeviceCheck) Prepare() ([]*pb.HealthEvent, error) {
 	c.Discard()
 
@@ -172,7 +230,7 @@ func (c *InfiniBandCharDeviceCheck) Prepare() ([]*pb.HealthEvent, error) {
 	}
 
 	if !result.Complete {
-		if c.previousMissing != nil {
+		if c.seeded {
 			return nil, fmt.Errorf("device discovery incomplete: InfiniBand sysfs tree unavailable")
 		}
 
@@ -199,17 +257,23 @@ func (c *InfiniBandCharDeviceCheck) Prepare() ([]*pb.HealthEvent, error) {
 		// A class directory we need was entirely absent while devices that
 		// should populate it exist: an uncertain observation, not evidence
 		// of mass failure. Hold state (do not stage) so the baseline stays
-		// owed and no spurious FATALs are emitted.
-		slog.Warn("Holding InfiniBand char-device poll: class directory unavailable",
-			"check", c.Name(), "node", c.nodeName)
+		// owed and no spurious FATALs are emitted. Warn once per
+		// transition, not per poll: on a node without the ib_umad module
+		// this state is permanent and would otherwise log every second.
+		if !c.uncertainWarned {
+			c.uncertainWarned = true
+
+			slog.Warn("Holding InfiniBand char-device poll: class directory unavailable",
+				"check", c.Name(), "node", c.nodeName)
+		}
 
 		return nil, nil
 	}
 
-	currentMissing := diffMissing(expected, observed)
-	events := c.buildEvents(currentMissing, baselineRun)
+	c.uncertainWarned = false
 
-	c.pending = &charDevPollCommit{missing: currentMissing, baselineRan: baselineRun}
+	events, nextLatched, nextStreak := c.evaluatePoll(expected, observed, baselineRun)
+	c.pending = &charDevPollCommit{latched: nextLatched, missStreak: nextStreak, baselineRan: baselineRun}
 
 	return events, nil
 }
@@ -222,12 +286,41 @@ func (c *InfiniBandCharDeviceCheck) Commit() {
 
 	pending := c.pending
 	c.pending = nil
-	c.previousMissing = pending.missing
+	c.latched = pending.latched
+	c.missStreak = pending.missStreak
+	c.seeded = true
+
+	flags := make(map[string]statefile.MissingCharDeviceFlag, len(pending.latched))
+	for key := range pending.latched {
+		flags[key.flagKey()] = key.flagOf()
+	}
+
+	changed := c.state.UpdateMissingCharDevices(flags)
 
 	if pending.baselineRan {
 		c.emitHealthyBaselines = false
 		c.state.ClearPendingBaseline(checks.InfiniBandCharDeviceCheckName)
+
+		changed = true
 	}
+
+	// Persist when something changed or a previous Save failed: the
+	// in-memory manager already carries the update, so without the retry
+	// the on-disk state would stay stale until an unrelated change.
+	if !changed && !c.saveFailed {
+		return
+	}
+
+	if err := c.state.Save(); err != nil {
+		c.saveFailed = true
+
+		slog.Warn("Failed to persist state to disk",
+			"check", c.Name(), "path", c.state.Path(), "error", err)
+
+		return
+	}
+
+	c.saveFailed = false
 }
 
 // Discard abandons a prepared poll after check or publication failure.
@@ -235,15 +328,32 @@ func (c *InfiniBandCharDeviceCheck) Discard() {
 	c.pending = nil
 }
 
-// buildEvents turns the current missing-set into HealthEvents. On a
-// baseline run it emits a check-scoped clear (wiping stale prior-boot
-// conditions) followed by a FATAL for every still-missing node. On a
-// normal run it emits a FATAL for each newly-missing node and a healthy
-// recovery for each node that reappeared, staying silent on steady state.
-func (c *InfiniBandCharDeviceCheck) buildEvents(
-	currentMissing map[charDevKey]bool, baselineRun bool,
-) []*pb.HealthEvent {
+// evaluatePoll compares the expected and observed sets and produces this
+// poll's events plus the candidate latch and debounce state.
+//
+// Transitions:
+//   - expected + observed + latched   → recovery event, latch released
+//     (the only path that releases a latch outside a baseline: recovery
+//     requires the node to be positively observed, so a device that
+//     drops out of discovery HOLDS its latch instead of fabricating a
+//     recovery for a fault that never healed).
+//   - expected + missing + unlatched  → debounce; FATAL + latch once the
+//     key has been missing charDevMissThreshold consecutive polls.
+//   - expected + missing + latched    → steady faulted state, silent.
+//   - not expected + latched          → held: no event, latch kept.
+//
+// On a baseline run the check-scoped clear voids every downstream
+// condition, so still-missing latched keys immediately re-assert their
+// FATAL with fresh events, and latches whose keys are no longer expected
+// are dropped with the clear — if their device returns still broken, the
+// debounce re-fatals it within charDevMissThreshold polls.
+func (c *InfiniBandCharDeviceCheck) evaluatePoll(
+	expected expectedCharDevices, observed observedCharDevices, baselineRun bool,
+) ([]*pb.HealthEvent, map[charDevKey]bool, map[charDevKey]int) {
 	var events []*pb.HealthEvent
+
+	nextLatched := make(map[charDevKey]bool)
+	nextStreak := make(map[charDevKey]int)
 
 	if baselineRun {
 		events = append(events, checks.NewBaselineClearEvent(
@@ -251,29 +361,70 @@ func (c *InfiniBandCharDeviceCheck) buildEvents(
 			"InfiniBand character-device check: clearing stale conditions after reboot",
 			c.processingStrategy,
 		))
+	}
 
-		for key := range currentMissing {
-			events = append(events, c.missingEvent(key))
+	for key := range expected.keys {
+		if evt := c.evaluateKey(key, observed.present[key], baselineRun, nextLatched, nextStreak); evt != nil {
+			events = append(events, evt)
 		}
+	}
 
+	// Latched keys not expected this poll (device unreadable, absent, or
+	// without IB ports): hold them — absence is not positive evidence of
+	// recovery. On a baseline run they are dropped instead: the clear has
+	// voided their downstream conditions.
+	if !baselineRun {
+		for key := range c.latched {
+			if _, isExpected := expected.keys[key]; !isExpected {
+				nextLatched[key] = true
+			}
+		}
+	}
+
+	if baselineRun {
 		checks.EnsureClearPrecedesBatch(events)
-
-		return events
 	}
 
-	for key := range currentMissing {
-		if !c.previousMissing[key] {
-			events = append(events, c.missingEvent(key))
+	return events, nextLatched, nextStreak
+}
+
+// evaluateKey applies the transition rules to one expected key, updating
+// the candidate latch/streak maps and returning the event to emit, if any.
+func (c *InfiniBandCharDeviceCheck) evaluateKey(
+	key charDevKey, present, baselineRun bool,
+	nextLatched map[charDevKey]bool, nextStreak map[charDevKey]int,
+) *pb.HealthEvent {
+	if present {
+		if c.latched[key] && !baselineRun {
+			return c.recoveryEvent(key)
 		}
+
+		return nil
 	}
 
-	for key := range c.previousMissing {
-		if !currentMissing[key] {
-			events = append(events, c.recoveryEvent(key))
+	if c.latched[key] {
+		nextLatched[key] = true
+
+		if baselineRun {
+			// The clear just voided this key's condition; re-assert the
+			// confirmed fault immediately rather than re-running the
+			// debounce.
+			return c.missingEvent(key)
 		}
+
+		return nil
 	}
 
-	return events
+	streak := c.missStreak[key] + 1
+	if streak >= charDevMissThreshold {
+		nextLatched[key] = true
+
+		return c.missingEvent(key)
+	}
+
+	nextStreak[key] = streak
+
+	return nil
 }
 
 // expectedCharDevices is the per-device internal-consistency expectation
@@ -461,19 +612,6 @@ func (c *InfiniBandCharDeviceCheck) readVerbsDir(present map[charDevKey]bool) (b
 	return false, nil
 }
 
-// diffMissing returns the expected keys that are absent from the observed set.
-func diffMissing(expected expectedCharDevices, observed observedCharDevices) map[charDevKey]bool {
-	missing := make(map[charDevKey]bool)
-
-	for key := range expected.keys {
-		if !observed.present[key] {
-			missing[key] = true
-		}
-	}
-
-	return missing
-}
-
 // missingEvent builds the FATAL event for a missing character device. A
 // missing node cannot be repaired from inside the workload — it requires
 // host-level driver/udev/reboot intervention and pods hard-fail to start —
@@ -484,10 +622,10 @@ func (c *InfiniBandCharDeviceCheck) missingEvent(key charDevKey) *pb.HealthEvent
 		c.nodeName, c.Name(), key.device, discovery.PortEntityValue(key.port),
 	).Inc()
 
-	return checks.NewHealthEvent(
+	return withCharDevCode(checks.NewHealthEvent(
 		c.nodeName, c.Name(), c.missingMessage(key), c.entitiesFor(key),
 		true, false, pb.RecommendedAction_REPLACE_VM, c.processingStrategy,
-	)
+	), key.kind)
 }
 
 // recoveryEvent builds the healthy event emitted when a previously-missing
@@ -495,10 +633,23 @@ func (c *InfiniBandCharDeviceCheck) missingEvent(key charDevKey) *pb.HealthEvent
 func (c *InfiniBandCharDeviceCheck) recoveryEvent(key charDevKey) *pb.HealthEvent {
 	msg := fmt.Sprintf("InfiniBand character device %s for %s is present again", key.kind, c.entityDesc(key))
 
-	return checks.NewHealthEvent(
+	return withCharDevCode(checks.NewHealthEvent(
 		c.nodeName, c.Name(), msg, c.entitiesFor(key),
 		false, true, pb.RecommendedAction_NONE, c.processingStrategy,
-	)
+	), key.kind)
+}
+
+// withCharDevCode stamps the character-device kind onto an event as its
+// ErrorCode. Downstream consumers scope condition clearing by ErrorCode:
+// without it the issm and umad events for a port share one identity
+// (check name + entities), so a umad recovery would also wipe a still-open
+// issm condition — and since the check reports transitions, the issm fault
+// would never be re-added until reboot. Only the check-scoped baseline
+// clear is deliberately code-less, because it means "clear everything".
+func withCharDevCode(evt *pb.HealthEvent, kind charDevKind) *pb.HealthEvent {
+	evt.ErrorCode = []string{string(kind)}
+
+	return evt
 }
 
 // missingMessage renders the operator-facing description of a missing node.
