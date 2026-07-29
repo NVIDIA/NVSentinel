@@ -217,6 +217,8 @@ allows canceled drains and healthy events to remove labels from any state withou
 type StateManager interface {
 	UpdateNVSentinelStateNodeLabel(ctx context.Context, nodeName string,
 		newStateLabelValue NVSentinelStateLabelValue, removeStateLabel bool) (bool, error)
+	RemoveNVSentinelStateNodeLabelIfMatch(ctx context.Context, nodeName string,
+		expectedValues ...NVSentinelStateLabelValue) (bool, error)
 }
 
 type stateManager struct {
@@ -305,6 +307,64 @@ func (manager *stateManager) UpdateNVSentinelStateNodeLabel(ctx context.Context,
 		if validationErr != nil {
 			return validationErr
 		}
+
+		return nil
+	})
+
+	return nodeModified, err
+}
+
+// RemoveNVSentinelStateNodeLabelIfMatch atomically removes the state label only when its latest
+// value is one of expectedValues. The ownership check and deletion share the same conflict-retried
+// read/update loop, so a concurrent writer cannot have its newer state removed.
+func (manager *stateManager) RemoveNVSentinelStateNodeLabelIfMatch(
+	ctx context.Context,
+	nodeName string,
+	expectedValues ...NVSentinelStateLabelValue,
+) (bool, error) {
+	expected := make(map[string]struct{}, len(expectedValues))
+	for _, value := range expectedValues {
+		expected[string(value)] = struct{}{}
+	}
+
+	nodeModified := false
+
+	err := retry.OnError(retry.DefaultRetry, errors.IsConflict, func() error {
+		node, err := manager.clientSet.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+
+		currentValue, exists := node.Labels[NVSentinelStateLabelKey]
+		if !exists {
+			slog.Info("Label already absent",
+				"node", nodeName,
+				"label", NVSentinelStateLabelKey)
+
+			return nil
+		}
+
+		if _, matches := expected[currentValue]; !matches {
+			slog.Info("Skipping conditional label removal because the current value is not owned",
+				"node", nodeName,
+				"label", NVSentinelStateLabelKey,
+				"value", currentValue)
+
+			return nil
+		}
+
+		delete(node.Labels, NVSentinelStateLabelKey)
+
+		if _, err = manager.clientSet.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{}); err != nil {
+			return fmt.Errorf("failed to update node %s to conditionally remove label: %w", nodeName, err)
+		}
+
+		nodeModified = true
+
+		slog.Info("Label conditionally removed successfully for node",
+			"label", NVSentinelStateLabelKey,
+			"previousValue", currentValue,
+			"node", nodeName)
 
 		return nil
 	})

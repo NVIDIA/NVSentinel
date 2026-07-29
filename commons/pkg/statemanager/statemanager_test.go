@@ -165,6 +165,92 @@ func TestUpdateNVSentinelStateNodeLabelWithLabelAlreadyRemoved(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestRemoveNVSentinelStateNodeLabelIfMatch_MatchingValue_RemovesLabel(t *testing.T) {
+	ctx, manager, err := newTestStateManager(testNodeName, map[string]string{
+		NVSentinelStateLabelKey: string(RemediationFailedLabelValue),
+	})
+	assert.NoError(t, err)
+
+	nodeModified, err := manager.RemoveNVSentinelStateNodeLabelIfMatch(
+		ctx,
+		testNodeName,
+		RemediatingLabelValue,
+		RemediationSucceededLabelValue,
+		RemediationFailedLabelValue,
+	)
+
+	assert.True(t, nodeModified)
+	assert.NoError(t, err)
+	node, err := manager.clientSet.CoreV1().Nodes().Get(ctx, testNodeName, metav1.GetOptions{})
+	assert.NoError(t, err)
+	assert.NotContains(t, node.Labels, NVSentinelStateLabelKey)
+}
+
+func TestRemoveNVSentinelStateNodeLabelIfMatch_NewerNonMatchingValue_PreservesLabel(t *testing.T) {
+	ctx, manager, err := newTestStateManager(testNodeName, map[string]string{
+		NVSentinelStateLabelKey: string(QuarantinedLabelValue),
+	})
+	assert.NoError(t, err)
+
+	nodeModified, err := manager.RemoveNVSentinelStateNodeLabelIfMatch(
+		ctx,
+		testNodeName,
+		RemediatingLabelValue,
+		RemediationSucceededLabelValue,
+		RemediationFailedLabelValue,
+	)
+
+	assert.False(t, nodeModified)
+	assert.NoError(t, err)
+	node, err := manager.clientSet.CoreV1().Nodes().Get(ctx, testNodeName, metav1.GetOptions{})
+	assert.NoError(t, err)
+	assert.Equal(t, string(QuarantinedLabelValue), node.Labels[NVSentinelStateLabelKey])
+}
+
+func TestRemoveNVSentinelStateNodeLabelIfMatch_ConcurrentNewerValue_PreservesLabelAfterConflict(t *testing.T) {
+	ctx, manager, err := newTestStateManager(testNodeName, map[string]string{
+		NVSentinelStateLabelKey: string(RemediationFailedLabelValue),
+	})
+	assert.NoError(t, err)
+
+	clientSet := manager.clientSet.(*fake.Clientset)
+	updateCalls := 0
+	clientSet.Fake.PrependReactor("update", "nodes", func(ktesting.Action) (bool, runtime.Object, error) {
+		updateCalls++
+		newerNode := &v1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: testNodeName,
+				Labels: map[string]string{
+					NVSentinelStateLabelKey: string(QuarantinedLabelValue),
+				},
+			},
+		}
+		err := clientSet.Tracker().Update(v1.SchemeGroupVersion.WithResource("nodes"), newerNode, "")
+		assert.NoError(t, err)
+
+		return true, nil, errors.NewConflict(
+			schema.GroupResource{Group: "", Resource: "nodes"},
+			testNodeName,
+			fmt.Errorf("simulated concurrent label update"),
+		)
+	})
+
+	nodeModified, err := manager.RemoveNVSentinelStateNodeLabelIfMatch(
+		ctx,
+		testNodeName,
+		RemediatingLabelValue,
+		RemediationSucceededLabelValue,
+		RemediationFailedLabelValue,
+	)
+
+	assert.False(t, nodeModified)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, updateCalls, "retry should observe the newer non-matching value and skip deletion")
+	node, err := manager.clientSet.CoreV1().Nodes().Get(ctx, testNodeName, metav1.GetOptions{})
+	assert.NoError(t, err)
+	assert.Equal(t, string(QuarantinedLabelValue), node.Labels[NVSentinelStateLabelKey])
+}
+
 // Test that label removal from any state doesn't trigger validation errors.
 // This is important for canceled drains: quarantined -> draining -> label removed (healthy event).
 func TestLabelRemovalFromAnyStateDoesNotTriggerValidation(t *testing.T) {
