@@ -81,6 +81,9 @@ var (
 		"Root path for sysfs reads (BDF→driver resolution). Typically a container mount point.")
 	cancellationsConfigPath = flag.String("cancellations-config", "/etc/syslog-health-monitor/cancellations.toml",
 		"Path to per-monitor cancellation rules (TOML). Missing file is treated as no rules.")
+	bootLookbackWindowFlag = flag.String("boot-lookback-window", "30m",
+		"How far back to scan the journal after a reboot (e.g. 30m, 1h). "+
+			"Entries older than this window are skipped to avoid re-processing ancient XIDs.")
 )
 
 var checks []fd.CheckDefinition
@@ -172,6 +175,17 @@ func run() error {
 	})
 
 	return g.Wait()
+}
+
+// mustParseDuration parses a duration string and exits on failure.
+func mustParseDuration(s string) time.Duration {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		slog.Error("Invalid duration flag", "flag", "boot-lookback-window", "value", s, "error", err)
+		os.Exit(1)
+	}
+
+	return d
 }
 
 func validateNodeName() (string, error) {
@@ -388,6 +402,7 @@ func createSyslogMonitor(
 		*sysfsRoot,
 		cancellationsCfg,
 		*platformConnectorSocket,
+		mustParseDuration(*bootLookbackWindowFlag),
 	)
 	if err != nil {
 		return nil, 0, fmt.Errorf("error creating syslog health monitor: %w", err)

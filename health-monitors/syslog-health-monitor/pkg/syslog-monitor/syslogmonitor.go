@@ -60,6 +60,7 @@ func NewSyslogMonitor(
 	sysfsRoot string,
 	cancellationsCfg *cancellation.Config,
 	platformConnectorTarget string,
+	bootLookbackWindow time.Duration,
 ) (*SyslogMonitor, error) {
 	return NewSyslogMonitorWithFactory(nodeName, checks, pcClient, defaultAgentName,
 		defaultComponentClass, pollingInterval, stateFilePath, GetDefaultJournalFactory(),
@@ -68,6 +69,7 @@ func NewSyslogMonitor(
 		nicDriverConfigPath, sysfsRoot,
 		cancellationsCfg,
 		platformConnectorTarget,
+		bootLookbackWindow,
 	)
 }
 
@@ -90,6 +92,7 @@ func NewSyslogMonitorWithFactory(
 	sysfsRoot string,
 	cancellationsCfg *cancellation.Config,
 	platformConnectorTarget string,
+	bootLookbackWindow time.Duration,
 ) (*SyslogMonitor, error) {
 	// Load state from file
 	state, err := loadState(stateFilePath)
@@ -120,6 +123,7 @@ func NewSyslogMonitorWithFactory(
 		checkToHandlerMap:       make(map[string]types.Handler),
 		xidAnalyserEndpoint:     xidAnalyserEndpoint,
 		platformConnectorTarget: platformConnectorTarget,
+		bootLookbackWindow:      bootLookbackWindow,
 	}
 
 	if err := initHandlers(sm, checks, nodeName, defaultAgentName, defaultComponentClass,
@@ -1097,13 +1101,8 @@ func (sm *SyslogMonitor) initializeJournalFromTail(journal Journal, check CheckD
 // A boot filter (_BOOT_ID=<current>) is applied explicitly so that only entries
 // from the current boot are read, even though SeekHead positions at the very
 // beginning of the journal.
-// defaultBootLookbackWindow limits how far back the post-reboot scan reaches.
-// Entries older than this window are skipped to avoid re-processing ancient
-// XIDs that may have already been manually remediated.
-const defaultBootLookbackWindow = 30 * time.Minute
-
 func (sm *SyslogMonitor) initializeJournalFromBootStart(journal Journal, check CheckDefinition) error {
-	lookback := defaultBootLookbackWindow
+	lookback := sm.bootLookbackWindow
 	seekTarget := time.Now().Add(-lookback)
 
 	slog.Info("Post-reboot: seeking to boot start with lookback window",

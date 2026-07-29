@@ -14,6 +14,8 @@
 package syslogmonitor
 
 import (
+	"time"
+
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/types"
 )
@@ -92,6 +94,9 @@ type SyslogMonitor struct {
 	// journal instead of the tail, so entries emitted between boot and
 	// monitor startup are not missed. Single-goroutine access.
 	postRebootInit bool
+	// bootLookbackWindow limits how far back the post-reboot journal scan
+	// reaches. Configurable via --boot-lookback-window CLI flag.
+	bootLookbackWindow time.Duration
 }
 
 // CheckDefinition matches the structure of each check in the YAML config file

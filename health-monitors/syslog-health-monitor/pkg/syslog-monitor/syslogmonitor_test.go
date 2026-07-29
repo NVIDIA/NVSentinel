@@ -360,7 +360,7 @@ func TestNewSyslogMonitor(t *testing.T) {
 	filePath := testStateFile
 
 	monitor, err := NewSyslogMonitor(args.NodeName,
-		args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, filePath, "http://localhost:8080", "/tmp/metadata.json", pb.ProcessingStrategy_STORE_ONLY, "", "", nil, "tcp://test")
+		args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, filePath, "http://localhost:8080", "/tmp/metadata.json", pb.ProcessingStrategy_STORE_ONLY, "", "", nil, "tcp://test", 30*time.Minute)
 	assert.NoError(t, err)
 	assert.NotNil(t, monitor)
 	assert.Equal(t, args.NodeName, monitor.nodeName)
@@ -380,7 +380,7 @@ func TestNewSyslogMonitor(t *testing.T) {
 
 	filePath = testStateFile2
 	monitor, err = NewSyslogMonitorWithFactory(args.NodeName,
-		args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, filePath, fakeJournalFactory, "http://localhost:8080", "/tmp/metadata.json", pb.ProcessingStrategy_EXECUTE_REMEDIATION, "", "", nil, "tcp://test")
+		args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, filePath, fakeJournalFactory, "http://localhost:8080", "/tmp/metadata.json", pb.ProcessingStrategy_EXECUTE_REMEDIATION, "", "", nil, "tcp://test", 30*time.Minute)
 	assert.NoError(t, err)
 	assert.NotNil(t, monitor)
 	assert.Equal(t, fakeJournalFactory, monitor.journalFactory)
@@ -456,6 +456,7 @@ func TestJournalProcessingLogic(t *testing.T) {
 		"", "",
 		nil,
 		"tcp://test",
+		30*time.Minute,
 	)
 	assert.NoError(t, err)
 
@@ -562,6 +563,7 @@ func TestJournalStateManagement(t *testing.T) {
 		"", "",
 		nil,
 		"tcp://test",
+		30*time.Minute,
 	)
 	assert.NoError(t, err)
 
@@ -597,6 +599,7 @@ func TestJournalStateManagement(t *testing.T) {
 		"", "",
 		nil,
 		"tcp://test",
+		30*time.Minute,
 	)
 	assert.NoError(t, err)
 
@@ -648,6 +651,7 @@ func TestBootIDChangeHandling(t *testing.T) {
 		"", "",
 		nil,
 		"tcp://test",
+		30*time.Minute,
 	)
 	assert.NoError(t, err)
 
@@ -702,6 +706,7 @@ func TestBootIDChange_StateNotPersistedWhenSendSkipped(t *testing.T) {
 		"", "",
 		nil,
 		"unix://"+socketPathTest,
+		30*time.Minute,
 	)
 	assert.NoError(t, err, "monitor must construct successfully even when send is skipped")
 	assert.NotNil(t, sm)
@@ -726,7 +731,7 @@ func TestBootIDChange_StateNotPersistedWhenSendSkipped(t *testing.T) {
 		"pendingPostRebootBootID must hold the current bootID for retry")
 
 	// Run() with the socket still missing must NOT persist the new
-	// BootID. Previously this was a regression: executeCheck →
+	// BootID. Previously this was a regression: executeCheck ??
 	// saveCurrentState would overwrite on-disk BootID with
 	// sm.currentBootID, breaking the retry guarantee after one cycle.
 	assert.NoError(t, sm.Run())
@@ -814,6 +819,7 @@ func TestBootIDChange_ProcessesEntriesFromBootStart(t *testing.T) {
 		"", "",
 		nil,
 		"tcp://test",
+		30*time.Minute,
 	)
 	assert.NoError(t, err)
 
@@ -882,6 +888,7 @@ func TestBootIDChange_SecondPollResumesFromCursor(t *testing.T) {
 		"", "",
 		nil,
 		"tcp://test",
+		30*time.Minute,
 	)
 	assert.NoError(t, err)
 
@@ -961,6 +968,7 @@ func TestNoBootChange_StillSeeksTail(t *testing.T) {
 		"", "",
 		nil,
 		"tcp://test",
+		30*time.Minute,
 	)
 	assert.NoError(t, err)
 
@@ -1023,6 +1031,7 @@ func TestRunMultipleChecks(t *testing.T) {
 		"", "",
 		nil,
 		"tcp://test",
+		30*time.Minute,
 	)
 	assert.NoError(t, err)
 
@@ -1067,6 +1076,7 @@ func TestGPUFallenOffHandlerInitialization(t *testing.T) {
 		"", "",
 		nil,
 		"tcp://test",
+		30*time.Minute,
 	)
 	assert.NoError(t, err)
 	assert.NotNil(t, sm.checkToHandlerMap[GPUFallenOffCheck], "GPU Fallen Off handler should be initialized")
