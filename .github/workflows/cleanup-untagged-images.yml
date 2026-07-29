@@ -51,6 +51,8 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
+      # Limit concurrency to stay under GitHub API secondary rate limits
+      max-parallel: 3
       matrix:
         # Excludes: nvsentinel-buildcache
         package:
