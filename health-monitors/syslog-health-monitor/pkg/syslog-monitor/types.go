@@ -54,6 +54,10 @@ type syslogMonitorState struct {
 	Version          int               `json:"version"`
 	BootID           string            `json:"boot_id"`
 	CheckLastCursors map[string]string `json:"check_last_cursors"`
+	// BootStartScanDone is true once the post-reboot boot-start journal
+	// scan has completed. Persisted so that a restart between the healthy
+	// event flush and the scan does not silently fall back to SeekTail.
+	BootStartScanDone bool `json:"boot_start_scan_done"`
 }
 
 // SyslogMonitor monitors journal logs for error patterns

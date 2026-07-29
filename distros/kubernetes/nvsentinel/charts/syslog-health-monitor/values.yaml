@@ -52,7 +52,8 @@ journalHostPath: /var/log
 # How far back to scan the journal after a reboot (e.g. 30m, 1h).
 # Entries older than this window are skipped to avoid re-processing
 # ancient XIDs that may have already been manually remediated.
-bootLookbackWindow: "30m"
+# Set to "0" for unlimited lookback (scan from journal head, no clipping).
+bootLookbackWindow: "2h"
 
 logLevel: info
 

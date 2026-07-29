@@ -731,7 +731,7 @@ func TestBootIDChange_StateNotPersistedWhenSendSkipped(t *testing.T) {
 		"pendingPostRebootBootID must hold the current bootID for retry")
 
 	// Run() with the socket still missing must NOT persist the new
-	// BootID. Previously this was a regression: executeCheck ??
+	// BootID. Previously this was a regression: executeCheck →
 	// saveCurrentState would overwrite on-disk BootID with
 	// sm.currentBootID, breaking the retry guarantee after one cycle.
 	assert.NoError(t, sm.Run())

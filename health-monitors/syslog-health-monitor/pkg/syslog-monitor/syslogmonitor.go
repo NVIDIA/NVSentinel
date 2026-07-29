@@ -137,6 +137,21 @@ func NewSyslogMonitorWithFactory(
 		return nil, fmt.Errorf("failed to handle boot ID change: %w", err)
 	}
 
+	// Recover postRebootInit from disk: if the previous run persisted the
+	// new BootID (healthy events flushed) but crashed before the boot-start
+	// scan completed, we must re-run the scan rather than falling back to
+	// SeekTail (which would silently skip pre-startup XIDs).
+	if !sm.postRebootInit &&
+		state.BootID == currentBootID &&
+		currentBootID != "" &&
+		!state.BootStartScanDone &&
+		len(state.CheckLastCursors) == 0 {
+		sm.postRebootInit = true
+
+		slog.Info("Recovered postRebootInit from persisted state: boot-start scan was incomplete",
+			"bootID", currentBootID)
+	}
+
 	slog.Info("SyslogMonitor initialized with persistent state. Each check will resume from last processed cursor.")
 
 	return sm, nil
@@ -505,9 +520,10 @@ func (sm *SyslogMonitor) tryFlushPostRebootBootIDClear() error {
 	}
 
 	state := syslogMonitorState{
-		Version:          stateFileVersion,
-		BootID:           sm.pendingPostRebootBootID,
-		CheckLastCursors: sm.checkLastCursors,
+		Version:           stateFileVersion,
+		BootID:            sm.pendingPostRebootBootID,
+		CheckLastCursors:  sm.checkLastCursors,
+		BootStartScanDone: false,
 	}
 
 	if err := saveState(sm.stateFilePath, state); err != nil {
@@ -525,9 +541,10 @@ func (sm *SyslogMonitor) tryFlushPostRebootBootIDClear() error {
 // saveCurrentState saves the current state to the state file
 func (sm *SyslogMonitor) saveCurrentState() error {
 	state := syslogMonitorState{
-		Version:          stateFileVersion,
-		BootID:           sm.currentBootID,
-		CheckLastCursors: sm.checkLastCursors,
+		Version:           stateFileVersion,
+		BootID:            sm.currentBootID,
+		CheckLastCursors:  sm.checkLastCursors,
+		BootStartScanDone: !sm.postRebootInit,
 	}
 
 	return saveState(sm.stateFilePath, state)
@@ -1103,47 +1120,130 @@ func (sm *SyslogMonitor) initializeJournalFromTail(journal Journal, check CheckD
 // beginning of the journal.
 func (sm *SyslogMonitor) initializeJournalFromBootStart(journal Journal, check CheckDefinition) error {
 	lookback := sm.bootLookbackWindow
-	seekTarget := time.Now().Add(-lookback)
 
-	slog.Info("Post-reboot: seeking to boot start with lookback window",
-		"check", check.Name,
-		"lookbackWindow", lookback,
-		"seekTarget", seekTarget.Format(time.RFC3339))
+	// Determine seek position based on lookback window.
+	// A zero window means unlimited: seek to the absolute journal head
+	// so no XIDs are missed regardless of how long the boot took.
+	if lookback == 0 {
+		slog.Info("Post-reboot: unlimited lookback, scanning from journal head",
+			"check", check.Name)
 
-	if err := sm.configureBootFilter(journal, check.Name); err != nil {
-		return fmt.Errorf("check '%s': failed to configure boot filter for post-reboot scan: %w", check.Name, err)
-	}
+		if err := journal.SeekHead(); err != nil {
+			return fmt.Errorf("check '%s': failed to seek to journal head: %w", check.Name, err)
+		}
+	} else {
+		seekTarget := time.Now().Add(-lookback)
 
-	// Seek to (now - lookbackWindow) instead of the absolute journal head.
-	// This avoids processing ancient XIDs from earlier in the boot that may
-	// have already been manually remediated, while still capturing XIDs
-	// emitted between boot and monitor startup.
-	seekUsec := seekTarget.UnixMicro()
-	if seekUsec < 0 {
-		seekUsec = 0
-	}
+		slog.Info("Post-reboot: lookback window active, entries before seekTarget will be skipped",
+			"check", check.Name,
+			"lookbackWindow", lookback,
+			"seekTarget", seekTarget.Format(time.RFC3339))
 
-	//nolint:gosec // G115: seekUsec is guarded >= 0 above
-	if err := journal.SeekRealtimeUsec(uint64(seekUsec)); err != nil {
-		return fmt.Errorf("check '%s': failed to seek to lookback target for post-reboot scan: %w", check.Name, err)
+		seekUsec := seekTarget.UnixMicro()
+		if seekUsec < 0 {
+			seekUsec = 0
+		}
+
+		//nolint:gosec // G115: seekUsec is guarded >= 0 above
+		if err := journal.SeekRealtimeUsec(uint64(seekUsec)); err != nil {
+			return fmt.Errorf("check '%s': failed to seek to lookback target: %w", check.Name, err)
+		}
 	}
 
 	// Advance to the first matching entry (journal.Next respects match filters).
 	advanced, err := journal.Next()
 	if err != nil && !errors.Is(err, io.EOF) {
-		return fmt.Errorf("check '%s': error advancing from lookback target: %w", check.Name, err)
+		return fmt.Errorf("check '%s': error advancing from seek position: %w", check.Name, err)
 	}
 
 	if errors.Is(err, io.EOF) || advanced == 0 {
-		slog.Info("Post-reboot: no journal entries found within lookback window", "check", check.Name)
+		slog.Info("Post-reboot: no journal entries found", "check", check.Name)
 
 		// No entries yet; fall back to tail initialization so the next
 		// cycle starts fresh (same as first-install behavior).
 		return sm.initializeJournalFromTail(journal, check)
 	}
 
-	// Process all entries from the lookback target forward.
-	return sm.processAllEntries(journal, check)
+	// Process entries, filtering by boot ID at the application level.
+	// We do NOT use journal-level AddMatch(_BOOT_ID=...) because the
+	// existing tag filters use OR disjunctions:
+	//   (_TRANSPORT=kernel) OR (SYSLOG_IDENTIFIER=nvsentinel-gpu-reset)
+	// Adding _BOOT_ID via AddMatch would only AND with the last group,
+	// leaving kernel-transport entries from previous boots unfiltered.
+	return sm.processBootFilteredEntries(journal, check)
+}
+
+// isStaleBootEntry returns true if the current journal entry belongs to a
+// previous boot and should be skipped during the post-reboot scan.
+func (sm *SyslogMonitor) isStaleBootEntry(journal Journal) bool {
+	entryBootID, err := journal.GetData(FieldBootID)
+	if err != nil || entryBootID == "" || sm.currentBootID == "" {
+		return false
+	}
+
+	return entryBootID != sm.currentBootID
+}
+
+// skipStaleBootEntry advances past a stale-boot entry, updating the cursor.
+// Returns (true, nil) if the journal is exhausted; (false, err) on error;
+// (false, nil) if successfully advanced.
+func (sm *SyslogMonitor) skipStaleBootEntry(journal Journal, check CheckDefinition, cursor string) (bool, error) {
+	sm.checkLastCursors[check.Name] = cursor
+
+	advanced, err := journal.Next()
+	if errors.Is(err, io.EOF) || advanced == 0 {
+		return true, nil
+	}
+
+	if err != nil {
+		return false, fmt.Errorf("check '%s': error advancing past stale-boot entry: %w", check.Name, err)
+	}
+
+	return false, nil
+}
+
+// processBootFilteredEntries processes journal entries while skipping any
+// entry whose _BOOT_ID does not match the current boot. This provides
+// correct boot-scoping regardless of the journal match filter structure.
+func (sm *SyslogMonitor) processBootFilteredEntries(journal Journal, check CheckDefinition) error {
+	for {
+		breakLoop, retErr := sm.processOneBootFilteredEntry(journal, check)
+		if retErr != nil {
+			return retErr
+		}
+
+		if breakLoop {
+			break
+		}
+	}
+
+	finalCursor := sm.checkLastCursors[check.Name]
+	slog.Info("Finished processing boot-filtered journal entries",
+		"check", check.Name,
+		"nextCursor", finalCursor)
+
+	return nil
+}
+
+// processOneBootFilteredEntry handles a single journal entry during the
+// post-reboot boot-filtered scan. Returns (true, nil) when the journal is
+// exhausted; (false, err) on error; (false, nil) to continue the loop.
+func (sm *SyslogMonitor) processOneBootFilteredEntry(journal Journal, check CheckDefinition) (bool, error) {
+	currentEntryCursor, err := journal.GetCursor()
+	if err != nil {
+		return sm.recoverFromGetCursorError(journal, check)
+	}
+
+	if sm.isStaleBootEntry(journal) {
+		return sm.skipStaleBootEntry(journal, check, currentEntryCursor)
+	}
+
+	message, msgErr := sm.getJournalMessage(journal, check.Name)
+	if msgErr != nil {
+		return sm.recoverFromMessageError(journal, check, currentEntryCursor, msgErr)
+	}
+
+	return sm.processOneEntryAndAdvance(journal, check, currentEntryCursor, message)
 }
 
 // getJournalMessage attempts to read a message from the journal with retry logic
