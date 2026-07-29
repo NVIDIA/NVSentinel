@@ -49,6 +49,11 @@ tolerations: []
 # Customize this if your journal is stored in a non-standard location
 journalHostPath: /var/log
 
+# How far back to scan the journal after a reboot (e.g. 30m, 1h).
+# Entries older than this window are skipped to avoid re-processing
+# ancient XIDs that may have already been manually remediated.
+bootLookbackWindow: "30m"
+
 logLevel: info
 
 # Processing strategy for health events

@@ -133,6 +133,8 @@ spec:
             - "/etc/syslog-health-monitor/nic-driver.toml"
             - "--sysfs-root"
             - "/nvsentinel/sys"
+            - "--boot-lookback-window"
+            - "{{ $root.Values.bootLookbackWindow }}"
             - "--cancellations-config"
             - "/etc/syslog-health-monitor/cancellations.toml"
           resources:
