@@ -92,7 +92,7 @@ ruleSets:
         - kind: "Node"
           # CEL expression with access to 'node' object containing Node spec and metadata
           # This checks if the node has a label preventing automated management
-          expression: |
+          expression: >-
             !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
             !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")
     # Cordon action - marks node as unschedulable when ruleset triggers
@@ -128,7 +128,7 @@ ruleSets:
         - kind: "HealthEvent"
           expression: "event.agent == 'csp-health-monitor' && event.checkName == 'CSPMaintenance' && event.isFatal == true"
         - kind: "Node"
-          expression: |
+          expression: >-
             !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
             !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")
     cordon:
@@ -142,7 +142,7 @@ ruleSets:
         - kind: "HealthEvent"
           expression: "event.agent == 'syslog-health-monitor' && (event.componentClass == 'GPU' || event.componentClass == 'NIC') && event.isFatal == true"
         - kind: "Node"
-          expression: |
+          expression: >-
             !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
             !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")
     cordon:
@@ -156,7 +156,7 @@ ruleSets:
         - kind: "HealthEvent"
           expression: "event.agent == 'nic-health-monitor' && event.isFatal == true"
         - kind: "Node"
-          expression: |
+          expression: >-
             !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
             !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")
     cordon:
@@ -170,7 +170,7 @@ ruleSets:
         - kind: "HealthEvent"
           expression: "event.agent == 'kubernetes-object-monitor' && event.isFatal == true"
         - kind: "Node"
-          expression: |
+          expression: >-
             !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
             !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")
     cordon:
@@ -188,7 +188,7 @@ ruleSets:
         - kind: "HealthEvent"
           expression: "event.agent.startsWith('preflight-') && event.isFatal == true"
         - kind: "Node"
-          expression: |
+          expression: >-
             !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
             !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")
     cordon:
