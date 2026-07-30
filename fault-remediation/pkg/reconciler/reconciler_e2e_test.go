@@ -240,16 +240,17 @@ func (m *MockHealthEventStore) UpdateSpanID(ctx context.Context, id string, serv
 }
 
 var (
-	ctrlRuntimeClient client.Client
-	testClient        *kubernetes.Clientset
-	testDynamic       dynamic.Interface
-	testContext       context.Context
-	testCancelFunc    context.CancelFunc
-	testEnv           *envtest.Environment
-	testRestConfig    *rest.Config
-	mockWatcher       *MockChangeStreamWatcher
-	mockStore         *MockHealthEventStore
-	reconciler        *FaultRemediationReconciler
+	ctrlRuntimeClient    client.Client
+	ctrlRuntimeAPIReader client.Reader
+	testClient           *kubernetes.Clientset
+	testDynamic          dynamic.Interface
+	testContext          context.Context
+	testCancelFunc       context.CancelFunc
+	testEnv              *envtest.Environment
+	testRestConfig       *rest.Config
+	mockWatcher          *MockChangeStreamWatcher
+	mockStore            *MockHealthEventStore
+	reconciler           *FaultRemediationReconciler
 )
 
 func TestMain(m *testing.M) {
@@ -290,6 +291,7 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	ctrlRuntimeClient = mgr.GetClient()
+	ctrlRuntimeAPIReader = mgr.GetAPIReader()
 
 	remediationClient, err := createTestRemediationClient(false, restartRemediationActions)
 	if err != nil {
@@ -299,6 +301,7 @@ func TestMain(m *testing.M) {
 	cfg := ReconcilerConfig{
 		RemediationClient: remediationClient,
 		StateManager:      statemanager.NewStateManager(testClient),
+		NodeReader:        ctrlRuntimeAPIReader,
 		UpdateMaxRetries:  3,
 		UpdateRetryDelay:  100 * time.Millisecond,
 	}
@@ -704,6 +707,7 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	cfg := ReconcilerConfig{
 		RemediationClient: remediationClient,
 		StateManager:      stateManager,
+		NodeReader:        ctrlRuntimeAPIReader,
 		UpdateMaxRetries:  3,
 		UpdateRetryDelay:  100 * time.Millisecond,
 	}
@@ -850,6 +854,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	cfg := ReconcilerConfig{
 		RemediationClient: remediationClient,
 		StateManager:      stateManager,
+		NodeReader:        ctrlRuntimeAPIReader,
 		UpdateMaxRetries:  3,
 		UpdateRetryDelay:  100 * time.Millisecond,
 	}
@@ -910,7 +915,8 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event2.HealthEvent)
 	assert.NoError(t, err)
-	shouldSkip := r.shouldSkipEvent(ctx, event2, groupConfig)
+	shouldSkip, err := r.shouldSkipEvent(ctx, event2, groupConfig)
+	assert.NoError(t, err)
 	assert.False(t, shouldSkip, "Shouldn't valid health event")
 	shouldCreate, existingCR, _, err := r.checkExistingCRStatus(ctx, event2.HealthEvent, time.Now(), groupConfig)
 	assert.NoError(t, err)
@@ -1110,18 +1116,41 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	}, 5*time.Second, 100*time.Millisecond, "Expected CR-2 group to be removed and CR-3 group to remain")
 
 	// Event 9: COMPONENT_RESET missing GPU_UUID should result in a nvsentinel-state label having value remediation-failed.
+	// Model the active fault-quarantine state that permits fault-remediation to write a terminal label.
+	activeUnsupportedEvent := &protos.HealthEvent{
+		Id:                "event-9",
+		Version:           1,
+		Agent:             "test-agent",
+		ComponentClass:    "GPU",
+		CheckName:         "test-check",
+		IsFatal:           true,
+		RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+		NodeName:          nodeName,
+	}
+	node, err = testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	if node.Annotations == nil {
+		node.Annotations = make(map[string]string)
+	}
+	for key, value := range quarantineAnnotationForTest(t, activeUnsupportedEvent) {
+		node.Annotations[key] = value
+	}
+	_, err = testClient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	active, err := r.nodeHasActiveQuarantine(ctx, activeUnsupportedEvent)
+	require.NoError(t, err)
+	require.True(t, active)
+
 	_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.DrainSucceededLabelValue, false)
 	event9 := model.HealthEventWithStatus{
-		HealthEvent: &protos.HealthEvent{
-			NodeName:          nodeName,
-			RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
-		},
+		HealthEvent: activeUnsupportedEvent,
 	}
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event9.HealthEvent)
 	assert.Error(t, err)
 	assert.Nil(t, groupConfig)
-	shouldSkip = r.shouldSkipEvent(ctx, event9, groupConfig)
+	shouldSkip, err = r.shouldSkipEvent(ctx, event9, groupConfig)
+	assert.NoError(t, err)
 	assert.True(t, shouldSkip, "Should skip invalid health event")
 
 	node, err = testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
@@ -1318,6 +1347,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		cfg := ReconcilerConfig{
 			RemediationClient: remediationClient,
 			StateManager:      statemanager.NewStateManager(testClient),
+			NodeReader:        ctrlRuntimeAPIReader,
 			UpdateMaxRetries:  3,
 			UpdateRetryDelay:  100 * time.Millisecond,
 		}
@@ -1339,7 +1369,8 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 			healthEvent.HealthEvent)
 		assert.NoError(t, err)
 
-		shouldSkip := reconcilerInstance.shouldSkipEvent(ctx, healthEvent, groupConfig)
+		shouldSkip, err := reconcilerInstance.shouldSkipEvent(ctx, healthEvent, groupConfig)
+		assert.NoError(t, err)
 		assert.True(t, shouldSkip, "Should skip unsupported action")
 
 		afterUnsupported := getCounterVecValue(t, metrics.TotalUnsupportedRemediationActions, "UNKNOWN", nodeName)

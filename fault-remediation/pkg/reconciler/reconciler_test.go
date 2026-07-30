@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
@@ -51,6 +52,39 @@ type MockK8sClient struct {
 	runLogCollectorJobFn      func(ctx context.Context, nodeName string) (ctrl.Result, error)
 	annotationManagerOverride annotation.NodeAnnotationManagerInterface
 	mockStatusChecker         *mockStatusChecker
+}
+
+type MockNodeReader struct {
+	getFn func(ctx context.Context, key ctrlclient.ObjectKey, obj ctrlclient.Object) error
+}
+
+func newMockNodeReader(annotations map[string]string) *MockNodeReader {
+	return &MockNodeReader{
+		getFn: func(_ context.Context, key ctrlclient.ObjectKey, obj ctrlclient.Object) error {
+			node := obj.(*corev1.Node)
+			node.Name = key.Name
+			node.Annotations = annotations
+
+			return nil
+		},
+	}
+}
+
+func (m *MockNodeReader) Get(
+	ctx context.Context,
+	key ctrlclient.ObjectKey,
+	obj ctrlclient.Object,
+	_ ...ctrlclient.GetOption,
+) error {
+	return m.getFn(ctx, key, obj)
+}
+
+func (m *MockNodeReader) List(
+	context.Context,
+	ctrlclient.ObjectList,
+	...ctrlclient.ListOption,
+) error {
+	return nil
 }
 
 func (m *MockK8sClient) CreateMaintenanceResource(ctx context.Context, healthEventData *events.HealthEventData, groupConfig *common.EquivalenceGroupConfig) (string, error) {
@@ -415,11 +449,16 @@ func TestHandleEvent(t *testing.T) {
 }
 
 func TestPerformRemediationWithUnsupportedAction(t *testing.T) {
+	activeEvent := testAnnotationHealthEvent(
+		"unsupported-event", "node1", protos.RecommendedAction_UNKNOWN, "GPU-test")
 	k8sClient := &MockK8sClient{
 		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *events.HealthEventData,
 			groupConfig *common.EquivalenceGroupConfig) (string, error) {
 			t.Errorf("CreateMaintenanceResource should not be called on an unsupported action")
 			return "", fmt.Errorf("test error")
+		},
+		annotationManagerOverride: &MockNodeAnnotationManager{
+			nodeAnnotations: quarantineAnnotationForTest(t, activeEvent),
 		},
 	}
 	count := 0
@@ -439,16 +478,14 @@ func TestPerformRemediationWithUnsupportedAction(t *testing.T) {
 	cfg := ReconcilerConfig{
 		RemediationClient: k8sClient,
 		StateManager:      stateManager,
+		NodeReader:        newMockNodeReader(quarantineAnnotationForTest(t, activeEvent)),
 		UpdateMaxRetries:  2,
 		UpdateRetryDelay:  1 * time.Microsecond,
 	}
 	healthEvent := events.HealthEventData{
 		HealthEventWithStatus: model.HealthEventWithStatus{
-			CreatedAt: time.Now(),
-			HealthEvent: &protos.HealthEvent{
-				NodeName:          "node1",
-				RecommendedAction: protos.RecommendedAction_UNKNOWN,
-			},
+			CreatedAt:   time.Now(),
+			HealthEvent: activeEvent,
 			HealthEventStatus: &protos.HealthEventStatus{
 				NodeQuarantined:        string(model.Quarantined),
 				UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.StatusSucceeded)},
@@ -459,7 +496,9 @@ func TestPerformRemediationWithUnsupportedAction(t *testing.T) {
 	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
 	// shouldSkipEvent should return true for UNKNOWN action
-	assert.True(t, r.shouldSkipEvent(t.Context(), healthEvent.HealthEventWithStatus, nil))
+	shouldSkip, err := r.shouldSkipEvent(t.Context(), healthEvent.HealthEventWithStatus, nil)
+	assert.NoError(t, err)
+	assert.True(t, shouldSkip)
 }
 
 func TestPerformRemediationWithSuccess(t *testing.T) {
@@ -640,7 +679,11 @@ func TestShouldSkipEvent(t *testing.T) {
 		},
 	}
 
-	cfg := ReconcilerConfig{RemediationClient: mockK8sClient, StateManager: stateManager}
+	cfg := ReconcilerConfig{
+		RemediationClient: mockK8sClient,
+		StateManager:      stateManager,
+		NodeReader:        newMockNodeReader(nil),
+	}
 	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
 	tests := []struct {
@@ -695,7 +738,8 @@ func TestShouldSkipEvent(t *testing.T) {
 				HealthEvent: healthEvent,
 			}
 
-			result := r.shouldSkipEvent(t.Context(), healthEventWithStatus, tt.groupConfig)
+			result, err := r.shouldSkipEvent(t.Context(), healthEventWithStatus, tt.groupConfig)
+			assert.NoError(t, err)
 			assert.Equal(t, tt.shouldSkip, result, tt.description)
 		})
 	}
@@ -711,7 +755,8 @@ func TestShouldSkipEvent(t *testing.T) {
 		}
 		groupConfig := getGroupConfig("disk-replace", nil)
 
-		result := r.shouldSkipEvent(t.Context(), healthEventWithStatus, groupConfig)
+		result, err := r.shouldSkipEvent(t.Context(), healthEventWithStatus, groupConfig)
+		assert.NoError(t, err)
 		assert.False(t, result, "Custom actions with a matching group config should not be skipped")
 	})
 
@@ -725,7 +770,8 @@ func TestShouldSkipEvent(t *testing.T) {
 			HealthEvent: healthEvent,
 		}
 
-		result := r.shouldSkipEvent(t.Context(), healthEventWithStatus, nil)
+		result, err := r.shouldSkipEvent(t.Context(), healthEventWithStatus, nil)
+		assert.NoError(t, err)
 		assert.True(t, result, "Custom actions without a matching group config should be skipped")
 	})
 }
@@ -767,7 +813,9 @@ func TestRunLogCollectorOnNoneActionWhenEnabled(t *testing.T) {
 		_, _ = r.Config.RemediationClient.RunLogCollectorJob(ctx, event.HealthEvent.NodeName, "")
 	}
 	groupConfig := getGroupConfig("restart", nil)
-	assert.True(t, r.shouldSkipEvent(t.Context(), event, groupConfig))
+	shouldSkip, err := r.shouldSkipEvent(t.Context(), event, groupConfig)
+	assert.NoError(t, err)
+	assert.True(t, shouldSkip)
 	assert.True(t, called, "log collector job should be invoked when enabled for NONE action")
 }
 
@@ -902,7 +950,9 @@ func TestLogCollectorDisabled(t *testing.T) {
 		_, _ = r.Config.RemediationClient.RunLogCollectorJob(ctx, event.HealthEvent.NodeName, "")
 	}
 	groupConfig := getGroupConfig("restart", nil)
-	assert.True(t, r.shouldSkipEvent(t.Context(), event, groupConfig))
+	shouldSkip, err := r.shouldSkipEvent(t.Context(), event, groupConfig)
+	assert.NoError(t, err)
+	assert.True(t, shouldSkip)
 	assert.False(t, logCollectorCalled, "log collector job should NOT be invoked when disabled")
 }
 
@@ -1265,7 +1315,13 @@ func TestUnsupportedActionSkipMarksEventTerminal(t *testing.T) {
 	// CONTACT_SUPPORT is not configured as a maintenance action for FR. That is an
 	// intentional skip, but it still needs a durable terminal status; otherwise cold
 	// start will keep replaying the same unsupported event because faultremediated is nil.
-	mockK8sClient := &MockK8sClient{}
+	activeEvent := testAnnotationHealthEvent(
+		eventID, nodeName, protos.RecommendedAction_CONTACT_SUPPORT, "GPU-test")
+	mockK8sClient := &MockK8sClient{
+		annotationManagerOverride: &MockNodeAnnotationManager{
+			nodeAnnotations: quarantineAnnotationForTest(t, activeEvent),
+		},
+	}
 	cfg := ReconcilerConfig{
 		RemediationClient: mockK8sClient,
 		StateManager: &statemanager.MockStateManager{
@@ -1274,6 +1330,7 @@ func TestUnsupportedActionSkipMarksEventTerminal(t *testing.T) {
 				return true, nil
 			},
 		},
+		NodeReader: newMockNodeReader(quarantineAnnotationForTest(t, activeEvent)),
 	}
 	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 	mockWatcher := &MockChangeStreamWatcher{}
@@ -1290,10 +1347,7 @@ func TestUnsupportedActionSkipMarksEventTerminal(t *testing.T) {
 	healthEventDoc := &events.HealthEventDoc{
 		ID: eventID,
 		HealthEventWithStatus: model.HealthEventWithStatus{
-			HealthEvent: &protos.HealthEvent{
-				NodeName:          nodeName,
-				RecommendedAction: protos.RecommendedAction_CONTACT_SUPPORT,
-			},
+			HealthEvent:       activeEvent,
 			HealthEventStatus: &protos.HealthEventStatus{},
 		},
 	}
@@ -1308,6 +1362,332 @@ func TestUnsupportedActionSkipMarksEventTerminal(t *testing.T) {
 	assert.True(t, updated)
 	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
 	assert.Equal(t, 1, markProcessedCount)
+}
+
+func TestTrySkipEvent_UnsupportedReplayWithoutLiveQuarantine_MarksTerminalWithoutStateLabel(t *testing.T) {
+	ctx := context.Background()
+	nodeName := "recovered-node"
+	eventID := "stale-unsupported-event"
+	labelUpdateCalled := false
+	statusUpdated := false
+
+	mockK8sClient := &MockK8sClient{
+		annotationManagerOverride: &MockNodeAnnotationManager{},
+	}
+	cfg := ReconcilerConfig{
+		RemediationClient: mockK8sClient,
+		StateManager: &statemanager.MockStateManager{
+			UpdateNVSentinelStateNodeLabelFn: func(context.Context, string,
+				statemanager.NVSentinelStateLabelValue, bool) (bool, error) {
+				labelUpdateCalled = true
+
+				return true, nil
+			},
+		},
+		NodeReader: newMockNodeReader(nil),
+	}
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
+	mockWatcher := &MockChangeStreamWatcher{}
+	mockStore := &MockHealthEventStore{
+		UpdateHealthEventStatusFn: func(_ context.Context, id string, status datastore.HealthEventStatus) error {
+			assert.Equal(t, eventID, id)
+			assert.NotNil(t, status.FaultRemediated)
+			assert.False(t, *status.FaultRemediated)
+			statusUpdated = true
+
+			return nil
+		},
+	}
+	healthEventDoc := &events.HealthEventDoc{
+		ID: eventID,
+		HealthEventWithStatus: model.HealthEventWithStatus{
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          nodeName,
+				RecommendedAction: protos.RecommendedAction_CONTACT_SUPPORT,
+			},
+			HealthEventStatus: &protos.HealthEventStatus{
+				NodeQuarantined: string(model.Quarantined),
+			},
+		},
+	}
+	eventWithToken := datastore.EventWithToken{
+		Event:       testRawHealthEvent(eventID, nodeName, protos.RecommendedAction_CONTACT_SUPPORT),
+		ResumeToken: []byte("resume-token"),
+	}
+
+	_, err, done := r.trySkipEvent(
+		ctx, healthEventDoc, nil, eventWithToken, mockWatcher, mockStore, nodeName)
+
+	assert.True(t, done)
+	assert.NoError(t, err)
+	assert.False(t, labelUpdateCalled,
+		"a persisted quarantine status must not relabel a node whose live quarantine annotation is gone")
+	assert.True(t, statusUpdated, "the stale unsupported event should still be made terminal")
+	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
+	assert.Equal(t, 1, markProcessedCount)
+}
+
+func TestNodeHasActiveQuarantine_APIReaderHasMatchingEvent_ReturnsTrueWithoutCacheSync(t *testing.T) {
+	nodeName := "test-node"
+	activeEvent := testAnnotationHealthEvent(
+		"active-event", nodeName, protos.RecommendedAction_CONTACT_SUPPORT, "GPU-test")
+	liveNode := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        nodeName,
+			Annotations: quarantineAnnotationForTest(t, activeEvent),
+		},
+	}
+	mockAnnotationManager := &MockNodeAnnotationManager{
+		getRemediationStateErr: errors.New("cache should not be read"),
+	}
+	mockK8sClient := &MockK8sClient{
+		annotationManagerOverride: mockAnnotationManager,
+	}
+	cfg := ReconcilerConfig{
+		RemediationClient: mockK8sClient,
+		NodeReader: &MockNodeReader{
+			getFn: func(_ context.Context, key ctrlclient.ObjectKey, obj ctrlclient.Object) error {
+				assert.Equal(t, nodeName, key.Name)
+				*obj.(*corev1.Node) = *liveNode.DeepCopy()
+
+				return nil
+			},
+		},
+	}
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
+
+	active, err := r.nodeHasActiveQuarantine(t.Context(), activeEvent)
+
+	assert.NoError(t, err)
+	assert.True(t, active)
+}
+
+func TestTrySkipEvent_UnsupportedReplayDuringNewQuarantine_MarksTerminalWithoutStateLabel(t *testing.T) {
+	ctx := context.Background()
+	nodeName := "requarantined-node"
+	staleEventID := "old-session-event"
+	newSessionEvent := testAnnotationHealthEvent(
+		"new-session-event", nodeName, protos.RecommendedAction_RESTART_BM, "GPU-test")
+	staleEvent := testAnnotationHealthEvent(
+		staleEventID, nodeName, protos.RecommendedAction_CONTACT_SUPPORT, "GPU-test")
+	labelUpdateCalled := false
+	statusUpdated := false
+
+	mockK8sClient := &MockK8sClient{
+		annotationManagerOverride: &MockNodeAnnotationManager{
+			nodeAnnotations: quarantineAnnotationForTest(t, newSessionEvent),
+		},
+	}
+	cfg := ReconcilerConfig{
+		RemediationClient: mockK8sClient,
+		StateManager: &statemanager.MockStateManager{
+			UpdateNVSentinelStateNodeLabelFn: func(context.Context, string,
+				statemanager.NVSentinelStateLabelValue, bool) (bool, error) {
+				labelUpdateCalled = true
+
+				return true, nil
+			},
+		},
+		NodeReader: newMockNodeReader(quarantineAnnotationForTest(t, newSessionEvent)),
+	}
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
+	mockWatcher := &MockChangeStreamWatcher{}
+	mockStore := &MockHealthEventStore{
+		UpdateHealthEventStatusFn: func(_ context.Context, id string, status datastore.HealthEventStatus) error {
+			assert.Equal(t, staleEventID, id)
+			assert.NotNil(t, status.FaultRemediated)
+			assert.False(t, *status.FaultRemediated)
+			statusUpdated = true
+
+			return nil
+		},
+	}
+	healthEventDoc := &events.HealthEventDoc{
+		ID: staleEventID,
+		HealthEventWithStatus: model.HealthEventWithStatus{
+			HealthEvent: staleEvent,
+			HealthEventStatus: &protos.HealthEventStatus{
+				NodeQuarantined: string(model.Quarantined),
+			},
+		},
+	}
+	eventWithToken := datastore.EventWithToken{
+		Event:       testRawHealthEvent(staleEventID, nodeName, protos.RecommendedAction_CONTACT_SUPPORT),
+		ResumeToken: []byte("resume-token"),
+	}
+
+	_, err, done := r.trySkipEvent(
+		ctx, healthEventDoc, nil, eventWithToken, mockWatcher, mockStore, nodeName)
+
+	assert.True(t, done)
+	assert.NoError(t, err)
+	assert.False(t, labelUpdateCalled,
+		"an event from an older session must not affect a newer quarantine with a different event ID")
+	assert.True(t, statusUpdated)
+	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
+	assert.Equal(t, 1, markProcessedCount)
+}
+
+func TestTrySkipEvent_LiveNodeReadFails_ReturnsErrorWithoutFinalizingEvent(t *testing.T) {
+	ctx := context.Background()
+	nodeName := "test-node"
+	eventID := "unsupported-event"
+	liveReadErr := errors.New("live API read failed")
+	labelUpdateCalled := false
+	statusUpdated := false
+	unsupportedEvent := testAnnotationHealthEvent(
+		eventID, nodeName, protos.RecommendedAction_CONTACT_SUPPORT, "GPU-test")
+
+	mockK8sClient := &MockK8sClient{
+		annotationManagerOverride: &MockNodeAnnotationManager{
+			nodeAnnotations: quarantineAnnotationForTest(t, unsupportedEvent),
+		},
+	}
+	cfg := ReconcilerConfig{
+		RemediationClient: mockK8sClient,
+		NodeReader: &MockNodeReader{
+			getFn: func(context.Context, ctrlclient.ObjectKey, ctrlclient.Object) error {
+				return liveReadErr
+			},
+		},
+		StateManager: &statemanager.MockStateManager{
+			UpdateNVSentinelStateNodeLabelFn: func(context.Context, string,
+				statemanager.NVSentinelStateLabelValue, bool) (bool, error) {
+				labelUpdateCalled = true
+
+				return true, nil
+			},
+		},
+	}
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
+	mockWatcher := &MockChangeStreamWatcher{}
+	mockStore := &MockHealthEventStore{
+		UpdateHealthEventStatusFn: func(context.Context, string, datastore.HealthEventStatus) error {
+			statusUpdated = true
+
+			return nil
+		},
+	}
+	healthEventDoc := &events.HealthEventDoc{
+		ID: eventID,
+		HealthEventWithStatus: model.HealthEventWithStatus{
+			HealthEvent: unsupportedEvent,
+		},
+	}
+	eventWithToken := datastore.EventWithToken{
+		Event:       testRawHealthEvent(eventID, nodeName, protos.RecommendedAction_CONTACT_SUPPORT),
+		ResumeToken: []byte("resume-token"),
+	}
+
+	_, err, done := r.trySkipEvent(
+		ctx, healthEventDoc, nil, eventWithToken, mockWatcher, mockStore, nodeName)
+
+	assert.True(t, done)
+	assert.ErrorIs(t, err, liveReadErr)
+	assert.ErrorContains(t, err, "failed to read node test-node from the API")
+	assert.False(t, labelUpdateCalled)
+	assert.False(t, statusUpdated)
+	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
+	assert.Equal(t, 0, markProcessedCount)
+}
+
+func TestHandleCancellationEvent_StateLabelOwnership_ClearsOnlyFaultRemediationLabels(t *testing.T) {
+	tests := []struct {
+		name          string
+		label         string
+		expectRemoval bool
+	}{
+		{
+			name:          "remediating",
+			label:         string(statemanager.RemediatingLabelValue),
+			expectRemoval: true,
+		},
+		{
+			name:          "remediation succeeded",
+			label:         string(statemanager.RemediationSucceededLabelValue),
+			expectRemoval: true,
+		},
+		{
+			name:          "remediation failed",
+			label:         string(statemanager.RemediationFailedLabelValue),
+			expectRemoval: true,
+		},
+		{
+			name:          "drain succeeded belongs to node drainer",
+			label:         string(statemanager.DrainSucceededLabelValue),
+			expectRemoval: false,
+		},
+		{
+			name:          "state label absent",
+			expectRemoval: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			nodeName := "test-node"
+			eventID := "cancellation-event"
+			conditionalRemoveCalls := 0
+			labelRemoved := false
+			nodeLabels := map[string]string{}
+			if tt.label != "" {
+				nodeLabels[statemanager.NVSentinelStateLabelKey] = tt.label
+			}
+
+			mockAnnotationManager := &MockNodeAnnotationManager{
+				nodeLabels: nodeLabels,
+			}
+			mockK8sClient := &MockK8sClient{
+				annotationManagerOverride: mockAnnotationManager,
+			}
+			cfg := ReconcilerConfig{
+				RemediationClient: mockK8sClient,
+				StateManager: &statemanager.MockStateManager{
+					RemoveNVSentinelStateNodeLabelIfMatchFn: func(_ context.Context, gotNodeName string,
+						expectedValues ...statemanager.NVSentinelStateLabelValue) (bool, error) {
+						conditionalRemoveCalls++
+						assert.Equal(t, nodeName, gotNodeName)
+						assert.ElementsMatch(t, []statemanager.NVSentinelStateLabelValue{
+							statemanager.RemediatingLabelValue,
+							statemanager.RemediationSucceededLabelValue,
+							statemanager.RemediationFailedLabelValue,
+						}, expectedValues)
+
+						labelRemoved = tt.expectRemoval
+
+						return labelRemoved, nil
+					},
+				},
+			}
+			mockStore := &MockHealthEventStore{
+				UpdateHealthEventStatusFn: func(_ context.Context, id string,
+					status datastore.HealthEventStatus) error {
+					assert.Equal(t, eventID, id)
+					assert.NotNil(t, status.FaultRemediated)
+					assert.True(t, *status.FaultRemediated)
+
+					return nil
+				},
+			}
+			mockWatcher := &MockChangeStreamWatcher{}
+			r := NewFaultRemediationReconciler(nil, mockWatcher, mockStore, cfg, false)
+			eventWithToken := datastore.EventWithToken{
+				Event:       testRawHealthEvent(eventID, nodeName, protos.RecommendedAction_CONTACT_SUPPORT),
+				ResumeToken: []byte("resume-token"),
+			}
+
+			result, err := r.handleCancellationEvent(
+				ctx, nodeName, model.UnQuarantined, mockWatcher, eventWithToken, mockStore)
+
+			assert.NoError(t, err)
+			assert.True(t, result.IsZero())
+			assert.Equal(t, 1, conditionalRemoveCalls)
+			assert.Equal(t, tt.expectRemoval, labelRemoved)
+			_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
+			assert.Equal(t, 1, markProcessedCount)
+		})
+	}
 }
 
 func TestPartialRecoveryRecomputesLabelToRemediationSucceeded(t *testing.T) {
