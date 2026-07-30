@@ -51,4 +51,14 @@ var (
 		},
 		[]string{"resource_kind", "error_type"},
 	)
+
+	// EmissionsSkippedManaged counts PublishHealthEvent calls skipped because the
+	// target node carries nvsentinel.dgxc.nvidia.com/managed=false (ADR-040 opt-out).
+	EmissionsSkippedManaged = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "k8s_object_monitor_emissions_skipped_managed_total",
+			Help: "Total number of health event emissions skipped because the node is opted out of NVSentinel management.",
+		},
+		[]string{"policy_name"},
+	)
 )

@@ -29,6 +29,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes"
+	listersv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -38,6 +40,7 @@ import (
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/annotations"
 	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
@@ -92,7 +95,11 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 
 	slog.Info("Event handling strategy configured", "processingStrategy", params.ProcessingStrategy)
 
-	pub := publisher.New(pcClient, params.PlatformConnectorSocket, pb.ProcessingStrategy(strategyValue))
+	pub, err := buildPublisher(ctx, pcClient, params, pb.ProcessingStrategy(strategyValue))
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
 
 	mgr, err := createManager(params, cfg.Policies)
 	if err != nil {
@@ -294,6 +301,34 @@ func registerControllers(
 	}
 
 	return nil
+}
+
+func buildNodeLister(
+	ctx context.Context, restCfg *rest.Config, resyncPeriod time.Duration,
+) (listersv1.NodeLister, error) {
+	k8sClient, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		return nil, fmt.Errorf("create kubernetes client for node lister: %w", err)
+	}
+
+	return managed.NewNodeLister(ctx, k8sClient, resyncPeriod)
+}
+
+func buildPublisher(
+	ctx context.Context, pcClient pb.PlatformConnectorClient,
+	params Params, strategy pb.ProcessingStrategy,
+) (*publisher.Publisher, error) {
+	restConfig, err := ctrl.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("getting kubeconfig for node lister: %w", err)
+	}
+
+	nodeLister, err := buildNodeLister(ctx, restConfig, params.ResyncPeriod)
+	if err != nil {
+		return nil, fmt.Errorf("build node lister: %w", err)
+	}
+
+	return publisher.New(pcClient, params.PlatformConnectorSocket, nodeLister, strategy), nil
 }
 
 func dialPlatformConnector(socket string) (*grpc.ClientConn, error) {

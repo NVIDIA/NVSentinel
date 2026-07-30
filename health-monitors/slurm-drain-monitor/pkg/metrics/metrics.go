@@ -51,4 +51,13 @@ var (
 		},
 		[]string{"pattern_name"},
 	)
+
+	// EmissionsSkippedManaged counts PublishDrainEvents calls skipped because the
+	// target node carries nvsentinel.dgxc.nvidia.com/managed=false (ADR-040 opt-out).
+	EmissionsSkippedManaged = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "slurm_drain_monitor_emissions_skipped_managed_total",
+			Help: "Total number of drain event emissions skipped because the node is opted out of NVSentinel management.",
+		},
+	)
 )

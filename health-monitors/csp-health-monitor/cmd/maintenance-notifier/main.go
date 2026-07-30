@@ -28,9 +28,11 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"k8s.io/client-go/kubernetes"
+	listersv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/rest"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	met "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	srv "github.com/nvidia/nvsentinel/commons/pkg/server"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -125,6 +127,10 @@ func setupUDSConnection(udsPath string) (*grpc.ClientConn, pb.PlatformConnectorC
 	return conn, pb.NewPlatformConnectorClient(conn), nil
 }
 
+func setupNodeLister(ctx context.Context, k8sClient kubernetes.Interface) (listersv1.NodeLister, error) {
+	return managed.NewNodeLister(ctx, k8sClient, 0)
+}
+
 func setupKubernetesClient() (kubernetes.Interface, error) {
 	var restCfg *rest.Config
 
@@ -194,50 +200,7 @@ func run() error {
 	})
 
 	g.Go(func() error {
-		slog.Info("Initializing datastore connection for sidecar...")
-
-		store, err := datastore.NewStore(gCtx, &appCfg.databaseClientCertMountPath)
-		if err != nil {
-			return fmt.Errorf("failed to initialize datastore: %w", err)
-		}
-
-		slog.Info("Datastore initialized successfully for sidecar.")
-
-		conn, platformConnectorClient, err := setupUDSConnection(appCfg.udsPath)
-		if err != nil {
-			return fmt.Errorf("UDS connection setup failed: %w", err)
-		}
-
-		defer func() {
-			slog.Info("Closing UDS connection for sidecar.")
-
-			if errClose := conn.Close(); errClose != nil {
-				slog.Error("Error closing sidecar UDS connection", "error", errClose)
-			}
-		}()
-
-		k8sClient, err := setupKubernetesClient()
-		if err != nil {
-			return fmt.Errorf("kubernetes client setup failed: %w", err)
-		}
-
-		value, ok := pb.ProcessingStrategy_value[appCfg.processingStrategy]
-		if !ok {
-			return fmt.Errorf("invalid processingStrategy %q (expected EXECUTE_REMEDIATION or STORE_ONLY)",
-				appCfg.processingStrategy)
-		}
-
-		slog.Info("Event handling strategy configured", "processingStrategy", appCfg.processingStrategy)
-
-		engine := trigger.NewEngine(cfg, store, platformConnectorClient,
-			fmt.Sprintf("unix:%s", appCfg.udsPath),
-			k8sClient, pb.ProcessingStrategy(value))
-
-		slog.Info("Trigger engine starting...")
-		engine.Start(gCtx)
-		slog.Info("Trigger engine stopped.")
-
-		return nil
+		return runTriggerEngine(gCtx, appCfg, cfg)
 	})
 
 	// Wait for both goroutines to finish
@@ -246,6 +209,58 @@ func run() error {
 	}
 
 	slog.Info("Quarantine Trigger Engine Sidecar shut down.")
+
+	return nil
+}
+
+func runTriggerEngine(ctx context.Context, appCfg *appConfig, cfg *config.Config) error {
+	slog.Info("Initializing datastore connection for sidecar...")
+
+	store, err := datastore.NewStore(ctx, &appCfg.databaseClientCertMountPath)
+	if err != nil {
+		return fmt.Errorf("failed to initialize datastore: %w", err)
+	}
+
+	slog.Info("Datastore initialized successfully for sidecar.")
+
+	conn, platformConnectorClient, err := setupUDSConnection(appCfg.udsPath)
+	if err != nil {
+		return fmt.Errorf("UDS connection setup failed: %w", err)
+	}
+
+	defer func() {
+		slog.Info("Closing UDS connection for sidecar.")
+
+		if errClose := conn.Close(); errClose != nil {
+			slog.Error("Error closing sidecar UDS connection", "error", errClose)
+		}
+	}()
+
+	k8sClient, err := setupKubernetesClient()
+	if err != nil {
+		return fmt.Errorf("kubernetes client setup failed: %w", err)
+	}
+
+	nodeLister, err := setupNodeLister(ctx, k8sClient)
+	if err != nil {
+		return fmt.Errorf("node lister setup failed: %w", err)
+	}
+
+	value, ok := pb.ProcessingStrategy_value[appCfg.processingStrategy]
+	if !ok {
+		return fmt.Errorf("invalid processingStrategy %q (expected EXECUTE_REMEDIATION or STORE_ONLY)",
+			appCfg.processingStrategy)
+	}
+
+	slog.Info("Event handling strategy configured", "processingStrategy", appCfg.processingStrategy)
+
+	engine := trigger.NewEngine(cfg, store, platformConnectorClient,
+		fmt.Sprintf("unix:%s", appCfg.udsPath),
+		k8sClient, nodeLister, pb.ProcessingStrategy(value))
+
+	slog.Info("Trigger engine starting...")
+	engine.Start(ctx)
+	slog.Info("Trigger engine stopped.")
 
 	return nil
 }

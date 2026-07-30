@@ -28,6 +28,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/kubernetes"
+	listersv1 "k8s.io/client-go/listers/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -35,6 +37,7 @@ import (
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/slurm-drain-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/slurm-drain-monitor/pkg/controller"
@@ -156,9 +159,27 @@ func initConnAndClients(ctx context.Context, params Params) (
 		return nil, nil, nil, nil, fmt.Errorf("failed to create parser: %w", err)
 	}
 
-	pub := publisher.New(pcClient, params.PlatformConnectorSocket, pb.ProcessingStrategy(strategyValue))
+	nodeLister, err := buildNodeLister(ctx, params.ResyncPeriod)
+	if err != nil {
+		conn.Close()
+
+		return nil, nil, nil, nil, fmt.Errorf("build node lister: %w", err)
+	}
+
+	pub := publisher.New(pcClient, params.PlatformConnectorSocket, nodeLister, pb.ProcessingStrategy(strategyValue))
 
 	return conn, pr, pub, cfg, nil
+}
+
+func buildNodeLister(ctx context.Context, resyncPeriod time.Duration) (listersv1.NodeLister, error) {
+	restConfig := ctrl.GetConfigOrDie()
+
+	k8sClient, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("create kubernetes client for node lister: %w", err)
+	}
+
+	return managed.NewNodeLister(ctx, k8sClient, resyncPeriod)
 }
 
 func validateRecommendedActions(cfg *config.Config) error {

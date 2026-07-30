@@ -227,6 +227,16 @@ var (
 		},
 	)
 
+	// TriggerSkippedManaged counts trigger attempts skipped because the target node
+	// carries nvsentinel.dgxc.nvidia.com/managed=false (ADR-040 opt-out).
+	TriggerSkippedManaged = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "csp_health_monitor_trigger_skipped_managed_total",
+			Help: "Total number of trigger attempts skipped because the node is opted out of NVSentinel management.",
+		},
+		[]string{"trigger_type"},
+	)
+
 	// Node Readiness Metrics
 	NodeNotReadyTimeout = promauto.NewCounterVec(
 		prometheus.CounterOpts{

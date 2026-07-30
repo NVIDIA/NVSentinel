@@ -20,10 +20,13 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
+	listersv1 "k8s.io/client-go/listers/core/v1"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
+	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/metrics"
 )
 
 const (
@@ -34,14 +37,20 @@ const (
 // shared healthpub publisher (commons/pkg/healthpub).
 type Publisher struct {
 	pub                *healthpub.Publisher
+	nodeLister         listersv1.NodeLister
 	processingStrategy pb.ProcessingStrategy
 }
 
 // New constructs a Publisher. target must match the gRPC target string
 // used to dial client (typically "unix:///var/run/nvsentinel.sock").
-func New(client pb.PlatformConnectorClient, target string, processingStrategy pb.ProcessingStrategy) *Publisher {
+// nodeLister is used to gate emission for nodes opted out of NVSentinel management.
+func New(
+	client pb.PlatformConnectorClient, target string,
+	nodeLister listersv1.NodeLister, processingStrategy pb.ProcessingStrategy,
+) *Publisher {
 	return &Publisher{
 		pub:                healthpub.New(client, target, agentName),
+		nodeLister:         nodeLister,
 		processingStrategy: processingStrategy,
 	}
 }
@@ -51,6 +60,17 @@ func New(client pb.PlatformConnectorClient, target string, processingStrategy pb
 // which allows fault-quarantine to track each resource individually.
 func (p *Publisher) PublishHealthEvent(ctx context.Context,
 	policy *config.Policy, nodeName string, isHealthy bool, resourceInfo *config.ResourceInfo) error {
+	// Skip emission when the node is opted out of NVSentinel management (ADR-040).
+	if optedOut, err := managed.IsNodeOptedOut(ctx, p.nodeLister, nodeName); err != nil {
+		return fmt.Errorf("managed label check failed for node %s: %w", nodeName, err)
+	} else if optedOut {
+		slog.Info("Skipping emission: node is opted out of NVSentinel management",
+			"node", nodeName, "policy", policy.Name)
+		metrics.EmissionsSkippedManaged.WithLabelValues(policy.Name).Inc()
+
+		return nil
+	}
+
 	strategy := p.processingStrategy
 
 	if policy.HealthEvent.ProcessingStrategy != "" {
