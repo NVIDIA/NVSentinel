@@ -400,6 +400,7 @@ func (m *Manager) Load() error {
 			AnomalousCards:     loaded.AnomalousCards,
 			DisappearedDevices: loaded.DisappearedDevices,
 			DisappearedPorts:   loaded.DisappearedPorts,
+			MissingCharDevices: loaded.MissingCharDevices,
 			CounterSnapshots:   loaded.CounterSnapshots,
 			BreachFlags:        loaded.BreachFlags,
 			PendingBaselines:   loaded.PendingBaselines,

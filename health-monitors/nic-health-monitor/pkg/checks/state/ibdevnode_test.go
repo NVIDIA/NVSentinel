@@ -509,6 +509,49 @@ func TestIBCharDev_LatchSurvivesPodRestart(t *testing.T) {
 	assert.Equal(t, []string{"issm"}, events[0].ErrorCode)
 }
 
+func TestIBCharDev_LatchSurvivesScopeChange(t *testing.T) {
+	t.Parallel()
+
+	// A discovery-scope change (e.g. enabling the inclusion override)
+	// resets port/device state but must preserve the missing-char-device
+	// latch: the FATAL is still holding a condition downstream, and the
+	// check rebuilds its latch map from the persisted state at
+	// construction.
+	mgr, statePath, bootIDPath := newStateManagerForTest(t, "boot-1")
+
+	_, f := singleIBNode(t)
+	f.mad = dropKind(f.mad, "issm")
+	reader := f.reader()
+	check := newCharDevCheckWithManager(t, f, reader, mgr, false)
+
+	runQuietPolls(t, check, charDevMissThreshold-1)
+
+	events, err := check.Run()
+	require.NoError(t, err)
+	require.Len(t, fatalEvents(events), 1)
+
+	// Reload under a different discovery scope, same boot.
+	mgr2 := statefile.NewManagerWithPaths(statePath, bootIDPath)
+	mgr2.SetScope("incl=mlx5_.*;excl=")
+	require.NoError(t, mgr2.Load())
+	require.True(t, mgr2.ScopeChanged())
+	require.False(t, mgr2.BootIDChanged())
+
+	assert.NotEmpty(t, mgr2.MissingCharDevices(),
+		"scope change must preserve the missing-char-device latch")
+
+	// The node healed while the scope changed: the new pod's check must
+	// still emit the recovery for the preserved latch.
+	f.mad, _ = fullCharDevs(f.node)
+	check2 := newCharDevCheckWithManager(t, f, reader, mgr2, mgr2.BootIDChanged())
+
+	events, err = check2.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	assert.True(t, events[0].IsHealthy, "preserved latch must release via recovery")
+	assert.Equal(t, []string{"issm"}, events[0].ErrorCode)
+}
+
 func TestIBCharDev_NoDuplicateBaselineAfterRestart(t *testing.T) {
 	t.Parallel()
 
