@@ -213,6 +213,18 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 			expectEvaluate: common.RuleEvaluationSuccess,
 			expectError:    false,
 		},
+		{
+			// Verifies the legacy k8saas compatibility clause still skips quarantine
+			// independently of the ADR-040 label, so removing it would break this test.
+			name: "combined expression: legacy k8saas=false skips quarantine (backwards compat)",
+			expression: `!('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
+            !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
+			nodeLabels: map[string]string{
+				"k8saas.nvidia.com/ManagedByNVSentinel": "false",
+			},
+			expectEvaluate: common.RuleEvaluationFailed,
+			expectError:    false,
+		},
 	}
 
 	for _, tt := range tests {

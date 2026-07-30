@@ -633,6 +633,8 @@ func (l *Labeler) updateNodeLabelsForPod(nodeName, expectedDCGMVersion, expected
 
 	if optedOut {
 		slog.Debug("Skipping pod-driven label update for opted-out node", "node", nodeName)
+		metrics.NodeLabelsSkippedManaged.Inc()
+
 		return nil
 	}
 
@@ -746,10 +748,6 @@ func (l *Labeler) stripDetectionLabels(node *v1.Node) bool {
 		}
 	}
 
-	if needsUpdate {
-		metrics.NodeLabelsSkippedManaged.Inc()
-	}
-
 	return needsUpdate
 }
 
@@ -766,6 +764,10 @@ func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVer
 	}
 
 	if optedOut {
+		// Count every reconciliation attempt on an opted-out node, not only those
+		// that actually removed labels, so the metric reflects how often the gate
+		// fired (ADR-040).
+		metrics.NodeLabelsSkippedManaged.Inc()
 		return l.stripDetectionLabels(node)
 	}
 

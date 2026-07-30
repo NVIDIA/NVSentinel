@@ -84,7 +84,8 @@ var (
 	)
 
 	// NodeLabelsSkippedManaged counts reconcile attempts skipped because the node
-	// carries nvsentinel.dgxc.nvidia.com/managed=false (ADR-040 opt-out).
+	// is opted out of NVSentinel management (ADR-040). See commons/pkg/managed
+	// for the canonical label key and value.
 	NodeLabelsSkippedManaged = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Name: "labeler_node_labels_skipped_managed_total",
