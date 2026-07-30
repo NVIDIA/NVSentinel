@@ -52,6 +52,7 @@ func InitializeAll(
 	ctx context.Context,
 	params InitializationParams,
 	ctrlruntimeClient ctrlruntimeClient.Client,
+	nodeReader ctrlruntimeClient.Reader,
 ) (*Components, error) {
 	slog.Info("Starting fault remediation module initialization")
 
@@ -98,6 +99,7 @@ func InitializeAll(
 		Pipeline:           pipeline,
 		RemediationClient:  remediationClient,
 		StateManager:       stateManager,
+		NodeReader:         nodeReader,
 		EnableLogCollector: params.EnableLogCollector,
 		UpdateMaxRetries:   tomlConfig.UpdateRetry.MaxRetries,
 		UpdateRetryDelay:   time.Duration(tomlConfig.UpdateRetry.RetryDelaySeconds) * time.Second,

@@ -67,6 +67,7 @@ type ReconcilerConfig struct {
 	Pipeline           datastore.Pipeline
 	RemediationClient  remediation.FaultRemediationClientInterface
 	StateManager       statemanager.StateManager
+	NodeReader         client.Reader
 	EnableLogCollector bool
 	UpdateMaxRetries   int
 	UpdateRetryDelay   time.Duration
@@ -214,7 +215,9 @@ func (r *FaultRemediationReconciler) completeEventSession(
 }
 
 func (r *FaultRemediationReconciler) shouldSkipEvent(ctx context.Context,
-	healthEventWithStatus model.HealthEventWithStatus, groupConfig *common.EquivalenceGroupConfig) bool {
+	healthEventWithStatus model.HealthEventWithStatus,
+	groupConfig *common.EquivalenceGroupConfig,
+) (bool, error) {
 	action := healthEventWithStatus.HealthEvent.RecommendedAction
 	nodeName := healthEventWithStatus.HealthEvent.NodeName
 
@@ -228,7 +231,7 @@ func (r *FaultRemediationReconciler) shouldSkipEvent(ctx context.Context,
 			attribute.String("fault_remediation.skip_reason", "recommended_action_none"),
 		)
 
-		return true
+		return true, nil
 	}
 
 	if healthEventWithStatus.HealthEventStatus != nil && healthEventWithStatus.HealthEventStatus.FaultRemediated != nil &&
@@ -237,11 +240,11 @@ func (r *FaultRemediationReconciler) shouldSkipEvent(ctx context.Context,
 			attribute.String("fault_remediation.skip_reason", "already_remediated"),
 		)
 
-		return true
+		return true, nil
 	}
 
 	if groupConfig != nil {
-		return false
+		return false, nil
 	}
 
 	// Unsupported action detected
@@ -249,18 +252,42 @@ func (r *FaultRemediationReconciler) shouldSkipEvent(ctx context.Context,
 	slog.Info("Unsupported recommended action for node",
 		"action", actionName,
 		"node", nodeName)
-	metrics.TotalUnsupportedRemediationActions.WithLabelValues(actionName, nodeName).Inc()
 
 	span.SetAttributes(
 		attribute.String("fault_remediation.skip_reason", "unsupported_action"),
 	)
 
-	_, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
+	activeQuarantine, err := r.nodeHasActiveQuarantine(ctx, healthEventWithStatus.HealthEvent)
+	if err != nil {
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("fault_remediation.error.type", "quarantine_state_check_error"),
+			attribute.String("fault_remediation.error.message", err.Error()),
+		)
+
+		return true, err
+	}
+
+	metrics.TotalUnsupportedRemediationActions.WithLabelValues(actionName, nodeName).Inc()
+
+	if !activeQuarantine {
+		slog.InfoContext(ctx, "Skipping remediation-failed label for node without an active quarantine",
+			"action", actionName,
+			"node", nodeName)
+		span.SetAttributes(
+			attribute.String("fault_remediation.skip_reason", "unsupported_action_stale_event"),
+		)
+
+		return true, nil
+	}
+
+	nodeModified, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 		healthEventWithStatus.HealthEvent.NodeName,
 		statemanager.RemediationFailedLabelValue, false)
 	if err != nil {
 		slog.ErrorContext(ctx, "Error updating node label",
 			"label", statemanager.RemediationFailedLabelValue,
+			"nodeModified", nodeModified,
 			"error", err)
 		tracing.RecordError(span, err)
 		span.SetAttributes(
@@ -269,9 +296,52 @@ func (r *FaultRemediationReconciler) shouldSkipEvent(ctx context.Context,
 		)
 		metrics.ProcessingErrors.WithLabelValues("label_update_error",
 			healthEventWithStatus.HealthEvent.NodeName).Inc()
+
+		if !nodeModified {
+			return true, fmt.Errorf("failed to label unsupported remediation action for node %s: %w", nodeName, err)
+		}
 	}
 
-	return true
+	return true, nil
+}
+
+// nodeHasActiveQuarantine checks the current node rather than trusting persisted event status.
+// It requires the same failure to remain in the live quarantine annotation so an event from an
+// older quarantine session cannot affect a newer, unrelated session.
+func (r *FaultRemediationReconciler) nodeHasActiveQuarantine(
+	ctx context.Context,
+	healthEvent *protos.HealthEvent,
+) (bool, error) {
+	if healthEvent == nil {
+		return false, fmt.Errorf("health event is nil")
+	}
+
+	node, err := r.readLiveNode(ctx, healthEvent.NodeName)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+
+		return false, fmt.Errorf("failed to get live node state for %s: %w", healthEvent.NodeName, err)
+	}
+
+	active, err := activeQuarantineContainsEvent(node.GetAnnotations(), healthEvent)
+	if err != nil {
+		return false, fmt.Errorf(
+			"failed to read active quarantine events for node %s: %w", healthEvent.NodeName, err)
+	}
+
+	return active, nil
+}
+
+// readLiveNode uses the API reader to bypass the informer cache.
+func (r *FaultRemediationReconciler) readLiveNode(ctx context.Context, nodeName string) (*corev1.Node, error) {
+	node := &corev1.Node{}
+	if err := r.Config.NodeReader.Get(ctx, client.ObjectKey{Name: nodeName}, node); err != nil {
+		return nil, fmt.Errorf("failed to read node %s from the API: %w", nodeName, err)
+	}
+
+	return node, nil
 }
 
 // runLogCollector runs log collector for non-NONE actions if enabled
@@ -432,6 +502,16 @@ func (r *FaultRemediationReconciler) handleCancellationEvent(
 		return ctrl.Result{}, fmt.Errorf("failed to clear remediation state for node: %w", err)
 	}
 
+	if err := r.clearFaultRemediationNodeLabel(ctx, nodeName); err != nil {
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("fault_remediation.error.type", "clear_remediation_label_error"),
+			attribute.String("fault_remediation.error.message", err.Error()),
+		)
+
+		return ctrl.Result{}, err
+	}
+
 	if err := r.updateNodeRemediatedStatus(ctx, healthEventStore, eventWithToken, true); err != nil {
 		slog.ErrorContext(ctx, "Failed to write completion marker for cancellation event",
 			"node", nodeName,
@@ -446,6 +526,31 @@ func (r *FaultRemediationReconciler) handleCancellationEvent(
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// clearFaultRemediationNodeLabel removes terminal or in-progress labels owned by this controller.
+// It deliberately leaves quarantine and drain labels alone because those belong to other
+// controllers and may represent a newer quarantine session.
+func (r *FaultRemediationReconciler) clearFaultRemediationNodeLabel(
+	ctx context.Context,
+	nodeName string,
+) error {
+	_, err := r.Config.StateManager.RemoveNVSentinelStateNodeLabelIfMatch(
+		ctx,
+		nodeName,
+		statemanager.RemediatingLabelValue,
+		statemanager.RemediationSucceededLabelValue,
+		statemanager.RemediationFailedLabelValue,
+	)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to clear fault-remediation node label",
+			"node", nodeName,
+			"error", err)
+
+		return fmt.Errorf("failed to clear fault-remediation label for node %s: %w", nodeName, err)
+	}
+
+	return nil
 }
 
 func (r *FaultRemediationReconciler) handlePartialRecoveryEvent(
@@ -741,6 +846,38 @@ func activeQuarantineEvents(annotations map[string]string) ([]*protos.HealthEven
 	return activeEvents, nil
 }
 
+// activeQuarantineContainsEvent reports whether the incoming event belongs to the current
+// quarantine session. Event IDs distinguish repeated failures across sessions when available;
+// legacy records without IDs fall back to fault-quarantine's normal event-key matching.
+func activeQuarantineContainsEvent(
+	annotations map[string]string,
+	incomingEvent *protos.HealthEvent,
+) (bool, error) {
+	activeEvents, err := activeQuarantineEvents(annotations)
+	if err != nil {
+		return false, err
+	}
+
+	for _, activeEvent := range activeEvents {
+		if activeEvent.Id != "" && incomingEvent.Id != "" {
+			if activeEvent.Id == incomingEvent.Id {
+				return true, nil
+			}
+
+			continue
+		}
+
+		activeEventMap := fqannotation.NewHealthEventsAnnotationMap()
+		activeEventMap.AddOrUpdateEvent(activeEvent)
+
+		if _, matches := activeEventMap.GetEvent(incomingEvent); matches {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 // unsupportedRemediationAction reports whether an active event needs remediation but has no
 // configured action. A nil groupConfig alone is ambiguous: GetGroupConfigForEvent also returns
 // nil for RecommendedAction_NONE, which means "no remediation needed" rather than "unsupported".
@@ -884,7 +1021,12 @@ func (r *FaultRemediationReconciler) trySkipEvent(
 	healthEventStore datastore.HealthEventStore,
 	nodeName string,
 ) (ctrl.Result, error, bool) {
-	if !r.shouldSkipEvent(ctx, healthEventWithStatus.HealthEventWithStatus, groupConfig) {
+	shouldSkip, err := r.shouldSkipEvent(ctx, healthEventWithStatus.HealthEventWithStatus, groupConfig)
+	if err != nil {
+		return ctrl.Result{}, err, true
+	}
+
+	if !shouldSkip {
 		return ctrl.Result{}, nil, false
 	}
 

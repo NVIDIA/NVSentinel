@@ -23,9 +23,23 @@ import (
 type MockStateManager struct {
 	UpdateNVSentinelStateNodeLabelFn func(ctx context.Context, nodeName string,
 		newStateLabelValue NVSentinelStateLabelValue, removeStateLabel bool) (bool, error)
+	RemoveNVSentinelStateNodeLabelIfMatchFn func(ctx context.Context, nodeName string,
+		expectedValues ...NVSentinelStateLabelValue) (bool, error)
 }
 
 func (manager *MockStateManager) UpdateNVSentinelStateNodeLabel(ctx context.Context, nodeName string,
 	newStateLabelValue NVSentinelStateLabelValue, removeStateLabel bool) (bool, error) {
 	return manager.UpdateNVSentinelStateNodeLabelFn(ctx, nodeName, newStateLabelValue, removeStateLabel)
+}
+
+func (manager *MockStateManager) RemoveNVSentinelStateNodeLabelIfMatch(
+	ctx context.Context,
+	nodeName string,
+	expectedValues ...NVSentinelStateLabelValue,
+) (bool, error) {
+	if manager.RemoveNVSentinelStateNodeLabelIfMatchFn == nil {
+		return false, nil
+	}
+
+	return manager.RemoveNVSentinelStateNodeLabelIfMatchFn(ctx, nodeName, expectedValues...)
 }
