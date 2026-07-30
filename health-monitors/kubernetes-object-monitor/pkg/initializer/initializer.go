@@ -29,11 +29,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	listersv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/rest"
-	toolscache "k8s.io/client-go/tools/cache"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -42,6 +40,7 @@ import (
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/annotations"
 	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
@@ -312,22 +311,7 @@ func buildNodeLister(
 		return nil, fmt.Errorf("create kubernetes client for node lister: %w", err)
 	}
 
-	factory := informers.NewSharedInformerFactory(k8sClient, resyncPeriod)
-	nodes := factory.Core().V1().Nodes()
-
-	// A SharedInformerFactory only starts informers that were referenced (via
-	// Informer()/Lister()) BEFORE Start is called. Register the node informer
-	// first, otherwise Start launches nothing and the lister cache stays empty
-	// forever, which would silently disable the managed=false gate (fail-open).
-	informer := nodes.Informer()
-
-	factory.Start(ctx.Done())
-
-	if !toolscache.WaitForCacheSync(ctx.Done(), informer.HasSynced) {
-		return nil, fmt.Errorf("timed out waiting for node informer cache to sync")
-	}
-
-	return nodes.Lister(), nil
+	return managed.NewNodeLister(ctx, k8sClient, resyncPeriod)
 }
 
 func buildPublisher(

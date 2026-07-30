@@ -40,9 +40,13 @@ package managed
 import (
 	"context"
 	"fmt"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
 	listersv1 "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/tools/cache"
 )
 
 const (
@@ -90,4 +94,41 @@ func IsNodeOptedOut(ctx context.Context, nodeLister listersv1.NodeLister, nodeNa
 	}
 
 	return node.Labels[ManagedLabelKey] == ManagedLabelValueFalse, nil
+}
+
+// cacheSyncTimeout is the maximum time NewNodeLister waits for the node
+// informer cache to populate on startup. The parent ctx controls the informer
+// factory lifetime; this deadline is only for the sync step so a slow apiserver
+// at startup doesn't block the caller indefinitely.
+const cacheSyncTimeout = 30 * time.Second
+
+// NewNodeLister builds an informer-backed NodeLister using the provided
+// Kubernetes client. It starts the informer factory, waits up to 30 seconds
+// for the node cache to sync, then returns the lister. The factory is tied to
+// ctx — when ctx is cancelled the factory stops.
+//
+// Call this once at startup and reuse the returned lister for the lifetime of
+// the process. resyncPeriod controls how often the informer performs a full
+// re-list from the apiserver; 0 disables periodic re-sync.
+func NewNodeLister(
+	ctx context.Context, client kubernetes.Interface, resyncPeriod time.Duration,
+) (listersv1.NodeLister, error) {
+	factory := informers.NewSharedInformerFactory(client, resyncPeriod)
+	nodes := factory.Core().V1().Nodes()
+
+	// Register the node informer BEFORE calling factory.Start.
+	// SharedInformerFactory only starts informers that were referenced before
+	// Start is called; registering afterward leaves the cache permanently empty.
+	informer := nodes.Informer()
+
+	factory.Start(ctx.Done())
+
+	syncCtx, syncCancel := context.WithTimeout(ctx, cacheSyncTimeout)
+	defer syncCancel()
+
+	if !cache.WaitForCacheSync(syncCtx.Done(), informer.HasSynced) {
+		return nil, fmt.Errorf("timed out waiting for node informer cache to sync")
+	}
+
+	return nodes.Lister(), nil
 }

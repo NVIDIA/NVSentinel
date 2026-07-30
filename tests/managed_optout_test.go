@@ -173,7 +173,7 @@ func TestExtRRManagedOptOutSuppressesHealthMonitor(t *testing.T) {
 		node, err := helpers.GetNodeByName(ctx, client, nodeName)
 		require.NoError(t, err)
 		_, hasLabel := node.Labels[managedLabelKey]
-		assert.False(t, hasLabel, "managed label must be gone after ExtRR completion")
+		require.False(t, hasLabel, "managed label must be gone after ExtRR completion")
 
 		require.NoError(t, helpers.DeleteExistingNodeEvents(ctx, t, client, nodeName, nodeEventType, nodeEventReason))
 

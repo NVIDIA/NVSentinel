@@ -623,14 +623,20 @@ func (l *Labeler) getDriverLabelForNode(nodeName string, excludePod *v1.Pod) (st
 func (l *Labeler) updateNodeLabelsForPod(nodeName, expectedDCGMVersion, expectedDriverLabel string) error {
 	// When the node is opted out, detection labels are stripped by reconcileNodeLabelsInPlace
 	// (triggered by the managed-label node event). Skip pod-driven re-stamping.
-	if optedOut, err := managed.IsNodeOptedOut(l.ctx, l.nodeLister, nodeName); err != nil {
-		slog.Warn("Failed to check managed label, treating as not opted out", "node", nodeName, "error", err)
-	} else if optedOut {
+	// Fail closed: if the lister errors we must not re-stamp detection labels on
+	// a node that may be under active ERR.
+	optedOut, err := managed.IsNodeOptedOut(l.ctx, l.nodeLister, nodeName)
+	if err != nil {
+		slog.Warn("Failed to check managed label, skipping pod-driven label update", "node", nodeName, "error", err)
+		return nil
+	}
+
+	if optedOut {
 		slog.Debug("Skipping pod-driven label update for opted-out node", "node", nodeName)
 		return nil
 	}
 
-	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		node, err := l.clientset.CoreV1().Nodes().Get(l.ctx, nodeName, metav1.GetOptions{})
 		if err != nil {
 			return err
@@ -752,7 +758,11 @@ func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVer
 	// so DaemonSet monitors evict via their existing nodeSelectors (ADR-040).
 	optedOut, err := managed.IsNodeOptedOut(l.ctx, l.nodeLister, node.Name)
 	if err != nil {
-		slog.Warn("Failed to check managed label, treating as not opted out", "node", node.Name, "error", err)
+		// Fail closed: if we cannot determine opt-out state we must not proceed
+		// with label mutations — stamping detection labels on a node under active
+		// ERR would restore health-monitor scheduling on a released node.
+		slog.Warn("Failed to check managed label, skipping label reconciliation", "node", node.Name, "error", err)
+		return false
 	}
 
 	if optedOut {

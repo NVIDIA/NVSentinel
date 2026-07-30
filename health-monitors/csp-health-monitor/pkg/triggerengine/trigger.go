@@ -258,6 +258,8 @@ func (e *Engine) processAndSendTrigger(
 		metrics.TriggerSkippedManaged.WithLabelValues(triggerType).Inc()
 
 		if dbErr := e.store.UpdateEventStatus(ctx, event.EventID, targetDBStatus); dbErr != nil {
+			metrics.TriggerDatastoreUpdateErrors.WithLabelValues(triggerType).Inc()
+			metrics.TriggerFailures.WithLabelValues(triggerType, failureReasonDBUpdate).Inc()
 			slog.Error("Failed to advance event status after managed skip",
 				"eventID", event.EventID, "error", dbErr)
 		}
