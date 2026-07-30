@@ -295,6 +295,12 @@ func (sm *SyslogMonitor) Run() error {
 		sm.postRebootInit = false
 
 		slog.Info("Post-reboot boot-start scan completed; resuming cursor-based processing")
+
+		// Persist BootStartScanDone: true so a subsequent restart does not
+		// re-trigger the recovery path.
+		if err := sm.saveCurrentState(); err != nil {
+			slog.Warn("Failed to persist BootStartScanDone after scan completion", "error", err)
+		}
 	}
 
 	slog.Info("Syslog monitor run cycle completed successfully.")
