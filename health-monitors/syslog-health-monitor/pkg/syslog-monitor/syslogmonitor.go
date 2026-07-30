@@ -144,8 +144,7 @@ func NewSyslogMonitorWithFactory(
 	if !sm.postRebootInit &&
 		state.BootID == currentBootID &&
 		currentBootID != "" &&
-		!state.BootStartScanDone &&
-		len(state.CheckLastCursors) == 0 {
+		!state.BootStartScanDone {
 		sm.postRebootInit = true
 
 		slog.Info("Recovered postRebootInit from persisted state: boot-start scan was incomplete",
