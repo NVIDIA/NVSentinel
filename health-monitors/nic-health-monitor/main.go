@@ -56,7 +56,8 @@ var (
 	date    = "unknown"
 
 	checksList = flag.String("checks",
-		"InfiniBandStateCheck,InfiniBandDegradationCheck,EthernetStateCheck,EthernetDegradationCheck",
+		"InfiniBandStateCheck,InfiniBandDegradationCheck,InfiniBandCharDeviceCheck,"+
+			"EthernetStateCheck,EthernetDegradationCheck",
 		"Comma-separated list of checks to enable.")
 	platformConnectorSocket = flag.String("platform-connector-socket", "unix:///var/run/nvsentinel.sock",
 		"Path to the platform-connector UDS socket")
@@ -146,7 +147,8 @@ func run() error {
 		rc.processingStrategy, stateManager, rebooted || scopeChanged, rebooted)
 	if len(enabledChecks) == 0 {
 		return fmt.Errorf("no checks enabled — set --checks to include at least one of: " +
-			"InfiniBandStateCheck, InfiniBandDegradationCheck, EthernetStateCheck, EthernetDegradationCheck")
+			"InfiniBandStateCheck, InfiniBandDegradationCheck, InfiniBandCharDeviceCheck, " +
+			"EthernetStateCheck, EthernetDegradationCheck")
 	}
 
 	nicMonitor := monitor.NewNICHealthMonitor(rc.nodeName, client, *platformConnectorSocket,
@@ -369,41 +371,57 @@ func buildChecks(
 			continue
 		}
 
-		switch c {
-		case checks.InfiniBandStateCheckName:
-			result = append(result, state.NewInfiniBandStateCheck(
-				nodeName, reader, cfg, classifier, processingStrategy,
-				stateManager, stateBaselines,
-			))
-		case checks.InfiniBandDegradationCheckName:
-			if cfg.CounterDetection.Enabled {
-				result = append(result, counter.NewInfiniBandDegradationCheck(
-					nodeName, reader, cfg, classifier, processingStrategy,
-					stateManager, counterBaselines,
-				))
-			} else {
-				slog.Warn("Skipping requested check: counterDetection.enabled is false", "check", c)
-			}
-		case checks.EthernetStateCheckName:
-			result = append(result, state.NewEthernetStateCheck(
-				nodeName, reader, cfg, classifier, processingStrategy,
-				stateManager, stateBaselines,
-			))
-		case checks.EthernetDegradationCheckName:
-			if cfg.CounterDetection.Enabled {
-				result = append(result, counter.NewEthernetDegradationCheck(
-					nodeName, reader, cfg, classifier, processingStrategy,
-					stateManager, counterBaselines,
-				))
-			} else {
-				slog.Warn("Skipping requested check: counterDetection.enabled is false", "check", c)
-			}
-		default:
-			slog.Warn("Unknown check, skipping", "check", c)
+		if chk := buildCheck(c, nodeName, reader, cfg, classifier,
+			processingStrategy, stateManager, stateBaselines, counterBaselines); chk != nil {
+			result = append(result, chk)
 		}
 	}
 
 	return result
+}
+
+// buildCheck instantiates a single check by name, or returns nil when the
+// name is unknown or a counter check is requested while counter detection
+// is disabled.
+func buildCheck(
+	name, nodeName string,
+	reader sysfs.Reader,
+	cfg *config.Config,
+	classifier *topology.Classifier,
+	processingStrategy pb.ProcessingStrategy,
+	stateManager *statefile.Manager,
+	stateBaselines, counterBaselines bool,
+) checks.TransactionalCheck {
+	switch name {
+	case checks.InfiniBandStateCheckName:
+		return state.NewInfiniBandStateCheck(
+			nodeName, reader, cfg, classifier, processingStrategy, stateManager, stateBaselines)
+	case checks.InfiniBandCharDeviceCheckName:
+		return state.NewInfiniBandCharDeviceCheck(
+			nodeName, reader, cfg, classifier, processingStrategy, stateManager, stateBaselines)
+	case checks.EthernetStateCheckName:
+		return state.NewEthernetStateCheck(
+			nodeName, reader, cfg, classifier, processingStrategy, stateManager, stateBaselines)
+	case checks.InfiniBandDegradationCheckName:
+		if !cfg.CounterDetection.Enabled {
+			slog.Warn("Skipping requested check: counterDetection.enabled is false", "check", name)
+			return nil
+		}
+
+		return counter.NewInfiniBandDegradationCheck(
+			nodeName, reader, cfg, classifier, processingStrategy, stateManager, counterBaselines)
+	case checks.EthernetDegradationCheckName:
+		if !cfg.CounterDetection.Enabled {
+			slog.Warn("Skipping requested check: counterDetection.enabled is false", "check", name)
+			return nil
+		}
+
+		return counter.NewEthernetDegradationCheck(
+			nodeName, reader, cfg, classifier, processingStrategy, stateManager, counterBaselines)
+	default:
+		slog.Warn("Unknown check, skipping", "check", name)
+		return nil
+	}
 }
 
 // parseProcessingStrategy maps the string flag to the protobuf enum.

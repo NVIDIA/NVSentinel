@@ -102,6 +102,14 @@ type MonitorState struct {
 	// state and is discarded on boot-ID or discovery-scope changes.
 	DeviceMissCounts map[string]DeviceMissCount `json:"device_miss_counts,omitempty"`
 
+	// MissingCharDevices is the InfiniBandCharDeviceCheck latch: character
+	// devices (issm/umad/uverbs) with a missing-node FATAL outstanding
+	// downstream. Like the disappearance latches it survives restarts and
+	// reboots — an entry means a condition is still held on the node, and
+	// only a positive observation of the node (or the baseline clear)
+	// removes it. Keys are "<kind>/<device>_<port>".
+	MissingCharDevices map[string]MissingCharDeviceFlag `json:"missing_char_devices,omitempty"`
+
 	// Counter detection state — produced by InfiniBandDegradationCheck
 	// and EthernetDegradationCheck. Both maps key on
 	// `<device>:<port>:<counter_name>` so the IB and Ethernet checks
@@ -172,6 +180,15 @@ type DeviceMissCount struct {
 	Device    string `json:"device,omitempty"`
 	LinkLayer string `json:"link_layer,omitempty"`
 	Count     int    `json:"count,omitempty"`
+}
+
+// MissingCharDeviceFlag marks one missing InfiniBand character-device
+// node (issm/umad/uverbs) with a FATAL outstanding downstream. Port is
+// zero for the device-level uverbs kind.
+type MissingCharDeviceFlag struct {
+	Kind   string `json:"kind,omitempty"`
+	Device string `json:"device,omitempty"`
+	Port   int    `json:"port,omitempty"`
 }
 
 // CounterSnapshot stores the value and wall-clock timestamp of a counter
@@ -340,6 +357,7 @@ func (m *Manager) Load() error {
 			AnomalousCards:     loaded.AnomalousCards,
 			DisappearedDevices: stripDeviceBootMarkers(loaded.DisappearedDevices),
 			DisappearedPorts:   stripPortBootMarkers(loaded.DisappearedPorts),
+			MissingCharDevices: loaded.MissingCharDevices,
 		}
 		m.loaded = true
 		m.bootIDChanged = true
@@ -382,6 +400,7 @@ func (m *Manager) Load() error {
 			AnomalousCards:     loaded.AnomalousCards,
 			DisappearedDevices: loaded.DisappearedDevices,
 			DisappearedPorts:   loaded.DisappearedPorts,
+			MissingCharDevices: loaded.MissingCharDevices,
 			CounterSnapshots:   loaded.CounterSnapshots,
 			BreachFlags:        loaded.BreachFlags,
 			PendingBaselines:   loaded.PendingBaselines,
@@ -755,6 +774,57 @@ func (m *Manager) UpdateDisappearedPorts(
 	}
 
 	return changed
+}
+
+// MissingCharDevices returns the outstanding missing-character-device
+// latches, keyed as persisted ("<kind>/<device>_<port>").
+func (m *Manager) MissingCharDevices() map[string]MissingCharDeviceFlag {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	out := make(map[string]MissingCharDeviceFlag, len(m.state.MissingCharDevices))
+	for k, v := range m.state.MissingCharDevices {
+		out[k] = v
+	}
+
+	return out
+}
+
+// UpdateMissingCharDevices replaces the persisted missing-character-device
+// latch with the caller's set and reports whether anything changed. The
+// InfiniBandCharDeviceCheck is the map's only owner, so unlike the
+// port-disappearance latch there is no link-layer slicing to preserve.
+func (m *Manager) UpdateMissingCharDevices(flags map[string]MissingCharDeviceFlag) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	changed := len(m.state.MissingCharDevices) != len(flags)
+
+	if !changed {
+		for k, v := range flags {
+			if old, ok := m.state.MissingCharDevices[k]; !ok || old != v {
+				changed = true
+				break
+			}
+		}
+	}
+
+	if !changed {
+		return false
+	}
+
+	if len(flags) == 0 {
+		m.state.MissingCharDevices = nil
+
+		return true
+	}
+
+	m.state.MissingCharDevices = make(map[string]MissingCharDeviceFlag, len(flags))
+	for k, v := range flags {
+		m.state.MissingCharDevices[k] = v
+	}
+
+	return true
 }
 
 // DeviceMissCountsFor returns consecutive enumeration-miss counts for the

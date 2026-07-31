@@ -27,6 +27,7 @@ const (
 	// Check names match the enabledChecks keys in the Helm values.
 	InfiniBandStateCheckName       = "InfiniBandStateCheck"
 	InfiniBandDegradationCheckName = "InfiniBandDegradationCheck"
+	InfiniBandCharDeviceCheckName  = "InfiniBandCharDeviceCheck"
 	EthernetStateCheckName         = "EthernetStateCheck"
 	EthernetDegradationCheckName   = "EthernetDegradationCheck"
 

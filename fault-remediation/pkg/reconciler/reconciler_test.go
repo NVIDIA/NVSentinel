@@ -1048,6 +1048,7 @@ func TestCRBasedDeduplication(t *testing.T) {
 		remediationCreatedByGroup map[string]time.Time
 		expectedShouldCreateCR    bool
 		expectedRemediated        bool
+		expectedInProgress        bool
 	}{
 		{
 			name:                   "NoStatusChecker_AllowRemediation",
@@ -1071,11 +1072,14 @@ func TestCRBasedDeduplication(t *testing.T) {
 			expectedShouldCreateCR: true,
 		},
 		{
-			name:                   "CRSucceeded_SkipRemediation",
+			// The mock maps shouldSkipCRCreation=true to CRStateInProgress, so this covers
+			// the in-progress wait decision.
+			name:                   "CRInProgress_WaitsForTerminalState",
 			existingCRs:            map[string]string{"restart": "maintenance-node-123"},
 			shouldSkipCRCreation:   []bool{true},
 			groupConfig:            getGroupConfig("restart", nil),
 			expectedShouldCreateCR: false,
+			expectedInProgress:     true,
 		},
 		{
 			name:                   "MultipleCRs_SkipRemediation_MultipleEquivalenceGroups_OneInProgress",
@@ -1083,6 +1087,7 @@ func TestCRBasedDeduplication(t *testing.T) {
 			shouldSkipCRCreation:   []bool{false, true},
 			groupConfig:            getGroupConfig("restart", []string{"reset-GPU-123"}),
 			expectedShouldCreateCR: false,
+			expectedInProgress:     true,
 		},
 		{
 			name:                   "MultipleCRs_AllowRemediation_MultipleEquivalenceGroups_BothCompleted",
@@ -1136,6 +1141,7 @@ func TestCRBasedDeduplication(t *testing.T) {
 			eventCreatedAt:         time.Date(2026, 5, 14, 10, 0, 0, 0, time.UTC),
 			expectedShouldCreateCR: false,
 			expectedRemediated:     false,
+			expectedInProgress:     true,
 			remediationCreatedByGroup: map[string]time.Time{
 				"restart":       time.Date(2026, 5, 14, 10, 0, 0, 0, time.UTC),
 				"reset-GPU-123": time.Date(2026, 5, 14, 10, 1, 0, 0, time.UTC),
@@ -1177,10 +1183,303 @@ func TestCRBasedDeduplication(t *testing.T) {
 			healthEvent := &protos.HealthEvent{
 				NodeName: "test-node",
 			}
-			shouldCreateCR, _, remediated, err := r.checkExistingCRStatus(ctx, healthEvent, tt.eventCreatedAt, tt.groupConfig)
+			decision, err := r.checkExistingCRStatus(ctx, healthEvent, tt.eventCreatedAt, tt.groupConfig)
 			assert.NoError(t, err)
-			assert.Equal(t, tt.expectedShouldCreateCR, shouldCreateCR)
-			assert.Equal(t, tt.expectedRemediated, remediated)
+			assert.Equal(t, tt.expectedShouldCreateCR, decision.shouldCreate)
+			assert.Equal(t, tt.expectedRemediated, decision.remediated)
+			assert.Equal(t, tt.expectedInProgress, decision.inProgress)
+		})
+	}
+}
+
+// TestInProgressCREventRequeuedUntilTerminal is the regression test for issue #1536: an
+// event that arrives while an equivalent maintenance CR is still InProgress must be
+// requeued — without advancing the resume token or finalizing the event — and must be
+// automatically reconsidered once the CR reaches a terminal state.
+func TestInProgressCREventRequeuedUntilTerminal(t *testing.T) {
+	crCreatedAt := time.Date(2026, 7, 24, 2, 38, 18, 0, time.UTC)
+
+	tests := []struct {
+		name           string
+		eventCreatedAt time.Time
+		terminalState  crstatus.CRState
+		expectNewCR    bool
+	}{
+		{
+			// The production incident: post-reboot events arrived while the RebootNode CR
+			// was still InProgress and were silently dropped. They are post-session
+			// observations and must produce a new CR once the old CR completes.
+			name:           "PostSessionEvent_NewCRAfterCRSucceeds",
+			eventCreatedAt: crCreatedAt.Add(5 * time.Minute),
+			terminalState:  crstatus.CRStateSucceeded,
+			expectNewCR:    true,
+		},
+		{
+			name:           "SameSessionEvent_MarkedRemediatedAfterCRSucceeds",
+			eventCreatedAt: crCreatedAt.Add(-time.Minute),
+			terminalState:  crstatus.CRStateSucceeded,
+			expectNewCR:    false,
+		},
+		{
+			name:           "PostSessionEvent_NewCRAfterCRFails",
+			eventCreatedAt: crCreatedAt.Add(5 * time.Minute),
+			terminalState:  crstatus.CRStateFailed,
+			expectNewCR:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			nodeName := "test-node"
+			eventID := "post-reboot-event"
+
+			crStates := map[string]crstatus.CRState{"maintenance-cr-1": crstatus.CRStateInProgress}
+			createCalls := 0
+			mockK8sClient := &MockK8sClient{
+				createMaintenanceResourceFn: func(context.Context, *events.HealthEventData,
+					*common.EquivalenceGroupConfig) (string, error) {
+					createCalls++
+					return "maintenance-cr-2", nil
+				},
+				annotationManagerOverride: &MockNodeAnnotationManager{
+					existingCRs:       map[string]string{"restart": "maintenance-cr-1"},
+					existingCRCreated: crCreatedAt,
+				},
+				mockStatusChecker: &mockStatusChecker{stateByCR: crStates},
+			}
+
+			cfg := ReconcilerConfig{
+				RemediationClient: mockK8sClient,
+				StateManager: &statemanager.MockStateManager{
+					UpdateNVSentinelStateNodeLabelFn: func(context.Context, string,
+						statemanager.NVSentinelStateLabelValue, bool) (bool, error) {
+						return true, nil
+					},
+				},
+				InProgressRequeueDelay: 42 * time.Millisecond,
+			}
+			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
+
+			mockWatcher := &MockChangeStreamWatcher{}
+
+			var statusWrites []datastore.HealthEventStatus
+			mockStore := &MockHealthEventStore{
+				UpdateHealthEventStatusFn: func(_ context.Context, id string, status datastore.HealthEventStatus) error {
+					assert.Equal(t, eventID, id)
+					statusWrites = append(statusWrites, status)
+					return nil
+				},
+			}
+
+			healthEventDoc := &events.HealthEventDoc{
+				ID: eventID,
+				HealthEventWithStatus: model.HealthEventWithStatus{
+					CreatedAt: tt.eventCreatedAt,
+					HealthEvent: &protos.HealthEvent{
+						NodeName:          nodeName,
+						RecommendedAction: protos.RecommendedAction_RESTART_BM,
+					},
+					HealthEventStatus: &protos.HealthEventStatus{
+						NodeQuarantined:        string(model.AlreadyQuarantined),
+						UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.AlreadyDrained)},
+					},
+				},
+			}
+			eventWithToken := datastore.EventWithToken{
+				Event:       testRawHealthEvent(eventID, nodeName, protos.RecommendedAction_RESTART_BM),
+				ResumeToken: []byte("resume-token"),
+			}
+
+			// While the CR is InProgress the event must be requeued and left untouched.
+			result, err := r.handleRemediationEvent(ctx, healthEventDoc, eventWithToken, mockWatcher, mockStore)
+			assert.NoError(t, err)
+			assert.Equal(t, cfg.InProgressRequeueDelay, result.RequeueAfter,
+				"event behind an in-progress CR must be requeued")
+			_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
+			assert.Equal(t, 0, markProcessedCount, "resume token must not advance while waiting")
+			assert.Empty(t, statusWrites, "faultremediated must stay unset while waiting")
+			assert.Equal(t, 0, createCalls, "no CR may be created while an equivalent CR is in progress")
+
+			// The CR reaches a terminal state; the requeued event must now be resolved.
+			crStates["maintenance-cr-1"] = tt.terminalState
+
+			result, err = r.handleRemediationEvent(ctx, healthEventDoc, eventWithToken, mockWatcher, mockStore)
+			assert.NoError(t, err)
+			assert.True(t, result.IsZero())
+			_, markProcessedCount, _, _ = mockWatcher.GetCallCounts()
+			assert.Equal(t, 1, markProcessedCount, "resume token must advance once the event is resolved")
+
+			if tt.expectNewCR {
+				assert.Equal(t, 1, createCalls, "a new CR must be created once the old CR is terminal")
+			} else {
+				assert.Equal(t, 0, createCalls, "a covered same-session event must not create a new CR")
+			}
+
+			// Both outcomes leave a durable terminal status on the event.
+			if assert.Len(t, statusWrites, 1) {
+				assert.NotNil(t, statusWrites[0].FaultRemediated)
+				assert.True(t, *statusWrites[0].FaultRemediated)
+			}
+		})
+	}
+}
+
+func TestInProgressRequeueDelayDefault(t *testing.T) {
+	r := NewFaultRemediationReconciler(nil, nil, nil, ReconcilerConfig{RemediationClient: &MockK8sClient{}}, false)
+	assert.Equal(t, defaultInProgressRequeueDelay, r.inProgressRequeueDelay())
+
+	r.Config.InProgressRequeueDelay = time.Second
+	assert.Equal(t, time.Second, r.inProgressRequeueDelay())
+}
+
+// TestStaleEventSnapshotResolvedInStoreIsNotRemediated verifies the datastore re-check
+// that guards CR creation: an event snapshot that sat in the workqueue (for example
+// requeued behind an in-progress CR) must not start a remediation when its datastore
+// record was meanwhile closed or its quarantine session ended. A failed-attempt record
+// (faultremediated=false) with a live quarantine must stay retryable.
+func TestStaleEventSnapshotResolvedInStoreIsNotRemediated(t *testing.T) {
+	remediatedTrue := true
+	remediatedFalse := false
+	quarantined := datastore.Quarantined
+	unquarantined := datastore.UnQuarantined
+	cancelled := datastore.Status(string(model.Cancelled))
+
+	tests := []struct {
+		name             string
+		currentStatus    datastore.HealthEventStatus
+		activeQuarantine bool
+		expectResolved   bool
+	}{
+		{
+			name: "RemediatedElsewhere_SkipsWithoutNewCR",
+			currentStatus: datastore.HealthEventStatus{
+				FaultRemediated: &remediatedTrue,
+				NodeQuarantined: &quarantined,
+			},
+			activeQuarantine: true,
+			expectResolved:   true,
+		},
+		{
+			name:             "QuarantineSessionUnquarantined_SkipsWithoutNewCR",
+			currentStatus:    datastore.HealthEventStatus{NodeQuarantined: &unquarantined},
+			activeQuarantine: false,
+			expectResolved:   true,
+		},
+		{
+			name:             "QuarantineSessionCancelled_SkipsWithoutNewCR",
+			currentStatus:    datastore.HealthEventStatus{NodeQuarantined: &cancelled},
+			activeQuarantine: false,
+			expectResolved:   true,
+		},
+		{
+			// closeStaleEquivalentEvents writes faultremediated=false for covered events
+			// when the session ends; their own quarantine status can stay stale, so the
+			// live quarantine annotation is the discriminator.
+			name: "ClosedByCancellationCleanup_SkipsWithoutNewCR",
+			currentStatus: datastore.HealthEventStatus{
+				FaultRemediated: &remediatedFalse,
+				NodeQuarantined: &quarantined,
+			},
+			activeQuarantine: false,
+			expectResolved:   true,
+		},
+		{
+			// A failed remediation attempt writes faultremediated=false; while the
+			// quarantine session is still active the event must remain retryable.
+			name: "FailedAttemptStillQuarantined_ProceedsToRemediation",
+			currentStatus: datastore.HealthEventStatus{
+				FaultRemediated: &remediatedFalse,
+				NodeQuarantined: &quarantined,
+			},
+			activeQuarantine: true,
+			expectResolved:   false,
+		},
+		{
+			name:             "StillUnresolved_ProceedsToRemediation",
+			currentStatus:    datastore.HealthEventStatus{NodeQuarantined: &quarantined},
+			activeQuarantine: true,
+			expectResolved:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			nodeName := "test-node"
+			eventID := "stale-snapshot-event"
+			healthEvent := testAnnotationHealthEvent(
+				eventID, nodeName, protos.RecommendedAction_RESTART_BM, "GPU-test")
+
+			var nodeAnnotations map[string]string
+			if tt.activeQuarantine {
+				nodeAnnotations = quarantineAnnotationForTest(t, healthEvent)
+			}
+
+			createCalls := 0
+			mockK8sClient := &MockK8sClient{
+				createMaintenanceResourceFn: func(context.Context, *events.HealthEventData,
+					*common.EquivalenceGroupConfig) (string, error) {
+					createCalls++
+					return "maintenance-cr-new", nil
+				},
+				annotationManagerOverride: &MockNodeAnnotationManager{},
+			}
+
+			cfg := ReconcilerConfig{
+				RemediationClient: mockK8sClient,
+				StateManager: &statemanager.MockStateManager{
+					UpdateNVSentinelStateNodeLabelFn: func(context.Context, string,
+						statemanager.NVSentinelStateLabelValue, bool) (bool, error) {
+						return true, nil
+					},
+				},
+				NodeReader: newMockNodeReader(nodeAnnotations),
+			}
+			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
+
+			mockWatcher := &MockChangeStreamWatcher{}
+
+			statusWrites := 0
+			mockStore := &MockHealthEventStore{
+				FindHealthEventsByQueryFn: func(context.Context, datastore.QueryBuilder) (
+					[]datastore.HealthEventWithStatus, error) {
+					return []datastore.HealthEventWithStatus{{HealthEventStatus: tt.currentStatus}}, nil
+				},
+				UpdateHealthEventStatusFn: func(context.Context, string, datastore.HealthEventStatus) error {
+					statusWrites++
+					return nil
+				},
+			}
+
+			healthEventDoc := &events.HealthEventDoc{
+				ID: eventID,
+				HealthEventWithStatus: model.HealthEventWithStatus{
+					CreatedAt:   time.Date(2026, 7, 24, 2, 43, 11, 0, time.UTC),
+					HealthEvent: healthEvent,
+					HealthEventStatus: &protos.HealthEventStatus{
+						NodeQuarantined:        string(model.Quarantined),
+						UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.StatusSucceeded)},
+					},
+				},
+			}
+			eventWithToken := datastore.EventWithToken{
+				Event:       testRawHealthEvent(eventID, nodeName, protos.RecommendedAction_RESTART_BM),
+				ResumeToken: []byte("resume-token"),
+			}
+
+			result, err := r.handleRemediationEvent(ctx, healthEventDoc, eventWithToken, mockWatcher, mockStore)
+			assert.NoError(t, err)
+			assert.True(t, result.IsZero())
+			_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
+			assert.Equal(t, 1, markProcessedCount, "event must be checkpointed either way")
+
+			if tt.expectResolved {
+				assert.Equal(t, 0, createCalls, "a resolved event must not create a CR from a stale snapshot")
+				assert.Equal(t, 0, statusWrites, "a resolved event must not be rewritten")
+			} else {
+				assert.Equal(t, 1, createCalls, "an unresolved event must proceed to remediation")
+			}
 		})
 	}
 }
