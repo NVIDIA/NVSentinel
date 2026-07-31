@@ -21,11 +21,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	lambdaapi "github.com/nvidia/nvsentinel/commons/pkg/lambda"
+	eventpkg "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/event"
+	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/model"
 )
 
 func TestExtractUUIDFromLRN(t *testing.T) {
@@ -104,4 +107,147 @@ func TestAPISourceFetchEventsAPIError(t *testing.T) {
 
 	_, err := src.fetchEvents(context.Background())
 	assert.ErrorContains(t, err, "401")
+}
+
+// fakeSource returns pre-canned events without hitting HTTP; used to exercise
+// pollEvents in isolation.
+type fakeSource struct{ events []Event }
+
+func (f *fakeSource) fetchEvents(_ context.Context) ([]Event, error) {
+	return f.events, nil
+}
+
+// newInformerForTest builds a NodeInformer around the given uuid → node map
+// without needing a real Kubernetes client. GetNodeName only reads the map.
+func newInformerForTest(entries map[string]string) *NodeInformer {
+	ni := &NodeInformer{instanceToNodeName: map[string]string{}}
+	for k, v := range entries {
+		ni.instanceToNodeName[k] = v
+	}
+	return ni
+}
+
+func TestResolveLRNs(t *testing.T) {
+	c := &Client{
+		nodeInformer: newInformerForTest(map[string]string{
+			"uuid-a": "node-a",
+			"uuid-b": "node-b",
+		}),
+	}
+
+	tests := []struct {
+		name string
+		lrns []string
+		want []resolvedLRN
+	}{
+		{
+			name: "single valid LRN",
+			lrns: []string{"lrn:cloud:instance:uuid-a"},
+			want: []resolvedLRN{{uuid: "uuid-a", nodeName: "node-a"}},
+		},
+		{
+			name: "multiple valid LRNs — all fan out",
+			lrns: []string{"lrn:cloud:instance:uuid-a", "lrn:cloud:instance:uuid-b"},
+			want: []resolvedLRN{
+				{uuid: "uuid-a", nodeName: "node-a"},
+				{uuid: "uuid-b", nodeName: "node-b"},
+			},
+		},
+		{
+			name: "LRN[0] is non-instance entity — LRN[1] still resolves",
+			lrns: []string{"lrn:cloud:server:whatever", "lrn:cloud:instance:uuid-a"},
+			want: []resolvedLRN{{uuid: "uuid-a", nodeName: "node-a"}},
+		},
+		{
+			name: "LRN[0] unknown UUID — LRN[1] still resolves",
+			lrns: []string{"lrn:cloud:instance:uuid-unknown", "lrn:cloud:instance:uuid-b"},
+			want: []resolvedLRN{{uuid: "uuid-b", nodeName: "node-b"}},
+		},
+		{
+			name: "all LRNs unresolvable — empty result",
+			lrns: []string{"lrn:cloud:instance:uuid-unknown", "lrn:cloud:server:x"},
+			want: nil,
+		},
+		{
+			name: "empty entity_lrns list",
+			lrns: nil,
+			want: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := c.resolveLRNs(Event{ID: "e1", EntityLRNs: tc.lrns})
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestPollEventsFanOutsAcrossLRNs is the end-to-end check for fix 2:
+// a single Lambda event with multiple entity_lrns produces one internal
+// MaintenanceEvent per resolved node, each with a suffixed EventID.
+func TestPollEventsFanOutsAcrossLRNs(t *testing.T) {
+	c := &Client{
+		clusterName:  "test-cluster",
+		nodeInformer: newInformerForTest(map[string]string{"uuid-a": "node-a", "uuid-b": "node-b"}),
+		normalizer:   &eventpkg.LambdaNormalizer{},
+		source: &fakeSource{events: []Event{{
+			ID:         "evt-1",
+			Urgency:    "emergency",
+			Status:     "scheduled",
+			EntityLRNs: []string{"lrn:cloud:instance:uuid-a", "lrn:cloud:instance:uuid-b"},
+		}}},
+		triggerTimeLimit: 30 * time.Minute,
+	}
+
+	ch := make(chan model.MaintenanceEvent, 4)
+	require.NoError(t, c.pollEvents(context.Background(), ch))
+	close(ch)
+
+	var got []model.MaintenanceEvent
+	for e := range ch {
+		got = append(got, e)
+	}
+
+	require.Len(t, got, 2, "one internal event per resolved LRN")
+
+	// Order matches EntityLRNs order.
+	assert.Equal(t, "evt-1-uuid-a", got[0].EventID)
+	assert.Equal(t, "node-a", got[0].NodeName)
+	assert.Equal(t, "evt-1-uuid-b", got[1].EventID)
+	assert.Equal(t, "node-b", got[1].NodeName)
+}
+
+// TestPollEventsPartialLRNResolution regresses the specific bug called out in
+// review — LRN[0] being unresolvable used to drop the entire event even if
+// LRN[1] resolved.
+func TestPollEventsPartialLRNResolution(t *testing.T) {
+	c := &Client{
+		clusterName:  "test-cluster",
+		nodeInformer: newInformerForTest(map[string]string{"uuid-b": "node-b"}),
+		normalizer:   &eventpkg.LambdaNormalizer{},
+		source: &fakeSource{events: []Event{{
+			ID:      "evt-1",
+			Urgency: "emergency",
+			Status:  "scheduled",
+			EntityLRNs: []string{
+				"lrn:cloud:server:non-instance", // unresolvable
+				"lrn:cloud:instance:uuid-b",     // resolves
+			},
+		}}},
+		triggerTimeLimit: 30 * time.Minute,
+	}
+
+	ch := make(chan model.MaintenanceEvent, 4)
+	require.NoError(t, c.pollEvents(context.Background(), ch))
+	close(ch)
+
+	var got []model.MaintenanceEvent
+	for e := range ch {
+		got = append(got, e)
+	}
+
+	require.Len(t, got, 1, "the resolved LRN should emit even though LRN[0] was bad")
+	assert.Equal(t, "evt-1-uuid-b", got[0].EventID)
+	assert.Equal(t, "node-b", got[0].NodeName)
 }

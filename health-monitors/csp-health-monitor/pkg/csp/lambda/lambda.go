@@ -221,65 +221,92 @@ func (c *Client) pollEvents(ctx context.Context, eventChan chan<- model.Maintena
 	slog.Debug("Lambda: fetched events", "count", len(events))
 
 	for _, raw := range events {
-		nodeName := c.resolveNodeName(raw)
-		if nodeName == "" {
-			slog.Warn("Lambda: skipping event, could not resolve node name",
+		resolved := c.resolveLRNs(raw)
+		if len(resolved) == 0 {
+			slog.Warn("Lambda: skipping event, no LRNs resolved to node names",
 				"eventID", raw.ID,
 				"entityLRNs", raw.EntityLRNs)
 			continue
 		}
 
-		meta := eventpkg.LambdaEventMetadata{
-			ID:                raw.ID,
-			Detail:            raw.Detail,
-			Urgency:           raw.Urgency,
-			Status:            raw.Status,
-			NotBefore:         raw.NotBefore,
-			NotBeforeDeadline: raw.NotBeforeDeadline,
-			NotAfter:          raw.NotAfter,
-			LastUpdated:       raw.LastUpdated,
-			NodeName:          nodeName,
-			ClusterName:       c.clusterName,
-			TriggerTimeLimit:  c.triggerTimeLimit,
-		}
+		for _, r := range resolved {
+			// Suffix the internal event ID with the instance UUID so a single Lambda
+			// event covering multiple instances upserts one MaintenanceEvent per node
+			// (matches how fault-quarantine tracks entities per-instance).
+			internalID := raw.ID + "-" + r.uuid
 
-		normalized, err := c.normalizer.Normalize(nil, meta)
-		if err != nil {
-			slog.Error("Lambda: failed to normalize event", "eventID", raw.ID, "error", err)
-			continue
-		}
+			meta := eventpkg.LambdaEventMetadata{
+				ID:                internalID,
+				Detail:             raw.Detail,
+				Urgency:            raw.Urgency,
+				Status:             raw.Status,
+				NotBefore:          raw.NotBefore,
+				NotBeforeDeadline:  raw.NotBeforeDeadline,
+				NotAfter:           raw.NotAfter,
+				LastUpdated:        raw.LastUpdated,
+				NodeName:           r.nodeName,
+				ClusterName:        c.clusterName,
+				TriggerTimeLimit:   c.triggerTimeLimit,
+			}
 
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case eventChan <- *normalized:
-			slog.Debug("Lambda: emitted event", "eventID", normalized.EventID, "status", normalized.Status)
+			normalized, err := c.normalizer.Normalize(nil, meta)
+			if err != nil {
+				slog.Error("Lambda: failed to normalize event",
+					"rawEventID", raw.ID, "internalEventID", internalID, "error", err)
+				continue
+			}
+
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case eventChan <- *normalized:
+				slog.Debug("Lambda: emitted event",
+					"eventID", normalized.EventID, "node", normalized.NodeName, "status", normalized.Status)
+			}
 		}
 	}
 
 	return nil
 }
 
-// resolveNodeName extracts the instance UUID from the first entity LRN and
-// looks it up in the node informer map.
-func (c *Client) resolveNodeName(event Event) string {
+// resolvedLRN is a single (uuid, nodeName) pair extracted from a Lambda event's
+// entity_lrns list after informer lookup.
+type resolvedLRN struct {
+	uuid     string
+	nodeName string
+}
+
+// resolveLRNs walks event.EntityLRNs and returns one (uuid, nodeName) entry for
+// each LRN that parses as an instance and maps to a known node. LRNs that fail
+// to parse or aren't in the informer's map are logged and skipped, so that an
+// unresolvable LRN at position 0 doesn't cause the entire event (which may
+// affect multiple instances) to be dropped.
+func (c *Client) resolveLRNs(event Event) []resolvedLRN {
 	if len(event.EntityLRNs) == 0 {
-		return ""
+		return nil
 	}
 
-	uuid := extractUUIDFromLRN(event.EntityLRNs[0])
-	if uuid == "" {
-		slog.Warn("Lambda: could not parse instance UUID from LRN", "lrn", event.EntityLRNs[0])
-		return ""
+	var resolved []resolvedLRN
+
+	for _, lrn := range event.EntityLRNs {
+		uuid := extractUUIDFromLRN(lrn)
+		if uuid == "" {
+			slog.Warn("Lambda: could not parse instance UUID from LRN",
+				"eventID", event.ID, "lrn", lrn)
+			continue
+		}
+
+		nodeName, ok := c.nodeInformer.GetNodeName(uuid)
+		if !ok {
+			slog.Warn("Lambda: instance UUID not found in node informer",
+				"eventID", event.ID, "uuid", uuid)
+			continue
+		}
+
+		resolved = append(resolved, resolvedLRN{uuid: uuid, nodeName: nodeName})
 	}
 
-	nodeName, ok := c.nodeInformer.GetNodeName(uuid)
-	if !ok {
-		slog.Warn("Lambda: instance UUID not found in node informer", "uuid", uuid)
-		return ""
-	}
-
-	return nodeName
+	return resolved
 }
 
 // extractUUIDFromLRN parses "lrn:cloud:instance:<uuid>" and returns the UUID.
