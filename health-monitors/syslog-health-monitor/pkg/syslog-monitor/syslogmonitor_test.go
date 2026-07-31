@@ -1392,8 +1392,42 @@ func TestBootStartScanDone_CrashRecovery(t *testing.T) {
 	tmpDir := t.TempDir()
 	stateFilePath := tmpDir + "/state.json"
 
-	// Simulate: previous run persisted BootID but crashed before scan completed.
-	currentBootID := "boot-2"
+	check := CheckDefinition{Name: "bootCheck", JournalPath: TEST_JOURNAL_PATH}
+	mockJournal := &MockJournal{
+		Entries:         []MockJournalEntry{{Message: "entry1", Cursor: "c1", BootID: "boot-2"}},
+		CurrentPosition: -1,
+		TestBootID:      "boot-2",
+	}
+	mockFactory := NewMockJournalFactory()
+	mockFactory.JournalsByPath[check.JournalPath] = mockJournal
+	mockFactory.DefaultJournal = &MockJournal{TestBootID: "boot-2", CurrentPosition: -1}
+
+	// Phase 1: discover the actual kernel boot ID.
+	_ = os.WriteFile(stateFilePath, []byte(`{"version":1,"boot_id":"","check_last_cursors":{}}`), 0o644)
+	probe, err := NewSyslogMonitorWithFactory(
+		TEST_NODE,
+		[]CheckDefinition{check},
+		&mockPlatformConnectorClient{},
+		TEST_AGENT,
+		TEST_COMPONENT,
+		"60s",
+		stateFilePath,
+		mockFactory,
+		"http://localhost:8080",
+		"/tmp/metadata.json",
+		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		"", "",
+		nil,
+		"tcp://test",
+		30*time.Minute,
+	)
+	assert.NoError(t, err)
+
+	currentBootID := probe.currentBootID
+	require.NotEmpty(t, currentBootID, "test prerequisite: kernel boot-id must be readable")
+
+	// Phase 2: write state as if a previous run persisted BootID but crashed
+	// before the boot-start scan completed.
 	initialState := syslogMonitorState{
 		Version:           stateFileVersion,
 		BootID:            currentBootID,
@@ -1403,16 +1437,8 @@ func TestBootStartScanDone_CrashRecovery(t *testing.T) {
 	stateData, _ := json.Marshal(initialState)
 	_ = os.WriteFile(stateFilePath, stateData, 0o644)
 
-	check := CheckDefinition{Name: "bootCheck", JournalPath: TEST_JOURNAL_PATH}
-	mockJournal := &MockJournal{
-		Entries:         []MockJournalEntry{{Message: "entry1", Cursor: "c1", BootID: currentBootID}},
-		CurrentPosition: -1,
-		TestBootID:      currentBootID,
-	}
-	mockFactory := NewMockJournalFactory()
-	mockFactory.JournalsByPath[check.JournalPath] = mockJournal
-	mockFactory.DefaultJournal = &MockJournal{TestBootID: currentBootID, CurrentPosition: -1}
-
+	// Reconstruct: handleBootIDChange sees same boot ID (no change), but
+	// BootStartScanDone=false triggers the disk-recovery path.
 	sm, err := NewSyslogMonitorWithFactory(
 		TEST_NODE,
 		[]CheckDefinition{check},
@@ -1432,10 +1458,8 @@ func TestBootStartScanDone_CrashRecovery(t *testing.T) {
 	)
 	assert.NoError(t, err)
 
-	// Recovery: postRebootInit must be restored from disk.
-	if sm.currentBootID == currentBootID {
-		assert.True(t, sm.postRebootInit, "postRebootInit must be recovered when BootStartScanDone is false")
-	}
+	// The disk-recovery path must have set postRebootInit.
+	assert.True(t, sm.postRebootInit, "postRebootInit must be recovered from disk when BootStartScanDone is false")
 }
 
 func TestBootStartScanDone_NormalRestart(t *testing.T) {
