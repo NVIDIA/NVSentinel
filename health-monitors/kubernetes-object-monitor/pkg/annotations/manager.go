@@ -35,11 +35,19 @@ const (
 type PolicyMatchState map[string]string
 
 type Manager struct {
-	client client.Client
+	reader client.Reader
+	writer client.Writer
 }
 
 func NewManager(c client.Client) *Manager {
-	return &Manager{client: c}
+	return NewManagerWithReader(c, c)
+}
+
+func NewManagerWithReader(reader client.Reader, writer client.Writer) *Manager {
+	return &Manager{
+		reader: reader,
+		writer: writer,
+	}
 }
 
 func (m *Manager) AddMatch(ctx context.Context, nodeName, stateKey, targetNode string) error {
@@ -77,7 +85,7 @@ func (m *Manager) RemoveMatch(ctx context.Context, nodeName, stateKey string) er
 
 func (m *Manager) GetMatches(ctx context.Context, nodeName string) (PolicyMatchState, error) {
 	node := &v1.Node{}
-	if err := m.client.Get(ctx, types.NamespacedName{Name: nodeName}, node); err != nil {
+	if err := m.reader.Get(ctx, types.NamespacedName{Name: nodeName}, node); err != nil {
 		if apierrors.IsNotFound(err) {
 			return make(PolicyMatchState), nil
 		}
@@ -85,6 +93,10 @@ func (m *Manager) GetMatches(ctx context.Context, nodeName string) (PolicyMatchS
 		return make(PolicyMatchState), fmt.Errorf("failed to get node: %w", err)
 	}
 
+	return matchesFromNode(node)
+}
+
+func matchesFromNode(node *v1.Node) (PolicyMatchState, error) {
 	if node.Annotations == nil {
 		return make(PolicyMatchState), nil
 	}
@@ -104,14 +116,14 @@ func (m *Manager) GetMatches(ctx context.Context, nodeName string) (PolicyMatchS
 
 func (m *Manager) LoadAllMatches(ctx context.Context) (map[string]string, error) {
 	nodeList := &v1.NodeList{}
-	if err := m.client.List(ctx, nodeList); err != nil {
+	if err := m.reader.List(ctx, nodeList); err != nil {
 		return nil, fmt.Errorf("failed to list nodes: %w", err)
 	}
 
 	allMatches := make(map[string]string)
 
 	for _, node := range nodeList.Items {
-		matches, err := m.GetMatches(ctx, node.Name)
+		matches, err := matchesFromNode(&node)
 		if err != nil {
 			slog.Warn("Failed to load matches from node", "node", node.Name, "error", err)
 			continue
@@ -131,7 +143,7 @@ func (m *Manager) updateAnnotation(ctx context.Context,
 
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		node := &v1.Node{}
-		if err := m.client.Get(ctx, types.NamespacedName{Name: nodeName}, node); err != nil {
+		if err := m.reader.Get(ctx, types.NamespacedName{Name: nodeName}, node); err != nil {
 			if apierrors.IsNotFound(err) {
 				slog.Warn("Node not found, assuming deleted", "node", nodeName)
 				return nil
@@ -167,7 +179,7 @@ func (m *Manager) updateAnnotation(ctx context.Context,
 			node.Annotations[AnnotationKey] = string(annotationBytes)
 		}
 
-		return m.client.Update(ctx, node, &client.UpdateOptions{
+		return m.writer.Update(ctx, node, &client.UpdateOptions{
 			FieldManager: "kubernetes-object-monitor",
 		})
 	})

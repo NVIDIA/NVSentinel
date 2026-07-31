@@ -267,33 +267,170 @@ func setupHealthChecks(mgr ctrl.Manager) error {
 func registerControllers(
 	mgr ctrl.Manager,
 	evaluator *policy.Evaluator,
-	pub *publisher.Publisher,
+	pub controller.HealthEventPublisher,
 	policies []config.Policy,
 	maxConcurrentReconciles int,
 ) error {
-	annotationMgr := annotations.NewManager(mgr.GetClient())
+	apiReader := mgr.GetAPIReader()
+	annotationMgr := annotations.NewManagerWithReader(apiReader, mgr.GetClient())
 	gvkPolicies := groupPoliciesByGVK(policies)
+	// The shared barrier prevents workers from consuming initial informer events
+	// before every controller has restored its persisted match state.
+	stateBarrier := newStateLoadBarrier()
+	stateLoader := &controllerStateLoader{
+		barrier: stateBarrier,
+	}
+	enableWarmup := true
 
 	for gvk, policies := range gvkPolicies {
-		reconciler := controller.NewResourceReconciler(mgr.GetClient(), evaluator, pub, annotationMgr, policies, gvk)
-
-		if err := reconciler.LoadState(context.Background()); err != nil {
-			slog.Warn("Failed to load state for controller, starting fresh", "gvk", gvk.String(), "error", err)
+		mapping, err := mgr.GetRESTMapper().RESTMapping(gvk.GroupKind(), gvk.Version)
+		if err != nil {
+			return fmt.Errorf("failed to resolve resource scope for %s: %w", gvk.String(), err)
 		}
 
-		if err := ctrl.NewControllerManagedBy(mgr).
+		var resourceNamespaced bool
+
+		switch mapping.Scope.Name() {
+		case meta.RESTScopeNameNamespace:
+			resourceNamespaced = true
+		case meta.RESTScopeNameRoot:
+			resourceNamespaced = false
+		default:
+			return fmt.Errorf(
+				"unsupported resource scope %q for %s",
+				mapping.Scope.Name(),
+				gvk.String(),
+			)
+		}
+
+		reconciler := controller.NewResourceReconcilerWithReader(
+			mgr.GetClient(),
+			apiReader,
+			evaluator,
+			pub,
+			annotationMgr,
+			policies,
+			gvk,
+		)
+
+		gatedReconciler := &stateLoadingReconciler{
+			reconciler: reconciler,
+			barrier:    stateBarrier,
+		}
+
+		builtController, err := ctrl.NewControllerManagedBy(mgr).
 			For(newUnstructuredForGVK(gvk)).
 			WithOptions(ctrlcontroller.Options{
 				MaxConcurrentReconciles: maxConcurrentReconciles,
+				EnableWarmup:            &enableWarmup,
 			}).
-			Complete(reconciler); err != nil {
+			Build(gatedReconciler)
+		if err != nil {
 			return fmt.Errorf("failed to create controller for %s: %w", gvk.String(), err)
 		}
+
+		warmupController, ok := builtController.(interface {
+			Warmup(context.Context) error
+		})
+		if !ok {
+			return fmt.Errorf("controller for %s does not support source warmup", gvk.String())
+		}
+
+		stateLoader.controllers = append(stateLoader.controllers, controllerState{
+			gvk:                gvk,
+			resourceNamespaced: resourceNamespaced,
+			reconciler:         reconciler,
+			controller:         warmupController,
+		})
 
 		slog.Info("Registered controller", "gvk", gvk.String(), "policies", len(policies))
 	}
 
+	if err := mgr.Add(stateLoader); err != nil {
+		return fmt.Errorf("failed to register controller state loader: %w", err)
+	}
+
 	return nil
+}
+
+type stateLoadBarrier struct {
+	done chan struct{}
+	err  error
+}
+
+func newStateLoadBarrier() *stateLoadBarrier {
+	return &stateLoadBarrier{done: make(chan struct{})}
+}
+
+func (b *stateLoadBarrier) complete(err error) {
+	b.err = err
+	close(b.done)
+}
+
+func (b *stateLoadBarrier) wait(ctx context.Context) error {
+	select {
+	case <-b.done:
+		return b.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+type stateLoadingReconciler struct {
+	reconciler *controller.ResourceReconciler
+	barrier    *stateLoadBarrier
+}
+
+func (r *stateLoadingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	if err := r.barrier.wait(ctx); err != nil {
+		return ctrl.Result{}, fmt.Errorf("initial state load failed: %w", err)
+	}
+
+	return r.reconciler.Reconcile(ctx, req)
+}
+
+type controllerState struct {
+	gvk                schema.GroupVersionKind
+	resourceNamespaced bool
+	reconciler         *controller.ResourceReconciler
+	controller         interface {
+		Warmup(context.Context) error
+	}
+}
+
+type controllerStateLoader struct {
+	barrier     *stateLoadBarrier
+	controllers []controllerState
+}
+
+func (l *controllerStateLoader) Start(ctx context.Context) error {
+	for _, state := range l.controllers {
+		// Controller warmup is serialized and idempotent. Calling it here waits
+		// for the source handler and cache to be ready before the final API scan,
+		// even when the manager's warmup phase is still finishing concurrently.
+		if err := state.controller.Warmup(ctx); err != nil {
+			loadErr := fmt.Errorf("failed to warm up controller source for %s: %w", state.gvk.String(), err)
+			l.barrier.complete(loadErr)
+
+			return loadErr
+		}
+
+		if err := state.reconciler.LoadStateWithScope(ctx, state.resourceNamespaced); err != nil {
+			loadErr := fmt.Errorf("failed to load state for controller %s: %w", state.gvk.String(), err)
+			l.barrier.complete(loadErr)
+
+			return loadErr
+		}
+	}
+
+	l.barrier.complete(nil)
+	<-ctx.Done()
+
+	return nil
+}
+
+func (*controllerStateLoader) NeedLeaderElection() bool {
+	return true
 }
 
 func dialPlatformConnector(socket string) (*grpc.ClientConn, error) {
