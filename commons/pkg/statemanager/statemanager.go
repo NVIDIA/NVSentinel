@@ -70,7 +70,8 @@
 //   - [NO LABEL]: No nvsentinel-state label present (healthy node)
 //   - [TERMINAL]: Terminal states with no forward transitions
 //   - remediation-succeeded and remediation-failed are terminal for a single failure, but
-//     fault-remediation may recompute between them on a partial recovery (see below)
+//     fault-remediation may recompute between them on a partial recovery, and either may
+//     return to remediating when a new remediation cycle starts (see below)
 //   - All state names match the dgxc.nvidia.com/nvsentinel-state label values
 //   - Label removal (removeStateLabel=true) bypasses all validation
 //
@@ -98,6 +99,12 @@
 //	  remediation-succeeded → remediation-failed (fault-remediation: a remaining active failure is
 //	                                              unsupported or failed remediation)
 //
+//	Re-remediation (a new remediation cycle starts while the node stays quarantined):
+//	  remediation-succeeded → remediating (fault-remediation: a new remediation-ready event
+//	                                       arrived after the previous maintenance CR completed,
+//	                                       e.g. a post-reboot fault)
+//	  remediation-failed → remediating    (fault-remediation: a failed CR is retried with a new CR)
+//
 //	Label Removal (from ANY state):
 //	  * → (no label)               (removeStateLabel=true - supports canceled drains)
 //
@@ -115,8 +122,10 @@
 //	Invalid Transitions:
 //	  drain-succeeded → drain-failed           (cannot reverse drain result)
 //	  drain-failed → remediating               (terminal state - no remediation)
-//	  remediation-succeeded → * (except remediation-failed via partial-recovery recompute)
-//	  remediation-failed → * (except remediation-succeeded via partial-recovery recompute)
+//	  remediation-succeeded → * (except remediation-failed via partial-recovery recompute
+//	                             and remediating via re-remediation)
+//	  remediation-failed → * (except remediation-succeeded via partial-recovery recompute
+//	                          and remediating via re-remediation)
 //
 // # Example Sequences
 //
@@ -150,11 +159,13 @@
 // drain-failed has no valid forward transitions (only label removal):
 //   - drain-failed: Remediation doesn't process failed drains
 //
-// remediation-succeeded and remediation-failed are terminal for a single failure. The only
-// forward transition allowed is between the two of them, when fault-remediation recomputes the
-// node label from the remaining active failures during a partial recovery:
-//   - remediation-succeeded: Success state (may be recomputed to remediation-failed)
-//   - remediation-failed: Failure state (may be recomputed to remediation-succeeded)
+// remediation-succeeded and remediation-failed are terminal for a single failure. Two forward
+// transitions are allowed: between the two of them, when fault-remediation recomputes the node
+// label from the remaining active failures during a partial recovery, and back to remediating,
+// when fault-remediation starts a new remediation cycle (a remediation-ready event arrived after
+// the previous maintenance CR completed, or a failed CR is retried with a new CR):
+//   - remediation-succeeded: Success state (may be recomputed or re-enter remediating)
+//   - remediation-failed: Failure state (may be recomputed or re-enter remediating)
 package statemanager
 
 import (
@@ -403,9 +414,13 @@ func validateStateTransition(nodeName, currentValue string, exists bool, targetS
 		// remediation-succeeded and remediation-failed are terminal for a single failure, but a
 		// partial recovery (a tracked failure clears while the node stays quarantined) lets
 		// fault-remediation recompute the node label from the remaining active failures, which can
-		// move between the two terminal remediation outcomes.
-		RemediationSucceededLabelValue: {RemediationFailedLabelValue},
-		RemediationFailedLabelValue:    {RemediationSucceededLabelValue},
+		// move between the two terminal remediation outcomes. Both states can also return to
+		// remediating: a new remediation-ready event can arrive after an equivalent maintenance CR
+		// completed (for example a post-reboot fault while the node is still quarantined), and a
+		// failed CR is retried with a new CR, so fault-remediation legitimately starts another
+		// remediation cycle within the same quarantine session.
+		RemediationSucceededLabelValue: {RemediationFailedLabelValue, RemediatingLabelValue},
+		RemediationFailedLabelValue:    {RemediationSucceededLabelValue, RemediatingLabelValue},
 	}
 
 	currentState := NVSentinelStateLabelValue(currentValue)

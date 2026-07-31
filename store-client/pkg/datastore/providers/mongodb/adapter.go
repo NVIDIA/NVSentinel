@@ -234,10 +234,14 @@ func (a *AdaptedChangeStreamWatcher) Events() <-chan datastore.EventWithToken {
 					continue
 				}
 
-				// Create EventWithToken
+				// Create EventWithToken carrying the per-event resume token so
+				// consumers (e.g. fault-remediation's safeMarkProcessed) can
+				// checkpoint exactly at the event they processed. Events that
+				// carry no token (e.g. synthesized cold-start events) yield an
+				// empty slice, which consumers treat as "do not checkpoint".
 				eventWithToken := datastore.EventWithToken{
 					Event:       eventMap,
-					ResumeToken: []byte(""), // We'll need to extract the resume token properly
+					ResumeToken: event.GetResumeToken(),
 				}
 
 				a.eventChan <- eventWithToken

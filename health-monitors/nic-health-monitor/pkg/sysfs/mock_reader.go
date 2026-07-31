@@ -19,6 +19,8 @@ package sysfs
 type MockReader struct {
 	IBBase         string
 	NetBase        string
+	IBMadBase      string
+	IBVerbsBase    string
 	IBPortPathFunc func(device string, port int) string
 	NetIfacePathFn func(iface string) string
 	ReadFileFunc   func(path string) (string, error)
@@ -57,6 +59,22 @@ func (m *MockReader) NetBasePath() string {
 	}
 
 	return m.NetBase
+}
+
+func (m *MockReader) IBMadBasePath() string {
+	if m.IBMadBase == "" {
+		return m.IBBasePath() + "_mad"
+	}
+
+	return m.IBMadBase
+}
+
+func (m *MockReader) IBVerbsBasePath() string {
+	if m.IBVerbsBase == "" {
+		return m.IBBasePath() + "_verbs"
+	}
+
+	return m.IBVerbsBase
 }
 
 func (m *MockReader) IBPortPath(device string, port int) string {

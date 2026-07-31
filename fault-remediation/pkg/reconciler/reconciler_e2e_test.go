@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -156,8 +157,10 @@ type MockHealthEventStore struct {
 	UpdateHealthEventStatusFn        func(ctx context.Context, id string, status datastore.HealthEventStatus) error
 	FindHealthEventsByQueryFn        func(ctx context.Context, builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error)
 	FindHealthEventsByQueryBatchedFn func(ctx context.Context, builder datastore.QueryBuilder, batchSize int, fn func([]datastore.HealthEventWithStatus) error) error
-	updateCalled                     int
-	findHealthEventsByQueryCalls     int
+	// Counters are written from the controller goroutine and polled by tests, so they
+	// must be atomic to stay race-free.
+	updateCalled                 atomic.Int64
+	findHealthEventsByQueryCalls atomic.Int64
 }
 
 // UpdateHealthEventStatus updates a health event status (mock implementation)
@@ -210,7 +213,7 @@ func (m *MockHealthEventStore) FindLatestEventForNode(ctx context.Context, nodeN
 }
 
 func (m *MockHealthEventStore) FindHealthEventsByQuery(ctx context.Context, builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error) {
-	m.findHealthEventsByQueryCalls++
+	m.findHealthEventsByQueryCalls.Add(1)
 
 	if m.FindHealthEventsByQueryFn != nil {
 		return m.FindHealthEventsByQueryFn(ctx, builder)
@@ -304,14 +307,15 @@ func TestMain(m *testing.M) {
 		NodeReader:        ctrlRuntimeAPIReader,
 		UpdateMaxRetries:  3,
 		UpdateRetryDelay:  100 * time.Millisecond,
+		// Keep requeues fast so tests can observe events waiting behind an
+		// in-progress CR being reconsidered within an Eventually window.
+		InProgressRequeueDelay: 200 * time.Millisecond,
 	}
 
 	// Create mock health event store
-	mockStore = &MockHealthEventStore{
-		updateCalled: 0,
-	}
+	mockStore = &MockHealthEventStore{}
 	mockStore.UpdateHealthEventStatusFn = func(ctx context.Context, id string, status datastore.HealthEventStatus) error {
-		mockStore.updateCalled++
+		mockStore.updateCalled.Add(1)
 		return nil
 	}
 
@@ -503,16 +507,26 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		// Update CR status to InProgress
 		updateRebootNodeStatus(ctx, t, firstCRName, "InProgress")
 
-		// Event 2: Should be skipped
-		shouldCreateCR, existingCR, _, err := r.checkExistingCRStatus(ctx, event1.HealthEventWithStatus.HealthEvent, time.Now(), groupConfig)
+		// Event 2: must wait for the in-progress CR instead of being finalized
+		decision, err := r.checkExistingCRStatus(ctx, event1.HealthEventWithStatus.HealthEvent, time.Now(), groupConfig)
 		assert.NoError(t, err)
-		assert.False(t, shouldCreateCR, "Second event should be skipped")
-		assert.Equal(t, firstCRName, existingCR)
+		assert.False(t, decision.shouldCreate, "Second event should not create a CR yet")
+		assert.True(t, decision.inProgress, "Second event must be requeued while the CR is in progress")
+		assert.Equal(t, firstCRName, decision.crName)
 
 		// Verify annotation still exists and unchanged
 		state, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
 		require.NoError(t, err)
 		assert.Equal(t, firstCRName, state.EquivalenceGroups["restart"].MaintenanceCR)
+
+		// Once the CR completes, a post-session event (created after the CR) must be
+		// allowed to create a new CR instead of staying stranded (issue #1536).
+		updateRebootNodeStatus(ctx, t, firstCRName, "Succeeded")
+
+		decision, err = r.checkExistingCRStatus(ctx, event1.HealthEventWithStatus.HealthEvent, time.Now(), groupConfig)
+		assert.NoError(t, err)
+		assert.True(t, decision.shouldCreate, "post-session event must be reconsidered after the CR succeeds")
+		assert.False(t, decision.inProgress)
 
 		// Cleanup
 		gvr := schema.GroupVersionResource{
@@ -565,9 +579,9 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		updateRebootNodeStatus(ctx, t, firstCRName, "Failed")
 
 		// Event 2: Should create new CR after cleanup
-		shouldCreateCR, _, _, err := r.checkExistingCRStatus(ctx, event1.HealthEventWithStatus.HealthEvent, time.Now(), groupConfig)
+		decision, err := r.checkExistingCRStatus(ctx, event1.HealthEventWithStatus.HealthEvent, time.Now(), groupConfig)
 		assert.NoError(t, err)
-		assert.True(t, shouldCreateCR, "Should allow retry after CR failed")
+		assert.True(t, decision.shouldCreate, "Should allow retry after CR failed")
 
 		// Verify annotation was cleaned up.
 		// Use Eventually because RemoveGroupsFromState writes to the API server but
@@ -669,10 +683,11 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 			event2Health)
 		assert.NoError(t, err)
 
-		shouldCreateCR, existingCR, _, err := r.checkExistingCRStatus(ctx, event2Health, time.Now(), groupConfig2)
+		decision, err := r.checkExistingCRStatus(ctx, event2Health, time.Now(), groupConfig2)
 		assert.NoError(t, err)
-		assert.False(t, shouldCreateCR, "RESTART_BM should be deduplicated with RESTART_VM (same group)")
-		assert.Equal(t, firstCRName, existingCR)
+		assert.False(t, decision.shouldCreate, "RESTART_BM should be deduplicated with RESTART_VM (same group)")
+		assert.True(t, decision.inProgress, "deduplicated event must wait for the in-progress CR")
+		assert.Equal(t, firstCRName, decision.crName)
 
 		// Verify both actions map to same group
 		assert.Equal(t, groupConfig1, groupConfig2, "Both actions should be in same equivalence group")
@@ -755,10 +770,11 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event2)
 	assert.NoError(t, err)
-	shouldCreate, existingCR, _, err := r.checkExistingCRStatus(ctx, event2, time.Now(), groupConfig)
+	decision, err := r.checkExistingCRStatus(ctx, event2, time.Now(), groupConfig)
 	assert.NoError(t, err)
-	assert.False(t, shouldCreate, "RESTART_VM should be skipped (same group as RESTART_BM)")
-	assert.Equal(t, crName1, existingCR)
+	assert.False(t, decision.shouldCreate, "RESTART_VM should be skipped (same group as RESTART_BM)")
+	assert.True(t, decision.inProgress, "RESTART_VM must wait for the in-progress CR")
+	assert.Equal(t, crName1, decision.crName)
 
 	// Verify annotation unchanged
 	state, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
@@ -775,11 +791,12 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event3)
 	assert.NoError(t, err)
-	shouldCreate, _, remediatedByExistingCR, err := r.checkExistingCRStatus(ctx, event3, time.Now().Add(-time.Minute),
+	decision, err = r.checkExistingCRStatus(ctx, event3, time.Now().Add(-time.Minute),
 		groupConfig)
 	assert.NoError(t, err)
-	assert.False(t, shouldCreate, "RESTART_BM should be skipped (CR succeeded)")
-	assert.True(t, remediatedByExistingCR, "successful existing CR should cover equivalent event")
+	assert.False(t, decision.shouldCreate, "RESTART_BM should be skipped (CR succeeded)")
+	assert.True(t, decision.remediated, "successful existing CR should cover equivalent event")
+	assert.False(t, decision.inProgress)
 
 	// Event 4: CR fails - annotation cleaned, retry allowed
 	updateRebootNodeStatus(ctx, t, crName1, "Failed")
@@ -791,9 +808,9 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event4)
 	assert.NoError(t, err)
-	shouldCreate, _, _, err = r.checkExistingCRStatus(ctx, event4, time.Now(), groupConfig)
+	decision, err = r.checkExistingCRStatus(ctx, event4, time.Now(), groupConfig)
 	assert.NoError(t, err)
-	assert.True(t, shouldCreate, "Should allow retry after failure")
+	assert.True(t, decision.shouldCreate, "Should allow retry after failure")
 
 	// Verify annotation cleaned.
 	// Use Eventually because RemoveGroupsFromState writes to the API server but
@@ -918,10 +935,11 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	shouldSkip, err := r.shouldSkipEvent(ctx, event2, groupConfig)
 	assert.NoError(t, err)
 	assert.False(t, shouldSkip, "Shouldn't valid health event")
-	shouldCreate, existingCR, _, err := r.checkExistingCRStatus(ctx, event2.HealthEvent, time.Now(), groupConfig)
+	decision, err := r.checkExistingCRStatus(ctx, event2.HealthEvent, time.Now(), groupConfig)
 	assert.NoError(t, err)
-	assert.False(t, shouldCreate, "COMPONENT_RESET should be skipped (same group as RESTART_BM)")
-	assert.Equal(t, crName1, existingCR)
+	assert.False(t, decision.shouldCreate, "COMPONENT_RESET should be skipped (same group as RESTART_BM)")
+	assert.True(t, decision.inProgress, "COMPONENT_RESET must wait for the in-progress superseding CR")
+	assert.Equal(t, crName1, decision.crName)
 
 	// Verify annotation unchanged
 	state, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
@@ -945,11 +963,12 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event3)
 	assert.NoError(t, err)
-	shouldCreate, _, remediatedByExistingCR, err := r.checkExistingCRStatus(ctx, event3, time.Now().Add(-time.Minute),
+	decision, err = r.checkExistingCRStatus(ctx, event3, time.Now().Add(-time.Minute),
 		groupConfig)
 	assert.NoError(t, err)
-	assert.False(t, shouldCreate, "COMPONENT_RESET should be skipped (superseding CR succeeded)")
-	assert.True(t, remediatedByExistingCR, "successful superseding CR should cover reset event")
+	assert.False(t, decision.shouldCreate, "COMPONENT_RESET should be skipped (superseding CR succeeded)")
+	assert.True(t, decision.remediated, "successful superseding CR should cover reset event")
+	assert.False(t, decision.inProgress)
 
 	// Event 4: COMPONENT_RESET in group reset with superseding group restart should be created after CR-1 fails
 	updateRebootNodeStatus(ctx, t, crName1, "Failed")
@@ -967,9 +986,9 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event4)
 	assert.NoError(t, err)
-	shouldCreate, _, _, err = r.checkExistingCRStatus(ctx, event4, time.Now(), groupConfig)
+	decision, err = r.checkExistingCRStatus(ctx, event4, time.Now(), groupConfig)
 	assert.NoError(t, err)
-	assert.True(t, shouldCreate, "Should allow retry after failure")
+	assert.True(t, decision.shouldCreate, "Should allow retry after failure")
 
 	// Verify annotation cleaned.
 	// Use Eventually because RemoveGroupsFromState writes to the API server but
@@ -1027,10 +1046,11 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event6)
 	assert.NoError(t, err)
-	shouldCreate, existingCR, _, err = r.checkExistingCRStatus(ctx, event6, time.Now(), groupConfig)
+	decision, err = r.checkExistingCRStatus(ctx, event6, time.Now(), groupConfig)
 	assert.NoError(t, err)
-	assert.False(t, shouldCreate, "COMPONENT_RESET should be skipped (same group as previous COMPONENT_RESET)")
-	assert.Equal(t, crName2, existingCR)
+	assert.False(t, decision.shouldCreate, "COMPONENT_RESET should be skipped (same group as previous COMPONENT_RESET)")
+	assert.True(t, decision.inProgress, "COMPONENT_RESET must wait for the in-progress reset CR")
+	assert.Equal(t, crName2, decision.crName)
 
 	// Verify annotation unchanged
 	state, _, err = r.annotationManager.GetRemediationState(ctx, nodeName)
@@ -1057,9 +1077,9 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event7.HealthEvent)
 	assert.NoError(t, err)
-	shouldCreate, existingCR, _, err = r.checkExistingCRStatus(ctx, event7.HealthEvent, time.Now(), groupConfig)
+	decision, err = r.checkExistingCRStatus(ctx, event7.HealthEvent, time.Now(), groupConfig)
 	assert.NoError(t, err)
-	assert.True(t, shouldCreate, "COMPONENT_RESET should be allowed (different group as previous COMPONENT_RESET)")
+	assert.True(t, decision.shouldCreate, "COMPONENT_RESET should be allowed (different group as previous COMPONENT_RESET)")
 
 	// Verify annotation unchanged
 	state, _, err = r.annotationManager.GetRemediationState(ctx, nodeName)
@@ -1097,9 +1117,9 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event8)
 	assert.NoError(t, err)
-	shouldCreate, existingCR, _, err = r.checkExistingCRStatus(ctx, event8, time.Now(), groupConfig)
+	decision, err = r.checkExistingCRStatus(ctx, event8, time.Now(), groupConfig)
 	assert.NoError(t, err)
-	assert.True(t, shouldCreate, "COMPONENT_RESET should be allowed (same group as previous "+
+	assert.True(t, decision.shouldCreate, "COMPONENT_RESET should be allowed (same group as previous "+
 		"COMPONENT_RESET that completed)")
 
 	// Verify annotation removed for CR-2 but not CR-3.
@@ -1184,7 +1204,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 	}
 
 	t.Run("CompleteFlow_WithEventLoop", func(t *testing.T) {
-		mockStore.updateCalled = 0
+		mockStore.updateCalled.Store(0)
 
 		beforeReceived := getCounterValue(t, metrics.TotalEventsReceived)
 		beforeDuration := getHistogramCount(t, metrics.EventHandlingDuration)
@@ -1239,35 +1259,32 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		}
 		assert.Equal(t, 1, crCount, "Only one CR should exist for the node at this point")
 
-		// Event 2: Set CR to InProgress, send duplicate event (different action, same group)
+		// Event 2: Set CR to InProgress, send duplicate event (different action, same group).
+		// Regression test for issue #1536: the duplicate must be requeued while the CR is
+		// in progress — not checkpointed or finalized — and automatically reconsidered
+		// once the CR reaches a terminal state.
 		updateRebootNodeStatus(ctx, t, crName, "InProgress")
 
 		// Record MongoDB update count before sending duplicate event
-		updateCountBefore := mockStore.updateCalled
+		updateCountBefore := mockStore.updateCalled.Load()
+		_, markedBeforeEvent2, _, _ := mockWatcher.GetCallCounts()
+		waitingBefore := getCounterVecValue(t, metrics.EventsProcessed, metrics.CRStatusWaiting, nodeName)
 
 		eventID2 := "test-event-id-2"
-		event2 := createQuarantineEvent(eventID2, nodeName, protos.RecommendedAction_RESTART_VM)
+		// The event predates the CR so it belongs to the running remediation session and
+		// must be marked remediated (not produce a second CR) once the CR succeeds.
+		event2 := createQuarantineEventCreatedAt(eventID2, nodeName, protos.RecommendedAction_RESTART_VM,
+			time.Now().Add(-time.Hour))
 		eventToken2 := datastore.EventWithToken{
 			Event:       map[string]interface{}(event2),
 			ResumeToken: []byte("test-token-2"),
 		}
 		mockWatcher.EventsChan <- eventToken2
 
-		// Wait for event to be processed and verify deduplication
+		// Wait until the event has been evaluated at least once against the in-progress CR
 		assert.Eventually(t, func() bool {
-			state, _, err = reconciler.annotationManager.GetRemediationState(ctx, nodeName)
-			if err != nil {
-				t.Logf("Failed to get remediation state: %v", err)
-				return false
-			}
-
-			// Check if the CR name is still the original one (deduplication working)
-			if grp, ok := state.EquivalenceGroups["restart"]; ok {
-				return grp.MaintenanceCR == crName
-			}
-
-			return false
-		}, 5*time.Second, 100*time.Millisecond, "Event should be processed and deduplicated")
+			return getCounterVecValue(t, metrics.EventsProcessed, metrics.CRStatusWaiting, nodeName) > waitingBefore
+		}, 5*time.Second, 50*time.Millisecond, "duplicate event should wait behind the in-progress CR")
 
 		// Verify annotation is still on the node and unchanged
 		node, err = testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
@@ -1290,8 +1307,38 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		}
 		assert.Equal(t, 1, crCount2, "Should still be only one CR (duplicate event was skipped)")
 
-		// Verify MongoDB update was NOT called (event was skipped due to deduplication)
-		assert.Equal(t, updateCountBefore, mockStore.updateCalled, "MongoDB update should not be called for skipped event")
+		// While waiting, the event must not be finalized: no status write, no checkpoint.
+		assert.Equal(t, updateCountBefore, mockStore.updateCalled.Load(),
+			"MongoDB update should not be called while the event waits for the in-progress CR")
+		_, markedWhileWaiting, _, _ := mockWatcher.GetCallCounts()
+		assert.Equal(t, markedBeforeEvent2, markedWhileWaiting,
+			"resume token should not advance while the event waits for the in-progress CR")
+
+		// Complete the CR: the waiting event must be reconsidered automatically and marked
+		// remediated (covered by the completed remediation session) without a new CR.
+		updateRebootNodeStatus(ctx, t, crName, "Succeeded")
+
+		assert.Eventually(t, func() bool {
+			return mockStore.updateCalled.Load() > updateCountBefore
+		}, 5*time.Second, 50*time.Millisecond,
+			"waiting event should be marked remediated after the CR succeeds")
+
+		assert.Eventually(t, func() bool {
+			_, marked, _, _ := mockWatcher.GetCallCounts()
+			return marked > markedBeforeEvent2
+		}, 5*time.Second, 50*time.Millisecond,
+			"waiting event should be checkpointed after it is resolved")
+
+		// Still exactly one CR: resolving the waiting event must not create a duplicate.
+		crList2, err = testDynamic.Resource(gvr).List(ctx, metav1.ListOptions{})
+		require.NoError(t, err)
+		crCount2 = 0
+		for _, item := range crList2.Items {
+			if item.Object["spec"].(map[string]interface{})["nodeName"] == nodeName {
+				crCount2++
+			}
+		}
+		assert.Equal(t, 1, crCount2, "resolved same-session event must not create a second CR")
 
 		// Event 3: Send unquarantine event
 		unquarantineEvent := createUnquarantineEvent(nodeName)
@@ -1330,10 +1377,12 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		afterDuration := getHistogramCount(t, metrics.EventHandlingDuration)
 		createdCount := getCounterVecValue(t, metrics.EventsProcessed, metrics.CRStatusCreated, nodeName)
 		skippedCount := getCounterVecValue(t, metrics.EventsProcessed, metrics.CRStatusSkipped, nodeName)
+		waitingCount := getCounterVecValue(t, metrics.EventsProcessed, metrics.CRStatusWaiting, nodeName)
 
 		assert.GreaterOrEqual(t, afterReceived, beforeReceived+3, "TotalEventsReceived should increment for all events")
 		assert.GreaterOrEqual(t, createdCount, float64(1), "EventsProcessed with cr_status=created should increment for CR creation")
-		assert.GreaterOrEqual(t, skippedCount, float64(1), "EventsProcessed with cr_status=skipped should increment for duplicate event")
+		assert.GreaterOrEqual(t, waitingCount, float64(1), "EventsProcessed with cr_status=waiting should increment while the duplicate event waits")
+		assert.GreaterOrEqual(t, skippedCount, float64(1), "EventsProcessed with cr_status=skipped should increment when the duplicate event is covered")
 		assert.GreaterOrEqual(t, afterDuration, beforeDuration+3, "EventHandlingDuration should record observations for all events")
 
 		// Cleanup
@@ -1420,6 +1469,20 @@ func createQuarantineEvent(eventID string, nodeName string, action protos.Recomm
 	}
 }
 
+// createQuarantineEventCreatedAt is createQuarantineEvent with an explicit document
+// creation time, used to position the event inside or outside a remediation session.
+func createQuarantineEventCreatedAt(
+	eventID string,
+	nodeName string,
+	action protos.RecommendedAction,
+	createdAt time.Time,
+) datastore.Event {
+	event := createQuarantineEvent(eventID, nodeName, action)
+	event["fullDocument"].(map[string]interface{})["createdAt"] = createdAt.UTC().Format(time.RFC3339Nano)
+
+	return event
+}
+
 // Helper to create unquarantine event
 func createUnquarantineEvent(nodeName string) datastore.Event {
 	return datastore.Event{
@@ -1458,7 +1521,7 @@ func createCancelledEvent(eventID string, nodeName string, action protos.Recomme
 
 // TestReconciler_CancelledEventCleansAnnotation tests that a cancelled event removes the equivalence group from the annotation
 func TestReconciler_CancelledEventCleansAnnotation(t *testing.T) {
-	mockStore.updateCalled = 0
+	mockStore.updateCalled.Store(0)
 	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
 	defer cancel()
 
@@ -1532,7 +1595,7 @@ func TestReconciler_CancelledEventCleansAnnotation(t *testing.T) {
 
 // TestReconciler_CancelledEventClearsAllGroups tests that a cancelled event clears all equivalence groups
 func TestReconciler_CancelledEventClearsAllGroups(t *testing.T) {
-	mockStore.updateCalled = 0
+	mockStore.updateCalled.Store(0)
 	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
 	defer cancel()
 
@@ -1613,7 +1676,7 @@ func TestReconciler_CancelledEventClearsAllGroups(t *testing.T) {
 
 // TestReconciler_CancelledAndUnQuarantinedClearAllState tests that Cancelled followed by UnQuarantined clears all state
 func TestReconciler_CancelledAndUnQuarantinedClearAllState(t *testing.T) {
-	mockStore.updateCalled = 0
+	mockStore.updateCalled.Store(0)
 	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
 	defer cancel()
 
@@ -1846,7 +1909,7 @@ func cleanupNodeAnnotations(ctx context.Context, t *testing.T, nodeName string) 
 
 // TestMetrics_CRGenerationDuration tests that CR generation duration metric is recorded
 func TestMetrics_CRGenerationDuration(t *testing.T) {
-	mockStore.updateCalled = 0
+	mockStore.updateCalled.Store(0)
 	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
 	defer cancel()
 
@@ -1994,7 +2057,7 @@ func makeColdStartHealthEvent(
 //  2. HandleColdStart enqueues the missed event into the controller workqueue
 //  3. Controller-runtime processes it and FR creates a maintenance CR
 func TestHandleColdStart_RemediationFlow(t *testing.T) {
-	mockStore.updateCalled = 0
+	mockStore.updateCalled.Store(0)
 
 	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
 	defer cancel()
@@ -2059,7 +2122,7 @@ func TestHandleColdStart_RemediationFlow(t *testing.T) {
 //  2. While FR was down, the event was cancelled
 //  3. HandleColdStart picks up the cancellation and clears remediation state
 func TestHandleColdStart_CancellationFlow(t *testing.T) {
-	mockStore.updateCalled = 0
+	mockStore.updateCalled.Store(0)
 
 	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
 	defer cancel()

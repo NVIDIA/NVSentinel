@@ -307,6 +307,11 @@ func TestStateTransitionValidProgression(t *testing.T) {
 		// Partial-recovery recompute between terminal remediation outcomes (fault-remediation)
 		{"RemediationFailed to RemediationSucceeded", string(RemediationFailedLabelValue), RemediationSucceededLabelValue, true, false},
 		{"RemediationSucceeded to RemediationFailed", string(RemediationSucceededLabelValue), RemediationFailedLabelValue, true, false},
+		// A new remediation cycle can start after a terminal remediation outcome while the node
+		// stays quarantined: a post-session event creates a new CR after the previous CR
+		// completed (issue #1536), and a failed CR is retried with a new CR (fault-remediation).
+		{"RemediationSucceeded to Remediating", string(RemediationSucceededLabelValue), RemediatingLabelValue, true, false},
+		{"RemediationFailed to Remediating", string(RemediationFailedLabelValue), RemediatingLabelValue, true, false},
 
 		// Unexpected progressions (return error but label is still updated)
 		// This allows callers to emit error metrics while labels reflect reality
