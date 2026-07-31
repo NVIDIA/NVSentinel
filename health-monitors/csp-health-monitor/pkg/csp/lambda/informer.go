@@ -57,7 +57,29 @@ func NewNodeInformer(k8sClient kubernetes.Interface) (*NodeInformer, error) {
 			ni.handleNodeAdd(node)
 		},
 		DeleteFunc: func(obj interface{}) {
-			node := obj.(*v1.Node)
+			// client-go can deliver a DeletedFinalStateUnknown tombstone when
+			// the informer misses a delete event (e.g. after a watch/relist
+			// disruption). Unwrap it before the type assertion, otherwise a
+			// missed delete panics the entire process.
+			node, ok := obj.(*v1.Node)
+			if !ok {
+				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+				if !ok {
+					slog.Error("Lambda node informer: unexpected delete object type",
+						"type", fmt.Sprintf("%T", obj))
+
+					return
+				}
+
+				node, ok = tombstone.Obj.(*v1.Node)
+				if !ok {
+					slog.Error("Lambda node informer: tombstone contained non-Node object",
+						"type", fmt.Sprintf("%T", tombstone.Obj))
+
+					return
+				}
+			}
+
 			ni.handleNodeDelete(node)
 		},
 	})
@@ -73,6 +95,15 @@ func NewNodeInformer(k8sClient kubernetes.Interface) (*NodeInformer, error) {
 func (ni *NodeInformer) Start(ctx context.Context) {
 	slog.Info("Starting Lambda node informer")
 
+	// Wire ctx cancellation to Stop() *before* the blocking cache sync wait so
+	// that a cancelled ctx during startup (e.g. app shutdown, unreachable API
+	// server) closes stopCh promptly. WaitForCacheSync returns as soon as
+	// stopCh is closed; otherwise it would block indefinitely.
+	go func() {
+		<-ctx.Done()
+		ni.Stop()
+	}()
+
 	go ni.informer.Run(ni.stopCh)
 
 	if !cache.WaitForCacheSync(ni.stopCh, ni.informer.HasSynced) {
@@ -85,11 +116,6 @@ func (ni *NodeInformer) Start(ctx context.Context) {
 	ni.mu.RLock()
 	slog.Info("Lambda node informer cache synced successfully", "instanceToNodeMap", ni.instanceToNodeName)
 	ni.mu.RUnlock()
-
-	go func() {
-		<-ctx.Done()
-		ni.Stop()
-	}()
 }
 
 func (ni *NodeInformer) Stop() {

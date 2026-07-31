@@ -199,6 +199,7 @@ func run() error {
 		slog.Info("Initializing datastore connection for sidecar...")
 
 		var err error
+
 		store, err = datastore.NewStore(gCtx, &appCfg.databaseClientCertMountPath)
 		if err != nil {
 			return fmt.Errorf("failed to initialize datastore: %w", err)

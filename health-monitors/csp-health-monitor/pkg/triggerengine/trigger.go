@@ -237,21 +237,22 @@ func (e *Engine) processHealthyCandidates(ctx context.Context, events []model.Ma
 
 		_, alreadyMonitoring := e.monitoredNodes.LoadOrStore(event.NodeName, true)
 		if !alreadyMonitoring {
-			slog.Debug(
-				"Node %s is not Ready yet. Starting background monitoring for event %s.",
-				event.NodeName,
-				event.EventID,
-			)
+			slog.Debug("Node not Ready yet; starting background monitoring for event",
+				"node", event.NodeName, "eventID", event.EventID)
 
 			metrics.NodeReadinessMonitoringStarted.WithLabelValues(event.NodeName).Inc()
 
-			go e.monitorNodeReadiness(context.Background(), event.NodeName, event.EventID, event)
-		} else {
-			slog.Debug(
-				"Node %s is already being monitored. Deferring healthy trigger for event %s.",
-				event.NodeName,
-				event.EventID,
+			// Deliberately detach from the poll-cycle ctx: node-readiness monitoring
+			// must outlive the current poll and only terminate when the node becomes
+			// Ready or the process exits.
+			//nolint:gosec // G118: intentional; see comment above
+			go e.monitorNodeReadiness(
+				context.Background(),
+				event.NodeName, event.EventID, event,
 			)
+		} else {
+			slog.Debug("Node already being monitored; deferring healthy trigger for event",
+				"node", event.NodeName, "eventID", event.EventID)
 		}
 	}
 }

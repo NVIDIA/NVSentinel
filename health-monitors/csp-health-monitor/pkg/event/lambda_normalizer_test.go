@@ -32,7 +32,6 @@ func TestLambdaNormalizer_Normalize(t *testing.T) {
 		testCluster = "test-cluster"
 	)
 
-	triggerLimit := 30 * time.Minute
 	notBefore := time.Now().UTC().Add(2 * time.Hour)
 	notBeforeDeadline := notBefore.Add(4 * time.Hour)
 	notAfter := notBefore.Add(1 * time.Hour)
@@ -46,43 +45,44 @@ func TestLambdaNormalizer_Normalize(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "emergency sets scheduledStartTime = now + triggerTimeLimit",
+			name: "emergency leaves scheduledStartTime and scheduledEndTime nil",
 			meta: LambdaEventMetadata{
-				ID:               testID,
-				Urgency:          UrgencyEmergency,
-				Status:           "scheduled",
-				NodeName:         testNode,
-				ClusterName:      testCluster,
-				TriggerTimeLimit: triggerLimit,
+				ID:          testID,
+				Urgency:     UrgencyEmergency,
+				Status:      "scheduled",
+				NodeName:    testNode,
+				ClusterName: testCluster,
 			},
 			check: func(t *testing.T, e *model.MaintenanceEvent) {
-				require.NotNil(t, e.ScheduledStartTime)
-				// scheduledStartTime must be approximately now + triggerLimit
-				lo := time.Now().UTC().Add(triggerLimit - 2*time.Second)
-				hi := time.Now().UTC().Add(triggerLimit + 2*time.Second)
-				assert.True(t, e.ScheduledStartTime.After(lo) && e.ScheduledStartTime.Before(hi),
-					"scheduledStartTime %v should be within 2s of now+%v", *e.ScheduledStartTime, triggerLimit)
+				// Emergency events rely on FindEmergencyEventsToTriggerQuarantine
+				// (which filters on metadata.urgency and has no time-window check),
+				// not on the scheduledStartTime range query. Both time fields must
+				// stay nil so we don't pollute downstream dashboards / notifier
+				// with a synthetic "scheduled in 30 min" value.
+				assert.Nil(t, e.ScheduledStartTime, "emergency events must not synthesize scheduledStartTime")
 				assert.Nil(t, e.ScheduledEndTime, "emergency events have no scheduled end")
+				assert.Equal(t, model.MetadataUrgencyEmergency, e.Metadata["urgency"],
+					"metadata.urgency must match what FindEmergencyEventsToTriggerQuarantine filters on")
 				assert.Equal(t, model.StatusDetected, e.Status)
+				assert.Equal(t, model.TypeUnscheduled, e.MaintenanceType,
+					"emergency events are unplanned; MaintenanceType should be UNSCHEDULED")
+				assert.Equal(t, model.CSPLambda, e.CSP)
 				assert.Equal(t, "NONE", e.RecommendedAction)
 			},
 		},
 		{
-			name: "emergency uses 30m fallback when TriggerTimeLimit is zero",
+			name: "emergency with populated not_before still leaves scheduledStartTime nil",
 			meta: LambdaEventMetadata{
-				ID:               testID,
-				Urgency:          UrgencyEmergency,
-				Status:           "scheduled",
-				NodeName:         testNode,
-				ClusterName:      testCluster,
-				TriggerTimeLimit: 0,
+				ID:          testID,
+				Urgency:     UrgencyEmergency,
+				Status:      "scheduled",
+				NotBefore:   &notBefore, // API sometimes returns this; must be ignored for emergency
+				NodeName:    testNode,
+				ClusterName: testCluster,
 			},
 			check: func(t *testing.T, e *model.MaintenanceEvent) {
-				require.NotNil(t, e.ScheduledStartTime)
-				lo := time.Now().UTC().Add(30*time.Minute - 2*time.Second)
-				hi := time.Now().UTC().Add(30*time.Minute + 2*time.Second)
-				assert.True(t, e.ScheduledStartTime.After(lo) && e.ScheduledStartTime.Before(hi),
-					"scheduledStartTime %v should be within 2s of now+30m", *e.ScheduledStartTime)
+				assert.Nil(t, e.ScheduledStartTime)
+				assert.Nil(t, e.ScheduledEndTime)
 			},
 		},
 		{
@@ -96,7 +96,6 @@ func TestLambdaNormalizer_Normalize(t *testing.T) {
 				NotAfter:          &notAfter,
 				NodeName:          testNode,
 				ClusterName:       testCluster,
-				TriggerTimeLimit:  triggerLimit,
 			},
 			check: func(t *testing.T, e *model.MaintenanceEvent) {
 				require.NotNil(t, e.ScheduledStartTime)
@@ -104,18 +103,19 @@ func TestLambdaNormalizer_Normalize(t *testing.T) {
 				require.NotNil(t, e.ScheduledEndTime)
 				assert.Equal(t, notBeforeDeadline.Truncate(time.Second), e.ScheduledEndTime.Truncate(time.Second))
 				assert.Equal(t, notAfter.Format(time.RFC3339), e.Metadata["notAfter"])
+				assert.Equal(t, model.TypeScheduled, e.MaintenanceType,
+					"non-emergency events remain SCHEDULED")
 			},
 		},
 		{
 			name: "metadata contains urgency and detail",
 			meta: LambdaEventMetadata{
-				ID:               testID,
-				Urgency:          UrgencyEmergency,
-				Detail:           "cooling failure",
-				Status:           "scheduled",
-				NodeName:         testNode,
-				ClusterName:      testCluster,
-				TriggerTimeLimit: triggerLimit,
+				ID:          testID,
+				Urgency:     UrgencyEmergency,
+				Detail:      "cooling failure",
+				Status:      "scheduled",
+				NodeName:    testNode,
+				ClusterName: testCluster,
 			},
 			check: func(t *testing.T, e *model.MaintenanceEvent) {
 				assert.Equal(t, UrgencyEmergency, e.Metadata["urgency"])
@@ -127,13 +127,12 @@ func TestLambdaNormalizer_Normalize(t *testing.T) {
 		{
 			name: "notAfter absent when nil",
 			meta: LambdaEventMetadata{
-				ID:               testID,
-				Urgency:          UrgencyEmergency,
-				Status:           "scheduled",
-				NotAfter:         nil,
-				NodeName:         testNode,
-				ClusterName:      testCluster,
-				TriggerTimeLimit: triggerLimit,
+				ID:          testID,
+				Urgency:     UrgencyEmergency,
+				Status:      "scheduled",
+				NotAfter:    nil,
+				NodeName:    testNode,
+				ClusterName: testCluster,
 			},
 			check: func(t *testing.T, e *model.MaintenanceEvent) {
 				_, ok := e.Metadata["notAfter"]
@@ -143,14 +142,13 @@ func TestLambdaNormalizer_Normalize(t *testing.T) {
 		{
 			name: "LastUpdated is written into metadata.providerLastUpdated",
 			meta: LambdaEventMetadata{
-				ID:               testID,
-				Urgency:          UrgencyCriticalWithDeadline,
-				Status:           "scheduled",
-				NotBefore:        &notBefore,
-				NodeName:         testNode,
-				ClusterName:      testCluster,
-				TriggerTimeLimit: triggerLimit,
-				LastUpdated:      ptr(time.Date(2026, 7, 28, 16, 32, 36, 509041000, time.UTC)),
+				ID:          testID,
+				Urgency:     UrgencyCriticalWithDeadline,
+				Status:      "scheduled",
+				NotBefore:   &notBefore,
+				NodeName:    testNode,
+				ClusterName: testCluster,
+				LastUpdated: ptr(time.Date(2026, 7, 28, 16, 32, 36, 509041000, time.UTC)),
 			},
 			check: func(t *testing.T, e *model.MaintenanceEvent) {
 				got, ok := e.Metadata[model.ProviderLastUpdatedKey]
@@ -161,14 +159,13 @@ func TestLambdaNormalizer_Normalize(t *testing.T) {
 		{
 			name: "LastUpdated nil leaves providerLastUpdated unset",
 			meta: LambdaEventMetadata{
-				ID:               testID,
-				Urgency:          UrgencyCriticalWithDeadline,
-				Status:           "scheduled",
-				NotBefore:        &notBefore,
-				NodeName:         testNode,
-				ClusterName:      testCluster,
-				TriggerTimeLimit: triggerLimit,
-				LastUpdated:      nil,
+				ID:          testID,
+				Urgency:     UrgencyCriticalWithDeadline,
+				Status:      "scheduled",
+				NotBefore:   &notBefore,
+				NodeName:    testNode,
+				ClusterName: testCluster,
+				LastUpdated: nil,
 			},
 			check: func(t *testing.T, e *model.MaintenanceEvent) {
 				_, ok := e.Metadata[model.ProviderLastUpdatedKey]

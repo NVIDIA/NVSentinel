@@ -37,11 +37,11 @@ const (
 )
 
 type Config struct {
-	MaintenanceEventPollIntervalSeconds       int       `toml:"maintenanceEventPollIntervalSeconds"`
-	TriggerQuarantineWorkflowTimeLimitMinutes int       `toml:"triggerQuarantineWorkflowTimeLimitMinutes"`
-	PostMaintenanceHealthyDelayMinutes        int       `toml:"postMaintenanceHealthyDelayMinutes"`
-	NodeReadinessTimeoutMinutes               int       `toml:"nodeReadinessTimeoutMinutes"`
-	ClusterName                               string    `toml:"clusterName"`
+	MaintenanceEventPollIntervalSeconds       int          `toml:"maintenanceEventPollIntervalSeconds"`
+	TriggerQuarantineWorkflowTimeLimitMinutes int          `toml:"triggerQuarantineWorkflowTimeLimitMinutes"`
+	PostMaintenanceHealthyDelayMinutes        int          `toml:"postMaintenanceHealthyDelayMinutes"`
+	NodeReadinessTimeoutMinutes               int          `toml:"nodeReadinessTimeoutMinutes"`
+	ClusterName                               string       `toml:"clusterName"`
 	GCP                                       GCPConfig    `toml:"gcp"`
 	AWS                                       AWSConfig    `toml:"aws"`
 	Lambda                                    LambdaConfig `toml:"lambda"`
@@ -185,9 +185,23 @@ func validateGeneralConfig(cfg *Config) error {
 	return nil
 }
 
-// validateCSPConfig checks GCP/AWS polling intervals and ensures only one CSP is enabled.
+// validateCSPConfig checks per-CSP polling intervals, Lambda event-source
+// exclusivity, and that at most one CSP is enabled.
 func validateCSPConfig(cfg *Config) error {
-	// Validate GCP polling interval
+	if err := validateCSPPollingIntervals(cfg); err != nil {
+		return err
+	}
+
+	if err := validateLambdaEventSource(cfg); err != nil {
+		return err
+	}
+
+	return validateSingleCSPEnabled(cfg)
+}
+
+// validateCSPPollingIntervals enforces the minimum polling interval on each
+// enabled CSP.
+func validateCSPPollingIntervals(cfg *Config) error {
 	if cfg.GCP.Enabled && cfg.GCP.APIPollingIntervalSeconds < minCSPSpecificPollingIntervalSeconds {
 		return fmt.Errorf(
 			"gcp.apiPollingIntervalSeconds must be at least %d seconds (got %d)",
@@ -196,7 +210,6 @@ func validateCSPConfig(cfg *Config) error {
 		)
 	}
 
-	// Validate AWS polling interval
 	if cfg.AWS.Enabled && cfg.AWS.PollingIntervalSeconds < minCSPSpecificPollingIntervalSeconds {
 		return fmt.Errorf(
 			"aws.pollingIntervalSeconds must be at least %d seconds (got %d)",
@@ -205,7 +218,6 @@ func validateCSPConfig(cfg *Config) error {
 		)
 	}
 
-	// Validate Lambda polling interval
 	if cfg.Lambda.Enabled && cfg.Lambda.PollingIntervalSeconds < minCSPSpecificPollingIntervalSeconds {
 		return fmt.Errorf(
 			"lambda.pollingIntervalSeconds must be at least %d seconds (got %d)",
@@ -214,29 +226,47 @@ func validateCSPConfig(cfg *Config) error {
 		)
 	}
 
-	// Validate Lambda event source: exactly one of apiEndpoint or mockEventsFilePath must be set.
-	if cfg.Lambda.Enabled {
-		if cfg.Lambda.APIEndpoint == "" && cfg.Lambda.MockEventsFilePath == "" {
-			return fmt.Errorf("lambda: one of apiEndpoint or mockEventsFilePath must be set")
-		}
-		if cfg.Lambda.APIEndpoint != "" && cfg.Lambda.MockEventsFilePath != "" {
-			return fmt.Errorf("lambda: apiEndpoint and mockEventsFilePath are mutually exclusive")
-		}
+	return nil
+}
+
+// validateLambdaEventSource ensures exactly one of apiEndpoint or
+// mockEventsFilePath is set when Lambda is enabled.
+func validateLambdaEventSource(cfg *Config) error {
+	if !cfg.Lambda.Enabled {
+		return nil
 	}
 
-	// Ensure only one CSP is enabled
+	if cfg.Lambda.APIEndpoint == "" && cfg.Lambda.MockEventsFilePath == "" {
+		return fmt.Errorf("lambda: one of apiEndpoint or mockEventsFilePath must be set")
+	}
+
+	if cfg.Lambda.APIEndpoint != "" && cfg.Lambda.MockEventsFilePath != "" {
+		return fmt.Errorf("lambda: apiEndpoint and mockEventsFilePath are mutually exclusive")
+	}
+
+	return nil
+}
+
+// validateSingleCSPEnabled refuses configs that enable more than one CSP.
+func validateSingleCSPEnabled(cfg *Config) error {
 	enabledCount := 0
+
 	if cfg.GCP.Enabled {
 		enabledCount++
 	}
+
 	if cfg.AWS.Enabled {
 		enabledCount++
 	}
+
 	if cfg.Lambda.Enabled {
 		enabledCount++
 	}
+
 	if enabledCount > 1 {
-		return fmt.Errorf("multiple CSPs enabled: only one of GCP, AWS, or Lambda can be enabled at a time in the configuration")
+		return fmt.Errorf(
+			"multiple CSPs enabled: only one of GCP, AWS, or Lambda can be enabled at a time in the configuration",
+		)
 	}
 
 	return nil

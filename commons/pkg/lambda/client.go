@@ -32,7 +32,7 @@ import (
 
 const (
 	// APIKeyEnvVar is the environment variable name for the Lambda API key.
-	APIKeyEnvVar = "LAMBDA_API_KEY"
+	APIKeyEnvVar = "LAMBDA_API_KEY" //nolint:gosec // env var name, not the credential itself
 
 	// DefaultTimeout is the default HTTP request timeout for a single attempt.
 	DefaultTimeout = 30 * time.Second
@@ -138,9 +138,14 @@ func (c *Client) Get(ctx context.Context, path string, query url.Values, out any
 		Jitter:   c.retry.jitter,
 	}
 
-	var lastErr error
+	var (
+		lastErr  error
+		attempts int
+	)
 
 	err := wait.ExponentialBackoffWithContext(ctx, backoff, func(ctx context.Context) (bool, error) {
+		attempts++
+
 		body, statusCode, doErr := c.doOnce(ctx, u, apiKey)
 		if doErr != nil {
 			// Transport-level failures (dial, TLS, i/o) are transient.
@@ -162,25 +167,35 @@ func (c *Client) Get(ctx context.Context, path string, query url.Values, out any
 			return false, fmt.Errorf("GET %s: status %d: %s", u, statusCode, body)
 		}
 
-		if out != nil {
-			if err := json.Unmarshal(body, out); err != nil {
-				return false, fmt.Errorf("unmarshal response: %w", err)
-			}
-		}
-
-		return true, nil
+		return true, decodeBody(body, out)
 	})
-
 	if err == nil {
 		return nil
 	}
 
-	// Retry budget exhausted or context cancelled — surface the last observed error.
+	// Retry budget exhausted or context cancelled — surface the last observed error
+	// and the actual number of attempts made (not the configured max, which would
+	// misreport when we bailed early on a permanent error or cancelled context).
 	if lastErr != nil {
-		return fmt.Errorf("after %d attempts: %w", c.retry.maxAttempts, lastErr)
+		return fmt.Errorf("after %d attempts: %w", attempts, lastErr)
 	}
 
 	return err
+}
+
+// decodeBody unmarshals body into out when out is non-nil, otherwise discards
+// body. Extracted from Get so the retry closure stays under the cyclomatic
+// complexity limit.
+func decodeBody(body []byte, out any) error {
+	if out == nil {
+		return nil
+	}
+
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	return nil
 }
 
 // doOnce performs a single request. It returns the response body and status

@@ -33,8 +33,8 @@ import (
 	srv "github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp"
-	awsclient    "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp/aws"
-	gcpclient    "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp/gcp"
+	awsclient "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp/aws"
+	gcpclient "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp/gcp"
 	lambdaclient "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp/lambda"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/datastore"
 	eventpkg "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/event"
@@ -167,6 +167,7 @@ func run() error {
 		slog.Info("Initializing datastore connection...")
 
 		var err error
+
 		store, err = datastore.NewStore(gCtx, databaseClientCertMountPath)
 		if err != nil {
 			return fmt.Errorf("failed to initialize datastore: %w", err)
@@ -266,16 +267,19 @@ func initActiveMonitor(
 	if cfg.Lambda.Enabled {
 		slog.Info("Lambda configuration is enabled.")
 
-		triggerTimeLimit := time.Duration(cfg.TriggerQuarantineWorkflowTimeLimitMinutes) * time.Minute
-		lambdaMonitor, err := lambdaclient.NewClient(ctx, cfg.Lambda, cfg.ClusterName, triggerTimeLimit, kubeconfigPath, store)
+		lambdaMonitor, err := lambdaclient.NewClient(ctx, cfg.Lambda, cfg.ClusterName, kubeconfigPath, store)
 		if err != nil {
-			metrics.CSPMonitorErrors.WithLabelValues(string(lambdaclient.CSPLambda), "init_error").Inc()
+			metrics.CSPMonitorErrors.WithLabelValues(string(model.CSPLambda), "init_error").Inc()
 			slog.Error("Failed to initialize Lambda monitor.", "error", err)
 
 			return nil
 		}
 
-		slog.Info("Lambda mock monitor initialized", "eventsFile", cfg.Lambda.MockEventsFilePath)
+		if cfg.Lambda.MockEventsFilePath != "" {
+			slog.Info("Lambda mock monitor initialized", "eventsFile", cfg.Lambda.MockEventsFilePath)
+		} else {
+			slog.Info("Lambda monitor initialized", "endpoint", cfg.Lambda.APIEndpoint)
+		}
 
 		return lambdaMonitor
 	}

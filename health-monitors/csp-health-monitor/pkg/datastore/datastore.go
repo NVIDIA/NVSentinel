@@ -152,39 +152,64 @@ func (s *DatabaseStore) UpsertMaintenanceEvent(ctx context.Context, event *model
 	filter := map[string]interface{}{"eventId": event.EventID}
 	event.LastUpdatedTimestamp = time.Now().UTC()
 
-	needsExisting := hasProviderLastUpdated(event) ||
-		(event.Status == model.StatusMaintenanceComplete && event.ActualEndTime != nil)
-
-	if needsExisting {
-		var existing model.MaintenanceEvent
-
-		found, err := client.FindOneWithExists(ctx, s.databaseClient, filter, nil, &existing)
-		if err != nil {
-			slog.Warn("UpsertMaintenanceEvent: failed to fetch existing event; proceeding without pre-write checks",
-				"eventID", event.EventID, "error", err)
-		} else if found {
-			// (1) Skip if CSP has not changed the event since we last stored it.
-			if shouldSkipUnchangedEvent(&existing, event) {
-				slog.Debug("UpsertMaintenanceEvent: providerLastUpdated unchanged, skipping upsert",
-					"eventID", event.EventID,
-					"providerLastUpdated", event.Metadata[model.ProviderLastUpdatedKey])
-
-				return nil
-			}
-
-			// (2) Preserve stored actualEndTime for MAINTENANCE_COMPLETE.
-			if event.Status == model.StatusMaintenanceComplete && event.ActualEndTime != nil &&
-				existing.ActualEndTime != nil {
-				slog.Debug("UpsertMaintenanceEvent: preserving existing actualEndTime",
-					"eventID", event.EventID, "actualEndTime", existing.ActualEndTime)
-				event.ActualEndTime = existing.ActualEndTime
-			}
+	if hasProviderLastUpdated(event) ||
+		(event.Status == model.StatusMaintenanceComplete && event.ActualEndTime != nil) {
+		if skip := s.reconcileWithExisting(ctx, filter, event); skip {
+			return nil
 		}
 	}
 
 	slog.Debug("Upserting event", "eventID", event.EventID, "status", event.Status)
 
 	return s.executeUpsert(ctx, filter, event)
+}
+
+// reconcileWithExisting fetches the currently-stored event for this ID and
+// applies two pre-write checks against it:
+//
+//  1. If the CSP hasn't changed the event since we last stored it
+//     (providerLastUpdated matches), returns skip=true so the caller can bail
+//     out of the write entirely.
+//  2. For MAINTENANCE_COMPLETE events, preserves the stored actualEndTime
+//     onto the incoming event so repeated polls don't keep resetting it.
+//
+// If the fetch itself fails we log and return skip=false, so we still write
+// (best-effort) rather than silently dropping the update.
+func (s *DatabaseStore) reconcileWithExisting(
+	ctx context.Context,
+	filter map[string]interface{},
+	event *model.MaintenanceEvent,
+) bool {
+	var existing model.MaintenanceEvent
+
+	found, err := client.FindOneWithExists(ctx, s.databaseClient, filter, nil, &existing)
+	if err != nil {
+		slog.Warn("UpsertMaintenanceEvent: failed to fetch existing event; proceeding without pre-write checks",
+			"eventID", event.EventID, "error", err)
+
+		return false
+	}
+
+	if !found {
+		return false
+	}
+
+	if shouldSkipUnchangedEvent(&existing, event) {
+		slog.Debug("UpsertMaintenanceEvent: providerLastUpdated unchanged, skipping upsert",
+			"eventID", event.EventID,
+			"providerLastUpdated", event.Metadata[model.ProviderLastUpdatedKey])
+
+		return true
+	}
+
+	if event.Status == model.StatusMaintenanceComplete && event.ActualEndTime != nil &&
+		existing.ActualEndTime != nil {
+		slog.Debug("UpsertMaintenanceEvent: preserving existing actualEndTime",
+			"eventID", event.EventID, "actualEndTime", existing.ActualEndTime)
+		event.ActualEndTime = existing.ActualEndTime
+	}
+
+	return false
 }
 
 // hasProviderLastUpdated reports whether event.Metadata carries the
@@ -298,7 +323,7 @@ func (s *DatabaseStore) FindEmergencyEventsToTriggerQuarantine(
 	ctx context.Context,
 ) ([]model.MaintenanceEvent, error) {
 	statusFilter := client.BuildStatusFilter("status", model.StatusDetected)
-	urgencyFilter := client.NewFilterBuilder().Eq("metadata.urgency", "EMERGENCY").Build()
+	urgencyFilter := client.NewFilterBuilder().Eq("metadata.urgency", model.MetadataUrgencyEmergency).Build()
 
 	filter := client.NewFilterBuilder().
 		And(statusFilter, urgencyFilter).

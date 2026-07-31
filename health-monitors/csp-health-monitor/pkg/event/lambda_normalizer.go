@@ -48,13 +48,7 @@ type LambdaEventMetadata struct {
 	LastUpdated *time.Time
 	NodeName    string
 	ClusterName string
-	// TriggerTimeLimit is the configured quarantine workflow time limit.
-	// Emergency events set scheduledStartTime = now + TriggerTimeLimit so the
-	// trigger-engine query (scheduledStartTime <= now+limit) keeps finding them
-	// across every poll cycle until they leave DETECTED status.
-	TriggerTimeLimit time.Duration
 }
-
 
 // LambdaNormalizer implements the Normalizer interface for Lambda mock events.
 type LambdaNormalizer struct{}
@@ -63,7 +57,9 @@ var _ Normalizer = (*LambdaNormalizer)(nil)
 
 // Normalize converts a Lambda mock event into a MaintenanceEvent.
 // rawEvent is unused; all fields are conveyed via additionalInfo[0] (LambdaEventMetadata).
-func (n *LambdaNormalizer) Normalize(rawEvent interface{}, additionalInfo ...interface{}) (*model.MaintenanceEvent, error) {
+func (n *LambdaNormalizer) Normalize(
+	rawEvent interface{}, additionalInfo ...interface{},
+) (*model.MaintenanceEvent, error) {
 	if len(additionalInfo) < 1 {
 		return nil, fmt.Errorf("LambdaNormalizer: missing LambdaEventMetadata")
 	}
@@ -80,23 +76,15 @@ func (n *LambdaNormalizer) Normalize(rawEvent interface{}, additionalInfo ...int
 	internalStatus, cspStatus, actualStartTime, actualEndTime := mapLambdaStatus(meta.Status)
 
 	// Map urgency → scheduling fields.
-	// EMERGENCY:              ScheduledStartTime = now so the emergency query fires on next poll.
-	// CRITICAL_WITH_DEADLINE: ScheduledStartTime = not_before, ScheduledEndTime = not_before_deadline.
-	scheduledStartTime := meta.NotBefore
-	scheduledEndTime := meta.NotBeforeDeadline
-
-	if meta.Urgency == UrgencyEmergency {
-		// Set scheduledStartTime far enough in the future that the trigger-engine
-		// query (scheduledStartTime <= now+triggerTimeLimit) keeps finding this
-		// event across every poll cycle. Without this, an event stamped "now" at
-		// normalization time falls below the query's lower bound 60s later.
-		limit := meta.TriggerTimeLimit
-		if limit <= 0 {
-			limit = 30 * time.Minute // safe fallback matching config default
-		}
-		t := time.Now().UTC().Add(limit)
-		scheduledStartTime = &t
-		scheduledEndTime = nil
+	//   EMERGENCY:              no natural scheduledStartTime — leave both fields nil and
+	//                           rely on FindEmergencyEventsToTriggerQuarantine (which
+	//                           filters on metadata.urgency = MetadataUrgencyEmergency and
+	//                           applies no time-window check) to fire quarantine.
+	//   CRITICAL_WITH_DEADLINE: ScheduledStartTime = not_before, ScheduledEndTime = not_before_deadline.
+	var scheduledStartTime, scheduledEndTime *time.Time
+	if meta.Urgency != UrgencyEmergency {
+		scheduledStartTime = meta.NotBefore
+		scheduledEndTime = meta.NotBeforeDeadline
 	}
 
 	metadata := map[string]string{
@@ -112,20 +100,26 @@ func (n *LambdaNormalizer) Normalize(rawEvent interface{}, additionalInfo ...int
 		metadata[model.ProviderLastUpdatedKey] = meta.LastUpdated.UTC().Format(time.RFC3339Nano)
 	}
 
-	slog.Debug("Normalizing Lambda mock event",
+	slog.Debug("Normalizing Lambda event",
 		"eventID", meta.ID,
 		"urgency", meta.Urgency,
 		"status", meta.Status,
 		"node", meta.NodeName)
 
+	// Emergency events are unplanned/urgent; everything else is a scheduled maintenance.
+	maintenanceType := model.TypeScheduled
+	if meta.Urgency == UrgencyEmergency {
+		maintenanceType = model.TypeUnscheduled
+	}
+
 	return &model.MaintenanceEvent{
 		EventID:                meta.ID,
-		CSP:                    "lambda",
+		CSP:                    model.CSPLambda,
 		ClusterName:            meta.ClusterName,
 		ResourceType:           lambdaResourceType,
 		ResourceID:             meta.ID,
 		NodeName:               meta.NodeName,
-		MaintenanceType:        model.TypeScheduled,
+		MaintenanceType:        maintenanceType,
 		Status:                 internalStatus,
 		CSPStatus:              cspStatus,
 		ScheduledStartTime:     scheduledStartTime,
