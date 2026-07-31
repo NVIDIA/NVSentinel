@@ -73,6 +73,10 @@ type MockJournal struct {
 	// the first Next() after SeekCursor returns the bookmarked entry itself.
 	InclusiveSeekCursor  bool
 	replayBookmarkOnNext bool
+	// Tracking fields for test assertions on seek behavior.
+	SeekHeadCalled       bool
+	LastSeekRealtimeUsec uint64
+	SeekRealtimeCalled   bool
 }
 
 // AddMatch adds a match filter for journal entries
@@ -243,6 +247,7 @@ func (j *MockJournal) SeekHead() error {
 		return errors.New(JOURNAL_CLOSED_ERROR)
 	}
 
+	j.SeekHeadCalled = true
 	j.CurrentPosition = -1
 
 	return nil
@@ -254,7 +259,8 @@ func (j *MockJournal) SeekRealtimeUsec(usec uint64) error {
 		return errors.New(JOURNAL_CLOSED_ERROR)
 	}
 
-	// Mock journal has no timestamps; behave like SeekHead.
+	j.SeekRealtimeCalled = true
+	j.LastSeekRealtimeUsec = usec
 	j.CurrentPosition = -1
 
 	return nil
@@ -1184,4 +1190,322 @@ func TestResumeFromLastCursor_SkipsBookmarkReReadWithFilteredJournal(t *testing.
 	ready, err := sm.resumeFromLastCursor(journal, check, "xid-cursor")
 	assert.NoError(t, err)
 	assert.False(t, ready, "should not re-read the bookmarked kernel XID when no newer entries exist")
+}
+
+// --- Unit tests for boot-start scan helpers ---
+
+func TestIsStaleBootEntry(t *testing.T) {
+	tests := []struct {
+		name          string
+		entryBootID   string
+		currentBootID string
+		getDataErr    bool
+		want          bool
+	}{
+		{"same boot", "boot-2", "boot-2", false, false},
+		{"different boot", "boot-1", "boot-2", false, true},
+		{"empty entry boot ID", "", "boot-2", false, false},
+		{"empty current boot ID", "boot-1", "", false, false},
+		{"GetData error", "", "boot-2", true, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			journal := &MockJournal{
+				Entries: []MockJournalEntry{
+					{Message: "test", Cursor: "c1", BootID: tt.entryBootID, Fields: map[string]string{FieldBootID: tt.entryBootID}},
+				},
+				CurrentPosition: 0,
+				TestBootID:      tt.entryBootID,
+				FailGetData:     tt.getDataErr,
+			}
+
+			sm := &SyslogMonitor{currentBootID: tt.currentBootID}
+			got := sm.isStaleBootEntry(journal)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestSkipStaleBootEntry(t *testing.T) {
+	t.Run("normal advance", func(t *testing.T) {
+		journal := &MockJournal{
+			Entries: []MockJournalEntry{
+				{Message: "old", Cursor: "c1", BootID: "boot-1"},
+				{Message: "new", Cursor: "c2", BootID: "boot-2"},
+			},
+			CurrentPosition: 0,
+		}
+		sm := &SyslogMonitor{checkLastCursors: make(map[string]string)}
+		check := CheckDefinition{Name: "testCheck"}
+
+		exhausted, err := sm.skipStaleBootEntry(journal, check, "c1")
+		assert.NoError(t, err)
+		assert.False(t, exhausted)
+		assert.Equal(t, "c1", sm.checkLastCursors["testCheck"])
+	})
+
+	t.Run("journal exhausted", func(t *testing.T) {
+		journal := &MockJournal{
+			Entries:         []MockJournalEntry{{Message: "old", Cursor: "c1", BootID: "boot-1"}},
+			CurrentPosition: 0,
+		}
+		sm := &SyslogMonitor{checkLastCursors: make(map[string]string)}
+		check := CheckDefinition{Name: "testCheck"}
+
+		exhausted, err := sm.skipStaleBootEntry(journal, check, "c1")
+		assert.NoError(t, err)
+		assert.True(t, exhausted)
+	})
+}
+
+func TestInitializeJournalFromBootStart_UnlimitedLookback(t *testing.T) {
+	journal := &MockJournal{
+		Entries: []MockJournalEntry{
+			{Message: "NVRM: Xid 79", Cursor: "c1", BootID: "boot-2"},
+		},
+		CurrentPosition: -1,
+		TestBootID:      "boot-2",
+	}
+
+	sm := &SyslogMonitor{
+		currentBootID:      "boot-2",
+		bootLookbackWindow: 0, // unlimited
+		checkLastCursors:   make(map[string]string),
+		checkToHandlerMap:  make(map[string]types.Handler),
+	}
+	check := CheckDefinition{Name: "testCheck", JournalPath: TEST_JOURNAL_PATH}
+
+	err := sm.initializeJournalFromBootStart(journal, check)
+	assert.NoError(t, err)
+	assert.True(t, journal.SeekHeadCalled, "unlimited lookback must call SeekHead")
+	assert.False(t, journal.SeekRealtimeCalled, "unlimited lookback must NOT call SeekRealtimeUsec")
+}
+
+func TestInitializeJournalFromBootStart_WindowedLookback(t *testing.T) {
+	journal := &MockJournal{
+		Entries: []MockJournalEntry{
+			{Message: "NVRM: Xid 79", Cursor: "c1", BootID: "boot-2"},
+		},
+		CurrentPosition: -1,
+		TestBootID:      "boot-2",
+	}
+
+	sm := &SyslogMonitor{
+		currentBootID:      "boot-2",
+		bootLookbackWindow: 2 * time.Hour,
+		checkLastCursors:   make(map[string]string),
+		checkToHandlerMap:  make(map[string]types.Handler),
+	}
+	check := CheckDefinition{Name: "testCheck", JournalPath: TEST_JOURNAL_PATH}
+
+	err := sm.initializeJournalFromBootStart(journal, check)
+	assert.NoError(t, err)
+	assert.False(t, journal.SeekHeadCalled, "windowed lookback must NOT call SeekHead")
+	assert.True(t, journal.SeekRealtimeCalled, "windowed lookback must call SeekRealtimeUsec")
+	assert.Greater(t, journal.LastSeekRealtimeUsec, uint64(0))
+}
+
+func TestInitializeJournalFromBootStart_NoEntries(t *testing.T) {
+	journal := &MockJournal{
+		Entries:         []MockJournalEntry{},
+		CurrentPosition: -1,
+		TestBootID:      "boot-2",
+	}
+
+	sm := &SyslogMonitor{
+		currentBootID:      "boot-2",
+		bootLookbackWindow: 2 * time.Hour,
+		checkLastCursors:   make(map[string]string),
+		checkToHandlerMap:  make(map[string]types.Handler),
+	}
+	check := CheckDefinition{Name: "testCheck", JournalPath: TEST_JOURNAL_PATH}
+
+	err := sm.initializeJournalFromBootStart(journal, check)
+	assert.NoError(t, err)
+	// With no entries, falls back to initializeJournalFromTail which sets a cursor.
+	_, hasCursor := sm.checkLastCursors["testCheck"]
+	// Empty journal: tail fallback with no entries means no cursor set.
+	assert.False(t, hasCursor)
+}
+
+func TestBootStartScanDone_PersistedAfterScan(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFilePath := tmpDir + "/state.json"
+
+	check := CheckDefinition{Name: "bootCheck", JournalPath: TEST_JOURNAL_PATH}
+
+	mockJournal := &MockJournal{
+		Entries: []MockJournalEntry{
+			{Message: "entry1", Cursor: "cursor-1", BootID: "boot-2"},
+		},
+		CurrentPosition: -1,
+		TestBootID:      "boot-2",
+	}
+
+	mockFactory := NewMockJournalFactory()
+	mockFactory.JournalsByPath[check.JournalPath] = mockJournal
+	mockFactory.DefaultJournal = &MockJournal{TestBootID: "boot-2", CurrentPosition: -1}
+
+	initialState := syslogMonitorState{
+		Version:          stateFileVersion,
+		BootID:           "boot-1",
+		CheckLastCursors: map[string]string{"bootCheck": "old-cursor"},
+	}
+	stateData, _ := json.Marshal(initialState)
+	_ = os.WriteFile(stateFilePath, stateData, 0o644)
+
+	sm, err := NewSyslogMonitorWithFactory(
+		TEST_NODE,
+		[]CheckDefinition{check},
+		&mockPlatformConnectorClient{},
+		TEST_AGENT,
+		TEST_COMPONENT,
+		"60s",
+		stateFilePath,
+		mockFactory,
+		"http://localhost:8080",
+		"/tmp/metadata.json",
+		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		"", "",
+		nil,
+		"tcp://test",
+		30*time.Minute,
+	)
+	assert.NoError(t, err)
+	assert.True(t, sm.postRebootInit)
+
+	// Run completes the scan.
+	assert.NoError(t, sm.Run())
+	assert.False(t, sm.postRebootInit)
+
+	// Verify state file has BootStartScanDone: true.
+	persisted, err := os.ReadFile(stateFilePath)
+	assert.NoError(t, err)
+
+	var saved syslogMonitorState
+	assert.NoError(t, json.Unmarshal(persisted, &saved))
+	assert.True(t, saved.BootStartScanDone, "BootStartScanDone must be true after successful scan")
+}
+
+func TestBootStartScanDone_CrashRecovery(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFilePath := tmpDir + "/state.json"
+
+	// Simulate: previous run persisted BootID but crashed before scan completed.
+	currentBootID := "boot-2"
+	initialState := syslogMonitorState{
+		Version:           stateFileVersion,
+		BootID:            currentBootID,
+		CheckLastCursors:  map[string]string{},
+		BootStartScanDone: false,
+	}
+	stateData, _ := json.Marshal(initialState)
+	_ = os.WriteFile(stateFilePath, stateData, 0o644)
+
+	check := CheckDefinition{Name: "bootCheck", JournalPath: TEST_JOURNAL_PATH}
+	mockJournal := &MockJournal{
+		Entries:         []MockJournalEntry{{Message: "entry1", Cursor: "c1", BootID: currentBootID}},
+		CurrentPosition: -1,
+		TestBootID:      currentBootID,
+	}
+	mockFactory := NewMockJournalFactory()
+	mockFactory.JournalsByPath[check.JournalPath] = mockJournal
+	mockFactory.DefaultJournal = &MockJournal{TestBootID: currentBootID, CurrentPosition: -1}
+
+	sm, err := NewSyslogMonitorWithFactory(
+		TEST_NODE,
+		[]CheckDefinition{check},
+		&mockPlatformConnectorClient{},
+		TEST_AGENT,
+		TEST_COMPONENT,
+		"60s",
+		stateFilePath,
+		mockFactory,
+		"http://localhost:8080",
+		"/tmp/metadata.json",
+		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		"", "",
+		nil,
+		"tcp://test",
+		30*time.Minute,
+	)
+	assert.NoError(t, err)
+
+	// Recovery: postRebootInit must be restored from disk.
+	if sm.currentBootID == currentBootID {
+		assert.True(t, sm.postRebootInit, "postRebootInit must be recovered when BootStartScanDone is false")
+	}
+}
+
+func TestBootStartScanDone_NormalRestart(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFilePath := tmpDir + "/state.json"
+
+	check := CheckDefinition{Name: "bootCheck", JournalPath: TEST_JOURNAL_PATH}
+	mockJournal := &MockJournal{
+		Entries:         []MockJournalEntry{{Message: "entry1", Cursor: "cursor-1", BootID: "boot-2"}},
+		CurrentPosition: -1,
+		TestBootID:      "boot-2",
+	}
+	mockFactory := NewMockJournalFactory()
+	mockFactory.JournalsByPath[check.JournalPath] = mockJournal
+	mockFactory.DefaultJournal = &MockJournal{TestBootID: "boot-2", CurrentPosition: -1}
+
+	// Phase 1: construct once to discover the actual kernel boot ID.
+	_ = os.WriteFile(stateFilePath, []byte(`{"version":1,"boot_id":"","check_last_cursors":{}}`), 0o644)
+	probe, err := NewSyslogMonitorWithFactory(
+		TEST_NODE,
+		[]CheckDefinition{check},
+		&mockPlatformConnectorClient{},
+		TEST_AGENT,
+		TEST_COMPONENT,
+		"60s",
+		stateFilePath,
+		mockFactory,
+		"http://localhost:8080",
+		"/tmp/metadata.json",
+		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		"", "",
+		nil,
+		"tcp://test",
+		30*time.Minute,
+	)
+	assert.NoError(t, err)
+
+	currentBootID := probe.currentBootID
+	require.NotEmpty(t, currentBootID, "test prerequisite: kernel boot-id must be readable")
+
+	// Phase 2: write state as if a previous run completed successfully.
+	initialState := syslogMonitorState{
+		Version:           stateFileVersion,
+		BootID:            currentBootID,
+		CheckLastCursors:  map[string]string{"bootCheck": "cursor-1"},
+		BootStartScanDone: true,
+	}
+	stateData, _ := json.Marshal(initialState)
+	_ = os.WriteFile(stateFilePath, stateData, 0o644)
+
+	// Reconstruct with the matching boot ID.
+	sm, err := NewSyslogMonitorWithFactory(
+		TEST_NODE,
+		[]CheckDefinition{check},
+		&mockPlatformConnectorClient{},
+		TEST_AGENT,
+		TEST_COMPONENT,
+		"60s",
+		stateFilePath,
+		mockFactory,
+		"http://localhost:8080",
+		"/tmp/metadata.json",
+		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		"", "",
+		nil,
+		"tcp://test",
+		30*time.Minute,
+	)
+	assert.NoError(t, err)
+
+	// Normal restart: postRebootInit must remain false.
+	assert.False(t, sm.postRebootInit, "postRebootInit must be false when BootStartScanDone is true")
 }

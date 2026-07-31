@@ -1120,9 +1120,9 @@ func (sm *SyslogMonitor) initializeJournalFromTail(journal Journal, check CheckD
 // skips everything before the tail), this ensures entries emitted between boot
 // and monitor startup are not missed.
 //
-// A boot filter (_BOOT_ID=<current>) is applied explicitly so that only entries
-// from the current boot are read, even though SeekHead positions at the very
-// beginning of the journal.
+// Boot-scoping is done at the application level (isStaleBootEntry) rather than
+// via journal-level AddMatch(_BOOT_ID=...), because the existing tag filters use
+// OR disjunctions and AddMatch would only AND with the last group.
 func (sm *SyslogMonitor) initializeJournalFromBootStart(journal Journal, check CheckDefinition) error {
 	lookback := sm.bootLookbackWindow
 

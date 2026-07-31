@@ -177,11 +177,26 @@ func run() error {
 	return g.Wait()
 }
 
-// mustParseDuration parses a duration string and exits on failure.
-func mustParseDuration(s string) time.Duration {
+// parseBootLookbackWindow parses a duration string for the boot lookback window.
+// Returns an error for invalid or negative durations. Zero is valid (unlimited).
+func parseBootLookbackWindow(s string) (time.Duration, error) {
 	d, err := time.ParseDuration(s)
 	if err != nil {
-		slog.Error("Invalid duration flag", "flag", "boot-lookback-window", "value", s, "error", err)
+		return 0, fmt.Errorf("invalid duration %q: %w", s, err)
+	}
+
+	if d < 0 {
+		return 0, fmt.Errorf("negative duration %q not allowed", s)
+	}
+
+	return d, nil
+}
+
+// mustParseDuration parses a duration string and exits on failure.
+func mustParseDuration(s string) time.Duration {
+	d, err := parseBootLookbackWindow(s)
+	if err != nil {
+		slog.Error("Invalid boot-lookback-window flag", "value", s, "error", err)
 		os.Exit(1)
 	}
 
