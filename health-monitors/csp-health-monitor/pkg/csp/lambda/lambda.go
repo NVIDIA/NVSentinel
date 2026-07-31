@@ -237,6 +237,7 @@ func (c *Client) pollEvents(ctx context.Context, eventChan chan<- model.Maintena
 			NotBefore:         raw.NotBefore,
 			NotBeforeDeadline: raw.NotBeforeDeadline,
 			NotAfter:          raw.NotAfter,
+			LastUpdated:       raw.LastUpdated,
 			NodeName:          nodeName,
 			ClusterName:       c.clusterName,
 			TriggerTimeLimit:  c.triggerTimeLimit,

@@ -133,6 +133,17 @@ func (s *DatabaseStore) executeUpsert(ctx context.Context, filter map[string]int
 
 // UpsertMaintenanceEvent inserts or updates a maintenance event.
 // Metrics are handled by the caller (Processor).
+//
+// Fetches the existing stored event once at the start when needed. Two things
+// are done off that read:
+//  1. If metadata.providerLastUpdated matches the incoming value, short-circuit
+//     — the CSP hasn't touched the event since we last stored it, so re-upserting
+//     would just overwrite our internal state (e.g. QUARANTINE_TRIGGERED) with
+//     whatever the incoming normalizer produced (typically DETECTED), causing
+//     spurious re-triggers on every poll cycle.
+//  2. For MAINTENANCE_COMPLETE events, preserve the stored actualEndTime so
+//     repeated polls don't keep resetting it to now, which would prevent
+//     FindEventsToTriggerHealthy from ever satisfying the healthy-delay window.
 func (s *DatabaseStore) UpsertMaintenanceEvent(ctx context.Context, event *model.MaintenanceEvent) error {
 	if event == nil || event.EventID == "" {
 		return fmt.Errorf("invalid event passed to UpsertMaintenanceEvent (nil or empty EventID)")
@@ -141,26 +152,79 @@ func (s *DatabaseStore) UpsertMaintenanceEvent(ctx context.Context, event *model
 	filter := map[string]interface{}{"eventId": event.EventID}
 	event.LastUpdatedTimestamp = time.Now().UTC()
 
-	// For MAINTENANCE_COMPLETE events, preserve the original actualEndTime if the
-	// existing event already has one. Without this guard, repeated polls would keep
-	// resetting actualEndTime to now, preventing FindEventsToTriggerHealthy from
-	// ever satisfying the postMaintenanceHealthyDelay window.
-	if event.Status == model.StatusMaintenanceComplete && event.ActualEndTime != nil {
+	needsExisting := hasProviderLastUpdated(event) ||
+		(event.Status == model.StatusMaintenanceComplete && event.ActualEndTime != nil)
+
+	if needsExisting {
 		var existing model.MaintenanceEvent
+
 		found, err := client.FindOneWithExists(ctx, s.databaseClient, filter, nil, &existing)
 		if err != nil {
-			slog.Warn("UpsertMaintenanceEvent: failed to fetch existing event; proceeding with new actualEndTime",
+			slog.Warn("UpsertMaintenanceEvent: failed to fetch existing event; proceeding without pre-write checks",
 				"eventID", event.EventID, "error", err)
-		} else if found && existing.ActualEndTime != nil {
-			slog.Debug("UpsertMaintenanceEvent: preserving existing actualEndTime",
-				"eventID", event.EventID, "actualEndTime", existing.ActualEndTime)
-			event.ActualEndTime = existing.ActualEndTime
+		} else if found {
+			// (1) Skip if CSP has not changed the event since we last stored it.
+			if shouldSkipUnchangedEvent(&existing, event) {
+				slog.Debug("UpsertMaintenanceEvent: providerLastUpdated unchanged, skipping upsert",
+					"eventID", event.EventID,
+					"providerLastUpdated", event.Metadata[model.ProviderLastUpdatedKey])
+
+				return nil
+			}
+
+			// (2) Preserve stored actualEndTime for MAINTENANCE_COMPLETE.
+			if event.Status == model.StatusMaintenanceComplete && event.ActualEndTime != nil &&
+				existing.ActualEndTime != nil {
+				slog.Debug("UpsertMaintenanceEvent: preserving existing actualEndTime",
+					"eventID", event.EventID, "actualEndTime", existing.ActualEndTime)
+				event.ActualEndTime = existing.ActualEndTime
+			}
 		}
 	}
 
 	slog.Debug("Upserting event", "eventID", event.EventID, "status", event.Status)
 
 	return s.executeUpsert(ctx, filter, event)
+}
+
+// hasProviderLastUpdated reports whether event.Metadata carries the
+// providerLastUpdated key set by CSP normalizers that want dedup.
+func hasProviderLastUpdated(event *model.MaintenanceEvent) bool {
+	if event == nil || event.Metadata == nil {
+		return false
+	}
+
+	_, ok := event.Metadata[model.ProviderLastUpdatedKey]
+
+	return ok
+}
+
+// shouldSkipUnchangedEvent returns true when the incoming event carries a
+// providerLastUpdated value equal to the stored one AND the CSP-reported
+// status hasn't changed — i.e. the CSP hasn't touched the event since we
+// last upserted it, so re-upserting would overwrite our internal state
+// (status, timestamps) for no reason.
+//
+// The CSPStatus check guards against a CSP that transitions an event to
+// cancelled/completed without bumping providerLastUpdated: without it we'd
+// skip the write and the affected node would stay quarantined.
+func shouldSkipUnchangedEvent(existing, incoming *model.MaintenanceEvent) bool {
+	if existing == nil || incoming == nil {
+		return false
+	}
+
+	if existing.CSPStatus != incoming.CSPStatus {
+		return false
+	}
+
+	in, ok := incoming.Metadata[model.ProviderLastUpdatedKey]
+	if !ok {
+		return false
+	}
+
+	stored, ok := existing.Metadata[model.ProviderLastUpdatedKey]
+
+	return ok && stored == in
 }
 
 // FindEventsToTriggerQuarantine finds events ready for quarantine trigger.

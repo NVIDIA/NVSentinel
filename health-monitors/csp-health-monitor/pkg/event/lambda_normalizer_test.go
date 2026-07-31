@@ -141,6 +141,41 @@ func TestLambdaNormalizer_Normalize(t *testing.T) {
 			},
 		},
 		{
+			name: "LastUpdated is written into metadata.providerLastUpdated",
+			meta: LambdaEventMetadata{
+				ID:               testID,
+				Urgency:          UrgencyCriticalWithDeadline,
+				Status:           "scheduled",
+				NotBefore:        &notBefore,
+				NodeName:         testNode,
+				ClusterName:      testCluster,
+				TriggerTimeLimit: triggerLimit,
+				LastUpdated:      ptr(time.Date(2026, 7, 28, 16, 32, 36, 509041000, time.UTC)),
+			},
+			check: func(t *testing.T, e *model.MaintenanceEvent) {
+				got, ok := e.Metadata[model.ProviderLastUpdatedKey]
+				require.True(t, ok, "expected metadata[%q] to be set", model.ProviderLastUpdatedKey)
+				assert.Equal(t, "2026-07-28T16:32:36.509041Z", got)
+			},
+		},
+		{
+			name: "LastUpdated nil leaves providerLastUpdated unset",
+			meta: LambdaEventMetadata{
+				ID:               testID,
+				Urgency:          UrgencyCriticalWithDeadline,
+				Status:           "scheduled",
+				NotBefore:        &notBefore,
+				NodeName:         testNode,
+				ClusterName:      testCluster,
+				TriggerTimeLimit: triggerLimit,
+				LastUpdated:      nil,
+			},
+			check: func(t *testing.T, e *model.MaintenanceEvent) {
+				_, ok := e.Metadata[model.ProviderLastUpdatedKey]
+				assert.False(t, ok, "providerLastUpdated should be absent when LastUpdated is nil")
+			},
+		},
+		{
 			name: "missing metadata returns error",
 			meta: LambdaEventMetadata{},
 			check: func(_ *testing.T, _ *model.MaintenanceEvent) {},

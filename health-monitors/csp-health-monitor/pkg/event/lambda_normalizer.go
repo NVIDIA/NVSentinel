@@ -42,14 +42,19 @@ type LambdaEventMetadata struct {
 	NotBefore         *time.Time
 	NotBeforeDeadline *time.Time // nil if event cannot be rescheduled
 	NotAfter          *time.Time // nil if not provided
-	NodeName          string
-	ClusterName       string
+	// LastUpdated is the Lambda API's `last_updated` timestamp. Stored in the
+	// event's metadata as `providerLastUpdated` so UpsertMaintenanceEvent can
+	// short-circuit unchanged events on repeated polls.
+	LastUpdated *time.Time
+	NodeName    string
+	ClusterName string
 	// TriggerTimeLimit is the configured quarantine workflow time limit.
 	// Emergency events set scheduledStartTime = now + TriggerTimeLimit so the
 	// trigger-engine query (scheduledStartTime <= now+limit) keeps finding them
 	// across every poll cycle until they leave DETECTED status.
 	TriggerTimeLimit time.Duration
 }
+
 
 // LambdaNormalizer implements the Normalizer interface for Lambda mock events.
 type LambdaNormalizer struct{}
@@ -101,6 +106,10 @@ func (n *LambdaNormalizer) Normalize(rawEvent interface{}, additionalInfo ...int
 
 	if meta.NotAfter != nil {
 		metadata["notAfter"] = meta.NotAfter.Format(time.RFC3339)
+	}
+
+	if meta.LastUpdated != nil {
+		metadata[model.ProviderLastUpdatedKey] = meta.LastUpdated.UTC().Format(time.RFC3339Nano)
 	}
 
 	slog.Debug("Normalizing Lambda mock event",

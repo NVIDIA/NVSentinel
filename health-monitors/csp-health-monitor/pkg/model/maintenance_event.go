@@ -39,6 +39,12 @@ type MaintenanceEvent struct {
 	NodeName               string            `json:"nodeName,omitempty"           bson:"nodeName,omitemtpy"`
 }
 
+// ProviderLastUpdatedKey is the MaintenanceEvent.Metadata key used to record
+// the CSP's `last_updated` (or equivalent) timestamp for the event. Upsert
+// short-circuits when the incoming value matches the stored one, so a CSP
+// poll that returns unchanged events does not thrash our internal state.
+const ProviderLastUpdatedKey = "providerLastUpdated"
+
 // CSP represents the Cloud Service Provider identifier as an enum.
 type CSP string
 
