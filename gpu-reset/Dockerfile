@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM nvcr.io/nvidia/cuda:13.3.0-runtime-ubuntu24.04
+FROM nvcr.io/nvidia/cuda:13.3.1-runtime-ubuntu24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 
