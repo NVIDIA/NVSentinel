@@ -160,6 +160,46 @@ func TestExtRRLifecycleHappyPath(t *testing.T) {
 			return ctx
 		})
 
+	// ADR-040: detection labels stripped by the labeler must cause the
+	// syslog-health-monitor (nodeSelector: driver.installed=true) and
+	// gpu-health-monitor (nodeSelector: dcgm.version=4.x) DaemonSets to
+	// self-evict their pods from the released node.
+	feature.Assess("health-monitor pods are torn down while node is released",
+		func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			client, err := c.NewClient()
+			require.NoError(t, err)
+
+			// Both DaemonSets rely on detection labels set by the labeler. When
+			// managed=false is applied the labeler strips those labels, causing
+			// the DaemonSet controller to remove the pods from the node.
+			for _, dsName := range []string{
+				helpers.SyslogDaemonSetName,
+				GPUHealthMonitorDaemonSetName,
+			} {
+				dsName := dsName
+				require.Eventually(t, func() bool {
+					pods, err := helpers.ListDaemonSetPods(ctx, client, helpers.NVSentinelNamespace, dsName)
+					if err != nil {
+						t.Logf("listing pods for %s: %v", dsName, err)
+						return false
+					}
+					for _, pod := range pods {
+						if pod.Spec.NodeName == nodeName {
+							t.Logf("%s pod %s still on %s (phase=%s)",
+								dsName, pod.Name, nodeName, pod.Status.Phase)
+							return false
+						}
+					}
+					return true
+				}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+					"%s must have no pod on %s after managed=false is set", dsName, nodeName)
+
+				t.Logf("%s: no pod on %s — DaemonSet self-eviction confirmed", dsName, nodeName)
+			}
+
+			return ctx
+		})
+
 	feature.Assess("Complete=True scrubs the Node; ExtRR stays as historical record",
 		func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			client, err := c.NewClient()
@@ -181,6 +221,31 @@ func TestExtRRLifecycleHappyPath(t *testing.T) {
 			assert.Contains(t, finalizers,
 				"nvsentinel.dgxc.nvidia.com/external-remediation-cleanup",
 				"cleanup finalizer must remain attached after Complete=True cleanup")
+
+			// Verify health-monitor pods reschedule once managed=false is cleared
+			// and the labeler restamps the detection labels.
+			for _, dsName := range []string{
+				helpers.SyslogDaemonSetName,
+				GPUHealthMonitorDaemonSetName,
+			} {
+				dsName := dsName
+				require.Eventually(t, func() bool {
+					pods, err := helpers.ListDaemonSetPods(ctx, client, helpers.NVSentinelNamespace, dsName)
+					if err != nil {
+						t.Logf("listing pods for %s: %v", dsName, err)
+						return false
+					}
+					for _, pod := range pods {
+						if pod.Spec.NodeName == nodeName && pod.Status.Phase == corev1.PodRunning {
+							return true
+						}
+					}
+					return false
+				}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+					"%s must have a running pod on %s after node is returned to NVSentinel", dsName, nodeName)
+
+				t.Logf("%s: pod back on %s — monitor re-scheduling confirmed", dsName, nodeName)
+			}
 
 			return ctx
 		})
