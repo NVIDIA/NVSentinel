@@ -131,8 +131,9 @@ func TestExtRRLifecycleHappyPath(t *testing.T) {
 		WithLabel("component", "janitor")
 
 	var (
-		nodeName string
-		crName   = "extrr-lifecycle-happy"
+		nodeName        string
+		monitorNodeName string
+		crName          = "extrr-lifecycle-happy"
 	)
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
@@ -142,6 +143,23 @@ func TestExtRRLifecycleHappyPath(t *testing.T) {
 		nodeName, err = helpers.GetRealNodeName(ctx, client)
 		require.NoError(t, err)
 		t.Logf("using node %s for ExtRR lifecycle test", nodeName)
+
+		// Find a KWOK node that currently has a syslog-health-monitor pod running.
+		// Monitors use nodeSelector on detection labels and only run on KWOK nodes
+		// (which carry GPU labels); the real kind worker lacks these. We use this
+		// node to verify the full DaemonSet eviction + rescheduling lifecycle.
+		pods, err := helpers.ListDaemonSetPods(ctx, client, helpers.NVSentinelNamespace, extrrSyslogDaemonSetName)
+		require.NoError(t, err)
+		for _, pod := range pods {
+			if pod.Status.Phase == corev1.PodRunning && pod.Spec.NodeName != "" {
+				monitorNodeName = pod.Spec.NodeName
+				break
+			}
+		}
+		require.NotEmpty(t, monitorNodeName,
+			"expected at least one running %s pod to identify a monitor-hosting node",
+			extrrSyslogDaemonSetName)
+		t.Logf("using KWOK node %s for health-monitor eviction checks", monitorNodeName)
 
 		return ctx
 	})
@@ -167,44 +185,70 @@ func TestExtRRLifecycleHappyPath(t *testing.T) {
 			return ctx
 		})
 
-	// ADR-040: while managed=false is set the labeler must strip the detection
-	// labels that gate syslog-health-monitor (driver.installed) and
-	// gpu-health-monitor (dcgm.version) DaemonSet scheduling. We stamp them
-	// manually so the assertion is non-trivial on nodes where DCGM / driver
-	// DaemonSet pods do not run (e.g. real kind workers without GPU labels).
-	feature.Assess("labeler strips detection labels while node is released (managed=false)",
+	// ADR-040: while managed=false is set the labeler must strip detection labels
+	// and health-monitor DaemonSet pods must self-evict. We exercise this on two
+	// levels:
+	//
+	//   1. Label stripping on the ExtRR-released node (real kind worker). We stamp
+	//      the labels manually because DCGM / driver fake DaemonSets only schedule
+	//      on KWOK fake nodes that carry GPU labels, so the real worker would never
+	//      have them organically in the test environment.
+	//
+	//   2. Full DaemonSet eviction on a KWOK node (found in Setup). These nodes
+	//      already carry detection labels set by the labeler and have syslog /
+	//      gpu-health-monitor pods running. We apply managed=false to simulate
+	//      what the ERR reconciler does, verify pod eviction, then verify pods
+	//      return after managed=false is removed.
+	feature.Assess("labeler strips detection labels and health-monitor pods evict while node is released",
 		func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			client, err := c.NewClient()
 			require.NoError(t, err)
 
-			// Stamp the detection labels the labeler would normally set.
+			// ── Part 1: label stripping on the real ExtRR-targeted node ──────
 			require.NoError(t, helpers.SetNodeLabel(ctx, client, nodeName,
 				"nvsentinel.dgxc.nvidia.com/dcgm.version", "4.x"),
-				"failed to stamp dcgm.version on node")
+				"failed to stamp dcgm.version on ExtRR node")
 			require.NoError(t, helpers.SetNodeLabel(ctx, client, nodeName,
 				"nvsentinel.dgxc.nvidia.com/driver.installed", "true"),
-				"failed to stamp driver.installed on node")
+				"failed to stamp driver.installed on ExtRR node")
 
-			t.Logf("stamped detection labels on %s; waiting for labeler to strip them", nodeName)
-
-			// The labeler must strip these because managed=false is already set.
 			require.Eventually(t, func() bool {
 				node, err := helpers.GetNodeByName(ctx, client, nodeName)
 				if err != nil {
-					t.Logf("get node %q: %v", nodeName, err)
 					return false
 				}
 				_, hasDCGM := node.Labels["nvsentinel.dgxc.nvidia.com/dcgm.version"]
 				_, hasDriver := node.Labels["nvsentinel.dgxc.nvidia.com/driver.installed"]
-				if hasDCGM || hasDriver {
-					t.Logf("detection labels still present: dcgm=%v driver=%v", hasDCGM, hasDriver)
-					return false
-				}
-				return true
+				return !hasDCGM && !hasDriver
 			}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
-				"labeler must strip dcgm.version and driver.installed while managed=false is set on %s", nodeName)
+				"labeler must strip detection labels while managed=false is set on %s", nodeName)
+			t.Logf("detection labels stripped from %s — labeler gate on ExtRR node confirmed", nodeName)
 
-			t.Logf("detection labels stripped from %s — labeler gate confirmed", nodeName)
+			// ── Part 2: DaemonSet pod eviction on the monitor-hosting KWOK node ─
+			t.Logf("applying managed=false to KWOK node %s to trigger monitor self-eviction", monitorNodeName)
+			require.NoError(t, helpers.SetNodeLabel(ctx, client, monitorNodeName, managedLabelKey, "false"),
+				"failed to apply managed=false to KWOK node")
+
+			for _, dsName := range []string{extrrSyslogDaemonSetName, extrrGPUHealthMonitorDaemonSetName} {
+				dsName := dsName
+				require.Eventually(t, func() bool {
+					pods, err := helpers.ListDaemonSetPods(ctx, client, helpers.NVSentinelNamespace, dsName)
+					if err != nil {
+						t.Logf("listing pods for %s: %v", dsName, err)
+						return false
+					}
+					for _, pod := range pods {
+						if pod.Spec.NodeName == monitorNodeName {
+							t.Logf("%s pod %s still on %s (phase=%s)",
+								dsName, pod.Name, monitorNodeName, pod.Status.Phase)
+							return false
+						}
+					}
+					return true
+				}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+					"%s pod must evict from %s after managed=false is set", dsName, monitorNodeName)
+				t.Logf("%s: pod evicted from %s — DaemonSet self-eviction confirmed", dsName, monitorNodeName)
+			}
 
 			return ctx
 		})
@@ -231,9 +275,29 @@ func TestExtRRLifecycleHappyPath(t *testing.T) {
 				"nvsentinel.dgxc.nvidia.com/external-remediation-cleanup",
 				"cleanup finalizer must remain attached after Complete=True cleanup")
 
-			// Confirm the managed label itself is gone — the managed_optout_test.go
-			// suite (in the companion cluster-scope monitor PR) covers the full
-			// restoration of detection labels and monitor re-scheduling.
+			// Remove managed=false from the KWOK node and verify monitors reschedule.
+			t.Logf("removing managed=false from KWOK node %s; monitors must reschedule", monitorNodeName)
+			require.NoError(t, helpers.RemoveNodeLabel(ctx, client, monitorNodeName, managedLabelKey),
+				"failed to remove managed=false from KWOK node")
+
+			for _, dsName := range []string{extrrSyslogDaemonSetName, extrrGPUHealthMonitorDaemonSetName} {
+				dsName := dsName
+				require.Eventually(t, func() bool {
+					pods, err := helpers.ListDaemonSetPods(ctx, client, helpers.NVSentinelNamespace, dsName)
+					if err != nil {
+						t.Logf("listing pods for %s: %v", dsName, err)
+						return false
+					}
+					for _, pod := range pods {
+						if pod.Spec.NodeName == monitorNodeName && pod.Status.Phase == corev1.PodRunning {
+							return true
+						}
+					}
+					return false
+				}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+					"%s pod must reschedule on %s after managed=false is removed", dsName, monitorNodeName)
+				t.Logf("%s: pod rescheduled on %s — monitor restoration confirmed", dsName, monitorNodeName)
+			}
 
 			return ctx
 		})
@@ -249,6 +313,12 @@ func TestExtRRLifecycleHappyPath(t *testing.T) {
 		if nodeName != "" {
 			if err := helpers.ScrubExtRRStateFromNode(ctx, client, nodeName); err != nil {
 				t.Logf("ScrubExtRRStateFromNode(%s): %v", nodeName, err)
+			}
+		}
+		// Remove managed=false from the KWOK node in case the test failed mid-way.
+		if monitorNodeName != "" {
+			if err := helpers.RemoveNodeLabel(ctx, client, monitorNodeName, managedLabelKey); err != nil {
+				t.Logf("removing managed label from %s: %v", monitorNodeName, err)
 			}
 		}
 
