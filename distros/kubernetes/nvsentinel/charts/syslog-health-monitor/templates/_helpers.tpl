@@ -134,7 +134,11 @@ spec:
             - "--sysfs-root"
             - "/nvsentinel/sys"
             - "--boot-lookback-window"
-            - {{ $root.Values.bootLookbackWindow | default "2h" | quote }}
+            {{- if hasKey $root.Values "bootLookbackWindow" }}
+            - {{ $root.Values.bootLookbackWindow | quote }}
+            {{- else }}
+            - "2h"
+            {{- end }}
             - "--cancellations-config"
             - "/etc/syslog-health-monitor/cancellations.toml"
           resources:

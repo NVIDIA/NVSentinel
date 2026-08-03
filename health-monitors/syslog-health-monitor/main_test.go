@@ -132,7 +132,7 @@ func TestApplyKataConfig_OverridesKernelFilterWithContainerdUnit(t *testing.T) {
 
 		for _, tag := range tags {
 			if tag == "-k" {
-			t.Errorf("check %q in Kata mode must not carry -k (would AND with the unit filter)", name)
+				t.Errorf("check %q in Kata mode must not carry -k (would AND with the unit filter)", name)
 			}
 		}
 	}
