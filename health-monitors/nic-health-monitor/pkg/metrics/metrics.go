@@ -53,4 +53,13 @@ var (
 		Name: "nic_health_monitor_counter_threshold_breaches_total",
 		Help: "Total number of counter threshold breaches detected",
 	}, []string{"node", "counter", "device", "port", "is_fatal"})
+
+	// FirstPollDeferred counts polls a check skipped before its first
+	// complete evaluation because discovery reported unreadable devices.
+	// A non-zero value that stops growing means the deferral limit was
+	// reached and monitoring proceeded on the readable subset.
+	FirstPollDeferred = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "nic_health_monitor_first_poll_deferred_total",
+		Help: "Polls deferred before the first evaluation because devices were unreadable",
+	}, []string{"node", "check"})
 )

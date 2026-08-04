@@ -12,7 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM nvcr.io/nvidia/cuda:13.2.1-runtime-ubuntu24.04
+FROM nvcr.io/nvidia/cuda:13.3.1-runtime-ubuntu24.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+  && rm -rf /var/lib/apt/lists/*
 
 COPY gpu-reset/gpu_reset.sh /usr/local/bin/gpu_reset.sh
 

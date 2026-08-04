@@ -26,11 +26,14 @@ import (
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	ctrlcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -91,7 +94,7 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 
 	pub := publisher.New(pcClient, params.PlatformConnectorSocket, pb.ProcessingStrategy(strategyValue))
 
-	mgr, err := createManager(params)
+	mgr, err := createManager(params, cfg.Policies)
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to create manager: %w", err)
@@ -129,25 +132,124 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 	}, nil
 }
 
-func createManager(params Params) (ctrl.Manager, error) {
-	config := ctrl.GetConfigOrDie()
+func createManager(params Params, policies []config.Policy) (ctrl.Manager, error) {
+	restConfig, err := ctrl.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("getting kubeconfig: %w", err)
+	}
+
+	cacheOptions, err := buildCacheOptions(restConfig, policies, params.ResyncPeriod)
+	if err != nil {
+		return nil, err
+	}
 
 	mgrOpts := ctrl.Options{
 		Metrics: server.Options{
 			BindAddress: params.MetricsBindAddress,
 		},
 		HealthProbeBindAddress: params.HealthProbeBindAddress,
-		Cache: cache.Options{
-			SyncPeriod: &params.ResyncPeriod,
-		},
+		Cache:                  cacheOptions,
 	}
 
-	mgr, err := ctrl.NewManager(config, mgrOpts)
+	mgr, err := ctrl.NewManager(restConfig, mgrOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create manager: %w", err)
 	}
 
 	return mgr, nil
+}
+
+func buildCacheOptions(
+	restConfig *rest.Config,
+	policies []config.Policy,
+	resyncPeriod time.Duration,
+) (cache.Options, error) {
+	httpClient, err := rest.HTTPClientFor(restConfig)
+	if err != nil {
+		return cache.Options{}, fmt.Errorf("failed to create Kubernetes HTTP client: %w", err)
+	}
+
+	restMapper, err := apiutil.NewDynamicRESTMapper(restConfig, httpClient)
+	if err != nil {
+		return cache.Options{}, fmt.Errorf("failed to create Kubernetes REST mapper: %w", err)
+	}
+
+	return buildCacheOptionsWithRESTMapper(restMapper, policies, resyncPeriod)
+}
+
+func buildCacheOptionsWithRESTMapper(
+	restMapper meta.RESTMapper,
+	policies []config.Policy,
+	resyncPeriod time.Duration,
+) (cache.Options, error) {
+	opts := cache.Options{
+		SyncPeriod: &resyncPeriod,
+	}
+
+	namespacesByGVK := make(map[schema.GroupVersionKind]map[string]cache.Config)
+	allNamespacesByGVK := make(map[schema.GroupVersionKind]bool)
+
+	for _, p := range policies {
+		if !p.Enabled {
+			continue
+		}
+
+		gvk := policyGVK(p)
+		if p.Resource.Namespace == "" {
+			allNamespacesByGVK[gvk] = true
+			delete(namespacesByGVK, gvk)
+
+			continue
+		}
+
+		if err := validateResourceNamespaceScope(restMapper, p, gvk); err != nil {
+			return cache.Options{}, err
+		}
+
+		if allNamespacesByGVK[gvk] {
+			continue
+		}
+
+		if namespacesByGVK[gvk] == nil {
+			namespacesByGVK[gvk] = make(map[string]cache.Config)
+		}
+
+		namespacesByGVK[gvk][p.Resource.Namespace] = cache.Config{}
+	}
+
+	if len(namespacesByGVK) == 0 {
+		return opts, nil
+	}
+
+	opts.ByObject = make(map[client.Object]cache.ByObject, len(namespacesByGVK))
+	for gvk, namespaces := range namespacesByGVK {
+		opts.ByObject[newUnstructuredForGVK(gvk)] = cache.ByObject{
+			Namespaces: namespaces,
+		}
+	}
+
+	return opts, nil
+}
+
+func validateResourceNamespaceScope(
+	restMapper meta.RESTMapper,
+	p config.Policy,
+	gvk schema.GroupVersionKind,
+) error {
+	mapping, err := restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	if err != nil {
+		return fmt.Errorf("policy %q: failed to resolve resource scope for %s: %w", p.Name, gvk.String(), err)
+	}
+
+	if mapping.Scope.Name() == meta.RESTScopeNameRoot {
+		return fmt.Errorf(
+			"policy %q: resource.namespace cannot be set for cluster-scoped resource %s",
+			p.Name,
+			gvk.String(),
+		)
+	}
+
+	return nil
 }
 
 func setupHealthChecks(mgr ctrl.Manager) error {
@@ -237,15 +339,19 @@ func groupPoliciesByGVK(policies []config.Policy) map[schema.GroupVersionKind][]
 			continue
 		}
 
-		gvk := schema.GroupVersionKind{
-			Group:   p.Resource.Group,
-			Version: p.Resource.Version,
-			Kind:    p.Resource.Kind,
-		}
+		gvk := policyGVK(p)
 		result[gvk] = append(result[gvk], p)
 	}
 
 	return result
+}
+
+func policyGVK(p config.Policy) schema.GroupVersionKind {
+	return schema.GroupVersionKind{
+		Group:   p.Resource.Group,
+		Version: p.Resource.Version,
+		Kind:    p.Resource.Kind,
+	}
 }
 
 func newUnstructuredForGVK(gvk schema.GroupVersionKind) client.Object {

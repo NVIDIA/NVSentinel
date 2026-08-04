@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -148,6 +149,7 @@ func makePodGroupCRD(namespace, name string, minMember int64) *unstructured.Unst
 	})
 	obj.SetNamespace(namespace)
 	obj.SetName(name)
+	obj.SetUID(k8stypes.UID(name + "-uid"))
 	_ = unstructured.SetNestedField(obj.Object, minMember, "spec", "minMember")
 	return obj
 }
@@ -196,6 +198,11 @@ func TestPodGroupDiscoverer_DiscoverPeers(t *testing.T) {
 		require.NotNil(t, info)
 		assert.Len(t, info.Peers, 3)
 		assert.Equal(t, 3, info.ExpectedMinCount)
+		require.NotNil(t, info.OwnerReference)
+		assert.Equal(t, "scheduling.test.io/v1", info.OwnerReference.APIVersion)
+		assert.Equal(t, "PodGroup", info.OwnerReference.Kind)
+		assert.Equal(t, "my-pg", info.OwnerReference.Name)
+		assert.Equal(t, k8stypes.UID("my-pg-uid"), info.OwnerReference.UID)
 	})
 
 	t.Run("filters by phase", func(t *testing.T) {

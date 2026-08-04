@@ -149,6 +149,7 @@ gpuResetController:
   resetJob:
     writeSysLogEvent: true
     runtimeClassName: "nvidia"
+    uploadURL: "http://nvsentinel-incluster-file-server.nvsentinel.svc.cluster.local/upload"
     imageConfig:
       image: "alpine:latest"
       imagePullSecrets:
@@ -213,6 +214,8 @@ gpuResetController:
 	assert.True(t, config.GPUReset.Enabled)
 	assert.Equal(t, 27*time.Minute, config.GPUReset.Timeout)
 	assert.False(t, *config.GPUReset.ManualMode)
+	assert.Equal(t, "http://nvsentinel-incluster-file-server.nvsentinel.svc.cluster.local/upload",
+		config.GPUReset.ResetJob.UploadURL)
 	assert.Len(t, config.GPUReset.Exclusions, 1)
 	assert.Equal(t, "qa", config.GPUReset.Exclusions[0].MatchLabels["environment"])
 	assert.Equal(t, "true", config.GPUReset.Exclusions[0].MatchLabels["critical"])
@@ -234,7 +237,7 @@ gpuResetController:
 		},
 	}
 	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", imagePullSecrets,
-		resourceRequirements, "nvidia", true)
+		resourceRequirements, "nvidia", true, "http://nvsentinel-incluster-file-server.nvsentinel.svc.cluster.local/upload")
 	assert.NoError(t, err)
 	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
 
@@ -301,7 +304,7 @@ gpuResetController:
 	assert.True(t, config.GPUReset.Enabled)
 
 	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
-		ResourceRequirements{}, "", true)
+		ResourceRequirements{}, "", true, "")
 	assert.NoError(t, err)
 	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
 
@@ -352,7 +355,7 @@ gpuResetController:
 	assert.True(t, config.GPUReset.Enabled)
 
 	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
-		ResourceRequirements{}, "", true)
+		ResourceRequirements{}, "", true, "")
 	assert.NoError(t, err)
 	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
 
@@ -441,7 +444,7 @@ gpuResetController:
 	assert.True(t, config.GPUReset.Enabled)
 
 	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
-		ResourceRequirements{}, "", false)
+		ResourceRequirements{}, "", false, "")
 	assert.NoError(t, err)
 	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
 

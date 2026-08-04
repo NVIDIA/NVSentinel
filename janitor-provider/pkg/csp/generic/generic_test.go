@@ -93,6 +93,59 @@ func TestSendRebootSignal_CreatesJob(t *testing.T) {
 	assert.Equal(t, int32(3600), *job.Spec.TTLSecondsAfterFinished)
 }
 
+func TestSendRebootSignal_CreatesSysrqJob(t *testing.T) {
+	client := NewClientWithK8s(fake.NewSimpleClientset(), Config{
+		RebootImage:        "busybox:1.37",
+		UseSysrqReboot:     true,
+		RebootJobNamespace: "test-ns",
+		RebootJobTTL:       3600,
+	})
+	ctx := context.Background()
+	node := newNode("worker-1", "boot-id-abc", true)
+
+	ref, err := client.SendRebootSignal(ctx, node)
+	require.NoError(t, err)
+	assert.Equal(t, model.ResetSignalRequestRef("boot-id-abc"), ref)
+
+	jobs, err := client.k8sClient.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, jobs.Items, 1)
+
+	job := jobs.Items[0]
+	require.Len(t, job.Spec.Template.Spec.Containers, 1)
+	container := job.Spec.Template.Spec.Containers[0]
+	assert.Equal(t, []string{"sh", "-c", "echo b > /host-proc/sysrq-trigger"}, container.Command)
+
+	require.Len(t, container.VolumeMounts, 1)
+	assert.Equal(t, corev1.VolumeMount{
+		Name:      "host-proc",
+		MountPath: hostProcMountPath,
+	}, container.VolumeMounts[0])
+	require.Len(t, job.Spec.Template.Spec.Volumes, 1)
+	assert.Equal(t, corev1.Volume{
+		Name: "host-proc",
+		VolumeSource: corev1.VolumeSource{
+			HostPath: &corev1.HostPathVolumeSource{
+				Path: "/proc",
+			},
+		},
+	}, job.Spec.Template.Spec.Volumes[0])
+}
+
+func TestBuildRebootJob_UsesCommandRebootByDefault(t *testing.T) {
+	client := NewClientWithK8s(fake.NewSimpleClientset(), Config{
+		RebootImage:        "busybox:1.37",
+		RebootJobNamespace: "test-ns",
+		RebootJobTTL:       3600,
+	})
+
+	job := client.buildRebootJob("worker-1")
+	container := job.Spec.Template.Spec.Containers[0]
+	assert.Equal(t, []string{"chroot", hostMountPath, "reboot"}, container.Command)
+	require.Len(t, job.Spec.Template.Spec.Volumes, 1)
+	assert.Equal(t, "host-root", job.Spec.Template.Spec.Volumes[0].Name)
+}
+
 func TestSendRebootSignal_EmptyBootID(t *testing.T) {
 	client := newTestClient()
 	ctx := context.Background()
@@ -338,21 +391,31 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	t.Run("defaults", func(t *testing.T) {
 		config := loadConfigFromEnv()
 		assert.Equal(t, defaultRebootImage, config.RebootImage)
+		assert.False(t, config.UseSysrqReboot)
 		assert.Equal(t, "", config.RebootJobNamespace)
 		assert.Equal(t, int32(defaultRebootJobTTLSeconds), config.RebootJobTTL)
 	})
 
 	t.Run("custom values", func(t *testing.T) {
 		t.Setenv("GENERIC_REBOOT_IMAGE", "custom-image:latest")
+		t.Setenv("GENERIC_REBOOT_USE_SYSRQ", "true")
 		t.Setenv("GENERIC_REBOOT_JOB_NAMESPACE", "custom-ns")
 		t.Setenv("GENERIC_REBOOT_JOB_TTL", "7200")
 		t.Setenv("GENERIC_REBOOT_IMAGE_PULL_SECRETS", "secret-a, secret-b")
 
 		config := loadConfigFromEnv()
 		assert.Equal(t, "custom-image:latest", config.RebootImage)
+		assert.True(t, config.UseSysrqReboot)
 		assert.Equal(t, "custom-ns", config.RebootJobNamespace)
 		assert.Equal(t, int32(7200), config.RebootJobTTL)
 		assert.Equal(t, []string{"secret-a", "secret-b"}, config.RebootJobPullSecrets)
+	})
+
+	t.Run("invalid sysrq flag uses default", func(t *testing.T) {
+		t.Setenv("GENERIC_REBOOT_USE_SYSRQ", "not-a-bool")
+
+		config := loadConfigFromEnv()
+		assert.False(t, config.UseSysrqReboot)
 	})
 
 	t.Run("invalid TTL uses default", func(t *testing.T) {

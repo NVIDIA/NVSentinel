@@ -111,9 +111,12 @@ enum RecommendedAction {
   NONE = 0;
   COMPONENT_RESET = 2;
   CONTACT_SUPPORT = 5;
+  RUN_FIELDDIAG = 6;
   RESTART_VM = 15;
   RESTART_BM = 24;
   REPLACE_VM = 25;
+  RUN_DCGMEUD = 26;
+  CUSTOM = 27;
   UNKNOWN = 99;
 }
 
@@ -297,7 +300,6 @@ Else:
 
 ### 5. Fault Quarantine Module
 
-**What it receives:**
 **What it receives:**
 - MongoDB change stream events
 - Watches for: new HealthEvents with `isFatal: true` or specific error codes
@@ -654,7 +656,7 @@ spec:
 - **Service Definition**: `PlatformConnector.HealthEventOccurredV1`
 - **Client**: Health Monitors (GPU, Syslog, CSP)
 - **Server**: Platform Connectors
-- **Port**: Configurable (default: 50051)
+- **Transport**: Unix domain socket (default path: `/var/run/nvsentinel.sock`; the CSP health monitor uses `/run/nvsentinel/nvsentinel.sock`)
 - **TLS**: Optional (cert-manager integration)
 
 ### MongoDB Connections

@@ -187,3 +187,51 @@ func TestExternalRemediationRequestList_DeepCopy_NilSafe(t *testing.T) {
 	assert.Nil(t, nilList.DeepCopyObject())
 	assert.Nil(t, nilList.DeepCopy())
 }
+
+func TestExternalRemediationRequest_SetCompletionTime_AllocatesStatus(t *testing.T) {
+	t.Parallel()
+
+	extrr := newERR()
+	extrr.Status = nil
+
+	before := time.Now()
+	extrr.SetCompletionTime()
+	after := time.Now()
+
+	require.NotNil(t, extrr.Status, "SetCompletionTime must allocate Status when nil")
+	require.NotNil(t, extrr.Status.CompletionTime, "CompletionTime must be set")
+
+	got := extrr.Status.CompletionTime.AsTime()
+	assert.False(t, got.Before(before.Add(-time.Second)), "CompletionTime must be ~now")
+	assert.False(t, got.After(after.Add(time.Second)), "CompletionTime must be ~now")
+}
+
+func TestExternalRemediationRequest_SetCompletionTime_StampsOnExistingStatus(t *testing.T) {
+	t.Parallel()
+
+	extrr := newERR()
+	extrr.Status = &protos.ExternalRemediationRequestStatus{
+		Conditions: []*protos.Condition{{Type: "NVSentinelOwnershipReleased", Status: "True"}},
+	}
+
+	extrr.SetCompletionTime()
+
+	require.NotNil(t, extrr.Status.CompletionTime, "CompletionTime must be set on existing Status")
+	assert.Len(t, extrr.Status.Conditions, 1, "existing conditions must be preserved")
+}
+
+func TestExternalRemediationRequest_SetCompletionTime_IdempotentWhenAlreadySet(t *testing.T) {
+	t.Parallel()
+
+	original := timestamppb.New(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
+
+	extrr := newERR()
+	extrr.Status = &protos.ExternalRemediationRequestStatus{
+		CompletionTime: original,
+	}
+
+	extrr.SetCompletionTime()
+
+	assert.Equal(t, original.AsTime(), extrr.Status.CompletionTime.AsTime(),
+		"SetCompletionTime must NOT overwrite an existing CompletionTime")
+}

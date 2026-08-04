@@ -31,6 +31,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
@@ -150,6 +151,32 @@ func TestPreflightEndToEnd(t *testing.T) {
 			helpers.AssertGangConfigMap(
 				ctx, t, client, testCtx, gangID, minMember,
 			)
+
+			return ctx
+		})
+
+	feature.Assess("gang ConfigMap is garbage-collected with PodGroup owner",
+		func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			client, err := c.NewClient()
+			require.NoError(t, err)
+
+			gangID := helpers.ExpectedKAIGangID(testNS, pgName)
+			gangCM := helpers.AssertGangConfigMap(
+				ctx, t, client, testCtx, gangID, minMember,
+			)
+			podGroup := helpers.GetKAIPodGroup(ctx, t, client, testNS, pgName)
+
+			require.Contains(t, gangCM.OwnerReferences, metav1.OwnerReference{
+				APIVersion: "scheduling.run.ai/v2alpha2",
+				Kind:       "PodGroup",
+				Name:       pgName,
+				UID:        podGroup.GetUID(),
+			}, "gang ConfigMap should be owned by the KAI PodGroup")
+
+			helpers.DeleteKAIPodGroup(ctx, client, testNS, pgName)
+			testCtx.PodGroupName = ""
+
+			helpers.WaitForGangConfigMapDeleted(ctx, t, client, gangCM.Namespace, gangCM.Name)
 
 			return ctx
 		})

@@ -155,6 +155,7 @@ rules:
   - watch
   - update
   - patch
+  - delete
 - apiGroups:
   - nvsentinel.dgxc.nvidia.com
   resources:

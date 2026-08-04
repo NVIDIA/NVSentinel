@@ -17,6 +17,7 @@ package healthEventsAnnotation
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
@@ -116,7 +117,7 @@ func createEntityKeys(
 		return keys
 	}
 
-	keys := make([]HealthEventKey, 0, len(entities)*len(errorCodes))
+	keys := make([]HealthEventKey, 0, eventKeysCapacity(len(entities), len(errorCodes)))
 
 	for _, entity := range entities {
 		for _, code := range errorCodes {
@@ -127,6 +128,18 @@ func createEntityKeys(
 	}
 
 	return keys
+}
+
+func eventKeysCapacity(entityCount, errorCodeCount int) int {
+	if entityCount == 0 || errorCodeCount == 0 {
+		return 0
+	}
+
+	if entityCount > math.MaxInt/errorCodeCount {
+		return 0
+	}
+
+	return entityCount * errorCodeCount
 }
 
 // AddOrUpdateEvent adds a health event for each impacted entity

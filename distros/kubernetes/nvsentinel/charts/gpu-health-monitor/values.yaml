@@ -19,12 +19,26 @@ image:
 
 # DCGM (Data Center GPU Manager) integration configuration
 dcgm:
+  # Source mode. Supported values: operator-service, external-hostengine, embedded-mode.
+  # operator-service: the GPU Operator DCGM service
+  # external-hostengine: an externally owned nv-hostengine
+  # embedded-mode: the GPU health monitor runs an in-process embedded DCGM hostengine
+  # and exposes it on a pod-local loopback listener for DCGM clients such as dcgmi
+  mode: operator-service
   # Enable DCGM Kubernetes service for GPU metrics collection
   dcgmK8sServiceEnabled: true
+  # GPU Operator DCGM service used by operator-service mode.
   service:
-    # DCGM service endpoint in the cluster
     endpoint: "nvidia-dcgm.gpu-operator.svc"
-    # DCGM service port
+    port: 5555
+  # Externally owned hostengine used by external-hostengine mode.
+  externalHostengine:
+    endpoint: localhost
+    port: 5555
+  # In-process hostengine listener used by embedded-mode. The endpoint must be
+  # localhost, 127.0.0.1, or ::1.
+  embedded:
+    endpoint: localhost
     port: 5555
 
 # DCGM field-level monitoring feature flags
@@ -35,9 +49,23 @@ dcgmFieldsMonitoring:
   # events are emitted with processingStrategy=STORE_ONLY
   gpuTempLimitStoreOnly: true
 
-# Use host networking for GPU health monitor pods
-# Required for accessing host-level GPU metrics
+# DCGM health check incident suppression
+dcgmHealthCheck:
+  # DCGM error codes to drop before they become health events
+  # Example: ["DCGM_FR_CLOCK_THROTTLE_POWER"]
+  suppressedErrorCodes: []
+
+# Use host networking for GPU health monitor pods. external-hostengine mode
+# enables host networking automatically because the configured endpoint is
+# node-local by contract. This value is an opt-in for other modes.
 useHostNetworking: false
+
+# RuntimeClass for the GPU health monitor pods. Leave empty for operator-service
+# and external-hostengine modes (the monitor connects to a remote hostengine and
+# needs no local GPU access). In embedded-mode the monitor runs an in-process
+# embedded DCGM hostengine, which requires NVML/driver access. This value is
+# required in embedded-mode and is commonly "nvidia".
+runtimeClassName: ""
 
 # Additional volume mounts for GPU health monitor (optional)
 additionalVolumeMounts: []
@@ -68,3 +96,14 @@ verbose: "False"
 # EXECUTE_REMEDIATION: normal behavior; downstream modules may update cluster state.
 # STORE_ONLY: observability-only behavior; event should be persisted/exported but should not modify cluster resources (i.e., no node conditions, no quarantine, no drain, no remediation).
 processingStrategy: EXECUTE_REMEDIATION
+
+# Operator assertion that bridge-capable PCIe GPUs (A100/H100 PCIe) in this
+# fleet run without NVLink bridges by design. When true, DCGM_FR_NVLINK_DOWN
+# is suppressed on PCIe-named GPUs whose metadata shows zero active NVLink
+# links (DCGM otherwise reports the permanently-inactive bridge links as a
+# FATAL fault with RESTART_VM). Leave false if any pool uses NVLink bridges:
+# an unbridged card and a card whose bridge was dead at metadata-collection
+# time are indistinguishable, so enabling this could mask a bridge failure
+# present at boot. GPUs with no NVLink silicon (L40, A40) are always
+# suppressed regardless of this value.
+suppressNvlinkDownOnUnbridgedPcie: "False"

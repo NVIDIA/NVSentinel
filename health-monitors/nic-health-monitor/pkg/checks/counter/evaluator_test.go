@@ -15,6 +15,7 @@
 package counter
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -70,26 +71,26 @@ func ibDevice() *discovery.IBDevice {
 
 func deltaCounter(threshold float64) config.CounterConfig {
 	return config.CounterConfig{
-		Name:              "link_downed",
-		Path:              "counters/link_downed",
-		Enabled:           true,
-		IsFatal:           true,
-		ThresholdType:     "delta",
-		Threshold:         threshold,
-		Description: "QP disconnect",
+		Name:          "link_downed",
+		Path:          "counters/link_downed",
+		Enabled:       true,
+		IsFatal:       true,
+		ThresholdType: "delta",
+		Threshold:     threshold,
+		Description:   "QP disconnect",
 	}
 }
 
 func velocityCounter(unit string, threshold float64) config.CounterConfig {
 	return config.CounterConfig{
-		Name:              "symbol_error_fatal",
-		Path:              "counters/symbol_error",
-		Enabled:           true,
-		IsFatal:           true,
-		ThresholdType:     "velocity",
-		Threshold:         threshold,
-		VelocityUnit:      unit,
-		Description: "BER spec violation",
+		Name:          "symbol_error_fatal",
+		Path:          "counters/symbol_error",
+		Enabled:       true,
+		IsFatal:       true,
+		ThresholdType: "velocity",
+		Threshold:     threshold,
+		VelocityUnit:  unit,
+		Description:   "BER spec violation",
 	}
 }
 
@@ -163,6 +164,27 @@ func TestEvaluateCounters_FirstPollSeedsBaselineNoEvent(t *testing.T) {
 	assert.Equal(t, uint64(100), snapshots["mlx5_0:1:link_downed"].Value)
 }
 
+func TestEvaluatorClone_IsolatesPreparedCounterState(t *testing.T) {
+	value := uint64(0)
+	reader := newReaderFor(&value)
+	committed := newEvaluator(t, reader, false)
+	cfg := []config.CounterConfig{deltaCounter(0)}
+
+	require.Empty(t, committed.EvaluateCounters(
+		ibDevice(), ibPort(), cfg, checks.InfiniBandDegradationCheckName))
+
+	candidate := committed.Clone()
+	value = 1
+	events := candidate.EvaluateCounters(
+		ibDevice(), ibPort(), cfg, checks.InfiniBandDegradationCheckName)
+	require.Len(t, events, 1)
+	assert.True(t, candidate.isBreached("mlx5_0:1:link_downed"))
+
+	assert.False(t, committed.isBreached("mlx5_0:1:link_downed"),
+		"discarding a prepared candidate must preserve the committed latch")
+	assert.Equal(t, uint64(0), committed.snapshots["mlx5_0:1:link_downed"].Value)
+}
+
 func TestEvaluateCounters_DeltaBreachAndLatch(t *testing.T) {
 	value := uint64(0)
 	reader := newReaderFor(&value)
@@ -173,14 +195,14 @@ func TestEvaluateCounters_DeltaBreachAndLatch(t *testing.T) {
 	// Poll 1: seed snapshot.
 	require.Empty(t, ev.EvaluateCounters(ibDevice(), ibPort(), cfg, checks.InfiniBandDegradationCheckName))
 
-	// Poll 2: counter increments → fatal event under the IB STATE check
-	// name (per fatalCheckName mapping).
+	// Poll 2: counter increments → fatal event under the degradation check
+	// name so a state recovery cannot clear the independent counter latch.
 	value = 1
 	events := ev.EvaluateCounters(ibDevice(), ibPort(), cfg, checks.InfiniBandDegradationCheckName)
 	require.Len(t, events, 1)
 	assert.True(t, events[0].IsFatal)
 	assert.False(t, events[0].IsHealthy)
-	assert.Equal(t, checks.InfiniBandStateCheckName, events[0].CheckName)
+	assert.Equal(t, checks.InfiniBandDegradationCheckName, events[0].CheckName)
 	assert.Contains(t, events[0].Message, "link_downed")
 
 	// Poll 3: delta returns to 0, but breach is latched → no event.
@@ -191,6 +213,42 @@ func TestEvaluateCounters_DeltaBreachAndLatch(t *testing.T) {
 	value = 2
 	events = ev.EvaluateCounters(ibDevice(), ibPort(), cfg, checks.InfiniBandDegradationCheckName)
 	assert.Empty(t, events, "latched breach must suppress further events even on more increments")
+}
+
+func TestEvaluateCounters_ScopeChangeRestart_LatchSurvives(t *testing.T) {
+	// After a discovery-scope change the pod restarts with counter
+	// snapshots and breach latches preserved and bootIDChanged=false
+	// (statefile reports the change via ScopeChanged instead — see
+	// Manager.ScopeChanged). A real latched breach must neither emit a
+	// synthetic "healthy after reboot" recovery nor lose its latch.
+	value := uint64(5) // unchanged since the breach fired
+	reader := newReaderFor(&value)
+
+	seededSnapshots := map[string]statefile.CounterSnapshot{
+		"mlx5_0:1:link_downed": {Value: 5, Timestamp: time.Now()},
+	}
+	seededFlags := map[string]statefile.CounterBreachFlag{
+		"mlx5_0:1:link_downed": {Breached: true, CheckName: checks.InfiniBandStateCheckName, IsFatal: true},
+	}
+
+	ev := NewEvaluator(testNode, reader, pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		seededSnapshots, seededFlags, false)
+
+	cfg := []config.CounterConfig{deltaCounter(0)}
+
+	// First poll after the scope-change restart: silence — no synthetic
+	// recovery, no duplicate breach.
+	events := ev.EvaluateCounters(ibDevice(), ibPort(), cfg, checks.InfiniBandDegradationCheckName)
+	assert.Empty(t, events, "scope-change restart must not emit synthetic events for a latched breach")
+
+	// The latch is still armed: only a real admin counter reset produces
+	// the recovery event.
+	value = 0
+	events = ev.EvaluateCounters(ibDevice(), ibPort(), cfg, checks.InfiniBandDegradationCheckName)
+	require.Len(t, events, 1)
+	assert.True(t, events[0].IsHealthy, "latch preserved across scope change must still recover on real reset")
+	assert.Equal(t, checks.InfiniBandStateCheckName, events[0].CheckName,
+		"legacy persisted breaches must recover under their original identity")
 }
 
 func TestEvaluateCounters_ResetEmitsRecovery(t *testing.T) {
@@ -212,7 +270,7 @@ func TestEvaluateCounters_ResetEmitsRecovery(t *testing.T) {
 	assert.True(t, events[0].IsHealthy, "reset of breached counter must emit recovery")
 	assert.False(t, events[0].IsFatal)
 	assert.Equal(t, pb.RecommendedAction_NONE, events[0].RecommendedAction)
-	assert.Equal(t, checks.InfiniBandStateCheckName, events[0].CheckName)
+	assert.Equal(t, checks.InfiniBandDegradationCheckName, events[0].CheckName)
 
 	// Breach flag must be cleared. We expect the entry to remain in
 	// the returned map with Breached=false so statefile.Manager can
@@ -302,7 +360,7 @@ func TestEvaluateCounters_VelocityEvaluatesAfterWindow(t *testing.T) {
 	flags := ev.BreachFlags()
 	require.Contains(t, flags, "mlx5_0:1:symbol_error_fatal")
 	assert.True(t, flags["mlx5_0:1:symbol_error_fatal"].Breached)
-	assert.Equal(t, checks.InfiniBandStateCheckName, flags["mlx5_0:1:symbol_error_fatal"].CheckName)
+	assert.Equal(t, checks.InfiniBandDegradationCheckName, flags["mlx5_0:1:symbol_error_fatal"].CheckName)
 }
 
 // TestEvaluateCounters_VelocityBelowThresholdNoEvent verifies that an
@@ -450,13 +508,13 @@ func TestEvaluateNetCounters_DeltaBreach(t *testing.T) {
 	port := &discovery.IBPort{Device: testDevice, Port: testPort, LinkLayer: "Ethernet"}
 	cfg := []config.CounterConfig{
 		{
-			Name:              "carrier_changes",
-			Path:              "statistics/carrier_changes",
-			Enabled:           true,
-			IsFatal:           false,
-			ThresholdType:     "delta",
-			Threshold:         2,
-			Description: "carrier flap",
+			Name:          "carrier_changes",
+			Path:          "statistics/carrier_changes",
+			Enabled:       true,
+			IsFatal:       false,
+			ThresholdType: "delta",
+			Threshold:     2,
+			Description:   "carrier flap",
 		},
 	}
 
@@ -485,12 +543,12 @@ func TestEvaluateNetCounters_PathDrivesStatFile(t *testing.T) {
 	port := &discovery.IBPort{Device: testDevice, Port: testPort, LinkLayer: "Ethernet"}
 	cfg := []config.CounterConfig{
 		{
-			Name:              "rx_missed_errors",
-			Path:              "statistics/rx_missed_errors",
-			Enabled:           true,
-			ThresholdType:     "delta",
-			Threshold:         5,
-			Description: "host bottleneck",
+			Name:          "rx_missed_errors",
+			Path:          "statistics/rx_missed_errors",
+			Enabled:       true,
+			ThresholdType: "delta",
+			Threshold:     5,
+			Description:   "host bottleneck",
 		},
 	}
 
@@ -799,4 +857,85 @@ func TestEvaluateCounters_BreachMessageContainsCorrectRateUnit(t *testing.T) {
 				"breach message must contain the correct rate unit")
 		})
 	}
+}
+
+func TestEvaluateNetCounters_NetdevRootAttributeCounter(t *testing.T) {
+	// netdev/-class counters (carrier_changes) are read from the netdev
+	// root via ReadNetAttribute, not from statistics/.
+	value := uint64(10)
+	reader := &sysfs.MockReader{
+		ReadNetAttributeFunc: func(iface, attr string) (uint64, error) {
+			require.Equal(t, "eth4", iface)
+			require.Equal(t, "carrier_changes", attr)
+			return value, nil
+		},
+		ReadNetStatisticFunc: func(_, _ string) (uint64, error) {
+			t.Fatal("netdev/ counters must not be read from statistics/")
+			return 0, nil
+		},
+	}
+
+	ev := newEvaluator(t, reader, false)
+	dev := &discovery.IBDevice{Name: testDevice, NetDev: "eth4"}
+	cfg := config.CounterConfig{
+		Name: "carrier_changes", Path: "netdev/carrier_changes",
+		Enabled: true, ThresholdType: "delta", Threshold: 0,
+		Description: "Link instability",
+	}
+
+	events := ev.EvaluateNetCounters(dev, ibPort(), []config.CounterConfig{cfg}, checks.EthernetDegradationCheckName)
+	assert.Empty(t, events, "first read seeds the snapshot")
+
+	value = 12
+
+	events = ev.EvaluateNetCounters(dev, ibPort(), []config.CounterConfig{cfg}, checks.EthernetDegradationCheckName)
+	require.Len(t, events, 1, "the delta must breach")
+	assert.False(t, events[0].IsFatal)
+	assert.Equal(t, []string{"carrier_changes"}, events[0].ErrorCode)
+}
+
+func TestEvaluateCounters_SkipsNetdevRootPaths(t *testing.T) {
+	// The IB-tree loop must skip both net path classes; a netdev/ path
+	// must never be read through ReadIBPortCounter.
+	reader := &sysfs.MockReader{
+		ReadIBPortCounterFunc: func(_ string, _ int, counterPath string) (uint64, error) {
+			require.NotEqual(t, "netdev/carrier_changes", counterPath,
+				"netdev/ counters must not be evaluated by the IB-tree loop")
+			return 0, nil
+		},
+	}
+
+	ev := newEvaluator(t, reader, false)
+	cfg := config.CounterConfig{
+		Name: "carrier_changes", Path: "netdev/carrier_changes",
+		Enabled: true, ThresholdType: "delta", Threshold: 0,
+		Description: "Link instability",
+	}
+
+	events := ev.EvaluateCounters(ibDevice(), ibPort(), []config.CounterConfig{cfg}, checks.InfiniBandDegradationCheckName)
+	assert.Empty(t, events)
+}
+
+func TestUnreadableEnabledCounter_SkippedAndWarnedOnce(t *testing.T) {
+	// An enabled counter whose read fails is skipped (no events, no
+	// snapshot) but must be marked for the one-time warning — a wrong
+	// sysfs path once kept carrier_changes silently unmonitored for the
+	// project's entire history.
+	reader := &sysfs.MockReader{
+		ReadIBPortCounterFunc: func(_ string, _ int, _ string) (uint64, error) {
+			return 0, errors.New("transient EIO")
+		},
+	}
+
+	ev := newEvaluator(t, reader, false)
+	cfg := []config.CounterConfig{deltaCounter(0)}
+
+	events := ev.EvaluateCounters(ibDevice(), ibPort(), cfg, checks.InfiniBandDegradationCheckName)
+	assert.Empty(t, events)
+	assert.True(t, ev.unreadableWarned["mlx5_0:1:link_downed"], "the key must be marked as warned")
+	assert.NotContains(t, ev.snapshots, "mlx5_0:1:link_downed", "a failed read must not seed a snapshot")
+
+	// Repeated failures keep it marked exactly once (warn-once).
+	ev.EvaluateCounters(ibDevice(), ibPort(), cfg, checks.InfiniBandDegradationCheckName)
+	assert.Len(t, ev.unreadableWarned, 1)
 }

@@ -142,7 +142,7 @@ spec:
               containerPort: {{ $root.Values.global.metricsPort }}
           livenessProbe:
             httpGet:
-              path: /metrics
+              path: /healthz
               port: {{ $root.Values.global.metricsPort }}
             initialDelaySeconds: 30
             periodSeconds: 30

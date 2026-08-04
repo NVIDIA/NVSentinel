@@ -21,7 +21,7 @@ ARG NCCL_TESTS_VERSION=v2.13.11
 # =============================================================================
 # Build stage: Compile Go binary
 # =============================================================================
-FROM public.ecr.aws/docker/library/golang:1.26.3-trixie AS go-builder
+FROM public.ecr.aws/docker/library/golang:1.26.4-trixie AS go-builder
 
 ARG VERSION="dev"
 ARG GIT_COMMIT="none"

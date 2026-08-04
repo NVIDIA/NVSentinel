@@ -18,6 +18,7 @@ class ProcessingStrategy(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     UNSPECIFIED: _ClassVar[ProcessingStrategy]
     EXECUTE_REMEDIATION: _ClassVar[ProcessingStrategy]
     STORE_ONLY: _ClassVar[ProcessingStrategy]
+    STORE_AND_ANALYSE: _ClassVar[ProcessingStrategy]
 
 class RecommendedAction(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -34,6 +35,7 @@ class RecommendedAction(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
 UNSPECIFIED: ProcessingStrategy
 EXECUTE_REMEDIATION: ProcessingStrategy
 STORE_ONLY: ProcessingStrategy
+STORE_AND_ANALYSE: ProcessingStrategy
 NONE: RecommendedAction
 COMPONENT_RESET: RecommendedAction
 CONTACT_SUPPORT: RecommendedAction

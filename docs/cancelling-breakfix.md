@@ -20,10 +20,10 @@ Cancel a workflow when you need to handle a specific situation manually:
 
 ### How to Cancel
 
-Simply uncordon the node:
+Simply uncordon the node (replace `{node-name}` with the actual node name):
 
 ```bash
-kubectl uncordon <node-name>
+kubectl uncordon {node-name}
 ```
 
 NVSentinel detects the uncordon and immediately:
@@ -39,7 +39,7 @@ The node can schedule new workloads right away. If the health issue happens agai
 See if a node was manually uncordoned:
 
 ```bash
-kubectl get node <node-name> -o jsonpath='{.metadata.annotations.quarantinedNodeUncordonedManually}'
+kubectl get node {node-name} -o jsonpath='{.metadata.annotations.quarantinedNodeUncordonedManually}'
 ```
 
 If this returns `"True"`, the node was manually uncordoned.
@@ -60,7 +60,7 @@ Disable NVSentinel break-fix automation permanently on nodes when:
 Label the node to opt out:
 
 ```bash
-kubectl label node <node-name> k8saas.nvidia.com/ManagedByNVSentinel=false
+kubectl label node {node-name} k8saas.nvidia.com/ManagedByNVSentinel=false
 ```
 
 **Effect**: NVSentinel will completely ignore health events from this node. No quarantine, no drain, no remediation.
@@ -70,7 +70,7 @@ kubectl label node <node-name> k8saas.nvidia.com/ManagedByNVSentinel=false
 Remove the label to opt back in:
 
 ```bash
-kubectl label node <node-name> k8saas.nvidia.com/ManagedByNVSentinel-
+kubectl label node {node-name} k8saas.nvidia.com/ManagedByNVSentinel-
 ```
 
 The node will be managed by NVSentinel again for any new health events.

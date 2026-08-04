@@ -42,6 +42,23 @@ fault-quarantine:
   logLevel: info  # Options: debug, info, warn, error
 ```
 
+### Change Stream Resume Token
+
+To make fault-quarantine skip accumulated events and start from the current stream head, scale it to zero, set its key in the shared resume-control ConfigMap to `CREATE`, then restore its replicas. Fault-quarantine deletes only its own resume token and resets the key back to `RESUME` during startup.
+
+```bash
+REPLICAS=$(kubectl -n nvsentinel get deployment fault-quarantine -o jsonpath='{.spec.replicas}')
+kubectl -n nvsentinel scale deployment/fault-quarantine --replicas=0
+kubectl -n nvsentinel rollout status deployment/fault-quarantine --timeout=180s
+kubectl -n nvsentinel get configmap resume-control >/dev/null 2>&1 || \
+  kubectl -n nvsentinel create configmap resume-control
+kubectl -n nvsentinel patch configmap resume-control \
+  --type merge \
+  -p '{"data":{"fault-quarantine":"CREATE"}}'
+kubectl -n nvsentinel scale deployment/fault-quarantine --replicas="${REPLICAS:-1}"
+kubectl -n nvsentinel rollout status deployment/fault-quarantine --timeout=180s
+```
+
 ### Label Prefix
 
 Defines the prefix for all node labels created by the module to track cordon/uncordon lifecycle.
@@ -51,12 +68,15 @@ fault-quarantine:
   labelPrefix: "k8saas.nvidia.com/"
 ```
 
-Generated labels:
-- `<labelPrefix>cordon-by` - Service that cordoned the node
-- `<labelPrefix>cordon-reason` - Reason for cordoning
-- `<labelPrefix>cordon-timestamp` - Cordon timestamp (format: 2006-01-02T15-04-05Z)
-- `<labelPrefix>uncordon-by` - Service that uncordoned the node
-- `<labelPrefix>uncordon-timestamp` - Uncordon timestamp (format: 2006-01-02T15-04-05Z)
+### Generated Labels
+
+Labels use the configured `{labelPrefix}` (default `k8saas.nvidia.com/`):
+- `{labelPrefix}cordon-by` — Service that cordoned the node
+- `{labelPrefix}cordon-reason` — Reason for cordoning
+- `{labelPrefix}cordon-timestamp` — Cordon timestamp (format: 2006-01-02T15-04-05Z)
+- `{labelPrefix}uncordon-by` — Service that uncordoned the node
+- `{labelPrefix}uncordon-reason` — Reason for uncordoning
+- `{labelPrefix}uncordon-timestamp` — Uncordon timestamp (format: 2006-01-02T15-04-05Z)
 
 ## Circuit Breaker
 
@@ -116,7 +136,8 @@ Rule sets define conditions for quarantining nodes using CEL expressions. Each r
 ```yaml
 fault-quarantine:
   ruleSets:
-    - version: "1"
+    - enabled: true
+      version: "1"
       name: "ruleset-name"
       priority: 100
       
@@ -139,9 +160,16 @@ fault-quarantine:
         key: "nvidia.com/gpu-error"
         value: "fatal"
         effect: "NoSchedule"
+
+      label:
+        key: "nvidia.com/gpu-fault"
+        value: "active"
 ```
 
 ### Parameters
+
+#### enabled
+When `false`, the ruleset is skipped entirely. Use this to turn off a built-in ruleset without removing its definition.
 
 #### version
 Rule set format version for future compatibility.
@@ -150,7 +178,7 @@ Rule set format version for future compatibility.
 Unique identifier used in logs, metrics, and as part of the cordon-reason label.
 
 #### priority
-Optional integer for resolving conflicts when multiple rule sets apply the same taint key-value pair. Higher values take precedence.
+Optional integer for resolving conflicts when multiple rule sets apply the same taint key-value pair or label key. Higher values take precedence. Label priority is preserved across all matching health events in the same quarantine session; a later lower-priority event cannot downgrade the current label. For labels with equal priority, the later rule set in configuration order wins.
 
 #### match
 Defines conditions that must be satisfied for the rule set to trigger. Supports `all` (AND) and `any` (OR) logic.
@@ -166,6 +194,9 @@ Specifies whether to mark the node as unschedulable when the rule matches.
 
 #### taint
 Optional Kubernetes taint to apply. Taints can prevent pod scheduling or evict existing pods based on the effect.
+
+#### label
+Optional Kubernetes label to apply for the lifetime of the quarantine session. If the key already exists, fault-quarantine overwrites its value. The label, priority, and configuration order are recorded in the `quarantineHealthEventAppliedLabels` node annotation so later events use the same conflict policy. The label is removed after every health event tracked in `quarantineHealthEvent` has recovered. Manual uncordon, manual untaint, and stale-state cleanup remove the tracking annotation but preserve the label itself, mirroring the existing applied-taint behavior. In dry-run mode, the intended label is recorded in annotations for observability, but Kubernetes Node labels are not added, overwritten, or removed.
 
 ### Example Rule Sets
 
@@ -208,3 +239,24 @@ ruleSets:
     cordon:
       shouldCordon: true
 ```
+
+### Adding and Modifying Rule Sets
+
+`fault-quarantine.ruleSets` is a **list**. When Helm merges multiple values files (`-f`), lists are replaced entirely — not merged by `name`. A file that sets only one ruleset replaces the whole list; built-in rulesets from [values.yaml](../../distros/kubernetes/nvsentinel/charts/fault-quarantine/values.yaml) are dropped unless you include them again. The chart has no keyed-merge for rulesets.
+
+Copy the default `ruleSets` from values.yaml into your values file, edit the full list, then upgrade:
+
+- **Disable** a ruleset: set `enabled: false` on that entry in your complete list.
+- **Add** a ruleset: append an entry (see [examples above](#example-rule-sets)).
+- **Modify** a ruleset: change `match`, `cordon`, or `taint` on that entry in your complete list.
+
+```bash
+helm upgrade nvsentinel ./distros/kubernetes/nvsentinel \
+  -n nvsentinel \
+  -f my-values.yaml \
+  --wait
+```
+
+The chart renders the list into the `fault-quarantine` ConfigMap (`config.toml`); a config change triggers a pod restart.
+
+Use `global.dryRun: true` to test without cordoning nodes (see [Dry Run Mode](./README.md#dry-run-mode)). Confirm the rollout with `kubectl -n nvsentinel rollout status deployment/fault-quarantine` and check `kubectl -n nvsentinel logs deployment/fault-quarantine`.

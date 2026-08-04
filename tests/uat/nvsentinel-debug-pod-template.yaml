@@ -1,0 +1,41 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: v1
+kind: Pod
+metadata:
+  generateName: uat-node-debug-
+  namespace: nvsentinel
+  labels:
+    app.kubernetes.io/name: uat-node-debug
+spec:
+  nodeName: NODE_NAME
+  runtimeClassName: nvidia
+  restartPolicy: Never
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: nvsentinel-debug
+      # Same base image as the syslog-health-monitor runtime stage. nvidia-smi
+      # is injected by the NVIDIA container toolkit (runtimeClassName +
+      # privileged + NVIDIA_VISIBLE_DEVICES, see ADR-044).
+      image: public.ecr.aws/docker/library/debian:trixie-slim
+      command: ["sleep", "3600"]
+      securityContext:
+        privileged: true
+      env:
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: all
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: utility

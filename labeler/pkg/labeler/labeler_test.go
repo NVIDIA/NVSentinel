@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -33,6 +34,8 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+
+	"github.com/nvidia/nvsentinel/labeler/pkg/devicecounts"
 )
 
 // go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
@@ -629,7 +632,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 				require.NoError(t, err, "failed to update pod status")
 			}
 
-			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", false)
+			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", false, false,
+				devicecounts.Config{}, false)
 			require.NoError(t, err)
 			go func() {
 				require.NoError(t, labeler.Run(ctx), "failed to run labeler")
@@ -714,6 +718,258 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 	}
 }
 
+func TestDCGMBootstrapCompleted(t *testing.T) {
+	tests := []struct {
+		name                         string
+		requireDCGMReadyForBootstrap bool
+		dcgmPodReady                 bool
+		existingBootstrapAnnotation  string
+		existingDCGMVersionLabel     string
+		deletePodAfterLabelSet       bool
+		expectedDCGMLabel            string
+		expectedBootstrapAnnotation  string
+	}{
+		{
+			name:                         "not deployed if bootstrap not completed and DCGM not ready",
+			requireDCGMReadyForBootstrap: true,
+			dcgmPodReady:                 false,
+			existingBootstrapAnnotation:  "",
+			existingDCGMVersionLabel:     "",
+			deletePodAfterLabelSet:       false,
+			expectedDCGMLabel:            "",
+			expectedBootstrapAnnotation:  "",
+		},
+		{
+			name:                         "deployed if requireDCGMReadyForBootstrap false, bootstrap not completed, DCGM not ready",
+			requireDCGMReadyForBootstrap: false,
+			dcgmPodReady:                 false,
+			existingBootstrapAnnotation:  "",
+			existingDCGMVersionLabel:     "",
+			deletePodAfterLabelSet:       false,
+			expectedDCGMLabel:            "4.x",
+			expectedBootstrapAnnotation:  "true",
+		},
+		{
+			name:                         "deployed if bootstrap not completed and DCGM ready",
+			requireDCGMReadyForBootstrap: true,
+			dcgmPodReady:                 true,
+			existingBootstrapAnnotation:  "",
+			existingDCGMVersionLabel:     "",
+			deletePodAfterLabelSet:       false,
+			expectedDCGMLabel:            "4.x",
+			expectedBootstrapAnnotation:  "true",
+		},
+		{
+			name:                         "deployed if bootstrap completed and DCGM not ready",
+			requireDCGMReadyForBootstrap: true,
+			dcgmPodReady:                 false,
+			existingBootstrapAnnotation:  "true",
+			existingDCGMVersionLabel:     "",
+			deletePodAfterLabelSet:       false,
+			expectedDCGMLabel:            "4.x",
+			expectedBootstrapAnnotation:  "true",
+		},
+		{
+			name:                         "annotation added when label already set, bootstrap not completed, DCGM ready",
+			requireDCGMReadyForBootstrap: true,
+			dcgmPodReady:                 true,
+			existingBootstrapAnnotation:  "",
+			existingDCGMVersionLabel:     "4.x",
+			deletePodAfterLabelSet:       false,
+			expectedDCGMLabel:            "4.x",
+			expectedBootstrapAnnotation:  "true",
+		},
+		{
+			name:                         "annotation persists but DCGM label removed when DCGM pod deleted",
+			requireDCGMReadyForBootstrap: true,
+			dcgmPodReady:                 true,
+			existingBootstrapAnnotation:  "",
+			existingDCGMVersionLabel:     "4.x",
+			deletePodAfterLabelSet:       true,
+			expectedDCGMLabel:            "",
+			expectedBootstrapAnnotation:  "true",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			testEnv := envtest.Environment{}
+			cfg, err := testEnv.Start()
+			require.NoError(t, err, "failed to setup envtest")
+			defer func() { _ = testEnv.Stop() }()
+
+			kubeClient, err := kubernetes.NewForConfig(cfg)
+			require.NoError(t, err, "failed to create K8s client")
+
+			ns, err := kubeClient.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "gpu-operator"},
+			}, metav1.CreateOptions{})
+			require.NoError(t, err, "failed to create namespace")
+
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "test-node",
+					Labels:      make(map[string]string),
+					Annotations: make(map[string]string),
+				},
+			}
+			if tt.existingBootstrapAnnotation != "" {
+				node.Annotations[DCGMBootstrapCompletedAnnotation] = tt.existingBootstrapAnnotation
+			}
+			if tt.existingDCGMVersionLabel != "" {
+				node.Labels[DCGMVersionLabel] = tt.existingDCGMVersionLabel
+			}
+
+			_, err = kubeClient.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
+			require.NoError(t, err, "failed to create node")
+
+			labeler, err := NewLabeler(kubeClient, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset",
+				"nvidia-driver-installer", "", false, false,
+				devicecounts.Config{}, false)
+			require.NoError(t, err, "failed to create labeler")
+			labeler.requireDCGMReadyForBootstrap = tt.requireDCGMReadyForBootstrap
+
+			labelerCtx, labelerCancel := context.WithCancel(ctx)
+			defer labelerCancel()
+
+			go func() { _ = labeler.Run(labelerCtx) }()
+
+			require.Eventually(t, func() bool {
+				return labeler.allInformersSynced()
+			}, 10*time.Second, 100*time.Millisecond, "informers did not sync")
+
+			dcgmPodStatus := corev1.PodStatus{
+				Phase: corev1.PodPending,
+				Conditions: []corev1.PodCondition{
+					{Type: corev1.PodReady, Status: corev1.ConditionFalse},
+				},
+			}
+			if tt.dcgmPodReady {
+				dcgmPodStatus = corev1.PodStatus{
+					Phase: corev1.PodRunning,
+					Conditions: []corev1.PodCondition{
+						{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+					},
+				}
+			}
+
+			dcgmPod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "dcgm-pod",
+					Labels: map[string]string{"app": "nvidia-dcgm"},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "test-node",
+					Containers: []corev1.Container{
+						{Name: "dcgm", Image: "nvcr.io/nvidia/dcgm:4.1.0"},
+					},
+				},
+			}
+
+			po, err := kubeClient.CoreV1().Pods(ns.Name).Create(ctx, dcgmPod, metav1.CreateOptions{})
+			require.NoError(t, err, "failed to create dcgm pod")
+			po.Status = dcgmPodStatus
+			_, err = kubeClient.CoreV1().Pods(ns.Name).UpdateStatus(ctx, po, metav1.UpdateOptions{})
+			require.NoError(t, err, "failed to update dcgm pod status")
+
+			if tt.deletePodAfterLabelSet {
+				require.Eventually(t, func() bool {
+					no, err := kubeClient.CoreV1().Nodes().Get(ctx, "test-node", metav1.GetOptions{})
+					if err != nil {
+						return false
+					}
+					return no.Labels[DCGMVersionLabel] != "" &&
+						no.Annotations[DCGMBootstrapCompletedAnnotation] != ""
+				}, 15*time.Second, 500*time.Millisecond, "dcgm label and annotation should be set before pod deletion")
+
+				var noGrace int64 = 0
+				err = kubeClient.CoreV1().Pods(ns.Name).Delete(ctx, dcgmPod.Name, metav1.DeleteOptions{GracePeriodSeconds: &noGrace})
+				require.NoError(t, err, "failed to delete dcgm pod")
+			}
+
+			require.Eventually(t, func() bool {
+				no, err := kubeClient.CoreV1().Nodes().Get(ctx, "test-node", metav1.GetOptions{})
+				if err != nil {
+					return false
+				}
+				dcgmLabel := no.Labels[DCGMVersionLabel]
+				annotation := no.Annotations[DCGMBootstrapCompletedAnnotation]
+				if dcgmLabel != tt.expectedDCGMLabel {
+					t.Logf("waiting for DCGM label: want=%q got=%q", tt.expectedDCGMLabel, dcgmLabel)
+					return false
+				}
+				if annotation != tt.expectedBootstrapAnnotation {
+					t.Logf("waiting for bootstrap annotation: want=%q got=%q", tt.expectedBootstrapAnnotation, annotation)
+					return false
+				}
+				return true
+			}, 15*time.Second, 500*time.Millisecond, "node labels/annotations not as expected")
+		})
+	}
+}
+
+func TestAssumeDCGMAvailableWhenPodSourceMissing(t *testing.T) {
+	tests := []struct {
+		name          string
+		existingLabel string
+		preserve      bool
+		wantLabel     string
+	}{
+		{
+			name:          "preserves valid existing label when enabled",
+			existingLabel: "3.x",
+			preserve:      true,
+			wantLabel:     "3.x",
+		},
+		{
+			name:          "removes stale label when disabled",
+			existingLabel: "3.x",
+			preserve:      false,
+			wantLabel:     "",
+		},
+		{
+			name:          "does not preserve invalid label",
+			existingLabel: "5.x",
+			preserve:      true,
+			wantLabel:     "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l, err := NewLabeler(
+				fake.NewSimpleClientset(),
+				time.Minute,
+				"nvidia-dcgm",
+				"nvidia-driver-daemonset",
+				"nvidia-driver-installer",
+				"",
+				false,
+				false,
+				devicecounts.Config{},
+				tt.preserve,
+			)
+			require.NoError(t, err)
+
+			node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "test-node", Labels: map[string]string{}}}
+			if tt.existingLabel != "" {
+				node.Labels[DCGMVersionLabel] = tt.existingLabel
+			}
+
+			l.updateDriverAndDCGMLabels(node, "", "")
+
+			if tt.wantLabel == "" {
+				require.NotContains(t, node.Labels, DCGMVersionLabel)
+			} else {
+				require.Equal(t, tt.wantLabel, node.Labels[DCGMVersionLabel])
+			}
+		})
+	}
+}
+
 // TestKataLabelOverride verifies that the kataLabelOverride parameter correctly
 // adds custom kata detection labels to the labeler instance.
 func TestKataLabelOverride(t *testing.T) {
@@ -757,6 +1013,9 @@ func TestKataLabelOverride(t *testing.T) {
 				"nvidia-driver-installer",
 				tt.override,
 				false,
+				false,
+				devicecounts.Config{},
+				false,
 			)
 
 			if err != nil {
@@ -776,16 +1035,185 @@ func TestNewLabeler_InvalidLabelSelectors_ReturnsError(t *testing.T) {
 	clientset := fake.NewSimpleClientset()
 
 	t.Run("invalid pod label selector", func(t *testing.T) {
-		_, err := NewLabeler(clientset, time.Minute, "invalid(value", "driver", "gke", "", false)
+		_, err := NewLabeler(clientset, time.Minute, "invalid(value", "driver", "gke", "", false, false,
+			devicecounts.Config{}, false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "create pod informer")
 	})
 
 	t.Run("invalid GKE installer label selector", func(t *testing.T) {
-		_, err := NewLabeler(clientset, time.Minute, "dcgm", "driver", "invalid(value", "", false)
+		_, err := NewLabeler(clientset, time.Minute, "dcgm", "driver", "invalid(value", "", false, false,
+			devicecounts.Config{}, false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "create GKE installer informer")
 	})
+}
+
+func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+
+	t.Run("disabled config does not create ResourceSlice informer", func(t *testing.T) {
+		labeler, err := NewLabeler(
+			clientset,
+			time.Minute,
+			"nvidia-dcgm",
+			"nvidia-driver-daemonset",
+			"nvidia-driver-installer",
+			"",
+			false,
+			false,
+			devicecounts.Config{},
+			false,
+		)
+		require.NoError(t, err)
+		require.Nil(t, labeler.resourceSliceInformer)
+		require.Len(t, labeler.informersSynced, 3)
+	})
+
+	t.Run("node-only enabled config does not create ResourceSlice informer", func(t *testing.T) {
+		labeler, err := NewLabeler(
+			clientset,
+			time.Minute,
+			"nvidia-dcgm",
+			"nvidia-driver-daemonset",
+			"nvidia-driver-installer",
+			"",
+			false,
+			false,
+			testDeviceCountConfig(),
+			false,
+		)
+		require.NoError(t, err)
+		require.Nil(t, labeler.resourceSliceInformer)
+		require.Len(t, labeler.informersSynced, 3)
+	})
+
+	t.Run("ResourceSlice expression creates ResourceSlice informer", func(t *testing.T) {
+		labeler, err := NewLabeler(
+			clientset,
+			time.Minute,
+			"nvidia-dcgm",
+			"nvidia-driver-daemonset",
+			"nvidia-driver-installer",
+			"",
+			false,
+			false,
+			testResourceSliceDeviceCountConfig(),
+			false,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, labeler.resourceSliceInformer)
+		require.Len(t, labeler.informersSynced, 4)
+	})
+}
+
+func TestLabelerNodeRequiresReconciliation_DeviceCountLabels(t *testing.T) {
+	labeler, err := NewLabeler(
+		fake.NewSimpleClientset(),
+		time.Minute,
+		"nvidia-dcgm",
+		"nvidia-driver-daemonset",
+		"nvidia-driver-installer",
+		"",
+		false,
+		false,
+		testDeviceCountConfig(),
+		false,
+	)
+	require.NoError(t, err)
+
+	oldNode := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "node-a",
+			Labels: map[string]string{
+				"nvidia.com/gpu.count":     "4",
+				"test.nvsentinel/current":  "4",
+				"test.nvsentinel/expected": "8",
+			},
+		},
+	}
+
+	t.Run("ignores labels managed by device counts", func(t *testing.T) {
+		newNode := oldNode.DeepCopy()
+		newNode.Labels["test.nvsentinel/current"] = "3"
+		newNode.Labels["test.nvsentinel/expected"] = "8"
+
+		require.False(t, labeler.nodeRequiresReconciliation(oldNode, newNode))
+	})
+
+	t.Run("reconciles when an input node label changes", func(t *testing.T) {
+		newNode := oldNode.DeepCopy()
+		newNode.Labels["nvidia.com/gpu.count"] = "8"
+
+		require.True(t, labeler.nodeRequiresReconciliation(oldNode, newNode))
+	})
+}
+
+func TestLabelerResourceSlicesForNodeFiltersByNodeName(t *testing.T) {
+	labeler, err := NewLabeler(
+		fake.NewSimpleClientset(),
+		time.Minute,
+		"nvidia-dcgm",
+		"nvidia-driver-daemonset",
+		"nvidia-driver-installer",
+		"",
+		false,
+		false,
+		testResourceSliceDeviceCountConfig(),
+		false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, labeler.resourceSliceInformer)
+
+	nodeName := "node-a"
+	otherNodeName := "node-b"
+
+	require.NoError(t, labeler.resourceSliceInformer.GetStore().Add(&resourcev1.ResourceSlice{
+		ObjectMeta: metav1.ObjectMeta{Name: "slice-a"},
+		Spec: resourcev1.ResourceSliceSpec{
+			NodeName: &nodeName,
+		},
+	}))
+	require.NoError(t, labeler.resourceSliceInformer.GetStore().Add(&resourcev1.ResourceSlice{
+		ObjectMeta: metav1.ObjectMeta{Name: "slice-b"},
+		Spec: resourcev1.ResourceSliceSpec{
+			NodeName: &otherNodeName,
+		},
+	}))
+	require.NoError(t, labeler.resourceSliceInformer.GetStore().Add(&resourcev1.ResourceSlice{
+		ObjectMeta: metav1.ObjectMeta{Name: "global-slice"},
+	}))
+
+	resourceSlices := labeler.resourceSlicesForNode(&corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+	})
+
+	require.Len(t, resourceSlices, 1)
+	require.Equal(t, "slice-a", resourceSlices[0].Name)
+}
+
+func testDeviceCountConfig() devicecounts.Config {
+	return devicecounts.Config{
+		Enabled: true,
+		Classes: []devicecounts.ClassConfig{
+			{
+				Name:    "gpu",
+				Enabled: true,
+				Labels: devicecounts.Labels{
+					Current:  "test.nvsentinel/current",
+					Expected: "test.nvsentinel/expected",
+				},
+				CurrentExpression: "int(node.metadata.labels['nvidia.com/gpu.count'])",
+			},
+		},
+	}
+}
+
+func testResourceSliceDeviceCountConfig() devicecounts.Config {
+	config := testDeviceCountConfig()
+	config.Classes[0].CurrentExpression = "resourceSlices.size()"
+
+	return config
 }
 
 // TestKataLabelOverrideIsolation verifies that creating multiple labeler instances
@@ -808,6 +1236,9 @@ func TestKataLabelOverrideIsolation(t *testing.T) {
 		"nvidia-driver-installer",
 		"first.io/kata",
 		false,
+		false,
+		devicecounts.Config{},
+		false,
 	)
 	if err != nil {
 		t.Fatalf("NewLabeler(first) error = %v", err)
@@ -822,6 +1253,9 @@ func TestKataLabelOverrideIsolation(t *testing.T) {
 		"nvidia-driver-installer",
 		"second.io/kata",
 		false,
+		false,
+		devicecounts.Config{},
+		false,
 	)
 	if err != nil {
 		t.Fatalf("NewLabeler(second) error = %v", err)
@@ -835,6 +1269,9 @@ func TestKataLabelOverrideIsolation(t *testing.T) {
 		"nvidia-driver-daemonset",
 		"nvidia-driver-installer",
 		"",
+		false,
+		false,
+		devicecounts.Config{},
 		false,
 	)
 	if err != nil {
@@ -961,7 +1398,8 @@ func TestKataLabelDetection(t *testing.T) {
 			require.NoError(t, err, "failed to create node")
 
 			// Create labeler with kata override if specified
-			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", tt.kataOverride, false)
+			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", tt.kataOverride, false, false,
+				devicecounts.Config{}, false)
 			require.NoError(t, err, "failed to create labeler")
 
 			// Start labeler
@@ -1127,7 +1565,8 @@ func TestStaleLabelsRemoval(t *testing.T) {
 				require.NoError(t, err, "failed to update pod status")
 			}
 
-			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", false)
+			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", false, false,
+				devicecounts.Config{}, false)
 			require.NoError(t, err, "failed to create labeler")
 
 			labelerCtx, labelerCancel := context.WithCancel(ctx)
@@ -1149,22 +1588,22 @@ func TestStaleLabelsRemoval(t *testing.T) {
 					return len(dcgmObjs) > 0 || len(driverObjs) > 0
 				}, 10*time.Second, 100*time.Millisecond, "pods not indexed in custom indexes")
 
-			// Restore original labels - reconcileAllNodes() may have removed them
-			// before pods were indexed during the initial sync race.
-			// Uses RetryOnConflict because the labeler may concurrently update
-			// the same node during its initial reconciliation.
-			err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-				node, err := cli.CoreV1().Nodes().Get(ctx, tt.existingNode.Name, metav1.GetOptions{})
-				if err != nil {
+				// Restore original labels - reconcileAllNodes() may have removed them
+				// before pods were indexed during the initial sync race.
+				// Uses RetryOnConflict because the labeler may concurrently update
+				// the same node during its initial reconciliation.
+				err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+					node, err := cli.CoreV1().Nodes().Get(ctx, tt.existingNode.Name, metav1.GetOptions{})
+					if err != nil {
+						return err
+					}
+					for k, v := range tt.existingNode.Labels {
+						node.Labels[k] = v
+					}
+					_, err = cli.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
 					return err
-				}
-				for k, v := range tt.existingNode.Labels {
-					node.Labels[k] = v
-				}
-				_, err = cli.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
-				return err
-			})
-			require.NoError(t, err, "failed to restore node labels")
+				})
+				require.NoError(t, err, "failed to restore node labels")
 			}
 
 			err = labeler.handleNodeEvent(tt.existingNode)
@@ -1290,7 +1729,8 @@ func TestAssumeDriverInstalled(t *testing.T) {
 			_, err = cli.CoreV1().Nodes().Create(ctx, tt.existingNode, metav1.CreateOptions{})
 			require.NoError(t, err, "failed to create node")
 
-			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", tt.assumeDriverInstalled)
+			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", tt.assumeDriverInstalled, false,
+				devicecounts.Config{}, false)
 			require.NoError(t, err, "failed to create labeler")
 
 			labelerCtx, labelerCancel := context.WithCancel(ctx)
@@ -1354,7 +1794,8 @@ func TestMemoryUnderNodeUpdatePressure(t *testing.T) {
 
 	createNodes(t, ctx, cli, nodeCount)
 
-	labeler, err := NewLabeler(cli, 30*time.Second, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", false)
+	labeler, err := NewLabeler(cli, 30*time.Second, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", false, false,
+		devicecounts.Config{}, false)
 	require.NoError(t, err)
 
 	labelerCtx, labelerCancel := context.WithCancel(ctx)

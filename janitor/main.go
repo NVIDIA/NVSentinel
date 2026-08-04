@@ -239,7 +239,17 @@ func run() error {
 		return err
 	}
 
-	slog.Info("RebootNode, TerminateNode, and GPUReset controllers registered")
+	if err = (&controller.ExternalRemediationRequestReconciler{
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		LockNamespace: podNamespace,
+	}).SetupWithManager(mgr); err != nil {
+		slog.Error("unable to create controller", "controller", "ExternalRemediationRequest", "error", err)
+
+		return err
+	}
+
+	slog.Info("RebootNode, TerminateNode, GPUReset, and ExternalRemediationRequest controllers registered")
 
 	// Register TTL reconcilers for each maintenance CR kind. See
 	// docs/designs/037-janitor-cr-ttl-cleanup.md for the design.
@@ -531,7 +541,12 @@ func registerTTLReconcilers(mgr ctrl.Manager, enabled bool, defaultTTL time.Dura
 		return err
 	}
 
-	slog.Info("TTL reconcilers registered for RebootNode, GPUReset, TerminateNode",
+	if err := setupTTL[*janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest](
+		mgr, "externalremediationrequest-ttl", "ExternalRemediationRequest", defaultTTL); err != nil {
+		return err
+	}
+
+	slog.Info("TTL reconcilers registered for RebootNode, GPUReset, TerminateNode, ExternalRemediationRequest",
 		"default-ttl", defaultTTL)
 
 	return nil

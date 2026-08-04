@@ -54,6 +54,7 @@ gpu-health-monitor:
 - **Host Networking**: Enable if DCGM service requires host network access
 - **Polling Interval**: Configure how frequently to check GPU health (set via DCGM configuration)
 - **Verbose Logging**: Enable detailed debug output
+- **Incident Suppression**: Drop specific DCGM error codes before they generate a health event — see [DCGM Health Check Incident Suppression](configuration/gpu-health-monitor.md#dcgm-health-check-incident-suppression)
 
 ## What It Monitors
 

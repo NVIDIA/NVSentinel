@@ -17,7 +17,7 @@ import click, configparser, signal, sys
 import logging as log
 from importlib.metadata import version as get_package_version
 from threading import Event
-from prometheus_client import start_http_server
+from gpu_health_monitor.healthz import start_server as start_health_server
 import csv
 from .dcgm_watcher import dcgm
 from .platform_connector import platform_connector
@@ -59,6 +59,13 @@ def _init_event_processor(
 @click.command()
 @click.option("--dcgm-addr", type=str, help="Host:Port where DCGM is running", required=True)
 @click.option(
+    "--dcgm-mode",
+    type=click.Choice(["remote", "local-managed"]),
+    default="remote",
+    show_default=True,
+    help="DCGM connection mode. remote connects to a remote hostengine; local-managed runs an in-process embedded hostengine with a loopback listener.",
+)
+@click.option(
     "--dcgm-error-mapping-config-file", type=click.Path(), help="Path to dcgm errors mapping config file", required=True
 )
 @click.option("--config-file", type=click.Path(), help="Path to config file", required=True)
@@ -80,8 +87,24 @@ def _init_event_processor(
     help="Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY",
     required=False,
 )
+@click.option(
+    "--suppress-nvlink-down-unbridged-pcie",
+    type=bool,
+    default=False,
+    required=False,
+    help=(
+        "Operator assertion that bridge-capable PCIe GPUs (A100/H100 PCIe) in this fleet "
+        "run without NVLink bridges by design. When true, DCGM_FR_NVLINK_DOWN is suppressed "
+        "on PCIe-named GPUs whose metadata shows zero active NVLink links. Leave false if "
+        "any pool uses NVLink bridges: an unbridged card and a card whose bridge was dead at "
+        "metadata-collection time are indistinguishable, so enabling this could mask a "
+        "bridge failure present at boot. GPUs with no NVLink silicon (L40, A40) are always "
+        "suppressed regardless of this flag."
+    ),
+)
 def cli(
     dcgm_addr,
+    dcgm_mode,
     dcgm_error_mapping_config_file,
     config_file,
     port,
@@ -90,6 +113,7 @@ def cli(
     dcgm_k8s_service_enabled,
     metadata_path,
     processing_strategy,
+    suppress_nvlink_down_unbridged_pcie,
 ):
     exit = Event()
     config = configparser.ConfigParser()
@@ -134,6 +158,7 @@ def cli(
 
     metrics.set_flag("store_only_mode", processing_strategy == "STORE_ONLY")
     metrics.set_flag("dcgm_k8s_service_enabled", dcgm_k8s_service_enabled)
+    metrics.set_flag("dcgm_local_managed", dcgm_mode == "local-managed")
 
     log.info("Initialization completed")
 
@@ -156,6 +181,15 @@ def cli(
     # or cordon) while every other DCGM check keeps the process-wide strategy.
     store_only_checks = frozenset({"GpuThermalMarginWatch"}) if thermal_margin_store_only else frozenset()
 
+    suppressed_error_codes = frozenset()
+    if config.has_section("dcgmhealthcheck"):
+        suppressed_error_codes_raw = config["dcgmhealthcheck"].get("SuppressedErrorCodes", fallback="")
+        suppressed_error_codes = frozenset(
+            code.strip() for code in suppressed_error_codes_raw.split(",") if code.strip()
+        )
+        if suppressed_error_codes:
+            log.info(f"DCGM error codes suppressed via config: {sorted(suppressed_error_codes)}")
+
     enabled_event_processor_names = cli_config["EnabledEventProcessors"].split(",")
     enabled_event_processors = []
     for event_processor in enabled_event_processor_names:
@@ -173,9 +207,10 @@ def cli(
             )
         )
 
-    metadata_reader = MetadataReader(metadata_path) if thermal_margin_enabled else None
+    metadata_reader = MetadataReader(metadata_path)
 
-    prom_server, t = start_http_server(port)
+    poll_interval = int(dcgm_config["PollIntervalSeconds"])
+    prom_server, t = start_health_server(port, staleness_seconds=poll_interval * 3)
 
     def process_exit_signal(signum, frame):
         exit.set()
@@ -187,11 +222,14 @@ def cli(
 
     dcgm_watcher = dcgm.DCGMWatcher(
         addr=dcgm_addr,
-        poll_interval_seconds=int(dcgm_config["PollIntervalSeconds"]),
+        poll_interval_seconds=poll_interval,
         callbacks=enabled_event_processors,
         dcgm_k8s_service_enabled=dcgm_k8s_service_enabled,
         thermal_margin_enabled=thermal_margin_enabled,
         metadata_reader=metadata_reader,
+        dcgm_mode=dcgm_mode,
+        suppressed_error_codes=suppressed_error_codes,
+        suppress_unbridged_pcie_nvlink_down=suppress_nvlink_down_unbridged_pcie,
     )
     dcgm_watcher.start([], exit)
 

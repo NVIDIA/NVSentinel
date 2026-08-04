@@ -58,6 +58,8 @@ The Fault Quarantine module uses CEL (Common Expression Language) to define flex
 
 ## Configuration
 
+See [Fault Quarantine configuration](configuration/fault-quarantine.md) for the full Helm reference, including how to add, modify, and verify rule sets.
+
 Configure the Fault Quarantine module through Helm values:
 
 ```yaml
@@ -88,6 +90,10 @@ fault-quarantine:
       #   key: "nvidia.com/gpu-error"
       #   value: "fatal"
       #   effect: "NoSchedule"
+      # Optional label configuration
+      # label:
+      #   key: "nvidia.com/gpu-fault"
+      #   value: "active"
 ```
 
 ### Defining CEL Rules
@@ -101,6 +107,7 @@ Rules are defined using rulesets that evaluate CEL expressions. Each ruleset has
 **Actions**: What happens when conditions match
 - `cordon.shouldCordon: true` - Cordon (mark unschedulable) the node
 - `taint` (optional) - Apply Kubernetes taints to the node
+- `label` (optional) - Apply a Kubernetes label until all tracked faults recover
 
 **Configuration options:**
 - **Dry Run**: Test rules without cordoning nodes

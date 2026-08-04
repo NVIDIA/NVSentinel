@@ -44,6 +44,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/sysfs"
@@ -69,6 +70,13 @@ type Classifier struct {
 	// non-empty, classify() treats it as Management. Resolved once at
 	// startup from /proc/net/route + sysfs.
 	defaultRouteDevice string
+
+	// mu guards the lazily-populated caches below. The classifier is
+	// shared between the state and counter polling loops (the counter
+	// checks consult it for management scoping), which run in separate
+	// goroutines — unsynchronized lazy population crashes the process
+	// with "concurrent map read and map write" while the cache is cold.
+	mu sync.RWMutex
 
 	// cachedRoles stores the classifier output for each known IB device
 	// so repeated lookups do not re-read sysfs. Populated lazily on first
@@ -144,6 +152,38 @@ func LoadFromMetadata(metadataPath string, reader sysfs.Reader, procNetRoutePath
 	return c, nil
 }
 
+// NewOverrideClassifier returns a Classifier with no GPU or topology
+// data, for use ONLY while the explicit NIC inclusion override is
+// active and gpu_metadata.json is unavailable (e.g., the metadata
+// collector cannot run because the GPU stack is down — precisely the
+// situation the override exists for). Lookups degrade gracefully: with
+// an empty GPU-NUMA set every device classifies as Management, which is
+// irrelevant under the override because pinned devices bypass
+// classification filters and the homogeneity check entirely. Normal
+// discovery must never use this — LoadFromMetadata's hard failure is
+// the contract there ("no silent fallback").
+func NewOverrideClassifier(reader sysfs.Reader, procNetRoutePath ...string) *Classifier {
+	c := &Classifier{
+		reader:      reader,
+		gpuNUMASet:  make(map[int]struct{}),
+		topology:    map[string][]string{},
+		cachedRoles: make(map[string]Role),
+		cachedCards: make(map[string]string),
+	}
+
+	routePath := DefaultProcNetRoutePath
+	if len(procNetRoutePath) > 0 && procNetRoutePath[0] != "" {
+		routePath = procNetRoutePath[0]
+	}
+
+	c.resolveDefaultRouteDevice(routePath)
+
+	slog.Warn("NIC topology classifier running WITHOUT GPU metadata " +
+		"(inclusion override active) — only explicitly pinned devices are monitored")
+
+	return c
+}
+
 // populateGPUNUMASet reads each GPU's NUMA node from the metadata file
 // (populated by the metadata collector from `nvidia-smi topo -m`).
 // GPUs with numa_node < 0 (unknown) are skipped. The caller checks
@@ -165,12 +205,26 @@ func (c *Classifier) IsManagementNIC(device string) bool {
 }
 
 // RoleOf returns the classification for a device, caching the result.
+// Safe for concurrent use by the state and counter polling loops.
 func (c *Classifier) RoleOf(device string) Role {
+	c.mu.RLock()
+	role, ok := c.cachedRoles[device]
+	c.mu.RUnlock()
+
+	if ok {
+		return role
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Another goroutine may have classified the device while we waited
+	// for the write lock.
 	if role, ok := c.cachedRoles[device]; ok {
 		return role
 	}
 
-	role := c.classify(device)
+	role = c.classify(device)
 	c.cachedRoles[device] = role
 
 	return role
@@ -182,6 +236,8 @@ func (c *Classifier) RoleOf(device string) Role {
 func (c *Classifier) LogClassificationSummary() {
 	var compute, storage, management []string
 
+	c.mu.RLock()
+
 	for device, role := range c.cachedRoles {
 		switch role {
 		case RoleCompute:
@@ -192,6 +248,8 @@ func (c *Classifier) LogClassificationSummary() {
 			management = append(management, device)
 		}
 	}
+
+	c.mu.RUnlock()
 
 	sort.Strings(compute)
 	sort.Strings(storage)
@@ -375,8 +433,20 @@ func (c *Classifier) netIfaceToIBDevice(iface string) string {
 // PCICardOf returns the "bus:device" portion of a NIC's PCI slot (i.e.,
 // the PCI address with the function digit stripped) so ports on the same
 // physical card are grouped together. Falls back to the device name on
-// sysfs errors so the caller still has a usable key.
+// sysfs errors so the caller still has a usable key. Safe for
+// concurrent use by the state and counter polling loops.
 func (c *Classifier) PCICardOf(device string) string {
+	c.mu.RLock()
+	card, ok := c.cachedCards[device]
+	c.mu.RUnlock()
+
+	if ok {
+		return card
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if card, ok := c.cachedCards[device]; ok {
 		return card
 	}
@@ -387,7 +457,7 @@ func (c *Classifier) PCICardOf(device string) string {
 		return device
 	}
 
-	card := addr
+	card = addr
 	if idx := strings.LastIndex(addr, "."); idx > 0 {
 		card = addr[:idx]
 	}
@@ -437,23 +507,48 @@ func formatIntSet(s map[int]struct{}) string {
 }
 
 // CheckCardHomogeneity scans per-role groups of cards and flags any card
-// whose active-port count is below its role's mode. The returned anomaly
-// map is keyed by card (PCI bus:device) for use as sticky state across
-// poll cycles.
+// whose active-port count is below its role's decisive mode. The returned
+// anomaly map is keyed by card (PCI bus:device) for use as sticky state
+// across poll cycles. An entry in the map is positive peer evidence that
+// the card has failed ports: the per-port state checks use it to decide
+// whether a first-poll DOWN port is fatal (card anomalous) or merely
+// informational (no peer evidence — uncabled or unprovisioned port).
 //
 // Groups with fewer than two cards are skipped (nothing to compare
-// against); groups whose mode is zero (every card has no active ports)
-// are also skipped because the mode is not meaningful and we would
-// otherwise flag every card in the group.
+// against — e.g., a lone storage NIC left over after its twin was
+// excluded as the default-route management NIC); groups whose mode is
+// zero (every card has no active ports) or tied (no majority pattern,
+// e.g., an asymmetric Prime/Aux frontend pair) are also skipped because
+// the mode is not meaningful and we would otherwise flag healthy-by-design
+// cards.
 func (c *Classifier) CheckCardHomogeneity(
 	cardActive map[string]int,
 	cardTotal map[string]int,
 	cardRole map[string]Role,
 ) (anomalies map[string]CardAnomaly) {
+	anomalies, _ = c.EvaluateCardHomogeneity(cardActive, cardTotal, cardRole)
+
+	return anomalies
+}
+
+// EvaluateCardHomogeneity is CheckCardHomogeneity plus the positive
+// evidence set: it also returns the decisive mode for every card that
+// was actually judged (member of a >=2-card role group with a nonzero,
+// untied mode). Callers use the evaluated map to drive the card-anomaly
+// latch lifecycle: a latched card recovers only when it is present,
+// its group is decisive, and it is no longer below the mode. Absent
+// cards and indecisive groups hold the latch — no evidence, no verdict,
+// matching the first-poll suppression philosophy.
+func (c *Classifier) EvaluateCardHomogeneity(
+	cardActive map[string]int,
+	cardTotal map[string]int,
+	cardRole map[string]Role,
+) (anomalies map[string]CardAnomaly, evaluated map[string]int) {
 	anomalies = make(map[string]CardAnomaly)
+	evaluated = make(map[string]int)
 
 	if len(cardTotal) < 2 {
-		return anomalies
+		return anomalies, evaluated
 	}
 
 	byRole := make(map[Role][]string)
@@ -472,6 +567,8 @@ func (c *Classifier) CheckCardHomogeneity(
 		}
 
 		for _, card := range cards {
+			evaluated[card] = mode
+
 			active := cardActive[card]
 			if active < mode {
 				anomalies[card] = CardAnomaly{
@@ -483,47 +580,7 @@ func (c *Classifier) CheckCardHomogeneity(
 		}
 	}
 
-	return anomalies
-}
-
-// ExpectedDownCards returns the set of cards whose active port count
-// matches their role's mode — DOWN ports on these cards are expected (e.g.,
-// uncabled second port on a dual-port NIC) and should not be reported as
-// fatal on the first poll cycle.
-func (c *Classifier) ExpectedDownCards(
-	cardActive map[string]int,
-	cardTotal map[string]int,
-	cardRole map[string]Role,
-) map[string]struct{} {
-	expected := make(map[string]struct{})
-
-	if len(cardTotal) < 2 {
-		return expected
-	}
-
-	byRole := make(map[Role][]string)
-	for card := range cardTotal {
-		byRole[cardRole[card]] = append(byRole[cardRole[card]], card)
-	}
-
-	for _, cards := range byRole {
-		if len(cards) < 2 {
-			continue
-		}
-
-		mode := modeActiveCount(cardActive, cards)
-		if mode == 0 {
-			continue
-		}
-
-		for _, card := range cards {
-			if cardActive[card] >= mode {
-				expected[card] = struct{}{}
-			}
-		}
-	}
-
-	return expected
+	return anomalies, evaluated
 }
 
 // CardAnomaly describes a card whose active-port count is below the mode
@@ -535,8 +592,12 @@ type CardAnomaly struct {
 }
 
 // modeActiveCount returns the most common active-port count among a
-// group of cards, breaking ties toward the higher value so a fleet with
-// mixed dual-/single-port cards conservatively expects dual-port behaviour.
+// group of cards, or 0 when there is no decisive mode. A tie between two
+// distinct counts means the group has no majority pattern to learn from —
+// numerically, an intentionally-idle card (e.g., the unused Aux port of a
+// Prime/Aux frontend pair) is indistinguishable from a failed one — so the
+// callers must skip the group rather than guess. Returning 0 reuses the
+// existing "mode is meaningless" skip path.
 func modeActiveCount(cardActive map[string]int, cards []string) int {
 	freq := make(map[int]int)
 	for _, card := range cards {
@@ -545,12 +606,21 @@ func modeActiveCount(cardActive map[string]int, cards []string) int {
 
 	mode := 0
 	modeFreq := 0
+	tied := false
 
 	for count, f := range freq {
-		if f > modeFreq || (f == modeFreq && count > mode) {
+		switch {
+		case f > modeFreq:
 			mode = count
 			modeFreq = f
+			tied = false
+		case f == modeFreq && count != mode:
+			tied = true
 		}
+	}
+
+	if tied {
+		return 0
 	}
 
 	return mode

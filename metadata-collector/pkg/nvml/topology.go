@@ -38,6 +38,8 @@ func (w *NVMLWrapper) CollectNVLinkTopology(
 
 	nvswitches := make(map[string]struct{})
 
+	var nvlinkLinkCount, nvlinkActiveLinkCount int
+
 	for linkID := range nvml.NVLINK_MAX_LINKS {
 		state, ret := device.GetNvLinkState(linkID)
 		if ret != nvml.SUCCESS {
@@ -45,10 +47,23 @@ func (w *NVMLWrapper) CollectNVLinkTopology(
 			continue
 		}
 
+		// Count all links where GetNvLinkState returns SUCCESS, regardless of
+		// enabled/disabled state. GPUs without NVLink silicon (L40, A40, ...)
+		// return NOT_SUPPORTED and never reach here — but NVLink-bridge-capable
+		// PCIe cards (A100/H100 PCIe) DO return SUCCESS for their bridge links
+		// even when no bridge is installed, so this count alone does not say
+		// whether NVLink is in use.
+		nvlinkLinkCount++
+
 		if state != nvml.FEATURE_ENABLED {
 			slog.Debug("NVLink not enabled", "gpu_id", index, "link_id", linkID)
 			continue
 		}
+
+		// Links actually up at collection time. Zero active links on an
+		// unbridged PCIe card is normal steady state; zero on an SXM/HGX
+		// system usually means fabric-manager training has not finished.
+		nvlinkActiveLinkCount++
 
 		remotePCIInfo, ret := device.GetNvLinkRemotePciInfo(linkID)
 		if ret != nvml.SUCCESS {
@@ -63,7 +78,7 @@ func (w *NVMLWrapper) CollectNVLinkTopology(
 		}
 
 		if remoteDeviceType != nvml.NVLINK_DEVICE_TYPE_SWITCH {
-			remotePCIStr := convertNVMLCString(remotePCIInfo.BusIdLegacy)
+			remotePCIStr := convertNVMLCString(remotePCIInfo.BusIdLegacy[:])
 			slog.Debug("Remote device is not an NVSwitch, skipping",
 				"gpu_id", index,
 				"link_id", linkID,
@@ -73,7 +88,7 @@ func (w *NVMLWrapper) CollectNVLinkTopology(
 			continue
 		}
 
-		remotePCIStr := convertNVMLCString(remotePCIInfo.BusIdLegacy)
+		remotePCIStr := convertNVMLCString(remotePCIInfo.BusIdLegacy[:])
 		remotePCI := normalizePCIAddress(remotePCIStr)
 
 		slog.Debug("Found NVSwitch connection",
@@ -98,10 +113,18 @@ func (w *NVMLWrapper) CollectNVLinkTopology(
 		nvswitches[remotePCI] = struct{}{}
 	}
 
+	// Set only on successful collection: the collector appends the GPU even
+	// when this function errors, and missing fields must read as "unknown"
+	// downstream, not as confirmed zeros.
+	gpuInfo.NVLinkLinkCount = &nvlinkLinkCount
+	gpuInfo.NVLinkActiveLinkCount = &nvlinkActiveLinkCount
+
 	slog.Info("NVLink topology collection complete",
 		"gpu_id", index,
 		"pci_address", gpuInfo.PCIAddress,
 		"nvlink_count", len(gpuInfo.NVLinks),
+		"nvlink_link_count", nvlinkLinkCount,
+		"nvlink_active_link_count", nvlinkActiveLinkCount,
 		"nvswitch_count", len(nvswitches))
 
 	return nvswitches, nil
@@ -200,7 +223,7 @@ func getRemoteLinkViaReverseLookup(
 			continue
 		}
 
-		remoteRemotePCI := normalizePCIAddress(convertNVMLCString(remoteRemotePCIInfo.BusIdLegacy))
+		remoteRemotePCI := normalizePCIAddress(convertNVMLCString(remoteRemotePCIInfo.BusIdLegacy[:]))
 		if remoteRemotePCI == localPCI {
 			slog.Debug("Found remote link ID via reverse lookup",
 				"gpu_id", gpuID,

@@ -716,17 +716,21 @@ func TestSyslogHealthMonitorNICDriverDetection(t *testing.T) {
 		nodeName := ctx.Value(keySyslogNodeName).(string)
 		messages := []string{
 			"kernel: [123.456792] NETDEV WATCHDOG: eth0 (mlx5_core): transmit queue timed out",
+			"kernel: [123.456793] mlx5_core 0000:65:00.0 ens15np0: NETDEV WATCHDOG: CPU: 94: transmit queue 3 timed out 5032 ms",
 			"kernel: Jan 21 11:18:36 kernel: mlx5_core 0000:01:00.0: mlx5_pcie_event:326:(pid 165): Detected insufficient power on the PCIe slot (27W).",
 			"kernel: [123.456794] mlx5_core 0000:5c:00.0: Port module event[error]: module 0, Cable error, High Temperature",
 			"kernel: [123.456795] mlx5_core 0000:d2:00.0: mlx5_cmd_out_err:838:(pid 1441871): ACCESS_REG(0x805) op_mod(0x1) failed, status bad operation(0x2), syndrome (0x305684), err(-22)",
 			"kernel: [    8.951695] mlx5_core 0000:63:00.1: Port module event: module 1, Cable unplugged",
+			"kernel: [123.456796] mlx5_core 0000:65:00.0 ens15np0: RX timeout on channel: 20, ICOSQ: 0x1ee0, RQ: 0x1e43, CQ: 0x3ea6",
 		}
 		expectedEventPatterns := []string{
 			`ErrorCode:netdev_watchdog kernel:.*NETDEV WATCHDOG: eth0 \(mlx5_core\): transmit queue timed out.*Recommended Action=NONE`,
+			`ErrorCode:netdev_watchdog kernel:.*mlx5_core 0000:65:00\.0 ens15np0: NETDEV WATCHDOG: CPU: 94: transmit queue 3 timed out 5032 ms.*Recommended Action=NONE`,
 			`ErrorCode:pci_power_insufficient kernel:.*mlx5_core 0000:01:00\.0: mlx5_pcie_event:326:\(pid 165\): Detected insufficient power on the PCIe slot \(27W\).*Recommended Action=NONE`,
 			`ErrorCode:port_module_high_temp kernel:.*mlx5_core 0000:5c:00\.0: Port module event\[error\]: module 0, Cable error, High Temperature.*Recommended Action=NONE`,
 			`ErrorCode:access_reg_failed kernel:.*mlx5_core 0000:d2:00\.0: mlx5_cmd_out_err:838:\(pid 1441871\): ACCESS_REG\(0x805\) op_mod\(0x1\) failed.*Recommended Action=NONE`,
 			`ErrorCode:module_unplugged kernel:.*mlx5_core 0000:63:00\.1: Port module event: module 1, Cable unplugged.*Recommended Action=NONE`,
+			`ErrorCode:mlx5_rx_timeout_detected kernel:.*mlx5_core 0000:65:00\.0 ens15np0: RX timeout on channel: 20.*Recommended Action=NONE`,
 		}
 
 		helpers.InjectSyslogMessages(t, helpers.StubJournalHTTPPort, messages)
@@ -788,6 +792,157 @@ func TestSyslogHealthMonitorNICDriverDetection(t *testing.T) {
 			"SysLogsNICDriverError condition should be cleared")
 
 		t.Logf("Verifying node %s is uncordoned after SysLogsNICDriverError recovery", nodeName)
+		helpers.AssertQuarantineState(ctx, t, client, nodeName, helpers.QuarantineAssertion{
+			ExpectCordoned: false,
+			AnnotationChecks: []helpers.AnnotationCheck{
+				{Key: helpers.QuarantineHealthEventAnnotationKey, ShouldExist: false},
+			},
+		})
+
+		t.Logf("Cleaning up metadata from node %s", nodeName)
+		helpers.DeleteMetadata(t, ctx, client, helpers.NVSentinelNamespace, nodeName)
+
+		t.Logf("Removing ManagedByNVSentinel label from node %s", nodeName)
+		if err := helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, nodeName); err != nil {
+			t.Logf("Warning: failed to remove ManagedByNVSentinel label: %v", err)
+		}
+
+		return ctx
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+// TestSyslogHealthMonitorNAPISoftLockupDetection verifies the stateful
+// multi-line mlx5 NAPI soft-lockup detection end to end: a "BUG: soft lockup"
+// header followed — as separate journal entries — by an mlx5e stack frame
+// must emit a fatal mlx5_napi_soft_lockup event that cordons the node, while
+// the driver's own TX timeout line emits a non-fatal corroborating event.
+func TestSyslogHealthMonitorNAPISoftLockupDetection(t *testing.T) {
+	feature := features.New("Syslog Health Monitor - mlx5 NAPI Soft Lockup Detection").
+		WithLabel("suite", "syslog-health-monitor").
+		WithLabel("component", "nic-driver-detection")
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		// ManagedByNVSentinel=true is required for the fault-quarantine
+		// syslog ruleset to cordon this test node.
+		testNodeName, syslogPod, stopChan, originalArgs := helpers.SetUpSyslogHealthMonitor(ctx, t, client, nil, true)
+
+		ctx = context.WithValue(ctx, keySyslogNodeName, testNodeName)
+		ctx = context.WithValue(ctx, keySyslogPodName, syslogPod.Name)
+		ctx = context.WithValue(ctx, keyStopChan, stopChan)
+		ctx = context.WithValue(ctx, keyOriginalArgs, originalArgs)
+
+		return ctx
+	})
+
+	feature.Assess("Inject TX timeout and multi-line soft lockup dump", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		nodeName := ctx.Value(keySyslogNodeName).(string)
+
+		// Log shape of the issue #1334 incident: the driver's TX timeout
+		// line, then the watchdog dump where the header and the mlx5 stack
+		// evidence arrive as separate journal entries. No single entry
+		// contains both the lockup header and the mlx5 attribution.
+		messages := []string{
+			"kernel: [249067.323011] mlx5_core 0000:65:00.0 ens15np0: TX timeout detected",
+			"kernel: [249078.442331] watchdog: BUG: soft lockup - CPU#94 stuck for 226906s! [swapper/94:0]",
+			"kernel: [249078.442332] Modules linked in: xt_conntrack nf_conntrack mlx5_ib mlx5_core",
+			"kernel: [249078.442333] CPU: 94 PID: 0 Comm: swapper/94 Tainted: G             L 5.15.0-1053-azure #61-Ubuntu",
+			"kernel: [249078.442334] RIP: 0010:mlx5e_poll_ico_cq+0x8b/0x1a0 [mlx5_core]",
+			"kernel: [249078.442335]  mlx5e_napi_poll+0x142/0x680 [mlx5_core]",
+			"kernel: [249078.442336]  net_rx_action+0x142/0x2a0",
+		}
+
+		helpers.InjectSyslogMessages(t, helpers.StubJournalHTTPPort, messages)
+
+		t.Log("Verifying fatal mlx5_napi_soft_lockup node condition with parsed header fields")
+		expectedConditionPatterns := []string{
+			`ErrorCode:mlx5_napi_soft_lockup.*CPU#94 stuck for 226906s in mlx5 NAPI poll loop.*mlx5e_poll_ico_cq\+0x8b/0x1a0.*Recommended Action=REPLACE_VM`,
+		}
+		require.Eventually(t, func() bool {
+			return helpers.VerifyNodeConditionMatchesSequence(t, ctx, client, nodeName,
+				"SysLogsNICDriverError", "SysLogsNICDriverErrorIsNotHealthy", expectedConditionPatterns)
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+			"Node condition should contain the mlx5 NAPI soft lockup pattern")
+
+		t.Log("Verifying the non-fatal TX timeout corroborating event")
+		expectedEventPatterns := []string{
+			`ErrorCode:mlx5_tx_timeout_detected kernel:.*mlx5_core 0000:65:00\.0 ens15np0: TX timeout detected.*Recommended Action=NONE`,
+		}
+		require.Eventually(t, func() bool {
+			return helpers.VerifyEventsMatchPatterns(t, ctx, client, nodeName,
+				"SysLogsNICDriverError", "SysLogsNICDriverErrorIsNotHealthy", expectedEventPatterns)
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+			"Node events should contain the non-fatal TX timeout pattern")
+
+		t.Log("Verifying the fatal soft lockup event cordons the node")
+		helpers.AssertQuarantineState(ctx, t, client, nodeName, helpers.QuarantineAssertion{
+			ExpectCordoned: true,
+			AnnotationChecks: []helpers.AnnotationCheck{
+				{
+					Key:         helpers.QuarantineHealthEventAnnotationKey,
+					Pattern:     "mlx5_napi_soft_lockup",
+					ShouldExist: true,
+				},
+			},
+		})
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		if stopChanVal := ctx.Value(keyStopChan); stopChanVal != nil {
+			t.Log("Stopping port-forward")
+			close(stopChanVal.(chan struct{}))
+		}
+
+		client, err := c.NewClient()
+		if err != nil {
+			t.Logf("Warning: failed to create client for teardown: %v", err)
+			return ctx
+		}
+
+		nodeNameVal := ctx.Value(keySyslogNodeName)
+		if nodeNameVal == nil {
+			t.Log("Skipping teardown: nodeName not set (setup likely failed early)")
+			return ctx
+		}
+		nodeName := nodeNameVal.(string)
+
+		if originalArgs, ok := ctx.Value(keyOriginalArgs).([]string); ok && originalArgs != nil {
+			helpers.RestoreDaemonSetArgs(ctx, t, client, helpers.SyslogDaemonSetName,
+				helpers.SyslogContainerName, originalArgs)
+		}
+
+		t.Logf("Sending healthy SysLogsNICDriverError event to clear condition on node %s", nodeName)
+		healthyEvent := helpers.NewHealthEvent(nodeName).
+			WithAgent("syslog-health-monitor").
+			WithCheckName("SysLogsNICDriverError").
+			WithComponentClass("NIC").
+			WithHealthy(true).
+			WithFatal(false).
+			WithMessage("No Health Failures").
+			WithEntitiesImpacted([]helpers.EntityImpacted{})
+		helpers.SendHealthEvent(ctx, t, healthyEvent)
+
+		require.Eventually(t, func() bool {
+			condition, conditionErr := helpers.CheckNodeConditionExists(ctx, client, nodeName,
+				"SysLogsNICDriverError", "SysLogsNICDriverErrorIsHealthy")
+			if conditionErr != nil {
+				t.Logf("Failed to check node condition: %v", conditionErr)
+				return false
+			}
+			return condition != nil && condition.Status == v1.ConditionFalse
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+			"SysLogsNICDriverError condition should be cleared")
+
+		t.Logf("Verifying node %s is uncordoned after soft lockup recovery", nodeName)
 		helpers.AssertQuarantineState(ctx, t, client, nodeName, helpers.QuarantineAssertion{
 			ExpectCordoned: false,
 			AnnotationChecks: []helpers.AnnotationCheck{

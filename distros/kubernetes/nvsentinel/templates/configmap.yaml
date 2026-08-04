@@ -33,10 +33,18 @@ data:
       ,"GRPCSinkTarget": "{{ .Values.platformConnector.grpcSinkConnector.target }}"
       ,"GRPCSinkConnectorMaxRetries": {{ .Values.platformConnector.grpcSinkConnector.maxRetries }}
       ,"GRPCSinkTokenPath": "{{ .Values.platformConnector.grpcSinkConnector.tokenPath }}"
-      {{- with .Values.platformConnector.pipeline }}
-      ,"pipeline": {{ . | toJson }}
+      {{- $pipeline := (.Values.platformConnector.pipeline | default list) }}
+      {{- with .Values.platformConnector.dedup }}
+      {{- $pipeline = append $pipeline (dict "name" "Deduplicator" "enabled" .enabled "config" "/etc/config/dedup.toml") }}
       {{- end }}
+      ,"pipeline": {{ $pipeline | toJson }}
     }
+  {{- if .Values.platformConnector.dedup }}
+  dedup.toml: |
+    suppressionWindow = "{{ .Values.platformConnector.dedup.suppressionWindow }}"
+    cleanupInterval = "{{ .Values.platformConnector.dedup.cleanupInterval }}"
+    includeChecks = {{ .Values.platformConnector.dedup.includeChecks | default list | toJson }}
+  {{- end }}
   {{- if .Values.platformConnector.transformers.MetadataAugmentor }}
   metadata.toml: |
     cacheSize = {{ .Values.platformConnector.transformers.MetadataAugmentor.cacheSize }}

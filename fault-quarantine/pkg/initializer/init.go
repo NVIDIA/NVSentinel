@@ -38,6 +38,8 @@ type InitializationParams struct {
 	DryRun                      bool
 	CircuitBreakerEnabled       bool
 	DatabaseClientCertMountPath string
+	GPUNodeLabelKey             string
+	GPUNodeLabelValue           string
 }
 
 type Components struct {
@@ -75,7 +77,10 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		slog.InfoContext(ctx, "Running in dry-run mode")
 	}
 
-	k8sClient, err := informer.NewFaultQuarantineClient(params.KubeconfigPath, params.DryRun, 30*time.Minute)
+	k8sClient, err := informer.NewFaultQuarantineClient(
+		params.KubeconfigPath, params.DryRun, 30*time.Minute,
+		params.GPUNodeLabelKey, params.GPUNodeLabelValue,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("error while initializing kubernetes client: %w", err)
 	}

@@ -34,6 +34,30 @@ global:
   metricsPort: 2112
 ```
 
+### Change Stream Resume Tokens
+
+Watcher-based components persist change stream resume tokens so they can resume from the last processed event after a restart. To skip accumulated events and start from the current stream head, scale the component to zero, patch its key in the runtime resume-control ConfigMap from `RESUME` to `CREATE`, then restore its replicas. The component deletes only its own resume token, records a cold-start cutoff timestamp, skips startup cold-start recovery for that run, opens its watcher from the current stream head, and writes its key back to `RESUME`. Future restarts still run cold-start recovery, but only for records newer than the recorded cutoff.
+
+Helm does not create the resume-control ConfigMap. Components create it at runtime if it is missing, so GitOps tools such as Argo CD do not revert operator patches to its data.
+When a component starts and its key is missing, it writes its key as `RESUME`; the ConfigMap therefore self-populates with explicit per-component state over time.
+
+Example one-shot reset for node-drainer:
+
+```bash
+REPLICAS=$(kubectl -n nvsentinel get deployment node-drainer -o jsonpath='{.spec.replicas}')
+kubectl -n nvsentinel scale deployment/node-drainer --replicas=0
+kubectl -n nvsentinel rollout status deployment/node-drainer --timeout=180s
+kubectl -n nvsentinel get configmap resume-control >/dev/null 2>&1 || \
+  kubectl -n nvsentinel create configmap resume-control
+kubectl -n nvsentinel patch configmap resume-control \
+  --type merge \
+  -p '{"data":{"node-drainer":"CREATE"}}'
+kubectl -n nvsentinel scale deployment/node-drainer --replicas="${REPLICAS:-1}"
+kubectl -n nvsentinel rollout status deployment/node-drainer --timeout=180s
+```
+
+This applies to `fault-quarantine`, `node-drainer`, `fault-remediation`, and `health-events-analyzer`.
+
 ### Node Scheduling
 
 Control where NVSentinel pods are scheduled.

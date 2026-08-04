@@ -30,6 +30,9 @@ data:
     gputemplimitmonitoringenabled = {{ .Values.dcgmFieldsMonitoring.gpuTempLimitMonitoringEnabled }}
     gputemplimitstoreonly = {{ .Values.dcgmFieldsMonitoring.gpuTempLimitStoreOnly }}
 
+    [dcgmhealthcheck]
+    SuppressedErrorCodes = {{ .Values.dcgmHealthCheck.suppressedErrorCodes | join "," }}
+
     [eventprocessors.kubernetes]
     ConflictRetryCount = 10
 

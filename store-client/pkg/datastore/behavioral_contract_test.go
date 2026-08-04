@@ -165,6 +165,14 @@ func (m *MockHealthEventStore) FindLatestEventForNode(ctx context.Context, nodeN
 	return args.Get(0).(*datastore.HealthEventWithStatus), args.Error(1)
 }
 
+func (m *MockHealthEventStore) FindLatestHealthEventByQuery(ctx context.Context, builder datastore.QueryBuilder) (*datastore.HealthEventWithStatus, error) {
+	args := m.Called(ctx, builder)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*datastore.HealthEventWithStatus), args.Error(1)
+}
+
 // TestMaintenanceEventStoreBehavior tests that all MaintenanceEventStore implementations
 // behave consistently for the same operations.
 func TestMaintenanceEventStoreBehavior(t *testing.T) {

@@ -626,8 +626,10 @@ func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinit
 
 		switch trimmedTag {
 		case "-k", "--dmesg":
-			// Facility 0 is typically KERNEL messages.
-			matchExpr := FieldSyslogFacility + "=0"
+			// Kernel-transport logs (printk + /dev/kmsg), independent of the
+			// syslog facility. This is generic across devices that may not set
+			// SYSLOG_FACILITY=kern, and naturally excludes journal/audit noise.
+			matchExpr := FieldTransport + "=" + TransportKernel
 
 			slog.Info("Adding kernel log filter",
 				"check", check.Name,
@@ -636,6 +638,26 @@ func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinit
 
 			if err := journal.AddMatch(matchExpr); err != nil {
 				return fmt.Errorf("check '%s': failed to add kernel match ('%s'): %w", check.Name, matchExpr, err)
+			}
+
+			// GPU reset acknowledgements are emitted through logger rather than
+			// the kernel. Keep them visible to the XID handler without admitting
+			// unrelated userspace logs:
+			// (_TRANSPORT=kernel) OR (SYSLOG_IDENTIFIER=nvsentinel-gpu-reset).
+			if check.Name == XIDErrorCheck {
+				if err := journal.AddDisjunction(); err != nil {
+					return fmt.Errorf("check '%s': failed to add GPU reset filter disjunction: %w", check.Name, err)
+				}
+
+				resetMatchExpr := FieldSyslogID + "=" + GPUResetSyslogID
+				slog.Info("Adding GPU reset acknowledgement filter",
+					"check", check.Name,
+					"match", resetMatchExpr)
+
+				if err := journal.AddMatch(resetMatchExpr); err != nil {
+					return fmt.Errorf("check '%s': failed to add GPU reset match ('%s'): %w",
+						check.Name, resetMatchExpr, err)
+				}
 			}
 		case "-b", "--boot":
 			slog.Info("Processing explicit boot tag",
@@ -798,7 +820,49 @@ func (sm *SyslogMonitor) resumeFromLastCursor(
 		return false, nil
 	}
 
-	// Journal cursor is now positioned at the first new entry to process.
+	ready, err := sm.skipBookmarkedEntryIfPresent(journal, check, lastKnownCursor)
+	if err != nil {
+		return false, err
+	}
+
+	return ready, nil
+}
+
+// skipBookmarkedEntryIfPresent advances past lastKnownCursor when a filtered
+// journal read returns the bookmarked entry itself after SeekCursor+Next.
+// systemd may return the entry at the cursor on the first Next() after
+// SeekCursor when journal matches (e.g. _TRANSPORT=kernel for "-k") are active.
+// Without this skip, the last processed kernel XID is re-read every poll cycle.
+func (sm *SyslogMonitor) skipBookmarkedEntryIfPresent(
+	journal Journal, check CheckDefinition, lastKnownCursor string,
+) (bool, error) {
+	cur, err := journal.GetCursor()
+	if err != nil {
+		return false, fmt.Errorf("check '%s': failed to get cursor after resume advance: %w", check.Name, err)
+	}
+
+	if cur != lastKnownCursor {
+		return true, nil
+	}
+
+	slog.Debug("Skipping bookmarked journal entry re-read after filtered resume",
+		"check", check.Name,
+		"cursor", lastKnownCursor)
+
+	advanced, nextErr := journal.Next()
+	if nextErr != nil && !errors.Is(nextErr, io.EOF) {
+		return false, fmt.Errorf("check '%s': error advancing past bookmarked cursor '%s': %w",
+			check.Name, lastKnownCursor, nextErr)
+	}
+
+	if errors.Is(nextErr, io.EOF) || advanced == 0 {
+		slog.Info("No new entries since last cursor",
+			"check", check.Name,
+			"cursor", lastKnownCursor)
+
+		return false, nil
+	}
+
 	return true, nil
 }
 

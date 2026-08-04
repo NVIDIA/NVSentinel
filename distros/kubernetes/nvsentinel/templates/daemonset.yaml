@@ -45,12 +45,12 @@ spec:
       securityContext:
         fsGroup: 65532
       {{- end }}
-      {{- if or .Values.global.auditLogging.enabled (and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql")) }}
+      {{- if or .Values.global.auditLogging.enabled (and .Values.platformConnector.postgresqlStore.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql")) }}
       initContainers:
         {{- if .Values.global.auditLogging.enabled }}
         {{- include "nvsentinel.auditLogging.initContainer" . | nindent 8 }}
         {{- end }}
-      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+      {{- if and .Values.platformConnector.postgresqlStore.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
         - name: fix-cert-permissions
           image: "{{ .Values.global.initContainerImage.repository }}:{{ .Values.global.initContainerImage.tag }}"
           imagePullPolicy: {{ .Values.global.initContainerImage.pullPolicy }}
@@ -130,10 +130,12 @@ spec:
               mountPath: /var/run
             - name: platform-connector-configmap
               mountPath: /etc/config/
-            {{- if and .Values.platformConnector.postgresqlStore.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+            {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+            {{- if .Values.platformConnector.postgresqlStore.clientCertMountPath }}
             - name: client-certs-fixed
               mountPath: {{ .Values.platformConnector.postgresqlStore.clientCertMountPath }}
               readOnly: true
+            {{- end }}
             {{- else if and (eq (include "nvsentinel.mongodb.hasCertVolume" .) "true") $mongoPC }}
             - name: mongo-app-client-cert
               mountPath: {{ $mongoPC }}
@@ -187,12 +189,14 @@ spec:
           configMap:
             name: {{ include "nvsentinel.fullname" . }}
         {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+        {{- if .Values.platformConnector.postgresqlStore.clientCertMountPath }}
         - name: postgresql-client-cert-original
           secret:
             secretName: postgresql-client-cert
             optional: false
         - name: client-certs-fixed
           emptyDir: {}
+        {{- end }}
         {{- else }}
         {{- include "nvsentinel.mongodb.certVolume" . | nindent 8 }}
         {{- end }}

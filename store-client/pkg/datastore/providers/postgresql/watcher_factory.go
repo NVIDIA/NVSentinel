@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/watcher"
 )
@@ -49,6 +50,15 @@ func (f *PostgreSQLWatcherFactory) CreateChangeStreamWatcher(
 		return nil, fmt.Errorf("CollectionName (table name) is required for PostgreSQL watcher")
 	}
 
+	resumeControlDecision, err := client.ResetResumeTokenOnStartIfConfigured(
+		ctx,
+		pgStore.GetDatabaseClient(),
+		client.TokenConfig{ClientName: clientName},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reset change stream resume token on startup: %w", err)
+	}
+
 	snakeCaseTableName := toSnakeCase(tableName)
 
 	slog.Info("Creating PostgreSQL change stream watcher",
@@ -66,7 +76,7 @@ func (f *PostgreSQLWatcherFactory) CreateChangeStreamWatcher(
 
 	f.applyPipelineFilter(changeStreamWatcher, config.Pipeline, tableName)
 
-	return NewPostgreSQLChangeStreamWatcherWithUnwrap(changeStreamWatcher), nil
+	return NewPostgreSQLChangeStreamWatcherWithUnwrap(changeStreamWatcher, resumeControlDecision), nil
 }
 
 // applyPipelineFilter applies pipeline filter to the watcher if provided.

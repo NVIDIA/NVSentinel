@@ -75,6 +75,13 @@ func SetupJanitorWebhookWithManager(mgr ctrl.Manager, cfg *config.Config) error 
 		return err
 	}
 
+	// Register webhook for ExternalRemediationRequest
+	if err := ctrl.NewWebhookManagedBy(mgr, &janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest{}).
+		WithValidator(&extrrValidator{validator}).
+		Complete(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -86,6 +93,9 @@ func SetupJanitorWebhookWithManager(mgr ctrl.Manager, cfg *config.Config) error 
 
 // nolint:lll
 // +kubebuilder:webhook:path=/validate-janitor-dgxc-nvidia-com-v1alpha1-gpureset,mutating=false,failurePolicy=fail,sideEffects=None,groups=janitor.dgxc.nvidia.com,resources=gpuresets,verbs=create;update;delete,versions=v1alpha1,name=vgpureset-v1alpha1.kb.io,admissionReviewVersions=v1
+
+// nolint:lll
+// +kubebuilder:webhook:path=/validate-nvsentinel-dgxc-nvidia-com-v1-externalremediationrequest,mutating=false,failurePolicy=fail,sideEffects=None,groups=nvsentinel.dgxc.nvidia.com,resources=externalremediationrequests,verbs=create;update;delete,versions=v1,name=vextrr-v1.kb.io,admissionReviewVersions=v1
 
 // JanitorCustomValidator struct is responsible for validating all Janitor resources
 // when they are created, updated, or deleted.
@@ -471,4 +481,69 @@ func (v *gpuResetValidator) ValidateDelete(_ context.Context,
 	janitorWebhookLog.Info("Validation for Janitor CR upon deletion", "type", controllerTypeGPUReset, "name", objName)
 
 	return nil, nil
+}
+
+// --- ExternalRemediationRequest typed validator ---
+//
+// Spec/Status are pointer fields (the proto's embedded sync.Mutex forces it),
+// so the apiserver schema accepts `spec: null`. This webhook closes that gap
+// so the reconciler can treat HealthEvent/NodeName as set-by-construction.
+//
+// No Config.Enabled gate (unlike the sibling validators): disabling ExtRR
+// would strand any external system mid-remediation per ADR-040.
+
+const controllerTypeExternalRemediationRequest = "ExternalRemediationRequest"
+
+type extrrValidator struct{ *JanitorCustomValidator }
+
+func (v *extrrValidator) ValidateCreate(_ context.Context,
+	obj *janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest) (admission.Warnings, error) {
+	if err := validateExtRRSpec(obj); err != nil {
+		janitorWebhookLog.Info("ExternalRemediationRequest spec validation failed on create",
+			"type", controllerTypeExternalRemediationRequest, "name", obj.GetName(), "error", err.Error())
+
+		return nil, err
+	}
+
+	return nil, nil
+}
+
+func (v *extrrValidator) ValidateUpdate(_ context.Context,
+	oldObj, newObj *janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest) (admission.Warnings, error) {
+	if err := validateExtRRSpec(newObj); err != nil {
+		janitorWebhookLog.Info("ExternalRemediationRequest spec validation failed on update",
+			"type", controllerTypeExternalRemediationRequest, "name", newObj.GetName(), "error", err.Error())
+
+		return nil, err
+	}
+
+	// nodeName is immutable: the release taint value carries the ExtRR's
+	// name, so swapping nodes would orphan one.
+	if oldObj.Spec != nil && oldObj.Spec.HealthEvent != nil &&
+		oldObj.Spec.HealthEvent.NodeName != newObj.Spec.HealthEvent.NodeName {
+		return nil, fmt.Errorf("nodeName cannot be changed after creation")
+	}
+
+	return nil, nil
+}
+
+func (v *extrrValidator) ValidateDelete(_ context.Context,
+	_ *janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest) (admission.Warnings, error) {
+	return nil, nil
+}
+
+func validateExtRRSpec(obj *janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest) error {
+	if obj.Spec == nil {
+		return fmt.Errorf("spec is required")
+	}
+
+	if obj.Spec.HealthEvent == nil {
+		return fmt.Errorf("spec.healthEvent is required")
+	}
+
+	if obj.Spec.HealthEvent.NodeName == "" {
+		return fmt.Errorf("spec.healthEvent.nodeName is required and must be non-empty")
+	}
+
+	return nil
 }

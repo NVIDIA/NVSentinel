@@ -38,13 +38,12 @@ const (
 	keyCounterPodName  nicCounterContextKey = "nicCounterPodName"
 	keyCounterState    nicCounterContextKey = "nicCounterState"
 
-	// Fatal counter events route to the STATE check name via fatalCheckName.
-	// Node Conditions are updated for fatal events.
+	// State checks use their own identity for link-state conditions.
 	ibStateCheckName  = "InfiniBandStateCheck"
 	ethStateCheckName = "EthernetStateCheck"
 
-	// Non-fatal counter events use the DEGRADATION check name.
-	// Node Events (not Conditions) are created for non-fatal events.
+	// All counter events retain the DEGRADATION check identity. Fatal events
+	// update Node Conditions; non-fatal events create Node Events.
 	ibDegCheckName  = "InfiniBandDegradationCheck"
 	ethDegCheckName = "EthernetDegradationCheck"
 
@@ -99,9 +98,9 @@ func TestNICCounterIBDegradation(t *testing.T) {
 		helpers.MutateSysfsCounter(t, ctx, client, helpers.NVSentinelNamespace,
 			nodeName, "mlx5_0", "1", "counters/link_downed", "1")
 
-		t.Log("Verifying InfiniBandStateCheck condition becomes True with link_downed message")
+		t.Log("Verifying InfiniBandDegradationCheck condition becomes True with link_downed message")
 		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName,
-			ibStateCheckName, "link_downed", "", corev1.ConditionTrue)
+			ibDegCheckName, "link_downed", "", corev1.ConditionTrue)
 
 		return ctx
 	})
@@ -112,7 +111,7 @@ func TestNICCounterIBDegradation(t *testing.T) {
 
 		nodeName := ctx.Value(keyCounterNodeName).(string)
 
-		t.Log("Observing for 15s that InfiniBandStateCheck remains True (latched)")
+		t.Log("Observing for 15s that InfiniBandDegradationCheck remains True (latched)")
 		require.Never(t, func() bool {
 			node, getErr := helpers.GetNodeByName(ctx, client, nodeName)
 			if getErr != nil {
@@ -121,7 +120,7 @@ func TestNICCounterIBDegradation(t *testing.T) {
 			}
 
 			for _, cond := range node.Status.Conditions {
-				if string(cond.Type) == ibStateCheckName && cond.Status == corev1.ConditionFalse {
+				if string(cond.Type) == ibDegCheckName && cond.Status == corev1.ConditionFalse {
 					return true
 				}
 			}
@@ -143,9 +142,9 @@ func TestNICCounterIBDegradation(t *testing.T) {
 		helpers.ResetSysfsCounter(t, ctx, client, helpers.NVSentinelNamespace,
 			nodeName, "mlx5_0", "1", "counters/link_downed")
 
-		t.Log("Verifying InfiniBandStateCheck condition returns to False (recovery)")
+		t.Log("Verifying InfiniBandDegradationCheck condition returns to False (recovery)")
 		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName,
-			ibStateCheckName, "", "", corev1.ConditionFalse)
+			ibDegCheckName, "", "", corev1.ConditionFalse)
 
 		return ctx
 	})
@@ -255,9 +254,9 @@ func TestNICCounterIBDegradation(t *testing.T) {
 		helpers.MutateSysfsCounter(t, ctx, client, helpers.NVSentinelNamespace,
 			nodeName, "mlx5_1", "1", "counters/excessive_buffer_overrun_errors", "1")
 
-		t.Log("Verifying InfiniBandStateCheck becomes True")
+		t.Log("Verifying InfiniBandDegradationCheck becomes True")
 		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName,
-			ibStateCheckName, "link_downed", "", corev1.ConditionTrue)
+			ibDegCheckName, "link_downed", "", corev1.ConditionTrue)
 
 		t.Log("Resetting both counters")
 		helpers.ResetSysfsCounter(t, ctx, client, helpers.NVSentinelNamespace,
@@ -265,9 +264,9 @@ func TestNICCounterIBDegradation(t *testing.T) {
 		helpers.ResetSysfsCounter(t, ctx, client, helpers.NVSentinelNamespace,
 			nodeName, "mlx5_1", "1", "counters/excessive_buffer_overrun_errors")
 
-		t.Log("Verifying InfiniBandStateCheck returns to False")
+		t.Log("Verifying InfiniBandDegradationCheck returns to False")
 		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName,
-			ibStateCheckName, "", "", corev1.ConditionFalse)
+			ibDegCheckName, "", "", corev1.ConditionFalse)
 
 		return ctx
 	})
@@ -545,9 +544,9 @@ func TestNICCounterBootIDClearsBreachState(t *testing.T) {
 		helpers.MutateSysfsCounter(t, ctx, client, helpers.NVSentinelNamespace,
 			nodeName, "mlx5_0", "1", "counters/link_downed", "1")
 
-		t.Log("Waiting for InfiniBandStateCheck to become True")
+		t.Log("Waiting for InfiniBandDegradationCheck to become True")
 		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName,
-			ibStateCheckName, "link_downed", "", corev1.ConditionTrue)
+			ibDegCheckName, "link_downed", "", corev1.ConditionTrue)
 
 		return ctx
 	})
@@ -574,9 +573,9 @@ func TestNICCounterBootIDClearsBreachState(t *testing.T) {
 
 		ctx = context.WithValue(ctx, keyCounterPodName, newPod.Name)
 
-		t.Log("Verifying InfiniBandStateCheck returns to False (healthy baselines emitted)")
+		t.Log("Verifying InfiniBandDegradationCheck returns to False (healthy baselines emitted)")
 		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName,
-			ibStateCheckName, "", "", corev1.ConditionFalse)
+			ibDegCheckName, "", "", corev1.ConditionFalse)
 
 		return ctx
 	})

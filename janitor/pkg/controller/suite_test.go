@@ -66,6 +66,9 @@ var _ = BeforeSuite(func() {
 	err = janitordgxcnvidiacomv1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
+	err = janitordgxcnvidiacomv1alpha1.AddNVSentinelToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+
 	// +kubebuilder:scaffold:scheme
 
 	By("bootstrapping test environment")

@@ -19,8 +19,25 @@ import (
 	"testing"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
 	"github.com/stretchr/testify/assert"
 )
+
+type storeOnlyTransformer struct {
+	checkName string
+}
+
+func (t *storeOnlyTransformer) Transform(ctx context.Context, event *pb.HealthEvent) error {
+	if event.CheckName == t.checkName {
+		event.ProcessingStrategy = pb.ProcessingStrategy_STORE_ONLY
+	}
+
+	return nil
+}
+
+func (t *storeOnlyTransformer) Name() string {
+	return "store-only"
+}
 
 func TestHealthEventOccurredV1_ProcessingStrategyNormalization(t *testing.T) {
 	tests := []struct {
@@ -65,4 +82,25 @@ func TestHealthEventOccurredV1_ProcessingStrategyNormalization(t *testing.T) {
 			assert.Equal(t, tt.expectedStrategy, healthEvents.Events[0].ProcessingStrategy)
 		})
 	}
+}
+
+func TestHealthEventOccurredV1_PipelineMutationsKeepFullBatch(t *testing.T) {
+	server := &PlatformConnectorServer{
+		Pipeline: pipeline.New(&storeOnlyTransformer{checkName: "duplicate"}),
+	}
+	healthEvents := &pb.HealthEvents{
+		Events: []*pb.HealthEvent{
+			{NodeName: "test-node", CheckName: "keep-me"},
+			{NodeName: "test-node", CheckName: "duplicate"},
+		},
+	}
+
+	_, err := server.HealthEventOccurredV1(context.Background(), healthEvents)
+
+	assert.NoError(t, err)
+	assert.Len(t, healthEvents.Events, 2)
+	assert.Equal(t, "keep-me", healthEvents.Events[0].CheckName)
+	assert.Equal(t, pb.ProcessingStrategy_EXECUTE_REMEDIATION, healthEvents.Events[0].ProcessingStrategy)
+	assert.Equal(t, "duplicate", healthEvents.Events[1].CheckName)
+	assert.Equal(t, pb.ProcessingStrategy_STORE_ONLY, healthEvents.Events[1].ProcessingStrategy)
 }

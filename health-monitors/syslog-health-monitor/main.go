@@ -142,7 +142,11 @@ func run() error {
 		return err
 	}
 
-	srv, portInt, err := createMetricsServer()
+	// Health checker reports unhealthy if the polling loop has not completed
+	// an iteration within 3x the polling interval.
+	healthChecker := server.NewPollingHealthChecker(3 * pollingInterval)
+
+	srv, portInt, err := createMetricsServer(healthChecker)
 	if err != nil {
 		return err
 	}
@@ -164,7 +168,7 @@ func run() error {
 	}
 
 	g.Go(func() error {
-		return runPollingLoop(gCtx, monitor, pollingInterval, checks)
+		return runPollingLoop(gCtx, monitor, pollingInterval, checks, healthChecker)
 	})
 
 	return g.Wait()
@@ -197,6 +201,23 @@ func dialPlatformConnector(ctx context.Context, socket string) (*grpc.ClientConn
 	return conn, nil
 }
 
+// kernelOriginChecks lists checks whose source events are emitted by the kernel
+// (NVIDIA driver, NVSwitch, PCI subsystem). They must only consume kernel
+// (_TRANSPORT=kernel) journal entries: scanning every transport lets unrelated
+// high-volume userspace logs (audit, containers) push the read cursor behind
+// journald's retention window, so the segment holding an XID can be vacuumed
+// before the monitor processes it. See NVIDIA/NVSentinel#1417.
+//
+// On Kata nodes this default is overridden in applyKataConfig, because there the
+// GPU runs in the guest VM and XIDs surface via containerd rather than as host
+// kernel entries.
+var kernelOriginChecks = map[string]bool{
+	fd.XIDErrorCheck:       true,
+	fd.SXIDErrorCheck:      true,
+	fd.GPUFallenOffCheck:   true,
+	fd.NICDriverErrorCheck: true,
+}
+
 func buildChecksFromFlag() ([]fd.CheckDefinition, error) {
 	list := make([]fd.CheckDefinition, 0)
 
@@ -206,10 +227,19 @@ func buildChecksFromFlag() ([]fd.CheckDefinition, error) {
 			continue
 		}
 
-		list = append(list, fd.CheckDefinition{
+		check := fd.CheckDefinition{
 			Name:        name,
 			JournalPath: "/nvsentinel/var/log/journal/",
-		})
+		}
+
+		// Kernel-origin checks only consume kernel (_TRANSPORT=kernel) entries by
+		// default so they keep up with journald instead of falling behind under
+		// retention pressure from unrelated logs. See NVIDIA/NVSentinel#1417.
+		if kernelOriginChecks[name] {
+			check.Tags = []string{"-k"}
+		}
+
+		list = append(list, check)
 	}
 
 	if len(list) == 0 {
@@ -227,11 +257,12 @@ func applyKataConfig(list []fd.CheckDefinition) []fd.CheckDefinition {
 	slog.Info("Kata mode enabled, adding containerd service filter and removing SysLogsSXIDError check")
 
 	for i := range list {
-		if list[i].Tags == nil {
-			list[i].Tags = []string{"-u containerd.service"}
-		} else {
-			list[i].Tags = append(list[i].Tags, "-u containerd.service")
-		}
+		// On Kata nodes XIDs surface via the guest kernel relayed through
+		// containerd, not as host _TRANSPORT=kernel entries, so filter by the
+		// containerd unit and drop any kernel-transport default set in
+		// buildChecksFromFlag (the two would AND together and match nothing).
+		// See NVIDIA/NVSentinel#1417.
+		list[i].Tags = []string{"-u containerd.service"}
 	}
 
 	filtered := make([]fd.CheckDefinition, 0, len(list))
@@ -372,7 +403,7 @@ func createSyslogMonitor(
 	return monitor, pollingInterval, nil
 }
 
-func createMetricsServer() (server.Server, int, error) {
+func createMetricsServer(healthChecker *server.PollingHealthChecker) (server.Server, int, error) {
 	portInt, err := strconv.Atoi(*metricsPort)
 	if err != nil {
 		return nil, 0, fmt.Errorf("invalid metrics port: %w", err)
@@ -381,7 +412,7 @@ func createMetricsServer() (server.Server, int, error) {
 	srv := server.NewServer(
 		server.WithPort(portInt),
 		server.WithPrometheusMetrics(),
-		server.WithSimpleHealth(),
+		server.WithHealthCheck(healthChecker),
 	)
 
 	return srv, portInt, nil
@@ -392,6 +423,7 @@ func runPollingLoop(
 	monitor *fd.SyslogMonitor,
 	interval time.Duration,
 	list []fd.CheckDefinition,
+	healthChecker *server.PollingHealthChecker,
 ) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -411,6 +443,13 @@ func runPollingLoop(
 			slog.Info("Performing scheduled health check run...")
 
 			for {
+				// Mark alive on every attempt, not just on success, so the
+				// liveness probe detects a frozen loop rather than a failed
+				// dependency: on sustained failure this retry loop never
+				// returns to the outer ticker, and backoff (≤30s) is far
+				// shorter than the staleness threshold.
+				healthChecker.MarkAlive()
+
 				if err := monitor.Run(); err != nil {
 					if backoff == 0 {
 						backoff = 2 * time.Second

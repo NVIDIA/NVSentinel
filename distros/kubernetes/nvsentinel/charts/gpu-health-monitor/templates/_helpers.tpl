@@ -51,30 +51,103 @@ DCGM service enabled - uses global.dcgm.enabled with fallback to local
 {{- end }}
 
 {{/*
-DCGM service endpoint - uses global.dcgm.service.endpoint with fallback to local
+DCGM source mode.
+*/}}
+{{- define "gpu-health-monitor.dcgmMode" -}}
+{{- $mode := "" -}}
+{{- if and .Values.global .Values.global.dcgm .Values.global.dcgm.mode -}}
+{{- $mode = .Values.global.dcgm.mode -}}
+{{- else -}}
+{{- $mode = (.Values.dcgm.mode | default "operator-service") -}}
+{{- end -}}
+{{- if not (has $mode (list "operator-service" "external-hostengine" "embedded-mode")) -}}
+{{- fail (printf "unsupported DCGM source mode %q; expected operator-service, external-hostengine, or embedded-mode" $mode) -}}
+{{- end -}}
+{{- $mode -}}
+{{- end }}
+
+{{/*
+DCGM endpoint for the selected source mode. Global values take precedence over
+the corresponding chart-local values.
 */}}
 {{- define "gpu-health-monitor.dcgmEndpoint" -}}
-{{- if and .Values.global .Values.global.dcgm .Values.global.dcgm.service }}
-{{- .Values.global.dcgm.service.endpoint | default .Values.dcgm.service.endpoint }}
-{{- else }}
-{{- .Values.dcgm.service.endpoint }}
-{{- end }}
+{{- $mode := include "gpu-health-monitor.dcgmMode" . -}}
+{{- $endpoint := "" -}}
+{{- if eq $mode "external-hostengine" -}}
+  {{- if and .Values.global .Values.global.dcgm .Values.global.dcgm.externalHostengine -}}
+    {{- $endpoint = (.Values.global.dcgm.externalHostengine.endpoint | default .Values.dcgm.externalHostengine.endpoint) -}}
+  {{- else -}}
+    {{- $endpoint = .Values.dcgm.externalHostengine.endpoint -}}
+  {{- end -}}
+{{- else if eq $mode "embedded-mode" -}}
+  {{- if and .Values.global .Values.global.dcgm .Values.global.dcgm.embedded -}}
+    {{- $endpoint = (.Values.global.dcgm.embedded.endpoint | default .Values.dcgm.embedded.endpoint) -}}
+  {{- else -}}
+    {{- $endpoint = .Values.dcgm.embedded.endpoint -}}
+  {{- end -}}
+  {{- if not (has $endpoint (list "localhost" "127.0.0.1" "::1")) -}}
+    {{- fail (printf "embedded-mode DCGM endpoint %q must be a loopback address: localhost, 127.0.0.1, or ::1" $endpoint) -}}
+  {{- end -}}
+{{- else -}}
+  {{- if and .Values.global .Values.global.dcgm .Values.global.dcgm.service -}}
+    {{- $endpoint = (.Values.global.dcgm.service.endpoint | default .Values.dcgm.service.endpoint) -}}
+  {{- else -}}
+    {{- $endpoint = .Values.dcgm.service.endpoint -}}
+  {{- end -}}
+{{- end -}}
+{{- $endpoint -}}
 {{- end }}
 
 {{/*
-DCGM service port - uses global.dcgm.service.port with fallback to local
+DCGM port for the selected source mode. Global values take precedence over the
+corresponding chart-local values.
 */}}
 {{- define "gpu-health-monitor.dcgmPort" -}}
-{{- if and .Values.global .Values.global.dcgm .Values.global.dcgm.service }}
-{{- .Values.global.dcgm.service.port | default .Values.dcgm.service.port }}
-{{- else }}
-{{- .Values.dcgm.service.port }}
-{{- end }}
+{{- $mode := include "gpu-health-monitor.dcgmMode" . -}}
+{{- if eq $mode "external-hostengine" -}}
+  {{- if and .Values.global .Values.global.dcgm .Values.global.dcgm.externalHostengine -}}
+    {{- .Values.global.dcgm.externalHostengine.port | default .Values.dcgm.externalHostengine.port -}}
+  {{- else -}}
+    {{- .Values.dcgm.externalHostengine.port -}}
+  {{- end -}}
+{{- else if eq $mode "embedded-mode" -}}
+  {{- if and .Values.global .Values.global.dcgm .Values.global.dcgm.embedded -}}
+    {{- .Values.global.dcgm.embedded.port | default .Values.dcgm.embedded.port -}}
+  {{- else -}}
+    {{- .Values.dcgm.embedded.port -}}
+  {{- end -}}
+{{- else -}}
+  {{- if and .Values.global .Values.global.dcgm .Values.global.dcgm.service -}}
+    {{- .Values.global.dcgm.service.port | default .Values.dcgm.service.port -}}
+  {{- else -}}
+    {{- .Values.dcgm.service.port -}}
+  {{- end -}}
+{{- end -}}
 {{- end }}
 
 {{/*
-DCGM address - combines endpoint and port
+DCGM address for the selected source mode.
 */}}
 {{- define "gpu-health-monitor.dcgmAddr" -}}
 {{- printf "%s:%v" (include "gpu-health-monitor.dcgmEndpoint" .) (include "gpu-health-monitor.dcgmPort" .) }}
 {{- end }}
+
+{{/*
+GPU health monitor CLI mode passed to --dcgm-mode. Derived from the source mode
+so the two can never drift: embedded-mode runs an in-process embedded DCGM
+hostengine with a loopback listener ("local-managed"); operator-service and
+external-hostengine connect remotely ("remote").
+*/}}
+{{- define "gpu-health-monitor.dcgmCliMode" -}}
+{{- if eq (include "gpu-health-monitor.dcgmMode" .) "embedded-mode" -}}local-managed{{- else -}}remote{{- end -}}
+{{- end }}
+
+{{/*
+Whether the GPU health monitor pod should use host networking. External
+hostengine mode defaults to localhost, so it must resolve in the host network
+namespace. An endpoint override does not change this networking contract.
+*/}}
+{{- define "gpu-health-monitor.useHostNetworking" -}}
+{{- if or .Values.useHostNetworking (eq (include "gpu-health-monitor.dcgmMode" .) "external-hostengine") -}}true{{- end -}}
+{{- end }}
+

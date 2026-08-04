@@ -19,7 +19,7 @@ GPU health monitor requires connection to NVIDIA DCGM for all GPU health checks.
 ### 1. Check GPU Monitor Logs
 
 ```bash
-kubectl logs -n nvsentinel <GPU_MONITOR_POD> --tail=50 | grep -i dcgm
+kubectl logs -n nvsentinel {GPU_MONITOR_POD} --tail=50 | grep -i dcgm
 ```
 
 Look for:
@@ -44,7 +44,7 @@ If the service exists, the cluster is using **Kubernetes Service Mode**. If the 
 Verify the gpu-health-monitor pod configuration matches the expected mode:
 
 ```bash
-kubectl get pod -n nvsentinel <GPU_MONITOR_POD> -o yaml | grep -A 2 "dcgm-addr"
+kubectl get pod -n nvsentinel {GPU_MONITOR_POD} -o yaml | grep -A 2 "dcgm-addr"
 ```
 
 Expected configurations:
@@ -60,7 +60,7 @@ These values come from Helm values `dcgm.dcgmK8sServiceEnabled` and `dcgm.servic
 kubectl get pods -n gpu-operator -l app=nvidia-dcgm -o wide
 
 # Check DCGM logs
-kubectl logs -n gpu-operator <DCGM_POD> --tail=30
+kubectl logs -n gpu-operator {DCGM_POD} --tail=30
 ```
 
 DCGM pod must be `Running` on the same node as the failing GPU monitor.
@@ -71,7 +71,7 @@ Test DCGM connectivity from within the gpu-health-monitor pod:
 
 ```bash
 # Exec into the GPU monitor pod
-kubectl exec -it -n nvsentinel <GPU_MONITOR_POD> -- /bin/bash
+kubectl exec -it -n nvsentinel {GPU_MONITOR_POD} -- /bin/bash
 
 # For Kubernetes Service Mode, use the service endpoint
 dcgmi discovery -l --host nvidia-dcgm.gpu-operator.svc:5555
@@ -90,9 +90,9 @@ If DCGM commands fail, check:
 
 ```bash
 # Check condition cleared
-kubectl describe node <NODE_NAME> | grep GpuDcgmConnectivityFailure
+kubectl describe node {NODE_NAME} | grep GpuDcgmConnectivityFailure
 # Should show: Status: False (or condition absent)
 
 # Watch GPU monitor logs for health checks
-kubectl logs -n nvsentinel <GPU_MONITOR_POD> -f | grep "Publish DCGM"
+kubectl logs -n nvsentinel {GPU_MONITOR_POD} -f | grep "Publish DCGM"
 ```

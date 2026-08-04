@@ -16,9 +16,11 @@ package informer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -30,10 +32,13 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/retry"
 
+	annotationutil "github.com/nvidia/nvsentinel/commons/pkg/annotation"
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/breaker"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
 )
 
 var customBackoff = wait.Backoff{
@@ -53,7 +58,7 @@ type FaultQuarantineClient struct {
 }
 
 func NewFaultQuarantineClient(kubeconfig string, dryRun bool,
-	resyncPeriod time.Duration) (*FaultQuarantineClient, error) {
+	resyncPeriod time.Duration, gpuNodeLabelKey, gpuNodeLabelValue string) (*FaultQuarantineClient, error) {
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		return nil, fmt.Errorf("error creating Kubernetes config: %w", err)
@@ -68,7 +73,7 @@ func NewFaultQuarantineClient(kubeconfig string, dryRun bool,
 		return nil, fmt.Errorf("error creating clientset: %w", err)
 	}
 
-	nodeInformer, err := NewNodeInformer(clientset, resyncPeriod)
+	nodeInformer, err := NewNodeInformer(clientset, resyncPeriod, gpuNodeLabelKey, gpuNodeLabelValue)
 	if err != nil {
 		return nil, fmt.Errorf("error creating node informer: %w", err)
 	}
@@ -286,8 +291,12 @@ func (c *FaultQuarantineClient) QuarantineNodeAndSetAnnotations(
 	isCordon bool,
 	annotations map[string]string,
 	labels map[string]string,
-) error {
+) (bool, error) {
+	alreadyQuarantined := false
+
 	updateFn := func(node *v1.Node) error {
+		alreadyQuarantined = hasNonEmptyQuarantineHealthEvent(node)
+
 		if len(taints) > 0 {
 			if err := c.applyTaints(ctx, node, taints, nodename); err != nil {
 				return fmt.Errorf("failed to apply taints to node %s: %w", nodename, err)
@@ -295,23 +304,53 @@ func (c *FaultQuarantineClient) QuarantineNodeAndSetAnnotations(
 		}
 
 		if isCordon {
-			if shouldSkip := c.handleCordon(ctx, node, nodename); shouldSkip {
-				return nil
-			}
+			c.handleCordon(ctx, node, nodename)
 		}
 
 		if len(annotations) > 0 {
-			c.applyAnnotations(ctx, node, annotations, nodename)
+			if err := c.applyAnnotations(ctx, node, annotations, nodename); err != nil {
+				return err
+			}
 		}
 
 		if len(labels) > 0 {
-			c.applyLabels(ctx, node, labels, nodename)
+			labelsToApply, err := labelsWithSessionWinners(node, labels)
+			if err != nil {
+				return fmt.Errorf("failed to get merged applied labels on node %s: %w", nodename, err)
+			}
+
+			c.applyLabels(ctx, node, labelsToApply, nodename)
 		}
 
 		return nil
 	}
 
-	return c.UpdateNode(ctx, nodename, updateFn)
+	err := c.UpdateNode(ctx, nodename, updateFn)
+
+	return alreadyQuarantined, err
+}
+
+func labelsWithSessionWinners(node *v1.Node, labels map[string]string) (map[string]string, error) {
+	labelsToApply := make(map[string]string, len(labels))
+	for key, value := range labels {
+		labelsToApply[key] = value
+	}
+
+	appliedLabelsJSON := node.Annotations[common.QuarantineHealthEventAppliedLabelsAnnotationKey]
+	if annotationutil.IsEmptyValue(appliedLabelsJSON) {
+		return labelsToApply, nil
+	}
+
+	appliedLabels, err := parseAppliedLabelsAnnotation(appliedLabelsJSON)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, label := range appliedLabels {
+		labelsToApply[label.Key] = label.Value
+	}
+
+	return labelsToApply, nil
 }
 
 func (c *FaultQuarantineClient) applyTaints(
@@ -348,13 +387,13 @@ func (c *FaultQuarantineClient) applyTaints(
 	return nil
 }
 
-func (c *FaultQuarantineClient) handleCordon(ctx context.Context, node *v1.Node, nodename string) bool {
+func (c *FaultQuarantineClient) handleCordon(ctx context.Context, node *v1.Node, nodename string) {
 	_, exist := node.Annotations[common.QuarantineHealthEventAnnotationKey]
 
 	if node.Spec.Unschedulable {
 		if exist {
-			slog.InfoContext(ctx, "Node already cordoned by FQM; skipping taint/annotation updates", "node", nodename)
-			return true
+			slog.InfoContext(ctx, "Node already cordoned by FQM; preserving cordon while applying updates", "node", nodename)
+			return
 		}
 
 		slog.InfoContext(ctx, "Node is cordoned manually; applying FQM taints/annotations", "node", nodename)
@@ -365,13 +404,11 @@ func (c *FaultQuarantineClient) handleCordon(ctx context.Context, node *v1.Node,
 			node.Spec.Unschedulable = true
 		}
 	}
-
-	return false
 }
 
 func (c *FaultQuarantineClient) applyAnnotations(
 	ctx context.Context, node *v1.Node, annotations map[string]string, nodename string,
-) {
+) error {
 	if node.Annotations == nil {
 		node.Annotations = make(map[string]string)
 	}
@@ -379,13 +416,215 @@ func (c *FaultQuarantineClient) applyAnnotations(
 	slog.InfoContext(ctx, "Setting annotations on node", "node", nodename, "annotations", annotations)
 
 	for annotationKey, annotationValue := range annotations {
+		if annotationKey == common.QuarantineHealthEventAnnotationKey {
+			mergedValue, err := mergeQuarantineHealthEventAnnotation(node.Annotations[annotationKey], annotationValue)
+			if err != nil {
+				return fmt.Errorf("failed to merge annotation %q on node %s: %w", annotationKey, nodename, err)
+			}
+
+			annotationValue = mergedValue
+		}
+
+		if annotationKey == common.QuarantineHealthEventAppliedTaintsAnnotationKey {
+			mergedValue, err := mergeAppliedTaintsAnnotation(node.Annotations[annotationKey], annotationValue)
+			if err != nil {
+				return fmt.Errorf("failed to merge annotation %q on node %s: %w", annotationKey, nodename, err)
+			}
+
+			annotationValue = mergedValue
+		}
+
+		if annotationKey == common.QuarantineHealthEventAppliedLabelsAnnotationKey {
+			mergedValue, err := mergeAppliedLabelsAnnotation(node.Annotations[annotationKey], annotationValue)
+			if err != nil {
+				return fmt.Errorf("failed to merge annotation %q on node %s: %w", annotationKey, nodename, err)
+			}
+
+			annotationValue = mergedValue
+		}
+
 		node.Annotations[annotationKey] = annotationValue
 	}
+
+	return nil
+}
+
+func hasNonEmptyQuarantineHealthEvent(node *v1.Node) bool {
+	if node.Annotations == nil {
+		return false
+	}
+
+	return !annotationutil.IsEmptyValue(node.Annotations[common.QuarantineHealthEventAnnotationKey])
+}
+
+func mergeQuarantineHealthEventAnnotation(existingValue, incomingValue string) (string, error) {
+	return mergeAnnotation(
+		existingValue,
+		incomingValue,
+		"quarantine health event",
+		parseHealthEventsAnnotation,
+		mergeHealthEventsAnnotations,
+	)
+}
+
+func mergeAppliedTaintsAnnotation(existingValue, incomingValue string) (string, error) {
+	return mergeAnnotation(
+		existingValue,
+		incomingValue,
+		"applied taints",
+		parseAppliedTaintsAnnotation,
+		mergeAppliedTaints,
+	)
+}
+
+func mergeAppliedLabelsAnnotation(existingValue, incomingValue string) (string, error) {
+	return mergeAnnotation(
+		existingValue,
+		incomingValue,
+		"applied labels",
+		parseAppliedLabelsAnnotation,
+		mergeAppliedLabels,
+	)
+}
+
+func mergeAnnotation[T any](
+	existingValue string,
+	incomingValue string,
+	annotationName string,
+	parse func(string) (T, error),
+	merge func(T, T) T,
+) (string, error) {
+	if annotationutil.IsEmptyValue(existingValue) {
+		return incomingValue, nil
+	}
+
+	if annotationutil.IsEmptyValue(incomingValue) {
+		return existingValue, nil
+	}
+
+	existing, err := parse(existingValue)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse existing %s annotation: %w", annotationName, err)
+	}
+
+	incoming, err := parse(incomingValue)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse incoming %s annotation: %w", annotationName, err)
+	}
+
+	annotationBytes, err := json.Marshal(merge(existing, incoming))
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal merged %s annotation: %w", annotationName, err)
+	}
+
+	return string(annotationBytes), nil
+}
+
+func mergeHealthEventsAnnotations(
+	existing *healthEventsAnnotation.HealthEventsAnnotationMap,
+	incoming *healthEventsAnnotation.HealthEventsAnnotationMap,
+) *healthEventsAnnotation.HealthEventsAnnotationMap {
+	for _, event := range incoming.Events {
+		existing.AddOrUpdateEvent(event)
+	}
+
+	return existing
+}
+
+func parseAppliedTaintsAnnotation(value string) ([]config.Taint, error) {
+	var taints []config.Taint
+	if err := json.Unmarshal([]byte(value), &taints); err != nil {
+		return nil, err
+	}
+
+	return taints, nil
+}
+
+func mergeAppliedTaints(existingTaints, incomingTaints []config.Taint) []config.Taint {
+	mergedByKey := make(map[config.Taint]config.Taint, len(existingTaints)+len(incomingTaints))
+	for _, taints := range [][]config.Taint{existingTaints, incomingTaints} {
+		for _, taint := range taints {
+			key := config.Taint{Key: taint.Key, Value: taint.Value, Effect: taint.Effect}
+			if existing, ok := mergedByKey[key]; ok {
+				taint.PreExisting = existing.PreExisting || taint.PreExisting
+			}
+
+			mergedByKey[key] = taint
+		}
+	}
+
+	mergedTaints := make([]config.Taint, 0, len(mergedByKey))
+	for _, taint := range mergedByKey {
+		mergedTaints = append(mergedTaints, taint)
+	}
+
+	return mergedTaints
+}
+
+func parseAppliedLabelsAnnotation(value string) ([]config.AppliedLabel, error) {
+	var labels []config.AppliedLabel
+	if err := json.Unmarshal([]byte(value), &labels); err != nil {
+		return nil, err
+	}
+
+	return labels, nil
+}
+
+func mergeAppliedLabels(existingLabels, incomingLabels []config.AppliedLabel) []config.AppliedLabel {
+	mergedByKey := make(map[string]config.AppliedLabel, len(existingLabels)+len(incomingLabels))
+	for _, label := range existingLabels {
+		mergedByKey[label.Key] = label
+	}
+
+	for _, incoming := range incomingLabels {
+		existing, ok := mergedByKey[incoming.Key]
+		if ok && (existing.Priority > incoming.Priority ||
+			(existing.Priority == incoming.Priority && existing.Order > incoming.Order)) {
+			continue
+		}
+
+		mergedByKey[incoming.Key] = incoming
+	}
+
+	keys := make([]string, 0, len(mergedByKey))
+	for key := range mergedByKey {
+		keys = append(keys, key)
+	}
+
+	sort.Strings(keys)
+
+	mergedLabels := make([]config.AppliedLabel, 0, len(keys))
+	for _, key := range keys {
+		mergedLabels = append(mergedLabels, mergedByKey[key])
+	}
+
+	return mergedLabels
+}
+
+func parseHealthEventsAnnotation(value string) (*healthEventsAnnotation.HealthEventsAnnotationMap, error) {
+	healthEventsMap := healthEventsAnnotation.NewHealthEventsAnnotationMap()
+	if err := json.Unmarshal([]byte(value), healthEventsMap); err == nil {
+		return healthEventsMap, nil
+	}
+
+	var singleEvent protos.HealthEvent
+	if err := json.Unmarshal([]byte(value), &singleEvent); err != nil {
+		return nil, err
+	}
+
+	healthEventsMap.AddOrUpdateEvent(&singleEvent)
+
+	return healthEventsMap, nil
 }
 
 func (c *FaultQuarantineClient) applyLabels(
 	ctx context.Context, node *v1.Node, labels map[string]string, nodename string,
 ) {
+	if c.DryRunMode {
+		slog.InfoContext(ctx, "DryRun mode enabled, skipping label application", "node", nodename, "labels", labels)
+		return
+	}
+
 	if node.Labels == nil {
 		node.Labels = make(map[string]string)
 	}
@@ -401,6 +640,7 @@ func (c *FaultQuarantineClient) UnQuarantineNodeAndRemoveAnnotations(
 	ctx context.Context,
 	nodename string,
 	taints []config.Taint,
+	shouldUncordon bool,
 	annotationKeys []string,
 	labelsToRemove []string,
 	labels map[string]string,
@@ -412,7 +652,9 @@ func (c *FaultQuarantineClient) UnQuarantineNodeAndRemoveAnnotations(
 			}
 		}
 
-		c.handleUncordon(ctx, node, labels, nodename)
+		if shouldUncordon {
+			c.handleUncordon(ctx, node, labels, nodename)
+		}
 
 		if len(annotationKeys) > 0 {
 			for _, annotationKey := range annotationKeys {
@@ -421,17 +663,30 @@ func (c *FaultQuarantineClient) UnQuarantineNodeAndRemoveAnnotations(
 			}
 		}
 
-		if len(labelsToRemove) > 0 {
-			for _, labelKey := range labelsToRemove {
-				slog.InfoContext(ctx, "Removing label key from node", "key", labelKey, "node", nodename)
-				delete(node.Labels, labelKey)
-			}
-		}
+		c.removeLabels(ctx, node, labelsToRemove, nodename)
 
 		return nil
 	}
 
 	return c.UpdateNode(ctx, nodename, updateFn)
+}
+
+func (c *FaultQuarantineClient) removeLabels(
+	ctx context.Context, node *v1.Node, labelKeys []string, nodename string,
+) {
+	if len(labelKeys) == 0 {
+		return
+	}
+
+	if c.DryRunMode {
+		slog.InfoContext(ctx, "DryRun mode enabled, skipping label removal", "node", nodename, "labels", labelKeys)
+		return
+	}
+
+	for _, labelKey := range labelKeys {
+		slog.InfoContext(ctx, "Removing label key from node", "key", labelKey, "node", nodename)
+		delete(node.Labels, labelKey)
+	}
 }
 
 func (c *FaultQuarantineClient) removeTaints(
@@ -513,11 +768,7 @@ func (c *FaultQuarantineClient) HandleManualUncordonCleanup(
 			c.updateNodeAnnotationsForManualUncordon(node, annotationsToRemove, annotationsToAdd)
 		}
 
-		if len(labelsToRemove) > 0 {
-			for _, key := range labelsToRemove {
-				delete(node.Labels, key)
-			}
-		}
+		c.removeLabels(ctx, node, labelsToRemove, nodename)
 
 		return nil
 	}
@@ -527,7 +778,6 @@ func (c *FaultQuarantineClient) HandleManualUncordonCleanup(
 
 // HandleManualUntaintCleanup atomically removes FQ annotations/taints/labels and adds manual untaint annotation
 // This is used when a node is manually untainted while having FQ quarantine state
-// Also uncordons the node to ensure full cleanup
 func (c *FaultQuarantineClient) HandleManualUntaintCleanup(
 	ctx context.Context,
 	nodename string,
@@ -540,11 +790,7 @@ func (c *FaultQuarantineClient) HandleManualUntaintCleanup(
 			c.updateNodeAnnotationsForManualUncordon(node, annotationsToRemove, annotationsToAdd)
 		}
 
-		if len(labelsToRemove) > 0 {
-			for _, key := range labelsToRemove {
-				delete(node.Labels, key)
-			}
-		}
+		c.removeLabels(ctx, node, labelsToRemove, nodename)
 
 		return nil
 	}

@@ -33,7 +33,7 @@ flowchart TD
 
 ## Decision
 
-Add a **generic provider** (`CSP=generic`) that reboots nodes via a privileged Kubernetes Job running `chroot /host /sbin/reboot`, following the Job-based pattern from GPU Reset ([ADR-019](019-janitor-gpu-reset.md)). It is a named provider in the factory switch, just like `aws`, `gcp`, or `kind`.
+Add a **generic provider** (`CSP=generic`) that reboots nodes via a privileged Kubernetes Job. By default the Job runs `chroot /host reboot`; deployments can opt into a Linux Magic SysRq reboot for environments where the normal reboot path wedges the node. This follows the Job-based pattern from GPU Reset ([ADR-019](019-janitor-gpu-reset.md)). It is a named provider in the factory switch, just like `aws`, `gcp`, or `kind`.
 
 ## Implementation
 
@@ -69,7 +69,7 @@ sequenceDiagram
     GP-->>JC: requestID = pre-reboot bootID
 
     K8s->>Job: Schedule pod on target node
-    Job->>Node: chroot /host /sbin/reboot
+    Job->>Node: chroot /host reboot or echo b > /proc/sysrq-trigger
     Note over Node: Node reboots, pod is killed
 
     Note over Node: Node boots back up, new bootID assigned
@@ -86,6 +86,13 @@ sequenceDiagram
 #### SendRebootSignal
 
 Records the node's current `bootID` from `node.Status.NodeInfo.BootID`, creates a privileged Job on the target node, and returns the pre-reboot `bootID` as the `requestID`.
+
+The reboot Job supports two reboot paths:
+
+- Default: `chroot /host reboot`
+- SysRq opt-in: `echo b > /proc/sysrq-trigger` via the host `/proc` mount
+
+The SysRq path is intended for bare-metal environments where the standard reboot command is accepted but leaves the node stuck `NotReady`. It bypasses the normal userspace shutdown path, so it is controlled by an explicit feature flag.
 
 **Job specification:**
 
@@ -109,7 +116,7 @@ spec:
       containers:
         - name: reboot
           image: busybox:1.37
-          command: ["chroot", "/host", "/sbin/reboot"]
+          command: ["chroot", "/host", "reboot"]
           securityContext:
             privileged: true
           volumeMounts:
@@ -131,7 +138,7 @@ spec:
 | `ttlSecondsAfterFinished` | `3600` | Auto-cleanup after 1h |
 | `tolerations` | `[{operator: Exists}]` | Target node is likely cordoned/tainted |
 | `restartPolicy` | `Never` | Do not restart after reboot |
-| Image | `busybox:1.37` | Only needs `chroot` and host `/sbin/reboot` |
+| Image | `busybox:1.37` | Only needs `chroot` and the host `reboot` command |
 
 #### IsNodeReady
 
@@ -166,6 +173,7 @@ csp:
 
   generic:                      # config for the generic provider (when provider=generic)
     rebootImage: "busybox:1.37"
+    useSysrqReboot: false       # true to use echo b > /proc/sysrq-trigger
     rebootJobNamespace: ""      # defaults to the janitor-provider's own namespace
     rebootJobTTLSeconds: 3600
 ```
@@ -177,6 +185,8 @@ env:
     value: {{ .Values.csp.provider | default "kind" | quote }}
   - name: GENERIC_REBOOT_IMAGE
     value: {{ .Values.csp.generic.rebootImage | default "busybox:1.37" | quote }}
+  - name: GENERIC_REBOOT_USE_SYSRQ
+    value: {{ .Values.csp.generic.useSysrqReboot | default false | quote }}
   - name: GENERIC_REBOOT_JOB_NAMESPACE
     value: {{ .Values.csp.generic.rebootJobNamespace | quote }}
   - name: GENERIC_REBOOT_JOB_TTL

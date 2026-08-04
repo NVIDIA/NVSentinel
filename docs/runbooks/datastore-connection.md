@@ -52,7 +52,7 @@ db.HealthEvents.find({"healthevent.ishealthy": false}).limit(10).pretty()
 
 **Find events for a specific node:**
 ```javascript
-db.HealthEvents.find({"healthevent.nodename": "<NODE_NAME>"}).pretty()
+db.HealthEvents.find({"healthevent.nodename": "{NODE_NAME}"}).pretty()
 ```
 
 **Find fatal events:**

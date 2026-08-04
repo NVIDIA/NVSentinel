@@ -43,12 +43,14 @@ const (
 // UNSPECIFIED: events without an explicit strategy use this default, which platform-connector normalizes to EXECUTE_REMEDIATION.
 // EXECUTE_REMEDIATION: normal behavior; downstream modules may update cluster state.
 // STORE_ONLY: observability-only behavior; event should be persisted/exported but should not modify cluster resources.
+// STORE_AND_ANALYSE: event should be persisted/exported and may be used by analyzers, but should not directly modify cluster resources.
 type ProcessingStrategy int32
 
 const (
 	ProcessingStrategy_UNSPECIFIED         ProcessingStrategy = 0
 	ProcessingStrategy_EXECUTE_REMEDIATION ProcessingStrategy = 1
 	ProcessingStrategy_STORE_ONLY          ProcessingStrategy = 2
+	ProcessingStrategy_STORE_AND_ANALYSE   ProcessingStrategy = 3
 )
 
 // Enum value maps for ProcessingStrategy.
@@ -57,11 +59,13 @@ var (
 		0: "UNSPECIFIED",
 		1: "EXECUTE_REMEDIATION",
 		2: "STORE_ONLY",
+		3: "STORE_AND_ANALYSE",
 	}
 	ProcessingStrategy_value = map[string]int32{
 		"UNSPECIFIED":         0,
 		"EXECUTE_REMEDIATION": 1,
 		"STORE_ONLY":          2,
+		"STORE_AND_ANALYSE":   3,
 	}
 )
 
@@ -820,12 +824,13 @@ const file_health_event_proto_rawDesc = "" +
 	"\x13HealthEventResource\x12+\n" +
 	"\x04spec\x18\x01 \x01(\v2\x17.datamodels.HealthEventR\x04spec\x125\n" +
 	"\x06status\x18\x02 \x01(\v2\x1d.datamodels.HealthEventStatusR\x06status:q\xaa\xa8\xfd\x97\x02k\n" +
-	"\x1chealthevents.dgxc.nvidia.com\x12\x13HealthEventResource\x1a\x13healtheventresource\"\x14healtheventresources2\x06nvidia2\x03gpu*N\n" +
+	"\x1chealthevents.dgxc.nvidia.com\x12\x13HealthEventResource\x1a\x13healtheventresource\"\x14healtheventresources2\x06nvidia2\x03gpu*e\n" +
 	"\x12ProcessingStrategy\x12\x0f\n" +
 	"\vUNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13EXECUTE_REMEDIATION\x10\x01\x12\x0e\n" +
 	"\n" +
-	"STORE_ONLY\x10\x02*\xb4\x01\n" +
+	"STORE_ONLY\x10\x02\x12\x15\n" +
+	"\x11STORE_AND_ANALYSE\x10\x03*\xb4\x01\n" +
 	"\x11RecommendedAction\x12\b\n" +
 	"\x04NONE\x10\x00\x12\x13\n" +
 	"\x0fCOMPONENT_RESET\x10\x02\x12\x13\n" +

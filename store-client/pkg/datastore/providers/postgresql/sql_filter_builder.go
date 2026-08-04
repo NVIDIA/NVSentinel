@@ -50,6 +50,7 @@ type SQLFilterBuilder struct {
 	conditions []string
 	args       []interface{}
 	argIndex   int
+	complete   bool
 }
 
 // NewSQLFilterBuilder creates a new SQL filter builder.
@@ -59,6 +60,7 @@ func NewSQLFilterBuilder(startArgIndex int) *SQLFilterBuilder {
 		conditions: make([]string, 0),
 		args:       make([]interface{}, 0),
 		argIndex:   startArgIndex,
+		complete:   true,
 	}
 }
 
@@ -79,6 +81,7 @@ func (b *SQLFilterBuilder) BuildFromPipeline(pipeline interface{}) error {
 			slog.Debug("Skipping pipeline stage for SQL conversion",
 				"error", err,
 				"stageType", fmt.Sprintf("%T", stage))
+			b.markIncomplete()
 		}
 	}
 
@@ -114,6 +117,10 @@ func (b *SQLFilterBuilder) parseStage(stage interface{}) error {
 		return b.parseMatchConditions(matchValue)
 	}
 
+	if len(stageMap) > 0 {
+		return fmt.Errorf("unsupported pipeline stage keys: %v", stageMap)
+	}
+
 	return nil
 }
 
@@ -145,6 +152,7 @@ func (b *SQLFilterBuilder) parseMatchConditions(match interface{}) error {
 		if field == opOr {
 			if err := b.handleOrOperator(value); err != nil {
 				slog.Debug("Skipping $or operator for SQL conversion", "error", err)
+				b.markIncomplete()
 			}
 
 			continue
@@ -153,12 +161,16 @@ func (b *SQLFilterBuilder) parseMatchConditions(match interface{}) error {
 		sqlCond, err := b.fieldToSQL(field, value)
 		if err != nil {
 			slog.Debug("Skipping field for SQL conversion", "field", field, "error", err)
+			b.markIncomplete()
 
 			continue
 		}
 
 		if sqlCond != "" {
 			b.conditions = append(b.conditions, sqlCond)
+		} else {
+			slog.Debug("Field produced no SQL condition", "field", field)
+			b.markIncomplete()
 		}
 	}
 
@@ -172,11 +184,19 @@ func (b *SQLFilterBuilder) handleOrOperator(value interface{}) error {
 		return fmt.Errorf("$or value must be an array, got %T", value)
 	}
 
+	if len(orConditions) == 0 {
+		b.markIncomplete()
+		return fmt.Errorf("$or value must not be empty")
+	}
+
 	orParts := b.processOrConditions(orConditions)
 
-	if len(orParts) > 0 {
-		b.conditions = append(b.conditions, fmt.Sprintf("(%s)", strings.Join(orParts, " OR ")))
+	if len(orParts) != len(orConditions) {
+		b.markIncomplete()
+		return fmt.Errorf("converted %d of %d $or branches", len(orParts), len(orConditions))
 	}
+
+	b.conditions = append(b.conditions, fmt.Sprintf("(%s)", strings.Join(orParts, " OR ")))
 
 	return nil
 }
@@ -203,6 +223,7 @@ func (b *SQLFilterBuilder) processOrConditions(orConditions []interface{}) []str
 	for _, orCond := range orConditions {
 		condMap := b.convertToMap(orCond)
 		if condMap == nil {
+			b.markIncomplete()
 			continue
 		}
 
@@ -210,6 +231,8 @@ func (b *SQLFilterBuilder) processOrConditions(orConditions []interface{}) []str
 
 		if len(branchConditions) > 0 {
 			orParts = append(orParts, b.combineBranchConditions(branchConditions))
+		} else {
+			b.markIncomplete()
 		}
 	}
 
@@ -222,18 +245,23 @@ func (b *SQLFilterBuilder) processBranchConditions(condMap map[string]interface{
 
 	for field, val := range condMap {
 		if field == opOr {
-			b.handleNestedOr(val, &branchConditions)
+			if err := b.handleNestedOr(val, &branchConditions); err != nil {
+				b.markIncomplete()
+			}
 
 			continue
 		}
 
 		sqlCond, err := b.fieldToSQL(field, val)
 		if err != nil {
+			b.markIncomplete()
 			continue
 		}
 
 		if sqlCond != "" {
 			branchConditions = append(branchConditions, sqlCond)
+		} else {
+			b.markIncomplete()
 		}
 	}
 
@@ -241,14 +269,22 @@ func (b *SQLFilterBuilder) processBranchConditions(condMap map[string]interface{
 }
 
 // handleNestedOr handles nested $or within an OR branch.
-func (b *SQLFilterBuilder) handleNestedOr(val interface{}, branchConditions *[]string) {
+func (b *SQLFilterBuilder) handleNestedOr(val interface{}, branchConditions *[]string) error {
 	subBuilder := NewSQLFilterBuilder(b.argIndex)
 
-	if err := subBuilder.handleOrOperator(val); err == nil && subBuilder.HasConditions() {
-		*branchConditions = append(*branchConditions, subBuilder.GetWhereClause())
-		b.args = append(b.args, subBuilder.GetArgs()...)
-		b.argIndex = subBuilder.argIndex
+	if err := subBuilder.handleOrOperator(val); err != nil {
+		return err
 	}
+
+	if !subBuilder.IsComplete() || !subBuilder.HasConditions() {
+		return fmt.Errorf("nested $or could not be fully converted")
+	}
+
+	*branchConditions = append(*branchConditions, subBuilder.GetWhereClause())
+	b.args = append(b.args, subBuilder.GetArgs()...)
+	b.argIndex = subBuilder.argIndex
+
+	return nil
 }
 
 // combineBranchConditions combines conditions in an OR branch with AND.
@@ -506,15 +542,11 @@ func (b *SQLFilterBuilder) handleSingleOperator(jsonPath, op string, val interfa
 	case opExists:
 		return b.handleExistsOperator(jsonPath, val)
 	case opGte, opGt, opLte, opLt:
-		slog.Debug("Skipping comparison operator for SQL conversion", "operator", op)
-
-		return "", nil
+		return "", fmt.Errorf("unsupported comparison operator for SQL conversion: %s", op)
 	case opEq:
 		return b.handleEqOperator(jsonPath, val)
 	default:
-		slog.Debug("Skipping unknown operator for SQL conversion", "operator", op)
-
-		return "", nil
+		return "", fmt.Errorf("unsupported operator for SQL conversion: %s", op)
 	}
 }
 
@@ -655,4 +687,12 @@ func (b *SQLFilterBuilder) GetArgs() []interface{} {
 // HasConditions returns true if any conditions were added.
 func (b *SQLFilterBuilder) HasConditions() bool {
 	return len(b.conditions) > 0
+}
+
+func (b *SQLFilterBuilder) IsComplete() bool {
+	return b.complete
+}
+
+func (b *SQLFilterBuilder) markIncomplete() {
+	b.complete = false
 }
