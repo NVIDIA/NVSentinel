@@ -39,6 +39,20 @@ type MaintenanceEvent struct {
 	NodeName               string            `json:"nodeName,omitempty"           bson:"nodeName,omitemtpy"`
 }
 
+// ProviderLastUpdatedKey is the MaintenanceEvent.Metadata key used to record
+// the CSP's `last_updated` (or equivalent) timestamp for the event. Upsert
+// short-circuits when the incoming value matches the stored one, so a CSP
+// poll that returns unchanged events does not thrash our internal state.
+const ProviderLastUpdatedKey = "providerLastUpdated"
+
+// MetadataUrgencyEmergency is the Metadata.urgency value indicating an
+// event that should bypass the standard scheduledStartTime trigger-window
+// query and fire on the very next poll. Set by CSP normalizers whose events
+// carry an urgent/emergency signal (e.g. Lambda's `urgency: emergency`).
+// FindEmergencyEventsToTriggerQuarantine filters on this exact value, so
+// the writer and reader must agree — hence this shared constant.
+const MetadataUrgencyEmergency = "emergency"
+
 // CSP represents the Cloud Service Provider identifier as an enum.
 type CSP string
 
@@ -53,8 +67,9 @@ type ProviderStatus string
 
 // Constants for CSP types
 const (
-	CSPGCP CSP = "gcp"
-	CSPAWS CSP = "aws"
+	CSPGCP    CSP = "gcp"
+	CSPAWS    CSP = "aws"
+	CSPLambda CSP = "lambda"
 )
 
 // Constants for maintenance types

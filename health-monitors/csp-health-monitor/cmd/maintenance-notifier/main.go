@@ -194,9 +194,13 @@ func run() error {
 	})
 
 	g.Go(func() error {
+		var store datastore.Store
+
 		slog.Info("Initializing datastore connection for sidecar...")
 
-		store, err := datastore.NewStore(gCtx, &appCfg.databaseClientCertMountPath)
+		var err error
+
+		store, err = datastore.NewStore(gCtx, &appCfg.databaseClientCertMountPath)
 		if err != nil {
 			return fmt.Errorf("failed to initialize datastore: %w", err)
 		}

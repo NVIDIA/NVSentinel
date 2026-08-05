@@ -33,7 +33,9 @@ import (
 type Store interface {
 	UpsertMaintenanceEvent(ctx context.Context, event *model.MaintenanceEvent) error
 	FindEventsToTriggerQuarantine(ctx context.Context, triggerTimeLimit time.Duration) ([]model.MaintenanceEvent, error)
+	FindEmergencyEventsToTriggerQuarantine(ctx context.Context) ([]model.MaintenanceEvent, error)
 	FindEventsToTriggerHealthy(ctx context.Context, healthyDelay time.Duration) ([]model.MaintenanceEvent, error)
+	FindCancelledEventsToTriggerHealthy(ctx context.Context) ([]model.MaintenanceEvent, error)
 	UpdateEventStatus(ctx context.Context, eventID string, newStatus model.InternalStatus) error
 	GetLastProcessedEventTimestampByCSP(
 		ctx context.Context,
@@ -131,6 +133,17 @@ func (s *DatabaseStore) executeUpsert(ctx context.Context, filter map[string]int
 
 // UpsertMaintenanceEvent inserts or updates a maintenance event.
 // Metrics are handled by the caller (Processor).
+//
+// Fetches the existing stored event once at the start when needed. Two things
+// are done off that read:
+//  1. If metadata.providerLastUpdated matches the incoming value, short-circuit
+//     — the CSP hasn't touched the event since we last stored it, so re-upserting
+//     would just overwrite our internal state (e.g. QUARANTINE_TRIGGERED) with
+//     whatever the incoming normalizer produced (typically DETECTED), causing
+//     spurious re-triggers on every poll cycle.
+//  2. For MAINTENANCE_COMPLETE events, preserve the stored actualEndTime so
+//     repeated polls don't keep resetting it to now, which would prevent
+//     FindEventsToTriggerHealthy from ever satisfying the healthy-delay window.
 func (s *DatabaseStore) UpsertMaintenanceEvent(ctx context.Context, event *model.MaintenanceEvent) error {
 	if event == nil || event.EventID == "" {
 		return fmt.Errorf("invalid event passed to UpsertMaintenanceEvent (nil or empty EventID)")
@@ -139,12 +152,104 @@ func (s *DatabaseStore) UpsertMaintenanceEvent(ctx context.Context, event *model
 	filter := map[string]interface{}{"eventId": event.EventID}
 	event.LastUpdatedTimestamp = time.Now().UTC()
 
-	// Since Processor now prepares the event fully, we directly upsert.
-	// The fetchExistingEvent and mergeEvents logic is removed based on the confidence
-	// that each EventID is processed once in its final state by the Processor.
-	slog.Debug("Upserting event directly as prepared by Processor", "eventID", event.EventID)
+	if hasProviderLastUpdated(event) ||
+		(event.Status == model.StatusMaintenanceComplete && event.ActualEndTime != nil) {
+		if skip := s.reconcileWithExisting(ctx, filter, event); skip {
+			return nil
+		}
+	}
+
+	slog.Debug("Upserting event", "eventID", event.EventID, "status", event.Status)
 
 	return s.executeUpsert(ctx, filter, event)
+}
+
+// reconcileWithExisting fetches the currently-stored event for this ID and
+// applies two pre-write checks against it:
+//
+//  1. If the CSP hasn't changed the event since we last stored it
+//     (providerLastUpdated matches), returns skip=true so the caller can bail
+//     out of the write entirely.
+//  2. For MAINTENANCE_COMPLETE events, preserves the stored actualEndTime
+//     onto the incoming event so repeated polls don't keep resetting it.
+//
+// If the fetch itself fails we log and return skip=false, so we still write
+// (best-effort) rather than silently dropping the update.
+func (s *DatabaseStore) reconcileWithExisting(
+	ctx context.Context,
+	filter map[string]interface{},
+	event *model.MaintenanceEvent,
+) bool {
+	var existing model.MaintenanceEvent
+
+	found, err := client.FindOneWithExists(ctx, s.databaseClient, filter, nil, &existing)
+	if err != nil {
+		slog.Warn("UpsertMaintenanceEvent: failed to fetch existing event; proceeding without pre-write checks",
+			"eventID", event.EventID, "error", err)
+
+		return false
+	}
+
+	if !found {
+		return false
+	}
+
+	if shouldSkipUnchangedEvent(&existing, event) {
+		slog.Debug("UpsertMaintenanceEvent: providerLastUpdated unchanged, skipping upsert",
+			"eventID", event.EventID,
+			"providerLastUpdated", event.Metadata[model.ProviderLastUpdatedKey])
+
+		return true
+	}
+
+	if event.Status == model.StatusMaintenanceComplete && event.ActualEndTime != nil &&
+		existing.ActualEndTime != nil {
+		slog.Debug("UpsertMaintenanceEvent: preserving existing actualEndTime",
+			"eventID", event.EventID, "actualEndTime", existing.ActualEndTime)
+		event.ActualEndTime = existing.ActualEndTime
+	}
+
+	return false
+}
+
+// hasProviderLastUpdated reports whether event.Metadata carries the
+// providerLastUpdated key set by CSP normalizers that want dedup.
+func hasProviderLastUpdated(event *model.MaintenanceEvent) bool {
+	if event == nil || event.Metadata == nil {
+		return false
+	}
+
+	_, ok := event.Metadata[model.ProviderLastUpdatedKey]
+
+	return ok
+}
+
+// shouldSkipUnchangedEvent returns true when the incoming event carries a
+// providerLastUpdated value equal to the stored one AND the CSP-reported
+// status hasn't changed — i.e. the CSP hasn't touched the event since we
+// last upserted it, so re-upserting would overwrite our internal state
+// (status, timestamps) for no reason.
+//
+// The CSPStatus check guards against a CSP that transitions an event to
+// cancelled/completed without bumping providerLastUpdated: without it we'd
+// skip the write and the affected node would stay quarantined.
+func shouldSkipUnchangedEvent(existing, incoming *model.MaintenanceEvent) bool {
+	if existing == nil || incoming == nil {
+		return false
+	}
+
+	if existing.CSPStatus != incoming.CSPStatus {
+		return false
+	}
+
+	in, ok := incoming.Metadata[model.ProviderLastUpdatedKey]
+	if !ok {
+		return false
+	}
+
+	stored, ok := existing.Metadata[model.ProviderLastUpdatedKey]
+
+	return ok && stored == in
 }
 
 // FindEventsToTriggerQuarantine finds events ready for quarantine trigger.
@@ -183,6 +288,62 @@ func (s *DatabaseStore) FindEventsToTriggerQuarantine(
 	}
 
 	slog.Debug("Found events potentially ready for quarantine trigger", "count", len(results))
+
+	return results, nil
+}
+
+// FindCancelledEventsToTriggerHealthy finds CANCELLED events awaiting a HEALTHY trigger.
+// Cancelled events fire immediately (no post-maintenance delay) — the maintenance was
+// aborted, so the node should return to service as soon as we observe the cancellation.
+// If the node was never quarantined for this event, the emitted HEALTHY is a no-op in
+// fault-quarantine (idempotent on the entity set).
+func (s *DatabaseStore) FindCancelledEventsToTriggerHealthy(
+	ctx context.Context,
+) ([]model.MaintenanceEvent, error) {
+	filter := client.BuildStatusFilter("status", model.StatusCancelled)
+
+	cursor, err := s.databaseClient.Find(ctx, filter, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query cancelled events for healthy trigger: %w", err)
+	}
+
+	defer cursor.Close(ctx)
+
+	var results []model.MaintenanceEvent
+	if err := cursor.All(ctx, &results); err != nil {
+		return nil, fmt.Errorf("failed to decode cancelled events for healthy trigger: %w", err)
+	}
+
+	return results, nil
+}
+
+// FindEmergencyEventsToTriggerQuarantine finds DETECTED Lambda EMERGENCY events.
+// These fire immediately on the next poll cycle — no time-window check is applied.
+func (s *DatabaseStore) FindEmergencyEventsToTriggerQuarantine(
+	ctx context.Context,
+) ([]model.MaintenanceEvent, error) {
+	statusFilter := client.BuildStatusFilter("status", model.StatusDetected)
+	urgencyFilter := client.NewFilterBuilder().Eq("metadata.urgency", model.MetadataUrgencyEmergency).Build()
+
+	filter := client.NewFilterBuilder().
+		And(statusFilter, urgencyFilter).
+		Build()
+
+	slog.Debug("Querying for emergency quarantine triggers")
+
+	cursor, err := s.databaseClient.Find(ctx, filter, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query emergency quarantine events: %w", err)
+	}
+
+	defer cursor.Close(ctx)
+
+	var results []model.MaintenanceEvent
+	if err := cursor.All(ctx, &results); err != nil {
+		return nil, fmt.Errorf("failed to decode emergency quarantine events: %w", err)
+	}
+
+	slog.Debug("Found emergency events for quarantine trigger", "count", len(results))
 
 	return results, nil
 }
