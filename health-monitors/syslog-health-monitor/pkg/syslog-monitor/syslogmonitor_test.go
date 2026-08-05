@@ -330,6 +330,16 @@ type LogCheckConfig struct {
 	Checks []CheckDefinition `yaml:"checks"`
 }
 
+// recordingHandler records messages passed to ProcessLine for test assertions.
+type recordingHandler struct {
+	messages []string
+}
+
+func (h *recordingHandler) ProcessLine(message string) (*pb.HealthEvents, error) {
+	h.messages = append(h.messages, message)
+	return nil, nil
+}
+
 // Mock PlatformConnectorClient
 type mockPlatformConnectorClient struct {
 	RecordedHealthEvents []*pb.HealthEvents
@@ -787,11 +797,17 @@ func TestBootIDChange_ProcessesEntriesFromBootStart(t *testing.T) {
 		JournalPath: TEST_JOURNAL_PATH,
 	}
 
-	// Journal contains entries emitted during driver startup (before monitor).
+	// Journal contains a mixed-boot journal: one stale entry from the
+	// previous boot followed by entries from the current boot. The stale
+	// entry must be skipped by the application-level boot filter.
 	mockJournal := &MockJournal{
 		Entries: []MockJournalEntry{
-			{Message: "NVRM: Xid (PCI:0000:38:00): 79, GPU has fallen off the bus", Cursor: "cursor-1", BootID: "boot-2"},
-			{Message: "NVRM: Xid (PCI:0000:38:00): 154, GPU recovery action", Cursor: "cursor-2", BootID: "boot-2"},
+			{Message: "NVRM: Xid (PCI:0000:38:00): 48, stale previous-boot XID", Cursor: "cursor-0", BootID: "boot-1",
+				Fields: map[string]string{FieldBootID: "boot-1"}},
+			{Message: "NVRM: Xid (PCI:0000:38:00): 79, GPU has fallen off the bus", Cursor: "cursor-1", BootID: "boot-2",
+				Fields: map[string]string{FieldBootID: "boot-2"}},
+			{Message: "NVRM: Xid (PCI:0000:38:00): 154, GPU recovery action", Cursor: "cursor-2", BootID: "boot-2",
+				Fields: map[string]string{FieldBootID: "boot-2"}},
 		},
 		CurrentPosition: -1,
 		TestBootID:      "boot-2",
@@ -829,6 +845,16 @@ func TestBootIDChange_ProcessesEntriesFromBootStart(t *testing.T) {
 	)
 	assert.NoError(t, err)
 
+	// Override currentBootID so the application-level boot filter matches
+	// the mock journal entries (on Linux, fetchCurrentBootID returns the
+	// real kernel UUID which would not match "boot-2").
+	sm.currentBootID = "boot-2"
+
+	// Register a recording handler so we can assert which messages were
+	// actually processed (vs skipped by the boot filter).
+	recorder := &recordingHandler{}
+	sm.checkToHandlerMap[check.Name] = recorder
+
 	// Boot change detected: cursors cleared, postRebootInit set.
 	assert.True(t, sm.postRebootInit, "postRebootInit must be true after boot-ID change")
 	_, hasCursor := sm.checkLastCursors[check.Name]
@@ -841,6 +867,16 @@ func TestBootIDChange_ProcessesEntriesFromBootStart(t *testing.T) {
 	cursor, exists := sm.checkLastCursors[check.Name]
 	assert.True(t, exists, "cursor must be saved after processing boot-start entries")
 	assert.Equal(t, "cursor-2", cursor, "cursor must be at the last processed entry")
+
+	// The stale boot-1 entry must have been skipped by the boot filter;
+	// only the two boot-2 entries should have reached the handler.
+	assert.Len(t, recorder.messages, 2, "only current-boot entries must be processed")
+	assert.Contains(t, recorder.messages[0], "Xid (PCI:0000:38:00): 79")
+	assert.Contains(t, recorder.messages[1], "Xid (PCI:0000:38:00): 154")
+	for _, msg := range recorder.messages {
+		assert.NotContains(t, msg, "stale previous-boot XID",
+			"stale boot-1 entry must not reach the handler")
+	}
 
 	// postRebootInit must be cleared after successful Run.
 	assert.False(t, sm.postRebootInit, "postRebootInit must be false after successful Run")
