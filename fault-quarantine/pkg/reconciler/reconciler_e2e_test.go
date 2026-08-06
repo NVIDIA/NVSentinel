@@ -6718,3 +6718,317 @@ func TestE2E_ManualUntaintAnnotationCleanup(t *testing.T) {
 			node.Annotations[common.QuarantinedNodeIsUntaintedManuallyAnnotationKey] == ""
 	}, eventuallyTimeout, eventuallyPollInterval, "Manual untaint annotation should be removed, FQ annotations added with taint applied")
 }
+
+// TestE2E_SkipNodeLabels_UnhealthyEvent_SkipsQuarantine verifies that an unhealthy
+// event is silently dropped for a node carrying a configured skip label.
+func TestE2E_SkipNodeLabels_UnhealthyEvent_SkipsQuarantine(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-skip-label-unhealthy-" + generateShortTestID()
+
+	labels := map[string]string{
+		"nvsentinel.dgxc.nvidia.com/managed": "false",
+	}
+
+	createE2ETestNode(ctx, t, nodeName, nil, labels, nil, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		SkipNodeLabels: []config.SkipNodeLabel{
+			{Key: "nvsentinel.dgxc.nvidia.com/managed", Value: "false"},
+		},
+		RuleSets: []config.RuleSet{
+			{
+				Enabled:  true,
+				Name:     "gpu-xid-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+					},
+				},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	t.Log("Send unhealthy event for node with skip label")
+	eventID := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		eventID,
+		nodeName,
+		"GpuXidError",
+		false,
+		true,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		model.StatusInProgress,
+	)}
+
+	t.Log("Verify status is nil (event skipped)")
+	require.Eventually(t, func() bool {
+		status := getStatus(eventID)
+		return status == nil
+	}, statusCheckTimeout, statusCheckPollInterval, "Status should be nil for skipped node")
+
+	t.Log("Verify node is NOT quarantined")
+	assert.Never(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		return node.Spec.Unschedulable
+	}, neverTimeout, neverPollInterval, "Node with skip label should not be quarantined")
+}
+
+// TestE2E_SkipNodeLabels_HealthyEvent_DoesNotUncordon verifies that a healthy event
+// does not uncordon a quarantined node when the node carries a configured skip label.
+func TestE2E_SkipNodeLabels_HealthyEvent_DoesNotUncordon(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-skip-label-healthy-" + generateShortTestID()
+
+	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.RuleSet{
+			{
+				Enabled:  true,
+				Name:     "gpu-xid-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+					},
+				},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	t.Log("Quarantine the node first with an unhealthy event (no skip label yet)")
+	eventID1 := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		eventID1,
+		nodeName,
+		"GpuXidError",
+		false,
+		true,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		model.StatusInProgress,
+	)}
+
+	require.Eventually(t, func() bool {
+		status := getStatus(eventID1)
+		return status != nil && *status == model.Quarantined
+	}, statusCheckTimeout, statusCheckPollInterval, "Node should be quarantined first")
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		return err == nil && node.Spec.Unschedulable
+	}, eventuallyTimeout, eventuallyPollInterval, "Node should be cordoned")
+
+	t.Log("Add skip label to the already-quarantined node (simulates ExtRR labeling)")
+	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	node.Labels["nvsentinel.dgxc.nvidia.com/managed"] = "false"
+	_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	t.Log("Restart the reconciler with skip label config to pick up label change")
+	tomlConfigWithSkip := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		SkipNodeLabels: []config.SkipNodeLabel{
+			{Key: "nvsentinel.dgxc.nvidia.com/managed", Value: "false"},
+		},
+		RuleSets: tomlConfig.RuleSets,
+	}
+
+	_, mockWatcher2, getStatus2, _ := setupE2EReconciler(t, ctx, tomlConfigWithSkip, nil)
+
+	t.Log("Send healthy event that would normally uncordon the node")
+	eventID2 := generateTestID()
+	mockWatcher2.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		eventID2,
+		nodeName,
+		"GpuXidError",
+		true,
+		false,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		model.StatusInProgress,
+	)}
+
+	t.Log("Verify status is nil (healthy event skipped)")
+	require.Eventually(t, func() bool {
+		status := getStatus2(eventID2)
+		return status == nil
+	}, statusCheckTimeout, statusCheckPollInterval, "Healthy event should be skipped for node with skip label")
+
+	t.Log("Verify node remains cordoned (not uncordoned)")
+	assert.Never(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return true
+		}
+		return !node.Spec.Unschedulable
+	}, neverTimeout, neverPollInterval, "Node should remain cordoned when skip label is present")
+}
+
+// TestE2E_SkipNodeLabels_EmptyConfig_QuarantinesNode verifies that events are
+// processed normally when the skipNodeLabels configuration is empty.
+func TestE2E_SkipNodeLabels_EmptyConfig_QuarantinesNode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-skip-label-empty-" + generateShortTestID()
+
+	labels := map[string]string{
+		"nvsentinel.dgxc.nvidia.com/managed": "false",
+	}
+
+	createE2ETestNode(ctx, t, nodeName, nil, labels, nil, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.RuleSet{
+			{
+				Enabled:  true,
+				Name:     "gpu-xid-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+					},
+				},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	t.Log("Send unhealthy event -- skipNodeLabels is empty so node should still be quarantined")
+	eventID := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		eventID,
+		nodeName,
+		"GpuXidError",
+		false,
+		true,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		model.StatusInProgress,
+	)}
+
+	require.Eventually(t, func() bool {
+		status := getStatus(eventID)
+		return status != nil && *status == model.Quarantined
+	}, statusCheckTimeout, statusCheckPollInterval, "Node should be quarantined when skipNodeLabels is empty")
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		return err == nil && node.Spec.Unschedulable
+	}, eventuallyTimeout, eventuallyPollInterval, "Node should be cordoned when skipNodeLabels is empty")
+}
+
+// TestE2E_SkipNodeLabels_NoMatchingValue_QuarantinesNode verifies that events are
+// processed normally when the node's label value does not match the skip config.
+func TestE2E_SkipNodeLabels_NoMatchingValue_QuarantinesNode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-skip-label-nomatch-" + generateShortTestID()
+
+	labels := map[string]string{
+		"nvsentinel.dgxc.nvidia.com/managed": "true",
+	}
+
+	createE2ETestNode(ctx, t, nodeName, nil, labels, nil, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		SkipNodeLabels: []config.SkipNodeLabel{
+			{Key: "nvsentinel.dgxc.nvidia.com/managed", Value: "false"},
+		},
+		RuleSets: []config.RuleSet{
+			{
+				Enabled:  true,
+				Name:     "gpu-xid-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+					},
+				},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	t.Log("Send unhealthy event -- label value doesn't match skip config so node should be quarantined")
+	eventID := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		eventID,
+		nodeName,
+		"GpuXidError",
+		false,
+		true,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		model.StatusInProgress,
+	)}
+
+	require.Eventually(t, func() bool {
+		status := getStatus(eventID)
+		return status != nil && *status == model.Quarantined
+	}, statusCheckTimeout, statusCheckPollInterval, "Node should be quarantined when label value doesn't match skip config")
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		return err == nil && node.Spec.Unschedulable
+	}, eventuallyTimeout, eventuallyPollInterval, "Node should be cordoned when label value doesn't match skip config")
+}
+
+// TestE2E_SkipNodeLabels_CacheMissFailsOpen verifies that isNodeSkipped returns
+// false (fail-open) when the node is not present in the informer cache.
+func TestE2E_SkipNodeLabels_CacheMissFailsOpen(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
+	defer cancel()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		SkipNodeLabels: []config.SkipNodeLabel{
+			{Key: "nvsentinel.dgxc.nvidia.com/managed", Value: "false"},
+		},
+	}
+
+	r, _, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	// Node does not exist in the cluster, so the informer cache will miss.
+	// isNodeSkipped must return false (fail-open) so the event is processed
+	// normally rather than silently dropped.
+	result := r.isNodeSkipped(ctx, "nonexistent-node-"+generateShortTestID())
+	assert.False(t, result, "isNodeSkipped should fail-open (return false) when the node is not in the informer cache")
+}

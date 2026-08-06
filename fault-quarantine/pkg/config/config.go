@@ -67,8 +67,16 @@ type RuleSet struct {
 	Cordon   Cordon `toml:"cordon"`
 }
 
+// SkipNodeLabel defines a label key/value pair that causes fault-quarantine
+// to silently drop events for any node carrying the matching label.
+type SkipNodeLabel struct {
+	Key   string `toml:"key"`
+	Value string `toml:"value"`
+}
+
 type TomlConfig struct {
-	LabelPrefix    string         `toml:"label-prefix"`
-	CircuitBreaker CircuitBreaker `toml:"circuitBreaker"`
-	RuleSets       []RuleSet      `toml:"rule-sets"`
+	LabelPrefix    string          `toml:"label-prefix"`
+	CircuitBreaker CircuitBreaker  `toml:"circuitBreaker"`
+	RuleSets       []RuleSet       `toml:"rule-sets"`
+	SkipNodeLabels []SkipNodeLabel `toml:"skip-node-labels"`
 }

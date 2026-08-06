@@ -67,6 +67,14 @@ circuitBreaker:
   # Example: "5m" means if 50% of GPU nodes are cordoned within any 5-minute window, the circuit breaker trips
   duration: "5m"
 
+# Labels that cause fault-quarantine to silently drop events for matching nodes.
+# Any node carrying a label whose key and value match an entry here will not be
+# quarantined, uncordoned, or otherwise acted upon. This covers both healthy and
+# unhealthy events, preventing opted-out nodes from being affected by FQ.
+skipNodeLabels:
+  - key: "nvsentinel.dgxc.nvidia.com/managed"
+    value: "false"
+
 # Rule sets for node quarantine actions
 # Each ruleset defines conditions (match) and actions (taint, label, cordon) to apply when conditions are met
 # Rules are evaluated using CEL (Common Expression Language) expressions

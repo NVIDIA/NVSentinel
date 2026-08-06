@@ -473,6 +473,15 @@ func (r *Reconciler) ProcessEvent(
 		return nil
 	}
 
+	if r.isNodeSkipped(ctx, event.HealthEvent.NodeName) {
+		span.SetAttributes(
+			attribute.String("fault_quarantine.event.processing_status", EventProcessingStatusSkipped),
+			attribute.String("fault_quarantine.skip.reason", "Node carries skip label"),
+		)
+
+		return nil
+	}
+
 	slog.DebugContext(ctx, "Processing event", "checkName", event.HealthEvent.CheckName)
 
 	isNodeQuarantined := r.handleEvent(ctx, event, ruleSetEvals, rulesetsConfig)
@@ -503,6 +512,43 @@ func (r *Reconciler) ProcessEvent(
 	}
 
 	return isNodeQuarantined
+}
+
+// isNodeSkipped checks whether the node carries any label from the configured
+// skip-node-labels list. When a match is found the event should be dropped
+// silently so that opted-out nodes are neither quarantined nor uncordoned.
+//
+// Fail-open: if the node is not in the informer cache (e.g. cache hasn't synced
+// yet on startup, or the node was deleted), the event is processed normally.
+// This is intentional -- a missing cache entry should not block quarantine for
+// nodes that are genuinely unhealthy.
+func (r *Reconciler) isNodeSkipped(ctx context.Context, nodeName string) bool {
+	if len(r.config.TomlConfig.SkipNodeLabels) == 0 {
+		return false
+	}
+
+	node, err := r.k8sClient.NodeInformer.GetNode(nodeName)
+	if err != nil {
+		slog.DebugContext(ctx, "Node not found in informer cache, not skipping", "node", nodeName, "error", err)
+		return false
+	}
+
+	for _, skipLabel := range r.config.TomlConfig.SkipNodeLabels {
+		if skipLabel.Key == "" {
+			slog.WarnContext(ctx, "Ignoring skip-node-label entry with empty key")
+			continue
+		}
+
+		if val, ok := node.Labels[skipLabel.Key]; ok && val == skipLabel.Value {
+			slog.InfoContext(ctx, "Skipping event for node with skip label",
+				"node", nodeName, "labelKey", skipLabel.Key, "labelValue", skipLabel.Value)
+			metrics.EventsSkippedNodeLabel.WithLabelValues(skipLabel.Key).Inc()
+
+			return true
+		}
+	}
+
+	return false
 }
 
 // checkCircuitBreakerAndHalt checks if circuit breaker is tripped and returns true if processing should halt

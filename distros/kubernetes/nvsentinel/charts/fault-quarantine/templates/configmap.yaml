@@ -70,3 +70,9 @@ data:
       [rule-sets.cordon]
         shouldCordon = {{ .cordon.shouldCordon }}
     {{- end }}
+
+    {{- range .Values.skipNodeLabels }}
+    [[skip-node-labels]]
+      key = {{ .key | quote }}
+      value = {{ .value | quote }}
+    {{- end }}

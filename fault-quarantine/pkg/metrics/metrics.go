@@ -25,6 +25,11 @@ const (
 	StatusFailed = "failed"
 )
 
+const (
+	labelNode = "node"
+	labelKey  = "label_key"
+)
+
 var (
 	// Event Processing Metrics
 	TotalEventsReceived = promauto.NewCounter(
@@ -53,21 +58,21 @@ var (
 			Name: "fault_quarantine_nodes_quarantined_total",
 			Help: "Total number of nodes quarantined.",
 		},
-		[]string{"node"},
+		[]string{labelNode},
 	)
 	TotalNodesUnquarantined = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "fault_quarantine_nodes_unquarantined_total",
 			Help: "Total number of nodes unquarantined.",
 		},
-		[]string{"node"},
+		[]string{labelNode},
 	)
 	TotalNodesManuallyUncordoned = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "fault_quarantine_nodes_manually_uncordoned_total",
 			Help: "Total number of nodes manually uncordoned.",
 		},
-		[]string{"node"},
+		[]string{labelNode},
 	)
 
 	TotalNodesManuallyUntainted = promauto.NewCounterVec(
@@ -75,14 +80,22 @@ var (
 			Name: "fault_quarantine_nodes_manually_untainted_total",
 			Help: "Total number of nodes manually untainted",
 		},
-		[]string{"node"},
+		[]string{labelNode},
 	)
 	CurrentQuarantinedNodes = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "fault_quarantine_current_quarantined_nodes",
 			Help: "Nodes which are currently quarantined and undergoing breakfix",
 		},
-		[]string{"node"},
+		[]string{labelNode},
+	)
+
+	EventsSkippedNodeLabel = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "fault_quarantine_events_skipped_node_label_total",
+			Help: "Events skipped because the target node carries a configured skip label.",
+		},
+		[]string{labelKey},
 	)
 
 	// Taint and Cordon Metrics
@@ -105,14 +118,14 @@ var (
 			Name: "fault_quarantine_labels_applied_total",
 			Help: "Total number of quarantine labels applied to nodes.",
 		},
-		[]string{"label_key"},
+		[]string{labelKey},
 	)
 	LabelsRemoved = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "fault_quarantine_labels_removed_total",
 			Help: "Total number of quarantine labels removed from nodes.",
 		},
-		[]string{"label_key"},
+		[]string{labelKey},
 	)
 	CordonsApplied = promauto.NewCounter(
 		prometheus.CounterOpts{
