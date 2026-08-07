@@ -157,6 +157,8 @@ navigation:
         path: runbooks/log-collection-job-failures.md
       - page: Log Rotation Failures
         path: runbooks/log-rotation-failures.md
+      - page: MongoDB Bitnami to Percona Migration
+        path: runbooks/mongodb-bitnami-to-percona-migration.md
       - page: MongoDB Connection Error
         path: runbooks/mongodb-connection-error.md
       - page: Node Conditions

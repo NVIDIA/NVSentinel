@@ -29,12 +29,15 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	listersv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	"github.com/nvidia/nvsentinel/labeler/pkg/devicecounts"
 )
 
@@ -1931,4 +1934,140 @@ func generateNodeUpdates(t *testing.T, ctx context.Context, cli kubernetes.Inter
 		}
 		t.Logf("heartbeat round %d complete", round)
 	}
+}
+
+// errNodeLister is a NodeLister that always returns a non-NotFound error from Get,
+// used to exercise the fail-closed paths in reconcileNodeLabelsInPlace and
+// updateNodeLabelsForPod.
+type errNodeLister struct{}
+
+func (e errNodeLister) List(_ labels.Selector) ([]*corev1.Node, error) { return nil, nil }
+func (e errNodeLister) Get(_ string) (*corev1.Node, error) {
+	return nil, fmt.Errorf("simulated lister error")
+}
+
+// nodeIndexerLister builds a NodeLister backed by a fake cache.Indexer containing nodes.
+func nodeIndexerLister(nodes ...*corev1.Node) listersv1.NodeLister {
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	for _, n := range nodes {
+		_ = indexer.Add(n)
+	}
+	return listersv1.NewNodeLister(indexer)
+}
+
+func TestReconcileNodeLabelsInPlace_ManagedGate(t *testing.T) {
+	t.Run("strips detection labels when node is opted out", func(t *testing.T) {
+		node := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "opted-out-node",
+				Labels: map[string]string{
+					managed.ManagedLabelKey:  managed.ManagedLabelValueFalse,
+					DCGMVersionLabel:         "3.x",
+					DriverInstalledLabel:     "true",
+					KataEnabledLabel:         "true",
+				},
+			},
+		}
+		l := &Labeler{
+			ctx:        context.Background(),
+			nodeLister: nodeIndexerLister(node),
+		}
+
+		target := node.DeepCopy()
+		changed := l.reconcileNodeLabelsInPlace(target, "true", "3.x")
+
+		assert.True(t, changed, "should report labels changed")
+		assert.NotContains(t, target.Labels, DCGMVersionLabel, "DCGM label must be stripped")
+		assert.NotContains(t, target.Labels, DriverInstalledLabel, "driver label must be stripped")
+		assert.NotContains(t, target.Labels, KataEnabledLabel, "kata label must be stripped")
+		// The managed label itself is owned by the ERR reconciler — labeler must not touch it.
+		assert.Equal(t, managed.ManagedLabelValueFalse, target.Labels[managed.ManagedLabelKey])
+	})
+
+	t.Run("no-op when opted-out node has no detection labels", func(t *testing.T) {
+		node := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "opted-out-clean",
+				Labels: map[string]string{managed.ManagedLabelKey: managed.ManagedLabelValueFalse},
+			},
+		}
+		l := &Labeler{
+			ctx:        context.Background(),
+			nodeLister: nodeIndexerLister(node),
+		}
+		target := node.DeepCopy()
+		changed := l.reconcileNodeLabelsInPlace(target, "", "")
+		assert.False(t, changed, "no labels to strip → no update needed")
+	})
+
+	t.Run("fail closed — returns false without mutating on lister error", func(t *testing.T) {
+		node := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "error-node",
+				Labels: map[string]string{DCGMVersionLabel: "3.x", DriverInstalledLabel: "true"},
+			},
+		}
+		l := &Labeler{
+			ctx:        context.Background(),
+			nodeLister: errNodeLister{},
+		}
+		target := node.DeepCopy()
+		changed := l.reconcileNodeLabelsInPlace(target, "true", "3.x")
+
+		assert.False(t, changed, "lister error must not report changes")
+		assert.Contains(t, target.Labels, DCGMVersionLabel, "lister error must not strip labels")
+		assert.Contains(t, target.Labels, DriverInstalledLabel, "lister error must not strip labels")
+	})
+
+}
+
+func TestUpdateNodeLabelsForPod_ManagedGate(t *testing.T) {
+	t.Run("skips update when node is opted out", func(t *testing.T) {
+		node := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "opted-out-node",
+				Labels: map[string]string{
+					managed.ManagedLabelKey: managed.ManagedLabelValueFalse,
+					// Suppose driver label is currently absent — update would stamp it.
+				},
+			},
+		}
+		clientset := fake.NewSimpleClientset(node)
+		l := &Labeler{
+			ctx:        context.Background(),
+			nodeLister: nodeIndexerLister(node),
+			clientset:  clientset,
+		}
+
+		err := l.updateNodeLabelsForPod(node.Name, "true", "3.x")
+		require.NoError(t, err, "opted-out skip must not return an error")
+
+		// Verify the clientset was never called to update labels.
+		updated, getErr := clientset.CoreV1().Nodes().Get(context.Background(), node.Name, metav1.GetOptions{})
+		require.NoError(t, getErr)
+		assert.NotContains(t, updated.Labels, DriverInstalledLabel,
+			"driver label must not be stamped on an opted-out node")
+		assert.NotContains(t, updated.Labels, DCGMVersionLabel,
+			"DCGM label must not be stamped on an opted-out node")
+	})
+
+	t.Run("fail closed — skips update on lister error", func(t *testing.T) {
+		node := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{Name: "error-node", Labels: map[string]string{}},
+		}
+		clientset := fake.NewSimpleClientset(node)
+		l := &Labeler{
+			ctx:        context.Background(),
+			nodeLister: errNodeLister{},
+			clientset:  clientset,
+		}
+
+		err := l.updateNodeLabelsForPod(node.Name, "true", "3.x")
+		require.NoError(t, err, "fail-closed skip must not propagate as an error")
+
+		updated, getErr := clientset.CoreV1().Nodes().Get(context.Background(), node.Name, metav1.GetOptions{})
+		require.NoError(t, getErr)
+		assert.NotContains(t, updated.Labels, DriverInstalledLabel,
+			"lister error must not stamp labels on node")
+	})
 }

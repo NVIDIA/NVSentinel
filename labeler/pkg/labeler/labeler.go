@@ -33,6 +33,9 @@ import (
 	"k8s.io/client-go/util/retry"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 
+	listersv1 "k8s.io/client-go/listers/core/v1"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	"github.com/nvidia/nvsentinel/commons/pkg/stringutil"
 	"github.com/nvidia/nvsentinel/labeler/pkg/devicecounts"
 	"github.com/nvidia/nvsentinel/labeler/pkg/metrics"
@@ -67,6 +70,7 @@ type Labeler struct {
 	clientset                    kubernetes.Interface
 	podInformer                  cache.SharedIndexInformer
 	nodeInformer                 cache.SharedIndexInformer
+	nodeLister                   listersv1.NodeLister
 	gkeInstallerInformer         cache.SharedIndexInformer
 	resourceSliceInformer        cache.SharedIndexInformer
 	informersSynced              []cache.InformerSynced
@@ -126,6 +130,7 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		clientset:                    clientset,
 		podInformer:                  podInformer,
 		nodeInformer:                 nodeInformer,
+		nodeLister:                   listersv1.NewNodeLister(nodeInformer.GetIndexer()),
 		gkeInstallerInformer:         gkeInstallerInformer,
 		resourceSliceInformer:        resourceSliceInformer,
 		informersSynced:              informersSynced,
@@ -502,6 +507,10 @@ func (l *Labeler) nodeRequiresReconciliation(oldObj, newObj any) bool {
 		return true
 	}
 
+	if oldNode.Labels[managed.ManagedLabelKey] != newNode.Labels[managed.ManagedLabelKey] {
+		return true
+	}
+
 	if oldNode.Labels[gpuPresentLabel] != newNode.Labels[gpuPresentLabel] {
 		return true
 	}
@@ -612,7 +621,24 @@ func (l *Labeler) getDriverLabelForNode(nodeName string, excludePod *v1.Pod) (st
 
 // updateNodeLabelsForPod updates only DCGM and driver labels (kata is handled separately by node events)
 func (l *Labeler) updateNodeLabelsForPod(nodeName, expectedDCGMVersion, expectedDriverLabel string) error {
-	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+	// When the node is opted out, detection labels are stripped by reconcileNodeLabelsInPlace
+	// (triggered by the managed-label node event). Skip pod-driven re-stamping.
+	// Fail closed: if the lister errors we must not re-stamp detection labels on
+	// a node that may be under active ERR.
+	optedOut, err := managed.IsNodeOptedOut(l.ctx, l.nodeLister, nodeName)
+	if err != nil {
+		slog.Warn("Failed to check managed label, skipping pod-driven label update", "node", nodeName, "error", err)
+		return nil
+	}
+
+	if optedOut {
+		slog.Debug("Skipping pod-driven label update for opted-out node", "node", nodeName)
+		metrics.NodeLabelsSkippedManaged.Inc()
+
+		return nil
+	}
+
+	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		node, err := l.clientset.CoreV1().Nodes().Get(l.ctx, nodeName, metav1.GetOptions{})
 		if err != nil {
 			return err
@@ -706,7 +732,45 @@ func (l *Labeler) desiredNodeLabels(nodeName string) (string, string, error) {
 	return driverLabel, dcgmVersion, nil
 }
 
+// stripDetectionLabels removes the three detection labels that DaemonSet monitors
+// rely on for their nodeSelectors. Called when a node carries managed=false so
+// monitors evict without any per-monitor chart change.
+func (l *Labeler) stripDetectionLabels(node *v1.Node) bool {
+	needsUpdate := false
+
+	for _, key := range []string{DCGMVersionLabel, DriverInstalledLabel, KataEnabledLabel} {
+		if _, exists := node.Labels[key]; exists {
+			delete(node.Labels, key)
+
+			needsUpdate = true
+
+			slog.Info("Removing detection label from opted-out node", "node", node.Name, "label", key)
+		}
+	}
+
+	return needsUpdate
+}
+
 func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVersion string) bool {
+	// When the node is opted out of NVSentinel management, strip detection labels
+	// so DaemonSet monitors evict via their existing nodeSelectors (ADR-040).
+	optedOut, err := managed.IsNodeOptedOut(l.ctx, l.nodeLister, node.Name)
+	if err != nil {
+		// Fail closed: if we cannot determine opt-out state we must not proceed
+		// with label mutations — stamping detection labels on a node under active
+		// ERR would restore health-monitor scheduling on a released node.
+		slog.Warn("Failed to check managed label, skipping label reconciliation", "node", node.Name, "error", err)
+		return false
+	}
+
+	if optedOut {
+		// Count every reconciliation attempt on an opted-out node, not only those
+		// that actually removed labels, so the metric reflects how often the gate
+		// fired (ADR-040).
+		metrics.NodeLabelsSkippedManaged.Inc()
+		return l.stripDetectionLabels(node)
+	}
+
 	needsUpdate := false
 
 	expectedKataLabel := l.getKataLabelForNode(node)

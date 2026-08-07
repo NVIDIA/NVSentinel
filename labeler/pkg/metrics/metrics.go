@@ -82,4 +82,14 @@ var (
 		},
 		[]string{ClassLabel, "reason"},
 	)
+
+	// NodeLabelsSkippedManaged counts reconcile attempts skipped because the node
+	// is opted out of NVSentinel management (ADR-040). See commons/pkg/managed
+	// for the canonical label key and value.
+	NodeLabelsSkippedManaged = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "labeler_node_labels_skipped_managed_total",
+			Help: "Node label reconcile attempts skipped because the node is opted out of NVSentinel management.",
+		},
+	)
 )
