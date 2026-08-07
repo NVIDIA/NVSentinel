@@ -1245,12 +1245,14 @@ class TestDCGMWatcherHangSafeOrdering:
 
     @patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmGroup")
     @patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmHandle")
-    def test_connectivity_failure_is_published_before_cleanup(self, mock_dcgm_handle, mock_dcgm_group):
+    def test_connectivity_failure_is_published_before_cleanup(
+        self, mock_dcgm_handle: MagicMock, mock_dcgm_group: MagicMock
+    ) -> None:
         published = Event()
         observed = {}
 
         class SignallingProcessor(FakeEventProcessorInTest):
-            def dcgm_connectivity_failed(self):
+            def dcgm_connectivity_failed(self) -> None:
                 super().dcgm_connectivity_failed()
                 published.set()
 
@@ -1264,12 +1266,13 @@ class TestDCGMWatcherHangSafeOrdering:
         # Saturate the shared callback executor. Critical connectivity delivery
         # must bypass it or the event remains queued behind these workers.
         release_workers = Event()
-        for _ in range(watcher._callback_thread_pool._max_workers):
-            watcher._callback_thread_pool.submit(release_workers.wait)
+        saturated_workers = 8
+        for _ in range(saturated_workers):
+            watcher._callback_thread_pool.submit(release_workers.wait, 10)
 
         dcgm_handle_mock = MagicMock()
 
-        def cleanup():
+        def cleanup() -> None:
             observed["published_before_cleanup"] = published.is_set()
             release_workers.set()
 
@@ -1282,9 +1285,9 @@ class TestDCGMWatcherHangSafeOrdering:
         mock_dcgm_group.return_value = dcgm_group_mock
 
         # The first cycle only connects; the health check runs on the second.
-        exit = MagicMock(spec=Event)
-        exit.is_set.side_effect = [False, False, False, True]
-        exit.wait.side_effect = [False, False, True]
-        watcher.start([], exit)
+        stop_event = MagicMock(spec=Event)
+        stop_event.is_set.side_effect = [False, False, False, True]
+        stop_event.wait.side_effect = [False, False, True]
+        watcher.start([], stop_event)
 
         assert observed["published_before_cleanup"] is True

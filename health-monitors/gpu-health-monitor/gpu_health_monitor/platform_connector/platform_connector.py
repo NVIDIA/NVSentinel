@@ -339,6 +339,12 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         and `False` is returned. The caller's cache must be left untouched so
         the next poll re-emits with a fresh `generatedTimestamp`.
 
+        Every gRPC call is bounded by ``GRPC_CALL_TIMEOUT_SECONDS`` so a stalled
+        connector cannot block a worker indefinitely. When
+        ``delivery_timeout_seconds`` is set (critical pre-cleanup paths), the
+        overall retry budget is also capped; ordinary health events keep the
+        existing MAX_RETRIES backoff without an overall deadline.
+
         Returns:
             True on success. False if the socket was missing or all retries
             were exhausted. Callers must update their cache only on True.
@@ -372,13 +378,10 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
                 try:
                     request = platformconnector_pb2.HealthEvents(events=health_events, version=1)
+                    rpc_timeout = GRPC_CALL_TIMEOUT_SECONDS
                     if remaining is not None:
-                        stub.HealthEventOccurredV1(
-                            request,
-                            timeout=min(GRPC_CALL_TIMEOUT_SECONDS, remaining),
-                        )
-                    else:
-                        stub.HealthEventOccurredV1(request)
+                        rpc_timeout = min(GRPC_CALL_TIMEOUT_SECONDS, remaining)
+                    stub.HealthEventOccurredV1(request, timeout=rpc_timeout)
                     metrics.health_events_insertion_to_uds_succeed.inc()
                     return True
                 except grpc.RpcError as e:

@@ -269,7 +269,10 @@ class DCGMWatcher:
         return delivered
 
     def _report_connectivity_failed(self) -> bool:
-        return self._invoke_callback_funcs_sync(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])
+        delivered = self._invoke_callback_funcs_sync(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])
+        if not delivered:
+            log.warning("Failed to publish DCGM connectivity failure before cleanup; will retry on next cycle")
+        return delivered
 
     def _create_dcgm_group_with_all_entities(self, dcgm_handle: pydcgm.DcgmHandle) -> pydcgm.DcgmGroup:
         dcgm_system = dcgm_handle.GetSystem()
