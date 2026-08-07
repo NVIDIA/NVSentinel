@@ -643,8 +643,11 @@ class DCGMWatcher:
 
                         if not connectivity_success:
                             log.warning("DCGM connectivity failure detected")
-                            self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
+                            # Publish before cleaning up: Shutdown() calls into
+                            # DCGM as well, so an unresponsive driver would block
+                            # here and the event would never be sent.
                             self._fire_callback_funcs(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])
+                            self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
                             dcgm_handle = None
                             dcgm_group = None
                             gpu_ids = []
