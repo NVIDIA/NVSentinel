@@ -163,16 +163,9 @@ gpu-health-monitor:
 
 ## Unresponsive Driver Detection
 
-A wedged NVIDIA driver does not return an error — it stops answering. Any process
-that queries it parks in uninterruptible sleep and cannot be killed, so the DCGM
-call blocks forever rather than raising `DCGMError_Timeout`. Meanwhile the node
-still reports `Ready` with every GPU allocatable and no taint, so no other signal
-in the stack registers a fault.
+A wedged NVIDIA driver does not return an error — it stops answering. Any process that queries it parks in uninterruptible sleep and cannot be killed, so the DCGM call blocks forever rather than raising `DCGMError_Timeout`. Meanwhile the node still reports `Ready` with every GPU allocatable and no taint, so no other signal in the stack registers a fault.
 
-The poll loop cannot report this itself: it is blocked before the point where it
-would publish anything, and `/healthz` only observes that the loop is frozen, so
-kubelet restarts the container and the replacement blocks in the same place. Two
-settings close that gap.
+The poll loop cannot report this itself: it is blocked before the point where it would publish anything, and `/healthz` only observes that the loop is frozen, so kubelet restarts the container and the replacement blocks in the same place. Two settings close that gap.
 
 ```yaml
 gpu-health-monitor:
@@ -185,70 +178,29 @@ gpu-health-monitor:
 
 ### probeStoreOnly
 
-Ships the check in dry-run. While `true` (the default) `GpuDriverUnresponsive` is
-emitted with `processingStrategy=STORE_ONLY`, so it is persisted and exported as
-metrics but excluded from the remediation pipeline — no node condition, no cordon,
-no reboot. The event still carries `RESTART_BM` so the record shows what the node
-needs.
+Ships the check in dry-run. While `true` (the default) `GpuDriverUnresponsive` is emitted with `processingStrategy=STORE_ONLY`, so it is persisted and exported as metrics but excluded from the remediation pipeline — no node condition, no cordon, no reboot. The event still carries `RESTART_BM` so the record shows what the node needs.
 
-Watch `dcgm_probe_hangs` and the stored events for a release or two, confirm the
-detections match real wedges on your fleet, then set `probeStoreOnly: false` to
-let remediation act on them. Both the unhealthy and the clearing event use the
-same strategy, so fault-quarantine always sees a consistent pair.
+Watch `dcgm_probe_hangs` and the stored events for a release or two, confirm the detections match real wedges on your fleet, then set `probeStoreOnly: false` to let remediation act on them. Both the unhealthy and the clearing event use the same strategy, so fault-quarantine always sees a consistent pair.
 
 ### probeDeadlineSeconds
 
-Seconds a single DCGM probe may run before a watchdog thread — which the driver
-cannot block — reports the stalled operation. In `embedded-mode` the call is
-in-process and node-local, so it publishes `GpuDriverUnresponsive` with error
-code `DRIVER_PROBE_HANG` and recommended action `RESTART_BM`. In
-`operator-service` and `external-hostengine` modes, the same symptom can come
-from the endpoint, DNS, or network; those modes publish
-`GpuDcgmConnectivityFailure` with `CONTACT_SUPPORT` instead. Defaults to
-`PollIntervalSeconds * 3` when unset. Set to `0` to disable the watchdog.
+Seconds a single DCGM probe may run before a watchdog thread — which the driver cannot block — reports the stalled operation. In `embedded-mode` the call is in-process and node-local, so it publishes `GpuDriverUnresponsive` with error code `DRIVER_PROBE_HANG` and recommended action `RESTART_BM`. In `operator-service` and `external-hostengine` modes, the same symptom can come from the endpoint, DNS, or network; those modes publish `GpuDcgmConnectivityFailure` with `CONTACT_SUPPORT` instead. Defaults to `PollIntervalSeconds * 3` when unset. Set to `0` to disable the watchdog.
 
-The default equals the `/healthz` staleness window
-(`PollIntervalSeconds * 3`), so the monitor reports when the poll loop is
-officially considered stalled. Critical event delivery is capped at 15 seconds,
-leaving the liveness probe's remaining failure budget to persist the finding
-before kubelet restarts the container.
+The default equals the `/healthz` staleness window (`PollIntervalSeconds * 3`), so the monitor reports when the poll loop is officially considered stalled. Critical event delivery is capped at 15 seconds, leaving the liveness probe's remaining failure budget to persist the finding before kubelet restarts the container.
 
-DCGM exposes timeout errors but does not document a fixed timeout for every RPC.
-Treat 45 seconds as a fleet default, not proof that every slower operation is a
-driver wedge. Leave `probeStoreOnly` enabled while measuring normal embedded-mode
-probe latencies. If you substantially raise `probeDeadlineSeconds`, verify the
-resulting deadline still precedes the configured liveness restart; the chart
-exposes `livenessProbe.periodSeconds` and `livenessProbe.failureThreshold` for
-that adjustment.
+DCGM exposes timeout errors but does not document a fixed timeout for every RPC. Treat 45 seconds as a fleet default, not proof that every slower operation is a driver wedge. Leave `probeStoreOnly` enabled while measuring normal embedded-mode probe latencies. If you substantially raise `probeDeadlineSeconds`, verify the resulting deadline still precedes the configured liveness restart; the chart exposes `livenessProbe.periodSeconds` and `livenessProbe.failureThreshold` for that adjustment.
 
-The event reports once per hang episode. After delivery, a marker under the
-monitor's persistent `/var/run/nvsentinel` state survives liveness restarts; it
-prevents the same wedge from being republished and lets the first successful
-probe emit the healthy clearing event. Every DCGM call in the poll loop is
-tracked, including connect, health check, thermal margin evaluation, and cleanup.
-`dcgm_probe_hangs` increments when the deadline is crossed even if event delivery
-must be retried.
+The event reports once per hang episode. After delivery, a marker under the monitor's persistent `/var/run/nvsentinel` state survives liveness restarts; it prevents the same wedge from being republished and lets the first successful probe emit the healthy clearing event. Every DCGM call in the poll loop is tracked, including connect, health check, thermal margin evaluation, and cleanup. `dcgm_probe_hangs` increments when the deadline is crossed even if event delivery must be retried.
 
 ### connectivityFailureEscalationThreshold
 
-Number of consecutive `GpuDcgmConnectivityFailure` cycles after which the
-recommended action escalates from `CONTACT_SUPPORT` to `RESTART_BM`.
+Number of consecutive `GpuDcgmConnectivityFailure` cycles after which the recommended action escalates from `CONTACT_SUPPORT` to `RESTART_BM`.
 
-Enable this only when the configured DCGM endpoint is node-local and repeated
-unreachability has been validated as a driver wedge. With a shared service,
-service failure, DNS issue, or network policy, rebooting the node is not a valid
-remediation.
+Enable this only when the configured DCGM endpoint is node-local and repeated unreachability has been validated as a driver wedge. With a shared service, service failure, DNS issue, or network policy, rebooting the node is not a valid remediation.
 
-Defaults to `0`, which disables escalation and keeps every connectivity failure
-at `CONTACT_SUPPORT`. The counter resets once connectivity is restored, and the
-escalated event is published once rather than on every subsequent cycle.
+Defaults to `0`, which disables escalation and keeps every connectivity failure at `CONTACT_SUPPORT`. The counter resets once connectivity is restored, and the escalated event is published once rather than on every subsequent cycle.
 
-> **Note**: Both settings recommend `RESTART_BM`, which fault-remediation maps to
-> a `RebootNode` CR. A reboot is the only fix for a wedge — the stuck processes
-> cannot be killed and the nvidia module cannot be unloaded while they hold
-> references to it. Nodes are drained before the reboot by node-drainer. Note that
-> `probeStoreOnly` gates this for `GpuDriverUnresponsive`, while
-> `connectivityFailureEscalationThreshold` is opt-in by being `0` by default.
+> **Note**: Both settings recommend `RESTART_BM`, which fault-remediation maps to a `RebootNode` CR. A reboot is the only fix for a wedge — the stuck processes cannot be killed and the nvidia module cannot be unloaded while they hold references to it. Nodes are drained before the reboot by node-drainer. Note that `probeStoreOnly` gates this for `GpuDriverUnresponsive`, while `connectivityFailureEscalationThreshold` is opt-in by being `0` by default.
 
 ## Additional Volumes
 
