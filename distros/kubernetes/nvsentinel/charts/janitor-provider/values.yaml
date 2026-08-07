@@ -98,7 +98,7 @@ auth:
 # The janitor-provider module supports multiple cloud providers for node reboot operations
 # Configure the appropriate CSP for your environment
 csp:
-  # CSP provider type (kind, kwok, aws, gcp, azure, oci, nebius, generic)
+  # CSP provider type (kind, kwok, aws, gcp, azure, oci, nebius, lambda, generic)
   # - kind: For local development with kind clusters (simulated reboots)
   # - kwok: For testing with kwok (simulated nodes)
   # - aws: For AWS EKS clusters
@@ -106,6 +106,7 @@ csp:
   # - azure: For Microsoft Azure AKS clusters
   # - oci: For Oracle Cloud Infrastructure OKE clusters
   # - nebius: For Nebius Managed Kubernetes (MK8s) clusters
+  # - lambda: For Lambda Cloud clusters (reboot = power cycle, terminate = terminate instance)
   # - generic: For bare-metal / on-premises clusters (reboots via privileged Job)
   provider: "kind"
 
@@ -231,3 +232,22 @@ csp:
     # - NEBIUS_SA_KEY_FILE: Path to service account credentials JSON file (recommended)
     #   The service account must have compute.instances.stop and compute.instances.start permissions
     # - NEBIUS_IAM_TOKEN: Direct IAM token (for testing only)
+
+  # Lambda Cloud specific configuration (only required when provider=lambda)
+  # Reboot maps to the power-cycle operation, terminate to the terminate operation.
+  lambda:
+    # apiEndpoint overrides the Lambda Cloud API base URL, set via LAMBDA_API_ENDPOINT.
+    # Must be https, and the host is checked in code against a fixed allowlist,
+    # so an unapproved host fails at startup.
+    apiEndpoint: ""
+    # apiKeySecretRef names the Secret containing the LAMBDA_API_KEY env var.
+    # Required when provider=lambda, plaintext key values are not supported.
+    # The key needs permission to power cycle and terminate instances.
+    # Example:
+    #   apiKeySecretRef:
+    #     name: lambda-api-key
+    #     key: LAMBDA_API_KEY
+    apiKeySecretRef:
+      name: ""
+      key: "LAMBDA_API_KEY"
+
