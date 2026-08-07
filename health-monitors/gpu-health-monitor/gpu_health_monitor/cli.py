@@ -195,17 +195,17 @@ def cli(
     store_only_checks = frozenset(store_only_checks)
 
     suppressed_error_codes = frozenset()
+    connectivity_failure_escalation_threshold = 0
     if config.has_section("dcgmhealthcheck"):
-        suppressed_error_codes_raw = config["dcgmhealthcheck"].get("SuppressedErrorCodes", fallback="")
+        health_check_config = config["dcgmhealthcheck"]
+        suppressed_error_codes_raw = health_check_config.get("SuppressedErrorCodes", fallback="")
         suppressed_error_codes = frozenset(
             code.strip() for code in suppressed_error_codes_raw.split(",") if code.strip()
         )
         if suppressed_error_codes:
             log.info(f"DCGM error codes suppressed via config: {sorted(suppressed_error_codes)}")
 
-    connectivity_failure_escalation_threshold = 0
-    if config.has_section("dcgmhealthcheck"):
-        connectivity_failure_escalation_threshold = config["dcgmhealthcheck"].getint(
+        connectivity_failure_escalation_threshold = health_check_config.getint(
             "ConnectivityFailureEscalationThreshold", fallback=0
         )
         if connectivity_failure_escalation_threshold > 0:

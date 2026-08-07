@@ -13,9 +13,11 @@
 # limitations under the License.
 
 import dataclasses
+from collections.abc import Callable
 from functools import wraps
 import logging as log
 import os
+from typing import Any
 from gpu_health_monitor.dcgm_watcher import types as dcgmtypes
 from gpu_health_monitor.metadata import MetadataReader
 from threading import Event, RLock
@@ -38,11 +40,11 @@ GRPC_CALL_TIMEOUT_SECONDS = 5.0
 CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS = 15.0
 
 
-def _serialized_event_state(method):
+def _serialized_event_state(method: Callable[..., Any]) -> Callable[..., Any]:
     """Serialize cache/counter transitions across callback and watchdog threads."""
 
     @wraps(method)
-    def wrapper(self, *args, **kwargs):
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
         with self._event_lock:
             return method(self, *args, **kwargs)
 
@@ -441,20 +443,20 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
     ) -> bool:
         """Send health events to the platform connector with retries.
 
-        If the platform-connector Unix socket is absent at send time the send
-        is skipped immediately (no gRPC call, no buffering, no cache mutation)
-        and `False` is returned. The caller's cache must be left untouched so
-        the next poll re-emits with a fresh `generatedTimestamp`.
+                If the platform-connector Unix socket is absent at send time the send
+                is skipped immediately (no gRPC call, no buffering, no cache mutation)
+                and `False` is returned. The caller's cache must be left untouched so
+                the next poll re-emits with a fresh `generatedTimestamp`.
 
-Every gRPC call is bounded by ``GRPC_CALL_TIMEOUT_SECONDS`` so a stalled
-        connector cannot block a worker indefinitely. When
-        ``delivery_timeout_seconds`` is set (critical pre-cleanup paths), the
-        overall retry budget is also capped; ordinary health events keep the
-        existing MAX_RETRIES backoff without an overall deadline.
+        Every gRPC call is bounded by ``GRPC_CALL_TIMEOUT_SECONDS`` so a stalled
+                connector cannot block a worker indefinitely. When
+                ``delivery_timeout_seconds`` is set (critical pre-cleanup paths), the
+                overall retry budget is also capped; ordinary health events keep the
+                existing MAX_RETRIES backoff without an overall deadline.
 
-        Returns:
-            True on success. False if the socket was missing or all retries
-            were exhausted. Callers must update their cache only on True.
+                Returns:
+                    True on success. False if the socket was missing or all retries
+                    were exhausted. Callers must update their cache only on True.
         """
         if not self._is_platform_connector_socket_present():
             metrics.health_events_insertion_skipped_pc_unavailable.inc()
@@ -466,10 +468,15 @@ Every gRPC call is bounded by ``GRPC_CALL_TIMEOUT_SECONDS`` so a stalled
 
         deadline = monotonic() + delivery_timeout_seconds if delivery_timeout_seconds is not None else None
         delay = INITIAL_DELAY
+        attempts = 0
+        timed_out = False
         for attempt in range(MAX_RETRIES):
             remaining = deadline - monotonic() if deadline is not None else None
             if remaining is not None and remaining <= 0:
+                timed_out = True
                 break
+
+            attempts = attempt + 1
 
             # Re-check between retries so a connector that disappears
             # mid-flight short-circuits instead of burning the budget.
@@ -499,13 +506,19 @@ Every gRPC call is bounded by ``GRPC_CALL_TIMEOUT_SECONDS`` so a stalled
                     if deadline is not None:
                         remaining = deadline - monotonic()
                         if remaining <= 0:
+                            timed_out = True
                             break
                         sleep_seconds = min(sleep_seconds, remaining)
                     sleep(sleep_seconds)
                     delay *= 1.5
         metrics.health_events_insertion_to_uds_error.inc()
+        if timed_out:
+            reason = f"delivery budget exhausted after {attempts} attempt(s) (delivery_timeout_seconds={delivery_timeout_seconds})"
+        else:
+            reason = f"retry limit exhausted after {attempts} attempt(s)"
         log.warning(
-            f"Failed to send health event after {MAX_RETRIES} retries. Events will be retried on next health check cycle."
+            "Failed to send health event: %s. Events will be retried on next health check cycle.",
+            reason,
         )
         return False
 
@@ -595,7 +608,7 @@ Every gRPC call is bounded by ``GRPC_CALL_TIMEOUT_SECONDS`` so a stalled
         self,
         operation: str,
         elapsed_seconds: float,
-        dcgm_mode: str = "local-managed",
+        dcgm_mode: str,
     ) -> bool:
         """Report a DCGM probe that stopped returning.
 

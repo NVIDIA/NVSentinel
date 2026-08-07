@@ -52,7 +52,7 @@ class FakeEventProcessorInTest(dcgm.types.CallbackInterface):
         self,
         operation: str,
         elapsed_seconds: float,
-        dcgm_mode: str = "local-managed",
+        dcgm_mode: str,
     ):
         self.probe_unresponsive_calls.append((operation, elapsed_seconds, dcgm_mode))
         return True
@@ -1507,18 +1507,17 @@ class TestDCGMWatcherHangSafeOrdering:
 
         mock_dcgm_handle.return_value = MagicMock()
         dcgm_group_mock = MagicMock()
-        mock_response = dcgm_structs.c_dcgmHealthResponse_v4
-        mock_response.version = dcgm_structs.dcgmHealthResponse_version4
-        mock_response.overallHealth = dcgm_structs.DCGM_DIAG_RESULT_PASS
-        mock_response.incidentCount = 0
-        mock_response.incidents = dcgm_structs.c_dcgmIncidentInfo_t * dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS
-        dcgm_group_mock.health.Check.return_value = mock_response()
+        health_response = dcgm_structs.c_dcgmHealthResponse_v4()
+        health_response.version = dcgm_structs.dcgmHealthResponse_version4
+        health_response.overallHealth = dcgm_structs.DCGM_DIAG_RESULT_PASS
+        health_response.incidentCount = 0
+        dcgm_group_mock.health.Check.return_value = health_response
         mock_dcgm_group.return_value = dcgm_group_mock
 
         # The first cycle only connects; the health check runs on the second.
-        exit = MagicMock(spec=Event)
-        exit.is_set.side_effect = [False, False, False, True]
-        exit.wait.side_effect = [False, False, True]
-        watcher.start([], exit)
+        stop_event = MagicMock(spec=Event)
+        stop_event.is_set.side_effect = [False, False, False, True]
+        stop_event.wait.side_effect = [False, False, True]
+        watcher.start([], stop_event)
 
         assert observed["operation"] == "dcgm_thermal_margin"

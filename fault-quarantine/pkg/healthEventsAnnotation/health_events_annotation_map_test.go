@@ -180,6 +180,54 @@ func TestHealthEventsAnnotationMap_AddOrUpdateEvent(t *testing.T) {
 	}
 }
 
+// TestHealthEventsAnnotationMap_AddOrUpdateEvent_RefreshesRecommendedAction
+// covers escalated remediation for an already-tracked check. Matching ignores
+// RecommendedAction, so AddOrUpdate must overwrite the stored event when the
+// action changes or consumers retain CONTACT_SUPPORT after RESTART_BM.
+func TestHealthEventsAnnotationMap_AddOrUpdateEvent_RefreshesRecommendedAction(t *testing.T) {
+	hem := NewHealthEventsAnnotationMap()
+
+	initial := &protos.HealthEvent{
+		Agent:             "gpu-health-monitor",
+		ComponentClass:    "GPU",
+		CheckName:         "GpuDcgmConnectivityFailure",
+		NodeName:          "node1",
+		IsFatal:           true,
+		IsHealthy:         false,
+		ErrorCode:         []string{"DCGM_CONNECTIVITY_ERROR"},
+		RecommendedAction: protos.RecommendedAction_CONTACT_SUPPORT,
+	}
+	if !hem.AddOrUpdateEvent(initial) {
+		t.Fatal("expected initial connectivity failure to be added")
+	}
+
+	escalated := &protos.HealthEvent{
+		Agent:             "gpu-health-monitor",
+		ComponentClass:    "GPU",
+		CheckName:         "GpuDcgmConnectivityFailure",
+		NodeName:          "node1",
+		IsFatal:           true,
+		IsHealthy:         false,
+		ErrorCode:         []string{"DCGM_CONNECTIVITY_ERROR"},
+		RecommendedAction: protos.RecommendedAction_RESTART_BM,
+		Message:           "Failed to connect to DCGM for health check on 3 consecutive cycles",
+	}
+	if !hem.AddOrUpdateEvent(escalated) {
+		t.Fatal("expected escalated RecommendedAction to refresh the stored event")
+	}
+
+	stored, found := hem.GetEvent(escalated)
+	if !found {
+		t.Fatal("expected stored escalated event")
+	}
+	if stored.RecommendedAction != protos.RecommendedAction_RESTART_BM {
+		t.Fatalf("RecommendedAction = %v, want RESTART_BM", stored.RecommendedAction)
+	}
+	if hem.Count() != 1 {
+		t.Fatalf("Count() = %d, want 1", hem.Count())
+	}
+}
+
 // TestHealthEventsAnnotationMap_GetEvent tests retrieving events
 func TestHealthEventsAnnotationMap_GetEvent(t *testing.T) {
 	hem := NewHealthEventsAnnotationMap()

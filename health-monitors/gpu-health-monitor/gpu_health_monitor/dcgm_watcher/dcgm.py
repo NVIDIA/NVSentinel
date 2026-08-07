@@ -22,6 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from gpu_health_monitor.healthz import mark_alive as _mark_alive
 from collections.abc import Callable, Iterator
 import contextlib
+from contextlib import AbstractContextManager
 import os
 import time
 
@@ -79,6 +80,11 @@ class ProbeWatchdog:
     Delivery is retried until ``on_hang`` succeeds: a hung poll loop has no
     "next cycle" to fall back on, so a single failed publish would otherwise
     lose the event for the life of the process.
+
+    ``on_hang`` must complete within a bounded time. ``poll_once`` holds the
+    watchdog lock across the callback so a concurrent probe return cannot emit
+    recovery before the unhealthy event is committed. The platform connector
+    bounds critical delivery with ``CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS``.
     """
 
     def __init__(self, deadline_seconds: float, on_hang: Callable[[str, float], bool | None]) -> None:
@@ -384,7 +390,7 @@ class DCGMWatcher:
             [operation, elapsed_seconds, self._dcgm_mode],
         )
 
-    def _probe(self, operation: str):
+    def _probe(self, operation: str) -> AbstractContextManager[None]:
         """Track a blocking DCGM call, when the watchdog is enabled."""
         if self._probe_watchdog is None:
             return contextlib.nullcontext()

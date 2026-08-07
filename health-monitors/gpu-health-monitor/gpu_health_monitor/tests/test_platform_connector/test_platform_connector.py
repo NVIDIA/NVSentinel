@@ -21,7 +21,7 @@ import unittest
 import json
 import os
 import tempfile
-from typing import Any
+from typing import Any, Iterator
 from concurrent import futures
 from gpu_health_monitor.dcgm_watcher import types as dcgmtypes
 from gpu_health_monitor.platform_connector import platform_connector
@@ -1535,7 +1535,9 @@ class TestPlatformConnectors(unittest.TestCase):
                     os.unlink(p)
             os.rmdir(tmpdir)
 
-    def _make_processor(self, state_file_path, metadata_path, **kwargs):
+    def _make_processor(
+        self, state_file_path: str, metadata_path: str, **kwargs: Any
+    ) -> platform_connector.PlatformConnectorEventProcessor:
         return platform_connector.PlatformConnectorEventProcessor(
             socket_path=socket_path,
             node_name=node_name,
@@ -1548,7 +1550,9 @@ class TestPlatformConnectors(unittest.TestCase):
         )
 
     @contextlib.contextmanager
-    def _running_connector(self, **kwargs):
+    def _running_connector(
+        self, **kwargs: Any
+    ) -> Iterator[tuple[PlatformConnectorServicer, platform_connector.PlatformConnectorEventProcessor]]:
         """Yields (servicer, processor) with a live gRPC server on the unix socket."""
         healthEventProcessor = PlatformConnectorServicer()
         server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
@@ -1572,7 +1576,7 @@ class TestPlatformConnectors(unittest.TestCase):
     def test_probe_unresponsive_recommends_reboot(self):
         """A DCGM probe that never returns must publish a fatal reboot recommendation."""
         with self._running_connector() as (servicer, processor):
-            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5) is True
+            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed") is True
 
             assert servicer.health_events is not None
             assert len(servicer.health_events) == 1
@@ -1618,7 +1622,7 @@ class TestPlatformConnectors(unittest.TestCase):
                 metadata_path=metadata_path,
                 processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
             )
-            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5) is False
+            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed") is False
             assert not any("GpuDriverUnresponsive" in k for k in processor.entity_cache)
         finally:
             for p in (state_file_path, metadata_path):
@@ -1653,7 +1657,7 @@ class TestPlatformConnectors(unittest.TestCase):
                 processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
             )
             started = time.monotonic()
-            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5) is False
+            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed") is False
             assert time.monotonic() - started < 1
         finally:
             platform_connector.CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS = original_delivery_timeout
@@ -1669,7 +1673,7 @@ class TestPlatformConnectors(unittest.TestCase):
             servicer,
             processor,
         ):
-            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5) is True
+            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed") is True
 
             event = servicer.health_events[0]
             assert event.processingStrategy == platformconnector_pb2.STORE_ONLY
@@ -1678,7 +1682,7 @@ class TestPlatformConnectors(unittest.TestCase):
 
             # Already cached: further calls report success without republishing.
             servicer.health_events = None
-            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 90.0) is True
+            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 90.0, "local-managed") is True
             assert servicer.health_events is None
 
     def test_driver_unresponsive_clear_matches_observe_only_strategy(self):
@@ -1687,13 +1691,11 @@ class TestPlatformConnectors(unittest.TestCase):
             servicer,
             processor,
         ):
-            processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5)
-            time.sleep(1)
+            processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed")
 
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
             processor.clear_driver_unresponsive(timestamp)
-            time.sleep(1)
 
             event = servicer.health_events[0]
             assert event.isHealthy is True
@@ -1702,19 +1704,17 @@ class TestPlatformConnectors(unittest.TestCase):
     def test_probe_unresponsive_is_not_republished_while_active(self):
         """The watchdog reports once per episode; a repeat must not duplicate the event."""
         with self._running_connector() as (servicer, processor):
-            processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5)
-            time.sleep(1)
+            processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed")
             servicer.health_events = None
 
-            processor.dcgm_probe_unresponsive("dcgm_health_check", 90.0)
-            time.sleep(1)
+            processor.dcgm_probe_unresponsive("dcgm_health_check", 90.0, "local-managed")
 
             assert servicer.health_events is None
 
     def test_driver_unresponsive_state_survives_process_restart(self):
         """Persistent wedges must not republish on every liveness restart."""
         with self._running_connector() as (servicer, processor):
-            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5) is True
+            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed") is True
             marker = processor._driver_unresponsive_state_path
             assert os.path.exists(marker)
 
@@ -1725,7 +1725,7 @@ class TestPlatformConnectors(unittest.TestCase):
             servicer.health_events = None
 
             # The persisted marker restores the active cache entry.
-            assert restarted.dcgm_probe_unresponsive("dcgm_health_check", 90.0) is True
+            assert restarted.dcgm_probe_unresponsive("dcgm_health_check", 90.0, "local-managed") is True
             assert servicer.health_events is None
 
             timestamp = Timestamp()
@@ -1738,13 +1738,11 @@ class TestPlatformConnectors(unittest.TestCase):
     def test_driver_unresponsive_cleared_when_probe_returns(self):
         """A completed health check proves the driver answered, so the event must clear."""
         with self._running_connector() as (servicer, processor):
-            processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5)
-            time.sleep(1)
+            processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed")
 
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
             processor.clear_driver_unresponsive(timestamp)
-            time.sleep(1)
 
             event = servicer.health_events[0]
             assert event.checkName == "GpuDriverUnresponsive"
@@ -1772,7 +1770,7 @@ class TestPlatformConnectors(unittest.TestCase):
             processor.send_health_event_with_retries = controlled_send
             unhealthy_thread = Thread(
                 target=processor.dcgm_probe_unresponsive,
-                args=("dcgm_health_check", 42.5),
+                args=("dcgm_health_check", 42.5, "local-managed"),
             )
             unhealthy_thread.start()
             assert unhealthy_send_started.wait(1)
@@ -1803,18 +1801,15 @@ class TestPlatformConnectors(unittest.TestCase):
         """DCGM unreachable cycle after cycle is a stuck driver, which needs a reboot."""
         with self._running_connector(connectivity_failure_escalation_threshold=3) as (servicer, processor):
             processor.dcgm_connectivity_failed()
-            time.sleep(1)
             assert servicer.health_events[0].recommendedAction == platformconnector_pb2.CONTACT_SUPPORT
 
             # Second failure is deduplicated: same action, nothing new to say.
             servicer.health_events = None
             processor.dcgm_connectivity_failed()
-            time.sleep(1)
             assert servicer.health_events is None
 
             # Third failure crosses the threshold, so the action changes.
             processor.dcgm_connectivity_failed()
-            time.sleep(1)
             event = servicer.health_events[0]
             assert event.checkName == "GpuDcgmConnectivityFailure"
             assert event.recommendedAction == platformconnector_pb2.RESTART_BM
@@ -1823,7 +1818,6 @@ class TestPlatformConnectors(unittest.TestCase):
             # Already escalated: no further duplicates.
             servicer.health_events = None
             processor.dcgm_connectivity_failed()
-            time.sleep(1)
             assert servicer.health_events is None
 
     def test_connectivity_failure_never_escalates_when_disabled(self):
@@ -1831,7 +1825,6 @@ class TestPlatformConnectors(unittest.TestCase):
         with self._running_connector(connectivity_failure_escalation_threshold=0) as (servicer, processor):
             for _ in range(5):
                 processor.dcgm_connectivity_failed()
-            time.sleep(1)
 
             assert servicer.health_events[0].recommendedAction == platformconnector_pb2.CONTACT_SUPPORT
             assert processor._connectivity_escalated is False
@@ -1841,16 +1834,13 @@ class TestPlatformConnectors(unittest.TestCase):
         with self._running_connector(connectivity_failure_escalation_threshold=2) as (servicer, processor):
             processor.dcgm_connectivity_failed()
             processor.dcgm_connectivity_failed()
-            time.sleep(1)
             assert servicer.health_events[0].recommendedAction == platformconnector_pb2.RESTART_BM
 
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
             processor.clear_dcgm_connectivity_failure(timestamp)
-            time.sleep(1)
             assert processor._consecutive_connectivity_failures == 0
             assert processor._connectivity_escalated is False
 
             processor.dcgm_connectivity_failed()
-            time.sleep(1)
             assert servicer.health_events[0].recommendedAction == platformconnector_pb2.CONTACT_SUPPORT

@@ -68,8 +68,8 @@ class CallbackInterface(abc.ABC):
         self,
         operation: str,
         elapsed_seconds: float,
-        dcgm_mode: str = "local-managed",
-    ):
+        dcgm_mode: str,
+    ) -> bool | None:
         """Called when a DCGM probe exceeds its deadline without returning.
 
         Invoked from the watchdog thread, not the poll loop, because the poll

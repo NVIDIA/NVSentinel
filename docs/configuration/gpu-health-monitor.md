@@ -165,7 +165,7 @@ gpu-health-monitor:
 
 A wedged NVIDIA driver does not return an error — it stops answering. Any process that queries it parks in uninterruptible sleep and cannot be killed, so the DCGM call blocks forever rather than raising `DCGMError_Timeout`. Meanwhile the node still reports `Ready` with every GPU allocatable and no taint, so no other signal in the stack registers a fault.
 
-The poll loop cannot report this itself: it is blocked before the point where it would publish anything, and `/healthz` only observes that the loop is frozen, so kubelet restarts the container and the replacement blocks in the same place. Two settings close that gap.
+The poll loop cannot report this itself: it is blocked before the point where it would publish anything, and `/healthz` only observes that the loop is frozen, so kubelet restarts the container and the replacement blocks in the same place. The settings below close that gap.
 
 ```yaml
 gpu-health-monitor:
@@ -188,7 +188,7 @@ Seconds a single DCGM probe may run before a watchdog thread — which the drive
 
 The default equals the `/healthz` staleness window (`PollIntervalSeconds * 3`), so the monitor reports when the poll loop is officially considered stalled. Critical event delivery is capped at 15 seconds, leaving the liveness probe's remaining failure budget to persist the finding before kubelet restarts the container.
 
-DCGM exposes timeout errors but does not document a fixed timeout for every RPC. Treat 45 seconds as a fleet default, not proof that every slower operation is a driver wedge. Leave `probeStoreOnly` enabled while measuring normal embedded-mode probe latencies. If you substantially raise `probeDeadlineSeconds`, verify the resulting deadline still precedes the configured liveness restart; the chart exposes `livenessProbe.periodSeconds` and `livenessProbe.failureThreshold` for that adjustment.
+DCGM exposes timeout errors but does not document a fixed timeout for every RPC. Treat any deadline you configure as a fleet-specific value, not proof that every slower operation is a driver wedge. The chart example uses 45 seconds because that equals the default `PollIntervalSeconds * 3` fallback when the setting is unset. Leave `probeStoreOnly` enabled while measuring normal embedded-mode probe latencies. If you substantially raise `probeDeadlineSeconds`, verify the resulting deadline still precedes the configured liveness restart; the chart exposes `livenessProbe.periodSeconds` and `livenessProbe.failureThreshold` for that adjustment.
 
 The event reports once per hang episode. After delivery, a marker under the monitor's persistent `/var/run/nvsentinel` state survives liveness restarts; it prevents the same wedge from being republished and lets the first successful probe emit the healthy clearing event. Every DCGM call in the poll loop is tracked, including connect, health check, thermal margin evaluation, and cleanup. `dcgm_probe_hangs` increments when the deadline is crossed even if event delivery must be retried.
 
