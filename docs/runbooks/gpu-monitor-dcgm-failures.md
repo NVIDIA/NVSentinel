@@ -80,7 +80,7 @@ dcgmi discovery -l --host nvidia-dcgm.gpu-operator.svc:5555
 dcgmi discovery -l --host localhost:5555
 ```
 
-If `dcgmi` produces no output at all and cannot be interrupted with Ctrl-C, stop here and go to [Unresponsive Driver](#unresponsive-driver) — the driver is wedged rather than unreachable, and every further query will hang the same way.
+If `dcgmi` produces no output at all and cannot be interrupted with Ctrl-C, stop here and go to [Unresponsive DCGM](#unresponsive-dcgm) — the probe is hung rather than unreachable, and every further query will hang the same way.
 
 If DCGM commands fail, check:
 - DCGM service exists: `kubectl get svc -n gpu-operator | grep dcgm`
@@ -99,21 +99,21 @@ kubectl describe node {NODE_NAME} | grep GpuDcgmConnectivityFailure
 kubectl logs -n nvsentinel {GPU_MONITOR_POD} -f | grep "Publish DCGM"
 ```
 
-## Unresponsive Driver
+## Unresponsive DCGM
 
-A different failure mode from the above: instead of refusing the connection, a wedged NVIDIA kernel driver stops answering. Callers park in uninterruptible sleep (`D` state), cannot be killed, and the query never returns an error. The node keeps reporting `Ready` with every GPU allocatable and no taint, so it continues accepting work that then fails to start.
+A different failure mode from the above: instead of refusing the connection, a DCGM probe stops answering. Callers can park indefinitely, and the query never returns an error. In embedded mode this is node-local but not yet proof of a kernel-driver wedge — DCGM userspace deadlock can look the same. The node may keep reporting `Ready` with every GPU allocatable and no taint, so it continues accepting work that then fails to start.
 
 **Symptoms:**
-- Node condition `GpuDriverUnresponsive`, error code `DRIVER_PROBE_HANG` in embedded mode (when `probeStoreOnly` is false; otherwise the event is stored/metric-only)
-- Remote modes use `GpuDcgmConnectivityFailure` / `DCGM_PROBE_HANG` with `CONTACT_SUPPORT`, because an endpoint or network hang does not prove that the local driver needs a reboot
+- Node condition `GpuDcgmUnresponsive`, error code `DCGM_PROBE_HANG` in embedded mode (when `probeStoreOnly` is false; otherwise the event is stored/metric-only)
+- Remote modes use `GpuDcgmConnectivityFailure` / `DCGM_PROBE_HANG` with `CONTACT_SUPPORT`, because an endpoint or network hang does not prove that this node needs a reboot
 - Metric `dcgm_probe_hangs` incremented for the hung `operation_name`
-- GPU monitor logs: `"has not returned after Ns ... treating the GPU driver as unresponsive"`
+- GPU monitor logs: `"has not returned after Ns ... treating the DCGM probe as unresponsive"`
 - Two common on-node shapes for the same underlying fault:
   - `dcgm-exporter` stays `Running` with `/health` green while scrapes fail (`up==0` for hours/days, no new log lines after "Listening on")
   - Or GPU containers fail to start with `context deadline exceeded` / `StartError` exit 128, while the node itself remains `Ready` with GPUs allocatable
 - Do **not** treat a `NotReady`/`unreachable` node as this failure mode — that is ordinary kubelet death, already tainted, and the monitor is not running there to begin with
 
-Confirm from the node rather than through DCGM, since anything that touches the driver will hang:
+Confirm from the node rather than through DCGM, since anything that touches a wedged driver will hang:
 
 ```bash
 # Processes stuck in uninterruptible sleep, usually including nvidia-smi
@@ -123,7 +123,7 @@ ps -eo stat,pid,comm | awk '$1 ~ /^D/'
 lsmod | grep nvidia
 ```
 
-**Resolution:** reboot the node. The stuck processes cannot be killed and the `nvidia` module cannot be unloaded while they hold references to it, so nothing short of a reboot clears the wedge.
+**Resolution:** reboot the node. Whether the hang is a wedged driver or DCGM userspace holding driver locks, the stuck processes typically cannot be cleared short of a reboot.
 
 The check ships observe-only, so by default it records the fault and leaves the reboot to you. Where [`probeStoreOnly`](../configuration/gpu-health-monitor.md#probestoreonly) has been set to `false`, the monitor requests the reboot itself: the event's `RESTART_BM` action becomes a `RebootNode` CR once node-drainer has evicted the workloads.
 

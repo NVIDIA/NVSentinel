@@ -123,7 +123,7 @@ class ProbeWatchdog:
                 self._detected = True
                 log.error(
                     f"DCGM probe {operation} has not returned after {elapsed:.1f}s "
-                    f"(deadline {self._deadline_seconds:.1f}s); treating the GPU driver as unresponsive"
+                    f"(deadline {self._deadline_seconds:.1f}s); treating the DCGM probe as unresponsive"
                 )
                 # This metric records detection, not successful event delivery.
                 metrics.dcgm_probe_hangs.labels(operation).inc()

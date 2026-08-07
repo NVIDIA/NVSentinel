@@ -1569,7 +1569,7 @@ class TestPlatformConnectors(unittest.TestCase):
             yield healthEventProcessor, self._make_processor(state_file_path, metadata_path, **kwargs)
         finally:
             server.stop(0)
-            for p in (state_file_path, f"{state_file_path}.driver-unresponsive", metadata_path):
+            for p in (state_file_path, f"{state_file_path}.dcgm-unresponsive", metadata_path):
                 if os.path.exists(p):
                     os.unlink(p)
 
@@ -1581,10 +1581,10 @@ class TestPlatformConnectors(unittest.TestCase):
             assert servicer.health_events is not None
             assert len(servicer.health_events) == 1
             event = servicer.health_events[0]
-            assert event.checkName == "GpuDriverUnresponsive"
+            assert event.checkName == "GpuDcgmUnresponsive"
             assert event.isFatal is True
             assert event.isHealthy is False
-            assert event.errorCode == ["DRIVER_PROBE_HANG"]
+            assert event.errorCode == ["DCGM_PROBE_HANG"]
             assert event.recommendedAction == platformconnector_pb2.RESTART_BM
             assert event.nodeName == node_name
             assert "dcgm_health_check" in event.message
@@ -1623,7 +1623,7 @@ class TestPlatformConnectors(unittest.TestCase):
                 processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
             )
             assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed") is False
-            assert not any("GpuDriverUnresponsive" in k for k in processor.entity_cache)
+            assert not any("GpuDcgmUnresponsive" in k for k in processor.entity_cache)
         finally:
             for p in (state_file_path, metadata_path):
                 if os.path.exists(p):
@@ -1669,7 +1669,7 @@ class TestPlatformConnectors(unittest.TestCase):
 
     def test_probe_unresponsive_is_observe_only_when_configured(self):
         """Shipping default: detected but kept out of the remediation pipeline."""
-        with self._running_connector(store_only_checks=frozenset({"GpuDriverUnresponsive"})) as (
+        with self._running_connector(store_only_checks=frozenset({"GpuDcgmUnresponsive"})) as (
             servicer,
             processor,
         ):
@@ -1685,9 +1685,9 @@ class TestPlatformConnectors(unittest.TestCase):
             assert processor.dcgm_probe_unresponsive("dcgm_health_check", 90.0, "local-managed") is True
             assert servicer.health_events is None
 
-    def test_driver_unresponsive_clear_matches_observe_only_strategy(self):
+    def test_dcgm_unresponsive_clear_matches_observe_only_strategy(self):
         """The clearing event must carry the same strategy as the event it clears."""
-        with self._running_connector(store_only_checks=frozenset({"GpuDriverUnresponsive"})) as (
+        with self._running_connector(store_only_checks=frozenset({"GpuDcgmUnresponsive"})) as (
             servicer,
             processor,
         ):
@@ -1695,7 +1695,7 @@ class TestPlatformConnectors(unittest.TestCase):
 
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
-            processor.clear_driver_unresponsive(timestamp)
+            processor.clear_dcgm_unresponsive(timestamp)
 
             event = servicer.health_events[0]
             assert event.isHealthy is True
@@ -1711,11 +1711,11 @@ class TestPlatformConnectors(unittest.TestCase):
 
             assert servicer.health_events is None
 
-    def test_driver_unresponsive_state_survives_process_restart(self):
+    def test_dcgm_unresponsive_state_survives_process_restart(self):
         """Persistent wedges must not republish on every liveness restart."""
         with self._running_connector() as (servicer, processor):
             assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed") is True
-            marker = processor._driver_unresponsive_state_path
+            marker = processor._dcgm_unresponsive_state_path
             assert os.path.exists(marker)
 
             restarted = self._make_processor(
@@ -1730,28 +1730,28 @@ class TestPlatformConnectors(unittest.TestCase):
 
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
-            restarted.clear_driver_unresponsive(timestamp)
+            restarted.clear_dcgm_unresponsive(timestamp)
 
             assert servicer.health_events[0].isHealthy is True
             assert not os.path.exists(marker)
 
-    def test_driver_unresponsive_cleared_when_probe_returns(self):
-        """A completed health check proves the driver answered, so the event must clear."""
+    def test_dcgm_unresponsive_cleared_when_probe_returns(self):
+        """A completed health check proves DCGM answered, so the event must clear."""
         with self._running_connector() as (servicer, processor):
             processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed")
 
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
-            processor.clear_driver_unresponsive(timestamp)
+            processor.clear_dcgm_unresponsive(timestamp)
 
             event = servicer.health_events[0]
-            assert event.checkName == "GpuDriverUnresponsive"
+            assert event.checkName == "GpuDcgmUnresponsive"
             assert event.isHealthy is True
             assert event.isFatal is False
             assert event.errorCode == []
             assert event.recommendedAction == platformconnector_pb2.NONE
 
-    def test_driver_unresponsive_publish_and_clear_are_serialized(self):
+    def test_dcgm_unresponsive_publish_and_clear_are_serialized(self):
         """Recovery cannot observe an empty cache while unhealthy send is in flight."""
         with self._running_connector() as (_, processor):
             unhealthy_send_started = Event()
@@ -1777,7 +1777,7 @@ class TestPlatformConnectors(unittest.TestCase):
 
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
-            clear_thread = Thread(target=processor.clear_driver_unresponsive, args=(timestamp,))
+            clear_thread = Thread(target=processor.clear_dcgm_unresponsive, args=(timestamp,))
             clear_thread.start()
             time.sleep(0.05)
             assert clear_thread.is_alive()
@@ -1788,12 +1788,12 @@ class TestPlatformConnectors(unittest.TestCase):
 
             assert send_order == ["unhealthy", "healthy"]
 
-    def test_driver_unresponsive_clear_is_noop_when_never_fired(self):
+    def test_dcgm_unresponsive_clear_is_noop_when_never_fired(self):
         """Clearing an event that was never raised must not emit anything."""
         with self._running_connector() as (servicer, processor):
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
-            processor.clear_driver_unresponsive(timestamp)
+            processor.clear_dcgm_unresponsive(timestamp)
 
             assert servicer.health_events is None
 

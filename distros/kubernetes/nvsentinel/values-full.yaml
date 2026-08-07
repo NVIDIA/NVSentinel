@@ -886,17 +886,17 @@ gpu-health-monitor:
       # Default DCGM port is 5555
       port: 5555
 
-    # Seconds a single DCGM probe may run before the watchdog reports the driver
-    # as unresponsive (GpuDriverUnresponsive, RESTART_BM). A wedged NVIDIA driver
-    # parks its callers in uninterruptible sleep, so the probe never errors and
-    # never times out; without this the poll loop blocks and the hang is never
-    # published. Matches the /healthz staleness window (PollIntervalSeconds * 3),
-    # leaving the liveness probe's failureThreshold budget to publish the event
-    # before the container restarts. DCGM has no documented fixed RPC timeout;
-    # validate this deadline in observe-only mode. Set to 0 to disable.
+    # Seconds a single DCGM probe may run before the watchdog reports
+    # GpuDcgmUnresponsive (RESTART_BM) in embedded mode. A hung probe never
+    # errors and never times out; without this the poll loop blocks and the hang
+    # is never published. Matches the /healthz staleness window
+    # (PollIntervalSeconds * 3), leaving the liveness probe's failureThreshold
+    # budget to publish the event before the container restarts. DCGM has no
+    # documented fixed RPC timeout; validate this deadline in observe-only mode.
+    # Set to 0 to disable.
     probeDeadlineSeconds: 45
 
-    # Dry-run for the embedded-mode GpuDriverUnresponsive event. While true the
+    # Dry-run for the embedded-mode GpuDcgmUnresponsive event. While true the
     # check is persisted/exported but kept out of remediation. Remote modes emit
     # GpuDcgmConnectivityFailure with CONTACT_SUPPORT regardless of this setting.
     # Set to false only after validating embedded-mode detections on your fleet.

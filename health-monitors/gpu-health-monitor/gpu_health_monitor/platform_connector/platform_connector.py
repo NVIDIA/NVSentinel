@@ -81,14 +81,14 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self._component_class = "GPU"
         self.dcgm_errors_info_dict = dcgm_errors_info_dict
         self.state_file_path = state_file_path
-        self._driver_unresponsive_state_path = f"{state_file_path}.driver-unresponsive"
+        self._dcgm_unresponsive_state_path = f"{state_file_path}.dcgm-unresponsive"
         self.node_bootid_path = "/proc/sys/kernel/random/boot_id"
         self.old_bootid = self.read_old_system_bootid_from_state_file()
         self.entity_cache: dict[str, EntityCacheEntry] = {}
         self._event_lock = RLock()
-        if os.path.exists(self._driver_unresponsive_state_path):
-            key = self._build_cache_key("GpuDriverUnresponsive", "DCGM", "ALL")
-            self.entity_cache[key] = EntityCacheEntry(active_errors={"DRIVER_PROBE_HANG"})
+        if os.path.exists(self._dcgm_unresponsive_state_path):
+            key = self._build_cache_key("GpuDcgmUnresponsive", "DCGM", "ALL")
+            self.entity_cache[key] = EntityCacheEntry(active_errors={"DCGM_PROBE_HANG"})
         self._metadata_reader = MetadataReader(metadata_path)
         self._processing_strategy = processing_strategy
         self._store_only_checks = store_only_checks
@@ -119,21 +119,21 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
     def _build_cache_key(self, check_name: str, entity_type: str, entity_value: str) -> str:
         return f"{check_name}|{entity_type}|{entity_value}"
 
-    def _persist_driver_unresponsive_state(self) -> None:
-        """Remember a delivered local-driver event across liveness restarts."""
+    def _persist_dcgm_unresponsive_state(self) -> None:
+        """Remember a delivered local-managed probe hang across liveness restarts."""
         try:
-            with open(self._driver_unresponsive_state_path, "w") as state_file:
-                state_file.write("DRIVER_PROBE_HANG\n")
+            with open(self._dcgm_unresponsive_state_path, "w") as state_file:
+                state_file.write("DCGM_PROBE_HANG\n")
         except OSError as e:
-            log.error("Failed to persist unresponsive-driver state at %s: %s", self._driver_unresponsive_state_path, e)
+            log.error("Failed to persist unresponsive-DCGM state at %s: %s", self._dcgm_unresponsive_state_path, e)
 
-    def _clear_driver_unresponsive_state(self) -> None:
+    def _clear_dcgm_unresponsive_state(self) -> None:
         try:
-            os.remove(self._driver_unresponsive_state_path)
+            os.remove(self._dcgm_unresponsive_state_path)
         except FileNotFoundError:
             pass
         except OSError as e:
-            log.error("Failed to remove unresponsive-driver state at %s: %s", self._driver_unresponsive_state_path, e)
+            log.error("Failed to remove unresponsive-DCGM state at %s: %s", self._dcgm_unresponsive_state_path, e)
 
     @_serialized_event_state
     def clear_dcgm_connectivity_failure(self, timestamp: Timestamp) -> None:
@@ -194,10 +194,10 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         return self._processing_strategy
 
     @_serialized_event_state
-    def clear_driver_unresponsive(self, timestamp: Timestamp) -> None:
-        """Clear a GpuDriverUnresponsive event once a probe returns again."""
+    def clear_dcgm_unresponsive(self, timestamp: Timestamp) -> None:
+        """Clear a GpuDcgmUnresponsive event once a probe returns again."""
         health_events = []
-        check_name = "GpuDriverUnresponsive"
+        check_name = "GpuDcgmUnresponsive"
 
         key = self._build_cache_key(check_name, "DCGM", "ALL")
         entry = self.entity_cache.get(key)
@@ -219,7 +219,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 isHealthy=True,
                 errorCode=[],
                 entitiesImpacted=[],
-                message="GPU driver answered a DCGM probe again",
+                message="DCGM answered a probe again",
                 recommendedAction=platformconnector_pb2.NONE,
                 nodeName=self._node_name,
                 metadata=event_metadata,
@@ -234,11 +234,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     delivery_timeout_seconds=CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS,
                 ):
                     self.entity_cache[key] = EntityCacheEntry()
-                    self._clear_driver_unresponsive_state()
+                    self._clear_dcgm_unresponsive_state()
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
                     metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="").set(0)
             except Exception as e:
-                log.error(f"Exception while sending GPU driver responsive events: {e}")
+                log.error(f"Exception while sending DCGM responsive events: {e}")
                 raise
 
     def health_event_occurred(self, health_details: dict[str, dcgmtypes.HealthDetails], gpu_ids: list) -> None:
@@ -251,9 +251,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
 
             # First, check if we need to clear any previous connectivity failure events
             self.clear_dcgm_connectivity_failure(timestamp)
-            # A completed health check proves the driver answered, so retire any
+            # A completed health check proves DCGM answered, so retire any
             # unresponsive event a previous watchdog firing left active.
-            self.clear_driver_unresponsive(timestamp)
+            self.clear_dcgm_unresponsive(timestamp)
 
             health_events = []
             # Collect pending cache and metric updates to apply only after successful send
@@ -528,7 +528,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
 
         Returns whether the event is already active or was delivered within the
         bounded critical-event budget. DCGMWatcher uses this synchronously before
-        cleanup because cleanup itself can hang on an unresponsive driver.
+        cleanup because cleanup itself can hang on an unresponsive DCGM probe.
         """
         with metrics.dcgm_health_events_publish_time_to_grpc_channel.labels(
             "dcgm_connectivity_failure_to_grpc_channel"
@@ -612,10 +612,13 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
     ) -> bool:
         """Report a DCGM probe that stopped returning.
 
-        An embedded (local-managed) hostengine calls the local driver in-process,
-        so a hang is node-local and recommends a reboot. In remote modes the
-        same symptom can be a service, DNS, or network outage; report it as a
-        connectivity failure and leave the action at CONTACT_SUPPORT.
+        An embedded (local-managed) hostengine hangs on-node, so the fault is
+        local to this node even though it may still be DCGM userspace deadlock
+        rather than a proven kernel-driver wedge. Classify that as
+        GpuDcgmUnresponsive and recommend a reboot as the practical recovery.
+        In remote modes the same symptom can be a service, DNS, or network
+        outage; report it as a connectivity failure and leave the action at
+        CONTACT_SUPPORT.
 
         Returns False when the event still needs publishing so the watchdog can
         retry: a hung poll loop has no later cycle to fall back on.
@@ -623,13 +626,13 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         with metrics.dcgm_health_events_publish_time_to_grpc_channel.labels(
             "dcgm_probe_unresponsive_to_grpc_channel"
         ).time():
-            driver_local = dcgm_mode == "local-managed"
-            check_name = "GpuDriverUnresponsive" if driver_local else "GpuDcgmConnectivityFailure"
-            error_code = "DRIVER_PROBE_HANG" if driver_local else "DCGM_PROBE_HANG"
+            local_managed = dcgm_mode == "local-managed"
+            check_name = "GpuDcgmUnresponsive" if local_managed else "GpuDcgmConnectivityFailure"
+            error_code = "DCGM_PROBE_HANG"
             recommended_action = (
-                platformconnector_pb2.RESTART_BM if driver_local else platformconnector_pb2.CONTACT_SUPPORT
+                platformconnector_pb2.RESTART_BM if local_managed else platformconnector_pb2.CONTACT_SUPPORT
             )
-            processing_strategy = self._effective_strategy(check_name) if driver_local else self._processing_strategy
+            processing_strategy = self._effective_strategy(check_name) if local_managed else self._processing_strategy
 
             log.error(
                 f"DCGM probe {operation} unresponsive for {elapsed_seconds:.1f}s, "
@@ -649,10 +652,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             if chassis_serial:
                 event_metadata["chassis_serial"] = chassis_serial
 
-            if driver_local:
+            if local_managed:
                 message = (
-                    f"DCGM probe {operation} did not return after {elapsed_seconds:.1f}s; "
-                    "the local GPU driver is not answering and the node needs a reboot"
+                    f"DCGM probe {operation} did not return after {elapsed_seconds:.1f}s "
+                    "in local-managed mode; DCGM on this node is unresponsive and a reboot "
+                    "is the practical recovery"
                 )
             else:
                 message = (
@@ -684,12 +688,12 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     delivery_timeout_seconds=CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS,
                 ):
                     self.entity_cache[key] = EntityCacheEntry(active_errors={error_code})
-                    if driver_local:
-                        self._persist_driver_unresponsive_state()
+                    if local_managed:
+                        self._persist_dcgm_unresponsive_state()
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
                     metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="").set(1)
                     return True
                 return False
             except Exception as e:
-                log.error(f"Exception while sending GPU driver unresponsive events: {e}")
+                log.error(f"Exception while sending DCGM unresponsive events: {e}")
                 raise

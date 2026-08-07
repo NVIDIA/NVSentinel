@@ -185,12 +185,12 @@ def cli(
     if thermal_margin_store_only:
         store_only_checks.add("GpuThermalMarginWatch")
 
-    # GpuDriverUnresponsive recommends a node reboot, so it ships observe-only
+    # GpuDcgmUnresponsive recommends a node reboot, so it ships observe-only
     # and has to be turned on deliberately per fleet.
     probe_store_only = dcgm_config.getboolean("ProbeStoreOnly", fallback=True)
     if probe_store_only:
-        store_only_checks.add("GpuDriverUnresponsive")
-    log.info("GpuDriverUnresponsive check: store_only=%s", probe_store_only)
+        store_only_checks.add("GpuDcgmUnresponsive")
+    log.info("GpuDcgmUnresponsive check: store_only=%s", probe_store_only)
 
     store_only_checks = frozenset(store_only_checks)
 
