@@ -1497,3 +1497,39 @@ class TestPlatformConnectors(unittest.TestCase):
             for p in (state_file_path, metadata_path):
                 if os.path.exists(p):
                     os.unlink(p)
+
+    def test_connectivity_failure_stale_socket_respects_delivery_budget(self) -> None:
+        """Pre-cleanup publication must remain shorter than the liveness budget."""
+        tmpdir = tempfile.mkdtemp(prefix="ghm_connectivity_stale_socket_")
+        stale_socket = os.path.join(tmpdir, "nvsentinel.sock")
+        with open(stale_socket, "w"):
+            pass
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix="_test_state") as f:
+            f.write("test_boot_id")
+            state_file_path = f.name
+        metadata_path = metadata_file()
+        original_delivery_timeout = platform_connector.CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS
+        original_rpc_timeout = platform_connector.GRPC_CALL_TIMEOUT_SECONDS
+        platform_connector.CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS = 0.1
+        platform_connector.GRPC_CALL_TIMEOUT_SECONDS = 0.05
+
+        try:
+            processor = platform_connector.PlatformConnectorEventProcessor(
+                socket_path=stale_socket,
+                node_name=node_name,
+                exit=Event(),
+                dcgm_errors_info_dict={},
+                state_file_path=state_file_path,
+                metadata_path=metadata_path,
+                processing_strategy=platformconnector_pb2.STORE_ONLY,
+            )
+            started = time.monotonic()
+            assert processor.dcgm_connectivity_failed() is False
+            assert time.monotonic() - started < 1
+        finally:
+            platform_connector.CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS = original_delivery_timeout
+            platform_connector.GRPC_CALL_TIMEOUT_SECONDS = original_rpc_timeout
+            for p in (stale_socket, state_file_path, metadata_path):
+                if os.path.exists(p):
+                    os.unlink(p)
+            os.rmdir(tmpdir)

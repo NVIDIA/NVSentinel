@@ -1261,10 +1261,19 @@ class TestDCGMWatcherHangSafeOrdering:
             dcgm_k8s_service_enabled=False,
         )
 
+        # Saturate the shared callback executor. Critical connectivity delivery
+        # must bypass it or the event remains queued behind these workers.
+        release_workers = Event()
+        for _ in range(watcher._callback_thread_pool._max_workers):
+            watcher._callback_thread_pool.submit(release_workers.wait)
+
         dcgm_handle_mock = MagicMock()
-        # Stand in for an unresponsive driver: Shutdown() does not return until
-        # the event has been handed off. It only can if publishing came first.
-        dcgm_handle_mock.Shutdown.side_effect = lambda: observed.update(published_before_cleanup=published.wait(5))
+
+        def cleanup():
+            observed["published_before_cleanup"] = published.is_set()
+            release_workers.set()
+
+        dcgm_handle_mock.Shutdown.side_effect = cleanup
         mock_dcgm_handle.return_value = dcgm_handle_mock
 
         dcgm_group_mock = MagicMock()

@@ -251,6 +251,26 @@ class DCGMWatcher:
                 partial(done_callback, callback.__class__.__name__, func_name)
             )
 
+    def _invoke_callback_funcs_sync(self, func_name: str, args: list[object]) -> bool:
+        """Invoke callbacks inline when cleanup cannot safely precede them."""
+        delivered = True
+        for callback in self._callbacks:
+            try:
+                result = getattr(callback, func_name)(*args)
+                if result is False:
+                    delivered = False
+                    metrics.callback_failures.labels(callback.__class__.__name__, func_name).inc()
+                else:
+                    metrics.callback_success.labels(callback.__class__.__name__, func_name).inc()
+            except Exception as e:
+                delivered = False
+                log.exception(e)
+                metrics.callback_failures.labels(callback.__class__.__name__, func_name).inc()
+        return delivered
+
+    def _report_connectivity_failed(self) -> bool:
+        return self._invoke_callback_funcs_sync(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])
+
     def _create_dcgm_group_with_all_entities(self, dcgm_handle: pydcgm.DcgmHandle) -> pydcgm.DcgmGroup:
         dcgm_system = dcgm_handle.GetSystem()
 
@@ -626,13 +646,13 @@ class DCGMWatcher:
                         try:
                             dcgm_handle = self._get_dcgm_handle()
                             if dcgm_handle is None:
-                                self._fire_callback_funcs(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])
+                                self._report_connectivity_failed()
                                 self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
                                 continue
                             dcgm_group, gpu_ids, _gpu_serials = self._initialize_dcgm_monitoring(dcgm_handle)
                         except Exception as e:
                             log.error(f"Error getting DCGM handle: {e}")
-                            self._fire_callback_funcs(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])
+                            self._report_connectivity_failed()
                             self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
                             dcgm_handle = None
                             dcgm_group = None
@@ -646,7 +666,7 @@ class DCGMWatcher:
                             # Publish before cleaning up: Shutdown() calls into
                             # DCGM as well, so an unresponsive driver would block
                             # here and the event would never be sent.
-                            self._fire_callback_funcs(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])
+                            self._report_connectivity_failed()
                             self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
                             dcgm_handle = None
                             dcgm_group = None

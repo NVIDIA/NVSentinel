@@ -26,11 +26,13 @@ from gpu_health_monitor.protos import (
 from google.protobuf.timestamp_pb2 import Timestamp
 import grpc
 from . import metrics
-from time import sleep
+from time import monotonic, sleep
 import re
 
 MAX_RETRIES = 10
 INITIAL_DELAY = 5
+GRPC_CALL_TIMEOUT_SECONDS = 5.0
+CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS = 15.0
 
 
 @dataclasses.dataclass
@@ -325,7 +327,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         # for "PC is up" on this node.
         return os.path.exists(self._socket_path)
 
-    def send_health_event_with_retries(self, health_events: list[platformconnector_pb2.HealthEvent]) -> bool:
+    def send_health_event_with_retries(
+        self,
+        health_events: list[platformconnector_pb2.HealthEvent],
+        delivery_timeout_seconds: float | None = None,
+    ) -> bool:
         """Send health events to the platform connector with retries.
 
         If the platform-connector Unix socket is absent at send time the send
@@ -345,8 +351,13 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             )
             return False
 
+        deadline = monotonic() + delivery_timeout_seconds if delivery_timeout_seconds is not None else None
         delay = INITIAL_DELAY
         for attempt in range(MAX_RETRIES):
+            remaining = deadline - monotonic() if deadline is not None else None
+            if remaining is not None and remaining <= 0:
+                break
+
             # Re-check between retries so a connector that disappears
             # mid-flight short-circuits instead of burning the budget.
             if attempt > 0 and not self._is_platform_connector_socket_present():
@@ -360,22 +371,36 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
                 stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
                 try:
-                    stub.HealthEventOccurredV1(platformconnector_pb2.HealthEvents(events=health_events, version=1))
+                    request = platformconnector_pb2.HealthEvents(events=health_events, version=1)
+                    if remaining is not None:
+                        stub.HealthEventOccurredV1(
+                            request,
+                            timeout=min(GRPC_CALL_TIMEOUT_SECONDS, remaining),
+                        )
+                    else:
+                        stub.HealthEventOccurredV1(request)
                     metrics.health_events_insertion_to_uds_succeed.inc()
                     return True
                 except grpc.RpcError as e:
                     log.error(f"Failed to send health event {health_events} to UDS: {e}")
-                    sleep(delay)
+                    if attempt == MAX_RETRIES - 1:
+                        break
+                    sleep_seconds = delay
+                    if deadline is not None:
+                        remaining = deadline - monotonic()
+                        if remaining <= 0:
+                            break
+                        sleep_seconds = min(sleep_seconds, remaining)
+                    sleep(sleep_seconds)
                     delay *= 1.5
-                    continue
         metrics.health_events_insertion_to_uds_error.inc()
         log.warning(
             f"Failed to send health event after {MAX_RETRIES} retries. Events will be retried on next health check cycle."
         )
         return False
 
-    def dcgm_connectivity_failed(self) -> None:
-        """Handle DCGM connectivity failure event."""
+    def dcgm_connectivity_failed(self) -> bool:
+        """Publish connectivity failure within the pre-cleanup budget."""
         with metrics.dcgm_health_events_publish_time_to_grpc_channel.labels(
             "dcgm_connectivity_failure_to_grpc_channel"
         ).time():
@@ -411,14 +436,19 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 )
                 health_events.append(health_event)
 
-            if len(health_events):
-                try:
-                    if self.send_health_event_with_retries(health_events):
-                        self.entity_cache[key] = EntityCacheEntry(active_errors={"DCGM_CONNECTIVITY_ERROR"})
-                        log.info(
-                            f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send"
-                        )
-                        metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="").set(1)
-                except Exception as e:
-                    log.error(f"Exception while sending DCGM connectivity failure events: {e}")
-                    raise
+            if not health_events:
+                return True
+
+            try:
+                if self.send_health_event_with_retries(
+                    health_events,
+                    delivery_timeout_seconds=CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS,
+                ):
+                    self.entity_cache[key] = EntityCacheEntry(active_errors={"DCGM_CONNECTIVITY_ERROR"})
+                    log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
+                    metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="").set(1)
+                    return True
+                return False
+            except Exception as e:
+                log.error(f"Exception while sending DCGM connectivity failure events: {e}")
+                raise
