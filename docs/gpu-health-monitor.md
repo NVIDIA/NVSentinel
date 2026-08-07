@@ -55,6 +55,7 @@ gpu-health-monitor:
 - **Polling Interval**: Configure how frequently to check GPU health (set via DCGM configuration)
 - **Verbose Logging**: Enable detailed debug output
 - **Incident Suppression**: Drop specific DCGM error codes before they generate a health event — see [DCGM Health Check Incident Suppression](configuration/gpu-health-monitor.md#dcgm-health-check-incident-suppression)
+- **Probe Watchdog**: Report a driver that hangs instead of erroring — see [Unresponsive Driver Detection](configuration/gpu-health-monitor.md#unresponsive-driver-detection)
 
 ## What It Monitors
 
@@ -87,3 +88,6 @@ Includes GPU serial numbers, UUIDs, and other metadata in health events for prec
 
 ### Connectivity Monitoring
 Detects and reports DCGM connectivity issues to ensure monitoring remains functional.
+
+### Unresponsive Driver Detection
+Detects a DCGM call that stops answering instead of returning an error. Embedded mode reports the node-local fault as `GpuDriverUnresponsive`, observe-only by default; remote modes report a connectivity failure without recommending a node reboot — see [Unresponsive Driver Detection](configuration/gpu-health-monitor.md#unresponsive-driver-detection).

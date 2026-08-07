@@ -37,6 +37,7 @@ def _init_event_processor(
     metadata_path: str,
     processing_strategy: platformconnector_pb2.ProcessingStrategy,
     store_only_checks: frozenset[str],
+    connectivity_failure_escalation_threshold: int,
 ):
     platform_connector_config = config["eventprocessors.platformconnector"]
     match event_processor_name:
@@ -50,6 +51,7 @@ def _init_event_processor(
                 metadata_path=metadata_path,
                 processing_strategy=processing_strategy,
                 store_only_checks=store_only_checks,
+                connectivity_failure_escalation_threshold=connectivity_failure_escalation_threshold,
             )
         case _:
             log.fatal(f"Unknown event processor {event_processor_name}")
@@ -179,7 +181,18 @@ def cli(
     # GpuThermalMarginWatch emits STORE_ONLY events (persisted + exported as
     # metrics but excluded from the remediation pipeline, so no node condition
     # or cordon) while every other DCGM check keeps the process-wide strategy.
-    store_only_checks = frozenset({"GpuThermalMarginWatch"}) if thermal_margin_store_only else frozenset()
+    store_only_checks = set()
+    if thermal_margin_store_only:
+        store_only_checks.add("GpuThermalMarginWatch")
+
+    # GpuDriverUnresponsive recommends a node reboot, so it ships observe-only
+    # and has to be turned on deliberately per fleet.
+    probe_store_only = dcgm_config.getboolean("ProbeStoreOnly", fallback=True)
+    if probe_store_only:
+        store_only_checks.add("GpuDriverUnresponsive")
+    log.info("GpuDriverUnresponsive check: store_only=%s", probe_store_only)
+
+    store_only_checks = frozenset(store_only_checks)
 
     suppressed_error_codes = frozenset()
     if config.has_section("dcgmhealthcheck"):
@@ -189,6 +202,17 @@ def cli(
         )
         if suppressed_error_codes:
             log.info(f"DCGM error codes suppressed via config: {sorted(suppressed_error_codes)}")
+
+    connectivity_failure_escalation_threshold = 0
+    if config.has_section("dcgmhealthcheck"):
+        connectivity_failure_escalation_threshold = config["dcgmhealthcheck"].getint(
+            "ConnectivityFailureEscalationThreshold", fallback=0
+        )
+        if connectivity_failure_escalation_threshold > 0:
+            log.info(
+                "DCGM connectivity failures escalate to RESTART_BM after %d consecutive cycles",
+                connectivity_failure_escalation_threshold,
+            )
 
     enabled_event_processor_names = cli_config["EnabledEventProcessors"].split(",")
     enabled_event_processors = []
@@ -204,12 +228,19 @@ def cli(
                 metadata_path,
                 processing_strategy_value,
                 store_only_checks,
+                connectivity_failure_escalation_threshold,
             )
         )
 
     metadata_reader = MetadataReader(metadata_path)
 
     poll_interval = int(dcgm_config["PollIntervalSeconds"])
+    # Defaults to the /healthz staleness window, so the watchdog reports at the
+    # same moment the loop is declared stale. Critical event delivery is bounded
+    # separately so it remains inside the liveness restart budget. DCGM does not
+    # expose a documented fixed RPC timeout, so fleets should validate this
+    # deadline in STORE_ONLY mode before enabling remediation. Set to 0 to disable.
+    probe_deadline_seconds = dcgm_config.getfloat("ProbeDeadlineSeconds", fallback=poll_interval * 3)
     prom_server, t = start_health_server(port, staleness_seconds=poll_interval * 3)
 
     def process_exit_signal(signum, frame):
@@ -230,6 +261,7 @@ def cli(
         dcgm_mode=dcgm_mode,
         suppressed_error_codes=suppressed_error_codes,
         suppress_unbridged_pcie_nvlink_down=suppress_nvlink_down_unbridged_pcie,
+        probe_deadline_seconds=probe_deadline_seconds,
     )
     dcgm_watcher.start([], exit)
 

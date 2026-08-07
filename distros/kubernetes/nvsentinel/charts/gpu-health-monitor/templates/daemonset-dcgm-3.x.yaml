@@ -83,18 +83,18 @@ spec:
             httpGet:
               path: /healthz
               port: {{ .Values.global.metricsPort }}
-            initialDelaySeconds: 30
-            periodSeconds: 30
-            timeoutSeconds: 3
-            failureThreshold: 3
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
           readinessProbe:
             httpGet:
               path: /metrics
               port: {{ .Values.global.metricsPort }}
-            initialDelaySeconds: 10
-            periodSeconds: 10
-            timeoutSeconds: 3
-            failureThreshold: 3
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
           volumeMounts:
             {{- if .Values.additionalVolumeMounts }}
             {{ toYaml .Values.additionalVolumeMounts | nindent 12 }}

@@ -25,6 +25,8 @@ data:
 
     [dcgm]
     PollIntervalSeconds = 15
+    ProbeDeadlineSeconds = {{ .Values.dcgm.probeDeadlineSeconds }}
+    ProbeStoreOnly = {{ .Values.dcgm.probeStoreOnly }}
 
     [dcgmfieldsmonitoring]
     gputemplimitmonitoringenabled = {{ .Values.dcgmFieldsMonitoring.gpuTempLimitMonitoringEnabled }}
@@ -32,6 +34,7 @@ data:
 
     [dcgmhealthcheck]
     SuppressedErrorCodes = {{ .Values.dcgmHealthCheck.suppressedErrorCodes | join "," }}
+    ConnectivityFailureEscalationThreshold = {{ .Values.dcgmHealthCheck.connectivityFailureEscalationThreshold }}
 
     [eventprocessors.kubernetes]
     ConflictRetryCount = 10
