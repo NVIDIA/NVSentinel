@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 import dcgm_structs, dcgm_errors, dcgm_fields
 from pathlib import Path
 from threading import Event, Thread
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 from ctypes import pointer
 import copy
@@ -42,18 +43,19 @@ class FakeEventProcessorInTest(dcgm.types.CallbackInterface):
         self.connectivity_failed_called = False
         self.probe_unresponsive_calls: list[tuple[str, float, str]] = []
 
-    def health_event_occurred(self, health_details: dict[str, dcgm.types.HealthDetails], gpu_ids: list[int]):
+    def health_event_occurred(self, health_details: dict[str, dcgm.types.HealthDetails], gpu_ids: list[int]) -> None:
         self.health_details = health_details
 
-    def dcgm_connectivity_failed(self):
+    def dcgm_connectivity_failed(self) -> bool:
         self.connectivity_failed_called = True
+        return True
 
     def dcgm_probe_unresponsive(
         self,
         operation: str,
         elapsed_seconds: float,
         dcgm_mode: str,
-    ):
+    ) -> bool:
         self.probe_unresponsive_calls.append((operation, elapsed_seconds, dcgm_mode))
         return True
 
@@ -1347,12 +1349,12 @@ class TestProbeWatchdog:
                 finish_probe.wait()
             probe_returned.set()
 
-        probe_thread = Thread(target=run_probe)
+        probe_thread = Thread(target=run_probe, daemon=True)
         probe_thread.start()
         assert entered_probe.wait(1)
         time.sleep(0.05)
 
-        report_thread = Thread(target=lambda: poll_result.append(watchdog.poll_once()))
+        report_thread = Thread(target=lambda: poll_result.append(watchdog.poll_once()), daemon=True)
         report_thread.start()
         assert delivery_started.wait(1)
 
@@ -1380,10 +1382,10 @@ class TestProbeWatchdog:
     def test_run_returns_when_exit_is_set(self):
         hangs, on_hang = self._collector()
         watchdog = dcgm.ProbeWatchdog(10.0, on_hang)
-        exit = Event()
-        exit.set()
+        exit_event = Event()
+        exit_event.set()
 
-        watchdog.run(exit, interval_seconds=0.01)
+        watchdog.run(exit_event, interval_seconds=0.01)
 
         assert hangs == []
 
@@ -1452,9 +1454,10 @@ class TestDCGMWatcherHangSafeOrdering:
         observed = {}
 
         class SignallingProcessor(FakeEventProcessorInTest):
-            def dcgm_connectivity_failed(self) -> None:
-                super().dcgm_connectivity_failed()
+            def dcgm_connectivity_failed(self) -> bool:
+                delivered = super().dcgm_connectivity_failed()
                 published.set()
+                return delivered
 
         watcher = dcgm.DCGMWatcher(
             addr="localhost:5555",
@@ -1467,6 +1470,7 @@ class TestDCGMWatcherHangSafeOrdering:
         # must bypass it or the event remains queued behind these workers.
         release_workers = Event()
         saturated_workers = 8
+        watcher._callback_thread_pool = ThreadPoolExecutor(max_workers=saturated_workers)
         for _ in range(saturated_workers):
             watcher._callback_thread_pool.submit(release_workers.wait, 10)
 

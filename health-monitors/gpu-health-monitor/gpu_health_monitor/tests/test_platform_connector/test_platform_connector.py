@@ -1717,11 +1717,22 @@ class TestPlatformConnectors(unittest.TestCase):
             assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed") is True
             marker = processor._dcgm_unresponsive_state_path
             assert os.path.exists(marker)
+            with open(marker) as marker_file:
+                assert marker_file.read().splitlines() == [
+                    "DCGM_PROBE_HANG",
+                    "EXECUTE_REMEDIATION",
+                ]
 
-            restarted = self._make_processor(
-                processor.state_file_path,
-                processor._metadata_reader._path,
-            )
+            with unittest.mock.patch.object(pc_metrics, "dcgm_health_active_events") as gauge:
+                gauge_labels = unittest.mock.MagicMock()
+                gauge.labels.return_value = gauge_labels
+                restarted = self._make_processor(
+                    processor.state_file_path,
+                    processor._metadata_reader._path,
+                )
+                gauge.labels.assert_called_with(event_type="GpuDcgmUnresponsive", gpu_id="")
+                gauge_labels.set.assert_called_with(1)
+
             servicer.health_events = None
 
             # The persisted marker restores the active cache entry.
@@ -1733,6 +1744,34 @@ class TestPlatformConnectors(unittest.TestCase):
             restarted.clear_dcgm_unresponsive(timestamp)
 
             assert servicer.health_events[0].isHealthy is True
+            assert servicer.health_events[0].processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+            assert not os.path.exists(marker)
+
+    def test_dcgm_unresponsive_clear_keeps_strategy_after_config_change(self):
+        """A clear after restart must use the strategy stored with the unhealthy event."""
+        with self._running_connector(store_only_checks=frozenset({"GpuDcgmUnresponsive"})) as (
+            servicer,
+            processor,
+        ):
+            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed") is True
+            assert servicer.health_events[0].processingStrategy == platformconnector_pb2.STORE_ONLY
+            marker = processor._dcgm_unresponsive_state_path
+
+            # Simulate a Helm change that removes observe-only for this check
+            # before the liveness restart recreates the processor.
+            restarted = self._make_processor(
+                processor.state_file_path,
+                processor._metadata_reader._path,
+                store_only_checks=frozenset(),
+            )
+            assert restarted._dcgm_unresponsive_strategy == platformconnector_pb2.STORE_ONLY
+
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            restarted.clear_dcgm_unresponsive(timestamp)
+
+            assert servicer.health_events[0].isHealthy is True
+            assert servicer.health_events[0].processingStrategy == platformconnector_pb2.STORE_ONLY
             assert not os.path.exists(marker)
 
     def test_dcgm_unresponsive_cleared_when_probe_returns(self):

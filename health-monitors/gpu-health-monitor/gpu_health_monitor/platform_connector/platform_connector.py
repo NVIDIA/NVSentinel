@@ -86,15 +86,17 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self.old_bootid = self.read_old_system_bootid_from_state_file()
         self.entity_cache: dict[str, EntityCacheEntry] = {}
         self._event_lock = RLock()
-        if os.path.exists(self._dcgm_unresponsive_state_path):
-            key = self._build_cache_key("GpuDcgmUnresponsive", "DCGM", "ALL")
-            self.entity_cache[key] = EntityCacheEntry(active_errors={"DCGM_PROBE_HANG"})
         self._metadata_reader = MetadataReader(metadata_path)
         self._processing_strategy = processing_strategy
         self._store_only_checks = store_only_checks
         self._connectivity_failure_escalation_threshold = connectivity_failure_escalation_threshold
         self._consecutive_connectivity_failures = 0
         self._connectivity_escalated = False
+        # Strategy used for the active local-managed probe-hang event. Restored
+        # from the marker so a clear after a liveness restart still matches the
+        # unhealthy event even if Helm config changed in between.
+        self._dcgm_unresponsive_strategy: platformconnector_pb2.ProcessingStrategy | None = None
+        self._restore_dcgm_unresponsive_state()
 
     def read_old_system_bootid_from_state_file(self) -> str:
         bootid = ""
@@ -119,13 +121,46 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
     def _build_cache_key(self, check_name: str, entity_type: str, entity_value: str) -> str:
         return f"{check_name}|{entity_type}|{entity_value}"
 
-    def _persist_dcgm_unresponsive_state(self) -> None:
-        """Remember a delivered local-managed probe hang across liveness restarts."""
+    def _persist_dcgm_unresponsive_state(self, processing_strategy: platformconnector_pb2.ProcessingStrategy) -> None:
+        """Remember a delivered local-managed probe hang across liveness restarts.
+
+        Format is two lines: error code, then the ProcessingStrategy name used
+        for the unhealthy event. The strategy must be restored for the clear
+        path so fault-quarantine still matches the pair after a config change.
+        """
         try:
+            strategy_name = platformconnector_pb2.ProcessingStrategy.Name(processing_strategy)
             with open(self._dcgm_unresponsive_state_path, "w") as state_file:
-                state_file.write("DCGM_PROBE_HANG\n")
+                state_file.write(f"DCGM_PROBE_HANG\n{strategy_name}\n")
+            self._dcgm_unresponsive_strategy = processing_strategy
         except OSError as e:
             log.error("Failed to persist unresponsive-DCGM state at %s: %s", self._dcgm_unresponsive_state_path, e)
+
+    def _restore_dcgm_unresponsive_state(self) -> None:
+        """Rebuild cache and gauge from a marker left by a previous process."""
+        if not os.path.exists(self._dcgm_unresponsive_state_path):
+            return
+
+        strategy = self._effective_strategy("GpuDcgmUnresponsive")
+        try:
+            with open(self._dcgm_unresponsive_state_path, "r") as state_file:
+                lines = [line.strip() for line in state_file.read().splitlines() if line.strip()]
+            if len(lines) >= 2:
+                try:
+                    strategy = platformconnector_pb2.ProcessingStrategy.Value(lines[1])
+                except ValueError:
+                    log.warning(
+                        "Unknown processing strategy %r in %s; falling back to current config",
+                        lines[1],
+                        self._dcgm_unresponsive_state_path,
+                    )
+        except OSError as e:
+            log.error("Failed to read unresponsive-DCGM state at %s: %s", self._dcgm_unresponsive_state_path, e)
+
+        key = self._build_cache_key("GpuDcgmUnresponsive", "DCGM", "ALL")
+        self.entity_cache[key] = EntityCacheEntry(active_errors={"DCGM_PROBE_HANG"})
+        self._dcgm_unresponsive_strategy = strategy
+        metrics.dcgm_health_active_events.labels(event_type="GpuDcgmUnresponsive", gpu_id="").set(1)
 
     def _clear_dcgm_unresponsive_state(self) -> None:
         try:
@@ -134,6 +169,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             pass
         except OSError as e:
             log.error("Failed to remove unresponsive-DCGM state at %s: %s", self._dcgm_unresponsive_state_path, e)
+        self._dcgm_unresponsive_strategy = None
 
     @_serialized_event_state
     def clear_dcgm_connectivity_failure(self, timestamp: Timestamp) -> None:
@@ -209,6 +245,13 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             if chassis_serial:
                 event_metadata["chassis_serial"] = chassis_serial
 
+            # Prefer the strategy captured with the unhealthy event so a Helm
+            # change between liveness restarts cannot break the clear pair.
+            clear_strategy = (
+                self._dcgm_unresponsive_strategy
+                if self._dcgm_unresponsive_strategy is not None
+                else self._effective_strategy(check_name)
+            )
             health_event = platformconnector_pb2.HealthEvent(
                 version=self._version,
                 agent=self._agent,
@@ -223,7 +266,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 recommendedAction=platformconnector_pb2.NONE,
                 nodeName=self._node_name,
                 metadata=event_metadata,
-                processingStrategy=self._effective_strategy(check_name),
+                processingStrategy=clear_strategy,
             )
             health_events.append(health_event)
 
@@ -641,6 +684,10 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
             health_events = []
+            # Remote probe hangs intentionally share GpuDcgmConnectivityFailure with
+            # ordinary connectivity failures: both mean "DCGM is unreachable from
+            # this node" and should collapse to one active condition. Embedded hangs
+            # use a distinct check name so the node-local reboot signal is preserved.
             key = self._build_cache_key(check_name, "DCGM", "ALL")
             entry = self.entity_cache.get(key)
             if entry is not None and not entry.is_healthy:
@@ -689,7 +736,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 ):
                     self.entity_cache[key] = EntityCacheEntry(active_errors={error_code})
                     if local_managed:
-                        self._persist_dcgm_unresponsive_state()
+                        self._persist_dcgm_unresponsive_state(processing_strategy)
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
                     metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="").set(1)
                     return True

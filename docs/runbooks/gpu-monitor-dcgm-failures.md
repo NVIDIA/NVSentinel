@@ -111,7 +111,7 @@ A different failure mode from the above: instead of refusing the connection, a D
 - Two common on-node shapes for the same underlying fault:
   - `dcgm-exporter` stays `Running` with `/health` green while scrapes fail (`up==0` for hours/days, no new log lines after "Listening on")
   - Or GPU containers fail to start with `context deadline exceeded` / `StartError` exit 128, while the node itself remains `Ready` with GPUs allocatable
-- Do **not** treat a `NotReady`/`unreachable` node as this failure mode — that is ordinary kubelet death, already tainted, and the monitor is not running there to begin with
+- Do **not** use `NotReady`/`unreachable` alone to exclude this failure mode. A node can become `NotReady`/`unreachable` after the monitor has already started and recorded a hang; verify the monitor pod was running and check `dcgm_probe_hangs` / `GpuDcgmUnresponsive` evidence before dismissing it. Ordinary kubelet death with no monitor activity is a different failure class.
 
 Confirm from the node rather than through DCGM, since anything that touches a wedged driver will hang:
 
