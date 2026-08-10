@@ -113,14 +113,12 @@ A different failure mode from the above: instead of refusing the connection, a D
   - Or GPU containers fail to start with `context deadline exceeded` / `StartError` exit 128, while the node itself remains `Ready` with GPUs allocatable
 - Do **not** use `NotReady`/`unreachable` alone to exclude this failure mode. A node can become `NotReady`/`unreachable` after the monitor has already started and recorded a hang; verify the monitor pod was running and check `dcgm_probe_hangs` / `GpuDcgmUnresponsive` evidence before dismissing it. Ordinary kubelet death with no monitor activity is a different failure class.
 
-Confirm from the node rather than through DCGM, since anything that touches a wedged driver will hang:
+Confirm with a bounded `nvidia-smi` probe (always use `timeout` — an unbounded hang can leave another unkillable `D`-state process):
 
 ```bash
-# Processes stuck in uninterruptible sleep, usually including nvidia-smi
-ps -eo stat,pid,comm | awk '$1 ~ /^D/'
-
-# The driver module cannot be unloaded while those processes reference it
-lsmod | grep nvidia
+timeout 15 nvidia-smi -L >/dev/null 2>&1; echo $?
+# 124 → broader GPU/driver hang
+# 0   → nvidia-smi is fine; the stuck call is more likely DCGM-specific
 ```
 
 **Resolution:** reboot the node. Whether the hang is a wedged driver or DCGM userspace holding driver locks, the stuck processes typically cannot be cleared short of a reboot.
