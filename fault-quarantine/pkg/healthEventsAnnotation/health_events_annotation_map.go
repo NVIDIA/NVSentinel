@@ -154,11 +154,9 @@ func (he *HealthEventsAnnotationMap) AddOrUpdateEvent(event *protos.HealthEvent)
 		if !exists {
 			he.Events[key] = event
 			updated = true
-			continue
-		}
-		// Matching ignores RecommendedAction, so an escalated remediation must
-		// overwrite the stored event or consumers keep the stale action.
-		if existing.RecommendedAction != event.RecommendedAction {
+		} else if existing.RecommendedAction != event.RecommendedAction {
+			// Matching ignores RecommendedAction, so an escalated remediation must
+			// overwrite the stored event or consumers keep the stale action.
 			he.Events[key] = event
 			updated = true
 		}
