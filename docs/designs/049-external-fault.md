@@ -22,6 +22,39 @@ EF and ERR together form the complete bilateral handoff API. ERR is the outbound
 
 Human operators follow the same path as automated systems: creating an EF CR is the sanctioned mechanism for requesting a node drain before manual intervention.
 
+## ExternalFault Reconciler
+
+Where the EF reconciler is hosted is a distinct, open decision. It is unusual among NVSentinel controllers because it needs three capabilities that no single existing component provides together:
+
+1. **A controller-runtime manager + validating webhook** — to reconcile the EF CRD (finalizers, status, `Owns(&ExternalRemediationRequest{})`) and to enforce admission checks (duplicate-node, `nodeName` immutability, node existence).
+2. **A health-event emitter** — a `healthpub.Publisher` over the platform-connector's node-local socket, to submit both the opening `CUSTOM` event and the closing `isHealthy=true` event.
+3. **Proximity to the ERR** it watches — the `Owns`-watch reacts to the child ERR's `ExternalRemediationComplete` status, which is set by the ERR reconciler.
+
+No component has all three, so each option grafts on what it lacks. The [Implementation](#implementation) section below is written against **Option 1**.
+
+### Option 1 — janitor (reference implementation)
+
+Host the EF reconciler in `janitor`, alongside the ERR reconciler and the shared validating-webhook server.
+
+- **Pros:** janitor is already a controller-runtime manager with a webhook server (RebootNode/TerminateNode/GPUReset/ERR), and the ERR reconciler — whose status the EF watches — lives here, so capabilities (1) and (3) come for free. Smallest change.
+- **Cons:** janitor emits no health events today; EF makes it an emitter, adding the platform-connector socket mount and a `healthpub` client (see [Health-event emission](#health-event-emission-janitor--platform-connector)). That is a new outbound dependency for a component that previously spoke only to the Kubernetes API.
+
+### Option 2 — csp-health-monitor
+
+Host the EF reconciler in `csp-health-monitor` (or another health monitor).
+
+- **Pros:** health monitors are native emitters — `csp-health-monitor` already mounts the platform-connector socket and holds a `healthpub.Publisher`, so capability (2) is free. It also already detects CSP maintenance signals (AWS/GCP), the canonical EF trigger, so the component that observes external faults would also own their lifecycle — a good fit with EF's "synthetic monitor" framing.
+- **Cons:** `csp-health-monitor` is a poll/emit loop, **not** a controller-runtime app — no manager, no CRD reconcilers, no webhook server, and no leader election (it runs as a multi-replica Deployment). Hosting EF here means grafting on the entire controller-runtime + webhook stack (capability 1). It also splits the EF↔ERR pair across components: `csp-health-monitor` would import janitor's CRD types and `Owns`-watch a janitor-owned CRD, and the EF webhook would either need a new server here or stay behind in janitor.
+
+### Option 3 — standalone component
+
+Introduce a dedicated component (e.g. an `external-fault-controller`) that owns the EF reconciler, its webhook, and its emitter — optionally owning the ERR reconciler as well, making it the single home for the bilateral handoff API.
+
+- **Pros:** cleanest bounded context. EF and ERR are the two halves of one handoff; owning both in one binary makes the `Owns`-watch and the shared webhook trivial and keeps the handoff logic in one place. No capability is grafted onto a component whose role it doesn't fit.
+- **Cons:** the largest lift — a new component (image, chart, RBAC, webhook certs, leader election, deployment) to build and operate. Realizing the full benefit means relocating the ERR reconciler out of janitor (ADR-040 already ships it there), a migration in its own right. If EF alone moves and ERR stays, this collapses toward Option 1's split without Option 1's low cost.
+
+Option 1 is the least-change path and the shape the rest of this ADR describes; Option 3 is the cleanest long-term structure but the largest investment. This choice is deferred to team review.
+
 ## Implementation
 
 ### Module layout
