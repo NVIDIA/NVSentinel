@@ -187,9 +187,10 @@ The EF surfaces only these two conditions. It deliberately does **not** mirror t
 **Init** (first reconcile — neither finalizer nor initial conditions present):
 1. Add cleanup finalizer.
 2. Seed initial conditions: `FaultReported=Unknown`, `FaultCleared=False (FaultActive)`.
-3. Emit the health event from `spec.healthEvent` to the platform-connector, with `recommendedAction` set to `CUSTOM` and `customRecommendedAction` set to `external-remediation`. Include the EF's name in `healthEvent.metadata["externalFaultName"]` so `fault-remediation` can link the child ERR back to this EF.
+3. Emit the health event from `spec.healthEvent` to the platform-connector, with `recommendedAction` set to `CUSTOM` and `customRecommendedAction` set to `external-remediation`. Include the EF's name **and UID** in `healthEvent.metadata["externalFaultName"]` / `["externalFaultUID"]` so `fault-remediation` can link the child ERR back to *this* EF (see [OwnerReference design](#ownerreference-design)).
 4. On success: set `FaultReported=True (HealthEventEmitted)`. Reconcile returns; next trigger is the child ERR appearing.
 5. On failure: return error; controller-runtime requeues with backoff.
+6. The opening emit is gated on `FaultReported != True`, not on the one-time Init entry — so after the conditions are seeded, a failed or not-yet-attempted emission is retried on the next reconcile rather than being stranded between states.
 
 **Open / awaiting clear** (`FaultReported=True`, `FaultCleared=False`):
 - Idle. The controller watches owned ERRs via `Owns(&ExternalRemediationRequest{})` in `SetupWithManager`; when `fault-remediation` creates the ERR with an `OwnerReference` to this EF, a reconcile is triggered automatically. If no ERR is ever created — e.g. the emitted event doesn't produce external remediation — the EF simply stays open here until an operator deletes it.
@@ -201,11 +202,13 @@ The EF surfaces only these two conditions. It deliberately does **not** mirror t
 2. Stamp `CompletionTime`.
 3. Remove the cleanup finalizer. Kubernetes GC cascades the OwnerReference deletion to the child ERR (see *OwnerReference design* below).
 
+Operator-delete is a deliberate **force-close**: it does **not** emit the clearing `isHealthy=true` event. If the EF was still open, the synthetic fault is therefore *not* retracted and the node stays cordoned — deleting an open EF means abandoning the drain request, and the node is left cordoned for manual attention (open EFs are filterable right up to deletion). One race is tolerated by design: an opening event still in flight can create an ERR *after* the EF is gone; that ERR carries an `OwnerReference` to a UID that no longer exists, so Kubernetes GC deletes it on discovery — and the ERR's own finalizer scrubs the node — rather than leaving an orphan.
+
 ### OwnerReference design
 
-`fault-remediation` creates the ERR when it processes a `CUSTOM` health event. When the health event carries `metadata["externalFaultName"]`, `fault-remediation`:
+`fault-remediation` creates the ERR when it processes a `CUSTOM` health event. When the health event carries `metadata["externalFaultName"]` and `metadata["externalFaultUID"]`, `fault-remediation`:
 
-1. Looks up the named EF by name.
+1. Looks up the named EF and verifies its `uid` matches `externalFaultUID`. A name-only match is not enough: an EF can be deleted and recreated with the same name, and a queued or replayed event must not attach its ERR to a *different* object that happens to reuse the name. On a UID mismatch — or if the EF is not found — it does **not** create an unowned ERR; it fails closed and retries under the normal reconcile backoff.
 2. Adds an `OwnerReference` on the new ERR pointing to the EF:
 
 ```yaml
@@ -222,7 +225,7 @@ ownerReferences:
 
 The EF reconciler uses `Owns(&ExternalRemediationRequest{})` in `SetupWithManager`, which installs a field indexer on `metadata.ownerReferences` so EF reconciles fire when the paired ERR changes state.
 
-The link between EF and ERR rides on `metadata["externalFaultName"]`, **not** on the health-event `id`. The platform-connector/datastore assigns its own identifier to the event as it is persisted, so the `id` on the EF's `spec.healthEvent` is not stable downstream — `fault-remediation` sees the datastore's id, not the one the EF submitted. `externalFaultName` is a stable, EF-controlled key that survives the round-trip and is therefore the correct linkage.
+The link between EF and ERR rides on `metadata["externalFaultName"]` + `["externalFaultUID"]`, **not** on the health-event `id`. The platform-connector/datastore assigns its own identifier to the event as it is persisted, so the `id` on the EF's `spec.healthEvent` is not stable downstream — `fault-remediation` sees the datastore's id, not the one the EF submitted. The name is the human-readable handle and the UID disambiguates a delete-and-recreate, so the pair is the stable, EF-controlled linkage.
 
 ### No node lock
 
@@ -241,7 +244,7 @@ The janitor process does not emit health events today; EF adds this capability. 
 EF only *emits* a health event; whether that event flows through quarantine → drain → ERR depends on the rest of the pipeline being configured to act on it. Two pieces must be in place for the happy path to fire, and neither is implied by the EF reconciler itself:
 
 1. **A `fault-quarantine` ruleset that matches EF-emitted events.** `fault-quarantine` cordons only events matching one of its rulesets; a generic external-remediation event (e.g. a CSP-maintenance `CUSTOM` event) matches none of the default agent/check-specific rulesets and is skipped, so no cordon/drain occurs. The EF-emitted event must carry fields that match an existing ruleset, or a dedicated ruleset for EF-originated events must be added.
-2. **A `fault-remediation` action that produces the ERR.** `fault-remediation` maps `customRecommendedAction` to a configured action template; an `external-remediation` action that renders an `ExternalRemediationRequest` (and stamps the `OwnerReference` from `metadata["externalFaultName"]`) must exist. This is the ERR-production path — a prerequisite for EF, not part of EF itself.
+2. **A `fault-remediation` action that produces the ERR.** `fault-remediation` maps `customRecommendedAction` to a configured action template; an `external-remediation` action that renders an `ExternalRemediationRequest` and stamps the `OwnerReference` from `metadata["externalFaultName"]` + `["externalFaultUID"]` (matching on **both**) must exist. It must also be **idempotent on re-publish**: because the EF re-emits its opening event on retry and the datastore assigns each event its own id, the producer must not create a second ERR for a node that already has an active one. This is the ERR-production path — a prerequisite for EF, not part of EF itself.
 
 These are sequencing dependencies: EF is the entry door, but the entry door is only useful once the quarantine ruleset and the ERR-producing action behind it are wired.
 
@@ -252,17 +255,20 @@ Added to the existing `janitor_webhook.go` validator chain:
 | Check | On create | On update |
 |---|---|---|
 | `spec.healthEvent.nodeName` is non-empty | ✓ | ✓ |
-| Node named by `nodeName` exists in the cluster | ✓ | if `nodeName` changed |
-| `spec.healthEvent.nodeName` is immutable | — | ✓ |
+| `spec.healthEvent.isHealthy` is `false` (an opening event must *raise* a fault, not clear one) | ✓ | ✓ |
+| Node named by `nodeName` exists in the cluster | ✓ | — |
+| `spec.healthEvent` is immutable (the whole event is frozen after creation) | — | ✓ |
 | No other active EF for the same node (`CompletionTime == nil`) | ✓ | — |
 
-The duplicate-node check prevents race conditions where two EF CRs race to drain the same node. The webhook queries EFs by `spec.healthEvent.nodeName` using an informer-backed lister (the same pattern as the ERR webhook for node-existence checks). If an active EF already exists, the webhook rejects with a descriptive message directing the caller to the existing EF's name.
+**Why the whole health event is frozen, not just `nodeName`.** The clearing event the reconciler emits reuses the original `agent`/`checkName`/`nodeName` so fault-quarantine's "check recovered" logic matches the fault EF opened. If any of those fields could drift after the opening emit, the clearing event would target a different check and silently fail to un-cordon the node. Freezing `spec.healthEvent` on update keeps open and close addressing the same fault. Rejecting `isHealthy=true` closes the other gap: a "healthy" opening event would set `FaultReported=True` without ever raising a fault.
+
+**The duplicate-EF check is a best-effort early rejection, not a race guarantee.** It queries EFs by `spec.healthEvent.nodeName` via an informer-backed lister — the same non-transactional pattern the sibling RebootNode/TerminateNode/ERR webhooks use — and rejects a create when an active EF already exists, pointing the caller at it. Two concurrent creates can still both observe "no active EF" and both pass; the single-active-EF invariant is ultimately upheld by the reconciler and producer converging (a duplicate opening event for a node that is already `FaultReported=True` must be treated idempotently downstream — see [Pipeline dependencies](#pipeline-dependencies)), not by admission alone.
 
 ### RBAC
 
 EF reconciler (in `janitor` binary):
 
-```
+```text
 # kubebuilder:rbac:groups=nvsentinel.dgxc.nvidia.com,resources=externalfaults,verbs=get;list;watch;update;patch;delete
 # kubebuilder:rbac:groups=nvsentinel.dgxc.nvidia.com,resources=externalfaults/status,verbs=get;update;patch
 # kubebuilder:rbac:groups=nvsentinel.dgxc.nvidia.com,resources=externalfaults/finalizers,verbs=update
@@ -271,7 +277,7 @@ EF reconciler (in `janitor` binary):
 
 `fault-remediation` (new permissions required for EF integration):
 
-```
+```text
 # kubebuilder:rbac:groups=nvsentinel.dgxc.nvidia.com,resources=externalfaults,verbs=get;list;watch
 ```
 
@@ -279,7 +285,7 @@ No new node-level RBAC is needed; EF does not touch nodes directly.
 
 ### Sequence: EF-initiated fault (happy path)
 
-```
+```text
 External System         NVSentinel                     Node
 ──────────────          ──────────────────────────     ────
 Create ExternalFault ──▶
@@ -319,7 +325,7 @@ External System watches ERR
 
 ### Sequence: EF operator delete (cancellation)
 
-```
+```text
 Operator             Kubernetes GC        ERR reconciler (finalizer)
 ────────             ─────────────        ──────────────────────────
 kubectl delete ef ──▶
@@ -345,7 +351,7 @@ kubectl delete ef ──▶
 
 **No node lock on EF.** The EF reconciler's sole in-cluster side effect is emitting a health event. All node mutations are performed by downstream reconcilers (fault-quarantine, ERR reconciler) that already participate in the cross-controller node lock protocol. Adding a lock to EF would be redundant and would block on nodes that are not yet claimed.
 
-**Webhook rejects duplicate active EFs.** A second EF for the same node would create a second health event, a second quarantine session, and potentially a second ERR — all racing over the same node. Rejecting at admission is cleaner than detecting and resolving the race at runtime.
+**Webhook rejects duplicate active EFs (best-effort).** A second EF for the same node would create a second health event, a second quarantine session, and potentially a second ERR. Admission rejects the common case cheaply, but the lister is not transactional, so it is an early guard rather than a hard guarantee — the authoritative single-active-EF invariant comes from idempotent downstream handling (dedup on node + name/UID), not the webhook alone.
 
 ## Consequences
 
@@ -358,7 +364,7 @@ kubectl delete ef ──▶
 **Negative / tradeoffs:**
 - The EF path depends on pipeline wiring that does not exist purely for EF: a `fault-quarantine` ruleset that matches EF-emitted events, and a `fault-remediation` `external-remediation` action that produces the ERR (and reads `healthEvent.metadata["externalFaultName"]` to set the OwnerReference). These must land with, or before, EF (see [Pipeline dependencies](#pipeline-dependencies)).
 - The janitor gains a new outbound dependency — it must reach the platform-connector's node-local socket to emit — where before it only spoke to the Kubernetes API. See [Health-event emission](#health-event-emission-janitor--platform-connector).
-- The webhook's duplicate-node check requires an informer-backed lister at admission time. This is the same approach the ERR webhook uses for node-existence checks, so no new infrastructure is needed.
+- The webhook's duplicate-node check requires an informer-backed lister at admission time (same approach the ERR webhook uses), so no new infrastructure is needed — but it is a best-effort guard, not a transactional uniqueness constraint (see the *Validating admission webhook* section).
 - An EF whose repair fails, stalls, or never produces an ERR simply stays open (`FaultReported=True`, not cleared) until an operator deletes it; NVSentinel does not auto-recover. The remediation's success/failure detail lives on the ERR, not the EF — the EF is intentionally binary (submitted / cleared).
 
 ## Alternatives Considered
@@ -372,7 +378,7 @@ kubectl delete ef ──▶
 ## Testing
 
 - Unit tests for EF reconciler covering all condition transitions: FaultReported=Unknown → True (opening emit), clearing-event emission triggered by the child ERR reporting complete (including retry when the clearing emit fails), FaultCleared=True, no-clear when the ERR fails or never appears, CompletionTime stamping, deletion path.
-- Webhook unit tests: empty nodeName rejected, non-existent nodeName rejected, nodeName immutable on update, duplicate active EF for same node rejected.
+- Webhook unit tests: empty nodeName rejected, non-existent nodeName rejected, `isHealthy=true` opening event rejected, `spec.healthEvent` immutable on update (any field change rejected), duplicate active EF for same node rejected.
 - E2E (`tests/external_fault_test.go`, build tag `arm64_group`):
   - Happy path: EF created → monitors suppress on node → ERR appears with OwnerReference → ERR ExternalRemediationComplete=True → EF emits the `isHealthy=true` clearing event → EF FaultCleared=True → node un-cordoned.
   - Failure path: child ERR reports ExternalRemediationComplete=False → EF emits no clearing event and stays open, node stays cordoned; operator delete closes the EF.
