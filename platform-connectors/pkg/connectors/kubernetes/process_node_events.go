@@ -539,7 +539,17 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, 
 				existingEvent.LastTimestamp = event.LastTimestamp
 
 				_, err = r.clientset.CoreV1().Events(DefaultNamespace).Update(ctx, existingEvent, metav1.UpdateOptions{})
-				if err != nil {
+
+				switch {
+				case err == nil:
+					nodeEventOperationsCounter.WithLabelValues(nodeName, OperationUpdate, StatusSuccess).Inc()
+
+					return nil
+				case apierrors.IsNotFound(err):
+					// The event was deleted between the lookup and the
+					// update, so fall through and create a fresh one in
+					// this same attempt rather than losing the write.
+				default:
 					nodeEventOperationsCounter.WithLabelValues(nodeName, OperationUpdate, StatusFailed).Inc()
 					span.AddEvent("platform_connector.k8s.node_event_update_failed", trace.WithAttributes(
 						attribute.String("platform_connector.k8s.error.type", "node_event_update_failed"),
@@ -548,14 +558,11 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, 
 
 					return fmt.Errorf("failed to update event for node %s: %w", nodeName, err)
 				}
-
-				nodeEventOperationsCounter.WithLabelValues(nodeName, OperationUpdate, StatusSuccess).Inc()
-
-				return nil
 			}
 
-			// The cached event was TTL-expired or deleted; create a fresh
-			// one below.
+			// Either the lookup returned nothing or the update raced a
+			// deletion: the cached name no longer refers to a live event,
+			// so forget it and create a fresh one below.
 			r.dropCachedNodeEventName(dedupeKey)
 		}
 

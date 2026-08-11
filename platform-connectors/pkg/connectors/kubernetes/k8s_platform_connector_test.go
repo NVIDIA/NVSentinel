@@ -34,8 +34,10 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
@@ -2264,4 +2266,68 @@ func TestDeduplicationBehavior(t *testing.T) {
 		assert.NotContains(t, result, "pid=1582259", "Older duplicate must be dropped")
 	})
 
+}
+
+// TestWriteNodeEvent_UpdateRacesDeletion verifies that when the cached event is deleted
+// between the metadata.name lookup and the Update (the event TTL can expire in that
+// window), the write is not lost: the stale cache entry is dropped and a fresh event is
+// created in the same attempt.
+func TestWriteNodeEvent_UpdateRacesDeletion(t *testing.T) {
+	localCtx := context.Background()
+	localClientSet := fake.NewSimpleClientset()
+	stopCh := make(chan struct{})
+
+	defer close(stopCh)
+
+	ringBuffer := ringbuffer.NewRingBuffer("updateRacesDeletionBuffer", localCtx)
+	connector := NewK8sConnector(localClientSet, ringBuffer, stopCh, localCtx, K8sConnectorConfig{
+		MaxNodeConditionMessageLength: 1024,
+		CompactedHealthEventMsgLen:    72,
+	})
+
+	nodeName := "update-race-test-node"
+	_, err := localClientSet.CoreV1().Nodes().Create(localCtx, &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+	}, metav1.CreateOptions{})
+	require.NoError(t, err, "Failed to create test node")
+
+	healthEvent := &protos.HealthEvent{
+		CheckName:          "GpuThermalWatch",
+		IsHealthy:          false,
+		EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		ErrorCode:          []string{"THERMAL_WARNING"},
+		IsFatal:            false,
+		GeneratedTimestamp: timestamppb.New(time.Now()),
+		NodeName:           nodeName,
+	}
+	healthEvents := &protos.HealthEvents{Version: 1, Events: []*protos.HealthEvent{healthEvent}}
+	dedupeKey := nodeEventDedupeKey(connector.createK8sEvent(localCtx, healthEvent), nodeName)
+
+	// First write populates the dedupe cache.
+	require.NoError(t, connector.processHealthEvents(localCtx, healthEvents))
+
+	events, err := localClientSet.CoreV1().Events(DefaultNamespace).List(localCtx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, events.Items, 1, "First health event should create exactly one Kubernetes event")
+
+	firstName := events.Items[0].Name
+	cachedName, ok := connector.getCachedNodeEventName(dedupeKey)
+	require.True(t, ok, "First write should cache the created event name")
+	require.Equal(t, firstName, cachedName)
+
+	// The cached event disappears after the lookup but before the update.
+	localClientSet.PrependReactor("update", "events", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewNotFound(corev1.Resource("events"), firstName)
+	})
+
+	require.NoError(t, connector.processHealthEvents(localCtx, healthEvents),
+		"A racing deletion should not surface as a write error")
+
+	events, err = localClientSet.CoreV1().Events(DefaultNamespace).List(localCtx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, events.Items, 2, "A racing deletion should be recovered by creating a fresh event")
+
+	cachedName, ok = connector.getCachedNodeEventName(dedupeKey)
+	require.True(t, ok, "The recreated event name should be cached")
+	assert.NotEqual(t, firstName, cachedName, "The stale cache entry should have been replaced")
 }
