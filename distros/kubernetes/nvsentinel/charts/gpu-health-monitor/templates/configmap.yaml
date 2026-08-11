@@ -25,10 +25,10 @@ data:
 
     [dcgm]
     {{- $poll := .Values.dcgm.pollIntervalSeconds | default 15 }}
-    {{- /* 0 is a valid override (disables the watchdog); do not use `default`. */}}
-    {{- $deadline := mul $poll 3 }}
-    {{- if and (hasKey .Values.dcgm "probeDeadlineSeconds") (ne (.Values.dcgm.probeDeadlineSeconds | toJson) "null") }}
-    {{- $deadline = .Values.dcgm.probeDeadlineSeconds }}
+    {{- /* Only nil falls back; 0 is a valid override that disables the watchdog. */}}
+    {{- $deadline := .Values.dcgm.probeDeadlineSeconds }}
+    {{- if kindIs "invalid" $deadline }}
+    {{- $deadline = mul $poll 3 }}
     {{- end }}
     PollIntervalSeconds = {{ $poll }}
     ProbeDeadlineSeconds = {{ $deadline }}
