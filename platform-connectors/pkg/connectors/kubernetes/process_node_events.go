@@ -462,6 +462,43 @@ func messageMatchesAnyErrorCode(msg string, errorCodes []string) bool {
 	return false
 }
 
+// maxCachedNodeEventNames bounds the dedupe cache; distinct messages are
+// distinct faults, so a per-node connector stays far below this in practice.
+const maxCachedNodeEventNames = 1024
+
+// nodeEventDedupeKey identifies a logically-identical node event: the same
+// type, reason and message on the same node.
+func nodeEventDedupeKey(event *corev1.Event, nodeName string) string {
+	return fmt.Sprintf("%s\x00%s\x00%s\x00%s", nodeName, event.Type, event.Reason, event.Message)
+}
+
+func (r *K8sConnector) getCachedNodeEventName(key string) (string, bool) {
+	r.nodeEventMu.Lock()
+	defer r.nodeEventMu.Unlock()
+
+	name, ok := r.nodeEventNames[key]
+
+	return name, ok
+}
+
+func (r *K8sConnector) setCachedNodeEventName(key, name string) {
+	r.nodeEventMu.Lock()
+	defer r.nodeEventMu.Unlock()
+
+	if r.nodeEventNames == nil || len(r.nodeEventNames) >= maxCachedNodeEventNames {
+		r.nodeEventNames = make(map[string]string)
+	}
+
+	r.nodeEventNames[key] = name
+}
+
+func (r *K8sConnector) dropCachedNodeEventName(key string) {
+	r.nodeEventMu.Lock()
+	defer r.nodeEventMu.Unlock()
+
+	delete(r.nodeEventNames, key)
+}
+
 func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, nodeName string) error {
 	ctx, span := tracing.StartSpan(ctx, "platform_connector.k8s.update_node_event")
 	defer span.End()
@@ -471,27 +508,37 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, 
 		attribute.String("platform_connector.k8s.event_type", string(event.Type)),
 	)
 
+	dedupeKey := nodeEventDedupeKey(event, nodeName)
+
 	err := retry.OnError(retry.DefaultRetry, func(err error) bool {
 		return apierrors.IsConflict(err) || isTemporaryError(err)
 	}, func() error {
-		// Fetch all events for the node
-		events, err := r.clientset.CoreV1().Events(DefaultNamespace).List(ctx, metav1.ListOptions{
-			FieldSelector: fmt.Sprintf("involvedObject.name=%s", nodeName),
-		})
-		if err != nil {
-			return fmt.Errorf("failed to list events for node %s: %w", nodeName, err)
-		}
+		// Deduplicate against the per-process cache instead of listing
+		// every event for the node: an involvedObject fieldSelector LIST
+		// cannot be served from an index, so the apiserver scans the full
+		// events range in etcd on every call — once per health event per
+		// node, which across a fleet peaks exactly during health-event
+		// storms. A cached name narrows the dedupe read to a
+		// metadata.name selector, which the apiserver resolves as a
+		// single-key read (matchesSingle), and which stays within the
+		// chart's existing RBAC (list/create/update — no get). After a
+		// restart the first occurrence of a recurring fault creates one
+		// fresh event instead of incrementing the old one.
+		if name, ok := r.getCachedNodeEventName(dedupeKey); ok {
+			existingEvents, err := r.clientset.CoreV1().Events(DefaultNamespace).List(ctx, metav1.ListOptions{
+				FieldSelector: fmt.Sprintf("metadata.name=%s", name),
+			})
+			if err != nil {
+				return fmt.Errorf("failed to look up event %s for node %s: %w", name, nodeName, err)
+			}
 
-		// Check if any event matches the new event
-
-		for _, existingEvent := range events.Items {
-			if existingEvent.Type == event.Type && existingEvent.Reason == event.Reason &&
-				existingEvent.Message == event.Message {
+			if len(existingEvents.Items) > 0 {
 				// Matching event found, update it
+				existingEvent := &existingEvents.Items[0]
 				existingEvent.Count++
 				existingEvent.LastTimestamp = event.LastTimestamp
 
-				_, err = r.clientset.CoreV1().Events(DefaultNamespace).Update(ctx, &existingEvent, metav1.UpdateOptions{})
+				_, err = r.clientset.CoreV1().Events(DefaultNamespace).Update(ctx, existingEvent, metav1.UpdateOptions{})
 				if err != nil {
 					nodeEventOperationsCounter.WithLabelValues(nodeName, OperationUpdate, StatusFailed).Inc()
 					span.AddEvent("platform_connector.k8s.node_event_update_failed", trace.WithAttributes(
@@ -506,17 +553,22 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, 
 
 				return nil
 			}
+
+			// The cached event was TTL-expired or deleted; create a fresh
+			// one below.
+			r.dropCachedNodeEventName(dedupeKey)
 		}
 
-		// No matching event found, create a new event with count 1
+		// No live matching event, create a new event with count 1
 		event.Count = 1
 
-		_, err = r.clientset.CoreV1().Events(DefaultNamespace).Create(ctx, event, metav1.CreateOptions{})
+		created, err := r.clientset.CoreV1().Events(DefaultNamespace).Create(ctx, event, metav1.CreateOptions{})
 		if err != nil {
 			nodeEventOperationsCounter.WithLabelValues(nodeName, OperationCreate, StatusFailed).Inc()
 			return fmt.Errorf("failed to create event for node %s: %w", nodeName, err)
 		}
 
+		r.setCachedNodeEventName(dedupeKey, created.Name)
 		nodeEventOperationsCounter.WithLabelValues(nodeName, OperationCreate, StatusSuccess).Inc()
 
 		return nil

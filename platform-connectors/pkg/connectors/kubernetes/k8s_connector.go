@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
 	"k8s.io/client-go/kubernetes"
@@ -48,6 +49,13 @@ type K8sConnector struct {
 	stopCh     <-chan struct{}
 	ctx        context.Context
 	config     K8sConnectorConfig
+
+	// nodeEventNames caches the name of the last event written per
+	// (node, type, reason, message) so recurring health events can be
+	// deduplicated with a single-key metadata.name LIST instead of
+	// listing every event for the node. See writeNodeEvent.
+	nodeEventMu    sync.Mutex
+	nodeEventNames map[string]string
 }
 
 // NewK8sConnector creates a K8sConnector with the given Kubernetes client, ring buffer, and configuration.
