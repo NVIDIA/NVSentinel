@@ -2315,19 +2315,32 @@ func TestWriteNodeEvent_UpdateRacesDeletion(t *testing.T) {
 	require.True(t, ok, "First write should cache the created event name")
 	require.Equal(t, firstName, cachedName)
 
-	// The cached event disappears after the lookup but before the update.
+	// The cached event disappears after the lookup but before the update: drop it from the
+	// tracker so the NotFound reflects real cluster state rather than just being asserted.
+	var (
+		updateCalled     bool
+		trackerDeleteErr error
+	)
+
 	localClientSet.PrependReactor("update", "events", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		updateCalled = true
+		trackerDeleteErr = localClientSet.Tracker().Delete(action.GetResource(), action.GetNamespace(), firstName)
+
 		return true, nil, apierrors.NewNotFound(corev1.Resource("events"), firstName)
 	})
 
 	require.NoError(t, connector.processHealthEvents(localCtx, healthEvents),
 		"A racing deletion should not surface as a write error")
+	require.NoError(t, trackerDeleteErr, "Failed to remove the raced event from the tracker")
+	require.True(t, updateCalled, "The cached event should have been updated in place before the race")
 
 	events, err = localClientSet.CoreV1().Events(DefaultNamespace).List(localCtx, metav1.ListOptions{})
 	require.NoError(t, err)
-	require.Len(t, events.Items, 2, "A racing deletion should be recovered by creating a fresh event")
+	require.Len(t, events.Items, 1, "A racing deletion should be recovered by creating one replacement event")
+	assert.NotEqual(t, firstName, events.Items[0].Name, "The deleted event should not have been resurrected")
 
 	cachedName, ok = connector.getCachedNodeEventName(dedupeKey)
 	require.True(t, ok, "The recreated event name should be cached")
+	assert.Equal(t, events.Items[0].Name, cachedName, "The cache should hold the replacement event name")
 	assert.NotEqual(t, firstName, cachedName, "The stale cache entry should have been replaced")
 }
