@@ -285,60 +285,51 @@ No new node-level RBAC is needed; EF does not touch nodes directly.
 
 ### Sequence: EF-initiated fault (happy path)
 
-```text
-External System         NVSentinel                     Node
-──────────────          ──────────────────────────     ────
-Create ExternalFault ──▶
-                        EF reconciler:
-                          emit CUSTOM health event
-                          (metadata: externalFaultName)
-                          FaultReported=True
-                        ↓
-                        fault-quarantine: cordon node ──▶ unschedulable=true
-                        node-drainer: drain workloads ──▶ workloads evicted
-                        fault-remediation:
-                          create ERR
-                          (OwnerReference → EF)
-                        ↓
-                        ERR reconciler:
-                          apply release taint ──────────▶ taint applied
-                          managed=false ────────────────▶ label applied
-                          NVSentinelOwnershipReleased=True
-                        ↓
-External System watches ERR
-  performs repair ───────────────────────────────────────▶ (external work)
-  patches ERR ExternalRemediationComplete=True
-                        ↓
-                        ERR reconciler:
-                          remove taint ─────────────────▶ taint removed
-                          remove managed label ──────────▶ label removed
-                          ERR CompletionTime set
-                        ↓
-                        EF reconciler (Owns watch fires):
-                          child ERR reports complete
-                          emit isHealthy=true event ────▶ platform-connector
-                          FaultCleared=True
-                          EF CompletionTime set
-                        ↓
-                        fault-quarantine: check recovered ──▶ node un-cordoned
+```mermaid
+sequenceDiagram
+    participant Ext as External System
+    participant EF as EF reconciler
+    participant PC as platform-connector
+    participant FQ as fault-quarantine
+    participant ND as node-drainer
+    participant FR as fault-remediation
+    participant ERR as ERR reconciler
+    participant Node
+    Ext->>EF: create ExternalFault
+    EF->>PC: emit CUSTOM health event (metadata externalFaultName + UID)
+    Note over EF: FaultReported=True
+    PC->>FQ: CUSTOM event (via datastore)
+    FQ->>Node: cordon (unschedulable=true)
+    ND->>Node: drain workloads (evicted)
+    FR->>ERR: create ERR (OwnerReference to EF)
+    ERR->>Node: apply release taint + managed=false
+    Note over ERR: NVSentinelOwnershipReleased=True
+    Ext->>Node: perform repair (external work)
+    Ext->>ERR: patch ExternalRemediationComplete=True
+    ERR->>Node: remove release taint + managed label
+    Note over ERR: ERR CompletionTime set
+    ERR-->>EF: Owns watch fires (child ERR complete)
+    EF->>PC: emit isHealthy=true event
+    Note over EF: FaultCleared=True, EF CompletionTime set
+    PC->>FQ: healthy event (via datastore)
+    FQ->>Node: check recovered, un-cordon
 ```
 
 ### Sequence: EF operator delete (cancellation)
 
-```text
-Operator             Kubernetes GC        ERR reconciler (finalizer)
-────────             ─────────────        ──────────────────────────
-kubectl delete ef ──▶
-                     EF finalizer runs:
-                       CompletionTime set
-                       finalizer removed
-                     EF deleted
-                     GC cascades ────────▶ ERR deletion enqueued
-                                           ERR finalizer runs:
-                                             remove taint
-                                             remove managed label
-                                           ERR finalizer removed
-                                           ERR GC'd
+```mermaid
+sequenceDiagram
+    participant Op as Operator
+    participant EF as EF reconciler
+    participant GC as Kubernetes GC
+    participant ERR as ERR reconciler
+    participant Node
+    Op->>EF: kubectl delete ef
+    Note over EF: finalizer runs, stamp CompletionTime, remove finalizer, EF deleted
+    GC->>ERR: cascade delete (owner EF gone)
+    Note over ERR: finalizer runs
+    ERR->>Node: remove release taint + managed label
+    Note over ERR: finalizer removed, ERR garbage-collected
 ```
 
 ## Rationale
