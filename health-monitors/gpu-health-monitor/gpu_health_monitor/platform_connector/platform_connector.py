@@ -308,11 +308,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 # Observe-only checks are forced to STORE_ONLY; all others use the
                 # process-wide strategy. Applied to both the unhealthy and the
                 # clearing event so fault-quarantine sees a consistent strategy.
-                effective_strategy = (
-                    platformconnector_pb2.STORE_ONLY
-                    if check_name in self._store_only_checks
-                    else self._processing_strategy
-                )
+                effective_strategy = self._effective_strategy(check_name)
                 message = (
                     f"GPU {self._get_dcgm_watch(watch_name)} watch reported no errors"
                     if details.status == dcgmtypes.HealthStatus.PASS
@@ -486,20 +482,20 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
     ) -> bool:
         """Send health events to the platform connector with retries.
 
-                If the platform-connector Unix socket is absent at send time the send
-                is skipped immediately (no gRPC call, no buffering, no cache mutation)
-                and `False` is returned. The caller's cache must be left untouched so
-                the next poll re-emits with a fresh `generatedTimestamp`.
+        If the platform-connector Unix socket is absent at send time the send
+        is skipped immediately (no gRPC call, no buffering, no cache mutation)
+        and `False` is returned. The caller's cache must be left untouched so
+        the next poll re-emits with a fresh `generatedTimestamp`.
 
         Every gRPC call is bounded by ``GRPC_CALL_TIMEOUT_SECONDS`` so a stalled
-                connector cannot block a worker indefinitely. When
-                ``delivery_timeout_seconds`` is set (critical pre-cleanup paths), the
-                overall retry budget is also capped; ordinary health events keep the
-                existing MAX_RETRIES backoff without an overall deadline.
+        connector cannot block a worker indefinitely. When
+        ``delivery_timeout_seconds`` is set (critical pre-cleanup paths), the
+        overall retry budget is also capped; ordinary health events keep the
+        existing MAX_RETRIES backoff without an overall deadline.
 
-                Returns:
-                    True on success. False if the socket was missing or all retries
-                    were exhausted. Callers must update their cache only on True.
+        Returns:
+            True on success. False if the socket was missing or all retries
+            were exhausted. Callers must update their cache only on True.
         """
         if not self._is_platform_connector_socket_present():
             metrics.health_events_insertion_skipped_pc_unavailable.inc()

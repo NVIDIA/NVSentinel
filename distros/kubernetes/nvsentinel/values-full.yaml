@@ -886,15 +886,16 @@ gpu-health-monitor:
       # Default DCGM port is 5555
       port: 5555
 
+    # DCGM poll interval (also drives /healthz staleness and the default
+    # probe deadline via pollIntervalSeconds * 3).
+    pollIntervalSeconds: 15
+
     # Seconds a single DCGM probe may run before the watchdog reports
     # GpuDcgmUnresponsive (RESTART_BM) in embedded mode. A hung probe never
     # errors and never times out; without this the poll loop blocks and the hang
-    # is never published. Matches the /healthz staleness window
-    # (PollIntervalSeconds * 3), leaving the liveness probe's failureThreshold
-    # budget to publish the event before the container restarts. DCGM has no
-    # documented fixed RPC timeout; validate this deadline in observe-only mode.
-    # Set to 0 to disable.
-    probeDeadlineSeconds: 45
+    # is never published. When null/omitted, defaults to pollIntervalSeconds * 3.
+    # Set to 0 to disable (0 is not treated as unset).
+    probeDeadlineSeconds: null
 
     # Dry-run for the embedded-mode GpuDcgmUnresponsive event. While true the
     # check is persisted/exported but kept out of remediation. Remote modes emit

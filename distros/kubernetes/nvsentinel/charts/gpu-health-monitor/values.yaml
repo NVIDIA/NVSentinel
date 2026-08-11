@@ -40,15 +40,19 @@ dcgm:
   embedded:
     endpoint: localhost
     port: 5555
+  # DCGM poll interval written to config.ini. Also drives the /healthz
+  # staleness window (pollIntervalSeconds * 3) and the default probe deadline.
+  pollIntervalSeconds: 15
   # Seconds a single DCGM probe may run before the watchdog reports
   # GpuDcgmUnresponsive (RESTART_BM) in embedded mode. A hung probe never
   # errors and never times out — without this the poll loop just blocks and the
-  # hang is never published. Matches the /healthz staleness window
-  # (PollIntervalSeconds * 3), which leaves the liveness probe's
-  # failureThreshold budget to publish the event before the container is
-  # restarted. DCGM has no documented fixed RPC timeout; validate this deadline
-  # with probeStoreOnly before enabling remediation. Set to 0 to disable.
-  probeDeadlineSeconds: 45
+  # hang is never published. When null/omitted, defaults to
+  # pollIntervalSeconds * 3 so it stays coupled with /healthz staleness and
+  # leaves the liveness probe's failureThreshold budget to publish the event
+  # before the container is restarted. DCGM has no documented fixed RPC
+  # timeout; validate this deadline with probeStoreOnly before enabling
+  # remediation. Set to 0 to disable the watchdog (0 is not treated as unset).
+  probeDeadlineSeconds: null
   # Dry-run for the embedded-mode GpuDcgmUnresponsive event. While true the
   # check is persisted/exported but kept out of remediation. Remote modes emit
   # GpuDcgmConnectivityFailure with CONTACT_SUPPORT regardless of this setting.

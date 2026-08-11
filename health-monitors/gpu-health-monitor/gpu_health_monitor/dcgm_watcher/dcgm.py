@@ -718,15 +718,20 @@ class DCGMWatcher:
         self,
         dcgm_group: pydcgm.DcgmGroup,
         dcgm_handle: pydcgm.DcgmHandle,
+        *,
+        track_probe: bool = True,
     ):
         """Clean up DCGM resources safely.
 
         Group deletion and handle shutdown are in separate try blocks so that
-        a failure in Delete() does not prevent Shutdown() from running. The whole
-        sequence is watchdog-tracked because every call in it reaches the driver,
-        and Shutdown() in particular is a likely place to block.
+        a failure in Delete() does not prevent Shutdown() from running. When
+        ``track_probe`` is true the sequence is watchdog-tracked because every
+        call reaches the driver and Shutdown() in particular can block. Intentional
+        loop teardown passes ``track_probe=False`` so a slow cleanup during
+        rolling upgrades cannot publish a false GpuDcgmUnresponsive.
         """
-        with self._probe("dcgm_cleanup"):
+        probe = self._probe("dcgm_cleanup") if track_probe else contextlib.nullcontext()
+        with probe:
             if dcgm_group and self._field_group is not None:
                 try:
                     with metrics.dcgm_api_latency.labels("field_unwatch_fields").time():
@@ -827,11 +832,13 @@ class DCGMWatcher:
                                 [health_status, gpu_ids],
                             )
         finally:
-            # Shutdown() stops the embedded hostengine and its loopback server.
+            # Stop the watchdog before teardown cleanup. A slow Shutdown() during
+            # rolling upgrades / DCGM restarts must not publish GpuDcgmUnresponsive.
+            # Mid-loop cleanups after connectivity failure remain probe-tracked.
+            watchdog_exit.set()
+            if watchdog_thread is not None:
+                watchdog_thread.join(timeout=PROBE_WATCHDOG_INTERVAL_SECONDS * 2)
             try:
-                self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
+                self._cleanup_dcgm_resources(dcgm_group, dcgm_handle, track_probe=False)
             finally:
-                watchdog_exit.set()
-                if watchdog_thread is not None:
-                    watchdog_thread.join(timeout=PROBE_WATCHDOG_INTERVAL_SECONDS * 2)
                 self._callback_thread_pool.shutdown(cancel_futures=True)

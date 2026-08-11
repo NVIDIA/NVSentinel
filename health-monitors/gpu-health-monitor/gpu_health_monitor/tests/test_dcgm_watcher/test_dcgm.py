@@ -1429,12 +1429,27 @@ class TestDCGMWatcherProbeWatchdog:
         dcgm_handle_mock = MagicMock()
         observed = {}
 
-        # Shutdown() reaches the driver, so it must be tracked while it runs.
+        # Mid-loop cleanup after connectivity failure still reaches the driver
+        # and must stay tracked.
         dcgm_handle_mock.Shutdown.side_effect = lambda: observed.update(operation=watcher._probe_watchdog._operation)
 
         watcher._cleanup_dcgm_resources(None, dcgm_handle_mock)
 
         assert observed["operation"] == "dcgm_cleanup"
+        assert watcher._probe_watchdog._operation is None
+
+    def test_teardown_cleanup_skips_probe_tracking(self):
+        watcher = self._make_watcher(probe_deadline_seconds=30)
+        dcgm_handle_mock = MagicMock()
+        observed = {}
+
+        # Intentional loop teardown must not publish GpuDcgmUnresponsive when
+        # Shutdown() is merely slow (rolling upgrades / DCGM restarts).
+        dcgm_handle_mock.Shutdown.side_effect = lambda: observed.update(operation=watcher._probe_watchdog._operation)
+
+        watcher._cleanup_dcgm_resources(None, dcgm_handle_mock, track_probe=False)
+
+        assert observed["operation"] is None
         assert watcher._probe_watchdog._operation is None
 
 
