@@ -127,11 +127,15 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         Format is two lines: error code, then the ProcessingStrategy name used
         for the unhealthy event. The strategy must be restored for the clear
         path so fault-quarantine still matches the pair after a config change.
+        The marker is written to a sibling temporary file and renamed so a
+        restart mid-write cannot leave the strategy line missing.
         """
+        tmp_path = f"{self._dcgm_unresponsive_state_path}.tmp"
         try:
             strategy_name = platformconnector_pb2.ProcessingStrategy.Name(processing_strategy)
-            with open(self._dcgm_unresponsive_state_path, "w") as state_file:
+            with open(tmp_path, "w") as state_file:
                 state_file.write(f"DCGM_PROBE_HANG\n{strategy_name}\n")
+            os.replace(tmp_path, self._dcgm_unresponsive_state_path)
             self._dcgm_unresponsive_strategy = processing_strategy
         except OSError as e:
             log.error("Failed to persist unresponsive-DCGM state at %s: %s", self._dcgm_unresponsive_state_path, e)
@@ -552,7 +556,10 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     delay *= 1.5
         metrics.health_events_insertion_to_uds_error.inc()
         if timed_out:
-            reason = f"delivery budget exhausted after {attempts} attempt(s) (delivery_timeout_seconds={delivery_timeout_seconds})"
+            reason = (
+                f"delivery budget exhausted after {attempts} attempt(s) "
+                f"(delivery_timeout_seconds={delivery_timeout_seconds})"
+            )
         else:
             reason = f"retry limit exhausted after {attempts} attempt(s)"
         log.warning(
