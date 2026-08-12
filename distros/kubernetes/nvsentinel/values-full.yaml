@@ -886,6 +886,23 @@ gpu-health-monitor:
       # Default DCGM port is 5555
       port: 5555
 
+    # DCGM poll interval (also drives /healthz staleness and the default
+    # probe deadline via pollIntervalSeconds * 3).
+    pollIntervalSeconds: 15
+
+    # Seconds a single DCGM probe may run before the watchdog reports
+    # GpuDcgmUnresponsive (RESTART_BM) in embedded mode. A hung probe never
+    # errors and never times out; without this the poll loop blocks and the hang
+    # is never published. When null/omitted, defaults to pollIntervalSeconds * 3.
+    # Set to 0 to disable (0 is not treated as unset).
+    probeDeadlineSeconds: null
+
+    # Dry-run for the embedded-mode GpuDcgmUnresponsive event. While true the
+    # check is persisted/exported but kept out of remediation. Remote modes emit
+    # GpuDcgmConnectivityFailure with CONTACT_SUPPORT regardless of this setting.
+    # Set to false only after validating embedded-mode detections on your fleet.
+    probeStoreOnly: true
+
   # Use host networking for GPU health monitor pods
   # Required when:
   # - DCGM is running as hostProcess (not as service)
@@ -903,6 +920,13 @@ gpu-health-monitor:
     # DCGM_FR_CLOCK_THROTTLE_POWER, or custom field-monitor codes like
     # GPU_TEMP_HW_SLOWDOWN_VIOLATION). Empty by default (no suppression).
     suppressedErrorCodes: []
+
+    # Consecutive GpuDcgmConnectivityFailure cycles after which the recommended
+    # action escalates from CONTACT_SUPPORT to RESTART_BM. Enable only for a
+    # node-local endpoint where repeated unreachability is known to indicate a
+    # driver wedge; shared-service and network failures are not fixed by reboot.
+    # 0 disables escalation.
+    connectivityFailureEscalationThreshold: 0
 
   # Additional volume mounts for GPU health monitor
   # Use when monitor needs access to host files
@@ -931,6 +955,20 @@ gpu-health-monitor:
     requests:
       cpu: 100m
       memory: 128Mi
+
+  # Keep enough liveness budget after /healthz becomes stale for bounded
+  # critical-event delivery to complete.
+  livenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
 
   # Scheduling configuration
   nodeSelector: {}

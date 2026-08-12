@@ -352,6 +352,51 @@ func TestUpdatePodDevicesAnnotationsWithNonRetryablePatchError(t *testing.T) {
 	assert.Equal(t, numUpdates, 0)
 }
 
+func TestUpdatePodDevicesAnnotationsSkipsDeletedPod(t *testing.T) {
+	deletedTestPod := testPodTemplate.DeepCopy()
+	deletedTestPod.SetName("deleted-pod")
+	existingTestPod := testPodTemplate.DeepCopy()
+
+	deletedPodKey := "default/deleted-pod"
+	existingPodKey := "default/example-pod"
+	deviceAnnotation := map[string]*model.DeviceAnnotation{
+		deletedPodKey: {
+			Devices: map[string][]string{
+				"nvidia.com/gpu": {
+					"GPU-123",
+				},
+			},
+		},
+		existingPodKey: {
+			Devices: map[string][]string{
+				"nvidia.com/gpu": {
+					"GPU-456",
+				},
+			},
+		},
+	}
+	_, expectedDeviceAnnotationJSON, err := getDeviceAnnotation(deviceAnnotation, existingPodKey, "")
+	assert.NoError(t, err)
+
+	testCase := &kubeletResponses{
+		pods:          []corev1.Pod{*deletedTestPod, *existingTestPod},
+		httpClientErr: nil,
+		devicesPerPod: deviceAnnotation,
+		grpcClientErr: nil,
+	}
+	mapper, err := newTestDeviceMapper(testCase, []*corev1.Pod{existingTestPod})
+	assert.NoError(t, err)
+
+	numUpdates, err := mapper.UpdatePodDevicesAnnotations()
+	assert.NoError(t, err)
+	assert.Equal(t, 1, numUpdates)
+
+	pod, err := mapper.kubernetesClient.CoreV1().Pods(existingTestPod.GetNamespace()).
+		Get(context.TODO(), existingTestPod.GetName(), metav1.GetOptions{})
+	assert.NoError(t, err)
+	assert.Equal(t, expectedDeviceAnnotationJSON, pod.GetAnnotations()[model.PodDeviceAnnotationName])
+}
+
 func TestUpdatePodDevicesAnnotationsWithMultiplePodsResourcesAndDevices(t *testing.T) {
 	podKey1 := "default/example-pod"
 	podKey2 := "default/example-pod2"

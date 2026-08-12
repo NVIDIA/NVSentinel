@@ -63,6 +63,8 @@ spec:
             - {{ .Values.global.metadataPath | quote }}
             - --processing-strategy
             - {{ .Values.processingStrategy | quote }}
+            - --suppress-nvlink-down-unbridged-pcie
+            - {{ .Values.suppressNvlinkDownOnUnbridgedPcie | quote }}
           securityContext:
             runAsUser: 0
             {{- if eq (include "gpu-health-monitor.dcgmMode" .) "embedded-mode" }}
@@ -81,18 +83,12 @@ spec:
             httpGet:
               path: /healthz
               port: {{ .Values.global.metricsPort }}
-            initialDelaySeconds: 30
-            periodSeconds: 30
-            timeoutSeconds: 3
-            failureThreshold: 3
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
             httpGet:
               path: /metrics
               port: {{ .Values.global.metricsPort }}
-            initialDelaySeconds: 10
-            periodSeconds: 10
-            timeoutSeconds: 3
-            failureThreshold: 3
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
           volumeMounts:
             {{- if .Values.additionalVolumeMounts }}
             {{ toYaml .Values.additionalVolumeMounts | nindent 12 }}

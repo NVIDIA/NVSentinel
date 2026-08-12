@@ -32,12 +32,16 @@ resources:
 #   - InfiniBandStateCheck: Monitors IB port state (UP/DOWN), physical state, device disappearance,
 #       card homogeneity anomalies; auto-excludes management NICs via NUMA topology
 #   - InfiniBandDegradationCheck: Monitors IB counter thresholds (fatal and non-fatal)
+#   - InfiniBandCharDeviceCheck: Detects missing IB character-device nodes (issm/umad/uverbs)
+#       via /sys/class/infiniband_mad and /sys/class/infiniband_verbs — a device whose ports
+#       read ACTIVE/LinkUp but whose /dev/infiniband/* nodes are missing (pods fail to start)
 #   - EthernetStateCheck: Monitors Ethernet/RoCE interface state (operstate), device disappearance,
 #       card homogeneity anomalies; auto-excludes management NICs via NUMA topology
 #   - EthernetDegradationCheck: Monitors Ethernet/RoCE counter thresholds
 enabledChecks:
   - InfiniBandStateCheck
   - InfiniBandDegradationCheck
+  - InfiniBandCharDeviceCheck
   - EthernetStateCheck
   - EthernetDegradationCheck
 

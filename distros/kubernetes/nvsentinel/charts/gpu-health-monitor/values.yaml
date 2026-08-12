@@ -40,6 +40,24 @@ dcgm:
   embedded:
     endpoint: localhost
     port: 5555
+  # DCGM poll interval written to config.ini. Also drives the /healthz
+  # staleness window (pollIntervalSeconds * 3) and the default probe deadline.
+  pollIntervalSeconds: 15
+  # Seconds a single DCGM probe may run before the watchdog reports
+  # GpuDcgmUnresponsive (RESTART_BM) in embedded mode. A hung probe never
+  # errors and never times out — without this the poll loop just blocks and the
+  # hang is never published. When null/omitted, defaults to
+  # pollIntervalSeconds * 3 so it stays coupled with /healthz staleness and
+  # leaves the liveness probe's failureThreshold budget to publish the event
+  # before the container is restarted. DCGM has no documented fixed RPC
+  # timeout; validate this deadline with probeStoreOnly before enabling
+  # remediation. Set to 0 to disable the watchdog (0 is not treated as unset).
+  probeDeadlineSeconds: null
+  # Dry-run for the embedded-mode GpuDcgmUnresponsive event. While true the
+  # check is persisted/exported but kept out of remediation. Remote modes emit
+  # GpuDcgmConnectivityFailure with CONTACT_SUPPORT regardless of this setting.
+  # Set to false only after validating embedded-mode detections on your fleet.
+  probeStoreOnly: true
 
 # DCGM field-level monitoring feature flags
 dcgmFieldsMonitoring:
@@ -54,6 +72,12 @@ dcgmHealthCheck:
   # DCGM error codes to drop before they become health events
   # Example: ["DCGM_FR_CLOCK_THROTTLE_POWER"]
   suppressedErrorCodes: []
+  # Consecutive GpuDcgmConnectivityFailure cycles after which the recommended
+  # action escalates from CONTACT_SUPPORT to RESTART_BM. Enable only when the
+  # endpoint is node-local and repeated unreachability is known to represent a
+  # wedged driver; a shared service or network outage is not fixed by rebooting
+  # this node. 0 disables escalation and keeps failures at CONTACT_SUPPORT.
+  connectivityFailureEscalationThreshold: 0
 
 # Use host networking for GPU health monitor pods. external-hostengine mode
 # enables host networking automatically because the configured endpoint is
@@ -81,6 +105,20 @@ resources:
     cpu: 100m
     memory: 128Mi
 
+# If probeDeadlineSeconds is raised, keep enough liveness failures after the
+# /healthz staleness window for bounded critical-event delivery to finish.
+livenessProbe:
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+readinessProbe:
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
 # Scheduling configuration
 nodeSelector: {}
 affinity: {}
@@ -96,3 +134,14 @@ verbose: "False"
 # EXECUTE_REMEDIATION: normal behavior; downstream modules may update cluster state.
 # STORE_ONLY: observability-only behavior; event should be persisted/exported but should not modify cluster resources (i.e., no node conditions, no quarantine, no drain, no remediation).
 processingStrategy: EXECUTE_REMEDIATION
+
+# Operator assertion that bridge-capable PCIe GPUs (A100/H100 PCIe) in this
+# fleet run without NVLink bridges by design. When true, DCGM_FR_NVLINK_DOWN
+# is suppressed on PCIe-named GPUs whose metadata shows zero active NVLink
+# links (DCGM otherwise reports the permanently-inactive bridge links as a
+# FATAL fault with RESTART_VM). Leave false if any pool uses NVLink bridges:
+# an unbridged card and a card whose bridge was dead at metadata-collection
+# time are indistinguishable, so enabling this could mask a bridge failure
+# present at boot. GPUs with no NVLink silicon (L40, A40) are always
+# suppressed regardless of this value.
+suppressNvlinkDownOnUnbridgedPcie: "False"

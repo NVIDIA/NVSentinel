@@ -133,7 +133,7 @@ func (e *mongoEvent) GetNodeName() (string, error) {
 
 func (e *mongoEvent) GetResumeToken() []byte {
 	// Extract the resume token that was captured when the event was received
-	// This token is added by the ChangeStreamWatcher in processChangeStreamEvent
+	// This token is added by the ChangeStreamWatcher in processNextEvent
 	token, ok := e.rawEvent["_resumeToken"]
 	if !ok {
 		// If no token was found, return empty (caller will fall back to cursor position)
@@ -143,6 +143,8 @@ func (e *mongoEvent) GetResumeToken() []byte {
 	// MongoDB resume tokens can be various types (Binary, string, etc.)
 	// Try to extract as byte array
 	switch v := token.(type) {
+	case bson.Raw:
+		return v
 	case []byte:
 		return v
 	case primitive.Binary:

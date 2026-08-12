@@ -63,7 +63,7 @@ logLevel: info
 # Set to an empty string to disable MongoDB TLS client certificate mounts.
 clientCertMountPath: /etc/ssl/client-certs
 
-# cspName specifies the active cloud service provider. Can be "gcp" or "aws".
+# cspName specifies the active cloud service provider. Can be "gcp", "aws", or "lambda".
 cspName: ""
 
 # config.toml content will be generated from the fields below using the configmap template.
@@ -93,3 +93,23 @@ configToml:
     # If empty, defaults to "<clusterName>-nvsentinel-health-monitor-assume-role-policy".
     # Set this if your cluster name exceeds 19 characters (AWS IAM role names max 64 chars).
     iamRoleName: ""
+
+  lambda:
+    # apiEndpoint is the base URL of the Lambda maintenance API.
+    # Defaulted to the production endpoint so the happy path works out of the
+    # box; override for staging (cloud.lambdastaging.com) or a local fake.
+    apiEndpoint: "https://cloud.lambda.ai"
+    # pollingIntervalSeconds controls how often the Lambda maintenance-events
+    # API is polled for new / updated events. Lower values reduce trigger
+    # latency at the cost of more API traffic.
+    pollingIntervalSeconds: 30
+    # mockEventsFilePath is intentionally not exposed through the chart. It is
+    # a dev-only path in pkg/config.LambdaConfig that swaps the real API poller
+    # for a JSON-file source; set it directly in a locally-run config.toml when
+    # exercising csp-health-monitor without hitting cloud.lambda.ai.
+
+# lambdaApiKeySecret names the Secret containing the LAMBDA_API_KEY env var.
+# Required when cspName=lambda.
+lambdaApiKeySecret:
+  name: ""
+  key: "LAMBDA_API_KEY"

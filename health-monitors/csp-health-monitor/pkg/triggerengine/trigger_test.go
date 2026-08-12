@@ -67,6 +67,26 @@ func (m *MockDatastore) FindEventsToTriggerHealthy(
 	return args.Get(0).([]model.MaintenanceEvent), args.Error(1)
 }
 
+func (m *MockDatastore) FindEmergencyEventsToTriggerQuarantine(
+	ctx context.Context,
+) ([]model.MaintenanceEvent, error) {
+	args := m.Called(ctx)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]model.MaintenanceEvent), args.Error(1)
+}
+
+func (m *MockDatastore) FindCancelledEventsToTriggerHealthy(
+	ctx context.Context,
+) ([]model.MaintenanceEvent, error) {
+	args := m.Called(ctx)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]model.MaintenanceEvent), args.Error(1)
+}
+
 func (m *MockDatastore) UpdateEventStatus(ctx context.Context, eventID string, newStatus model.InternalStatus) error {
 	args := m.Called(ctx, eventID, newStatus)
 	return args.Error(0)
@@ -620,9 +640,15 @@ func TestCheckAndTriggerEvents(t *testing.T) {
 				mStore.On("FindEventsToTriggerQuarantine", ctx, time.Duration(cfg.TriggerQuarantineWorkflowTimeLimitMinutes)*time.Minute).
 					Return([]model.MaintenanceEvent{}, nil).
 					Once()
+				mStore.On("FindEmergencyEventsToTriggerQuarantine", ctx).
+					Return([]model.MaintenanceEvent{}, nil).
+					Maybe()
 				mStore.On("FindEventsToTriggerHealthy", ctx, time.Duration(cfg.PostMaintenanceHealthyDelayMinutes)*time.Minute).
 					Return([]model.MaintenanceEvent{}, nil).
 					Once()
+				mStore.On("FindCancelledEventsToTriggerHealthy", ctx).
+					Return([]model.MaintenanceEvent{}, nil).
+					Maybe()
 			},
 			expectError: false,
 			verifyMocks: func(t *testing.T, mStore *MockDatastore, mUDSClient *MockUDSClient) {
@@ -636,9 +662,15 @@ func TestCheckAndTriggerEvents(t *testing.T) {
 				mStore.On("FindEventsToTriggerQuarantine", ctx, mock.AnythingOfType("time.Duration")).
 					Return([]model.MaintenanceEvent{defaultQuarantineEvent}, nil).
 					Once()
+				mStore.On("FindEmergencyEventsToTriggerQuarantine", ctx).
+					Return([]model.MaintenanceEvent{}, nil).
+					Maybe()
 				mStore.On("FindEventsToTriggerHealthy", ctx, mock.AnythingOfType("time.Duration")).
 					Return([]model.MaintenanceEvent{}, nil).
 					Once()
+				mStore.On("FindCancelledEventsToTriggerHealthy", ctx).
+					Return([]model.MaintenanceEvent{}, nil).
+					Maybe()
 				// processAndSendTrigger mocks for defaultQuarantineEvent
 				mUDSClient.On("HealthEventOccurredV1", ctx, mock.MatchedBy(func(events *pb.HealthEvents) bool {
 					return len(events.Events) == 1 && events.Events[0].NodeName == defaultQuarantineEvent.NodeName &&
@@ -660,9 +692,15 @@ func TestCheckAndTriggerEvents(t *testing.T) {
 				mStore.On("FindEventsToTriggerQuarantine", ctx, mock.AnythingOfType("time.Duration")).
 					Return([]model.MaintenanceEvent{}, nil).
 					Once()
+				mStore.On("FindEmergencyEventsToTriggerQuarantine", ctx).
+					Return([]model.MaintenanceEvent{}, nil).
+					Maybe()
 				mStore.On("FindEventsToTriggerHealthy", ctx, mock.AnythingOfType("time.Duration")).
 					Return([]model.MaintenanceEvent{defaultHealthyEvent}, nil).
 					Once()
+				mStore.On("FindCancelledEventsToTriggerHealthy", ctx).
+					Return([]model.MaintenanceEvent{}, nil).
+					Maybe()
 				// processAndSendTrigger mocks for defaultHealthyEvent
 				mUDSClient.On("HealthEventOccurredV1", ctx, mock.MatchedBy(func(events *pb.HealthEvents) bool {
 					return len(events.Events) == 1 && events.Events[0].NodeName == defaultHealthyEvent.NodeName &&
@@ -700,6 +738,9 @@ func TestCheckAndTriggerEvents(t *testing.T) {
 				mStore.On("FindEventsToTriggerQuarantine", ctx, mock.AnythingOfType("time.Duration")).
 					Return([]model.MaintenanceEvent{}, nil).
 					Once()
+				mStore.On("FindEmergencyEventsToTriggerQuarantine", ctx).
+					Return([]model.MaintenanceEvent{}, nil).
+					Maybe()
 				mStore.On("FindEventsToTriggerHealthy", ctx, mock.AnythingOfType("time.Duration")).
 					Return(nil, errors.New("db find healthy error")).
 					Once()
@@ -708,6 +749,63 @@ func TestCheckAndTriggerEvents(t *testing.T) {
 			expectedErrorContains: "failed to query for healthy triggers",
 			verifyMocks: func(t *testing.T, mStore *MockDatastore, mUDSClient *MockUDSClient) {
 				mStore.AssertExpectations(t)
+			},
+		},
+		{
+			name: "One cancelled event fires HEALTHY immediately",
+			setupMocks: func(mStore *MockDatastore, mUDSClient *MockUDSClient) {
+				cancelledEvent := model.MaintenanceEvent{
+					EventID: "c-event-1", NodeName: "node-h1", ResourceType: "test", ResourceID: "c-id1",
+					RecommendedAction: pb.RecommendedAction_NONE.String(),
+					Status:            model.StatusCancelled,
+				}
+				mStore.On("FindEventsToTriggerQuarantine", ctx, mock.AnythingOfType("time.Duration")).
+					Return([]model.MaintenanceEvent{}, nil).
+					Once()
+				mStore.On("FindEmergencyEventsToTriggerQuarantine", ctx).
+					Return([]model.MaintenanceEvent{}, nil).
+					Maybe()
+				mStore.On("FindEventsToTriggerHealthy", ctx, mock.AnythingOfType("time.Duration")).
+					Return([]model.MaintenanceEvent{}, nil).
+					Once()
+				mStore.On("FindCancelledEventsToTriggerHealthy", ctx).
+					Return([]model.MaintenanceEvent{cancelledEvent}, nil).
+					Once()
+				mUDSClient.On("HealthEventOccurredV1", ctx, mock.MatchedBy(func(events *pb.HealthEvents) bool {
+					return len(events.Events) == 1 &&
+						events.Events[0].NodeName == cancelledEvent.NodeName &&
+						events.Events[0].IsHealthy
+				}), mock.Anything).Return(&emptypb.Empty{}, nil).Once()
+				mStore.On("UpdateEventStatus", ctx, cancelledEvent.EventID, model.StatusHealthyTriggered).
+					Return(nil).
+					Once()
+			},
+			expectError: false,
+			verifyMocks: func(t *testing.T, mStore *MockDatastore, mUDSClient *MockUDSClient) {
+				mStore.AssertExpectations(t)
+				mUDSClient.AssertExpectations(t)
+			},
+		},
+		{
+			name: "Cancelled query error is non-fatal, healthy processing still succeeded",
+			setupMocks: func(mStore *MockDatastore, mUDSClient *MockUDSClient) {
+				mStore.On("FindEventsToTriggerQuarantine", ctx, mock.AnythingOfType("time.Duration")).
+					Return([]model.MaintenanceEvent{}, nil).
+					Once()
+				mStore.On("FindEmergencyEventsToTriggerQuarantine", ctx).
+					Return([]model.MaintenanceEvent{}, nil).
+					Maybe()
+				mStore.On("FindEventsToTriggerHealthy", ctx, mock.AnythingOfType("time.Duration")).
+					Return([]model.MaintenanceEvent{}, nil).
+					Once()
+				mStore.On("FindCancelledEventsToTriggerHealthy", ctx).
+					Return(nil, errors.New("db find cancelled error")).
+					Once()
+			},
+			expectError: false, // Cancelled query error must not fail the poll cycle.
+			verifyMocks: func(t *testing.T, mStore *MockDatastore, mUDSClient *MockUDSClient) {
+				mStore.AssertExpectations(t)
+				mUDSClient.AssertNotCalled(t, "HealthEventOccurredV1", mock.Anything, mock.Anything, mock.Anything)
 			},
 		},
 		{
@@ -721,10 +819,16 @@ func TestCheckAndTriggerEvents(t *testing.T) {
 				mStore.On("FindEventsToTriggerQuarantine", ctx, mock.AnythingOfType("time.Duration")).
 					Return([]model.MaintenanceEvent{eventWithNoNode}, nil).
 					Once()
+				mStore.On("FindEmergencyEventsToTriggerQuarantine", ctx).
+					Return([]model.MaintenanceEvent{}, nil).
+					Maybe()
 
 				mStore.On("FindEventsToTriggerHealthy", ctx, mock.AnythingOfType("time.Duration")).
 					Return([]model.MaintenanceEvent{defaultHealthyEvent}, nil).
 					Once()
+				mStore.On("FindCancelledEventsToTriggerHealthy", ctx).
+					Return([]model.MaintenanceEvent{}, nil).
+					Maybe()
 				// Mocks for successful healthy event
 				mUDSClient.On("HealthEventOccurredV1", ctx, mock.MatchedBy(func(events *pb.HealthEvents) bool {
 					return len(events.Events) == 1 && events.Events[0].NodeName == defaultHealthyEvent.NodeName &&
@@ -787,8 +891,10 @@ func TestHealthyTriggerWaitsForNodeReady(t *testing.T) {
 	mUDSClient := new(MockUDSClient)
 
 	mStore.On("FindEventsToTriggerQuarantine", ctx, mock.AnythingOfType("time.Duration")).Return([]model.MaintenanceEvent{}, nil).Twice()
+	mStore.On("FindEmergencyEventsToTriggerQuarantine", ctx).Return([]model.MaintenanceEvent{}, nil).Maybe()
 	mStore.On("FindEventsToTriggerHealthy", ctx, mock.AnythingOfType("time.Duration")).Return([]model.MaintenanceEvent{healthyEvent}, nil).Once()
 	mStore.On("FindEventsToTriggerHealthy", ctx, mock.AnythingOfType("time.Duration")).Return([]model.MaintenanceEvent{}, nil).Once()
+	mStore.On("FindCancelledEventsToTriggerHealthy", ctx).Return([]model.MaintenanceEvent{}, nil).Maybe()
 
 	mUDSClient.On("HealthEventOccurredV1", mock.Anything, mock.Anything, mock.Anything).Return(&emptypb.Empty{}, nil).Once()
 	mStore.On("UpdateEventStatus", mock.AnythingOfType("*context.timerCtx"), healthyEvent.EventID, model.StatusHealthyTriggered).Return(nil).Once()

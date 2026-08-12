@@ -37,6 +37,8 @@ func GetNormalizer(csp model.CSP) (Normalizer, error) {
 		return &GCPNormalizer{}, nil // GCPNormalizer is defined in gcp_normalizer.go
 	case model.CSPAWS:
 		return &AWSNormalizer{}, nil // AWSNormalizer is defined in aws_normalizer.go
+	case model.CSPLambda:
+		return &LambdaNormalizer{}, nil // LambdaNormalizer is defined in lambda_normalizer.go
 	default:
 		return nil, fmt.Errorf("no normalizer available for CSP: %s", csp)
 	}

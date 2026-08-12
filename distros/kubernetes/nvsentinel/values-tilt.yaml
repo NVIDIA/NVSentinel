@@ -380,7 +380,9 @@ health-events-analyzer:
   config: |
     [[rules]]
     name = "MultipleRemediations"
-    description = "Detect if multiple remediations are performed within 2 minutes on a node (test config)"
+    # Keep this wider than two full remediation cycles in CI. A 120s window
+    # flakes when each reboot takes ~70-90s (see #1458).
+    description = "Detect if multiple remediations are performed within 10 minutes on a node (test config)"
     recommended_action = "CONTACT_SUPPORT"
     evaluate_rule = true
     stage = [
@@ -392,7 +394,7 @@ health-events-analyzer:
               {
                 "$gte": [
                   "$healthevent.generatedtimestamp.seconds",
-                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 120]}
+                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 600]}
                 ]
               },
               {

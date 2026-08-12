@@ -16,6 +16,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	fd "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/syslog-monitor"
 )
@@ -134,5 +135,45 @@ func TestApplyKataConfig_OverridesKernelFilterWithContainerdUnit(t *testing.T) {
 				t.Errorf("check %q in Kata mode must not carry -k (would AND with the unit filter)", name)
 			}
 		}
+	}
+}
+
+func TestParseBootLookbackWindow(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    time.Duration
+		wantErr bool
+	}{
+		{"valid hours", "2h", 2 * time.Hour, false},
+		{"valid minutes", "30m", 30 * time.Minute, false},
+		{"valid combined", "1h30m", 90 * time.Minute, false},
+		{"zero means unlimited", "0", 0, false},
+		{"negative rejected", "-1h", 0, true},
+		{"negative small", "-30s", 0, true},
+		{"invalid format", "abc", 0, true},
+		{"empty string", "", 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseBootLookbackWindow(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("parseBootLookbackWindow(%q) expected error, got nil", tt.input)
+				}
+
+				return
+			}
+
+			if err != nil {
+				t.Errorf("parseBootLookbackWindow(%q) unexpected error: %v", tt.input, err)
+				return
+			}
+
+			if got != tt.want {
+				t.Errorf("parseBootLookbackWindow(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
 	}
 }
