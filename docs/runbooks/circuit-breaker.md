@@ -34,7 +34,7 @@ kubectl get nodes | grep SchedulingDisabled | wc -l
 Check each cordoned node:
 
 ```bash
-kubectl describe node <NODE_NAME>
+kubectl describe node {NODE_NAME}
 ```
 
 Look at **Conditions** and **Events** sections for hardware failures.
@@ -64,7 +64,7 @@ If health checks are flapping, this typically indicates an infrastructure issue 
 Manually uncordon nodes that are now healthy:
 
 ```bash
-kubectl uncordon <NODE_NAME>
+kubectl uncordon {NODE_NAME}
 ```
 
 Repeat for each affected node.

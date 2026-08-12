@@ -28,4 +28,5 @@ type NICDriverHandler struct {
 	processingStrategy pb.ProcessingStrategy
 	patterns           []CompiledPattern
 	resolver           Resolver
+	lockup             *softLockupDetector
 }

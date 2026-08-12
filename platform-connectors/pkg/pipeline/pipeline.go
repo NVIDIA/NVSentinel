@@ -32,6 +32,7 @@ type Transformer interface {
 	Name() string
 }
 
+// Pipeline runs configured transformers for each event.
 type Pipeline struct {
 	transformers []Transformer
 }
@@ -40,6 +41,21 @@ func New(transformers ...Transformer) *Pipeline {
 	return &Pipeline{transformers: transformers}
 }
 
+// Close releases resources owned by transformers that expose a Close method.
+func (p *Pipeline) Close() {
+	for _, t := range p.transformers {
+		closer, ok := t.(interface{ Close() error })
+		if !ok {
+			continue
+		}
+
+		if err := closer.Close(); err != nil {
+			slog.Warn("Failed to close pipeline transformer", "transformer", t.Name(), "error", err)
+		}
+	}
+}
+
+// Process applies the pipeline to the event.
 func (p *Pipeline) Process(ctx context.Context, event *pb.HealthEvent) {
 	ctx, span := tracing.StartSpan(ctx, "platform_connector.pipeline.process")
 	defer span.End()
@@ -62,4 +78,6 @@ func (p *Pipeline) Process(ctx context.Context, event *pb.HealthEvent) {
 			))
 		}
 	}
+
+	span.SetAttributes(attribute.Int("platform_connector.pipeline.failed_stage_count", failedCount))
 }

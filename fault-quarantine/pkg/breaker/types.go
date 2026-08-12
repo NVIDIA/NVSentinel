@@ -77,9 +77,9 @@ type Config struct {
 	// Default: 5 minutes. Events older than this window are automatically discarded.
 	Window time.Duration
 
-	// TripPercentage is the fraction of total nodes that, if exceeded by recent cordon
-	// events within Window, will trip the breaker (e.g., 50 for 50%).
-	// Default: 50 (50% of nodes).
+	// TripPercentage is the percentage of GPU nodes that, if reached by recent
+	// cordon events within Window, will trip the breaker (e.g., 50 for 50%).
+	// Default: 50 (50% of GPU nodes).
 	TripPercentage float64
 
 	// K8sClient provides operations for node counts and ConfigMap state persistence

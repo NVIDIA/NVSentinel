@@ -14,6 +14,8 @@
 package syslogmonitor
 
 import (
+	"time"
+
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/types"
 )
@@ -29,8 +31,12 @@ const (
 	FieldBootID         = "_BOOT_ID"
 	FieldMessage        = "MESSAGE"
 	FieldSyslogFacility = "SYSLOG_FACILITY"
+	FieldSyslogID       = "SYSLOG_IDENTIFIER"
 	FieldSystemdUnit    = "_SYSTEMD_UNIT"
+	FieldTransport      = "_TRANSPORT"
+	TransportKernel     = "kernel"
 
+	GPUResetSyslogID    = "nvsentinel-gpu-reset"
 	XIDErrorCheck       = "SysLogsXIDError"
 	SXIDErrorCheck      = "SysLogsSXIDError"
 	GPUFallenOffCheck   = "SysLogsGPUFallenOff"
@@ -48,6 +54,10 @@ type syslogMonitorState struct {
 	Version          int               `json:"version"`
 	BootID           string            `json:"boot_id"`
 	CheckLastCursors map[string]string `json:"check_last_cursors"`
+	// BootStartScanDone is true once the post-reboot boot-start journal
+	// scan has completed. Persisted so that a restart between the healthy
+	// event flush and the scan does not silently fall back to SeekTail.
+	BootStartScanDone bool `json:"boot_start_scan_done"`
 }
 
 // SyslogMonitor monitors journal logs for error patterns
@@ -82,6 +92,15 @@ type SyslogMonitor struct {
 	// after PC returns. Single-goroutine access (Run() is serialised by
 	// main's ticker loop), so no mutex is required.
 	pendingPostRebootBootID string
+	// postRebootInit is true after handleBootIDChange clears cursors and
+	// before the first successful journal scan on the new boot. While set,
+	// processJournalEntries seeks to the beginning of the current boot's
+	// journal instead of the tail, so entries emitted between boot and
+	// monitor startup are not missed. Single-goroutine access.
+	postRebootInit bool
+	// bootLookbackWindow limits how far back the post-reboot journal scan
+	// reaches. Configurable via --boot-lookback-window CLI flag.
+	bootLookbackWindow time.Duration
 }
 
 // CheckDefinition matches the structure of each check in the YAML config file

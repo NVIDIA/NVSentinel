@@ -20,7 +20,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/XSAM/otelsql"
@@ -392,26 +394,26 @@ func (c *PostgreSQLClient) UpdateDocumentStatusFields(
 func (c *PostgreSQLClient) UpdateDocument(
 	ctx context.Context, filter interface{}, update interface{},
 ) (*UpdateResult, error) {
-	// Build WHERE clause from filter
-	whereClause, args, err := c.buildWhereClause(filter)
-	if err != nil {
-		return nil, err
-	}
-
-	// Build SET clause from update
+	// Build SET clause first so its placeholders own the initial parameter range.
 	setClause, updateArgs, err := c.buildUpdateClause(update)
 	if err != nil {
 		return nil, err
 	}
 
-	// Combine args (WHERE args + SET args)
-	args = append(args, updateArgs...)
+	whereClause, filterArgs, err := c.buildWhereClause(filter)
+	if err != nil {
+		return nil, err
+	}
+
+	adjustedWhereClause := c.adjustParameterNumbers(whereClause, len(updateArgs))
+	args := updateArgs
+	args = append(args, filterArgs...)
 
 	// Build final query
 	//nolint:gosec // G201: table name from config, clauses built with parameterized queries
 	query := fmt.Sprintf(
 		"UPDATE %s SET %s, updated_at = NOW() WHERE %s",
-		c.table, setClause, whereClause,
+		c.table, setClause, adjustedWhereClause,
 	)
 
 	result, err := c.db.ExecContext(ctx, query, args...)
@@ -2622,17 +2624,16 @@ func (c *PostgreSQLClient) adjustParameterNumbers(clause string, offset int) str
 		return clause
 	}
 
-	// Replace parameter placeholders: $1 → $N, $2 → $N+1, etc.
-	// This is a simple implementation; for production, use a more robust parser
-	result := clause
+	paramRe := regexp.MustCompile(`\$(\d+)`)
 
-	for i := 20; i >= 1; i-- { // Process in reverse to avoid double replacement
-		oldParam := fmt.Sprintf("$%d", i)
-		newParam := fmt.Sprintf("$%d", i+offset)
-		result = strings.ReplaceAll(result, oldParam, newParam)
-	}
+	return paramRe.ReplaceAllStringFunc(clause, func(match string) string {
+		n, err := strconv.Atoi(match[1:])
+		if err != nil {
+			return match
+		}
 
-	return result
+		return fmt.Sprintf("$%d", n+offset)
+	})
 }
 
 // buildUpdateClause converts MongoDB-style update operators to PostgreSQL SET clause

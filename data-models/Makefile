@@ -59,11 +59,22 @@ PROTOC_GEN_CRD_VERSION ?= $(shell yq '.protobuf.protoc_gen_crd' ../.versions.yam
 CRD_OUT_DIR = ../distros/kubernetes/nvsentinel/charts/k8s-datastore/crds
 CRD_FILE = $(CRD_OUT_DIR)/health_event.crd.yaml
 
+# ExtRR CRD lands in the janitor chart, not k8s-datastore, because the ExtRR
+# reconciler ships with janitor.
+EXTRR_CRD_OUT_DIR = ../distros/kubernetes/nvsentinel/charts/janitor/crds
+EXTRR_CRD_FILE = $(EXTRR_CRD_OUT_DIR)/external_remediation.crd.yaml
+
 # Path to vendored crd.proto
 PROTO_OPTIONS = vendor/github.com/yandex/protoc-gen-crd/library/go/k8s/protoc_gen_crd/proto/crd.proto
 
-# Command to invoke protoc for CRD generation
-PROTOC_COMMAND = protoc --plugin=protoc-gen-crd=$(PROTOC_GEN_CRD) -I=protobufs -I=vendor --crd_out=paths=source_relative:$(CRD_OUT_DIR)
+# Command template to invoke protoc for CRD generation; the output directory is
+# parameterized so different protos can target different chart directories.
+# Usage: $(call PROTOC_CRD_CMD,<out-dir>) <proto-file>
+PROTOC_CRD_CMD = protoc --plugin=protoc-gen-crd=$(PROTOC_GEN_CRD) -I=protobufs -I=vendor --crd_out=paths=source_relative:$(1)
+
+# Backwards-compat alias for any existing callers that hard-coded
+# PROTOC_COMMAND against CRD_OUT_DIR.
+PROTOC_COMMAND = $(call PROTOC_CRD_CMD,$(CRD_OUT_DIR))
 
 # Install protoc-gen-crd from github (default)
 .PHONY: install-plugin-remote
@@ -91,16 +102,29 @@ vendor-proto: $(PROTO_OPTIONS)
 $(CRD_FILE): vendor-proto protobufs/health_event.proto install-plugin-remote
 	@echo "Generating CRD YAML at $(CRD_FILE)..."
 	mkdir -p $(CRD_OUT_DIR)
-	$(PROTOC_COMMAND) health_event.proto
+	$(call PROTOC_CRD_CMD,$(CRD_OUT_DIR)) health_event.proto
 	@ls -l $(CRD_FILE) || (echo "CRD file not generated!" && exit 1)
 
+# Generate CRD YAML for external_remediation.proto into the janitor chart.
+# protoc-gen-crd emits a CRD file for every transitively-imported proto that
+# carries a k8s_crd option, so running it against external_remediation.proto
+# also produces a stray health_event.crd.yaml here — the canonical
+# HealthEventResource CRD lives in the k8s-datastore chart, not janitor, so we
+# remove the duplicate after generation.
+$(EXTRR_CRD_FILE): vendor-proto protobufs/external_remediation.proto protobufs/health_event.proto install-plugin-remote
+	@echo "Generating CRD YAML at $(EXTRR_CRD_FILE)..."
+	mkdir -p $(EXTRR_CRD_OUT_DIR)
+	$(call PROTOC_CRD_CMD,$(EXTRR_CRD_OUT_DIR)) external_remediation.proto
+	@rm -f $(EXTRR_CRD_OUT_DIR)/health_event.crd.yaml
+	@ls -l $(EXTRR_CRD_FILE) || (echo "ExtRR CRD file not generated!" && exit 1)
+
 .PHONY: compile-crd-server
-compile-crd-server: $(CRD_FILE)
+compile-crd-server: $(CRD_FILE) $(EXTRR_CRD_FILE)
 
 # Clean generated CRD YAML
 .PHONY: crd-clean
 crd-clean:
-	rm -f $(CRD_FILE)
+	rm -f $(CRD_FILE) $(EXTRR_CRD_FILE)
 
 # Generate Go protobuf files for data-models (shared across all Go modules)
 .PHONY: protos-generate
@@ -116,7 +140,8 @@ protos-generate: vendor-proto protos-clean compile-crd-server
 	protoc -I protobufs/ -I vendor/ \
 		--go_out=pkg/protos/ --go_opt=paths=source_relative \
 		--go-grpc_out=pkg/protos/ --go-grpc_opt=paths=source_relative \
-		protobufs/health_event.proto
+		protobufs/health_event.proto \
+		protobufs/external_remediation.proto
 
 # Clean generated Go protobuf files
 .PHONY: protos-clean

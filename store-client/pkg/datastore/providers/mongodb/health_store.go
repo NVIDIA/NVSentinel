@@ -269,21 +269,42 @@ func (h *MongoHealthEventStore) CheckIfNodeAlreadyDrained(ctx context.Context,
 	return count > 0, nil
 }
 
-// FindLatestEventForNode finds the latest event for a node
-func (h *MongoHealthEventStore) FindLatestEventForNode(
-	ctx context.Context,
-	nodeName string,
+// findLatestByFilter returns the newest matching event (createdAt descending) for the
+// given filter, or nil if none match. Errors are returned unwrapped so callers can add
+// their own message and metadata.
+func (h *MongoHealthEventStore) findLatestByFilter(
+	ctx context.Context, filter map[string]interface{},
 ) (*datastore.HealthEventWithStatus, error) {
-	filter := map[string]interface{}{
-		"healthevent.nodename": nodeName,
-	}
-
-	// Sort by creation time descending to get the latest event
 	options := &client.FindOneOptions{
 		Sort: map[string]interface{}{"createdAt": -1},
 	}
 
 	result, err := h.databaseClient.FindOne(ctx, filter, options)
+	if err != nil {
+		return nil, err
+	}
+
+	var event datastore.HealthEventWithStatus
+
+	if err := result.Decode(&event); err != nil {
+		if client.IsNoDocumentsError(err) {
+			return nil, nil // No matching event
+		}
+
+		return nil, err
+	}
+
+	return &event, nil
+}
+
+// FindLatestEventForNode finds the latest event for a node
+func (h *MongoHealthEventStore) FindLatestEventForNode(
+	ctx context.Context,
+	nodeName string,
+) (*datastore.HealthEventWithStatus, error) {
+	event, err := h.findLatestByFilter(ctx, map[string]interface{}{
+		"healthevent.nodename": nodeName,
+	})
 	if err != nil {
 		return nil, datastore.NewQueryError(
 			datastore.ProviderMongoDB,
@@ -292,22 +313,23 @@ func (h *MongoHealthEventStore) FindLatestEventForNode(
 		).WithMetadata("nodeName", nodeName)
 	}
 
-	var event datastore.HealthEventWithStatus
+	return event, nil
+}
 
-	err = result.Decode(&event)
+// FindLatestHealthEventByQuery returns the newest matching event (by createdAt) using a
+// server-side sort and limit, so it never loads more than one document.
+func (h *MongoHealthEventStore) FindLatestHealthEventByQuery(ctx context.Context,
+	builder datastore.QueryBuilder) (*datastore.HealthEventWithStatus, error) {
+	event, err := h.findLatestByFilter(ctx, builder.ToMongo())
 	if err != nil {
-		if client.IsNoDocumentsError(err) {
-			return nil, nil // No event found, return nil without error
-		}
-
 		return nil, datastore.NewQueryError(
 			datastore.ProviderMongoDB,
-			"failed to decode latest event for node",
+			"failed to find latest health event by query",
 			err,
-		).WithMetadata("nodeName", nodeName)
+		)
 	}
 
-	return &event, nil
+	return event, nil
 }
 
 // FindHealthEventsByQuery finds health events using query builder

@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/stretchr/testify/require"
 )
 
@@ -153,6 +154,63 @@ func (h *HealthEventTemplate) WithRecommendedAction(action int) *HealthEventTemp
 func (h *HealthEventTemplate) WithProcessingStrategy(strategy int) *HealthEventTemplate {
 	h.ProcessingStrategy = strategy
 	return h
+}
+
+// SyslogXIDEventOptions describes a syslog-health-monitor XID health event.
+// It keeps call sites readable when varying PCI address, XID, process details,
+// and entity ordering across E2E scenarios.
+type SyslogXIDEventOptions struct {
+	NodeName           string
+	XID                string
+	PCI                string
+	GPUUUID            string
+	KernelTimestamp    int
+	PID                int
+	ProcessName        string
+	Detail             string
+	RecommendedAction  pb.RecommendedAction
+	ProcessingStrategy pb.ProcessingStrategy
+	ReverseEntityOrder bool
+}
+
+// NewSyslogXIDEvent builds a HealthEventTemplate that matches the shape emitted
+// by syslog-health-monitor for GPU XID lines.
+func NewSyslogXIDEvent(opts SyslogXIDEventOptions) *HealthEventTemplate {
+	processingStrategy := opts.ProcessingStrategy
+	if processingStrategy == pb.ProcessingStrategy_UNSPECIFIED {
+		processingStrategy = pb.ProcessingStrategy_EXECUTE_REMEDIATION
+	}
+
+	return NewHealthEvent(opts.NodeName).
+		WithAgent("syslog-health-monitor").
+		WithCheckName("SysLogsXIDError").
+		WithComponentClass("GPU").
+		WithErrorCode(opts.XID).
+		WithEntitiesImpacted(XIDEntities(opts.PCI, opts.GPUUUID, opts.ReverseEntityOrder)).
+		WithHealthy(false).
+		WithFatal(true).
+		WithMessage(syslogXIDMessage(opts)).
+		WithRecommendedAction(int(opts.RecommendedAction)).
+		WithProcessingStrategy(int(processingStrategy))
+}
+
+// XIDEntities returns the impacted PCI and GPU UUID entities used by syslog XID events.
+// reversed is useful for tests that need to verify entity-order canonicalization.
+func XIDEntities(pci string, gpuUUID string, reversed bool) []EntityImpacted {
+	entities := []EntityImpacted{
+		{EntityType: "PCI", EntityValue: pci},
+		{EntityType: "GPU_UUID", EntityValue: gpuUUID},
+	}
+	if reversed {
+		return []EntityImpacted{entities[1], entities[0]}
+	}
+
+	return entities
+}
+
+func syslogXIDMessage(opts SyslogXIDEventOptions) string {
+	return fmt.Sprintf("kernel: [%d.435595] NVRM: Xid (PCI:%s): %s, pid=%d, name=%s, %s",
+		opts.KernelTimestamp, opts.PCI, opts.XID, opts.PID, opts.ProcessName, opts.Detail)
 }
 
 func (h *HealthEventTemplate) WriteToTempFile() (string, error) {
@@ -284,4 +342,16 @@ func SendHealthyEvent(ctx context.Context, t *testing.T, nodeName string) {
 		WithComponentClass("GPU")
 
 	SendHealthEvent(ctx, t, event)
+}
+
+// RecoverEntityFailure sends a healthy event that clears a specific entity/error-code failure
+// (matching the GpuXidError check). Useful for cleaning up entity-level quarantine state.
+func RecoverEntityFailure(ctx context.Context, t *testing.T, nodeName, entityType, entityValue, errorCode string) {
+	t.Helper()
+	SendHealthEvent(ctx, t, NewHealthEvent(nodeName).
+		WithErrorCode(errorCode).
+		WithEntitiesImpacted([]EntityImpacted{{EntityType: entityType, EntityValue: entityValue}}).
+		WithHealthy(true).
+		WithFatal(false).
+		WithMessage("cleanup: clearing "+entityType+entityValue+" failure"))
 }

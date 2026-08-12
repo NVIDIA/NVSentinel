@@ -24,6 +24,7 @@ import (
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -106,6 +107,21 @@ func (d *PodGroupDiscoverer) ExtractGangID(pod *corev1.Pod) string {
 	return fmt.Sprintf("%s-%s-%s", d.config.Name, pod.Namespace, podGroupName)
 }
 
+// OwnerReference returns the PodGroup owner reference for the pod's gang.
+func (d *PodGroupDiscoverer) OwnerReference(ctx context.Context, pod *corev1.Pod) (*metav1.OwnerReference, error) {
+	podGroupName := d.getPodGroupName(pod)
+	if podGroupName == "" {
+		return nil, nil
+	}
+
+	podGroup, err := d.getPodGroup(ctx, pod.Namespace, podGroupName)
+	if err != nil {
+		return nil, err
+	}
+
+	return ownerReferenceForUnstructured(podGroup, d.config.PodGroupGVK), nil
+}
+
 // getPodGroupName extracts the pod group name from annotations or labels.
 func (d *PodGroupDiscoverer) getPodGroupName(pod *corev1.Pod) string {
 	// Check annotations first
@@ -150,8 +166,14 @@ func (d *PodGroupDiscoverer) DiscoverPeers(ctx context.Context, pod *corev1.Pod)
 		"podGroup", podGroupName,
 		"gangID", gangID)
 
-	// Get expected size from PodGroup CRD - required for correct gang coordination
-	expectedCount, err := d.getPodGroupMinMember(ctx, pod.Namespace, podGroupName)
+	// Get expected size from PodGroup CRD - required for correct gang coordination.
+	podGroup, err := d.getPodGroup(ctx, pod.Namespace, podGroupName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get PodGroup %s/%s minMember (check RBAC): %w",
+			pod.Namespace, podGroupName, err)
+	}
+
+	expectedCount, err := d.getPodGroupMinMember(podGroup)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get PodGroup %s/%s minMember (check RBAC): %w",
 			pod.Namespace, podGroupName, err)
@@ -206,21 +228,26 @@ func (d *PodGroupDiscoverer) DiscoverPeers(ctx context.Context, pod *corev1.Pod)
 		GangID:           gangID,
 		ExpectedMinCount: expectedCount,
 		Peers:            peers,
+		OwnerReference:   ownerReferenceForUnstructured(podGroup, d.config.PodGroupGVK),
 	}, nil
 }
 
-// getPodGroupMinMember retrieves the minMember field from a PodGroup CRD using CEL.
-func (d *PodGroupDiscoverer) getPodGroupMinMember(
+func (d *PodGroupDiscoverer) getPodGroup(
 	ctx context.Context,
 	namespace, name string,
-) (int, error) {
+) (*unstructured.Unstructured, error) {
 	podGroup := &unstructured.Unstructured{}
 	podGroup.SetGroupVersionKind(d.config.PodGroupGVK)
 
 	if err := d.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, podGroup); err != nil {
-		return 0, fmt.Errorf("failed to get PodGroup %s/%s: %w", namespace, name, err)
+		return nil, fmt.Errorf("failed to get PodGroup %s/%s: %w", namespace, name, err)
 	}
 
+	return podGroup, nil
+}
+
+// getPodGroupMinMember retrieves the minMember field from a PodGroup CRD using CEL.
+func (d *PodGroupDiscoverer) getPodGroupMinMember(podGroup *unstructured.Unstructured) (int, error) {
 	result, _, err := d.minCountProgram.Eval(map[string]any{
 		"podGroup": podGroup.Object,
 	})
@@ -238,5 +265,18 @@ func (d *PodGroupDiscoverer) getPodGroupMinMember(
 		return v, nil
 	default:
 		return 0, fmt.Errorf("minCountExpr %q returned non-numeric type %T", d.config.MinCountExpr, v)
+	}
+}
+
+func ownerReferenceForUnstructured(obj *unstructured.Unstructured, gvk schema.GroupVersionKind) *metav1.OwnerReference {
+	if obj == nil {
+		return nil
+	}
+
+	return &metav1.OwnerReference{
+		APIVersion: gvk.GroupVersion().String(),
+		Kind:       gvk.Kind,
+		Name:       obj.GetName(),
+		UID:        obj.GetUID(),
 	}
 }

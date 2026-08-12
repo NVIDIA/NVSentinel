@@ -114,6 +114,17 @@ Device:
         currentMode: 0  # 0 = Disabled
         pendingMode: 0
     
+    # Margin temperature (DCGM field 153 / DCGM_FI_DEV_GPU_TEMP_LIMIT) is sourced
+    # by DCGM from nvmlDeviceGetMarginTemperature. Serving it here lets
+    # GpuThermalMarginWatch evaluate a live T.Limit margin. 56 is a realistic
+    # positive headroom; a violation is exercised by raising the metadata
+    # slowdown_tlimit_c threshold above this value.
+    MarginTemperature:
+      FunctionReturn: 0
+      ReturnValue:
+        version: 16777224   # NVML_STRUCT_VERSION(MarginTemperature, 1)
+        marginTemperature: 56
+
     # NVLink Fields - Mark as not supported for simple test GPU
     # This tells the health check to skip NVLink monitoring
     FieldValues:

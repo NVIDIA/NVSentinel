@@ -1,27 +1,43 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # KWOK Stage to simulate log-collector pod failure for negative testing
 # WARNING: This will affect ALL log-collector pods cluster-wide while active
 # The test MUST run in isolation and clean up the Stage in teardown
 # Weight: 10 ensures this Stage takes precedence over default stage-fast (weight 0)
+# resourceRef must be spelled exactly {apiGroup: v1, kind: Pod}: any other
+# spelling (including apiGroup: "") routes the Stage to kwok's generic
+# controller, which has no node scoping and patches pods on REAL nodes.
 apiVersion: kwok.x-k8s.io/v1alpha1
 kind: Stage
 metadata:
   name: log-collector-failure
 spec:
   resourceRef:
-    apiGroup: ""
+    apiGroup: v1
     kind: Pod
   selector:
     matchLabels:
       app: log-collector
+    matchExpressions:
+    - key: '.status.phase'
+      operator: 'In'
+      values:
+      - 'Pending'
   weight: 10
   delay:
     durationMilliseconds: 100
-  when:
-  - field: status.phase
-    operator: In
-    values:
-    - ""
-    - "Pending"
   next:
     statusTemplate: |
       {{ $now := Now }}

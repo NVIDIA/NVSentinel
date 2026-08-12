@@ -19,6 +19,7 @@ This directory contains troubleshooting runbooks for NVSentinel operations.
 ### Health Monitor Issues
 - [Health Monitor UDS Communication Failures](health-monitor-uds-failures.md) - Troubleshoot health monitor to platform-connector communication
 - [GPU Monitor DCGM Connectivity Failures](gpu-monitor-dcgm-failures.md) - Resolve DCGM connectivity issues
+- [GPU Thermal Margin / HW Slowdown Violations](gpu-thermal-margin.md) - Investigate `GpuThermalMarginWatch` thermal slowdown violations
 - [CSP Health Monitor Issues](csp-health-monitor-iam.md) - Troubleshoot cloud provider API access and permissions
 
 ### Operational Issues

@@ -20,9 +20,26 @@ type Rule struct {
 }
 
 type Taint struct {
-	Key    string `toml:"key"`
-	Value  string `toml:"value"`
-	Effect string `toml:"effect"`
+	Key         string `toml:"key"    json:"key"`
+	Value       string `toml:"value"  json:"value"`
+	Effect      string `toml:"effect" json:"effect"`
+	PreExisting bool   `toml:"-"      json:"preExisting"`
+}
+
+type Label struct {
+	Key   string `toml:"key"`
+	Value string `toml:"value"`
+}
+
+// AppliedLabel is the persisted quarantine-session label winner. Priority and
+// Order preserve the same conflict policy used while evaluating one event so
+// later events cannot downgrade an active session label. Missing fields in
+// legacy annotations decode as zero and remain backward compatible.
+type AppliedLabel struct {
+	Key      string `json:"key"`
+	Value    string `json:"value"`
+	Priority int    `json:"priority,omitempty"`
+	Order    int    `json:"order,omitempty"`
 }
 
 type Cordon struct {
@@ -46,6 +63,7 @@ type RuleSet struct {
 	Priority int    `toml:"priority"`
 	Match    Match  `toml:"match"`
 	Taint    Taint  `toml:"taint"`
+	Label    Label  `toml:"label"`
 	Cordon   Cordon `toml:"cordon"`
 }
 

@@ -23,6 +23,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
@@ -300,6 +301,7 @@ func (w *EventWatcher) emitRemediationDurationFromDocIDs(ctx context.Context, do
 
 		EmitRemediationDuration(
 			doc.HealthEvent.NodeName,
+			protos.RecommendedAction(doc.HealthEvent.RecommendedAction).String(),
 			genTs,
 			qft,
 			dft,
@@ -315,6 +317,7 @@ type remediationDoc struct {
 	HealthEvent struct {
 		NodeName           string       `bson:"nodename" json:"nodeName"`
 		GeneratedTimestamp *dbTimestamp `bson:"generatedtimestamp" json:"generatedTimestamp"`
+		RecommendedAction  int32        `bson:"recommendedaction" json:"recommendedAction"`
 	} `bson:"healthevent" json:"healthEvent"`
 	HealthEventStatus struct {
 		QuarantineFinishTimestamp *dbTimestamp `bson:"quarantinefinishtimestamp,omitempty" json:"quarantineFinishTimestamp"`
@@ -339,12 +342,13 @@ func protoTsToTimePtr(ts *dbTimestamp, nodeName string) *time.Time {
 	return &t
 }
 
-func EmitRemediationDuration(nodeName string, genTs time.Time, qft, dft *time.Time) {
+func EmitRemediationDuration(nodeName, recommendedAction string, genTs time.Time, qft, dft *time.Time) {
 	now := time.Now()
 
 	if duration := now.Sub(genTs).Seconds(); duration > 0 {
-		metrics.NodeRemediationDurationSeconds.Observe(duration)
-		slog.Info("Node remediation duration (end-to-end)", "node", nodeName, "duration_seconds", duration)
+		metrics.NodeRemediationDurationSeconds.WithLabelValues(recommendedAction).Observe(duration)
+		slog.Info("Node remediation duration (end-to-end)",
+			"node", nodeName, "recommended_action", recommendedAction, "duration_seconds", duration)
 	}
 
 	if qft != nil && dft != nil {
@@ -352,9 +356,11 @@ func EmitRemediationDuration(nodeName string, genTs time.Time, qft, dft *time.Ti
 		endToEnd := now.Sub(genTs).Seconds()
 
 		if durationExcludingDrain := endToEnd - drainDuration; durationExcludingDrain > 0 {
-			metrics.NodeRemediationDurationExcludingDrainSeconds.Observe(durationExcludingDrain)
+			metrics.NodeRemediationDurationExcludingDrainSeconds.
+				WithLabelValues(recommendedAction).Observe(durationExcludingDrain)
 			slog.Info("Node remediation duration (excluding drain)",
-				"node", nodeName, "duration_seconds", durationExcludingDrain)
+				"node", nodeName, "recommended_action", recommendedAction,
+				"duration_seconds", durationExcludingDrain)
 		}
 	}
 }
@@ -448,6 +454,7 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 			NodeName           string            `bson:"nodename" json:"nodeName"`
 			GeneratedTimestamp *dbTimestamp      `bson:"generatedtimestamp" json:"generatedTimestamp"`
 			Metadata           map[string]string `bson:"metadata" json:"metadata"`
+			RecommendedAction  int32             `bson:"recommendedaction" json:"recommendedAction"`
 		} `bson:"healthevent" json:"healthEvent"`
 		HealthEventStatus struct {
 			NodeQuarantined           string            `bson:"nodequarantined" json:"nodeQuarantined"`
@@ -563,6 +570,7 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 
 	emitCancelledRemediationDuration(
 		latestEvent.HealthEvent.NodeName,
+		protos.RecommendedAction(latestEvent.HealthEvent.RecommendedAction).String(),
 		latestEvent.HealthEvent.GeneratedTimestamp,
 		latestEvent.HealthEventStatus.QuarantineFinishTimestamp,
 		latestEvent.HealthEventStatus.DrainFinishTimestamp,
@@ -578,7 +586,7 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 }
 
 func emitCancelledRemediationDuration(
-	nodeName string,
+	nodeName, recommendedAction string,
 	genTS, qfTS, dfTS *dbTimestamp,
 	logNode string,
 ) {
@@ -591,6 +599,7 @@ func emitCancelledRemediationDuration(
 
 	EmitRemediationDuration(
 		nodeName,
+		recommendedAction,
 		genTs,
 		protoTsToTimePtr(qfTS, nodeName),
 		protoTsToTimePtr(dfTS, nodeName),

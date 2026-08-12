@@ -56,7 +56,7 @@ Should include `update`, `patch` verbs for `nodes/status`.
 
 ```bash
 # Verify node from logs exists
-kubectl get node <NODE_NAME>
+kubectl get node {NODE_NAME}
 ```
 
 If node was deleted or renamed, updates will fail.
@@ -65,5 +65,5 @@ If node was deleted or renamed, updates will fail.
 
 ```bash
 # Check node conditions reflect current health
-kubectl describe node <NODE_NAME>
+kubectl describe node {NODE_NAME}
 ```

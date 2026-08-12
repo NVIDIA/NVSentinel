@@ -44,19 +44,48 @@ type GPUMetadata struct {
 }
 
 type GPU struct {
-	GPUID        int      `json:"gpu_id"`
-	UUID         string   `json:"uuid"`
-	PCIAddress   string   `json:"pci_address"`
-	SerialNumber string   `json:"serial_number"`
-	DeviceName   string   `json:"device_name"`
-	NVLinks      []NVLink `json:"nvlinks"`
-	NUMANode     int      `json:"numa_node"`
+	GPUID                 int      `json:"gpu_id"`
+	UUID                  string   `json:"uuid"`
+	PCIAddress            string   `json:"pci_address"`
+	SerialNumber          string   `json:"serial_number"`
+	DeviceName            string   `json:"device_name"`
+	NVLinks               []NVLink `json:"nvlinks"`
+	NVLinkLinkCount       *int     `json:"nvlink_link_count,omitempty"`
+	NVLinkActiveLinkCount *int     `json:"nvlink_active_link_count,omitempty"`
+	NUMANode              int      `json:"numa_node"`
+	SlowdownTLimitC       *int     `json:"slowdown_tlimit_c,omitempty"`
 }
 
 type NVLink struct {
 	LinkID           int    `json:"link_id"`
 	RemotePCIAddress string `json:"remote_pci_address"`
 	RemoteLinkID     int    `json:"remote_link_id"`
+}
+
+// GpuThermalMarginMetadata builds a minimal gpu_metadata.json describing a single
+// GPU with the given HW-slowdown threshold, for GpuThermalMarginWatch tests.
+// metadata-collector does not run on GPU-less CI nodes, so the test seeds this
+// file itself.
+func GpuThermalMarginMetadata(nodeName string, gpuID, slowdownTLimitC int) *GPUMetadata {
+	slowdown := slowdownTLimitC
+
+	return &GPUMetadata{
+		Version:       "1.0",
+		Timestamp:     "2025-01-01T00:00:00Z",
+		NodeName:      nodeName,
+		DriverVersion: "570.148.08",
+		GPUs: []GPU{
+			{
+				GPUID:           gpuID,
+				UUID:            "GPU-00000000-0000-0000-0000-000000000000",
+				PCIAddress:      "0000:00:00.0",
+				DeviceName:      "Test GPU",
+				NVLinks:         []NVLink{},
+				SlowdownTLimitC: &slowdown,
+			},
+		},
+		NVSwitches: []string{},
+	}
 }
 
 func CreateTestMetadata(nodeName string) *GPUMetadata {

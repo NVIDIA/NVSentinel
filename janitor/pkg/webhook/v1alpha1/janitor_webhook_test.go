@@ -29,19 +29,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
 )
 
 var _ = Describe("Janitor Webhook", func() {
 	var (
-		ctx            context.Context
-		baseValidator  *JanitorCustomValidator
-		rebootVal      *rebootNodeValidator
-		terminateVal   *terminateNodeValidator
-		gpuResetVal    *gpuResetValidator
-		fakeClient     client.Client
-		testNode       *corev1.Node
+		ctx           context.Context
+		baseValidator *JanitorCustomValidator
+		rebootVal     *rebootNodeValidator
+		terminateVal  *terminateNodeValidator
+		gpuResetVal   *gpuResetValidator
+		fakeClient    client.Client
+		testNode      *corev1.Node
 	)
 
 	BeforeEach(func() {
@@ -955,6 +956,90 @@ var _ = Describe("Janitor Webhook", func() {
 			}
 
 			_, err := v.ValidateCreate(ctx, obj)
+			Expect(err).ToNot(HaveOccurred())
+		})
+	})
+})
+
+var _ = Describe("ExternalRemediationRequest Webhook", func() {
+	var (
+		ctx context.Context
+		val *extrrValidator
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		// The validator only inspects spec; no Config / Client needed.
+		val = &extrrValidator{&JanitorCustomValidator{}}
+	})
+
+	validExtRR := func(name, nodeName string) *janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest {
+		return &janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: &protos.ExternalRemediationRequestSpec{
+				HealthEvent: &protos.HealthEvent{
+					Id:       "he-1",
+					NodeName: nodeName,
+				},
+			},
+		}
+	}
+
+	Context("ValidateCreate", func() {
+		It("admits a well-formed ExtRR with spec.healthEvent.nodeName set", func() {
+			_, err := val.ValidateCreate(ctx, validExtRR("extrr-1", "node-1"))
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("rejects an ExtRR with nil spec", func() {
+			obj := &janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest{
+				ObjectMeta: metav1.ObjectMeta{Name: "extrr-nil-spec"},
+			}
+			_, err := val.ValidateCreate(ctx, obj)
+			Expect(err).To(MatchError(ContainSubstring("spec is required")))
+		})
+
+		It("rejects an ExtRR with nil spec.healthEvent", func() {
+			obj := &janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest{
+				ObjectMeta: metav1.ObjectMeta{Name: "extrr-nil-he"},
+				Spec:       &protos.ExternalRemediationRequestSpec{},
+			}
+			_, err := val.ValidateCreate(ctx, obj)
+			Expect(err).To(MatchError(ContainSubstring("spec.healthEvent is required")))
+		})
+
+		It("rejects an ExtRR with empty spec.healthEvent.nodeName", func() {
+			_, err := val.ValidateCreate(ctx, validExtRR("extrr-empty-node", ""))
+			Expect(err).To(MatchError(ContainSubstring("spec.healthEvent.nodeName is required")))
+		})
+	})
+
+	Context("ValidateUpdate", func() {
+		It("admits an unchanged ExtRR", func() {
+			old := validExtRR("extrr-1", "node-1")
+			updated := validExtRR("extrr-1", "node-1")
+			_, err := val.ValidateUpdate(ctx, old, updated)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("rejects updates that clear spec.healthEvent.nodeName", func() {
+			old := validExtRR("extrr-1", "node-1")
+			updated := validExtRR("extrr-1", "")
+			_, err := val.ValidateUpdate(ctx, old, updated)
+			Expect(err).To(MatchError(ContainSubstring("nodeName is required")))
+		})
+
+		It("rejects updates that change spec.healthEvent.nodeName (immutable)", func() {
+			old := validExtRR("extrr-1", "node-1")
+			updated := validExtRR("extrr-1", "node-2")
+			_, err := val.ValidateUpdate(ctx, old, updated)
+			Expect(err).To(MatchError(ContainSubstring("nodeName cannot be changed")))
+		})
+	})
+
+	Context("ValidateDelete", func() {
+		It("admits any delete (cleanup is the reconciler's job, not the webhook's)", func() {
+			_, err := val.ValidateDelete(ctx, validExtRR("extrr-1", "node-1"))
 			Expect(err).ToNot(HaveOccurred())
 		})
 	})

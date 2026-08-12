@@ -2,7 +2,6 @@
 
 Preflight is a mutating admission webhook that injects GPU diagnostic init containers (DCGM diagnostics, optional NCCL loopback / all-reduce) into pods that request GPUs in namespaces you opt in via labels. It answers "is this GPU healthy enough to start?" before your workload runs—separate from continuous [GPU health monitoring](../gpu-health-monitor.md).
 
-For architecture, tradeoffs, and metrics design, see [ADR-026: Preflight checks](../designs/026-preflight-checks.md).
 
 ## Prerequisites
 
@@ -26,7 +25,7 @@ global:
 3. Label namespaces where injection should apply:
 
 ```bash
-kubectl label namespace <namespace> nvsentinel.nvidia.com/preflight=enabled
+kubectl label namespace {namespace} nvsentinel.nvidia.com/preflight=enabled
 ```
 
 The chart default `namespaceSelector` matches that label.
@@ -305,6 +304,159 @@ gangDiscovery:
 
 Here membership is determined by a pod label instead of an annotation. The rest of the flow is the same: look up the PodGroup CRD and extract `minCount` via CEL.
 
+### OSMO + KAI Scheduler
+
+[KAI Scheduler](https://github.com/kai-scheduler/KAI-Scheduler) uses the `scheduling.run.ai/v2alpha2` PodGroup CRD. KAI Scheduler can run on its own, but in that setup the gang anchor is applied **after** admission, so preflight has no label or annotation to hook on when the webhook runs. This section documents the **OSMO + KAI** integration instead: OSMO creates the PodGroup and labels each pod with `osmo.group_uuid` at admission time. Preflight reads that label, fetches the PodGroup, and uses `spec.minMember` as the expected gang size for `preflight-nccl-allreduce`.
+
+#### Step 1 — Enable preflight cluster-wide
+
+```yaml
+global:
+  preflight:
+    enabled: true
+
+preflight:
+  gangDiscovery:
+    name: "osmo-with-kai"
+    labelKeys:
+      - "osmo.group_uuid"
+    podGroupGVR:
+      group: "scheduling.run.ai"
+      version: "v2alpha2"
+      resource: "podgroups"
+    minCountExpr: "podGroup.spec.minMember"
+```
+
+The chart's built-in RBAC contributor role grants read access to `scheduling.run.ai/podgroups` when `gangDiscovery.podGroupGVR` is set in Helm values (see [RBAC (aggregated ClusterRole)](#rbac-aggregated-clusterrole) below).
+
+#### Step 2 — Label namespaces for injection
+
+```bash
+kubectl label namespace {training-namespace} nvsentinel.nvidia.com/preflight=enabled
+```
+
+#### Step 3 — Verify image pull secrets
+
+If preflight check images are in a private registry, set `injectedImagePullSecrets` in the preflight Helm values (`[charts/preflight/values.yaml](../../distros/kubernetes/nvsentinel/charts/preflight/values.yaml)`). The webhook injects those secrets into admitted pods as `spec.imagePullSecrets`.
+
+Check whether any secrets are configured:
+
+```bash
+kubectl -n nvsentinel get configmap preflight -o jsonpath='{.data.config\.yaml}' | yq .imagePullSecrets
+```
+
+If `imagePullSecrets` is present, confirm each secret exists in your workload namespace:
+
+```bash
+kubectl -n {training-namespace} get secret {secret-name}
+```
+
+If `injectedImagePullSecrets` is empty (`[]`), no pull secrets are injected and this step can be skipped.
+
+#### Step 4 — Submit a workload
+
+Submit your OSMO gang-scheduled workload in the labeled namespace.
+
+#### Step 5 — Verify injection
+
+After a GPU pod is admitted, confirm the webhook injected preflight init containers and created the gang ConfigMap:
+
+```bash
+# Init containers injected (preflight-dcgm-diag, preflight-nccl-loopback, preflight-nccl-allreduce)
+kubectl -n {training-namespace} get pod {pod-name} -o jsonpath='{range .spec.initContainers[*]}{.name}{": "}{.image}{"\n"}{end}'
+
+# Gang ConfigMap created at admission
+kubectl -n {training-namespace} get configmap -l nvsentinel.nvidia.com/managed-by=preflight -o yaml
+```
+
+The gang ID is `{gangDiscovery.name}-{namespace}-{podGroupName}`. For example, with `name: osmo-with-kai` in namespace `team-a` and PodGroup `myjob`, the gang ID is `osmo-with-kai-team-a-myjob`.
+
+At admission, the ConfigMap contains `gang_id`, `expected_count`, `master_port`, `peers`, and `master_addr`. If the PodGroup is not present yet, `expected_count` is `"0"` and `peers` / `master_addr` are empty.
+
+The ConfigMap name starts with `preflight-`, but long gang IDs are sanitized and truncated with a hash suffix, so use the label selector above instead of constructing the name by hand.
+
+### Grove
+
+[Grove](https://github.com/ai-dynamo/grove) is **not supported** for preflight gang coordination today. Its gang model is **hierarchical** — multiple nested scheduling layers — while preflight's `preflight-nccl-allreduce` coordination assumes a **single flat PodGroup** per gang.
+
+Grove's hierarchy looks like this:
+
+```text
+PodCliqueSet
+  └── PodClique / PodCliqueScalingGroup
+        └── PodGang
+              └── podgroups[]
+                    └── podReferences[]
+```
+
+Tracking issue: [NVIDIA/NVSentinel#1354 — Parallelism-aware preflight checks](https://github.com/NVIDIA/NVSentinel/issues/1354).
+
+### Per-namespace gang discovery
+
+The Helm `gangDiscovery` value sets only the **cluster-wide default**. To make a specific namespace use a different gang-scheduling system (for example, Volcano for one team while everyone else uses native Kubernetes), create a **`PreflightConfig`** custom resource in that namespace. It is reconciled at runtime — no Helm upgrade and no controller restart.
+
+A pod is resolved as follows:
+
+1. If the pod's namespace has a `PreflightConfig` with a `gangDiscovery` block, that discoverer is used.
+2. Otherwise, the cluster-wide `gangDiscovery` Helm value is used as the default.
+
+`PreflightConfig` is namespaced (`preflight.nvsentinel.nvidia.com/v1alpha1`); the object's own namespace is its scope. Its `spec.gangDiscovery` block uses the same schema as the Helm `gangDiscovery` value — an empty block selects native Kubernetes discovery. (`spec` is intentionally a container for per-namespace preflight settings, so future options can be added alongside `gangDiscovery`.)
+
+```yaml
+# team-a uses Volcano; every other namespace uses the cluster-wide default.
+apiVersion: preflight.nvsentinel.nvidia.com/v1alpha1
+kind: PreflightConfig
+metadata:
+  name: default
+  namespace: team-a
+spec:
+  gangDiscovery:
+    name: "volcano"
+    annotationKeys: ["scheduling.k8s.io/group-name"]
+    podGroupGVR:
+      group: "scheduling.volcano.sh"
+      version: "v1beta1"
+      resource: "podgroups"
+    minCountExpr: "podGroup.spec.minMember"
+```
+
+At most one `PreflightConfig` should exist per namespace. If more than one is present, the **oldest** object (tie-broken by name) stays active so an existing working configuration is not disrupted; the additional objects are marked not ready as superseded. Check the resolved state via the object's status:
+
+```console
+$ kubectl -n team-a get preflightconfig
+NAME      DISCOVERER   READY   AGE
+default   volcano      True    10s
+```
+
+Readiness is reported via the `Ready` status condition (the `READY` column above is its status); its message explains why a config is not ready (invalid or superseded). Inspect it with `kubectl -n team-a get preflightconfig default -o yaml` under `.status.conditions`.
+
+#### RBAC (aggregated ClusterRole)
+
+The controller reads scheduler `PodGroup` resources cluster-wide through an **aggregated ClusterRole** (`{release}-gang-discovery`). The chart ships a built-in contributor role covering the native `scheduling.k8s.io` resources plus the default `gangDiscovery.podGroupGVR`. To let the controller read a scheduler CRD that isn't covered (e.g. a namespace registers Volcano but the default is native), apply a `ClusterRole` labeled for aggregation — it is merged in automatically, with no preflight change or restart:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: preflight-gang-discovery-volcano
+  labels:
+    preflight.nvsentinel.nvidia.com/aggregate-to-gang-discovery: "true"
+rules:
+  - apiGroups: ["scheduling.volcano.sh"]
+    resources: ["podgroups"]
+    verbs: ["get", "list", "watch"]
+```
+
+Because `ClusterRole`s are cluster-scoped, creating one is a platform/cluster-admin action — a namespace tenant declares its scheduler via the `PreflightConfig`, while the platform grants the corresponding read access. Aggregation is eventually consistent, so a brief `Forbidden` window after adding a new contributor role is expected; the controller retries.
+
+Each `PreflightConfig` is validated when reconciled: the `gangDiscovery.podGroupGVR` is resolved against the cluster's API RESTMapper (and native specs verify the `scheduling.k8s.io` resources). An invalid or unresolvable config does not disrupt admission — the namespace falls back to the default and the error is surfaced in the object's status.
+
+#### Changing gang discovery configuration
+
+`PreflightConfig` changes take effect on **newly-admitted gangs** and are applied per pod at admission. Avoid editing or deleting a namespace's active `PreflightConfig` (or deleting it so a different one becomes active) **while multi-node preflight gangs are being launched** in that namespace.
+
+The gang ID embeds the discoverer name (`{discoverer}-{namespace}-{podGroup}`), and discovery is resolved per pod. If the effective discoverer for a namespace changes mid-flight, pods of the same gang admitted before and after the change can derive **different gang IDs** and fail to coordinate (peers never converge). Such a gang's `preflight-nccl-allreduce` check then waits until `gangCoordination.timeout` and fails — the pod stays in `Init:Error` and follows the normal NVSentinel quarantine path. This fails safe (no false "healthy" result) but causes a spurious preflight failure, so treat gang discovery config as a namespace setting to change during a quiet window. Adding a *second* `PreflightConfig` is safe — the active (oldest) one is unaffected (see above); the risk is specifically changing or removing the currently-active config.
+
 ## Gang coordination
 
 When `gangCoordination.enabled` is true (default in the preflight chart), the controller coordinates multi-node checks through ConfigMaps:
@@ -391,6 +543,50 @@ Tilt development often trims init containers to DCGM-only; see `distros/kubernet
 
 - Webhook pod: liveness/readiness probes use `/healthz` on the webhook port.
 - Prometheus metric names for check containers and the injector are specified in [ADR-026 § Metrics](../designs/026-preflight-checks.md#metrics); wire scrapers to your init container images and deployment as your environment allows.
+
+## Debugging preflight failures
+
+When a preflight check fails, the pod stays in `Init:Error` and the init container exits non-zero.
+
+### 1. Check the exit code
+
+```bash
+kubectl -n {namespace} get pod {pod-name} -o jsonpath=\
+'{range .status.initContainerStatuses[*]}{.name}{"\t"}{.state.terminated.exitCode}{"\n"}{end}'
+```
+
+| Exit code | Meaning | Node effect |
+|---------|---------|-------------|
+| `0` | Check passed | None |
+| `1` | Check failed (GPU/interconnect unhealthy) | A fatal health event is emitted and the node is **cordoned**. It stays cordoned until the node is remediated or manually uncordoned. |
+| `2` | Configuration error in the init container | Node is **not cordoned**. |
+
+### 2. Check health events
+
+All three checks (`preflight-dcgm-diag`, `preflight-nccl-loopback`, `preflight-nccl-allreduce`) report results as health events. From the NVSentinel repository root, query them with the MongoDB shell helper:
+
+```bash
+./scripts/mongodb-shell.sh
+```
+
+Once connected, filter for the failing node (replace `{NODE_NAME}`):
+
+```javascript
+db.HealthEvents.find({"healthevent.nodename": "{NODE_NAME}"}).pretty()
+```
+
+See [Connecting to the Datastore](../runbooks/datastore-connection.md) for more query examples.
+
+Init container logs are not always available (for example if the pod was already cleaned up). In that case, rely on the health events and node conditions instead:
+
+```bash
+kubectl describe node {node-name} | grep -A3 Conditions
+```
+
+### 3. Act on the failure
+
+- **`preflight-dcgm-diag` failed** — the GPU/node is in a bad state. The node needs to be fixed (reboot or terminate).
+- **`preflight-nccl-loopback` or `preflight-nccl-allreduce` failed** — first confirm the `BW_THRESHOLD_GBPS` is realistic for the hardware. The default (`150` for loopback, `100` for all-reduce) assumes NVLink; it is too high for PCIe-only interconnect or lower-bandwidth GPUs (for example, L40S sustains ~20 GB/s), where the check would never pass. If the threshold is set too high for your GPUs, lower it to the expected value for that interconnect. If the threshold is already correct for the hardware, do **not** lower it to force a pass — re-run the check once to rule out a false positive, and if it fails again, check the health event and take the needful action such as rebooting or terminating the node.
 
 ## Related documentation
 

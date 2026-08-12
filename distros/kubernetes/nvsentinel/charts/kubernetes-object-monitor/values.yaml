@@ -68,6 +68,9 @@ policies:
   #     group: batch.example.com
   #     version: v1alpha1
   #     kind: GPUJob
+  #     # Optional: restrict namespaced resources to this namespace.
+  #     # Leave unset to watch all namespaces for this resource kind.
+  #     namespace: gpu-operator
   #   predicate:
   #     # CEL expression to detect unhealthy state
   #     # Access the resource via 'resource' variable

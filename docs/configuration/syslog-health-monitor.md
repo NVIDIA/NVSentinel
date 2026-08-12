@@ -42,7 +42,7 @@ syslog-health-monitor:
 
 ## Enabled Checks
 
-Configures which health checks are active. The module monitors journald logs for specific error patterns. The only supported checks at this time are SysLogsXIDError, SysLogsSXIDError and SysLogsGPUFallenOff.
+Configures which health checks are active. The module monitors journald logs for specific error patterns. Supported checks are `SysLogsXIDError`, `SysLogsSXIDError`, `SysLogsGPUFallenOff`, and `SysLogsNICDriverError`.
 
 ```yaml
 syslog-health-monitor:
@@ -50,6 +50,7 @@ syslog-health-monitor:
     - SysLogsXIDError
     - SysLogsSXIDError
     - SysLogsGPUFallenOff
+    - SysLogsNICDriverError
 ```
 
 ### Check Types
@@ -62,6 +63,9 @@ Monitors for SXID messages specific to NVSwitch errors in multi-GPU configuratio
 
 #### SysLogsGPUFallenOff
 Monitors for GPU fallen off events where the GPU becomes unresponsive or inaccessible to the system.
+
+#### SysLogsNICDriverError
+Monitors for NIC driver error patterns (e.g. mlx5 TX/RX timeouts, NAPI soft lockups) in system logs. Detected errors are correlated with the syslog-detection-correlation logic described in the NIC Health Monitor documentation. Enable alongside `nicDriverDetection` configuration.
 
 ## XID Analyzer Sidecar
 

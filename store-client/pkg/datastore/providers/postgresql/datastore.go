@@ -144,6 +144,15 @@ func (p *PostgreSQLDataStore) NewChangeStreamWatcher(
 		return nil, err
 	}
 
+	resumeControlDecision, err := client.ResetResumeTokenOnStartIfConfigured(
+		ctx,
+		p.GetDatabaseClient(),
+		client.TokenConfig{ClientName: clientName},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reset change stream resume token on startup: %w", err)
+	}
+
 	pipelineFilter := buildPipelineFilter(pipeline, tableName, clientName)
 
 	// Convert PascalCase table name to snake_case for PostgreSQL compatibility
@@ -161,7 +170,7 @@ func (p *PostgreSQLDataStore) NewChangeStreamWatcher(
 	watcher.pipelineFilter = pipelineFilter
 
 	// Wrap the watcher to provide Unwrap() support for backward compatibility
-	return NewPostgreSQLChangeStreamWatcherWithUnwrap(watcher), nil
+	return NewPostgreSQLChangeStreamWatcherWithUnwrap(watcher, resumeControlDecision), nil
 }
 
 func parseWatcherConfig(config interface{}) (string, string, interface{}, error) {

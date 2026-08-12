@@ -14,10 +14,17 @@
 
 import json
 import os
+from pathlib import Path
 import tempfile
 import threading
 import pytest
-from gpu_health_monitor.metadata import MetadataReader
+from gpu_health_monitor.metadata import MetadataReader, NVLinkDownExpectation
+from gpu_health_monitor.tests.nvlink_fixtures import (
+    A100_PCIE_UNBRIDGED,
+    H100_SXM_TRAINED,
+    L40_NO_NVLINK,
+    make_metadata_reader,
+)
 
 
 @pytest.fixture
@@ -148,6 +155,32 @@ def test_file_not_found():
 
     serial = reader.get_chassis_serial()
     assert serial is None
+
+
+def test_file_appears_after_initial_miss(sample_metadata):
+    """Metadata written after the first (missing) access must be picked up.
+
+    Regression for the startup race where gpu-health-monitor reads the metadata
+    file before metadata-collector has written it. A missing file must NOT latch
+    the reader as 'loaded'; a later access should reload once the file appears.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "gpu_metadata.json")
+
+        reader = MetadataReader(path)
+
+        # First access: file absent -> graceful None, and reader stays unloaded.
+        assert reader.get_gpu_uuid(0) is None
+        assert reader._loaded is False
+
+        # metadata-collector writes the file after the monitor already started.
+        with open(path, "w") as f:
+            json.dump(sample_metadata, f)
+
+        # Next access must reload and surface the real data.
+        assert reader.get_gpu_uuid(0) == "GPU-00000000-0000-0000-0000-000000000000"
+        assert reader._loaded is True
+        assert reader.get_slowdown_tlimit_c(0) is None  # not present in sample, but no crash
 
 
 def test_malformed_json():
@@ -291,3 +324,92 @@ def test_concurrent_initial_load(metadata_file):
     assert len(results) == 50
     assert all(uuid == "GPU-00000000-0000-0000-0000-000000000000" for uuid in results)
     assert reader._loaded
+
+
+# --- classify_nvlink_down tests ---
+
+
+def test_classify_unbridged_pcie_card(tmp_path: Path) -> None:
+    """A100 PCIe with bridge links present but zero active: UNBRIDGED_PCIE.
+
+    This is the live-repro shape: NVML GetNvLinkState returns SUCCESS for
+    links 0-11 (state NOT_ACTIVE) on an unbridged A100 80GB PCIe."""
+    reader = make_metadata_reader(tmp_path, [A100_PCIE_UNBRIDGED])
+    assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNBRIDGED_PCIE
+
+
+def test_classify_no_nvlink_silicon(tmp_path: Path) -> None:
+    """L40-class GPU with zero hardware links: NO_NVLINK_HARDWARE."""
+    reader = make_metadata_reader(tmp_path, [L40_NO_NVLINK])
+    assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.NO_NVLINK_HARDWARE
+
+
+def test_classify_active_links_in_use(tmp_path: Path) -> None:
+    """SXM GPU with trained links: NVLINK_IN_USE — a down report is genuine."""
+    reader = make_metadata_reader(tmp_path, [H100_SXM_TRAINED])
+    assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.NVLINK_IN_USE
+
+
+def test_classify_unknown_sxm_zero_active(tmp_path: Path) -> None:
+    """SXM GPU with hardware links but zero active (fabric manager may not
+    have trained links when metadata was collected): UNKNOWN, fail closed."""
+    gpu = dict(H100_SXM_TRAINED, nvlink_active_link_count=0)
+    reader = make_metadata_reader(tmp_path, [gpu])
+    assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNKNOWN
+
+
+def test_classify_pcie_name_without_hardware_count(tmp_path: Path) -> None:
+    """PCIe card with zero active links and no hardware count (partial
+    metadata): the PCIe device name still classifies as UNBRIDGED_PCIE."""
+    gpu = {k: v for k, v in A100_PCIE_UNBRIDGED.items() if k != "nvlink_link_count"}
+    reader = make_metadata_reader(tmp_path, [gpu])
+    assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNBRIDGED_PCIE
+
+
+def test_classify_unknown_missing_active_count(tmp_path: Path) -> None:
+    """Old metadata-collector without nvlink_active_link_count: UNKNOWN."""
+    gpu = {k: v for k, v in A100_PCIE_UNBRIDGED.items() if k != "nvlink_active_link_count"}
+    reader = make_metadata_reader(tmp_path, [gpu])
+    assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNKNOWN
+
+
+@pytest.mark.parametrize("bad_value", [-1, 0.5, True, "12", "invalid"])
+def test_classify_unknown_malformed_active_count(tmp_path: Path, bad_value: object) -> None:
+    """Malformed nvlink_active_link_count values: UNKNOWN, fail closed."""
+    gpu = dict(A100_PCIE_UNBRIDGED, nvlink_active_link_count=bad_value)
+    reader = make_metadata_reader(tmp_path, [gpu])
+    assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNKNOWN
+
+
+def test_classify_malformed_hardware_count_pcie_name_still_wins(tmp_path: Path) -> None:
+    """Malformed hardware count reads as unknown, but a PCIe device name with
+    zero active links still classifies as UNBRIDGED_PCIE."""
+    gpu = dict(A100_PCIE_UNBRIDGED, nvlink_link_count="bogus")
+    reader = make_metadata_reader(tmp_path, [gpu])
+    assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNBRIDGED_PCIE
+
+
+def test_classify_unknown_zero_active_no_pcie_name_no_hardware_count(tmp_path: Path) -> None:
+    """Zero active links with neither a zero hardware count nor a PCIe name:
+    UNKNOWN, fail closed."""
+    gpu = {
+        "gpu_id": 0,
+        "uuid": "GPU-0",
+        "device_name": "NVIDIA H100 NVL",
+        "nvlinks": [],
+        "nvlink_active_link_count": 0,
+    }
+    reader = make_metadata_reader(tmp_path, [gpu])
+    assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNKNOWN
+
+
+def test_classify_unknown_gpu_not_found(tmp_path: Path) -> None:
+    """Non-existent GPU returns UNKNOWN."""
+    reader = make_metadata_reader(tmp_path, [A100_PCIE_UNBRIDGED])
+    assert reader.classify_nvlink_down(99) is NVLinkDownExpectation.UNKNOWN
+
+
+def test_classify_unknown_metadata_unavailable() -> None:
+    """Missing metadata file returns UNKNOWN."""
+    reader = MetadataReader("/nonexistent/file.json")
+    assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNKNOWN
