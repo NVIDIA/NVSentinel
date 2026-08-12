@@ -292,6 +292,16 @@ platformConnector:
     # Burst: Maximum burst size above QPS
     burst: 10
 
+  # Health event deduplication transformer
+  # Marks repeated events for configured high-volume checks as STORE_AND_ANALYSE.
+  dedup:
+    enabled: false
+    suppressionWindow: "3m"
+    cleanupInterval: "60s"
+    includeChecks:
+      - SysLogsXIDError
+      - SysLogsSXIDError
+
   # Health event transformers pipeline
   # Transformers process health events before storage and propagation
   # They execute in the order specified in the pipeline
@@ -422,15 +432,19 @@ fault-quarantine:
   # Also used for uncordon tracking
   labelPrefix: "k8saas.nvidia.com/"
 
-  # Circuit breaker prevents quarantining too many nodes at once
+  # Label selector (key=value) identifying GPU nodes. Override when the cluster uses a
+  # non-standard label key or a value other than "true".
+  gpuNodeLabel: "nvidia.com/gpu.present=true"
+
+  # Circuit breaker prevents quarantining too many GPU nodes at once
   # If the threshold is exceeded, new quarantines are blocked
   # This prevents cascading failures from taking down the entire cluster
   # State is persisted in a ConfigMap and survives restarts
   circuitBreaker:
     # Enable circuit breaker protection
     enabled: true
-    # Maximum percentage of cluster nodes that can be cordoned
-    # Example: 50 means if 50% or more nodes are already cordoned,
+    # Maximum percentage of nvidia.com/gpu.present=true nodes that can be cordoned
+    # Example: 50 means if 50% or more GPU nodes are already cordoned,
     # no new quarantines will be allowed
     # Range: 1-100
     percentage: 50
@@ -872,6 +886,23 @@ gpu-health-monitor:
       # Default DCGM port is 5555
       port: 5555
 
+    # DCGM poll interval (also drives /healthz staleness and the default
+    # probe deadline via pollIntervalSeconds * 3).
+    pollIntervalSeconds: 15
+
+    # Seconds a single DCGM probe may run before the watchdog reports
+    # GpuDcgmUnresponsive (RESTART_BM) in embedded mode. A hung probe never
+    # errors and never times out; without this the poll loop blocks and the hang
+    # is never published. When null/omitted, defaults to pollIntervalSeconds * 3.
+    # Set to 0 to disable (0 is not treated as unset).
+    probeDeadlineSeconds: null
+
+    # Dry-run for the embedded-mode GpuDcgmUnresponsive event. While true the
+    # check is persisted/exported but kept out of remediation. Remote modes emit
+    # GpuDcgmConnectivityFailure with CONTACT_SUPPORT regardless of this setting.
+    # Set to false only after validating embedded-mode detections on your fleet.
+    probeStoreOnly: true
+
   # Use host networking for GPU health monitor pods
   # Required when:
   # - DCGM is running as hostProcess (not as service)
@@ -879,6 +910,23 @@ gpu-health-monitor:
   # - dcgmK8sServiceEnabled is false
   # Most deployments should use service-based access (false)
   useHostNetworking: false
+
+  # DCGM health check incident suppression
+  # Drops incidents matching specific error codes before they generate a health
+  # event, so they are never persisted or acted on. Useful for high-frequency,
+  # non-actionable flaps (e.g. normal power-cap boost-clock behavior).
+  dcgmHealthCheck:
+    # List of error code names to suppress (native DCGM codes like
+    # DCGM_FR_CLOCK_THROTTLE_POWER, or custom field-monitor codes like
+    # GPU_TEMP_HW_SLOWDOWN_VIOLATION). Empty by default (no suppression).
+    suppressedErrorCodes: []
+
+    # Consecutive GpuDcgmConnectivityFailure cycles after which the recommended
+    # action escalates from CONTACT_SUPPORT to RESTART_BM. Enable only for a
+    # node-local endpoint where repeated unreachability is known to indicate a
+    # driver wedge; shared-service and network failures are not fixed by reboot.
+    # 0 disables escalation.
+    connectivityFailureEscalationThreshold: 0
 
   # Additional volume mounts for GPU health monitor
   # Use when monitor needs access to host files
@@ -907,6 +955,20 @@ gpu-health-monitor:
     requests:
       cpu: 100m
       memory: 128Mi
+
+  # Keep enough liveness budget after /healthz becomes stale for bounded
+  # critical-event delivery to complete.
+  livenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
 
   # Scheduling configuration
   nodeSelector: {}
@@ -953,6 +1015,63 @@ labeler:
   # Example: 'io.katacontainers.config.runtime.oci_runtime'
   # Leave empty to only check default label
   kataLabelOverride: ""
+
+  # Pre-installed driver configuration
+  # When enabled, the labeler sets nvsentinel.dgxc.nvidia.com/driver.installed=true
+  # on all nodes with nvidia.com/gpu.present=true, skipping driver pod detection.
+  assumeDriverInstalled: false
+
+  # Expected device count labels
+  # Writes current/expected device-count labels from node labels or DRA ResourceSlice data.
+  expectedDeviceCounts:
+    enabled: true
+    classes:
+      - name: gpu
+        enabled: true
+        labels:
+          current: nvsentinel.dgxc.nvidia.com/gpu.count.current
+          expected: nvsentinel.dgxc.nvidia.com/gpu.count.expected
+        groupingLabels:
+          - node.kubernetes.io/instance-type
+          - nvidia.com/gpu.product
+        expectedCountOverrides: []
+        currentExpression: |
+          int(node.metadata.labels['nvidia.com/gpu.count'])
+      - name: nic
+        enabled: true
+        labels:
+          current: nvsentinel.dgxc.nvidia.com/nic.count.current
+          expected: nvsentinel.dgxc.nvidia.com/nic.count.expected
+        groupingLabels:
+          - node.kubernetes.io/instance-type
+        expectedCountOverrides: []
+        currentExpression: |
+          int(node.status.allocatable['nvidia.com/mlnxnics'])
+      # Example AWS RoCE DRA NIC class. Uncomment and adapt per environment.
+      # - name: nic
+      #   enabled: false
+      #   labels:
+      #     current: nvsentinel.dgxc.nvidia.com/nic.count.current
+      #     expected: nvsentinel.dgxc.nvidia.com/nic.count.expected
+      #   groupingLabels:
+      #     - node.kubernetes.io/instance-type
+      #   expectedCountOverrides: []
+      #   currentExpression: |
+      #     sum(resourceSlices
+      #       .filter(rs,
+      #         has(rs.spec.driver) &&
+      #         rs.spec.driver == 'dra.networking.k8s.aws' &&
+      #         has(rs.spec.devices)
+      #       )
+      #       .map(rs, rs.spec.devices
+      #         .filter(d,
+      #           has(d.attributes) &&
+      #           'dra.vpc.amazonaws.com/deviceType' in d.attributes &&
+      #           has(d.attributes['dra.vpc.amazonaws.com/deviceType'].string) &&
+      #           d.attributes['dra.vpc.amazonaws.com/deviceType'].string == 'roce'
+      #         )
+      #         .size()
+      #       ))
 
   # Pod resource limits and requests
   resources:
@@ -1114,7 +1233,29 @@ janitor:
     # - gcp: Google Cloud Platform GKE clusters
     # - azure: Microsoft Azure AKS clusters
     # - oci: Oracle Cloud Infrastructure OKE clusters
+    # - generic: Bare-metal / on-premises clusters using privileged reboot Jobs
     provider: "kind"
+    
+    # Generic provider configuration (only needed when provider=generic)
+    generic:
+      # Container image used for the reboot Job
+      rebootImage: "public.ecr.aws/docker/library/busybox:1.37.0"
+      
+      # Use Linux Magic SysRq for an immediate kernel reboot instead of
+      # running chroot /host reboot. Only enable this when target nodes support
+      # Linux Magic SysRq and their kernel/config permissions allow an immediate
+      # reboot through /proc/sysrq-trigger.
+      useSysrqReboot: false
+      
+      # Namespace for reboot Jobs
+      # Leave empty to use the janitor-provider release namespace
+      rebootJobNamespace: ""
+      
+      # TTL in seconds for completed reboot Jobs
+      rebootJobTTLSeconds: 3600
+      
+      # Comma-separated image pull secret names for the reboot Job
+      imagePullSecrets: ""
     
     # AWS-specific configuration (only needed when provider=aws)
     aws:
@@ -1800,6 +1941,19 @@ preflight:
     #   version: "v1beta1"
     #   resource: "podgroups"
     # minCountExpr: "podGroup.spec.minMember"
+
+  ##############################################################################
+  # PER-NAMESPACE GANG DISCOVERY (PreflightConfig CRD)
+  #
+  # Per-namespace overrides are runtime objects, not Helm values. Create a
+  # PreflightConfig (preflight.nvsentinel.nvidia.com/v1alpha1) with a
+  # spec.gangDiscovery block in a namespace to override the cluster-wide
+  # gangDiscovery above for that namespace. The
+  # controller reads scheduler PodGroup CRs via an aggregated ClusterRole; grant
+  # access to additional scheduler CRDs with a ClusterRole labeled
+  # preflight.nvsentinel.nvidia.com/aggregate-to-gang-discovery: "true".
+  # See: docs/configuration/preflight.md#gang-discovery
+  ##############################################################################
 
   ##############################################################################
   # GANG COORDINATION

@@ -44,24 +44,29 @@ func Create(cfg *Config, opts Options) (Transformer, error) {
 }
 
 // NewFromConfigs creates a Pipeline from a slice of transformer configurations.
-// Disabled transformers are skipped. Returns an error if any enabled transformer
-// fails to initialize.
+// Disabled stages are skipped. Returns an error if any enabled stage fails to initialize.
 func NewFromConfigs(ctx context.Context, configs []Config, opts Options) (*Pipeline, error) {
 	var transformers []Transformer
 
 	for _, cfg := range configs {
 		if !cfg.Enabled {
-			slog.InfoContext(ctx, "Transformer disabled", "name", cfg.Name)
+			slog.InfoContext(ctx, "Pipeline stage disabled", "name", cfg.Name)
 			continue
 		}
 
-		t, err := Create(&cfg, opts)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create transformer %s: %w", cfg.Name, err)
+		if factory, ok := registry[cfg.Name]; ok {
+			t, err := factory(&cfg, opts)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create transformer %s: %w", cfg.Name, err)
+			}
+
+			transformers = append(transformers, t)
+			slog.InfoContext(ctx, "Transformer registered", "name", t.Name())
+
+			continue
 		}
 
-		transformers = append(transformers, t)
-		slog.InfoContext(ctx, "Transformer registered", "name", t.Name())
+		return nil, fmt.Errorf("unknown pipeline stage: %s", cfg.Name)
 	}
 
 	return New(transformers...), nil

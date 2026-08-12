@@ -29,6 +29,14 @@ type Reader interface {
 	// Paths -------------------------------------------------------------
 	IBBasePath() string
 	NetBasePath() string
+	// IBMadBasePath returns the sysfs directory holding the InfiniBand
+	// MAD character-device class entries (issm*/umad*), a sibling of
+	// IBBasePath (e.g. /nvsentinel/sys/class/infiniband_mad).
+	IBMadBasePath() string
+	// IBVerbsBasePath returns the sysfs directory holding the InfiniBand
+	// verbs character-device class entries (uverbs*), a sibling of
+	// IBBasePath (e.g. /nvsentinel/sys/class/infiniband_verbs).
+	IBVerbsBasePath() string
 	IBPortPath(device string, port int) string
 	NetInterfacePath(iface string) string
 
@@ -47,6 +55,11 @@ type Reader interface {
 	ReadIBPortCounter(device string, port int, counterPath string) (uint64, error)
 	// ReadNetStatistic reads a uint64 counter from /sys/class/net/<iface>/statistics/<counter>.
 	ReadNetStatistic(iface, counter string) (uint64, error)
+
+	// ReadNetAttribute reads a uint64 attribute from the netdev root,
+	// /sys/class/net/<iface>/<attr> — e.g. carrier_changes, which lives
+	// beside operstate, NOT under statistics/.
+	ReadNetAttribute(iface, attr string) (uint64, error)
 
 	// NUMA / PCI --------------------------------------------------------
 	// ReadIBDeviceNUMANode reads /sys/class/infiniband/<dev>/device/numa_node.

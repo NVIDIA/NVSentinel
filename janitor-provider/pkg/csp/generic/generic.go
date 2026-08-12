@@ -38,6 +38,7 @@ const (
 	jobLabelKey                = "nvsentinel.nvidia.com/reboot-job"
 	jobNodeLabelKey            = "nvsentinel.nvidia.com/reboot-node"
 	hostMountPath              = "/host"
+	hostProcMountPath          = "/host-proc"
 )
 
 var _ model.CSPClient = (*Client)(nil)
@@ -45,13 +46,14 @@ var _ model.CSPClient = (*Client)(nil)
 // Config holds the configuration for the generic provider.
 type Config struct {
 	RebootImage          string
+	UseSysrqReboot       bool
 	RebootJobNamespace   string
 	RebootJobTTL         int32
 	RebootJobPullSecrets []string
 }
 
 // Client is the generic bare-metal implementation of the CSP Client interface.
-// It reboots nodes by creating a privileged Job that runs chroot /host reboot.
+// It reboots nodes by creating a privileged Job that runs the configured reboot method.
 type Client struct {
 	k8sClient kubernetes.Interface
 	config    Config
@@ -89,7 +91,7 @@ func NewClientWithK8s(k8sClient kubernetes.Interface, config Config) *Client {
 }
 
 // SendRebootSignal creates a privileged Job on the target node that executes
-// chroot /host reboot. Returns the node's pre-reboot bootID as the requestID.
+// the configured reboot command. Returns the node's pre-reboot bootID as the requestID.
 func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
 	preRebootBootID := node.Status.NodeInfo.BootID
 	if preRebootBootID == "" {
@@ -99,7 +101,8 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 
 	job := c.buildRebootJob(node.Name)
 
-	slog.InfoContext(ctx, "Creating reboot Job", "node", node.Name, "namespace", c.config.RebootJobNamespace)
+	slog.InfoContext(ctx, "Creating reboot Job", "node", node.Name, "namespace", c.config.RebootJobNamespace,
+		"useSysrqReboot", c.config.UseSysrqReboot)
 
 	created, err := c.k8sClient.BatchV1().Jobs(c.config.RebootJobNamespace).Create(ctx, job, metav1.CreateOptions{})
 	if err != nil {
@@ -107,7 +110,8 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 	}
 
 	slog.InfoContext(ctx, "Reboot Job created", "node", node.Name, "job", created.Name,
-		"jobNamespace", c.config.RebootJobNamespace, "bootID", preRebootBootID)
+		"jobNamespace", c.config.RebootJobNamespace, "bootID", preRebootBootID,
+		"useSysrqReboot", c.config.UseSysrqReboot)
 
 	return model.ResetSignalRequestRef(preRebootBootID), nil
 }
@@ -151,6 +155,44 @@ func (c *Client) SendTerminateSignal(ctx context.Context, node corev1.Node) (mod
 func (c *Client) buildRebootJob(nodeName string) *batchv1.Job {
 	image := c.config.RebootImage
 	ttl := c.config.RebootJobTTL
+	command := c.config.rebootCommand()
+	var volumeMounts []corev1.VolumeMount
+	var volumes []corev1.Volume
+	if c.config.UseSysrqReboot {
+		volumeMounts = []corev1.VolumeMount{
+			{
+				Name:      "host-proc",
+				MountPath: hostProcMountPath,
+			},
+		}
+		volumes = []corev1.Volume{
+			{
+				Name: "host-proc",
+				VolumeSource: corev1.VolumeSource{
+					HostPath: &corev1.HostPathVolumeSource{
+						Path: "/proc",
+					},
+				},
+			},
+		}
+	} else {
+		volumeMounts = []corev1.VolumeMount{
+			{
+				Name:      "host-root",
+				MountPath: hostMountPath,
+			},
+		}
+		volumes = []corev1.Volume{
+			{
+				Name: "host-root",
+				VolumeSource: corev1.VolumeSource{
+					HostPath: &corev1.HostPathVolumeSource{
+						Path: "/",
+					},
+				},
+			},
+		}
+	}
 
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -182,32 +224,26 @@ func (c *Client) buildRebootJob(nodeName string) *batchv1.Job {
 						{
 							Name:    "reboot",
 							Image:   image,
-							Command: []string{"chroot", hostMountPath, "reboot"},
+							Command: command,
 							SecurityContext: &corev1.SecurityContext{
 								Privileged: ptr.To(true),
 							},
-							VolumeMounts: []corev1.VolumeMount{
-								{
-									Name:      "host-root",
-									MountPath: hostMountPath,
-								},
-							},
+							VolumeMounts: volumeMounts,
 						},
 					},
-					Volumes: []corev1.Volume{
-						{
-							Name: "host-root",
-							VolumeSource: corev1.VolumeSource{
-								HostPath: &corev1.HostPathVolumeSource{
-									Path: "/",
-								},
-							},
-						},
-					},
+					Volumes: volumes,
 				},
 			},
 		},
 	}
+}
+
+func (c Config) rebootCommand() []string {
+	if c.UseSysrqReboot {
+		return []string{"sh", "-c", fmt.Sprintf("echo b > %s/sysrq-trigger", hostProcMountPath)}
+	}
+
+	return []string{"chroot", hostMountPath, "reboot"}
 }
 
 // checkRebootJobPodStatus checks the reboot Job's pod for terminal failures
@@ -319,6 +355,16 @@ func loadConfigFromEnv() Config {
 		image = defaultRebootImage
 	}
 
+	useSysrqReboot := false
+	if useSysrqStr := os.Getenv("GENERIC_REBOOT_USE_SYSRQ"); useSysrqStr != "" {
+		parsed, err := strconv.ParseBool(useSysrqStr)
+		if err != nil {
+			slog.Warn("Invalid GENERIC_REBOOT_USE_SYSRQ, using default", "value", useSysrqStr, "default", false)
+		} else {
+			useSysrqReboot = parsed
+		}
+	}
+
 	namespace := os.Getenv("GENERIC_REBOOT_JOB_NAMESPACE")
 	ttl := int32(defaultRebootJobTTLSeconds)
 
@@ -343,6 +389,7 @@ func loadConfigFromEnv() Config {
 
 	return Config{
 		RebootImage:          image,
+		UseSysrqReboot:       useSysrqReboot,
 		RebootJobNamespace:   namespace,
 		RebootJobTTL:         ttl,
 		RebootJobPullSecrets: pullSecrets,

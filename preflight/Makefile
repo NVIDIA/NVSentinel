@@ -30,11 +30,35 @@ CLEAN_EXTRA_FILES := preflight
 include ../make/common.mk
 include ../make/go.mk
 
+# Paths for generated files (must be after common.mk to get REPO_ROOT)
+API_DIR := api/v1alpha1
+CRD_OUTPUT_DIR := $(REPO_ROOT)/distros/kubernetes/nvsentinel/charts/preflight/crds
+
 # Test setup commands for kubebuilder envtest
 # Version is centrally managed in .versions.yaml
 TEST_SETUP_COMMANDS := \
 	go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION) && \
 	eval $$(setup-envtest use --use-env -p env) &&
+
+# =============================================================================
+# CODE GENERATION TARGETS
+# =============================================================================
+
+.PHONY: generate
+generate: ## Generate CRDs and DeepCopy implementations for preflight
+	@echo "Generating CRDs and DeepCopy code implementations for preflight..."
+	@which controller-gen > /dev/null || (echo "Installing controller-gen $(CONTROLLER_GEN_VERSION)..." && go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION))
+	@controller-gen +crd:headerFile="../.github/headers/LICENSE_YAML" paths=./$(API_DIR) output:crd:dir=./$(API_DIR)
+	@echo "Moving generated CRDs to $(CRD_OUTPUT_DIR)..."
+	@mkdir -p $(CRD_OUTPUT_DIR)
+	@mv ./$(API_DIR)/*.yaml $(CRD_OUTPUT_DIR)/
+	@echo "Generated files:"
+	@ls -1 $(CRD_OUTPUT_DIR)/*.yaml
+	@controller-gen +object:headerFile="../.github/headers/LICENSE_GO" paths="./..."
+	@echo "Generated DeepCopy method implementations"
+
+.PHONY: manifests
+manifests: generate ## Alias for generate (for compatibility)
 
 # =============================================================================
 # DEFAULT TARGET

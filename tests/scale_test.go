@@ -31,6 +31,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
+	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 )
 
 type scaleTestContextKey int
@@ -74,20 +75,25 @@ func TestScaleHealthEvents(t *testing.T) {
 		kwokNodes, err := helpers.GetAllNodesNames(ctx, client)
 		assert.NoError(t, err, "failed to get KWOK nodes")
 
-		var allNodesList v1.NodeList
-		err = client.Resources().List(ctx, &allNodesList)
-		assert.NoError(t, err, "failed to get all nodes")
+		var gpuNodesList v1.NodeList
+		err = client.Resources().List(ctx, &gpuNodesList,
+			resources.WithLabelSelector("nvidia.com/gpu.present=true"))
+		assert.NoError(t, err, "failed to get GPU nodes")
 
-		totalNodesInCluster := len(allNodesList.Items)
+		totalGPUNodes := len(gpuNodesList.Items)
 
-		t.Logf("Found %d KWOK nodes, %d total nodes in cluster", len(kwokNodes), totalNodesInCluster)
+		t.Logf("Found %d KWOK nodes, %d GPU nodes in cluster", len(kwokNodes), totalGPUNodes)
 
 		cbThresholdPercentage := 40
-		nodesToCordon := min(int(math.Ceil(float64(totalNodesInCluster)*float64(cbThresholdPercentage+3)/100.0)), len(kwokNodes))
+		cbThreshold := int(math.Ceil(float64(totalGPUNodes) * float64(cbThresholdPercentage) / 100.0))
+		nodesToCordon := min(cbThreshold+1, len(kwokNodes))
+		require.Greater(t, len(kwokNodes), cbThreshold,
+			"need at least %d KWOK nodes to exceed the %d%% CB threshold (%d nodes), got %d",
+			cbThreshold+1, cbThresholdPercentage, cbThreshold, len(kwokNodes))
 
 		healthCheckNodes := kwokNodes[:nodesToCordon]
-		t.Logf("Selected %d KWOK nodes to cordon (43%% of %d total nodes, exceeds 40%% CB threshold)",
-			len(healthCheckNodes), totalNodesInCluster)
+		t.Logf("Selected %d KWOK nodes to cordon (%d above %d%% CB threshold of %d GPU nodes)",
+			len(healthCheckNodes), nodesToCordon, cbThresholdPercentage, totalGPUNodes)
 
 		ctx = context.WithValue(ctx, keyNamespace, workloadNamespace)
 		ctx = context.WithValue(ctx, keyNodes, kwokNodes)
@@ -127,21 +133,23 @@ func TestScaleHealthEvents(t *testing.T) {
 		return ctx
 	})
 
-	feature.Assess("Circuit breaker trips after 40% of total nodes cordoned", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("Circuit breaker trips after 40% of GPU nodes cordoned", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		healthCheckNodes := ctx.Value(keyHealthCheckNodes).([]string)
 
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		var allNodesList v1.NodeList
-		err = client.Resources().List(ctx, &allNodesList)
+		var gpuNodesList v1.NodeList
+		err = client.Resources().List(ctx, &gpuNodesList,
+			resources.WithLabelSelector("nvidia.com/gpu.present=true"))
 		require.NoError(t, err)
 
-		totalNodesInCluster := len(allNodesList.Items)
+		totalGPUNodes := len(gpuNodesList.Items)
+		require.Greater(t, totalGPUNodes, 0, "no GPU nodes (nvidia.com/gpu.present=true) found; circuit breaker denominator would be zero")
 
-		cbThreshold := int(math.Ceil(float64(totalNodesInCluster) * 0.40))
+		cbThreshold := int(math.Ceil(float64(totalGPUNodes) * 0.40))
 
-		t.Logf("Waiting for ~%d nodes (40%% of %d total nodes) to be cordoned before CB trips", cbThreshold, totalNodesInCluster)
+		t.Logf("Waiting for ~%d nodes (40%% of %d GPU nodes) to be cordoned before CB trips", cbThreshold, totalGPUNodes)
 		require.Eventually(t, func() bool {
 			cordonedCount := 0
 			for _, nodeName := range healthCheckNodes {
@@ -150,15 +158,15 @@ func TestScaleHealthEvents(t *testing.T) {
 					cordonedCount++
 				}
 			}
-			percentageOfTotal := float64(cordonedCount) / float64(totalNodesInCluster) * 100
+			percentageOfTotal := float64(cordonedCount) / float64(totalGPUNodes) * 100
 			if cordonedCount >= cbThreshold {
-				t.Logf("Circuit breaker should trip: %d cordoned = %.1f%% of %d total nodes",
-					cordonedCount, percentageOfTotal, totalNodesInCluster)
+				t.Logf("Circuit breaker should trip: %d cordoned = %.1f%% of %d GPU nodes",
+					cordonedCount, percentageOfTotal, totalGPUNodes)
 				return true
 			}
 			if cordonedCount%5 == 0 && cordonedCount > 0 {
-				t.Logf("Progress: %d cordoned = %.1f%% of %d total nodes",
-					cordonedCount, percentageOfTotal, totalNodesInCluster)
+				t.Logf("Progress: %d cordoned = %.1f%% of %d GPU nodes",
+					cordonedCount, percentageOfTotal, totalGPUNodes)
 			}
 			return false
 		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval)

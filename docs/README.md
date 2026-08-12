@@ -20,6 +20,19 @@ Understand how data flows through the system - from GPU failure detection to aut
 **For SREs and monitoring teams** (10 min reference)  
 Complete catalog of all Prometheus metrics exposed by NVSentinel components. Use this to build dashboards and alerts.
 
+### [tutorials/](./tutorials/)
+**Step-by-step developer guides**  
+Hands-on walkthroughs for extending NVSentinel:
+
+- [Writing a New Health Monitor](./tutorials/writing-a-health-monitor.md) — build, deploy, and
+  verify a custom fault detector end-to-end (no GPU required).
+- [Writing a Preflight Check](./tutorials/writing-a-preflight-check.md) — build an init-container
+  diagnostic, register it in Helm, and verify it blocks bad GPU pod starts.
+- [Writing a Drain Plugin](./tutorials/writing-a-drain-plugin.md) — replace node-drainer's
+  eviction step with a custom controller.
+- [Plugin Custom Remediation](./tutorials/plugin-custom-remediation.md) — extend the
+  fault-remediation stage with your own repair via custom actions and a controller CRD.
+
 ### [configuration/](./configuration/)
 **Component configuration guides**  
 Detailed setup instructions for each NVSentinel component. Read these when you need to configure specific monitors, connectors, or remediation modules.

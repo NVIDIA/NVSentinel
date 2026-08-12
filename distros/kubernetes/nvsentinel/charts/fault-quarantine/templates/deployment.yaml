@@ -98,6 +98,7 @@ spec:
           - "--tls-enabled=false"
           {{- end }}
           - "--circuit-breaker-enabled={{ .Values.circuitBreaker.enabled }}"
+          - "--gpu-node-label={{ .Values.gpuNodeLabel }}"
           ports:
             - name: metrics
               containerPort: {{ ((.Values.global).metricsPort) | default 2112 }}

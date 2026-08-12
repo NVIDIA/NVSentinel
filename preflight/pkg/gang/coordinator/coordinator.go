@@ -163,13 +163,14 @@ func (c *Coordinator) EnsureConfigMap(
 	namespace string,
 	gangID string,
 	expectedMinCount int,
+	ownerReference *metav1.OwnerReference,
 ) error {
 	configMapName := ConfigMapName(gangID)
 	existing := &corev1.ConfigMap{}
 
 	err := c.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: configMapName}, existing)
 	if err == nil {
-		return nil
+		return c.ensureOwnerReference(ctx, namespace, configMapName, ownerReference)
 	}
 
 	if !errors.IsNotFound(err) {
@@ -179,11 +180,16 @@ func (c *Coordinator) EnsureConfigMap(
 	gangInfo := &types.GangInfo{
 		GangID:           gangID,
 		ExpectedMinCount: expectedMinCount,
+		OwnerReference:   ownerReference,
 	}
 	cm := c.createConfigMap(configMapName, namespace, gangInfo)
 
 	err = c.client.Create(ctx, cm)
-	if err != nil && !errors.IsAlreadyExists(err) {
+	if errors.IsAlreadyExists(err) {
+		return c.ensureOwnerReference(ctx, namespace, configMapName, ownerReference)
+	}
+
+	if err != nil {
 		return fmt.Errorf("failed to create ConfigMap %s: %w", configMapName, err)
 	}
 
@@ -203,7 +209,13 @@ func (c *Coordinator) RegisterPeer(
 	gangInfo *types.GangInfo,
 	peer types.PeerInfo,
 ) error {
-	if err := c.EnsureConfigMap(ctx, namespace, gangInfo.GangID, gangInfo.ExpectedMinCount); err != nil {
+	if err := c.EnsureConfigMap(
+		ctx,
+		namespace,
+		gangInfo.GangID,
+		gangInfo.ExpectedMinCount,
+		gangInfo.OwnerReference,
+	); err != nil {
 		return fmt.Errorf("failed to ensure ConfigMap: %w", err)
 	}
 
@@ -218,7 +230,15 @@ func (c *Coordinator) RegisterPeer(
 
 	livePodNames := livePodNamesFromPeers(gangInfo.Peers)
 
-	if err := c.updateConfigMap(ctx, namespace, configMapName, gangInfo.ExpectedMinCount, peer, livePodNames); err != nil {
+	if err := c.updateConfigMap(
+		ctx,
+		namespace,
+		configMapName,
+		gangInfo.ExpectedMinCount,
+		peer,
+		livePodNames,
+		gangInfo.OwnerReference,
+	); err != nil {
 		return fmt.Errorf("failed to update ConfigMap: %w", err)
 	}
 
@@ -256,7 +276,15 @@ func (c *Coordinator) RegisterPeerInConfigMap(
 
 	livePodNames := livePodNamesFromPeers(gangInfo.Peers)
 
-	if err := c.updateConfigMap(ctx, namespace, configMapName, gangInfo.ExpectedMinCount, peer, livePodNames); err != nil {
+	if err := c.updateConfigMap(
+		ctx,
+		namespace,
+		configMapName,
+		gangInfo.ExpectedMinCount,
+		peer,
+		livePodNames,
+		gangInfo.OwnerReference,
+	); err != nil {
 		return fmt.Errorf("failed to update ConfigMap: %w", err)
 	}
 
@@ -277,11 +305,16 @@ func (c *Coordinator) updateConfigMap(
 	expectedCount int,
 	peer types.PeerInfo,
 	livePodNames map[string]bool,
+	ownerReference *metav1.OwnerReference,
 ) error {
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		cm := &corev1.ConfigMap{}
 		if err := c.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: configMapName}, cm); err != nil {
 			return fmt.Errorf("failed to get ConfigMap %s: %w", configMapName, err)
+		}
+
+		if cm.Data == nil {
+			cm.Data = make(map[string]string)
 		}
 
 		// Update expected_count if it was 0 (skeleton) and we now have the real value
@@ -294,6 +327,31 @@ func (c *Coordinator) updateConfigMap(
 
 		c.addPeerToConfigMap(cm, peer, livePodNames)
 		c.updateMasterAddr(cm)
+		c.addOwnerReference(cm, ownerReference)
+
+		return c.client.Update(ctx, cm)
+	})
+}
+
+func (c *Coordinator) ensureOwnerReference(
+	ctx context.Context,
+	namespace string,
+	configMapName string,
+	ownerReference *metav1.OwnerReference,
+) error {
+	if ownerReference == nil {
+		return nil
+	}
+
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		cm := &corev1.ConfigMap{}
+		if err := c.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: configMapName}, cm); err != nil {
+			return fmt.Errorf("failed to get ConfigMap %s: %w", configMapName, err)
+		}
+
+		if !c.addOwnerReference(cm, ownerReference) {
+			return nil
+		}
 
 		return c.client.Update(ctx, cm)
 	})
@@ -363,7 +421,7 @@ func GetRank(podName string, peers []types.PeerInfo) int {
 
 // createConfigMap creates a new ConfigMap for gang coordination.
 func (c *Coordinator) createConfigMap(name, namespace string, gangInfo *types.GangInfo) *corev1.ConfigMap {
-	return &corev1.ConfigMap{
+	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
@@ -380,6 +438,36 @@ func (c *Coordinator) createConfigMap(name, namespace string, gangInfo *types.Ga
 			DataKeyGangID:        gangInfo.GangID, // Store full gang ID in data
 		},
 	}
+
+	c.addOwnerReference(cm, gangInfo.OwnerReference)
+
+	return cm
+}
+
+func (c *Coordinator) addOwnerReference(cm *corev1.ConfigMap, ownerReference *metav1.OwnerReference) bool {
+	if ownerReference == nil || ownerReference.Name == "" || ownerReference.UID == "" {
+		return false
+	}
+
+	ownerReferences := cm.GetOwnerReferences()
+	for idx, existing := range ownerReferences {
+		if existing.APIVersion == ownerReference.APIVersion &&
+			existing.Kind == ownerReference.Kind &&
+			existing.Name == ownerReference.Name {
+			if existing.UID == ownerReference.UID {
+				return false
+			}
+
+			ownerReferences[idx] = *ownerReference
+			cm.SetOwnerReferences(ownerReferences)
+
+			return true
+		}
+	}
+
+	cm.SetOwnerReferences(append(ownerReferences, *ownerReference))
+
+	return true
 }
 
 // addPeerToConfigMap adds a peer to the ConfigMap's peer list.

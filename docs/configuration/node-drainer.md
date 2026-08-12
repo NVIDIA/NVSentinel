@@ -24,11 +24,11 @@ Defines CPU and memory resource requests and limits for the node-drainer pod.
 node-drainer:
   resources:
     limits:
-      cpu: "2"
-      memory: "2Gi"
+      cpu: "200m"
+      memory: "300Mi"
     requests:
-      cpu: "1"
-      memory: "1Gi"
+      cpu: "200m"
+      memory: "300Mi"
 ```
 
 ### Logging
@@ -41,6 +41,23 @@ node-drainer:
 ```
 
 > Note: This module depends on the results from fault-quarantine. It also depends on the datastore being enabled. Therefore, ensure the datastore and the other modules are also enabled.
+
+### Change Stream Resume Token
+
+To make node-drainer skip accumulated events and start from the current stream head, scale it to zero, set its key in the shared resume-control ConfigMap to `CREATE`, then restore its replicas. Node-drainer deletes only its own resume token, records a cold-start cutoff timestamp, skips startup cold-start recovery for that run, and resets the key back to `RESUME` during startup. Future restarts still run cold-start recovery, but only for records newer than the recorded cutoff.
+
+```bash
+REPLICAS=$(kubectl -n nvsentinel get deployment node-drainer -o jsonpath='{.spec.replicas}')
+kubectl -n nvsentinel scale deployment/node-drainer --replicas=0
+kubectl -n nvsentinel rollout status deployment/node-drainer --timeout=180s
+kubectl -n nvsentinel get configmap resume-control >/dev/null 2>&1 || \
+  kubectl -n nvsentinel create configmap resume-control
+kubectl -n nvsentinel patch configmap resume-control \
+  --type merge \
+  -p '{"data":{"node-drainer":"CREATE"}}'
+kubectl -n nvsentinel scale deployment/node-drainer --replicas="${REPLICAS:-1}"
+kubectl -n nvsentinel rollout status deployment/node-drainer --timeout=180s
+```
 
 ### Partial Drain
 
@@ -69,7 +86,7 @@ Regular expression pattern matching system namespaces that are skipped during no
 
 ```yaml
 node-drainer:
-  systemNamespaces: "^(nvsentinel|kube-system|gpu-operator|gmp-system|network-operator)$"
+  systemNamespaces: "^(nvsentinel|kube-system|gpu-operator|gmp-system|network-operator|skyhook)$"
 ```
 
 Pods in namespaces matching this regex are not evicted during drain operations.
@@ -196,4 +213,103 @@ userNamespaces:
     mode: "DeleteAfterTimeout"
   - name: "inference-*"
     mode: "Immediate"
+```
+
+#### Example 3: Multi-Tier Application
+
+```yaml
+userNamespaces:
+  - name: "frontend"
+    mode: "Immediate"
+  - name: "batch-jobs"
+    mode: "DeleteAfterTimeout"
+  - name: "database"
+    mode: "AllowCompletion"
+  - name: "*"
+    mode: "AllowCompletion"
+```
+
+### Observe a Drain
+
+On a quarantined node with workloads still scheduled:
+
+```bash
+NODE={cordoned-node}
+
+kubectl get pods -A --field-selector "spec.nodeName=$NODE" -w
+kubectl get node "$NODE" -L dgxc.nvidia.com/nvsentinel-state
+kubectl get events -n default \
+  --field-selector "involvedObject.kind=Node,involvedObject.name=$NODE"
+```
+
+Node Drainer events are created in the **`default`** namespace (`Type=NodeDraining`,
+`Source=nvsentinel-node-drainer`). Example output for a pod `training-job-0` in namespace
+`batch-jobs` on node `gpu-node-42`:
+
+#### `Immediate`
+
+Pods are evicted via the Eviction API — no Node Drainer event is emitted.
+
+```text
+# kubectl get pods -A --field-selector "spec.nodeName=gpu-node-42"
+NAMESPACE   NAME              READY   STATUS        RESTARTS   AGE
+frontend    inference-api-0   1/1     Terminating   0          2h
+
+# (pod disappears within evictionTimeoutInSeconds)
+
+# kubectl get node gpu-node-42 -L dgxc.nvidia.com/nvsentinel-state
+NAME         STATUS                     ROLES    AGE   VERSION   NVSENTINEL-STATE
+gpu-node-42  Ready,SchedulingDisabled   <none>   30d   v1.29.0   draining
+```
+
+#### `AllowCompletion`
+
+```text
+# kubectl get pods -A --field-selector "spec.nodeName=gpu-node-42"
+NAMESPACE   NAME              READY   STATUS    RESTARTS   AGE
+database    postgres-0        1/1     Running   0          2h
+
+# kubectl get events -n default --field-selector "involvedObject.name=gpu-node-42"
+LAST SEEN   TYPE          REASON                  OBJECT           MESSAGE
+2m          NodeDraining  AwaitingPodCompletion   Node/gpu-node-42 Waiting for following pods to finish: [database/postgres-0]
+```
+
+#### `DeleteAfterTimeout`
+
+```text
+# kubectl get pods -A --field-selector "spec.nodeName=gpu-node-42"
+NAMESPACE   NAME              READY   STATUS    RESTARTS   AGE
+batch-jobs  training-job-0    1/1     Running   0          2h
+
+# kubectl get events -n default --field-selector "involvedObject.name=gpu-node-42"
+LAST SEEN   TYPE          REASON                    OBJECT           MESSAGE
+1m          NodeDraining  WaitingBeforeForceDelete  Node/gpu-node-42 Waiting for following pods to finish: [training-job-0] in namespace: [batch-jobs] or they will be force deleted on: 2026-07-01 18:30:00 +0000 UTC
+```
+
+After the deadline, the pod is force-deleted and `kubectl get pods` shows it gone.
+
+### One-shot AI prompt (per-namespace drain modes)
+
+Paste to an AI coding agent. Replace bracketed parts.
+
+```text
+Create a Helm values overlay for NVSentinel node-drainer per-namespace drain modes.
+
+Modes (exact strings): Immediate, AllowCompletion, DeleteAfterTimeout.
+- Immediate: Eviction API; evictionTimeoutInSeconds as a quoted string (e.g. "60")
+- AllowCompletion: wait for pod exit (terminationGracePeriodSeconds)
+- DeleteAfterTimeout: force-delete after deleteAfterTimeoutMinutes from health-event createdAt
+
+YAML under global.nodeDrainer and node-drainer:
+  global.nodeDrainer.enabled: true
+  node-drainer.evictionTimeoutInSeconds: "60"
+  node-drainer.deleteAfterTimeoutMinutes: [minutes, default 60]
+  node-drainer.systemNamespaces: "^(nvsentinel|kube-system|gpu-operator|gmp-system|network-operator|skyhook)$"
+  node-drainer.userNamespaces (specific globs before "*"; omit customDrain):
+    [ns1] → Immediate     (default: frontend)
+    [ns2] → DeleteAfterTimeout (default: batch-jobs)
+    [ns3] → AllowCompletion  (default: database)
+    *     → AllowCompletion
+
+Output only the values YAML. User applies it with their existing NVSentinel Helm release.
 ```

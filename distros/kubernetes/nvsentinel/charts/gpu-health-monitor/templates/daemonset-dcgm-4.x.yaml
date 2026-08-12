@@ -48,7 +48,9 @@ spec:
             - --dcgm-error-mapping-config-file
             - "/etc/dcgmhealth/dcgmerrorsmapping.csv"
             - --dcgm-addr
-            - {{ ternary (include "gpu-health-monitor.dcgmAddr" .) "localhost:5555" (include "gpu-health-monitor.dcgmEnabled" . | eq "true") | quote }}
+            - {{ include "gpu-health-monitor.dcgmAddr" . | quote }}
+            - --dcgm-mode
+            - {{ include "gpu-health-monitor.dcgmCliMode" . | quote }}
             - --port
             - "{{ .Values.global.metricsPort }}"
             - --verbose
@@ -61,8 +63,15 @@ spec:
             - {{ .Values.global.metadataPath | quote }}
             - --processing-strategy
             - {{ .Values.processingStrategy | quote }}
+            - --suppress-nvlink-down-unbridged-pcie
+            - {{ .Values.suppressNvlinkDownOnUnbridgedPcie | quote }}
           securityContext:
             runAsUser: 0
+            {{- if eq (include "gpu-health-monitor.dcgmMode" .) "embedded-mode" }}
+            # Required for NVIDIA container toolkit GPU/driver injection when the
+            # toolkit ignores NVIDIA_VISIBLE_DEVICES for unprivileged containers.
+            privileged: true
+            {{- end }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}-dcgm-4.x"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           resources:
@@ -72,20 +81,14 @@ spec:
               containerPort: {{ .Values.global.metricsPort }}
           livenessProbe:
             httpGet:
-              path: /metrics
+              path: /healthz
               port: {{ .Values.global.metricsPort }}
-            initialDelaySeconds: 30
-            periodSeconds: 30
-            timeoutSeconds: 3
-            failureThreshold: 3
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
             httpGet:
               path: /metrics
               port: {{ .Values.global.metricsPort }}
-            initialDelaySeconds: 10
-            periodSeconds: 10
-            timeoutSeconds: 3
-            failureThreshold: 3
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
           volumeMounts:
             {{- if .Values.additionalVolumeMounts }}
             {{ toYaml .Values.additionalVolumeMounts | nindent 12 }}
@@ -97,7 +100,7 @@ spec:
             - name: gpu-metadata
               mountPath: /var/lib/nvsentinel
               readOnly: true
-          env: 
+          env:
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
@@ -119,7 +122,12 @@ spec:
         {{- if .Values.additionalHostVolumes }}
         {{ toYaml .Values.additionalHostVolumes | nindent 8 }}
         {{- end }}
-      {{- if .Values.useHostNetworking }}
+      {{- if eq (include "gpu-health-monitor.dcgmMode" .) "embedded-mode" }}
+      runtimeClassName: {{ required "gpu-health-monitor.runtimeClassName is required in embedded-mode" .Values.runtimeClassName }}
+      {{- else if .Values.runtimeClassName }}
+      runtimeClassName: {{ .Values.runtimeClassName }}
+      {{- end }}
+      {{- if eq (include "gpu-health-monitor.useHostNetworking" .) "true" }}
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       {{- end }}

@@ -40,9 +40,9 @@ platformConnector:
   affinity: {}
 ```
 
-## Transformer Pipeline
+## Event Processing Pipeline
 
-Configures the event transformation pipeline that processes health events before storage and Kubernetes propagation.
+Configures the event processing pipeline that processes health events before storage and Kubernetes propagation. Transformers mutate events in order before connector fan-out.
 
 ```yaml
 platformConnector:
@@ -54,6 +54,14 @@ platformConnector:
       enabled: false
       config: /etc/config/overrides.toml
   
+  dedup:
+    enabled: true
+    suppressionWindow: "3m"
+    cleanupInterval: "60s"
+    includeChecks:
+      - SysLogsXIDError
+      - SysLogsSXIDError
+
   transformers:
     MetadataAugmentor:
       cacheSize: 50
@@ -68,10 +76,15 @@ platformConnector:
 ### Parameters
 
 #### pipeline
-Array of transformers to execute in order:
+Array of transformer stages to execute in order:
 - **name**: Transformer identifier (`MetadataAugmentor`, `OverrideTransformer`)
 - **enabled**: Enable/disable the transformer
 - **config**: Path to transformer-specific configuration file
+
+The chart appends the `Deduplicator` transformer stage from `platformConnector.dedup`; operators normally configure deduplication through the `dedup` block rather than adding it manually to `pipeline`.
+
+#### dedup
+Deduplication transformer configuration. See [Deduplication Transformer Configuration](#deduplication-transformer-configuration).
 
 #### transformers
 Transformer-specific configurations, nested by transformer name.
@@ -181,6 +194,50 @@ transformers:
           recommendedAction: "NONE"
 ```
 
+## Deduplication Transformer Configuration
+
+Suppresses repeated health events within a burst window before they are written to the datastore or propagated to Kubernetes. The dedup key is derived from:
+
+```text
+(nodeName, checkName, canonical entitiesImpacted, canonical errorCode, processingStrategy, isHealthy)
+```
+
+`message`, `pid`, timestamps, and other fields outside the key do not distinguish events. If a producer needs those fields to create distinct faults, it should include them in `entitiesImpacted` or `errorCode`. `processingStrategy` is included so a `STORE_ONLY` observation cannot suppress a later `EXECUTE_REMEDIATION` event for the same fault identity.
+
+```yaml
+platformConnector:
+  dedup:
+    enabled: true
+    suppressionWindow: "3m"
+    cleanupInterval: "60s"
+    includeChecks:
+      - SysLogsXIDError
+      - SysLogsSXIDError
+```
+
+### Parameters
+
+#### enabled
+Enables the deduplication transformer. When disabled, every event that reaches platform-connectors keeps its original processing strategy.
+
+#### suppressionWindow
+Go duration string that controls how long repeated events with the same key are downgraded to `STORE_AND_ANALYSE`. After the window expires, the next matching event remains `EXECUTE_REMEDIATION`.
+
+#### cleanupInterval
+Go duration string that controls how often the in-memory tracker removes expired keys that have not recurred.
+
+#### includeChecks
+List of `checkName` values eligible for platform-connector deduplication. Keep this focused on high-volume repeated signal streams, such as `SysLogsXIDError` and `SysLogsSXIDError`; every other check passes through unchanged.
+
+### Healthy Event Behavior
+
+Healthy events are not downgraded by deduplication. Before they continue downstream, they clear any matching unhealthy entries from the in-memory tracker. This keeps recovery and baseline events reliable even when a previous healthy event did not update every downstream consumer, while repeated unhealthy fault observations are still deduplicated.
+
+### Operational Notes
+
+- Dedup state is in-memory only and is cleared on platform-connectors pod restart.
+- The dedup counter is exposed as `nvsentinel_platform_connector_dedup_store_and_analyse_total{check,node,err_code}`.
+- `entitiesImpacted` and `errorCode` are canonicalized as sets for keying; ordering differences do not create distinct events.
 
 ## Kubernetes Connector
 

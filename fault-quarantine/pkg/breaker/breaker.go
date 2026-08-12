@@ -181,7 +181,7 @@ func (b *slidingWindowBreaker) sumBuckets() int {
 // IsTripped checks if the circuit breaker should prevent further node cordoning.
 // It returns true if:
 // 1. The breaker is already in TRIPPED state, OR
-// 2. Recent cordon events exceed the configured threshold (TripPercentage * total nodes)
+// 2. Recent cordon events reach the configured threshold (TripPercentage * GPU nodes)
 // The method automatically trips the breaker if the threshold is exceeded.
 func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 	b.mu.RLock()

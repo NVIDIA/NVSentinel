@@ -441,6 +441,17 @@ func (w *ChangeStreamWatcher) processNextEvent(ctx context.Context) {
 		return
 	}
 
+	// Attach this event's resume token (read via mongoEvent.GetResumeToken) so
+	// consumers can checkpoint exactly at the event they processed. The change
+	// stream cursor keeps advancing while consumers work, so checkpointing the
+	// cursor position instead could skip events that were never processed.
+	// The driver-owned bson.Raw aliases the current batch's pooled response
+	// buffer, which is recycled once the event loop calls Next() again — clone
+	// it so the token stays valid after the channel handoff.
+	if token := w.changeStream.ResumeToken(); len(token) > 0 {
+		event["_resumeToken"] = bson.Raw(append([]byte(nil), token...))
+	}
+
 	genericEvent := Event(event)
 
 	select {
@@ -495,8 +506,17 @@ func (w *ChangeStreamWatcher) MarkProcessed(ctx context.Context, token []byte) e
 
 		slog.Debug("Using change stream resume token", "client", w.clientName)
 	} else {
-		// Use the provided token
-		resumeTokenToStore = token
+		// Use the provided per-event token. Tokens originate from the change
+		// stream as raw BSON documents ({"_data": ...}), so store them as a
+		// document — the same shape SetResumeAfter expects when the token is
+		// read back on startup. Storing the plain byte slice would write a
+		// BSON binary value that fails to decode into TokenDoc.ResumeToken.
+		raw := bson.Raw(token)
+		if err := raw.Validate(); err != nil {
+			return fmt.Errorf("invalid resume token for client %s: %w", w.clientName, err)
+		}
+
+		resumeTokenToStore = raw
 
 		slog.Debug("Using provided resume token", "client", w.clientName)
 	}

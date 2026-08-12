@@ -323,6 +323,25 @@ gangDiscovery: {}
   #   resource: "podgroups"
   # minCountExpr: "podGroup.spec.minMember"  # CEL expression
 
+# Per-namespace gang discovery is configured at runtime via PreflightConfig
+# custom resources (preflight.nvsentinel.nvidia.com/v1alpha1), not Helm values.
+# Create one PreflightConfig in a namespace to override the cluster-wide
+# gangDiscovery above for pods in that namespace, e.g.:
+#
+#   apiVersion: preflight.nvsentinel.nvidia.com/v1alpha1
+#   kind: PreflightConfig
+#   metadata: {name: default, namespace: team-a}
+#   spec:
+#     gangDiscovery:
+#       name: volcano
+#       annotationKeys: ["scheduling.k8s.io/group-name"]
+#       podGroupGVR: {group: scheduling.volcano.sh, version: v1beta1, resource: podgroups}
+#       minCountExpr: podGroup.spec.minMember
+#
+# The controller reads PodGroup CRs via an aggregated ClusterRole. To let it read
+# a scheduler CRD not covered by the built-in role, apply a ClusterRole labeled
+# preflight.nvsentinel.nvidia.com/aggregate-to-gang-discovery: "true".
+
 # Gang coordination configuration for multi-node checks (e.g., nccl-allreduce)
 gangCoordination:
   # Enable gang coordination (required for gang-wide checks)

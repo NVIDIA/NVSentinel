@@ -244,7 +244,7 @@ In the AWS Console, navigate to **Amazon DocumentDB → Clusters → Create** wi
 
 After creation, note the **Cluster endpoint** (read/write):
 ```
-<cluster-id>.cluster-<suffix>.<region>.docdb.amazonaws.com
+{cluster-id}.cluster-{suffix}.{region}.docdb.amazonaws.com
 ```
 
 ---
@@ -307,7 +307,7 @@ DocumentDB cluster endpoints use private DNS names (e.g. `nvsentinel-test-1.clus
 
 ```bash
 kubectl run -it --rm dns-test --image=busybox --restart=Never -- \
-  nslookup <cluster-endpoint>
+  nslookup {cluster-endpoint}
 ```
 
 Expected output: a valid IP address. `NXDOMAIN` means the Route 53 hosted zone or A record is incorrect.
@@ -355,7 +355,7 @@ global:
     credentialsFromSecret:
       name: nvsentinel-datastore-mongodb-uri
     connection:
-      host: "<cluster-endpoint>"
+      host: "{cluster-endpoint}"
       port: 27017
       database: "HealthEventsDatabase"
     tls:
@@ -473,7 +473,7 @@ global:
     credentialsFromSecret:
       name: nvsentinel-datastore-mongodb-uri
     connection:
-      host: "<cluster>.mongocluster.cosmos.azure.com"
+      host: "{cluster}.mongocluster.cosmos.azure.com"
       port: 27017
       database: "HealthEventsDatabase"
     tls:
@@ -570,7 +570,7 @@ global:
     credentialsFromSecret:
       name: nvsentinel-datastore-mongodb-uri
     connection:
-      host: "<cluster>.mongodb.net"
+      host: "{cluster}.mongodb.net"
       port: 27017
       database: "HealthEventsDatabase"
     tls:

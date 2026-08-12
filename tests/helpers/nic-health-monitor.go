@@ -245,11 +245,13 @@ for vf in mlx5_9 mlx5_10; do
   ln -s dummy "$FAKE/$vf/device/physfn"
 done
 
-# Net statistics for carrier_changes (EvaluateNetCounters path).
-# Only statistics/ is created; no operstate file, so the NUMA
-# classifier and EthernetStateCheck are unaffected.
-mkdir -p "$NET/eth0/statistics"
-echo "0" > "$NET/eth0/statistics/carrier_changes"
+# carrier_changes for the EvaluateNetCounters path. It is a
+# netdev-ROOT attribute (/sys/class/net/<iface>/carrier_changes,
+# beside operstate) — NOT under statistics/, which never held it on
+# any kernel. No operstate file is created, so the NUMA classifier
+# and EthernetStateCheck are unaffected.
+mkdir -p "$NET/eth0"
+echo "0" > "$NET/eth0/carrier_changes"
 
 mkdir -p "$PROC/sys/kernel/random"
 echo "test-boot-id-00000000-0000-0000-0000-000000000001" > "$PROC/sys/kernel/random/boot_id"
@@ -326,8 +328,9 @@ func ResetSysfsCounter(t *testing.T, ctx context.Context,
 	MutateSysfsCounter(t, ctx, client, namespace, nodeName, device, port, counterPath, "0")
 }
 
-// MutateNetCounter writes a value to a network interface statistics
-// counter under fake-net. Creates the directory if missing for
+// MutateNetCounter writes a value to a netdev-root attribute counter
+// under fake-net (e.g. carrier_changes, which lives beside operstate —
+// not under statistics/). Creates the directory if missing for
 // idempotency.
 func MutateNetCounter(t *testing.T, ctx context.Context,
 	client klient.Client, namespace, nodeName, iface, counter, value string,
@@ -335,7 +338,7 @@ func MutateNetCounter(t *testing.T, ctx context.Context,
 	t.Helper()
 
 	script := fmt.Sprintf(
-		`mkdir -p "/host/fake-net/%s/statistics" && echo '%s' > "/host/fake-net/%s/statistics/%s"`,
+		`mkdir -p "/host/fake-net/%s" && echo '%s' > "/host/fake-net/%s/%s"`,
 		iface, value, iface, counter)
 	runShellPodOnNode(t, ctx, client, namespace, nodeName, "nic-net-counter-mutator", script)
 }

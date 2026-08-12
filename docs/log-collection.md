@@ -172,8 +172,8 @@ Automatic cleanup service runs periodically (default: daily) to remove logs olde
 ### Directory Structure
 ```
 /usr/share/nginx/html/
-└── <node-name>/
-    └── <timestamp>/
-        ├── nvidia-bug-report-<node-name>-<timestamp>.log.gz
-        └── gpu-operator-must-gather-<node-name>-<timestamp>.tar.gz
+└── {node-name}/
+    └── {timestamp}/
+        ├── nvidia-bug-report-{node-name}-{timestamp}.log.gz
+        └── gpu-operator-must-gather-{node-name}-{timestamp}.tar.gz
 ```

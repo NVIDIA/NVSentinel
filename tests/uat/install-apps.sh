@@ -137,10 +137,12 @@ install_kwok() {
     helm repo add sigs-kwok https://kwok.sigs.k8s.io/charts/
     helm repo update
     
+    # kwok must NOT run with hostNetwork: it stamps its own pod IP on every
+    # fake node, so with hostNetwork the fake nodes clone the host node's IP
+    # and break pod networking on that node (see issue #1567).
     if ! helm upgrade --install kwok sigs-kwok/kwok \
         --namespace kube-system \
         --version "$KWOK_CHART_VERSION" \
-        --set hostNetwork=true \
         --wait \
         --timeout=5m; then
         error "Failed to install KWOK"
@@ -222,11 +224,22 @@ install_fake_gpu_stack() {
     log "Installing fake GPU driver and DCGM for Kind..."
     
     kubectl create namespace gpu-operator --dry-run=client -o yaml | kubectl apply -f -
-    
+
     if ! kubectl apply -f "${VALUES_DIR}/nvidia-driver-daemonset.yaml"; then
         error "Failed to install fake GPU driver"
     fi
-    
+
+    # Mount the NVML injection spec from the repo so the fixture serves fields
+    # added after the pinned image was published (e.g. DCGM field 153 via the
+    # MarginTemperature entry). Sourced from the single source-of-truth spec
+    # that tilt/dcgm-fake/Dockerfile bakes into the image.
+    if ! kubectl create configmap nvidia-dcgm-gpu-spec \
+        --namespace gpu-operator \
+        --from-file=gpu-spec.yaml="${REPO_ROOT}/tilt/dcgm-fake/gpu-spec.yaml" \
+        --dry-run=client -o yaml | kubectl apply -f -; then
+        error "Failed to create DCGM gpu-spec ConfigMap"
+    fi
+
     if ! kubectl apply -f "${VALUES_DIR}/nvidia-dcgm-daemonset.yaml"; then
         error "Failed to install fake DCGM"
     fi

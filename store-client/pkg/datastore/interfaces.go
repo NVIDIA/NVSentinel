@@ -88,6 +88,12 @@ type HealthEventStore interface {
 	CheckIfNodeAlreadyDrained(ctx context.Context, nodeName string) (bool, error)
 	FindLatestEventForNode(ctx context.Context, nodeName string) (*HealthEventWithStatus, error)
 
+	// FindLatestHealthEventByQuery returns the single most recent (by createdAt) event
+	// matching the query, or nil if none match. It pushes the sort+limit to the
+	// datastore so callers (e.g. cold start's session-end lookup) do not load every
+	// matching event into memory.
+	FindLatestHealthEventByQuery(ctx context.Context, builder QueryBuilder) (*HealthEventWithStatus, error)
+
 	// Cold-start support: iterates matching events in bounded batches.
 	// fn is called once per batch; return a non-nil error from fn to stop iteration.
 	// MongoDB: cursor-based batch iteration

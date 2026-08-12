@@ -156,6 +156,68 @@ enabled = true
 	assert.False(t, patterns[0].HasProcessingStrategy)
 }
 
+func TestLoadConfig_NAPISoftLockupAndTimeoutPatterns(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTOML(t, dir, `
+[[nicDriverDetection.patterns]]
+name = "mlx5_tx_timeout_detected"
+enabled = true
+
+[[nicDriverDetection.patterns]]
+name = "mlx5_rx_timeout_detected"
+enabled = true
+
+[[nicDriverDetection.patterns]]
+name = "mlx5_napi_soft_lockup"
+enabled = true
+`)
+
+	patterns, err := LoadConfig(path)
+	require.NoError(t, err)
+	require.Len(t, patterns, 3)
+
+	tx := patterns[0]
+	assert.False(t, tx.IsFatal)
+	assert.Equal(t, pb.RecommendedAction_NONE, tx.RecommendedAction)
+	assert.True(t, tx.Re.MatchString(
+		"mlx5_core 0000:65:00.0 ens15np0: TX timeout detected"))
+
+	rx := patterns[1]
+	assert.False(t, rx.IsFatal)
+	assert.True(t, rx.Re.MatchString(
+		"mlx5_core 0000:65:00.0 ens15np0: RX timeout on channel: 20, ICOSQ: 0x1ee0, RQ: 0x1e43, CQ: 0x3ea6"))
+
+	lockup := patterns[2]
+	assert.True(t, lockup.IsFatal)
+	assert.Equal(t, pb.RecommendedAction_REPLACE_VM, lockup.RecommendedAction)
+	assert.True(t, lockup.Re.MatchString("RIP: 0010:mlx5e_poll_ico_cq+0x8b/0x1a0 [mlx5_core]"))
+	assert.True(t, lockup.Re.MatchString(" mlx5e_napi_poll+0x142/0x680 [mlx5_core]"))
+}
+
+func TestLoadConfig_NetdevWatchdogMatchesBothKernelFormats(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTOML(t, dir, `
+[[nicDriverDetection.patterns]]
+name = "netdev_watchdog"
+enabled = true
+`)
+
+	patterns, err := LoadConfig(path)
+	require.NoError(t, err)
+	require.Len(t, patterns, 1)
+
+	re := patterns[0].Re
+	assert.True(t, re.MatchString(
+		"NETDEV WATCHDOG: eth0 (mlx5_core): transmit queue 0 timed out"),
+		"pre-6.8 WARN_ONCE format")
+	assert.True(t, re.MatchString(
+		"mlx5_core 0000:65:00.0 ens15np0: NETDEV WATCHDOG: CPU: 94: transmit queue 3 timed out 5032 ms"),
+		"post-6.8 netdev_crit format (e316dd1cf135)")
+	assert.False(t, re.MatchString(
+		"NETDEV WATCHDOG: eth0 (r8169): transmit queue 0 timed out"),
+		"non-mlx5 NIC must not match")
+}
+
 func TestLoadConfig_DefinitionWithApostropheRegex(t *testing.T) {
 	dir := t.TempDir()
 	path := writeTOML(t, dir, `

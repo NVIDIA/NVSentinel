@@ -34,6 +34,21 @@ spec:
       containers:
         - image: ghcr.io/nvidia/nvsentinel-fake-dcgm:4.2.0
           name: nvidia-dcgm-ctr
+          env:
+            # Read the NVML injection spec from the mounted ConfigMap instead of
+            # the copy baked into the pinned image, so fields added after the
+            # image was published (e.g. DCGM field 153) are served without an
+            # image rebuild.
+            - name: NVML_YAML_FILE
+              value: /etc/dcgm-fake/gpu-spec.yaml
+          volumeMounts:
+            - name: gpu-spec
+              mountPath: /etc/dcgm-fake
+              readOnly: true
+      volumes:
+        - name: gpu-spec
+          configMap:
+            name: nvidia-dcgm-gpu-spec
       tolerations:
         - key: nvidia.com/gpu
           operator: Exists

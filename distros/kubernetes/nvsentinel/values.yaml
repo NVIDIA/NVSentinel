@@ -109,14 +109,23 @@ global:
   # DCGM (Data Center GPU Manager) configuration
   # Used by gpu-health-monitor
   dcgm:
+    # Source mode. Supported values: operator-service, external-hostengine, embedded-mode.
+    mode: operator-service
     # Enable DCGM Kubernetes service integration
     enabled: true
+    # GPU Operator DCGM service used by operator-service mode.
     service:
-      # DCGM hostengine service endpoint
       endpoint: "nvidia-dcgm.gpu-operator.svc"
-      # DCGM hostengine service port
       port: 5555
-
+    # Externally owned hostengine used by external-hostengine mode.
+    externalHostengine:
+      endpoint: localhost
+      port: 5555
+    # In-process hostengine listener used by embedded-mode. The endpoint must be
+    # localhost, 127.0.0.1, or ::1.
+    embedded:
+      endpoint: localhost
+      port: 5555
   # OpenTelemetry tracing configuration
   tracing:
     enabled: false # Enable/disable tracing for all components
@@ -242,6 +251,20 @@ platformConnector:
     qps: 5.0
     burst: 10
 
+  dedup:
+    # Enable to mark repeated health events STORE_AND_ANALYSE before connector fan-out.
+    enabled: false
+    # How long repeated events with the same dedup key are marked STORE_AND_ANALYSE.
+    # Example: with "3m", a matching unhealthy event can trigger remediation again only after 3 minutes.
+    suppressionWindow: "3m"
+    # How often expired dedup keys are removed from the in-memory tracker.
+    cleanupInterval: "60s"
+    # Checks eligible for deduplication. Keep this focused on high-volume syslog
+    # fault streams; all other checks pass through unchanged.
+    includeChecks:
+      - SysLogsXIDError
+      - SysLogsSXIDError
+
   # Node metadata enrichment configuration
   # Health event transformers pipeline
   pipeline:
@@ -333,4 +356,3 @@ podMonitor:
   # scrapeTimeout: ""  # Scrape timeout (defaults to Prometheus default if not specified)
   # metricsPath: "/metrics"  # Metrics path (defaults to /metrics)
   # labels: {}  # Additional labels for the PodMonitor resource
-  
