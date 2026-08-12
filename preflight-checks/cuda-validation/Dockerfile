@@ -47,6 +47,12 @@ WORKDIR /app
 COPY preflight-checks/cuda-validation/cuda_validation.py /app/cuda_validation.py
 RUN chmod +x /app/cuda_validation.py
 
-# Note: Running as root because CUDA device access typically needs
-# elevated privileges; matches the nccl-allreduce sibling.
+# Run as a dedicated non-root user (matches the dcgm-diag sibling). CUDA
+# device access is permission-dependent, not root-only: the device plugin
+# exposes /dev/nvidia* with world-accessible modes on standard GPU operator
+# deployments. HOME points at /tmp so any torch/JIT cache writes succeed.
+RUN groupadd -r nvsentinel && useradd -r -g nvsentinel nvsentinel
+USER nvsentinel
+ENV HOME=/tmp
+
 ENTRYPOINT ["python3", "/app/cuda_validation.py"]

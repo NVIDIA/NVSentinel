@@ -57,6 +57,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import types
 from dataclasses import dataclass
 
 
@@ -103,7 +104,7 @@ def _tensor_size() -> int:
     return size if size > 0 else DEFAULT_TENSOR_SIZE
 
 
-def _probe_device(torch, index: int, size: int) -> GPUResult:
+def _probe_device(torch: types.ModuleType, index: int, size: int) -> GPUResult:
     """Run the per-device probe; never raises — failures are returned."""
     try:
         name = torch.cuda.get_device_name(index)
@@ -131,7 +132,7 @@ def main() -> int:
     log = _setup_logging()
 
     try:
-        import torch  # noqa: WPS433 - imported here so missing torch maps to EXIT_ENV_FAIL
+        import torch  # imported here so missing torch maps to EXIT_ENV_FAIL
     except ImportError as exc:
         log.error("PyTorch is not available in this image: %s", exc)
         return EXIT_ENV_FAIL
