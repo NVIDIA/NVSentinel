@@ -120,11 +120,48 @@ class TestToCheckResults:
         assert results[0].is_fatal is False
 
     def test_unhealthy_gpu_yields_fatal_result_with_error_code(self, checker: FabricStateChecker) -> None:
-        statuses = [GpuFabricState(gpu_index=3, fabric_state="In Progress", fabric_status="In Progress")]
+        statuses = [GpuFabricState(gpu_index=3, fabric_state="Completed", fabric_status="Failure")]
         results = checker.to_check_results(statuses, node_name="node-a")
 
         assert len(results) == 1
         assert results[0].is_healthy is False
         assert results[0].is_fatal is True
-        assert results[0].error_codes == [FabricFailureState.FM_REGISTRATION_STUCK.value]
+        assert results[0].error_codes == [FabricFailureState.FM_FABRIC_ERROR.value]
         assert results[0].entities_impacted == [{"entityType": "GPU", "entityValue": "3"}]
+
+    def test_in_progress_under_threshold_reports_healthy(self, checker: FabricStateChecker) -> None:
+        """A GPU still registering (streak < threshold) is healthy, not stuck."""
+        statuses = [GpuFabricState(gpu_index=3, fabric_state="In Progress", fabric_status="In Progress")]
+        results = checker.to_check_results(statuses, node_name="node-a")
+
+        assert len(results) == 1
+        assert results[0].is_healthy is True
+        assert results[0].is_fatal is False
+        assert results[0].error_codes == []
+
+    def test_in_progress_becomes_stuck_at_threshold(self, checker: FabricStateChecker) -> None:
+        """FM_REGISTRATION_STUCK fires only after stuck_threshold consecutive polls."""
+        statuses = [GpuFabricState(gpu_index=3, fabric_state="In Progress", fabric_status="In Progress")]
+
+        first = checker.to_check_results(statuses, node_name="node-a")
+        second = checker.to_check_results(statuses, node_name="node-a")
+        third = checker.to_check_results(statuses, node_name="node-a")
+
+        assert first[0].is_healthy is True
+        assert second[0].is_healthy is True
+        assert third[0].is_healthy is False
+        assert third[0].error_codes == [FabricFailureState.FM_REGISTRATION_STUCK.value]
+
+    def test_in_progress_streak_resets_on_completion(self, checker: FabricStateChecker) -> None:
+        """Registration completing resets the streak; a later In Progress starts over."""
+        in_progress = [GpuFabricState(gpu_index=3, fabric_state="In Progress", fabric_status="In Progress")]
+        completed = [GpuFabricState(gpu_index=3, fabric_state="Completed", fabric_status="Success")]
+
+        checker.to_check_results(in_progress, node_name="node-a")
+        checker.to_check_results(in_progress, node_name="node-a")
+        checker.to_check_results(completed, node_name="node-a")
+        # Streak restarted: two more In Progress polls stay healthy.
+        checker.to_check_results(in_progress, node_name="node-a")
+        results = checker.to_check_results(in_progress, node_name="node-a")
+
+        assert results[0].is_healthy is True

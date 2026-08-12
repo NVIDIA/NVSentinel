@@ -32,7 +32,7 @@ fabric.state values (mapped to nvidia-smi query):
 
 State classification (splits the former FM_UNRESPONSIVE into 3 states):
     FM_NOT_STARTED       -- fabric.state == "Not Started"
-    FM_REGISTRATION_STUCK -- fabric.state == "In Progress"
+    FM_REGISTRATION_STUCK -- fabric.state == "In Progress" for stuck_threshold consecutive polls
     FM_FABRIC_ERROR      -- fabric.state == "Completed" and fabric.status != "Success"
 """
 
@@ -40,7 +40,7 @@ import logging as log
 import subprocess
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from .types import CheckResult
 
@@ -65,6 +65,15 @@ class GpuFabricState:
 
 class FabricStateChecker:
     """Queries per-GPU Fabric Manager state via nsenter nvidia-smi."""
+
+    def __init__(self, stuck_threshold: int = 3):
+        # "In Progress" is a normal transient state during registration, so a
+        # single-poll snapshot cannot distinguish progressing from hung. A GPU
+        # is only classified FM_REGISTRATION_STUCK after stuck_threshold
+        # consecutive polls in "In Progress" (default 3, ~90 s at the default
+        # 30 s poll interval).
+        self._stuck_threshold = stuck_threshold
+        self._in_progress_streak: Dict[int, int] = {}
 
     def check(self) -> List[GpuFabricState]:
         """Query nvidia-smi for fabric state on all GPUs via nsenter."""
@@ -152,7 +161,7 @@ class FabricStateChecker:
 
         Unhealthy states (replaces monolithic FM_UNRESPONSIVE):
           FM_NOT_STARTED        -- FM has not begun configuring this GPU
-          FM_REGISTRATION_STUCK -- FM configuration in progress (may be hung)
+          FM_REGISTRATION_STUCK -- "In Progress" for stuck_threshold consecutive polls
           FM_FABRIC_ERROR       -- FM completed but with error status
         """
         results = []
@@ -162,6 +171,35 @@ class FabricStateChecker:
                 continue
 
             failure = self.classify_failure(gpu)
+
+            # FM_REGISTRATION_STUCK is time-based: only report it after
+            # stuck_threshold consecutive polls in "In Progress". Below the
+            # threshold the GPU is registering normally and reports healthy.
+            if failure is FabricFailureState.FM_REGISTRATION_STUCK:
+                streak = self._in_progress_streak.get(gpu.gpu_index, 0) + 1
+                self._in_progress_streak[gpu.gpu_index] = streak
+                if streak < self._stuck_threshold:
+                    results.append(
+                        CheckResult(
+                            check_name="FabricStateUnhealthy",
+                            is_healthy=True,
+                            is_fatal=False,
+                            error_codes=[],
+                            message=(
+                                f"Fabric registration in progress on {node_name} GPU {gpu.gpu_index} "
+                                f"(poll {streak}/{self._stuck_threshold} before stuck)"
+                            ),
+                            entities_impacted=[{"entityType": "GPU", "entityValue": str(gpu.gpu_index)}],
+                            metadata={
+                                "gpu_index": str(gpu.gpu_index),
+                                "fabric_state": gpu.fabric_state,
+                                "fabric_status": gpu.fabric_status,
+                            },
+                        )
+                    )
+                    continue
+            else:
+                self._in_progress_streak.pop(gpu.gpu_index, None)
 
             if failure is not None:
                 results.append(

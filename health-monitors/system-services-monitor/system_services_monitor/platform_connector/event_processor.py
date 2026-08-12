@@ -48,6 +48,11 @@ GRPC_SEND_TIMEOUT_SECS = 10
 class CachedEntityState:
     is_fatal: bool
     is_healthy: bool
+    # Normalized (sorted, de-duplicated) condition codes. Part of the cached
+    # identity so a code-only transition (e.g. FABRIC_MANAGER_NOT_RUNNING ->
+    # FABRIC_MANAGER_NOT_RUNNING + FABRIC_MANAGER_FLAPPING) emits a new event
+    # even when the fatal/healthy flags are unchanged.
+    error_codes: tuple = ()
 
 
 class PlatformConnectorEventProcessor(CallbackInterface):
@@ -113,9 +118,14 @@ class PlatformConnectorEventProcessor(CallbackInterface):
                 for result in results:
                     cache_key = self._build_cache_key(result.check_name, result.entities_impacted)
                     cached = self.entity_cache.get(cache_key)
+                    new_state = CachedEntityState(
+                        is_fatal=result.is_fatal,
+                        is_healthy=result.is_healthy,
+                        error_codes=tuple(sorted(set(result.error_codes or []))),
+                    )
 
                     # Only send if state changed (or first observation)
-                    if cached is None or cached.is_fatal != result.is_fatal or cached.is_healthy != result.is_healthy:
+                    if cached is None or cached != new_state:
                         entities = [
                             platformconnector_pb2.Entity(entityType=e["entityType"], entityValue=e["entityValue"])
                             for e in result.entities_impacted
@@ -140,9 +150,7 @@ class PlatformConnectorEventProcessor(CallbackInterface):
                             processingStrategy=self._processing_strategy,
                         )
                         health_events.append(health_event)
-                        pending_cache_updates[cache_key] = CachedEntityState(
-                            is_fatal=result.is_fatal, is_healthy=result.is_healthy
-                        )
+                        pending_cache_updates[cache_key] = new_state
                         # Reserve the decision immediately so a concurrent
                         # callback observing the same check result skips it
                         # instead of re-emitting a duplicate HealthEvent while
@@ -157,15 +165,21 @@ class PlatformConnectorEventProcessor(CallbackInterface):
                             log.info(f"Updated cache for key {key} with value {state} after successful send")
                     else:
                         # Send failed after retries -- roll back the reservations
-                        # so the next cycle re-attempts these events.
+                        # so the next cycle re-attempts these events. Pop only
+                        # entries that are still OUR reservation (object identity
+                        # is the reservation token): a newer overlapping callback
+                        # may have replaced the entry with an already-sent state,
+                        # and popping that would re-emit it as a duplicate.
                         with self._cache_lock:
-                            for key in pending_cache_updates:
-                                self.entity_cache.pop(key, None)
+                            for key, reserved in pending_cache_updates.items():
+                                if self.entity_cache.get(key) is reserved:
+                                    self.entity_cache.pop(key, None)
                 except Exception as e:
                     log.error(f"Exception while sending health events: {e}")
                     with self._cache_lock:
-                        for key in pending_cache_updates:
-                            self.entity_cache.pop(key, None)
+                        for key, reserved in pending_cache_updates.items():
+                            if self.entity_cache.get(key) is reserved:
+                                self.entity_cache.pop(key, None)
 
     def _is_platform_connector_socket_present(self) -> bool:
         # platform-connector removes the socket file on shutdown and on

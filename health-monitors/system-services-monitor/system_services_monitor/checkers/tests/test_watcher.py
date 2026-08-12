@@ -123,6 +123,42 @@ class TestRunServiceChecks:
 
         assert counter._value.get() == before
 
+    def test_absent_fabric_manager_unit_yields_no_result(self) -> None:
+        """LoadState=not-found (unit absent on this host) emits nothing, not NOT_RUNNING."""
+        w = _make_watcher(boot_grace_period=0)
+        status = _fm_status(active=False)
+        status.load_state = "not-found"
+        w._service_checker.check_fabric_manager.return_value = status
+        w._service_checker.check_all_gpu_services.return_value = {}
+
+        results = w._run_service_checks()
+
+        assert [r for r in results if r.check_name == "FabricManagerServiceDown"] == []
+
+    def test_fm_probe_error_yields_no_result(self) -> None:
+        """A failed probe (state unknown) is not conflated with service-down."""
+        w = _make_watcher(boot_grace_period=0)
+        status = _fm_status(active=False)
+        status.error = "systemctl show timed out"
+        w._service_checker.check_fabric_manager.return_value = status
+        w._service_checker.check_all_gpu_services.return_value = {}
+
+        results = w._run_service_checks()
+
+        assert [r for r in results if r.check_name == "FabricManagerServiceDown"] == []
+
+    def test_absent_gpu_service_yields_no_result(self) -> None:
+        """A configured GPU service that is not installed emits nothing."""
+        w = _make_watcher(boot_grace_period=0)
+        w._service_checker.check_fabric_manager.return_value = _fm_status(active=True)
+        w._service_checker.check_all_gpu_services.return_value = {
+            "nvidia-persistenced": ServiceStatus(name="nvidia-persistenced", active=False, load_state="not-found"),
+        }
+
+        results = w._run_service_checks()
+
+        assert [r for r in results if r.check_name == "GpuServiceDown"] == []
+
     def test_gpu_service_down_is_non_fatal(self) -> None:
         """A downed non-FM GPU service yields a non-fatal CheckResult."""
         w = _make_watcher(boot_grace_period=0)
@@ -138,6 +174,34 @@ class TestRunServiceChecks:
         assert svc_results[0].is_healthy is False
         assert svc_results[0].is_fatal is False
         assert "GPU_SERVICE_NOT_RUNNING" in svc_results[0].error_codes
+
+
+class TestRunFabricStateChecks:
+    def test_fabric_unhealthy_suppressed_during_grace(self) -> None:
+        """During the boot grace period unhealthy fabric results are dropped, healthy kept."""
+        w = _make_watcher(boot_grace_period=3600)
+        unhealthy = CheckResult(
+            check_name="FabricStateUnhealthy",
+            is_healthy=False,
+            is_fatal=True,
+            error_codes=["FM_REGISTRATION_STUCK"],
+            message="stuck",
+            entities_impacted=[{"entityType": "GPU", "entityValue": "0"}],
+        )
+        healthy = CheckResult(
+            check_name="FabricStateUnhealthy",
+            is_healthy=True,
+            is_fatal=False,
+            error_codes=[],
+            message="ok",
+            entities_impacted=[{"entityType": "GPU", "entityValue": "1"}],
+        )
+        w._fabric_state_checker.check.return_value = []
+        w._fabric_state_checker.to_check_results.return_value = [unhealthy, healthy]
+
+        results = w._run_fabric_state_checks()
+
+        assert results == [healthy]
 
 
 class TestFireCallbacks:

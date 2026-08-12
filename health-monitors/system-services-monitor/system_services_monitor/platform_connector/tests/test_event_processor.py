@@ -80,6 +80,40 @@ class TestHealthCheckCompleted:
 
         send.assert_called_once()
 
+    def test_error_code_change_triggers_new_event(self, processor: PlatformConnectorEventProcessor) -> None:
+        """A code-only transition (same fatal/healthy flags) still emits a new event."""
+        base = _result()
+        escalated = _result()
+        escalated.error_codes = ["FABRIC_MANAGER_NOT_RUNNING", "FABRIC_MANAGER_FLAPPING"]
+
+        with patch.object(processor, "send_health_event_with_retries", return_value=True) as send:
+            processor.health_check_completed([base])
+            processor.health_check_completed([escalated])
+
+        assert send.call_count == 2
+
+    def test_failed_rollback_preserves_newer_reservation(self, processor: PlatformConnectorEventProcessor) -> None:
+        """An older failed send must not pop a newer state that landed mid-flight."""
+        newer = _result(is_healthy=True, is_fatal=False)
+        calls = {"n": 0}
+
+        def send_side_effect(events):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # While the older send is "in flight" (lock not held), a newer
+                # callback for the same key completes successfully...
+                processor.health_check_completed([newer])
+                # ...then the older send fails and triggers rollback.
+                return False
+            return True
+
+        with patch.object(processor, "send_health_event_with_retries", side_effect=send_side_effect):
+            processor.health_check_completed([_result()])
+
+        # The newer, successfully sent state survives the older rollback.
+        assert len(processor.entity_cache) == 1
+        assert next(iter(processor.entity_cache.values())).is_healthy is True
+
     def test_failed_send_rolls_back_reservation(self, processor: PlatformConnectorEventProcessor) -> None:
         """Failure path: when the send fails the cache reservation is rolled back."""
         with patch.object(processor, "send_health_event_with_retries", return_value=False):

@@ -70,6 +70,7 @@ class ServiceStatus:
 
     name: str
     active: bool  # True if ActiveState == "active"
+    load_state: str = ""  # e.g. "loaded", "not-found" (unit absent on this host)
     sub_state: str = ""  # e.g. "running", "dead", "failed"
     main_pid: int = 0
     n_restarts: int = 0
@@ -125,7 +126,7 @@ class ServiceChecker:
                 "systemctl",
                 "show",
                 service_name,
-                "--property=ActiveState,SubState,MainPID,ExecMainStartTimestamp",
+                "--property=LoadState,ActiveState,SubState,MainPID,ExecMainStartTimestamp",
             ])
 
             if result.returncode != 0 and not result.stdout.strip():
@@ -152,6 +153,7 @@ class ServiceChecker:
             return ServiceStatus(
                 name=service_name,
                 active=(active_state == "active"),
+                load_state=props.get("LoadState", ""),
                 sub_state=props.get("SubState", ""),
                 main_pid=int(props.get("MainPID", "0")),
                 n_restarts=n_restarts,
@@ -225,6 +227,7 @@ class ServiceChecker:
         return FabricManagerStatus(
             name=base.name,
             active=base.active,
+            load_state=base.load_state,
             sub_state=base.sub_state,
             main_pid=base.main_pid,
             n_restarts=base.n_restarts,

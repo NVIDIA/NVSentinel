@@ -147,61 +147,82 @@ class FabricManagerWatcher:
 
         fm = self._service_checker.check_fabric_manager()
 
-        # Update Prometheus metrics
-        metrics.fabric_manager_up.labels(self._node_name).set(1 if fm.active else 0)
-        if fm.active:
-            metrics.fabric_manager_last_healthy_seconds.labels(self._node_name).set(time.time())
+        if fm.load_state == "not-found":
+            # Unit not present on this host (e.g. a platform without
+            # nvidia-fabricmanager installed). Not a failure -- emit nothing
+            # rather than a false FABRIC_MANAGER_NOT_RUNNING.
+            log.debug(f"nvidia-fabricmanager not present on {self._node_name} (LoadState=not-found); skipping")
+        elif fm.error is not None:
+            # The probe itself failed (nsenter/systemctl error or timeout):
+            # FM state is UNKNOWN, which is not the same as FM down. Skip
+            # emission instead of reporting a fatal NOT_RUNNING.
+            log.warning(f"Fabric Manager probe failed on {self._node_name}, state unknown: {fm.error}")
+            metrics.check_errors.labels("services").inc()
+        else:
+            # Update Prometheus metrics
+            metrics.fabric_manager_up.labels(self._node_name).set(1 if fm.active else 0)
+            if fm.active:
+                metrics.fabric_manager_last_healthy_seconds.labels(self._node_name).set(time.time())
 
-        # Increment the restart counter by the delta in systemd NRestarts since
-        # the last cycle. Backs the FabricManagerFlapping alert.
-        restart_delta = fm.n_restarts - self._last_fm_restarts
-        if restart_delta > 0:
-            metrics.fabric_manager_restarts_total.labels(self._node_name).inc(restart_delta)
-        self._last_fm_restarts = fm.n_restarts
+            # Increment the restart counter by the delta in systemd NRestarts since
+            # the last cycle. Backs the FabricManagerFlapping alert.
+            restart_delta = fm.n_restarts - self._last_fm_restarts
+            if restart_delta > 0:
+                metrics.fabric_manager_restarts_total.labels(self._node_name).inc(restart_delta)
+            self._last_fm_restarts = fm.n_restarts
 
-        if fm.flapping:
-            log.warning(f"Fabric Manager is flapping on {self._node_name}")
-
-        if fm.journal_errors:
-            log.warning(f"Fabric Manager journal errors on {self._node_name}: {[e.value for e in fm.journal_errors]}")
-
-        if not fm.active and not self._in_grace_period():
-            error_codes = ["FABRIC_MANAGER_NOT_RUNNING"]
             if fm.flapping:
-                error_codes.append("FABRIC_MANAGER_FLAPPING")
-            if fm.journal_errors:
-                error_codes.extend([f"JOURNAL_{e.value.upper()}" for e in fm.journal_errors])
+                log.warning(f"Fabric Manager is flapping on {self._node_name}")
 
-            results.append(
-                CheckResult(
-                    check_name="FabricManagerServiceDown",
-                    is_healthy=False,
-                    is_fatal=True,
-                    error_codes=error_codes,
-                    message=f"Fabric Manager is {fm.sub_state} on {self._node_name}",
-                    entities_impacted=[{"entityType": "NODE", "entityValue": self._node_name}],
-                    metadata={
-                        "sub_state": fm.sub_state,
-                        "n_restarts": str(fm.n_restarts),
-                        "flapping": str(fm.flapping),
-                    },
+            if fm.journal_errors:
+                log.warning(
+                    f"Fabric Manager journal errors on {self._node_name}: {[e.value for e in fm.journal_errors]}"
                 )
-            )
-        elif fm.active:
-            results.append(
-                CheckResult(
-                    check_name="FabricManagerServiceDown",
-                    is_healthy=True,
-                    is_fatal=False,
-                    error_codes=[],
-                    message=f"Fabric Manager is running on {self._node_name}",
-                    entities_impacted=[{"entityType": "NODE", "entityValue": self._node_name}],
+
+            if not fm.active and not self._in_grace_period():
+                error_codes = ["FABRIC_MANAGER_NOT_RUNNING"]
+                if fm.flapping:
+                    error_codes.append("FABRIC_MANAGER_FLAPPING")
+                if fm.journal_errors:
+                    error_codes.extend([f"JOURNAL_{e.value.upper()}" for e in fm.journal_errors])
+
+                results.append(
+                    CheckResult(
+                        check_name="FabricManagerServiceDown",
+                        is_healthy=False,
+                        is_fatal=True,
+                        error_codes=error_codes,
+                        message=f"Fabric Manager is {fm.sub_state} on {self._node_name}",
+                        entities_impacted=[{"entityType": "NODE", "entityValue": self._node_name}],
+                        metadata={
+                            "sub_state": fm.sub_state,
+                            "n_restarts": str(fm.n_restarts),
+                            "flapping": str(fm.flapping),
+                        },
+                    )
                 )
-            )
+            elif fm.active:
+                results.append(
+                    CheckResult(
+                        check_name="FabricManagerServiceDown",
+                        is_healthy=True,
+                        is_fatal=False,
+                        error_codes=[],
+                        message=f"Fabric Manager is running on {self._node_name}",
+                        entities_impacted=[{"entityType": "NODE", "entityValue": self._node_name}],
+                    )
+                )
 
         # Check additional GPU services
         svc_results = self._service_checker.check_all_gpu_services()
         for svc_name, status in svc_results.items():
+            if status.load_state == "not-found":
+                log.debug(f"Service {svc_name} not present on {self._node_name} (LoadState=not-found); skipping")
+                continue
+            if status.error is not None:
+                log.warning(f"Service {svc_name} probe failed on {self._node_name}, state unknown: {status.error}")
+                metrics.check_errors.labels("services").inc()
+                continue
             metrics.nvidia_service_up.labels(self._node_name, svc_name).set(1 if status.active else 0)
             if not status.active and not self._in_grace_period():
                 results.append(
@@ -246,4 +267,10 @@ class FabricManagerWatcher:
                     f"state={gpu.fabric_state}, status={gpu.fabric_status}"
                 )
 
-        return self._fabric_state_checker.to_check_results(statuses, self._node_name)
+        fabric_results = self._fabric_state_checker.to_check_results(statuses, self._node_name)
+        if self._in_grace_period():
+            # Same suppression the service checks apply during node startup:
+            # drop unhealthy results, keep healthy ones (they prime the
+            # transition cache without triggering remediation).
+            fabric_results = [r for r in fabric_results if r.is_healthy]
+        return fabric_results
