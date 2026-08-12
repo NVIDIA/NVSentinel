@@ -29,7 +29,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from threading import Event
-from typing import List
+from typing import Callable, List
 
 from system_services_monitor import metrics
 from .fabric_state_check import FabricStateChecker
@@ -70,7 +70,7 @@ class FabricManagerWatcher:
         self._last_fm_restarts = 0
 
         # Initialize checkers and build the check list based on enabled flags
-        self._checkers: List[tuple[str, callable]] = []
+        self._checkers: List[tuple[str, Callable[[], List[CheckResult]]]] = []
 
         if enable_fabric_check:
             self._service_checker = ServiceChecker(

@@ -183,8 +183,10 @@ class ServiceChecker:
             if result.returncode == 0 and result.stdout.strip():
                 _, _, val = result.stdout.strip().partition("=")
                 return int(val)
-        except Exception:
-            pass
+        except Exception as e:
+            # Intentional silent fallback: NRestarts is unsupported on older
+            # systemd. Keep the reason visible for troubleshooting.
+            log.debug("NRestarts query failed for %s (likely unsupported): %s", service_name, e)
         return 0
 
     def _update_flap_tracking(self, service_name: str, current_restarts: int) -> None:

@@ -87,7 +87,7 @@ class TestEnvVarWiring:
 
     def test_cli_arg_overrides_env(self, runner: CliRunner) -> None:
         """An explicit CLI flag wins over the corresponding env var."""
-        with _mock_runtime() as (watcher, processor):
+        with _mock_runtime() as (_watcher, processor):
             result = runner.invoke(
                 climod.cli,
                 ["--platform-connector-socket", "/run/from-cli.sock", "--node-name", "node-a"],

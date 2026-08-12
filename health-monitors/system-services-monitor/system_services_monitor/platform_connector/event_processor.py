@@ -38,6 +38,10 @@ from . import metrics
 MAX_RETRIES = 5
 INITIAL_DELAY = 2
 MAX_DELAY = 15
+# Per-attempt gRPC deadline. Shorter than the total retry budget so a hung
+# platform-connector surfaces as DEADLINE_EXCEEDED and is retried instead of
+# blocking a ThreadPoolExecutor thread indefinitely.
+GRPC_SEND_TIMEOUT_SECS = 10
 
 
 @dataclasses.dataclass
@@ -204,7 +208,10 @@ class PlatformConnectorEventProcessor(CallbackInterface):
             with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
                 stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
                 try:
-                    stub.HealthEventOccurredV1(platformconnector_pb2.HealthEvents(events=health_events, version=1))
+                    stub.HealthEventOccurredV1(
+                        platformconnector_pb2.HealthEvents(events=health_events, version=1),
+                        timeout=GRPC_SEND_TIMEOUT_SECS,
+                    )
                     metrics.events_sent_success.inc()
                     return True
                 except grpc.RpcError as e:
