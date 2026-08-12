@@ -47,21 +47,24 @@ type NICHealthMonitor struct {
 	nodeName string
 	pub      *healthpub.Publisher
 
-	stateChecks   []checks.Check
-	counterChecks []checks.Check
+	stateChecks   []checks.TransactionalCheck
+	counterChecks []checks.TransactionalCheck
 
 	stateInterval time.Duration
 }
 
 // NewNICHealthMonitor constructs a NICHealthMonitor. The allChecks
 // slice is automatically partitioned into state and counter categories
-// based on each check's name. target must match the gRPC target string
-// used to dial pcClient (typically "unix:///var/run/nvsentinel.sock").
+// based on each check's name. Checks must be transactional so a failed
+// publication can never consume a health boundary — the monitor commits
+// staged state only after successful delivery. target must match the
+// gRPC target string used to dial pcClient (typically
+// "unix:///var/run/nvsentinel.sock").
 func NewNICHealthMonitor(
 	nodeName string,
 	pcClient pb.PlatformConnectorClient,
 	target string,
-	allChecks []checks.Check,
+	allChecks []checks.TransactionalCheck,
 	stateInterval time.Duration,
 ) *NICHealthMonitor {
 	m := &NICHealthMonitor{
@@ -103,63 +106,83 @@ func (m *NICHealthMonitor) RunCounterChecks(ctx context.Context) error {
 func (m *NICHealthMonitor) StateInterval() time.Duration { return m.stateInterval }
 
 // runChecks executes the checks in a category and sends any resulting
-// events in a single batch. Check errors are logged and do not cancel
-// the remaining checks.
-func (m *NICHealthMonitor) runChecks(ctx context.Context, checkList []checks.Check, category string) error {
+// events in a single batch per check. Check errors are logged and do
+// not cancel the remaining checks.
+func (m *NICHealthMonitor) runChecks(
+	ctx context.Context, checkList []checks.TransactionalCheck, category string,
+) error {
 	start := time.Now()
 
 	for _, chk := range checkList {
-		events, err := chk.Run()
-		if err != nil {
-			slog.Error("Check failed",
-				"check", chk.Name(),
-				"category", category,
-				"error", err,
-			)
-
-			continue
-		}
-
-		if len(events) == 0 {
-			continue
-		}
-
-		slog.Info("Check produced events", "check", chk.Name(), "count", len(events))
-
-		batch := &pb.HealthEvents{Version: 1, Events: events}
-
-		if err := m.pub.Publish(ctx, batch); err != nil {
-			slog.Error("Failed to send health events",
-				"check", chk.Name(), "error", err)
-
-			continue
-		}
-
-		for _, evt := range events {
-			slog.Info("Health event sent",
-				"check", evt.CheckName,
-				"is_fatal", evt.IsFatal,
-				"is_healthy", evt.IsHealthy,
-				"recommended_action", evt.RecommendedAction.String(),
-				"entities", formatEntities(evt.EntitiesImpacted),
-				"message", evt.Message,
-			)
-
-			isFatal := "false"
-			if evt.IsFatal {
-				isFatal = "true"
-			}
-
-			metrics.HealthEventsSent.WithLabelValues(
-				m.nodeName, chk.Name(), isFatal,
-			).Inc()
-		}
+		m.runOneCheck(ctx, chk, category)
 	}
 
 	metrics.PollCycleDuration.WithLabelValues(m.nodeName, category).
 		Observe(time.Since(start).Seconds())
 
 	return nil
+}
+
+// runOneCheck prepares one check, publishes its events, and commits the
+// staged state only after successful delivery so a failed publication
+// cannot consume a health boundary.
+func (m *NICHealthMonitor) runOneCheck(ctx context.Context, chk checks.TransactionalCheck, category string) {
+	events, err := chk.Prepare()
+	if err != nil {
+		chk.Discard()
+		slog.Error("Check failed",
+			"check", chk.Name(),
+			"category", category,
+			"error", err,
+		)
+
+		return
+	}
+
+	if len(events) == 0 {
+		chk.Commit()
+
+		return
+	}
+
+	slog.Info("Check produced events", "check", chk.Name(), "count", len(events))
+
+	batch := &pb.HealthEvents{Version: 1, Events: events}
+
+	if err := m.pub.Publish(ctx, batch); err != nil {
+		chk.Discard()
+		slog.Error("Failed to send health events",
+			"check", chk.Name(), "error", err)
+
+		return
+	}
+
+	chk.Commit()
+	m.logSentEvents(chk.Name(), events)
+}
+
+// logSentEvents records the per-event log line and delivery metric after
+// a batch has been published.
+func (m *NICHealthMonitor) logSentEvents(checkName string, events []*pb.HealthEvent) {
+	for _, evt := range events {
+		slog.Info("Health event sent",
+			"check", evt.CheckName,
+			"is_fatal", evt.IsFatal,
+			"is_healthy", evt.IsHealthy,
+			"recommended_action", evt.RecommendedAction.String(),
+			"entities", formatEntities(evt.EntitiesImpacted),
+			"message", evt.Message,
+		)
+
+		isFatal := "false"
+		if evt.IsFatal {
+			isFatal = "true"
+		}
+
+		metrics.HealthEventsSent.WithLabelValues(
+			m.nodeName, checkName, isFatal,
+		).Inc()
+	}
 }
 
 // formatEntities produces a compact "NIC=mlx5_0, NICPort=1" string for logs.

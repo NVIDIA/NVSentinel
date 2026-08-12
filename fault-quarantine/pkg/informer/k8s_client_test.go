@@ -16,6 +16,7 @@ package informer
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"testing"
@@ -30,6 +31,8 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -77,7 +80,7 @@ func setupTestClient(t *testing.T) *FaultQuarantineClient {
 		DryRunMode: false,
 	}
 
-	nodeInformer, err := NewNodeInformer(testClient, 0)
+	nodeInformer, err := NewNodeInformer(testClient, 0, GPUNodeLabel, GPUNodeLabelValue)
 	if err != nil {
 		t.Fatalf("Failed to create NodeInformer: %v", err)
 	}
@@ -111,6 +114,7 @@ func createTestNode(ctx context.Context, t *testing.T, name string, annotations 
 	if labels == nil {
 		labels = make(map[string]string)
 	}
+	labels[GPUNodeLabel] = "true"
 
 	node := &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -162,9 +166,12 @@ func TestQuarantineNodeAndSetAnnotations(t *testing.T) {
 		cordonedReasonLabelKey:    "gpu-error",
 		cordonedTimestampLabelKey: time.Now().UTC().Format("2006-01-02T15-04-05Z"),
 	}
-	err := k8sClient.QuarantineNodeAndSetAnnotations(ctx, nodeName, taints, true, annotations, labelsMap)
+	alreadyQuarantined, err := k8sClient.QuarantineNodeAndSetAnnotations(ctx, nodeName, taints, true, annotations, labelsMap)
 	if err != nil {
 		t.Fatalf("QuarantineNodeAndSetAnnotations failed: %v", err)
+	}
+	if alreadyQuarantined {
+		t.Errorf("Expected node to be newly quarantined")
 	}
 
 	updatedNode, err := testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
@@ -205,6 +212,61 @@ func TestQuarantineNodeAndSetAnnotations(t *testing.T) {
 	if val, ok := updatedNode.Annotations["test-annotation"]; !ok || val != "test-value" {
 		t.Errorf("Annotation not set correctly")
 	}
+}
+
+func TestQuarantineNodeAndSetAnnotationsMergesAppliedLabelWinners(t *testing.T) {
+	ctx := context.Background()
+	nodeName := testutils.GenerateTestNodeName("test-applied-label-winners")
+
+	createTestNode(ctx, t, nodeName, nil, nil, nil, false)
+	defer func() {
+		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	k8sClient := setupTestClient(t)
+
+	first, err := json.Marshal([]config.AppliedLabel{{
+		Key: "gpu-fault", Value: "critical", Priority: 10, Order: 0,
+	}})
+	require.NoError(t, err)
+	_, err = k8sClient.QuarantineNodeAndSetAnnotations(
+		ctx,
+		nodeName,
+		nil,
+		false,
+		map[string]string{common.QuarantineHealthEventAppliedLabelsAnnotationKey: string(first)},
+		map[string]string{"gpu-fault": "critical"},
+	)
+	require.NoError(t, err)
+
+	second, err := json.Marshal([]config.AppliedLabel{
+		{Key: "gpu-fault", Value: "degraded", Priority: 5, Order: 1},
+		{Key: "network-fault", Value: "active", Priority: 5, Order: 1},
+	})
+	require.NoError(t, err)
+	_, err = k8sClient.QuarantineNodeAndSetAnnotations(
+		ctx,
+		nodeName,
+		nil,
+		false,
+		map[string]string{common.QuarantineHealthEventAppliedLabelsAnnotationKey: string(second)},
+		map[string]string{"gpu-fault": "degraded", "network-fault": "active"},
+	)
+	require.NoError(t, err)
+
+	node, err := testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, "critical", node.Labels["gpu-fault"])
+	assert.Equal(t, "active", node.Labels["network-fault"])
+
+	var applied []config.AppliedLabel
+	require.NoError(t, json.Unmarshal(
+		[]byte(node.Annotations[common.QuarantineHealthEventAppliedLabelsAnnotationKey]), &applied,
+	))
+	assert.ElementsMatch(t, []config.AppliedLabel{
+		{Key: "gpu-fault", Value: "critical", Priority: 10, Order: 0},
+		{Key: "network-fault", Value: "active", Priority: 5, Order: 1},
+	}, applied)
 }
 
 func TestUnQuarantineNodeAndRemoveAnnotations(t *testing.T) {
@@ -248,7 +310,7 @@ func TestUnQuarantineNodeAndRemoveAnnotations(t *testing.T) {
 		uncordonedTimestampLabelKey: time.Now().UTC().Format("2006-01-02T15-04-05Z"),
 	}
 
-	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(ctx, nodeName, taintsToRemove, annotationKeys, []string{cordonedByLabelKey, cordonedReasonLabelKey, cordonedTimestampLabelKey}, labelsMap)
+	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(ctx, nodeName, taintsToRemove, true, annotationKeys, []string{cordonedByLabelKey, cordonedReasonLabelKey, cordonedTimestampLabelKey}, labelsMap)
 	if err != nil {
 		t.Fatalf("UnQuarantineNodeAndRemoveAnnotations failed: %v", err)
 	}
@@ -301,7 +363,7 @@ func TestTaintAndCordonNode_NodeNotFound(t *testing.T) {
 	ctx := context.Background()
 	k8sClient := setupTestClient(t)
 
-	err := k8sClient.QuarantineNodeAndSetAnnotations(ctx, "non-existent-node", nil, false, nil, map[string]string{})
+	_, err := k8sClient.QuarantineNodeAndSetAnnotations(ctx, "non-existent-node", nil, false, nil, map[string]string{})
 	if err == nil {
 		t.Errorf("Expected error when node does not exist, got nil")
 	}
@@ -318,7 +380,7 @@ func TestTaintAndCordonNode_NoChanges(t *testing.T) {
 
 	k8sClient := setupTestClient(t)
 
-	err := k8sClient.QuarantineNodeAndSetAnnotations(ctx, nodeName, nil, false, nil, map[string]string{})
+	_, err := k8sClient.QuarantineNodeAndSetAnnotations(ctx, nodeName, nil, false, nil, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -349,7 +411,7 @@ func TestUnTaintAndUnCordonNode_NoChanges(t *testing.T) {
 
 	k8sClient := setupTestClient(t)
 
-	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(ctx, nodeName, nil, nil, []string{}, map[string]string{})
+	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(ctx, nodeName, nil, true, nil, []string{}, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -385,7 +447,7 @@ func TestUnTaintAndUnCordonNode_PartialTaintRemoval(t *testing.T) {
 	k8sClient := setupTestClient(t)
 
 	taintsToRemove := []config.Taint{{Key: "taint1", Value: "val1", Effect: "NoSchedule"}}
-	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(ctx, nodeName, taintsToRemove, nil, []string{}, map[string]string{})
+	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(ctx, nodeName, taintsToRemove, false, nil, []string{}, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -436,7 +498,7 @@ func TestUnTaintAndUnCordonNode_PartialAnnotationRemoval(t *testing.T) {
 		uncordonedByLabelKey:        common.ServiceName,
 		uncordonedTimestampLabelKey: time.Now().UTC().Format("2006-01-02T15-04-05Z"),
 	}
-	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(ctx, nodeName, nil, annotationsToRemove, []string{cordonedByLabelKey, cordonedReasonLabelKey, cordonedTimestampLabelKey}, labelsMap)
+	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(ctx, nodeName, nil, true, annotationsToRemove, []string{cordonedByLabelKey, cordonedReasonLabelKey, cordonedTimestampLabelKey}, labelsMap)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -473,7 +535,7 @@ func TestTaintAndCordonNode_AlreadyTaintedCordoned(t *testing.T) {
 	k8sClient := setupTestClient(t)
 
 	taintsToAdd := []config.Taint{{Key: "test-key", Value: "test-value", Effect: "NoSchedule"}}
-	err := k8sClient.QuarantineNodeAndSetAnnotations(ctx, nodeName, taintsToAdd, true, nil, map[string]string{})
+	_, err := k8sClient.QuarantineNodeAndSetAnnotations(ctx, nodeName, taintsToAdd, true, nil, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -509,7 +571,7 @@ func TestUnTaintAndUnCordonNode_AlreadyUntaintedUncordoned(t *testing.T) {
 
 	k8sClient := setupTestClient(t)
 
-	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(ctx, nodeName, nil, nil, []string{}, map[string]string{})
+	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(ctx, nodeName, nil, true, nil, []string{}, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -538,7 +600,7 @@ func TestTaintAndCordonNode_InvalidTaintEffect(t *testing.T) {
 
 	// envtest validates taint effects, so invalid effects should now return an error
 	taints := []config.Taint{{Key: "weird-key", Value: "weird-value", Effect: "SomeInvalidEffect"}}
-	err := k8sClient.QuarantineNodeAndSetAnnotations(ctx, nodeName, taints, false, nil, map[string]string{})
+	_, err := k8sClient.QuarantineNodeAndSetAnnotations(ctx, nodeName, taints, false, nil, map[string]string{})
 	if err == nil {
 		t.Errorf("Expected error for invalid taint effect, got nil")
 	}
@@ -558,7 +620,7 @@ func TestTaintAndCordonNode_OverwriteAnnotation(t *testing.T) {
 	k8sClient := setupTestClient(t)
 
 	annotations := map[string]string{"existing-key": "new-value"}
-	err := k8sClient.QuarantineNodeAndSetAnnotations(ctx, nodeName, nil, false, annotations, map[string]string{})
+	_, err := k8sClient.QuarantineNodeAndSetAnnotations(ctx, nodeName, nil, false, annotations, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -589,7 +651,7 @@ func TestUnTaintAndUnCordonNode_NonExistentTaintRemoval(t *testing.T) {
 	k8sClient := setupTestClient(t)
 
 	taintsToRemove := []config.Taint{{Key: "taint-nonexistent", Value: "valX", Effect: "NoSchedule"}}
-	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(ctx, nodeName, taintsToRemove, nil, []string{}, map[string]string{})
+	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(ctx, nodeName, taintsToRemove, true, nil, []string{}, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -628,7 +690,7 @@ func TestUnTaintAndUnCordonNode_NonExistentAnnotationRemoval(t *testing.T) {
 	k8sClient := setupTestClient(t)
 
 	annotationsToRemove := []string{"nonexistent-annotation"}
-	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(ctx, nodeName, nil, annotationsToRemove, []string{}, map[string]string{})
+	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(ctx, nodeName, nil, true, annotationsToRemove, []string{}, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -659,7 +721,7 @@ func TestTaintAndCordonNode_EmptyTaintKeyOrValue(t *testing.T) {
 	taints := []config.Taint{
 		{Key: "", Value: "", Effect: "NoSchedule"},
 	}
-	err := k8sClient.QuarantineNodeAndSetAnnotations(ctx, nodeName, taints, false, nil, map[string]string{})
+	_, err := k8sClient.QuarantineNodeAndSetAnnotations(ctx, nodeName, taints, false, nil, map[string]string{})
 	if err == nil {
 		t.Errorf("Expected error for empty taint key, got nil")
 	}
@@ -680,7 +742,7 @@ func TestTaintAndCordonNode_EmptyAnnotationKey(t *testing.T) {
 	annotations := map[string]string{
 		"": "empty-key-value",
 	}
-	err := k8sClient.QuarantineNodeAndSetAnnotations(ctx, nodeName, nil, false, annotations, map[string]string{})
+	_, err := k8sClient.QuarantineNodeAndSetAnnotations(ctx, nodeName, nil, false, annotations, map[string]string{})
 	if err == nil {
 		t.Errorf("Expected error for empty annotation key, got nil")
 	}
@@ -690,7 +752,7 @@ func TestTaintAndCordonNode_NonExistentNode(t *testing.T) {
 	ctx := context.Background()
 	k8sClient := setupTestClient(t)
 
-	err := k8sClient.QuarantineNodeAndSetAnnotations(ctx, "no-such-node", nil, true, nil, map[string]string{})
+	_, err := k8sClient.QuarantineNodeAndSetAnnotations(ctx, "no-such-node", nil, true, nil, map[string]string{})
 	if err == nil {
 		t.Errorf("Expected error for non-existent node, got nil")
 	}
@@ -700,7 +762,7 @@ func TestUnTaintAndUnCordonNode_NonExistentNode(t *testing.T) {
 	ctx := context.Background()
 	k8sClient := setupTestClient(t)
 
-	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(ctx, "no-such-node", nil, nil, []string{}, map[string]string{})
+	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(ctx, "no-such-node", nil, true, nil, []string{}, map[string]string{})
 	if err == nil {
 		t.Errorf("Expected error for non-existent node, got nil")
 	}

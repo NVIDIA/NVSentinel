@@ -77,6 +77,14 @@ Collect all unique API groups and their associated resources from multi-template
   - "create"
   - "patch"
 - apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - update
+  - create
+- apiGroups:
   - "batch"
   resources:
   - "jobs"

@@ -53,6 +53,15 @@ func (j *StubJournal) AddMatch(match string) error {
 	return nil
 }
 
+// AddDisjunction inserts an OR between journal match groups.
+func (j *StubJournal) AddDisjunction() error {
+	if j.closed {
+		return errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
+	}
+
+	return nil
+}
+
 // Close closes the journal
 func (j *StubJournal) Close() error {
 	j.closed = true
@@ -151,6 +160,29 @@ func (j *StubJournal) SeekCursor(cursor string) error {
 	}
 
 	j.currentPosition = index
+
+	return nil
+}
+
+// SeekHead seeks to the beginning of the journal
+func (j *StubJournal) SeekHead() error {
+	if j.closed {
+		return errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
+	}
+
+	j.currentPosition = -1
+
+	return nil
+}
+
+// SeekRealtimeUsec seeks to the entry closest to the given realtime timestamp
+func (j *StubJournal) SeekRealtimeUsec(usec uint64) error {
+	if j.closed {
+		return errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
+	}
+
+	// Stub journal has no timestamps; seek to beginning.
+	j.currentPosition = -1
 
 	return nil
 }

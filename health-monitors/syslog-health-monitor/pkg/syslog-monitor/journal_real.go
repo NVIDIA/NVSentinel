@@ -29,6 +29,11 @@ func (j *RealJournal) AddMatch(match string) error {
 	return j.journal.AddMatch(match)
 }
 
+// AddDisjunction inserts an OR between journal match groups.
+func (j *RealJournal) AddDisjunction() error {
+	return j.journal.AddDisjunction()
+}
+
 // Close closes the journal
 func (j *RealJournal) Close() error {
 	return j.journal.Close()
@@ -62,6 +67,16 @@ func (j *RealJournal) Previous() (uint64, error) {
 // SeekCursor seeks to a position indicated by a cursor
 func (j *RealJournal) SeekCursor(cursor string) error {
 	return j.journal.SeekCursor(cursor)
+}
+
+// SeekHead seeks to the beginning of the journal
+func (j *RealJournal) SeekHead() error {
+	return j.journal.SeekHead()
+}
+
+// SeekRealtimeUsec seeks to the entry closest to the given realtime timestamp
+func (j *RealJournal) SeekRealtimeUsec(usec uint64) error {
+	return j.journal.SeekRealtimeUsec(usec)
 }
 
 // SeekTail seeks to the end of the journal

@@ -102,6 +102,10 @@ func (r *ResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			continue
 		}
 
+		if !p.Resource.MatchesNamespace(obj.GetNamespace()) {
+			continue
+		}
+
 		if err := r.reconcilePolicy(ctx, &p, obj); err != nil {
 			slog.Error("Failed to reconcile policy", "policy", p.Name, "resource", req.NamespacedName, "error", err)
 			metrics.ReconciliationErrors.WithLabelValues(r.gvk.Kind, "policy_reconcile_error").Inc()
@@ -130,6 +134,10 @@ func (r *ResourceReconciler) cleanupDeletedResource(ctx context.Context, req ctr
 
 	for _, p := range r.policies {
 		if !p.Enabled {
+			continue
+		}
+
+		if !p.Resource.MatchesNamespace(req.Namespace) {
 			continue
 		}
 

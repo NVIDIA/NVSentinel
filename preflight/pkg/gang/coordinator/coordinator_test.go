@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -389,7 +390,7 @@ func TestEnsureConfigMap(t *testing.T) {
 	t.Run("creates ConfigMap when missing", func(t *testing.T) {
 		coord := newFakeCoordinator()
 
-		err := coord.EnsureConfigMap(context.Background(), "default", "test-gang", 4)
+		err := coord.EnsureConfigMap(context.Background(), "default", "test-gang", 4, nil)
 		require.NoError(t, err)
 
 		cm := getConfigMap(t, coord.client, "default", ConfigMapName("test-gang"))
@@ -399,6 +400,23 @@ func TestEnsureConfigMap(t *testing.T) {
 		assert.Equal(t, "", cm.Data[DataKeyMasterAddr])
 		assert.Equal(t, "test-gang", cm.Data[DataKeyGangID])
 		assert.Equal(t, "preflight", cm.Labels[ConfigMapLabelManagedBy])
+	})
+
+	t.Run("creates ConfigMap with owner reference", func(t *testing.T) {
+		coord := newFakeCoordinator()
+		ownerRef := &metav1.OwnerReference{
+			APIVersion: "scheduling.test.io/v1",
+			Kind:       "PodGroup",
+			Name:       "test-pg",
+			UID:        "test-pg-uid",
+		}
+
+		err := coord.EnsureConfigMap(context.Background(), "default", "owned-gang", 4, ownerRef)
+		require.NoError(t, err)
+
+		cm := getConfigMap(t, coord.client, "default", ConfigMapName("owned-gang"))
+		require.Len(t, cm.OwnerReferences, 1)
+		assert.Equal(t, *ownerRef, cm.OwnerReferences[0])
 	})
 
 	t.Run("noop when ConfigMap already exists", func(t *testing.T) {
@@ -412,22 +430,66 @@ func TestEnsureConfigMap(t *testing.T) {
 		}
 		coord := newFakeCoordinator(existing)
 
-		err := coord.EnsureConfigMap(context.Background(), "default", "existing-gang", 2)
+		err := coord.EnsureConfigMap(context.Background(), "default", "existing-gang", 2, nil)
 		require.NoError(t, err)
 
 		cm := getConfigMap(t, coord.client, "default", cmName)
 		assert.Equal(t, "pod-0;10.0.0.1;0", cm.Data[DataKeyPeers], "existing data should be unchanged")
 	})
 
+	t.Run("backfills owner reference on existing ConfigMap without changing data", func(t *testing.T) {
+		cmName := ConfigMapName("backfill-gang")
+		existing := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      cmName,
+				Namespace: "default",
+			},
+			Data: map[string]string{DataKeyPeers: "pod-0;10.0.0.1;0"},
+		}
+		coord := newFakeCoordinator(existing)
+		ownerRef := &metav1.OwnerReference{
+			APIVersion: "scheduling.test.io/v1",
+			Kind:       "PodGroup",
+			Name:       "backfill-pg",
+			UID:        "backfill-pg-uid",
+		}
+
+		err := coord.EnsureConfigMap(context.Background(), "default", "backfill-gang", 2, ownerRef)
+		require.NoError(t, err)
+
+		cm := getConfigMap(t, coord.client, "default", cmName)
+		assert.Equal(t, "pod-0;10.0.0.1;0", cm.Data[DataKeyPeers], "existing data should be unchanged")
+		require.Len(t, cm.OwnerReferences, 1)
+		assert.Equal(t, *ownerRef, cm.OwnerReferences[0])
+	})
+
 	t.Run("idempotent on repeated calls", func(t *testing.T) {
 		coord := newFakeCoordinator()
 		ctx := context.Background()
 
-		require.NoError(t, coord.EnsureConfigMap(ctx, "default", "idempotent-gang", 2))
-		require.NoError(t, coord.EnsureConfigMap(ctx, "default", "idempotent-gang", 2))
+		require.NoError(t, coord.EnsureConfigMap(ctx, "default", "idempotent-gang", 2, nil))
+		require.NoError(t, coord.EnsureConfigMap(ctx, "default", "idempotent-gang", 2, nil))
 
 		cm := getConfigMap(t, coord.client, "default", ConfigMapName("idempotent-gang"))
 		assert.NotNil(t, cm)
+	})
+
+	t.Run("idempotent on repeated calls with owner reference", func(t *testing.T) {
+		coord := newFakeCoordinator()
+		ctx := context.Background()
+		ownerRef := &metav1.OwnerReference{
+			APIVersion: "scheduling.test.io/v1",
+			Kind:       "PodGroup",
+			Name:       "idempotent-pg",
+			UID:        "idempotent-pg-uid",
+		}
+
+		require.NoError(t, coord.EnsureConfigMap(ctx, "default", "idempotent-owned-gang", 2, ownerRef))
+		require.NoError(t, coord.EnsureConfigMap(ctx, "default", "idempotent-owned-gang", 2, ownerRef))
+
+		cm := getConfigMap(t, coord.client, "default", ConfigMapName("idempotent-owned-gang"))
+		require.Len(t, cm.OwnerReferences, 1)
+		assert.Equal(t, *ownerRef, cm.OwnerReferences[0])
 	})
 }
 
@@ -499,7 +561,7 @@ func TestRegisterPeer(t *testing.T) {
 		coord := newFakeCoordinator()
 		ctx := context.Background()
 
-		require.NoError(t, coord.EnsureConfigMap(ctx, "default", "skeleton-gang", 0))
+		require.NoError(t, coord.EnsureConfigMap(ctx, "default", "skeleton-gang", 0, nil))
 		cm := getConfigMap(t, coord.client, "default", ConfigMapName("skeleton-gang"))
 		assert.Equal(t, "0", cm.Data[DataKeyExpectedCount])
 
@@ -510,11 +572,83 @@ func TestRegisterPeer(t *testing.T) {
 		assert.Equal(t, "4", cm.Data[DataKeyExpectedCount])
 	})
 
+	t.Run("owner reference backfilled from skeleton during peer registration", func(t *testing.T) {
+		coord := newFakeCoordinator()
+		ctx := context.Background()
+		ownerRef := &metav1.OwnerReference{
+			APIVersion: "scheduling.test.io/v1",
+			Kind:       "PodGroup",
+			Name:       "skeleton-pg",
+			UID:        "skeleton-pg-uid",
+		}
+
+		require.NoError(t, coord.EnsureConfigMap(ctx, "default", "skeleton-owned-gang", 0, nil))
+		gangInfo := &types.GangInfo{
+			GangID:           "skeleton-owned-gang",
+			ExpectedMinCount: 4,
+			OwnerReference:   ownerRef,
+		}
+		require.NoError(t, coord.RegisterPeer(ctx, "default", gangInfo, types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.1"}))
+
+		cm := getConfigMap(t, coord.client, "default", ConfigMapName("skeleton-owned-gang"))
+		require.Len(t, cm.OwnerReferences, 1)
+		assert.Equal(t, *ownerRef, cm.OwnerReferences[0])
+	})
+
+	t.Run("owner reference backfilled onto provisional webhook ConfigMap", func(t *testing.T) {
+		provisionalName := ConfigMapName("label-derived-gang")
+		existing := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      provisionalName,
+				Namespace: "default",
+			},
+			Data: map[string]string{
+				DataKeyExpectedCount: "0",
+				DataKeyPeers:         "",
+				DataKeyMasterAddr:    "",
+			},
+		}
+		coord := newFakeCoordinator(existing)
+		ctx := context.Background()
+		ownerRef := &metav1.OwnerReference{
+			APIVersion: "scheduling.test.io/v1",
+			Kind:       "PodGroup",
+			Name:       "actual-pg",
+			UID:        "actual-pg-uid",
+		}
+		gangInfo := &types.GangInfo{
+			GangID:           "annotation-derived-gang",
+			ExpectedMinCount: 4,
+			OwnerReference:   ownerRef,
+		}
+
+		require.NoError(t, coord.RegisterPeerInConfigMap(
+			ctx,
+			"default",
+			provisionalName,
+			gangInfo,
+			types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.1"},
+		))
+
+		cm := getConfigMap(t, coord.client, "default", provisionalName)
+		require.Len(t, cm.OwnerReferences, 1)
+		assert.Equal(t, *ownerRef, cm.OwnerReferences[0])
+		assert.Equal(t, "4", cm.Data[DataKeyExpectedCount])
+		assert.Contains(t, cm.Data[DataKeyPeers], "pod-0;10.0.0.1")
+
+		derived := &corev1.ConfigMap{}
+		err := coord.client.Get(ctx, client.ObjectKey{
+			Namespace: "default",
+			Name:      ConfigMapName("annotation-derived-gang"),
+		}, derived)
+		assert.True(t, errors.IsNotFound(err), "actual-name ConfigMap should not be created for an already mounted provisional ConfigMap")
+	})
+
 	t.Run("expected count not overwritten when already set", func(t *testing.T) {
 		coord := newFakeCoordinator()
 		ctx := context.Background()
 
-		require.NoError(t, coord.EnsureConfigMap(ctx, "default", "preset-gang", 4))
+		require.NoError(t, coord.EnsureConfigMap(ctx, "default", "preset-gang", 4, nil))
 		gangInfo := &types.GangInfo{GangID: "preset-gang", ExpectedMinCount: 2}
 		require.NoError(t, coord.RegisterPeer(ctx, "default", gangInfo, types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.1"}))
 

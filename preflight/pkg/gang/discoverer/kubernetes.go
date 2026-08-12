@@ -23,6 +23,7 @@ import (
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -97,6 +98,28 @@ func (w *WorkloadRefDiscoverer) ExtractGangID(pod *corev1.Pod) string {
 	return fmt.Sprintf("kubernetes-%s-%s", pod.Namespace, workloadName)
 }
 
+// OwnerReference returns the native Workload owner reference for the pod's gang.
+func (w *WorkloadRefDiscoverer) OwnerReference(ctx context.Context, pod *corev1.Pod) (*metav1.OwnerReference, error) {
+	workloadName, _ := w.getPodWorkloadRef(ctx, pod.Namespace, pod.Name)
+	if workloadName == "" {
+		return nil, nil
+	}
+
+	return w.workloadOwnerReference(ctx, pod.Namespace, workloadName)
+}
+
+func (w *WorkloadRefDiscoverer) workloadOwnerReference(
+	ctx context.Context,
+	namespace, workloadName string,
+) (*metav1.OwnerReference, error) {
+	workload, err := w.getWorkload(ctx, namespace, workloadName)
+	if err != nil {
+		return nil, err
+	}
+
+	return ownerReferenceForUnstructured(workload, WorkloadGVK), nil
+}
+
 // DiscoverPeers finds all pods with the same workloadRef.
 func (w *WorkloadRefDiscoverer) DiscoverPeers(
 	ctx context.Context,
@@ -116,7 +139,16 @@ func (w *WorkloadRefDiscoverer) DiscoverPeers(
 		"podGroup", podGroup,
 		"gangID", gangID)
 
-	expectedMinCount := w.fetchExpectedMinCount(ctx, pod.Namespace, workloadName, podGroup)
+	workload, err := w.getWorkload(ctx, pod.Namespace, workloadName)
+	if err != nil {
+		slog.Warn("Failed to get Workload, will use discovered pod count and skip owner reference",
+			"workload", workloadName,
+			"namespace", pod.Namespace,
+			"error", err)
+	}
+
+	ownerReference := ownerReferenceForUnstructured(workload, WorkloadGVK)
+	expectedMinCount := w.fetchExpectedMinCount(pod.Namespace, workloadName, podGroup, workload)
 
 	peers, err := w.findPeers(ctx, pod.Namespace, workloadName, podGroup)
 	if err != nil {
@@ -142,15 +174,20 @@ func (w *WorkloadRefDiscoverer) DiscoverPeers(
 		GangID:           gangID,
 		ExpectedMinCount: expectedMinCount,
 		Peers:            peers,
+		OwnerReference:   ownerReference,
 	}, nil
 }
 
 // fetchExpectedMinCount retrieves expected count, logging any errors.
 func (w *WorkloadRefDiscoverer) fetchExpectedMinCount(
-	ctx context.Context,
 	namespace, workloadName, podGroup string,
+	workload *unstructured.Unstructured,
 ) int {
-	count, err := w.getWorkloadMinCount(ctx, namespace, workloadName, podGroup)
+	if workload == nil {
+		return 0
+	}
+
+	count, err := w.getWorkloadMinCount(namespace, workloadName, podGroup, workload)
 	if err != nil {
 		slog.Warn("Failed to get Workload minCount, will use discovered pod count",
 			"workload", workloadName,
@@ -213,16 +250,9 @@ func (w *WorkloadRefDiscoverer) isPeerMatch(p *unstructured.Unstructured, worklo
 
 // getWorkloadMinCount retrieves the minCount from a Workload's podGroup gang policy.
 func (w *WorkloadRefDiscoverer) getWorkloadMinCount(
-	ctx context.Context,
 	namespace, name, podGroup string,
+	workload *unstructured.Unstructured,
 ) (int, error) {
-	workload := &unstructured.Unstructured{}
-	workload.SetGroupVersionKind(WorkloadGVK)
-
-	if err := w.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, workload); err != nil {
-		return 0, fmt.Errorf("failed to get Workload %s/%s: %w", namespace, name, err)
-	}
-
 	podGroups, found, err := unstructured.NestedSlice(workload.Object, "spec", "podGroups")
 	if err != nil {
 		return 0, fmt.Errorf("failed to get podGroups from Workload %s/%s: %w", namespace, name, err)
@@ -251,6 +281,20 @@ func (w *WorkloadRefDiscoverer) getWorkloadMinCount(
 	}
 
 	return 0, nil
+}
+
+func (w *WorkloadRefDiscoverer) getWorkload(
+	ctx context.Context,
+	namespace, name string,
+) (*unstructured.Unstructured, error) {
+	workload := &unstructured.Unstructured{}
+	workload.SetGroupVersionKind(WorkloadGVK)
+
+	if err := w.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, workload); err != nil {
+		return nil, fmt.Errorf("failed to get Workload %s/%s: %w", namespace, name, err)
+	}
+
+	return workload, nil
 }
 
 func (w *WorkloadRefDiscoverer) getPodWorkloadRef(ctx context.Context, namespace, name string) (string, string) {
@@ -325,6 +369,21 @@ func (w *KubernetesDiscoverer) ExtractGangID(pod *corev1.Pod) string {
 	return fmt.Sprintf("kubernetes-%s-%s", pod.Namespace, podGroup)
 }
 
+// OwnerReference returns the native PodGroup owner reference for the pod's gang.
+func (w *KubernetesDiscoverer) OwnerReference(ctx context.Context, pod *corev1.Pod) (*metav1.OwnerReference, error) {
+	podGroupName := getSchedulingPodGroupName(pod)
+	if podGroupName == "" {
+		return nil, nil
+	}
+
+	podGroup, err := w.getPodGroup(ctx, pod.Namespace, podGroupName)
+	if err != nil {
+		return nil, err
+	}
+
+	return ownerReferenceForUnstructured(podGroup, PodGroupGVK), nil
+}
+
 // DiscoverPeers finds all pods with the same schedulingGroup.
 func (w *KubernetesDiscoverer) DiscoverPeers(
 	ctx context.Context,
@@ -342,6 +401,14 @@ func (w *KubernetesDiscoverer) DiscoverPeers(
 		"namespace", pod.Namespace,
 		"podGroup", podGroup,
 		"gangID", gangID)
+
+	ownerReference, err := w.OwnerReference(ctx, pod)
+	if err != nil {
+		slog.Warn("Failed to get PodGroup owner reference, ConfigMap GC will rely on later backfill",
+			"podGroup", podGroup,
+			"namespace", pod.Namespace,
+			"error", err)
+	}
 
 	expectedMinCount := w.fetchExpectedMinCount(ctx, pod.Namespace, podGroup)
 
@@ -368,6 +435,7 @@ func (w *KubernetesDiscoverer) DiscoverPeers(
 		GangID:           gangID,
 		ExpectedMinCount: expectedMinCount,
 		Peers:            peers,
+		OwnerReference:   ownerReference,
 	}, nil
 }
 
@@ -429,11 +497,9 @@ func (w *KubernetesDiscoverer) getPodGroupMinCount(
 	ctx context.Context,
 	namespace, name string,
 ) (int, error) {
-	podGroup := &unstructured.Unstructured{}
-	podGroup.SetGroupVersionKind(PodGroupGVK)
-
-	if err := w.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, podGroup); err != nil {
-		return 0, fmt.Errorf("failed to get PodGroup %s/%s: %w", namespace, name, err)
+	podGroup, err := w.getPodGroup(ctx, namespace, name)
+	if err != nil {
+		return 0, err
 	}
 
 	minCount, found, err := nestedInt(podGroup.Object, "spec", "schedulingPolicy", "gang", "minCount")
@@ -446,6 +512,20 @@ func (w *KubernetesDiscoverer) getPodGroupMinCount(
 	}
 
 	return 0, nil
+}
+
+func (w *KubernetesDiscoverer) getPodGroup(
+	ctx context.Context,
+	namespace, name string,
+) (*unstructured.Unstructured, error) {
+	podGroup := &unstructured.Unstructured{}
+	podGroup.SetGroupVersionKind(PodGroupGVK)
+
+	if err := w.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, podGroup); err != nil {
+		return nil, fmt.Errorf("failed to get PodGroup %s/%s: %w", namespace, name, err)
+	}
+
+	return podGroup, nil
 }
 
 func nestedInt(obj map[string]any, fields ...string) (int, bool, error) {

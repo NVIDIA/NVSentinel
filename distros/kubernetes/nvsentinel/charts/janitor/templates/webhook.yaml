@@ -120,3 +120,27 @@ webhooks:
     sideEffects: None
     failurePolicy: Fail
     timeoutSeconds: 10
+  - name: vextrr-v1.kb.io
+    clientConfig:
+      service:
+        name: {{ include "janitor.fullname" . }}
+        namespace: {{ .Release.Namespace }}
+        path: /validate-nvsentinel-dgxc-nvidia-com-v1-externalremediationrequest
+        port: {{ .Values.webhook.port }}
+    rules:
+      - apiGroups:
+          - nvsentinel.dgxc.nvidia.com
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+          - DELETE
+        resources:
+          - externalremediationrequests
+        scope: "*"
+    admissionReviewVersions:
+    - v1
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: 10

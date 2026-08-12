@@ -234,10 +234,14 @@ func (a *AdaptedChangeStreamWatcher) Events() <-chan datastore.EventWithToken {
 					continue
 				}
 
-				// Create EventWithToken
+				// Create EventWithToken carrying the per-event resume token so
+				// consumers (e.g. fault-remediation's safeMarkProcessed) can
+				// checkpoint exactly at the event they processed. Events that
+				// carry no token (e.g. synthesized cold-start events) yield an
+				// empty slice, which consumers treat as "do not checkpoint".
 				eventWithToken := datastore.EventWithToken{
 					Event:       eventMap,
-					ResumeToken: []byte(""), // We'll need to extract the resume token properly
+					ResumeToken: event.GetResumeToken(),
 				}
 
 				a.eventChan <- eventWithToken
@@ -270,4 +274,14 @@ func (a *AdaptedChangeStreamWatcher) Close(ctx context.Context) error {
 // This is needed for services that still use the old EventWatcher/EventProcessor
 func (a *AdaptedChangeStreamWatcher) Unwrap() client.ChangeStreamWatcher {
 	return a.watcher
+}
+
+// ResumeControlDecision returns the resume-control startup decision for the wrapped watcher.
+func (a *AdaptedChangeStreamWatcher) ResumeControlDecision() client.ResumeControlDecision {
+	decisionWatcher, ok := a.watcher.(client.ChangeStreamWatcherWithResumeControl)
+	if !ok {
+		return client.ResumeControlDecision{}
+	}
+
+	return decisionWatcher.ResumeControlDecision()
 }

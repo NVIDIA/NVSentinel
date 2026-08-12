@@ -23,7 +23,7 @@ NVSentinel automatically detects, classifies, and remediates hardware and softwa
 ### Installation
 
 ```bash
-NVSENTINEL_VERSION=v1.9.0
+NVSENTINEL_VERSION=v1.18.0
 # Install from GitHub Container Registry
 helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --version "$NVSENTINEL_VERSION" \
@@ -76,7 +76,7 @@ helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
 ### 3. Install NVSentinel
 
 ```bash
-NVSENTINEL_VERSION=v1.9.0
+NVSENTINEL_VERSION=v1.18.0
 
 helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --namespace nvsentinel --create-namespace \
@@ -278,6 +278,22 @@ For detailed module configuration, see the **[Helm Chart Configuration Guide](di
 - **[Labeler](docs/labeler.md)**: Automatically labels nodes with DCGM and driver versions for self-configuration
 - **[Metadata Collector](docs/metadata-collector.md)**: Gathers GPU and NVSwitch topology information
 - **[Log Collection](docs/log-collection.md)**: Collects diagnostic logs and GPU reports for troubleshooting
+
+## 🖥️ GPU Support
+
+NVSentinel has been validated on the following NVIDIA GPU architectures:
+
+| Architecture | Example GPUs |
+|---|---|
+| Volta | V100 |
+| Ampere | A100 |
+| Hopper | H100 |
+| Ada Lovelace | L4 Tensor Core GPU, L40, L40S |
+| Blackwell | B200, GB200, GB300, RTX Pro 6000 |
+
+NVSentinel is designed to work with any GPU supported by the NVIDIA GPU Operator. Architectures and GPUs not listed above have not been formally validated but may work in your environment.
+
+> **Note**: Most NVSentinel components (health monitoring, fault quarantine, remediation) do not compile GPU code and work across all validated architectures. The optional **nccl-loopback preflight check** (NCCL bandwidth test) compiles GPU kernels and targets Ampere, Ada Lovelace, Hopper, and Blackwell only — it does not support Volta (V100). Disable or skip this check on Volta nodes via the preflight configuration.
 
 ## 📋 Requirements
 

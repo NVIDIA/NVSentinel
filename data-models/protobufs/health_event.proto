@@ -64,10 +64,12 @@ message HealthEvents {
 // UNSPECIFIED: events without an explicit strategy use this default, which platform-connector normalizes to EXECUTE_REMEDIATION.
 // EXECUTE_REMEDIATION: normal behavior; downstream modules may update cluster state.
 // STORE_ONLY: observability-only behavior; event should be persisted/exported but should not modify cluster resources.
+// STORE_AND_ANALYSE: event should be persisted/exported and may be used by analyzers, but should not directly modify cluster resources.
 enum ProcessingStrategy {
   UNSPECIFIED = 0;
   EXECUTE_REMEDIATION = 1;
   STORE_ONLY = 2;
+  STORE_AND_ANALYSE = 3;
 }
 
 enum RecommendedAction {

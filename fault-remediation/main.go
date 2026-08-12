@@ -227,7 +227,7 @@ const reconcilerCloseTimeout = 30 * time.Second
 func initializeAndWatch(
 	ctx context.Context, params initializer.InitializationParams, mgr ctrl.Manager,
 ) (cleanup func(), err error) {
-	components, err := initializer.InitializeAll(ctx, params, mgr.GetClient())
+	components, err := initializer.InitializeAll(ctx, params, mgr.GetClient(), mgr.GetAPIReader())
 	if err != nil {
 		return nil, fmt.Errorf("initialization failed: %w", err)
 	}

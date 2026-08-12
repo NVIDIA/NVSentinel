@@ -26,6 +26,7 @@ import (
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/gcp"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/generic"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/kind"
+	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/lambda"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/nebius"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/oci"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/model"
@@ -38,6 +39,7 @@ const (
 	ProviderAzure   Provider = "azure"
 	ProviderOCI     Provider = "oci"
 	ProviderNebius  Provider = "nebius"
+	ProviderLambda  Provider = "lambda"
 	ProviderGeneric Provider = "generic"
 )
 
@@ -85,6 +87,8 @@ func NewWithProvider(ctx context.Context, provider Provider) (model.CSPClient, e
 		return oci.NewClientFromEnv(ctx)
 	case ProviderNebius:
 		return nebius.NewClientFromEnv(ctx)
+	case ProviderLambda:
+		return lambda.NewClientFromEnv(ctx)
 	case ProviderGeneric:
 		return generic.NewClient(ctx)
 	default:
@@ -118,6 +122,8 @@ func GetProviderFromString(providerStr string) (Provider, error) {
 		return ProviderOCI, nil
 	case "nebius":
 		return ProviderNebius, nil
+	case "lambda":
+		return ProviderLambda, nil
 	case "generic":
 		return ProviderGeneric, nil
 	default:

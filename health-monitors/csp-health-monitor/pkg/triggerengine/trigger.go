@@ -156,6 +156,25 @@ func (e *Engine) checkAndTriggerEvents(ctx context.Context) error {
 		}
 	}
 
+	// --- Check for emergency quarantine triggers (Lambda EMERGENCY urgency) ---
+	emergencyEvents, err := e.store.FindEmergencyEventsToTriggerQuarantine(ctx)
+	if err != nil {
+		// Non-fatal: log and continue to healthy check.
+		slog.Error("Failed to query for emergency quarantine triggers", "error", err)
+	} else {
+		metrics.TriggerEventsFound.WithLabelValues(quarantineTriggerType).Add(float64(len(emergencyEvents)))
+		slog.Debug("Found emergency events for quarantine trigger", "count", len(emergencyEvents))
+
+		for _, event := range emergencyEvents {
+			if errTrig := e.triggerQuarantine(ctx, event); errTrig != nil {
+				slog.Error("Error triggering emergency quarantine",
+					"eventID", event.EventID,
+					"node", event.NodeName,
+					"error", errTrig)
+			}
+		}
+	}
+
 	// --- Check for healthy triggers ---
 	startQuery = time.Now()
 	healthyEvents, err := e.store.FindEventsToTriggerHealthy(ctx, healthyDelay)
@@ -173,7 +192,28 @@ func (e *Engine) checkAndTriggerEvents(ctx context.Context) error {
 	slog.Debug("Found events potentially needing healthy trigger",
 		"count", len(healthyEvents))
 
-	for _, event := range healthyEvents {
+	e.processHealthyCandidates(ctx, healthyEvents)
+
+	// --- Check for cancelled events (fire HEALTHY immediately, no delay) ---
+	cancelledEvents, err := e.store.FindCancelledEventsToTriggerHealthy(ctx)
+	if err != nil {
+		// Non-fatal: log and continue.
+		slog.Error("Failed to query for cancelled events", "error", err)
+	} else {
+		metrics.TriggerEventsFound.WithLabelValues(healthyTriggerType).Add(float64(len(cancelledEvents)))
+		slog.Debug("Found cancelled events for healthy trigger", "count", len(cancelledEvents))
+		e.processHealthyCandidates(ctx, cancelledEvents)
+	}
+
+	return nil // Poll cycle completed (though individual triggers might have failed)
+}
+
+// processHealthyCandidates triggers HEALTHY for each event whose node is Ready.
+// For NotReady nodes, it starts background monitoring so the trigger fires as soon
+// as the node returns. Errors from individual events are logged, not returned —
+// one bad event should not stop the whole batch.
+func (e *Engine) processHealthyCandidates(ctx context.Context, events []model.MaintenanceEvent) {
+	for _, event := range events {
 		ready, err := e.isNodeReady(ctx, event.NodeName)
 		if err != nil {
 			slog.Error("Failed to confirm node readiness, will check next polling interval",
@@ -185,40 +225,36 @@ func (e *Engine) checkAndTriggerEvents(ctx context.Context) error {
 		}
 
 		if ready {
-			// Node is ready, proceed with triggering healthy event
 			if errTrig := e.triggerHealthy(ctx, event); errTrig != nil {
-				// Metrics incremented within triggerHealthy
 				slog.Error("Error triggering healthy for event",
 					"eventID", event.EventID,
 					"node", event.NodeName,
 					"error", errTrig)
 			}
+
+			continue
+		}
+
+		_, alreadyMonitoring := e.monitoredNodes.LoadOrStore(event.NodeName, true)
+		if !alreadyMonitoring {
+			slog.Debug("Node not Ready yet; starting background monitoring for event",
+				"node", event.NodeName, "eventID", event.EventID)
+
+			metrics.NodeReadinessMonitoringStarted.WithLabelValues(event.NodeName).Inc()
+
+			// Deliberately detach from the poll-cycle ctx: node-readiness monitoring
+			// must outlive the current poll and only terminate when the node becomes
+			// Ready or the process exits.
+			//nolint:gosec // G118: intentional; see comment above
+			go e.monitorNodeReadiness(
+				context.Background(),
+				event.NodeName, event.EventID, event,
+			)
 		} else {
-			// Node is not ready, start background monitoring if not already monitoring
-			_, alreadyMonitoring := e.monitoredNodes.LoadOrStore(event.NodeName, true)
-			if !alreadyMonitoring {
-				slog.Debug(
-					"Node %s is not Ready yet. Starting background monitoring for event %s.",
-					event.NodeName,
-					event.EventID,
-				)
-
-				// Increment monitoring started metric
-				metrics.NodeReadinessMonitoringStarted.WithLabelValues(event.NodeName).Inc()
-
-				// Start background monitoring in a goroutine
-				go e.monitorNodeReadiness(context.Background(), event.NodeName, event.EventID, event)
-			} else {
-				slog.Debug(
-					"Node %s is already being monitored. Deferring healthy trigger for event %s.",
-					event.NodeName,
-					event.EventID,
-				)
-			}
+			slog.Debug("Node already being monitored; deferring healthy trigger for event",
+				"node", event.NodeName, "eventID", event.EventID)
 		}
 	}
-
-	return nil // Poll cycle completed (though individual triggers might have failed)
 }
 
 // processAndSendTrigger is a helper to handle the common logic for sending quarantine or healthy triggers.

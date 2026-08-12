@@ -144,7 +144,7 @@ func TestGangController_WebhookRegistration(t *testing.T) {
 			&config.Config{},
 			te.mgr.GetClient(),
 			gang.NewCoordinator(te.mgr.GetClient(), gang.DefaultCoordinatorConfig()),
-			newGangDiscoverer("rp-gang", 2),
+			gang.NewResolver(newGangDiscoverer("rp-gang", 2), nil),
 		)
 
 		ctrl.RegisterPod(ctx, webhook.GangRegistration{
@@ -165,6 +165,39 @@ func TestGangController_WebhookRegistration(t *testing.T) {
 		assert.Equal(t, "0", cm.Data["expected_count"], "skeleton ConfigMap should have expected_count=0")
 	})
 
+	t.Run("creates skeleton ConfigMap with owner reference", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		te := setupTestEnv(t, ctx, newGangDiscoverer("owned-rp-gang", 2))
+		defer te.teardown()
+
+		te.createNamespace(t, ctx, "default")
+
+		ctrl := NewGangController(
+			&config.Config{},
+			te.mgr.GetClient(),
+			gang.NewCoordinator(te.mgr.GetClient(), gang.DefaultCoordinatorConfig()),
+			gang.NewResolver(newGangDiscoverer("owned-rp-gang", 2), nil),
+		)
+		ownerRef := &metav1.OwnerReference{
+			APIVersion: "scheduling.test.io/v1",
+			Kind:       "PodGroup",
+			Name:       "owned-rp-pg",
+			UID:        "owned-rp-pg-uid",
+		}
+
+		ctrl.RegisterPod(ctx, webhook.GangRegistration{
+			Namespace:      "default",
+			PodName:        "worker-0",
+			GangID:         "owned-rp-gang",
+			ConfigMapName:  coordinator.ConfigMapName("owned-rp-gang"),
+			OwnerReference: ownerRef,
+		})
+
+		te.assertConfigMapOwnerReference(t, ctx, "default", coordinator.ConfigMapName("owned-rp-gang"), ownerRef)
+	})
+
 	t.Run("RegisterPod then reconcile fills peers", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -179,7 +212,7 @@ func TestGangController_WebhookRegistration(t *testing.T) {
 			&config.Config{},
 			te.mgr.GetClient(),
 			gang.NewCoordinator(te.mgr.GetClient(), gang.DefaultCoordinatorConfig()),
-			disc,
+			gang.NewResolver(disc, nil),
 		)
 
 		gangCtrl.RegisterPod(ctx, webhook.GangRegistration{
@@ -193,6 +226,29 @@ func TestGangController_WebhookRegistration(t *testing.T) {
 		te.createPodWithIP(t, ctx, newGangPod("worker-0", "default", "10.0.0.1", "full-gang"))
 		te.assertConfigMapWithPeer(t, ctx, "default", "full-gang", "worker-0", "10.0.0.1")
 	})
+}
+
+func TestGangController_ReconcileBackfillsOwnerReference(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	ownerRef := &metav1.OwnerReference{
+		APIVersion: "scheduling.test.io/v1",
+		Kind:       "PodGroup",
+		Name:       "backfill-pg",
+		UID:        "backfill-pg-uid",
+	}
+	discoverer := newGangDiscoverer("backfill-gang", 2)
+	discoverer.gangInfo.OwnerReference = ownerRef
+	te := setupTestEnv(t, ctx, discoverer)
+	defer te.teardown()
+
+	te.createNamespace(t, ctx, "default")
+	te.ensureGangConfigMap(t, ctx, "default", "backfill-gang")
+	te.createPodWithIP(t, ctx, newGangPod("worker-0", "default", "10.0.0.1", "backfill-gang"))
+
+	te.assertConfigMapWithPeer(t, ctx, "default", "backfill-gang", "worker-0", "10.0.0.1")
+	te.assertConfigMapOwnerReference(t, ctx, "default", coordinator.ConfigMapName("backfill-gang"), ownerRef)
 }
 
 // Verifies that topology configmap are created upon pod registration and is idempotent upon subsequent registrations.
@@ -222,7 +278,7 @@ func TestGangController_EnsureNCCLTopoConfigMap(t *testing.T) {
 	gangCtrl := NewGangController(
 		cfg, te.mgr.GetClient(),
 		gang.NewCoordinator(te.mgr.GetClient(), gang.DefaultCoordinatorConfig()),
-		newGangDiscoverer(gangID, 2),
+		gang.NewResolver(newGangDiscoverer(gangID, 2), nil),
 	)
 
 	registerPod := func(podName string) {
@@ -348,7 +404,7 @@ func setupTestEnv(t *testing.T, ctx context.Context, discoverer gang.GangDiscove
 
 	coord := gang.NewCoordinator(mgr.GetClient(), gang.DefaultCoordinatorConfig())
 	testCfg := &config.Config{}
-	gangCtrl := NewGangController(testCfg, mgr.GetClient(), coord, discoverer)
+	gangCtrl := NewGangController(testCfg, mgr.GetClient(), coord, gang.NewResolver(discoverer, nil))
 
 	skipValidation := true
 	err = ctrl.NewControllerManagedBy(mgr).
@@ -393,7 +449,7 @@ func (te *testEnv) createNamespace(t *testing.T, ctx context.Context, name strin
 func (te *testEnv) ensureGangConfigMap(t *testing.T, ctx context.Context, namespace, gangID string) {
 	t.Helper()
 	coord := gang.NewCoordinator(te.mgr.GetClient(), gang.DefaultCoordinatorConfig())
-	err := coord.EnsureConfigMap(ctx, namespace, gangID, 0)
+	err := coord.EnsureConfigMap(ctx, namespace, gangID, 0, nil)
 	require.NoError(t, err, "failed to create gang ConfigMap")
 }
 
@@ -440,6 +496,35 @@ func (te *testEnv) assertConfigMapData(t *testing.T, ctx context.Context, namesp
 	}, 10*time.Second, 200*time.Millisecond, "ConfigMap %s[%s] should be %q", name, key, wantValue)
 }
 
+func (te *testEnv) assertConfigMapOwnerReference(
+	t *testing.T,
+	ctx context.Context,
+	namespace string,
+	name string,
+	want *metav1.OwnerReference,
+) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		cm, err := te.kubeClient.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			t.Logf("ConfigMap %q not found: %v", name, err)
+			return false
+		}
+
+		for _, ownerRef := range cm.OwnerReferences {
+			if ownerRef.APIVersion == want.APIVersion &&
+				ownerRef.Kind == want.Kind &&
+				ownerRef.Name == want.Name &&
+				ownerRef.UID == want.UID {
+				return true
+			}
+		}
+
+		t.Logf("OwnerReference %+v not found in ConfigMap", want)
+		return false
+	}, 10*time.Second, 200*time.Millisecond, "ConfigMap %s should have owner reference", name)
+}
+
 func (te *testEnv) assertNoConfigMaps(t *testing.T, ctx context.Context, namespace string) {
 	t.Helper()
 	time.Sleep(500 * time.Millisecond)
@@ -447,7 +532,6 @@ func (te *testEnv) assertNoConfigMaps(t *testing.T, ctx context.Context, namespa
 	require.NoError(t, err)
 	assert.Empty(t, cms.Items, "expected no ConfigMaps")
 }
-
 
 func newTestPod(name, namespace, ip string) *corev1.Pod {
 	return newTestPodWithGangVolume(name, namespace, ip, "")

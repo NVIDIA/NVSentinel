@@ -16,6 +16,7 @@ package helpers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -43,6 +44,9 @@ const QuarantineHealthEventAnnotationKey = "quarantineHealthEvent"
 
 // QuarantineHealthEventIsCordonedAnnotationKey records that fault-quarantine cordoned the node.
 const QuarantineHealthEventIsCordonedAnnotationKey = "quarantineHealthEventIsCordoned"
+
+// QuarantineHealthEventCordonPreExistingAnnotationKey records there was a pre-existing cordon.
+const QuarantineHealthEventCordonPreExistingAnnotationKey = "quarantineHealthEventCordonPreExisting"
 
 type faultQuarantineConfig struct {
 	LabelPrefix    string               `toml:"label-prefix"`
@@ -77,6 +81,53 @@ type QuarantineAssertion struct {
 	// AnnotationChecks is a list of annotation checks to perform.
 	// Each check specifies an annotation key, pattern, and whether it should exist.
 	AnnotationChecks []AnnotationCheck
+}
+
+// QuarantineAnnotationEvent is the subset of a health event needed for annotation assertions.
+type QuarantineAnnotationEvent struct {
+	ErrorCode []string `json:"errorCode"`
+}
+
+// QuarantineAnnotationSummary summarizes the fault-quarantine health-event annotation.
+type QuarantineAnnotationSummary struct {
+	Total       int
+	ByErrorCode map[string]int
+}
+
+// SummarizeQuarantineAnnotation reads the node's fault-quarantine annotation and
+// returns the total stored health events plus counts grouped by error code.
+func SummarizeQuarantineAnnotation(
+	ctx context.Context, client klient.Client, nodeName string,
+) (QuarantineAnnotationSummary, error) {
+	summary := QuarantineAnnotationSummary{ByErrorCode: map[string]int{}}
+
+	node, err := GetNodeByName(ctx, client, nodeName)
+	if err != nil {
+		return summary, err
+	}
+
+	if node.Annotations == nil {
+		return summary, nil
+	}
+
+	annotation := node.Annotations[QuarantineHealthEventAnnotationKey]
+	if annotation == "" {
+		return summary, nil
+	}
+
+	var events []QuarantineAnnotationEvent
+	if err := json.Unmarshal([]byte(annotation), &events); err != nil {
+		return summary, fmt.Errorf("failed to unmarshal quarantine annotation: %w", err)
+	}
+
+	summary.Total = len(events)
+	for _, event := range events {
+		for _, errorCode := range event.ErrorCode {
+			summary.ByErrorCode[errorCode]++
+		}
+	}
+
+	return summary, nil
 }
 
 func ApplyQuarantineConfig(ctx context.Context, t *testing.T, c *envconf.Config, configMapPath string) context.Context {

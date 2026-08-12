@@ -142,12 +142,17 @@ var counterDefinitions = map[string]counterDefinition{
 		description: "Victim flow oscillation",
 	},
 
-	// /sys/class/net/<iface>/statistics/
+	// /sys/class/net/<iface>/ (netdev-root attribute — carrier_changes
+	// lives beside operstate, NOT under statistics/; the old
+	// "statistics/carrier_changes" path never existed on any kernel, so
+	// this counter silently never worked before the netdev/ path class).
 	"carrier_changes": {
-		path:        "statistics/carrier_changes",
+		path:        "netdev/carrier_changes",
 		isFatal:     false,
 		description: "Link instability - carrier state changes",
 	},
+
+	// /sys/class/net/<iface>/statistics/
 	"rx_crc_errors": {
 		path:        "statistics/rx_crc_errors",
 		isFatal:     false,
@@ -178,10 +183,12 @@ var counterDefinitions = map[string]counterDefinition{
 // Config represents the NIC Health Monitor configuration loaded from TOML.
 type Config struct {
 	// NicExclusionRegex contains comma-separated regex patterns for NICs to exclude
+	// during normal discovery. NicInclusionRegexOverride takes precedence when set.
 	NicExclusionRegex string `toml:"nicExclusionRegex"`
 
-	// NicInclusionRegexOverride, when non-empty, bypasses automatic device discovery
-	// and monitors only NIC devices whose names match these comma-separated regex patterns.
+	// NicInclusionRegexOverride, when non-empty, monitors only NIC devices whose
+	// names match these comma-separated regex patterns and bypasses all automatic
+	// device filters for those matches.
 	NicInclusionRegexOverride string `toml:"nicInclusionRegexOverride"`
 
 	// SysClassNetPath is the sysfs path for network interfaces (container mount point)
@@ -231,7 +238,7 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("invalid nicExclusionRegex: %w", err)
 	}
 
-	if err := validateRegexList(cfg.NicInclusionRegexOverride); err != nil {
+	if err := validateInclusionRegexList(cfg.NicInclusionRegexOverride); err != nil {
 		return nil, fmt.Errorf("invalid nicInclusionRegexOverride: %w", err)
 	}
 
@@ -259,6 +266,28 @@ func validateRegexList(commaSeparated string) error {
 	}
 
 	return nil
+}
+
+// validateInclusionRegexList additionally requires a configured override
+// to contain at least one non-empty pattern. Without this guard values such
+// as "," or ",," would enable an exclusive override that cannot match any
+// device.
+func validateInclusionRegexList(commaSeparated string) error {
+	if err := validateRegexList(commaSeparated); err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(commaSeparated) == "" {
+		return nil
+	}
+
+	for _, pat := range strings.Split(commaSeparated, ",") {
+		if strings.TrimSpace(pat) != "" {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("must contain at least one non-empty pattern")
 }
 
 func validateCounterDetection(cd *CounterDetectionConfig) error {

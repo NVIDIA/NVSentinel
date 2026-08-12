@@ -35,6 +35,9 @@ const (
 	healthEventsTable = "health_events"
 	// PostgreSQL NOTIFY channel for instant change notifications
 	notifyChannel = "nvsentinel_changes"
+
+	recentEventIDLimit = 10000
+	recentEventIDTTL   = 5 * time.Minute
 )
 
 // ChangeStreamMode defines the operating mode for the changestream watcher
@@ -77,6 +80,8 @@ type PostgreSQLChangeStreamWatcher struct {
 	pollInterval   time.Duration
 	pipelineFilter *PipelineFilter // Application-side filter (fallback for edge cases)
 	pipeline       interface{}     // Raw pipeline for SQL filter building
+	recentEventIDs map[int64]time.Time
+	recentEventSeq []int64
 
 	// Hybrid mode fields
 	mode           ChangeStreamMode
@@ -90,14 +95,15 @@ func NewPostgreSQLChangeStreamWatcher(
 	db *sql.DB, clientName string, tableName string, connString string, mode ChangeStreamMode,
 ) *PostgreSQLChangeStreamWatcher {
 	return &PostgreSQLChangeStreamWatcher{
-		db:           db,
-		clientName:   clientName,
-		tableName:    tableName,
-		connString:   connString,
-		mode:         mode,
-		events:       make(chan datastore.EventWithToken, 100),
-		stopCh:       make(chan struct{}),
-		pollInterval: 10 * time.Millisecond, // Aggressive poll interval (used in polling and fallback modes)
+		db:             db,
+		clientName:     clientName,
+		tableName:      tableName,
+		connString:     connString,
+		mode:           mode,
+		events:         make(chan datastore.EventWithToken, 100),
+		stopCh:         make(chan struct{}),
+		pollInterval:   10 * time.Millisecond, // Aggressive poll interval (used in polling and fallback modes)
+		recentEventIDs: make(map[int64]time.Time),
 	}
 }
 
@@ -216,6 +222,8 @@ func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token
 		}
 	}
 
+	processedEventID := eventID
+
 	// Mark all events up to and including this eventID as processed
 	// This is safe because:
 	// 1. The application only calls MarkProcessed after successfully processing an event
@@ -227,25 +235,35 @@ func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token
 		WHERE id <= $1 AND table_name = $2 AND processed = FALSE
 	`
 
-	_, err := w.db.ExecContext(ctx, query, eventID, w.tableName)
+	_, err := w.db.ExecContext(ctx, query, processedEventID, w.tableName)
 	if err != nil {
 		return fmt.Errorf("failed to mark event as processed: %w", err)
 	}
 
-	// Update resume position
+	// Serialize resume position selection and persistence so concurrent
+	// MarkProcessed calls cannot persist an older bookmark after a newer one.
 	w.mu.Lock()
-	w.lastEventID = eventID
-	w.lastTimestamp = timestamp
+
+	if processedEventID > w.lastEventID {
+		w.lastEventID = processedEventID
+		w.lastTimestamp = timestamp
+	}
+
+	resumeEventID := w.lastEventID
+	resumeTimestamp := w.lastTimestamp
+	saveErr := w.saveResumePosition(ctx, resumeTimestamp, resumeEventID)
+
 	w.mu.Unlock()
 
-	if err := w.saveResumePosition(ctx, timestamp, eventID); err != nil {
-		slog.Error("Failed to save resume position", "error", err)
+	if saveErr != nil {
+		slog.Error("Failed to save resume position", "error", saveErr)
 	}
 
 	slog.Debug("Marked events processed",
 		"client", w.clientName,
-		"eventID", eventID,
-		"timestamp", timestamp,
+		"eventID", processedEventID,
+		"resumeEventID", resumeEventID,
+		"timestamp", resumeTimestamp,
 		"table", w.tableName)
 
 	return nil
@@ -474,20 +492,68 @@ func (w *PostgreSQLChangeStreamWatcher) handleNotification(ctx context.Context, 
 	lastEventID := w.lastEventID
 	w.mu.RUnlock()
 
-	// Only fetch if this event is newer than what we've already processed
 	if payload.ID <= lastEventID {
-		slog.Debug("Skipping already-processed event from NOTIFY",
+		if w.hasRecentlySeenEventID(payload.ID) {
+			slog.Debug("Skipping already-processed event from NOTIFY",
+				"client", w.clientName,
+				"notifiedID", payload.ID,
+				"lastEventID", lastEventID)
+
+			return nil
+		}
+
+		slog.Debug("Recovering out-of-order NOTIFY below current bookmark",
 			"client", w.clientName,
 			"notifiedID", payload.ID,
 			"lastEventID", lastEventID)
 
+		if err := w.fetchChangeByID(ctx, payload.ID); err != nil {
+			return fmt.Errorf("failed to recover out-of-order changelog event %d: %w", payload.ID, err)
+		}
+
 		return nil
 	}
 
-	// Fetch any events we might have missed plus this one
-	// This handles the case where we got a notification but missed some events
+	if err := w.fetchChangeByID(ctx, payload.ID); err != nil {
+		return fmt.Errorf("failed to fetch notified changelog event %d: %w", payload.ID, err)
+	}
+
+	// Fetch any additional events we might have missed after this one.
 	if err := w.fetchNewChanges(ctx); err != nil {
 		return fmt.Errorf("failed to fetch changes after NOTIFY: %w", err)
+	}
+
+	return nil
+}
+
+func (w *PostgreSQLChangeStreamWatcher) fetchChangeByID(ctx context.Context, eventID int64) error {
+	query := `
+		SELECT id, record_id, operation, old_values, new_values, changed_at
+		FROM datastore_changelog
+		WHERE table_name = $1 AND id = $2
+	`
+
+	rows, err := w.db.QueryContext(ctx, query, w.tableName, eventID)
+	if err != nil {
+		return fmt.Errorf("failed to query changelog event by ID: %w", err)
+	}
+	defer rows.Close()
+
+	events, err := w.processChangelogRows(rows)
+	if err != nil {
+		return fmt.Errorf("failed to process recovered changelog row %d: %w", eventID, err)
+	}
+
+	if len(events) == 0 {
+		slog.Debug("Out-of-order NOTIFY row was not visible or did not match table",
+			"client", w.clientName,
+			"eventID", eventID)
+
+		return nil
+	}
+
+	if err := w.sendEventsToChannel(ctx, events); err != nil {
+		return fmt.Errorf("failed to deliver recovered changelog row %d: %w", eventID, err)
 	}
 
 	return nil
@@ -641,6 +707,13 @@ func (w *PostgreSQLChangeStreamWatcher) buildSQLFilter() (string, []interface{})
 	}
 
 	if !builder.HasConditions() {
+		return "", nil
+	}
+
+	if !builder.IsComplete() {
+		slog.Debug("SQL filter conversion incomplete, using application-side filter only",
+			"client", w.clientName)
+
 		return "", nil
 	}
 
@@ -1053,13 +1126,64 @@ func (w *PostgreSQLChangeStreamWatcher) advancePosition(event datastore.EventWit
 	eventTimestamp := w.extractEventTimestamp(event.Event, eventID)
 
 	w.mu.Lock()
-	w.lastEventID = eventID
-	w.lastTimestamp = eventTimestamp
+	w.recordRecentEventIDLocked(eventID, time.Now())
+
+	if eventID > w.lastEventID {
+		w.lastEventID = eventID
+		w.lastTimestamp = eventTimestamp
+	}
+
 	w.mu.Unlock()
 
 	slog.Debug("Advanced position before filtering", "client", w.clientName, "eventID", eventID)
 
 	return eventID
+}
+
+func (w *PostgreSQLChangeStreamWatcher) hasRecentlySeenEventID(eventID int64) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.pruneRecentEventIDsLocked(time.Now())
+	_, recentlySeen := w.recentEventIDs[eventID]
+
+	return recentlySeen
+}
+
+func (w *PostgreSQLChangeStreamWatcher) recordRecentEventIDLocked(eventID int64, now time.Time) {
+	if w.recentEventIDs == nil {
+		w.recentEventIDs = make(map[int64]time.Time)
+	}
+
+	if _, exists := w.recentEventIDs[eventID]; !exists {
+		w.recentEventSeq = append(w.recentEventSeq, eventID)
+	}
+
+	w.recentEventIDs[eventID] = now
+	w.pruneRecentEventIDsLocked(now)
+}
+
+func (w *PostgreSQLChangeStreamWatcher) pruneRecentEventIDsLocked(now time.Time) {
+	cutoff := now.Add(-recentEventIDTTL)
+	overflow := len(w.recentEventSeq) - recentEventIDLimit
+	writeIdx := 0
+
+	for readIdx, eventID := range w.recentEventSeq {
+		seenAt, exists := w.recentEventIDs[eventID]
+		if !exists {
+			continue
+		}
+
+		if readIdx < overflow || seenAt.Before(cutoff) {
+			delete(w.recentEventIDs, eventID)
+			continue
+		}
+
+		w.recentEventSeq[writeIdx] = eventID
+		writeIdx++
+	}
+
+	w.recentEventSeq = w.recentEventSeq[:writeIdx]
 }
 
 // parseTimestampFromToken extracts the timestamp from a resume token map.
@@ -1538,17 +1662,25 @@ func (a *PostgreSQLChangeStreamAdapter) Close(ctx context.Context) error {
 // and provides the Unwrap() method without creating interface conflicts.
 // This wrapper implements datastore.ChangeStreamWatcher and can be unwrapped to client.ChangeStreamWatcher.
 type PostgreSQLChangeStreamWatcherWithUnwrap struct {
-	watcher *PostgreSQLChangeStreamWatcher
-	adapter *PostgreSQLChangeStreamAdapter
+	watcher  *PostgreSQLChangeStreamWatcher
+	adapter  *PostgreSQLChangeStreamAdapter
+	decision client.ResumeControlDecision
 }
 
 // NewPostgreSQLChangeStreamWatcherWithUnwrap creates a wrapper that supports unwrapping
 func NewPostgreSQLChangeStreamWatcherWithUnwrap(
 	watcher *PostgreSQLChangeStreamWatcher,
+	decision ...client.ResumeControlDecision,
 ) *PostgreSQLChangeStreamWatcherWithUnwrap {
+	resumeControlDecision := client.ResumeControlDecision{}
+	if len(decision) > 0 {
+		resumeControlDecision = decision[0]
+	}
+
 	return &PostgreSQLChangeStreamWatcherWithUnwrap{
-		watcher: watcher,
-		adapter: NewPostgreSQLChangeStreamAdapter(watcher),
+		watcher:  watcher,
+		adapter:  NewPostgreSQLChangeStreamAdapter(watcher),
+		decision: resumeControlDecision,
 	}
 }
 
@@ -1576,4 +1708,9 @@ func (w *PostgreSQLChangeStreamWatcherWithUnwrap) Close(ctx context.Context) err
 // This allows services to unwrap the PostgreSQL watcher to the legacy interface
 func (w *PostgreSQLChangeStreamWatcherWithUnwrap) Unwrap() client.ChangeStreamWatcher {
 	return w.adapter
+}
+
+// ResumeControlDecision returns the watcher's current resume-control startup decision.
+func (w *PostgreSQLChangeStreamWatcherWithUnwrap) ResumeControlDecision() client.ResumeControlDecision {
+	return w.decision
 }

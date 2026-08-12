@@ -19,6 +19,8 @@ package sysfs
 type MockReader struct {
 	IBBase         string
 	NetBase        string
+	IBMadBase      string
+	IBVerbsBase    string
 	IBPortPathFunc func(device string, port int) string
 	NetIfacePathFn func(iface string) string
 	ReadFileFunc   func(path string) (string, error)
@@ -33,6 +35,7 @@ type MockReader struct {
 
 	ReadIBPortCounterFunc func(device string, port int, counterPath string) (uint64, error)
 	ReadNetStatisticFunc  func(iface, counter string) (uint64, error)
+	ReadNetAttributeFunc  func(iface, attr string) (uint64, error)
 
 	ReadIBDeviceNUMAFunc  func(device string) (int, error)
 	ReadPCIAddressFunc    func(device string) (string, error)
@@ -56,6 +59,22 @@ func (m *MockReader) NetBasePath() string {
 	}
 
 	return m.NetBase
+}
+
+func (m *MockReader) IBMadBasePath() string {
+	if m.IBMadBase == "" {
+		return m.IBBasePath() + "_mad"
+	}
+
+	return m.IBMadBase
+}
+
+func (m *MockReader) IBVerbsBasePath() string {
+	if m.IBVerbsBase == "" {
+		return m.IBBasePath() + "_verbs"
+	}
+
+	return m.IBVerbsBase
 }
 
 func (m *MockReader) IBPortPath(device string, port int) string {
@@ -141,6 +160,14 @@ func (m *MockReader) ReadIBPortCounter(device string, port int, counterPath stri
 func (m *MockReader) ReadNetStatistic(iface, counter string) (uint64, error) {
 	if m.ReadNetStatisticFunc != nil {
 		return m.ReadNetStatisticFunc(iface, counter)
+	}
+
+	return 0, nil
+}
+
+func (m *MockReader) ReadNetAttribute(iface, attr string) (uint64, error) {
+	if m.ReadNetAttributeFunc != nil {
+		return m.ReadNetAttributeFunc(iface, attr)
 	}
 
 	return 0, nil

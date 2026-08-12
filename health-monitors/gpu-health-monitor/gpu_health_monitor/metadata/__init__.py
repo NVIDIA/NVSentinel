@@ -12,6 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .reader import MetadataReader
+from .reader import MetadataReader, NVLinkDownExpectation
 
-__all__ = ["MetadataReader"]
+__all__ = ["MetadataReader", "NVLinkDownExpectation"]

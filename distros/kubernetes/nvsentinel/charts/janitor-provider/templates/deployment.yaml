@@ -82,6 +82,8 @@ spec:
             # Generic provider environment variables
             - name: GENERIC_REBOOT_IMAGE
               value: {{ .Values.csp.generic.rebootImage | quote }}
+            - name: GENERIC_REBOOT_USE_SYSRQ
+              value: {{ .Values.csp.generic.useSysrqReboot | default false | quote }}
             - name: GENERIC_REBOOT_JOB_NAMESPACE
               value: {{ .Values.csp.generic.rebootJobNamespace | default .Release.Namespace | quote }}
             - name: GENERIC_REBOOT_JOB_TTL
@@ -164,6 +166,20 @@ spec:
             - name: NEBIUS_IAM_TOKEN
               value: {{ .Values.csp.nebius.iamToken | quote }}
             {{- end }}
+            {{- end }}
+            {{- if eq (lower (.Values.csp.provider | default "kind")) "lambda" }}
+            # Lambda-specific environment variables
+            {{- if .Values.csp.lambda.apiEndpoint }}
+            # Validated in code against a fixed host allowlist, an unapproved
+            # host fails at startup rather than on the first remediation.
+            - name: LAMBDA_API_ENDPOINT
+              value: {{ .Values.csp.lambda.apiEndpoint | quote }}
+            {{- end }}
+            - name: LAMBDA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "csp.lambda.apiKeySecretRef.name must be set when csp.provider=lambda" .Values.csp.lambda.apiKeySecretRef.name }}
+                  key: {{ .Values.csp.lambda.apiKeySecretRef.key | default "LAMBDA_API_KEY" }}
             {{- end }}
             {{- if .Values.tls.enabled }}
             - name: TLS_CERT_PATH
