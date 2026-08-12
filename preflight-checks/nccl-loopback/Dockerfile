@@ -21,7 +21,7 @@ ARG NCCL_TESTS_VERSION=v2.13.11
 # =============================================================================
 # Build stage: Compile Go binary
 # =============================================================================
-FROM public.ecr.aws/docker/library/golang:1.26.3-trixie AS go-builder
+FROM public.ecr.aws/docker/library/golang:1.26.4-trixie AS go-builder
 
 ARG VERSION="dev"
 ARG GIT_COMMIT="none"
@@ -73,7 +73,7 @@ RUN rm -f /usr/local/bin/uv /usr/local/bin/uvx
 # Uses NCCL bundled with PyTorch image for version compatibility
 # NVCC_GENCODE targets modern data center GPUs:
 #   - compute_80: A100 (Ampere)
-#   - compute_89: L40S, L4 (Ada Lovelace)
+#   - compute_89: L4, L40, L40S (Ada Lovelace)
 #   - compute_90: H100, H200 (Hopper)
 #   - compute_100: GB200, B100, B200 (Blackwell) - requires CUDA 12.8+
 RUN git clone -b ${NCCL_TESTS_VERSION} https://github.com/NVIDIA/nccl-tests.git /opt/nccl-tests \

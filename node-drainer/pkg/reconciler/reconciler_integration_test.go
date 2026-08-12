@@ -225,6 +225,8 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 		recommendedAction               protos.RecommendedAction
 		entitiesImpacted                []*protos.Entity
 		existingNodeLabels              map[string]string
+		nodeAnnotations                 map[string]string
+		annotationHealthEvents          []*protos.HealthEvent
 		findHealthEventsByQueryResponse []datastore.HealthEventWithStatus
 		expectError                     bool
 		expectedNodeLabel               *string
@@ -567,6 +569,56 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			},
 		},
 		{
+			name:            "Partial drain for ImmediateEviction mode only evicts NotReady but not Failed pods leveraging the given GPU UUID",
+			nodeName:        "test-node",
+			namespaces:      []string{"immediate-test"},
+			nodeQuarantined: model.Quarantined,
+			pods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "immediate-test", Annotations: map[string]string{
+						model.PodDeviceAnnotationName: "{\"devices\":{\"nvidia.com/gpu\":[\"GPU-123\"]}}",
+					}},
+					Spec:   v1.PodSpec{NodeName: "test-node", Containers: []v1.Container{{Name: "c", Image: "nginx"}}},
+					Status: v1.PodStatus{Phase: v1.PodFailed},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-2", Namespace: "immediate-test", Annotations: map[string]string{
+						model.PodDeviceAnnotationName: "{\"devices\":{\"nvidia.com/gpu\":[\"GPU-123\"]}}",
+					}},
+					Spec:   v1.PodSpec{NodeName: "test-node", Containers: []v1.Container{{Name: "c", Image: "nginx"}}},
+					Status: v1.PodStatus{Phase: v1.PodRunning, Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionFalse}}},
+				},
+			},
+			entitiesImpacted: []*protos.Entity{
+				{
+					EntityType:  "GPU_UUID",
+					EntityValue: "GPU-123",
+				},
+				{
+					EntityType:  "PCI",
+					EntityValue: "PCI:0000:00:08",
+				},
+			},
+			recommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+			expectError:       true,
+			expectedNodeLabel: ptr.To(string(statemanager.DrainingLabelValue)),
+			validateFunc: func(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, err error) {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "immediate eviction completed, requeuing for status verification")
+
+				// confirm that pod-2 was deleted but not pod-1
+				expectDeletedForPods := map[string]bool{
+					"pod-1": false,
+					"pod-2": true,
+				}
+				for podName, expectDeleted := range expectDeletedForPods {
+					pod, err := client.CoreV1().Pods("immediate-test").Get(ctx, podName, metav1.GetOptions{})
+					require.NoError(t, err)
+					assert.True(t, pod.DeletionTimestamp != nil == expectDeleted)
+				}
+			},
+		},
+		{
 			name:            "Partial drain for DeleteAfterTimeout mode only evicts for pods leveraging given GPU UUID",
 			nodeName:        "test-node",
 			namespaces:      []string{"timeout-test"},
@@ -698,6 +750,16 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			namespaces:      []string{"test-ns"},
 			nodeQuarantined: model.AlreadyQuarantined,
 			pods:            []*v1.Pod{},
+			annotationHealthEvents: []*protos.HealthEvent{
+				{
+					Id:             "previous-event",
+					NodeName:       "already-drained-node",
+					Agent:          "test-agent",
+					CheckName:      "test-check",
+					ComponentClass: "GPU",
+					Version:        1,
+				},
+			},
 			findHealthEventsByQueryResponse: []datastore.HealthEventWithStatus{
 				{
 					HealthEventStatus: datastore.HealthEventStatus{
@@ -714,6 +776,24 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			expectError: false,
 			validateFunc: func(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, err error) {
 				assert.NoError(t, err)
+			},
+		},
+		{
+			name:              "AlreadyQuarantined with missing quarantine annotation is cancelled as stale",
+			nodeName:          "stale-already-quarantined-node",
+			namespaces:        []string{"test-ns"},
+			nodeQuarantined:   model.AlreadyQuarantined,
+			pods:              []*v1.Pod{},
+			expectError:       false,
+			expectedNodeLabel: ptr.To(""),
+			validateFunc: func(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, err error) {
+				assert.NoError(t, err)
+
+				node, getErr := client.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+				require.NoError(t, getErr)
+
+				_, exists := node.Labels[statemanager.NVSentinelStateLabelKey]
+				assert.False(t, exists, "stale AlreadyQuarantined events should not mutate node state label")
 			},
 		},
 		{
@@ -852,14 +932,21 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			if nodeLabels == nil {
 				nodeLabels = map[string]string{"test-label": "test-value"}
 			}
-			createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, tt.nodeName, nodeLabels, nil)
+			nodeAnnotations := tt.nodeAnnotations
+			if nodeAnnotations == nil && tt.annotationHealthEvents != nil {
+				annotationValue, err := createHealthEventAnnotationsMap(tt.annotationHealthEvents)
+				require.NoError(t, err)
+				nodeAnnotations = map[string]string{common.QuarantineHealthEventAnnotationKey: annotationValue}
+			}
+
+			createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, tt.nodeName, nodeLabels, nodeAnnotations)
 
 			for _, ns := range tt.namespaces {
 				createNamespace(setup.ctx, t, setup.client, ns)
 			}
 
 			for _, pod := range tt.pods {
-				createPod(setup.ctx, t, setup.client, pod.Namespace, pod.Name, tt.nodeName, pod.Status.Phase, pod.Annotations, pod.Spec.Containers[0].Resources.Limits)
+				createPod(setup.ctx, t, setup.client, pod.Namespace, pod.Name, tt.nodeName, pod.Status.Phase, pod.Annotations, pod.Spec.Containers[0].Resources.Limits, pod.Status.Conditions)
 			}
 
 			if tt.findHealthEventsByQueryResponse != nil {
@@ -927,7 +1014,7 @@ func TestReconciler_DryRunMode(t *testing.T) {
 	nodeName := "dry-run-node"
 	createNode(setup.ctx, t, setup.client, nodeName)
 	createNamespace(setup.ctx, t, setup.client, "immediate-test")
-	createPod(setup.ctx, t, setup.client, "immediate-test", "dry-pod", nodeName, v1.PodRunning, nil, nil)
+	createPod(setup.ctx, t, setup.client, "immediate-test", "dry-pod", nodeName, v1.PodRunning, nil, nil, nil)
 
 	err := processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, setup.healthEventStore,
 		healthEventOptions{
@@ -962,7 +1049,7 @@ func TestReconciler_RequeueMechanism(t *testing.T) {
 
 	initialDepth := getGaugeValue(t, metrics.QueueDepth)
 
-	createPod(setup.ctx, t, setup.client, "immediate-test", "test-pod", nodeName, v1.PodRunning, nil, nil)
+	createPod(setup.ctx, t, setup.client, "immediate-test", "test-pod", nodeName, v1.PodRunning, nil, nil, nil)
 	enqueueHealthEvent(setup.ctx, t, setup.queueMgr, setup.mockCollection, setup.healthEventStore, nodeName)
 
 	require.Eventually(t, func() bool {
@@ -993,7 +1080,7 @@ func TestReconciler_AllowCompletionRequeue(t *testing.T) {
 	_, err := setup.client.CoreV1().Namespaces().Create(setup.ctx, ns, metav1.CreateOptions{})
 	require.NoError(t, err)
 
-	createPod(setup.ctx, t, setup.client, "completion-test", "running-pod", nodeName, v1.PodRunning, nil, nil)
+	createPod(setup.ctx, t, setup.client, "completion-test", "running-pod", nodeName, v1.PodRunning, nil, nil, nil)
 	enqueueHealthEvent(setup.ctx, t, setup.queueMgr, setup.mockCollection, setup.healthEventStore, nodeName)
 
 	assertNodeLabel(t, setup.client, setup.ctx, nodeName, statemanager.DrainingLabelValue)
@@ -1044,7 +1131,7 @@ func TestReconciler_MultipleNodesRequeue(t *testing.T) {
 	beforeReceived := getCounterValue(t, metrics.TotalEventsReceived)
 
 	for _, nodeName := range nodeNames {
-		createPod(setup.ctx, t, setup.client, "immediate-test", fmt.Sprintf("pod-%s", nodeName), nodeName, v1.PodRunning, nil, nil)
+		createPod(setup.ctx, t, setup.client, "immediate-test", fmt.Sprintf("pod-%s", nodeName), nodeName, v1.PodRunning, nil, nil, nil)
 		enqueueHealthEvent(setup.ctx, t, setup.queueMgr, setup.mockCollection, setup.healthEventStore, nodeName)
 	}
 
@@ -1072,8 +1159,8 @@ func TestReconciler_DeleteAfterTimeoutThenAllowCompletion(t *testing.T) {
 	createNamespace(setup.ctx, t, setup.client, "timeout-test")
 	createNamespace(setup.ctx, t, setup.client, "completion-test")
 
-	createPod(setup.ctx, t, setup.client, "timeout-test", "timeout-pod", nodeName, v1.PodRunning, nil, nil)
-	createPod(setup.ctx, t, setup.client, "completion-test", "completion-pod", nodeName, v1.PodRunning, nil, nil)
+	createPod(setup.ctx, t, setup.client, "timeout-test", "timeout-pod", nodeName, v1.PodRunning, nil, nil, nil)
+	createPod(setup.ctx, t, setup.client, "completion-test", "completion-pod", nodeName, v1.PodRunning, nil, nil, nil)
 
 	enqueueHealthEvent(setup.ctx, t, setup.queueMgr, setup.mockCollection, setup.healthEventStore, nodeName)
 
@@ -1497,13 +1584,13 @@ func createNamespace(ctx context.Context, t *testing.T, client kubernetes.Interf
 }
 
 func createPod(ctx context.Context, t *testing.T, client kubernetes.Interface, namespace, name, nodeName string, phase v1.PodPhase,
-	annotations map[string]string, limits v1.ResourceList) {
+	annotations map[string]string, limits v1.ResourceList, conditions []v1.PodCondition) {
 	t.Helper()
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Annotations: annotations},
 		Spec: v1.PodSpec{NodeName: nodeName, Containers: []v1.Container{{Name: "c", Image: "nginx",
 			Resources: v1.ResourceRequirements{Limits: limits}}}},
-		Status: v1.PodStatus{Phase: phase},
+		Status: v1.PodStatus{Phase: phase, Conditions: conditions},
 	}
 	po, err := client.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
 	require.NoError(t, err)
@@ -1516,6 +1603,7 @@ type healthEventOptions struct {
 	nodeName          string
 	eventID           string
 	nodeQuarantined   model.Status
+	createdAt         time.Time
 	drainForce        bool
 	recommendedAction protos.RecommendedAction
 	entitiesImpacted  []*protos.Entity
@@ -1525,6 +1613,10 @@ func createHealthEvent(opts healthEventOptions) map[string]interface{} {
 	eventID := opts.nodeName + "-event"
 	if opts.eventID != "" {
 		eventID = opts.eventID
+	}
+	createdAt := opts.createdAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
 	}
 
 	healthEvent := &protos.HealthEvent{
@@ -1546,7 +1638,7 @@ func createHealthEvent(opts healthEventOptions) map[string]interface{} {
 			NodeQuarantined:        string(opts.nodeQuarantined),
 			UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.StatusInProgress)},
 		},
-		"createdAt": time.Now(),
+		"createdAt": createdAt,
 	}
 }
 
@@ -1643,7 +1735,7 @@ func TestMetrics_NodeDrainTimeout(t *testing.T) {
 	nodeName := "metrics-timeout-node"
 	createNode(setup.ctx, t, setup.client, nodeName)
 	createNamespace(setup.ctx, t, setup.client, "timeout-test")
-	createPod(setup.ctx, t, setup.client, "timeout-test", "timeout-pod", nodeName, v1.PodRunning, nil, nil)
+	createPod(setup.ctx, t, setup.client, "timeout-test", "timeout-pod", nodeName, v1.PodRunning, nil, nil, nil)
 
 	_ = processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, setup.healthEventStore, healthEventOptions{
 		nodeName:        nodeName,
@@ -1766,7 +1858,7 @@ func TestReconciler_CancelledEventWithOngoingDrain(t *testing.T) {
 
 	createNamespace(setup.ctx, t, setup.client, "timeout-test")
 
-	createPod(setup.ctx, t, setup.client, "timeout-test", "stuck-pod", nodeName, v1.PodRunning, nil, nil)
+	createPod(setup.ctx, t, setup.client, "timeout-test", "stuck-pod", nodeName, v1.PodRunning, nil, nil, nil)
 
 	beforeCancelled := getCounterVecValue(t, metrics.CancelledEvent, nodeName, "test-check")
 
@@ -1816,7 +1908,7 @@ func TestReconciler_UnQuarantinedEventCancelsOngoingDrain(t *testing.T) {
 
 	createNamespace(setup.ctx, t, setup.client, "timeout-test")
 
-	createPod(setup.ctx, t, setup.client, "timeout-test", "stuck-pod", nodeName, v1.PodRunning, nil, nil)
+	createPod(setup.ctx, t, setup.client, "timeout-test", "stuck-pod", nodeName, v1.PodRunning, nil, nil, nil)
 
 	t.Log("Enqueue Quarantined event - should start deleteAfterTimeout drain")
 	quarantinedEvent := createHealthEvent(healthEventOptions{
@@ -1873,8 +1965,8 @@ func TestReconciler_MultipleEventsOnNodeCancelledByUnQuarantine(t *testing.T) {
 
 	createNamespace(setup.ctx, t, setup.client, "timeout-test")
 
-	createPod(setup.ctx, t, setup.client, "timeout-test", "pod-1", nodeName, v1.PodRunning, nil, nil)
-	createPod(setup.ctx, t, setup.client, "timeout-test", "pod-2", nodeName, v1.PodRunning, nil, nil)
+	createPod(setup.ctx, t, setup.client, "timeout-test", "pod-1", nodeName, v1.PodRunning, nil, nil, nil)
+	createPod(setup.ctx, t, setup.client, "timeout-test", "pod-2", nodeName, v1.PodRunning, nil, nil, nil)
 
 	t.Log("Enqueue two Quarantined events for the same node")
 	event1 := createHealthEvent(healthEventOptions{
@@ -1931,6 +2023,173 @@ func TestReconciler_MultipleEventsOnNodeCancelledByUnQuarantine(t *testing.T) {
 	assert.Nil(t, pod2.DeletionTimestamp, "pod-2 should not be deleted")
 }
 
+func TestReconciler_UnQuarantineCancellationDoesNotCancelFreshSession(t *testing.T) {
+	setup := setupDirectTest(t, []config.UserNamespace{
+		{Name: "allowcompletion-*", Mode: config.ModeAllowCompletion},
+	}, false)
+
+	nodeName := testutils.GenerateTestNodeName("fresh-session-after-unquarantine")
+	createNode(setup.ctx, t, setup.client, nodeName)
+	createNamespace(setup.ctx, t, setup.client, "allowcompletion-test")
+	createPod(setup.ctx, t, setup.client, "allowcompletion-test", "held-pod", nodeName, v1.PodRunning, nil, nil, nil)
+
+	baseTime := time.Now().UTC()
+	oldEvent := createHealthEvent(healthEventOptions{
+		nodeName:        nodeName,
+		eventID:         "old-event",
+		nodeQuarantined: model.Quarantined,
+		createdAt:       baseTime,
+	})
+	freshEvent := createHealthEvent(healthEventOptions{
+		nodeName:        nodeName,
+		eventID:         "fresh-event",
+		nodeQuarantined: model.Quarantined,
+		createdAt:       baseTime.Add(2 * time.Second),
+	})
+
+	err := setup.reconciler.ProcessEventGeneric(setup.ctx, oldEvent, setup.mockCollection,
+		setup.healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "waiting for pods to complete")
+
+	setup.reconciler.HandleCancellation(setup.ctx, "unquarantined-event", nodeName,
+		model.UnQuarantined, baseTime.Add(time.Second))
+
+	cancelledUpdates := make(map[string]bool)
+	setup.mockCollection.UpdateDocumentFunc = func(_ context.Context, filter interface{},
+		update interface{}) (*sdkclient.UpdateResult, error) {
+		filterMap, ok := filter.(map[string]any)
+		require.True(t, ok)
+
+		documentID := fmt.Sprintf("%v", filterMap["_id"])
+		if updateMap, ok := update.(map[string]any); ok {
+			if setMap, ok := updateMap["$set"].(map[string]any); ok {
+				if statusMap, ok := setMap["healtheventstatus.userpodsevictionstatus"].(map[string]interface{}); ok {
+					cancelledUpdates[documentID] = statusMap["status"] == string(model.Cancelled)
+				}
+			}
+		}
+
+		return &sdkclient.UpdateResult{ModifiedCount: 1}, nil
+	}
+
+	err = setup.reconciler.ProcessEventGeneric(setup.ctx, freshEvent, setup.mockCollection,
+		setup.healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "waiting for pods to complete")
+	assert.False(t, cancelledUpdates["fresh-event"], "fresh event after UnQuarantined cutoff must not be cancelled")
+
+	err = setup.reconciler.ProcessEventGeneric(setup.ctx, oldEvent, setup.mockCollection,
+		setup.healthEventStore, nodeName)
+	require.NoError(t, err)
+	assert.True(t, cancelledUpdates["old-event"], "old event before UnQuarantined cutoff should still be cancelled")
+}
+
+func TestReconciler_UnQuarantineCutoffStillCancelsUntrackedOldEventsAfterFreshSession(t *testing.T) {
+	setup := setupDirectTest(t, []config.UserNamespace{
+		{Name: "allowcompletion-*", Mode: config.ModeAllowCompletion},
+	}, false)
+
+	nodeName := testutils.GenerateTestNodeName("fresh-session-before-untracked-old")
+	createNode(setup.ctx, t, setup.client, nodeName)
+	createNamespace(setup.ctx, t, setup.client, "allowcompletion-test")
+	createPod(setup.ctx, t, setup.client, "allowcompletion-test", "held-pod", nodeName, v1.PodRunning, nil, nil, nil)
+
+	baseTime := time.Now().UTC()
+	staleQueuedEvent := createHealthEvent(healthEventOptions{
+		nodeName:        nodeName,
+		eventID:         "stale-queued-event",
+		nodeQuarantined: model.Quarantined,
+		createdAt:       baseTime,
+	})
+	freshEvent := createHealthEvent(healthEventOptions{
+		nodeName:        nodeName,
+		eventID:         "fresh-event",
+		nodeQuarantined: model.Quarantined,
+		createdAt:       baseTime.Add(2 * time.Second),
+	})
+
+	setup.reconciler.HandleCancellation(setup.ctx, "unquarantined-event", nodeName,
+		model.UnQuarantined, baseTime.Add(time.Second))
+
+	cancelledUpdates := make(map[string]bool)
+	setup.mockCollection.UpdateDocumentFunc = func(_ context.Context, filter interface{},
+		update interface{}) (*sdkclient.UpdateResult, error) {
+		filterMap, ok := filter.(map[string]any)
+		require.True(t, ok)
+
+		documentID := fmt.Sprintf("%v", filterMap["_id"])
+		if updateMap, ok := update.(map[string]any); ok {
+			if setMap, ok := updateMap["$set"].(map[string]any); ok {
+				if statusMap, ok := setMap["healtheventstatus.userpodsevictionstatus"].(map[string]interface{}); ok {
+					cancelledUpdates[documentID] = statusMap["status"] == string(model.Cancelled)
+				}
+			}
+		}
+
+		return &sdkclient.UpdateResult{ModifiedCount: 1}, nil
+	}
+
+	err := setup.reconciler.ProcessEventGeneric(setup.ctx, freshEvent, setup.mockCollection,
+		setup.healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "waiting for pods to complete")
+	assert.False(t, cancelledUpdates["fresh-event"], "fresh event after UnQuarantined cutoff must not be cancelled")
+
+	err = setup.reconciler.ProcessEventGeneric(setup.ctx, staleQueuedEvent, setup.mockCollection,
+		setup.healthEventStore, nodeName)
+	require.NoError(t, err)
+	assert.True(t, cancelledUpdates["stale-queued-event"],
+		"pre-cutoff event that was not tracked before the fresh session should still be cancelled")
+}
+
+func TestReconciler_UnQuarantineCutoffDoesNotCancelFreshTimeoutEviction(t *testing.T) {
+	setup := setupDirectTest(t, []config.UserNamespace{
+		{Name: "timeout-*", Mode: config.ModeDeleteAfterTimeout},
+	}, false)
+
+	nodeName := testutils.GenerateTestNodeName("fresh-timeout-after-unquarantine")
+	createNode(setup.ctx, t, setup.client, nodeName)
+	createNamespace(setup.ctx, t, setup.client, "timeout-test")
+	createPod(setup.ctx, t, setup.client, "timeout-test", "held-pod", nodeName, v1.PodRunning, nil, nil, nil)
+
+	baseTime := time.Now().UTC()
+	freshEvent := createHealthEvent(healthEventOptions{
+		nodeName:        nodeName,
+		eventID:         "fresh-timeout-event",
+		nodeQuarantined: model.Quarantined,
+		createdAt:       baseTime.Add(2 * time.Second),
+	})
+
+	setup.reconciler.HandleCancellation(setup.ctx, "unquarantined-event", nodeName,
+		model.UnQuarantined, baseTime.Add(time.Second))
+
+	cancelledUpdates := make(map[string]bool)
+	setup.mockCollection.UpdateDocumentFunc = func(_ context.Context, filter interface{},
+		update interface{}) (*sdkclient.UpdateResult, error) {
+		filterMap, ok := filter.(map[string]any)
+		require.True(t, ok)
+
+		documentID := fmt.Sprintf("%v", filterMap["_id"])
+		if updateMap, ok := update.(map[string]any); ok {
+			if setMap, ok := updateMap["$set"].(map[string]any); ok {
+				if statusMap, ok := setMap["healtheventstatus.userpodsevictionstatus"].(map[string]interface{}); ok {
+					cancelledUpdates[documentID] = statusMap["status"] == string(model.Cancelled)
+				}
+			}
+		}
+
+		return &sdkclient.UpdateResult{ModifiedCount: 1}, nil
+	}
+
+	err := setup.reconciler.ProcessEventGeneric(setup.ctx, freshEvent, setup.mockCollection,
+		setup.healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "waiting for 1 pods to complete or timeout")
+	assert.False(t, cancelledUpdates["fresh-timeout-event"],
+		"fresh timeout eviction after UnQuarantined cutoff must not be cancelled")
+}
+
 func TestReconciler_HandleCancellation_UnknownStatus_LogsWarning(t *testing.T) {
 	setup := setupDirectTest(t, nil, false)
 
@@ -1960,8 +2219,8 @@ func TestReconciler_CustomDrainHappyPath(t *testing.T) {
 	createNamespace(setup.ctx, t, setup.client, "default")
 	createNamespace(setup.ctx, t, setup.client, "app-ns")
 
-	createPod(setup.ctx, t, setup.client, "default", "pod-1", nodeName, v1.PodRunning, nil, nil)
-	createPod(setup.ctx, t, setup.client, "app-ns", "app-pod", nodeName, v1.PodRunning, nil, nil)
+	createPod(setup.ctx, t, setup.client, "default", "pod-1", nodeName, v1.PodRunning, nil, nil, nil)
+	createPod(setup.ctx, t, setup.client, "app-ns", "app-pod", nodeName, v1.PodRunning, nil, nil, nil)
 
 	gvr := schema.GroupVersionResource{
 		Group:    "drain.example.com",
@@ -2214,7 +2473,7 @@ func TestMetrics_PodEvictionDuration(t *testing.T) {
 
 	createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, nodeName, nodeLabels, nil)
 	createNamespace(setup.ctx, t, setup.client, "immediate-test")
-	createPod(setup.ctx, t, setup.client, "immediate-test", "test-pod", nodeName, v1.PodRunning, nil, nil)
+	createPod(setup.ctx, t, setup.client, "immediate-test", "test-pod", nodeName, v1.PodRunning, nil, nil, nil)
 
 	beforeEvictionDuration := getHistogramCount(t, metrics.PodEvictionDuration)
 

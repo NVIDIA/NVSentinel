@@ -245,6 +245,11 @@ incluster-file-server:
   logCleanup:
     enabled: false
 
+# Subchart-specific configuration for gpu-health-monitor
+gpu-health-monitor:
+  dcgmFieldsMonitoring:
+    gpuTempLimitStoreOnly: false
+
 # Override log levels for all modules during testing
 fault-quarantine:
   logLevel: debug
@@ -375,7 +380,9 @@ health-events-analyzer:
   config: |
     [[rules]]
     name = "MultipleRemediations"
-    description = "Detect if multiple remediations are performed within 2 minutes on a node (test config)"
+    # Keep this wider than two full remediation cycles in CI. A 120s window
+    # flakes when each reboot takes ~70-90s (see #1458).
+    description = "Detect if multiple remediations are performed within 10 minutes on a node (test config)"
     recommended_action = "CONTACT_SUPPORT"
     evaluate_rule = true
     stage = [
@@ -387,7 +394,7 @@ health-events-analyzer:
               {
                 "$gte": [
                   "$healthevent.generatedtimestamp.seconds",
-                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 120]}
+                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 600]}
                 ]
               },
               {
@@ -3805,7 +3812,7 @@ health-events-analyzer:
               {
                 "$in": [
                   "this.healthevent.errorcode.0",
-                  ["netdev_watchdog", "port_module_high_temp", "pci_power_insufficient", "module_unplugged"]
+                  ["netdev_watchdog", "port_module_high_temp", "pci_power_insufficient", "module_unplugged", "mlx5_tx_timeout_detected", "mlx5_rx_timeout_detected"]
                 ]
               }
             ]
@@ -4063,8 +4070,11 @@ syslog-health-monitor:
     # Tilt-only: production defaults intentionally leave SysLogsNICDriverError
     # disabled. Enable it here so e2e tests can exercise NIC driver syslog detection.
     - SysLogsNICDriverError
-  # Tilt-only: production defaults intentionally do not enable any NIC driver
-  # syslog pattern names. The regexes, severities, and actions are owned by code.
+  # Tilt-only overrides: the production chart enables only the mlx5 timeout
+  # patterns and the soft-lockup pattern (the latter in STORE_ONLY shadow
+  # mode). Tilt enables every pattern with EXECUTE_REMEDIATION so e2e tests
+  # can exercise detection and the quarantine path end to end. The regexes,
+  # severities, and actions are owned by code.
   nicDriverDetection:
     patterns:
       - name: cmd_exec_timeout
@@ -4096,6 +4106,18 @@ syslog-health-monitor:
         processingStrategy: EXECUTE_REMEDIATION
 
       - name: module_unplugged
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: mlx5_tx_timeout_detected
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: mlx5_rx_timeout_detected
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: mlx5_napi_soft_lockup
         enabled: true
         processingStrategy: EXECUTE_REMEDIATION
 
@@ -4132,6 +4154,15 @@ platformConnector:
     compactedHealthEventMsgLen: 72
     qps: 5.0
     burst: 10
+
+  dedup:
+    enabled: true
+    suppressionWindow: "3m"
+    cleanupInterval: "60s"
+    # Tilt keeps platform-connector dedup scoped to the dedicated E2E check so
+    # syslog and health-events-analyzer tests can still exercise repeated XID/SXID flows.
+    includeChecks:
+      - PlatformConnectorDedupTestXIDError
   
   pipeline:
     - name: MetadataAugmentor

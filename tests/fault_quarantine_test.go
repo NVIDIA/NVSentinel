@@ -179,6 +179,11 @@ func TestPreCordonedNodeHandling(t *testing.T) {
 		_, exists := node.Annotations["quarantineHealthEvent"]
 		assert.True(t, exists)
 
+		assert.Equal(t, "True", node.Annotations[helpers.QuarantineHealthEventIsCordonedAnnotationKey],
+			"quarantineHealthEventIsCordoned should be True")
+		assert.Equal(t, "True", node.Annotations[helpers.QuarantineHealthEventCordonPreExistingAnnotationKey],
+			"quarantineHealthEventCordonPreExisting should be True since node was pre-cordoned")
+
 		return ctx
 	})
 
@@ -202,10 +207,16 @@ func TestPreCordonedNodeHandling(t *testing.T) {
 				}
 			}
 
-			_, hasAnnotation := node.Annotations["quarantineHealthEvent"]
+			_, hasQuarantineAnnotation := node.Annotations["quarantineHealthEvent"]
+			_, hasIsCordonedAnnotation := node.Annotations[helpers.QuarantineHealthEventIsCordonedAnnotationKey]
+			_, hasCordonPreExistingAnnotation := node.Annotations[helpers.QuarantineHealthEventCordonPreExistingAnnotationKey]
 
-			return !hasFQTaint && !hasAnnotation
+			return !hasFQTaint && !hasQuarantineAnnotation && !hasIsCordonedAnnotation && !hasCordonPreExistingAnnotation
 		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval)
+
+		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+		require.NoError(t, err)
+		assert.True(t, node.Spec.Unschedulable, "pre-existing cordon should be preserved after FQ recovery")
 
 		return ctx
 	})
@@ -343,6 +354,48 @@ func TestFaultQuarantineWithProcessingStrategy(t *testing.T) {
 			WithCheckName("GpuPowerWatch").
 			WithFatal(false).
 			WithProcessingStrategy(int(protos.ProcessingStrategy_STORE_ONLY))
+		helpers.SendHealthEvent(ctx, t, event)
+
+		t.Logf("Node %s should not have GpuPowerWatch node event", testCtx.NodeName)
+		helpers.EnsureNodeEventNotPresent(ctx, t, client, testCtx.NodeName, "GpuPowerWatch", "GpuPowerWatchIsNotHealthy")
+
+		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
+			ExpectCordoned: false,
+			AnnotationChecks: []helpers.AnnotationCheck{
+				{Key: helpers.QuarantineHealthEventAnnotationKey, ShouldExist: false},
+			},
+		})
+
+		return ctx
+	})
+
+	feature.Assess("Check that node is not quarantined for STORE_AND_ANALYSE events", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		event := helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("79").
+			WithMessage("XID error occurred").
+			WithAgent(helpers.SYSLOG_HEALTH_MONITOR_AGENT).
+			WithCheckName("SysLogsXIDError").
+			WithProcessingStrategy(int(protos.ProcessingStrategy_STORE_AND_ANALYSE))
+		helpers.SendHealthEvent(ctx, t, event)
+
+		t.Logf("Node %s should not have condition SysLogsXIDError", testCtx.NodeName)
+		helpers.EnsureNodeConditionNotPresent(ctx, t, client, testCtx.NodeName, "SysLogsXIDError")
+
+		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
+			ExpectCordoned: false,
+			AnnotationChecks: []helpers.AnnotationCheck{
+				{Key: helpers.QuarantineHealthEventAnnotationKey, ShouldExist: false},
+			},
+		})
+
+		event = helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("DCGM_FR_CLOCK_THROTTLE_POWER").
+			WithCheckName("GpuPowerWatch").
+			WithFatal(false).
+			WithProcessingStrategy(int(protos.ProcessingStrategy_STORE_AND_ANALYSE))
 		helpers.SendHealthEvent(ctx, t, event)
 
 		t.Logf("Node %s should not have GpuPowerWatch node event", testCtx.NodeName)

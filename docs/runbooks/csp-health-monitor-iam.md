@@ -18,21 +18,21 @@ Error iterating GCP log entries: rpc error: code = PermissionDenied desc = The c
 1. **Check GCP Service Account has required role:**
 
 ```bash
-gcloud projects get-iam-policy <TARGET_PROJECT_ID> \
+gcloud projects get-iam-policy {TARGET_PROJECT_ID} \
     --flatten="bindings[].members" \
-    --filter="bindings.members:serviceAccount:<GCP_SA_NAME>@<TARGET_PROJECT_ID>.iam.gserviceaccount.com"
+    --filter="bindings.members:serviceAccount:{GCP_SA_NAME}@{TARGET_PROJECT_ID}.iam.gserviceaccount.com"
 ```
 
-Expected output should show the custom role `projects/<TARGET_PROJECT_ID>/roles/cspHealthMonitorRole` or predefined role `roles/logging.viewer`.
+Expected output should show the custom role `projects/{TARGET_PROJECT_ID}/roles/cspHealthMonitorRole` or predefined role `roles/logging.viewer`.
 
 2. **Check Workload Identity binding:**
 
 ```bash
 gcloud iam service-accounts get-iam-policy \
-    <GCP_SA_NAME>@<TARGET_PROJECT_ID>.iam.gserviceaccount.com
+    {GCP_SA_NAME}@{TARGET_PROJECT_ID}.iam.gserviceaccount.com
 ```
 
-Expected output should show `roles/iam.workloadIdentityUser` with member `serviceAccount:<GKE_PROJECT_ID>.svc.id.goog[nvsentinel/csp-health-monitor]`.
+Expected output should show `roles/iam.workloadIdentityUser` with member `serviceAccount:{GKE_PROJECT_ID}.svc.id.goog[nvsentinel/csp-health-monitor]`.
 
 3. **Check ServiceAccount annotation:**
 
@@ -40,34 +40,34 @@ Expected output should show `roles/iam.workloadIdentityUser` with member `servic
 kubectl get serviceaccount csp-health-monitor -n nvsentinel -o jsonpath='{.metadata.annotations.iam\.gke\.io/gcp-service-account}'
 ```
 
-Expected output: `<GCP_SA_NAME>@<TARGET_PROJECT_ID>.iam.gserviceaccount.com`
+Expected output: `{GCP_SA_NAME}@{TARGET_PROJECT_ID}.iam.gserviceaccount.com`
 
 ### Resolution
 
 If the GCP Service Account is missing the role:
 
 ```bash
-gcloud projects add-iam-policy-binding <TARGET_PROJECT_ID> \
-    --member="serviceAccount:<GCP_SA_NAME>@<TARGET_PROJECT_ID>.iam.gserviceaccount.com" \
-    --role="projects/<TARGET_PROJECT_ID>/roles/cspHealthMonitorRole"
+gcloud projects add-iam-policy-binding {TARGET_PROJECT_ID} \
+    --member="serviceAccount:{GCP_SA_NAME}@{TARGET_PROJECT_ID}.iam.gserviceaccount.com" \
+    --role="projects/{TARGET_PROJECT_ID}/roles/cspHealthMonitorRole"
 ```
 
 If Workload Identity binding is missing:
 
 ```bash
 gcloud iam service-accounts add-iam-policy-binding \
-    <GCP_SA_NAME>@<TARGET_PROJECT_ID>.iam.gserviceaccount.com \
+    {GCP_SA_NAME}@{TARGET_PROJECT_ID}.iam.gserviceaccount.com \
     --role="roles/iam.workloadIdentityUser" \
-    --member="serviceAccount:<GKE_PROJECT_ID>.svc.id.goog[nvsentinel/csp-health-monitor]"
+    --member="serviceAccount:{GKE_PROJECT_ID}.svc.id.goog[nvsentinel/csp-health-monitor]"
 ```
 
 ### Test Permissions Manually
 
 ```bash
-gcloud logging read "logName=\"projects/<PROJECT_ID>/logs/cloudaudit.googleapis.com%2Fsystem_event\"" \
-    --project=<PROJECT_ID> \
+gcloud logging read "logName=\"projects/{TARGET_PROJECT_ID}/logs/cloudaudit.googleapis.com%2Fsystem_event\"" \
+    --project={TARGET_PROJECT_ID} \
     --limit=1 \
-    --impersonate-service-account=<GCP_SA_NAME>@<PROJECT_ID>.iam.gserviceaccount.com
+    --impersonate-service-account={GCP_SA_NAME}@{TARGET_PROJECT_ID}.iam.gserviceaccount.com
 ```
 
 ## AWS Issues
@@ -86,10 +86,10 @@ Error while fetching maintenance events: operation error Health: DescribeEvents,
 ```bash
 # Use your custom role name if aws.iamRoleName is set, otherwise use the default pattern
 aws iam list-attached-role-policies \
-    --role-name <IAM_ROLE_NAME>
+    --role-name {IAM_ROLE_NAME}
 ```
 
-> **Note**: The role name is either the value of `aws.iamRoleName` (if set) or the default `<CLUSTER_NAME>-nvsentinel-health-monitor-assume-role-policy`.
+> **Note**: The role name is either the value of `aws.iamRoleName` (if set) or the default `{CLUSTER_NAME}-nvsentinel-health-monitor-assume-role-policy`.
 
 Expected output should show `CSPHealthMonitorPolicy` attached.
 
@@ -97,7 +97,7 @@ Expected output should show `CSPHealthMonitorPolicy` attached.
 
 ```bash
 aws iam get-role \
-    --role-name <IAM_ROLE_NAME> \
+    --role-name {IAM_ROLE_NAME} \
     --query 'Role.AssumeRolePolicyDocument'
 ```
 
@@ -109,7 +109,7 @@ Expected: Trust policy should reference the correct EKS OIDC provider and `syste
 kubectl get serviceaccount csp-health-monitor -n nvsentinel -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}'
 ```
 
-Expected output: `arn:aws:iam::<ACCOUNT_ID>:role/<IAM_ROLE_NAME>`
+Expected output: `arn:aws:iam::{ACCOUNT_ID}:role/{IAM_ROLE_NAME}`
 
 ### Resolution
 
@@ -119,7 +119,7 @@ If IAM policy is not attached:
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 aws iam attach-role-policy \
-    --role-name <IAM_ROLE_NAME> \
+    --role-name {IAM_ROLE_NAME} \
     --policy-arn arn:aws:iam::${ACCOUNT_ID}:policy/CSPHealthMonitorPolicy
 ```
 
@@ -150,8 +150,8 @@ kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.pro
 ```
 
 Expected:
-- GCP: `gce://<project-id>/<zone>/<instance-name>`
-- AWS: `aws:///<availability-zone>/<instance-id>`
+- GCP: `gce://{PROJECT_ID}/{ZONE}/{INSTANCE_NAME}`
+- AWS: `aws:///{AVAILABILITY_ZONE}/{INSTANCE_ID}`
 
 2. **Check GCP node annotations (GCP only):**
 

@@ -69,6 +69,7 @@ func createTestNode(ctx context.Context, t *testing.T, name string, labels map[s
 	if labels == nil {
 		labels = make(map[string]string)
 	}
+	labels[informer.GPUNodeLabel] = "true"
 
 	node := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -167,6 +168,63 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 			expectEvaluate: common.RuleEvaluationFailed,
 			expectError:    true,
 		},
+		// ADR-040: nvsentinel.dgxc.nvidia.com/managed=false skips quarantine.
+		{
+			name: "ADR-040 managed=false skips quarantine",
+			expression: `!('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
+			nodeLabels: map[string]string{
+				"nvsentinel.dgxc.nvidia.com/managed": "false",
+			},
+			expectEvaluate: common.RuleEvaluationFailed,
+			expectError:    false,
+		},
+		{
+			name: "ADR-040 managed label absent — quarantine proceeds",
+			expression: `!('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
+			nodeLabels: map[string]string{},
+			expectEvaluate: common.RuleEvaluationSuccess,
+			expectError:    false,
+		},
+		{
+			name: "ADR-040 managed=true — quarantine proceeds (only 'false' opts out)",
+			expression: `!('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
+			nodeLabels: map[string]string{
+				"nvsentinel.dgxc.nvidia.com/managed": "true",
+			},
+			expectEvaluate: common.RuleEvaluationSuccess,
+			expectError:    false,
+		},
+		// Combined expression matching the default rulesets: both old and ADR-040 labels respected.
+		{
+			name: "combined expression: ADR-040 managed=false skips even if k8saas label absent",
+			expression: `!('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
+            !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
+			nodeLabels: map[string]string{
+				"nvsentinel.dgxc.nvidia.com/managed": "false",
+			},
+			expectEvaluate: common.RuleEvaluationFailed,
+			expectError:    false,
+		},
+		{
+			name: "combined expression: no opt-out labels — quarantine proceeds",
+			expression: `!('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
+            !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
+			nodeLabels:     map[string]string{},
+			expectEvaluate: common.RuleEvaluationSuccess,
+			expectError:    false,
+		},
+		{
+			// Verifies the legacy k8saas compatibility clause still skips quarantine
+			// independently of the ADR-040 label, so removing it would break this test.
+			name: "combined expression: legacy k8saas=false skips quarantine (backwards compat)",
+			expression: `!('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
+            !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
+			nodeLabels: map[string]string{
+				"k8saas.nvidia.com/ManagedByNVSentinel": "false",
+			},
+			expectEvaluate: common.RuleEvaluationFailed,
+			expectError:    false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -179,7 +237,7 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 				_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 			}()
 
-			nodeInformer, err := informer.NewNodeInformer(testClient, 0)
+			nodeInformer, err := informer.NewNodeInformer(testClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue)
 			if err != nil {
 				t.Fatalf("Failed to create NodeInformer: %v", err)
 			}

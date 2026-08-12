@@ -24,6 +24,135 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// YAML fixtures for TestLoad. Kept as named constants (rather than inlined in
+// each subtest) so the test bodies read as assertions, not data. Raw string
+// literals start at column 0 by necessity — gofmt leaves them untouched.
+const (
+	yamlMinimal = `
+initContainers:
+  - name: preflight-dcgm-diag
+    image: dcgm:latest
+`
+
+	yamlGangEnabled = `
+initContainers:
+  - name: preflight-dcgm-diag
+    image: dcgm:latest
+gangCoordination:
+  enabled: true
+`
+
+	yamlGangCustomValues = `
+initContainers:
+  - name: preflight-dcgm-diag
+    image: dcgm:latest
+gangCoordination:
+  enabled: true
+  timeout: "5m30s"
+  masterPort: 29501
+  configMapMountPath: "/custom/path"
+`
+
+	yamlGangInvalidTimeout = `
+initContainers:
+  - name: preflight-dcgm-diag
+    image: dcgm:latest
+gangCoordination:
+  enabled: true
+  timeout: "not-a-duration"
+`
+
+	yamlInvalidSyntax = `{invalid yaml: [`
+
+	yamlExtraHostPathDefault = `
+initContainers:
+  - name: preflight-dcgm-diag
+    image: dcgm:latest
+gangCoordination:
+  enabled: true
+  extraHostPathMounts:
+    - name: host-libs
+      hostPath: /opt/libs
+      mountPath: /opt/libs
+`
+
+	yamlPlacementPrepend = `
+initContainers:
+  - name: preflight-dcgm-diag
+    image: dcgm:latest
+initContainerPlacement: "prepend"
+`
+
+	yamlPlacementInvalid = `
+initContainers:
+  - name: preflight-dcgm-diag
+    image: dcgm:latest
+initContainerPlacement: "middle"
+`
+
+	yamlEmptyInitContainerName = `
+initContainers:
+  - name: ""
+    image: dcgm:latest
+`
+
+	yamlDuplicateInitContainerNames = `
+initContainers:
+  - name: preflight-dcgm-diag
+    image: dcgm:latest
+  - name: preflight-dcgm-diag
+    image: dcgm:v2
+`
+
+	yamlDefaultEnabled = `
+initContainers:
+  - name: preflight-dcgm-diag
+    image: dcgm:latest
+  - name: preflight-nccl-allreduce
+    image: nccl:latest
+    defaultEnabled: false
+`
+
+	yamlInheritanceFlags = `
+initContainers:
+  - name: preflight-dcgm-diag
+    image: dcgm:latest
+  - name: preflight-nccl-loopback
+    image: nccl:latest
+    inheritUserEnv: false
+    inheritUserVolumeMounts: false
+`
+
+	yamlExtraHostPathExplicitFalse = `
+initContainers:
+  - name: preflight-dcgm-diag
+    image: dcgm:latest
+gangCoordination:
+  enabled: true
+  extraHostPathMounts:
+    - name: host-libs
+      hostPath: /opt/libs
+      mountPath: /opt/libs
+      readOnly: false
+`
+
+	yamlGangDiscoveryDefault = `
+initContainers:
+  - name: preflight-dcgm-diag
+    image: dcgm:latest
+gangCoordination:
+  enabled: true
+gangDiscovery:
+  name: volcano
+  annotationKeys: ["scheduling.k8s.io/group-name"]
+  podGroupGVR:
+    group: scheduling.volcano.sh
+    version: v1beta1
+    resource: podgroups
+  minCountExpr: podGroup.spec.minMember
+`
+)
+
 func writeYAML(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -37,11 +166,7 @@ func writeYAML(t *testing.T, content string) string {
 // and extraHostPathMounts readOnly defaulting.
 func TestLoad(t *testing.T) {
 	t.Run("minimal config with defaults", func(t *testing.T) {
-		path := writeYAML(t, `
-initContainers:
-  - name: preflight-dcgm-diag
-    image: dcgm:latest
-`)
+		path := writeYAML(t, yamlMinimal)
 		cfg, err := Load(path)
 		require.NoError(t, err)
 
@@ -52,13 +177,7 @@ initContainers:
 	})
 
 	t.Run("gang enabled defaults", func(t *testing.T) {
-		path := writeYAML(t, `
-initContainers:
-  - name: preflight-dcgm-diag
-    image: dcgm:latest
-gangCoordination:
-  enabled: true
-`)
+		path := writeYAML(t, yamlGangEnabled)
 		cfg, err := Load(path)
 		require.NoError(t, err)
 
@@ -71,16 +190,7 @@ gangCoordination:
 	})
 
 	t.Run("gang custom values", func(t *testing.T) {
-		path := writeYAML(t, `
-initContainers:
-  - name: preflight-dcgm-diag
-    image: dcgm:latest
-gangCoordination:
-  enabled: true
-  timeout: "5m30s"
-  masterPort: 29501
-  configMapMountPath: "/custom/path"
-`)
+		path := writeYAML(t, yamlGangCustomValues)
 		cfg, err := Load(path)
 		require.NoError(t, err)
 
@@ -90,21 +200,14 @@ gangCoordination:
 	})
 
 	t.Run("gang invalid timeout", func(t *testing.T) {
-		path := writeYAML(t, `
-initContainers:
-  - name: preflight-dcgm-diag
-    image: dcgm:latest
-gangCoordination:
-  enabled: true
-  timeout: "not-a-duration"
-`)
+		path := writeYAML(t, yamlGangInvalidTimeout)
 		_, err := Load(path)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "timeout")
 	})
 
 	t.Run("invalid YAML", func(t *testing.T) {
-		path := writeYAML(t, `{invalid yaml: [`)
+		path := writeYAML(t, yamlInvalidSyntax)
 		_, err := Load(path)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "parse")
@@ -117,17 +220,7 @@ gangCoordination:
 	})
 
 	t.Run("extra hostPath readOnly defaults to true", func(t *testing.T) {
-		path := writeYAML(t, `
-initContainers:
-  - name: preflight-dcgm-diag
-    image: dcgm:latest
-gangCoordination:
-  enabled: true
-  extraHostPathMounts:
-    - name: host-libs
-      hostPath: /opt/libs
-      mountPath: /opt/libs
-`)
+		path := writeYAML(t, yamlExtraHostPathDefault)
 		cfg, err := Load(path)
 		require.NoError(t, err)
 
@@ -137,11 +230,7 @@ gangCoordination:
 	})
 
 	t.Run("initContainerPlacement defaults to append", func(t *testing.T) {
-		path := writeYAML(t, `
-initContainers:
-  - name: preflight-dcgm-diag
-    image: dcgm:latest
-`)
+		path := writeYAML(t, yamlMinimal)
 		cfg, err := Load(path)
 		require.NoError(t, err)
 
@@ -149,12 +238,7 @@ initContainers:
 	})
 
 	t.Run("initContainerPlacement prepend", func(t *testing.T) {
-		path := writeYAML(t, `
-initContainers:
-  - name: preflight-dcgm-diag
-    image: dcgm:latest
-initContainerPlacement: "prepend"
-`)
+		path := writeYAML(t, yamlPlacementPrepend)
 		cfg, err := Load(path)
 		require.NoError(t, err)
 
@@ -162,36 +246,21 @@ initContainerPlacement: "prepend"
 	})
 
 	t.Run("initContainerPlacement invalid value", func(t *testing.T) {
-		path := writeYAML(t, `
-initContainers:
-  - name: preflight-dcgm-diag
-    image: dcgm:latest
-initContainerPlacement: "middle"
-`)
+		path := writeYAML(t, yamlPlacementInvalid)
 		_, err := Load(path)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "initContainerPlacement")
 	})
 
 	t.Run("empty init container name rejected", func(t *testing.T) {
-		path := writeYAML(t, `
-initContainers:
-  - name: ""
-    image: dcgm:latest
-`)
+		path := writeYAML(t, yamlEmptyInitContainerName)
 		_, err := Load(path)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "name must be set")
 	})
 
 	t.Run("duplicate init container names rejected", func(t *testing.T) {
-		path := writeYAML(t, `
-initContainers:
-  - name: preflight-dcgm-diag
-    image: dcgm:latest
-  - name: preflight-dcgm-diag
-    image: dcgm:v2
-`)
+		path := writeYAML(t, yamlDuplicateInitContainerNames)
 		_, err := Load(path)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "duplicate")
@@ -199,14 +268,7 @@ initContainers:
 	})
 
 	t.Run("defaultEnabled parsed from YAML", func(t *testing.T) {
-		path := writeYAML(t, `
-initContainers:
-  - name: preflight-dcgm-diag
-    image: dcgm:latest
-  - name: preflight-nccl-allreduce
-    image: nccl:latest
-    defaultEnabled: false
-`)
+		path := writeYAML(t, yamlDefaultEnabled)
 		cfg, err := Load(path)
 		require.NoError(t, err)
 		require.Len(t, cfg.InitContainers, 2)
@@ -216,15 +278,7 @@ initContainers:
 	})
 
 	t.Run("inheritance flags parsed from YAML", func(t *testing.T) {
-		path := writeYAML(t, `
-initContainers:
-  - name: preflight-dcgm-diag
-    image: dcgm:latest
-  - name: preflight-nccl-loopback
-    image: nccl:latest
-    inheritUserEnv: false
-    inheritUserVolumeMounts: false
-`)
+		path := writeYAML(t, yamlInheritanceFlags)
 		cfg, err := Load(path)
 		require.NoError(t, err)
 		require.Len(t, cfg.InitContainers, 2)
@@ -238,23 +292,25 @@ initContainers:
 	})
 
 	t.Run("extra hostPath readOnly explicit false", func(t *testing.T) {
-		path := writeYAML(t, `
-initContainers:
-  - name: preflight-dcgm-diag
-    image: dcgm:latest
-gangCoordination:
-  enabled: true
-  extraHostPathMounts:
-    - name: host-libs
-      hostPath: /opt/libs
-      mountPath: /opt/libs
-      readOnly: false
-`)
+		path := writeYAML(t, yamlExtraHostPathExplicitFalse)
 		cfg, err := Load(path)
 		require.NoError(t, err)
 
 		require.Len(t, cfg.GangCoordination.ExtraHostPathMounts, 1)
 		require.NotNil(t, cfg.GangCoordination.ExtraHostPathMounts[0].ReadOnly)
 		assert.False(t, *cfg.GangCoordination.ExtraHostPathMounts[0].ReadOnly)
+	})
+
+	t.Run("cluster-wide gangDiscovery parsed from YAML", func(t *testing.T) {
+		path := writeYAML(t, yamlGangDiscoveryDefault)
+		cfg, err := Load(path)
+		require.NoError(t, err)
+
+		assert.Equal(t, "volcano", cfg.GangDiscovery.Name)
+		assert.Equal(t, []string{"scheduling.k8s.io/group-name"}, cfg.GangDiscovery.AnnotationKeys)
+		assert.Equal(t, "scheduling.volcano.sh", cfg.GangDiscovery.PodGroupGVR.Group)
+		assert.Equal(t, "v1beta1", cfg.GangDiscovery.PodGroupGVR.Version)
+		assert.Equal(t, "podgroups", cfg.GangDiscovery.PodGroupGVR.Resource)
+		assert.Equal(t, "podGroup.spec.minMember", cfg.GangDiscovery.MinCountExpr)
 	})
 }

@@ -115,6 +115,7 @@ type ResetJobConfig struct {
 	Resources        ResourceRequirements `mapstructure:"resources" json:"resources"`
 	RuntimeClassName string               `mapstructure:"runtimeClassName" json:"runtimeClassName"`
 	WriteSysLogEvent *bool                `mapstructure:"writeSysLogEvent" json:"writeSysLogEvent"`
+	UploadURL        string               `mapstructure:"uploadURL" json:"uploadURL"`
 }
 
 type ResourceRequirements struct {
@@ -185,7 +186,7 @@ func LoadConfig(configPath string, namespace string) (*Config, error) {
 
 		jobTemplate, err := getDefaultGPUResetJobTemplate(namespace, resetJobConfig.ImageConfig.Image,
 			resetJobConfig.ImageConfig.ImagePullSecrets, resetJobConfig.Resources, resetJobConfig.RuntimeClassName,
-			*resetJobConfig.WriteSysLogEvent)
+			*resetJobConfig.WriteSysLogEvent, resetJobConfig.UploadURL)
 		if err != nil {
 			return nil, err
 		}

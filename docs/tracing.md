@@ -172,7 +172,7 @@ You can look up traces in your tracing UI (Grafana Tempo, Jaeger) by:
 
 ### Example: Identifying Database Bottlenecks
 
-Database operations appear as spans named `<collection>.<operation>` (e.g., `HealthEvents.update`, `HealthEvents.insert`, `HealthEvents.find`), with attributes like `db.operation.name`, `db.collection.name`, `db.system.name` (`mongodb`), and `network.peer.address` (the MongoDB host). To find slow database operations, use TraceQL:
+Database operations appear as spans named `{COLLECTION}.{OPERATION}` (e.g., `HealthEvents.update`, `HealthEvents.insert`, `HealthEvents.find`), with attributes like `db.operation.name`, `db.collection.name`, `db.system.name` (`mongodb`), and `network.peer.address` (the MongoDB host). To find slow database operations, use TraceQL:
 
 ```
 {name =~ "HealthEvents.*" && duration > 100ms}
@@ -182,13 +182,14 @@ This returns all spans where a database operation took longer than 100ms, helpin
 
 ### Example: Finding Slow Kubernetes/CSP API Calls
 
-K8s API calls appear as `HTTP PUT`, `HTTP DELETE`, `HTTP GET` spans within a trace. Each HTTP span includes `url.full` (e.g., `https://10.96.0.1:443/api/v1/nodes/<node>/status`), `http.response.status_code`, and `http.request.method`, so you can identify exactly which API call was slow and to which resource. To find slow calls across all traces, use TraceQL:
+K8s API calls appear as `HTTP PUT`, `HTTP DELETE`, `HTTP GET` spans within a trace. Each HTTP span includes `url.full` (e.g., `https://10.96.0.1:443/api/v1/nodes/{node}/status`), `http.response.status_code`, and `http.request.method`, so you can identify exactly which API call was slow and to which resource. To find slow calls across all traces, use TraceQL:
 
-```
+```text
 {name =~ "HTTP.*" && duration > 500ms}
 ```
 
 This returns all spans where an HTTP call took longer than 500ms, helping you identify slow API calls across all modules.
+
 ## Troubleshooting
 
 **Q: Tracing is enabled but I don't see any traces in my backend**

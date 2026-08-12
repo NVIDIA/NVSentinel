@@ -619,6 +619,39 @@ func TestReconciler_PodHealthyOnNode(t *testing.T) {
 	}, time.Second, 50*time.Millisecond)
 }
 
+func TestReconciler_PodPolicyNamespaceSkipsOtherNamespaces(t *testing.T) {
+	policy := defaultPodHealthPolicy()
+	policy.Resource.Namespace = "gpu-operator"
+	policy.Predicate.Expression = `has(resource.spec.nodeName) && resource.spec.nodeName != "" &&
+		resource.status.phase != 'Running' &&
+		resource.status.phase != 'Succeeded'`
+
+	setup := setupPodTestWithPolicies(t, []config.Policy{policy})
+	nodeName := "test-node-pod-namespace"
+
+	createNode(t, setup, nodeName, v1.ConditionTrue)
+	createNamespace(t, setup, "gpu-operator")
+	createNamespace(t, setup, "default")
+
+	createPod(t, setup, "default", "default-pod", nodeName, v1.PodPending)
+	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "default-pod"},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+	require.Empty(t, setup.publisher.publishedEvents)
+
+	createPod(t, setup, "gpu-operator", "gpu-operator-pod", nodeName, v1.PodPending)
+	result, err = setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "gpu-operator", Name: "gpu-operator-pod"},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	require.Len(t, setup.publisher.publishedEvents, 1)
+	require.Equal(t, "gpu-operator", setup.publisher.publishedEvents[0].resourceInfo.Namespace)
+}
+
 type testSetup struct {
 	ctx        context.Context
 	k8sClient  client.Client
@@ -1034,6 +1067,12 @@ func defaultPodHealthPolicy() config.Policy {
 func setupPodTest(t *testing.T) *testSetup {
 	t.Helper()
 
+	return setupPodTestWithPolicies(t, []config.Policy{defaultPodHealthPolicy()})
+}
+
+func setupPodTestWithPolicies(t *testing.T, policies []config.Policy) *testSetup {
+	t.Helper()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 
@@ -1050,8 +1089,6 @@ func setupPodTest(t *testing.T) *testSetup {
 	mockPub := &mockPublisher{
 		publishedEvents: []mockPublishedEvent{},
 	}
-
-	policies := []config.Policy{defaultPodHealthPolicy()}
 
 	celEnvironment, err := celenv.NewEnvironment(k8sClient)
 	require.NoError(t, err)

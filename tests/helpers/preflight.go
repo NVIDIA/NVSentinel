@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/util/retry"
@@ -422,7 +423,7 @@ func AssertGangConfigMap(
 	ctx context.Context, t *testing.T, client klient.Client,
 	testCtx *PreflightTestContext, expectedGangID string,
 	expectedPeerCount int,
-) {
+) *v1.ConfigMap {
 	t.Helper()
 
 	namespaces := []string{testCtx.TestNamespace, NVSentinelNamespace}
@@ -475,6 +476,25 @@ func AssertGangConfigMap(
 		found.Data[GangDataKeyGangID],
 		found.Data[GangDataKeyExpectedCount],
 		found.Data[GangDataKeyPeers])
+
+	return found
+}
+
+// WaitForGangConfigMapDeleted waits until the named gang ConfigMap is gone.
+func WaitForGangConfigMapDeleted(
+	ctx context.Context, t *testing.T, client klient.Client,
+	namespace, name string,
+) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		var cm v1.ConfigMap
+
+		err := client.Resources(namespace).Get(ctx, name, namespace, &cm)
+
+		return apierrors.IsNotFound(err)
+	}, EventuallyWaitTimeout, WaitInterval,
+		"gang ConfigMap %s/%s should be garbage-collected", namespace, name)
 }
 
 // CreateKAIPodGroup creates a KAI Scheduler PodGroup with the given
@@ -485,30 +505,38 @@ func CreateKAIPodGroup(
 ) {
 	t.Helper()
 
-	pg := &unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "scheduling.run.ai/v2alpha2",
-			"kind":       "PodGroup",
-			"metadata": map[string]any{
-				"name":      name,
-				"namespace": namespace,
-			},
-			"spec": map[string]any{
-				"minMember": int64(minMember),
-			},
-		},
-	}
+	pg := NewKAIPodGroup(namespace, name)
+	_ = unstructured.SetNestedField(pg.Object, int64(minMember), "spec", "minMember")
 
 	err := client.Resources(namespace).Create(ctx, pg)
 	require.NoError(t, err,
 		"create KAI PodGroup %s/%s", namespace, name)
 }
 
+// GetKAIPodGroup retrieves a KAI Scheduler PodGroup.
+func GetKAIPodGroup(
+	ctx context.Context, t *testing.T, client klient.Client,
+	namespace, name string,
+) *unstructured.Unstructured {
+	t.Helper()
+
+	pg := NewKAIPodGroup(namespace, name)
+	err := client.Resources(namespace).Get(ctx, name, namespace, pg)
+	require.NoError(t, err, "get KAI PodGroup %s/%s", namespace, name)
+
+	return pg
+}
+
 // DeleteKAIPodGroup deletes a KAI Scheduler PodGroup (best-effort).
 func DeleteKAIPodGroup(
 	ctx context.Context, client klient.Client, namespace, name string,
 ) {
-	pg := &unstructured.Unstructured{
+	_ = client.Resources(namespace).Delete(ctx, NewKAIPodGroup(namespace, name))
+}
+
+// NewKAIPodGroup returns an unstructured KAI Scheduler PodGroup object.
+func NewKAIPodGroup(namespace, name string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{
 		Object: map[string]any{
 			"apiVersion": "scheduling.run.ai/v2alpha2",
 			"kind":       "PodGroup",
@@ -518,8 +546,6 @@ func DeleteKAIPodGroup(
 			},
 		},
 	}
-
-	_ = client.Resources(namespace).Delete(ctx, pg)
 }
 
 // CreateGPUPodInGang creates a GPU pod annotated with the KAI PodGroup

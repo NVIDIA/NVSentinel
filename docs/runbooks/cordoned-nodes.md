@@ -136,12 +136,12 @@ cat /tmp/$NODE_NAME-remediation-state.json
 
 For COMPONENT_RESET actions:
 ```bash
-kubectl get gpureset <CR_NAME> -o yaml
+kubectl get gpureset {CR_NAME} -o yaml
 ```
 
 For RESTART_VM and RESTART_BM actions:
 ```bash
-kubectl get rebootnode <CR_NAME> -o yaml
+kubectl get rebootnode {CR_NAME} -o yaml
 ```
 
 **If CR shows successful completion:**
@@ -219,9 +219,9 @@ status:
 
 Check Janitor controller-manager logs for why the ServicesTornDown, ResetJobCreated, or ServicesRestored steps failed during processing of a GPUReset. If the ResetJobCompleted step fails, check the logs for the reset pod:
 ```bash
-kubectl get pods -n <JANITOR_NAMESPACE> | grep <CR_NAME>
+kubectl get pods -n {JANITOR_NAMESPACE} | grep {CR_NAME}
  
-kubectl logs <RESET_POD_NAME> -n <JANITOR_NAMESPACE>
+kubectl logs {RESET_POD_NAME} -n {JANITOR_NAMESPACE}
 ```
 
 **RebootNode:** 
@@ -259,7 +259,7 @@ If a remediation action needs to be retried or executed manually (for example if
 
 To manually trigger a reboot:
 ```bash
-NODE=<NODE_NAME> && cat <<EOF | kubectl apply -f -
+NODE={NODE_NAME} && cat <<EOF | kubectl apply -f -
 apiVersion: janitor.dgxc.nvidia.com/v1alpha1
 kind: RebootNode
 metadata:
@@ -272,7 +272,7 @@ EOF
 
 To manually trigger a GPU reset:
 ```bash
-NODE=<NODE_NAME> && GPU_UUID=<GPU_UUID> && cat <<EOF | kubectl apply -f -
+NODE={NODE_NAME} && GPU_UUID={GPU_UUID} && cat <<EOF | kubectl apply -f -
 apiVersion: janitor.dgxc.nvidia.com/v1alpha1
 kind: GPUReset
 metadata:

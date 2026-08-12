@@ -19,9 +19,11 @@ package tests
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"tests/helpers"
 
@@ -38,14 +40,194 @@ const (
 	dcgmServiceName               = "nvidia-dcgm"
 	dcgmOriginalPort              = 5555
 	dcgmBrokenPort                = 1555
+	dcgmBootstrapAnnotation       = "nvsentinel.dgxc.nvidia.com/dcgm-bootstrap-completed"
 	GPUHealthMonitorContainerName = "gpu-health-monitor"
 	GPUHealthMonitorDaemonSetName = "gpu-health-monitor-dcgm-4.x"
 )
+
+// dcgmConnectivityFailureObserveWindow bounds how long we wait for the fatal
+// GpuDcgmConnectivityFailure that the gpu-health-monitor emits on its first
+// poll after its DCGM connection breaks. The monitor polls every 15s
+// (PollIntervalSeconds in the gpu-health-monitor chart configmap), so three
+// poll cycles plus pipeline latency is ample; if nothing shows up by then the
+// connection survived and no fatal is in flight.
+const dcgmConnectivityFailureObserveWindow = 50 * time.Second
 
 const (
 	keyGpuHealthMonitorPodName      contextKey = "gpuHealthMonitorPodName"
 	keyGpuHealthMonitorOriginalArgs contextKey = "originalArgs"
 )
+
+// violatingSlowdownTLimitC is an artificially high HW-slowdown threshold (°C).
+// gpu-health-monitor flags GpuThermalMarginWatch when the live T.Limit margin
+// (DCGM field 153) is below the threshold. A real idle GPU reports a margin no
+// larger than the headroom to its max operating temperature (tens of °C), so a
+// threshold of 200 is above any physically possible reading and guarantees the
+// comparison fails on every poll — making the violation deterministic instead of
+// racing live telemetry.
+const violatingSlowdownTLimitC = 200
+
+// realSlowdownTLimitC is the per-SKU HW-slowdown offset (°C) used as the healthy
+// baseline. It is a small negative number (e.g. H100 reports -2), so the live
+// T.Limit margin (DCGM field 153) stays well above it and the watch is healthy
+// until the threshold is overridden in a violation scenario.
+const realSlowdownTLimitC = -2
+
+// TestGPUHealthMonitorThermalMarginViolationLifecycle drives the
+// GpuThermalMarginWatch FAIL -> clear lifecycle by overriding the per-GPU HW
+// slowdown threshold (slowdown_tlimit_c) published in gpu_metadata.json, rather
+// than injecting the live margin (DCGM field 153).
+//
+// Why override the threshold instead of the margin: field 153 is live telemetry
+// that DCGM re-samples from the driver at the field-watch interval, so an
+// injected margin is transient and races the real reading. The threshold, by
+// contrast, is read from gpu_metadata.json once at startup (MetadataReader does
+// not hot-reload) and never changes while the process runs. Setting it above any
+// possible live margin makes every poll fail deterministically; restoring the
+// real (negative) value makes every poll pass. Each change takes effect by
+// restarting the pod so it reloads the file.
+func TestGPUHealthMonitorThermalMarginViolationLifecycle(t *testing.T) {
+	feature := features.New("GPU Health Monitor - Thermal Margin Violation Lifecycle").
+		WithLabel("suite", "gpu-health-monitor").
+		WithLabel("component", "thermal-margin")
+
+	var testNodeName string
+	var podName string
+	var gpuID int
+	var originalMetadataJSON []byte
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		gpuHealthMonitorPod, err := helpers.GetPodOnWorkerNode(ctx, t, client, helpers.NVSentinelNamespace, "gpu-health-monitor")
+		require.NoError(t, err, "failed to find GPU health monitor pod on worker node")
+		require.NotNil(t, gpuHealthMonitorPod, "GPU health monitor pod should exist on worker node")
+
+		testNodeName = gpuHealthMonitorPod.Spec.NodeName
+		podName = gpuHealthMonitorPod.Name
+		t.Logf("Using GPU health monitor pod: %s on node: %s", podName, testNodeName)
+
+		// DCGM field 153 (the live T.Limit margin) is served by the fixture: the
+		// kind daemonset mounts tilt/dcgm-fake/gpu-spec.yaml (with a
+		// MarginTemperature entry) via the nvidia-dcgm-gpu-spec ConfigMap, and a
+		// real GPU node serves it natively. If it is ever absent, Assess1 below
+		// fails (no violation is ever observed) rather than silently skipping.
+		//
+		// metadata-collector does not run on GPU-less CI nodes, so seed
+		// gpu_metadata.json ourselves with a healthy baseline (negative slowdown
+		// offset). Capture it so the assess phases can flip the threshold and
+		// teardown can restore it.
+		gpuID = 0
+		baseline := helpers.GpuThermalMarginMetadata(testNodeName, gpuID, realSlowdownTLimitC)
+		originalMetadataJSON, err = json.Marshal(baseline)
+		require.NoError(t, err, "failed to marshal baseline metadata")
+
+		t.Logf("Seeding baseline metadata with slowdown_tlimit_c=%dC for GPU %d and restarting", realSlowdownTLimitC, gpuID)
+		helpers.InjectMetadata(t, ctx, client, helpers.NVSentinelNamespace, testNodeName, baseline)
+		podName = helpers.RestartDaemonSetPodOnNode(ctx, t, client, helpers.NVSentinelNamespace,
+			GPUHealthMonitorDaemonSetName, "gpu-health-monitor", testNodeName, podName)
+
+		t.Logf("Setting ManagedByNVSentinel=false on node %s", testNodeName)
+		err = helpers.SetNodeManagedByNVSentinel(ctx, client, testNodeName, false)
+		require.NoError(t, err, "failed to set ManagedByNVSentinel label")
+
+		ctx = context.WithValue(ctx, keyNodeName, testNodeName)
+		ctx = context.WithValue(ctx, keyPodName, podName)
+		return ctx
+	})
+
+	feature.Assess("override threshold above live margin and verify fatal GpuThermalMarginWatch", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		// Re-parse the captured metadata and raise the chosen GPU's threshold above
+		// any possible live margin, leaving every other field (UUIDs, PCI, other
+		// GPUs) untouched so only this GPU's watch flips to a violation.
+		var violating helpers.GPUMetadata
+		require.NoError(t, json.Unmarshal(originalMetadataJSON, &violating), "failed to parse captured metadata")
+
+		high := violatingSlowdownTLimitC
+		overridden := false
+		for i := range violating.GPUs {
+			if violating.GPUs[i].GPUID == gpuID {
+				violating.GPUs[i].SlowdownTLimitC = &high
+				overridden = true
+				break
+			}
+		}
+		require.True(t, overridden, "chosen GPU %d should be present in captured metadata", gpuID)
+
+		t.Logf("Injecting metadata with slowdown_tlimit_c=%dC for GPU %d and restarting", high, gpuID)
+		helpers.InjectMetadata(t, ctx, client, helpers.NVSentinelNamespace, testNodeName, &violating)
+		podName = helpers.RestartDaemonSetPodOnNode(ctx, t, client, helpers.NVSentinelNamespace,
+			GPUHealthMonitorDaemonSetName, "gpu-health-monitor", testNodeName, podName)
+
+		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, testNodeName,
+			"GpuThermalMarginWatch", "ErrorCode:GPU_TEMP_HW_SLOWDOWN_VIOLATION",
+			"GpuThermalMarginWatchIsNotHealthy", v1.ConditionTrue)
+
+		return ctx
+	})
+
+	feature.Assess("restore real threshold and verify GpuThermalMarginWatch clears", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		// Restore the original metadata verbatim (real negative threshold) so the
+		// live margin is once again above it, and restart so the fresh pod reports
+		// the watch healthy.
+		var original helpers.GPUMetadata
+		require.NoError(t, json.Unmarshal(originalMetadataJSON, &original), "failed to parse captured metadata")
+
+		t.Logf("Restoring original metadata for GPU %d and restarting", gpuID)
+		helpers.InjectMetadata(t, ctx, client, helpers.NVSentinelNamespace, testNodeName, &original)
+		podName = helpers.RestartDaemonSetPodOnNode(ctx, t, client, helpers.NVSentinelNamespace,
+			GPUHealthMonitorDaemonSetName, "gpu-health-monitor", testNodeName, podName)
+
+		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, testNodeName,
+			"GpuThermalMarginWatch", "", "GpuThermalMarginWatchIsHealthy", v1.ConditionFalse)
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		if err != nil {
+			t.Logf("Warning: failed to create client for teardown: %v", err)
+			return ctx
+		}
+
+		if testNodeName == "" {
+			t.Log("Skipping teardown: nodeName not set (setup likely failed or skipped early)")
+			return ctx
+		}
+
+		// Restore the captured original metadata verbatim. metadata-collector only
+		// writes gpu_metadata.json once at startup, so deleting it would leave the
+		// node with no metadata file until the collector pod restarts and break the
+		// next run's Setup. Re-injecting the original (rather than deleting) also
+		// repairs the file if Assess2 failed mid-way and left the violating value.
+		if len(originalMetadataJSON) > 0 {
+			var original helpers.GPUMetadata
+			if err := json.Unmarshal(originalMetadataJSON, &original); err != nil {
+				t.Logf("Warning: failed to parse captured metadata for restore: %v", err)
+			} else {
+				t.Logf("Restoring original metadata on node %s", testNodeName)
+				helpers.InjectMetadata(t, ctx, client, helpers.NVSentinelNamespace, testNodeName, &original)
+			}
+		}
+
+		t.Logf("Removing ManagedByNVSentinel label from node %s", testNodeName)
+		if err := helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, testNodeName); err != nil {
+			t.Logf("Warning: failed to remove ManagedByNVSentinel label: %v", err)
+		}
+
+		return ctx
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
 
 // TestGPUHealthMonitorMultipleErrors verifies GPU health monitor handles multiple concurrent errors
 func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
@@ -760,6 +942,158 @@ func TestGpuHealthMonitorStoreOnlyEvents(t *testing.T) {
 
 		return ctx
 
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+func TestDCGMBootstrapCompletedAnnotation(t *testing.T) {
+	feature := features.New("GPU Health Monitor - DCGM Bootstrap Completed Annotation").
+		WithLabel("suite", "gpu-health-monitor").
+		WithLabel("component", "dcgm-bootstrap-completed")
+
+	var testNodeName string
+	var dcgmPodName string
+	var originalManagedLabel string
+	var hadManagedLabel bool
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		gpuHealthMonitorPod, err := helpers.GetDaemonSetPodOnWorkerNode(ctx, t, client, GPUHealthMonitorDaemonSetName,
+			"gpu-health-monitor-dcgm-4.x")
+		require.NoError(t, err, "failed to find gpu-health-monitor pod on worker node")
+
+		testNodeName = gpuHealthMonitorPod.Spec.NodeName
+		t.Logf("Using node: %s", testNodeName)
+
+		// Capture original label state so teardown can restore it exactly.
+		node, err := helpers.GetNodeByName(ctx, client, testNodeName)
+		require.NoError(t, err, "failed to get node %s", testNodeName)
+		originalManagedLabel, hadManagedLabel = node.Labels["k8saas.nvidia.com/ManagedByNVSentinel"]
+
+		// Deleting the nvidia-dcgm pod below breaks the gpu-health-monitor's DCGM
+		// connection; its next poll emits a fatal GpuDcgmConnectivityFailure, which
+		// would quarantine this node and leak a cordon into whichever test runs
+		// next. Mark the node unmanaged so fault-quarantine ignores that event.
+		t.Logf("Setting ManagedByNVSentinel=false on node %s (original: present=%v, value=%q)",
+			testNodeName, hadManagedLabel, originalManagedLabel)
+		err = helpers.SetNodeManagedByNVSentinel(ctx, client, testNodeName, false)
+		require.NoError(t, err, "failed to set ManagedByNVSentinel label")
+
+		require.NotEmpty(t, node.Annotations[dcgmBootstrapAnnotation],
+			"node %s should have annotation %s set", testNodeName, dcgmBootstrapAnnotation)
+		t.Logf("Node %s has annotation %s: %s", testNodeName, dcgmBootstrapAnnotation,
+			node.Annotations[dcgmBootstrapAnnotation])
+
+		podsOnNode, err := helpers.GetPodsOnNode(ctx, client.Resources(gpuOperatorNamespace), testNodeName)
+		require.NoError(t, err, "failed to list pods on node %s", testNodeName)
+		for _, pod := range podsOnNode {
+			if strings.HasPrefix(pod.Name, dcgmServiceName) {
+				dcgmPodName = pod.Name
+				break
+			}
+		}
+		require.NotEmpty(t, dcgmPodName, "no nvidia-dcgm pod found on node %s", testNodeName)
+		t.Logf("nvidia-dcgm pod on node %s: %s", testNodeName, dcgmPodName)
+
+		ctx = context.WithValue(ctx, keyNodeName, testNodeName)
+		return ctx
+	})
+
+	feature.Assess("bootstrap annotation persists after nvidia-dcgm pod is deleted and restarted",
+		func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			client, err := c.NewClient()
+			require.NoError(t, err, "failed to create kubernetes client")
+
+			t.Logf("Deleting nvidia-dcgm pod %s on node %s", dcgmPodName, testNodeName)
+			err = helpers.DeletePod(ctx, t, client, gpuOperatorNamespace, dcgmPodName, true)
+			require.NoError(t, err, "failed to delete nvidia-dcgm pod %s", dcgmPodName)
+
+			t.Logf("Waiting for replacement nvidia-dcgm pod on node %s to be Running and Ready", testNodeName)
+			helpers.WaitForDaemonSetPodRunning(ctx, t, client, gpuOperatorNamespace, dcgmServiceName, testNodeName)
+
+			t.Logf("Verifying bootstrap annotation is still present on node %s", testNodeName)
+			node, err := helpers.GetNodeByName(ctx, client, testNodeName)
+			require.NoError(t, err, "failed to get node %s", testNodeName)
+			require.NotEmpty(t, node.Annotations[dcgmBootstrapAnnotation],
+				"bootstrap annotation should persist after nvidia-dcgm pod restart on node %s", testNodeName)
+			t.Logf("Bootstrap annotation still present: %s", node.Annotations[dcgmBootstrapAnnotation])
+
+			return ctx
+		})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		if testNodeName == "" {
+			t.Log("Skipping teardown: node not selected (setup likely failed early)")
+			return ctx
+		}
+
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client for teardown")
+
+		// The nvidia-dcgm pod restart leaves the gpu-health-monitor with a stale
+		// DCGM handle, so its next poll emits a fatal GpuDcgmConnectivityFailure.
+		// Before handing the node back as managed, wait for that failure to show
+		// up and for the monitor to reconnect and report healthy again.
+		t.Logf("Waiting up to %v for GpuDcgmConnectivityFailure to appear on node %s",
+			dcgmConnectivityFailureObserveWindow, testNodeName)
+		sawConnectivityFailure := false
+		hadSuccessfulCheck := false
+		ticker := time.NewTicker(helpers.WaitInterval)
+		defer ticker.Stop()
+		deadline := time.After(dcgmConnectivityFailureObserveWindow)
+	observeLoop:
+		for {
+			select {
+			case <-ctx.Done():
+				t.Logf("Context canceled while waiting for GpuDcgmConnectivityFailure on node %s", testNodeName)
+				break observeLoop
+			case <-deadline:
+				break observeLoop
+			case <-ticker.C:
+				condition, checkErr := helpers.CheckNodeConditionExists(ctx, client, testNodeName,
+					"GpuDcgmConnectivityFailure", "GpuDcgmConnectivityFailureIsNotHealthy")
+				if checkErr != nil {
+					t.Logf("Error checking condition: %v", checkErr)
+					continue
+				}
+				hadSuccessfulCheck = true
+				if condition != nil && condition.Status == v1.ConditionTrue {
+					sawConnectivityFailure = true
+					break observeLoop
+				}
+			}
+		}
+		require.True(t, hadSuccessfulCheck,
+			"never got a successful condition check for node %s during observe window", testNodeName)
+
+		if sawConnectivityFailure {
+			t.Logf("Waiting for GpuDcgmConnectivityFailure to become healthy on node %s", testNodeName)
+			helpers.WaitForNodeConditionWithCheckName(ctx, t, client, testNodeName,
+				"GpuDcgmConnectivityFailure", "", "GpuDcgmConnectivityFailureIsHealthy", v1.ConditionFalse)
+		} else {
+			t.Logf("No GpuDcgmConnectivityFailure observed within %v on node %s; "+
+				"gpu-health-monitor connection survived the nvidia-dcgm restart",
+				dcgmConnectivityFailureObserveWindow, testNodeName)
+		}
+
+		t.Logf("Verifying GpuDcgmConnectivityFailure stays healthy on node %s", testNodeName)
+		helpers.EnsureNodeConditionNotPresent(ctx, t, client, testNodeName, "GpuDcgmConnectivityFailure")
+
+		// Restore the original ManagedByNVSentinel label state.
+		if hadManagedLabel {
+			t.Logf("Restoring ManagedByNVSentinel=%s on node %s", originalManagedLabel, testNodeName)
+			require.NoError(t, helpers.SetNodeManagedByNVSentinel(ctx, client, testNodeName, originalManagedLabel == "true"),
+				"failed to restore ManagedByNVSentinel label on node %s", testNodeName)
+		} else {
+			t.Logf("Removing ManagedByNVSentinel label from node %s (was not present before test)", testNodeName)
+			require.NoError(t, helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, testNodeName),
+				"failed to remove ManagedByNVSentinel label from node %s", testNodeName)
+		}
+
+		return ctx
 	})
 
 	testEnv.Test(t, feature.Feature())

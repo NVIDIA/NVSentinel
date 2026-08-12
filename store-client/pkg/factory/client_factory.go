@@ -171,11 +171,22 @@ func (f *ClientFactory) CreateChangeStreamWatcher(
 		providerPipeline = pipeline
 	}
 
-	watcher, err := dbClient.NewChangeStreamWatcher(ctx, client.TokenConfig{
+	clientTokenConfig := client.TokenConfig{
 		ClientName:      tokenConfig.ClientName,
 		TokenDatabase:   tokenConfig.TokenDatabase,
 		TokenCollection: tokenConfig.TokenCollection,
-	}, providerPipeline)
+	}
+
+	resumeControlDecision, err := client.ResetResumeTokenOnStartIfConfigured(ctx, dbClient, clientTokenConfig)
+	if err != nil {
+		return nil, datastore.NewConfigurationError(
+			providerType,
+			"failed to reset change stream resume token on startup",
+			err,
+		).WithMetadata("clientName", clientName).WithMetadata("tokenConfig", tokenConfig)
+	}
+
+	watcher, err := dbClient.NewChangeStreamWatcher(ctx, clientTokenConfig, providerPipeline)
 	if err != nil {
 		return nil, datastore.NewChangeStreamError(
 			providerType,
@@ -184,7 +195,7 @@ func (f *ClientFactory) CreateChangeStreamWatcher(
 		).WithMetadata("clientName", clientName).WithMetadata("tokenConfig", tokenConfig)
 	}
 
-	return watcher, nil
+	return client.NewChangeStreamWatcherWithResumeControl(watcher, resumeControlDecision), nil
 }
 
 // GetDatabaseConfig returns the database configuration used by this factory

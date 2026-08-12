@@ -24,6 +24,7 @@ import (
 const (
 	CRStatusCreated = "created"
 	CRStatusSkipped = "skipped"
+	CRStatusWaiting = "waiting"
 )
 
 var (

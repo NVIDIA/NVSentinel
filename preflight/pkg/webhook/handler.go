@@ -35,6 +35,8 @@ type GangRegistration struct {
 	PodName       string
 	GangID        string
 	ConfigMapName string
+	// OwnerReference points the gang ConfigMap at its scheduler owner for Kubernetes GC.
+	OwnerReference *metav1.OwnerReference
 	// CheckNames is a comma-separated list of preflight checks this pod
 	// will run. Annotation order when present, chart order for defaults.
 	CheckNames string
@@ -48,9 +50,12 @@ type Handler struct {
 	onGangRegister GangRegistrationFunc
 }
 
-func NewHandler(cfg *config.Config, discoverer gang.GangDiscoverer, onGangRegister GangRegistrationFunc) *Handler {
+// NewHandler builds a Handler from the preflight config, the namespace-aware
+// gang discoverer resolver, and the callback invoked to register a pod with its
+// gang after admission.
+func NewHandler(cfg *config.Config, resolver *gang.DiscovererResolver, onGangRegister GangRegistrationFunc) *Handler {
 	return &Handler{
-		injector:       NewInjector(cfg, discoverer),
+		injector:       NewInjector(cfg, resolver),
 		onGangRegister: onGangRegister,
 	}
 }
@@ -123,7 +128,7 @@ func (h *Handler) mutate(ctx context.Context, req *admissionv1.AdmissionRequest)
 		pod.Namespace = req.Namespace
 	}
 
-	patch, gangCtx, err := h.injector.InjectInitContainers(&pod)
+	patch, gangCtx, err := h.injector.InjectInitContainers(ctx, &pod)
 	if err != nil {
 		slog.Error("Failed to inject init containers", "error", err)
 
@@ -159,11 +164,12 @@ func (h *Handler) mutate(ctx context.Context, req *admissionv1.AdmissionRequest)
 			"configMap", gangCtx.ConfigMapName)
 
 		h.onGangRegister(ctx, GangRegistration{
-			Namespace:     pod.Namespace,
-			PodName:       podName,
-			GangID:        gangCtx.GangID,
-			ConfigMapName: gangCtx.ConfigMapName,
-			CheckNames:    gangCtx.CheckNames,
+			Namespace:      pod.Namespace,
+			PodName:        podName,
+			GangID:         gangCtx.GangID,
+			ConfigMapName:  gangCtx.ConfigMapName,
+			OwnerReference: gangCtx.OwnerReference,
+			CheckNames:     gangCtx.CheckNames,
 		})
 	}
 

@@ -851,12 +851,53 @@ func (p *PostgreSQLHealthEventStore) FindLatestEventForNode(
 		return nil, fmt.Errorf("failed to find latest event for node: %w", err)
 	}
 
+	return decodeHealthEventDocument(documentJSON)
+}
+
+// FindLatestHealthEventByQuery returns the newest matching event (by created_at) using
+// ORDER BY created_at DESC LIMIT 1, so it never loads more than one row.
+func (p *PostgreSQLHealthEventStore) FindLatestHealthEventByQuery(ctx context.Context,
+	builder datastore.QueryBuilder) (*datastore.HealthEventWithStatus, error) {
+	if builder == nil {
+		return nil, fmt.Errorf("cannot find latest health event: query builder is nil")
+	}
+
+	whereClause, args := builder.ToSQL()
+	if whereClause == "" {
+		return nil, fmt.Errorf("cannot find latest health event: query builder produced an empty WHERE clause")
+	}
+
+	//nolint:gosec // G202 false positive - using parameterized query with placeholders
+	query := `
+		SELECT document FROM health_events
+		WHERE ` + whereClause + `
+		ORDER BY created_at DESC
+		LIMIT 1
+	`
+
+	var documentJSON []byte
+
+	err := p.db.QueryRowContext(ctx, query, args...).Scan(&documentJSON)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to find latest health event by query: %w", err)
+	}
+
+	return decodeHealthEventDocument(documentJSON)
+}
+
+// decodeHealthEventDocument unmarshals a health_events.document JSON blob into a typed
+// HealthEventWithStatus and also preserves the raw map in RawEvent (needed for
+// cold-start support).
+func decodeHealthEventDocument(documentJSON []byte) (*datastore.HealthEventWithStatus, error) {
 	var event datastore.HealthEventWithStatus
 	if err := json.Unmarshal(documentJSON, &event); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal health event: %w", err)
 	}
 
-	// Populate RawEvent for cold-start support
 	var rawEvent map[string]interface{}
 	if err := json.Unmarshal(documentJSON, &rawEvent); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal raw event: %w", err)

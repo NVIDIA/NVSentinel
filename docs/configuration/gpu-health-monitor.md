@@ -6,25 +6,35 @@ The GPU Health Monitor module watches GPU health using NVIDIA DCGM (Data Center 
 
 ## DCGM Deployment Modes
 
-DCGM (Data Center GPU Manager) always runs as a DaemonSet with one pod per GPU node. The GPU Health Monitor can connect to DCGM in two modes:
+The GPU Health Monitor supports three DCGM source modes, selected with `global.dcgm.mode`.
 
-### DCGM with Kubernetes Service
+### Operator Service
 
-DCGM DaemonSet exposes a Kubernetes service. GPU Health Monitor pods connect to DCGM on their local node via this service endpoint.
+The GPU Operator runs DCGM as a DaemonSet and exposes it through a Kubernetes service. GPU Health Monitor pods connect to the service endpoint.
 
 **Characteristics:**
 - DCGM runs as a DaemonSet (one pod per GPU node)
 - Kubernetes service provides DNS endpoint for DCGM
 - GPU Health Monitor connects via service DNS name
 
-### DCGM with Host Networking
+### External Hostengine
 
-DCGM DaemonSet uses host networking. GPU Health Monitor pods connect to DCGM via `localhost:5555` on the host network.
+An externally managed hostengine runs on each GPU node. GPU Health Monitor pods use host networking and connect to the configured endpoint, which defaults to `localhost:5555`.
 
 **Characteristics:**
-- DCGM runs as a DaemonSet with `hostNetwork: true`
+- The hostengine lifecycle is managed outside NVSentinel
 - No Kubernetes service needed
-- GPU Health Monitor connects to `localhost:5555`
+- GPU Health Monitor enables host networking automatically
+
+### Embedded Mode
+
+GPU Health Monitor starts an in-process DCGM hostengine and exposes it to pod-local clients on a loopback endpoint.
+
+**Characteristics:**
+- No separate DCGM DaemonSet or service is needed
+- `gpu-health-monitor.runtimeClassName` must name the cluster's NVIDIA RuntimeClass
+- The chart automatically sets `privileged: true` on the GPU Health Monitor container
+- The endpoint must be `localhost`, `127.0.0.1`, or `::1`
 
 ## Configuration Reference
 
@@ -64,71 +74,134 @@ gpu-health-monitor:
 
 ## DCGM Configuration
 
-### DCGM Service Mode
+### Operator Service Mode
 
-Configuration for connecting to DCGM running as a Kubernetes service.
+This is the default mode.
 
 ```yaml
-gpu-health-monitor:
+global:
   dcgm:
-    dcgmK8sServiceEnabled: true
+    mode: operator-service
+    enabled: true
     service:
       endpoint: "nvidia-dcgm.gpu-operator.svc"
       port: 5555
 ```
 
-#### Parameters
-
-##### dcgmK8sServiceEnabled
-Enables connection to DCGM via Kubernetes service. When `true`, uses `service.endpoint` and `service.port`. When `false`, connects to `localhost:5555` (sidecar mode).
-
-##### service.endpoint
-Kubernetes service DNS name for DCGM. Typically the DCGM service deployed by GPU Operator.
-
-##### service.port
-Port where DCGM is listening. Default is `5555`.
-
-#### DCGM Service Examples
-
-##### Example 1: GPU Operator DCGM Service
+To use a service in another namespace, override its endpoint:
 
 ```yaml
-dcgm:
-  dcgmK8sServiceEnabled: true
-  service:
-    endpoint: "nvidia-dcgm.gpu-operator.svc"
-    port: 5555
+global:
+  dcgm:
+    mode: operator-service
+    service:
+      endpoint: "dcgm-service.custom-namespace.svc.cluster.local"
+      port: 5555
 ```
 
-##### Example 2: Custom Namespace DCGM Service
+### External Hostengine Mode
+
+NVSentinel does not deploy the hostengine in this mode. The configured hostengine must already be running and reachable on every selected GPU node.
 
 ```yaml
-dcgm:
-  dcgmK8sServiceEnabled: true
-  service:
-    endpoint: "dcgm-service.custom-namespace.svc.cluster.local"
-    port: 5555
+global:
+  dcgm:
+    mode: external-hostengine
+    externalHostengine:
+      endpoint: localhost
+      port: 5555
 ```
 
-### Host Networking
+GPU Health Monitor enables host networking automatically in this mode.
 
-Enables host network mode for GPU Health Monitor pods.
+### Embedded Mode
+
+```yaml
+global:
+  dcgm:
+    mode: embedded-mode
+    embedded:
+      endpoint: localhost
+      port: 5555
+
+gpu-health-monitor:
+  runtimeClassName: nvidia
+```
+
+`runtimeClassName` is required and must match an NVIDIA RuntimeClass installed in the cluster. The chart automatically sets the GPU Health Monitor container to privileged in embedded mode so the NVIDIA Container Toolkit can provide GPU and driver access; no separate security-context value is required.
+
+### Host Networking Override
+
+`external-hostengine` enables host networking automatically. For other modes, it can be enabled explicitly when required by a custom deployment:
 
 ```yaml
 gpu-health-monitor:
-  useHostNetworking: false
+  useHostNetworking: true
 ```
 
-Set to `true` when DCGM is deployed with host networking (`dcgm.dcgmK8sServiceEnabled: false`). In this mode, GPU Health Monitor connects to DCGM via `localhost:5555` on the host network.
+## DCGM Health Check Incident Suppression
 
-#### Example: Host Networking Mode for connecting to DCGM
+Drops DCGM health check incidents matching specific error codes before they generate a health event, so they are never persisted or acted on. Useful for high-frequency, non-actionable flaps (e.g. normal power-cap boost-clock behavior).
 
 ```yaml
-dcgm:
-  dcgmK8sServiceEnabled: false
-
-useHostNetworking: true
+gpu-health-monitor:
+  dcgmHealthCheck:
+    suppressedErrorCodes: []
 ```
+
+### suppressedErrorCodes
+List of DCGM error code names (as reported by DCGM, e.g. `DCGM_FR_CLOCK_THROTTLE_POWER`) to suppress. Empty by default (no suppression). Suppression is scoped to the listed error codes only — other incidents on the same health watch (e.g. other `GpuPowerWatch` error codes) are still reported.
+
+### Example: Suppress power-cap throttle flaps
+
+```yaml
+gpu-health-monitor:
+  dcgmHealthCheck:
+    suppressedErrorCodes:
+      - DCGM_FR_CLOCK_THROTTLE_POWER
+```
+
+## Unresponsive DCGM Detection
+
+A DCGM call that stops answering never returns an error — callers park and the probe blocks forever rather than raising `DCGMError_Timeout`. Meanwhile the node can still report `Ready` with every GPU allocatable and no taint, so no other signal in the stack registers a fault. In `embedded-mode` that hang is node-local, but it is not yet proof of a kernel-driver wedge: DCGM userspace deadlock or lock contention can look the same until an independent NVML/`nvidia-smi` probe confirms the driver itself.
+
+The poll loop cannot report this itself: it is blocked before the point where it would publish anything, and `/healthz` only observes that the loop is frozen, so kubelet restarts the container and the replacement blocks in the same place. The settings below close that gap.
+
+```yaml
+gpu-health-monitor:
+  dcgm:
+    pollIntervalSeconds: 15
+    # Omit (or null) to default to pollIntervalSeconds * 3; set 0 to disable.
+    probeStoreOnly: true
+  dcgmHealthCheck:
+    connectivityFailureEscalationThreshold: 0
+```
+
+### probeStoreOnly
+
+Ships the check in dry-run. While `true` (the default) `GpuDcgmUnresponsive` is emitted with `processingStrategy=STORE_ONLY`, so it is persisted and exported as metrics but excluded from the remediation pipeline — no node condition, no cordon, no reboot. The event still carries `RESTART_BM` so the record shows what the node needs.
+
+Watch `dcgm_probe_hangs` and the stored events for a release or two, confirm the detections match real on-node hangs on your fleet, then set `probeStoreOnly: false` to let remediation act on them. Both the unhealthy and the clearing event use the same strategy, so fault-quarantine always sees a consistent pair.
+
+### probeDeadlineSeconds
+
+Seconds a single DCGM probe may run before a watchdog thread — which the blocked probe cannot stop — reports the stalled operation. In `embedded-mode` the call is in-process and node-local, so it publishes `GpuDcgmUnresponsive` with error code `DCGM_PROBE_HANG` and recommended action `RESTART_BM`. In `operator-service` and `external-hostengine` modes, the same symptom can come from the endpoint, DNS, or network; those modes publish `GpuDcgmConnectivityFailure` with `CONTACT_SUPPORT` instead. Defaults to `PollIntervalSeconds * 3` when unset. Set to `0` to disable the watchdog.
+
+The default equals the `/healthz` staleness window (`PollIntervalSeconds * 3`), so the monitor reports when the poll loop is officially considered stalled. Critical event delivery is capped at 15 seconds, leaving the liveness probe's remaining failure budget to persist the finding before kubelet restarts the container.
+
+DCGM exposes timeout errors but does not document a fixed timeout for every RPC. Treat any deadline you configure as a fleet-specific value, not proof that every slower operation is a hard hang. The chart templates `PollIntervalSeconds` from `dcgm.pollIntervalSeconds` and, when `probeDeadlineSeconds` is null/omitted, sets the deadline to `pollIntervalSeconds * 3` so the two stay coupled. Leave `probeStoreOnly` enabled while measuring normal embedded-mode probe latencies. If you substantially raise `probeDeadlineSeconds`, verify the resulting deadline still precedes the configured liveness restart; the chart exposes `livenessProbe.periodSeconds` and `livenessProbe.failureThreshold` for that adjustment.
+
+The event reports once per hang episode. After delivery, a marker under the monitor's persistent `/var/run/nvsentinel` state survives liveness restarts; it prevents the same hang from being republished and lets the first successful probe emit the healthy clearing event. Every DCGM call in the poll loop is tracked, including connect, health check, thermal margin evaluation, and the cleanup that follows a connectivity failure. Cleanup during intentional shutdown is not tracked, so a slow teardown while DCGM is restarting cannot be reported as a hang. `dcgm_probe_hangs` increments when the deadline is crossed even if event delivery must be retried.
+
+### connectivityFailureEscalationThreshold
+
+Number of consecutive `GpuDcgmConnectivityFailure` cycles after which the recommended action escalates from `CONTACT_SUPPORT` to `RESTART_BM`.
+
+Enable this only when the configured DCGM endpoint is node-local and repeated unreachability has been validated as a driver wedge. With a shared service, service failure, DNS issue, or network policy, rebooting the node is not a valid remediation.
+
+Defaults to `0`, which disables escalation and keeps every connectivity failure at `CONTACT_SUPPORT`. The counter resets once connectivity is restored, and the escalated event is published once rather than on every subsequent cycle.
+
+> **Note**: Both settings recommend `RESTART_BM`, which fault-remediation maps to a `RebootNode` CR. A reboot is the practical recovery when an on-node DCGM probe will not return — whether the underlying cause is a wedged driver or DCGM userspace holding driver locks. Nodes are drained before the reboot by node-drainer. Note that `probeStoreOnly` gates this for `GpuDcgmUnresponsive`, while `connectivityFailureEscalationThreshold` is opt-in by being `0` by default.
 
 ## Additional Volumes
 

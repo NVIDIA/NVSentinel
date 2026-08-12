@@ -75,19 +75,27 @@ local_resource(
 )
 
 helm_repo('sigs-kwok', 'https://kwok.sigs.k8s.io/charts/')
+# kwok must NOT run with hostNetwork: kwok stamps its own pod IP on every fake
+# node (--node-ip=$(POD_IP)), so with hostNetwork the fake nodes clone this
+# pod's host-node IP, kindnetd then treats them as that node and rewrites its
+# CNI config with fake podCIDRs, and real pods created there get duplicate IPs
+# whose traffic NetworkPolicy enforcement misattributes and drops.
 helm_resource(
     'kwok',
     chart='sigs-kwok/kwok',
     namespace='kube-system',
     flags=[
-        '--set=hostNetwork=true'
+        '--version=0.3.0'  # pin: an unpinned chart floats to new releases mid-flight
     ]
 )
 helm_resource(
     'kwok-stage-fast',
     chart='sigs-kwok/stage-fast',
     resource_deps=['kwok'],
-    pod_readiness='ignore'
+    pod_readiness='ignore',
+    flags=[
+        '--version=0.3.0'
+    ]
 )
 
 namespace_create('gpu-operator')
@@ -123,6 +131,15 @@ else:
     print("Skipping KWOK node creation in Tilt (SKIP_KWOK_NODES_IN_TILT=1)")
 
 k8s_yaml('./nvidia-driver-daemonset.yaml')
+# Mount the NVML injection spec from the repo so the pinned fake-dcgm image
+# serves fields added after it was published (e.g. DCGM field 153). Generated
+# offline (--dry-run=client) from the single source-of-truth spec.
+k8s_yaml(local(
+    'kubectl create configmap nvidia-dcgm-gpu-spec -n gpu-operator ' +
+    '--from-file=gpu-spec.yaml=./dcgm-fake/gpu-spec.yaml ' +
+    '--dry-run=client -o yaml',
+    quiet=True,
+))
 k8s_yaml('./nvidia-dcgm-daemonset.yaml')
 
 include('../fault-quarantine/Tiltfile')

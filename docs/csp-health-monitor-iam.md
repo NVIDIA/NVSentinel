@@ -12,35 +12,35 @@ The CSP Health Monitor requires IAM permissions to monitor cloud provider mainte
 
 ### Setup Commands
 
-Replace placeholders:
-- `<GCP_SA_NAME>` - GCP Service Account name (e.g., `csp-health-monitor`)
-- `<TARGET_PROJECT_ID>` - GCP project ID where the cluster runs
-- `<GKE_PROJECT_ID>` - GCP project ID where GKE cluster is deployed
-- `<NAMESPACE>` - Kubernetes namespace (default: `nvsentinel`)
+Replace the following placeholders in the commands below:
+- `{GCP_SA_NAME}` — GCP Service Account name (e.g., `csp-health-monitor`)
+- `{TARGET_PROJECT_ID}` — GCP project ID where the cluster runs
+- `{GKE_PROJECT_ID}` — GCP project ID where GKE cluster is deployed
+- `{NAMESPACE}` — Kubernetes namespace (default: `nvsentinel`)
 
 ```bash
 # 1. Create GCP Service Account
-gcloud iam service-accounts create <GCP_SA_NAME> \
+gcloud iam service-accounts create {GCP_SA_NAME} \
     --display-name="CSP Health Monitor Service Account" \
-    --project=<TARGET_PROJECT_ID>
+    --project={TARGET_PROJECT_ID}
 
 # 2. Create custom IAM role with minimal permissions
 gcloud iam roles create cspHealthMonitorRole \
-    --project=<TARGET_PROJECT_ID> \
+    --project={TARGET_PROJECT_ID} \
     --title="CSP Health Monitor Role" \
     --description="Minimal permissions for CSP Health Monitor" \
     --permissions="logging.logEntries.list"
 
 # 3. Grant role to GCP Service Account
-gcloud projects add-iam-policy-binding <TARGET_PROJECT_ID> \
-    --member="serviceAccount:<GCP_SA_NAME>@<TARGET_PROJECT_ID>.iam.gserviceaccount.com" \
-    --role="projects/<TARGET_PROJECT_ID>/roles/cspHealthMonitorRole"
+gcloud projects add-iam-policy-binding {TARGET_PROJECT_ID} \
+    --member="serviceAccount:{GCP_SA_NAME}@{TARGET_PROJECT_ID}.iam.gserviceaccount.com" \
+    --role="projects/{TARGET_PROJECT_ID}/roles/cspHealthMonitorRole"
 
 # 4. Enable Workload Identity binding
 gcloud iam service-accounts add-iam-policy-binding \
-    <GCP_SA_NAME>@<TARGET_PROJECT_ID>.iam.gserviceaccount.com \
+    {GCP_SA_NAME}@{TARGET_PROJECT_ID}.iam.gserviceaccount.com \
     --role="roles/iam.workloadIdentityUser" \
-    --member="serviceAccount:<GKE_PROJECT_ID>.svc.id.goog[<NAMESPACE>/csp-health-monitor]"
+    --member="serviceAccount:{GKE_PROJECT_ID}.svc.id.goog[{NAMESPACE}/csp-health-monitor]"
 ```
 
 ### Helm Configuration
@@ -51,10 +51,10 @@ csp-health-monitor:
   configToml:
     clusterName: "my-gke-cluster"
     gcp:
-      targetProjectId: "<TARGET_PROJECT_ID>"
-      gcpServiceAccountName: "<GCP_SA_NAME>"
+      targetProjectId: "{TARGET_PROJECT_ID}"
+      gcpServiceAccountName: "{GCP_SA_NAME}"
       apiPollingIntervalSeconds: 60
-      logFilter: 'logName="projects/<TARGET_PROJECT_ID>/logs/cloudaudit.googleapis.com%2Fsystem_event" AND protoPayload.methodName="compute.instances.upcomingMaintenance"'
+      logFilter: 'logName="projects/{TARGET_PROJECT_ID}/logs/cloudaudit.googleapis.com%2Fsystem_event" AND protoPayload.methodName="compute.instances.upcomingMaintenance"'
 ```
 
 ## Amazon Web Services (AWS)
@@ -67,9 +67,11 @@ csp-health-monitor:
 
 ### Setup Commands
 
-Replace placeholders:
-- `<CLUSTER_NAME>` - EKS cluster name
-- `<NAMESPACE>` - Kubernetes namespace (default: `nvsentinel`)
+Replace the following placeholders in the commands below:
+- `{CLUSTER_NAME}` — EKS cluster name
+- `{NAMESPACE}` — Kubernetes namespace (default: `nvsentinel`)
+- `{ACCOUNT_ID}` — AWS account ID (12-digit number); obtained from the `aws sts get-caller-identity` command in the script
+- `{AWS_REGION}` — AWS region where the EKS cluster runs (e.g. `us-east-1`)
 
 ```bash
 # 1. Create IAM policy
@@ -91,7 +93,7 @@ aws iam create-policy \
     }'
 
 # 2. Get OIDC provider and Account ID
-OIDC_PROVIDER=$(aws eks describe-cluster --name <CLUSTER_NAME> --query "cluster.identity.oidc.issuer" --output text | sed 's|https://||')
+OIDC_PROVIDER=$(aws eks describe-cluster --name {CLUSTER_NAME} --query "cluster.identity.oidc.issuer" --output text | sed 's|https://||')
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 # 3. Create trust policy file
@@ -108,7 +110,7 @@ cat > trust-policy.json << EOF
             "Condition": {
                 "StringEquals": {
                     "${OIDC_PROVIDER}:aud": "sts.amazonaws.com",
-                    "${OIDC_PROVIDER}:sub": "system:serviceaccount:<NAMESPACE>:csp-health-monitor"
+                    "${OIDC_PROVIDER}:sub": "system:serviceaccount:{NAMESPACE}:csp-health-monitor"
                 }
             }
         }
@@ -118,12 +120,12 @@ EOF
 
 # 4. Create IAM role
 aws iam create-role \
-    --role-name <CLUSTER_NAME>-nvsentinel-health-monitor-assume-role-policy \
+    --role-name {CLUSTER_NAME}-nvsentinel-health-monitor-assume-role-policy \
     --assume-role-policy-document file://trust-policy.json
 
 # 5. Attach policy to role
 aws iam attach-role-policy \
-    --role-name <CLUSTER_NAME>-nvsentinel-health-monitor-assume-role-policy \
+    --role-name {CLUSTER_NAME}-nvsentinel-health-monitor-assume-role-policy \
     --policy-arn arn:aws:iam::${ACCOUNT_ID}:policy/CSPHealthMonitorPolicy
 ```
 
@@ -133,16 +135,16 @@ aws iam attach-role-policy \
 csp-health-monitor:
   cspName: "aws"
   configToml:
-    clusterName: "<CLUSTER_NAME>"
+    clusterName: "{CLUSTER_NAME}"
     aws:
-      accountId: "<ACCOUNT_ID>"
-      region: "<AWS_REGION>"
+      accountId: "{ACCOUNT_ID}"
+      region: "{AWS_REGION}"
       pollingIntervalSeconds: 60
       # Optional: override the default IAM role name
       # iamRoleName: "my-custom-nvsentinel-role"
 ```
 
-> **Important (EKS)**: By default, the IAM role name is constructed as `<CLUSTER_NAME>-nvsentinel-health-monitor-assume-role-policy`. AWS IAM role names have a **64-character limit**, and the default suffix is 45 characters, leaving only **19 characters** for the cluster name. If your cluster name exceeds 19 characters, set `aws.iamRoleName` to a custom role name and create the IAM role with that name instead:
+> **Important (EKS)**: By default, the IAM role name is constructed as `{CLUSTER_NAME}-nvsentinel-health-monitor-assume-role-policy`. AWS IAM role names have a **64-character limit**, and the default suffix is 45 characters, leaving only **19 characters** for the cluster name. If your cluster name exceeds 19 characters, set `aws.iamRoleName` to a custom role name and create the IAM role with that name instead:
 >
 > ```bash
 > aws iam create-role \

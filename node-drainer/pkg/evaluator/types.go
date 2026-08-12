@@ -62,6 +62,7 @@ const (
 	ActionCheckCompletion
 	ActionMarkAlreadyDrained
 	ActionUpdateStatus
+	ActionCancel
 )
 
 type DrainActionResult struct {
@@ -69,31 +70,28 @@ type DrainActionResult struct {
 	Namespaces         []string
 	Timeout            time.Duration
 	WaitDelay          time.Duration // For ActionWait
-	Status             model.Status  // For ActionUpdateStatus
+	Status             model.Status  // For ActionUpdateStatus and ActionCancel
 	PartialDrainEntity *protos.Entity
 }
 
+var drainActionNames = map[DrainAction]string{
+	ActionSkip:               "Skip",
+	ActionWait:               "Wait",
+	ActionCreateCR:           "CreateCR",
+	ActionEvictImmediate:     "EvictImmediate",
+	ActionEvictWithTimeout:   "EvictWithTimeout",
+	ActionCheckCompletion:    "CheckCompletion",
+	ActionMarkAlreadyDrained: "MarkAlreadyDrained",
+	ActionUpdateStatus:       "UpdateStatus",
+	ActionCancel:             "Cancel",
+}
+
 func (a DrainAction) String() string {
-	switch a {
-	case ActionSkip:
-		return "Skip"
-	case ActionWait:
-		return "Wait"
-	case ActionCreateCR:
-		return "CreateCR"
-	case ActionEvictImmediate:
-		return "EvictImmediate"
-	case ActionEvictWithTimeout:
-		return "EvictWithTimeout"
-	case ActionCheckCompletion:
-		return "CheckCompletion"
-	case ActionMarkAlreadyDrained:
-		return "MarkAlreadyDrained"
-	case ActionUpdateStatus:
-		return "UpdateStatus"
-	default:
-		return "Unknown"
+	if name, ok := drainActionNames[a]; ok {
+		return name
 	}
+
+	return "Unknown"
 }
 
 type namespaces struct {

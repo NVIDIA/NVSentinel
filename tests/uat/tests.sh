@@ -117,6 +117,54 @@ verify_gpu_driver_pod_exists() {
     log "WARN: No running driver pod found on node $node (checked gpu-operator and kube-system namespaces)."
 }
 
+# Resolve the DCGM fault-injection target for the given node. dcgmi faults
+# are always injected from the gpu-health-monitor pod, against the same
+# engine address the monitor itself watches (its --dcgm-addr argument): the
+# pod-local embedded engine, the GPU Operator DCGM service (node-local via
+# internalTrafficPolicy: Local), or an external host engine. Set
+# UAT_DCGM_HOST to override the dcgmi --host value.
+# Sets: GPU_HM_NS, GPU_HM_POD, DCGM_HOST
+discover_dcgm_target() {
+    local node=$1
+
+    GPU_HM_NS=nvsentinel
+    GPU_HM_POD=$(kubectl get pods -n "$GPU_HM_NS" -l app.kubernetes.io/name=gpu-health-monitor \
+        --field-selector=status.phase=Running \
+        -o jsonpath="{.items[?(@.spec.nodeName=='$node')].metadata.name}" 2>/dev/null | head -1)
+    if [[ -z "$GPU_HM_POD" ]]; then
+        error "No running gpu-health-monitor pod on node $node"
+    fi
+
+    local dcgm_addr
+    dcgm_addr=$(kubectl get pod -n "$GPU_HM_NS" "$GPU_HM_POD" -o json 2>/dev/null \
+        | jq -r '.spec.containers[0].args // [] | index("--dcgm-addr") as $i | if $i then .[$i + 1] else empty end')
+    DCGM_HOST=${UAT_DCGM_HOST:-${dcgm_addr:-localhost:5555}}
+    log "Using monitor pod for DCGM injection: $GPU_HM_NS/$GPU_HM_POD (dcgmi host: $DCGM_HOST)"
+}
+
+# Privileged helper pod for node-level test operations (/dev/kmsg writes,
+# nvidia-smi queries) on the given node, from nvsentinel-debug-pod-template.yaml.
+# Sets: NODE_NS, NODE_POD
+create_node_debug_pod() {
+    local node=$1
+
+    NODE_NS=nvsentinel
+    NODE_POD=$(sed "s|NODE_NAME|$node|" "${SCRIPT_DIR}/nvsentinel-debug-pod-template.yaml" \
+        | kubectl create -f - -o jsonpath='{.metadata.name}')
+    trap 'delete_node_debug_pod' EXIT
+
+    if ! kubectl wait --for=condition=Ready pod -n "$NODE_NS" "$NODE_POD" --timeout=120s >/dev/null; then
+        error "Debug pod $NODE_NS/$NODE_POD did not become Ready on node $node"
+    fi
+    log "Node debug pod running: $NODE_NS/$NODE_POD"
+}
+
+delete_node_debug_pod() {
+    kubectl delete pod -n "${NODE_NS:-nvsentinel}" "$NODE_POD" --ignore-not-found --wait=false >/dev/null
+    trap - EXIT
+    log "Node debug pod deleted"
+}
+
 
 wait_for_node_condition() {
     local node=$1
@@ -334,14 +382,9 @@ test_gpu_monitoring_dcgm() {
     original_boot_id=$(get_boot_id "$gpu_node")
     log "Original boot ID: $original_boot_id"
 
-    local dcgm_pod
-    dcgm_pod=$(kubectl get pods -n gpu-operator -l app=nvidia-dcgm -o jsonpath="{.items[?(@.spec.nodeName=='$gpu_node')].metadata.name}" | head -1)
+    discover_dcgm_target "$gpu_node"
 
-    if [[ -z "$dcgm_pod" ]]; then
-        error "No DCGM pod found on node $gpu_node"
-    fi
-
-    kubectl exec -n gpu-operator "$dcgm_pod" -- dcgmi test --inject --gpuid 0 -f 240 -v 99999 # power watch error
+    kubectl exec -n "$GPU_HM_NS" "$GPU_HM_POD" -- dcgmi test --host "$DCGM_HOST" --inject --gpuid 0 -f 240 -v 99999 # power watch error
 
     log "Waiting for node events to appear..."
     local max_wait=${UAT_EVENT_TIMEOUT:-30}
@@ -368,7 +411,7 @@ test_gpu_monitoring_dcgm() {
     # XID 95 results in DCGM_FR_UNCONTAINED_ERROR which requires a RESTART_VM action.
     # DCGM 4.2.x maps this to DCGM_HEALTH_WATCH_MEM (GpuMemWatch).
     # DCGM 4.4.x+ reclassified it as a "devastating" XID under DCGM_HEALTH_WATCH_ALL (GpuAllWatch).
-    kubectl exec -n gpu-operator "$dcgm_pod" -- dcgmi test --inject --gpuid 0 -f 230 -v 95
+    kubectl exec -n "$GPU_HM_NS" "$GPU_HM_POD" -- dcgmi test --host "$DCGM_HOST" --inject --gpuid 0 -f 230 -v 95
 
     wait_for_any_node_condition "$gpu_node" "GpuAllWatch" "GpuMemWatch"
 
@@ -376,7 +419,7 @@ test_gpu_monitoring_dcgm() {
 
     log "Waiting for node to reboot and recover..."
     wait_for_boot_id_change "$gpu_node" "$original_boot_id"
-    
+
     log "Test 1 PASSED ✓"
 }
 
@@ -398,15 +441,10 @@ test_xid_monitoring_syslog() {
     original_boot_id=$(get_boot_id "$gpu_node")
     log "Original boot ID: $original_boot_id"
 
-    local dcgm_pod
-    dcgm_pod=$(kubectl get pods -n gpu-operator -l app=nvidia-dcgm \
-        -o jsonpath="{.items[?(@.spec.nodeName=='$gpu_node')].metadata.name}" | head -1)
-    if [[ -z "$dcgm_pod" ]]; then
-        error "No DCGM pod found on node $gpu_node"
-    fi
+    create_node_debug_pod "$gpu_node"
 
-    log "Injecting XID 79 via /dev/kmsg on pod: gpu-operator/$dcgm_pod"
-    kubectl exec -n "gpu-operator" "$dcgm_pod" -- sh -c 'echo "<3>[6085126.134786] NVRM: Xid (PCI:0002:00:00): 79, pid=1582259, name=nvc:[driver], GPU has fallen off the bus." > /dev/kmsg'
+    log "Injecting XID 79 via /dev/kmsg on pod: $NODE_NS/$NODE_POD"
+    kubectl exec -n "$NODE_NS" "$NODE_POD" -- sh -c 'echo "<3>[6085126.134786] NVRM: Xid (PCI:0002:00:00): 79, pid=1582259, name=nvc:[driver], GPU has fallen off the bus." > /dev/kmsg'
 
     wait_for_node_condition "$gpu_node" "SysLogsXIDError"
 
@@ -414,6 +452,8 @@ test_xid_monitoring_syslog() {
 
     log "Waiting for node to reboot and recover..."
     wait_for_boot_id_change "$gpu_node" "$original_boot_id"
+
+    delete_node_debug_pod
 
     log "Test 2 PASSED ✓"
 }
@@ -446,16 +486,11 @@ test_xid_monitoring_syslog_gpu_reset() {
     initial_boot_id=$(get_boot_id "$gpu_node")
     log "Original boot ID: $initial_boot_id"
 
-    local dcgm_pod
-    dcgm_pod=$(kubectl get pods -n gpu-operator -l app=nvidia-dcgm \
-        -o jsonpath="{.items[?(@.spec.nodeName=='$gpu_node')].metadata.name}" | head -1)
-    if [[ -z "$dcgm_pod" ]]; then
-        error "No DCGM pod found on node $gpu_node"
-    fi
+    create_node_debug_pod "$gpu_node"
 
-    log "Fetching GPU UUID and PCI from nvidia-smi on gpu-operator/$dcgm_pod"
+    log "Fetching GPU UUID and PCI from nvidia-smi on $NODE_NS/$NODE_POD"
 
-    uuid_pci=$(kubectl exec -n "gpu-operator" "$dcgm_pod" -- sh -c "nvidia-smi --query-gpu=uuid,pci.bus_id --format=csv,noheader | head -n 1")
+    uuid_pci=$(kubectl exec -n "$NODE_NS" "$NODE_POD" -- sh -c "nvidia-smi --query-gpu=uuid,pci.bus_id --format=csv,noheader | head -n 1")
 
     if [[ -z "$uuid_pci" ]]; then
         error "No nvidia-smi query output on node $gpu_node"
@@ -468,8 +503,8 @@ test_xid_monitoring_syslog_gpu_reset() {
     fi
     log "Resetting GPU UUID $uuid on PCI $pci"
 
-    log "Injecting XID 119 on GPU $uuid via /dev/kmsg on pod: gpu-operator/$dcgm_pod"
-    kubectl exec -n "gpu-operator" "$dcgm_pod" -- sh -c "echo '<3>[6085126.134786] NVRM: Xid (PCI:$pci): 119, pid=1582259, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU1 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8).' > /dev/kmsg"
+    log "Injecting XID 119 on GPU $uuid via /dev/kmsg on pod: $NODE_NS/$NODE_POD"
+    kubectl exec -n "$NODE_NS" "$NODE_POD" -- sh -c "echo '<3>[6085126.134786] NVRM: Xid (PCI:$pci): 119, pid=1582259, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU1 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8).' > /dev/kmsg"
 
     wait_for_node_condition "$gpu_node" "SysLogsXIDError"
 
@@ -487,6 +522,8 @@ test_xid_monitoring_syslog_gpu_reset() {
         error "Boot ID changed during GPU reset. Original: $initial_boot_id, Final: $final_boot_id"
     fi
     log "Boot ID unchanged: $final_boot_id"
+
+    delete_node_debug_pod
 
     log "Test 3 PASSED ✓"
 }
@@ -510,16 +547,11 @@ test_sxid_monitoring_syslog() {
     log "Original boot ID: $original_boot_id"
 
 
-    local dcgm_pod
-    dcgm_pod=$(kubectl get pods -n gpu-operator -l app=nvidia-dcgm -o jsonpath="{.items[?(@.spec.nodeName=='$gpu_node')].metadata.name}" | head -1)
+    create_node_debug_pod "$gpu_node"
 
-    if [[ -z "$dcgm_pod" ]]; then
-        error "No DCGM pod found on node $gpu_node"
-    fi
-
-    log "Getting NVLink topology from DCGM pod: $dcgm_pod"
+    log "Getting NVLink topology from debug pod: $NODE_POD"
     local nvlink_output
-    nvlink_output=$(kubectl exec -n gpu-operator "$dcgm_pod" -- nvidia-smi nvlink -R 2>/dev/null)
+    nvlink_output=$(kubectl exec -n "$NODE_NS" "$NODE_POD" -- nvidia-smi nvlink -R 2>/dev/null)
 
     if [[ -z "$nvlink_output" ]]; then
         log "Warning: nvidia-smi nvlink not available, using fallback PCI/Link values"
@@ -545,10 +577,10 @@ test_sxid_monitoring_syslog() {
     fi
 
 
-    log "Injecting SXID error messages via /dev/kmsg on pod: gpu-operator/$dcgm_pod"
+    log "Injecting SXID error messages via /dev/kmsg on pod: $NODE_NS/$NODE_POD"
 
     log "  - SXID 28002 (Non-fatal): Therm Warn Deactivated on Link $link_number"
-    kubectl exec -n gpu-operator "$dcgm_pod" -- sh -c "echo '<3>nvidia-nvswitch0: SXid (PCI:${pci_id}): 28002, Non-fatal, Link ${link_number} Therm Warn Deactivated' > /dev/kmsg"
+    kubectl exec -n "$NODE_NS" "$NODE_POD" -- sh -c "echo '<3>[6085126.134786] nvidia-nvswitch0: SXid (PCI:${pci_id}): 28002, Non-fatal, Link ${link_number} Therm Warn Deactivated' > /dev/kmsg"
 
     local max_wait=${UAT_EVENT_TIMEOUT:-30}
     local waited=0
@@ -571,7 +603,7 @@ test_sxid_monitoring_syslog() {
     log "Node event verified: SysLogsSXIDError ✓"
 
     log "  - SXID 20034 (Fatal): LTSSM Fault Up on Link $link_number"
-    kubectl exec -n gpu-operator "$dcgm_pod" -- sh -c "echo '<3>nvidia-nvswitch3: SXid (PCI:${pci_id}): 20034, Fatal, Link ${link_number} LTSSM Fault Up' > /dev/kmsg"
+    kubectl exec -n "$NODE_NS" "$NODE_POD" -- sh -c "echo '<3>[6085126.134786] nvidia-nvswitch3: SXid (PCI:${pci_id}): 20034, Fatal, Link ${link_number} LTSSM Fault Up' > /dev/kmsg"
 
     wait_for_node_condition "$gpu_node" "SysLogsSXIDError"
 
@@ -579,6 +611,8 @@ test_sxid_monitoring_syslog() {
 
     log "Waiting for node to reboot and recover..."
     wait_for_boot_id_change "$gpu_node" "$original_boot_id"
+
+    delete_node_debug_pod
 
     log "Test 4 PASSED ✓"
 }

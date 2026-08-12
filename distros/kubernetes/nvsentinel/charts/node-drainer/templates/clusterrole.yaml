@@ -57,6 +57,14 @@ rules:
   - create
   - update
   - watch
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - update
+  - create
 {{- if .Values.customDrain.enabled }}
 - apiGroups:
   - {{ .Values.customDrain.apiGroup | quote }}

@@ -63,6 +63,8 @@ type Components struct {
 	DatabaseClient     client.DatabaseClient
 	DataStore          datastore.DataStore
 	CustomDrainEnabled bool
+	StartFresh         bool
+	ColdStartAfterTime time.Time
 }
 
 // InitializeAll creates all node-drainer runtime dependencies from the given params and returns them as Components.
@@ -158,6 +160,8 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		DatabaseClient:     dsComponents.databaseClient,
 		DataStore:          ds,
 		CustomDrainEnabled: configs.tomlCfg.CustomDrain.Enabled,
+		StartFresh:         dsComponents.resumeControlDecision.StartFresh,
+		ColdStartAfterTime: dsComponents.resumeControlDecision.ColdStartCutoff,
 	}, nil
 }
 
@@ -229,8 +233,9 @@ func initializeDynamicClientAndMapper(
 }
 
 type datastoreComponents struct {
-	databaseClient client.DatabaseClient
-	eventWatcher   client.ChangeStreamWatcher
+	databaseClient        client.DatabaseClient
+	eventWatcher          client.ChangeStreamWatcher
+	resumeControlDecision client.ResumeControlDecision
 }
 
 func initializeDatastoreComponents(ctx context.Context, ds datastore.DataStore,
@@ -253,6 +258,15 @@ func initializeDatastoreComponents(ctx context.Context, ds datastore.DataStore,
 		return nil, fmt.Errorf("failed to create change stream watcher: %w", err)
 	}
 
+	var resumeControlDecision client.ResumeControlDecision
+
+	type resumeControlDecisionProvider interface {
+		ResumeControlDecision() client.ResumeControlDecision
+	}
+	if provider, ok := changeStreamWatcher.(resumeControlDecisionProvider); ok {
+		resumeControlDecision = provider.ResumeControlDecision()
+	}
+
 	// Unwrap for EventWatcher compatibility
 	type unwrapper interface {
 		Unwrap() client.ChangeStreamWatcher
@@ -264,8 +278,9 @@ func initializeDatastoreComponents(ctx context.Context, ds datastore.DataStore,
 	}
 
 	return &datastoreComponents{
-		databaseClient: databaseClient,
-		eventWatcher:   unwrapable.Unwrap(),
+		databaseClient:        databaseClient,
+		eventWatcher:          unwrapable.Unwrap(),
+		resumeControlDecision: resumeControlDecision,
 	}, nil
 }
 

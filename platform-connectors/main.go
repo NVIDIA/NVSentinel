@@ -42,6 +42,7 @@ import (
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/server"
+	_ "github.com/nvidia/nvsentinel/platform-connectors/pkg/transformers/dedup"
 	_ "github.com/nvidia/nvsentinel/platform-connectors/pkg/transformers/metadata"
 	_ "github.com/nvidia/nvsentinel/platform-connectors/pkg/transformers/overrides"
 )
@@ -499,6 +500,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize pipeline: %w", err)
 	}
+	defer pipeline.Close()
 
 	lis, err := startGRPCServer(ctx, cfg.socket, pipeline)
 	if err != nil {

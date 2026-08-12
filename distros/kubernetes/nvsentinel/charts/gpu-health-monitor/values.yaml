@@ -19,17 +19,77 @@ image:
 
 # DCGM (Data Center GPU Manager) integration configuration
 dcgm:
+  # Source mode. Supported values: operator-service, external-hostengine, embedded-mode.
+  # operator-service: the GPU Operator DCGM service
+  # external-hostengine: an externally owned nv-hostengine
+  # embedded-mode: the GPU health monitor runs an in-process embedded DCGM hostengine
+  # and exposes it on a pod-local loopback listener for DCGM clients such as dcgmi
+  mode: operator-service
   # Enable DCGM Kubernetes service for GPU metrics collection
   dcgmK8sServiceEnabled: true
+  # GPU Operator DCGM service used by operator-service mode.
   service:
-    # DCGM service endpoint in the cluster
     endpoint: "nvidia-dcgm.gpu-operator.svc"
-    # DCGM service port
     port: 5555
+  # Externally owned hostengine used by external-hostengine mode.
+  externalHostengine:
+    endpoint: localhost
+    port: 5555
+  # In-process hostengine listener used by embedded-mode. The endpoint must be
+  # localhost, 127.0.0.1, or ::1.
+  embedded:
+    endpoint: localhost
+    port: 5555
+  # DCGM poll interval written to config.ini. Also drives the /healthz
+  # staleness window (pollIntervalSeconds * 3) and the default probe deadline.
+  pollIntervalSeconds: 15
+  # Seconds a single DCGM probe may run before the watchdog reports
+  # GpuDcgmUnresponsive (RESTART_BM) in embedded mode. A hung probe never
+  # errors and never times out — without this the poll loop just blocks and the
+  # hang is never published. When null/omitted, defaults to
+  # pollIntervalSeconds * 3 so it stays coupled with /healthz staleness and
+  # leaves the liveness probe's failureThreshold budget to publish the event
+  # before the container is restarted. DCGM has no documented fixed RPC
+  # timeout; validate this deadline with probeStoreOnly before enabling
+  # remediation. Set to 0 to disable the watchdog (0 is not treated as unset).
+  probeDeadlineSeconds: null
+  # Dry-run for the embedded-mode GpuDcgmUnresponsive event. While true the
+  # check is persisted/exported but kept out of remediation. Remote modes emit
+  # GpuDcgmConnectivityFailure with CONTACT_SUPPORT regardless of this setting.
+  # Set to false only after validating embedded-mode detections on your fleet.
+  probeStoreOnly: true
 
-# Use host networking for GPU health monitor pods
-# Required for accessing host-level GPU metrics
+# DCGM field-level monitoring feature flags
+dcgmFieldsMonitoring:
+  # Enable GpuThermalMarginWatch (DCGM field 153 / GPU T.Limit margin monitoring)
+  gpuTempLimitMonitoringEnabled: true
+  # Dry-run for GpuThermalMarginWatch. When true, this check's
+  # events are emitted with processingStrategy=STORE_ONLY
+  gpuTempLimitStoreOnly: true
+
+# DCGM health check incident suppression
+dcgmHealthCheck:
+  # DCGM error codes to drop before they become health events
+  # Example: ["DCGM_FR_CLOCK_THROTTLE_POWER"]
+  suppressedErrorCodes: []
+  # Consecutive GpuDcgmConnectivityFailure cycles after which the recommended
+  # action escalates from CONTACT_SUPPORT to RESTART_BM. Enable only when the
+  # endpoint is node-local and repeated unreachability is known to represent a
+  # wedged driver; a shared service or network outage is not fixed by rebooting
+  # this node. 0 disables escalation and keeps failures at CONTACT_SUPPORT.
+  connectivityFailureEscalationThreshold: 0
+
+# Use host networking for GPU health monitor pods. external-hostengine mode
+# enables host networking automatically because the configured endpoint is
+# node-local by contract. This value is an opt-in for other modes.
 useHostNetworking: false
+
+# RuntimeClass for the GPU health monitor pods. Leave empty for operator-service
+# and external-hostengine modes (the monitor connects to a remote hostengine and
+# needs no local GPU access). In embedded-mode the monitor runs an in-process
+# embedded DCGM hostengine, which requires NVML/driver access. This value is
+# required in embedded-mode and is commonly "nvidia".
+runtimeClassName: ""
 
 # Additional volume mounts for GPU health monitor (optional)
 additionalVolumeMounts: []
@@ -44,6 +104,20 @@ resources:
   requests:
     cpu: 100m
     memory: 128Mi
+
+# If probeDeadlineSeconds is raised, keep enough liveness failures after the
+# /healthz staleness window for bounded critical-event delivery to finish.
+livenessProbe:
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+readinessProbe:
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
 
 # Scheduling configuration
 nodeSelector: {}
@@ -60,3 +134,14 @@ verbose: "False"
 # EXECUTE_REMEDIATION: normal behavior; downstream modules may update cluster state.
 # STORE_ONLY: observability-only behavior; event should be persisted/exported but should not modify cluster resources (i.e., no node conditions, no quarantine, no drain, no remediation).
 processingStrategy: EXECUTE_REMEDIATION
+
+# Operator assertion that bridge-capable PCIe GPUs (A100/H100 PCIe) in this
+# fleet run without NVLink bridges by design. When true, DCGM_FR_NVLINK_DOWN
+# is suppressed on PCIe-named GPUs whose metadata shows zero active NVLink
+# links (DCGM otherwise reports the permanently-inactive bridge links as a
+# FATAL fault with RESTART_VM). Leave false if any pool uses NVLink bridges:
+# an unbridged card and a card whose bridge was dead at metadata-collection
+# time are indistinguishable, so enabling this could mask a bridge failure
+# present at boot. GPUs with no NVLink silicon (L40, A40) are always
+# suppressed regardless of this value.
+suppressNvlinkDownOnUnbridgedPcie: "False"

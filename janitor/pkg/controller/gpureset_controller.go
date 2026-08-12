@@ -876,7 +876,7 @@ func (r *GPUResetReconciler) expectedJobName(gr *v1alpha1.GPUReset) string {
 	}
 
 	if len(baseName) > maxJobNameBaseLength {
-		baseName = baseName[0:maxJobNameBaseLength]
+		baseName = strings.TrimRight(baseName[0:maxJobNameBaseLength], ".")
 	}
 
 	hash := sha256.Sum256([]byte(gr.Name))

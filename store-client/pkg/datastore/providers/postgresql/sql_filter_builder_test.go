@@ -369,7 +369,20 @@ func TestSQLFilterBuilder_HealthEventsAnalyzerPipeline(t *testing.T) {
 				datastore.E("operationType", datastore.D(datastore.E("$in", datastore.A("insert", "update")))),
 				datastore.E("fullDocument.healthevent.agent", datastore.D(datastore.E("$ne", "health-events-analyzer"))),
 				datastore.E("fullDocument.healthevent.ishealthy", false),
-				datastore.E("fullDocument.healthevent.processingstrategy", int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION)),
+				datastore.E("$or", datastore.A(
+					datastore.D(datastore.E(
+						"fullDocument.healthevent.processingstrategy",
+						int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION),
+					)),
+					datastore.D(datastore.E(
+						"fullDocument.healthevent.processingstrategy",
+						int32(protos.ProcessingStrategy_STORE_AND_ANALYSE),
+					)),
+					datastore.D(datastore.E(
+						"fullDocument.healthevent.processingstrategy",
+						datastore.D(datastore.E("$exists", false)),
+					)),
+				)),
 			)),
 		),
 	)
@@ -496,6 +509,43 @@ func TestSQLFilterBuilder_NodeDrainerPipeline(t *testing.T) {
 
 	// Should have OR condition for the two paths
 	assert.Contains(t, clause, " OR ")
+}
+
+func TestSQLFilterBuilder_NodeDrainerPipelineIncompleteForServerSideFiltering(t *testing.T) {
+	pipeline := datastore.ToPipeline(
+		datastore.D(
+			datastore.E("$match", datastore.D(
+				datastore.E("$or", datastore.A(
+					datastore.D(
+						datastore.E("operationType", "update"),
+						datastore.E("updateDescription.updatedFields", datastore.D(
+							datastore.E("healtheventstatus.nodequarantined", "UnQuarantined"),
+						)),
+					),
+					datastore.D(
+						datastore.E("operationType", "insert"),
+						datastore.E("fullDocument.healtheventstatus.nodequarantined", datastore.D(
+							datastore.E("$in", datastore.A("Quarantined", "AlreadyQuarantined", "UnQuarantined", "Cancelled")),
+						)),
+					),
+				)),
+			)),
+		),
+	)
+
+	builder := NewSQLFilterBuilder(3)
+	err := builder.BuildFromPipeline(pipeline)
+	require.NoError(t, err)
+	assert.True(t, builder.HasConditions(), "builder can still expose partial SQL for diagnostics")
+	assert.False(t, builder.IsComplete(), "node-drainer pipeline must not use partial server-side SQL filtering")
+
+	watcher := &PostgreSQLChangeStreamWatcher{
+		clientName: "node-drainer",
+		pipeline:   pipeline,
+	}
+	clause, args := watcher.buildSQLFilter()
+	assert.Empty(t, clause)
+	assert.Nil(t, args)
 }
 
 // TestSQLFilterBuilder_FaultQuarantinePipeline tests the pipeline used by fault-quarantine

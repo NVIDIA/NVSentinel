@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sync/errgroup"
@@ -33,6 +34,7 @@ import (
 	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/initializer"
 )
 
@@ -77,7 +79,7 @@ func main() {
 
 func run() error {
 	metricsPort, databaseClientCertMountPath, kubeconfigPath, dryRun, circuitBreakerEnabled,
-		tomlConfigPath := parseFlags()
+		tomlConfigPath, gpuNodeLabelKey, gpuNodeLabelValue := parseFlags()
 
 	ff := metrics.NewRegistry("fault-quarantine")
 	ff.Set("dry_run", *dryRun)
@@ -103,6 +105,8 @@ func run() error {
 		TomlConfigPath:              *tomlConfigPath,
 		DryRun:                      *dryRun,
 		CircuitBreakerEnabled:       *circuitBreakerEnabled,
+		GPUNodeLabelKey:             *gpuNodeLabelKey,
+		GPUNodeLabelValue:           *gpuNodeLabelValue,
 	}
 
 	components, err := initializer.InitializeAll(ctx, params)
@@ -139,7 +143,11 @@ func parseFlags() (
 	kubeconfigPath *string,
 	dryRun, circuitBreakerEnabled *bool,
 	tomlConfigPath *string,
+	gpuNodeLabelKey *string,
+	gpuNodeLabelValue *string,
 ) {
+	const defaultGPUNodeLabel = informer.GPUNodeLabel + "=" + informer.GPUNodeLabelValue
+
 	metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
 
 	// Register database certificate flags using common package
@@ -155,7 +163,21 @@ func parseFlags() (
 	circuitBreakerEnabled = flag.Bool("circuit-breaker-enabled", true,
 		"enable or disable fault quarantine circuit breaker")
 
+	gpuNodeLabel := flag.String("gpu-node-label", defaultGPUNodeLabel,
+		"Label selector (key=value) identifying GPU nodes. Only matching nodes are watched "+
+			"by the NodeInformer and counted by the circuit breaker. "+
+			"Example: nvidia.com/gpu.present=true")
+
 	flag.Parse()
+
+	key, value, ok := strings.Cut(*gpuNodeLabel, "=")
+	if !ok || key == "" {
+		slog.Error("--gpu-node-label must be in key=value format", "got", *gpuNodeLabel)
+		os.Exit(1)
+	}
+
+	gpuNodeLabelKey = &key
+	gpuNodeLabelValue = &value
 
 	// Resolve the certificate path using common logic
 	databaseClientCertMountPath = certConfig.ResolveCertPath()

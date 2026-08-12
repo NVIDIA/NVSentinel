@@ -11,6 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+{{- $global := .Values.global | default dict }}
+{{- $inclusterFileServer := get $global "inclusterFileServer" | default dict }}
+{{- $defaultGPUResetUploadURL := "" }}
+{{- if get $inclusterFileServer "enabled" }}
+{{- $defaultGPUResetUploadURL = printf "http://%s-incluster-file-server.%s.svc.cluster.local/upload" .Release.Name .Release.Namespace }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -84,9 +90,13 @@ data:
       cspProviderHost: {{ .Values.config.controllers.gpuReset.cspProviderHost }}
       {{- end }}
       {{- if .Values.config.controllers.gpuReset.resetJob }}
+      {{- $gpuResetUploadURL := .Values.config.controllers.gpuReset.resetJob.uploadURL | default $defaultGPUResetUploadURL }}
       resetJob:
         writeSysLogEvent: "{{ .Values.config.controllers.gpuReset.resetJob.writeSysLogEvent }}"
         runtimeClassName: "{{ .Values.config.controllers.gpuReset.resetJob.runtimeClassName }}"
+        {{- if $gpuResetUploadURL }}
+        uploadURL: {{ $gpuResetUploadURL | quote }}
+        {{- end }}
         imageConfig:
           image: "{{ .Values.config.controllers.gpuReset.resetJob.image.repository }}:{{ .Values.config.controllers.gpuReset.resetJob.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
           {{- with (.Values.config.controllers.gpuReset.resetJob.image.imagePullSecrets | default  (.Values.global).imagePullSecrets) }}

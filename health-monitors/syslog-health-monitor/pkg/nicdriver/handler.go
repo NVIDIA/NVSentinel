@@ -49,28 +49,55 @@ func NewNICDriverHandler(
 }
 
 // newWithDeps creates a handler with pre-built dependencies for focused tests.
+// The mlx5_napi_soft_lockup pattern is routed to the stateful soft-lockup
+// detector instead of the single-line matching loop: its evidence spans
+// multiple journal entries and must never match a lone stack-frame line.
 func newWithDeps(
 	nodeName, defaultAgentName, checkName string,
 	patterns []CompiledPattern,
 	resolver Resolver,
 	processingStrategy pb.ProcessingStrategy,
 ) *NICDriverHandler {
-	return &NICDriverHandler{
+	h := &NICDriverHandler{
 		nodeName:           nodeName,
 		defaultAgentName:   defaultAgentName,
 		checkName:          checkName,
 		processingStrategy: processingStrategy,
-		patterns:           patterns,
 		resolver:           resolver,
 	}
+
+	singleLine := make([]CompiledPattern, 0, len(patterns))
+
+	for _, p := range patterns {
+		if p.Name == softLockupPatternName {
+			h.lockup = newSoftLockupDetector(p)
+			continue
+		}
+
+		singleLine = append(singleLine, p)
+	}
+
+	h.patterns = singleLine
+
+	return h
 }
 
 // ProcessLine evaluates the kernel log message against configured patterns.
 // First match wins. Returns nil when no pattern matches.
 //
+// The soft-lockup detector observes every line (even ones that also match a
+// single-line pattern would have counted against its window) and takes
+// precedence when it confirms, since its event is fatal.
+//
 // BDF lookup is best-effort entity enrichment only; it does not gate event
 // emission because some mlx5 log lines do not include a PCI address.
 func (h *NICDriverHandler) ProcessLine(message string) (*pb.HealthEvents, error) {
+	if h.lockup != nil {
+		if m := h.lockup.observe(message); m != nil {
+			return h.buildLockupEvent(m), nil
+		}
+	}
+
 	for i := range h.patterns {
 		p := &h.patterns[i]
 		if !p.Re.MatchString(message) {
@@ -83,6 +110,24 @@ func (h *NICDriverHandler) ProcessLine(message string) (*pb.HealthEvents, error)
 	}
 
 	return nil, nil
+}
+
+// buildLockupEvent emits the fatal mlx5 NAPI soft-lockup event. The kernel
+// dump carries no PCI address, so the event is node-scoped (no NIC entity)
+// and the parsed header fields are attached as metadata instead.
+func (h *NICDriverHandler) buildLockupEvent(m *softLockupMatch) *pb.HealthEvents {
+	events := h.buildEvent(&h.lockup.pattern, m.evidence, "", false)
+
+	event := events.Events[0]
+	event.Message = fmt.Sprintf(
+		"kernel soft lockup: CPU#%s stuck for %ss in mlx5 NAPI poll loop (evidence: %s)",
+		m.cpu, m.duration, m.evidence)
+	event.Metadata = map[string]string{
+		"cpu":             m.cpu,
+		"durationSeconds": m.duration,
+	}
+
+	return events
 }
 
 func (h *NICDriverHandler) buildEvent(

@@ -681,3 +681,119 @@ func TestManualUncordonWithFaultRemediation(t *testing.T) {
 
 	testEnv.Test(t, feature.Feature())
 }
+
+// TestPartialRecoveryClearsStaleRemediationFailed reproduces issue #1416:
+// a node carries the terminal remediation-failed label set by an unsupported
+// CONTACT_SUPPORT failure, while a separate supported failure keeps it quarantined.
+// When the unsupported failure recovers (a partial recovery that does not unquarantine
+// the node), fault-remediation must recompute the node state label from the remaining
+// active failure instead of leaving it stuck at remediation-failed.
+func TestPartialRecoveryClearsStaleRemediationFailed(t *testing.T) {
+	feature := features.New("TestPartialRecoveryClearsStaleRemediationFailed").
+		WithLabel("suite", "fault-management-partial-recovery")
+
+	// RecommendedAction enum values (data-models/pkg/protos): RESTART_BM is a supported
+	// maintenance action, CONTACT_SUPPORT is intentionally unsupported by fault-remediation.
+	const (
+		actionRestartBM      = 24
+		actionContactSupport = 5
+	)
+
+	var testCtx *helpers.RemediationTestContext
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		var newCtx context.Context
+		newCtx, testCtx = helpers.SetupFaultRemediationTest(ctx, t, c, "")
+
+		return newCtx
+	})
+
+	feature.Assess("supported failure on GPU0 remediates", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		t.Log("Send supported fatal failure on GPU0 (RESTART_BM)")
+		supportedEvent := helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("79").
+			WithMessage("XID 79 supported fatal on GPU0").
+			WithRecommendedAction(actionRestartBM)
+		helpers.SendHealthEvent(ctx, t, supportedEvent)
+
+		helpers.WaitForNodesCordonState(ctx, t, client, []string{testCtx.NodeName}, true)
+
+		t.Log("Wait for fault-remediation to create and complete the RebootNode CR")
+		helpers.WaitForCR(ctx, t, client, testCtx.NodeName, helpers.RebootNodeGVK)
+
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
+			statemanager.NVSentinelStateLabelKey, string(statemanager.RemediationSucceededLabelValue))
+
+		return ctx
+	})
+
+	feature.Assess("unsupported failure on GPU1 drives remediation-failed", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		t.Log("Send unsupported CONTACT_SUPPORT fatal failure on GPU1")
+		unsupportedEvent := helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("80").
+			WithEntitiesImpacted([]helpers.EntityImpacted{{EntityType: "GPU", EntityValue: "1"}}).
+			WithMessage("XID 80 unsupported fatal on GPU1").
+			WithRecommendedAction(actionContactSupport)
+		helpers.SendHealthEvent(ctx, t, unsupportedEvent)
+
+		t.Log("Node should now report the terminal remediation-failed label")
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
+			statemanager.NVSentinelStateLabelKey, string(statemanager.RemediationFailedLabelValue))
+
+		return ctx
+	})
+
+	feature.Assess("recovering GPU1 recomputes label off remediation-failed", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		t.Log("Recover only the unsupported GPU1 failure (partial recovery)")
+		recoveryEvent := helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("80").
+			WithEntitiesImpacted([]helpers.EntityImpacted{{EntityType: "GPU", EntityValue: "1"}}).
+			WithHealthy(true).
+			WithFatal(false).
+			WithMessage("XID 80 cleared on GPU1")
+		helpers.SendHealthEvent(ctx, t, recoveryEvent)
+
+		t.Log("Node must stay quarantined: GPU0's supported failure is still active")
+		helpers.WaitForNodesCordonState(ctx, t, client, []string{testCtx.NodeName}, true)
+
+		t.Log("Label must be recomputed from the remaining active failure, not left at remediation-failed")
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
+			statemanager.NVSentinelStateLabelKey, string(statemanager.RemediationSucceededLabelValue))
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		// This test creates two entity-level failures (GPU0 + GPU1). Explicitly recover both
+		// so the node uncordons regardless of which assess step failed; the default
+		// TeardownFaultRemediation healthy event only targets GPU0 and would otherwise leak a
+		// still-quarantined node out of the uncordoned test pool.
+		if testCtx != nil && testCtx.NodeName != "" {
+			t.Log("Recovering both GPU failures to return the node to a clean state")
+			helpers.RecoverEntityFailure(ctx, t, testCtx.NodeName, "GPU", "0", "79")
+			helpers.RecoverEntityFailure(ctx, t, testCtx.NodeName, "GPU", "1", "80")
+			helpers.WaitForNodesCordonState(ctx, t, client, []string{testCtx.NodeName}, false)
+		}
+
+		t.Log("Cleaning up: RebootNode CRs")
+		if err := helpers.DeleteAllCRs(ctx, t, client, helpers.RebootNodeGVK); err != nil {
+			t.Logf("Warning: failed to delete RebootNode CRs: %v", err)
+		}
+
+		return helpers.TeardownFaultRemediation(ctx, t, c)
+	})
+
+	testEnv.Test(t, feature.Feature())
+}

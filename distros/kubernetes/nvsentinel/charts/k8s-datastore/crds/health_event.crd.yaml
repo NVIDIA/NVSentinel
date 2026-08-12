@@ -117,6 +117,8 @@ spec:
                     - "EXECUTE_REMEDIATION"
                     - 2
                     - "STORE_ONLY"
+                    - 3
+                    - "STORE_AND_ANALYSE"
                   format: enum
                   x-kubernetes-int-or-string: true
                 id:

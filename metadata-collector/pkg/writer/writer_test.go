@@ -81,3 +81,45 @@ func TestWriterCreateDirectory(t *testing.T) {
 	_, err = os.Stat(filepath.Join(tmpDir, "subdir"))
 	require.NoError(t, err, "Output directory was not created")
 }
+
+func TestWriterFixesStaleTempFileMode(t *testing.T) {
+	// os.WriteFile only applies its mode when creating the file: a stale
+	// 0600 tmp file from a previously interrupted run would otherwise
+	// keep its restrictive mode and be renamed into place, breaking the
+	// non-root consumers of the metadata file.
+	tmpDir := t.TempDir()
+	outputPath := filepath.Join(tmpDir, "metadata.json")
+	tmpPath := outputPath + ".tmp"
+
+	require.NoError(t, os.WriteFile(tmpPath, []byte("stale"), 0600),
+		"Failed to plant stale temp file")
+
+	w, err := NewWriter(outputPath)
+	require.NoError(t, err, "Failed to create writer")
+
+	metadata := &model.GPUMetadata{
+		Version:  "1.0",
+		NodeName: "test-node",
+	}
+	require.NoError(t, w.Write(metadata), "Failed to write metadata")
+
+	info, err := os.Stat(outputPath)
+	require.NoError(t, err, "Output file was not created")
+	require.Equal(t, os.FileMode(0644), info.Mode().Perm(),
+		"metadata file must be world-readable for non-root consumers")
+}
+
+func TestWriterOutputIsWorldReadable(t *testing.T) {
+	tmpDir := t.TempDir()
+	outputPath := filepath.Join(tmpDir, "metadata.json")
+
+	w, err := NewWriter(outputPath)
+	require.NoError(t, err, "Failed to create writer")
+
+	require.NoError(t, w.Write(&model.GPUMetadata{Version: "1.0"}), "Failed to write metadata")
+
+	info, err := os.Stat(outputPath)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0644), info.Mode().Perm(),
+		"metadata file must be world-readable for non-root consumers")
+}

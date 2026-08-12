@@ -26,7 +26,7 @@ import (
 // K8sClientInterface defines the methods used by Reconciler from k8sClient
 type K8sClientInterface interface {
 	QuarantineNodeAndSetAnnotations(ctx context.Context, nodeName string,
-		taints []config.Taint, isCordon bool, annotations map[string]string, labelMap map[string]string) error
+		taints []config.Taint, isCordon bool, annotations map[string]string, labelMap map[string]string) (bool, error)
 	UnQuarantineNodeAndRemoveAnnotations(ctx context.Context, nodeName string,
 		taints []config.Taint, annotationKeys []string, labelsToRemove []string,
 		labelMap map[string]string) error

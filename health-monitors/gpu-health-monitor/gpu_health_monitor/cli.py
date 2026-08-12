@@ -17,11 +17,12 @@ import click, configparser, signal, sys
 import logging as log
 from importlib.metadata import version as get_package_version
 from threading import Event
-from prometheus_client import start_http_server
+from gpu_health_monitor.healthz import start_server as start_health_server
 import csv
 from .dcgm_watcher import dcgm
 from .platform_connector import platform_connector
 from . import metrics
+from gpu_health_monitor.metadata import MetadataReader
 from gpu_health_monitor.protos import health_event_pb2 as platformconnector_pb2
 from gpu_health_monitor.logger import set_default_structured_logger_with_level
 
@@ -35,6 +36,8 @@ def _init_event_processor(
     state_file_path: str,
     metadata_path: str,
     processing_strategy: platformconnector_pb2.ProcessingStrategy,
+    store_only_checks: frozenset[str],
+    connectivity_failure_escalation_threshold: int,
 ):
     platform_connector_config = config["eventprocessors.platformconnector"]
     match event_processor_name:
@@ -47,6 +50,8 @@ def _init_event_processor(
                 state_file_path=state_file_path,
                 metadata_path=metadata_path,
                 processing_strategy=processing_strategy,
+                store_only_checks=store_only_checks,
+                connectivity_failure_escalation_threshold=connectivity_failure_escalation_threshold,
             )
         case _:
             log.fatal(f"Unknown event processor {event_processor_name}")
@@ -55,6 +60,13 @@ def _init_event_processor(
 
 @click.command()
 @click.option("--dcgm-addr", type=str, help="Host:Port where DCGM is running", required=True)
+@click.option(
+    "--dcgm-mode",
+    type=click.Choice(["remote", "local-managed"]),
+    default="remote",
+    show_default=True,
+    help="DCGM connection mode. remote connects to a remote hostengine; local-managed runs an in-process embedded hostengine with a loopback listener.",
+)
 @click.option(
     "--dcgm-error-mapping-config-file", type=click.Path(), help="Path to dcgm errors mapping config file", required=True
 )
@@ -77,8 +89,24 @@ def _init_event_processor(
     help="Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY",
     required=False,
 )
+@click.option(
+    "--suppress-nvlink-down-unbridged-pcie",
+    type=bool,
+    default=False,
+    required=False,
+    help=(
+        "Operator assertion that bridge-capable PCIe GPUs (A100/H100 PCIe) in this fleet "
+        "run without NVLink bridges by design. When true, DCGM_FR_NVLINK_DOWN is suppressed "
+        "on PCIe-named GPUs whose metadata shows zero active NVLink links. Leave false if "
+        "any pool uses NVLink bridges: an unbridged card and a card whose bridge was dead at "
+        "metadata-collection time are indistinguishable, so enabling this could mask a "
+        "bridge failure present at boot. GPUs with no NVLink silicon (L40, A40) are always "
+        "suppressed regardless of this flag."
+    ),
+)
 def cli(
     dcgm_addr,
+    dcgm_mode,
     dcgm_error_mapping_config_file,
     config_file,
     port,
@@ -87,6 +115,7 @@ def cli(
     dcgm_k8s_service_enabled,
     metadata_path,
     processing_strategy,
+    suppress_nvlink_down_unbridged_pcie,
 ):
     exit = Event()
     config = configparser.ConfigParser()
@@ -131,8 +160,60 @@ def cli(
 
     metrics.set_flag("store_only_mode", processing_strategy == "STORE_ONLY")
     metrics.set_flag("dcgm_k8s_service_enabled", dcgm_k8s_service_enabled)
+    metrics.set_flag("dcgm_local_managed", dcgm_mode == "local-managed")
 
     log.info("Initialization completed")
+
+    thermal_margin_enabled = False
+    thermal_margin_store_only = False
+    if config.has_section("dcgmfieldsmonitoring"):
+        thermal_margin_enabled = config["dcgmfieldsmonitoring"].getboolean(
+            "gputemplimitmonitoringenabled", fallback=False
+        )
+        thermal_margin_store_only = config["dcgmfieldsmonitoring"].getboolean("gputemplimitstoreonly", fallback=False)
+        log.info(
+            "GpuThermalMarginWatch field monitor: enabled=%s store_only=%s",
+            thermal_margin_enabled,
+            thermal_margin_store_only,
+        )
+
+    # Per-check observe-only set: when store-only is enabled the new
+    # GpuThermalMarginWatch emits STORE_ONLY events (persisted + exported as
+    # metrics but excluded from the remediation pipeline, so no node condition
+    # or cordon) while every other DCGM check keeps the process-wide strategy.
+    store_only_checks = set()
+    if thermal_margin_store_only:
+        store_only_checks.add("GpuThermalMarginWatch")
+
+    # GpuDcgmUnresponsive recommends a node reboot, so it ships observe-only
+    # and has to be turned on deliberately per fleet.
+    probe_store_only = dcgm_config.getboolean("ProbeStoreOnly", fallback=True)
+    if probe_store_only:
+        store_only_checks.add("GpuDcgmUnresponsive")
+    log.info("GpuDcgmUnresponsive check: store_only=%s", probe_store_only)
+
+    store_only_checks = frozenset(store_only_checks)
+
+    suppressed_error_codes = frozenset()
+    connectivity_failure_escalation_threshold = 0
+    if config.has_section("dcgmhealthcheck"):
+        health_check_config = config["dcgmhealthcheck"]
+        suppressed_error_codes_raw = health_check_config.get("SuppressedErrorCodes", fallback="")
+        suppressed_error_codes = frozenset(
+            code.strip() for code in suppressed_error_codes_raw.split(",") if code.strip()
+        )
+        if suppressed_error_codes:
+            log.info(f"DCGM error codes suppressed via config: {sorted(suppressed_error_codes)}")
+
+        connectivity_failure_escalation_threshold = health_check_config.getint(
+            "ConnectivityFailureEscalationThreshold", fallback=0
+        )
+        if connectivity_failure_escalation_threshold > 0:
+            log.info(
+                "DCGM connectivity failures escalate to RESTART_BM after %d consecutive cycles",
+                connectivity_failure_escalation_threshold,
+            )
+
     enabled_event_processor_names = cli_config["EnabledEventProcessors"].split(",")
     enabled_event_processors = []
     for event_processor in enabled_event_processor_names:
@@ -146,10 +227,21 @@ def cli(
                 state_file_path,
                 metadata_path,
                 processing_strategy_value,
+                store_only_checks,
+                connectivity_failure_escalation_threshold,
             )
         )
 
-    prom_server, t = start_http_server(port)
+    metadata_reader = MetadataReader(metadata_path)
+
+    poll_interval = int(dcgm_config["PollIntervalSeconds"])
+    # Defaults to the /healthz staleness window, so the watchdog reports at the
+    # same moment the loop is declared stale. Critical event delivery is bounded
+    # separately so it remains inside the liveness restart budget. DCGM does not
+    # expose a documented fixed RPC timeout, so fleets should validate this
+    # deadline in STORE_ONLY mode before enabling remediation. Set to 0 to disable.
+    probe_deadline_seconds = dcgm_config.getfloat("ProbeDeadlineSeconds", fallback=poll_interval * 3)
+    prom_server, t = start_health_server(port, staleness_seconds=poll_interval * 3)
 
     def process_exit_signal(signum, frame):
         exit.set()
@@ -161,9 +253,15 @@ def cli(
 
     dcgm_watcher = dcgm.DCGMWatcher(
         addr=dcgm_addr,
-        poll_interval_seconds=int(dcgm_config["PollIntervalSeconds"]),
+        poll_interval_seconds=poll_interval,
         callbacks=enabled_event_processors,
         dcgm_k8s_service_enabled=dcgm_k8s_service_enabled,
+        thermal_margin_enabled=thermal_margin_enabled,
+        metadata_reader=metadata_reader,
+        dcgm_mode=dcgm_mode,
+        suppressed_error_codes=suppressed_error_codes,
+        suppress_unbridged_pcie_nvlink_down=suppress_nvlink_down_unbridged_pcie,
+        probe_deadline_seconds=probe_deadline_seconds,
     )
     dcgm_watcher.start([], exit)
 
