@@ -78,7 +78,7 @@ List of accepted token audiences. Must include the value set in `janitor.config.
 ```yaml
 janitor-provider:
   csp:
-    provider: "kind"  # Options: kind, kwok, aws, gcp, azure, oci, nebius, generic
+    provider: "kind"  # Options: kind, kwok, aws, gcp, azure, oci, nebius, lambda, generic
 ```
 
 Only one provider is active at a time. `kind` and `kwok` are for development only; they simulate reboots without contacting any cloud API.
@@ -186,6 +186,26 @@ Profile name within the credentials file. Defaults to `DEFAULT`. Ignored when `c
 
 ### principalId
 OCI principal OCID used for Workload Identity. Required when `credentialsFile` is empty.
+
+## Lambda
+
+Uses a Lambda Cloud API key for authentication. Reboot maps to the Lambda power-cycle operation (a host-level power cycle, not a guest restart) and terminate maps to the Lambda terminate operation. Nodes must carry `spec.providerID` in the form `lambda://<instanceID>`.
+
+```yaml
+janitor-provider:
+  csp:
+    provider: "lambda"
+    lambda:
+      apiKeySecretRef:
+        name: "lambda-api-key"
+        key: "LAMBDA_API_KEY"
+```
+
+### apiEndpoint
+Optional. Overrides the base URL of the Lambda Cloud API, passed as `LAMBDA_API_ENDPOINT`. Defaults to `https://cloud.lambda.ai` when unset. Must be https, and must not carry userinfo, a query string, or a fragment. The host is checked against a fixed allowlist built into the provider, so an unapproved host fails at startup rather than on the first remediation.
+
+### apiKeySecretRef
+Secret holding the Lambda API key, injected as `LAMBDA_API_KEY`. `name` is required when `csp.provider` is `lambda`; the install fails without it. `key` defaults to `LAMBDA_API_KEY`. The same Secret can be shared with the CSP Health Monitor, which reads the key the same way. The key needs permission to power cycle and terminate instances.
 
 ## Generic / Bare-Metal
 

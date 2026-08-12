@@ -67,6 +67,7 @@ nic-health-monitor:
   enabledChecks:
     - InfiniBandStateCheck
     - InfiniBandDegradationCheck
+    - InfiniBandCharDeviceCheck
     - EthernetStateCheck
     - EthernetDegradationCheck
 ```
@@ -78,6 +79,9 @@ Polls `/sys/class/infiniband/*/ports/*/state` and `phys_state` every `statePolli
 
 #### InfiniBandDegradationCheck
 Polls InfiniBand hardware counters every 1 second. Emits fatal events when counters like `link_downed`, `rnr_nak_retry_err`, or `excessive_buffer_overrun_errors` increment. Rate-based threshold breaches emit events at the severity configured for each counter — `symbol_error > 10/sec` is non-fatal, `symbol_error_fatal > 120/hour` is fatal. Counter breach state is persisted across pod restarts.
+
+#### InfiniBandCharDeviceCheck
+Verifies that each InfiniBand device's character-device nodes exist: one `uverbs` per device plus one `umad` and one `issm` per InfiniBand-mode port, read from `/sys/class/infiniband_verbs` and `/sys/class/infiniband_mad` (udev creates the `/dev/infiniband/*` nodes from these class entries, so a missing entry means workloads fail with errors like `lstat /dev/infiniband/issm9: no such file or directory` even while the port reads ACTIVE/LinkUp). The expectation is derived per device from its own discovered ports — never from an absolute device count — and `issm` is only expected on InfiniBand-mode ports (RoCE ports legitimately have none). A node missing for 3 consecutive polls emits a fatal `REPLACE_VM` event; the fault latches (persisted across pod restarts and reboots) and clears only when the node is positively observed again. An entirely absent class directory (e.g. `ib_umad` module not loaded) is treated as an uncertain observation and held rather than reported.
 
 #### EthernetStateCheck
 Same as `InfiniBandStateCheck` but for Ethernet/RoCE devices (reads `link_layer = Ethernet`). Monitors `operstate` in addition to `state` and `phys_state`.

@@ -14,13 +14,23 @@
 
 from gpu_health_monitor.dcgm_watcher import dcgm
 from gpu_health_monitor.metadata import MetadataReader
+from gpu_health_monitor.tests.nvlink_fixtures import (
+    A100_PCIE_UNBRIDGED,
+    H100_SXM_TRAINED,
+    L40_NO_NVLINK,
+    make_metadata_reader,
+)
 from unittest.mock import MagicMock, patch
 import dcgm_structs, dcgm_errors, dcgm_fields
-from threading import Event
+from pathlib import Path
+from threading import Event, Thread
+from concurrent.futures import ThreadPoolExecutor
+from typing import Optional
 from ctypes import pointer
 import copy
 import json
 import pytest
+import time
 
 
 class FakeEventProcessorInTest(dcgm.types.CallbackInterface):
@@ -31,12 +41,23 @@ class FakeEventProcessorInTest(dcgm.types.CallbackInterface):
         self.serial = None
         self.fields_changes = None
         self.connectivity_failed_called = False
+        self.probe_unresponsive_calls: list[tuple[str, float, str]] = []
 
-    def health_event_occurred(self, health_details: dict[str, dcgm.types.HealthDetails], gpu_ids: list[int]):
+    def health_event_occurred(self, health_details: dict[str, dcgm.types.HealthDetails], gpu_ids: list[int]) -> None:
         self.health_details = health_details
 
-    def dcgm_connectivity_failed(self):
+    def dcgm_connectivity_failed(self) -> bool:
         self.connectivity_failed_called = True
+        return True
+
+    def dcgm_probe_unresponsive(
+        self,
+        operation: str,
+        elapsed_seconds: float,
+        dcgm_mode: str,
+    ) -> bool:
+        self.probe_unresponsive_calls.append((operation, elapsed_seconds, dcgm_mode))
+        return True
 
 
 class TestDCGMHealthChecks:
@@ -103,7 +124,7 @@ class TestDCGMHealthChecks:
             dcgm_k8s_service_enabled=False,
         )
         error_codes = watcher._get_available_error_codes()
-        assert len(error_codes) == 113
+        assert len(error_codes) == 114
 
     def test_get_available_fields(self):
         watcher = dcgm.DCGMWatcher(
@@ -351,8 +372,10 @@ class TestDCGMHealthChecks:
         return incident
 
     def test_perform_health_check_reports_clock_throttle_power(self):
-        """_perform_health_check itself never suppresses; suppression is applied later
-        against the fully assembled health_status (see _suppress_configured_error_codes)."""
+        """_perform_health_check never suppresses configured error codes; that
+        suppression is applied later against the fully assembled health_status
+        (see _suppress_configured_error_codes). Only NVLINK_DOWN false positives
+        on non-NVLink GPUs are filtered per-incident during the check itself."""
         watcher = dcgm.DCGMWatcher(
             addr="localhost:5555",
             poll_interval_seconds=10,
@@ -951,3 +974,569 @@ class TestDCGMHandleLeakFix:
             watcher._initialize_dcgm_monitoring(dcgm_handle_mock)
 
         dcgm_group_mock.Delete.assert_called_once()
+
+
+class TestSuppressNvlinkDownOnPcieGpus:
+    """Tests for per-incident suppression of false positive DCGM_FR_NVLINK_DOWN.
+
+    Two expected-down cases: GPUs with no NVLink silicon are always
+    suppressed; unbridged bridge-capable PCIe cards are suppressed only with
+    explicit operator opt-in (suppress_unbridged_pcie_nvlink_down), because
+    metadata alone cannot distinguish them from a card whose bridge was dead
+    at collection time.
+
+    Suppression happens inside _perform_health_check at incident granularity,
+    before incidents are aggregated per (watch, GPU), so genuine co-occurring
+    incidents on the same GPU and watch are always preserved.
+    """
+
+    def _make_watcher(self):
+        return dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+        )
+
+    @pytest.mark.parametrize(
+        "group_is_none, delete_raises",
+        [
+            (False, True),
+            (True, False),
+        ],
+        ids=["delete_throws", "none_group"],
+    )
+    def test_cleanup_dcgm_resources(self, group_is_none, delete_raises):
+        """Shutdown() always runs regardless of Delete() outcome."""
+        watcher = self._make_watcher()
+        dcgm_handle_mock = MagicMock()
+
+        dcgm_group_mock = None
+        if not group_is_none:
+            dcgm_group_mock = MagicMock()
+            if delete_raises:
+                dcgm_group_mock.Delete.side_effect = Exception("Delete failed")
+
+        watcher._cleanup_dcgm_resources(dcgm_group_mock, dcgm_handle_mock)
+
+        dcgm_handle_mock.Shutdown.assert_called_once()
+        if not group_is_none:
+            dcgm_group_mock.Delete.assert_called_once()
+
+    @patch("pydcgm.DcgmGroup.__new__")
+    def test_init_monitoring_rolls_back_group_on_failure(self, mock_dcgm_group):
+        """Group must be deleted if initialization fails after group creation."""
+        watcher = self._make_watcher()
+        dcgm_handle_mock = MagicMock()
+        dcgm_group_mock = MagicMock()
+        mock_dcgm_group.return_value = dcgm_group_mock
+
+        dcgm_system_mock = MagicMock()
+        dcgm_system_mock.discovery.GetEntityGroupEntities.return_value = [0, 1]
+        dcgm_handle_mock.GetSystem.return_value = dcgm_system_mock
+
+        # health.Set() fails after group is created
+        dcgm_group_mock.health.Set.side_effect = Exception("DCGM connection lost")
+
+        with pytest.raises(Exception, match="DCGM connection lost"):
+            watcher._initialize_dcgm_monitoring(dcgm_handle_mock)
+
+        dcgm_group_mock.Delete.assert_called_once()
+
+
+class TestSuppressNvlinkDownOnPcieGpus:
+    """Tests for per-incident suppression of false positive DCGM_FR_NVLINK_DOWN.
+
+    Two expected-down cases: GPUs with no NVLink silicon are always
+    suppressed; unbridged bridge-capable PCIe cards are suppressed only with
+    explicit operator opt-in (suppress_unbridged_pcie_nvlink_down), because
+    metadata alone cannot distinguish them from a card whose bridge was dead
+    at collection time.
+
+    Suppression happens inside _perform_health_check at incident granularity,
+    before incidents are aggregated per (watch, GPU), so genuine co-occurring
+    incidents on the same GPU and watch are always preserved.
+    """
+
+    def _make_watcher(
+        self,
+        metadata_reader: Optional[MetadataReader] = None,
+        suppress_unbridged_pcie: bool = False,
+    ) -> dcgm.DCGMWatcher:
+        return dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            metadata_reader=metadata_reader,
+            suppress_unbridged_pcie_nvlink_down=suppress_unbridged_pcie,
+        )
+
+    def _make_nvlink_incident(self, entity_id: int, msg: str, error_code: int) -> "dcgm_structs.c_dcgmIncidentInfo_t":
+        incident = dcgm_structs.c_dcgmIncidentInfo_t()
+        incident.system = dcgm_structs.DCGM_HEALTH_WATCH_NVLINK
+        incident.health = dcgm_structs.DCGM_HEALTH_RESULT_FAIL
+        incident.error = dcgm_structs.c_dcgmDiagErrorDetail_t()
+        incident.error.msg = msg
+        incident.error.code = error_code
+        incident.entityInfo = dcgm_structs.c_dcgmGroupEntityPair_t()
+        incident.entityInfo.entityGroupId = 0
+        incident.entityInfo.entityId = entity_id
+        return incident
+
+    def _nvlink_down_incident(self, entity_id: int, link_id: int) -> "dcgm_structs.c_dcgmIncidentInfo_t":
+        return self._make_nvlink_incident(
+            entity_id,
+            f"GPU {entity_id}'s NvLink link {link_id} is currently down",
+            dcgm_errors.DCGM_FR_NVLINK_DOWN,
+        )
+
+    def _nvlink_threshold_incident(self, entity_id: int) -> "dcgm_structs.c_dcgmIncidentInfo_t":
+        return self._make_nvlink_incident(
+            entity_id,
+            f"GPU {entity_id} NVLink error threshold exceeded",
+            dcgm_errors.DCGM_FR_NVLINK_ERROR_THRESHOLD,
+        )
+
+    def _run_health_check(self, watcher: dcgm.DCGMWatcher, incidents: list) -> dict[str, dcgm.types.HealthDetails]:
+        dcgm_group_mock = MagicMock()
+        mock_response = dcgm_structs.c_dcgmHealthResponse_v4
+        mock_response.version = dcgm_structs.dcgmHealthResponse_version4
+        mock_response.overallHealth = dcgm_structs.DCGM_HEALTH_RESULT_FAIL
+        mock_response.incidentCount = len(incidents)
+        mock_response.incidents = (dcgm_structs.c_dcgmIncidentInfo_t * dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS)()
+        for i, incident in enumerate(incidents):
+            mock_response.incidents[i] = incident
+        dcgm_group_mock.health.Check.return_value = mock_response()
+
+        health_status, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
+        assert connectivity_success is True
+        return health_status
+
+    def _assert_not_suppressed(self, health_status: dict[str, dcgm.types.HealthDetails]) -> None:
+        details = health_status["DCGM_HEALTH_WATCH_NVLINK"]
+        assert details.status == dcgm.types.HealthStatus.FAIL
+        assert details.entity_failures[0].code == "DCGM_FR_NVLINK_DOWN"
+
+    def test_suppress_no_nvlink_silicon_without_opt_in(self, tmp_path: Path) -> None:
+        """L40-class GPU (zero hardware links): suppressed unconditionally —
+        no operator opt-in required for the unambiguous case."""
+        reader = make_metadata_reader(tmp_path, [L40_NO_NVLINK])
+        watcher = self._make_watcher(metadata_reader=reader)
+
+        health_status = self._run_health_check(watcher, [self._nvlink_down_incident(0, 0)])
+
+        assert health_status["DCGM_HEALTH_WATCH_NVLINK"].status == dcgm.types.HealthStatus.PASS
+        assert len(health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures) == 0
+
+    def test_no_suppress_unbridged_pcie_by_default(self, tmp_path: Path) -> None:
+        """Unbridged A100 PCIe WITHOUT operator opt-in: NOT suppressed.
+
+        Metadata alone cannot distinguish an unbridged card from one whose
+        bridge was dead at collection time, so the default is fail-safe."""
+        reader = make_metadata_reader(tmp_path, [A100_PCIE_UNBRIDGED])
+        watcher = self._make_watcher(metadata_reader=reader)
+
+        health_status = self._run_health_check(watcher, [self._nvlink_down_incident(0, 8)])
+
+        self._assert_not_suppressed(health_status)
+
+    def test_suppress_unbridged_pcie_with_opt_in(self, tmp_path: Path) -> None:
+        """Unbridged A100 PCIe WITH operator opt-in (the live-repro shape):
+        all NVLINK_DOWN incidents suppressed, watch stays PASS."""
+        reader = make_metadata_reader(tmp_path, [A100_PCIE_UNBRIDGED])
+        watcher = self._make_watcher(metadata_reader=reader, suppress_unbridged_pcie=True)
+
+        health_status = self._run_health_check(
+            watcher,
+            [self._nvlink_down_incident(0, link) for link in range(12)],
+        )
+
+        assert health_status == watcher._get_health_status_dict()
+        assert health_status["DCGM_HEALTH_WATCH_NVLINK"].status == dcgm.types.HealthStatus.PASS
+        assert len(health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures) == 0
+
+    def test_no_suppress_sxm_gpu_with_active_nvlink(self, tmp_path: Path) -> None:
+        """SXM GPU with trained links: incident NOT suppressed even with the
+        opt-in enabled."""
+        reader = make_metadata_reader(tmp_path, [H100_SXM_TRAINED])
+        watcher = self._make_watcher(metadata_reader=reader, suppress_unbridged_pcie=True)
+
+        health_status = self._run_health_check(watcher, [self._nvlink_down_incident(0, 5)])
+
+        self._assert_not_suppressed(health_status)
+
+    def test_no_suppress_sxm_gpu_zero_active_links(self, tmp_path: Path) -> None:
+        """SXM GPU whose metadata shows zero active links (fabric manager may
+        not have trained links at collection time): NOT suppressed even with
+        the opt-in enabled — the expectation is UNKNOWN, so we fail closed."""
+        gpu = dict(H100_SXM_TRAINED, nvlink_active_link_count=0)
+        reader = make_metadata_reader(tmp_path, [gpu])
+        watcher = self._make_watcher(metadata_reader=reader, suppress_unbridged_pcie=True)
+
+        health_status = self._run_health_check(watcher, [self._nvlink_down_incident(0, 5)])
+
+        self._assert_not_suppressed(health_status)
+
+    def test_mixed_topology_only_expected_down_suppressed(self, tmp_path: Path) -> None:
+        """Mixed node with opt-in: unbridged PCIe GPU suppressed, trained SXM
+        GPU kept."""
+        gpu1 = dict(H100_SXM_TRAINED, gpu_id=1, uuid="GPU-1")
+        reader = make_metadata_reader(tmp_path, [A100_PCIE_UNBRIDGED, gpu1])
+        watcher = self._make_watcher(metadata_reader=reader, suppress_unbridged_pcie=True)
+
+        health_status = self._run_health_check(
+            watcher,
+            [self._nvlink_down_incident(0, 3), self._nvlink_down_incident(1, 5)],
+        )
+
+        details = health_status["DCGM_HEALTH_WATCH_NVLINK"]
+        assert details.status == dcgm.types.HealthStatus.FAIL
+        assert 0 not in details.entity_failures
+        assert details.entity_failures[1].code == "DCGM_FR_NVLINK_DOWN"
+
+    def test_mixed_codes_same_gpu_preserves_genuine_incident(self, tmp_path: Path) -> None:
+        """Regression: a genuine non-NVLINK_DOWN incident aggregated on the same
+        GPU and watch survives suppression of the NVLINK_DOWN false positives.
+
+        NVLINK_DOWN arrives first, so aggregate-level suppression (keyed on the
+        first incident's code) would have deleted the whole entry and dropped
+        the genuine threshold incident with it."""
+        reader = make_metadata_reader(tmp_path, [A100_PCIE_UNBRIDGED])
+        watcher = self._make_watcher(metadata_reader=reader, suppress_unbridged_pcie=True)
+
+        health_status = self._run_health_check(
+            watcher,
+            [
+                self._nvlink_down_incident(0, 8),
+                self._nvlink_threshold_incident(0),
+                self._nvlink_down_incident(0, 9),
+            ],
+        )
+
+        details = health_status["DCGM_HEALTH_WATCH_NVLINK"]
+        assert details.status == dcgm.types.HealthStatus.FAIL
+        assert details.entity_failures[0].code == "DCGM_FR_NVLINK_ERROR_THRESHOLD"
+        assert details.entity_failures[0].message == "GPU 0 NVLink error threshold exceeded"
+        assert "currently down" not in details.entity_failures[0].message
+
+    def test_no_suppress_when_metadata_unavailable(self) -> None:
+        """Metadata file missing: incident NOT suppressed (fail closed)."""
+        reader = MetadataReader("/nonexistent/file.json")
+        watcher = self._make_watcher(metadata_reader=reader, suppress_unbridged_pcie=True)
+
+        health_status = self._run_health_check(watcher, [self._nvlink_down_incident(0, 8)])
+
+        self._assert_not_suppressed(health_status)
+
+    def test_no_suppress_when_no_metadata_reader(self) -> None:
+        """No metadata reader configured: incident NOT suppressed (fail closed)."""
+        watcher = self._make_watcher(metadata_reader=None, suppress_unbridged_pcie=True)
+
+        health_status = self._run_health_check(watcher, [self._nvlink_down_incident(0, 8)])
+
+        self._assert_not_suppressed(health_status)
+
+    def test_other_nvlink_error_code_not_suppressed(self, tmp_path: Path) -> None:
+        """Non-NVLINK_DOWN codes on an expected-down GPU are never suppressed."""
+        reader = make_metadata_reader(tmp_path, [A100_PCIE_UNBRIDGED])
+        watcher = self._make_watcher(metadata_reader=reader, suppress_unbridged_pcie=True)
+
+        health_status = self._run_health_check(watcher, [self._nvlink_threshold_incident(0)])
+
+        details = health_status["DCGM_HEALTH_WATCH_NVLINK"]
+        assert details.status == dcgm.types.HealthStatus.FAIL
+        assert details.entity_failures[0].code == "DCGM_FR_NVLINK_ERROR_THRESHOLD"
+
+
+class TestProbeWatchdog:
+    """A wedged driver never returns, so the poll loop cannot report its own hang."""
+
+    def _collector(self, succeed: bool = True):
+        """Returns (recorded_hangs, on_hang_callback).
+
+        ``succeed`` controls whether on_hang reports delivery success. False
+        models a failed UDS publish that the watchdog must retry.
+        """
+        hangs: list[tuple[str, float]] = []
+
+        def on_hang(operation: str, elapsed: float) -> bool:
+            hangs.append((operation, elapsed))
+            return succeed
+
+        return hangs, on_hang
+
+    def test_probe_within_deadline_is_not_reported(self):
+        hangs, on_hang = self._collector()
+        watchdog = dcgm.ProbeWatchdog(10.0, on_hang)
+
+        with watchdog.probe("dcgm_health_check"):
+            assert watchdog.poll_once() is False
+
+        assert hangs == []
+
+    def test_probe_past_deadline_is_reported_once(self):
+        hangs, on_hang = self._collector()
+        watchdog = dcgm.ProbeWatchdog(0.01, on_hang)
+
+        with watchdog.probe("dcgm_health_check"):
+            time.sleep(0.05)
+            assert watchdog.poll_once() is True
+            # Delivered successfully: further polls must not spam.
+            assert watchdog.poll_once() is False
+
+        assert len(hangs) == 1
+        operation, elapsed = hangs[0]
+        assert operation == "dcgm_health_check"
+        assert elapsed >= 0.01
+
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm.metrics.dcgm_probe_hangs")
+    def test_failed_delivery_is_retried_until_success(self, probe_hangs_metric):
+        """A hung poll loop has no next cycle, so a failed publish must retry."""
+        attempts: list[int] = []
+
+        def on_hang(operation: str, elapsed: float) -> bool:
+            attempts.append(1)
+            # Fail the first publish (e.g. platform-connector socket missing),
+            # then succeed — the pattern seen when the connector starts after us.
+            return len(attempts) >= 2
+
+        watchdog = dcgm.ProbeWatchdog(0.01, on_hang)
+
+        with watchdog.probe("dcgm_health_check"):
+            time.sleep(0.05)
+            assert watchdog.poll_once() is False
+            assert watchdog.poll_once() is True
+            assert watchdog.poll_once() is False
+
+        assert len(attempts) == 2
+        # Detection is observable immediately and counted once, independent of
+        # how many delivery attempts the event needs.
+        probe_hangs_metric.labels.assert_called_once_with("dcgm_health_check")
+        probe_hangs_metric.labels.return_value.inc.assert_called_once_with()
+
+    def test_completed_probe_is_never_reported(self):
+        hangs, on_hang = self._collector()
+        watchdog = dcgm.ProbeWatchdog(0.01, on_hang)
+
+        with watchdog.probe("dcgm_connect"):
+            pass
+
+        time.sleep(0.05)
+
+        assert watchdog.poll_once() is False
+        assert hangs == []
+
+    def test_probe_completion_waits_for_bounded_delivery(self):
+        """Recovery cannot overtake the unhealthy event publication."""
+        entered_probe = Event()
+        finish_probe = Event()
+        probe_returned = Event()
+        delivery_started = Event()
+        release_delivery = Event()
+        poll_result = []
+
+        def on_hang(operation: str, elapsed: float) -> bool:
+            delivery_started.set()
+            assert release_delivery.wait(1)
+            return True
+
+        watchdog = dcgm.ProbeWatchdog(0.01, on_hang)
+
+        def run_probe():
+            with watchdog.probe("dcgm_health_check"):
+                entered_probe.set()
+                finish_probe.wait()
+            probe_returned.set()
+
+        probe_thread = Thread(target=run_probe, daemon=True)
+        probe_thread.start()
+        assert entered_probe.wait(1)
+        time.sleep(0.05)
+
+        report_thread = Thread(target=lambda: poll_result.append(watchdog.poll_once()), daemon=True)
+        report_thread.start()
+        assert delivery_started.wait(1)
+
+        finish_probe.set()
+        assert not probe_returned.wait(0.05)
+
+        release_delivery.set()
+        report_thread.join(1)
+        probe_thread.join(1)
+
+        assert poll_result == [True]
+        assert probe_returned.is_set()
+
+    def test_second_hang_episode_is_reported_again(self):
+        hangs, on_hang = self._collector()
+        watchdog = dcgm.ProbeWatchdog(0.01, on_hang)
+
+        for _ in range(2):
+            with watchdog.probe("dcgm_health_check"):
+                time.sleep(0.05)
+                watchdog.poll_once()
+
+        assert len(hangs) == 2
+
+    def test_run_returns_when_exit_is_set(self):
+        hangs, on_hang = self._collector()
+        watchdog = dcgm.ProbeWatchdog(10.0, on_hang)
+        exit_event = Event()
+        exit_event.set()
+
+        watchdog.run(exit_event, interval_seconds=0.01)
+
+        assert hangs == []
+
+
+class TestDCGMWatcherProbeWatchdog:
+    def _make_watcher(self, probe_deadline_seconds: float, callbacks=None) -> dcgm.DCGMWatcher:
+        return dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=callbacks if callbacks is not None else [],
+            dcgm_k8s_service_enabled=False,
+            probe_deadline_seconds=probe_deadline_seconds,
+        )
+
+    def test_watchdog_disabled_when_deadline_not_positive(self):
+        watcher = self._make_watcher(probe_deadline_seconds=0)
+
+        assert watcher._probe_watchdog is None
+        # Probe tracking must degrade to a no-op rather than failing.
+        with watcher._probe("dcgm_health_check"):
+            pass
+
+    def test_watchdog_enabled_tracks_probes(self):
+        watcher = self._make_watcher(probe_deadline_seconds=30)
+
+        assert watcher._probe_watchdog is not None
+        with watcher._probe("dcgm_health_check"):
+            assert watcher._probe_watchdog._operation == "dcgm_health_check"
+        assert watcher._probe_watchdog._operation is None
+
+    def test_hang_is_delivered_to_callbacks(self):
+        fake = FakeEventProcessorInTest()
+        watcher = self._make_watcher(probe_deadline_seconds=30, callbacks=[fake])
+
+        assert watcher._report_probe_unresponsive("dcgm_health_check", 42.0) is True
+
+        assert fake.probe_unresponsive_calls == [("dcgm_health_check", 42.0, "remote")]
+
+    def test_cleanup_is_probe_tracked(self):
+        watcher = self._make_watcher(probe_deadline_seconds=30)
+        dcgm_handle_mock = MagicMock()
+        observed = {}
+
+        # Mid-loop cleanup after connectivity failure still reaches the driver
+        # and must stay tracked.
+        dcgm_handle_mock.Shutdown.side_effect = lambda: observed.update(operation=watcher._probe_watchdog._operation)
+
+        watcher._cleanup_dcgm_resources(None, dcgm_handle_mock)
+
+        assert observed["operation"] == "dcgm_cleanup"
+        assert watcher._probe_watchdog._operation is None
+
+    def test_teardown_cleanup_skips_probe_tracking(self):
+        watcher = self._make_watcher(probe_deadline_seconds=30)
+        dcgm_handle_mock = MagicMock()
+        observed = {}
+
+        # Intentional loop teardown must not publish GpuDcgmUnresponsive when
+        # Shutdown() is merely slow (rolling upgrades / DCGM restarts).
+        dcgm_handle_mock.Shutdown.side_effect = lambda: observed.update(operation=watcher._probe_watchdog._operation)
+
+        watcher._cleanup_dcgm_resources(None, dcgm_handle_mock, track_probe=False)
+
+        assert observed["operation"] is None
+        assert watcher._probe_watchdog._operation is None
+
+
+class TestDCGMWatcherHangSafeOrdering:
+    """The loop must publish findings before making further DCGM calls.
+
+    An unresponsive driver blocks every call including Shutdown(), so anything
+    published only after cleanup is never published at all.
+    """
+
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmGroup")
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmHandle")
+    def test_connectivity_failure_is_published_before_cleanup(
+        self, mock_dcgm_handle: MagicMock, mock_dcgm_group: MagicMock
+    ) -> None:
+        published = Event()
+        observed = {}
+
+        class SignallingProcessor(FakeEventProcessorInTest):
+            def dcgm_connectivity_failed(self) -> bool:
+                delivered = super().dcgm_connectivity_failed()
+                published.set()
+                return delivered
+
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[SignallingProcessor()],
+            dcgm_k8s_service_enabled=False,
+        )
+
+        # Saturate the shared callback executor. Critical connectivity delivery
+        # must bypass it or the event remains queued behind these workers.
+        release_workers = Event()
+        saturated_workers = 8
+        watcher._callback_thread_pool = ThreadPoolExecutor(max_workers=saturated_workers)
+        for _ in range(saturated_workers):
+            watcher._callback_thread_pool.submit(release_workers.wait, 10)
+
+        dcgm_handle_mock = MagicMock()
+
+        def cleanup() -> None:
+            observed["published_before_cleanup"] = published.is_set()
+            release_workers.set()
+
+        dcgm_handle_mock.Shutdown.side_effect = cleanup
+        mock_dcgm_handle.return_value = dcgm_handle_mock
+
+        dcgm_group_mock = MagicMock()
+        # A timeout from the health check is what flags connectivity failure.
+        dcgm_group_mock.health.Check.side_effect = dcgm_structs.DCGMError_Timeout()
+        mock_dcgm_group.return_value = dcgm_group_mock
+
+        # The first cycle only connects; the health check runs on the second.
+        stop_event = MagicMock(spec=Event)
+        stop_event.is_set.side_effect = [False, False, False, True]
+        stop_event.wait.side_effect = [False, False, True]
+        watcher.start([], stop_event)
+
+        assert observed["published_before_cleanup"] is True
+
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmGroup")
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmHandle")
+    def test_thermal_margin_evaluation_is_probe_tracked(self, mock_dcgm_handle, mock_dcgm_group):
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[FakeEventProcessorInTest()],
+            dcgm_k8s_service_enabled=False,
+            probe_deadline_seconds=30,
+        )
+        observed = {}
+        watcher._evaluate_gpu_thermal_margin = lambda *_: observed.update(operation=watcher._probe_watchdog._operation)
+
+        mock_dcgm_handle.return_value = MagicMock()
+        dcgm_group_mock = MagicMock()
+        health_response = dcgm_structs.c_dcgmHealthResponse_v4()
+        health_response.version = dcgm_structs.dcgmHealthResponse_version4
+        health_response.overallHealth = dcgm_structs.DCGM_DIAG_RESULT_PASS
+        health_response.incidentCount = 0
+        dcgm_group_mock.health.Check.return_value = health_response
+        mock_dcgm_group.return_value = dcgm_group_mock
+
+        # The first cycle only connects; the health check runs on the second.
+        stop_event = MagicMock(spec=Event)
+        stop_event.is_set.side_effect = [False, False, False, True]
+        stop_event.wait.side_effect = [False, False, True]
+        watcher.start([], stop_event)
+
+        assert observed["operation"] == "dcgm_thermal_margin"

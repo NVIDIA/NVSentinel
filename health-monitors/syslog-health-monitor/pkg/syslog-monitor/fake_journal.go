@@ -205,6 +205,24 @@ func (j *FakeJournal) SeekCursor(cursor string) error {
 	return fmt.Errorf("cursor not found: %s", cursor)
 }
 
+// SeekHead implements the Journal interface
+func (j *FakeJournal) SeekHead() error {
+	// Allow even if closed for test purposes
+	// Position before the first entry so that Next() advances to it.
+	// Match filtering is handled by Next() itself.
+	j.CurrentPosition = -1
+
+	return nil
+}
+
+// SeekRealtimeUsec implements the Journal interface
+func (j *FakeJournal) SeekRealtimeUsec(usec uint64) error {
+	// Fake journal has no timestamps; behave like SeekHead.
+	j.CurrentPosition = -1
+
+	return nil
+}
+
 // SeekTail implements the Journal interface
 func (j *FakeJournal) SeekTail() error {
 	// Allow even if closed for test purposes

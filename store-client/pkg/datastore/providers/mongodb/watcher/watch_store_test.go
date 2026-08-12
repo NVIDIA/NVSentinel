@@ -179,6 +179,23 @@ func TestChangeStreamWatcher_Start(t *testing.T) {
 		}
 
 		require.Len(t, receivedEvents, 2)
+
+		// Each event must carry its own resume token (its change stream _id)
+		// so consumers can checkpoint exactly at the event they processed.
+		for i, expectedID := range []bson.D{
+			{{Key: "ts", Value: int64(1)}, {Key: "t", Value: int32(1)}},
+			{{Key: "ts", Value: int64(2)}, {Key: "t", Value: int32(2)}},
+		} {
+			token, ok := receivedEvents[i]["_resumeToken"].(bson.Raw)
+			require.True(t, ok, "event %d should carry a bson.Raw _resumeToken", i)
+
+			expectedToken, err := bson.Marshal(expectedID)
+			require.NoError(t, err)
+			require.Equal(t, bson.Raw(expectedToken), token, "event %d resume token should match its _id", i)
+
+			delete(receivedEvents[i], "_resumeToken")
+		}
+
 		require.EqualValues(t, bson.M{
 			"operationType": "insert",
 			"documentKey":   bson.M{"id": int32(1)},
@@ -194,6 +211,83 @@ func TestChangeStreamWatcher_Start(t *testing.T) {
 		watcher.client = nil
 		err = watcher.Close(ctx)
 		require.NoError(t, err)
+	})
+
+	mt.Run("resume tokens remain valid across batch boundaries", func(mt *mtest.T) {
+		// Regression test: the injected _resumeToken must be a copy. The
+		// driver's ResumeToken() aliases the current batch's pooled response
+		// buffer, so a token captured for event N must stay intact after the
+		// watcher fetches the next batch (which recycles that buffer).
+		id1 := bson.D{{Key: "ts", Value: int64(10)}, {Key: "t", Value: int32(1)}}
+		id2 := bson.D{{Key: "ts", Value: int64(20)}, {Key: "t", Value: int32(2)}}
+
+		event1 := bson.D{
+			{Key: "operationType", Value: "insert"},
+			{Key: "documentKey", Value: bson.D{{Key: "id", Value: int32(1)}}},
+			{Key: "_id", Value: id1},
+		}
+		event2 := bson.D{
+			{Key: "operationType", Value: "insert"},
+			{Key: "documentKey", Value: bson.D{{Key: "id", Value: int32(2)}}},
+			{Key: "_id", Value: id2},
+		}
+
+		mt.AddMockResponses(
+			mtest.CreateCursorResponse(1, "testdb.testcollection", mtest.FirstBatch),
+			mtest.CreateCursorResponse(1, "testdb.testcollection", mtest.NextBatch, event1),
+			mtest.CreateCursorResponse(0, "testdb.testcollection", mtest.NextBatch, event2),
+		)
+
+		coll := mt.Client.Database("testdb").Collection("testcollection")
+		changeStream, err := coll.Watch(context.Background(), mongo.Pipeline{})
+		require.NoError(mt, err)
+
+		watcher := &ChangeStreamWatcher{
+			client:       mt.Client,
+			changeStream: changeStream,
+			// Unbuffered so the watcher can only fetch the next batch after
+			// the test has received the previous event.
+			eventChannel: make(chan Event),
+			clientName:   "testclient-token-lifetime",
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		watcher.Start(ctx)
+
+		receive := func() Event {
+			select {
+			case ev := <-watcher.Events():
+				return ev
+			case <-time.After(2 * time.Second):
+				t.Fatal("timeout waiting for event")
+				return nil
+			}
+		}
+
+		first := receive()
+		firstToken, ok := first["_resumeToken"].(bson.Raw)
+		require.True(t, ok, "first event should carry a bson.Raw _resumeToken")
+
+		// Receiving the second event guarantees the watcher advanced to the
+		// next batch, after which the first batch's buffer may be recycled.
+		second := receive()
+		secondToken, ok := second["_resumeToken"].(bson.Raw)
+		require.True(t, ok, "second event should carry a bson.Raw _resumeToken")
+
+		expectedFirst, err := bson.Marshal(id1)
+		require.NoError(t, err)
+		expectedSecond, err := bson.Marshal(id2)
+		require.NoError(t, err)
+
+		require.Equal(t, bson.Raw(expectedFirst), firstToken,
+			"first event's token must remain intact after the stream advanced to the next batch")
+		require.Equal(t, bson.Raw(expectedSecond), secondToken)
+
+		// Set client to nil before Close() - mtest manages client lifecycle
+		watcher.client = nil
+		require.NoError(t, watcher.Close(ctx))
 	})
 
 	mt.Run("Start exits goroutine on change stream error", func(mt *mtest.T) {
@@ -521,6 +615,79 @@ func TestChangeStreamWatcher_MarkProcessed(t *testing.T) {
 		err = watcher.Close(closeCtx)
 		require.NoError(t, err)
 
+	})
+
+	mt.Run("MarkProcessed stores provided per-event token as document", func(mt *mtest.T) {
+		// mock the UpdateOne response for storing the resume token
+		mt.AddMockResponses(mtest.CreateSuccessResponse())
+
+		resumeTokenCol := mt.Client.Database("tokendb").Collection("tokencollection")
+
+		// No change stream: the provided-token path must not consult the
+		// change stream cursor at all.
+		watcher := &ChangeStreamWatcher{
+			client:                    mt.Client,
+			resumeTokenCol:            resumeTokenCol,
+			clientName:                "testclient-provided-token",
+			resumeTokenUpdateTimeout:  5 * time.Second,
+			resumeTokenUpdateInterval: 1 * time.Second,
+		}
+
+		tokenBytes, err := bson.Marshal(resumeToken)
+		require.NoError(mt, err)
+
+		err = watcher.MarkProcessed(context.Background(), tokenBytes)
+		require.NoError(t, err)
+
+		// Verify the token was stored as a BSON document (the shape
+		// SetResumeAfter expects on restart), not as a binary blob.
+		startedEvents := mt.GetAllStartedEvents()
+		updateCommands := 0
+		for _, startedEvent := range startedEvents {
+			if startedEvent.CommandName == "update" {
+				updateCommands++
+
+				var cmdMap bson.M
+				require.NoError(t, bson.Unmarshal(startedEvent.Command, &cmdMap))
+
+				updates := cmdMap["updates"].(bson.A)
+				update0 := updates[0].(bson.M)
+
+				filter := update0["q"].(bson.M)
+				update := update0["u"].(bson.M)
+
+				require.EqualValues(t, bson.M{"clientName": "testclient-provided-token"}, filter)
+				expectedUpdate := bson.M{"$set": bson.M{"resumeToken": bson.M{"ts": int64(1), "t": int32(1)}}}
+				require.EqualValues(t, expectedUpdate, update)
+			}
+		}
+		require.Equal(t, 1, updateCommands, "Expected exactly one update command")
+
+		mt.ClearEvents()
+	})
+
+	mt.Run("MarkProcessed rejects invalid provided token", func(mt *mtest.T) {
+		resumeTokenCol := mt.Client.Database("tokendb").Collection("tokencollection")
+
+		watcher := &ChangeStreamWatcher{
+			client:                    mt.Client,
+			resumeTokenCol:            resumeTokenCol,
+			clientName:                "testclient-invalid-token",
+			resumeTokenUpdateTimeout:  5 * time.Second,
+			resumeTokenUpdateInterval: 1 * time.Second,
+		}
+
+		err := watcher.MarkProcessed(context.Background(), []byte("not-a-bson-document"))
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "invalid resume token")
+
+		// No update command should have been issued
+		for _, startedEvent := range mt.GetAllStartedEvents() {
+			require.NotEqual(t, "update", startedEvent.CommandName,
+				"no update command should be issued for an invalid token")
+		}
+
+		mt.ClearEvents()
 	})
 }
 

@@ -29,6 +29,14 @@ type Reader interface {
 	// Paths -------------------------------------------------------------
 	IBBasePath() string
 	NetBasePath() string
+	// IBMadBasePath returns the sysfs directory holding the InfiniBand
+	// MAD character-device class entries (issm*/umad*), a sibling of
+	// IBBasePath (e.g. /nvsentinel/sys/class/infiniband_mad).
+	IBMadBasePath() string
+	// IBVerbsBasePath returns the sysfs directory holding the InfiniBand
+	// verbs character-device class entries (uverbs*), a sibling of
+	// IBBasePath (e.g. /nvsentinel/sys/class/infiniband_verbs).
+	IBVerbsBasePath() string
 	IBPortPath(device string, port int) string
 	NetInterfacePath(iface string) string
 

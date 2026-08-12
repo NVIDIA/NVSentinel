@@ -137,10 +137,12 @@ install_kwok() {
     helm repo add sigs-kwok https://kwok.sigs.k8s.io/charts/
     helm repo update
     
+    # kwok must NOT run with hostNetwork: it stamps its own pod IP on every
+    # fake node, so with hostNetwork the fake nodes clone the host node's IP
+    # and break pod networking on that node (see issue #1567).
     if ! helm upgrade --install kwok sigs-kwok/kwok \
         --namespace kube-system \
         --version "$KWOK_CHART_VERSION" \
-        --set hostNetwork=true \
         --wait \
         --timeout=5m; then
         error "Failed to install KWOK"

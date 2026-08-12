@@ -45,3 +45,8 @@ data:
     pollingIntervalSeconds = {{ .Values.configToml.aws.pollingIntervalSeconds }}
     region = {{ .Values.configToml.aws.region | quote }}
     endpointOverride = {{ .Values.configToml.aws.endpointOverride | default "" | quote }}
+
+    [lambda]
+    enabled = {{ eq .Values.cspName "lambda" }}
+    apiEndpoint = {{ .Values.configToml.lambda.apiEndpoint | default "" | quote }}
+    pollingIntervalSeconds = {{ .Values.configToml.lambda.pollingIntervalSeconds | default 30 }}

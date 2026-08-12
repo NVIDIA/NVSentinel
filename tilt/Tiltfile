@@ -75,19 +75,27 @@ local_resource(
 )
 
 helm_repo('sigs-kwok', 'https://kwok.sigs.k8s.io/charts/')
+# kwok must NOT run with hostNetwork: kwok stamps its own pod IP on every fake
+# node (--node-ip=$(POD_IP)), so with hostNetwork the fake nodes clone this
+# pod's host-node IP, kindnetd then treats them as that node and rewrites its
+# CNI config with fake podCIDRs, and real pods created there get duplicate IPs
+# whose traffic NetworkPolicy enforcement misattributes and drops.
 helm_resource(
     'kwok',
     chart='sigs-kwok/kwok',
     namespace='kube-system',
     flags=[
-        '--set=hostNetwork=true'
+        '--version=0.3.0'  # pin: an unpinned chart floats to new releases mid-flight
     ]
 )
 helm_resource(
     'kwok-stage-fast',
     chart='sigs-kwok/stage-fast',
     resource_deps=['kwok'],
-    pod_readiness='ignore'
+    pod_readiness='ignore',
+    flags=[
+        '--version=0.3.0'
+    ]
 )
 
 namespace_create('gpu-operator')

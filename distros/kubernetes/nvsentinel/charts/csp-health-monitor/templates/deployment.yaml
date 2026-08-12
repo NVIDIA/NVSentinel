@@ -150,6 +150,13 @@ spec:
             # App name for connection identification in logs and currentOp
             - name: APP_NAME
               value: {{ .Chart.Name | quote }}
+            {{- if eq .Values.cspName "lambda" }}
+            - name: LAMBDA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "lambdaApiKeySecret.name must be set when cspName=lambda" .Values.lambdaApiKeySecret.name }}
+                  key: {{ required "lambdaApiKeySecret.key must be set when cspName=lambda" .Values.lambdaApiKeySecret.key }}
+            {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ if .Values.global.datastore }}{{ .Release.Name }}-datastore-config{{ else }}mongodb-config{{ end }}
