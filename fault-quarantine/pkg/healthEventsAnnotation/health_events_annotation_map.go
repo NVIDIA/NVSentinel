@@ -142,20 +142,27 @@ func eventKeysCapacity(entityCount, errorCodeCount int) int {
 	return entityCount * errorCodeCount
 }
 
-// AddOrUpdateEvent adds a health event for each impacted entity
-// Returns true if at least one entity was added/updated
+// AddOrUpdateEvent adds a health event for each impacted entity.
+// Returns true if at least one entity was added or an existing entry's
+// RecommendedAction was refreshed.
 func (he *HealthEventsAnnotationMap) AddOrUpdateEvent(event *protos.HealthEvent) bool {
 	keys := createEventKeys(event)
-	added := false
+	updated := false
 
 	for _, key := range keys {
-		if _, exists := he.Events[key]; !exists {
+		existing, exists := he.Events[key]
+		if !exists {
 			he.Events[key] = event
-			added = true
+			updated = true
+		} else if existing.RecommendedAction != event.RecommendedAction {
+			// Matching ignores RecommendedAction, so an escalated remediation must
+			// overwrite the stored event or consumers keep the stale action.
+			he.Events[key] = event
+			updated = true
 		}
 	}
 
-	return added
+	return updated
 }
 
 // GetEvent checks if any entity from the event exists in the map

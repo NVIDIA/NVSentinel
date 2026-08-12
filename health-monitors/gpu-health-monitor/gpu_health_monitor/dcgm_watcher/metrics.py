@@ -44,6 +44,11 @@ dcgm_health_check_suppressed_incidents = Counter(
     "Number of DCGM health check incidents suppressed due to a non-actionable error code",
     labelnames=["error_code"],
 )
+dcgm_probe_hangs = Counter(
+    "dcgm_probe_hangs",
+    "Number of DCGM probes that exceeded the watchdog deadline without returning",
+    labelnames=["operation_name"],
+)
 gpu_temp_limit_margin_blank = Counter(
     "gpu_temp_limit_margin_blank",
     "Number of poll cycles where DCGM field 153 (T.Limit) returned a blank value",

@@ -23,12 +23,14 @@ from gpu_health_monitor.tests.nvlink_fixtures import (
 from unittest.mock import MagicMock, patch
 import dcgm_structs, dcgm_errors, dcgm_fields
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 from ctypes import pointer
 import copy
 import json
 import pytest
+import time
 
 
 class FakeEventProcessorInTest(dcgm.types.CallbackInterface):
@@ -39,12 +41,23 @@ class FakeEventProcessorInTest(dcgm.types.CallbackInterface):
         self.serial = None
         self.fields_changes = None
         self.connectivity_failed_called = False
+        self.probe_unresponsive_calls: list[tuple[str, float, str]] = []
 
-    def health_event_occurred(self, health_details: dict[str, dcgm.types.HealthDetails], gpu_ids: list[int]):
+    def health_event_occurred(self, health_details: dict[str, dcgm.types.HealthDetails], gpu_ids: list[int]) -> None:
         self.health_details = health_details
 
-    def dcgm_connectivity_failed(self):
+    def dcgm_connectivity_failed(self) -> bool:
         self.connectivity_failed_called = True
+        return True
+
+    def dcgm_probe_unresponsive(
+        self,
+        operation: str,
+        elapsed_seconds: float,
+        dcgm_mode: str,
+    ) -> bool:
+        self.probe_unresponsive_calls.append((operation, elapsed_seconds, dcgm_mode))
+        return True
 
 
 class TestDCGMHealthChecks:
@@ -1236,6 +1249,210 @@ class TestSuppressNvlinkDownOnPcieGpus:
         assert details.entity_failures[0].code == "DCGM_FR_NVLINK_ERROR_THRESHOLD"
 
 
+class TestProbeWatchdog:
+    """A wedged driver never returns, so the poll loop cannot report its own hang."""
+
+    def _collector(self, succeed: bool = True):
+        """Returns (recorded_hangs, on_hang_callback).
+
+        ``succeed`` controls whether on_hang reports delivery success. False
+        models a failed UDS publish that the watchdog must retry.
+        """
+        hangs: list[tuple[str, float]] = []
+
+        def on_hang(operation: str, elapsed: float) -> bool:
+            hangs.append((operation, elapsed))
+            return succeed
+
+        return hangs, on_hang
+
+    def test_probe_within_deadline_is_not_reported(self):
+        hangs, on_hang = self._collector()
+        watchdog = dcgm.ProbeWatchdog(10.0, on_hang)
+
+        with watchdog.probe("dcgm_health_check"):
+            assert watchdog.poll_once() is False
+
+        assert hangs == []
+
+    def test_probe_past_deadline_is_reported_once(self):
+        hangs, on_hang = self._collector()
+        watchdog = dcgm.ProbeWatchdog(0.01, on_hang)
+
+        with watchdog.probe("dcgm_health_check"):
+            time.sleep(0.05)
+            assert watchdog.poll_once() is True
+            # Delivered successfully: further polls must not spam.
+            assert watchdog.poll_once() is False
+
+        assert len(hangs) == 1
+        operation, elapsed = hangs[0]
+        assert operation == "dcgm_health_check"
+        assert elapsed >= 0.01
+
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm.metrics.dcgm_probe_hangs")
+    def test_failed_delivery_is_retried_until_success(self, probe_hangs_metric):
+        """A hung poll loop has no next cycle, so a failed publish must retry."""
+        attempts: list[int] = []
+
+        def on_hang(operation: str, elapsed: float) -> bool:
+            attempts.append(1)
+            # Fail the first publish (e.g. platform-connector socket missing),
+            # then succeed — the pattern seen when the connector starts after us.
+            return len(attempts) >= 2
+
+        watchdog = dcgm.ProbeWatchdog(0.01, on_hang)
+
+        with watchdog.probe("dcgm_health_check"):
+            time.sleep(0.05)
+            assert watchdog.poll_once() is False
+            assert watchdog.poll_once() is True
+            assert watchdog.poll_once() is False
+
+        assert len(attempts) == 2
+        # Detection is observable immediately and counted once, independent of
+        # how many delivery attempts the event needs.
+        probe_hangs_metric.labels.assert_called_once_with("dcgm_health_check")
+        probe_hangs_metric.labels.return_value.inc.assert_called_once_with()
+
+    def test_completed_probe_is_never_reported(self):
+        hangs, on_hang = self._collector()
+        watchdog = dcgm.ProbeWatchdog(0.01, on_hang)
+
+        with watchdog.probe("dcgm_connect"):
+            pass
+
+        time.sleep(0.05)
+
+        assert watchdog.poll_once() is False
+        assert hangs == []
+
+    def test_probe_completion_waits_for_bounded_delivery(self):
+        """Recovery cannot overtake the unhealthy event publication."""
+        entered_probe = Event()
+        finish_probe = Event()
+        probe_returned = Event()
+        delivery_started = Event()
+        release_delivery = Event()
+        poll_result = []
+
+        def on_hang(operation: str, elapsed: float) -> bool:
+            delivery_started.set()
+            assert release_delivery.wait(1)
+            return True
+
+        watchdog = dcgm.ProbeWatchdog(0.01, on_hang)
+
+        def run_probe():
+            with watchdog.probe("dcgm_health_check"):
+                entered_probe.set()
+                finish_probe.wait()
+            probe_returned.set()
+
+        probe_thread = Thread(target=run_probe, daemon=True)
+        probe_thread.start()
+        assert entered_probe.wait(1)
+        time.sleep(0.05)
+
+        report_thread = Thread(target=lambda: poll_result.append(watchdog.poll_once()), daemon=True)
+        report_thread.start()
+        assert delivery_started.wait(1)
+
+        finish_probe.set()
+        assert not probe_returned.wait(0.05)
+
+        release_delivery.set()
+        report_thread.join(1)
+        probe_thread.join(1)
+
+        assert poll_result == [True]
+        assert probe_returned.is_set()
+
+    def test_second_hang_episode_is_reported_again(self):
+        hangs, on_hang = self._collector()
+        watchdog = dcgm.ProbeWatchdog(0.01, on_hang)
+
+        for _ in range(2):
+            with watchdog.probe("dcgm_health_check"):
+                time.sleep(0.05)
+                watchdog.poll_once()
+
+        assert len(hangs) == 2
+
+    def test_run_returns_when_exit_is_set(self):
+        hangs, on_hang = self._collector()
+        watchdog = dcgm.ProbeWatchdog(10.0, on_hang)
+        exit_event = Event()
+        exit_event.set()
+
+        watchdog.run(exit_event, interval_seconds=0.01)
+
+        assert hangs == []
+
+
+class TestDCGMWatcherProbeWatchdog:
+    def _make_watcher(self, probe_deadline_seconds: float, callbacks=None) -> dcgm.DCGMWatcher:
+        return dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=callbacks if callbacks is not None else [],
+            dcgm_k8s_service_enabled=False,
+            probe_deadline_seconds=probe_deadline_seconds,
+        )
+
+    def test_watchdog_disabled_when_deadline_not_positive(self):
+        watcher = self._make_watcher(probe_deadline_seconds=0)
+
+        assert watcher._probe_watchdog is None
+        # Probe tracking must degrade to a no-op rather than failing.
+        with watcher._probe("dcgm_health_check"):
+            pass
+
+    def test_watchdog_enabled_tracks_probes(self):
+        watcher = self._make_watcher(probe_deadline_seconds=30)
+
+        assert watcher._probe_watchdog is not None
+        with watcher._probe("dcgm_health_check"):
+            assert watcher._probe_watchdog._operation == "dcgm_health_check"
+        assert watcher._probe_watchdog._operation is None
+
+    def test_hang_is_delivered_to_callbacks(self):
+        fake = FakeEventProcessorInTest()
+        watcher = self._make_watcher(probe_deadline_seconds=30, callbacks=[fake])
+
+        assert watcher._report_probe_unresponsive("dcgm_health_check", 42.0) is True
+
+        assert fake.probe_unresponsive_calls == [("dcgm_health_check", 42.0, "remote")]
+
+    def test_cleanup_is_probe_tracked(self):
+        watcher = self._make_watcher(probe_deadline_seconds=30)
+        dcgm_handle_mock = MagicMock()
+        observed = {}
+
+        # Mid-loop cleanup after connectivity failure still reaches the driver
+        # and must stay tracked.
+        dcgm_handle_mock.Shutdown.side_effect = lambda: observed.update(operation=watcher._probe_watchdog._operation)
+
+        watcher._cleanup_dcgm_resources(None, dcgm_handle_mock)
+
+        assert observed["operation"] == "dcgm_cleanup"
+        assert watcher._probe_watchdog._operation is None
+
+    def test_teardown_cleanup_skips_probe_tracking(self):
+        watcher = self._make_watcher(probe_deadline_seconds=30)
+        dcgm_handle_mock = MagicMock()
+        observed = {}
+
+        # Intentional loop teardown must not publish GpuDcgmUnresponsive when
+        # Shutdown() is merely slow (rolling upgrades / DCGM restarts).
+        dcgm_handle_mock.Shutdown.side_effect = lambda: observed.update(operation=watcher._probe_watchdog._operation)
+
+        watcher._cleanup_dcgm_resources(None, dcgm_handle_mock, track_probe=False)
+
+        assert observed["operation"] is None
+        assert watcher._probe_watchdog._operation is None
+
+
 class TestDCGMWatcherHangSafeOrdering:
     """The loop must publish findings before making further DCGM calls.
 
@@ -1252,9 +1469,10 @@ class TestDCGMWatcherHangSafeOrdering:
         observed = {}
 
         class SignallingProcessor(FakeEventProcessorInTest):
-            def dcgm_connectivity_failed(self) -> None:
-                super().dcgm_connectivity_failed()
+            def dcgm_connectivity_failed(self) -> bool:
+                delivered = super().dcgm_connectivity_failed()
                 published.set()
+                return delivered
 
         watcher = dcgm.DCGMWatcher(
             addr="localhost:5555",
@@ -1267,6 +1485,7 @@ class TestDCGMWatcherHangSafeOrdering:
         # must bypass it or the event remains queued behind these workers.
         release_workers = Event()
         saturated_workers = 8
+        watcher._callback_thread_pool = ThreadPoolExecutor(max_workers=saturated_workers)
         for _ in range(saturated_workers):
             watcher._callback_thread_pool.submit(release_workers.wait, 10)
 
@@ -1291,3 +1510,33 @@ class TestDCGMWatcherHangSafeOrdering:
         watcher.start([], stop_event)
 
         assert observed["published_before_cleanup"] is True
+
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmGroup")
+    @patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmHandle")
+    def test_thermal_margin_evaluation_is_probe_tracked(self, mock_dcgm_handle, mock_dcgm_group):
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[FakeEventProcessorInTest()],
+            dcgm_k8s_service_enabled=False,
+            probe_deadline_seconds=30,
+        )
+        observed = {}
+        watcher._evaluate_gpu_thermal_margin = lambda *_: observed.update(operation=watcher._probe_watchdog._operation)
+
+        mock_dcgm_handle.return_value = MagicMock()
+        dcgm_group_mock = MagicMock()
+        health_response = dcgm_structs.c_dcgmHealthResponse_v4()
+        health_response.version = dcgm_structs.dcgmHealthResponse_version4
+        health_response.overallHealth = dcgm_structs.DCGM_DIAG_RESULT_PASS
+        health_response.incidentCount = 0
+        dcgm_group_mock.health.Check.return_value = health_response
+        mock_dcgm_group.return_value = dcgm_group_mock
+
+        # The first cycle only connects; the health check runs on the second.
+        stop_event = MagicMock(spec=Event)
+        stop_event.is_set.side_effect = [False, False, False, True]
+        stop_event.wait.side_effect = [False, False, True]
+        watcher.start([], stop_event)
+
+        assert observed["operation"] == "dcgm_thermal_margin"
