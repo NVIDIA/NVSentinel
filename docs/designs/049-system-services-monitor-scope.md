@@ -1,7 +1,7 @@
 # ADR-049: System Services Monitor — Scope and Event Taxonomy
 
 - **Status:** Proposed
-- **Date:** 2026-03-20 (revised 2026-07-24)
+- **Date:** 2026-03-20 (revised 2026-08-12)
 - **Author:** dmvevents
 - **Reviewers:** XRFXLP, lalitadithya
 
@@ -154,12 +154,37 @@ detection is unit-state and query based:
 - **Fabric registration state:** `nvidia-smi --query-gpu=index,fabric.state,fabric.status
   --format=csv,noheader` per GPU. A GPU is healthy when `fabric.state == "Completed"`
   and `fabric.status == "Success"`; `fabric.state == "N/A"` (non-NVSwitch topology)
-  is skipped.
+  is skipped. `"In Progress"` is a normal transient state, so it is time-gated: a GPU
+  is classified `FM_REGISTRATION_STUCK` only after reporting `"In Progress"` for
+  `stuck_threshold` **consecutive polls** (default 3, ~90 s at the default poll
+  interval), and the streak resets when registration completes. Combined with the
+  boot grace period below, normal startup registration never reports as a fatal
+  fault.
 - **GPU service lifecycle:** the same `systemctl show` probe for each service in the
   configured list (default `nvidia-persistenced`).
 
+Every host probe is bounded: `systemctl show` runs with a 10 s timeout,
+`journalctl` and `nvidia-smi` with 15 s. A probe that fails or times out yields
+**unknown** state — the monitor logs the failure and increments a check-error
+metric but emits no HealthEvent, because "the probe could not observe the
+service" is not evidence that the service is down. A hung systemd, D-Bus, or
+driver therefore costs at most one bounded check, and cannot wedge the polling
+loop into false `*_NOT_RUNNING` reporting.
+
+Applicability is checked before health: `LoadState` is queried alongside
+`ActiveState`, and a unit with `LoadState=not-found` (e.g. a host without
+`nvidia-fabricmanager` installed, or an optional support service that is not
+present) is skipped entirely rather than reported as `*_NOT_RUNNING`. Together
+with the `fabric.state == "N/A"` skip, every check is self-gating on
+platform/service presence.
+
 A boot grace period (`--boot-grace-period`, default 300s) suppresses unhealthy
-alerts during node startup.
+alerts during node startup — for service checks and fabric-state checks alike.
+Suppression happens at result generation: a suppressed failure produces no
+`CheckResult`, so it never reserves or commits a transition-cache entry (see
+Cached State). When the grace period expires the condition is re-evaluated from
+scratch; a still-unhealthy service is then an unseen key (or a
+healthy-to-unhealthy transition) and emits normally.
 
 ### FM readiness (Phase 1)
 
@@ -203,6 +228,17 @@ connection, so no TLS is required on this hop. (The gRPC-TLS decision in
 ADR-030 applies to the janitor-controller ↔ janitor-provider path, which is a
 different, potentially cross-namespace connection, and is out of scope here.)
 
+Skipping TLS does not mean the socket is open to arbitrary local clients.
+Authorization on this hop is filesystem access control: the socket lives in the
+`/var/run/nvsentinel` hostPath directory, which is root-owned and mounted only
+into the NVSentinel DaemonSets, so injecting a forged `HealthEvent` requires
+root (or an equivalently privileged pod) on the node — a principal that could
+already forge any node-local signal directly. Server-side peer authorization
+(e.g. an `SO_PEERCRED` check in `platform-connector` before accepting
+remediation-triggering events) would harden every monitor on this hop equally;
+it is a `platform-connector`-level item shared by all existing monitors, not a
+per-monitor concern, and is deliberately not re-specified here.
+
 ## Event Model
 
 `system-services-monitor` reuses the existing `HealthEvent` envelope — no new
@@ -221,6 +257,16 @@ category and carries the specific condition in `errorCode`.
 
 Multiple `errorCode` values combine on a single event (e.g. an FM-down event that
 is also flapping carries `[FABRIC_MANAGER_NOT_RUNNING, FABRIC_MANAGER_FLAPPING]`).
+
+The table above is the **complete Phase-1 taxonomy** — there is deliberately no
+`FM_UNRESPONSIVE` code. The earlier draft's monolithic "FM unresponsive"
+condition is split into the three fabric-state codes (`FM_NOT_STARTED` /
+`FM_REGISTRATION_STUCK` / `FM_FABRIC_ERROR`), which are the distinctions the
+Phase-1 probes can actually make. A dedicated responsiveness probe — and with it
+a distinct unresponsive code, its detection threshold, and its `HealthEvent`
+mapping — is deferred together with the local API/socket probe described under
+*FM readiness (Phase 1)*; it must be added to this table before any
+implementation emits it.
 
 ### HealthEvent schema
 
@@ -312,18 +358,28 @@ not re-sent every poll interval.
 - **Key:** `"<checkName>|<entityType>:<entityValue>"`, built from the impacted
   entities sorted by `(entityType, entityValue)` so key construction is
   order-independent (e.g. `FabricManagerServiceDown|NODE:gpu-node-07`).
-- **Value:** `CachedEntityState(is_fatal, is_healthy)` — the last emitted state for
-  that key. An event is sent only when the key is unseen or either `is_fatal` or
-  `is_healthy` differs from the cached value.
+- **Value:** `CachedEntityState(is_fatal, is_healthy, error_codes)` — the last
+  emitted state for that key, where `error_codes` is the normalized (sorted,
+  de-duplicated) condition-code set. An event is sent when the key is unseen or
+  any of the three fields differs from the cached value, so a code-only
+  escalation (e.g. `FABRIC_MANAGER_NOT_RUNNING` → `FABRIC_MANAGER_NOT_RUNNING +
+  FABRIC_MANAGER_FLAPPING`, or one journal classification changing to another)
+  emits a new event even though the fatal/healthy flags are unchanged.
+  Normalization keeps the comparison order-independent for equivalent code sets.
 - **Concurrency:** the read-decide-write sequence is guarded by a
   `threading.Lock`. Callbacks fire on a `ThreadPoolExecutor`, so without the lock
   two overlapping callbacks could observe the same stale entry and both emit while
   one blocks in the gRPC send. Under the lock, the new state is *reserved* into the
   cache immediately (before the send) so a concurrent callback skips the duplicate.
 - **Rollback:** the gRPC send retries with backoff (up to 5 attempts, ~26 s worst
-  case). If it ultimately fails or raises, the reserved cache entries are rolled
-  back (popped) so the next poll cycle re-attempts those events. The cache is only
-  committed as the authoritative last-sent state after a successful send.
+  case) and a 10 s per-attempt deadline. If it ultimately fails or raises, the
+  reserved cache entries are rolled back (popped) so the next poll cycle
+  re-attempts those events. Rollback is **generation-safe**: each reservation
+  object is its own token, and a failed older send only pops an entry that is
+  still *its* reservation — if a newer overlapping callback already replaced
+  (and successfully sent) a newer state for the same key, that newer state is
+  preserved instead of being popped into a duplicate re-emission. The cache is
+  only committed as the authoritative last-sent state after a successful send.
 - **Lifetime:** in-memory for the life of the process; there is no persistence, so
   the cache is empty on restart and the first post-restart cycle re-establishes
   current state.
