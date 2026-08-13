@@ -2344,3 +2344,30 @@ func TestWriteNodeEvent_UpdateRacesDeletion(t *testing.T) {
 	assert.Equal(t, events.Items[0].Name, cachedName, "The cache should hold the replacement event name")
 	assert.NotEqual(t, firstName, cachedName, "The stale cache entry should have been replaced")
 }
+
+func TestK8sConnector_NodeEventCache_EvictsOnlyOldest(t *testing.T) {
+	connector := &K8sConnector{}
+
+	for i := range maxCachedNodeEventNames {
+		connector.setCachedNodeEventName(fmt.Sprintf("key-%d", i), fmt.Sprintf("event-%d", i))
+	}
+
+	// Reading an entry refreshes its recency, so overflow must evict the next-oldest instead.
+	_, ok := connector.getCachedNodeEventName("key-0")
+	require.True(t, ok, "Filling the cache to capacity should not evict")
+
+	connector.setCachedNodeEventName("overflow-key", "overflow-event")
+
+	_, ok = connector.getCachedNodeEventName("key-1")
+	assert.False(t, ok, "Overflow should evict the least-recently-used entry")
+
+	_, ok = connector.getCachedNodeEventName("key-0")
+	assert.True(t, ok, "A recently-read entry should survive overflow")
+
+	name, ok := connector.getCachedNodeEventName("overflow-key")
+	require.True(t, ok, "The overflowing entry should be cached")
+	assert.Equal(t, "overflow-event", name)
+
+	assert.Equal(t, maxCachedNodeEventNames, connector.nodeEventCache().Len(),
+		"Overflow should evict exactly one entry, not flush the cache")
+}

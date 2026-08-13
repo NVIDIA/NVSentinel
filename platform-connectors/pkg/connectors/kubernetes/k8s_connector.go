@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/hashicorp/golang-lru/v2/expirable"
 	"go.opentelemetry.io/otel/attribute"
 	"k8s.io/client-go/kubernetes"
 
@@ -54,8 +55,10 @@ type K8sConnector struct {
 	// (node, type, reason, message) so recurring health events can be
 	// deduplicated with a single-key metadata.name LIST instead of
 	// listing every event for the node. See writeNodeEvent.
+	// nodeEventMu guards only the lazy initialization; the LRU itself
+	// is thread-safe.
 	nodeEventMu    sync.Mutex
-	nodeEventNames map[string]string
+	nodeEventNames *expirable.LRU[string, string]
 }
 
 // NewK8sConnector creates a K8sConnector with the given Kubernetes client, ring buffer, and configuration.

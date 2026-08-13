@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hashicorp/golang-lru/v2/expirable"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	corev1 "k8s.io/api/core/v1"
@@ -464,6 +465,8 @@ func messageMatchesAnyErrorCode(msg string, errorCodes []string) bool {
 
 // maxCachedNodeEventNames bounds the dedupe cache; distinct messages are
 // distinct faults, so a per-node connector stays far below this in practice.
+// Overflow evicts only the least-recently-used entry, so a fleet-scale
+// connector degrades one entry at a time rather than losing the whole cache.
 const maxCachedNodeEventNames = 1024
 
 // nodeEventDedupeKey identifies a logically-identical node event: the same
@@ -472,31 +475,29 @@ func nodeEventDedupeKey(event *corev1.Event, nodeName string) string {
 	return fmt.Sprintf("%s\x00%s\x00%s\x00%s", nodeName, event.Type, event.Reason, event.Message)
 }
 
-func (r *K8sConnector) getCachedNodeEventName(key string) (string, bool) {
+// nodeEventCache lazily initializes the LRU so connectors constructed as
+// struct literals (tests) work without a constructor change.
+func (r *K8sConnector) nodeEventCache() *expirable.LRU[string, string] {
 	r.nodeEventMu.Lock()
 	defer r.nodeEventMu.Unlock()
 
-	name, ok := r.nodeEventNames[key]
+	if r.nodeEventNames == nil {
+		r.nodeEventNames = expirable.NewLRU[string, string](maxCachedNodeEventNames, nil, 0)
+	}
 
-	return name, ok
+	return r.nodeEventNames
+}
+
+func (r *K8sConnector) getCachedNodeEventName(key string) (string, bool) {
+	return r.nodeEventCache().Get(key)
 }
 
 func (r *K8sConnector) setCachedNodeEventName(key, name string) {
-	r.nodeEventMu.Lock()
-	defer r.nodeEventMu.Unlock()
-
-	if r.nodeEventNames == nil || len(r.nodeEventNames) >= maxCachedNodeEventNames {
-		r.nodeEventNames = make(map[string]string)
-	}
-
-	r.nodeEventNames[key] = name
+	r.nodeEventCache().Add(key, name)
 }
 
 func (r *K8sConnector) dropCachedNodeEventName(key string) {
-	r.nodeEventMu.Lock()
-	defer r.nodeEventMu.Unlock()
-
-	delete(r.nodeEventNames, key)
+	r.nodeEventCache().Remove(key)
 }
 
 func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, nodeName string) error {
