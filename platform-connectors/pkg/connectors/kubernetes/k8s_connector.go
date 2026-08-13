@@ -51,12 +51,8 @@ type K8sConnector struct {
 	ctx        context.Context
 	config     K8sConnectorConfig
 
-	// nodeEventNames caches the name of the last event written per
-	// (node, type, reason, message) so recurring health events can be
-	// deduplicated with a single-key metadata.name LIST instead of
-	// listing every event for the node. See writeNodeEvent.
-	// nodeEventMu guards only the lazy initialization; the LRU itself
-	// is thread-safe.
+	// nodeEventNames caches the last written event name per dedupe key;
+	// see writeNodeEvent. nodeEventMu guards only the lazy init.
 	nodeEventMu    sync.Mutex
 	nodeEventNames *expirable.LRU[string, string]
 }

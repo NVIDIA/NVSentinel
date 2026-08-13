@@ -2315,8 +2315,7 @@ func TestWriteNodeEvent_UpdateRacesDeletion(t *testing.T) {
 	require.True(t, ok, "First write should cache the created event name")
 	require.Equal(t, firstName, cachedName)
 
-	// The cached event disappears after the lookup but before the update: drop it from the
-	// tracker so the NotFound reflects real cluster state rather than just being asserted.
+	// Delete the raced event from the tracker so the NotFound reflects real state.
 	var (
 		updateCalled     bool
 		trackerDeleteErr error
@@ -2352,7 +2351,7 @@ func TestK8sConnector_NodeEventCache_EvictsOnlyOldest(t *testing.T) {
 		connector.setCachedNodeEventName(fmt.Sprintf("key-%d", i), fmt.Sprintf("event-%d", i))
 	}
 
-	// Reading an entry refreshes its recency, so overflow must evict the next-oldest instead.
+	// Refresh key-0's recency so overflow must evict key-1 instead.
 	_, ok := connector.getCachedNodeEventName("key-0")
 	require.True(t, ok, "Filling the cache to capacity should not evict")
 

@@ -463,20 +463,16 @@ func messageMatchesAnyErrorCode(msg string, errorCodes []string) bool {
 	return false
 }
 
-// maxCachedNodeEventNames bounds the dedupe cache; distinct messages are
-// distinct faults, so a per-node connector stays far below this in practice.
-// Overflow evicts only the least-recently-used entry, so a fleet-scale
-// connector degrades one entry at a time rather than losing the whole cache.
+// maxCachedNodeEventNames bounds the dedupe cache; overflow evicts only
+// the least-recently-used entry.
 const maxCachedNodeEventNames = 1024
 
-// nodeEventDedupeKey identifies a logically-identical node event: the same
-// type, reason and message on the same node.
+// nodeEventDedupeKey identifies a logically-identical node event.
 func nodeEventDedupeKey(event *corev1.Event, nodeName string) string {
 	return fmt.Sprintf("%s\x00%s\x00%s\x00%s", nodeName, event.Type, event.Reason, event.Message)
 }
 
-// nodeEventCache lazily initializes the LRU so connectors constructed as
-// struct literals (tests) work without a constructor change.
+// nodeEventCache lazily initializes the LRU so struct-literal construction works.
 func (r *K8sConnector) nodeEventCache() *expirable.LRU[string, string] {
 	r.nodeEventMu.Lock()
 	defer r.nodeEventMu.Unlock()
@@ -514,17 +510,9 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, 
 	err := retry.OnError(retry.DefaultRetry, func(err error) bool {
 		return apierrors.IsConflict(err) || isTemporaryError(err)
 	}, func() error {
-		// Deduplicate against the per-process cache instead of listing
-		// every event for the node: an involvedObject fieldSelector LIST
-		// cannot be served from an index, so the apiserver scans the full
-		// events range in etcd on every call — once per health event per
-		// node, which across a fleet peaks exactly during health-event
-		// storms. A cached name narrows the dedupe read to a
-		// metadata.name selector, which the apiserver resolves as a
-		// single-key read (matchesSingle), and which stays within the
-		// chart's existing RBAC (list/create/update — no get). After a
-		// restart the first occurrence of a recurring fault creates one
-		// fresh event instead of incrementing the old one.
+		// An involvedObject LIST is an unindexed full-range etcd scan, so
+		// dedupe via the cached name with a metadata.name selector: a
+		// single-key read that stays within the chart's RBAC (no get verb).
 		if name, ok := r.getCachedNodeEventName(dedupeKey); ok {
 			existingEvents, err := r.clientset.CoreV1().Events(DefaultNamespace).List(ctx, metav1.ListOptions{
 				FieldSelector: fmt.Sprintf("metadata.name=%s", name),
@@ -547,9 +535,8 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, 
 
 					return nil
 				case apierrors.IsNotFound(err):
-					// The event was deleted between the lookup and the
-					// update, so fall through and create a fresh one in
-					// this same attempt rather than losing the write.
+					// Deleted between lookup and update: fall through and
+					// create a fresh event in this same attempt.
 				default:
 					nodeEventOperationsCounter.WithLabelValues(nodeName, OperationUpdate, StatusFailed).Inc()
 					span.AddEvent("platform_connector.k8s.node_event_update_failed", trace.WithAttributes(
@@ -561,9 +548,7 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, 
 				}
 			}
 
-			// Either the lookup returned nothing or the update raced a
-			// deletion: the cached name no longer refers to a live event,
-			// so forget it and create a fresh one below.
+			// The cached name no longer refers to a live event.
 			r.dropCachedNodeEventName(dedupeKey)
 		}
 
