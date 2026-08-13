@@ -43,6 +43,34 @@ import (
 
 // go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
 // source <(setup-envtest use -p env)
+func TestCRDDriverPodInformer(t *testing.T) {
+	clientset := fake.NewSimpleClientset(&corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "crd-driver",
+			Namespace: "gpu-operator",
+			Labels: map[string]string{
+				"app":                "nvidia-gpu-driver-ubuntu22.04-abc123",
+				driverComponentLabel: driverComponentValue,
+			},
+		},
+		Spec: corev1.PodSpec{NodeName: "gpu-node"},
+	})
+
+	informer, err := createCRDDriverInformer(clientset, time.Minute, "nvidia-driver-daemonset")
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go informer.Run(ctx.Done())
+	require.True(t, cache.WaitForCacheSync(ctx.Done(), informer.HasSynced))
+
+	pods, err := informer.GetIndexer().ByIndex(NodeDriverIndex, "gpu-node")
+	require.NoError(t, err)
+	require.Len(t, pods, 1)
+	assert.Equal(t, "crd-driver", pods[0].(*corev1.Pod).Name)
+}
+
 func TestLabeler_handlePodEvent(t *testing.T) {
 	tests := []struct {
 		name                string
@@ -1070,7 +1098,7 @@ func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.Nil(t, labeler.resourceSliceInformer)
-		require.Len(t, labeler.informersSynced, 3)
+		require.Len(t, labeler.informersSynced, 4)
 	})
 
 	t.Run("node-only enabled config does not create ResourceSlice informer", func(t *testing.T) {
@@ -1088,7 +1116,7 @@ func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.Nil(t, labeler.resourceSliceInformer)
-		require.Len(t, labeler.informersSynced, 3)
+		require.Len(t, labeler.informersSynced, 4)
 	})
 
 	t.Run("ResourceSlice expression creates ResourceSlice informer", func(t *testing.T) {
@@ -1106,7 +1134,7 @@ func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.NotNil(t, labeler.resourceSliceInformer)
-		require.Len(t, labeler.informersSynced, 4)
+		require.Len(t, labeler.informersSynced, 5)
 	})
 }
 

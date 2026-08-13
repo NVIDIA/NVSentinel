@@ -51,6 +51,8 @@ const (
 	NodeDCGMIndex               = "nodeDCGM"
 	NodeDriverIndex             = "nodeDriver"
 	NodeGKEDriverInstallerIndex = "nodeGKEDriverInstaller"
+	driverComponentLabel        = "app.kubernetes.io/component"
+	driverComponentValue        = "nvidia-driver"
 	// DCGM major versions used for the dcgm.version label.
 	dcgmVersion3 = "3.x"
 	dcgmVersion4 = "4.x"
@@ -69,6 +71,7 @@ var (
 type Labeler struct {
 	clientset                    kubernetes.Interface
 	podInformer                  cache.SharedIndexInformer
+	crdDriverInformer            cache.SharedIndexInformer
 	nodeInformer                 cache.SharedIndexInformer
 	nodeLister                   listersv1.NodeLister
 	gkeInstallerInformer         cache.SharedIndexInformer
@@ -102,6 +105,11 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		return nil, fmt.Errorf("create pod informer: %w", err)
 	}
 
+	crdDriverInformer, err := createCRDDriverInformer(clientset, resyncPeriod, driverApp)
+	if err != nil {
+		return nil, fmt.Errorf("create CRD driver pod informer: %w", err)
+	}
+
 	gkeInstallerInformer, err := createGKEInstallerInformer(clientset, resyncPeriod, gkeInstallerApp)
 	if err != nil {
 		return nil, fmt.Errorf("create GKE installer informer: %w", err)
@@ -116,6 +124,7 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 
 	informersSynced := []cache.InformerSynced{
 		podInformer.HasSynced,
+		crdDriverInformer.HasSynced,
 		nodeInformer.HasSynced,
 		gkeInstallerInformer.HasSynced,
 	}
@@ -129,6 +138,7 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	l := &Labeler{
 		clientset:                    clientset,
 		podInformer:                  podInformer,
+		crdDriverInformer:            crdDriverInformer,
 		nodeInformer:                 nodeInformer,
 		nodeLister:                   listersv1.NewNodeLister(nodeInformer.GetIndexer()),
 		gkeInstallerInformer:         gkeInstallerInformer,
@@ -200,6 +210,16 @@ func createPodInformer(clientset kubernetes.Interface, resyncPeriod time.Duratio
 		cache.Indexers{
 			NodeDCGMIndex:   podNodeIndexerByLabel("app", dcgmApp),
 			NodeDriverIndex: podNodeIndexerByLabel("app", driverApp),
+		},
+	)
+}
+
+func createCRDDriverInformer(clientset kubernetes.Interface, resyncPeriod time.Duration,
+	driverApp string) (cache.SharedIndexInformer, error) {
+	return createIndexedPodInformer(clientset, resyncPeriod,
+		fmt.Sprintf("%s=%s,app!=%s", driverComponentLabel, driverComponentValue, driverApp),
+		cache.Indexers{
+			NodeDriverIndex: podNodeIndexerByLabel(driverComponentLabel, driverComponentValue),
 		},
 	)
 }
@@ -330,6 +350,17 @@ func (l *Labeler) registerPodEventHandlers() error {
 		return fmt.Errorf("failed to add pod event handler: %w", err)
 	}
 
+	_, err = l.crdDriverInformer.AddEventHandler(cache.FilteringResourceEventHandler{
+		FilterFunc: func(obj any) bool {
+			pod, ok := obj.(*v1.Pod)
+			return ok && pod.Spec.NodeName != ""
+		},
+		Handler: eventHandlers,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to add CRD driver pod event handler: %w", err)
+	}
+
 	_, err = l.gkeInstallerInformer.AddEventHandler(cache.FilteringResourceEventHandler{
 		FilterFunc: func(obj any) bool {
 			pod, ok := obj.(*v1.Pod)
@@ -391,6 +422,7 @@ func (l *Labeler) Run(ctx context.Context) error {
 	l.ctx = ctx
 
 	go l.podInformer.Run(ctx.Done())
+	go l.crdDriverInformer.Run(ctx.Done())
 	go l.gkeInstallerInformer.Run(ctx.Done())
 	go l.nodeInformer.Run(ctx.Done())
 
@@ -600,6 +632,15 @@ func (l *Labeler) getDriverLabelForNode(nodeName string, excludePod *v1.Pod) (st
 	objs, err := l.podInformer.GetIndexer().ByIndex(NodeDriverIndex, nodeName)
 	if err != nil {
 		return "", fmt.Errorf("failed to get driver pods by node index for node %s: %w", nodeName, err)
+	}
+
+	if hasReadyDriverPod(objs, excludePod) {
+		return LabelValueTrue, nil
+	}
+
+	objs, err = l.crdDriverInformer.GetIndexer().ByIndex(NodeDriverIndex, nodeName)
+	if err != nil {
+		return "", fmt.Errorf("failed to get CRD driver pods by node index for node %s: %w", nodeName, err)
 	}
 
 	if hasReadyDriverPod(objs, excludePod) {
