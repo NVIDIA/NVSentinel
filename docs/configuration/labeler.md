@@ -54,6 +54,15 @@ labeler:
   logLevel: info  # Options: debug, info, warn, error
 ```
 
+## Pre-Installed Drivers
+
+Assumes NVIDIA drivers are installed directly on the host rather than via GPU Operator driver containers. When enabled, the labeler sets `nvsentinel.dgxc.nvidia.com/driver.installed=true` on all GPU nodes it manages (`nvidia.com/gpu.present=true`; nodes opted out with `nvsentinel.dgxc.nvidia.com/managed=false` — for example during external remediation — are excluded), skipping driver pod detection.
+
+```yaml
+labeler:
+  assumeDriverInstalled: false
+```
+
 ## DCGM Bootstrap Gating
 
 Controls whether the DCGM pod must be ready before the DCGM version label is set for the first time on a node.
