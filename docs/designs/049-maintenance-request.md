@@ -245,7 +245,7 @@ sequenceDiagram
     ND->>Node: drain workloads (evicted)
     FR->>Rem: create remediation CR
     Rem->>Node: run remediation (independent lifecycle)
-    Note over Req: maintenance happens; MR persists throughout
+    Note over Req: maintenance happens, MR persists throughout
     Req->>MR: delete MaintenanceRequest
     Note over MR: finalizer runs
     MR->>PC: emit isHealthy=true clearing event
