@@ -1,0 +1,132 @@
+
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/nvidia/nvsentinel/lifecycle-manager
+  pullPolicy: IfNotPresent
+  tag: ""
+
+nameOverride: ""
+fullNameOverride: "lifecycle-manager"
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+imagePullSecrets: []
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+
+securityContext: {}
+
+resources: {}
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+extraEnv: []
+
+# We define the config as a Helm map rather than as an embedded ValidationConfiguration
+# yaml string so that we can range over config.providers in the lifecycle-manager ClusterRole
+# to automatically generate the lifecycle-manager ClusterRole
+config:
+  schedulingGate:
+    cordon:
+      remove: true
+  readinessCriteria:
+    - name: gpu-allocatable
+      expression: 'node.status.allocatable["nvidia.com/gpu"] > 0'
+    - name: not-under-quarantine
+      expression: '!("nvsentinel.nvidia.com/quarantineHealthEvent" in node.metadata.annotations)'
+  defaultTests:
+    - dcgm-diag-test
+  templateMountPath: /etc/nvsentinel/templates
+  providers:
+    k8s-job-provider:
+      apiGroup: "batch"
+      version: "v1"
+      kind: "Job"
+      resource: "jobs"
+      templateFile: k8s-job-template.yaml
+      supportsTestBatching: false
+      retries: 5
+      timeout: 30m
+      successfulCondition:
+        type: Complete
+        status: "True"
+      failedCondition:
+        type: Failed
+        status: "True"
+  maxConcurrentGroups: 3
+  tests:
+    dcgm-diag-test:
+      provider: k8s-job-provider
+      image: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag
+      supportsBatchingNodes: false
+      minimumNodesPerBatch: 1
+      batchFailurePolicy: fail
+
+  templates:
+    "k8s-job-template.yaml": |
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: {{.ValidationRequestName}}-{{.TestGroupName}}
+        namespace: {{.Namespace}}
+      spec:
+        activeDeadlineSeconds: {{.Timeout}}
+        template:
+          spec:
+            runtimeClassName: nvidia
+            nodeName: {{(index .Nodes 0).NodeName}}
+            restartPolicy: Never
+            containers:
+              - name: test
+                image: {{.Image}}
+                command: {{.Command}}
+  
+controllers:
+  validationRequest:
+    enabled: true
+
+leaderElection:
+  enabled: true
+
+webhook:
+  port: 9443
+  certDir: "/tmp/k8s-webhook-server/serving-certs"
+  certIssuer: "lifecycle-manager-selfsigned-issuer"
+  certProvider: cert-manager
+
+metrics:
+  tls:
+    enabled: false
+    certDir: "/tmp/k8s-metrics-server/metrics-certs"
+    issuerName: ""
+    issuerKind: "Issuer"
+    issuerGroup: ""
+    duration: "2160h"
+    renewBefore: "720h"
+    organization: "NVIDIA"
