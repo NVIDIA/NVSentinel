@@ -511,23 +511,16 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, 
 		return apierrors.IsConflict(err) || isTemporaryError(err)
 	}, func() error {
 		// An involvedObject LIST is an unindexed full-range etcd scan, so
-		// dedupe via the cached name with a metadata.name selector: a
-		// single-key read that stays within the chart's RBAC (no get verb).
+		// dedupe via the cached name: a single-key GET.
 		if name, ok := r.getCachedNodeEventName(dedupeKey); ok {
-			existingEvents, err := r.clientset.CoreV1().Events(DefaultNamespace).List(ctx, metav1.ListOptions{
-				FieldSelector: fmt.Sprintf("metadata.name=%s", name),
-			})
-			if err != nil {
-				return fmt.Errorf("failed to look up event %s for node %s: %w", name, nodeName, err)
-			}
+			existingEvent, getErr := r.clientset.CoreV1().Events(DefaultNamespace).Get(ctx, name, metav1.GetOptions{})
 
-			if len(existingEvents.Items) > 0 {
-				// Matching event found, update it
-				existingEvent := &existingEvents.Items[0]
+			switch {
+			case getErr == nil:
 				existingEvent.Count++
 				existingEvent.LastTimestamp = event.LastTimestamp
 
-				_, err = r.clientset.CoreV1().Events(DefaultNamespace).Update(ctx, existingEvent, metav1.UpdateOptions{})
+				_, err := r.clientset.CoreV1().Events(DefaultNamespace).Update(ctx, existingEvent, metav1.UpdateOptions{})
 
 				switch {
 				case err == nil:
@@ -546,6 +539,10 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, 
 
 					return fmt.Errorf("failed to update event for node %s: %w", nodeName, err)
 				}
+			case apierrors.IsNotFound(getErr):
+				// Stale cache entry: fall through and create a fresh event.
+			default:
+				return fmt.Errorf("failed to look up event %s for node %s: %w", name, nodeName, getErr)
 			}
 
 			// The cached name no longer refers to a live event.
