@@ -78,13 +78,28 @@ Indicates which major version of DCGM is running on the node.
 **Label**: `nvsentinel.dgxc.nvidia.com/driver.installed`
 **Values**: `true` or `false`
 
-Indicates whether the NVIDIA driver is installed on the node. The Labeler detects drivers by watching for:
-- `nvidia-driver-daemonset` pods (GPU Operator managed)
-- `nvidia-driver-installer` pods in `kube-system` (GKE managed)
+Indicates whether the NVIDIA driver is installed on the node. The Labeler detects drivers in three tiers, in order:
+1. `nvidia-driver-daemonset` pods (GPU Operator managed)
+2. `nvidia-driver-installer` pods in `kube-system` (GKE managed)
+3. GPU Feature Discovery node labels, when no driver DaemonSet schedules onto the node and the node has no driver pod
 
 In GKE clusters with pre-installed drivers, the `nvidia-driver-daemonset` is not deployed. Instead, Google manages driver installation through `nvidia-driver-installer` DaemonSet pods. The Labeler watches these pods to detect driver installation in GKE environments with pre-installed drivers.
 
-**Note**: For environments with pre-installed drivers where no `nvidia-driver-installer` pods exist (e.g., custom machine images with pre-baked drivers), use the following command to manually label the node:
+On platforms where the driver ships in the node image and the GPU Operator runs with `driver.enabled=false` — such as AKS with the "Driver only" node image, GKE on Container-Optimized OS, and OKE — no driver pod exists at all. In that case the Labeler falls back to the labels GPU Feature Discovery publishes from the host driver, and sets `driver.installed=true` when the node carries both `nvidia.com/gpu.present=true` and a non-empty `nvidia.com/cuda.driver-version.full`.
+
+The fallback is gated on whether a driver DaemonSet schedules onto the node. Whenever a DaemonSet that owns driver pods targets the node, pod readiness remains authoritative and this tier never fires.
+
+A driver DaemonSet is recognized two ways, because the GPU Operator has two render paths. Its legacy asset hardcodes the `app: nvidia-driver-daemonset` selector, which the configured driver and GKE installer app labels match directly. Its NVIDIADriver CRD path instead generates both the DaemonSet name and the `app` selector value per driver instance (`nvidia-<driverType>-driver-<os>-<hash>`), which no fixed label match can catch; those are recognized by the `app.kubernetes.io/component` label (`nvidia-driver` or `nvidia-vgpu-host-manager`) that both paths put on the pod template.
+
+Targeting is evaluated per node rather than cluster-wide, using the DaemonSet pod template's `nodeSelector` and required `nodeAffinity` against the node, exactly as the upstream DaemonSet controller does. Driver install mode is not always a cluster-wide choice: on GKE it is selected per node pool, so a cluster can run automatic driver installation on one pool while another pool runs Google's manual installer DaemonSet, whose required node affinity excludes the automatically-installed nodes. A cluster-wide check would let that DaemonSet suppress detection on pools it never schedules onto.
+
+DaemonSet existence rather than pod presence is the gate because absence from the pod index is not evidence that no pod source exists. A driver pod is indexed only once it is bound to a node, and the Labeler's pod update handler reacts only to readiness transitions, so the binding of a still-unready replacement pod is not observed. Under the GPU Operator's `OnDelete` update strategy a driver upgrade deletes the driver pod outright, and a replacement that never becomes ready produces no further event. The DaemonSet object is unaffected by that pod churn, so an unready, unloading, deleted or permanently stuck driver pod is never papered over by node labels left behind from the previous driver.
+
+A driver pod without a DaemonSet behind it gates the fallback the same way. The tier also stays inert until every informer cache has synced, since it infers installation from an absence of evidence.
+
+**Limitation.** `nvidia.com/cuda.driver-version.full` is published from an NVML read, so tier 3 keys on a signal of driver *functionality* rather than driver *installation* — the distinction drawn in [design 018](designs/018-syslog-monitor-preinstalled-driver-support.md). On a pre-installed-driver platform where the driver is installed but too broken for GFD to query it, the label is not set and the syslog monitors that would capture those errors do not schedule. Label such nodes manually using the command below. Tiers 1 and 2 are unaffected: they key on pod existence and readiness, not on NVML.
+
+**Note**: For environments where neither a driver pod nor GPU Feature Discovery labels are available (for example, custom machine images with pre-baked drivers and `gfd.enabled=false`), use the following command to manually label the node:
 
 ```bash
 kubectl label nodes {node-name} nvsentinel.dgxc.nvidia.com/driver.installed=true

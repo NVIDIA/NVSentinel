@@ -25,11 +25,13 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	listersv1 "k8s.io/client-go/listers/core/v1"
@@ -1070,7 +1072,7 @@ func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.Nil(t, labeler.resourceSliceInformer)
-		require.Len(t, labeler.informersSynced, 3)
+		require.Len(t, labeler.informersSynced, 4)
 	})
 
 	t.Run("node-only enabled config does not create ResourceSlice informer", func(t *testing.T) {
@@ -1088,7 +1090,7 @@ func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.Nil(t, labeler.resourceSliceInformer)
-		require.Len(t, labeler.informersSynced, 3)
+		require.Len(t, labeler.informersSynced, 4)
 	})
 
 	t.Run("ResourceSlice expression creates ResourceSlice informer", func(t *testing.T) {
@@ -1106,7 +1108,7 @@ func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.NotNil(t, labeler.resourceSliceInformer)
-		require.Len(t, labeler.informersSynced, 4)
+		require.Len(t, labeler.informersSynced, 5)
 	})
 }
 
@@ -1961,10 +1963,10 @@ func TestReconcileNodeLabelsInPlace_ManagedGate(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "opted-out-node",
 				Labels: map[string]string{
-					managed.ManagedLabelKey:  managed.ManagedLabelValueFalse,
-					DCGMVersionLabel:         "3.x",
-					DriverInstalledLabel:     "true",
-					KataEnabledLabel:         "true",
+					managed.ManagedLabelKey: managed.ManagedLabelValueFalse,
+					DCGMVersionLabel:        "3.x",
+					DriverInstalledLabel:    "true",
+					KataEnabledLabel:        "true",
 				},
 			},
 		}
@@ -2070,4 +2072,432 @@ func TestUpdateNodeLabelsForPod_ManagedGate(t *testing.T) {
 		assert.NotContains(t, updated.Labels, DriverInstalledLabel,
 			"lister error must not stamp labels on node")
 	})
+}
+
+// driverPodOnNode builds a driver pod scheduled on nodeName with the given
+// readiness, using the label key/value the corresponding informer indexes on.
+func driverPodOnNode(name, labelKey, labelValue, nodeName string, ready bool) *corev1.Pod {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			// A distinct UID per pod name keeps delete-event exclusion honest:
+			// isTargetPod compares UIDs, so empty UIDs would let any pod match.
+			UID:    types.UID("uid-" + name),
+			Labels: map[string]string{labelKey: labelValue},
+		},
+		Spec: corev1.PodSpec{NodeName: nodeName},
+	}
+
+	condition := corev1.ConditionFalse
+	if ready {
+		condition = corev1.ConditionTrue
+	}
+
+	pod.Status.Conditions = []corev1.PodCondition{
+		{Type: corev1.PodReady, Status: condition},
+	}
+
+	return pod
+}
+
+// driverDaemonSet builds a DaemonSet whose pod selector matches the given pod
+// label, mirroring how the GPU Operator and the GKE driver installer own their
+// driver pods.
+func driverDaemonSet(name, labelKey, labelValue string) *appsv1.DaemonSet {
+	return driverDaemonSetWithTemplate(name, labelKey, labelValue, corev1.PodSpec{})
+}
+
+// driverDaemonSetWithTemplate builds a driver DaemonSet whose pod template carries
+// the given scheduling constraints.
+func driverDaemonSetWithTemplate(name, labelKey, labelValue string, spec corev1.PodSpec) *appsv1.DaemonSet {
+	return &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "gpu-operator"},
+		Spec: appsv1.DaemonSetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{labelKey: labelValue}},
+			Template: corev1.PodTemplateSpec{Spec: spec},
+		},
+	}
+}
+
+const (
+	// gkeGPUDriverVersionLabel is set by GKE on nodes whose driver it installed
+	// automatically; gkeAcceleratorLabel marks a GKE GPU node.
+	gkeGPUDriverVersionLabel = "cloud.google.com/gke-gpu-driver-version"
+	gkeAcceleratorLabel      = "cloud.google.com/gke-accelerator"
+)
+
+// gkeInstallerDaemonSet mirrors Google's manual driver installer DaemonSet from
+// container-engine-accelerators (nvidia-driver-installer/cos/daemonset-preloaded.yaml).
+// Its required node affinity deliberately excludes nodes that GKE installed a
+// driver on automatically, which is what makes driver install mode a per-node-pool
+// choice rather than a cluster-wide one.
+func gkeInstallerDaemonSet() *appsv1.DaemonSet {
+	return driverDaemonSetWithTemplate("nvidia-driver-installer", "k8s-app", "nvidia-driver-installer", corev1.PodSpec{
+		Affinity: &corev1.Affinity{
+			NodeAffinity: &corev1.NodeAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+					NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "cloud.google.com/gke-accelerator",
+								Operator: corev1.NodeSelectorOpExists,
+							},
+							{
+								Key:      gkeGPUDriverVersionLabel,
+								Operator: corev1.NodeSelectorOpDoesNotExist,
+							},
+						},
+					}},
+				},
+			},
+		},
+	})
+}
+
+// generatedDriverDaemonSet mirrors the GPU Operator's NVIDIADriver CRD render
+// path (manifests/state-driver/0500_daemonset.yaml), where metadata.name and
+// spec.selector.matchLabels.app are both set to the generated driver app name
+// nvidia-<driverType>-driver-<os>-<hash>, and the pod template carries the
+// well-known component label.
+func generatedDriverDaemonSet(component string) *appsv1.DaemonSet {
+	const appName = "nvidia-gpu-driver-ubuntu24.04-6b8f4c9d7"
+
+	daemonSet := driverDaemonSet(appName, "app", appName)
+	daemonSet.Spec.Template.Labels = map[string]string{
+		"app":          appName,
+		componentLabel: component,
+	}
+
+	return daemonSet
+}
+
+// withNodeSelector adds a pod template nodeSelector to a DaemonSet fixture.
+func withNodeSelector(daemonSet *appsv1.DaemonSet, nodeSelector map[string]string) *appsv1.DaemonSet {
+	daemonSet.Spec.Template.Spec.NodeSelector = nodeSelector
+
+	return daemonSet
+}
+
+// nodeLabelsWith returns the GFD labels plus the given extras.
+func nodeLabelsWith(base map[string]string, extra map[string]string) map[string]string {
+	merged := map[string]string{}
+	for k, v := range base {
+		merged[k] = v
+	}
+
+	for k, v := range extra {
+		merged[k] = v
+	}
+
+	return merged
+}
+
+// TestGetDriverLabelForNode_HostInstalledDriver_UsesGFDLabels covers driver detection when the
+// driver is installed by the node image rather than by a driver pod. On those
+// platforms the GPU Operator runs with driver.enabled=false, so no driver pod
+// ever exists and the labeler must fall back to the driver version GPU Feature
+// Discovery publishes. Pod-based detection must keep its existing precedence.
+func TestGetDriverLabelForNode_HostInstalledDriver_UsesGFDLabels(t *testing.T) {
+	const nodeName = "gpu-node"
+
+	gfdLabels := map[string]string{
+		gpuPresentLabel:        LabelValueTrue,
+		CUDADriverVersionLabel: "580.159.04",
+	}
+
+	tests := []struct {
+		name       string
+		node       *corev1.Node
+		pods       []*corev1.Pod
+		daemonSets []*appsv1.DaemonSet
+		excludePod *corev1.Pod
+		want       string
+	}{
+		{
+			name: "ready driver pod sets label without GFD labels",
+			node: &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: map[string]string{}}},
+			pods: []*corev1.Pod{
+				driverPodOnNode("driver", "app", "nvidia-driver-daemonset", nodeName, true),
+			},
+			want: LabelValueTrue,
+		},
+		{
+			name: "ready driver pod sets label with GFD labels",
+			node: &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: gfdLabels}},
+			pods: []*corev1.Pod{
+				driverPodOnNode("driver", "app", "nvidia-driver-daemonset", nodeName, true),
+			},
+			want: LabelValueTrue,
+		},
+		{
+			name: "unready driver pod is not masked by GFD labels",
+			node: &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: gfdLabels}},
+			pods: []*corev1.Pod{
+				driverPodOnNode("driver", "app", "nvidia-driver-daemonset", nodeName, false),
+			},
+			want: "",
+		},
+		{
+			name: "unready GKE installer pod is not masked by GFD labels",
+			node: &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: gfdLabels}},
+			pods: []*corev1.Pod{
+				driverPodOnNode("installer", "k8s-app", "nvidia-driver-installer", nodeName, false),
+			},
+			want: "",
+		},
+		{
+			name: "no driver pod falls back to GFD labels",
+			node: &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: gfdLabels}},
+			want: LabelValueTrue,
+		},
+		{
+			// Models a standalone (non-DaemonSet) driver pod being deleted. The pod is
+			// left in the index by hand: a real informer removes the object from the
+			// store before OnDelete fires, so this exercises the exclusion argument
+			// rather than reproducing the callback exactly. The supported deletion
+			// cases are covered by the DaemonSet gate above.
+			name: "deleted driver pod is not masked by GFD labels",
+			node: &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: gfdLabels}},
+			pods: []*corev1.Pod{
+				driverPodOnNode("driver", "app", "nvidia-driver-daemonset", nodeName, true),
+			},
+			excludePod: driverPodOnNode("driver", "app", "nvidia-driver-daemonset", nodeName, true),
+			want:       "",
+		},
+		{
+			name: "stuck replacement driver pod is not masked by GFD labels",
+			node: &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: gfdLabels}},
+			// The driver pod was deleted for an OnDelete upgrade and its replacement
+			// never became ready, so no driver pod is indexed for this node and no
+			// further pod event will fire. Only the DaemonSet still proves the
+			// driver is pod-managed.
+			daemonSets: []*appsv1.DaemonSet{driverDaemonSet("nvidia-driver-daemonset", "app", "nvidia-driver-daemonset")},
+			want:       "",
+		},
+		{
+			// NVIDIADriver CRD render path: the DaemonSet name AND its app selector
+			// value are both generated per driver instance, so no fixed label set
+			// matches. The component label is what recognizes it.
+			name:       "driver DaemonSet with generated selector is not masked by GFD labels",
+			node:       &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: gfdLabels}},
+			daemonSets: []*appsv1.DaemonSet{generatedDriverDaemonSet(driverComponent)},
+			want:       "",
+		},
+		{
+			name:       "vGPU host manager DaemonSet is not masked by GFD labels",
+			node:       &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: gfdLabels}},
+			daemonSets: []*appsv1.DaemonSet{generatedDriverDaemonSet(vGPUHostManagerComponent)},
+			want:       "",
+		},
+		{
+			// A generated-selector DaemonSet is still evaluated per node.
+			name: "generated-selector driver DaemonSet that does not target the node does not block the fallback",
+			node: &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: gfdLabels}},
+			daemonSets: []*appsv1.DaemonSet{withNodeSelector(
+				generatedDriverDaemonSet(driverComponent),
+				map[string]string{"nvidia.com/gpu.deploy.driver": "true"},
+			)},
+			want: LabelValueTrue,
+		},
+		{
+			// Manual-install GKE pool: the installer DaemonSet's affinity admits this
+			// node, so its missing pod must not be papered over by GFD labels.
+			name: "GKE installer DaemonSet with no indexed pod is not masked by GFD labels",
+			node: &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: nodeLabelsWith(gfdLabels, map[string]string{
+				gkeAcceleratorLabel: "nvidia-h100-80gb",
+			})}},
+			daemonSets: []*appsv1.DaemonSet{gkeInstallerDaemonSet()},
+			want:       "",
+		},
+		{
+			// Mixed GKE cluster: this node is in an automatic-install pool, so the
+			// manual installer DaemonSet in the other pool never schedules here and
+			// must not suppress detection.
+			name: "GKE installer DaemonSet does not gate an automatic-install node",
+			node: &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: nodeLabelsWith(gfdLabels, map[string]string{
+				gkeAcceleratorLabel:      "nvidia-h100-80gb",
+				gkeGPUDriverVersionLabel: "default",
+			})}},
+			daemonSets: []*appsv1.DaemonSet{gkeInstallerDaemonSet()},
+			want:       LabelValueTrue,
+		},
+		{
+			// A driver DaemonSet that does not schedule onto this node says nothing
+			// about how this node's driver was installed.
+			name: "driver DaemonSet that does not target the node does not block the fallback",
+			node: &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: gfdLabels}},
+			daemonSets: []*appsv1.DaemonSet{driverDaemonSetWithTemplate(
+				"nvidia-driver-daemonset", "app", "nvidia-driver-daemonset",
+				corev1.PodSpec{NodeSelector: map[string]string{"nvidia.com/gpu.deploy.driver": "true"}},
+			)},
+			want: LabelValueTrue,
+		},
+		{
+			// Same DaemonSet, but this node is one it schedules onto.
+			name: "driver DaemonSet that targets the node blocks the fallback",
+			node: &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: nodeLabelsWith(gfdLabels, map[string]string{
+				"nvidia.com/gpu.deploy.driver": "true",
+			})}},
+			daemonSets: []*appsv1.DaemonSet{driverDaemonSetWithTemplate(
+				"nvidia-driver-daemonset", "app", "nvidia-driver-daemonset",
+				corev1.PodSpec{NodeSelector: map[string]string{"nvidia.com/gpu.deploy.driver": "true"}},
+			)},
+			want: "",
+		},
+		{
+			name: "unscheduled driver pod is not masked by GFD labels",
+			node: &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: gfdLabels}},
+			// An unbound pod indexes to no node at all, and its later binding is
+			// invisible because the pod UpdateFunc only reacts to readiness
+			// transitions. Only the DaemonSet gate sees the pod source.
+			pods:       []*corev1.Pod{driverPodOnNode("driver", "app", "nvidia-driver-daemonset", "", false)},
+			daemonSets: []*appsv1.DaemonSet{driverDaemonSet("nvidia-driver-daemonset", "app", "nvidia-driver-daemonset")},
+			want:       "",
+		},
+		{
+			name:       "unrelated DaemonSet does not block the fallback",
+			node:       &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: gfdLabels}},
+			daemonSets: []*appsv1.DaemonSet{driverDaemonSet("nvidia-dcgm", "app", "nvidia-dcgm")},
+			want:       LabelValueTrue,
+		},
+		{
+			name: "driver version without gpu.present does not set label",
+			node: &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: map[string]string{
+				CUDADriverVersionLabel: "580.159.04",
+			}}},
+			want: "",
+		},
+		{
+			name: "gpu.present without driver version does not set label",
+			node: &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: map[string]string{
+				gpuPresentLabel: LabelValueTrue,
+			}}},
+			want: "",
+		},
+		{
+			name: "blank driver version does not set label",
+			node: &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: map[string]string{
+				gpuPresentLabel:        LabelValueTrue,
+				CUDADriverVersionLabel: "   ",
+			}}},
+			want: "",
+		},
+		{
+			name: "node missing from cache does not set label",
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l, err := NewLabeler(
+				fake.NewSimpleClientset(),
+				time.Minute,
+				"nvidia-dcgm",
+				"nvidia-driver-daemonset",
+				"nvidia-driver-installer",
+				"",
+				false,
+				false,
+				devicecounts.Config{},
+				false,
+			)
+			require.NoError(t, err)
+
+			// getDriverLabelForNode is exercised directly, without running the
+			// informers, so report the caches as synced: tier 3 is gated on it.
+			l.informersSynced = []cache.InformerSynced{func() bool { return true }}
+
+			if tt.node != nil {
+				require.NoError(t, l.nodeInformer.GetStore().Add(tt.node))
+			}
+
+			for _, pod := range tt.pods {
+				if pod.Labels["k8s-app"] != "" {
+					require.NoError(t, l.gkeInstallerInformer.GetIndexer().Add(pod))
+					continue
+				}
+
+				require.NoError(t, l.podInformer.GetIndexer().Add(pod))
+			}
+
+			for _, daemonSet := range tt.daemonSets {
+				require.NoError(t, l.daemonSetInformer.GetStore().Add(daemonSet))
+			}
+
+			got, err := l.getDriverLabelForNode(nodeName, tt.excludePod)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestGetDriverLabelForNode_CachesNotSynced_DoesNotUseGFDLabels verifies that the
+// host-installed driver fallback stays inert until every cache has synced. Tier 3
+// infers installation from the absence of a driver pod source, and during the
+// initial list an empty index means "not seen yet" rather than "does not exist".
+func TestGetDriverLabelForNode_CachesNotSynced_DoesNotUseGFDLabels(t *testing.T) {
+	l, err := NewLabeler(
+		fake.NewSimpleClientset(),
+		time.Minute,
+		"nvidia-dcgm",
+		"nvidia-driver-daemonset",
+		"nvidia-driver-installer",
+		"",
+		false,
+		false,
+		devicecounts.Config{},
+		false,
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, l.nodeInformer.GetStore().Add(&corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "gpu-node", Labels: map[string]string{
+			gpuPresentLabel:        LabelValueTrue,
+			CUDADriverVersionLabel: "580.159.04",
+		}},
+	}))
+
+	l.informersSynced = []cache.InformerSynced{func() bool { return false }}
+
+	got, err := l.getDriverLabelForNode("gpu-node", nil)
+	require.NoError(t, err)
+	require.Empty(t, got, "fallback must not fire before caches sync")
+
+	l.informersSynced = []cache.InformerSynced{func() bool { return true }}
+
+	got, err = l.getDriverLabelForNode("gpu-node", nil)
+	require.NoError(t, err)
+	require.Equal(t, LabelValueTrue, got, "fallback must fire once caches are synced")
+}
+
+// TestNodeRequiresReconciliation_DriverVersionLabelChanged_ReturnsTrue verifies that a node gaining
+// or losing the GFD driver version label re-triggers reconciliation, so the
+// host-installed driver fallback reacts to GFD label changes.
+func TestNodeRequiresReconciliation_DriverVersionLabelChanged_ReturnsTrue(t *testing.T) {
+	l, err := NewLabeler(
+		fake.NewSimpleClientset(),
+		time.Minute,
+		"nvidia-dcgm",
+		"nvidia-driver-daemonset",
+		"nvidia-driver-installer",
+		"",
+		false,
+		false,
+		devicecounts.Config{},
+		false,
+	)
+	require.NoError(t, err)
+
+	oldNode := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "gpu-node", Labels: map[string]string{
+		gpuPresentLabel: LabelValueTrue,
+	}}}
+	newNode := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "gpu-node", Labels: map[string]string{
+		gpuPresentLabel:        LabelValueTrue,
+		CUDADriverVersionLabel: "580.159.04",
+	}}}
+
+	require.True(t, l.nodeRequiresReconciliation(oldNode, newNode))
+	require.True(t, l.nodeRequiresReconciliation(newNode, oldNode))
+	require.False(t, l.nodeRequiresReconciliation(newNode, newNode.DeepCopy()))
 }

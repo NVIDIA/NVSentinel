@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,6 +32,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/component-helpers/scheduling/corev1/nodeaffinity"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 
 	listersv1 "k8s.io/client-go/listers/core/v1"
@@ -42,11 +44,20 @@ import (
 )
 
 const (
-	DCGMVersionLabel                 = "nvsentinel.dgxc.nvidia.com/dcgm.version"
-	DriverInstalledLabel             = "nvsentinel.dgxc.nvidia.com/driver.installed"
-	KataEnabledLabel                 = "nvsentinel.dgxc.nvidia.com/kata.enabled"
-	KataRuntimeDefaultLabel          = "katacontainers.io/kata-runtime"
+	DCGMVersionLabel        = "nvsentinel.dgxc.nvidia.com/dcgm.version"
+	DriverInstalledLabel    = "nvsentinel.dgxc.nvidia.com/driver.installed"
+	KataEnabledLabel        = "nvsentinel.dgxc.nvidia.com/kata.enabled"
+	KataRuntimeDefaultLabel = "katacontainers.io/kata-runtime"
+	// CUDADriverVersionLabel is published by GPU Feature Discovery from the driver
+	// loaded on the host, independent of whether the GPU Operator installed it.
+	CUDADriverVersionLabel           = "nvidia.com/cuda.driver-version.full"
 	DCGMBootstrapCompletedAnnotation = "nvsentinel.dgxc.nvidia.com/dcgm-bootstrap-completed"
+
+	// componentLabel and its driver values identify a GPU Operator driver
+	// DaemonSet whose app selector value is generated per driver instance.
+	componentLabel           = "app.kubernetes.io/component"
+	driverComponent          = "nvidia-driver"
+	vGPUHostManagerComponent = "nvidia-vgpu-host-manager"
 
 	NodeDCGMIndex               = "nodeDCGM"
 	NodeDriverIndex             = "nodeDriver"
@@ -72,7 +83,9 @@ type Labeler struct {
 	nodeInformer                 cache.SharedIndexInformer
 	nodeLister                   listersv1.NodeLister
 	gkeInstallerInformer         cache.SharedIndexInformer
+	daemonSetInformer            cache.SharedIndexInformer
 	resourceSliceInformer        cache.SharedIndexInformer
+	driverPodLabelSets           []labels.Set
 	informersSynced              []cache.InformerSynced
 	ctx                          context.Context
 	kataLabels                   []string
@@ -109,6 +122,8 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 
 	nodeInformer := createNodeInformer(clientset, resyncPeriod)
 
+	daemonSetInformer := createDaemonSetInformer(clientset, resyncPeriod)
+
 	deviceCounts, err := devicecounts.NewManager(expectedDeviceCounts)
 	if err != nil {
 		return nil, fmt.Errorf("create expected device count manager: %w", err)
@@ -118,6 +133,7 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		podInformer.HasSynced,
 		nodeInformer.HasSynced,
 		gkeInstallerInformer.HasSynced,
+		daemonSetInformer.HasSynced,
 	}
 
 	var resourceSliceInformer cache.SharedIndexInformer
@@ -127,12 +143,17 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	}
 
 	l := &Labeler{
-		clientset:                    clientset,
-		podInformer:                  podInformer,
-		nodeInformer:                 nodeInformer,
-		nodeLister:                   listersv1.NewNodeLister(nodeInformer.GetIndexer()),
-		gkeInstallerInformer:         gkeInstallerInformer,
-		resourceSliceInformer:        resourceSliceInformer,
+		clientset:             clientset,
+		podInformer:           podInformer,
+		nodeInformer:          nodeInformer,
+		nodeLister:            listersv1.NewNodeLister(nodeInformer.GetIndexer()),
+		gkeInstallerInformer:  gkeInstallerInformer,
+		daemonSetInformer:     daemonSetInformer,
+		resourceSliceInformer: resourceSliceInformer,
+		driverPodLabelSets: []labels.Set{
+			{"app": driverApp},
+			{"k8s-app": gkeInstallerApp},
+		},
 		informersSynced:              informersSynced,
 		ctx:                          context.Background(),
 		kataLabels:                   buildKataLabels(kataLabelOverride),
@@ -166,7 +187,60 @@ func (l *Labeler) registerEventHandlers() error {
 		return fmt.Errorf("register ResourceSlice event handlers: %w", err)
 	}
 
+	if err := l.registerDaemonSetEventHandlers(); err != nil {
+		return fmt.Errorf("register DaemonSet event handlers: %w", err)
+	}
+
 	return nil
+}
+
+// registerDaemonSetEventHandlers reconciles every node when a driver DaemonSet
+// appears or disappears, so a cluster that switches between operator-installed
+// and node-image-installed drivers converges without waiting for unrelated pod
+// or node events.
+func (l *Labeler) registerDaemonSetEventHandlers() error {
+	reconcile := func(obj any) {
+		if !l.allInformersSynced() {
+			// Startup reconciliation covers the initial listing.
+			return
+		}
+
+		slog.Info("Driver DaemonSet added or removed, reconciling driver labels on all nodes")
+		l.reconcileAllNodes()
+	}
+
+	_, err := l.daemonSetInformer.AddEventHandler(cache.FilteringResourceEventHandler{
+		FilterFunc: func(obj any) bool {
+			daemonSet, ok := driverDaemonSetFromObj(obj)
+			if !ok {
+				return false
+			}
+
+			return l.ownsDriverPods(daemonSet)
+		},
+		Handler: cache.ResourceEventHandlerFuncs{
+			AddFunc:    reconcile,
+			DeleteFunc: reconcile,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to add DaemonSet event handler: %w", err)
+	}
+
+	return nil
+}
+
+// driverDaemonSetFromObj extracts a DaemonSet from an informer event object,
+// unwrapping the tombstone delivered when a delete was missed while the watch
+// was disconnected.
+func driverDaemonSetFromObj(obj any) (*appsv1.DaemonSet, bool) {
+	if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+		obj = tombstone.Obj
+	}
+
+	daemonSet, ok := obj.(*appsv1.DaemonSet)
+
+	return daemonSet, ok
 }
 
 // logConfiguration emits the labeler's effective configuration at startup.
@@ -179,7 +253,8 @@ func (l *Labeler) logConfiguration() {
 		slog.Info("Labeler configured to reconcile expected device count labels", "classes", l.deviceCounts.ClassCount())
 	}
 
-	slog.Info("Labeler created, watching DCGM and driver pods and nodes for kata detection",
+	slog.Info("Labeler created, watching DCGM and driver pods and nodes for kata "+
+		"and host-installed driver detection",
 		"requireDCGMReadyForBootstrap", l.requireDCGMReadyForBootstrap,
 		"assumeDCGMAvailable", l.assumeDCGMAvailable)
 }
@@ -260,6 +335,14 @@ func podNodeIndexerByLabel(labelKey, labelValue string) cache.IndexFunc {
 func createNodeInformer(clientset kubernetes.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
 	factory := informers.NewSharedInformerFactory(clientset, resyncPeriod)
 	return factory.Core().V1().Nodes().Informer()
+}
+
+// createDaemonSetInformer watches DaemonSets cluster-wide so driver detection can
+// tell a cluster whose drivers are pod-managed from one whose drivers ship in the
+// node image, independently of whether driver pods happen to exist right now.
+func createDaemonSetInformer(clientset kubernetes.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
+	factory := informers.NewSharedInformerFactory(clientset, resyncPeriod)
+	return factory.Apps().V1().DaemonSets().Informer()
 }
 
 func createResourceSliceInformer(clientset kubernetes.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
@@ -393,6 +476,7 @@ func (l *Labeler) Run(ctx context.Context) error {
 	go l.podInformer.Run(ctx.Done())
 	go l.gkeInstallerInformer.Run(ctx.Done())
 	go l.nodeInformer.Run(ctx.Done())
+	go l.daemonSetInformer.Run(ctx.Done())
 
 	if l.resourceSliceInformer != nil {
 		go l.resourceSliceInformer.Run(ctx.Done())
@@ -483,10 +567,11 @@ func normalizeDCGMVersion(version string) string {
 	}
 }
 
-// hasReadyDriverPod checks if any pod in the list is ready, optionally excluding a specific pod
-func hasReadyDriverPod(objs []any, excludePod *v1.Pod) bool {
+// hasDriverPod checks if any pod in the list is a driver pod, optionally
+// requiring readiness and optionally excluding a specific pod.
+func hasDriverPod(objs []any, excludePod *v1.Pod, requireReady bool) bool {
 	for _, obj := range objs {
-		isTarget, _ := isTargetPod(obj, true, excludePod)
+		isTarget, _ := isTargetPod(obj, requireReady, excludePod)
 		if isTarget {
 			return true
 		}
@@ -498,7 +583,9 @@ func hasReadyDriverPod(objs []any, excludePod *v1.Pod) bool {
 // nodeRequiresReconciliation returns true only when a node update changed an
 // input label the labeler reads from nodes. DCGM and driver labels are driven
 // by pod events, so the node UpdateFunc only needs to react to changes in kata
-// detection labels and the gpu-present label (for assumeDriverInstalled mode).
+// detection labels, the gpu-present label (for assumeDriverInstalled mode and
+// host-installed driver detection) and the GFD driver version label (for
+// host-installed driver detection).
 func (l *Labeler) nodeRequiresReconciliation(oldObj, newObj any) bool {
 	oldNode, ok1 := oldObj.(*v1.Node)
 	newNode, ok2 := newObj.(*v1.Node)
@@ -512,6 +599,10 @@ func (l *Labeler) nodeRequiresReconciliation(oldObj, newObj any) bool {
 	}
 
 	if oldNode.Labels[gpuPresentLabel] != newNode.Labels[gpuPresentLabel] {
+		return true
+	}
+
+	if oldNode.Labels[CUDADriverVersionLabel] != newNode.Labels[CUDADriverVersionLabel] {
 		return true
 	}
 
@@ -597,26 +688,196 @@ func (l *Labeler) getDriverLabelForNode(nodeName string, excludePod *v1.Pod) (st
 		return LabelValueTrue, nil
 	}
 
-	objs, err := l.podInformer.GetIndexer().ByIndex(NodeDriverIndex, nodeName)
+	driverPods, err := l.podInformer.GetIndexer().ByIndex(NodeDriverIndex, nodeName)
 	if err != nil {
 		return "", fmt.Errorf("failed to get driver pods by node index for node %s: %w", nodeName, err)
 	}
 
-	if hasReadyDriverPod(objs, excludePod) {
+	if hasDriverPod(driverPods, excludePod, true) {
 		return LabelValueTrue, nil
 	}
 
 	// fallback mechanism for GKE pre-installed driver where nvidia-driver-daemonset is not present
-	objs, err = l.gkeInstallerInformer.GetIndexer().ByIndex(NodeGKEDriverInstallerIndex, nodeName)
+	installerPods, err := l.gkeInstallerInformer.GetIndexer().ByIndex(NodeGKEDriverInstallerIndex, nodeName)
 	if err != nil {
 		return "", fmt.Errorf("failed to get GKE driver installer pods by node index for node %s: %w", nodeName, err)
 	}
 
-	if hasReadyDriverPod(objs, excludePod) {
+	if hasDriverPod(installerPods, excludePod, true) {
+		return LabelValueTrue, nil
+	}
+
+	// Pod-managed drivers keep pod readiness authoritative: the node-label fallback
+	// below must not mask an unhealthy, unloading or not-yet-recreated driver.
+	if l.driverIsPodManaged(nodeName, driverPods, installerPods) {
+		return "", nil
+	}
+
+	// No driver pod source manages this node at all. This is the steady state on
+	// platforms where the driver ships in the node image and the GPU Operator runs
+	// with driver.enabled=false (AKS "Driver only" node images, GKE on COS, OKE),
+	// so fall back to the driver version GPU Feature Discovery publishes from the
+	// host driver.
+	if l.hasHostInstalledDriver(nodeName) {
 		return LabelValueTrue, nil
 	}
 
 	return "", nil
+}
+
+// driverIsPodManaged reports whether driver installation is owned by pods rather
+// than by the node image.
+//
+// DaemonSet existence, not pod presence, is the primary signal: absence from the
+// pod index is not evidence that no pod source exists. A driver pod is indexed
+// only once it is bound to a node, and the pod UpdateFunc filters on readiness
+// transitions alone, so the binding of an unready replacement pod is not
+// observed. Under the GPU Operator's OnDelete update strategy the driver pod is
+// deleted outright during an upgrade, and a replacement that never becomes ready
+// (stuck unscheduled, ImagePullBackOff, a taint it no longer tolerates) produces
+// no further event at all. The DaemonSet object is unaffected by that pod churn
+// and keeps the gate closed throughout.
+//
+// The pod checks cover a driver pod with no DaemonSet behind it; their exclusion
+// argument is deliberately nil, because a pod being deleted still proves the
+// driver is pod-managed here.
+func (l *Labeler) driverIsPodManaged(nodeName string, driverPods, installerPods []any) bool {
+	if l.driverDaemonSetTargetsNode(nodeName) {
+		return true
+	}
+
+	return hasDriverPod(driverPods, nil, false) || hasDriverPod(installerPods, nil, false)
+}
+
+// driverDaemonSetTargetsNode reports whether a DaemonSet that owns driver pods
+// schedules onto this specific node. Detection matches each DaemonSet's own pod
+// selector against the labels the pod informers index on, so it stays correct for
+// the name variants the GPU Operator generates for precompiled drivers.
+//
+// Targeting is evaluated per node, not cluster-wide, because driver installation
+// is not always a cluster-wide choice. On GKE the install mode is selected per
+// node pool: a cluster can run automatic driver installation on one pool while
+// another pool runs Google's manual installer DaemonSet, whose required node
+// affinity excludes the automatically-installed nodes. A cluster-wide check would
+// let that DaemonSet suppress detection on pools it never schedules onto.
+func (l *Labeler) driverDaemonSetTargetsNode(nodeName string) bool {
+	node, err := l.getNodeFromCache(nodeName)
+	if err != nil {
+		// Fail closed: without the node object the DaemonSet's scheduling
+		// constraints cannot be evaluated, so assume the driver is pod-managed
+		// rather than risk labelling a node whose driver pod is simply absent.
+		slog.Warn("Failed to read node for driver DaemonSet detection, assuming pod-managed driver",
+			"node", nodeName, "error", err)
+
+		return true
+	}
+
+	for _, obj := range l.daemonSetInformer.GetStore().List() {
+		daemonSet, ok := obj.(*appsv1.DaemonSet)
+		if !ok {
+			continue
+		}
+
+		if !l.ownsDriverPods(daemonSet) || !daemonSetTargetsNode(daemonSet, node) {
+			continue
+		}
+
+		slog.Debug("Driver DaemonSet targets node, skipping host-installed driver detection",
+			"node", nodeName, "daemonSet", daemonSet.Name, "namespace", daemonSet.Namespace)
+
+		return true
+	}
+
+	return false
+}
+
+// ownsDriverPods reports whether the DaemonSet owns driver pods.
+//
+// Two signals are needed because the GPU Operator has two render paths. The
+// legacy asset (assets/state-driver/0500_daemonset.yaml) hardcodes the
+// app=nvidia-driver-daemonset selector the pod informers watch, but the
+// NVIDIADriver CRD path (manifests/state-driver/0500_daemonset.yaml) sets both
+// the DaemonSet name and the app selector value to a generated
+// nvidia-<driverType>-driver-<os>-<hash> app name, which no fixed label set can
+// match. Both paths label the pod template with the well-known
+// app.kubernetes.io/component component name, so that is what recognizes the
+// generated case.
+func (l *Labeler) ownsDriverPods(daemonSet *appsv1.DaemonSet) bool {
+	for _, podLabels := range l.driverPodLabelSets {
+		if daemonSetSelects(daemonSet, podLabels) {
+			return true
+		}
+	}
+
+	component := daemonSet.Spec.Template.Labels[componentLabel]
+
+	return component == driverComponent || component == vGPUHostManagerComponent
+}
+
+// daemonSetTargetsNode reports whether the DaemonSet's pod template can be
+// scheduled onto the node, evaluating the required node affinity and nodeSelector
+// exactly as the upstream DaemonSet controller does.
+func daemonSetTargetsNode(daemonSet *appsv1.DaemonSet, node *v1.Node) bool {
+	pod := &v1.Pod{Spec: daemonSet.Spec.Template.Spec}
+
+	matches, err := nodeaffinity.GetRequiredNodeAffinity(pod).Match(node)
+	if err != nil {
+		// Fail closed: an unparseable selector must not open the fallback.
+		slog.Warn("Failed to evaluate driver DaemonSet node affinity, assuming it targets the node",
+			"daemonSet", daemonSet.Name, "node", node.Name, "error", err)
+
+		return true
+	}
+
+	return matches
+}
+
+// daemonSetSelects reports whether the DaemonSet's pod selector matches the
+// given pod labels.
+func daemonSetSelects(daemonSet *appsv1.DaemonSet, podLabels labels.Set) bool {
+	if daemonSet.Spec.Selector == nil {
+		return false
+	}
+
+	selector, err := metav1.LabelSelectorAsSelector(daemonSet.Spec.Selector)
+	if err != nil || selector.Empty() {
+		return false
+	}
+
+	return selector.Matches(podLabels)
+}
+
+// hasHostInstalledDriver reports whether GPU Feature Discovery advertises a
+// usable host driver on the node. GFD reads the driver version through NVML
+// regardless of who installed the driver, so its labels are the only pod-free
+// signal available on pre-installed-driver platforms.
+func (l *Labeler) hasHostInstalledDriver(nodeName string) bool {
+	// Tier 3 asserts a driver is installed from the absence of a driver pod
+	// source, so it must not run while the caches are still filling: an empty
+	// index during the initial list means "not seen yet", not "does not exist".
+	if !l.allInformersSynced() {
+		return false
+	}
+
+	node, err := l.getNodeFromCache(nodeName)
+	if err != nil {
+		slog.Debug("Skipping host-installed driver detection", "node", nodeName, "error", err)
+		return false
+	}
+
+	if node.Labels[gpuPresentLabel] != LabelValueTrue {
+		return false
+	}
+
+	driverVersion := strings.TrimSpace(node.Labels[CUDADriverVersionLabel])
+	if driverVersion == "" {
+		return false
+	}
+
+	slog.Debug("Detected host-installed driver from GPU Feature Discovery labels",
+		"node", nodeName, "driverVersion", driverVersion)
+
+	return true
 }
 
 // updateNodeLabelsForPod updates only DCGM and driver labels (kata is handled separately by node events)

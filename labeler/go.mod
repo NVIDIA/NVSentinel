@@ -13,6 +13,7 @@ require (
 	k8s.io/api v0.36.3
 	k8s.io/apimachinery v0.36.3
 	k8s.io/client-go v0.36.3
+	k8s.io/component-helpers v0.36.3
 	k8s.io/kubernetes v1.32.10
 	sigs.k8s.io/controller-runtime v0.24.1
 )

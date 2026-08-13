@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Labeler module automatically applies labels to Kubernetes nodes based on GPU runtime components. It watches DCGM and driver pods deployed by GPU Operator and detects Kata Containers runtime. This document covers all Helm configuration options for system administrators.
+The Labeler module automatically applies labels to Kubernetes nodes based on GPU runtime components. It watches DCGM and driver pods deployed by GPU Operator, falls back to GPU Feature Discovery node labels on platforms where the driver ships in the node image and no driver pod exists, and detects Kata Containers runtime. This document covers all Helm configuration options for system administrators.
 
 ## Labels Applied
 
@@ -11,7 +11,7 @@ The labeler automatically manages these node labels:
 | Label | Values | Purpose |
 |-------|--------|---------|
 | `nvsentinel.dgxc.nvidia.com/dcgm.version` | `3.x`, `4.x` | DCGM major version detected from DCGM pods |
-| `nvsentinel.dgxc.nvidia.com/driver.installed` | `true`, `false` | NVIDIA driver pod status on node |
+| `nvsentinel.dgxc.nvidia.com/driver.installed` | `true`, `false` | NVIDIA driver pod status on node, or the GPU Feature Discovery driver version when no driver DaemonSet targets the node |
 | `nvsentinel.dgxc.nvidia.com/kata.enabled` | `true`, `false` | Kata Containers runtime presence |
 | `nvsentinel.dgxc.nvidia.com/gpu.count.current` | non-negative integer | Current GPU count from the configured class expression |
 | `nvsentinel.dgxc.nvidia.com/gpu.count.expected` | non-negative integer | Expected GPU count from override or learned hardware-class baseline |
