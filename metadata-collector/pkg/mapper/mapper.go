@@ -141,11 +141,15 @@ func (mapper *podDeviceMapper) UpdatePodDevicesAnnotations() (int, error) {
 
 		if len(patchBytes) > 0 {
 			err = mapper.patchPodWithRetry(pod.GetName(), pod.GetNamespace(), patchType, patchBytes)
-			if err != nil {
+			switch {
+			case errors.IsNotFound(err):
+				slog.Info("Skipping device annotation update because pod no longer exists",
+					"podKey", pod.GetNamespace()+"/"+pod.GetName())
+			case err != nil:
 				return numPodDevicesAnnotationsModified, fmt.Errorf("error patching device annotation: %w", err)
+			default:
+				numPodDevicesAnnotationsModified++
 			}
-
-			numPodDevicesAnnotationsModified++
 		}
 	}
 

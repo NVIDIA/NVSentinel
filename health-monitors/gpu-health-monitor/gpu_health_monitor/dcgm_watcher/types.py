@@ -55,6 +55,28 @@ class CallbackInterface(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def dcgm_connectivity_failed(self):
-        """Called when DCGM connectivity fails during health check."""
+    def dcgm_connectivity_failed(self) -> bool | None:
+        """Called when DCGM connectivity fails during health check.
+
+        Return False when delivery failed. True/None means the event was
+        delivered or is already active.
+        """
+        pass
+
+    @abc.abstractmethod
+    def dcgm_probe_unresponsive(
+        self,
+        operation: str,
+        elapsed_seconds: float,
+        dcgm_mode: str,
+    ) -> bool | None:
+        """Called when a DCGM probe exceeds its deadline without returning.
+
+        Invoked from the watchdog thread, not the poll loop, because the poll
+        loop is by definition blocked when this fires. dcgm_mode distinguishes
+        an in-process driver call from a remote service/network call.
+
+        Return False to ask the watchdog to retry delivery on the next poll.
+        Return True (or None) once the hang has been recorded.
+        """
         pass

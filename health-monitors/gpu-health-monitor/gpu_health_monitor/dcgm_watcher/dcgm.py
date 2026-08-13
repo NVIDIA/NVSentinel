@@ -16,15 +16,22 @@ import dcgm_agent, dcgm_structs, dcgm_errors, dcgm_fields, dcgmvalue, pydcgm, bi
 import logging as log
 from . import types, metrics
 from gpu_health_monitor.metadata import MetadataReader, NVLinkDownExpectation
-from threading import Event
+from threading import Event, Lock, Thread
 from functools import partial
 from concurrent.futures import ThreadPoolExecutor
 from gpu_health_monitor.healthz import mark_alive as _mark_alive
+from collections.abc import Callable, Iterator
+import contextlib
+from contextlib import AbstractContextManager
 import os
+import time
 
 DELAY, MULTIPLIER, MAX_DELAY = 2, 1.5, 120
 DCGM_4_PYTHON_PATH = "/usr/share/datacenter-gpu-manager-4/bindings/python3"
 DCGM_CONNECTION_TYPE_TCP = 1
+
+# How often the watchdog thread checks for an overdue probe.
+PROBE_WATCHDOG_INTERVAL_SECONDS = 1.0
 
 
 def _run_dcgm_server(port: int, bind_address: str) -> None:
@@ -58,6 +65,94 @@ if _gpu_temp_limit_field_id is not None:
     )
 
 
+class ProbeWatchdog:
+    """Reports DCGM probes that stop returning instead of failing.
+
+    A wedged NVIDIA driver parks its callers in uninterruptible sleep, so a
+    blocked DCGM call never raises and never times out — it simply never comes
+    back. The poll loop therefore cannot report its own hang: it is stuck
+    before the point where it would publish anything, and the liveness probe
+    only sees a frozen loop and restarts the container, which discards the
+    evidence and hangs again.
+
+    This watchdog closes that gap by treating "the probe did not return" as a
+    positive finding. It runs on its own thread so the driver cannot block it.
+    Delivery is retried until ``on_hang`` succeeds: a hung poll loop has no
+    "next cycle" to fall back on, so a single failed publish would otherwise
+    lose the event for the life of the process.
+
+    ``on_hang`` must complete within a bounded time. ``poll_once`` holds the
+    watchdog lock across the callback so a concurrent probe return cannot emit
+    recovery before the unhealthy event is committed. The platform connector
+    bounds critical delivery with ``CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS``.
+    """
+
+    def __init__(self, deadline_seconds: float, on_hang: Callable[[str, float], bool | None]) -> None:
+        self._deadline_seconds = deadline_seconds
+        self._on_hang = on_hang
+        self._lock = Lock()
+        self._operation: str | None = None
+        self._started_at = 0.0
+        self._detected = False
+        self._reported = False
+
+    @contextlib.contextmanager
+    def probe(self, operation: str) -> Iterator[None]:
+        """Mark a blocking DCGM call as in flight for the duration of the block."""
+        with self._lock:
+            self._operation = operation
+            self._started_at = time.monotonic()
+            self._detected = False
+            self._reported = False
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._operation = None
+
+    def poll_once(self) -> bool:
+        """Attempt to report an overdue probe. Returns True once delivery succeeds."""
+        with self._lock:
+            if self._operation is None or self._reported:
+                return False
+            elapsed = time.monotonic() - self._started_at
+            if elapsed < self._deadline_seconds:
+                return False
+            operation = self._operation
+            if not self._detected:
+                self._detected = True
+                log.error(
+                    f"DCGM probe {operation} has not returned after {elapsed:.1f}s "
+                    f"(deadline {self._deadline_seconds:.1f}s); treating the DCGM probe as unresponsive"
+                )
+                # This metric records detection, not successful event delivery.
+                metrics.dcgm_probe_hangs.labels(operation).inc()
+
+            # False means "try again later". True/None means the hang was handled
+            # (published, or already cached as active). Keep the lock while the
+            # bounded callback runs: if the probe returns concurrently, its
+            # finally block waits here, then emits recovery only after the
+            # unhealthy event is committed.
+            delivered = self._on_hang(operation, elapsed)
+            if delivered is False:
+                log.warning(
+                    f"DCGM probe {operation} unresponsive for {elapsed:.1f}s but "
+                    "the health event was not published; will retry"
+                )
+                return False
+
+            self._reported = True
+            return True
+
+    def run(self, exit: Event, interval_seconds: float = PROBE_WATCHDOG_INTERVAL_SECONDS) -> None:
+        """Poll for overdue probes until exit is set."""
+        while not exit.wait(interval_seconds):
+            try:
+                self.poll_once()
+            except Exception as e:
+                log.exception(f"Probe watchdog iteration failed: {e}")
+
+
 class DCGMWatcher:
     def __init__(
         self,
@@ -70,6 +165,7 @@ class DCGMWatcher:
         dcgm_mode: str = "remote",
         suppressed_error_codes: frozenset[str] | None = None,
         suppress_unbridged_pcie_nvlink_down: bool = False,
+        probe_deadline_seconds: float = 0.0,
     ) -> None:
         self._addr = addr
         self._poll_interval_seconds = poll_interval_seconds
@@ -103,6 +199,13 @@ class DCGMWatcher:
 
         self._callback_thread_pool = ThreadPoolExecutor()
         self._dcgm_k8s_service_enabled = dcgm_k8s_service_enabled
+
+        self._probe_watchdog: ProbeWatchdog | None = None
+        if probe_deadline_seconds > 0:
+            self._probe_watchdog = ProbeWatchdog(probe_deadline_seconds, self._report_probe_unresponsive)
+            log.info(f"DCGM probe watchdog enabled with a {probe_deadline_seconds:.1f}s deadline")
+        else:
+            log.warning("DCGM probe watchdog disabled; a driver that hangs instead of erroring will not be reported")
 
     def _get_available_health_watches(self) -> dict[int, str]:
         health_watches = {}
@@ -250,6 +353,48 @@ class DCGMWatcher:
             self._callback_thread_pool.submit(getattr(callback, func_name), *args).add_done_callback(
                 partial(done_callback, callback.__class__.__name__, func_name)
             )
+
+    def _invoke_callback_funcs_sync(self, func_name: str, args: list[object]) -> bool:
+        """Invoke critical callbacks directly, outside the shared executor.
+
+        DCGM cleanup can block forever. Queueing a callback before cleanup is
+        insufficient because slow callbacks can saturate the executor and leave
+        the critical event queued until liveness kills the process.
+        """
+        delivered = True
+        for callback in self._callbacks:
+            try:
+                result = getattr(callback, func_name)(*args)
+                if result is False:
+                    delivered = False
+                    metrics.callback_failures.labels(callback.__class__.__name__, func_name).inc()
+                else:
+                    metrics.callback_success.labels(callback.__class__.__name__, func_name).inc()
+            except Exception as e:
+                delivered = False
+                log.exception(e)
+                metrics.callback_failures.labels(callback.__class__.__name__, func_name).inc()
+        return delivered
+
+    def _report_connectivity_failed(self) -> bool:
+        """Deliver connectivity failure before entering potentially hung cleanup."""
+        delivered = self._invoke_callback_funcs_sync(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])
+        if not delivered:
+            log.warning("Failed to publish DCGM connectivity failure before cleanup; will retry on next cycle")
+        return delivered
+
+    def _report_probe_unresponsive(self, operation: str, elapsed_seconds: float) -> bool:
+        """Publish the hang synchronously so the watchdog can retry on failure."""
+        return self._invoke_callback_funcs_sync(
+            types.CallbackInterface.dcgm_probe_unresponsive.__name__,
+            [operation, elapsed_seconds, self._dcgm_mode],
+        )
+
+    def _probe(self, operation: str) -> AbstractContextManager[None]:
+        """Track a blocking DCGM call, when the watchdog is enabled."""
+        if self._probe_watchdog is None:
+            return contextlib.nullcontext()
+        return self._probe_watchdog.probe(operation)
 
     def _create_dcgm_group_with_all_entities(self, dcgm_handle: pydcgm.DcgmHandle) -> pydcgm.DcgmGroup:
         dcgm_system = dcgm_handle.GetSystem()
@@ -573,40 +718,59 @@ class DCGMWatcher:
         self,
         dcgm_group: pydcgm.DcgmGroup,
         dcgm_handle: pydcgm.DcgmHandle,
+        *,
+        track_probe: bool = True,
     ):
         """Clean up DCGM resources safely.
 
         Group deletion and handle shutdown are in separate try blocks so that
-        a failure in Delete() does not prevent Shutdown() from running.
+        a failure in Delete() does not prevent Shutdown() from running. When
+        ``track_probe`` is true the sequence is watchdog-tracked because every
+        call reaches the driver and Shutdown() in particular can block. Intentional
+        loop teardown passes ``track_probe=False`` so a slow cleanup during
+        rolling upgrades cannot publish a false GpuDcgmUnresponsive.
         """
-        if dcgm_group and self._field_group is not None:
-            try:
-                with metrics.dcgm_api_latency.labels("field_unwatch_fields").time():
-                    dcgm_group.samples.UnwatchFields(self._field_group)
-            except Exception as e:
-                log.warning(f"Error unwatching GPU temp limit field watch: {e}")
-                metrics.dcgm_api_failures.labels("field_unwatch_fields").inc()
-            try:
-                self._field_group.Delete()
-            except Exception as e:
-                log.warning(f"Error deleting GPU temp limit field group: {e}")
-                metrics.dcgm_api_failures.labels("field_group_delete_error").inc()
-            self._field_group = None
+        probe = self._probe("dcgm_cleanup") if track_probe else contextlib.nullcontext()
+        with probe:
+            if dcgm_group and self._field_group is not None:
+                try:
+                    with metrics.dcgm_api_latency.labels("field_unwatch_fields").time():
+                        dcgm_group.samples.UnwatchFields(self._field_group)
+                except Exception as e:
+                    log.warning(f"Error unwatching GPU temp limit field watch: {e}")
+                    metrics.dcgm_api_failures.labels("field_unwatch_fields").inc()
+                try:
+                    self._field_group.Delete()
+                except Exception as e:
+                    log.warning(f"Error deleting GPU temp limit field group: {e}")
+                    metrics.dcgm_api_failures.labels("field_group_delete_error").inc()
+                self._field_group = None
 
-        if dcgm_group:
-            try:
-                dcgm_group.Delete()
-            except Exception as e:
-                log.warning(f"Error deleting DCGM group (will still shut down handle): {e}")
-                metrics.dcgm_api_failures.labels("group_delete_error").inc()
+            if dcgm_group:
+                try:
+                    dcgm_group.Delete()
+                except Exception as e:
+                    log.warning(f"Error deleting DCGM group (will still shut down handle): {e}")
+                    metrics.dcgm_api_failures.labels("group_delete_error").inc()
 
-        if dcgm_handle:
-            dcgm_handle.Shutdown()
+            if dcgm_handle:
+                dcgm_handle.Shutdown()
 
     def start(self, fields_to_monitor: list[str], exit: Event) -> None:
         dcgm_handle = None
         dcgm_group = None
         gpu_ids = []
+
+        # Tied to loop teardown rather than to the process exit event: on SIGTERM
+        # during a hang the loop cannot return, and the stuck probe still needs
+        # reporting.
+        watchdog_exit = Event()
+        watchdog_thread = None
+        if self._probe_watchdog is not None:
+            watchdog_thread = Thread(
+                target=self._probe_watchdog.run, args=(watchdog_exit,), name="dcgm-probe-watchdog", daemon=True
+            )
+            watchdog_thread.start()
 
         # Initial DCGM handle and monitoring setup
         try:
@@ -624,32 +788,39 @@ class DCGMWatcher:
 
                     if dcgm_handle is None:
                         try:
-                            dcgm_handle = self._get_dcgm_handle()
+                            with self._probe("dcgm_connect"):
+                                dcgm_handle = self._get_dcgm_handle()
                             if dcgm_handle is None:
-                                self._fire_callback_funcs(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])
+                                self._report_connectivity_failed()
                                 self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
                                 continue
-                            dcgm_group, gpu_ids, _gpu_serials = self._initialize_dcgm_monitoring(dcgm_handle)
+                            with self._probe("dcgm_initialize_monitoring"):
+                                dcgm_group, gpu_ids, _gpu_serials = self._initialize_dcgm_monitoring(dcgm_handle)
                         except Exception as e:
                             log.error(f"Error getting DCGM handle: {e}")
-                            self._fire_callback_funcs(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])
+                            self._report_connectivity_failed()
                             self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
                             dcgm_handle = None
                             dcgm_group = None
                             gpu_ids = []
                     else:
                         log.debug("Running health check")
-                        health_status, connectivity_success = self._perform_health_check(dcgm_group)
+                        with self._probe("dcgm_health_check"):
+                            health_status, connectivity_success = self._perform_health_check(dcgm_group)
 
                         if not connectivity_success:
                             log.warning("DCGM connectivity failure detected")
+                            # Publish before cleaning up: Shutdown() calls into
+                            # DCGM as well, so an unresponsive driver would block
+                            # here and the event would never be sent.
+                            self._report_connectivity_failed()
                             self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
-                            self._fire_callback_funcs(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])
                             dcgm_handle = None
                             dcgm_group = None
                             gpu_ids = []
                         else:
-                            margin_details = self._evaluate_gpu_thermal_margin(dcgm_group, gpu_ids)
+                            with self._probe("dcgm_thermal_margin"):
+                                margin_details = self._evaluate_gpu_thermal_margin(dcgm_group, gpu_ids)
                             if margin_details is not None:
                                 health_status[DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"].watch_name] = (
                                     margin_details
@@ -661,8 +832,13 @@ class DCGMWatcher:
                                 [health_status, gpu_ids],
                             )
         finally:
-            # Shutdown() stops the embedded hostengine and its loopback server.
+            # Stop the watchdog before teardown cleanup. A slow Shutdown() during
+            # rolling upgrades / DCGM restarts must not publish GpuDcgmUnresponsive.
+            # Mid-loop cleanups after connectivity failure remain probe-tracked.
+            watchdog_exit.set()
+            if watchdog_thread is not None:
+                watchdog_thread.join(timeout=PROBE_WATCHDOG_INTERVAL_SECONDS * 2)
             try:
-                self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
+                self._cleanup_dcgm_resources(dcgm_group, dcgm_handle, track_probe=False)
             finally:
                 self._callback_thread_pool.shutdown(cancel_futures=True)

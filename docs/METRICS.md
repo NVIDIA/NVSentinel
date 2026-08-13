@@ -205,6 +205,7 @@ These metrics track GPU health events detected via DCGM (Data Center GPU Manager
 | `callback_success`                                | Counter   | `class_name`, `func_name`          | Number of times a callback function has successfully completed                                            |
 | `dcgm_api_failures`                               | Counter   | `error_name`                       | Number of DCGM API errors                                                                                 |
 | `dcgm_health_check_unknown_system_skipped`        | Counter   | -                                  | Number of DCGM health check incidents skipped due to unrecognized system value                            |
+| `dcgm_probe_hangs`                                | Counter   | `operation_name`                   | Number of DCGM probes that exceeded the watchdog deadline without returning                                |
 
 ---
 

@@ -24,7 +24,15 @@ data:
     DateTimeFormat = %%Y-%%m-%%d:%%H:%%M:%%S
 
     [dcgm]
-    PollIntervalSeconds = 15
+    {{- $poll := .Values.dcgm.pollIntervalSeconds | default 15 }}
+    {{- /* Only nil falls back; 0 is a valid override that disables the watchdog. */}}
+    {{- $deadline := .Values.dcgm.probeDeadlineSeconds }}
+    {{- if kindIs "invalid" $deadline }}
+    {{- $deadline = mul $poll 3 }}
+    {{- end }}
+    PollIntervalSeconds = {{ $poll }}
+    ProbeDeadlineSeconds = {{ $deadline }}
+    ProbeStoreOnly = {{ .Values.dcgm.probeStoreOnly }}
 
     [dcgmfieldsmonitoring]
     gputemplimitmonitoringenabled = {{ .Values.dcgmFieldsMonitoring.gpuTempLimitMonitoringEnabled }}
@@ -32,6 +40,7 @@ data:
 
     [dcgmhealthcheck]
     SuppressedErrorCodes = {{ .Values.dcgmHealthCheck.suppressedErrorCodes | join "," }}
+    ConnectivityFailureEscalationThreshold = {{ .Values.dcgmHealthCheck.connectivityFailureEscalationThreshold }}
 
     [eventprocessors.kubernetes]
     ConflictRetryCount = 10
