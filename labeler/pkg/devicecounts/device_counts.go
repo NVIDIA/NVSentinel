@@ -230,6 +230,7 @@ func (m *Manager) NodeResourcesAffectDeviceCounts(oldNode, newNode *corev1.Node)
 	}
 
 	statusReferenced := false
+
 	for _, class := range m.classes {
 		if class.referencesNodeStatus() {
 			statusReferenced = true
@@ -241,11 +242,17 @@ func (m *Manager) NodeResourcesAffectDeviceCounts(oldNode, newNode *corev1.Node)
 		return false
 	}
 
-	if !maps.Equal(resourceListToStringMap(oldNode.Status.Allocatable), resourceListToStringMap(newNode.Status.Allocatable)) {
+	oldAllocatable := resourceListToStringMap(oldNode.Status.Allocatable)
+	newAllocatable := resourceListToStringMap(newNode.Status.Allocatable)
+
+	if !maps.Equal(oldAllocatable, newAllocatable) {
 		return true
 	}
 
-	return !maps.Equal(resourceListToStringMap(oldNode.Status.Capacity), resourceListToStringMap(newNode.Status.Capacity))
+	oldCapacity := resourceListToStringMap(oldNode.Status.Capacity)
+	newCapacity := resourceListToStringMap(newNode.Status.Capacity)
+
+	return !maps.Equal(oldCapacity, newCapacity)
 }
 
 func resourceListToStringMap(rl corev1.ResourceList) map[string]string {
