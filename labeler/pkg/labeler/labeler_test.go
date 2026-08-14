@@ -1475,6 +1475,82 @@ func TestLabelerNodeRequiresReconciliation_DeviceCountLabels(t *testing.T) {
 	})
 }
 
+func TestLabelerNodeRequiresReconciliation_AllocatableChanges(t *testing.T) {
+	t.Run("reconciles when allocatable changes with status-backed class", func(t *testing.T) {
+		labeler, err := NewLabeler(
+			fake.NewSimpleClientset(),
+			time.Minute,
+			"nvidia-dcgm",
+			"nvidia-driver-daemonset",
+			"nvidia-driver-installer",
+			"",
+			false,
+			false,
+			testAllocatableDeviceCountConfig(),
+			false,
+		)
+		require.NoError(t, err)
+
+		oldNode := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "node-a",
+				Labels: map[string]string{},
+			},
+			Status: corev1.NodeStatus{
+				Allocatable: corev1.ResourceList{
+					corev1.ResourceName("nvidia.com/mlnxnics"): resource.MustParse("0"),
+				},
+			},
+		}
+
+		newNode := oldNode.DeepCopy()
+		newNode.Status.Allocatable = corev1.ResourceList{
+			corev1.ResourceName("nvidia.com/mlnxnics"): resource.MustParse("4"),
+		}
+
+		require.True(t, labeler.nodeRequiresReconciliation(oldNode, newNode))
+	})
+
+	t.Run("does not reconcile allocatable changes with label-only class", func(t *testing.T) {
+		labeler, err := NewLabeler(
+			fake.NewSimpleClientset(),
+			time.Minute,
+			"nvidia-dcgm",
+			"nvidia-driver-daemonset",
+			"nvidia-driver-installer",
+			"",
+			false,
+			false,
+			testDeviceCountConfig(),
+			false,
+		)
+		require.NoError(t, err)
+
+		oldNode := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "node-a",
+				Labels: map[string]string{
+					"nvidia.com/gpu.count":     "4",
+					"test.nvsentinel/current":  "4",
+					"test.nvsentinel/expected": "8",
+				},
+			},
+			Status: corev1.NodeStatus{
+				Allocatable: corev1.ResourceList{
+					corev1.ResourceName("nvidia.com/mlnxnics"): resource.MustParse("0"),
+				},
+			},
+		}
+
+		newNode := oldNode.DeepCopy()
+		newNode.Status.Allocatable = corev1.ResourceList{
+			corev1.ResourceName("nvidia.com/mlnxnics"): resource.MustParse("4"),
+		}
+
+		require.False(t, labeler.nodeRequiresReconciliation(oldNode, newNode))
+	})
+}
+
 func TestLabelerResourceSlicesForNodeFiltersByNodeName(t *testing.T) {
 	labeler, err := NewLabeler(
 		fake.NewSimpleClientset(),
@@ -1547,6 +1623,23 @@ func deviceCountConfigWithExpression(expression string) devicecounts.Config {
 	config.Classes[0].CurrentExpression = expression
 
 	return config
+}
+
+func testAllocatableDeviceCountConfig() devicecounts.Config {
+	return devicecounts.Config{
+		Enabled: true,
+		Classes: []devicecounts.ClassConfig{
+			{
+				Name:    "nic",
+				Enabled: true,
+				Labels: devicecounts.Labels{
+					Current:  "test.nvsentinel/nic-current",
+					Expected: "test.nvsentinel/nic-expected",
+				},
+				CurrentExpression: "int(node.status.allocatable['nvidia.com/mlnxnics'])",
+			},
+		},
+	}
 }
 
 // TestKataLabelOverrideIsolation verifies that creating multiple labeler instances

@@ -222,6 +222,45 @@ func (m *Manager) NodeLabelsAffectDeviceCounts(oldLabels, newLabels map[string]s
 	return !maps.Equal(oldInputLabels, newInputLabels)
 }
 
+// NodeResourcesAffectDeviceCounts reports whether an allocatable or capacity
+// change on a node could affect a device-count class that reads from node status.
+func (m *Manager) NodeResourcesAffectDeviceCounts(oldNode, newNode *corev1.Node) bool {
+	if !m.Enabled() || oldNode == nil || newNode == nil {
+		return false
+	}
+
+	statusReferenced := false
+	for _, class := range m.classes {
+		if class.referencesNodeStatus() {
+			statusReferenced = true
+			break
+		}
+	}
+
+	if !statusReferenced {
+		return false
+	}
+
+	if !maps.Equal(resourceListToStringMap(oldNode.Status.Allocatable), resourceListToStringMap(newNode.Status.Allocatable)) {
+		return true
+	}
+
+	return !maps.Equal(resourceListToStringMap(oldNode.Status.Capacity), resourceListToStringMap(newNode.Status.Capacity))
+}
+
+func resourceListToStringMap(rl corev1.ResourceList) map[string]string {
+	if len(rl) == 0 {
+		return nil
+	}
+
+	result := make(map[string]string, len(rl))
+	for k, v := range rl {
+		result[string(k)] = v.String()
+	}
+
+	return result
+}
+
 func newDeviceCountCELEnv() (*cel.Env, error) {
 	// Keep the CEL surface intentionally small: expressions can only inspect
 	// the reconciled node, that node's associated ResourceSlices, and sum lists.
@@ -575,6 +614,14 @@ func (class compiledClass) referencesResourceSlices() bool {
 	// legitimate zero count. Expressions that do not reference ResourceSlices can
 	// still evaluate from node labels alone.
 	return strings.Contains(class.CurrentExpression, "resourceSlices")
+}
+
+// referencesNodeStatus is a cheap heuristic mirroring referencesResourceSlices.
+// It detects dot-style access (e.g. node.status.allocatable) which covers all
+// shipped and documented CEL expression forms. NodeResourcesAffectDeviceCounts
+// uses this to decide whether allocatable/capacity changes need reconciliation.
+func (class compiledClass) referencesNodeStatus() bool {
+	return strings.Contains(class.CurrentExpression, "node.status")
 }
 
 func matchLabels(actual, expected map[string]string) bool {

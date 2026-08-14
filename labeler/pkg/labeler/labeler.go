@@ -629,10 +629,12 @@ func hasReadyDriverPod(objs []any, excludePod *v1.Pod) bool {
 	return false
 }
 
-// nodeRequiresReconciliation returns true only when a node update changed an
-// input label the labeler reads from nodes. DCGM and driver labels are driven
-// by pod events, so the node UpdateFunc only needs to react to changes in kata
-// detection labels and the gpu-present label (for assumeDriverInstalled mode).
+// nodeRequiresReconciliation returns true when a node update changed an input
+// that the labeler reads from nodes: labels, allocatable, or capacity. DCGM
+// and driver labels are driven by pod events, so the node UpdateFunc only needs
+// to react to changes in kata detection labels, the gpu-present label (for
+// assumeDriverInstalled mode), and resource changes for status-backed device
+// count classes.
 func (l *Labeler) nodeRequiresReconciliation(oldObj, newObj any) bool {
 	oldNode, ok1 := oldObj.(*v1.Node)
 	newNode, ok2 := newObj.(*v1.Node)
@@ -655,7 +657,8 @@ func (l *Labeler) nodeRequiresReconciliation(oldObj, newObj any) bool {
 		}
 	}
 
-	return l.deviceCounts.NodeLabelsAffectDeviceCounts(oldNode.Labels, newNode.Labels)
+	return l.deviceCounts.NodeResourcesAffectDeviceCounts(oldNode, newNode) ||
+		l.deviceCounts.NodeLabelsAffectDeviceCounts(oldNode.Labels, newNode.Labels)
 }
 
 const gpuPresentLabel = "nvidia.com/gpu.present"
