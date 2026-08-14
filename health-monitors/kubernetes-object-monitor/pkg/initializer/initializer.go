@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	ctrlcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -52,6 +53,7 @@ type Params struct {
 	MetricsBindAddress      string
 	HealthProbeBindAddress  string
 	ResyncPeriod            time.Duration
+	CacheSyncTimeout        time.Duration
 	MaxConcurrentReconciles int
 	PlatformConnectorSocket string
 	ProcessingStrategy      string
@@ -143,13 +145,7 @@ func createManager(params Params, policies []config.Policy) (ctrl.Manager, error
 		return nil, err
 	}
 
-	mgrOpts := ctrl.Options{
-		Metrics: server.Options{
-			BindAddress: params.MetricsBindAddress,
-		},
-		HealthProbeBindAddress: params.HealthProbeBindAddress,
-		Cache:                  cacheOptions,
-	}
+	mgrOpts := buildManagerOptions(params, cacheOptions)
 
 	mgr, err := ctrl.NewManager(restConfig, mgrOpts)
 	if err != nil {
@@ -157,6 +153,19 @@ func createManager(params Params, policies []config.Policy) (ctrl.Manager, error
 	}
 
 	return mgr, nil
+}
+
+func buildManagerOptions(params Params, cacheOptions cache.Options) ctrl.Options {
+	return ctrl.Options{
+		Metrics: server.Options{
+			BindAddress: params.MetricsBindAddress,
+		},
+		HealthProbeBindAddress: params.HealthProbeBindAddress,
+		Cache:                  cacheOptions,
+		Controller: ctrlconfig.Controller{
+			CacheSyncTimeout: params.CacheSyncTimeout,
+		},
+	}
 }
 
 func buildCacheOptions(

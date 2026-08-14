@@ -56,6 +56,7 @@ spec:
             - "--health-probe-bind-address=:8081"
             - "--max-concurrent-reconciles={{ .Values.maxConcurrentReconciles }}"
             - "--resync-period={{ .Values.resyncPeriod }}"
+            - "--cache-sync-timeout={{ .Values.cacheSyncTimeout }}"
             - "--processing-strategy={{ .Values.processingStrategy }}"
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
