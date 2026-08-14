@@ -99,6 +99,13 @@ configToml:
     # Defaulted to the production endpoint so the happy path works out of the
     # box; override for staging (cloud.lambdastaging.com) or a local fake.
     apiEndpoint: "https://cloud.lambda.ai"
+    # workspaceId scopes the maintenance-events query to one Lambda workspace,
+    # in dashed or undashed UUID form, e.g. "c4d291f47f9d436fa39f58493ce3b50d"
+    # or "c4d291f4-7f9d-436f-a39f-58493ce3b50d". Leave it empty to use the
+    # default workspace; set it when that is not the workspace running this
+    # cluster, otherwise the poller reads the wrong workspace's events and no
+    # maintenance is ever seen for these nodes.
+    workspaceId: ""
     # pollingIntervalSeconds controls how often the Lambda maintenance-events
     # API is polled for new / updated events. Lower values reduce trigger
     # latency at the cost of more API traffic.
