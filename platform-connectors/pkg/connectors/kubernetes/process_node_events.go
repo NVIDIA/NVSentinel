@@ -496,6 +496,50 @@ func (r *K8sConnector) dropCachedNodeEventName(key string) {
 	r.nodeEventCache().Remove(key)
 }
 
+// updateCachedNodeEvent attempts to increment the count of the cached event identified by name.
+// It returns (true, nil) on success, (false, nil) when the cached name is stale and a fresh
+// event should be created, and (true, error) for unexpected lookup or update failures.
+func (r *K8sConnector) updateCachedNodeEvent(
+	ctx context.Context, span trace.Span, name string, event *corev1.Event,
+	nodeName, dedupeKey string,
+) (bool, error) {
+	existingEvent, getErr := r.clientset.CoreV1().Events(DefaultNamespace).Get(ctx, name, metav1.GetOptions{})
+
+	switch {
+	case getErr == nil:
+		existingEvent.Count++
+		existingEvent.LastTimestamp = event.LastTimestamp
+
+		_, err := r.clientset.CoreV1().Events(DefaultNamespace).Update(ctx, existingEvent, metav1.UpdateOptions{})
+
+		switch {
+		case err == nil:
+			nodeEventOperationsCounter.WithLabelValues(nodeName, OperationUpdate, StatusSuccess).Inc()
+
+			return true, nil
+		case apierrors.IsNotFound(err):
+			// Deleted between lookup and update: fall through and create a fresh event.
+		default:
+			nodeEventOperationsCounter.WithLabelValues(nodeName, OperationUpdate, StatusFailed).Inc()
+			span.AddEvent("platform_connector.k8s.node_event_update_failed", trace.WithAttributes(
+				attribute.String("platform_connector.k8s.error.type", "node_event_update_failed"),
+				attribute.String("platform_connector.k8s.error.message", err.Error()),
+			))
+
+			return true, fmt.Errorf("failed to update event for node %s: %w", nodeName, err)
+		}
+	case apierrors.IsNotFound(getErr):
+		// Stale cache entry: fall through and create a fresh event.
+	default:
+		return true, fmt.Errorf("failed to look up event %s for node %s: %w", name, nodeName, getErr)
+	}
+
+	// The cached name no longer refers to a live event.
+	r.dropCachedNodeEventName(dedupeKey)
+
+	return false, nil
+}
+
 func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, nodeName string) error {
 	ctx, span := tracing.StartSpan(ctx, "platform_connector.k8s.update_node_event")
 	defer span.End()
@@ -513,40 +557,10 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, 
 		// An involvedObject LIST is an unindexed full-range etcd scan, so
 		// dedupe via the cached name: a single-key GET.
 		if name, ok := r.getCachedNodeEventName(dedupeKey); ok {
-			existingEvent, getErr := r.clientset.CoreV1().Events(DefaultNamespace).Get(ctx, name, metav1.GetOptions{})
-
-			switch {
-			case getErr == nil:
-				existingEvent.Count++
-				existingEvent.LastTimestamp = event.LastTimestamp
-
-				_, err := r.clientset.CoreV1().Events(DefaultNamespace).Update(ctx, existingEvent, metav1.UpdateOptions{})
-
-				switch {
-				case err == nil:
-					nodeEventOperationsCounter.WithLabelValues(nodeName, OperationUpdate, StatusSuccess).Inc()
-
-					return nil
-				case apierrors.IsNotFound(err):
-					// Deleted between lookup and update: fall through and
-					// create a fresh event in this same attempt.
-				default:
-					nodeEventOperationsCounter.WithLabelValues(nodeName, OperationUpdate, StatusFailed).Inc()
-					span.AddEvent("platform_connector.k8s.node_event_update_failed", trace.WithAttributes(
-						attribute.String("platform_connector.k8s.error.type", "node_event_update_failed"),
-						attribute.String("platform_connector.k8s.error.message", err.Error()),
-					))
-
-					return fmt.Errorf("failed to update event for node %s: %w", nodeName, err)
-				}
-			case apierrors.IsNotFound(getErr):
-				// Stale cache entry: fall through and create a fresh event.
-			default:
-				return fmt.Errorf("failed to look up event %s for node %s: %w", name, nodeName, getErr)
+			updated, err := r.updateCachedNodeEvent(ctx, span, name, event, nodeName, dedupeKey)
+			if updated {
+				return err
 			}
-
-			// The cached name no longer refers to a live event.
-			r.dropCachedNodeEventName(dedupeKey)
 		}
 
 		// No live matching event, create a new event with count 1
