@@ -62,10 +62,6 @@ recommendedAction = "RESTART_VM"
 
 The per-request-content gap is closable with a contained KOM enhancement — sourcing event fields from the watched object (e.g. `fromField = "spec.healthEvent"`) — which would make Option B equivalent to Option A apart from the finalizer and status. The plumbing already carries the unstructured object to the evaluator.
 
-### What changes under Option B
-
-The CRD, the validation checks, and the pipeline behaviour are unchanged. There is no finalizer, no `HealthEventEmitted` condition, and no new component — so *Module layout*, *Status conditions*, *RBAC*, and the finalizer step of the state machine do not apply. Validation moves to CRD `x-kubernetes-validations` CEL rules, which cover non-empty `nodeName`, `isHealthy == false`, and `spec.healthEvent` immutability; only node-existence and the duplicate check need a webhook. Unless KOM gains object-sourced event fields, `spec.healthEvent` would shrink to a discriminator (e.g. `spec.action`) plus `nodeName` and `startTime`, with the event shape living in policy config.
-
 ## Implementation
 
 Written against **Option A**; see [What changes under Option B](#what-changes-under-option-b) for the delta.
@@ -246,6 +242,10 @@ sequenceDiagram
     FQ->>Node: check recovered, un-cordon
     Note over MR: finalizer removed, MR gone
 ```
+
+## What changes under Option B
+
+The CRD, the validation checks, and the pipeline behaviour are unchanged. There is no finalizer, no `HealthEventEmitted` condition, and no new component — so *Module layout*, *Status conditions*, *RBAC*, and the finalizer step of the state machine do not apply. Validation moves to CRD `x-kubernetes-validations` CEL rules, which cover non-empty `nodeName`, `isHealthy == false`, and `spec.healthEvent` immutability; only node-existence and the duplicate check need a webhook. Unless KOM gains object-sourced event fields, `spec.healthEvent` would shrink to a discriminator (e.g. `spec.action`) plus `nodeName` and `startTime`, with the event shape living in policy config.
 
 ## Pipeline dependencies
 
