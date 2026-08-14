@@ -50,17 +50,37 @@ message           = "Maintenance requested: node reboot"
 recommendedAction = "RESTART_VM"
 ```
 
+The catch is that **everything under `[policies.healthEvent]` is a static literal**. KOM assembles the published event from the *policy*, not from the object it is watching — only the node name is read from the object, via `nodeAssociation`. Two consequences follow, and they are the reason this is not simply "Option A for free":
+
+- **One policy per distinct event, so publishing a new kind of fault means changing NVSentinel.** A policy emits exactly one event shape. Every new fault type the external system wants to raise needs its own policy block, which is a config change and a release *before* the requester can use it. An external system cannot introduce a fault type on its own schedule — it has to file a PR against NVSentinel and wait for a deploy. Over time that is a standing stream of config churn driven entirely by someone else's roadmap.
+- **No per-request detail.** Within a policy, `message` and `errorCode` are identical for every MR that matches it, and `HealthEventSpec` has no `metadata` map at all. A specific request cannot carry what makes it diagnosable — which CSP event, which maintenance window, which ticket — so an operator looking at a drained node sees the same generic text for every request of that type.
+
 | | Option A (`lifecycle-manager`) | Option B (KOM policy) |
 |---|---|---|
-| New component / reconciler code | Yes | No — policy config only |
-| Clear on delete | Finalizer-guaranteed, retried until submitted | Best-effort; on publish failure KOM logs, drops match state, and the clear is lost |
-| Per-request event content | Yes — emitted as authored | No — `HealthEventSpec` is static TOML, and it has no `metadata` map |
-| New fault type using an existing action | Pure API call, no config | New policy + release, unless it fits an existing one |
-| Status on the MR | `HealthEventEmitted` condition | None — KOM writes no status to watched objects |
-| Constrains what requesters can inject | No | Yes — the policy set is an operator-controlled gate |
-| Survives restarts | Yes | Yes — match state is persisted in node annotations |
+| New component / reconciler code to build | Yes | No — policy config only |
+| **Publishing a new kind of fault** | Create an MR; no NVSentinel change | Add a KOM policy and cut a release first |
+| **Per-request detail** (`message`, `errorCode`, metadata) | Taken from each MR, so every request is self-describing | Fixed in the policy — every MR matching it emits identical text |
+| Clearing the fault on delete | Finalizer holds the MR until the clear is submitted, and retries | Emitted after the fact; if the publish fails KOM drops its state and the clear is lost |
+| Status reported on the MR | `HealthEventEmitted` condition | None — KOM does not write to the objects it watches |
+| Who decides what a request may do | The requester (any event, any action) | The operator (the policy set is the gate) |
+| Survives a restart | Yes | Yes — match state is persisted in node annotations |
 
-The per-request-content gap is closable with a contained KOM enhancement — sourcing event fields from the watched object (e.g. `fromField = "spec.healthEvent"`) — which would make Option B equivalent to Option A apart from the finalizer and status. The plumbing already carries the unstructured object to the evaluator.
+### Closing the gap: object-sourced event fields in KOM
+
+Both consequences above trace to a single design choice — the event comes from the policy. An enhancement that lets a policy take the event from the watched object instead, e.g.:
+
+```toml
+[policies.healthEvent]
+fromField = "spec.healthEvent"    # publish the object's own event
+```
+
+removes both at once. One policy then covers every MR regardless of what the requester puts in it, so a new fault type becomes a pure API call with no NVSentinel config change or release, and each request carries its own message, error codes, and metadata.
+
+The change looks contained: the reconciler already holds the unstructured object where it calls the publisher — it evaluates the CEL `predicate` and `nodeAssociation` against it — so this is a new config field plus a branch in event construction, not new plumbing.
+
+One wrinkle it has to settle: the **clearing event is published after the object is gone**, so its fields cannot be read from the object at that point. KOM currently caches only the node name (in `matchStates`, persisted to node annotations). Either the identity fields the clear depends on — `agent`, `checkName`, `nodeName` — stay policy-owned while only the descriptive fields are object-sourced, or KOM caches the emitted event alongside the match state.
+
+With that in place, Option B differs from Option A only in the finalizer guarantee and MR status.
 
 ## Implementation
 
