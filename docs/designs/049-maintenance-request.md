@@ -191,17 +191,6 @@ For this first iteration NVSentinel performs **no automatic cleanup** — the re
 
 MR and the remediation it triggers are otherwise fully decoupled: no owner-reference, label, or watch links them. The remediation CR runs its own lifecycle and is cleaned up by its own reconciler / TTL (ADR-040 for ERR, ADR-037 for the others).
 
-### Health-event emission
-
-Events are published to the platform-connector over its node-local Unix domain socket (`healthpub.Publisher` → `PlatformConnector.HealthEventOccurredV1`) — the same ingress path the health monitors use. The emitter acts as the synthetic health monitor for a fault no real monitor observes, emitting exactly twice per MR: the opening event on create, the clearing event on delete. This requires:
-
-- **Socket mount.** A `hostPath` mount of `/var/run/nvsentinel`, as the Deployment-type monitors (e.g. `csp-health-monitor`) do. The platform-connector is a per-node DaemonSet, so a socket exists on whatever node the pod lands on.
-- **gRPC client.** A lazy `PlatformConnectorClient` (`grpc.NewClient`) wrapped by `healthpub.Publisher`, so start-up never blocks on the socket; a transient failure leaves `HealthEventEmitted=Unknown` (opening) or the finalizer in place (clearing) and requeues.
-
-### No node lock
-
-The MR reconciler does not acquire the cross-controller node-level lock (`NodeLock` / coordination Lease). Its only side effect is health-event emission; the remediation CR takes ownership of the lock from creation, and all node mutations are performed by downstream reconcilers that already participate in the protocol.
-
 ### Validating admission webhook
 
 | Check | On create | On update |
