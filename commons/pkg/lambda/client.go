@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"time"
 
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -62,9 +63,10 @@ var errRedirect = errors.New("redirect refused")
 // failures (4xx other than 429, malformed responses, missing API key)
 // short-circuit the retry loop. Post retries on less, see retryRateLimitOnly.
 type Client struct {
-	endpoint string
-	http     *http.Client
-	retry    retryPolicy
+	endpoint    string
+	workspaceID string
+	http        *http.Client
+	retry       retryPolicy
 }
 
 // retryPolicy is the exponential-backoff schedule applied to a request.
@@ -83,6 +85,28 @@ type Option func(*Client)
 // need to inject an httptest.NewServer's client.
 func WithHTTPClient(h *http.Client) Option {
 	return func(c *Client) { c.http = h }
+}
+
+// WithWorkspaceID scopes requests to a Lambda workspace. An empty ID leaves the
+// parameter off, so the API defaults to the key's own workspace.
+//
+// Only ListMaintenanceEvents takes it today, the instance endpoints resolve the
+// workspace from the instance itself.
+func WithWorkspaceID(workspaceID string) Option {
+	return func(c *Client) { c.workspaceID = workspaceID }
+}
+
+// workspaceIDPattern matches a UUID with or without dashes, the two forms the
+// API accepts for workspace_id.
+var workspaceIDPattern = regexp.MustCompile(
+	`^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$`,
+)
+
+// ValidWorkspaceID reports whether id is in a form the API accepts for
+// workspace_id. Callers check it at startup: the API answers 400 to anything
+// else, which would otherwise repeat on every request.
+func ValidWorkspaceID(id string) bool {
+	return workspaceIDPattern.MatchString(id)
 }
 
 // WithRetryPolicy overrides the retry defaults. maxAttempts includes the

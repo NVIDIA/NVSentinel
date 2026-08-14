@@ -117,8 +117,10 @@ func NewClient(
 		slog.Info("Lambda client: using mock events file (dev/test mode)", "path", cfg.MockEventsFilePath)
 		source = &fileSource{path: cfg.MockEventsFilePath}
 	} else {
-		slog.Info("Lambda client: using real API", "endpoint", cfg.APIEndpoint)
-		source = &apiSource{client: lambdaapi.NewClient(cfg.APIEndpoint)}
+		slog.Info("Lambda client: using real API", "endpoint", cfg.APIEndpoint, "workspaceID", cfg.WorkspaceID)
+		source = &apiSource{
+			client: lambdaapi.NewClient(cfg.APIEndpoint, lambdaapi.WithWorkspaceID(cfg.WorkspaceID)),
+		}
 	}
 
 	return &Client{
