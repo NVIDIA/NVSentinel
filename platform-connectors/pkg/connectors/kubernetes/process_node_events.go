@@ -259,23 +259,20 @@ func recoveryEntities(event *protos.HealthEvent) []*protos.Entity {
 	}
 
 	hasStableGPUIdentity := false
+	entities := make([]*protos.Entity, 0, len(event.EntitiesImpacted))
 
 	for _, entity := range event.EntitiesImpacted {
 		if strings.EqualFold(entity.EntityType, "GPU") || strings.EqualFold(entity.EntityType, "PCI") {
 			hasStableGPUIdentity = true
-			break
+		}
+
+		if !strings.EqualFold(entity.EntityType, "GPU_UUID") {
+			entities = append(entities, entity)
 		}
 	}
 
 	if !hasStableGPUIdentity {
 		return event.EntitiesImpacted
-	}
-
-	entities := make([]*protos.Entity, 0, len(event.EntitiesImpacted))
-	for _, entity := range event.EntitiesImpacted {
-		if !strings.EqualFold(entity.EntityType, "GPU_UUID") {
-			entities = append(entities, entity)
-		}
 	}
 
 	return entities
