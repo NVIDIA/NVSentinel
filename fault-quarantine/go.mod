@@ -5,7 +5,7 @@ go 1.26.0
 toolchain go1.26.3
 
 require (
-	github.com/google/cel-go v0.30.0
+	github.com/google/cel-go v0.31.0
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/nvidia/nvsentinel/data-models v0.0.0

@@ -19,7 +19,7 @@ go 1.26.0
 toolchain go1.26.3
 
 require (
-	cloud.google.com/go/logging v1.19.0
+	cloud.google.com/go/logging v1.19.1
 	google.golang.org/genproto v0.0.0-20260319201613-d00831a3d3e7
 	google.golang.org/genproto/googleapis/api v0.0.0-20260803160001-6ac0973c030d
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d
