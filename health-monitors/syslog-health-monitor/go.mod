@@ -10,7 +10,7 @@ require (
 	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/nvidia/nvsentinel/data-models v0.0.0
 	github.com/prometheus/client_golang v1.24.1
-	github.com/stretchr/testify v1.11.1
+	github.com/stretchr/testify v1.12.0
 	github.com/thedatashed/xlsxreader v1.2.8
 	golang.org/x/sync v0.22.0
 	google.golang.org/grpc v1.83.0
