@@ -43,34 +43,6 @@ import (
 
 // go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
 // source <(setup-envtest use -p env)
-func TestCRDDriverPodInformer(t *testing.T) {
-	clientset := fake.NewSimpleClientset(&corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "crd-driver",
-			Namespace: "gpu-operator",
-			Labels: map[string]string{
-				"app":                "nvidia-gpu-driver-ubuntu22.04-abc123",
-				driverComponentLabel: driverComponentValue,
-			},
-		},
-		Spec: corev1.PodSpec{NodeName: "gpu-node"},
-	})
-
-	informer, err := createCRDDriverInformer(clientset, time.Minute, "nvidia-driver-daemonset")
-	require.NoError(t, err)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go informer.Run(ctx.Done())
-	require.True(t, cache.WaitForCacheSync(ctx.Done(), informer.HasSynced))
-
-	pods, err := informer.GetIndexer().ByIndex(NodeDriverIndex, "gpu-node")
-	require.NoError(t, err)
-	require.Len(t, pods, 1)
-	assert.Equal(t, "crd-driver", pods[0].(*corev1.Pod).Name)
-}
-
 func TestLabeler_handlePodEvent(t *testing.T) {
 	tests := []struct {
 		name                string
@@ -193,6 +165,82 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			},
 			expectedDCGMLabel:   "",
 			expectedDriverLabel: "true",
+		},
+		{
+			name: "ready NVIDIADriver CRD pod adds driver label",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "crd-driver-pod",
+					Labels: map[string]string{
+						"app":                "nvidia-gpu-driver-ubuntu22.04-7d9f5c",
+						driverComponentLabel: driverComponentValue,
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "test-node",
+					Containers: []corev1.Container{
+						{
+							Name:  "dcgm",
+							Image: "nvcr.io/nvidia/driver:550.x",
+						},
+					},
+				},
+				Status: corev1.PodStatus{
+					Phase: corev1.PodRunning,
+					Conditions: []corev1.PodCondition{
+						{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+					},
+				},
+			},
+			existingPods: []*corev1.Pod{},
+			existingNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "test-node",
+					Labels: map[string]string{},
+				},
+			},
+			expectedDCGMLabel:   "",
+			expectedDriverLabel: "true",
+		},
+		{
+			name: "NVIDIADriver CRD pod deletion removes driver label",
+			pod:  nil,
+			existingPods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "crd-driver-pod",
+						Labels: map[string]string{
+							"app":                "nvidia-gpu-driver-ubuntu22.04-7d9f5c",
+							driverComponentLabel: driverComponentValue,
+						},
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "test-node",
+						Containers: []corev1.Container{
+							{
+								Name:  "dcgm",
+								Image: "nvcr.io/nvidia/driver:550.x",
+							},
+						},
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						Conditions: []corev1.PodCondition{
+							{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+						},
+					},
+				},
+			},
+			existingNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-node",
+					Labels: map[string]string{
+						DriverInstalledLabel: "true",
+					},
+				},
+			},
+			expectedDCGMLabel:   "",
+			expectedDriverLabel: "",
 		},
 		{
 			name: "ready GKE driver installer pod adds driver label",
