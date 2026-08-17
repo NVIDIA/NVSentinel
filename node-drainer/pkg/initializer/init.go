@@ -101,7 +101,11 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 	}
 
 	informersInstance, err := initializeInformers(
-		clientSet, &configs.tomlCfg.NotReadyTimeoutMinutes, configs.tomlCfg.DrainGPUPods, params.DryRun,
+		clientSet,
+		&configs.tomlCfg.NotReadyTimeoutMinutes,
+		configs.tomlCfg.DrainGPUPods,
+		params.DryRun,
+		configs.tomlCfg.SystemNamespaces,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("error while initializing informers: %w", err)
@@ -303,8 +307,15 @@ func initializeKubernetesClient(kubeconfigPath string) (kubernetes.Interface, *r
 }
 
 func initializeInformers(clientset kubernetes.Interface,
-	notReadyTimeoutMinutes *int, drainGPUPods bool, dryRun bool) (*informers.Informers, error) {
-	return informers.NewInformers(clientset, time.Hour, notReadyTimeoutMinutes, drainGPUPods, dryRun)
+	notReadyTimeoutMinutes *int, drainGPUPods bool, dryRun bool, systemNamespaces string) (*informers.Informers, error) {
+	return informers.NewInformers(
+		clientset,
+		time.Hour,
+		notReadyTimeoutMinutes,
+		drainGPUPods,
+		dryRun,
+		systemNamespaces,
+	)
 }
 
 func initializeStateManager(clientSet kubernetes.Interface) statemanager.StateManager {
