@@ -71,6 +71,54 @@ func TestClient_ListMaintenanceEvents_PaginatedResponse_ReturnsAllEvents(t *test
 	assert.Equal(t, "event-2", events[1].ID)
 }
 
+// TestClient_ListMaintenanceEvents_WorkspaceID checks the workspace scope is
+// sent on every page, and left off entirely when none was configured so the API
+// keeps falling back to the key's own workspace.
+func TestClient_ListMaintenanceEvents_WorkspaceID(t *testing.T) {
+	tests := []struct {
+		name        string
+		workspaceID string
+	}{
+		{name: "configured workspace is sent", workspaceID: "c4d291f47f9d436fa39f58493ce3b50d"},
+		{name: "unset workspace omits the parameter", workspaceID: ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			nextToken := "token-page2"
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				query := r.URL.Query()
+
+				// Presence is asserted separately from the value: Get returns ""
+				// both for an absent parameter and for a bare "workspace_id=",
+				// so dropping the guard in ListMaintenanceEvents would otherwise
+				// go unnoticed here. The API answers 400 to an empty one.
+				_, present := query["workspace_id"]
+				assert.Equal(t, tc.workspaceID != "", present, "workspace_id present in query")
+				assert.Equal(t, tc.workspaceID, query.Get("workspace_id"))
+
+				resp := apiResponse{Data: []Event{{ID: "event-2"}}}
+				if query.Get("page_token") == "" {
+					resp = apiResponse{Data: []Event{{ID: "event-1"}}, PageToken: &nextToken}
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				assert.NoError(t, json.NewEncoder(w).Encode(resp))
+			}))
+			defer srv.Close()
+
+			t.Setenv(APIKeyEnvVar, "test-key")
+
+			client := NewClient(srv.URL, WithHTTPClient(srv.Client()), WithWorkspaceID(tc.workspaceID))
+
+			events, err := client.ListMaintenanceEvents(context.Background())
+			require.NoError(t, err)
+			require.Len(t, events, 2)
+		})
+	}
+}
+
 func TestClient_ListMaintenanceEvents_ServerError_ReturnsWrappedStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
