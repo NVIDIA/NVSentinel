@@ -8,7 +8,7 @@ require (
 	github.com/google/cel-go v0.31.0
 	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/prometheus/client_golang v1.24.1
-	github.com/stretchr/testify v1.11.1
+	github.com/stretchr/testify v1.12.0
 	golang.org/x/sync v0.22.0
 	k8s.io/api v0.36.3
 	k8s.io/apimachinery v0.36.3

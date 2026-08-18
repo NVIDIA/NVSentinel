@@ -682,6 +682,79 @@ func TestRemoveImpactedEntitiesMessagesScoped(t *testing.T) {
 	}
 }
 
+func TestRecoveryEntities(t *testing.T) {
+	tests := []struct {
+		name     string
+		event    *protos.HealthEvent
+		expected []string
+	}{
+		{
+			name: "GPU replacement uses stable slot identity",
+			event: &protos.HealthEvent{
+				ComponentClass: "GPU",
+				EntitiesImpacted: []*protos.Entity{
+					{EntityType: "GPU", EntityValue: "0"},
+					{EntityType: "PCI", EntityValue: "0000:18:00.0"},
+					{EntityType: "GPU_UUID", EntityValue: "GPU-new"},
+				},
+			},
+			expected: []string{"GPU:0", "PCI:0000:18:00.0"},
+		},
+		{
+			name: "UUID remains when no stable GPU identity exists",
+			event: &protos.HealthEvent{
+				ComponentClass: "GPU",
+				EntitiesImpacted: []*protos.Entity{
+					{EntityType: "GPU_UUID", EntityValue: "GPU-new"},
+				},
+			},
+			expected: []string{"GPU_UUID:GPU-new"},
+		},
+		{
+			name: "non-GPU entities are unchanged",
+			event: &protos.HealthEvent{
+				ComponentClass: "NIC",
+				EntitiesImpacted: []*protos.Entity{
+					{EntityType: "PCI", EntityValue: "0000:18:00.0"},
+					{EntityType: "GPU_UUID", EntityValue: "GPU-new"},
+				},
+			},
+			expected: []string{"PCI:0000:18:00.0", "GPU_UUID:GPU-new"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			entities := recoveryEntities(tc.event)
+			actual := make([]string, 0, len(entities))
+			for _, entity := range entities {
+				actual = append(actual, entity.EntityType+":"+entity.EntityValue)
+			}
+			assert.Equal(t, tc.expected, actual)
+		})
+	}
+}
+
+func TestGPUReplacementRecoveryClearsOldUUIDCondition(t *testing.T) {
+	messages := []string{
+		"ErrorCode:DCGM_FR_POWER_UN GPU:0 PCI:0000:18:00.0 GPU_UUID:GPU-old Recommended Action=CONTACT_SUPPORT",
+	}
+	events := []*protos.HealthEvent{
+		{
+			ComponentClass: "GPU",
+			IsHealthy:      true,
+			ErrorCode:      []string{"DCGM_FR_POWER_UN"},
+			EntitiesImpacted: []*protos.Entity{
+				{EntityType: "GPU", EntityValue: "0"},
+				{EntityType: "PCI", EntityValue: "0000:18:00.0"},
+				{EntityType: "GPU_UUID", EntityValue: "GPU-new"},
+			},
+		},
+	}
+
+	assert.Empty(t, k8sConnector.aggregateEventMessages(messages, events))
+}
+
 func TestUpdateHealthEventReason(t *testing.T) {
 	tests := []struct {
 		checkName string

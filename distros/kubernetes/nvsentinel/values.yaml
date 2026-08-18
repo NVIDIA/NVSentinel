@@ -162,6 +162,8 @@ global:
     enabled: false
   janitor:
     enabled: false
+  lifecycleManager:
+    enabled: false
   janitorProvider:
     enabled: false
   cspHealthMonitor:

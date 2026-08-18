@@ -288,3 +288,20 @@ builds:
       org.opencontainers.image.version: "{{.Env.VERSION}}"
       org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
       org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"
+
+  - id: lifecycle-manager
+    dir: lifecycle-manager
+    main: .
+    ldflags:
+      - "-s -w"
+      - "-X main.version={{.Env.VERSION}} -X main.commit={{.Env.GIT_COMMIT}} -X main.date={{.Env.BUILD_DATE}}"
+    annotations:
+      org.opencontainers.image.description: "Lifecycle manager controller for NVSentinel"
+    labels:
+      org.opencontainers.image.source: "https://github.com/nvidia/nvsentinel"
+      org.opencontainers.image.licenses: "Apache-2.0"
+      org.opencontainers.image.title: "NVSentinel Lifecycle Manager"
+      org.opencontainers.image.description: "Lifecycle manager for GPU node validation and maintenance in NVSentinel"
+      org.opencontainers.image.version: "{{.Env.VERSION}}"
+      org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
+      org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"
