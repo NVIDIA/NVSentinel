@@ -50,6 +50,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
+	"github.com/nvidia/nvsentinel/janitor/pkg/cacheconfig"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
 	"github.com/nvidia/nvsentinel/janitor/pkg/controller"
 	janitormetrics "github.com/nvidia/nvsentinel/janitor/pkg/metrics"
@@ -180,8 +181,14 @@ func run() error {
 		return auditlogger.NewAuditingRoundTripper(rt)
 	})
 
+	cacheOptions, err := cacheconfig.Build(cfg)
+	if err != nil {
+		return fmt.Errorf("build manager cache options: %w", err)
+	}
+
 	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
+		Cache:                  cacheOptions,
 		Metrics:                setup.metricsServerOptions,
 		WebhookServer:          setup.webhookServer,
 		HealthProbeBindAddress: flags.probeAddr,
