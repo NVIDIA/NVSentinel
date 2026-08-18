@@ -241,13 +241,42 @@ func (r *K8sConnector) aggregateEventMessages(messages []string, events []*proto
 		case !event.IsHealthy:
 			messages = r.addMessageIfNotExist(messages, event)
 		case len(event.EntitiesImpacted) > 0:
-			messages = r.removeImpactedEntitiesMessagesScoped(messages, event.EntitiesImpacted, event.ErrorCode)
+			messages = r.removeImpactedEntitiesMessagesScoped(messages, recoveryEntities(event), event.ErrorCode)
 		default: // healthy event with no impacted entities — full recovery, clear all messages
 			messages = []string{}
 		}
 	}
 
 	return messages
+}
+
+// recoveryEntities drops the physical GPU UUID from recovery identity when a
+// stable GPU slot identifier is available. A replacement GPU keeps its logical
+// index or PCI address but receives a new UUID, so requiring the UUID would
+// leave the historical node condition active after the hardware is healthy.
+func recoveryEntities(event *protos.HealthEvent) []*protos.Entity {
+	if !strings.EqualFold(event.ComponentClass, "GPU") {
+		return event.EntitiesImpacted
+	}
+
+	hasStableGPUIdentity := false
+	entities := make([]*protos.Entity, 0, len(event.EntitiesImpacted))
+
+	for _, entity := range event.EntitiesImpacted {
+		if strings.EqualFold(entity.EntityType, "GPU") || strings.EqualFold(entity.EntityType, "PCI") {
+			hasStableGPUIdentity = true
+		}
+
+		if !strings.EqualFold(entity.EntityType, "GPU_UUID") {
+			entities = append(entities, entity)
+		}
+	}
+
+	if !hasStableGPUIdentity {
+		return event.EntitiesImpacted
+	}
+
+	return entities
 }
 
 func parseMessages(message string) []string {
