@@ -326,7 +326,10 @@ func (c *clients) ensureEventExporterOIDCSecret(ctx context.Context, cfg Config)
 // unlockPendingHelmRelease rolls back a stuck pending-* release.
 func (c *clients) unlockPendingHelmRelease(ctx context.Context, release, ns string) error {
 	status, err := helmStatus(ctx, release, ns)
-	if err != nil || status == "" {
+	if err != nil {
+		return fmt.Errorf("helm status %s/%s: %w", ns, release, err)
+	}
+	if status == "" {
 		return nil // no release yet
 	}
 	if !strings.HasPrefix(status, "pending-") {
