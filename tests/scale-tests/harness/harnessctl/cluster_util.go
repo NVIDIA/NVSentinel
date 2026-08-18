@@ -9,12 +9,11 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metricsclient "k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
 // clusterUtil is real-node CPU/memory utilization (KWOK nodes excluded).
@@ -30,7 +29,7 @@ type clusterUtil struct {
 }
 
 // clusterNodeUtil is real-node usage / allocatable from metrics-server.
-// OK=false if metrics-server is missing or no real capacity.
+// OK=false if metrics-server is missing, a real node lacks a sample, or usage is invalid.
 func (c *clients) clusterNodeUtil(ctx context.Context) clusterUtil {
 	var u clusterUtil
 	nodes, err := c.kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
@@ -56,36 +55,33 @@ func (c *clients) clusterNodeUtil(ctx context.Context) clusterUtil {
 		return u
 	}
 
-	raw, err := c.kube.CoreV1().RESTClient().Get().
-		AbsPath("/apis/metrics.k8s.io/v1beta1/nodes").DoRaw(ctx)
+	mc, err := metricsclient.NewForConfig(c.rest)
 	if err != nil {
 		return u
 	}
-	var nm struct {
-		Items []struct {
-			Metadata struct {
-				Name string `json:"name"`
-			} `json:"metadata"`
-			Usage struct {
-				CPU    string `json:"cpu"`
-				Memory string `json:"memory"`
-			} `json:"usage"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(raw, &nm); err != nil {
+	nm, err := mc.MetricsV1beta1().NodeMetricses().List(ctx, metav1.ListOptions{})
+	if err != nil {
 		return u
 	}
+
+	covered := map[string]bool{}
 	var useCPUmilli, useMemMi int64
-	for _, it := range nm.Items {
-		if !real[it.Metadata.Name] {
+	for i := range nm.Items {
+		it := &nm.Items[i]
+		if !real[it.Name] {
 			continue
 		}
-		if q, err := resource.ParseQuantity(it.Usage.CPU); err == nil {
-			useCPUmilli += q.MilliValue()
+		cpu, okCPU := it.Usage[corev1.ResourceCPU]
+		mem, okMem := it.Usage[corev1.ResourceMemory]
+		if !okCPU || !okMem {
+			continue
 		}
-		if q, err := resource.ParseQuantity(it.Usage.Memory); err == nil {
-			useMemMi += q.Value() / (1024 * 1024)
-		}
+		covered[it.Name] = true
+		useCPUmilli += cpu.MilliValue()
+		useMemMi += mem.Value() / (1024 * 1024)
+	}
+	if len(covered) != len(real) {
+		return u
 	}
 
 	u.OK = true
@@ -104,7 +100,7 @@ func (c *clients) clusterNodeUtil(ctx context.Context) clusterUtil {
 // summary formats real-node CPU/memory utilization for logs and artifacts.
 func (u clusterUtil) summary() string {
 	if !u.OK {
-		return "cluster cpu/mem: unavailable (metrics-server absent)"
+		return "cluster cpu/mem: unavailable (metrics-server absent or incomplete)"
 	}
 	return fmt.Sprintf("cluster cpu=%.1f%% (%.1f/%.1f cores) mem=%.1f%% (%d/%d Mi) over %d real nodes",
 		u.CPUPct*100, u.CPUUsedCores, u.CPUCapacityCores, u.MemPct*100, u.MemUsedMi, u.MemCapacityMi, u.RealNodes)

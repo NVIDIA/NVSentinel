@@ -204,8 +204,10 @@ jobs:
 
       - name: Build multi-arch CLI archives
         working-directory: tests/scale-tests/harness/harnessctl
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
         run: |
-          TAG="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}"
+          TAG="${RELEASE_TAG:?release tag is required}"
           VER="${TAG#v}"
           OUT="$GITHUB_WORKSPACE/harnessctl-dist"
           mkdir -p "$OUT"

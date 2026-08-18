@@ -278,16 +278,18 @@ func (c *clients) waitNodesReady(ctx context.Context, target int, timeout time.D
 	)
 	nodeInformer := factory.Core().V1().Nodes()
 	lister := nodeInformer.Lister()
+	deadline := time.Now().Add(timeout)
+	syncCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
 	stop := make(chan struct{})
 	defer close(stop)
 	factory.Start(stop)
-	if !cache.WaitForCacheSync(stop, nodeInformer.Informer().HasSynced) {
+	if !cache.WaitForCacheSync(syncCtx.Done(), nodeInformer.Informer().HasSynced) {
 		warnf("node informer cache did not sync; falling back to direct list")
 	}
 
 	const maxStallHeals = 3
 	const onStallAfter = 90 * time.Second
-	deadline := time.Now().Add(timeout)
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	last := 0

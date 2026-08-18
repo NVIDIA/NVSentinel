@@ -348,8 +348,6 @@ func looksImmutableFieldError(out string) bool {
 		return true
 	case strings.Contains(low, "cannot patch") && strings.Contains(low, "job"):
 		return true
-	case strings.Contains(low, "forbidden"):
-		return true
 	default:
 		return false
 	}

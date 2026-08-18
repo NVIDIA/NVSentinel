@@ -78,7 +78,6 @@ kubelet:
 grafana:
   enabled: true
   defaultDashboardsEnabled: true
-  adminPassword: "harness"   # sandbox only; not a secret
   resources:
     requests:
       cpu: "250m"

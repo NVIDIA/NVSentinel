@@ -45,8 +45,8 @@ spec:
     statusTemplate: |
       {{ $now := Now }}
       phase: Succeeded
-      {{ range .spec.containers }}
       containerStatuses:
+      {{ range .spec.containers }}
         - name: {{ .name }}
           state:
             terminated:

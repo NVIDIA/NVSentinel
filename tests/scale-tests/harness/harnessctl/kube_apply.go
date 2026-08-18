@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -56,13 +57,16 @@ func (c *clients) applyYAMLBytes(ctx context.Context, b []byte, dryRun bool) err
 	return c.applyYAML(ctx, bytes.NewReader(b), dryRun)
 }
 
+const yamlFetchTimeout = 30 * time.Second
+
 // applyYAMLURL fetches a remote manifest URL and applies it.
 func (c *clients) applyYAMLURL(ctx context.Context, url string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: yamlFetchTimeout}
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("fetch %s: %w", url, err)
 	}

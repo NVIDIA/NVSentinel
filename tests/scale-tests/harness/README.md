@@ -29,9 +29,10 @@ harness/
 ## Install harnessctl
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nvidia/nvsentinel/<tag>/tests/scale-tests/harness/harnessctl/installer | bash
+curl -fsSL https://raw.githubusercontent.com/nvidia/nvsentinel/main/tests/scale-tests/harness/harnessctl/installer | bash
 # pin a version:
-HARNESSCTL_VERSION=vX.Y.Z curl -fsSL https://raw.githubusercontent.com/nvidia/nvsentinel/<tag>/tests/scale-tests/harness/harnessctl/installer | bash
+VERSION=vX.Y.Z
+curl -fsSL "https://raw.githubusercontent.com/nvidia/nvsentinel/${VERSION}/tests/scale-tests/harness/harnessctl/installer" | HARNESSCTL_VERSION="${VERSION}" bash
 ```
 
 The installer picks `linux|darwin|windows` × `amd64|arm64` and installs to
