@@ -276,7 +276,10 @@ func installNVSentinel(ctx context.Context, c *clients, cfg Config) error {
 func (c *clients) ensureCertManagerWebhookHealthy(ctx context.Context, cfg Config) error {
 	ns := cfg.CertManagerNamespace
 	if _, err := c.kube.AppsV1().Deployments(ns).Get(ctx, "cert-manager-webhook", metav1.GetOptions{}); err != nil {
-		return nil // not installed here; nothing to heal
+		if apierrors.IsNotFound(err) {
+			return nil // not installed here; nothing to heal
+		}
+		return fmt.Errorf("get cert-manager-webhook in %s: %w", ns, err)
 	}
 	if c.dryRunCertManagerIssuer(ctx, ns) == nil {
 		infof("cert-manager webhook healthy")
