@@ -116,7 +116,18 @@ configToml:
     # exercising csp-health-monitor without hitting cloud.lambda.ai.
 
 # lambdaApiKeySecret names the Secret containing the LAMBDA_API_KEY env var.
-# Required when cspName=lambda.
+# Required when cspName=lambda unless lambdaWorkloadIdentity.identityLRN is set.
 lambdaApiKeySecret:
   name: ""
   key: "LAMBDA_API_KEY"
+
+# lambdaWorkloadIdentity authenticates with a short-lived token instead of a
+# static key, so no Lambda credential is stored in the cluster. Setting
+# identityLRN annotates the ServiceAccount and lambdaApiKeySecret is no longer
+# required. See docs/configuration/csp-health-monitor.md.
+lambdaWorkloadIdentity:
+  # identityLRN is the service identity to assume, in the form
+  # lrn:iam:identity:<id>, e.g. "lrn:iam:identity:3cd2d107c6a347eeb0ef9498820d637d".
+  # It needs permission to read maintenance events in the workspace named by
+  # configToml.lambda.workspaceId, and must trust this cluster's ServiceAccount.
+  identityLRN: ""
