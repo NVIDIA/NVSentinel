@@ -55,6 +55,9 @@ dependencies:
   - name: janitor
     version: "0.1.0"
     condition: global.janitor.enabled
+  - name: lifecycle-manager
+    version: "0.1.0"
+    condition: global.lifecycleManager.enabled
   - name: janitor-provider
     version: "0.1.0"
     condition: global.janitorProvider.enabled
