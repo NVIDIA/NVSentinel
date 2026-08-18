@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# Install harnessctl from a GitHub release asset: harnessctl_<ver>_<os>_<arch>.tar.gz
+# Usage: ./installer [-d install_dir]
+# Env: HARNESSCTL_VERSION, HARNESSCTL_REPO, INSTALL_DIR
+
+set -euo pipefail
+
+INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+REPO="${HARNESSCTL_REPO:-nvidia/nvsentinel}"
+BIN_NAME="harnessctl"
+REQUIRED_TOOLS=(curl tar uname)
+COLOR_RED='\033[0;31m'
+COLOR_YELLOW='\033[1;33m'
+COLOR_RESET='\033[0m'
+
+usage() {
+  cat <<EOF
+Install utility for $BIN_NAME
+
+Usage: $0 [-d install_dir]
+
+Environment:
+  HARNESSCTL_VERSION  Release tag (default: latest GitHub release)
+  HARNESSCTL_REPO     GitHub repo (default: nvidia/nvsentinel)
+  INSTALL_DIR         Install directory (default: /usr/local/bin)
+EOF
+  exit 1
+}
+
+err() {
+  printf "${COLOR_RED}%s${COLOR_RESET}\n" "$1" >&2
+  exit 1
+}
+
+msg() {
+  printf "%s\n" "$1" >&2
+}
+
+warn() {
+  printf "${COLOR_YELLOW}%s${COLOR_RESET}\n" "$1" >&2
+}
+
+has_tools() {
+  local tools=("$@")
+  for tool in "${tools[@]}"; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      err "Required tool ($tool) is not installed."
+    fi
+  done
+}
+
+getOS() {
+  case "$(uname -s)" in
+    Darwin) echo darwin ;;
+    Linux) echo linux ;;
+    MINGW*|MSYS*|CYGWIN*) echo windows ;;
+    *) err "Unsupported OS: $(uname -s)" ;;
+  esac
+}
+
+getArch() {
+  local arch
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64) echo amd64 ;;
+    aarch64|arm64) echo arm64 ;;
+    *) err "Unsupported architecture: $arch" ;;
+  esac
+}
+
+while getopts "d:h" opt; do
+  case "$opt" in
+    d) INSTALL_DIR="$OPTARG" ;;
+    h) usage ;;
+    \?) usage ;;
+  esac
+done
+
+has_tools "${REQUIRED_TOOLS[@]}"
+
+OS="$(getOS)"
+ARCH="$(getArch)"
+API="https://api.github.com/repos/${REPO}/releases"
+
+if [[ -n "${HARNESSCTL_VERSION:-}" ]]; then
+  VERSION="${HARNESSCTL_VERSION}"
+  RELEASE_JSON="$(curl -fsSL "${API}/tags/${VERSION}")"
+else
+  RELEASE_JSON="$(curl -fsSL "${API}/latest")"
+  VERSION="$(printf '%s' "$RELEASE_JSON" | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+fi
+
+[[ -n "$VERSION" && "$VERSION" != "null" ]] || err "Could not resolve a release tag for ${REPO}"
+
+VER="${VERSION#v}"
+ASSET="harnessctl_${VER}_${OS}_${ARCH}.tar.gz"
+DOWNLOAD_URL="$(printf '%s' "$RELEASE_JSON" | sed -n "s|.*\"browser_download_url\":[[:space:]]*\"\\([^\"]*${ASSET}\\)\".*|\\1|p" | head -1)"
+
+if [[ -z "$DOWNLOAD_URL" ]]; then
+  # Fall back to constructing the release asset URL when parsing JSON fails.
+  DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}"
+fi
+
+msg "OS: $OS"
+msg "ARCH: $ARCH"
+msg "VERSION: $VERSION"
+msg "Downloading $ASSET"
+
+TEMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TEMP_DIR"' EXIT
+
+curl -fL --retry 3 -o "${TEMP_DIR}/${ASSET}" "$DOWNLOAD_URL"
+tar -xzf "${TEMP_DIR}/${ASSET}" -C "$TEMP_DIR"
+
+EXTRACTED_BINARY=""
+if [[ "$OS" == "windows" ]]; then
+  EXTRACTED_BINARY="$(find "$TEMP_DIR" -name 'harnessctl.exe' -type f | head -1)"
+  DEST_NAME="${BIN_NAME}.exe"
+else
+  EXTRACTED_BINARY="$(find "$TEMP_DIR" -name 'harnessctl' -type f | head -1)"
+  DEST_NAME="${BIN_NAME}"
+fi
+
+[[ -n "$EXTRACTED_BINARY" ]] || err "Could not find extracted binary in $ASSET"
+chmod +x "$EXTRACTED_BINARY"
+
+msg "Installing $BIN_NAME to $INSTALL_DIR"
+mkdir -p "$INSTALL_DIR"
+if [[ -w "$INSTALL_DIR" ]]; then
+  mv "$EXTRACTED_BINARY" "${INSTALL_DIR}/${DEST_NAME}"
+else
+  sudo mv "$EXTRACTED_BINARY" "${INSTALL_DIR}/${DEST_NAME}"
+fi
+
+msg "$BIN_NAME installed to ${INSTALL_DIR}/${DEST_NAME}"
+if command -v "$BIN_NAME" >/dev/null 2>&1 || [[ -x "${INSTALL_DIR}/${DEST_NAME}" ]]; then
+  "${INSTALL_DIR}/${DEST_NAME}" --help >/dev/null 2>&1 || true
+fi
+msg "Done."

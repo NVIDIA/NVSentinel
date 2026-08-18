@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/SchemaStore/schemastore/master/src/schemas/json/kind-cluster.json
+# kind create cluster --config kind/kind-cluster.yaml
+# Untainted control-plane (small VMs); GPU labels for fault-quarantine startup.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: nvs-harness-kind
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          taints: []
+    labels:
+      nvidia.com/gpu.present: "true"
+      nvidia.com/gpu.count: "8"
+      nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3
+      nvidia.com/gpu.deploy.driver: "true"
+      nvidia.com/gpu.deploy.dcgm: "true"
+      nvidia.com/gpu.deploy.device-plugin: "true"
+  - role: worker
+    labels:
+      nvidia.com/gpu.present: "true"
+      nvidia.com/gpu.count: "8"
+      nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3
+      nvidia.com/gpu.deploy.driver: "true"
+      nvidia.com/gpu.deploy.dcgm: "true"
+      nvidia.com/gpu.deploy.device-plugin: "true"

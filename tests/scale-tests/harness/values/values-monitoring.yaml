@@ -1,0 +1,98 @@
+# kube-prometheus-stack values for the KWOK-scale harness.
+# Sized for a multi-node sandbox; use kind/values-monitoring.yaml for Kind.
+
+fullnameOverride: prometheus
+
+prometheus:
+  prometheusSpec:
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+    retention: 15d
+    retentionSize: "40GB"
+    walCompression: true
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    resources:
+      requests:
+        cpu: "2"
+        memory: 8Gi
+      limits:
+        memory: 16Gi
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 60Gi
+    # No extra kubelet scrapes: KWOK nodes have no kubelet.
+    additionalScrapeConfigs: []
+
+nodeExporter:
+  enabled: true
+
+# Keep node-exporter off KWOK nodes (no kubelet; default NoSchedule would schedule anyway).
+prometheus-node-exporter:
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: type
+                operator: NotIn
+                values: ["kwok"]
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      memory: 6Gi
+kubelet:
+  enabled: true
+  serviceMonitor:
+    # Drop KWOK kubelet targets; keep metrics_path rewrite (overrides replace chart defaults).
+    attachMetadata:
+      node: true
+    cAdvisor: true
+    probes: false
+    resource: false
+    relabelings:
+      - action: replace
+        sourceLabels: [__metrics_path__]
+        targetLabel: metrics_path
+      - action: drop
+        sourceLabels: [__meta_kubernetes_node_label_type]
+        regex: kwok
+    cAdvisorRelabelings:
+      - action: replace
+        sourceLabels: [__metrics_path__]
+        targetLabel: metrics_path
+      - action: drop
+        sourceLabels: [__meta_kubernetes_node_label_type]
+        regex: kwok
+
+grafana:
+  enabled: true
+  defaultDashboardsEnabled: true
+  adminPassword: "harness"   # sandbox only; not a secret
+  resources:
+    requests:
+      cpu: "250m"
+      memory: 512Mi
+
+alertmanager:
+  enabled: false
+
+# Control-plane scrapes are not available on managed Kubernetes clusters.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false

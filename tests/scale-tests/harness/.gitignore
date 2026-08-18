@@ -1,0 +1,5 @@
+# Local nodes-scale artifacts (--results-dir); never commit
+results/
+*.bak
+harnessctl/harnessctl
+harnessctl/harnessctl-*

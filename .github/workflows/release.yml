@@ -131,6 +131,7 @@ jobs:
     needs:
       - build-image-list
       - helm-publish
+      - publish-harnessctl
     permissions:
       contents: write
     steps:
@@ -143,6 +144,12 @@ jobs:
         with:
           name: versions
           path: .
+
+      - name: Download harnessctl CLI archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: harnessctl-binaries
+          path: harnessctl-dist
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
@@ -162,7 +169,62 @@ jobs:
             ```
             helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel --version ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
             ```
+
+            ## harnessctl (scale-test harness)
+
+            Operator CLI archives: `harnessctl_<version>_<os>_<arch>.tar.gz` (linux/darwin/windows × amd64/arm64).
+
+            Install the matching binary for your machine:
+            ```
+            curl -fsSL https://raw.githubusercontent.com/nvidia/nvsentinel/${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}/tests/scale-tests/harness/harnessctl/installer | bash
+            ```
+            Or download an asset below and extract `harnessctl` onto your `PATH`.
           files: |
             versions.txt
+            harnessctl-dist/*.tar.gz
           draft: false
           prerelease: ${{ contains(github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name, '-') }}
+
+  publish-harnessctl:
+    if: github.repository == 'nvidia/nvsentinel'
+    runs-on: linux-amd64-cpu4
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: tests/scale-tests/harness/harnessctl/go.mod
+          cache-dependency-path: tests/scale-tests/harness/harnessctl/go.sum
+
+      - name: Build multi-arch CLI archives
+        working-directory: tests/scale-tests/harness/harnessctl
+        run: |
+          TAG="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}"
+          VER="${TAG#v}"
+          OUT="$GITHUB_WORKSPACE/harnessctl-dist"
+          mkdir -p "$OUT"
+          for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            GOOS="${pair%/*}"
+            GOARCH="${pair#*/}"
+            BIN=harnessctl
+            if [[ "$GOOS" == "windows" ]]; then BIN=harnessctl.exe; fi
+            echo "building CLI ${GOOS}/${GOARCH}"
+            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -ldflags="-s -w" -o "$BIN" .
+            tar -czf "$OUT/harnessctl_${VER}_${GOOS}_${GOARCH}.tar.gz" "$BIN"
+            rm -f "$BIN"
+          done
+          ls -la "$OUT"
+
+      - name: Upload harnessctl CLI archives
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: harnessctl-binaries
+          path: harnessctl-dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 90

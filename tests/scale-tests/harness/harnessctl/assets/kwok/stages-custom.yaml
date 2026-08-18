@@ -1,0 +1,63 @@
+# Applied by harnessctl after KWOK defaults.
+# __JOB_COMPLETE_DELAY__ is milliseconds; harnessctl fills it from --job-complete-delay (seconds).
+---
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: pod-delete-graceful
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Pod
+  selector:
+    matchExpressions:
+      - key: '.metadata.deletionTimestamp'
+        operator: 'Exists'
+      - key: '.metadata.annotations["kwok.x-k8s.io/node"]'
+        operator: 'DoesNotExist'
+  delay:
+    durationMilliseconds: 1000
+    durationFrom:
+      expressionFrom: '.metadata.deletionGracePeriodSeconds'
+  next:
+    delete: true
+---
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: janitor-job-pod-complete
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Pod
+  selector:
+    matchExpressions:
+      - key: '.metadata.labels["batch.kubernetes.io/job-name"]'
+        operator: 'Exists'
+      - key: '.status.phase'
+        operator: 'In'
+        values:
+          - 'Pending'
+          - 'Running'
+  delay:
+    durationMilliseconds: __JOB_COMPLETE_DELAY__
+  next:
+    statusTemplate: |
+      {{ $now := Now }}
+      phase: Succeeded
+      {{ range .spec.containers }}
+      containerStatuses:
+        - name: {{ .name }}
+          state:
+            terminated:
+              exitCode: 0
+              reason: Completed
+              startedAt: {{ $now | Quote }}
+              finishedAt: {{ $now | Quote }}
+          ready: false
+          started: false
+      {{ end }}
+      conditions:
+        - type: Ready
+          status: "False"
+          reason: PodCompleted

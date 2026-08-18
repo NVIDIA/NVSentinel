@@ -1,0 +1,173 @@
+# NVSentinel Helm values for KWOK-scale harness bringup.
+# Sized for a multi-node cluster; local Kind values live under kind/.
+
+global:
+  dryRun: false
+  metricsPort: 2112
+
+  tolerations: []
+  nodeSelector: {}
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: type
+                operator: NotIn
+                values: ["kwok"]
+
+  gpuHealthMonitor:
+    enabled: false       
+  healthEventsAnalyzer:
+    enabled: true
+  faultQuarantine:
+    enabled: true
+  nodeDrainer:
+    enabled: true
+  faultRemediation:
+    enabled: true
+  janitor:
+    enabled: true         
+  janitorProvider:
+    enabled: true  
+  cspHealthMonitor:
+    enabled: false
+  syslogHealthMonitor:
+    enabled: false
+  labeler:
+    enabled: true
+  metadataCollector:
+    enabled: false
+  inclusterFileServer:
+    enabled: false
+  mongodbStore:
+    enabled: true
+
+podMonitor:
+  enabled: true
+  interval: 15s
+
+platformConnector:
+  image:
+    repository: ghcr.io/nvidia/nvsentinel/platform-connectors
+    pullPolicy: IfNotPresent
+    tag: ""
+  resources:
+    limits:
+      cpu: "1"
+      memory: 1Gi
+    requests:
+      cpu: 200m
+      memory: 512Mi
+  k8sConnector:
+    enabled: true
+    qps: 5.0
+    burst: 10
+  mongodbStore:
+    enabled: true
+  nodeMetadata:
+    enabled: false
+  # Keep connectors off fake nodes: they must run on real kubelets only.
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: type
+                operator: NotIn
+                values: ["kwok"]
+
+# Higher limits for large KWOK fleets (controllers cache node/pod population).
+node-drainer:
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 12Gi
+  customDrain:
+    enabled: false
+
+labeler:
+  resources:
+    requests:
+      cpu: 500m
+      memory: 4Gi
+    limits:
+      cpu: "2"
+      memory: 16Gi
+
+fault-remediation:
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 6Gi
+
+fault-quarantine:
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 6Gi
+
+kubernetes-object-monitor:
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 8Gi
+
+janitor:
+  ttl:
+    defaultTTL: "24h"
+  config:
+    controllers:
+      rebootNode:
+        timeout: "5m"
+      gpuReset:
+        timeout: "5m"
+        # Empty serviceManager: no gpu-operator on KWOK; skip restore so CR succeeds.
+        serviceManager:
+          name: ""
+
+# Simulated provider for RebootNode on KWOK (no real reboot Job).
+janitor-provider:
+  csp:
+    provider: "kind"
+
+mongodb-store:
+  mongodb:
+    auth:
+      enabled: true
+      rootUser: root
+    architecture: replicaset
+    replicaCount: 3
+    replicaSetName: rs0
+    # Headroom for dense connector writes on a scale sandbox.
+    resources:
+      requests:
+        memory: 12Gi
+        cpu: "6"
+      limits:
+        memory: 12Gi
+        cpu: "6"
+    persistence:
+      enabled: true
+      size: 40Gi
+    metrics:
+      enabled: true
+      serviceMonitor:
+        enabled: true
+        interval: 15s
+        labels:
+          release: prometheus
+
+socketPath: "/var/run/nvsentinel.sock"

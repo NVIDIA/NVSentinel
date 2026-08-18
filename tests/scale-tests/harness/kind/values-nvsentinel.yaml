@@ -1,0 +1,210 @@
+# Complete NVSentinel Helm values for a local Kind harness.
+# Image tags come from the chart AppVersion selected by --nvs-chart-version.
+global:
+  dryRun: false
+  metricsPort: 2112
+  tolerations: []
+  nodeSelector: {}
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: type
+                operator: NotIn
+                values: ["kwok"]
+  gpuHealthMonitor:
+    enabled: false
+  healthEventsAnalyzer:
+    enabled: true
+  faultQuarantine:
+    enabled: true
+  nodeDrainer:
+    enabled: true
+  faultRemediation:
+    enabled: true
+  janitor:
+    enabled: true
+  janitorProvider:
+    enabled: true
+  cspHealthMonitor:
+    enabled: false
+  syslogHealthMonitor:
+    enabled: false
+  labeler:
+    enabled: true
+  metadataCollector:
+    enabled: false
+  inclusterFileServer:
+    enabled: false
+  mongodbStore:
+    enabled: true
+  clusterType: standalone
+  datastore:
+    provider: "mongodb"
+    connection:
+      host: "mongodb-rs0.nvsentinel.svc.cluster.local"
+      port: 27017
+      database: "HealthEventsDatabase"
+      collection: "HealthEvents"
+      tokenCollection: "ResumeTokens"
+      extraParams:
+        replicaSet: "rs0"
+        tls: "true"
+podMonitor:
+  enabled: false
+  interval: 15s
+platformConnector:
+  image:
+    repository: ghcr.io/nvidia/nvsentinel/platform-connectors
+    pullPolicy: IfNotPresent
+    tag: ""
+  resources:
+    limits:
+      cpu: "500m"
+      memory: 384Mi
+    requests:
+      cpu: 100m
+      memory: 192Mi
+  k8sConnector:
+    enabled: true
+    qps: 5.0
+    burst: 10
+  mongodbStore:
+    enabled: true
+  nodeMetadata:
+    enabled: false
+  # Keep connectors off fake nodes: they must run on real kubelets only.
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: type
+                operator: NotIn
+                values: ["kwok"]
+# Higher limits for large KWOK fleets (controllers cache node/pod population).
+node-drainer:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "500m"
+      memory: 512Mi
+  customDrain:
+    enabled: false
+labeler:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: "200m"
+      memory: 128Mi
+fault-remediation:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "300m"
+      memory: 256Mi
+fault-quarantine:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "500m"
+      memory: 256Mi
+kubernetes-object-monitor:
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 8Gi
+janitor:
+  ttl:
+    defaultTTL: "24h"
+  config:
+    controllers:
+      rebootNode:
+        timeout: "5m"
+      gpuReset:
+        timeout: "5m"
+        # Empty serviceManager: no gpu-operator on KWOK; skip restore so CR succeeds.
+        serviceManager:
+          name: ""
+# Simulated provider for RebootNode on KWOK (no real reboot Job).
+janitor-provider:
+  csp:
+    provider: "kind"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+mongodb-store:
+  mongodb:
+    auth:
+      enabled: true
+      rootUser: root
+    architecture: replicaset
+    replicaCount: 3
+    replicaSetName: rs0
+    # Headroom for dense connector writes on a scale sandbox.
+    resources:
+      requests:
+        memory: 12Gi
+        cpu: "6"
+      limits:
+        memory: 12Gi
+        cpu: "6"
+    persistence:
+      enabled: true
+      size: 40Gi
+    metrics:
+      enabled: true
+      serviceMonitor:
+        enabled: true
+        interval: 15s
+        labels:
+          release: prometheus
+  useBitnami: false
+  usePerconaOperator: true
+  psmdb-db:
+    unsafeFlags:
+      replsetSize: true
+    replsets:
+      rs0:
+        size: 1
+        replsetOverrides:
+          mongodb-rs0-0:
+            priority: 3
+        resources:
+          requests:
+            cpu: 100m
+            memory: 384Mi
+          limits:
+            cpu: 500m
+            memory: 768Mi
+        volumeSpec:
+          pvc:
+            resources:
+              requests:
+                storage: 2Gi
+        sidecars: []
+socketPath: "/var/run/nvsentinel.sock"
+health-events-analyzer:
+  resources:
+    requests:
+      cpu: 150m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
