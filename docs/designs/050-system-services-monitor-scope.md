@@ -1,4 +1,4 @@
-# ADR-049: System Services Monitor — Scope and Event Taxonomy
+# ADR-050: System Services Monitor — Scope and Event Taxonomy
 
 - **Status:** Proposed
 - **Date:** 2026-03-20 (revised 2026-08-12)
@@ -157,8 +157,12 @@ detection is unit-state and query based:
   is skipped. `"In Progress"` is a normal transient state, so it is time-gated: a GPU
   is classified `FM_REGISTRATION_STUCK` only after reporting `"In Progress"` for
   `stuck_threshold` **consecutive polls** (default 3, ~90 s at the default poll
-  interval), and the streak resets when registration completes. Combined with the
-  boot grace period below, normal startup registration never reports as a fatal
+  interval). The streak is strictly consecutive: it resets on **every**
+  non-`"In Progress"` result for that GPU — registration completing, `"N/A"`,
+  the GPU being absent from a poll's output, or the probe itself failing — so
+  only an unbroken run of `"In Progress"` observations can accumulate toward
+  the threshold. Combined with the boot grace period below (during which the
+  streak is not advanced), normal startup registration never reports as a fatal
   fault.
 - **GPU service lifecycle:** the same `systemctl show` probe for each service in the
   configured list (default `nvidia-persistenced`).
@@ -229,14 +233,20 @@ ADR-030 applies to the janitor-controller ↔ janitor-provider path, which is a
 different, potentially cross-namespace connection, and is out of scope here.)
 
 Skipping TLS does not mean the socket is open to arbitrary local clients.
-Authorization on this hop is filesystem access control: the socket lives in the
-`/var/run/nvsentinel` hostPath directory, which is root-owned and mounted only
-into the NVSentinel DaemonSets, so injecting a forged `HealthEvent` requires
-root (or an equivalently privileged pod) on the node — a principal that could
-already forge any node-local signal directly. Server-side peer authorization
-(e.g. an `SO_PEERCRED` check in `platform-connector` before accepting
-remediation-triggering events) would harden every monitor on this hop equally;
-it is a `platform-connector`-level item shared by all existing monitors, not a
+Authorization on this hop is filesystem access control, stated here as
+enforceable requirements rather than an assumption: the socket directory
+(`/var/run/nvsentinel`) MUST be owned `root:root` with mode `0750` or
+stricter, the socket file MUST NOT be group- or world-writable, and the
+directory MUST be mounted only into the NVSentinel DaemonSets (no other
+workload mounts that hostPath). Under those invariants, connecting to the
+socket — and therefore injecting a forged `HealthEvent` — requires root (or an
+equivalently privileged pod) on the node, a principal that could already forge
+any node-local signal directly. These are deployment invariants the chart owns
+and a reviewer can verify in the DaemonSet spec, not properties the monitor
+re-checks at runtime. Server-side peer authorization (e.g. an `SO_PEERCRED`
+check in `platform-connector` before accepting remediation-triggering events)
+would harden every monitor on this hop equally; it is a
+`platform-connector`-level item shared by all existing monitors, not a
 per-monitor concern, and is deliberately not re-specified here.
 
 ## Event Model
@@ -371,15 +381,20 @@ not re-sent every poll interval.
   two overlapping callbacks could observe the same stale entry and both emit while
   one blocks in the gRPC send. Under the lock, the new state is *reserved* into the
   cache immediately (before the send) so a concurrent callback skips the duplicate.
-- **Rollback:** the gRPC send retries with backoff (up to 5 attempts, ~26 s worst
-  case) and a 10 s per-attempt deadline. If it ultimately fails or raises, the
+- **Rollback:** the gRPC send retries with backoff — up to 5 attempts, each with
+  a 10 s per-attempt deadline, with exponential inter-attempt sleeps (2 s
+  initial, ×1.5, capped at 15 s). Worst case is therefore ~66 s: up to 50 s of
+  attempt deadlines plus ~16 s of backoff sleeps. If the send ultimately fails or raises, the
   reserved cache entries are rolled back (popped) so the next poll cycle
-  re-attempts those events. Rollback is **generation-safe**: each reservation
-  object is its own token, and a failed older send only pops an entry that is
-  still *its* reservation — if a newer overlapping callback already replaced
-  (and successfully sent) a newer state for the same key, that newer state is
-  preserved instead of being popped into a duplicate re-emission. The cache is
-  only committed as the authoritative last-sent state after a successful send.
+  re-attempts those events. Both the rollback **and the success-path commit**
+  are **generation-safe**: each reservation object is its own token, and either
+  path first verifies the cache still holds *its* reservation for the key
+  before acting. A failed older send only pops an entry that is still its own
+  reservation, and a slow older send that completes after a newer overlapping
+  callback replaced the entry MUST NOT commit its now-stale state over the
+  newer one — in both cases the newer state is preserved. The cache is only
+  committed as the authoritative last-sent state after a successful send whose
+  reservation token still matches.
 - **Lifetime:** in-memory for the life of the process; there is no persistence, so
   the cache is empty on restart and the first post-restart cycle re-establishes
   current state.
