@@ -399,6 +399,47 @@ not re-sent every poll interval.
   the cache is empty on restart and the first post-restart cycle re-establishes
   current state.
 
+### Ordering and idempotency
+
+The rollback machinery above protects the monitor's *local* record of what was
+sent. This section states the end-to-end delivery contract it sits inside, so
+the guarantees and non-guarantees are explicit rather than implied:
+
+- **Delivery is at-least-once.** `HealthEventOccurredV1` enqueues server-side
+  before returning, so a call that times out on the client may still have been
+  accepted; the monitor's retry (and the next-cycle re-emission after a
+  rollback) can then deliver the same transition again. The monitor does not
+  attempt exactly-once and consumers MUST NOT assume it.
+- **Duplicates are identifiable by a stable dedup key.** A transition's
+  identity is `(nodeName, checkName, sorted entitiesImpacted, normalized
+  errorCode set, isFatal, isHealthy)` — the same tuple the entity cache keys
+  on. Because the cache suppresses identical consecutive transitions at the
+  source, the monitor never *intentionally* emits the same tuple twice in a
+  row for an entity: any identical consecutive pair observed downstream is a
+  transport-level retry duplicate and is safe to drop. Applying a duplicate is
+  also harmless by construction — transitions carry absolute state
+  (`isFatal`/`isHealthy`/codes), not increments. The `HealthEvent.id` proto
+  field is the natural carrier for this key if connector-side deduplication is
+  enabled (it is off by default today); populating it is an implementation
+  follow-up, not assumed by this design.
+- **Per-entity emission order is monotone at the source.** Callback dispatch
+  is serialized (single-worker executor, submission order == execution order),
+  and one cycle's transitions travel in one RPC, so this monitor never emits a
+  newer transition for an entity before an older one. Reordering *after*
+  acceptance — concurrent RPCs from other monitors, connector-internal
+  queueing — is outside this monitor's control. Transitions carry
+  `generatedTimestamp`; a consumer that needs strict per-entity ordering
+  SHOULD reject a transition older than the newest it has applied for the same
+  `(checkName, entity)` key (stale-generation rejection).
+- **Non-goal, stated deliberately:** enforcing ordering or idempotency inside
+  `HealthEventOccurredV1`/platform-connector (stable-ID dedup, per-entity
+  sequence numbers) would harden every monitor on this hop equally; like the
+  socket peer-authorization item above, it is a platform-connector-level
+  concern shared by all existing monitors and is not re-specified per-monitor
+  here. This design's obligation is to make such enforcement *possible* — the
+  dedup key, absolute-state transitions, and source-side ordering above are
+  exactly the inputs it needs.
+
 ### False-positive mitigations
 
 - **Boot grace period** (default 300s): suppress unhealthy alerts during node
