@@ -513,3 +513,7 @@ type MockHealthEventStore struct {
 func (m *MockHealthEventStore) FindHealthEventsByQueryBatched(_ context.Context, _ datastore.QueryBuilder, _ int, _ func([]datastore.HealthEventWithStatus) error) error {
 	return nil
 }
+
+func (m *MockHealthEventStore) FindHealthEventIDsByQueryBatched(_ context.Context, _ datastore.QueryBuilder, _ int, _ func([]interface{}) error) error {
+	return nil
+}

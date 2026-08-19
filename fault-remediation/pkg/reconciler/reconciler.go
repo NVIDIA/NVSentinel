@@ -136,7 +136,18 @@ func (r *FaultRemediationReconciler) Reconcile(
 
 	metrics.TotalEventsReceived.Inc()
 
-	healthEventWithStatus, err := r.parseHealthEvent(ctx, *event, r.Watcher)
+	// Materialize cold-start entries into a local copy. The queued object remains
+	// ID-only if controller-runtime requeues it, so delayed retries do not retain
+	// the fetched document.
+	eventToProcess := *event
+	if err := r.fetchEventByID(ctx, &eventToProcess); err != nil {
+		metrics.ProcessingErrors.WithLabelValues("cold_start_fetch_error", "unknown").Inc()
+		slog.ErrorContext(ctx, "Failed to fetch cold-start health event", "error", err)
+
+		return ctrl.Result{}, err
+	}
+
+	healthEventWithStatus, err := r.parseHealthEvent(ctx, eventToProcess, r.Watcher)
 	if err != nil {
 		return ctrl.Result{}, nil
 	}
@@ -170,10 +181,47 @@ func (r *FaultRemediationReconciler) Reconcile(
 	nodeQuarantined := healthEventWithStatus.HealthEventStatus.NodeQuarantined
 
 	if nodeQuarantined == string(model.UnQuarantined) || nodeQuarantined == string(model.Cancelled) {
-		return r.handleCancellationEvent(ctx, nodeName, model.Status(nodeQuarantined), r.Watcher, *event, r.healthEventStore)
+		return r.handleCancellationEvent(ctx, nodeName, model.Status(nodeQuarantined), r.Watcher, eventToProcess, r.healthEventStore)
 	}
 
-	return r.handleRemediationEvent(ctx, &healthEventWithStatus, *event, r.Watcher, r.healthEventStore)
+	return r.handleRemediationEvent(ctx, &healthEventWithStatus, eventToProcess, r.Watcher, r.healthEventStore)
+}
+
+// fetchEventByID replaces an ID-only cold-start queue entry with its full event.
+// Keeping the queue entry small prevents the controller workqueue from retaining all
+// decoded health event maps while still using the normal reconciliation path.
+func (r *FaultRemediationReconciler) fetchEventByID(
+	ctx context.Context,
+	event *datastore.EventWithToken,
+) error {
+	if !event.FetchByID {
+		return nil
+	}
+
+	if event.DocumentID == nil {
+		return errors.New("cold-start queue entry has no document ID")
+	}
+
+	q := query.New().Build(query.Eq("_id", event.DocumentID))
+
+	healthEvents, err := r.healthEventStore.FindHealthEventsByQuery(ctx, q)
+	if err != nil {
+		return fmt.Errorf("query cold-start health event %v: %w", event.DocumentID, err)
+	}
+
+	if len(healthEvents) == 0 {
+		return fmt.Errorf("cold-start health event %v not found", event.DocumentID)
+	}
+
+	if len(healthEvents[0].RawEvent) == 0 {
+		return fmt.Errorf("cold-start health event %v has no raw document", event.DocumentID)
+	}
+
+	event.Event = healthEvents[0].RawEvent
+	event.FetchByID = false
+	event.DocumentID = nil
+
+	return nil
 }
 
 func (r *FaultRemediationReconciler) startOrReuseEventSession(
@@ -1863,25 +1911,11 @@ func (r *FaultRemediationReconciler) HandleColdStart(ctx context.Context) {
 
 	q := query.New().Build(condition)
 
-	enqueued := 0
+	var documentIDs []interface{}
 
-	err := r.healthEventStore.FindHealthEventsByQueryBatched(ctx, q, coldStartBatchSize,
-		func(batch []datastore.HealthEventWithStatus) error {
-			for _, he := range batch {
-				if len(he.RawEvent) == 0 {
-					continue
-				}
-
-				evt := datastore.EventWithToken{Event: he.RawEvent}
-
-				select {
-				case r.coldStartCh <- event.TypedGenericEvent[*datastore.EventWithToken]{Object: &evt}:
-					enqueued++
-				case <-ctx.Done():
-					return ctx.Err()
-				}
-			}
-
+	err := r.healthEventStore.FindHealthEventIDsByQueryBatched(ctx, q, coldStartBatchSize,
+		func(batch []interface{}) error {
+			documentIDs = append(documentIDs, batch...)
 			return nil
 		})
 	if err != nil {
@@ -1889,7 +1923,20 @@ func (r *FaultRemediationReconciler) HandleColdStart(ctx context.Context) {
 		return
 	}
 
-	slog.Info("Cold start: enqueued events for processing", "count", enqueued)
+	for _, documentID := range documentIDs {
+		evt := datastore.EventWithToken{
+			FetchByID:  true,
+			DocumentID: documentID,
+		}
+
+		select {
+		case r.coldStartCh <- event.TypedGenericEvent[*datastore.EventWithToken]{Object: &evt}:
+		case <-ctx.Done():
+			return
+		}
+	}
+
+	slog.Info("Cold start: enqueued events for processing", "count", len(documentIDs))
 }
 
 // AdaptEvents transforms a channel of EventWithToken into a channel of controller-runtime

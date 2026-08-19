@@ -24,6 +24,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
@@ -390,6 +391,92 @@ func TestMongoHealthEventStore_FindHealthEventsByQueryBatched(t *testing.T) {
 		assert.ErrorIs(t, err, callbackErr)
 
 		mockDB.AssertExpectations(t)
+	})
+}
+
+func TestMongoHealthEventStore_FindHealthEventIDsByQueryBatched(t *testing.T) {
+	ctx := context.Background()
+	projectionOptions := mock.MatchedBy(func(opts *client.FindOptions) bool {
+		return opts != nil &&
+			reflect.DeepEqual(opts.Projection, map[string]interface{}{"_id": 1})
+	})
+
+	t.Run("projects native IDs and delivers batches", func(t *testing.T) {
+		mockDB := new(MockDatabaseClient)
+		mockCursor := new(MockCursor)
+		store := &MongoHealthEventStore{databaseClient: mockDB}
+		expectedIDs := []primitive.ObjectID{
+			primitive.NewObjectID(),
+			primitive.NewObjectID(),
+			primitive.NewObjectID(),
+		}
+
+		mockDB.On("Find", ctx, mock.Anything, projectionOptions).Return(mockCursor, nil)
+		mockCursor.On("Close", ctx).Return(nil)
+		mockCursor.On("Next", ctx).Return(true).Times(len(expectedIDs))
+		mockCursor.On("Next", ctx).Return(false).Once()
+
+		documentIndex := 0
+		mockCursor.On("Decode", mock.AnythingOfType("*mongodb.healthEventIDProjection")).
+			Return(nil).
+			Run(func(args mock.Arguments) {
+				projected := args.Get(0).(*healthEventIDProjection)
+				projected.ID = expectedIDs[documentIndex]
+				documentIndex++
+			})
+		mockCursor.On("Err").Return(nil)
+
+		var batches [][]interface{}
+		err := store.FindHealthEventIDsByQueryBatched(ctx, mockQueryBuilder{}, 2,
+			func(batch []interface{}) error {
+				batches = append(batches, append([]interface{}(nil), batch...))
+				return nil
+			})
+
+		require.NoError(t, err)
+		require.Len(t, batches, 2)
+		assert.Equal(t, []interface{}{expectedIDs[0], expectedIDs[1]}, batches[0])
+		assert.Equal(t, []interface{}{expectedIDs[2]}, batches[1])
+		mockDB.AssertExpectations(t)
+		mockCursor.AssertExpectations(t)
+	})
+
+	t.Run("find error", func(t *testing.T) {
+		mockDB := new(MockDatabaseClient)
+		store := &MongoHealthEventStore{databaseClient: mockDB}
+
+		mockDB.On("Find", ctx, mock.Anything, projectionOptions).
+			Return((*MockCursor)(nil), errors.New("db error"))
+
+		err := store.FindHealthEventIDsByQueryBatched(ctx, mockQueryBuilder{}, 10,
+			func([]interface{}) error { return nil })
+
+		assert.ErrorContains(t, err, "failed to find health event IDs")
+		mockDB.AssertExpectations(t)
+	})
+
+	t.Run("callback error stops iteration", func(t *testing.T) {
+		mockDB := new(MockDatabaseClient)
+		mockCursor := new(MockCursor)
+		store := &MongoHealthEventStore{databaseClient: mockDB}
+		documentID := primitive.NewObjectID()
+
+		mockDB.On("Find", ctx, mock.Anything, projectionOptions).Return(mockCursor, nil)
+		mockCursor.On("Close", ctx).Return(nil)
+		mockCursor.On("Next", ctx).Return(true).Once()
+		mockCursor.On("Decode", mock.AnythingOfType("*mongodb.healthEventIDProjection")).
+			Return(nil).
+			Run(func(args mock.Arguments) {
+				args.Get(0).(*healthEventIDProjection).ID = documentID
+			})
+
+		callbackErr := errors.New("stop processing")
+		err := store.FindHealthEventIDsByQueryBatched(ctx, mockQueryBuilder{}, 1,
+			func([]interface{}) error { return callbackErr })
+
+		assert.ErrorIs(t, err, callbackErr)
+		mockDB.AssertExpectations(t)
+		mockCursor.AssertExpectations(t)
 	})
 }
 

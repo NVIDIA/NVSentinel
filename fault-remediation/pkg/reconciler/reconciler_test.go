@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
@@ -2730,4 +2731,99 @@ func TestParseHealthEventShouldNotMarkColdStartEventProcessedIfDocumentIDExtract
 	assert.ErrorContains(t, err, "error extracting document ID")
 	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
 	assert.Equal(t, 0, markProcessedCount, "expected cold-start event without resume token to not be marked processed")
+}
+
+func TestFetchEventByID(t *testing.T) {
+	ctx := context.Background()
+	fullEvent := testRawHealthEvent("lazy-event", "lazy-node", protos.RecommendedAction_RESTART_BM)
+	documentID := fullEvent["_id"]
+
+	t.Run("replaces ID-only event with fetched document", func(t *testing.T) {
+		store := &MockHealthEventStore{
+			FindHealthEventsByQueryFn: func(_ context.Context, builder datastore.QueryBuilder) (
+				[]datastore.HealthEventWithStatus, error,
+			) {
+				assert.Equal(t, map[string]interface{}{"_id": documentID}, builder.ToMongo())
+
+				return []datastore.HealthEventWithStatus{{RawEvent: fullEvent}}, nil
+			},
+		}
+		r := &FaultRemediationReconciler{healthEventStore: store}
+		eventWithToken := &datastore.EventWithToken{
+			FetchByID:  true,
+			DocumentID: documentID,
+		}
+
+		err := r.fetchEventByID(ctx, eventWithToken)
+
+		assert.NoError(t, err)
+		assert.False(t, eventWithToken.FetchByID)
+		assert.Nil(t, eventWithToken.DocumentID)
+		assert.Equal(t, fullEvent, eventWithToken.Event)
+	})
+
+	t.Run("leaves live event unchanged", func(t *testing.T) {
+		store := &MockHealthEventStore{
+			FindHealthEventsByQueryFn: func(context.Context, datastore.QueryBuilder) (
+				[]datastore.HealthEventWithStatus, error,
+			) {
+				t.Fatal("live events must not be fetched")
+
+				return nil, nil
+			},
+		}
+		r := &FaultRemediationReconciler{healthEventStore: store}
+		eventWithToken := &datastore.EventWithToken{Event: fullEvent}
+
+		err := r.fetchEventByID(ctx, eventWithToken)
+
+		assert.NoError(t, err)
+		assert.Equal(t, fullEvent, eventWithToken.Event)
+	})
+
+	t.Run("returns retryable error when document is unavailable", func(t *testing.T) {
+		store := &MockHealthEventStore{
+			FindHealthEventsByQueryFn: func(context.Context, datastore.QueryBuilder) (
+				[]datastore.HealthEventWithStatus, error,
+			) {
+				return nil, nil
+			},
+		}
+		r := &FaultRemediationReconciler{healthEventStore: store}
+		eventWithToken := &datastore.EventWithToken{
+			FetchByID:  true,
+			DocumentID: documentID,
+		}
+
+		err := r.fetchEventByID(ctx, eventWithToken)
+
+		assert.ErrorContains(t, err, "not found")
+		assert.True(t, eventWithToken.FetchByID)
+	})
+}
+
+func TestHandleColdStartQueuesOnlyDocumentID(t *testing.T) {
+	ctx := context.Background()
+	documentID := "queued-event"
+	store := &MockHealthEventStore{
+		FindHealthEventIDsByQueryBatchedFn: func(
+			_ context.Context,
+			_ datastore.QueryBuilder,
+			_ int,
+			fn func([]interface{}) error,
+		) error {
+			return fn([]interface{}{documentID})
+		},
+	}
+	r := &FaultRemediationReconciler{
+		healthEventStore: store,
+		coldStartCh:      make(chan event.TypedGenericEvent[*datastore.EventWithToken], 1),
+	}
+
+	r.HandleColdStart(ctx)
+
+	queued := <-r.coldStartCh
+	assert.True(t, queued.Object.FetchByID)
+	assert.Equal(t, documentID, queued.Object.DocumentID)
+	assert.Nil(t, queued.Object.Event)
 }

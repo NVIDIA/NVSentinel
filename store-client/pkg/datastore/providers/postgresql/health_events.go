@@ -959,6 +959,80 @@ func (p *PostgreSQLHealthEventStore) FindHealthEventsByQueryBatched(ctx context.
 	return nil
 }
 
+// FindHealthEventIDsByQueryBatched iterates matching PostgreSQL health event IDs
+// without loading the JSONB document payload.
+func (p *PostgreSQLHealthEventStore) FindHealthEventIDsByQueryBatched(ctx context.Context,
+	builder datastore.QueryBuilder, batchSize int,
+	fn func([]interface{}) error) error {
+	if batchSize <= 0 {
+		return fmt.Errorf("batch size must be greater than zero")
+	}
+
+	whereClause, args := builder.ToSQL()
+	lastID := ""
+
+	for {
+		pageWhereClause := whereClause
+		pageArgs := append([]interface{}(nil), args...)
+		if lastID != "" {
+			pageWhereClause += fmt.Sprintf(" AND id > $%d", len(pageArgs)+1)
+			pageArgs = append(pageArgs, lastID)
+		}
+
+		//nolint:gosec // G202 false positive - batchSize is an integer, not user input
+		q := fmt.Sprintf(
+			"SELECT id FROM health_events WHERE %s ORDER BY id LIMIT %d",
+			pageWhereClause, batchSize)
+
+		batch, err := p.queryHealthEventIDs(ctx, q, pageArgs...)
+		if err != nil {
+			return fmt.Errorf("failed to query health event IDs after %q: %w", lastID, err)
+		}
+
+		if len(batch) == 0 {
+			break
+		}
+
+		if err := fn(batch); err != nil {
+			return err
+		}
+
+		if len(batch) < batchSize {
+			break
+		}
+
+		lastID = batch[len(batch)-1].(string)
+	}
+
+	return nil
+}
+
+func (p *PostgreSQLHealthEventStore) queryHealthEventIDs(
+	ctx context.Context, query string, args ...interface{},
+) ([]interface{}, error) {
+	rows, err := p.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query health event IDs: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []interface{}
+
+	for rows.Next() {
+		var documentID string
+		if err := rows.Scan(&documentID); err != nil {
+			return nil, fmt.Errorf("failed to scan health event ID: %w", err)
+		}
+		ids = append(ids, documentID)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating health event IDs: %w", err)
+	}
+
+	return ids, nil
+}
+
 // queryHealthEventsWithID executes a query that returns (id, document) rows
 // and converts them into HealthEventWithStatus slices with RawEvent populated.
 func (p *PostgreSQLHealthEventStore) queryHealthEventsWithID(

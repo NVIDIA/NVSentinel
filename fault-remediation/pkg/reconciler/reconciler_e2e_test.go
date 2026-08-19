@@ -154,9 +154,10 @@ func (m *MockChangeStreamWatcher) GetCallCounts() (int, int, int, int) {
 
 // MockHealthEventStore provides a mock implementation of datastore.HealthEventStore for testing
 type MockHealthEventStore struct {
-	UpdateHealthEventStatusFn        func(ctx context.Context, id string, status datastore.HealthEventStatus) error
-	FindHealthEventsByQueryFn        func(ctx context.Context, builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error)
-	FindHealthEventsByQueryBatchedFn func(ctx context.Context, builder datastore.QueryBuilder, batchSize int, fn func([]datastore.HealthEventWithStatus) error) error
+	UpdateHealthEventStatusFn          func(ctx context.Context, id string, status datastore.HealthEventStatus) error
+	FindHealthEventsByQueryFn          func(ctx context.Context, builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error)
+	FindHealthEventsByQueryBatchedFn   func(ctx context.Context, builder datastore.QueryBuilder, batchSize int, fn func([]datastore.HealthEventWithStatus) error) error
+	FindHealthEventIDsByQueryBatchedFn func(ctx context.Context, builder datastore.QueryBuilder, batchSize int, fn func([]interface{}) error) error
 	// Counters are written from the controller goroutine and polled by tests, so they
 	// must be atomic to stay race-free.
 	updateCalled                 atomic.Int64
@@ -229,6 +230,14 @@ func (m *MockHealthEventStore) FindLatestHealthEventByQuery(_ context.Context, _
 func (m *MockHealthEventStore) FindHealthEventsByQueryBatched(ctx context.Context, builder datastore.QueryBuilder, batchSize int, fn func([]datastore.HealthEventWithStatus) error) error {
 	if m.FindHealthEventsByQueryBatchedFn != nil {
 		return m.FindHealthEventsByQueryBatchedFn(ctx, builder, batchSize, fn)
+	}
+
+	return nil
+}
+
+func (m *MockHealthEventStore) FindHealthEventIDsByQueryBatched(ctx context.Context, builder datastore.QueryBuilder, batchSize int, fn func([]interface{}) error) error {
+	if m.FindHealthEventIDsByQueryBatchedFn != nil {
+		return m.FindHealthEventIDsByQueryBatchedFn(ctx, builder, batchSize, fn)
 	}
 
 	return nil
@@ -2077,7 +2086,8 @@ func TestHandleColdStart_RemediationFlow(t *testing.T) {
 	defer func() {
 		cleanupNodeAnnotations(ctx, t, nodeName)
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
-		mockStore.FindHealthEventsByQueryBatchedFn = nil
+		mockStore.FindHealthEventsByQueryFn = nil
+		mockStore.FindHealthEventIDsByQueryBatchedFn = nil
 	}()
 
 	missedEvent := makeColdStartHealthEvent(
@@ -2086,8 +2096,11 @@ func TestHandleColdStart_RemediationFlow(t *testing.T) {
 		protos.RecommendedAction_RESTART_BM, time.Now(),
 	)
 
-	mockStore.FindHealthEventsByQueryBatchedFn = func(_ context.Context, _ datastore.QueryBuilder, _ int, fn func([]datastore.HealthEventWithStatus) error) error {
-		return fn([]datastore.HealthEventWithStatus{missedEvent})
+	mockStore.FindHealthEventIDsByQueryBatchedFn = func(_ context.Context, _ datastore.QueryBuilder, _ int, fn func([]interface{}) error) error {
+		return fn([]interface{}{"cold-start-event-1"})
+	}
+	mockStore.FindHealthEventsByQueryFn = func(_ context.Context, _ datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error) {
+		return []datastore.HealthEventWithStatus{missedEvent}, nil
 	}
 
 	t.Log("Calling HandleColdStart to enqueue missed event")
@@ -2140,7 +2153,8 @@ func TestHandleColdStart_CancellationFlow(t *testing.T) {
 
 	defer func() {
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
-		mockStore.FindHealthEventsByQueryBatchedFn = nil
+		mockStore.FindHealthEventsByQueryFn = nil
+		mockStore.FindHealthEventIDsByQueryBatchedFn = nil
 	}()
 
 	// Step 1: Send a quarantine event through the normal change stream path
@@ -2177,8 +2191,11 @@ func TestHandleColdStart_CancellationFlow(t *testing.T) {
 		protos.RecommendedAction_RESTART_BM, time.Now(),
 	)
 
-	mockStore.FindHealthEventsByQueryBatchedFn = func(_ context.Context, _ datastore.QueryBuilder, _ int, fn func([]datastore.HealthEventWithStatus) error) error {
-		return fn([]datastore.HealthEventWithStatus{cancelledEvent})
+	mockStore.FindHealthEventIDsByQueryBatchedFn = func(_ context.Context, _ datastore.QueryBuilder, _ int, fn func([]interface{}) error) error {
+		return fn([]interface{}{eventID})
+	}
+	mockStore.FindHealthEventsByQueryFn = func(_ context.Context, _ datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error) {
+		return []datastore.HealthEventWithStatus{cancelledEvent}, nil
 	}
 
 	t.Log("Step 3: Calling HandleColdStart to enqueue missed cancellation")
@@ -2342,10 +2359,10 @@ func TestColdStartCancellationQueryRequiresCompletionMarker(t *testing.T) {
 	coldStartCallCount := 0
 
 	localStore := &MockHealthEventStore{}
-	localStore.FindHealthEventsByQueryBatchedFn = func(_ context.Context, builder datastore.QueryBuilder, _ int, fn func([]datastore.HealthEventWithStatus) error) error {
+	localStore.FindHealthEventIDsByQueryBatchedFn = func(_ context.Context, builder datastore.QueryBuilder, _ int, fn func([]interface{}) error) error {
 		coldStartCallCount++
 		capturedQuery = builder.ToMongo()
-		return fn([]datastore.HealthEventWithStatus{})
+		return fn([]interface{}{})
 	}
 
 	remediationClient, err := createTestRemediationClient(false, restartRemediationActions)

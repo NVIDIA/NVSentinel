@@ -106,6 +106,11 @@ type HealthEventWithStatus struct {
 type EventWithToken struct {
 	Event       Event
 	ResumeToken []byte // Provider-agnostic binary token for resume position
+	// FetchByID marks cold-start queue entries that contain only a document ID.
+	// Consumers must fetch the full event before parsing it.
+	FetchByID bool
+	// DocumentID preserves the datastore-native ID for an ID-only queue entry.
+	DocumentID interface{}
 }
 
 // Database-agnostic pipeline types for query operations across different datastore providers

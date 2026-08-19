@@ -102,6 +102,12 @@ type HealthEventStore interface {
 		ctx context.Context, builder QueryBuilder, batchSize int,
 		fn func([]HealthEventWithStatus) error,
 	) error
+	// FindHealthEventIDsByQueryBatched iterates only datastore-native document IDs.
+	// Providers must avoid loading the full health event document.
+	FindHealthEventIDsByQueryBatched(
+		ctx context.Context, builder QueryBuilder, batchSize int,
+		fn func([]interface{}) error,
+	) error
 }
 
 // QueryBuilder interface for database-agnostic queries

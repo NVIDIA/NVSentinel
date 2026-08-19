@@ -141,6 +141,9 @@ func (mockStore *mockHealthEventStore) FindHealthEventsByQuery(_ context.Context
 func (mockStore *mockHealthEventStore) FindHealthEventsByQueryBatched(_ context.Context, _ datastore.QueryBuilder, _ int, _ func([]datastore.HealthEventWithStatus) error) error {
 	return nil
 }
+func (mockStore *mockHealthEventStore) FindHealthEventIDsByQueryBatched(_ context.Context, _ datastore.QueryBuilder, _ int, _ func([]interface{}) error) error {
+	return nil
+}
 
 func (m *mockDatabaseConfig) GetConnectionURI() string {
 	return m.connectionURI

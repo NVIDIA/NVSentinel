@@ -32,6 +32,10 @@ type MongoHealthEventStore struct {
 	collectionClient client.CollectionClient
 }
 
+type healthEventIDProjection struct {
+	ID interface{} `bson:"_id"`
+}
+
 // NewMongoHealthEventStore creates a new MongoDB health event store
 func NewMongoHealthEventStore(databaseClient client.DatabaseClient,
 	collectionClient client.CollectionClient) datastore.HealthEventStore {
@@ -447,6 +451,71 @@ func (h *MongoHealthEventStore) FindHealthEventsByQueryBatched(ctx context.Conte
 	if len(batch) > 0 {
 		normalizeHealthEvents(batch)
 
+		if err := fn(batch); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// FindHealthEventIDsByQueryBatched iterates matching native MongoDB document IDs
+// without loading the health event payload.
+func (h *MongoHealthEventStore) FindHealthEventIDsByQueryBatched(ctx context.Context,
+	builder datastore.QueryBuilder, batchSize int,
+	fn func([]interface{}) error) error {
+	if batchSize <= 0 {
+		return fmt.Errorf("batch size must be greater than zero")
+	}
+
+	filter := builder.ToMongo()
+	findOptions := &client.FindOptions{
+		Projection: map[string]interface{}{"_id": 1},
+	}
+
+	cursor, err := h.databaseClient.Find(ctx, filter, findOptions)
+	if err != nil {
+		return datastore.NewQueryError(
+			datastore.ProviderMongoDB,
+			"failed to find health event IDs for batched query",
+			err,
+		)
+	}
+	defer cursor.Close(ctx)
+
+	batch := make([]interface{}, 0, batchSize)
+
+	for cursor.Next(ctx) {
+		var projected healthEventIDProjection
+		if err := cursor.Decode(&projected); err != nil {
+			slog.Error("Skipping undecodable document ID in batched query", "error", err)
+
+			continue
+		}
+		if projected.ID == nil {
+			slog.Error("Skipping document without _id in batched query")
+
+			continue
+		}
+
+		batch = append(batch, projected.ID)
+		if len(batch) >= batchSize {
+			if err := fn(batch); err != nil {
+				return err
+			}
+			batch = make([]interface{}, 0, batchSize)
+		}
+	}
+
+	if err := cursor.Err(); err != nil {
+		return datastore.NewQueryError(
+			datastore.ProviderMongoDB,
+			"cursor error while iterating health event ID query",
+			err,
+		)
+	}
+
+	if len(batch) > 0 {
 		if err := fn(batch); err != nil {
 			return err
 		}
