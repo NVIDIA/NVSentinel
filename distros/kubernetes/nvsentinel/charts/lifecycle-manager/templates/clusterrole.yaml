@@ -1,0 +1,92 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "lifecycle-manager.fullname" . }}
+  labels:
+    {{- include "lifecycle-manager.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - nvsentinel.nvidia.com
+  resources:
+  - validationrequests
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - nvsentinel.nvidia.com
+  resources:
+  - validationrequests/status
+  verbs:
+  - get
+  - update
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - nodes/status
+  verbs:
+  - update
+  - patch
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+{{- /*
+  Add permissions for API groups and resources from config.providers.
+*/}}
+{{- $apiGroups := dict }}
+{{- range $name, $provider := .Values.config.providers }}
+  {{- $resource := $provider.resource }}
+  {{- $existing := index $apiGroups $provider.apiGroup | default (list) }}
+  {{- $_ := set $apiGroups $provider.apiGroup (append $existing $resource | uniq) }}
+{{- end }}
+{{- range $apiGroup, $resources := $apiGroups }}
+- apiGroups:
+  - {{ $apiGroup }}
+  resources:
+  {{- range $resources }}
+  - {{ . }}
+  {{- end }}
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - delete
+{{- end }}

@@ -1,0 +1,71 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# --------------------------------------------------------------------------
+# Preflight, for clusters using Kubernetes' native gang scheduling.
+#
+# Preflight is different from monitoring and remediation: it's an active
+# check that runs as an init container in the workload pod's own spec,
+# right before the pod starts, to confirm the node is actually ready to
+# take that workload.
+#
+# Multi-node checks (verifying GPU-to-GPU bandwidth across the whole job,
+# not just within one node) need to know which pods belong together. This
+# file uses Kubernetes' own gang scheduling APIs to find out, so it works
+# with no extra scheduler, PROVIDED your cluster has them turned on:
+#   - Kubernetes 1.36: scheduling.k8s.io/v1alpha2 PodGroup
+#   - Kubernetes 1.35: scheduling.k8s.io/v1alpha1 Workload, used as a
+#     fallback if PodGroup isn't available
+#
+# Both are alpha and disabled by default. You need the GenericWorkload
+# feature gate on the API server and scheduler (to get the API itself),
+# and the scheduler's GangScheduling gate (to get all-or-nothing gang
+# scheduling behavior; folded into GenericWorkload from Kubernetes 1.37).
+# A cluster admin has to enable these; they aren't a Helm value, and some
+# managed Kubernetes offerings won't let you turn on alpha gates at all.
+# Check what your cluster actually exposes before relying on this:
+#   kubectl api-resources --api-group=scheduling.k8s.io
+#
+# On a different scheduler (KAI Scheduler, Volcano, etc.), use that
+# scheduler's values file instead of this one. See the gang
+# discovery guide for others:
+#   https://docs.nvidia.com/nvsentinel/configuration/preflight/#gang-discovery
+#
+# Usage, layered on top of whatever stage you're already running:
+#
+#   helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
+#     --version "$NVSENTINEL_VERSION" \
+#     --namespace nvsentinel --create-namespace \
+#     -f distros/kubernetes/nvsentinel/values-remediation.yaml \
+#     -f distros/kubernetes/nvsentinel/values-preflight-kube.yaml
+#
+# Then label each namespace that should run preflight checks:
+#
+#   kubectl label namespace <your-namespace> nvsentinel.nvidia.com/preflight=enabled
+# --------------------------------------------------------------------------
+
+global:
+  preflight:
+    enabled: true
+
+# preflight:
+#   gangDiscovery:
+#     name: "osmo-with-kai"
+#     labelKeys:
+#       - "osmo.group_uuid"
+#     podGroupGVR:
+#       group: "scheduling.run.ai"
+#       version: "v2alpha2"
+#       resource: "podgroups"
+#     minCountExpr: "podGroup.spec.minMember"
