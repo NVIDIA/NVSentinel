@@ -54,7 +54,8 @@ if [ ! -f go.work ]; then
     ./node-drainer \
     ./platform-connectors \
     ./plugins/slinky-drainer \
-    ./preflight
+    ./preflight \
+    ./lifecycle-manager
 fi
 
 ko build "${KO_FLAGS[@]}" \
@@ -72,7 +73,8 @@ ko build "${KO_FLAGS[@]}" \
   ./node-drainer \
   ./platform-connectors \
   ./plugins/slinky-drainer \
-  ./preflight
+  ./preflight \
+  ./lifecycle-manager
 
 echo "built refs:"
 cat digests.txt

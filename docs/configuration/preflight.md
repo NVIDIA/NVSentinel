@@ -457,6 +457,12 @@ Each `PreflightConfig` is validated when reconciled: the `gangDiscovery.podGroup
 
 The gang ID embeds the discoverer name (`{discoverer}-{namespace}-{podGroup}`), and discovery is resolved per pod. If the effective discoverer for a namespace changes mid-flight, pods of the same gang admitted before and after the change can derive **different gang IDs** and fail to coordinate (peers never converge). Such a gang's `preflight-nccl-allreduce` check then waits until `gangCoordination.timeout` and fails — the pod stays in `Init:Error` and follows the normal NVSentinel quarantine path. This fails safe (no false "healthy" result) but causes a spurious preflight failure, so treat gang discovery config as a namespace setting to change during a quiet window. Adding a *second* `PreflightConfig` is safe — the active (oldest) one is unaffected (see above); the risk is specifically changing or removing the currently-active config.
 
+#### Gang coordination Pod cache
+
+When gang coordination is enabled, Preflight watches Pods cluster-wide because namespace-specific `PreflightConfig` resources can be added or removed while the process is running. The controller-runtime cache namespace set is fixed when the manager starts, so limiting it to the namespaces known at startup would miss Pods after a new namespace configuration is created.
+
+To keep the cluster-wide cache small, Preflight stores only Pod identity and deletion metadata, annotations and labels used by configurable discoverers, the gang ConfigMap volume, node and scheduling-group references, and Pod IP and phase. Containers, init containers, unrelated volumes, conditions, managed fields, and other unused Pod data are discarded before caching.
+
 ## Gang coordination
 
 When `gangCoordination.enabled` is true (default in the preflight chart), the controller coordinates multi-node checks through ConfigMaps:

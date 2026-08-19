@@ -20,6 +20,8 @@ import (
 	"os"
 
 	"github.com/BurntSushi/toml"
+
+	lambdaapi "github.com/nvidia/nvsentinel/commons/pkg/lambda"
 )
 
 const (
@@ -69,6 +71,7 @@ type AWSConfig struct {
 type LambdaConfig struct {
 	Enabled                bool   `toml:"enabled"`
 	APIEndpoint            string `toml:"apiEndpoint"`
+	WorkspaceID            string `toml:"workspaceId"`        // optional; defaults to the API key's own workspace
 	MockEventsFilePath     string `toml:"mockEventsFilePath"` // dev/test only; if set, skips real API
 	PollingIntervalSeconds int    `toml:"pollingIntervalSeconds"`
 }
@@ -196,6 +199,10 @@ func validateCSPConfig(cfg *Config) error {
 		return err
 	}
 
+	if err := validateLambdaWorkspaceID(cfg); err != nil {
+		return err
+	}
+
 	return validateSingleCSPEnabled(cfg)
 }
 
@@ -242,6 +249,20 @@ func validateLambdaEventSource(cfg *Config) error {
 
 	if cfg.Lambda.APIEndpoint != "" && cfg.Lambda.MockEventsFilePath != "" {
 		return fmt.Errorf("lambda: apiEndpoint and mockEventsFilePath are mutually exclusive")
+	}
+
+	return nil
+}
+
+// validateLambdaWorkspaceID checks the optional workspace ID looks like a UUID,
+// so a typo fails at startup rather than earning a 400 on every poll.
+func validateLambdaWorkspaceID(cfg *Config) error {
+	if !cfg.Lambda.Enabled || cfg.Lambda.WorkspaceID == "" {
+		return nil
+	}
+
+	if !lambdaapi.ValidWorkspaceID(cfg.Lambda.WorkspaceID) {
+		return fmt.Errorf("lambda: workspaceId %q is not a UUID", cfg.Lambda.WorkspaceID)
 	}
 
 	return nil

@@ -31,7 +31,7 @@ The labels are derived from the best available source for the deployment mode:
 
 The CEL environment is intentionally small and read-only. `labeler` builds the input context and the expression only counts from that context:
 
-- `node`: the Kubernetes `Node` object being reconciled;
+- `node`: the Labeler's cached `Node` projection;
 - `resourceSlices`: all raw `ResourceSlice` objects associated with that node.
 
 Device count expressions can use either legacy node labels or DRA `ResourceSlice` data:
@@ -194,6 +194,13 @@ sum(list<int>) -> int
 ```
 
 `sum` returns the total of the integer values in the list and returns `0` for an empty list. It exists so expressions can count devices across multiple `ResourceSlice` objects without adding broader Kubernetes query helpers.
+
+The cached Node projection always includes identity fields, labels, and the
+Labeler's DCGM bootstrap annotation. When at least one device-count class is
+enabled, it additionally includes `status.allocatable` and `status.capacity`.
+All Node `spec` fields, other metadata, and other `status` fields are discarded.
+Consequently, Node-based current-count expressions are supported only for
+`metadata.labels`, `status.allocatable`, and `status.capacity`.
 
 Tests for this evaluator should cover multiple `ResourceSlice` objects for one node, slices without `spec.devices`, devices without the selected attribute, and selected attributes without a `string` value.
 

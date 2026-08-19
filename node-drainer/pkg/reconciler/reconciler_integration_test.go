@@ -1439,7 +1439,14 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 		StateManager: statemanager.NewStateManager(client),
 	}
 
-	informersInstance, err := informers.NewInformers(client, 1*time.Minute, ptr.To(2), enableDrainGPUPods, dryRun)
+	informersInstance, err := informers.NewInformers(
+		client,
+		1*time.Minute,
+		ptr.To(2),
+		enableDrainGPUPods,
+		dryRun,
+		tomlConfig.SystemNamespaces,
+	)
 	require.NoError(t, err)
 
 	go func() { _ = informersInstance.Run(ctx) }()
@@ -1535,7 +1542,14 @@ func setupCustomDrainTest(t *testing.T, customDrainConfig config.CustomDrainConf
 		StateManager: statemanager.NewStateManager(client),
 	}
 
-	informersInstance, err := informers.NewInformers(client, 1*time.Minute, ptr.To(2), false, false)
+	informersInstance, err := informers.NewInformers(
+		client,
+		1*time.Minute,
+		ptr.To(2),
+		false,
+		false,
+		tomlConfig.SystemNamespaces,
+	)
 	require.NoError(t, err)
 
 	go func() { _ = informersInstance.Run(ctx) }()
@@ -2441,7 +2455,14 @@ func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {
 		StateManager: statemanager.NewStateManager(client),
 	}
 
-	informersInstance, err := informers.NewInformers(client, 1*time.Minute, ptr.To(2), false, false)
+	informersInstance, err := informers.NewInformers(
+		client,
+		1*time.Minute,
+		ptr.To(2),
+		false,
+		false,
+		tomlConfig.SystemNamespaces,
+	)
 	require.NoError(t, err)
 
 	go func() { _ = informersInstance.Run(ctx) }()

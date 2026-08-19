@@ -114,7 +114,7 @@ func (he *HealthEventRuleEvaluator) Evaluate(
 func NewNodeRuleEvaluator(expression string, nodeLister corelisters.NodeLister) (*NodeRuleEvaluator, error) {
 	slog.Info("Creating NodeRuleEvaluator", "expression", expression)
 
-	// Create a CEL environment with declarations for node.labels and node.annotations
+	// Create a CEL environment for the cached Node metadata and spec.
 	env, err := cel.NewEnv(
 		cel.Variable(nodeObjKey, cel.AnyType),
 		ext.Strings(),
@@ -146,7 +146,7 @@ func NewNodeRuleEvaluator(expression string, nodeLister corelisters.NodeLister) 
 	}, nil
 }
 
-// Evaluate the CEL expression against node metadata (labels and annotations)
+// Evaluate the CEL expression against cached node metadata and spec.
 func (nm *NodeRuleEvaluator) Evaluate(event *protos.HealthEvent) (common.RuleEvaluationResult, error) {
 	slog.Info("Evaluating NodeRuleEvaluator for node", "node", event.NodeName)
 
@@ -172,7 +172,7 @@ func (nm *NodeRuleEvaluator) Evaluate(event *protos.HealthEvent) (common.RuleEva
 	return common.RuleEvaluationFailed, nil
 }
 
-// getNode gets both labels and annotations from a node using the informer lister
+// getNode gets node metadata and spec from the informer lister.
 func (nm *NodeRuleEvaluator) getNode(nodeName string) (map[string]interface{}, error) {
 	node, err := nm.nodeLister.Get(nodeName)
 	if err != nil {
