@@ -60,7 +60,6 @@ import sys
 import types
 from dataclasses import dataclass
 
-
 EXIT_OK = 0
 EXIT_GPU_FAIL = 1
 EXIT_ENV_FAIL = 2
@@ -79,6 +78,7 @@ class GPUResult:
 
 
 def _setup_logging() -> logging.Logger:
+    """Configure stderr logging at the LOG_LEVEL env level (default info)."""
     level_name = os.getenv("LOG_LEVEL", "info").lower().strip()
     level = {
         "debug": logging.DEBUG,
@@ -96,6 +96,7 @@ def _setup_logging() -> logging.Logger:
 
 
 def _tensor_size() -> int:
+    """Validation tensor edge size from CUDA_VALIDATION_TENSOR_SIZE (falls back to default on bad values)."""
     raw = os.getenv("CUDA_VALIDATION_TENSOR_SIZE", str(DEFAULT_TENSOR_SIZE))
     try:
         size = int(raw)
@@ -109,7 +110,9 @@ def _probe_device(torch: types.ModuleType, index: int, size: int) -> GPUResult:
     try:
         name = torch.cuda.get_device_name(index)
     except Exception as exc:  # noqa: BLE001 - intentional broad catch
-        return GPUResult(index=index, name="?", passed=False, detail=f"get_device_name failed: {exc}")
+        return GPUResult(
+            index=index, name="?", passed=False, detail=f"get_device_name failed: {exc}"
+        )
 
     try:
         torch.cuda.set_device(index)
@@ -120,7 +123,9 @@ def _probe_device(torch: types.ModuleType, index: int, size: int) -> GPUResult:
         total = tensor.sum()
         torch.cuda.synchronize(index)
         if not total.isfinite().item():
-            return GPUResult(index=index, name=name, passed=False, detail="non-finite sum")
+            return GPUResult(
+                index=index, name=name, passed=False, detail="non-finite sum"
+            )
         del tensor
         torch.cuda.empty_cache()
         return GPUResult(index=index, name=name, passed=True, detail="ok")
@@ -129,6 +134,7 @@ def _probe_device(torch: types.ModuleType, index: int, size: int) -> GPUResult:
 
 
 def main() -> int:
+    """Run the per-GPU CUDA validation probe; exit code encodes the failure class."""
     log = _setup_logging()
 
     try:
