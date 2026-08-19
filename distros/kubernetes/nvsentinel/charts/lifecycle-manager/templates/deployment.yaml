@@ -1,0 +1,168 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lifecycle-manager.fullname" . }}
+  labels:
+    {{- include "lifecycle-manager.labels" . | nindent 4}}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "lifecycle-manager.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- if .Values.controllers.validationRequest.enabled }}
+        # Force pod restart when configmaps change
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/templates: {{ include (print $.Template.BasePath "/configmap-templates.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with ((.Values.global).podAnnotations | default .Values.podAnnotations) }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "lifecycle-manager.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with ((.Values.global).imagePullSecrets | default .Values.imagePullSecrets) }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "lifecycle-manager.serviceAccountName" . }}
+      containers:
+        - name: lifecycle-manager
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "--metrics-bind-address=:{{ ((.Values.global).metricsPort) | default 2112 }}"
+            - "--health-probe-bind-address=:8081"
+            - "--leader-elect={{ .Values.leaderElection.enabled }}"
+            - "--enable-validation-controller={{ .Values.controllers.validationRequest.enabled }}"
+            {{- if .Values.controllers.validationRequest.enabled }}
+            - "--config=/etc/nvsentinel/lifecycle-manager/config.yaml"
+            {{- end }}
+            - "--webhook-cert-path={{ .Values.webhook.certDir }}"
+            - "--webhook-cert-name=tls.crt"
+            - "--webhook-cert-key=tls.key"
+            {{- if .Values.metrics.tls.enabled }}
+            - "--metrics-secure=true"
+            - "--metrics-cert-path={{ .Values.metrics.tls.certDir }}"
+            - "--metrics-cert-name=tls.crt"
+            - "--metrics-cert-key=tls.key"
+            {{- end }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- if .Values.global.tracing.enabled }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.global.tracing.endpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: {{ .Values.global.tracing.insecure | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          ports:
+            - name: metrics
+              containerPort: {{ ((.Values.global).metricsPort) | default 2112 }}
+            - name: webhook
+              containerPort: {{ .Values.webhook.port }}
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            {{- if .Values.controllers.validationRequest.enabled }}
+            - name: config
+              mountPath: /etc/nvsentinel/lifecycle-manager/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            - name: templates
+              mountPath: {{ .Values.config.templateMountPath }}
+              readOnly: true
+            {{- end }}
+            - name: webhook-certs
+              mountPath: {{ .Values.webhook.certDir }}
+              readOnly: true
+            {{- if .Values.metrics.tls.enabled }}
+            - name: metrics-certs
+              mountPath: {{ .Values.metrics.tls.certDir }}
+              readOnly: true
+            {{- end }}
+      restartPolicy: Always
+      volumes:
+        {{- if .Values.controllers.validationRequest.enabled }}
+        - name: config
+          configMap:
+            name: {{ include "lifecycle-manager.fullname" . }}
+        - name: templates
+          configMap:
+            name: {{ include "lifecycle-manager.fullname" . }}-templates
+        {{- end }}
+        - name: webhook-certs
+          secret:
+            secretName: {{ include "lifecycle-manager.fullname" . }}-webhook-cert
+            defaultMode: 420
+        {{- if .Values.metrics.tls.enabled }}
+        - name: metrics-certs
+          secret:
+            {{- if eq .Values.webhook.certProvider "openshift-service-ca" }}
+            secretName: {{ include "lifecycle-manager.fullname" . }}-webhook-cert
+            {{- else }}
+            secretName: {{ include "lifecycle-manager.fullname" . }}-metrics-cert
+            items:
+              - key: ca.crt
+                path: ca.crt
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+            {{- end }}
+            defaultMode: 420
+        {{- end }}
+      {{- with (((.Values.global).systemNodeSelector) | default .Values.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (((.Values.global).affinity) | default .Values.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (((.Values.global).systemNodeTolerations) | default .Values.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -559,6 +559,112 @@ func TestK8sConnector_WithEnvtest_EventCountIncrement(t *testing.T) {
 	assert.True(t, eventFound, "event count was not incremented")
 }
 
+// TestK8sConnector_WithEnvtest_EventDedupeCacheRecovery tests the cases where the
+// node-event dedupe cache does not resolve to a live event: the cached event was deleted
+// (or TTL-expired) out from under the connector, and the connector restarted with an empty
+// cache. Both must create a fresh event rather than increment or fail.
+func TestK8sConnector_WithEnvtest_EventDedupeCacheRecovery(t *testing.T) {
+	tests := []struct {
+		name                string
+		deleteExistingEvent bool
+		restartConnector    bool
+		expectedEvents      int
+		description         string
+	}{
+		{
+			name:                "cached event deleted before second write",
+			deleteExistingEvent: true,
+			restartConnector:    false,
+			expectedEvents:      1,
+			description:         "stale cache entry should fall back to creating a fresh event",
+		},
+		{
+			name:                "connector restarted with empty cache",
+			deleteExistingEvent: false,
+			restartConnector:    true,
+			expectedEvents:      2,
+			description:         "restarted connector should create a fresh event, not increment",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			testEnv, cli := setupEnvtest(t)
+
+			defer testEnv.Stop()
+
+			nodeName := "test-node"
+			_, err := cli.CoreV1().Nodes().Create(ctx, &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+			}, metav1.CreateOptions{})
+			require.NoError(t, err, "failed to create node")
+
+			stopCh := make(chan struct{})
+			defer close(stopCh)
+
+			connector := NewK8sConnector(cli, nil, stopCh, ctx, defaultConnectorConfig)
+
+			healthEventsProto := &protos.HealthEvents{
+				Events: []*protos.HealthEvent{
+					{
+						CheckName:          "GpuThermalWatch",
+						IsHealthy:          false,
+						EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+						ErrorCode:          []string{"THERMAL_WARNING"},
+						IsFatal:            false,
+						GeneratedTimestamp: timestamppb.New(time.Now()),
+						NodeName:           nodeName,
+					},
+				},
+			}
+
+			listNodeEvents := func() []corev1.Event {
+				t.Helper()
+
+				events, err := cli.CoreV1().Events(DefaultNamespace).List(ctx, metav1.ListOptions{
+					FieldSelector: fmt.Sprintf("involvedObject.name=%s", nodeName),
+				})
+				require.NoError(t, err)
+
+				var nodeEvents []corev1.Event
+
+				for _, event := range events.Items {
+					if event.Type == "GpuThermalWatch" {
+						nodeEvents = append(nodeEvents, event)
+					}
+				}
+
+				return nodeEvents
+			}
+
+			require.NoError(t, connector.processHealthEvents(ctx, healthEventsProto))
+
+			events := listNodeEvents()
+			require.Len(t, events, 1, "first health event did not create exactly one Kubernetes event")
+
+			if tt.deleteExistingEvent {
+				require.NoError(t,
+					cli.CoreV1().Events(DefaultNamespace).Delete(ctx, events[0].Name, metav1.DeleteOptions{}))
+			}
+
+			// A restarted connector starts with an empty dedupe cache.
+			if tt.restartConnector {
+				connector = NewK8sConnector(cli, nil, stopCh, ctx, defaultConnectorConfig)
+			}
+
+			require.NoError(t, connector.processHealthEvents(ctx, healthEventsProto))
+
+			events = listNodeEvents()
+			require.Len(t, events, tt.expectedEvents, tt.description)
+
+			for _, event := range events {
+				assert.EqualValues(t, 1, event.Count, "events should be created fresh, not incremented")
+			}
+		})
+	}
+}
+
 // TestK8sConnector_WithEnvtest_NodeNotFound tests handling of non-existent nodes
 func TestK8sConnector_WithEnvtest_NodeNotFound(t *testing.T) {
 	ctx := context.Background()

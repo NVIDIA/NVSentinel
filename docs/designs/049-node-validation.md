@@ -104,28 +104,32 @@ spec:
   - nccl-loopback
   templateMountPath: /etc/nvsentinel/templates
   providers:
-  - name: nccl-provider
-    supportsTestBatching: true
-    retries: 2
-    timeout: 30m
-    successfulCondition:
-      type: Succeeded
-      status: "True"
-    failedCondition:
-      type: Failed
-      status: "True"
-    templateFile: nccl-test-template.yaml
-  - name: k8s-job-provider
-    supportsTestBatching: false
-    retries: 5
-    timeout: 30m
-    successfulCondition:
-      type: Complete
-      status: "True"
-    failedCondition:
-      type: Failed
-      status: "True"
-    templateFile: k8s-job-template.yaml
+    nccl-provider:
+      apiGroup: validation.nvidia.com
+      version: v1alpha1
+      supportsTestBatching: true
+      retries: 2
+      timeout: 30m
+      successfulCondition:
+        type: Succeeded
+        status: "True"
+      failedCondition:
+        type: Failed
+        status: "True"
+      templateFile: nccl-test-template.yaml
+    k8s-job-provider:
+      apiGroup: batch
+      version: v1
+      supportsTestBatching: false
+      retries: 5
+      timeout: 30m
+      successfulCondition:
+        type: Complete
+        status: "True"
+      failedCondition:
+        type: Failed
+        status: "True"
+      templateFile: k8s-job-template.yaml
   maxConcurrentGroups: 3
   tests:
     dcgm-level4:
@@ -675,7 +679,7 @@ A mutating webhook will enforce the following properties in ValidationRequests. 
 
 1. At least 1 test name is specified and each test name exists in the ValidationConfiguration.
 2. At least 1 node name or label selector is specified. Additionally, the node name and label selector options are mutually exclusive.
-3. The same node cannot be listed multiple times for the same test in a single ValidationRequest.
+3. Nodes and tests must each be unique within a single ValidationRequest. Non-existent nodes are allowed and will be skipped during reconciliation.
 4. If exclusiveAccess is false in the ValidationRequest, gpuUUIDs must not be empty.
 5. If exclusiveNodeAccess is false in the test configuration, gpuUUIDs must not be empty in the ValidationRequest.
 6. If exclusiveNodeAccess is true in the test configuration, exclusiveAccess must be true in the ValidationRequest.
@@ -686,7 +690,7 @@ When a ValidationRequest is created, the controller sets its phase to Pending an
 # ValidationRequest1
 status:
   phase: Pending
-  attempts: []
+  testGroups: []
 
 # Node1
 metadata:
@@ -838,16 +842,19 @@ status:
   phase: Running
   testGroups:
     - name: dcgm-nccl-group-1
-      currentPhase: Running
+      provider: nccl-provider
+      phase: Running
       attempts:
         - objectName: test-exec-dcgm-nccl-group-1-1
           phase: Running
           startTime: "2024-07-14T10:00:00Z"
     - name: cuda-smoke-group-1
-      currentPhase: Pending
+      provider: k8s-job-provider
+      phase: Pending
       attempts: []
     - name: cuda-smoke-group-2
-      currentPhase: Pending
+      provider: k8s-job-provider
+      phase: Pending
       attempts: []
 
 # Node1
@@ -880,20 +887,23 @@ status:
   phase: Running
   testGroups:
     - name: dcgm-nccl-group-1
-      currentPhase: Succeeded
+      provider: nccl-provider
+      phase: Succeeded
       attempts:
         - objectName: test-exec-dcgm-nccl-group-1-1
           phase: Succeeded
           startTime: "2024-07-14T10:00:00Z"
           endTime: "2024-07-14T10:20:00Z"
     - name: cuda-smoke-group-1
-      currentPhase: Running
+      provider: k8s-job-provider
+      phase: Running
       attempts:
         - objectName: test-exec-cuda-smoke-group-1-1
           phase: Running
           startTime: "2024-07-14T10:21:00Z"
     - name: cuda-smoke-group-2
-      currentPhase: Running
+      provider: k8s-job-provider
+      phase: Running
       attempts:
         - objectName: test-exec-cuda-smoke-group-2-1
           phase: Running
@@ -910,14 +920,16 @@ status:
   phase: Running
   testGroups:
     - name: dcgm-nccl-group-1
-      currentPhase: Succeeded
+      provider: nccl-provider
+      phase: Succeeded
       attempts:
         - objectName: test-exec-dcgm-nccl-group-1-1
           phase: Succeeded
           startTime: "2024-07-14T10:00:00Z"
           endTime: "2024-07-14T10:20:00Z"
     - name: cuda-smoke-group-1
-      currentPhase: Running
+      provider: k8s-job-provider
+      phase: Running
       attempts:
         - objectName: test-exec-cuda-smoke-group-1-1
           phase: Failed
@@ -928,7 +940,8 @@ status:
           phase: Running
           startTime: "2024-07-14T10:30:00Z"
     - name: cuda-smoke-group-2
-      currentPhase: Running
+      provider: k8s-job-provider
+      phase: Running
       attempts:
         - objectName: test-exec-cuda-smoke-group-2-1
           phase: Running
@@ -945,14 +958,16 @@ status:
   phase: Succeeded
   testGroups:
     - name: dcgm-nccl-group-1
-      currentPhase: Succeeded
+      provider: nccl-provider
+      phase: Succeeded
       attempts:
         - objectName: test-exec-dcgm-nccl-group-1-1
           phase: Succeeded
           startTime: "2024-07-14T10:00:00Z"
           endTime: "2024-07-14T10:20:00Z"
     - name: cuda-smoke-group-1
-      currentPhase: Succeeded
+      provider: k8s-job-provider
+      phase: Succeeded
       attempts:
         - objectName: test-exec-cuda-smoke-group-1-1
           phase: Failed
@@ -964,7 +979,8 @@ status:
           startTime: "2024-07-14T10:30:00Z"
           endTime: "2024-07-14T10:38:00Z"
     - name: cuda-smoke-group-2
-      currentPhase: Succeeded
+      provider: k8s-job-provider
+      phase: Succeeded
       attempts:
         - objectName: test-exec-cuda-smoke-group-2-1
           phase: Succeeded
@@ -999,9 +1015,8 @@ metadata:
 * **ValidationRequest deletion:** if a ValidationRequest is in-progress, a delete request is blocked with a finalizer until all owned test provider CRDs are cleaned up. A Pending, Succeeded, or Failed ValidationRequest can be deleted immediately.
   * When a ValidationRequest is deleted, it will be removed from the tracking node annotation, indicating that this request is no longer part of the current validation session.
 * **Node deletion:** there is no finalizer that prevents a node from being deleted while it has an active ValidationRequest. If all test groups complete successfully after the node is deleted, the ValidationRequest will be marked as succeeded and any deleted nodes will be skipped for annotation updates. If a test group fails due to a deleted node, the ValidationRequest will be permitted to exhaust any test provider retries, skipping any non-existent nodes.
-* **Skipping nodes or tests:** nodes referenced in a ValidationRequest will only be skipped if they have been deleted. Tests from a ValidationRequest will only be permitted to be skipped if the batchFailurePolicy is ignore. In both cases, the ValidationRequest status will explicitly list any skipped nodes or tests.
-* **Identifying failed nodes:** the ValidationRequest status will include a failedNodes section for identifying specific nodes which experienced a NodeReadinessViolation or had a test group failure.
-  * If a test group is made up of multiple nodes, an operator will need to bisect which specific nodes were responsible for the test failures.
+* **Skipping nodes or tests:** nodes referenced in a ValidationRequest will only be skipped if they have been deleted. Tests from a ValidationRequest will only be permitted to be skipped if the batchFailurePolicy is ignore. In both cases, the ValidationRequest status will explicitly list any skipped nodes or tests in a dedicated skipped section (skipped.nodes and skipped.tests). If every node has been skipped or every test has been skipped, the ValidationRequest is marked as Succeeded.
+* **Identifying failed nodes:** each attempt within a test group includes a failedNodes field that gives per-attempt visibility into failed nodes, since different retries may fail due to different nodes. Initially, failedNodes is only populated for the NodeReadinessViolation failure reason, as the controller can directly identify which node violated its readiness criteria. As a follow-up, we could add support to consume failed node information directly from test providers for TestFailed and TestTimeout reasons.
 * **Retrying or skipping validation:** a ValidationRequest can be skipped by deleting the CRD. This will result in the CRD being removed from each targeted node's validation-session annotation. Additionally, a failed ValidationRequest can be retried by recreating it.
 * **Validation sessions:** a given node's validation-session will be made up of 1 or more ValidationRequests. A given request will only be removed after a matching ValidationRequest completes. To prevent needing an additional CRD object per node to track validation sessions, we will leverage a node annotation which is consistent with how fault-quarantine maintains quarantine sessions.
   * Compared to events arriving to the fault-quarantine module, we do not have the benefit of processing only new events, so we need to differentiate which ValidationRequests are part of the active session (to prevent old successful ValidationRequests from clearing a request in the current session).

@@ -187,7 +187,7 @@ Defines conditions that must be satisfied for the rule set to trigger. Supports 
 Specifies the object type to evaluate in the CEL expression. Valid values: `HealthEvent` (evaluates against health event data) or `Node` (evaluates against Kubernetes node object).
 
 #### expression
-CEL (Common Expression Language) expression that evaluates to true or false. For `HealthEvent` kind, access fields via `event` variable. For `Node` kind, access fields via `node` variable.
+CEL (Common Expression Language) expression that evaluates to true or false. For `HealthEvent` kind, access fields via the `event` variable. For `Node` kind, access `node.metadata` and `node.spec`; `node.status` is not cached or available.
 
 #### cordon
 Specifies whether to mark the node as unschedulable when the rule matches.
