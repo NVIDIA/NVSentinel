@@ -47,13 +47,13 @@ The Fault Quarantine module continuously watches the datastore for health events
 
 The Fault Quarantine module uses CEL (Common Expression Language) to define flexible rules for when nodes should be quarantined. CEL is a simple expression language that lets you write conditions like "if this happens, then quarantine the node."
 
-**Key feature**: The CEL evaluator has access to the complete Kubernetes Node object, giving you flexibility to make quarantine decisions based on any node attribute - labels, annotations, conditions, capacity, or any other node metadata.
+**Key feature**: The CEL evaluator has access to the Kubernetes Node's `metadata` and `spec`. Node `status` is not cached or available to Fault Quarantine rules.
 
 **Example rule capabilities:**
 - Quarantine nodes with fatal XID errors: `event.errorCode.contains("XID-48")`
 - Check node labels: `node.metadata.labels["node-type"] == "training"`
 - Evaluate multiple conditions: `event.isFatal && node.metadata.labels["environment"] == "production"`
-- Access node capacity: `node.status.capacity["nvidia.com/gpu"] > 8`
+- Check scheduling state: `node.spec.unschedulable == false`
 - Skip quarantine for certain nodes or environments
 
 ## Configuration
@@ -102,7 +102,7 @@ Rules are defined using rulesets that evaluate CEL expressions. Each ruleset has
 
 **Match Conditions**: CEL expressions that determine when the ruleset triggers
 - `kind: "HealthEvent"` - Expressions evaluated against the health event (agent, isFatal, checkName, etc.)
-- `kind: "Node"` - Expressions evaluated against the Kubernetes Node object (labels, capacity, conditions, etc.)
+- `kind: "Node"` - Expressions evaluated against the Kubernetes Node `metadata` and `spec`
 
 **Actions**: What happens when conditions match
 - `cordon.shouldCordon: true` - Cordon (mark unschedulable) the node
@@ -113,7 +113,7 @@ Rules are defined using rulesets that evaluate CEL expressions. Each ruleset has
 - **Dry Run**: Test rules without cordoning nodes
 - **Circuit Breaker**: Prevents cordoning too many nodes at once. See [Circuit Breaker documentation](circuit-breaker.md)
 - **Label Prefix**: Customize the prefix for tracking labels and annotations on nodes
-- **Multiple Rulesets**: Define different rules for different failure types with CEL expressions that have access to both the health event and full Node object
+- **Multiple Rulesets**: Define different rules for different failure types with CEL expressions that access either the health event or Node metadata/spec
 
 ## Key Features
 
@@ -124,9 +124,9 @@ Tracks health issues at the entity level (e.g., individual GPUs), not just at th
 - Partial recovery scenarios where some GPUs recover while others remain faulty
 
 ### Flexible CEL Rules with Node Context
-CEL expressions receive both the health event and the complete Kubernetes Node object:
+CEL expressions receive either the health event or the Kubernetes Node's metadata and spec:
 - Cordon based on node labels (e.g., environment, node type, GPU model)
-- Access node capacity and conditions
+- Check scheduling and taint configuration
 - Skip quarantine for nodes with specific annotations
 - Different thresholds based on any node metadata
 

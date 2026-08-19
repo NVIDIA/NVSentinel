@@ -61,6 +61,11 @@ var (
 		5*time.Minute,
 		"Periodic reconciliation interval",
 	)
+	cacheSyncTimeout = flag.Duration(
+		"cache-sync-timeout",
+		10*time.Minute,
+		"Maximum time to wait for informer caches to sync on startup",
+	)
 	maxConcurrentReconciles = flag.Int(
 		"max-concurrent-reconciles",
 		1,
@@ -104,6 +109,7 @@ func run() error {
 		MetricsBindAddress:      *metricsBindAddress,
 		HealthProbeBindAddress:  *healthProbeBindAddress,
 		ResyncPeriod:            *resyncPeriod,
+		CacheSyncTimeout:        *cacheSyncTimeout,
 		MaxConcurrentReconciles: *maxConcurrentReconciles,
 		PlatformConnectorSocket: *platformConnectorSocket,
 		ProcessingStrategy:      *processingStrategyFlag,

@@ -26,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
@@ -87,6 +88,48 @@ func createTestNode(ctx context.Context, t *testing.T, name string, labels map[s
 	_, err := testClient.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create test node %s: %v", name, err)
+	}
+}
+
+func TestNodeRuleEvaluatorWithMetadataAndSpecOnly(t *testing.T) {
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "slim-node",
+			Labels:      map[string]string{"environment": "production"},
+			Annotations: map[string]string{"maintenance": "false"},
+		},
+		Spec: corev1.NodeSpec{
+			Unschedulable: true,
+			Taints: []corev1.Taint{{
+				Key:    "dedicated",
+				Value:  "gpu",
+				Effect: corev1.TaintEffectNoSchedule,
+			}},
+		},
+	}
+	if err := indexer.Add(node); err != nil {
+		t.Fatalf("indexer.Add() error = %v", err)
+	}
+
+	evaluator, err := NewNodeRuleEvaluator(
+		`node.metadata.name == "slim-node" &&
+		 node.metadata.labels["environment"] == "production" &&
+		 node.metadata.annotations["maintenance"] == "false" &&
+		 node.spec.unschedulable &&
+		 node.spec.taints.exists(t, t.key == "dedicated")`,
+		corelisters.NewNodeLister(indexer),
+	)
+	if err != nil {
+		t.Fatalf("NewNodeRuleEvaluator() error = %v", err)
+	}
+
+	result, err := evaluator.Evaluate(&protos.HealthEvent{NodeName: "slim-node"})
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if result != common.RuleEvaluationSuccess {
+		t.Fatalf("Evaluate() = %v, want success", result)
 	}
 }
 

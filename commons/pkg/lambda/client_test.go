@@ -330,3 +330,37 @@ func TestClient_Post_Permanent4xx_ErrorNamesTheMethod(t *testing.T) {
 	assert.ErrorContains(t, err, "POST")
 	assert.ErrorContains(t, err, "404")
 }
+
+// TestValidWorkspaceID pins the two forms the API accepts, dashed and undashed,
+// against the near-misses a hand-copied ID turns into.
+func TestValidWorkspaceID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		id   string
+		want bool
+	}{
+		{name: "undashed", id: "c4d291f47f9d436fa39f58493ce3b50d", want: true},
+		{name: "dashed", id: "c4d291f4-7f9d-436f-a39f-58493ce3b50d", want: true},
+		{name: "uppercase", id: "C4D291F47F9D436FA39F58493CE3B50D", want: true},
+		{name: "empty", id: ""},
+		{name: "a name, not an ID", id: "my-workspace"},
+		{name: "one digit short", id: "c4d291f47f9d436fa39f58493ce3b50"},
+		{name: "one digit long", id: "c4d291f47f9d436fa39f58493ce3b50da"},
+		{name: "non-hex digit", id: "g4d291f47f9d436fa39f58493ce3b50d"},
+		// Each dash is optional independently, matching the API, which strips
+		// every dash before checking the length.
+		{name: "some dashes missing", id: "c4d291f4-7f9d436f-a39f-58493ce3b50d", want: true},
+		{name: "surrounding whitespace", id: " c4d291f47f9d436fa39f58493ce3b50d "},
+		{name: "an LRN, not an ID", id: "lrn:iam:workspace:c4d291f47f9d436fa39f58493ce3b50d"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tc.want, ValidWorkspaceID(tc.id))
+		})
+	}
+}

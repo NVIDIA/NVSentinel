@@ -41,6 +41,7 @@ updates:
       - "/health-monitors/slurm-drain-monitor"
       - "/health-monitors/syslog-health-monitor"
       - "/janitor"
+      - "/lifecycle-manager"
       - "/janitor-provider"
       - "/labeler"
       - "/metadata-collector"

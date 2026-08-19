@@ -9,6 +9,10 @@
 IS_GO_MODULE := 1
 IS_KO_MODULE := 1
 
+# The envtest-heavy suite includes a one-minute memory pressure test and can
+# exceed Go's default ten-minute package timeout on CI runners.
+TEST_EXTRA_FLAGS := -timeout=15m
+
 # =============================================================================
 # INCLUDE SHARED DEFINITIONS
 # =============================================================================

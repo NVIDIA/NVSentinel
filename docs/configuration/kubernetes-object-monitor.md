@@ -48,6 +48,7 @@ Controls behavior of the Kubernetes controller watching resources.
 kubernetes-object-monitor:
   maxConcurrentReconciles: 1
   resyncPeriod: 5m
+  cacheSyncTimeout: 10m
 ```
 
 #### maxConcurrentReconciles
@@ -55,6 +56,9 @@ Maximum number of concurrent reconciliation workers. Higher values allow paralle
 
 #### resyncPeriod
 How often the controller re-evaluates all watched resources even without changes.
+
+#### cacheSyncTimeout
+Maximum time to wait for informer caches to synchronize on startup. Increase this value for large clusters where the initial cache population takes longer.
 
 ## Policies Configuration
 
