@@ -53,6 +53,9 @@ type apiResponse struct {
 // ListMaintenanceEvents fetches all maintenance events, walking pagination
 // via the API's page_token cursor. Retry/backoff is handled by the underlying
 // Client.
+//
+// Events are scoped to the workspace given to WithWorkspaceID, or to the
+// default workspace when none was given.
 func (c *Client) ListMaintenanceEvents(ctx context.Context) ([]Event, error) {
 	var all []Event
 
@@ -60,6 +63,10 @@ func (c *Client) ListMaintenanceEvents(ctx context.Context) ([]Event, error) {
 
 	for page := 0; page < maxEventPages; page++ {
 		q := url.Values{}
+		if c.workspaceID != "" {
+			q.Set("workspace_id", c.workspaceID)
+		}
+
 		if pageToken != nil {
 			q.Set("page_token", *pageToken)
 		}

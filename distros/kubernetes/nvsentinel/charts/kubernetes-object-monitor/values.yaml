@@ -29,6 +29,7 @@ podAnnotations: {}
 
 maxConcurrentReconciles: 1
 resyncPeriod: 5m
+cacheSyncTimeout: 10m # Duration limiting startup cache synchronization.
 
 # RBAC permissions are automatically generated based on the resources defined in policies.
 # Nodes always get write permissions (patch/update) for annotations.

@@ -91,6 +91,10 @@ func NewNodeInformer(clientset kubernetes.Interface,
 	ni.lister = nodeInformerObj.Lister()
 	ni.informerSynced = nodeInformerObj.Informer().HasSynced
 
+	if err := ni.informer.SetTransform(stripNodeStatus); err != nil {
+		return nil, fmt.Errorf("failed to set node cache transform: %w", err)
+	}
+
 	err := ni.informer.AddIndexers(cache.Indexers{
 		quarantineAnnotationIndexName: quarantineAnnotationIndexFunc,
 	})
@@ -111,6 +115,17 @@ func NewNodeInformer(clientset kubernetes.Interface,
 		"gpuNodeLabelKey", gpuNodeLabelKey, "gpuNodeLabelValue", gpuNodeLabelValue)
 
 	return ni, nil
+}
+
+func stripNodeStatus(obj interface{}) (interface{}, error) {
+	node, ok := obj.(*v1.Node)
+	if !ok {
+		return nil, fmt.Errorf("expected node object, got %T", obj)
+	}
+
+	node.Status = v1.NodeStatus{}
+
+	return node, nil
 }
 
 // Run starts the informer and waits for cache sync.

@@ -84,11 +84,16 @@ Indicates whether the NVIDIA driver is installed on the node. The Labeler detect
 
 In GKE clusters with pre-installed drivers, the `nvidia-driver-daemonset` is not deployed. Instead, Google manages driver installation through `nvidia-driver-installer` DaemonSet pods. The Labeler watches these pods to detect driver installation in GKE environments with pre-installed drivers.
 
-**Note**: For environments with pre-installed drivers where no `nvidia-driver-installer` pods exist (e.g., custom machine images with pre-baked drivers), use the following command to manually label the node:
+**Note**: For environments with pre-installed drivers where no driver pods exist at all (e.g., custom machine images with pre-baked drivers, or cloud node images that ship the driver), enable the `assumeDriverInstalled` Helm value:
 
-```bash
-kubectl label nodes {node-name} nvsentinel.dgxc.nvidia.com/driver.installed=true
+```yaml
+labeler:
+  assumeDriverInstalled: true
 ```
+
+With this setting the Labeler sets `driver.installed=true` on every GPU node (`nvidia.com/gpu.present=true`) it manages, skips driver pod detection, and automatically covers nodes added later. Nodes opted out with `nvsentinel.dgxc.nvidia.com/managed=false` — for example during external remediation — are excluded.
+
+Do not apply the label manually with `kubectl label`. Instead, enable `assumeDriverInstalled`; without it, the Labeler computes an empty desired value for a node with no driver pod and silently removes a manually applied `driver.installed` label as stale on its next relevant reconciliation — for example, any Labeler restart, a driver or DCGM pod readiness change on the node, or a change to the node labels the Labeler watches — so a manual label cannot be relied on to persist.
 
 ### Kata Enabled
 **Label**: `nvsentinel.dgxc.nvidia.com/kata.enabled`

@@ -35,6 +35,9 @@ dependencies:
 - name: janitor
   repository: ""
   version: 0.1.0
+- name: lifecycle-manager
+  repository: ""
+  version: 0.1.0
 - name: metadata-collector
   repository: ""
   version: 0.1.0

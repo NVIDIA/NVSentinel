@@ -49,4 +49,5 @@ data:
     [lambda]
     enabled = {{ eq .Values.cspName "lambda" }}
     apiEndpoint = {{ .Values.configToml.lambda.apiEndpoint | default "" | quote }}
+    workspaceId = {{ .Values.configToml.lambda.workspaceId | default "" | quote }}
     pollingIntervalSeconds = {{ .Values.configToml.lambda.pollingIntervalSeconds | default 30 }}
