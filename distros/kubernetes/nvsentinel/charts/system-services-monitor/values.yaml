@@ -12,13 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Container image for the monitor DaemonSet. `tag` empty means the chart
+# appVersion is used.
 image:
   repository: ghcr.io/nvidia/nvsentinel/system-services-monitor
   pullPolicy: IfNotPresent
   tag: ""
 
+# Extra annotations applied to every monitor pod (e.g. scrape hints).
 podAnnotations: {}
 
+# Pod resource requests/limits. The monitor is a light poller; the defaults
+# are deliberately small.
 resources:
   limits:
     cpu: 100m
@@ -78,6 +83,9 @@ tolerations:
     operator: Exists
     effect: NoSchedule
 
+# Standard pod affinity/anti-affinity rules, merged verbatim into the pod
+# spec. The DaemonSet already targets GPU nodes via nodeSelector above.
 affinity: {}
 
+# Application log level: DEBUG, INFO, WARNING, or ERROR (passed as LOG_LEVEL).
 logLevel: INFO

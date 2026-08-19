@@ -43,9 +43,14 @@ spec:
         # Warning: Fabric Manager flapping (restarting repeatedly).
         # Backed by the fabric_manager_restarts_total counter the app
         # increments from the systemd NRestarts delta observed between poll
-        # cycles: more than 3 restarts within 10 minutes flags flapping.
+        # cycles. The window and threshold are templated from the same
+        # .Values.flapWindow / .Values.flapThreshold the DaemonSet passes to
+        # the monitor, and the comparison is >= to match ServiceChecker's
+        # is_flapping (which flags AT the threshold), so the alert fires on
+        # exactly the condition the monitor reports — including when a user
+        # overrides either value.
         - alert: FabricManagerFlapping
-          expr: increase(fabric_manager_restarts_total[10m]) > 3
+          expr: increase(fabric_manager_restarts_total[{{ .Values.flapWindow }}s]) >= {{ .Values.flapThreshold }}
           for: 5m
           labels:
             severity: warning
