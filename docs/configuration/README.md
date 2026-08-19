@@ -74,6 +74,37 @@ global:
   systemNodeTolerations: []
 ```
 
+### Pod Priority
+
+By default NVSentinel pods run at priority 0, which places them below any workload that
+sets a priority class. On a saturated cluster that means the scheduler leaves them Pending
+rather than preempting a lower-value pod, so a node can end up with no health monitor while
+the workload still reports healthy.
+
+Assign a priority class to avoid that. The split matches the node-scheduling values above:
+`priorityClassName` covers the node-level agents (the health monitor, metadata collector
+and NIC health monitor DaemonSets, the preflight image cache, plus platform-connectors),
+`systemPriorityClassName` covers the control-plane components (labeler,
+health-events-analyzer, fault-quarantine, node-drainer etc).
+
+```yaml
+global:
+  priorityClassName: ""        # node-level agents (DaemonSets)
+  systemPriorityClassName: ""  # control-plane components (Deployments)
+```
+
+Both default to empty, which leaves the field off the pod spec entirely and preserves the
+existing behaviour. Any component can also be set individually, and the global takes
+precedence when both are set, consistent with how `tolerations` behaves:
+
+```yaml
+gpu-health-monitor:
+  priorityClassName: my-gpu-agent-priority
+```
+
+The priority classes must already exist in the cluster. `system-node-critical` and
+`system-cluster-critical` are built in; anything else has to be created first.
+
 ### Image Pull Secrets
 
 Credentials for pulling images from private registries.

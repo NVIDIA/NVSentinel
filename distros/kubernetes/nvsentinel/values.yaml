@@ -210,6 +210,15 @@ global:
   affinity: {}
   systemNodeSelector: {}
   systemNodeTolerations: []
+  # Pod priority for the node-level agents (DaemonSets), e.g. system-node-critical.
+  # Empty means cluster default priority 0. Any non-empty value must name an existing
+  # PriorityClass. Overrides each component's local priorityClassName.
+  priorityClassName: ""
+  # Pod priority for the control-plane components (Deployments), e.g.
+  # system-cluster-critical. Split from the value above for the same reason
+  # systemNodeTolerations is split from tolerations: the two groups run on different
+  # node classes and are usually sized differently.
+  systemPriorityClassName: ""
   imagePullSecrets: []
 
   gpuHealthMonitor:
@@ -263,6 +272,9 @@ networkPolicy:
   enabled: true
 
 platformConnector:
+  # Local fallback, overridden by global.priorityClassName when that is set.
+  priorityClassName: ""
+
   image:
     repository: ghcr.io/nvidia/nvsentinel/platform-connectors
     pullPolicy: IfNotPresent
