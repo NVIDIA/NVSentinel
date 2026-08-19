@@ -55,8 +55,7 @@ def _parse_log_level(level: str) -> int:
     normalized = level.lower().strip()
     if normalized not in _LEVEL_MAP:
         print(
-            f"[logger] Unknown log level {level!r}; defaulting to INFO. "
-            f"Valid values: {sorted(_LEVEL_MAP.keys())}",
+            f"[logger] Unknown log level {level!r}; defaulting to INFO. " f"Valid values: {sorted(_LEVEL_MAP.keys())}",
             file=sys.stderr,
         )
     return _LEVEL_MAP.get(normalized, logging.INFO)
@@ -72,6 +71,7 @@ def _make_module_version_injector(
         method_name: str,
         event_dict: dict[str, Any],
     ) -> dict[str, Any]:
+        """structlog processor: stamp module and version onto the event dict."""
         event_dict["module"] = module
         event_dict["version"] = version
         return event_dict

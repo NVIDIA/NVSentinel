@@ -41,6 +41,8 @@ class CheckResult:
 
 
 class CallbackInterface(abc.ABC):
+    """Interface for consumers of completed health-check cycles."""
+
     @abc.abstractmethod
     def health_check_completed(self, results: List[CheckResult]) -> None:
         """Called after each check cycle with the aggregated results from all checkers."""

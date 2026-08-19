@@ -32,6 +32,8 @@ from .types import CheckResult
 
 
 class ErrorCategory(Enum):
+    """Failure-mode categories parsed from Fabric Manager journal lines."""
+
     NVSWITCH_ERROR = "nvswitch_error"
     INITIALIZATION_FAILED = "initialization_failed"
     TIMEOUT = "timeout"
@@ -97,6 +99,7 @@ class ServiceChecker:
     ]
 
     def __init__(self, flap_window: int = 600, flap_threshold: int = 3):
+        """Configure flap detection: `flap_threshold` restarts within `flap_window` seconds."""
         self._flap_window = flap_window
         self._flap_threshold = flap_threshold
         # Track restart timestamps per service for flap detection
@@ -122,12 +125,14 @@ class ServiceChecker:
         older systemd versions don't support it in a combined property list.
         """
         try:
-            result = self._run_host_cmd([
-                "systemctl",
-                "show",
-                service_name,
-                "--property=LoadState,ActiveState,SubState,MainPID,ExecMainStartTimestamp",
-            ])
+            result = self._run_host_cmd(
+                [
+                    "systemctl",
+                    "show",
+                    service_name,
+                    "--property=LoadState,ActiveState,SubState,MainPID,ExecMainStartTimestamp",
+                ]
+            )
 
             if result.returncode != 0 and not result.stdout.strip():
                 return ServiceStatus(
@@ -156,7 +161,9 @@ class ServiceChecker:
                 load_state=props.get("LoadState", ""),
                 sub_state=props.get("SubState", ""),
                 main_pid=int(props.get("MainPID", "0")),
-                n_restarts=n_restarts,
+                # None (unobserved) surfaces as 0 in the status; the
+                # distinction only matters to flap tracking above.
+                n_restarts=n_restarts if n_restarts is not None else 0,
                 start_timestamp=props.get("ExecMainStartTimestamp", ""),
             )
 
@@ -173,15 +180,23 @@ class ServiceChecker:
                 error=str(e),
             )
 
-    def _get_restart_count(self, service_name: str) -> int:
-        """Get NRestarts from systemd, returning 0 if unsupported."""
+    def _get_restart_count(self, service_name: str) -> Optional[int]:
+        """Get NRestarts from systemd.
+
+        Returns the counter value, or None when it could not be observed
+        (NRestarts unsupported on older systemd, or the probe failed). None is
+        deliberately distinct from 0: a real 0 participates in flap tracking's
+        reset detection, while an unobserved value must not.
+        """
         try:
-            result = self._run_host_cmd([
-                "systemctl",
-                "show",
-                service_name,
-                "--property=NRestarts",
-            ])
+            result = self._run_host_cmd(
+                [
+                    "systemctl",
+                    "show",
+                    service_name,
+                    "--property=NRestarts",
+                ]
+            )
             if result.returncode == 0 and result.stdout.strip():
                 _, _, val = result.stdout.strip().partition("=")
                 return int(val)
@@ -189,22 +204,49 @@ class ServiceChecker:
             # Intentional silent fallback: NRestarts is unsupported on older
             # systemd. Keep the reason visible for troubleshooting.
             log.debug("NRestarts query failed for %s (likely unsupported): %s", service_name, e)
-        return 0
+        return None
 
-    def _update_flap_tracking(self, service_name: str, current_restarts: int) -> None:
-        """Track restart events for flap detection."""
-        if service_name not in self._restart_history:
+    def _update_flap_tracking(self, service_name: str, current_restarts: Optional[int]) -> None:
+        """Track restart events for flap detection.
+
+        systemd's NRestarts is not monotonic: it resets to 0 on
+        `systemctl reset-failed`, on unit re-creation, and after a reboot. A
+        decrease is therefore re-baselined (not ignored) so counting resumes
+        from the new value instead of going quiet until the counter climbs
+        past the old high-water mark. An unobserved probe (None) leaves the
+        baseline untouched entirely.
+        """
+        if current_restarts is None:
+            # Probe failed / NRestarts unsupported: no observation, no
+            # baseline movement. Still prune below so stale entries age out.
+            if service_name not in self._restart_history:
+                return
+        elif service_name not in self._restart_history:
             self._restart_history[service_name] = deque()
             self._last_restart_count[service_name] = current_restarts
             return
-
-        last_count = self._last_restart_count[service_name]
-        if current_restarts > last_count:
-            # New restarts detected -- record timestamp for each
-            now = time.monotonic()
-            for _ in range(current_restarts - last_count):
-                self._restart_history[service_name].append(now)
-            self._last_restart_count[service_name] = current_restarts
+        else:
+            last_count = self._last_restart_count[service_name]
+            if current_restarts > last_count:
+                # New restarts detected -- record timestamp for each
+                now = time.monotonic()
+                for _ in range(current_restarts - last_count):
+                    self._restart_history[service_name].append(now)
+                self._last_restart_count[service_name] = current_restarts
+            elif current_restarts < last_count:
+                # Counter reset (reset-failed, unit re-creation, reboot):
+                # re-baseline. The restart that caused a reboot-reset is
+                # itself observable as a restart event; record one sample so
+                # flap detection doesn't go quiet right after the reboot a
+                # flapping service would cause.
+                log.info(
+                    "NRestarts for %s reset (%d -> %d); re-baselining flap tracking",
+                    service_name,
+                    last_count,
+                    current_restarts,
+                )
+                self._restart_history[service_name].append(time.monotonic())
+                self._last_restart_count[service_name] = current_restarts
 
         # Prune entries outside the flap window
         cutoff = time.monotonic() - self._flap_window

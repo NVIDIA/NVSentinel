@@ -165,3 +165,35 @@ class TestToCheckResults:
         results = checker.to_check_results(in_progress, node_name="node-a")
 
         assert results[0].is_healthy is True
+
+    def test_in_progress_streak_drops_when_gpu_absent_from_poll(self, checker: FabricStateChecker) -> None:
+        """A GPU missing from a poll (probe failure / partial output) breaks the streak."""
+        in_progress = [GpuFabricState(gpu_index=3, fabric_state="In Progress", fabric_status="In Progress")]
+
+        checker.to_check_results(in_progress, node_name="node-a")
+        checker.to_check_results(in_progress, node_name="node-a")
+        # GPU 3 absent this poll (e.g. nvidia-smi timed out): streak must drop.
+        checker.to_check_results([], node_name="node-a")
+        # Two more In Progress polls: still under threshold, so healthy.
+        checker.to_check_results(in_progress, node_name="node-a")
+        results = checker.to_check_results(in_progress, node_name="node-a")
+
+        assert results[0].is_healthy is True
+
+    def test_streak_does_not_advance_when_disabled(self, checker: FabricStateChecker) -> None:
+        """advance_streak=False (boot grace) evaluates without accumulating."""
+        in_progress = [GpuFabricState(gpu_index=3, fabric_state="In Progress", fabric_status="In Progress")]
+
+        # Many grace-period polls must not accrue toward the threshold.
+        for _ in range(5):
+            results = checker.to_check_results(in_progress, node_name="node-a", advance_streak=False)
+            assert results[0].is_healthy is True
+
+        # After grace, the streak starts from zero: two polls stay healthy,
+        # the third (threshold=3) reports stuck.
+        checker.to_check_results(in_progress, node_name="node-a")
+        checker.to_check_results(in_progress, node_name="node-a")
+        results = checker.to_check_results(in_progress, node_name="node-a")
+
+        assert results[0].is_healthy is False
+        assert results[0].error_codes == [FabricFailureState.FM_REGISTRATION_STUCK.value]

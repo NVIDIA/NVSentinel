@@ -18,7 +18,7 @@ Runs non-DCGM health checks on a configurable interval and fires
 callbacks (e.g. PlatformConnectorEventProcessor) with the aggregated
 results. Mirrors the DCGMWatcher pattern from gpu-health-monitor.
 
-Scope (per ADR-049): only checks that DCGM cannot see --
+Scope (per ADR-050): only checks that DCGM cannot see --
   FM service health, FM flap detection, fabric state,
   GPU service lifecycle. PCIe, NVLink, and clock throttling are
   owned by gpu-health-monitor via pydcgm.
@@ -45,7 +45,7 @@ class FabricManagerWatcher:
 
     PCIe link health, NVLink fabric, and clock throttling are intentionally
     excluded -- those signals are DCGM-visible and belong in gpu-health-monitor
-    (see ADR-049).
+    (see ADR-050).
     """
 
     def __init__(
@@ -58,12 +58,18 @@ class FabricManagerWatcher:
         flap_threshold: int = 3,
         enable_fabric_check: bool = True,
     ) -> None:
+        """Wire checkers and callbacks; see class docstring for the polling contract."""
         self._poll_interval = poll_interval
         self._callbacks = callbacks
         self._node_name = node_name
         self._boot_grace_period = boot_grace_period
         self._start_time = time.monotonic()
-        self._callback_thread_pool = ThreadPoolExecutor()
+        # Single worker on purpose: callbacks apply state transitions, so
+        # dispatch must be ordered — with N workers a stale unhealthy result
+        # could be applied after a newer healthy one. One worker turns the
+        # pool into a serial queue (submission order == execution order)
+        # while still keeping callback latency out of the poll loop.
+        self._callback_thread_pool = ThreadPoolExecutor(max_workers=1)
         # Last-observed cumulative FM restart count (systemd NRestarts) used to
         # increment the fabric_manager_restarts_total counter by the per-cycle
         # delta. Negative deltas (systemd reset / reload) are ignored.
@@ -84,12 +90,14 @@ class FabricManagerWatcher:
             self._checkers.append(("fabric_state", self._run_fabric_state_checks))
 
     def _in_grace_period(self) -> bool:
+        """True while the node is inside the boot grace period."""
         return (time.monotonic() - self._start_time) < self._boot_grace_period
 
     def _fire_callback_funcs(self, results: List[CheckResult]) -> None:
         """Invoke health_check_completed on all registered callbacks."""
 
         def done_callback(class_name: str, future):
+            """Record per-callback success/failure metrics when a future completes."""
             e = future.exception()
             if e is not None:
                 log.exception(f"Callback failed: {e}")
@@ -267,8 +275,15 @@ class FabricManagerWatcher:
                     f"state={gpu.fabric_state}, status={gpu.fabric_status}"
                 )
 
-        fabric_results = self._fabric_state_checker.to_check_results(statuses, self._node_name)
-        if self._in_grace_period():
+        # During boot grace, evaluate without advancing the "In Progress"
+        # streaks: alerts are suppressed then, so FM_REGISTRATION_STUCK must
+        # not accrue toward its threshold either — otherwise a normal slow
+        # startup could trip the alert on the first post-grace poll.
+        in_grace = self._in_grace_period()
+        fabric_results = self._fabric_state_checker.to_check_results(
+            statuses, self._node_name, advance_streak=not in_grace
+        )
+        if in_grace:
             # Same suppression the service checks apply during node startup:
             # drop unhealthy results, keep healthy ones (they prime the
             # transition cache without triggering remediation).

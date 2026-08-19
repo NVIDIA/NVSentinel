@@ -46,6 +46,8 @@ GRPC_SEND_TIMEOUT_SECS = 10
 
 @dataclasses.dataclass
 class CachedEntityState:
+    """Last-sent health state for one entity; the transition cache's value type."""
+
     is_fatal: bool
     is_healthy: bool
     # Normalized (sorted, de-duplicated) condition codes. Part of the cached
@@ -64,6 +66,7 @@ class PlatformConnectorEventProcessor(CallbackInterface):
         node_name: str,
         processing_strategy: platformconnector_pb2.ProcessingStrategy,
     ) -> None:
+        """Bind the UDS socket path, node identity, and processing strategy."""
         self._socket_path = socket_path
         self._node_name = node_name
         self._version = 1
@@ -99,9 +102,7 @@ class PlatformConnectorEventProcessor(CallbackInterface):
 
     def health_check_completed(self, results: List[CheckResult]) -> None:
         """Process check results and send state-change HealthEvents to platform-connector."""
-        with metrics.health_events_publish_time_to_grpc_channel.labels(
-            "health_check_completed_to_grpc_channel"
-        ).time():
+        with metrics.health_events_publish_time_to_grpc_channel.labels("health_check_completed_to_grpc_channel").time():
             log.debug("received callback for health check completed")
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
@@ -182,6 +183,7 @@ class PlatformConnectorEventProcessor(CallbackInterface):
                                 self.entity_cache.pop(key, None)
 
     def _is_platform_connector_socket_present(self) -> bool:
+        """True when the platform-connector UDS socket file exists."""
         # platform-connector removes the socket file on shutdown and on
         # startup before binding, so file-presence is a faithful proxy
         # for "PC is up" on this node.

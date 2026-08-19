@@ -103,13 +103,40 @@ class TestFlapDetection:
         c._update_flap_tracking("svc", current_restarts=3)
         assert c.is_flapping("svc") is True  # 3 >= threshold(3)
 
+    def test_counter_reset_rebaselines_and_keeps_counting(self) -> None:
+        """systemd resetting NRestarts (reset-failed / reboot) must not silence tracking."""
+        c = ServiceChecker(flap_window=600, flap_threshold=3)
+        c._update_flap_tracking("svc", current_restarts=5)  # baseline
+        c._update_flap_tracking("svc", current_restarts=6)  # 1 event
+
+        # Counter resets to 0 (e.g. reboot). Records one event (the restart
+        # that produced the reset) and re-baselines to 0.
+        c._update_flap_tracking("svc", current_restarts=0)
+        assert c._last_restart_count["svc"] == 0
+
+        # Counting resumes from the new baseline immediately: one more
+        # restart reaches the threshold (1 + 1 reset-event + 1 = 3).
+        c._update_flap_tracking("svc", current_restarts=1)
+        assert c.is_flapping("svc") is True
+
+    def test_unobserved_probe_leaves_baseline_untouched(self) -> None:
+        """None (probe failed / NRestarts unsupported) must not move the baseline."""
+        c = ServiceChecker(flap_window=600, flap_threshold=3)
+        c._update_flap_tracking("svc", current_restarts=4)  # baseline
+        c._update_flap_tracking("svc", current_restarts=None)  # no observation
+        assert c._last_restart_count["svc"] == 4
+        assert c.is_flapping("svc") is False
+
+        # A later real observation still diffs against the old baseline.
+        c._update_flap_tracking("svc", current_restarts=7)  # 3 events
+        assert c.is_flapping("svc") is True
+
 
 class TestParseJournalErrors:
     def test_recognizes_known_error_patterns(self, checker: ServiceChecker) -> None:
         """Journal text matching pattern lists is classified into categories."""
         journal_text = (
-            "fabricmanager: NVSwitch initialization failed\n"
-            "fabricmanager: timed out waiting for response\n"
+            "fabricmanager: NVSwitch initialization failed\n" "fabricmanager: timed out waiting for response\n"
         )
         with patch.object(ServiceChecker, "_run_host_cmd", return_value=_completed(stdout=journal_text)):
             cats = checker._parse_journal_errors("nvidia-fabricmanager")

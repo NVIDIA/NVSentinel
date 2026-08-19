@@ -102,6 +102,7 @@ def cli(
     processing_strategy,
     verbose,
 ):
+    """Start the system-services-monitor daemon with the given configuration."""
     stop_event = Event()
 
     # Resolve node name from CLI or environment
@@ -144,6 +145,7 @@ def cli(
     prom_server, t = start_http_server(port)
 
     def process_exit_signal(signum, frame):
+        """Signal handler: set the exit event so the polling loop stops."""
         stop_event.set()
         prom_server.shutdown()
         t.join()
@@ -151,7 +153,7 @@ def cli(
     signal.signal(signal.SIGTERM, process_exit_signal)
     signal.signal(signal.SIGINT, process_exit_signal)
 
-    # Create watcher with enabled checks (scoped to non-DCGM signals per ADR-049)
+    # Create watcher with enabled checks (scoped to non-DCGM signals per ADR-050)
     watcher = FabricManagerWatcher(
         poll_interval=poll_interval,
         callbacks=[event_processor],

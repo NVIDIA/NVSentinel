@@ -67,6 +67,7 @@ class FabricStateChecker:
     """Queries per-GPU Fabric Manager state via nsenter nvidia-smi."""
 
     def __init__(self, stuck_threshold: int = 3):
+        """`stuck_threshold`: consecutive "In Progress" polls before FM_REGISTRATION_STUCK."""
         # "In Progress" is a normal transient state during registration, so a
         # single-poll snapshot cannot distinguish progressing from hung. A GPU
         # is only classified FM_REGISTRATION_STUCK after stuck_threshold
@@ -153,7 +154,9 @@ class FabricStateChecker:
         # Fallback for any unexpected combination
         return FabricFailureState.FM_FABRIC_ERROR
 
-    def to_check_results(self, statuses: List[GpuFabricState], node_name: str) -> List[CheckResult]:
+    def to_check_results(
+        self, statuses: List[GpuFabricState], node_name: str, advance_streak: bool = True
+    ) -> List[CheckResult]:
         """Convert GpuFabricState list to CheckResult list.
 
         Healthy: fabric_state == "Completed" and fabric_status == "Success"
@@ -163,7 +166,22 @@ class FabricStateChecker:
           FM_NOT_STARTED        -- FM has not begun configuring this GPU
           FM_REGISTRATION_STUCK -- "In Progress" for stuck_threshold consecutive polls
           FM_FABRIC_ERROR       -- FM completed but with error status
+
+        The "In Progress" streak is strictly consecutive: a GPU absent from
+        `statuses` (probe failure / partial nvidia-smi output) has its streak
+        dropped rather than frozen, so only an unbroken run of observed
+        "In Progress" results can reach the threshold. `advance_streak=False`
+        (used during boot grace) evaluates results without accumulating
+        streaks, so FM_REGISTRATION_STUCK cannot accrue while its alerts are
+        suppressed.
         """
+        # Streaks are consecutive-by-observation: any GPU we did NOT observe
+        # this poll loses its streak (a gap breaks the run).
+        observed = {gpu.gpu_index for gpu in statuses}
+        for gpu_index in list(self._in_progress_streak):
+            if gpu_index not in observed:
+                self._in_progress_streak.pop(gpu_index, None)
+
         results = []
         for gpu in statuses:
             # N/A means non-NVSwitch topology -- skip
@@ -176,8 +194,10 @@ class FabricStateChecker:
             # stuck_threshold consecutive polls in "In Progress". Below the
             # threshold the GPU is registering normally and reports healthy.
             if failure is FabricFailureState.FM_REGISTRATION_STUCK:
-                streak = self._in_progress_streak.get(gpu.gpu_index, 0) + 1
-                self._in_progress_streak[gpu.gpu_index] = streak
+                streak = self._in_progress_streak.get(gpu.gpu_index, 0)
+                if advance_streak:
+                    streak += 1
+                    self._in_progress_streak[gpu.gpu_index] = streak
                 if streak < self._stuck_threshold:
                     results.append(
                         CheckResult(
