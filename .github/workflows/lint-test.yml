@@ -180,6 +180,7 @@ jobs:
           - node-drainer
           - fault-remediation
           - janitor
+          - lifecycle-manager
           - preflight
           - tests
     steps:

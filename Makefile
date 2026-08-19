@@ -51,6 +51,7 @@ GO_MODULES := \
 	node-drainer \
 	fault-remediation \
 	janitor \
+	lifecycle-manager \
 	metadata-collector \
 	event-exporter \
 	store-client \
@@ -79,7 +80,8 @@ PRIVATE_MODULES := \
 # Modules requiring kubebuilder for tests
 KUBEBUILDER_MODULES := \
 	node-drainer \
-	fault-remediation
+	fault-remediation \
+	lifecycle-manager
 
 # Default target
 .PHONY: all
@@ -454,6 +456,11 @@ lint-test-fault-remediation:
 lint-test-janitor:
 	@echo "Linting and testing janitor (using standardized Makefile)..."
 	$(MAKE) -C janitor lint-test
+
+.PHONY: lint-test-lifecycle-manager
+lint-test-lifecycle-manager:
+	@echo "Linting and testing lifecycle-manager (using standardized Makefile)..."
+	$(MAKE) -C lifecycle-manager lint-test
 
 .PHONY: lint-test-store-client
 lint-test-store-client:

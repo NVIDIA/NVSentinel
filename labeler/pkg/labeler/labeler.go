@@ -51,6 +51,8 @@ const (
 	NodeDCGMIndex               = "nodeDCGM"
 	NodeDriverIndex             = "nodeDriver"
 	NodeGKEDriverInstallerIndex = "nodeGKEDriverInstaller"
+	driverComponentLabel        = "app.kubernetes.io/component"
+	driverComponentValue        = "nvidia-driver"
 	// DCGM major versions used for the dcgm.version label.
 	dcgmVersion3 = "3.x"
 	dcgmVersion4 = "4.x"
@@ -69,6 +71,7 @@ var (
 type Labeler struct {
 	clientset                    kubernetes.Interface
 	podInformer                  cache.SharedIndexInformer
+	crdDriverInformer            cache.SharedIndexInformer
 	nodeInformer                 cache.SharedIndexInformer
 	nodeLister                   listersv1.NodeLister
 	gkeInstallerInformer         cache.SharedIndexInformer
@@ -102,20 +105,33 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		return nil, fmt.Errorf("create pod informer: %w", err)
 	}
 
+	crdDriverInformer, err := createCRDDriverInformer(clientset, resyncPeriod, driverApp)
+	if err != nil {
+		return nil, fmt.Errorf("create CRD driver pod informer: %w", err)
+	}
+
 	gkeInstallerInformer, err := createGKEInstallerInformer(clientset, resyncPeriod, gkeInstallerApp)
 	if err != nil {
 		return nil, fmt.Errorf("create GKE installer informer: %w", err)
 	}
-
-	nodeInformer := createNodeInformer(clientset, resyncPeriod)
 
 	deviceCounts, err := devicecounts.NewManager(expectedDeviceCounts)
 	if err != nil {
 		return nil, fmt.Errorf("create expected device count manager: %w", err)
 	}
 
+	nodeInformer, err := createNodeInformer(
+		clientset,
+		resyncPeriod,
+		deviceCounts.Enabled(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create node informer: %w", err)
+	}
+
 	informersSynced := []cache.InformerSynced{
 		podInformer.HasSynced,
+		crdDriverInformer.HasSynced,
 		nodeInformer.HasSynced,
 		gkeInstallerInformer.HasSynced,
 	}
@@ -129,6 +145,7 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	l := &Labeler{
 		clientset:                    clientset,
 		podInformer:                  podInformer,
+		crdDriverInformer:            crdDriverInformer,
 		nodeInformer:                 nodeInformer,
 		nodeLister:                   listersv1.NewNodeLister(nodeInformer.GetIndexer()),
 		gkeInstallerInformer:         gkeInstallerInformer,
@@ -204,6 +221,16 @@ func createPodInformer(clientset kubernetes.Interface, resyncPeriod time.Duratio
 	)
 }
 
+func createCRDDriverInformer(clientset kubernetes.Interface, resyncPeriod time.Duration,
+	driverApp string) (cache.SharedIndexInformer, error) {
+	return createIndexedPodInformer(clientset, resyncPeriod,
+		fmt.Sprintf("%s=%s,app!=%s", driverComponentLabel, driverComponentValue, driverApp),
+		cache.Indexers{
+			NodeDriverIndex: podNodeIndexerByLabel(driverComponentLabel, driverComponentValue),
+		},
+	)
+}
+
 func createGKEInstallerInformer(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	gkeInstallerApp string) (cache.SharedIndexInformer, error) {
 	return createIndexedPodInformer(clientset, resyncPeriod,
@@ -231,11 +258,94 @@ func createIndexedPodInformer(clientset kubernetes.Interface, resyncPeriod time.
 
 	informer := factory.Core().V1().Pods().Informer()
 
+	if err := informer.SetTransform(transformPodForCache); err != nil {
+		return nil, fmt.Errorf("failed to set pod transform: %w", err)
+	}
+
 	if err := informer.GetIndexer().AddIndexers(indexers); err != nil {
 		return nil, fmt.Errorf("failed to add indexers: %w", err)
 	}
 
 	return informer, nil
+}
+
+// transformPodForCache retains only fields used for pod indexing, readiness,
+// delete-event identity, and DCGM image version detection.
+func transformPodForCache(obj any) (any, error) {
+	pod, ok := obj.(*v1.Pod)
+	if !ok {
+		return nil, fmt.Errorf("pod transform: expected Pod object, got %T", obj)
+	}
+
+	containers := make([]v1.Container, len(pod.Spec.Containers))
+	for i, container := range pod.Spec.Containers {
+		containers[i] = v1.Container{Image: container.Image}
+	}
+
+	conditions := make([]v1.PodCondition, len(pod.Status.Conditions))
+	for i, condition := range pod.Status.Conditions {
+		conditions[i] = v1.PodCondition{
+			Type:   condition.Type,
+			Status: condition.Status,
+		}
+	}
+
+	pod.TypeMeta = metav1.TypeMeta{}
+	pod.ObjectMeta = metav1.ObjectMeta{
+		Name:            pod.Name,
+		Namespace:       pod.Namespace,
+		UID:             pod.UID,
+		ResourceVersion: pod.ResourceVersion,
+		Labels:          pod.Labels,
+	}
+	pod.Spec = v1.PodSpec{
+		NodeName:   pod.Spec.NodeName,
+		Containers: containers,
+	}
+	pod.Status = v1.PodStatus{Conditions: conditions}
+
+	return pod, nil
+}
+
+// transformNodeForCache returns a fixed Node projection for the Labeler.
+//
+// Identity, labels, and the DCGM bootstrap annotation are always retained.
+// When expected device counts are enabled, capacity and allocatable resources
+// are also retained for current-count CEL expressions. All other Node fields
+// are discarded before the object enters the informer cache.
+func transformNodeForCache(deviceCountsEnabled bool) cache.TransformFunc {
+	return func(obj any) (any, error) {
+		node, ok := obj.(*v1.Node)
+		if !ok {
+			return nil, fmt.Errorf("node transform: expected Node object, got %T", obj)
+		}
+
+		objectMeta := node.ObjectMeta
+		status := node.Status
+
+		var annotations map[string]string
+		if value, exists := objectMeta.Annotations[DCGMBootstrapCompletedAnnotation]; exists {
+			annotations = map[string]string{DCGMBootstrapCompletedAnnotation: value}
+		}
+
+		node.TypeMeta = metav1.TypeMeta{}
+		node.ObjectMeta = metav1.ObjectMeta{
+			Name:            objectMeta.Name,
+			UID:             objectMeta.UID,
+			ResourceVersion: objectMeta.ResourceVersion,
+			Labels:          objectMeta.Labels,
+			Annotations:     annotations,
+		}
+		node.Spec = v1.NodeSpec{}
+		node.Status = v1.NodeStatus{}
+
+		if deviceCountsEnabled {
+			node.Status.Allocatable = status.Allocatable
+			node.Status.Capacity = status.Capacity
+		}
+
+		return node, nil
+	}
 }
 
 func podNodeIndexerByLabel(labelKey, labelValue string) cache.IndexFunc {
@@ -257,9 +367,21 @@ func podNodeIndexerByLabel(labelKey, labelValue string) cache.IndexFunc {
 	}
 }
 
-func createNodeInformer(clientset kubernetes.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
+// createNodeInformer applies the Labeler's fixed field projection before Nodes
+// enter the shared informer cache.
+func createNodeInformer(
+	clientset kubernetes.Interface,
+	resyncPeriod time.Duration,
+	deviceCountsEnabled bool,
+) (cache.SharedIndexInformer, error) {
 	factory := informers.NewSharedInformerFactory(clientset, resyncPeriod)
-	return factory.Core().V1().Nodes().Informer()
+	informer := factory.Core().V1().Nodes().Informer()
+
+	if err := informer.SetTransform(transformNodeForCache(deviceCountsEnabled)); err != nil {
+		return nil, fmt.Errorf("failed to set node transform: %w", err)
+	}
+
+	return informer, nil
 }
 
 func createResourceSliceInformer(clientset kubernetes.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
@@ -330,6 +452,17 @@ func (l *Labeler) registerPodEventHandlers() error {
 		return fmt.Errorf("failed to add pod event handler: %w", err)
 	}
 
+	_, err = l.crdDriverInformer.AddEventHandler(cache.FilteringResourceEventHandler{
+		FilterFunc: func(obj any) bool {
+			pod, ok := obj.(*v1.Pod)
+			return ok && pod.Spec.NodeName != ""
+		},
+		Handler: eventHandlers,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to add CRD driver pod event handler: %w", err)
+	}
+
 	_, err = l.gkeInstallerInformer.AddEventHandler(cache.FilteringResourceEventHandler{
 		FilterFunc: func(obj any) bool {
 			pod, ok := obj.(*v1.Pod)
@@ -391,6 +524,7 @@ func (l *Labeler) Run(ctx context.Context) error {
 	l.ctx = ctx
 
 	go l.podInformer.Run(ctx.Done())
+	go l.crdDriverInformer.Run(ctx.Done())
 	go l.gkeInstallerInformer.Run(ctx.Done())
 	go l.nodeInformer.Run(ctx.Done())
 
@@ -600,6 +734,15 @@ func (l *Labeler) getDriverLabelForNode(nodeName string, excludePod *v1.Pod) (st
 	objs, err := l.podInformer.GetIndexer().ByIndex(NodeDriverIndex, nodeName)
 	if err != nil {
 		return "", fmt.Errorf("failed to get driver pods by node index for node %s: %w", nodeName, err)
+	}
+
+	if hasReadyDriverPod(objs, excludePod) {
+		return LabelValueTrue, nil
+	}
+
+	objs, err = l.crdDriverInformer.GetIndexer().ByIndex(NodeDriverIndex, nodeName)
+	if err != nil {
+		return "", fmt.Errorf("failed to get CRD driver pods by node index for node %s: %w", nodeName, err)
 	}
 
 	if hasReadyDriverPod(objs, excludePod) {

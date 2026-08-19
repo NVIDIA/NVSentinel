@@ -34,8 +34,10 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
@@ -678,6 +680,79 @@ func TestRemoveImpactedEntitiesMessagesScoped(t *testing.T) {
 			assert.Equal(t, tc.expected, result)
 		})
 	}
+}
+
+func TestRecoveryEntities(t *testing.T) {
+	tests := []struct {
+		name     string
+		event    *protos.HealthEvent
+		expected []string
+	}{
+		{
+			name: "GPU replacement uses stable slot identity",
+			event: &protos.HealthEvent{
+				ComponentClass: "GPU",
+				EntitiesImpacted: []*protos.Entity{
+					{EntityType: "GPU", EntityValue: "0"},
+					{EntityType: "PCI", EntityValue: "0000:18:00.0"},
+					{EntityType: "GPU_UUID", EntityValue: "GPU-new"},
+				},
+			},
+			expected: []string{"GPU:0", "PCI:0000:18:00.0"},
+		},
+		{
+			name: "UUID remains when no stable GPU identity exists",
+			event: &protos.HealthEvent{
+				ComponentClass: "GPU",
+				EntitiesImpacted: []*protos.Entity{
+					{EntityType: "GPU_UUID", EntityValue: "GPU-new"},
+				},
+			},
+			expected: []string{"GPU_UUID:GPU-new"},
+		},
+		{
+			name: "non-GPU entities are unchanged",
+			event: &protos.HealthEvent{
+				ComponentClass: "NIC",
+				EntitiesImpacted: []*protos.Entity{
+					{EntityType: "PCI", EntityValue: "0000:18:00.0"},
+					{EntityType: "GPU_UUID", EntityValue: "GPU-new"},
+				},
+			},
+			expected: []string{"PCI:0000:18:00.0", "GPU_UUID:GPU-new"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			entities := recoveryEntities(tc.event)
+			actual := make([]string, 0, len(entities))
+			for _, entity := range entities {
+				actual = append(actual, entity.EntityType+":"+entity.EntityValue)
+			}
+			assert.Equal(t, tc.expected, actual)
+		})
+	}
+}
+
+func TestGPUReplacementRecoveryClearsOldUUIDCondition(t *testing.T) {
+	messages := []string{
+		"ErrorCode:DCGM_FR_POWER_UN GPU:0 PCI:0000:18:00.0 GPU_UUID:GPU-old Recommended Action=CONTACT_SUPPORT",
+	}
+	events := []*protos.HealthEvent{
+		{
+			ComponentClass: "GPU",
+			IsHealthy:      true,
+			ErrorCode:      []string{"DCGM_FR_POWER_UN"},
+			EntitiesImpacted: []*protos.Entity{
+				{EntityType: "GPU", EntityValue: "0"},
+				{EntityType: "PCI", EntityValue: "0000:18:00.0"},
+				{EntityType: "GPU_UUID", EntityValue: "GPU-new"},
+			},
+		},
+	}
+
+	assert.Empty(t, k8sConnector.aggregateEventMessages(messages, events))
 }
 
 func TestUpdateHealthEventReason(t *testing.T) {
@@ -2264,4 +2339,107 @@ func TestDeduplicationBehavior(t *testing.T) {
 		assert.NotContains(t, result, "pid=1582259", "Older duplicate must be dropped")
 	})
 
+}
+
+// TestWriteNodeEvent_UpdateRacesDeletion verifies that when the cached event is deleted
+// between the metadata.name lookup and the Update (the event TTL can expire in that
+// window), the write is not lost: the stale cache entry is dropped and a fresh event is
+// created in the same attempt.
+func TestWriteNodeEvent_UpdateRacesDeletion(t *testing.T) {
+	localCtx := context.Background()
+	localClientSet := fake.NewSimpleClientset()
+	stopCh := make(chan struct{})
+
+	defer close(stopCh)
+
+	ringBuffer := ringbuffer.NewRingBuffer("updateRacesDeletionBuffer", localCtx)
+	connector := NewK8sConnector(localClientSet, ringBuffer, stopCh, localCtx, K8sConnectorConfig{
+		MaxNodeConditionMessageLength: 1024,
+		CompactedHealthEventMsgLen:    72,
+	})
+
+	nodeName := "update-race-test-node"
+	_, err := localClientSet.CoreV1().Nodes().Create(localCtx, &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+	}, metav1.CreateOptions{})
+	require.NoError(t, err, "Failed to create test node")
+
+	healthEvent := &protos.HealthEvent{
+		CheckName:          "GpuThermalWatch",
+		IsHealthy:          false,
+		EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		ErrorCode:          []string{"THERMAL_WARNING"},
+		IsFatal:            false,
+		GeneratedTimestamp: timestamppb.New(time.Now()),
+		NodeName:           nodeName,
+	}
+	healthEvents := &protos.HealthEvents{Version: 1, Events: []*protos.HealthEvent{healthEvent}}
+	dedupeKey := nodeEventDedupeKey(connector.createK8sEvent(localCtx, healthEvent), nodeName)
+
+	// First write populates the dedupe cache.
+	require.NoError(t, connector.processHealthEvents(localCtx, healthEvents))
+
+	events, err := localClientSet.CoreV1().Events(DefaultNamespace).List(localCtx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, events.Items, 1, "First health event should create exactly one Kubernetes event")
+
+	firstName := events.Items[0].Name
+	cachedName, ok := connector.getCachedNodeEventName(dedupeKey)
+	require.True(t, ok, "First write should cache the created event name")
+	require.Equal(t, firstName, cachedName)
+
+	// Delete the raced event from the tracker so the NotFound reflects real state.
+	var (
+		updateCalled     bool
+		trackerDeleteErr error
+	)
+
+	localClientSet.PrependReactor("update", "events", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		updateCalled = true
+		trackerDeleteErr = localClientSet.Tracker().Delete(action.GetResource(), action.GetNamespace(), firstName)
+
+		return true, nil, apierrors.NewNotFound(corev1.Resource("events"), firstName)
+	})
+
+	require.NoError(t, connector.processHealthEvents(localCtx, healthEvents),
+		"A racing deletion should not surface as a write error")
+	require.NoError(t, trackerDeleteErr, "Failed to remove the raced event from the tracker")
+	require.True(t, updateCalled, "The cached event should have been updated in place before the race")
+
+	events, err = localClientSet.CoreV1().Events(DefaultNamespace).List(localCtx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, events.Items, 1, "A racing deletion should be recovered by creating one replacement event")
+	assert.NotEqual(t, firstName, events.Items[0].Name, "The deleted event should not have been resurrected")
+
+	cachedName, ok = connector.getCachedNodeEventName(dedupeKey)
+	require.True(t, ok, "The recreated event name should be cached")
+	assert.Equal(t, events.Items[0].Name, cachedName, "The cache should hold the replacement event name")
+	assert.NotEqual(t, firstName, cachedName, "The stale cache entry should have been replaced")
+}
+
+func TestK8sConnector_NodeEventCache_EvictsOnlyOldest(t *testing.T) {
+	connector := &K8sConnector{}
+
+	for i := range maxCachedNodeEventNames {
+		connector.setCachedNodeEventName(fmt.Sprintf("key-%d", i), fmt.Sprintf("event-%d", i))
+	}
+
+	// Refresh key-0's recency so overflow must evict key-1 instead.
+	_, ok := connector.getCachedNodeEventName("key-0")
+	require.True(t, ok, "Filling the cache to capacity should not evict")
+
+	connector.setCachedNodeEventName("overflow-key", "overflow-event")
+
+	_, ok = connector.getCachedNodeEventName("key-1")
+	assert.False(t, ok, "Overflow should evict the least-recently-used entry")
+
+	_, ok = connector.getCachedNodeEventName("key-0")
+	assert.True(t, ok, "A recently-read entry should survive overflow")
+
+	name, ok := connector.getCachedNodeEventName("overflow-key")
+	require.True(t, ok, "The overflowing entry should be cached")
+	assert.Equal(t, "overflow-event", name)
+
+	assert.Equal(t, maxCachedNodeEventNames, connector.nodeEventCache().Len(),
+		"Overflow should evict exactly one entry, not flush the cache")
 }

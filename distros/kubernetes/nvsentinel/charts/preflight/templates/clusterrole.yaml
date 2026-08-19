@@ -25,6 +25,11 @@ rules:
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
 
+  # Namespaces for tracking which are preflight-enabled (ActiveNamespaces)
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+
   # ConfigMaps for gang coordination
   - apiGroups: [""]
     resources: ["configmaps"]

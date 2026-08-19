@@ -118,7 +118,12 @@ func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(preflightv1alpha1.AddToScheme(scheme))
 
-	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{Scheme: scheme})
+	activeNamespaces := controller.NewActiveNamespaces()
+
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
+		Scheme: scheme,
+		Cache:  controller.ManagerCacheOptions(activeNamespaces),
+	})
 	if err != nil {
 		return fmt.Errorf("failed to create controller manager: %w", err)
 	}
@@ -157,6 +162,11 @@ func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context
 
 	if err := pfcReconciler.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("failed to setup PreflightConfig controller: %w", err)
+	}
+
+	nsReconciler := controller.NewNamespaceReconciler(mgr.GetClient(), activeNamespaces)
+	if err := nsReconciler.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("failed to setup namespace controller: %w", err)
 	}
 
 	onGangRegister = gangController.RegisterPod
