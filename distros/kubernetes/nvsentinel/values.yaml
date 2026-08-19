@@ -192,6 +192,10 @@ global:
     enabled: false
   nicHealthMonitor:
     enabled: false
+  # Enable the system-services-monitor subchart (host systemd service health:
+  # Fabric Manager state/flapping, per-GPU fabric registration, GPU service
+  # lifecycle). Set to an unquoted YAML boolean (true, not "true") — the value
+  # gates the subchart via its Chart.yaml condition.
   systemServicesMonitor:
     enabled: false
 

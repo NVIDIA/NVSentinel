@@ -49,7 +49,8 @@ flapWindow: "600"
 flapThreshold: "3"
 
 # Enable the Fabric Manager + GPU systemd service checks. When false the app
-# is launched with --disable-fabric-check.
+# is launched with --disable-fabric-check. Use an unquoted YAML boolean
+# (true/false, not "true"/"false").
 enableFabricCheck: true
 
 # Processing strategy for emitted health events.
@@ -58,6 +59,7 @@ processingStrategy: EXECUTE_REMEDIATION
 
 # ServiceMonitor (Prometheus Operator) for auto-discovery. Disabled by default
 # to match the sibling health-monitor charts, which do not ship one enabled.
+# `enabled` must be an unquoted YAML boolean.
 serviceMonitor:
   enabled: false
   interval: 30s
@@ -68,7 +70,8 @@ serviceMonitor:
   labels: {}
 
 # PrometheusRule with FabricManager / GPU service alert definitions. Disabled by
-# default to match the sibling health-monitor charts.
+# default to match the sibling health-monitor charts. `enabled` must be an
+# unquoted YAML boolean.
 prometheusRule:
   enabled: false
   labels: {}
