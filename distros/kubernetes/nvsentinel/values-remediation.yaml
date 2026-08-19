@@ -1,0 +1,116 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# --------------------------------------------------------------------------
+# Monitoring + remediation.
+#
+# Layer this on top of the default install once you trust what NVSentinel
+# is reporting. It turns on the rest of the pipeline (quarantine/cordon,
+# drain, and remediation) and deploys the in-cluster MongoDB event store
+# those modules read from. When a node reports a fatal GPU error, NVSentinel
+# will cordon it, evict its workloads, and then repair it automatically:
+#
+#   - Recoverable GPU faults -> in-place GPU reset (nvidia-smi), seconds
+#   - Everything else        -> node reboot (chroot /host reboot), minutes
+#
+# Both actions run as privileged Kubernetes Jobs on the node itself, so this
+# works out of the box on any cluster (bare-metal, on-prem, or any cloud)
+# with no cloud credentials required. If you'd rather have NVSentinel call
+# your cloud provider's reboot/terminate API instead of running these Jobs
+# locally, see "Using CSP APIs instead" below.
+#
+#   helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
+#     --version "$NVSENTINEL_VERSION" \
+#     --namespace nvsentinel --create-namespace \
+#     -f values-remediation.yaml
+#
+# `helm upgrade` (without --reuse-values) only applies the chart's own
+# defaults plus whatever -f/--set flags you pass on that command, so this
+# file is self-contained: it doesn't depend on flags used in a previous
+# install.
+#
+# Review docs/fault-quarantine.md and docs/node-drainer.md before enabling
+# this in a production cluster. The default ruleset cordons any node that
+# reports a fatal GPU error.
+# --------------------------------------------------------------------------
+
+global:
+  faultQuarantine:
+    enabled: true
+  nodeDrainer:
+    enabled: true
+  faultRemediation:
+    enabled: true
+  janitor:
+    enabled: true
+  janitorProvider:
+    enabled: true
+
+  # Deploys an in-cluster MongoDB (3-node replica set) event store.
+  # fault-quarantine, node-drainer, and fault-remediation all watch it for
+  # events, so it's required from this stage on.
+  mongodbStore:
+    enabled: true
+
+janitor-provider:
+  csp:
+    # "generic" performs remediation locally on the node (a privileged Job
+    # running `chroot /host reboot`, equivalent to an operator running
+    # `sudo reboot` on the box) instead of calling a cloud provider API.
+    provider: "generic"
+
+fault-remediation:
+  maintenance:
+    actions:
+      # Recoverable GPU faults: reset the GPU in place instead of rebooting
+      # the whole node. Keeps the rest of the node's GPUs online.
+      COMPONENT_RESET:
+        apiGroup: "janitor.dgxc.nvidia.com"
+        version: "v1alpha1"
+        kind: "GPUReset"
+        scope: "Cluster"
+        completeConditionType: "Complete"
+        templateFileName: "gpureset-template.yaml"
+        equivalenceGroup: "reset"
+        impactedEntityScope: "GPU_UUID"
+        supersedingEquivalenceGroups: ["restart"]
+    templates:
+      "gpureset-template.yaml": |
+        apiVersion: {{ .ApiGroup }}/{{ .Version }}
+        kind: GPUReset
+        metadata:
+          name: maintenance-{{ .HealthEvent.NodeName }}-{{ .HealthEventID }}
+        spec:
+          nodeName: {{ .HealthEvent.NodeName }}
+          selector:
+            uuids:
+              - {{ .ImpactedEntityScopeValue }}
+
+# --------------------------------------------------------------------------
+# Using CSP APIs instead
+#
+# To have the janitor call your cloud provider's API instead of running the
+# local reboot Job, replace the janitor-provider.csp block above. See:
+#   - docs/configuration/janitor-provider.md: per-provider Helm reference
+#   - docs/csp-health-monitor-iam.md: IAM / Workload Identity setup
+#
+# Example for AWS:
+# janitor-provider:
+#   csp:
+#     provider: "aws"
+#     aws:
+#       region: "us-west-2"
+#       accountId: "123456789012"
+#       iamRoleName: "nvsentinel-janitor-provider"
+# --------------------------------------------------------------------------

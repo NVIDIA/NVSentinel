@@ -853,6 +853,17 @@ fault-remediation:
     enableAwsSosCollection: false
 
 ################################################################################
+# KUBERNETES-OBJECT-MONITOR CONFIGURATION
+#
+# Watches configured Kubernetes resources and generates health events when
+# policy predicates identify unhealthy objects.
+################################################################################
+kubernetes-object-monitor:
+  # Maximum time to wait for informer caches to synchronize on startup.
+  # Large clusters may require a longer timeout while caches are populated.
+  cacheSyncTimeout: 10m
+
+################################################################################
 # GPU-HEALTH-MONITOR CONFIGURATION
 #
 # Monitors GPU hardware health using NVIDIA DCGM (Data Center GPU Manager).

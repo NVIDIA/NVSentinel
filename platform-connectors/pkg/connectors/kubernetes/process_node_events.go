@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hashicorp/golang-lru/v2/expirable"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	corev1 "k8s.io/api/core/v1"
@@ -240,13 +241,42 @@ func (r *K8sConnector) aggregateEventMessages(messages []string, events []*proto
 		case !event.IsHealthy:
 			messages = r.addMessageIfNotExist(messages, event)
 		case len(event.EntitiesImpacted) > 0:
-			messages = r.removeImpactedEntitiesMessagesScoped(messages, event.EntitiesImpacted, event.ErrorCode)
+			messages = r.removeImpactedEntitiesMessagesScoped(messages, recoveryEntities(event), event.ErrorCode)
 		default: // healthy event with no impacted entities — full recovery, clear all messages
 			messages = []string{}
 		}
 	}
 
 	return messages
+}
+
+// recoveryEntities drops the physical GPU UUID from recovery identity when a
+// stable GPU slot identifier is available. A replacement GPU keeps its logical
+// index or PCI address but receives a new UUID, so requiring the UUID would
+// leave the historical node condition active after the hardware is healthy.
+func recoveryEntities(event *protos.HealthEvent) []*protos.Entity {
+	if !strings.EqualFold(event.ComponentClass, "GPU") {
+		return event.EntitiesImpacted
+	}
+
+	hasStableGPUIdentity := false
+	entities := make([]*protos.Entity, 0, len(event.EntitiesImpacted))
+
+	for _, entity := range event.EntitiesImpacted {
+		if strings.EqualFold(entity.EntityType, "GPU") || strings.EqualFold(entity.EntityType, "PCI") {
+			hasStableGPUIdentity = true
+		}
+
+		if !strings.EqualFold(entity.EntityType, "GPU_UUID") {
+			entities = append(entities, entity)
+		}
+	}
+
+	if !hasStableGPUIdentity {
+		return event.EntitiesImpacted
+	}
+
+	return entities
 }
 
 func parseMessages(message string) []string {
@@ -462,6 +492,83 @@ func messageMatchesAnyErrorCode(msg string, errorCodes []string) bool {
 	return false
 }
 
+// maxCachedNodeEventNames bounds the dedupe cache; overflow evicts only
+// the least-recently-used entry.
+const maxCachedNodeEventNames = 1024
+
+// nodeEventDedupeKey identifies a logically-identical node event.
+func nodeEventDedupeKey(event *corev1.Event, nodeName string) string {
+	return fmt.Sprintf("%s\x00%s\x00%s\x00%s", nodeName, event.Type, event.Reason, event.Message)
+}
+
+// nodeEventCache lazily initializes the LRU so struct-literal construction works.
+func (r *K8sConnector) nodeEventCache() *expirable.LRU[string, string] {
+	r.nodeEventMu.Lock()
+	defer r.nodeEventMu.Unlock()
+
+	if r.nodeEventNames == nil {
+		r.nodeEventNames = expirable.NewLRU[string, string](maxCachedNodeEventNames, nil, 0)
+	}
+
+	return r.nodeEventNames
+}
+
+func (r *K8sConnector) getCachedNodeEventName(key string) (string, bool) {
+	return r.nodeEventCache().Get(key)
+}
+
+func (r *K8sConnector) setCachedNodeEventName(key, name string) {
+	r.nodeEventCache().Add(key, name)
+}
+
+func (r *K8sConnector) dropCachedNodeEventName(key string) {
+	r.nodeEventCache().Remove(key)
+}
+
+// updateCachedNodeEvent attempts to increment the count of the cached event identified by name.
+// It returns (true, nil) on success, (false, nil) when the cached name is stale and a fresh
+// event should be created, and (true, error) for unexpected lookup or update failures.
+func (r *K8sConnector) updateCachedNodeEvent(
+	ctx context.Context, span trace.Span, name string, event *corev1.Event,
+	nodeName, dedupeKey string,
+) (bool, error) {
+	existingEvent, getErr := r.clientset.CoreV1().Events(DefaultNamespace).Get(ctx, name, metav1.GetOptions{})
+
+	switch {
+	case getErr == nil:
+		existingEvent.Count++
+		existingEvent.LastTimestamp = event.LastTimestamp
+
+		_, err := r.clientset.CoreV1().Events(DefaultNamespace).Update(ctx, existingEvent, metav1.UpdateOptions{})
+
+		switch {
+		case err == nil:
+			nodeEventOperationsCounter.WithLabelValues(nodeName, OperationUpdate, StatusSuccess).Inc()
+
+			return true, nil
+		case apierrors.IsNotFound(err):
+			// Deleted between lookup and update: fall through and create a fresh event.
+		default:
+			nodeEventOperationsCounter.WithLabelValues(nodeName, OperationUpdate, StatusFailed).Inc()
+			span.AddEvent("platform_connector.k8s.node_event_update_failed", trace.WithAttributes(
+				attribute.String("platform_connector.k8s.error.type", "node_event_update_failed"),
+				attribute.String("platform_connector.k8s.error.message", err.Error()),
+			))
+
+			return true, fmt.Errorf("failed to update event for node %s: %w", nodeName, err)
+		}
+	case apierrors.IsNotFound(getErr):
+		// Stale cache entry: fall through and create a fresh event.
+	default:
+		return true, fmt.Errorf("failed to look up event %s for node %s: %w", name, nodeName, getErr)
+	}
+
+	// The cached name no longer refers to a live event.
+	r.dropCachedNodeEventName(dedupeKey)
+
+	return false, nil
+}
+
 func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, nodeName string) error {
 	ctx, span := tracing.StartSpan(ctx, "platform_connector.k8s.update_node_event")
 	defer span.End()
@@ -471,52 +578,30 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, 
 		attribute.String("platform_connector.k8s.event_type", string(event.Type)),
 	)
 
+	dedupeKey := nodeEventDedupeKey(event, nodeName)
+
 	err := retry.OnError(retry.DefaultRetry, func(err error) bool {
 		return apierrors.IsConflict(err) || isTemporaryError(err)
 	}, func() error {
-		// Fetch all events for the node
-		events, err := r.clientset.CoreV1().Events(DefaultNamespace).List(ctx, metav1.ListOptions{
-			FieldSelector: fmt.Sprintf("involvedObject.name=%s", nodeName),
-		})
-		if err != nil {
-			return fmt.Errorf("failed to list events for node %s: %w", nodeName, err)
-		}
-
-		// Check if any event matches the new event
-
-		for _, existingEvent := range events.Items {
-			if existingEvent.Type == event.Type && existingEvent.Reason == event.Reason &&
-				existingEvent.Message == event.Message {
-				// Matching event found, update it
-				existingEvent.Count++
-				existingEvent.LastTimestamp = event.LastTimestamp
-
-				_, err = r.clientset.CoreV1().Events(DefaultNamespace).Update(ctx, &existingEvent, metav1.UpdateOptions{})
-				if err != nil {
-					nodeEventOperationsCounter.WithLabelValues(nodeName, OperationUpdate, StatusFailed).Inc()
-					span.AddEvent("platform_connector.k8s.node_event_update_failed", trace.WithAttributes(
-						attribute.String("platform_connector.k8s.error.type", "node_event_update_failed"),
-						attribute.String("platform_connector.k8s.error.message", err.Error()),
-					))
-
-					return fmt.Errorf("failed to update event for node %s: %w", nodeName, err)
-				}
-
-				nodeEventOperationsCounter.WithLabelValues(nodeName, OperationUpdate, StatusSuccess).Inc()
-
-				return nil
+		// An involvedObject LIST is an unindexed full-range etcd scan, so
+		// dedupe via the cached name: a single-key GET.
+		if name, ok := r.getCachedNodeEventName(dedupeKey); ok {
+			updated, err := r.updateCachedNodeEvent(ctx, span, name, event, nodeName, dedupeKey)
+			if updated {
+				return err
 			}
 		}
 
-		// No matching event found, create a new event with count 1
+		// No live matching event, create a new event with count 1
 		event.Count = 1
 
-		_, err = r.clientset.CoreV1().Events(DefaultNamespace).Create(ctx, event, metav1.CreateOptions{})
+		created, err := r.clientset.CoreV1().Events(DefaultNamespace).Create(ctx, event, metav1.CreateOptions{})
 		if err != nil {
 			nodeEventOperationsCounter.WithLabelValues(nodeName, OperationCreate, StatusFailed).Inc()
 			return fmt.Errorf("failed to create event for node %s: %w", nodeName, err)
 		}
 
+		r.setCachedNodeEventName(dedupeKey, created.Name)
 		nodeEventOperationsCounter.WithLabelValues(nodeName, OperationCreate, StatusSuccess).Inc()
 
 		return nil

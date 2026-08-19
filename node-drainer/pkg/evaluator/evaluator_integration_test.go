@@ -108,7 +108,14 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 		PartialDrainEnabled:       partialDrainEnabled,
 	}
 
-	informersInstance, err := informers.NewInformers(client, 1*time.Minute, ptr.To(2), false, dryRun)
+	informersInstance, err := informers.NewInformers(
+		client,
+		1*time.Minute,
+		ptr.To(2),
+		false,
+		dryRun,
+		tomlConfig.SystemNamespaces,
+	)
 	require.NoError(t, err)
 	go func() { _ = informersInstance.Run(ctx) }()
 	require.Eventually(t, informersInstance.HasSynced, 30*time.Second, 1*time.Second)
