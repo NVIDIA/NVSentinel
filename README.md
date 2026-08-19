@@ -1,57 +1,37 @@
 # NVSentinel
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Kubernetes](https://img.shields.io/badge/Kubernetes-1.25+-326CE5.svg?logo=kubernetes&logoColor=white)](https://kubernetes.io/)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-1.34+-326CE5.svg?logo=kubernetes&logoColor=white)](https://kubernetes.io/)
 [![Helm](https://img.shields.io/badge/Helm-3.0+-0F1689.svg?logo=helm&logoColor=white)](https://helm.sh/)
 
-**GPU Fault Detection and Remediation for Kubernetes**
+**NVSentinel detects and remediates GPU faults on Kubernetes nodes**
 
-NVSentinel automatically detects, classifies, and remediates hardware and software faults in GPU nodes. It monitors GPU health, system logs, and cloud provider maintenance events, then takes action: cordoning faulty nodes, draining workloads, and triggering break-fix workflows.
+A single bad GPU can silently corrupt a training run or leave a node sitting idle for hours before anyone notices. NVSentinel catches these faults as they happen, cordons and drains the affected node, then fixes it with a GPU reset or a reboot, and puts it back into service, no paging required.
 
 > [!NOTE]
 > **Beta / Stable**
 > NVSentinel is ready for production testing and use. APIs, configurations, and features may change between releases. If you encounter issues, please [open an issue](https://github.com/NVIDIA/NVSentinel/issues) or [start a discussion](https://github.com/NVIDIA/NVSentinel/discussions).
 
-## 🚀 Quick Start
+## Prerequisites
 
-### Prerequisites
-
-- Kubernetes 1.25+
+- Kubernetes 1.34+ 
 - Helm 3.0+
-- NVIDIA GPU Operator (includes DCGM for GPU monitoring)
-
-### Installation
-
-```bash
-NVSENTINEL_VERSION=v1.19.0
-# Install from GitHub Container Registry
-helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
-  --version "$NVSENTINEL_VERSION" \
-  --namespace nvsentinel \
-  --create-namespace
-
-# View chart information
-helm show chart oci://ghcr.io/nvidia/nvsentinel --version "$NVSENTINEL_VERSION"
-```
-
-## ✨ Key Features
-
-- **🔍 Comprehensive Monitoring**: Real-time detection of GPU, NVSwitch, and system-level failures
-- **🔧 Automated Remediation**: Intelligent fault handling with cordon, drain, and break-fix workflows
-- **📦 Modular Architecture**: Pluggable health monitors with standardized gRPC interfaces
-- **🔄 High Availability**: Kubernetes-native design with replica support and leader election
-- **⚡ Real-time Processing**: Event-driven architecture with immediate fault response
-- **📊 Persistent Storage**: MongoDB-based event store with change streams for real-time updates
-- **🛡️ Graceful Handling**: Coordinated workload eviction with configurable timeouts
-- **🏷️ Metadata Enrichment**: Automatic augmentation of health events with cloud provider and node metadata information
-
-## 🧪 Complete Setup Guide
-
-For a full installation with all dependencies, follow these steps:
-
-### 1. Install cert-manager (for TLS)
+- [NVIDIA GPU Operator](https://github.com/NVIDIA/gpu-operator)
+- [cert-manager](https://cert-manager.io/) v1.19+
+- Persistent storage support for a database
 
 ```bash
+# GPU Operator: enable DCGM standalone mode (required)
+# By default the GPU Operator embeds DCGM inside dcgm-exporter and doesn't
+# expose it as its own service. NVSentinel connects to DCGM directly, so add
+# `dcgm.enabled=true` to however you already install/upgrade the GPU Operator:
+helm repo add nvidia https://helm.ngc.nvidia.com/nvidia --force-update
+helm upgrade --install gpu-operator nvidia/gpu-operator \
+  --namespace gpu-operator --create-namespace \
+  --set dcgm.enabled=true \
+  --wait
+
+# cert-manager (required)
 helm repo add jetstack https://charts.jetstack.io --force-update
 helm upgrade --install cert-manager jetstack/cert-manager \
   --namespace cert-manager --create-namespace \
@@ -59,51 +39,161 @@ helm upgrade --install cert-manager jetstack/cert-manager \
   --wait
 ```
 
-### 2. Install Prometheus (for metrics)
+## Quick Start
 
-```bash
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update
-helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
-  --namespace monitoring --create-namespace \
-  --set prometheus.enabled=true \
-  --set alertmanager.enabled=false \
-  --set grafana.enabled=false \
-  --set kubeStateMetrics.enabled=false \
-  --set nodeExporter.enabled=false \
-  --wait
-```
+Most teams roll NVSentinel out in stages:
 
-### 3. Install NVSentinel
+### Stage 1: Monitor
+
+This turns on health monitoring only. NVSentinel watches your GPUs and system logs and reports faults as Kubernetes node conditions. It won't cordon a node, evict a pod or reboot a machine. Nothing here can disrupt a workload, so it's safe to run anywhere while you get a feel for what it reports. The defaults below are all you need.
+
+> [!NOTE]
+> **Host installed drivers**
+> If your GPU nodes get their NVIDIA driver from the host image instead of the GPU Operator's driver DaemonSet, add `--set labeler.assumeDriverInstalled=true` to every NVSentinel install/upgrade command below.
 
 ```bash
 NVSENTINEL_VERSION=v1.19.0
 
-helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
-  --namespace nvsentinel --create-namespace \
+# Drop the --set podMonitor.enabled=false flag if prometheus is installed
+helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --version "$NVSENTINEL_VERSION" \
-  --timeout 15m \
+  --namespace nvsentinel --create-namespace \
+  --set podMonitor.enabled=false \
   --wait
 ```
 
-### 4. Verify Installation
+Verify it's running:
 
 ```bash
 kubectl get pods -n nvsentinel
-kubectl get nodes  # Verify GPU nodes are visible
-
-# Run comprehensive validation
-./scripts/validate-nvsentinel.sh --version "$NVSENTINEL_VERSION" --verbose
 ```
 
-> **Testing**: The example above uses default settings. For production, customize values for your environment.
+### Stage 2: Remediate
 
-> **Production**: By default, only health monitoring is enabled. Enable fault quarantine and remediation modules via Helm values. See [Configuration](#-configuration) below.
+Once you trust what it's reporting, turn on remediation too. NVSentinel will now cordon a faulty node, drain its workloads, and fix it automatically:
 
-## 🎮 Try the Demo
+- Faults that don't need a full restart get an GPU reset, so the rest of the node's GPUs stay in service.
+- Everything else gets a node reboot.
+
+By default, both actions run as a privileged job right on the node itself, so this works on day one with no cloud credentials to set up, on any infrastructure: on-prem, or any cloud. 
+
+```bash
+# Drop the --set podMonitor.enabled=false flag if prometheus is installed
+helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
+  --version "$NVSENTINEL_VERSION" \
+  --namespace nvsentinel --create-namespace \
+  -f distros/kubernetes/nvsentinel/values-remediation.yaml \
+  --set podMonitor.enabled=false \
+  --wait
+```
+
+To reboot nodes through your cloud provider's API instead, see the [cloud provider configuration guide](https://docs.nvidia.com/nvsentinel/configuration/janitor-provider/#cloud-provider-selection).
+
+Verify it's running:
+
+```bash
+kubectl get pods -n nvsentinel
+```
+
+### Stage 3: Preflight (optional)
+
+Preflight is an active check that runs as an init container in the workload pod to confirm the node is ready to take that workload. A job never lands on bad hardware in the first place.
+
+Multi-node checks also need to know which pods belong to the same distributed job, so setup depends on the scheduler you use:
+
+1. **Check your scheduler.** By default, NVSentinel uses Kubernetes' native gang scheduling, covered by [values-preflight-kube.yaml](distros/kubernetes/nvsentinel/values-preflight-kube.yaml) (Note: the `GenericWorkload` and `GangScheduling` feature gates should enabled by a cluster admin). For different schedulers (KAI, Volcano, etc.), see the [gang discovery guide](https://docs.nvidia.com/nvsentinel/configuration/preflight/#gang-discovery) for configuration options.
+
+2. **Enable preflight:**
+
+   ```bash
+   # Drop the --set podMonitor.enabled=false flag if prometheus is installed
+   helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
+     --version "$NVSENTINEL_VERSION" \
+     --namespace nvsentinel --create-namespace \
+     -f distros/kubernetes/nvsentinel/values-remediation.yaml \
+     -f distros/kubernetes/nvsentinel/values-preflight-kube.yaml \
+     --set podMonitor.enabled=false \
+     --wait
+   ```
+
+   Swap in your scheduler's values file from step 1 if you're not on native Kubernetes gang scheduling.
+
+3. **Label the namespaces that should run it.** It's opt-in per namespace, so nothing changes until you do this:
+
+   ```bash
+   kubectl label namespace <your-namespace> nvsentinel.nvidia.com/preflight=enabled
+   ```
+
+Verify it's running: submit a GPU pod in the labeled namespace, then check that preflight added its init containers.
+
+```bash
+kubectl get pod <pod-name> -n <your-namespace> -o jsonpath='{.spec.initContainers[*].name}'
+```
+
+## Architecture
+
+NVSentinel is a set of independent modules coordinated through a shared MongoDB event store and the Kubernetes API; no module talks to another directly.
+
+```mermaid
+graph LR
+    subgraph "Health Monitors"
+        GPU["GPU Health Monitor<br/>(DCGM)"]
+        SYS["Syslog Health Monitor<br/>(Journalctl)"]
+        CSP["CSP Health Monitor<br/>(Maintenance Events)"]
+        NIC["NIC Health Monitor<br/>(NIC)"]
+        HEA["Health Events Analyzer<br/>(Pattern Detection)"]
+        KOM["Kubernetes Object Monitor<br/>(Kube objects)"]
+    end
+
+    subgraph "Ingestion"
+        PC["Platform Connectors<br/>(gRPC Server)"]
+        STORE[("MongoDB Store<br/>(Event Database)")]
+    end
+
+    subgraph "Fault Management"
+        FQ["Fault Quarantine<br/>(Node Cordon / Taint)"]
+        ND["Node Drainer<br/>(Workload Eviction)"]
+        FR["Fault Remediation<br/>(Trigger Node Maintenance)"]
+        JAN["Janitor<br/>(Reset / Reboot)"]
+    end
+
+    subgraph "Kubernetes Cluster"
+        K8S["Kubernetes API<br/>(Nodes, Pods, Events)"]
+    end
+
+    GPU -->|gRPC| PC
+    SYS -->|gRPC| PC
+    CSP -->|gRPC| PC
+    NIC -->|gRPC| PC
+    KOM -->|gRPC| PC
+    HEA -->|gRPC| PC
+
+    PC -->|persist| STORE
+    PC -->|update node conditions, events| K8S
+    STORE ~~~ FQ
+    STORE ~~~ ND
+    STORE ~~~ FR
+    STORE ~~~ JAN
+
+    FQ -->|reconcile changes| STORE
+    FQ -->|cordon| K8S
+
+    ND -->|reconcile changes| STORE
+    ND -->|drain| K8S
+
+    FR -->|reconcile changes| STORE
+    FR -->|create maintenance CRs| K8S
+
+    JAN -.->|reconcile maintenance CRs| K8S
+    JAN -->|reboot / reset| K8S
+```
+
+
+## Try the Demo
 
 ### Demo Videos
 
-See NVSentinel in action — click any thumbnail to watch:
+See NVSentinel in action: click any thumbnail to watch.
 
 <table>
 <tr>
@@ -158,156 +248,20 @@ cd demos/local-fault-injection-demo
 make demo  # Automated: creates cluster, installs NVSentinel, injects fault, verifies cordon
 ```
 
-Perfect for learning, presentations, or CI/CD testing!
+## Supported GPUs
 
-## 🏗️ Architecture
+Validated on NVIDIA Volta, Ampere, Hopper, Ada Lovelace and Blackwell architectures. See the [GPU support](https://docs.nvidia.com/nvsentinel/getting-started/overview/#gpu-support) for more information.
 
-NVSentinel follows a microservices architecture with modular health monitors and core processing modules:
+## Learn more
 
-```mermaid
-graph LR
-    subgraph "Health Monitors"
-        GPU["GPU Health Monitor<br/>(DCGM Integration)"]
-        SYS["Syslog Health Monitor<br/>(Journalctl)"]
-        CSP["CSP Health Monitor<br/>(CSP APIs)"]
-        K8SOM["Kubernetes Object Monitor<br/>(CEL Policies)"]
-    end
-    
-    subgraph "Core Processing"
-        PC["Platform Connectors<br/>(gRPC Server)"]
-        STORE[("MongoDB Store<br/>(Event Database)")]
-        FQ["Fault Quarantine<br/>(Node Cordon)"]
-        ND["Node Drainer<br/>(Workload Eviction)"]
-        FR["Fault Remediation<br/>(Break-Fix Integration)"]
-        HEA["Health Events Analyzer<br/>(Pattern Analysis)"]
-        LBL["Labeler<br/>(Node Labels)"]
-    end
-    
-    subgraph "Kubernetes Cluster"
-        K8S["Kubernetes API<br/>(Nodes, Pods, Events)"]
-    end
-    
-    GPU -->|gRPC| PC
-    SYS -->|gRPC| PC
-    CSP -->|gRPC| PC
-    K8SOM -->|gRPC| PC
+For more, including configuration options, external database setup, writing custom health checks, and operational runbooks, visit [docs.nvidia.com/nvsentinel](https://docs.nvidia.com/nvsentinel/).
 
-    PC -->|persist| STORE
-    PC <-->|update status| K8S
-    
-    FQ -.->|watch changes| STORE
-    FQ -->|cordon| K8S
-    
-    ND -.->|watch changes| STORE
-    ND -->|drain| K8S
-    
-    FR -.->|watch changes| STORE
-    FR -->|create CRDs| K8S
-    
-    HEA -.->|watch changes| STORE
-    
-    LBL -->|update labels| K8S
 
-    K8SOM -.->|watch changes| K8S
-```
-
-**Data Flow**:
-1. **Health Monitors** detect hardware/software faults and send events via gRPC to Platform Connectors
-2. **Platform Connectors** validate, persist events to MongoDB, and update Kubernetes node conditions
-3. **Core Modules** independently watch MongoDB change streams for relevant events
-4. **Modules** interact with Kubernetes API to cordon, drain, label nodes, and create remediation CRDs
-5. **Labeler** monitors pods to automatically label nodes with DCGM and driver versions
-
-> **Note**: All modules operate independently without direct communication. Coordination happens through MongoDB change streams and Kubernetes API.
-
-## ⚙️ Configuration
-
-NVSentinel is highly configurable with options for each module. For complete configuration documentation, see the **[Helm Chart README](distros/kubernetes/README.md)**.
-
-### Quick Configuration Overview
-
-```yaml
-global:
-  dryRun: false  # Test mode - log actions without executing
-  
-  # Health Monitors (enabled by default)
-  gpuHealthMonitor:
-    enabled: true
-  syslogHealthMonitor:
-    enabled: true
-
-  # Core Modules (disabled by default - enable for production)
-  faultQuarantine:
-    enabled: false
-  nodeDrainer:
-    enabled: false
-  faultRemediation:
-    enabled: false
-  janitor:
-    enabled: false
-  mongodbStore:
-    enabled: false 
-```
-
-**Configuration Resources**:
-- **[Helm Chart Configuration Guide](distros/kubernetes/README.md#configuration)**: Complete configuration reference
-- **[values-full.yaml](distros/kubernetes/nvsentinel/values-full.yaml)**: Detailed reference with all options
-- **[values.yaml](distros/kubernetes/nvsentinel/values.yaml)**: Default values
-
-## 📦 Module Details
-
-For detailed module configuration, see the **[Helm Chart Configuration Guide](distros/kubernetes/README.md#module-specific-configuration)**.
-
-### 🔍 Health Monitors
-
-- **[GPU Health Monitor](docs/gpu-health-monitor.md)**: Monitors GPU hardware health via DCGM - detects thermal issues, ECC errors, and XID events
-- **[Syslog Health Monitor](docs/syslog-health-monitor.md)**: Analyzes system logs for hardware and software fault patterns via journalctl
-- **CSP Health Monitor**: Integrates with cloud provider APIs (GCP/AWS) for maintenance events
-- **[Kubernetes Object Monitor](docs/kubernetes-object-monitor.md)**: Policy-based monitoring for any Kubernetes resource using CEL expressions
-
-### 🏗️ Core Modules
-
-- **[Platform Connectors](docs/platform-connectors.md)**: Receives health events from monitors via gRPC, persists to MongoDB, and updates Kubernetes node status
-- **[Fault Quarantine](docs/fault-quarantine.md)**: Watches MongoDB for health events and cordons nodes based on configurable CEL rules
-- **[Node Drainer](docs/node-drainer.md)**: Gracefully evicts workloads from cordoned nodes with per-namespace eviction strategies
-- **[Fault Remediation](docs/fault-remediation.md)**: Triggers external break-fix systems by creating maintenance CRDs after drain completion
-- **Janitor**: Executes node reboots and terminations via cloud provider APIs
-- **Health Events Analyzer**: Analyzes event patterns and generates recommended actions
-- **[Event Exporter](docs/event-exporter.md)**: Streams health events to external systems in CloudEvents format
-- **MongoDB Store**: Persistent storage for health events with real-time change streams
-- **[Labeler](docs/labeler.md)**: Automatically labels nodes with DCGM and driver versions for self-configuration
-- **[Metadata Collector](docs/metadata-collector.md)**: Gathers GPU and NVSwitch topology information
-- **[Log Collection](docs/log-collection.md)**: Collects diagnostic logs and GPU reports for troubleshooting
-
-## 🖥️ GPU Support
-
-NVSentinel has been validated on the following NVIDIA GPU architectures:
-
-| Architecture | Example GPUs |
-|---|---|
-| Volta | V100 |
-| Ampere | A100 |
-| Hopper | H100 |
-| Ada Lovelace | L4 Tensor Core GPU, L40, L40S |
-| Blackwell | B200, GB200, GB300, RTX Pro 6000 |
-
-NVSentinel is designed to work with any GPU supported by the NVIDIA GPU Operator. Architectures and GPUs not listed above have not been formally validated but may work in your environment.
-
-> **Note**: Most NVSentinel components (health monitoring, fault quarantine, remediation) do not compile GPU code and work across all validated architectures. The optional **nccl-loopback preflight check** (NCCL bandwidth test) compiles GPU kernels and targets Ampere, Ada Lovelace, Hopper, and Blackwell only — it does not support Volta (V100). Disable or skip this check on Volta nodes via the preflight configuration.
-
-## 📋 Requirements
-
-- **Kubernetes**: 1.25 or later
-- **Helm**: 3.0 or later
-- **NVIDIA GPU Operator**: For GPU monitoring capabilities (includes DCGM)
-- **Storage**: Persistent storage for MongoDB (recommended 10GB+)
-- **Network**: Cluster networking for inter-service communication
-
-## 🤝 Contributing
+## Contributing
 
 We welcome contributions! Here's how to get started:
 
-**Ways to Contribute**:
+Ways to Contribute:
 - 🐛 Report bugs and request features via [issues](https://github.com/NVIDIA/NVSentinel/issues)
 - 🧭 See what we're working on in the [roadmap](ROADMAP.md)
 - 📝 Improve documentation
@@ -315,28 +269,26 @@ We welcome contributions! Here's how to get started:
 - 🔧 Submit pull requests to fix issues
 - 💬 Help others in [discussions](https://github.com/NVIDIA/NVSentinel/discussions)
 
-**Getting Started**:
+Getting Started:
 1. Read the [Contributing Guide](CONTRIBUTING.md) for guidelines
 2. Check the [Development Guide](DEVELOPMENT.md) for setup instructions
 3. Browse [open issues](https://github.com/NVIDIA/NVSentinel/issues) for opportunities
 
-All contributors must sign their commits (DCO). See the contributing guide for details.
+## Support
 
-## 💬 Support
-
-- 🐛 **Bug Reports**: [Create an issue](https://github.com/NVIDIA/NVSentinel/issues/new)
-- ❓ **Questions**: [Start a discussion](https://github.com/NVIDIA/NVSentinel/discussions/new?category=q-a)
-- 🔒 **Security**: See [Security Policy](SECURITY.md)
+- 🐛 Bug Reports: [Create an issue](https://github.com/NVIDIA/NVSentinel/issues/new)
+- ❓ Questions: [Start a discussion](https://github.com/NVIDIA/NVSentinel/discussions/new?category=q-a)
+- 🔒 Security: See [Security Policy](SECURITY.md)
 
 ### Stay Connected
 
-- ⭐ **Star this repository** to show your support
+- ⭐ **Star** this repository to show your support
 - 👀 **Watch** for updates on releases and announcements
 - 🔗 **Share** NVSentinel with others who might benefit
 
-## 📄 License
+## License
 
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+Apache License 2.0. See [LICENSE](LICENSE).
 
 ---
 
