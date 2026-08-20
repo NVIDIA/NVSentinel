@@ -29,6 +29,11 @@ spec:
       annotations:
         # Force pod restart when configmap changes
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if and (eq .Values.cspName "lambda") ((.Values.lambdaWorkloadIdentity).identityLRN) }}
+        # Force pod restart when identityLRN changes; it lives on the
+        # ServiceAccount annotation, which the pod template doesn't reference.
+        checksum/lambda-workload-identity: {{ .Values.lambdaWorkloadIdentity.identityLRN | sha256sum }}
+        {{- end }}
         {{- with ((.Values.global).podAnnotations | default .Values.podAnnotations) }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -151,11 +156,16 @@ spec:
             - name: APP_NAME
               value: {{ .Chart.Name | quote }}
             {{- if eq .Values.cspName "lambda" }}
+            {{- if not ((.Values.lambdaWorkloadIdentity).identityLRN) }}
             - name: LAMBDA_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ required "lambdaApiKeySecret.name must be set when cspName=lambda" .Values.lambdaApiKeySecret.name }}
-                  key: {{ required "lambdaApiKeySecret.key must be set when cspName=lambda" .Values.lambdaApiKeySecret.key }}
+                  name: {{ required "lambdaApiKeySecret.name must be set when cspName=lambda and lambdaWorkloadIdentity.identityLRN is empty" .Values.lambdaApiKeySecret.name }}
+                  key: {{ required "lambdaApiKeySecret.key must be set when cspName=lambda and lambdaWorkloadIdentity.identityLRN is empty" .Values.lambdaApiKeySecret.key }}
+            {{- end }}
+            {{- /* With workload identity the credential env vars and the token
+                   volume are injected by lambda-pod-identity-webhook, keyed off
+                   the ServiceAccount annotation, so nothing is declared here. */}}
             {{- end }}
           envFrom:
             - configMapRef:

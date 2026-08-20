@@ -26,9 +26,20 @@ spec:
       {{- include "provider.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with ((.Values.global).podAnnotations | default .Values.podAnnotations) }}
+      {{- $lambdaIdentityLRN := "" }}
+      {{- if eq (lower (.Values.csp.provider | default "kind")) "lambda" }}
+      {{- $lambdaIdentityLRN = ((.Values.csp.lambda).workloadIdentity).identityLRN }}
+      {{- end }}
+      {{- if or ((.Values.global).podAnnotations | default .Values.podAnnotations) $lambdaIdentityLRN }}
       annotations:
+        {{- if $lambdaIdentityLRN }}
+        # Force pod restart when identityLRN changes; it lives on the
+        # ServiceAccount annotation, which the pod template doesn't reference.
+        checksum/lambda-workload-identity: {{ $lambdaIdentityLRN | sha256sum }}
+        {{- end }}
+        {{- with ((.Values.global).podAnnotations | default .Values.podAnnotations) }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
       labels:
         {{- include "provider.selectorLabels" . | nindent 8 }}
@@ -175,11 +186,16 @@ spec:
             - name: LAMBDA_API_ENDPOINT
               value: {{ .Values.csp.lambda.apiEndpoint | quote }}
             {{- end }}
+            {{- if not $lambdaIdentityLRN }}
             - name: LAMBDA_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ required "csp.lambda.apiKeySecretRef.name must be set when csp.provider=lambda" .Values.csp.lambda.apiKeySecretRef.name }}
+                  name: {{ required "csp.lambda.apiKeySecretRef.name must be set when csp.provider=lambda and csp.lambda.workloadIdentity.identityLRN is empty" .Values.csp.lambda.apiKeySecretRef.name }}
                   key: {{ .Values.csp.lambda.apiKeySecretRef.key | default "LAMBDA_API_KEY" }}
+            {{- end }}
+            {{- /* With workload identity the credential env vars and the token
+                   volume are injected by lambda-pod-identity-webhook, keyed off
+                   the ServiceAccount annotation, so nothing is declared here. */}}
             {{- end }}
             {{- if .Values.tls.enabled }}
             - name: TLS_CERT_PATH

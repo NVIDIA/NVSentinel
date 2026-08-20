@@ -104,8 +104,6 @@ func NewClient(
 		return nil, fmt.Errorf("failed to create Lambda node informer: %w", err)
 	}
 
-	nodeInformer.Start(ctx)
-
 	normalizer, err := eventpkg.GetNormalizer(model.CSPLambda)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get Lambda normalizer: %w", err)
@@ -117,11 +115,32 @@ func NewClient(
 		slog.Info("Lambda client: using mock events file (dev/test mode)", "path", cfg.MockEventsFilePath)
 		source = &fileSource{path: cfg.MockEventsFilePath}
 	} else {
-		slog.Info("Lambda client: using real API", "endpoint", cfg.APIEndpoint, "workspaceID", cfg.WorkspaceID)
+		mode := lambdaapi.DetectAuthMode()
+		if mode == lambdaapi.AuthNone {
+			return nil, fmt.Errorf(
+				"no Lambda credential: set %s, or annotate the ServiceAccount with lambda.ai/identity-lrn so the "+
+					"pod-identity webhook injects %s",
+				lambdaapi.APIKeyEnvVar, lambdaapi.IdentityLRNEnvVar)
+		}
+
+		// Bounds where the credential can be sent, before a client that holds
+		// one exists.
+		endpoint, err := lambdaapi.NormalizeEndpoint("lambda.apiEndpoint", cfg.APIEndpoint)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve Lambda API endpoint: %w", err)
+		}
+
+		slog.Info("Lambda client: using real API",
+			"endpoint", endpoint, "workspaceID", cfg.WorkspaceID, "authMode", mode)
+
 		source = &apiSource{
-			client: lambdaapi.NewClient(cfg.APIEndpoint, lambdaapi.WithWorkspaceID(cfg.WorkspaceID)),
+			client: lambdaapi.NewClient(endpoint, lambdaapi.WithWorkspaceID(cfg.WorkspaceID)),
 		}
 	}
+
+	// Started last: everything above can fail, and the caller gets no handle to
+	// stop the informer on an error return.
+	nodeInformer.Start(ctx)
 
 	return &Client{
 		cfg:          cfg,

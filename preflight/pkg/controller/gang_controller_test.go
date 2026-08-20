@@ -384,6 +384,7 @@ type testEnv struct {
 	cfg        *rest.Config
 	kubeClient kubernetes.Interface
 	mgr        manager.Manager
+	active     *ActiveNamespaces
 	cancel     context.CancelFunc
 }
 
@@ -397,8 +398,11 @@ func setupTestEnv(t *testing.T, ctx context.Context, discoverer gang.GangDiscove
 	kubeClient, err := kubernetes.NewForConfig(cfg)
 	require.NoError(t, err, "failed to create kubernetes client")
 
+	active := NewActiveNamespaces()
+
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Metrics: metricsserver.Options{BindAddress: "0"}, // Disable metrics to avoid port conflicts
+		Cache:   ManagerCacheOptions(active),
 	})
 	require.NoError(t, err, "failed to create manager")
 
@@ -427,6 +431,7 @@ func setupTestEnv(t *testing.T, ctx context.Context, discoverer gang.GangDiscove
 		cfg:        cfg,
 		kubeClient: kubeClient,
 		mgr:        mgr,
+		active:     active,
 		cancel:     mgrCancel,
 	}
 }
@@ -438,6 +443,9 @@ func (te *testEnv) teardown() {
 
 func (te *testEnv) createNamespace(t *testing.T, ctx context.Context, name string) {
 	t.Helper()
+
+	te.active.Add(name)
+
 	_, err := te.kubeClient.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 	}, metav1.CreateOptions{})
