@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/flags"
+	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
@@ -98,9 +99,14 @@ func createPipeline() interface{} {
 	return builder.BuildProcessableNonFatalUnhealthyInsertsPipeline()
 }
 
-func connectToPlatform(socket string, processingStrategy protos.ProcessingStrategy) (
+func connectToPlatform(socket, tokenPath string, processingStrategy protos.ProcessingStrategy) (
 	*publisher.PublisherConfig, *grpc.ClientConn, error) {
-	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	opts := append(
+		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
+		grpcclient.DialOptions(tokenPath)...,
+	)
+
+	slog.Info("Dialing platform connector", "socket", socket, "tokenAuthEnabled", tokenPath != "")
 
 	conn, err := grpc.NewClient(socket, opts...)
 	if err != nil {
@@ -119,6 +125,10 @@ func run() error {
 
 	metricsPort := flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
 	socket := flag.String("socket", "unix:///var/run/nvsentinel.sock", "unix domain socket")
+	socketTokenPath := flag.String("socket-token-path", "",
+		"Path to a projected ServiceAccount token presented to platform-connector. "+
+			"Republished events preserve the node name of the original event, so this is required "+
+			"for reporting on nodes other than the one this pod runs on; empty disables token authentication.")
 	tomlConfigPath := flag.String("config-path", "/etc/config/config.toml", "path to TOML config file")
 	certConfig := flags.RegisterDatabaseCertFlags()
 	processingStrategyFlag := flag.String("processing-strategy", "EXECUTE_REMEDIATION",
@@ -143,7 +153,7 @@ func run() error {
 
 	slog.Info("Event handling strategy configured", "processingStrategy", *processingStrategyFlag)
 
-	pub, conn, err := connectToPlatform(*socket, protos.ProcessingStrategy(value))
+	pub, conn, err := connectToPlatform(*socket, *socketTokenPath, protos.ProcessingStrategy(value))
 	if err != nil {
 		return err
 	}

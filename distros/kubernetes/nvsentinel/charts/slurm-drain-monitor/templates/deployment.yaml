@@ -49,6 +49,11 @@ spec:
           args:
             - "--config-path=/config/slurm-drain-monitor.toml"
             - "--platform-connector-socket=unix://{{ ((.Values.global).socketPath) | default "/var/run/nvsentinel.sock" }}"
+            {{- if include "slurm-drain-monitor.pcAuth.enabled" . }}
+            {{- /* Reads a central Slinky controller, so it reports on nodes other than its
+                 own and must present an allowlisted token to platform-connector. */}}
+            - "--platform-connector-token-path={{ include "slurm-drain-monitor.pcAuth.tokenPath" . }}"
+            {{- end }}
             - "--metrics-bind-address=:{{ ((.Values.global).metricsPort) | default 2112 }}"
             - "--health-probe-bind-address=:8081"
             - "--max-concurrent-reconciles={{ .Values.maxConcurrentReconciles }}"
@@ -86,10 +91,16 @@ spec:
               readOnly: true
             - name: socket
               mountPath: /var/run
+            {{- if include "slurm-drain-monitor.pcAuth.enabled" . }}
+            {{- include "slurm-drain-monitor.pcAuth.volumeMount" . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: config
           configMap:
             name: {{ include "slurm-drain-monitor.fullname" . }}
+        {{- if include "slurm-drain-monitor.pcAuth.enabled" . }}
+        {{- include "slurm-drain-monitor.pcAuth.volume" . | nindent 8 }}
+        {{- end }}
         {{- range .Values.volumes }}
         - {{- toYaml . | nindent 10 }}
         {{- end }}

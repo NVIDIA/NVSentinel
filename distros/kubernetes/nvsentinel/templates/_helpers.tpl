@@ -299,3 +299,176 @@ items:
   - key: {{ $caKey }}
     path: ca.crt
 {{- end -}}
+
+{{/*
+platform-connector health-event socket authentication.
+
+The socket is the only place node identity is established: nothing downstream
+re-checks which node an event names. These helpers give every cross-node
+publisher the same projected token so the server-side allowlist and the
+client-side credential cannot drift apart.
+*/}}
+
+{{/*
+Renders "true" when node-binding authentication is on, "" otherwise, so it can
+be used directly in an `if`.
+*/}}
+{{- define "nvsentinel.pcAuth.enabled" -}}
+{{- $auth := ((.Values.global).platformConnectorAuth) | default dict -}}
+{{- $enabled := $auth.enabled -}}
+{{- /*
+Must be a real YAML boolean. Go-template truthiness would otherwise decide this
+for us: the string "false" is truthy and would ENABLE auth, while null and 0 are
+falsy and would silently DISABLE it. platform-connector's own parser cannot
+catch either, because the chart has already coerced the value into a valid
+"true"/"false" by the time it reaches the ConfigMap. Fail the render instead.
+*/ -}}
+{{- if not (kindIs "bool" $enabled) -}}
+{{- fail (printf "global.platformConnectorAuth.enabled must be a boolean (true or false), got %s %#v. Quoted strings, null and numbers are refused because they would silently enable or disable authentication." (kindOf $enabled) $enabled) -}}
+{{- end -}}
+{{- if $enabled -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+Audience the projected tokens are minted for and that platform-connector
+requires. Defined once: a token minted for one audience and checked against
+another is rejected at runtime with nothing in the rendered manifests to show
+why.
+*/}}
+{{- define "nvsentinel.pcAuth.audience" -}}
+{{- if (include "nvsentinel.pcAuth.enabled" .) -}}
+{{- required "global.platformConnectorAuth.audience is required when platform-connector auth is enabled" (((.Values.global).platformConnectorAuth).audience) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Directory the projected platform-connector token is mounted at.
+*/}}
+{{- define "nvsentinel.pcAuth.mountPath" -}}
+{{- if (include "nvsentinel.pcAuth.enabled" .) -}}
+{{- required "global.platformConnectorAuth.tokenMountPath is required when platform-connector auth is enabled" (((.Values.global).platformConnectorAuth).tokenMountPath) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Full path of the projected token file, for the publishers' --*-token-path flags.
+*/}}
+{{- define "nvsentinel.pcAuth.tokenPath" -}}
+{{- printf "%s/token" (include "nvsentinel.pcAuth.mountPath" .) -}}
+{{- end -}}
+
+{{/*
+Projected token volume for a cross-node publisher. Indent with `nindent 8`
+alongside sibling entries under `volumes:`.
+*/}}
+{{- define "nvsentinel.pcAuth.volume" -}}
+- name: platform-connector-token
+  projected:
+    sources:
+      - serviceAccountToken:
+          audience: {{ include "nvsentinel.pcAuth.audience" . | quote }}
+          expirationSeconds: {{ include "nvsentinel.pcAuth.expirationSeconds" . }}
+          path: token
+{{- end -}}
+
+{{/*
+Matching volumeMount. Indent with `nindent 12` under `volumeMounts:`.
+*/}}
+{{- define "nvsentinel.pcAuth.volumeMount" -}}
+- name: platform-connector-token
+  mountPath: {{ include "nvsentinel.pcAuth.mountPath" . }}
+  readOnly: true
+{{- end -}}
+
+{{/*
+JSON array of the canonical usernames allowed to name nodes other than their
+own, for the platform-connector ConfigMap.
+
+Entries are passed through verbatim — the namespace is never filled in on the
+operator's behalf, because an entry that silently became
+"system:serviceaccount:default:x" would grant cross-node reach to an account
+nobody meant to name. The two checks below turn the misconfigurations that
+would otherwise surface as runtime rejections into a failed render.
+*/}}
+{{- define "nvsentinel.pcAuth.crossNodeUsernames" -}}
+{{- if not (include "nvsentinel.pcAuth.enabled" .) -}}
+[]
+{{- else -}}
+{{- $auth := (((.Values.global).platformConnectorAuth)) | default dict -}}
+{{- /*
+The bundled cluster-scoped monitors are DERIVED from the rendered namespace
+rather than listed. Their ServiceAccount names are fixed by this chart and the
+namespace is a fact the chart already knows, so writing them out by hand only
+created a way to be wrong: a hardcoded "nvsentinel" installed into any other
+namespace renders successfully and then has every one of its events rejected at
+runtime. Only monitors that are actually enabled are included.
+*/ -}}
+{{- $ns := .Release.Namespace -}}
+{{- $derived := list -}}
+{{- range $key, $sa := dict "cspHealthMonitor" "csp-health-monitor" "kubernetesObjectMonitor" "kubernetes-object-monitor" "slurmDrainMonitor" "slurm-drain-monitor" "healthEventsAnalyzer" "health-events-analyzer" -}}
+  {{- if (index (($.Values.global) | default dict) $key | default dict).enabled -}}
+    {{- $derived = append $derived (printf "system:serviceaccount:%s:%s" $ns $sa) -}}
+  {{- end -}}
+{{- end -}}
+{{- /*
+crossNodeServiceAccounts is now only for callers this chart does not ship. It
+may be absent (no extra callers) but never null, which is an ambiguous way of
+writing "none".
+*/ -}}
+{{- $extra := list -}}
+{{- if hasKey $auth "crossNodeServiceAccounts" -}}
+{{- $extra = index $auth "crossNodeServiceAccounts" -}}
+{{- if kindIs "invalid" $extra -}}
+{{- fail "global.platformConnectorAuth.crossNodeServiceAccounts is null. Write an explicit [] to add no callers beyond the bundled monitors, or list the canonical usernames of your own cross-node publishers." -}}
+{{- end -}}
+{{- if not (kindIs "slice" $extra) -}}
+{{- fail (printf "global.platformConnectorAuth.crossNodeServiceAccounts must be a list, got %s %#v." (kindOf $extra) $extra) -}}
+{{- end -}}
+{{- end -}}
+{{- range $sa := $extra -}}
+  {{- if not (regexMatch "^system:serviceaccount:[a-z0-9]([-a-z0-9]*[a-z0-9])?:[a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $sa) -}}
+    {{- fail (printf "global.platformConnectorAuth.crossNodeServiceAccounts entry %q is not a canonical Kubernetes username; want \"system:serviceaccount:<namespace>:<name>\". The namespace must be a DNS-1123 label and the name a DNS-1123 subdomain, so stray whitespace or capitals are refused rather than trimmed: an entry that does not match exactly can never equal the username TokenReview reports" $sa) -}}
+  {{- end -}}
+{{- $seg := splitList ":" $sa -}}
+{{- if gt (len (index $seg 2)) 63 -}}
+{{- fail (printf "global.platformConnectorAuth.crossNodeServiceAccounts entry %q has a %d-character namespace; Kubernetes limits it to 63" $sa (len (index $seg 2))) -}}
+{{- end -}}
+{{- if gt (len (index $seg 3)) 253 -}}
+{{- fail (printf "global.platformConnectorAuth.crossNodeServiceAccounts entry %q has a %d-character ServiceAccount name; Kubernetes limits it to 253" $sa (len (index $seg 3))) -}}
+{{- end -}}
+{{- end -}}
+{{- concat $derived $extra | uniq | toJson -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "nvsentinel.pcAuth.expirationSeconds" -}}
+{{- $v := (((.Values.global).platformConnectorAuth)).tokenExpirationSeconds -}}
+{{- if kindIs "invalid" $v -}}
+{{- fail "global.platformConnectorAuth.tokenExpirationSeconds is required when platform-connector auth is enabled" -}}
+{{- end -}}
+{{- if not (or (kindIs "float64" $v) (kindIs "int" $v) (kindIs "int64" $v)) -}}
+{{- fail (printf "global.platformConnectorAuth.tokenExpirationSeconds must be an integer, got %s %#v." (kindOf $v) $v) -}}
+{{- end -}}
+{{- /*
+YAML numbers reach templates as float64, so a fractional value passes a bare
+numeric check and then renders into an integer Kubernetes field, which the API
+server rejects when the pod is created.
+*/ -}}
+{{- if ne (float64 $v) (floor (float64 $v)) -}}
+{{- fail (printf "global.platformConnectorAuth.tokenExpirationSeconds must be a whole number of seconds, got %v." $v) -}}
+{{- end -}}
+{{- /*
+Kubernetes rejects a projected ServiceAccount token lifetime below 10 minutes or
+above 2^32 seconds (core validation, volume projection). Out-of-range values
+render fine and are then refused by the API server when the pod is created, so
+the workload never starts and the reason is a long way from the values file.
+*/ -}}
+{{- if lt (float64 $v) 600.0 -}}
+{{- fail (printf "global.platformConnectorAuth.tokenExpirationSeconds is %v, but Kubernetes rejects a projected token lifetime under 600 seconds (10 minutes)." $v) -}}
+{{- end -}}
+{{- if gt (float64 $v) 4294967296.0 -}}
+{{- fail (printf "global.platformConnectorAuth.tokenExpirationSeconds is %v, but Kubernetes rejects a projected token lifetime over 2^32 seconds." $v) -}}
+{{- end -}}
+{{- int64 $v -}}
+{{- end -}}
+

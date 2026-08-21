@@ -38,6 +38,30 @@
 # These can be overridden per-module in their individual sections.
 ################################################################################
 global:
+  # ---------------------------------------------------------------------------
+  # Platform-connector authentication.
+  #
+  # Publishers present a projected ServiceAccount token; platform-connector
+  # verifies it with TokenReview and binds each event to the node the caller
+  # actually runs on. See docs/platform-connectors.md.
+  # ---------------------------------------------------------------------------
+  platformConnectorAuth:
+    # Must be a real boolean. A quoted "false" is refused rather than read as
+    # true. Disabling lets any caller that reaches the socket name any node.
+    enabled: true
+    # Audience the tokens are minted for and TokenReview must echo back.
+    audience: "platform-connector.nvsentinel.nvidia.com"
+    # Token lifetime. Kubernetes requires 600 <= x <= 2^32, and the chart
+    # enforces that range and whole-number values at render time.
+    tokenExpirationSeconds: 3600
+    # Directory each publisher mounts the token at.
+    tokenMountPath: "/var/run/secrets/nvsentinel/platform-connector"
+    # ADDITIONAL callers permitted to report about nodes other than their own.
+    # The bundled cluster-scoped monitors are derived from the release namespace
+    # for whichever are enabled, so they do not belong here — list only
+    # publishers this chart does not ship. Absent means none; null is refused.
+    crossNodeServiceAccounts: []
+
   # Docker image configuration
   image:
     # Image tag to use for all NVSentinel containers
@@ -2044,3 +2068,9 @@ preflight:
 ################################################################################
 # END OF CONFIGURATION
 ################################################################################
+
+janitor-provider:
+  auth:
+    audience: "nvsentinel-csp-provider"
+    allowedUsernames: []
+  janitorServiceAccountName: "janitor"

@@ -36,7 +36,6 @@ const (
 	k8sMonitorKeyOriginalArgs k8sObjectMonitorContextKey = iota
 
 	testConditionType        = "TestCondition"
-	gpuOperatorNamespace     = "gpu-operator"
 	gpuOperatorPodPolicyName = "gpu-operator-pod-health"
 )
 

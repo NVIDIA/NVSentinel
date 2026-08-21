@@ -30,6 +30,60 @@ global:
   # client-go default. Negative values are invalid.
   burst: 10
 
+  # Authentication for the platform-connector health-event socket.
+  #
+  # The socket is shared by two classes of publisher: node-local ones (syslog,
+  # nic, gpu, preflight checks) that only ever report the node they run on, and
+  # cluster-scoped ones that legitimately report on other nodes. The node name
+  # is a plain field on the event and is not re-derived downstream, so a
+  # publisher that names the wrong node has that carried through to a cordon,
+  # drain or reboot of that node.
+  #
+  # With this enabled, platform-connector fills in its own node name for callers
+  # that present no credential and rejects any other name they supply, while
+  # cluster-scoped publishers present a projected ServiceAccount token minted
+  # for a dedicated audience and keep their cross-node reach. See ADR-030.
+  platformConnectorAuth:
+    # Disabling this lets any caller that can reach the platform-connector
+    # socket submit health events naming any node; not a supported production
+    # configuration.
+    enabled: true
+
+    # Audience every publisher's projected token is minted for, and that
+    # platform-connector requires TokenReview to echo back, so a token issued
+    # for a different service is not accepted here. Node-local monitors (gpu,
+    # syslog, nic, preflight checks) present tokens too: on Kubernetes 1.30+
+    # the token carries the node its pod runs on, written by the API server,
+    # and platform-connector verifies that claim names its own node. On older
+    # clusters the claim is absent and those callers are simply pinned to the
+    # connector's node, as before.
+    audience: "platform-connector.nvsentinel.nvidia.com"
+
+    # Token lifetime. kubelet rotates the token well before it expires.
+    tokenExpirationSeconds: 3600
+
+    # Directory the projected token is mounted at in each publisher.
+    tokenMountPath: "/var/run/secrets/nvsentinel/platform-connector"
+
+    # ADDITIONAL canonical Kubernetes usernames permitted to report health
+    # events about nodes other than the one they run on. Everything else is
+    # pinned to its own node. Each entry lets that identity have any node in
+    # the cluster cordoned, drained and rebooted, so add sparingly.
+    #
+    # The bundled cluster-scoped monitors — csp-health-monitor,
+    # kubernetes-object-monitor, slurm-drain-monitor and health-events-analyzer
+    # — do NOT belong here. They are derived from the release namespace at
+    # render time for whichever of them are enabled, so installing into a
+    # namespace other than nvsentinel needs no edit. Listing them by hand is
+    # what used to break such an install: a hardcoded namespace rendered
+    # cleanly and then had every one of their events rejected at runtime.
+    #
+    # List only publishers this chart does not ship. Entries are matched
+    # verbatim against the username TokenReview reports, so the namespace must
+    # be a DNS-1123 label and the name a DNS-1123 subdomain — nothing is
+    # trimmed or normalised for you.
+    crossNodeServiceAccounts: []
+
   # Datastore configuration
   # By default, datastore is not configured (internal mongodb-config ConfigMap is used).
   # Uncomment and configure this section to use an external/managed database service,
@@ -251,6 +305,13 @@ platformConnector:
     # Optional: path to a projected Kubernetes ServiceAccount token for
     # bearer token authentication.
     # Leave empty to disable authentication.
+    #
+    # The target must be an external sink, not another NVSentinel
+    # platform-connector. A connector's own token is bound to the node its pod
+    # runs on, and a receiving connector rejects any token whose node claim
+    # names a different node, so chaining connectors together cannot
+    # authenticate. Fan-in belongs to the datastore, which every connector
+    # already writes to.
     tokenPath: ""
 
   k8sConnector:

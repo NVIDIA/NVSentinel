@@ -32,6 +32,7 @@ import (
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -61,6 +62,10 @@ var (
 		"Comma-separated list of checks to enable.")
 	platformConnectorSocket = flag.String("platform-connector-socket", "unix:///var/run/nvsentinel.sock",
 		"Path to the platform-connector UDS socket")
+	platformConnectorTokenPath = flag.String("platform-connector-token-path", "",
+		"Path to a projected ServiceAccount token presented to platform-connector. "+
+			"This monitor reports health events only for the node it runs on; the token "+
+			"lets platform-connector confirm that placement. Empty disables token authentication.")
 	nodeNameEnv = flag.String("node-name", os.Getenv("NODE_NAME"),
 		"Node name. Defaults to NODE_NAME env var.")
 	statePollingIntervalFlag = flag.String("state-polling-interval", defaultStatePollingInterval,
@@ -126,8 +131,12 @@ func run() error {
 
 	stateManager, rebooted, scopeChanged := loadStateManager(rc.cfg)
 
-	conn, err := dialWithRetry(ctx, *platformConnectorSocket,
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	dialOpts := append(
+		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
+		grpcclient.DialOptions(*platformConnectorTokenPath)...,
+	)
+
+	conn, err := dialWithRetry(ctx, *platformConnectorSocket, dialOpts...)
 	if err != nil {
 		return fmt.Errorf("failed to create gRPC client after retries: %w", err)
 	}

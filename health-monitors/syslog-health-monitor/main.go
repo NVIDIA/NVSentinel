@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
@@ -61,6 +62,10 @@ var (
 		"Comma separated listed of checks to enable")
 	platformConnectorSocket = flag.String("platform-connector-socket", "unix:///var/run/nvsentinel.sock",
 		"Path to the platform-connector UDS socket.")
+	platformConnectorTokenPath = flag.String("platform-connector-token-path", "",
+		"Path to a projected ServiceAccount token presented to platform-connector. "+
+			"This monitor reports health events only for the node it runs on; the token "+
+			"lets platform-connector confirm that placement. Empty disables token authentication.")
 	nodeNameEnv         = flag.String("node-name", os.Getenv("NODE_NAME"), "Node name. Defaults to NODE_NAME env var.")
 	pollingIntervalFlag = flag.String("polling-interval", defaultPollingInterval,
 		"Polling interval for health checks (e.g., 15m, 1h).")
@@ -114,7 +119,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(root, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	conn, err := dialPlatformConnector(ctx, *platformConnectorSocket)
+	conn, err := dialPlatformConnector(ctx, *platformConnectorSocket, *platformConnectorTokenPath)
 	if err != nil {
 		return err
 	}
@@ -217,10 +222,13 @@ func validateNodeName() (string, error) {
 	return nodeName, nil
 }
 
-func dialPlatformConnector(ctx context.Context, socket string) (*grpc.ClientConn, error) {
-	dialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+func dialPlatformConnector(ctx context.Context, socket, tokenPath string) (*grpc.ClientConn, error) {
+	dialOpts := append(
+		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
+		grpcclient.DialOptions(tokenPath)...,
+	)
 
-	slog.Info("Creating gRPC client to platform connector", "socket", socket)
+	slog.Info("Creating gRPC client to platform connector", "socket", socket, "tokenAuthEnabled", tokenPath != "")
 
 	conn, err := dialWithRetry(ctx, socket, dialOpts...)
 	if err != nil {

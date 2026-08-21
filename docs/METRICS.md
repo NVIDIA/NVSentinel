@@ -158,6 +158,18 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 
 ## Platform Connectors
 
+### Health Event Authentication Metrics
+
+These track the node-binding interceptor that stops a caller on one node from
+submitting health events naming another node. See
+[Health Event Authentication](platform-connectors.md#health-event-node-binding).
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `platform_connector_auth_decisions_total` | Counter | `decision` | Health event batches by the node scope granted to the caller. Values: `node_local`, `cross_node` |
+| `platform_connector_auth_node_claim_total` | Counter | `result` | Whether an authenticated caller's token carried a node claim. `verified`: it carried one and it named this node. `absent`: it carried none, so the caller was pinned to this node — the same scope a tokenless caller gets. |
+| `platform_connector_auth_violations_total` | Counter | `reason` | Health event batches rejected by the node-binding interceptor. Rejection reasons: `node_mismatch` (a node-local caller named a different node), `node_claim_mismatch` (the token was issued on another node — applies to every caller, allowlisted or not), `unbound_cross_node_token` (an allowlisted caller presented a token bound to no pod, e.g. from `kubectl create token`), `cross_node_claim_absent` (pod-bound, but the pod was never scheduled), `missing_node_name` (no node name on the event and none could be stamped), `token_invalid` (TokenReview rejected the token), `malformed_credentials` (the authorization header was duplicated or did not use the Bearer scheme). Three further reasons mean **no verdict could be reached**, not that the caller was rejected: `validator_unavailable` (the API server was unreachable), `validator_timeout` (the caller gave up or its deadline passed) and `validator_error` (an unexpected failure, typically this component's own RBAC to create TokenReviews). Exclude those three when alerting on suspected credential abuse — a control-plane outage increments them for every in-flight request and would otherwise look identical to an attack: `sum(rate(platform_connector_auth_violations_total{reason=~"node_mismatch\|token_invalid\|node_claim_mismatch\|unbound_cross_node_token"}[5m]))` |
+
 ### Kubernetes Connector Metrics
 
 | Metric Name | Type | Labels | Description |

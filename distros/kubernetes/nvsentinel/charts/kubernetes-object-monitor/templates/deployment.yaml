@@ -52,6 +52,12 @@ spec:
           args:
             - "--policy-config-path=/config/config.toml"
             - "--platform-connector-socket=unix://{{ ((.Values.global).socketPath) | default "/var/run/nvsentinel.sock" }}"
+            {{- if include "kubernetes-object-monitor.pcAuth.enabled" . }}
+            {{- /* Watches cluster-wide Kubernetes objects, so it reports on nodes other
+                 than its own and must present an allowlisted token to
+                 platform-connector. */}}
+            - "--platform-connector-token-path={{ include "kubernetes-object-monitor.pcAuth.tokenPath" . }}"
+            {{- end }}
             - "--metrics-bind-address=:{{ ((.Values.global).metricsPort) | default 2112 }}"
             - "--health-probe-bind-address=:8081"
             - "--max-concurrent-reconciles={{ .Values.maxConcurrentReconciles }}"
@@ -90,10 +96,16 @@ spec:
               readOnly: true
             - name: socket
               mountPath: /var/run
+            {{- if include "kubernetes-object-monitor.pcAuth.enabled" . }}
+            {{- include "kubernetes-object-monitor.pcAuth.volumeMount" . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: config
           configMap:
             name: {{ include "kubernetes-object-monitor.fullname" . }}
+        {{- if include "kubernetes-object-monitor.pcAuth.enabled" . }}
+        {{- include "kubernetes-object-monitor.pcAuth.volume" . | nindent 8 }}
+        {{- end }}
         {{- range .Values.volumes }}
         - {{- toYaml . | nindent 10 }}
         {{- end }}

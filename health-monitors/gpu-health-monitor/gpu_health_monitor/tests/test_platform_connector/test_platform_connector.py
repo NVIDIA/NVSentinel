@@ -21,6 +21,7 @@ import unittest
 import unittest.mock
 import json
 import os
+import shutil
 import tempfile
 from typing import Any, Iterator
 from concurrent import futures
@@ -1884,3 +1885,226 @@ class TestPlatformConnectors(unittest.TestCase):
 
             processor.dcgm_connectivity_failed()
             assert servicer.health_events[0].recommendedAction == platformconnector_pb2.CONTACT_SUPPORT
+
+
+class RpcErrorWithCode(grpc.RpcError):
+    """An RpcError carrying a status code, the way a live channel's failures do."""
+
+    def __init__(self, code: grpc.StatusCode) -> None:
+        super().__init__()
+        self._code = code
+
+    def code(self) -> grpc.StatusCode:
+        return self._code
+
+
+class TestPlatformConnectorTokenAuth(unittest.TestCase):
+    """Bearer-token call metadata attached to HealthEventOccurredV1 publishes."""
+
+    def setUp(self) -> None:
+        # Snapshot the environment so tests can set or clear the token env var
+        # without leaking into each other.
+        self._env_patcher = unittest.mock.patch.dict(os.environ)
+        self._env_patcher.start()
+        os.environ.pop("PLATFORM_CONNECTOR_TOKEN_PATH", None)
+
+        self._tmpdir = tempfile.mkdtemp(prefix="ghm_token_auth_")
+        # The availability gate only checks file presence, so a plain file
+        # stands in for the platform-connector socket.
+        self._socket_path = os.path.join(self._tmpdir, "nvsentinel.sock")
+        with open(self._socket_path, "w"):
+            pass
+        self._state_file_path = os.path.join(self._tmpdir, "statefile")
+        with open(self._state_file_path, "w") as state_file:
+            state_file.write("test_boot_id")
+        self._metadata_path = metadata_file()
+
+    def tearDown(self) -> None:
+        self._env_patcher.stop()
+        if os.path.exists(self._metadata_path):
+            os.unlink(self._metadata_path)
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _write_token(self, contents: str) -> str:
+        token_path = os.path.join(self._tmpdir, "token")
+        with open(token_path, "w") as token_file:
+            token_file.write(contents)
+        return token_path
+
+    def _make_processor(self, token_path: str | None = None) -> platform_connector.PlatformConnectorEventProcessor:
+        return platform_connector.PlatformConnectorEventProcessor(
+            socket_path=self._socket_path,
+            node_name=node_name,
+            exit=Event(),
+            dcgm_errors_info_dict={},
+            state_file_path=self._state_file_path,
+            metadata_path=self._metadata_path,
+            processing_strategy=platformconnector_pb2.STORE_ONLY,
+            token_path=token_path,
+        )
+
+    @staticmethod
+    def _sample_events() -> list[platformconnector_pb2.HealthEvent]:
+        timestamp = Timestamp()
+        timestamp.GetCurrentTime()
+        return [
+            platformconnector_pb2.HealthEvent(
+                version=1,
+                agent="gpu-health-monitor",
+                componentClass="GPU",
+                checkName="GpuMemWatch",
+                generatedTimestamp=timestamp,
+                isFatal=False,
+                isHealthy=True,
+                nodeName=node_name,
+                processingStrategy=platformconnector_pb2.STORE_ONLY,
+            )
+        ]
+
+    def _send_with_mock_stub(
+        self, processor: platform_connector.PlatformConnectorEventProcessor
+    ) -> tuple[bool, unittest.mock.MagicMock]:
+        """Runs one send with the gRPC stub mocked out; returns (result, stub)."""
+        stub = unittest.mock.MagicMock()
+        with unittest.mock.patch.object(
+            platform_connector.platformconnector_pb2_grpc, "PlatformConnectorStub", return_value=stub
+        ):
+            result = processor.send_health_event_with_retries(self._sample_events())
+        return result, stub
+
+    def test_metadata_carries_bearer_token_from_file(self) -> None:
+        processor = self._make_processor(token_path=self._write_token("projected-token"))
+
+        result, stub = self._send_with_mock_stub(processor)
+
+        assert result is True
+        stub.HealthEventOccurredV1.assert_called_once()
+        assert stub.HealthEventOccurredV1.call_args.kwargs["metadata"] == [("authorization", "Bearer projected-token")]
+
+    def test_token_file_is_reread_on_every_call(self) -> None:
+        """The kubelet rewrites the projected token file, so every send must read it fresh."""
+        token_path = self._write_token("token-one")
+        processor = self._make_processor(token_path=token_path)
+
+        _, first_stub = self._send_with_mock_stub(processor)
+        self._write_token("token-two")
+        _, second_stub = self._send_with_mock_stub(processor)
+
+        assert first_stub.HealthEventOccurredV1.call_args.kwargs["metadata"] == [("authorization", "Bearer token-one")]
+        assert second_stub.HealthEventOccurredV1.call_args.kwargs["metadata"] == [("authorization", "Bearer token-two")]
+
+    def test_token_file_is_sent_verbatim(self) -> None:
+        """Kubelet writes the token with no surrounding whitespace, so none is removed.
+
+        Verified on-cluster: a projected token file's byte count is identical
+        before and after stripping whitespace. Trimming here would only mask a
+        mount that is not a projected token volume, and gRPC rejects a header
+        value containing a newline anyway.
+        """
+        processor = self._make_processor(token_path=self._write_token("plain-token"))
+
+        _, stub = self._send_with_mock_stub(processor)
+
+        assert stub.HealthEventOccurredV1.call_args.kwargs["metadata"] == [("authorization", "Bearer plain-token")]
+
+    def test_no_metadata_when_token_path_unconfigured(self) -> None:
+        processor = self._make_processor(token_path=None)
+
+        result, stub = self._send_with_mock_stub(processor)
+
+        assert result is True
+        stub.HealthEventOccurredV1.assert_called_once()
+        assert stub.HealthEventOccurredV1.call_args.kwargs["metadata"] is None
+
+    def test_ambient_env_var_does_not_override_an_explicit_empty_token_path(self) -> None:
+        """The CLI layer owns PLATFORM_CONNECTOR_TOKEN_PATH; the processor uses what it is given.
+
+        Resolving the environment a second time here would let ambient process
+        state re-enable token auth for a caller that explicitly disabled it.
+        """
+        os.environ["PLATFORM_CONNECTOR_TOKEN_PATH"] = self._write_token("env-token")
+        processor = self._make_processor(token_path=None)
+
+        _, stub = self._send_with_mock_stub(processor)
+
+        assert stub.HealthEventOccurredV1.call_args.kwargs["metadata"] is None
+
+    def test_missing_token_file_raises_instead_of_sending_without_token(self) -> None:
+        """A publisher configured with a token path must not publish when the read fails."""
+        processor = self._make_processor(token_path=os.path.join(self._tmpdir, "does-not-exist"))
+
+        stub = unittest.mock.MagicMock()
+        with unittest.mock.patch.object(
+            platform_connector.platformconnector_pb2_grpc, "PlatformConnectorStub", return_value=stub
+        ):
+            with self.assertRaises(OSError):
+                processor.send_health_event_with_retries(self._sample_events())
+
+        stub.HealthEventOccurredV1.assert_not_called()
+
+    def _assert_blank_token_is_not_published(self, contents: str) -> None:
+        token_path = self._write_token(contents)
+        processor = self._make_processor(token_path=token_path)
+
+        stub = unittest.mock.MagicMock()
+        with unittest.mock.patch.object(
+            platform_connector.platformconnector_pb2_grpc, "PlatformConnectorStub", return_value=stub
+        ):
+            with self.assertRaises(ValueError) as raised:
+                processor.send_health_event_with_retries(self._sample_events())
+
+        # The message must name the file, since "Bearer " would come back as a
+        # generic authentication error that says nothing about the mount.
+        assert token_path in str(raised.exception)
+        stub.HealthEventOccurredV1.assert_not_called()
+
+    def test_empty_token_file_raises_instead_of_publishing_a_blank_credential(self) -> None:
+        """An empty file is a broken mount, not a credential."""
+        self._assert_blank_token_is_not_published("")
+
+    def _send_with_failing_stub(
+        self,
+        processor: platform_connector.PlatformConnectorEventProcessor,
+        error: grpc.RpcError,
+    ) -> tuple[bool, unittest.mock.MagicMock]:
+        """Runs one send whose every attempt raises `error`; returns (result, stub)."""
+        stub = unittest.mock.MagicMock()
+        stub.HealthEventOccurredV1.side_effect = error
+        with unittest.mock.patch.object(
+            platform_connector.platformconnector_pb2_grpc, "PlatformConnectorStub", return_value=stub
+        ), unittest.mock.patch.object(platform_connector, "MAX_RETRIES", 3), unittest.mock.patch.object(
+            platform_connector, "INITIAL_DELAY", 0
+        ), unittest.mock.patch.object(
+            platform_connector, "sleep"
+        ):
+            result = processor.send_health_event_with_retries(self._sample_events())
+        return result, stub
+
+    def test_non_retryable_status_is_not_retried(self) -> None:
+        """A deterministic rejection answers the same way every time, so retrying only stalls."""
+        for code in (
+            grpc.StatusCode.PERMISSION_DENIED,
+            grpc.StatusCode.UNAUTHENTICATED,
+            grpc.StatusCode.INVALID_ARGUMENT,
+        ):
+            with self.subTest(code=code):
+                processor = self._make_processor(token_path=self._write_token("projected-token"))
+
+                result, stub = self._send_with_failing_stub(processor, RpcErrorWithCode(code))
+
+                assert result is False
+                stub.HealthEventOccurredV1.assert_called_once()
+                # The dedup cache only advances on a True return, so the event
+                # is re-emitted on the next poll rather than being swallowed.
+                assert processor.entity_cache == {}
+
+    def test_transient_status_is_retried(self) -> None:
+        for code in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED):
+            with self.subTest(code=code):
+                processor = self._make_processor(token_path=self._write_token("projected-token"))
+
+                result, stub = self._send_with_failing_stub(processor, RpcErrorWithCode(code))
+
+                assert result is False
+                assert stub.HealthEventOccurredV1.call_count > 1
+                assert processor.entity_cache == {}

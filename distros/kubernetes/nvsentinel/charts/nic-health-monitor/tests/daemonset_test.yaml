@@ -15,6 +15,11 @@
 suite: daemonset
 templates:
   - templates/daemonset.yaml
+set:
+  # Supplied by the umbrella chart in a real install. It has no default on
+  # purpose: a monitor rendered without knowing whether it must authenticate is
+  # the ambiguity the strict helper exists to refuse.
+  global.platformConnectorAuth.enabled: false
 tests:
   - it: must not add any Linux capability to the monitor (SYS_ADMIN regression guard)
     set:
@@ -104,3 +109,58 @@ tests:
             name: proc-vol
             mountPath: /nvsentinel/proc
             readOnly: true
+
+  - it: must present the platform-connector token when auth is enabled
+    set:
+      global.metricsPort: 2112
+      global.initContainerImage.repository: docker.io/bitnamilegacy/os-shell
+      global.initContainerImage.tag: "12-debian-12-r30"
+      global.initContainerImage.pullPolicy: IfNotPresent
+      global.platformConnectorAuth.enabled: true
+      # Set explicitly: the chart has no built-in fallback for these, so the
+      # token can only ever be minted with what the operator configured.
+      global.platformConnectorAuth.audience: platform-connector.nvsentinel.nvidia.com
+      global.platformConnectorAuth.tokenMountPath: /var/run/secrets/nvsentinel/platform-connector
+      global.platformConnectorAuth.tokenExpirationSeconds: 3600
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "--platform-connector-token-path=/var/run/secrets/nvsentinel/platform-connector/token"
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: platform-connector-token
+            mountPath: /var/run/secrets/nvsentinel/platform-connector
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: platform-connector-token
+            projected:
+              sources:
+                - serviceAccountToken:
+                    audience: platform-connector.nvsentinel.nvidia.com
+                    expirationSeconds: 3600
+                    path: token
+
+  - it: must not present the platform-connector token when auth is disabled
+    set:
+      global.metricsPort: 2112
+      global.initContainerImage.repository: docker.io/bitnamilegacy/os-shell
+      global.initContainerImage.tag: "12-debian-12-r30"
+      global.initContainerImage.pullPolicy: IfNotPresent
+      global.platformConnectorAuth.enabled: false
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: "--platform-connector-token-path=/var/run/secrets/nvsentinel/platform-connector/token"
+      - notContains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: platform-connector-token
+          any: true
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: platform-connector-token
+          any: true

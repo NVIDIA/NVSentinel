@@ -29,16 +29,20 @@ import (
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"k8s.io/apimachinery/pkg/util/json"
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/flags"
+	"github.com/nvidia/nvsentinel/commons/pkg/grpcauth"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	srv "github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/auth"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/grpcsink"
-	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/kubernetes"
+	k8sconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/kubernetes"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/kubeconfig"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/server"
@@ -138,12 +142,12 @@ func initializeK8sConnector(
 		return nil, fmt.Errorf("failed to convert K8sConnectorBurst to int: %v", config["K8sConnectorBurst"])
 	}
 
-	k8sConnectorCfg := kubernetes.K8sConnectorConfig{
+	k8sConnectorCfg := k8sconnector.K8sConnectorConfig{
 		MaxNodeConditionMessageLength: maxNodeConditionMessageLength,
 		CompactedHealthEventMsgLen:    compactedEventMsgLen,
 	}
 
-	k8sConnector, _, err := kubernetes.InitializeK8sConnector(
+	k8sConnector, _, err := k8sconnector.InitializeK8sConnector(
 		ctx, k8sRingBuffer, qps, int(burst), stopCh, k8sConnectorCfg, kubeconfigPath,
 	)
 	if err != nil {
@@ -224,6 +228,7 @@ func startGRPCServer(
 	ctx context.Context,
 	socket string,
 	pipeline *pipeline.Pipeline,
+	interceptor grpc.UnaryServerInterceptor,
 ) (net.Listener, error) {
 	slog.InfoContext(ctx, "Starting gRPC server on Unix socket", "socket", socket)
 
@@ -239,7 +244,10 @@ func startGRPCServer(
 		return nil, fmt.Errorf("failed to listen on unix socket %s: %w", socket, err)
 	}
 
-	// Set socket permissions to allow other processes to connect (0666 = rw-rw-rw-)
+	// The socket stays group/world accessible: the publishers that write to it
+	// run non-root at assorted UIDs, so tightening the mode here would require
+	// every publisher to change. Which node a caller may report on is decided
+	// by the node-binding interceptor below, not by file permissions.
 	if err := os.Chmod(socket, 0o666); err != nil {
 		return nil, fmt.Errorf("failed to set socket permissions: %w", err)
 	}
@@ -247,6 +255,10 @@ func startGRPCServer(
 	slog.InfoContext(ctx, "gRPC server socket created successfully", "socket", socket, "permissions", "0666")
 
 	var opts []grpc.ServerOption
+
+	if interceptor != nil {
+		opts = append(opts, grpc.UnaryInterceptor(interceptor))
+	}
 
 	grpcServer := grpc.NewServer(opts...)
 	pb.RegisterPlatformConnectorServer(grpcServer, &server.PlatformConnectorServer{
@@ -264,6 +276,206 @@ func startGRPCServer(
 	}()
 
 	return lis, nil
+}
+
+// TokenReview QPS and per-request timeout. client-go's defaults (5 QPS, 10
+// burst, no timeout) are meant for controllers that write occasionally, not for
+// a call on the path of every cross-node health event: at 5 QPS a burst of
+// events from the cluster-scoped publishers would queue in the client's rate
+// limiter, and with no timeout a wedged API server would hold those calls open
+// indefinitely instead of letting the publisher retry.
+const (
+	tokenReviewQPS     = 50
+	tokenReviewBurst   = 100
+	tokenReviewTimeout = 10 * time.Second
+)
+
+// newK8sClientset builds a Kubernetes clientset for the auth interceptor. It is
+// kept separate from the K8s connector's clientset so that node-binding
+// enforcement does not depend on enableK8sPlatformConnector being on, and so
+// TokenReview traffic does not share the connector's node-patching QPS budget.
+//
+// This client is deliberately NOT wrapped with auditlogger. A TokenReview is a
+// question, not a change to the cluster, so there is nothing here for a change
+// audit to record. It is only a POST because that is the shape of the API, and
+// the audit round tripper treats every POST as a write: it would emit an entry
+// per authenticated batch, and with AUDIT_LOG_REQUEST_BODY on it would copy the
+// request body into the log. That body is the caller's ServiceAccount token.
+func newK8sClientset(kubeconfigPath string) (kubernetes.Interface, error) {
+	restConfig, err := kubeconfig.Load(kubeconfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("loading kubernetes auth configuration: %w", err)
+	}
+
+	restConfig.QPS = tokenReviewQPS
+	restConfig.Burst = tokenReviewBurst
+	restConfig.Timeout = tokenReviewTimeout
+
+	clientSet, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("error creating kubernetes clientset for auth: %w", err)
+	}
+
+	return clientSet, nil
+}
+
+// stringSliceFromConfig reads a JSON array of strings out of the ConfigMap.
+//
+// A missing key and an explicit null are errors, not empty lists. Silently
+// reading either as "no cross-node publishers" would start the connector in a
+// configuration where every cluster-scoped monitor is pinned to one node and
+// its events rejected — a failure that surfaces far from its cause. Only an
+// explicit [] says that on purpose.
+func stringSliceFromConfig(config map[string]interface{}, key string) ([]string, error) {
+	raw, present := config[key]
+	if !present {
+		return nil, fmt.Errorf("%s is not set: it must be a list of canonical "+
+			"ServiceAccount usernames, or an explicit empty list to declare that no "+
+			"publisher may name other nodes", key)
+	}
+
+	if raw == nil {
+		return nil, fmt.Errorf("%s is null: use an explicit empty list to declare "+
+			"that no publisher may name other nodes", key)
+	}
+
+	items, ok := raw.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("%s must be a list of strings, got %T", key, raw)
+	}
+
+	result := make([]string, 0, len(items))
+
+	for _, item := range items {
+		s, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s must be a list of strings, found element of type %T", key, item)
+		}
+
+		result = append(result, s)
+	}
+
+	return result, nil
+}
+
+// nodeBindingEnabled reports whether node binding is on.
+//
+// The flag must be present and must be exactly true or false. It is not
+// defaulted in either direction: guessing "on" would silently enforce against
+// a config that never asked for it, and guessing "off" would silently drop the
+// check that keeps a publisher on one node from reporting faults about
+// another. A ConfigMap that predates the flag is missing the audience and
+// allowlist too, so it cannot work either way — saying so plainly is more
+// useful than inferring an answer.
+//
+//	true / "true"     -> enabled
+//	false / "false"   -> disabled
+//	absent or other   -> refuse to start
+//
+// Values arrive as JSON, where the chart quotes them; an unquoted bool from a
+// hand-edited ConfigMap is accepted too.
+func nodeBindingEnabled(config map[string]interface{}) (bool, error) {
+	const key = "enableNodeBindingAuth"
+
+	raw, present := config[key]
+	if !present {
+		return false, fmt.Errorf(
+			"%s is not set: it must be true or false. A ConfigMap without it "+
+				"predates this platform-connector version and is missing AuthAudience and "+
+				"AuthCrossNodeServiceAccounts as well; upgrade the chart rather than "+
+				"relying on a default", key)
+	}
+
+	switch v := raw.(type) {
+	case bool:
+		return v, nil
+	case string:
+		switch v {
+		case True:
+			return true, nil
+		case "false":
+			return false, nil
+		}
+	}
+
+	return false, fmt.Errorf("%s must be true or false, got %#v", key, raw)
+}
+
+// newTokenValidator builds the TokenReview validator used to authenticate
+// token-presenting publishers. It answers authentication only.
+//
+// The cross-node allowlist is deliberately not applied here: an authenticated
+// identity not entitled to cross-node scope is pinned to this node by the
+// interceptor rather than rejected, so it can still report the node it runs on.
+// Authorization lives in platform-connectors/pkg/auth.
+func newTokenValidator(audience string, kubeconfigPath string) (*grpcauth.Validator, error) {
+	clientSet, err := newK8sClientset(kubeconfigPath)
+	if err != nil {
+		return nil, err
+	}
+
+	validator, err := grpcauth.NewValidator(clientSet, audience)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build token validator: %w", err)
+	}
+
+	return validator, nil
+}
+
+// initializeAuthInterceptor builds the node-binding interceptor that keeps a
+// publisher on one node from submitting health events naming another node. It
+// returns nil when node binding is explicitly disabled, in which case any
+// caller may name any node; that is not a supported production configuration.
+func initializeAuthInterceptor(
+	ctx context.Context,
+	config map[string]interface{},
+	kubeconfigPath string,
+) (grpc.UnaryServerInterceptor, error) {
+	enabled, err := nodeBindingEnabled(config)
+	if err != nil {
+		return nil, err
+	}
+
+	if !enabled {
+		slog.WarnContext(ctx, "Node-binding authentication is DISABLED. Any caller able to reach the "+
+			"platform-connector socket may submit health events naming any node in the cluster.")
+
+		return nil, nil
+	}
+
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		return nil, fmt.Errorf("NODE_NAME environment variable is required when node-binding auth is enabled")
+	}
+
+	crossNodeSAs, err := stringSliceFromConfig(config, "AuthCrossNodeServiceAccounts")
+	if err != nil {
+		return nil, err
+	}
+
+	// Every monitor may present a token, not only the cross-node ones, so the
+	// audience is required whenever node binding is on: without it no token can
+	// be verified and the node claims this check rests on are unreadable.
+	audience, _ := config["AuthAudience"].(string)
+	if audience == "" {
+		return nil, fmt.Errorf("AuthAudience must be set when node-binding auth is enabled")
+	}
+
+	validator, err := newTokenValidator(audience, kubeconfigPath)
+	if err != nil {
+		return nil, err
+	}
+
+	interceptor, err := auth.NewNodeBindingInterceptor(auth.Config{
+		NodeName:                 nodeName,
+		Validator:                validator,
+		CrossNodeServiceAccounts: crossNodeSAs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to build node-binding interceptor: %w", err)
+	}
+
+	return interceptor, nil
 }
 
 func initializeGRPCSinkConnector(
@@ -502,7 +714,12 @@ func run() error {
 	}
 	defer pipeline.Close()
 
-	lis, err := startGRPCServer(ctx, cfg.socket, pipeline)
+	authInterceptor, err := initializeAuthInterceptor(ctx, config, cfg.kubeconfigPath)
+	if err != nil {
+		return fmt.Errorf("failed to initialize auth interceptor: %w", err)
+	}
+
+	lis, err := startGRPCServer(ctx, cfg.socket, pipeline, authInterceptor)
 	if err != nil {
 		return err
 	}

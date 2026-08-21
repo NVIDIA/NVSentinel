@@ -94,6 +94,9 @@ spec:
         hostPath:
           path: /var/run/nvsentinel
           type: DirectoryOrCreate
+      {{- if include "nvsentinel.pcAuth.enabled" . }}
+      {{- include "nvsentinel.pcAuth.volume" . | nindent 6 }}
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
@@ -192,6 +195,12 @@ spec:
           - "--database-client-cert-mount-path="
           {{- end }}
           - "--uds-path=/run/nvsentinel/nvsentinel.sock"
+          {{- if include "nvsentinel.pcAuth.enabled" . }}
+          {{- /* Polls a central cloud-provider API and maps instance IDs to node
+                 names, so it reports on nodes other than its own and must present
+                 an allowlisted token to platform-connector. */}}
+          - "--uds-token-path={{ include "nvsentinel.pcAuth.tokenPath" . }}"
+          {{- end }}
           - "--metrics-port=2113"
           - "--processing-strategy={{ .Values.processingStrategy }}"
           resources:
@@ -232,6 +241,9 @@ spec:
           {{- end }}
           - name: platform-connector-uds
             mountPath: /run/nvsentinel
+          {{- if include "nvsentinel.pcAuth.enabled" . }}
+          {{- include "nvsentinel.pcAuth.volumeMount" . | nindent 10 }}
+          {{- end }}
           env:
             - name: LOG_LEVEL
               value: "{{ .Values.quarantineTriggerEngine.logLevel | default .Values.logLevel }}"

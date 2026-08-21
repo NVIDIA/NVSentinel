@@ -500,8 +500,18 @@ func EnsureNodeEventNotPresent(ctx context.Context, t *testing.T,
 	}, NeverWaitTimeout, WaitInterval, "node %s should not have event %v", nodeName, eventType)
 }
 
-// SelectTestNodeFromUnusedPool selects an available test node from the cluster.
-// Prefers uncordoned nodes but will fall back to the first node if none are available.
+// SelectTestNodeFromUnusedPool returns an uncordoned node carrying no leftover
+// quarantine state, and fails the test if there is none.
+//
+// Uncordoned alone is not enough. A node can be uncordoned while still holding
+// the AggregatedNodeHealth taint or the quarantine annotations from an earlier
+// test, and a test that asserts such state is absent then fails immediately on
+// residue it did not create — before its own event could possibly have been
+// processed.
+//
+// It deliberately does NOT fall back to a contaminated or cordoned node. A
+// silent fallback turns a cleanup regression into a passing test: the residue
+// is real, and the run should say so rather than route around it.
 func SelectTestNodeFromUnusedPool(ctx context.Context, t *testing.T, client klient.Client) string {
 	t.Log("Selecting an available uncordoned test node")
 
@@ -509,23 +519,74 @@ func SelectTestNodeFromUnusedPool(ctx context.Context, t *testing.T, client klie
 	require.NoError(t, err)
 	require.NotEmpty(t, nodes, "no nodes found in cluster")
 
-	// Try to find an uncordoned node
+	var (
+		cordoned     []string
+		contaminated []string
+		unreadable   []string
+	)
+
 	for _, name := range nodes {
 		node, err := GetNodeByName(ctx, client, name)
 		if err != nil {
+			// Not silently skipped: a node we could not read is not evidence of
+			// cordoning or residue, and folding it into either category makes
+			// the final diagnostic blame the wrong thing.
+			unreadable = append(unreadable, fmt.Sprintf("%s (%v)", name, err))
 			continue
 		}
 
-		if !node.Spec.Unschedulable {
-			t.Logf("Selected uncordoned node: %s", name)
-			return name
+		if node.Spec.Unschedulable {
+			cordoned = append(cordoned, name)
+			continue
+		}
+
+		if hasQuarantineResidue(node) {
+			contaminated = append(contaminated, name)
+			continue
+		}
+
+		t.Logf("Selected uncordoned node with no leftover quarantine state: %s", name)
+
+		return name
+	}
+
+	require.FailNowf(t, "no clean test node available",
+		"no node is both uncordoned and free of quarantine state from an earlier test. "+
+			"This is a cleanup regression, not a reason to continue on a dirty node.\n"+
+			"  cordoned:   %v\n"+
+			"  residue (taint %q or annotations %v): %v\n"+
+			"  unreadable: %v",
+		cordoned, AggregatedNodeHealthTaintKey,
+		[]string{
+			QuarantineHealthEventAnnotationKey,
+			QuarantineHealthEventIsCordonedAnnotationKey,
+			QuarantineHealthEventCordonPreExistingAnnotationKey,
+		}, contaminated, unreadable)
+
+	// Unreachable: require.FailNowf does not return.
+	return ""
+}
+
+// hasQuarantineResidue reports whether a node still carries fault-quarantine
+// state: the health taint, or any of the quarantine annotations.
+func hasQuarantineResidue(node *v1.Node) bool {
+	for _, taint := range node.Spec.Taints {
+		if taint.Key == AggregatedNodeHealthTaintKey {
+			return true
 		}
 	}
 
-	nodeName := nodes[0]
-	t.Logf("No uncordoned node found, using first node: %s", nodeName)
+	for _, key := range []string{
+		QuarantineHealthEventAnnotationKey,
+		QuarantineHealthEventIsCordonedAnnotationKey,
+		QuarantineHealthEventCordonPreExistingAnnotationKey,
+	} {
+		if _, ok := node.Annotations[key]; ok {
+			return true
+		}
+	}
 
-	return nodeName
+	return false
 }
 
 // SelectTestNodeWithEmptyProviderID selects a test node with empty providerID.
