@@ -104,11 +104,19 @@ func (m *NodeAnnotationManager) UpdateRemediationState(ctx context.Context, node
 			return err
 		}
 
+		// Increment retry count if this group already exists
+		existingGroup, exists := state.EquivalenceGroups[group]
+		retryCount := 0
+		if exists {
+			retryCount = existingGroup.RetryCount + 1
+		}
+
 		// Update state for the group
 		state.EquivalenceGroups[group] = EquivalenceGroupState{
 			MaintenanceCR: crName,
 			CreatedAt:     time.Now().UTC(),
 			ActionName:    actionName,
+			RetryCount:    retryCount,
 		}
 
 		// Marshal to JSON
@@ -131,7 +139,8 @@ func (m *NodeAnnotationManager) UpdateRemediationState(ctx context.Context, node
 		slog.InfoContext(ctx, "Updated remediation state annotation for node",
 			"node", nodeName,
 			"group", group,
-			"crName", crName)
+			"crName", crName,
+			"retryCount", retryCount)
 
 		return nil
 	})
