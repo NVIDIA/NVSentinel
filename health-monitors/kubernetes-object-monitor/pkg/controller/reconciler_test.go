@@ -16,6 +16,7 @@ package controller_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/annotations"
 	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
@@ -619,6 +621,366 @@ func TestReconciler_PodHealthyOnNode(t *testing.T) {
 	}, time.Second, 50*time.Millisecond)
 }
 
+func TestReconciler_LoadStateRecoversResourceDeletedWhileStopped(t *testing.T) {
+	setup := setupPodTest(t)
+	nodeName := "test-node-pod-deleted-while-stopped"
+	namespace := "gpu-operator"
+	podName := "test-pod-deleted-while-stopped"
+	stateKey := "gpu-operator-pod-health/gpu-operator/" + podName
+
+	createNode(t, setup, nodeName, v1.ConditionTrue)
+	createNamespace(t, setup, namespace)
+	pod := createPod(t, setup, namespace, podName, nodeName, v1.PodPending)
+
+	_, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: namespace, Name: podName},
+	})
+	require.NoError(t, err)
+	require.Len(t, setup.publisher.publishedEvents, 1)
+	require.False(t, setup.publisher.publishedEvents[0].isHealthy)
+
+	annotationMgr := annotations.NewManagerWithReader(setup.k8sClient, setup.k8sClient)
+	matches, err := annotationMgr.GetMatches(setup.ctx, nodeName)
+	require.NoError(t, err)
+	require.Equal(t, nodeName, matches[stateKey])
+
+	require.NoError(t, setup.k8sClient.Delete(setup.ctx, pod, client.GracePeriodSeconds(0)))
+	require.Eventually(t, func() bool {
+		err := setup.k8sClient.Get(
+			setup.ctx,
+			types.NamespacedName{Namespace: namespace, Name: podName},
+			&v1.Pod{},
+		)
+		return apierrors.IsNotFound(err)
+	}, time.Second, 50*time.Millisecond)
+
+	recoveryPublisher := &mockPublisher{}
+	restartedReconciler := controller.NewResourceReconcilerWithReader(
+		setup.k8sClient,
+		setup.k8sClient,
+		setup.evaluator,
+		recoveryPublisher,
+		annotationMgr,
+		[]config.Policy{defaultPodHealthPolicy()},
+		schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Pod"},
+	)
+
+	require.NoError(t, restartedReconciler.LoadStateWithScope(setup.ctx, true))
+	require.Len(t, recoveryPublisher.publishedEvents, 1)
+
+	recoveryEvent := recoveryPublisher.publishedEvents[0]
+	require.True(t, recoveryEvent.isHealthy)
+	require.Equal(t, nodeName, recoveryEvent.nodeName)
+	require.Equal(t, "Pod", recoveryEvent.resourceInfo.Kind)
+	require.Equal(t, "v1", recoveryEvent.resourceInfo.Version)
+	require.Equal(t, namespace, recoveryEvent.resourceInfo.Namespace)
+	require.Equal(t, podName, recoveryEvent.resourceInfo.Name)
+
+	matches, err = annotationMgr.GetMatches(setup.ctx, nodeName)
+	require.NoError(t, err)
+	require.NotContains(t, matches, stateKey)
+
+	_, err = restartedReconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: namespace, Name: podName},
+	})
+	require.NoError(t, err)
+	require.Len(t, recoveryPublisher.publishedEvents, 1)
+}
+
+func TestReconciler_LoadStatePreservesMatchWhenRecoveryPublishFails(t *testing.T) {
+	setup := setupPodTest(t)
+	nodeName := "test-node-pod-recovery-publish-fails"
+	namespace := "gpu-operator"
+	podName := "test-pod-recovery-publish-fails"
+	stateKey := "gpu-operator-pod-health/gpu-operator/" + podName
+
+	createNode(t, setup, nodeName, v1.ConditionTrue)
+	createNamespace(t, setup, namespace)
+	pod := createPod(t, setup, namespace, podName, nodeName, v1.PodPending)
+
+	_, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: namespace, Name: podName},
+	})
+	require.NoError(t, err)
+
+	annotationMgr := annotations.NewManagerWithReader(setup.k8sClient, setup.k8sClient)
+	matches, err := annotationMgr.GetMatches(setup.ctx, nodeName)
+	require.NoError(t, err)
+	require.Equal(t, nodeName, matches[stateKey])
+
+	require.NoError(t, setup.k8sClient.Delete(setup.ctx, pod, client.GracePeriodSeconds(0)))
+	require.Eventually(t, func() bool {
+		err := setup.k8sClient.Get(
+			setup.ctx,
+			types.NamespacedName{Namespace: namespace, Name: podName},
+			&v1.Pod{},
+		)
+		return apierrors.IsNotFound(err)
+	}, time.Second, 50*time.Millisecond)
+
+	publishErr := errors.New("publisher unavailable")
+	recoveryPublisher := &mockPublisher{publishErr: publishErr}
+	restartedReconciler := controller.NewResourceReconcilerWithReader(
+		setup.k8sClient,
+		setup.k8sClient,
+		setup.evaluator,
+		recoveryPublisher,
+		annotationMgr,
+		[]config.Policy{defaultPodHealthPolicy()},
+		schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Pod"},
+	)
+
+	err = restartedReconciler.LoadStateWithScope(setup.ctx, true)
+	require.ErrorIs(t, err, publishErr)
+	require.Empty(t, recoveryPublisher.publishedEvents)
+
+	matches, err = annotationMgr.GetMatches(setup.ctx, nodeName)
+	require.NoError(t, err)
+	require.Equal(t, nodeName, matches[stateKey])
+
+	recoveryPublisher.publishErr = nil
+	_, err = restartedReconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: namespace, Name: podName},
+	})
+	require.NoError(t, err)
+	require.Len(t, recoveryPublisher.publishedEvents, 1)
+
+	matches, err = annotationMgr.GetMatches(setup.ctx, nodeName)
+	require.NoError(t, err)
+	require.NotContains(t, matches, stateKey)
+}
+
+func TestReconciler_LoadStateDoesNotTreatReadErrorAsDeletion(t *testing.T) {
+	setup := setupPodTest(t)
+	nodeName := "test-node-pod-read-error"
+	namespace := "gpu-operator"
+	podName := "test-pod-read-error"
+	stateKey := "gpu-operator-pod-health/gpu-operator/" + podName
+
+	createNode(t, setup, nodeName, v1.ConditionTrue)
+	createNamespace(t, setup, namespace)
+	createPod(t, setup, namespace, podName, nodeName, v1.PodPending)
+
+	_, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: namespace, Name: podName},
+	})
+	require.NoError(t, err)
+
+	readErr := errors.New("API server unavailable")
+	apiReader := &getErrorReader{
+		Reader: setup.k8sClient,
+		err:    readErr,
+	}
+	annotationMgr := annotations.NewManagerWithReader(apiReader, setup.k8sClient)
+	recoveryPublisher := &mockPublisher{}
+	restartedReconciler := controller.NewResourceReconcilerWithReader(
+		setup.k8sClient,
+		apiReader,
+		setup.evaluator,
+		recoveryPublisher,
+		annotationMgr,
+		[]config.Policy{defaultPodHealthPolicy()},
+		schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Pod"},
+	)
+
+	err = restartedReconciler.LoadStateWithScope(setup.ctx, true)
+	require.ErrorIs(t, err, readErr)
+	require.Empty(t, recoveryPublisher.publishedEvents)
+
+	matches, err := annotations.NewManager(setup.k8sClient).GetMatches(setup.ctx, nodeName)
+	require.NoError(t, err)
+	require.Equal(t, nodeName, matches[stateKey])
+}
+
+func TestAnnotationManager_LoadAllMatchesUsesListedNodes(t *testing.T) {
+	reader := &countingNodeReader{
+		nodes: []v1.Node{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node-a",
+					Annotations: map[string]string{
+						annotations.AnnotationKey: `{"policy-a/namespace-a/resource-a":"node-a"}`,
+					},
+				},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node-b",
+					Annotations: map[string]string{
+						annotations.AnnotationKey: `{"policy-b/resource-b":"node-b"}`,
+					},
+				},
+			},
+		},
+	}
+
+	annotationMgr := annotations.NewManagerWithReader(reader, nil)
+	matches, err := annotationMgr.LoadAllMatches(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{
+		"policy-a/namespace-a/resource-a": "node-a",
+		"policy-b/resource-b":             "node-b",
+	}, matches)
+	require.Equal(t, 1, reader.listCalls)
+	require.Zero(t, reader.getCalls)
+}
+
+func TestReconciler_LoadStateBeforeManagerCacheStarts(t *testing.T) {
+	setup := setupPodTest(t)
+	nodeName := "test-node-manager-not-started"
+	namespace := "gpu-operator"
+	podName := "test-pod-manager-not-started"
+	stateKey := "gpu-operator-pod-health/gpu-operator/" + podName
+
+	createNode(t, setup, nodeName, v1.ConditionTrue)
+	createNamespace(t, setup, namespace)
+	createPod(t, setup, namespace, podName, nodeName, v1.PodPending)
+
+	_, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: namespace, Name: podName},
+	})
+	require.NoError(t, err)
+
+	mgr, err := ctrl.NewManager(setup.testEnv.Config, ctrl.Options{
+		Metrics: metricsserver.Options{BindAddress: "0"},
+	})
+	require.NoError(t, err)
+
+	publisher := &mockPublisher{}
+	apiReader := mgr.GetAPIReader()
+	annotationMgr := annotations.NewManagerWithReader(apiReader, mgr.GetClient())
+	reconciler := controller.NewResourceReconcilerWithReader(
+		mgr.GetClient(),
+		apiReader,
+		setup.evaluator,
+		publisher,
+		annotationMgr,
+		[]config.Policy{defaultPodHealthPolicy()},
+		schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Pod"},
+	)
+
+	require.NoError(t, reconciler.LoadStateWithScope(setup.ctx, true))
+	require.Empty(t, publisher.publishedEvents)
+
+	matches, err := annotations.NewManagerWithReader(setup.k8sClient, setup.k8sClient).GetMatches(setup.ctx, nodeName)
+	require.NoError(t, err)
+	require.Equal(t, nodeName, matches[stateKey])
+}
+
+func TestReconciler_LoadStateAcceptsUnambiguousPolicyNameContainingSlash(t *testing.T) {
+	shortPolicy := defaultPodHealthPolicy()
+	shortPolicy.Name = "operator"
+	slashPolicy := defaultPodHealthPolicy()
+	slashPolicy.Name = "operator/pod-health"
+
+	setup := setupPodTestWithPolicies(t, []config.Policy{shortPolicy, slashPolicy})
+	nodeName := "test-node-slash-policy"
+	namespace := "gpu-operator"
+	podName := "test-pod-slash-policy"
+	stateKey := slashPolicy.Name + "/" + namespace + "/" + podName
+
+	createNode(t, setup, nodeName, v1.ConditionTrue)
+	createNamespace(t, setup, namespace)
+	createPod(t, setup, namespace, podName, nodeName, v1.PodRunning)
+	require.NoError(t, annotations.NewManager(setup.k8sClient).AddMatch(
+		setup.ctx,
+		nodeName,
+		stateKey,
+		nodeName,
+	))
+
+	require.NoError(t, setup.reconciler.LoadStateWithScope(setup.ctx, true))
+	require.Empty(t, setup.publisher.publishedEvents)
+
+	matches, err := annotations.NewManager(setup.k8sClient).GetMatches(setup.ctx, nodeName)
+	require.NoError(t, err)
+	require.Equal(t, nodeName, matches[stateKey])
+}
+
+func TestReconciler_LoadStateUsesNamespacedScopeForSlashLikeNamespace(t *testing.T) {
+	shortPolicy := defaultPodHealthPolicy()
+	shortPolicy.Name = "operator"
+	slashPolicy := defaultPodHealthPolicy()
+	slashPolicy.Name = "operator/pod-health"
+
+	setup := setupPodTestWithPolicies(t, []config.Policy{shortPolicy, slashPolicy})
+	targetNodeName := "test-node-slash-like-namespace"
+	namespace := "pod-health"
+	podName := "missing-pod"
+	stateKey := shortPolicy.Name + "/" + namespace + "/" + podName
+
+	createNode(t, setup, targetNodeName, v1.ConditionTrue)
+	require.NoError(t, annotations.NewManager(setup.k8sClient).AddMatch(
+		setup.ctx,
+		targetNodeName,
+		stateKey,
+		targetNodeName,
+	))
+
+	require.NoError(t, setup.reconciler.LoadStateWithScope(setup.ctx, true))
+	require.Len(t, setup.publisher.publishedEvents, 1)
+
+	event := setup.publisher.publishedEvents[0]
+	require.Equal(t, shortPolicy.Name, event.policy.Name)
+	require.True(t, event.isHealthy)
+	require.Equal(t, namespace, event.resourceInfo.Namespace)
+	require.Equal(t, podName, event.resourceInfo.Name)
+
+	matches, err := annotations.NewManager(setup.k8sClient).GetMatches(setup.ctx, targetNodeName)
+	require.NoError(t, err)
+	require.NotContains(t, matches, stateKey)
+}
+
+func TestReconciler_LoadStateUsesClusterScopeToDisambiguatePolicyPrefixes(t *testing.T) {
+	shortPolicy := defaultNodeNotReadyPolicy()
+	shortPolicy.Name = "node"
+	slashPolicy := defaultNodeNotReadyPolicy()
+	slashPolicy.Name = "node/not-ready"
+
+	setup := setupTestWithPolicies(t, []config.Policy{shortPolicy, slashPolicy})
+	nodeName := "test-node-ambiguous-policy"
+	stateKey := slashPolicy.Name + "/" + nodeName
+
+	createNode(t, setup, nodeName, v1.ConditionTrue)
+	require.NoError(t, annotations.NewManager(setup.k8sClient).AddMatch(
+		setup.ctx,
+		nodeName,
+		stateKey,
+		nodeName,
+	))
+
+	require.NoError(t, setup.reconciler.LoadStateWithScope(setup.ctx, false))
+	require.Empty(t, setup.publisher.publishedEvents)
+
+	matches, getErr := annotations.NewManager(setup.k8sClient).GetMatches(setup.ctx, nodeName)
+	require.NoError(t, getErr)
+	require.Equal(t, nodeName, matches[stateKey])
+}
+
+func TestReconciler_LoadStateDoesNotClaimStateForRemovedSlashPolicy(t *testing.T) {
+	policy := defaultNodeNotReadyPolicy()
+	policy.Name = "node"
+
+	setup := setupTestWithPolicies(t, []config.Policy{policy})
+	targetNodeName := "test-node-removed-slash-policy-target"
+	stateKey := "node/not-ready/missing-node"
+
+	createNode(t, setup, targetNodeName, v1.ConditionTrue)
+	require.NoError(t, annotations.NewManager(setup.k8sClient).AddMatch(
+		setup.ctx,
+		targetNodeName,
+		stateKey,
+		targetNodeName,
+	))
+
+	require.NoError(t, setup.reconciler.LoadStateWithScope(setup.ctx, false))
+	require.Empty(t, setup.publisher.publishedEvents)
+
+	matches, err := annotations.NewManager(setup.k8sClient).GetMatches(setup.ctx, targetNodeName)
+	require.NoError(t, err)
+	require.Equal(t, targetNodeName, matches[stateKey])
+}
+
 func TestReconciler_PodPolicyNamespaceSkipsOtherNamespaces(t *testing.T) {
 	policy := defaultPodHealthPolicy()
 	policy.Resource.Namespace = "gpu-operator"
@@ -745,9 +1107,10 @@ func setupTestWithPolicies(t *testing.T, policies []config.Policy) *testSetup {
 		Kind:    "Node",
 	}
 
-	annotationMgr := annotations.NewManager(k8sClient)
+	annotationMgr := annotations.NewManagerWithReader(k8sClient, k8sClient)
 
-	reconciler := controller.NewResourceReconciler(
+	reconciler := controller.NewResourceReconcilerWithReader(
+		k8sClient,
 		k8sClient,
 		evaluator,
 		mockPub,
@@ -800,9 +1163,10 @@ func setupTestWithCRD(t *testing.T, policies []config.Policy, crd *apiextensions
 		Kind:    crd.Spec.Names.Kind,
 	}
 
-	annotationMgr := annotations.NewManager(k8sClient)
+	annotationMgr := annotations.NewManagerWithReader(k8sClient, k8sClient)
 
-	reconciler := controller.NewResourceReconciler(
+	reconciler := controller.NewResourceReconcilerWithReader(
+		k8sClient,
 		k8sClient,
 		evaluator,
 		mockPub,
@@ -831,6 +1195,55 @@ type mockPublishedEvent struct {
 
 type mockPublisher struct {
 	publishedEvents []mockPublishedEvent
+	publishErr      error
+}
+
+type countingNodeReader struct {
+	nodes     []v1.Node
+	getCalls  int
+	listCalls int
+}
+
+type getErrorReader struct {
+	client.Reader
+	err error
+}
+
+func (r *getErrorReader) Get(
+	_ context.Context,
+	_ client.ObjectKey,
+	_ client.Object,
+	_ ...client.GetOption,
+) error {
+	return r.err
+}
+
+func (r *countingNodeReader) Get(
+	_ context.Context,
+	_ client.ObjectKey,
+	_ client.Object,
+	_ ...client.GetOption,
+) error {
+	r.getCalls++
+
+	return errors.New("unexpected Get call")
+}
+
+func (r *countingNodeReader) List(
+	_ context.Context,
+	list client.ObjectList,
+	_ ...client.ListOption,
+) error {
+	r.listCalls++
+
+	nodeList, ok := list.(*v1.NodeList)
+	if !ok {
+		return errors.New("expected NodeList")
+	}
+
+	nodeList.Items = append(nodeList.Items, r.nodes...)
+
+	return nil
 }
 
 func (m *mockPublisher) PublishHealthEvent(
@@ -840,6 +1253,10 @@ func (m *mockPublisher) PublishHealthEvent(
 	isHealthy bool,
 	resourceInfo *config.ResourceInfo,
 ) error {
+	if m.publishErr != nil {
+		return m.publishErr
+	}
+
 	m.publishedEvents = append(m.publishedEvents, mockPublishedEvent{
 		ctx:          ctx,
 		policy:       policy,
@@ -911,9 +1328,10 @@ func restartReconciler(t *testing.T, setup *testSetup) *testSetup {
 
 	policies := []config.Policy{defaultNodeNotReadyPolicy()}
 
-	annotationMgr := annotations.NewManager(setup.k8sClient)
+	annotationMgr := annotations.NewManagerWithReader(setup.k8sClient, setup.k8sClient)
 
-	reconciler := controller.NewResourceReconciler(
+	reconciler := controller.NewResourceReconcilerWithReader(
+		setup.k8sClient,
 		setup.k8sClient,
 		setup.evaluator,
 		mockPub,
@@ -949,9 +1367,10 @@ func restartReconcilerWithCRD(t *testing.T, setup *testSetup, policies []config.
 		publishedEvents: []mockPublishedEvent{},
 	}
 
-	annotationMgr := annotations.NewManager(setup.k8sClient)
+	annotationMgr := annotations.NewManagerWithReader(setup.k8sClient, setup.k8sClient)
 
-	reconciler := controller.NewResourceReconciler(
+	reconciler := controller.NewResourceReconcilerWithReader(
+		setup.k8sClient,
 		setup.k8sClient,
 		setup.evaluator,
 		mockPub,
@@ -1102,9 +1521,10 @@ func setupPodTestWithPolicies(t *testing.T, policies []config.Policy) *testSetup
 		Kind:    "Pod",
 	}
 
-	annotationMgr := annotations.NewManager(k8sClient)
+	annotationMgr := annotations.NewManagerWithReader(k8sClient, k8sClient)
 
-	reconciler := controller.NewResourceReconciler(
+	reconciler := controller.NewResourceReconcilerWithReader(
+		k8sClient,
 		k8sClient,
 		evaluator,
 		mockPub,

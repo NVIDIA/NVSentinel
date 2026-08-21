@@ -18,8 +18,10 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"strings"
 	"sync"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -43,6 +45,7 @@ type HealthEventPublisher interface {
 
 type ResourceReconciler struct {
 	client.Client
+	apiReader     client.Reader
 	evaluator     *policy.Evaluator
 	publisher     HealthEventPublisher
 	annotationMgr *annotations.Manager
@@ -61,8 +64,21 @@ func NewResourceReconciler(
 	policies []config.Policy,
 	gvk schema.GroupVersionKind,
 ) *ResourceReconciler {
+	return NewResourceReconcilerWithReader(c, c, evaluator, pub, annotationMgr, policies, gvk)
+}
+
+func NewResourceReconcilerWithReader(
+	c client.Client,
+	apiReader client.Reader,
+	evaluator *policy.Evaluator,
+	pub HealthEventPublisher,
+	annotationMgr *annotations.Manager,
+	policies []config.Policy,
+	gvk schema.GroupVersionKind,
+) *ResourceReconciler {
 	return &ResourceReconciler{
 		Client:        c,
+		apiReader:     apiReader,
 		evaluator:     evaluator,
 		publisher:     pub,
 		annotationMgr: annotationMgr,
@@ -87,6 +103,102 @@ func (r *ResourceReconciler) LoadState(ctx context.Context) error {
 	slog.Info("Loaded policy match state from annotations", "gvk", r.gvk.String(), "matches", len(allMatches))
 
 	return nil
+}
+
+// LoadStateWithScope reloads persisted policy match state, verifies referenced
+// resources, and recovers deletions that occurred while the monitor was stopped.
+func (r *ResourceReconciler) LoadStateWithScope(ctx context.Context, resourceNamespaced bool) error {
+	allMatches, err := r.annotationMgr.LoadAllMatches(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load match state: %w", err)
+	}
+
+	loadedMatches := make(map[string]string)
+	requests := make(map[string]ctrl.Request)
+
+	for stateKey, nodeName := range allMatches {
+		req, ok := r.requestFromStateKey(stateKey, resourceNamespaced)
+		if !ok {
+			continue
+		}
+
+		loadedMatches[stateKey] = nodeName
+		requests[stateKey] = req
+	}
+
+	r.matchStatesMu.Lock()
+	r.matchStates = maps.Clone(loadedMatches)
+	r.matchStatesMu.Unlock()
+
+	for stateKey, req := range requests {
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(r.gvk)
+
+		if err := r.apiReader.Get(ctx, req.NamespacedName, obj); err != nil {
+			if apierrors.IsNotFound(err) {
+				if err := r.cleanupDeletedResource(ctx, req); err != nil {
+					return fmt.Errorf("failed to recover deleted match %q: %w", stateKey, err)
+				}
+
+				continue
+			}
+
+			return fmt.Errorf("failed to verify loaded match %q: %w", stateKey, err)
+		}
+	}
+
+	r.matchStatesMu.RLock()
+	remainingMatches := len(r.matchStates)
+	r.matchStatesMu.RUnlock()
+
+	slog.Info("Loaded policy match state from annotations", "gvk", r.gvk.String(), "matches", remainingMatches)
+
+	return nil
+}
+
+func (r *ResourceReconciler) requestFromStateKey(stateKey string, resourceNamespaced bool) (ctrl.Request, bool) {
+	parts := strings.Split(stateKey, "/")
+
+	resourcePartCount := 1
+	if resourceNamespaced {
+		resourcePartCount = 2
+	}
+
+	if len(parts) <= resourcePartCount {
+		return ctrl.Request{}, false
+	}
+
+	policyName := strings.Join(parts[:len(parts)-resourcePartCount], "/")
+	if !r.hasEnabledPolicy(policyName) {
+		return ctrl.Request{}, false
+	}
+
+	resourceParts := parts[len(parts)-resourcePartCount:]
+
+	if resourceNamespaced {
+		req := ctrl.Request{
+			NamespacedName: client.ObjectKey{
+				Namespace: resourceParts[0],
+				Name:      resourceParts[1],
+			},
+		}
+
+		return req, resourceParts[0] != "" && resourceParts[1] != ""
+	}
+
+	return ctrl.Request{
+		NamespacedName: client.ObjectKey{Name: resourceParts[0]},
+	}, resourceParts[0] != ""
+}
+
+func (r *ResourceReconciler) hasEnabledPolicy(name string) bool {
+	for i := range r.policies {
+		if r.policies[i].Enabled && r.policies[i].Name == name {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (r *ResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -117,7 +229,10 @@ func (r *ResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 func (r *ResourceReconciler) handleGetError(ctx context.Context, err error, req ctrl.Request) (ctrl.Result, error) {
 	if client.IgnoreNotFound(err) == nil {
-		r.cleanupDeletedResource(ctx, req)
+		if err := r.cleanupDeletedResource(ctx, req); err != nil {
+			return ctrl.Result{}, err
+		}
+
 		return ctrl.Result{}, nil
 	}
 
@@ -129,7 +244,7 @@ func (r *ResourceReconciler) handleGetError(ctx context.Context, err error, req 
 // cleanupDeletedResource handles cleanup when a resource is deleted.
 // when a pod is deleted, we uncordon the node immediately.
 // This means if a replacement pod comes up unhealthy, it will be re-cordoned.
-func (r *ResourceReconciler) cleanupDeletedResource(ctx context.Context, req ctrl.Request) {
+func (r *ResourceReconciler) cleanupDeletedResource(ctx context.Context, req ctrl.Request) error {
 	slog.Info("Cleaning up deleted resource", "resource", req.NamespacedName)
 
 	for _, p := range r.policies {
@@ -180,24 +295,18 @@ func (r *ResourceReconciler) cleanupDeletedResource(ctx context.Context, req ctr
 			slog.Info("Resource deleted, publishing healthy event to uncordon node",
 				"policy", p.Name, "resource", req.NamespacedName, "node", nodeName)
 
-			if err := r.publisher.PublishHealthEvent(ctx, &p, nodeName, true, resourceInfo); err != nil {
-				slog.Error("Failed to publish healthy event for deleted resource",
-					"policy", p.Name,
-					"resource", req.NamespacedName,
-					"node", nodeName,
-					"error", err)
-				metrics.HealthEventsPublishErrors.WithLabelValues(p.Name, "grpc_error").Inc()
-			}
-
-			r.matchStatesMu.Lock()
-			delete(r.matchStates, stateKey)
-			r.matchStatesMu.Unlock()
-
-			if err := r.annotationMgr.RemoveMatch(ctx, nodeName, stateKey); err != nil {
-				slog.Error("Failed to remove match state from annotation", "node", nodeName, "stateKey", stateKey, "error", err)
+			if err := r.handleHealthyTransition(ctx, &p, nodeName, stateKey, resourceInfo); err != nil {
+				return fmt.Errorf(
+					"failed to publish recovery for deleted resource %s with policy %q: %w",
+					req.NamespacedName,
+					p.Name,
+					err,
+				)
 			}
 		}
 	}
+
+	return nil
 }
 
 func (r *ResourceReconciler) reconcilePolicy(
