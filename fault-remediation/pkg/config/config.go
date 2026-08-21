@@ -105,6 +105,10 @@ type TomlConfig struct {
 // surface their own error before any cross-reference error they may also
 // participate in.
 func (c *TomlConfig) Validate() error {
+	if c.MaxRetryAttempts < 0 {
+		return fmt.Errorf("maxRetryAttempts must be non-negative (got %d); use 0 for unlimited retries", c.MaxRetryAttempts)
+	}
+
 	if err := c.validateTemplate(); err != nil {
 		return err
 	}

@@ -47,11 +47,36 @@ func TestTomlConfig_Validate(t *testing.T) {
 		{
 			name: "empty template mountPath should be rejected",
 			config: TomlConfig{
-				Template:          Template{MountPath: ""},
+				Template:           Template{MountPath: ""},
 				RemediationActions: map[string]MaintenanceResource{},
 			},
 			expectError: true,
 			errorSubstr: "template mountPath must be non-empty",
+		},
+		{
+			name: "negative maxRetryAttempts should be rejected",
+			config: TomlConfig{
+				Template:           Template{MountPath: tempDir},
+				MaxRetryAttempts:   -1,
+				RemediationActions: map[string]MaintenanceResource{},
+			},
+			expectError: true,
+			errorSubstr: "maxRetryAttempts must be non-negative",
+		},
+		{
+			name: "zero maxRetryAttempts should be accepted (unlimited)",
+			config: TomlConfig{
+				Template:         Template{MountPath: tempDir},
+				MaxRetryAttempts: 0,
+				RemediationActions: map[string]MaintenanceResource{
+					"ACTION_A": {
+						TemplateFileName: "template-a.yaml",
+						Scope:            "Cluster",
+						EquivalenceGroup: "restart",
+					},
+				},
+			},
+			expectError: false,
 		},
 		{
 			name: "valid config with matching templates",

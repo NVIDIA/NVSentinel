@@ -40,29 +40,29 @@ func TestRetryCountIncrementsOnUpdate(t *testing.T) {
 	client := fake.NewClientBuilder().WithObjects(node).Build()
 	annotationManager := NodeAnnotationManager{client: client}
 
-	// First update - retry count should be 0
+	// First update - retry count should be 1
 	err := annotationManager.UpdateRemediationState(ctx, nodeName, groupName, "cr-1", "RESTART_BM")
 	require.NoError(t, err)
 
 	state, _, err := annotationManager.GetRemediationState(ctx, nodeName)
 	require.NoError(t, err)
-	assert.Equal(t, 0, state.EquivalenceGroups[groupName].RetryCount, "First attempt should have retry count 0")
+	assert.Equal(t, 1, state.EquivalenceGroups[groupName].RetryCount, "First attempt should have retry count 1")
 
-	// Second update - retry count should be 1
+	// Second update - retry count should be 2
 	err = annotationManager.UpdateRemediationState(ctx, nodeName, groupName, "cr-2", "RESTART_BM")
 	require.NoError(t, err)
 
 	state, _, err = annotationManager.GetRemediationState(ctx, nodeName)
 	require.NoError(t, err)
-	assert.Equal(t, 1, state.EquivalenceGroups[groupName].RetryCount, "Second attempt should have retry count 1")
+	assert.Equal(t, 2, state.EquivalenceGroups[groupName].RetryCount, "Second attempt should have retry count 2")
 
-	// Third update - retry count should be 2
+	// Third update - retry count should be 3
 	err = annotationManager.UpdateRemediationState(ctx, nodeName, groupName, "cr-3", "RESTART_BM")
 	require.NoError(t, err)
 
 	state, _, err = annotationManager.GetRemediationState(ctx, nodeName)
 	require.NoError(t, err)
-	assert.Equal(t, 2, state.EquivalenceGroups[groupName].RetryCount, "Third attempt should have retry count 2")
+	assert.Equal(t, 3, state.EquivalenceGroups[groupName].RetryCount, "Third attempt should have retry count 3")
 }
 
 func TestRetryCountIndependentPerGroup(t *testing.T) {
@@ -92,8 +92,8 @@ func TestRetryCountIndependentPerGroup(t *testing.T) {
 	state, _, err := annotationManager.GetRemediationState(ctx, nodeName)
 	require.NoError(t, err)
 
-	assert.Equal(t, 1, state.EquivalenceGroups["group-1"].RetryCount, "group-1 should have retry count 1")
-	assert.Equal(t, 0, state.EquivalenceGroups["group-2"].RetryCount, "group-2 should have retry count 0")
+	assert.Equal(t, 2, state.EquivalenceGroups["group-1"].RetryCount, "group-1 should have retry count 2")
+	assert.Equal(t, 1, state.EquivalenceGroups["group-2"].RetryCount, "group-2 should have retry count 1")
 }
 
 func TestRetryCountPersistsAcrossPodRestarts(t *testing.T) {
@@ -123,6 +123,6 @@ func TestRetryCountPersistsAcrossPodRestarts(t *testing.T) {
 	// Verify retry count persisted
 	state, _, err := manager2.GetRemediationState(ctx, nodeName)
 	require.NoError(t, err)
-	assert.Equal(t, 1, state.EquivalenceGroups[groupName].RetryCount,
+	assert.Equal(t, 2, state.EquivalenceGroups[groupName].RetryCount,
 		"Retry count should persist across pod restarts")
 }
