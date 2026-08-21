@@ -2285,6 +2285,43 @@ func nodeIndexerLister(nodes ...*corev1.Node) listersv1.NodeLister {
 	return listersv1.NewNodeLister(indexer)
 }
 
+// TestReconcileNodeLabelsInPlace_KataAndDriverLabelsMissing_AppliesBothInOnePass
+// covers a node that needs its Kata label and its driver label at the same time.
+//
+// The two results were combined with `needsUpdate ||
+// l.updateDriverAndDCGMLabels(...)`, and || short-circuits: once the Kata label had
+// been set, the driver and DCGM labels were never evaluated. A second reconcile pass
+// hid this, because by then the Kata label was already correct and the short circuit
+// no longer triggered — so the labels arrived one pass later than they should, and
+// only if a second pass happened at all.
+func TestReconcileNodeLabelsInPlace_KataAndDriverLabelsMissing_AppliesBothInOnePass(t *testing.T) {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "kata-and-driver-node",
+			Labels: map[string]string{gpuPresentLabel: LabelValueTrue},
+		},
+	}
+
+	// Never started, so no event handler can race the reconcile below. It only has to
+	// hold the node: the device-count pass is disabled here but still lists the store.
+	nodeInformer := cache.NewSharedIndexInformer(&cache.ListWatch{}, &corev1.Node{}, 0, cache.Indexers{})
+	require.NoError(t, nodeInformer.GetStore().Add(node))
+
+	l := &Labeler{
+		ctx:          context.Background(),
+		nodeInformer: nodeInformer,
+		nodeLister:   listersv1.NewNodeLister(nodeInformer.GetIndexer()),
+	}
+
+	target := node.DeepCopy()
+	changed := l.reconcileNodeLabelsInPlace(target, LabelValueTrue, "")
+
+	assert.True(t, changed, "both labels are missing, so an update is needed")
+	assert.Equal(t, LabelValueFalse, target.Labels[KataEnabledLabel])
+	assert.Equal(t, LabelValueTrue, target.Labels[DriverInstalledLabel],
+		"the driver label must not be skipped just because the kata label changed")
+}
+
 func TestReconcileNodeLabelsInPlace_ManagedGate(t *testing.T) {
 	t.Run("strips detection labels when node is opted out", func(t *testing.T) {
 		node := &corev1.Node{
