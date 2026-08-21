@@ -85,6 +85,10 @@ type TomlConfig struct {
 
 	// Common configuration
 	UpdateRetry UpdateRetry `toml:"updateRetry"`
+
+	// MaxRetryAttempts is the maximum number of remediation attempts per equivalence group
+	// before marking the remediation as failed. Zero means unlimited retries (legacy behavior).
+	MaxRetryAttempts int `toml:"maxRetryAttempts"`
 }
 
 // Validate checks the configuration for consistency and completeness.
