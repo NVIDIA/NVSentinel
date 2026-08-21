@@ -47,4 +47,8 @@ type EquivalenceGroupState struct {
 	// Action that created the CR (e.g., "RESTART_BM")
 	// Required to look up the corresponding MaintenanceResource from the TomlConfig
 	ActionName string `json:"actionName"`
+
+	// RetryCount tracks how many remediation attempts have been made for this equivalence group.
+	// Survives pod restarts as it's persisted in the node annotation.
+	RetryCount int `json:"retryCount,omitempty"`
 }

@@ -1065,6 +1065,19 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 			nodeName)
 	}
 
+	// Check if we've exceeded the maximum retry attempts
+	maxRetries := r.Config.RemediationClient.GetConfig().MaxRetryAttempts
+	if maxRetries > 0 {
+		res, err, done := r.trySkipMaxRetriesExceeded(ctx, nodeName, groupConfig.EffectiveEquivalenceGroup,
+			maxRetries, eventWithToken, watcherInstance, healthEventStore)
+		if done {
+			span.SetAttributes(
+				attribute.String("fault_remediation.status", "max_retries_exceeded"),
+			)
+			return res, err
+		}
+	}
+
 	result, err := r.runLogCollectorAndRemediate(ctx, healthEvent, healthEventWithStatus, eventWithToken,
 		watcherInstance, healthEventStore, groupConfig, nodeName)
 	if err != nil {
@@ -1159,6 +1172,56 @@ func (r *FaultRemediationReconciler) trySkipResolvedEvent(
 	result, err := r.markProcessedOrError(ctx, watcherInstance, eventWithToken, nodeName)
 
 	return result, err, true
+}
+
+// trySkipMaxRetriesExceeded returns (result, err, true) when the retry count for this
+// equivalence group has reached or exceeded the configured maximum; otherwise (zero, nil, false).
+func (r *FaultRemediationReconciler) trySkipMaxRetriesExceeded(
+	ctx context.Context,
+	nodeName string,
+	effectiveEquivalenceGroup string,
+	maxRetries int,
+	eventWithToken datastore.EventWithToken,
+	watcherInstance datastore.ChangeStreamWatcher,
+	healthEventStore datastore.HealthEventStore,
+) (ctrl.Result, error, bool) {
+	remediationState, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			// Node does not exist, not a retry limit issue
+			return ctrl.Result{}, nil, false
+		}
+		slog.ErrorContext(ctx, "Failed to get remediation state for retry check",
+			"node", nodeName,
+			"error", err)
+		return ctrl.Result{}, fmt.Errorf("failed to get remediation state for retry check: %w", err), true
+	}
+
+	groupState, exists := remediationState.EquivalenceGroups[effectiveEquivalenceGroup]
+	if !exists {
+		// First attempt for this group
+		return ctrl.Result{}, nil, false
+	}
+
+	if groupState.RetryCount >= maxRetries {
+		slog.WarnContext(ctx, "Maximum retry attempts exceeded for equivalence group",
+			"node", nodeName,
+			"group", effectiveEquivalenceGroup,
+			"retryCount", groupState.RetryCount,
+			"maxRetries", maxRetries)
+
+		metrics.EventsProcessed.WithLabelValues(metrics.CRStatusSkipped, nodeName).Inc()
+
+		// Mark as failed since we cannot remediate
+		if err := r.updateNodeRemediatedStatus(ctx, healthEventStore, eventWithToken, false); err != nil {
+			return ctrl.Result{}, err, true
+		}
+
+		result, err := r.markProcessedOrError(ctx, watcherInstance, eventWithToken, nodeName)
+		return result, err, true
+	}
+
+	return ctrl.Result{}, nil, false
 }
 
 // handleEventCoveredByExistingCR routes a shouldCreate=false decision: an event behind a
