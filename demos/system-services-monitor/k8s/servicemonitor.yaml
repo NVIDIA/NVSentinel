@@ -55,9 +55,11 @@ spec:
               Multi-GPU workloads will fail silently or hang.
             runbook: "ssh to node and run: sudo systemctl restart nvidia-fabricmanager"
 
-        # Warning: Fabric Manager flapping (restarting repeatedly)
+        # Warning: Fabric Manager flapping (restarting repeatedly).
+        # Threshold matches ServiceChecker.is_flapping (FLAP_THRESHOLD=3,
+        # `len(history) >= 3`), so >= 3 here rather than > 3.
         - alert: FabricManagerFlapping
-          expr: increase(fabric_manager_restarts_total[10m]) > 3
+          expr: increase(fabric_manager_restarts_total[10m]) >= 3
           for: 5m
           labels:
             severity: warning

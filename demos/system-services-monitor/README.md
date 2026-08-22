@@ -23,8 +23,8 @@ NVIDIA Fabric Manager can fail and stay broken for weeks undetected. NVSentinel'
 ## Quick Start
 
 ```bash
-# Build
-docker build -t system-services-monitor:latest .
+# Build (tag must match k8s/daemonset.yaml)
+docker build -t system-services-monitor:0.1.0 .
 
 # Deploy (assumes nvsentinel namespace exists)
 kubectl apply -f k8s/rbac.yaml
@@ -38,7 +38,7 @@ kubectl get ds -n nvsentinel system-services-monitor
 # Port-forward to a specific node's pod
 NODE=<node-name>
 POD=$(kubectl get pod -n nvsentinel -o wide --field-selector spec.nodeName=${NODE} \
-  -l app=system-services-monitor -o jsonpath='{.items[0].metadata.name}')
+  -l app.kubernetes.io/name=system-services-monitor -o jsonpath='{.items[0].metadata.name}')
 kubectl port-forward -n nvsentinel pod/${POD} 9101:9101
 curl -s localhost:9101/metrics | grep fabric_manager_up
 ```
@@ -60,7 +60,7 @@ The ServiceMonitor includes PrometheusRule with alerts:
 - `FabricManagerDown` (critical, 5m)
 - `FabricManagerFlapping` (warning, 5m)
 - `FabricStateUnhealthy` (critical, 5m) -- per-GPU fabric orchestration failure
-- `GPUServiceDown` (critical, 3m)
+- `GPUServiceDown` (warning, 3m)
 
 ## Validated On
 
