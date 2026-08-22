@@ -223,22 +223,23 @@ func (m *Manager) NodeLabelsAffectDeviceCounts(oldLabels, newLabels map[string]s
 }
 
 // NodeResourcesAffectDeviceCounts reports whether an allocatable or capacity
-// change on a node could affect a device-count class that reads from node status.
+// change on a node could affect a device-count class whose CEL expression reads
+// from node.status.allocatable or node.status.capacity.
 func (m *Manager) NodeResourcesAffectDeviceCounts(oldNode, newNode *corev1.Node) bool {
 	if !m.Enabled() || oldNode == nil || newNode == nil {
 		return false
 	}
 
-	statusReferenced := false
+	resourcesReferenced := false
 
 	for _, class := range m.classes {
-		if class.referencesNodeStatus() {
-			statusReferenced = true
+		if class.referencesNodeResources() {
+			resourcesReferenced = true
 			break
 		}
 	}
 
-	if !statusReferenced {
+	if !resourcesReferenced {
 		return false
 	}
 
@@ -623,12 +624,14 @@ func (class compiledClass) referencesResourceSlices() bool {
 	return strings.Contains(class.CurrentExpression, "resourceSlices")
 }
 
-// referencesNodeStatus is a cheap heuristic mirroring referencesResourceSlices.
-// It detects dot-style access (e.g. node.status.allocatable) which covers all
-// shipped and documented CEL expression forms. NodeResourcesAffectDeviceCounts
-// uses this to decide whether allocatable/capacity changes need reconciliation.
-func (class compiledClass) referencesNodeStatus() bool {
-	return strings.Contains(class.CurrentExpression, "node.status")
+// referencesNodeResources is a cheap heuristic mirroring referencesResourceSlices.
+// It checks specifically for node.status.allocatable or node.status.capacity
+// rather than the broader node.status, so expressions that only reference
+// node.status.conditions (noisy with heartbeats) do not trigger unnecessary
+// allocatable/capacity comparisons on every node update.
+func (class compiledClass) referencesNodeResources() bool {
+	return strings.Contains(class.CurrentExpression, "node.status.allocatable") ||
+		strings.Contains(class.CurrentExpression, "node.status.capacity")
 }
 
 func matchLabels(actual, expected map[string]string) bool {

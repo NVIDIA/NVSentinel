@@ -414,14 +414,14 @@ func TestNodeResourcesAffectDeviceCounts(t *testing.T) {
 	})
 }
 
-func TestReferencesNodeStatus(t *testing.T) {
+func TestReferencesNodeResources(t *testing.T) {
 	t.Run("returns true for allocatable expression", func(t *testing.T) {
 		class := compiledClass{
 			ClassConfig: ClassConfig{
 				CurrentExpression: "int(node.status.allocatable['nvidia.com/mlnxnics'])",
 			},
 		}
-		require.True(t, class.referencesNodeStatus())
+		require.True(t, class.referencesNodeResources())
 	})
 
 	t.Run("returns true for capacity expression", func(t *testing.T) {
@@ -430,7 +430,7 @@ func TestReferencesNodeStatus(t *testing.T) {
 				CurrentExpression: "int(node.status.capacity['nvidia.com/mlnxnics'])",
 			},
 		}
-		require.True(t, class.referencesNodeStatus())
+		require.True(t, class.referencesNodeResources())
 	})
 
 	t.Run("returns false for label expression", func(t *testing.T) {
@@ -439,7 +439,7 @@ func TestReferencesNodeStatus(t *testing.T) {
 				CurrentExpression: "int(node.metadata.labels['nvidia.com/gpu.count'])",
 			},
 		}
-		require.False(t, class.referencesNodeStatus())
+		require.False(t, class.referencesNodeResources())
 	})
 
 	t.Run("returns false for resourceSlices expression", func(t *testing.T) {
@@ -448,7 +448,16 @@ func TestReferencesNodeStatus(t *testing.T) {
 				CurrentExpression: "resourceSlices.size()",
 			},
 		}
-		require.False(t, class.referencesNodeStatus())
+		require.False(t, class.referencesNodeResources())
+	})
+
+	t.Run("returns false for conditions expression", func(t *testing.T) {
+		class := compiledClass{
+			ClassConfig: ClassConfig{
+				CurrentExpression: "node.status.conditions.exists(c, c.type == 'Ready')",
+			},
+		}
+		require.False(t, class.referencesNodeResources())
 	})
 }
 
