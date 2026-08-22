@@ -31,13 +31,13 @@ all: lint-test
 # python.mk Black+pytest+coverage target does not apply). The
 # preflight-checks-lint-test CI job runs this target directly.
 #
-# Hard gate: byte-compile the probe. py_compile fails on any syntax
-# error, so a broken probe fails CI instead of only failing at
-# container runtime. When pyflakes is present (locally) it also gates
-# on undefined names / unused imports. CI installs Black but not
-# pyflakes/ruff, so Black runs as an advisory format check — the probe
-# is deliberately package-free and reformatting it is out of scope for
-# this CI-registration change.
+# Hard gates: byte-compile the probe, then Black. py_compile fails on any
+# syntax error, so a broken probe fails CI instead of only failing at
+# container runtime. Black is a hard gate too, matching the shared
+# python.mk target (`poetry run black --check .`) — setup-ci-env installs
+# the pinned Black from .versions.yaml, so a format regression fails here
+# the same way it would in any other Python module. When pyflakes is
+# present (locally) it also gates on undefined names / unused imports.
 .PHONY: lint-test
 lint-test:
 	@echo "Linting $(MODULE_NAME) (single-file probe; no Poetry package/pytest suite)..."
@@ -48,13 +48,11 @@ lint-test:
 	else \
 		echo "pyflakes not installed; skipping (py_compile already gated)"; \
 	fi
-	@if command -v black >/dev/null 2>&1; then \
-		echo "Running black --check (advisory)..."; \
-		black --check --line-length 120 cuda_validation.py \
-			|| echo "::warning::black would reformat cuda_validation.py (advisory, not failing this target)"; \
-	else \
-		echo "black not installed; skipping format check"; \
-	fi
+	@echo "Running black --check..."
+	@black --check --line-length 120 cuda_validation.py || { \
+		echo "ERROR: cuda_validation.py is not Black-formatted; run 'black --line-length 120 cuda_validation.py'"; \
+		exit 1; \
+	}
 	@echo "OK"
 
 .PHONY: ci-test
