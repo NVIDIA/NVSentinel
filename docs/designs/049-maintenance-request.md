@@ -2,34 +2,34 @@
 
 ## Context
 
-[ADR-040](040-external-remediation-request.md) introduced the `ExternalRemediationRequest` (ERR) — the **exit door** from NVSentinel node ownership. When NVSentinel detects a fault it cannot remediate itself, it creates an ERR, releases the node to an external system, and waits for that system to signal completion.
+[ADR-040](040-external-remediation-request.md) introduced the `ExternalRemediationRequest` (ERR) — the **exit door** from NVSentinel node ownership. When NVSentinel detects a fault it cannot remediate itself, it creates an ERR. It then releases the node to an external system and waits for that system to signal completion.
 
-ADR-040 does not cover the reverse: an external system that knows **maintenance is coming** for a node — a CSP maintenance notification, a planned hardware repair, an operator-scheduled intervention — and needs NVSentinel to prepare the node (cordon, drain) before the maintenance begins. NVSentinel has no fault of its own here; the signal originates outside the cluster.
+ADR-040 does not cover the reverse direction. An external system often knows that **maintenance is coming** for a node — a CSP maintenance notification, a planned hardware repair, or an operator-scheduled intervention. That system needs NVSentinel to prepare the node (cordon, drain) before the maintenance begins. NVSentinel has no fault of its own here, because the signal comes from outside the cluster.
 
-Without a formal entry point, external automation must side-step NVSentinel (cordoning nodes directly, fighting over taints) or duplicate its quarantine and drain logic. Both undermine the ownership model established by ADR-040.
+Without a formal entry point, external automation must bypass NVSentinel by cordoning nodes directly and competing over taints. The alternative is to duplicate NVSentinel's quarantine and drain logic. Both approaches undermine the ownership model that ADR-040 established.
 
 ## Decision
 
-Introduce a new CRD, `MaintenanceRequest` (MR), in the existing `nvsentinel.dgxc.nvidia.com` API group. MR is the **entry door**: an external system or human operator creates an MR to tell NVSentinel *"maintenance is incoming for this node — prepare it."*
+Introduce a new CRD, `MaintenanceRequest` (MR), in the existing `nvsentinel.dgxc.nvidia.com` API group. MR is the **entry door**. An external system or operator — the **requester** — creates an MR to tell NVSentinel *"maintenance is incoming for this node — prepare it."*
 
-- Created with a `healthEvent` describing the preparation NVSentinel should perform, and a `startTime` recording when the maintenance window opens.
-- On create, the MR's `healthEvent` is emitted **as authored** — the creator chooses `recommendedAction`, and the pipeline routes it to the matching remediation (`CUSTOM` / `external-remediation` produces an ERR; `RESTART_VM` produces a RebootNode; etc.). Given the pipeline wiring in [Pipeline dependencies](#pipeline-dependencies), this drives the normal flow: quarantine (cordon), drain, and creation of the appropriate maintenance CR by `fault-remediation`.
-- The MR then **persists until the entity that created it deletes it**. NVSentinel does not track the maintenance to completion; the MR's existence is the statement "this node is under maintenance."
-- **Deletion is the clear.** Deleting the MR emits a matching `isHealthy=true` event that retracts the fault it raised, letting the normal quarantine-recovery path un-cordon the node.
+- The requester supplies a `healthEvent` that describes the preparation NVSentinel must perform, and a `startTime` that records when the maintenance window opens.
+- On create, the reconciler emits the `healthEvent` **as authored**. The requester chooses `recommendedAction`, and the pipeline routes the event to the matching remediation. For example, `RESTART_VM` produces a RebootNode, and `CUSTOM` / `external-remediation` produces an ERR. Given the wiring in [Pipeline dependencies](#pipeline-dependencies), this drives the normal flow: quarantine (cordon), drain, and creation of the remediation CR by `fault-remediation`.
+- The MR then **persists until the requester deletes it**. NVSentinel does not track the maintenance to completion. The existence of the MR is the statement "this node is under maintenance."
+- **Deletion is the clear.** When the requester deletes the MR, the reconciler emits a matching `isHealthy=true` event. That event retracts the fault the MR raised, and the normal quarantine-recovery path un-cordons the node.
 
 MR is the inbound counterpart to ERR's outbound "NVSentinel is releasing this node." The external-remediation handoff is the canonical case, but MR drives any remediation the pipeline already supports.
 
 ## Open decision: what emits the MR's health events
 
-The CRD is settled. **Where the emit-on-create / emit-on-delete logic lives is not.** Whatever hosts it needs a controller-runtime manager (to watch the CRD, and for a finalizer-based clear, to manage finalizers and status) *and* a health-event emitter (`healthpub.Publisher` over the platform-connector's node-local socket).
+The CRD is settled. **Where the emit-on-create / emit-on-delete logic lives is not.** The host needs two capabilities: a controller-runtime manager, which watches the CRD and (for a finalizer-based clear) manages finalizers and status; and a health-event emitter, a `healthpub.Publisher` over the platform-connector's node-local socket.
 
-Two components are ruled out: **janitor** is a controller-runtime manager with a webhook server but emits no health events and node-maintenance coordination is not its remit; **csp-health-monitor** is a native emitter but a poll/emit loop with no manager, webhook server, or leader election.
+Two components are ruled out. **janitor** is a controller-runtime manager with a webhook server, but it emits no health events, and node-maintenance coordination is not its remit. **csp-health-monitor** is a native emitter, but it is a poll/emit loop with no manager, webhook server, or leader election.
 
 The [Implementation](#implementation) section is written against **Option A**.
 
-**Option A — a new `lifecycle-manager` component.** A dedicated home for controllers coordinating node lifecycle transitions: a controller-runtime manager with its own validating-webhook server, a platform-connector emitter, and a purpose-built MR reconciler.
+**Option A — a new `lifecycle-manager` component.** A dedicated home for controllers that coordinate node lifecycle transitions. It is a controller-runtime manager with its own validating-webhook server, a platform-connector emitter, and a purpose-built MR reconciler.
 
-**Option B — a `kubernetes-object-monitor` (KOM) policy.** KOM is already a controller-runtime manager that watches any configured GVK via TOML policy, evaluates CEL `predicate` and `nodeAssociation` expressions against the object, and publishes a health event on transition — **unhealthy when the object starts matching, healthy when it stops matching or is deleted**. That is precisely MR's open/close model, already built:
+**Option B — a `kubernetes-object-monitor` (KOM) policy.** KOM is already a controller-runtime manager that watches any configured GVK through a TOML policy. It evaluates CEL `predicate` and `nodeAssociation` expressions against the object, then publishes a health event on each transition: **unhealthy when the object starts to match, healthy when it stops matching or is deleted**. That is precisely MR's open/close model, already built:
 
 ```toml
 [[policies]]
@@ -50,37 +50,37 @@ message           = "Maintenance requested: node reboot"
 recommendedAction = "RESTART_VM"
 ```
 
-The catch is that **everything under `[policies.healthEvent]` is a static literal**. KOM assembles the published event from the *policy*, not from the object it is watching — only the node name is read from the object, via `nodeAssociation`. Two consequences follow, and they are the reason this is not simply "Option A for free":
+However, **every field under `[policies.healthEvent]` is a static literal**. KOM assembles the published event from the *policy*, not from the object it watches. Only the node name comes from the object, through `nodeAssociation`. Two consequences follow, and they are why Option B does not deliver Option A at no cost:
 
-- **One policy per distinct event, so publishing a new kind of fault means changing NVSentinel.** A policy emits exactly one event shape. Every new fault type the external system wants to raise needs its own policy block, which is a config change and a release *before* the requester can use it. An external system cannot introduce a fault type on its own schedule — it has to file a PR against NVSentinel and wait for a deploy. Over time that is a standing stream of config churn driven entirely by someone else's roadmap.
-- **No per-request detail.** Within a policy, `message` and `errorCode` are identical for every MR that matches it, and `HealthEventSpec` has no `metadata` map at all. A specific request cannot carry what makes it diagnosable — which CSP event, which maintenance window, which ticket — so an operator looking at a drained node sees the same generic text for every request of that type.
+- **One policy per distinct event, so a new kind of fault requires a change to NVSentinel.** A policy emits exactly one event shape. Each new fault type needs its own policy block. That is a configuration change and a release, and both must land before the requester can use the new type. A requester therefore cannot introduce a fault type on its own schedule. Over time this produces a continuous stream of configuration changes that another team's roadmap drives.
+- **No per-request detail.** Within a policy, `message` and `errorCode` are identical for every MR that matches, and `HealthEventSpec` has no `metadata` map. A single request cannot carry the detail that makes it diagnosable, such as the CSP event, the maintenance window, or the ticket. An operator who examines a drained node therefore sees the same generic text for every request of that type.
 
 | | Option A (`lifecycle-manager`) | Option B (KOM policy) |
 |---|---|---|
 | New component / reconciler code to build | Yes | No — policy config only |
-| **Publishing a new kind of fault** | Create an MR; no NVSentinel change | Add a KOM policy and cut a release first |
-| **Per-request detail** (`message`, `errorCode`, metadata) | Taken from each MR, so every request is self-describing | Fixed in the policy — every MR matching it emits identical text |
-| Clearing the fault on delete | Finalizer holds the MR until the clear is submitted, and retries | Emitted after the fact; if the publish fails KOM drops its state and the clear is lost |
+| **Publishing a new kind of fault** | Create an MR; no NVSentinel change | Add a KOM policy and release NVSentinel first |
+| **Per-request detail** (`message`, `errorCode`, metadata) | Taken from each MR, so every request describes itself | Fixed in the policy — every matching MR emits identical text |
+| Clearing the fault on delete | The finalizer holds the MR until the clear succeeds, and retries | Emitted after the fact; if the publish fails, KOM drops its state and the clear is lost |
 | Status reported on the MR | `HealthEventEmitted` condition | None — KOM does not write to the objects it watches |
 | Who decides what a request may do | The requester (any event, any action) | The operator (the policy set is the gate) |
-| Survives a restart | Yes | Yes — match state is persisted in node annotations |
+| Survives a restart | Yes | Yes — KOM persists match state in node annotations |
 
 ### Closing the gap: object-sourced event fields in KOM
 
-Both consequences above trace to a single design choice — the event comes from the policy. An enhancement that lets a policy take the event from the watched object instead, e.g.:
+Both consequences trace to one design choice: the event comes from the policy. An enhancement can let a policy read the event from the watched object instead:
 
 ```toml
 [policies.healthEvent]
 fromField = "spec.healthEvent"    # publish the object's own event
 ```
 
-removes both at once. One policy then covers every MR regardless of what the requester puts in it, so a new fault type becomes a pure API call with no NVSentinel config change or release, and each request carries its own message, error codes, and metadata.
+This removes both consequences. A single policy then covers every MR, whatever the requester puts in it. A new fault type becomes a pure API call that needs no NVSentinel configuration change or release, and each request carries its own message, error codes, and metadata.
 
-The change looks contained: the reconciler already holds the unstructured object where it calls the publisher — it evaluates the CEL `predicate` and `nodeAssociation` against it — so this is a new config field plus a branch in event construction, not new plumbing.
+The change looks contained. The reconciler already holds the unstructured object where it calls the publisher, because it evaluates the CEL `predicate` and `nodeAssociation` against that object. The work is therefore a new configuration field plus a branch in event construction, not new infrastructure.
 
-One wrinkle it has to settle: the **clearing event is published after the object is gone**, so its fields cannot be read from the object at that point. KOM currently caches only the node name (in `matchStates`, persisted to node annotations). Either the identity fields the clear depends on — `agent`, `checkName`, `nodeName` — stay policy-owned while only the descriptive fields are object-sourced, or KOM caches the emitted event alongside the match state.
+One problem remains to solve. KOM publishes the **clearing event after the object is gone**, so it cannot read the fields from the object at that point. KOM currently caches only the node name, in `matchStates`, and persists it to node annotations. There are two ways to close this. The policy can continue to own the identity fields — `agent`, `checkName`, and `nodeName` — while only the descriptive fields come from the object. Alternatively, KOM can cache the emitted event alongside the match state.
 
-With that in place, Option B differs from Option A only in the finalizer guarantee and MR status.
+With that in place, Option B differs from Option A only in the finalizer guarantee and the MR status.
 
 ## Implementation
 
@@ -106,18 +106,18 @@ lifecycle-manager/                          (new component)
 
 ### CRD schema
 
-Proto-generated via `protoc-gen-crd`, matching the ERR pattern:
+Proto-generated through `protoc-gen-crd`, matching the ERR pattern:
 
 ```proto
 message MaintenanceRequestSpec {
-  // healthEvent describes the preparation NVSentinel should perform. It is
-  // re-emitted into the pipeline as authored (the creator's recommendedAction
-  // stands) so the normal quarantine → drain → remediation flow fires for
-  // whichever action the event names.
+  // healthEvent describes the preparation NVSentinel must perform. The
+  // reconciler re-emits this event into the pipeline as authored (the
+  // requester's recommendedAction stands), so the normal quarantine → drain →
+  // remediation flow fires for whichever action the event names.
   HealthEvent healthEvent = 1;
 
-  // startTime is when the maintenance window opens. Recorded for observability
-  // and future scheduling; the node is prepared on creation today.
+  // startTime is when the maintenance window opens. It is recorded for
+  // observability and future scheduling; the node is prepared on creation today.
   google.protobuf.Timestamp startTime = 2;
 }
 
@@ -186,26 +186,26 @@ status:
 
 | Condition | Initial | Terminal | Meaning |
 |---|---|---|---|
-| `HealthEventEmitted` | `Unknown (Initializing)` | `True (Emitted)` | The opening health event was successfully submitted to the platform-connector. |
+| `HealthEventEmitted` | `Unknown (Initializing)` | `True (Emitted)` | The reconciler submitted the opening health event to the platform-connector. |
 
-One condition and no `completionTime` — the MR's lifecycle is *present = active, absent = cleared*, so there is no "cleared" state on a living object to track.
+The MR carries one condition and no `completionTime`. Its lifecycle is *present = active, absent = cleared*, so there is no "cleared" state to track on a living object.
 
 ### MR reconciler state machine
 
 **Init** (neither finalizer nor initial condition present):
 1. Add the cleanup finalizer and seed `HealthEventEmitted=Unknown`.
-2. Emit `spec.healthEvent` as authored, stamping the MR's name and UID into `healthEvent.metadata["maintenanceRequestName"]` / `["maintenanceRequestUID"]`. That metadata is **observability only** — it lets an operator trace a remediation back to the MR that triggered it; nothing consumes it and no other component changes for it.
-3. On success set `HealthEventEmitted=True`; on failure return an error and requeue. The emit is gated on `HealthEventEmitted != True`, so a failed emission is retried rather than stranded.
+2. Emit `spec.healthEvent` as authored. Stamp the MR's name and UID into `healthEvent.metadata["maintenanceRequestName"]` and `["maintenanceRequestUID"]`. That metadata serves **observability only**: it lets an operator trace a remediation back to the MR that triggered it. Nothing consumes it, and no other component changes for it.
+3. On success, set `HealthEventEmitted=True`. On failure, return an error and requeue. The emit is gated on `HealthEventEmitted != True`, so the reconciler retries a failed emission rather than stranding it.
 
-**Open** (`HealthEventEmitted=True`): idle. The reconciler takes no further action and does **not** watch the remediation it triggered. The MR stays here until the requester deletes it.
+**Open** (`HealthEventEmitted=True`): idle. The reconciler takes no further action, and it does **not** watch the remediation it triggered. The MR stays in this state until the requester deletes it.
 
 **Finalizer** (DeletionTimestamp set):
-1. If the opening event was emitted, emit the clearing event: `isHealthy=true` with the same `agent`/`checkName`/`nodeName` and `recommendedAction=NONE` (it must clear the check, not trigger a second remediation). If the opening event was never emitted, skip — there is no fault to retract.
-2. On success remove the finalizer; on failure return an error and retry, so the MR is not removed until the clear has been submitted.
+1. If the reconciler emitted the opening event, emit the clearing event. It carries `isHealthy=true`, the same `agent`, `checkName`, and `nodeName`, and `recommendedAction=NONE`, because it must clear the check rather than trigger a second remediation. If the reconciler never emitted the opening event, skip this step, because there is no fault to retract.
+2. On success, remove the finalizer. On failure, return an error and retry, so the MR remains until the clear succeeds.
 
-For this first iteration NVSentinel performs **no automatic cleanup** — the requester deletes the MR when it wants the node marked healthy again. Auto-deleting on remediation completion is deliberately deferred (see [Alternatives Considered](#alternatives-considered)).
+For this first iteration NVSentinel performs **no automatic cleanup**. The requester deletes the MR when it wants the node marked healthy again. Auto-deletion on remediation completion is deliberately deferred (see [Alternatives Considered](#alternatives-considered)).
 
-MR and the remediation it triggers are otherwise fully decoupled: no owner-reference, label, or watch links them. The remediation CR runs its own lifecycle and is cleaned up by its own reconciler / TTL (ADR-040 for ERR, ADR-037 for the others).
+MR and the remediation it triggers are otherwise fully decoupled: no owner-reference, label, or watch links them. The remediation CR runs its own lifecycle, and its own reconciler or TTL cleans it up (ADR-040 for ERR, ADR-037 for the others).
 
 ### Validating admission webhook
 
@@ -217,9 +217,9 @@ MR and the remediation it triggers are otherwise fully decoupled: no owner-refer
 | `spec.healthEvent` is immutable | — | ✓ |
 | No other MaintenanceRequest for the same node | ✓ | — |
 
-The whole event is frozen, not just `nodeName`, because the clearing event reuses the original `agent`/`checkName`/`nodeName` to match the fault the MR opened — if those could drift, the clear would target a different check and silently fail to un-cordon. Rejecting `isHealthy=true` closes the other gap: a "healthy" opening event would mark the MR emitted without ever raising a fault.
+The webhook freezes the whole event, not only `nodeName`. The clearing event reuses the original `agent`, `checkName`, and `nodeName` to match the fault the MR opened. If those fields could drift, the clear would target a different check and would silently fail to un-cordon the node. The `isHealthy` check closes a second gap: a "healthy" opening event would mark the MR emitted without ever raising a fault.
 
-The duplicate check is a best-effort early rejection, not a race guarantee: it uses an informer-backed lister, so two concurrent creates can both observe "no MR" and pass. The single-active invariant ultimately rests on idempotent downstream handling, not admission.
+The duplicate check is a best-effort early rejection, not a race guarantee. It uses an informer-backed lister, so two concurrent creates can both observe "no MR" and both pass. Idempotent downstream handling, not admission, ultimately upholds the single-active invariant.
 
 ### RBAC
 
@@ -230,11 +230,11 @@ The duplicate check is a best-effort early rejection, not a race guarantee: it u
 # kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
 ```
 
-No access to janitor's maintenance CRs is needed — the reconciler does not watch them. `nodes` is read-only, for the webhook's node-existence check. No other component needs new permissions.
+The reconciler needs no access to janitor's remediation CRDs, because it does not watch them. Access to `nodes` is read-only, for the webhook's node-existence check. No other component needs new permissions.
 
 ### Sequence: MR lifecycle
 
-Shown for the `CUSTOM` / external-remediation case; other actions follow the same shape with a different remediation CR.
+The diagram shows the `CUSTOM` / external-remediation case. Other actions follow the same shape with a different remediation CR.
 
 ```mermaid
 sequenceDiagram
@@ -265,53 +265,62 @@ sequenceDiagram
 
 ## What changes under Option B
 
-The CRD, the validation checks, and the pipeline behaviour are unchanged. There is no finalizer, no `HealthEventEmitted` condition, and no new component — so *Module layout*, *Status conditions*, *RBAC*, and the finalizer step of the state machine do not apply. Validation moves to CRD `x-kubernetes-validations` CEL rules, which cover non-empty `nodeName`, `isHealthy == false`, and `spec.healthEvent` immutability; only node-existence and the duplicate check need a webhook. Unless KOM gains object-sourced event fields, `spec.healthEvent` would shrink to a discriminator (e.g. `spec.action`) plus `nodeName` and `startTime`, with the event shape living in policy config.
+The CRD, the validation checks, and the pipeline behaviour do not change. There is no finalizer, no `HealthEventEmitted` condition, and no new component. *Module layout*, *Status conditions*, *RBAC*, and the finalizer step of the state machine therefore do not apply.
+
+Validation moves to CRD `x-kubernetes-validations` CEL rules. Those rules cover the non-empty `nodeName`, the `isHealthy == false` check, and `spec.healthEvent` immutability. Only the node-existence and duplicate checks still need a webhook.
+
+Unless KOM gains object-sourced event fields, `spec.healthEvent` shrinks to a discriminator such as `spec.action`, plus `nodeName` and `startTime`. The event shape then lives in the policy configuration.
 
 ## Pipeline dependencies
 
-MR only *emits* an event; whether it flows through quarantine → drain → remediation depends on the pipeline being configured to act on it:
+MR only *emits* an event. Whether that event flows through quarantine, drain, and remediation depends on the pipeline being configured to act on it:
 
-1. **A `fault-quarantine` ruleset that matches the MR-emitted event.** `fault-quarantine` cordons only events matching one of its rulesets, so a generic external-origin event matches none of the default agent/check-specific rulesets and is skipped — no cordon, no drain. A dedicated ruleset for MR-originated events (matched on the emitter's `agent`, say) covers every MR in one place. This is the only hard prerequisite, and it applies whatever the action.
-2. **A `fault-remediation` action for the chosen `recommendedAction`.** Built-in actions (`RESTART_VM` → RebootNode, `TERMINATE_NODE` → TerminateNode, …) already have templates, so MR works against them today; only the `CUSTOM` / `external-remediation` path needs the not-yet-built action that renders an ERR. `fault-remediation` should also be **idempotent on re-publish** — the MR re-emits on retry and the datastore assigns each event its own id, so the producer must not create a second CR for a node that already has an active one.
+1. **A `fault-quarantine` ruleset that matches the MR-emitted event.** `fault-quarantine` cordons only events that match one of its rulesets. A generic external-origin event matches none of the default agent-specific or check-specific rulesets, so `fault-quarantine` skips it and no cordon or drain occurs. A dedicated ruleset for MR-originated events, matched on the emitter's `agent`, covers every MR in one place. This is the only hard prerequisite, and it applies whatever the action.
+2. **A `fault-remediation` action for the chosen `recommendedAction`.** Built-in actions such as `RESTART_VM` → RebootNode and `TERMINATE_NODE` → TerminateNode already have templates, so MR works against them today. Only the `CUSTOM` / `external-remediation` path needs the action that renders an ERR, which does not exist yet. `fault-remediation` must also be **idempotent on re-publish**: the MR re-emits on retry and the datastore assigns each event its own id, so the producer must not create a second CR for a node that already has an active one.
 
-Because the MR does not associate itself with the remediation it triggers, no association-label propagation or other cross-component plumbing is required.
+The MR does not associate itself with the remediation it triggers. No association labels or other cross-component wiring are required.
 
 ## Consequences
 
 **Positive:**
-- Very small first iteration: two emissions, one condition, one finalizer — no cross-CRD watches, owner-references, or GC coupling, and no new code paths in any other component.
-- Simple lifecycle (*present = active, absent = cleared*) with exactly one place the clear can happen, no matter who deletes the MR or why.
-- Drives any pipeline-supported remediation, not just the ERR handoff.
-- The requester controls when the node is returned — correct when the external maintenance window, not the in-cluster remediation, determines "done."
+- Very small first iteration: two emissions, one condition, one finalizer. It adds no cross-CRD watches, owner-references, or GC coupling, and no new code paths in any other component.
+- Simple lifecycle (*present = active, absent = cleared*), with exactly one place where the clear can happen, whoever deletes the MR.
+- Drives any remediation the pipeline supports, not only the ERR handoff.
+- The requester controls when NVSentinel takes the node back. That is correct when the external maintenance window, rather than the in-cluster remediation, determines that the work is done.
 
 **Negative / tradeoffs:**
-- **A forgotten MR leaves a node cordoned indefinitely.** Nothing reclaims it, so MRs become an operational surface that needs monitoring (e.g. alert on MRs well past their `startTime`). This is the main cost of dropping automatic cleanup.
-- Deleting an MR always emits the clear, even if the remediation it triggered is still in flight — the node un-cordons while that remediation continues independently.
-- MRs are not retained after completion, so there is no built-in historical record of completed maintenance.
-- Under Option A, a new component to build and operate. Either way the emitter takes on an outbound dependency on the platform-connector socket.
-- Requires a `fault-quarantine` ruleset matching MR-emitted events (and, for the `CUSTOM` case, the not-yet-built ERR-producing action) to land with or before MR.
+- **A forgotten MR leaves a node cordoned indefinitely.** Nothing reclaims it. MRs therefore become an operational surface that needs monitoring, such as an alert on MRs well past their `startTime`. This is the main cost of dropping automatic cleanup.
+- Deletion of an MR always emits the clear, even when the remediation it triggered is still in flight. The node un-cordons while that remediation continues independently.
+- NVSentinel does not retain MRs after completion, so there is no built-in historical record of completed maintenance.
+- Option A adds a new component to build and operate. Under either option, the emitter takes on an outbound dependency on the platform-connector socket.
+- A `fault-quarantine` ruleset that matches MR-emitted events must land with MR or before it. The `CUSTOM` case also needs the ERR-producing action, which does not exist yet.
 
 ## Alternatives Considered
 
 **Where the emit logic lives** is an [open decision](#open-decision-what-emits-the-mrs-health-events), recorded above rather than settled here.
 
-**Auto-delete the MR when the triggered remediation completes (deferred, not rejected).** The reconciler would watch janitor's maintenance CRs, associate one back to its MR, and delete the MR when it sets `Status.CompletionTime` — closing the loop without requiring the requester to act, and removing the forgotten-MR failure mode. Deferred because it costs cross-CRD watches, an association mechanism the pipeline must propagate, and read RBAC on janitor's CRs — and because "the remediation completed" is not always "the maintenance is over"; for an external repair the requester is the authority. The most likely follow-up once the basic flow is proven.
+**Auto-delete the MR when the triggered remediation completes (deferred, not rejected).** The reconciler would watch janitor's remediation CRDs, associate one back to its MR, and delete the MR when that CR sets `Status.CompletionTime`. This closes the loop without requiring the requester to act, and it removes the forgotten-MR failure mode. It is deferred for two reasons. First, it costs cross-CRD watches, an association mechanism that the pipeline must propagate, and read RBAC on janitor's CRDs. Second, "the remediation completed" does not always mean "the maintenance is over" — for an external repair, the requester is the authority. This is the most likely follow-up once the basic flow is proven.
 
-**Clear via a status condition + separate emit path.** An earlier model derived a "cleared" condition and emitted the clear on a distinct trigger, keeping the object after completion. Deletion-as-clear collapses that into one finalizer path and removes the retained-object machinery.
+**Clear through a status condition and a separate emit path.** An earlier model derived a "cleared" condition and emitted the clear on a distinct trigger, keeping the object after completion. Deletion-as-clear collapses that into one finalizer path and removes the retained-object machinery.
 
-**MR reconciler directly creates the remediation CR, skipping the health event.** Simpler short-term but bypasses quarantine/drain entirely, making the creator responsible for draining first — violating the ADR-040 principle that every node handed to a remediation has passed through NVSentinel's quarantine and drain.
+**The MR reconciler creates the remediation CR directly, skipping the health event.** This is simpler in the short term, but it bypasses quarantine and drain entirely and makes the requester responsible for draining the node first. That violates the ADR-040 principle that every node handed to a remediation has passed through NVSentinel's quarantine and drain.
 
-**MR as a label or annotation on the Node.** Simpler, but not observable as a first-class resource, not auditable via standard tooling, and it requires granting external systems `patch` on Nodes — a far broader privilege than `create` on one CRD.
+**MR as a label or annotation on the Node.** This is simpler, but it is not observable as a first-class resource and not auditable through standard tooling. It also requires granting external systems `patch` on Nodes, a far broader privilege than `create` on one CRD.
 
 ## Testing
 
-- **Reconciler unit tests:** opening emit (condition transitions + retry on failure); the finalizer emitting the clear on delete, including retry on failure and that the finalizer is not removed until the clear succeeds; skipping the clear when the opening event was never emitted; and the clearing event reusing the original `agent`/`checkName`/`nodeName` with `isHealthy=true` / `recommendedAction=NONE`.
+- **Reconciler unit tests:**
+  - The opening emit sets `HealthEventEmitted` correctly, and retries after a failure.
+  - The finalizer emits the clear on delete, and retries after a failure.
+  - The finalizer is not removed until the clear succeeds.
+  - The reconciler skips the clear when it never emitted the opening event.
+  - The clearing event reuses the original `agent`, `checkName`, and `nodeName`, with `isHealthy=true` and `recommendedAction=NONE`.
 - **Webhook unit tests:** one per row of the validation table.
 - **E2E** (`tests/maintenance_request_test.go`):
-  - Happy path: MR created → node quarantined/drained → ERR produced → MR deleted → node un-cordoned.
-  - Action-agnostic: same with `recommendedAction=RESTART_VM` producing a RebootNode.
-  - MR persists: the MR is not removed on its own while the remediation completes; the node stays cordoned until it is deleted.
-  - Duplicate rejection: a second MR for the same node is rejected at admission.
+  - Happy path: create an MR, confirm the node is quarantined and drained, confirm an ERR is produced, delete the MR, confirm the node un-cordons.
+  - Action-agnostic: repeat with `recommendedAction=RESTART_VM`, which produces a RebootNode.
+  - MR persists: the MR is not removed on its own while the remediation completes, and the node stays cordoned until the requester deletes the MR.
+  - Duplicate rejection: the webhook rejects a second MR for the same node.
 
 ## References
 
