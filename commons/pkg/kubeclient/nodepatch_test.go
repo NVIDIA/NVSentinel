@@ -1,0 +1,314 @@
+// Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package kubeclient
+
+import (
+	"context"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
+)
+
+func node(labels, annotations map[string]string) *v1.Node {
+	return &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "node-1",
+			ResourceVersion: "1",
+			Labels:          labels,
+			Annotations:     annotations,
+		},
+	}
+}
+
+func TestNodePatcher_CachedNode_UsesPatchAndSkipsNoOp(t *testing.T) {
+	current := node(map[string]string{"a": "1"}, nil)
+	clientset := fake.NewSimpleClientset(current.DeepCopy())
+	var patcher NodePatcher
+	mutate := func(node *v1.Node) error {
+		node.Labels["b"] = "2"
+		return nil
+	}
+
+	clientset.ClearActions()
+	changed, err := patcher.Patch(
+		context.Background(),
+		clientset.CoreV1().Nodes(),
+		current.Name,
+		current,
+		mutate,
+	)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Len(t, clientset.Actions(), 1)
+	action, ok := clientset.Actions()[0].(k8stesting.PatchAction)
+	require.True(t, ok)
+	assert.JSONEq(t, `{"metadata":{"labels":{"b":"2"}}}`, string(action.GetPatch()))
+
+	updated, err := clientset.CoreV1().Nodes().Get(t.Context(), current.Name, metav1.GetOptions{})
+	require.NoError(t, err)
+	clientset.ClearActions()
+	changed, err = patcher.Patch(
+		context.Background(),
+		clientset.CoreV1().Nodes(),
+		current.Name,
+		updated,
+		mutate,
+	)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Empty(t, clientset.Actions())
+}
+
+func TestNodePatcher_PreviousWriteNotInCache_ReadsLiveNode(t *testing.T) {
+	current := node(map[string]string{"a": "1"}, nil)
+	clientset := fake.NewSimpleClientset(current.DeepCopy())
+	var patcher NodePatcher
+
+	_, err := patcher.Patch(
+		context.Background(),
+		clientset.CoreV1().Nodes(),
+		current.Name,
+		current,
+		func(node *v1.Node) error {
+			node.Labels["b"] = "2"
+			return nil
+		},
+	)
+	require.NoError(t, err)
+
+	stale := current.DeepCopy()
+	stale.ResourceVersion = "stale"
+	clientset.ClearActions()
+	changed, err := patcher.Patch(
+		context.Background(),
+		clientset.CoreV1().Nodes(),
+		current.Name,
+		stale,
+		func(*v1.Node) error { return nil },
+	)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	require.Len(t, clientset.Actions(), 1)
+	assert.Equal(t, "get", clientset.Actions()[0].GetVerb())
+
+	updated, err := clientset.CoreV1().Nodes().Get(t.Context(), current.Name, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, "2", updated.Labels["b"])
+}
+
+func TestNodePatcher_LiveReadFailure_PreservesPendingVersion(t *testing.T) {
+	current := node(map[string]string{"a": "1"}, nil)
+	clientset := fake.NewSimpleClientset(current.DeepCopy())
+	var patcher NodePatcher
+	patcher.pendingVersions.Store(current.Name, "written")
+
+	stale := current.DeepCopy()
+	stale.ResourceVersion = "stale"
+	getAttempts := 0
+	clientset.PrependReactor("get", "nodes", func(k8stesting.Action) (bool, runtime.Object, error) {
+		getAttempts++
+		if getAttempts == 1 {
+			return true, nil, assert.AnError
+		}
+
+		return false, nil, nil
+	})
+
+	_, err := patcher.Patch(
+		context.Background(),
+		clientset.CoreV1().Nodes(),
+		current.Name,
+		stale,
+		func(*v1.Node) error { return nil },
+	)
+	require.ErrorIs(t, err, assert.AnError)
+	assert.ErrorContains(t, err, `refresh node "node-1" while pending write is not in cache`)
+
+	changed, err := patcher.Patch(
+		context.Background(),
+		clientset.CoreV1().Nodes(),
+		current.Name,
+		stale,
+		func(*v1.Node) error { return nil },
+	)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Equal(t, 2, getAttempts)
+}
+
+func TestNodePatcher_Conflict_RefreshesLiveNodeBeforeRetry(t *testing.T) {
+	cached := node(map[string]string{"cached": "true"}, nil)
+	live := cached.DeepCopy()
+	live.ResourceVersion = "2"
+	live.Labels["concurrent"] = "preserved"
+	clientset := fake.NewSimpleClientset(live)
+
+	patchAttempts := 0
+	clientset.PrependReactor("patch", "nodes", func(k8stesting.Action) (bool, runtime.Object, error) {
+		patchAttempts++
+		if patchAttempts == 1 {
+			return true, nil, apierrors.NewConflict(
+				schema.GroupResource{Resource: "nodes"},
+				cached.Name,
+				assert.AnError,
+			)
+		}
+
+		return false, nil, nil
+	})
+
+	var patcher NodePatcher
+	changed, err := patcher.Patch(
+		context.Background(),
+		clientset.CoreV1().Nodes(),
+		cached.Name,
+		cached,
+		func(node *v1.Node) error {
+			node.Labels["desired"] = "true"
+			return nil
+		},
+	)
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.Equal(t, 2, patchAttempts)
+
+	updated, err := clientset.CoreV1().Nodes().Get(t.Context(), cached.Name, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, "preserved", updated.Labels["concurrent"])
+	assert.Equal(t, "true", updated.Labels["desired"])
+}
+
+func TestNodeMergePatch_MetadataChanges_ReturnsExpectedPatch(t *testing.T) {
+	tests := []struct {
+		name     string
+		original *v1.Node
+		modified *v1.Node
+		expected string
+	}{
+		{
+			name:     "no change produces no patch",
+			original: node(map[string]string{"a": "1"}, map[string]string{"b": "2"}),
+			modified: node(map[string]string{"a": "1"}, map[string]string{"b": "2"}),
+			expected: "",
+		},
+		{
+			name:     "adds a label",
+			original: node(map[string]string{"a": "1"}, nil),
+			modified: node(map[string]string{"a": "1", "b": "2"}, nil),
+			expected: `{"metadata":{"labels":{"b":"2"}}}`,
+		},
+		{
+			name:     "changes a label without mentioning the others",
+			original: node(map[string]string{"a": "1", "b": "2"}, nil),
+			modified: node(map[string]string{"a": "9", "b": "2"}, nil),
+			expected: `{"metadata":{"labels":{"a":"9"}}}`,
+		},
+		{
+			name:     "removes a label with an explicit null",
+			original: node(map[string]string{"a": "1", "b": "2"}, nil),
+			modified: node(map[string]string{"a": "1"}, nil),
+			expected: `{"metadata":{"labels":{"b":null}}}`,
+		},
+		{
+			name:     "adds an annotation",
+			original: node(nil, nil),
+			modified: node(nil, map[string]string{"bootstrap": "true"}),
+			expected: `{"metadata":{"annotations":{"bootstrap":"true"}}}`,
+		},
+		{
+			name:     "carries labels and annotations in a single patch",
+			original: node(map[string]string{"a": "1"}, nil),
+			modified: node(map[string]string{"a": "2"}, map[string]string{"bootstrap": "true"}),
+			expected: `{"metadata":{"annotations":{"bootstrap":"true"},"labels":{"a":"2"}}}`,
+		},
+		{
+			name:     "a nil map and an empty map are the same thing",
+			original: node(nil, nil),
+			modified: node(map[string]string{}, map[string]string{}),
+			expected: "",
+		},
+		{
+			name:     "sets a label onto a node that had none",
+			original: node(nil, nil),
+			modified: node(map[string]string{"a": "1"}, nil),
+			expected: `{"metadata":{"labels":{"a":"1"}}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			patch, err := NodeMergePatch(tt.original, tt.modified)
+			require.NoError(t, err)
+
+			if tt.expected == "" {
+				assert.Nil(t, patch, "equivalent nodes must not cost an API call")
+				return
+			}
+
+			assert.JSONEq(t, tt.expected, string(patch))
+		})
+	}
+}
+
+// TestNodeMergePatchLeavesProjectedFieldsAlone pins the reason the patch is built key
+// by key. Informer caches often hold a projected Node — the labeler's transform keeps
+// only one annotation and clears Spec entirely — and a patch derived from that
+// projection must not describe the fields the projection dropped, or it would erase
+// them on the real object.
+func TestNodeMergePatch_ProjectedFields_LeavesThemAlone(t *testing.T) {
+	projected := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "node-1",
+			ResourceVersion: "1",
+			Labels:          map[string]string{"gpu": "true"},
+			Annotations:     map[string]string{"kept": "yes"},
+		},
+	}
+
+	modified := projected.DeepCopy()
+	modified.Labels["driver.installed"] = "true"
+
+	patch, err := NodeMergePatch(projected, modified)
+	require.NoError(t, err)
+
+	assert.JSONEq(t,
+		`{"metadata":{"labels":{"driver.installed":"true"}}}`,
+		string(patch),
+	)
+	assert.NotContains(t, string(patch), "annotations",
+		"an untouched annotation must not appear in the patch")
+	assert.NotContains(t, string(patch), "spec",
+		"a cleared Spec must never reach the patch, or real taints would be dropped")
+}
+
+func TestNodeMergePatch_SpecChanges_ReturnsNoPatch(t *testing.T) {
+	original := node(nil, nil)
+	modified := original.DeepCopy()
+	modified.Spec.Unschedulable = true
+	modified.Spec.Taints = []v1.Taint{{Key: "held", Effect: v1.TaintEffectNoSchedule}}
+
+	patch, err := NodeMergePatch(original, modified)
+	require.NoError(t, err)
+
+	assert.Nil(t, patch, "spec is out of scope until a caller needs it")
+}

@@ -32,6 +32,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	listersv1 "k8s.io/client-go/listers/core/v1"
@@ -2584,8 +2586,7 @@ func TestUpdateNodeLabels_DriverPodDeletedDuringReconcile_DeleteWins(t *testing.
 		ObjectMeta: metav1.ObjectMeta{
 			Name: nodeName,
 			Labels: map[string]string{
-				DriverInstalledLabel: LabelValueTrue,
-				KataEnabledLabel:     LabelValueFalse,
+				KataEnabledLabel: LabelValueFalse,
 			},
 		},
 	}
@@ -2606,12 +2607,12 @@ func TestUpdateNodeLabels_DriverPodDeletedDuringReconcile_DeleteWins(t *testing.
 	l, clientset := newLabelerWithCachedDriverPods(t, node, pod)
 	fakeClient := clientset.(*fake.Clientset)
 
-	reconcileReadPodCache := make(chan struct{})
+	reconcileReachedPatch := make(chan struct{})
 	releaseReconcile := make(chan struct{})
 	var blocked atomic.Bool
-	fakeClient.PrependReactor("get", "nodes", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
+	fakeClient.PrependReactor("patch", "nodes", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
 		if blocked.CompareAndSwap(false, true) {
-			close(reconcileReadPodCache)
+			close(reconcileReachedPatch)
 			<-releaseReconcile
 		}
 
@@ -2620,7 +2621,7 @@ func TestUpdateNodeLabels_DriverPodDeletedDuringReconcile_DeleteWins(t *testing.
 
 	reconcileDone := make(chan error, 1)
 	go func() { reconcileDone <- l.updateNodeLabels(nodeName) }()
-	<-reconcileReadPodCache
+	<-reconcileReachedPatch
 
 	// Informer stores remove an object before invoking its delete handler.
 	require.NoError(t, l.podInformer.GetIndexer().Delete(pod))
@@ -2640,4 +2641,194 @@ func TestUpdateNodeLabels_DriverPodDeletedDuringReconcile_DeleteWins(t *testing.
 	updated, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
 	require.NoError(t, err)
 	assert.NotContains(t, updated.Labels, DriverInstalledLabel)
+}
+
+// TestUpdateNodeLabels_CachedNode_UsesPatchOnly pins the API-call budget and payload
+// of the label write path.
+func TestUpdateNodeLabels_CachedNode_UsesPatchOnly(t *testing.T) {
+	const nodeName = "gpu-node"
+
+	clientset := fake.NewSimpleClientset(&corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            nodeName,
+			ResourceVersion: "1",
+			Labels:          map[string]string{gpuPresentLabel: LabelValueTrue},
+		},
+	})
+
+	labeler, _ := startTransformTestLabeler(t, clientset, devicecounts.Config{})
+	requireCachedLabel(t, labeler, nodeName, KataEnabledLabel, LabelValueFalse)
+
+	tests := []struct {
+		name          string
+		setup         func(*testing.T)
+		expectedPatch string
+	}{
+		{
+			name: "label change costs one merge patch",
+			setup: func(t *testing.T) {
+				node, getErr := clientset.CoreV1().Nodes().Get(t.Context(), nodeName, metav1.GetOptions{})
+				require.NoError(t, getErr)
+				delete(node.Labels, KataEnabledLabel)
+				_, updateErr := clientset.CoreV1().Nodes().Update(t.Context(), node, metav1.UpdateOptions{})
+				require.NoError(t, updateErr)
+				requireCachedLabelAbsent(t, labeler, nodeName, KataEnabledLabel)
+			},
+			expectedPatch: fmt.Sprintf(
+				`{"metadata":{"labels":{%q:%q}}}`,
+				KataEnabledLabel,
+				LabelValueFalse,
+			),
+		},
+		{
+			name: "no-op reconcile costs no API call",
+			setup: func(t *testing.T) {
+				requireCachedLabel(t, labeler, nodeName, KataEnabledLabel, LabelValueFalse)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.setup(t)
+			clientset.ClearActions()
+
+			require.NoError(t, labeler.updateNodeLabels(nodeName))
+
+			expectedPatchCount := 0
+			if tt.expectedPatch != "" {
+				expectedPatchCount = 1
+				action := nodePatchAction(t, clientset.Actions())
+				assert.Equal(t, types.MergePatchType, action.GetPatchType())
+				assert.JSONEq(t, tt.expectedPatch, string(action.GetPatch()))
+			}
+
+			assert.Equal(t, expectedPatchCount, countNodeActions(clientset, "patch"))
+			assert.Equal(t, 0, countNodeActions(clientset, "get"))
+			assert.Equal(t, 0, countNodeActions(clientset, "update"))
+
+			updated, getErr := clientset.CoreV1().Nodes().Get(t.Context(), nodeName, metav1.GetOptions{})
+			require.NoError(t, getErr)
+			assert.Equal(t, LabelValueFalse, updated.Labels[KataEnabledLabel], "the desired label is present")
+			assert.Equal(t, LabelValueTrue, updated.Labels[gpuPresentLabel],
+				"a merge patch must leave labels it does not mention alone")
+		})
+	}
+}
+
+func TestUpdateNodeLabels_DelayedInformerEvent_EventuallyConverges(t *testing.T) {
+	const nodeName = "delayed-node"
+
+	initial := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: nodeName,
+			Labels: map[string]string{
+				KataRuntimeDefaultLabel: LabelValueFalse,
+				KataEnabledLabel:        LabelValueFalse,
+			},
+		},
+	}
+
+	// A controlled fake watch lets the API object advance independently of the
+	// informer cache, making the stale-cache checkpoints deterministic.
+	clientset := fake.NewSimpleClientset(initial)
+	nodeWatch := watch.NewRaceFreeFake()
+	clientset.PrependWatchReactor("nodes", func(k8stesting.Action) (bool, watch.Interface, error) {
+		return true, nodeWatch, nil
+	})
+
+	labeler, _ := startTransformTestLabeler(t, clientset, devicecounts.Config{})
+	requireCachedLabel(t, labeler, nodeName, KataRuntimeDefaultLabel, LabelValueFalse)
+
+	// Change the API object while withholding its watch event. The informer is synced,
+	// but its node projection deliberately remains one generation behind.
+	liveNode, err := clientset.CoreV1().Nodes().Get(t.Context(), nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	liveNode.Labels[KataRuntimeDefaultLabel] = LabelValueTrue
+	liveNode, err = clientset.CoreV1().Nodes().Update(t.Context(), liveNode, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	cachedNode, err := labeler.getNodeFromCache(nodeName)
+	require.NoError(t, err)
+	assert.Equal(t, LabelValueFalse, cachedNode.Labels[KataRuntimeDefaultLabel])
+	assert.Equal(t, LabelValueFalse, liveNode.Labels[KataEnabledLabel])
+
+	// A reconcile against the stale projection computes the stale derived value and
+	// correctly emits no write.
+	clientset.ClearActions()
+	require.NoError(t, labeler.updateNodeLabels(nodeName))
+	assert.Empty(t, clientset.Actions())
+
+	// Deliver the delayed input event. Its handler must reconcile from the new cache
+	// generation and correct the derived label.
+	nodeWatch.Modify(liveNode.DeepCopy())
+	requireCachedLabel(t, labeler, nodeName, KataRuntimeDefaultLabel, LabelValueTrue)
+
+	cachedNode, err = labeler.getNodeFromCache(nodeName)
+	require.NoError(t, err)
+	assert.Equal(t, LabelValueFalse, cachedNode.Labels[KataEnabledLabel])
+
+	require.Eventually(t, func() bool {
+		node, getErr := clientset.CoreV1().Nodes().Get(t.Context(), nodeName, metav1.GetOptions{})
+		return getErr == nil && node.Labels[KataEnabledLabel] == LabelValueTrue
+	}, 10*time.Second, 10*time.Millisecond)
+
+	finalNode, err := clientset.CoreV1().Nodes().Get(t.Context(), nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	nodeWatch.Modify(finalNode.DeepCopy())
+	requireCachedLabel(t, labeler, nodeName, KataEnabledLabel, LabelValueTrue)
+}
+
+func countNodeActions(clientset *fake.Clientset, verb string) int {
+	count := 0
+
+	for _, action := range clientset.Actions() {
+		if action.GetVerb() == verb && action.GetResource().Resource == "nodes" {
+			count++
+		}
+	}
+
+	return count
+}
+
+func nodePatchAction(t *testing.T, actions []k8stesting.Action) k8stesting.PatchAction {
+	t.Helper()
+
+	for _, action := range actions {
+		if action.GetVerb() == "patch" && action.GetResource().Resource == "nodes" {
+			patchAction, ok := action.(k8stesting.PatchAction)
+			require.True(t, ok)
+
+			return patchAction
+		}
+	}
+
+	require.FailNow(t, "node PATCH action not found")
+	return nil
+}
+
+// requireCachedLabel waits for the informer cache to show the given label, which is
+// how a test tells that the labeler has finished reacting to earlier events.
+func requireCachedLabel(t *testing.T, l *Labeler, nodeName, key, value string) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		node, err := l.getNodeFromCache(nodeName)
+		return err == nil && node.Labels[key] == value
+	}, 10*time.Second, 10*time.Millisecond, "cache never showed %s=%s", key, value)
+}
+
+func requireCachedLabelAbsent(t *testing.T, l *Labeler, nodeName, key string) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		node, err := l.getNodeFromCache(nodeName)
+		if err != nil {
+			return false
+		}
+
+		_, exists := node.Labels[key]
+
+		return !exists
+	}, 10*time.Second, 10*time.Millisecond, "cache never dropped %s", key)
 }
