@@ -162,7 +162,7 @@ func (c *FaultQuarantineClient) UpdateNode(ctx context.Context, nodeName string,
 
 	defer mu.(*sync.Mutex).Unlock()
 
-	_, changed, err := c.nodePatcher.Patch(
+	changed, err := c.nodePatcher.Patch(
 		ctx,
 		c.Clientset.CoreV1().Nodes(),
 		nodeName,
