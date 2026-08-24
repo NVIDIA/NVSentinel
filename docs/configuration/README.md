@@ -106,6 +106,10 @@ gpu-health-monitor:
 The priority classes must already exist in the cluster. `system-node-critical` and
 `system-cluster-critical` are built in; anything else has to be created first.
 
+A higher priority is necessary but not sufficient: preemption also needs an evictable
+lower-priority pod on a node that would then fit, and a class with `preemptionPolicy: Never`
+only improves queue order without evicting anything. Both built-in classes above preempt.
+
 ### Image Pull Secrets
 
 Credentials for pulling images from private registries.
