@@ -52,7 +52,7 @@ This turns on health monitoring only. NVSentinel watches your GPUs and system lo
 > If your GPU nodes get their NVIDIA driver from the host image instead of the GPU Operator's driver DaemonSet, add `--set labeler.assumeDriverInstalled=true` to every NVSentinel install/upgrade command below.
 
 ```bash
-NVSENTINEL_VERSION=v1.19.0
+NVSENTINEL_VERSION=v1.20.0
 
 # Drop the --set podMonitor.enabled=false flag if prometheus is installed
 helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
