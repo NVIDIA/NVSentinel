@@ -1475,6 +1475,82 @@ func TestLabelerNodeRequiresReconciliation_DeviceCountLabels(t *testing.T) {
 	})
 }
 
+func TestLabelerNodeRequiresReconciliation_AllocatableChanges(t *testing.T) {
+	t.Run("reconciles when allocatable changes with status-backed class", func(t *testing.T) {
+		labeler, err := NewLabeler(
+			fake.NewSimpleClientset(),
+			time.Minute,
+			"nvidia-dcgm",
+			"nvidia-driver-daemonset",
+			"nvidia-driver-installer",
+			"",
+			false,
+			false,
+			testAllocatableDeviceCountConfig(),
+			false,
+		)
+		require.NoError(t, err)
+
+		oldNode := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "node-a",
+				Labels: map[string]string{},
+			},
+			Status: corev1.NodeStatus{
+				Allocatable: corev1.ResourceList{
+					corev1.ResourceName("nvidia.com/mlnxnics"): resource.MustParse("0"),
+				},
+			},
+		}
+
+		newNode := oldNode.DeepCopy()
+		newNode.Status.Allocatable = corev1.ResourceList{
+			corev1.ResourceName("nvidia.com/mlnxnics"): resource.MustParse("4"),
+		}
+
+		require.True(t, labeler.nodeRequiresReconciliation(oldNode, newNode))
+	})
+
+	t.Run("does not reconcile allocatable changes with label-only class", func(t *testing.T) {
+		labeler, err := NewLabeler(
+			fake.NewSimpleClientset(),
+			time.Minute,
+			"nvidia-dcgm",
+			"nvidia-driver-daemonset",
+			"nvidia-driver-installer",
+			"",
+			false,
+			false,
+			testDeviceCountConfig(),
+			false,
+		)
+		require.NoError(t, err)
+
+		oldNode := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "node-a",
+				Labels: map[string]string{
+					"nvidia.com/gpu.count":     "4",
+					"test.nvsentinel/current":  "4",
+					"test.nvsentinel/expected": "8",
+				},
+			},
+			Status: corev1.NodeStatus{
+				Allocatable: corev1.ResourceList{
+					corev1.ResourceName("nvidia.com/mlnxnics"): resource.MustParse("0"),
+				},
+			},
+		}
+
+		newNode := oldNode.DeepCopy()
+		newNode.Status.Allocatable = corev1.ResourceList{
+			corev1.ResourceName("nvidia.com/mlnxnics"): resource.MustParse("4"),
+		}
+
+		require.False(t, labeler.nodeRequiresReconciliation(oldNode, newNode))
+	})
+}
+
 func TestLabelerResourceSlicesForNodeFiltersByNodeName(t *testing.T) {
 	labeler, err := NewLabeler(
 		fake.NewSimpleClientset(),
@@ -1547,6 +1623,23 @@ func deviceCountConfigWithExpression(expression string) devicecounts.Config {
 	config.Classes[0].CurrentExpression = expression
 
 	return config
+}
+
+func testAllocatableDeviceCountConfig() devicecounts.Config {
+	return devicecounts.Config{
+		Enabled: true,
+		Classes: []devicecounts.ClassConfig{
+			{
+				Name:    "nic",
+				Enabled: true,
+				Labels: devicecounts.Labels{
+					Current:  "test.nvsentinel/nic-current",
+					Expected: "test.nvsentinel/nic-expected",
+				},
+				CurrentExpression: "int(node.status.allocatable['nvidia.com/mlnxnics'])",
+			},
+		},
+	}
 }
 
 // TestKataLabelOverrideIsolation verifies that creating multiple labeler instances
@@ -2283,6 +2376,43 @@ func nodeIndexerLister(nodes ...*corev1.Node) listersv1.NodeLister {
 		_ = indexer.Add(n)
 	}
 	return listersv1.NewNodeLister(indexer)
+}
+
+// TestReconcileNodeLabelsInPlace_KataAndDriverLabelsMissing_AppliesBothInOnePass
+// covers a node that needs its Kata label and its driver label at the same time.
+//
+// The two results were combined with `needsUpdate ||
+// l.updateDriverAndDCGMLabels(...)`, and || short-circuits: once the Kata label had
+// been set, the driver and DCGM labels were never evaluated. A second reconcile pass
+// hid this, because by then the Kata label was already correct and the short circuit
+// no longer triggered — so the labels arrived one pass later than they should, and
+// only if a second pass happened at all.
+func TestReconcileNodeLabelsInPlace_KataAndDriverLabelsMissing_AppliesBothInOnePass(t *testing.T) {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "kata-and-driver-node",
+			Labels: map[string]string{gpuPresentLabel: LabelValueTrue},
+		},
+	}
+
+	// Never started, so no event handler can race the reconcile below. It only has to
+	// hold the node: the device-count pass is disabled here but still lists the store.
+	nodeInformer := cache.NewSharedIndexInformer(&cache.ListWatch{}, &corev1.Node{}, 0, cache.Indexers{})
+	require.NoError(t, nodeInformer.GetStore().Add(node))
+
+	l := &Labeler{
+		ctx:          context.Background(),
+		nodeInformer: nodeInformer,
+		nodeLister:   listersv1.NewNodeLister(nodeInformer.GetIndexer()),
+	}
+
+	target := node.DeepCopy()
+	changed := l.reconcileNodeLabelsInPlace(target, LabelValueTrue, "")
+
+	assert.True(t, changed, "both labels are missing, so an update is needed")
+	assert.Equal(t, LabelValueFalse, target.Labels[KataEnabledLabel])
+	assert.Equal(t, LabelValueTrue, target.Labels[DriverInstalledLabel],
+		"the driver label must not be skipped just because the kata label changed")
 }
 
 func TestReconcileNodeLabelsInPlace_ManagedGate(t *testing.T) {
