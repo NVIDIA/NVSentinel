@@ -76,10 +76,11 @@ global:
 
 ### Pod Priority
 
-By default NVSentinel pods run at priority 0, which places them below any workload that
-sets a priority class. On a saturated cluster that means the scheduler leaves them Pending
-rather than preempting a lower-value pod, so a node can end up with no health monitor while
-the workload still reports healthy.
+NVSentinel pods set no `priorityClassName` by default, so each takes the priority of the
+cluster's `globalDefault` PriorityClass if one is configured, and 0 otherwise. A pod can
+preempt another only when its own priority is higher, so on a saturated cluster the
+scheduler leaves these pods Pending rather than preempting a lower-priority workload, and a
+node can end up with no health monitor while the workload still reports healthy.
 
 Assign a priority class to avoid that. The split matches the node-scheduling values above:
 `priorityClassName` covers the node-level agents (the health monitor, metadata collector
