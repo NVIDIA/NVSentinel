@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
@@ -156,40 +157,36 @@ func isRetryableNodePatchError(err error) bool {
 		errors.IsServiceUnavailable(err)
 }
 
-// NodeMergePatch builds an RFC 7386 JSON merge patch carrying the label and
-// annotation differences between original and modified. It returns a nil patch when
-// the two already agree, so callers can skip the write instead of spending an API
-// call on a no-op.
+// NodeMergePatch builds an RFC 7386 JSON merge patch carrying differences in labels,
+// annotations, taints, and unschedulable state. It returns a nil patch when the two
+// nodes already agree, so callers can skip a no-op write.
 //
-// CreateTwoWayMergePatch compares metadata-only projections of the two Nodes.
-// Excluding every other field from both inputs ensures an informer projection cannot
-// patch its gaps back over the live object.
+// CreateTwoWayMergePatch compares projections containing only the fields this helper
+// supports. Excluding every other field from both inputs ensures an informer
+// projection cannot patch its gaps back over the live object.
 //
-// Spec fields such as taints and unschedulable are deliberately out of scope: a merge
-// patch replaces a list wholesale, so patching taints from a projected Node whose Spec
-// had been cleared would silently drop every taint on the real object.
+// Taints are emitted only when the caller changed them. A projected Node whose Spec
+// is empty on both sides therefore cannot erase taints from the real object.
 func NodeMergePatch(original, modified *v1.Node) ([]byte, error) {
-	originalMetadata := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Labels:      original.Labels,
-			Annotations: original.Annotations,
-		},
-	}
-	modifiedMetadata := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Labels:      modified.Labels,
-			Annotations: modified.Annotations,
-		},
+	originalProjection := nodePatchProjection(original)
+	modifiedProjection := nodePatchProjection(modified)
+
+	specChanged := !reflect.DeepEqual(original.Spec.Taints, modified.Spec.Taints) ||
+		original.Spec.Unschedulable != modified.Spec.Unschedulable
+	if specChanged {
+		// Lists in spec, such as taints, are replaced wholesale. ResourceVersion
+		// prevents a stale list from overwriting a concurrent update.
+		modifiedProjection.ResourceVersion = original.ResourceVersion
 	}
 
-	originalJSON, err := json.Marshal(originalMetadata)
+	originalJSON, err := json.Marshal(originalProjection)
 	if err != nil {
-		return nil, fmt.Errorf("marshal original metadata for node %q: %w", original.Name, err)
+		return nil, fmt.Errorf("marshal original patch projection for node %q: %w", original.Name, err)
 	}
 
-	modifiedJSON, err := json.Marshal(modifiedMetadata)
+	modifiedJSON, err := json.Marshal(modifiedProjection)
 	if err != nil {
-		return nil, fmt.Errorf("marshal modified metadata for node %q: %w", original.Name, err)
+		return nil, fmt.Errorf("marshal modified patch projection for node %q: %w", original.Name, err)
 	}
 
 	patch, err := strategicpatch.CreateTwoWayMergePatch(originalJSON, modifiedJSON, v1.Node{})
@@ -202,4 +199,17 @@ func NodeMergePatch(original, modified *v1.Node) ([]byte, error) {
 	}
 
 	return patch, nil
+}
+
+func nodePatchProjection(node *v1.Node) *v1.Node {
+	return &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels:      node.Labels,
+			Annotations: node.Annotations,
+		},
+		Spec: v1.NodeSpec{
+			Taints:        node.Spec.Taints,
+			Unschedulable: node.Spec.Unschedulable,
+		},
+	}
 }

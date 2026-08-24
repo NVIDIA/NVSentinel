@@ -27,6 +27,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -57,6 +58,7 @@ type FaultQuarantineClient struct {
 	cordonedReasonLabelKey   string
 	uncordonedReasonLabelKey string
 	operationMutex           sync.Map // map[string]*sync.Mutex for per-node locking
+	lastWrittenNodeVersion   sync.Map // map[string]string
 }
 
 // NewFaultQuarantineClient constructs a FaultQuarantineClient using the
@@ -171,24 +173,80 @@ func (c *FaultQuarantineClient) UpdateNode(ctx context.Context, nodeName string,
 	}
 
 	return retry.OnError(backoff, isRetryableError, func() error {
-		node, err := c.Clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		current, err := c.nodeForPatch(ctx, nodeName)
 		if err != nil {
 			return err
 		}
 
-		if err := updateFn(node); err != nil {
+		desired := current.DeepCopy()
+		if err := updateFn(desired); err != nil {
 			return err
 		}
 
-		_, err = c.Clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+		patch, err := kubeclient.NodeMergePatch(current, desired)
 		if err != nil {
 			return err
 		}
 
-		slog.Debug("Updated node", "node", nodeName)
+		if patch == nil {
+			return nil
+		}
+
+		updated, err := c.Clientset.CoreV1().Nodes().Patch(
+			ctx,
+			nodeName,
+			types.MergePatchType,
+			patch,
+			metav1.PatchOptions{},
+		)
+		if err != nil {
+			return err
+		}
+
+		c.lastWrittenNodeVersion.Store(nodeName, updated.ResourceVersion)
+		slog.Debug("Patched node", "node", nodeName)
 
 		return nil
 	})
+}
+
+func (c *FaultQuarantineClient) nodeForPatch(ctx context.Context, nodeName string) (*v1.Node, error) {
+	if node, ready := c.cachedNodeForPatch(nodeName); ready {
+		return node, nil
+	}
+
+	// The informer may not be running in tests or may not have observed our previous
+	// write yet. A live read preserves consecutive updates to the same node.
+	node, err := c.Clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	c.lastWrittenNodeVersion.Delete(nodeName)
+
+	return node, nil
+}
+
+func (c *FaultQuarantineClient) cachedNodeForPatch(nodeName string) (*v1.Node, bool) {
+	if c.NodeInformer == nil || !c.NodeInformer.HasSynced() {
+		return nil, false
+	}
+
+	node, err := c.NodeInformer.GetNode(nodeName)
+	if err != nil {
+		return nil, false
+	}
+
+	lastWrittenVersion, pending := c.lastWrittenNodeVersion.Load(nodeName)
+	if pending && node.ResourceVersion != lastWrittenVersion.(string) {
+		return nil, false
+	}
+
+	if pending {
+		c.lastWrittenNodeVersion.Delete(nodeName)
+	}
+
+	return node.DeepCopy(), true
 }
 
 func isRetryableError(err error) bool {
@@ -376,9 +434,9 @@ func (c *FaultQuarantineClient) applyTaints(
 		return nil
 	}
 
-	existingTaints := make(map[config.Taint]v1.Taint)
+	existingTaints := make(map[config.Taint]struct{})
 	for _, taint := range node.Spec.Taints {
-		existingTaints[config.Taint{Key: taint.Key, Value: taint.Value, Effect: string(taint.Effect)}] = taint
+		existingTaints[config.Taint{Key: taint.Key, Value: taint.Value, Effect: string(taint.Effect)}] = struct{}{}
 	}
 
 	for _, taintConfig := range taints {
@@ -386,17 +444,13 @@ func (c *FaultQuarantineClient) applyTaints(
 
 		if _, exists := existingTaints[key]; !exists {
 			slog.InfoContext(ctx, "Tainting node", "node", nodename, "taintConfig", taintConfig)
-			existingTaints[key] = v1.Taint{
+			node.Spec.Taints = append(node.Spec.Taints, v1.Taint{
 				Key:    taintConfig.Key,
 				Value:  taintConfig.Value,
 				Effect: v1.TaintEffect(taintConfig.Effect),
-			}
+			})
+			existingTaints[key] = struct{}{}
 		}
-	}
-
-	node.Spec.Taints = []v1.Taint{}
-	for _, taint := range existingTaints {
-		node.Spec.Taints = append(node.Spec.Taints, taint)
 	}
 
 	return nil

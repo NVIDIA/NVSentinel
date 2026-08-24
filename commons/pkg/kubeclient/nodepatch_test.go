@@ -301,7 +301,7 @@ func TestNodeMergePatch_ProjectedFields_LeavesThemAlone(t *testing.T) {
 		"a cleared Spec must never reach the patch, or real taints would be dropped")
 }
 
-func TestNodeMergePatch_SpecChanges_ReturnsNoPatch(t *testing.T) {
+func TestNodeMergePatch_SpecChanges_ReturnsExpectedPatch(t *testing.T) {
 	original := node(nil, nil)
 	modified := original.DeepCopy()
 	modified.Spec.Unschedulable = true
@@ -310,5 +310,12 @@ func TestNodeMergePatch_SpecChanges_ReturnsNoPatch(t *testing.T) {
 	patch, err := NodeMergePatch(original, modified)
 	require.NoError(t, err)
 
-	assert.Nil(t, patch, "spec is out of scope until a caller needs it")
+	assert.JSONEq(t,
+		`{"spec":{"taints":[{"key":"held","effect":"NoSchedule"}],"unschedulable":true}}`,
+		string(patch),
+	)
+
+	patch, err = NodeMergePatch(modified, original)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"spec":{"taints":null,"unschedulable":false}}`, string(patch))
 }

@@ -172,6 +172,10 @@ func measureCordonThroughput(t *testing.T, prefix string, nodeCount int, qps flo
 	)
 	require.NoError(t, err)
 
+	stopCh := make(chan struct{})
+	t.Cleanup(func() { close(stopCh) })
+	require.NoError(t, client.NodeInformer.Run(stopCh))
+
 	start := time.Now()
 	for _, nodeName := range nodeNames {
 		_, err := client.QuarantineNodeAndSetAnnotations(ctx, nodeName, nil, true, nil, nil)
@@ -182,7 +186,7 @@ func measureCordonThroughput(t *testing.T, prefix string, nodeCount int, qps flo
 }
 
 // TestQuarantineNodeAndSetAnnotations_QPSControlledCordonThroughput_HigherQPSIncreasesThroughput
-// exercises FQ's real GET+UPDATE cordon path against envtest.
+// exercises FQ's cache-read + PATCH cordon path against envtest.
 func TestQuarantineNodeAndSetAnnotations_QPSControlledCordonThroughput_HigherQPSIncreasesThroughput(t *testing.T) {
 	const (
 		nodeCount = 10
