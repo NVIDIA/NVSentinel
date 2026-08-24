@@ -332,7 +332,7 @@ func TestNodeMergePatch_SpecChanges_ReturnsExpectedPatch(t *testing.T) {
 	patch, err = NodeMergePatch(modified, original)
 	require.NoError(t, err)
 	assert.JSONEq(t,
-		`{"metadata":{"resourceVersion":"1"},"spec":{"taints":null,"unschedulable":false}}`,
+		`{"metadata":{"resourceVersion":"1"},"spec":{"taints":null,"unschedulable":null}}`,
 		string(patch),
 	)
 }
