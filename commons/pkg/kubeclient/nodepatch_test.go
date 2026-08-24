@@ -270,6 +270,20 @@ func TestNodeMergePatch_MetadataChanges_ReturnsExpectedPatch(t *testing.T) {
 	}
 }
 
+func TestNodeMergePatch_ChangedNode_IncludesOriginalResourceVersion(t *testing.T) {
+	original := node(nil, nil)
+	original.ResourceVersion = "42"
+	modified := original.DeepCopy()
+	modified.Spec.Unschedulable = true
+
+	patch, err := NodeMergePatch(original, modified)
+	require.NoError(t, err)
+	assert.JSONEq(t,
+		`{"metadata":{"resourceVersion":"42"},"spec":{"unschedulable":true}}`,
+		string(patch),
+	)
+}
+
 // TestNodeMergePatchLeavesProjectedFieldsAlone pins the reason the patch is built key
 // by key. Informer caches often hold a projected Node — the labeler's transform keeps
 // only one annotation and clears Spec entirely — and a patch derived from that
@@ -311,11 +325,14 @@ func TestNodeMergePatch_SpecChanges_ReturnsExpectedPatch(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.JSONEq(t,
-		`{"spec":{"taints":[{"key":"held","effect":"NoSchedule"}],"unschedulable":true}}`,
+		`{"metadata":{"resourceVersion":"1"},"spec":{"taints":[{"key":"held","effect":"NoSchedule"}],"unschedulable":true}}`,
 		string(patch),
 	)
 
 	patch, err = NodeMergePatch(modified, original)
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"spec":{"taints":null,"unschedulable":false}}`, string(patch))
+	assert.JSONEq(t,
+		`{"metadata":{"resourceVersion":"1"},"spec":{"taints":null,"unschedulable":false}}`,
+		string(patch),
+	)
 }

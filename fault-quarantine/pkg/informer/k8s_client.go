@@ -27,7 +27,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -58,7 +57,7 @@ type FaultQuarantineClient struct {
 	cordonedReasonLabelKey   string
 	uncordonedReasonLabelKey string
 	operationMutex           sync.Map // map[string]*sync.Mutex for per-node locking
-	lastWrittenNodeVersion   sync.Map // map[string]string
+	nodePatcher              kubeclient.NodePatcher
 }
 
 // NewFaultQuarantineClient constructs a FaultQuarantineClient using the
@@ -163,106 +162,35 @@ func (c *FaultQuarantineClient) UpdateNode(ctx context.Context, nodeName string,
 
 	defer mu.(*sync.Mutex).Unlock()
 
-	// Increased retry attempts to handle node update conflicts when multiple modules
-	// attempt concurrent updates, preventing nodes from remaining cordoned with stale annotations.
-	backoff := wait.Backoff{
-		Steps:    10,                    // Increased from default 5
-		Duration: 20 * time.Millisecond, // Increased from default 10ms
-		Factor:   2.0,
-		Jitter:   0.1,
-	}
-
-	return retry.OnError(backoff, isRetryableError, func() error {
-		current, err := c.nodeForPatch(ctx, nodeName)
-		if err != nil {
-			return err
-		}
-
-		desired := current.DeepCopy()
-		if err := updateFn(desired); err != nil {
-			return err
-		}
-
-		patch, err := kubeclient.NodeMergePatch(current, desired)
-		if err != nil {
-			return err
-		}
-
-		if patch == nil {
-			return nil
-		}
-
-		updated, err := c.Clientset.CoreV1().Nodes().Patch(
-			ctx,
-			nodeName,
-			types.MergePatchType,
-			patch,
-			metav1.PatchOptions{},
-		)
-		if err != nil {
-			return err
-		}
-
-		c.lastWrittenNodeVersion.Store(nodeName, updated.ResourceVersion)
-		slog.Debug("Patched node", "node", nodeName)
-
-		return nil
-	})
-}
-
-func (c *FaultQuarantineClient) nodeForPatch(ctx context.Context, nodeName string) (*v1.Node, error) {
-	if node, ready := c.cachedNodeForPatch(nodeName); ready {
-		return node, nil
-	}
-
-	// The informer may not be running in tests or may not have observed our previous
-	// write yet. A live read preserves consecutive updates to the same node.
-	node, err := c.Clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	_, changed, err := c.nodePatcher.Patch(
+		ctx,
+		c.Clientset.CoreV1().Nodes(),
+		nodeName,
+		c.cachedNodeForPatch(nodeName),
+		updateFn,
+	)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	c.lastWrittenNodeVersion.Delete(nodeName)
+	if changed {
+		slog.Debug("Patched node", "node", nodeName)
+	}
 
-	return node, nil
+	return nil
 }
 
-func (c *FaultQuarantineClient) cachedNodeForPatch(nodeName string) (*v1.Node, bool) {
+func (c *FaultQuarantineClient) cachedNodeForPatch(nodeName string) *v1.Node {
 	if c.NodeInformer == nil || !c.NodeInformer.HasSynced() {
-		return nil, false
+		return nil
 	}
 
 	node, err := c.NodeInformer.GetNode(nodeName)
 	if err != nil {
-		return nil, false
+		return nil
 	}
 
-	lastWrittenVersion, pending := c.lastWrittenNodeVersion.Load(nodeName)
-	if pending && node.ResourceVersion != lastWrittenVersion.(string) {
-		return nil, false
-	}
-
-	if pending {
-		c.lastWrittenNodeVersion.Delete(nodeName)
-	}
-
-	return node.DeepCopy(), true
-}
-
-func isRetryableError(err error) bool {
-	if errors.IsConflict(err) {
-		return true
-	}
-
-	if errors.IsServerTimeout(err) || errors.IsTooManyRequests(err) {
-		return true
-	}
-
-	if errors.IsTimeout(err) || errors.IsServiceUnavailable(err) {
-		return true
-	}
-
-	return false
+	return node.DeepCopy()
 }
 
 func (c *FaultQuarantineClient) ReadCircuitBreakerState(
