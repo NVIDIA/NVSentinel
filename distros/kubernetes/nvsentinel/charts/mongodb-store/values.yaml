@@ -31,6 +31,16 @@
 useBitnami: true
 usePerconaOperator: false
 
+# TTL expireAfterSeconds. Default 2592000 (30d); production often 604800 (7d).
+# Also used for external Mongo. Unset/null → 2592000 (int(nil) is 0, immediate expiry).
+# Job name is create-mongodb-database-<seconds>-<scriptHash> (-l app.kubernetes.io/name=create-mongodb-database).
+collectionExpirySeconds: 2592000
+
+# PVC size. Default 8Gi is for development.
+# Bitnami: mongodb.persistence.size
+# Percona: psmdb-db.replsets.rs0.volumeSpec.pvc.resources.requests.storage
+# Existing Bound PVCs do not grow on helm upgrade (StatefulSet VCT is immutable).
+
 # SCRAM application user (created when mongodb.tls.enabled is false).
 # Instead of X.509 cert-based users, the Job creates a SCRAM-SHA-256 user
 # with readWrite access to the NVSentinel database.
@@ -108,6 +118,7 @@ mongodb:
   
   persistence:
     resourcePolicy: "keep"
+    size: &persistenceSize "8Gi"
   
   automountServiceAccountToken: true
   
@@ -295,7 +306,7 @@ psmdb-db:
         pvc:
           resources:
             requests:
-              storage: "8Gi"
+              storage: *persistenceSize
       nodeSelector: {}
       tolerations: []
       podDisruptionBudget:

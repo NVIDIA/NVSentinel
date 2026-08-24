@@ -1511,12 +1511,21 @@ janitor:
 # Required by: fault-quarantine, node-drainer, fault-remediation
 ################################################################################
 mongodb-store:
+  # TTL expireAfterSeconds. Default 2592000 (30d); production often 604800 (7d).
+  # In-cluster and external Mongo. Job name includes this value so helm/argo rerun collMod.
+  collectionExpirySeconds: 2592000
+
   # MongoDB replica configuration
   mongodb:
+    # Bitnami PVC size (default 8Gi). Percona: psmdb-db.replsets.rs0.volumeSpec.pvc.resources.requests.storage
+    # Existing Bound PVCs do not grow on upgrade.
+    persistence:
+      size: "8Gi"
+
     # Number of MongoDB replicas
     # Recommend 1 for development, 3 for production
     replicaCount: 1
-    
+
     # Node selector for MongoDB pods
     # Example - run on control plane:
     # nodeSelector:

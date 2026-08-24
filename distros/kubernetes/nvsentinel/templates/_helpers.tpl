@@ -1,4 +1,39 @@
 {{/*
+TTL from mongodb-store.collectionExpirySeconds (works when the subchart is disabled).
+Nil/empty → 2592000. Strings must be base-10 digits in 0–2147483647 (int("abc") is 0).
+*/}}
+{{- define "nvsentinel.collectionExpirySeconds" -}}
+{{- $store := index .Values "mongodb-store" | default dict -}}
+{{- $raw := index $store "collectionExpirySeconds" -}}
+{{- if or (kindIs "invalid" $raw) (eq ($raw | toString) "") -}}
+{{- $raw = 2592000 -}}
+{{- end -}}
+{{- if kindIs "string" $raw -}}
+{{- if not (regexMatch "^[0-9]+$" $raw) -}}
+{{- fail (printf "mongodb-store.collectionExpirySeconds must be an integer from 0 through 2147483647, got %v" $raw) -}}
+{{- end -}}
+{{- if or (gt (len $raw) 10) (and (eq (len $raw) 10) (gt $raw "2147483647")) -}}
+{{- fail (printf "mongodb-store.collectionExpirySeconds must be an integer from 0 through 2147483647, got %v" $raw) -}}
+{{- end -}}
+{{- end -}}
+{{- $v := int $raw -}}
+{{- if or (lt $v 0) (gt $v 2147483647) -}}
+{{- fail (printf "mongodb-store.collectionExpirySeconds must be an integer from 0 through 2147483647, got %v" $raw) -}}
+{{- end -}}
+{{- $v -}}
+{{- end }}
+
+{{/*
+<release>-external-mongodb-setup-<ttl>-<scriptHash> so a TTL or init-script
+change is a new Job, not a patch on a completed one.
+*/}}
+{{- define "nvsentinel.externalMongoInitJobName" -}}
+{{- $ttl := include "nvsentinel.collectionExpirySeconds" . | toString -}}
+{{- $hash := include "nvsentinel.externalMongoInitEval" . | sha256sum | trunc 8 -}}
+{{- printf "%s-external-mongodb-setup-%s-%s" .Release.Name $ttl $hash | trunc 63 | trimSuffix "-" -}}
+{{- end }}
+
+{{/*
 Expand the name of the chart.
 */}}
 {{- define "nvsentinel.name" -}}
