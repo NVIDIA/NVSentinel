@@ -17,9 +17,11 @@ package labeler
 import (
 	"context"
 	"fmt"
+	"hash/maphash"
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -30,11 +32,11 @@ import (
 	resourceinformers "k8s.io/client-go/informers/resource/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/util/retry"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 
 	listersv1 "k8s.io/client-go/listers/core/v1"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	"github.com/nvidia/nvsentinel/commons/pkg/stringutil"
 	"github.com/nvidia/nvsentinel/labeler/pkg/devicecounts"
@@ -51,6 +53,8 @@ const (
 	NodeDCGMIndex               = "nodeDCGM"
 	NodeDriverIndex             = "nodeDriver"
 	NodeGKEDriverInstallerIndex = "nodeGKEDriverInstaller"
+	driverComponentLabel        = "app.kubernetes.io/component"
+	driverComponentValue        = "nvidia-driver"
 	// DCGM major versions used for the dcgm.version label.
 	dcgmVersion3 = "3.x"
 	dcgmVersion4 = "4.x"
@@ -61,14 +65,16 @@ const (
 )
 
 var (
-	dcgm4Regex = regexp.MustCompile(`.*dcgm:4\..*`)
-	dcgm3Regex = regexp.MustCompile(`.*dcgm:3\..*`)
+	dcgm4Regex       = regexp.MustCompile(`.*dcgm:4\..*`)
+	dcgm3Regex       = regexp.MustCompile(`.*dcgm:3\..*`)
+	nodeLockHashSeed = maphash.MakeSeed()
 )
 
 // Labeler manages node labeling based on pod information
 type Labeler struct {
 	clientset                    kubernetes.Interface
 	podInformer                  cache.SharedIndexInformer
+	crdDriverInformer            cache.SharedIndexInformer
 	nodeInformer                 cache.SharedIndexInformer
 	nodeLister                   listersv1.NodeLister
 	gkeInstallerInformer         cache.SharedIndexInformer
@@ -80,6 +86,8 @@ type Labeler struct {
 	requireDCGMReadyForBootstrap bool
 	deviceCounts                 *devicecounts.Manager
 	assumeDCGMAvailable          bool
+	nodeLocks                    [256]sync.Mutex
+	nodePatcher                  kubeclient.NodePatcher
 }
 
 func (l *Labeler) allInformersSynced() bool {
@@ -102,20 +110,33 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		return nil, fmt.Errorf("create pod informer: %w", err)
 	}
 
+	crdDriverInformer, err := createCRDDriverInformer(clientset, resyncPeriod, driverApp)
+	if err != nil {
+		return nil, fmt.Errorf("create CRD driver pod informer: %w", err)
+	}
+
 	gkeInstallerInformer, err := createGKEInstallerInformer(clientset, resyncPeriod, gkeInstallerApp)
 	if err != nil {
 		return nil, fmt.Errorf("create GKE installer informer: %w", err)
 	}
-
-	nodeInformer := createNodeInformer(clientset, resyncPeriod)
 
 	deviceCounts, err := devicecounts.NewManager(expectedDeviceCounts)
 	if err != nil {
 		return nil, fmt.Errorf("create expected device count manager: %w", err)
 	}
 
+	nodeInformer, err := createNodeInformer(
+		clientset,
+		resyncPeriod,
+		deviceCounts.Enabled(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create node informer: %w", err)
+	}
+
 	informersSynced := []cache.InformerSynced{
 		podInformer.HasSynced,
+		crdDriverInformer.HasSynced,
 		nodeInformer.HasSynced,
 		gkeInstallerInformer.HasSynced,
 	}
@@ -129,6 +150,7 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	l := &Labeler{
 		clientset:                    clientset,
 		podInformer:                  podInformer,
+		crdDriverInformer:            crdDriverInformer,
 		nodeInformer:                 nodeInformer,
 		nodeLister:                   listersv1.NewNodeLister(nodeInformer.GetIndexer()),
 		gkeInstallerInformer:         gkeInstallerInformer,
@@ -204,6 +226,16 @@ func createPodInformer(clientset kubernetes.Interface, resyncPeriod time.Duratio
 	)
 }
 
+func createCRDDriverInformer(clientset kubernetes.Interface, resyncPeriod time.Duration,
+	driverApp string) (cache.SharedIndexInformer, error) {
+	return createIndexedPodInformer(clientset, resyncPeriod,
+		fmt.Sprintf("%s=%s,app!=%s", driverComponentLabel, driverComponentValue, driverApp),
+		cache.Indexers{
+			NodeDriverIndex: podNodeIndexerByLabel(driverComponentLabel, driverComponentValue),
+		},
+	)
+}
+
 func createGKEInstallerInformer(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	gkeInstallerApp string) (cache.SharedIndexInformer, error) {
 	return createIndexedPodInformer(clientset, resyncPeriod,
@@ -231,11 +263,94 @@ func createIndexedPodInformer(clientset kubernetes.Interface, resyncPeriod time.
 
 	informer := factory.Core().V1().Pods().Informer()
 
+	if err := informer.SetTransform(transformPodForCache); err != nil {
+		return nil, fmt.Errorf("failed to set pod transform: %w", err)
+	}
+
 	if err := informer.GetIndexer().AddIndexers(indexers); err != nil {
 		return nil, fmt.Errorf("failed to add indexers: %w", err)
 	}
 
 	return informer, nil
+}
+
+// transformPodForCache retains only fields used for pod indexing, readiness,
+// delete-event identity, and DCGM image version detection.
+func transformPodForCache(obj any) (any, error) {
+	pod, ok := obj.(*v1.Pod)
+	if !ok {
+		return nil, fmt.Errorf("pod transform: expected Pod object, got %T", obj)
+	}
+
+	containers := make([]v1.Container, len(pod.Spec.Containers))
+	for i, container := range pod.Spec.Containers {
+		containers[i] = v1.Container{Image: container.Image}
+	}
+
+	conditions := make([]v1.PodCondition, len(pod.Status.Conditions))
+	for i, condition := range pod.Status.Conditions {
+		conditions[i] = v1.PodCondition{
+			Type:   condition.Type,
+			Status: condition.Status,
+		}
+	}
+
+	pod.TypeMeta = metav1.TypeMeta{}
+	pod.ObjectMeta = metav1.ObjectMeta{
+		Name:            pod.Name,
+		Namespace:       pod.Namespace,
+		UID:             pod.UID,
+		ResourceVersion: pod.ResourceVersion,
+		Labels:          pod.Labels,
+	}
+	pod.Spec = v1.PodSpec{
+		NodeName:   pod.Spec.NodeName,
+		Containers: containers,
+	}
+	pod.Status = v1.PodStatus{Conditions: conditions}
+
+	return pod, nil
+}
+
+// transformNodeForCache returns a fixed Node projection for the Labeler.
+//
+// Identity, labels, and the DCGM bootstrap annotation are always retained.
+// When expected device counts are enabled, capacity and allocatable resources
+// are also retained for current-count CEL expressions. All other Node fields
+// are discarded before the object enters the informer cache.
+func transformNodeForCache(deviceCountsEnabled bool) cache.TransformFunc {
+	return func(obj any) (any, error) {
+		node, ok := obj.(*v1.Node)
+		if !ok {
+			return nil, fmt.Errorf("node transform: expected Node object, got %T", obj)
+		}
+
+		objectMeta := node.ObjectMeta
+		status := node.Status
+
+		var annotations map[string]string
+		if value, exists := objectMeta.Annotations[DCGMBootstrapCompletedAnnotation]; exists {
+			annotations = map[string]string{DCGMBootstrapCompletedAnnotation: value}
+		}
+
+		node.TypeMeta = metav1.TypeMeta{}
+		node.ObjectMeta = metav1.ObjectMeta{
+			Name:            objectMeta.Name,
+			UID:             objectMeta.UID,
+			ResourceVersion: objectMeta.ResourceVersion,
+			Labels:          objectMeta.Labels,
+			Annotations:     annotations,
+		}
+		node.Spec = v1.NodeSpec{}
+		node.Status = v1.NodeStatus{}
+
+		if deviceCountsEnabled {
+			node.Status.Allocatable = status.Allocatable
+			node.Status.Capacity = status.Capacity
+		}
+
+		return node, nil
+	}
 }
 
 func podNodeIndexerByLabel(labelKey, labelValue string) cache.IndexFunc {
@@ -257,9 +372,21 @@ func podNodeIndexerByLabel(labelKey, labelValue string) cache.IndexFunc {
 	}
 }
 
-func createNodeInformer(clientset kubernetes.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
+// createNodeInformer applies the Labeler's fixed field projection before Nodes
+// enter the shared informer cache.
+func createNodeInformer(
+	clientset kubernetes.Interface,
+	resyncPeriod time.Duration,
+	deviceCountsEnabled bool,
+) (cache.SharedIndexInformer, error) {
 	factory := informers.NewSharedInformerFactory(clientset, resyncPeriod)
-	return factory.Core().V1().Nodes().Informer()
+	informer := factory.Core().V1().Nodes().Informer()
+
+	if err := informer.SetTransform(transformNodeForCache(deviceCountsEnabled)); err != nil {
+		return nil, fmt.Errorf("failed to set node transform: %w", err)
+	}
+
+	return informer, nil
 }
 
 func createResourceSliceInformer(clientset kubernetes.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
@@ -330,6 +457,17 @@ func (l *Labeler) registerPodEventHandlers() error {
 		return fmt.Errorf("failed to add pod event handler: %w", err)
 	}
 
+	_, err = l.crdDriverInformer.AddEventHandler(cache.FilteringResourceEventHandler{
+		FilterFunc: func(obj any) bool {
+			pod, ok := obj.(*v1.Pod)
+			return ok && pod.Spec.NodeName != ""
+		},
+		Handler: eventHandlers,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to add CRD driver pod event handler: %w", err)
+	}
+
 	_, err = l.gkeInstallerInformer.AddEventHandler(cache.FilteringResourceEventHandler{
 		FilterFunc: func(obj any) bool {
 			pod, ok := obj.(*v1.Pod)
@@ -391,6 +529,7 @@ func (l *Labeler) Run(ctx context.Context) error {
 	l.ctx = ctx
 
 	go l.podInformer.Run(ctx.Done())
+	go l.crdDriverInformer.Run(ctx.Done())
 	go l.gkeInstallerInformer.Run(ctx.Done())
 	go l.nodeInformer.Run(ctx.Done())
 
@@ -495,10 +634,12 @@ func hasReadyDriverPod(objs []any, excludePod *v1.Pod) bool {
 	return false
 }
 
-// nodeRequiresReconciliation returns true only when a node update changed an
-// input label the labeler reads from nodes. DCGM and driver labels are driven
-// by pod events, so the node UpdateFunc only needs to react to changes in kata
-// detection labels and the gpu-present label (for assumeDriverInstalled mode).
+// nodeRequiresReconciliation returns true when a node update changed an input
+// that the labeler reads from nodes: labels, allocatable, or capacity. DCGM
+// and driver labels are driven by pod events, so the node UpdateFunc only needs
+// to react to changes in kata detection labels, the gpu-present label (for
+// assumeDriverInstalled mode), and resource changes for status-backed device
+// count classes.
 func (l *Labeler) nodeRequiresReconciliation(oldObj, newObj any) bool {
 	oldNode, ok1 := oldObj.(*v1.Node)
 	newNode, ok2 := newObj.(*v1.Node)
@@ -521,7 +662,8 @@ func (l *Labeler) nodeRequiresReconciliation(oldObj, newObj any) bool {
 		}
 	}
 
-	return l.deviceCounts.NodeLabelsAffectDeviceCounts(oldNode.Labels, newNode.Labels)
+	return l.deviceCounts.NodeResourcesAffectDeviceCounts(oldNode, newNode) ||
+		l.deviceCounts.NodeLabelsAffectDeviceCounts(oldNode.Labels, newNode.Labels)
 }
 
 const gpuPresentLabel = "nvidia.com/gpu.present"
@@ -606,6 +748,15 @@ func (l *Labeler) getDriverLabelForNode(nodeName string, excludePod *v1.Pod) (st
 		return LabelValueTrue, nil
 	}
 
+	objs, err = l.crdDriverInformer.GetIndexer().ByIndex(NodeDriverIndex, nodeName)
+	if err != nil {
+		return "", fmt.Errorf("failed to get CRD driver pods by node index for node %s: %w", nodeName, err)
+	}
+
+	if hasReadyDriverPod(objs, excludePod) {
+		return LabelValueTrue, nil
+	}
+
 	// fallback mechanism for GKE pre-installed driver where nvidia-driver-daemonset is not present
 	objs, err = l.gkeInstallerInformer.GetIndexer().ByIndex(NodeGKEDriverInstallerIndex, nodeName)
 	if err != nil {
@@ -638,27 +789,21 @@ func (l *Labeler) updateNodeLabelsForPod(nodeName, expectedDCGMVersion, expected
 		return nil
 	}
 
-	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		node, err := l.clientset.CoreV1().Nodes().Get(l.ctx, nodeName, metav1.GetOptions{})
-		if err != nil {
-			return err
-		}
+	_, err = l.nodePatcher.Patch(
+		l.ctx,
+		l.clientset.CoreV1().Nodes(),
+		nodeName,
+		l.cachedNodeForPatch(nodeName),
+		func(desired *v1.Node) error {
+			if desired.Labels == nil {
+				desired.Labels = make(map[string]string)
+			}
 
-		if node.Labels == nil {
-			node.Labels = make(map[string]string)
-		}
+			l.updateDriverAndDCGMLabels(desired, expectedDriverLabel, expectedDCGMVersion)
 
-		needsUpdate := l.updateDriverAndDCGMLabels(node, expectedDriverLabel, expectedDCGMVersion)
-
-		if !needsUpdate {
-			slog.Debug("Node already has correct pod-related labels", "node", nodeName)
 			return nil
-		}
-
-		_, err = l.clientset.CoreV1().Nodes().Update(l.ctx, node, metav1.UpdateOptions{})
-
-		return err
-	})
+		},
+	)
 	if err != nil {
 		metrics.NodeUpdateFailures.Inc()
 		return fmt.Errorf("failed to reconcile node labeling for %s: %w", nodeName, err)
@@ -677,16 +822,26 @@ func (l *Labeler) handleNodeEvent(obj any) error {
 }
 
 func (l *Labeler) updateNodeLabels(nodeName string) error {
-	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		return l.updateNodeLabelsAttempt(nodeName)
+	return l.withNodeLock(nodeName, func() error {
+		err := l.updateNodeLabelsAttempt(nodeName)
+		if err != nil {
+			metrics.NodeUpdateFailures.Inc()
+
+			return fmt.Errorf("failed to update labels for node %s: %w", nodeName, err)
+		}
+
+		return nil
 	})
-	if err != nil {
-		metrics.NodeUpdateFailures.Inc()
+}
 
-		return fmt.Errorf("failed to update labels for node %s: %w", nodeName, err)
-	}
+func (l *Labeler) withNodeLock(nodeName string, fn func() error) error {
+	hash := maphash.String(nodeLockHashSeed, nodeName)
+	mutex := &l.nodeLocks[hash%uint64(len(l.nodeLocks))]
 
-	return nil
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	return fn()
 }
 
 func (l *Labeler) updateNodeLabelsAttempt(nodeName string) error {
@@ -695,27 +850,36 @@ func (l *Labeler) updateNodeLabelsAttempt(nodeName string) error {
 		return fmt.Errorf("failed to calculate desired node labels for %s: %w", nodeName, err)
 	}
 
-	node, err := l.clientset.CoreV1().Nodes().Get(l.ctx, nodeName, metav1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("get node %s: %w", nodeName, err)
-	}
+	_, err = l.nodePatcher.Patch(
+		l.ctx,
+		l.clientset.CoreV1().Nodes(),
+		nodeName,
+		l.cachedNodeForPatch(nodeName),
+		func(desired *v1.Node) error {
+			if desired.Labels == nil {
+				desired.Labels = make(map[string]string)
+			}
 
-	if node.Labels == nil {
-		node.Labels = make(map[string]string)
-	}
+			l.reconcileNodeLabelsInPlace(desired, driverLabel, dcgmVersion)
 
-	needsUpdate := l.reconcileNodeLabelsInPlace(node, driverLabel, dcgmVersion)
-	if !needsUpdate {
-		slog.Debug("Node labels are correct", "node", nodeName)
+			return nil
+		},
+	)
+
+	return err
+}
+
+func (l *Labeler) cachedNodeForPatch(nodeName string) *v1.Node {
+	if !l.allInformersSynced() {
 		return nil
 	}
 
-	_, err = l.clientset.CoreV1().Nodes().Update(l.ctx, node, metav1.UpdateOptions{})
+	node, err := l.getNodeFromCache(nodeName)
 	if err != nil {
-		return fmt.Errorf("update node %s: %w", nodeName, err)
+		return nil
 	}
 
-	return nil
+	return node
 }
 
 func (l *Labeler) desiredNodeLabels(nodeName string) (string, string, error) {
@@ -787,7 +951,9 @@ func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVer
 		return needsUpdate
 	}
 
-	needsUpdate = needsUpdate || l.updateDriverAndDCGMLabels(node, driverLabel, dcgmVersion)
+	if l.updateDriverAndDCGMLabels(node, driverLabel, dcgmVersion) {
+		needsUpdate = true
+	}
 
 	if l.deviceCounts.ReconcileNodeLabelsInPlace(
 		l.ctx,
@@ -887,34 +1053,15 @@ func (l *Labeler) resourceSlicesForNode(node *v1.Node) []*resourcev1.ResourceSli
 // handlePodDeleteEvent processes pod delete events by recalculating node labels
 // after excluding the deleted pod from consideration
 func (l *Labeler) handlePodDeleteEvent(obj any) error {
-	startTime := time.Now()
-
-	defer func() {
-		metrics.EventHandlingDuration.Observe(time.Since(startTime).Seconds())
-	}()
-
-	pod, ok := obj.(*v1.Pod)
-	if !ok {
-		return fmt.Errorf("pod delete event: expected Pod object, got %T", obj)
-	}
-
-	// For delete events, we need to calculate what the labels should be
-	// after this pod is removed, so we exclude it from our calculations
-	expectedDCGMVersion, err := l.getDCGMVersionForNode(pod.Spec.NodeName, pod)
-	if err != nil {
-		return fmt.Errorf("failed to get DCGM version for node %s excluding deleted pod: %w", pod.Spec.NodeName, err)
-	}
-
-	expectedDriverLabel, err := l.getDriverLabelForNode(pod.Spec.NodeName, pod)
-	if err != nil {
-		return fmt.Errorf("failed to get driver label for node %s excluding deleted pod: %w", pod.Spec.NodeName, err)
-	}
-
-	return l.updateNodeLabelsForPod(pod.Spec.NodeName, expectedDCGMVersion, expectedDriverLabel)
+	return l.handlePodLabelEvent(obj, true)
 }
 
 // handlePodEvent processes all pod events (add, update) idempotently
 func (l *Labeler) handlePodEvent(obj any) error {
+	return l.handlePodLabelEvent(obj, false)
+}
+
+func (l *Labeler) handlePodLabelEvent(obj any, deleting bool) error {
 	startTime := time.Now()
 
 	defer func() {
@@ -926,17 +1073,26 @@ func (l *Labeler) handlePodEvent(obj any) error {
 		return fmt.Errorf("pod event: expected Pod object, got %T", obj)
 	}
 
-	expectedDCGMVersion, err := l.getDCGMVersionForNode(pod.Spec.NodeName, nil)
-	if err != nil {
-		return fmt.Errorf("failed to get DCGM version for node %s: %w", pod.Spec.NodeName, err)
+	var excludePod *v1.Pod
+	if deleting {
+		excludePod = pod
 	}
 
-	expectedDriverLabel, err := l.getDriverLabelForNode(pod.Spec.NodeName, nil)
-	if err != nil {
-		return fmt.Errorf("failed to get driver label for node %s: %w", pod.Spec.NodeName, err)
-	}
+	return l.withNodeLock(pod.Spec.NodeName, func() error {
+		// Calculate and write under the same lock as node-driven reconciliation so
+		// the startup sweep cannot overwrite this result with an older cache read.
+		expectedDCGMVersion, err := l.getDCGMVersionForNode(pod.Spec.NodeName, excludePod)
+		if err != nil {
+			return fmt.Errorf("failed to get DCGM version for node %s: %w", pod.Spec.NodeName, err)
+		}
 
-	return l.updateNodeLabelsForPod(pod.Spec.NodeName, expectedDCGMVersion, expectedDriverLabel)
+		expectedDriverLabel, err := l.getDriverLabelForNode(pod.Spec.NodeName, excludePod)
+		if err != nil {
+			return fmt.Errorf("failed to get driver label for node %s: %w", pod.Spec.NodeName, err)
+		}
+
+		return l.updateNodeLabelsForPod(pod.Spec.NodeName, expectedDCGMVersion, expectedDriverLabel)
+	})
 }
 
 func (l *Labeler) getNodeFromCache(nodeName string) (*v1.Node, error) {

@@ -45,6 +45,8 @@ spec:
             - --port={{ .Values.webhook.port }}
             - --cert-dir=/certs
             - --config=/etc/preflight/config.yaml
+            - --kube-api-qps={{ if hasKey .Values "qps" }}{{ .Values.qps }}{{ else if hasKey (.Values.global | default dict) "qps" }}{{ .Values.global.qps }}{{ else }}5{{ end }}
+            - --kube-api-burst={{ if hasKey .Values "burst" }}{{ .Values.burst }}{{ else if hasKey (.Values.global | default dict) "burst" }}{{ .Values.global.burst }}{{ else }}10{{ end }}
           ports:
             - name: https
               containerPort: {{ .Values.webhook.port }}

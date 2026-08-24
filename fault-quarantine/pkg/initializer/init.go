@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
+	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/breaker"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
@@ -40,6 +41,7 @@ type InitializationParams struct {
 	DatabaseClientCertMountPath string
 	GPUNodeLabelKey             string
 	GPUNodeLabelValue           string
+	KubernetesClientRateLimits  kubeclient.RateLimitConfig
 }
 
 type Components struct {
@@ -79,7 +81,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 
 	k8sClient, err := informer.NewFaultQuarantineClient(
 		params.KubeconfigPath, params.DryRun, 30*time.Minute,
-		params.GPUNodeLabelKey, params.GPUNodeLabelValue,
+		params.GPUNodeLabelKey, params.GPUNodeLabelValue, params.KubernetesClientRateLimits,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("error while initializing kubernetes client: %w", err)

@@ -61,6 +61,11 @@ var (
 		5*time.Minute,
 		"Periodic reconciliation interval",
 	)
+	cacheSyncTimeout = flag.Duration(
+		"cache-sync-timeout",
+		10*time.Minute,
+		"Maximum time to wait for informer caches to sync on startup",
+	)
 	maxConcurrentReconciles = flag.Int(
 		"max-concurrent-reconciles",
 		1,
@@ -70,6 +75,13 @@ var (
 		"platform-connector-socket",
 		"unix:///var/run/nvsentinel.sock",
 		"Platform Connector gRPC socket",
+	)
+	platformConnectorTokenPath = flag.String(
+		"platform-connector-token-path",
+		"",
+		"Path to a projected ServiceAccount token presented to platform-connector. "+
+			"Required for reporting health events about nodes other than the one this pod runs on; "+
+			"empty disables token authentication.",
 	)
 	processingStrategyFlag = flag.String(
 		"processing-strategy",
@@ -104,8 +116,10 @@ func run() error {
 		MetricsBindAddress:      *metricsBindAddress,
 		HealthProbeBindAddress:  *healthProbeBindAddress,
 		ResyncPeriod:            *resyncPeriod,
+		CacheSyncTimeout:        *cacheSyncTimeout,
 		MaxConcurrentReconciles: *maxConcurrentReconciles,
 		PlatformConnectorSocket: *platformConnectorSocket,
+		PlatformConnectorToken:  *platformConnectorTokenPath,
 		ProcessingStrategy:      *processingStrategyFlag,
 	}
 

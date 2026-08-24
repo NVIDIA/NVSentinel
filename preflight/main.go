@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	preflightv1alpha1 "github.com/nvidia/nvsentinel/preflight/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
@@ -75,6 +76,9 @@ func run() error {
 	flag.IntVar(&port, "port", 8443, "Webhook server port")
 	flag.StringVar(&certDir, "cert-dir", "/certs", "Directory containing TLS certificates")
 	flag.StringVar(&configFile, "config", "/etc/preflight/config.yaml", "Path to config file")
+
+	rateLimits := kubeclient.RegisterRateLimitFlags()
+
 	flag.Parse()
 
 	cfg, err := config.Load(configFile)
@@ -94,7 +98,7 @@ func run() error {
 	defer stop()
 
 	if cfg.GangCoordination.Enabled {
-		if err := setupGangCoordination(ctx, cfg, stop); err != nil {
+		if err := setupGangCoordination(ctx, cfg, stop, *rateLimits); err != nil {
 			return err
 		}
 	}
@@ -108,17 +112,27 @@ func run() error {
 	return runHTTPServer(ctx, mux, certDir, port)
 }
 
-func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context.CancelFunc) error {
+func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context.CancelFunc,
+	rateLimits kubeclient.RateLimitConfig) error {
 	restConfig, err := rest.InClusterConfig()
 	if err != nil {
 		return fmt.Errorf("failed to get in-cluster config: %w", err)
+	}
+
+	if err := rateLimits.Apply(restConfig); err != nil {
+		return fmt.Errorf("invalid Kubernetes client rate limits: %w", err)
 	}
 
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(preflightv1alpha1.AddToScheme(scheme))
 
-	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{Scheme: scheme})
+	activeNamespaces := controller.NewActiveNamespaces()
+
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
+		Scheme: scheme,
+		Cache:  controller.ManagerCacheOptions(activeNamespaces),
+	})
 	if err != nil {
 		return fmt.Errorf("failed to create controller manager: %w", err)
 	}
@@ -157,6 +171,11 @@ func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context
 
 	if err := pfcReconciler.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("failed to setup PreflightConfig controller: %w", err)
+	}
+
+	nsReconciler := controller.NewNamespaceReconciler(mgr.GetClient(), activeNamespaces)
+	if err := nsReconciler.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("failed to setup namespace controller: %w", err)
 	}
 
 	onGangRegister = gangController.RegisterPod

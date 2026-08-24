@@ -13,7 +13,7 @@ MongoDB connection failure can occur due to the following reasons:
    - Expired certificates
 
 ### 2. **Initialization Job Not Completed**
-   - `create-mongodb-database` job failed or still running
+   - `create-mongodb-database-<seconds>-<scriptHash>` job failed or still running (`-l app.kubernetes.io/name=create-mongodb-database`)
    - Job creates required database, collections, and indexes
    - Without successful completion, MongoDB pod can't initialize properly
 
@@ -54,8 +54,8 @@ kubectl -n nvsentinel get pvc | grep mongodb
 # STATUS should be "Bound" (not "Pending" or "Lost")
 
 # 5. Check if initialization job completed
-kubectl -n nvsentinel get jobs | grep mongodb
-kubectl -n nvsentinel get jobs create-mongodb-database -o yaml | grep -A 5 "status:"
+kubectl -n nvsentinel get jobs -l app.kubernetes.io/name=create-mongodb-database
+kubectl -n nvsentinel get jobs -l app.kubernetes.io/name=create-mongodb-database -o yaml | grep -A 5 "status:"
 
 # 6. Check certificates exist
 kubectl -n nvsentinel get secrets | grep mongo
@@ -160,19 +160,19 @@ kubectl -n nvsentinel delete pvc -l app.kubernetes.io/name=mongodb
 ### Issue 2: Initialization Job Failed
 
 ```bash
-# Check job status
-kubectl -n nvsentinel get job create-mongodb-database
+# Check job status (name is create-mongodb-database-<seconds>-<scriptHash>)
+kubectl -n nvsentinel get job -l app.kubernetes.io/name=create-mongodb-database
 
 # Check job logs
-kubectl -n nvsentinel logs job/create-mongodb-database
+kubectl -n nvsentinel logs -l app.kubernetes.io/name=create-mongodb-database
 
 # Check if job completed successfully
-kubectl -n nvsentinel get job create-mongodb-database -o jsonpath='{.status.succeeded}'
+kubectl -n nvsentinel get job -l app.kubernetes.io/name=create-mongodb-database -o jsonpath='{.items[-1:].status.succeeded}'
 # Should return "1" if successful
 
 # If job failed, delete the job and mongodb stateful set
-kubectl delete  -n nvsentinel statefulset.apps/mongodb
-kubectl delete  -n nvsentinel job.batch/create-mongodb-database
+kubectl delete -n nvsentinel statefulset.apps/mongodb
+kubectl delete -n nvsentinel job -l app.kubernetes.io/name=create-mongodb-database
 
 # Re-sync the nvsentinel application. ArgoCD will recreate the job
 ```

@@ -17,6 +17,7 @@ package informer
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"testing"
@@ -26,8 +27,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
@@ -47,6 +50,7 @@ const (
 var (
 	testClient *kubernetes.Clientset
 	testEnv    *envtest.Environment
+	testConfig *rest.Config
 )
 
 func TestMain(m *testing.M) {
@@ -54,12 +58,12 @@ func TestMain(m *testing.M) {
 
 	testEnv = &envtest.Environment{}
 
-	testRestConfig, err := testEnv.Start()
+	testConfig, err = testEnv.Start()
 	if err != nil {
 		log.Fatalf("Failed to start test environment: %v", err)
 	}
 
-	testClient, err = kubernetes.NewForConfig(testRestConfig)
+	testClient, err = kubernetes.NewForConfig(testConfig)
 	if err != nil {
 		log.Fatalf("Failed to create kubernetes client: %v", err)
 	}
@@ -137,6 +141,65 @@ func createTestNode(ctx context.Context, t *testing.T, name string, annotations 
 	if err != nil {
 		t.Fatalf("Failed to create test node %s: %v", name, err)
 	}
+}
+
+// measureCordonThroughput creates nodes with an unrestricted setup client, then
+// measures only requests made by the rate-limited FaultQuarantineClient.
+func measureCordonThroughput(t *testing.T, prefix string, nodeCount int, qps float64, burst int) time.Duration {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+
+	nodeNames := make([]string, nodeCount)
+	for idx := range nodeCount {
+		nodeNames[idx] = testutils.GenerateTestNodeName(fmt.Sprintf("%s-%d", prefix, idx))
+		createTestNode(ctx, t, nodeNames[idx], nil, nil, nil, false)
+	}
+	t.Cleanup(func() {
+		for _, nodeName := range nodeNames {
+			_ = testClient.CoreV1().Nodes().Delete(context.Background(), nodeName, metav1.DeleteOptions{})
+		}
+	})
+
+	client, err := newFaultQuarantineClient(
+		rest.CopyConfig(testConfig),
+		false,
+		0,
+		GPUNodeLabel,
+		GPUNodeLabelValue,
+		kubeclient.RateLimitConfig{QPS: qps, Burst: burst},
+	)
+	require.NoError(t, err)
+
+	start := time.Now()
+	for _, nodeName := range nodeNames {
+		_, err := client.QuarantineNodeAndSetAnnotations(ctx, nodeName, nil, true, nil, nil)
+		require.NoError(t, err)
+	}
+
+	return time.Since(start)
+}
+
+// TestQuarantineNodeAndSetAnnotations_QPSControlledCordonThroughput_HigherQPSIncreasesThroughput
+// exercises FQ's real GET+UPDATE cordon path against envtest.
+func TestQuarantineNodeAndSetAnnotations_QPSControlledCordonThroughput_HigherQPSIncreasesThroughput(t *testing.T) {
+	const (
+		nodeCount = 10
+		burst     = 1
+	)
+
+	lowDuration := measureCordonThroughput(t, "low-qps", nodeCount, 4, burst)
+	highDuration := measureCordonThroughput(t, "high-qps", nodeCount, 40, burst)
+
+	lowRate := float64(nodeCount) / lowDuration.Seconds()
+	highRate := float64(nodeCount) / highDuration.Seconds()
+	throughputRatio := highRate / lowRate
+	t.Logf("cordon throughput: low QPS=%.2f nodes/s, high QPS=%.2f nodes/s, ratio=%.2fx",
+		lowRate, highRate, throughputRatio)
+
+	assert.GreaterOrEqual(t, throughputRatio, 6.0)
+	assert.LessOrEqual(t, throughputRatio, 14.0)
 }
 
 func TestQuarantineNodeAndSetAnnotations(t *testing.T) {

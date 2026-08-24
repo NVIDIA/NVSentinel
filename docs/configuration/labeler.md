@@ -54,6 +54,27 @@ labeler:
   logLevel: info  # Options: debug, info, warn, error
 ```
 
+### Kubernetes API Rate Limits
+
+The labeler inherits the Kubernetes client limits from `global.qps` and `global.burst` (defaults: `5` and `10`). Set component values only when the labeler needs different limits:
+
+```yaml
+labeler:
+  qps: 40
+  burst: 80
+```
+
+Positive `qps` values enable client-side throttling, `0` uses the client-go default, and a negative value disables client-side throttling. `burst` must be non-negative; `0` uses the client-go default.
+
+## Pre-Installed Drivers
+
+Assumes NVIDIA drivers are installed directly on the host rather than via GPU Operator driver containers. When enabled, the labeler sets `nvsentinel.dgxc.nvidia.com/driver.installed=true` on all GPU nodes it manages (`nvidia.com/gpu.present=true`; nodes opted out with `nvsentinel.dgxc.nvidia.com/managed=false` — for example during external remediation — are excluded), skipping driver pod detection.
+
+```yaml
+labeler:
+  assumeDriverInstalled: false
+```
+
 ## DCGM Bootstrap Gating
 
 Controls whether the DCGM pod must be ready before the DCGM version label is set for the first time on a node.
@@ -121,9 +142,29 @@ labeler:
 
 The CEL context exposes:
 
-- `node`: the Kubernetes Node object being reconciled.
+- `node`: the cached projection of the Kubernetes Node being reconciled.
 - `resourceSlices`: ResourceSlice objects associated with the node.
 - `sum(list<int>)`: helper that returns the sum of a list of integers.
+
+#### Node fields available to expressions
+
+To limit informer memory use, the Labeler does not cache complete Node objects.
+The following fields are always retained:
+
+- `metadata.name`, `metadata.uid`, and `metadata.resourceVersion`
+- all `metadata.labels`
+- the `nvsentinel.dgxc.nvidia.com/dcgm-bootstrap-completed` annotation, when present
+
+When expected device counts have at least one enabled class, the Labeler also
+retains `status.allocatable` and `status.capacity`. Device-count expressions
+that read Node data must use `node.metadata.labels`,
+`node.status.allocatable`, or `node.status.capacity`.
+
+All other Node fields are discarded before caching, including `spec`, other
+annotations, `status.conditions`, addresses, images, and node information.
+When expected device counts are disabled, all of `status` is discarded.
+Expressions that reference discarded fields are unsupported and receive only
+the field's empty or absent value.
 
 For classes without a matching override, the expected value is learned as the maximum current or existing expected count among nodes with the same configured grouping-label values. Learned expected counts can rise automatically, but do not fall automatically when a node reports fewer devices.
 

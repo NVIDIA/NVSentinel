@@ -229,6 +229,17 @@ k8s_yaml(yaml)
 
 # Check if using Percona operator (only relevant when using MongoDB)
 use_percona = effective_values.get('mongodb-store', {}).get('usePerconaOperator', False) if not use_postgresql else False
+# Job name is create-mongodb-database-<ttl>-<scriptHash>; read it from the render.
+mongodb_init_job = None
+for obj in decode_yaml_stream(yaml):
+    if not obj:
+        continue
+    labels = (obj.get('metadata') or {}).get('labels') or {}
+    if obj.get('kind') == 'Job' and labels.get('app.kubernetes.io/name') == 'create-mongodb-database':
+        mongodb_init_job = obj['metadata']['name']
+        break
+if not mongodb_init_job and not use_postgresql:
+    fail('could not find create-mongodb-database Job in the rendered chart')
 if use_percona:
     print("Using Percona MongoDB Operator for MongoDB installation.")
 else:
@@ -238,7 +249,7 @@ else:
 if use_postgresql:
     datastore_resource = 'nvsentinel-postgresql'
 else:
-    datastore_resource = 'mongodb' if not use_percona else 'create-mongodb-database'
+    datastore_resource = 'mongodb' if not use_percona else mongodb_init_job
 
 # Cert-manager resources vary based on datastore and TLS configuration.
 # Pulled out of auto-grouped workload resources so they get applied after
@@ -314,7 +325,7 @@ if use_percona:
 # MongoDB database creation (only for MongoDB, not PostgreSQL)
 if not use_postgresql:
     k8s_resource(
-        'create-mongodb-database',
+        mongodb_init_job,
         resource_deps=['wait-for-cert-manager-crds', 'nvsentinel-psmdb-operator'] if use_percona else ['wait-for-cert-manager-crds'],
     )
 

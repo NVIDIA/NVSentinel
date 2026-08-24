@@ -58,6 +58,7 @@ def main() -> None:
         socket_path=cfg.connector_socket,
         node_name=cfg.node_name,
         processing_strategy=cfg.processing_strategy,
+        token_path=cfg.token_path,
     )
 
     diag = DCGMDiagnostic(

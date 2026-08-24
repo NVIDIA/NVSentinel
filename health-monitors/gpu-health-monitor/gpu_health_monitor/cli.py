@@ -38,6 +38,7 @@ def _init_event_processor(
     processing_strategy: platformconnector_pb2.ProcessingStrategy,
     store_only_checks: frozenset[str],
     connectivity_failure_escalation_threshold: int,
+    platform_connector_token_path: str,
 ):
     platform_connector_config = config["eventprocessors.platformconnector"]
     match event_processor_name:
@@ -52,6 +53,7 @@ def _init_event_processor(
                 processing_strategy=processing_strategy,
                 store_only_checks=store_only_checks,
                 connectivity_failure_escalation_threshold=connectivity_failure_escalation_threshold,
+                token_path=platform_connector_token_path or None,
             )
         case _:
             log.fatal(f"Unknown event processor {event_processor_name}")
@@ -90,6 +92,18 @@ def _init_event_processor(
     required=False,
 )
 @click.option(
+    "--platform-connector-token-path",
+    type=click.Path(),
+    default="",
+    envvar="PLATFORM_CONNECTOR_TOKEN_PATH",
+    help=(
+        "Path to a projected ServiceAccount token presented as a bearer credential "
+        "when publishing health events to platform-connector. Defaults to the "
+        "PLATFORM_CONNECTOR_TOKEN_PATH environment variable; empty disables it."
+    ),
+    required=False,
+)
+@click.option(
     "--suppress-nvlink-down-unbridged-pcie",
     type=bool,
     default=False,
@@ -115,6 +129,7 @@ def cli(
     dcgm_k8s_service_enabled,
     metadata_path,
     processing_strategy,
+    platform_connector_token_path,
     suppress_nvlink_down_unbridged_pcie,
 ):
     exit = Event()
@@ -157,6 +172,10 @@ def cli(
         sys.exit(1)
 
     log.info(f"Event handling strategy configured to: {processing_strategy_value}")
+    log.info(
+        "Platform-connector token auth: %s",
+        f"enabled (path={platform_connector_token_path})" if platform_connector_token_path else "disabled",
+    )
 
     metrics.set_flag("store_only_mode", processing_strategy == "STORE_ONLY")
     metrics.set_flag("dcgm_k8s_service_enabled", dcgm_k8s_service_enabled)
@@ -229,6 +248,7 @@ def cli(
                 processing_strategy_value,
                 store_only_checks,
                 connectivity_failure_escalation_threshold,
+                platform_connector_token_path,
             )
         )
 

@@ -26,6 +26,11 @@ WORKDIR /go/src
 
 # Copy go.mod and go.sum files for all dependencies first
 COPY data-models/go.mod data-models/go.sum ./data-models/
+# commons is required for the shared platform-connector token client. It in
+# turn replaces data-models and store-client with local paths, so both of
+# those go.mod files must exist for the module graph to resolve.
+COPY commons/go.mod commons/go.sum ./commons/
+COPY store-client/go.mod store-client/go.sum ./store-client/
 COPY tilt/simple-health-client/go.mod tilt/simple-health-client/go.sum ./tilt/simple-health-client/
 
 WORKDIR /go/src/tilt/simple-health-client
@@ -36,6 +41,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Copy the source code after go mod download
 COPY tilt/simple-health-client/ .
 COPY data-models/ ../../data-models/
+COPY commons/ ../../commons/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -o simple-health-client main.go

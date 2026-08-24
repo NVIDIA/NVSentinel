@@ -93,7 +93,7 @@ type FaultRemediationReconciler struct {
 	Config            ReconcilerConfig
 	annotationManager annotation.NodeAnnotationManagerInterface
 	dryRun            bool
-	coldStartCh       chan event.TypedGenericEvent[*datastore.EventWithToken]
+	coldStartCh       chan event.TypedGenericEvent[reconcileRequest]
 	eventSessions     sync.Map
 }
 
@@ -170,7 +170,8 @@ func (r *FaultRemediationReconciler) Reconcile(
 	nodeQuarantined := healthEventWithStatus.HealthEventStatus.NodeQuarantined
 
 	if nodeQuarantined == string(model.UnQuarantined) || nodeQuarantined == string(model.Cancelled) {
-		return r.handleCancellationEvent(ctx, nodeName, model.Status(nodeQuarantined), r.Watcher, *event, r.healthEventStore)
+		return r.handleCancellationEvent(
+			ctx, nodeName, model.Status(nodeQuarantined), r.Watcher, *event, r.healthEventStore)
 	}
 
 	return r.handleRemediationEvent(ctx, &healthEventWithStatus, *event, r.Watcher, r.healthEventStore)
@@ -1811,23 +1812,23 @@ func (r *FaultRemediationReconciler) SetupWithManager(ctx context.Context, mgr c
 
 	typedCh, watcherDone := AdaptEvents(ctx, r.Watcher.Events())
 
-	r.coldStartCh = make(chan event.TypedGenericEvent[*datastore.EventWithToken], coldStartBatchSize)
+	r.coldStartCh = make(chan event.TypedGenericEvent[reconcileRequest], coldStartBatchSize)
 
-	enqueueHandler := handler.TypedFuncs[*datastore.EventWithToken, *datastore.EventWithToken]{
+	enqueueHandler := handler.TypedFuncs[reconcileRequest, reconcileRequest]{
 		GenericFunc: func(
 			ctx context.Context,
-			e event.TypedGenericEvent[*datastore.EventWithToken],
-			q workqueue.TypedRateLimitingInterface[*datastore.EventWithToken],
+			e event.TypedGenericEvent[reconcileRequest],
+			q workqueue.TypedRateLimitingInterface[reconcileRequest],
 		) {
 			q.Add(e.Object)
 		},
 	}
 
-	err := builder.TypedControllerManagedBy[*datastore.EventWithToken](mgr).
+	err := builder.TypedControllerManagedBy[reconcileRequest](mgr).
 		Named("fault-remediation-controller").
 		WatchesRawSource(source.TypedChannel(typedCh, enqueueHandler)).
 		WatchesRawSource(source.TypedChannel(r.coldStartCh, enqueueHandler)).
-		Complete(r)
+		Complete(&controllerReconciler{reconciler: r})
 
 	return watcherDone, err
 }
@@ -1865,17 +1866,23 @@ func (r *FaultRemediationReconciler) HandleColdStart(ctx context.Context) {
 
 	enqueued := 0
 
-	err := r.healthEventStore.FindHealthEventsByQueryBatched(ctx, q, coldStartBatchSize,
-		func(batch []datastore.HealthEventWithStatus) error {
-			for _, he := range batch {
-				if len(he.RawEvent) == 0 {
+	err := r.healthEventStore.FindHealthEventsByQueryBatched(
+		ctx,
+		q,
+		coldStartBatchSize,
+		func(healthEvents []datastore.HealthEventWithStatus) error {
+			for _, healthEvent := range healthEvents {
+				documentID, err := utils.ExtractDocumentID(healthEvent.RawEvent)
+				if err != nil {
+					slog.WarnContext(ctx, "Skipping cold-start health event without a document ID", "error", err)
+
 					continue
 				}
 
-				evt := datastore.EventWithToken{Event: he.RawEvent}
+				request := reconcileRequest{documentID: documentID}
 
 				select {
-				case r.coldStartCh <- event.TypedGenericEvent[*datastore.EventWithToken]{Object: &evt}:
+				case r.coldStartCh <- event.TypedGenericEvent[reconcileRequest]{Object: request}:
 					enqueued++
 				case <-ctx.Done():
 					return ctx.Err()
@@ -1883,7 +1890,8 @@ func (r *FaultRemediationReconciler) HandleColdStart(ctx context.Context) {
 			}
 
 			return nil
-		})
+		},
+	)
 	if err != nil {
 		slog.Error("Cold start query failed", "error", err)
 		return
@@ -1900,8 +1908,8 @@ func (r *FaultRemediationReconciler) HandleColdStart(ctx context.Context) {
 func AdaptEvents(
 	ctx context.Context,
 	in <-chan datastore.EventWithToken,
-) (<-chan event.TypedGenericEvent[*datastore.EventWithToken], <-chan struct{}) {
-	out := make(chan event.TypedGenericEvent[*datastore.EventWithToken])
+) (<-chan event.TypedGenericEvent[reconcileRequest], <-chan struct{}) {
+	out := make(chan event.TypedGenericEvent[reconcileRequest])
 	done := make(chan struct{})
 
 	go func() {
@@ -1918,7 +1926,9 @@ func AdaptEvents(
 				}
 
 				eventOut := e
-				out <- event.TypedGenericEvent[*datastore.EventWithToken]{Object: &eventOut}
+				request := reconcileRequest{event: &eventOut}
+
+				out <- event.TypedGenericEvent[reconcileRequest]{Object: request}
 			}
 		}
 	}()

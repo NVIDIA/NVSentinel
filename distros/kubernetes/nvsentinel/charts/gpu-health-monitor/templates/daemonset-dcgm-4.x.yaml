@@ -100,12 +100,21 @@ spec:
             - name: gpu-metadata
               mountPath: /var/lib/nvsentinel
               readOnly: true
+            {{- if include "gpu-health-monitor.pcAuth.enabled" . }}
+            {{- include "gpu-health-monitor.pcAuth.volumeMount" . | nindent 12 }}
+            {{- end }}
           env:
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: spec.nodeName
+            {{- if include "gpu-health-monitor.pcAuth.enabled" . }}
+            {{- /* Projected token presented on health-event publishes. This monitor
+                 only names its own node, so it needs no cross-node allowlisting. */}}
+            - name: PLATFORM_CONNECTOR_TOKEN_PATH
+              value: {{ include "gpu-health-monitor.pcAuth.tokenPath" . | quote }}
+            {{- end }}
       volumes:
         - name: config-vol
           configMap:
@@ -119,6 +128,9 @@ spec:
           hostPath:
             path: /var/lib/nvsentinel
             type: DirectoryOrCreate
+        {{- if include "gpu-health-monitor.pcAuth.enabled" . }}
+        {{- include "gpu-health-monitor.pcAuth.volume" . | nindent 8 }}
+        {{- end }}
         {{- if .Values.additionalHostVolumes }}
         {{ toYaml .Values.additionalHostVolumes | nindent 8 }}
         {{- end }}

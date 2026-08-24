@@ -52,7 +52,7 @@ NVSentinel has been validated on the following NVIDIA GPU architectures:
 |---|---|
 | Volta | V100 |
 | Ampere | A100 |
-| Hopper | H100 |
+| Hopper | H100, H200 |
 | Ada Lovelace | L4 Tensor Core GPU, L40, L40S |
 | Blackwell | B200, GB200, GB300, RTX Pro 6000 |
 
@@ -64,7 +64,7 @@ NVSentinel is designed to work with any GPU supported by the NVIDIA GPU Operator
 
 ```bash
 helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
-  --version v1.18.0 \
+  --version v1.20.0 \
   --namespace nvsentinel \
   --create-namespace
 ```

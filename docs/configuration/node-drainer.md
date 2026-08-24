@@ -40,6 +40,18 @@ node-drainer:
   logLevel: info  # Options: debug, info, warn, error
 ```
 
+### Kubernetes API Rate Limits
+
+Node Drainer inherits the Kubernetes client limits from `global.qps` and `global.burst` (defaults: `5` and `10`). Set component values only when Node Drainer needs different limits:
+
+```yaml
+node-drainer:
+  qps: 40
+  burst: 80
+```
+
+Positive `qps` values enable client-side throttling, `0` uses the client-go default, and a negative value disables client-side throttling. `burst` must be non-negative; `0` uses the client-go default.
+
 > Note: This module depends on the results from fault-quarantine. It also depends on the datastore being enabled. Therefore, ensure the datastore and the other modules are also enabled.
 
 ### Change Stream Resume Token

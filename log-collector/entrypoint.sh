@@ -120,10 +120,10 @@ else
   echo "[INFO] GCP COS nvidia-bug-report not found, using standard GPU Operator approach"
   
   # Locate the driver daemonset pod on the node
-  DRIVER_POD_NAME="$(kubectl -n "${GPU_OPERATOR_NAMESPACE}" get pods -l app=nvidia-driver-daemonset --field-selector spec.nodeName="${NODE_NAME}" -o name | head -n1 | cut -d/ -f2 || true)"
+  DRIVER_POD_NAME="$(kubectl -n "${GPU_OPERATOR_NAMESPACE}" get pods -l app.kubernetes.io/component=nvidia-driver --field-selector spec.nodeName="${NODE_NAME}" -o name | head -n1 | cut -d/ -f2 || true)"
 
   if [ -z "${DRIVER_POD_NAME}" ]; then
-    echo "[ERROR] nvidia-driver-daemonset pod not found on node ${NODE_NAME} in namespace ${GPU_OPERATOR_NAMESPACE}" >&2
+    echo "[ERROR] NVIDIA driver pod not found on node ${NODE_NAME} in namespace ${GPU_OPERATOR_NAMESPACE}" >&2
     echo "[ERROR] This might be a GCP cluster with preinstalled drivers but nvidia-bug-report not accessible" >&2
     echo "[ERROR] Failed to collect nvidia-bug-report using available methods" >&2
     exit 1

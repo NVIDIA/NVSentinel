@@ -38,6 +38,30 @@
 # These can be overridden per-module in their individual sections.
 ################################################################################
 global:
+  # ---------------------------------------------------------------------------
+  # Platform-connector authentication.
+  #
+  # Publishers present a projected ServiceAccount token; platform-connector
+  # verifies it with TokenReview and binds each event to the node the caller
+  # actually runs on. See docs/platform-connectors.md.
+  # ---------------------------------------------------------------------------
+  platformConnectorAuth:
+    # Must be a real boolean. A quoted "false" is refused rather than read as
+    # true. Disabling lets any caller that reaches the socket name any node.
+    enabled: true
+    # Audience the tokens are minted for and TokenReview must echo back.
+    audience: "platform-connector.nvsentinel.nvidia.com"
+    # Token lifetime. Kubernetes requires 600 <= x <= 2^32, and the chart
+    # enforces that range and whole-number values at render time.
+    tokenExpirationSeconds: 3600
+    # Directory each publisher mounts the token at.
+    tokenMountPath: "/var/run/secrets/nvsentinel/platform-connector"
+    # ADDITIONAL callers permitted to report about nodes other than their own.
+    # The bundled cluster-scoped monitors are derived from the release namespace
+    # for whichever are enabled, so they do not belong here — list only
+    # publishers this chart does not ship. Absent means none; null is refused.
+    crossNodeServiceAccounts: []
+
   # Docker image configuration
   image:
     # Image tag to use for all NVSentinel containers
@@ -49,6 +73,14 @@ global:
   # All components expose health and metrics endpoints on this port unless using ctrl-runtime mgmt
   # Prometheus should scrape these endpoints to monitor NVSentinel
   metricsPort: 2112
+
+  # Default Kubernetes API client rate limits for core controllers
+  # Individual fault-quarantine, node-drainer, labeler, and preflight values
+  # override these defaults when configured.
+  # Positive qps values throttle requests; a negative value disables
+  # client-side throttling. Zero qps or burst uses the client-go default.
+  qps: 5
+  burst: 10
 
   # Health Check port for healthz and readyz scraping
   # This port is only used when using ctrl-runtime
@@ -404,6 +436,11 @@ fault-quarantine:
   # error: Error conditions only
   logLevel: info
 
+  # Optional Kubernetes API client rate-limit overrides.
+  # Omit these values to inherit global.qps and global.burst.
+  # qps: 5
+  # burst: 10
+
   # Container image configuration
   image:
     repository: ghcr.io/nvidia/nvsentinel/fault-quarantine
@@ -581,6 +618,11 @@ node-drainer:
 
   # Log level for debugging and monitoring
   logLevel: info
+
+  # Optional Kubernetes API client rate-limit overrides.
+  # Omit these values to inherit global.qps and global.burst.
+  # qps: 5
+  # burst: 10
 
   # Container image configuration
   image:
@@ -853,6 +895,17 @@ fault-remediation:
     enableAwsSosCollection: false
 
 ################################################################################
+# KUBERNETES-OBJECT-MONITOR CONFIGURATION
+#
+# Watches configured Kubernetes resources and generates health events when
+# policy predicates identify unhealthy objects.
+################################################################################
+kubernetes-object-monitor:
+  # Maximum time to wait for informer caches to synchronize on startup.
+  # Large clusters may require a longer timeout while caches are populated.
+  cacheSyncTimeout: 10m
+
+################################################################################
 # GPU-HEALTH-MONITOR CONFIGURATION
 #
 # Monitors GPU hardware health using NVIDIA DCGM (Data Center GPU Manager).
@@ -989,6 +1042,11 @@ labeler:
 
   # Log level for debugging
   logLevel: info
+
+  # Optional Kubernetes API client rate-limit overrides.
+  # Omit these values to inherit global.qps and global.burst.
+  # qps: 5
+  # burst: 10
 
   # Container image configuration
   image:
@@ -1453,12 +1511,21 @@ janitor:
 # Required by: fault-quarantine, node-drainer, fault-remediation
 ################################################################################
 mongodb-store:
+  # TTL expireAfterSeconds. Default 2592000 (30d); production often 604800 (7d).
+  # In-cluster and external Mongo. Job name includes this value so helm/argo rerun collMod.
+  collectionExpirySeconds: 2592000
+
   # MongoDB replica configuration
   mongodb:
+    # Bitnami PVC size (default 8Gi). Percona: psmdb-db.replsets.rs0.volumeSpec.pvc.resources.requests.storage
+    # Existing Bound PVCs do not grow on upgrade.
+    persistence:
+      size: "8Gi"
+
     # Number of MongoDB replicas
     # Recommend 1 for development, 3 for production
     replicaCount: 1
-    
+
     # Node selector for MongoDB pods
     # Example - run on control plane:
     # nodeSelector:
@@ -1676,6 +1743,11 @@ event-exporter:
 ################################################################################
 preflight:
   replicaCount: 1
+
+  # Optional Kubernetes API client rate-limit overrides.
+  # Omit these values to inherit global.qps and global.burst.
+  # qps: 5
+  # burst: 10
 
   # Container image configuration for the webhook server
   image:
@@ -2005,3 +2077,9 @@ preflight:
 ################################################################################
 # END OF CONFIGURATION
 ################################################################################
+
+janitor-provider:
+  auth:
+    audience: "nvsentinel-csp-provider"
+    allowedUsernames: []
+  janitorServiceAccountName: "janitor"

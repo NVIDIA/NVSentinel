@@ -101,6 +101,11 @@ spec:
             - "/var/run/nic_health_monitor/state.json"
             - "--boot-id-path"
             - "/nvsentinel/proc/sys/kernel/random/boot_id"
+            {{- if include "nic-health-monitor.pcAuth.enabled" . }}
+            {{- /* Node-local monitor: it reports only its own node, and the token
+                 lets platform-connector confirm that placement. */}}
+            - "--platform-connector-token-path={{ include "nic-health-monitor.pcAuth.tokenPath" . }}"
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           ports:
@@ -147,6 +152,9 @@ spec:
             - name: proc-vol
               mountPath: /nvsentinel/proc
               readOnly: true
+            {{- if include "nic-health-monitor.pcAuth.enabled" . }}
+            {{- include "nic-health-monitor.pcAuth.volumeMount" . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: var-run-vol
           hostPath:
@@ -171,6 +179,9 @@ spec:
           hostPath:
             path: /proc
             type: Directory
+        {{- if include "nic-health-monitor.pcAuth.enabled" . }}
+        {{- include "nic-health-monitor.pcAuth.volume" . | nindent 8 }}
+        {{- end }}
       nodeSelector:
         nvsentinel.dgxc.nvidia.com/driver.installed: "true"
         {{- with (.Values.global.nodeSelector | default .Values.nodeSelector) }}

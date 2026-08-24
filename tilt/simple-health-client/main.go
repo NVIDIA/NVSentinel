@@ -28,15 +28,27 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
+// tokenInterceptor attaches a projected ServiceAccount token as a Bearer
+// credential on every call. This client posts events naming arbitrary nodes,
+// so platform-connector's node-binding interceptor requires it to authenticate
+// as an allowlisted cross-node identity. Kept inline rather than importing
+// commons/pkg/grpcclient to keep this dev-only image's dependency set small.
 func main() {
 	socketPath := "/var/run/nvsentinel.sock"
 	port := "8080"
+	tokenPath := os.Getenv("PLATFORM_CONNECTOR_TOKEN_PATH")
+
+	// The shared client helper, not a local copy: it also refuses an empty
+	// token file rather than sending a bare "Bearer ".
+	dialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	dialOpts = append(dialOpts, grpcclient.DialOptions(tokenPath)...)
 
 	log.Printf("Starting health event API server on port %s", port)
-	log.Printf("Using socket path: %s", socketPath)
+	log.Printf("Using socket path: %s (token auth: %v)", socketPath, tokenPath != "")
 
 	http.HandleFunc("/health-event", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -55,10 +67,7 @@ func main() {
 
 		healthEvent.GeneratedTimestamp = timestamppb.Now()
 
-		conn, err := grpc.NewClient(
-			fmt.Sprintf("unix://%s", socketPath),
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-		)
+		conn, err := grpc.NewClient(fmt.Sprintf("unix://%s", socketPath), dialOpts...)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to connect to socket: %v", err), http.StatusInternalServerError)
 			return

@@ -27,6 +27,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
+	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/labeler/pkg/devicecounts"
@@ -65,19 +66,17 @@ func main() {
 }
 
 func run() error {
-	kubeconfig, metricsPort, dcgmAppLabel, driverAppLabel,
-		gkeInstallerAppLabel, kataLabel, expectedDeviceCountsConfigFile,
-		assumeDCGMAvailable, assumeDriverInstalled, requireDCGMReadyForBootstrap := parseFlags()
+	options := parseFlags()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	portInt, err := strconv.Atoi(*metricsPort)
+	portInt, err := strconv.Atoi(options.metricsPort)
 	if err != nil {
 		return fmt.Errorf("invalid metrics port: %w", err)
 	}
 
-	expectedDeviceCounts, err := loadExpectedDeviceCountsConfig(*expectedDeviceCountsConfigFile)
+	expectedDeviceCounts, err := loadExpectedDeviceCountsConfig(options.expectedDeviceCountsConfigFile)
 	if err != nil {
 		return fmt.Errorf("load expected device counts config: %w", err)
 	}
@@ -88,17 +87,7 @@ func run() error {
 		server.WithSimpleHealth(),
 	)
 
-	params := initializer.InitializationParams{
-		KubeconfigPath:               *kubeconfig,
-		DCGMAppLabel:                 *dcgmAppLabel,
-		DriverAppLabel:               *driverAppLabel,
-		GKEInstallerAppLabel:         *gkeInstallerAppLabel,
-		KataLabel:                    *kataLabel,
-		AssumeDCGMAvailable:          *assumeDCGMAvailable,
-		AssumeDriverInstalled:        *assumeDriverInstalled,
-		RequireDCGMReadyForBootstrap: *requireDCGMReadyForBootstrap,
-		ExpectedDeviceCounts:         expectedDeviceCounts,
-	}
+	params := options.initializationParams(expectedDeviceCounts)
 
 	components, err := initializer.InitializeAll(params)
 	if err != nil {
@@ -124,34 +113,72 @@ func run() error {
 	return g.Wait()
 }
 
-func parseFlags() (
-	kubeconfig, metricsPort, dcgmAppLabel, driverAppLabel,
-	gkeInstallerAppLabel, kataLabel, expectedDeviceCountsConfigFile *string,
-	assumeDCGMAvailable, assumeDriverInstalled, requireDCGMReadyForBootstrap *bool,
-) {
-	kubeconfig = flag.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
-	metricsPort = flag.String("metrics-port", "2112", "Port to expose Prometheus metrics on")
-	dcgmAppLabel = flag.String("dcgm-app-label", "nvidia-dcgm", "App label value for DCGM pods")
-	driverAppLabel = flag.String("driver-app-label", "nvidia-driver-daemonset", "App label value for driver pods")
-	gkeInstallerAppLabel = flag.String("gke-installer-app-label",
+type cliOptions struct {
+	kubeconfig                     string
+	metricsPort                    string
+	dcgmAppLabel                   string
+	driverAppLabel                 string
+	gkeInstallerAppLabel           string
+	kataLabel                      string
+	expectedDeviceCountsConfigFile string
+	assumeDCGMAvailable            bool
+	assumeDriverInstalled          bool
+	requireDCGMReadyForBootstrap   bool
+	kubernetesClientRateLimits     kubeclient.RateLimitConfig
+}
+
+func (o cliOptions) initializationParams(expectedDeviceCounts devicecounts.Config) initializer.InitializationParams {
+	return initializer.InitializationParams{
+		KubeconfigPath:               o.kubeconfig,
+		DCGMAppLabel:                 o.dcgmAppLabel,
+		DriverAppLabel:               o.driverAppLabel,
+		GKEInstallerAppLabel:         o.gkeInstallerAppLabel,
+		KataLabel:                    o.kataLabel,
+		AssumeDCGMAvailable:          o.assumeDCGMAvailable,
+		AssumeDriverInstalled:        o.assumeDriverInstalled,
+		RequireDCGMReadyForBootstrap: o.requireDCGMReadyForBootstrap,
+		ExpectedDeviceCounts:         expectedDeviceCounts,
+		KubernetesClientRateLimits:   o.kubernetesClientRateLimits,
+	}
+}
+
+func parseFlags() cliOptions {
+	kubeconfig := flag.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
+	metricsPort := flag.String("metrics-port", "2112", "Port to expose Prometheus metrics on")
+	dcgmAppLabel := flag.String("dcgm-app-label", "nvidia-dcgm", "App label value for DCGM pods")
+	driverAppLabel := flag.String("driver-app-label", "nvidia-driver-daemonset", "App label value for driver pods")
+	gkeInstallerAppLabel := flag.String("gke-installer-app-label",
 		"nvidia-driver-installer", "App label value for GKE driver installer pods")
-	kataLabel = flag.String("kata-label", "",
+	kataLabel := flag.String("kata-label", "",
 		fmt.Sprintf("Custom node label to check for Kata Containers support. If empty, uses default '%s'",
 			labeler.KataRuntimeDefaultLabel))
-	expectedDeviceCountsConfigFile = flag.String("expected-device-counts-config-file", "",
+	expectedDeviceCountsConfigFile := flag.String("expected-device-counts-config-file", "",
 		"Path to a TOML expected-device-count configuration file. Empty disables expected device count labels.")
-	assumeDCGMAvailable = flag.Bool("assume-dcgm-available", false,
+	assumeDCGMAvailable := flag.Bool("assume-dcgm-available", false,
 		"Assume DCGM is available when a valid dcgm.version node label exists and no DCGM pod source is found.")
-	assumeDriverInstalled = flag.Bool("assume-driver-installed", false,
+	assumeDriverInstalled := flag.Bool("assume-driver-installed", false,
 		"Assume GPU drivers are pre-installed on GPU nodes (nvidia.com/gpu.present=true). "+
 			"Sets driver.installed=true unconditionally for those nodes, skipping driver pod detection. "+
 			"Use for clusters with host-installed drivers.")
-	requireDCGMReadyForBootstrap = flag.Bool("require-dcgm-ready-for-bootstrap", true,
+	requireDCGMReadyForBootstrap := flag.Bool("require-dcgm-ready-for-bootstrap", true,
 		"Require the DCGM pod to be ready before setting the DCGM version label for initial bootstrap.")
+	rateLimits := kubeclient.RegisterRateLimitFlags()
 
 	flag.Parse()
 
-	return
+	return cliOptions{
+		kubeconfig:                     *kubeconfig,
+		metricsPort:                    *metricsPort,
+		dcgmAppLabel:                   *dcgmAppLabel,
+		driverAppLabel:                 *driverAppLabel,
+		gkeInstallerAppLabel:           *gkeInstallerAppLabel,
+		kataLabel:                      *kataLabel,
+		expectedDeviceCountsConfigFile: *expectedDeviceCountsConfigFile,
+		assumeDCGMAvailable:            *assumeDCGMAvailable,
+		assumeDriverInstalled:          *assumeDriverInstalled,
+		requireDCGMReadyForBootstrap:   *requireDCGMReadyForBootstrap,
+		kubernetesClientRateLimits:     *rateLimits,
+	}
 }
 
 func loadExpectedDeviceCountsConfig(configFile string) (devicecounts.Config, error) {

@@ -30,6 +30,18 @@ kubectl label namespace {namespace} nvsentinel.nvidia.com/preflight=enabled
 
 The chart default `namespaceSelector` matches that label.
 
+## Kubernetes API rate limits
+
+Preflight inherits the Kubernetes client limits from `global.qps` and `global.burst` (defaults: `5` and `10`). Set component values only when Preflight needs different limits:
+
+```yaml
+preflight:
+  qps: 40
+  burst: 80
+```
+
+Positive `qps` values enable client-side throttling, `0` uses the client-go default, and a negative value disables client-side throttling. `burst` must be non-negative; `0` uses the client-go default.
+
 ## Init container placement
 
 By default the webhook **appends** preflight init containers after any existing init containers in the pod spec. This ensures provider-injected setup containers (e.g., GCP TCPXO daemon) complete before preflight checks run.
@@ -456,6 +468,12 @@ Each `PreflightConfig` is validated when reconciled: the `gangDiscovery.podGroup
 `PreflightConfig` changes take effect on **newly-admitted gangs** and are applied per pod at admission. Avoid editing or deleting a namespace's active `PreflightConfig` (or deleting it so a different one becomes active) **while multi-node preflight gangs are being launched** in that namespace.
 
 The gang ID embeds the discoverer name (`{discoverer}-{namespace}-{podGroup}`), and discovery is resolved per pod. If the effective discoverer for a namespace changes mid-flight, pods of the same gang admitted before and after the change can derive **different gang IDs** and fail to coordinate (peers never converge). Such a gang's `preflight-nccl-allreduce` check then waits until `gangCoordination.timeout` and fails — the pod stays in `Init:Error` and follows the normal NVSentinel quarantine path. This fails safe (no false "healthy" result) but causes a spurious preflight failure, so treat gang discovery config as a namespace setting to change during a quiet window. Adding a *second* `PreflightConfig` is safe — the active (oldest) one is unaffected (see above); the risk is specifically changing or removing the currently-active config.
+
+#### Gang coordination Pod cache
+
+When gang coordination is enabled, Preflight watches Pods cluster-wide because namespace-specific `PreflightConfig` resources can be added or removed while the process is running. The controller-runtime cache namespace set is fixed when the manager starts, so limiting it to the namespaces known at startup would miss Pods after a new namespace configuration is created.
+
+To keep the cluster-wide cache small, Preflight stores only Pod identity and deletion metadata, annotations and labels used by configurable discoverers, the gang ConfigMap volume, node and scheduling-group references, and Pod IP and phase. Containers, init containers, unrelated volumes, conditions, managed fields, and other unused Pod data are discarded before caching.
 
 ## Gang coordination
 

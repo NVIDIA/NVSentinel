@@ -19,7 +19,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 
+	"github.com/hashicorp/golang-lru/v2/expirable"
 	"go.opentelemetry.io/otel/attribute"
 	"k8s.io/client-go/kubernetes"
 
@@ -48,6 +50,11 @@ type K8sConnector struct {
 	stopCh     <-chan struct{}
 	ctx        context.Context
 	config     K8sConnectorConfig
+
+	// nodeEventNames caches the last written event name per dedupe key;
+	// see writeNodeEvent. nodeEventMu guards only the lazy init.
+	nodeEventMu    sync.Mutex
+	nodeEventNames *expirable.LRU[string, string]
 }
 
 // NewK8sConnector creates a K8sConnector with the given Kubernetes client, ring buffer, and configuration.

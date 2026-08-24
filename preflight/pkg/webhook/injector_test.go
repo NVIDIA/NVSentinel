@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/utils/ptr"
 )
 
 func TestCollectMatchingEnvVars(t *testing.T) {
@@ -983,6 +984,217 @@ func TestParseCheckNames(t *testing.T) {
 // TestInjectVolumes covers volume patch generation: nvsentinel socket,
 // gang ConfigMap (optional), /dev/shm, NCCL topology, extra hostPaths,
 // and dedup against existing pod volumes.
+func TestInjectConnectorToken(t *testing.T) {
+	t.Run("volume, mount and env injected when audience configured", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.ConnectorTokenAudience = "nvsentinel-platform-connector"
+		cfg.ConnectorTokenMountPath = "/var/run/secrets/nvsentinel/platform-connector"
+		cfg.ConnectorTokenExpirationSeconds = 3600
+		injector := &Injector{cfg: cfg}
+
+		volumes := extractVolumes(t, injector.injectVolumes(&corev1.Pod{}, nil))
+		vol := requireVolume(t, volumes, connectorTokenVolumeName)
+		require.NotNil(t, vol.Projected)
+		require.Len(t, vol.Projected.Sources, 1)
+		sat := vol.Projected.Sources[0].ServiceAccountToken
+		require.NotNil(t, sat)
+		assert.Equal(t, "nvsentinel-platform-connector", sat.Audience)
+		assert.Equal(t, "token", sat.Path)
+		require.NotNil(t, sat.ExpirationSeconds)
+		assert.Equal(t, int64(3600), *sat.ExpirationSeconds)
+
+		container := &corev1.Container{}
+		injector.injectCommonEnv(container)
+		injector.injectConnectorTokenMount(container)
+
+		var tokenEnv string
+		for _, e := range container.Env {
+			if e.Name == "PLATFORM_CONNECTOR_TOKEN_PATH" {
+				tokenEnv = e.Value
+			}
+		}
+		assert.Equal(t, "/var/run/secrets/nvsentinel/platform-connector/token", tokenEnv)
+
+		require.Len(t, container.VolumeMounts, 1)
+		assert.Equal(t, connectorTokenVolumeName, container.VolumeMounts[0].Name)
+		assert.Equal(t, "/var/run/secrets/nvsentinel/platform-connector", container.VolumeMounts[0].MountPath)
+		assert.True(t, container.VolumeMounts[0].ReadOnly)
+
+		// Idempotent: a second pass must not duplicate the mount.
+		injector.injectConnectorTokenMount(container)
+		assert.Len(t, container.VolumeMounts, 1)
+	})
+
+	t.Run("nothing injected when audience is empty", func(t *testing.T) {
+		injector := &Injector{cfg: testConfig()}
+
+		for _, p := range injector.injectVolumes(&corev1.Pod{}, nil) {
+			if vol, ok := p.Value.(corev1.Volume); ok {
+				assert.NotEqual(t, connectorTokenVolumeName, vol.Name)
+			}
+		}
+
+		container := &corev1.Container{}
+		injector.injectCommonEnv(container)
+		injector.injectConnectorTokenMount(container)
+
+		for _, e := range container.Env {
+			assert.NotEqual(t, "PLATFORM_CONNECTOR_TOKEN_PATH", e.Name)
+		}
+		assert.Empty(t, container.VolumeMounts)
+	})
+
+	t.Run("pod-supplied volume with the same name is not duplicated", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.ConnectorTokenAudience = "nvsentinel-platform-connector"
+		cfg.ConnectorTokenMountPath = "/var/run/secrets/nvsentinel/platform-connector"
+		cfg.ConnectorTokenExpirationSeconds = 3600
+		injector := &Injector{cfg: cfg}
+		pod := &corev1.Pod{
+			Spec: corev1.PodSpec{
+				Volumes: []corev1.Volume{{Name: connectorTokenVolumeName}},
+			},
+		}
+
+		for _, p := range injector.injectVolumes(pod, nil) {
+			if vol, ok := p.Value.(corev1.Volume); ok {
+				assert.NotEqual(t, connectorTokenVolumeName, vol.Name)
+			}
+		}
+	})
+}
+
+func TestValidateConnectorTokenVolume(t *testing.T) {
+	// Injected checks read their credential out of the volume with this name.
+	// A workload that declares its own volume by that name would otherwise
+	// choose what the check reads, so admission refuses the pod.
+	const audience = "nvsentinel-platform-connector"
+
+	ours := corev1.Volume{
+		Name: connectorTokenVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Projected: &corev1.ProjectedVolumeSource{
+				Sources: []corev1.VolumeProjection{{
+					ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+						Audience:          audience,
+						ExpirationSeconds: ptr.To(int64(3600)),
+						Path:              "token",
+					},
+				}},
+			},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		volume  *corev1.Volume
+		wantErr bool
+	}{
+		{name: "no colliding volume", volume: nil},
+		{name: "our own projection is accepted", volume: &ours},
+		{
+			name:    "workload-supplied emptyDir is refused",
+			volume:  &corev1.Volume{Name: connectorTokenVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+			wantErr: true,
+		},
+		{
+			name: "workload-supplied secret is refused",
+			volume: &corev1.Volume{
+				Name:         connectorTokenVolumeName,
+				VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "workload-supplied"}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "projection for a different audience is refused",
+			volume: &corev1.Volume{
+				Name: connectorTokenVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					Projected: &corev1.ProjectedVolumeSource{
+						Sources: []corev1.VolumeProjection{{
+							ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+								Audience:          "something-else",
+								ExpirationSeconds: ptr.To(int64(3600)),
+								Path:              "token",
+							},
+						}},
+					},
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.ConnectorTokenAudience = audience
+			cfg.ConnectorTokenMountPath = "/var/run/secrets/nvsentinel/platform-connector"
+			cfg.ConnectorTokenExpirationSeconds = 3600
+			injector := &Injector{cfg: cfg}
+
+			pod := &corev1.Pod{}
+			if tt.volume != nil {
+				pod.Spec.Volumes = []corev1.Volume{*tt.volume}
+			}
+
+			err := injector.ValidateConnectorTokenVolume(pod)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), connectorTokenVolumeName)
+
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+
+	t.Run("no check at all when token injection is disabled", func(t *testing.T) {
+		injector := &Injector{cfg: testConfig()}
+		pod := &corev1.Pod{
+			Spec: corev1.PodSpec{Volumes: []corev1.Volume{{Name: connectorTokenVolumeName}}},
+		}
+
+		require.NoError(t, injector.ValidateConnectorTokenVolume(pod))
+	})
+}
+
+func TestConnectorTokenSettingsFollowTheChart(t *testing.T) {
+	// The docs promise these are global and cannot drift between publishers,
+	// so preflight must use the configured values rather than its own copy.
+	cfg := testConfig()
+	cfg.ConnectorTokenAudience = "custom-audience"
+	cfg.ConnectorTokenMountPath = "/custom/creds"
+	cfg.ConnectorTokenExpirationSeconds = 900
+	injector := &Injector{cfg: cfg}
+
+	volumes := extractVolumes(t, injector.injectVolumes(&corev1.Pod{}, nil))
+	sat := requireVolume(t, volumes, connectorTokenVolumeName).Projected.Sources[0].ServiceAccountToken
+	require.NotNil(t, sat)
+	assert.Equal(t, "custom-audience", sat.Audience)
+	require.NotNil(t, sat.ExpirationSeconds)
+	assert.Equal(t, int64(900), *sat.ExpirationSeconds)
+
+	container := &corev1.Container{}
+	injector.injectCommonEnv(container)
+	injector.injectConnectorTokenMount(container)
+
+	require.Len(t, container.VolumeMounts, 1)
+	assert.Equal(t, "/custom/creds", container.VolumeMounts[0].MountPath)
+
+	var tokenEnv string
+
+	for _, e := range container.Env {
+		if e.Name == "PLATFORM_CONNECTOR_TOKEN_PATH" {
+			tokenEnv = e.Value
+		}
+	}
+
+	assert.Equal(t, "/custom/creds/token", tokenEnv)
+}
+
 func TestInjectVolumes(t *testing.T) {
 	t.Run("nvsentinel socket volume added", func(t *testing.T) {
 		injector := &Injector{cfg: testConfig()}

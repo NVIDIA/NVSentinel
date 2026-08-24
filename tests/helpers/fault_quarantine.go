@@ -39,6 +39,10 @@ const (
 	CELKeyConfigMapBackup
 )
 
+// AggregatedNodeHealthTaintKey is the taint fault-quarantine applies to a
+// node it has quarantined.
+const AggregatedNodeHealthTaintKey = "AggregatedNodeHealth"
+
 // QuarantineHealthEventAnnotationKey is the annotation key for health events set by fault-quarantine.
 const QuarantineHealthEventAnnotationKey = "quarantineHealthEvent"
 

@@ -79,6 +79,7 @@ jobs:
           - nvsentinel/log-collector
           - nvsentinel/file-server-cleanup
           - nvsentinel/janitor
+          - nvsentinel/lifecycle-manager
           - nvsentinel/health-events-analyzer
           - nvsentinel/maintenance-notifier
           - nvsentinel/event-exporter

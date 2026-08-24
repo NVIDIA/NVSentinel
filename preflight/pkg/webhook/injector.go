@@ -28,6 +28,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 )
 
 var supportedHostPathTypes = map[string]corev1.HostPathType{
@@ -42,6 +43,11 @@ var supportedHostPathTypes = map[string]corev1.HostPathType{
 
 const (
 	nvsentinelSocketVolumeName = "nvsentinel-socket"
+	// connectorTokenVolumeName holds a projected ServiceAccount token for the
+	// platform-connector audience, minted against the workload pod's own
+	// ServiceAccount (every pod has one, so no coordination with the workload
+	// is needed).
+	connectorTokenVolumeName = "nvsentinel-connector-token"
 	// dshmVolumeName is the name for the shared memory volume needed by NCCL
 	dshmVolumeName = "dshm"
 	// ncclTopoVolumeName is the name for the NCCL topology ConfigMap volume
@@ -184,6 +190,12 @@ func (i *Injector) InjectInitContainers(ctx context.Context, pod *corev1.Pod) ([
 	if len(maxResources) == 0 {
 		slog.Debug("Pod does not request GPU/network resources, skipping injection")
 		return nil, nil, nil
+	}
+
+	// Refuse before injecting anything: the checks about to be added would read
+	// their credential out of a volume the workload supplied.
+	if err := i.ValidateConnectorTokenVolume(pod); err != nil {
+		return nil, nil, err
 	}
 
 	// Check if pod is part of a gang
@@ -404,6 +416,7 @@ func (i *Injector) buildInitContainers(
 		}
 
 		i.injectCommonEnv(container)
+		i.injectConnectorTokenMount(container)
 		i.injectGangEnv(container, gangCtx)
 		i.inheritUserConfig(container, tmpl, userEnvVars, userVolumeMounts)
 
@@ -539,7 +552,121 @@ func (i *Injector) injectCommonEnv(container *corev1.Container) {
 		})
 	}
 
+	if i.cfg.ConnectorTokenAudience != "" {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "PLATFORM_CONNECTOR_TOKEN_PATH",
+			Value: i.connectorTokenMountPath() + "/token",
+		})
+	}
+
 	i.mergeEnvVars(container, envVars)
+}
+
+// connectorTokenMountPath is where the projected token is mounted in injected
+// check containers.
+//
+// No fallback: config validation makes the three connector-token settings
+// atomic, so whenever an audience is set — the only condition under which the
+// token is injected at all — this is set too. A built-in default here would
+// mount the credential at a path the chart never agreed to, which the check
+// then fails to read.
+func (i *Injector) connectorTokenMountPath() string {
+	return i.cfg.ConnectorTokenMountPath
+}
+
+// connectorTokenExpirationSeconds is the projected token's lifetime. Set
+// alongside the audience and mount path, for the same reason.
+func (i *Injector) connectorTokenExpirationSeconds() int64 {
+	return i.cfg.ConnectorTokenExpirationSeconds
+}
+
+// injectConnectorTokenMount attaches the projected connector-token volume to a
+// check container. The matching pod-level volume is added by injectVolumes.
+func (i *Injector) injectConnectorTokenMount(container *corev1.Container) {
+	if i.cfg.ConnectorTokenAudience == "" {
+		return
+	}
+
+	for _, m := range container.VolumeMounts {
+		if m.Name == connectorTokenVolumeName {
+			return
+		}
+	}
+
+	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+		Name:      connectorTokenVolumeName,
+		MountPath: i.connectorTokenMountPath(),
+		ReadOnly:  true,
+	})
+}
+
+// connectorTokenVolume is the projected token volume this webhook injects.
+func (i *Injector) connectorTokenVolume() corev1.Volume {
+	return corev1.Volume{
+		Name: connectorTokenVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Projected: &corev1.ProjectedVolumeSource{
+				Sources: []corev1.VolumeProjection{{
+					ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+						Audience:          i.cfg.ConnectorTokenAudience,
+						ExpirationSeconds: ptr.To(i.connectorTokenExpirationSeconds()),
+						Path:              "token",
+					},
+				}},
+			},
+		},
+	}
+}
+
+// ValidateConnectorTokenVolume reports an error when the pod already carries a
+// volume by the injected token's name that is not the projection this webhook
+// would have added. Callers reject such a pod at admission rather than let an
+// injected check read a credential the workload supplied.
+func (i *Injector) ValidateConnectorTokenVolume(pod *corev1.Pod) error {
+	if i.cfg.ConnectorTokenAudience == "" {
+		return nil
+	}
+
+	for _, vol := range pod.Spec.Volumes {
+		if vol.Name != connectorTokenVolumeName {
+			continue
+		}
+
+		if !isOurConnectorTokenVolume(vol, i.cfg.ConnectorTokenAudience, i.connectorTokenExpirationSeconds()) {
+			return fmt.Errorf(
+				"pod declares a volume named %q that is not the projected "+
+					"ServiceAccount token preflight injects; rename it, because injected "+
+					"checks read their platform-connector credential from that volume",
+				connectorTokenVolumeName)
+		}
+	}
+
+	return nil
+}
+
+// isOurConnectorTokenVolume reports whether an existing pod volume is exactly
+// the projection this webhook would have injected.
+//
+// A volume is matched by name, and a name is all a workload needs to supply its
+// own. Injected checks read a credential out of that volume, so accepting one
+// the workload controls means reading a credential the workload chose. The
+// substitution is bounded — any token still has to pass TokenReview, and its
+// node claim still pins it to this node — but a check must not silently read a
+// credential from a source it did not get from us.
+func isOurConnectorTokenVolume(vol corev1.Volume, audience string, expirationSeconds int64) bool {
+	if vol.Projected == nil || len(vol.Projected.Sources) != 1 {
+		return false
+	}
+
+	sat := vol.Projected.Sources[0].ServiceAccountToken
+	if sat == nil {
+		return false
+	}
+
+	return sat.Audience == audience &&
+		sat.Path == "token" &&
+		sat.ExpirationSeconds != nil &&
+		*sat.ExpirationSeconds == expirationSeconds
 }
 
 func (i *Injector) injectVolumes(pod *corev1.Pod, gangCtx *GangContext) []PatchOperation {
@@ -567,6 +694,10 @@ func (i *Injector) injectVolumes(pod *corev1.Pod, gangCtx *GangContext) []PatchO
 				},
 			},
 		})
+	}
+
+	if i.cfg.ConnectorTokenAudience != "" && !existingVolumes[connectorTokenVolumeName] {
+		volumesToAdd = append(volumesToAdd, i.connectorTokenVolume())
 	}
 
 	if gangCtx != nil {

@@ -34,6 +34,11 @@ data:
       {{- toYaml .Values.volumeMountPatterns | nindent 6 }}
     {{- end }}
     connectorSocket: {{ include "preflight.connectorSocket" . | quote }}
+    {{- if include "preflight.pcAuth.enabled" . }}
+    connectorTokenAudience: {{ required "global.platformConnectorAuth.audience is required when platform-connector auth is enabled" (((.Values.global).platformConnectorAuth).audience) | quote }}
+    connectorTokenMountPath: {{ required "global.platformConnectorAuth.tokenMountPath is required when platform-connector auth is enabled" (((.Values.global).platformConnectorAuth).tokenMountPath) | quote }}
+    connectorTokenExpirationSeconds: {{ include "preflight.pcAuth.expirationSeconds" . }}
+    {{- end }}
     processingStrategy: {{ include "preflight.processingStrategy" . | quote }}
     gangDiscovery:
       {{- toYaml .Values.gangDiscovery | nindent 6 }}

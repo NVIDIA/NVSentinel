@@ -36,7 +36,6 @@ import (
 const (
 	dcgmServiceHost               = "nvidia-dcgm.gpu-operator.svc"
 	dcgmServicePort               = "5555"
-	gpuOperatorNamespace          = "gpu-operator"
 	dcgmServiceName               = "nvidia-dcgm"
 	dcgmOriginalPort              = 5555
 	dcgmBrokenPort                = 1555
