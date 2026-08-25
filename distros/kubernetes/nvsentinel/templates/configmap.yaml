@@ -32,6 +32,8 @@ data:
       ,"enableNodeBindingAuth": "{{ include "nvsentinel.pcAuth.enabled" . | default "false" }}"
       ,"AuthAudience": "{{ include "nvsentinel.pcAuth.audience" . }}"
       ,"AuthCrossNodeServiceAccounts": {{ include "nvsentinel.pcAuth.crossNodeUsernames" . }}
+      ,"AuthMode": "{{ include "nvsentinel.pcAuth.mode" . }}"
+      ,"AuthFailOpenOnUnavailable": "{{ include "nvsentinel.pcAuth.failOpenOnUnavailable" . | default "false" }}"
       ,"enableGRPCSinkConnector": "{{ .Values.platformConnector.grpcSinkConnector.enabled }}"
       ,"GRPCSinkTarget": "{{ .Values.platformConnector.grpcSinkConnector.target }}"
       ,"GRPCSinkConnectorMaxRetries": {{ .Values.platformConnector.grpcSinkConnector.maxRetries }}

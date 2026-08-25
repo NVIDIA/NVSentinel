@@ -484,7 +484,6 @@ func (ni *NodeInformer) handleDeleteNode(obj interface{}) {
 func hasTaint(node *v1.Node, expectedTaint config.Taint) bool {
 	for _, taint := range node.Spec.Taints {
 		if taint.Key == expectedTaint.Key &&
-			taint.Value == expectedTaint.Value &&
 			string(taint.Effect) == expectedTaint.Effect {
 			return true
 		}

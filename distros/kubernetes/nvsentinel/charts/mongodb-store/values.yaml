@@ -259,6 +259,13 @@ mongodb:
       repository: bitnamilegacy/mongodb-exporter
       tag: 0.41.2-debian-12-r1
       pullSecrets: []
+    resources:
+      requests:
+        cpu: 200m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 192Mi
     command:
       - /bin/bash
       - -ec

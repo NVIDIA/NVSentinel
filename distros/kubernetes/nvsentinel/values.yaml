@@ -49,6 +49,37 @@ global:
     # configuration.
     enabled: true
 
+    # "enforce" rejects a request that violates the node-binding rule.
+    # "audit" validates every request and records the same violation counters
+    # by reason, but lets the request through instead of rejecting it. Run
+    # audit for a period, confirm platform_connector_auth_violations_total
+    # stays at zero for real traffic, then switch to enforce with evidence.
+    # One exception applies in both modes: an event with no node name from a
+    # caller resolved to VERIFIED cross-node scope is always rejected, since
+    # nothing downstream can handle it. A caller that fell back to a degraded
+    # scope under failOpenOnUnavailable was never verified as cross-node, so
+    # this does not apply to it — see failOpenOnUnavailable below.
+    mode: enforce
+
+    # Must be a real YAML boolean (true or false); a quoted "false" is a
+    # string, not this setting, and is refused rather than read as false.
+    #
+    # A validator that cannot reach a verdict (API server unreachable, or the
+    # call timed out) says nothing about the caller's credential — it is not
+    # evidence of a forged token. When true, that case falls back to a
+    # degraded node-local scope instead of rejecting the request: a blank or
+    # matching node name is accepted and stamped as usual, and an event
+    # naming a different node is kept retryable under mode: enforce (rather
+    # than rejected outright, since the caller might really be an
+    # allowlisted cross-node publisher the outage prevented from verifying)
+    # or, under mode: audit, recorded and let through like any other audited
+    # violation. Under mode: enforce a rejected credential (invalid or
+    # malformed token) is always rejected regardless of this setting; under
+    # mode: audit it is recorded and let through like any other violation
+    # instead. Defaults to false: fail closed, matching behavior before this
+    # setting existed.
+    failOpenOnUnavailable: false
+
     # Audience every publisher's projected token is minted for, and that
     # platform-connector requires TokenReview to echo back, so a token issued
     # for a different service is not accepted here. Node-local monitors (gpu,
