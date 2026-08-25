@@ -1,4 +1,24 @@
-# ADR-049: API — MaintenanceRequest (MR)
+# ADR-051: API — MaintenanceRequest (MR)
+
+## Table of contents
+
+- [Context](#context)
+- [Decision](#decision)
+- [Implementation](#implementation)
+  - [Component](#component)
+  - [Module layout](#module-layout)
+  - [CRD schema](#crd-schema)
+  - [Example](#example)
+  - [Status conditions](#status-conditions)
+  - [MR reconciler state machine](#mr-reconciler-state-machine)
+  - [Validating admission webhook](#validating-admission-webhook)
+  - [RBAC](#rbac)
+  - [Sequence: MR lifecycle](#sequence-mr-lifecycle)
+- [Pipeline dependencies](#pipeline-dependencies)
+- [Consequences](#consequences)
+- [Alternatives Considered](#alternatives-considered)
+- [Testing](#testing)
+- [References](#references)
 
 ## Context
 
@@ -17,76 +37,19 @@ Introduce a new CRD, `MaintenanceRequest` (MR), in the existing `nvsentinel.dgxc
 - The MR then **persists until the requester deletes it**. NVSentinel does not track the maintenance to completion. The existence of the MR is the statement "this node is under maintenance."
 - **Deletion is the clear.** When the requester deletes the MR, the reconciler emits a matching `isHealthy=true` event. That event retracts the fault the MR raised, and the normal quarantine-recovery path un-cordons the node.
 
+The MR reconciler and its validating webhook live in the existing `lifecycle-manager` component, alongside the validation-controller. See [Component](#component).
+
 MR is the inbound counterpart to ERR's outbound "NVSentinel is releasing this node." The external-remediation handoff is the canonical case, but MR drives any remediation the pipeline already supports.
-
-## Open decision: what emits the MR's health events
-
-The CRD is settled. **Where the emit-on-create / emit-on-delete logic lives is not.** The host needs two capabilities: a controller-runtime manager, which watches the CRD and (for a finalizer-based clear) manages finalizers and status; and a health-event emitter, a `healthpub.Publisher` over the platform-connector's node-local socket.
-
-Two components are ruled out. **janitor** is a controller-runtime manager with a webhook server, but it emits no health events, and node-maintenance coordination is not its remit. **csp-health-monitor** is a native emitter, but it is a poll/emit loop with no manager, webhook server, or leader election.
-
-The [Implementation](#implementation) section is written against **Option A**.
-
-**Option A — a second controller in the existing `lifecycle-manager` component.** `lifecycle-manager` now exists on `main`. It was introduced with the validation-controller (see [ADR: Node Validation](049-node-validation.md)) as the home for controllers that coordinate node lifecycle transitions. It already provides the controller-runtime manager, leader election, a validating-webhook server with a certificate watcher, a ConfigMap-backed configuration file, a Helm chart, and RBAC scaffolding. It also has a per-controller enable flag (`--enable-validation-controller`, `controllers.validationRequest.enabled`) that a maintenance controller would follow.
-
-MR therefore adds a reconciler and a webhook to a component that already runs, rather than creating one. The one capability `lifecycle-manager` does **not** have today is the emitter: nothing in it imports `healthpub` or opens the platform-connector socket. Option A must add a `healthpub.Publisher` and a `hostPath` mount of the node-local socket, which also gives `lifecycle-manager` its first dependency on a node-local socket. `lifecycle-manager` already requires the `commons` module directly, so `healthpub` is available.
-
-**Option B — a `kubernetes-object-monitor` (KOM) policy.** KOM is already a controller-runtime manager that watches any configured GVK through a TOML policy. It evaluates CEL `predicate` and `nodeAssociation` expressions against the object, then publishes a health event on each transition: **unhealthy when the object starts to match, healthy when it stops matching or is deleted**. That is precisely MR's open/close model, already built:
-
-```toml
-[[policies]]
-name = "maintenance-request-reboot"
-enabled = true
-[policies.resource]
-group = "nvsentinel.dgxc.nvidia.com"
-version = "v1"
-kind = "MaintenanceRequest"
-[policies.predicate]
-expression = 'resource.spec.action == "reboot"'
-[policies.nodeAssociation]
-expression = 'resource.spec.healthEvent.nodeName'
-[policies.healthEvent]
-componentClass    = "node"
-isFatal           = false
-message           = "Maintenance requested: node reboot"
-recommendedAction = "RESTART_VM"
-```
-
-However, **every field under `[policies.healthEvent]` is a static literal**. KOM assembles the published event from the *policy*, not from the object it watches. Only the node name comes from the object, through `nodeAssociation`. Two consequences follow, and they are why Option B does not deliver Option A at no cost:
-
-- **One policy per distinct event, so a new kind of fault requires a change to NVSentinel.** A policy emits exactly one event shape. Each new fault type needs its own policy block. That is a configuration change and a release, and both must land before the requester can use the new type. A requester therefore cannot introduce a fault type on its own schedule. Over time this produces a continuous stream of configuration changes that another team's roadmap drives.
-- **No per-request detail.** Within a policy, `message` and `errorCode` are identical for every MR that matches, and `HealthEventSpec` has no `metadata` map. A single request cannot carry the detail that makes it diagnosable, such as the CSP event, the maintenance window, or the ticket. An operator who examines a drained node therefore sees the same generic text for every request of that type.
-
-| | Option A (`lifecycle-manager`) | Option B (KOM policy) |
-|---|---|---|
-| Code to build | A reconciler and webhook inside the existing `lifecycle-manager`, plus the emitter it lacks today | None — policy config only |
-| **Publishing a new kind of fault** | Create an MR; no NVSentinel change | Add a KOM policy and release NVSentinel first |
-| **Per-request detail** (`message`, `errorCode`, metadata) | Taken from each MR, so every request describes itself | Fixed in the policy — every matching MR emits identical text |
-| Clearing the fault on delete | The finalizer holds the MR until the clear succeeds, and retries | Emitted after the fact; if the publish fails, KOM drops its state and the clear is lost |
-| Status reported on the MR | `HealthEventEmitted` condition | None — KOM does not write to the objects it watches |
-| Who decides what a request may do | The requester (any event, any action) | The operator (the policy set is the gate) |
-| Survives a restart | Yes | Yes — KOM persists match state in node annotations |
-
-### Closing the gap: object-sourced event fields in KOM
-
-Both consequences trace to one design choice: the event comes from the policy. An enhancement can let a policy read the event from the watched object instead:
-
-```toml
-[policies.healthEvent]
-fromField = "spec.healthEvent"    # publish the object's own event
-```
-
-This removes both consequences. A single policy then covers every MR, whatever the requester puts in it. A new fault type becomes a pure API call that needs no NVSentinel configuration change or release, and each request carries its own message, error codes, and metadata.
-
-The change looks contained. The reconciler already holds the unstructured object where it calls the publisher, because it evaluates the CEL `predicate` and `nodeAssociation` against that object. The work is therefore a new configuration field plus a branch in event construction, not new infrastructure.
-
-One problem remains to solve. KOM publishes the **clearing event after the object is gone**, so it cannot read the fields from the object at that point. KOM currently caches only the node name, in `matchStates`, and persists it to node annotations. There are two ways to close this. The policy can continue to own the identity fields — `agent`, `checkName`, and `nodeName` — while only the descriptive fields come from the object. Alternatively, KOM can cache the emitted event alongside the match state.
-
-With that in place, Option B differs from Option A only in the finalizer guarantee and the MR status.
 
 ## Implementation
 
-Written against **Option A**; see [What changes under Option B](#what-changes-under-option-b) for the delta.
+### Component
+
+MR needs two capabilities from its host: a controller-runtime manager, to watch the CRD and manage the finalizer and status; and a health-event emitter, a `healthpub.Publisher` over the platform-connector's node-local socket.
+
+`lifecycle-manager` already provides the first. It was introduced with the validation-controller (see [ADR: Node Validation](049-node-validation.md)) as the home for controllers that coordinate node lifecycle transitions, and it supplies the controller-runtime manager, leader election, a validating-webhook server with a certificate watcher, a ConfigMap-backed configuration file, a Helm chart, and RBAC scaffolding. MR therefore adds a reconciler and a webhook to a component that already runs, rather than creating one. It follows the existing per-controller enable flag convention (`--enable-validation-controller`, `controllers.validationRequest.enabled`) with `--enable-maintenance-controller` and `controllers.maintenanceRequest.enabled`.
+
+`lifecycle-manager` does **not** provide the second. Nothing in it imports `healthpub` or opens the platform-connector socket today, so MR adds a `healthpub.Publisher` and a `hostPath` mount of `/var/run/nvsentinel`. This gives `lifecycle-manager` its first dependency on a node-local socket. The platform-connector runs as a per-node DaemonSet, so the socket exists on whatever node the pod is scheduled to, and `lifecycle-manager` already requires the `commons` module directly, so `healthpub` is available.
 
 ### Module layout
 
@@ -230,6 +193,8 @@ The webhook freezes the whole event, not only `nodeName`. The clearing event reu
 
 The `startTime` check rejects a request that is backdated at creation, because a maintenance window that has already opened cannot be prepared for. On update the webhook applies the check only when `startTime` changes. An MR persists through its window and beyond, so re-checking an unchanged `startTime` would reject every later update to an MR whose window has already opened. Scoping the check to changes still validates a reschedule.
 
+The `startTime` check must live in the webhook rather than in CRD `x-kubernetes-validations` CEL rules. Those rules must be deterministic, so their CEL environment exposes no current time and cannot evaluate whether a timestamp is in the future.
+
 The duplicate check is a best-effort early rejection, not a race guarantee. It uses an informer-backed lister, so two concurrent creates can both observe "no MR" and both pass. Idempotent downstream handling, not admission, ultimately upholds the single-active invariant.
 
 ### RBAC
@@ -274,14 +239,6 @@ sequenceDiagram
     Note over MR: finalizer removed, MR gone
 ```
 
-## What changes under Option B
-
-The CRD, the validation checks, and the pipeline behaviour do not change. There is no finalizer, no `HealthEventEmitted` condition, and no addition to `lifecycle-manager`. *Module layout*, *Status conditions*, *RBAC*, and the finalizer step of the state machine therefore do not apply. Option B also leaves `lifecycle-manager` free of any platform-connector socket dependency, because KOM already has one.
-
-Validation moves to CRD `x-kubernetes-validations` CEL rules. Those rules cover the non-empty `nodeName`, the `isHealthy == false` check, and `spec.healthEvent` immutability. The node-existence, duplicate, and `startTime` checks still need a webhook. CRD validation rules must be deterministic, so their CEL environment exposes no current time and cannot evaluate whether `startTime` is in the future. KOM's own policy CEL environment does expose `now`, but that governs when a policy matches, not what admission accepts.
-
-Unless KOM gains object-sourced event fields, `spec.healthEvent` shrinks to a discriminator such as `spec.action`, plus `nodeName` and `startTime`. The event shape then lives in the policy configuration.
-
 ## Pipeline dependencies
 
 MR only *emits* an event. Whether that event flows through quarantine, drain, and remediation depends on the pipeline being configured to act on it:
@@ -297,18 +254,51 @@ The MR does not associate itself with the remediation it triggers. No associatio
 - Very small first iteration: two emissions, one condition, one finalizer. It adds no cross-CRD watches, owner-references, or GC coupling, and no new code paths in any other component.
 - Simple lifecycle (*present = active, absent = cleared*), with exactly one place where the clear can happen, whoever deletes the MR.
 - Drives any remediation the pipeline supports, not only the ERR handoff.
+- Reuses an existing component, so it adds no new image, chart, deployment, or operational surface.
 - The requester controls when NVSentinel takes the node back. That is correct when the external maintenance window, rather than the in-cluster remediation, determines that the work is done.
 
 **Negative / tradeoffs:**
 - **A forgotten MR leaves a node cordoned indefinitely.** Nothing reclaims it. MRs therefore become an operational surface that needs monitoring, such as an alert on MRs well past their `startTime`. This is the main cost of dropping automatic cleanup.
 - Deletion of an MR always emits the clear, even when the remediation it triggered is still in flight. The node un-cordons while that remediation continues independently.
 - NVSentinel does not retain MRs after completion, so there is no built-in historical record of completed maintenance.
-- Option A adds a reconciler, a webhook, and an emitter to `lifecycle-manager`, and gives that component its first dependency on the platform-connector's node-local socket. It no longer requires building a new component, because `lifecycle-manager` already exists.
+- MR adds a reconciler, a webhook, and an emitter to `lifecycle-manager`, and gives that component its first dependency on the platform-connector's node-local socket.
 - A `fault-quarantine` ruleset that matches MR-emitted events must land with MR or before it. The `CUSTOM` case also needs the ERR-producing action, which does not exist yet.
 
 ## Alternatives Considered
 
-**Where the emit logic lives** is an [open decision](#open-decision-what-emits-the-mrs-health-events), recorded above rather than settled here.
+**A `kubernetes-object-monitor` (KOM) policy instead of a controller.** KOM is already a controller-runtime manager that watches any configured GVK through a TOML policy. It evaluates CEL `predicate` and `nodeAssociation` expressions against the object, then publishes a health event on each transition: unhealthy when the object starts to match, healthy when it stops matching or is deleted. That is precisely MR's open/close model, already built, so a policy over the MR CRD would need no new reconciler at all:
+
+```toml
+[[policies]]
+name = "maintenance-request-reboot"
+enabled = true
+[policies.resource]
+group = "nvsentinel.dgxc.nvidia.com"
+version = "v1"
+kind = "MaintenanceRequest"
+[policies.predicate]
+expression = 'resource.spec.action == "reboot"'
+[policies.nodeAssociation]
+expression = 'resource.spec.healthEvent.nodeName'
+[policies.healthEvent]
+componentClass    = "node"
+isFatal           = false
+message           = "Maintenance requested: node reboot"
+recommendedAction = "RESTART_VM"
+```
+
+It was rejected because every field under `[policies.healthEvent]` is a static literal. KOM assembles the published event from the *policy*, not from the object it watches; only the node name comes from the object. Four consequences follow:
+
+| | MaintenanceRequest controller | KOM policy |
+|---|---|---|
+| Publishing a new kind of fault | Create an MR; no NVSentinel change | Add a policy and release NVSentinel first |
+| Per-request detail (`message`, `errorCode`, metadata) | Taken from each MR, so every request describes itself | Fixed in the policy — every matching MR emits identical text |
+| Clearing the fault on delete | The finalizer holds the MR until the clear succeeds, and retries | Emitted after the fact; if the publish fails, KOM drops its state and the clear is lost |
+| Status reported on the MR | `HealthEventEmitted` condition | None — KOM does not write to the objects it watches |
+
+The first two are the deciding ones. Each new fault type would need its own policy block, so a requester could not introduce one without a change to NVSentinel and a release, and no single request could carry the detail that makes it diagnosable. A contained KOM enhancement — sourcing event fields from the watched object, for example `fromField = "spec.healthEvent"` — would close both. It would not close the other two, because KOM has no finalizer and writes no status to the objects it watches, so it was not enough to change the decision.
+
+Two other hosts were considered and dismissed earlier. **janitor** is a controller-runtime manager with a webhook server, but it emits no health events and node-maintenance coordination is not its remit. **csp-health-monitor** is a native emitter, but it is a poll/emit loop with no manager, webhook server, or leader election.
 
 **Auto-delete the MR when the triggered remediation completes (deferred, not rejected).** The reconciler would watch janitor's remediation CRDs, associate one back to its MR, and delete the MR when that CR sets `Status.CompletionTime`. This closes the loop without requiring the requester to act, and it removes the forgotten-MR failure mode. It is deferred for two reasons. First, it costs cross-CRD watches, an association mechanism that the pipeline must propagate, and read RBAC on janitor's CRDs. Second, "the remediation completed" does not always mean "the maintenance is over" — for an external repair, the requester is the authority. This is the most likely follow-up once the basic flow is proven.
 
