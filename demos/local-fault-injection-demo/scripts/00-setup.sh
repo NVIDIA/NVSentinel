@@ -380,13 +380,13 @@ EOF
         --timeout=120s > /dev/null 2>&1; then
         success "Fake DCGM deployed and ready (port 5555 is listening)"
     else
-        error "Fake DCGM did not become ready within 120s"
         echo ""
         echo "The image may still be pulling on slower connections. Check with:"
         echo "  kubectl get pods -n gpu-operator"
         echo ""
         echo "Once it shows Running, continue with ./scripts/01-show-cluster.sh"
-        exit 1
+        echo ""
+        error "Fake DCGM did not become ready within 120s"
     fi
 }
 

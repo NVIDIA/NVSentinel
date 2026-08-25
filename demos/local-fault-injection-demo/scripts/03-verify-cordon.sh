@@ -78,7 +78,7 @@ verify_cordon() {
     echo ""
     
     # Poll for cordon status with retries
-    local max_attempts=7  # 7 attempts x 3 seconds = 21 seconds
+    local max_attempts=7  # 7 attempts, 3s apart = ~18 seconds
     local attempt=1
     local is_unschedulable="false"
     
@@ -116,7 +116,7 @@ verify_cordon() {
         echo "  🎯 NVSentinel successfully quarantined the faulty node!"
         echo ""
     else
-        warn "Node $TARGET_NODE was not cordoned within $((max_attempts * 3)) seconds"
+        warn "Node $TARGET_NODE was not cordoned after $max_attempts attempts"
         echo ""
         echo "This could mean:"
         echo "  - The event is still being processed (wait a few seconds)"
