@@ -59,17 +59,29 @@ header.
 
 ### 3. Confirm it in metrics, and check whether it is sustained
 
-If dcgm-exporter is deployed, the raw mask is the authoritative view. Bit `0x80` set means brake:
+If dcgm-exporter is deployed, the raw mask is the authoritative view. PromQL has no bitwise AND, so isolate
+the low byte with `% 256` and test its top bit. Do **not** use a bare `>= 128`: that also matches masks such
+as `0x100` (`DISPLAY_CLOCKS`) and `0x140`, which do not have the brake bit set.
 
 ```promql
-DCGM_FI_DEV_CLOCKS_EVENT_REASONS >= 128
+(DCGM_FI_DEV_CLOCKS_EVENT_REASONS % 256) >= 128
 ```
 
 Fraction of a window each GPU spent braked, which distinguishes a transient from a sustained assertion:
 
 ```promql
-avg by (Hostname, gpu) (avg_over_time((DCGM_FI_DEV_CLOCKS_EVENT_REASONS >= bool 128)[1h:1m]))
+avg by (Hostname, gpu) (avg_over_time(((DCGM_FI_DEV_CLOCKS_EVENT_REASONS % 256) >= bool 128)[1h:1m]))
 ```
+
+On a DCGM build that predates the clocks-throttle to clocks-event rename, gpu-health-monitor falls back to
+`DCGM_FI_DEV_CLOCK_THROTTLE_REASONS`, and dcgm-exporter names its series after whichever field it is
+configured to collect. Substitute that metric name in both queries if the one above returns nothing:
+
+```promql
+(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS % 256) >= 128
+```
+
+The bit layout is identical across the rename, so only the metric name changes.
 
 A value pinned at 1 is a sustained brake. Values well below 1 suggest load transients, in which case raise
 `gpuPowerBrakeMinConsecutivePolls` rather than treating each one as a fault.

@@ -123,7 +123,7 @@ class TestDCGMHealthChecks:
         dcgm_group.health.Set.assert_called_once_with(dcgm_structs.DCGM_HEALTH_WATCH_ALL)
         dcgm_group.samples.WatchFields.assert_not_called()
 
-    def test_unsupported_power_brake_field_is_disabled(self, monkeypatch):
+    def test_unsupported_power_brake_field_is_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """No clocks-event-reasons field in this DCGM build → monitor disables itself."""
         monkeypatch.delitem(dcgm.DCGM_FIELDS_MONITORING, "gpupowerbrakemonitoringenabled")
         watcher = dcgm.DCGMWatcher(
@@ -135,7 +135,7 @@ class TestDCGMHealthChecks:
         )
         assert watcher._power_brake_enabled is False
 
-    def test_power_brake_disabled_returns_none(self):
+    def test_power_brake_disabled_returns_none(self) -> None:
         """Watch off → nothing published, even with the bit set."""
         watcher = dcgm.DCGMWatcher(
             addr="localhost:5555",
@@ -149,7 +149,7 @@ class TestDCGMHealthChecks:
 
         assert watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0]) is None
 
-    def test_evaluate_gpu_power_brake_detects_brake_bit(self):
+    def test_evaluate_gpu_power_brake_detects_brake_bit(self) -> None:
         """Brake bit set, threshold of 1 → FAIL carrying the violation code."""
         watcher = self._make_power_brake_watcher()
         dcgm_group_mock = MagicMock()
@@ -162,7 +162,7 @@ class TestDCGMHealthChecks:
         assert result.status == dcgm.types.HealthStatus.FAIL
         assert result.entity_failures[0].code == "GPU_HW_POWER_BRAKE_VIOLATION"
 
-    def test_evaluate_gpu_power_brake_ignores_sw_power_cap(self):
+    def test_evaluate_gpu_power_brake_ignores_sw_power_cap(self) -> None:
         """SW power cap alone is normal capping under load and must not fail."""
         watcher = self._make_power_brake_watcher()
         dcgm_group_mock = MagicMock()
@@ -174,7 +174,7 @@ class TestDCGMHealthChecks:
         assert result.status == dcgm.types.HealthStatus.PASS
         assert result.entity_failures == {}
 
-    def test_evaluate_gpu_power_brake_requires_consecutive_polls(self):
+    def test_evaluate_gpu_power_brake_requires_consecutive_polls(self) -> None:
         """With a threshold of 3, only the third consecutive assertion fails."""
         watcher = self._make_power_brake_watcher(min_consecutive_polls=3)
         dcgm_group_mock = MagicMock()
@@ -189,7 +189,7 @@ class TestDCGMHealthChecks:
         assert third.status == dcgm.types.HealthStatus.FAIL
         assert third.entity_failures[0].code == "GPU_HW_POWER_BRAKE_VIOLATION"
 
-    def test_evaluate_gpu_power_brake_streak_resets_when_cleared(self):
+    def test_evaluate_gpu_power_brake_streak_resets_when_cleared(self) -> None:
         """A clear resets the streak, so a transient never accumulates to a failure."""
         watcher = self._make_power_brake_watcher(min_consecutive_polls=2)
         dcgm_group_mock = MagicMock()
@@ -204,7 +204,7 @@ class TestDCGMHealthChecks:
         dcgm_group_mock.samples.GetLatest.return_value = self._brake_samples({0: dcgm.HW_POWER_BRAKE_REASON_BIT})
         assert watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0]).status == dcgm.types.HealthStatus.PASS
 
-    def test_evaluate_gpu_power_brake_mixed_gpus(self):
+    def test_evaluate_gpu_power_brake_mixed_gpus(self) -> None:
         """Only the braked GPU is failed; the other is left clean."""
         watcher = self._make_power_brake_watcher()
         dcgm_group_mock = MagicMock()
@@ -217,7 +217,7 @@ class TestDCGMHealthChecks:
         assert result.status == dcgm.types.HealthStatus.FAIL
         assert set(result.entity_failures) == {1}
 
-    def test_evaluate_gpu_power_brake_returns_none_without_samples(self):
+    def test_evaluate_gpu_power_brake_returns_none_without_samples(self) -> None:
         """A DCGM data gap must neither raise nor clear a finding."""
         watcher = self._make_power_brake_watcher()
         dcgm_group_mock = MagicMock()

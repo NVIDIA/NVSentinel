@@ -55,7 +55,7 @@ def _run_dcgm_server(port: int, bind_address: str) -> None:
 # 1. Add a new entry here (key = config key from [dcgmfieldsmonitoring])
 # 2. Add the key to configmap.yaml under [dcgmfieldsmonitoring]
 # 3. Add evaluation logic in _evaluate_* method if needed
-def _first_defined(module, *names: str):
+def _first_defined(module: object, *names: str) -> int | None:
     """Return the first attribute that exists on ``module``, or None.
 
     DCGM renamed the clocks-throttle family to "clocks event" in 4.x. Looking up
