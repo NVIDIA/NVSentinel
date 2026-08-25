@@ -196,7 +196,7 @@ func getValueByReflection(value reflect.Value, parts []string) (any, error) {
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
 		reflect.Float32, reflect.Float64,
 		reflect.Complex64, reflect.Complex128,
-		reflect.Chan, reflect.Func, reflect.Interface, reflect.Ptr,
+		reflect.Chan, reflect.Func, reflect.Interface, reflect.Pointer,
 		reflect.String, reflect.UnsafePointer:
 		return nil, fmt.Errorf("invalid value: %s", value.Kind())
 	}
@@ -213,7 +213,7 @@ func getInterfaceOrNil(value reflect.Value) (any, error) {
 }
 
 func dereferencePointer(value reflect.Value) reflect.Value {
-	if value.Kind() == reflect.Ptr {
+	if value.Kind() == reflect.Pointer {
 		if value.IsNil() {
 			return reflect.Value{}
 		}

@@ -44,3 +44,6 @@ kubeletHost:
   valueFrom:
     fieldRef:
       fieldPath: status.hostIP
+
+# Pod priority for this component. Overridden by the matching global when that is set.
+priorityClassName: ""

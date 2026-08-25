@@ -212,6 +212,7 @@ func trimContainers(containers []v1.Container) []v1.Container {
 
 func trimPodReadyConditions(conditions []v1.PodCondition) []v1.PodCondition {
 	var cached []v1.PodCondition
+
 	for _, condition := range conditions {
 		if condition.Type != v1.PodReady {
 			continue

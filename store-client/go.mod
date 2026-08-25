@@ -1,8 +1,6 @@
 module github.com/nvidia/nvsentinel/store-client
 
-go 1.26.0
-
-toolchain go1.26.3
+go 1.27.0
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2

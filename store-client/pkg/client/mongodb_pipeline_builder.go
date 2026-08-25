@@ -57,8 +57,8 @@ func (b *MongoDBPipelineBuilder) BuildNodeQuarantineStatusPipeline() datastore.P
 
 	return datastore.ToPipeline(
 		datastore.D(
-			datastore.E("$match", datastore.D(
-				datastore.E("operationType", "update"),
+			datastore.E(opMatch, datastore.D(
+				datastore.E(fieldOperationType, "update"),
 				datastore.E("$or", datastore.A(
 					makeExprEq(string(model.Quarantined)),
 					makeExprEq(string(model.AlreadyQuarantined)),
@@ -75,9 +75,9 @@ func (b *MongoDBPipelineBuilder) BuildNodeQuarantineStatusPipeline() datastore.P
 func (b *MongoDBPipelineBuilder) BuildAllHealthEventInsertsPipeline() datastore.Pipeline {
 	return datastore.ToPipeline(
 		datastore.D(
-			datastore.E("$match", datastore.D(
-				datastore.E("operationType", datastore.D(
-					datastore.E("$in", datastore.A("insert")),
+			datastore.E(opMatch, datastore.D(
+				datastore.E(fieldOperationType, datastore.D(
+					datastore.E(opIn, datastore.A(opTypeInsert)),
 				)),
 			)),
 		),
@@ -93,9 +93,9 @@ func (b *MongoDBPipelineBuilder) BuildAllHealthEventInsertsPipeline() datastore.
 func (b *MongoDBPipelineBuilder) BuildProcessableHealthEventInsertsPipeline() datastore.Pipeline {
 	return datastore.ToPipeline(
 		datastore.D(
-			datastore.E("$match", datastore.D(
-				datastore.E("operationType", datastore.D(
-					datastore.E("$in", datastore.A("insert")),
+			datastore.E(opMatch, datastore.D(
+				datastore.E(fieldOperationType, datastore.D(
+					datastore.E(opIn, datastore.A(opTypeInsert)),
 				)),
 				datastore.E("$or", datastore.A(
 					datastore.D(datastore.E(
@@ -119,9 +119,9 @@ func (b *MongoDBPipelineBuilder) BuildProcessableHealthEventInsertsPipeline() da
 func (b *MongoDBPipelineBuilder) BuildProcessableNonFatalUnhealthyInsertsPipeline() datastore.Pipeline {
 	return datastore.ToPipeline(
 		datastore.D(
-			datastore.E("$match", datastore.D(
-				datastore.E("operationType", "insert"),
-				datastore.E("fullDocument.healthevent.agent", datastore.D(datastore.E("$ne", "health-events-analyzer"))),
+			datastore.E(opMatch, datastore.D(
+				datastore.E(fieldOperationType, opTypeInsert),
+				datastore.E("fullDocument.healthevent.agent", datastore.D(datastore.E(opNE, "health-events-analyzer"))),
 				datastore.E("fullDocument.healthevent.ishealthy", false),
 				datastore.E("$or", datastore.A(
 					datastore.D(datastore.E(
@@ -149,17 +149,17 @@ func (b *MongoDBPipelineBuilder) BuildProcessableNonFatalUnhealthyInsertsPipelin
 func (b *MongoDBPipelineBuilder) BuildQuarantinedAndDrainedNodesPipeline() datastore.Pipeline {
 	return datastore.ToPipeline(
 		datastore.D(
-			datastore.E("$match", datastore.D(
+			datastore.E(opMatch, datastore.D(
 				datastore.E("$or", datastore.A(
 					// ============================================================
 					// Case 1: UPDATE operations (PRIMARY PATH)
 					// ============================================================
 					datastore.D(
-						datastore.E("operationType", "update"),
+						datastore.E(fieldOperationType, "update"),
 						datastore.E("$or", datastore.A(
 							datastore.D(
 								datastore.E("$expr", datastore.D(
-									datastore.E("$gt", datastore.A(
+									datastore.E(opGT, datastore.A(
 										datastore.D(
 											datastore.E("$size", datastore.D(
 												datastore.E("$filter", datastore.D(
@@ -177,16 +177,16 @@ func (b *MongoDBPipelineBuilder) BuildQuarantinedAndDrainedNodesPipeline() datas
 									)),
 								)),
 								datastore.E("fullDocument.healtheventstatus.userpodsevictionstatus.status", datastore.D(
-									datastore.E("$in", datastore.A(string(model.StatusSucceeded), string(model.AlreadyDrained))),
+									datastore.E(opIn, datastore.A(string(model.StatusSucceeded), string(model.AlreadyDrained))),
 								)),
 								datastore.E("fullDocument.healtheventstatus.nodequarantined", datastore.D(
-									datastore.E("$in", datastore.A(string(model.Quarantined), string(model.AlreadyQuarantined))),
+									datastore.E(opIn, datastore.A(string(model.Quarantined), string(model.AlreadyQuarantined))),
 								)),
 							),
 							// Watch for unquarantine events (for annotation cleanup)
 							datastore.D(
 								datastore.E("$expr", datastore.D(
-									datastore.E("$gt", datastore.A(
+									datastore.E(opGT, datastore.A(
 										datastore.D(
 											datastore.E("$size", datastore.D(
 												datastore.E("$filter", datastore.D(
@@ -208,8 +208,8 @@ func (b *MongoDBPipelineBuilder) BuildQuarantinedAndDrainedNodesPipeline() datas
 							),
 							// Watch for cancelled quarantine events (for annotation cleanup)
 							datastore.D(
-								datastore.E("updateDescription.updatedFields", datastore.D(
-									datastore.E("healtheventstatus.nodequarantined", string(model.Cancelled)),
+								datastore.E(fieldUpdatedFields, datastore.D(
+									datastore.E(nodeQuarantinedStatusField, string(model.Cancelled)),
 								)),
 							),
 						)),
@@ -220,15 +220,15 @@ func (b *MongoDBPipelineBuilder) BuildQuarantinedAndDrainedNodesPipeline() datas
 					// ============================================================
 					// Match if event is inserted with remediation-ready status already set
 					datastore.D(
-						datastore.E("operationType", "insert"),
+						datastore.E(fieldOperationType, opTypeInsert),
 						datastore.E("$or", datastore.A(
 							// Watch for quarantine events (for remediation)
 							datastore.D(
 								datastore.E("fullDocument.healtheventstatus.userpodsevictionstatus.status", datastore.D(
-									datastore.E("$in", datastore.A(string(model.StatusSucceeded), string(model.AlreadyDrained))),
+									datastore.E(opIn, datastore.A(string(model.StatusSucceeded), string(model.AlreadyDrained))),
 								)),
 								datastore.E("fullDocument.healtheventstatus.nodequarantined", datastore.D(
-									datastore.E("$in", datastore.A(string(model.Quarantined), string(model.AlreadyQuarantined))),
+									datastore.E(opIn, datastore.A(string(model.Quarantined), string(model.AlreadyQuarantined))),
 								)),
 							),
 							// Watch for unquarantine events (for annotation cleanup)

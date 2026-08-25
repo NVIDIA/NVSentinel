@@ -1,8 +1,6 @@
 module github.com/nvidia/nvsentinel/labeler
 
-go 1.26.0
-
-toolchain go1.26.3
+go 1.27.0
 
 require (
 	github.com/google/cel-go v0.31.0

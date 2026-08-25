@@ -1048,9 +1048,9 @@ func NewGPUPodSpec(namespace string, gpuCount int) *v1.Pod {
 			Containers: []v1.Container{
 				{
 					Name:    "gpu-container",
-					Image:   "busybox:latest",
-					Command: []string{"/bin/sh", "-c"},
-					Args:    []string{"sleep 3600"},
+					Image:   busyboxImage,
+					Command: []string{shellBinary, "-c"},
+					Args:    []string{sleepForever},
 					Resources: v1.ResourceRequirements{
 						Requests: v1.ResourceList{
 							"nvidia.com/gpu": resource.MustParse(fmt.Sprintf("%d", gpuCount)),

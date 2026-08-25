@@ -41,6 +41,9 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 )
 
+// fieldClientName is the resume-token document field identifying the watcher.
+const fieldClientName = "clientName"
+
 var resumeTokenRecoveries = promauto.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "change_stream_resume_token_recoveries_total",
@@ -169,7 +172,7 @@ func NewChangeStreamWatcher(
 	hasResumeToken := false
 
 	// Check if the resume token exists
-	err = tokenColl.FindOne(ctx, bson.M{"clientName": tokenConfig.ClientName}).Decode(&storedToken)
+	err = tokenColl.FindOne(ctx, bson.M{fieldClientName: tokenConfig.ClientName}).Decode(&storedToken)
 	if err == nil {
 		if len(storedToken.ResumeToken) > 0 {
 			slog.Info("ResumeToken found", "token", storedToken.ResumeToken)
@@ -352,7 +355,7 @@ func recoverFromStaleResumeToken(
 		"client", clientName)
 	resumeTokenRecoveries.WithLabelValues(clientName, "initialization").Inc()
 
-	if _, err := tokenColl.DeleteOne(ctx, bson.M{"clientName": clientName}); err != nil {
+	if _, err := tokenColl.DeleteOne(ctx, bson.M{fieldClientName: clientName}); err != nil {
 		slog.Error("Failed to delete resume token", "client", clientName, "error", err)
 	}
 
@@ -480,7 +483,7 @@ func (w *ChangeStreamWatcher) deleteStaleResumeToken() {
 	deleteCtx, deleteCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer deleteCancel()
 
-	if _, delErr := w.resumeTokenCol.DeleteOne(deleteCtx, bson.M{"clientName": w.clientName}); delErr != nil {
+	if _, delErr := w.resumeTokenCol.DeleteOne(deleteCtx, bson.M{fieldClientName: w.clientName}); delErr != nil {
 		slog.Error("Failed to delete stale resume token during event loop recovery",
 			"client", w.clientName, "error", delErr)
 	}
@@ -534,7 +537,7 @@ func (w *ChangeStreamWatcher) MarkProcessed(ctx context.Context, token []byte) e
 
 		_, err = w.resumeTokenCol.UpdateOne(
 			ctx,
-			bson.M{"clientName": w.clientName},
+			bson.M{fieldClientName: w.clientName},
 			bson.M{"$set": bson.M{"resumeToken": resumeTokenToStore}},
 			options.Update().SetUpsert(true),
 		)

@@ -23,6 +23,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/json"
+
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/auth"
 )
 
 // configFromJSON parses config the same way loadConfig does, so these tests
@@ -234,6 +236,93 @@ func TestInitializeAuthInterceptor_RequiresAudience(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "AuthAudience")
+}
+
+func TestAuthMode(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    auth.Mode
+		wantErr string
+	}{
+		{name: "absent defaults to enforce", raw: `{"other":1}`, want: auth.ModeEnforce},
+		{name: "explicit enforce", raw: `{"AuthMode":"enforce"}`, want: auth.ModeEnforce},
+		{name: "explicit audit", raw: `{"AuthMode":"audit"}`, want: auth.ModeAudit},
+		{name: "unknown value is rejected", raw: `{"AuthMode":"warn"}`, wantErr: `must be "enforce" or "audit"`},
+		{name: "wrong type is rejected", raw: `{"AuthMode":1}`, wantErr: "must be a string"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := authMode(configFromJSON(t, tt.raw))
+
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestBoolFromConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		def     bool
+		want    bool
+		wantErr bool
+	}{
+		{name: "absent returns default", raw: `{"other":1}`, def: true, want: true},
+		{name: "quoted true", raw: `{"k":"true"}`, want: true},
+		{name: "unquoted true", raw: `{"k":true}`, want: true},
+		{name: "quoted false", raw: `{"k":"false"}`, def: true, want: false},
+		{name: "unquoted false", raw: `{"k":false}`, def: true, want: false},
+		{name: "typo is malformed", raw: `{"k":"yes"}`, wantErr: true},
+		{name: "number is malformed", raw: `{"k":1}`, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := boolFromConfig(configFromJSON(t, tt.raw), "k", tt.def)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestInitializeAuthInterceptor_RejectsUnknownMode(t *testing.T) {
+	t.Setenv("NODE_NAME", "node-a")
+
+	_, err := initializeAuthInterceptor(context.Background(), configFromJSON(t,
+		`{"enableNodeBindingAuth":"true","AuthAudience":"a","AuthCrossNodeServiceAccounts":[],"AuthMode":"warn"}`),
+		stubKubeconfig(t))
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "AuthMode")
+}
+
+func TestInitializeAuthInterceptor_AuditModeAndFailOpenBuild(t *testing.T) {
+	// Both flags are optional and wire through to a working interceptor.
+	t.Setenv("NODE_NAME", "node-a")
+
+	got, err := initializeAuthInterceptor(context.Background(), configFromJSON(t,
+		`{"enableNodeBindingAuth":"true","AuthAudience":"a","AuthCrossNodeServiceAccounts":[],`+
+			`"AuthMode":"audit","AuthFailOpenOnUnavailable":true}`),
+		stubKubeconfig(t))
+
+	require.NoError(t, err)
+	assert.NotNil(t, got)
 }
 
 func TestInitializeAuthInterceptor_RejectsNonCanonicalAllowlistEntry(t *testing.T) {

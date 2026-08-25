@@ -374,12 +374,20 @@ EOF
     # Wait for fake DCGM to be ready before continuing
     # The readiness probe checks if port 5555 is actually listening
     log "Waiting for fake DCGM to be ready..."
-    kubectl wait --for=condition=ready pod \
+    if kubectl wait --for=condition=ready pod \
         -l app=nvidia-dcgm \
         -n gpu-operator \
-        --timeout=120s > /dev/null 2>&1
-    
-    success "Fake DCGM deployed and ready (port 5555 is listening)"
+        --timeout=120s > /dev/null 2>&1; then
+        success "Fake DCGM deployed and ready (port 5555 is listening)"
+    else
+        echo ""
+        echo "The image may still be pulling on slower connections. Check with:"
+        echo "  kubectl get pods -n gpu-operator"
+        echo ""
+        echo "Once it shows Running, continue with ./scripts/01-show-cluster.sh"
+        echo ""
+        error "Fake DCGM did not become ready within 120s"
+    fi
 }
 
 label_demo_nodes() {

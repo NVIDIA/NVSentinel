@@ -26,6 +26,9 @@ import (
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
+// fieldHealthEventNodeName is the node-name field path in health event documents.
+const fieldHealthEventNodeName = "healthevent.nodename"
+
 // MongoHealthEventStore implements HealthEventStore for MongoDB
 type MongoHealthEventStore struct {
 	databaseClient   client.DatabaseClient
@@ -70,7 +73,7 @@ func (h *MongoHealthEventStore) UpdateHealthEventStatusByNode(ctx context.Contex
 	status datastore.HealthEventStatus) error {
 	// Create filter for node name
 	filter := map[string]interface{}{
-		"healthevent.nodename": nodeName,
+		fieldHealthEventNodeName: nodeName,
 	}
 
 	// Create update document
@@ -92,7 +95,7 @@ func (h *MongoHealthEventStore) UpdateHealthEventStatusByNode(ctx context.Contex
 func (h *MongoHealthEventStore) FindHealthEventsByNode(ctx context.Context,
 	nodeName string) ([]datastore.HealthEventWithStatus, error) {
 	filter := map[string]interface{}{
-		"healthevent.nodename": nodeName,
+		fieldHealthEventNodeName: nodeName,
 	}
 
 	cursor, err := h.databaseClient.Find(ctx, filter, nil)
@@ -253,7 +256,7 @@ func (h *MongoHealthEventStore) CheckIfNodeAlreadyDrained(ctx context.Context,
 	nodeName string) (bool, error) {
 	// Look for events where the node is successfully drained
 	filter := map[string]interface{}{
-		"healthevent.nodename":                            nodeName,
+		fieldHealthEventNodeName:                          nodeName,
 		"healtheventstatus.userpodsevictionstatus.status": datastore.StatusSucceeded,
 	}
 
@@ -303,7 +306,7 @@ func (h *MongoHealthEventStore) FindLatestEventForNode(
 	nodeName string,
 ) (*datastore.HealthEventWithStatus, error) {
 	event, err := h.findLatestByFilter(ctx, map[string]interface{}{
-		"healthevent.nodename": nodeName,
+		fieldHealthEventNodeName: nodeName,
 	})
 	if err != nil {
 		return nil, datastore.NewQueryError(

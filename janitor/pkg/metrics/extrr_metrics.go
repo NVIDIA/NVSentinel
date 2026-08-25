@@ -21,6 +21,12 @@ import (
 
 // ExtRR observability metrics. Schema per ADR-040.
 
+// Metric label names.
+const (
+	labelResult            = "result"
+	labelRecommendedAction = "recommended_action"
+)
+
 const (
 	ExtRRPhaseCreated          = "created"
 	ExtRRPhaseReleased         = "released"
@@ -53,39 +59,39 @@ var (
 	ExtRRTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "nvsentinel_external_remediation_total",
 		Help: "Lifecycle transitions of ExternalRemediationRequest objects, labeled by phase and outcome.",
-	}, []string{"phase", "result"})
+	}, []string{"phase", labelResult})
 
 	ExtRROpen = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "nvsentinel_external_remediation_open",
 		Help: "Currently-open ExternalRemediationRequest objects by node, action, and substate.",
-	}, []string{"node", "recommended_action", "state"})
+	}, []string{labelNode, labelRecommendedAction, "state"})
 
 	ExtRRAgeSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "nvsentinel_external_remediation_age_seconds",
 		Help:    "Age of an ExternalRemediationRequest at close time.",
 		Buckets: prometheus.ExponentialBuckets(10, 4, 8), // 10s, 40s, 160s, ~10m, ~43m, ~3h, ~11h, ~46h
-	}, []string{"recommended_action", "result"})
+	}, []string{labelRecommendedAction, labelResult})
 )
 
 func (m *ActionMetrics) IncExtRRTotal(phase, result string) {
 	ExtRRTotal.With(prometheus.Labels{
-		"phase":  phase,
-		"result": result,
+		"phase":     phase,
+		labelResult: result,
 	}).Inc()
 }
 
 func (m *ActionMetrics) AdjustExtRROpen(node, recommendedAction, state string, delta float64) {
 	ExtRROpen.With(prometheus.Labels{
-		"node":               node,
-		"recommended_action": recommendedAction,
-		"state":              state,
+		labelNode:              node,
+		labelRecommendedAction: recommendedAction,
+		"state":                state,
 	}).Add(delta)
 }
 
 func (m *ActionMetrics) ObserveExtRRAge(recommendedAction, result string, ageSeconds float64) {
 	ExtRRAgeSeconds.With(prometheus.Labels{
-		"recommended_action": recommendedAction,
-		"result":             result,
+		labelRecommendedAction: recommendedAction,
+		labelResult:            result,
 	}).Observe(ageSeconds)
 }
 

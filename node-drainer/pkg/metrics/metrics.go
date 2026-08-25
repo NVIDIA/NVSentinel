@@ -21,6 +21,9 @@ import (
 
 // Drain Status constants for event processing metrics
 const (
+	// labelNode is the node-name label shared by the metrics below.
+	labelNode = "node"
+
 	DrainStatusDrained   = "drained"
 	DrainStatusCancelled = "cancelled"
 	DrainStatusSkipped   = "skipped"
@@ -51,7 +54,7 @@ var (
 			Name: "node_drainer_events_processed_total",
 			Help: "Total number of events processed by drain status outcome.",
 		},
-		[]string{"drain_status", "node"},
+		[]string{"drain_status", labelNode},
 	)
 
 	// ProcessingErrors tracks all errors (event processing and node draining)
@@ -60,7 +63,7 @@ var (
 			Name: "node_drainer_processing_errors_total",
 			Help: "Total number of errors encountered during event processing and node draining.",
 		},
-		[]string{"error_type", "node"},
+		[]string{"error_type", labelNode},
 	)
 
 	// CancelledEvent tracks cancelled drain events
@@ -68,7 +71,7 @@ var (
 		prometheus.CounterOpts{
 			Name: "node_drainer_cancelled_event_total",
 			Help: "Total number of cancelled drain events (due to manual uncordon or healthy recovery).",
-		}, []string{"node", "check_name"},
+		}, []string{labelNode, "check_name"},
 	)
 
 	// Node draining metrics
@@ -79,7 +82,7 @@ var (
 			Name: "node_drainer_waiting_for_timeout",
 			Help: "Total number of node drainer operations in deleteAfterTimeout mode.",
 		},
-		[]string{"node"},
+		[]string{labelNode},
 	)
 
 	// NodeDrainTimeoutReached tracks operations that reached timeout and force deleted pods
@@ -89,7 +92,7 @@ var (
 			Help: "Total number of node drainer operations in deleteAfterTimeout mode" +
 				"that reached the timeout and force deleted the pods.",
 		},
-		[]string{"node", "namespace"},
+		[]string{labelNode, "namespace"},
 	)
 
 	// EventHandlingDuration tracks event handling durations
@@ -134,6 +137,6 @@ var (
 			Name: "node_drainer_custom_drain_crd_not_found_total",
 			Help: "Total number of custom drain operations that failed because the CRD was not found in the cluster.",
 		},
-		[]string{"node"},
+		[]string{labelNode},
 	)
 )

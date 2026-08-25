@@ -66,7 +66,7 @@ func (e *mongoEvent) GetDocumentID() (string, error) {
 		).WithMetadata("type", fmt.Sprintf("%T", fullDocument))
 	}
 
-	objectID, ok := document["_id"].(primitive.ObjectID)
+	objectID, ok := document[fieldID].(primitive.ObjectID)
 	if !ok {
 		return "", datastore.NewValidationError(
 			datastore.ProviderMongoDB,
@@ -227,8 +227,8 @@ func (e *mongoEvent) UnmarshalDocument(v interface{}) error {
 // Deprecated: Use BuildInsertOnlyPipelineAgnostic() instead
 func BuildInsertOnlyPipeline() interface{} {
 	return mongo.Pipeline{
-		bson.D{{Key: "$match", Value: bson.D{
-			{Key: "operationType", Value: bson.D{{Key: "$in", Value: bson.A{"insert"}}}},
+		bson.D{{Key: opMatch, Value: bson.D{
+			{Key: fieldOperationType, Value: bson.D{{Key: opIn, Value: bson.A{opTypeInsert}}}},
 		}}},
 	}
 }
@@ -238,15 +238,15 @@ func BuildInsertOnlyPipeline() interface{} {
 // Deprecated: Use BuildQuarantineUpdatePipelineAgnostic() instead
 func BuildQuarantineUpdatePipeline() interface{} {
 	return mongo.Pipeline{
-		bson.D{{Key: "$match", Value: bson.D{
-			{Key: "operationType", Value: "update"},
+		bson.D{{Key: opMatch, Value: bson.D{
+			{Key: fieldOperationType, Value: "update"},
 			{Key: "$or", Value: bson.A{
-				bson.D{{Key: "updateDescription.updatedFields",
-					Value: bson.D{{Key: "healtheventstatus.nodequarantined", Value: model.Quarantined}}}},
-				bson.D{{Key: "updateDescription.updatedFields",
-					Value: bson.D{{Key: "healtheventstatus.nodequarantined", Value: model.AlreadyQuarantined}}}},
-				bson.D{{Key: "updateDescription.updatedFields",
-					Value: bson.D{{Key: "healtheventstatus.nodequarantined", Value: model.UnQuarantined}}}},
+				bson.D{{Key: fieldUpdatedFields,
+					Value: bson.D{{Key: nodeQuarantinedStatusField, Value: model.Quarantined}}}},
+				bson.D{{Key: fieldUpdatedFields,
+					Value: bson.D{{Key: nodeQuarantinedStatusField, Value: model.AlreadyQuarantined}}}},
+				bson.D{{Key: fieldUpdatedFields,
+					Value: bson.D{{Key: nodeQuarantinedStatusField, Value: model.UnQuarantined}}}},
 			}},
 		}}},
 	}
@@ -257,8 +257,8 @@ func BuildQuarantineUpdatePipeline() interface{} {
 // Deprecated: Use BuildNonFatalInsertPipelineAgnostic() instead
 func BuildNonFatalInsertPipeline() interface{} {
 	return mongo.Pipeline{
-		bson.D{{Key: "$match", Value: bson.D{
-			{Key: "operationType", Value: "insert"},
+		bson.D{{Key: opMatch, Value: bson.D{
+			{Key: fieldOperationType, Value: opTypeInsert},
 			{Key: "fullDocument.healthevent.isfatal", Value: false},
 			{Key: "fullDocument.healthevent.ishealthy", Value: false},
 		}}},
@@ -443,9 +443,9 @@ func (c *MongoDBClient) UpdateDocumentStatus(
 		).WithMetadata("documentID", documentID)
 	}
 
-	filter := bson.M{"_id": objectID}
+	filter := bson.M{fieldID: objectID}
 
-	// Determine if this is a nested field path (e.g., "healtheventstatus.nodequarantined")
+	// Determine if this is a nested field path (e.g., nodeQuarantinedStatusField)
 	// or a base path with a struct (e.g., "healtheventstatus" with HealthEventStatus)
 	var updateFields bson.M
 	if c.isNestedFieldPath(statusPath) {
@@ -456,7 +456,7 @@ func (c *MongoDBClient) UpdateDocumentStatus(
 		updateFields = c.buildStructFieldUpdates(statusPath, status)
 	}
 
-	update := bson.M{"$set": updateFields}
+	update := bson.M{opSet: updateFields}
 
 	_, err = c.mongoCol.UpdateOne(ctx, filter, update)
 	if err != nil {
@@ -488,8 +488,8 @@ func (c *MongoDBClient) UpdateDocumentStatusFields(
 		).WithMetadata("documentID", documentID)
 	}
 
-	filter := bson.M{"_id": objectID}
-	update := bson.M{"$set": fields}
+	filter := bson.M{fieldID: objectID}
+	update := bson.M{opSet: fields}
 
 	_, err = c.mongoCol.UpdateOne(ctx, filter, update)
 	if err != nil {
@@ -511,9 +511,9 @@ func (c *MongoDBClient) isNestedFieldPath(statusPath string) bool {
 
 // buildDirectFieldUpdate creates a direct field update for a specific nested path
 // Used by convenience functions like UpdateHealthEventNodeQuarantineStatus
-// Example: statusPath="healtheventstatus.nodequarantined", status="Quarantined"
+// Example: statusPath=nodeQuarantinedStatusField, status="Quarantined"
 //
-//	→ {"healtheventstatus.nodequarantined": "Quarantined"}
+//	→ {nodeQuarantinedStatusField: "Quarantined"}
 func (c *MongoDBClient) buildDirectFieldUpdate(statusPath string, status interface{}) bson.M {
 	return bson.M{statusPath: status}
 }
@@ -560,15 +560,15 @@ func (c *MongoDBClient) buildStructFieldUpdates(basePath string, status interfac
 	// (timestamppb.Timestamp expects {seconds, nanos}; wrapperspb.BoolValue expects {value}).
 	if healthStatus.QuarantineFinishTimestamp != nil {
 		updateFields[basePath+".quarantinefinishtimestamp"] = map[string]interface{}{
-			"seconds": healthStatus.QuarantineFinishTimestamp.Seconds,
-			"nanos":   healthStatus.QuarantineFinishTimestamp.Nanos,
+			fieldTimestampSecs:  healthStatus.QuarantineFinishTimestamp.Seconds,
+			fieldTimestampNanos: healthStatus.QuarantineFinishTimestamp.Nanos,
 		}
 	}
 
 	if healthStatus.DrainFinishTimestamp != nil {
 		updateFields[basePath+".drainfinishtimestamp"] = map[string]interface{}{
-			"seconds": healthStatus.DrainFinishTimestamp.Seconds,
-			"nanos":   healthStatus.DrainFinishTimestamp.Nanos,
+			fieldTimestampSecs:  healthStatus.DrainFinishTimestamp.Seconds,
+			fieldTimestampNanos: healthStatus.DrainFinishTimestamp.Nanos,
 		}
 	}
 
@@ -580,8 +580,8 @@ func (c *MongoDBClient) buildStructFieldUpdates(basePath string, status interfac
 
 	if healthStatus.LastRemediationTimestamp != nil {
 		updateFields[basePath+".lastremediationtimestamp"] = map[string]interface{}{
-			"seconds": healthStatus.LastRemediationTimestamp.Seconds,
-			"nanos":   healthStatus.LastRemediationTimestamp.Nanos,
+			fieldTimestampSecs:  healthStatus.LastRemediationTimestamp.Seconds,
+			fieldTimestampNanos: healthStatus.LastRemediationTimestamp.Nanos,
 		}
 	}
 
@@ -663,7 +663,7 @@ func (c *MongoDBClient) UpsertDocument(
 	ctx context.Context, filter interface{}, document interface{},
 ) (*UpdateResult, error) {
 	opts := options.Update().SetUpsert(true)
-	update := bson.M{"$set": document}
+	update := bson.M{opSet: document}
 
 	result, err := c.mongoCol.UpdateOne(ctx, resolveMongoFilter(filter), update, opts)
 	if err != nil {
@@ -1032,8 +1032,8 @@ func ConvertAgnosticPipelineToMongo(pipeline datastore.Pipeline) (interface{}, e
 	if len(pipeline) == 0 {
 		// Return an insert-only pipeline as default
 		return mongo.Pipeline{
-			bson.D{{Key: "$match", Value: bson.D{
-				{Key: "operationType", Value: bson.D{{Key: "$in", Value: bson.A{"insert"}}}},
+			bson.D{{Key: opMatch, Value: bson.D{
+				{Key: fieldOperationType, Value: bson.D{{Key: opIn, Value: bson.A{opTypeInsert}}}},
 			}}},
 		}, nil
 	}

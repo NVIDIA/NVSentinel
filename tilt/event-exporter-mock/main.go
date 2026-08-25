@@ -25,12 +25,23 @@ import (
 	"time"
 )
 
+// unknownValue is the placeholder used when an incoming CloudEvent omits a field.
+const unknownValue = "unknown"
+
 var (
 	tokenRequestCount   int64
 	eventsReceivedCount int64
 	receivedEvents      []map[string]any
 	eventsMutex         sync.RWMutex
 )
+
+// writeJSON encodes v to w, logging (rather than propagating) encode failures:
+// the status line has already been written by the time this runs.
+func writeJSON(w http.ResponseWriter, v any) {
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Printf("encode response: %v", err)
+	}
+}
 
 func main() {
 	mux := http.NewServeMux()
@@ -67,7 +78,8 @@ func handleTokenRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Token request from %s", r.RemoteAddr)
+	// G706: RemoteAddr is set by the server from the socket peer, not client-controlled text.
+	log.Printf("Token request from %s", r.RemoteAddr) //nolint:gosec
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -78,7 +90,7 @@ func handleTokenRequest(w http.ResponseWriter, r *http.Request) {
 		"token_type":   "Bearer",
 	}
 
-	json.NewEncoder(w).Encode(response)
+	writeJSON(w, response)
 }
 
 func handleEventSink(w http.ResponseWriter, r *http.Request) {
@@ -91,6 +103,7 @@ func handleEventSink(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("Failed to read request body: %v", err)
 		http.Error(w, "Failed to read body", http.StatusBadRequest)
+
 		return
 	}
 	defer r.Body.Close()
@@ -99,27 +112,29 @@ func handleEventSink(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(body, &event); err != nil {
 		log.Printf("Invalid JSON: %v", err)
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+
 		return
 	}
 
 	atomic.AddInt64(&eventsReceivedCount, 1)
 
-	eventID := "unknown"
+	eventID := unknownValue
 	if id, ok := event["id"].(string); ok {
 		eventID = id
 	}
 
-	eventType := "unknown"
+	eventType := unknownValue
 	if typ, ok := event["type"].(string); ok {
 		eventType = typ
 	}
 
-	source := "unknown"
+	source := unknownValue
 	if src, ok := event["source"].(string); ok {
 		source = src
 	}
 
 	eventsMutex.Lock()
+
 	receivedEvents = append(receivedEvents, event)
 	if len(receivedEvents) > 100 {
 		receivedEvents = receivedEvents[1:]
@@ -130,7 +145,7 @@ func handleEventSink(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+	writeJSON(w, map[string]string{"status": "accepted"})
 }
 
 func handleMetrics(w http.ResponseWriter, r *http.Request) {
@@ -150,7 +165,7 @@ func handleEventsList(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]any{
+	writeJSON(w, map[string]any{
 		"events": receivedEvents,
 		"count":  len(receivedEvents),
 	})
@@ -159,5 +174,8 @@ func handleEventsList(w http.ResponseWriter, r *http.Request) {
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ok"))
+
+	if _, err := w.Write([]byte("ok")); err != nil {
+		log.Printf("write health response: %v", err)
+	}
 }

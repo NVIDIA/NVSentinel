@@ -44,6 +44,19 @@ const (
 	opGT  = "$gt"
 	opLT  = "$lt"
 	opNE  = "$ne"
+	opIn  = "$in"
+
+	// MongoDB aggregation stages and update operators
+	opMatch = "$match"
+	opSet   = "$set"
+
+	// Change-stream and document field names
+	fieldID             = "_id"
+	fieldOperationType  = "operationType"
+	fieldUpdatedFields  = "updateDescription.updatedFields"
+	opTypeInsert        = "insert"
+	fieldTimestampSecs  = "seconds"
+	fieldTimestampNanos = "nanos"
 
 	// SQL constants
 	orderDESC     = "DESC"
@@ -239,7 +252,7 @@ func (c *PostgreSQLClient) UpdateDocumentStatus(
 	//nolint:gosec // G201: table name from config, using parameterized queries ($1, $2)
 
 	switch statusPath {
-	case "healtheventstatus.nodequarantined":
+	case nodeQuarantinedStatusField:
 		// Update both the JSONB field and the denormalized node_quarantined column
 		query = fmt.Sprintf(
 			"UPDATE %s SET document = jsonb_set(document, '%s', $1), node_quarantined = $2, updated_at = NOW() WHERE id = $3",
@@ -291,7 +304,7 @@ func (c *PostgreSQLClient) UpdateDocumentStatus(
 }
 
 // UpdateDocumentStatusFields updates multiple status fields in a document in one operation.
-// Keys in fields are dot-notation paths (e.g. "healtheventstatus.nodequarantined").
+// Keys in fields are dot-notation paths (e.g. nodeQuarantinedStatusField).
 func (c *PostgreSQLClient) UpdateDocumentStatusFields(
 	ctx context.Context, documentID string, fields map[string]interface{},
 ) error {
@@ -338,7 +351,7 @@ func (c *PostgreSQLClient) UpdateDocumentStatusFields(
 
 		args = append(args, string(valueJSON))
 
-		if path == "healtheventstatus.nodequarantined" {
+		if path == nodeQuarantinedStatusField {
 			nodeQuarantinedVal = value
 		}
 
@@ -461,7 +474,7 @@ func (c *PostgreSQLClient) UpsertDocument(
 
 	// Try update first
 	update := map[string]interface{}{
-		"$set": document,
+		opSet: document,
 	}
 
 	result, err := c.UpdateDocument(ctx, filter, update)
@@ -818,7 +831,7 @@ func (c *PostgreSQLClient) buildWhereClause(filter interface{}) (string, []inter
 
 		// Check if value is a map containing comparison operators
 		if valueMap, ok := value.(map[string]interface{}); ok {
-			// Handle comparison operators: {"count": {"$gte": 5}} → document->>'count' >= 5
+			// Handle comparison operators: {"count": {opGTE: 5}} → document->>'count' >= 5
 			jsonPath := c.buildJSONPath(key)
 
 			condition, valueArgs, err := c.buildFieldComparison(jsonPath, valueMap, paramCount)
@@ -865,17 +878,17 @@ func (c *PostgreSQLClient) buildFieldComparison(
 		var sqlOp string
 
 		switch op {
-		case "$gte":
+		case opGTE:
 			sqlOp = ">="
-		case "$gt":
+		case opGT:
 			sqlOp = ">"
 		case opLTE:
 			sqlOp = "<="
-		case "$lt":
+		case opLT:
 			sqlOp = "<"
 		case opEQ:
 			sqlOp = "="
-		case "$ne":
+		case opNE:
 			sqlOp = "!="
 		default:
 			return "", nil, datastore.NewQueryError(
@@ -976,19 +989,19 @@ func (c *PostgreSQLClient) buildExprCondition(expr interface{}) (string, error) 
 
 			return fmt.Sprintf("(%s)", strings.Join(conditions, " OR ")), nil
 
-		case "$gte":
+		case opGTE:
 			return c.buildComparisonExpr(">=", value)
-		case "$gt":
+		case opGT:
 			return c.buildComparisonExpr(">", value)
 		case opLTE:
 			return c.buildComparisonExpr("<=", value)
-		case "$lt":
+		case opLT:
 			return c.buildComparisonExpr("<", value)
 		case opEQ:
 			return c.buildComparisonExpr("=", value)
-		case "$ne":
+		case opNE:
 			return c.buildComparisonExpr("!=", value)
-		case "$in":
+		case opIn:
 			// Handle $in operator for arrays
 			inArray, ok := value.([]interface{})
 			if !ok || len(inArray) != 2 {
@@ -1076,7 +1089,7 @@ func (c *PostgreSQLClient) buildExprValue(value interface{}) (string, error) {
 		}
 
 		// Plain string literal - return as SQL string literal
-		// This handles cases like {"$in": ["79", "$arrayField"]} where "79" is a literal value
+		// This handles cases like {opIn: ["79", "$arrayField"]} where "79" is a literal value
 		// Escape single quotes to prevent SQL injection
 		escaped := strings.ReplaceAll(v, "'", "''")
 
@@ -1333,7 +1346,7 @@ func (c *PostgreSQLClient) buildExprValue(value interface{}) (string, error) {
 					"sql", sql)
 
 				return sql, nil
-			case "$in":
+			case opIn:
 				// $in checks if a value is in an array: [value, array]
 				// PostgreSQL: value IN (array) or for JSONB: value = ANY(array)
 				operandArray, ok := operand.([]interface{})
@@ -1895,7 +1908,7 @@ func (b *aggregationQueryBuilder) processStage(stageIndex int, stage map[string]
 
 	for operator, value := range stage {
 		switch operator {
-		case "$match":
+		case opMatch:
 			return b.processMatch(value)
 		case "$sort":
 			return b.processSort(value)
@@ -2325,7 +2338,7 @@ func (b *aggregationQueryBuilder) buildGroupQuery() string {
 	}
 
 	// Extract _id field for grouping
-	idField, hasID := b.groupBy["_id"]
+	idField, hasID := b.groupBy[fieldID]
 	if !hasID {
 		idField = nil
 	}
@@ -2339,7 +2352,7 @@ func (b *aggregationQueryBuilder) buildGroupQuery() string {
 
 	// Handle aggregation operators in the group stage
 	for fieldName, fieldExpr := range b.groupBy {
-		if fieldName == "_id" {
+		if fieldName == fieldID {
 			continue // Already handled
 		}
 
@@ -2649,7 +2662,7 @@ func (c *PostgreSQLClient) buildUpdateClause(update interface{}) (string, []inte
 	}
 
 	// Handle $set operator
-	setFields, hasSet := updateMap["$set"]
+	setFields, hasSet := updateMap[opSet]
 	if !hasSet {
 		return "", nil, datastore.NewValidationError(
 			datastore.ProviderPostgreSQL,
@@ -2767,7 +2780,7 @@ func (r *postgresqlSingleResult) Decode(v interface{}) error {
 
 	// Add _id field if target is a map (for compatibility with MongoDB)
 	if targetMap, ok := v.(*map[string]interface{}); ok && targetMap != nil {
-		(*targetMap)["_id"] = id
+		(*targetMap)[fieldID] = id
 	}
 
 	return nil
@@ -2822,7 +2835,7 @@ func (c *postgresqlCursor) Decode(v interface{}) error {
 
 	// Add _id field if target is a map (for compatibility with MongoDB)
 	if targetMap, ok := v.(*map[string]interface{}); ok && targetMap != nil {
-		(*targetMap)["_id"] = id
+		(*targetMap)[fieldID] = id
 	}
 
 	return nil
@@ -2872,7 +2885,7 @@ func (c *postgresqlCursor) All(ctx context.Context, results interface{}) error {
 			)
 		}
 
-		doc["_id"] = id
+		doc[fieldID] = id
 		documents = append(documents, doc)
 	}
 

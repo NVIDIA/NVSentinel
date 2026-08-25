@@ -478,9 +478,9 @@ func (c *PostgreSQLDatabaseClient) syncDenormalizedColumns(
 	// For maintenance_events table, when updating denormalized columns (like status),
 	// also update the corresponding field in the JSONB document to keep them in sync.
 	// This is critical because queries may filter on either the column or the document field.
-	if c.tableName == maintenanceEventTableName && key == "status" {
+	if c.tableName == maintenanceEventTableName && key == fieldStatus {
 		slog.Debug("Also updating document.status field to keep in sync with column", "value", value)
-		builder.SetDocumentField("status", value)
+		builder.SetDocumentField(fieldStatus, value)
 	}
 }
 
@@ -620,6 +620,7 @@ func (c *PostgreSQLDatabaseClient) upsertMaintenanceEvent(
 }
 
 var knownColumnMappings = map[string]string{
+	//nolint:goconst // identity/canonicalisation table; literals are the data
 	"createdAt": "created_at",
 	"updatedAt": "updated_at",
 	"_id":       "id",
@@ -1116,7 +1117,7 @@ func (c *postgresqlCursor) Err() error {
 func (c *postgresqlCursor) All(ctx context.Context, results interface{}) error {
 	// Results should be a pointer to a slice
 	resultsVal := reflect.ValueOf(results)
-	if resultsVal.Kind() != reflect.Ptr || resultsVal.Elem().Kind() != reflect.Slice {
+	if resultsVal.Kind() != reflect.Pointer || resultsVal.Elem().Kind() != reflect.Slice {
 		return fmt.Errorf("results must be a pointer to a slice")
 	}
 

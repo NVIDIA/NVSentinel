@@ -45,6 +45,9 @@ quarantineTriggerEngine:
 # Scheduling configuration
 nodeSelector: {}
 affinity: {}
+# Pod priority for this component. Overridden by the matching global when that is set.
+priorityClassName: ""
+
 tolerations: []
 
 podAnnotations: {}

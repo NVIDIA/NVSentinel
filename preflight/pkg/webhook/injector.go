@@ -42,6 +42,9 @@ var supportedHostPathTypes = map[string]corev1.HostPathType{
 }
 
 const (
+	// patchOpAdd is the JSON Patch (RFC 6902) "add" operation.
+	patchOpAdd = "add"
+
 	nvsentinelSocketVolumeName = "nvsentinel-socket"
 	// connectorTokenVolumeName holds a projected ServiceAccount token for the
 	// platform-connector audience, minted against the workload pod's own
@@ -237,7 +240,7 @@ func (i *Injector) InjectInitContainers(ctx context.Context, pod *corev1.Pod) ([
 func (i *Injector) patchInitContainers(pod *corev1.Pod, initContainers []corev1.Container) []PatchOperation {
 	if len(pod.Spec.InitContainers) == 0 {
 		return []PatchOperation{{
-			Op:    "add",
+			Op:    patchOpAdd,
 			Path:  "/spec/initContainers",
 			Value: initContainers,
 		}}
@@ -252,7 +255,7 @@ func (i *Injector) patchInitContainers(pod *corev1.Pod, initContainers []corev1.
 		}
 
 		patches = append(patches, PatchOperation{
-			Op:    "add",
+			Op:    patchOpAdd,
 			Path:  path,
 			Value: c,
 		})
@@ -710,14 +713,14 @@ func (i *Injector) injectVolumes(pod *corev1.Pod, gangCtx *GangContext) []PatchO
 
 	if len(pod.Spec.Volumes) == 0 {
 		patches = append(patches, PatchOperation{
-			Op:    "add",
+			Op:    patchOpAdd,
 			Path:  "/spec/volumes",
 			Value: volumesToAdd,
 		})
 	} else {
 		for _, vol := range volumesToAdd {
 			patches = append(patches, PatchOperation{
-				Op:    "add",
+				Op:    patchOpAdd,
 				Path:  "/spec/volumes/-",
 				Value: vol,
 			})
@@ -754,7 +757,7 @@ func (i *Injector) injectImagePullSecrets(pod *corev1.Pod) []PatchOperation {
 
 	if len(pod.Spec.ImagePullSecrets) == 0 {
 		return []PatchOperation{{
-			Op:    "add",
+			Op:    patchOpAdd,
 			Path:  "/spec/imagePullSecrets",
 			Value: toAdd,
 		}}
@@ -763,7 +766,7 @@ func (i *Injector) injectImagePullSecrets(pod *corev1.Pod) []PatchOperation {
 	patches := make([]PatchOperation, 0, len(toAdd))
 	for _, s := range toAdd {
 		patches = append(patches, PatchOperation{
-			Op:    "add",
+			Op:    patchOpAdd,
 			Path:  "/spec/imagePullSecrets/-",
 			Value: s,
 		})

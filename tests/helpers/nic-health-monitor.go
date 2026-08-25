@@ -41,7 +41,6 @@ const (
 	FakeBootIDPath   = "/var/lib/nvsentinel/fake-proc/sys/kernel/random/boot_id"
 
 	fakeSysfsHostBase = "/var/lib/nvsentinel"
-	busyboxImage      = "busybox:latest"
 )
 
 // NICTestState bundles everything needed to tear down a NIC test cleanly.

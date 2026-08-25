@@ -466,16 +466,76 @@ func initializeAuthInterceptor(
 		return nil, err
 	}
 
+	mode, err := authMode(config)
+	if err != nil {
+		return nil, fmt.Errorf("parse AuthMode: %w", err)
+	}
+
+	failOpenOnUnavailable, err := boolFromConfig(config, "AuthFailOpenOnUnavailable", false)
+	if err != nil {
+		return nil, fmt.Errorf("parse AuthFailOpenOnUnavailable: %w", err)
+	}
+
 	interceptor, err := auth.NewNodeBindingInterceptor(auth.Config{
 		NodeName:                 nodeName,
 		Validator:                validator,
 		CrossNodeServiceAccounts: crossNodeSAs,
+		Mode:                     mode,
+		FailOpenOnUnavailable:    failOpenOnUnavailable,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to build node-binding interceptor: %w", err)
 	}
 
 	return interceptor, nil
+}
+
+// authMode reads the node-binding enforcement mode from config. Absent means
+// auth.ModeEnforce, so that a ConfigMap that predates this setting keeps
+// today's behavior rather than silently switching to audit-only.
+func authMode(config map[string]interface{}) (auth.Mode, error) {
+	const key = "AuthMode"
+
+	raw, present := config[key]
+	if !present {
+		return auth.ModeEnforce, nil
+	}
+
+	v, ok := raw.(string)
+	if !ok {
+		return "", fmt.Errorf("%s must be a string, got %#v", key, raw)
+	}
+
+	switch auth.Mode(v) {
+	case auth.ModeEnforce, auth.ModeAudit:
+		return auth.Mode(v), nil
+	default:
+		return "", fmt.Errorf("%s must be %q or %q, got %q", key, auth.ModeEnforce, auth.ModeAudit, v)
+	}
+}
+
+// boolFromConfig reads a strict boolean config value, defaulting when absent.
+// Values arrive as JSON, where the chart quotes them; an unquoted bool from a
+// hand-edited ConfigMap is accepted too.
+func boolFromConfig(config map[string]interface{}, key string, def bool) (bool, error) {
+	raw, present := config[key]
+	if !present {
+		return def, nil
+	}
+
+	switch v := raw.(type) {
+	case bool:
+		return v, nil
+	case string:
+		switch v {
+		case True:
+			return true, nil
+		case "false":
+			return false, nil
+		}
+	}
+
+	return false, fmt.Errorf("%s must be true or false, got %#v", key, raw)
 }
 
 func initializeGRPCSinkConnector(

@@ -31,7 +31,7 @@
 
 # Language Versions
 languages:
-  go: '1.26.3'
+  go: '1.27.0'
   python: '3.13'
 
 # Build & Package Management
@@ -41,7 +41,7 @@ build_tools:
 
 # Go Development Tools
 go_tools:
-  golangci_lint: 'v2.5.0'
+  golangci_lint: 'v2.13.1'
   gotestsum: 'v1.13.0'
   gocover_cobertura: 'v1.4.0'
   setup_envtest: 'v0.0.0-20260119123727-a2de7e94d2dd'

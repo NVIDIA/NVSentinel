@@ -70,7 +70,7 @@ func GpuThermalMarginMetadata(nodeName string, gpuID, slowdownTLimitC int) *GPUM
 	slowdown := slowdownTLimitC
 
 	return &GPUMetadata{
-		Version:       "1.0",
+		Version:       metadataVersion,
 		Timestamp:     "2025-01-01T00:00:00Z",
 		NodeName:      nodeName,
 		DriverVersion: "570.148.08",
@@ -92,7 +92,7 @@ func CreateTestMetadata(nodeName string) *GPUMetadata {
 	chassisSerial := "TEST-CHASSIS-12345"
 
 	return &GPUMetadata{
-		Version:       "1.0",
+		Version:       metadataVersion,
 		Timestamp:     time.Now().UTC().Format(time.RFC3339),
 		NodeName:      nodeName,
 		ChassisSerial: &chassisSerial,
@@ -103,10 +103,10 @@ func CreateTestMetadata(nodeName string) *GPUMetadata {
 				UUID:         "GPU-00000000-0000-0000-0000-000000000000",
 				PCIAddress:   "0000:17:00.0",
 				SerialNumber: "SN-GPU-0",
-				DeviceName:   "NVIDIA A100",
+				DeviceName:   deviceNameA100,
 				NVLinks: []NVLink{
-					{LinkID: 0, RemotePCIAddress: "0000:c3:00.0", RemoteLinkID: 28},
-					{LinkID: 1, RemotePCIAddress: "0000:c3:00.0", RemoteLinkID: 29},
+					{LinkID: 0, RemotePCIAddress: nvSwitchPCIAddress, RemoteLinkID: 28},
+					{LinkID: 1, RemotePCIAddress: nvSwitchPCIAddress, RemoteLinkID: 29},
 				},
 			},
 			{
@@ -114,9 +114,9 @@ func CreateTestMetadata(nodeName string) *GPUMetadata {
 				UUID:         "GPU-11111111-1111-1111-1111-111111111111",
 				PCIAddress:   "0001:00:00.0",
 				SerialNumber: "SN-GPU-1",
-				DeviceName:   "NVIDIA A100",
+				DeviceName:   deviceNameA100,
 				NVLinks: []NVLink{
-					{LinkID: 0, RemotePCIAddress: "0000:c3:00.0", RemoteLinkID: 30},
+					{LinkID: 0, RemotePCIAddress: nvSwitchPCIAddress, RemoteLinkID: 30},
 				},
 			},
 			{
@@ -124,7 +124,7 @@ func CreateTestMetadata(nodeName string) *GPUMetadata {
 				UUID:         "GPU-22222222-2222-2222-2222-222222222222",
 				PCIAddress:   "0002:00:00.0",
 				SerialNumber: "SN-GPU-2",
-				DeviceName:   "NVIDIA A100",
+				DeviceName:   deviceNameA100,
 				NVLinks:      []NVLink{},
 			},
 			{
@@ -132,22 +132,24 @@ func CreateTestMetadata(nodeName string) *GPUMetadata {
 				UUID:         "GPU-33333333-3333-3333-3333-333333333333",
 				PCIAddress:   "0000:19:00.0",
 				SerialNumber: "SN-GPU-3",
-				DeviceName:   "NVIDIA A100",
+				DeviceName:   deviceNameA100,
 				NVLinks:      []NVLink{},
 			},
 		},
-		NVSwitches: []string{"0000:c3:00.0"},
+		NVSwitches: []string{nvSwitchPCIAddress},
 	}
 }
 
 // CreateNICTestMetadata returns a GPUMetadata blob modeled after a
 // DGX A100 (8× A100-SXM4-80GB) with NICTopology matching the fake
 // sysfs tree created by CreateFakeSysfsTree.
+//
+//nolint:goconst // the PXB/SYS topology matrix reads best as literals
 func CreateNICTestMetadata(nodeName string) *GPUMetadata {
 	chassisSerial := "TEST-NIC-CHASSIS-001"
 
 	return &GPUMetadata{
-		Version:       "1.0",
+		Version:       metadataVersion,
 		Timestamp:     time.Now().UTC().Format(time.RFC3339),
 		NodeName:      nodeName,
 		ChassisSerial: &chassisSerial,

@@ -49,6 +49,13 @@ global:
     # Must be a real boolean. A quoted "false" is refused rather than read as
     # true. Disabling lets any caller that reaches the socket name any node.
     enabled: true
+    # "enforce" (default) rejects a violating request. "audit" records the
+    # same violation counters by reason but lets the request through.
+    mode: enforce
+    # When true, a validator that never reached a verdict (API server
+    # unreachable or timed out) falls back to node-local scope instead of
+    # rejecting the request. A rejected credential is always rejected.
+    failOpenOnUnavailable: false
     # Audience the tokens are minted for and TokenReview must echo back.
     audience: "platform-connector.nvsentinel.nvidia.com"
     # Token lifetime. Kubernetes requires 600 <= x <= 2^32, and the chart

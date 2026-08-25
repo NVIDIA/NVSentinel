@@ -126,7 +126,7 @@ func BuildTestDaemonSet(name, namespace, nodeName string, failureType DaemonSetF
 		podSpec.Containers = []v1.Container{
 			{
 				Name:    "crasher",
-				Image:   "busybox:latest",
+				Image:   busyboxImage,
 				Command: []string{"sh", "-c", "exit 1"},
 			},
 		}
@@ -135,15 +135,15 @@ func BuildTestDaemonSet(name, namespace, nodeName string, failureType DaemonSetF
 		podSpec.InitContainers = []v1.Container{
 			{
 				Name:    "init-crasher",
-				Image:   "busybox:latest",
+				Image:   busyboxImage,
 				Command: []string{"sh", "-c", "exit 1"},
 			},
 		}
 		podSpec.Containers = []v1.Container{
 			{
-				Name:    "main",
-				Image:   "busybox:latest",
-				Command: []string{"sh", "-c", "sleep 3600"},
+				Name:    containerNameMain,
+				Image:   busyboxImage,
+				Command: []string{"sh", "-c", sleepForever},
 			},
 		}
 	case DaemonSetInitBlocking:
@@ -151,24 +151,24 @@ func BuildTestDaemonSet(name, namespace, nodeName string, failureType DaemonSetF
 		podSpec.InitContainers = []v1.Container{
 			{
 				Name:    "init-blocker",
-				Image:   "busybox:latest",
-				Command: []string{"sh", "-c", "sleep 3600"},
+				Image:   busyboxImage,
+				Command: []string{"sh", "-c", sleepForever},
 			},
 		}
 		podSpec.Containers = []v1.Container{
 			{
-				Name:    "main",
-				Image:   "busybox:latest",
-				Command: []string{"sh", "-c", "sleep 3600"},
+				Name:    containerNameMain,
+				Image:   busyboxImage,
+				Command: []string{"sh", "-c", sleepForever},
 			},
 		}
 	case DaemonSetHealthy:
 		// Healthy pod - main container runs normally
 		podSpec.Containers = []v1.Container{
 			{
-				Name:    "main",
-				Image:   "busybox:latest",
-				Command: []string{"sh", "-c", "sleep 3600"},
+				Name:    containerNameMain,
+				Image:   busyboxImage,
+				Command: []string{"sh", "-c", sleepForever},
 			},
 		}
 	}
@@ -178,21 +178,21 @@ func BuildTestDaemonSet(name, namespace, nodeName string, failureType DaemonSetF
 			Name:      name,
 			Namespace: namespace,
 			Labels: map[string]string{
-				"app":  selectorLabel,
-				"test": "kubernetes-object-monitor",
+				labelApp:  selectorLabel,
+				labelTest: "kubernetes-object-monitor",
 			},
 		},
 		Spec: appsv1.DaemonSetSpec{
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					"app": selectorLabel,
+					labelApp: selectorLabel,
 				},
 			},
 			Template: v1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						"app":  selectorLabel,
-						"test": "kubernetes-object-monitor",
+						labelApp:  selectorLabel,
+						labelTest: "kubernetes-object-monitor",
 					},
 				},
 				Spec: podSpec,
@@ -210,7 +210,7 @@ func UpdateDaemonSetToHealthy(ctx context.Context, client klient.Client, namespa
 }
 
 // FixCrashingContainer updates a DaemonSet to fix the crashing main container.
-// Changes the container command from "exit 1" to "sleep 3600" so the pod becomes healthy.
+// Changes the container command from "exit 1" to sleepForever so the pod becomes healthy.
 // Returns an error if the "crasher" container is not found in the DaemonSet.
 func FixCrashingContainer(ctx context.Context, client klient.Client, namespace, name string) error {
 	const containerName = "crasher"
@@ -220,7 +220,7 @@ func FixCrashingContainer(ctx context.Context, client klient.Client, namespace, 
 	err := UpdateDaemonSet(ctx, client, namespace, name, func(ds *appsv1.DaemonSet) {
 		for i := range ds.Spec.Template.Spec.Containers {
 			if ds.Spec.Template.Spec.Containers[i].Name == containerName {
-				ds.Spec.Template.Spec.Containers[i].Command = []string{"sh", "-c", "sleep 3600"}
+				ds.Spec.Template.Spec.Containers[i].Command = []string{"sh", "-c", sleepForever}
 				found = true
 
 				break

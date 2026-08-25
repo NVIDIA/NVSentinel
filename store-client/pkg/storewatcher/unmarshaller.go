@@ -43,7 +43,7 @@ func UnmarshalFullDocumentFromEvent[T any](event map[string]interface{}, result 
 
 // CreateBsonTaggedStructType creates a new struct type with BSON tags based on JSON tags
 func CreateBsonTaggedStructType(typ reflect.Type) reflect.Type {
-	if typ.Kind() == reflect.Ptr {
+	if typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
 
@@ -66,7 +66,7 @@ func CreateBsonTaggedStructType(typ reflect.Type) reflect.Type {
 		// Recursively handle nested structs
 		if field.Type.Kind() == reflect.Struct {
 			field.Type = CreateBsonTaggedStructType(field.Type)
-		} else if field.Type.Kind() == reflect.Ptr && field.Type.Elem().Kind() == reflect.Struct {
+		} else if field.Type.Kind() == reflect.Pointer && field.Type.Elem().Kind() == reflect.Struct {
 			elemType := field.Type.Elem()
 			field.Type = reflect.PointerTo(CreateBsonTaggedStructType(elemType))
 		}
@@ -95,7 +95,7 @@ func CopyStructFields(dst, src reflect.Value) {
 		}
 
 		switch {
-		case dstField.Kind() == reflect.Ptr && srcField.Kind() == reflect.Ptr:
+		case dstField.Kind() == reflect.Pointer && srcField.Kind() == reflect.Pointer:
 			copyPtrField(dstField, srcField)
 		case dstField.Kind() == reflect.Struct && srcField.Kind() == reflect.Struct:
 			CopyStructFields(dstField, srcField)
