@@ -717,6 +717,18 @@ class DCGMWatcher:
                     raw_reasons,
                 )
                 continue
+
+            # DCGM encodes "no data" as int64 sentinels (DCGM_INT64_BLANK and
+            # friends, 0x7ffffffffffffff0..f3) whose low byte has bit 0x80 set,
+            # so an unchecked blank would count as an asserted brake. Treat it
+            # like a missing sample: skip, keep the streak.
+            if dcgmvalue.DCGM_INT64_IS_BLANK(reasons_mask):
+                log.warning(
+                    "GPU %s clocks-event-reasons value is blank (0x%x); skipping power brake evaluation",
+                    gpu_id,
+                    reasons_mask,
+                )
+                continue
             evaluated = True
 
             if reasons_mask & HW_POWER_BRAKE_REASON_BIT:

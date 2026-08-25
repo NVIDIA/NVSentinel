@@ -21,7 +21,7 @@ from gpu_health_monitor.tests.nvlink_fixtures import (
     make_metadata_reader,
 )
 from unittest.mock import MagicMock, patch
-import dcgm_structs, dcgm_errors, dcgm_fields
+import dcgm_structs, dcgm_errors, dcgm_fields, dcgmvalue
 from pathlib import Path
 from threading import Event, Thread
 from concurrent.futures import ThreadPoolExecutor
@@ -224,6 +224,35 @@ class TestDCGMHealthChecks:
         dcgm_group_mock.samples.GetLatest.return_value = MagicMock(values={})
 
         assert watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0]) is None
+
+    def test_evaluate_gpu_power_brake_ignores_blank_sentinel(self) -> None:
+        """DCGM blank sentinels have bit 0x80 set in their low byte, so an
+        unchecked blank would be indistinguishable from an asserted brake."""
+        watcher = self._make_power_brake_watcher()
+        dcgm_group_mock = MagicMock()
+        dcgm_group_mock.samples.GetLatest.return_value = self._brake_samples({0: dcgmvalue.DCGM_INT64_BLANK})
+
+        # Nothing was evaluated, so the watch is not published at all.
+        assert watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0]) is None
+
+    def test_evaluate_gpu_power_brake_blank_does_not_accumulate_streak(self) -> None:
+        """Repeated blanks must not accumulate to a failure, and must not clear
+        a streak built from real assertions either."""
+        watcher = self._make_power_brake_watcher(min_consecutive_polls=2)
+        dcgm_group_mock = MagicMock()
+
+        dcgm_group_mock.samples.GetLatest.return_value = self._brake_samples({0: dcgm.HW_POWER_BRAKE_REASON_BIT})
+        assert watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0]).status == dcgm.types.HealthStatus.PASS
+        assert watcher._power_brake_streaks == {0: 1}
+
+        # A blank in the middle is skipped: the streak survives rather than
+        # being cleared or advanced.
+        dcgm_group_mock.samples.GetLatest.return_value = self._brake_samples({0: dcgmvalue.DCGM_INT64_BLANK})
+        assert watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0]) is None
+        assert watcher._power_brake_streaks == {0: 1}
+
+        dcgm_group_mock.samples.GetLatest.return_value = self._brake_samples({0: dcgm.HW_POWER_BRAKE_REASON_BIT})
+        assert watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0]).status == dcgm.types.HealthStatus.FAIL
 
     def test_get_available_health_watches(self):
         watcher = dcgm.DCGMWatcher(
