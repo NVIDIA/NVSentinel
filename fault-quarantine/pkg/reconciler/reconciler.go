@@ -30,6 +30,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	annotationutil "github.com/nvidia/nvsentinel/commons/pkg/annotation"
+	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
@@ -473,6 +474,20 @@ func (r *Reconciler) ProcessEvent(
 		return nil
 	}
 
+	if r.isNodeOptedOut(ctx, event.HealthEvent.NodeName) {
+		span.SetAttributes(
+			attribute.String("fault_quarantine.event.processing_status", EventProcessingStatusSkipped),
+			attribute.String("fault_quarantine.skip.reason", "node externally owned (label or taint)"),
+		)
+		metrics.EventsSkippedManagedLabel.Inc()
+		slog.InfoContext(ctx, "Skipping event for externally-owned node (defense-in-depth)",
+			"node", event.HealthEvent.NodeName,
+			"label", managed.ManagedLabelKey,
+			"taint", managed.ReleaseTaintKey)
+
+		return nil
+	}
+
 	slog.DebugContext(ctx, "Processing event", "checkName", event.HealthEvent.CheckName)
 
 	isNodeQuarantined := r.handleEvent(ctx, event, ruleSetEvals, rulesetsConfig)
@@ -536,6 +551,32 @@ func (r *Reconciler) checkCircuitBreakerAndHalt(ctx context.Context) bool {
 
 		<-ctx.Done()
 
+		return true
+	}
+
+	return false
+}
+
+// isNodeOptedOut checks the node informer cache for the managed=false label
+// or the external-remediation release taint. Either signal means the node is
+// externally owned. This is a defense-in-depth backstop: platform-connector's
+// MetadataAugmentor should have already gated the event to STORE_ONLY, but if
+// the event slipped through (cache staleness, lookup failure), this check
+// catches it. Uses the informer-backed lister for sub-second accuracy.
+func (r *Reconciler) isNodeOptedOut(ctx context.Context, nodeName string) bool {
+	lister := r.k8sClient.NodeInformer.Lister()
+
+	if optedOut, err := managed.IsNodeOptedOut(ctx, lister, nodeName); err != nil {
+		slog.WarnContext(ctx, "Failed to check managed label, proceeding with event (fail-open)",
+			"node", nodeName, "error", err)
+	} else if optedOut {
+		return true
+	}
+
+	if hasTaint, err := managed.HasReleaseTaint(ctx, lister, nodeName); err != nil {
+		slog.WarnContext(ctx, "Failed to check release taint, proceeding with event (fail-open)",
+			"node", nodeName, "error", err)
+	} else if hasTaint {
 		return true
 	}
 

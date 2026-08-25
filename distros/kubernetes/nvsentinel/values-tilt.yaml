@@ -4190,7 +4190,10 @@ platformConnector:
   transformers:
     MetadataAugmentor:
       cacheSize: 50
-      cacheTTLSeconds: 3600
+      cacheTTLSeconds: 30
+      # Must match commons/pkg/managed.ManagedLabelKey and ManagedLabelValueFalse.
+      skipNodeLabelKey: "nvsentinel.dgxc.nvidia.com/managed"
+      skipNodeLabelValue: "false"
       allowedLabels:
         - "topology.kubernetes.io/zone"
         - "topology.kubernetes.io/region"

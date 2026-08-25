@@ -27,10 +27,14 @@ const (
 	DefaultCacheTTL  = 1 * time.Hour
 )
 
+// Config holds MetadataAugmentor settings including the optional managed-label
+// gate that marks events for opted-out nodes as STORE_ONLY.
 type Config struct {
-	CacheSize     int           `toml:"cacheSize"`
-	CacheTTL      time.Duration `toml:"cacheTTL"`
-	AllowedLabels []string      `toml:"allowedLabels"`
+	CacheSize          int           `toml:"cacheSize"`
+	CacheTTL           time.Duration `toml:"cacheTTL"`
+	AllowedLabels      []string      `toml:"allowedLabels"`
+	SkipNodeLabelKey   string        `toml:"skipNodeLabelKey"`
+	SkipNodeLabelValue string        `toml:"skipNodeLabelValue"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -61,6 +65,14 @@ func (c *Config) Validate() error {
 
 	if c.CacheTTL <= 0 {
 		return fmt.Errorf("cacheTTL must be positive")
+	}
+
+	if c.SkipNodeLabelKey == "" && c.SkipNodeLabelValue != "" {
+		return fmt.Errorf("skipNodeLabelValue is set but skipNodeLabelKey is empty")
+	}
+
+	if c.SkipNodeLabelKey != "" && c.SkipNodeLabelValue == "" {
+		return fmt.Errorf("skipNodeLabelKey is set but skipNodeLabelValue is empty")
 	}
 
 	return nil

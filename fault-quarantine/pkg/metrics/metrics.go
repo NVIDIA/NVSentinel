@@ -221,6 +221,15 @@ var (
 			Buckets: []float64{0, 1, 2, 3, 5, 10},
 		},
 	)
+
+	// Defense-in-depth counter for events skipped because the target node is
+	// externally owned (managed=false label or external-remediation taint).
+	EventsSkippedManagedLabel = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "fault_quarantine_events_skipped_managed_label_total",
+			Help: "Events skipped because the target node is externally owned (managed=false label or release taint).",
+		},
+	)
 )
 
 func SetFaultQuarantineBreakerUtilization(utilization float64) {

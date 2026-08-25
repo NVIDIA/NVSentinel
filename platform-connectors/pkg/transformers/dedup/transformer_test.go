@@ -198,6 +198,57 @@ func TestDeduplicatorKeepsCheckLevelHealthyEventThatClearsUnhealthyCounterpart(t
 	assert.Equal(t, pb.ProcessingStrategy_EXECUTE_REMEDIATION, healthy.ProcessingStrategy)
 }
 
+func TestDeduplicatorSkipsStoreOnlyEvents(t *testing.T) {
+	now := time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC)
+	tracker := newTracker(3*time.Minute, withNow(func() time.Time { return now }))
+	transformer := NewDeduplicator(tracker, nil)
+	event := &pb.HealthEvent{
+		NodeName:           "node-a",
+		CheckName:          "SysLogsXIDError",
+		ErrorCode:          []string{"79"},
+		ProcessingStrategy: pb.ProcessingStrategy_STORE_ONLY,
+		EntitiesImpacted:   []*pb.Entity{{EntityType: "gpu", EntityValue: "GPU-1"}},
+	}
+
+	err := transformer.Transform(context.Background(), event)
+	require.NoError(t, err)
+	assert.Equal(t, pb.ProcessingStrategy_STORE_ONLY, event.ProcessingStrategy,
+		"STORE_ONLY events should not be modified by dedup")
+
+	err = transformer.Transform(context.Background(), event)
+	require.NoError(t, err)
+	assert.Equal(t, pb.ProcessingStrategy_STORE_ONLY, event.ProcessingStrategy,
+		"repeated STORE_ONLY events should still not be modified")
+}
+
+func TestDeduplicatorStoreOnlyDoesNotAffectTracker(t *testing.T) {
+	now := time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC)
+	tracker := newTracker(3*time.Minute, withNow(func() time.Time { return now }))
+	transformer := NewDeduplicator(tracker, nil)
+
+	storeOnlyEvent := &pb.HealthEvent{
+		NodeName:           "node-b",
+		CheckName:          "SysLogsXIDError",
+		ErrorCode:          []string{"79"},
+		ProcessingStrategy: pb.ProcessingStrategy_STORE_ONLY,
+		EntitiesImpacted:   []*pb.Entity{{EntityType: "gpu", EntityValue: "GPU-1"}},
+	}
+	err := transformer.Transform(context.Background(), storeOnlyEvent)
+	require.NoError(t, err)
+
+	normalEvent := &pb.HealthEvent{
+		NodeName:           "node-b",
+		CheckName:          "SysLogsXIDError",
+		ErrorCode:          []string{"79"},
+		ProcessingStrategy: pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		EntitiesImpacted:   []*pb.Entity{{EntityType: "gpu", EntityValue: "GPU-1"}},
+	}
+	err = transformer.Transform(context.Background(), normalEvent)
+	require.NoError(t, err)
+	assert.Equal(t, pb.ProcessingStrategy_EXECUTE_REMEDIATION, normalEvent.ProcessingStrategy,
+		"STORE_ONLY event should not have entered tracker, so first normal event is not a duplicate")
+}
+
 func TestErrCodeLabelCanonicalizesErrorCodes(t *testing.T) {
 	event := &pb.HealthEvent{ErrorCode: []string{"95", "79"}}
 

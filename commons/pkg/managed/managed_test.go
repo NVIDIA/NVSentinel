@@ -163,3 +163,101 @@ func TestIsNodeOptedOut_LookupError(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, want, "wrapped error must preserve the original cause")
 }
+
+// --- HasReleaseTaint tests ---
+
+func nodeWithTaints(name string, taints []corev1.Taint) *corev1.Node {
+	return &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       corev1.NodeSpec{Taints: taints},
+	}
+}
+
+func TestHasReleaseTaint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		nodes    []*corev1.Node
+		nodeName string
+		want     bool
+	}{
+		{
+			name: "release taint present -> true",
+			nodes: []*corev1.Node{nodeWithTaints("n1", []corev1.Taint{
+				{Key: ReleaseTaintKey, Value: "gpu0-xid79", Effect: corev1.TaintEffectNoSchedule},
+			})},
+			nodeName: "n1",
+			want:     true,
+		},
+		{
+			name: "different taint key -> false",
+			nodes: []*corev1.Node{nodeWithTaints("n1", []corev1.Taint{
+				{Key: "node.kubernetes.io/not-ready", Effect: corev1.TaintEffectNoSchedule},
+			})},
+			nodeName: "n1",
+			want:     false,
+		},
+		{
+			name:     "no taints -> false",
+			nodes:    []*corev1.Node{nodeWithTaints("n1", nil)},
+			nodeName: "n1",
+			want:     false,
+		},
+		{
+			name: "release taint among several -> true",
+			nodes: []*corev1.Node{nodeWithTaints("n1", []corev1.Taint{
+				{Key: "node.kubernetes.io/not-ready", Effect: corev1.TaintEffectNoSchedule},
+				{Key: ReleaseTaintKey, Value: "err-123", Effect: corev1.TaintEffectNoSchedule},
+				{Key: "other-taint", Effect: corev1.TaintEffectNoExecute},
+			})},
+			nodeName: "n1",
+			want:     true,
+		},
+		{
+			name: "node not in cache -> false",
+			nodes: []*corev1.Node{nodeWithTaints("n1", []corev1.Taint{
+				{Key: ReleaseTaintKey, Value: "gpu0", Effect: corev1.TaintEffectNoSchedule},
+			})},
+			nodeName: "missing",
+			want:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			lister := listerWith(t, tt.nodes...)
+			got, err := HasReleaseTaint(context.Background(), lister, tt.nodeName)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestHasReleaseTaint_NilLister(t *testing.T) {
+	t.Parallel()
+
+	got, err := HasReleaseTaint(context.Background(), nil, "n1")
+	require.NoError(t, err)
+	assert.False(t, got, "nil lister must return false, not panic")
+}
+
+func TestHasReleaseTaint_EmptyNodeName(t *testing.T) {
+	t.Parallel()
+
+	got, err := HasReleaseTaint(context.Background(), listerWith(t), "")
+	require.NoError(t, err)
+	assert.False(t, got, "empty node name must return false")
+}
+
+func TestHasReleaseTaint_LookupError(t *testing.T) {
+	t.Parallel()
+
+	want := errors.New("transient apiserver hiccup")
+	got, err := HasReleaseTaint(context.Background(), errLister{err: want}, "n1")
+	assert.False(t, got)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, want, "wrapped error must preserve the original cause")
+}

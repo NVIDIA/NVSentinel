@@ -384,7 +384,7 @@ platformConnector:
   pipeline:
     # List of transformers to execute (in order)
     - name: MetadataAugmentor
-      enabled: false
+      enabled: true
       config: /etc/config/metadata.toml
     
     - name: OverrideTransformer
@@ -396,7 +396,10 @@ platformConnector:
     # Metadata augmentor - enriches events with node labels and provider info
     MetadataAugmentor:
       cacheSize: 50
-      cacheTTLSeconds: 3600
+      cacheTTLSeconds: 30
+      # Must match commons/pkg/managed.ManagedLabelKey and ManagedLabelValueFalse.
+      skipNodeLabelKey: "nvsentinel.dgxc.nvidia.com/managed"
+      skipNodeLabelValue: "false"
       allowedLabels:
         - "topology.kubernetes.io/zone"
         - "topology.kubernetes.io/region"

@@ -38,6 +38,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -6717,4 +6718,181 @@ func TestE2E_ManualUntaintAnnotationCleanup(t *testing.T) {
 			node.Annotations[common.QuarantineHealthEventAnnotationKey] != "" &&
 			node.Annotations[common.QuarantinedNodeIsUntaintedManuallyAnnotationKey] == ""
 	}, eventuallyTimeout, eventuallyPollInterval, "Manual untaint annotation should be removed, FQ annotations added with taint applied")
+}
+
+// TestE2E_SkipNodeWithManagedLabel verifies that fault-quarantine skips events
+// for nodes carrying the managed=false label (defense-in-depth gate).
+func TestE2E_SkipNodeWithManagedLabel(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-managed-false-" + generateShortTestID()
+
+	labels := map[string]string{
+		managed.ManagedLabelKey: managed.ManagedLabelValueFalse,
+	}
+	createE2ETestNode(ctx, t, nodeName, nil, labels, nil, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.RuleSet{
+			{
+				Enabled:  true,
+				Name:     "gpu-xid-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+					},
+				},
+				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	t.Log("Send unhealthy event for opted-out node")
+	eventID := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		eventID, nodeName, "GpuXidError", false, true,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		model.StatusInProgress,
+	)}
+
+	t.Log("Verify event is skipped (no quarantine)")
+	assert.Never(t, func() bool {
+		status := getStatus(eventID)
+		return status != nil
+	}, neverTimeout, neverPollInterval, "Event for managed=false node must be skipped")
+
+	t.Log("Verify node is NOT cordoned")
+	assert.Never(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		return node.Spec.Unschedulable
+	}, neverTimeout, neverPollInterval, "Node with managed=false must not be cordoned")
+}
+
+// TestE2E_SkipNodeWithReleaseTaint verifies that fault-quarantine skips events
+// for nodes carrying the external-remediation release taint (defense-in-depth gate).
+func TestE2E_SkipNodeWithReleaseTaint(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-release-taint-" + generateShortTestID()
+
+	taints := []corev1.Taint{
+		{Key: managed.ReleaseTaintKey, Value: "gpu0-xid79", Effect: corev1.TaintEffectNoSchedule},
+	}
+	createE2ETestNode(ctx, t, nodeName, nil, nil, taints, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.RuleSet{
+			{
+				Enabled:  true,
+				Name:     "gpu-xid-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+					},
+				},
+				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	t.Log("Send unhealthy event for tainted (externally-owned) node")
+	eventID := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		eventID, nodeName, "GpuXidError", false, true,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		model.StatusInProgress,
+	)}
+
+	t.Log("Verify event is skipped (no quarantine)")
+	assert.Never(t, func() bool {
+		status := getStatus(eventID)
+		return status != nil
+	}, neverTimeout, neverPollInterval, "Event for release-tainted node must be skipped")
+
+	t.Log("Verify node is NOT cordoned")
+	assert.Never(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		return node.Spec.Unschedulable
+	}, neverTimeout, neverPollInterval, "Node with release taint must not be cordoned")
+}
+
+// TestE2E_SkipNodeWithBothLabelAndTaint verifies that fault-quarantine correctly
+// skips events when a node has both the managed=false label and the release taint.
+func TestE2E_SkipNodeWithBothLabelAndTaint(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-label-and-taint-" + generateShortTestID()
+
+	labels := map[string]string{
+		managed.ManagedLabelKey: managed.ManagedLabelValueFalse,
+	}
+	taints := []corev1.Taint{
+		{Key: managed.ReleaseTaintKey, Value: "err-456", Effect: corev1.TaintEffectNoSchedule},
+	}
+	createE2ETestNode(ctx, t, nodeName, nil, labels, taints, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.RuleSet{
+			{
+				Enabled:  true,
+				Name:     "gpu-xid-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+					},
+				},
+				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	t.Log("Send unhealthy event for node with both label and taint")
+	eventID := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		eventID, nodeName, "GpuXidError", false, true,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		model.StatusInProgress,
+	)}
+
+	t.Log("Verify event is skipped (no quarantine)")
+	assert.Never(t, func() bool {
+		status := getStatus(eventID)
+		return status != nil
+	}, neverTimeout, neverPollInterval, "Event for doubly-opted-out node must be skipped")
 }
