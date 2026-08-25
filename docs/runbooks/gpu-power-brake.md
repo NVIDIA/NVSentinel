@@ -73,7 +73,7 @@ Fraction of a window each GPU spent braked, which distinguishes a transient from
 avg by (Hostname, gpu) (avg_over_time(((DCGM_FI_DEV_CLOCKS_EVENT_REASONS % 256) >= bool 128)[1h:1m]))
 ```
 
-On a DCGM build that predates the clocks-throttle to clocks-event rename, gpu-health-monitor falls back to
+On a DCGM build that predates the rename from clocks-throttle to clocks-event, gpu-health-monitor falls back to
 `DCGM_FI_DEV_CLOCK_THROTTLE_REASONS`, and dcgm-exporter names its series after whichever field it is
 configured to collect. Substitute that metric name in both queries if the one above returns nothing:
 
