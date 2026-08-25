@@ -37,6 +37,9 @@ data:
     [dcgmfieldsmonitoring]
     gputemplimitmonitoringenabled = {{ .Values.dcgmFieldsMonitoring.gpuTempLimitMonitoringEnabled }}
     gputemplimitstoreonly = {{ .Values.dcgmFieldsMonitoring.gpuTempLimitStoreOnly }}
+    gpupowerbrakemonitoringenabled = {{ .Values.dcgmFieldsMonitoring.gpuPowerBrakeMonitoringEnabled }}
+    gpupowerbrakestoreonly = {{ .Values.dcgmFieldsMonitoring.gpuPowerBrakeStoreOnly }}
+    gpupowerbrakeminconsecutivepolls = {{ .Values.dcgmFieldsMonitoring.gpuPowerBrakeMinConsecutivePolls }}
 
     [dcgmhealthcheck]
     SuppressedErrorCodes = {{ .Values.dcgmHealthCheck.suppressedErrorCodes | join "," }}
