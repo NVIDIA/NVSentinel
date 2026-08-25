@@ -104,11 +104,15 @@ distros/kubernetes/nvsentinel/charts/lifecycle-manager/     (existing chart)
 └── templates/                              (extended — socket mount, clusterrole, webhook)
 ```
 
-The `api/`, `internal/controller/`, and `pkg/webhook/v1alpha1/` paths follow the layout the validation-controller established. How the MR CRD is generated is still open: `lifecycle-manager` generates its CRDs with `controller-gen` from Go types, while `spec.healthEvent` embeds the proto-generated `HealthEvent`. See [CRD schema](#crd-schema).
+The `api/`, `internal/controller/`, and `pkg/webhook/v1alpha1/` paths follow the layout the validation-controller established. The CRD itself follows janitor's ExtRR pattern rather than the validation-controller's, so `lifecycle-manager` gains a second generation path — see [CRD schema](#crd-schema).
 
 ### CRD schema
 
-> **Open question.** The schema below is proto-generated through `protoc-gen-crd`, matching the ERR pattern. `lifecycle-manager`, however, generates its CRDs with `controller-gen` from hand-written Go types and imports no protos, and `ValidationRequest` embeds no `HealthEvent`. Reconciling the two — and the API group and version that follow from it — is still to be decided.
+MR follows the same pattern janitor uses for ExtRR (ADR-040). The `.proto` file is the source of truth for the spec and status shapes. `protoc-gen-crd` generates the CRD YAML, and a thin Go wrapper supplies the Kubernetes machinery that the proto-generated types do not: `TypeMeta`, `ObjectMeta`, pointer `Spec` and `Status` fields, and `MarshalJSON`/`UnmarshalJSON` overrides that route those fields through `protojson`. Those overrides are required because `encoding/json` renders proto well-known types such as `Timestamp` in a form the CRD schema rejects.
+
+This differs from the validation-controller, which generates its CRDs with `controller-gen` from hand-written Go types. `lifecycle-manager` therefore carries two generation paths. MR follows ExtRR because `spec.healthEvent` embeds the proto-generated `HealthEvent`, and keeping the proto as the source of truth avoids hand-mirroring that message and letting the copy drift.
+
+Two consequences follow. The API version is `v1`, because `protoc-gen-crd` hardcodes that version. The API group stays `nvsentinel.dgxc.nvidia.com`, matching ERR, so `lifecycle-manager` serves this group alongside `nvsentinel.nvidia.com` for `ValidationRequest`.
 
 Proto-generated through `protoc-gen-crd`, matching the ERR pattern:
 
@@ -218,10 +222,13 @@ MR and the remediation it triggers are otherwise fully decoupled: no owner-refer
 | `spec.healthEvent.nodeName` is non-empty | ✓ | ✓ |
 | `spec.healthEvent.isHealthy` is `false` | ✓ | ✓ |
 | Node named by `nodeName` exists | ✓ | — |
+| `spec.startTime` is in the future | ✓ | if changed |
 | `spec.healthEvent` is immutable | — | ✓ |
 | No other MaintenanceRequest for the same node | ✓ | — |
 
 The webhook freezes the whole event, not only `nodeName`. The clearing event reuses the original `agent`, `checkName`, and `nodeName` to match the fault the MR opened. If those fields could drift, the clear would target a different check and would silently fail to un-cordon the node. The `isHealthy` check closes a second gap: a "healthy" opening event would mark the MR emitted without ever raising a fault.
+
+The `startTime` check rejects a request that is backdated at creation, because a maintenance window that has already opened cannot be prepared for. On update the webhook applies the check only when `startTime` changes. An MR persists through its window and beyond, so re-checking an unchanged `startTime` would reject every later update to an MR whose window has already opened. Scoping the check to changes still validates a reschedule.
 
 The duplicate check is a best-effort early rejection, not a race guarantee. It uses an informer-backed lister, so two concurrent creates can both observe "no MR" and both pass. Idempotent downstream handling, not admission, ultimately upholds the single-active invariant.
 
@@ -271,7 +278,7 @@ sequenceDiagram
 
 The CRD, the validation checks, and the pipeline behaviour do not change. There is no finalizer, no `HealthEventEmitted` condition, and no addition to `lifecycle-manager`. *Module layout*, *Status conditions*, *RBAC*, and the finalizer step of the state machine therefore do not apply. Option B also leaves `lifecycle-manager` free of any platform-connector socket dependency, because KOM already has one.
 
-Validation moves to CRD `x-kubernetes-validations` CEL rules. Those rules cover the non-empty `nodeName`, the `isHealthy == false` check, and `spec.healthEvent` immutability. Only the node-existence and duplicate checks still need a webhook.
+Validation moves to CRD `x-kubernetes-validations` CEL rules. Those rules cover the non-empty `nodeName`, the `isHealthy == false` check, and `spec.healthEvent` immutability. The node-existence, duplicate, and `startTime` checks still need a webhook. CRD validation rules must be deterministic, so their CEL environment exposes no current time and cannot evaluate whether `startTime` is in the future. KOM's own policy CEL environment does expose `now`, but that governs when a policy matches, not what admission accepts.
 
 Unless KOM gains object-sourced event fields, `spec.healthEvent` shrinks to a discriminator such as `spec.action`, plus `nodeName` and `startTime`. The event shape then lives in the policy configuration.
 
