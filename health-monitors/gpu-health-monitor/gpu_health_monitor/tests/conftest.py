@@ -202,7 +202,7 @@ class MockDCGMValue:
     DCGM_INT64_NOT_PERMISSIONED = 0x7FFFFFFFFFFFFFF3
 
     @staticmethod
-    def DCGM_INT64_IS_BLANK(val):
+    def DCGM_INT64_IS_BLANK(val: int) -> bool:
         return val >= MockDCGMValue.DCGM_INT64_BLANK
 
 
