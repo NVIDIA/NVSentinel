@@ -116,6 +116,7 @@ func (a *Augmentor) Transform(ctx context.Context, event *pb.HealthEvent) error 
 
 	if metadata.SkipMatched {
 		event.ProcessingStrategy = pb.ProcessingStrategy_STORE_ONLY
+
 		skipLabelGatedCounter.Inc()
 		span.SetAttributes(
 			attribute.Bool("metadata.skip_label_matched", true),

@@ -36,8 +36,8 @@ type Factory func(cfg *Config, opts Options) (Transformer, error)
 type DisabledCheck func(ctx context.Context, cfg *Config)
 
 var (
-	registry        = map[string]Factory{}
-	disabledChecks  = map[string]DisabledCheck{}
+	registry       = map[string]Factory{}
+	disabledChecks = map[string]DisabledCheck{}
 )
 
 func Register(name string, factory Factory) {
