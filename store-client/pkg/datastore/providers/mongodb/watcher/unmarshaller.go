@@ -19,7 +19,7 @@ import (
 	"reflect"
 	"strings"
 
-	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 // UnmarshalFullDocumentFromEvent unmarshals the fullDocument from event directly into result.

@@ -376,7 +376,7 @@ func (c *PostgreSQLDatabaseClient) convertFilterToWhereClause(
 	}
 
 	// Try to convert filter to map[string]any if it's a compatible type
-	// This handles bson.M (primitive.M) which is essentially map[string]any
+	// This handles bson.M which is essentially map[string]any
 	// MongoDB builder factory may be registered as the default, so we may receive MongoDB types
 	filterMap := c.convertFilterToMap(filter)
 
@@ -683,7 +683,7 @@ func isDescending(direction interface{}) bool {
 }
 
 // convertFilterToMap converts various filter types to map[string]interface{}.
-// This handles bson.M (primitive.M) and other map-like types that are
+// This handles bson.M and other map-like types that are
 // essentially map[string]interface{} under the hood.
 func (c *PostgreSQLDatabaseClient) convertFilterToMap(filter interface{}) map[string]interface{} {
 	// Direct type assertion for map[string]interface{}
@@ -709,7 +709,7 @@ func (c *PostgreSQLDatabaseClient) convertFilterToMap(filter interface{}) map[st
 }
 
 // convertToInterfaceSlice converts various slice types to []interface{}.
-// This handles []string, []interface{}, bson.A (primitive.A), and other slice types.
+// This handles []string, []interface{}, bson.A, and other slice types.
 func (c *PostgreSQLDatabaseClient) convertToInterfaceSlice(value interface{}) []interface{} {
 	// Direct type assertion for []interface{}
 	if slice, ok := value.([]interface{}); ok {

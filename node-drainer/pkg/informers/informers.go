@@ -34,7 +34,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
@@ -44,20 +47,19 @@ import (
 )
 
 const (
-	NodeIndex            = "node"
-	NamespaceNodeIndex   = "namespace-node"
-	NodeEventReasonIndex = "node-event-reason"
+	NodeIndex          = "node"
+	NamespaceNodeIndex = "namespace-node"
 )
 
 type Informers struct {
 	podInformer            cache.SharedIndexInformer
-	eventInformer          cache.SharedIndexInformer
 	nodeInformer           cache.SharedIndexInformer
+	eventBroadcaster       record.EventBroadcaster
+	eventRecorder          record.EventRecorder
 	clientset              kubernetes.Interface
 	notReadyTimeoutMinutes *int
 	drainGPUPods           bool
 	dryRunMode             []string
-	namespace              string
 }
 
 func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
@@ -87,26 +89,12 @@ func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		return nil, fmt.Errorf("failed to add indexer: %w", err)
 	}
 
-	eventInformerFactory := informers.NewSharedInformerFactoryWithOptions(
-		clientset,
-		resyncPeriod,
-		informers.WithNamespace(metav1.NamespaceDefault),
-	)
-
-	eventInformer := eventInformerFactory.Core().V1().Events().Informer()
-
-	err = eventInformer.GetIndexer().AddIndexers(
-		cache.Indexers{
-			NodeEventReasonIndex: NodeEventReasonIndexFunc,
-		})
-	if err != nil {
-		return nil, fmt.Errorf("failed to add event indexer: %w", err)
-	}
-
 	nodeInformer := informerFactory.Core().V1().Nodes().Informer()
 	if err := nodeInformer.SetTransform(nodeTransform); err != nil {
 		return nil, fmt.Errorf("failed to set node informer transform: %w", err)
 	}
+
+	eventBroadcaster := record.NewBroadcaster()
 
 	dryRunMode := []string{}
 	if dryRun {
@@ -114,14 +102,17 @@ func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	}
 
 	return &Informers{
-		clientset:              clientset,
-		podInformer:            podInformer,
-		eventInformer:          eventInformer,
-		nodeInformer:           nodeInformer,
+		clientset:        clientset,
+		podInformer:      podInformer,
+		nodeInformer:     nodeInformer,
+		eventBroadcaster: eventBroadcaster,
+		eventRecorder: eventBroadcaster.NewRecorder(
+			scheme.Scheme,
+			v1.EventSource{Component: "nvsentinel-node-drainer"},
+		),
 		notReadyTimeoutMinutes: notReadyTimeoutMinutes,
 		drainGPUPods:           drainGPUPods,
 		dryRunMode:             dryRunMode,
-		namespace:              metav1.NamespaceDefault,
 	}, nil
 }
 
@@ -274,7 +265,7 @@ func isDaemonSetOwned(ownerReferences []metav1.OwnerReference) bool {
 }
 
 func (i *Informers) HasSynced() bool {
-	return i.podInformer.HasSynced() && i.eventInformer.HasSynced() && i.nodeInformer.HasSynced()
+	return i.podInformer.HasSynced() && i.nodeInformer.HasSynced()
 }
 
 func NodeIndexFunc(obj any) ([]string, error) {
@@ -305,25 +296,17 @@ func NamespaceNodeIndexFunc(obj any) ([]string, error) {
 	return []string{compositeKey}, nil
 }
 
-func NodeEventReasonIndexFunc(obj any) ([]string, error) {
-	event, ok := obj.(*v1.Event)
-	if !ok {
-		return []string{}, nil
-	}
-
-	if event.InvolvedObject.Kind != "Node" {
-		return []string{}, nil
-	}
-
-	compositeKey := fmt.Sprintf("%s/%s", event.InvolvedObject.Name, event.Reason)
-
-	return []string{compositeKey}, nil
-}
-
 func (i *Informers) Run(ctx context.Context) error {
+	i.eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{
+		Interface: i.clientset.CoreV1().Events(metav1.NamespaceDefault),
+	})
+
 	go i.podInformer.Run(ctx.Done())
-	go i.eventInformer.Run(ctx.Done())
 	go i.nodeInformer.Run(ctx.Done())
+	go func() {
+		<-ctx.Done()
+		i.eventBroadcaster.Shutdown()
+	}()
 
 	if ok := cache.WaitForCacheSync(ctx.Done(),
 		i.HasSynced); !ok {
@@ -715,70 +698,14 @@ func (i *Informers) sendEvictionRequestForPod(ctx context.Context, namespace str
 	return nil
 }
 
-func (i *Informers) UpdateNodeEvent(ctx context.Context, nodeName string, reason string, message string) error {
-	compositeKey := fmt.Sprintf("%s/%s", nodeName, reason)
-
-	cachedEvents, err := i.eventInformer.GetIndexer().ByIndex(NodeEventReasonIndex, compositeKey)
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to query event cache", "error", err)
-		return fmt.Errorf("error querying event cache: %w", err)
-	}
-
-	now := metav1.NewTime(time.Now())
-	eventsClient := i.clientset.CoreV1().Events(i.namespace)
-
-	for _, obj := range cachedEvents {
-		existingEvent, ok := obj.(*v1.Event)
-		if !ok {
-			continue
-		}
-
-		if existingEvent.Message == message {
-			eventCopy := existingEvent.DeepCopy()
-			eventCopy.Count++
-			eventCopy.LastTimestamp = now
-
-			_, err = eventsClient.Update(ctx, eventCopy, metav1.UpdateOptions{})
-			if err != nil {
-				slog.ErrorContext(ctx, "Failed to update event occurrence count", "error", err)
-				return fmt.Errorf("error in updating event occurrence count: %w", err)
-			}
-
-			return nil
-		}
-	}
-
-	// Get node from informer cache to retrieve its UID for proper event association
+// UpdateNodeEvent records a normal event for the named node.
+func (i *Informers) UpdateNodeEvent(_ context.Context, nodeName string, reason string, message string) error {
 	node, err := i.GetNode(nodeName)
 	if err != nil {
 		return fmt.Errorf("error getting node from cache %s: %w", nodeName, err)
 	}
 
-	newEvent := &v1.Event{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: nodeName + "-",
-			Namespace:    i.namespace,
-		},
-		InvolvedObject: v1.ObjectReference{
-			Kind:       "Node",
-			Name:       nodeName,
-			UID:        node.UID,
-			APIVersion: "v1",
-		},
-		Reason:         reason,
-		Message:        message,
-		Type:           "NodeDraining",
-		Source:         v1.EventSource{Component: "nvsentinel-node-drainer"},
-		FirstTimestamp: now,
-		LastTimestamp:  now,
-		Count:          1,
-	}
-
-	_, err = eventsClient.Create(ctx, newEvent, metav1.CreateOptions{})
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to create event", "error", err, "node", nodeName, "reason", reason)
-		return fmt.Errorf("error in creating event: %w", err)
-	}
+	i.eventRecorder.Event(node, v1.EventTypeNormal, reason, message)
 
 	return nil
 }

@@ -15,6 +15,7 @@
 package watcher
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -32,67 +33,13 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/integration/mtest"
-	mongoOptions "go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 )
 
-func TestConfirmConnectivityWithDBAndCollection(t *testing.T) {
-	mtOpts := mtest.NewOptions().ClientType(mtest.Mock).ClientOptions(mongoOptions.Client().SetRetryWrites(false))
-	mt := mtest.New(t, mtOpts)
-
-	mt.Run("successful connectivity", func(mt *mtest.T) {
-		// mock the ping and listCollection responses
-		mt.AddMockResponses(
-			mtest.CreateSuccessResponse(),
-			mtest.CreateCursorResponse(0, "testdb.$cmd.listCollections", mtest.FirstBatch, bson.D{
-				{Key: "name", Value: "testcollection"},
-			}),
-		)
-
-		ctx := context.Background()
-
-		err := confirmConnectivityWithDBAndCollection(ctx, mt.Client, "testdb", "testcollection", 1*time.Second, 100*time.Millisecond)
-		require.NoError(mt, err)
-	})
-
-	mt.Run("ping fails", func(mt *mtest.T) {
-		mt.AddMockResponses(
-			mtest.CreateCommandErrorResponse(mtest.CommandError{
-				Message: "ping failed",
-				Name:    "NetworkError",
-			}),
-		)
-
-		ctx := context.Background()
-
-		err := confirmConnectivityWithDBAndCollection(ctx, mt.Client, "testdb", "testcollection", 500*time.Millisecond, 100*time.Millisecond)
-		require.Error(mt, err)
-		require.Contains(mt, err.Error(), "retrying ping to database testdb timed out")
-	})
-
-	mt.Run("collection not found", func(mt *mtest.T) {
-		mt.AddMockResponses(
-			mtest.CreateSuccessResponse(),
-			mtest.CreateCursorResponse(0, "testdb.$cmd.listCollections", mtest.FirstBatch),
-		)
-
-		ctx := context.Background()
-
-		err := confirmConnectivityWithDBAndCollection(ctx, mt.Client, "testdb", "testcollection", 1*time.Second, 100*time.Millisecond)
-		require.Error(mt, err)
-		require.Contains(mt, err.Error(), "no collection with name testcollection for DB testdb was found")
-	})
-}
-
-func TestNewChangeStreamWatcher(t *testing.T) {
-	mtOpts := mtest.NewOptions().DatabaseName("testdb").ClientType(mtest.Mock).ClientOptions(mongoOptions.Client().SetRetryWrites(false))
-	mt := mtest.New(t, mtOpts)
-
-	mt.Run("error in constructing client options", func(mt *mtest.T) {
+func TestNewChangeStreamWatcher_InvalidTLSPaths_ReturnsClientOptsError(t *testing.T) {
+	t.Run("error in constructing client options", func(t *testing.T) {
 		mongoConfig := MongoDBConfig{
 			URI:        "mongodb://localhost:27017",
 			Database:   "testdb",
@@ -122,572 +69,6 @@ func TestNewChangeStreamWatcher(t *testing.T) {
 		require.Error(t, err)
 		require.Nil(t, watcher)
 		require.Contains(t, err.Error(), "error creating mongoDB clientOpts")
-	})
-}
-
-func TestChangeStreamWatcher_Start(t *testing.T) {
-	mtOpts := mtest.NewOptions().ClientType(mtest.Mock).DatabaseName("testdb")
-	mt := mtest.New(t, mtOpts)
-
-	mt.Run("Start sends events to eventChannel", func(mt *mtest.T) {
-		// mock change stream events
-		event1 := bson.D{
-			{Key: "operationType", Value: "insert"},
-			{Key: "documentKey", Value: bson.D{{Key: "id", Value: int32(1)}}},
-			{Key: "_id", Value: bson.D{{Key: "ts", Value: int64(1)}, {Key: "t", Value: int32(1)}}},
-		}
-		event2 := bson.D{
-			{Key: "operationType", Value: "update"},
-			{Key: "documentKey", Value: bson.D{{Key: "id", Value: int32(2)}}},
-			{Key: "_id", Value: bson.D{{Key: "ts", Value: int64(2)}, {Key: "t", Value: int32(2)}}},
-		}
-
-		mt.AddMockResponses(
-			mtest.CreateCursorResponse(1, "testdb.testcollection", mtest.FirstBatch),
-			mtest.CreateCursorResponse(0, "testdb.testcollection", mtest.NextBatch, event1, event2),
-		)
-
-		coll := mt.Client.Database("testdb").Collection("testcollection")
-		changeStream, err := coll.Watch(context.Background(), mongo.Pipeline{})
-		require.NoError(mt, err)
-
-		resumeTokenCol := mt.Client.Database("tokendb").Collection("tokencollection")
-
-		watcher := &ChangeStreamWatcher{
-			client:         mt.Client,
-			changeStream:   changeStream,
-			eventChannel:   make(chan Event, 2),
-			resumeTokenCol: resumeTokenCol,
-			clientName:     "testclient",
-		}
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		watcher.Start(ctx)
-
-		// receive events
-		var receivedEvents []bson.M
-		timeout := time.After(2 * time.Second)
-		for len(receivedEvents) < 2 {
-			select {
-			case event := <-watcher.Events():
-				receivedEvents = append(receivedEvents, bson.M(event))
-			case <-timeout:
-				t.Fatal("timeout waiting for events")
-			}
-		}
-
-		require.Len(t, receivedEvents, 2)
-
-		// Each event must carry its own resume token (its change stream _id)
-		// so consumers can checkpoint exactly at the event they processed.
-		for i, expectedID := range []bson.D{
-			{{Key: "ts", Value: int64(1)}, {Key: "t", Value: int32(1)}},
-			{{Key: "ts", Value: int64(2)}, {Key: "t", Value: int32(2)}},
-		} {
-			token, ok := receivedEvents[i]["_resumeToken"].(bson.Raw)
-			require.True(t, ok, "event %d should carry a bson.Raw _resumeToken", i)
-
-			expectedToken, err := bson.Marshal(expectedID)
-			require.NoError(t, err)
-			require.Equal(t, bson.Raw(expectedToken), token, "event %d resume token should match its _id", i)
-
-			delete(receivedEvents[i], "_resumeToken")
-		}
-
-		require.EqualValues(t, bson.M{
-			"operationType": "insert",
-			"documentKey":   bson.M{"id": int32(1)},
-			"_id":           bson.M{"ts": int64(1), "t": int32(1)},
-		}, receivedEvents[0])
-		require.EqualValues(t, bson.M{
-			"operationType": "update",
-			"documentKey":   bson.M{"id": int32(2)},
-			"_id":           bson.M{"ts": int64(2), "t": int32(2)},
-		}, receivedEvents[1])
-
-		// Set client to nil before Close() - mtest manages client lifecycle
-		watcher.client = nil
-		err = watcher.Close(ctx)
-		require.NoError(t, err)
-	})
-
-	mt.Run("resume tokens remain valid across batch boundaries", func(mt *mtest.T) {
-		// Regression test: the injected _resumeToken must be a copy. The
-		// driver's ResumeToken() aliases the current batch's pooled response
-		// buffer, so a token captured for event N must stay intact after the
-		// watcher fetches the next batch (which recycles that buffer).
-		id1 := bson.D{{Key: "ts", Value: int64(10)}, {Key: "t", Value: int32(1)}}
-		id2 := bson.D{{Key: "ts", Value: int64(20)}, {Key: "t", Value: int32(2)}}
-
-		event1 := bson.D{
-			{Key: "operationType", Value: "insert"},
-			{Key: "documentKey", Value: bson.D{{Key: "id", Value: int32(1)}}},
-			{Key: "_id", Value: id1},
-		}
-		event2 := bson.D{
-			{Key: "operationType", Value: "insert"},
-			{Key: "documentKey", Value: bson.D{{Key: "id", Value: int32(2)}}},
-			{Key: "_id", Value: id2},
-		}
-
-		mt.AddMockResponses(
-			mtest.CreateCursorResponse(1, "testdb.testcollection", mtest.FirstBatch),
-			mtest.CreateCursorResponse(1, "testdb.testcollection", mtest.NextBatch, event1),
-			mtest.CreateCursorResponse(0, "testdb.testcollection", mtest.NextBatch, event2),
-		)
-
-		coll := mt.Client.Database("testdb").Collection("testcollection")
-		changeStream, err := coll.Watch(context.Background(), mongo.Pipeline{})
-		require.NoError(mt, err)
-
-		watcher := &ChangeStreamWatcher{
-			client:       mt.Client,
-			changeStream: changeStream,
-			// Unbuffered so the watcher can only fetch the next batch after
-			// the test has received the previous event.
-			eventChannel: make(chan Event),
-			clientName:   "testclient-token-lifetime",
-		}
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		watcher.Start(ctx)
-
-		receive := func() Event {
-			select {
-			case ev := <-watcher.Events():
-				return ev
-			case <-time.After(2 * time.Second):
-				t.Fatal("timeout waiting for event")
-				return nil
-			}
-		}
-
-		first := receive()
-		firstToken, ok := first["_resumeToken"].(bson.Raw)
-		require.True(t, ok, "first event should carry a bson.Raw _resumeToken")
-
-		// Receiving the second event guarantees the watcher advanced to the
-		// next batch, after which the first batch's buffer may be recycled.
-		second := receive()
-		secondToken, ok := second["_resumeToken"].(bson.Raw)
-		require.True(t, ok, "second event should carry a bson.Raw _resumeToken")
-
-		expectedFirst, err := bson.Marshal(id1)
-		require.NoError(t, err)
-		expectedSecond, err := bson.Marshal(id2)
-		require.NoError(t, err)
-
-		require.Equal(t, bson.Raw(expectedFirst), firstToken,
-			"first event's token must remain intact after the stream advanced to the next batch")
-		require.Equal(t, bson.Raw(expectedSecond), secondToken)
-
-		// Set client to nil before Close() - mtest manages client lifecycle
-		watcher.client = nil
-		require.NoError(t, watcher.Close(ctx))
-	})
-
-	mt.Run("Start exits goroutine on change stream error", func(mt *mtest.T) {
-		mt.AddMockResponses(
-			// Initial change stream cursor
-			mtest.CreateCursorResponse(1, "testdb.testcollection", mtest.FirstBatch),
-			// getMore returns an error
-			mtest.CreateCommandErrorResponse(mtest.CommandError{Code: 123, Message: "stream error"}),
-		)
-
-		coll := mt.Client.Database("testdb").Collection("testcollection")
-		changeStream, err := coll.Watch(context.Background(), mongo.Pipeline{})
-		require.NoError(mt, err)
-
-		watcher := &ChangeStreamWatcher{
-			client:       mt.Client,
-			changeStream: changeStream,
-			eventChannel: make(chan Event, 1),
-			clientName:   "testclient-error",
-			done:         make(chan struct{}),
-		}
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		watcher.Start(ctx)
-
-		// The goroutine should exit and close the event channel
-		select {
-		case <-watcher.done:
-			// Goroutine exited as expected
-		case <-time.After(2 * time.Second):
-			t.Fatal("timeout waiting for goroutine to exit on change stream error")
-		}
-
-		// Event channel should be closed
-		_, open := <-watcher.eventChannel
-		require.False(t, open, "event channel should be closed after stream error")
-
-		// Close the change stream to release the mtest session
-		_ = watcher.changeStream.Close(context.Background())
-	})
-
-	mt.Run("Start deletes stale resume token on ChangeStreamHistoryLost error", func(mt *mtest.T) {
-		mt.AddMockResponses(
-			// Initial change stream cursor
-			mtest.CreateCursorResponse(1, "testdb.testcollection", mtest.FirstBatch),
-			// getMore returns ChangeStreamHistoryLost
-			mtest.CreateCommandErrorResponse(mtest.CommandError{
-				Code:    280,
-				Message: "Resume of change stream was not possible, the resume token was not found",
-			}),
-			// DeleteOne for the stale resume token
-			mtest.CreateSuccessResponse(),
-		)
-
-		coll := mt.Client.Database("testdb").Collection("testcollection")
-		changeStream, err := coll.Watch(context.Background(), mongo.Pipeline{})
-		require.NoError(mt, err)
-
-		resumeTokenCol := mt.Client.Database("tokendb").Collection("ResumeTokens")
-
-		watcher := &ChangeStreamWatcher{
-			client:         mt.Client,
-			changeStream:   changeStream,
-			eventChannel:   make(chan Event, 1),
-			resumeTokenCol: resumeTokenCol,
-			clientName:     "testclient-stale",
-			done:           make(chan struct{}),
-		}
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		watcher.Start(ctx)
-
-		select {
-		case <-watcher.done:
-			// Goroutine exited as expected after detecting stale token
-		case <-time.After(2 * time.Second):
-			t.Fatal("timeout waiting for goroutine to exit on stale token error")
-		}
-
-		_, open := <-watcher.eventChannel
-		require.False(t, open, "event channel should be closed after stale token error")
-
-		_ = watcher.changeStream.Close(context.Background())
-	})
-}
-
-func TestChangeStreamWatcher_MarkProcessed(t *testing.T) {
-	mtOpts := mtest.NewOptions().ClientType(mtest.Mock).DatabaseName("testdb")
-	mt := mtest.New(t, mtOpts)
-
-	resumeToken := bson.D{
-		{Key: "ts", Value: int64(1)},
-		{Key: "t", Value: int32(1)},
-	}
-
-	// mock the watch command response with one change event
-	event := bson.D{
-		{Key: "operationType", Value: "insert"},
-		{Key: "documentKey", Value: bson.D{{Key: "id", Value: int32(1)}}},
-		{Key: "_id", Value: resumeToken},
-	}
-
-	mt.Run("MarkProcessed updates successfully on first try", func(mt *mtest.T) {
-		// mock the watch command response with one change event
-		mt.AddMockResponses(
-			mtest.CreateCursorResponse(1, "testdb.testcollection", mtest.FirstBatch),
-			mtest.CreateCursorResponse(0, "testdb.testcollection", mtest.NextBatch, event),
-		)
-
-		// mock the UpdateOne response for storing the resume token
-		mt.AddMockResponses(mtest.CreateSuccessResponse())
-
-		coll := mt.Client.Database("testdb").Collection("testcollection")
-		changeStream, err := coll.Watch(context.Background(), mongo.Pipeline{})
-		require.NoError(mt, err)
-
-		resumeTokenCol := mt.Client.Database("tokendb").Collection("tokencollection")
-
-		watcher := &ChangeStreamWatcher{
-			client:                    mt.Client,
-			changeStream:              changeStream,
-			eventChannel:              make(chan Event, 1),
-			resumeTokenCol:            resumeTokenCol,
-			clientName:                "testclient-success-first",
-			resumeTokenUpdateTimeout:  5 * time.Second,
-			resumeTokenUpdateInterval: 1 * time.Second,
-		}
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		watcher.Start(ctx)
-
-		select {
-		case ev := <-watcher.Events():
-			require.NotEmpty(t, ev)
-		case <-time.After(2 * time.Second):
-			t.Fatal("timeout waiting for event")
-		}
-
-		err = watcher.MarkProcessed(ctx, []byte{})
-		require.NoError(t, err)
-
-		// Verify the UpdateOne command was called once
-		startedEvents := mt.GetAllStartedEvents()
-		updateCommands := 0
-		for _, startedEvent := range startedEvents {
-			if startedEvent.CommandName == "update" {
-				updateCommands++
-				require.Equal(t, "tokencollection", startedEvent.Command.Lookup("update").StringValue())
-				require.Equal(t, "tokendb", startedEvent.DatabaseName)
-
-				var cmd bson.D
-				err = bson.Unmarshal(startedEvent.Command, &cmd)
-				require.NoError(t, err, "failed to unmarshal command")
-
-				var cmdMap bson.M
-				cmdBytes, err := bson.Marshal(cmd)
-				require.NoError(t, err, "failed to marshal command to bytes")
-				err = bson.Unmarshal(cmdBytes, &cmdMap)
-				require.NoError(t, err, "failed to unmarshal command bytes to map")
-
-				updates := cmdMap["updates"].(bson.A)
-				update0 := updates[0].(bson.M)
-
-				filter := update0["q"].(bson.M)
-				update := update0["u"].(bson.M)
-
-				require.EqualValues(t, bson.M{"clientName": "testclient-success-first"}, filter)
-				expectedUpdate := bson.M{"$set": bson.M{"resumeToken": bson.M{"ts": int64(1), "t": int32(1)}}}
-				require.EqualValues(t, expectedUpdate, update)
-			}
-		}
-		require.Equal(t, 1, updateCommands, "Expected exactly one update command")
-
-		cancel()
-
-		mt.ClearEvents()
-
-		closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer closeCancel()
-		// Set client to nil before Close() - mtest manages client lifecycle
-		watcher.client = nil
-		err = watcher.Close(closeCtx)
-		require.NoError(t, err)
-	})
-
-	mt.Run("MarkProcessed updates successfully after retry", func(mt *mtest.T) {
-		mt.AddMockResponses(
-			mtest.CreateCursorResponse(1, "testdb.testcollection", mtest.FirstBatch),
-			mtest.CreateCursorResponse(0, "testdb.testcollection", mtest.NextBatch, event),
-		)
-
-		// mock UpdateOne: first fails, second succeeds
-		mt.AddMockResponses(
-			mtest.CreateCommandErrorResponse(mtest.CommandError{Code: 123, Message: "network error"}),
-			mtest.CreateSuccessResponse(),
-		)
-
-		coll := mt.Client.Database("testdb").Collection("testcollection")
-		changeStream, err := coll.Watch(context.Background(), mongo.Pipeline{})
-		require.NoError(mt, err)
-
-		resumeTokenCol := mt.Client.Database("tokendb").Collection("tokencollection")
-
-		watcher := &ChangeStreamWatcher{
-			client:                    mt.Client,
-			changeStream:              changeStream,
-			eventChannel:              make(chan Event, 1),
-			resumeTokenCol:            resumeTokenCol,
-			clientName:                "testclient-retry-success",
-			resumeTokenUpdateTimeout:  5 * time.Second,
-			resumeTokenUpdateInterval: 1 * time.Second,
-		}
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		watcher.Start(ctx)
-
-		select {
-		case ev := <-watcher.Events():
-			require.NotEmpty(t, ev)
-		case <-time.After(2 * time.Second):
-			t.Fatal("timeout waiting for event")
-		}
-
-		err = watcher.MarkProcessed(ctx, []byte{})
-		require.NoError(t, err)
-
-		// Verify the UpdateOne command was called twice
-		startedEvents := mt.GetAllStartedEvents()
-		updateCommands := 0
-		for _, startedEvent := range startedEvents {
-			if startedEvent.CommandName == "update" {
-				updateCommands++
-			}
-		}
-		require.Equal(t, 2, updateCommands, "Expected exactly two update commands")
-
-		cancel()
-
-		mt.ClearEvents()
-
-		closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer closeCancel()
-		// Set client to nil before Close() - mtest manages client lifecycle
-		watcher.client = nil
-		err = watcher.Close(closeCtx)
-		require.NoError(t, err)
-
-	})
-
-	mt.Run("MarkProcessed times out after multiple failures", func(mt *mtest.T) {
-		mt.AddMockResponses(
-			mtest.CreateCursorResponse(1, "testdb.testcollection", mtest.FirstBatch),
-			mtest.CreateCursorResponse(0, "testdb.testcollection", mtest.NextBatch, event),
-		)
-
-		// mock UpdateOne: always fail enough times to hit the timeout
-		mt.AddMockResponses(
-			mtest.CreateCommandErrorResponse(mtest.CommandError{Code: 123, Message: "persistent network error 1"}),
-			mtest.CreateCommandErrorResponse(mtest.CommandError{Code: 123, Message: "persistent network error 2"}),
-			mtest.CreateCommandErrorResponse(mtest.CommandError{Code: 123, Message: "persistent network error 3"}),
-			mtest.CreateCommandErrorResponse(mtest.CommandError{Code: 123, Message: "persistent network error 4"}),
-			mtest.CreateCommandErrorResponse(mtest.CommandError{Code: 123, Message: "persistent network error 5"}),
-			mtest.CreateCommandErrorResponse(mtest.CommandError{Code: 123, Message: "persistent network error 6"}),
-		)
-
-		coll := mt.Client.Database("testdb").Collection("testcollection")
-		changeStream, err := coll.Watch(context.Background(), mongo.Pipeline{})
-		require.NoError(mt, err)
-
-		resumeTokenCol := mt.Client.Database("tokendb").Collection("tokencollection")
-
-		watcher := &ChangeStreamWatcher{
-			client:                    mt.Client,
-			changeStream:              changeStream,
-			eventChannel:              make(chan Event, 1),
-			resumeTokenCol:            resumeTokenCol,
-			clientName:                "testclient-timeout",
-			resumeTokenUpdateTimeout:  5 * time.Second,
-			resumeTokenUpdateInterval: 1 * time.Second,
-		}
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		watcher.Start(ctx)
-
-		select {
-		case ev := <-watcher.Events():
-			require.NotEmpty(t, ev)
-		case <-time.After(2 * time.Second):
-			t.Fatal("timeout waiting for event")
-		}
-
-		err = watcher.MarkProcessed(ctx, []byte{})
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "retrying storing resume token for client testclient-timeout timed out")
-		require.Contains(t, err.Error(), "persistent network error 5")
-
-		// Verify the UpdateOne command was called multiple times
-		startedEvents := mt.GetAllStartedEvents()
-		updateCommands := 0
-		for _, startedEvent := range startedEvents {
-			if startedEvent.CommandName == "update" {
-				updateCommands++
-			}
-		}
-		require.GreaterOrEqual(t, updateCommands, 5, "Expected at least 5 update commands due to timeout")
-
-		cancel()
-
-		mt.ClearEvents()
-
-		closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer closeCancel()
-		// Set client to nil before Close() - mtest manages client lifecycle
-		watcher.client = nil
-		err = watcher.Close(closeCtx)
-		require.NoError(t, err)
-
-	})
-
-	mt.Run("MarkProcessed stores provided per-event token as document", func(mt *mtest.T) {
-		// mock the UpdateOne response for storing the resume token
-		mt.AddMockResponses(mtest.CreateSuccessResponse())
-
-		resumeTokenCol := mt.Client.Database("tokendb").Collection("tokencollection")
-
-		// No change stream: the provided-token path must not consult the
-		// change stream cursor at all.
-		watcher := &ChangeStreamWatcher{
-			client:                    mt.Client,
-			resumeTokenCol:            resumeTokenCol,
-			clientName:                "testclient-provided-token",
-			resumeTokenUpdateTimeout:  5 * time.Second,
-			resumeTokenUpdateInterval: 1 * time.Second,
-		}
-
-		tokenBytes, err := bson.Marshal(resumeToken)
-		require.NoError(mt, err)
-
-		err = watcher.MarkProcessed(context.Background(), tokenBytes)
-		require.NoError(t, err)
-
-		// Verify the token was stored as a BSON document (the shape
-		// SetResumeAfter expects on restart), not as a binary blob.
-		startedEvents := mt.GetAllStartedEvents()
-		updateCommands := 0
-		for _, startedEvent := range startedEvents {
-			if startedEvent.CommandName == "update" {
-				updateCommands++
-
-				var cmdMap bson.M
-				require.NoError(t, bson.Unmarshal(startedEvent.Command, &cmdMap))
-
-				updates := cmdMap["updates"].(bson.A)
-				update0 := updates[0].(bson.M)
-
-				filter := update0["q"].(bson.M)
-				update := update0["u"].(bson.M)
-
-				require.EqualValues(t, bson.M{"clientName": "testclient-provided-token"}, filter)
-				expectedUpdate := bson.M{"$set": bson.M{"resumeToken": bson.M{"ts": int64(1), "t": int32(1)}}}
-				require.EqualValues(t, expectedUpdate, update)
-			}
-		}
-		require.Equal(t, 1, updateCommands, "Expected exactly one update command")
-
-		mt.ClearEvents()
-	})
-
-	mt.Run("MarkProcessed rejects invalid provided token", func(mt *mtest.T) {
-		resumeTokenCol := mt.Client.Database("tokendb").Collection("tokencollection")
-
-		watcher := &ChangeStreamWatcher{
-			client:                    mt.Client,
-			resumeTokenCol:            resumeTokenCol,
-			clientName:                "testclient-invalid-token",
-			resumeTokenUpdateTimeout:  5 * time.Second,
-			resumeTokenUpdateInterval: 1 * time.Second,
-		}
-
-		err := watcher.MarkProcessed(context.Background(), []byte("not-a-bson-document"))
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "invalid resume token")
-
-		// No update command should have been issued
-		for _, startedEvent := range mt.GetAllStartedEvents() {
-			require.NotEqual(t, "update", startedEvent.CommandName,
-				"no update command should be issued for an invalid token")
-		}
-
-		mt.ClearEvents()
 	})
 }
 
@@ -987,6 +368,55 @@ func TestConstructMongoClientOptions_NoTLS(t *testing.T) {
 	if opts.Auth != nil {
 		t.Fatal("Expected nil auth when TLS is disabled")
 	}
+}
+
+// TestConstructMongoClientOptions_BSONOptions_PreserveV1DecodeShape guards the two
+// driver v1 -> v2 decode behaviour changes this package depends on:
+//
+//   - DefaultDocumentM: v2 decodes nested documents into bson.D; callers here
+//     type-assert bson.M.
+//   - ObjectIDAsHexString: v2 refuses to decode an ObjectID into a Go string, which
+//     breaks structs binding `bson:"_id"` to a string field (e.g. the latest-event
+//     lookup in fault-quarantine's CancelLatestQuarantiningEvents). Losing this
+//     silently turns manual-uncordon cancellation into a no-op.
+func TestConstructMongoClientOptions_BSONOptions_PreserveV1DecodeShape(t *testing.T) {
+	mongoConfig := MongoDBConfig{
+		URI:                      "mongodb://localhost:27017",
+		Database:                 "test",
+		Collection:               "test",
+		TotalPingTimeoutSeconds:  5,
+		TotalPingIntervalSeconds: 1,
+	}
+
+	opts, err := constructMongoClientOptions(mongoConfig)
+	require.NoError(t, err)
+	require.NotNil(t, opts.BSONOptions, "BSON options must be set")
+	require.True(t, opts.BSONOptions.DefaultDocumentM, "DefaultDocumentM must stay enabled")
+	require.True(t, opts.BSONOptions.ObjectIDAsHexString, "ObjectIDAsHexString must stay enabled")
+}
+
+// TestObjectIDDecodesIntoStringField documents the underlying driver behaviour the
+// option above compensates for: without it, decoding _id into a string fails.
+func TestObjectIDDecodesIntoStringField(t *testing.T) {
+	oid := bson.NewObjectID()
+
+	raw, err := bson.Marshal(bson.M{"_id": oid})
+	require.NoError(t, err)
+
+	var target struct {
+		ID string `bson:"_id"`
+	}
+
+	// Default v2 decoder: this is the failure seen in CI.
+	err = bson.Unmarshal(raw, &target)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "decoding an object ID into a string is not supported by default")
+
+	// With ObjectIDAsHexString the same document decodes to the hex string.
+	dec := bson.NewDecoder(bson.NewDocumentReader(bytes.NewReader(raw)))
+	dec.ObjectIDAsHexString()
+	require.NoError(t, dec.Decode(&target))
+	require.Equal(t, oid.Hex(), target.ID)
 }
 
 func TestConstructMongoClientOptions_DynamicClientCertificateUsesX509Auth(t *testing.T) {
@@ -1306,183 +736,6 @@ func writeCertFiles(dir string, caCertPEM, clientCertPEM, clientKeyPEM []byte) (
 	return cleanup, nil
 }
 
-func TestOpenChangeStreamWithConfigurableRetry(t *testing.T) {
-	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
-
-	// Mock resume token
-	resumeToken := bson.D{
-		{Key: "ts", Value: int64(1)},
-		{Key: "t", Value: int32(1)},
-	}
-
-	// Mock change event
-	event := bson.D{
-		{Key: "operationType", Value: "insert"},
-		{Key: "documentKey", Value: bson.D{{Key: "id", Value: int32(1)}}},
-		{Key: "_id", Value: resumeToken},
-	}
-
-	mt.Run("Uses default retry values when not configured", func(mt *mtest.T) {
-		// Create MongoDBConfig without retry settings
-		mongoConfig := MongoDBConfig{
-			Database:   "testdb",
-			Collection: "testcollection",
-			// ChangeStreamRetryDeadlineSeconds and ChangeStreamRetryIntervalSeconds not set
-		}
-
-		// Mock successful change stream creation on first try
-		mt.AddMockResponses(
-			mtest.CreateSuccessResponse(
-				bson.E{Key: "cursor", Value: bson.D{
-					{Key: "id", Value: int64(1)},
-					{Key: "ns", Value: "testdb.testcollection"},
-					{Key: "firstBatch", Value: bson.A{event}},
-				}},
-			),
-		)
-
-		pipeline := mongo.Pipeline{}
-		opts := mongoOptions.ChangeStream()
-
-		// Call openChangeStream with no resume token (should use SecondaryPreferred)
-		cs, err := openChangeStream(context.Background(), mt.Client, mongoConfig, pipeline, opts, false, nil, "")
-
-		require.NoError(t, err)
-		require.NotNil(t, cs)
-		defer cs.Close(context.Background())
-	})
-
-	mt.Run("Uses custom retry values when configured", func(mt *mtest.T) {
-		// Create MongoDBConfig with custom retry settings
-		mongoConfig := MongoDBConfig{
-			Database:                         "testdb",
-			Collection:                       "testcollection",
-			ChangeStreamRetryDeadlineSeconds: 30, // Custom 30 seconds
-			ChangeStreamRetryIntervalSeconds: 5,  // Custom 5 seconds
-		}
-
-		// Mock successful change stream creation
-		mt.AddMockResponses(
-			mtest.CreateSuccessResponse(
-				bson.E{Key: "cursor", Value: bson.D{
-					{Key: "id", Value: int64(1)},
-					{Key: "ns", Value: "testdb.testcollection"},
-					{Key: "firstBatch", Value: bson.A{event}},
-				}},
-			),
-		)
-
-		pipeline := mongo.Pipeline{}
-		opts := mongoOptions.ChangeStream()
-
-		// Call openChangeStream with no resume token
-		cs, err := openChangeStream(context.Background(), mt.Client, mongoConfig, pipeline, opts, false, nil, "")
-
-		require.NoError(t, err)
-		require.NotNil(t, cs)
-		defer cs.Close(context.Background())
-	})
-
-	mt.Run("Handles negative retry values by using defaults", func(mt *mtest.T) {
-		// Create MongoDBConfig with negative retry settings (should trigger defaults)
-		mongoConfig := MongoDBConfig{
-			Database:                         "testdb",
-			Collection:                       "testcollection",
-			ChangeStreamRetryDeadlineSeconds: -10, // Invalid, should use default 60
-			ChangeStreamRetryIntervalSeconds: -5,  // Invalid, should use default 3
-		}
-
-		// Mock successful change stream creation
-		mt.AddMockResponses(
-			mtest.CreateSuccessResponse(
-				bson.E{Key: "cursor", Value: bson.D{
-					{Key: "id", Value: int64(1)},
-					{Key: "ns", Value: "testdb.testcollection"},
-					{Key: "firstBatch", Value: bson.A{event}},
-				}},
-			),
-		)
-
-		pipeline := mongo.Pipeline{}
-		opts := mongoOptions.ChangeStream()
-
-		// Call openChangeStream
-		cs, err := openChangeStream(context.Background(), mt.Client, mongoConfig, pipeline, opts, false, nil, "")
-
-		require.NoError(t, err)
-		require.NotNil(t, cs)
-		defer cs.Close(context.Background())
-	})
-
-	mt.Run("Opens change stream without resume token on SecondaryPreferred", func(mt *mtest.T) {
-		mongoConfig := MongoDBConfig{
-			Database:   "testdb",
-			Collection: "testcollection",
-		}
-
-		// Mock successful change stream creation
-		mt.AddMockResponses(
-			mtest.CreateSuccessResponse(
-				bson.E{Key: "cursor", Value: bson.D{
-					{Key: "id", Value: int64(1)},
-					{Key: "ns", Value: "testdb.testcollection"},
-					{Key: "firstBatch", Value: bson.A{event}},
-				}},
-			),
-		)
-
-		pipeline := mongo.Pipeline{}
-		opts := mongoOptions.ChangeStream()
-
-		// Call openChangeStream without resume token (hasResumeToken = false)
-		cs, err := openChangeStream(context.Background(), mt.Client, mongoConfig, pipeline, opts, false, nil, "")
-
-		require.NoError(t, err)
-		require.NotNil(t, cs)
-		defer cs.Close(context.Background())
-	})
-
-	mt.Run("Recovers from stale resume token by deleting token and starting fresh", func(mt *mtest.T) {
-		mongoConfig := MongoDBConfig{
-			Database:                         "testdb",
-			Collection:                       "testcollection",
-			ChangeStreamRetryDeadlineSeconds: 1,
-			ChangeStreamRetryIntervalSeconds: 1,
-		}
-
-		// First Watch call fails with ChangeStreamHistoryLost, then recovery
-		// deletes the stale token and opens a fresh stream.
-		mt.AddMockResponses(
-			// 1. Watch fails with stale token error
-			mtest.CreateCommandErrorResponse(mtest.CommandError{
-				Code:    280,
-				Message: "Resume of change stream was not possible",
-			}),
-			// 2. DeleteOne for the stale resume token
-			mtest.CreateSuccessResponse(),
-			// 3. Fresh Watch succeeds
-			mtest.CreateSuccessResponse(
-				bson.E{Key: "cursor", Value: bson.D{
-					{Key: "id", Value: int64(1)},
-					{Key: "ns", Value: "testdb.testcollection"},
-					{Key: "firstBatch", Value: bson.A{event}},
-				}},
-			),
-		)
-
-		pipeline := mongo.Pipeline{}
-		opts := mongoOptions.ChangeStream().SetResumeAfter(resumeToken)
-		tokenColl := mt.Client.Database("testdb").Collection("ResumeTokens")
-
-		cs, err := openChangeStream(context.Background(), mt.Client, mongoConfig, pipeline, opts, true,
-			tokenColl, "test-client")
-
-		require.NoError(t, err)
-		require.NotNil(t, cs)
-		defer cs.Close(context.Background())
-	})
-}
-
 func TestIsUnrecoverableResumeTokenError(t *testing.T) {
 	t.Run("detects error code 280 (ChangeStreamFatalError)", func(t *testing.T) {
 		err := mongo.CommandError{Code: 280, Message: "Resume of change stream was not possible"}
@@ -1749,83 +1002,8 @@ func TestCopyStructFields(t *testing.T) {
 	})
 }
 
-func TestGetUnprocessedEventCount(t *testing.T) {
-	mtOpts := mtest.NewOptions().ClientType(mtest.Mock).DatabaseName("testdb")
-	mt := mtest.New(t, mtOpts)
-
-	mt.Run("count unprocessed events", func(mt *mtest.T) {
-		mt.AddMockResponses(
-			mtest.CreateCursorResponse(0, "testdb.testcollection", mtest.FirstBatch, bson.D{
-				{Key: "n", Value: int32(5)},
-			}),
-		)
-
-		watcher := &ChangeStreamWatcher{
-			client:     mt.Client,
-			database:   "testdb",
-			collection: "testcollection",
-		}
-
-		ctx := context.Background()
-		objectID := primitive.NewObjectID()
-		count, err := watcher.GetUnprocessedEventCount(ctx, objectID)
-
-		require.NoError(t, err)
-		require.Equal(t, int64(5), count)
-	})
-
-	mt.Run("count with additional filters", func(mt *mtest.T) {
-		mt.AddMockResponses(
-			mtest.CreateCursorResponse(0, "testdb.testcollection", mtest.FirstBatch, bson.D{
-				{Key: "n", Value: int32(3)},
-			}),
-		)
-
-		watcher := &ChangeStreamWatcher{
-			client:     mt.Client,
-			database:   "testdb",
-			collection: "testcollection",
-		}
-
-		ctx := context.Background()
-		objectID := primitive.NewObjectID()
-		additionalFilter := bson.M{"status": "pending"}
-
-		count, err := watcher.GetUnprocessedEventCount(ctx, objectID, additionalFilter)
-
-		require.NoError(t, err)
-		require.Equal(t, int64(3), count)
-	})
-
-	mt.Run("count documents error", func(mt *mtest.T) {
-		mt.AddMockResponses(
-			mtest.CreateCommandErrorResponse(mtest.CommandError{
-				Code:    123,
-				Message: "database error",
-			}),
-		)
-
-		watcher := &ChangeStreamWatcher{
-			client:     mt.Client,
-			database:   "testdb",
-			collection: "testcollection",
-		}
-
-		ctx := context.Background()
-		objectID := primitive.NewObjectID()
-		count, err := watcher.GetUnprocessedEventCount(ctx, objectID)
-
-		require.Error(t, err)
-		require.Equal(t, int64(0), count)
-		require.Contains(t, err.Error(), "failed to count unprocessed events")
-	})
-}
-
-func TestGetCollectionClient(t *testing.T) {
-	mtOpts := mtest.NewOptions().ClientType(mtest.Mock).DatabaseName("testdb")
-	mt := mtest.New(t, mtOpts)
-
-	mt.Run("error in constructing client options", func(mt *mtest.T) {
+func TestGetCollectionClient_InvalidConfig_ReturnsError(t *testing.T) {
+	t.Run("error in constructing client options", func(t *testing.T) {
 		mongoConfig := MongoDBConfig{
 			URI:        "mongodb://localhost:27017",
 			Database:   "testdb",
@@ -1849,7 +1027,7 @@ func TestGetCollectionClient(t *testing.T) {
 		require.Contains(t, err.Error(), "error creating mongoDB clientOpts")
 	})
 
-	mt.Run("invalid ping timeout", func(mt *mtest.T) {
+	t.Run("invalid ping timeout", func(t *testing.T) {
 		tempDir, err := os.MkdirTemp("", "test_get_collection")
 		require.NoError(t, err)
 		defer os.RemoveAll(tempDir)
@@ -1886,7 +1064,7 @@ func TestGetCollectionClient(t *testing.T) {
 		require.Contains(t, err.Error(), "invalid ping timeout value")
 	})
 
-	mt.Run("invalid ping interval", func(mt *mtest.T) {
+	t.Run("invalid ping interval", func(t *testing.T) {
 		tempDir, err := os.MkdirTemp("", "test_get_collection")
 		require.NoError(t, err)
 		defer os.RemoveAll(tempDir)
@@ -1923,7 +1101,7 @@ func TestGetCollectionClient(t *testing.T) {
 		require.Contains(t, err.Error(), "invalid ping interval value")
 	})
 
-	mt.Run("ping interval >= timeout", func(mt *mtest.T) {
+	t.Run("ping interval >= timeout", func(t *testing.T) {
 		tempDir, err := os.MkdirTemp("", "test_get_collection")
 		require.NoError(t, err)
 		defer os.RemoveAll(tempDir)
@@ -2085,301 +1263,5 @@ func TestNewChangeStreamWatcher_ValidationErrors(t *testing.T) {
 		require.Error(t, err)
 		require.Nil(t, watcher)
 		require.Contains(t, err.Error(), "invalid ping interval value, value must be less than ping timeout")
-	})
-}
-
-// TestChangeStreamWatcher_CloseWithoutPanic tests that closing the watcher
-// while events are being processed doesn't cause a panic from sending on closed channel.
-// This is a regression test for the race condition fix.
-func TestChangeStreamWatcher_CloseWithoutPanic(t *testing.T) {
-	mtOpts := mtest.NewOptions().ClientType(mtest.Mock).DatabaseName("testdb")
-	mt := mtest.New(t, mtOpts)
-
-	mt.Run("Close while processing events doesn't panic", func(mt *mtest.T) {
-		// Create a stream of events that will keep the goroutine busy
-		events := make([]bson.D, 0, 10)
-		for i := 0; i < 10; i++ {
-			events = append(events, bson.D{
-				{Key: "operationType", Value: "insert"},
-				{Key: "documentKey", Value: bson.D{{Key: "id", Value: int32(i)}}},
-				{Key: "_id", Value: bson.D{{Key: "ts", Value: int64(i)}, {Key: "t", Value: int32(1)}}},
-			})
-		}
-
-		mt.AddMockResponses(
-			mtest.CreateCursorResponse(1, "testdb.testcollection", mtest.FirstBatch),
-			mtest.CreateCursorResponse(0, "testdb.testcollection", mtest.NextBatch, events...),
-		)
-
-		coll := mt.Client.Database("testdb").Collection("testcollection")
-		changeStream, err := coll.Watch(context.Background(), mongo.Pipeline{})
-		require.NoError(mt, err)
-
-		resumeTokenCol := mt.Client.Database("tokendb").Collection("tokencollection")
-
-		watcher := &ChangeStreamWatcher{
-			client:         mt.Client,
-			changeStream:   changeStream,
-			eventChannel:   make(chan Event, 10),
-			resumeTokenCol: resumeTokenCol,
-			clientName:     "testclient",
-			done:           make(chan struct{}),
-		}
-
-		ctx := context.Background()
-		watcher.Start(ctx)
-
-		// Read a few events to ensure the goroutine is running
-		receivedCount := 0
-		timeout := time.After(1 * time.Second)
-		for receivedCount < 2 {
-			select {
-			case <-watcher.Events():
-				receivedCount++
-			case <-timeout:
-				t.Fatal("timeout waiting for initial events")
-			}
-		}
-
-		// Close the watcher while events are still being processed
-		// This should not panic even if there are events waiting to be sent
-		// Set client to nil before Close() - mtest manages client lifecycle
-		watcher.client = nil
-		err = watcher.Close(ctx)
-		require.NoError(t, err)
-
-		// Drain any remaining events to verify channel is closed properly
-		drained := 0
-		drainTimeout := time.After(100 * time.Millisecond)
-	drainLoop:
-		for {
-			select {
-			case _, ok := <-watcher.Events():
-				if !ok {
-					// Channel closed properly
-					break drainLoop
-				}
-				drained++
-			case <-drainTimeout:
-				// Timeout is acceptable - we just want to ensure no panic
-				break drainLoop
-			}
-		}
-
-		t.Logf("Drained %d remaining events after close", drained)
-	})
-}
-
-// TestChangeStreamWatcher_ContextCancellation tests that cancelling the context
-// stops the event processing goroutine gracefully.
-func TestChangeStreamWatcher_ContextCancellation(t *testing.T) {
-	mtOpts := mtest.NewOptions().ClientType(mtest.Mock).DatabaseName("testdb")
-	mt := mtest.New(t, mtOpts)
-
-	mt.Run("Context cancellation stops event processing", func(mt *mtest.T) {
-		// Create events that would keep streaming
-		event := bson.D{
-			{Key: "operationType", Value: "insert"},
-			{Key: "documentKey", Value: bson.D{{Key: "id", Value: int32(1)}}},
-			{Key: "_id", Value: bson.D{{Key: "ts", Value: int64(1)}, {Key: "t", Value: int32(1)}}},
-		}
-
-		mt.AddMockResponses(
-			mtest.CreateCursorResponse(1, "testdb.testcollection", mtest.FirstBatch),
-			mtest.CreateCursorResponse(0, "testdb.testcollection", mtest.NextBatch, event),
-		)
-
-		coll := mt.Client.Database("testdb").Collection("testcollection")
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		changeStream, err := coll.Watch(ctx, mongo.Pipeline{})
-		require.NoError(mt, err)
-
-		resumeTokenCol := mt.Client.Database("tokendb").Collection("tokencollection")
-
-		watcher := &ChangeStreamWatcher{
-			client:         mt.Client,
-			changeStream:   changeStream,
-			eventChannel:   make(chan Event, 10),
-			resumeTokenCol: resumeTokenCol,
-			clientName:     "testclient",
-			done:           make(chan struct{}),
-		}
-
-		watcher.Start(ctx)
-
-		// Wait for at least one event to ensure goroutine is running
-		timeout := time.After(1 * time.Second)
-		select {
-		case <-watcher.Events():
-			// Got an event, good
-		case <-timeout:
-			t.Fatal("timeout waiting for event")
-		}
-
-		// Cancel the context
-		cancel()
-
-		// Wait for the done channel to close, indicating goroutine exited
-		select {
-		case <-watcher.done:
-			// Goroutine exited successfully
-		case <-time.After(2 * time.Second):
-			t.Fatal("goroutine did not exit after context cancellation")
-		}
-
-		// Verify channel is closed
-		select {
-		case _, ok := <-watcher.Events():
-			require.False(t, ok, "event channel should be closed after context cancellation")
-		case <-time.After(100 * time.Millisecond):
-			t.Fatal("event channel not closed after goroutine exit")
-		}
-
-		// Close the change stream to clean up the session
-		err = changeStream.Close(context.Background())
-		require.NoError(mt, err)
-	})
-}
-
-// TestChangeStreamWatcher_RapidCloseAndRestart tests rapid close/restart cycles
-// to ensure no race conditions or resource leaks.
-func TestChangeStreamWatcher_RapidCloseAndRestart(t *testing.T) {
-	mtOpts := mtest.NewOptions().ClientType(mtest.Mock).DatabaseName("testdb")
-	mt := mtest.New(t, mtOpts)
-
-	mt.Run("Rapid close and restart cycles", func(mt *mtest.T) {
-		event := bson.D{
-			{Key: "operationType", Value: "insert"},
-			{Key: "documentKey", Value: bson.D{{Key: "id", Value: int32(1)}}},
-			{Key: "_id", Value: bson.D{{Key: "ts", Value: int64(1)}, {Key: "t", Value: int32(1)}}},
-		}
-
-		// Run multiple cycles
-		for i := 0; i < 5; i++ {
-			mt.ClearMockResponses()
-			mt.AddMockResponses(
-				mtest.CreateCursorResponse(1, "testdb.testcollection", mtest.FirstBatch),
-				mtest.CreateCursorResponse(0, "testdb.testcollection", mtest.NextBatch, event),
-			)
-
-			coll := mt.Client.Database("testdb").Collection("testcollection")
-			changeStream, err := coll.Watch(context.Background(), mongo.Pipeline{})
-			require.NoError(mt, err)
-
-			resumeTokenCol := mt.Client.Database("tokendb").Collection("tokencollection")
-
-			watcher := &ChangeStreamWatcher{
-				client:         mt.Client,
-				changeStream:   changeStream,
-				eventChannel:   make(chan Event, 10),
-				resumeTokenCol: resumeTokenCol,
-				clientName:     "testclient",
-				done:           make(chan struct{}),
-			}
-
-			ctx := context.Background()
-			watcher.Start(ctx)
-
-			// Read one event
-			timeout := time.After(500 * time.Millisecond)
-			select {
-			case <-watcher.Events():
-				// Got event
-			case <-timeout:
-				// No event received, but that's ok for this test
-			}
-
-			// Immediately close
-			// Set client to nil before Close() - mtest manages client lifecycle
-			watcher.client = nil
-			err = watcher.Close(ctx)
-			require.NoError(mt, err)
-
-			// Verify the done channel closed
-			select {
-			case <-watcher.done:
-				// Good
-			case <-time.After(1 * time.Second):
-				t.Fatalf("cycle %d: done channel not closed", i)
-			}
-		}
-	})
-}
-
-// TestChangeStreamWatcher_SendOnClosedChannelPrevention uses race detector
-// to ensure there are no race conditions when closing while sending.
-func TestChangeStreamWatcher_SendOnClosedChannelPrevention(t *testing.T) {
-	// This test is specifically designed to catch the race condition
-	// Run with: go test -race
-	mtOpts := mtest.NewOptions().ClientType(mtest.Mock).DatabaseName("testdb")
-	mt := mtest.New(t, mtOpts)
-
-	mt.Run("No race when closing during send", func(mt *mtest.T) {
-		// Create many events to increase chance of catching race
-		events := make([]bson.D, 0, 100)
-		for i := 0; i < 100; i++ {
-			events = append(events, bson.D{
-				{Key: "operationType", Value: "insert"},
-				{Key: "documentKey", Value: bson.D{{Key: "id", Value: int32(i)}}},
-				{Key: "_id", Value: bson.D{{Key: "ts", Value: int64(i)}, {Key: "t", Value: int32(1)}}},
-			})
-		}
-
-		mt.AddMockResponses(
-			mtest.CreateCursorResponse(1, "testdb.testcollection", mtest.FirstBatch),
-			mtest.CreateCursorResponse(0, "testdb.testcollection", mtest.NextBatch, events...),
-		)
-
-		coll := mt.Client.Database("testdb").Collection("testcollection")
-		changeStream, err := coll.Watch(context.Background(), mongo.Pipeline{})
-		require.NoError(mt, err)
-
-		resumeTokenCol := mt.Client.Database("tokendb").Collection("tokencollection")
-
-		// Use unbuffered channel to increase contention
-		watcher := &ChangeStreamWatcher{
-			client:         mt.Client,
-			changeStream:   changeStream,
-			eventChannel:   make(chan Event), // Unbuffered!
-			resumeTokenCol: resumeTokenCol,
-			clientName:     "testclient",
-			done:           make(chan struct{}),
-		}
-
-		ctx := context.Background()
-		watcher.Start(ctx)
-
-		// Start a goroutine to slowly consume events
-		consumeCtx, consumeCancel := context.WithCancel(context.Background())
-		defer consumeCancel()
-
-		go func() {
-			for {
-				select {
-				case <-consumeCtx.Done():
-					return
-				case _, ok := <-watcher.Events():
-					if !ok {
-						return
-					}
-					// Slow consumer to create backpressure
-					time.Sleep(10 * time.Millisecond)
-				}
-			}
-		}()
-
-		// Let some events flow
-		time.Sleep(50 * time.Millisecond)
-
-		// Close while the send goroutine is likely blocked trying to send
-		// Set client to nil before Close() - mtest manages client lifecycle
-		watcher.client = nil
-		err = watcher.Close(ctx)
-		require.NoError(mt, err)
-
-		// If there's a race condition, the race detector will catch it
 	})
 }

@@ -84,5 +84,5 @@ testing_tools:
 cluster:
   prometheus_operator: '78.5.0'
   gpu_operator: 'v25.10.0'
-  cert_manager: '1.19.1'
+  cert_manager: '1.21.1'
   policy_controller: '0.10.5'  # Sigstore Policy Controller Helm chart version

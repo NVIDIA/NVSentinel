@@ -28,14 +28,13 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.mongodb.org/mongo-driver/mongo/readconcern"
-	"go.mongodb.org/mongo-driver/mongo/readpref"
-	"go.mongodb.org/mongo-driver/mongo/writeconcern"
-	"go.opentelemetry.io/contrib/instrumentation/go.mongodb.org/mongo-driver/mongo/otelmongo"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo/readconcern"
+	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
+	"go.mongodb.org/mongo-driver/v2/mongo/writeconcern"
+	"go.opentelemetry.io/contrib/instrumentation/go.mongodb.org/mongo-driver/v2/mongo/otelmongo"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
@@ -130,7 +129,7 @@ func NewChangeStreamWatcher(
 		return nil, fmt.Errorf("error creating mongoDB clientOpts: %w", err)
 	}
 
-	client, err := mongo.Connect(ctx, clientOpts)
+	client, err := mongo.Connect(clientOpts)
 	if err != nil {
 		return nil, fmt.Errorf("error connecting to mongoDB: %w", err)
 	}
@@ -237,7 +236,7 @@ func openChangeStream(
 	client *mongo.Client,
 	mongoConfig MongoDBConfig,
 	pipeline mongo.Pipeline,
-	opts *options.ChangeStreamOptions,
+	opts *options.ChangeStreamOptionsBuilder,
 	hasResumeToken bool,
 	tokenColl *mongo.Collection,
 	clientName string,
@@ -280,7 +279,7 @@ func openChangeStreamWithRetry(
 	client *mongo.Client,
 	mongoConfig MongoDBConfig,
 	pipeline mongo.Pipeline,
-	opts *options.ChangeStreamOptions,
+	opts *options.ChangeStreamOptionsBuilder,
 	retryDeadlineSeconds int,
 	retryIntervalSeconds int,
 	tokenColl *mongo.Collection,
@@ -347,7 +346,7 @@ func recoverFromStaleResumeToken(
 	ctx context.Context,
 	coll *mongo.Collection,
 	pipeline mongo.Pipeline,
-	opts *options.ChangeStreamOptions,
+	opts *options.ChangeStreamOptionsBuilder,
 	tokenColl *mongo.Collection,
 	clientName string,
 ) (*mongo.ChangeStream, error) {
@@ -539,7 +538,7 @@ func (w *ChangeStreamWatcher) MarkProcessed(ctx context.Context, token []byte) e
 			ctx,
 			bson.M{fieldClientName: w.clientName},
 			bson.M{"$set": bson.M{"resumeToken": resumeTokenToStore}},
-			options.Update().SetUpsert(true),
+			options.UpdateOne().SetUpsert(true),
 		)
 		if err == nil {
 			return nil
@@ -559,7 +558,7 @@ func (w *ChangeStreamWatcher) Events() <-chan Event {
 // This leverages MongoDB's default index on _id for efficient querying.
 // Pass in the ObjectID of the event currently being processed.
 // Optional additionalFilters can be provided to further filter the events.
-func (w *ChangeStreamWatcher) GetUnprocessedEventCount(ctx context.Context, lastProcessedID primitive.ObjectID,
+func (w *ChangeStreamWatcher) GetUnprocessedEventCount(ctx context.Context, lastProcessedID bson.ObjectID,
 	additionalFilters ...bson.M) (int64, error) {
 	filter := bson.M{"_id": bson.M{"$gt": lastProcessedID}}
 
@@ -688,7 +687,7 @@ func GetCollectionClient(
 		return nil, fmt.Errorf("error creating mongoDB clientOpts: %w", err)
 	}
 
-	client, err := mongo.Connect(ctx, clientOpts)
+	client, err := mongo.Connect(clientOpts)
 	if err != nil {
 		return nil, fmt.Errorf("error connecting to mongoDB: %w", err)
 	}
@@ -752,6 +751,19 @@ func constructMongoClientOptions(
 	clientOpts := options.Client().
 		ApplyURI(mongoConfig.URI).
 		SetServerSelectionTimeout(serverSelectionTimeout).
+		// Driver v2 decodes nested documents into bson.D by default, whereas v1
+		// mirrored the ancestor type and produced bson.M. Change stream events and
+		// query results are read as bson.M and their nested fields are type-asserted
+		// as such throughout this package, so keep the v1 shape.
+		//
+		// ObjectIDAsHexString likewise restores v1 behaviour: v2 refuses to decode
+		// an ObjectID into a Go string ("decoding an object ID into a string is not
+		// supported by default"), which breaks structs that bind `bson:"_id"` to a
+		// string field.
+		SetBSONOptions(&options.BSONOptions{
+			DefaultDocumentM:    true,
+			ObjectIDAsHexString: true,
+		}).
 		SetMonitor(otelmongo.NewMonitor(
 			otelmongo.WithTracerProvider(tracing.GetChildOnlyTracerProvider()),
 		))

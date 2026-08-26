@@ -19,7 +19,7 @@ import (
 	"strings"
 	"unicode"
 
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 const (
@@ -510,7 +510,7 @@ func mongoFieldToJSONB(fieldPath string) string {
 func convertToMongoObject(id interface{}) interface{} {
 	idStr := id.(string)
 
-	objID, err := primitive.ObjectIDFromHex(idStr)
+	objID, err := bson.ObjectIDFromHex(idStr)
 	if err != nil {
 		return id
 	}

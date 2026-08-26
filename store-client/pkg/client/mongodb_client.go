@@ -22,10 +22,9 @@ import (
 	"sync"
 
 	"github.com/go-logr/logr"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -50,11 +49,11 @@ func (e *mongoEvent) GetDocumentID() (string, error) {
 		).WithMetadata("eventKeys", getMapKeys(e.rawEvent))
 	}
 
-	// Convert to bson.M for internal processing - handle both primitive.M and map[string]interface{}
+	// Convert to bson.M for internal processing - handle both bson.M and map[string]interface{}
 	var document bson.M
 
 	switch v := fullDocument.(type) {
-	case primitive.M:
+	case bson.M:
 		document = bson.M(v)
 	case map[string]interface{}:
 		document = bson.M(v)
@@ -66,7 +65,7 @@ func (e *mongoEvent) GetDocumentID() (string, error) {
 		).WithMetadata("type", fmt.Sprintf("%T", fullDocument))
 	}
 
-	objectID, ok := document[fieldID].(primitive.ObjectID)
+	objectID, ok := document[fieldID].(bson.ObjectID)
 	if !ok {
 		return "", datastore.NewValidationError(
 			datastore.ProviderMongoDB,
@@ -94,11 +93,11 @@ func (e *mongoEvent) GetNodeName() (string, error) {
 		).WithMetadata("eventKeys", getMapKeys(e.rawEvent))
 	}
 
-	// Convert to bson.M for internal processing - handle both primitive.M and map[string]interface{}
+	// Convert to bson.M for internal processing - handle both bson.M and map[string]interface{}
 	var document bson.M
 
 	switch v := fullDocument.(type) {
-	case primitive.M:
+	case bson.M:
 		document = bson.M(v)
 	case map[string]interface{}:
 		document = bson.M(v)
@@ -147,7 +146,7 @@ func (e *mongoEvent) GetResumeToken() []byte {
 		return v
 	case []byte:
 		return v
-	case primitive.Binary:
+	case bson.Binary:
 		return v.Data
 	case bson.RawValue:
 		data, err := bson.Marshal(v)
@@ -176,11 +175,11 @@ func (e *mongoEvent) UnmarshalDocument(v interface{}) error {
 		).WithMetadata("eventKeys", getMapKeys(e.rawEvent))
 	}
 
-	// Convert to bson.M for internal processing - handle both primitive.M and map[string]interface{}
+	// Convert to bson.M for internal processing - handle both bson.M and map[string]interface{}
 	var document bson.M
 
 	switch v := fullDocument.(type) {
-	case primitive.M:
+	case bson.M:
 		document = bson.M(v)
 	case map[string]interface{}:
 		document = bson.M(v)
@@ -434,7 +433,7 @@ func NewMongoDBCollectionClient(ctx context.Context, dbConfig config.DatabaseCon
 func (c *MongoDBClient) UpdateDocumentStatus(
 	ctx context.Context, documentID string, statusPath string, status interface{},
 ) error {
-	objectID, err := primitive.ObjectIDFromHex(documentID)
+	objectID, err := bson.ObjectIDFromHex(documentID)
 	if err != nil {
 		return datastore.NewValidationError(
 			datastore.ProviderMongoDB,
@@ -479,7 +478,7 @@ func (c *MongoDBClient) UpdateDocumentStatusFields(
 		return nil
 	}
 
-	objectID, err := primitive.ObjectIDFromHex(documentID)
+	objectID, err := bson.ObjectIDFromHex(documentID)
 	if err != nil {
 		return datastore.NewValidationError(
 			datastore.ProviderMongoDB,
@@ -662,7 +661,7 @@ func (c *MongoDBClient) executeUpdate(
 func (c *MongoDBClient) UpsertDocument(
 	ctx context.Context, filter interface{}, document interface{},
 ) (*UpdateResult, error) {
-	opts := options.Update().SetUpsert(true)
+	opts := options.UpdateOne().SetUpsert(true)
 	update := bson.M{opSet: document}
 
 	result, err := c.mongoCol.UpdateOne(ctx, resolveMongoFilter(filter), update, opts)
@@ -989,7 +988,7 @@ func (w *mongoChangeStreamWatcher) MarkProcessed(ctx context.Context, token []by
 
 func (w *mongoChangeStreamWatcher) GetUnprocessedEventCount(ctx context.Context,
 	lastProcessedID string) (int64, error) {
-	objectID, err := primitive.ObjectIDFromHex(lastProcessedID)
+	objectID, err := bson.ObjectIDFromHex(lastProcessedID)
 	if err != nil {
 		return 0, datastore.NewValidationError(
 			datastore.ProviderMongoDB,
@@ -1093,7 +1092,7 @@ func convertValueToBson(value interface{}) (interface{}, error) {
 }
 
 // normalizeMongoTypes recursively converts MongoDB-specific types to standard Go types
-// This ensures that modules don't have to deal with MongoDB-specific types like primitive.DateTime
+// This ensures that modules don't have to deal with MongoDB-specific types like bson.DateTime
 func normalizeMongoTypes(doc map[string]interface{}) {
 	for key, value := range doc {
 		doc[key] = normalizeValue(value)
@@ -1101,12 +1100,14 @@ func normalizeMongoTypes(doc map[string]interface{}) {
 }
 
 // normalizeValue converts a single value, handling MongoDB-specific types and nested structures
+//
+//nolint:cyclop // flat type switch: one independent branch per BSON type
 func normalizeValue(value interface{}) interface{} {
 	switch v := value.(type) {
-	case primitive.DateTime:
+	case bson.DateTime:
 		// Convert MongoDB DateTime to standard time.Time
 		return v.Time()
-	case primitive.ObjectID:
+	case bson.ObjectID:
 		// Keep ObjectID as-is for _id fields, but could convert to string if needed
 		return v
 	case map[string]interface{}:
@@ -1117,6 +1118,15 @@ func normalizeValue(value interface{}) interface{} {
 		// Handle bson.M (which is map[string]interface{})
 		normalizeMongoTypes(v)
 		return v
+	case bson.D:
+		// Driver v2 decodes embedded documents into bson.D rather than mirroring
+		// the ancestor map type as v1 did, so flatten it back into a plain map.
+		doc := make(map[string]interface{}, len(v))
+		for _, elem := range v {
+			doc[elem.Key] = normalizeValue(elem.Value)
+		}
+
+		return doc
 	case []interface{}:
 		// Recursively normalize arrays
 		for i, item := range v {
@@ -1124,8 +1134,8 @@ func normalizeValue(value interface{}) interface{} {
 		}
 
 		return v
-	case primitive.A:
-		// Handle primitive.A arrays
+	case bson.A:
+		// Handle bson.A arrays
 		result := make([]interface{}, len(v))
 		for i, item := range v {
 			result[i] = normalizeValue(item)

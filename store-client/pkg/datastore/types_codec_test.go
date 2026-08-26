@@ -20,7 +20,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 func TestHealthEventStatus_UnmarshalBSON_PlainBool(t *testing.T) {
@@ -40,9 +40,9 @@ func TestHealthEventStatus_MarshalBSON_WrappedBool(t *testing.T) {
 	var doc bson.M
 	require.NoError(t, bson.Unmarshal(data, &doc))
 
-	value, ok := doc["faultremediated"].(bson.M)
+	value, ok := doc["faultremediated"].(bson.D)
 	require.True(t, ok, "faultremediated should be an embedded document, got %T", doc["faultremediated"])
-	assert.Equal(t, true, value["value"])
+	assert.Equal(t, bson.D{{Key: "value", Value: true}}, value)
 }
 
 func TestHealthEventStatus_MarshalBSON_NilBool(t *testing.T) {
