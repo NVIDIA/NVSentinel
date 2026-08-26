@@ -97,7 +97,7 @@ if _clocks_event_reasons_field_id is not None:
 # slowdown), which the thermal margin monitor already covers.
 HW_POWER_BRAKE_REASON_BIT = (
     _first_defined(
-        dcgm_structs,
+        dcgm_fields,
         "DCGM_CLOCKS_EVENT_REASON_HW_POWER_BRAKE",
         "DCGM_CLOCKS_THROTTLE_REASON_HW_POWER_BRAKE",
     )
@@ -704,7 +704,10 @@ class DCGMWatcher:
         for gpu_id in gpu_ids:
             field_samples = field_values.values.get(gpu_id, {}).get(monitor.field_id, [])
             if not field_samples:
-                log.warning("GPU %s clocks-event-reasons unavailable; skipping power brake evaluation", gpu_id)
+                # Debug, not warning: a GPU that never reports this field would log
+                # on every poll. The counter below keeps it observable.
+                log.debug("GPU %s clocks-event-reasons unavailable; skipping power brake evaluation", gpu_id)
+                metrics.gpu_power_brake_reasons_blank.inc()
                 continue
 
             raw_reasons = field_samples[0].value
@@ -723,11 +726,15 @@ class DCGMWatcher:
             # so an unchecked blank would count as an asserted brake. Treat it
             # like a missing sample: skip, keep the streak.
             if dcgmvalue.DCGM_INT64_IS_BLANK(reasons_mask):
-                log.warning(
+                # Debug, not warning: a GPU whose field is unsupported returns a
+                # blank on every poll, which would flood the log. The counter keeps
+                # it observable without the noise.
+                log.debug(
                     "GPU %s clocks-event-reasons value is blank (0x%x); skipping power brake evaluation",
                     gpu_id,
                     reasons_mask,
                 )
+                metrics.gpu_power_brake_reasons_blank.inc()
                 continue
             evaluated = True
 
