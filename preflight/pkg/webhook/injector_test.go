@@ -30,9 +30,7 @@ import (
 
 func TestCollectMatchingEnvVars(t *testing.T) {
 	injector := &Injector{cfg: &config.Config{
-		FileConfig: config.FileConfig{
-			NCCLEnvPatterns: []string{"NCCL_*", "FI_*", "LD_LIBRARY_PATH"},
-		},
+		NCCLEnvPatterns: []string{"NCCL_*", "FI_*", "LD_LIBRARY_PATH"},
 	}}
 
 	containers := []corev1.Container{
@@ -56,9 +54,7 @@ func TestCollectMatchingEnvVars(t *testing.T) {
 
 func TestCollectMatchingVolumeMounts(t *testing.T) {
 	injector := &Injector{cfg: &config.Config{
-		FileConfig: config.FileConfig{
-			VolumeMountPatterns: []string{"nvtcpxo-*", "host-opt-*"},
-		},
+		VolumeMountPatterns: []string{"nvtcpxo-*", "host-opt-*"},
 	}}
 
 	containers := []corev1.Container{
@@ -112,10 +108,8 @@ func TestMergeVolumeMounts_SkipsExistingNameOrPath(t *testing.T) {
 
 func TestFindMaxResources(t *testing.T) {
 	injector := &Injector{cfg: &config.Config{
-		FileConfig: config.FileConfig{
-			GPUResourceNames:     []string{"nvidia.com/gpu"},
-			NetworkResourceNames: []string{"vpc.amazonaws.com/efa"},
-		},
+		GPUResourceNames:     []string{"nvidia.com/gpu"},
+		NetworkResourceNames: []string{"vpc.amazonaws.com/efa"},
 	}}
 
 	pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{
@@ -136,7 +130,7 @@ func TestFindMaxResources(t *testing.T) {
 
 func TestFindMaxResources_NoGPU_ReturnsNil(t *testing.T) {
 	injector := &Injector{cfg: &config.Config{
-		FileConfig: config.FileConfig{GPUResourceNames: []string{"nvidia.com/gpu"}},
+		GPUResourceNames: []string{"nvidia.com/gpu"},
 	}}
 	pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{}}}}
 	assert.Nil(t, injector.findMaxResources(pod))
@@ -280,8 +274,8 @@ func TestInjectInitContainers(t *testing.T) {
 				c := testConfig()
 				c.InitContainerPlacement = config.PlacementPrepend
 				c.InitContainers = []config.InitContainerSpec{
-					{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
-					{Container: corev1.Container{Name: "preflight-nccl-loopback", Image: "nccl:latest"}},
+					{Name: "preflight-dcgm-diag", Image: "dcgm:latest"},
+					{Name: "preflight-nccl-loopback", Image: "nccl:latest"},
 				}
 				return c
 			}(),
@@ -386,9 +380,9 @@ func TestInjectInitContainers(t *testing.T) {
 			cfg: func() *config.Config {
 				cfg := testGangConfig()
 				cfg.InitContainers = []config.InitContainerSpec{
-					{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
-					{Container: corev1.Container{Name: "preflight-nccl-loopback", Image: "nccl:latest"}},
-					{Container: corev1.Container{Name: "preflight-nccl-allreduce", Image: "nccl:latest"}},
+					{Name: "preflight-dcgm-diag", Image: "dcgm:latest"},
+					{Name: "preflight-nccl-loopback", Image: "nccl:latest"},
+					{Name: "preflight-nccl-allreduce", Image: "nccl:latest"},
 				}
 				return cfg
 			}(),
@@ -426,8 +420,8 @@ func TestInjectInitContainers(t *testing.T) {
 				cfg := testGangConfig()
 				f := false
 				cfg.InitContainers = []config.InitContainerSpec{
-					{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
-					{Container: corev1.Container{Name: "preflight-nccl-allreduce", Image: "nccl:latest"}, DefaultEnabled: &f},
+					{Name: "preflight-dcgm-diag", Image: "dcgm:latest"},
+					{Name: "preflight-nccl-allreduce", Image: "nccl:latest", DefaultEnabled: &f},
 				}
 				return cfg
 			}(),
@@ -554,7 +548,7 @@ func TestBuildInitContainers(t *testing.T) {
 	t.Run("CPU and memory floor not applied when already set", func(t *testing.T) {
 		cfg := testConfig()
 		cfg.InitContainers = []config.InitContainerSpec{
-			{Container: corev1.Container{
+			{
 				Name:  "preflight-dcgm-diag",
 				Image: "dcgm:latest",
 				Resources: corev1.ResourceRequirements{
@@ -562,8 +556,7 @@ func TestBuildInitContainers(t *testing.T) {
 						corev1.ResourceCPU:    resource.MustParse("200m"),
 						corev1.ResourceMemory: resource.MustParse("1Gi"),
 					},
-				},
-			}},
+				}},
 		}
 		injector := NewInjector(cfg, nil)
 
@@ -644,7 +637,7 @@ func TestBuildInitContainers(t *testing.T) {
 	t.Run("user NCCL env not inherited when disabled", func(t *testing.T) {
 		cfg := testConfig()
 		cfg.NCCLEnvPatterns = []string{"NCCL_*"}
-		cfg.InitContainers[0].InheritUserEnv = boolPtr(false)
+		cfg.InitContainers[0].InheritUserEnv = new(false)
 		injector := NewInjector(cfg, nil)
 
 		pod := gpuPod()
@@ -663,11 +656,10 @@ func TestBuildInitContainers(t *testing.T) {
 		cfg := testConfig()
 		cfg.NCCLEnvPatterns = []string{"NCCL_*"}
 		cfg.InitContainers = []config.InitContainerSpec{
-			{Container: corev1.Container{
+			{
 				Name:  "preflight-dcgm-diag",
 				Image: "dcgm:latest",
-				Env:   []corev1.EnvVar{{Name: "NCCL_DEBUG", Value: "WARN"}},
-			}},
+				Env:   []corev1.EnvVar{{Name: "NCCL_DEBUG", Value: "WARN"}}},
 		}
 		injector := NewInjector(cfg, nil)
 
@@ -703,7 +695,7 @@ func TestBuildInitContainers(t *testing.T) {
 	t.Run("user volume mounts not inherited when disabled", func(t *testing.T) {
 		cfg := testConfig()
 		cfg.VolumeMountPatterns = []string{"nvtcpxo-*"}
-		cfg.InitContainers[0].InheritUserVolumeMounts = boolPtr(false)
+		cfg.InitContainers[0].InheritUserVolumeMounts = new(false)
 		injector := NewInjector(cfg, nil)
 
 		pod := gpuPod()
@@ -740,7 +732,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 	t.Run("DRA claims not mirrored when disabled", func(t *testing.T) {
 		cfg := testGangConfig()
-		cfg.GangCoordination.MirrorResourceClaims = boolPtr(false)
+		cfg.GangCoordination.MirrorResourceClaims = new(false)
 		injector := NewInjector(cfg, nil)
 
 		pod := gpuPod()
@@ -807,9 +799,9 @@ func TestSelectInitContainers(t *testing.T) {
 		cfg := testConfig()
 		f := false
 		cfg.InitContainers = []config.InitContainerSpec{
-			{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
-			{Container: corev1.Container{Name: "preflight-nccl-loopback", Image: "nccl:latest"}},
-			{Container: corev1.Container{Name: "preflight-nccl-allreduce", Image: "nccl:latest"}, DefaultEnabled: &f},
+			{Name: "preflight-dcgm-diag", Image: "dcgm:latest"},
+			{Name: "preflight-nccl-loopback", Image: "nccl:latest"},
+			{Name: "preflight-nccl-allreduce", Image: "nccl:latest", DefaultEnabled: &f},
 		}
 		return cfg
 	}
@@ -983,6 +975,213 @@ func TestParseCheckNames(t *testing.T) {
 // TestInjectVolumes covers volume patch generation: nvsentinel socket,
 // gang ConfigMap (optional), /dev/shm, NCCL topology, extra hostPaths,
 // and dedup against existing pod volumes.
+func TestInjectConnectorToken(t *testing.T) {
+	t.Run("volume, mount and env injected when audience configured", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.ConnectorTokenAudience = "nvsentinel-platform-connector"
+		cfg.ConnectorTokenMountPath = "/var/run/secrets/nvsentinel/platform-connector"
+		cfg.ConnectorTokenExpirationSeconds = 3600
+		injector := &Injector{cfg: cfg}
+
+		volumes := extractVolumes(t, injector.injectVolumes(&corev1.Pod{}, nil))
+		vol := requireVolume(t, volumes, connectorTokenVolumeName)
+		require.NotNil(t, vol.Projected)
+		require.Len(t, vol.Projected.Sources, 1)
+		sat := vol.Projected.Sources[0].ServiceAccountToken
+		require.NotNil(t, sat)
+		assert.Equal(t, "nvsentinel-platform-connector", sat.Audience)
+		assert.Equal(t, "token", sat.Path)
+		require.NotNil(t, sat.ExpirationSeconds)
+		assert.Equal(t, int64(3600), *sat.ExpirationSeconds)
+
+		container := &corev1.Container{}
+		injector.injectCommonEnv(container)
+		injector.injectConnectorTokenMount(container)
+
+		var tokenEnv string
+		for _, e := range container.Env {
+			if e.Name == "PLATFORM_CONNECTOR_TOKEN_PATH" {
+				tokenEnv = e.Value
+			}
+		}
+		assert.Equal(t, "/var/run/secrets/nvsentinel/platform-connector/token", tokenEnv)
+
+		require.Len(t, container.VolumeMounts, 1)
+		assert.Equal(t, connectorTokenVolumeName, container.VolumeMounts[0].Name)
+		assert.Equal(t, "/var/run/secrets/nvsentinel/platform-connector", container.VolumeMounts[0].MountPath)
+		assert.True(t, container.VolumeMounts[0].ReadOnly)
+
+		// Idempotent: a second pass must not duplicate the mount.
+		injector.injectConnectorTokenMount(container)
+		assert.Len(t, container.VolumeMounts, 1)
+	})
+
+	t.Run("nothing injected when audience is empty", func(t *testing.T) {
+		injector := &Injector{cfg: testConfig()}
+
+		for _, p := range injector.injectVolumes(&corev1.Pod{}, nil) {
+			if vol, ok := p.Value.(corev1.Volume); ok {
+				assert.NotEqual(t, connectorTokenVolumeName, vol.Name)
+			}
+		}
+
+		container := &corev1.Container{}
+		injector.injectCommonEnv(container)
+		injector.injectConnectorTokenMount(container)
+
+		for _, e := range container.Env {
+			assert.NotEqual(t, "PLATFORM_CONNECTOR_TOKEN_PATH", e.Name)
+		}
+		assert.Empty(t, container.VolumeMounts)
+	})
+
+	t.Run("pod-supplied volume with the same name is not duplicated", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.ConnectorTokenAudience = "nvsentinel-platform-connector"
+		cfg.ConnectorTokenMountPath = "/var/run/secrets/nvsentinel/platform-connector"
+		cfg.ConnectorTokenExpirationSeconds = 3600
+		injector := &Injector{cfg: cfg}
+		pod := &corev1.Pod{
+			Spec: corev1.PodSpec{
+				Volumes: []corev1.Volume{{Name: connectorTokenVolumeName}},
+			},
+		}
+
+		for _, p := range injector.injectVolumes(pod, nil) {
+			if vol, ok := p.Value.(corev1.Volume); ok {
+				assert.NotEqual(t, connectorTokenVolumeName, vol.Name)
+			}
+		}
+	})
+}
+
+func TestValidateConnectorTokenVolume(t *testing.T) {
+	// Injected checks read their credential out of the volume with this name.
+	// A workload that declares its own volume by that name would otherwise
+	// choose what the check reads, so admission refuses the pod.
+	const audience = "nvsentinel-platform-connector"
+
+	ours := corev1.Volume{
+		Name: connectorTokenVolumeName,
+		Projected: &corev1.ProjectedVolumeSource{
+			Sources: []corev1.VolumeProjection{{
+				ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+					Audience:          audience,
+					ExpirationSeconds: new(int64(3600)),
+					Path:              "token",
+				},
+			}},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		volume  *corev1.Volume
+		wantErr bool
+	}{
+		{name: "no colliding volume", volume: nil},
+		{name: "our own projection is accepted", volume: &ours},
+		{
+			name:    "workload-supplied emptyDir is refused",
+			volume:  &corev1.Volume{Name: connectorTokenVolumeName, EmptyDir: &corev1.EmptyDirVolumeSource{}},
+			wantErr: true,
+		},
+		{
+			name: "workload-supplied secret is refused",
+			volume: &corev1.Volume{
+				Name:   connectorTokenVolumeName,
+				Secret: &corev1.SecretVolumeSource{SecretName: "workload-supplied"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "projection for a different audience is refused",
+			volume: &corev1.Volume{
+				Name: connectorTokenVolumeName,
+				Projected: &corev1.ProjectedVolumeSource{
+					Sources: []corev1.VolumeProjection{{
+						ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+							Audience:          "something-else",
+							ExpirationSeconds: new(int64(3600)),
+							Path:              "token",
+						},
+					}},
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.ConnectorTokenAudience = audience
+			cfg.ConnectorTokenMountPath = "/var/run/secrets/nvsentinel/platform-connector"
+			cfg.ConnectorTokenExpirationSeconds = 3600
+			injector := &Injector{cfg: cfg}
+
+			pod := &corev1.Pod{}
+			if tt.volume != nil {
+				pod.Spec.Volumes = []corev1.Volume{*tt.volume}
+			}
+
+			err := injector.ValidateConnectorTokenVolume(pod)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), connectorTokenVolumeName)
+
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+
+	t.Run("no check at all when token injection is disabled", func(t *testing.T) {
+		injector := &Injector{cfg: testConfig()}
+		pod := &corev1.Pod{
+			Spec: corev1.PodSpec{Volumes: []corev1.Volume{{Name: connectorTokenVolumeName}}},
+		}
+
+		require.NoError(t, injector.ValidateConnectorTokenVolume(pod))
+	})
+}
+
+func TestConnectorTokenSettingsFollowTheChart(t *testing.T) {
+	// The docs promise these are global and cannot drift between publishers,
+	// so preflight must use the configured values rather than its own copy.
+	cfg := testConfig()
+	cfg.ConnectorTokenAudience = "custom-audience"
+	cfg.ConnectorTokenMountPath = "/custom/creds"
+	cfg.ConnectorTokenExpirationSeconds = 900
+	injector := &Injector{cfg: cfg}
+
+	volumes := extractVolumes(t, injector.injectVolumes(&corev1.Pod{}, nil))
+	sat := requireVolume(t, volumes, connectorTokenVolumeName).Projected.Sources[0].ServiceAccountToken
+	require.NotNil(t, sat)
+	assert.Equal(t, "custom-audience", sat.Audience)
+	require.NotNil(t, sat.ExpirationSeconds)
+	assert.Equal(t, int64(900), *sat.ExpirationSeconds)
+
+	container := &corev1.Container{}
+	injector.injectCommonEnv(container)
+	injector.injectConnectorTokenMount(container)
+
+	require.Len(t, container.VolumeMounts, 1)
+	assert.Equal(t, "/custom/creds", container.VolumeMounts[0].MountPath)
+
+	var tokenEnv string
+
+	for _, e := range container.Env {
+		if e.Name == "PLATFORM_CONNECTOR_TOKEN_PATH" {
+			tokenEnv = e.Value
+		}
+	}
+
+	assert.Equal(t, "/custom/creds/token", tokenEnv)
+}
+
 func TestInjectVolumes(t *testing.T) {
 	t.Run("nvsentinel socket volume added", func(t *testing.T) {
 		injector := &Injector{cfg: testConfig()}
@@ -1257,20 +1456,19 @@ func TestInjectInitContainers_NamespaceScopedDiscovery_SelectsNamespaceDiscovere
 	}
 }
 
-func boolPtr(b bool) *bool { return &b }
+//go:fix inline
+func boolPtr(b bool) *bool { return new(b) }
 
 func testConfig() *config.Config {
 	return &config.Config{
-		FileConfig: config.FileConfig{
-			InitContainers: []config.InitContainerSpec{
-				{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "nvcr.io/nvidia/dcgm:latest"}},
-			},
-			GPUResourceNames:       []string{"nvidia.com/gpu"},
-			NetworkResourceNames:   []string{"vpc.amazonaws.com/efa"},
-			InitContainerPlacement: config.PlacementAppend,
-			ConnectorSocket:        "/var/run/nvsentinel/nvsentinel.sock",
-			ProcessingStrategy:     "EXECUTE_REMEDIATION",
+		InitContainers: []config.InitContainerSpec{
+			{Name: "preflight-dcgm-diag", Image: "nvcr.io/nvidia/dcgm:latest"},
 		},
+		GPUResourceNames:       []string{"nvidia.com/gpu"},
+		NetworkResourceNames:   []string{"vpc.amazonaws.com/efa"},
+		InitContainerPlacement: config.PlacementAppend,
+		ConnectorSocket:        "/var/run/nvsentinel/nvsentinel.sock",
+		ProcessingStrategy:     "EXECUTE_REMEDIATION",
 	}
 }
 
@@ -1282,7 +1480,7 @@ func testGangConfig() *config.Config {
 		TimeoutDuration:      10 * time.Minute,
 		MasterPort:           29500,
 		ConfigMapMountPath:   "/etc/preflight",
-		MirrorResourceClaims: boolPtr(true),
+		MirrorResourceClaims: new(true),
 	}
 	return cfg
 }

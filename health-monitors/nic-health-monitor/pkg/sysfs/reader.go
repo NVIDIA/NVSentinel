@@ -141,9 +141,9 @@ func (r *fsReader) ReadPCIAddress(device string) (string, error) {
 		return "", err
 	}
 
-	for _, line := range strings.Split(uevent, "\n") {
-		if strings.HasPrefix(line, "PCI_SLOT_NAME=") {
-			return strings.TrimPrefix(line, "PCI_SLOT_NAME="), nil
+	for line := range strings.SplitSeq(uevent, "\n") {
+		if after, ok := strings.CutPrefix(line, "PCI_SLOT_NAME="); ok {
+			return after, nil
 		}
 	}
 
@@ -164,8 +164,8 @@ func (r *fsReader) IsVirtualFunction(device string) bool {
 // as "4: ACTIVE" → "ACTIVE" or "5: LinkUp" → "LinkUp". Inputs without a
 // colon are returned unchanged (after whitespace trimming).
 func ParsePortState(raw string) string {
-	if idx := strings.Index(raw, ":"); idx >= 0 {
-		return strings.TrimSpace(raw[idx+1:])
+	if _, after, ok := strings.Cut(raw, ":"); ok {
+		return strings.TrimSpace(after)
 	}
 
 	return strings.TrimSpace(raw)

@@ -28,6 +28,13 @@ import (
 	kwokv1alpha1 "sigs.k8s.io/kwok/pkg/apis/v1alpha1"
 )
 
+// gpuOperatorNamespace is declared here, in the only file without a build
+// tag, so that both the amd64_group and arm64_group suites can use it and
+// the two tags can still be combined in one `go test` invocation. Declaring
+// it in a tagged file in each group made the combined build fail with a
+// redeclaration error.
+const gpuOperatorNamespace = "gpu-operator"
+
 var testEnv env.Environment
 
 // Shared test context keys used across multiple test files

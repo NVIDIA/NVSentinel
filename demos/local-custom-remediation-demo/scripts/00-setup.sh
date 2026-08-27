@@ -79,7 +79,7 @@ install_cert_manager() {
     section "Phase 2: Installing cert-manager"
 
     log "Installing cert-manager..."
-    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.yaml
+    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.21.1/cert-manager.yaml
 
     log "Waiting for cert-manager to be ready..."
     kubectl wait --for=condition=available --timeout=300s \

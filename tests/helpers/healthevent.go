@@ -131,7 +131,7 @@ func (h *HealthEventTemplate) WithForceOverride() *HealthEventTemplate {
 		h.Metadata = make(map[string]string)
 	}
 
-	h.Metadata["creator_id"] = "test"
+	h.Metadata["creator_id"] = labelTest
 
 	return h
 }

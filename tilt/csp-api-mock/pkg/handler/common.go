@@ -14,43 +14,80 @@
 
 package handler
 
-import "csp-api-mock/pkg/store"
+import (
+	"encoding/json"
+	"log"
+	"net/http"
+
+	"csp-api-mock/pkg/store"
+)
+
+// Values shared by the AWS and GCP mock handlers.
+const (
+	// awsEventTypeMaintenanceScheduled is the default AWS Health event type code.
+	awsEventTypeMaintenanceScheduled = "AWS_EC2_MAINTENANCE_SCHEDULED"
+	// gcpStatusPending is the default GCP upcoming-maintenance status.
+	gcpStatusPending = "PENDING"
+	// keyStatus is the JSON key used by the mock control endpoints.
+	keyStatus = "status"
+)
+
+// writeJSON encodes v to w, logging (rather than propagating) encode failures:
+// the status line has already been written by the time this runs.
+func writeJSON(w http.ResponseWriter, v any) {
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Printf("encode response: %v", err)
+	}
+}
 
 // mergeEvent updates dst with non-empty fields from src
+//
+//nolint:cyclop // flat sequence of independent per-field emptiness checks
 func mergeEvent(dst, src *store.MaintenanceEvent) {
 	if src.Status != "" {
 		dst.Status = src.Status
 	}
+
 	if src.InstanceID != "" {
 		dst.InstanceID = src.InstanceID
 	}
+
 	if src.NodeName != "" {
 		dst.NodeName = src.NodeName
 	}
+
 	if src.Zone != "" {
 		dst.Zone = src.Zone
 	}
+
 	if src.ProjectID != "" {
 		dst.ProjectID = src.ProjectID
 	}
+
 	if src.Region != "" {
 		dst.Region = src.Region
 	}
+
 	if src.AccountID != "" {
 		dst.AccountID = src.AccountID
 	}
+
 	if src.EventTypeCode != "" {
 		dst.EventTypeCode = src.EventTypeCode
 	}
+
 	if src.MaintenanceType != "" {
 		dst.MaintenanceType = src.MaintenanceType
 	}
+
 	if src.ScheduledStart != nil {
 		dst.ScheduledStart = src.ScheduledStart
 	}
+
 	if src.ScheduledEnd != nil {
 		dst.ScheduledEnd = src.ScheduledEnd
 	}
+
 	if src.Description != "" {
 		dst.Description = src.Description
 	}

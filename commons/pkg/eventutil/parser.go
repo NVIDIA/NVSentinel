@@ -58,7 +58,7 @@ func ParseHealthEventFromEvent(event datastore.Event) (model.HealthEventWithStat
 	return healthEventWithStatus, nil
 }
 
-func healthEventDocumentMap(event datastore.Event) (map[string]interface{}, error) {
+func healthEventDocumentMap(event datastore.Event) (map[string]any, error) {
 	documentToUnmarshal := healthEventDocument(event)
 
 	tempMap, err := toMap(documentToUnmarshal, "event")
@@ -74,7 +74,7 @@ func healthEventDocumentMap(event datastore.Event) (map[string]interface{}, erro
 	return tempMap, nil
 }
 
-func healthEventDocument(event datastore.Event) interface{} {
+func healthEventDocument(event datastore.Event) any {
 	if fullDoc, ok := event["fullDocument"]; ok {
 		return fullDoc
 	}
@@ -82,13 +82,13 @@ func healthEventDocument(event datastore.Event) interface{} {
 	return event
 }
 
-func toMap(value interface{}, name string) (map[string]interface{}, error) {
+func toMap(value any, name string) (map[string]any, error) {
 	jsonBytes, err := json.Marshal(value)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal %s to JSON: %w", name, err)
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.Unmarshal(jsonBytes, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal %s to map: %w", name, err)
 	}
@@ -96,9 +96,9 @@ func toMap(value interface{}, name string) (map[string]interface{}, error) {
 	return result, nil
 }
 
-func normalizeProtoWrapperBoolFields(document map[string]interface{}) {
+func normalizeProtoWrapperBoolFields(document map[string]any) {
 	for _, statusKey := range []string{"healtheventstatus", "healthEventStatus", "HealthEventStatus"} {
-		status, ok := document[statusKey].(map[string]interface{})
+		status, ok := document[statusKey].(map[string]any)
 		if !ok {
 			continue
 		}
@@ -109,13 +109,13 @@ func normalizeProtoWrapperBoolFields(document map[string]interface{}) {
 	}
 }
 
-func normalizeWrappedBoolField(document map[string]interface{}, field string) {
+func normalizeWrappedBoolField(document map[string]any, field string) {
 	value, ok := document[field]
 	if !ok {
 		return
 	}
 
 	if boolValue, ok := value.(bool); ok {
-		document[field] = map[string]interface{}{"value": boolValue}
+		document[field] = map[string]any{"value": boolValue}
 	}
 }

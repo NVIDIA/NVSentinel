@@ -20,14 +20,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
-	"strings"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 )
@@ -60,8 +58,9 @@ func InitializeGRPCSinkConnector(
 
 	if tokenPath != "" {
 		slog.Info("Enabling SA token authentication for gRPC sink", "tokenPath", tokenPath)
-		dialOpts = append(dialOpts, grpc.WithUnaryInterceptor(tokenInterceptor(tokenPath)))
 	}
+
+	dialOpts = append(dialOpts, grpcclient.DialOptions(tokenPath)...)
 
 	conn, err := grpc.NewClient(target, dialOpts...)
 	if err != nil {
@@ -155,35 +154,6 @@ func (g *GRPCSinkConnector) sendHealthEvents(ctx context.Context, healthEvents *
 		"durationMs", duration.Milliseconds())
 
 	return nil
-}
-
-// tokenInterceptor returns a gRPC unary client interceptor that reads a
-// ServiceAccount token from tokenPath on every call and attaches it as a
-// Bearer token in the "authorization" gRPC metadata header.
-// The token is re-read on each invocation to handle Kubernetes token rotation.
-//
-// TODO: extract to commons/pkg/grpcclient and share with janitor/pkg/client.TokenInterceptor
-// which has identical logic. See janitor/pkg/client/grpc_auth.go.
-func tokenInterceptor(tokenPath string) grpc.UnaryClientInterceptor {
-	return func(
-		ctx context.Context,
-		method string,
-		req, reply any,
-		cc *grpc.ClientConn,
-		invoker grpc.UnaryInvoker,
-		opts ...grpc.CallOption,
-	) error {
-		//nolint:gosec // G304: tokenPath is operator-controlled config, not user input.
-		tokenBytes, err := os.ReadFile(tokenPath)
-		if err != nil {
-			return fmt.Errorf("reading SA token from %q: %w", tokenPath, err)
-		}
-
-		token := strings.TrimSpace(string(tokenBytes))
-		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
-
-		return invoker(ctx, method, req, reply, cc, opts...)
-	}
 }
 
 // ShutdownRingBuffer drains the ring buffer and stops the processing loop.

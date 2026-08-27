@@ -63,35 +63,47 @@ type AppSpec struct {
 	DisabledValue string `mapstructure:"disabledValue" json:"disabledValue"`
 }
 
+// Well-known values used by the pre-defined manager configurations below.
+const (
+	// managerGPUOperator is the registry key and namespace of the NVIDIA GPU Operator.
+	managerGPUOperator = "gpu-operator"
+	// labelApp is the pod label used to select an individual managed application.
+	labelApp = "app"
+	// nodeLabelEnabled / nodeLabelDisabled are the default node-label values
+	// that enable and disable a managed application.
+	nodeLabelEnabled  = "true"
+	nodeLabelDisabled = "false"
+)
+
 // Registry holds all known, pre-defined Manager configurations.
 var Registry = map[string]ManagerSpec{
-	"gpu-operator": {
-		ManagerSelector: map[string]string{"app.kubernetes.io/managed-by": "gpu-operator"},
-		Namespace:       "gpu-operator",
+	managerGPUOperator: {
+		ManagerSelector: map[string]string{"app.kubernetes.io/managed-by": managerGPUOperator},
+		Namespace:       managerGPUOperator,
 		Apps: []AppSpec{
 			{
-				AppSelector:   map[string]string{"app": "nvidia-device-plugin-daemonset"},
+				AppSelector:   map[string]string{labelApp: "nvidia-device-plugin-daemonset"},
 				NodeLabel:     "nvidia.com/gpu.deploy.device-plugin",
-				EnabledValue:  "true",
-				DisabledValue: "false",
+				EnabledValue:  nodeLabelEnabled,
+				DisabledValue: nodeLabelDisabled,
 			},
 			{
-				AppSelector:   map[string]string{"app": "nvidia-dcgm"},
+				AppSelector:   map[string]string{labelApp: "nvidia-dcgm"},
 				NodeLabel:     "nvidia.com/gpu.deploy.dcgm",
-				EnabledValue:  "true",
-				DisabledValue: "false",
+				EnabledValue:  nodeLabelEnabled,
+				DisabledValue: nodeLabelDisabled,
 			},
 			{
-				AppSelector:   map[string]string{"app": "nvidia-dcgm-exporter"},
+				AppSelector:   map[string]string{labelApp: "nvidia-dcgm-exporter"},
 				NodeLabel:     "nvidia.com/gpu.deploy.dcgm-exporter",
-				EnabledValue:  "true",
-				DisabledValue: "false",
+				EnabledValue:  nodeLabelEnabled,
+				DisabledValue: nodeLabelDisabled,
 			},
 			{
-				AppSelector:   map[string]string{"app": "gpu-feature-discovery"},
+				AppSelector:   map[string]string{labelApp: "gpu-feature-discovery"},
 				NodeLabel:     "nvidia.com/gpu.deploy.gpu-feature-discovery",
-				EnabledValue:  "true",
-				DisabledValue: "false",
+				EnabledValue:  nodeLabelEnabled,
+				DisabledValue: nodeLabelDisabled,
 			},
 		},
 		TeardownTimeout: 5 * time.Minute,

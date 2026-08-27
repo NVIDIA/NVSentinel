@@ -125,7 +125,7 @@ func (e *testEvent) GetResumeToken() []byte {
 	return []byte{}
 }
 
-func (e *testEvent) UnmarshalDocument(v interface{}) error {
+func (e *testEvent) UnmarshalDocument(v any) error {
 	// Create the health event structure that modules expect
 	healthEvent := &model.HealthEventWithStatus{
 		CreatedAt: time.Now(),

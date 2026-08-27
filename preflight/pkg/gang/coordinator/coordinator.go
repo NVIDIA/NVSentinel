@@ -422,13 +422,11 @@ func GetRank(podName string, peers []types.PeerInfo) int {
 // createConfigMap creates a new ConfigMap for gang coordination.
 func (c *Coordinator) createConfigMap(name, namespace string, gangInfo *types.GangInfo) *corev1.ConfigMap {
 	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			Labels: map[string]string{
-				ConfigMapLabelGangID:    sanitizeString(gangInfo.GangID),
-				ConfigMapLabelManagedBy: "preflight",
-			},
+		Name:      name,
+		Namespace: namespace,
+		Labels: map[string]string{
+			ConfigMapLabelGangID:    sanitizeString(gangInfo.GangID),
+			ConfigMapLabelManagedBy: "preflight",
 		},
 		Data: map[string]string{
 			DataKeyExpectedCount: strconv.Itoa(gangInfo.ExpectedMinCount),

@@ -137,7 +137,7 @@ func (p *PostgreSQLDataStore) GetDB() *sql.DB {
 // NewChangeStreamWatcher creates a new change stream watcher for the PostgreSQL datastore
 // This method makes PostgreSQL compatible with the datastore abstraction layer
 func (p *PostgreSQLDataStore) NewChangeStreamWatcher(
-	ctx context.Context, config interface{},
+	ctx context.Context, config any,
 ) (datastore.ChangeStreamWatcher, error) {
 	clientName, tableName, pipeline, err := parseWatcherConfig(config)
 	if err != nil {
@@ -173,8 +173,8 @@ func (p *PostgreSQLDataStore) NewChangeStreamWatcher(
 	return NewPostgreSQLChangeStreamWatcherWithUnwrap(watcher, resumeControlDecision), nil
 }
 
-func parseWatcherConfig(config interface{}) (string, string, interface{}, error) {
-	configMap, ok := config.(map[string]interface{})
+func parseWatcherConfig(config any) (string, string, any, error) {
+	configMap, ok := config.(map[string]any)
 	if !ok {
 		return "", "", nil, fmt.Errorf("unsupported config type: %T", config)
 	}
@@ -208,7 +208,7 @@ func parseWatcherConfig(config interface{}) (string, string, interface{}, error)
 // buildPipelineFilter creates a two-layer pipeline filter for optimal performance:
 // 1. Server-side: SQL WHERE clause (built from raw pipeline in fetchNewChanges)
 // 2. Application-side: PipelineFilter (handles edge cases SQL can't express)
-func buildPipelineFilter(pipeline interface{}, tableName, clientName string) *PipelineFilter {
+func buildPipelineFilter(pipeline any, tableName, clientName string) *PipelineFilter {
 	if pipeline == nil {
 		return nil
 	}
@@ -246,9 +246,9 @@ func (p *PostgreSQLDataStore) GetDatabaseClient() client.DatabaseClient {
 // This method exists for compatibility with services that use MongoDB-style type assertions
 // It delegates to NewChangeStreamWatcher with the appropriate configuration
 func (p *PostgreSQLDataStore) CreateChangeStreamWatcher(
-	ctx context.Context, clientName string, pipeline interface{},
+	ctx context.Context, clientName string, pipeline any,
 ) (datastore.ChangeStreamWatcher, error) {
-	config := map[string]interface{}{
+	config := map[string]any{
 		"ClientName": clientName,
 		"TableName":  "health_events", // Default table name
 		"Pipeline":   pipeline,

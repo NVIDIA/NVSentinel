@@ -59,7 +59,7 @@ type ReconcilerConfig struct {
 	CircuitBreakerEnabled bool
 	DataStoreConfig       *datastore.DataStoreConfig
 	TokenConfig           client.TokenConfig
-	DatabasePipeline      interface{}
+	DatabasePipeline      any
 }
 
 type rulesetsConfig struct {
@@ -164,7 +164,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	datastoreAdapter, ok := ds.(interface {
 		GetDatabaseClient() client.DatabaseClient
 		CreateChangeStreamWatcher(
-			ctx context.Context, clientName string, pipeline interface{},
+			ctx context.Context, clientName string, pipeline any,
 		) (datastore.ChangeStreamWatcher, error)
 	})
 	if !ok {
@@ -249,7 +249,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 func (r *Reconciler) setupChangeStreamWatcher(
 	ctx context.Context,
 	datastoreAdapter interface {
-		CreateChangeStreamWatcher(ctx context.Context, clientName string, pipeline interface{}) (
+		CreateChangeStreamWatcher(ctx context.Context, clientName string, pipeline any) (
 			datastore.ChangeStreamWatcher, error)
 	},
 ) (client.ChangeStreamWatcher, error) {

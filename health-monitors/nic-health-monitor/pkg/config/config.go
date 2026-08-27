@@ -254,7 +254,7 @@ func validateRegexList(commaSeparated string) error {
 		return nil
 	}
 
-	for _, pat := range strings.Split(commaSeparated, ",") {
+	for pat := range strings.SplitSeq(commaSeparated, ",") {
 		pat = strings.TrimSpace(pat)
 		if pat == "" {
 			continue
@@ -281,7 +281,7 @@ func validateInclusionRegexList(commaSeparated string) error {
 		return nil
 	}
 
-	for _, pat := range strings.Split(commaSeparated, ",") {
+	for pat := range strings.SplitSeq(commaSeparated, ",") {
 		if strings.TrimSpace(pat) != "" {
 			return nil
 		}

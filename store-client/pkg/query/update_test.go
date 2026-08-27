@@ -28,8 +28,8 @@ func TestUpdateBuilder_Set_SimpleField(t *testing.T) {
 
 	// Test MongoDB output
 	mongoUpdate := update.ToMongo()
-	expectedMongo := map[string]interface{}{
-		"$set": map[string]interface{}{
+	expectedMongo := map[string]any{
+		"$set": map[string]any{
 			"myField": "active",
 		},
 	}
@@ -38,7 +38,7 @@ func TestUpdateBuilder_Set_SimpleField(t *testing.T) {
 	// Test SQL output
 	sql, args := update.ToSQL()
 	assert.Equal(t, "document = jsonb_set(document, '{myField}', $1::jsonb)", sql)
-	assert.Equal(t, []interface{}{"\"active\""}, args)
+	assert.Equal(t, []any{"\"active\""}, args)
 }
 
 func TestUpdateBuilder_Set_NestedField(t *testing.T) {
@@ -46,8 +46,8 @@ func TestUpdateBuilder_Set_NestedField(t *testing.T) {
 
 	// Test MongoDB output
 	mongoUpdate := update.ToMongo()
-	expectedMongo := map[string]interface{}{
-		"$set": map[string]interface{}{
+	expectedMongo := map[string]any{
+		"$set": map[string]any{
 			"healtheventstatus.nodequarantined": "Quarantined",
 		},
 	}
@@ -56,7 +56,7 @@ func TestUpdateBuilder_Set_NestedField(t *testing.T) {
 	// Test SQL output
 	sql, args := update.ToSQL()
 	assert.Equal(t, "document = jsonb_set(document, '{healtheventstatus,nodequarantined}', $1::jsonb)", sql)
-	assert.Equal(t, []interface{}{"\"Quarantined\""}, args)
+	assert.Equal(t, []any{"\"Quarantined\""}, args)
 }
 
 func TestUpdateBuilder_Set_ColumnField(t *testing.T) {
@@ -64,8 +64,8 @@ func TestUpdateBuilder_Set_ColumnField(t *testing.T) {
 
 	// Test MongoDB output
 	mongoUpdate := update.ToMongo()
-	expectedMongo := map[string]interface{}{
-		"$set": map[string]interface{}{
+	expectedMongo := map[string]any{
+		"$set": map[string]any{
 			"updated_at": "2025-01-15T10:00:00Z",
 		},
 	}
@@ -74,7 +74,7 @@ func TestUpdateBuilder_Set_ColumnField(t *testing.T) {
 	// Test SQL output - updated_at is a column field so it's a direct assignment
 	sql, args := update.ToSQL()
 	assert.Equal(t, "updated_at = $1", sql)
-	assert.Equal(t, []interface{}{"2025-01-15T10:00:00Z"}, args)
+	assert.Equal(t, []any{"2025-01-15T10:00:00Z"}, args)
 }
 
 func TestUpdateBuilder_SetMultiple_Fields(t *testing.T) {
@@ -84,7 +84,7 @@ func TestUpdateBuilder_SetMultiple_Fields(t *testing.T) {
 
 	// Test MongoDB output
 	mongoUpdate := update.ToMongo()
-	setMap := mongoUpdate["$set"].(map[string]interface{})
+	setMap := mongoUpdate["$set"].(map[string]any)
 	assert.Len(t, setMap, 2)
 	assert.Equal(t, "active", setMap["field1"])
 	assert.Equal(t, "critical", setMap["field2"])
@@ -98,7 +98,7 @@ func TestUpdateBuilder_SetMultiple_Fields(t *testing.T) {
 }
 
 func TestUpdateBuilder_SetMultiple_Map(t *testing.T) {
-	updates := map[string]interface{}{
+	updates := map[string]any{
 		"status": "active",
 		"count":  10,
 	}
@@ -106,7 +106,7 @@ func TestUpdateBuilder_SetMultiple_Map(t *testing.T) {
 
 	// Test MongoDB output
 	mongoUpdate := update.ToMongo()
-	setMap := mongoUpdate["$set"].(map[string]interface{})
+	setMap := mongoUpdate["$set"].(map[string]any)
 	assert.Len(t, setMap, 2)
 	assert.Equal(t, "active", setMap["status"])
 	assert.Equal(t, 10, setMap["count"])
@@ -122,8 +122,8 @@ func TestUpdateBuilder_Set_DeeplyNestedField(t *testing.T) {
 
 	// Test MongoDB output
 	mongoUpdate := update.ToMongo()
-	expectedMongo := map[string]interface{}{
-		"$set": map[string]interface{}{
+	expectedMongo := map[string]any{
+		"$set": map[string]any{
 			"healtheventstatus.userpodsevictionstatus.status": "InProgress",
 		},
 	}
@@ -132,7 +132,7 @@ func TestUpdateBuilder_Set_DeeplyNestedField(t *testing.T) {
 	// Test SQL output
 	sql, args := update.ToSQL()
 	assert.Equal(t, "document = jsonb_set(document, '{healtheventstatus,userpodsevictionstatus,status}', $1::jsonb)", sql)
-	assert.Equal(t, []interface{}{"\"InProgress\""}, args)
+	assert.Equal(t, []any{"\"InProgress\""}, args)
 }
 
 func TestUpdateBuilder_EmptyUpdate(t *testing.T) {
@@ -140,7 +140,7 @@ func TestUpdateBuilder_EmptyUpdate(t *testing.T) {
 
 	// Test MongoDB output
 	mongoUpdate := update.ToMongo()
-	assert.Equal(t, map[string]interface{}{}, mongoUpdate)
+	assert.Equal(t, map[string]any{}, mongoUpdate)
 
 	// Test SQL output
 	sql, args := update.ToSQL()
@@ -153,7 +153,7 @@ func TestUpdateBuilder_NilUpdate(t *testing.T) {
 
 	// Test MongoDB output
 	mongoUpdate := update.ToMongo()
-	assert.Equal(t, map[string]interface{}{}, mongoUpdate)
+	assert.Equal(t, map[string]any{}, mongoUpdate)
 
 	// Test SQL output
 	sql, args := update.ToSQL()
@@ -164,7 +164,7 @@ func TestUpdateBuilder_NilUpdate(t *testing.T) {
 func TestToJSONBValue(t *testing.T) {
 	tests := []struct {
 		name     string
-		value    interface{}
+		value    any
 		expected string
 	}{
 		{
@@ -261,7 +261,7 @@ func TestUpdateBuilder_RealWorldUpdates(t *testing.T) {
 		sql, args := update.ToSQL()
 		assert.Contains(t, sql, "jsonb_set")
 		assert.Contains(t, sql, "healtheventstatus,nodequarantined")
-		assert.Equal(t, []interface{}{"\"Cancelled\""}, args)
+		assert.Equal(t, []any{"\"Cancelled\""}, args)
 	})
 
 	t.Run("multiple field update", func(t *testing.T) {
@@ -272,7 +272,7 @@ func TestUpdateBuilder_RealWorldUpdates(t *testing.T) {
 		// MongoDB update should work
 		mongoUpdate := update.ToMongo()
 		require.NotNil(t, mongoUpdate)
-		setMap := mongoUpdate["$set"].(map[string]interface{})
+		setMap := mongoUpdate["$set"].(map[string]any)
 		assert.Len(t, setMap, 2)
 
 		// SQL should generate correctly
@@ -294,7 +294,7 @@ func TestToJSONBValue_ComplexTypes(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		value    interface{}
+		value    any
 		expected string
 	}{
 		{
@@ -331,7 +331,7 @@ func TestToJSONBValue_ComplexTypes(t *testing.T) {
 		},
 		{
 			name: "map[string]interface{}",
-			value: map[string]interface{}{
+			value: map[string]any{
 				"status":  "Succeeded",
 				"message": "Done",
 			},
@@ -368,7 +368,7 @@ func TestToJSONBValue_ComplexTypes(t *testing.T) {
 		},
 		{
 			name:     "empty map",
-			value:    map[string]interface{}{},
+			value:    map[string]any{},
 			expected: `{}`,
 		},
 		{
@@ -383,8 +383,8 @@ func TestToJSONBValue_ComplexTypes(t *testing.T) {
 			result := toJSONBValue(tt.value)
 
 			// For maps, compare as JSON to handle key ordering
-			if _, isMap := tt.value.(map[string]interface{}); isMap {
-				var expectedJSON, resultJSON map[string]interface{}
+			if _, isMap := tt.value.(map[string]any); isMap {
+				var expectedJSON, resultJSON map[string]any
 				err := json.Unmarshal([]byte(tt.expected), &expectedJSON)
 				require.NoError(t, err, "expected value should be valid JSON")
 				err = json.Unmarshal([]byte(result), &resultJSON)
@@ -399,7 +399,7 @@ func TestToJSONBValue_ComplexTypes(t *testing.T) {
 			case string, bool, int, int32, int64, uint, uint32, uint64, float32, float64:
 				// Primitive types may not be complete JSON documents
 			default:
-				var jsonCheck interface{}
+				var jsonCheck any
 				err := json.Unmarshal([]byte(result), &jsonCheck)
 				assert.NoError(t, err, "result should be valid JSON")
 			}
@@ -428,7 +428,7 @@ func TestToJSONBValue_RegressionTest_StructAsString(t *testing.T) {
 	assert.NotContains(t, result, "\\\"", "should not have escaped quotes")
 
 	// Should be valid JSON object
-	var parsed map[string]interface{}
+	var parsed map[string]any
 	err := json.Unmarshal([]byte(result), &parsed)
 	require.NoError(t, err, "should be valid JSON object")
 
@@ -454,7 +454,7 @@ func TestUpdateBuilder_Set_StructValue(t *testing.T) {
 
 	// Test MongoDB output
 	mongoUpdate := update.ToMongo()
-	setMap := mongoUpdate["$set"].(map[string]interface{})
+	setMap := mongoUpdate["$set"].(map[string]any)
 	assert.Contains(t, setMap, "healtheventstatus.userpodsevictionstatus")
 
 	statusValue := setMap["healtheventstatus.userpodsevictionstatus"]
@@ -470,7 +470,7 @@ func TestUpdateBuilder_Set_StructValue(t *testing.T) {
 	argStr := args[0].(string)
 	assert.NotContains(t, argStr, "{Succeeded }", "should not format struct as string")
 
-	var parsed map[string]interface{}
+	var parsed map[string]any
 	err := json.Unmarshal([]byte(argStr), &parsed)
 	require.NoError(t, err, "SQL argument should be valid JSON")
 	assert.Equal(t, "Succeeded", parsed["status"])
@@ -478,7 +478,7 @@ func TestUpdateBuilder_Set_StructValue(t *testing.T) {
 
 // TestUpdateBuilder_Set_MapValue tests updating with a map value
 func TestUpdateBuilder_Set_MapValue(t *testing.T) {
-	statusMap := map[string]interface{}{
+	statusMap := map[string]any{
 		"status":  "InProgress",
 		"message": "Evicting pods",
 	}
@@ -487,7 +487,7 @@ func TestUpdateBuilder_Set_MapValue(t *testing.T) {
 
 	// Test MongoDB output
 	mongoUpdate := update.ToMongo()
-	setMap := mongoUpdate["$set"].(map[string]interface{})
+	setMap := mongoUpdate["$set"].(map[string]any)
 	assert.Contains(t, setMap, "healtheventstatus.userpodsevictionstatus")
 
 	// Test SQL output
@@ -497,7 +497,7 @@ func TestUpdateBuilder_Set_MapValue(t *testing.T) {
 
 	// The argument should be valid JSON object
 	argStr := args[0].(string)
-	var parsed map[string]interface{}
+	var parsed map[string]any
 	err := json.Unmarshal([]byte(argStr), &parsed)
 	require.NoError(t, err, "SQL argument should be valid JSON")
 	assert.Equal(t, "InProgress", parsed["status"])
@@ -559,7 +559,7 @@ func TestUpdateBuilder_RealCICorruptionScenario(t *testing.T) {
 	assert.NotContains(t, argStr, "{Succeeded }", "BUG: struct toString() used instead of JSON!")
 
 	// Verify it IS proper JSON
-	var parsed map[string]interface{}
+	var parsed map[string]any
 	err := json.Unmarshal([]byte(argStr), &parsed)
 	require.NoError(t, err, "MUST be valid JSON object, not string")
 
@@ -577,7 +577,7 @@ func TestUpdateBuilder_RealCICorruptionScenario(t *testing.T) {
 		// The pipeline filter needs to evaluate: userpodsevictionstatus.status == "Succeeded"
 
 		// Parse what would be stored in the database
-		var storedData map[string]interface{}
+		var storedData map[string]any
 		err := json.Unmarshal([]byte(argStr), &storedData)
 		require.NoError(t, err)
 
@@ -596,7 +596,7 @@ func TestUpdateBuilder_RealCICorruptionScenario(t *testing.T) {
 		corruptedValue := "\"{Succeeded }\""
 
 		// Try to parse it as JSON object - this would FAIL or give wrong result
-		var attempt map[string]interface{}
+		var attempt map[string]any
 		_ = json.Unmarshal([]byte(corruptedValue), &attempt)
 
 		// With the old format, either:
@@ -614,7 +614,7 @@ func TestUpdateBuilder_RealCICorruptionScenario(t *testing.T) {
 	t.Run("mongodb_compatibility", func(t *testing.T) {
 		// Verify MongoDB path still works correctly
 		mongoUpdate := update.ToMongo()
-		setMap := mongoUpdate["$set"].(map[string]interface{})
+		setMap := mongoUpdate["$set"].(map[string]any)
 
 		statusValue := setMap["healtheventstatus.userpodsevictionstatus"]
 		assert.IsType(t, OperationStatus{}, statusValue, "MongoDB should get struct directly")

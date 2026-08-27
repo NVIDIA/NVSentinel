@@ -566,10 +566,10 @@ type WatchGpusResponse struct {
 	// type indicates the nature of the change.
 	//
 	// Valid values:
-	//   - "ADDED": The GPU resource was created or first observed.
-	//   - "MODIFIED": The GPU resource was updated.
-	//   - "DELETED": The GPU resource was removed.
-	//   - "ERROR": An error occurred during the watch stream.
+	//  - "ADDED": The GPU resource was created or first observed.
+	//  - "MODIFIED": The GPU resource was updated.
+	//  - "DELETED": The GPU resource was removed.
+	//  - "ERROR": An error occurred during the watch stream.
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// object is the GPU resource.
 	//

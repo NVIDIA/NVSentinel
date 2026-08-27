@@ -31,7 +31,7 @@ const (
 // Event represents a database-agnostic document or event as a map.
 // This is the canonical type for representing database documents throughout the system,
 // whether they come from change streams, queries, or inserts.
-type Event map[string]interface{}
+type Event map[string]any
 
 // DataStoreConfig holds configuration for any datastore provider
 type DataStoreConfig struct {
@@ -78,9 +78,9 @@ const (
 
 // OperationStatus represents status of an operation
 type OperationStatus struct {
-	Status   Status                 `json:"status"`
-	Message  string                 `json:"message,omitempty"`
-	Metadata map[string]interface{} `json:"metadata,omitempty"`
+	Status   Status         `json:"status"`
+	Message  string         `json:"message,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 // HealthEventStatus represents status of a health event
@@ -97,7 +97,7 @@ type HealthEventStatus struct {
 // HealthEventWithStatus wraps a health event with status information
 type HealthEventWithStatus struct {
 	CreatedAt         time.Time         `json:"createdAt"`
-	HealthEvent       interface{}       `json:"healthevent,omitempty"`
+	HealthEvent       any               `json:"healthevent,omitempty"`
 	HealthEventStatus HealthEventStatus `json:"healtheventstatus"`
 	RawEvent          Event             // Raw event from change stream (for extracting MongoDB _id etc)
 }
@@ -112,15 +112,15 @@ type EventWithToken struct {
 
 // Element represents a key-value pair in a database-agnostic way
 type Element struct {
-	Key   string      `json:"key"`
-	Value interface{} `json:"value"`
+	Key   string `json:"key"`
+	Value any    `json:"value"`
 }
 
 // Document represents a collection of key-value pairs (like a MongoDB document or PostgreSQL JSON object)
 type Document []Element
 
 // Array represents an array of values in a database-agnostic way
-type Array []interface{}
+type Array []any
 
 // Pipeline represents a sequence of operations that can be applied across different datastore providers
 type Pipeline []Document
@@ -128,7 +128,7 @@ type Pipeline []Document
 // Convenience constructors for building pipeline operations
 
 // E creates an Element with the given key and value
-func E(key string, value interface{}) Element {
+func E(key string, value any) Element {
 	return Element{Key: key, Value: value}
 }
 
@@ -138,13 +138,13 @@ func D(elements ...Element) Document {
 }
 
 // A creates an Array from a list of values
-func A(values ...interface{}) Array {
+func A(values ...any) Array {
 	return Array(values)
 }
 
 // ToMap converts a Document to a map[string]interface{} for compatibility
-func (d Document) ToMap() map[string]interface{} {
-	result := make(map[string]interface{}, len(d))
+func (d Document) ToMap() map[string]any {
+	result := make(map[string]any, len(d))
 	for _, elem := range d {
 		result[elem.Key] = elem.Value
 	}
@@ -153,7 +153,7 @@ func (d Document) ToMap() map[string]interface{} {
 }
 
 // FromMap creates a Document from a map[string]interface{}
-func FromMap(m map[string]interface{}) Document {
+func FromMap(m map[string]any) Document {
 	doc := make(Document, 0, len(m))
 	for k, v := range m {
 		doc = append(doc, Element{Key: k, Value: v})

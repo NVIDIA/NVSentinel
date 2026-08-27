@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -366,13 +367,7 @@ func isHeaderLine(fields []string) bool {
 		return false
 	}
 
-	for _, f := range fields {
-		if dataCellPattern.MatchString(f) {
-			return false
-		}
-	}
-
-	return true
+	return !slices.ContainsFunc(fields, dataCellPattern.MatchString)
 }
 
 func isColumnLabel(s string) bool {

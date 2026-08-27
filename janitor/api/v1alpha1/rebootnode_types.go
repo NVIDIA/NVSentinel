@@ -26,6 +26,9 @@ const (
 	RebootNodeConditionNodeReady = "NodeReady"
 	// ManualModeConditionType indicates that manual mode is enabled and outside actor is required
 	ManualModeConditionType = "ManualMode"
+	// ConditionReasonInitializing is the reason stamped on conditions seeded
+	// when a resource is first observed.
+	ConditionReasonInitializing = "Initializing"
 )
 
 // RebootNodeSpec defines the desired state of RebootNode
@@ -128,7 +131,7 @@ func (r *RebootNode) SetInitialConditions() {
 		signalSentCondition := metav1.Condition{
 			Type:               RebootNodeConditionSignalSent,
 			Status:             metav1.ConditionUnknown,
-			Reason:             "Initializing",
+			Reason:             ConditionReasonInitializing,
 			Message:            "Reboot signal not yet sent",
 			LastTransitionTime: now,
 		}
@@ -139,7 +142,7 @@ func (r *RebootNode) SetInitialConditions() {
 		nodeReadyCondition := metav1.Condition{
 			Type:               RebootNodeConditionNodeReady,
 			Status:             metav1.ConditionUnknown,
-			Reason:             "Initializing",
+			Reason:             ConditionReasonInitializing,
 			Message:            "Node ready state not yet determined",
 			LastTransitionTime: now,
 		}

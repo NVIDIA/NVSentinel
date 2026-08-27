@@ -46,6 +46,9 @@ class Config:
         pod_name: Pod name (used to determine rank).
         processing_strategy: How downstream modules handle the event.
         reduce_op: Reduction operation (sum/prod/min/max/avg).
+        token_path: Optional file path of a projected ServiceAccount token
+            presented as a bearer credential on Platform Connector calls.
+            None leaves the calls unauthenticated (current behavior).
     """
 
     gang_config_dir: str
@@ -60,6 +63,7 @@ class Config:
     node_name: str
     pod_name: str
     processing_strategy: int
+    token_path: str | None = None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -92,6 +96,9 @@ class Config:
         connector_socket = os.getenv("PLATFORM_CONNECTOR_SOCKET", "")
         node_name = os.getenv("NODE_NAME", "")
         pod_name = os.getenv("POD_NAME", "")
+        # Optional: set by the preflight injection webhook when token
+        # authentication to the Platform Connector is configured.
+        token_path = os.getenv("PLATFORM_CONNECTOR_TOKEN_PATH") or None
 
         if not connector_socket:
             raise ValueError("PLATFORM_CONNECTOR_SOCKET is required")
@@ -119,6 +126,7 @@ class Config:
             node_name=node_name,
             pod_name=pod_name,
             processing_strategy=processing_strategy,
+            token_path=token_path,
         )
 
 

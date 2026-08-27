@@ -26,7 +26,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
@@ -61,9 +60,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 
 		// Create a test node
 		node = &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: nodeName,
-			},
+			Name: nodeName,
 			Status: corev1.NodeStatus{
 				Conditions: []corev1.NodeCondition{
 					{
@@ -77,9 +74,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 
 		// Create a test TerminateNode resource
 		terminateNode = &janitordgxcnvidiacomv1alpha1.TerminateNode{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: crName,
-			},
+			Name: crName,
 			Spec: janitordgxcnvidiacomv1alpha1.TerminateNodeSpec{
 				NodeName: nodeName,
 				Force:    false,
@@ -92,12 +87,12 @@ var _ = Describe("TerminateNodeReconciler", func() {
 			Client: k8sClient,
 			Scheme: scheme.Scheme,
 			Config: &config.TerminateNodeControllerConfig{
-				ManualMode: ptr.To(false),
+				ManualMode: new(false),
 			},
 			dialProviderFunc: func(_ context.Context) (cspv1alpha1.CSPProviderServiceClient, func(), error) {
 				return mockCSP.Client, func() {}, nil
 			},
-			NodeLock:  distributedlock.NewNodeLock(k8sClient, "default"),
+			NodeLock: distributedlock.NewNodeLock(k8sClient, "default"),
 		}
 
 		// Default to success behavior - tests can override as needed
@@ -115,9 +110,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 		It("Should set the start time", func() {
 			// Trigger initial reconciliation to set start time
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name: crName,
-				},
+				Name: crName,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -138,9 +131,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 		It("Should successfully send terminate signal and update condition", func() {
 			// Trigger initial reconciliation to set start time
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name: crName,
-				},
+				Name: crName,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -157,9 +148,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 
 			// Trigger reconciliation again to send terminate signal
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name: crName,
-				},
+				Name: crName,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -186,9 +175,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 			mockCSP.Server.SetFailure()
 
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name: crName,
-				},
+				Name: crName,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -219,9 +206,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 		It("Should delete the node", func() {
 			// Trigger initial reconciliation to set start time
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name: crName,
-				},
+				Name: crName,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -238,9 +223,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 
 			// Trigger reconciliation to send terminate signal
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name: crName,
-				},
+				Name: crName,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -266,9 +249,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 
 			// Trigger reconciliation to delete node
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name: crName,
-				},
+				Name: crName,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -280,9 +261,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 
 			// Trigger reconciliation again to mark as complete
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name: crName,
-				},
+				Name: crName,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -312,9 +291,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 		It("Should mark termination as complete", func() {
 			// Trigger initial reconciliation to set start time
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name: crName,
-				},
+				Name: crName,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -332,9 +309,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 
 			// Trigger reconciliation to send terminate signal
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name: crName,
-				},
+				Name: crName,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -360,9 +335,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 
 			// Trigger reconciliation to mark as complete
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name: crName,
-				},
+				Name: crName,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -391,15 +364,13 @@ var _ = Describe("TerminateNodeReconciler", func() {
 	Context("when manual mode is enabled", func() {
 		BeforeEach(func() {
 			// Enable manual mode in the reconciler config
-			reconciler.Config.ManualMode = ptr.To(true)
+			reconciler.Config.ManualMode = new(true)
 		})
 
 		It("should set ManualMode condition on the first reconciliation", func() {
 			// First reconciliation with manual mode enabled
 			req := ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name: crName,
-				},
+				Name: crName,
 			}
 
 			result, err := reconciler.Reconcile(ctx, req)
@@ -430,9 +401,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 		It("should not ever send terminate signal", func() {
 			// Multiple reconciliations should never trigger terminate signal in manual mode
 			req := ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name: crName,
-				},
+				Name: crName,
 			}
 
 			// First reconciliation
@@ -460,9 +429,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 		It("should continue monitoring the node if an outside actor sends a terminate signal", func() {
 			// First reconciliation - sets up manual mode
 			req := ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name: crName,
-				},
+				Name: crName,
 			}
 
 			_, err := reconciler.Reconcile(ctx, req)
