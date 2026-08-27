@@ -130,7 +130,7 @@ func (e *TestEvent) GetNodeName() (string, error) {
 	return "", fmt.Errorf("node name not found")
 }
 
-func (e *TestEvent) UnmarshalDocument(v interface{}) error {
+func (e *TestEvent) UnmarshalDocument(v any) error {
 	// For testing, we'll use JSON marshaling/unmarshaling
 	jsonBytes, err := json.Marshal(e.Data["fullDocument"])
 	if err != nil {
@@ -178,11 +178,9 @@ func createE2ETestNode(ctx context.Context, t *testing.T, name string, annotatio
 	labels[informer.GPUNodeLabel] = "true"
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Annotations: annotations,
-			Labels:      labels,
-		},
+		Name:        name,
+		Annotations: annotations,
+		Labels:      labels,
 		Spec: corev1.NodeSpec{
 			Unschedulable: unschedulable,
 			Taints:        taints,
@@ -199,7 +197,7 @@ func createE2ETestNode(ctx context.Context, t *testing.T, name string, annotatio
 }
 
 func createHealthEventBSON(eventID string, nodeName, checkName string, isHealthy, isFatal bool, entities []*protos.Entity, quarantineStatus model.Status) datastore.Event {
-	entitiesBSON := []interface{}{}
+	entitiesBSON := []any{}
 	for _, entity := range entities {
 		entitiesBSON = append(entitiesBSON, datastore.Event{
 			"entitytype":  entity.EntityType,
@@ -1544,7 +1542,7 @@ func TestE2E_PartialEntityRecovery(t *testing.T) {
 	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Fail GPUs 0, 1, 2 (send sequentially to avoid race conditions)")
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
 			generateTestID(),
 			nodeName,
@@ -1622,7 +1620,7 @@ func TestE2E_AllGPUsFailThenRecover(t *testing.T) {
 	numGPUs := 8
 
 	t.Log("All GPUs fail (send sequentially to avoid race conditions)")
-	for i := 0; i < numGPUs; i++ {
+	for i := range numGPUs {
 		mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
 			generateTestID(),
 			nodeName,
@@ -1646,7 +1644,7 @@ func TestE2E_AllGPUsFailThenRecover(t *testing.T) {
 	}
 
 	t.Log("All GPUs recover")
-	for i := 0; i < numGPUs; i++ {
+	for i := range numGPUs {
 		mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
 			generateTestID(),
 			nodeName,
@@ -1712,7 +1710,7 @@ func TestE2E_SyslogMultipleEntityTypes(t *testing.T) {
 				"ishealthy":      false,
 				"isfatal":        true,
 				"errorcode":      []string{"79"},
-				"entitiesimpacted": []interface{}{
+				"entitiesimpacted": []any{
 					datastore.Event{"entitytype": "PCI", "entityvalue": "0000:b4:00"},
 					datastore.Event{"entitytype": "GPUID", "entityvalue": "GPU-0b32a29e-0c94-cd1a-d44a-4e3ea8b2e3fc"},
 				},
@@ -1751,7 +1749,7 @@ func TestE2E_SyslogMultipleEntityTypes(t *testing.T) {
 				"version":          uint32(1),
 				"ishealthy":        true,
 				"message":          "No Health Failures",
-				"entitiesimpacted": []interface{}{}, // Empty
+				"entitiesimpacted": []any{}, // Empty
 			},
 		},
 	}}
@@ -1911,7 +1909,7 @@ func TestE2E_MixedHealthyUnhealthyFlapping(t *testing.T) {
 	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Flapping GPU scenario: alternating unhealthy and healthy events")
-	for cycle := 0; cycle < 3; cycle++ {
+	for range 3 {
 		// Unhealthy
 		mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
 			generateTestID(),
@@ -2530,7 +2528,7 @@ func TestE2E_NodeAlreadyQuarantinedStillUnhealthy(t *testing.T) {
 				"checkname":      "checkA",
 				"version":        uint32(1),
 				"ishealthy":      false,
-				"entitiesimpacted": []interface{}{
+				"entitiesimpacted": []any{
 					datastore.Event{"entitytype": "GPU", "entityvalue": "0"},
 				},
 			},
@@ -2611,7 +2609,7 @@ func TestE2E_NodeAlreadyQuarantinedBecomesHealthy(t *testing.T) {
 				"checkname":      "checkA",
 				"version":        uint32(1),
 				"ishealthy":      true,
-				"entitiesimpacted": []interface{}{
+				"entitiesimpacted": []any{
 					datastore.Event{"entitytype": "GPU", "entityvalue": "0"},
 				},
 			},
@@ -2754,7 +2752,7 @@ func TestE2E_PartialAnnotationUpdate(t *testing.T) {
 	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Quarantine with GPU 0, 1, 2 (send sequentially to avoid race conditions)")
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
 			generateTestID(),
 			nodeName,
@@ -2831,7 +2829,7 @@ func TestE2E_CircuitBreakerBasic(t *testing.T) {
 
 	// Create 10 test nodes
 	baseNodeName := "e2e-cb-basic-" + generateShortTestID()[:6]
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		nodeName := fmt.Sprintf("%s-%d", baseNodeName, i)
 		createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 		defer func(name string) {
@@ -2878,7 +2876,7 @@ func TestE2E_CircuitBreakerBasic(t *testing.T) {
 	}, statusCheckTimeout, statusCheckPollInterval, "NodeInformer should see all 10 nodes")
 
 	t.Log("Cordoning 4 nodes (40%) - should not trip circuit breaker")
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
 			generateTestID(),
 			fmt.Sprintf("%s-%d", baseNodeName, i),
@@ -2893,7 +2891,7 @@ func TestE2E_CircuitBreakerBasic(t *testing.T) {
 	// Wait for all 4 nodes to be cordoned
 	require.Eventually(t, func() bool {
 		cordonedCount := 0
-		for i := 0; i < 4; i++ {
+		for i := range 4 {
 			node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, fmt.Sprintf("%s-%d", baseNodeName, i), metav1.GetOptions{})
 			if err == nil && node.Spec.Unschedulable {
 				cordonedCount++
@@ -2954,7 +2952,7 @@ func TestE2E_CircuitBreakerSlidingWindow(t *testing.T) {
 
 	// Create 10 test nodes
 	baseNodeName := "e2e-cb-window-" + generateShortTestID()[:6]
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		nodeName := fmt.Sprintf("%s-%d", baseNodeName, i)
 		createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 		defer func(name string) {
@@ -3000,7 +2998,7 @@ func TestE2E_CircuitBreakerSlidingWindow(t *testing.T) {
 	}, statusCheckTimeout, statusCheckPollInterval, "NodeInformer should see all 10 nodes")
 
 	t.Log("Cordoning 5 nodes to trip the circuit breaker")
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
 			generateTestID(),
 			fmt.Sprintf("%s-%d", baseNodeName, i),
@@ -3015,7 +3013,7 @@ func TestE2E_CircuitBreakerSlidingWindow(t *testing.T) {
 	// Wait for all 5 nodes to be cordoned
 	require.Eventually(t, func() bool {
 		cordonedCount := 0
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, fmt.Sprintf("%s-%d", baseNodeName, i), metav1.GetOptions{})
 			if err == nil && node.Spec.Unschedulable {
 				cordonedCount++
@@ -3047,7 +3045,7 @@ func TestE2E_CircuitBreakerUniqueNodeTracking(t *testing.T) {
 
 	// Create 10 test nodes
 	baseNodeName := "e2e-cb-unique-" + generateShortTestID()[:6]
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		nodeName := fmt.Sprintf("%s-%d", baseNodeName, i)
 		createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 		defer func(name string) {
@@ -3140,7 +3138,7 @@ func TestE2E_CircuitBreakerUniqueNodeTracking(t *testing.T) {
 	// Wait for all 5 nodes to be cordoned
 	require.Eventually(t, func() bool {
 		cordonedCount := 0
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, fmt.Sprintf("%s-%d", baseNodeName, i), metav1.GetOptions{})
 			if err == nil && node.Spec.Unschedulable {
 				cordonedCount++
@@ -3726,7 +3724,7 @@ func TestE2E_ForceQuarantineOnAlreadyQuarantinedNode(t *testing.T) {
 				"version":        uint32(1),
 				"ishealthy":      false,
 				"message":        "Force quarantine for maintenance",
-				"entitiesimpacted": []interface{}{
+				"entitiesimpacted": []any{
 					datastore.Event{
 						"entitytype":  "node",
 						"entityvalue": nodeName,
@@ -4418,12 +4416,10 @@ func TestE2E_ConcurrentUnhealthyEvents_WithDelayedInformer(t *testing.T) {
 
 	nodeName := "concurrent-unhealthy-" + generateShortTestID()
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   nodeName,
-			Labels: map[string]string{informer.GPUNodeLabel: "true"},
-		},
-		Spec:       corev1.NodeSpec{Unschedulable: false},
-		Status:     corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}},
+		Name:   nodeName,
+		Labels: map[string]string{informer.GPUNodeLabel: "true"},
+		Spec:   corev1.NodeSpec{Unschedulable: false},
+		Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}},
 	}
 	_, err = k8sClient.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	require.NoError(t, err, "Failed to create test node")
@@ -4691,12 +4687,10 @@ func TestE2E_ConcurrentHealthyEvents_WithDelayedInformer(t *testing.T) {
 
 	nodeName := "concurrent-recovery-" + generateShortTestID()
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   nodeName,
-			Labels: map[string]string{informer.GPUNodeLabel: "true"},
-		},
-		Spec:       corev1.NodeSpec{Unschedulable: false},
-		Status:     corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}},
+		Name:   nodeName,
+		Labels: map[string]string{informer.GPUNodeLabel: "true"},
+		Spec:   corev1.NodeSpec{Unschedulable: false},
+		Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}},
 	}
 	_, err = k8sClient.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	require.NoError(t, err, "Failed to create test node")
@@ -5893,7 +5887,7 @@ func TestMetrics_NodeQuarantineDuration(t *testing.T) {
 					"seconds": generatedTime.Unix(),
 					"nanos":   int32(generatedTime.Nanosecond()),
 				},
-				"entitiesimpacted": []interface{}{
+				"entitiesimpacted": []any{
 					datastore.Event{
 						"entitytype":  "GPU",
 						"entityvalue": "0",
@@ -6047,7 +6041,7 @@ func TestMetrics_NodeRemediationDuration(t *testing.T) {
 					"seconds": generatedTime.Unix(),
 					"nanos":   int32(generatedTime.Nanosecond()),
 				},
-				"entitiesimpacted": []interface{}{
+				"entitiesimpacted": []any{
 					datastore.Event{"entitytype": "GPU", "entityvalue": "0"},
 				},
 			},
@@ -6084,7 +6078,7 @@ func TestMetrics_NodeRemediationDuration(t *testing.T) {
 					"seconds": generatedTime.Unix(),
 					"nanos":   int32(generatedTime.Nanosecond()),
 				},
-				"entitiesimpacted": []interface{}{
+				"entitiesimpacted": []any{
 					datastore.Event{"entitytype": "GPU", "entityvalue": "0"},
 				},
 			},
@@ -6180,7 +6174,7 @@ func TestMetrics_NodeRemediationDurationRecommendedActionLabel(t *testing.T) {
 					"seconds": generatedTime.Unix(),
 					"nanos":   int32(generatedTime.Nanosecond()),
 				},
-				"entitiesimpacted": []interface{}{
+				"entitiesimpacted": []any{
 					datastore.Event{"entitytype": "GPU", "entityvalue": "0"},
 				},
 			},
@@ -6218,7 +6212,7 @@ func TestMetrics_NodeRemediationDurationRecommendedActionLabel(t *testing.T) {
 					"seconds": generatedTime.Unix(),
 					"nanos":   int32(generatedTime.Nanosecond()),
 				},
-				"entitiesimpacted": []interface{}{
+				"entitiesimpacted": []any{
 					datastore.Event{"entitytype": "GPU", "entityvalue": "0"},
 				},
 			},
@@ -6362,7 +6356,7 @@ func TestMetrics_FullQuarantineUnquarantineMetricsFlow(t *testing.T) {
 					"seconds": generatedTime.Unix(),
 					"nanos":   int32(generatedTime.Nanosecond()),
 				},
-				"entitiesimpacted": []interface{}{
+				"entitiesimpacted": []any{
 					datastore.Event{"entitytype": "GPU", "entityvalue": "0"},
 				},
 			},
@@ -6413,7 +6407,7 @@ func TestMetrics_FullQuarantineUnquarantineMetricsFlow(t *testing.T) {
 					"seconds": generatedTime.Unix(),
 					"nanos":   int32(generatedTime.Nanosecond()),
 				},
-				"entitiesimpacted": []interface{}{
+				"entitiesimpacted": []any{
 					datastore.Event{"entitytype": "GPU", "entityvalue": "0"},
 				},
 			},

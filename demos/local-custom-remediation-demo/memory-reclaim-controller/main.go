@@ -144,7 +144,7 @@ func isAlreadyCompleted(cr *unstructured.Unstructured) bool {
 	}
 
 	for _, c := range conditions {
-		cond, ok := c.(map[string]interface{})
+		cond, ok := c.(map[string]any)
 		if !ok {
 			continue
 		}
@@ -189,7 +189,7 @@ func deleteMemoryHogPods(
 func updateCRStatus(ctx context.Context, dynClient dynamic.Interface, cr *unstructured.Unstructured) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	newCondition := map[string]interface{}{
+	newCondition := map[string]any{
 		"type":               conditionMemoryReclaimed,
 		"status":             string(corev1.ConditionTrue),
 		"reason":             "HogPodsDeleted",
@@ -202,7 +202,7 @@ func updateCRStatus(ctx context.Context, dynClient dynamic.Interface, cr *unstru
 	updated := false
 
 	for i, c := range conditions {
-		cond, ok := c.(map[string]interface{})
+		cond, ok := c.(map[string]any)
 		if !ok {
 			continue
 		}

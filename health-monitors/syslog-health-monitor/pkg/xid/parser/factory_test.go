@@ -77,7 +77,7 @@ func TestCreateParser(t *testing.T) {
 	}
 }
 
-func getParserTypeInstance(typeName string) interface{} {
+func getParserTypeInstance(typeName string) any {
 	switch typeName {
 	case "*parser.CSVParser":
 		return &CSVParser{}

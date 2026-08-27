@@ -29,8 +29,8 @@ import (
 const unknownValue = "unknown"
 
 var (
-	tokenRequestCount   int64
-	eventsReceivedCount int64
+	tokenRequestCount   atomic.Int64
+	eventsReceivedCount atomic.Int64
 	receivedEvents      []map[string]any
 	eventsMutex         sync.RWMutex
 )
@@ -71,7 +71,7 @@ func main() {
 }
 
 func handleTokenRequest(w http.ResponseWriter, r *http.Request) {
-	atomic.AddInt64(&tokenRequestCount, 1)
+	tokenRequestCount.Add(1)
 
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -116,7 +116,7 @@ func handleEventSink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	atomic.AddInt64(&eventsReceivedCount, 1)
+	eventsReceivedCount.Add(1)
 
 	eventID := unknownValue
 	if id, ok := event["id"].(string); ok {
@@ -152,11 +152,11 @@ func handleMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	fmt.Fprintf(w, "# HELP mock_token_requests_total Total token requests received\n")
 	fmt.Fprintf(w, "# TYPE mock_token_requests_total counter\n")
-	fmt.Fprintf(w, "mock_token_requests_total %d\n", atomic.LoadInt64(&tokenRequestCount))
+	fmt.Fprintf(w, "mock_token_requests_total %d\n", tokenRequestCount.Load())
 	fmt.Fprintf(w, "\n")
 	fmt.Fprintf(w, "# HELP mock_events_received_total Total CloudEvents received\n")
 	fmt.Fprintf(w, "# TYPE mock_events_received_total counter\n")
-	fmt.Fprintf(w, "mock_events_received_total %d\n", atomic.LoadInt64(&eventsReceivedCount))
+	fmt.Fprintf(w, "mock_events_received_total %d\n", eventsReceivedCount.Load())
 }
 
 func handleEventsList(w http.ResponseWriter, r *http.Request) {

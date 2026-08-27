@@ -287,7 +287,7 @@ func (p *PostgreSQLMaintenanceEventStore) FindLatestActiveEventByNodeAndType(
 	}
 
 	// Build status list for IN clause
-	statusStrings := make([]interface{}, len(statuses))
+	statusStrings := make([]any, len(statuses))
 	placeholders := make([]string, len(statuses))
 
 	for i, status := range statuses {
@@ -309,7 +309,7 @@ func (p *PostgreSQLMaintenanceEventStore) FindLatestActiveEventByNodeAndType(
 	`)
 
 	query := queryBuilder.String()
-	params := []interface{}{nodeName, string(maintenanceType)}
+	params := []any{nodeName, string(maintenanceType)}
 
 	params = append(params, statusStrings...)
 
@@ -354,7 +354,7 @@ func (p *PostgreSQLMaintenanceEventStore) FindActiveEventsByStatuses(
 	}
 
 	// Build status list for IN clause
-	statusParams := make([]interface{}, len(statuses))
+	statusParams := make([]any, len(statuses))
 	placeholders := make([]string, len(statuses))
 
 	for i, status := range statuses {
@@ -374,7 +374,7 @@ func (p *PostgreSQLMaintenanceEventStore) FindActiveEventsByStatuses(
 	`)
 
 	query := queryBuilder.String()
-	params := []interface{}{string(csp)}
+	params := []any{string(csp)}
 
 	params = append(params, statusParams...)
 

@@ -428,11 +428,9 @@ func TestEnsureConfigMap(t *testing.T) {
 	t.Run("noop when ConfigMap already exists", func(t *testing.T) {
 		cmName := ConfigMapName("existing-gang")
 		existing := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      cmName,
-				Namespace: "default",
-			},
-			Data: map[string]string{DataKeyPeers: "pod-0;10.0.0.1;0"},
+			Name:      cmName,
+			Namespace: "default",
+			Data:      map[string]string{DataKeyPeers: "pod-0;10.0.0.1;0"},
 		}
 		coord := newFakeCoordinator(existing)
 
@@ -446,11 +444,9 @@ func TestEnsureConfigMap(t *testing.T) {
 	t.Run("backfills owner reference on existing ConfigMap without changing data", func(t *testing.T) {
 		cmName := ConfigMapName("backfill-gang")
 		existing := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      cmName,
-				Namespace: "default",
-			},
-			Data: map[string]string{DataKeyPeers: "pod-0;10.0.0.1;0"},
+			Name:      cmName,
+			Namespace: "default",
+			Data:      map[string]string{DataKeyPeers: "pod-0;10.0.0.1;0"},
 		}
 		coord := newFakeCoordinator(existing)
 		ownerRef := &metav1.OwnerReference{
@@ -604,10 +600,8 @@ func TestRegisterPeer(t *testing.T) {
 	t.Run("owner reference backfilled onto provisional webhook ConfigMap", func(t *testing.T) {
 		provisionalName := ConfigMapName("label-derived-gang")
 		existing := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      provisionalName,
-				Namespace: "default",
-			},
+			Name:      provisionalName,
+			Namespace: "default",
 			Data: map[string]string{
 				DataKeyExpectedCount: "0",
 				DataKeyPeers:         "",
@@ -711,7 +705,7 @@ func TestKubernetesClientRateLimitsGangRegistrationThroughput(t *testing.T) {
 
 	namespace := fmt.Sprintf("rate-limit-%d", time.Now().UnixNano())
 	_, err = adminClient.CoreV1().Namespaces().Create(t.Context(), &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: namespace},
+		Name: namespace,
 	}, metav1.CreateOptions{})
 	require.NoError(t, err)
 

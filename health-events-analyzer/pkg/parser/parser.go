@@ -27,8 +27,8 @@ import (
 )
 
 // ParseSequenceStage parses a JSON stage string and replaces "this." references with actual event values
-func ParseSequenceStage(stage string, event datamodels.HealthEventWithStatus) (map[string]interface{}, error) {
-	var stageMap map[string]interface{}
+func ParseSequenceStage(stage string, event datamodels.HealthEventWithStatus) (map[string]any, error) {
+	var stageMap map[string]any
 	if err := json.Unmarshal([]byte(stage), &stageMap); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal stage '%s': %w", stage, err)
 	}
@@ -46,11 +46,11 @@ func ParseSequenceStage(stage string, event datamodels.HealthEventWithStatus) (m
 }
 
 // processValue recursively processes any value type and replaces "this." references with actual event values
-func processValue(value interface{}, event datamodels.HealthEventWithStatus) (interface{}, error) {
+func processValue(value any, event datamodels.HealthEventWithStatus) (any, error) {
 	switch v := value.(type) {
 	case string:
-		if strings.HasPrefix(v, "this.") {
-			fieldPath := strings.TrimPrefix(v, "this.")
+		if after, ok := strings.CutPrefix(v, "this."); ok {
+			fieldPath := after
 
 			resolvedValue, err := getValueFromPath(fieldPath, event)
 			if err != nil {
@@ -66,17 +66,17 @@ func processValue(value interface{}, event datamodels.HealthEventWithStatus) (in
 		}
 
 		return v, nil
-	case map[string]interface{}:
+	case map[string]any:
 		return processMapValue(v, event)
-	case []interface{}:
+	case []any:
 		return processArrayValue(v, event)
 	default:
 		return v, nil
 	}
 }
 
-func processMapValue(v map[string]interface{}, event datamodels.HealthEventWithStatus) (map[string]interface{}, error) {
-	result := make(map[string]interface{})
+func processMapValue(v map[string]any, event datamodels.HealthEventWithStatus) (map[string]any, error) {
+	result := make(map[string]any)
 
 	for key, val := range v {
 		processedVal, err := processValue(val, event)
@@ -90,8 +90,8 @@ func processMapValue(v map[string]interface{}, event datamodels.HealthEventWithS
 	return result, nil
 }
 
-func processArrayValue(v []interface{}, event datamodels.HealthEventWithStatus) ([]interface{}, error) {
-	result := make([]interface{}, len(v))
+func processArrayValue(v []any, event datamodels.HealthEventWithStatus) ([]any, error) {
+	result := make([]any, len(v))
 
 	for i, val := range v {
 		processedVal, err := processValue(val, event)
@@ -110,8 +110,8 @@ func processArrayValue(v []interface{}, event datamodels.HealthEventWithStatus) 
 func ParseSequenceString(
 	criteria map[string]any,
 	event datamodels.HealthEventWithStatus,
-) (map[string]interface{}, error) {
-	doc := make(map[string]interface{})
+) (map[string]any, error) {
+	doc := make(map[string]any)
 	allowedStringPattern := regexp.MustCompile(`^[a-zA-Z0-9.-]+$`)
 
 	for key, value := range criteria {
@@ -123,8 +123,8 @@ func ParseSequenceString(
 		}
 
 		// "this." reference → resolve from current event
-		if strings.HasPrefix(strVal, "this.") {
-			fieldPath := strings.TrimPrefix(strVal, "this.")
+		if after, ok := strings.CutPrefix(strVal, "this."); ok {
+			fieldPath := after
 
 			resolvedValue, err := getValueFromPath(fieldPath, event)
 			if err != nil {

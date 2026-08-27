@@ -18,8 +18,7 @@ import (
 	"context"
 	"sync"
 
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 // FakeChangeStreamWatcher provides a fake implementation of the ChangeStreamWatcher
@@ -32,7 +31,7 @@ type FakeChangeStreamWatcher struct {
 	StartFn                    func(ctx context.Context)
 	MarkProcessedFn            func(ctx context.Context, token []byte) error
 	CloseFn                    func(ctx context.Context) error
-	GetUnprocessedEventCountFn func(ctx context.Context, lastProcessedID primitive.ObjectID,
+	GetUnprocessedEventCountFn func(ctx context.Context, lastProcessedID bson.ObjectID,
 		additionalFilters ...bson.M) (int64, error)
 
 	// Call tracking fields
@@ -45,7 +44,7 @@ type FakeChangeStreamWatcher struct {
 	LastMarkProcessedCtx                context.Context
 	LastCloseCtx                        context.Context
 	LastGetUnprocessedEventCountCtx     context.Context
-	LastGetUnprocessedEventCountID      primitive.ObjectID
+	LastGetUnprocessedEventCountID      bson.ObjectID
 	LastGetUnprocessedEventCountFilters []bson.M
 
 	mu sync.Mutex
@@ -67,7 +66,7 @@ func NewFakeChangeStreamWatcher() *FakeChangeStreamWatcher {
 			// Default: succeed
 			return nil
 		},
-		GetUnprocessedEventCountFn: func(ctx context.Context, lastProcessedID primitive.ObjectID,
+		GetUnprocessedEventCountFn: func(ctx context.Context, lastProcessedID bson.ObjectID,
 			additionalFilters ...bson.M) (int64, error) {
 			// Default: return 0 events
 			return 0, nil
@@ -124,7 +123,7 @@ func (m *FakeChangeStreamWatcher) Close(ctx context.Context) error {
 // GetUnprocessedEventCount executes the configured GetUnprocessedEventCount function and tracks the call.
 func (m *FakeChangeStreamWatcher) GetUnprocessedEventCount(
 	ctx context.Context,
-	lastProcessedID primitive.ObjectID,
+	lastProcessedID bson.ObjectID,
 	additionalFilters ...bson.M,
 ) (int64, error) {
 	m.mu.Lock()
@@ -156,7 +155,7 @@ func (m *FakeChangeStreamWatcher) Reset() {
 	m.LastMarkProcessedCtx = nil
 	m.LastCloseCtx = nil
 	m.LastGetUnprocessedEventCountCtx = nil
-	m.LastGetUnprocessedEventCountID = primitive.ObjectID{}
+	m.LastGetUnprocessedEventCountID = bson.ObjectID{}
 	m.LastGetUnprocessedEventCountFilters = nil
 
 	for len(m.EventsChan) > 0 {

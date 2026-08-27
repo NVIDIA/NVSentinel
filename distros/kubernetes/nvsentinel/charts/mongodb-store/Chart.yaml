@@ -25,7 +25,7 @@ dependencies:
     repository: ""
     condition: useBitnami
   - name: psmdb-operator
-    version: "1.22.0"
+    version: "1.23.0"
     repository: ""
     condition: usePerconaOperator
   - name: psmdb-db

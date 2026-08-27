@@ -219,8 +219,7 @@ func TestFetchAndProcessHealthMetric_MaxRetries_EventDropped(t *testing.T) {
 }
 
 func TestShutdownRingBuffer_AfterShutdown_EnqueueIsNoOp(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	rb := ringbuffer.NewRingBuffer("testShutdown", ctx)
 	connector := &GRPCSinkConnector{ringBuffer: rb}

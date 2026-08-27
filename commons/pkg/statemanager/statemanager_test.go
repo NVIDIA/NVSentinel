@@ -38,11 +38,9 @@ func newTestStateManager(nodeName string, startingNodeLabels map[string]string) 
 	clientSet := fake.NewSimpleClientset()
 	// Create a test node
 	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   nodeName,
-			Labels: startingNodeLabels,
-		},
-		Spec: v1.NodeSpec{},
+		Name:   nodeName,
+		Labels: startingNodeLabels,
+		Spec:   v1.NodeSpec{},
 	}
 	_, err := clientSet.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	if err != nil {
@@ -68,11 +66,9 @@ func TestUpdateNVSentinelStateNodeLabelWithUpdateFailure(t *testing.T) {
 	clientSet := fake.NewSimpleClientset()
 	// Create a test node
 	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   testNodeName,
-			Labels: make(map[string]string),
-		},
-		Spec: v1.NodeSpec{},
+		Name:   testNodeName,
+		Labels: make(map[string]string),
+		Spec:   v1.NodeSpec{},
 	}
 	_, err := clientSet.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	assert.NoError(t, err)
@@ -90,11 +86,9 @@ func TestUpdateNVSentinelStateNodeLabelWithUpdateConflictRetry(t *testing.T) {
 	clientSet := fake.NewSimpleClientset()
 	// Create a test node
 	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   testNodeName,
-			Labels: make(map[string]string),
-		},
-		Spec: v1.NodeSpec{},
+		Name:   testNodeName,
+		Labels: make(map[string]string),
+		Spec:   v1.NodeSpec{},
 	}
 	_, err := clientSet.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	assert.NoError(t, err)
@@ -218,11 +212,9 @@ func TestRemoveNVSentinelStateNodeLabelIfMatch_ConcurrentNewerValue_PreservesLab
 	clientSet.Fake.PrependReactor("update", "nodes", func(ktesting.Action) (bool, runtime.Object, error) {
 		updateCalls++
 		newerNode := &v1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: testNodeName,
-				Labels: map[string]string{
-					NVSentinelStateLabelKey: string(QuarantinedLabelValue),
-				},
+			Name: testNodeName,
+			Labels: map[string]string{
+				NVSentinelStateLabelKey: string(QuarantinedLabelValue),
 			},
 		}
 		err := clientSet.Tracker().Update(v1.SchemeGroupVersion.WithResource("nodes"), newerNode, "")

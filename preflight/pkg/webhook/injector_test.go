@@ -26,14 +26,11 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/utils/ptr"
 )
 
 func TestCollectMatchingEnvVars(t *testing.T) {
 	injector := &Injector{cfg: &config.Config{
-		FileConfig: config.FileConfig{
-			NCCLEnvPatterns: []string{"NCCL_*", "FI_*", "LD_LIBRARY_PATH"},
-		},
+		NCCLEnvPatterns: []string{"NCCL_*", "FI_*", "LD_LIBRARY_PATH"},
 	}}
 
 	containers := []corev1.Container{
@@ -57,9 +54,7 @@ func TestCollectMatchingEnvVars(t *testing.T) {
 
 func TestCollectMatchingVolumeMounts(t *testing.T) {
 	injector := &Injector{cfg: &config.Config{
-		FileConfig: config.FileConfig{
-			VolumeMountPatterns: []string{"nvtcpxo-*", "host-opt-*"},
-		},
+		VolumeMountPatterns: []string{"nvtcpxo-*", "host-opt-*"},
 	}}
 
 	containers := []corev1.Container{
@@ -113,10 +108,8 @@ func TestMergeVolumeMounts_SkipsExistingNameOrPath(t *testing.T) {
 
 func TestFindMaxResources(t *testing.T) {
 	injector := &Injector{cfg: &config.Config{
-		FileConfig: config.FileConfig{
-			GPUResourceNames:     []string{"nvidia.com/gpu"},
-			NetworkResourceNames: []string{"vpc.amazonaws.com/efa"},
-		},
+		GPUResourceNames:     []string{"nvidia.com/gpu"},
+		NetworkResourceNames: []string{"vpc.amazonaws.com/efa"},
 	}}
 
 	pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{
@@ -137,7 +130,7 @@ func TestFindMaxResources(t *testing.T) {
 
 func TestFindMaxResources_NoGPU_ReturnsNil(t *testing.T) {
 	injector := &Injector{cfg: &config.Config{
-		FileConfig: config.FileConfig{GPUResourceNames: []string{"nvidia.com/gpu"}},
+		GPUResourceNames: []string{"nvidia.com/gpu"},
 	}}
 	pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{}}}}
 	assert.Nil(t, injector.findMaxResources(pod))
@@ -281,8 +274,8 @@ func TestInjectInitContainers(t *testing.T) {
 				c := testConfig()
 				c.InitContainerPlacement = config.PlacementPrepend
 				c.InitContainers = []config.InitContainerSpec{
-					{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
-					{Container: corev1.Container{Name: "preflight-nccl-loopback", Image: "nccl:latest"}},
+					{Name: "preflight-dcgm-diag", Image: "dcgm:latest"},
+					{Name: "preflight-nccl-loopback", Image: "nccl:latest"},
 				}
 				return c
 			}(),
@@ -387,9 +380,9 @@ func TestInjectInitContainers(t *testing.T) {
 			cfg: func() *config.Config {
 				cfg := testGangConfig()
 				cfg.InitContainers = []config.InitContainerSpec{
-					{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
-					{Container: corev1.Container{Name: "preflight-nccl-loopback", Image: "nccl:latest"}},
-					{Container: corev1.Container{Name: "preflight-nccl-allreduce", Image: "nccl:latest"}},
+					{Name: "preflight-dcgm-diag", Image: "dcgm:latest"},
+					{Name: "preflight-nccl-loopback", Image: "nccl:latest"},
+					{Name: "preflight-nccl-allreduce", Image: "nccl:latest"},
 				}
 				return cfg
 			}(),
@@ -427,8 +420,8 @@ func TestInjectInitContainers(t *testing.T) {
 				cfg := testGangConfig()
 				f := false
 				cfg.InitContainers = []config.InitContainerSpec{
-					{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
-					{Container: corev1.Container{Name: "preflight-nccl-allreduce", Image: "nccl:latest"}, DefaultEnabled: &f},
+					{Name: "preflight-dcgm-diag", Image: "dcgm:latest"},
+					{Name: "preflight-nccl-allreduce", Image: "nccl:latest", DefaultEnabled: &f},
 				}
 				return cfg
 			}(),
@@ -555,7 +548,7 @@ func TestBuildInitContainers(t *testing.T) {
 	t.Run("CPU and memory floor not applied when already set", func(t *testing.T) {
 		cfg := testConfig()
 		cfg.InitContainers = []config.InitContainerSpec{
-			{Container: corev1.Container{
+			{
 				Name:  "preflight-dcgm-diag",
 				Image: "dcgm:latest",
 				Resources: corev1.ResourceRequirements{
@@ -563,8 +556,7 @@ func TestBuildInitContainers(t *testing.T) {
 						corev1.ResourceCPU:    resource.MustParse("200m"),
 						corev1.ResourceMemory: resource.MustParse("1Gi"),
 					},
-				},
-			}},
+				}},
 		}
 		injector := NewInjector(cfg, nil)
 
@@ -645,7 +637,7 @@ func TestBuildInitContainers(t *testing.T) {
 	t.Run("user NCCL env not inherited when disabled", func(t *testing.T) {
 		cfg := testConfig()
 		cfg.NCCLEnvPatterns = []string{"NCCL_*"}
-		cfg.InitContainers[0].InheritUserEnv = boolPtr(false)
+		cfg.InitContainers[0].InheritUserEnv = new(false)
 		injector := NewInjector(cfg, nil)
 
 		pod := gpuPod()
@@ -664,11 +656,10 @@ func TestBuildInitContainers(t *testing.T) {
 		cfg := testConfig()
 		cfg.NCCLEnvPatterns = []string{"NCCL_*"}
 		cfg.InitContainers = []config.InitContainerSpec{
-			{Container: corev1.Container{
+			{
 				Name:  "preflight-dcgm-diag",
 				Image: "dcgm:latest",
-				Env:   []corev1.EnvVar{{Name: "NCCL_DEBUG", Value: "WARN"}},
-			}},
+				Env:   []corev1.EnvVar{{Name: "NCCL_DEBUG", Value: "WARN"}}},
 		}
 		injector := NewInjector(cfg, nil)
 
@@ -704,7 +695,7 @@ func TestBuildInitContainers(t *testing.T) {
 	t.Run("user volume mounts not inherited when disabled", func(t *testing.T) {
 		cfg := testConfig()
 		cfg.VolumeMountPatterns = []string{"nvtcpxo-*"}
-		cfg.InitContainers[0].InheritUserVolumeMounts = boolPtr(false)
+		cfg.InitContainers[0].InheritUserVolumeMounts = new(false)
 		injector := NewInjector(cfg, nil)
 
 		pod := gpuPod()
@@ -741,7 +732,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 	t.Run("DRA claims not mirrored when disabled", func(t *testing.T) {
 		cfg := testGangConfig()
-		cfg.GangCoordination.MirrorResourceClaims = boolPtr(false)
+		cfg.GangCoordination.MirrorResourceClaims = new(false)
 		injector := NewInjector(cfg, nil)
 
 		pod := gpuPod()
@@ -808,9 +799,9 @@ func TestSelectInitContainers(t *testing.T) {
 		cfg := testConfig()
 		f := false
 		cfg.InitContainers = []config.InitContainerSpec{
-			{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
-			{Container: corev1.Container{Name: "preflight-nccl-loopback", Image: "nccl:latest"}},
-			{Container: corev1.Container{Name: "preflight-nccl-allreduce", Image: "nccl:latest"}, DefaultEnabled: &f},
+			{Name: "preflight-dcgm-diag", Image: "dcgm:latest"},
+			{Name: "preflight-nccl-loopback", Image: "nccl:latest"},
+			{Name: "preflight-nccl-allreduce", Image: "nccl:latest", DefaultEnabled: &f},
 		}
 		return cfg
 	}
@@ -1072,16 +1063,14 @@ func TestValidateConnectorTokenVolume(t *testing.T) {
 
 	ours := corev1.Volume{
 		Name: connectorTokenVolumeName,
-		VolumeSource: corev1.VolumeSource{
-			Projected: &corev1.ProjectedVolumeSource{
-				Sources: []corev1.VolumeProjection{{
-					ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-						Audience:          audience,
-						ExpirationSeconds: ptr.To(int64(3600)),
-						Path:              "token",
-					},
-				}},
-			},
+		Projected: &corev1.ProjectedVolumeSource{
+			Sources: []corev1.VolumeProjection{{
+				ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+					Audience:          audience,
+					ExpirationSeconds: new(int64(3600)),
+					Path:              "token",
+				},
+			}},
 		},
 	}
 
@@ -1094,14 +1083,14 @@ func TestValidateConnectorTokenVolume(t *testing.T) {
 		{name: "our own projection is accepted", volume: &ours},
 		{
 			name:    "workload-supplied emptyDir is refused",
-			volume:  &corev1.Volume{Name: connectorTokenVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+			volume:  &corev1.Volume{Name: connectorTokenVolumeName, EmptyDir: &corev1.EmptyDirVolumeSource{}},
 			wantErr: true,
 		},
 		{
 			name: "workload-supplied secret is refused",
 			volume: &corev1.Volume{
-				Name:         connectorTokenVolumeName,
-				VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "workload-supplied"}},
+				Name:   connectorTokenVolumeName,
+				Secret: &corev1.SecretVolumeSource{SecretName: "workload-supplied"},
 			},
 			wantErr: true,
 		},
@@ -1109,16 +1098,14 @@ func TestValidateConnectorTokenVolume(t *testing.T) {
 			name: "projection for a different audience is refused",
 			volume: &corev1.Volume{
 				Name: connectorTokenVolumeName,
-				VolumeSource: corev1.VolumeSource{
-					Projected: &corev1.ProjectedVolumeSource{
-						Sources: []corev1.VolumeProjection{{
-							ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-								Audience:          "something-else",
-								ExpirationSeconds: ptr.To(int64(3600)),
-								Path:              "token",
-							},
-						}},
-					},
+				Projected: &corev1.ProjectedVolumeSource{
+					Sources: []corev1.VolumeProjection{{
+						ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+							Audience:          "something-else",
+							ExpirationSeconds: new(int64(3600)),
+							Path:              "token",
+						},
+					}},
 				},
 			},
 			wantErr: true,
@@ -1469,20 +1456,19 @@ func TestInjectInitContainers_NamespaceScopedDiscovery_SelectsNamespaceDiscovere
 	}
 }
 
-func boolPtr(b bool) *bool { return &b }
+//go:fix inline
+func boolPtr(b bool) *bool { return new(b) }
 
 func testConfig() *config.Config {
 	return &config.Config{
-		FileConfig: config.FileConfig{
-			InitContainers: []config.InitContainerSpec{
-				{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "nvcr.io/nvidia/dcgm:latest"}},
-			},
-			GPUResourceNames:       []string{"nvidia.com/gpu"},
-			NetworkResourceNames:   []string{"vpc.amazonaws.com/efa"},
-			InitContainerPlacement: config.PlacementAppend,
-			ConnectorSocket:        "/var/run/nvsentinel/nvsentinel.sock",
-			ProcessingStrategy:     "EXECUTE_REMEDIATION",
+		InitContainers: []config.InitContainerSpec{
+			{Name: "preflight-dcgm-diag", Image: "nvcr.io/nvidia/dcgm:latest"},
 		},
+		GPUResourceNames:       []string{"nvidia.com/gpu"},
+		NetworkResourceNames:   []string{"vpc.amazonaws.com/efa"},
+		InitContainerPlacement: config.PlacementAppend,
+		ConnectorSocket:        "/var/run/nvsentinel/nvsentinel.sock",
+		ProcessingStrategy:     "EXECUTE_REMEDIATION",
 	}
 }
 
@@ -1494,7 +1480,7 @@ func testGangConfig() *config.Config {
 		TimeoutDuration:      10 * time.Minute,
 		MasterPort:           29500,
 		ConfigMapMountPath:   "/etc/preflight",
-		MirrorResourceClaims: boolPtr(true),
+		MirrorResourceClaims: new(true),
 	}
 	return cfg
 }

@@ -85,9 +85,9 @@ func TestSQLFilterBuilder_FieldToJSONBPath(t *testing.T) {
 func TestSQLFilterBuilder_BooleanField(t *testing.T) {
 	t.Run("true value", func(t *testing.T) {
 		builder := NewSQLFilterBuilder(3)
-		err := builder.BuildFromPipeline([]interface{}{
-			map[string]interface{}{
-				"$match": map[string]interface{}{
+		err := builder.BuildFromPipeline([]any{
+			map[string]any{
+				"$match": map[string]any{
 					"fullDocument.healthevent.isFatal": true,
 				},
 			},
@@ -106,9 +106,9 @@ func TestSQLFilterBuilder_BooleanField(t *testing.T) {
 
 	t.Run("false value handles NULL", func(t *testing.T) {
 		builder := NewSQLFilterBuilder(3)
-		err := builder.BuildFromPipeline([]interface{}{
-			map[string]interface{}{
-				"$match": map[string]interface{}{
+		err := builder.BuildFromPipeline([]any{
+			map[string]any{
+				"$match": map[string]any{
 					"fullDocument.healthevent.isHealthy": false,
 				},
 			},
@@ -127,12 +127,12 @@ func TestSQLFilterBuilder_OrOperator(t *testing.T) {
 	builder := NewSQLFilterBuilder(3)
 
 	// This is the typical health-events-analyzer pipeline
-	pipeline := []interface{}{
-		map[string]interface{}{
-			"$match": map[string]interface{}{
-				"$or": []interface{}{
-					map[string]interface{}{"fullDocument.healthevent.isFatal": true},
-					map[string]interface{}{"fullDocument.healthevent.isHealthy": false},
+	pipeline := []any{
+		map[string]any{
+			"$match": map[string]any{
+				"$or": []any{
+					map[string]any{"fullDocument.healthevent.isFatal": true},
+					map[string]any{"fullDocument.healthevent.isHealthy": false},
 				},
 			},
 		},
@@ -156,10 +156,10 @@ func TestSQLFilterBuilder_OrOperator(t *testing.T) {
 func TestSQLFilterBuilder_NeOperator(t *testing.T) {
 	t.Run("$ne with string", func(t *testing.T) {
 		builder := NewSQLFilterBuilder(3)
-		err := builder.BuildFromPipeline([]interface{}{
-			map[string]interface{}{
-				"$match": map[string]interface{}{
-					"fullDocument.healthevent.checkName": map[string]interface{}{
+		err := builder.BuildFromPipeline([]any{
+			map[string]any{
+				"$match": map[string]any{
+					"fullDocument.healthevent.checkName": map[string]any{
 						"$ne": "HealthCheck",
 					},
 				},
@@ -178,10 +178,10 @@ func TestSQLFilterBuilder_NeOperator(t *testing.T) {
 
 	t.Run("$ne with boolean true", func(t *testing.T) {
 		builder := NewSQLFilterBuilder(3)
-		err := builder.BuildFromPipeline([]interface{}{
-			map[string]interface{}{
-				"$match": map[string]interface{}{
-					"fullDocument.healthevent.isFatal": map[string]interface{}{
+		err := builder.BuildFromPipeline([]any{
+			map[string]any{
+				"$match": map[string]any{
+					"fullDocument.healthevent.isFatal": map[string]any{
 						"$ne": true,
 					},
 				},
@@ -199,11 +199,11 @@ func TestSQLFilterBuilder_NeOperator(t *testing.T) {
 
 func TestSQLFilterBuilder_InOperator(t *testing.T) {
 	builder := NewSQLFilterBuilder(3)
-	err := builder.BuildFromPipeline([]interface{}{
-		map[string]interface{}{
-			"$match": map[string]interface{}{
-				"fullDocument.healthevent.errorCode": map[string]interface{}{
-					"$in": []interface{}{"79", "119", "31"},
+	err := builder.BuildFromPipeline([]any{
+		map[string]any{
+			"$match": map[string]any{
+				"fullDocument.healthevent.errorCode": map[string]any{
+					"$in": []any{"79", "119", "31"},
 				},
 			},
 		},
@@ -220,10 +220,10 @@ func TestSQLFilterBuilder_InOperator(t *testing.T) {
 func TestSQLFilterBuilder_ExistsOperator(t *testing.T) {
 	t.Run("$exists true", func(t *testing.T) {
 		builder := NewSQLFilterBuilder(3)
-		err := builder.BuildFromPipeline([]interface{}{
-			map[string]interface{}{
-				"$match": map[string]interface{}{
-					"fullDocument.healthevent.nodeName": map[string]interface{}{
+		err := builder.BuildFromPipeline([]any{
+			map[string]any{
+				"$match": map[string]any{
+					"fullDocument.healthevent.nodeName": map[string]any{
 						"$exists": true,
 					},
 				},
@@ -237,10 +237,10 @@ func TestSQLFilterBuilder_ExistsOperator(t *testing.T) {
 
 	t.Run("$exists false", func(t *testing.T) {
 		builder := NewSQLFilterBuilder(3)
-		err := builder.BuildFromPipeline([]interface{}{
-			map[string]interface{}{
-				"$match": map[string]interface{}{
-					"fullDocument.healthevent.metadata": map[string]interface{}{
+		err := builder.BuildFromPipeline([]any{
+			map[string]any{
+				"$match": map[string]any{
+					"fullDocument.healthevent.metadata": map[string]any{
 						"$exists": false,
 					},
 				},
@@ -265,7 +265,7 @@ func TestSQLFilterBuilder_NilPipeline(t *testing.T) {
 
 func TestSQLFilterBuilder_EmptyPipeline(t *testing.T) {
 	builder := NewSQLFilterBuilder(3)
-	err := builder.BuildFromPipeline([]interface{}{})
+	err := builder.BuildFromPipeline([]any{})
 	require.NoError(t, err)
 
 	assert.False(t, builder.HasConditions())
@@ -274,9 +274,9 @@ func TestSQLFilterBuilder_EmptyPipeline(t *testing.T) {
 
 func TestSQLFilterBuilder_GetWhereClauseWithAnd(t *testing.T) {
 	builder := NewSQLFilterBuilder(3)
-	err := builder.BuildFromPipeline([]interface{}{
-		map[string]interface{}{
-			"$match": map[string]interface{}{
+	err := builder.BuildFromPipeline([]any{
+		map[string]any{
+			"$match": map[string]any{
 				"fullDocument.healthevent.isFatal": true,
 			},
 		},
@@ -292,9 +292,9 @@ func TestSQLFilterBuilder_GetWhereClauseWithAnd(t *testing.T) {
 
 func TestSQLFilterBuilder_MultipleMatchConditions(t *testing.T) {
 	builder := NewSQLFilterBuilder(3)
-	err := builder.BuildFromPipeline([]interface{}{
-		map[string]interface{}{
-			"$match": map[string]interface{}{
+	err := builder.BuildFromPipeline([]any{
+		map[string]any{
+			"$match": map[string]any{
 				"fullDocument.healthevent.isFatal":   true,
 				"fullDocument.healthevent.nodeName":  "test-node",
 				"fullDocument.healthevent.checkName": "GpuXidError",
@@ -320,12 +320,12 @@ func TestSQLFilterBuilder_MultipleMatchConditions(t *testing.T) {
 
 func TestSQLFilterBuilder_RealWorldHealthEventsAnalyzerPipeline(t *testing.T) {
 	// This is the actual pipeline used by health-events-analyzer
-	pipeline := []interface{}{
-		map[string]interface{}{
-			"$match": map[string]interface{}{
-				"$or": []interface{}{
-					map[string]interface{}{"fullDocument.healthevent.isFatal": true},
-					map[string]interface{}{"fullDocument.healthevent.isHealthy": false},
+	pipeline := []any{
+		map[string]any{
+			"$match": map[string]any{
+				"$or": []any{
+					map[string]any{"fullDocument.healthevent.isFatal": true},
+					map[string]any{"fullDocument.healthevent.isHealthy": false},
 				},
 			},
 		},
@@ -580,9 +580,9 @@ func TestSQLFilterBuilder_FaultQuarantinePipeline(t *testing.T) {
 // This is how pipelines appear when parsed from JSON or passed through generic interfaces
 func TestSQLFilterBuilder_SimpleMapInterface(t *testing.T) {
 	// Pipeline as simple map[string]interface{} (common in tests and generic code)
-	pipeline := []interface{}{
-		map[string]interface{}{
-			"$match": map[string]interface{}{
+	pipeline := []any{
+		map[string]any{
+			"$match": map[string]any{
 				"operationType":                      "insert",
 				"fullDocument.healthevent.ishealthy": false,
 				"fullDocument.healthevent.isfatal":   true,
@@ -615,9 +615,9 @@ func TestSQLFilterBuilder_ArgIndexing(t *testing.T) {
 	// Test that arg indices start from the correct position
 	builder := NewSQLFilterBuilder(3) // Start at 4 ($1, $2, $3 already used)
 
-	err := builder.BuildFromPipeline([]interface{}{
-		map[string]interface{}{
-			"$match": map[string]interface{}{
+	err := builder.BuildFromPipeline([]any{
+		map[string]any{
+			"$match": map[string]any{
 				"fullDocument.healthevent.isFatal":  true,
 				"fullDocument.healthevent.nodeName": "test-node",
 			},

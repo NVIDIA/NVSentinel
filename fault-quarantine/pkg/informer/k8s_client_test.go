@@ -128,11 +128,9 @@ func createTestNode(ctx context.Context, t *testing.T, name string, annotations 
 	labels[GPUNodeLabel] = "true"
 
 	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Annotations: annotations,
-			Labels:      labels,
-		},
+		Name:        name,
+		Annotations: annotations,
+		Labels:      labels,
 		Spec: v1.NodeSpec{
 			Unschedulable: unschedulable,
 			Taints:        taints,
@@ -863,7 +861,7 @@ func TestUnTaintAndUnCordonNode_NonExistentNode(t *testing.T) {
 // TestUpdateNode_CachedNode_UsesPatchAndSkipsNoOp verifies that a cached Node
 // requires one PATCH for a change and no API request once the desired state is present.
 func TestUpdateNode_CachedNode_UsesPatchAndSkipsNoOp(t *testing.T) {
-	node := &v1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-1", ResourceVersion: "1"}}
+	node := &v1.Node{Name: "node-1", ResourceVersion: "1"}
 	clientset := fake.NewSimpleClientset(node.DeepCopy())
 	client := &FaultQuarantineClient{
 		Clientset:    clientset,

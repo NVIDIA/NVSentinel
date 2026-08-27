@@ -169,7 +169,7 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 		require.NoError(t, err)
 
 		require.Eventually(t, func() bool {
-			found, event := helpers.CheckNodeEventExists(ctx, client, testCtx.NodeName, "NodeDraining", "", restartTime)
+			found, event := helpers.CheckNodeEventExists(ctx, client, testCtx.NodeName, v1.EventTypeNormal, "AwaitingPodCompletion", restartTime)
 			if found {
 				t.Logf("Found event after restart: %s", event.Reason)
 			}

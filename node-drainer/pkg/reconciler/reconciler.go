@@ -229,7 +229,7 @@ func (r *Reconciler) PreprocessAndEnqueueEvent(ctx context.Context, event client
 // Returns true if the event should be skipped (not enqueued)
 func (r *Reconciler) handleEventCancellation(
 	ctx context.Context,
-	documentID interface{},
+	documentID any,
 	nodeName string,
 	statusPtr *model.Status,
 	eventCreatedAt time.Time,
@@ -929,7 +929,7 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 	}
 
 	// Explicitly construct the eviction status map, always setting all fields
-	evictionStatusMap := map[string]interface{}{
+	evictionStatusMap := map[string]any{
 		"status":  userPodsEvictionStatus.GetStatus(),
 		"message": userPodsEvictionStatus.GetMessage(),
 	}
@@ -1351,8 +1351,7 @@ func (r *Reconciler) handleCustomDrainCRCreationError(
 	ctx, span := tracing.StartSpan(ctx, "node_drainer.handle_custom_drain_cr_creation_error")
 	defer span.End()
 
-	var noMatchErr *meta.NoKindMatchError
-	if !errors.As(err, &noMatchErr) {
+	if _, ok := errors.AsType[*meta.NoKindMatchError](err); !ok {
 		tracing.RecordError(span, err)
 		span.SetAttributes(
 			attribute.String("node_drainer.error.type", "custom_drain_cr_creation_error"),

@@ -954,8 +954,8 @@ func netCounterKey(iface, counterName string) string {
 // /sys/class/net/<iface>/statistics/, netdev/ entries at the netdev
 // root (e.g. carrier_changes, which sits beside operstate).
 func (e *Evaluator) readNetCounter(iface, path string) (uint64, error) {
-	if strings.HasPrefix(path, netStatisticsPathPrefix) {
-		statFile := strings.TrimPrefix(path, netStatisticsPathPrefix)
+	if after, ok := strings.CutPrefix(path, netStatisticsPathPrefix); ok {
+		statFile := after
 		if statFile == "" {
 			return 0, fmt.Errorf("empty statistics counter path %q", path)
 		}

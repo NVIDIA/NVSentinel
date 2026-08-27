@@ -254,7 +254,7 @@ kubectl get events -n default \
   --field-selector "involvedObject.kind=Node,involvedObject.name=$NODE"
 ```
 
-Node Drainer events are created in the **`default`** namespace (`Type=NodeDraining`,
+Node Drainer events are created in the **`default`** namespace (`Type=Normal`,
 `Source=nvsentinel-node-drainer`). Example output for a pod `training-job-0` in namespace
 `batch-jobs` on node `gpu-node-42`:
 
@@ -283,7 +283,7 @@ database    postgres-0        1/1     Running   0          2h
 
 # kubectl get events -n default --field-selector "involvedObject.name=gpu-node-42"
 LAST SEEN   TYPE          REASON                  OBJECT           MESSAGE
-2m          NodeDraining  AwaitingPodCompletion   Node/gpu-node-42 Waiting for following pods to finish: [database/postgres-0]
+2m          Normal        AwaitingPodCompletion   Node/gpu-node-42 Waiting for following pods to finish: [database/postgres-0]
 ```
 
 #### `DeleteAfterTimeout`
@@ -295,7 +295,7 @@ batch-jobs  training-job-0    1/1     Running   0          2h
 
 # kubectl get events -n default --field-selector "involvedObject.name=gpu-node-42"
 LAST SEEN   TYPE          REASON                    OBJECT           MESSAGE
-1m          NodeDraining  WaitingBeforeForceDelete  Node/gpu-node-42 Waiting for following pods to finish: [training-job-0] in namespace: [batch-jobs] or they will be force deleted on: 2026-07-01 18:30:00 +0000 UTC
+1m          Normal        WaitingBeforeForceDelete  Node/gpu-node-42 Waiting for following pods to finish: [training-job-0] in namespace: [batch-jobs] or they will be force deleted on: 2026-07-01 18:30:00 +0000 UTC
 ```
 
 After the deadline, the pod is force-deleted and `kubectl get pods` shows it gone.

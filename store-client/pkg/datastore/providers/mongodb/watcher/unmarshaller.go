@@ -19,7 +19,7 @@ import (
 	"reflect"
 	"strings"
 
-	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 // UnmarshalFullDocumentFromEvent unmarshals the fullDocument from event directly into result.
@@ -44,8 +44,8 @@ func CreateBsonTaggedStructType(typ reflect.Type) reflect.Type {
 
 	var fields []reflect.StructField
 
-	for i := 0; i < typ.NumField(); i++ {
-		field := typ.Field(i)
+	for field := range typ.Fields() {
+		field := field
 
 		// Skip unexported fields
 		if field.PkgPath != "" {
@@ -144,7 +144,7 @@ func marshalFullDocument(event Event) ([]byte, error) {
 	switch v := fullDocument.(type) {
 	case bson.M:
 		document = v
-	case map[string]interface{}:
+	case map[string]any:
 		document = bson.M(v)
 	default:
 		return nil, fmt.Errorf("unsupported fullDocument type %T: %+v", fullDocument, fullDocument)

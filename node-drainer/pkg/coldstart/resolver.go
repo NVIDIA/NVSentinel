@@ -93,7 +93,7 @@ func (r *quarantineSessionResolver) lookupLatestSessionEnd(
 		query.And(
 			query.Eq("healthevent.nodename", nodeName),
 			query.In("healtheventstatus.nodequarantined",
-				[]interface{}{string(model.UnQuarantined), string(model.Cancelled)}),
+				[]any{string(model.UnQuarantined), string(model.Cancelled)}),
 		),
 	)
 

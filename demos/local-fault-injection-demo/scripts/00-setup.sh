@@ -112,7 +112,7 @@ install_cert_manager() {
     helm upgrade --install cert-manager jetstack/cert-manager \
         --namespace cert-manager \
         --create-namespace \
-        --version v1.16.2 \
+        --version v1.21.1 \
         --set crds.enabled=true \
         --wait \
         --timeout 5m > /dev/null 2>&1

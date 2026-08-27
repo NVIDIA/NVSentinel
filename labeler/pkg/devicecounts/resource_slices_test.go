@@ -21,7 +21,6 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -90,7 +89,7 @@ sum(resourceSlices
 
 func testResourceSlice(name, nodeName string, devices ...resourcev1.Device) *resourcev1.ResourceSlice {
 	return &resourcev1.ResourceSlice{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Spec: resourcev1.ResourceSliceSpec{
 			Driver: "dra.networking.k8s.aws",
 			Pool: resourcev1.ResourcePool{

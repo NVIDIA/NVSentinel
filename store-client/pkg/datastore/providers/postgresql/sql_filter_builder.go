@@ -51,7 +51,7 @@ const (
 // Application-side filtering (PipelineFilter) remains as a fallback for edge cases.
 type SQLFilterBuilder struct {
 	conditions []string
-	args       []interface{}
+	args       []any
 	argIndex   int
 	complete   bool
 }
@@ -61,7 +61,7 @@ type SQLFilterBuilder struct {
 func NewSQLFilterBuilder(startArgIndex int) *SQLFilterBuilder {
 	return &SQLFilterBuilder{
 		conditions: make([]string, 0),
-		args:       make([]interface{}, 0),
+		args:       make([]any, 0),
 		argIndex:   startArgIndex,
 		complete:   true,
 	}
@@ -69,7 +69,7 @@ func NewSQLFilterBuilder(startArgIndex int) *SQLFilterBuilder {
 
 // BuildFromPipeline converts a MongoDB-style pipeline to SQL WHERE conditions.
 // It extracts $match stages and converts them to PostgreSQL JSONB conditions.
-func (b *SQLFilterBuilder) BuildFromPipeline(pipeline interface{}) error {
+func (b *SQLFilterBuilder) BuildFromPipeline(pipeline any) error {
 	if pipeline == nil {
 		return nil
 	}
@@ -92,12 +92,12 @@ func (b *SQLFilterBuilder) BuildFromPipeline(pipeline interface{}) error {
 }
 
 // convertToStageList converts various pipeline types to []interface{}.
-func (b *SQLFilterBuilder) convertToStageList(pipeline interface{}) []interface{} {
+func (b *SQLFilterBuilder) convertToStageList(pipeline any) []any {
 	switch p := pipeline.(type) {
-	case []interface{}:
+	case []any:
 		return p
 	case datastore.Pipeline:
-		stageList := make([]interface{}, len(p))
+		stageList := make([]any, len(p))
 		for i, doc := range p {
 			stageList[i] = doc
 		}
@@ -109,7 +109,7 @@ func (b *SQLFilterBuilder) convertToStageList(pipeline interface{}) []interface{
 }
 
 // parseStage parses a single pipeline stage.
-func (b *SQLFilterBuilder) parseStage(stage interface{}) error {
+func (b *SQLFilterBuilder) parseStage(stage any) error {
 	stageMap := b.convertToMap(stage)
 	if stageMap == nil {
 		return fmt.Errorf("stage is not a map or datastore.Document: %T", stage)
@@ -128,12 +128,12 @@ func (b *SQLFilterBuilder) parseStage(stage interface{}) error {
 }
 
 // convertToMap converts various types to map[string]interface{}.
-func (b *SQLFilterBuilder) convertToMap(value interface{}) map[string]interface{} {
+func (b *SQLFilterBuilder) convertToMap(value any) map[string]any {
 	switch v := value.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		return v
 	case datastore.Document:
-		result := make(map[string]interface{})
+		result := make(map[string]any)
 		for _, elem := range v {
 			result[elem.Key] = elem.Value
 		}
@@ -145,7 +145,7 @@ func (b *SQLFilterBuilder) convertToMap(value interface{}) map[string]interface{
 }
 
 // parseMatchConditions parses $match conditions into SQL.
-func (b *SQLFilterBuilder) parseMatchConditions(match interface{}) error {
+func (b *SQLFilterBuilder) parseMatchConditions(match any) error {
 	conditions := b.convertToMap(match)
 	if conditions == nil {
 		return fmt.Errorf("match conditions must be a map, got %T", match)
@@ -181,7 +181,7 @@ func (b *SQLFilterBuilder) parseMatchConditions(match interface{}) error {
 }
 
 // handleOrOperator handles $or conditions.
-func (b *SQLFilterBuilder) handleOrOperator(value interface{}) error {
+func (b *SQLFilterBuilder) handleOrOperator(value any) error {
 	orConditions := b.convertToSlice(value)
 	if orConditions == nil {
 		return fmt.Errorf("$or value must be an array, got %T", value)
@@ -205,12 +205,12 @@ func (b *SQLFilterBuilder) handleOrOperator(value interface{}) error {
 }
 
 // convertToSlice converts various array types to []interface{}.
-func (b *SQLFilterBuilder) convertToSlice(value interface{}) []interface{} {
+func (b *SQLFilterBuilder) convertToSlice(value any) []any {
 	switch v := value.(type) {
-	case []interface{}:
+	case []any:
 		return v
 	case datastore.Array:
-		result := make([]interface{}, len(v))
+		result := make([]any, len(v))
 		copy(result, v)
 
 		return result
@@ -220,7 +220,7 @@ func (b *SQLFilterBuilder) convertToSlice(value interface{}) []interface{} {
 }
 
 // processOrConditions processes each condition in an $or array.
-func (b *SQLFilterBuilder) processOrConditions(orConditions []interface{}) []string {
+func (b *SQLFilterBuilder) processOrConditions(orConditions []any) []string {
 	orParts := make([]string, 0)
 
 	for _, orCond := range orConditions {
@@ -243,7 +243,7 @@ func (b *SQLFilterBuilder) processOrConditions(orConditions []interface{}) []str
 }
 
 // processBranchConditions processes conditions within a single OR branch.
-func (b *SQLFilterBuilder) processBranchConditions(condMap map[string]interface{}) []string {
+func (b *SQLFilterBuilder) processBranchConditions(condMap map[string]any) []string {
 	branchConditions := make([]string, 0)
 
 	for field, val := range condMap {
@@ -272,7 +272,7 @@ func (b *SQLFilterBuilder) processBranchConditions(condMap map[string]interface{
 }
 
 // handleNestedOr handles nested $or within an OR branch.
-func (b *SQLFilterBuilder) handleNestedOr(val interface{}, branchConditions *[]string) error {
+func (b *SQLFilterBuilder) handleNestedOr(val any, branchConditions *[]string) error {
 	subBuilder := NewSQLFilterBuilder(b.argIndex)
 
 	if err := subBuilder.handleOrOperator(val); err != nil {
@@ -301,7 +301,7 @@ func (b *SQLFilterBuilder) combineBranchConditions(branchConditions []string) st
 
 // fieldToSQL converts a field condition to SQL.
 // Handles MongoDB-style dot notation: "fullDocument.healthevent.isFatal" -> new_values->'healthevent'->>'isFatal'
-func (b *SQLFilterBuilder) fieldToSQL(field string, value interface{}) (string, error) {
+func (b *SQLFilterBuilder) fieldToSQL(field string, value any) (string, error) {
 	jsonPath := b.fieldToJSONBPath(field)
 	if jsonPath == "" {
 		return "", fmt.Errorf("could not convert field to JSONB path: %s", field)
@@ -311,7 +311,7 @@ func (b *SQLFilterBuilder) fieldToSQL(field string, value interface{}) (string, 
 }
 
 // valueToSQL converts a value to SQL condition.
-func (b *SQLFilterBuilder) valueToSQL(jsonPath string, value interface{}) (string, error) {
+func (b *SQLFilterBuilder) valueToSQL(jsonPath string, value any) (string, error) {
 	switch v := value.(type) {
 	case bool:
 		return b.handleBoolValue(jsonPath, v)
@@ -321,7 +321,7 @@ func (b *SQLFilterBuilder) valueToSQL(jsonPath string, value interface{}) (strin
 		return b.handleFloat64Value(jsonPath, v)
 	case int:
 		return b.handleIntValue(jsonPath, v)
-	case map[string]interface{}:
+	case map[string]any:
 		return b.handleOperators(jsonPath, v)
 	case datastore.Document:
 		return b.handleOperators(jsonPath, b.convertToMap(v))
@@ -374,20 +374,20 @@ func (b *SQLFilterBuilder) handleStringValue(jsonPath string, v string) (string,
 // Returns empty string if no alternate path is needed.
 func (b *SQLFilterBuilder) getAlternateCasePath(jsonPath string) string {
 	// Only handle userpodsevictionstatus.status and userpodsevictionstatus.message
-	if strings.HasSuffix(jsonPath, "->>'status'") {
-		return strings.TrimSuffix(jsonPath, "->>'status'") + "->>'Status'"
+	if before, ok := strings.CutSuffix(jsonPath, "->>'status'"); ok {
+		return before + "->>'Status'"
 	}
 
-	if strings.HasSuffix(jsonPath, "->>'Status'") {
-		return strings.TrimSuffix(jsonPath, "->>'Status'") + "->>'status'"
+	if before, ok := strings.CutSuffix(jsonPath, "->>'Status'"); ok {
+		return before + "->>'status'"
 	}
 
-	if strings.HasSuffix(jsonPath, "->>'message'") {
-		return strings.TrimSuffix(jsonPath, "->>'message'") + "->>'Message'"
+	if before, ok := strings.CutSuffix(jsonPath, "->>'message'"); ok {
+		return before + "->>'Message'"
 	}
 
-	if strings.HasSuffix(jsonPath, "->>'Message'") {
-		return strings.TrimSuffix(jsonPath, "->>'Message'") + "->>'message'"
+	if before, ok := strings.CutSuffix(jsonPath, "->>'Message'"); ok {
+		return before + "->>'message'"
 	}
 
 	return ""
@@ -410,7 +410,7 @@ func (b *SQLFilterBuilder) handleIntValue(jsonPath string, v int) (string, error
 }
 
 // handleDefaultValue handles default field values.
-func (b *SQLFilterBuilder) handleDefaultValue(jsonPath string, v interface{}) (string, error) {
+func (b *SQLFilterBuilder) handleDefaultValue(jsonPath string, v any) (string, error) {
 	b.argIndex++
 	b.args = append(b.args, fmt.Sprintf("%v", v))
 
@@ -483,11 +483,12 @@ func (b *SQLFilterBuilder) fieldToJSONBPath(field string) string {
 		return column
 	}
 
-	path := column
+	var path strings.Builder
+	path.WriteString(column)
 
 	// Add the 'document' level if needed
 	if needsDocumentLevel {
-		path += "->'document'"
+		path.WriteString("->'document'")
 	}
 
 	for i := startIdx; i < len(parts); i++ {
@@ -495,13 +496,13 @@ func (b *SQLFilterBuilder) fieldToJSONBPath(field string) string {
 		fieldName := b.convertFieldName(parts[i])
 
 		if i == len(parts)-1 {
-			path += fmt.Sprintf("->>'%s'", fieldName)
+			fmt.Fprintf(&path, "->>'%s'", fieldName)
 		} else {
-			path += fmt.Sprintf("->'%s'", fieldName)
+			fmt.Fprintf(&path, "->'%s'", fieldName)
 		}
 	}
 
-	return path
+	return path.String()
 }
 
 // convertFieldName converts MongoDB bson field names to PostgreSQL JSON field names.
@@ -516,7 +517,7 @@ func (b *SQLFilterBuilder) convertFieldName(name string) string {
 }
 
 // handleOperators handles MongoDB operators like $ne, $in, $exists.
-func (b *SQLFilterBuilder) handleOperators(jsonPath string, ops map[string]interface{}) (string, error) {
+func (b *SQLFilterBuilder) handleOperators(jsonPath string, ops map[string]any) (string, error) {
 	var conditions []string
 
 	for op, val := range ops {
@@ -538,7 +539,7 @@ func (b *SQLFilterBuilder) handleOperators(jsonPath string, ops map[string]inter
 }
 
 // handleSingleOperator handles a single MongoDB operator.
-func (b *SQLFilterBuilder) handleSingleOperator(jsonPath, op string, val interface{}) (string, error) {
+func (b *SQLFilterBuilder) handleSingleOperator(jsonPath, op string, val any) (string, error) {
 	switch op {
 	case opNe:
 		return b.handleNeOperator(jsonPath, val)
@@ -556,7 +557,7 @@ func (b *SQLFilterBuilder) handleSingleOperator(jsonPath, op string, val interfa
 }
 
 // handleExistsOperator handles $exists operator.
-func (b *SQLFilterBuilder) handleExistsOperator(jsonPath string, val interface{}) (string, error) {
+func (b *SQLFilterBuilder) handleExistsOperator(jsonPath string, val any) (string, error) {
 	exists, ok := val.(bool)
 	if !ok {
 		return "", fmt.Errorf("$exists value must be boolean")
@@ -570,7 +571,7 @@ func (b *SQLFilterBuilder) handleExistsOperator(jsonPath string, val interface{}
 }
 
 // handleEqOperator handles $eq operator.
-func (b *SQLFilterBuilder) handleEqOperator(jsonPath string, val interface{}) (string, error) {
+func (b *SQLFilterBuilder) handleEqOperator(jsonPath string, val any) (string, error) {
 	cond, err := b.valueToSQL("", val)
 	if err != nil {
 		return "", err
@@ -580,7 +581,7 @@ func (b *SQLFilterBuilder) handleEqOperator(jsonPath string, val interface{}) (s
 }
 
 // handleNeOperator handles $ne (not equal) operator.
-func (b *SQLFilterBuilder) handleNeOperator(jsonPath string, val interface{}) (string, error) {
+func (b *SQLFilterBuilder) handleNeOperator(jsonPath string, val any) (string, error) {
 	switch v := val.(type) {
 	case bool:
 		return b.handleNeBool(jsonPath, v)
@@ -614,7 +615,7 @@ func (b *SQLFilterBuilder) handleNeString(jsonPath string, v string) (string, er
 }
 
 // handleNeDefault handles $ne with default value type.
-func (b *SQLFilterBuilder) handleNeDefault(jsonPath string, v interface{}) (string, error) {
+func (b *SQLFilterBuilder) handleNeDefault(jsonPath string, v any) (string, error) {
 	b.argIndex++
 	b.args = append(b.args, fmt.Sprintf("%v", v))
 
@@ -622,7 +623,7 @@ func (b *SQLFilterBuilder) handleNeDefault(jsonPath string, v interface{}) (stri
 }
 
 // handleInOperator handles $in operator.
-func (b *SQLFilterBuilder) handleInOperator(jsonPath string, val interface{}) (string, error) {
+func (b *SQLFilterBuilder) handleInOperator(jsonPath string, val any) (string, error) {
 	arr := b.convertToSlice(val)
 	if arr == nil {
 		return "", fmt.Errorf("$in value must be an array, got %T", val)
@@ -685,7 +686,7 @@ func (b *SQLFilterBuilder) GetWhereClauseWithAnd() string {
 }
 
 // GetArgs returns the SQL arguments for the WHERE clause.
-func (b *SQLFilterBuilder) GetArgs() []interface{} {
+func (b *SQLFilterBuilder) GetArgs() []any {
 	return b.args
 }
 

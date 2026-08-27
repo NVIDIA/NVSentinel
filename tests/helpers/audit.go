@@ -23,7 +23,6 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 )
@@ -112,7 +111,7 @@ func runAuditCheck(ctx context.Context, t *testing.T, c klient.Client, node, com
 	zero, ttl := int32(0), int32(60)
 
 	job := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{GenerateName: "audit-check-", Namespace: NVSentinelNamespace},
+		GenerateName: "audit-check-", Namespace: NVSentinelNamespace,
 		Spec: batchv1.JobSpec{
 			BackoffLimit:            &zero,
 			TTLSecondsAfterFinished: &ttl,
@@ -142,8 +141,8 @@ func runAuditCheck(ctx context.Context, t *testing.T, c klient.Client, node, com
 						},
 					}},
 					Volumes: []v1.Volume{{
-						Name:         "v",
-						VolumeSource: v1.VolumeSource{HostPath: &v1.HostPathVolumeSource{Path: auditLogDir}},
+						Name:     "v",
+						HostPath: &v1.HostPathVolumeSource{Path: auditLogDir},
 					}},
 				},
 			},

@@ -31,12 +31,10 @@ import (
 
 func node(labels, annotations map[string]string) *v1.Node {
 	return &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            "node-1",
-			ResourceVersion: "1",
-			Labels:          labels,
-			Annotations:     annotations,
-		},
+		Name:            "node-1",
+		ResourceVersion: "1",
+		Labels:          labels,
+		Annotations:     annotations,
 	}
 }
 
@@ -212,12 +210,10 @@ func TestNodeMergePatch_ReturnsExpectedPatch(t *testing.T) {
 	resourceVersionModified.Spec.Unschedulable = true
 
 	projected := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            "node-1",
-			ResourceVersion: "1",
-			Labels:          map[string]string{"gpu": "true"},
-			Annotations:     map[string]string{"kept": "yes"},
-		},
+		Name:            "node-1",
+		ResourceVersion: "1",
+		Labels:          map[string]string{"gpu": "true"},
+		Annotations:     map[string]string{"kept": "yes"},
 	}
 	projectedModified := projected.DeepCopy()
 	projectedModified.Labels["driver.installed"] = "true"

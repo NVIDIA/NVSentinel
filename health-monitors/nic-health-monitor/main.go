@@ -374,7 +374,7 @@ func buildChecks(
 ) []checks.TransactionalCheck {
 	var result []checks.TransactionalCheck
 
-	for _, c := range strings.Split(*checksList, ",") {
+	for c := range strings.SplitSeq(*checksList, ",") {
 		c = strings.TrimSpace(c)
 		if c == "" {
 			continue
@@ -511,8 +511,8 @@ func dialWithRetry(ctx context.Context, target string, opts ...grpc.DialOption) 
 func tryDial(
 	ctx context.Context, target string, timeout time.Duration, opts ...grpc.DialOption,
 ) (*grpc.ClientConn, error) {
-	if strings.HasPrefix(target, "unix://") {
-		socketPath := strings.TrimPrefix(target, "unix://")
+	if after, ok := strings.CutPrefix(target, "unix://"); ok {
+		socketPath := after
 		if _, err := os.Stat(socketPath); err != nil {
 			return nil, fmt.Errorf("socket file not found: %w", err)
 		}

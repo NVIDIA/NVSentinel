@@ -22,7 +22,7 @@ A single bad GPU can silently corrupt a training run or leave a node sitting idl
 - Kubernetes 1.34+ 
 - Helm 3.0+
 - [NVIDIA GPU Operator](https://github.com/NVIDIA/gpu-operator)
-- [cert-manager](https://cert-manager.io/) v1.19+
+- [cert-manager](https://cert-manager.io/) v1.21+
 - Persistent storage support for a database
 
 The commands below get you ready for NVSentinel: the first makes sure the GPU Operator exposes DCGM as its own service, since NVSentinel queries it directly instead of going through dcgm-exporter; the second installs cert-manager, which issues the TLS certificates NVSentinel's webhooks and internal services need.
@@ -42,7 +42,7 @@ helm upgrade --install gpu-operator nvidia/gpu-operator \
 helm repo add jetstack https://charts.jetstack.io --force-update
 helm upgrade --install cert-manager jetstack/cert-manager \
   --namespace cert-manager --create-namespace \
-  --version v1.19.1 --set installCRDs=true \
+  --version v1.21.1 --set installCRDs=true \
   --wait
 ```
 

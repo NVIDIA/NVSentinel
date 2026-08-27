@@ -168,7 +168,7 @@ func TestEthState_IBOnlyDeviceLifecycleIgnored(t *testing.T) {
 	removed := node.ib["mlx5_0"]
 	delete(node.ib, "mlx5_0")
 
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		events, err = check.Run()
 		require.NoError(t, err)
 		assert.Empty(t, events,
@@ -208,7 +208,7 @@ func TestEthState_LatchedDeviceReenumeratedWithoutEthPorts_EmitsDeviceRecovery(t
 	// Confirmed disappearance: two debounced misses, FATAL on the third.
 	delete(node.ib, "mlx5_0")
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		events, err = check.Run()
 		require.NoError(t, err)
 		assert.Empty(t, events, "miss %d must be debounced", i+1)

@@ -66,6 +66,19 @@ dcgmFieldsMonitoring:
   # Dry-run for GpuThermalMarginWatch. When true, this check's
   # events are emitted with processingStrategy=STORE_ONLY
   gpuTempLimitStoreOnly: true
+  # Enable GpuPowerBrakeWatch: fails a GPU whose clocks-event-reasons mask has the
+  # HW power brake bit (0x80) set, i.e. the power delivery path is forcing clocks
+  # down. DCGM's POWER health watch does not report this; its dominant code
+  # DCGM_FR_CLOCK_THROTTLE_POWER tracks power-capped throttling and maps to NONE.
+  # Off by default so existing deployments see no change in behaviour.
+  gpuPowerBrakeMonitoringEnabled: false
+  # Dry-run for GpuPowerBrakeWatch. When true, this check's
+  # events are emitted with processingStrategy=STORE_ONLY
+  gpuPowerBrakeStoreOnly: true
+  # Consecutive polls with the brake bit set before the GPU is failed. A brake
+  # asserted for one poll can be a load transient; a sustained assertion is the
+  # actionable case. 1 fails on first observation.
+  gpuPowerBrakeMinConsecutivePolls: 3
 
 # DCGM health check incident suppression
 dcgmHealthCheck:

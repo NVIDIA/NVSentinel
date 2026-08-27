@@ -47,11 +47,9 @@ func (allEval *AllRuleSetEvaluator) Evaluate(
 
 func NewAllRuleSetEvaluator(evaluators []RuleEvaluator, ruleset config.RuleSet) *AllRuleSetEvaluator {
 	return &AllRuleSetEvaluator{
-		baseRuleSetEvaluator: baseRuleSetEvaluator{
-			Name:     ruleset.Name,
-			Version:  ruleset.Version,
-			Priority: ruleset.Priority,
-		},
+		Name:       ruleset.Name,
+		Version:    ruleset.Version,
+		Priority:   ruleset.Priority,
 		evaluators: evaluators,
 	}
 }

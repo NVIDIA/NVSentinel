@@ -23,6 +23,9 @@ update_settings(
     suppress_unused_image_warnings=['localhost:5001/ghcr.io_nvidia_nvsentinel_log-collector:latest']
 )
 
+versions = read_yaml('../.versions.yaml')
+cert_manager_version = versions['cluster']['cert_manager']
+
 num_gpu_nodes = int(os.getenv('NUM_GPU_NODES', '50'))
 num_kata_test_nodes = int(os.getenv('NUM_KATA_TEST_NODES', '5'))
 use_postgresql = os.getenv('USE_POSTGRESQL', '0') == '1'
@@ -50,6 +53,7 @@ helm_resource(
     flags=[
         '--create-namespace',
         '--set=installCRDs=true',
+        '--version=' + cert_manager_version,  # pin: an unpinned chart floats to new releases mid-flight
     ],
 )
 

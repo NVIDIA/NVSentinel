@@ -116,7 +116,7 @@ func (m *MockHealthEventStore) FindHealthEventsByNode(ctx context.Context, nodeN
 	return args.Get(0).([]datastore.HealthEventWithStatus), args.Error(1)
 }
 
-func (m *MockHealthEventStore) FindHealthEventsByFilter(ctx context.Context, filter map[string]interface{}) ([]datastore.HealthEventWithStatus, error) {
+func (m *MockHealthEventStore) FindHealthEventsByFilter(ctx context.Context, filter map[string]any) ([]datastore.HealthEventWithStatus, error) {
 	args := m.Called(ctx, filter)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
@@ -147,7 +147,7 @@ func (m *MockHealthEventStore) UpdatePodEvictionStatus(ctx context.Context, even
 	return args.Error(0)
 }
 
-func (m *MockHealthEventStore) UpdateRemediationStatus(ctx context.Context, eventID string, status interface{}) error {
+func (m *MockHealthEventStore) UpdateRemediationStatus(ctx context.Context, eventID string, status any) error {
 	args := m.Called(ctx, eventID, status)
 	return args.Error(0)
 }
@@ -383,7 +383,7 @@ func TestHealthEventStoreBehavior(t *testing.T) {
 	t.Run("FindHealthEventsByFilter applies filters correctly", func(t *testing.T) {
 		store := &MockHealthEventStore{}
 		ctx := context.Background()
-		filter := map[string]interface{}{
+		filter := map[string]any{
 			"checkName": "GpuXidError",
 			"isFatal":   true,
 		}

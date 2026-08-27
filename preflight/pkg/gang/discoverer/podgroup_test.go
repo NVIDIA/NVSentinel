@@ -21,7 +21,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -54,9 +53,7 @@ func TestPodGroupDiscoverer_CanHandle(t *testing.T) {
 			name:   "matches annotation",
 			config: testConfig(),
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{"test.io/pod-group": "my-pg"},
-				},
+				Annotations: map[string]string{"test.io/pod-group": "my-pg"},
 			},
 			want: true,
 		},
@@ -64,9 +61,7 @@ func TestPodGroupDiscoverer_CanHandle(t *testing.T) {
 			name:   "matches label fallback",
 			config: testConfig(),
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"test.io/job-name": "my-job"},
-				},
+				Labels: map[string]string{"test.io/job-name": "my-job"},
 			},
 			want: true,
 		},
@@ -74,9 +69,7 @@ func TestPodGroupDiscoverer_CanHandle(t *testing.T) {
 			name:   "no matching annotation or label",
 			config: testConfig(),
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"some-label": "value"},
-				},
+				Labels: map[string]string{"some-label": "value"},
 			},
 			want: false,
 		},
@@ -107,10 +100,8 @@ func TestPodGroupDiscoverer_ExtractGangID(t *testing.T) {
 			name:   "gang ID format",
 			config: testConfig(),
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace:   "default",
-					Annotations: map[string]string{"test.io/pod-group": "pg-123"},
-				},
+				Namespace:   "default",
+				Annotations: map[string]string{"test.io/pod-group": "pg-123"},
 			},
 			want: "test-scheduler-default-pg-123",
 		},
@@ -118,7 +109,7 @@ func TestPodGroupDiscoverer_ExtractGangID(t *testing.T) {
 			name:   "no matching annotation returns empty",
 			config: testConfig(),
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{Namespace: "test"},
+				Namespace: "test",
 			},
 			want: "",
 		},
@@ -156,11 +147,9 @@ func makePodGroupCRD(namespace, name string, minMember int64) *unstructured.Unst
 
 func makePodInGroup(name, namespace, podGroupName, ip string, phase corev1.PodPhase) *corev1.Pod {
 	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Namespace:   namespace,
-			Annotations: map[string]string{"test.io/pod-group": podGroupName},
-		},
+		Name:        name,
+		Namespace:   namespace,
+		Annotations: map[string]string{"test.io/pod-group": podGroupName},
 		Spec: corev1.PodSpec{
 			NodeName:   "node-1",
 			Containers: []corev1.Container{{Name: "c", Image: "img"}},
@@ -283,7 +272,7 @@ func TestPodGroupDiscoverer_DiscoverPeers(t *testing.T) {
 		d, err := NewPodGroupDiscoverer(c, cfg)
 		require.NoError(t, err)
 
-		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default"}}
+		pod := &corev1.Pod{Namespace: "default"}
 		info, err := d.DiscoverPeers(context.Background(), pod)
 		require.NoError(t, err)
 		assert.Nil(t, info)

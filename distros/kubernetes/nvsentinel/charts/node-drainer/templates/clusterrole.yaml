@@ -53,10 +53,8 @@ rules:
   resources:
   - events
   verbs:
-  - list
   - create
-  - update
-  - watch
+  - patch
 - apiGroups:
   - ""
   resources:

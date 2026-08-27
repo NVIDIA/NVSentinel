@@ -117,7 +117,7 @@ func NewNodeInformer(clientset kubernetes.Interface,
 	return ni, nil
 }
 
-func stripNodeStatus(obj interface{}) (interface{}, error) {
+func stripNodeStatus(obj any) (any, error) {
 	node, ok := obj.(*v1.Node)
 	if !ok {
 		return nil, fmt.Errorf("expected node object, got %T", obj)
@@ -165,7 +165,7 @@ func (ni *NodeInformer) WaitForSync(ctx context.Context) bool {
 }
 
 // quarantineAnnotationIndexFunc is the indexer function for quarantined nodes
-func quarantineAnnotationIndexFunc(obj interface{}) ([]string, error) {
+func quarantineAnnotationIndexFunc(obj any) ([]string, error) {
 	node, ok := obj.(*v1.Node)
 	if !ok {
 		return nil, fmt.Errorf("expected node object, got %T", obj)
@@ -227,7 +227,7 @@ func (ni *NodeInformer) ListNodes() ([]*v1.Node, error) {
 // This is important during informer restart/resync when we get ADD events
 // for all existing nodes. If a node was manually uncordoned/untainted while
 // FQ was down, we need to detect and handle it.
-func (ni *NodeInformer) handleAddNode(obj interface{}) {
+func (ni *NodeInformer) handleAddNode(obj any) {
 	node, ok := obj.(*v1.Node)
 	if !ok {
 		slog.Error("Add event received unexpected type",
@@ -324,7 +324,7 @@ func (ni *NodeInformer) hasMissingTaints(node *v1.Node, expectedTaints []config.
 }
 
 // handleUpdateNodeWrapper is a wrapper for handleUpdateNode that converts interface{} to *v1.Node.
-func (ni *NodeInformer) handleUpdateNodeWrapper(oldObj, newObj interface{}) {
+func (ni *NodeInformer) handleUpdateNodeWrapper(oldObj, newObj any) {
 	oldNode, okOld := oldObj.(*v1.Node)
 	newNode, okNew := newObj.(*v1.Node)
 
@@ -447,7 +447,7 @@ func (ni *NodeInformer) SetOnManualUntaintCallback(callback func(nodeName string
 }
 
 // handleDeleteNode handles node deletion events.
-func (ni *NodeInformer) handleDeleteNode(obj interface{}) {
+func (ni *NodeInformer) handleDeleteNode(obj any) {
 	node, ok := obj.(*v1.Node)
 	if !ok {
 		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
