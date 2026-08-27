@@ -11,9 +11,9 @@ NOT duplicated here.
 
 import logging
 import signal
-import sys
 import time
 from threading import Event
+from typing import Optional
 
 from prometheus_client import start_http_server
 
@@ -48,6 +48,13 @@ class SystemServicesMonitor:
 
         # Track state for cross-check correlation
         self._fabric_manager_down = False
+        # Last-observed cumulative FM restart count (systemd NRestarts), used
+        # to increment fabric_manager_restarts_total by the per-cycle delta.
+        # None until the first successful observation: the counter must only
+        # count restarts that happen while this monitor is watching, not the
+        # NRestarts total accumulated before it was deployed (which would
+        # false-fire the FabricManagerFlapping alert right after rollout).
+        self._last_fm_restarts: Optional[int] = None
 
     def run(self):
         """Start metrics server and enter the check loop."""
@@ -86,55 +93,128 @@ class SystemServicesMonitor:
     def run_check_cycle(self):
         """Execute all enabled checks and update metrics."""
         node = self.config.node_name
+        # Snapshot the grace state once per cycle: the checks report absolute
+        # health and this single snapshot gates both their DOWN logging and
+        # the final gauge, so a grace period expiring mid-cycle can't leave a
+        # down service published as healthy.
+        in_grace = self._in_grace_period()
         overall_healthy = True
 
-        # --- Check 1 & 2: Services ---
+        # --- Check 1: Fabric Manager service ---
         if self.config.enable_fabric_check:
+            with health_check_duration_seconds.labels("fabric_manager").time():
+                try:
+                    overall_healthy &= self._check_fabric_manager(node, in_grace)
+                except Exception:
+                    # Could not inspect Fabric Manager at all: past boot grace
+                    # the node must not keep reporting healthy on no evidence.
+                    logger.exception("Fabric Manager check failed")
+                    health_check_errors_total.labels("fabric_manager").inc()
+                    overall_healthy = False
+
+        # --- Check 2: generic GPU services (besides Fabric Manager) ---
+        if self.config.enable_gpu_services_check:
             with health_check_duration_seconds.labels("services").time():
                 try:
-                    fm_status = self._service_checker.check_fabric_manager()
-                    self._fabric_manager_down = not fm_status.active
-
-                    fabric_manager_up.labels(node).set(1 if fm_status.active else 0)
-                    if fm_status.active:
-                        fabric_manager_last_healthy_seconds.labels(node).set(time.time())
-
-                    if fm_status.flapping:
-                        logger.warning("Fabric Manager is flapping on %s", node)
-
-                    if fm_status.journal_errors:
-                        logger.warning("Fabric Manager journal errors on %s: %s",
-                                       node, [e.value for e in fm_status.journal_errors])
-
-                    if not fm_status.active and not self._in_grace_period():
-                        logger.error("Fabric Manager DOWN on %s (sub_state=%s)",
-                                     node, fm_status.sub_state)
-                        overall_healthy = False
-
-                    # All GPU services
-                    svc_results = self._service_checker.check_all_gpu_services(
-                        self.config.gpu_services
-                    )
-                    for svc_name, status in svc_results.items():
-                        nvidia_service_up.labels(node, svc_name).set(1 if status.active else 0)
-                        if not status.active and not self._in_grace_period():
-                            logger.error("Service %s DOWN on %s", svc_name, node)
-                            overall_healthy = False
-
+                    overall_healthy &= self._check_gpu_services(node, in_grace)
                 except Exception:
-                    logger.exception("Service check failed")
+                    logger.exception("GPU service check failed")
                     health_check_errors_total.labels("services").inc()
+                    overall_healthy = False
 
         # GPU context/memory validation is intentionally not polled from this
         # daemon (it would contend for GPU memory with running workloads). It
         # runs as a preflight init-container instead — see the demo README.
 
         # --- Overall health ---
-        if self._in_grace_period():
+        if in_grace:
             gpu_node_health_up.labels(node).set(1)
             logger.debug("In boot grace period, reporting healthy")
         else:
             gpu_node_health_up.labels(node).set(1 if overall_healthy else 0)
+
+    def _check_fabric_manager(self, node: str, in_grace: bool) -> bool:
+        """Check Fabric Manager; return its contribution to overall health."""
+        fm_status = self._service_checker.check_fabric_manager()
+
+        if fm_status.load_state == "not-found":
+            # Unit not present on this host (e.g. a platform without
+            # nvidia-fabricmanager installed). Not a failure.
+            logger.debug("nvidia-fabricmanager not present on %s (LoadState=not-found); skipping",
+                         node)
+            self._fabric_manager_down = False
+            return True
+
+        if fm_status.error is not None:
+            # The probe itself failed (nsenter/systemctl error or timeout):
+            # FM state is UNKNOWN, which is not the same as FM down. Leave the
+            # fabric_manager_up gauge untouched (no false FabricManagerDown
+            # alert) but count the node unhealthy past boot grace — it cannot
+            # be called healthy on no evidence.
+            logger.warning("Fabric Manager probe failed on %s, state unknown: %s",
+                           node, fm_status.error)
+            health_check_errors_total.labels("fabric_manager").inc()
+            return False
+
+        self._fabric_manager_down = not fm_status.active
+
+        fabric_manager_up.labels(node).set(1 if fm_status.active else 0)
+        if fm_status.active:
+            fabric_manager_last_healthy_seconds.labels(node).set(time.time())
+
+        # Increment the restart counter by the delta in systemd NRestarts
+        # since the last observation. Backs the FabricManagerFlapping alert.
+        # An unobserved NRestarts (None) leaves the baseline untouched.
+        if fm_status.n_restarts is not None:
+            if self._last_fm_restarts is not None:
+                restart_delta = fm_status.n_restarts - self._last_fm_restarts
+                if restart_delta > 0:
+                    fabric_manager_restarts_total.labels(node).inc(restart_delta)
+            self._last_fm_restarts = fm_status.n_restarts
+
+        if fm_status.flapping:
+            logger.warning("Fabric Manager is flapping on %s", node)
+
+        if fm_status.journal_probe_failed:
+            # Journal state is UNKNOWN — do not treat as "no errors found".
+            logger.warning("Fabric Manager journal probe failed on %s; journal state unknown",
+                           node)
+            health_check_errors_total.labels("journal").inc()
+        elif fm_status.journal_errors:
+            logger.warning("Fabric Manager journal errors on %s: %s",
+                           node, [e.value for e in fm_status.journal_errors])
+
+        if not fm_status.active:
+            if not in_grace:
+                logger.error("Fabric Manager DOWN on %s (sub_state=%s)",
+                             node, fm_status.sub_state)
+            return False
+
+        return True
+
+    def _check_gpu_services(self, node: str, in_grace: bool) -> bool:
+        """Check the configured GPU services; return their health contribution."""
+        healthy = True
+        svc_results = self._service_checker.check_all_gpu_services(
+            self.config.gpu_services
+        )
+        for svc_name, status in svc_results.items():
+            if status.load_state == "not-found":
+                logger.debug("Service %s not present on %s (LoadState=not-found); skipping",
+                             svc_name, node)
+                continue
+            if status.error is not None:
+                logger.warning("Service %s probe failed on %s, state unknown: %s",
+                               svc_name, node, status.error)
+                health_check_errors_total.labels("services").inc()
+                healthy = False
+                continue
+            nvidia_service_up.labels(node, svc_name).set(1 if status.active else 0)
+            if not status.active:
+                if not in_grace:
+                    logger.error("Service %s DOWN on %s", svc_name, node)
+                healthy = False
+        return healthy
 
 
 # Backwards-compat alias

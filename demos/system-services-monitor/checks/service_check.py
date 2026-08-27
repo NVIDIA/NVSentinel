@@ -2,6 +2,8 @@
 
 Uses nsenter to inspect host systemd services from within a container.
 Includes flap detection (rapid restart cycling) and journal error parsing.
+NRestarts is queried in a separate systemctl call for compatibility with
+older systemd versions that do not support it in a combined --property list.
 """
 
 import logging
@@ -40,6 +42,11 @@ _ERROR_PATTERNS = {
         "timeout",
         "deadline exceeded",
     ],
+    ErrorCategory.GENERAL_ERROR: [
+        "error",
+        "fatal",
+        "failed",
+    ],
 }
 
 
@@ -48,9 +55,13 @@ class ServiceStatus:
     """Result of a single systemd service check."""
     name: str
     active: bool               # True if ActiveState == "active"
+    load_state: str = ""       # e.g. "loaded", "not-found" (unit absent on this host)
     sub_state: str = ""        # e.g. "running", "dead", "failed"
     main_pid: int = 0
-    n_restarts: int = 0
+    # None means NRestarts could not be observed (unsupported systemd or a
+    # failed probe) — deliberately distinct from a real 0 so consumers don't
+    # mistake "unobserved" for "never restarted" when computing deltas.
+    n_restarts: Optional[int] = None
     start_timestamp: str = ""
     error: Optional[str] = None  # non-None if the check itself failed
 
@@ -59,6 +70,9 @@ class ServiceStatus:
 class FabricManagerStatus(ServiceStatus):
     """Extended status for Fabric Manager with journal analysis."""
     journal_errors: List[ErrorCategory] = field(default_factory=list)
+    # True when the journal probe itself failed (journalctl error or timeout):
+    # journal state is UNKNOWN, which is not the same as "no errors found".
+    journal_probe_failed: bool = False
     flapping: bool = False
 
 
@@ -86,14 +100,16 @@ class ServiceChecker:
     def check_service(self, service_name: str) -> ServiceStatus:
         """Check a single systemd service via nsenter.
 
-        Parses systemctl show output for ActiveState, SubState, MainPID,
-        and ExecMainStartTimestamp. NRestarts is queried separately since
-        older systemd versions don't support it.
+        Parses systemctl show output for LoadState, ActiveState, SubState,
+        MainPID, and ExecMainStartTimestamp. NRestarts is queried separately
+        since older systemd versions don't support it in a combined list.
+        LoadState is preserved so callers can tell a unit that is absent on
+        this host (LoadState=not-found) from one that is loaded but stopped.
         """
         try:
             result = self._run_host_cmd([
                 "systemctl", "show", service_name,
-                "--property=ActiveState,SubState,MainPID,ExecMainStartTimestamp",
+                "--property=LoadState,ActiveState,SubState,MainPID,ExecMainStartTimestamp",
             ])
 
             if result.returncode != 0 and not result.stdout.strip():
@@ -120,6 +136,7 @@ class ServiceChecker:
             return ServiceStatus(
                 name=service_name,
                 active=(active_state == "active"),
+                load_state=props.get("LoadState", ""),
                 sub_state=props.get("SubState", ""),
                 main_pid=int(props.get("MainPID", "0")),
                 n_restarts=n_restarts,
@@ -139,8 +156,14 @@ class ServiceChecker:
                 error=str(e),
             )
 
-    def _get_restart_count(self, service_name: str) -> int:
-        """Get NRestarts from systemd, returning 0 if unsupported."""
+    def _get_restart_count(self, service_name: str) -> Optional[int]:
+        """Get NRestarts from systemd.
+
+        Returns the counter value, or None when it could not be observed
+        (NRestarts unsupported on older systemd, or the probe failed). None is
+        deliberately distinct from 0: a real 0 participates in flap tracking's
+        reset detection, while an unobserved value must not.
+        """
         try:
             result = self._run_host_cmd([
                 "systemctl", "show", service_name, "--property=NRestarts",
@@ -148,24 +171,51 @@ class ServiceChecker:
             if result.returncode == 0 and result.stdout.strip():
                 _, _, val = result.stdout.strip().partition("=")
                 return int(val)
-        except Exception:
-            pass
-        return 0
+        except Exception as e:
+            # Intentional silent fallback: NRestarts is unsupported on older
+            # systemd. Keep the reason visible for troubleshooting.
+            logger.debug("NRestarts query failed for %s (likely unsupported): %s", service_name, e)
+        return None
 
-    def _update_flap_tracking(self, service_name: str, current_restarts: int) -> None:
-        """Track restart events for flap detection."""
-        if service_name not in self._restart_history:
+    def _update_flap_tracking(self, service_name: str, current_restarts: Optional[int]) -> None:
+        """Track restart events for flap detection.
+
+        systemd's NRestarts is not monotonic: it resets to 0 on
+        `systemctl reset-failed`, on unit re-creation, and after a reboot. A
+        decrease is therefore re-baselined (not ignored) so counting resumes
+        from the new value instead of going quiet until the counter climbs
+        past the old high-water mark. An unobserved probe (None) leaves the
+        baseline untouched entirely.
+        """
+        if current_restarts is None:
+            # Probe failed / NRestarts unsupported: no observation, no
+            # baseline movement. Still prune below so stale entries age out.
+            if service_name not in self._restart_history:
+                return
+        elif service_name not in self._restart_history:
             self._restart_history[service_name] = deque()
             self._last_restart_count[service_name] = current_restarts
             return
-
-        last_count = self._last_restart_count[service_name]
-        if current_restarts > last_count:
-            # New restarts detected — record timestamp for each
-            now = time.monotonic()
-            for _ in range(current_restarts - last_count):
-                self._restart_history[service_name].append(now)
-            self._last_restart_count[service_name] = current_restarts
+        else:
+            last_count = self._last_restart_count[service_name]
+            if current_restarts > last_count:
+                # New restarts detected — record timestamp for each
+                now = time.monotonic()
+                for _ in range(current_restarts - last_count):
+                    self._restart_history[service_name].append(now)
+                self._last_restart_count[service_name] = current_restarts
+            elif current_restarts < last_count:
+                # Counter reset (reset-failed, unit re-creation, reboot):
+                # re-baseline. The restart that caused a reboot-reset is
+                # itself observable as a restart event; record one sample so
+                # flap detection doesn't go quiet right after the reboot a
+                # flapping service would cause.
+                logger.info(
+                    "NRestarts for %s reset (%d -> %d); re-baselining flap tracking",
+                    service_name, last_count, current_restarts,
+                )
+                self._restart_history[service_name].append(time.monotonic())
+                self._last_restart_count[service_name] = current_restarts
 
         # Prune entries outside the flap window
         cutoff = time.monotonic() - self._flap_window
@@ -188,17 +238,24 @@ class ServiceChecker:
         return FabricManagerStatus(
             name=base.name,
             active=base.active,
+            load_state=base.load_state,
             sub_state=base.sub_state,
             main_pid=base.main_pid,
             n_restarts=base.n_restarts,
             start_timestamp=base.start_timestamp,
             error=base.error,
-            journal_errors=journal_errors,
+            journal_errors=journal_errors if journal_errors is not None else [],
+            journal_probe_failed=journal_errors is None,
             flapping=flapping,
         )
 
-    def _parse_journal_errors(self, service_name: str) -> List[ErrorCategory]:
-        """Scan recent journal entries for known error patterns."""
+    def _parse_journal_errors(self, service_name: str) -> Optional[List[ErrorCategory]]:
+        """Scan recent journal entries for known error patterns.
+
+        Returns the categories found ([] when the journal is clean), or None
+        when the probe itself failed (non-zero journalctl exit, timeout, or
+        exception) — a failed probe must stay distinguishable from a clean one.
+        """
         try:
             result = self._run_host_cmd([
                 "journalctl", "-u", service_name,
@@ -206,7 +263,12 @@ class ServiceChecker:
                 "--no-pager", "-q",
             ], timeout=15)
 
-            if result.returncode != 0 or not result.stdout.strip():
+            if result.returncode != 0:
+                logger.warning("Journal probe failed for %s (rc=%d): %s",
+                               service_name, result.returncode, result.stderr.strip())
+                return None
+
+            if not result.stdout.strip():
                 return []
 
             found: List[ErrorCategory] = []
@@ -218,8 +280,8 @@ class ServiceChecker:
             return found
 
         except (subprocess.TimeoutExpired, Exception) as e:
-            logger.warning("Journal parsing failed for %s: %s", service_name, e)
-            return []
+            logger.warning("Journal probe failed for %s: %s", service_name, e)
+            return None
 
     def check_all_gpu_services(self, service_names: List[str]) -> Dict[str, ServiceStatus]:
         """Check all configured GPU services."""

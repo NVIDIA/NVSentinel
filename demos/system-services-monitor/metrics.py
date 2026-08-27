@@ -20,9 +20,12 @@ fabric_manager_up = Gauge(
     "Fabric Manager service status (1=running, 0=down)",
     ["node"],
 )
+# Cumulative restarts observed while this monitor is running. Backs the
+# FabricManagerFlapping alert (increase(fabric_manager_restarts_total[10m])
+# >= 3). Incremented by the delta in systemd NRestarts between poll cycles.
 fabric_manager_restarts_total = Counter(
     "fabric_manager_restarts_total",
-    "Total Fabric Manager restart count observed",
+    "Total Fabric Manager service restarts observed via systemd NRestarts",
     ["node"],
 )
 fabric_manager_last_healthy_seconds = Gauge(

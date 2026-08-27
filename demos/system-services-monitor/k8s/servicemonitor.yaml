@@ -70,20 +70,6 @@ spec:
               Fabric Manager is restarting repeatedly on {{ $labels.node }}.
               Check journalctl -u nvidia-fabricmanager for root cause.
 
-        # Critical: Per-GPU fabric state unhealthy
-        - alert: FabricStateUnhealthy
-          expr: fabric_state_healthy == 0
-          for: 5m
-          labels:
-            severity: critical
-            component: system-services-monitor
-          annotations:
-            summary: "Fabric state unhealthy on {{ $labels.node }} GPU {{ $labels.gpu_index }}"
-            description: >-
-              Fabric Manager orchestration is in a bad state for GPU
-              {{ $labels.gpu_index }} on {{ $labels.node }}.
-              Check nvidia-smi -q for fabric.state and fabric.status.
-
         # Warning: GPU systemd service down (non-fatal per PR classification).
         - alert: GPUServiceDown
           expr: nvidia_service_up == 0

@@ -22,9 +22,11 @@ from checks.service_check import (
 class TestServiceChecker:
     """Tests for ServiceChecker."""
 
-    def _mock_systemctl_output(self, active="active", sub="running", pid=1234, restarts=0):
+    def _mock_systemctl_output(self, active="active", sub="running", pid=1234,
+                               restarts=0, load="loaded"):
         """Build a mock systemctl show output string."""
         return (
+            f"LoadState={load}\n"
             f"ActiveState={active}\n"
             f"SubState={sub}\n"
             f"MainPID={pid}\n"
@@ -43,6 +45,7 @@ class TestServiceChecker:
         status = checker.check_service("nvidia-fabricmanager")
 
         assert status.active is True
+        assert status.load_state == "loaded"
         assert status.sub_state == "running"
         assert status.main_pid == 1234
         assert status.error is None
@@ -59,6 +62,23 @@ class TestServiceChecker:
 
         assert status.active is False
         assert status.sub_state == "failed"
+
+    @patch("checks.service_check.ServiceChecker._run_host_cmd")
+    def test_check_service_not_found_preserves_load_state(self, mock_run):
+        """A unit absent on the host must stay distinguishable from a loaded
+        but stopped unit (a missing unit is not a *_NOT_RUNNING failure)."""
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout=self._mock_systemctl_output(
+                active="inactive", sub="dead", pid=0, load="not-found"),
+            stderr="",
+        )
+        checker = ServiceChecker()
+        status = checker.check_service("nvidia-fabricmanager")
+
+        assert status.active is False
+        assert status.load_state == "not-found"
+        assert status.error is None
 
     @patch("checks.service_check.ServiceChecker._run_host_cmd")
     def test_check_service_timeout(self, mock_run):
@@ -82,6 +102,23 @@ class TestServiceChecker:
 
         assert status.active is False
         assert "Unit not found" in status.error
+
+    @patch("checks.service_check.ServiceChecker._run_host_cmd")
+    def test_restart_count_unobserved_is_none(self, mock_run):
+        """A failed NRestarts probe must be None, not a fake 0."""
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="boom",
+        )
+        checker = ServiceChecker()
+        assert checker._get_restart_count("svc") is None
+
+    @patch("checks.service_check.ServiceChecker._run_host_cmd")
+    def test_restart_count_parsed(self, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="NRestarts=4\n", stderr="",
+        )
+        checker = ServiceChecker()
+        assert checker._get_restart_count("svc") == 4
 
     def test_flap_detection_no_flap(self):
         checker = ServiceChecker(flap_window=600, flap_threshold=3)
@@ -115,6 +152,33 @@ class TestServiceChecker:
         checker._update_flap_tracking("test", 3)  # same count, triggers prune
         assert not checker.is_flapping("test")
 
+    def test_flap_tracking_ignores_unobserved(self):
+        """None (probe failed) must not move the baseline or add samples."""
+        checker = ServiceChecker(flap_window=600, flap_threshold=3)
+        checker._restart_history["test"] = deque()
+        checker._last_restart_count["test"] = 5
+
+        checker._update_flap_tracking("test", None)
+        assert checker._last_restart_count["test"] == 5
+        assert len(checker._restart_history["test"]) == 0
+
+    def test_flap_tracking_rebaselines_on_counter_reset(self):
+        """NRestarts is not monotonic (reset-failed / reboot); a decrease
+        re-baselines instead of going quiet until the old high-water mark."""
+        checker = ServiceChecker(flap_window=600, flap_threshold=3)
+        checker._restart_history["test"] = deque()
+        checker._last_restart_count["test"] = 5
+
+        checker._update_flap_tracking("test", 1)
+        assert checker._last_restart_count["test"] == 1
+        # The reset itself is recorded as one restart observation.
+        assert len(checker._restart_history["test"]) == 1
+
+        # Counting resumes from the new baseline immediately.
+        checker._update_flap_tracking("test", 3)
+        assert len(checker._restart_history["test"]) == 3
+        assert checker.is_flapping("test")
+
     @patch("checks.service_check.ServiceChecker._run_host_cmd")
     def test_check_fabric_manager_with_journal_errors(self, mock_run):
         def side_effect(cmd, timeout=10):
@@ -139,6 +203,67 @@ class TestServiceChecker:
         assert isinstance(status, FabricManagerStatus)
         assert status.active is False
         assert ErrorCategory.NVSWITCH_ERROR in status.journal_errors
+        assert status.journal_probe_failed is False
+
+    @patch("checks.service_check.ServiceChecker._run_host_cmd")
+    def test_journal_probe_failure_is_not_a_clean_journal(self, mock_run):
+        """A failed journal probe must be reported as UNKNOWN, not as
+        'no errors found'."""
+        def side_effect(cmd, timeout=10):
+            if "systemctl" in cmd:
+                return subprocess.CompletedProcess(
+                    args=[], returncode=0,
+                    stdout=self._mock_systemctl_output(),
+                    stderr="",
+                )
+            elif "journalctl" in cmd:
+                return subprocess.CompletedProcess(
+                    args=[], returncode=1, stdout="",
+                    stderr="Failed to open journal",
+                )
+            return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+        checker = ServiceChecker()
+        status = checker.check_fabric_manager()
+
+        assert status.journal_probe_failed is True
+        assert status.journal_errors == []
+
+    @patch("checks.service_check.ServiceChecker._run_host_cmd")
+    def test_journal_probe_timeout_is_not_a_clean_journal(self, mock_run):
+        def side_effect(cmd, timeout=10):
+            if "systemctl" in cmd:
+                return subprocess.CompletedProcess(
+                    args=[], returncode=0,
+                    stdout=self._mock_systemctl_output(),
+                    stderr="",
+                )
+            raise subprocess.TimeoutExpired(cmd="journalctl", timeout=15)
+
+        mock_run.side_effect = side_effect
+        checker = ServiceChecker()
+        status = checker.check_fabric_manager()
+
+        assert status.journal_probe_failed is True
+
+    @patch("checks.service_check.ServiceChecker._run_host_cmd")
+    def test_journal_clean_is_empty_not_failed(self, mock_run):
+        def side_effect(cmd, timeout=10):
+            if "systemctl" in cmd:
+                return subprocess.CompletedProcess(
+                    args=[], returncode=0,
+                    stdout=self._mock_systemctl_output(),
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+        checker = ServiceChecker()
+        status = checker.check_fabric_manager()
+
+        assert status.journal_probe_failed is False
+        assert status.journal_errors == []
 
     @patch("checks.service_check.ServiceChecker._run_host_cmd")
     def test_check_all_gpu_services(self, mock_run):
@@ -149,11 +274,10 @@ class TestServiceChecker:
         )
         checker = ServiceChecker()
         results = checker.check_all_gpu_services([
-            "nvidia-fabricmanager",
             "nvidia-persistenced",
-            "nv-hostengine",
+            "nvidia-imex",
         ])
 
-        assert len(results) == 3
+        assert len(results) == 2
         for name, status in results.items():
             assert status.active is True

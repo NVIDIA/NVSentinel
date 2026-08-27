@@ -1,3 +1,6 @@
+# The monitor reads host state via nsenter (hostPID + privileged) and talks
+# to no Kubernetes API — node identity comes from the NODE_NAME downward-API
+# env var — so the ServiceAccount carries no RBAC grants.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -7,35 +10,3 @@ metadata:
     app.kubernetes.io/name: system-services-monitor
     app.kubernetes.io/instance: nvsentinel
     app.kubernetes.io/component: metrics
-
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: system-services-monitor
-  labels:
-    app.kubernetes.io/name: system-services-monitor
-    app.kubernetes.io/instance: nvsentinel
-    app.kubernetes.io/component: metrics
-rules:
-  - apiGroups: [""]
-    resources: ["nodes"]
-    verbs: ["get", "list"]
-
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: system-services-monitor
-  labels:
-    app.kubernetes.io/name: system-services-monitor
-    app.kubernetes.io/instance: nvsentinel
-    app.kubernetes.io/component: metrics
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: system-services-monitor
-subjects:
-  - kind: ServiceAccount
-    name: system-services-monitor
-    namespace: nvsentinel
