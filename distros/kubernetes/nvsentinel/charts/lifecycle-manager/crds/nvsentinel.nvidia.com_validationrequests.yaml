@@ -211,6 +211,7 @@ spec:
                             - TestFailed
                             - TestTimeout
                             - NodeReadinessViolation
+                            - NodeDeleted
                             - BatchMinimumNotMet
                             type: string
                           objectName:
@@ -235,6 +236,12 @@ spec:
                     name:
                       description: Name identifies this test group.
                       type: string
+                    nodes:
+                      default: []
+                      description: Nodes lists the node names included in this group.
+                      items:
+                        type: string
+                      type: array
                     phase:
                       description: Phase is the current lifecycle state of this test
                         group.
@@ -249,9 +256,17 @@ spec:
                         Provider is the key of the provider in the ValidationConfiguration used to create this group's
                         provider resources. This allows fetching each AttemptStatus.ObjectName by GVK.
                       type: string
+                    tests:
+                      default: []
+                      description: Tests lists the test names included in this group.
+                      items:
+                        type: string
+                      type: array
                   required:
                   - name
+                  - nodes
                   - provider
+                  - tests
                   type: object
                 type: array
             type: object

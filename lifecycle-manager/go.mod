@@ -4,7 +4,8 @@ go 1.27.0
 
 require (
 	github.com/go-logr/logr v1.4.4
-	github.com/nvidia/nvsentinel/commons v0.0.0-00010101000000-000000000000
+	github.com/google/cel-go v0.31.0
+	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/nvidia/nvsentinel/data-models v0.0.0
 	github.com/onsi/ginkgo/v2 v2.32.1
 	github.com/onsi/gomega v1.42.1
@@ -14,11 +15,14 @@ require (
 	k8s.io/apimachinery v0.37.0
 	k8s.io/client-go v0.37.0
 	sigs.k8s.io/controller-runtime v0.24.1
+	sigs.k8s.io/yaml v1.6.0
 )
 
 replace github.com/nvidia/nvsentinel/commons => ../commons
 
 replace github.com/nvidia/nvsentinel/data-models => ../data-models
+
+replace github.com/nvidia/nvsentinel/store-client => ../store-client
 
 require (
 	cel.dev/expr v0.25.3 // indirect
@@ -52,7 +56,6 @@ require (
 	github.com/go-openapi/swag/typeutils v0.29.1 // indirect
 	github.com/go-openapi/swag/yamlutils v0.29.1 // indirect
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
-	github.com/google/cel-go v0.31.0 // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/pprof v0.0.0-20260402051712-545e8a4df936 // indirect
@@ -114,5 +117,4 @@ require (
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
-	sigs.k8s.io/yaml v1.6.0 // indirect
 )

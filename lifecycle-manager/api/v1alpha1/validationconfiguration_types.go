@@ -142,6 +142,16 @@ type TaintConfig struct {
 	Remove bool `json:"remove,omitempty"`
 }
 
+// EnvVarConfig defines a single environment variable for a k8s-job-provider test's container.
+type EnvVarConfig struct {
+	// Name is the environment variable name.
+	// +required
+	Name string `json:"name"`
+	// Value is the environment variable value.
+	// +optional
+	Value string `json:"value,omitempty"`
+}
+
 // ProviderConfig defines a test provider configuration.
 type ProviderConfig struct {
 	// APIGroup is the Kubernetes API group of the resources this provider creates.
@@ -174,9 +184,9 @@ type ProviderConfig struct {
 	// +optional
 	Retries int `json:"retries,omitempty"`
 
-	// Timeout is the maximum duration allowed for a single test group attempt.
+	// TimeoutSeconds is the maximum number of seconds allowed for a single test group attempt.
 	// +optional
-	Timeout metav1.Duration `json:"timeout,omitempty"`
+	TimeoutSeconds int64 `json:"timeoutSeconds,omitempty"`
 
 	// SuccessfulCondition describes the condition on the provider resource that indicates a
 	// test run succeeded.
@@ -216,13 +226,17 @@ type TestConfig struct {
 	// +required
 	Provider string `json:"provider"`
 
-	// Image is the container image used by k8s-job-provider tests.
+	// Image is the container image referenced in test provider resource templates.
 	// +optional
 	Image string `json:"image,omitempty"`
 
-	// Command overrides the container entrypoint for k8s-job-provider tests.
+	// Command overrides the container entrypoint referenced in test provider resource templates.
 	// +optional
 	Command []string `json:"command,omitempty"`
+
+	// Env sets environment variables on test provider resource templates.
+	// +optional
+	Env []EnvVarConfig `json:"env,omitempty"`
 
 	// SupportsBatchingNodes indicates whether multiple nodes can be tested together in a
 	// single provider resource.

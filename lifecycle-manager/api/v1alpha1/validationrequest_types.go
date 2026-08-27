@@ -31,13 +31,14 @@ const (
 )
 
 // FailureReason identifies why a test attempt failed.
-// +kubebuilder:validation:Enum=TestFailed;TestTimeout;NodeReadinessViolation;BatchMinimumNotMet
+// +kubebuilder:validation:Enum=TestFailed;TestTimeout;NodeReadinessViolation;NodeDeleted;BatchMinimumNotMet
 type FailureReason string
 
 const (
 	FailureReasonTestFailed             FailureReason = "TestFailed"
 	FailureReasonTestTimeout            FailureReason = "TestTimeout"
 	FailureReasonNodeReadinessViolation FailureReason = "NodeReadinessViolation"
+	FailureReasonNodeDeleted            FailureReason = "NodeDeleted"
 	FailureReasonBatchMinimumNotMet     FailureReason = "BatchMinimumNotMet"
 )
 
@@ -98,6 +99,16 @@ type TestGroupStatus struct {
 	// provider resources. This allows fetching each AttemptStatus.ObjectName by GVK.
 	// +required
 	Provider string `json:"provider"`
+
+	// Tests lists the test names included in this group.
+	// +required
+	// +kubebuilder:default:={}
+	Tests []string `json:"tests,omitempty"`
+
+	// Nodes lists the node names included in this group.
+	// +required
+	// +kubebuilder:default:={}
+	Nodes []string `json:"nodes,omitempty"`
 
 	// Phase is the current lifecycle state of this test group.
 	// +optional
