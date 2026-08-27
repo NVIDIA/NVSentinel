@@ -1,3 +1,17 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -20,9 +34,17 @@ spec:
         app.kubernetes.io/component: metrics
     spec:
       serviceAccountName: system-services-monitor
-      hostPID: true  # Required for nsenter to check host systemd services
+      # hostPID + privileged (below) are required by the probe mechanism:
+      # nsenter -t 1 -m needs the host PID namespace and privilege to enter
+      # PID 1's mount namespace. This matches the in-tree
+      # system-services-monitor Helm subchart. The namespace must allow the
+      # `privileged` Pod Security level; see "Security model" in the README.
+      hostPID: true
       nodeSelector:
-        # Matches any node with NVIDIA GPUs (set by GPU Feature Discovery)
+        # Matches any node with NVIDIA GPUs (set by GPU Feature Discovery).
+        # Because this pod is privileged, consider narrowing the rollout to
+        # an explicitly trusted node pool, e.g. by adding:
+        #   node-pool.example.com/trusted-gpu-monitoring: "true"
         feature.node.kubernetes.io/pci-10de.present: "true"
       tolerations:
         - key: nvidia.com/gpu
@@ -62,15 +84,9 @@ spec:
               memory: 128Mi
           securityContext:
             privileged: true  # Required for nsenter into host mount namespace
-          volumeMounts:
-            - name: host-dbus
-              mountPath: /var/run/dbus
-              readOnly: true
-      volumes:
-        - name: host-dbus
-          hostPath:
-            path: /var/run/dbus
-            type: Directory
+      # No hostPath volumes: nsenter -t 1 -m runs every probe inside the
+      # host's own mount namespace, so the host's /run/dbus etc. are already
+      # visible to the probes without mounting anything into the container.
 
 ---
 apiVersion: v1

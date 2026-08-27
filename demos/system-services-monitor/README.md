@@ -27,8 +27,15 @@ NVIDIA Fabric Manager can fail and stay broken for weeks undetected. NVSentinel'
 ## Quick Start
 
 ```bash
-# Build (tag must match k8s/daemonset.yaml)
-docker build -t system-services-monitor:0.1.0 .
+# Build and publish to a registry your nodes can pull from — a locally
+# built image only exists on the build machine, so DaemonSet pods on other
+# nodes would ImagePullBackOff. Update the image in k8s/daemonset.yaml to
+# the pushed reference.
+REGISTRY=<your-registry>   # e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com
+docker build -t ${REGISTRY}/system-services-monitor:0.1.0 .
+docker push ${REGISTRY}/system-services-monitor:0.1.0
+# (Single-node/kind clusters can skip the push and load the image directly,
+# e.g. `kind load docker-image system-services-monitor:0.1.0`.)
 
 # Deploy (assumes nvsentinel namespace exists)
 kubectl apply -f k8s/rbac.yaml
@@ -88,6 +95,24 @@ All settings via ConfigMap environment variables. See `k8s/configmap.yaml`.
 | `ENABLE_FABRIC_CHECK` | `true` | Gates the Fabric Manager check only |
 | `ENABLE_GPU_SERVICES_CHECK` | `true` | Gates the generic service checks independently |
 | `GPU_SERVICES` | `nvidia-persistenced` | Comma-separated; Fabric Manager has its own check and is not in this list |
+
+## Security model
+
+The probe mechanism is `nsenter -t 1 -m` into the host PID 1 mount
+namespace, which requires `hostPID: true` and a privileged container —
+the same posture as the in-tree `system-services-monitor` Helm subchart.
+Deploy accordingly:
+
+- The target namespace must allow the `privileged` [Pod Security
+  Standard](https://kubernetes.io/docs/concepts/security/pod-security-standards/)
+  level.
+- The DaemonSet targets GPU nodes via GPU Feature Discovery labels; since
+  the pod is privileged, consider narrowing it further to an explicitly
+  trusted node pool (see the commented `nodeSelector` example in
+  `k8s/daemonset.yaml`).
+- The ServiceAccount carries **no RBAC grants** — the monitor never talks
+  to the Kubernetes API — and no hostPath volumes are mounted; all host
+  access flows through the audited nsenter probes.
 
 ## Relationship to NVSentinel
 

@@ -1,12 +1,26 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Tests for service_check module."""
 
+import os
 import subprocess
+import sys
 import time
 from collections import deque
-from unittest.mock import patch, MagicMock
-
-import sys
-import os
+from typing import List
+from unittest.mock import MagicMock, patch
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -22,8 +36,9 @@ from checks.service_check import (
 class TestServiceChecker:
     """Tests for ServiceChecker."""
 
-    def _mock_systemctl_output(self, active="active", sub="running", pid=1234,
-                               restarts=0, load="loaded"):
+    def _mock_systemctl_output(self, active: str = "active", sub: str = "running",
+                               pid: int = 1234, restarts: int = 0,
+                               load: str = "loaded") -> str:
         """Build a mock systemctl show output string.
 
         Note: tests that mock _run_host_cmd with this full block feed it to
@@ -42,7 +57,7 @@ class TestServiceChecker:
         )
 
     @patch("checks.service_check.ServiceChecker._run_host_cmd")
-    def test_check_service_active(self, mock_run):
+    def test_check_service_active(self, mock_run: MagicMock) -> None:
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0,
             stdout=self._mock_systemctl_output(active="active", sub="running"),
@@ -58,7 +73,7 @@ class TestServiceChecker:
         assert status.error is None
 
     @patch("checks.service_check.ServiceChecker._run_host_cmd")
-    def test_check_service_failed(self, mock_run):
+    def test_check_service_failed(self, mock_run: MagicMock) -> None:
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0,
             stdout=self._mock_systemctl_output(active="failed", sub="failed"),
@@ -71,7 +86,7 @@ class TestServiceChecker:
         assert status.sub_state == "failed"
 
     @patch("checks.service_check.ServiceChecker._run_host_cmd")
-    def test_check_service_not_found_preserves_load_state(self, mock_run):
+    def test_check_service_not_found_preserves_load_state(self, mock_run: MagicMock) -> None:
         """A unit absent on the host must stay distinguishable from a loaded
         but stopped unit (a missing unit is not a *_NOT_RUNNING failure)."""
         mock_run.return_value = subprocess.CompletedProcess(
@@ -88,7 +103,7 @@ class TestServiceChecker:
         assert status.error is None
 
     @patch("checks.service_check.ServiceChecker._run_host_cmd")
-    def test_check_service_timeout(self, mock_run):
+    def test_check_service_timeout(self, mock_run: MagicMock) -> None:
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="", timeout=10)
 
         checker = ServiceChecker()
@@ -98,7 +113,7 @@ class TestServiceChecker:
         assert status.error == "systemctl show timed out"
 
     @patch("checks.service_check.ServiceChecker._run_host_cmd")
-    def test_check_service_command_failure(self, mock_run):
+    def test_check_service_command_failure(self, mock_run: MagicMock) -> None:
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=4,
             stdout="",
@@ -111,7 +126,7 @@ class TestServiceChecker:
         assert "Unit not found" in status.error
 
     @patch("checks.service_check.ServiceChecker._run_host_cmd")
-    def test_restart_count_unobserved_is_none(self, mock_run):
+    def test_restart_count_unobserved_is_none(self, mock_run: MagicMock) -> None:
         """A failed NRestarts probe must be None, not a fake 0."""
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=1, stdout="", stderr="boom",
@@ -120,14 +135,14 @@ class TestServiceChecker:
         assert checker._get_restart_count("svc") is None
 
     @patch("checks.service_check.ServiceChecker._run_host_cmd")
-    def test_restart_count_parsed(self, mock_run):
+    def test_restart_count_parsed(self, mock_run: MagicMock) -> None:
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="NRestarts=4\n", stderr="",
         )
         checker = ServiceChecker()
         assert checker._get_restart_count("svc") == 4
 
-    def test_flap_detection_no_flap(self):
+    def test_flap_detection_no_flap(self) -> None:
         checker = ServiceChecker(flap_window=600, flap_threshold=3)
         # Simulate 2 restarts (below threshold)
         checker._restart_history["test"] = deque()
@@ -136,7 +151,7 @@ class TestServiceChecker:
         checker._update_flap_tracking("test", 2)
         assert not checker.is_flapping("test")
 
-    def test_flap_detection_triggers(self):
+    def test_flap_detection_triggers(self) -> None:
         checker = ServiceChecker(flap_window=600, flap_threshold=3)
         checker._restart_history["test"] = deque()
         checker._last_restart_count["test"] = 0
@@ -145,7 +160,7 @@ class TestServiceChecker:
         checker._update_flap_tracking("test", 3)
         assert checker.is_flapping("test")
 
-    def test_flap_detection_window_expiry(self):
+    def test_flap_detection_window_expiry(self) -> None:
         checker = ServiceChecker(flap_window=1, flap_threshold=3)
         checker._restart_history["test"] = deque()
         checker._last_restart_count["test"] = 0
@@ -159,7 +174,7 @@ class TestServiceChecker:
         checker._update_flap_tracking("test", 3)  # same count, triggers prune
         assert not checker.is_flapping("test")
 
-    def test_flap_tracking_ignores_unobserved(self):
+    def test_flap_tracking_ignores_unobserved(self) -> None:
         """None (probe failed) must not move the baseline or add samples."""
         checker = ServiceChecker(flap_window=600, flap_threshold=3)
         checker._restart_history["test"] = deque()
@@ -169,7 +184,7 @@ class TestServiceChecker:
         assert checker._last_restart_count["test"] == 5
         assert len(checker._restart_history["test"]) == 0
 
-    def test_flap_tracking_rebaselines_on_counter_reset(self):
+    def test_flap_tracking_rebaselines_on_counter_reset(self) -> None:
         """NRestarts is not monotonic (reset-failed / reboot); a decrease
         re-baselines instead of going quiet until the old high-water mark."""
         checker = ServiceChecker(flap_window=600, flap_threshold=3)
@@ -187,8 +202,8 @@ class TestServiceChecker:
         assert checker.is_flapping("test")
 
     @patch("checks.service_check.ServiceChecker._run_host_cmd")
-    def test_check_fabric_manager_with_journal_errors(self, mock_run):
-        def side_effect(cmd, timeout=10):
+    def test_check_fabric_manager_with_journal_errors(self, mock_run: MagicMock) -> None:
+        def side_effect(cmd: List[str], timeout: int = 10) -> subprocess.CompletedProcess:
             if "systemctl" in cmd:
                 return subprocess.CompletedProcess(
                     args=[], returncode=0,
@@ -213,10 +228,10 @@ class TestServiceChecker:
         assert status.journal_probe_failed is False
 
     @patch("checks.service_check.ServiceChecker._run_host_cmd")
-    def test_journal_probe_failure_is_not_a_clean_journal(self, mock_run):
+    def test_journal_probe_failure_is_not_a_clean_journal(self, mock_run: MagicMock) -> None:
         """A failed journal probe must be reported as UNKNOWN, not as
         'no errors found'."""
-        def side_effect(cmd, timeout=10):
+        def side_effect(cmd: List[str], timeout: int = 10) -> subprocess.CompletedProcess:
             if "systemctl" in cmd:
                 return subprocess.CompletedProcess(
                     args=[], returncode=0,
@@ -238,8 +253,8 @@ class TestServiceChecker:
         assert status.journal_errors == []
 
     @patch("checks.service_check.ServiceChecker._run_host_cmd")
-    def test_journal_probe_timeout_is_not_a_clean_journal(self, mock_run):
-        def side_effect(cmd, timeout=10):
+    def test_journal_probe_timeout_is_not_a_clean_journal(self, mock_run: MagicMock) -> None:
+        def side_effect(cmd: List[str], timeout: int = 10) -> subprocess.CompletedProcess:
             if "systemctl" in cmd:
                 return subprocess.CompletedProcess(
                     args=[], returncode=0,
@@ -255,9 +270,9 @@ class TestServiceChecker:
         assert status.journal_probe_failed is True
 
     @patch("checks.service_check.ServiceChecker._run_host_cmd")
-    def test_journal_probe_skipped_when_unit_absent(self, mock_run):
+    def test_journal_probe_skipped_when_unit_absent(self, mock_run: MagicMock) -> None:
         """No journalctl fork for a unit that is absent on the host."""
-        def side_effect(cmd, timeout=10):
+        def side_effect(cmd: List[str], timeout: int = 10) -> subprocess.CompletedProcess:
             assert "journalctl" not in cmd, "journal probe must be skipped"
             return subprocess.CompletedProcess(
                 args=[], returncode=0,
@@ -275,8 +290,8 @@ class TestServiceChecker:
         assert status.journal_errors == []
 
     @patch("checks.service_check.ServiceChecker._run_host_cmd")
-    def test_journal_clean_is_empty_not_failed(self, mock_run):
-        def side_effect(cmd, timeout=10):
+    def test_journal_clean_is_empty_not_failed(self, mock_run: MagicMock) -> None:
+        def side_effect(cmd: List[str], timeout: int = 10) -> subprocess.CompletedProcess:
             if "systemctl" in cmd:
                 return subprocess.CompletedProcess(
                     args=[], returncode=0,
@@ -293,7 +308,7 @@ class TestServiceChecker:
         assert status.journal_errors == []
 
     @patch("checks.service_check.ServiceChecker._run_host_cmd")
-    def test_check_all_gpu_services(self, mock_run):
+    def test_check_all_gpu_services(self, mock_run: MagicMock) -> None:
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0,
             stdout=self._mock_systemctl_output(active="active", sub="running"),

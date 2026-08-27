@@ -1,3 +1,17 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # ServiceMonitor for Prometheus Operator auto-discovery
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
@@ -8,7 +22,12 @@ metadata:
     app.kubernetes.io/name: system-services-monitor
     app.kubernetes.io/instance: nvsentinel
     app.kubernetes.io/component: metrics
-    release: prometheus  # Required for Prometheus Operator discovery
+    # Must match the Prometheus Operator's release-label selector. The value
+    # below matches a kube-prometheus-stack install whose Helm release is
+    # named kube-prometheus-stack (the chart's default selectors only
+    # discover resources labeled with the release name); adjust to your
+    # installation's release name.
+    release: kube-prometheus-stack
 spec:
   selector:
     matchLabels:
@@ -35,7 +54,8 @@ metadata:
   labels:
     app.kubernetes.io/name: system-services-monitor
     app.kubernetes.io/instance: nvsentinel
-    release: prometheus
+    # Same release-label constraint as the ServiceMonitor above.
+    release: kube-prometheus-stack
 spec:
   groups:
     - name: gpu-node-health
