@@ -1,30 +1,39 @@
 # ADR-050: System Services Monitor — Scope and Event Taxonomy
 
 - **Status:** Proposed
-- **Date:** 2026-03-20 (revised 2026-08-12)
+- **Date:** 2026-03-20 (revised 2026-08-27)
 - **Author:** dmvevents
 - **Reviewers:** XRFXLP, lalitadithya
 
 ## Context
 
-NVSentinel has no service-level monitoring of the host daemons that keep a GPU
-node's fabric healthy. The existing monitors observe different layers:
+NVSentinel has no monitoring of the *systemd unit layer* on GPU nodes. The
+existing monitors observe adjacent layers:
 
 - `gpu-health-monitor` polls DCGM via `pydcgm` for per-GPU device telemetry
-  (PCIe, NVLink, thermal). It does not observe host process state.
-- `syslog-health-monitor` parses kernel logs for XID/SXID and fallen-off-bus
-  events. It does not observe systemd unit state.
+  (PCIe, NVLink, thermal). With DCGM 4.5.2 its health watches also surface the
+  per-GPU **fabric probe state** (`DCGM_FR_FABRIC_PROBE_STATE`: registration
+  NotStarted / InProgress / Failed). It does not observe host process state:
+  the fabric field is a **latched registration outcome**, not daemon liveness —
+  issue #883's Node 1 showed `fabric.state` still reporting the pre-death value
+  while `nvidia-fabricmanager` had been dead for 2.5 weeks, and the DCGM status
+  enum has no value meaning "FM is not running".
+- `syslog-health-monitor` tails journald/kernel logs for XID/SXID,
+  fallen-off-bus, NIC errors, and GPU-reset events. It owns the journal-parsing
+  machinery (filtering, dedup) but does not observe systemd unit state.
 
-Neither monitor can tell whether `nvidia-fabricmanager` is running, has hung, or
-is crash-looping, whether `nvidia-persistenced` is up, or whether NVSwitch fabric
-registration is stuck "In Progress" indefinitely. On NVSwitch platforms a dead or
-stuck Fabric Manager silently breaks multi-GPU workloads while every device-level
-and log-level check still reports healthy — the failure is in the *service layer*,
-which nothing currently watches.
+Neither monitor can tell whether `nvidia-fabricmanager` is *running*, is
+crash-looping under `Restart=`, or whether `nvidia-persistenced` is up. On
+NVSwitch platforms a Fabric Manager that dies **after** registration completed
+silently degrades multi-GPU workloads (no NVLink error-recovery coordination,
+no servicing of new registrations) while the latched DCGM fabric state and
+every log-level check still report healthy — the failure is in the *service
+layer*, which nothing currently watches.
 
-`system-services-monitor` fills that gap: a node-local monitor for non-DCGM,
-non-syslog service health. This ADR defines its scope, the boundary against
-`gpu-health-monitor`, and the health-event taxonomy it emits.
+`system-services-monitor` fills exactly that gap: a node-local monitor for
+systemd-unit health of GPU-critical services. This ADR defines its scope, the
+boundaries against `gpu-health-monitor` and `syslog-health-monitor`, and the
+health-event taxonomy it emits.
 
 ## Problem Statement
 
@@ -32,14 +41,15 @@ Service-level health signals fall into two buckets relative to what NVSentinel
 already collects:
 
 1. **Already covered** — per-GPU device health (PCIe, NVLink, clock throttling)
-   is owned by `gpu-health-monitor` through DCGM health watches; kernel XID/SXID
-   events are owned by `syslog-health-monitor`.
+   and, since DCGM 4.5.2, per-GPU fabric **registration/probe state** are owned
+   by `gpu-health-monitor` through DCGM health watches; journald/kernel log
+   signals (XID/SXID, NIC errors, GPU resets) are owned by
+   `syslog-health-monitor`.
 
-2. **Not covered by any monitor** — Fabric Manager process state, FM
-   responsiveness, NVSwitch fabric registration state, and GPU-support service
-   lifecycle (e.g. `nvidia-persistenced`). These require active host probing
-   (systemd queries, `nvidia-smi` fabric-state) that does not fit a passive DCGM
-   polling loop or a syslog tail.
+2. **Not covered by any monitor** — systemd unit state: Fabric Manager process
+   liveness and crash-loop (flap) behavior, and GPU-support service lifecycle
+   (e.g. `nvidia-persistenced`). These require active systemd probing that does
+   not fit a passive DCGM polling loop or a journal tail.
 
 The design goal is to add the second bucket **without** re-collecting the first.
 Re-scraping DCGM-visible signals would create a second collection path for the
@@ -108,14 +118,33 @@ also excluded, because `gpu-health-monitor` already reports it as
 
 ### Service-health signals go to `system-services-monitor`
 
-`system-services-monitor` is scoped to what DCGM genuinely cannot see:
+`system-services-monitor` is scoped to what neither DCGM nor the journal can
+see — the systemd unit layer:
 
-- Whether `nvidia-fabricmanager` is running, hung, or crash-looping
-- Whether NVSwitch fabric registration is stuck or errored per GPU
+- Whether `nvidia-fabricmanager` is running or crash-looping (`NRestarts` flap
+  detection)
 - Whether GPU-support services (e.g. `nvidia-persistenced`) are up
 
-These require active systemd and `nvidia-smi` probing that does not belong in a
-passive DCGM polling loop.
+These require active systemd probing that does not belong in a passive DCGM
+polling loop or a journal tail.
+
+### Signals delegated to the existing monitors
+
+Two signals that earlier drafts placed here are delegated to the monitors that
+already own the relevant machinery, keeping exactly one collection path per
+signal:
+
+- **Per-GPU fabric registration/probe state** (NotStarted / stuck InProgress /
+  Failed) is DCGM-visible as of 4.5.2: `gpu-health-monitor` enables all health
+  watches and maps `DCGM_FR_FABRIC_PROBE_STATE` in `dcgmerrorsmapping.csv`, and
+  its Dockerfile already pins DCGM 4.5.2. Re-probing the same NVML field via
+  `nvidia-smi` here would duplicate that watch.
+- **Fabric Manager journal-error patterns** (NVSwitch errors, initialization
+  failures, timeouts) belong in `syslog-health-monitor`, which already owns
+  journald tailing, filtering, and dedup — its scope has grown the same way for
+  NIC errors and GPU-reset detection. Adding those FM patterns there is a small
+  follow-up to that module; a second journal reader in this monitor would
+  duplicate its machinery.
 
 ## Signal Ownership
 
@@ -125,11 +154,11 @@ passive DCGM polling loop.
 | NVLink degradation | `DCGM_HEALTH_WATCH_NVLINK` via `pydcgm` | `gpu-health-monitor` |
 | GPU clock / thermal throttling | `DCGM_HEALTH_WATCH_THERMAL` via `pydcgm` | `gpu-health-monitor` |
 | DCGM host-engine connectivity | `pydcgm` connect | `gpu-health-monitor` |
-| XID / SXID errors | kernel log parsing | `syslog-health-monitor` |
+| NVSwitch fabric registration / probe state | `DCGM_FR_FABRIC_PROBE_STATE` health watch (DCGM ≥ 4.5.2) | `gpu-health-monitor` |
+| XID / SXID errors | journald/kernel log parsing | `syslog-health-monitor` |
+| Fabric Manager journal-error patterns | journald pattern scan (follow-up patterns) | `syslog-health-monitor` |
 | Fabric Manager up/down | `nsenter` → `systemctl show` (`ActiveState`/`SubState`) | `system-services-monitor` |
 | Fabric Manager flapping | `systemctl show NRestarts` + restart-window tracking | `system-services-monitor` |
-| Fabric Manager journal errors | `journalctl -u nvidia-fabricmanager` pattern scan | `system-services-monitor` |
-| NVSwitch fabric registration state | `nvidia-smi --query-gpu=fabric.state,fabric.status` | `system-services-monitor` |
 | GPU service lifecycle (`nvidia-persistenced`) | `nsenter` → `systemctl show` | `system-services-monitor` |
 
 ## Detection Mechanism
@@ -140,50 +169,35 @@ is **no HTTP health endpoint** — `nvidia-fabricmanager` does not expose one �
 detection is unit-state and query based:
 
 - **Fabric Manager service state:** `systemctl show nvidia-fabricmanager
-  --property=ActiveState,SubState,MainPID,ExecMainStartTimestamp`. The service is
-  considered up when `ActiveState == "active"`. `NRestarts` is queried in a
-  separate `systemctl show` call for compatibility with older systemd that omits
-  it from combined property lists.
+  --property=LoadState,ActiveState,SubState,MainPID,ExecMainStartTimestamp`. The
+  service is considered up when `ActiveState == "active"`. `NRestarts` is
+  queried in a separate `systemctl show` call for compatibility with older
+  systemd that omits it from combined property lists.
 - **Flap detection:** each new restart (delta in `NRestarts`) is timestamped into a
   per-service deque; the service is "flapping" when the number of restarts inside
   the window (`--flap-window`, default 600s) reaches the threshold
-  (`--flap-threshold`, default 3).
-- **Journal errors:** `journalctl -u nvidia-fabricmanager --since "5 minutes ago"`
-  is scanned for known patterns and classified as `nvswitch_error`,
-  `initialization_failed`, `timeout`, or `general_error`.
-- **Fabric registration state:** `nvidia-smi --query-gpu=index,fabric.state,fabric.status
-  --format=csv,noheader` per GPU. A GPU is healthy when `fabric.state == "Completed"`
-  and `fabric.status == "Success"`; `fabric.state == "N/A"` (non-NVSwitch topology)
-  is skipped. `"In Progress"` is a normal transient state, so it is time-gated: a GPU
-  is classified `FM_REGISTRATION_STUCK` only after reporting `"In Progress"` for
-  `stuck_threshold` **consecutive polls** (default 3, ~90 s at the default poll
-  interval). The streak is strictly consecutive: it resets on **every**
-  non-`"In Progress"` result for that GPU — registration completing, `"N/A"`,
-  the GPU being absent from a poll's output, or the probe itself failing — so
-  only an unbroken run of `"In Progress"` observations can accumulate toward
-  the threshold. Combined with the boot grace period below (during which the
-  streak is not advanced), normal startup registration never reports as a fatal
-  fault.
+  (`--flap-threshold`, default 3). `NRestarts` is not monotonic (it resets on
+  `systemctl reset-failed`, unit re-creation, and reboot); a decrease
+  re-baselines tracking and records one restart observation, so a service whose
+  crashes cause reboots does not go dark to flap detection.
 - **GPU service lifecycle:** the same `systemctl show` probe for each service in the
   configured list (default `nvidia-persistenced`).
 
-Every host probe is bounded: `systemctl show` runs with a 10 s timeout,
-`journalctl` and `nvidia-smi` with 15 s. A probe that fails or times out yields
-**unknown** state — the monitor logs the failure and increments a check-error
-metric but emits no HealthEvent, because "the probe could not observe the
-service" is not evidence that the service is down. A hung systemd, D-Bus, or
-driver therefore costs at most one bounded check, and cannot wedge the polling
-loop into false `*_NOT_RUNNING` reporting.
+Every host probe is bounded (`systemctl show` runs with a 10 s timeout). A
+probe that fails or times out yields **unknown** state — the monitor logs the
+failure and increments a check-error metric but emits no HealthEvent, because
+"the probe could not observe the service" is not evidence that the service is
+down. A hung systemd or D-Bus therefore costs at most one bounded check, and
+cannot wedge the polling loop into false `*_NOT_RUNNING` reporting.
 
 Applicability is checked before health: `LoadState` is queried alongside
 `ActiveState`, and a unit with `LoadState=not-found` (e.g. a host without
 `nvidia-fabricmanager` installed, or an optional support service that is not
-present) is skipped entirely rather than reported as `*_NOT_RUNNING`. Together
-with the `fabric.state == "N/A"` skip, every check is self-gating on
-platform/service presence.
+present) is skipped entirely rather than reported as `*_NOT_RUNNING`, so every
+check is self-gating on platform/service presence.
 
 A boot grace period (`--boot-grace-period`, default 300s) suppresses unhealthy
-alerts during node startup — for service checks and fabric-state checks alike.
+alerts during node startup for all service checks.
 Suppression happens at result generation: a suppressed failure produces no
 `CheckResult`, so it never reserves or commits a transition-cache entry (see
 Cached State). When the grace period expires the condition is re-evaluated from
@@ -192,38 +206,27 @@ healthy-to-unhealthy transition) and emits normally.
 
 ### FM readiness (Phase 1)
 
-Fabric Manager is considered ready when it is **systemd `active`** *and* the
-per-GPU fabric-state query shows FM is responsive/progressing — i.e. not in a
-stuck or errored condition (`FM_REGISTRATION_STUCK` / `FM_FABRIC_ERROR`). An
-explicit local API/socket probe is deferred as a future refinement, not a Phase-1
-prerequisite, because the systemd unit exposes no health endpoint.
+Fabric Manager is considered ready when it is **systemd `active`** and not
+flapping. Registration-progress health is observed by `gpu-health-monitor`'s
+DCGM fabric-probe watch (see *Signals delegated*), so the two monitors jointly
+cover "the daemon is alive" and "registration succeeded". An explicit local
+API/socket responsiveness probe is deferred as a future refinement, not a
+Phase-1 prerequisite, because the systemd unit exposes no health endpoint.
 
 ## Architecture
 
-```text
-┌────────────────────────────────────────────────────────────────────┐
-│  Node                                                                │
-│                                                                      │
-│  ┌────────────────────┐ ┌────────────────────┐ ┌──────────────────┐ │
-│  │ gpu-health-monitor │ │ syslog-health-     │ │ system-services- │ │
-│  │                    │ │ monitor            │ │ monitor          │ │
-│  │ DCGM via pydcgm:   │ │                    │ │ Non-DCGM probes: │ │
-│  │ - PCIe / NVLink    │ │ Kernel log parse:  │ │ - FM systemd     │ │
-│  │ - thermal / clock  │ │ - XID / SXID       │ │ - FM flap / jrnl │ │
-│  │ - DCGM connectivity│ │ - fallen-off-bus   │ │ - fabric state   │ │
-│  │                    │ │                    │ │ - GPU svc up/down│ │
-│  │                    │ │                    │ │ + state cache    │ │
-│  └─────────┬──────────┘ └─────────┬──────────┘ └────────┬─────────┘ │
-│            │                      │                      │           │
-│            └──────────────────────┼──────────────────────┘           │
-│                                   ▼                                  │
-│  ┌────────────────────────────────────────────────────────────────┐ │
-│  │ platform-connector                                             │ │
-│  │ - Aggregates HealthEvents from all node monitors               │ │
-│  │ - gRPC over a node-local Unix domain socket (unix://…)         │ │
-│  │ - Node health state reconciliation                             │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-└────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph node["GPU node"]
+        direction TB
+        ghm["gpu-health-monitor<br/>DCGM via pydcgm:<br/>PCIe / NVLink / thermal<br/>DCGM connectivity<br/>fabric probe state (DCGM 4.5.2)"]
+        shm["syslog-health-monitor<br/>journald / kernel log parse:<br/>XID / SXID / fallen-off-bus<br/>NIC errors / GPU resets<br/>FM journal patterns (follow-up)"]
+        ssm["system-services-monitor<br/>systemd probes via nsenter:<br/>FM up/down + flap detection<br/>GPU service lifecycle<br/>+ transition cache"]
+        pc["platform-connector<br/>aggregates HealthEvents from all node monitors<br/>node health state reconciliation"]
+        ghm -- "gRPC over node-local unix:// socket" --> pc
+        shm -- "gRPC over node-local unix:// socket" --> pc
+        ssm -- "gRPC over node-local unix:// socket" --> pc
+    end
 ```
 
 Transport from a monitor to `platform-connector` is gRPC over a **node-local Unix
@@ -259,24 +262,58 @@ category and carries the specific condition in `errorCode`.
 |-----------|-------------|-------------|-----------|---------------------|
 | FM not running | `FabricManagerServiceDown` | `FABRIC_MANAGER_NOT_RUNNING` | true | `RESTART_BM` |
 | FM flapping | `FabricManagerServiceDown` | `FABRIC_MANAGER_FLAPPING` | true | `RESTART_BM` |
-| FM journal errors | `FabricManagerServiceDown` | `JOURNAL_NVSWITCH_ERROR` / `JOURNAL_INITIALIZATION_FAILED` / `JOURNAL_TIMEOUT` / `JOURNAL_GENERAL_ERROR` | true | `RESTART_BM` |
-| Fabric registration not started | `FabricStateUnhealthy` | `FM_NOT_STARTED` | true | `RESTART_BM` |
-| Fabric registration stuck | `FabricStateUnhealthy` | `FM_REGISTRATION_STUCK` | true | `RESTART_BM` |
-| Fabric error | `FabricStateUnhealthy` | `FM_FABRIC_ERROR` | true | `RESTART_BM` |
 | GPU support service down | `GpuServiceDown` | `GPU_SERVICE_NOT_RUNNING` | false | `CONTACT_SUPPORT` |
 
 Multiple `errorCode` values combine on a single event (e.g. an FM-down event that
 is also flapping carries `[FABRIC_MANAGER_NOT_RUNNING, FABRIC_MANAGER_FLAPPING]`).
 
-The table above is the **complete Phase-1 taxonomy** — there is deliberately no
-`FM_UNRESPONSIVE` code. The earlier draft's monolithic "FM unresponsive"
-condition is split into the three fabric-state codes (`FM_NOT_STARTED` /
-`FM_REGISTRATION_STUCK` / `FM_FABRIC_ERROR`), which are the distinctions the
-Phase-1 probes can actually make. A dedicated responsiveness probe — and with it
-a distinct unresponsive code, its detection threshold, and its `HealthEvent`
-mapping — is deferred together with the local API/socket probe described under
-*FM readiness (Phase 1)*; it must be added to this table before any
-implementation emits it.
+The table above is the **complete Phase-1 taxonomy**, deliberately small:
+
+- The fabric-state codes of earlier drafts (`FM_NOT_STARTED` /
+  `FM_REGISTRATION_STUCK` / `FM_FABRIC_ERROR`) are removed — that signal is
+  owned by `gpu-health-monitor`'s DCGM 4.5.2 fabric-probe watch (see *Signals
+  delegated*), which already maps `DCGM_FR_FABRIC_PROBE_STATE` through
+  `dcgmerrorsmapping.csv`.
+- The `JOURNAL_*` codes of earlier drafts are removed — journal-pattern
+  detection belongs to `syslog-health-monitor` (see *Signals delegated*), and
+  events from this monitor carry systemd evidence only (`sub_state`,
+  `n_restarts`, `flapping`).
+- There is deliberately no `FM_UNRESPONSIVE` code. A dedicated responsiveness
+  probe — and with it a distinct unresponsive code, its detection threshold,
+  and its `HealthEvent` mapping — is deferred together with the local
+  API/socket probe described under *FM readiness (Phase 1)*; it must be added
+  to this table before any implementation emits it.
+
+### Remediation classification: restart-fixable vs. hardware-return
+
+Operational experience on NVSwitch platforms (NVL72/36) shows Fabric Manager
+faults span two very different remediation classes: some clear with a service
+restart or node reboot (config/driver mismatch after an upgrade, transient
+init races), while others — NVSwitch hardware faults — have required returning
+entire racks. A node-local poller cannot make that distinction from one
+observation, and this ADR does not pretend it can:
+
+- **`recommendedAction` is the safe *first* try, not a verdict.**
+  `RESTART_BM` on FM-down/flapping means "restart the service / reboot the
+  node is the cheapest step with a real chance of clearing this"; it does not
+  assert the fault is software.
+- **Classification is cross-signal and belongs downstream.** The signals that
+  separate the two classes arrive on different paths: NVSwitch/SXID hardware
+  errors via `syslog-health-monitor`, fabric-probe failures via
+  `gpu-health-monitor`, and unit-lifecycle evidence (`n_restarts`, flapping,
+  `sub_state`) via this monitor. `health-events-analyzer` /
+  fault-management — which see all three streams plus remediation history —
+  are where "restart-fixable" hardens into "hardware-return":
+  - FM-down that **recurs after a remediation** (the node re-enters
+    `FabricManagerServiceDown` shortly after a `RESTART_BM` was executed)
+    should escalate to `CONTACT_SUPPORT` rather than loop reboots.
+  - FM-down or flapping **correlated with NVSwitch/SXID hardware errors** from
+    `syslog-health-monitor` on the same node should escalate directly.
+- **This monitor's obligation is evidence, not policy:** transition-only
+  events with absolute state, `n_restarts`/`sub_state`/`flapping` metadata,
+  and timestamps — exactly the inputs recurrence- and correlation-based
+  escalation needs. Encoding the escalation rules is fault-management policy
+  and is out of scope here.
 
 ### HealthEvent schema
 
@@ -293,7 +330,7 @@ Events populate the shared `HealthEvent` protobuf. Fields set by this monitor:
 | `message` | string | human-readable detail |
 | `recommendedAction` | enum `RecommendedAction` | `RESTART_BM` (fatal) / `CONTACT_SUPPORT` (non-fatal) / `NONE` (healthy) |
 | `errorCode` | repeated string | condition codes (table above) |
-| `entitiesImpacted` | repeated `Entity` | `{entityType, entityValue}` — `NODE:<node>` for service checks, `GPU:<index>` for fabric-state checks |
+| `entitiesImpacted` | repeated `Entity` | `{entityType, entityValue}` — `NODE:<node>` (all Phase-1 checks are node-scoped) |
 | `metadata` | map<string,string> | check-specific context |
 | `generatedTimestamp` | Timestamp | event time |
 | `nodeName` | string | node the monitor runs on |
@@ -314,26 +351,6 @@ Example — Fabric Manager down (fatal, node-scoped):
   "errorCode": ["FABRIC_MANAGER_NOT_RUNNING"],
   "entitiesImpacted": [{"entityType": "NODE", "entityValue": "gpu-node-07"}],
   "metadata": {"sub_state": "failed", "n_restarts": "4", "flapping": "true"},
-  "nodeName": "gpu-node-07",
-  "processingStrategy": "EXECUTE_REMEDIATION"
-}
-```
-
-Example — fabric registration stuck (fatal, GPU-scoped):
-
-```json
-{
-  "version": 1,
-  "agent": "system-services-monitor",
-  "componentClass": "INFRASTRUCTURE",
-  "checkName": "FabricStateUnhealthy",
-  "isFatal": true,
-  "isHealthy": false,
-  "message": "FM_REGISTRATION_STUCK on gpu-node-07 GPU 7: state=In Progress, status=In Progress",
-  "recommendedAction": "RESTART_BM",
-  "errorCode": ["FM_REGISTRATION_STUCK"],
-  "entitiesImpacted": [{"entityType": "GPU", "entityValue": "7"}],
-  "metadata": {"gpu_index": "7", "fabric_state": "In Progress", "fabric_status": "In Progress", "failure_class": "FM_REGISTRATION_STUCK"},
   "nodeName": "gpu-node-07",
   "processingStrategy": "EXECUTE_REMEDIATION"
 }
@@ -373,8 +390,8 @@ not re-sent every poll interval.
   de-duplicated) condition-code set. An event is sent when the key is unseen or
   any of the three fields differs from the cached value, so a code-only
   escalation (e.g. `FABRIC_MANAGER_NOT_RUNNING` → `FABRIC_MANAGER_NOT_RUNNING +
-  FABRIC_MANAGER_FLAPPING`, or one journal classification changing to another)
-  emits a new event even though the fatal/healthy flags are unchanged.
+  FABRIC_MANAGER_FLAPPING`) emits a new event even though the fatal/healthy
+  flags are unchanged.
   Normalization keeps the comparison order-independent for equivalent code sets.
 - **Concurrency:** the read-decide-write sequence is guarded by a
   `threading.Lock`. Callbacks fire on a `ThreadPoolExecutor`, so without the lock
@@ -451,23 +468,27 @@ the guarantees and non-guarantees are explicit rather than implied:
 
 In scope for `system-services-monitor`:
 
-- Fabric Manager systemd health (`ActiveState`/`SubState`)
-- Fabric Manager flap detection and journal-error classification
-- Per-GPU NVSwitch fabric-registration state
+- Fabric Manager systemd health (`ActiveState`/`SubState`, `LoadState` gating)
+- Fabric Manager flap detection (`NRestarts` window tracking)
 - GPU support-service lifecycle (`nvidia-persistenced`)
 - gRPC client (Unix domain socket), state caching, structured logging, CLI
 
 Out of scope (owned elsewhere):
 
 - PCIe, NVLink, thermal/clock telemetry — `gpu-health-monitor` (DCGM watches)
+- Per-GPU fabric registration/probe state — `gpu-health-monitor`
+  (`DCGM_FR_FABRIC_PROBE_STATE`, DCGM ≥ 4.5.2)
 - DCGM host-engine connectivity — `gpu-health-monitor` (`GpuDcgmConnectivityFailure`)
-- XID / SXID kernel events — `syslog-health-monitor`
+- XID / SXID kernel events and journal-pattern detection (including the
+  Fabric Manager journal patterns) — `syslog-health-monitor`
+- Restart-vs-hardware-return escalation policy — `health-events-analyzer` /
+  fault-management (see *Remediation classification*)
 
 ### Integration testing
 
 - Device-level faults handled only by `gpu-health-monitor`
-- Kernel XID/SXID handled only by `syslog-health-monitor`
-- Service-level faults handled only by `system-services-monitor`
+- Journal/kernel-log signals handled only by `syslog-health-monitor`
+- Systemd service-level faults handled only by `system-services-monitor`
 - No overlap in event generation for the same underlying condition
 - State-cache deduplication verified (transition-only emission)
 - HealthEvent schema compatibility over gRPC
@@ -475,9 +496,11 @@ Out of scope (owned elsewhere):
 ## Consequences
 
 ### Positive
-- Adds service-level monitoring that no existing monitor provides
-- No overlap or source-of-truth conflict with DCGM device health
-- Keeps `system-services-monitor` focused and small
+- Adds systemd-layer monitoring that no existing monitor provides
+- Exactly one collection path per signal: no overlap or source-of-truth
+  conflict with DCGM device/fabric health or with journal parsing
+- Keeps `system-services-monitor` minimal (systemd probes only — no DCGM
+  client, no `nvidia-smi`, no journal reader)
 - Preserves consistent event semantics across monitors
 - Explicit, testable ownership boundary against `gpu-health-monitor` and
   `syslog-health-monitor`
@@ -486,3 +509,7 @@ Out of scope (owned elsewhere):
 - Adds a third node-local monitor DaemonSet to operate
 - Requires the event taxonomy above to stay in sync with remediation policy in
   `platform-connector`
+- Fabric-probe coverage depends on `gpu-health-monitor` running DCGM ≥ 4.5.2
+  (already pinned in its Dockerfile)
+- The Fabric Manager journal patterns require a small follow-up in
+  `syslog-health-monitor` before journal-level FM detection exists anywhere
