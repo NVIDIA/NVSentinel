@@ -57,3 +57,13 @@ rules:
   - get
   - list
   - watch
+{{- if include "nvsentinel.pcAuth.enabled" . }}
+# Validates the projected tokens presented by cross-node health-event
+# publishers. See global.platformConnectorAuth.
+- apiGroups:
+  - authentication.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - create
+{{- end }}

@@ -21,8 +21,9 @@ import (
 	"strings"
 	"time"
 
-	loggingpb "cloud.google.com/go/logging/apiv2/loggingpb"
 	"csp-api-mock/pkg/store"
+
+	loggingpb "cloud.google.com/go/logging/apiv2/loggingpb"
 	"google.golang.org/genproto/googleapis/api/monitoredres"
 	"google.golang.org/genproto/googleapis/cloud/audit"
 	logtypepb "google.golang.org/genproto/googleapis/logging/type"
@@ -55,6 +56,7 @@ func (s *GCPLoggingServer) ListLogEntries(
 		req.GetFilter(), startTime.Format(time.RFC3339Nano), endTime.Format(time.RFC3339Nano), len(events))
 
 	var entries []*loggingpb.LogEntry
+
 	for _, event := range events {
 		eventTime := event.UpdatedAt
 		if eventTime.IsZero() {
@@ -65,6 +67,7 @@ func (s *GCPLoggingServer) ListLogEntries(
 		if !startTime.IsZero() && !eventTime.After(startTime) {
 			log.Printf("GCP gRPC: FILTERED event ID=%s (eventTime %v not after startTime %v)",
 				event.ID, eventTime.Format(time.RFC3339Nano), startTime.Format(time.RFC3339Nano))
+
 			continue
 		}
 
@@ -77,11 +80,13 @@ func (s *GCPLoggingServer) ListLogEntries(
 		if entry := s.eventToLogEntry(event); entry != nil {
 			log.Printf("GCP gRPC: Returning event ID=%s, instanceID=%s, status=%s",
 				event.ID, event.InstanceID, event.Status)
+
 			entries = append(entries, entry)
 		}
 	}
 
 	log.Printf("GCP gRPC: ListLogEntries returning %d entries", len(entries))
+
 	return &loggingpb.ListLogEntriesResponse{Entries: entries}, nil
 }
 
@@ -113,6 +118,7 @@ func (s *GCPLoggingServer) parseTimestampFilter(filter string) (startTime, endTi
 	return startTime, endTime
 }
 
+//nolint:cyclop // flat sequence of independent optional-field mappings
 func (s *GCPLoggingServer) eventToLogEntry(event *store.MaintenanceEvent) *loggingpb.LogEntry {
 	methodName := GCPMethodUpcomingMaintenance
 	if event.EventTypeCode != "" {
@@ -121,7 +127,7 @@ func (s *GCPLoggingServer) eventToLogEntry(event *store.MaintenanceEvent) *loggi
 
 	maintenanceStatus := event.Status
 	if maintenanceStatus == "" {
-		maintenanceStatus = "PENDING"
+		maintenanceStatus = gcpStatusPending
 	}
 
 	maintenanceType := event.MaintenanceType
@@ -142,12 +148,18 @@ func (s *GCPLoggingServer) eventToLogEntry(event *store.MaintenanceEvent) *loggi
 	resourceNameFQN := fmt.Sprintf("projects/%s/zones/%s/instances/%s",
 		event.ProjectID, event.Zone, instanceName)
 
+	isComplete := strings.ToUpper(maintenanceStatus) == "COMPLETE" ||
+		strings.ToUpper(maintenanceStatus) == "COMPLETED"
+
 	var statusMessage string
-	if strings.ToUpper(maintenanceStatus) == "COMPLETE" || strings.ToUpper(maintenanceStatus) == "COMPLETED" {
-		statusMessage = "Maintenance window has completed for this instance. All maintenance notifications on the instance have been removed."
-	} else if event.Description != "" {
+
+	switch {
+	case isComplete:
+		statusMessage = "Maintenance window has completed for this instance. " +
+			"All maintenance notifications on the instance have been removed."
+	case event.Description != "":
 		statusMessage = event.Description
-	} else {
+	default:
 		statusMessage = fmt.Sprintf("Maintenance %s for %s", maintenanceStatus, instanceName)
 	}
 
@@ -161,25 +173,26 @@ func (s *GCPLoggingServer) eventToLogEntry(event *store.MaintenanceEvent) *loggi
 		Status: &spb.Status{Message: statusMessage},
 	}
 
-	isComplete := strings.ToUpper(maintenanceStatus) == "COMPLETE" || strings.ToUpper(maintenanceStatus) == "COMPLETED"
-
 	if !isComplete {
 		metadata := make(map[string]*structpb.Value)
 		metadata["@type"] = structpb.NewStringValue("type.googleapis.com/google.cloud.compute.v1.UpcomingMaintenance")
 		metadata["maintenanceStatus"] = structpb.NewStringValue(strings.ToUpper(maintenanceStatus))
 		metadata["type"] = structpb.NewStringValue(maintenanceType)
-		metadata["canReschedule"] = structpb.NewBoolValue(strings.ToUpper(maintenanceStatus) == "PENDING")
+		metadata["canReschedule"] = structpb.NewBoolValue(strings.ToUpper(maintenanceStatus) == gcpStatusPending)
 
 		if event.ScheduledStart != nil {
 			metadata["windowStartTime"] = structpb.NewStringValue(event.ScheduledStart.Format(time.RFC3339))
 		}
+
 		if event.ScheduledEnd != nil {
 			metadata["windowEndTime"] = structpb.NewStringValue(event.ScheduledEnd.Format(time.RFC3339))
 		}
+
 		if latestStart, ok := event.Metadata["latestWindowStartTime"]; ok {
 			metadata["latestWindowStartTime"] = structpb.NewStringValue(latestStart)
 		} else if event.ScheduledStart != nil {
-			metadata["latestWindowStartTime"] = structpb.NewStringValue(event.ScheduledStart.Add(2 * time.Hour).Format(time.RFC3339))
+			metadata["latestWindowStartTime"] = structpb.NewStringValue(
+				event.ScheduledStart.Add(2 * time.Hour).Format(time.RFC3339))
 		}
 
 		auditLog.Metadata = &structpb.Struct{Fields: metadata}
@@ -195,7 +208,7 @@ func (s *GCPLoggingServer) eventToLogEntry(event *store.MaintenanceEvent) *loggi
 		operationID = opID
 	}
 
-	isPending := strings.ToUpper(maintenanceStatus) == "PENDING"
+	isPending := strings.ToUpper(maintenanceStatus) == gcpStatusPending
 
 	return &loggingpb.LogEntry{
 		LogName:   fmt.Sprintf("projects/%s/logs/cloudaudit.googleapis.com%%2Fsystem_event", event.ProjectID),

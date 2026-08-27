@@ -1,0 +1,48 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: platform-connector auth strictness
+templates:
+  - templates/configmap.yaml
+set:
+  global.platformConnectorAuth.audience: test-audience
+tests:
+  # This chart keeps its own copy of the umbrella's pcAuth helpers, because a
+  # subchart definition of an nvsentinel.* name would override the parent's for
+  # every other chart. The copy must apply the same strictness: an earlier one
+  # skipped the boolean check, so a quoted "false" was refused by the umbrella
+  # and silently ENABLED token injection here.
+  - it: refuses a quoted "false" rather than reading it as enabled
+    template: templates/configmap.yaml
+    set:
+      global.platformConnectorAuth.enabled: "false"
+    asserts:
+      - failedTemplate:
+          errorPattern: must be a boolean
+
+  - it: refuses a null rather than silently disabling authentication
+    template: templates/configmap.yaml
+    set:
+      global.platformConnectorAuth.enabled: null
+    asserts:
+      - failedTemplate:
+          errorPattern: must be a boolean
+
+  - it: refuses a number rather than reading it as a boolean
+    template: templates/configmap.yaml
+    set:
+      global.platformConnectorAuth.enabled: 0
+    asserts:
+      - failedTemplate:
+          errorPattern: must be a boolean

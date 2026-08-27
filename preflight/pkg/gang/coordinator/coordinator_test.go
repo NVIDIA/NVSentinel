@@ -16,18 +16,24 @@ package coordinator
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
 func TestConfigMapName(t *testing.T) {
@@ -689,4 +695,62 @@ func TestUpdateMasterAddr(t *testing.T) {
 		coord.updateMasterAddr(cm)
 		assert.Equal(t, "", cm.Data[DataKeyMasterAddr])
 	})
+}
+
+// TestKubernetesClientRateLimitsGangRegistrationThroughput exercises
+// Preflight's real gang ConfigMap GET+CREATE path against envtest. Comparing
+// rates verifies module-level QPS behavior without an absolute timing target.
+func TestKubernetesClientRateLimitsGangRegistrationThroughput(t *testing.T) {
+	testEnvironment := &envtest.Environment{}
+	testConfig, err := testEnvironment.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, testEnvironment.Stop()) })
+
+	adminClient, err := kubernetes.NewForConfig(testConfig)
+	require.NoError(t, err)
+
+	namespace := fmt.Sprintf("rate-limit-%d", time.Now().UnixNano())
+	_, err = adminClient.CoreV1().Namespaces().Create(t.Context(), &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: namespace},
+	}, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	const (
+		gangCount = 10
+		burst     = 1
+	)
+
+	lowDuration := measureGangRegistrationThroughput(t, testConfig, namespace, "low-qps", gangCount, 4, burst)
+	highDuration := measureGangRegistrationThroughput(t, testConfig, namespace, "high-qps", gangCount, 40, burst)
+
+	lowRate := float64(gangCount) / lowDuration.Seconds()
+	highRate := float64(gangCount) / highDuration.Seconds()
+	throughputRatio := highRate / lowRate
+	t.Logf("gang registration throughput: low QPS=%.2f gangs/s, high QPS=%.2f gangs/s, ratio=%.2fx",
+		lowRate, highRate, throughputRatio)
+
+	assert.GreaterOrEqual(t, throughputRatio, 6.0)
+	assert.LessOrEqual(t, throughputRatio, 14.0)
+}
+
+// measureGangRegistrationThroughput measures only ConfigMap requests made by
+// the rate-limited Preflight coordinator.
+func measureGangRegistrationThroughput(t *testing.T, testConfig *rest.Config,
+	namespace, prefix string, gangCount int, qps float64, burst int) time.Duration {
+	t.Helper()
+
+	config := rest.CopyConfig(testConfig)
+	require.NoError(t, (kubeclient.RateLimitConfig{QPS: qps, Burst: burst}).Apply(config))
+
+	kubernetesClient, err := client.New(config, client.Options{})
+	require.NoError(t, err)
+	coordinator := NewCoordinator(kubernetesClient, DefaultCoordinatorConfig())
+
+	start := time.Now()
+	for idx := range gangCount {
+		gangID := fmt.Sprintf("%s-%d-%d", prefix, idx, time.Now().UnixNano())
+		require.NoError(t, coordinator.EnsureConfigMap(t.Context(), namespace, gangID, gangCount, nil))
+	}
+
+	return time.Since(start)
 }

@@ -155,3 +155,54 @@ Uses global.socketPath with unix:// prefix
 {{- end }}
 {{- end }}
 
+
+{{/*
+Whether platform-connector auth is on, refusing the value shapes Go-template
+truthiness would misread.
+
+Deliberately named preflight.* rather than nvsentinel.*: Helm template names are
+GLOBAL across the chart tree and a subchart definition wins over the parent's,
+so reusing the umbrella name here would override it for every other chart. The
+checks must stay identical to nvsentinel/templates/_helpers.tpl — a copy without
+the boolean check is how a quoted "false" came to mean "enabled" in a standalone
+render.
+*/}}
+{{- define "preflight.pcAuth.enabled" -}}
+{{- $auth := ((.Values.global).platformConnectorAuth) | default dict -}}
+{{- $enabled := $auth.enabled -}}
+{{- if not (kindIs "bool" $enabled) -}}
+{{- fail (printf "global.platformConnectorAuth.enabled must be a boolean (true or false), got %s %#v. Quoted strings, null and numbers are refused because they would silently enable or disable authentication." (kindOf $enabled) $enabled) -}}
+{{- end -}}
+{{- if $enabled -}}true{{- end -}}
+{{- end -}}
+
+{{- define "preflight.pcAuth.expirationSeconds" -}}
+{{- $v := (((.Values.global).platformConnectorAuth)).tokenExpirationSeconds -}}
+{{- if kindIs "invalid" $v -}}
+{{- fail "global.platformConnectorAuth.tokenExpirationSeconds is required when platform-connector auth is enabled" -}}
+{{- end -}}
+{{- if not (or (kindIs "float64" $v) (kindIs "int" $v) (kindIs "int64" $v)) -}}
+{{- fail (printf "global.platformConnectorAuth.tokenExpirationSeconds must be an integer, got %s %#v." (kindOf $v) $v) -}}
+{{- end -}}
+{{- /*
+YAML numbers reach templates as float64, so a fractional value passes a bare
+numeric check and then renders into an integer Kubernetes field, which the API
+server rejects when the pod is created.
+*/ -}}
+{{- if ne (float64 $v) (floor (float64 $v)) -}}
+{{- fail (printf "global.platformConnectorAuth.tokenExpirationSeconds must be a whole number of seconds, got %v." $v) -}}
+{{- end -}}
+{{- /*
+Kubernetes rejects a projected ServiceAccount token lifetime below 10 minutes or
+above 2^32 seconds (core validation, volume projection). Out-of-range values
+render fine and are then refused by the API server when the pod is created, so
+the workload never starts and the reason is a long way from the values file.
+*/ -}}
+{{- if lt (float64 $v) 600.0 -}}
+{{- fail (printf "global.platformConnectorAuth.tokenExpirationSeconds is %v, but Kubernetes rejects a projected token lifetime under 600 seconds (10 minutes)." $v) -}}
+{{- end -}}
+{{- if gt (float64 $v) 4294967296.0 -}}
+{{- fail (printf "global.platformConnectorAuth.tokenExpirationSeconds is %v, but Kubernetes rejects a projected token lifetime over 2^32 seconds." $v) -}}
+{{- end -}}
+{{- int64 $v -}}
+{{- end -}}

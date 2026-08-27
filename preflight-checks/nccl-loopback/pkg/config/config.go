@@ -51,6 +51,11 @@ type Config struct {
 	// ConnectorSocket is the Unix socket path for the Platform Connector.
 	ConnectorSocket string
 
+	// TokenPath is the optional file path of a projected ServiceAccount token
+	// presented as a Bearer credential on Platform Connector calls.
+	// Empty/unset leaves the calls unauthenticated (current behavior).
+	TokenPath string
+
 	// NodeName is the Kubernetes node name for health events.
 	NodeName string
 
@@ -87,6 +92,10 @@ func FromEnv(ctx context.Context) (*Config, error) {
 		return nil, err
 	}
 
+	// Optional: set by the preflight injection webhook when token
+	// authentication to the Platform Connector is configured.
+	tokenPath := os.Getenv("PLATFORM_CONNECTOR_TOKEN_PATH")
+
 	nodeName, err := requireEnv("NODE_NAME")
 	if err != nil {
 		return nil, err
@@ -104,6 +113,7 @@ func FromEnv(ctx context.Context) (*Config, error) {
 		NumGPUs:            numGPUs,
 		NCCLTestBinaryPath: binaryPath,
 		ConnectorSocket:    connectorSocket,
+		TokenPath:          tokenPath,
 		NodeName:           nodeName,
 		ProcessingStrategy: strategy,
 	}, nil
@@ -269,7 +279,8 @@ func detectGPUCount(ctx context.Context) (int, error) {
 }
 
 func validateExecutable(path string) error {
-	info, err := os.Stat(path)
+	// G703: path comes from this check's own configuration, not from untrusted input.
+	info, err := os.Stat(path) //nolint:gosec
 	if err != nil {
 		slog.Error("File stat failed", "path", path, "error", err)
 		return fmt.Errorf("file not found: %w", err)

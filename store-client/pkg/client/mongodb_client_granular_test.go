@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"

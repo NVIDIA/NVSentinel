@@ -175,7 +175,7 @@ reproducibility). Because `commons` refers to `data-models` by an internal place
 add one `replace` so your build resolves the real commit:
 
 ```bash
-export GOTOOLCHAIN=auto   # the modules need Go 1.26+; this fetches it automatically
+export GOTOOLCHAIN=auto   # the modules need Go 1.27+; this fetches it automatically
 
 # 1. Fetch the contract module, then capture the exact version go resolved.
 go get github.com/nvidia/nvsentinel/data-models@main
@@ -384,7 +384,7 @@ directory. Because dependencies are fetched from the module proxy (not local pat
 context is just the monitor directory itself:
 
 ```dockerfile
-FROM public.ecr.aws/docker/library/golang:1.26.3-trixie AS builder
+FROM public.ecr.aws/docker/library/golang:1.27.0-trixie AS builder
 WORKDIR /src
 
 # Manifests first for better layer caching. go.mod/go.sum already pin the

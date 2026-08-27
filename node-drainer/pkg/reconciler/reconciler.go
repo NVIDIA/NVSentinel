@@ -48,6 +48,12 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// Document field and update-operator names used in datastore queries.
+const (
+	fieldID = "_id"
+	opSet   = "$set"
+)
+
 type eventStatus struct {
 	status    model.Status
 	createdAt time.Time
@@ -265,14 +271,14 @@ func (r *Reconciler) setInitialStatusAndEnqueue(ctx context.Context, document ma
 
 	// Set initial status to StatusInProgress (idempotent - only updates if not already set)
 	filter := map[string]any{
-		"_id": documentID,
+		fieldID: documentID,
 		"healtheventstatus.userpodsevictionstatus.status": map[string]any{
 			"$ne": string(model.StatusInProgress),
 		},
 	}
 
 	update := map[string]any{
-		"$set": map[string]any{
+		opSet: map[string]any{
 			"healtheventstatus.userpodsevictionstatus.status": string(model.StatusInProgress),
 		},
 	}
@@ -939,8 +945,8 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 		updateFields["healtheventstatus.drainfinishtimestamp"] = timestamppb.Now()
 	}
 
-	filter := map[string]any{"_id": documentID}
-	update := map[string]any{"$set": updateFields}
+	filter := map[string]any{fieldID: documentID}
+	update := map[string]any{opSet: updateFields}
 
 	_, err = database.UpdateDocument(ctx, filter, update)
 	if err != nil {
@@ -1422,10 +1428,10 @@ func (r *Reconciler) setDrainFailedStatus(
 		return fmt.Errorf("failed to extract document ID: %w", err)
 	}
 
-	filter := map[string]any{"_id": documentID}
+	filter := map[string]any{fieldID: documentID}
 
 	update := map[string]any{
-		"$set": map[string]any{
+		opSet: map[string]any{
 			"healtheventstatus.userpodsevictionstatus": protos.OperationStatus{
 				Status:  string(model.StatusFailed),
 				Message: reason,

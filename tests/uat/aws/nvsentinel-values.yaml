@@ -129,6 +129,10 @@ kubernetes-object-monitor:
   logLevel: debug
 
 janitor-provider:
+  auth:
+    # The bundled janitor is derived from the release namespace, so nothing is
+    # needed here. List only an out-of-tree janitor, if you run one.
+    allowedUsernames: []
   csp:
     provider: aws
     aws:

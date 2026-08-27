@@ -21,6 +21,99 @@ global:
     tag: "12-debian-12-r30"
     pullPolicy: IfNotPresent
   metricsPort: 2112
+  # Default Kubernetes API client limits for core controllers. Components can
+  # override these with their own qps and burst values.
+  # qps: positive values throttle requests, 0 uses the client-go default,
+  # and -1 (or any negative value) disables client-side throttling.
+  qps: 5
+  # burst: positive values set the token-bucket burst size; 0 uses the
+  # client-go default. Negative values are invalid.
+  burst: 10
+
+  # Authentication for the platform-connector health-event socket.
+  #
+  # The socket is shared by two classes of publisher: node-local ones (syslog,
+  # nic, gpu, preflight checks) that only ever report the node they run on, and
+  # cluster-scoped ones that legitimately report on other nodes. The node name
+  # is a plain field on the event and is not re-derived downstream, so a
+  # publisher that names the wrong node has that carried through to a cordon,
+  # drain or reboot of that node.
+  #
+  # With this enabled, platform-connector fills in its own node name for callers
+  # that present no credential and rejects any other name they supply, while
+  # cluster-scoped publishers present a projected ServiceAccount token minted
+  # for a dedicated audience and keep their cross-node reach. See ADR-030.
+  platformConnectorAuth:
+    # Disabling this lets any caller that can reach the platform-connector
+    # socket submit health events naming any node; not a supported production
+    # configuration.
+    enabled: true
+
+    # "enforce" rejects a request that violates the node-binding rule.
+    # "audit" validates every request and records the same violation counters
+    # by reason, but lets the request through instead of rejecting it. Run
+    # audit for a period, confirm platform_connector_auth_violations_total
+    # stays at zero for real traffic, then switch to enforce with evidence.
+    # One exception applies in both modes: an event with no node name from a
+    # caller resolved to VERIFIED cross-node scope is always rejected, since
+    # nothing downstream can handle it. A caller that fell back to a degraded
+    # scope under failOpenOnUnavailable was never verified as cross-node, so
+    # this does not apply to it — see failOpenOnUnavailable below.
+    mode: enforce
+
+    # Must be a real YAML boolean (true or false); a quoted "false" is a
+    # string, not this setting, and is refused rather than read as false.
+    #
+    # A validator that cannot reach a verdict (API server unreachable, or the
+    # call timed out) says nothing about the caller's credential — it is not
+    # evidence of a forged token. When true, that case falls back to a
+    # degraded node-local scope instead of rejecting the request: a blank or
+    # matching node name is accepted and stamped as usual, and an event
+    # naming a different node is kept retryable under mode: enforce (rather
+    # than rejected outright, since the caller might really be an
+    # allowlisted cross-node publisher the outage prevented from verifying)
+    # or, under mode: audit, recorded and let through like any other audited
+    # violation. Under mode: enforce a rejected credential (invalid or
+    # malformed token) is always rejected regardless of this setting; under
+    # mode: audit it is recorded and let through like any other violation
+    # instead. Defaults to false: fail closed, matching behavior before this
+    # setting existed.
+    failOpenOnUnavailable: false
+
+    # Audience every publisher's projected token is minted for, and that
+    # platform-connector requires TokenReview to echo back, so a token issued
+    # for a different service is not accepted here. Node-local monitors (gpu,
+    # syslog, nic, preflight checks) present tokens too: on Kubernetes 1.30+
+    # the token carries the node its pod runs on, written by the API server,
+    # and platform-connector verifies that claim names its own node. On older
+    # clusters the claim is absent and those callers are simply pinned to the
+    # connector's node, as before.
+    audience: "platform-connector.nvsentinel.nvidia.com"
+
+    # Token lifetime. kubelet rotates the token well before it expires.
+    tokenExpirationSeconds: 3600
+
+    # Directory the projected token is mounted at in each publisher.
+    tokenMountPath: "/var/run/secrets/nvsentinel/platform-connector"
+
+    # ADDITIONAL canonical Kubernetes usernames permitted to report health
+    # events about nodes other than the one they run on. Everything else is
+    # pinned to its own node. Each entry lets that identity have any node in
+    # the cluster cordoned, drained and rebooted, so add sparingly.
+    #
+    # The bundled cluster-scoped monitors — csp-health-monitor,
+    # kubernetes-object-monitor, slurm-drain-monitor and health-events-analyzer
+    # — do NOT belong here. They are derived from the release namespace at
+    # render time for whichever of them are enabled, so installing into a
+    # namespace other than nvsentinel needs no edit. Listing them by hand is
+    # what used to break such an install: a hardcoded namespace rendered
+    # cleanly and then had every one of their events rejected at runtime.
+    #
+    # List only publishers this chart does not ship. Entries are matched
+    # verbatim against the username TokenReview reports, so the namespace must
+    # be a DNS-1123 label and the name a DNS-1123 subdomain — nothing is
+    # trimmed or normalised for you.
+    crossNodeServiceAccounts: []
 
   # Datastore configuration
   # By default, datastore is not configured (internal mongodb-config ConfigMap is used).
@@ -148,6 +241,15 @@ global:
   affinity: {}
   systemNodeSelector: {}
   systemNodeTolerations: []
+  # Pod priority for the node-level agents (DaemonSets), e.g. system-node-critical.
+  # Empty means cluster default priority 0. Any non-empty value must name an existing
+  # PriorityClass. Overrides each component's local priorityClassName.
+  priorityClassName: ""
+  # Pod priority for the control-plane components (Deployments), e.g.
+  # system-cluster-critical. Split from the value above for the same reason
+  # systemNodeTolerations is split from tolerations: the two groups run on different
+  # node classes and are usually sized differently.
+  systemPriorityClassName: ""
   imagePullSecrets: []
 
   gpuHealthMonitor:
@@ -201,6 +303,9 @@ networkPolicy:
   enabled: true
 
 platformConnector:
+  # Local fallback, overridden by global.priorityClassName when that is set.
+  priorityClassName: ""
+
   image:
     repository: ghcr.io/nvidia/nvsentinel/platform-connectors
     pullPolicy: IfNotPresent
@@ -243,6 +348,13 @@ platformConnector:
     # Optional: path to a projected Kubernetes ServiceAccount token for
     # bearer token authentication.
     # Leave empty to disable authentication.
+    #
+    # The target must be an external sink, not another NVSentinel
+    # platform-connector. A connector's own token is bound to the node its pod
+    # runs on, and a receiving connector rejects any token whose node claim
+    # names a different node, so chaining connectors together cannot
+    # authenticate. Fan-in belongs to the datastore, which every connector
+    # already writes to.
     tokenPath: ""
 
   k8sConnector:

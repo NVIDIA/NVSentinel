@@ -215,7 +215,7 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 			terminateNode.SetCondition(metav1.Condition{
 				Type:               janitordgxcnvidiacomv1alpha1.TerminateNodeConditionNodeTerminated,
 				Status:             metav1.ConditionTrue,
-				Reason:             "Succeeded",
+				Reason:             conditionReasonSucceeded,
 				Message:            "CSP instance deleted and Kubernetes node removed.",
 				LastTransitionTime: metav1.Now(),
 			})
@@ -246,7 +246,7 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 			terminateNode.SetCondition(metav1.Condition{
 				Type:               janitordgxcnvidiacomv1alpha1.TerminateNodeConditionNodeTerminated,
 				Status:             metav1.ConditionTrue,
-				Reason:             "Succeeded",
+				Reason:             conditionReasonSucceeded,
 				Message:            "CSP instance deleted and Kubernetes node removed.",
 				LastTransitionTime: metav1.Now(),
 			})
@@ -348,7 +348,7 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 					signalSentCondition = metav1.Condition{
 						Type:               janitordgxcnvidiacomv1alpha1.TerminateNodeConditionSignalSent,
 						Status:             metav1.ConditionTrue,
-						Reason:             "Succeeded",
+						Reason:             conditionReasonSucceeded,
 						Message:            "Terminate signal sent to CSP",
 						LastTransitionTime: metav1.Now(),
 					}

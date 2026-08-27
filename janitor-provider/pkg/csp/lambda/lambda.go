@@ -29,7 +29,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -44,12 +43,6 @@ import (
 const (
 	// APIEndpointEnvVar overrides the Lambda Cloud API base URL.
 	APIEndpointEnvVar = "LAMBDA_API_ENDPOINT"
-
-	// DefaultAPIHost is the host of the production Lambda Cloud API.
-	DefaultAPIHost = "cloud.lambda.ai"
-
-	// DefaultAPIEndpoint is the production Lambda Cloud API.
-	DefaultAPIEndpoint = "https://" + DefaultAPIHost
 
 	providerIDPrefix = "lambda://"
 
@@ -69,13 +62,6 @@ const (
 	// timeout on a request that already took effect costs a second one.
 	apiTimeout = 120 * time.Second
 )
-
-// allowedAPIHosts is every host LAMBDA_API_ENDPOINT may point at. Anything
-// else fails at startup, bounding where the API key can be sent.
-var allowedAPIHosts = []string{
-	DefaultAPIHost,
-	"cloud.lambdastaging.com",
-}
 
 var _ model.CSPClient = (*Client)(nil)
 
@@ -104,8 +90,12 @@ func NewClientFromEnv(_ context.Context) (*Client, error) {
 		return nil, err
 	}
 
-	if os.Getenv(commonslambda.APIKeyEnvVar) == "" {
-		return nil, fmt.Errorf("env var %s is not set", commonslambda.APIKeyEnvVar)
+	mode := commonslambda.DetectAuthMode()
+	if mode == commonslambda.AuthNone {
+		return nil, fmt.Errorf(
+			"no Lambda credential: set %s, or annotate the ServiceAccount with lambda.ai/identity-lrn so the "+
+				"pod-identity webhook injects %s",
+			commonslambda.APIKeyEnvVar, commonslambda.IdentityLRNEnvVar)
 	}
 
 	httpClient := &http.Client{
@@ -113,66 +103,16 @@ func NewClientFromEnv(_ context.Context) (*Client, error) {
 		Transport: auditlogger.NewAuditingRoundTripper(http.DefaultTransport),
 	}
 
-	slog.Info("Using Lambda Cloud API")
+	slog.Info("Using Lambda Cloud API", "authMode", mode)
 
 	return NewClient(commonslambda.NewClient(endpoint, commonslambda.WithHTTPClient(httpClient))), nil
 }
 
-// endpointFromEnv resolves the API base URL, rejecting anything that is not an
-// absolute https URL so a typo fails at startup, not on the first remediation.
-//
-// http is refused outright rather than warned about or gated behind an opt-in:
-// the API key is a bearer token on every request, so there is no configuration
-// under which sending it in cleartext is acceptable.
-//
-// The host must be one of allowedAPIHosts, so a mistyped or altered endpoint
-// cannot send the API key somewhere unintended.
+// endpointFromEnv resolves the API base URL from the environment. The policy
+// itself lives in the shared client, so both Lambda callers bound where a
+// credential can be sent the same way.
 func endpointFromEnv() (string, error) {
-	raw := strings.TrimSpace(os.Getenv(APIEndpointEnvVar))
-	if raw == "" {
-		return DefaultAPIEndpoint, nil
-	}
-
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return "", fmt.Errorf("parse %s: %w", APIEndpointEnvVar, err)
-	}
-
-	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", fmt.Errorf("%s must not include userinfo, query parameters, or fragments", APIEndpointEnvVar)
-	}
-
-	if parsed.Scheme == "http" {
-		return "", fmt.Errorf("%s uses http, which would send the API key in cleartext: use https",
-			APIEndpointEnvVar)
-	}
-
-	if parsed.Scheme != "https" {
-		return "", fmt.Errorf("%s %q must be an absolute https URL", APIEndpointEnvVar, raw)
-	}
-
-	if parsed.Host == "" {
-		return "", fmt.Errorf("%s %q has no host", APIEndpointEnvVar, raw)
-	}
-
-	if !allowedHost(parsed.Hostname()) {
-		return "", fmt.Errorf("%s host %q is not an approved Lambda API host", APIEndpointEnvVar, parsed.Hostname())
-	}
-
-	return strings.TrimSuffix(raw, "/"), nil
-}
-
-// allowedHost reports whether the bearer token may be sent to host. The list is
-// deliberately fixed: making it configurable would let whoever sets the
-// endpoint widen the bound too, which defeats the point of having one.
-func allowedHost(host string) bool {
-	for _, allowed := range allowedAPIHosts {
-		if strings.EqualFold(allowed, host) {
-			return true
-		}
-	}
-
-	return false
+	return commonslambda.NormalizeEndpoint(APIEndpointEnvVar, os.Getenv(APIEndpointEnvVar))
 }
 
 // SendRebootSignal power-cycles the node's Lambda instance and returns

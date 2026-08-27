@@ -519,65 +519,20 @@ func TestParseRequestRef_RoundTrip_PreservesFields(t *testing.T) {
 	assert.True(t, started.Equal(got.startedAt), "want %s, got %s", started, got.startedAt)
 }
 
-// TestEndpointFromEnv_Values_DefaultsOrValidates checks the endpoint is
-// validated at startup rather than on the first remediation, and asserts which
-// error fires so the http rejection cannot be quietly folded into the general
-// scheme check.
-func TestEndpointFromEnv_Values_DefaultsOrValidates(t *testing.T) {
-	tests := []struct {
-		name    string
-		env     string
-		want    string
-		wantErr string
-	}{
-		{name: "unset defaults to production", env: "", want: DefaultAPIEndpoint},
-		{name: "trailing slash trimmed", env: "https://cloud.lambda.ai/", want: "https://cloud.lambda.ai"},
-		// The allowlist is fixed, so the bearer token can only ever reach a
-		// known Lambda API host.
-		{name: "unapproved host rejected", env: "https://cloud.example.com", wantErr: "is not an approved"},
-		{
-			name: "approved host matches case-insensitively",
-			env:  "https://Cloud.Lambda.AI",
-			want: "https://Cloud.Lambda.AI",
-		},
-		{
-			name: "port is not part of the host match",
-			env:  "https://cloud.lambda.ai:8443",
-			want: "https://cloud.lambda.ai:8443",
-		},
-		// The API key is a bearer token on every request, so http would put it
-		// on the wire in cleartext. There is no opt-in that relaxes this.
-		{name: "plain http rejected", env: "http://cloud.lambda.ai", wantErr: "cleartext"},
-		{name: "plain http rejected for loopback too", env: "http://127.0.0.1:8080", wantErr: "cleartext"},
-		{name: "whitespace only defaults", env: "   ", want: DefaultAPIEndpoint},
-		{name: "relative URL rejected", env: "/api/v1", wantErr: "must be an absolute https URL"},
-		{name: "host only rejected", env: "cloud.lambda.ai", wantErr: "must be an absolute https URL"},
-		{name: "non-http scheme rejected", env: "ftp://cloud.lambda.ai", wantErr: "must be an absolute https URL"},
-		{name: "scheme without host rejected", env: "https://", wantErr: "has no host"},
-		// Userinfo rides along in every request URL the client logs. A query or
-		// fragment is worse than cosmetic: request paths are appended by string
-		// concatenation, so "?token=x" + "/api/v1/instances" leaves the path
-		// inside the query.
-		{name: "userinfo rejected", env: "https://user:pass@cloud.lambda.ai", wantErr: "must not include userinfo"},
-		{name: "query rejected", env: "https://cloud.lambda.ai?token=x", wantErr: "must not include userinfo"},
-		{name: "fragment rejected", env: "https://cloud.lambda.ai#frag", wantErr: "must not include userinfo"},
-	}
+// TestEndpointFromEnv_ReadsEnvAndAppliesSharedPolicy checks the env var is
+// what feeds the shared policy, and that an unset one still defaults. The
+// policy's own cases live in commons/pkg/lambda.
+func TestEndpointFromEnv_ReadsEnvAndAppliesSharedPolicy(t *testing.T) {
+	t.Setenv(APIEndpointEnvVar, "")
+	got, err := endpointFromEnv()
+	require.NoError(t, err)
+	assert.Equal(t, commonslambda.DefaultAPIEndpoint, got)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv(APIEndpointEnvVar, tt.env)
+	t.Setenv(APIEndpointEnvVar, "http://cloud.lambda.ai")
 
-			got, err := endpointFromEnv()
-			if tt.wantErr != "" {
-				assert.ErrorContains(t, err, tt.wantErr)
-
-				return
-			}
-
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
-		})
-	}
+	_, err = endpointFromEnv()
+	assert.ErrorContains(t, err, "cleartext")
+	assert.ErrorContains(t, err, APIEndpointEnvVar)
 }
 
 // TestNewClientFromEnv_MissingAPIKey_ReturnsError checks a missing key fails at
@@ -605,7 +560,7 @@ func TestNewClientFromEnv_BadEndpoint_ReturnsError(t *testing.T) {
 // usable client from environment alone, with no Kubernetes or CSP SDK involved.
 func TestNewClientFromEnv_ValidEnv_ReturnsClient(t *testing.T) {
 	t.Setenv(commonslambda.APIKeyEnvVar, "test-key")
-	t.Setenv(APIEndpointEnvVar, DefaultAPIEndpoint)
+	t.Setenv(APIEndpointEnvVar, commonslambda.DefaultAPIEndpoint)
 
 	c, err := NewClientFromEnv(context.Background())
 	require.NoError(t, err)
@@ -614,7 +569,7 @@ func TestNewClientFromEnv_ValidEnv_ReturnsClient(t *testing.T) {
 
 // TestNewClientFromEnv_UnapprovedHost_ReturnsError checks the allowlist is
 // enforced before an authenticated client exists, so the bearer token is never
-// wired up against a host outside allowedAPIHosts.
+// wired up against a host outside the shared allowlist.
 func TestNewClientFromEnv_UnapprovedHost_ReturnsError(t *testing.T) {
 	t.Setenv(commonslambda.APIKeyEnvVar, "test-key")
 	t.Setenv(APIEndpointEnvVar, "https://attacker.example.com")

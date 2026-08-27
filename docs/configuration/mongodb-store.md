@@ -109,7 +109,7 @@ kubectl get perconaservermongodb -n {namespace}
 kubectl get pods -n {namespace} -l app.kubernetes.io/component=mongod
 ```
 
-The `perconaservermongodb` resource must reach the `ready` state and the `create-mongodb-database` job must complete.
+The `perconaservermongodb` resource must reach `ready`, and the init Job (`-l app.kubernetes.io/name=create-mongodb-database`) must complete.
 
 ## Configuration Reference
 
@@ -121,6 +121,28 @@ Controls whether the mongodb-store module is deployed in the cluster.
 global:
   mongodbStore:
     enabled: true
+```
+
+### Volume size (Bitnami)
+
+`mongodb.persistence.size` (default `8Gi`). Percona: `psmdb-db.replsets.rs0.volumeSpec.pvc.resources.requests.storage`. Existing PVCs do not grow on upgrade.
+
+```yaml
+mongodb-store:
+  mongodb:
+    persistence:
+      size: "100Gi"
+```
+
+### HealthEvents TTL
+
+`collectionExpirySeconds` (default `2592000` / 30d). Same key for external Mongo. The init Job is `create-mongodb-database-<seconds>-<scriptHash>` (`-l app.kubernetes.io/name=create-mongodb-database`).
+
+A completed Job is immutable. TTL and a hash of the mongosh init script are in the Job name so Helm/Argo create a new Job when expiry or indexes change. Argo also has `Force=true,Replace=true` so a Failed first run is recreated on sync. For Helm, if you need to rerun the same script, delete the Job by that label and upgrade.
+
+```yaml
+mongodb-store:
+  collectionExpirySeconds: 604800  # 7 days
 ```
 
 ### Initialization Job Placement

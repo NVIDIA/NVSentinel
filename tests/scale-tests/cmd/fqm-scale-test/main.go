@@ -75,6 +75,7 @@ func main() {
 	maxStagger := flag.Int("stagger", 0, "Max seconds to stagger events (0 = BLAST mode)")
 	pollInterval := flag.Int("poll", 5, "Poll interval in seconds")
 	workers := flag.Int("workers", 50, "Number of concurrent workers")
+
 	flag.Parse()
 
 	// Print configuration
@@ -102,6 +103,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to get nodes: %v", err)
 	}
+
 	log.Printf("✅ Selected %d nodes for testing", len(nodes))
 	log.Printf("")
 
@@ -156,8 +158,10 @@ func getSchedulableNodes(ctx context.Context, clientset *kubernetes.Clientset, l
 		return nil, fmt.Errorf("failed to list nodes: %w", err)
 	}
 
-	var schedulableNodes []string
-	var cordonedCount int
+	var (
+		schedulableNodes []string
+		cordonedCount    int
+	)
 
 	for _, node := range nodeList.Items {
 		// Skip system-workload nodes
@@ -184,7 +188,12 @@ func getSchedulableNodes(ctx context.Context, clientset *kubernetes.Clientset, l
 	return schedulableNodes, nil
 }
 
-func sendFatalEvent(ctx context.Context, clientset *kubernetes.Clientset, config *rest.Config, nodeName, namespace string) error {
+func sendFatalEvent(
+	ctx context.Context,
+	clientset *kubernetes.Clientset,
+	config *rest.Config,
+	nodeName, namespace string,
+) error {
 	// Get event generator pod on this node using the Kubernetes client
 	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: EventGeneratorLabel,
@@ -228,7 +237,18 @@ func sendFatalEvent(ctx context.Context, clientset *kubernetes.Clientset, config
 	return nil
 }
 
-func runTest(ctx context.Context, clientset *kubernetes.Clientset, config *rest.Config, nodes []string, namespace string, timeout int, maxStagger int, pollInterval int, numWorkers int) []QueueSnapshot {
+//nolint:cyclop,gocognit // end-to-end scale test driver: sequential orchestration steps
+func runTest(
+	ctx context.Context,
+	clientset *kubernetes.Clientset,
+	config *rest.Config,
+	nodes []string,
+	namespace string,
+	timeout int,
+	maxStagger int,
+	pollInterval int,
+	numWorkers int,
+) []QueueSnapshot {
 	log.Printf("🚀 Starting test with %d workers...", numWorkers)
 
 	startTime := time.Now()
@@ -239,18 +259,24 @@ func runTest(ctx context.Context, clientset *kubernetes.Clientset, config *rest.
 	log.Printf("📊 Baseline NVSentinel-cordoned nodes: %d", baselineCordoned)
 
 	// PHASE 1: Send ALL signals first (before any cordoning can evict pods)
-	log.Printf("🔀 Phase 1: Sending signals to %d nodes with %d workers (stagger 0-%ds)...", len(nodes), numWorkers, maxStagger)
+	log.Printf("🔀 Phase 1: Sending signals to %d nodes with %d workers (stagger 0-%ds)...",
+		len(nodes), numWorkers, maxStagger)
 
 	workCh := make(chan string, len(nodes))
-	var sentCount, errorCount int64
-	var mu sync.Mutex
-	var wg sync.WaitGroup
+
+	var (
+		sentCount, errorCount int64
+		mu                    sync.Mutex
+		wg                    sync.WaitGroup
+	)
 
 	// Progress ticker
 	progressDone := make(chan struct{})
+
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
+
 		for {
 			select {
 			case <-progressDone:
@@ -268,9 +294,11 @@ func runTest(ctx context.Context, clientset *kubernetes.Clientset, config *rest.
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+
 			for nodeName := range workCh {
 				// Random stagger within window
 				if maxStagger > 0 {
+					//nolint:gosec // G404: non-cryptographic jitter to stagger load-test traffic
 					stagger := time.Duration(rand.Intn(maxStagger+1)) * time.Second
 					time.Sleep(stagger)
 				}
@@ -292,27 +320,33 @@ func runTest(ctx context.Context, clientset *kubernetes.Clientset, config *rest.
 	for _, node := range nodes {
 		workCh <- node
 	}
+
 	close(workCh)
 
 	// Wait for ALL signals to be sent
 	wg.Wait()
 	close(progressDone)
+
 	signalsDone := time.Now()
-	log.Printf("✅ Phase 1 complete: %d sent, %d errors in %.1fs", sentCount, errorCount, signalsDone.Sub(startTime).Seconds())
+	log.Printf("✅ Phase 1 complete: %d sent, %d errors in %.1fs",
+		sentCount, errorCount, signalsDone.Sub(startTime).Seconds())
 
 	// PHASE 2: Poll until all cordoned
 	// Guard against invalid poll intervals (e.g. -poll=0)
 	if pollInterval <= 0 {
 		pollInterval = 1
 	}
+
 	log.Printf("📊 Phase 2: Polling cordoned count every %ds...", pollInterval)
 
 	var snapshots []QueueSnapshot
+
 	pollDone := make(chan struct{})
 
 	go func() {
 		ticker := time.NewTicker(time.Duration(pollInterval) * time.Second)
 		defer ticker.Stop()
+
 		deadline := time.After(time.Duration(timeout) * time.Second)
 		lastCordoned := 0
 
@@ -321,6 +355,7 @@ func runTest(ctx context.Context, clientset *kubernetes.Clientset, config *rest.
 			case <-deadline:
 				log.Printf("⏰ Timeout reached")
 				close(pollDone)
+
 				return
 			case <-ticker.C:
 				rawCordoned := countCordonedNodes(ctx, clientset)
@@ -354,6 +389,7 @@ func runTest(ctx context.Context, clientset *kubernetes.Clientset, config *rest.
 				if cordoned >= int(sentCount) {
 					log.Printf("✅ All %d nodes cordoned!", sentCount)
 					close(pollDone)
+
 					return
 				}
 			}
@@ -373,6 +409,7 @@ func countCordonedNodes(ctx context.Context, clientset *kubernetes.Clientset) in
 	if err != nil {
 		return 0
 	}
+
 	return len(nodeList.Items)
 }
 
@@ -384,25 +421,30 @@ func displayResults(snapshots []QueueSnapshot, totalNodes int, startTime time.Ti
 
 	// Find when all nodes were cordoned
 	var completionTime float64
+
 	for _, s := range snapshots {
 		if s.CordonedCount >= totalNodes {
 			completionTime = s.ElapsedSeconds
 			break
 		}
 	}
+
 	if completionTime == 0 {
 		completionTime = snapshots[len(snapshots)-1].ElapsedSeconds
 	}
 
 	// Calculate stats
-	var peakQueue int
-	var totalRate float64
-	var rateCount int
+	var (
+		peakQueue int
+		totalRate float64
+		rateCount int
+	)
 
 	for _, s := range snapshots {
 		if s.QueueDepth > peakQueue {
 			peakQueue = s.QueueDepth
 		}
+
 		if s.ProcessingRate > 0 {
 			totalRate += s.ProcessingRate
 			rateCount++
@@ -413,6 +455,7 @@ func displayResults(snapshots []QueueSnapshot, totalNodes int, startTime time.Ti
 	if rateCount > 0 {
 		avgRate = totalRate / float64(rateCount)
 	}
+
 	finalCordoned := snapshots[len(snapshots)-1].CordonedCount
 
 	log.Printf("")
@@ -428,6 +471,7 @@ func displayResults(snapshots []QueueSnapshot, totalNodes int, startTime time.Ti
 
 func saveResults(snapshots []QueueSnapshot, totalNodes int, outputDir, timestamp string) {
 	csvFile := fmt.Sprintf("%s/lightweight-%s.csv", outputDir, timestamp)
+
 	f, err := os.Create(csvFile)
 	if err != nil {
 		log.Printf("⚠️  Failed to create CSV: %v", err)
@@ -436,6 +480,7 @@ func saveResults(snapshots []QueueSnapshot, totalNodes int, outputDir, timestamp
 	defer f.Close()
 
 	fmt.Fprintf(f, "timestamp,elapsed_sec,cordoned,queue_depth,rate\n")
+
 	for _, s := range snapshots {
 		fmt.Fprintf(f, "%s,%.1f,%d,%d,%.2f\n",
 			s.Timestamp.Format(time.RFC3339),

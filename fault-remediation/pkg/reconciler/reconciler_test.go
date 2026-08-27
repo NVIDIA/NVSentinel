@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
@@ -2616,11 +2617,96 @@ func TestAdaptEvents_ForwardsEvents(t *testing.T) {
 	in <- testEvent
 
 	select {
-	case <-out:
-		// Event forwarded successfully
+	case forwarded := <-out:
+		assert.NotNil(t, forwarded.Object.event)
+		assert.Equal(t, testEvent, *forwarded.Object.event)
+		assert.Empty(t, forwarded.Object.documentID)
 	case <-time.After(2 * time.Second):
 		t.Fatal("event was not forwarded through AdaptEvents")
 	}
+}
+
+// TestControllerReconcilerHandlesColdStartFetchResults verifies that invalid and
+// missing cold-start requests are dropped, while a datastore lookup error is
+// returned so controller-runtime requeues and retries the request.
+func TestControllerReconcilerHandlesColdStartFetchResults(t *testing.T) {
+	t.Run("empty document ID is terminal", func(t *testing.T) {
+		controller := controllerReconciler{
+			reconciler: &FaultRemediationReconciler{},
+		}
+
+		result, err := controller.Reconcile(context.Background(), reconcileRequest{})
+
+		assert.NoError(t, err)
+		assert.True(t, result.IsZero())
+	})
+
+	t.Run("missing document is terminal", func(t *testing.T) {
+		store := &MockHealthEventStore{
+			FindHealthEventsByQueryFn: func(_ context.Context, builder datastore.QueryBuilder) (
+				[]datastore.HealthEventWithStatus, error,
+			) {
+				assert.NotPanics(t, func() {
+					_ = builder.ToMongo()
+				})
+
+				return nil, nil
+			},
+		}
+		controller := controllerReconciler{
+			reconciler: &FaultRemediationReconciler{healthEventStore: store},
+		}
+
+		result, err := controller.Reconcile(context.Background(), reconcileRequest{
+			documentID: "507f1f77bcf86cd799439011",
+		})
+
+		assert.NoError(t, err)
+		assert.True(t, result.IsZero())
+	})
+
+	t.Run("datastore failure is retryable", func(t *testing.T) {
+		store := &MockHealthEventStore{
+			FindHealthEventsByQueryFn: func(context.Context, datastore.QueryBuilder) (
+				[]datastore.HealthEventWithStatus, error,
+			) {
+				return nil, errors.New("temporary datastore failure")
+			},
+		}
+		controller := controllerReconciler{
+			reconciler: &FaultRemediationReconciler{healthEventStore: store},
+		}
+
+		_, err := controller.Reconcile(context.Background(), reconcileRequest{
+			documentID: "event-1",
+		})
+
+		assert.ErrorContains(t, err, "temporary datastore failure")
+	})
+}
+
+func TestHandleColdStartQueuesDocumentIDs(t *testing.T) {
+	rawEvent := testRawHealthEvent("event-1", "node-1", protos.RecommendedAction_RESTART_BM)
+	store := &MockHealthEventStore{
+		FindHealthEventsByQueryBatchedFn: func(
+			_ context.Context,
+			_ datastore.QueryBuilder,
+			_ int,
+			fn func([]datastore.HealthEventWithStatus) error,
+		) error {
+			return fn([]datastore.HealthEventWithStatus{{RawEvent: rawEvent}})
+		},
+	}
+	r := &FaultRemediationReconciler{
+		healthEventStore: store,
+		coldStartCh:      make(chan event.TypedGenericEvent[reconcileRequest], 1),
+	}
+
+	r.HandleColdStart(context.Background())
+
+	queued := <-r.coldStartCh
+	assert.Equal(t, "event-1", queued.Object.documentID)
+	assert.Nil(t, queued.Object.event)
 }
 
 func nodeNotFoundErr(nodeName string) error {
@@ -2707,7 +2793,8 @@ func TestDeletedNodeCancellationEventMarkedTerminal(t *testing.T) {
 		ResumeToken: []byte("resume-token"),
 	}
 
-	result, err := r.handleCancellationEvent(ctx, nodeName, model.Cancelled, mockWatcher, eventWithToken, mockStore)
+	result, err := r.handleCancellationEvent(
+		ctx, nodeName, model.Cancelled, mockWatcher, eventWithToken, mockStore)
 	assert.NoError(t, err)
 	assert.True(t, result.IsZero())
 	assert.True(t, updated, "expected faultRemediated=true to be written")

@@ -24,9 +24,11 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
@@ -197,7 +199,7 @@ func TestNodeTransformRetainsEventAndEvaluatorFields(t *testing.T) {
 	assert.Empty(t, transformedNode.Status)
 }
 
-func TestInformerTransformsIntegrateWithIndexesAndNodeEvents(t *testing.T) {
+func TestInformerTransformsIntegrateWithIndexes(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
@@ -243,12 +245,42 @@ func TestInformerTransformsIntegrateWithIndexesAndNodeEvents(t *testing.T) {
 	assert.Equal(t, node.UID, cachedNode.UID)
 	assert.Equal(t, node.ResourceVersion, cachedNode.ResourceVersion)
 	assert.Equal(t, node.Annotations, cachedNode.Annotations)
+}
+
+func TestEventRecorderAggregatesNodeEvents(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	testEnv := envtest.Environment{}
+	cfg, err := testEnv.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, testEnv.Stop()) })
+
+	client, err := kubernetes.NewForConfig(cfg)
+	require.NoError(t, err)
+	node, err := client.CoreV1().Nodes().Create(ctx, &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+	}, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	informers, err := NewInformers(client, 0, ptr.To(5), false, false, "")
+	require.NoError(t, err)
+	require.NoError(t, informers.Run(ctx))
 
 	require.NoError(t, informers.UpdateNodeEvent(ctx, node.Name, "AwaitingPodCompletion", "waiting"))
-	events, err := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, metav1.ListOptions{})
-	require.NoError(t, err)
-	require.Len(t, events.Items, 1)
-	assert.Equal(t, node.UID, events.Items[0].InvolvedObject.UID)
+	require.NoError(t, informers.UpdateNodeEvent(ctx, node.Name, "AwaitingPodCompletion", "waiting"))
+	require.EventuallyWithT(t, func(collect *assert.CollectT) {
+		events, listErr := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, metav1.ListOptions{})
+		if !assert.NoError(collect, listErr) || !assert.Len(collect, events.Items, 1) {
+			return
+		}
+
+		event := events.Items[0]
+		assert.Equal(collect, node.UID, event.InvolvedObject.UID)
+		assert.Equal(collect, v1.EventTypeNormal, event.Type)
+		assert.Equal(collect, "nvsentinel-node-drainer", event.Source.Component)
+		assert.Equal(collect, int32(2), event.Count)
+	}, 5*time.Second, 50*time.Millisecond)
 }
 
 func richDrainEligiblePod(namespace, name, nodeName string) *v1.Pod {

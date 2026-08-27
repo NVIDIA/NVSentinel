@@ -54,6 +54,18 @@ labeler:
   logLevel: info  # Options: debug, info, warn, error
 ```
 
+### Kubernetes API Rate Limits
+
+The labeler inherits the Kubernetes client limits from `global.qps` and `global.burst` (defaults: `5` and `10`). Set component values only when the labeler needs different limits:
+
+```yaml
+labeler:
+  qps: 40
+  burst: 80
+```
+
+Positive `qps` values enable client-side throttling, `0` uses the client-go default, and a negative value disables client-side throttling. `burst` must be non-negative; `0` uses the client-go default.
+
 ## Pre-Installed Drivers
 
 Assumes NVIDIA drivers are installed directly on the host rather than via GPU Operator driver containers. When enabled, the labeler sets `nvsentinel.dgxc.nvidia.com/driver.installed=true` on all GPU nodes it manages (`nvidia.com/gpu.present=true`; nodes opted out with `nvsentinel.dgxc.nvidia.com/managed=false` — for example during external remediation — are excluded), skipping driver pod detection.

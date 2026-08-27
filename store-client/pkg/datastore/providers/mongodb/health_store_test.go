@@ -24,7 +24,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
@@ -400,11 +400,11 @@ func TestNormalizeValue(t *testing.T) {
 		expected interface{}
 	}{
 		{
-			name: "primitive.D with nested values",
-			input: primitive.D{
+			name: "bson.D with nested values",
+			input: bson.D{
 				{Key: "nodename", Value: "test-node"},
 				{Key: "status", Value: "healthy"},
-				{Key: "metadata", Value: primitive.D{
+				{Key: "metadata", Value: bson.D{
 					{Key: "region", Value: "us-west"},
 					{Key: "zone", Value: "a"},
 				}},
@@ -419,14 +419,14 @@ func TestNormalizeValue(t *testing.T) {
 			},
 		},
 		{
-			name: "primitive.D with array containing primitive.D",
-			input: primitive.D{
+			name: "bson.D with array containing bson.D",
+			input: bson.D{
 				{Key: "items", Value: []interface{}{
-					primitive.D{
+					bson.D{
 						{Key: "name", Value: "item1"},
 						{Key: "value", Value: int32(100)},
 					},
-					primitive.D{
+					bson.D{
 						{Key: "name", Value: "item2"},
 						{Key: "value", Value: int32(200)},
 					},
@@ -465,7 +465,7 @@ func TestNormalizeValue(t *testing.T) {
 			input: []interface{}{
 				"string",
 				123,
-				primitive.D{{Key: "key", Value: "value"}},
+				bson.D{{Key: "key", Value: "value"}},
 				map[string]interface{}{"already": "normalized"},
 			},
 			expected: []interface{}{
@@ -473,6 +473,34 @@ func TestNormalizeValue(t *testing.T) {
 				123,
 				map[string]interface{}{"key": "value"},
 				map[string]interface{}{"already": "normalized"},
+			},
+		},
+		{
+			// The collection client sets DefaultDocumentM, so documents decode
+			// into bson.M rather than bson.D. bson.M is a defined type, so it
+			// does not match the map[string]interface{} case.
+			name: "top-level bson.M with nested values",
+			input: bson.M{
+				"nodename": "test-node",
+				"metadata": bson.M{
+					"region": "us-west",
+				},
+				"nested_d": bson.D{{Key: "zone", Value: "a"}},
+				"items": bson.A{
+					bson.M{"name": "item1"},
+					bson.D{{Key: "name", Value: "item2"}},
+				},
+			},
+			expected: map[string]interface{}{
+				"nodename": "test-node",
+				"metadata": map[string]interface{}{
+					"region": "us-west",
+				},
+				"nested_d": map[string]interface{}{"zone": "a"},
+				"items": []interface{}{
+					map[string]interface{}{"name": "item1"},
+					map[string]interface{}{"name": "item2"},
+				},
 			},
 		},
 		{

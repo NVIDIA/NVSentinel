@@ -502,7 +502,9 @@ func (c *FaultRemediationClient) launchLogCollectorJob(
 		manifestPath = filepath.Join(c.templateMountPath, "log-collector-job.yaml")
 	}
 
-	content, err := os.ReadFile(manifestPath)
+	// G703: manifestPath is operator-supplied (env var or the chart-mounted
+	// template directory), not derived from health-event or user input.
+	content, err := os.ReadFile(manifestPath) //nolint:gosec
 	if err != nil {
 		tracing.RecordError(span, err)
 		span.SetAttributes(attribute.String("fault_remediation.error.type", "manifest_read_error"))

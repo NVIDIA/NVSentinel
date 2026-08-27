@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -42,9 +43,13 @@ type Reporter struct {
 	socketPath         string
 	nodeName           string
 	processingStrategy pb.ProcessingStrategy
+	tokenPath          string
 }
 
-func NewReporter(socketPath, nodeName string, strategy pb.ProcessingStrategy) *Reporter {
+// NewReporter builds a Reporter for the Platform Connector at socketPath.
+// tokenPath is the optional file path of a projected ServiceAccount token to
+// present as a Bearer credential on every call; empty disables token metadata.
+func NewReporter(socketPath, nodeName string, strategy pb.ProcessingStrategy, tokenPath string) *Reporter {
 	// Remove unix:// prefix if present for grpc.Dial
 	socketPath = strings.TrimPrefix(socketPath, "unix://")
 
@@ -52,6 +57,7 @@ func NewReporter(socketPath, nodeName string, strategy pb.ProcessingStrategy) *R
 		socketPath:         socketPath,
 		nodeName:           nodeName,
 		processingStrategy: strategy,
+		tokenPath:          tokenPath,
 	}
 }
 
@@ -139,10 +145,14 @@ func isRetryable(err error) bool {
 }
 
 func (r *Reporter) send(ctx context.Context, events *pb.HealthEvents) error {
-	conn, err := grpc.NewClient(
-		"unix://"+r.socketPath,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	// DialOptions is a no-op for an empty token path, so the plain Unix-socket
+	// path is unchanged when no token is configured.
+	dialOpts := append(
+		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
+		grpcclient.DialOptions(r.tokenPath)...,
 	)
+
+	conn, err := grpc.NewClient("unix://"+r.socketPath, dialOpts...)
 	if err != nil {
 		return fmt.Errorf("failed to connect to platform connector: %w", err)
 	}

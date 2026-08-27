@@ -71,6 +71,13 @@ var (
 		"unix:///var/run/nvsentinel.sock",
 		"Platform Connector gRPC socket",
 	)
+	platformConnectorTokenPath = flag.String(
+		"platform-connector-token-path",
+		"",
+		"Path to a projected ServiceAccount token presented to platform-connector. "+
+			"Required for reporting health events about nodes other than the one this pod runs on; "+
+			"empty disables token authentication.",
+	)
 	processingStrategyFlag = flag.String(
 		"processing-strategy",
 		"EXECUTE_REMEDIATION",
@@ -106,6 +113,7 @@ func run() error {
 		ResyncPeriod:            *resyncPeriod,
 		MaxConcurrentReconciles: *maxConcurrentReconciles,
 		PlatformConnectorSocket: *platformConnectorSocket,
+		PlatformConnectorToken:  *platformConnectorTokenPath,
 		ProcessingStrategy:      *processingStrategyFlag,
 	}
 

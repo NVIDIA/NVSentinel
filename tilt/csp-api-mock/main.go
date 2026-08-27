@@ -15,14 +15,28 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net"
 	"net/http"
+	"time"
 
-	loggingpb "cloud.google.com/go/logging/apiv2/loggingpb"
 	"csp-api-mock/pkg/handler"
 	"csp-api-mock/pkg/store"
+
+	loggingpb "cloud.google.com/go/logging/apiv2/loggingpb"
 	"google.golang.org/grpc"
+)
+
+// This is an in-cluster mock served to the Tilt dev environment only, so both
+// listeners intentionally bind all interfaces (gosec G102).
+const (
+	httpAddr = ":8080"
+	grpcAddr = ":50051"
+
+	readHeaderTimeout = 10 * time.Second
+	readTimeout       = 30 * time.Second
+	writeTimeout      = 30 * time.Second
 )
 
 func main() {
@@ -38,12 +52,24 @@ func main() {
 
 	go startGRPCServer(handler.NewGCPLoggingServer(eventStore))
 
-	log.Printf("CSP API Mock: HTTP on :8080, gRPC on :50051")
-	log.Fatal(http.ListenAndServe(":8080", mux))
+	log.Printf("CSP API Mock: HTTP on %s, gRPC on %s", httpAddr, grpcAddr)
+
+	server := &http.Server{
+		Addr:              httpAddr, //nolint:gosec // G102: dev-only mock, binds all interfaces by design
+		Handler:           mux,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+	}
+
+	log.Fatal(server.ListenAndServe())
 }
 
 func startGRPCServer(gcpServer *handler.GCPLoggingServer) {
-	lis, err := net.Listen("tcp", ":50051")
+	var lc net.ListenConfig
+
+	//nolint:gosec // G102: dev-only mock, binds all interfaces by design
+	lis, err := lc.Listen(context.Background(), "tcp", grpcAddr)
 	if err != nil {
 		log.Fatalf("Failed to listen on gRPC port: %v", err)
 	}

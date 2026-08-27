@@ -15,7 +15,7 @@
 package mongodb
 
 import (
-	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 )

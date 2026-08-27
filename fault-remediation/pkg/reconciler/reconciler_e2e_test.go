@@ -2077,6 +2077,7 @@ func TestHandleColdStart_RemediationFlow(t *testing.T) {
 	defer func() {
 		cleanupNodeAnnotations(ctx, t, nodeName)
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+		mockStore.FindHealthEventsByQueryFn = nil
 		mockStore.FindHealthEventsByQueryBatchedFn = nil
 	}()
 
@@ -2085,9 +2086,19 @@ func TestHandleColdStart_RemediationFlow(t *testing.T) {
 		model.Quarantined, model.StatusSucceeded,
 		protos.RecommendedAction_RESTART_BM, time.Now(),
 	)
-
-	mockStore.FindHealthEventsByQueryBatchedFn = func(_ context.Context, _ datastore.QueryBuilder, _ int, fn func([]datastore.HealthEventWithStatus) error) error {
+	mockStore.FindHealthEventsByQueryBatchedFn = func(
+		_ context.Context,
+		_ datastore.QueryBuilder,
+		_ int,
+		fn func([]datastore.HealthEventWithStatus) error,
+	) error {
 		return fn([]datastore.HealthEventWithStatus{missedEvent})
+	}
+	mockStore.FindHealthEventsByQueryFn = func(
+		_ context.Context,
+		_ datastore.QueryBuilder,
+	) ([]datastore.HealthEventWithStatus, error) {
+		return []datastore.HealthEventWithStatus{missedEvent}, nil
 	}
 
 	t.Log("Calling HandleColdStart to enqueue missed event")
@@ -2140,6 +2151,7 @@ func TestHandleColdStart_CancellationFlow(t *testing.T) {
 
 	defer func() {
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+		mockStore.FindHealthEventsByQueryFn = nil
 		mockStore.FindHealthEventsByQueryBatchedFn = nil
 	}()
 
@@ -2176,9 +2188,19 @@ func TestHandleColdStart_CancellationFlow(t *testing.T) {
 		model.Cancelled, model.StatusSucceeded,
 		protos.RecommendedAction_RESTART_BM, time.Now(),
 	)
-
-	mockStore.FindHealthEventsByQueryBatchedFn = func(_ context.Context, _ datastore.QueryBuilder, _ int, fn func([]datastore.HealthEventWithStatus) error) error {
+	mockStore.FindHealthEventsByQueryBatchedFn = func(
+		_ context.Context,
+		_ datastore.QueryBuilder,
+		_ int,
+		fn func([]datastore.HealthEventWithStatus) error,
+	) error {
 		return fn([]datastore.HealthEventWithStatus{cancelledEvent})
+	}
+	mockStore.FindHealthEventsByQueryFn = func(
+		_ context.Context,
+		_ datastore.QueryBuilder,
+	) ([]datastore.HealthEventWithStatus, error) {
+		return []datastore.HealthEventWithStatus{cancelledEvent}, nil
 	}
 
 	t.Log("Step 3: Calling HandleColdStart to enqueue missed cancellation")
@@ -2342,10 +2364,16 @@ func TestColdStartCancellationQueryRequiresCompletionMarker(t *testing.T) {
 	coldStartCallCount := 0
 
 	localStore := &MockHealthEventStore{}
-	localStore.FindHealthEventsByQueryBatchedFn = func(_ context.Context, builder datastore.QueryBuilder, _ int, fn func([]datastore.HealthEventWithStatus) error) error {
+	localStore.FindHealthEventsByQueryBatchedFn = func(
+		_ context.Context,
+		builder datastore.QueryBuilder,
+		_ int,
+		_ func([]datastore.HealthEventWithStatus) error,
+	) error {
 		coldStartCallCount++
 		capturedQuery = builder.ToMongo()
-		return fn([]datastore.HealthEventWithStatus{})
+
+		return nil
 	}
 
 	remediationClient, err := createTestRemediationClient(false, restartRemediationActions)
