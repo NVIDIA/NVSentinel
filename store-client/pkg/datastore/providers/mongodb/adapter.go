@@ -151,7 +151,7 @@ func (a *AdaptedMongoStore) GetCollectionClient() client.CollectionClient {
 
 // CreateChangeStreamWatcher creates a change stream watcher
 func (a *AdaptedMongoStore) CreateChangeStreamWatcher(ctx context.Context, clientName string,
-	pipeline interface{}) (datastore.ChangeStreamWatcher, error) {
+	pipeline any) (datastore.ChangeStreamWatcher, error) {
 	// Use our existing factory to create a change stream watcher
 	// Note: Token configuration is loaded from environment variables by the factory
 	// via config.TokenConfigFromEnv(clientName). To customize token collection,
@@ -170,17 +170,17 @@ func (a *AdaptedMongoStore) CreateChangeStreamWatcher(ctx context.Context, clien
 // NewChangeStreamWatcher creates a new change stream watcher for the MongoDB datastore
 // This method makes MongoDB compatible with the datastore abstraction layer using a config map
 func (a *AdaptedMongoStore) NewChangeStreamWatcher(
-	ctx context.Context, config interface{},
+	ctx context.Context, config any,
 ) (datastore.ChangeStreamWatcher, error) {
 	// Convert the generic config to MongoDB-specific parameters
 	var clientName string
 
-	var pipeline interface{}
+	var pipeline any
 
 	// Handle different config types that might be passed
 
 	switch c := config.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		// Support generic config format from factory
 		if clientNameVal, ok := c["ClientName"].(string); ok {
 			clientName = clientNameVal
@@ -226,7 +226,7 @@ func (a *AdaptedChangeStreamWatcher) Events() <-chan datastore.EventWithToken {
 
 			for event := range a.watcher.Events() {
 				// Convert from our existing Event interface to the new EventWithToken
-				eventMap := make(map[string]interface{})
+				eventMap := make(map[string]any)
 
 				// Extract the event data
 				if err := event.UnmarshalDocument(&eventMap); err != nil {

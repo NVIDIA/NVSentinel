@@ -22,7 +22,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -44,7 +43,6 @@ func RandString(n int) string {
 // (`+kubebuilder:validation`) on the GPUReset CRD.
 
 var _ = Describe("GPUReset Validation", func() {
-
 	Context("When creating a GPUReset resource", func() {
 		const (
 			TestNodeName      = "test-node-1"
@@ -58,10 +56,8 @@ var _ = Describe("GPUReset Validation", func() {
 		BeforeEach(func() {
 			gpuResetName = "test-gpureset-" + RandString(5)
 			gpuReset = &GPUReset{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      gpuResetName,
-					Namespace: GPUResetNamespace,
-				},
+				Name:      gpuResetName,
+				Namespace: GPUResetNamespace,
 				Spec: GPUResetSpec{
 					NodeName: TestNodeName,
 				},

@@ -296,7 +296,14 @@ fi
 # Check jobs
 echo "=== Jobs ==="
 if [[ "$DATASTORE" == "mongodb" ]]; then
-    check_job "create-mongodb-database"
+    mongodb_job=$(kubectl get job -n "$NAMESPACE" -l app.kubernetes.io/name=create-mongodb-database \
+        --sort-by=.metadata.creationTimestamp \
+        -o jsonpath='{.items[-1:].metadata.name}' 2>/dev/null || true)
+    if [[ -n "$mongodb_job" ]]; then
+        check_job "$mongodb_job"
+    else
+        error "create-mongodb-database job not found (label app.kubernetes.io/name=create-mongodb-database)"
+    fi
 else
     ok "no initialization jobs required for postgresql (schema auto-initialized)"
 fi

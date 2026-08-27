@@ -22,6 +22,9 @@ import (
 
 // CR Status constants for event processing metrics
 const (
+	// labelNodeName is the node-name label shared by the metrics below.
+	labelNodeName = "node_name"
+
 	CRStatusCreated = "created"
 	CRStatusSkipped = "skipped"
 	CRStatusWaiting = "waiting"
@@ -42,21 +45,21 @@ var (
 			Name: "fault_remediation_events_processed_total",
 			Help: "Total number of remediation events processed by CR creation status.",
 		},
-		[]string{"cr_status", "node_name"},
+		[]string{"cr_status", labelNodeName},
 	)
 	ProcessingErrors = promauto.With(crmetrics.Registry).NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "fault_remediation_processing_errors_total",
 			Help: "Total number of errors encountered during event processing.",
 		},
-		[]string{"error_type", "node_name"},
+		[]string{"error_type", labelNodeName},
 	)
 	TotalUnsupportedRemediationActions = promauto.With(crmetrics.Registry).NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "fault_remediation_unsupported_actions_total",
 			Help: "Total number of health events with currently unsupported remediation actions.",
 		},
-		[]string{"action", "node_name"},
+		[]string{"action", labelNodeName},
 	)
 
 	// Performance Metrics
@@ -83,7 +86,7 @@ var (
 			Name: "fault_remediation_log_collector_jobs_total",
 			Help: "Total number of log collector jobs.",
 		},
-		[]string{"node_name", "status"},
+		[]string{labelNodeName, "status"},
 	)
 	LogCollectorJobDuration = promauto.With(crmetrics.Registry).NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -91,13 +94,13 @@ var (
 			Help:    "Duration of log collector jobs in seconds.",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"node_name", "status"},
+		[]string{labelNodeName, "status"},
 	)
 	LogCollectorErrors = promauto.With(crmetrics.Registry).NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "fault_remediation_log_collector_errors_total",
 			Help: "Total number of errors encountered in log collector operations.",
 		},
-		[]string{"error_type", "node_name"},
+		[]string{"error_type", labelNodeName},
 	)
 )

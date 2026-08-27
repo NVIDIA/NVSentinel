@@ -30,6 +30,18 @@ kubectl label namespace {namespace} nvsentinel.nvidia.com/preflight=enabled
 
 The chart default `namespaceSelector` matches that label.
 
+## Kubernetes API rate limits
+
+Preflight inherits the Kubernetes client limits from `global.qps` and `global.burst` (defaults: `5` and `10`). Set component values only when Preflight needs different limits:
+
+```yaml
+preflight:
+  qps: 40
+  burst: 80
+```
+
+Positive `qps` values enable client-side throttling, `0` uses the client-go default, and a negative value disables client-side throttling. `burst` must be non-negative; `0` uses the client-go default.
+
 ## Init container placement
 
 By default the webhook **appends** preflight init containers after any existing init containers in the pod spec. This ensures provider-injected setup containers (e.g., GCP TCPXO daemon) complete before preflight checks run.

@@ -208,11 +208,11 @@ Use the **exact connection string** your provider shows in its console as the **
 
 You do **not** need to manually create the `HealthEventsDatabase` database or any collections
 in any of the CSPs below. On every `helm install` or `helm upgrade`, NVSentinel automatically
-runs the `nvsentinel-external-mongodb-setup` Job which:
+runs the `<release>-external-mongodb-setup-<collectionExpirySeconds>-<scriptHash>` Job (`-l app.kubernetes.io/name=external-mongodb-setup`) which:
 
 - Creates the `HealthEventsDatabase` database (MongoDB creates it lazily on first write)
 - Creates the `HealthEvents`, `ResumeTokens`, and `MaintenanceEvents` collections if they don't exist
-- Creates TTL indexes (auto-expire old events) and query indexes on all collections
+- Creates TTL indexes from `mongodb-store.collectionExpirySeconds` (default 2592000). A TTL change recreates the setup Job and collMod's existing indexes.
 
 All you need is a cluster endpoint and a database user with read/write access.
 

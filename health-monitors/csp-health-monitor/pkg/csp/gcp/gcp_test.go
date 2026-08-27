@@ -30,7 +30,6 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	structpb "google.golang.org/protobuf/types/known/structpb"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
@@ -51,20 +50,20 @@ const (
 )
 
 type mockNormalizer struct {
-	NormalizeFunc func(rawEvent interface{}, additionalInfo ...interface{}) (*model.MaintenanceEvent, error)
+	NormalizeFunc func(rawEvent any, additionalInfo ...any) (*model.MaintenanceEvent, error)
 	calls         []struct {
-		RawEvent       interface{}
-		AdditionalInfo []interface{}
+		RawEvent       any
+		AdditionalInfo []any
 	}
 }
 
 func (m *mockNormalizer) Normalize(
-	rawEvent interface{},
-	additionalInfo ...interface{},
+	rawEvent any,
+	additionalInfo ...any,
 ) (*model.MaintenanceEvent, error) {
 	m.calls = append(m.calls, struct {
-		RawEvent       interface{}
-		AdditionalInfo []interface{}
+		RawEvent       any
+		AdditionalInfo []any
 	}{rawEvent, additionalInfo})
 	if m.NormalizeFunc != nil {
 		return m.NormalizeFunc(rawEvent, additionalInfo...)
@@ -236,11 +235,9 @@ func TestProcessLogEntries_OneValidMappableEntry(t *testing.T) {
 	defer cancel()
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        testPollLogsNodeName,
-			Annotations: map[string]string{gcpInstanceIDAnnotation: testPollLogsInstanceID},
-			Labels:      map[string]string{ZONE: testPollLogsZone},
-		},
+		Name:        testPollLogsNodeName,
+		Annotations: map[string]string{gcpInstanceIDAnnotation: testPollLogsInstanceID},
+		Labels:      map[string]string{ZONE: testPollLogsZone},
 	}
 	_ = fakeK8sCS.Tracker().Add(node)
 
@@ -359,7 +356,7 @@ func TestProcessLogEntries_NormalizationError(t *testing.T) {
 	)
 	mockIter := &mockEntryIterator{entries: []*logging.Entry{logEntry}}
 
-	mockNorm.NormalizeFunc = func(rawEvent interface{}, additionalInfo ...interface{}) (*model.MaintenanceEvent, error) {
+	mockNorm.NormalizeFunc = func(rawEvent any, additionalInfo ...any) (*model.MaintenanceEvent, error) {
 		return nil, errors.New("normalization failed badly")
 	}
 
@@ -418,7 +415,7 @@ func TestProcessLogEntries_ContextCancelledDuringProcessing(t *testing.T) {
 	mockIter := &mockEntryIterator{entries: []*logging.Entry{log1, log2}}
 
 	processedOne := make(chan struct{})
-	mockNorm.NormalizeFunc = func(rawEvent interface{}, additionalInfo ...interface{}) (*model.MaintenanceEvent, error) {
+	mockNorm.NormalizeFunc = func(rawEvent any, additionalInfo ...any) (*model.MaintenanceEvent, error) {
 		entry := rawEvent.(*logging.Entry)
 		if entry.InsertID == "ctx-proc-1" {
 			close(processedOne)               // Signal that the first one is being processed
@@ -474,11 +471,9 @@ func TestProcessLogEntries_WithOperationProducer(t *testing.T) {
 	defer cancel()
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        testPollLogsNodeName,
-			Annotations: map[string]string{gcpInstanceIDAnnotation: testPollLogsInstanceID},
-			Labels:      map[string]string{ZONE: testPollLogsZone},
-		},
+		Name:        testPollLogsNodeName,
+		Annotations: map[string]string{gcpInstanceIDAnnotation: testPollLogsInstanceID},
+		Labels:      map[string]string{ZONE: testPollLogsZone},
 	}
 	_ = fakeK8sCS.Tracker().Add(node)
 
@@ -505,7 +500,7 @@ func TestProcessLogEntries_WithOperationProducer(t *testing.T) {
 	mockIter := &mockEntryIterator{entries: []*logging.Entry{logEntry}}
 
 	// Setup mock normalizer to return a specific CSPStatus for verification
-	mockNorm.NormalizeFunc = func(rawEvent interface{}, additionalInfo ...interface{}) (*model.MaintenanceEvent, error) {
+	mockNorm.NormalizeFunc = func(rawEvent any, additionalInfo ...any) (*model.MaintenanceEvent, error) {
 		entry := rawEvent.(*logging.Entry)
 		nodeName, _ := additionalInfo[0].(string)
 		clusterName, _ := additionalInfo[1].(string)
@@ -597,7 +592,7 @@ func TestProcessLogEntries_UnmappableInstance(t *testing.T) {
 	mockIter := &mockEntryIterator{entries: []*logging.Entry{logEntry}}
 
 	// Normalizer should be called with an empty node name
-	mockNorm.NormalizeFunc = func(rawEvent interface{}, additionalInfo ...interface{}) (*model.MaintenanceEvent, error) {
+	mockNorm.NormalizeFunc = func(rawEvent any, additionalInfo ...any) (*model.MaintenanceEvent, error) {
 		entry := rawEvent.(*logging.Entry)
 		var nodeName string
 		if len(additionalInfo) > 0 {
@@ -652,11 +647,9 @@ func TestProcessLogEntries_OngoingStatus(t *testing.T) {
 	defer cancel()
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        testPollLogsNodeName,
-			Annotations: map[string]string{gcpInstanceIDAnnotation: testPollLogsInstanceID},
-			Labels:      map[string]string{ZONE: testPollLogsZone},
-		},
+		Name:        testPollLogsNodeName,
+		Annotations: map[string]string{gcpInstanceIDAnnotation: testPollLogsInstanceID},
+		Labels:      map[string]string{ZONE: testPollLogsZone},
 	}
 	_ = fakeK8sCS.Tracker().Add(node)
 
@@ -681,7 +674,7 @@ func TestProcessLogEntries_OngoingStatus(t *testing.T) {
 	)
 	mockIter := &mockEntryIterator{entries: []*logging.Entry{logEntry}}
 
-	mockNorm.NormalizeFunc = func(rawEvent interface{}, additionalInfo ...interface{}) (*model.MaintenanceEvent, error) {
+	mockNorm.NormalizeFunc = func(rawEvent any, additionalInfo ...any) (*model.MaintenanceEvent, error) {
 		entry := rawEvent.(*logging.Entry)
 		nodeName, _ := additionalInfo[0].(string)
 		clusterName, _ := additionalInfo[1].(string)
@@ -741,11 +734,9 @@ func TestProcessLogEntries_CompletedStatus(t *testing.T) {
 	defer cancel()
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        testPollLogsNodeName,
-			Annotations: map[string]string{gcpInstanceIDAnnotation: testPollLogsInstanceID},
-			Labels:      map[string]string{ZONE: testPollLogsZone},
-		},
+		Name:        testPollLogsNodeName,
+		Annotations: map[string]string{gcpInstanceIDAnnotation: testPollLogsInstanceID},
+		Labels:      map[string]string{ZONE: testPollLogsZone},
 	}
 	_ = fakeK8sCS.Tracker().Add(node)
 
@@ -770,7 +761,7 @@ func TestProcessLogEntries_CompletedStatus(t *testing.T) {
 	)
 	mockIter := &mockEntryIterator{entries: []*logging.Entry{logEntry}}
 
-	mockNorm.NormalizeFunc = func(rawEvent interface{}, additionalInfo ...interface{}) (*model.MaintenanceEvent, error) {
+	mockNorm.NormalizeFunc = func(rawEvent any, additionalInfo ...any) (*model.MaintenanceEvent, error) {
 		entry := rawEvent.(*logging.Entry)
 		nodeName, _ := additionalInfo[0].(string)
 		clusterName, _ := additionalInfo[1].(string)
@@ -830,11 +821,9 @@ func TestProcessLogEntries_CancelledStatus(t *testing.T) {
 	defer cancel()
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        testPollLogsNodeName,
-			Annotations: map[string]string{gcpInstanceIDAnnotation: testPollLogsInstanceID},
-			Labels:      map[string]string{ZONE: testPollLogsZone},
-		},
+		Name:        testPollLogsNodeName,
+		Annotations: map[string]string{gcpInstanceIDAnnotation: testPollLogsInstanceID},
+		Labels:      map[string]string{ZONE: testPollLogsZone},
 	}
 	_ = fakeK8sCS.Tracker().Add(node)
 
@@ -859,7 +848,7 @@ func TestProcessLogEntries_CancelledStatus(t *testing.T) {
 	)
 	mockIter := &mockEntryIterator{entries: []*logging.Entry{logEntry}}
 
-	mockNorm.NormalizeFunc = func(rawEvent interface{}, additionalInfo ...interface{}) (*model.MaintenanceEvent, error) {
+	mockNorm.NormalizeFunc = func(rawEvent any, additionalInfo ...any) (*model.MaintenanceEvent, error) {
 		entry := rawEvent.(*logging.Entry)
 		nodeName, _ := additionalInfo[0].(string)
 		clusterName, _ := additionalInfo[1].(string)
@@ -923,14 +912,12 @@ func TestMapGCPInstanceToNodeName(t *testing.T) {
 	)
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: nodeName,
-			Annotations: map[string]string{
-				gcpInstanceIDAnnotation: instanceID,
-			},
-			Labels: map[string]string{
-				ZONE: zone,
-			},
+		Name: nodeName,
+		Annotations: map[string]string{
+			gcpInstanceIDAnnotation: instanceID,
+		},
+		Labels: map[string]string{
+			ZONE: zone,
 		},
 	}
 	fakeCS := fake.NewSimpleClientset(node)
@@ -964,11 +951,9 @@ func TestMapGCPInstanceToNodeNameNoZoneLabel(t *testing.T) {
 	)
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: nodeName,
-			Annotations: map[string]string{
-				gcpInstanceIDAnnotation: instanceID,
-			},
+		Name: nodeName,
+		Annotations: map[string]string{
+			gcpInstanceIDAnnotation: instanceID,
 		},
 	}
 	fakeCS := fake.NewSimpleClientset(node)
@@ -985,11 +970,9 @@ func TestMapGCPInstanceToNodeNameNoZoneLabel(t *testing.T) {
 
 func TestMapGCPInstanceToNodeNameMultipleNodes(t *testing.T) {
 	node1 := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "unrelated-node",
-			Annotations: map[string]string{
-				gcpInstanceIDAnnotation: "1111111111111111111",
-			},
+		Name: "unrelated-node",
+		Annotations: map[string]string{
+			gcpInstanceIDAnnotation: "1111111111111111111",
 		},
 	}
 	const (
@@ -997,13 +980,11 @@ func TestMapGCPInstanceToNodeNameMultipleNodes(t *testing.T) {
 		nodeName   = "target-node"
 	)
 	node2 := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: nodeName,
-			Annotations: map[string]string{
-				gcpInstanceIDAnnotation: instanceID,
-			},
-			Labels: map[string]string{ZONE: "europe-west4-b"},
+		Name: nodeName,
+		Annotations: map[string]string{
+			gcpInstanceIDAnnotation: instanceID,
 		},
+		Labels: map[string]string{ZONE: "europe-west4-b"},
 	}
 	fakeCS := fake.NewSimpleClientset(node1, node2)
 	c := &Client{k8sClientset: fakeCS}

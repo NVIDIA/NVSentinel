@@ -907,7 +907,7 @@ func TestEthState_DelayedBaseline_ReplaysWindowDisappearance(t *testing.T) {
 
 	var disappearance []*pb.HealthEvent
 
-	for i := 0; i < deviceMissThreshold; i++ {
+	for range deviceMissThreshold {
 		events, err := check.Run()
 		require.NoError(t, err)
 
@@ -976,7 +976,7 @@ func TestEthState_WindowDisappearanceProvenanceSurvivesRestart(t *testing.T) {
 	// mlx5_0 disappears during the window and FATALs after the debounce.
 	delete(node.ib, "mlx5_0")
 
-	for i := 0; i < deviceMissThreshold; i++ {
+	for range deviceMissThreshold {
 		_, err := firstPod.Run()
 		require.NoError(t, err)
 	}

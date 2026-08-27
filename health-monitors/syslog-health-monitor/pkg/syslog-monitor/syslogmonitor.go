@@ -753,8 +753,8 @@ func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinit
 
 			// Combined flag: unit name in same element (e.g. "-u containerd.service")
 			var unitName string
-			if strings.HasPrefix(trimmedTag, "-u ") {
-				unitName = strings.TrimSpace(strings.TrimPrefix(trimmedTag, "-u "))
+			if after, ok := strings.CutPrefix(trimmedTag, "-u "); ok {
+				unitName = strings.TrimSpace(after)
 			} else {
 				unitName = strings.TrimSpace(strings.TrimPrefix(trimmedTag, "--unit "))
 			}
@@ -1144,10 +1144,7 @@ func (sm *SyslogMonitor) initializeJournalFromBootStart(journal Journal, check C
 			"lookbackWindow", lookback,
 			"seekTarget", seekTarget.Format(time.RFC3339))
 
-		seekUsec := seekTarget.UnixMicro()
-		if seekUsec < 0 {
-			seekUsec = 0
-		}
+		seekUsec := max(seekTarget.UnixMicro(), 0)
 
 		//nolint:gosec // G115: seekUsec is guarded >= 0 above
 		if err := journal.SeekRealtimeUsec(uint64(seekUsec)); err != nil {
@@ -1260,7 +1257,7 @@ func (sm *SyslogMonitor) getJournalMessage(journal Journal, checkName string) (s
 	maxRetries := 3
 	retryDelay := 100 * time.Millisecond
 
-	for i := 0; i < maxRetries; i++ {
+	for i := range maxRetries {
 		// Try to read the message
 		message, err = journal.GetData(FieldMessage)
 		if err == nil {

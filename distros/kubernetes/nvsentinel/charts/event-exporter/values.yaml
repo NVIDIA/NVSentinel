@@ -92,3 +92,5 @@ exporter:
     maxBackoff: "5m"
     backoffMultiplier: 2.0
 
+# Pod priority for this component. Overridden by the matching global when that is set.
+priorityClassName: ""

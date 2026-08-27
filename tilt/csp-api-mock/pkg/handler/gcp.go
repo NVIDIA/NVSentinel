@@ -57,6 +57,7 @@ func (h *GCPHandler) handleInject(w http.ResponseWriter, r *http.Request) {
 	if req.ID == "" {
 		req.ID = fmt.Sprintf("gcp-event-%d", time.Now().UnixNano())
 	}
+
 	req.CSP = store.CSPGCP
 
 	existing, exists := h.store.Get(req.ID)
@@ -65,7 +66,9 @@ func (h *GCPHandler) handleInject(w http.ResponseWriter, r *http.Request) {
 	if exists {
 		mergeEvent(existing, &req)
 		h.store.Update(existing)
+
 		statusCode = http.StatusOK
+
 		log.Printf("GCP: Updated event %s", existing.ID)
 	} else {
 		setDefaults(&req)
@@ -75,39 +78,42 @@ func (h *GCPHandler) handleInject(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(map[string]string{"eventId": req.ID})
+	writeJSON(w, map[string]string{"eventId": req.ID})
 }
 
 func (h *GCPHandler) handleListEvents(w http.ResponseWriter, r *http.Request) {
 	events := h.store.ListByCSP(store.CSPGCP)
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(events)
+	writeJSON(w, events)
 }
 
 func (h *GCPHandler) handleClear(w http.ResponseWriter, r *http.Request) {
 	h.store.ClearByCSP(store.CSPGCP)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "cleared"})
+	writeJSON(w, map[string]string{keyStatus: "cleared"})
 }
 
 func (h *GCPHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]int64{"pollCount": h.store.GetPollCount(store.CSPGCP)})
+	writeJSON(w, map[string]int64{"pollCount": h.store.GetPollCount(store.CSPGCP)})
 }
 
 func (h *GCPHandler) handleResetStats(w http.ResponseWriter, r *http.Request) {
 	h.store.ResetPollCount(store.CSPGCP)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "reset"})
+	writeJSON(w, map[string]string{keyStatus: "reset"})
 }
 
 func setDefaults(e *store.MaintenanceEvent) {
 	if e.Status == "" {
-		e.Status = "PENDING"
+		e.Status = gcpStatusPending
 	}
+
 	if e.EventTypeCode == "" {
 		e.EventTypeCode = "compute.instances.upcomingMaintenance"
 	}
+
 	if e.MaintenanceType == "" {
 		e.MaintenanceType = "SCHEDULED"
 	}

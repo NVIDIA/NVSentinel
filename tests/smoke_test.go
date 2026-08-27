@@ -130,7 +130,7 @@ func TestFatalHealthEvent(t *testing.T) {
 		helpers.WaitForNodesWithLabel(ctx, t, client, []string{nodeName}, statemanager.NVSentinelStateLabelKey, string(statemanager.DrainingLabelValue))
 
 		expectedDrainingNodeEvent := v1.Event{
-			Type:   "NodeDraining",
+			Type:   v1.EventTypeNormal,
 			Reason: "AwaitingPodCompletion",
 		}
 		helpers.WaitForNodeEvent(ctx, t, client, nodeName, expectedDrainingNodeEvent)
@@ -321,7 +321,7 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 		helpers.WaitForNodesWithLabel(ctx, t, client, []string{nodeName}, statemanager.NVSentinelStateLabelKey, string(statemanager.DrainingLabelValue))
 
 		expectedDrainingNodeEvent := v1.Event{
-			Type:   "NodeDraining",
+			Type:   v1.EventTypeNormal,
 			Reason: "AwaitingPodCompletion",
 		}
 		helpers.WaitForNodeEvent(ctx, t, client, nodeName, expectedDrainingNodeEvent)

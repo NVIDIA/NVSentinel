@@ -73,11 +73,9 @@ func createTestNode(ctx context.Context, t *testing.T, name string, labels map[s
 	labels[informer.GPUNodeLabel] = "true"
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   name,
-			Labels: labels,
-		},
-		Spec: corev1.NodeSpec{},
+		Name:   name,
+		Labels: labels,
+		Spec:   corev1.NodeSpec{},
 		Status: corev1.NodeStatus{
 			Conditions: []corev1.NodeCondition{
 				{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
@@ -94,11 +92,9 @@ func createTestNode(ctx context.Context, t *testing.T, name string, labels map[s
 func TestNodeRuleEvaluatorWithMetadataAndSpecOnly(t *testing.T) {
 	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        "slim-node",
-			Labels:      map[string]string{"environment": "production"},
-			Annotations: map[string]string{"maintenance": "false"},
-		},
+		Name:        "slim-node",
+		Labels:      map[string]string{"environment": "production"},
+		Annotations: map[string]string{"maintenance": "false"},
 		Spec: corev1.NodeSpec{
 			Unschedulable: true,
 			Taints: []corev1.Taint{{
@@ -213,7 +209,7 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 		},
 		// ADR-040: nvsentinel.dgxc.nvidia.com/managed=false skips quarantine.
 		{
-			name: "ADR-040 managed=false skips quarantine",
+			name:       "ADR-040 managed=false skips quarantine",
 			expression: `!('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
 			nodeLabels: map[string]string{
 				"nvsentinel.dgxc.nvidia.com/managed": "false",
@@ -222,14 +218,14 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 			expectError:    false,
 		},
 		{
-			name: "ADR-040 managed label absent — quarantine proceeds",
-			expression: `!('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
-			nodeLabels: map[string]string{},
+			name:           "ADR-040 managed label absent — quarantine proceeds",
+			expression:     `!('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
+			nodeLabels:     map[string]string{},
 			expectEvaluate: common.RuleEvaluationSuccess,
 			expectError:    false,
 		},
 		{
-			name: "ADR-040 managed=true — quarantine proceeds (only 'false' opts out)",
+			name:       "ADR-040 managed=true — quarantine proceeds (only 'false' opts out)",
 			expression: `!('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
 			nodeLabels: map[string]string{
 				"nvsentinel.dgxc.nvidia.com/managed": "true",
@@ -340,7 +336,7 @@ func TestRoundTrip(t *testing.T) {
 		t.Fatalf("Failed to roundtrip event: %v", err)
 	}
 
-	expectedMap := map[string]interface{}{
+	expectedMap := map[string]any{
 		"id":                "123",
 		"version":           float64(1),
 		"agent":             "test-agent",
@@ -350,23 +346,23 @@ func TestRoundTrip(t *testing.T) {
 		"isHealthy":         false,
 		"message":           "test-message",
 		"recommendedAction": float64(protos.RecommendedAction_RESTART_VM),
-		"errorCode":         []interface{}{"E001", "E002"},
-		"entitiesImpacted": []interface{}{
-			map[string]interface{}{
+		"errorCode":         []any{"E001", "E002"},
+		"entitiesImpacted": []any{
+			map[string]any{
 				"entityType":  "GPU",
 				"entityValue": "GPU-0",
 			},
 		},
-		"metadata": map[string]interface{}{"key1": "value1"},
-		"generatedTimestamp": map[string]interface{}{
+		"metadata": map[string]any{"key1": "value1"},
+		"generatedTimestamp": map[string]any{
 			"seconds": float64(eventTime.GetSeconds()),
 			"nanos":   float64(eventTime.GetNanos()),
 		},
-		"nodeName":                 "test-node",
-		"processingStrategy":        float64(0),
-		"quarantineOverrides":       nil,
-		"drainOverrides":            nil,
-		"customRecommendedAction":   "",
+		"nodeName":                "test-node",
+		"processingStrategy":      float64(0),
+		"quarantineOverrides":     nil,
+		"drainOverrides":          nil,
+		"customRecommendedAction": "",
 	}
 
 	if !reflect.DeepEqual(result, expectedMap) {

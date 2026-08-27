@@ -16,6 +16,7 @@ package lambda
 
 import (
 	"context"
+	"maps"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -59,9 +60,7 @@ func (f *fakeSource) fetchEvents(_ context.Context) ([]lambdaapi.Event, error) {
 // without needing a real Kubernetes client. GetNodeName only reads the map.
 func newInformerForTest(entries map[string]string) *NodeInformer {
 	ni := &NodeInformer{instanceToNodeName: map[string]string{}}
-	for k, v := range entries {
-		ni.instanceToNodeName[k] = v
-	}
+	maps.Copy(ni.instanceToNodeName, entries)
 	return ni
 }
 

@@ -25,40 +25,40 @@ func TestBuilder_Eq(t *testing.T) {
 	tests := []struct {
 		name          string
 		field         string
-		value         interface{}
-		expectedMongo map[string]interface{}
+		value         any
+		expectedMongo map[string]any
 		expectedSQL   string
-		expectedArgs  []interface{}
+		expectedArgs  []any
 	}{
 		{
 			name:  "simple field equality",
 			field: "myField",
 			value: "active",
-			expectedMongo: map[string]interface{}{
+			expectedMongo: map[string]any{
 				"myField": "active",
 			},
 			expectedSQL:  "document->>'myField' = $1",
-			expectedArgs: []interface{}{"active"},
+			expectedArgs: []any{"active"},
 		},
 		{
 			name:  "nested field equality",
 			field: "healtheventstatus.nodequarantined",
 			value: "Quarantined",
-			expectedMongo: map[string]interface{}{
+			expectedMongo: map[string]any{
 				"healtheventstatus.nodequarantined": "Quarantined",
 			},
 			expectedSQL:  "COALESCE(document->'healtheventstatus'->>'nodequarantined', document->'healtheventstatus'->>'nodeQuarantined') = $1",
-			expectedArgs: []interface{}{"Quarantined"},
+			expectedArgs: []any{"Quarantined"},
 		},
 		{
 			name:  "column field (id)",
 			field: "id",
 			value: "123",
-			expectedMongo: map[string]interface{}{
+			expectedMongo: map[string]any{
 				"id": "123",
 			},
 			expectedSQL:  "id = $1",
-			expectedArgs: []interface{}{"123"},
+			expectedArgs: []any{"123"},
 		},
 	}
 
@@ -83,8 +83,8 @@ func TestBuilder_Ne(t *testing.T) {
 
 	// Test MongoDB output
 	mongoFilter := builder.ToMongo()
-	expectedMongo := map[string]interface{}{
-		"agent": map[string]interface{}{
+	expectedMongo := map[string]any{
+		"agent": map[string]any{
 			"$ne": "health-events-analyzer",
 		},
 	}
@@ -93,17 +93,17 @@ func TestBuilder_Ne(t *testing.T) {
 	// Test SQL output
 	sql, args := builder.ToSQL()
 	assert.Equal(t, "document->>'agent' != $1", sql)
-	assert.Equal(t, []interface{}{"health-events-analyzer"}, args)
+	assert.Equal(t, []any{"health-events-analyzer"}, args)
 }
 
 func TestBuilder_In(t *testing.T) {
-	builder := New().Build(In("myField", []interface{}{"active", "pending"}))
+	builder := New().Build(In("myField", []any{"active", "pending"}))
 
 	// Test MongoDB output
 	mongoFilter := builder.ToMongo()
-	expectedMongo := map[string]interface{}{
-		"myField": map[string]interface{}{
-			"$in": []interface{}{"active", "pending"},
+	expectedMongo := map[string]any{
+		"myField": map[string]any{
+			"$in": []any{"active", "pending"},
 		},
 	}
 	assert.Equal(t, expectedMongo, mongoFilter)
@@ -111,7 +111,7 @@ func TestBuilder_In(t *testing.T) {
 	// Test SQL output
 	sql, args := builder.ToSQL()
 	assert.Equal(t, "document->>'myField' IN ($1, $2)", sql)
-	assert.Equal(t, []interface{}{"active", "pending"}, args)
+	assert.Equal(t, []any{"active", "pending"}, args)
 }
 
 func TestBuilder_Gt(t *testing.T) {
@@ -119,8 +119,8 @@ func TestBuilder_Gt(t *testing.T) {
 
 	// Test MongoDB output
 	mongoFilter := builder.ToMongo()
-	expectedMongo := map[string]interface{}{
-		"count": map[string]interface{}{
+	expectedMongo := map[string]any{
+		"count": map[string]any{
 			"$gt": 10,
 		},
 	}
@@ -129,7 +129,7 @@ func TestBuilder_Gt(t *testing.T) {
 	// Test SQL output
 	sql, args := builder.ToSQL()
 	assert.Equal(t, "document->>'count' > $1", sql)
-	assert.Equal(t, []interface{}{10}, args)
+	assert.Equal(t, []any{10}, args)
 }
 
 func TestBuilder_Gte(t *testing.T) {
@@ -137,8 +137,8 @@ func TestBuilder_Gte(t *testing.T) {
 
 	// Test MongoDB output
 	mongoFilter := builder.ToMongo()
-	expectedMongo := map[string]interface{}{
-		"count": map[string]interface{}{
+	expectedMongo := map[string]any{
+		"count": map[string]any{
 			"$gte": 10,
 		},
 	}
@@ -147,7 +147,7 @@ func TestBuilder_Gte(t *testing.T) {
 	// Test SQL output
 	sql, args := builder.ToSQL()
 	assert.Equal(t, "document->>'count' >= $1", sql)
-	assert.Equal(t, []interface{}{10}, args)
+	assert.Equal(t, []any{10}, args)
 }
 
 func TestBuilder_Lt(t *testing.T) {
@@ -155,8 +155,8 @@ func TestBuilder_Lt(t *testing.T) {
 
 	// Test MongoDB output
 	mongoFilter := builder.ToMongo()
-	expectedMongo := map[string]interface{}{
-		"count": map[string]interface{}{
+	expectedMongo := map[string]any{
+		"count": map[string]any{
 			"$lt": 100,
 		},
 	}
@@ -165,7 +165,7 @@ func TestBuilder_Lt(t *testing.T) {
 	// Test SQL output
 	sql, args := builder.ToSQL()
 	assert.Equal(t, "document->>'count' < $1", sql)
-	assert.Equal(t, []interface{}{100}, args)
+	assert.Equal(t, []any{100}, args)
 }
 
 func TestBuilder_Lte(t *testing.T) {
@@ -173,8 +173,8 @@ func TestBuilder_Lte(t *testing.T) {
 
 	// Test MongoDB output
 	mongoFilter := builder.ToMongo()
-	expectedMongo := map[string]interface{}{
-		"count": map[string]interface{}{
+	expectedMongo := map[string]any{
+		"count": map[string]any{
 			"$lte": 100,
 		},
 	}
@@ -183,7 +183,7 @@ func TestBuilder_Lte(t *testing.T) {
 	// Test SQL output
 	sql, args := builder.ToSQL()
 	assert.Equal(t, "document->>'count' <= $1", sql)
-	assert.Equal(t, []interface{}{100}, args)
+	assert.Equal(t, []any{100}, args)
 }
 
 func TestBuilder_And(t *testing.T) {
@@ -196,7 +196,7 @@ func TestBuilder_And(t *testing.T) {
 
 	// Test MongoDB output
 	mongoFilter := builder.ToMongo()
-	expectedMongo := map[string]interface{}{
+	expectedMongo := map[string]any{
 		"field1": "active",
 		"field2": "critical",
 	}
@@ -205,7 +205,7 @@ func TestBuilder_And(t *testing.T) {
 	// Test SQL output
 	sql, args := builder.ToSQL()
 	assert.Equal(t, "(document->>'field1' = $1) AND (document->>'field2' = $2)", sql)
-	assert.Equal(t, []interface{}{"active", "critical"}, args)
+	assert.Equal(t, []any{"active", "critical"}, args)
 }
 
 func TestBuilder_And_WithConflictingFields(t *testing.T) {
@@ -219,13 +219,13 @@ func TestBuilder_And_WithConflictingFields(t *testing.T) {
 
 	// Test MongoDB output
 	mongoFilter := builder.ToMongo()
-	expectedMongo := map[string]interface{}{
-		"$and": []interface{}{
-			map[string]interface{}{
-				"count": map[string]interface{}{"$gt": 10},
+	expectedMongo := map[string]any{
+		"$and": []any{
+			map[string]any{
+				"count": map[string]any{"$gt": 10},
 			},
-			map[string]interface{}{
-				"count": map[string]interface{}{"$lt": 100},
+			map[string]any{
+				"count": map[string]any{"$lt": 100},
 			},
 		},
 	}
@@ -234,7 +234,7 @@ func TestBuilder_And_WithConflictingFields(t *testing.T) {
 	// Test SQL output
 	sql, args := builder.ToSQL()
 	assert.Equal(t, "(document->>'count' > $1) AND (document->>'count' < $2)", sql)
-	assert.Equal(t, []interface{}{10, 100}, args)
+	assert.Equal(t, []any{10, 100}, args)
 }
 
 func TestBuilder_Or(t *testing.T) {
@@ -247,10 +247,10 @@ func TestBuilder_Or(t *testing.T) {
 
 	// Test MongoDB output
 	mongoFilter := builder.ToMongo()
-	expectedMongo := map[string]interface{}{
-		"$or": []interface{}{
-			map[string]interface{}{"myField": "active"},
-			map[string]interface{}{"myField": "pending"},
+	expectedMongo := map[string]any{
+		"$or": []any{
+			map[string]any{"myField": "active"},
+			map[string]any{"myField": "pending"},
 		},
 	}
 	assert.Equal(t, expectedMongo, mongoFilter)
@@ -258,7 +258,7 @@ func TestBuilder_Or(t *testing.T) {
 	// Test SQL output
 	sql, args := builder.ToSQL()
 	assert.Equal(t, "(document->>'myField' = $1) OR (document->>'myField' = $2)", sql)
-	assert.Equal(t, []interface{}{"active", "pending"}, args)
+	assert.Equal(t, []any{"active", "pending"}, args)
 }
 
 func TestBuilder_ComplexOr(t *testing.T) {
@@ -270,12 +270,12 @@ func TestBuilder_ComplexOr(t *testing.T) {
 			// Case 2: Quarantined not started
 			And(
 				Eq("healtheventstatus.nodequarantined", "Quarantined"),
-				In("healtheventstatus.userpodsevictionstatus.status", []interface{}{"", "NotStarted"}),
+				In("healtheventstatus.userpodsevictionstatus.status", []any{"", "NotStarted"}),
 			),
 			// Case 3: AlreadyQuarantined not started
 			And(
 				Eq("healtheventstatus.nodequarantined", "AlreadyQuarantined"),
-				In("healtheventstatus.userpodsevictionstatus.status", []interface{}{"", "NotStarted"}),
+				In("healtheventstatus.userpodsevictionstatus.status", []any{"", "NotStarted"}),
 			),
 		),
 	)
@@ -284,7 +284,7 @@ func TestBuilder_ComplexOr(t *testing.T) {
 	mongoFilter := builder.ToMongo()
 	require.NotNil(t, mongoFilter)
 	assert.Contains(t, mongoFilter, "$or")
-	orArray := mongoFilter["$or"].([]interface{})
+	orArray := mongoFilter["$or"].([]any)
 	assert.Len(t, orArray, 3)
 
 	// Test SQL output
@@ -331,7 +331,7 @@ func TestBuilder_EmptyBuilder(t *testing.T) {
 
 	// Test MongoDB output
 	mongoFilter := builder.ToMongo()
-	assert.Equal(t, map[string]interface{}{}, mongoFilter)
+	assert.Equal(t, map[string]any{}, mongoFilter)
 
 	// Test SQL output
 	sql, args := builder.ToSQL()
@@ -344,7 +344,7 @@ func TestBuilder_NilBuilder(t *testing.T) {
 
 	// Test MongoDB output
 	mongoFilter := builder.ToMongo()
-	assert.Equal(t, map[string]interface{}{}, mongoFilter)
+	assert.Equal(t, map[string]any{}, mongoFilter)
 
 	// Test SQL output
 	sql, args := builder.ToSQL()
@@ -410,7 +410,7 @@ func TestBuilder_RealWorldQueries(t *testing.T) {
 				Eq("healtheventstatus.userpodsevictionstatus.status", "InProgress"),
 				And(
 					Eq("healtheventstatus.nodequarantined", "Quarantined"),
-					In("healtheventstatus.userpodsevictionstatus.status", []interface{}{"", "NotStarted"}),
+					In("healtheventstatus.userpodsevictionstatus.status", []any{"", "NotStarted"}),
 				),
 			),
 		)
@@ -430,7 +430,7 @@ func TestBuilder_RealWorldQueries(t *testing.T) {
 		builder := New().Build(
 			And(
 				Eq("healthevent.nodename", "node1"),
-				In("healtheventstatus.nodequarantined", []interface{}{"Quarantined", "UnQuarantined"}),
+				In("healtheventstatus.nodequarantined", []any{"Quarantined", "UnQuarantined"}),
 			),
 		)
 
@@ -459,6 +459,6 @@ func TestBuilder_RealWorldQueries(t *testing.T) {
 		// SQL should generate correctly
 		sql, args := builder.ToSQL()
 		assert.Contains(t, sql, "!=")
-		assert.Equal(t, []interface{}{"health-events-analyzer"}, args)
+		assert.Equal(t, []any{"health-events-analyzer"}, args)
 	})
 }

@@ -27,7 +27,7 @@ import (
 func TestConvertToMongoPipeline(t *testing.T) {
 	tests := []struct {
 		name        string
-		pipeline    interface{}
+		pipeline    any
 		expectError bool
 		description string
 	}{
@@ -39,9 +39,9 @@ func TestConvertToMongoPipeline(t *testing.T) {
 		},
 		{
 			name: "[]interface{} pipeline conversion (from NewPipelineBuilder)",
-			pipeline: []interface{}{
-				map[string]interface{}{
-					"$match": map[string]interface{}{
+			pipeline: []any{
+				map[string]any{
+					"$match": map[string]any{
 						"operationType": "insert",
 					},
 				},
@@ -51,7 +51,7 @@ func TestConvertToMongoPipeline(t *testing.T) {
 		},
 		{
 			name: "[]interface{} with invalid stage type",
-			pipeline: []interface{}{
+			pipeline: []any{
 				"invalid-stage", // Not a map[string]interface{}
 			},
 			expectError: true,
@@ -59,7 +59,7 @@ func TestConvertToMongoPipeline(t *testing.T) {
 		},
 		{
 			name:        "Already MongoDB pipeline (backward compatibility)",
-			pipeline:    map[string]interface{}{"$match": map[string]interface{}{"field": "value"}},
+			pipeline:    map[string]any{"$match": map[string]any{"field": "value"}},
 			expectError: false,
 			description: "Should pass through already MongoDB-compatible pipelines unchanged",
 		},
@@ -77,8 +77,8 @@ func TestConvertToMongoPipeline(t *testing.T) {
 				assert.NotNil(t, result)
 
 				// For []interface{} conversion, verify the result format
-				if originalSlice, ok := tt.pipeline.([]interface{}); ok {
-					resultSlice, ok := result.([]map[string]interface{})
+				if originalSlice, ok := tt.pipeline.([]any); ok {
+					resultSlice, ok := result.([]map[string]any)
 					require.True(t, ok, "Result should be []map[string]interface{}")
 					assert.Len(t, resultSlice, len(originalSlice), "Result should have same length as input")
 				}
@@ -99,8 +99,8 @@ func TestConvertToMongoPipeline_Integration(t *testing.T) {
 			Build()
 
 		// Build a pipeline like fault-remediation does (manually)
-		pipeline := []interface{}{
-			map[string]interface{}{
+		pipeline := []any{
+			map[string]any{
 				"$match": matchCondition,
 			},
 		}
@@ -112,7 +112,7 @@ func TestConvertToMongoPipeline_Integration(t *testing.T) {
 		require.NotNil(t, result, "Result should not be nil")
 
 		// Verify the result is in the expected format for MongoDB
-		resultSlice, ok := result.([]map[string]interface{})
+		resultSlice, ok := result.([]map[string]any)
 		require.True(t, ok, "Result should be []map[string]interface{} for MongoDB compatibility")
 		require.Len(t, resultSlice, 1, "Should have one stage (the $match stage)")
 

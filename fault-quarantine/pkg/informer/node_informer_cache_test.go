@@ -113,16 +113,14 @@ func BenchmarkStripNodeStatus(b *testing.B) {
 
 func testFullNode() *v1.Node {
 	return &v1.Node{
-		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Node"},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            "test-node",
-			UID:             types.UID("test-uid"),
-			ResourceVersion: "42",
-			Labels:          map[string]string{"label": "value", GPUNodeLabel: GPUNodeLabelValue},
-			Annotations:     map[string]string{"annotation": "value"},
-			OwnerReferences: []metav1.OwnerReference{{Name: "owner"}},
-			ManagedFields:   []metav1.ManagedFieldsEntry{{Manager: "manager"}},
-		},
+		APIVersion: "v1", Kind: "Node",
+		Name:            "test-node",
+		UID:             types.UID("test-uid"),
+		ResourceVersion: "42",
+		Labels:          map[string]string{"label": "value", GPUNodeLabel: GPUNodeLabelValue},
+		Annotations:     map[string]string{"annotation": "value"},
+		OwnerReferences: []metav1.OwnerReference{{Name: "owner"}},
+		ManagedFields:   []metav1.ManagedFieldsEntry{{Manager: "manager"}},
 		Spec: v1.NodeSpec{
 			Unschedulable: true,
 			Taints: []v1.Taint{{

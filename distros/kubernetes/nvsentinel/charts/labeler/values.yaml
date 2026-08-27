@@ -109,3 +109,6 @@ resources:
   limits:
     cpu: 500m
     memory: 256Mi
+
+# Pod priority for this component. Overridden by the matching global when that is set.
+priorityClassName: ""

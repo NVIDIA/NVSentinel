@@ -57,7 +57,7 @@ func TestNamespaceReconciler_Reconcile(t *testing.T) {
 			setup: func(t *testing.T, ctx context.Context, kc kubernetes.Interface, _ *ActiveNamespaces) {
 				t.Helper()
 				_, err := kc.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
-					ObjectMeta: metav1.ObjectMeta{Name: "team-b"},
+					Name: "team-b",
 				}, metav1.CreateOptions{})
 				require.NoError(t, err)
 			},
@@ -177,21 +177,17 @@ func TestNamespaceReconciler_PodTransformFollowsActiveSet(t *testing.T) {
 
 	// team-a is now active: its pods must get the full transform.
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "worker-0",
-			Namespace: "team-a",
-			Annotations: map[string]string{
-				"scheduling.k8s.io/group-name": "training",
-			},
+		Name:      "worker-0",
+		Namespace: "team-a",
+		Annotations: map[string]string{
+			"scheduling.k8s.io/group-name": "training",
 		},
 		Spec: corev1.PodSpec{
 			NodeName: "node-a",
 			Volumes: []corev1.Volume{{
 				Name: gangtypes.GangConfigVolumeName,
-				VolumeSource: corev1.VolumeSource{
-					ConfigMap: &corev1.ConfigMapVolumeSource{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "gang-config"},
-					},
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					Name: "gang-config",
 				},
 			}},
 		},
@@ -232,12 +228,10 @@ func TestPreflightConfig_GangDiscoveryWorksAfterNamespaceActivation(t *testing.T
 	// A pod arrives with a gang annotation and heavy spec fields, as a real GPU
 	// training pod would look like before the cache transform runs.
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "worker-0",
-			Namespace: "preflight-ns",
-			Annotations: map[string]string{
-				"scheduling.k8s.io/group-name": "training",
-			},
+		Name:      "worker-0",
+		Namespace: "preflight-ns",
+		Annotations: map[string]string{
+			"scheduling.k8s.io/group-name": "training",
 		},
 		Spec: corev1.PodSpec{
 			NodeName:   "node-a",
@@ -281,10 +275,8 @@ func TestPreflightConfig_GangDiscoveryWorksAfterNamespaceActivation(t *testing.T
 
 func preflightNamespace(name string) *corev1.Namespace {
 	return &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   name,
-			Labels: map[string]string{preflightNamespaceLabel: "enabled"},
-		},
+		Name:   name,
+		Labels: map[string]string{preflightNamespaceLabel: "enabled"},
 	}
 }
 
@@ -302,7 +294,7 @@ func reconcileNS(t *testing.T, r *NamespaceReconciler, name string) {
 	t.Helper()
 
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: client.ObjectKey{Name: name},
+		Name: name,
 	})
 	require.NoError(t, err)
 }

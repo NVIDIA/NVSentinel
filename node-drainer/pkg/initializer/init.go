@@ -33,6 +33,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
+	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/informers"
@@ -52,6 +53,7 @@ type InitializationParams struct {
 	TomlConfigPath              string
 	MetricsPort                 string
 	DryRun                      bool
+	KubernetesClientRateLimits  kubeclient.RateLimitConfig
 }
 
 // Components holds the initialized runtime dependencies returned by InitializeAll.
@@ -88,7 +90,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		slog.InfoContext(ctx, "Running with partial drain disabled")
 	}
 
-	clientSet, restConfig, err := initializeKubernetesClient(params.KubeconfigPath)
+	clientSet, restConfig, err := initializeKubernetesClient(params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize kubernetes client: %w", err)
 	}
@@ -247,7 +249,7 @@ func initializeDatastoreComponents(ctx context.Context, ds datastore.DataStore,
 	datastoreAdapter, ok := ds.(interface {
 		GetDatabaseClient() client.DatabaseClient
 		CreateChangeStreamWatcher(
-			ctx context.Context, clientName string, pipeline interface{},
+			ctx context.Context, clientName string, pipeline any,
 		) (datastore.ChangeStreamWatcher, error)
 	})
 	if !ok {
@@ -288,10 +290,14 @@ func initializeDatastoreComponents(ctx context.Context, ds datastore.DataStore,
 	}, nil
 }
 
-func initializeKubernetesClient(kubeconfigPath string) (kubernetes.Interface, *rest.Config, error) {
-	restConfig, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+func initializeKubernetesClient(params InitializationParams) (kubernetes.Interface, *rest.Config, error) {
+	restConfig, err := clientcmd.BuildConfigFromFlags("", params.KubeconfigPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to build config: %w", err)
+	}
+
+	if err := params.KubernetesClientRateLimits.Apply(restConfig); err != nil {
+		return nil, nil, fmt.Errorf("invalid Kubernetes client rate limits: %w", err)
 	}
 
 	restConfig.Wrap(func(rt http.RoundTripper) http.RoundTripper {
@@ -359,19 +365,19 @@ type databaseClientAdapter struct {
 }
 
 func (a *databaseClientAdapter) UpdateDocument(
-	ctx context.Context, filter, update interface{},
+	ctx context.Context, filter, update any,
 ) (*client.UpdateResult, error) {
 	return a.client.UpdateDocument(ctx, filter, update)
 }
 
 func (a *databaseClientAdapter) FindDocument(
-	ctx context.Context, filter interface{}, options *client.FindOneOptions,
+	ctx context.Context, filter any, options *client.FindOneOptions,
 ) (client.SingleResult, error) {
 	return a.client.FindOne(ctx, filter, options)
 }
 
 func (a *databaseClientAdapter) FindDocuments(
-	ctx context.Context, filter interface{}, options *client.FindOptions,
+	ctx context.Context, filter any, options *client.FindOptions,
 ) (client.Cursor, error) {
 	return a.client.Find(ctx, filter, options)
 }

@@ -17,7 +17,6 @@ package remediation
 import (
 	"context"
 	"github.com/google/uuid"
-	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
@@ -31,7 +30,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	"os"
 	"path/filepath"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -231,9 +229,7 @@ func TestCreateRebootNodeResource(t *testing.T) {
 			expectedError:     false,
 			existingObjects: []client.Object{
 				&corev1.Node{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "test-node-1",
-					},
+					Name: "test-node-1",
 				},
 			},
 		},
@@ -245,9 +241,7 @@ func TestCreateRebootNodeResource(t *testing.T) {
 			expectedError:     false,
 			existingObjects: []client.Object{
 				&corev1.Node{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "test-node-1",
-					},
+					Name: "test-node-1",
 				},
 			},
 		},
@@ -304,11 +298,9 @@ spec:
 			// Create a HealthEventData object
 			healthEventDoc := &events.HealthEventData{
 				ID: uuid.New().String(),
-				HealthEventWithStatus: model.HealthEventWithStatus{
-					HealthEvent: &protos.HealthEvent{
-						NodeName:          tt.nodeName,
-						RecommendedAction: tt.recommendedAction,
-					},
+				HealthEvent: &protos.HealthEvent{
+					NodeName:          tt.nodeName,
+					RecommendedAction: tt.recommendedAction,
 				},
 			}
 			groupConfig, err := common.GetGroupConfigForEvent(remediationConfig.RemediationActions,
@@ -405,18 +397,14 @@ func TestRunLogCollectorJob(t *testing.T) {
 			expectedError:    true,
 			existingObjects: []client.Object{
 				&batchv1.Job{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test1",
-						Namespace: jobNamespace,
-						Labels:    labels,
-					},
+					Name:      "test1",
+					Namespace: jobNamespace,
+					Labels:    labels,
 				},
 				&batchv1.Job{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test2",
-						Namespace: jobNamespace,
-						Labels:    labels,
-					},
+					Name:      "test2",
+					Namespace: jobNamespace,
+					Labels:    labels,
 				},
 			},
 		},
@@ -428,12 +416,10 @@ func TestRunLogCollectorJob(t *testing.T) {
 			expectedError:    false,
 			existingObjects: []client.Object{
 				&batchv1.Job{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:              "test1",
-						Namespace:         jobNamespace,
-						Labels:            labels,
-						CreationTimestamp: metav1.Now(),
-					},
+					Name:              "test1",
+					Namespace:         jobNamespace,
+					Labels:            labels,
+					CreationTimestamp: metav1.Now(),
 				},
 			},
 			requeueTime: 10 * time.Second,
@@ -446,12 +432,10 @@ func TestRunLogCollectorJob(t *testing.T) {
 			expectedError:    false,
 			existingObjects: []client.Object{
 				&batchv1.Job{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:              "test1",
-						Namespace:         jobNamespace,
-						Labels:            labels,
-						CreationTimestamp: metav1.Now(),
-					},
+					Name:              "test1",
+					Namespace:         jobNamespace,
+					Labels:            labels,
+					CreationTimestamp: metav1.Now(),
 					Status: batchv1.JobStatus{
 						Conditions: []batchv1.JobCondition{
 							{
@@ -459,8 +443,8 @@ func TestRunLogCollectorJob(t *testing.T) {
 								Status: corev1.ConditionTrue,
 							},
 						},
-						CompletionTime: ptr.To(metav1.Now()),
-						StartTime:      ptr.To(metav1.Now()),
+						CompletionTime: new(metav1.Now()),
+						StartTime:      new(metav1.Now()),
 					},
 				},
 			},
@@ -473,12 +457,10 @@ func TestRunLogCollectorJob(t *testing.T) {
 			expectedError:    false,
 			existingObjects: []client.Object{
 				&batchv1.Job{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:              "test1",
-						Namespace:         jobNamespace,
-						Labels:            labels,
-						CreationTimestamp: metav1.Now(),
-					},
+					Name:              "test1",
+					Namespace:         jobNamespace,
+					Labels:            labels,
+					CreationTimestamp: metav1.Now(),
 					Status: batchv1.JobStatus{
 						Conditions: []batchv1.JobCondition{
 							{
@@ -486,8 +468,8 @@ func TestRunLogCollectorJob(t *testing.T) {
 								Status: corev1.ConditionTrue,
 							},
 						},
-						CompletionTime: ptr.To(metav1.Now()),
-						StartTime:      ptr.To(metav1.Now()),
+						CompletionTime: new(metav1.Now()),
+						StartTime:      new(metav1.Now()),
 					},
 				},
 			},
@@ -500,17 +482,15 @@ func TestRunLogCollectorJob(t *testing.T) {
 			expectedError:    false,
 			existingObjects: []client.Object{
 				&batchv1.Job{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test1",
-						Namespace: jobNamespace,
-						Labels:    labels,
-						CreationTimestamp: metav1.Time{
-							Time: metav1.Now().Add(-15 * time.Minute),
-						},
+					Name:      "test1",
+					Namespace: jobNamespace,
+					Labels:    labels,
+					CreationTimestamp: metav1.Time{
+						Time: metav1.Now().Add(-15 * time.Minute),
 					},
 					Status: batchv1.JobStatus{
-						CompletionTime: ptr.To(metav1.Now()),
-						StartTime:      ptr.To(metav1.Now()),
+						CompletionTime: new(metav1.Now()),
+						StartTime:      new(metav1.Now()),
 					},
 				},
 			},
@@ -519,7 +499,6 @@ func TestRunLogCollectorJob(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-
 			fakeClient := fake.NewClientBuilder().
 				WithObjects(tt.existingObjects...).
 				WithStatusSubresource(tt.existingObjects...).

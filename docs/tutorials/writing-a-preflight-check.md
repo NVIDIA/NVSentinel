@@ -14,7 +14,7 @@ By the end you will have:
 
 ## Prerequisites
 
-- `go` 1.26+ and `docker` — build the check image.
+- `go` 1.27+ and `docker` — build the check image.
 - `kubectl` with access to a cluster where:
   - NVSentinel is running (`platform-connectors` at minimum).
   - Preflight is enabled (`global.preflight.enabled: true`).
@@ -251,7 +251,7 @@ For production code, copy the retry/backoff reporter from `preflight-checks/nccl
 ## 3. Containerize
 
 ```dockerfile
-FROM public.ecr.aws/docker/library/golang:1.26.4-trixie AS builder
+FROM public.ecr.aws/docker/library/golang:1.27.0-trixie AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -405,7 +405,7 @@ output docs — just implement it):
 Implementation:
 
 - Scaffold: mkdir demo-preflight-check && cd demo-preflight-check; go mod init
-  github.com/nvidia/demo-preflight-check; export GOTOOLCHAIN=auto (Go 1.26+); go get
+  github.com/nvidia/demo-preflight-check; export GOTOOLCHAIN=auto (Go 1.27+); go get
   github.com/nvidia/nvsentinel/data-models@a3fb47d4
 - main.go: parse MIN_GPU_COUNT (default 1), NODE_NAME, PLATFORM_CONNECTOR_SOCKET,
   PROCESSING_STRATEGY from env; run `nvidia-smi -L`; pass when visible GPU count >= MIN_GPU_COUNT;
@@ -415,7 +415,7 @@ Implementation:
   recommendedAction=CONTACT_SUPPORT, errorCode NVIDIA_SMI_ERROR or NO_GPUS_VISIBLE; on success
   isHealthy=true, isFatal=false, recommendedAction=NONE.
 - Multi-stage Dockerfile (build context = demo-preflight-check directory):
-  builder public.ecr.aws/docker/library/golang:1.26.4-trixie, runtime
+  builder public.ecr.aws/docker/library/golang:1.27.0-trixie, runtime
   nvcr.io/nvidia/cuda:12.8.1-base-ubuntu24.04 (needs nvidia-smi), ENTRYPOINT the built binary.
 - Build/push example (NGC):
     docker login nvcr.io   # Username: $oauthtoken, Password: <NGC API key>

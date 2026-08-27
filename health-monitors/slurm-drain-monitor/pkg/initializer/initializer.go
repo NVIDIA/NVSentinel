@@ -35,6 +35,7 @@ import (
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/slurm-drain-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/slurm-drain-monitor/pkg/controller"
@@ -50,7 +51,13 @@ type Params struct {
 	ResyncPeriod            time.Duration
 	MaxConcurrentReconciles int
 	PlatformConnectorSocket string
-	ProcessingStrategy      string
+	// PlatformConnectorToken is the path to a projected ServiceAccount token
+	// presented to platform-connector. This monitor reads a central Slinky
+	// controller and therefore reports on nodes other than its own, which
+	// platform-connector only permits for an allowlisted, token-authenticated
+	// identity. Empty disables token authentication.
+	PlatformConnectorToken string
+	ProcessingStrategy     string
 }
 
 // Components holds initialized components.
@@ -133,7 +140,7 @@ func initConnAndClients(ctx context.Context, params Params) (
 
 	slog.Info("Loaded slurm-drain-monitor config", "namespace", cfg.Namespace, "patterns", len(cfg.Patterns))
 
-	conn, err := dialPlatformConnector(ctx, params.PlatformConnectorSocket)
+	conn, err := dialPlatformConnector(ctx, params.PlatformConnectorSocket, params.PlatformConnectorToken)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("failed to connect to platform connector: %w", err)
 	}
@@ -233,8 +240,15 @@ func setupHealthProbes(mgr ctrl.Manager) error {
 	return nil
 }
 
-func dialPlatformConnector(ctx context.Context, socket string) (*grpc.ClientConn, error) {
+func dialPlatformConnector(ctx context.Context, socket, tokenPath string) (*grpc.ClientConn, error) {
 	socketPath := strings.TrimPrefix(socket, "unix://")
+
+	dialOpts := append(
+		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
+		grpcclient.DialOptions(tokenPath)...,
+	)
+
+	slog.Info("Dialing platform connector", "socket", socket, "tokenAuthEnabled", tokenPath != "")
 
 	for attempt := 1; attempt <= 10; attempt++ {
 		if _, err := os.Stat(socketPath); err != nil {
@@ -253,7 +267,7 @@ func dialPlatformConnector(ctx context.Context, socket string) (*grpc.ClientConn
 			return nil, fmt.Errorf("socket not found after retries: %w", err)
 		}
 
-		conn, err := grpc.NewClient(socket, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		conn, err := grpc.NewClient(socket, dialOpts...)
 		if err != nil {
 			slog.Warn("Failed to create gRPC client", "attempt", attempt, "error", err)
 

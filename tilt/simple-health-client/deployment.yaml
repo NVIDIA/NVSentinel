@@ -12,6 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: simple-health-client
+  namespace: nvsentinel
+  labels:
+    app: simple-health-client
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -29,14 +37,25 @@ spec:
       labels:
         app: simple-health-client
     spec:
+      serviceAccountName: simple-health-client
       containers:
       - name: simple-health-client
         image: simple-health-client
         ports:
         - containerPort: 8080
+        env:
+        # This client posts health events naming arbitrary nodes, so it must
+        # authenticate to platform-connector as an allowlisted cross-node
+        # identity. Its ServiceAccount is listed in
+        # platformConnector.auth.crossNodeServiceAccounts in values-tilt.yaml.
+        - name: PLATFORM_CONNECTOR_TOKEN_PATH
+          value: /var/run/secrets/nvsentinel/platform-connector/token
         volumeMounts:
         - mountPath: /var/run
           name: var-run-vol
+        - mountPath: /var/run/secrets/nvsentinel/platform-connector
+          name: platform-connector-token
+          readOnly: true
         securityContext:
           runAsUser: 0
       volumes:
@@ -44,6 +63,16 @@ spec:
           path: /var/run/nvsentinel
           type: Directory
         name: var-run-vol
+      - name: platform-connector-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              # Must match global.platformConnectorAuth in
+              # distros/kubernetes/nvsentinel/values.yaml: platform-connector
+              # rejects a token minted for any other audience.
+              audience: platform-connector.nvsentinel.nvidia.com
+              expirationSeconds: 3600
+              path: token
 ---
 apiVersion: v1
 kind: Service

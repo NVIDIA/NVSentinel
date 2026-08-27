@@ -172,6 +172,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -434,10 +435,8 @@ func validateStateTransition(nodeName, currentValue string, exists bool, targetS
 	}
 
 	// Check if target state is in the expected transitions
-	for _, allowed := range allowedStates {
-		if targetState == allowed {
-			return nil // Expected transition
-		}
+	if slices.Contains(allowedStates, targetState) {
+		return nil // Expected transition
 	}
 
 	// Unexpected transition

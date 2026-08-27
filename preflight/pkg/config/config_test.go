@@ -314,3 +314,110 @@ func TestLoad(t *testing.T) {
 		assert.Equal(t, "podGroup.spec.minMember", cfg.GangDiscovery.MinCountExpr)
 	})
 }
+
+// The three connector-token settings describe one credential. Filling in a
+// built-in mount path or lifetime for a half-configured block injects a token
+// shaped by an assumption nobody wrote down, at a path the chart never agreed
+// to — so a partial block is refused outright.
+func TestValidateConnectorTokenIsAllOrNothing(t *testing.T) {
+	base := func() FileConfig {
+		return FileConfig{InitContainerPlacement: PlacementAppend}
+	}
+
+	t.Run("all three absent is fine", func(t *testing.T) {
+		c := base()
+		require.NoError(t, c.validate())
+	})
+
+	t.Run("all three present is fine", func(t *testing.T) {
+		c := base()
+		c.ConnectorTokenAudience = "platform-connector.nvsentinel.nvidia.com"
+		c.ConnectorTokenMountPath = "/var/run/secrets/nvsentinel/platform-connector"
+		c.ConnectorTokenExpirationSeconds = 3600
+		require.NoError(t, c.validate())
+	})
+
+	t.Run("the exact Kubernetes bounds are accepted", func(t *testing.T) {
+		for _, secs := range []int64{600, 1 << 32} {
+			c := base()
+			c.ConnectorTokenAudience = "platform-connector.nvsentinel.nvidia.com"
+			c.ConnectorTokenMountPath = "/var/run/secrets/nvsentinel/platform-connector"
+			c.ConnectorTokenExpirationSeconds = secs
+			require.NoError(t, c.validate())
+		}
+	})
+
+	for _, tc := range []struct {
+		name      string
+		mutate    func(*FileConfig)
+		wantInErr string
+	}{
+		{
+			name: "audience without mount path or expiry",
+			mutate: func(c *FileConfig) {
+				c.ConnectorTokenAudience = "platform-connector.nvsentinel.nvidia.com"
+			},
+			wantInErr: "all-or-nothing",
+		},
+		{
+			name: "audience and mount path without expiry",
+			mutate: func(c *FileConfig) {
+				c.ConnectorTokenAudience = "platform-connector.nvsentinel.nvidia.com"
+				c.ConnectorTokenMountPath = "/var/run/secrets/nvsentinel/platform-connector"
+			},
+			wantInErr: "connectorTokenExpirationSeconds",
+		},
+		{
+			name: "mount path without an audience",
+			mutate: func(c *FileConfig) {
+				c.ConnectorTokenMountPath = "/var/run/secrets/nvsentinel/platform-connector"
+			},
+			wantInErr: "connectorTokenAudience",
+		},
+		{
+			name: "relative mount path could never be mounted",
+			mutate: func(c *FileConfig) {
+				c.ConnectorTokenAudience = "platform-connector.nvsentinel.nvidia.com"
+				c.ConnectorTokenMountPath = "relative/path"
+				c.ConnectorTokenExpirationSeconds = 3600
+			},
+			wantInErr: "absolute path",
+		},
+		{
+			name: "negative expiry",
+			mutate: func(c *FileConfig) {
+				c.ConnectorTokenAudience = "platform-connector.nvsentinel.nvidia.com"
+				c.ConnectorTokenMountPath = "/var/run/secrets/nvsentinel/platform-connector"
+				c.ConnectorTokenExpirationSeconds = -1
+			},
+			wantInErr: "must be between",
+		},
+		{
+			name: "under the 10-minute floor Kubernetes enforces",
+			mutate: func(c *FileConfig) {
+				c.ConnectorTokenAudience = "platform-connector.nvsentinel.nvidia.com"
+				c.ConnectorTokenMountPath = "/var/run/secrets/nvsentinel/platform-connector"
+				c.ConnectorTokenExpirationSeconds = 599
+			},
+			wantInErr: "must be between",
+		},
+		{
+			name: "over the 2^32 ceiling Kubernetes enforces",
+			mutate: func(c *FileConfig) {
+				c.ConnectorTokenAudience = "platform-connector.nvsentinel.nvidia.com"
+				c.ConnectorTokenMountPath = "/var/run/secrets/nvsentinel/platform-connector"
+				c.ConnectorTokenExpirationSeconds = 1<<32 + 1
+			},
+			wantInErr: "must be between",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := base()
+			tc.mutate(&c)
+
+			err := c.validate()
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.wantInErr)
+		})
+	}
+}

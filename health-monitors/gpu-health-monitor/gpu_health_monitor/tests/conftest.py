@@ -179,12 +179,31 @@ class MockDCGMFields:
         locals()[f"DCGM_FI_DEV_FIELD_{i}"] = i
     DCGM_FI_DEV_GPU_TEMP_TLIMIT = 153
     del DCGM_FI_DEV_FIELD_153
+    # Named replacements for a generated field keep the DCGM_FI_DEV_* count at 320,
+    # which test_get_available_fields asserts.
+    DCGM_FI_DEV_CLOCKS_EVENT_REASONS = 112
+    del DCGM_FI_DEV_FIELD_112
+
+    # Clocks-event reason bits. Not DCGM_FI_DEV_*, so they do not affect that count.
+    DCGM_CLOCKS_EVENT_REASON_SW_POWER_CAP = 0x0000000000000004
+    DCGM_CLOCKS_EVENT_REASON_HW_SLOWDOWN = 0x0000000000000008
+    DCGM_CLOCKS_EVENT_REASON_HW_THERMAL = 0x0000000000000040
+    DCGM_CLOCKS_EVENT_REASON_HW_POWER_BRAKE = 0x0000000000000080
+    DCGM_CLOCKS_EVENT_REASON_DISPLAY_CLOCKS = 0x0000000000000100
 
 
 class MockDCGMValue:
     """Mock DCGM value module for testing."""
 
-    pass
+    # DCGM encodes "no data" as int64 sentinels starting at DCGM_INT64_BLANK.
+    DCGM_INT64_BLANK = 0x7FFFFFFFFFFFFFF0
+    DCGM_INT64_NOT_FOUND = 0x7FFFFFFFFFFFFFF1
+    DCGM_INT64_NOT_SUPPORTED = 0x7FFFFFFFFFFFFFF2
+    DCGM_INT64_NOT_PERMISSIONED = 0x7FFFFFFFFFFFFFF3
+
+    @staticmethod
+    def DCGM_INT64_IS_BLANK(val: int) -> bool:
+        return val >= MockDCGMValue.DCGM_INT64_BLANK
 
 
 class MockDCGMAgent:

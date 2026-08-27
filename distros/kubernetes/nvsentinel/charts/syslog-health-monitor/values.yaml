@@ -44,6 +44,9 @@ xidSideCar:
 # Scheduling configuration
 nodeSelector: {}
 affinity: {}
+# Pod priority for this component. Overridden by the matching global when that is set.
+priorityClassName: ""
+
 tolerations: []
 
 # Customize this if your journal is stored in a non-standard location

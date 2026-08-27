@@ -123,9 +123,7 @@ func createTestClient(t *testing.T) (*AWSClient, *MockAWSHealthClient, kubernete
 	mockAWSClient := new(MockAWSHealthClient)
 
 	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: testNodeName,
-		},
+		Name: testNodeName,
 		Spec: v1.NodeSpec{
 			ProviderID: "aws:///" + testRegion + "/" + testInstanceID,
 		},
@@ -284,9 +282,7 @@ func TestMultipleAffectedEntities(t *testing.T) {
 
 	for _, nodeData := range additionalNodes {
 		node := &v1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: nodeData.name,
-			},
+			Name: nodeData.name,
 			Spec: v1.NodeSpec{
 				ProviderID: "aws:///" + testRegion + "/" + nodeData.instanceID,
 			},
@@ -471,9 +467,7 @@ func TestCompletedEvent(t *testing.T) {
 	}, nil)
 
 	node2 := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: testNodeName1,
-		},
+		Name: testNodeName1,
 		Spec: v1.NodeSpec{
 			ProviderID: "aws:///" + testRegion + "/" + testInstanceID1,
 		},
@@ -483,9 +477,7 @@ func TestCompletedEvent(t *testing.T) {
 	defer testK8sClient.CoreV1().Nodes().Delete(context.Background(), testNodeName1, metav1.DeleteOptions{})
 
 	node3 := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: testNodeName2,
-		},
+		Name: testNodeName2,
 		Spec: v1.NodeSpec{
 			ProviderID: "aws:///" + testRegion + "/" + testInstanceID2,
 		},
@@ -859,9 +851,7 @@ func TestIgnoredEventTypes(t *testing.T) {
 	entityArn1 := fmt.Sprintf("arn:aws:ec2:%s:%s:instance/%s", testRegion, testAccountID, testInstanceIDIgnored)
 
 	nodeIgnored := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: testNodeNameIgnored,
-		},
+		Name: testNodeNameIgnored,
 		Spec: v1.NodeSpec{
 			ProviderID: "aws:///" + testRegion + "/" + testInstanceIDIgnored,
 		},

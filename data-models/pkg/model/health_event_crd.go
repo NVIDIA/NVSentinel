@@ -23,7 +23,7 @@ import (
 // Spec and Status are generated from the proto definitions.
 type HealthEventResourceCRD struct {
 	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
+	metav1.ObjectMeta `json:"metadata"`
 	Spec              *protos.HealthEvent       `json:"spec,omitempty"`
 	Status            *protos.HealthEventStatus `json:"status,omitempty"`
 }
@@ -32,6 +32,6 @@ type HealthEventResourceCRD struct {
 // (optional, but useful for List operations)
 type HealthEventResourceCRDList struct {
 	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"`
+	metav1.ListMeta `json:"metadata"`
 	Items           []HealthEventResourceCRD `json:"items"`
 }

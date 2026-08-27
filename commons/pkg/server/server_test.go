@@ -573,7 +573,7 @@ func TestServerConcurrency(t *testing.T) {
 		// Make concurrent requests
 		numRequests := 10
 		eg := errgroup.Group{}
-		for i := 0; i < numRequests; i++ {
+		for range numRequests {
 			eg.Go(func() error {
 				resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/test", port))
 				if err != nil {
@@ -705,9 +705,9 @@ func TestIsRunning(t *testing.T) {
 		var readCount atomic.Int32
 		g := errgroup.Group{}
 
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			g.Go(func() error {
-				for j := 0; j < 100; j++ {
+				for range 100 {
 					if s.IsRunning() {
 						readCount.Add(1)
 					}

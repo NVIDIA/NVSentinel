@@ -59,15 +59,13 @@ type kubeletResponses struct {
 
 var (
 	testPodTemplate = &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "example-pod",
-			Namespace: "default",
-			Labels: map[string]string{
-				"app": "demo",
-			},
-			Annotations: map[string]string{
-				"example.com/owner": "team-a",
-			},
+		Name:      "example-pod",
+		Namespace: "default",
+		Labels: map[string]string{
+			"app": "demo",
+		},
+		Annotations: map[string]string{
+			"example.com/owner": "team-a",
 		},
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{

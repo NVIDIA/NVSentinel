@@ -97,13 +97,13 @@ func coldStartQuery(coldStartAfter time.Time) *query.Builder {
 		// Quarantined events that haven't been processed yet
 		query.And(
 			query.Eq("healtheventstatus.nodequarantined", string(model.Quarantined)),
-			query.In("healtheventstatus.userpodsevictionstatus.status", []interface{}{"", string(model.StatusNotStarted)}),
+			query.In("healtheventstatus.userpodsevictionstatus.status", []any{"", string(model.StatusNotStarted)}),
 		),
 
 		// AlreadyQuarantined events that haven't been processed yet
 		query.And(
 			query.Eq("healtheventstatus.nodequarantined", string(model.AlreadyQuarantined)),
-			query.In("healtheventstatus.userpodsevictionstatus.status", []interface{}{"", string(model.StatusNotStarted)}),
+			query.In("healtheventstatus.userpodsevictionstatus.status", []any{"", string(model.StatusNotStarted)}),
 		),
 	)
 
@@ -149,7 +149,7 @@ func processColdStartEvent(
 // be skipped.
 func parseColdStartEvent(
 	ctx context.Context, event datastore.Event,
-) (parsed model.HealthEventWithStatus, nodeName string, documentID interface{}, ok bool) {
+) (parsed model.HealthEventWithStatus, nodeName string, documentID any, ok bool) {
 	if len(event) == 0 {
 		slog.ErrorContext(ctx, "RawEvent is empty, skipping cold start event")
 
@@ -197,7 +197,7 @@ func skipStaleColdStartEvent(
 	dbAdapter *dataStoreAdapter,
 	parsed model.HealthEventWithStatus,
 	nodeName string,
-	documentID interface{},
+	documentID any,
 	eventCreatedAt time.Time,
 ) bool {
 	// Staleness only applies to active quarantine records. UnQuarantined/Cancelled are
@@ -240,7 +240,7 @@ func isActiveQuarantineStatus(status string) bool {
 // nodequarantined stays Quarantined/AlreadyQuarantined with a non-drained status, it
 // does not match fault-remediation's change-stream pipeline, so no remediation label
 // is applied.
-func tombstoneStaleQuarantineEvent(ctx context.Context, dbClient client.DatabaseClient, documentID interface{}) error {
+func tombstoneStaleQuarantineEvent(ctx context.Context, dbClient client.DatabaseClient, documentID any) error {
 	filter := map[string]any{"_id": documentID}
 	update := map[string]any{
 		"$set": map[string]any{
@@ -260,12 +260,12 @@ type dataStoreAdapter struct {
 	client.DatabaseClient
 }
 
-func (d *dataStoreAdapter) FindDocument(ctx context.Context, filter interface{},
+func (d *dataStoreAdapter) FindDocument(ctx context.Context, filter any,
 	options *client.FindOneOptions) (client.SingleResult, error) {
 	return d.FindOne(ctx, filter, options)
 }
 
-func (d *dataStoreAdapter) FindDocuments(ctx context.Context, filter interface{},
+func (d *dataStoreAdapter) FindDocuments(ctx context.Context, filter any,
 	options *client.FindOptions) (client.Cursor, error) {
 	return d.Find(ctx, filter, options)
 }

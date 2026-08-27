@@ -30,11 +30,11 @@ type PipelineFilter struct {
 
 // filterStage represents a single stage in the pipeline (currently only $match is supported)
 type filterStage struct {
-	matchConditions map[string]interface{}
+	matchConditions map[string]any
 }
 
 // NewPipelineFilter creates a new pipeline filter from a MongoDB-style pipeline
-func NewPipelineFilter(pipeline interface{}) (*PipelineFilter, error) {
+func NewPipelineFilter(pipeline any) (*PipelineFilter, error) {
 	if pipeline == nil {
 		return nil, nil
 	}
@@ -44,15 +44,15 @@ func NewPipelineFilter(pipeline interface{}) (*PipelineFilter, error) {
 	}
 
 	// Handle different pipeline types
-	var stageList []interface{}
+	var stageList []any
 
 	switch p := pipeline.(type) {
-	case []interface{}:
+	case []any:
 		// Native Go slice
 		stageList = p
 	case datastore.Pipeline:
 		// datastore.Pipeline is []Document, convert to []interface{}
-		stageList = make([]interface{}, len(p))
+		stageList = make([]any, len(p))
 		for i, doc := range p {
 			stageList[i] = doc
 		}
@@ -79,13 +79,13 @@ func NewPipelineFilter(pipeline interface{}) (*PipelineFilter, error) {
 }
 
 // parseStage parses a single pipeline stage
-func (f *PipelineFilter) parseStage(stage interface{}) error {
+func (f *PipelineFilter) parseStage(stage any) error {
 	// Convert stage to map
-	stageMap, ok := stage.(map[string]interface{})
+	stageMap, ok := stage.(map[string]any)
 	if !ok {
 		// Try datastore.Document type
 		if stageD, ok := stage.(datastore.Document); ok {
-			stageMap = make(map[string]interface{})
+			stageMap = make(map[string]any)
 			for _, elem := range stageD {
 				stageMap[elem.Key] = elem.Value
 			}
@@ -110,13 +110,13 @@ func (f *PipelineFilter) parseStage(stage interface{}) error {
 }
 
 // parseMatchConditions parses $match conditions from the pipeline
-func (f *PipelineFilter) parseMatchConditions(matchValue interface{}) (map[string]interface{}, error) {
+func (f *PipelineFilter) parseMatchConditions(matchValue any) (map[string]any, error) {
 	// Convert to map
-	matchMap, ok := matchValue.(map[string]interface{})
+	matchMap, ok := matchValue.(map[string]any)
 	if !ok {
 		// Try datastore.Document type
 		if matchD, ok := matchValue.(datastore.Document); ok {
-			matchMap = make(map[string]interface{})
+			matchMap = make(map[string]any)
 			for _, elem := range matchD {
 				matchMap[elem.Key] = elem.Value
 			}
@@ -151,7 +151,7 @@ func (f *PipelineFilter) MatchesEvent(event datastore.EventWithToken) bool {
 }
 
 // matchesStage checks if an event matches a single filter stage
-func (f *PipelineFilter) matchesStage(event map[string]interface{}, conditions map[string]interface{}) bool {
+func (f *PipelineFilter) matchesStage(event map[string]any, conditions map[string]any) bool {
 	for key, value := range conditions {
 		if !f.matchesCondition(event, key, value) {
 			return false
@@ -162,7 +162,7 @@ func (f *PipelineFilter) matchesStage(event map[string]interface{}, conditions m
 }
 
 // matchesCondition checks if an event matches a specific condition
-func (f *PipelineFilter) matchesCondition(event map[string]interface{}, key string, expectedValue interface{}) bool {
+func (f *PipelineFilter) matchesCondition(event map[string]any, key string, expectedValue any) bool {
 	// Handle MongoDB operators
 	switch key {
 	case opOr:
@@ -182,13 +182,13 @@ func (f *PipelineFilter) matchesCondition(event map[string]interface{}, key stri
 }
 
 // matchesOr handles $or conditions
-func (f *PipelineFilter) matchesOr(event map[string]interface{}, orConditions interface{}) bool {
+func (f *PipelineFilter) matchesOr(event map[string]any, orConditions any) bool {
 	// Convert to array
-	conditionsArray, ok := orConditions.([]interface{})
+	conditionsArray, ok := orConditions.([]any)
 	if !ok {
 		// Try datastore.Array type
 		if conditionsA, ok := orConditions.(datastore.Array); ok {
-			conditionsArray = []interface{}(conditionsA)
+			conditionsArray = []any(conditionsA)
 		} else {
 			slog.Warn("$or conditions not an array", "type", fmt.Sprintf("%T", orConditions))
 			return false
@@ -197,11 +197,11 @@ func (f *PipelineFilter) matchesOr(event map[string]interface{}, orConditions in
 
 	// At least one condition must match
 	for _, condition := range conditionsArray {
-		condMap, ok := condition.(map[string]interface{})
+		condMap, ok := condition.(map[string]any)
 		if !ok {
 			// Try datastore.Document type
 			if condD, ok := condition.(datastore.Document); ok {
-				condMap = make(map[string]interface{})
+				condMap = make(map[string]any)
 				for _, elem := range condD {
 					condMap[elem.Key] = elem.Value
 				}
@@ -219,13 +219,13 @@ func (f *PipelineFilter) matchesOr(event map[string]interface{}, orConditions in
 }
 
 // matchesAnd handles $and conditions
-func (f *PipelineFilter) matchesAnd(event map[string]interface{}, andConditions interface{}) bool {
+func (f *PipelineFilter) matchesAnd(event map[string]any, andConditions any) bool {
 	// Convert to array
-	conditionsArray, ok := andConditions.([]interface{})
+	conditionsArray, ok := andConditions.([]any)
 	if !ok {
 		// Try datastore.Array type
 		if conditionsA, ok := andConditions.(datastore.Array); ok {
-			conditionsArray = []interface{}(conditionsA)
+			conditionsArray = []any(conditionsA)
 		} else {
 			slog.Warn("$and conditions not an array", "type", fmt.Sprintf("%T", andConditions))
 			return false
@@ -234,11 +234,11 @@ func (f *PipelineFilter) matchesAnd(event map[string]interface{}, andConditions 
 
 	// All conditions must match
 	for _, condition := range conditionsArray {
-		condMap, ok := condition.(map[string]interface{})
+		condMap, ok := condition.(map[string]any)
 		if !ok {
 			// Try datastore.Document type
 			if condD, ok := condition.(datastore.Document); ok {
-				condMap = make(map[string]interface{})
+				condMap = make(map[string]any)
 				for _, elem := range condD {
 					condMap[elem.Key] = elem.Value
 				}
@@ -256,15 +256,15 @@ func (f *PipelineFilter) matchesAnd(event map[string]interface{}, andConditions 
 }
 
 // matchesValue checks if an actual value matches an expected value (with operator support)
-func (f *PipelineFilter) matchesValue(actualValue interface{}, expectedValue interface{}) bool {
+func (f *PipelineFilter) matchesValue(actualValue any, expectedValue any) bool {
 	// Handle MongoDB operators and nested field matching in expectedValue
-	if expectedMap, ok := expectedValue.(map[string]interface{}); ok {
+	if expectedMap, ok := expectedValue.(map[string]any); ok {
 		return f.matchesMapValue(actualValue, expectedMap)
 	}
 
 	// Try datastore.Document type
 	if expectedD, ok := expectedValue.(datastore.Document); ok {
-		expectedMap := make(map[string]interface{})
+		expectedMap := make(map[string]any)
 
 		for _, elem := range expectedD {
 			expectedMap[elem.Key] = elem.Value
@@ -279,7 +279,7 @@ func (f *PipelineFilter) matchesValue(actualValue interface{}, expectedValue int
 
 // matchesMapValue handles matching when expectedValue is a map
 // (either operators or nested field matching)
-func (f *PipelineFilter) matchesMapValue(actualValue interface{}, expectedMap map[string]interface{}) bool {
+func (f *PipelineFilter) matchesMapValue(actualValue any, expectedMap map[string]any) bool {
 	// Check if this is an operator map (all keys start with $) or a nested field match
 	hasOperators := false
 	hasNonOperators := false
@@ -307,7 +307,7 @@ func (f *PipelineFilter) matchesMapValue(actualValue interface{}, expectedMap ma
 }
 
 // matchesOperators processes MongoDB operator expressions
-func (f *PipelineFilter) matchesOperators(actualValue interface{}, operators map[string]interface{}) bool {
+func (f *PipelineFilter) matchesOperators(actualValue any, operators map[string]any) bool {
 	for op, opValue := range operators {
 		switch op {
 		case opIn:
@@ -334,8 +334,8 @@ func (f *PipelineFilter) matchesOperators(actualValue interface{}, operators map
 }
 
 // matchesNestedFields checks if actualValue (as a map) contains expected fields
-func (f *PipelineFilter) matchesNestedFields(actualValue interface{}, expectedFields map[string]interface{}) bool {
-	actualMap, ok := actualValue.(map[string]interface{})
+func (f *PipelineFilter) matchesNestedFields(actualValue any, expectedFields map[string]any) bool {
+	actualMap, ok := actualValue.(map[string]any)
 	if !ok {
 		slog.Debug("Actual value is not a map for nested field matching", "actualType", fmt.Sprintf("%T", actualValue))
 
@@ -347,7 +347,7 @@ func (f *PipelineFilter) matchesNestedFields(actualValue interface{}, expectedFi
 		// Try direct key match first (for flat maps with dot-notation keys)
 		// This is important for PostgreSQL updatedFields which uses flat keys like
 		// "healtheventstatus.nodequarantined" instead of nested maps
-		var actualFieldValue interface{}
+		var actualFieldValue any
 
 		if directValue, exists := actualMap[fieldPath]; exists {
 			actualFieldValue = directValue
@@ -367,7 +367,7 @@ func (f *PipelineFilter) matchesNestedFields(actualValue interface{}, expectedFi
 }
 
 // matchesIn checks if value is in array
-func (f *PipelineFilter) matchesIn(actualValue interface{}, inArray interface{}) bool {
+func (f *PipelineFilter) matchesIn(actualValue any, inArray any) bool {
 	// CRITICAL FIX: NULL values never match $in arrays
 	// In MongoDB, null !== "Quarantined", null !== "Succeeded", etc.
 	if actualValue == nil {
@@ -383,11 +383,11 @@ func (f *PipelineFilter) matchesIn(actualValue interface{}, inArray interface{})
 	}
 
 	// Convert to array
-	array, ok := inArray.([]interface{})
+	array, ok := inArray.([]any)
 	if !ok {
 		// Try datastore.Array type
 		if arrayA, ok := inArray.(datastore.Array); ok {
-			array = []interface{}(arrayA)
+			array = []any(arrayA)
 		} else {
 			slog.Warn("$in value not an array", "type", fmt.Sprintf("%T", inArray))
 			return false
@@ -404,7 +404,7 @@ func (f *PipelineFilter) matchesIn(actualValue interface{}, inArray interface{})
 }
 
 // matchesEqual checks if two values are equal
-func (f *PipelineFilter) matchesEqual(actual, expected interface{}) bool {
+func (f *PipelineFilter) matchesEqual(actual, expected any) bool {
 	if actual == nil || expected == nil {
 		return f.matchesNullValues(actual, expected)
 	}
@@ -430,7 +430,7 @@ func (f *PipelineFilter) matchesEqual(actual, expected interface{}) bool {
 	return actual == expected
 }
 
-func (f *PipelineFilter) matchesBoolValues(actual, expected interface{}) (result bool, handled bool) {
+func (f *PipelineFilter) matchesBoolValues(actual, expected any) (result bool, handled bool) {
 	actualBool, actualIsBool := actual.(bool)
 	expectedBool, expectedIsBool := expected.(bool)
 
@@ -448,7 +448,7 @@ func (f *PipelineFilter) matchesBoolValues(actual, expected interface{}) (result
 }
 
 // matchesNullValues handles NULL value comparisons
-func (f *PipelineFilter) matchesNullValues(actual, expected interface{}) bool {
+func (f *PipelineFilter) matchesNullValues(actual, expected any) bool {
 	// CRITICAL FIX: Handle missing boolean fields as false (protobuf/JSON default)
 	// When a protobuf boolean field is false, it's often omitted from JSON serialization.
 	// So if actual is nil (field missing) and expected is false, we should match.
@@ -470,7 +470,7 @@ func (f *PipelineFilter) matchesNullValues(actual, expected interface{}) bool {
 }
 
 // matchesGreaterThan checks if actual > expected
-func (f *PipelineFilter) matchesGreaterThan(actual, expected interface{}) bool {
+func (f *PipelineFilter) matchesGreaterThan(actual, expected any) bool {
 	actualNum, actualIsNum := toFloat64(actual)
 	expectedNum, expectedIsNum := toFloat64(expected)
 
@@ -482,7 +482,7 @@ func (f *PipelineFilter) matchesGreaterThan(actual, expected interface{}) bool {
 }
 
 // matchesGreaterThanOrEqual checks if actual >= expected
-func (f *PipelineFilter) matchesGreaterThanOrEqual(actual, expected interface{}) bool {
+func (f *PipelineFilter) matchesGreaterThanOrEqual(actual, expected any) bool {
 	actualNum, actualIsNum := toFloat64(actual)
 	expectedNum, expectedIsNum := toFloat64(expected)
 
@@ -494,7 +494,7 @@ func (f *PipelineFilter) matchesGreaterThanOrEqual(actual, expected interface{})
 }
 
 // matchesLessThan checks if actual < expected
-func (f *PipelineFilter) matchesLessThan(actual, expected interface{}) bool {
+func (f *PipelineFilter) matchesLessThan(actual, expected any) bool {
 	actualNum, actualIsNum := toFloat64(actual)
 	expectedNum, expectedIsNum := toFloat64(expected)
 
@@ -506,7 +506,7 @@ func (f *PipelineFilter) matchesLessThan(actual, expected interface{}) bool {
 }
 
 // matchesLessThanOrEqual checks if actual <= expected
-func (f *PipelineFilter) matchesLessThanOrEqual(actual, expected interface{}) bool {
+func (f *PipelineFilter) matchesLessThanOrEqual(actual, expected any) bool {
 	actualNum, actualIsNum := toFloat64(actual)
 	expectedNum, expectedIsNum := toFloat64(expected)
 
@@ -520,12 +520,12 @@ func (f *PipelineFilter) matchesLessThanOrEqual(actual, expected interface{}) bo
 // getFieldValue extracts a field value from an event using a dot-separated path
 // e.g., "operationType" or "fullDocument.healthevent.isfatal"
 // Performs case-insensitive key matching to handle MongoDB (lowercase) vs PostgreSQL (camelCase) differences
-func (f *PipelineFilter) getFieldValue(event map[string]interface{}, fieldPath string) interface{} {
+func (f *PipelineFilter) getFieldValue(event map[string]any, fieldPath string) any {
 	parts := strings.Split(fieldPath, ".")
-	current := interface{}(event)
+	current := any(event)
 
 	for _, part := range parts {
-		if currentMap, ok := current.(map[string]interface{}); ok {
+		if currentMap, ok := current.(map[string]any); ok {
 			// Try exact match first (fast path)
 			if value, exists := currentMap[part]; exists {
 				current = value
@@ -559,7 +559,7 @@ func (f *PipelineFilter) getFieldValue(event map[string]interface{}, fieldPath s
 }
 
 // toFloat64 converts various numeric types to float64
-func toFloat64(val interface{}) (float64, bool) {
+func toFloat64(val any) (float64, bool) {
 	switch v := val.(type) {
 	case float64:
 		return v, true

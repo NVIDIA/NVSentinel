@@ -30,6 +30,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/flags"
+	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
@@ -79,7 +80,7 @@ func main() {
 
 func run() error {
 	metricsPort, databaseClientCertMountPath, kubeconfigPath, dryRun, circuitBreakerEnabled,
-		tomlConfigPath, gpuNodeLabelKey, gpuNodeLabelValue := parseFlags()
+		tomlConfigPath, gpuNodeLabelKey, gpuNodeLabelValue, rateLimits := parseFlags()
 
 	ff := metrics.NewRegistry("fault-quarantine")
 	ff.Set("dry_run", *dryRun)
@@ -107,6 +108,7 @@ func run() error {
 		CircuitBreakerEnabled:       *circuitBreakerEnabled,
 		GPUNodeLabelKey:             *gpuNodeLabelKey,
 		GPUNodeLabelValue:           *gpuNodeLabelValue,
+		KubernetesClientRateLimits:  *rateLimits,
 	}
 
 	components, err := initializer.InitializeAll(ctx, params)
@@ -145,6 +147,7 @@ func parseFlags() (
 	tomlConfigPath *string,
 	gpuNodeLabelKey *string,
 	gpuNodeLabelValue *string,
+	rateLimits *kubeclient.RateLimitConfig,
 ) {
 	const defaultGPUNodeLabel = informer.GPUNodeLabel + "=" + informer.GPUNodeLabelValue
 
@@ -167,6 +170,7 @@ func parseFlags() (
 		"Label selector (key=value) identifying GPU nodes. Only matching nodes are watched "+
 			"by the NodeInformer and counted by the circuit breaker. "+
 			"Example: nvidia.com/gpu.present=true")
+	rateLimits = kubeclient.RegisterRateLimitFlags()
 
 	flag.Parse()
 

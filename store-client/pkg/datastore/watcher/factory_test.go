@@ -87,7 +87,7 @@ func TestConfig_Validation(t *testing.T) {
 			config: Config{
 				ClientName: "test-client",
 				TableName:  "test-table",
-				Pipeline:   []interface{}{map[string]interface{}{"$match": map[string]interface{}{}}},
+				Pipeline:   []any{map[string]any{"$match": map[string]any{}}},
 			},
 			valid: true,
 		},

@@ -33,6 +33,8 @@ Environment variables set by entrypoint/container:
     - MESSAGE_SIZES: Comma-separated message sizes to test
     - SKIP_BANDWIDTH_CHECK: Skip bandwidth threshold; pass if benchmark completes
     - PLATFORM_CONNECTOR_SOCKET: gRPC socket for health events
+    - PLATFORM_CONNECTOR_TOKEN_PATH: Optional projected ServiceAccount token
+      file presented as a bearer credential on health event sends
     - NODE_NAME: Kubernetes node name
 """
 
@@ -245,6 +247,7 @@ def _handle_success(cfg: Config, result: BenchmarkResult) -> int:
             socket_path=cfg.connector_socket,
             node_name=cfg.node_name,
             processing_strategy=cfg.processing_strategy,
+            token_path=cfg.token_path,
         )
         reporter.send_success(message)
     except RuntimeError as err:
@@ -275,6 +278,7 @@ def _handle_failure(cfg: Config, error: NCCLError, message: str) -> int:
             socket_path=cfg.connector_socket,
             node_name=cfg.node_name,
             processing_strategy=cfg.processing_strategy,
+            token_path=cfg.token_path,
         )
         reporter.send_failure(error, message)
     except RuntimeError as err:

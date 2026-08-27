@@ -30,6 +30,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	met "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	srv "github.com/nvidia/nvsentinel/commons/pkg/server"
@@ -60,6 +61,12 @@ type appConfig struct {
 	databaseClientCertMountPath string
 	metricsPort                 string
 	processingStrategy          string
+	// udsTokenPath is a projected ServiceAccount token presented to
+	// platform-connector. This notifier polls a central cloud-provider API and
+	// therefore reports on nodes other than its own, which platform-connector
+	// only permits for an allowlisted, token-authenticated identity. Empty
+	// disables token authentication.
+	udsTokenPath string
 }
 
 func parseFlags() *appConfig {
@@ -75,6 +82,10 @@ func parseFlags() *appConfig {
 	flag.StringVar(&cfg.metricsPort, "metrics-port", defaultMetricsPortSidecar, "Port for the sidecar Prometheus metrics.")
 	flag.StringVar(&cfg.processingStrategy, "processing-strategy", "EXECUTE_REMEDIATION",
 		"Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY")
+	flag.StringVar(&cfg.udsTokenPath, "uds-token-path", "",
+		"Path to a projected ServiceAccount token presented to platform-connector. "+
+			"Required for reporting health events about nodes other than the one this pod runs on; "+
+			"empty disables token authentication.")
 
 	// Parse flags after initialising klog
 	flag.Parse()
@@ -98,17 +109,21 @@ func logStartupInfo(cfg *appConfig) {
 		"platform connector UDS path", cfg.udsPath,
 		"database client cert mount path", cfg.databaseClientCertMountPath,
 		"exposing sidecar metrics on port", cfg.metricsPort,
+		"platform connector token auth", cfg.udsTokenPath != "",
 	)
 	slog.Debug("log verbosity level is set based on the -v flag for sidecar.")
 }
 
-func setupUDSConnection(udsPath string) (*grpc.ClientConn, pb.PlatformConnectorClient, error) {
-	slog.Info("Sidecar attempting to connect to Platform Connector UDS", "unix", udsPath)
+func setupUDSConnection(udsPath, tokenPath string) (*grpc.ClientConn, pb.PlatformConnectorClient, error) {
+	slog.Info("Sidecar attempting to connect to Platform Connector UDS",
+		"unix", udsPath, "tokenAuthEnabled", tokenPath != "")
+
 	target := fmt.Sprintf("unix:%s", udsPath)
 
-	opts := []grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	}
+	opts := append(
+		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
+		grpcclient.DialOptions(tokenPath)...,
+	)
 
 	conn, err := grpc.NewClient(target, opts...)
 	if err != nil {
@@ -207,7 +222,7 @@ func run() error {
 
 		slog.Info("Datastore initialized successfully for sidecar.")
 
-		conn, platformConnectorClient, err := setupUDSConnection(appCfg.udsPath)
+		conn, platformConnectorClient, err := setupUDSConnection(appCfg.udsPath, appCfg.udsTokenPath)
 		if err != nil {
 			return fmt.Errorf("UDS connection setup failed: %w", err)
 		}

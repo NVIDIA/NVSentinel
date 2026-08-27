@@ -35,7 +35,7 @@ type mockDatabaseClient struct {
 	mock.Mock
 }
 
-func (m *mockDatabaseClient) InsertMany(ctx context.Context, documents []interface{}) (*client.InsertManyResult, error) {
+func (m *mockDatabaseClient) InsertMany(ctx context.Context, documents []any) (*client.InsertManyResult, error) {
 	args := m.Called(ctx, documents)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
@@ -43,7 +43,7 @@ func (m *mockDatabaseClient) InsertMany(ctx context.Context, documents []interfa
 	return args.Get(0).(*client.InsertManyResult), args.Error(1)
 }
 
-func (m *mockDatabaseClient) UpsertDocument(ctx context.Context, filter interface{}, document interface{}) (*client.UpdateResult, error) {
+func (m *mockDatabaseClient) UpsertDocument(ctx context.Context, filter any, document any) (*client.UpdateResult, error) {
 	args := m.Called(ctx, filter, document)
 	return args.Get(0).(*client.UpdateResult), args.Error(1)
 }
@@ -59,47 +59,47 @@ func (m *mockDatabaseClient) DeleteResumeToken(ctx context.Context, tokenConfig 
 }
 
 // Additional methods to satisfy the DatabaseClient interface
-func (m *mockDatabaseClient) UpdateDocumentStatus(ctx context.Context, documentID string, statusPath string, status interface{}) error {
+func (m *mockDatabaseClient) UpdateDocumentStatus(ctx context.Context, documentID string, statusPath string, status any) error {
 	args := m.Called(ctx, documentID, statusPath, status)
 	return args.Error(0)
 }
 
-func (m *mockDatabaseClient) UpdateDocumentStatusFields(ctx context.Context, documentID string, fields map[string]interface{}) error {
+func (m *mockDatabaseClient) UpdateDocumentStatusFields(ctx context.Context, documentID string, fields map[string]any) error {
 	args := m.Called(ctx, documentID, fields)
 	return args.Error(0)
 }
 
-func (m *mockDatabaseClient) CountDocuments(ctx context.Context, filter interface{}, options *client.CountOptions) (int64, error) {
+func (m *mockDatabaseClient) CountDocuments(ctx context.Context, filter any, options *client.CountOptions) (int64, error) {
 	args := m.Called(ctx, filter, options)
 	return args.Get(0).(int64), args.Error(1)
 }
 
-func (m *mockDatabaseClient) UpdateDocument(ctx context.Context, filter interface{}, update interface{}) (*client.UpdateResult, error) {
+func (m *mockDatabaseClient) UpdateDocument(ctx context.Context, filter any, update any) (*client.UpdateResult, error) {
 	args := m.Called(ctx, filter, update)
 	return args.Get(0).(*client.UpdateResult), args.Error(1)
 }
 
-func (m *mockDatabaseClient) UpdateManyDocuments(ctx context.Context, filter interface{}, update interface{}) (*client.UpdateResult, error) {
+func (m *mockDatabaseClient) UpdateManyDocuments(ctx context.Context, filter any, update any) (*client.UpdateResult, error) {
 	args := m.Called(ctx, filter, update)
 	return args.Get(0).(*client.UpdateResult), args.Error(1)
 }
 
-func (m *mockDatabaseClient) FindOne(ctx context.Context, filter interface{}, options *client.FindOneOptions) (client.SingleResult, error) {
+func (m *mockDatabaseClient) FindOne(ctx context.Context, filter any, options *client.FindOneOptions) (client.SingleResult, error) {
 	args := m.Called(ctx, filter, options)
 	return args.Get(0).(client.SingleResult), args.Error(1)
 }
 
-func (m *mockDatabaseClient) Find(ctx context.Context, filter interface{}, options *client.FindOptions) (client.Cursor, error) {
+func (m *mockDatabaseClient) Find(ctx context.Context, filter any, options *client.FindOptions) (client.Cursor, error) {
 	args := m.Called(ctx, filter, options)
 	return args.Get(0).(client.Cursor), args.Error(1)
 }
 
-func (m *mockDatabaseClient) Aggregate(ctx context.Context, pipeline interface{}) (client.Cursor, error) {
+func (m *mockDatabaseClient) Aggregate(ctx context.Context, pipeline any) (client.Cursor, error) {
 	args := m.Called(ctx, pipeline)
 	return args.Get(0).(client.Cursor), args.Error(1)
 }
 
-func (m *mockDatabaseClient) NewChangeStreamWatcher(ctx context.Context, tokenConfig client.TokenConfig, pipeline interface{}) (client.ChangeStreamWatcher, error) {
+func (m *mockDatabaseClient) NewChangeStreamWatcher(ctx context.Context, tokenConfig client.TokenConfig, pipeline any) (client.ChangeStreamWatcher, error) {
 	args := m.Called(ctx, tokenConfig, pipeline)
 	return args.Get(0).(client.ChangeStreamWatcher), args.Error(1)
 }
@@ -117,7 +117,7 @@ func TestInsertHealthEvents(t *testing.T) {
 		mockClient := &mockDatabaseClient{}
 
 		// Setup mock expectations
-		mockClient.On("InsertMany", mock.Anything, mock.Anything).Return(&client.InsertManyResult{InsertedIDs: []interface{}{"id1"}}, nil)
+		mockClient.On("InsertMany", mock.Anything, mock.Anything).Return(&client.InsertManyResult{InsertedIDs: []any{"id1"}}, nil)
 
 		connector := &DatabaseStoreConnector{
 			databaseClient: mockClient,
@@ -167,7 +167,7 @@ func TestFetchAndProcessHealthMetric(t *testing.T) {
 		mockClient := &mockDatabaseClient{}
 
 		// Setup mock expectations
-		mockClient.On("InsertMany", mock.Anything, mock.Anything).Return(&client.InsertManyResult{InsertedIDs: []interface{}{"id1"}}, nil)
+		mockClient.On("InsertMany", mock.Anything, mock.Anything).Return(&client.InsertManyResult{InsertedIDs: []any{"id1"}}, nil)
 
 		connector := &DatabaseStoreConnector{
 			databaseClient: mockClient,
@@ -323,7 +323,7 @@ func TestMessageRetriedOnMongoDBFailure(t *testing.T) {
 	mockClient.On("InsertMany", mock.Anything, mock.Anything).
 		Return(nil, errors.New("MongoDB temporarily unavailable")).Times(2)
 	mockClient.On("InsertMany", mock.Anything, mock.Anything).
-		Return(&client.InsertManyResult{InsertedIDs: []interface{}{"id1"}}, nil).Once()
+		Return(&client.InsertManyResult{InsertedIDs: []any{"id1"}}, nil).Once()
 
 	connector := &DatabaseStoreConnector{
 		databaseClient: mockClient,

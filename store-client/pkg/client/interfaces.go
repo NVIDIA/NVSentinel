@@ -22,26 +22,26 @@ import (
 // This interface abstracts common database operations to allow for different database implementations
 type DatabaseClient interface {
 	// Document operations
-	InsertMany(ctx context.Context, documents []interface{}) (*InsertManyResult, error)
-	UpdateDocumentStatus(ctx context.Context, documentID string, statusPath string, status interface{}) error
-	UpdateDocumentStatusFields(ctx context.Context, documentID string, fields map[string]interface{}) error
-	UpdateDocument(ctx context.Context, filter interface{}, update interface{}) (*UpdateResult, error)
-	UpdateManyDocuments(ctx context.Context, filter interface{}, update interface{}) (*UpdateResult, error)
-	UpsertDocument(ctx context.Context, filter interface{}, document interface{}) (*UpdateResult, error)
+	InsertMany(ctx context.Context, documents []any) (*InsertManyResult, error)
+	UpdateDocumentStatus(ctx context.Context, documentID string, statusPath string, status any) error
+	UpdateDocumentStatusFields(ctx context.Context, documentID string, fields map[string]any) error
+	UpdateDocument(ctx context.Context, filter any, update any) (*UpdateResult, error)
+	UpdateManyDocuments(ctx context.Context, filter any, update any) (*UpdateResult, error)
+	UpsertDocument(ctx context.Context, filter any, document any) (*UpdateResult, error)
 
 	// Query operations
-	FindOne(ctx context.Context, filter interface{}, options *FindOneOptions) (SingleResult, error)
-	Find(ctx context.Context, filter interface{}, options *FindOptions) (Cursor, error)
-	CountDocuments(ctx context.Context, filter interface{}, options *CountOptions) (int64, error)
+	FindOne(ctx context.Context, filter any, options *FindOneOptions) (SingleResult, error)
+	Find(ctx context.Context, filter any, options *FindOptions) (Cursor, error)
+	CountDocuments(ctx context.Context, filter any, options *CountOptions) (int64, error)
 
 	// Aggregation
-	Aggregate(ctx context.Context, pipeline interface{}) (Cursor, error)
+	Aggregate(ctx context.Context, pipeline any) (Cursor, error)
 
 	// Health checks
 	Ping(ctx context.Context) error
 
 	// Change streams (delegated to existing ChangeStreamWatcher)
-	NewChangeStreamWatcher(ctx context.Context, tokenConfig TokenConfig, pipeline interface{}) (ChangeStreamWatcher, error)
+	NewChangeStreamWatcher(ctx context.Context, tokenConfig TokenConfig, pipeline any) (ChangeStreamWatcher, error)
 
 	// Resume token operations
 	DeleteResumeToken(ctx context.Context, tokenConfig TokenConfig) error
@@ -66,7 +66,7 @@ type Event interface {
 	GetRecordUUID() (string, error)
 	GetNodeName() (string, error)
 	GetResumeToken() []byte
-	UnmarshalDocument(v interface{}) error
+	UnmarshalDocument(v any) error
 }
 
 // ChangeStreamWatcher abstracts change stream operations
@@ -94,7 +94,7 @@ type TokenConfig struct {
 
 // InsertManyResult represents the result of an insert many operation
 type InsertManyResult struct {
-	InsertedIDs []interface{}
+	InsertedIDs []any
 }
 
 // UpdateResult represents the result of an update operation
@@ -102,21 +102,21 @@ type UpdateResult struct {
 	MatchedCount  int64
 	ModifiedCount int64
 	UpsertedCount int64
-	UpsertedID    interface{}
+	UpsertedID    any
 }
 
 // SingleResult represents a single document result
 type SingleResult interface {
-	Decode(v interface{}) error
+	Decode(v any) error
 	Err() error
 }
 
 // Cursor represents a query result cursor
 type Cursor interface {
 	Next(ctx context.Context) bool
-	Decode(v interface{}) error
+	Decode(v any) error
 	Close(ctx context.Context) error
-	All(ctx context.Context, results interface{}) error
+	All(ctx context.Context, results any) error
 	Err() error
 }
 
@@ -124,13 +124,13 @@ type Cursor interface {
 
 // FindOneOptions holds options for FindOne operations
 type FindOneOptions struct {
-	Sort interface{}
+	Sort any
 	Skip *int64
 }
 
 // FindOptions holds options for Find operations
 type FindOptions struct {
-	Sort  interface{}
+	Sort  any
 	Limit *int64
 	Skip  *int64
 }
@@ -148,7 +148,7 @@ type UpdateOptions struct {
 
 // InsertResult represents the result of an insert operation
 type InsertResult struct {
-	InsertedIDs []interface{}
+	InsertedIDs []any
 }
 
 // Filter and Update builders - these help construct database-agnostic queries
@@ -156,31 +156,31 @@ type InsertResult struct {
 // FilterBuilder helps build database-agnostic filters
 type FilterBuilder interface {
 	// Field operations
-	Eq(field string, value interface{}) FilterBuilder
-	Ne(field string, value interface{}) FilterBuilder
-	Gt(field string, value interface{}) FilterBuilder
-	Gte(field string, value interface{}) FilterBuilder
-	Lt(field string, value interface{}) FilterBuilder
-	Lte(field string, value interface{}) FilterBuilder
-	In(field string, values interface{}) FilterBuilder
+	Eq(field string, value any) FilterBuilder
+	Ne(field string, value any) FilterBuilder
+	Gt(field string, value any) FilterBuilder
+	Gte(field string, value any) FilterBuilder
+	Lt(field string, value any) FilterBuilder
+	Lte(field string, value any) FilterBuilder
+	In(field string, values any) FilterBuilder
 
 	// Logical operations
-	And(filters ...interface{}) FilterBuilder
-	Or(filters ...interface{}) FilterBuilder
+	And(filters ...any) FilterBuilder
+	Or(filters ...any) FilterBuilder
 
 	// Build the final filter
-	Build() interface{}
+	Build() any
 }
 
 // UpdateBuilder helps build database-agnostic updates
 type UpdateBuilder interface {
 	// Field operations
-	Set(field string, value interface{}) UpdateBuilder
+	Set(field string, value any) UpdateBuilder
 	Unset(field string) UpdateBuilder
-	Inc(field string, value interface{}) UpdateBuilder
+	Inc(field string, value any) UpdateBuilder
 
 	// Build the final update
-	Build() interface{}
+	Build() any
 }
 
 // Builder factory functions - these delegate to database-specific implementations

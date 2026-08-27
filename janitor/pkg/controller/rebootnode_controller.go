@@ -72,6 +72,10 @@ var errRebootNodeDeleted = errors.New("rebootnode deleted during status update")
 // requeueBackoffForTransientCSPError is the delay before retrying after a transient gRPC/CSP error.
 const requeueBackoffForTransientCSPError = 15 * time.Second
 
+// conditionReasonSucceeded is the reason stamped on conditions that completed
+// successfully.
+const conditionReasonSucceeded = "Succeeded"
+
 //nolint:lll // kubebuilder RBAC marker must stay on one line
 // +kubebuilder:rbac:groups=janitor.dgxc.nvidia.com,resources=rebootnodes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=janitor.dgxc.nvidia.com,resources=rebootnodes/status,verbs=get;update;patch
@@ -347,7 +351,7 @@ func (r *RebootNodeReconciler) handleRebootInProgress(
 		slog.InfoContext(ctx, "Node reached ready state post-reboot", "node", node.Name)
 		metrics.GlobalMetrics.RecordActionMTTR(metrics.ActionTypeReboot, time.Since(rebootNode.CreationTimestamp.Time))
 
-		return r.completeNodeReadyCheck(rebootNode, node, metav1.ConditionTrue, "Succeeded",
+		return r.completeNodeReadyCheck(rebootNode, node, metav1.ConditionTrue, conditionReasonSucceeded,
 			"Node reached ready state post-reboot", metrics.StatusSucceeded)
 	}
 
@@ -481,7 +485,7 @@ func (r *RebootNodeReconciler) sendRebootSignalAndSetCondition(
 		rebootNode.SetCondition(metav1.Condition{
 			Type:               janitordgxcnvidiacomv1alpha1.RebootNodeConditionSignalSent,
 			Status:             metav1.ConditionTrue,
-			Reason:             "Succeeded",
+			Reason:             conditionReasonSucceeded,
 			Message:            rsp.RequestId,
 			LastTransitionTime: metav1.Now(),
 		})

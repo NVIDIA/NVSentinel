@@ -675,7 +675,7 @@ func TestHealthEventsAnnotationMap_JSONSerialization(t *testing.T) {
 	}
 
 	// Verify JSON structure - should be an array of events
-	var jsonArray []map[string]interface{}
+	var jsonArray []map[string]any
 	if err := json.Unmarshal(jsonData, &jsonArray); err != nil {
 		t.Fatalf("Marshaled JSON is not an array: %v", err)
 	}
