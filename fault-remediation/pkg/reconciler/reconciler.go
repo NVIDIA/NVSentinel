@@ -1039,30 +1039,10 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 		return res, err
 	}
 
-	decision, err := r.checkExistingCRStatus(ctx, healthEvent,
-		healthEventWithStatus.CreatedAt, groupConfig)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			slog.WarnContext(ctx, "Node no longer exists, marking remediation event as stale", "node", nodeName)
-
-			return r.markEventTerminalAndProcessed(ctx, healthEventStore, eventWithToken, watcherInstance, nodeName, false)
-		}
-
-		metrics.ProcessingErrors.WithLabelValues("cr_status_check_error", nodeName).Inc()
-		slog.ErrorContext(ctx, "Error checking existing CR status", "node", nodeName, "error", err)
-
-		span.SetAttributes(
-			attribute.String("fault_remediation.error.type", "cr_status_check_error"),
-			attribute.String("fault_remediation.error.message", err.Error()),
-		)
-		tracing.RecordError(span, err)
-
-		return ctrl.Result{}, fmt.Errorf("error checking existing CR status: %w", err)
-	}
-
-	if !decision.shouldCreate {
-		return r.handleEventCoveredByExistingCR(ctx, decision, eventWithToken, watcherInstance, healthEventStore,
-			nodeName)
+	res, err, done = r.tryHandleExistingCR(ctx, span, healthEventWithStatus, groupConfig, eventWithToken,
+		watcherInstance, healthEventStore, nodeName)
+	if done {
+		return res, err
 	}
 
 	// Check if we've exceeded the maximum retry attempts
@@ -1074,6 +1054,7 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 			span.SetAttributes(
 				attribute.String("fault_remediation.status", "max_retries_exceeded"),
 			)
+
 			return res, err
 		}
 	}
@@ -1091,6 +1072,52 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 	metrics.EventsProcessed.WithLabelValues(metrics.CRStatusCreated, nodeName).Inc()
 
 	return r.markProcessedOrError(ctx, watcherInstance, eventWithToken, nodeName)
+}
+
+// tryHandleExistingCR checks the current CR status and returns (result, err, true) when the
+// event is terminal (node gone), errored, or already covered by an existing CR; otherwise it
+// returns (zero, nil, false) to signal that a new remediation should proceed.
+func (r *FaultRemediationReconciler) tryHandleExistingCR(
+	ctx context.Context,
+	span oteltrace.Span,
+	healthEventWithStatus *events.HealthEventDoc,
+	groupConfig *common.EquivalenceGroupConfig,
+	eventWithToken datastore.EventWithToken,
+	watcherInstance datastore.ChangeStreamWatcher,
+	healthEventStore datastore.HealthEventStore,
+	nodeName string,
+) (ctrl.Result, error, bool) {
+	decision, err := r.checkExistingCRStatus(ctx, healthEventWithStatus.HealthEvent,
+		healthEventWithStatus.CreatedAt, groupConfig)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			slog.WarnContext(ctx, "Node no longer exists, marking remediation event as stale", "node", nodeName)
+
+			res, err := r.markEventTerminalAndProcessed(ctx, healthEventStore, eventWithToken, watcherInstance, nodeName, false)
+
+			return res, err, true
+		}
+
+		metrics.ProcessingErrors.WithLabelValues("cr_status_check_error", nodeName).Inc()
+		slog.ErrorContext(ctx, "Error checking existing CR status", "node", nodeName, "error", err)
+
+		span.SetAttributes(
+			attribute.String("fault_remediation.error.type", "cr_status_check_error"),
+			attribute.String("fault_remediation.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
+
+		return ctrl.Result{}, fmt.Errorf("error checking existing CR status: %w", err), true
+	}
+
+	if !decision.shouldCreate {
+		res, err := r.handleEventCoveredByExistingCR(ctx, decision, eventWithToken, watcherInstance, healthEventStore,
+			nodeName)
+
+		return res, err, true
+	}
+
+	return ctrl.Result{}, nil, false
 }
 
 // trySkipEvent returns (result, err, true) when the event should be skipped; otherwise (zero, nil, false).
@@ -1191,9 +1218,11 @@ func (r *FaultRemediationReconciler) trySkipMaxRetriesExceeded(
 			// Node does not exist, not a retry limit issue
 			return ctrl.Result{}, nil, false
 		}
+
 		slog.ErrorContext(ctx, "Failed to get remediation state for retry check",
 			"node", nodeName,
 			"error", err)
+
 		return ctrl.Result{}, fmt.Errorf("failed to get remediation state for retry check: %w", err), true
 	}
 
@@ -1218,6 +1247,7 @@ func (r *FaultRemediationReconciler) trySkipMaxRetriesExceeded(
 		}
 
 		result, err := r.markProcessedOrError(ctx, watcherInstance, eventWithToken, nodeName)
+
 		return result, err, true
 	}
 
