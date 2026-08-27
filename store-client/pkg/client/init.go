@@ -38,12 +38,12 @@ func init() {
 
 // defaultFilterBuilder provides a minimal fallback implementation
 type defaultFilterBuilder struct {
-	filters map[string]interface{}
+	filters map[string]any
 }
 
-func (f *defaultFilterBuilder) Eq(field string, value interface{}) FilterBuilder {
+func (f *defaultFilterBuilder) Eq(field string, value any) FilterBuilder {
 	if f.filters == nil {
-		f.filters = make(map[string]interface{})
+		f.filters = make(map[string]any)
 	}
 
 	f.filters[field] = value
@@ -51,69 +51,69 @@ func (f *defaultFilterBuilder) Eq(field string, value interface{}) FilterBuilder
 	return f
 }
 
-func (f *defaultFilterBuilder) Ne(field string, value interface{}) FilterBuilder {
+func (f *defaultFilterBuilder) Ne(field string, value any) FilterBuilder {
 	if f.filters == nil {
-		f.filters = make(map[string]interface{})
+		f.filters = make(map[string]any)
 	}
 
-	f.filters[field] = map[string]interface{}{opNE: value}
+	f.filters[field] = map[string]any{opNE: value}
 
 	return f
 }
 
-func (f *defaultFilterBuilder) Gt(field string, value interface{}) FilterBuilder {
+func (f *defaultFilterBuilder) Gt(field string, value any) FilterBuilder {
 	if f.filters == nil {
-		f.filters = make(map[string]interface{})
+		f.filters = make(map[string]any)
 	}
 
-	f.filters[field] = map[string]interface{}{opGT: value}
+	f.filters[field] = map[string]any{opGT: value}
 
 	return f
 }
 
-func (f *defaultFilterBuilder) Gte(field string, value interface{}) FilterBuilder {
+func (f *defaultFilterBuilder) Gte(field string, value any) FilterBuilder {
 	if f.filters == nil {
-		f.filters = make(map[string]interface{})
+		f.filters = make(map[string]any)
 	}
 
-	f.filters[field] = map[string]interface{}{opGTE: value}
+	f.filters[field] = map[string]any{opGTE: value}
 
 	return f
 }
 
-func (f *defaultFilterBuilder) Lt(field string, value interface{}) FilterBuilder {
+func (f *defaultFilterBuilder) Lt(field string, value any) FilterBuilder {
 	if f.filters == nil {
-		f.filters = make(map[string]interface{})
+		f.filters = make(map[string]any)
 	}
 
-	f.filters[field] = map[string]interface{}{opLT: value}
+	f.filters[field] = map[string]any{opLT: value}
 
 	return f
 }
 
-func (f *defaultFilterBuilder) Lte(field string, value interface{}) FilterBuilder {
+func (f *defaultFilterBuilder) Lte(field string, value any) FilterBuilder {
 	if f.filters == nil {
-		f.filters = make(map[string]interface{})
+		f.filters = make(map[string]any)
 	}
 
-	f.filters[field] = map[string]interface{}{opLTE: value}
+	f.filters[field] = map[string]any{opLTE: value}
 
 	return f
 }
 
-func (f *defaultFilterBuilder) In(field string, values interface{}) FilterBuilder {
+func (f *defaultFilterBuilder) In(field string, values any) FilterBuilder {
 	if f.filters == nil {
-		f.filters = make(map[string]interface{})
+		f.filters = make(map[string]any)
 	}
 
-	f.filters[field] = map[string]interface{}{opIn: values}
+	f.filters[field] = map[string]any{opIn: values}
 
 	return f
 }
 
-func (f *defaultFilterBuilder) And(filters ...interface{}) FilterBuilder {
+func (f *defaultFilterBuilder) And(filters ...any) FilterBuilder {
 	if f.filters == nil {
-		f.filters = make(map[string]interface{})
+		f.filters = make(map[string]any)
 	}
 
 	f.filters["$and"] = filters
@@ -121,9 +121,9 @@ func (f *defaultFilterBuilder) And(filters ...interface{}) FilterBuilder {
 	return f
 }
 
-func (f *defaultFilterBuilder) Or(filters ...interface{}) FilterBuilder {
+func (f *defaultFilterBuilder) Or(filters ...any) FilterBuilder {
 	if f.filters == nil {
-		f.filters = make(map[string]interface{})
+		f.filters = make(map[string]any)
 	}
 
 	f.filters["$or"] = filters
@@ -131,9 +131,9 @@ func (f *defaultFilterBuilder) Or(filters ...interface{}) FilterBuilder {
 	return f
 }
 
-func (f *defaultFilterBuilder) Build() interface{} {
+func (f *defaultFilterBuilder) Build() any {
 	if f.filters == nil {
-		return map[string]interface{}{}
+		return map[string]any{}
 	}
 
 	return f.filters
@@ -141,54 +141,54 @@ func (f *defaultFilterBuilder) Build() interface{} {
 
 // defaultUpdateBuilder provides a minimal fallback implementation
 type defaultUpdateBuilder struct {
-	updates map[string]interface{}
+	updates map[string]any
 }
 
-func (u *defaultUpdateBuilder) Set(field string, value interface{}) UpdateBuilder {
+func (u *defaultUpdateBuilder) Set(field string, value any) UpdateBuilder {
 	if u.updates == nil {
-		u.updates = make(map[string]interface{})
+		u.updates = make(map[string]any)
 	}
 
 	if u.updates[opSet] == nil {
-		u.updates[opSet] = make(map[string]interface{})
+		u.updates[opSet] = make(map[string]any)
 	}
 
-	u.updates[opSet].(map[string]interface{})[field] = value
+	u.updates[opSet].(map[string]any)[field] = value
 
 	return u
 }
 
 func (u *defaultUpdateBuilder) Unset(field string) UpdateBuilder {
 	if u.updates == nil {
-		u.updates = make(map[string]interface{})
+		u.updates = make(map[string]any)
 	}
 
 	if u.updates["$unset"] == nil {
-		u.updates["$unset"] = make(map[string]interface{})
+		u.updates["$unset"] = make(map[string]any)
 	}
 
-	u.updates["$unset"].(map[string]interface{})[field] = ""
+	u.updates["$unset"].(map[string]any)[field] = ""
 
 	return u
 }
 
-func (u *defaultUpdateBuilder) Inc(field string, value interface{}) UpdateBuilder {
+func (u *defaultUpdateBuilder) Inc(field string, value any) UpdateBuilder {
 	if u.updates == nil {
-		u.updates = make(map[string]interface{})
+		u.updates = make(map[string]any)
 	}
 
 	if u.updates["$inc"] == nil {
-		u.updates["$inc"] = make(map[string]interface{})
+		u.updates["$inc"] = make(map[string]any)
 	}
 
-	u.updates["$inc"].(map[string]interface{})[field] = value
+	u.updates["$inc"].(map[string]any)[field] = value
 
 	return u
 }
 
-func (u *defaultUpdateBuilder) Build() interface{} {
+func (u *defaultUpdateBuilder) Build() any {
 	if u.updates == nil {
-		return map[string]interface{}{}
+		return map[string]any{}
 	}
 
 	return u.updates

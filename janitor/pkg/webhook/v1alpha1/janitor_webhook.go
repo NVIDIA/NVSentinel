@@ -17,6 +17,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -225,11 +226,9 @@ func (v *JanitorCustomValidator) validateNoActiveResetForSameGPU(ctx context.Con
 
 		if gpuReset.Status.CompletionTime == nil {
 			for _, currentUUID := range currentUUIDs {
-				for _, inProgressUUID := range gpuReset.Spec.Selector.UUIDs {
-					if currentUUID == inProgressUUID {
-						return fmt.Errorf("node '%s' and GPU '%s' already has an active reset in progress (GPUReset: %s)",
-							nodeName, currentUUID, gpuReset.Name)
-					}
+				if slices.Contains(gpuReset.Spec.Selector.UUIDs, currentUUID) {
+					return fmt.Errorf("node '%s' and GPU '%s' already has an active reset in progress (GPUReset: %s)",
+						nodeName, currentUUID, gpuReset.Name)
 				}
 			}
 		}

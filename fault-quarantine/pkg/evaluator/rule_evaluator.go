@@ -91,7 +91,7 @@ func (he *HealthEventRuleEvaluator) Evaluate(
 		return common.RuleEvaluationFailed, fmt.Errorf("error roundtripping event: %w", err)
 	}
 
-	out, _, err := he.program.Eval(map[string]interface{}{
+	out, _, err := he.program.Eval(map[string]any{
 		eventObjKey: obj,
 	})
 	if err != nil {
@@ -173,7 +173,7 @@ func (nm *NodeRuleEvaluator) Evaluate(event *protos.HealthEvent) (common.RuleEva
 }
 
 // getNode gets node metadata and spec from the informer lister.
-func (nm *NodeRuleEvaluator) getNode(nodeName string) (map[string]interface{}, error) {
+func (nm *NodeRuleEvaluator) getNode(nodeName string) (map[string]any, error) {
 	node, err := nm.nodeLister.Get(nodeName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get node %s from informer cache: %w", nodeName, err)
@@ -184,7 +184,7 @@ func (nm *NodeRuleEvaluator) getNode(nodeName string) (map[string]interface{}, e
 		return nil, fmt.Errorf("failed to convert node %s to unstructured: %w", nodeName, err)
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"node": unstructuredObj,
 	}, nil
 }
@@ -212,7 +212,7 @@ var primitiveKinds = map[reflect.Kind]bool{
 // recursively converts any Go value into a JSON-compatible structure
 // with all fields present. Structs become map[string]interface{}, slices become []interface{},
 // maps become map[string]interface{}. Zero-values or nil pointers appear as null in the final map
-func structToInterface(v reflect.Value) interface{} {
+func structToInterface(v reflect.Value) any {
 	if !v.IsValid() {
 		return nil
 	}
@@ -226,7 +226,7 @@ func structToInterface(v reflect.Value) interface{} {
 	return handleComplexType(v, kind)
 }
 
-func handleComplexType(v reflect.Value, kind reflect.Kind) interface{} {
+func handleComplexType(v reflect.Value, kind reflect.Kind) any {
 	switch kind {
 	case reflect.Pointer:
 		return handlePointer(v)
@@ -252,7 +252,7 @@ func handleComplexType(v reflect.Value, kind reflect.Kind) interface{} {
 	}
 }
 
-func handlePointer(v reflect.Value) interface{} {
+func handlePointer(v reflect.Value) any {
 	if v.IsNil() {
 		return nil
 	}
@@ -260,8 +260,8 @@ func handlePointer(v reflect.Value) interface{} {
 	return structToInterface(v.Elem())
 }
 
-func handleStruct(v reflect.Value) interface{} {
-	result := make(map[string]interface{})
+func handleStruct(v reflect.Value) any {
+	result := make(map[string]any)
 	typ := v.Type()
 
 	for i := 0; i < typ.NumField(); i++ {
@@ -297,12 +297,12 @@ func extractJSONFieldName(jsonTag, fieldName string) string {
 	return name
 }
 
-func handleSliceOrArray(v reflect.Value) interface{} {
+func handleSliceOrArray(v reflect.Value) any {
 	if v.Kind() == reflect.Slice && v.IsNil() {
 		return nil
 	}
 
-	sliceResult := make([]interface{}, v.Len())
+	sliceResult := make([]any, v.Len())
 
 	for i := 0; i < v.Len(); i++ {
 		sliceResult[i] = structToInterface(v.Index(i))
@@ -311,12 +311,12 @@ func handleSliceOrArray(v reflect.Value) interface{} {
 	return sliceResult
 }
 
-func handleMap(v reflect.Value) interface{} {
+func handleMap(v reflect.Value) any {
 	if v.IsNil() {
 		return nil
 	}
 
-	mapResult := make(map[string]interface{})
+	mapResult := make(map[string]any)
 
 	for _, key := range v.MapKeys() {
 		mapResult[key.String()] = structToInterface(v.MapIndex(key))
@@ -325,7 +325,7 @@ func handleMap(v reflect.Value) interface{} {
 	return mapResult
 }
 
-func handleInterface(v reflect.Value) interface{} {
+func handleInterface(v reflect.Value) any {
 	if v.IsNil() {
 		return nil
 	}
@@ -334,7 +334,7 @@ func handleInterface(v reflect.Value) interface{} {
 }
 
 // uses structToInterface for recursive processing
-func RoundTrip(v interface{}) (map[string]interface{}, error) {
+func RoundTrip(v any) (map[string]any, error) {
 	val := reflect.ValueOf(v)
 	obj := structToInterface(val)
 
@@ -343,12 +343,12 @@ func RoundTrip(v interface{}) (map[string]interface{}, error) {
 		return nil, fmt.Errorf("failed to marshal intermediate object: %w", err)
 	}
 
-	var j interface{}
+	var j any
 	if err := json.Unmarshal(b, &j); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal JSON back to map: %w", err)
 	}
 
-	m, ok := j.(map[string]interface{})
+	m, ok := j.(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("expected JSON object after roundtrip")
 	}

@@ -23,14 +23,13 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/stretchr/testify/assert"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/stretchr/testify/assert"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -85,14 +84,10 @@ const testRecommendedActionLabel = "external-remediation"
 
 func newTestExtRR(name, nodeName string) *nvsentinelv1.ExternalRemediationRequest {
 	return &nvsentinelv1.ExternalRemediationRequest{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "nvsentinel.dgxc.nvidia.com/v1",
-			Kind:       "ExternalRemediationRequest",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: testExtRRNamespace,
-		},
+		APIVersion: "nvsentinel.dgxc.nvidia.com/v1",
+		Kind:       "ExternalRemediationRequest",
+		Name:       name,
+		Namespace:  testExtRRNamespace,
 		Spec: &protos.ExternalRemediationRequestSpec{
 			HealthEvent: &protos.HealthEvent{
 				Id:                      "he-" + name,
@@ -116,7 +111,7 @@ func reconcileToSteadyState(
 ) *nvsentinelv1.ExternalRemediationRequest {
 	GinkgoHelper()
 
-	for i := 0; i < maxPasses; i++ {
+	for i := range maxPasses {
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred(), "reconcile pass %d", i+1)
 	}
@@ -237,7 +232,7 @@ var _ = Describe("ExternalRemediationRequest Controller", func() {
 
 	It("swallows reconciles for missing objects", func() {
 		result, err := r.Reconcile(ctx, reconcile.Request{
-			NamespacedName: types.NamespacedName{Name: "missing-err", Namespace: testExtRRNamespace},
+			Name: "missing-err", Namespace: testExtRRNamespace,
 		})
 		Expect(err).NotTo(HaveOccurred(), "missing object must be swallowed via client.IgnoreNotFound")
 		Expect(result.RequeueAfter).To(BeZero())
@@ -361,9 +356,8 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 			DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
 
 			setExternalRemediationComplete(ctx, r.Client,
-				&nvsentinelv1.ExternalRemediationRequest{ObjectMeta: metav1.ObjectMeta{
-					Name: key.Name, Namespace: key.Namespace,
-				}}, "True", "ExternalRemediationSucceeded")
+				&nvsentinelv1.ExternalRemediationRequest{
+					Name: key.Name, Namespace: key.Namespace}, "True", "ExternalRemediationSucceeded")
 
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
@@ -391,9 +385,8 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 			DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
 
 			setExternalRemediationComplete(ctx, r.Client,
-				&nvsentinelv1.ExternalRemediationRequest{ObjectMeta: metav1.ObjectMeta{
-					Name: key.Name, Namespace: key.Namespace,
-				}}, "True", "ExternalRemediationSucceeded")
+				&nvsentinelv1.ExternalRemediationRequest{
+					Name: key.Name, Namespace: key.Namespace}, "True", "ExternalRemediationSucceeded")
 
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
@@ -402,7 +395,7 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 			Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &nodeAfterCleanup)).To(Succeed())
 			rvAfterCleanup := nodeAfterCleanup.ResourceVersion
 
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -426,9 +419,8 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 				"reconcileApply must acquire the node-lock lease")
 
 			setExternalRemediationComplete(ctx, r.Client,
-				&nvsentinelv1.ExternalRemediationRequest{ObjectMeta: metav1.ObjectMeta{
-					Name: key.Name, Namespace: key.Namespace,
-				}}, "True", "ExternalRemediationSucceeded")
+				&nvsentinelv1.ExternalRemediationRequest{
+					Name: key.Name, Namespace: key.Namespace}, "True", "ExternalRemediationSucceeded")
 
 			// First reconcile after Complete=True runs the close path
 			// (scrub + close metrics + markCompletionTime). Drain events here.
@@ -470,7 +462,7 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 			DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
 
 			Expect(r.Client.Delete(ctx, &nvsentinelv1.ExternalRemediationRequest{
-				ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+				Name: key.Name, Namespace: key.Namespace,
 			})).To(Succeed())
 
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
@@ -493,14 +485,13 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 			DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
 
 			setExternalRemediationComplete(ctx, r.Client,
-				&nvsentinelv1.ExternalRemediationRequest{ObjectMeta: metav1.ObjectMeta{
-					Name: key.Name, Namespace: key.Namespace,
-				}}, "True", "ExternalRemediationSucceeded")
+				&nvsentinelv1.ExternalRemediationRequest{
+					Name: key.Name, Namespace: key.Namespace}, "True", "ExternalRemediationSucceeded")
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(r.Client.Delete(ctx, &nvsentinelv1.ExternalRemediationRequest{
-				ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+				Name: key.Name, Namespace: key.Namespace,
 			})).To(Succeed())
 
 			var nodeBeforeDel corev1.Node
@@ -530,7 +521,7 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 			Expect(r.Client.Delete(ctx, &node)).To(Succeed())
 
 			Expect(r.Client.Delete(ctx, &nvsentinelv1.ExternalRemediationRequest{
-				ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+				Name: key.Name, Namespace: key.Namespace,
 			})).To(Succeed())
 
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
@@ -555,9 +546,8 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 		Expect(nodeAfterApply.Labels).To(HaveKeyWithValue(managed.ManagedLabelKey, managed.ManagedLabelValueFalse))
 
 		setExternalRemediationComplete(ctx, r.Client,
-			&nvsentinelv1.ExternalRemediationRequest{ObjectMeta: metav1.ObjectMeta{
-				Name: key.Name, Namespace: key.Namespace,
-			}}, "True", "ExternalRemediationSucceeded")
+			&nvsentinelv1.ExternalRemediationRequest{
+				Name: key.Name, Namespace: key.Namespace}, "True", "ExternalRemediationSucceeded")
 
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
@@ -593,9 +583,8 @@ var _ = Describe("ExternalRemediationRequest Controller asymmetric False handlin
 		rvBefore := nodeBefore.ResourceVersion
 
 		setExternalRemediationComplete(ctx, r.Client,
-			&nvsentinelv1.ExternalRemediationRequest{ObjectMeta: metav1.ObjectMeta{
-				Name: key.Name, Namespace: key.Namespace,
-			}}, "False", "ExternalRemediationFailed")
+			&nvsentinelv1.ExternalRemediationRequest{
+				Name: key.Name, Namespace: key.Namespace}, "False", "ExternalRemediationFailed")
 
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
@@ -619,9 +608,8 @@ var _ = Describe("ExternalRemediationRequest Controller asymmetric False handlin
 		DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
 
 		setExternalRemediationComplete(ctx, r.Client,
-			&nvsentinelv1.ExternalRemediationRequest{ObjectMeta: metav1.ObjectMeta{
-				Name: key.Name, Namespace: key.Namespace,
-			}}, "False", "ExternalRemediationFailed")
+			&nvsentinelv1.ExternalRemediationRequest{
+				Name: key.Name, Namespace: key.Namespace}, "False", "ExternalRemediationFailed")
 
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
@@ -630,7 +618,7 @@ var _ = Describe("ExternalRemediationRequest Controller asymmetric False handlin
 		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &nodeBaseline)).To(Succeed())
 		rvBaseline := nodeBaseline.ResourceVersion
 
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 		}
@@ -648,9 +636,8 @@ var _ = Describe("ExternalRemediationRequest Controller asymmetric False handlin
 		DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
 
 		setExternalRemediationComplete(ctx, r.Client,
-			&nvsentinelv1.ExternalRemediationRequest{ObjectMeta: metav1.ObjectMeta{
-				Name: key.Name, Namespace: key.Namespace,
-			}}, "False", "ExternalRemediationFailed")
+			&nvsentinelv1.ExternalRemediationRequest{
+				Name: key.Name, Namespace: key.Namespace}, "False", "ExternalRemediationFailed")
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -661,9 +648,8 @@ var _ = Describe("ExternalRemediationRequest Controller asymmetric False handlin
 
 		// True retry → branch 4 cleanup.
 		setExternalRemediationComplete(ctx, r.Client,
-			&nvsentinelv1.ExternalRemediationRequest{ObjectMeta: metav1.ObjectMeta{
-				Name: key.Name, Namespace: key.Namespace,
-			}}, "True", "ExternalRemediationSucceeded")
+			&nvsentinelv1.ExternalRemediationRequest{
+				Name: key.Name, Namespace: key.Namespace}, "True", "ExternalRemediationSucceeded")
 		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -680,14 +666,13 @@ var _ = Describe("ExternalRemediationRequest Controller asymmetric False handlin
 		DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
 
 		setExternalRemediationComplete(ctx, r.Client,
-			&nvsentinelv1.ExternalRemediationRequest{ObjectMeta: metav1.ObjectMeta{
-				Name: key.Name, Namespace: key.Namespace,
-			}}, "False", "ExternalRemediationFailed")
+			&nvsentinelv1.ExternalRemediationRequest{
+				Name: key.Name, Namespace: key.Namespace}, "False", "ExternalRemediationFailed")
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(r.Client.Delete(ctx, &nvsentinelv1.ExternalRemediationRequest{
-			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+			Name: key.Name, Namespace: key.Namespace,
 		})).To(Succeed())
 
 		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
@@ -764,7 +749,7 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 		rvAfterApply := nodeAfterApply.ResourceVersion
 
 		// With Released=True the dispatcher falls through to the no-op branch.
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 		}
@@ -836,7 +821,7 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
-			janitormetrics.ExtRRPhaseReleased, janitormetrics.ExtRRResultNodeNotFound)) - before).
+			janitormetrics.ExtRRPhaseReleased, janitormetrics.ExtRRResultNodeNotFound))-before).
 			To(BeNumerically("==", 1.0), "subsequent reconciles must not re-fire the metric")
 		Expect(drainEvents(r)).To(BeEmpty())
 	})
@@ -851,16 +836,14 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 		// Pre-create a lease as if a sibling maintenance CR (e.g. RebootNode)
 		// already holds the lock for this node.
 		foreignLease := &coordinationv1.Lease{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      nodeName,
-				Namespace: testExtRRNamespace,
-				OwnerReferences: []metav1.OwnerReference{{
-					APIVersion: "janitor.dgxc.nvidia.com/v1alpha1",
-					Kind:       "RebootNode",
-					Name:       "foreign-reboot",
-					UID:        "foreign-uid",
-				}},
-			},
+			Name:      nodeName,
+			Namespace: testExtRRNamespace,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "janitor.dgxc.nvidia.com/v1alpha1",
+				Kind:       "RebootNode",
+				Name:       "foreign-reboot",
+				UID:        "foreign-uid",
+			}},
 		}
 		Expect(r.Client.Create(ctx, foreignLease)).To(Succeed())
 		DeferCleanup(func() { _ = r.Client.Delete(ctx, foreignLease) })
@@ -976,14 +959,10 @@ func forceFinalizerRemovalByKey(ctx context.Context, r *ExternalRemediationReque
 
 func newTestNode(name string, labels map[string]string, taints []corev1.Taint) *corev1.Node {
 	return &corev1.Node{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "v1",
-			Kind:       "Node",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   name,
-			Labels: labels,
-		},
+		APIVersion: "v1",
+		Kind:       "Node",
+		Name:       name,
+		Labels:     labels,
 		Spec: corev1.NodeSpec{
 			Taints: taints,
 		},
@@ -1060,7 +1039,7 @@ var _ = Describe("ExternalRemediationRequest Controller observability", func() {
 
 		key := ctrlclient.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace}
 		// setInitialConditions only fires the counter on the pass that writes.
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 		}
@@ -1096,12 +1075,12 @@ var _ = Describe("ExternalRemediationRequest Controller observability", func() {
 			To(BeNumerically("==", 1.0))
 
 		// Re-reconciles must not double-count once Released=True.
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 		}
 		Expect(testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
-			janitormetrics.ExtRRPhaseReleased, janitormetrics.ExtRRResultSuccess)) - releasedBefore).
+			janitormetrics.ExtRRPhaseReleased, janitormetrics.ExtRRResultSuccess))-releasedBefore).
 			To(BeNumerically("==", 1.0), "released{success} must NOT double-count on re-reconciles")
 
 		events := drainEvents(r)
@@ -1122,9 +1101,8 @@ var _ = Describe("ExternalRemediationRequest Controller observability", func() {
 			janitormetrics.ExtRRPhaseExternalResponse, janitormetrics.ExtRRResultSuccess))
 
 		setExternalRemediationComplete(ctx, r.Client,
-			&nvsentinelv1.ExternalRemediationRequest{ObjectMeta: metav1.ObjectMeta{
-				Name: key.Name, Namespace: key.Namespace,
-			}}, "True", "ExternalRemediationSucceeded")
+			&nvsentinelv1.ExternalRemediationRequest{
+				Name: key.Name, Namespace: key.Namespace}, "True", "ExternalRemediationSucceeded")
 
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
@@ -1145,7 +1123,7 @@ var _ = Describe("ExternalRemediationRequest Controller observability", func() {
 		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
-			janitormetrics.ExtRRPhaseClosed, janitormetrics.ExtRRResultSuccess)) - closedBefore).
+			janitormetrics.ExtRRPhaseClosed, janitormetrics.ExtRRResultSuccess))-closedBefore).
 			To(BeNumerically("==", 1.0), "closed{success} must NOT double-count after cleanup")
 	})
 
@@ -1167,19 +1145,18 @@ var _ = Describe("ExternalRemediationRequest Controller observability", func() {
 
 		// Maestro signals success after the Node is gone.
 		setExternalRemediationComplete(ctx, r.Client,
-			&nvsentinelv1.ExternalRemediationRequest{ObjectMeta: metav1.ObjectMeta{
-				Name: key.Name, Namespace: key.Namespace,
-			}}, "True", "ExternalRemediationSucceeded")
+			&nvsentinelv1.ExternalRemediationRequest{
+				Name: key.Name, Namespace: key.Namespace}, "True", "ExternalRemediationSucceeded")
 
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
-			janitormetrics.ExtRRPhaseClosed, janitormetrics.ExtRRResultSuccess)) - closedBefore).
+			janitormetrics.ExtRRPhaseClosed, janitormetrics.ExtRRResultSuccess))-closedBefore).
 			To(BeNumerically("==", 1.0),
 				"closed{success} must fire even when the Node has been deleted")
 		Expect(testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
-			janitormetrics.ExtRRPhaseExternalResponse, janitormetrics.ExtRRResultSuccess)) - extRespBefore).
+			janitormetrics.ExtRRPhaseExternalResponse, janitormetrics.ExtRRResultSuccess))-extRespBefore).
 			To(BeNumerically("==", 1.0),
 				"external_response{success} must fire even when the Node has been deleted")
 
@@ -1193,7 +1170,7 @@ var _ = Describe("ExternalRemediationRequest Controller observability", func() {
 		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
-			janitormetrics.ExtRRPhaseClosed, janitormetrics.ExtRRResultSuccess)) - closedBefore).
+			janitormetrics.ExtRRPhaseClosed, janitormetrics.ExtRRResultSuccess))-closedBefore).
 			To(BeNumerically("==", 1.0),
 				"closed{success} must NOT double-count across re-reconciles")
 	})
@@ -1209,7 +1186,7 @@ var _ = Describe("ExternalRemediationRequest Controller observability", func() {
 			janitormetrics.ExtRRPhaseClosed, janitormetrics.ExtRRResultOperatorDeleted))
 
 		Expect(r.Client.Delete(ctx, &nvsentinelv1.ExternalRemediationRequest{
-			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+			Name: key.Name, Namespace: key.Namespace,
 		})).To(Succeed())
 
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})

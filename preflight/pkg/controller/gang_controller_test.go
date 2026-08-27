@@ -268,11 +268,9 @@ func TestGangController_EnsureNCCLTopoConfigMap(t *testing.T) {
 	te.createNamespace(t, ctx, "default")
 
 	cfg := &config.Config{
-		FileConfig: config.FileConfig{
-			GangCoordination: config.GangCoordinationConfig{
-				NCCLTopoConfigMap: topoName,
-				NCCLTopoData:      topoData,
-			},
+		GangCoordination: config.GangCoordinationConfig{
+			NCCLTopoConfigMap: topoName,
+			NCCLTopoData:      topoData,
 		},
 	}
 	gangCtrl := NewGangController(
@@ -447,7 +445,7 @@ func (te *testEnv) createNamespace(t *testing.T, ctx context.Context, name strin
 	te.active.Add(name)
 
 	_, err := te.kubeClient.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 	}, metav1.CreateOptions{})
 	if err != nil {
 		t.Logf("Namespace %q: %v (may already exist)", name, err)
@@ -551,10 +549,8 @@ func newGangPod(name, namespace, ip, gangID string) *corev1.Pod {
 
 func newTestPodWithGangVolume(name, namespace, ip, gangID string) *corev1.Pod {
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
+		Name:      name,
+		Namespace: namespace,
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{
 				{Name: "test", Image: "busybox"},
@@ -569,12 +565,8 @@ func newTestPodWithGangVolume(name, namespace, ip, gangID string) *corev1.Pod {
 		pod.Spec.Volumes = []corev1.Volume{
 			{
 				Name: types.GangConfigVolumeName,
-				VolumeSource: corev1.VolumeSource{
-					ConfigMap: &corev1.ConfigMapVolumeSource{
-						LocalObjectReference: corev1.LocalObjectReference{
-							Name: coordinator.ConfigMapName(gangID),
-						},
-					},
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					Name: coordinator.ConfigMapName(gangID),
 				},
 			},
 		}
@@ -621,10 +613,8 @@ func TestWebhookConfigMapName(t *testing.T) {
 					Containers: []corev1.Container{{Name: "c", Image: "img"}},
 					Volumes: []corev1.Volume{
 						{
-							Name: types.GangConfigVolumeName,
-							VolumeSource: corev1.VolumeSource{
-								EmptyDir: &corev1.EmptyDirVolumeSource{},
-							},
+							Name:     types.GangConfigVolumeName,
+							EmptyDir: &corev1.EmptyDirVolumeSource{},
 						},
 					},
 				},
@@ -639,10 +629,8 @@ func TestWebhookConfigMapName(t *testing.T) {
 					Volumes: []corev1.Volume{
 						{
 							Name: "other-volume",
-							VolumeSource: corev1.VolumeSource{
-								ConfigMap: &corev1.ConfigMapVolumeSource{
-									LocalObjectReference: corev1.LocalObjectReference{Name: "other-cm"},
-								},
+							ConfigMap: &corev1.ConfigMapVolumeSource{
+								Name: "other-cm",
 							},
 						},
 					},
@@ -663,12 +651,10 @@ func TestCheckNamesFromPod(t *testing.T) {
 	boolPtr := func(b bool) *bool { return &b }
 
 	baseCfg := &config.Config{
-		FileConfig: config.FileConfig{
-			InitContainers: []config.InitContainerSpec{
-				{Container: corev1.Container{Name: "preflight-dcgm-diag"}, DefaultEnabled: nil},
-				{Container: corev1.Container{Name: "preflight-nccl-allreduce"}, DefaultEnabled: nil},
-				{Container: corev1.Container{Name: "preflight-nccl-loopback"}, DefaultEnabled: boolPtr(false)},
-			},
+		InitContainers: []config.InitContainerSpec{
+			{Name: "preflight-dcgm-diag", DefaultEnabled: nil},
+			{Name: "preflight-nccl-allreduce", DefaultEnabled: nil},
+			{Name: "preflight-nccl-loopback", DefaultEnabled: boolPtr(false)},
 		},
 	}
 
@@ -680,17 +666,15 @@ func TestCheckNamesFromPod(t *testing.T) {
 	}{
 		{
 			name: "no annotation uses defaultEnabled checks in chart order",
-			pod:  &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p"}},
+			pod:  &corev1.Pod{Name: "p"},
 			cfg:  baseCfg,
 			want: "preflight-dcgm-diag,preflight-nccl-allreduce",
 		},
 		{
 			name: "annotation overrides with explicit order",
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:        "p",
-					Annotations: map[string]string{webhook.PreflightChecksAnnotation: "preflight-nccl-allreduce,preflight-dcgm-diag"},
-				},
+				Name:        "p",
+				Annotations: map[string]string{webhook.PreflightChecksAnnotation: "preflight-nccl-allreduce,preflight-dcgm-diag"},
 			},
 			cfg:  baseCfg,
 			want: "preflight-nccl-allreduce,preflight-dcgm-diag",
@@ -698,10 +682,8 @@ func TestCheckNamesFromPod(t *testing.T) {
 		{
 			name: "annotation with unknown check names filters them out",
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:        "p",
-					Annotations: map[string]string{webhook.PreflightChecksAnnotation: "preflight-dcgm-diag,nonexistent"},
-				},
+				Name:        "p",
+				Annotations: map[string]string{webhook.PreflightChecksAnnotation: "preflight-dcgm-diag,nonexistent"},
 			},
 			cfg:  baseCfg,
 			want: "preflight-dcgm-diag",
@@ -709,10 +691,8 @@ func TestCheckNamesFromPod(t *testing.T) {
 		{
 			name: "annotation can enable a non-default check",
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:        "p",
-					Annotations: map[string]string{webhook.PreflightChecksAnnotation: "preflight-nccl-loopback"},
-				},
+				Name:        "p",
+				Annotations: map[string]string{webhook.PreflightChecksAnnotation: "preflight-nccl-loopback"},
 			},
 			cfg:  baseCfg,
 			want: "preflight-nccl-loopback",
@@ -720,17 +700,15 @@ func TestCheckNamesFromPod(t *testing.T) {
 		{
 			name: "duplicate annotation returns empty",
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:        "p",
-					Annotations: map[string]string{webhook.PreflightChecksAnnotation: "preflight-dcgm-diag,preflight-dcgm-diag"},
-				},
+				Name:        "p",
+				Annotations: map[string]string{webhook.PreflightChecksAnnotation: "preflight-dcgm-diag,preflight-dcgm-diag"},
 			},
 			cfg:  baseCfg,
 			want: "",
 		},
 		{
 			name: "empty config returns empty string",
-			pod:  &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p"}},
+			pod:  &corev1.Pod{Name: "p"},
 			cfg:  &config.Config{},
 			want: "",
 		},
@@ -749,7 +727,7 @@ func TestCleanupOrphanedConfigMap(t *testing.T) {
 		derivedName := coordinator.ConfigMapName("annotation-gang")
 
 		fc := fake.NewClientBuilder().WithObjects(&corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{Name: derivedName, Namespace: "default"},
+			Name: derivedName, Namespace: "default",
 		}).Build()
 
 		gc := &GangController{Client: fc}
@@ -764,7 +742,7 @@ func TestCleanupOrphanedConfigMap(t *testing.T) {
 		cmName := coordinator.ConfigMapName("same-gang")
 
 		fc := fake.NewClientBuilder().WithObjects(&corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: "default"},
+			Name: cmName, Namespace: "default",
 		}).Build()
 
 		gc := &GangController{Client: fc}
@@ -779,7 +757,7 @@ func TestCleanupOrphanedConfigMap(t *testing.T) {
 		derivedName := coordinator.ConfigMapName("some-gang")
 
 		fc := fake.NewClientBuilder().WithObjects(&corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{Name: derivedName, Namespace: "default"},
+			Name: derivedName, Namespace: "default",
 		}).Build()
 
 		gc := &GangController{Client: fc}
@@ -796,7 +774,7 @@ func TestDeleteOrphanedConfigMap(t *testing.T) {
 		orphanName := coordinator.ConfigMapName("orphan-gang")
 
 		orphanCM := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{Name: orphanName, Namespace: "default"},
+			Name: orphanName, Namespace: "default",
 		}
 		fc := fake.NewClientBuilder().WithObjects(orphanCM).Build()
 

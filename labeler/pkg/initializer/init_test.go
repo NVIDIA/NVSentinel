@@ -64,10 +64,8 @@ func TestInitializeAll_RateLimitScenarios_InitializedLabelerUsesConfiguredQPS(t 
 			for idx := range nodeCount {
 				nodeNames[idx] = fmt.Sprintf("%s-%d-%d", test.prefix, idx, time.Now().UnixNano())
 				_, createErr := adminClient.CoreV1().Nodes().Create(t.Context(), &corev1.Node{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:   nodeNames[idx],
-						Labels: map[string]string{"nvidia.com/gpu.present": "true"},
-					},
+					Name:   nodeNames[idx],
+					Labels: map[string]string{"nvidia.com/gpu.present": "true"},
 				}, metav1.CreateOptions{})
 				require.NoError(t, createErr)
 			}

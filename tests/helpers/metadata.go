@@ -23,7 +23,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/e2e-framework/klient"
 )
@@ -192,10 +191,8 @@ func InjectMetadata(t *testing.T, ctx context.Context,
 	require.NoError(t, err, "failed to marshal metadata")
 
 	configMap := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: "gpu-metadata-",
-			Namespace:    namespace,
-		},
+		GenerateName: "gpu-metadata-",
+		Namespace:    namespace,
 		Data: map[string]string{
 			"gpu_metadata.json": string(metadataJSON),
 		},

@@ -37,11 +37,11 @@ func TestParseHealthEventFromEvent(t *testing.T) {
 			name: "parse change stream event with fullDocument",
 			event: datastore.Event{
 				"operationType": "insert",
-				"fullDocument": map[string]interface{}{
-					"healtheventstatus": map[string]interface{}{
+				"fullDocument": map[string]any{
+					"healtheventstatus": map[string]any{
 						"nodequarantined": "Quarantined",
 					},
-					"healthevent": map[string]interface{}{
+					"healthevent": map[string]any{
 						"nodename":       "test-node",
 						"checkname":      "GpuXidError",
 						"componentclass": "GPU",
@@ -58,10 +58,10 @@ func TestParseHealthEventFromEvent(t *testing.T) {
 		{
 			name: "parse direct document event",
 			event: datastore.Event{
-				"healtheventstatus": map[string]interface{}{
+				"healtheventstatus": map[string]any{
 					"nodequarantined": "Quarantined",
 				},
-				"healthevent": map[string]interface{}{
+				"healthevent": map[string]any{
 					"nodename":       "test-node-2",
 					"checkname":      "NvLinkDown",
 					"componentclass": "NVLink",
@@ -77,7 +77,7 @@ func TestParseHealthEventFromEvent(t *testing.T) {
 		{
 			name: "error on nil health event",
 			event: datastore.Event{
-				"healtheventstatus": map[string]interface{}{
+				"healtheventstatus": map[string]any{
 					"nodequarantined": "Quarantined",
 				},
 			},
@@ -87,12 +87,12 @@ func TestParseHealthEventFromEvent(t *testing.T) {
 			name: "parse PostgreSQL format with document field",
 			event: datastore.Event{
 				"operationType": "insert",
-				"fullDocument": map[string]interface{}{
-					"document": map[string]interface{}{
-						"healtheventstatus": map[string]interface{}{
+				"fullDocument": map[string]any{
+					"document": map[string]any{
+						"healtheventstatus": map[string]any{
 							"nodequarantined": "Quarantined",
 						},
-						"healthevent": map[string]interface{}{
+						"healthevent": map[string]any{
 							"nodename":       "postgres-node",
 							"checkname":      "GpuXidError",
 							"componentclass": "GPU",
@@ -110,11 +110,11 @@ func TestParseHealthEventFromEvent(t *testing.T) {
 		{
 			name: "parse direct document with legacy plain faultRemediated bool",
 			event: datastore.Event{
-				"healtheventstatus": map[string]interface{}{
+				"healtheventstatus": map[string]any{
 					"nodequarantined": "Quarantined",
 					"faultremediated": true,
 				},
-				"healthevent": map[string]interface{}{
+				"healthevent": map[string]any{
 					"nodename":       "legacy-node",
 					"checkname":      "GpuXidError",
 					"componentclass": "GPU",
@@ -131,12 +131,12 @@ func TestParseHealthEventFromEvent(t *testing.T) {
 			name: "parse change stream event with legacy plain faultRemediated bool",
 			event: datastore.Event{
 				"operationType": "update",
-				"fullDocument": map[string]interface{}{
-					"healtheventstatus": map[string]interface{}{
+				"fullDocument": map[string]any{
+					"healtheventstatus": map[string]any{
 						"nodequarantined": "Quarantined",
 						"faultremediated": false,
 					},
-					"healthevent": map[string]interface{}{
+					"healthevent": map[string]any{
 						"nodename":       "legacy-change-stream-node",
 						"checkname":      "GpuXidError",
 						"componentclass": "GPU",
@@ -154,13 +154,13 @@ func TestParseHealthEventFromEvent(t *testing.T) {
 			name: "parse PostgreSQL document field with legacy plain faultRemediated bool",
 			event: datastore.Event{
 				"operationType": "insert",
-				"fullDocument": map[string]interface{}{
-					"document": map[string]interface{}{
-						"healtheventstatus": map[string]interface{}{
+				"fullDocument": map[string]any{
+					"document": map[string]any{
+						"healtheventstatus": map[string]any{
 							"nodequarantined": "Quarantined",
 							"faultremediated": true,
 						},
-						"healthevent": map[string]interface{}{
+						"healthevent": map[string]any{
 							"nodename":       "postgres-legacy-node",
 							"checkname":      "GpuXidError",
 							"componentclass": "GPU",
@@ -179,12 +179,12 @@ func TestParseHealthEventFromEvent(t *testing.T) {
 			name: "parse change stream event with wrapped faultRemediated bool",
 			event: datastore.Event{
 				"operationType": "update",
-				"fullDocument": map[string]interface{}{
-					"healtheventstatus": map[string]interface{}{
+				"fullDocument": map[string]any{
+					"healtheventstatus": map[string]any{
 						"nodequarantined": "Quarantined",
-						"faultremediated": map[string]interface{}{"value": true},
+						"faultremediated": map[string]any{"value": true},
 					},
-					"healthevent": map[string]interface{}{
+					"healthevent": map[string]any{
 						"nodename":       "wrapped-node",
 						"checkname":      "GpuXidError",
 						"componentclass": "GPU",
@@ -202,12 +202,12 @@ func TestParseHealthEventFromEvent(t *testing.T) {
 			name: "handle nil NodeQuarantined with default value",
 			event: datastore.Event{
 				"operationType": "insert",
-				"fullDocument": map[string]interface{}{
-					"document": map[string]interface{}{
-						"healtheventstatus": map[string]interface{}{
+				"fullDocument": map[string]any{
+					"document": map[string]any{
+						"healtheventstatus": map[string]any{
 							"nodequarantined": "",
 						},
-						"healthevent": map[string]interface{}{
+						"healthevent": map[string]any{
 							"nodename":       "new-event-node",
 							"checkname":      "GpuXidError",
 							"componentclass": "GPU",
@@ -227,10 +227,10 @@ func TestParseHealthEventFromEvent(t *testing.T) {
 			name: "handle missing NodeQuarantined field with default value",
 			event: datastore.Event{
 				"operationType": "insert",
-				"fullDocument": map[string]interface{}{
-					"document": map[string]interface{}{
-						"healtheventstatus": map[string]interface{}{},
-						"healthevent": map[string]interface{}{
+				"fullDocument": map[string]any{
+					"document": map[string]any{
+						"healtheventstatus": map[string]any{},
+						"healthevent": map[string]any{
 							"nodename":       "missing-status-node",
 							"checkname":      "GpuXidError",
 							"componentclass": "GPU",

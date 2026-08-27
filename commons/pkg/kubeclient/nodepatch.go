@@ -213,10 +213,8 @@ func NodeMergePatch(original, modified *v1.Node) ([]byte, error) {
 // helper intentionally supports, preventing callbacks from patching unrelated fields.
 func projectNodePatchableFields(node *v1.Node) *v1.Node {
 	return &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Labels:      node.Labels,
-			Annotations: node.Annotations,
-		},
+		Labels:      node.Labels,
+		Annotations: node.Annotations,
 		Spec: v1.NodeSpec{
 			Taints:        node.Spec.Taints,
 			Unschedulable: node.Spec.Unschedulable,

@@ -553,8 +553,8 @@ func dialWithRetry(ctx context.Context, target string, opts ...grpc.DialOption) 
 		)
 
 		// For unix:// ensure the socket path exists before dialing.
-		if strings.HasPrefix(target, "unix://") {
-			socketPath := strings.TrimPrefix(target, "unix://")
+		if after, ok := strings.CutPrefix(target, "unix://"); ok {
+			socketPath := after
 			if _, statErr := os.Stat(socketPath); statErr != nil {
 				slog.Warn("Platform connector socket file does not exist",
 					"attempt", attempt, "maxRetries", maxRetries, "error", statErr)

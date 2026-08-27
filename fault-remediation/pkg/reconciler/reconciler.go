@@ -1328,9 +1328,9 @@ func unresolvedRemediationReadyEventsQuery(nodeName string) datastore.QueryBuild
 func unresolvedRemediationReadyEventsCondition(nodeName string) query.Condition {
 	conditions := []query.Condition{
 		query.In("healtheventstatus.nodequarantined",
-			[]interface{}{string(model.Quarantined), string(model.AlreadyQuarantined)}),
+			[]any{string(model.Quarantined), string(model.AlreadyQuarantined)}),
 		query.In("healtheventstatus.userpodsevictionstatus.status",
-			[]interface{}{string(model.StatusSucceeded), string(model.AlreadyDrained)}),
+			[]any{string(model.StatusSucceeded), string(model.AlreadyDrained)}),
 		query.Eq("healtheventstatus.faultremediated", nil),
 	}
 
@@ -1851,7 +1851,7 @@ func (r *FaultRemediationReconciler) HandleColdStart(ctx context.Context) {
 		// Cancelled/unquarantined events that haven't been marked complete
 		query.And(
 			query.In("healtheventstatus.nodequarantined",
-				[]interface{}{string(model.UnQuarantined), string(model.Cancelled)}),
+				[]any{string(model.UnQuarantined), string(model.Cancelled)}),
 			query.Eq("healtheventstatus.faultremediated", nil),
 		),
 	)

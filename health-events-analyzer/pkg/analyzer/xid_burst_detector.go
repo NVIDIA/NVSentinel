@@ -17,6 +17,7 @@ package analyzer
 import (
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -143,7 +144,7 @@ func ParseXidConfigFromPipeline(stages []string) XidBurstDetectorConfig {
 	cfg := DefaultXidBurstDetectorConfig()
 
 	for _, stageStr := range stages {
-		var stage map[string]interface{}
+		var stage map[string]any
 		if err := json.Unmarshal([]byte(stageStr), &stage); err != nil {
 			continue
 		}
@@ -157,8 +158,8 @@ func ParseXidConfigFromPipeline(stages []string) XidBurstDetectorConfig {
 }
 
 // parseMatchStage extracts lookback window and burst threshold from $match stages
-func parseMatchStage(stage map[string]interface{}, cfg *XidBurstDetectorConfig) {
-	match, ok := stage["$match"].(map[string]interface{})
+func parseMatchStage(stage map[string]any, cfg *XidBurstDetectorConfig) {
+	match, ok := stage["$match"].(map[string]any)
 	if !ok {
 		return
 	}
@@ -171,23 +172,23 @@ func parseMatchStage(stage map[string]interface{}, cfg *XidBurstDetectorConfig) 
 }
 
 // extractLookbackWindow extracts the lookback window from a $match.$expr.$gte stage
-func extractLookbackWindow(match map[string]interface{}, cfg *XidBurstDetectorConfig) {
-	expr, ok := match["$expr"].(map[string]interface{})
+func extractLookbackWindow(match map[string]any, cfg *XidBurstDetectorConfig) {
+	expr, ok := match["$expr"].(map[string]any)
 	if !ok {
 		return
 	}
 
-	gte, ok := expr["$gte"].([]interface{})
+	gte, ok := expr["$gte"].([]any)
 	if !ok || len(gte) != 2 {
 		return
 	}
 
-	subtract, ok := gte[1].(map[string]interface{})
+	subtract, ok := gte[1].(map[string]any)
 	if !ok {
 		return
 	}
 
-	sub, ok := subtract["$subtract"].([]interface{})
+	sub, ok := subtract["$subtract"].([]any)
 	if !ok || len(sub) != 2 {
 		return
 	}
@@ -199,8 +200,8 @@ func extractLookbackWindow(match map[string]interface{}, cfg *XidBurstDetectorCo
 }
 
 // extractBurstThreshold extracts the burst threshold from a $match.count.$gte stage
-func extractBurstThreshold(match map[string]interface{}, cfg *XidBurstDetectorConfig) {
-	count, ok := match["count"].(map[string]interface{})
+func extractBurstThreshold(match map[string]any, cfg *XidBurstDetectorConfig) {
+	count, ok := match["count"].(map[string]any)
 	if !ok {
 		return
 	}
@@ -212,18 +213,18 @@ func extractBurstThreshold(match map[string]interface{}, cfg *XidBurstDetectorCo
 }
 
 // parseSetWindowFieldsStage extracts burst window from $setWindowFields stages
-func parseSetWindowFieldsStage(stage map[string]interface{}, cfg *XidBurstDetectorConfig) {
-	swf, ok := stage["$setWindowFields"].(map[string]interface{})
+func parseSetWindowFieldsStage(stage map[string]any, cfg *XidBurstDetectorConfig) {
+	swf, ok := stage["$setWindowFields"].(map[string]any)
 	if !ok {
 		return
 	}
 
-	output, ok := swf["output"].(map[string]interface{})
+	output, ok := swf["output"].(map[string]any)
 	if !ok {
 		return
 	}
 
-	burstID, ok := output["burstId"].(map[string]interface{})
+	burstID, ok := output["burstId"].(map[string]any)
 	if !ok {
 		return
 	}
@@ -235,8 +236,8 @@ func parseSetWindowFieldsStage(stage map[string]interface{}, cfg *XidBurstDetect
 }
 
 // parseAddFieldsStage extracts sticky window from $addFields stages
-func parseAddFieldsStage(stage map[string]interface{}, cfg *XidBurstDetectorConfig) {
-	addFields, ok := stage["$addFields"].(map[string]interface{})
+func parseAddFieldsStage(stage map[string]any, cfg *XidBurstDetectorConfig) {
+	addFields, ok := stage["$addFields"].(map[string]any)
 	if !ok {
 		return
 	}
@@ -252,9 +253,9 @@ func parseAddFieldsStage(stage map[string]interface{}, cfg *XidBurstDetectorConf
 }
 
 // findGtInValue recursively searches for $gt operator and extracts the time value
-func findGtInValue(v interface{}) time.Duration {
+func findGtInValue(v any) time.Duration {
 	switch val := v.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		if result := checkGtOperator(val); result > 0 {
 			return result
 		}
@@ -264,7 +265,7 @@ func findGtInValue(v interface{}) time.Duration {
 				return result
 			}
 		}
-	case []interface{}:
+	case []any:
 		for _, child := range val {
 			if result := findGtInValue(child); result > 0 {
 				return result
@@ -276,13 +277,13 @@ func findGtInValue(v interface{}) time.Duration {
 }
 
 // checkGtOperator checks if a map contains a $gt operator with a time value
-func checkGtOperator(val map[string]interface{}) time.Duration {
-	gt, ok := val["$gt"].([]interface{})
+func checkGtOperator(val map[string]any) time.Duration {
+	gt, ok := val["$gt"].([]any)
 	if !ok || len(gt) != 2 {
 		return 0
 	}
 
-	subtract, ok := gt[0].(map[string]interface{})
+	subtract, ok := gt[0].(map[string]any)
 	if !ok {
 		return 0
 	}
@@ -299,9 +300,9 @@ func checkGtOperator(val map[string]interface{}) time.Duration {
 }
 
 // findLteInValue recursively searches for $lte operator and extracts the time value
-func findLteInValue(v interface{}) time.Duration {
+func findLteInValue(v any) time.Duration {
 	switch val := v.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		if result := checkLteOperator(val); result > 0 {
 			return result
 		}
@@ -311,7 +312,7 @@ func findLteInValue(v interface{}) time.Duration {
 				return result
 			}
 		}
-	case []interface{}:
+	case []any:
 		for _, child := range val {
 			if result := findLteInValue(child); result > 0 {
 				return result
@@ -323,8 +324,8 @@ func findLteInValue(v interface{}) time.Duration {
 }
 
 // checkLteOperator checks if a map contains a $lte operator with a time value
-func checkLteOperator(val map[string]interface{}) time.Duration {
-	lte, ok := val["$lte"].([]interface{})
+func checkLteOperator(val map[string]any) time.Duration {
+	lte, ok := val["$lte"].([]any)
 	if !ok || len(lte) != 2 {
 		return 0
 	}
@@ -465,8 +466,7 @@ func (d *XidBurstDetector) isStickyXidContinuation(event XidEvent, previousEvent
 	}
 
 	// Check if there's a sticky XID within stickyWindow (20 seconds) before this one
-	for i := len(previousEvents) - 1; i >= 0; i-- {
-		prev := previousEvents[i]
+	for _, prev := range slices.Backward(previousEvents) {
 		timeDiff := event.timestamp.Sub(prev.timestamp)
 
 		if timeDiff > d.stickyWindow {

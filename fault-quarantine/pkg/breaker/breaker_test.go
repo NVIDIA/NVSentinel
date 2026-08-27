@@ -106,7 +106,7 @@ func (c *testK8sClient) EnsureCircuitBreakerConfigMap(ctx context.Context, name,
 	}
 
 	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Name: name, Namespace: namespace,
 		Data: map[string]string{
 			"status": string(initialStatus),
 			"cursor": string(CursorModeResume),
@@ -188,9 +188,7 @@ func createTestNode(ctx context.Context, t *testing.T, name string) {
 	t.Helper()
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-		},
+		Name: name,
 		Spec: corev1.NodeSpec{},
 		Status: corev1.NodeStatus{
 			Conditions: []corev1.NodeCondition{
@@ -236,7 +234,7 @@ func newTestBreaker(t *testing.T, ctx context.Context, totalNodes int, tripPerce
 
 	// Create the specified number of nodes
 	nodeNames := make([]string, totalNodes)
-	for i := 0; i < totalNodes; i++ {
+	for i := range totalNodes {
 		nodeName := fmt.Sprintf("test-node-%d-%s", i, generateTestID()[:6])
 		nodeNames[i] = nodeName
 		createTestNode(ctx, t, nodeName)
@@ -289,7 +287,7 @@ func TestDoesNotTripBelowThreshold(t *testing.T) {
 	b := newTestBreaker(t, ctx, 10, 50, 1*time.Second, "")
 
 	t.Log("Adding 3 cordon events (below threshold of 5)")
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		b.AddCordonEvent(fmt.Sprintf("node%d", i))
 	}
 	tripped, err := b.IsTripped(ctx)
@@ -314,7 +312,7 @@ func TestTripsWhenAboveThreshold(t *testing.T) {
 	beforeDuration := getHistogramVecCount(t, metrics.FaultQuarantineGetTotalNodesDuration, "success")
 
 	t.Log("Adding 5 cordon events (at threshold, should trip)")
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		b.AddCordonEvent(fmt.Sprintf("node%d", i))
 	}
 	tripped, err := b.IsTripped(ctx)
@@ -371,7 +369,7 @@ func TestWindowExpiryResetsCounts(t *testing.T) {
 	b := newTestBreaker(t, ctx, 10, 50, 1*time.Second, "")
 
 	t.Log("Adding 6 cordon events (exceeds threshold)")
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		b.AddCordonEvent(fmt.Sprintf("node%d", i))
 	}
 	tripped, err := b.IsTripped(ctx)
@@ -436,7 +434,7 @@ func TestFlappingNodeDoesNotMultiplyCount(t *testing.T) {
 	}
 
 	t.Log("Add 4 more unique nodes (total 5 unique nodes)")
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		b.AddCordonEvent(fmt.Sprintf("node%d", i))
 	}
 

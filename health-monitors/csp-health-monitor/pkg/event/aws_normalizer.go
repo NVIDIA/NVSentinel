@@ -43,8 +43,8 @@ var _ Normalizer = (*AWSNormalizer)(nil)
 
 // validateAWSNormalizerInput checks the input to the Normalize function.
 func validateAWSNormalizerInput(
-	rawEvent interface{},
-	additionalInfo ...interface{},
+	rawEvent any,
+	additionalInfo ...any,
 ) (types.Event, EventMetadata, error) {
 	event, ok := rawEvent.(types.Event)
 	if !ok {
@@ -80,8 +80,8 @@ func validateAWSNormalizerInput(
 // Normalize converts a AWS Cloud health events into a standard MaintenanceEvent.
 // It expects rawEvent to be of type types.Event.
 func (n *AWSNormalizer) Normalize(
-	rawEvent interface{},
-	additionalInfo ...interface{},
+	rawEvent any,
+	additionalInfo ...any,
 ) (*model.MaintenanceEvent, error) {
 	event, meta, err := validateAWSNormalizerInput(rawEvent, additionalInfo...)
 	if err != nil {

@@ -61,7 +61,7 @@ func TestInitializeKubernetesClient_RateLimitScenarios_InitializedInformersUseCo
 		t.Run(test.name, func(t *testing.T) {
 			namespace := fmt.Sprintf("%s-%d", test.prefix, time.Now().UnixNano())
 			_, createErr := adminClient.CoreV1().Namespaces().Create(t.Context(), &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{Name: namespace},
+				Name: namespace,
 			}, metav1.CreateOptions{})
 			require.NoError(t, createErr)
 
@@ -69,7 +69,7 @@ func TestInitializeKubernetesClient_RateLimitScenarios_InitializedInformersUseCo
 			for idx := range podCount {
 				nodeNames[idx] = fmt.Sprintf("%s-node-%d", test.prefix, idx)
 				_, createErr = adminClient.CoreV1().Pods(namespace).Create(t.Context(), &corev1.Pod{
-					ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("%s-pod-%d", test.prefix, idx)},
+					Name: fmt.Sprintf("%s-pod-%d", test.prefix, idx),
 					Spec: corev1.PodSpec{
 						NodeName:   nodeNames[idx],
 						Containers: []corev1.Container{{Name: "workload", Image: "example.invalid/workload"}},

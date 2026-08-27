@@ -31,66 +31,66 @@ type mongoUpdateBuilder struct {
 }
 
 // Eq adds an equality filter
-func (fb *mongoFilterBuilder) Eq(field string, value interface{}) client.FilterBuilder {
+func (fb *mongoFilterBuilder) Eq(field string, value any) client.FilterBuilder {
 	fb.filter[field] = value
 	return fb
 }
 
 // Ne adds a not-equal filter
-func (fb *mongoFilterBuilder) Ne(field string, value interface{}) client.FilterBuilder {
+func (fb *mongoFilterBuilder) Ne(field string, value any) client.FilterBuilder {
 	fb.filter[field] = bson.M{"$ne": value}
 	return fb
 }
 
 // Gt adds a greater-than filter
-func (fb *mongoFilterBuilder) Gt(field string, value interface{}) client.FilterBuilder {
+func (fb *mongoFilterBuilder) Gt(field string, value any) client.FilterBuilder {
 	fb.filter[field] = bson.M{"$gt": value}
 	return fb
 }
 
 // Gte adds a greater-than-or-equal filter
-func (fb *mongoFilterBuilder) Gte(field string, value interface{}) client.FilterBuilder {
+func (fb *mongoFilterBuilder) Gte(field string, value any) client.FilterBuilder {
 	fb.filter[field] = bson.M{"$gte": value}
 	return fb
 }
 
 // Lt adds a less-than filter
-func (fb *mongoFilterBuilder) Lt(field string, value interface{}) client.FilterBuilder {
+func (fb *mongoFilterBuilder) Lt(field string, value any) client.FilterBuilder {
 	fb.filter[field] = bson.M{"$lt": value}
 	return fb
 }
 
 // Lte adds a less-than-or-equal filter
-func (fb *mongoFilterBuilder) Lte(field string, value interface{}) client.FilterBuilder {
+func (fb *mongoFilterBuilder) Lte(field string, value any) client.FilterBuilder {
 	fb.filter[field] = bson.M{"$lte": value}
 	return fb
 }
 
 // In adds an "in" filter for array membership
-func (fb *mongoFilterBuilder) In(field string, values interface{}) client.FilterBuilder {
+func (fb *mongoFilterBuilder) In(field string, values any) client.FilterBuilder {
 	fb.filter[field] = bson.M{"$in": values}
 	return fb
 }
 
 // And combines multiple filters with logical AND
-func (fb *mongoFilterBuilder) And(filters ...interface{}) client.FilterBuilder {
+func (fb *mongoFilterBuilder) And(filters ...any) client.FilterBuilder {
 	fb.filter["$and"] = filters
 	return fb
 }
 
 // Or combines multiple filters with logical OR
-func (fb *mongoFilterBuilder) Or(filters ...interface{}) client.FilterBuilder {
+func (fb *mongoFilterBuilder) Or(filters ...any) client.FilterBuilder {
 	fb.filter["$or"] = filters
 	return fb
 }
 
 // Build returns the final MongoDB filter document
-func (fb *mongoFilterBuilder) Build() interface{} {
+func (fb *mongoFilterBuilder) Build() any {
 	return fb.filter
 }
 
 // Set adds a field set operation to the update
-func (ub *mongoUpdateBuilder) Set(field string, value interface{}) client.UpdateBuilder {
+func (ub *mongoUpdateBuilder) Set(field string, value any) client.UpdateBuilder {
 	if ub.update["$set"] == nil {
 		ub.update["$set"] = bson.M{}
 	}
@@ -112,7 +112,7 @@ func (ub *mongoUpdateBuilder) Unset(field string) client.UpdateBuilder {
 }
 
 // Inc adds a field increment operation to the update
-func (ub *mongoUpdateBuilder) Inc(field string, value interface{}) client.UpdateBuilder {
+func (ub *mongoUpdateBuilder) Inc(field string, value any) client.UpdateBuilder {
 	if ub.update["$inc"] == nil {
 		ub.update["$inc"] = bson.M{}
 	}
@@ -123,7 +123,7 @@ func (ub *mongoUpdateBuilder) Inc(field string, value interface{}) client.Update
 }
 
 // Build returns the final MongoDB update document
-func (ub *mongoUpdateBuilder) Build() interface{} {
+func (ub *mongoUpdateBuilder) Build() any {
 	return ub.update
 }
 

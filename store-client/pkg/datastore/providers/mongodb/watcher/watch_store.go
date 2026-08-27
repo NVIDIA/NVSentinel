@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
@@ -53,7 +54,7 @@ var resumeTokenRecoveries = promauto.NewCounterVec(
 )
 
 // Event represents a database-agnostic event that abstracts away provider-specific types
-type Event map[string]interface{}
+type Event map[string]any
 
 type MongoDBClientTLSCertConfig struct {
 	TlsCertPath string
@@ -378,8 +379,7 @@ func recoverFromStaleResumeToken(
 //   - 280: ChangeStreamFatalError (general fatal change stream error)
 //   - 286: ChangeStreamHistoryLost (oplog rolled over past the token's position)
 func isUnrecoverableResumeTokenError(err error) bool {
-	var serverErr mongo.ServerError
-	if errors.As(err, &serverErr) {
+	if serverErr, ok := errors.AsType[mongo.ServerError](err); ok {
 		return serverErr.HasErrorCode(9) || serverErr.HasErrorCode(260) ||
 			serverErr.HasErrorCode(280) || serverErr.HasErrorCode(286)
 	}
@@ -491,7 +491,7 @@ func (w *ChangeStreamWatcher) deleteStaleResumeToken() {
 func (w *ChangeStreamWatcher) MarkProcessed(ctx context.Context, token []byte) error {
 	// Use the change stream resume token if the passed token is empty
 	// This handles the common case where callers pass empty byte slices
-	var resumeTokenToStore interface{}
+	var resumeTokenToStore any
 
 	if len(token) == 0 {
 		// Get the current resume token from the change stream
@@ -563,9 +563,7 @@ func (w *ChangeStreamWatcher) GetUnprocessedEventCount(ctx context.Context, last
 	filter := bson.M{"_id": bson.M{"$gt": lastProcessedID}}
 
 	for _, additionalFilter := range additionalFilters {
-		for key, value := range additionalFilter {
-			filter[key] = value
-		}
+		maps.Copy(filter, additionalFilter)
 	}
 
 	coll := w.client.Database(w.database).Collection(w.collection)

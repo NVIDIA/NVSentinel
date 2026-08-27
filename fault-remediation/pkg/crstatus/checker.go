@@ -114,7 +114,7 @@ func (c *CRStatusChecker) checkCondition(obj *unstructured.Unstructured, resourc
 
 func (c *CRStatusChecker) findConditionStatus(conditions []any, completeConditionType string) string {
 	for _, cond := range conditions {
-		condition, ok := cond.(map[string]interface{})
+		condition, ok := cond.(map[string]any)
 		if !ok {
 			continue
 		}

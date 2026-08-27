@@ -65,15 +65,15 @@ func TestResumeTokenAdvancedOnSend(t *testing.T) {
 
 	// Simulate processing an event
 	recordID := uuid.New()
-	newValues := map[string]interface{}{
+	newValues := map[string]any{
 		"id":   recordID.String(),
 		"name": "test",
 	}
 
 	events := []datastore.EventWithToken{
 		{
-			Event: map[string]interface{}{
-				"_id": map[string]interface{}{
+			Event: map[string]any{
+				"_id": map[string]any{
 					"_data": "1",
 				},
 				"operationType": "insert",
@@ -140,9 +140,9 @@ func TestResumeTokenAdvancedEvenForFilteredEvents(t *testing.T) {
 			AddRow(`{"eventID": 0, "timestamp": "2025-01-01T00:00:00Z"}`))
 
 	// Create a pipeline filter that rejects all events
-	pipelineFilter, err := NewPipelineFilter([]interface{}{
-		map[string]interface{}{
-			"$match": map[string]interface{}{
+	pipelineFilter, err := NewPipelineFilter([]any{
+		map[string]any{
+			"$match": map[string]any{
 				"operationType": "update", // Only accept updates
 			},
 		},
@@ -164,15 +164,15 @@ func TestResumeTokenAdvancedEvenForFilteredEvents(t *testing.T) {
 
 	// Create an INSERT event (which will be filtered out)
 	recordID := uuid.New()
-	newValues := map[string]interface{}{
+	newValues := map[string]any{
 		"id":   recordID.String(),
 		"name": "test",
 	}
 
 	events := []datastore.EventWithToken{
 		{
-			Event: map[string]interface{}{
-				"_id": map[string]interface{}{
+			Event: map[string]any{
+				"_id": map[string]any{
 					"_data": "1",
 				},
 				"operationType": "insert", // Will be filtered (we only accept "update")
@@ -275,9 +275,9 @@ func TestConcurrentClientsWithDifferentFilters(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"resume_token"}).
 			AddRow(`{"eventID": 0, "timestamp": "2025-01-01T00:00:00Z"}`))
 
-	pipelineFilter1, err := NewPipelineFilter([]interface{}{
-		map[string]interface{}{
-			"$match": map[string]interface{}{
+	pipelineFilter1, err := NewPipelineFilter([]any{
+		map[string]any{
+			"$match": map[string]any{
 				"operationType": "insert",
 			},
 		},
@@ -303,9 +303,9 @@ func TestConcurrentClientsWithDifferentFilters(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"resume_token"}).
 			AddRow(`{"eventID": 0, "timestamp": "2025-01-01T00:00:00Z"}`))
 
-	pipelineFilter2, err := NewPipelineFilter([]interface{}{
-		map[string]interface{}{
-			"$match": map[string]interface{}{
+	pipelineFilter2, err := NewPipelineFilter([]any{
+		map[string]any{
+			"$match": map[string]any{
 				"operationType": "update",
 			},
 		},
@@ -327,18 +327,18 @@ func TestConcurrentClientsWithDifferentFilters(t *testing.T) {
 	// Create mixed events
 	events := []datastore.EventWithToken{
 		{
-			Event: map[string]interface{}{
-				"_id":           map[string]interface{}{"_data": "1"},
+			Event: map[string]any{
+				"_id":           map[string]any{"_data": "1"},
 				"operationType": "insert",
-				"fullDocument":  map[string]interface{}{"id": "1"},
+				"fullDocument":  map[string]any{"id": "1"},
 			},
 			ResumeToken: []byte("1"),
 		},
 		{
-			Event: map[string]interface{}{
-				"_id":           map[string]interface{}{"_data": "2"},
+			Event: map[string]any{
+				"_id":           map[string]any{"_data": "2"},
 				"operationType": "update",
-				"fullDocument":  map[string]interface{}{"id": "2"},
+				"fullDocument":  map[string]any{"id": "2"},
 			},
 			ResumeToken: []byte("2"),
 		},
@@ -508,9 +508,9 @@ func TestMultipleFilteredEventsAdvancePosition(t *testing.T) {
 			AddRow(`{"eventID": 917, "timestamp": "2025-01-01T00:00:00Z"}`))
 
 	// Create a pipeline filter that rejects all events
-	pipelineFilter, err := NewPipelineFilter([]interface{}{
-		map[string]interface{}{
-			"$match": map[string]interface{}{
+	pipelineFilter, err := NewPipelineFilter([]any{
+		map[string]any{
+			"$match": map[string]any{
 				"fullDocument.nodeName": "nonexistent-node", // Reject all
 			},
 		},
@@ -534,14 +534,14 @@ func TestMultipleFilteredEventsAdvancePosition(t *testing.T) {
 	// Simulate 11 events (IDs 918-928) being fetched and ALL filtered
 	// This matches the exact scenario from the CI logs
 	events := make([]datastore.EventWithToken, 11)
-	for i := 0; i < 11; i++ {
+	for i := range 11 {
 		eventID := 918 + i
 		eventIDStr := fmt.Sprintf("%d", eventID)
 		events[i] = datastore.EventWithToken{
-			Event: map[string]interface{}{
-				"_id":           map[string]interface{}{"_data": eventIDStr},
+			Event: map[string]any{
+				"_id":           map[string]any{"_data": eventIDStr},
 				"operationType": "insert",
-				"fullDocument": map[string]interface{}{
+				"fullDocument": map[string]any{
 					"nodeName": "nvsentinel-worker2", // Doesn't match filter
 					"id":       uuid.New().String(),
 				},
@@ -589,9 +589,9 @@ func TestMixedFilteredAndPassedEvents(t *testing.T) {
 			AddRow(`{"eventID": 0, "timestamp": "2025-01-01T00:00:00Z"}`))
 
 	// Create a pipeline filter that only accepts worker1 events
-	pipelineFilter, err := NewPipelineFilter([]interface{}{
-		map[string]interface{}{
-			"$match": map[string]interface{}{
+	pipelineFilter, err := NewPipelineFilter([]any{
+		map[string]any{
+			"$match": map[string]any{
 				"fullDocument.nodeName": "worker1",
 			},
 		},
@@ -615,42 +615,42 @@ func TestMixedFilteredAndPassedEvents(t *testing.T) {
 	// Filter passes: NO, YES, NO, YES, NO
 	events := []datastore.EventWithToken{
 		{
-			Event: map[string]interface{}{
-				"_id":           map[string]interface{}{"_data": "1"},
+			Event: map[string]any{
+				"_id":           map[string]any{"_data": "1"},
 				"operationType": "insert",
-				"fullDocument":  map[string]interface{}{"nodeName": "worker2", "id": "1"},
+				"fullDocument":  map[string]any{"nodeName": "worker2", "id": "1"},
 			},
 			ResumeToken: []byte("1"),
 		},
 		{
-			Event: map[string]interface{}{
-				"_id":           map[string]interface{}{"_data": "2"},
+			Event: map[string]any{
+				"_id":           map[string]any{"_data": "2"},
 				"operationType": "insert",
-				"fullDocument":  map[string]interface{}{"nodeName": "worker1", "id": "2"},
+				"fullDocument":  map[string]any{"nodeName": "worker1", "id": "2"},
 			},
 			ResumeToken: []byte("2"),
 		},
 		{
-			Event: map[string]interface{}{
-				"_id":           map[string]interface{}{"_data": "3"},
+			Event: map[string]any{
+				"_id":           map[string]any{"_data": "3"},
 				"operationType": "insert",
-				"fullDocument":  map[string]interface{}{"nodeName": "worker2", "id": "3"},
+				"fullDocument":  map[string]any{"nodeName": "worker2", "id": "3"},
 			},
 			ResumeToken: []byte("3"),
 		},
 		{
-			Event: map[string]interface{}{
-				"_id":           map[string]interface{}{"_data": "4"},
+			Event: map[string]any{
+				"_id":           map[string]any{"_data": "4"},
 				"operationType": "insert",
-				"fullDocument":  map[string]interface{}{"nodeName": "worker1", "id": "4"},
+				"fullDocument":  map[string]any{"nodeName": "worker1", "id": "4"},
 			},
 			ResumeToken: []byte("4"),
 		},
 		{
-			Event: map[string]interface{}{
-				"_id":           map[string]interface{}{"_data": "5"},
+			Event: map[string]any{
+				"_id":           map[string]any{"_data": "5"},
 				"operationType": "insert",
-				"fullDocument":  map[string]interface{}{"nodeName": "worker2", "id": "5"},
+				"fullDocument":  map[string]any{"nodeName": "worker2", "id": "5"},
 			},
 			ResumeToken: []byte("5"),
 		},
@@ -855,9 +855,9 @@ func TestFilteredEventsDoNotBlockChannel(t *testing.T) {
 			AddRow(`{"eventID": 0, "timestamp": "2025-01-01T00:00:00Z"}`))
 
 	// Create a pipeline filter that only accepts worker1
-	pipelineFilter, err := NewPipelineFilter([]interface{}{
-		map[string]interface{}{
-			"$match": map[string]interface{}{
+	pipelineFilter, err := NewPipelineFilter([]any{
+		map[string]any{
+			"$match": map[string]any{
 				"fullDocument.nodeName": "worker1",
 			},
 		},
@@ -880,17 +880,17 @@ func TestFilteredEventsDoNotBlockChannel(t *testing.T) {
 
 	// Create 100 events: 98 worker2 (filtered), 2 worker1 (passed)
 	events := make([]datastore.EventWithToken, 100)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		nodeName := "worker2" // Default: filtered
 		if i == 50 || i == 99 {
 			nodeName = "worker1" // Only 2 pass
 		}
 		eventIDStr := fmt.Sprintf("%d", i+1)
 		events[i] = datastore.EventWithToken{
-			Event: map[string]interface{}{
-				"_id":           map[string]interface{}{"_data": eventIDStr},
+			Event: map[string]any{
+				"_id":           map[string]any{"_data": eventIDStr},
 				"operationType": "insert",
-				"fullDocument":  map[string]interface{}{"nodeName": nodeName, "id": eventIDStr},
+				"fullDocument":  map[string]any{"nodeName": nodeName, "id": eventIDStr},
 			},
 			ResumeToken: []byte(eventIDStr),
 		}
@@ -935,9 +935,9 @@ func TestSimulateRealWorldCIScenario(t *testing.T) {
 
 	// Create pipeline filter matching the test setup
 	// Tests use pipeline filters to only listen for specific node names or check names
-	pipelineFilter, err := NewPipelineFilter([]interface{}{
-		map[string]interface{}{
-			"$match": map[string]interface{}{
+	pipelineFilter, err := NewPipelineFilter([]any{
+		map[string]any{
+			"$match": map[string]any{
 				"fullDocument.healthevent.checkName": "SpecificCheck", // Rejects all test events
 			},
 		},
@@ -963,14 +963,14 @@ func TestSimulateRealWorldCIScenario(t *testing.T) {
 	events := []datastore.EventWithToken{
 		// Event 918: XID 119
 		{
-			Event: map[string]interface{}{
-				"_id":           map[string]interface{}{"_data": "918"},
+			Event: map[string]any{
+				"_id":           map[string]any{"_data": "918"},
 				"operationType": "insert",
-				"fullDocument": map[string]interface{}{
+				"fullDocument": map[string]any{
 					"id": "415d3b13-0ac3-4a52-a0ce-b6ac0e0468fd",
-					"healthevent": map[string]interface{}{
+					"healthevent": map[string]any{
 						"checkName": "MultipleRemediations", // Doesn't match filter
-						"errorCode": []interface{}{"119"},
+						"errorCode": []any{"119"},
 						"nodeName":  "nvsentinel-worker2",
 					},
 				},
@@ -979,14 +979,14 @@ func TestSimulateRealWorldCIScenario(t *testing.T) {
 		},
 		// Event 919: XID 79
 		{
-			Event: map[string]interface{}{
-				"_id":           map[string]interface{}{"_data": "919"},
+			Event: map[string]any{
+				"_id":           map[string]any{"_data": "919"},
 				"operationType": "insert",
-				"fullDocument": map[string]interface{}{
+				"fullDocument": map[string]any{
 					"id": "c9eee1f2-f52f-405e-b934-9b73b2b73fdb",
-					"healthevent": map[string]interface{}{
+					"healthevent": map[string]any{
 						"checkName": "MultipleRemediations",
-						"errorCode": []interface{}{"79"},
+						"errorCode": []any{"79"},
 						"nodeName":  "nvsentinel-worker2",
 					},
 				},
@@ -1043,15 +1043,15 @@ func TestSimulateRealWorldCIScenario(t *testing.T) {
 }
 
 // Helper function to build test health events
-func buildTestHealthEvent(id string) map[string]interface{} {
-	return map[string]interface{}{
-		"_id":           map[string]interface{}{"_data": id},
+func buildTestHealthEvent(id string) map[string]any {
+	return map[string]any{
+		"_id":           map[string]any{"_data": id},
 		"operationType": "insert",
-		"fullDocument": map[string]interface{}{
+		"fullDocument": map[string]any{
 			"id": uuid.New().String(),
-			"healthevent": map[string]interface{}{
+			"healthevent": map[string]any{
 				"checkName": "MultipleRemediations",
-				"errorCode": []interface{}{"999"},
+				"errorCode": []any{"999"},
 				"nodeName":  "nvsentinel-worker2",
 			},
 		},
@@ -1091,18 +1091,18 @@ func TestPositionAdvancesBeforeChannelSend(t *testing.T) {
 	// Create 2 events
 	events := []datastore.EventWithToken{
 		{
-			Event: map[string]interface{}{
-				"_id":           map[string]interface{}{"_data": "1"},
+			Event: map[string]any{
+				"_id":           map[string]any{"_data": "1"},
 				"operationType": "insert",
-				"fullDocument":  map[string]interface{}{"id": "1"},
+				"fullDocument":  map[string]any{"id": "1"},
 			},
 			ResumeToken: []byte("1"),
 		},
 		{
-			Event: map[string]interface{}{
-				"_id":           map[string]interface{}{"_data": "2"},
+			Event: map[string]any{
+				"_id":           map[string]any{"_data": "2"},
 				"operationType": "insert",
-				"fullDocument":  map[string]interface{}{"id": "2"},
+				"fullDocument":  map[string]any{"id": "2"},
 			},
 			ResumeToken: []byte("2"),
 		},
@@ -1166,9 +1166,9 @@ func TestRepeatedXIDRuleCIScenario(t *testing.T) {
 
 	// TestRepeatedXIDRule sets up a pipeline filter to ONLY listen for RepeatedXidError events
 	// This mimics the real aggregation pipeline used in the E2E test
-	pipelineFilter, err := NewPipelineFilter([]interface{}{
-		map[string]interface{}{
-			"$match": map[string]interface{}{
+	pipelineFilter, err := NewPipelineFilter([]any{
+		map[string]any{
+			"$match": map[string]any{
 				"fullDocument.healthevent.checkName": "RepeatedXidError",
 			},
 		},
@@ -1196,23 +1196,23 @@ func TestRepeatedXIDRuleCIScenario(t *testing.T) {
 	events := []datastore.EventWithToken{
 		// Event 918: XID 119 on GPU-22222222 at 14:33:48.046224Z
 		{
-			Event: map[string]interface{}{
-				"_id":           map[string]interface{}{"_data": "918"},
+			Event: map[string]any{
+				"_id":           map[string]any{"_data": "918"},
 				"clusterTime":   "2025-11-23T14:33:48.046224Z",
 				"operationType": "insert",
-				"fullDocument": map[string]interface{}{
+				"fullDocument": map[string]any{
 					"id": "415d3b13-0ac3-4a52-a0ce-b6ac0e0468fd",
-					"healthevent": map[string]interface{}{
+					"healthevent": map[string]any{
 						"checkName":         "MultipleRemediations", // ← NOT "RepeatedXidError"
 						"nodeName":          "nvsentinel-worker2",
 						"componentClass":    "GPU",
-						"errorCode":         []interface{}{"119"},
+						"errorCode":         []any{"119"},
 						"isFatal":           true,
 						"message":           "kernel: NVRM: Xid (PCI:0002:00:00): 119",
 						"recommendedAction": 5,
-						"entitiesImpacted": []interface{}{
-							map[string]interface{}{"entityType": "PCI", "entityValue": "0002:00:00"},
-							map[string]interface{}{"entityType": "GPU_UUID", "entityValue": "GPU-22222222-2222-2222-2222-222222222222"},
+						"entitiesImpacted": []any{
+							map[string]any{"entityType": "PCI", "entityValue": "0002:00:00"},
+							map[string]any{"entityType": "GPU_UUID", "entityValue": "GPU-22222222-2222-2222-2222-222222222222"},
 						},
 					},
 				},
@@ -1221,17 +1221,17 @@ func TestRepeatedXIDRuleCIScenario(t *testing.T) {
 		},
 		// Event 919: XID 79 on GPU-11111111 at 14:33:48.048263Z
 		{
-			Event: map[string]interface{}{
-				"_id":           map[string]interface{}{"_data": "919"},
+			Event: map[string]any{
+				"_id":           map[string]any{"_data": "919"},
 				"clusterTime":   "2025-11-23T14:33:48.048263Z",
 				"operationType": "insert",
-				"fullDocument": map[string]interface{}{
+				"fullDocument": map[string]any{
 					"id": "c9eee1f2-f52f-405e-b934-9b73b2b73fdb",
-					"healthevent": map[string]interface{}{
+					"healthevent": map[string]any{
 						"checkName":         "MultipleRemediations",
 						"nodeName":          "nvsentinel-worker2",
 						"componentClass":    "GPU",
-						"errorCode":         []interface{}{"79"},
+						"errorCode":         []any{"79"},
 						"isFatal":           true,
 						"message":           "kernel: NVRM: Xid (PCI:0001:00:00): 79, GPU has fallen off the bus.",
 						"recommendedAction": 5,
@@ -1242,16 +1242,16 @@ func TestRepeatedXIDRuleCIScenario(t *testing.T) {
 		},
 		// Event 920: XID 94 on GPU-00000000 at 14:33:48.050441Z
 		{
-			Event: map[string]interface{}{
-				"_id":           map[string]interface{}{"_data": "920"},
+			Event: map[string]any{
+				"_id":           map[string]any{"_data": "920"},
 				"clusterTime":   "2025-11-23T14:33:48.050441Z",
 				"operationType": "insert",
-				"fullDocument": map[string]interface{}{
+				"fullDocument": map[string]any{
 					"id": "5fd0f4a2-ea1b-4998-9eb3-74e6144b979a",
-					"healthevent": map[string]interface{}{
+					"healthevent": map[string]any{
 						"checkName":         "MultipleRemediations",
 						"nodeName":          "nvsentinel-worker2",
-						"errorCode":         []interface{}{"94"},
+						"errorCode":         []any{"94"},
 						"isFatal":           true,
 						"message":           "kernel: NVRM: Xid (PCI:0000:17:00): 94, Contained ECC error.",
 						"recommendedAction": 5,
@@ -1324,18 +1324,18 @@ func TestRepeatedXIDRuleCIScenario(t *testing.T) {
 }
 
 // Helper function to build CI health events matching the exact structure from logs
-func buildCIHealthEvent(id, errorCode string) map[string]interface{} {
-	return map[string]interface{}{
-		"_id":           map[string]interface{}{"_data": id},
+func buildCIHealthEvent(id, errorCode string) map[string]any {
+	return map[string]any{
+		"_id":           map[string]any{"_data": id},
 		"clusterTime":   fmt.Sprintf("2025-11-23T14:33:48.%sZ", id), // Approximate timestamp
 		"operationType": "insert",
-		"fullDocument": map[string]interface{}{
+		"fullDocument": map[string]any{
 			"id": uuid.New().String(),
-			"healthevent": map[string]interface{}{
+			"healthevent": map[string]any{
 				"checkName":         "MultipleRemediations", // NOT "RepeatedXidError"
 				"nodeName":          "nvsentinel-worker2",
 				"componentClass":    "GPU",
-				"errorCode":         []interface{}{errorCode},
+				"errorCode":         []any{errorCode},
 				"isFatal":           true,
 				"message":           fmt.Sprintf("kernel: NVRM: Xid error %s", errorCode),
 				"recommendedAction": 5,

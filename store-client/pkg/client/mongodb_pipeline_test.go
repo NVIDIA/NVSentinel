@@ -372,8 +372,8 @@ func TestConvertDocumentToBsonD_ComplexNesting(t *testing.T) {
 func TestConvertValueToBson_PreservesTypes(t *testing.T) {
 	tests := []struct {
 		name     string
-		input    interface{}
-		expected interface{}
+		input    any
+		expected any
 	}{
 		{
 			name:     "string",

@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"sync"
 )
 
@@ -73,9 +74,7 @@ func NewFactory() DataStoreFactory {
 
 	// Copy the global registry to this factory instance
 	providers := make(map[DataStoreProvider]ProviderFactory)
-	for provider, factory := range providerRegistry {
-		providers[provider] = factory
-	}
+	maps.Copy(providers, providerRegistry)
 
 	slog.Info("Created datastore factory", "providers", len(providers))
 

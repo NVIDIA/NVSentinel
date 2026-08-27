@@ -25,27 +25,27 @@ import (
 func TestMatchesIn_NullAndEmptyString(t *testing.T) {
 	tests := []struct {
 		name        string
-		actualValue interface{}
-		inArray     []interface{}
+		actualValue any
+		inArray     []any
 		expected    bool
 		comment     string // optional explanation for test behavior
 	}{
 		{
 			name:        "NULL value does not match non-empty strings",
 			actualValue: nil,
-			inArray:     []interface{}{"Succeeded", "AlreadyDrained"},
+			inArray:     []any{"Succeeded", "AlreadyDrained"},
 			expected:    false,
 		},
 		{
 			name:        "NULL value does not match Quarantined",
 			actualValue: nil,
-			inArray:     []interface{}{"Quarantined", "AlreadyQuarantined"},
+			inArray:     []any{"Quarantined", "AlreadyQuarantined"},
 			expected:    false,
 		},
 		{
 			name:        "NULL value does not match array with NULL",
 			actualValue: nil,
-			inArray:     []interface{}{nil, "Succeeded"},
+			inArray:     []any{nil, "Succeeded"},
 			expected:    false,
 			comment: "In MongoDB, { field: { $in: [null, \"value\"] } } matches documents " +
 				"where field is null. However, in our PostgreSQL implementation, we explicitly " +
@@ -56,25 +56,25 @@ func TestMatchesIn_NullAndEmptyString(t *testing.T) {
 		{
 			name:        "empty string does not match non-empty strings",
 			actualValue: "",
-			inArray:     []interface{}{"Succeeded", "AlreadyDrained"},
+			inArray:     []any{"Succeeded", "AlreadyDrained"},
 			expected:    false,
 		},
 		{
 			name:        "empty string matches if explicitly in array",
 			actualValue: "",
-			inArray:     []interface{}{"", "Succeeded"},
+			inArray:     []any{"", "Succeeded"},
 			expected:    true,
 		},
 		{
 			name:        "non-empty string matches",
 			actualValue: "Succeeded",
-			inArray:     []interface{}{"Succeeded", "AlreadyDrained"},
+			inArray:     []any{"Succeeded", "AlreadyDrained"},
 			expected:    true,
 		},
 		{
 			name:        "Quarantined matches",
 			actualValue: "Quarantined",
-			inArray:     []interface{}{"Quarantined", "AlreadyQuarantined"},
+			inArray:     []any{"Quarantined", "AlreadyQuarantined"},
 			expected:    true,
 		},
 	}
@@ -100,8 +100,8 @@ func TestMatchesIn_NullAndEmptyString(t *testing.T) {
 func TestMatchesEqual_NullHandling(t *testing.T) {
 	tests := []struct {
 		name     string
-		actual   interface{}
-		expected interface{}
+		actual   any
+		expected any
 		want     bool
 	}{
 		{
@@ -172,8 +172,8 @@ func TestMatchesEqual_NullHandling(t *testing.T) {
 func TestMatchesEqual_MissingBooleanField(t *testing.T) {
 	tests := []struct {
 		name     string
-		actual   interface{}
-		expected interface{}
+		actual   any
+		expected any
 		want     bool
 		reason   string
 	}{
@@ -238,7 +238,7 @@ func TestMatchesEqual_MissingBooleanField(t *testing.T) {
 // with NULL and empty values to ensure proper filtering
 func TestMatchesEvent_QuarantinedAndDrainedPipeline(t *testing.T) {
 	// This is the actual pipeline used by fault-remediation
-	pipeline := []interface{}{
+	pipeline := []any{
 		datastore.D(
 			datastore.E("$match", datastore.D(
 				datastore.E("$or", datastore.A(
@@ -298,12 +298,12 @@ func TestMatchesEvent_QuarantinedAndDrainedPipeline(t *testing.T) {
 		{
 			name: "SHOULD MATCH: UPDATE with Quarantined and Succeeded",
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
+				Event: map[string]any{
 					"operationType": "update",
-					"fullDocument": map[string]interface{}{
-						"healtheventstatus": map[string]interface{}{
+					"fullDocument": map[string]any{
+						"healtheventstatus": map[string]any{
 							"nodequarantined": "Quarantined",
-							"userpodsevictionstatus": map[string]interface{}{
+							"userpodsevictionstatus": map[string]any{
 								"status": "Succeeded",
 							},
 						},
@@ -317,17 +317,17 @@ func TestMatchesEvent_QuarantinedAndDrainedPipeline(t *testing.T) {
 		{
 			name: "SHOULD NOT MATCH: INSERT with NULL nodequarantined and empty status",
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
+				Event: map[string]any{
 					"operationType": "insert",
-					"fullDocument": map[string]interface{}{
-						"healthevent": map[string]interface{}{
+					"fullDocument": map[string]any{
+						"healthevent": map[string]any{
 							"agent":             "health-events-analyzer",
 							"checkName":         "MultipleRemediations",
 							"recommendedAction": 5,
 						},
-						"healtheventstatus": map[string]interface{}{
+						"healtheventstatus": map[string]any{
 							"nodequarantined": nil,
-							"userpodsevictionstatus": map[string]interface{}{
+							"userpodsevictionstatus": map[string]any{
 								"status": "",
 							},
 						},
@@ -341,12 +341,12 @@ func TestMatchesEvent_QuarantinedAndDrainedPipeline(t *testing.T) {
 		{
 			name: "SHOULD NOT MATCH: UPDATE with NULL nodequarantined",
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
+				Event: map[string]any{
 					"operationType": "update",
-					"fullDocument": map[string]interface{}{
-						"healtheventstatus": map[string]interface{}{
+					"fullDocument": map[string]any{
+						"healtheventstatus": map[string]any{
 							"nodequarantined": nil,
-							"userpodsevictionstatus": map[string]interface{}{
+							"userpodsevictionstatus": map[string]any{
 								"status": "Succeeded",
 							},
 						},
@@ -360,12 +360,12 @@ func TestMatchesEvent_QuarantinedAndDrainedPipeline(t *testing.T) {
 		{
 			name: "SHOULD NOT MATCH: UPDATE with empty status",
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
+				Event: map[string]any{
 					"operationType": "update",
-					"fullDocument": map[string]interface{}{
-						"healtheventstatus": map[string]interface{}{
+					"fullDocument": map[string]any{
+						"healtheventstatus": map[string]any{
 							"nodequarantined": "Quarantined",
-							"userpodsevictionstatus": map[string]interface{}{
+							"userpodsevictionstatus": map[string]any{
 								"status": "",
 							},
 						},
@@ -379,12 +379,12 @@ func TestMatchesEvent_QuarantinedAndDrainedPipeline(t *testing.T) {
 		{
 			name: "SHOULD NOT MATCH: UPDATE with InProgress status",
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
+				Event: map[string]any{
 					"operationType": "update",
-					"fullDocument": map[string]interface{}{
-						"healtheventstatus": map[string]interface{}{
+					"fullDocument": map[string]any{
+						"healtheventstatus": map[string]any{
 							"nodequarantined": "Quarantined",
-							"userpodsevictionstatus": map[string]interface{}{
+							"userpodsevictionstatus": map[string]any{
 								"status": "InProgress",
 							},
 						},
@@ -398,12 +398,12 @@ func TestMatchesEvent_QuarantinedAndDrainedPipeline(t *testing.T) {
 		{
 			name: "SHOULD MATCH: UPDATE with UnQuarantined and Succeeded",
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
+				Event: map[string]any{
 					"operationType": "update",
-					"fullDocument": map[string]interface{}{
-						"healtheventstatus": map[string]interface{}{
+					"fullDocument": map[string]any{
+						"healtheventstatus": map[string]any{
 							"nodequarantined": "UnQuarantined",
-							"userpodsevictionstatus": map[string]interface{}{
+							"userpodsevictionstatus": map[string]any{
 								"status": "Succeeded",
 							},
 						},
@@ -417,10 +417,10 @@ func TestMatchesEvent_QuarantinedAndDrainedPipeline(t *testing.T) {
 		{
 			name: "SHOULD MATCH: UPDATE with Cancelled",
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
+				Event: map[string]any{
 					"operationType": "update",
-					"fullDocument": map[string]interface{}{
-						"healtheventstatus": map[string]interface{}{
+					"fullDocument": map[string]any{
+						"healtheventstatus": map[string]any{
 							"nodequarantined": "Cancelled",
 						},
 					},
@@ -433,12 +433,12 @@ func TestMatchesEvent_QuarantinedAndDrainedPipeline(t *testing.T) {
 		{
 			name: "SHOULD MATCH: INSERT with AlreadyQuarantined and AlreadyDrained",
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
+				Event: map[string]any{
 					"operationType": "insert",
-					"fullDocument": map[string]interface{}{
-						"healtheventstatus": map[string]interface{}{
+					"fullDocument": map[string]any{
+						"healtheventstatus": map[string]any{
 							"nodequarantined": "AlreadyQuarantined",
-							"userpodsevictionstatus": map[string]interface{}{
+							"userpodsevictionstatus": map[string]any{
 								"status": "AlreadyDrained",
 							},
 						},
@@ -472,7 +472,7 @@ func TestMatchesEvent_QuarantinedAndDrainedPipeline(t *testing.T) {
 func TestMatchesEvent_HealthEventsAnalyzerPipeline(t *testing.T) {
 	// This is the actual pipeline used by health-events-analyzer
 	// It filters for: operationType in [insert, update], agent != health-events-analyzer, isHealthy = false
-	pipeline := []interface{}{
+	pipeline := []any{
 		datastore.D(
 			datastore.E("$match", datastore.D(
 				datastore.E("operationType", datastore.D(datastore.E("$in", datastore.A("insert", "update")))),
@@ -491,10 +491,10 @@ func TestMatchesEvent_HealthEventsAnalyzerPipeline(t *testing.T) {
 		{
 			name: "SHOULD MATCH: INSERT with isFatal=true and isHealthy missing (protobuf default)",
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
+				Event: map[string]any{
 					"operationType": "insert",
-					"fullDocument": map[string]interface{}{
-						"healthevent": map[string]interface{}{
+					"fullDocument": map[string]any{
+						"healthevent": map[string]any{
 							"agent":          "gpu-health-monitor",
 							"checkName":      "GpuXidError",
 							"componentClass": "GPU",
@@ -513,10 +513,10 @@ func TestMatchesEvent_HealthEventsAnalyzerPipeline(t *testing.T) {
 		{
 			name: "SHOULD MATCH: UPDATE with isHealthy explicitly false",
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
+				Event: map[string]any{
 					"operationType": "update",
-					"fullDocument": map[string]interface{}{
-						"healthevent": map[string]interface{}{
+					"fullDocument": map[string]any{
+						"healthevent": map[string]any{
 							"agent":     "gpu-health-monitor",
 							"checkName": "GpuXidError",
 							"isFatal":   true,
@@ -533,10 +533,10 @@ func TestMatchesEvent_HealthEventsAnalyzerPipeline(t *testing.T) {
 		{
 			name: "SHOULD NOT MATCH: INSERT with isHealthy=true",
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
+				Event: map[string]any{
 					"operationType": "insert",
-					"fullDocument": map[string]interface{}{
-						"healthevent": map[string]interface{}{
+					"fullDocument": map[string]any{
+						"healthevent": map[string]any{
 							"agent":     "gpu-health-monitor",
 							"checkName": "GpuXidError",
 							"isFatal":   false,
@@ -553,10 +553,10 @@ func TestMatchesEvent_HealthEventsAnalyzerPipeline(t *testing.T) {
 		{
 			name: "SHOULD NOT MATCH: INSERT from health-events-analyzer agent",
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
+				Event: map[string]any{
 					"operationType": "insert",
-					"fullDocument": map[string]interface{}{
-						"healthevent": map[string]interface{}{
+					"fullDocument": map[string]any{
+						"healthevent": map[string]any{
 							"agent":     "health-events-analyzer", // self-generated event
 							"checkName": "MultipleRemediations",
 							"isFatal":   true,
@@ -573,10 +573,10 @@ func TestMatchesEvent_HealthEventsAnalyzerPipeline(t *testing.T) {
 		{
 			name: "SHOULD NOT MATCH: DELETE operation",
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
+				Event: map[string]any{
 					"operationType": "delete",
-					"fullDocument": map[string]interface{}{
-						"healthevent": map[string]interface{}{
+					"fullDocument": map[string]any{
+						"healthevent": map[string]any{
 							"agent":     "gpu-health-monitor",
 							"checkName": "GpuXidError",
 							"isFatal":   true,
@@ -611,7 +611,7 @@ func TestMatchesEvent_HealthEventsAnalyzerPipeline(t *testing.T) {
 // from TestFatalUnsupportedHealthEvent
 func TestMatchesEvent_RealWorldFailingScenario(t *testing.T) {
 	// The actual pipeline fault-remediation uses
-	pipeline := []interface{}{
+	pipeline := []any{
 		datastore.D(
 			datastore.E("$match", datastore.D(
 				datastore.E("$or", datastore.A(
@@ -635,10 +635,10 @@ func TestMatchesEvent_RealWorldFailingScenario(t *testing.T) {
 
 	// The exact event that was incorrectly passing through the filter
 	failingEvent := datastore.EventWithToken{
-		Event: map[string]interface{}{
+		Event: map[string]any{
 			"operationType": "insert",
-			"fullDocument": map[string]interface{}{
-				"healthevent": map[string]interface{}{
+			"fullDocument": map[string]any{
+				"healthevent": map[string]any{
 					"agent":             "health-events-analyzer",
 					"checkName":         "MultipleRemediations",
 					"componentClass":    "GPU",
@@ -646,10 +646,10 @@ func TestMatchesEvent_RealWorldFailingScenario(t *testing.T) {
 					"isFatal":           true,
 					"nodeName":          "kwok-node-29",
 				},
-				"healtheventstatus": map[string]interface{}{
+				"healtheventstatus": map[string]any{
 					"faultremediated": nil,
 					"nodequarantined": nil,
-					"userpodsevictionstatus": map[string]interface{}{
+					"userpodsevictionstatus": map[string]any{
 						"status": "",
 					},
 				},
