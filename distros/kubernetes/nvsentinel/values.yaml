@@ -396,7 +396,14 @@ platformConnector:
     # Metadata augmentor - enriches events with node labels and provider info
     MetadataAugmentor:
       cacheSize: 50
+      # How long cached node metadata is considered fresh. Lower values mean
+      # label changes (e.g. managed=false) take effect faster, at the cost of
+      # more Kubernetes API GET calls. 30s bounds ownership-state staleness to
+      # ~30 seconds in either direction.
       cacheTTLSeconds: 30
+      # Managed-label gate: when a node carries this key=value pair, its events
+      # are set to STORE_ONLY (stored for audit but no remediation or Kubernetes
+      # side effects). Example: managed: "false" gates the node.
       # Must match commons/pkg/managed.ManagedLabelKey and ManagedLabelValueFalse.
       skipNodeLabelKey: "nvsentinel.dgxc.nvidia.com/managed"
       skipNodeLabelValue: "false"

@@ -53,12 +53,6 @@ const (
 	// other value (including absent, "true", or a typo) means NVSentinel
 	// manages the node normally.
 	ManagedLabelValueFalse = "false"
-
-	// ReleaseTaintKey is the taint key applied by the ERR reconciler when
-	// ownership is handed to an external system (ADR-040). The taint value
-	// is the ERR name; the effect is NoSchedule. Any node carrying a taint
-	// with this key is externally owned regardless of the managed label.
-	ReleaseTaintKey = "nvsentinel.nvidia.com/external-remediation"
 )
 
 // IsNodeOptedOut reports whether the named Node carries
@@ -96,30 +90,4 @@ func IsNodeOptedOut(ctx context.Context, nodeLister listersv1.NodeLister, nodeNa
 	}
 
 	return node.Labels[ManagedLabelKey] == ManagedLabelValueFalse, nil
-}
-
-// HasReleaseTaint reports whether the named Node carries the external-remediation
-// release taint (any value, NoSchedule effect). Like IsNodeOptedOut it reads from
-// the informer-backed lister. Returns false on cache miss or empty arguments.
-func HasReleaseTaint(ctx context.Context, nodeLister listersv1.NodeLister, nodeName string) (bool, error) {
-	if nodeLister == nil || nodeName == "" {
-		return false, nil
-	}
-
-	node, err := nodeLister.Get(nodeName)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, nil
-		}
-
-		return false, fmt.Errorf("looking up release taint for node %q: %w", nodeName, err)
-	}
-
-	for _, t := range node.Spec.Taints {
-		if t.Key == ReleaseTaintKey {
-			return true, nil
-		}
-	}
-
-	return false, nil
 }

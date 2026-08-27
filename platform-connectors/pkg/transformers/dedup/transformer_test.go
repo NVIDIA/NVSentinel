@@ -198,7 +198,9 @@ func TestDeduplicatorKeepsCheckLevelHealthyEventThatClearsUnhealthyCounterpart(t
 	assert.Equal(t, pb.ProcessingStrategy_EXECUTE_REMEDIATION, healthy.ProcessingStrategy)
 }
 
-func TestDeduplicatorSkipsStoreOnlyEvents(t *testing.T) {
+// TestDeduplicatorTransform_StoreOnlyEvents_PreservesStrategy verifies that
+// STORE_ONLY events pass through the deduplicator unchanged.
+func TestDeduplicatorTransform_StoreOnlyEvents_PreservesStrategy(t *testing.T) {
 	now := time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC)
 	tracker := newTracker(3*time.Minute, withNow(func() time.Time { return now }))
 	transformer := NewDeduplicator(tracker, nil)
@@ -221,7 +223,10 @@ func TestDeduplicatorSkipsStoreOnlyEvents(t *testing.T) {
 		"repeated STORE_ONLY events should still not be modified")
 }
 
-func TestDeduplicatorStoreOnlyDoesNotAffectTracker(t *testing.T) {
+// TestDeduplicatorTransform_StoreOnlyEvent_DoesNotPopulateTracker verifies that
+// processing a STORE_ONLY event does not create a tracker entry, so a subsequent
+// non-STORE_ONLY event for the same check is still treated as new.
+func TestDeduplicatorTransform_StoreOnlyEvent_DoesNotPopulateTracker(t *testing.T) {
 	now := time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC)
 	tracker := newTracker(3*time.Minute, withNow(func() time.Time { return now }))
 	transformer := NewDeduplicator(tracker, nil)
