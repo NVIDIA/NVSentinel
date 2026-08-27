@@ -40,7 +40,7 @@ make show-versions
 ### Prerequisites
 
 **Core Tools** (required):
-- [Go 1.25+](https://golang.org/dl/) - See `.versions.yaml` for exact version
+- [Go 1.27+](https://golang.org/dl/) - See `.versions.yaml` for exact version
 - [Docker](https://docs.docker.com/get-docker/)
 - [kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl/)
 - [Helm 3.0+](https://helm.sh/docs/intro/install/)

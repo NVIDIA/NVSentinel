@@ -33,6 +33,10 @@ import (
 const (
 	memoryHogLabel = "nvsentinel.nvidia.com/memory-hog"
 	pollInterval   = 10 * time.Second
+
+	// conditionMemoryReclaimed is the MemoryReclaim status condition this
+	// controller sets once the offending pod has been evicted.
+	conditionMemoryReclaimed = "MemoryReclaimed"
 )
 
 var memoryreclaimGVR = schema.GroupVersionResource{
@@ -65,7 +69,8 @@ func main() {
 		log.Fatalf("Failed to create kubernetes clientset: %v", err)
 	}
 
-	log.Printf("Starting controller (namespace=%s, poll=%s)", namespace, pollInterval)
+	// G706: namespace is this process's own flag/env configuration, not request data.
+	log.Printf("Starting controller (namespace=%s, poll=%s)", namespace, pollInterval) //nolint:gosec
 
 	ctx := context.Background()
 	processed := make(map[string]bool)
@@ -74,6 +79,7 @@ func main() {
 		if err := reconcileLoop(ctx, dynClient, clientset, namespace, processed); err != nil {
 			log.Printf("ERROR: reconcile loop: %v", err)
 		}
+
 		time.Sleep(pollInterval)
 	}
 }
@@ -142,7 +148,8 @@ func isAlreadyCompleted(cr *unstructured.Unstructured) bool {
 		if !ok {
 			continue
 		}
-		if cond["type"] == "MemoryReclaimed" && cond["status"] == "True" {
+
+		if cond["type"] == conditionMemoryReclaimed && cond["status"] == "True" {
 			return true
 		}
 	}
@@ -164,12 +171,15 @@ func deleteMemoryHogPods(
 	}
 
 	deleted := 0
+
 	for _, pod := range pods.Items {
 		log.Printf("  Deleting pod %s/%s on node %s", pod.Namespace, pod.Name, nodeName)
+
 		if err := clientset.CoreV1().Pods(namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil {
 			log.Printf("  WARN: failed to delete pod %s: %v", pod.Name, err)
 			continue
 		}
+
 		deleted++
 	}
 
@@ -180,7 +190,7 @@ func updateCRStatus(ctx context.Context, dynClient dynamic.Interface, cr *unstru
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	newCondition := map[string]interface{}{
-		"type":               "MemoryReclaimed",
+		"type":               conditionMemoryReclaimed,
 		"status":             string(corev1.ConditionTrue),
 		"reason":             "HogPodsDeleted",
 		"message":            "Memory hog pods deleted, memory pressure resolved",
@@ -190,14 +200,17 @@ func updateCRStatus(ctx context.Context, dynClient dynamic.Interface, cr *unstru
 	conditions, _, _ := unstructured.NestedSlice(cr.Object, "status", "conditions")
 
 	updated := false
+
 	for i, c := range conditions {
 		cond, ok := c.(map[string]interface{})
 		if !ok {
 			continue
 		}
-		if cond["type"] == "MemoryReclaimed" {
+
+		if cond["type"] == conditionMemoryReclaimed {
 			conditions[i] = newCondition
 			updated = true
+
 			break
 		}
 	}

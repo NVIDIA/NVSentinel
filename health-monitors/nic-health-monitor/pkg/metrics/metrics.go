@@ -21,38 +21,44 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// Label names shared across the metrics declared below.
+const (
+	labelNode  = "node"
+	labelCheck = "check"
+)
+
 var (
 	// DevicesDiscovered is the number of NIC devices discovered in sysfs.
 	DevicesDiscovered = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "nic_health_monitor_devices_discovered",
 		Help: "Number of NIC devices discovered in sysfs",
-	}, []string{"node", "check"})
+	}, []string{labelNode, labelCheck})
 
 	// HealthEventsSent counts health events sent to the platform connector.
 	HealthEventsSent = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "nic_health_monitor_health_events_sent_total",
 		Help: "Total number of health events sent to the platform connector",
-	}, []string{"node", "check", "is_fatal"})
+	}, []string{labelNode, labelCheck, "is_fatal"})
 
 	// PollCycleDuration measures the wall time of each poll cycle.
 	PollCycleDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "nic_health_monitor_poll_cycle_duration_seconds",
 		Help:    "Duration of each poll cycle in seconds",
 		Buckets: prometheus.DefBuckets,
-	}, []string{"node", "category"})
+	}, []string{labelNode, "category"})
 
 	// StateCheckErrors counts per-device state-check error events (port
 	// DOWN, device disappeared, etc.).
 	StateCheckErrors = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "nic_health_monitor_state_check_errors_total",
 		Help: "Total number of state check error events",
-	}, []string{"node", "check", "device", "port"})
+	}, []string{labelNode, labelCheck, "device", "port"})
 
 	// CounterThresholdBreaches counts counter threshold breaches.
 	CounterThresholdBreaches = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "nic_health_monitor_counter_threshold_breaches_total",
 		Help: "Total number of counter threshold breaches detected",
-	}, []string{"node", "counter", "device", "port", "is_fatal"})
+	}, []string{labelNode, "counter", "device", "port", "is_fatal"})
 
 	// FirstPollDeferred counts polls a check skipped before its first
 	// complete evaluation because discovery reported unreadable devices.
@@ -61,5 +67,5 @@ var (
 	FirstPollDeferred = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "nic_health_monitor_first_poll_deferred_total",
 		Help: "Polls deferred before the first evaluation because devices were unreadable",
-	}, []string{"node", "check"})
+	}, []string{labelNode, labelCheck})
 )

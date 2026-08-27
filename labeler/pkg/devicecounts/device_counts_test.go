@@ -223,6 +223,244 @@ func TestManagerRequiresResourceSlices(t *testing.T) {
 	})
 }
 
+func TestNodeResourcesAffectDeviceCounts(t *testing.T) {
+	nicConfig := Config{
+		Enabled: true,
+		Classes: []ClassConfig{
+			{
+				Name:    "nic",
+				Enabled: true,
+				Labels: Labels{
+					Current:  testNICCountCurrentLabel,
+					Expected: testNICCountExpectedLabel,
+				},
+				CurrentExpression: "int(node.status.allocatable['nvidia.com/mlnxnics'])",
+			},
+		},
+	}
+
+	gpuOnlyConfig := Config{
+		Enabled: true,
+		Classes: []ClassConfig{
+			{
+				Name:    "gpu",
+				Enabled: true,
+				Labels: Labels{
+					Current:  testGPUCountCurrentLabel,
+					Expected: testGPUCountExpectedLabel,
+				},
+				CurrentExpression: "int(node.metadata.labels['nvidia.com/gpu.count'])",
+			},
+		},
+	}
+
+	t.Run("triggers on allocatable NIC count change", func(t *testing.T) {
+		manager := newTestManager(t, nicConfig)
+		oldNode := testNode("node-a", map[string]string{})
+		oldNode.Status.Allocatable = corev1.ResourceList{
+			corev1.ResourceName("nvidia.com/mlnxnics"): resource.MustParse("0"),
+		}
+
+		newNode := oldNode.DeepCopy()
+		newNode.Status.Allocatable = corev1.ResourceList{
+			corev1.ResourceName("nvidia.com/mlnxnics"): resource.MustParse("4"),
+		}
+
+		require.True(t, manager.NodeResourcesAffectDeviceCounts(oldNode, newNode))
+	})
+
+	t.Run("triggers on allocatable key added", func(t *testing.T) {
+		manager := newTestManager(t, nicConfig)
+		oldNode := testNode("node-a", map[string]string{})
+
+		newNode := oldNode.DeepCopy()
+		newNode.Status.Allocatable = corev1.ResourceList{
+			corev1.ResourceName("nvidia.com/mlnxnics"): resource.MustParse("4"),
+		}
+
+		require.True(t, manager.NodeResourcesAffectDeviceCounts(oldNode, newNode))
+	})
+
+	t.Run("triggers on allocatable key removed", func(t *testing.T) {
+		manager := newTestManager(t, nicConfig)
+		oldNode := testNode("node-a", map[string]string{})
+		oldNode.Status.Allocatable = corev1.ResourceList{
+			corev1.ResourceName("nvidia.com/mlnxnics"): resource.MustParse("4"),
+		}
+
+		newNode := oldNode.DeepCopy()
+		newNode.Status.Allocatable = nil
+
+		require.True(t, manager.NodeResourcesAffectDeviceCounts(oldNode, newNode))
+	})
+
+	t.Run("triggers on capacity change", func(t *testing.T) {
+		capacityConfig := Config{
+			Enabled: true,
+			Classes: []ClassConfig{
+				{
+					Name:    "nic",
+					Enabled: true,
+					Labels: Labels{
+						Current:  testNICCountCurrentLabel,
+						Expected: testNICCountExpectedLabel,
+					},
+					CurrentExpression: "int(node.status.capacity['nvidia.com/mlnxnics'])",
+				},
+			},
+		}
+
+		manager := newTestManager(t, capacityConfig)
+		oldNode := testNode("node-a", map[string]string{})
+		oldNode.Status.Capacity = corev1.ResourceList{
+			corev1.ResourceName("nvidia.com/mlnxnics"): resource.MustParse("4"),
+		}
+
+		newNode := oldNode.DeepCopy()
+		newNode.Status.Capacity = corev1.ResourceList{
+			corev1.ResourceName("nvidia.com/mlnxnics"): resource.MustParse("8"),
+		}
+
+		require.True(t, manager.NodeResourcesAffectDeviceCounts(oldNode, newNode))
+	})
+
+	t.Run("does not trigger when allocatable is unchanged", func(t *testing.T) {
+		manager := newTestManager(t, nicConfig)
+		oldNode := testNode("node-a", map[string]string{})
+		oldNode.Status.Allocatable = corev1.ResourceList{
+			corev1.ResourceName("nvidia.com/mlnxnics"): resource.MustParse("4"),
+		}
+
+		newNode := oldNode.DeepCopy()
+
+		require.False(t, manager.NodeResourcesAffectDeviceCounts(oldNode, newNode))
+	})
+
+	t.Run("does not trigger for nil vs empty allocatable", func(t *testing.T) {
+		manager := newTestManager(t, nicConfig)
+		oldNode := testNode("node-a", map[string]string{})
+		oldNode.Status.Allocatable = nil
+
+		newNode := oldNode.DeepCopy()
+		newNode.Status.Allocatable = corev1.ResourceList{}
+
+		require.False(t, manager.NodeResourcesAffectDeviceCounts(oldNode, newNode))
+	})
+
+	t.Run("does not trigger when no class references node status", func(t *testing.T) {
+		manager := newTestManager(t, gpuOnlyConfig)
+		oldNode := testNode("node-a", map[string]string{
+			"nvidia.com/gpu.count": "8",
+		})
+		oldNode.Status.Allocatable = corev1.ResourceList{
+			corev1.ResourceName("nvidia.com/mlnxnics"): resource.MustParse("0"),
+		}
+
+		newNode := oldNode.DeepCopy()
+		newNode.Status.Allocatable = corev1.ResourceList{
+			corev1.ResourceName("nvidia.com/mlnxnics"): resource.MustParse("4"),
+		}
+
+		require.False(t, manager.NodeResourcesAffectDeviceCounts(oldNode, newNode))
+	})
+
+	t.Run("detects change when one of multiple classes references status", func(t *testing.T) {
+		mixedConfig := Config{
+			Enabled: true,
+			Classes: []ClassConfig{
+				{
+					Name:    "gpu",
+					Enabled: true,
+					Labels: Labels{
+						Current:  testGPUCountCurrentLabel,
+						Expected: testGPUCountExpectedLabel,
+					},
+					CurrentExpression: "int(node.metadata.labels['nvidia.com/gpu.count'])",
+				},
+				{
+					Name:    "nic",
+					Enabled: true,
+					Labels: Labels{
+						Current:  testNICCountCurrentLabel,
+						Expected: testNICCountExpectedLabel,
+					},
+					CurrentExpression: "int(node.status.allocatable['nvidia.com/mlnxnics'])",
+				},
+			},
+		}
+
+		manager := newTestManager(t, mixedConfig)
+		oldNode := testNode("node-a", map[string]string{
+			"nvidia.com/gpu.count": "8",
+		})
+		oldNode.Status.Allocatable = corev1.ResourceList{
+			corev1.ResourceName("nvidia.com/mlnxnics"): resource.MustParse("0"),
+		}
+
+		newNode := oldNode.DeepCopy()
+		newNode.Status.Allocatable = corev1.ResourceList{
+			corev1.ResourceName("nvidia.com/mlnxnics"): resource.MustParse("4"),
+		}
+
+		require.True(t, manager.NodeResourcesAffectDeviceCounts(oldNode, newNode))
+	})
+
+	t.Run("returns false for disabled manager", func(t *testing.T) {
+		var manager *Manager
+		oldNode := testNode("node-a", map[string]string{})
+		newNode := oldNode.DeepCopy()
+
+		require.False(t, manager.NodeResourcesAffectDeviceCounts(oldNode, newNode))
+	})
+}
+
+func TestReferencesNodeResources(t *testing.T) {
+	t.Run("returns true for allocatable expression", func(t *testing.T) {
+		class := compiledClass{
+			ClassConfig: ClassConfig{
+				CurrentExpression: "int(node.status.allocatable['nvidia.com/mlnxnics'])",
+			},
+		}
+		require.True(t, class.referencesNodeResources())
+	})
+
+	t.Run("returns true for capacity expression", func(t *testing.T) {
+		class := compiledClass{
+			ClassConfig: ClassConfig{
+				CurrentExpression: "int(node.status.capacity['nvidia.com/mlnxnics'])",
+			},
+		}
+		require.True(t, class.referencesNodeResources())
+	})
+
+	t.Run("returns false for label expression", func(t *testing.T) {
+		class := compiledClass{
+			ClassConfig: ClassConfig{
+				CurrentExpression: "int(node.metadata.labels['nvidia.com/gpu.count'])",
+			},
+		}
+		require.False(t, class.referencesNodeResources())
+	})
+
+	t.Run("returns false for resourceSlices expression", func(t *testing.T) {
+		class := compiledClass{
+			ClassConfig: ClassConfig{
+				CurrentExpression: "resourceSlices.size()",
+			},
+		}
+		require.False(t, class.referencesNodeResources())
+	})
+
+	t.Run("returns false for conditions expression", func(t *testing.T) {
+		class := compiledClass{
+			ClassConfig: ClassConfig{
+				CurrentExpression: "node.status.conditions.exists(c, c.type == 'Ready')",
+			},
+		}
+		require.False(t, class.referencesNodeResources())
+	})
+}
+
 func newTestManager(t *testing.T, config Config) *Manager {
 	t.Helper()
 

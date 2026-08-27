@@ -17,6 +17,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -79,6 +80,27 @@ type FileConfig struct {
 	NetworkResourceNames []string            `yaml:"networkResourceNames"`
 	ConnectorSocket      string              `yaml:"connectorSocket"`
 	ProcessingStrategy   string              `yaml:"processingStrategy"`
+
+	// ConnectorTokenAudience, when set, has the webhook add a projected
+	// ServiceAccount token volume (minted for this audience against the
+	// workload pod's own ServiceAccount) to injected check containers, with
+	// its path exported as PLATFORM_CONNECTOR_TOKEN_PATH. platform-connector
+	// uses the token's node claim to confirm the check is reporting from the
+	// node it runs on. Empty disables the injection and the checks publish
+	// without a token, which pins them to their own node the same way.
+	ConnectorTokenAudience string `yaml:"connectorTokenAudience,omitempty"`
+
+	// ConnectorTokenMountPath and ConnectorTokenExpirationSeconds mirror the
+	// chart's global platformConnectorAuth settings so preflight checks use the
+	// same mount path and token lifetime as every other publisher.
+	//
+	// The three connector-token fields are atomic: either all are set and
+	// valid, or none is. Substituting a built-in path or lifetime for a missing
+	// one would mean injecting a credential shaped by an assumption nobody
+	// wrote down, and a mount path that disagrees with the chart's yields a
+	// token the check cannot find at the path it was told to read.
+	ConnectorTokenMountPath         string `yaml:"connectorTokenMountPath,omitempty"`
+	ConnectorTokenExpirationSeconds int64  `yaml:"connectorTokenExpirationSeconds,omitempty"`
 
 	// GangDiscovery is the cluster-wide default gang discovery configuration.
 	// Per-namespace overrides are expressed as PreflightConfig custom
@@ -326,6 +348,10 @@ func (c *FileConfig) validate() error {
 			c.InitContainerPlacement, PlacementPrepend, PlacementAppend)
 	}
 
+	if err := c.validateConnectorToken(); err != nil {
+		return err
+	}
+
 	if c.GangCoordination.Enabled {
 		timeout, err := time.ParseDuration(c.GangCoordination.Timeout)
 		if err != nil {
@@ -333,6 +359,65 @@ func (c *FileConfig) validate() error {
 		}
 
 		c.GangCoordination.TimeoutDuration = timeout
+	}
+
+	return nil
+}
+
+// validateConnectorToken enforces that the connector-token settings are all
+// present or all absent. Filling in a default mount path or lifetime for a
+// half-configured block is how a credential ends up injected at a path the
+// chart never agreed to.
+func (c *FileConfig) validateConnectorToken() error {
+	set := map[string]bool{
+		"connectorTokenAudience":          c.ConnectorTokenAudience != "",
+		"connectorTokenMountPath":         c.ConnectorTokenMountPath != "",
+		"connectorTokenExpirationSeconds": c.ConnectorTokenExpirationSeconds != 0,
+	}
+
+	present := make([]string, 0, len(set))
+	missing := make([]string, 0, len(set))
+
+	for _, name := range []string{
+		"connectorTokenAudience", "connectorTokenMountPath", "connectorTokenExpirationSeconds",
+	} {
+		if set[name] {
+			present = append(present, name)
+		} else {
+			missing = append(missing, name)
+		}
+	}
+
+	if len(present) > 0 && len(missing) > 0 {
+		return fmt.Errorf(
+			"connector token settings are all-or-nothing: %s set but %s missing. "+
+				"Set every one of connectorTokenAudience, connectorTokenMountPath and "+
+				"connectorTokenExpirationSeconds, or none of them",
+			strings.Join(present, ", "), strings.Join(missing, ", "))
+	}
+
+	// Kubernetes refuses a projected ServiceAccount token lifetime under 10
+	// minutes or over 2^32 seconds. Accepting one here would inject a volume the
+	// API server rejects, so the workload never starts and the reason surfaces
+	// as an admission error a long way from this config.
+	const (
+		minTokenExpirationSeconds int64 = 10 * 60
+		maxTokenExpirationSeconds int64 = 1 << 32
+	)
+
+	if c.ConnectorTokenExpirationSeconds != 0 &&
+		(c.ConnectorTokenExpirationSeconds < minTokenExpirationSeconds ||
+			c.ConnectorTokenExpirationSeconds > maxTokenExpirationSeconds) {
+		return fmt.Errorf(
+			"connectorTokenExpirationSeconds must be between %d and %d, got %d: "+
+				"Kubernetes rejects projected token lifetimes outside that range",
+			minTokenExpirationSeconds, maxTokenExpirationSeconds,
+			c.ConnectorTokenExpirationSeconds)
+	}
+
+	if c.ConnectorTokenMountPath != "" && !strings.HasPrefix(c.ConnectorTokenMountPath, "/") {
+		return fmt.Errorf("connectorTokenMountPath must be an absolute path, got %q",
+			c.ConnectorTokenMountPath)
 	}
 
 	return nil

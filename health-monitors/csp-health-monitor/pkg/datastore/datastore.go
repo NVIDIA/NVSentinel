@@ -27,7 +27,9 @@ import (
 	"github.com/nvidia/nvsentinel/store-client/pkg/factory"
 )
 
-// Removed unused constants
+// fieldLastUpdatedTimestamp is the stored document field holding the last
+// mutation time of a maintenance event.
+const fieldLastUpdatedTimestamp = "lastUpdatedTimestamp"
 
 // Store defines the interface for datastore operations related to maintenance events.
 type Store interface {
@@ -397,8 +399,8 @@ func (s *DatabaseStore) UpdateEventStatus(ctx context.Context, eventID string, n
 
 	filter := client.BuildStatusFilter("eventId", eventID)
 	update := client.BuildSetUpdate(map[string]interface{}{
-		"status":               newStatus,
-		"lastUpdatedTimestamp": time.Now().UTC(),
+		"status":                  newStatus,
+		fieldLastUpdatedTimestamp: time.Now().UTC(),
 	})
 
 	// Use semantic update method from store-client
@@ -494,7 +496,7 @@ func (s *DatabaseStore) FindLatestActiveEventByNodeAndType(
 	// If multiple have the exact same LastUpdatedTimestamp, this will pick one arbitrarily among them.
 	// Consider adding a secondary sort key if more deterministic behavior is needed in such rare cases.
 	findOptions := &client.FindOneOptions{
-		Sort: map[string]interface{}{"lastUpdatedTimestamp": -1},
+		Sort: map[string]interface{}{fieldLastUpdatedTimestamp: -1},
 	}
 
 	slog.Debug("Querying for latest active event",
@@ -545,7 +547,7 @@ func (s *DatabaseStore) FindLatestOngoingEventByNode(
 		Build()
 
 	opts := &client.FindOneOptions{
-		Sort: map[string]interface{}{"lastUpdatedTimestamp": -1},
+		Sort: map[string]interface{}{fieldLastUpdatedTimestamp: -1},
 	}
 
 	var event model.MaintenanceEvent

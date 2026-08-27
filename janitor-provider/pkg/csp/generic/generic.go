@@ -156,8 +156,12 @@ func (c *Client) buildRebootJob(nodeName string) *batchv1.Job {
 	image := c.config.RebootImage
 	ttl := c.config.RebootJobTTL
 	command := c.config.rebootCommand()
-	var volumeMounts []corev1.VolumeMount
-	var volumes []corev1.Volume
+
+	var (
+		volumeMounts []corev1.VolumeMount
+		volumes      []corev1.Volume
+	)
+
 	if c.config.UseSysrqReboot {
 		volumeMounts = []corev1.VolumeMount{
 			{
@@ -356,6 +360,7 @@ func loadConfigFromEnv() Config {
 	}
 
 	useSysrqReboot := false
+
 	if useSysrqStr := os.Getenv("GENERIC_REBOOT_USE_SYSRQ"); useSysrqStr != "" {
 		parsed, err := strconv.ParseBool(useSysrqStr)
 		if err != nil {

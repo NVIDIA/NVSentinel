@@ -94,6 +94,10 @@ func TestMapActionStringToProto(t *testing.T) {
 			expectedOutput: pb.RecommendedAction_NONE,
 		},
 		{
+			input:          "WORKFLOW_XID_45",
+			expectedOutput: pb.RecommendedAction_NONE,
+		},
+		{
 			input:          "WORKFLOW_XID_48",
 			expectedOutput: pb.RecommendedAction_COMPONENT_RESET,
 		},

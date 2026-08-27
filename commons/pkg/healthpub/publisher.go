@@ -39,6 +39,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/grpcauth"
 )
 
 // ErrPlatformConnectorUnavailable is returned by Publisher.Publish when
@@ -312,11 +314,25 @@ func unixSocketPathFromTarget(target string) string {
 	return ""
 }
 
+// authBackendUnavailableLabel distinguishes an authentication-backend outage
+// from the platform-connector itself being unreachable. Both arrive as
+// Unavailable.
+const authBackendUnavailableLabel = "AuthBackendUnavailable"
+
 // errorCodeLabel produces a bounded-cardinality label value for the
 // sendsError counter using the gRPC status code string.
 func errorCodeLabel(err error) string {
 	if err == nil {
 		return ""
+	}
+
+	// Checked before the gRPC code. An authentication-backend outage is reported
+	// as Unavailable, which is the same code the platform-connector being down
+	// produces, so without this the two are indistinguishable on the metric. They
+	// call for different responses: one is a control-plane problem affecting every
+	// node, the other is local to this node.
+	if grpcauth.IsAuthBackendUnavailable(err) {
+		return authBackendUnavailableLabel
 	}
 
 	if s, ok := status.FromError(err); ok {

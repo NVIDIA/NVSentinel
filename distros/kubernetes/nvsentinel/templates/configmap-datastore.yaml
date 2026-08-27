@@ -177,7 +177,7 @@ data:
 
   # Operational defaults — same values as internal mongodb-config.
   # These control timeouts, retry intervals, and TTL for collections.
-  MONGODB_COLLECTION_EXPIRY_SECONDS: "2592000"
+  MONGODB_COLLECTION_EXPIRY_SECONDS: {{ include "nvsentinel.collectionExpirySeconds" . | quote }}
   MONGODB_PING_TIMEOUT_TOTAL_SECONDS: "30"
   MONGODB_PING_INTERVAL_SECONDS: "5"
   CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: "360"

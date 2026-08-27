@@ -189,7 +189,9 @@ OCI principal OCID used for Workload Identity. Required when `credentialsFile` i
 
 ## Lambda
 
-Uses a Lambda Cloud API key for authentication. Reboot maps to the Lambda power-cycle operation (a host-level power cycle, not a guest restart) and terminate maps to the Lambda terminate operation. Nodes must carry `spec.providerID` in the form `lambda://<instanceID>`.
+Reboot maps to the Lambda power-cycle operation (a host-level power cycle, not a guest restart) and terminate maps to the Lambda terminate operation. Nodes must carry `spec.providerID` in the form `lambda://<instanceID>`.
+
+Authenticate either with a static API key or with workload identity. Workload identity is preferred: no Lambda credential is stored in the cluster, and the token it uses is short-lived and rotated automatically.
 
 ```yaml
 janitor-provider:
@@ -205,7 +207,129 @@ janitor-provider:
 Optional. Overrides the base URL of the Lambda Cloud API, passed as `LAMBDA_API_ENDPOINT`. Defaults to `https://cloud.lambda.ai` when unset. Must be https, and must not carry userinfo, a query string, or a fragment. The host is checked against a fixed allowlist built into the provider, so an unapproved host fails at startup rather than on the first remediation.
 
 ### apiKeySecretRef
-Secret holding the Lambda API key, injected as `LAMBDA_API_KEY`. `name` is required when `csp.provider` is `lambda`; the install fails without it. `key` defaults to `LAMBDA_API_KEY`. The same Secret can be shared with the CSP Health Monitor, which reads the key the same way. The key needs permission to power cycle and terminate instances.
+Secret holding the Lambda API key, injected as `LAMBDA_API_KEY`. `name` is required when `csp.provider` is `lambda`, unless `workloadIdentity.identityLRN` is set; the install fails without one of the two. `key` defaults to `LAMBDA_API_KEY`. The same Secret can be shared with the CSP Health Monitor, which reads the key the same way. The key needs permission to power cycle and terminate instances.
+
+### workloadIdentity.identityLRN
+
+The service identity to assume, in the form `lrn:iam:identity:<id>`. Setting it annotates the janitor-provider ServiceAccount with `lambda.ai/identity-lrn`. The pod is then given a short-lived Kubernetes token, which the provider exchanges for a Lambda API key and refreshes before it expires — so no Lambda credential is stored in the cluster.
+
+```yaml
+janitor-provider:
+  csp:
+    provider: "lambda"
+    lambda:
+      workloadIdentity:
+        identityLRN: "lrn:iam:identity:3cd2d107c6a347eeb0ef9498820d637d"
+```
+
+When set, `apiKeySecretRef` is not required and no `LAMBDA_API_KEY` is placed in the pod. If both are configured, workload identity wins and the static key is ignored; the provider logs which one it selected at startup (`authMode`).
+
+On the Lambda side, the identity must exist, hold permission to power cycle and terminate instances, and trust this cluster's ServiceAccount.
+
+#### Setting up the identity
+
+Run once per cluster, with an admin API key. `$WS` is the workspace the cluster's instances belong to.
+
+```bash
+# Stop at the first failed call: a half-applied setup prints an identityLRN
+# that looks usable but has no role or no trust behind it.
+set -euo pipefail
+
+KEY=<admin-api-key>
+export WS=<workspace-id>
+
+lambda_curl() {
+  printf 'Authorization: Bearer %s\n' "$KEY" | curl -sf -H @- "$@"
+}
+
+# 1. Create a service identity for the Janitor Provider.
+SID=$(lambda_curl "https://cloud.lambda.ai/api/v1/identities" \
+  -H 'Content-Type: application/json' \
+  -d '{"display_name":"nvsentinel-janitor-provider"}' | jq -r .data.id)
+[ -n "$SID" ] && [ "$SID" != "null" ] || { echo "identity was not created" >&2; exit 1; }
+
+# 2. Add it to the workspace. A workspace-scoped role assignment needs membership.
+lambda_curl "https://cloud.lambda.ai/api/v1/workspaces/$WS/memberships" \
+  -H 'Content-Type: application/json' \
+  -d "{\"member_type\":\"identity\",\"member_id\":\"$SID\"}"
+
+# 3. Assign the built-in roles, scoped to that workspace.
+for role in instance-reader instance-power-cycle instance-terminate; do
+  ROLE=$(lambda_curl "https://cloud.lambda.ai/api/v1/roles" \
+    | jq -r --arg n "$role" '.data[] | select(.name==$n) | .id')
+  [ -n "$ROLE" ] && [ "$ROLE" != "null" ] || { echo "role $role not found" >&2; exit 1; }
+  lambda_curl "https://cloud.lambda.ai/api/v1/identities/$SID/role-assignments" \
+    -H 'Content-Type: application/json' \
+    -d "{\"role_id\":\"$ROLE\",\"scope\":{\"type\":\"workspace\",\"workspace_id\":\"$WS\"}}"
+done
+
+# 4. Trust this cluster's ServiceAccount to assume the identity. Registering the
+#    issuer is an idempotent upsert keyed on the issuer URL, so re-running is safe.
+SUBJECT=$(
+  kubectl get deployments --all-namespaces \
+    -l app.kubernetes.io/name=janitor-provider -o json |
+    jq -er '
+      .items
+      | if length == 1 then .[0] else error("expected exactly one janitor-provider Deployment") end
+      | "system:serviceaccount:\(.metadata.namespace):\(.spec.template.spec.serviceAccountName)"
+    '
+)
+ISS=$(kubectl get --raw /.well-known/openid-configuration |
+  jq -er '.issuer | select(type == "string" and length > 0)') ||
+  { echo "OIDC discovery returned no valid issuer" >&2; exit 1; }
+kubectl get --raw /openid/v1/jwks > /tmp/jwks.json
+lambda_curl "https://cloud.lambda.ai/api/v1/oidc-providers" \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -n --arg iss "$ISS" --arg lrn "lrn:iam:identity:$SID" \
+        --arg subject "$SUBJECT" --slurpfile jwks /tmp/jwks.json \
+        '{issuer_url:$iss, jwks:$jwks[0],
+          trusts:[{identity_lrn:$lrn, subject:$subject}]}')"
+
+echo "identityLRN: lrn:iam:identity:$SID"
+```
+
+The printed LRN is what goes in the chart value above.
+
+| Built-in role | Grants | Needed for |
+| --- | --- | --- |
+| `instance-reader` | `compute:instance:read` | Reading instance state before and after a reboot |
+| `instance-power-cycle` | `compute:instance:power-cycle` | The reboot itself |
+| `instance-terminate` | `compute:instance:terminate` | Terminating a node the remediation policy replaces rather than reboots |
+
+All three are workspace-scoped, so the identity can only act on instances in `$WS`.
+
+Drop `instance-terminate` from the loop if your remediation policy only ever reboots — the roles are additive, so granting just the two leaves terminate unauthorized.
+
+#### Verifying
+
+The identity is attached when the pod is created, so it only appears on pods created *after* the annotation lands. Restart the deployment if you added it to a running install.
+
+```bash
+(
+  set -euo pipefail
+
+  NAMESPACE=$(
+    kubectl get deployments --all-namespaces \
+      -l app.kubernetes.io/name=janitor-provider -o json |
+      jq -er '
+        .items
+        | if length == 1 then .[0] else error("expected exactly one janitor-provider Deployment") end
+        | .metadata.namespace
+      '
+  )
+
+  # The identity the pod received.
+  kubectl -n "$NAMESPACE" get pod -l app.kubernetes.io/name=janitor-provider \
+    -o jsonpath='{.items[0].spec.containers[0].env[?(@.name=="LAMBDA_IDENTITY_LRN")]}'
+
+  # Which credential the provider selected.
+  kubectl -n "$NAMESPACE" logs -l app.kubernetes.io/name=janitor-provider | grep authMode
+)
+```
+
+Expect `authMode=workload-identity`. If it says `api-key`, the pod never received an identity — check that the annotation is on the ServiceAccount and that the pod was created after it landed.
+
+Failures in the exchange itself surface on the first remediation, not at startup, because the token is minted lazily. When the exchange endpoint rejects the token it returns `401` with no detail by design, so an unauthenticated caller cannot probe for which identities exist; that means a missing trust, a wrong identity LRN and a disabled account all look identical from the client. Check the trust and the identity LRN first.
 
 ## Generic / Bare-Metal
 

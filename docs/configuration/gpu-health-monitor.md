@@ -161,6 +161,34 @@ gpu-health-monitor:
       - DCGM_FR_CLOCK_THROTTLE_POWER
 ```
 
+## Hardware Power Brake Detection
+
+`GpuPowerBrakeWatch` fails a GPU whose clocks-event-reasons mask has the hardware power brake bit (`0x80`) set, meaning the power delivery path is forcing clocks down. It reads `DCGM_FI_DEV_CLOCKS_EVENT_REASONS` directly, in the same way `GpuThermalMarginWatch` reads field 153, because DCGM's POWER health watch does not report the brake.
+
+That distinction matters. The POWER watch's dominant code, `DCGM_FR_CLOCK_THROTTLE_POWER`, tracks power-capped clock throttling, maps to `NONE`, and is the worked example under [DCGM Health Check Incident Suppression](#dcgm-health-check-incident-suppression) above. On a 288-node GB200 cluster it was observed active on 69% of nodes while exactly 50% had a brake asserted, correlating with neither the brake bit nor the SW power cap bit (`0x04`). A sustained brake is a power delivery fault, so it needs its own signal rather than sharing a non-actionable one.
+
+`GPU_HW_POWER_BRAKE_VIOLATION` maps to `CONTACT_SUPPORT` in `dcgmerrorsmapping.csv`, matching the thermal precedent: an asserted brake is a facility or power delivery problem, not something a node reboot resolves.
+
+```yaml
+gpu-health-monitor:
+  dcgmFieldsMonitoring:
+    gpuPowerBrakeMonitoringEnabled: false
+    gpuPowerBrakeStoreOnly: true
+    gpuPowerBrakeMinConsecutivePolls: 3
+```
+
+### gpuPowerBrakeMonitoringEnabled
+
+Enables the watch. Off by default so existing deployments see no behaviour change. If neither `DCGM_FI_DEV_CLOCKS_EVENT_REASONS` nor the older `DCGM_FI_DEV_CLOCK_THROTTLE_REASONS` is available in the running DCGM build, the monitor logs a warning and disables itself.
+
+### gpuPowerBrakeStoreOnly
+
+Dry run. When true, this check's events are emitted with `processingStrategy=STORE_ONLY`, so they are persisted and exported as metrics but excluded from the remediation pipeline: no node condition and no cordon. Defaults to true, so enabling the watch is observable before it can act.
+
+### gpuPowerBrakeMinConsecutivePolls
+
+Consecutive polls with the bit set before the GPU is failed. A brake asserted for a single poll can be a load transient; a sustained assertion is the actionable case. A clear resets the counter, so a flapping brake never accumulates to a failure. `1` fails on first observation. A GPU with no usable sample is skipped and keeps its counter, so a gap in DCGM data neither raises nor clears a finding. This includes DCGM's int64 "no data" sentinels, whose low byte has the brake bit set and which would otherwise read as an assertion.
+
 ## Unresponsive DCGM Detection
 
 A DCGM call that stops answering never returns an error — callers park and the probe blocks forever rather than raising `DCGMError_Timeout`. Meanwhile the node can still report `Ready` with every GPU allocatable and no taint, so no other signal in the stack registers a fault. In `embedded-mode` that hang is node-local, but it is not yet proof of a kernel-driver wedge: DCGM userspace deadlock or lock contention can look the same until an independent NVML/`nvidia-smi` probe confirms the driver itself.

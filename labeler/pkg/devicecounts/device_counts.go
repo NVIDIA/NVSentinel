@@ -222,6 +222,53 @@ func (m *Manager) NodeLabelsAffectDeviceCounts(oldLabels, newLabels map[string]s
 	return !maps.Equal(oldInputLabels, newInputLabels)
 }
 
+// NodeResourcesAffectDeviceCounts reports whether an allocatable or capacity
+// change on a node could affect a device-count class whose CEL expression reads
+// from node.status.allocatable or node.status.capacity.
+func (m *Manager) NodeResourcesAffectDeviceCounts(oldNode, newNode *corev1.Node) bool {
+	if !m.Enabled() || oldNode == nil || newNode == nil {
+		return false
+	}
+
+	resourcesReferenced := false
+
+	for _, class := range m.classes {
+		if class.referencesNodeResources() {
+			resourcesReferenced = true
+			break
+		}
+	}
+
+	if !resourcesReferenced {
+		return false
+	}
+
+	oldAllocatable := resourceListToStringMap(oldNode.Status.Allocatable)
+	newAllocatable := resourceListToStringMap(newNode.Status.Allocatable)
+
+	if !maps.Equal(oldAllocatable, newAllocatable) {
+		return true
+	}
+
+	oldCapacity := resourceListToStringMap(oldNode.Status.Capacity)
+	newCapacity := resourceListToStringMap(newNode.Status.Capacity)
+
+	return !maps.Equal(oldCapacity, newCapacity)
+}
+
+func resourceListToStringMap(rl corev1.ResourceList) map[string]string {
+	if len(rl) == 0 {
+		return nil
+	}
+
+	result := make(map[string]string, len(rl))
+	for k, v := range rl {
+		result[string(k)] = v.String()
+	}
+
+	return result
+}
+
 func newDeviceCountCELEnv() (*cel.Env, error) {
 	// Keep the CEL surface intentionally small: expressions can only inspect
 	// the reconciled node, that node's associated ResourceSlices, and sum lists.
@@ -575,6 +622,16 @@ func (class compiledClass) referencesResourceSlices() bool {
 	// legitimate zero count. Expressions that do not reference ResourceSlices can
 	// still evaluate from node labels alone.
 	return strings.Contains(class.CurrentExpression, "resourceSlices")
+}
+
+// referencesNodeResources is a cheap heuristic mirroring referencesResourceSlices.
+// It checks specifically for node.status.allocatable or node.status.capacity
+// rather than the broader node.status, so expressions that only reference
+// node.status.conditions (noisy with heartbeats) do not trigger unnecessary
+// allocatable/capacity comparisons on every node update.
+func (class compiledClass) referencesNodeResources() bool {
+	return strings.Contains(class.CurrentExpression, "node.status.allocatable") ||
+		strings.Contains(class.CurrentExpression, "node.status.capacity")
 }
 
 func matchLabels(actual, expected map[string]string) bool {

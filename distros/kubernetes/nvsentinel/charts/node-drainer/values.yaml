@@ -126,3 +126,6 @@ customDrain:
   # Timeout duration for waiting for CR completion (e.g., "30m")
   # After this timeout, the drain is considered failed
   timeout: "30m"
+
+# Pod priority for this component. Overridden by the matching global when that is set.
+priorityClassName: ""

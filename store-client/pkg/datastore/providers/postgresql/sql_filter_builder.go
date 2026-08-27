@@ -36,6 +36,9 @@ const (
 	opMatch  = "$match"
 	opNe     = "$ne"
 
+	// fieldStatus is the status field/column name.
+	fieldStatus = "status"
+
 	// operationColumn is the PostgreSQL column name for operation type.
 	// The column stores uppercase values (INSERT, UPDATE, DELETE).
 	operationColumn = "operation"
@@ -416,6 +419,8 @@ func (b *SQLFilterBuilder) handleDefaultValue(jsonPath string, v interface{}) (s
 
 // fieldNameMapping maps MongoDB bson field names (lowercase) to PostgreSQL JSON field names (camelCase).
 // MongoDB uses lowercase bson tags, PostgreSQL uses camelCase json tags.
+//
+//nolint:goconst // identity/canonicalisation table; literals are the data
 var fieldNameMapping = map[string]string{
 	"ishealthy":              "isHealthy",
 	"isfatal":                "isFatal",

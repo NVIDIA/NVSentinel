@@ -70,3 +70,6 @@ cleanupMetrics:
     repository: ghcr.io/nvidia/nvsentinel/file-server-cleanup
     tag: ""
     pullPolicy: IfNotPresent
+
+# Pod priority for this component. Overridden by the matching global when that is set.
+priorityClassName: ""
