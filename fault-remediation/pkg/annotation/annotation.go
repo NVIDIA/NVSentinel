@@ -107,6 +107,7 @@ func (m *NodeAnnotationManager) UpdateRemediationState(ctx context.Context, node
 		// Increment retry count if this group already exists
 		existingGroup, exists := state.EquivalenceGroups[group]
 		retryCount := 1
+
 		if exists {
 			retryCount = existingGroup.RetryCount + 1
 		}
