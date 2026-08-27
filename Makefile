@@ -309,6 +309,8 @@ protos-generate: vendor-proto protos-clean ## Ensure vendor dir, then generate p
 	$(MAKE) -C preflight-checks/dcgm-diag protos-generate
 	# Generate Python protobuf files for nccl-allreduce preflight check
 	$(MAKE) -C preflight-checks/nccl-allreduce protos-generate
+	# Generate Python protobuf files for system-services-monitor
+	$(MAKE) -C health-monitors/system-services-monitor protos-generate
 
 # Check protobuf files
 .PHONY: protos-lint

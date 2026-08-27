@@ -29,8 +29,11 @@ ENV POETRY_NO_INTERACTION=1 \
 WORKDIR /app
 
 COPY health-monitors/system-services-monitor/ .
-# Set package version from build arg (strip 'v' prefix for PEP 440 compliance)
-RUN poetry version $(echo "${VERSION}" | sed 's/^v//')
+# Update version if it's a valid semver (skip for branch names like
+# pull-request-NNNN-sha, which poetry rejects as invalid PEP 440)
+RUN if echo "${VERSION}" | grep -qE '^v?[0-9]+\.[0-9]+'; then \
+        poetry version $(echo "${VERSION}" | sed 's/^v//'); \
+    fi
 RUN --mount=type=cache,target=/tmp/poetry_cache \
     poetry build --format wheel
 RUN poetry export --format requirements.txt --output constraints.txt --without-hashes

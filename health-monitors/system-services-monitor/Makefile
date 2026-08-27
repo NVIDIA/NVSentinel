@@ -75,6 +75,69 @@ format:
 	@echo "Running Black formatter on $(MODULE_NAME)..."
 	poetry run black .
 
+format-protobuf-files:
+	@echo "Formatting local protobuf files for $(MODULE_NAME)..."
+	poetry run black $(PYTHON_PACKAGE_NAME)/protos/ || true
+
+protos-generate: protos-clean
+	@echo "Generating protobuf files for $(MODULE_NAME)..."
+	@echo "=== Tool Versions ==="
+	@echo "protoc: $$(protoc --version)"
+	@if command -v poetry >/dev/null 2>&1; then \
+		grpcio_tools_version=$$(poetry run python -c "import importlib.metadata; print('grpcio-tools', importlib.metadata.version('grpcio-tools'))" 2>/dev/null || echo "grpcio-tools: not installed"); \
+		echo "$$grpcio_tools_version"; \
+		black_version=$$(poetry run black --version 2>/dev/null | head -1 || echo "black: not installed"); \
+		echo "$$black_version"; \
+	else \
+		echo "grpcio-tools: Poetry not available"; \
+		echo "black: Poetry not available"; \
+	fi
+	@echo "========================"
+	# Generate Python protobuf files
+	@echo "Generating Python protobuf files for $(MODULE_NAME)..."
+	@mkdir -p $(PYTHON_PACKAGE_NAME)/protos
+	python3 -m grpc_tools.protoc -I ../../data-models/protobufs/ -I ../../data-models/vendor/ --python_out=$(PYTHON_PACKAGE_NAME)/protos --pyi_out=$(PYTHON_PACKAGE_NAME)/protos --grpc_python_out=$(PYTHON_PACKAGE_NAME)/protos ../../data-models/protobufs/health_event.proto
+	# health_event.proto imports crd.proto (needed for CRD generation via protoc-gen-crd).
+	# protoc propagates that import into the generated Python code, but the Go-style module path
+	# (github.com/yandex/...) is unresolvable in Python. To fix this we:
+	#   1. Generate crd_pb2.py from the vendored crd.proto using the vendor root as -I
+	#      so the file descriptor name matches what health_event_pb2.py expects.
+	#   2. Move crd_pb2.py from the nested output path into protos/ as a flat sibling.
+	#   3. Rewrite the import in health_event_pb2.py to a relative import (from . import crd_pb2).
+	python3 -m grpc_tools.protoc \
+		-I ../../data-models/vendor/ \
+		--python_out=$(PYTHON_PACKAGE_NAME)/protos \
+		--pyi_out=$(PYTHON_PACKAGE_NAME)/protos \
+		github.com/yandex/protoc-gen-crd/library/go/k8s/protoc_gen_crd/proto/crd.proto
+	mv $(PYTHON_PACKAGE_NAME)/protos/github/com/yandex/protoc_gen_crd/library/go/k8s/protoc_gen_crd/proto/crd_pb2.py $(PYTHON_PACKAGE_NAME)/protos/crd_pb2.py
+	mv $(PYTHON_PACKAGE_NAME)/protos/github/com/yandex/protoc_gen_crd/library/go/k8s/protoc_gen_crd/proto/crd_pb2.pyi $(PYTHON_PACKAGE_NAME)/protos/crd_pb2.pyi 2>/dev/null || true
+	rm -rf $(PYTHON_PACKAGE_NAME)/protos/github
+	# Fix relative imports in generated gRPC files
+	@if command -v gsed >/dev/null 2>&1; then \
+		gsed -i 's/^import health_event_pb2 as health__event__pb2$$/from . import health_event_pb2 as health__event__pb2/' $(PYTHON_PACKAGE_NAME)/protos/health_event_pb2_grpc.py; \
+		gsed -i 's/^from github\.com\.yandex\.protoc_gen_crd\.library\.go\.k8s\.protoc_gen_crd\.proto import crd_pb2 as \(.*\)$$/from . import crd_pb2 as \1/' $(PYTHON_PACKAGE_NAME)/protos/health_event_pb2.py; \
+	elif [ "$$(uname)" = "Darwin" ]; then \
+		sed -i '' 's/^import health_event_pb2 as health__event__pb2$$/from . import health_event_pb2 as health__event__pb2/' $(PYTHON_PACKAGE_NAME)/protos/health_event_pb2_grpc.py; \
+		sed -i '' 's/^from github\.com\.yandex\.protoc_gen_crd\.library\.go\.k8s\.protoc_gen_crd\.proto import crd_pb2 as \(.*\)$$/from . import crd_pb2 as \1/' $(PYTHON_PACKAGE_NAME)/protos/health_event_pb2.py; \
+	else \
+		sed -i 's/^import health_event_pb2 as health__event__pb2$$/from . import health_event_pb2 as health__event__pb2/' $(PYTHON_PACKAGE_NAME)/protos/health_event_pb2_grpc.py; \
+		sed -i 's/^from github\.com\.yandex\.protoc_gen_crd\.library\.go\.k8s\.protoc_gen_crd\.proto import crd_pb2 as \(.*\)$$/from . import crd_pb2 as \1/' $(PYTHON_PACKAGE_NAME)/protos/health_event_pb2.py; \
+	fi
+	@touch $(PYTHON_PACKAGE_NAME)/protos/__init__.py
+	# Format generated protobuf files with Black
+	@echo "Formatting generated protobuf files..."
+	poetry run black $(PYTHON_PACKAGE_NAME)/protos/ || true
+
+vendor-proto:
+	$(MAKE) -C ../../data-models vendor-proto
+
+.PHONY: protos-clean format-protobuf-files protos-generate vendor-proto
+protos-clean: vendor-proto
+	@echo "Cleaning generated protobuf files in $(MODULE_NAME)..."
+	@echo "Removing Python protobuf files (*_pb2.py, *_pb2_grpc.py, *_pb2.pyi)..."
+	find $(PYTHON_PACKAGE_NAME)/protos/ \( -name "*_pb2.py" -o -name "*_pb2_grpc.py" -o -name "*_pb2.pyi" \) -type f -delete 2>/dev/null || true
+	rm -rf ./health-monitors/system-services-monitor/.venv || true
+
 # =============================================================================
 # MODULE HELP
 # =============================================================================
