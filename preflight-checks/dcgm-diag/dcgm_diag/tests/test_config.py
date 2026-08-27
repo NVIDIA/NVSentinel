@@ -91,3 +91,14 @@ class TestConfigFromEnv:
         monkeypatch.setenv("DCGM_DIAG_STATUS_RETRY_INTERVAL_SECONDS", "0")
         with pytest.raises(ValueError, match="DCGM_DIAG_STATUS_RETRY_INTERVAL_SECONDS must be > 0"):
             Config.from_env()
+
+    def test_token_path_is_none_when_unset(self, valid_env: None) -> None:
+        assert Config.from_env().token_path is None
+
+    def test_token_path_loaded_from_env(self, valid_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PLATFORM_CONNECTOR_TOKEN_PATH", "/var/run/secrets/nvsentinel/token")
+        assert Config.from_env().token_path == "/var/run/secrets/nvsentinel/token"
+
+    def test_empty_token_path_is_treated_as_unset(self, valid_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PLATFORM_CONNECTOR_TOKEN_PATH", "")
+        assert Config.from_env().token_path is None

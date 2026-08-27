@@ -26,7 +26,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"time"
 
@@ -55,16 +54,21 @@ const (
 var errRedirect = errors.New("redirect refused")
 
 // Client is an authenticated HTTP client for the Lambda Cloud API.
-// The API key is read from LAMBDA_API_KEY on every request so credential
-// rotation works without a process restart.
+//
+// It authenticates with whichever credential the environment implies, see
+// DetectAuthMode: a workload identity when the pod-identity webhook injected
+// one, otherwise the static LAMBDA_API_KEY. The static key is read on every
+// request so rotation works without a process restart; a workload identity
+// token is cached and replaced before it expires.
 //
 // Requests are retried with exponential backoff on transient failures
 // (network errors, 5xx responses, and 429 Too Many Requests). Permanent
-// failures (4xx other than 429, malformed responses, missing API key)
+// failures (4xx other than 429, malformed responses, missing credential)
 // short-circuit the retry loop. Post retries on less, see retryRateLimitOnly.
 type Client struct {
 	endpoint    string
 	workspaceID string
+	creds       credentialSource
 	http        *http.Client
 	retry       retryPolicy
 }
@@ -133,7 +137,8 @@ func WithRetryPolicy(maxAttempts int, initialBackoff time.Duration, factor, jitt
 }
 
 // NewClient constructs a Lambda API client. endpoint is the base URL,
-// e.g. "https://cloud.lambda.ai".
+// e.g. "https://cloud.lambda.ai". The credential is picked from the
+// environment, see DetectAuthMode.
 func NewClient(endpoint string, opts ...Option) *Client {
 	c := &Client{
 		endpoint: endpoint,
@@ -153,6 +158,12 @@ func NewClient(endpoint string, opts ...Option) *Client {
 	// Wrapped rather than assigned outright, and after the options so an
 	// injected client cannot opt out of the scheme check.
 	c.http.CheckRedirect = refuseInsecureRedirect(c.http.CheckRedirect)
+
+	// After the redirect guard, so the token exchange shares a protected
+	// http.Client rather than one that can be redirected to plaintext.
+	if c.creds == nil {
+		c.creds = detectCredential(c.endpoint, c.http, c.retry)
+	}
 
 	return c
 }
@@ -200,13 +211,23 @@ func (c *Client) Get(ctx context.Context, path string, query url.Values, out any
 // take no idempotency key, so it retries on less than Get does. See
 // retryRateLimitOnly.
 func (c *Client) Post(ctx context.Context, path string, in, out any) error {
-	// Marshalled once so every retry resends identical bytes.
-	payload, err := json.Marshal(in)
+	payload, err := marshalJSON(in)
 	if err != nil {
-		return fmt.Errorf("marshal request body: %w", err)
+		return err
 	}
 
 	return c.do(ctx, http.MethodPost, path, nil, payload, out, retryRateLimitOnly)
+}
+
+// marshalJSON encodes a request body once, so every retry resends identical
+// bytes.
+func marshalJSON(in any) ([]byte, error) {
+	payload, err := json.Marshal(in)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request body: %w", err)
+	}
+
+	return payload, nil
 }
 
 // do performs an authenticated request and decodes the JSON response into out.
@@ -214,9 +235,12 @@ func (c *Client) Post(ctx context.Context, path string, in, out any) error {
 func (c *Client) do(
 	ctx context.Context, method, path string, query url.Values, payload []byte, out any, retry retryScope,
 ) error {
-	apiKey := os.Getenv(APIKeyEnvVar)
-	if apiKey == "" {
-		return fmt.Errorf("env var %s is not set", APIKeyEnvVar)
+	// Resolved once per call rather than per attempt: a workload identity
+	// token that was fresh when the first attempt started is still fresh
+	// across the retry budget.
+	apiKey, err := c.creds.token(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve Lambda credential: %w", err)
 	}
 
 	u := c.endpoint + path
@@ -236,7 +260,7 @@ func (c *Client) do(
 		attempts int
 	)
 
-	err := wait.ExponentialBackoffWithContext(ctx, backoff, func(ctx context.Context) (bool, error) {
+	err = wait.ExponentialBackoffWithContext(ctx, backoff, func(ctx context.Context) (bool, error) {
 		attempts++
 
 		body, statusCode, doErr := c.doOnce(ctx, method, u, apiKey, payload)
@@ -253,6 +277,13 @@ func (c *Client) do(
 		}
 
 		if statusCode != http.StatusOK {
+			// A credential the API rejects is dropped so the next request
+			// mints a fresh one. This is how a token revoked before its
+			// stated expiry gets noticed.
+			if statusCode == http.StatusUnauthorized {
+				c.creds.invalidate()
+			}
+
 			statusErr := fmt.Errorf("%s %s: status %d: %s", method, u, statusCode, body)
 			if !retry(statusCode, nil) {
 				return false, statusErr
@@ -335,7 +366,12 @@ func (c *Client) doOnce(ctx context.Context, method, u, apiKey string, payload [
 	}
 
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	// Empty only for the token exchange, which is unauthenticated: the JWT in
+	// its body is the credential.
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")

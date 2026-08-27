@@ -42,6 +42,7 @@ func main() {
 	}
 }
 
+//nolint:cyclop // linear setup: complexity from sequential env parsing and error checks
 func run() error {
 	nodeName := envOrDefault("NODE_NAME", "")
 	if nodeName == "" {
@@ -65,6 +66,7 @@ func run() error {
 	defer stop()
 
 	target := "unix://" + socketPath
+
 	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return fmt.Errorf("failed to create gRPC client: %w", err)
@@ -177,6 +179,7 @@ func sendEvent(ctx context.Context, client pb.PlatformConnectorClient, event *pb
 		Version: 1,
 		Events:  []*pb.HealthEvent{event},
 	})
+
 	return err
 }
 
@@ -184,5 +187,6 @@ func envOrDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
+
 	return fallback
 }

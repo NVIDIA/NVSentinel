@@ -116,10 +116,7 @@ func Process(ctx context.Context, obj client.Object, defaultTTL time.Duration, c
 		return Result{Action: ActionExpired, Changed: changed}, nil
 	}
 
-	remaining := expiryTime.Sub(clock.Now())
-	if remaining > maxRequeueInterval {
-		remaining = maxRequeueInterval
-	}
+	remaining := min(expiryTime.Sub(clock.Now()), maxRequeueInterval)
 
 	return Result{Action: ActionRequeue, RequeueAfter: remaining, Changed: changed}, nil
 }

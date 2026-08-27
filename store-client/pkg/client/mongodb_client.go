@@ -22,10 +22,9 @@ import (
 	"sync"
 
 	"github.com/go-logr/logr"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -50,13 +49,13 @@ func (e *mongoEvent) GetDocumentID() (string, error) {
 		).WithMetadata("eventKeys", getMapKeys(e.rawEvent))
 	}
 
-	// Convert to bson.M for internal processing - handle both primitive.M and map[string]interface{}
+	// Convert to bson.M for internal processing - handle both bson.M and map[string]interface{}
 	var document bson.M
 
 	switch v := fullDocument.(type) {
-	case primitive.M:
+	case bson.M:
 		document = bson.M(v)
-	case map[string]interface{}:
+	case map[string]any:
 		document = bson.M(v)
 	default:
 		return "", datastore.NewValidationError(
@@ -66,7 +65,7 @@ func (e *mongoEvent) GetDocumentID() (string, error) {
 		).WithMetadata("type", fmt.Sprintf("%T", fullDocument))
 	}
 
-	objectID, ok := document["_id"].(primitive.ObjectID)
+	objectID, ok := document[fieldID].(bson.ObjectID)
 	if !ok {
 		return "", datastore.NewValidationError(
 			datastore.ProviderMongoDB,
@@ -94,13 +93,13 @@ func (e *mongoEvent) GetNodeName() (string, error) {
 		).WithMetadata("eventKeys", getMapKeys(e.rawEvent))
 	}
 
-	// Convert to bson.M for internal processing - handle both primitive.M and map[string]interface{}
+	// Convert to bson.M for internal processing - handle both bson.M and map[string]interface{}
 	var document bson.M
 
 	switch v := fullDocument.(type) {
-	case primitive.M:
+	case bson.M:
 		document = bson.M(v)
-	case map[string]interface{}:
+	case map[string]any:
 		document = bson.M(v)
 	default:
 		return "", datastore.NewValidationError(
@@ -147,7 +146,7 @@ func (e *mongoEvent) GetResumeToken() []byte {
 		return v
 	case []byte:
 		return v
-	case primitive.Binary:
+	case bson.Binary:
 		return v.Data
 	case bson.RawValue:
 		data, err := bson.Marshal(v)
@@ -165,7 +164,7 @@ func (e *mongoEvent) GetResumeToken() []byte {
 	return []byte{}
 }
 
-func (e *mongoEvent) UnmarshalDocument(v interface{}) error {
+func (e *mongoEvent) UnmarshalDocument(v any) error {
 	// Extract fullDocument from the MongoDB change event
 	fullDocument, ok := e.rawEvent["fullDocument"]
 	if !ok {
@@ -176,13 +175,13 @@ func (e *mongoEvent) UnmarshalDocument(v interface{}) error {
 		).WithMetadata("eventKeys", getMapKeys(e.rawEvent))
 	}
 
-	// Convert to bson.M for internal processing - handle both primitive.M and map[string]interface{}
+	// Convert to bson.M for internal processing - handle both bson.M and map[string]interface{}
 	var document bson.M
 
 	switch v := fullDocument.(type) {
-	case primitive.M:
+	case bson.M:
 		document = bson.M(v)
-	case map[string]interface{}:
+	case map[string]any:
 		document = bson.M(v)
 	default:
 		return datastore.NewValidationError(
@@ -212,7 +211,7 @@ func (e *mongoEvent) UnmarshalDocument(v interface{}) error {
 
 	// Normalize MongoDB-specific types to standard Go types AFTER unmarshaling
 	// This is necessary because bson.Unmarshal into map[string]interface{} preserves MongoDB types
-	if targetMap, ok := v.(*map[string]interface{}); ok && targetMap != nil {
+	if targetMap, ok := v.(*map[string]any); ok && targetMap != nil {
 		normalizeMongoTypes(*targetMap)
 	}
 
@@ -225,10 +224,10 @@ func (e *mongoEvent) UnmarshalDocument(v interface{}) error {
 // BuildInsertOnlyPipeline creates a MongoDB-specific pipeline for insert operations
 //
 // Deprecated: Use BuildInsertOnlyPipelineAgnostic() instead
-func BuildInsertOnlyPipeline() interface{} {
+func BuildInsertOnlyPipeline() any {
 	return mongo.Pipeline{
-		bson.D{{Key: "$match", Value: bson.D{
-			{Key: "operationType", Value: bson.D{{Key: "$in", Value: bson.A{"insert"}}}},
+		bson.D{{Key: opMatch, Value: bson.D{
+			{Key: fieldOperationType, Value: bson.D{{Key: opIn, Value: bson.A{opTypeInsert}}}},
 		}}},
 	}
 }
@@ -236,17 +235,17 @@ func BuildInsertOnlyPipeline() interface{} {
 // BuildQuarantineUpdatePipeline creates a MongoDB-specific pipeline for quarantine updates
 //
 // Deprecated: Use BuildQuarantineUpdatePipelineAgnostic() instead
-func BuildQuarantineUpdatePipeline() interface{} {
+func BuildQuarantineUpdatePipeline() any {
 	return mongo.Pipeline{
-		bson.D{{Key: "$match", Value: bson.D{
-			{Key: "operationType", Value: "update"},
+		bson.D{{Key: opMatch, Value: bson.D{
+			{Key: fieldOperationType, Value: "update"},
 			{Key: "$or", Value: bson.A{
-				bson.D{{Key: "updateDescription.updatedFields",
-					Value: bson.D{{Key: "healtheventstatus.nodequarantined", Value: model.Quarantined}}}},
-				bson.D{{Key: "updateDescription.updatedFields",
-					Value: bson.D{{Key: "healtheventstatus.nodequarantined", Value: model.AlreadyQuarantined}}}},
-				bson.D{{Key: "updateDescription.updatedFields",
-					Value: bson.D{{Key: "healtheventstatus.nodequarantined", Value: model.UnQuarantined}}}},
+				bson.D{{Key: fieldUpdatedFields,
+					Value: bson.D{{Key: nodeQuarantinedStatusField, Value: model.Quarantined}}}},
+				bson.D{{Key: fieldUpdatedFields,
+					Value: bson.D{{Key: nodeQuarantinedStatusField, Value: model.AlreadyQuarantined}}}},
+				bson.D{{Key: fieldUpdatedFields,
+					Value: bson.D{{Key: nodeQuarantinedStatusField, Value: model.UnQuarantined}}}},
 			}},
 		}}},
 	}
@@ -255,10 +254,10 @@ func BuildQuarantineUpdatePipeline() interface{} {
 // BuildNonFatalInsertPipeline creates a MongoDB-specific pipeline for non-fatal insert operations
 //
 // Deprecated: Use BuildNonFatalInsertPipelineAgnostic() instead
-func BuildNonFatalInsertPipeline() interface{} {
+func BuildNonFatalInsertPipeline() any {
 	return mongo.Pipeline{
-		bson.D{{Key: "$match", Value: bson.D{
-			{Key: "operationType", Value: "insert"},
+		bson.D{{Key: opMatch, Value: bson.D{
+			{Key: fieldOperationType, Value: opTypeInsert},
 			{Key: "fullDocument.healthevent.isfatal", Value: false},
 			{Key: "fullDocument.healthevent.ishealthy", Value: false},
 		}}},
@@ -432,9 +431,9 @@ func NewMongoDBCollectionClient(ctx context.Context, dbConfig config.DatabaseCon
 // UpdateDocumentStatus updates a specific status field in a document
 // This consolidates the common pattern used across all modules
 func (c *MongoDBClient) UpdateDocumentStatus(
-	ctx context.Context, documentID string, statusPath string, status interface{},
+	ctx context.Context, documentID string, statusPath string, status any,
 ) error {
-	objectID, err := primitive.ObjectIDFromHex(documentID)
+	objectID, err := bson.ObjectIDFromHex(documentID)
 	if err != nil {
 		return datastore.NewValidationError(
 			datastore.ProviderMongoDB,
@@ -443,9 +442,9 @@ func (c *MongoDBClient) UpdateDocumentStatus(
 		).WithMetadata("documentID", documentID)
 	}
 
-	filter := bson.M{"_id": objectID}
+	filter := bson.M{fieldID: objectID}
 
-	// Determine if this is a nested field path (e.g., "healtheventstatus.nodequarantined")
+	// Determine if this is a nested field path (e.g., nodeQuarantinedStatusField)
 	// or a base path with a struct (e.g., "healtheventstatus" with HealthEventStatus)
 	var updateFields bson.M
 	if c.isNestedFieldPath(statusPath) {
@@ -456,7 +455,7 @@ func (c *MongoDBClient) UpdateDocumentStatus(
 		updateFields = c.buildStructFieldUpdates(statusPath, status)
 	}
 
-	update := bson.M{"$set": updateFields}
+	update := bson.M{opSet: updateFields}
 
 	_, err = c.mongoCol.UpdateOne(ctx, filter, update)
 	if err != nil {
@@ -473,13 +472,13 @@ func (c *MongoDBClient) UpdateDocumentStatus(
 
 // UpdateDocumentStatusFields updates multiple status fields in a document in one operation.
 func (c *MongoDBClient) UpdateDocumentStatusFields(
-	ctx context.Context, documentID string, fields map[string]interface{},
+	ctx context.Context, documentID string, fields map[string]any,
 ) error {
 	if len(fields) == 0 {
 		return nil
 	}
 
-	objectID, err := primitive.ObjectIDFromHex(documentID)
+	objectID, err := bson.ObjectIDFromHex(documentID)
 	if err != nil {
 		return datastore.NewValidationError(
 			datastore.ProviderMongoDB,
@@ -488,8 +487,8 @@ func (c *MongoDBClient) UpdateDocumentStatusFields(
 		).WithMetadata("documentID", documentID)
 	}
 
-	filter := bson.M{"_id": objectID}
-	update := bson.M{"$set": fields}
+	filter := bson.M{fieldID: objectID}
+	update := bson.M{opSet: fields}
 
 	_, err = c.mongoCol.UpdateOne(ctx, filter, update)
 	if err != nil {
@@ -511,10 +510,10 @@ func (c *MongoDBClient) isNestedFieldPath(statusPath string) bool {
 
 // buildDirectFieldUpdate creates a direct field update for a specific nested path
 // Used by convenience functions like UpdateHealthEventNodeQuarantineStatus
-// Example: statusPath="healtheventstatus.nodequarantined", status="Quarantined"
+// Example: statusPath=nodeQuarantinedStatusField, status="Quarantined"
 //
-//	→ {"healtheventstatus.nodequarantined": "Quarantined"}
-func (c *MongoDBClient) buildDirectFieldUpdate(statusPath string, status interface{}) bson.M {
+//	→ {nodeQuarantinedStatusField: "Quarantined"}
+func (c *MongoDBClient) buildDirectFieldUpdate(statusPath string, status any) bson.M {
 	return bson.M{statusPath: status}
 }
 
@@ -524,7 +523,7 @@ func (c *MongoDBClient) buildDirectFieldUpdate(statusPath string, status interfa
 // Example: statusPath="healtheventstatus", status=HealthEventStatus{FaultRemediated: &faultRemediated}
 //
 //	→ {"healtheventstatus.faultremediated": {"value": true}}
-func (c *MongoDBClient) buildStructFieldUpdates(basePath string, status interface{}) bson.M {
+func (c *MongoDBClient) buildStructFieldUpdates(basePath string, status any) bson.M {
 	updateFields := bson.M{}
 
 	// Try to extract fields from HealthEventStatus struct
@@ -559,29 +558,29 @@ func (c *MongoDBClient) buildStructFieldUpdates(basePath string, status interfac
 	// deserialized into the proto types used by model.HealthEventWithStatus
 	// (timestamppb.Timestamp expects {seconds, nanos}; wrapperspb.BoolValue expects {value}).
 	if healthStatus.QuarantineFinishTimestamp != nil {
-		updateFields[basePath+".quarantinefinishtimestamp"] = map[string]interface{}{
-			"seconds": healthStatus.QuarantineFinishTimestamp.Seconds,
-			"nanos":   healthStatus.QuarantineFinishTimestamp.Nanos,
+		updateFields[basePath+".quarantinefinishtimestamp"] = map[string]any{
+			fieldTimestampSecs:  healthStatus.QuarantineFinishTimestamp.Seconds,
+			fieldTimestampNanos: healthStatus.QuarantineFinishTimestamp.Nanos,
 		}
 	}
 
 	if healthStatus.DrainFinishTimestamp != nil {
-		updateFields[basePath+".drainfinishtimestamp"] = map[string]interface{}{
-			"seconds": healthStatus.DrainFinishTimestamp.Seconds,
-			"nanos":   healthStatus.DrainFinishTimestamp.Nanos,
+		updateFields[basePath+".drainfinishtimestamp"] = map[string]any{
+			fieldTimestampSecs:  healthStatus.DrainFinishTimestamp.Seconds,
+			fieldTimestampNanos: healthStatus.DrainFinishTimestamp.Nanos,
 		}
 	}
 
 	if healthStatus.FaultRemediated != nil {
-		updateFields[basePath+".faultremediated"] = map[string]interface{}{
+		updateFields[basePath+".faultremediated"] = map[string]any{
 			"value": *healthStatus.FaultRemediated,
 		}
 	}
 
 	if healthStatus.LastRemediationTimestamp != nil {
-		updateFields[basePath+".lastremediationtimestamp"] = map[string]interface{}{
-			"seconds": healthStatus.LastRemediationTimestamp.Seconds,
-			"nanos":   healthStatus.LastRemediationTimestamp.Nanos,
+		updateFields[basePath+".lastremediationtimestamp"] = map[string]any{
+			fieldTimestampSecs:  healthStatus.LastRemediationTimestamp.Seconds,
+			fieldTimestampNanos: healthStatus.LastRemediationTimestamp.Nanos,
 		}
 	}
 
@@ -591,8 +590,8 @@ func (c *MongoDBClient) buildStructFieldUpdates(basePath string, status interfac
 // resolveMongoFilter converts a *query.Builder (or any type implementing ToMongo())
 // to a MongoDB filter map so the driver can BSON-marshal it correctly.
 // Plain map[string]interface{} filters pass through unchanged.
-func resolveMongoFilter(filter interface{}) interface{} {
-	if b, ok := filter.(interface{ ToMongo() map[string]interface{} }); ok {
+func resolveMongoFilter(filter any) any {
+	if b, ok := filter.(interface{ ToMongo() map[string]any }); ok {
 		return b.ToMongo()
 	}
 
@@ -601,7 +600,7 @@ func resolveMongoFilter(filter interface{}) interface{} {
 
 // UpdateDocument performs a general update operation
 func (c *MongoDBClient) UpdateDocument(
-	ctx context.Context, filter interface{}, update interface{},
+	ctx context.Context, filter any, update any,
 ) (*UpdateResult, error) {
 	return c.executeUpdate(ctx, "db.update_document", filter, update,
 		func(ctx context.Context) (*mongo.UpdateResult, error) {
@@ -610,7 +609,7 @@ func (c *MongoDBClient) UpdateDocument(
 }
 
 // InsertMany inserts multiple documents
-func (c *MongoDBClient) InsertMany(ctx context.Context, documents []interface{}) (*InsertManyResult, error) {
+func (c *MongoDBClient) InsertMany(ctx context.Context, documents []any) (*InsertManyResult, error) {
 	result, err := c.mongoCol.InsertMany(ctx, documents)
 	if err != nil {
 		return nil, datastore.NewInsertError(
@@ -627,7 +626,7 @@ func (c *MongoDBClient) InsertMany(ctx context.Context, documents []interface{})
 
 // UpdateManyDocuments performs a general update operation on multiple documents
 func (c *MongoDBClient) UpdateManyDocuments(
-	ctx context.Context, filter interface{}, update interface{},
+	ctx context.Context, filter any, update any,
 ) (*UpdateResult, error) {
 	return c.executeUpdate(ctx, "db.update_many_documents", filter, update,
 		func(ctx context.Context) (*mongo.UpdateResult, error) {
@@ -638,7 +637,7 @@ func (c *MongoDBClient) UpdateManyDocuments(
 // executeUpdate is the shared implementation for UpdateDocument and UpdateManyDocuments.
 func (c *MongoDBClient) executeUpdate(
 	ctx context.Context, _ string,
-	filter interface{}, update interface{},
+	filter any, update any,
 	fn func(ctx context.Context) (*mongo.UpdateResult, error),
 ) (*UpdateResult, error) {
 	result, err := fn(ctx)
@@ -660,10 +659,10 @@ func (c *MongoDBClient) executeUpdate(
 
 // UpsertDocument performs an upsert operation
 func (c *MongoDBClient) UpsertDocument(
-	ctx context.Context, filter interface{}, document interface{},
+	ctx context.Context, filter any, document any,
 ) (*UpdateResult, error) {
-	opts := options.Update().SetUpsert(true)
-	update := bson.M{"$set": document}
+	opts := options.UpdateOne().SetUpsert(true)
+	update := bson.M{opSet: document}
 
 	result, err := c.mongoCol.UpdateOne(ctx, resolveMongoFilter(filter), update, opts)
 	if err != nil {
@@ -683,7 +682,7 @@ func (c *MongoDBClient) UpsertDocument(
 }
 
 // FindOne finds a single document
-func (c *MongoDBClient) FindOne(ctx context.Context, filter interface{}, opts *FindOneOptions) (SingleResult, error) {
+func (c *MongoDBClient) FindOne(ctx context.Context, filter any, opts *FindOneOptions) (SingleResult, error) {
 	mongoOpts := options.FindOne()
 
 	if opts != nil {
@@ -702,7 +701,7 @@ func (c *MongoDBClient) FindOne(ctx context.Context, filter interface{}, opts *F
 }
 
 // Find finds multiple documents
-func (c *MongoDBClient) Find(ctx context.Context, filter interface{}, opts *FindOptions) (Cursor, error) {
+func (c *MongoDBClient) Find(ctx context.Context, filter any, opts *FindOptions) (Cursor, error) {
 	mongoOpts := options.Find()
 
 	if opts != nil {
@@ -734,7 +733,7 @@ func (c *MongoDBClient) Find(ctx context.Context, filter interface{}, opts *Find
 }
 
 // CountDocuments counts documents matching the filter
-func (c *MongoDBClient) CountDocuments(ctx context.Context, filter interface{}, opts *CountOptions) (int64, error) {
+func (c *MongoDBClient) CountDocuments(ctx context.Context, filter any, opts *CountOptions) (int64, error) {
 	mongoOpts := options.Count()
 
 	if opts != nil {
@@ -762,9 +761,9 @@ func (c *MongoDBClient) CountDocuments(ctx context.Context, filter interface{}, 
 }
 
 // Aggregate performs an aggregation query
-func (c *MongoDBClient) Aggregate(ctx context.Context, pipeline interface{}) (Cursor, error) {
+func (c *MongoDBClient) Aggregate(ctx context.Context, pipeline any) (Cursor, error) {
 	// Convert datastore.Pipeline to mongo.Pipeline if needed
-	var mongoPipeline interface{}
+	var mongoPipeline any
 
 	switch p := pipeline.(type) {
 	case datastore.Pipeline:
@@ -813,7 +812,7 @@ func (c *MongoDBClient) Ping(ctx context.Context) error {
 
 // NewChangeStreamWatcher creates a new change stream watcher using the existing implementation
 func (c *MongoDBClient) NewChangeStreamWatcher(ctx context.Context, tokenConfig TokenConfig,
-	pipeline interface{}) (ChangeStreamWatcher, error) {
+	pipeline any) (ChangeStreamWatcher, error) {
 	// Convert to the existing configuration format
 	mongoConfig := mongoWatcher.MongoDBConfig{
 		URI:        c.config.GetConnectionURI(),
@@ -848,7 +847,7 @@ func (c *MongoDBClient) NewChangeStreamWatcher(ctx context.Context, tokenConfig 
 	switch p := pipeline.(type) {
 	case mongo.Pipeline:
 		mongoPipeline = p
-	case []map[string]interface{}:
+	case []map[string]any:
 		slog.Info("Converting []map[string]interface{} to mongo.Pipeline", "length", len(p))
 		// Convert from factory conversion format
 		mongoPipeline = make(mongo.Pipeline, len(p))
@@ -921,7 +920,7 @@ type mongoSingleResult struct {
 	result *mongo.SingleResult
 }
 
-func (r *mongoSingleResult) Decode(v interface{}) error {
+func (r *mongoSingleResult) Decode(v any) error {
 	return r.result.Decode(v)
 }
 
@@ -937,7 +936,7 @@ func (c *mongoCursor) Next(ctx context.Context) bool {
 	return c.cursor.Next(ctx)
 }
 
-func (c *mongoCursor) Decode(v interface{}) error {
+func (c *mongoCursor) Decode(v any) error {
 	return c.cursor.Decode(v)
 }
 
@@ -945,7 +944,7 @@ func (c *mongoCursor) Close(ctx context.Context) error {
 	return c.cursor.Close(ctx)
 }
 
-func (c *mongoCursor) All(ctx context.Context, results interface{}) error {
+func (c *mongoCursor) All(ctx context.Context, results any) error {
 	return c.cursor.All(ctx, results)
 }
 
@@ -989,7 +988,7 @@ func (w *mongoChangeStreamWatcher) MarkProcessed(ctx context.Context, token []by
 
 func (w *mongoChangeStreamWatcher) GetUnprocessedEventCount(ctx context.Context,
 	lastProcessedID string) (int64, error) {
-	objectID, err := primitive.ObjectIDFromHex(lastProcessedID)
+	objectID, err := bson.ObjectIDFromHex(lastProcessedID)
 	if err != nil {
 		return 0, datastore.NewValidationError(
 			datastore.ProviderMongoDB,
@@ -1006,9 +1005,9 @@ func (w *mongoChangeStreamWatcher) Close(ctx context.Context) error {
 }
 
 // Helper function to extract map keys for error metadata
-func getMapKeys(m interface{}) []string {
+func getMapKeys(m any) []string {
 	switch v := m.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		keys := make([]string, 0, len(v))
 		for k := range v {
 			keys = append(keys, k)
@@ -1028,12 +1027,12 @@ func getMapKeys(m interface{}) []string {
 }
 
 // ConvertAgnosticPipelineToMongo converts a database-agnostic pipeline to MongoDB pipeline
-func ConvertAgnosticPipelineToMongo(pipeline datastore.Pipeline) (interface{}, error) {
+func ConvertAgnosticPipelineToMongo(pipeline datastore.Pipeline) (any, error) {
 	if len(pipeline) == 0 {
 		// Return an insert-only pipeline as default
 		return mongo.Pipeline{
-			bson.D{{Key: "$match", Value: bson.D{
-				{Key: "operationType", Value: bson.D{{Key: "$in", Value: bson.A{"insert"}}}},
+			bson.D{{Key: opMatch, Value: bson.D{
+				{Key: fieldOperationType, Value: bson.D{{Key: opIn, Value: bson.A{opTypeInsert}}}},
 			}}},
 		}, nil
 	}
@@ -1069,7 +1068,7 @@ func convertDocumentToBsonD(doc datastore.Document) (bson.D, error) {
 }
 
 // convertValueToBson recursively converts values to BSON-compatible types
-func convertValueToBson(value interface{}) (interface{}, error) {
+func convertValueToBson(value any) (any, error) {
 	switch v := value.(type) {
 	case datastore.Document:
 		return convertDocumentToBsonD(v)
@@ -1093,23 +1092,25 @@ func convertValueToBson(value interface{}) (interface{}, error) {
 }
 
 // normalizeMongoTypes recursively converts MongoDB-specific types to standard Go types
-// This ensures that modules don't have to deal with MongoDB-specific types like primitive.DateTime
-func normalizeMongoTypes(doc map[string]interface{}) {
+// This ensures that modules don't have to deal with MongoDB-specific types like bson.DateTime
+func normalizeMongoTypes(doc map[string]any) {
 	for key, value := range doc {
 		doc[key] = normalizeValue(value)
 	}
 }
 
 // normalizeValue converts a single value, handling MongoDB-specific types and nested structures
-func normalizeValue(value interface{}) interface{} {
+//
+//nolint:cyclop // flat type switch: one independent branch per BSON type
+func normalizeValue(value any) any {
 	switch v := value.(type) {
-	case primitive.DateTime:
+	case bson.DateTime:
 		// Convert MongoDB DateTime to standard time.Time
 		return v.Time()
-	case primitive.ObjectID:
+	case bson.ObjectID:
 		// Keep ObjectID as-is for _id fields, but could convert to string if needed
 		return v
-	case map[string]interface{}:
+	case map[string]any:
 		// Recursively normalize nested documents
 		normalizeMongoTypes(v)
 		return v
@@ -1117,16 +1118,25 @@ func normalizeValue(value interface{}) interface{} {
 		// Handle bson.M (which is map[string]interface{})
 		normalizeMongoTypes(v)
 		return v
-	case []interface{}:
+	case bson.D:
+		// Driver v2 decodes embedded documents into bson.D rather than mirroring
+		// the ancestor map type as v1 did, so flatten it back into a plain map.
+		doc := make(map[string]any, len(v))
+		for _, elem := range v {
+			doc[elem.Key] = normalizeValue(elem.Value)
+		}
+
+		return doc
+	case []any:
 		// Recursively normalize arrays
 		for i, item := range v {
 			v[i] = normalizeValue(item)
 		}
 
 		return v
-	case primitive.A:
-		// Handle primitive.A arrays
-		result := make([]interface{}, len(v))
+	case bson.A:
+		// Handle bson.A arrays
+		result := make([]any, len(v))
 		for i, item := range v {
 			result[i] = normalizeValue(item)
 		}

@@ -191,7 +191,7 @@ func (r *DatabaseStoreConnector) insertHealthEvents(
 	ctx, span := tracing.StartSpan(ctx, "platform_connector.store.insert_health_events")
 	defer span.End()
 
-	healthEventWithStatusList := make([]interface{}, 0, len(healthEvents.GetEvents()))
+	healthEventWithStatusList := make([]any, 0, len(healthEvents.GetEvents()))
 	traceID := span.SpanContext().TraceID().String()
 
 	for i, healthEvent := range healthEvents.GetEvents() {

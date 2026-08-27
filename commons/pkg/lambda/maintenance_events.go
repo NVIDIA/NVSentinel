@@ -61,7 +61,7 @@ func (c *Client) ListMaintenanceEvents(ctx context.Context) ([]Event, error) {
 
 	var pageToken *string
 
-	for page := 0; page < maxEventPages; page++ {
+	for range maxEventPages {
 		q := url.Values{}
 		if c.workspaceID != "" {
 			q.Set("workspace_id", c.workspaceID)

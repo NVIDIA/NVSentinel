@@ -450,3 +450,7 @@ tests/scale-tests/results/*.csv
 tests/scale-tests/cmd/fqm-scale-test/results/
 preflight-checks/dcgm-diag/dcgm-diag
 preflight/preflight
+
+# Build output of tilt/simple-health-client (an 18MB binary that sits next to its
+# own source, so a bare `git add tilt/` would stage it).
+/tilt/simple-health-client/simple-health-client

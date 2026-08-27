@@ -40,6 +40,9 @@ affinity: {}
 podAnnotations: {}
 
 # Special tolerations for fault remediation - allow running on nodes with any taints for log collection
+# Pod priority for this component. Overridden by the matching global when that is set.
+priorityClassName: ""
+
 tolerations:
   - operator: "Exists"
 

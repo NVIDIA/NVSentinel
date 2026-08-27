@@ -44,7 +44,7 @@ func NewMongoMaintenanceEventStore(
 // UpsertMaintenanceEvent upserts a maintenance event
 func (m *MongoMaintenanceEventStore) UpsertMaintenanceEvent(ctx context.Context, event *model.MaintenanceEvent) error {
 	// Create filter based on event ID
-	filter := map[string]interface{}{
+	filter := map[string]any{
 		"eventId": event.EventID,
 	}
 
@@ -166,7 +166,7 @@ func (m *MongoMaintenanceEventStore) GetLastProcessedEventTimestampByCSP(
 
 	filter := builder.Build()
 	findOptions := &client.FindOneOptions{
-		Sort: map[string]interface{}{"eventReceivedTimestamp": -1},
+		Sort: map[string]any{"eventReceivedTimestamp": -1},
 	}
 
 	var latestEvent model.MaintenanceEvent
@@ -212,7 +212,7 @@ func (m *MongoMaintenanceEventStore) FindLatestActiveEventByNodeAndType(
 
 	// Sort by LastUpdatedTimestamp descending to get the latest one
 	findOptions := &client.FindOneOptions{
-		Sort: map[string]interface{}{"lastUpdatedTimestamp": -1},
+		Sort: map[string]any{"lastUpdatedTimestamp": -1},
 	}
 
 	var latestEvent model.MaintenanceEvent
@@ -257,7 +257,7 @@ func (m *MongoMaintenanceEventStore) FindLatestOngoingEventByNode(
 		Build()
 
 	opts := &client.FindOneOptions{
-		Sort: map[string]interface{}{"lastUpdatedTimestamp": -1},
+		Sort: map[string]any{"lastUpdatedTimestamp": -1},
 	}
 
 	var event model.MaintenanceEvent

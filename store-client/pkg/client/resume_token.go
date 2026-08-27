@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"strings"
 	"time"
@@ -365,12 +366,10 @@ func (s *kubernetesResumeControlStore) setValues(ctx context.Context, values map
 		cm, err := s.client.CoreV1().ConfigMaps(s.namespace).Get(ctx, s.name, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
 			cm = &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: s.name, Namespace: s.namespace},
-				Data:       map[string]string{},
+				Name: s.name, Namespace: s.namespace,
+				Data: map[string]string{},
 			}
-			for key, value := range values {
-				cm.Data[key] = value
-			}
+			maps.Copy(cm.Data, values)
 
 			_, createErr := s.client.CoreV1().ConfigMaps(s.namespace).Create(ctx, cm, metav1.CreateOptions{})
 			if apierrors.IsAlreadyExists(createErr) {
@@ -388,9 +387,7 @@ func (s *kubernetesResumeControlStore) setValues(ctx context.Context, values map
 			cm.Data = map[string]string{}
 		}
 
-		for key, value := range values {
-			cm.Data[key] = value
-		}
+		maps.Copy(cm.Data, values)
 
 		_, err = s.client.CoreV1().ConfigMaps(s.namespace).Update(ctx, cm, metav1.UpdateOptions{})
 

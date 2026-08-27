@@ -286,7 +286,7 @@ func parseMessages(message string) []string {
 		return nil
 	}
 
-	for _, msg := range strings.Split(message, ";") {
+	for msg := range strings.SplitSeq(message, ";") {
 		if msg == "" || msg == truncationSuffix || isNoHealthFailureMessage(msg) {
 			continue
 		}
@@ -333,7 +333,7 @@ func extractMessageIdentity(msg string) (errorCodes []string, entities []string,
 		prefix = msg[:raIdx]
 	}
 
-	for _, token := range strings.Fields(prefix) {
+	for token := range strings.FieldsSeq(prefix) {
 		switch {
 		case strings.HasPrefix(token, "ErrorCode:"):
 			errorCodes = append(errorCodes, token)
@@ -359,10 +359,8 @@ func messagesMatchByIdentity(a, b string) bool {
 	}
 
 	for _, ae := range aEnt {
-		for _, be := range bEnt {
-			if ae == be {
-				return true
-			}
+		if slices.Contains(bEnt, ae) {
+			return true
 		}
 	}
 
@@ -639,25 +637,25 @@ func (r *K8sConnector) fetchHealthEventMessage(healthEvent *protos.HealthEvent) 
 }
 
 func (r *K8sConnector) constructHealthEventMessage(healthEvent *protos.HealthEvent) string {
-	message := ""
+	var message strings.Builder
 
 	for _, errorCode := range healthEvent.ErrorCode {
-		message += fmt.Sprintf("ErrorCode:%s ", errorCode)
+		fmt.Fprintf(&message, "ErrorCode:%s ", errorCode)
 	}
 
 	for _, entity := range healthEvent.EntitiesImpacted {
-		message += fmt.Sprintf("%s:%s ", entity.EntityType, entity.EntityValue)
+		fmt.Fprintf(&message, "%s:%s ", entity.EntityType, entity.EntityValue)
 	}
 
 	if healthEvent.Message != "" {
 		// Replace semicolons with dots in the message to prevent delimiter collision
 		sanitizedMessage := strings.ReplaceAll(healthEvent.Message, ";", ".")
-		message += fmt.Sprintf("%s ", sanitizedMessage)
+		fmt.Fprintf(&message, "%s ", sanitizedMessage)
 	}
 
-	message += fmt.Sprintf("Recommended Action=%s;", healthEvent.RecommendedAction.String())
+	fmt.Fprintf(&message, "Recommended Action=%s;", healthEvent.RecommendedAction.String())
 
-	return message
+	return message.String()
 }
 
 // filterProcessableEvents filters out events that should not create node conditions or K8s events.
@@ -687,10 +685,8 @@ func (r *K8sConnector) createK8sEvent(ctx context.Context, healthEvent *protos.H
 	ts := safeTimestamp(ctx, healthEvent.GeneratedTimestamp)
 
 	return &corev1.Event{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s.%x", healthEvent.NodeName, metav1.Now().UnixNano()),
-			Namespace: DefaultNamespace,
-		},
+		Name:      fmt.Sprintf("%s.%x", healthEvent.NodeName, metav1.Now().UnixNano()),
+		Namespace: DefaultNamespace,
 		InvolvedObject: corev1.ObjectReference{
 			Kind: "Node",
 			Name: healthEvent.NodeName,
@@ -823,8 +819,7 @@ func isKubernetesAPIError(err error) bool {
 
 // isNetworkError checks if the error is a network-related error that should be retried
 func isNetworkError(err error) bool {
-	var netErr net.Error
-	if errors.As(err, &netErr) {
+	if netErr, ok := errors.AsType[net.Error](err); ok {
 		return netErr.Timeout()
 	}
 

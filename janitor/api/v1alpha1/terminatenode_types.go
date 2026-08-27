@@ -117,7 +117,7 @@ func (t *TerminateNode) SetInitialConditions() {
 		signalSentCondition := metav1.Condition{
 			Type:               TerminateNodeConditionSignalSent,
 			Status:             metav1.ConditionUnknown,
-			Reason:             "Initializing",
+			Reason:             ConditionReasonInitializing,
 			Message:            "Terminate signal not yet sent",
 			LastTransitionTime: now,
 		}
@@ -128,7 +128,7 @@ func (t *TerminateNode) SetInitialConditions() {
 		nodeTerminatedCondition := metav1.Condition{
 			Type:               TerminateNodeConditionNodeTerminated,
 			Status:             metav1.ConditionUnknown,
-			Reason:             "Initializing",
+			Reason:             ConditionReasonInitializing,
 			Message:            "Node terminated state not yet determined",
 			LastTransitionTime: now,
 		}

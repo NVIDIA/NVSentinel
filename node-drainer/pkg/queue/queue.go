@@ -69,7 +69,7 @@ func (m *eventQueueManager) ClearNodeDraining(nodeName string) {
 // Only the document ID is stored in the queue; the full event is fetched from the
 // database lazily when the worker processes the item, keeping queue memory minimal.
 func (m *eventQueueManager) EnqueueEventGeneric(ctx context.Context, nodeName string, event datastore.Event,
-	database DataStore, healthEventStore datastore.HealthEventStore, documentID interface{}) error {
+	database DataStore, healthEventStore datastore.HealthEventStore, documentID any) error {
 	if ctx.Err() != nil {
 		return fmt.Errorf("context cancelled while enqueueing event for node %s: %w", nodeName, ctx.Err())
 	}

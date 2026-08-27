@@ -42,6 +42,18 @@ fault-quarantine:
   logLevel: info  # Options: debug, info, warn, error
 ```
 
+### Kubernetes API Rate Limits
+
+Fault Quarantine inherits the Kubernetes client limits from `global.qps` and `global.burst` (defaults: `5` and `10`). Set component values only when Fault Quarantine needs different limits:
+
+```yaml
+fault-quarantine:
+  qps: 40
+  burst: 80
+```
+
+Positive `qps` values enable client-side throttling, `0` uses the client-go default, and a negative value disables client-side throttling. `burst` must be non-negative; `0` uses the client-go default.
+
 ### Change Stream Resume Token
 
 To make fault-quarantine skip accumulated events and start from the current stream head, scale it to zero, set its key in the shared resume-control ConfigMap to `CREATE`, then restore its replicas. Fault-quarantine deletes only its own resume token and resets the key back to `RESUME` during startup.

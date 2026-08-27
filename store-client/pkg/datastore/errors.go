@@ -57,11 +57,11 @@ const (
 
 // DatastoreError represents a structured error from datastore operations
 type DatastoreError struct {
-	Type     ErrorType              `json:"type"`
-	Provider DataStoreProvider      `json:"provider"`
-	Message  string                 `json:"message"`
-	Cause    error                  `json:"-"` // Original error, not serialized
-	Metadata map[string]interface{} `json:"metadata,omitempty"`
+	Type     ErrorType         `json:"type"`
+	Provider DataStoreProvider `json:"provider"`
+	Message  string            `json:"message"`
+	Cause    error             `json:"-"` // Original error, not serialized
+	Metadata map[string]any    `json:"metadata,omitempty"`
 }
 
 // Error implements the error interface
@@ -80,8 +80,7 @@ func (e *DatastoreError) Unwrap() error {
 
 // Is implements error comparison for errors.Is()
 func (e *DatastoreError) Is(target error) bool {
-	var datastoreErr *DatastoreError
-	if errors.As(target, &datastoreErr) {
+	if datastoreErr, ok := errors.AsType[*DatastoreError](target); ok {
 		return e.Type == datastoreErr.Type && e.Provider == datastoreErr.Provider
 	}
 
@@ -95,14 +94,14 @@ func NewDatastoreError(errorType ErrorType, provider DataStoreProvider, message 
 		Provider: provider,
 		Message:  message,
 		Cause:    cause,
-		Metadata: make(map[string]interface{}),
+		Metadata: make(map[string]any),
 	}
 }
 
 // WithMetadata adds metadata to the error
-func (e *DatastoreError) WithMetadata(key string, value interface{}) *DatastoreError {
+func (e *DatastoreError) WithMetadata(key string, value any) *DatastoreError {
 	if e.Metadata == nil {
-		e.Metadata = make(map[string]interface{})
+		e.Metadata = make(map[string]any)
 	}
 
 	e.Metadata[key] = value
@@ -112,8 +111,7 @@ func (e *DatastoreError) WithMetadata(key string, value interface{}) *DatastoreE
 
 // IsConnectionError checks if the error is a connection-related error
 func IsConnectionError(err error) bool {
-	var datastoreErr *DatastoreError
-	if errors.As(err, &datastoreErr) {
+	if datastoreErr, ok := errors.AsType[*DatastoreError](err); ok {
 		return datastoreErr.Type == ErrorTypeConnection ||
 			datastoreErr.Type == ErrorTypeAuthentication ||
 			datastoreErr.Type == ErrorTypeTimeout ||
@@ -125,8 +123,7 @@ func IsConnectionError(err error) bool {
 
 // IsRetryableError checks if the error should be retried
 func IsRetryableError(err error) bool {
-	var datastoreErr *DatastoreError
-	if errors.As(err, &datastoreErr) {
+	if datastoreErr, ok := errors.AsType[*DatastoreError](err); ok {
 		switch datastoreErr.Type {
 		case ErrorTypeConnection, ErrorTypeTimeout, ErrorTypeChangeStream:
 			return true
@@ -145,8 +142,7 @@ func IsRetryableError(err error) bool {
 
 // IsNotFoundError checks if the error indicates a document was not found
 func IsNotFoundError(err error) bool {
-	var datastoreErr *DatastoreError
-	if errors.As(err, &datastoreErr) {
+	if datastoreErr, ok := errors.AsType[*DatastoreError](err); ok {
 		return datastoreErr.Type == ErrorTypeDocumentNotFound
 	}
 

@@ -137,3 +137,17 @@ class TestConfigFromEnv:
         with patch.dict(os.environ, env, clear=True):
             with pytest.raises(ValueError, match="Invalid PROCESSING_STRATEGY"):
                 Config.from_env()
+
+    def test_token_path_is_none_when_unset(self, base_env: dict[str, str]) -> None:
+        with patch.dict(os.environ, base_env, clear=True):
+            assert Config.from_env().token_path is None
+
+    def test_token_path_loaded_from_env(self, base_env: dict[str, str]) -> None:
+        env = {**base_env, "PLATFORM_CONNECTOR_TOKEN_PATH": "/var/run/secrets/nvsentinel/token"}
+        with patch.dict(os.environ, env, clear=True):
+            assert Config.from_env().token_path == "/var/run/secrets/nvsentinel/token"
+
+    def test_empty_token_path_is_treated_as_unset(self, base_env: dict[str, str]) -> None:
+        env = {**base_env, "PLATFORM_CONNECTOR_TOKEN_PATH": ""}
+        with patch.dict(os.environ, env, clear=True):
+            assert Config.from_env().token_path is None

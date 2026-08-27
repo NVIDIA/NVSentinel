@@ -26,17 +26,17 @@ import (
 
 type NodeEvent struct {
 	NodeName         string
-	EventID          string      // String event ID for logging and rate-limiter deduplication
-	DocumentID       interface{} // Native DB document ID (e.g. MongoDB ObjectID) for lazy fetch
+	EventID          string // String event ID for logging and rate-limiter deduplication
+	DocumentID       any    // Native DB document ID (e.g. MongoDB ObjectID) for lazy fetch
 	HealthEventStore datastore.HealthEventStore
 	Database         DataStore
 }
 
 // DataStore provides database-agnostic operations using store-client
 type DataStore interface {
-	UpdateDocument(ctx context.Context, filter interface{}, update interface{}) (*client.UpdateResult, error)
-	FindDocument(ctx context.Context, filter interface{}, options *client.FindOneOptions) (client.SingleResult, error)
-	FindDocuments(ctx context.Context, filter interface{}, options *client.FindOptions) (client.Cursor, error)
+	UpdateDocument(ctx context.Context, filter any, update any) (*client.UpdateResult, error)
+	FindDocument(ctx context.Context, filter any, options *client.FindOneOptions) (client.SingleResult, error)
+	FindDocuments(ctx context.Context, filter any, options *client.FindOptions) (client.Cursor, error)
 }
 
 // DataStoreEventProcessor provides database-agnostic event processing
@@ -50,7 +50,7 @@ type DataStoreEventProcessor interface {
 type EventQueueManager interface {
 	// New database-agnostic method
 	EnqueueEventGeneric(ctx context.Context, nodeName string, event datastore.Event, database DataStore,
-		healthEventStore datastore.HealthEventStore, documentID interface{}) error
+		healthEventStore datastore.HealthEventStore, documentID any) error
 
 	// Deprecated EnqueueEvent method has been removed - use EnqueueEventGeneric instead
 

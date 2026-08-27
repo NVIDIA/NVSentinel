@@ -27,7 +27,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/utils/ptr"
 
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/model"
 )
@@ -156,8 +155,12 @@ func (c *Client) buildRebootJob(nodeName string) *batchv1.Job {
 	image := c.config.RebootImage
 	ttl := c.config.RebootJobTTL
 	command := c.config.rebootCommand()
-	var volumeMounts []corev1.VolumeMount
-	var volumes []corev1.Volume
+
+	var (
+		volumeMounts []corev1.VolumeMount
+		volumes      []corev1.Volume
+	)
+
 	if c.config.UseSysrqReboot {
 		volumeMounts = []corev1.VolumeMount{
 			{
@@ -168,10 +171,8 @@ func (c *Client) buildRebootJob(nodeName string) *batchv1.Job {
 		volumes = []corev1.Volume{
 			{
 				Name: "host-proc",
-				VolumeSource: corev1.VolumeSource{
-					HostPath: &corev1.HostPathVolumeSource{
-						Path: "/proc",
-					},
+				HostPath: &corev1.HostPathVolumeSource{
+					Path: "/proc",
 				},
 			},
 		}
@@ -185,27 +186,23 @@ func (c *Client) buildRebootJob(nodeName string) *batchv1.Job {
 		volumes = []corev1.Volume{
 			{
 				Name: "host-root",
-				VolumeSource: corev1.VolumeSource{
-					HostPath: &corev1.HostPathVolumeSource{
-						Path: "/",
-					},
+				HostPath: &corev1.HostPathVolumeSource{
+					Path: "/",
 				},
 			},
 		}
 	}
 
 	return &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: fmt.Sprintf("reboot-%s-", nodeName),
-			Namespace:    c.config.RebootJobNamespace,
-			Labels: map[string]string{
-				jobLabelKey:     "true",
-				jobNodeLabelKey: nodeName,
-			},
+		GenerateName: fmt.Sprintf("reboot-%s-", nodeName),
+		Namespace:    c.config.RebootJobNamespace,
+		Labels: map[string]string{
+			jobLabelKey:     "true",
+			jobNodeLabelKey: nodeName,
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit:            ptr.To(int32(0)),
-			TTLSecondsAfterFinished: ptr.To(ttl),
+			BackoffLimit:            new(int32(0)),
+			TTLSecondsAfterFinished: new(ttl),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
@@ -226,7 +223,7 @@ func (c *Client) buildRebootJob(nodeName string) *batchv1.Job {
 							Image:   image,
 							Command: command,
 							SecurityContext: &corev1.SecurityContext{
-								Privileged: ptr.To(true),
+								Privileged: new(true),
 							},
 							VolumeMounts: volumeMounts,
 						},
@@ -356,6 +353,7 @@ func loadConfigFromEnv() Config {
 	}
 
 	useSysrqReboot := false
+
 	if useSysrqStr := os.Getenv("GENERIC_REBOOT_USE_SYSRQ"); useSysrqStr != "" {
 		parsed, err := strconv.ParseBool(useSysrqStr)
 		if err != nil {

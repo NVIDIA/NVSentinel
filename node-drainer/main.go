@@ -29,6 +29,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/flags"
+	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
@@ -96,6 +97,7 @@ func run() error {
 		"path where the node drainer config file is present")
 
 	dryRun := flag.Bool("dry-run", false, "flag to run node drainer module in dry-run mode")
+	rateLimits := kubeclient.RegisterRateLimitFlags()
 
 	flag.Parse()
 
@@ -107,13 +109,14 @@ func run() error {
 
 	slog.InfoContext(ctx, "Database client cert", "path", databaseClientCertMountPath)
 
-	params := initializer.InitializationParams{
-		DatabaseClientCertMountPath: databaseClientCertMountPath,
-		KubeconfigPath:              *kubeconfigPath,
-		TomlConfigPath:              *tomlConfigPath,
-		MetricsPort:                 *metricsPort,
-		DryRun:                      *dryRun,
-	}
+	params := newInitializationParams(
+		databaseClientCertMountPath,
+		*kubeconfigPath,
+		*tomlConfigPath,
+		*metricsPort,
+		*dryRun,
+		*rateLimits,
+	)
 
 	// Create and start the health/metrics server BEFORE the potentially slow MongoDB
 	// initialization. This ensures Kubernetes liveness probes get HTTP 200 responses
@@ -193,6 +196,18 @@ func run() error {
 
 	// Wait for all goroutines to finish
 	return g.Wait()
+}
+
+func newInitializationParams(databaseClientCertMountPath, kubeconfigPath, tomlConfigPath, metricsPort string,
+	dryRun bool, rateLimits kubeclient.RateLimitConfig) initializer.InitializationParams {
+	return initializer.InitializationParams{
+		DatabaseClientCertMountPath: databaseClientCertMountPath,
+		KubeconfigPath:              kubeconfigPath,
+		TomlConfigPath:              tomlConfigPath,
+		MetricsPort:                 metricsPort,
+		DryRun:                      dryRun,
+		KubernetesClientRateLimits:  rateLimits,
+	}
 }
 
 // createMetricsServer creates and configures the metrics server

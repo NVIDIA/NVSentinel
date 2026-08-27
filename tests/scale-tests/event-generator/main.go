@@ -20,7 +20,7 @@ import (
 	"context"
 	"flag"
 	"log"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"os/signal"
 	"strconv"
@@ -34,12 +34,25 @@ import (
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
+const (
+	// agentName is the agent field stamped on generated events. FQM ignores
+	// this agent, so these events never cordon a node.
+	agentName = "event-generator"
+	// componentClassGPU / entityTypeGPU are the component-class and
+	// entity-type values used by the generated GPU events.
+	componentClassGPU = "GPU"
+	entityTypeGPU     = "gpu"
+)
+
+//nolint:cyclop // main wiring: linear setup; complexity from sequential flag validation
 func main() {
 	var (
 		socketPath         = flag.String("socket", "/var/run/nvsentinel/nvsentinel.sock", "Platform connector socket path")
 		backgroundEnabled  = flag.Bool("background", false, "Enable background event generation")
-		backgroundInterval = flag.Duration("interval", 15*time.Second, "Background event interval (only used if -background and EVENT_RATE not set)")
+		backgroundInterval = flag.Duration("interval", 15*time.Second,
+			"Background event interval (only used if -background and EVENT_RATE not set)")
 	)
+
 	flag.Parse()
 
 	// Get node name from environment (required)
@@ -50,46 +63,59 @@ func main() {
 
 	// Check for EVENT_RATE environment variable (takes precedence)
 	eventRateStr := os.Getenv("EVENT_RATE")
-	var eventRate float64
-	var continuousMode bool
 
-	if eventRateStr != "" {
+	var (
+		eventRate      float64
+		continuousMode bool
+	)
+
+	// G706 below: nodeName and eventRateStr come from this process's own
+	// environment/flags, not from request data.
+	switch {
+	case eventRateStr != "":
 		// Continuous generation mode (scale testing)
 		var err error
+
 		eventRate, err = strconv.ParseFloat(eventRateStr, 64)
 		if err != nil {
-			log.Fatalf("Invalid EVENT_RATE value '%s': %v", eventRateStr, err)
+			log.Fatalf("Invalid EVENT_RATE value '%s': %v", eventRateStr, err) //nolint:gosec
 		}
+
 		if eventRate <= 0 {
 			log.Fatalf("EVENT_RATE must be > 0, got %f", eventRate)
 		}
+
 		continuousMode = true
+
 		log.Printf("Starting NVSentinel Event Generator - Continuous Mode")
 		log.Printf("Configuration:")
-		log.Printf("  Node: %s", nodeName)
+		log.Printf("  Node: %s", nodeName) //nolint:gosec
 		log.Printf("  Mode: Continuous (EVENT_RATE=%.2f events/sec)", eventRate)
 		log.Printf("  Socket: %s", *socketPath)
-	} else if *backgroundEnabled {
+	case *backgroundEnabled:
 		// Background mode (latency testing)
 		continuousMode = false
+
 		log.Printf("Starting NVSentinel Event Generator - Dual Mode")
 		log.Printf("Configuration:")
-		log.Printf("  Node: %s", nodeName)
+		log.Printf("  Node: %s", nodeName) //nolint:gosec
 		log.Printf("  Mode: Background + On-Demand (SIGUSR1)")
 		log.Printf("  Socket: %s", *socketPath)
 		log.Printf("  Background Interval: %v", *backgroundInterval)
-	} else {
+	default:
 		// On-demand only
 		continuousMode = false
+
 		log.Printf("Starting NVSentinel Event Generator - On-Demand Mode")
 		log.Printf("Configuration:")
-		log.Printf("  Node: %s", nodeName)
+		log.Printf("  Node: %s", nodeName) //nolint:gosec
 		log.Printf("  Mode: On-Demand (SIGUSR1 only)")
 		log.Printf("  Socket: %s", *socketPath)
 	}
 
 	// Setup gRPC connection to local platform connector
 	log.Printf("Connecting to Unix socket: %s", *socketPath)
+
 	conn, err := grpc.NewClient(
 		"unix://"+*socketPath,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -100,6 +126,7 @@ func main() {
 	defer conn.Close()
 
 	client := pb.NewPlatformConnectorClient(conn)
+
 	log.Printf("Connected to platform connector")
 
 	// Setup context for gRPC calls
@@ -127,7 +154,9 @@ func main() {
 		// Wait for SIGUSR1 signals
 		for sig := range sigChan {
 			log.Printf("🚨 Signal received: %v - sending fatal GPU XID event", sig)
+
 			fatalEvent := generateFatalGpuXidEventForFQM(nodeName) // Uses gpu-health-monitor agent
+
 			success := sendHealthEvent(ctx, client, fatalEvent)
 			if success {
 				log.Printf("✅ Fatal event sent successfully for latency test")
@@ -138,12 +167,15 @@ func main() {
 	}
 }
 
-func continuousEventLoop(ctx context.Context, client pb.PlatformConnectorClient, nodeName string, eventsPerSecond float64) {
+func continuousEventLoop(
+	ctx context.Context,
+	client pb.PlatformConnectorClient,
+	nodeName string,
+	eventsPerSecond float64,
+) {
 	// Calculate interval between events
 	intervalNs := int64(float64(time.Second) / eventsPerSecond)
 	interval := time.Duration(intervalNs)
-
-	rand.Seed(time.Now().UnixNano())
 
 	log.Printf("Continuous mode: Generating events every %v", interval)
 
@@ -167,26 +199,28 @@ func continuousEventLoop(ctx context.Context, client pb.PlatformConnectorClient,
 			//   24% (30/125) - System Info
 			//   8%  (10/125) - Fatal GPU Error (XID 79) - TRIGGERS CORDONING
 			//   4%  (5/125)  - NVSwitch Warning
+			eventType := rand.IntN(125) //nolint:gosec // G404: load-gen mix, not security
 
-			eventType := rand.Intn(125)
 			var event *pb.HealthEvent
 
-			if eventType < 80 {
+			switch {
+			case eventType < 80:
 				// 64%: Healthy GPU event
 				event = generateHealthyGpuEvent(nodeName)
-			} else if eventType < 110 {
+			case eventType < 110:
 				// 24%: System info event
 				event = generateSystemInfoEvent(nodeName)
-			} else if eventType < 120 {
+			case eventType < 120:
 				// 8%: Fatal GPU error (triggers cordoning)
 				event = generateFatalGpuXidEvent(nodeName)
-			} else {
+			default:
 				// 4%: NVSwitch warning
 				event = generateNVSwitchWarningEvent(nodeName)
 			}
 
 			success := sendHealthEvent(ctx, client, event)
 			eventCount++
+
 			if success {
 				successCount++
 			}
@@ -203,11 +237,14 @@ func continuousEventLoop(ctx context.Context, client pb.PlatformConnectorClient,
 	}
 }
 
-func backgroundEventLoop(ctx context.Context, client pb.PlatformConnectorClient, nodeName string, interval time.Duration) {
+func backgroundEventLoop(
+	ctx context.Context,
+	client pb.PlatformConnectorClient,
+	nodeName string,
+	interval time.Duration,
+) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-
-	rand.Seed(time.Now().UnixNano())
 
 	log.Printf("Background event loop started")
 
@@ -219,7 +256,7 @@ func backgroundEventLoop(ctx context.Context, client pb.PlatformConnectorClient,
 		case <-ticker.C:
 			// Generate background event with weighted random selection
 			// For background mode: mostly healthy events
-			eventType := rand.Intn(100)
+			eventType := rand.IntN(100) //nolint:gosec // G404: load-gen mix, not security
 
 			var event *pb.HealthEvent
 			if eventType < 50 {
@@ -238,14 +275,14 @@ func backgroundEventLoop(ctx context.Context, client pb.PlatformConnectorClient,
 func generateHealthyGpuEvent(nodeName string) *pb.HealthEvent {
 	return &pb.HealthEvent{
 		Version:            1,
-		Agent:              "event-generator",
-		ComponentClass:     "GPU",
+		Agent:              agentName,
+		ComponentClass:     componentClassGPU,
 		CheckName:          "GpuHealth",
 		IsFatal:            false,
 		IsHealthy:          true,
 		Message:            "GPU operating normally",
 		RecommendedAction:  pb.RecommendedAction_NONE,
-		EntitiesImpacted:   []*pb.Entity{{EntityType: "gpu", EntityValue: "0"}},
+		EntitiesImpacted:   []*pb.Entity{{EntityType: entityTypeGPU, EntityValue: "0"}},
 		NodeName:           nodeName,
 		GeneratedTimestamp: timestamppb.Now(),
 	}
@@ -254,7 +291,7 @@ func generateHealthyGpuEvent(nodeName string) *pb.HealthEvent {
 func generateSystemInfoEvent(nodeName string) *pb.HealthEvent {
 	return &pb.HealthEvent{
 		Version:            1,
-		Agent:              "event-generator",
+		Agent:              agentName,
 		ComponentClass:     "System",
 		CheckName:          "SystemInfo",
 		IsFatal:            false,
@@ -267,19 +304,19 @@ func generateSystemInfoEvent(nodeName string) *pb.HealthEvent {
 }
 
 // generateFatalGpuXidEvent - for continuous mode (API/MongoDB tests)
-// Uses agent="event-generator" so FQM IGNORES it (no accidental cordons)
+// Uses the event-generator agent so FQM IGNORES it (no accidental cordons)
 func generateFatalGpuXidEvent(nodeName string) *pb.HealthEvent {
 	return &pb.HealthEvent{
 		Version:            1,
-		Agent:              "event-generator", // FQM ignores - won't cordon
-		ComponentClass:     "GPU",
+		Agent:              agentName, // FQM ignores - won't cordon
+		ComponentClass:     componentClassGPU,
 		CheckName:          "GpuXidError",
 		IsFatal:            true,
 		IsHealthy:          false,
 		Message:            "XID 79 - GPU has fallen off the bus",
 		RecommendedAction:  pb.RecommendedAction_COMPONENT_RESET,
 		ErrorCode:          []string{"79"},
-		EntitiesImpacted:   []*pb.Entity{{EntityType: "gpu", EntityValue: "0"}},
+		EntitiesImpacted:   []*pb.Entity{{EntityType: entityTypeGPU, EntityValue: "0"}},
 		NodeName:           nodeName,
 		GeneratedTimestamp: timestamppb.Now(),
 	}
@@ -291,14 +328,14 @@ func generateFatalGpuXidEventForFQM(nodeName string) *pb.HealthEvent {
 	return &pb.HealthEvent{
 		Version:            1,
 		Agent:              "gpu-health-monitor", // FQM matches - WILL cordon!
-		ComponentClass:     "GPU",
+		ComponentClass:     componentClassGPU,
 		CheckName:          "GpuXidError",
 		IsFatal:            true,
 		IsHealthy:          false,
 		Message:            "XID 79 - GPU has fallen off the bus",
 		RecommendedAction:  pb.RecommendedAction_COMPONENT_RESET,
 		ErrorCode:          []string{"79"},
-		EntitiesImpacted:   []*pb.Entity{{EntityType: "gpu", EntityValue: "0"}},
+		EntitiesImpacted:   []*pb.Entity{{EntityType: entityTypeGPU, EntityValue: "0"}},
 		NodeName:           nodeName,
 		GeneratedTimestamp: timestamppb.Now(),
 	}
@@ -307,7 +344,7 @@ func generateFatalGpuXidEventForFQM(nodeName string) *pb.HealthEvent {
 func generateNVSwitchWarningEvent(nodeName string) *pb.HealthEvent {
 	return &pb.HealthEvent{
 		Version:            1,
-		Agent:              "event-generator",
+		Agent:              agentName,
 		ComponentClass:     "NVSwitch",
 		CheckName:          "NVSwitchHealth",
 		IsFatal:            false,
@@ -336,7 +373,7 @@ func sendHealthEvent(ctx context.Context, client pb.PlatformConnectorClient, eve
 	}
 
 	// Only log successful sends occasionally to reduce noise
-	if rand.Intn(100) == 0 {
+	if rand.IntN(100) == 0 { //nolint:gosec // G404: log sampling
 		log.Printf("✅ Event sent successfully (took %v)", responseTime)
 	}
 

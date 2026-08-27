@@ -166,7 +166,7 @@ func createMockClientWithReadyNodes(nodeNames ...string) *k8sfake.Clientset {
 	objs := []runtime.Object{}
 	for _, n := range nodeNames {
 		node := &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{Name: n},
+			Name: n,
 			Status: corev1.NodeStatus{
 				Conditions: []corev1.NodeCondition{
 					{
@@ -187,7 +187,7 @@ func createMockClientWithReadyNodes(nodeNames ...string) *k8sfake.Clientset {
 // createMockClientWithNotReadyNode returns a fake clientset with a single node set to NotReady.
 func createMockClientWithNotReadyNode(nodeName string) *k8sfake.Clientset {
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		Name: nodeName,
 		Status: corev1.NodeStatus{
 			Conditions: []corev1.NodeCondition{
 				{

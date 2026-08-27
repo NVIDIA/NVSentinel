@@ -38,16 +38,16 @@ func TestDataStoreInterfaceCompliance(t *testing.T) {
 
 	t.Run("MongoDB implements DataStore", func(t *testing.T) {
 		// Verify MongoDB Store implements all DataStore methods
-		storeType := reflect.TypeOf((*mongodb.AdaptedMongoStore)(nil))
-		interfaceType := reflect.TypeOf((*datastore.DataStore)(nil)).Elem()
+		storeType := reflect.TypeFor[*mongodb.AdaptedMongoStore]()
+		interfaceType := reflect.TypeFor[datastore.DataStore]()
 
 		assertImplementsInterface(t, storeType, interfaceType, "MongoDB AdaptedMongoStore")
 	})
 
 	t.Run("PostgreSQL implements DataStore", func(t *testing.T) {
 		// Verify PostgreSQL Store implements all DataStore methods
-		storeType := reflect.TypeOf((*postgresql.PostgreSQLDataStore)(nil))
-		interfaceType := reflect.TypeOf((*datastore.DataStore)(nil)).Elem()
+		storeType := reflect.TypeFor[*postgresql.PostgreSQLDataStore]()
+		interfaceType := reflect.TypeFor[datastore.DataStore]()
 
 		assertImplementsInterface(t, storeType, interfaceType, "PostgreSQL DataStore")
 	})
@@ -61,22 +61,22 @@ func TestMaintenanceEventStoreInterfaceCompliance(t *testing.T) {
 	var _ datastore.MaintenanceEventStore = (*postgresql.PostgreSQLMaintenanceEventStore)(nil)
 
 	t.Run("MongoDB implements MaintenanceEventStore", func(t *testing.T) {
-		storeType := reflect.TypeOf((*mongodb.MongoMaintenanceEventStore)(nil))
-		interfaceType := reflect.TypeOf((*datastore.MaintenanceEventStore)(nil)).Elem()
+		storeType := reflect.TypeFor[*mongodb.MongoMaintenanceEventStore]()
+		interfaceType := reflect.TypeFor[datastore.MaintenanceEventStore]()
 
 		assertImplementsInterface(t, storeType, interfaceType, "MongoDB MaintenanceEventStore")
 	})
 
 	t.Run("PostgreSQL implements MaintenanceEventStore", func(t *testing.T) {
-		storeType := reflect.TypeOf((*postgresql.PostgreSQLMaintenanceEventStore)(nil))
-		interfaceType := reflect.TypeOf((*datastore.MaintenanceEventStore)(nil)).Elem()
+		storeType := reflect.TypeFor[*postgresql.PostgreSQLMaintenanceEventStore]()
+		interfaceType := reflect.TypeFor[datastore.MaintenanceEventStore]()
 
 		assertImplementsInterface(t, storeType, interfaceType, "PostgreSQL MaintenanceEventStore")
 	})
 
 	t.Run("MaintenanceEventStore methods exist", func(t *testing.T) {
 		// Verify all expected methods exist on the interface
-		interfaceType := reflect.TypeOf((*datastore.MaintenanceEventStore)(nil)).Elem()
+		interfaceType := reflect.TypeFor[datastore.MaintenanceEventStore]()
 
 		expectedMethods := []string{
 			"UpsertMaintenanceEvent",
@@ -99,7 +99,7 @@ func TestMaintenanceEventStoreInterfaceCompliance(t *testing.T) {
 				if numIn >= 1 {
 					// For interface methods, there's no receiver, so first param is at index 0
 					firstParam := method.Type.In(0)
-					ctxType := reflect.TypeOf((*context.Context)(nil)).Elem()
+					ctxType := reflect.TypeFor[context.Context]()
 					assert.True(t, firstParam.Implements(ctxType) || firstParam == ctxType,
 						"Method %s first parameter should be context.Context, got %s",
 						methodName, firstParam)
@@ -117,22 +117,22 @@ func TestHealthEventStoreInterfaceCompliance(t *testing.T) {
 	var _ datastore.HealthEventStore = (*postgresql.PostgreSQLHealthEventStore)(nil)
 
 	t.Run("MongoDB implements HealthEventStore", func(t *testing.T) {
-		storeType := reflect.TypeOf((*mongodb.MongoHealthEventStore)(nil))
-		interfaceType := reflect.TypeOf((*datastore.HealthEventStore)(nil)).Elem()
+		storeType := reflect.TypeFor[*mongodb.MongoHealthEventStore]()
+		interfaceType := reflect.TypeFor[datastore.HealthEventStore]()
 
 		assertImplementsInterface(t, storeType, interfaceType, "MongoDB HealthEventStore")
 	})
 
 	t.Run("PostgreSQL implements HealthEventStore", func(t *testing.T) {
-		storeType := reflect.TypeOf((*postgresql.PostgreSQLHealthEventStore)(nil))
-		interfaceType := reflect.TypeOf((*datastore.HealthEventStore)(nil)).Elem()
+		storeType := reflect.TypeFor[*postgresql.PostgreSQLHealthEventStore]()
+		interfaceType := reflect.TypeFor[datastore.HealthEventStore]()
 
 		assertImplementsInterface(t, storeType, interfaceType, "PostgreSQL HealthEventStore")
 	})
 
 	t.Run("HealthEventStore methods exist", func(t *testing.T) {
 		// Verify all expected methods exist on the interface
-		interfaceType := reflect.TypeOf((*datastore.HealthEventStore)(nil)).Elem()
+		interfaceType := reflect.TypeFor[datastore.HealthEventStore]()
 
 		expectedMethods := []string{
 			"UpdateHealthEventStatus",
@@ -161,7 +161,7 @@ func TestHealthEventStoreInterfaceCompliance(t *testing.T) {
 				if numIn >= 1 {
 					// For interface methods, there's no receiver, so first param is at index 0
 					firstParam := method.Type.In(0)
-					ctxType := reflect.TypeOf((*context.Context)(nil)).Elem()
+					ctxType := reflect.TypeFor[context.Context]()
 					assert.True(t, firstParam.Implements(ctxType) || firstParam == ctxType,
 						"Method %s first parameter should be context.Context, got %s",
 						methodName, firstParam)
@@ -181,22 +181,22 @@ func TestChangeStreamWatcherInterfaceCompliance(t *testing.T) {
 	// MongoDB watcher is wrapped by AdaptedChangeStreamWatcher in the adapter layer
 	t.Run("MongoDB has ChangeStreamWatcher wrapper", func(t *testing.T) {
 		// The AdaptedChangeStreamWatcher in the adapter.go wraps the MongoDB watcher
-		watcherType := reflect.TypeOf((*mongodb.AdaptedChangeStreamWatcher)(nil))
-		interfaceType := reflect.TypeOf((*datastore.ChangeStreamWatcher)(nil)).Elem()
+		watcherType := reflect.TypeFor[*mongodb.AdaptedChangeStreamWatcher]()
+		interfaceType := reflect.TypeFor[datastore.ChangeStreamWatcher]()
 
 		assertImplementsInterface(t, watcherType, interfaceType, "MongoDB AdaptedChangeStreamWatcher")
 	})
 
 	t.Run("PostgreSQL implements ChangeStreamWatcher", func(t *testing.T) {
-		watcherType := reflect.TypeOf((*postgresql.PostgreSQLChangeStreamWatcher)(nil))
-		interfaceType := reflect.TypeOf((*datastore.ChangeStreamWatcher)(nil)).Elem()
+		watcherType := reflect.TypeFor[*postgresql.PostgreSQLChangeStreamWatcher]()
+		interfaceType := reflect.TypeFor[datastore.ChangeStreamWatcher]()
 
 		assertImplementsInterface(t, watcherType, interfaceType, "PostgreSQL ChangeStreamWatcher")
 	})
 
 	t.Run("ChangeStreamWatcher methods exist", func(t *testing.T) {
 		// Verify all expected methods exist on the interface
-		interfaceType := reflect.TypeOf((*datastore.ChangeStreamWatcher)(nil)).Elem()
+		interfaceType := reflect.TypeFor[datastore.ChangeStreamWatcher]()
 
 		expectedMethods := []string{
 			"Events",
@@ -239,7 +239,7 @@ func TestProviderFactoryRegistration(t *testing.T) {
 func TestDataStoreReturnsCorrectInterfaces(t *testing.T) {
 	t.Run("MongoDB DataStore method return types", func(t *testing.T) {
 		// Use reflection to check return types without calling methods on nil pointers
-		storeType := reflect.TypeOf((*mongodb.AdaptedMongoStore)(nil))
+		storeType := reflect.TypeFor[*mongodb.AdaptedMongoStore]()
 
 		maintenanceMethod, found := storeType.MethodByName("MaintenanceEventStore")
 		require.True(t, found, "MongoDB should have MaintenanceEventStore method")
@@ -253,8 +253,8 @@ func TestDataStoreReturnsCorrectInterfaces(t *testing.T) {
 		maintenanceReturnType := maintenanceMethod.Type.Out(0)
 		healthReturnType := healthMethod.Type.Out(0)
 
-		interfaceMaintenanceType := reflect.TypeOf((*datastore.MaintenanceEventStore)(nil)).Elem()
-		interfaceHealthType := reflect.TypeOf((*datastore.HealthEventStore)(nil)).Elem()
+		interfaceMaintenanceType := reflect.TypeFor[datastore.MaintenanceEventStore]()
+		interfaceHealthType := reflect.TypeFor[datastore.HealthEventStore]()
 
 		assert.True(t, maintenanceReturnType.Implements(interfaceMaintenanceType),
 			"MongoDB MaintenanceEventStore return type should implement MaintenanceEventStore interface")
@@ -264,7 +264,7 @@ func TestDataStoreReturnsCorrectInterfaces(t *testing.T) {
 
 	t.Run("PostgreSQL DataStore method return types", func(t *testing.T) {
 		// Use reflection to check return types without calling methods on nil pointers
-		storeType := reflect.TypeOf((*postgresql.PostgreSQLDataStore)(nil))
+		storeType := reflect.TypeFor[*postgresql.PostgreSQLDataStore]()
 
 		maintenanceMethod, found := storeType.MethodByName("MaintenanceEventStore")
 		require.True(t, found, "PostgreSQL should have MaintenanceEventStore method")
@@ -278,8 +278,8 @@ func TestDataStoreReturnsCorrectInterfaces(t *testing.T) {
 		maintenanceReturnType := maintenanceMethod.Type.Out(0)
 		healthReturnType := healthMethod.Type.Out(0)
 
-		interfaceMaintenanceType := reflect.TypeOf((*datastore.MaintenanceEventStore)(nil)).Elem()
-		interfaceHealthType := reflect.TypeOf((*datastore.HealthEventStore)(nil)).Elem()
+		interfaceMaintenanceType := reflect.TypeFor[datastore.MaintenanceEventStore]()
+		interfaceHealthType := reflect.TypeFor[datastore.HealthEventStore]()
 
 		assert.True(t, maintenanceReturnType.Implements(interfaceMaintenanceType),
 			"PostgreSQL MaintenanceEventStore return type should implement MaintenanceEventStore interface")
@@ -292,8 +292,8 @@ func TestDataStoreReturnsCorrectInterfaces(t *testing.T) {
 // have identical signatures to ensure consistent behavior.
 func TestCommonMethodSignatures(t *testing.T) {
 	t.Run("Ping has consistent signature", func(t *testing.T) {
-		mongoType := reflect.TypeOf((*mongodb.AdaptedMongoStore)(nil))
-		pgType := reflect.TypeOf((*postgresql.PostgreSQLDataStore)(nil))
+		mongoType := reflect.TypeFor[*mongodb.AdaptedMongoStore]()
+		pgType := reflect.TypeFor[*postgresql.PostgreSQLDataStore]()
 
 		mongoMethod, mongoFound := mongoType.MethodByName("Ping")
 		pgMethod, pgFound := pgType.MethodByName("Ping")
@@ -308,8 +308,8 @@ func TestCommonMethodSignatures(t *testing.T) {
 	})
 
 	t.Run("Close has consistent signature", func(t *testing.T) {
-		mongoType := reflect.TypeOf((*mongodb.AdaptedMongoStore)(nil))
-		pgType := reflect.TypeOf((*postgresql.PostgreSQLDataStore)(nil))
+		mongoType := reflect.TypeFor[*mongodb.AdaptedMongoStore]()
+		pgType := reflect.TypeFor[*postgresql.PostgreSQLDataStore]()
 
 		mongoMethod, mongoFound := mongoType.MethodByName("Close")
 		pgMethod, pgFound := pgType.MethodByName("Close")
@@ -324,8 +324,8 @@ func TestCommonMethodSignatures(t *testing.T) {
 	})
 
 	t.Run("Provider has consistent signature", func(t *testing.T) {
-		mongoType := reflect.TypeOf((*mongodb.AdaptedMongoStore)(nil))
-		pgType := reflect.TypeOf((*postgresql.PostgreSQLDataStore)(nil))
+		mongoType := reflect.TypeFor[*mongodb.AdaptedMongoStore]()
+		pgType := reflect.TypeFor[*postgresql.PostgreSQLDataStore]()
 
 		mongoMethod, mongoFound := mongoType.MethodByName("Provider")
 		pgMethod, pgFound := pgType.MethodByName("Provider")
@@ -350,7 +350,7 @@ func assertImplementsInterface(t *testing.T, implType, interfaceType reflect.Typ
 	assert.Greater(t, numMethods, 0, "%s: interface should have methods", implName)
 
 	// Check each method in the interface
-	for i := 0; i < numMethods; i++ {
+	for i := range numMethods {
 		method := interfaceType.Method(i)
 
 		// Check if the implementation has this method

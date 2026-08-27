@@ -128,10 +128,10 @@ func (p *PostgreSQLHealthEventStore) extractIndexFields(
 }
 
 // extractFromMap extracts fields from map interface (MongoDB compatibility)
-func (p *PostgreSQLHealthEventStore) extractFromMap(healthEvent interface{}) healthEventIndexFields {
+func (p *PostgreSQLHealthEventStore) extractFromMap(healthEvent any) healthEventIndexFields {
 	fields := healthEventIndexFields{}
 
-	healthEventMap, ok := healthEvent.(map[string]interface{})
+	healthEventMap, ok := healthEvent.(map[string]any)
 	if !ok {
 		slog.Debug("Failed to extract fields - type assertion to map failed", "actualType", fmt.Sprintf("%T", healthEvent))
 
@@ -280,7 +280,7 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 	// "inconsistent types deduced for parameter" errors.
 	var query string
 
-	var params []interface{}
+	var params []any
 
 	switch {
 	case status.NodeQuarantined != nil:
@@ -321,7 +321,7 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 			    updated_at = NOW()
 			WHERE id = $8::uuid
 		`
-		params = []interface{}{
+		params = []any{
 			statusStr,
 			timestampToTime(status.QuarantineFinishTimestamp),
 			string(status.UserPodsEvictionStatus.Status),
@@ -364,7 +364,7 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 			    updated_at = NOW()
 			WHERE id = $7::uuid
 		`
-		params = []interface{}{
+		params = []any{
 			timestampToTime(status.QuarantineFinishTimestamp),
 			string(status.UserPodsEvictionStatus.Status),
 			status.UserPodsEvictionStatus.Message,
@@ -395,7 +395,7 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 			    updated_at = NOW()
 			WHERE id = $4::uuid
 		`
-		params = []interface{}{
+		params = []any{
 			status.FaultRemediated,
 			timestampToTime(status.LastRemediationTimestamp),
 			lastRemediationJSON,
@@ -504,7 +504,7 @@ func (p *PostgreSQLHealthEventStore) FindHealthEventsByNode(
 		}
 
 		// Populate RawEvent for cold-start support
-		var rawEvent map[string]interface{}
+		var rawEvent map[string]any
 		if err := json.Unmarshal(documentJSON, &rawEvent); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal raw event: %w", err)
 		}
@@ -523,7 +523,7 @@ func (p *PostgreSQLHealthEventStore) FindHealthEventsByNode(
 
 // FindHealthEventsByFilter finds health events based on filter criteria
 func (p *PostgreSQLHealthEventStore) FindHealthEventsByFilter(
-	ctx context.Context, filter map[string]interface{},
+	ctx context.Context, filter map[string]any,
 ) ([]datastore.HealthEventWithStatus, error) {
 	conditions, params := p.buildFilterConditions(filter)
 	query := p.buildFilterQuery(conditions)
@@ -533,11 +533,11 @@ func (p *PostgreSQLHealthEventStore) FindHealthEventsByFilter(
 
 // buildFilterConditions builds WHERE conditions and parameters from filter map
 func (p *PostgreSQLHealthEventStore) buildFilterConditions(
-	filter map[string]interface{},
-) ([]string, []interface{}) {
+	filter map[string]any,
+) ([]string, []any) {
 	var (
 		conditions []string
-		params     []interface{}
+		params     []any
 		paramIndex = 1
 	)
 
@@ -554,9 +554,9 @@ func (p *PostgreSQLHealthEventStore) buildFilterConditions(
 // buildSingleCondition builds a single WHERE condition for a filter key-value pair
 func (p *PostgreSQLHealthEventStore) buildSingleCondition(
 	key string,
-	value interface{},
+	value any,
 	paramIndex int,
-) (string, interface{}) {
+) (string, any) {
 	switch key {
 	case "node_name":
 		return fmt.Sprintf("node_name = $%d", paramIndex), value
@@ -590,7 +590,7 @@ func (p *PostgreSQLHealthEventStore) buildFilterQuery(conditions []string) strin
 func (p *PostgreSQLHealthEventStore) executeFilterQuery(
 	ctx context.Context,
 	query string,
-	params []interface{},
+	params []any,
 ) ([]datastore.HealthEventWithStatus, error) {
 	rows, err := p.db.QueryContext(ctx, query, params...)
 	if err != nil {
@@ -612,7 +612,7 @@ func (p *PostgreSQLHealthEventStore) executeFilterQuery(
 		}
 
 		// Populate RawEvent for cold-start support
-		var rawEvent map[string]interface{}
+		var rawEvent map[string]any
 		if err := json.Unmarshal(documentJSON, &rawEvent); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal raw event: %w", err)
 		}
@@ -659,7 +659,7 @@ func (p *PostgreSQLHealthEventStore) FindHealthEventsByStatus(
 		}
 
 		// Populate RawEvent for cold-start support
-		var rawEvent map[string]interface{}
+		var rawEvent map[string]any
 		if err := json.Unmarshal(documentJSON, &rawEvent); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal raw event: %w", err)
 		}
@@ -762,7 +762,7 @@ func (p *PostgreSQLHealthEventStore) UpdatePodEvictionStatus(
 
 // UpdateRemediationStatus updates remediation status for a specific event
 func (p *PostgreSQLHealthEventStore) UpdateRemediationStatus(
-	ctx context.Context, eventID string, status interface{},
+	ctx context.Context, eventID string, status any,
 ) error {
 	// Convert status to boolean if needed
 	var faultRemediated *bool
@@ -898,7 +898,7 @@ func decodeHealthEventDocument(documentJSON []byte) (*datastore.HealthEventWithS
 		return nil, fmt.Errorf("failed to unmarshal health event: %w", err)
 	}
 
-	var rawEvent map[string]interface{}
+	var rawEvent map[string]any
 	if err := json.Unmarshal(documentJSON, &rawEvent); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal raw event: %w", err)
 	}
@@ -962,7 +962,7 @@ func (p *PostgreSQLHealthEventStore) FindHealthEventsByQueryBatched(ctx context.
 // queryHealthEventsWithID executes a query that returns (id, document) rows
 // and converts them into HealthEventWithStatus slices with RawEvent populated.
 func (p *PostgreSQLHealthEventStore) queryHealthEventsWithID(
-	ctx context.Context, query string, args ...interface{},
+	ctx context.Context, query string, args ...any,
 ) ([]datastore.HealthEventWithStatus, error) {
 	rows, err := p.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -987,7 +987,7 @@ func (p *PostgreSQLHealthEventStore) queryHealthEventsWithID(
 			return nil, fmt.Errorf("failed to unmarshal health event: %w", err)
 		}
 
-		var rawEvent map[string]interface{}
+		var rawEvent map[string]any
 		if err := json.Unmarshal(documentJSON, &rawEvent); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal raw event: %w", err)
 		}
@@ -1016,7 +1016,7 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventsByQuery(ctx context.Conte
 	setClause, setArgs := updateBuilder.ToSQL()
 
 	// Combine arguments (SET args come first, then WHERE args)
-	var allArgs []interface{}
+	var allArgs []any
 
 	allArgs = append(allArgs, setArgs...)
 	allArgs = append(allArgs, whereArgs...)

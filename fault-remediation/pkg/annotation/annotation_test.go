@@ -17,13 +17,12 @@ package annotation
 import (
 	"context"
 	"fmt"
-	"sync"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sync"
 	"testing"
 	"time"
 )
@@ -46,30 +45,25 @@ func TestGetRemediationState(t *testing.T) {
 		{
 			name: "Node has no annotation, returns node and empty state",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:        nodeName,
-					Annotations: map[string]string{},
-				},
+				Name:        nodeName,
+				Annotations: map[string]string{},
 			},
 		},
 		{
 			name: "Node has bad annotation, returns node and empty state",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: nodeName,
-					Annotations: map[string]string{
-						AnnotationKey: "asdfasdf",
-					},
+				Name: nodeName,
+				Annotations: map[string]string{
+					AnnotationKey: "asdfasdf",
 				},
 			},
 		},
 		{
 			name: "Node has annotation, returns node and correct state",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: nodeName,
-					Annotations: map[string]string{
-						AnnotationKey: fmt.Sprintf(`{
+				Name: nodeName,
+				Annotations: map[string]string{
+					AnnotationKey: fmt.Sprintf(`{
 						  "equivalenceGroups": {
 							"gpu-timeout": {
 							  "maintenanceCR": "gpu-maintenance-abc123",
@@ -83,7 +77,6 @@ func TestGetRemediationState(t *testing.T) {
 							}
 						  }
 						}`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)),
-					},
 				},
 			},
 			expectedState: RemediationStateAnnotation{
@@ -141,10 +134,8 @@ func TestUpdateRemediationState(t *testing.T) {
 	nodeName := "node"
 	actionName := "reboot-action"
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        nodeName,
-			Annotations: map[string]string{},
-		},
+		Name:        nodeName,
+		Annotations: map[string]string{},
 	}
 	client := fake.NewClientBuilder().WithObjects(node).Build()
 	annotationManager := NodeAnnotationManager{
@@ -164,11 +155,9 @@ func TestUpdateRemediationState(t *testing.T) {
 func TestClearRemediationState(t *testing.T) {
 	nodeName := "node"
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: nodeName,
-			Annotations: map[string]string{
-				AnnotationKey: "test",
-			},
+		Name: nodeName,
+		Annotations: map[string]string{
+			AnnotationKey: "test",
 		},
 	}
 	client := fake.NewClientBuilder().WithObjects(node).Build()
@@ -192,10 +181,9 @@ func TestRemoveGroupsFromState(t *testing.T) {
 	notRemovedGroup := "node-reboot"
 	nodeName := "node"
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: nodeName,
-			Annotations: map[string]string{
-				AnnotationKey: fmt.Sprintf(`{
+		Name: nodeName,
+		Annotations: map[string]string{
+			AnnotationKey: fmt.Sprintf(`{
 				  "equivalenceGroups": {
 					"%s": {
 					  "maintenanceCR": "gpu-maintenance-abc123"
@@ -208,7 +196,6 @@ func TestRemoveGroupsFromState(t *testing.T) {
 					}
 				  }
 				}`, removedGroup1, removedGroup2, notRemovedGroup),
-			},
 		},
 	}
 
@@ -230,10 +217,9 @@ func TestRemoveGroupsFromState(t *testing.T) {
 func TestConcurrentRemoveGroupsFromState(t *testing.T) {
 	nodeName := "test-node"
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: nodeName,
-			Annotations: map[string]string{
-				AnnotationKey: fmt.Sprintf(`{
+		Name: nodeName,
+		Annotations: map[string]string{
+			AnnotationKey: fmt.Sprintf(`{
 				  "equivalenceGroups": {
 					"%s": {"maintenanceCR": "cr-0", "actionName": "action-0"},
 					"%s": {"maintenanceCR": "cr-1", "actionName": "action-1"},
@@ -243,7 +229,6 @@ func TestConcurrentRemoveGroupsFromState(t *testing.T) {
 					"%s": {"maintenanceCR": "cr-5", "actionName": "action-5"}
 				  }
 				}`, "group-0", "group-1", "group-2", "group-3", "group-4", "group-5"),
-			},
 		},
 	}
 
@@ -271,16 +256,14 @@ func TestConcurrentRemoveGroupsFromState(t *testing.T) {
 func TestConcurrentUpdateAndRemoveGroupsFromState(t *testing.T) {
 	nodeName := "test-node"
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: nodeName,
-			Annotations: map[string]string{
-				AnnotationKey: `{
+		Name: nodeName,
+		Annotations: map[string]string{
+			AnnotationKey: `{
 				  "equivalenceGroups": {
 					"existing-group-1": {"maintenanceCR": "old-cr-1", "actionName": "RESTART_BM"},
 					"existing-group-2": {"maintenanceCR": "old-cr-2", "actionName": "COMPONENT_RESET"}
 				  }
 				}`,
-			},
 		},
 	}
 
@@ -288,7 +271,7 @@ func TestConcurrentUpdateAndRemoveGroupsFromState(t *testing.T) {
 	annotationManager := NodeAnnotationManager{client: client}
 
 	const iterations = 100
-	for i := 0; i < iterations; i++ {
+	for i := range iterations {
 		// Reset state each iteration
 		err := annotationManager.UpdateRemediationState(context.TODO(), nodeName, "existing-group-1", "old-cr-1", "RESTART_BM")
 		require.NoError(t, err)

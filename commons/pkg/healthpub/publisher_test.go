@@ -26,12 +26,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/grpcauth"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
@@ -318,4 +320,27 @@ func TestPublish_ContextCancellationStopsRetries(t *testing.T) {
 		"expected a context-related error, got %v", err)
 	assert.Less(t, fc.calls.Load(), int64(20),
 		"retries must stop when the context is cancelled, not exhaust the full budget")
+}
+
+// An authentication-backend outage and an unreachable platform-connector both
+// arrive as Unavailable. They need different responses, so the metric must not
+// collapse them into one label.
+func TestErrorCodeLabelSeparatesAuthBackendOutageFromConnectorDown(t *testing.T) {
+	connectorDown := status.Error(codes.Unavailable, "connection refused")
+
+	detailed, err := status.New(codes.Unavailable, "auth backend unreachable").
+		WithDetails(&errdetails.ErrorInfo{
+			Reason: grpcauth.AuthBackendUnavailableReason,
+			Domain: "nvsentinel.nvidia.com",
+		})
+	require.NoError(t, err)
+
+	authBackendDown := detailed.Err()
+
+	require.True(t, grpcauth.IsAuthBackendUnavailable(authBackendDown),
+		"fixture must carry the marker, otherwise this test proves nothing")
+
+	assert.Equal(t, codes.Unavailable.String(), errorCodeLabel(connectorDown))
+	assert.Equal(t, authBackendUnavailableLabel, errorCodeLabel(authBackendDown))
+	assert.NotEqual(t, errorCodeLabel(connectorDown), errorCodeLabel(authBackendDown))
 }

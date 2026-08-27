@@ -70,4 +70,7 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with ($global.priorityClassName | default .Values.priorityClassName) }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
 {{- end }}

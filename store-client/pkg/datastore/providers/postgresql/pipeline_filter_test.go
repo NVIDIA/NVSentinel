@@ -23,15 +23,15 @@ import (
 func TestGetFieldValue_CaseInsensitive(t *testing.T) {
 	tests := []struct {
 		name      string
-		event     map[string]interface{}
+		event     map[string]any
 		fieldPath string
-		expected  interface{}
+		expected  any
 	}{
 		{
 			name: "exact case match - lowercase",
-			event: map[string]interface{}{
-				"fullDocument": map[string]interface{}{
-					"healthevent": map[string]interface{}{
+			event: map[string]any{
+				"fullDocument": map[string]any{
+					"healthevent": map[string]any{
 						"ishealthy": false,
 					},
 				},
@@ -41,9 +41,9 @@ func TestGetFieldValue_CaseInsensitive(t *testing.T) {
 		},
 		{
 			name: "exact case match - camelCase",
-			event: map[string]interface{}{
-				"fullDocument": map[string]interface{}{
-					"healthevent": map[string]interface{}{
+			event: map[string]any{
+				"fullDocument": map[string]any{
+					"healthevent": map[string]any{
 						"isHealthy": true,
 					},
 				},
@@ -53,9 +53,9 @@ func TestGetFieldValue_CaseInsensitive(t *testing.T) {
 		},
 		{
 			name: "case insensitive match - query lowercase, data camelCase",
-			event: map[string]interface{}{
-				"fullDocument": map[string]interface{}{
-					"healthevent": map[string]interface{}{
+			event: map[string]any{
+				"fullDocument": map[string]any{
+					"healthevent": map[string]any{
 						"isHealthy": false,
 						"isFatal":   true,
 					},
@@ -66,9 +66,9 @@ func TestGetFieldValue_CaseInsensitive(t *testing.T) {
 		},
 		{
 			name: "case insensitive match - query camelCase, data lowercase",
-			event: map[string]interface{}{
-				"fullDocument": map[string]interface{}{
-					"healthevent": map[string]interface{}{
+			event: map[string]any{
+				"fullDocument": map[string]any{
+					"healthevent": map[string]any{
 						"ishealthy": true,
 						"isfatal":   false,
 					},
@@ -79,9 +79,9 @@ func TestGetFieldValue_CaseInsensitive(t *testing.T) {
 		},
 		{
 			name: "case insensitive match - isFatal",
-			event: map[string]interface{}{
-				"fullDocument": map[string]interface{}{
-					"healthevent": map[string]interface{}{
+			event: map[string]any{
+				"fullDocument": map[string]any{
+					"healthevent": map[string]any{
 						"isFatal": true,
 					},
 				},
@@ -91,9 +91,9 @@ func TestGetFieldValue_CaseInsensitive(t *testing.T) {
 		},
 		{
 			name: "case insensitive match - nested agent field",
-			event: map[string]interface{}{
-				"fullDocument": map[string]interface{}{
-					"healthevent": map[string]interface{}{
+			event: map[string]any{
+				"fullDocument": map[string]any{
+					"healthevent": map[string]any{
 						"agent": "simple-health-client",
 					},
 				},
@@ -103,9 +103,9 @@ func TestGetFieldValue_CaseInsensitive(t *testing.T) {
 		},
 		{
 			name: "non-existent field",
-			event: map[string]interface{}{
-				"fullDocument": map[string]interface{}{
-					"healthevent": map[string]interface{}{
+			event: map[string]any{
+				"fullDocument": map[string]any{
+					"healthevent": map[string]any{
 						"isHealthy": true,
 					},
 				},
@@ -115,7 +115,7 @@ func TestGetFieldValue_CaseInsensitive(t *testing.T) {
 		},
 		{
 			name: "top-level field",
-			event: map[string]interface{}{
+			event: map[string]any{
 				"operationType": "insert",
 			},
 			fieldPath: "operationType",
@@ -123,7 +123,7 @@ func TestGetFieldValue_CaseInsensitive(t *testing.T) {
 		},
 		{
 			name: "top-level field case insensitive",
-			event: map[string]interface{}{
+			event: map[string]any{
 				"operationType": "update",
 			},
 			fieldPath: "OperationType",
@@ -146,26 +146,26 @@ func TestGetFieldValue_CaseInsensitive(t *testing.T) {
 func TestMatchesEvent_CaseInsensitive(t *testing.T) {
 	tests := []struct {
 		name     string
-		pipeline interface{}
+		pipeline any
 		event    datastore.EventWithToken
 		expected bool
 	}{
 		{
 			name: "matches with lowercase filter and camelCase data",
-			pipeline: []interface{}{
-				map[string]interface{}{
-					"$match": map[string]interface{}{
+			pipeline: []any{
+				map[string]any{
+					"$match": map[string]any{
 						"operationType":                      "insert",
-						"fullDocument.healthevent.agent":     map[string]interface{}{"$ne": "health-events-analyzer"},
+						"fullDocument.healthevent.agent":     map[string]any{"$ne": "health-events-analyzer"},
 						"fullDocument.healthevent.ishealthy": false,
 					},
 				},
 			},
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
+				Event: map[string]any{
 					"operationType": "insert",
-					"fullDocument": map[string]interface{}{
-						"healthevent": map[string]interface{}{
+					"fullDocument": map[string]any{
+						"healthevent": map[string]any{
 							"agent":     "simple-health-client",
 							"isHealthy": false,
 						},
@@ -177,19 +177,19 @@ func TestMatchesEvent_CaseInsensitive(t *testing.T) {
 		},
 		{
 			name: "does not match when isHealthy is true",
-			pipeline: []interface{}{
-				map[string]interface{}{
-					"$match": map[string]interface{}{
+			pipeline: []any{
+				map[string]any{
+					"$match": map[string]any{
 						"operationType":                      "insert",
 						"fullDocument.healthevent.ishealthy": false,
 					},
 				},
 			},
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
+				Event: map[string]any{
 					"operationType": "insert",
-					"fullDocument": map[string]interface{}{
-						"healthevent": map[string]interface{}{
+					"fullDocument": map[string]any{
+						"healthevent": map[string]any{
 							"isHealthy": true,
 						},
 					},
@@ -200,17 +200,17 @@ func TestMatchesEvent_CaseInsensitive(t *testing.T) {
 		},
 		{
 			name: "matches with camelCase filter and lowercase data",
-			pipeline: []interface{}{
-				map[string]interface{}{
-					"$match": map[string]interface{}{
+			pipeline: []any{
+				map[string]any{
+					"$match": map[string]any{
 						"fullDocument.healthevent.isHealthy": true,
 					},
 				},
 			},
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
-					"fullDocument": map[string]interface{}{
-						"healthevent": map[string]interface{}{
+				Event: map[string]any{
+					"fullDocument": map[string]any{
+						"healthevent": map[string]any{
 							"ishealthy": true,
 						},
 					},
@@ -221,17 +221,17 @@ func TestMatchesEvent_CaseInsensitive(t *testing.T) {
 		},
 		{
 			name: "matches isFatal case insensitive",
-			pipeline: []interface{}{
-				map[string]interface{}{
-					"$match": map[string]interface{}{
+			pipeline: []any{
+				map[string]any{
+					"$match": map[string]any{
 						"fullDocument.healthevent.isfatal": true,
 					},
 				},
 			},
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
-					"fullDocument": map[string]interface{}{
-						"healthevent": map[string]interface{}{
+				Event: map[string]any{
+					"fullDocument": map[string]any{
+						"healthevent": map[string]any{
 							"isFatal": true,
 						},
 					},
@@ -242,19 +242,19 @@ func TestMatchesEvent_CaseInsensitive(t *testing.T) {
 		},
 		{
 			name: "matches with $ne operator case insensitive",
-			pipeline: []interface{}{
-				map[string]interface{}{
-					"$match": map[string]interface{}{
-						"fullDocument.healthevent.agent": map[string]interface{}{
+			pipeline: []any{
+				map[string]any{
+					"$match": map[string]any{
+						"fullDocument.healthevent.agent": map[string]any{
 							"$ne": "health-events-analyzer",
 						},
 					},
 				},
 			},
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
-					"fullDocument": map[string]interface{}{
-						"healthevent": map[string]interface{}{
+				Event: map[string]any{
+					"fullDocument": map[string]any{
+						"healthevent": map[string]any{
 							"Agent": "simple-health-client",
 						},
 					},
@@ -265,19 +265,19 @@ func TestMatchesEvent_CaseInsensitive(t *testing.T) {
 		},
 		{
 			name: "does not match when agent is health-events-analyzer",
-			pipeline: []interface{}{
-				map[string]interface{}{
-					"$match": map[string]interface{}{
-						"fullDocument.healthevent.agent": map[string]interface{}{
+			pipeline: []any{
+				map[string]any{
+					"$match": map[string]any{
+						"fullDocument.healthevent.agent": map[string]any{
 							"$ne": "health-events-analyzer",
 						},
 					},
 				},
 			},
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
-					"fullDocument": map[string]interface{}{
-						"healthevent": map[string]interface{}{
+				Event: map[string]any{
+					"fullDocument": map[string]any{
+						"healthevent": map[string]any{
 							"agent": "health-events-analyzer",
 						},
 					},
@@ -306,7 +306,7 @@ func TestMatchesEvent_CaseInsensitive(t *testing.T) {
 func TestMatchesEvent_RealWorldHealthEventsAnalyzer(t *testing.T) {
 	// This test simulates the actual pipeline used by health-events-analyzer
 	// and ensures it works with PostgreSQL's camelCase field names
-	pipeline := []interface{}{
+	pipeline := []any{
 		datastore.D(
 			datastore.E("$match", datastore.D(
 				datastore.E("operationType", "insert"),
@@ -324,10 +324,10 @@ func TestMatchesEvent_RealWorldHealthEventsAnalyzer(t *testing.T) {
 		{
 			name: "should match - unhealthy insert from simple-health-client",
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
+				Event: map[string]any{
 					"operationType": "insert",
-					"fullDocument": map[string]interface{}{
-						"healthevent": map[string]interface{}{
+					"fullDocument": map[string]any{
+						"healthevent": map[string]any{
 							"agent":     "simple-health-client",
 							"isHealthy": false,
 							"isFatal":   true,
@@ -342,10 +342,10 @@ func TestMatchesEvent_RealWorldHealthEventsAnalyzer(t *testing.T) {
 		{
 			name: "should NOT match - healthy insert",
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
+				Event: map[string]any{
 					"operationType": "insert",
-					"fullDocument": map[string]interface{}{
-						"healthevent": map[string]interface{}{
+					"fullDocument": map[string]any{
+						"healthevent": map[string]any{
 							"agent":     "simple-health-client",
 							"isHealthy": true,
 							"nodename":  "kwok-node-0",
@@ -359,10 +359,10 @@ func TestMatchesEvent_RealWorldHealthEventsAnalyzer(t *testing.T) {
 		{
 			name: "should NOT match - from health-events-analyzer itself",
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
+				Event: map[string]any{
 					"operationType": "insert",
-					"fullDocument": map[string]interface{}{
-						"healthevent": map[string]interface{}{
+					"fullDocument": map[string]any{
+						"healthevent": map[string]any{
 							"agent":     "health-events-analyzer",
 							"isHealthy": false,
 							"nodename":  "kwok-node-0",
@@ -376,10 +376,10 @@ func TestMatchesEvent_RealWorldHealthEventsAnalyzer(t *testing.T) {
 		{
 			name: "should NOT match - update operation",
 			event: datastore.EventWithToken{
-				Event: map[string]interface{}{
+				Event: map[string]any{
 					"operationType": "update",
-					"fullDocument": map[string]interface{}{
-						"healthevent": map[string]interface{}{
+					"fullDocument": map[string]any{
+						"healthevent": map[string]any{
 							"agent":     "simple-health-client",
 							"isHealthy": false,
 							"nodename":  "kwok-node-0",

@@ -24,7 +24,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/nvidia/nvsentinel/janitor/pkg/metrics"
@@ -125,17 +124,15 @@ func (lock *nodeLock) LockNode(ctx context.Context, maintenanceObject client.Obj
 	}
 
 	lease = &coordinationv1.Lease{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      nodeLockName,
-			Namespace: lock.namespace,
-			OwnerReferences: []metav1.OwnerReference{
-				{
-					APIVersion:         apiVersion,
-					Kind:               kind,
-					Name:               maintenanceObject.GetName(),
-					UID:                maintenanceObject.GetUID(),
-					BlockOwnerDeletion: ptr.To(true),
-				},
+		Name:      nodeLockName,
+		Namespace: lock.namespace,
+		OwnerReferences: []metav1.OwnerReference{
+			{
+				APIVersion:         apiVersion,
+				Kind:               kind,
+				Name:               maintenanceObject.GetName(),
+				UID:                maintenanceObject.GetUID(),
+				BlockOwnerDeletion: new(true),
 			},
 		},
 		// There's no need to populate a HolderIdentity, LeaseDurationSeconds, nor RenewTime in Spec, we only need to identify

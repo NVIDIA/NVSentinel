@@ -65,17 +65,15 @@ kubectl get certificates -n nvsentinel
 kubectl get pods -n cert-manager
 
 # Check MongoDB database creation job
-kubectl get job -n nvsentinel create-mongodb-database
+kubectl get job -n nvsentinel -l app.kubernetes.io/name=create-mongodb-database
 # Should show COMPLETIONS: 1/1
 ```
 
 If the MongoDB job needs to be rerun:
 
 ```bash
-# Save and recreate the job
-kubectl get job create-mongodb-database -n nvsentinel -o yaml > create-mongodb-database.yaml
-kubectl delete job -n nvsentinel create-mongodb-database
-kubectl apply -f create-mongodb-database.yaml
+# Delete by label (name is create-mongodb-database-<seconds>-<scriptHash>), then re-sync / helm upgrade
+kubectl delete job -n nvsentinel -l app.kubernetes.io/name=create-mongodb-database
 ```
 
 Platform-connector connects to MongoDB on port 27017 with TLS. Check network policies:

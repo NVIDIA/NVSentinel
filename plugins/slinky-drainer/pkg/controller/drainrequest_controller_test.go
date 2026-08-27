@@ -191,7 +191,7 @@ func setupTestEnv(t *testing.T, controllerName string) *testEnvContext {
 	}()
 
 	k := mgr.GetClient()
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testSlinkyNamespace}}
+	ns := &corev1.Namespace{Name: testSlinkyNamespace}
 	_ = k.Create(ctx, ns)
 
 	t.Cleanup(func() {
@@ -214,11 +214,9 @@ func createNode(t *testing.T, tc *testEnvContext, name string, annotations, labe
 	t.Helper()
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Annotations: annotations,
-			Labels:      labels,
-		},
+		Name:        name,
+		Annotations: annotations,
+		Labels:      labels,
 	}
 	require.NoError(t, tc.client.Create(tc.ctx, node))
 
@@ -229,10 +227,8 @@ func createSlinkyPod(t *testing.T, tc *testEnvContext, nodeName string) *corev1.
 	t.Helper()
 
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "slinky-pod-" + nodeName,
-			Namespace: testSlinkyNamespace,
-		},
+		Name:      "slinky-pod-" + nodeName,
+		Namespace: testSlinkyNamespace,
 		Spec: corev1.PodSpec{
 			NodeName:   nodeName,
 			Containers: []corev1.Container{{Name: "slurmd", Image: "nvcr.io/nvidia/slinky:latest"}},
@@ -247,10 +243,8 @@ func createFailedPod(t *testing.T, tc *testEnvContext, nodeName string) {
 	t.Helper()
 
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "failed-pod-" + nodeName,
-			Namespace: testSlinkyNamespace,
-		},
+		Name:      "failed-pod-" + nodeName,
+		Namespace: testSlinkyNamespace,
 		Spec: corev1.PodSpec{
 			NodeName:   nodeName,
 			Containers: []corev1.Container{{Name: "slurmd", Image: "nvcr.io/nvidia/slinky:latest"}},
@@ -310,8 +304,8 @@ func createDrainRequest(t *testing.T, tc *testEnvContext, name string, spec drai
 	t.Helper()
 
 	dr := &drainv1alpha1.DrainRequest{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
-		Spec:       spec,
+		Name: name, Namespace: "default",
+		Spec: spec,
 	}
 	require.NoError(t, tc.client.Create(tc.ctx, dr))
 }
