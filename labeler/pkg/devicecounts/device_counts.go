@@ -73,6 +73,82 @@ type compiledClass struct {
 	program cel.Program
 }
 
+// ReconcileCache caches peer observations while one or more target nodes are reconciled.
+// Create a new cache whenever the peer-node or ResourceSlice snapshot may have changed.
+// A cache is used sequentially and discarded after its target nodes are reconciled;
+// it is not safe for concurrent use.
+//
+// During a fleet reconciliation, the cache ensures each node's ResourceSlices
+// are loaded once, each class/peer CEL expression is evaluated once, and each
+// class/partition maximum is learned once. Combined with the node-name informer
+// index, ResourceSlice processing scales with the N nodes and their K slices
+// (O(N*K)) instead of repeating peer-wide store scans for every target node.
+type ReconcileCache struct {
+	manager *Manager
+
+	// peerNodes is the cache-scoped node snapshot used to learn the maximum
+	// expected count for each class and hardware partition.
+	peerNodes []*corev1.Node
+
+	// loadResourceSlicesForNode performs the indexed informer lookup when a node is
+	// first observed by this cache.
+	loadResourceSlicesForNode func(*corev1.Node) []*resourcev1.ResourceSlice
+
+	// resourceSlices memoizes loadResourceSlicesForNode results by node name. A
+	// nil result is cached as well, preventing repeated lookups for a missing source.
+	resourceSlices map[string][]*resourcev1.ResourceSlice
+
+	// peerCurrentCounts maps a class-and-node key to the current device count
+	// obtained by evaluating that class's CEL program for that peer. The value
+	// also records whether evaluation was impossible because its ResourceSlices
+	// were missing or because CEL returned an error. expectedDeviceCountForPartition
+	// uses this map to avoid reevaluating the same class/peer pair while the cache lives.
+	peerCurrentCounts map[peerCurrentCountKey]cachedCurrentCount
+
+	// partitionExpected memoizes the maximum count learned from all peers in a
+	// class/partition pair, allowing every target in that partition to reuse it.
+	partitionExpected map[partitionExpectedKey]int
+}
+
+// peerCurrentCountKey identifies one peer observation within a ReconcileCache.
+//
+// classIndex is the position in Manager.classes (the compiled, enabled classes),
+// not the position in the original configuration. Including it prevents two
+// classes that inspect the same node from sharing results from different CEL
+// programs. For example, the GPU class at index 0 for "node-a" is represented
+// as peerCurrentCountKey{classIndex: 0, nodeName: "node-a"}.
+type peerCurrentCountKey struct {
+	classIndex int
+	nodeName   string
+}
+
+// partitionExpectedKey identifies the learned expected count shared by one
+// class and one hardware partition within a ReconcileCache.
+//
+// partitionKey is produced by compiledClass.partitionKey. It is "default" when
+// no grouping labels are configured, or a value such as
+// "node.kubernetes.io/instance-type=p5|nvidia.com/gpu.product=H100" otherwise.
+// The class index keeps equal partition strings from different classes separate.
+type partitionExpectedKey struct {
+	classIndex   int
+	partitionKey string
+}
+
+// cachedCurrentCount records the result of evaluating one class for one peer.
+//
+// Exactly one result state is meaningful:
+//   - missingSource is true when a ResourceSlice-backed class has no slices;
+//   - err is non-nil when CEL evaluation failed; or
+//   - count is valid when missingSource is false and err is nil.
+//
+// Failed and missing-source observations are cached too, so every peer is
+// inspected at most once per class during a ReconcileCache's lifetime.
+type cachedCurrentCount struct {
+	count         int
+	missingSource bool
+	err           error
+}
+
 // LoadConfig loads expected device-count TOML configuration from a file.
 func LoadConfig(path string) (Config, error) {
 	var config Config
@@ -144,14 +220,37 @@ func (m *Manager) ClassCount() int {
 	return len(m.classes)
 }
 
-// ReconcileNodeLabelsInPlace evaluates all enabled device-count classes for a node.
-func (m *Manager) ReconcileNodeLabelsInPlace(
+// CalculateAndSetDeviceCountLabels evaluates all enabled classes and writes
+// their current and expected device-count labels onto node.
+func (m *Manager) CalculateAndSetDeviceCountLabels(
 	ctx context.Context,
 	node *corev1.Node,
 	peerNodes []*corev1.Node,
-	resourceSlicesForNode func(*corev1.Node) []*resourcev1.ResourceSlice,
+	loadResourceSlicesForNode func(*corev1.Node) []*resourcev1.ResourceSlice,
 ) bool {
-	if !m.Enabled() {
+	return m.NewReconcileCache(peerNodes, loadResourceSlicesForNode).
+		CalculateAndSetDeviceCountLabels(ctx, node)
+}
+
+// NewReconcileCache creates a scoped cache for peer expected-count learning.
+func (m *Manager) NewReconcileCache(
+	peerNodes []*corev1.Node,
+	loadResourceSlicesForNode func(*corev1.Node) []*resourcev1.ResourceSlice,
+) *ReconcileCache {
+	return &ReconcileCache{
+		manager:                   m,
+		peerNodes:                 peerNodes,
+		loadResourceSlicesForNode: loadResourceSlicesForNode,
+		resourceSlices:            make(map[string][]*resourcev1.ResourceSlice),
+		peerCurrentCounts:         make(map[peerCurrentCountKey]cachedCurrentCount),
+		partitionExpected:         make(map[partitionExpectedKey]int),
+	}
+}
+
+// CalculateAndSetDeviceCountLabels evaluates all enabled classes using cached
+// peer observations and writes their labels onto node.
+func (p *ReconcileCache) CalculateAndSetDeviceCountLabels(ctx context.Context, node *corev1.Node) bool {
+	if !p.manager.Enabled() {
 		return false
 	}
 
@@ -160,9 +259,9 @@ func (m *Manager) ReconcileNodeLabelsInPlace(
 	}
 
 	needsUpdate := false
-	resourceSlices := resourceSlicesForNode(node)
+	resourceSlices := p.cachedResourceSlicesForNode(node)
 
-	for _, class := range m.classes {
+	for classIndex, class := range p.manager.classes {
 		// Do not turn a missing DRA source into current=0. A ResourceSlice-based
 		// expression should wait until at least one associated slice exists.
 		if class.referencesResourceSlices() && len(resourceSlices) == 0 {
@@ -173,7 +272,7 @@ func (m *Manager) ReconcileNodeLabelsInPlace(
 			continue
 		}
 
-		current, err := m.evaluateCurrent(ctx, class, node, resourceSlices)
+		current, err := p.manager.evaluateCurrent(ctx, class, node, resourceSlices)
 		if err != nil {
 			metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonEvaluationError).Inc()
 			slog.Warn("Skipping device count label update after current count evaluation failed",
@@ -182,7 +281,7 @@ func (m *Manager) ReconcileNodeLabelsInPlace(
 			continue
 		}
 
-		expected := m.expectedDeviceCount(ctx, class, node, current, peerNodes, resourceSlicesForNode)
+		expected := p.expectedDeviceCount(ctx, classIndex, class, node, current)
 		currentValue := strconv.Itoa(current)
 		expectedValue := strconv.Itoa(expected)
 		partitionKey := class.partitionKey(node)
@@ -497,13 +596,34 @@ func normalizeNumericMapValues(values map[string]any) {
 	}
 }
 
-func (m *Manager) expectedDeviceCount(
+// cachedResourceSlicesForNode loads a node's indexed ResourceSlices at most
+// once. Reusing the result across target and peer evaluations prevents multiple
+// classes from repeating the same O(K) informer lookup.
+func (p *ReconcileCache) cachedResourceSlicesForNode(node *corev1.Node) []*resourcev1.ResourceSlice {
+	if node == nil {
+		return nil
+	}
+
+	if resourceSlices, ok := p.resourceSlices[node.Name]; ok {
+		return resourceSlices
+	}
+
+	var resourceSlices []*resourcev1.ResourceSlice
+	if p.loadResourceSlicesForNode != nil {
+		resourceSlices = p.loadResourceSlicesForNode(node)
+	}
+
+	p.resourceSlices[node.Name] = resourceSlices
+
+	return resourceSlices
+}
+
+func (p *ReconcileCache) expectedDeviceCount(
 	ctx context.Context,
+	classIndex int,
 	class compiledClass,
 	node *corev1.Node,
 	current int,
-	peerNodes []*corev1.Node,
-	resourceSlicesForNode func(*corev1.Node) []*resourcev1.ResourceSlice,
 ) int {
 	if override, ok := class.expectedOverride(node); ok {
 		return override
@@ -514,9 +634,47 @@ func (m *Manager) expectedDeviceCount(
 	expected := maxCountLabel(current, node.Labels[class.Labels.Expected])
 
 	partitionKey := class.partitionKey(node)
-	for _, peer := range peerNodesForPartition(class, partitionKey, peerNodes) {
-		expected = m.learnExpectedFromPeer(ctx, class, node, peer, expected, resourceSlicesForNode)
+
+	partitionExpectedCount := p.expectedDeviceCountForPartition(
+		ctx,
+		classIndex,
+		class,
+		node.Name,
+		partitionKey,
+	)
+	if partitionExpectedCount > expected {
+		expected = partitionExpectedCount
 	}
+
+	return expected
+}
+
+// expectedDeviceCountForPartition computes a class/partition maximum once and caches it.
+// Without this cache, each target in a partition of P peers would repeat the
+// same P peer evaluations.
+func (p *ReconcileCache) expectedDeviceCountForPartition(
+	ctx context.Context,
+	classIndex int,
+	class compiledClass,
+	reconciledNodeName string,
+	partitionKey string,
+) int {
+	key := partitionExpectedKey{classIndex: classIndex, partitionKey: partitionKey}
+	if expected, ok := p.partitionExpected[key]; ok {
+		return expected
+	}
+
+	expected := 0
+	for _, peer := range peerNodesForPartition(class, partitionKey, p.peerNodes) {
+		expected = maxCountLabel(expected, peer.Labels[class.Labels.Expected])
+
+		peerCurrent, ok := p.currentDeviceCountForPeer(ctx, classIndex, class, reconciledNodeName, peer)
+		if ok && peerCurrent > expected {
+			expected = peerCurrent
+		}
+	}
+
+	p.partitionExpected[key] = expected
 
 	return expected
 }
@@ -548,50 +706,45 @@ func peerNodesForPartition(
 	return nodes
 }
 
-func (m *Manager) learnExpectedFromPeer(
+// currentDeviceCountForPeer evaluates each class/peer pair at most once per
+// cache lifetime, including failed and missing-source results.
+func (p *ReconcileCache) currentDeviceCountForPeer(
 	ctx context.Context,
+	classIndex int,
 	class compiledClass,
-	node *corev1.Node,
+	reconciledNodeName string,
 	peer *corev1.Node,
-	expected int,
-	resourceSlicesForNode func(*corev1.Node) []*resourcev1.ResourceSlice,
-) int {
-	expected = maxCountLabel(expected, peer.Labels[class.Labels.Expected])
-
-	peerCurrent, ok := m.currentDeviceCountForPeer(ctx, class, node, peer, resourceSlicesForNode)
-	if ok && peerCurrent > expected {
-		return peerCurrent
-	}
-
-	return expected
-}
-
-func (m *Manager) currentDeviceCountForPeer(
-	ctx context.Context,
-	class compiledClass,
-	node *corev1.Node,
-	peer *corev1.Node,
-	resourceSlicesForNode func(*corev1.Node) []*resourcev1.ResourceSlice,
 ) (int, bool) {
-	peerResourceSlices := resourceSlicesForNode(peer)
+	key := peerCurrentCountKey{classIndex: classIndex, nodeName: peer.Name}
+
+	cached, ok := p.peerCurrentCounts[key]
+	if !ok {
+		peerResourceSlices := p.cachedResourceSlicesForNode(peer)
+
+		cached.missingSource = class.referencesResourceSlices() && len(peerResourceSlices) == 0
+		if !cached.missingSource {
+			cached.count, cached.err = p.manager.evaluateCurrent(ctx, class, peer, peerResourceSlices)
+		}
+
+		p.peerCurrentCounts[key] = cached
+	}
 
 	// A peer with no DRA source should not lower or initialize the baseline
 	// for ResourceSlice-backed classes.
-	if class.referencesResourceSlices() && len(peerResourceSlices) == 0 {
+	if cached.missingSource {
 		metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonMissingSource).Inc()
 		return 0, false
 	}
 
-	peerCurrent, err := m.evaluateCurrent(ctx, class, peer, peerResourceSlices)
-	if err != nil {
+	if cached.err != nil {
 		metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonEvaluationError).Inc()
 		slog.Warn("Skipping peer device count during expected count learning",
-			"node", node.Name, "peer", peer.Name, "class", class.Name, "error", err)
+			"node", reconciledNodeName, "peer", peer.Name, "class", class.Name, "error", cached.err)
 
 		return 0, false
 	}
 
-	return peerCurrent, true
+	return cached.count, true
 }
 
 func parseCountLabel(raw string) (int, bool) {
