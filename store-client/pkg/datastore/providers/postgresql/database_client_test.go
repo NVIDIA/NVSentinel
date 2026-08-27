@@ -25,52 +25,52 @@ import (
 func TestFindOneFilterGeneration(t *testing.T) {
 	tests := []struct {
 		name         string
-		filter       map[string]interface{}
+		filter       map[string]any
 		expectedSQL  string
-		expectedArgs []interface{}
+		expectedArgs []any
 		expectError  bool
 	}{
 		{
 			name: "simple equality",
-			filter: map[string]interface{}{
+			filter: map[string]any{
 				"healthevent.nodename": "test-node-1",
 			},
 			expectedSQL: "COALESCE(document->'healthevent'->>'nodename', " +
 				"document->'healthevent'->>'nodeName') = $1",
-			expectedArgs: []interface{}{"test-node-1"},
+			expectedArgs: []any{"test-node-1"},
 			expectError:  false,
 		},
 		{
 			name: "single operator - $in",
-			filter: map[string]interface{}{
-				"healtheventstatus.nodequarantined": map[string]interface{}{
-					opIn: []interface{}{"Quarantined", "UnQuarantined"},
+			filter: map[string]any{
+				"healtheventstatus.nodequarantined": map[string]any{
+					opIn: []any{"Quarantined", "UnQuarantined"},
 				},
 			},
 			expectedSQL: "COALESCE(document->'healtheventstatus'->>'nodequarantined', " +
 				"document->'healtheventstatus'->>'nodeQuarantined') IN ($1, $2)",
-			expectedArgs: []interface{}{"Quarantined", "UnQuarantined"},
+			expectedArgs: []any{"Quarantined", "UnQuarantined"},
 			expectError:  false,
 		},
 		{
 			name: "single operator - $gte",
-			filter: map[string]interface{}{
-				"createdAt": map[string]interface{}{
+			filter: map[string]any{
+				"createdAt": map[string]any{
 					opGte: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 				},
 			},
 			expectedSQL:  "created_at >= $1",
-			expectedArgs: []interface{}{time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)},
+			expectedArgs: []any{time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)},
 			expectError:  false,
 		},
 		{
 			name: "multiple conditions - equality + $in + $gte",
-			filter: map[string]interface{}{
+			filter: map[string]any{
 				"healthevent.nodename": "test-node-1",
-				"healtheventstatus.nodequarantined": map[string]interface{}{
-					opIn: []interface{}{"Quarantined", "AlreadyQuarantined"},
+				"healtheventstatus.nodequarantined": map[string]any{
+					opIn: []any{"Quarantined", "AlreadyQuarantined"},
 				},
-				"createdAt": map[string]interface{}{
+				"createdAt": map[string]any{
 					opGte: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 				},
 			},
@@ -82,10 +82,10 @@ func TestFindOneFilterGeneration(t *testing.T) {
 		},
 		{
 			name: "real-world case - CancelLatestQuarantiningEvents filter",
-			filter: map[string]interface{}{
+			filter: map[string]any{
 				"healthevent.nodename": "kwok-kata-test-node-1",
-				"healtheventstatus.nodequarantined": map[string]interface{}{
-					opIn: []interface{}{"Quarantined", "UnQuarantined"},
+				"healtheventstatus.nodequarantined": map[string]any{
+					opIn: []any{"Quarantined", "UnQuarantined"},
 				},
 			},
 			// Check for COALESCE in the output for dual-case support
@@ -95,8 +95,8 @@ func TestFindOneFilterGeneration(t *testing.T) {
 		},
 		{
 			name: "invalid operator",
-			filter: map[string]interface{}{
-				"field": map[string]interface{}{
+			filter: map[string]any{
+				"field": map[string]any{
 					"$invalid": "value",
 				},
 			},
@@ -112,7 +112,7 @@ func TestFindOneFilterGeneration(t *testing.T) {
 			var conditions []query.Condition
 
 			for key, value := range tt.filter {
-				if valueMap, isMap := value.(map[string]interface{}); isMap {
+				if valueMap, isMap := value.(map[string]any); isMap {
 					for op, opValue := range valueMap {
 						var cond query.Condition
 
@@ -130,7 +130,7 @@ func TestFindOneFilterGeneration(t *testing.T) {
 						case opLte:
 							cond = query.Lte(key, opValue)
 						case opIn:
-							if inValues, ok := opValue.([]interface{}); ok {
+							if inValues, ok := opValue.([]any); ok {
 								cond = query.In(key, inValues)
 							} else {
 								if !tt.expectError {

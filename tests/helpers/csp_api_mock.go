@@ -140,7 +140,7 @@ func getNextAvailablePort() int {
 	lc := &net.ListenConfig{}
 
 	// Try up to 100 ports to find an available one
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		port := portAllocator.nextPort
 		portAllocator.nextPort++
 
@@ -229,7 +229,7 @@ func (c *CSPAPIMockClient) GetEventCount(csp CSPType) (int, error) {
 		return 0, fmt.Errorf("request failed: status=%d body=%s", resp.StatusCode, string(respBody))
 	}
 
-	var events []interface{}
+	var events []any
 	if err := json.Unmarshal(respBody, &events); err != nil {
 		return 0, fmt.Errorf("failed to decode response: %w", err)
 	}
@@ -271,7 +271,7 @@ func (c *CSPAPIMockClient) ResetPollCount(csp CSPType) error {
 	return c.postEmpty(fmt.Sprintf("/%s/stats/reset", csp))
 }
 
-func (c *CSPAPIMockClient) post(endpoint string, payload interface{}) ([]byte, error) {
+func (c *CSPAPIMockClient) post(endpoint string, payload any) ([]byte, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)

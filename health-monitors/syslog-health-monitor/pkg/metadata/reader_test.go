@@ -107,13 +107,11 @@ func TestReaderConcurrentAccess(t *testing.T) {
 	reader := NewReader(metadataFile)
 
 	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 10 {
+		wg.Go(func() {
 			_, err := reader.GetGPUByPCI("0000:17:00.0")
 			require.NoError(t, err)
-		}()
+		})
 	}
 
 	wg.Wait()

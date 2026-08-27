@@ -91,13 +91,13 @@ func main() {
 	}
 }
 
-func loadConfig(configFilePath string) (map[string]interface{}, error) {
+func loadConfig(configFilePath string) (map[string]any, error) {
 	data, err := os.ReadFile(configFilePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read platform-connector-configmap with err %w", err)
 	}
 
-	result := make(map[string]interface{})
+	result := make(map[string]any)
 
 	err = json.Unmarshal(data, &result)
 	if err != nil {
@@ -111,7 +111,7 @@ func loadConfig(configFilePath string) (map[string]interface{}, error) {
 // Processor is returned here because it depends on the clientset from K8s initialization.
 func initializeK8sConnector(
 	ctx context.Context,
-	config map[string]interface{},
+	config map[string]any,
 	stopCh chan struct{},
 	kubeconfigPath string,
 ) (*ringbuffer.RingBuffer, error) {
@@ -161,7 +161,7 @@ func initializeK8sConnector(
 
 func initializeDatabaseStoreConnector(
 	ctx context.Context,
-	config map[string]interface{},
+	config map[string]any,
 	databaseClientCertMountPath string,
 ) (*store.DatabaseStoreConnector, error) {
 	ringBuffer := ringbuffer.NewRingBuffer("databaseStore", ctx)
@@ -326,7 +326,7 @@ func newK8sClientset(kubeconfigPath string) (kubernetes.Interface, error) {
 // configuration where every cluster-scoped monitor is pinned to one node and
 // its events rejected — a failure that surfaces far from its cause. Only an
 // explicit [] says that on purpose.
-func stringSliceFromConfig(config map[string]interface{}, key string) ([]string, error) {
+func stringSliceFromConfig(config map[string]any, key string) ([]string, error) {
 	raw, present := config[key]
 	if !present {
 		return nil, fmt.Errorf("%s is not set: it must be a list of canonical "+
@@ -339,7 +339,7 @@ func stringSliceFromConfig(config map[string]interface{}, key string) ([]string,
 			"that no publisher may name other nodes", key)
 	}
 
-	items, ok := raw.([]interface{})
+	items, ok := raw.([]any)
 	if !ok {
 		return nil, fmt.Errorf("%s must be a list of strings, got %T", key, raw)
 	}
@@ -374,7 +374,7 @@ func stringSliceFromConfig(config map[string]interface{}, key string) ([]string,
 //
 // Values arrive as JSON, where the chart quotes them; an unquoted bool from a
 // hand-edited ConfigMap is accepted too.
-func nodeBindingEnabled(config map[string]interface{}) (bool, error) {
+func nodeBindingEnabled(config map[string]any) (bool, error) {
 	const key = "enableNodeBindingAuth"
 
 	raw, present := config[key]
@@ -428,7 +428,7 @@ func newTokenValidator(audience string, kubeconfigPath string) (*grpcauth.Valida
 // caller may name any node; that is not a supported production configuration.
 func initializeAuthInterceptor(
 	ctx context.Context,
-	config map[string]interface{},
+	config map[string]any,
 	kubeconfigPath string,
 ) (grpc.UnaryServerInterceptor, error) {
 	enabled, err := nodeBindingEnabled(config)
@@ -493,7 +493,7 @@ func initializeAuthInterceptor(
 // authMode reads the node-binding enforcement mode from config. Absent means
 // auth.ModeEnforce, so that a ConfigMap that predates this setting keeps
 // today's behavior rather than silently switching to audit-only.
-func authMode(config map[string]interface{}) (auth.Mode, error) {
+func authMode(config map[string]any) (auth.Mode, error) {
 	const key = "AuthMode"
 
 	raw, present := config[key]
@@ -517,7 +517,7 @@ func authMode(config map[string]interface{}) (auth.Mode, error) {
 // boolFromConfig reads a strict boolean config value, defaulting when absent.
 // Values arrive as JSON, where the chart quotes them; an unquoted bool from a
 // hand-edited ConfigMap is accepted too.
-func boolFromConfig(config map[string]interface{}, key string, def bool) (bool, error) {
+func boolFromConfig(config map[string]any, key string, def bool) (bool, error) {
 	raw, present := config[key]
 	if !present {
 		return def, nil
@@ -540,7 +540,7 @@ func boolFromConfig(config map[string]interface{}, key string, def bool) (bool, 
 
 func initializeGRPCSinkConnector(
 	ctx context.Context,
-	config map[string]interface{},
+	config map[string]any,
 ) (*grpcsink.GRPCSinkConnector, error) {
 	ringBuffer := ringbuffer.NewRingBuffer("grpcSink", ctx)
 	server.InitializeAndAttachRingBufferForConnectors(ringBuffer)
@@ -573,7 +573,7 @@ func initializeGRPCSinkConnector(
 
 func initializeConnectors(
 	ctx context.Context,
-	config map[string]interface{},
+	config map[string]any,
 	stopCh chan struct{},
 	databaseClientCertMountPath string,
 	kubeconfigPath string,

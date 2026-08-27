@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"text/template"
@@ -31,7 +32,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
@@ -390,8 +390,8 @@ func setNodeOwnerRef(ctx context.Context, maintenance *unstructured.Unstructured
 		Kind:               "Node",
 		Name:               node.Name,
 		UID:                node.UID,
-		Controller:         ptr.To(false),
-		BlockOwnerDeletion: ptr.To(false),
+		Controller:         new(false),
+		BlockOwnerDeletion: new(false),
 	}
 	maintenance.SetOwnerReferences([]metav1.OwnerReference{ownerRef})
 
@@ -535,9 +535,7 @@ func (c *FaultRemediationClient) launchLogCollectorJob(
 		logCollectorNodeLabel:  nodeName,
 		logCollectorEventLabel: eventUID,
 	}
-	for k, v := range labels {
-		job.Labels[k] = v
-	}
+	maps.Copy(job.Labels, labels)
 
 	// Get job if exists otherwise create
 	existingJobs := &batchv1.JobList{}

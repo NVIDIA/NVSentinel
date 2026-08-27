@@ -41,7 +41,7 @@ func newClock() *fakeClock { return &fakeClock{now: fixedNow} }
 
 func newRebootNode(name string) *janitorv1alpha1.RebootNode {
 	return &janitorv1alpha1.RebootNode{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 	}
 }
 

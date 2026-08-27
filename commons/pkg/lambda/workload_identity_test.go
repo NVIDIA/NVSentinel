@@ -226,15 +226,11 @@ func TestWorkloadIdentity_ConcurrentColdCacheRequests_MintsTokenOnce(t *testing.
 	var wg sync.WaitGroup
 
 	for range 16 {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-
+		wg.Go(func() {
 			token, err := w.token(context.Background())
 			assert.NoError(t, err)
 			assert.Equal(t, "minted-key", token)
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -402,7 +398,7 @@ func TestRefreshAt_VariedTokenLifetimes_SchedulesRefreshWithinExpectedBounds(t *
 
 			expiresAt := now.Add(tc.life)
 
-			for i := 0; i < 100; i++ {
+			for range 100 {
 				tc.check(t, expiresAt, refreshAt(expiresAt, now))
 			}
 		})

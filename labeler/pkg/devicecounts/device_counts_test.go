@@ -24,7 +24,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -97,7 +96,7 @@ func TestExpectedDeviceCountsLearnFromPeerNodeLabels(t *testing.T) {
 	})
 
 	manager := newTestManager(t, config)
-	updated := manager.ReconcileNodeLabelsInPlace(
+	updated := manager.CalculateAndSetDeviceCountLabels(
 		context.Background(),
 		nodeB,
 		[]*corev1.Node{nodeA, nodeB},
@@ -137,7 +136,7 @@ func TestExpectedDeviceCountsOverridePrecedence(t *testing.T) {
 	})
 
 	manager := newTestManager(t, config)
-	updated := manager.ReconcileNodeLabelsInPlace(
+	updated := manager.CalculateAndSetDeviceCountLabels(
 		context.Background(),
 		node,
 		[]*corev1.Node{node},
@@ -171,7 +170,7 @@ func TestExpectedDeviceCountsFromAllocatableResourceQuantity(t *testing.T) {
 	}
 
 	manager := newTestManager(t, config)
-	updated := manager.ReconcileNodeLabelsInPlace(
+	updated := manager.CalculateAndSetDeviceCountLabels(
 		context.Background(),
 		node,
 		[]*corev1.Node{node},
@@ -417,45 +416,35 @@ func TestNodeResourcesAffectDeviceCounts(t *testing.T) {
 func TestReferencesNodeResources(t *testing.T) {
 	t.Run("returns true for allocatable expression", func(t *testing.T) {
 		class := compiledClass{
-			ClassConfig: ClassConfig{
-				CurrentExpression: "int(node.status.allocatable['nvidia.com/mlnxnics'])",
-			},
+			CurrentExpression: "int(node.status.allocatable['nvidia.com/mlnxnics'])",
 		}
 		require.True(t, class.referencesNodeResources())
 	})
 
 	t.Run("returns true for capacity expression", func(t *testing.T) {
 		class := compiledClass{
-			ClassConfig: ClassConfig{
-				CurrentExpression: "int(node.status.capacity['nvidia.com/mlnxnics'])",
-			},
+			CurrentExpression: "int(node.status.capacity['nvidia.com/mlnxnics'])",
 		}
 		require.True(t, class.referencesNodeResources())
 	})
 
 	t.Run("returns false for label expression", func(t *testing.T) {
 		class := compiledClass{
-			ClassConfig: ClassConfig{
-				CurrentExpression: "int(node.metadata.labels['nvidia.com/gpu.count'])",
-			},
+			CurrentExpression: "int(node.metadata.labels['nvidia.com/gpu.count'])",
 		}
 		require.False(t, class.referencesNodeResources())
 	})
 
 	t.Run("returns false for resourceSlices expression", func(t *testing.T) {
 		class := compiledClass{
-			ClassConfig: ClassConfig{
-				CurrentExpression: "resourceSlices.size()",
-			},
+			CurrentExpression: "resourceSlices.size()",
 		}
 		require.False(t, class.referencesNodeResources())
 	})
 
 	t.Run("returns false for conditions expression", func(t *testing.T) {
 		class := compiledClass{
-			ClassConfig: ClassConfig{
-				CurrentExpression: "node.status.conditions.exists(c, c.type == 'Ready')",
-			},
+			CurrentExpression: "node.status.conditions.exists(c, c.type == 'Ready')",
 		}
 		require.False(t, class.referencesNodeResources())
 	})
@@ -473,9 +462,7 @@ func newTestManager(t *testing.T, config Config) *Manager {
 
 func testNode(name string, nodeLabels map[string]string) *corev1.Node {
 	return &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   name,
-			Labels: nodeLabels,
-		},
+		Name:   name,
+		Labels: nodeLabels,
 	}
 }

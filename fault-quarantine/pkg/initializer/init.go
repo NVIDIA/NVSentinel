@@ -49,7 +49,7 @@ type Components struct {
 	K8sClient       *informer.FaultQuarantineClient
 	CircuitBreaker  breaker.CircuitBreaker
 	DatastoreConfig *datastore.DataStoreConfig
-	Pipeline        interface{}
+	Pipeline        any
 	TomlConfig      config.TomlConfig
 }
 
@@ -127,7 +127,7 @@ func createReconcilerConfig(
 	circuitBreakerEnabled bool,
 	datastoreConfig *datastore.DataStoreConfig,
 	tokenConfig storeconfig.TokenConfig,
-	pipeline interface{},
+	pipeline any,
 ) reconciler.ReconcilerConfig {
 	// Convert store config types to the types expected by reconciler
 	clientTokenConfig := client.TokenConfig{

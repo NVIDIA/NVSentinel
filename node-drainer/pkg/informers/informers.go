@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -38,7 +39,6 @@ import (
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/utils/ptr"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -160,20 +160,18 @@ func drainEligiblePodCacheObject(pod *v1.Pod) *v1.Pod {
 
 	var terminationGracePeriodSeconds *int64
 	if pod.Spec.TerminationGracePeriodSeconds != nil {
-		terminationGracePeriodSeconds = ptr.To(*pod.Spec.TerminationGracePeriodSeconds)
+		terminationGracePeriodSeconds = new(*pod.Spec.TerminationGracePeriodSeconds)
 	}
 
 	return &v1.Pod{
-		TypeMeta: pod.TypeMeta,
-		ObjectMeta: metav1.ObjectMeta{
-			Name:              pod.Name,
-			Namespace:         pod.Namespace,
-			UID:               pod.UID,
-			ResourceVersion:   pod.ResourceVersion,
-			Annotations:       annotations,
-			OwnerReferences:   ownerReferences,
-			DeletionTimestamp: deletionTimestamp,
-		},
+		TypeMeta:          pod.TypeMeta,
+		Name:              pod.Name,
+		Namespace:         pod.Namespace,
+		UID:               pod.UID,
+		ResourceVersion:   pod.ResourceVersion,
+		Annotations:       annotations,
+		OwnerReferences:   ownerReferences,
+		DeletionTimestamp: deletionTimestamp,
 		Spec: v1.PodSpec{
 			NodeName:                      pod.Spec.NodeName,
 			TerminationGracePeriodSeconds: terminationGracePeriodSeconds,
@@ -449,10 +447,8 @@ func isPodUsingPartialDrainEntity(deviceAnnotation model.DeviceAnnotation, resou
 	partialDrainEntity *protos.Entity) bool {
 	for _, resourceName := range resourceNames {
 		if devicesForResource, ok := deviceAnnotation.Devices[resourceName]; ok {
-			for _, device := range devicesForResource {
-				if device == partialDrainEntity.EntityValue {
-					return true
-				}
+			if slices.Contains(devicesForResource, partialDrainEntity.EntityValue) {
+				return true
 			}
 		}
 	}
@@ -672,12 +668,10 @@ func (i *Informers) evictPodsInNamespaceAndNode(ctx context.Context,
 func (i *Informers) sendEvictionRequestForPod(ctx context.Context, namespace string,
 	timeout time.Duration, pod *v1.Pod) error {
 	eviction := &policyv1.Eviction{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      pod.Name,
-			Namespace: namespace,
-		},
+		Name:      pod.Name,
+		Namespace: namespace,
 		DeleteOptions: &metav1.DeleteOptions{
-			GracePeriodSeconds: ptr.To(int64(timeout.Seconds())),
+			GracePeriodSeconds: new(int64(timeout.Seconds())),
 			DryRun:             i.dryRunMode,
 		},
 	}

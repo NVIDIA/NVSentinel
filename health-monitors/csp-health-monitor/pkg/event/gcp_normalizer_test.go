@@ -321,7 +321,7 @@ func newTestAuditLog(methodName, resourceName, rpcStatusMsg string, metadata *st
 // Helper to create a basic logging.Entry for testing
 func newTestLogEntry(
 	insertID string,
-	payload interface{},
+	payload any,
 	resourceType string,
 	resourceLabels map[string]string,
 ) *logging.Entry {
@@ -1009,7 +1009,7 @@ func validateActualTimes(t *testing.T, result, expected *model.MaintenanceEvent)
 }
 
 // Helper function to validate timestamps
-func validateTimestamps(t *testing.T, result *model.MaintenanceEvent, rawEvent interface{}) {
+func validateTimestamps(t *testing.T, result *model.MaintenanceEvent, rawEvent any) {
 	// Check EventReceivedTimestamp is set (should be close to baseTime used in entry creation)
 	if entry, ok := rawEvent.(*logging.Entry); ok && entry != nil {
 		if result.EventReceivedTimestamp.Sub(entry.Timestamp) > time.Millisecond {
@@ -1044,8 +1044,8 @@ func handleErrorCase(t *testing.T, err error, expectErr bool) bool {
 // Test case struct for GCP Normalizer tests
 type gcpNormalizerTestCase struct {
 	name                string
-	rawEvent            interface{}
-	additionalInfo      []interface{}
+	rawEvent            any
+	additionalInfo      []any
 	expectedEvent       *model.MaintenanceEvent
 	expectErr           bool
 	checkActualTimes    bool
@@ -1153,7 +1153,7 @@ func TestGCPNormalizer_Normalize_ErrorCases(t *testing.T) {
 			rawEvent: newTestLogEntry("errpayload1",
 				"not an audit log payload",
 				"gce_instance", map[string]string{"instance_id": "id-err"}),
-			additionalInfo: []interface{}{"k8s-node-err", "test-cluster-errpayload"},
+			additionalInfo: []any{"k8s-node-err", "test-cluster-errpayload"},
 			expectErr:      true,
 		},
 		{
@@ -1161,7 +1161,7 @@ func TestGCPNormalizer_Normalize_ErrorCases(t *testing.T) {
 			rawEvent: newTestLogEntry("err_no_nodename",
 				newTestAuditLog(GCPMethodUpcomingMaintenance, TEST_INSTANCE_ERR, "", nil),
 				"gce_instance", map[string]string{"instance_id": "id-err-nn"}),
-			additionalInfo: []interface{}{},
+			additionalInfo: []any{},
 			expectErr:      true,
 		},
 		{
@@ -1169,7 +1169,7 @@ func TestGCPNormalizer_Normalize_ErrorCases(t *testing.T) {
 			rawEvent: newTestLogEntry("err_empty_nodename",
 				newTestAuditLog(GCPMethodUpcomingMaintenance, TEST_INSTANCE_ERR, "", nil),
 				"gce_instance", map[string]string{"instance_id": "id-err-en"}),
-			additionalInfo: []interface{}{"", TEST_CLUSTER},
+			additionalInfo: []any{"", TEST_CLUSTER},
 			expectErr:      true,
 		},
 		{
@@ -1177,7 +1177,7 @@ func TestGCPNormalizer_Normalize_ErrorCases(t *testing.T) {
 			rawEvent: newTestLogEntry("err_no_clustername",
 				newTestAuditLog(GCPMethodUpcomingMaintenance, TEST_INSTANCE_ERR, "", nil),
 				"gce_instance", map[string]string{"instance_id": "id-err-cn"}),
-			additionalInfo: []interface{}{"k8s-node-valid"},
+			additionalInfo: []any{"k8s-node-valid"},
 			expectErr:      true,
 		},
 		{
@@ -1185,7 +1185,7 @@ func TestGCPNormalizer_Normalize_ErrorCases(t *testing.T) {
 			rawEvent: newTestLogEntry("err_empty_clustername",
 				newTestAuditLog(GCPMethodUpcomingMaintenance, TEST_INSTANCE_ERR, "", nil),
 				"gce_instance", map[string]string{"instance_id": "id-err-ecn"}),
-			additionalInfo: []interface{}{"k8s-node-valid", ""},
+			additionalInfo: []any{"k8s-node-valid", ""},
 			expectErr:      true,
 		},
 		{
@@ -1193,7 +1193,7 @@ func TestGCPNormalizer_Normalize_ErrorCases(t *testing.T) {
 			rawEvent: newTestLogEntry("err_wrong_type",
 				newTestAuditLog(GCPMethodUpcomingMaintenance, "projects/p/zones/z/disks/d-1", "", nil),
 				"gcs_disk", map[string]string{"disk_id": "id-disk"}),
-			additionalInfo: []interface{}{"k8s-node-disk", "test-cluster-disk"},
+			additionalInfo: []any{"k8s-node-disk", "test-cluster-disk"},
 			expectErr:      true,
 		},
 	}
@@ -1215,7 +1215,7 @@ func TestGCPNormalizer_Normalize_ScheduledMaintenance(t *testing.T) {
 				newTestAuditLog(GCPMethodUpcomingMaintenance, "projects/p/zones/z/instances/i-1", "",
 					createScheduledMaintenanceMetadata(baseTime, string(model.TypeScheduled), string(model.CSPStatusPending))),
 				"gce_instance", map[string]string{"instance_id": "id-123"}),
-			additionalInfo:      []interface{}{K8S_NODE_1, TEST_CLUSTER},
+			additionalInfo:      []any{K8S_NODE_1, TEST_CLUSTER},
 			expectedEvent:       createExpectedMaintenanceEvent("up1", K8S_NODE_1, "id-123", model.TypeScheduled, model.CSPStatusPending, model.StatusDetected, TEST_CLUSTER, &baseTime, &endTime),
 			checkScheduledTimes: true,
 		},
@@ -1225,7 +1225,7 @@ func TestGCPNormalizer_Normalize_ScheduledMaintenance(t *testing.T) {
 				newTestAuditLog(GCPMethodUpcomingMaintenance, "projects/p/zones/z/instances/i-unsched", "",
 					createScheduledMaintenanceMetadata(baseTime, string(model.TypeUnscheduled), string(model.CSPStatusPending))),
 				"gce_instance", map[string]string{"instance_id": "id-up-unsched"}),
-			additionalInfo:      []interface{}{"k8s-node-up-unsched", "test-cluster-unsched"},
+			additionalInfo:      []any{"k8s-node-up-unsched", "test-cluster-unsched"},
 			expectedEvent:       createExpectedMaintenanceEvent("up_unsched", "k8s-node-up-unsched", "id-up-unsched", model.TypeUnscheduled, model.CSPStatusPending, model.StatusDetected, "test-cluster-unsched", &baseTime, &endTime),
 			checkScheduledTimes: true,
 		},
@@ -1247,7 +1247,7 @@ func TestGCPNormalizer_Normalize_OngoingMaintenance(t *testing.T) {
 				newTestAuditLog(GCPMethodMigrateOnHostMaintenance, "projects/p/zones/z/instances/i-2", "",
 					createBasicMaintenanceMetadata(string(model.CSPStatusActive))),
 				"gce_instance", map[string]string{"instance_id": "id-456"}),
-			additionalInfo:   []interface{}{"k8s-node-2", "test-cluster-mig"},
+			additionalInfo:   []any{"k8s-node-2", "test-cluster-mig"},
 			expectedEvent:    createExpectedMaintenanceEvent("mig1", "k8s-node-2", "id-456", "", model.CSPStatusActive, model.StatusMaintenanceOngoing, "test-cluster-mig", nil, nil),
 			checkActualTimes: true,
 		},
@@ -1257,7 +1257,7 @@ func TestGCPNormalizer_Normalize_OngoingMaintenance(t *testing.T) {
 				newTestAuditLog("some.other.Method", "projects/p/zones/z/instances/i-meta", "",
 					createMaintenanceMetadataWithType(string(model.TypeScheduled), string(model.CSPStatusOngoing))),
 				"gce_instance", map[string]string{"instance_id": "id-meta-ongoing"}),
-			additionalInfo:   []interface{}{"k8s-node-meta-ongoing", "test-cluster-meta"},
+			additionalInfo:   []any{"k8s-node-meta-ongoing", "test-cluster-meta"},
 			expectedEvent:    createExpectedMaintenanceEvent("meta_ongoing", "k8s-node-meta-ongoing", "id-meta-ongoing", model.TypeScheduled, model.CSPStatusOngoing, model.StatusMaintenanceOngoing, "test-cluster-meta", nil, nil),
 			checkActualTimes: true,
 		},
@@ -1286,7 +1286,7 @@ func TestGCPNormalizer_Normalize_CompletedMaintenance(t *testing.T) {
 				"gce_instance",
 				map[string]string{"instance_id": "id-789"},
 			),
-			additionalInfo:   []interface{}{"k8s-node-3", "test-cluster-comp"},
+			additionalInfo:   []any{"k8s-node-3", "test-cluster-comp"},
 			expectedEvent:    createExpectedMaintenanceEvent("comp1", "k8s-node-3", "id-789", "", model.CSPStatusCompleted, model.StatusMaintenanceComplete, "test-cluster-comp", nil, nil),
 			checkActualTimes: true,
 		},
@@ -1315,7 +1315,7 @@ func TestGCPNormalizer_Normalize_SpecialCases(t *testing.T) {
 				"gce_instance",
 				map[string]string{},
 			),
-			additionalInfo: []interface{}{"k8s-node-fqn", "test-cluster-fqn"},
+			additionalInfo: []any{"k8s-node-fqn", "test-cluster-fqn"},
 			expectedEvent:  createExpectedMaintenanceEvent("fqn_test", "k8s-node-fqn", defaultUnknown, "", model.CSPStatusPending, model.StatusDetected, "test-cluster-fqn", nil, nil),
 		},
 	}

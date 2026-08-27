@@ -64,14 +64,14 @@ func (h *AWSHandler) describeEvents(w http.ResponseWriter) {
 	h.store.IncrementPollCount(store.CSPAWS)
 
 	events := h.store.ListByCSP(store.CSPAWS)
-	awsEvents := make([]map[string]interface{}, 0, len(events))
+	awsEvents := make([]map[string]any, 0, len(events))
 
 	for _, e := range events {
 		awsEvents = append(awsEvents, h.toAWSEvent(e))
 	}
 
 	w.Header().Set("Content-Type", "application/x-amz-json-1.1")
-	writeJSON(w, map[string]interface{}{"events": awsEvents})
+	writeJSON(w, map[string]any{"events": awsEvents})
 }
 
 func (h *AWSHandler) describeEntities(w http.ResponseWriter, r *http.Request) {
@@ -87,13 +87,13 @@ func (h *AWSHandler) describeEntities(w http.ResponseWriter, r *http.Request) {
 
 	events := h.store.ListByCSP(store.CSPAWS)
 
-	var entities []map[string]interface{}
+	var entities []map[string]any
 
 	for _, e := range events {
 		arn := h.eventARN(e)
 		for _, targetArn := range req.Filter.EventArns {
 			if arn == targetArn {
-				entities = append(entities, map[string]interface{}{
+				entities = append(entities, map[string]any{
 					"entityValue":     e.InstanceID,
 					"eventArn":        arn,
 					"entityArn":       e.EntityARN,
@@ -106,7 +106,7 @@ func (h *AWSHandler) describeEntities(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/x-amz-json-1.1")
-	writeJSON(w, map[string]interface{}{"entities": entities})
+	writeJSON(w, map[string]any{"entities": entities})
 }
 
 func (h *AWSHandler) describeDetails(w http.ResponseWriter, r *http.Request) {
@@ -120,13 +120,13 @@ func (h *AWSHandler) describeDetails(w http.ResponseWriter, r *http.Request) {
 
 	events := h.store.ListByCSP(store.CSPAWS)
 
-	var details []map[string]interface{}
+	var details []map[string]any
 
 	for _, e := range events {
 		arn := h.eventARN(e)
 		for _, targetArn := range req.EventArns {
 			if arn == targetArn {
-				details = append(details, map[string]interface{}{
+				details = append(details, map[string]any{
 					"event":            h.toAWSEvent(e),
 					"eventDescription": map[string]string{"latestDescription": e.Description},
 				})
@@ -135,13 +135,13 @@ func (h *AWSHandler) describeDetails(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/x-amz-json-1.1")
-	writeJSON(w, map[string]interface{}{
+	writeJSON(w, map[string]any{
 		"successfulSet": details,
-		"failedSet":     []interface{}{},
+		"failedSet":     []any{},
 	})
 }
 
-func (h *AWSHandler) toAWSEvent(e *store.MaintenanceEvent) map[string]interface{} {
+func (h *AWSHandler) toAWSEvent(e *store.MaintenanceEvent) map[string]any {
 	status := e.Status
 	if status == "" {
 		status = "upcoming"
@@ -161,7 +161,7 @@ func (h *AWSHandler) toAWSEvent(e *store.MaintenanceEvent) map[string]interface{
 		endTime = float64(e.ScheduledEnd.Unix())
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"arn":               h.eventARN(e),
 		"availabilityZone":  e.Zone,
 		"service":           "EC2",

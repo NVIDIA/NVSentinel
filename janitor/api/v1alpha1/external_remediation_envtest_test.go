@@ -20,7 +20,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -38,13 +37,9 @@ import (
 var _ = Describe("ExternalRemediationRequest JSON wire format", func() {
 	It("round-trips through the apiserver with a non-zero Condition.LastTransitionTime", func() {
 		extrrObj := &ExternalRemediationRequest{
-			TypeMeta: metav1.TypeMeta{
-				APIVersion: "nvsentinel.dgxc.nvidia.com/v1",
-				Kind:       "ExternalRemediationRequest",
-			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "envtest-extrr-1",
-			},
+			APIVersion: "nvsentinel.dgxc.nvidia.com/v1",
+			Kind:       "ExternalRemediationRequest",
+			Name:       "envtest-extrr-1",
 			Spec: &protos.ExternalRemediationRequestSpec{
 				HealthEvent: &protos.HealthEvent{
 					Id:                "he-envtest",

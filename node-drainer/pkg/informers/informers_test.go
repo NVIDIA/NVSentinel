@@ -27,7 +27,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
@@ -112,20 +111,18 @@ func TestExcludedPodTransformRetainsDrainFieldsOnly(t *testing.T) {
 
 	cachedPod := transformed.(*v1.Pod)
 	expected := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:              "eligible",
-			Namespace:         "workload",
-			UID:               types.UID("workload-eligible"),
-			ResourceVersion:   "11",
-			DeletionTimestamp: pod.DeletionTimestamp.DeepCopy(),
-			Annotations: map[string]string{
-				model.PodDeviceAnnotationName: `{"devices":{"nvidia.com/gpu":["GPU-1"]}}`,
-			},
-			OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet"}},
+		Name:              "eligible",
+		Namespace:         "workload",
+		UID:               types.UID("workload-eligible"),
+		ResourceVersion:   "11",
+		DeletionTimestamp: pod.DeletionTimestamp.DeepCopy(),
+		Annotations: map[string]string{
+			model.PodDeviceAnnotationName: `{"devices":{"nvidia.com/gpu":["GPU-1"]}}`,
 		},
+		OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet"}},
 		Spec: v1.PodSpec{
 			NodeName:                      "node-a",
-			TerminationGracePeriodSeconds: ptr.To(int64(60)),
+			TerminationGracePeriodSeconds: new(int64(60)),
 			Containers: []v1.Container{{
 				Resources: v1.ResourceRequirements{
 					Limits: v1.ResourceList{v1.ResourceName("nvidia.com/gpu"): resource.MustParse("1")},
@@ -170,15 +167,13 @@ func TestNodeTransformRetainsEventAndEvaluatorFields(t *testing.T) {
 	t.Parallel()
 
 	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            "node-a",
-			UID:             types.UID("node-uid"),
-			ResourceVersion: "42",
-			Labels:          map[string]string{"large": "metadata"},
-			Annotations: map[string]string{
-				common.QuarantineHealthEventAnnotationKey: `{"events":[]}`,
-				"unrelated": "discard",
-			},
+		Name:            "node-a",
+		UID:             types.UID("node-uid"),
+		ResourceVersion: "42",
+		Labels:          map[string]string{"large": "metadata"},
+		Annotations: map[string]string{
+			common.QuarantineHealthEventAnnotationKey: `{"events":[]}`,
+			"unrelated": "discard",
 		},
 		Spec:   v1.NodeSpec{Unschedulable: true},
 		Status: v1.NodeStatus{Phase: v1.NodeRunning},
@@ -208,18 +203,16 @@ func TestInformerTransformsIntegrateWithIndexes(t *testing.T) {
 	daemonPod.OwnerReferences = []metav1.OwnerReference{{Kind: "DaemonSet", Name: "daemon"}}
 	eligiblePod := richDrainEligiblePod("workload", "eligible", "node-a")
 	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            "node-a",
-			UID:             types.UID("node-uid"),
-			ResourceVersion: "7",
-			Annotations: map[string]string{
-				common.QuarantineHealthEventAnnotationKey: `{"events":[]}`,
-			},
+		Name:            "node-a",
+		UID:             types.UID("node-uid"),
+		ResourceVersion: "7",
+		Annotations: map[string]string{
+			common.QuarantineHealthEventAnnotationKey: `{"events":[]}`,
 		},
 	}
 
 	client := fake.NewSimpleClientset(systemPod, daemonPod, eligiblePod, node)
-	informers, err := NewInformers(client, 0, ptr.To(5), false, false, `^kube-system$`)
+	informers, err := NewInformers(client, 0, new(5), false, false, `^kube-system$`)
 	require.NoError(t, err)
 	require.NoError(t, informers.Run(ctx))
 
@@ -259,11 +252,11 @@ func TestEventRecorderAggregatesNodeEvents(t *testing.T) {
 	client, err := kubernetes.NewForConfig(cfg)
 	require.NoError(t, err)
 	node, err := client.CoreV1().Nodes().Create(ctx, &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+		Name: "node-a",
 	}, metav1.CreateOptions{})
 	require.NoError(t, err)
 
-	informers, err := NewInformers(client, 0, ptr.To(5), false, false, "")
+	informers, err := NewInformers(client, 0, new(5), false, false, "")
 	require.NoError(t, err)
 	require.NoError(t, informers.Run(ctx))
 
@@ -287,23 +280,21 @@ func richDrainEligiblePod(namespace, name, nodeName string) *v1.Pod {
 	deletionTimestamp := metav1.NewTime(time.Now().Add(-time.Minute))
 
 	return &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            name,
-			Namespace:       namespace,
-			UID:             types.UID(namespace + "-" + name),
-			ResourceVersion: "11",
-			Labels:          map[string]string{"app": name},
-			Annotations: map[string]string{
-				model.PodDeviceAnnotationName: `{"devices":{"nvidia.com/gpu":["GPU-1"]}}`,
-				"unrelated":                   "discard",
-			},
-			OwnerReferences:   []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "owner"}},
-			Finalizers:        []string{"example.com/finalizer"},
-			DeletionTimestamp: &deletionTimestamp,
+		Name:            name,
+		Namespace:       namespace,
+		UID:             types.UID(namespace + "-" + name),
+		ResourceVersion: "11",
+		Labels:          map[string]string{"app": name},
+		Annotations: map[string]string{
+			model.PodDeviceAnnotationName: `{"devices":{"nvidia.com/gpu":["GPU-1"]}}`,
+			"unrelated":                   "discard",
 		},
+		OwnerReferences:   []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "owner"}},
+		Finalizers:        []string{"example.com/finalizer"},
+		DeletionTimestamp: &deletionTimestamp,
 		Spec: v1.PodSpec{
 			NodeName:                      nodeName,
-			TerminationGracePeriodSeconds: ptr.To(int64(60)),
+			TerminationGracePeriodSeconds: new(int64(60)),
 			InitContainers: []v1.Container{
 				{
 					Name:  "init",

@@ -17,6 +17,7 @@ package reconciler
 import (
 	"context"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
@@ -184,7 +185,7 @@ func (m *MockHealthEventStore) FindHealthEventsByNode(ctx context.Context, nodeN
 	return nil, nil
 }
 
-func (m *MockHealthEventStore) FindHealthEventsByFilter(ctx context.Context, filter map[string]interface{}) ([]datastore.HealthEventWithStatus, error) {
+func (m *MockHealthEventStore) FindHealthEventsByFilter(ctx context.Context, filter map[string]any) ([]datastore.HealthEventWithStatus, error) {
 	return nil, nil
 }
 
@@ -200,7 +201,7 @@ func (m *MockHealthEventStore) UpdatePodEvictionStatus(ctx context.Context, even
 	return nil
 }
 
-func (m *MockHealthEventStore) UpdateRemediationStatus(ctx context.Context, eventID string, status interface{}) error {
+func (m *MockHealthEventStore) UpdateRemediationStatus(ctx context.Context, eventID string, status any) error {
 	return nil
 }
 
@@ -353,11 +354,9 @@ func createTestNode(ctx context.Context, name string, annotations map[string]str
 		labels = make(map[string]string)
 	}
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Annotations: annotations,
-			Labels:      labels,
-		},
+		Name:        name,
+		Annotations: annotations,
+		Labels:      labels,
 		Status: corev1.NodeStatus{
 			Conditions: []corev1.NodeCondition{
 				{
@@ -424,11 +423,9 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		// Process Event 1
 		healthEventDoc := &events.HealthEventDoc{
 			ID: "test-event-id-1",
-			HealthEventWithStatus: model.HealthEventWithStatus{
-				HealthEvent: &protos.HealthEvent{
-					NodeName:          nodeName,
-					RecommendedAction: protos.RecommendedAction_RESTART_BM,
-				},
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          nodeName,
+				RecommendedAction: protos.RecommendedAction_RESTART_BM,
 			},
 		}
 		groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions, healthEventDoc.HealthEvent)
@@ -461,7 +458,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		}
 		cr, err := testDynamic.Resource(gvr).Get(ctx, crName, metav1.GetOptions{})
 		require.NoError(t, err)
-		assert.Equal(t, nodeName, cr.Object["spec"].(map[string]interface{})["nodeName"])
+		assert.Equal(t, nodeName, cr.Object["spec"].(map[string]any)["nodeName"])
 
 		// Cleanup
 		_ = testDynamic.Resource(gvr).Delete(ctx, crName, metav1.DeleteOptions{})
@@ -489,11 +486,9 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		// Event 1: Create first CR
 		event1 := &events.HealthEventDoc{
 			ID: "test-event-id-cr-1",
-			HealthEventWithStatus: model.HealthEventWithStatus{
-				HealthEvent: &protos.HealthEvent{
-					NodeName:          nodeName,
-					RecommendedAction: protos.RecommendedAction_RESTART_BM,
-				},
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          nodeName,
+				RecommendedAction: protos.RecommendedAction_RESTART_BM,
 			},
 		}
 		groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions, event1.HealthEvent)
@@ -559,11 +554,9 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		// Event 1: Create first CR
 		event1 := &events.HealthEventDoc{
 			ID: "test-event-id-cr-1",
-			HealthEventWithStatus: model.HealthEventWithStatus{
-				HealthEvent: &protos.HealthEvent{
-					NodeName:          nodeName,
-					RecommendedAction: protos.RecommendedAction_RESTART_BM,
-				},
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          nodeName,
+				RecommendedAction: protos.RecommendedAction_RESTART_BM,
 			},
 		}
 		groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions, event1.HealthEvent)
@@ -598,11 +591,9 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		// Event 2: Create retry CR
 		event2 := &events.HealthEventDoc{
 			ID: "test-event-id",
-			HealthEventWithStatus: model.HealthEventWithStatus{
-				HealthEvent: &protos.HealthEvent{
-					NodeName:          nodeName,
-					RecommendedAction: protos.RecommendedAction_RESTART_BM,
-				},
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          nodeName,
+				RecommendedAction: protos.RecommendedAction_RESTART_BM,
 			},
 		}
 		groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions, event2.HealthEvent)
@@ -653,11 +644,9 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		// Event 1: RESTART_VM
 		event1 := &events.HealthEventDoc{
 			ID: "test-event-id",
-			HealthEventWithStatus: model.HealthEventWithStatus{
-				HealthEvent: &protos.HealthEvent{
-					NodeName:          nodeName,
-					RecommendedAction: protos.RecommendedAction_RESTART_VM,
-				},
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          nodeName,
+				RecommendedAction: protos.RecommendedAction_RESTART_VM,
 			},
 		}
 		groupConfig1, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
@@ -740,11 +729,9 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	// Event 1: RESTART_BM creates CR-1
 	event1 := &events.HealthEventDoc{
 		ID: "test-event-id",
-		HealthEventWithStatus: model.HealthEventWithStatus{
-			HealthEvent: &protos.HealthEvent{
-				NodeName:          nodeName,
-				RecommendedAction: protos.RecommendedAction_RESTART_BM,
-			},
+		HealthEvent: &protos.HealthEvent{
+			NodeName:          nodeName,
+			RecommendedAction: protos.RecommendedAction_RESTART_BM,
 		},
 	}
 	groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
@@ -828,11 +815,9 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.DrainSucceededLabelValue, false)
 	event5 := &events.HealthEventDoc{
 		ID: "test-event-id",
-		HealthEventWithStatus: model.HealthEventWithStatus{
-			HealthEvent: &protos.HealthEvent{
-				NodeName:          nodeName,
-				RecommendedAction: protos.RecommendedAction_RESTART_BM,
-			},
+		HealthEvent: &protos.HealthEvent{
+			NodeName:          nodeName,
+			RecommendedAction: protos.RecommendedAction_RESTART_BM,
 		},
 	}
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
@@ -894,11 +879,9 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	// Event 1: RESTART_BM in group restart creates CR-1
 	event1 := &events.HealthEventDoc{
 		ID: "test-event-id",
-		HealthEventWithStatus: model.HealthEventWithStatus{
-			HealthEvent: &protos.HealthEvent{
-				NodeName:          nodeName,
-				RecommendedAction: protos.RecommendedAction_RESTART_BM,
-			},
+		HealthEvent: &protos.HealthEvent{
+			NodeName:          nodeName,
+			RecommendedAction: protos.RecommendedAction_RESTART_BM,
 		},
 	}
 	groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
@@ -1006,15 +989,13 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.DrainSucceededLabelValue, false)
 	event5 := &events.HealthEventDoc{
 		ID: "test-event-id",
-		HealthEventWithStatus: model.HealthEventWithStatus{
-			HealthEvent: &protos.HealthEvent{
-				NodeName:          nodeName,
-				RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
-				EntitiesImpacted: []*protos.Entity{
-					{
-						EntityType:  "GPU_UUID",
-						EntityValue: "GPU-455d8f70-2051-db6c-0430-ffc457bff834",
-					},
+		HealthEvent: &protos.HealthEvent{
+			NodeName:          nodeName,
+			RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+			EntitiesImpacted: []*protos.Entity{
+				{
+					EntityType:  "GPU_UUID",
+					EntityValue: "GPU-455d8f70-2051-db6c-0430-ffc457bff834",
 				},
 			},
 		},
@@ -1060,15 +1041,13 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	// Event 7: COMPONENT_RESET in group reset with the different entity should allow CR-3 creation
 	event7 := &events.HealthEventDoc{
 		ID: "test-event-id-2",
-		HealthEventWithStatus: model.HealthEventWithStatus{
-			HealthEvent: &protos.HealthEvent{
-				NodeName:          nodeName,
-				RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
-				EntitiesImpacted: []*protos.Entity{
-					{
-						EntityType:  "GPU_UUID",
-						EntityValue: "GPU-927d8f70-2051-db6c-0430-ffc457bff834",
-					},
+		HealthEvent: &protos.HealthEvent{
+			NodeName:          nodeName,
+			RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+			EntitiesImpacted: []*protos.Entity{
+				{
+					EntityType:  "GPU_UUID",
+					EntityValue: "GPU-927d8f70-2051-db6c-0430-ffc457bff834",
 				},
 			},
 		},
@@ -1152,9 +1131,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	if node.Annotations == nil {
 		node.Annotations = make(map[string]string)
 	}
-	for key, value := range quarantineAnnotationForTest(t, activeUnsupportedEvent) {
-		node.Annotations[key] = value
-	}
+	maps.Copy(node.Annotations, quarantineAnnotationForTest(t, activeUnsupportedEvent))
 	_, err = testClient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
 	require.NoError(t, err)
 	active, err := r.nodeHasActiveQuarantine(ctx, activeUnsupportedEvent)
@@ -1213,7 +1190,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		eventID1 := "test-event-id-1"
 		event1 := createQuarantineEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
 		eventToken1 := datastore.EventWithToken{
-			Event:       map[string]interface{}(event1),
+			Event:       map[string]any(event1),
 			ResumeToken: []byte("test-token-1"),
 		}
 		mockWatcher.EventsChan <- eventToken1
@@ -1246,14 +1223,14 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		// Verify CR exists in Kubernetes
 		cr, err := testDynamic.Resource(gvr).Get(ctx, crName, metav1.GetOptions{})
 		require.NoError(t, err, "CR should exist in Kubernetes")
-		assert.Equal(t, nodeName, cr.Object["spec"].(map[string]interface{})["nodeName"])
+		assert.Equal(t, nodeName, cr.Object["spec"].(map[string]any)["nodeName"])
 
 		// Verify only one CR exists for this node
 		crList, err := testDynamic.Resource(gvr).List(ctx, metav1.ListOptions{})
 		require.NoError(t, err)
 		crCount := 0
 		for _, item := range crList.Items {
-			if item.Object["spec"].(map[string]interface{})["nodeName"] == nodeName {
+			if item.Object["spec"].(map[string]any)["nodeName"] == nodeName {
 				crCount++
 			}
 		}
@@ -1276,7 +1253,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		event2 := createQuarantineEventCreatedAt(eventID2, nodeName, protos.RecommendedAction_RESTART_VM,
 			time.Now().Add(-time.Hour))
 		eventToken2 := datastore.EventWithToken{
-			Event:       map[string]interface{}(event2),
+			Event:       map[string]any(event2),
 			ResumeToken: []byte("test-token-2"),
 		}
 		mockWatcher.EventsChan <- eventToken2
@@ -1301,7 +1278,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		require.NoError(t, err)
 		crCount2 := 0
 		for _, item := range crList2.Items {
-			if item.Object["spec"].(map[string]interface{})["nodeName"] == nodeName {
+			if item.Object["spec"].(map[string]any)["nodeName"] == nodeName {
 				crCount2++
 			}
 		}
@@ -1334,7 +1311,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		require.NoError(t, err)
 		crCount2 = 0
 		for _, item := range crList2.Items {
-			if item.Object["spec"].(map[string]interface{})["nodeName"] == nodeName {
+			if item.Object["spec"].(map[string]any)["nodeName"] == nodeName {
 				crCount2++
 			}
 		}
@@ -1343,7 +1320,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		// Event 3: Send unquarantine event
 		unquarantineEvent := createUnquarantineEvent(nodeName)
 		unquarantineEventToken := datastore.EventWithToken{
-			Event:       map[string]interface{}(unquarantineEvent),
+			Event:       map[string]any(unquarantineEvent),
 			ResumeToken: []byte("test-token-3"),
 		}
 		mockWatcher.EventsChan <- unquarantineEventToken
@@ -1432,15 +1409,15 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 func createCustomActionQuarantineEvent(eventID, nodeName, customAction string) datastore.Event {
 	return datastore.Event{
 		"operationType": "update",
-		"fullDocument": map[string]interface{}{
+		"fullDocument": map[string]any{
 			"_id": eventID,
-			"healtheventstatus": map[string]interface{}{
-				"userpodsevictionstatus": map[string]interface{}{
+			"healtheventstatus": map[string]any{
+				"userpodsevictionstatus": map[string]any{
 					"status": model.StatusSucceeded,
 				},
 				"nodequarantined": model.Quarantined,
 			},
-			"healthevent": map[string]interface{}{
+			"healthevent": map[string]any{
 				"nodename":                nodeName,
 				"recommendedaction":       int32(protos.RecommendedAction_CUSTOM),
 				"customrecommendedaction": customAction,
@@ -1453,15 +1430,15 @@ func createCustomActionQuarantineEvent(eventID, nodeName, customAction string) d
 func createQuarantineEvent(eventID string, nodeName string, action protos.RecommendedAction) datastore.Event {
 	return datastore.Event{
 		"operationType": "update",
-		"fullDocument": map[string]interface{}{
+		"fullDocument": map[string]any{
 			"_id": eventID,
-			"healtheventstatus": map[string]interface{}{
-				"userpodsevictionstatus": map[string]interface{}{
+			"healtheventstatus": map[string]any{
+				"userpodsevictionstatus": map[string]any{
 					"status": model.StatusSucceeded,
 				},
 				"nodequarantined": model.Quarantined,
 			},
-			"healthevent": map[string]interface{}{
+			"healthevent": map[string]any{
 				"nodename":          nodeName,
 				"recommendedaction": int32(action),
 			},
@@ -1478,7 +1455,7 @@ func createQuarantineEventCreatedAt(
 	createdAt time.Time,
 ) datastore.Event {
 	event := createQuarantineEvent(eventID, nodeName, action)
-	event["fullDocument"].(map[string]interface{})["createdAt"] = createdAt.UTC().Format(time.RFC3339Nano)
+	event["fullDocument"].(map[string]any)["createdAt"] = createdAt.UTC().Format(time.RFC3339Nano)
 
 	return event
 }
@@ -1487,15 +1464,15 @@ func createQuarantineEventCreatedAt(
 func createUnquarantineEvent(nodeName string) datastore.Event {
 	return datastore.Event{
 		"operationType": "update",
-		"fullDocument": map[string]interface{}{
+		"fullDocument": map[string]any{
 			"_id": "test-doc-id",
-			"healtheventstatus": map[string]interface{}{
+			"healtheventstatus": map[string]any{
 				"nodequarantined": model.UnQuarantined,
-				"userpodsevictionstatus": map[string]interface{}{
+				"userpodsevictionstatus": map[string]any{
 					"status": model.StatusSucceeded,
 				},
 			},
-			"healthevent": map[string]interface{}{
+			"healthevent": map[string]any{
 				"nodename": nodeName,
 			},
 		},
@@ -1506,12 +1483,12 @@ func createUnquarantineEvent(nodeName string) datastore.Event {
 func createCancelledEvent(eventID string, nodeName string, action protos.RecommendedAction) datastore.Event {
 	return datastore.Event{
 		"operationType": "update",
-		"fullDocument": map[string]interface{}{
+		"fullDocument": map[string]any{
 			"_id": eventID,
-			"healtheventstatus": map[string]interface{}{
+			"healtheventstatus": map[string]any{
 				"nodequarantined": model.Cancelled,
 			},
-			"healthevent": map[string]interface{}{
+			"healthevent": map[string]any{
 				"nodename":          nodeName,
 				"recommendedaction": int32(action),
 			},
@@ -1543,7 +1520,7 @@ func TestReconciler_CancelledEventCleansAnnotation(t *testing.T) {
 	eventID1 := "test-event-id-1"
 	event1 := createQuarantineEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
 	eventToken1 := datastore.EventWithToken{
-		Event:       map[string]interface{}(event1),
+		Event:       map[string]any(event1),
 		ResumeToken: []byte("test-token-1"),
 	}
 	mockWatcher.EventsChan <- eventToken1
@@ -1570,7 +1547,7 @@ func TestReconciler_CancelledEventCleansAnnotation(t *testing.T) {
 	t.Log("Send Cancelled event to remove group from annotation")
 	cancelledEvent := createCancelledEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
 	cancelledEventToken := datastore.EventWithToken{
-		Event:       map[string]interface{}(cancelledEvent),
+		Event:       map[string]any(cancelledEvent),
 		ResumeToken: []byte("test-token-2"),
 	}
 	mockWatcher.EventsChan <- cancelledEventToken
@@ -1617,7 +1594,7 @@ func TestReconciler_CancelledEventClearsAllGroups(t *testing.T) {
 	eventID1 := "test-event-id-1"
 	event1 := createQuarantineEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
 	eventToken1 := datastore.EventWithToken{
-		Event:       map[string]interface{}(event1),
+		Event:       map[string]any(event1),
 		ResumeToken: []byte("test-token-1"),
 	}
 	mockWatcher.EventsChan <- eventToken1
@@ -1640,7 +1617,7 @@ func TestReconciler_CancelledEventClearsAllGroups(t *testing.T) {
 	eventID2 := "test-event-id-2"
 	event2 := createQuarantineEvent(eventID2, nodeName, protos.RecommendedAction_RESTART_VM)
 	eventToken2 := datastore.EventWithToken{
-		Event:       map[string]interface{}(event2),
+		Event:       map[string]any(event2),
 		ResumeToken: []byte("test-token-2"),
 	}
 	mockWatcher.EventsChan <- eventToken2
@@ -1656,7 +1633,7 @@ func TestReconciler_CancelledEventClearsAllGroups(t *testing.T) {
 	t.Log("Send Cancelled event")
 	cancelledEvent := createCancelledEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
 	cancelledEventToken := datastore.EventWithToken{
-		Event:       map[string]interface{}(cancelledEvent),
+		Event:       map[string]any(cancelledEvent),
 		ResumeToken: []byte("test-token-3"),
 	}
 	mockWatcher.EventsChan <- cancelledEventToken
@@ -1698,7 +1675,7 @@ func TestReconciler_CancelledAndUnQuarantinedClearAllState(t *testing.T) {
 	eventID1 := "test-event-id-1"
 	event1 := createQuarantineEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
 	eventToken1 := datastore.EventWithToken{
-		Event:       map[string]interface{}(event1),
+		Event:       map[string]any(event1),
 		ResumeToken: []byte("test-token-1"),
 	}
 	mockWatcher.EventsChan <- eventToken1
@@ -1719,7 +1696,7 @@ func TestReconciler_CancelledAndUnQuarantinedClearAllState(t *testing.T) {
 	t.Log("Send Cancelled event")
 	cancelledEvent := createCancelledEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
 	cancelledEventToken := datastore.EventWithToken{
-		Event:       map[string]interface{}(cancelledEvent),
+		Event:       map[string]any(cancelledEvent),
 		ResumeToken: []byte("test-token-2"),
 	}
 	mockWatcher.EventsChan <- cancelledEventToken
@@ -1735,7 +1712,7 @@ func TestReconciler_CancelledAndUnQuarantinedClearAllState(t *testing.T) {
 	t.Log("Send UnQuarantined event")
 	unquarantineEvent := createUnquarantineEvent(nodeName)
 	unquarantineEventToken := datastore.EventWithToken{
-		Event:       map[string]interface{}(unquarantineEvent),
+		Event:       map[string]any(unquarantineEvent),
 		ResumeToken: []byte("test-token-3"),
 	}
 	mockWatcher.EventsChan <- unquarantineEventToken
@@ -1777,17 +1754,17 @@ func updateGPUResetStatus(ctx context.Context, t *testing.T, crName, status stri
 	}
 
 	// Update status based on the provided status string
-	conditions := []interface{}{}
+	conditions := []any{}
 	switch status {
 	case "Succeeded":
-		conditions = append(conditions, map[string]interface{}{
+		conditions = append(conditions, map[string]any{
 			"type":               "Complete",
 			"status":             "True",
 			"reason":             "GPUResetSucceeded",
 			"message":            "GPU reset successfully",
 			"lastTransitionTime": time.Now().Format(time.RFC3339),
 		})
-		cr.Object["status"] = map[string]interface{}{
+		cr.Object["status"] = map[string]any{
 			"conditions":     conditions,
 			"startTime":      time.Now().Add(-5 * time.Minute).Format(time.RFC3339),
 			"completionTime": time.Now().Format(time.RFC3339),
@@ -1819,63 +1796,63 @@ func updateRebootNodeStatus(ctx context.Context, t *testing.T, crName, status st
 	}
 
 	// Update status based on the provided status string
-	conditions := []interface{}{}
+	conditions := []any{}
 	switch status {
 	case "Succeeded":
-		conditions = append(conditions, map[string]interface{}{
+		conditions = append(conditions, map[string]any{
 			"type":               "SignalSent",
 			"status":             "True",
 			"reason":             "SignalSent",
 			"message":            "Reboot signal sent successfully",
 			"lastTransitionTime": time.Now().Format(time.RFC3339),
 		})
-		conditions = append(conditions, map[string]interface{}{
+		conditions = append(conditions, map[string]any{
 			"type":               "NodeReady",
 			"status":             "True",
 			"reason":             "NodeReady",
 			"message":            "Node is ready after reboot",
 			"lastTransitionTime": time.Now().Format(time.RFC3339),
 		})
-		cr.Object["status"] = map[string]interface{}{
+		cr.Object["status"] = map[string]any{
 			"conditions":     conditions,
 			"startTime":      time.Now().Add(-5 * time.Minute).Format(time.RFC3339),
 			"completionTime": time.Now().Format(time.RFC3339),
 		}
 	case "InProgress":
-		conditions = append(conditions, map[string]interface{}{
+		conditions = append(conditions, map[string]any{
 			"type":               "SignalSent",
 			"status":             "True",
 			"reason":             "SignalSent",
 			"message":            "Reboot signal sent",
 			"lastTransitionTime": time.Now().Format(time.RFC3339),
 		})
-		conditions = append(conditions, map[string]interface{}{
+		conditions = append(conditions, map[string]any{
 			"type":               "NodeReady",
 			"status":             "Unknown",
 			"reason":             "InProgress",
 			"message":            "Waiting for node to become ready",
 			"lastTransitionTime": time.Now().Format(time.RFC3339),
 		})
-		cr.Object["status"] = map[string]interface{}{
+		cr.Object["status"] = map[string]any{
 			"conditions": conditions,
 			"startTime":  time.Now().Add(-1 * time.Minute).Format(time.RFC3339),
 		}
 	case "Failed":
-		conditions = append(conditions, map[string]interface{}{
+		conditions = append(conditions, map[string]any{
 			"type":               "SignalSent",
 			"status":             "True",
 			"reason":             "SignalSent",
 			"message":            "Reboot signal sent",
 			"lastTransitionTime": time.Now().Format(time.RFC3339),
 		})
-		conditions = append(conditions, map[string]interface{}{
+		conditions = append(conditions, map[string]any{
 			"type":               "NodeReady",
 			"status":             "False",
 			"reason":             "Failed",
 			"message":            "Node failed to reach ready state",
 			"lastTransitionTime": time.Now().Format(time.RFC3339),
 		})
-		cr.Object["status"] = map[string]interface{}{
+		cr.Object["status"] = map[string]any{
 			"conditions":     conditions,
 			"startTime":      time.Now().Add(-2 * time.Minute).Format(time.RFC3339),
 			"completionTime": time.Now().Format(time.RFC3339),
@@ -1939,14 +1916,14 @@ func TestMetrics_CRGenerationDuration(t *testing.T) {
 	event1 := createQuarantineEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
 
 	drainFinishTime := time.Now().Add(-5 * time.Second)
-	if fullDoc, ok := event1["fullDocument"].(map[string]interface{}); ok {
-		if status, ok := fullDoc["healtheventstatus"].(map[string]interface{}); ok {
+	if fullDoc, ok := event1["fullDocument"].(map[string]any); ok {
+		if status, ok := fullDoc["healtheventstatus"].(map[string]any); ok {
 			status["drainfinishtimestamp"] = timestamppb.New(drainFinishTime)
 		}
 	}
 
 	eventToken1 := datastore.EventWithToken{
-		Event:       map[string]interface{}(event1),
+		Event:       map[string]any(event1),
 		ResumeToken: []byte("test-token-1"),
 	}
 	mockWatcher.EventsChan <- eventToken1
@@ -1983,7 +1960,7 @@ func TestMetrics_ProcessingErrors(t *testing.T) {
 	beforeError := getCounterVecValue(t, metrics.ProcessingErrors, "unmarshal_doc_error", "unknown")
 
 	invalidEventToken := &datastore.EventWithToken{
-		Event: map[string]interface{}{
+		Event: map[string]any{
 			"fullDocument": "invalid-data",
 		},
 		ResumeToken: []byte("test-token"),
@@ -2038,13 +2015,13 @@ func makeColdStartHealthEvent(
 		CreatedAt: createdAt,
 		RawEvent: datastore.Event{
 			"_id": eventID,
-			"healtheventstatus": map[string]interface{}{
+			"healtheventstatus": map[string]any{
 				"nodequarantined": string(quarantineStatus),
-				"userpodsevictionstatus": map[string]interface{}{
+				"userpodsevictionstatus": map[string]any{
 					"status": string(drainStatus),
 				},
 			},
-			"healthevent": map[string]interface{}{
+			"healthevent": map[string]any{
 				"nodename":          nodeName,
 				"recommendedaction": int32(action),
 			},
@@ -2160,7 +2137,7 @@ func TestHandleColdStart_CancellationFlow(t *testing.T) {
 	eventID := "cold-start-cancel-event-1"
 	quarantineEvent := createQuarantineEvent(eventID, nodeName, protos.RecommendedAction_RESTART_BM)
 	mockWatcher.EventsChan <- datastore.EventWithToken{
-		Event:       map[string]interface{}(quarantineEvent),
+		Event:       map[string]any(quarantineEvent),
 		ResumeToken: []byte("cold-start-token-1"),
 	}
 
@@ -2285,7 +2262,7 @@ func TestCancellationEvent_WritesCompletionMarker(t *testing.T) {
 	eventID := "cancel-marker-event-1"
 	quarantineEvent := createQuarantineEvent(eventID, nodeName, protos.RecommendedAction_RESTART_BM)
 	quarantineEventToken := datastore.EventWithToken{
-		Event:       map[string]interface{}(quarantineEvent),
+		Event:       map[string]any(quarantineEvent),
 		ResumeToken: []byte("cancel-marker-token-1"),
 	}
 	_, err = localReconciler.Reconcile(ctx, &quarantineEventToken)
@@ -2313,7 +2290,7 @@ func TestCancellationEvent_WritesCompletionMarker(t *testing.T) {
 	t.Log("Step 2: Sending cancellation event and capturing store updates")
 	cancelledEvent := createCancelledEvent(eventID, nodeName, protos.RecommendedAction_RESTART_BM)
 	cancelledEventToken := datastore.EventWithToken{
-		Event:       map[string]interface{}(cancelledEvent),
+		Event:       map[string]any(cancelledEvent),
 		ResumeToken: []byte("cancel-marker-token-2"),
 	}
 	_, err = localReconciler.Reconcile(ctx, &cancelledEventToken)
@@ -2360,7 +2337,7 @@ func TestColdStartCancellationQueryRequiresCompletionMarker(t *testing.T) {
 	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
 	defer cancel()
 
-	var capturedQuery map[string]interface{}
+	var capturedQuery map[string]any
 	coldStartCallCount := 0
 
 	localStore := &MockHealthEventStore{}
@@ -2395,14 +2372,14 @@ func TestColdStartCancellationQueryRequiresCompletionMarker(t *testing.T) {
 		"Cold start cancellation query must include faultremediated==nil gate")
 }
 
-func coldStartCancellationQueryHasCompletionGate(q map[string]interface{}) bool {
-	orConditions, ok := q["$or"].([]interface{})
+func coldStartCancellationQueryHasCompletionGate(q map[string]any) bool {
+	orConditions, ok := q["$or"].([]any)
 	if !ok {
 		return false
 	}
 
 	for _, rawCondition := range orConditions {
-		condition, ok := rawCondition.(map[string]interface{})
+		condition, ok := rawCondition.(map[string]any)
 		if !ok {
 			continue
 		}
@@ -2411,7 +2388,7 @@ func coldStartCancellationQueryHasCompletionGate(q map[string]interface{}) bool 
 			return true
 		}
 
-		andConditions, ok := condition["$and"].([]interface{})
+		andConditions, ok := condition["$and"].([]any)
 		if !ok {
 			continue
 		}
@@ -2419,7 +2396,7 @@ func coldStartCancellationQueryHasCompletionGate(q map[string]interface{}) bool 
 		hasCancellationFilter := false
 		hasCompletionGate := false
 		for _, rawAndCondition := range andConditions {
-			andCondition, ok := rawAndCondition.(map[string]interface{})
+			andCondition, ok := rawAndCondition.(map[string]any)
 			if !ok {
 				continue
 			}
@@ -2434,13 +2411,13 @@ func coldStartCancellationQueryHasCompletionGate(q map[string]interface{}) bool 
 	return false
 }
 
-func isCancellationQueryLeg(condition map[string]interface{}) bool {
-	nodeQuarantined, ok := condition["healtheventstatus.nodequarantined"].(map[string]interface{})
+func isCancellationQueryLeg(condition map[string]any) bool {
+	nodeQuarantined, ok := condition["healtheventstatus.nodequarantined"].(map[string]any)
 	if !ok {
 		return false
 	}
 
-	values, ok := nodeQuarantined["$in"].([]interface{})
+	values, ok := nodeQuarantined["$in"].([]any)
 	if !ok {
 		return false
 	}
@@ -2459,7 +2436,7 @@ func isCancellationQueryLeg(condition map[string]interface{}) bool {
 	return foundUnquarantined && foundCancelled
 }
 
-func hasFaultRemediatedNilGate(condition map[string]interface{}) bool {
+func hasFaultRemediatedNilGate(condition map[string]any) bool {
 	value, ok := condition["healtheventstatus.faultremediated"]
 	return ok && value == nil
 }
@@ -2527,7 +2504,7 @@ func TestCustomAction_E2E(t *testing.T) {
 	eventID := "custom-action-e2e-event-1"
 	rawEvent := createCustomActionQuarantineEvent(eventID, nodeName, "REPLACE_DISK")
 	eventToken := datastore.EventWithToken{
-		Event:       map[string]interface{}(rawEvent),
+		Event:       map[string]any(rawEvent),
 		ResumeToken: []byte("custom-token-1"),
 	}
 
@@ -2545,7 +2522,7 @@ func TestCustomAction_E2E(t *testing.T) {
 
 	cr, err := testDynamic.Resource(gvr).Get(ctx, crName, metav1.GetOptions{})
 	require.NoError(t, err, "Custom action CR should exist in Kubernetes")
-	assert.Equal(t, nodeName, cr.Object["spec"].(map[string]interface{})["nodeName"])
+	assert.Equal(t, nodeName, cr.Object["spec"].(map[string]any)["nodeName"])
 
 	labels := cr.GetLabels()
 	assert.Equal(t, "true", labels["nvsentinel.nvidia.com/custom-action"],

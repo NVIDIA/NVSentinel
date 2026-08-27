@@ -171,7 +171,7 @@ func TestSoftLockup_WindowBoundary(t *testing.T) {
 		_, err := h.ProcessLine(lockupHeaderLine)
 		require.NoError(t, err)
 
-		for i := 0; i < softLockupWindowLines-1; i++ {
+		for range softLockupWindowLines - 1 {
 			events, err := h.ProcessLine(unrelatedLine)
 			require.NoError(t, err)
 			require.Nil(t, events)
@@ -188,7 +188,7 @@ func TestSoftLockup_WindowBoundary(t *testing.T) {
 		_, err := h.ProcessLine(lockupHeaderLine)
 		require.NoError(t, err)
 
-		for i := 0; i < softLockupWindowLines; i++ {
+		for range softLockupWindowLines {
 			events, err := h.ProcessLine(unrelatedLine)
 			require.NoError(t, err)
 			require.Nil(t, events)
@@ -209,7 +209,7 @@ func TestSoftLockup_NewHeaderReArmsWindow(t *testing.T) {
 	_, err := h.ProcessLine(lockupHeaderLine)
 	require.NoError(t, err)
 
-	for i := 0; i < softLockupWindowLines; i++ {
+	for range softLockupWindowLines {
 		_, err := h.ProcessLine(unrelatedLine)
 		require.NoError(t, err)
 	}
@@ -324,7 +324,7 @@ func TestSoftLockup_RedeliveryOfConfirmingEntryReturnsSameMatch(t *testing.T) {
 	// Simulate two failed-send retries of the same entry: identical message,
 	// no cursor advance. Both must reproduce the fatal event even though the
 	// cooldown window is now active.
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		events, err := h.ProcessLine(lockupRIPLine)
 		require.NoError(t, err)
 
@@ -354,7 +354,7 @@ func TestSoftLockup_ManyRepeatsEmitOncePerCooldown(t *testing.T) {
 
 	emitted := 0
 
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		header := fmt.Sprintf(
 			"watchdog: BUG: soft lockup - CPU#94 stuck for %ds! [swapper/94:0]", 226906+i*26)
 

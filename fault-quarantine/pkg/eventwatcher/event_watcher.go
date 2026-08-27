@@ -248,7 +248,7 @@ func EmitNodeQuarantineDuration(status *model.Status, healthEventWithStatus *mod
 func (w *EventWatcher) emitRemediationDurationFromDocIDs(ctx context.Context, docIDs []string) {
 	seen := make(map[string]struct{}, len(docIDs))
 
-	uniqueIDs := make([]interface{}, 0, len(docIDs))
+	uniqueIDs := make([]any, 0, len(docIDs))
 	for _, id := range docIDs {
 		if id == "" {
 			continue
@@ -440,11 +440,11 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 	filter := query.New().Build(query.And(
 		query.Eq("healthevent.nodename", nodeName),
 		query.In("healtheventstatus.nodequarantined",
-			[]interface{}{string(model.Quarantined), string(model.UnQuarantined)}),
+			[]any{string(model.Quarantined), string(model.UnQuarantined)}),
 	))
 
 	findOptions := &client.FindOneOptions{
-		Sort: map[string]interface{}{"createdAt": -1},
+		Sort: map[string]any{"createdAt": -1},
 	}
 
 	var latestEvent struct {
@@ -543,11 +543,11 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 		query.Eq("healthevent.nodename", nodeName),
 		query.Gte("createdAt", latestEvent.CreatedAt),
 		query.In("healtheventstatus.nodequarantined",
-			[]interface{}{string(model.Quarantined), string(model.AlreadyQuarantined)}),
+			[]any{string(model.Quarantined), string(model.AlreadyQuarantined)}),
 	))
 
-	update := map[string]interface{}{
-		"$set": map[string]interface{}{
+	update := map[string]any{
+		"$set": map[string]any{
 			"healtheventstatus.nodequarantined": string(model.Cancelled),
 		},
 	}

@@ -40,7 +40,7 @@ type DatastoreClientConfig struct {
 	DatabaseClientCertMountPath string
 
 	// Pipeline for change stream watcher (if needed)
-	Pipeline interface{}
+	Pipeline any
 }
 
 // DatastoreClientBundle contains all the clients created for a module
@@ -201,7 +201,7 @@ func NewDatabaseClientOnly(ctx context.Context, moduleName string) (client.Datab
 // NewChangeStreamWatcherOnly creates just a change stream watcher (no database client)
 // This is a convenience function for modules that only need event watching
 func NewChangeStreamWatcherOnly(
-	ctx context.Context, moduleName string, pipeline interface{},
+	ctx context.Context, moduleName string, pipeline any,
 ) (client.ChangeStreamWatcher, error) {
 	config := DatastoreClientConfig{
 		ModuleName: moduleName,
@@ -224,7 +224,7 @@ func NewChangeStreamWatcherOnly(
 // NewDatastoreClientFromConfig creates a bundle from an explicit DataStoreConfig
 // This is useful when the config is loaded from a custom source (not environment)
 func NewDatastoreClientFromConfig(
-	ctx context.Context, moduleName string, dsConfig datastore.DataStoreConfig, pipeline interface{},
+	ctx context.Context, moduleName string, dsConfig datastore.DataStoreConfig, pipeline any,
 ) (*DatastoreClientBundle, error) {
 	config := DatastoreClientConfig{
 		ModuleName:      moduleName,
@@ -238,7 +238,7 @@ func NewDatastoreClientFromConfig(
 // NewDatastoreClientWithCertPath creates a bundle with a custom certificate path
 // This is useful for modules that have specific certificate mount requirements
 func NewDatastoreClientWithCertPath(
-	ctx context.Context, moduleName string, certMountPath string, pipeline interface{},
+	ctx context.Context, moduleName string, certMountPath string, pipeline any,
 ) (*DatastoreClientBundle, error) {
 	config := DatastoreClientConfig{
 		ModuleName:                  moduleName,

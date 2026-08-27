@@ -166,7 +166,7 @@ func TestQuarantineSessionEndedCachesPerNode(t *testing.T) {
 
 	resolver := newQuarantineSessionResolver(finder)
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		ended, err := resolver.quarantineSessionEnded(context.Background(), "node-a", base)
 		require.NoError(t, err)
 		assert.True(t, ended)

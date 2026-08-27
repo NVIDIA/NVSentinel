@@ -37,7 +37,7 @@ type WatcherConfig struct {
 	ClientName string `json:"clientName"`
 
 	// Provider-specific options
-	Options map[string]interface{} `json:"options,omitempty"`
+	Options map[string]any `json:"options,omitempty"`
 }
 
 // WatcherFactory creates change stream watchers for specific datastore providers

@@ -31,10 +31,10 @@ import (
 // exercise the real types the ConfigMap produces (int64 for whole numbers,
 // []interface{} for arrays) rather than hand-built Go maps that would hide
 // type-assertion bugs.
-func configFromJSON(t *testing.T, raw string) map[string]interface{} {
+func configFromJSON(t *testing.T, raw string) map[string]any {
 	t.Helper()
 
-	result := make(map[string]interface{})
+	result := make(map[string]any)
 	require.NoError(t, json.Unmarshal([]byte(raw), &result))
 
 	return result

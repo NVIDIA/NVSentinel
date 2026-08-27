@@ -329,7 +329,7 @@ func compileRegexList(commaSeparated string) []*regexp.Regexp {
 
 	var out []*regexp.Regexp
 
-	for _, pat := range strings.Split(commaSeparated, ",") {
+	for pat := range strings.SplitSeq(commaSeparated, ",") {
 		pat = strings.TrimSpace(pat)
 		if pat == "" {
 			continue

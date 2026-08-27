@@ -63,28 +63,24 @@ func TestTransformPodForCacheRetainsRequiredFields(t *testing.T) {
 	podGroup := "training"
 	optional := true
 	original := &corev1.Pod{
-		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:              "worker-0",
-			Namespace:         "team-a",
-			UID:               "pod-uid",
-			ResourceVersion:   "42",
-			DeletionTimestamp: &deletionTime,
-			Annotations:       map[string]string{"scheduler.example/group": "training"},
-			Labels:            map[string]string{"job": "training"},
-			Finalizers:        []string{"unused"},
-			ManagedFields:     []metav1.ManagedFieldsEntry{{Manager: "unused"}},
-		},
+		APIVersion: "v1", Kind: "Pod",
+		Name:              "worker-0",
+		Namespace:         "team-a",
+		UID:               "pod-uid",
+		ResourceVersion:   "42",
+		DeletionTimestamp: &deletionTime,
+		Annotations:       map[string]string{"scheduler.example/group": "training"},
+		Labels:            map[string]string{"job": "training"},
+		Finalizers:        []string{"unused"},
+		ManagedFields:     []metav1.ManagedFieldsEntry{{Manager: "unused"}},
 		Spec: corev1.PodSpec{
 			NodeName: "node-a",
 			Volumes: []corev1.Volume{
 				{
 					Name: gangtypes.GangConfigVolumeName,
-					VolumeSource: corev1.VolumeSource{
-						ConfigMap: &corev1.ConfigMapVolumeSource{
-							LocalObjectReference: corev1.LocalObjectReference{Name: "gang-config"},
-							Optional:             &optional,
-						},
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						Name:     "gang-config",
+						Optional: &optional,
 					},
 				},
 				{Name: "unused"},
@@ -106,23 +102,19 @@ func TestTransformPodForCacheRetainsRequiredFields(t *testing.T) {
 
 	assert.Same(t, original, got)
 	assert.Equal(t, &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:              "worker-0",
-			Namespace:         "team-a",
-			UID:               "pod-uid",
-			ResourceVersion:   "42",
-			DeletionTimestamp: &deletionTime,
-			Annotations:       map[string]string{"scheduler.example/group": "training"},
-			Labels:            map[string]string{"job": "training"},
-		},
+		Name:              "worker-0",
+		Namespace:         "team-a",
+		UID:               "pod-uid",
+		ResourceVersion:   "42",
+		DeletionTimestamp: &deletionTime,
+		Annotations:       map[string]string{"scheduler.example/group": "training"},
+		Labels:            map[string]string{"job": "training"},
 		Spec: corev1.PodSpec{
 			NodeName: "node-a",
 			Volumes: []corev1.Volume{{
 				Name: gangtypes.GangConfigVolumeName,
-				VolumeSource: corev1.VolumeSource{
-					ConfigMap: &corev1.ConfigMapVolumeSource{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "gang-config"},
-					},
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					Name: "gang-config",
 				},
 			}},
 			SchedulingGroup: &corev1.PodSchedulingGroup{PodGroupName: &podGroup},
@@ -311,9 +303,8 @@ func TestTransformedPodsSupportAllGangDiscoverers(t *testing.T) {
 		assert.Equal(t, "training", mustNestedString(t, cachedPod, "spec", "workloadRef", "name"))
 
 		d := discoverer.NewWorkloadRefDiscoverer(c)
-		request := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
-			Name: "worker-0", Namespace: "team-a",
-		}}
+		request := &corev1.Pod{
+			Name: "worker-0", Namespace: "team-a"}
 		info, err := d.DiscoverPeers(context.Background(), request)
 		require.NoError(t, err)
 		require.NotNil(t, info)
@@ -324,14 +315,12 @@ func TestTransformedPodsSupportAllGangDiscoverers(t *testing.T) {
 
 func TestTransformPodForCache_InactiveNamespace_ReturnsStub(t *testing.T) {
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "worker-0", Namespace: "other-ns",
-			UID: "pod-uid", ResourceVersion: "99",
-			Annotations: map[string]string{"big": "annotation"},
-			Labels:      map[string]string{"big": "label"},
-		},
-		Spec:   corev1.PodSpec{NodeName: "node-a", Containers: []corev1.Container{{Name: "large"}}},
-		Status: corev1.PodStatus{PodIP: "10.0.0.1", Phase: corev1.PodRunning},
+		Name: "worker-0", Namespace: "other-ns",
+		UID: "pod-uid", ResourceVersion: "99",
+		Annotations: map[string]string{"big": "annotation"},
+		Labels:      map[string]string{"big": "label"},
+		Spec:        corev1.PodSpec{NodeName: "node-a", Containers: []corev1.Container{{Name: "large"}}},
+		Status:      corev1.PodStatus{PodIP: "10.0.0.1", Phase: corev1.PodRunning},
 	}
 
 	// "other-ns" is not in the active set.
@@ -409,10 +398,8 @@ func gangPodForCacheTest(name, namespace, ip string) *corev1.Pod {
 	pod := discovererPod(name, namespace, ip)
 	pod.Spec.Volumes = []corev1.Volume{{
 		Name: gangtypes.GangConfigVolumeName,
-		VolumeSource: corev1.VolumeSource{
-			ConfigMap: &corev1.ConfigMapVolumeSource{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "gang-config"},
-			},
+		ConfigMap: &corev1.ConfigMapVolumeSource{
+			Name: "gang-config",
 		},
 	}}
 
@@ -421,10 +408,8 @@ func gangPodForCacheTest(name, namespace, ip string) *corev1.Pod {
 
 func discovererPod(name, namespace, ip string) *corev1.Pod {
 	return &corev1.Pod{
-		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name, Namespace: namespace, UID: k8stypes.UID(name + "-uid"),
-		},
+		APIVersion: "v1", Kind: "Pod",
+		Name: name, Namespace: namespace, UID: k8stypes.UID(name + "-uid"),
 		Spec: corev1.PodSpec{NodeName: "node-a"},
 		Status: corev1.PodStatus{
 			PodIP: ip,

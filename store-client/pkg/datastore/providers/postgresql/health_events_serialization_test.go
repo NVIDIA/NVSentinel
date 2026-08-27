@@ -110,7 +110,7 @@ func TestHealthEventStatusSerialization(t *testing.T) {
 				jsonData, err := json.Marshal(tt.status)
 				require.NoError(t, err, "JSON marshal should succeed")
 
-				var jsonMap map[string]interface{}
+				var jsonMap map[string]any
 				err = json.Unmarshal(jsonData, &jsonMap)
 				require.NoError(t, err, "JSON unmarshal to map should succeed")
 
@@ -244,7 +244,7 @@ func TestJSONAndBSONConsistency(t *testing.T) {
 		"BSON: FaultRemediated should be nil after round-trip")
 
 	// Verify the serialized data doesn't contain the nil fields
-	var jsonMap map[string]interface{}
+	var jsonMap map[string]any
 	err = json.Unmarshal(jsonData, &jsonMap)
 	require.NoError(t, err)
 	assert.NotContains(t, jsonMap, "nodeQuarantined",

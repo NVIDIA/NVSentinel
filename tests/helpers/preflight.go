@@ -25,7 +25,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/klient"
@@ -202,7 +201,7 @@ func TeardownPreflightTest(
 
 	if testCtx.TestNamespace != "" {
 		_ = client.Resources().Delete(ctx, &v1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{Name: testCtx.TestNamespace},
+			Name: testCtx.TestNamespace,
 		})
 	}
 
@@ -586,10 +585,8 @@ func newPreflightGangPod(namespace, nodeName, podGroupName string) *v1.Pod {
 
 	pod.Annotations[KAIPodGroupAnnotation] = podGroupName
 	pod.Spec.Volumes = append(pod.Spec.Volumes, v1.Volume{
-		Name: PreflightInheritedVolumeName,
-		VolumeSource: v1.VolumeSource{
-			EmptyDir: &v1.EmptyDirVolumeSource{},
-		},
+		Name:     PreflightInheritedVolumeName,
+		EmptyDir: &v1.EmptyDirVolumeSource{},
 	})
 	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, v1.EnvVar{
 		Name:  PreflightInheritedEnvName,

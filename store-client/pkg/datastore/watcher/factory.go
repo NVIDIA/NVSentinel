@@ -34,7 +34,7 @@ type Config struct {
 
 	// Pipeline is an optional custom aggregation pipeline for filtering change stream events
 	// The type is interface{} to support different providers (e.g., mongo.Pipeline for MongoDB)
-	Pipeline interface{}
+	Pipeline any
 }
 
 // CreateChangeStreamWatcher creates a change stream watcher based on the datastore type
@@ -46,7 +46,7 @@ func CreateChangeStreamWatcher(
 	switch datastore := ds.(type) {
 	case *mongodb.AdaptedMongoStore:
 		// Create MongoDB change stream watcher configuration
-		mongoConfig := map[string]interface{}{
+		mongoConfig := map[string]any{
 			"CollectionName": config.TableName, // Use configurable table/collection name
 			"ClientName":     config.ClientName,
 			"Pipeline":       config.Pipeline, // Pass custom pipeline if provided
@@ -67,7 +67,7 @@ func CreateChangeStreamWatcher(
 
 		// Create PostgreSQL change stream watcher configuration
 		// Pass the pipeline - PostgreSQL will parse and emulate it
-		postgresConfig := map[string]interface{}{
+		postgresConfig := map[string]any{
 			"TableName":  config.TableName, // Use configurable table name
 			"ClientName": config.ClientName,
 			"Pipeline":   config.Pipeline, // Pass pipeline for filtering

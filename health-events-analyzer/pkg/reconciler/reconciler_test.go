@@ -48,7 +48,7 @@ type mockDatabaseClient struct {
 	mock.Mock
 }
 
-func (m *mockDatabaseClient) InsertMany(ctx context.Context, documents []interface{}) (*client.InsertManyResult, error) {
+func (m *mockDatabaseClient) InsertMany(ctx context.Context, documents []any) (*client.InsertManyResult, error) {
 	args := m.Called(ctx, documents)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
@@ -56,47 +56,47 @@ func (m *mockDatabaseClient) InsertMany(ctx context.Context, documents []interfa
 	return args.Get(0).(*client.InsertManyResult), args.Error(1)
 }
 
-func (m *mockDatabaseClient) UpdateDocumentStatus(ctx context.Context, documentID string, statusPath string, status interface{}) error {
+func (m *mockDatabaseClient) UpdateDocumentStatus(ctx context.Context, documentID string, statusPath string, status any) error {
 	args := m.Called(ctx, documentID, statusPath, status)
 	return args.Error(0)
 }
 
-func (m *mockDatabaseClient) UpdateDocumentStatusFields(ctx context.Context, documentID string, fields map[string]interface{}) error {
+func (m *mockDatabaseClient) UpdateDocumentStatusFields(ctx context.Context, documentID string, fields map[string]any) error {
 	args := m.Called(ctx, documentID, fields)
 	return args.Error(0)
 }
 
-func (m *mockDatabaseClient) CountDocuments(ctx context.Context, filter interface{}, options *client.CountOptions) (int64, error) {
+func (m *mockDatabaseClient) CountDocuments(ctx context.Context, filter any, options *client.CountOptions) (int64, error) {
 	args := m.Called(ctx, filter, options)
 	return args.Get(0).(int64), args.Error(1)
 }
 
-func (m *mockDatabaseClient) UpdateDocument(ctx context.Context, filter interface{}, update interface{}) (*client.UpdateResult, error) {
+func (m *mockDatabaseClient) UpdateDocument(ctx context.Context, filter any, update any) (*client.UpdateResult, error) {
 	args := m.Called(ctx, filter, update)
 	return args.Get(0).(*client.UpdateResult), args.Error(1)
 }
 
-func (m *mockDatabaseClient) UpdateManyDocuments(ctx context.Context, filter interface{}, update interface{}) (*client.UpdateResult, error) {
+func (m *mockDatabaseClient) UpdateManyDocuments(ctx context.Context, filter any, update any) (*client.UpdateResult, error) {
 	args := m.Called(ctx, filter, update)
 	return args.Get(0).(*client.UpdateResult), args.Error(1)
 }
 
-func (m *mockDatabaseClient) UpsertDocument(ctx context.Context, filter interface{}, document interface{}) (*client.UpdateResult, error) {
+func (m *mockDatabaseClient) UpsertDocument(ctx context.Context, filter any, document any) (*client.UpdateResult, error) {
 	args := m.Called(ctx, filter, document)
 	return args.Get(0).(*client.UpdateResult), args.Error(1)
 }
 
-func (m *mockDatabaseClient) FindOne(ctx context.Context, filter interface{}, options *client.FindOneOptions) (client.SingleResult, error) {
+func (m *mockDatabaseClient) FindOne(ctx context.Context, filter any, options *client.FindOneOptions) (client.SingleResult, error) {
 	args := m.Called(ctx, filter, options)
 	return args.Get(0).(client.SingleResult), args.Error(1)
 }
 
-func (m *mockDatabaseClient) Find(ctx context.Context, filter interface{}, options *client.FindOptions) (client.Cursor, error) {
+func (m *mockDatabaseClient) Find(ctx context.Context, filter any, options *client.FindOptions) (client.Cursor, error) {
 	args := m.Called(ctx, filter, options)
 	return args.Get(0).(client.Cursor), args.Error(1)
 }
 
-func (m *mockDatabaseClient) Aggregate(ctx context.Context, pipeline interface{}) (client.Cursor, error) {
+func (m *mockDatabaseClient) Aggregate(ctx context.Context, pipeline any) (client.Cursor, error) {
 	args := m.Called(ctx, pipeline)
 	return args.Get(0).(client.Cursor), args.Error(1)
 }
@@ -106,7 +106,7 @@ func (m *mockDatabaseClient) Ping(ctx context.Context) error {
 	return args.Error(0)
 }
 
-func (m *mockDatabaseClient) NewChangeStreamWatcher(ctx context.Context, tokenConfig client.TokenConfig, pipeline interface{}) (client.ChangeStreamWatcher, error) {
+func (m *mockDatabaseClient) NewChangeStreamWatcher(ctx context.Context, tokenConfig client.TokenConfig, pipeline any) (client.ChangeStreamWatcher, error) {
 	args := m.Called(ctx, tokenConfig, pipeline)
 	return args.Get(0).(client.ChangeStreamWatcher), args.Error(1)
 }
@@ -124,11 +124,11 @@ func (m *mockDatabaseClient) DeleteResumeToken(ctx context.Context, tokenConfig 
 // Mock cursor for tests
 type mockCursor struct {
 	mock.Mock
-	data []map[string]interface{}
+	data []map[string]any
 	pos  int
 }
 
-func createMockCursor(data []map[string]interface{}) (*mockCursor, error) {
+func createMockCursor(data []map[string]any) (*mockCursor, error) {
 	return &mockCursor{data: data, pos: -1}, nil
 }
 
@@ -137,9 +137,9 @@ func (m *mockCursor) Next(ctx context.Context) bool {
 	return m.pos < len(m.data)
 }
 
-func (m *mockCursor) Decode(v interface{}) error {
+func (m *mockCursor) Decode(v any) error {
 	if m.pos >= 0 && m.pos < len(m.data) {
-		if doc, ok := v.(*map[string]interface{}); ok {
+		if doc, ok := v.(*map[string]any); ok {
 			*doc = m.data[m.pos]
 		}
 	}
@@ -150,8 +150,8 @@ func (m *mockCursor) Close(ctx context.Context) error {
 	return nil
 }
 
-func (m *mockCursor) All(ctx context.Context, results interface{}) error {
-	if resultsSlice, ok := results.(*[]map[string]interface{}); ok {
+func (m *mockCursor) All(ctx context.Context, results any) error {
+	if resultsSlice, ok := results.(*[]map[string]any); ok {
 		*resultsSlice = m.data
 	}
 
@@ -241,7 +241,7 @@ func TestCheckRule(t *testing.T) {
 
 	t.Run("rule1 matches", func(t *testing.T) {
 		// Rule1 requires 5 occurrences, so return ruleMatched: true
-		cursor, _ := createMockCursor([]map[string]interface{}{
+		cursor, _ := createMockCursor([]map[string]any{
 			{"ruleMatched": true},
 		})
 		mockClient.On("Aggregate", mock.Anything, mock.Anything).Return(cursor, nil).Once()
@@ -253,7 +253,7 @@ func TestCheckRule(t *testing.T) {
 
 	t.Run("rule2 does not match", func(t *testing.T) {
 		// Rule2 requires 3 occurrences for the sequence, return ruleMatched: false
-		cursor, _ := createMockCursor([]map[string]interface{}{
+		cursor, _ := createMockCursor([]map[string]any{
 			{"ruleMatched": false},
 		})
 		mockClient.On("Aggregate", mock.Anything, mock.Anything).Return(cursor, nil).Once()
@@ -320,7 +320,7 @@ func TestHandleEvent(t *testing.T) {
 		mockPublisher.On("HealthEventOccurredV1", mock.Anything, expectedHealthEvents).Return(&emptypb.Empty{}, nil)
 
 		// Rule2 requires 3 occurrences, so return ruleMatched: true
-		cursor, _ := createMockCursor([]map[string]interface{}{
+		cursor, _ := createMockCursor([]map[string]any{
 			{"ruleMatched": true},
 		})
 		mockClient.On("Aggregate", mock.Anything, mock.Anything).Return(cursor, nil)
@@ -364,7 +364,7 @@ func TestHandleEvent(t *testing.T) {
 
 		// Rule1 will still call Aggregate (since it doesn't check error codes), return ruleMatched: false so it doesn't match
 		// Rules 2 and 3 might also call Aggregate for their criteria checks
-		cursor, _ := createMockCursor([]map[string]interface{}{
+		cursor, _ := createMockCursor([]map[string]any{
 			{"ruleMatched": false},
 		})
 		mockClient.On("Aggregate", mock.Anything, mock.Anything).Return(cursor, nil).Maybe()
@@ -390,7 +390,7 @@ func TestHandleEvent(t *testing.T) {
 		// - Rule1: will call Aggregate (doesn't check error codes)
 		// - Rule2: will call Aggregate (matches error code 13)
 		// - Rule3: has two sequences, return ruleMatched: false so it doesn't match
-		cursor, _ := createMockCursor([]map[string]interface{}{
+		cursor, _ := createMockCursor([]map[string]any{
 			{"ruleMatched": false},
 		})
 		mockClient.On("Aggregate", mock.Anything, mock.Anything).Return(cursor, nil).Maybe() // Rule1 and other calls
@@ -473,14 +473,14 @@ func TestGetPipelineStages(t *testing.T) {
 
 		// Check first stage is agent filter
 		firstStage := pipeline[0]
-		agentMatch, ok := firstStage["$match"].(map[string]interface{})
+		agentMatch, ok := firstStage["$match"].(map[string]any)
 		assert.True(t, ok)
 		_, hasAgentFilter := agentMatch["healthevent.agent"]
 		assert.True(t, hasAgentFilter, "First stage must be agent filter")
 
 		// Check second stage (first configured stage)
 		secondStage := pipeline[1]
-		matchStage, ok := secondStage["$match"].(map[string]interface{})
+		matchStage, ok := secondStage["$match"].(map[string]any)
 		assert.True(t, ok)
 		assert.Equal(t, "test-node-1", matchStage["healthevent.nodename"])
 
@@ -514,7 +514,7 @@ func TestGetPipelineStages(t *testing.T) {
 
 		// Check that this references are resolved in second stage (first configured stage)
 		secondStage := pipeline[1]
-		matchStage := secondStage["$match"].(map[string]interface{})
+		matchStage := secondStage["$match"].(map[string]any)
 		assert.Equal(t, "gpu-node-2", matchStage["healthevent.nodename"])
 		assert.Equal(t, "13", matchStage["healthevent.errorcode.0"])
 	})
@@ -540,7 +540,7 @@ func TestGetPipelineStages(t *testing.T) {
 		assert.Len(t, pipeline, 2)
 
 		secondStage := pipeline[1]
-		matchStage := secondStage["$match"].(map[string]interface{})
+		matchStage := secondStage["$match"].(map[string]any)
 		assert.Equal(t, "GPU-123", matchStage["healthevent.entitiesimpacted.0.entityvalue"])
 	})
 
@@ -619,7 +619,7 @@ func TestGetPipelineStages(t *testing.T) {
 
 		// Verify configured stages remain unchanged (second stage is first configured)
 		secondStage := pipeline[1]
-		matchStage := secondStage["$match"].(map[string]interface{})
+		matchStage := secondStage["$match"].(map[string]any)
 		assert.Equal(t, true, matchStage["healthevent.isfatal"])
 	})
 
@@ -642,11 +642,11 @@ func TestGetPipelineStages(t *testing.T) {
 		assert.Len(t, pipeline, 2)
 
 		secondStage := pipeline[1]
-		matchStage := secondStage["$match"].(map[string]interface{})
+		matchStage := secondStage["$match"].(map[string]any)
 		assert.Equal(t, "operator-node", matchStage["healthevent.nodename"])
 
 		// Verify $expr is preserved
-		exprStage, ok := matchStage["$expr"].(map[string]interface{})
+		exprStage, ok := matchStage["$expr"].(map[string]any)
 		assert.True(t, ok)
 		assert.NotNil(t, exprStage["$gte"])
 	})
@@ -687,7 +687,7 @@ func TestGetPipelineStages_ReturnTypeCompatibility(t *testing.T) {
 
 	// CRITICAL: Verify the return type is []map[string]interface{}
 	// This should compile and not panic
-	var typedPipeline []map[string]interface{}
+	var typedPipeline []map[string]any
 	typedPipeline = pipeline
 	assert.NotNil(t, typedPipeline)
 
