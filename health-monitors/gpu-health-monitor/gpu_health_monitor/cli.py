@@ -185,15 +185,29 @@ def cli(
 
     thermal_margin_enabled = False
     thermal_margin_store_only = False
+    power_brake_enabled = False
+    power_brake_store_only = False
+    power_brake_min_consecutive_polls = 1
     if config.has_section("dcgmfieldsmonitoring"):
-        thermal_margin_enabled = config["dcgmfieldsmonitoring"].getboolean(
-            "gputemplimitmonitoringenabled", fallback=False
-        )
-        thermal_margin_store_only = config["dcgmfieldsmonitoring"].getboolean("gputemplimitstoreonly", fallback=False)
+        fields_monitoring_config = config["dcgmfieldsmonitoring"]
+        thermal_margin_enabled = fields_monitoring_config.getboolean("gputemplimitmonitoringenabled", fallback=False)
+        thermal_margin_store_only = fields_monitoring_config.getboolean("gputemplimitstoreonly", fallback=False)
         log.info(
             "GpuThermalMarginWatch field monitor: enabled=%s store_only=%s",
             thermal_margin_enabled,
             thermal_margin_store_only,
+        )
+
+        power_brake_enabled = fields_monitoring_config.getboolean("gpupowerbrakemonitoringenabled", fallback=False)
+        power_brake_store_only = fields_monitoring_config.getboolean("gpupowerbrakestoreonly", fallback=False)
+        power_brake_min_consecutive_polls = fields_monitoring_config.getint(
+            "gpupowerbrakeminconsecutivepolls", fallback=1
+        )
+        log.info(
+            "GpuPowerBrakeWatch field monitor: enabled=%s store_only=%s min_consecutive_polls=%s",
+            power_brake_enabled,
+            power_brake_store_only,
+            power_brake_min_consecutive_polls,
         )
 
     # Per-check observe-only set: when store-only is enabled the new
@@ -203,6 +217,8 @@ def cli(
     store_only_checks = set()
     if thermal_margin_store_only:
         store_only_checks.add("GpuThermalMarginWatch")
+    if power_brake_store_only:
+        store_only_checks.add("GpuPowerBrakeWatch")
 
     # GpuDcgmUnresponsive recommends a node reboot, so it ships observe-only
     # and has to be turned on deliberately per fleet.
@@ -282,6 +298,8 @@ def cli(
         suppressed_error_codes=suppressed_error_codes,
         suppress_unbridged_pcie_nvlink_down=suppress_nvlink_down_unbridged_pcie,
         probe_deadline_seconds=probe_deadline_seconds,
+        power_brake_enabled=power_brake_enabled,
+        power_brake_min_consecutive_polls=power_brake_min_consecutive_polls,
     )
     dcgm_watcher.start([], exit)
 

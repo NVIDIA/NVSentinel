@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"time"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
@@ -240,9 +241,7 @@ func (p *DefaultEventProcessor) updateMetrics(eventType, eventID string, duratio
 	// This is a placeholder for metrics integration
 	// In a real implementation, this would integrate with prometheus or similar
 	labels := make(map[string]string)
-	for k, v := range p.config.MetricsLabels {
-		labels[k] = v
-	}
+	maps.Copy(labels, p.config.MetricsLabels)
 
 	labels["event_type"] = eventType
 	labels["success"] = fmt.Sprintf("%t", success)

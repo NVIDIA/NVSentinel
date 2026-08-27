@@ -74,9 +74,7 @@ type healthConditionList struct {
 func getNode() *corev1.Node {
 	// Create a fake node
 	fakeNode := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "testnode",
-		},
+		Name: "testnode",
 		Status: corev1.NodeStatus{
 			Capacity: corev1.ResourceList{
 				corev1.ResourceCPU:    resource.MustParse("4"),
@@ -824,9 +822,7 @@ func TestUpdateNodeCondition_StatusChange(t *testing.T) {
 
 		conditionType := corev1.NodeConditionType(healthEvent.CheckName)
 		fakeNode := &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "testnode",
-			},
+			Name: "testnode",
 			Status: corev1.NodeStatus{
 				Conditions: []corev1.NodeCondition{
 					{
@@ -922,9 +918,7 @@ func TestUpdateNodeCondition_NewCondition(t *testing.T) {
 		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})
 
 		fakeNode := &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "testnode",
-			},
+			Name: "testnode",
 			Status: corev1.NodeStatus{
 				Conditions: []corev1.NodeCondition{},
 			},
@@ -1036,9 +1030,7 @@ func TestUpdateNodeCondition_AddMessage(t *testing.T) {
 		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})
 
 		fakeNode := &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "testnode",
-			},
+			Name: "testnode",
 			Status: corev1.NodeStatus{
 				Conditions: []corev1.NodeCondition{
 					{
@@ -1120,9 +1112,7 @@ func TestUpdateNodeCondition_RemoveMessages(t *testing.T) {
 		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})
 
 		fakeNode := &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "testnode",
-			},
+			Name: "testnode",
 			Status: corev1.NodeStatus{
 				Conditions: []corev1.NodeCondition{
 					{
@@ -1583,9 +1573,7 @@ func TestUpdateNodeConditions_ErrorHandling(t *testing.T) {
 
 			if tt.setupNode {
 				node := &corev1.Node{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: tt.nodeName,
-					},
+					Name: tt.nodeName,
 				}
 				_, err := localClientSet.CoreV1().Nodes().Create(localCtx, node, metav1.CreateOptions{})
 				require.NoError(t, err)
@@ -1800,9 +1788,7 @@ func TestProcessHealthEvents_StoreOnlyStrategy(t *testing.T) {
 
 			nodeName := "store-only-test-node"
 			fakeNode := &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: nodeName,
-				},
+				Name: nodeName,
 				Status: corev1.NodeStatus{
 					Conditions: []corev1.NodeCondition{
 						{
@@ -2043,7 +2029,7 @@ func TestEntityMatchesMessage(t *testing.T) {
 func TestTruncateConditionMessage(t *testing.T) {
 	generateLongMessages := func(count int) []string {
 		var msgs []string
-		for i := 0; i < count; i++ {
+		for i := range count {
 			msgs = append(msgs, fmt.Sprintf(
 				"ErrorCode:DCGM_FR_NVLINK_DOWN GPU:%d PCI:0000:c%d:00.0 GPU_UUID:GPU-8614c5d9-371d-1d8a-9bab-78d04344270%d "+
 					"GPU %d's NvLink link 0 is currently down Check DCGM and system logs for errors. Reset GPU. Restart DCGM. Rerun diagnostics. "+
@@ -2158,7 +2144,7 @@ func TestTruncateConditionMessage_EntityIdentifierPreservation(t *testing.T) {
 	}
 
 	var msgs []string
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		msgs = append(msgs, fmt.Sprintf(
 			"ErrorCode:DCGM_FR_NVLINK_DOWN GPU:%d PCI:%s GPU_UUID:GPU-8614c5d9-371d-1d8a-9bab-78d0434427e%d "+
 				"GPU %d's NvLink link 0 is currently down Check DCGM and system logs for errors. Reset GPU. Restart DCGM. Rerun diagnostics. "+
@@ -2169,7 +2155,7 @@ func TestTruncateConditionMessage_EntityIdentifierPreservation(t *testing.T) {
 
 	t.Logf("Result length: %d / 1024", len(result))
 	assert.LessOrEqual(t, len(result), 1024)
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		assert.Contains(t, result, fmt.Sprintf("GPU:%d ", i),
 			"GPU %d identifier must survive compaction for clearing", i)
 		assert.Contains(t, result, fmt.Sprintf("PCI:%s", pciAddresses[i]),
@@ -2317,7 +2303,7 @@ func TestDeduplicationBehavior(t *testing.T) {
 		result := connector.truncateNodeConditionMessage(messages)
 
 		var entries []string
-		for _, p := range strings.Split(result, ";") {
+		for p := range strings.SplitSeq(result, ";") {
 			if p != "" && p != truncationSuffix {
 				entries = append(entries, p)
 			}
@@ -2360,7 +2346,7 @@ func TestWriteNodeEvent_UpdateRacesDeletion(t *testing.T) {
 
 	nodeName := "update-race-test-node"
 	_, err := localClientSet.CoreV1().Nodes().Create(localCtx, &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		Name: nodeName,
 	}, metav1.CreateOptions{})
 	require.NoError(t, err, "Failed to create test node")
 

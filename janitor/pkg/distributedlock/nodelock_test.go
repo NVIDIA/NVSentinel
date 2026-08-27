@@ -28,7 +28,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -106,9 +105,7 @@ var _ = Describe("NodeLock", func() {
 		statusSubresource = &janitordgxcnvidiacomv1alpha1.RebootNode{}
 
 		testNode = &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-node",
-			},
+			Name: "test-node",
 			Status: corev1.NodeStatus{
 				Conditions: []corev1.NodeCondition{
 					{
@@ -119,10 +116,8 @@ var _ = Describe("NodeLock", func() {
 			},
 		}
 		testRebootNode = &janitordgxcnvidiacomv1alpha1.RebootNode{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-rebootnode",
-				UID:  testNodeUID,
-			},
+			Name: "test-rebootnode",
+			UID:  testNodeUID,
 			Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 				NodeName: "test-node",
 				Force:    false,
@@ -132,17 +127,15 @@ var _ = Describe("NodeLock", func() {
 			Name: testRebootNode.Name,
 		}
 		testLeaseLock = &coordinationv1.Lease{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      testNode.GetName(),
-				Namespace: testNamespace,
-				OwnerReferences: []metav1.OwnerReference{
-					{
-						APIVersion:         testRebootNode.GetObjectKind().GroupVersionKind().GroupVersion().String(),
-						Kind:               testRebootNode.GetObjectKind().GroupVersionKind().Kind,
-						Name:               testRebootNode.GetName(),
-						UID:                testRebootNode.GetUID(),
-						BlockOwnerDeletion: ptr.To(true),
-					},
+			Name:      testNode.GetName(),
+			Namespace: testNamespace,
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         testRebootNode.GetObjectKind().GroupVersionKind().GroupVersion().String(),
+					Kind:               testRebootNode.GetObjectKind().GroupVersionKind().Kind,
+					Name:               testRebootNode.GetName(),
+					UID:                testRebootNode.GetUID(),
+					BlockOwnerDeletion: new(true),
 				},
 			},
 		}
@@ -225,7 +218,7 @@ var _ = Describe("NodeLock", func() {
 					Kind:               "RebootNode",
 					Name:               testRebootNode.GetName(),
 					UID:                testRebootNode.GetUID(),
-					BlockOwnerDeletion: ptr.To(true),
+					BlockOwnerDeletion: new(true),
 				},
 			}
 			Expect(createdLease.OwnerReferences).To(Equal(expectedOwnerReferences))

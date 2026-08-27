@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"sort"
 	"sync"
@@ -57,6 +58,7 @@ type FaultQuarantineClient struct {
 	cordonedReasonLabelKey   string
 	uncordonedReasonLabelKey string
 	operationMutex           sync.Map // map[string]*sync.Mutex for per-node locking
+	nodePatcher              kubeclient.NodePatcher
 }
 
 // NewFaultQuarantineClient constructs a FaultQuarantineClient using the
@@ -121,7 +123,7 @@ func (c *FaultQuarantineClient) EnsureCircuitBreakerConfigMap(ctx context.Contex
 	}
 
 	cm := &v1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Name: name, Namespace: namespace,
 		Data: map[string]string{
 			"status": string(initialStatus),
 			"cursor": string(breaker.CursorModeResume),
@@ -161,50 +163,35 @@ func (c *FaultQuarantineClient) UpdateNode(ctx context.Context, nodeName string,
 
 	defer mu.(*sync.Mutex).Unlock()
 
-	// Increased retry attempts to handle node update conflicts when multiple modules
-	// attempt concurrent updates, preventing nodes from remaining cordoned with stale annotations.
-	backoff := wait.Backoff{
-		Steps:    10,                    // Increased from default 5
-		Duration: 20 * time.Millisecond, // Increased from default 10ms
-		Factor:   2.0,
-		Jitter:   0.1,
+	changed, err := c.nodePatcher.Patch(
+		ctx,
+		c.Clientset.CoreV1().Nodes(),
+		nodeName,
+		c.cachedNodeForPatch(nodeName),
+		updateFn,
+	)
+	if err != nil {
+		return err
 	}
 
-	return retry.OnError(backoff, isRetryableError, func() error {
-		node, err := c.Clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-		if err != nil {
-			return err
-		}
+	if changed {
+		slog.Debug("Patched node", "node", nodeName)
+	}
 
-		if err := updateFn(node); err != nil {
-			return err
-		}
-
-		_, err = c.Clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
-		if err != nil {
-			return err
-		}
-
-		slog.Debug("Updated node", "node", nodeName)
-
-		return nil
-	})
+	return nil
 }
 
-func isRetryableError(err error) bool {
-	if errors.IsConflict(err) {
-		return true
+func (c *FaultQuarantineClient) cachedNodeForPatch(nodeName string) *v1.Node {
+	if c.NodeInformer == nil || !c.NodeInformer.HasSynced() {
+		return nil
 	}
 
-	if errors.IsServerTimeout(err) || errors.IsTooManyRequests(err) {
-		return true
+	node, err := c.NodeInformer.GetNode(nodeName)
+	if err != nil {
+		return nil
 	}
 
-	if errors.IsTimeout(err) || errors.IsServiceUnavailable(err) {
-		return true
-	}
-
-	return false
+	return node.DeepCopy()
 }
 
 func (c *FaultQuarantineClient) ReadCircuitBreakerState(
@@ -347,9 +334,7 @@ func (c *FaultQuarantineClient) QuarantineNodeAndSetAnnotations(
 
 func labelsWithSessionWinners(node *v1.Node, labels map[string]string) (map[string]string, error) {
 	labelsToApply := make(map[string]string, len(labels))
-	for key, value := range labels {
-		labelsToApply[key] = value
-	}
+	maps.Copy(labelsToApply, labels)
 
 	appliedLabelsJSON := node.Annotations[common.QuarantineHealthEventAppliedLabelsAnnotationKey]
 	if annotationutil.IsEmptyValue(appliedLabelsJSON) {
@@ -368,6 +353,11 @@ func labelsWithSessionWinners(node *v1.Node, labels map[string]string) (map[stri
 	return labelsToApply, nil
 }
 
+type taintIdentity struct {
+	key    string
+	effect string
+}
+
 func (c *FaultQuarantineClient) applyTaints(
 	ctx context.Context, node *v1.Node, taints []config.Taint, nodename string,
 ) error {
@@ -376,27 +366,40 @@ func (c *FaultQuarantineClient) applyTaints(
 		return nil
 	}
 
-	existingTaints := make(map[config.Taint]v1.Taint)
+	existingTaints := make(map[taintIdentity]int, len(node.Spec.Taints))
+
+	uniqueTaints := node.Spec.Taints[:0]
 	for _, taint := range node.Spec.Taints {
-		existingTaints[config.Taint{Key: taint.Key, Value: taint.Value, Effect: string(taint.Effect)}] = taint
+		identity := taintIdentity{key: taint.Key, effect: string(taint.Effect)}
+		if _, exists := existingTaints[identity]; exists {
+			continue
+		}
+
+		existingTaints[identity] = len(uniqueTaints)
+		uniqueTaints = append(uniqueTaints, taint)
 	}
+
+	node.Spec.Taints = uniqueTaints
 
 	for _, taintConfig := range taints {
-		key := config.Taint{Key: taintConfig.Key, Value: taintConfig.Value, Effect: string(taintConfig.Effect)}
-
-		if _, exists := existingTaints[key]; !exists {
-			slog.InfoContext(ctx, "Tainting node", "node", nodename, "taintConfig", taintConfig)
-			existingTaints[key] = v1.Taint{
-				Key:    taintConfig.Key,
-				Value:  taintConfig.Value,
-				Effect: v1.TaintEffect(taintConfig.Effect),
+		identity := taintIdentity{key: taintConfig.Key, effect: taintConfig.Effect}
+		if index, exists := existingTaints[identity]; exists {
+			if node.Spec.Taints[index].Value != taintConfig.Value {
+				slog.InfoContext(ctx, "Updating node taint", "node", nodename, "taintConfig", taintConfig)
+				node.Spec.Taints[index].Value = taintConfig.Value
 			}
-		}
-	}
 
-	node.Spec.Taints = []v1.Taint{}
-	for _, taint := range existingTaints {
-		node.Spec.Taints = append(node.Spec.Taints, taint)
+			continue
+		}
+
+		slog.InfoContext(ctx, "Tainting node", "node", nodename, "taintConfig", taintConfig)
+
+		existingTaints[identity] = len(node.Spec.Taints)
+		node.Spec.Taints = append(node.Spec.Taints, v1.Taint{
+			Key:    taintConfig.Key,
+			Value:  taintConfig.Value,
+			Effect: v1.TaintEffect(taintConfig.Effect),
+		})
 	}
 
 	return nil
@@ -556,10 +559,10 @@ func parseAppliedTaintsAnnotation(value string) ([]config.Taint, error) {
 }
 
 func mergeAppliedTaints(existingTaints, incomingTaints []config.Taint) []config.Taint {
-	mergedByKey := make(map[config.Taint]config.Taint, len(existingTaints)+len(incomingTaints))
+	mergedByKey := make(map[taintIdentity]config.Taint, len(existingTaints)+len(incomingTaints))
 	for _, taints := range [][]config.Taint{existingTaints, incomingTaints} {
 		for _, taint := range taints {
-			key := config.Taint{Key: taint.Key, Value: taint.Value, Effect: taint.Effect}
+			key := taintIdentity{key: taint.Key, effect: taint.Effect}
 			if existing, ok := mergedByKey[key]; ok {
 				taint.PreExisting = existing.PreExisting || taint.PreExisting
 			}
@@ -646,9 +649,7 @@ func (c *FaultQuarantineClient) applyLabels(
 
 	slog.InfoContext(ctx, "Adding labels on node", "node", nodename)
 
-	for k, v := range labels {
-		node.Labels[k] = v
-	}
+	maps.Copy(node.Labels, labels)
 }
 
 func (c *FaultQuarantineClient) UnQuarantineNodeAndRemoveAnnotations(
@@ -848,7 +849,5 @@ func (c *FaultQuarantineClient) updateNodeAnnotationsForManualUncordon(
 		delete(node.Annotations, key)
 	}
 
-	for key, value := range annotationsToAdd {
-		node.Annotations[key] = value
-	}
+	maps.Copy(node.Annotations, annotationsToAdd)
 }

@@ -31,7 +31,6 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -39,10 +38,8 @@ import (
 func buildAdmissionReview(pod *corev1.Pod, uid types.UID, namespace string) []byte {
 	raw, _ := json.Marshal(pod)
 	review := admissionv1.AdmissionReview{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "admission.k8s.io/v1",
-			Kind:       "AdmissionReview",
-		},
+		APIVersion: "admission.k8s.io/v1",
+		Kind:       "AdmissionReview",
 		Request: &admissionv1.AdmissionRequest{
 			UID:       uid,
 			Namespace: namespace,
@@ -55,14 +52,12 @@ func buildAdmissionReview(pod *corev1.Pod, uid types.UID, namespace string) []by
 
 func handlerConfig() *config.Config {
 	return &config.Config{
-		FileConfig: config.FileConfig{
-			InitContainers: []config.InitContainerSpec{
-				{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
-			},
-			GPUResourceNames:   []string{"nvidia.com/gpu"},
-			ConnectorSocket:    "/var/run/nvsentinel/nvsentinel.sock",
-			ProcessingStrategy: "EXECUTE_REMEDIATION",
+		InitContainers: []config.InitContainerSpec{
+			{Name: "preflight-dcgm-diag", Image: "dcgm:latest"},
 		},
+		GPUResourceNames:   []string{"nvidia.com/gpu"},
+		ConnectorSocket:    "/var/run/nvsentinel/nvsentinel.sock",
+		ProcessingStrategy: "EXECUTE_REMEDIATION",
 	}
 }
 
@@ -74,7 +69,7 @@ func handlerGangConfig() *config.Config {
 		TimeoutDuration:      10 * time.Minute,
 		MasterPort:           29500,
 		ConfigMapMountPath:   "/etc/preflight",
-		MirrorResourceClaims: boolPtr(true),
+		MirrorResourceClaims: new(true),
 	}
 	return cfg
 }
@@ -188,7 +183,7 @@ func TestHandleMutate(t *testing.T) {
 		handler := NewHandler(handlerConfig(), nil, nil)
 
 		review := admissionv1.AdmissionReview{
-			TypeMeta: metav1.TypeMeta{APIVersion: "admission.k8s.io/v1", Kind: "AdmissionReview"},
+			APIVersion: "admission.k8s.io/v1", Kind: "AdmissionReview",
 		}
 		body, _ := json.Marshal(review)
 
@@ -285,7 +280,7 @@ func TestHandleMutate(t *testing.T) {
 		})
 
 		pod := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{Name: "worker-0"},
+			Name: "worker-0",
 			Spec: corev1.PodSpec{
 				Containers: []corev1.Container{{
 					Name: "train", Image: "train:latest",
@@ -325,7 +320,7 @@ func TestHandleMutate(t *testing.T) {
 		})
 
 		pod := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{Name: "worker-0"},
+			Name: "worker-0",
 			Spec: corev1.PodSpec{
 				Containers: []corev1.Container{{
 					Name: "train", Image: "train:latest",
@@ -364,7 +359,7 @@ func TestHandleMutate(t *testing.T) {
 		})
 
 		pod := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{GenerateName: "train-"},
+			GenerateName: "train-",
 			Spec: corev1.PodSpec{
 				Containers: []corev1.Container{{
 					Name: "train", Image: "train:latest",

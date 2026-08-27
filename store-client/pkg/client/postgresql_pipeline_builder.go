@@ -44,7 +44,7 @@ func NewPostgreSQLPipelineBuilder() *PostgreSQLPipelineBuilder {
 func (b *PostgreSQLPipelineBuilder) BuildNodeQuarantineStatusPipeline() datastore.Pipeline {
 	return datastore.ToPipeline(
 		datastore.D(
-			datastore.E("$match", datastore.D(
+			datastore.E(opMatch, datastore.D(
 				datastore.E("$or", datastore.A(
 					// ============================================================
 					// Case 1: UPDATE operations (PRIMARY PATH)
@@ -52,26 +52,26 @@ func (b *PostgreSQLPipelineBuilder) BuildNodeQuarantineStatusPipeline() datastor
 					// This matches when quarantine status is CHANGED via UPDATE.
 					// This is the expected path for both MongoDB and PostgreSQL.
 					datastore.D(
-						datastore.E("operationType", "update"),
+						datastore.E(fieldOperationType, "update"),
 						datastore.E("$or", datastore.A(
 							datastore.D(
-								datastore.E("updateDescription.updatedFields", datastore.D(
-									datastore.E("healtheventstatus.nodequarantined", string(model.Quarantined)),
+								datastore.E(fieldUpdatedFields, datastore.D(
+									datastore.E(nodeQuarantinedStatusField, string(model.Quarantined)),
 								)),
 							),
 							datastore.D(
-								datastore.E("updateDescription.updatedFields", datastore.D(
-									datastore.E("healtheventstatus.nodequarantined", string(model.AlreadyQuarantined)),
+								datastore.E(fieldUpdatedFields, datastore.D(
+									datastore.E(nodeQuarantinedStatusField, string(model.AlreadyQuarantined)),
 								)),
 							),
 							datastore.D(
-								datastore.E("updateDescription.updatedFields", datastore.D(
-									datastore.E("healtheventstatus.nodequarantined", string(model.UnQuarantined)),
+								datastore.E(fieldUpdatedFields, datastore.D(
+									datastore.E(nodeQuarantinedStatusField, string(model.UnQuarantined)),
 								)),
 							),
 							datastore.D(
-								datastore.E("updateDescription.updatedFields", datastore.D(
-									datastore.E("healtheventstatus.nodequarantined", string(model.Cancelled)),
+								datastore.E(fieldUpdatedFields, datastore.D(
+									datastore.E(nodeQuarantinedStatusField, string(model.Cancelled)),
 								)),
 							),
 						)),
@@ -86,9 +86,9 @@ func (b *PostgreSQLPipelineBuilder) BuildNodeQuarantineStatusPipeline() datastor
 					//   - There are timing issues with trigger execution
 					//   - Events are inserted with status pre-populated (edge case)
 					datastore.D(
-						datastore.E("operationType", "insert"),
+						datastore.E(fieldOperationType, opTypeInsert),
 						datastore.E("fullDocument.healtheventstatus.nodequarantined", datastore.D(
-							datastore.E("$in", datastore.A(
+							datastore.E(opIn, datastore.A(
 								string(model.Quarantined),
 								string(model.AlreadyQuarantined),
 								string(model.UnQuarantined),
@@ -107,9 +107,9 @@ func (b *PostgreSQLPipelineBuilder) BuildNodeQuarantineStatusPipeline() datastor
 func (b *PostgreSQLPipelineBuilder) BuildAllHealthEventInsertsPipeline() datastore.Pipeline {
 	return datastore.ToPipeline(
 		datastore.D(
-			datastore.E("$match", datastore.D(
-				datastore.E("operationType", datastore.D(
-					datastore.E("$in", datastore.A("insert")),
+			datastore.E(opMatch, datastore.D(
+				datastore.E(fieldOperationType, datastore.D(
+					datastore.E(opIn, datastore.A(opTypeInsert)),
 				)),
 			)),
 		),
@@ -125,9 +125,9 @@ func (b *PostgreSQLPipelineBuilder) BuildAllHealthEventInsertsPipeline() datasto
 func (b *PostgreSQLPipelineBuilder) BuildProcessableHealthEventInsertsPipeline() datastore.Pipeline {
 	return datastore.ToPipeline(
 		datastore.D(
-			datastore.E("$match", datastore.D(
-				datastore.E("operationType", datastore.D(
-					datastore.E("$in", datastore.A("insert")),
+			datastore.E(opMatch, datastore.D(
+				datastore.E(fieldOperationType, datastore.D(
+					datastore.E(opIn, datastore.A(opTypeInsert)),
 				)),
 				// Exclude STORE_ONLY events, but include EXECUTE_REMEDIATION and missing field (backward compat)
 				datastore.E("$or", datastore.A(
@@ -154,9 +154,9 @@ func (b *PostgreSQLPipelineBuilder) BuildProcessableHealthEventInsertsPipeline()
 func (b *PostgreSQLPipelineBuilder) BuildProcessableNonFatalUnhealthyInsertsPipeline() datastore.Pipeline {
 	return datastore.ToPipeline(
 		datastore.D(
-			datastore.E("$match", datastore.D(
-				datastore.E("operationType", datastore.D(datastore.E("$in", datastore.A("insert", "update")))),
-				datastore.E("fullDocument.healthevent.agent", datastore.D(datastore.E("$ne", "health-events-analyzer"))),
+			datastore.E(opMatch, datastore.D(
+				datastore.E(fieldOperationType, datastore.D(datastore.E(opIn, datastore.A(opTypeInsert, "update")))),
+				datastore.E("fullDocument.healthevent.agent", datastore.D(datastore.E(opNE, "health-events-analyzer"))),
 				datastore.E("fullDocument.healthevent.ishealthy", false),
 				datastore.E("$or", datastore.A(
 					datastore.D(datastore.E(
@@ -183,36 +183,36 @@ func (b *PostgreSQLPipelineBuilder) BuildProcessableNonFatalUnhealthyInsertsPipe
 func (b *PostgreSQLPipelineBuilder) BuildQuarantinedAndDrainedNodesPipeline() datastore.Pipeline {
 	return datastore.ToPipeline(
 		datastore.D(
-			datastore.E("$match", datastore.D(
+			datastore.E(opMatch, datastore.D(
 				datastore.E("$or", datastore.A(
 					// ============================================================
 					// Case 1: UPDATE operations (PRIMARY PATH)
 					// ============================================================
 					datastore.D(
-						datastore.E("operationType", "update"),
+						datastore.E(fieldOperationType, "update"),
 						datastore.E("$or", datastore.A(
 							// Watch for quarantine events (for remediation)
 							datastore.D(
-								datastore.E("updateDescription.updatedFields", datastore.D(
+								datastore.E(fieldUpdatedFields, datastore.D(
 									datastore.E("healtheventstatus.userpodsevictionstatus.status", datastore.D(
-										datastore.E("$in", datastore.A(string(model.StatusSucceeded), string(model.AlreadyDrained))),
+										datastore.E(opIn, datastore.A(string(model.StatusSucceeded), string(model.AlreadyDrained))),
 									)),
 								)),
 								datastore.E("fullDocument.healtheventstatus.nodequarantined", datastore.D(
-									datastore.E("$in", datastore.A(string(model.Quarantined), string(model.AlreadyQuarantined))),
+									datastore.E(opIn, datastore.A(string(model.Quarantined), string(model.AlreadyQuarantined))),
 								)),
 							),
 							// Watch for unquarantine events (for annotation cleanup)
 							datastore.D(
-								datastore.E("updateDescription.updatedFields", datastore.D(
+								datastore.E(fieldUpdatedFields, datastore.D(
 									datastore.E("healtheventstatus.userpodsevictionstatus.status", string(model.StatusSucceeded)),
 								)),
 								datastore.E("fullDocument.healtheventstatus.nodequarantined", string(model.UnQuarantined)),
 							),
 							// Watch for cancelled quarantine events
 							datastore.D(
-								datastore.E("updateDescription.updatedFields", datastore.D(
-									datastore.E("healtheventstatus.nodequarantined", string(model.Cancelled)),
+								datastore.E(fieldUpdatedFields, datastore.D(
+									datastore.E(nodeQuarantinedStatusField, string(model.Cancelled)),
 								)),
 								datastore.E("fullDocument.healtheventstatus.nodequarantined", string(model.Cancelled)),
 							),
@@ -224,14 +224,14 @@ func (b *PostgreSQLPipelineBuilder) BuildQuarantinedAndDrainedNodesPipeline() da
 					// ============================================================
 					// Match if event is inserted with remediation-ready status already set
 					datastore.D(
-						datastore.E("operationType", "insert"),
+						datastore.E(fieldOperationType, opTypeInsert),
 						datastore.E("$or", datastore.A(
 							datastore.D(
 								datastore.E("fullDocument.healtheventstatus.userpodsevictionstatus.status", datastore.D(
-									datastore.E("$in", datastore.A(string(model.StatusSucceeded), string(model.AlreadyDrained))),
+									datastore.E(opIn, datastore.A(string(model.StatusSucceeded), string(model.AlreadyDrained))),
 								)),
 								datastore.E("fullDocument.healtheventstatus.nodequarantined", datastore.D(
-									datastore.E("$in", datastore.A(string(model.Quarantined), string(model.AlreadyQuarantined))),
+									datastore.E(opIn, datastore.A(string(model.Quarantined), string(model.AlreadyQuarantined))),
 								)),
 							),
 							datastore.D(

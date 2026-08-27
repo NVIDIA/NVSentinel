@@ -1,4 +1,39 @@
 {{/*
+TTL from mongodb-store.collectionExpirySeconds (works when the subchart is disabled).
+Nil/empty → 2592000. Strings must be base-10 digits in 0–2147483647 (int("abc") is 0).
+*/}}
+{{- define "nvsentinel.collectionExpirySeconds" -}}
+{{- $store := index .Values "mongodb-store" | default dict -}}
+{{- $raw := index $store "collectionExpirySeconds" -}}
+{{- if or (kindIs "invalid" $raw) (eq ($raw | toString) "") -}}
+{{- $raw = 2592000 -}}
+{{- end -}}
+{{- if kindIs "string" $raw -}}
+{{- if not (regexMatch "^[0-9]+$" $raw) -}}
+{{- fail (printf "mongodb-store.collectionExpirySeconds must be an integer from 0 through 2147483647, got %v" $raw) -}}
+{{- end -}}
+{{- if or (gt (len $raw) 10) (and (eq (len $raw) 10) (gt $raw "2147483647")) -}}
+{{- fail (printf "mongodb-store.collectionExpirySeconds must be an integer from 0 through 2147483647, got %v" $raw) -}}
+{{- end -}}
+{{- end -}}
+{{- $v := int $raw -}}
+{{- if or (lt $v 0) (gt $v 2147483647) -}}
+{{- fail (printf "mongodb-store.collectionExpirySeconds must be an integer from 0 through 2147483647, got %v" $raw) -}}
+{{- end -}}
+{{- $v -}}
+{{- end }}
+
+{{/*
+<release>-external-mongodb-setup-<ttl>-<scriptHash> so a TTL or init-script
+change is a new Job, not a patch on a completed one.
+*/}}
+{{- define "nvsentinel.externalMongoInitJobName" -}}
+{{- $ttl := include "nvsentinel.collectionExpirySeconds" . | toString -}}
+{{- $hash := include "nvsentinel.externalMongoInitEval" . | sha256sum | trunc 8 -}}
+{{- printf "%s-external-mongodb-setup-%s-%s" .Release.Name $ttl $hash | trunc 63 | trimSuffix "-" -}}
+{{- end }}
+
+{{/*
 Expand the name of the chart.
 */}}
 {{- define "nvsentinel.name" -}}
@@ -327,6 +362,56 @@ catch either, because the chart has already coerced the value into a valid
 {{- fail (printf "global.platformConnectorAuth.enabled must be a boolean (true or false), got %s %#v. Quoted strings, null and numbers are refused because they would silently enable or disable authentication." (kindOf $enabled) $enabled) -}}
 {{- end -}}
 {{- if $enabled -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+Node-binding enforcement mode: "enforce" (default) rejects a violating
+request, "audit" records it and lets the request through. Consumed only by
+platform-connector's own ConfigMap; publishers do not need it.
+*/}}
+{{- define "nvsentinel.pcAuth.mode" -}}
+{{- $auth := ((.Values.global).platformConnectorAuth) | default dict -}}
+{{- /*
+`default` treats false, 0, "" and nil as empty, so `$auth.mode | default
+"enforce"` would silently accept a typo'd non-string value by defaulting it
+away instead of rejecting it. Check presence explicitly, then validate
+whatever was actually supplied.
+*/ -}}
+{{- $mode := "enforce" -}}
+{{- if hasKey $auth "mode" -}}
+{{- $mode = index $auth "mode" -}}
+{{- end -}}
+{{- if not (kindIs "string" $mode) -}}
+{{- fail (printf "global.platformConnectorAuth.mode must be a string (\"enforce\" or \"audit\"), got %s %#v." (kindOf $mode) $mode) -}}
+{{- end -}}
+{{- if not (or (eq $mode "enforce") (eq $mode "audit")) -}}
+{{- fail (printf "global.platformConnectorAuth.mode must be \"enforce\" or \"audit\", got %q." $mode) -}}
+{{- end -}}
+{{- $mode -}}
+{{- end -}}
+
+{{/*
+Renders "true" when a validator that never reached a verdict (API server
+unreachable, or timed out) should fall back to node-local scope instead of
+rejecting the request; "" otherwise. Does not affect a rejected credential,
+which is always rejected. Consumed only by platform-connector's own
+ConfigMap.
+*/}}
+{{- define "nvsentinel.pcAuth.failOpenOnUnavailable" -}}
+{{- $auth := ((.Values.global).platformConnectorAuth) | default dict -}}
+{{- /*
+Same reasoning as nvsentinel.pcAuth.mode: `default` would treat an explicit
+0 as absent and silently coerce it to false rather than rejecting the wrong
+type, so presence is checked explicitly first.
+*/ -}}
+{{- $failOpen := false -}}
+{{- if hasKey $auth "failOpenOnUnavailable" -}}
+{{- $failOpen = index $auth "failOpenOnUnavailable" -}}
+{{- end -}}
+{{- if not (kindIs "bool" $failOpen) -}}
+{{- fail (printf "global.platformConnectorAuth.failOpenOnUnavailable must be a boolean (true or false), got %s %#v." (kindOf $failOpen) $failOpen) -}}
+{{- end -}}
+{{- if $failOpen -}}true{{- end -}}
 {{- end -}}
 
 {{/*

@@ -277,7 +277,7 @@ func TestMongoMaintenanceEventStore_UpsertMaintenanceEvent(t *testing.T) {
 
 	// Test successful upsert
 	t.Run("successful upsert", func(t *testing.T) {
-		mockDB.On("UpsertDocument", ctx, map[string]interface{}{"eventId": event.EventID}, event).Return(&client.UpdateResult{UpsertedCount: 1}, nil)
+		mockDB.On("UpsertDocument", ctx, map[string]any{"eventId": event.EventID}, event).Return(&client.UpdateResult{UpsertedCount: 1}, nil)
 
 		err := store.UpsertMaintenanceEvent(ctx, event)
 		assert.NoError(t, err)
@@ -289,7 +289,7 @@ func TestMongoMaintenanceEventStore_UpsertMaintenanceEvent(t *testing.T) {
 	t.Run("database error", func(t *testing.T) {
 		mockDB.ExpectedCalls = nil
 
-		mockDB.On("UpsertDocument", ctx, map[string]interface{}{"eventId": event.EventID}, event).Return((*client.UpdateResult)(nil), errors.New("db error"))
+		mockDB.On("UpsertDocument", ctx, map[string]any{"eventId": event.EventID}, event).Return((*client.UpdateResult)(nil), errors.New("db error"))
 
 		err := store.UpsertMaintenanceEvent(ctx, event)
 		assert.Error(t, err)

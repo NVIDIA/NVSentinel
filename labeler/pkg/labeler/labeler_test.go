@@ -17,6 +17,7 @@ package labeler
 import (
 	"context"
 	"fmt"
+	"maps"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -31,9 +32,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	listersv1 "k8s.io/client-go/listers/core/v1"
+	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -56,10 +61,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 		{
 			name: "DCGM 4.x new deployment adds version label",
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "dcgm-pod",
-					Labels: map[string]string{"app": "nvidia-dcgm"},
-				},
+				Name:   "dcgm-pod",
+				Labels: map[string]string{"app": "nvidia-dcgm"},
 				Spec: corev1.PodSpec{
 					NodeName: "test-node",
 					Containers: []corev1.Container{
@@ -72,10 +75,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			},
 			existingPods: []*corev1.Pod{},
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "test-node",
-					Labels: map[string]string{},
-				},
+				Name:   "test-node",
+				Labels: map[string]string{},
 			},
 			expectedDCGMLabel:   "4.x",
 			expectedDriverLabel: "",
@@ -83,10 +84,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 		{
 			name: "DCGM 3.x new deployment adds version label",
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "dcgm-pod",
-					Labels: map[string]string{"app": "nvidia-dcgm"},
-				},
+				Name:   "dcgm-pod",
+				Labels: map[string]string{"app": "nvidia-dcgm"},
 				Spec: corev1.PodSpec{
 					NodeName: "test-node",
 					Containers: []corev1.Container{
@@ -99,10 +98,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			},
 			existingPods: []*corev1.Pod{},
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "test-node",
-					Labels: map[string]string{},
-				},
+				Name:   "test-node",
+				Labels: map[string]string{},
 			},
 			expectedDCGMLabel:   "3.x",
 			expectedDriverLabel: "",
@@ -110,10 +107,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 		{
 			name: "DCGM pod with non-DCGM image new deployment does not add label",
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "dcgm-pod",
-					Labels: map[string]string{"app": "nvidia-dcgm"},
-				},
+				Name:   "dcgm-pod",
+				Labels: map[string]string{"app": "nvidia-dcgm"},
 				Spec: corev1.PodSpec{
 					NodeName: "test-node",
 					Containers: []corev1.Container{
@@ -126,10 +121,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			},
 			existingPods: []*corev1.Pod{},
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "test-node",
-					Labels: map[string]string{},
-				},
+				Name:   "test-node",
+				Labels: map[string]string{},
 			},
 			expectedDCGMLabel:   "",
 			expectedDriverLabel: "",
@@ -137,10 +130,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 		{
 			name: "ready driver pod new deployment adds driver label",
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "driver-pod",
-					Labels: map[string]string{"app": "nvidia-driver-daemonset"},
-				},
+				Name:   "driver-pod",
+				Labels: map[string]string{"app": "nvidia-driver-daemonset"},
 				Spec: corev1.PodSpec{
 					NodeName: "test-node",
 					Containers: []corev1.Container{
@@ -159,10 +150,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			},
 			existingPods: []*corev1.Pod{},
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "test-node",
-					Labels: map[string]string{},
-				},
+				Name:   "test-node",
+				Labels: map[string]string{},
 			},
 			expectedDCGMLabel:   "",
 			expectedDriverLabel: "true",
@@ -170,12 +159,10 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 		{
 			name: "ready NVIDIADriver CRD pod adds driver label",
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "crd-driver-pod",
-					Labels: map[string]string{
-						"app":                "nvidia-gpu-driver-ubuntu22.04-7d9f5c",
-						driverComponentLabel: driverComponentValue,
-					},
+				Name: "crd-driver-pod",
+				Labels: map[string]string{
+					"app":                "nvidia-gpu-driver-ubuntu22.04-7d9f5c",
+					driverComponentLabel: driverComponentValue,
 				},
 				Spec: corev1.PodSpec{
 					NodeName: "test-node",
@@ -195,10 +182,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			},
 			existingPods: []*corev1.Pod{},
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "test-node",
-					Labels: map[string]string{},
-				},
+				Name:   "test-node",
+				Labels: map[string]string{},
 			},
 			expectedDCGMLabel:   "",
 			expectedDriverLabel: "true",
@@ -208,12 +193,10 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			pod:  nil,
 			existingPods: []*corev1.Pod{
 				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "crd-driver-pod",
-						Labels: map[string]string{
-							"app":                "nvidia-gpu-driver-ubuntu22.04-7d9f5c",
-							driverComponentLabel: driverComponentValue,
-						},
+					Name: "crd-driver-pod",
+					Labels: map[string]string{
+						"app":                "nvidia-gpu-driver-ubuntu22.04-7d9f5c",
+						driverComponentLabel: driverComponentValue,
 					},
 					Spec: corev1.PodSpec{
 						NodeName: "test-node",
@@ -233,11 +216,9 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 				},
 			},
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-node",
-					Labels: map[string]string{
-						DriverInstalledLabel: "true",
-					},
+				Name: "test-node",
+				Labels: map[string]string{
+					DriverInstalledLabel: "true",
 				},
 			},
 			expectedDCGMLabel:   "",
@@ -246,10 +227,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 		{
 			name: "ready GKE driver installer pod adds driver label",
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "driver-installer-pod",
-					Labels: map[string]string{"k8s-app": "nvidia-driver-installer"},
-				},
+				Name:   "driver-installer-pod",
+				Labels: map[string]string{"k8s-app": "nvidia-driver-installer"},
 				Spec: corev1.PodSpec{
 					NodeName: "test-node",
 					Containers: []corev1.Container{
@@ -268,10 +247,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			},
 			existingPods: []*corev1.Pod{},
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "test-node",
-					Labels: map[string]string{},
-				},
+				Name:   "test-node",
+				Labels: map[string]string{},
 			},
 			expectedDCGMLabel:   "",
 			expectedDriverLabel: "true",
@@ -279,10 +256,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 		{
 			name: "not ready driver pod new deployment does not add label",
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "driver-pod",
-					Labels: map[string]string{"app": "nvidia-driver-daemonset"},
-				},
+				Name:   "driver-pod",
+				Labels: map[string]string{"app": "nvidia-driver-daemonset"},
 				Spec: corev1.PodSpec{
 					NodeName: "test-node",
 					Containers: []corev1.Container{
@@ -301,10 +276,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			},
 			existingPods: []*corev1.Pod{},
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "test-node",
-					Labels: map[string]string{},
-				},
+				Name:   "test-node",
+				Labels: map[string]string{},
 			},
 			expectedDCGMLabel:   "",
 			expectedDriverLabel: "",
@@ -312,10 +285,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 		{
 			name: "both DCGM and driver pods new deployment add both labels",
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "dcgm-pod",
-					Labels: map[string]string{"app": "nvidia-dcgm"},
-				},
+				Name:   "dcgm-pod",
+				Labels: map[string]string{"app": "nvidia-dcgm"},
 				Spec: corev1.PodSpec{
 					NodeName: "test-node",
 					Containers: []corev1.Container{
@@ -328,10 +299,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			},
 			existingPods: []*corev1.Pod{
 				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:   "driver-pod",
-						Labels: map[string]string{"app": "nvidia-driver-daemonset"},
-					},
+					Name:   "driver-pod",
+					Labels: map[string]string{"app": "nvidia-driver-daemonset"},
 					Spec: corev1.PodSpec{
 						NodeName: "test-node",
 						Containers: []corev1.Container{
@@ -350,10 +319,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 				},
 			},
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "test-node",
-					Labels: map[string]string{},
-				},
+				Name:   "test-node",
+				Labels: map[string]string{},
 			},
 			expectedDCGMLabel:   "3.x",
 			expectedDriverLabel: "true",
@@ -361,10 +328,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 		{
 			name: "node already has correct labels redeployment no update needed",
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "dcgm-pod",
-					Labels: map[string]string{"app": "nvidia-dcgm"},
-				},
+				Name:   "dcgm-pod",
+				Labels: map[string]string{"app": "nvidia-dcgm"},
 				Spec: corev1.PodSpec{
 					NodeName: "test-node",
 					Containers: []corev1.Container{
@@ -377,10 +342,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			},
 			existingPods: []*corev1.Pod{
 				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:   "dcgm-pod",
-						Labels: map[string]string{"app": "nvidia-dcgm"},
-					},
+					Name:   "dcgm-pod",
+					Labels: map[string]string{"app": "nvidia-dcgm"},
 					Spec: corev1.PodSpec{
 						NodeName: "test-node",
 						Containers: []corev1.Container{
@@ -393,11 +356,9 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 				},
 			},
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-node",
-					Labels: map[string]string{
-						DCGMVersionLabel: "4.x",
-					},
+				Name: "test-node",
+				Labels: map[string]string{
+					DCGMVersionLabel: "4.x",
 				},
 			},
 			expectedDCGMLabel:   "4.x",
@@ -406,10 +367,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 		{
 			name: "pod with no node assignment new deployment fails",
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "dcgm-pod",
-					Labels: map[string]string{"app": "nvidia-dcgm"},
-				},
+				Name:   "dcgm-pod",
+				Labels: map[string]string{"app": "nvidia-dcgm"},
 				Spec: corev1.PodSpec{
 					NodeName: "",
 					Containers: []corev1.Container{
@@ -422,19 +381,15 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			},
 			existingPods: []*corev1.Pod{},
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "test-node",
-					Labels: map[string]string{},
-				},
+				Name:   "test-node",
+				Labels: map[string]string{},
 			},
 		},
 		{
 			name: "DCGM upgrade from 3.x to 4.x updates label",
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "dcgm-pod",
-					Labels: map[string]string{"app": "nvidia-dcgm"},
-				},
+				Name:   "dcgm-pod",
+				Labels: map[string]string{"app": "nvidia-dcgm"},
 				Spec: corev1.PodSpec{
 					NodeName: "test-node",
 					Containers: []corev1.Container{
@@ -447,10 +402,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			},
 			existingPods: []*corev1.Pod{
 				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:   "dcgm-pod",
-						Labels: map[string]string{"app": "nvidia-dcgm"},
-					},
+					Name:   "dcgm-pod",
+					Labels: map[string]string{"app": "nvidia-dcgm"},
 					Spec: corev1.PodSpec{
 						NodeName: "test-node",
 						Containers: []corev1.Container{
@@ -463,11 +416,9 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 				},
 			},
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-node",
-					Labels: map[string]string{
-						DCGMVersionLabel: "3.x",
-					},
+				Name: "test-node",
+				Labels: map[string]string{
+					DCGMVersionLabel: "3.x",
 				},
 			},
 			expectedDCGMLabel:   "4.x",
@@ -476,10 +427,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 		{
 			name: "DCGM downgrade from 4.x to 3.x updates label",
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "dcgm-pod",
-					Labels: map[string]string{"app": "nvidia-dcgm"},
-				},
+				Name:   "dcgm-pod",
+				Labels: map[string]string{"app": "nvidia-dcgm"},
 				Spec: corev1.PodSpec{
 					NodeName: "test-node",
 					Containers: []corev1.Container{
@@ -492,10 +441,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			},
 			existingPods: []*corev1.Pod{
 				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:   "dcgm-pod",
-						Labels: map[string]string{"app": "nvidia-dcgm"},
-					},
+					Name:   "dcgm-pod",
+					Labels: map[string]string{"app": "nvidia-dcgm"},
 					Spec: corev1.PodSpec{
 						NodeName: "test-node",
 						Containers: []corev1.Container{
@@ -508,11 +455,9 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 				},
 			},
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-node",
-					Labels: map[string]string{
-						DCGMVersionLabel: "4.x",
-					},
+				Name: "test-node",
+				Labels: map[string]string{
+					DCGMVersionLabel: "4.x",
 				},
 			},
 			expectedDCGMLabel:   "3.x",
@@ -521,10 +466,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 		{
 			name: "driver pod becomes not ready removes label",
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "driver-pod",
-					Labels: map[string]string{"app": "nvidia-driver-daemonset"},
-				},
+				Name:   "driver-pod",
+				Labels: map[string]string{"app": "nvidia-driver-daemonset"},
 				Spec: corev1.PodSpec{
 					NodeName: "test-node",
 					Containers: []corev1.Container{
@@ -543,10 +486,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			},
 			existingPods: []*corev1.Pod{
 				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:   "driver-pod",
-						Labels: map[string]string{"app": "nvidia-driver-daemonset"},
-					},
+					Name:   "driver-pod",
+					Labels: map[string]string{"app": "nvidia-driver-daemonset"},
 					Spec: corev1.PodSpec{
 						NodeName: "test-node",
 						Containers: []corev1.Container{
@@ -565,11 +506,9 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 				},
 			},
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-node",
-					Labels: map[string]string{
-						DriverInstalledLabel: "true",
-					},
+				Name: "test-node",
+				Labels: map[string]string{
+					DriverInstalledLabel: "true",
 				},
 			},
 			expectedDCGMLabel:   "",
@@ -580,10 +519,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			pod:  nil,
 			existingPods: []*corev1.Pod{
 				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:   "dcgm-pod",
-						Labels: map[string]string{"app": "nvidia-dcgm"},
-					},
+					Name:   "dcgm-pod",
+					Labels: map[string]string{"app": "nvidia-dcgm"},
 					Spec: corev1.PodSpec{
 						NodeName: "test-node",
 						Containers: []corev1.Container{
@@ -596,11 +533,9 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 				},
 			},
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-node",
-					Labels: map[string]string{
-						DCGMVersionLabel: "4.x",
-					},
+				Name: "test-node",
+				Labels: map[string]string{
+					DCGMVersionLabel: "4.x",
 				},
 			},
 			expectedDCGMLabel:   "",
@@ -611,10 +546,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			pod:  nil,
 			existingPods: []*corev1.Pod{
 				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:   "driver-pod",
-						Labels: map[string]string{"app": "nvidia-driver-daemonset"},
-					},
+					Name:   "driver-pod",
+					Labels: map[string]string{"app": "nvidia-driver-daemonset"},
 					Spec: corev1.PodSpec{
 						NodeName: "test-node",
 						Containers: []corev1.Container{
@@ -633,11 +566,9 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 				},
 			},
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-node",
-					Labels: map[string]string{
-						DriverInstalledLabel: "true",
-					},
+				Name: "test-node",
+				Labels: map[string]string{
+					DriverInstalledLabel: "true",
 				},
 			},
 			expectedDCGMLabel:   "",
@@ -648,10 +579,8 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			pod:  nil,
 			existingPods: []*corev1.Pod{
 				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:   "driver-installer-pod",
-						Labels: map[string]string{"k8s-app": "nvidia-driver-installer"},
-					},
+					Name:   "driver-installer-pod",
+					Labels: map[string]string{"k8s-app": "nvidia-driver-installer"},
 					Spec: corev1.PodSpec{
 						NodeName: "test-node",
 						Containers: []corev1.Container{
@@ -670,11 +599,9 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 				},
 			},
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-node",
-					Labels: map[string]string{
-						DriverInstalledLabel: "true",
-					},
+				Name: "test-node",
+				Labels: map[string]string{
+					DriverInstalledLabel: "true",
 				},
 			},
 			expectedDCGMLabel:   "",
@@ -695,7 +622,7 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			cli, err := kubernetes.NewForConfig(cfg)
 			require.NoError(t, err, "failed to create a client")
 
-			ns, err := cli.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "gpu-operator"}}, metav1.CreateOptions{})
+			ns, err := cli.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{Name: "gpu-operator"}, metav1.CreateOptions{})
 			require.NoError(t, err, "failed to create namespace")
 
 			if tt.existingNode != nil {
@@ -885,16 +812,14 @@ func TestDCGMBootstrapCompleted(t *testing.T) {
 			require.NoError(t, err, "failed to create K8s client")
 
 			ns, err := kubeClient.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{Name: "gpu-operator"},
+				Name: "gpu-operator",
 			}, metav1.CreateOptions{})
 			require.NoError(t, err, "failed to create namespace")
 
 			node := &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:        "test-node",
-					Labels:      make(map[string]string),
-					Annotations: make(map[string]string),
-				},
+				Name:        "test-node",
+				Labels:      make(map[string]string),
+				Annotations: make(map[string]string),
 			}
 			if tt.existingBootstrapAnnotation != "" {
 				node.Annotations[DCGMBootstrapCompletedAnnotation] = tt.existingBootstrapAnnotation
@@ -937,10 +862,8 @@ func TestDCGMBootstrapCompleted(t *testing.T) {
 			}
 
 			dcgmPod := &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "dcgm-pod",
-					Labels: map[string]string{"app": "nvidia-dcgm"},
-				},
+				Name:   "dcgm-pod",
+				Labels: map[string]string{"app": "nvidia-dcgm"},
 				Spec: corev1.PodSpec{
 					NodeName: "test-node",
 					Containers: []corev1.Container{
@@ -1034,7 +957,7 @@ func TestAssumeDCGMAvailableWhenPodSourceMissing(t *testing.T) {
 			)
 			require.NoError(t, err)
 
-			node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "test-node", Labels: map[string]string{}}}
+			node := &corev1.Node{Name: "test-node", Labels: map[string]string{}}
 			if tt.existingLabel != "" {
 				node.Labels[DCGMVersionLabel] = tt.existingLabel
 			}
@@ -1141,22 +1064,20 @@ func TestLabelerInformerTransforms_EndToEnd(t *testing.T) {
 	require.NoError(t, err)
 
 	namespace, err := cli.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: "gpu-operator"},
+		Name: "gpu-operator",
 	}, metav1.CreateOptions{})
 	require.NoError(t, err)
 
 	t.Run("default cache shape and pod transform", func(t *testing.T) {
 		node, err := cli.CoreV1().Nodes().Create(ctx, &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "transform-disabled",
-				Labels: map[string]string{
-					managed.ManagedLabelKey: managed.ManagedLabelValueFalse,
-					"retain":                "label",
-				},
-				Annotations: map[string]string{
-					DCGMBootstrapCompletedAnnotation: "true",
-					"drop":                           "annotation",
-				},
+			Name: "transform-disabled",
+			Labels: map[string]string{
+				managed.ManagedLabelKey: managed.ManagedLabelValueFalse,
+				"retain":                "label",
+			},
+			Annotations: map[string]string{
+				DCGMBootstrapCompletedAnnotation: "true",
+				"drop":                           "annotation",
 			},
 			Spec: corev1.NodeSpec{ProviderID: "drop-provider"},
 		}, metav1.CreateOptions{})
@@ -1169,12 +1090,10 @@ func TestLabelerInformerTransforms_EndToEnd(t *testing.T) {
 		require.NoError(t, err)
 
 		pod, err := cli.CoreV1().Pods(namespace.Name).Create(ctx, &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:        "dcgm-pod",
-				Namespace:   namespace.Name,
-				Labels:      map[string]string{"app": "nvidia-dcgm"},
-				Annotations: map[string]string{"drop": "annotation"},
-			},
+			Name:        "dcgm-pod",
+			Namespace:   namespace.Name,
+			Labels:      map[string]string{"app": "nvidia-dcgm"},
+			Annotations: map[string]string{"drop": "annotation"},
 			Spec: corev1.PodSpec{
 				NodeName:           node.Name,
 				ServiceAccountName: "drop-service-account",
@@ -1206,13 +1125,11 @@ func TestLabelerInformerTransforms_EndToEnd(t *testing.T) {
 		cachedPod, ok := pods[0].(*corev1.Pod)
 		require.True(t, ok)
 		assert.Equal(t, &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:            pod.Name,
-				Namespace:       pod.Namespace,
-				UID:             pod.UID,
-				ResourceVersion: pod.ResourceVersion,
-				Labels:          pod.Labels,
-			},
+			Name:            pod.Name,
+			Namespace:       pod.Namespace,
+			UID:             pod.UID,
+			ResourceVersion: pod.ResourceVersion,
+			Labels:          pod.Labels,
 			Spec: corev1.PodSpec{
 				NodeName: pod.Spec.NodeName,
 				Containers: []corev1.Container{{
@@ -1237,14 +1154,12 @@ func TestLabelerInformerTransforms_EndToEnd(t *testing.T) {
 		cachedNode, err := labeler.getNodeFromCache(node.Name)
 		require.NoError(t, err)
 		assert.Equal(t, &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:            node.Name,
-				UID:             node.UID,
-				ResourceVersion: node.ResourceVersion,
-				Labels:          node.Labels,
-				Annotations: map[string]string{
-					DCGMBootstrapCompletedAnnotation: "true",
-				},
+			Name:            node.Name,
+			UID:             node.UID,
+			ResourceVersion: node.ResourceVersion,
+			Labels:          node.Labels,
+			Annotations: map[string]string{
+				DCGMBootstrapCompletedAnnotation: "true",
 			},
 		}, cachedNode)
 
@@ -1271,11 +1186,9 @@ func TestLabelerInformerTransforms_EndToEnd(t *testing.T) {
 			"transform-target": "4",
 		} {
 			node, err := cli.CoreV1().Nodes().Create(ctx, &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:        name,
-					Annotations: map[string]string{"drop": "annotation"},
-				},
-				Spec: corev1.NodeSpec{ProviderID: "drop-provider"},
+				Name:        name,
+				Annotations: map[string]string{"drop": "annotation"},
+				Spec:        corev1.NodeSpec{ProviderID: "drop-provider"},
 			}, metav1.CreateOptions{})
 			require.NoError(t, err)
 
@@ -1449,13 +1362,11 @@ func TestLabelerNodeRequiresReconciliation_DeviceCountLabels(t *testing.T) {
 	require.NoError(t, err)
 
 	oldNode := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "node-a",
-			Labels: map[string]string{
-				"nvidia.com/gpu.count":     "4",
-				"test.nvsentinel/current":  "4",
-				"test.nvsentinel/expected": "8",
-			},
+		Name: "node-a",
+		Labels: map[string]string{
+			"nvidia.com/gpu.count":     "4",
+			"test.nvsentinel/current":  "4",
+			"test.nvsentinel/expected": "8",
 		},
 	}
 
@@ -1492,10 +1403,8 @@ func TestLabelerNodeRequiresReconciliation_AllocatableChanges(t *testing.T) {
 		require.NoError(t, err)
 
 		oldNode := &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:   "node-a",
-				Labels: map[string]string{},
-			},
+			Name:   "node-a",
+			Labels: map[string]string{},
 			Status: corev1.NodeStatus{
 				Allocatable: corev1.ResourceList{
 					corev1.ResourceName("nvidia.com/mlnxnics"): resource.MustParse("0"),
@@ -1527,13 +1436,11 @@ func TestLabelerNodeRequiresReconciliation_AllocatableChanges(t *testing.T) {
 		require.NoError(t, err)
 
 		oldNode := &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "node-a",
-				Labels: map[string]string{
-					"nvidia.com/gpu.count":     "4",
-					"test.nvsentinel/current":  "4",
-					"test.nvsentinel/expected": "8",
-				},
+			Name: "node-a",
+			Labels: map[string]string{
+				"nvidia.com/gpu.count":     "4",
+				"test.nvsentinel/current":  "4",
+				"test.nvsentinel/expected": "8",
 			},
 			Status: corev1.NodeStatus{
 				Allocatable: corev1.ResourceList{
@@ -1571,23 +1478,23 @@ func TestLabelerResourceSlicesForNodeFiltersByNodeName(t *testing.T) {
 	otherNodeName := "node-b"
 
 	require.NoError(t, labeler.resourceSliceInformer.GetStore().Add(&resourcev1.ResourceSlice{
-		ObjectMeta: metav1.ObjectMeta{Name: "slice-a"},
+		Name: "slice-a",
 		Spec: resourcev1.ResourceSliceSpec{
 			NodeName: &nodeName,
 		},
 	}))
 	require.NoError(t, labeler.resourceSliceInformer.GetStore().Add(&resourcev1.ResourceSlice{
-		ObjectMeta: metav1.ObjectMeta{Name: "slice-b"},
+		Name: "slice-b",
 		Spec: resourcev1.ResourceSliceSpec{
 			NodeName: &otherNodeName,
 		},
 	}))
 	require.NoError(t, labeler.resourceSliceInformer.GetStore().Add(&resourcev1.ResourceSlice{
-		ObjectMeta: metav1.ObjectMeta{Name: "global-slice"},
+		Name: "global-slice",
 	}))
 
 	resourceSlices := labeler.resourceSlicesForNode(&corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		Name: nodeName,
 	})
 
 	require.Len(t, resourceSlices, 1)
@@ -1724,11 +1631,9 @@ func TestKataLabelDetection(t *testing.T) {
 		{
 			name: "kata node with default label true",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "kata-node",
-					Labels: map[string]string{
-						KataRuntimeDefaultLabel: "true",
-					},
+				Name: "kata-node",
+				Labels: map[string]string{
+					KataRuntimeDefaultLabel: "true",
 				},
 			},
 			kataOverride:    "",
@@ -1738,11 +1643,9 @@ func TestKataLabelDetection(t *testing.T) {
 		{
 			name: "kata node with default label enabled",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "kata-node",
-					Labels: map[string]string{
-						KataRuntimeDefaultLabel: "enabled",
-					},
+				Name: "kata-node",
+				Labels: map[string]string{
+					KataRuntimeDefaultLabel: "enabled",
 				},
 			},
 			kataOverride:    "",
@@ -1752,11 +1655,9 @@ func TestKataLabelDetection(t *testing.T) {
 		{
 			name: "non-kata node with default label false",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "regular-node",
-					Labels: map[string]string{
-						KataRuntimeDefaultLabel: "false",
-					},
+				Name: "regular-node",
+				Labels: map[string]string{
+					KataRuntimeDefaultLabel: "false",
 				},
 			},
 			kataOverride:    "",
@@ -1766,11 +1667,9 @@ func TestKataLabelDetection(t *testing.T) {
 		{
 			name: "node with custom kata label",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "custom-kata-node",
-					Labels: map[string]string{
-						"custom.io/kata": "true",
-					},
+				Name: "custom-kata-node",
+				Labels: map[string]string{
+					"custom.io/kata": "true",
 				},
 			},
 			kataOverride:    "custom.io/kata",
@@ -1780,10 +1679,8 @@ func TestKataLabelDetection(t *testing.T) {
 		{
 			name: "node without kata labels",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "no-kata-node",
-					Labels: map[string]string{},
-				},
+				Name:   "no-kata-node",
+				Labels: map[string]string{},
 			},
 			kataOverride:    "",
 			expectedKataVal: LabelValueFalse,
@@ -1792,12 +1689,10 @@ func TestKataLabelDetection(t *testing.T) {
 		{
 			name: "node with both default and custom kata labels - both true",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "both-kata-node",
-					Labels: map[string]string{
-						KataRuntimeDefaultLabel: "true",
-						"custom.io/kata":        "true",
-					},
+				Name: "both-kata-node",
+				Labels: map[string]string{
+					KataRuntimeDefaultLabel: "true",
+					"custom.io/kata":        "true",
 				},
 			},
 			kataOverride:    "custom.io/kata",
@@ -1887,12 +1782,10 @@ func TestStaleLabelsRemoval(t *testing.T) {
 		{
 			name: "both stale labels removed when no pods exist",
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-node",
-					Labels: map[string]string{
-						DriverInstalledLabel: "true",
-						DCGMVersionLabel:     "3.x",
-					},
+				Name: "test-node",
+				Labels: map[string]string{
+					DriverInstalledLabel: "true",
+					DCGMVersionLabel:     "3.x",
 				},
 			},
 			existingPods:          []*corev1.Pod{},
@@ -1902,19 +1795,15 @@ func TestStaleLabelsRemoval(t *testing.T) {
 		{
 			name: "driver label retained when driver pod exists",
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-node",
-					Labels: map[string]string{
-						DriverInstalledLabel: "true",
-					},
+				Name: "test-node",
+				Labels: map[string]string{
+					DriverInstalledLabel: "true",
 				},
 			},
 			existingPods: []*corev1.Pod{
 				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:   "driver-pod",
-						Labels: map[string]string{"app": "nvidia-driver-daemonset"},
-					},
+					Name:   "driver-pod",
+					Labels: map[string]string{"app": "nvidia-driver-daemonset"},
 					Spec: corev1.PodSpec{
 						NodeName: "test-node",
 						Containers: []corev1.Container{
@@ -1936,19 +1825,15 @@ func TestStaleLabelsRemoval(t *testing.T) {
 		{
 			name: "DCGM label retained when DCGM pod exists",
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-node",
-					Labels: map[string]string{
-						DCGMVersionLabel: "4.x",
-					},
+				Name: "test-node",
+				Labels: map[string]string{
+					DCGMVersionLabel: "4.x",
 				},
 			},
 			existingPods: []*corev1.Pod{
 				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:   "dcgm-pod",
-						Labels: map[string]string{"app": "nvidia-dcgm"},
-					},
+					Name:   "dcgm-pod",
+					Labels: map[string]string{"app": "nvidia-dcgm"},
 					Spec: corev1.PodSpec{
 						NodeName: "test-node",
 						Containers: []corev1.Container{
@@ -1976,7 +1861,7 @@ func TestStaleLabelsRemoval(t *testing.T) {
 			cli, err := kubernetes.NewForConfig(cfg)
 			require.NoError(t, err, "failed to create kubernetes client")
 
-			ns, err := cli.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "gpu-operator"}}, metav1.CreateOptions{})
+			ns, err := cli.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{Name: "gpu-operator"}, metav1.CreateOptions{})
 			require.NoError(t, err, "failed to create namespace")
 
 			_, err = cli.CoreV1().Nodes().Create(ctx, tt.existingNode, metav1.CreateOptions{})
@@ -2023,9 +1908,7 @@ func TestStaleLabelsRemoval(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					for k, v := range tt.existingNode.Labels {
-						node.Labels[k] = v
-					}
+					maps.Copy(node.Labels, tt.existingNode.Labels)
 					_, err = cli.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
 					return err
 				})
@@ -2088,11 +1971,9 @@ func TestAssumeDriverInstalled(t *testing.T) {
 			name:                  "assume-driver-installed sets label on GPU node without driver pods",
 			assumeDriverInstalled: true,
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "gpu-node",
-					Labels: map[string]string{
-						"nvidia.com/gpu.present": "true",
-					},
+				Name: "gpu-node",
+				Labels: map[string]string{
+					"nvidia.com/gpu.present": "true",
 				},
 			},
 			expectedDriverLabel:   "true",
@@ -2102,10 +1983,8 @@ func TestAssumeDriverInstalled(t *testing.T) {
 			name:                  "assume-driver-installed skips non-GPU node",
 			assumeDriverInstalled: true,
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "control-plane-node",
-					Labels: map[string]string{},
-				},
+				Name:   "control-plane-node",
+				Labels: map[string]string{},
 			},
 			shouldHaveDriverLabel: false,
 		},
@@ -2113,12 +1992,10 @@ func TestAssumeDriverInstalled(t *testing.T) {
 			name:                  "assume-driver-installed preserves label on GPU node reconciliation",
 			assumeDriverInstalled: true,
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "gpu-node",
-					Labels: map[string]string{
-						"nvidia.com/gpu.present": "true",
-						DriverInstalledLabel:     "true",
-					},
+				Name: "gpu-node",
+				Labels: map[string]string{
+					"nvidia.com/gpu.present": "true",
+					DriverInstalledLabel:     "true",
 				},
 			},
 			expectedDriverLabel:   "true",
@@ -2128,11 +2005,9 @@ func TestAssumeDriverInstalled(t *testing.T) {
 			name:                  "without flag stale label is removed when no driver pods",
 			assumeDriverInstalled: false,
 			existingNode: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "gpu-node",
-					Labels: map[string]string{
-						DriverInstalledLabel: "true",
-					},
+				Name: "gpu-node",
+				Labels: map[string]string{
+					DriverInstalledLabel: "true",
 				},
 			},
 			shouldHaveDriverLabel: false,
@@ -2299,10 +2174,8 @@ func createNodes(t *testing.T, ctx context.Context, cli kubernetes.Interface, co
 			defer func() { <-sem }()
 
 			_, err := cli.CoreV1().Nodes().Create(ctx, &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   fmt.Sprintf("node-%04d", i),
-					Labels: map[string]string{"nvidia.com/gpu.present": "true"},
-				},
+				Name:   fmt.Sprintf("node-%04d", i),
+				Labels: map[string]string{"nvidia.com/gpu.present": "true"},
 			}, metav1.CreateOptions{})
 			require.NoError(t, err)
 		}()
@@ -2331,9 +2204,7 @@ func generateNodeUpdates(t *testing.T, ctx context.Context, cli kubernetes.Inter
 				break
 			}
 
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				defer func() { <-sem }()
 
 				node, err := cli.CoreV1().Nodes().Get(ctx, fmt.Sprintf("node-%04d", i), metav1.GetOptions{})
@@ -2347,7 +2218,7 @@ func generateNodeUpdates(t *testing.T, ctx context.Context, cli kubernetes.Inter
 					Reason:            fmt.Sprintf("round-%d", round),
 				}}
 				_, _ = cli.CoreV1().Nodes().UpdateStatus(ctx, node, metav1.UpdateOptions{})
-			}()
+			})
 		}
 
 		wg.Wait()
@@ -2389,10 +2260,8 @@ func nodeIndexerLister(nodes ...*corev1.Node) listersv1.NodeLister {
 // only if a second pass happened at all.
 func TestReconcileNodeLabelsInPlace_KataAndDriverLabelsMissing_AppliesBothInOnePass(t *testing.T) {
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "kata-and-driver-node",
-			Labels: map[string]string{gpuPresentLabel: LabelValueTrue},
-		},
+		Name:   "kata-and-driver-node",
+		Labels: map[string]string{gpuPresentLabel: LabelValueTrue},
 	}
 
 	// Never started, so no event handler can race the reconcile below. It only has to
@@ -2418,14 +2287,12 @@ func TestReconcileNodeLabelsInPlace_KataAndDriverLabelsMissing_AppliesBothInOneP
 func TestReconcileNodeLabelsInPlace_ManagedGate(t *testing.T) {
 	t.Run("strips detection labels when node is opted out", func(t *testing.T) {
 		node := &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "opted-out-node",
-				Labels: map[string]string{
-					managed.ManagedLabelKey: managed.ManagedLabelValueFalse,
-					DCGMVersionLabel:        "3.x",
-					DriverInstalledLabel:    "true",
-					KataEnabledLabel:        "true",
-				},
+			Name: "opted-out-node",
+			Labels: map[string]string{
+				managed.ManagedLabelKey: managed.ManagedLabelValueFalse,
+				DCGMVersionLabel:        "3.x",
+				DriverInstalledLabel:    "true",
+				KataEnabledLabel:        "true",
 			},
 		}
 		l := &Labeler{
@@ -2446,10 +2313,8 @@ func TestReconcileNodeLabelsInPlace_ManagedGate(t *testing.T) {
 
 	t.Run("no-op when opted-out node has no detection labels", func(t *testing.T) {
 		node := &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:   "opted-out-clean",
-				Labels: map[string]string{managed.ManagedLabelKey: managed.ManagedLabelValueFalse},
-			},
+			Name:   "opted-out-clean",
+			Labels: map[string]string{managed.ManagedLabelKey: managed.ManagedLabelValueFalse},
 		}
 		l := &Labeler{
 			ctx:        context.Background(),
@@ -2462,10 +2327,8 @@ func TestReconcileNodeLabelsInPlace_ManagedGate(t *testing.T) {
 
 	t.Run("fail closed — returns false without mutating on lister error", func(t *testing.T) {
 		node := &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:   "error-node",
-				Labels: map[string]string{DCGMVersionLabel: "3.x", DriverInstalledLabel: "true"},
-			},
+			Name:   "error-node",
+			Labels: map[string]string{DCGMVersionLabel: "3.x", DriverInstalledLabel: "true"},
 		}
 		l := &Labeler{
 			ctx:        context.Background(),
@@ -2484,12 +2347,10 @@ func TestReconcileNodeLabelsInPlace_ManagedGate(t *testing.T) {
 func TestUpdateNodeLabelsForPod_ManagedGate(t *testing.T) {
 	t.Run("skips update when node is opted out", func(t *testing.T) {
 		node := &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "opted-out-node",
-				Labels: map[string]string{
-					managed.ManagedLabelKey: managed.ManagedLabelValueFalse,
-					// Suppose driver label is currently absent — update would stamp it.
-				},
+			Name: "opted-out-node",
+			Labels: map[string]string{
+				managed.ManagedLabelKey: managed.ManagedLabelValueFalse,
+				// Suppose driver label is currently absent — update would stamp it.
 			},
 		}
 		clientset := fake.NewSimpleClientset(node)
@@ -2513,7 +2374,7 @@ func TestUpdateNodeLabelsForPod_ManagedGate(t *testing.T) {
 
 	t.Run("fail closed — skips update on lister error", func(t *testing.T) {
 		node := &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{Name: "error-node", Labels: map[string]string{}},
+			Name: "error-node", Labels: map[string]string{},
 		}
 		clientset := fake.NewSimpleClientset(node)
 		l := &Labeler{
@@ -2530,4 +2391,293 @@ func TestUpdateNodeLabelsForPod_ManagedGate(t *testing.T) {
 		assert.NotContains(t, updated.Labels, DriverInstalledLabel,
 			"lister error must not stamp labels on node")
 	})
+}
+
+// newLabelerWithCachedDriverPods builds a Labeler with manually controlled informer
+// stores. The driver pods exist only in the pod cache, allowing the test to represent
+// a cache that has not yet observed their deletion.
+func newLabelerWithCachedDriverPods(t *testing.T, node *corev1.Node,
+	cachedDriverPods ...*corev1.Pod) (*Labeler, kubernetes.Interface) {
+	t.Helper()
+
+	podInformer := cache.NewSharedIndexInformer(&cache.ListWatch{}, &corev1.Pod{}, 0, cache.Indexers{
+		NodeDCGMIndex:   podNodeIndexerByLabel("app", "nvidia-dcgm"),
+		NodeDriverIndex: podNodeIndexerByLabel("app", "nvidia-driver-daemonset"),
+	})
+
+	for _, pod := range cachedDriverPods {
+		require.NoError(t, podInformer.GetIndexer().Add(pod))
+	}
+
+	nodeInformer := cache.NewSharedIndexInformer(&cache.ListWatch{}, &corev1.Node{}, 0, cache.Indexers{})
+	require.NoError(t, nodeInformer.GetStore().Add(node))
+
+	emptyPodInformer := func(index string, indexFunc cache.IndexFunc) cache.SharedIndexInformer {
+		return cache.NewSharedIndexInformer(&cache.ListWatch{}, &corev1.Pod{}, 0,
+			cache.Indexers{index: indexFunc})
+	}
+
+	clientset := fake.NewSimpleClientset(node)
+
+	return &Labeler{
+		ctx:          context.Background(),
+		clientset:    clientset,
+		podInformer:  podInformer,
+		nodeInformer: nodeInformer,
+		nodeLister:   listersv1.NewNodeLister(nodeInformer.GetIndexer()),
+		crdDriverInformer: emptyPodInformer(NodeDriverIndex,
+			podNodeIndexerByLabel(driverComponentLabel, driverComponentValue)),
+		gkeInstallerInformer: emptyPodInformer(NodeGKEDriverInstallerIndex,
+			podNodeIndexerByLabel("k8s-app", "nvidia-driver-installer")),
+		// Pod-derived labels are reconciled only after every informer has synced.
+		informersSynced: []cache.InformerSynced{func() bool { return true }},
+	}, clientset
+}
+
+// TestUpdateNodeLabels_DriverPodDeletedDuringReconcile_DeleteWins verifies that a
+// startup reconcile cannot overwrite a concurrent pod-deletion result.
+func TestUpdateNodeLabels_DriverPodDeletedDuringReconcile_DeleteWins(t *testing.T) {
+	const nodeName = "test-node"
+
+	node := &corev1.Node{
+		Name: nodeName,
+		Labels: map[string]string{
+			KataEnabledLabel: LabelValueFalse,
+		},
+	}
+	pod := &corev1.Pod{
+		Name:      "driver-pod",
+		Namespace: "default",
+		UID:       "driver-pod-uid",
+		Labels:    map[string]string{"app": "nvidia-driver-daemonset"},
+		Spec:      corev1.PodSpec{NodeName: nodeName},
+		Status: corev1.PodStatus{
+			Phase:      corev1.PodRunning,
+			Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+		},
+	}
+
+	l, clientset := newLabelerWithCachedDriverPods(t, node, pod)
+	fakeClient := clientset.(*fake.Clientset)
+
+	reconcileReachedPatch := make(chan struct{})
+	releaseReconcile := make(chan struct{})
+	var blocked atomic.Bool
+	fakeClient.PrependReactor("patch", "nodes", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
+		if blocked.CompareAndSwap(false, true) {
+			close(reconcileReachedPatch)
+			<-releaseReconcile
+		}
+
+		return false, nil, nil
+	})
+
+	reconcileDone := make(chan error, 1)
+	go func() { reconcileDone <- l.updateNodeLabels(nodeName) }()
+	<-reconcileReachedPatch
+
+	// Informer stores remove an object before invoking its delete handler.
+	require.NoError(t, l.podInformer.GetIndexer().Delete(pod))
+	deleteDone := make(chan error, 1)
+	go func() { deleteDone <- l.handlePodDeleteEvent(pod) }()
+
+	select {
+	case err := <-deleteDone:
+		t.Fatalf("pod deletion was not serialized with node reconciliation: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseReconcile)
+	require.NoError(t, <-reconcileDone)
+	require.NoError(t, <-deleteDone)
+
+	updated, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.NotContains(t, updated.Labels, DriverInstalledLabel)
+}
+
+// TestUpdateNodeLabels_CachedNode_UsesPatchOnly pins the API-call budget and payload
+// of the label write path.
+func TestUpdateNodeLabels_CachedNode_UsesPatchOnly(t *testing.T) {
+	const nodeName = "gpu-node"
+
+	clientset := fake.NewSimpleClientset(&corev1.Node{
+		Name:            nodeName,
+		ResourceVersion: "1",
+		Labels:          map[string]string{gpuPresentLabel: LabelValueTrue},
+	})
+
+	labeler, _ := startTransformTestLabeler(t, clientset, devicecounts.Config{})
+	requireCachedLabel(t, labeler, nodeName, KataEnabledLabel, LabelValueFalse)
+
+	tests := []struct {
+		name          string
+		setup         func(*testing.T)
+		expectedPatch string
+	}{
+		{
+			name: "label change costs one merge patch",
+			setup: func(t *testing.T) {
+				node, getErr := clientset.CoreV1().Nodes().Get(t.Context(), nodeName, metav1.GetOptions{})
+				require.NoError(t, getErr)
+				delete(node.Labels, KataEnabledLabel)
+				_, updateErr := clientset.CoreV1().Nodes().Update(t.Context(), node, metav1.UpdateOptions{})
+				require.NoError(t, updateErr)
+				requireCachedLabelAbsent(t, labeler, nodeName, KataEnabledLabel)
+			},
+			expectedPatch: fmt.Sprintf(
+				`{"metadata":{"labels":{%q:%q}}}`,
+				KataEnabledLabel,
+				LabelValueFalse,
+			),
+		},
+		{
+			name: "no-op reconcile costs no API call",
+			setup: func(t *testing.T) {
+				requireCachedLabel(t, labeler, nodeName, KataEnabledLabel, LabelValueFalse)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.setup(t)
+			clientset.ClearActions()
+
+			require.NoError(t, labeler.updateNodeLabels(nodeName))
+
+			expectedPatchCount := 0
+			if tt.expectedPatch != "" {
+				expectedPatchCount = 1
+				action := nodePatchAction(t, clientset.Actions())
+				assert.Equal(t, types.MergePatchType, action.GetPatchType())
+				assert.JSONEq(t, tt.expectedPatch, string(action.GetPatch()))
+			}
+
+			assert.Equal(t, expectedPatchCount, countNodeActions(clientset, "patch"))
+			assert.Equal(t, 0, countNodeActions(clientset, "get"))
+			assert.Equal(t, 0, countNodeActions(clientset, "update"))
+
+			updated, getErr := clientset.CoreV1().Nodes().Get(t.Context(), nodeName, metav1.GetOptions{})
+			require.NoError(t, getErr)
+			assert.Equal(t, LabelValueFalse, updated.Labels[KataEnabledLabel], "the desired label is present")
+			assert.Equal(t, LabelValueTrue, updated.Labels[gpuPresentLabel],
+				"a merge patch must leave labels it does not mention alone")
+		})
+	}
+}
+
+func TestUpdateNodeLabels_DelayedInformerEvent_EventuallyConverges(t *testing.T) {
+	const nodeName = "delayed-node"
+
+	initial := &corev1.Node{
+		Name: nodeName,
+		Labels: map[string]string{
+			KataRuntimeDefaultLabel: LabelValueFalse,
+			KataEnabledLabel:        LabelValueFalse,
+		},
+	}
+
+	// A controlled fake watch lets the API object advance independently of the
+	// informer cache, making the stale-cache checkpoints deterministic.
+	clientset := fake.NewSimpleClientset(initial)
+	nodeWatch := watch.NewRaceFreeFake()
+	clientset.PrependWatchReactor("nodes", func(k8stesting.Action) (bool, watch.Interface, error) {
+		return true, nodeWatch, nil
+	})
+
+	labeler, _ := startTransformTestLabeler(t, clientset, devicecounts.Config{})
+	requireCachedLabel(t, labeler, nodeName, KataRuntimeDefaultLabel, LabelValueFalse)
+
+	// Change the API object while withholding its watch event. The informer is synced,
+	// but its node projection deliberately remains one generation behind.
+	liveNode, err := clientset.CoreV1().Nodes().Get(t.Context(), nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	liveNode.Labels[KataRuntimeDefaultLabel] = LabelValueTrue
+	liveNode, err = clientset.CoreV1().Nodes().Update(t.Context(), liveNode, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	cachedNode, err := labeler.getNodeFromCache(nodeName)
+	require.NoError(t, err)
+	assert.Equal(t, LabelValueFalse, cachedNode.Labels[KataRuntimeDefaultLabel])
+	assert.Equal(t, LabelValueFalse, liveNode.Labels[KataEnabledLabel])
+
+	// A reconcile against the stale projection computes the stale derived value and
+	// correctly emits no write.
+	clientset.ClearActions()
+	require.NoError(t, labeler.updateNodeLabels(nodeName))
+	assert.Empty(t, clientset.Actions())
+
+	// Deliver the delayed input event. Its handler must reconcile from the new cache
+	// generation and correct the derived label.
+	nodeWatch.Modify(liveNode.DeepCopy())
+	requireCachedLabel(t, labeler, nodeName, KataRuntimeDefaultLabel, LabelValueTrue)
+
+	cachedNode, err = labeler.getNodeFromCache(nodeName)
+	require.NoError(t, err)
+	assert.Equal(t, LabelValueFalse, cachedNode.Labels[KataEnabledLabel])
+
+	require.Eventually(t, func() bool {
+		node, getErr := clientset.CoreV1().Nodes().Get(t.Context(), nodeName, metav1.GetOptions{})
+		return getErr == nil && node.Labels[KataEnabledLabel] == LabelValueTrue
+	}, 10*time.Second, 10*time.Millisecond)
+
+	finalNode, err := clientset.CoreV1().Nodes().Get(t.Context(), nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	nodeWatch.Modify(finalNode.DeepCopy())
+	requireCachedLabel(t, labeler, nodeName, KataEnabledLabel, LabelValueTrue)
+}
+
+func countNodeActions(clientset *fake.Clientset, verb string) int {
+	count := 0
+
+	for _, action := range clientset.Actions() {
+		if action.GetVerb() == verb && action.GetResource().Resource == "nodes" {
+			count++
+		}
+	}
+
+	return count
+}
+
+func nodePatchAction(t *testing.T, actions []k8stesting.Action) k8stesting.PatchAction {
+	t.Helper()
+
+	for _, action := range actions {
+		if action.GetVerb() == "patch" && action.GetResource().Resource == "nodes" {
+			patchAction, ok := action.(k8stesting.PatchAction)
+			require.True(t, ok)
+
+			return patchAction
+		}
+	}
+
+	require.FailNow(t, "node PATCH action not found")
+	return nil
+}
+
+// requireCachedLabel waits for the informer cache to show the given label, which is
+// how a test tells that the labeler has finished reacting to earlier events.
+func requireCachedLabel(t *testing.T, l *Labeler, nodeName, key, value string) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		node, err := l.getNodeFromCache(nodeName)
+		return err == nil && node.Labels[key] == value
+	}, 10*time.Second, 10*time.Millisecond, "cache never showed %s=%s", key, value)
+}
+
+func requireCachedLabelAbsent(t *testing.T, l *Labeler, nodeName, key string) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		node, err := l.getNodeFromCache(nodeName)
+		if err != nil {
+			return false
+		}
+
+		_, exists := node.Labels[key]
+
+		return !exists
+	}, 10*time.Second, 10*time.Millisecond, "cache never dropped %s", key)
 }

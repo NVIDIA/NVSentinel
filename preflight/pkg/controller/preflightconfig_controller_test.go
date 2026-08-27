@@ -55,7 +55,7 @@ func pfcTestRESTMapper() meta.RESTMapper {
 
 func volcanoPFC(namespace, name string) *preflightv1alpha1.PreflightConfig {
 	return &preflightv1alpha1.PreflightConfig{
-		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
+		Namespace: namespace, Name: name,
 		Spec: preflightv1alpha1.PreflightConfigSpec{
 			GangDiscovery: preflightv1alpha1.GangDiscoverySpec{
 				Name:           "volcano",
@@ -90,7 +90,7 @@ func reconcile(t *testing.T, r *PreflightConfigReconciler, namespace, name strin
 	t.Helper()
 
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: client.ObjectKey{Namespace: namespace, Name: name},
+		Namespace: namespace, Name: name,
 	})
 	require.NoError(t, err)
 }
@@ -134,7 +134,7 @@ func TestPreflightConfigReconciler_InvalidConfigFallsBack(t *testing.T) {
 
 	// name set but missing GVR/keys/expr => invalid (partial PodGroup config).
 	bad := &preflightv1alpha1.PreflightConfig{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "default"},
+		Namespace: "team-a", Name: "default",
 		Spec: preflightv1alpha1.PreflightConfigSpec{
 			GangDiscovery: preflightv1alpha1.GangDiscoverySpec{Name: "broken"},
 		},
@@ -186,7 +186,7 @@ func TestPreflightConfigReconciler_MultipleOldestInvalid(t *testing.T) {
 	newer := metav1.NewTime(time.Now())
 
 	broken := &preflightv1alpha1.PreflightConfig{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "z-broken", CreationTimestamp: older},
+		Namespace: "team-a", Name: "z-broken", CreationTimestamp: older,
 		Spec: preflightv1alpha1.PreflightConfigSpec{
 			GangDiscovery: preflightv1alpha1.GangDiscoverySpec{Name: "broken"},
 		},

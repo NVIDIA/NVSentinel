@@ -52,11 +52,11 @@ func NewNodeInformer(k8sClient kubernetes.Interface) (*NodeInformer, error) {
 	informer := factory.Core().V1().Nodes().Informer()
 
 	_, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
+		AddFunc: func(obj any) {
 			node := obj.(*v1.Node)
 			ni.handleNodeAdd(node)
 		},
-		DeleteFunc: func(obj interface{}) {
+		DeleteFunc: func(obj any) {
 			// client-go can deliver a DeletedFinalStateUnknown tombstone when
 			// the informer misses a delete event (e.g. after a watch/relist
 			// disruption). Unwrap it before the type assertion, otherwise a

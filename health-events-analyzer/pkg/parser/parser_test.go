@@ -30,7 +30,7 @@ func TestParseSequenceString(t *testing.T) {
 		name     string
 		criteria map[string]any
 		event    datamodels.HealthEventWithStatus
-		want     map[string]interface{}
+		want     map[string]any
 		wantErr  bool
 	}{
 		{
@@ -48,7 +48,7 @@ func TestParseSequenceString(t *testing.T) {
 				HealthEventStatus: &protos.HealthEventStatus{
 					FaultRemediated: wrapperspb.Bool(remediated)},
 			},
-			want: map[string]interface{}{
+			want: map[string]any{
 				"healtheventstatus.faultremediated.value": true,
 				"healthevent.nodename":                    "gpu-node-1",
 				"healthevent.isfatal":                     true,
@@ -67,7 +67,7 @@ func TestParseSequenceString(t *testing.T) {
 					Agent:    "health-events-analyzer",
 				},
 			},
-			want: map[string]interface{}{
+			want: map[string]any{
 				"healthevent.nodename": "test-node",
 				"healthevent.agent":    map[string]any{"$ne": "health-events-analyzer"},
 			},
@@ -85,7 +85,7 @@ func TestParseSequenceString(t *testing.T) {
 					ErrorCode: []string{"48"},
 				},
 			},
-			want: map[string]interface{}{
+			want: map[string]any{
 				"healthevent.errorcode.0": "48",
 				"healthevent.nodename":    "node2",
 			},
@@ -116,7 +116,7 @@ func TestParseSequenceString(t *testing.T) {
 					},
 				},
 			},
-			want: map[string]interface{}{
+			want: map[string]any{
 				"healthevent.isfatal":                             true,
 				"healthevent.ishealthy":                           false,
 				"healthevent.checkname":                           "GpuXidError",
@@ -138,7 +138,7 @@ func TestParseSequenceString(t *testing.T) {
 					CheckName: "XID_ERROR",
 				},
 			},
-			want: map[string]interface{}{
+			want: map[string]any{
 				"healthevent.checkname": map[string]any{"$in": []any{"GpuXidError", "GpuMemWatch", "GpuNvswitchFatalWatch"}},
 				"healthevent.nodename":  "check-node",
 			},
@@ -165,7 +165,7 @@ func TestParseSequenceStage(t *testing.T) {
 		name    string
 		stage   string
 		event   datamodels.HealthEventWithStatus
-		want    map[string]interface{}
+		want    map[string]any
 		wantErr bool
 	}{
 		{
@@ -177,8 +177,8 @@ func TestParseSequenceStage(t *testing.T) {
 					IsFatal:  true,
 				},
 			},
-			want: map[string]interface{}{
-				"$match": map[string]interface{}{
+			want: map[string]any{
+				"$match": map[string]any{
 					"healthevent.nodename": "test-node-1",
 					"healthevent.isfatal":  true,
 				},
@@ -194,8 +194,8 @@ func TestParseSequenceStage(t *testing.T) {
 					ErrorCode: []string{"13", "31"},
 				},
 			},
-			want: map[string]interface{}{
-				"$match": map[string]interface{}{
+			want: map[string]any{
+				"$match": map[string]any{
 					"healthevent.nodename":    "gpu-node-2",
 					"healthevent.errorcode.0": "13",
 				},
@@ -210,7 +210,7 @@ func TestParseSequenceStage(t *testing.T) {
 					NodeName: "node1",
 				},
 			},
-			want: map[string]interface{}{
+			want: map[string]any{
 				"$count": "total",
 			},
 			wantErr: false,
@@ -223,10 +223,10 @@ func TestParseSequenceStage(t *testing.T) {
 					NodeName: "expr-node",
 				},
 			},
-			want: map[string]interface{}{
-				"$match": map[string]interface{}{
-					"$expr": map[string]interface{}{
-						"$gte": []interface{}{
+			want: map[string]any{
+				"$match": map[string]any{
+					"$expr": map[string]any{
+						"$gte": []any{
 							"$healthevent.generatedtimestamp.seconds",
 							float64(1000),
 						},
@@ -246,8 +246,8 @@ func TestParseSequenceStage(t *testing.T) {
 					},
 				},
 			},
-			want: map[string]interface{}{
-				"$match": map[string]interface{}{
+			want: map[string]any{
+				"$match": map[string]any{
 					"healthevent.entitiesimpacted.0.entityvalue": "GPU-123",
 				},
 			},
@@ -265,15 +265,15 @@ func TestParseSequenceStage(t *testing.T) {
 				},
 			},
 			// After normalization, protobuf array should have lowercase field names
-			want: map[string]interface{}{
-				"$match": map[string]interface{}{
-					"$filter": map[string]interface{}{
-						"input": []interface{}{
-							map[string]interface{}{"entitytype": "GPU", "entityvalue": "0"},
-							map[string]interface{}{"entitytype": "CPU", "entityvalue": "1"},
+			want: map[string]any{
+				"$match": map[string]any{
+					"$filter": map[string]any{
+						"input": []any{
+							map[string]any{"entitytype": "GPU", "entityvalue": "0"},
+							map[string]any{"entitytype": "CPU", "entityvalue": "1"},
 						},
-						"cond": map[string]interface{}{
-							"$eq": []interface{}{"$$this.entitytype", "GPU"},
+						"cond": map[string]any{
+							"$eq": []any{"$$this.entitytype", "GPU"},
 						},
 					},
 				},
@@ -307,9 +307,9 @@ func TestParseSequenceStage(t *testing.T) {
 					CheckName: "TestCheck",
 				},
 			},
-			want: map[string]interface{}{
-				"$match": map[string]interface{}{
-					"filters": []interface{}{"array-node", "TestCheck"},
+			want: map[string]any{
+				"$match": map[string]any{
+					"filters": []any{"array-node", "TestCheck"},
 				},
 			},
 			wantErr: false,
@@ -322,10 +322,10 @@ func TestParseSequenceStage(t *testing.T) {
 					NodeName: "deep-node",
 				},
 			},
-			want: map[string]interface{}{
-				"$match": map[string]interface{}{
-					"nested": map[string]interface{}{
-						"level1": map[string]interface{}{
+			want: map[string]any{
+				"$match": map[string]any{
+					"nested": map[string]any{
+						"level1": map[string]any{
 							"level2": "deep-node",
 						},
 					},
@@ -356,7 +356,7 @@ func TestGetValueFromPath(t *testing.T) {
 		name    string
 		path    string
 		event   datamodels.HealthEventWithStatus
-		want    interface{}
+		want    any
 		wantErr bool
 	}{
 		{
@@ -494,9 +494,9 @@ func TestGetValueFromPath(t *testing.T) {
 func TestProcessValue(t *testing.T) {
 	tests := []struct {
 		name    string
-		value   interface{}
+		value   any
 		event   datamodels.HealthEventWithStatus
-		want    interface{}
+		want    any
 		wantErr bool
 	}{
 		{
@@ -529,7 +529,7 @@ func TestProcessValue(t *testing.T) {
 		},
 		{
 			name: "map with this reference",
-			value: map[string]interface{}{
+			value: map[string]any{
 				"field": "this.healthevent.checkname",
 			},
 			event: datamodels.HealthEventWithStatus{
@@ -537,13 +537,13 @@ func TestProcessValue(t *testing.T) {
 					CheckName: "TestCheck",
 				},
 			},
-			want: map[string]interface{}{
+			want: map[string]any{
 				"field": "TestCheck",
 			},
 		},
 		{
 			name: "array with this reference",
-			value: []interface{}{
+			value: []any{
 				"this.healthevent.nodename",
 				"static",
 			},
@@ -552,7 +552,7 @@ func TestProcessValue(t *testing.T) {
 					NodeName: "arraynode",
 				},
 			},
-			want: []interface{}{
+			want: []any{
 				"arraynode",
 				"static",
 			},

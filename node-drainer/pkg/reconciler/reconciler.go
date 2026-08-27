@@ -48,6 +48,12 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// Document field and update-operator names used in datastore queries.
+const (
+	fieldID = "_id"
+	opSet   = "$set"
+)
+
 type eventStatus struct {
 	status    model.Status
 	createdAt time.Time
@@ -223,7 +229,7 @@ func (r *Reconciler) PreprocessAndEnqueueEvent(ctx context.Context, event client
 // Returns true if the event should be skipped (not enqueued)
 func (r *Reconciler) handleEventCancellation(
 	ctx context.Context,
-	documentID interface{},
+	documentID any,
 	nodeName string,
 	statusPtr *model.Status,
 	eventCreatedAt time.Time,
@@ -265,14 +271,14 @@ func (r *Reconciler) setInitialStatusAndEnqueue(ctx context.Context, document ma
 
 	// Set initial status to StatusInProgress (idempotent - only updates if not already set)
 	filter := map[string]any{
-		"_id": documentID,
+		fieldID: documentID,
 		"healtheventstatus.userpodsevictionstatus.status": map[string]any{
 			"$ne": string(model.StatusInProgress),
 		},
 	}
 
 	update := map[string]any{
-		"$set": map[string]any{
+		opSet: map[string]any{
 			"healtheventstatus.userpodsevictionstatus.status": string(model.StatusInProgress),
 		},
 	}
@@ -923,7 +929,7 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 	}
 
 	// Explicitly construct the eviction status map, always setting all fields
-	evictionStatusMap := map[string]interface{}{
+	evictionStatusMap := map[string]any{
 		"status":  userPodsEvictionStatus.GetStatus(),
 		"message": userPodsEvictionStatus.GetMessage(),
 	}
@@ -939,8 +945,8 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 		updateFields["healtheventstatus.drainfinishtimestamp"] = timestamppb.Now()
 	}
 
-	filter := map[string]any{"_id": documentID}
-	update := map[string]any{"$set": updateFields}
+	filter := map[string]any{fieldID: documentID}
+	update := map[string]any{opSet: updateFields}
 
 	_, err = database.UpdateDocument(ctx, filter, update)
 	if err != nil {
@@ -1345,8 +1351,7 @@ func (r *Reconciler) handleCustomDrainCRCreationError(
 	ctx, span := tracing.StartSpan(ctx, "node_drainer.handle_custom_drain_cr_creation_error")
 	defer span.End()
 
-	var noMatchErr *meta.NoKindMatchError
-	if !errors.As(err, &noMatchErr) {
+	if _, ok := errors.AsType[*meta.NoKindMatchError](err); !ok {
 		tracing.RecordError(span, err)
 		span.SetAttributes(
 			attribute.String("node_drainer.error.type", "custom_drain_cr_creation_error"),
@@ -1422,10 +1427,10 @@ func (r *Reconciler) setDrainFailedStatus(
 		return fmt.Errorf("failed to extract document ID: %w", err)
 	}
 
-	filter := map[string]any{"_id": documentID}
+	filter := map[string]any{fieldID: documentID}
 
 	update := map[string]any{
-		"$set": map[string]any{
+		opSet: map[string]any{
 			"healtheventstatus.userpodsevictionstatus": protos.OperationStatus{
 				Status:  string(model.StatusFailed),
 				Message: reason,

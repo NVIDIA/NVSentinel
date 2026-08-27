@@ -28,7 +28,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 )
 
 var supportedHostPathTypes = map[string]corev1.HostPathType{
@@ -42,6 +41,9 @@ var supportedHostPathTypes = map[string]corev1.HostPathType{
 }
 
 const (
+	// patchOpAdd is the JSON Patch (RFC 6902) "add" operation.
+	patchOpAdd = "add"
+
 	nvsentinelSocketVolumeName = "nvsentinel-socket"
 	// connectorTokenVolumeName holds a projected ServiceAccount token for the
 	// platform-connector audience, minted against the workload pod's own
@@ -101,7 +103,7 @@ func ParseCheckNames(csv string) ([]string, error) {
 
 	var names []string
 
-	for _, part := range strings.Split(csv, ",") {
+	for part := range strings.SplitSeq(csv, ",") {
 		name := strings.TrimSpace(part)
 		if name == "" {
 			continue
@@ -237,7 +239,7 @@ func (i *Injector) InjectInitContainers(ctx context.Context, pod *corev1.Pod) ([
 func (i *Injector) patchInitContainers(pod *corev1.Pod, initContainers []corev1.Container) []PatchOperation {
 	if len(pod.Spec.InitContainers) == 0 {
 		return []PatchOperation{{
-			Op:    "add",
+			Op:    patchOpAdd,
 			Path:  "/spec/initContainers",
 			Value: initContainers,
 		}}
@@ -252,7 +254,7 @@ func (i *Injector) patchInitContainers(pod *corev1.Pod, initContainers []corev1.
 		}
 
 		patches = append(patches, PatchOperation{
-			Op:    "add",
+			Op:    patchOpAdd,
 			Path:  path,
 			Value: c,
 		})
@@ -604,16 +606,14 @@ func (i *Injector) injectConnectorTokenMount(container *corev1.Container) {
 func (i *Injector) connectorTokenVolume() corev1.Volume {
 	return corev1.Volume{
 		Name: connectorTokenVolumeName,
-		VolumeSource: corev1.VolumeSource{
-			Projected: &corev1.ProjectedVolumeSource{
-				Sources: []corev1.VolumeProjection{{
-					ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-						Audience:          i.cfg.ConnectorTokenAudience,
-						ExpirationSeconds: ptr.To(i.connectorTokenExpirationSeconds()),
-						Path:              "token",
-					},
-				}},
-			},
+		Projected: &corev1.ProjectedVolumeSource{
+			Sources: []corev1.VolumeProjection{{
+				ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+					Audience:          i.cfg.ConnectorTokenAudience,
+					ExpirationSeconds: new(i.connectorTokenExpirationSeconds()),
+					Path:              "token",
+				},
+			}},
 		},
 	}
 }
@@ -687,11 +687,9 @@ func (i *Injector) injectVolumes(pod *corev1.Pod, gangCtx *GangContext) []PatchO
 
 		volumesToAdd = append(volumesToAdd, corev1.Volume{
 			Name: nvsentinelSocketVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				HostPath: &corev1.HostPathVolumeSource{
-					Path: "/var/run/nvsentinel",
-					Type: &hostPathType,
-				},
+			HostPath: &corev1.HostPathVolumeSource{
+				Path: "/var/run/nvsentinel",
+				Type: &hostPathType,
 			},
 		})
 	}
@@ -710,14 +708,14 @@ func (i *Injector) injectVolumes(pod *corev1.Pod, gangCtx *GangContext) []PatchO
 
 	if len(pod.Spec.Volumes) == 0 {
 		patches = append(patches, PatchOperation{
-			Op:    "add",
+			Op:    patchOpAdd,
 			Path:  "/spec/volumes",
 			Value: volumesToAdd,
 		})
 	} else {
 		for _, vol := range volumesToAdd {
 			patches = append(patches, PatchOperation{
-				Op:    "add",
+				Op:    patchOpAdd,
 				Path:  "/spec/volumes/-",
 				Value: vol,
 			})
@@ -754,7 +752,7 @@ func (i *Injector) injectImagePullSecrets(pod *corev1.Pod) []PatchOperation {
 
 	if len(pod.Spec.ImagePullSecrets) == 0 {
 		return []PatchOperation{{
-			Op:    "add",
+			Op:    patchOpAdd,
 			Path:  "/spec/imagePullSecrets",
 			Value: toAdd,
 		}}
@@ -763,7 +761,7 @@ func (i *Injector) injectImagePullSecrets(pod *corev1.Pod) []PatchOperation {
 	patches := make([]PatchOperation, 0, len(toAdd))
 	for _, s := range toAdd {
 		patches = append(patches, PatchOperation{
-			Op:    "add",
+			Op:    patchOpAdd,
 			Path:  "/spec/imagePullSecrets/-",
 			Value: s,
 		})
@@ -788,13 +786,9 @@ func (i *Injector) collectGangVolumes(
 
 		volumes = append(volumes, corev1.Volume{
 			Name: types.GangConfigVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: gangCtx.ConfigMapName,
-					},
-					Optional: &optional,
-				},
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				Name:     gangCtx.ConfigMapName,
+				Optional: &optional,
 			},
 		})
 	}
@@ -807,11 +801,9 @@ func (i *Injector) collectGangVolumes(
 		dshmSizeLimit := resource.MustParse("64Gi")
 		volumes = append(volumes, corev1.Volume{
 			Name: dshmVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{
-					Medium:    corev1.StorageMediumMemory,
-					SizeLimit: &dshmSizeLimit,
-				},
+			EmptyDir: &corev1.EmptyDirVolumeSource{
+				Medium:    corev1.StorageMediumMemory,
+				SizeLimit: &dshmSizeLimit,
 			},
 		})
 	}
@@ -825,13 +817,9 @@ func (i *Injector) collectGangVolumes(
 
 		volumes = append(volumes, corev1.Volume{
 			Name: ncclTopoVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: i.cfg.GangCoordination.NCCLTopoConfigMap,
-					},
-					Optional: &optional,
-				},
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				Name:     i.cfg.GangCoordination.NCCLTopoConfigMap,
+				Optional: &optional,
 			},
 		})
 	}
@@ -862,11 +850,9 @@ func (i *Injector) collectExtraHostPathVolumes(existingVolumes map[string]bool) 
 
 		volumes = append(volumes, corev1.Volume{
 			Name: m.Name,
-			VolumeSource: corev1.VolumeSource{
-				HostPath: &corev1.HostPathVolumeSource{
-					Path: m.HostPath,
-					Type: hostPathType,
-				},
+			HostPath: &corev1.HostPathVolumeSource{
+				Path: m.HostPath,
+				Type: hostPathType,
 			},
 		})
 	}

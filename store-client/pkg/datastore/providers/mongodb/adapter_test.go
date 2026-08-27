@@ -28,7 +28,7 @@ import (
 
 // fakeClientEvent implements client.Event for adapter tests.
 type fakeClientEvent struct {
-	doc   map[string]interface{}
+	doc   map[string]any
 	token []byte
 }
 
@@ -37,8 +37,8 @@ func (f *fakeClientEvent) GetRecordUUID() (string, error) { return "doc-id", nil
 func (f *fakeClientEvent) GetNodeName() (string, error)   { return "node", nil }
 func (f *fakeClientEvent) GetResumeToken() []byte         { return f.token }
 
-func (f *fakeClientEvent) UnmarshalDocument(v interface{}) error {
-	target, ok := v.(*map[string]interface{})
+func (f *fakeClientEvent) UnmarshalDocument(v any) error {
+	target, ok := v.(*map[string]any)
 	if !ok {
 		return fmt.Errorf("unsupported target type %T", v)
 	}
@@ -65,7 +65,7 @@ func (f *fakeClientWatcher) MarkProcessed(ctx context.Context, token []byte) err
 
 func TestAdaptedChangeStreamWatcher_EventsCarryResumeToken(t *testing.T) {
 	token := []byte("per-event-resume-token")
-	doc := map[string]interface{}{"_id": "abc123", "healthevent": map[string]interface{}{"nodename": "node-1"}}
+	doc := map[string]any{"_id": "abc123", "healthevent": map[string]any{"nodename": "node-1"}}
 
 	watcher := &fakeClientWatcher{events: make(chan client.Event, 1)}
 	watcher.events <- &fakeClientEvent{doc: doc, token: token}
@@ -78,7 +78,7 @@ func TestAdaptedChangeStreamWatcher_EventsCarryResumeToken(t *testing.T) {
 		require.True(t, ok, "expected an adapted event before channel close")
 		assert.Equal(t, token, eventWithToken.ResumeToken,
 			"adapter must propagate the per-event resume token so consumers can checkpoint")
-		assert.Equal(t, doc, map[string]interface{}(eventWithToken.Event))
+		assert.Equal(t, doc, map[string]any(eventWithToken.Event))
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for adapted event")
 	}

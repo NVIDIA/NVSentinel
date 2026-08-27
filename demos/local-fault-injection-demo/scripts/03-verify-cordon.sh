@@ -78,7 +78,7 @@ verify_cordon() {
     echo ""
     
     # Poll for cordon status with retries
-    local max_attempts=7  # 7 attempts x 3 seconds = 21 seconds
+    local max_attempts=7  # 7 attempts, 3s apart = ~18 seconds
     local attempt=1
     local is_unschedulable="false"
     
@@ -106,13 +106,17 @@ verify_cordon() {
         ((attempt++))
     done
     
-    if [ "$is_unschedulable" = "true" ]; then
+    # Capture the target node's result before $is_unschedulable is reused
+    # by the all-nodes summary loop further down.
+    local cordon_verified="$is_unschedulable"
+
+    if [ "$cordon_verified" = "true" ]; then
         echo "  🔒 No new pods will be scheduled on this node"
         echo "  ✅ Existing workloads continue running (safe mode)"
         echo "  🎯 NVSentinel successfully quarantined the faulty node!"
         echo ""
     else
-        warn "Node $TARGET_NODE is NOT cordoned yet"
+        warn "Node $TARGET_NODE was not cordoned after $max_attempts attempts"
         echo ""
         echo "This could mean:"
         echo "  - The event is still being processed (wait a few seconds)"
@@ -177,6 +181,20 @@ verify_cordon() {
         fi
     done
     
+    if [ "$cordon_verified" != "true" ]; then
+        section "Demo Incomplete"
+
+        echo "The node was not cordoned, so the demo did not complete successfully."
+        echo ""
+        echo "Most common cause is insufficient resources - fault-quarantine needs"
+        echo "MongoDB to hold primary in order to watch the change stream. Check with:"
+        echo "  kubectl get pods -n $NAMESPACE"
+        echo ""
+        echo "When you're done, clean up: ./scripts/99-cleanup.sh"
+        echo ""
+        return 1
+    fi
+
     section "Demo Complete! 🎉"
     
     echo "You've successfully completed the NVSentinel local demo!"

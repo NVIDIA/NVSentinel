@@ -30,15 +30,15 @@ import (
 func TestPostgreSQLEventAdapter_GetDocumentID(t *testing.T) {
 	tests := []struct {
 		name        string
-		eventData   map[string]interface{}
+		eventData   map[string]any
 		want        string
 		wantErr     bool
 		description string
 	}{
 		{
 			name: "returns changelog ID from _id._data",
-			eventData: map[string]interface{}{
-				"_id": map[string]interface{}{
+			eventData: map[string]any{
+				"_id": map[string]any{
 					"_data": "136",
 				},
 			},
@@ -48,8 +48,8 @@ func TestPostgreSQLEventAdapter_GetDocumentID(t *testing.T) {
 		},
 		{
 			name: "returns int-parseable value",
-			eventData: map[string]interface{}{
-				"_id": map[string]interface{}{
+			eventData: map[string]any{
+				"_id": map[string]any{
 					"_data": "12345",
 				},
 			},
@@ -59,11 +59,11 @@ func TestPostgreSQLEventAdapter_GetDocumentID(t *testing.T) {
 		},
 		{
 			name: "does NOT return UUID from fullDocument",
-			eventData: map[string]interface{}{
-				"_id": map[string]interface{}{
+			eventData: map[string]any{
+				"_id": map[string]any{
 					"_data": "136",
 				},
-				"fullDocument": map[string]interface{}{
+				"fullDocument": map[string]any{
 					"id": "6d4e36e4-b9d2-473b-a290-3ed7fb99073e",
 				},
 			},
@@ -73,8 +73,8 @@ func TestPostgreSQLEventAdapter_GetDocumentID(t *testing.T) {
 		},
 		{
 			name: "handles numeric _data value",
-			eventData: map[string]interface{}{
-				"_id": map[string]interface{}{
+			eventData: map[string]any{
+				"_id": map[string]any{
 					"_data": 999,
 				},
 			},
@@ -84,8 +84,8 @@ func TestPostgreSQLEventAdapter_GetDocumentID(t *testing.T) {
 		},
 		{
 			name: "returns error when _id not present",
-			eventData: map[string]interface{}{
-				"fullDocument": map[string]interface{}{
+			eventData: map[string]any{
+				"fullDocument": map[string]any{
 					"id": "6d4e36e4-b9d2-473b-a290-3ed7fb99073e",
 				},
 			},
@@ -95,7 +95,7 @@ func TestPostgreSQLEventAdapter_GetDocumentID(t *testing.T) {
 		},
 		{
 			name: "uses _id directly if _data not present",
-			eventData: map[string]interface{}{
+			eventData: map[string]any{
 				"_id": "789",
 			},
 			want:        "789",
@@ -136,17 +136,17 @@ func TestPostgreSQLEventAdapter_GetDocumentID(t *testing.T) {
 func TestPostgreSQLEventAdapter_GetRecordUUID(t *testing.T) {
 	tests := []struct {
 		name      string
-		eventData map[string]interface{}
+		eventData map[string]any
 		want      string
 		wantErr   bool
 	}{
 		{
 			name: "returns UUID from fullDocument.id",
-			eventData: map[string]interface{}{
-				"_id": map[string]interface{}{
+			eventData: map[string]any{
+				"_id": map[string]any{
 					"_data": "136",
 				},
-				"fullDocument": map[string]interface{}{
+				"fullDocument": map[string]any{
 					"id": "6d4e36e4-b9d2-473b-a290-3ed7fb99073e",
 				},
 			},
@@ -155,11 +155,11 @@ func TestPostgreSQLEventAdapter_GetRecordUUID(t *testing.T) {
 		},
 		{
 			name: "returns UUID from fullDocument._id (MongoDB compatibility)",
-			eventData: map[string]interface{}{
-				"_id": map[string]interface{}{
+			eventData: map[string]any{
+				"_id": map[string]any{
 					"_data": "136",
 				},
-				"fullDocument": map[string]interface{}{
+				"fullDocument": map[string]any{
 					"_id": "507f1f77bcf86cd799439011",
 				},
 			},
@@ -168,8 +168,8 @@ func TestPostgreSQLEventAdapter_GetRecordUUID(t *testing.T) {
 		},
 		{
 			name: "errors when fullDocument not present",
-			eventData: map[string]interface{}{
-				"_id": map[string]interface{}{
+			eventData: map[string]any{
+				"_id": map[string]any{
 					"_data": "136",
 				},
 			},
@@ -178,11 +178,11 @@ func TestPostgreSQLEventAdapter_GetRecordUUID(t *testing.T) {
 		},
 		{
 			name: "errors when id not in fullDocument",
-			eventData: map[string]interface{}{
-				"_id": map[string]interface{}{
+			eventData: map[string]any{
+				"_id": map[string]any{
 					"_data": "136",
 				},
-				"fullDocument": map[string]interface{}{
+				"fullDocument": map[string]any{
 					"name": "test",
 				},
 			},
@@ -223,11 +223,11 @@ func TestPostgreSQLEventAdapter_GetRecordUUID(t *testing.T) {
 func TestPostgreSQLEventAdapter_BothMethods(t *testing.T) {
 	// Test that both methods return different values as expected
 	adapter := &PostgreSQLEventAdapter{
-		eventData: map[string]interface{}{
-			"_id": map[string]interface{}{
+		eventData: map[string]any{
+			"_id": map[string]any{
 				"_data": "136",
 			},
-			"fullDocument": map[string]interface{}{
+			"fullDocument": map[string]any{
 				"id": "6d4e36e4-b9d2-473b-a290-3ed7fb99073e",
 			},
 		},
@@ -276,7 +276,7 @@ func TestBuildEventDocument(t *testing.T) {
 	)
 
 	// Check that _id._data contains the changelog ID, not the UUID
-	idMap, ok := event["_id"].(map[string]interface{})
+	idMap, ok := event["_id"].(map[string]any)
 	if !ok {
 		t.Fatal("event[_id] is not a map")
 	}
@@ -355,7 +355,7 @@ func TestTimestampBasedResume_LoadExistingToken(t *testing.T) {
 
 	// Create a timestamp-based resume token
 	resumeTime := time.Date(2024, 11, 24, 10, 0, 4, 0, time.UTC)
-	token := map[string]interface{}{
+	token := map[string]any{
 		"timestamp": resumeTime.Format(time.RFC3339Nano),
 		"eventID":   int64(193),
 	}
@@ -391,7 +391,7 @@ func TestTimestampBasedResume_BackwardCompatibility(t *testing.T) {
 	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", "health_events", "", ModePolling)
 
 	// Create an OLD ID-based resume token (no timestamp)
-	token := map[string]interface{}{
+	token := map[string]any{
 		"eventID": int64(193),
 	}
 	tokenJSON, err := json.Marshal(token)

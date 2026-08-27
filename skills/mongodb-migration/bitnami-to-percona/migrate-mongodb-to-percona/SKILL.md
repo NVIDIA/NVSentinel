@@ -139,7 +139,7 @@ export NVSENTINEL_RELEASE="nvsentinel"
 | Symptom | Action |
 | ------- | ------ |
 | Operator log `requested storage (...) is less than actual storage (...)`, psmdb `error`, no primary | Volume below the provider minimum. Fix values, delete the `mongod-data-*` PVCs, re-run step 5. |
-| `create-mongodb-database` job `Failed` with `DeadlineExceeded` | The job never retries on its own. `kubectl delete job create-mongodb-database -n "$NVSENTINEL_NAMESPACE"`, then re-run the same `helm upgrade`; Helm recreates it and it completes against the healthy replica set. |
+| MongoDB init Job (`-l app.kubernetes.io/name=create-mongodb-database`) `Failed` with `DeadlineExceeded` | The job never retries on its own. `kubectl delete job -l app.kubernetes.io/name=create-mongodb-database -n "$NVSENTINEL_NAMESPACE"`, then re-run the same `helm upgrade`; Helm recreates it and it completes against the healthy replica set. |
 | Consumers crash-loop with TLS/connection-closed errors right after install | Leftover TLS secrets from the old backend. Re-run step 3 fully, then step 5. |
 | `helm upgrade` fails with `field is immutable` on the create-mongodb-database Job | An in-place backend switch was attempted on a live release. Follow the runbook troubleshooting row (rollback, manual deletion of everything the failed revision created), then restart from the readiness skill. |
 

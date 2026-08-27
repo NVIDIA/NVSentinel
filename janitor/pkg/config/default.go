@@ -22,8 +22,6 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 )
 
 const (
@@ -55,7 +53,7 @@ func applyGlobalDefaults(config *Config) {
 	}
 
 	if config.Global.ManualMode == nil {
-		config.Global.ManualMode = ptr.To(false)
+		config.Global.ManualMode = new(false)
 	}
 }
 
@@ -196,46 +194,36 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 	}
 
 	job := &batchv1.JobTemplateSpec{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: namespace,
-		},
+		Namespace: namespace,
 		Spec: batchv1.JobSpec{
-			ActiveDeadlineSeconds:   ptr.To(int64(300)),
-			BackoffLimit:            ptr.To(int32(2)),
-			TTLSecondsAfterFinished: ptr.To(int32(86400)),
+			ActiveDeadlineSeconds:   new(int64(300)),
+			BackoffLimit:            new(int32(2)),
+			TTLSecondsAfterFinished: new(int32(86400)),
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					Volumes: []corev1.Volume{
 						{
 							Name: HostDevVolumeName,
-							VolumeSource: corev1.VolumeSource{
-								HostPath: &corev1.HostPathVolumeSource{
-									Path: HostDevPath,
-								},
+							HostPath: &corev1.HostPathVolumeSource{
+								Path: HostDevPath,
 							},
 						},
 						{
 							Name: HostDevLogVolumeName,
-							VolumeSource: corev1.VolumeSource{
-								HostPath: &corev1.HostPathVolumeSource{
-									Path: HostDevLogPath,
-								},
+							HostPath: &corev1.HostPathVolumeSource{
+								Path: HostDevLogPath,
 							},
 						},
 						{
 							Name: DriverRootVolumeName,
-							VolumeSource: corev1.VolumeSource{
-								HostPath: &corev1.HostPathVolumeSource{
-									Path: DriverRootPath,
-								},
+							HostPath: &corev1.HostPathVolumeSource{
+								Path: DriverRootPath,
 							},
 						},
 						{
 							Name: HostSysVolumeName,
-							VolumeSource: corev1.VolumeSource{
-								HostPath: &corev1.HostPathVolumeSource{
-									Path: HostSysPath,
-								},
+							HostPath: &corev1.HostPathVolumeSource{
+								Path: HostSysPath,
 							},
 						},
 					},
@@ -290,7 +278,7 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 								},
 							},
 							SecurityContext: &corev1.SecurityContext{
-								Privileged: ptr.To(true),
+								Privileged: new(true),
 							},
 						},
 					},

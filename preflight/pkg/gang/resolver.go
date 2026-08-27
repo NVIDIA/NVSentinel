@@ -16,6 +16,7 @@ package gang
 
 import (
 	"fmt"
+	"maps"
 	"sync"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
@@ -41,9 +42,7 @@ type DiscovererResolver struct {
 // override map is copied; later mutations should go through Set/Remove.
 func NewResolver(defaultDiscoverer GangDiscoverer, overrides map[string]GangDiscoverer) *DiscovererResolver {
 	byNamespace := make(map[string]GangDiscoverer, len(overrides))
-	for ns, d := range overrides {
-		byNamespace[ns] = d
-	}
+	maps.Copy(byNamespace, overrides)
 
 	return &DiscovererResolver{
 		defaultDiscoverer: defaultDiscoverer,

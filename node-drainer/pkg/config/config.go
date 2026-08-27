@@ -236,7 +236,7 @@ func NewTokenConfig(envConfig *EnvConfig) client.TokenConfig {
 
 // NewQuarantinePipeline creates the database change stream pipeline for watching quarantine events
 // This uses the provider-specific pipeline builder for optimal performance with both MongoDB and PostgreSQL
-func NewQuarantinePipeline() interface{} {
+func NewQuarantinePipeline() any {
 	builder := client.GetPipelineBuilder()
 	return builder.BuildNodeQuarantineStatusPipeline()
 }

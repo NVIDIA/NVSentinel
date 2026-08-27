@@ -94,7 +94,7 @@ func loadDatabaseConfig(databaseClientCertMountPath string) (*datastore.DataStor
 	return config, nil
 }
 
-func createPipeline() interface{} {
+func createPipeline() any {
 	builder := client.GetPipelineBuilder()
 	return builder.BuildProcessableNonFatalUnhealthyInsertsPipeline()
 }

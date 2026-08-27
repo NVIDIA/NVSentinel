@@ -85,4 +85,7 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with (.Values.global.systemPriorityClassName | default .Values.priorityClassName) }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
 

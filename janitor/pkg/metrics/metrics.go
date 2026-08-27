@@ -22,6 +22,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
+// Metric label names.
+const (
+	labelActionType = "action_type"
+	labelStatus     = "status"
+	labelNode       = "node"
+)
+
 // Action types for metrics labeling
 const (
 	ActionTypeReboot    = "reboot"
@@ -44,7 +51,7 @@ var (
 			Name: "janitor_actions_count",
 			Help: "Total number of janitor actions by type and status",
 		},
-		[]string{"action_type", "status", "node"},
+		[]string{labelActionType, labelStatus, labelNode},
 	)
 
 	// actionMTTRHistogram tracks the time taken to complete actions
@@ -54,35 +61,35 @@ var (
 			Help:    "Time from CR creation to action completion",
 			Buckets: prometheus.ExponentialBuckets(10, 2, 10), // Log-scale buckets for MTTR
 		},
-		[]string{"action_type"},
+		[]string{labelActionType},
 	)
 
 	GPUResetRequestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "gpu_reset_requests_total",
 		Help: "Total number of GPU reset requests initiated.",
-	}, []string{"node"})
+	}, []string{labelNode})
 
 	GPUResetRequestsCompletedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "gpu_reset_requests_completed_total",
 		Help: "Total number of completed GPU reset requests, labeled by their final status.",
-	}, []string{"node", "status"})
+	}, []string{labelNode, labelStatus})
 
 	GPUResetDurationSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "gpu_reset_duration_seconds",
 		Help: "The end-to-end duration of GPU reset workflows, from controller acknowledgment to completion, " +
 			"labeled by their final status.",
 		Buckets: prometheus.LinearBuckets(30, 30, 10),
-	}, []string{"node", "status"})
+	}, []string{labelNode, labelStatus})
 
 	GPUResetActiveRequests = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "gpu_reset_active_requests",
 		Help: "The number of GPU reset requests currently in progress.",
-	}, []string{"node"})
+	}, []string{labelNode})
 
 	GPUResetFailureReasonsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "gpu_reset_failure_reasons_total",
 		Help: "Total number of GPU reset failures, labeled by the specific reason.",
-	}, []string{"node", "reason"})
+	}, []string{labelNode, "reason"})
 
 	// ttlDeletionsTotal tracks the number of CRs deleted by the TTL reconciler,
 	// labeled by the CR kind.
@@ -117,16 +124,16 @@ func NewActionMetrics() *ActionMetrics {
 // IncActionCount increments the action count for the given action type, status, and node
 func (m *ActionMetrics) IncActionCount(actionType, status, node string) {
 	actionsCount.With(prometheus.Labels{
-		"action_type": actionType,
-		"status":      status,
-		"node":        node,
+		labelActionType: actionType,
+		labelStatus:     status,
+		labelNode:       node,
 	}).Inc()
 }
 
 // RecordActionMTTR records the completion time for an action
 func (m *ActionMetrics) RecordActionMTTR(actionType string, duration time.Duration) {
 	actionMTTRHistogram.With(prometheus.Labels{
-		"action_type": actionType,
+		labelActionType: actionType,
 	}).Observe(duration.Seconds())
 }
 

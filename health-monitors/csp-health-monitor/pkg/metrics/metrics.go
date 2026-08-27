@@ -25,6 +25,13 @@ const (
 	StatusFailed  = "failed"
 )
 
+// Label names shared across the metrics declared below.
+const (
+	labelCSP         = "csp"
+	labelErrorType   = "error_type"
+	labelTriggerType = "trigger_type"
+)
+
 // --- Main Monitor Metrics ---
 
 var (
@@ -34,7 +41,7 @@ var (
 			Name: "csp_health_monitor_csp_events_received_total",
 			Help: "Total number of raw events received from CSP API/source.",
 		},
-		[]string{"csp"}, // gcp, aws
+		[]string{labelCSP}, // gcp, aws
 	)
 	CSPPollingDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -42,14 +49,14 @@ var (
 			Help:    "Duration of CSP polling cycles.",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"csp"}, // gcp, aws
+		[]string{labelCSP}, // gcp, aws
 	)
 	CSPAPIErrors = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "csp_health_monitor_csp_api_errors_total",
 			Help: "Total number of errors encountered during CSP API calls.",
 		},
-		[]string{"csp", "error_type"}, // gcp/aws, connection/parse/rate_limit etc.
+		[]string{labelCSP, labelErrorType}, // gcp/aws, connection/parse/rate_limit etc.
 	)
 	CSPAPIDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -57,14 +64,14 @@ var (
 			Help:    "Duration of CSP API polling cycles.",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"csp", "api"}, // gcp, aws, describe_events, describe_affected_entities, describe_event_details etc
+		[]string{labelCSP, "api"}, // gcp, aws, describe_events, describe_affected_entities, describe_event_details etc
 	)
 	CSPMonitorErrors = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "csp_health_monitor_csp_monitor_errors_total",
 			Help: "Total number of errors initializing or starting CSP monitors.",
 		},
-		[]string{"csp", "error_type"}, // gcp/aws, init_error/start_error
+		[]string{labelCSP, labelErrorType}, // gcp/aws, init_error/start_error
 	)
 
 	CSPEventsByTypeUnsupported = promauto.NewCounterVec(
@@ -73,7 +80,7 @@ var (
 			Help: "Total number of raw CSP events received, partitioned by event type code.",
 		},
 		[]string{
-			"csp",        // gcp, aws
+			labelCSP,     // gcp, aws
 			"event_type", // AWS_EC2_PERSISTENT_INSTANCE_RETIREMENT_SCHEDULED etc.
 		},
 	)
@@ -84,14 +91,14 @@ var (
 			Name: "csp_health_monitor_main_events_to_normalize_total",
 			Help: "Total number of events passed to the normalizer.",
 		},
-		[]string{"csp"}, // gcp, aws
+		[]string{labelCSP}, // gcp, aws
 	)
 	MainNormalizationErrors = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "csp_health_monitor_main_normalization_errors_total",
 			Help: "Total number of errors during event normalization.",
 		},
-		[]string{"csp"}, // gcp, aws
+		[]string{labelCSP}, // gcp, aws
 	)
 
 	// Event Processor Metrics
@@ -100,21 +107,21 @@ var (
 			Name: "csp_health_monitor_main_events_received_total",
 			Help: "Total number of normalized events received by the main processor.",
 		},
-		[]string{"csp"}, // gcp, aws
+		[]string{labelCSP}, // gcp, aws
 	)
 	MainEventsProcessedSuccess = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "csp_health_monitor_main_events_processed_success_total",
 			Help: "Total number of events successfully processed by the main processor (mapped & stored).",
 		},
-		[]string{"csp"}, // gcp, aws
+		[]string{labelCSP}, // gcp, aws
 	)
 	MainProcessingErrors = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "csp_health_monitor_main_processing_errors_total",
 			Help: "Total number of errors during event processing (mapping, storing).",
 		},
-		[]string{"csp", "error_type"}, // gcp/aws, mapping/datastore_upsert
+		[]string{labelCSP, labelErrorType}, // gcp/aws, mapping/datastore_upsert
 	)
 	MainEventProcessingDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -122,7 +129,7 @@ var (
 			Help:    "Duration of processing a single event (mapping + storing).",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"csp"}, // gcp, aws
+		[]string{labelCSP}, // gcp, aws
 	)
 
 	// Datastore Metrics (Main Monitor - primarily Upserts)
@@ -131,14 +138,14 @@ var (
 			Name: "csp_health_monitor_main_datastore_upsert_attempts_total",
 			Help: "Total number of attempts to upsert maintenance events.",
 		},
-		[]string{"csp"}, // gcp, aws
+		[]string{labelCSP}, // gcp, aws
 	)
 	MainDatastoreUpsert = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "csp_health_monitor_main_datastore_upsert_total",
 			Help: "Total number of maintenance event upserts by status.",
 		},
-		[]string{"csp", "status"}, // gcp/aws, success/failed
+		[]string{labelCSP, "status"}, // gcp/aws, success/failed
 	)
 )
 
@@ -179,7 +186,7 @@ var (
 			Name: "csp_health_monitor_trigger_datastore_update_errors_total",
 			Help: "Total number of errors updating event status after trigger.",
 		},
-		[]string{"trigger_type"}, // quarantine, healthy
+		[]string{labelTriggerType}, // quarantine, healthy
 	)
 
 	// Triggering Metrics
@@ -188,28 +195,28 @@ var (
 			Name: "csp_health_monitor_trigger_events_found_total",
 			Help: "Total number of events found potentially needing a trigger.",
 		},
-		[]string{"trigger_type"}, // quarantine, healthy
+		[]string{labelTriggerType}, // quarantine, healthy
 	)
 	TriggerAttempts = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "csp_health_monitor_trigger_attempts_total",
 			Help: "Total number of trigger attempts made (sending event via UDS).",
 		},
-		[]string{"trigger_type"}, // quarantine, healthy
+		[]string{labelTriggerType}, // quarantine, healthy
 	)
 	TriggerSuccess = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "csp_health_monitor_trigger_success_total",
 			Help: "Total number of successful triggers (UDS send OK, DB status updated).",
 		},
-		[]string{"trigger_type"}, // quarantine, healthy
+		[]string{labelTriggerType}, // quarantine, healthy
 	)
 	TriggerFailures = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "csp_health_monitor_trigger_failures_total",
 			Help: "Total number of failed trigger attempts (mapping error, UDS send error, DB update error).",
 		},
-		[]string{"trigger_type", "failure_reason"}, // quarantine/healthy, mapping/uds/db_update
+		[]string{labelTriggerType, "failure_reason"}, // quarantine/healthy, mapping/uds/db_update
 	)
 
 	// UDS Metrics
