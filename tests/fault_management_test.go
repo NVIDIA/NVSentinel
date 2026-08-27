@@ -346,7 +346,7 @@ func TestNodeRecoveryDuringDrain(t *testing.T) {
 		require.NoError(t, err)
 
 		require.Eventually(t, func() bool {
-			found, _ := helpers.CheckNodeEventExists(ctx, client, testCtx.NodeName, "NodeDraining", "WaitingBeforeForceDelete", time.Time{})
+			found, _ := helpers.CheckNodeEventExists(ctx, client, testCtx.NodeName, v1.EventTypeNormal, "WaitingBeforeForceDelete", time.Time{})
 			return found
 		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "WaitingBeforeForceDelete event should be created")
 
@@ -446,7 +446,7 @@ func TestManualUncordonPropagation(t *testing.T) {
 		require.NoError(t, err)
 
 		require.Eventually(t, func() bool {
-			found, _ := helpers.CheckNodeEventExists(ctx, client, testCtx.NodeName, "NodeDraining", "WaitingBeforeForceDelete", time.Time{})
+			found, _ := helpers.CheckNodeEventExists(ctx, client, testCtx.NodeName, v1.EventTypeNormal, "WaitingBeforeForceDelete", time.Time{})
 			return found
 		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "WaitingBeforeForceDelete event should be created")
 

@@ -56,7 +56,7 @@ func (f *defaultFilterBuilder) Ne(field string, value interface{}) FilterBuilder
 		f.filters = make(map[string]interface{})
 	}
 
-	f.filters[field] = map[string]interface{}{"$ne": value}
+	f.filters[field] = map[string]interface{}{opNE: value}
 
 	return f
 }
@@ -66,7 +66,7 @@ func (f *defaultFilterBuilder) Gt(field string, value interface{}) FilterBuilder
 		f.filters = make(map[string]interface{})
 	}
 
-	f.filters[field] = map[string]interface{}{"$gt": value}
+	f.filters[field] = map[string]interface{}{opGT: value}
 
 	return f
 }
@@ -76,7 +76,7 @@ func (f *defaultFilterBuilder) Gte(field string, value interface{}) FilterBuilde
 		f.filters = make(map[string]interface{})
 	}
 
-	f.filters[field] = map[string]interface{}{"$gte": value}
+	f.filters[field] = map[string]interface{}{opGTE: value}
 
 	return f
 }
@@ -86,7 +86,7 @@ func (f *defaultFilterBuilder) Lt(field string, value interface{}) FilterBuilder
 		f.filters = make(map[string]interface{})
 	}
 
-	f.filters[field] = map[string]interface{}{"$lt": value}
+	f.filters[field] = map[string]interface{}{opLT: value}
 
 	return f
 }
@@ -96,7 +96,7 @@ func (f *defaultFilterBuilder) Lte(field string, value interface{}) FilterBuilde
 		f.filters = make(map[string]interface{})
 	}
 
-	f.filters[field] = map[string]interface{}{"$lte": value}
+	f.filters[field] = map[string]interface{}{opLTE: value}
 
 	return f
 }
@@ -106,7 +106,7 @@ func (f *defaultFilterBuilder) In(field string, values interface{}) FilterBuilde
 		f.filters = make(map[string]interface{})
 	}
 
-	f.filters[field] = map[string]interface{}{"$in": values}
+	f.filters[field] = map[string]interface{}{opIn: values}
 
 	return f
 }
@@ -149,11 +149,11 @@ func (u *defaultUpdateBuilder) Set(field string, value interface{}) UpdateBuilde
 		u.updates = make(map[string]interface{})
 	}
 
-	if u.updates["$set"] == nil {
-		u.updates["$set"] = make(map[string]interface{})
+	if u.updates[opSet] == nil {
+		u.updates[opSet] = make(map[string]interface{})
 	}
 
-	u.updates["$set"].(map[string]interface{})[field] = value
+	u.updates[opSet].(map[string]interface{})[field] = value
 
 	return u
 }

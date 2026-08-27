@@ -58,7 +58,7 @@ When reporting issues:
 ## Development Setup
 
 **Prerequisites**:
-- Go 1.25+ (see `.versions.yaml` for exact version)
+- Go 1.27+ (see `.versions.yaml` for exact version)
 - Kubernetes cluster (for testing)
 - Docker (for container builds)
 - Make (for build targets)

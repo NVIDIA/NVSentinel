@@ -65,18 +65,21 @@ func NewEventStore() *EventStore {
 func (s *EventStore) IncrementPollCount(csp CSPType) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	s.pollCounts[csp]++
 }
 
 func (s *EventStore) GetPollCount(csp CSPType) int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
 	return s.pollCounts[csp]
 }
 
 func (s *EventStore) ResetPollCount(csp CSPType) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	s.pollCounts[csp] = 0
 }
 
@@ -99,6 +102,7 @@ func (s *EventStore) Update(event *MaintenanceEvent) bool {
 
 	event.UpdatedAt = time.Now().UTC()
 	s.events[event.ID] = event
+
 	return true
 }
 
@@ -107,6 +111,7 @@ func (s *EventStore) Get(id string) (*MaintenanceEvent, bool) {
 	defer s.mu.RUnlock()
 
 	event, exists := s.events[id]
+
 	return event, exists
 }
 
@@ -115,11 +120,13 @@ func (s *EventStore) ListByCSP(csp CSPType) []*MaintenanceEvent {
 	defer s.mu.RUnlock()
 
 	var result []*MaintenanceEvent
+
 	for _, event := range s.events {
 		if event.CSP == csp {
 			result = append(result, event)
 		}
 	}
+
 	return result
 }
 

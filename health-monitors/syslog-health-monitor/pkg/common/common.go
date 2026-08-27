@@ -77,7 +77,14 @@ func MapActionStringToProto(s string) pb.RecommendedAction {
 	// If no XID 154 present, RESTART_APP. Since each XID is acted on, the recommendation for XID 154 will be
 	// applied as a part of the XID 154 cycle therefore we don't need lookback/lookforward for the XID. Hence
 	// XID_154_EVAL is considered equivalent to RESTART_APP.
-	case "RESTART_APP", "IGNORE", "XID_154_EVAL":
+	//
+	// WORKFLOW_XID_45: catalog guidance is "Solo: RESTART_APP (Recovery); REPORT_ISSUE
+	// (Investigatory). Not Solo: IGNORE (follow guidance in other Xid)". Both branches resolve
+	// to no node-level action, so the bucket maps to NONE without needing to correlate against
+	// co-occurring XIDs. XID 45 is a channel-teardown breadcrumb and never appears as a
+	// driving signal in the catalog's XID parsing policy; the co-occurring XID carries the
+	// recovery action.
+	case "RESTART_APP", "IGNORE", "XID_154_EVAL", "WORKFLOW_XID_45":
 		return pb.RecommendedAction_NONE
 	// RECOVER_FEATURE_RESET_GPU: power-smoothing feature recovery (XID 163);
 	// trigger guidance is "reload the driver or reset the GPU" — same proto

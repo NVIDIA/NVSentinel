@@ -41,7 +41,7 @@ func UpdateHealthEventStatus(ctx context.Context, client DatabaseClient, eventID
 func UpdateHealthEventNodeQuarantineStatus(ctx context.Context, client DatabaseClient,
 	eventID string, status string, spanID string) error {
 	fields := map[string]interface{}{
-		"healtheventstatus.nodequarantined": status,
+		nodeQuarantinedStatusField: status,
 	}
 
 	if status == "Quarantined" || status == "AlreadyQuarantined" {
@@ -122,8 +122,8 @@ func BuildTimeRangeFilter(field string, after *time.Time, before *time.Time) int
 	case after != nil && before != nil:
 		// Range query: field > after AND field <= before
 		timeRange := map[string]interface{}{}
-		timeRange["$gt"] = *after
-		timeRange["$lte"] = *before
+		timeRange[opGT] = *after
+		timeRange[opLTE] = *before
 		builder.Eq(field, timeRange)
 	case after != nil:
 		builder.Gt(field, *after)

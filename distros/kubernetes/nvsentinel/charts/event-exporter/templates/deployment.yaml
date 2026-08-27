@@ -122,8 +122,6 @@ spec:
             mountPath: {{ include "nvsentinel.mongodb.certMountPathFromMongoStore" . | trim }}
             readOnly: true
           {{- end }}
-          - name: var-run-vol
-            mountPath: /var/run/
           env:
             # App name for connection identification in logs and currentOp
             - name: APP_NAME
@@ -169,10 +167,6 @@ spec:
         secret:
           secretName: {{ .Values.oidcSecretName }}
           optional: false
-      - name: var-run-vol
-        hostPath:
-          path: /var/run/nvsentinel
-          type: DirectoryOrCreate
       {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
       - name: postgresql-client-cert-original
         secret:
@@ -195,4 +189,7 @@ spec:
       {{- with (.Values.global.systemNodeTolerations | default .Values.tolerations) }}
       tolerations:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.global.systemPriorityClassName | default .Values.priorityClassName) }}
+      priorityClassName: {{ . | quote }}
       {{- end }}

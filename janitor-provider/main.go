@@ -76,13 +76,13 @@ func (s *janitorProviderServer) SendRebootSignal(
 	slog.InfoContext(ctx, "Sending reboot signal", "node", req.NodeName)
 
 	node, err := s.k8sClient.CoreV1().Nodes().Get(ctx, req.NodeName, metav1.GetOptions{})
-
 	if err != nil {
 		span.SetAttributes(
 			attribute.String("janitor_provider.error.type", "grpc_error"),
 			attribute.String("janitor_provider.error.message", err.Error()),
 		)
 		tracing.RecordError(span, err)
+
 		return nil, status.Errorf(codes.Internal, "failed to get node: %v", err)
 	}
 
@@ -93,6 +93,7 @@ func (s *janitorProviderServer) SendRebootSignal(
 			attribute.String("janitor_provider.error.message", err.Error()),
 		)
 		tracing.RecordError(span, err)
+
 		return nil, status.Errorf(codes.Internal, "failed to send reboot signal: %v", err)
 	}
 
@@ -105,11 +106,14 @@ func (s *janitorProviderServer) SendRebootSignal(
 	}, nil
 }
 
-func (s *janitorProviderServer) IsNodeReady(ctx context.Context, req *cspv1alpha1.IsNodeReadyRequest) (*cspv1alpha1.IsNodeReadyResponse, error) {
+func (s *janitorProviderServer) IsNodeReady(
+	ctx context.Context, req *cspv1alpha1.IsNodeReadyRequest,
+) (*cspv1alpha1.IsNodeReadyResponse, error) {
 	ctx, span := tracing.StartSpan(ctx, "janitor_provider.IsNodeReady")
 	defer span.End()
 
 	slog.InfoContext(ctx, "Checking if node is ready", "node", req.NodeName)
+
 	node, err := s.k8sClient.CoreV1().Nodes().Get(ctx, req.NodeName, metav1.GetOptions{})
 	if err != nil {
 		span.SetAttributes(
@@ -117,6 +121,7 @@ func (s *janitorProviderServer) IsNodeReady(ctx context.Context, req *cspv1alpha
 			attribute.String("janitor_provider.error.message", err.Error()),
 		)
 		span.RecordError(err)
+
 		return nil, status.Errorf(codes.Internal, "failed to get node: %v", err)
 	}
 
@@ -127,8 +132,10 @@ func (s *janitorProviderServer) IsNodeReady(ctx context.Context, req *cspv1alpha
 			attribute.String("janitor_provider.error.message", err.Error()),
 		)
 		tracing.RecordError(span, err)
+
 		return nil, status.Errorf(codes.Internal, "failed to check if node is ready: %v", err)
 	}
+
 	span.SetAttributes(attribute.Bool("janitor_provider.node_ready.ready", isReady))
 
 	return &cspv1alpha1.IsNodeReadyResponse{
@@ -136,11 +143,14 @@ func (s *janitorProviderServer) IsNodeReady(ctx context.Context, req *cspv1alpha
 	}, nil
 }
 
-func (s *janitorProviderServer) SendTerminateSignal(ctx context.Context, req *cspv1alpha1.SendTerminateSignalRequest) (*cspv1alpha1.SendTerminateSignalResponse, error) {
+func (s *janitorProviderServer) SendTerminateSignal(
+	ctx context.Context, req *cspv1alpha1.SendTerminateSignalRequest,
+) (*cspv1alpha1.SendTerminateSignalResponse, error) {
 	ctx, span := tracing.StartSpan(ctx, "janitor_provider.SendTerminateSignal")
 	defer span.End()
 
 	slog.InfoContext(ctx, "Sending terminate signal", "node", req.NodeName)
+
 	node, err := s.k8sClient.CoreV1().Nodes().Get(ctx, req.NodeName, metav1.GetOptions{})
 	if err != nil {
 		span.SetAttributes(
@@ -148,6 +158,7 @@ func (s *janitorProviderServer) SendTerminateSignal(ctx context.Context, req *cs
 			attribute.String("janitor_provider.error.message", err.Error()),
 		)
 		tracing.RecordError(span, err)
+
 		return nil, status.Errorf(codes.Internal, "failed to get node: %v", err)
 	}
 
@@ -158,8 +169,10 @@ func (s *janitorProviderServer) SendTerminateSignal(ctx context.Context, req *cs
 			attribute.String("janitor_provider.error.message", err.Error()),
 		)
 		tracing.RecordError(span, err)
+
 		return nil, status.Errorf(codes.Internal, "failed to send terminate signal: %v", err)
 	}
+
 	span.SetAttributes(
 		attribute.Bool("janitor_provider.terminate.sent", true),
 		attribute.String("janitor_provider.terminate.request_ref", string(requestID)),
@@ -186,6 +199,7 @@ func realMain() int {
 	if err := auditlogger.InitAuditLogger("janitor-provider"); err != nil {
 		slog.Warn("Failed to initialize audit logger", "error", err)
 	}
+
 	defer auditlogger.CloseAuditLogger() //nolint:errcheck
 
 	runErr := run()
@@ -194,6 +208,7 @@ func realMain() int {
 	if err := tracing.ShutdownTracing(tracingCtx); err != nil {
 		slog.Warn("Failed to shutdown tracing", "error", err)
 	}
+
 	tracingCancel()
 
 	if runErr != nil {

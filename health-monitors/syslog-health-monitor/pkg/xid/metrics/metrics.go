@@ -21,13 +21,16 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// labelNode is the node-name label shared by the XID metrics below.
+const labelNode = "node"
+
 var (
 	XidCounterMetric = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "syslog_health_monitor_xid_errors",
 			Help: "Total number of XID found",
 		},
-		[]string{"node", "err_code"},
+		[]string{labelNode, "err_code"},
 	)
 
 	XidProcessingErrors = promauto.NewCounterVec(
@@ -35,7 +38,7 @@ var (
 			Name: "syslog_health_monitor_xid_processing_errors",
 			Help: "Total number of errors encountered during XID processing",
 		},
-		[]string{"error_type", "node"},
+		[]string{"error_type", labelNode},
 	)
 
 	XidProcessingLatency = promauto.NewHistogram(
@@ -63,7 +66,7 @@ var (
 			Name: "syslog_health_monitor_xid_empty_driver_version_total",
 			Help: "Total number of XID decode requests issued with an empty driver version",
 		},
-		[]string{"node"},
+		[]string{labelNode},
 	)
 )
 

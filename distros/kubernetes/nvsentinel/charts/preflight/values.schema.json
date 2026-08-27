@@ -2,6 +2,13 @@
   "$schema": "http://json-schema.org/schema#",
   "type": "object",
   "properties": {
+    "qps": {
+      "type": "number"
+    },
+    "burst": {
+      "type": "integer",
+      "minimum": 0
+    },
     "webhook": {
       "type": "object",
       "properties": {

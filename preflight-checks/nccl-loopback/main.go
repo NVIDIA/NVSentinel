@@ -84,6 +84,7 @@ func execute(ctx context.Context, cfg *config.Config) int {
 		cfg.ConnectorSocket,
 		cfg.NodeName,
 		cfg.ProcessingStrategy,
+		cfg.TokenPath,
 	)
 
 	runner := benchmark.NewRunner(cfg.NCCLTestBinaryPath)

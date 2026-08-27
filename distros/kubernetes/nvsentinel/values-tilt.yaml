@@ -19,6 +19,18 @@ global:
   imagePullSecrets:
     - name: global-pull-secret
 
+  # simple-health-client (tilt/simple-health-client) is the injection path for
+  # the e2e fault-injection helpers: a single Deployment that posts health
+  # events naming arbitrary target nodes. It therefore needs the same cross-node
+  # grant as the real cluster-scoped monitors. Its ServiceAccount and projected
+  # token are defined in tilt/simple-health-client/deployment.yaml.
+  platformConnectorAuth:
+    # The bundled monitors are derived from the release namespace; only the
+    # dev-only fault-injection client needs listing. Tilt always installs into
+    # nvsentinel, so the literal namespace is accurate here.
+    crossNodeServiceAccounts:
+      - "system:serviceaccount:nvsentinel:simple-health-client"
+
   # NOTE: Datastore configuration is provided by:
   # - values-tilt-mongodb.yaml (default, when USE_POSTGRESQL is not set)
   # - values-tilt-postgresql.yaml (when USE_POSTGRESQL=1)
@@ -3998,7 +4010,7 @@ health-events-analyzer:
 
 janitor:
   config:
-    cspProviderHost: "janitor-provider.nvsentinel.svc.cluster.local:50051"
+    # Derived from the release namespace; no need to pin it.
     cspProvider:
       tls:
         enabled: true
@@ -4054,7 +4066,9 @@ janitor-provider:
   tls:
     enabled: true
   auth:
-    enabled: true
+    # The bundled janitor is derived from the release namespace, so nothing is
+    # needed here. List only an out-of-tree janitor, if you run one.
+    allowedUsernames: []
 
 labeler:
   logLevel: debug

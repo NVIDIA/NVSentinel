@@ -30,6 +30,10 @@ class Config:
     processing_strategy: pb.ProcessingStrategy
     status_retry_max_attempts: int
     status_retry_interval_seconds: float
+    # Optional file path of a projected ServiceAccount token presented as a
+    # bearer credential on Platform Connector calls. None leaves the calls
+    # unauthenticated (current behavior).
+    token_path: str | None = None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -37,6 +41,9 @@ class Config:
         hostengine_addr = os.getenv("DCGM_HOSTENGINE_ADDR", "")
         connector_socket = os.getenv("PLATFORM_CONNECTOR_SOCKET", "")
         node_name = os.getenv("NODE_NAME", "")
+        # Optional: set by the preflight injection webhook when token
+        # authentication to the Platform Connector is configured.
+        token_path = os.getenv("PLATFORM_CONNECTOR_TOKEN_PATH") or None
         strategy_str = os.getenv("PROCESSING_STRATEGY", "EXECUTE_REMEDIATION")
         status_retry_max_attempts = int(
             os.getenv(
@@ -84,4 +91,5 @@ class Config:
             processing_strategy=processing_strategy,
             status_retry_max_attempts=status_retry_max_attempts,
             status_retry_interval_seconds=status_retry_interval_seconds,
+            token_path=token_path,
         )

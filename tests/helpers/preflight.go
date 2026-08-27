@@ -260,8 +260,8 @@ func ApplyPreflightInheritanceTestConfig(
 func preflightInheritanceTestInitContainer(name string, inherit bool) map[string]any {
 	return map[string]any{
 		"name":                    name,
-		"image":                   "busybox:latest",
-		"command":                 []string{"/bin/sh", "-c"},
+		"image":                   busyboxImage,
+		"command":                 []string{shellBinary, "-c"},
 		"args":                    []string{"true"},
 		"inheritUserEnv":          inherit,
 		"inheritUserVolumeMounts": inherit,

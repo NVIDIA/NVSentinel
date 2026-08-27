@@ -228,7 +228,7 @@ func structToInterface(v reflect.Value) interface{} {
 
 func handleComplexType(v reflect.Value, kind reflect.Kind) interface{} {
 	switch kind {
-	case reflect.Ptr:
+	case reflect.Pointer:
 		return handlePointer(v)
 	case reflect.Struct:
 		return handleStruct(v)

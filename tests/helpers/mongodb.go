@@ -59,7 +59,7 @@ var (
 	}
 	perconaFlavor = mongoDBFlavor{
 		LabelSelector: "app.kubernetes.io/component=mongod",
-		ContainerName: "mongod",
+		ContainerName: mongodContainerName,
 		ServiceName:   "mongodb-rs0",
 	}
 )
@@ -184,7 +184,7 @@ func readPerconaCredentials(ctx context.Context, t *testing.T, restConfig *rest.
 func buildMongoshCommand(mongoPod string, flavor mongoDBFlavor, perconaUser, perconaPass, jsEval string) []string {
 	host := fmt.Sprintf("%s.%s.%s.svc.cluster.local", mongoPod, flavor.ServiceName, NVSentinelNamespace)
 
-	if flavor.ContainerName == "mongod" {
+	if flavor.ContainerName == mongodContainerName {
 		return buildPerconaMongoshCommand(host, perconaUser, perconaPass, jsEval)
 	}
 
@@ -219,7 +219,7 @@ func buildPerconaMongoshCommand(host, user, pass, jsEval string) []string {
 		userB64, passB64, host, jsEval,
 	)
 
-	return []string{"/bin/sh", "-c", script}
+	return []string{shellBinary, "-c", script}
 }
 
 // buildBitnamiMongoshCommand constructs a shell command for Bitnami mongodb pods.
@@ -245,7 +245,7 @@ func buildBitnamiMongoshCommand(host, jsEval string) []string {
 		host, jsEval,
 	)
 
-	return []string{"/bin/sh", "-c", script}
+	return []string{shellBinary, "-c", script}
 }
 
 // ExecMongosh runs a JavaScript expression inside a MongoDB pod via mongosh.
@@ -259,7 +259,7 @@ func ExecMongosh(
 	flavor := detectMongoDBFlavor(ctx, t, client, mongoPod)
 
 	var perconaUser, perconaPass string
-	if flavor.ContainerName == "mongod" {
+	if flavor.ContainerName == mongodContainerName {
 		perconaUser, perconaPass = readPerconaCredentials(ctx, t, restConfig)
 	}
 

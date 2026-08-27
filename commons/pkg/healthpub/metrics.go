@@ -19,6 +19,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// labelMonitor is the agent-name label shared by every publisher counter.
+const labelMonitor = "monitor"
+
 // Counters are registered against the default registry via promauto.
 // The `monitor` label is the agent name; `code` on sendsError is a gRPC
 // status-code string (bounded cardinality, ~17 values).
@@ -28,7 +31,7 @@ var (
 			Name: "nvsentinel_health_events_publisher_skipped_pc_unavailable_total",
 			Help: "Total health-event sends skipped because the platform-connector Unix socket was missing.",
 		},
-		[]string{"monitor"},
+		[]string{labelMonitor},
 	)
 
 	sendsSuccess = promauto.NewCounterVec(
@@ -36,7 +39,7 @@ var (
 			Name: "nvsentinel_health_events_publisher_sends_success_total",
 			Help: "Total successful health-event sends.",
 		},
-		[]string{"monitor"},
+		[]string{labelMonitor},
 	)
 
 	sendsError = promauto.NewCounterVec(
@@ -44,6 +47,6 @@ var (
 			Name: "nvsentinel_health_events_publisher_sends_error_total",
 			Help: "Total failed health-event sends after retries exhausted (excluding socket-missing skips).",
 		},
-		[]string{"monitor", "code"},
+		[]string{labelMonitor, "code"},
 	)
 )

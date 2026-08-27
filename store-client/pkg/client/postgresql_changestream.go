@@ -158,8 +158,8 @@ func (e *postgresqlEvent) UnmarshalDocument(v interface{}) error {
 		)
 	}
 
-	if _, hasID := document["_id"]; !hasID && e.recordID != "" {
-		document["_id"] = e.recordID
+	if _, hasID := document[fieldID]; !hasID && e.recordID != "" {
+		document[fieldID] = e.recordID
 	}
 
 	docJSON, err := json.Marshal(document)
@@ -403,7 +403,7 @@ func (w *PostgreSQLChangeStreamWatcher) matchesPipeline(entry *postgresqlEvent) 
 func (w *PostgreSQLChangeStreamWatcher) matchesStage(
 	stage map[string]interface{}, entry *postgresqlEvent,
 ) bool {
-	matchFilter, ok := stage["$match"]
+	matchFilter, ok := stage[opMatch]
 	if !ok {
 		return true
 	}
@@ -413,7 +413,7 @@ func (w *PostgreSQLChangeStreamWatcher) matchesStage(
 		return true
 	}
 
-	if opType, ok := matchMap["operationType"]; ok {
+	if opType, ok := matchMap[fieldOperationType]; ok {
 		expectedOps := mapOperationTypes(opType)
 		if len(expectedOps) == 0 || !slices.Contains(expectedOps, entry.operation) {
 			return false
@@ -433,7 +433,7 @@ func (w *PostgreSQLChangeStreamWatcher) matchesStage(
 }
 
 // mapOperationTypes maps MongoDB operation type filters to PostgreSQL operation strings.
-// Handles both single strings ("insert") and $in arrays ({"$in": ["insert", "update"]}).
+// Handles both single strings (opTypeInsert) and $in arrays ({opIn: [opTypeInsert, "update"]}).
 func mapOperationTypes(opType interface{}) []string {
 	switch v := opType.(type) {
 	case string:
@@ -448,7 +448,7 @@ func mapOperationTypes(opType interface{}) []string {
 }
 
 func mapInArrayOpTypes(filter map[string]interface{}) []string {
-	inArray, ok := filter["$in"]
+	inArray, ok := filter[opIn]
 	if !ok {
 		return nil
 	}
@@ -473,7 +473,7 @@ func mapInArrayOpTypes(filter map[string]interface{}) []string {
 
 func mapSingleOpType(op string) string {
 	switch op {
-	case "insert":
+	case opTypeInsert:
 		return "INSERT"
 	case "update":
 		return "UPDATE"
@@ -491,7 +491,7 @@ func (w *PostgreSQLChangeStreamWatcher) matchesFilters(
 ) bool {
 	for key, expectedValue := range filters {
 		// Skip special operators
-		if key == "operationType" {
+		if key == fieldOperationType {
 			continue
 		}
 

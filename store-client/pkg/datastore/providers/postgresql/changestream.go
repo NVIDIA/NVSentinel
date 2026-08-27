@@ -1566,6 +1566,8 @@ func transformJSONKeys(doc map[string]interface{}) map[string]interface{} {
 }
 
 // getTransformedKey returns the transformed key for known fields
+//
+//nolint:goconst // identity/canonicalisation table; literals are the data
 func getTransformedKey(key string) string {
 	keyMap := map[string]string{
 		"healthevent":              "healthevent",

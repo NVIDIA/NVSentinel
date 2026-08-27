@@ -20,6 +20,9 @@ import (
 	"strings"
 )
 
+// opSet is the MongoDB $set update operator.
+const opSet = "$set"
+
 // UpdateBuilder provides a database-agnostic update builder
 // It generates MongoDB update documents or PostgreSQL UPDATE SET clauses from the same API
 type UpdateBuilder struct {
@@ -77,7 +80,7 @@ func (u *UpdateBuilder) ToMongo() map[string]interface{} {
 
 	for _, op := range u.operations {
 		opMap := op.ToMongo()
-		if setMap, ok := opMap["$set"].(map[string]interface{}); ok {
+		if setMap, ok := opMap[opSet].(map[string]interface{}); ok {
 			for k, v := range setMap {
 				setDoc[k] = v
 			}
@@ -89,7 +92,7 @@ func (u *UpdateBuilder) ToMongo() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"$set": setDoc,
+		opSet: setDoc,
 	}
 }
 
@@ -182,7 +185,7 @@ type setOperation struct {
 
 func (s *setOperation) ToMongo() map[string]interface{} {
 	return map[string]interface{}{
-		"$set": map[string]interface{}{
+		opSet: map[string]interface{}{
 			s.field: s.value,
 		},
 	}
@@ -226,7 +229,7 @@ type setDocumentFieldOperation struct {
 func (s *setDocumentFieldOperation) ToMongo() map[string]any {
 	// For MongoDB, this is the same as a regular $set
 	return map[string]any{
-		"$set": map[string]any{
+		opSet: map[string]any{
 			s.field: s.value,
 		},
 	}

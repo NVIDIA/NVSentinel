@@ -116,20 +116,20 @@ func TestFindOneFilterGeneration(t *testing.T) {
 					for op, opValue := range valueMap {
 						var cond query.Condition
 
-					switch op {
-					case opNe:
-						cond = query.Ne(key, opValue)
-					case opEq:
-						cond = query.Eq(key, opValue)
-					case opGt:
-						cond = query.Gt(key, opValue)
-					case opGte:
-						cond = query.Gte(key, opValue)
-					case opLt:
-						cond = query.Lt(key, opValue)
-					case opLte:
-						cond = query.Lte(key, opValue)
-					case opIn:
+						switch op {
+						case opNe:
+							cond = query.Ne(key, opValue)
+						case opEq:
+							cond = query.Eq(key, opValue)
+						case opGt:
+							cond = query.Gt(key, opValue)
+						case opGte:
+							cond = query.Gte(key, opValue)
+						case opLt:
+							cond = query.Lt(key, opValue)
+						case opLte:
+							cond = query.Lte(key, opValue)
+						case opIn:
 							if inValues, ok := opValue.([]interface{}); ok {
 								cond = query.In(key, inValues)
 							} else {

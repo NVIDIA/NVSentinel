@@ -492,6 +492,12 @@ kubernetes-distro-lint:
 	$(MAKE) -C distros/kubernetes lint
 
 # Helm chart validation
+# Subcharts that cannot render standalone: they reference umbrella helpers or
+# globals that only exist when rendered as part of the parent chart.
+UMBRELLA_ONLY_CHARTS := csp-health-monitor event-exporter fault-quarantine \
+                       fault-remediation health-events-analyzer mongodb-store \
+                       node-drainer
+
 .PHONY: helm-lint
 helm-lint:
 	@echo "🎯 Validating Helm charts..."
@@ -508,9 +514,20 @@ helm-lint:
 	@echo ""
 	@# Individual component charts
 	@echo "Validating component charts..."
+	@# Recipes run under /bin/sh, so this uses [ rather than [[.
+	@# UMBRELLA_ONLY_CHARTS reference umbrella helpers (for example
+	@# nvsentinel.mongodb.certVolume) or umbrella globals, so they cannot render
+	@# standalone. They are skipped by name and reported, rather than being
+	@# silently included in a success message they did not earn. They are still
+	@# covered by the umbrella lint above and by helm-test.
 	@for chart_dir in distros/kubernetes/nvsentinel/charts/*/; do \
-		if [[ -f "$$chart_dir/Chart.yaml" ]]; then \
+		if [ -f "$$chart_dir/Chart.yaml" ]; then \
 			chart_name=$$(basename "$$chart_dir"); \
+			case " $(UMBRELLA_ONLY_CHARTS) " in \
+				*" $$chart_name "*) \
+					echo "Skipping $$chart_name (needs umbrella context)"; \
+					continue;; \
+			esac; \
 			echo "Validating chart: $$chart_name"; \
 			helm lint "$$chart_dir" -f distros/kubernetes/nvsentinel/values.yaml || exit 1; \
 			echo "Testing template rendering for: $$chart_name"; \
@@ -518,7 +535,17 @@ helm-lint:
 			echo ""; \
 		fi; \
 	done
-	@echo "✅ All Helm charts validated successfully"
+	@# The charts in UMBRELLA_ONLY_CHARTS ship disabled, so neither the parent
+	@# lint above (which renders defaults) nor the loop above exercises them.
+	@# Render once with every dependency condition turned on so they are
+	@# validated with the parent chart context they need. The conditions are
+	@# read from Chart.yaml so a newly added chart is picked up automatically.
+	@echo "Validating disabled-by-default charts with full context..."
+	helm template nvsentinel distros/kubernetes/nvsentinel \
+		$$(grep -oE 'condition: *[a-zA-Z0-9_.]+' distros/kubernetes/nvsentinel/Chart.yaml \
+			| awk '{print "--set "$$2"=true"}' | tr '\n' ' ') >/dev/null
+	@echo ""
+	@echo "✅ Parent chart, standalone-renderable component charts, and all charts with every dependency enabled validated"
 
 # Helm chart unit tests
 .PHONY: helm-test
@@ -528,8 +555,17 @@ helm-test:
 		echo "❌ Error: helm-unittest plugin not found. Install with: helm plugin install https://github.com/helm-unittest/helm-unittest"; \
 		exit 1; \
 	fi
+	@# The umbrella's own suite covers the cross-chart consistency checks, which
+	@# no subchart can see. --with-subchart=false because the subchart suites
+	@# address their templates by chart-relative path and are run separately
+	@# below.
+	@if [ -d "distros/kubernetes/nvsentinel/tests" ]; then \
+		echo "Running unit tests for chart: nvsentinel (umbrella)"; \
+		helm unittest --with-subchart=false distros/kubernetes/nvsentinel || exit 1; \
+		echo ""; \
+	fi
 	@for chart_dir in distros/kubernetes/nvsentinel/charts/*/; do \
-		if [[ -d "$$chart_dir/tests" ]]; then \
+		if [ -d "$$chart_dir/tests" ]; then \
 			chart_name=$$(basename "$$chart_dir"); \
 			echo "Running unit tests for chart: $$chart_name"; \
 			helm unittest "$$chart_dir" || exit 1; \

@@ -38,6 +38,31 @@ GRPC_CALL_TIMEOUT_SECONDS = 5.0
 # Critical events are emitted while the DCGM loop is about to enter cleanup or
 # is already hung. Keep delivery bounded well inside the liveness restart budget.
 CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS = 15.0
+# Only transport-level failures are worth another attempt. Every other status
+# is a deterministic verdict from platform-connector (PERMISSION_DENIED,
+# UNAUTHENTICATED, INVALID_ARGUMENT, ...) that will come back identical on the
+# next attempt, so retrying it just spends the whole backoff budget - roughly
+# six minutes at MAX_RETRIES=10 - before reporting the same failure.
+RETRYABLE_STATUS_CODES = frozenset(
+    {
+        grpc.StatusCode.UNAVAILABLE,
+        grpc.StatusCode.DEADLINE_EXCEEDED,
+    }
+)
+
+
+def _rpc_status_code(error: grpc.RpcError) -> grpc.StatusCode | None:
+    """The status code carried by a gRPC failure, or None when it carries none.
+
+    Failures raised by a live channel are ``grpc.Call`` instances and always
+    carry a code. A bare ``grpc.RpcError`` does not; it expresses no verdict
+    either way, so callers keep treating it as retryable.
+    """
+    code_getter = getattr(error, "code", None)
+    if not callable(code_getter):
+        return None
+    code = code_getter()
+    return code if isinstance(code, grpc.StatusCode) else None
 
 
 def _serialized_event_state(method: Callable[..., Any]) -> Callable[..., Any]:
@@ -72,9 +97,15 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         processing_strategy: platformconnector_pb2.ProcessingStrategy,
         store_only_checks: frozenset[str] = frozenset(),
         connectivity_failure_escalation_threshold: int = 0,
+        token_path: str | None = None,
     ) -> None:
         self._exit = exit
         self._socket_path = socket_path
+        # Projected ServiceAccount token presented as a bearer credential on
+        # every publish, used exactly as given. The CLI layer already resolves
+        # PLATFORM_CONNECTOR_TOKEN_PATH; resolving it again here would let
+        # ambient process state override an explicitly empty argument.
+        self._token_path = token_path
         self._node_name = node_name
         self._version = 1
         self._agent = "gpu-health-monitor"
@@ -479,6 +510,31 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         # for "PC is up" on this node.
         return os.path.exists(self._socket_path)
 
+    def _token_metadata(self) -> list[tuple[str, str]] | None:
+        """Bearer-token call metadata from the projected token file, or None.
+
+        The kubelet rewrites the projected token file periodically, so the file
+        is re-read on every call rather than cached. When a token path is
+        configured but unreadable, the error propagates: a publisher configured
+        to present a token must not fall back to publishing without one.
+        """
+        if not self._token_path:
+            return None
+        try:
+            with open(self._token_path) as token_file:
+                token = token_file.read()
+        except OSError as e:
+            log.error("Failed to read platform-connector token from %s: %s", self._token_path, e)
+            raise
+        # An empty file is a broken mount, not a credential. Publishing
+        # "Bearer " gets a generic authentication error back from the server and
+        # sends whoever debugs it looking at RBAC and audiences; failing here
+        # names the actual problem.
+        if not token:
+            log.error("Platform-connector token file %s is empty", self._token_path)
+            raise ValueError(f"platform-connector token file {self._token_path} is empty")
+        return [("authorization", "Bearer " + token)]
+
     def send_health_event_with_retries(
         self,
         health_events: list[platformconnector_pb2.HealthEvent],
@@ -497,9 +553,18 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         overall retry budget is also capped; ordinary health events keep the
         existing MAX_RETRIES backoff without an overall deadline.
 
+        When a token path is configured, every attempt re-reads the projected
+        token file and attaches it as bearer metadata; a failed token read
+        raises out of this method instead of publishing without the token.
+
+        Only ``RETRYABLE_STATUS_CODES`` are retried. Any other gRPC status is a
+        deterministic rejection, so the loop stops on the first one and reports
+        the failure immediately.
+
         Returns:
-            True on success. False if the socket was missing or all retries
-            were exhausted. Callers must update their cache only on True.
+            True on success. False if the socket was missing, a non-retryable
+            status came back, or all retries were exhausted. Callers must update
+            their cache only on True.
         """
         if not self._is_platform_connector_socket_present():
             metrics.health_events_insertion_skipped_pc_unavailable.inc()
@@ -513,6 +578,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         delay = INITIAL_DELAY
         attempts = 0
         timed_out = False
+        non_retryable_code: grpc.StatusCode | None = None
         for attempt in range(MAX_RETRIES):
             remaining = deadline - monotonic() if deadline is not None else None
             if remaining is not None and remaining <= 0:
@@ -538,11 +604,23 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     rpc_timeout = GRPC_CALL_TIMEOUT_SECONDS
                     if remaining is not None:
                         rpc_timeout = min(GRPC_CALL_TIMEOUT_SECONDS, remaining)
-                    stub.HealthEventOccurredV1(request, timeout=rpc_timeout)
+                    stub.HealthEventOccurredV1(request, timeout=rpc_timeout, metadata=self._token_metadata())
                     metrics.health_events_insertion_to_uds_succeed.inc()
                     return True
                 except grpc.RpcError as e:
                     log.error(f"Failed to send health event {health_events} to UDS: {e}")
+                    code = _rpc_status_code(e)
+                    if code is not None and code not in RETRYABLE_STATUS_CODES:
+                        # The same request will earn the same status next time,
+                        # so stop here instead of spending the backoff budget.
+                        non_retryable_code = code
+                        log.error(
+                            "Platform-connector returned non-retryable status %s; "
+                            "abandoning the remaining %d attempt(s).",
+                            code.name,
+                            MAX_RETRIES - attempts,
+                        )
+                        break
                     if attempt == MAX_RETRIES - 1:
                         break
                     sleep_seconds = delay
@@ -555,7 +633,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     sleep(sleep_seconds)
                     delay *= 1.5
         metrics.health_events_insertion_to_uds_error.inc()
-        if timed_out:
+        if non_retryable_code is not None:
+            reason = f"non-retryable status {non_retryable_code.name} on attempt {attempts}"
+        elif timed_out:
             reason = (
                 f"delivery budget exhausted after {attempts} attempt(s) "
                 f"(delivery_timeout_seconds={delivery_timeout_seconds})"

@@ -19,13 +19,19 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// Label names shared across the metrics declared below.
+const (
+	labelPolicyName = "policy_name"
+	labelErrorType  = "error_type"
+)
+
 var (
 	PolicyMatches = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "k8s_object_monitor_policy_matches_total",
 			Help: "Total number of times a policy matched (predicate=true), indicating detected issues by node",
 		},
-		[]string{"policy_name", "node", "resource_kind"},
+		[]string{labelPolicyName, "node", "resource_kind"},
 	)
 
 	PolicyEvaluationErrors = promauto.NewCounterVec(
@@ -33,7 +39,7 @@ var (
 			Name: "k8s_object_monitor_policy_evaluation_errors_total",
 			Help: "Policy evaluation errors",
 		},
-		[]string{"policy_name", "error_type"},
+		[]string{labelPolicyName, labelErrorType},
 	)
 
 	HealthEventsPublishErrors = promauto.NewCounterVec(
@@ -41,7 +47,7 @@ var (
 			Name: "k8s_object_monitor_health_events_publish_errors_total",
 			Help: "Errors publishing health events to Platform Connector via gRPC",
 		},
-		[]string{"policy_name", "error_type"},
+		[]string{labelPolicyName, labelErrorType},
 	)
 
 	ReconciliationErrors = promauto.NewCounterVec(
@@ -49,6 +55,6 @@ var (
 			Name: "k8s_object_monitor_reconciliation_errors_total",
 			Help: "Controller reconciliation errors",
 		},
-		[]string{"resource_kind", "error_type"},
+		[]string{"resource_kind", labelErrorType},
 	)
 )
