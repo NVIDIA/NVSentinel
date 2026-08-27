@@ -232,7 +232,13 @@ class ServiceChecker:
         """Check Fabric Manager with journal error analysis."""
         base = self.check_service("nvidia-fabricmanager")
 
-        journal_errors = self._parse_journal_errors("nvidia-fabricmanager")
+        if base.error is not None or base.load_state == "not-found":
+            # The unit is absent or the service probe itself failed: callers
+            # act on those conditions before looking at the journal, so the
+            # journalctl fork would be pure waste.
+            journal_errors = []
+        else:
+            journal_errors = self._parse_journal_errors("nvidia-fabricmanager")
         flapping = self.is_flapping("nvidia-fabricmanager")
 
         return FabricManagerStatus(
@@ -279,7 +285,9 @@ class ServiceChecker:
 
             return found
 
-        except (subprocess.TimeoutExpired, Exception) as e:
+        except Exception as e:
+            # Covers subprocess.TimeoutExpired and any nsenter/journalctl
+            # launch failure alike: the probe did not complete.
             logger.warning("Journal probe failed for %s: %s", service_name, e)
             return None
 

@@ -24,7 +24,14 @@ class TestServiceChecker:
 
     def _mock_systemctl_output(self, active="active", sub="running", pid=1234,
                                restarts=0, load="loaded"):
-        """Build a mock systemctl show output string."""
+        """Build a mock systemctl show output string.
+
+        Note: tests that mock _run_host_cmd with this full block feed it to
+        BOTH systemctl calls, including the NRestarts-only query — whose
+        parser then fails int() on the multi-line payload and reports
+        n_restarts=None (unobserved). Restart-count-specific tests must mock
+        the NRestarts call separately (see test_restart_count_parsed).
+        """
         return (
             f"LoadState={load}\n"
             f"ActiveState={active}\n"
@@ -246,6 +253,26 @@ class TestServiceChecker:
         status = checker.check_fabric_manager()
 
         assert status.journal_probe_failed is True
+
+    @patch("checks.service_check.ServiceChecker._run_host_cmd")
+    def test_journal_probe_skipped_when_unit_absent(self, mock_run):
+        """No journalctl fork for a unit that is absent on the host."""
+        def side_effect(cmd, timeout=10):
+            assert "journalctl" not in cmd, "journal probe must be skipped"
+            return subprocess.CompletedProcess(
+                args=[], returncode=0,
+                stdout=self._mock_systemctl_output(
+                    active="inactive", sub="dead", pid=0, load="not-found"),
+                stderr="",
+            )
+
+        mock_run.side_effect = side_effect
+        checker = ServiceChecker()
+        status = checker.check_fabric_manager()
+
+        assert status.load_state == "not-found"
+        assert status.journal_probe_failed is False
+        assert status.journal_errors == []
 
     @patch("checks.service_check.ServiceChecker._run_host_cmd")
     def test_journal_clean_is_empty_not_failed(self, mock_run):

@@ -46,7 +46,8 @@ class SystemServicesMonitor:
             flap_threshold=config.flap_threshold,
         )
 
-        # Track state for cross-check correlation
+        # Last-known FM down/up state; kept for observability (tests assert
+        # on it) — no production consumer today.
         self._fabric_manager_down = False
         # Last-observed cumulative FM restart count (systemd NRestarts), used
         # to increment fabric_manager_restarts_total by the per-cycle delta.
@@ -170,6 +171,12 @@ class SystemServicesMonitor:
                 restart_delta = fm_status.n_restarts - self._last_fm_restarts
                 if restart_delta > 0:
                     fabric_manager_restarts_total.labels(node).inc(restart_delta)
+                elif restart_delta < 0:
+                    # NRestarts reset (reset-failed / unit re-creation /
+                    # reboot): count the restart that caused it, keeping the
+                    # exported counter in step with flap tracking, which
+                    # records one sample for the same event.
+                    fabric_manager_restarts_total.labels(node).inc(1)
             self._last_fm_restarts = fm_status.n_restarts
 
         if fm_status.flapping:

@@ -30,6 +30,8 @@ class TestMonitorConfig:
         # nv-hostengine is covered by gpu-health-monitor / DCGM and must
         # not appear in the default demo service list.
         assert "nv-hostengine" not in config.gpu_services
+        # ...and the default must not silently become empty.
+        assert "nvidia-persistenced" in config.gpu_services
 
     def test_from_env(self):
         env = {
@@ -246,6 +248,12 @@ class TestSystemServicesMonitor:
         mock_svc.check_fabric_manager.return_value = fm(8)
         monitor.run_check_cycle()
         assert _fm_restarts(node) == 3.0
+
+        # A counter reset (reset-failed / reboot) counts as one restart,
+        # keeping the exported counter in step with flap tracking.
+        mock_svc.check_fabric_manager.return_value = fm(1)
+        monitor.run_check_cycle()
+        assert _fm_restarts(node) == 4.0
 
     def test_grace_period_suppresses_unhealthy(self):
         monitor = self._make_monitor(
