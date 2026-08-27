@@ -57,7 +57,7 @@ func (h *MongoHealthEventStore) UpdateHealthEventStatus(ctx context.Context, id 
 
 // UpdateSpanID writes a service's span ID into the span_ids map for trace context propagation.
 func (h *MongoHealthEventStore) UpdateSpanID(ctx context.Context, id string, serviceName string, spanID string) error {
-	err := h.databaseClient.UpdateDocumentStatusFields(ctx, id, map[string]interface{}{
+	err := h.databaseClient.UpdateDocumentStatusFields(ctx, id, map[string]any{
 		"healtheventstatus.spanids." + serviceName: spanID,
 	})
 	if err != nil {
@@ -71,13 +71,13 @@ func (h *MongoHealthEventStore) UpdateSpanID(ctx context.Context, id string, ser
 func (h *MongoHealthEventStore) UpdateHealthEventStatusByNode(ctx context.Context, nodeName string,
 	status datastore.HealthEventStatus) error {
 	// Create filter for node name
-	filter := map[string]interface{}{
+	filter := map[string]any{
 		fieldHealthEventNodeName: nodeName,
 	}
 
 	// Create update document
-	update := map[string]interface{}{
-		"$set": map[string]interface{}{
+	update := map[string]any{
+		"$set": map[string]any{
 			"healtheventstatus": status,
 		},
 	}
@@ -93,7 +93,7 @@ func (h *MongoHealthEventStore) UpdateHealthEventStatusByNode(ctx context.Contex
 // FindHealthEventsByNode finds health events by node
 func (h *MongoHealthEventStore) FindHealthEventsByNode(ctx context.Context,
 	nodeName string) ([]datastore.HealthEventWithStatus, error) {
-	filter := map[string]interface{}{
+	filter := map[string]any{
 		fieldHealthEventNodeName: nodeName,
 	}
 
@@ -126,7 +126,7 @@ func (h *MongoHealthEventStore) FindHealthEventsByNode(ctx context.Context,
 
 // FindHealthEventsByFilter finds health events by filter
 func (h *MongoHealthEventStore) FindHealthEventsByFilter(ctx context.Context,
-	filter map[string]interface{}) ([]datastore.HealthEventWithStatus, error) {
+	filter map[string]any) ([]datastore.HealthEventWithStatus, error) {
 	cursor, err := h.databaseClient.Find(ctx, filter, nil)
 	if err != nil {
 		return nil, datastore.NewQueryError(
@@ -142,7 +142,7 @@ func (h *MongoHealthEventStore) FindHealthEventsByFilter(ctx context.Context,
 	// Iterate manually to populate both the struct and RawEvent with _id
 	for cursor.Next(ctx) {
 		// First decode into a raw map to preserve _id
-		var rawDoc map[string]interface{}
+		var rawDoc map[string]any
 		if err := cursor.Decode(&rawDoc); err != nil {
 			return nil, datastore.NewQueryError(
 				datastore.ProviderMongoDB,
@@ -195,8 +195,8 @@ func (h *MongoHealthEventStore) FindHealthEventsByFilter(ctx context.Context,
 func (h *MongoHealthEventStore) FindHealthEventsByStatus(ctx context.Context,
 	status datastore.Status) ([]datastore.HealthEventWithStatus, error) {
 	// Query for any status field that matches the given status
-	filter := map[string]interface{}{
-		"$or": []map[string]interface{}{
+	filter := map[string]any{
+		"$or": []map[string]any{
 			{"healtheventstatus.nodequarantined": status},
 			{"healtheventstatus.userpodsevictionstatus.status": status},
 		},
@@ -245,7 +245,7 @@ func (h *MongoHealthEventStore) UpdatePodEvictionStatus(ctx context.Context, eve
 }
 
 // UpdateRemediationStatus updates remediation status
-func (h *MongoHealthEventStore) UpdateRemediationStatus(ctx context.Context, eventID string, status interface{}) error {
+func (h *MongoHealthEventStore) UpdateRemediationStatus(ctx context.Context, eventID string, status any) error {
 	// Use the convenience function from our existing implementation
 	return client.UpdateHealthEventRemediationStatus(ctx, h.databaseClient, eventID, status)
 }
@@ -254,7 +254,7 @@ func (h *MongoHealthEventStore) UpdateRemediationStatus(ctx context.Context, eve
 func (h *MongoHealthEventStore) CheckIfNodeAlreadyDrained(ctx context.Context,
 	nodeName string) (bool, error) {
 	// Look for events where the node is successfully drained
-	filter := map[string]interface{}{
+	filter := map[string]any{
 		fieldHealthEventNodeName:                          nodeName,
 		"healtheventstatus.userpodsevictionstatus.status": datastore.StatusSucceeded,
 	}
@@ -275,10 +275,10 @@ func (h *MongoHealthEventStore) CheckIfNodeAlreadyDrained(ctx context.Context,
 // given filter, or nil if none match. Errors are returned unwrapped so callers can add
 // their own message and metadata.
 func (h *MongoHealthEventStore) findLatestByFilter(
-	ctx context.Context, filter map[string]interface{},
+	ctx context.Context, filter map[string]any,
 ) (*datastore.HealthEventWithStatus, error) {
 	options := &client.FindOneOptions{
-		Sort: map[string]interface{}{"createdAt": -1},
+		Sort: map[string]any{"createdAt": -1},
 	}
 
 	result, err := h.databaseClient.FindOne(ctx, filter, options)
@@ -304,7 +304,7 @@ func (h *MongoHealthEventStore) FindLatestEventForNode(
 	ctx context.Context,
 	nodeName string,
 ) (*datastore.HealthEventWithStatus, error) {
-	event, err := h.findLatestByFilter(ctx, map[string]interface{}{
+	event, err := h.findLatestByFilter(ctx, map[string]any{
 		fieldHealthEventNodeName: nodeName,
 	})
 	if err != nil {
@@ -370,7 +370,7 @@ func (h *MongoHealthEventStore) UpdateHealthEventsByQuery(ctx context.Context,
 
 // decodeRawDocToHealthEvent decodes a raw BSON map into a HealthEventWithStatus,
 // preserving the original map in RawEvent.
-func decodeRawDocToHealthEvent(rawDoc map[string]interface{}) (datastore.HealthEventWithStatus, error) {
+func decodeRawDocToHealthEvent(rawDoc map[string]any) (datastore.HealthEventWithStatus, error) {
 	bsonBytes, err := bson.Marshal(rawDoc)
 	if err != nil {
 		return datastore.HealthEventWithStatus{}, datastore.NewQueryError(
@@ -409,7 +409,7 @@ func (h *MongoHealthEventStore) FindHealthEventsByQueryBatched(ctx context.Conte
 	batch := make([]datastore.HealthEventWithStatus, 0, batchSize)
 
 	for cursor.Next(ctx) {
-		var rawDoc map[string]interface{}
+		var rawDoc map[string]any
 		if err := cursor.Decode(&rawDoc); err != nil {
 			slog.Error("Skipping undecodable document in batched query",
 				"error", err)
@@ -468,7 +468,7 @@ func normalizeHealthEvents(events []datastore.HealthEventWithStatus) {
 }
 
 // normalizeValue recursively converts MongoDB types (bson.M, bson.D, bson.A, etc.) to standard Go types
-func normalizeValue(v interface{}) interface{} {
+func normalizeValue(v any) any {
 	switch val := v.(type) {
 	case bson.D:
 		return normalizeD(val)
@@ -480,9 +480,9 @@ func normalizeValue(v interface{}) interface{} {
 		// DefaultDocumentM, which makes this the shape documents actually decode
 		// into -- without this case the whole value is returned un-normalized.
 		return normalizeMap(val)
-	case map[string]interface{}:
+	case map[string]any:
 		return normalizeMap(val)
-	case []interface{}:
+	case []any:
 		return normalizeArray(val)
 	default:
 		// Primitive types, return as-is
@@ -491,13 +491,13 @@ func normalizeValue(v interface{}) interface{} {
 }
 
 // normalizeD converts bson.D to map[string]interface{} and normalizes nested values
-func normalizeD(val bson.D) interface{} {
+func normalizeD(val bson.D) any {
 	bsonBytes, err := bson.Marshal(val)
 	if err != nil {
 		return val // Return as-is if marshal fails
 	}
 
-	var m map[string]interface{}
+	var m map[string]any
 	if err := bson.Unmarshal(bsonBytes, &m); err != nil {
 		return val // Return as-is if unmarshal fails
 	}
@@ -506,8 +506,8 @@ func normalizeD(val bson.D) interface{} {
 }
 
 // normalizeMap recursively normalizes all values in a map
-func normalizeMap(m map[string]interface{}) map[string]interface{} {
-	result := make(map[string]interface{}, len(m))
+func normalizeMap(m map[string]any) map[string]any {
+	result := make(map[string]any, len(m))
 	for k, v := range m {
 		result[k] = normalizeValue(v)
 	}
@@ -516,23 +516,23 @@ func normalizeMap(m map[string]interface{}) map[string]interface{} {
 }
 
 // normalizeArray recursively normalizes all elements in an array
-func normalizeArray(arr interface{}) []interface{} {
+func normalizeArray(arr any) []any {
 	var length int
 
-	var getValue func(int) interface{}
+	var getValue func(int) any
 
 	switch v := arr.(type) {
 	case bson.A:
 		length = len(v)
-		getValue = func(i int) interface{} { return v[i] }
-	case []interface{}:
+		getValue = func(i int) any { return v[i] }
+	case []any:
 		length = len(v)
-		getValue = func(i int) interface{} { return v[i] }
+		getValue = func(i int) any { return v[i] }
 	default:
 		return nil
 	}
 
-	result := make([]interface{}, length)
+	result := make([]any, length)
 	for i := 0; i < length; i++ {
 		result[i] = normalizeValue(getValue(i))
 	}

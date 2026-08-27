@@ -78,14 +78,12 @@ func TestBuild_UnknownServiceManager_ReturnsError(t *testing.T) {
 func TestTransformNodeForCache_RetainsJanitorFieldsOnly(t *testing.T) {
 	transitionTime := metav1.NewTime(time.Unix(123, 0))
 	node := &corev1.Node{
-		TypeMeta: metav1.TypeMeta{Kind: "Node", APIVersion: "v1"},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            "node-a",
-			UID:             types.UID("node-uid"),
-			ResourceVersion: "node-rv",
-			Labels:          map[string]string{"retain": "label"},
-			Annotations:     map[string]string{"drop": "annotation"},
-		},
+		Kind: "Node", APIVersion: "v1",
+		Name:            "node-a",
+		UID:             types.UID("node-uid"),
+		ResourceVersion: "node-rv",
+		Labels:          map[string]string{"retain": "label"},
+		Annotations:     map[string]string{"drop": "annotation"},
 		Spec: corev1.NodeSpec{
 			ProviderID: "drop-provider",
 			Taints: []corev1.Taint{{
@@ -115,12 +113,10 @@ func TestTransformNodeForCache_RetainsJanitorFieldsOnly(t *testing.T) {
 	require.NoError(t, err)
 	assert.Same(t, node, transformed)
 	assert.Equal(t, &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            "node-a",
-			UID:             types.UID("node-uid"),
-			ResourceVersion: "node-rv",
-			Labels:          map[string]string{"retain": "label"},
-		},
+		Name:            "node-a",
+		UID:             types.UID("node-uid"),
+		ResourceVersion: "node-rv",
+		Labels:          map[string]string{"retain": "label"},
 		Spec: corev1.NodeSpec{
 			Taints: []corev1.Taint{{
 				Key:    "retain",
@@ -139,15 +135,13 @@ func TestTransformNodeForCache_RetainsJanitorFieldsOnly(t *testing.T) {
 
 func TestTransformPodForCache_RetainsJanitorFieldsOnly(t *testing.T) {
 	pod := &corev1.Pod{
-		TypeMeta: metav1.TypeMeta{Kind: "Pod", APIVersion: "v1"},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            "device-plugin",
-			Namespace:       "gpu-operator",
-			UID:             types.UID("pod-uid"),
-			ResourceVersion: "pod-rv",
-			Labels:          map[string]string{"app": "device-plugin"},
-			Annotations:     map[string]string{"drop": "annotation"},
-		},
+		Kind: "Pod", APIVersion: "v1",
+		Name:            "device-plugin",
+		Namespace:       "gpu-operator",
+		UID:             types.UID("pod-uid"),
+		ResourceVersion: "pod-rv",
+		Labels:          map[string]string{"app": "device-plugin"},
+		Annotations:     map[string]string{"drop": "annotation"},
 		Spec: corev1.PodSpec{
 			NodeName: "node-a",
 			Containers: []corev1.Container{{
@@ -177,14 +171,12 @@ func TestTransformPodForCache_RetainsJanitorFieldsOnly(t *testing.T) {
 	require.NoError(t, err)
 	assert.Same(t, pod, transformed)
 	assert.Equal(t, &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            "device-plugin",
-			Namespace:       "gpu-operator",
-			UID:             types.UID("pod-uid"),
-			ResourceVersion: "pod-rv",
-			Labels:          map[string]string{"app": "device-plugin"},
-		},
-		Spec: corev1.PodSpec{NodeName: "node-a"},
+		Name:            "device-plugin",
+		Namespace:       "gpu-operator",
+		UID:             types.UID("pod-uid"),
+		ResourceVersion: "pod-rv",
+		Labels:          map[string]string{"app": "device-plugin"},
+		Spec:            corev1.PodSpec{NodeName: "node-a"},
 		Status: corev1.PodStatus{
 			Phase: corev1.PodRunning,
 			Conditions: []corev1.PodCondition{{

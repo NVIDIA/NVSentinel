@@ -352,10 +352,8 @@ func runShellPodOnNode(t *testing.T, ctx context.Context,
 	t.Helper()
 
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: namePrefix + "-",
-			Namespace:    namespace,
-		},
+		GenerateName: namePrefix + "-",
+		Namespace:    namespace,
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyNever,
 			NodeName:      nodeName,
@@ -370,11 +368,9 @@ func runShellPodOnNode(t *testing.T, ctx context.Context,
 			}},
 			Volumes: []corev1.Volume{{
 				Name: "host-run",
-				VolumeSource: corev1.VolumeSource{
-					HostPath: &corev1.HostPathVolumeSource{
-						Path: fakeSysfsHostBase,
-						Type: hostPathType(corev1.HostPathDirectoryOrCreate),
-					},
+				HostPath: &corev1.HostPathVolumeSource{
+					Path: fakeSysfsHostBase,
+					Type: new(corev1.HostPathDirectoryOrCreate),
 				},
 			}},
 		},
@@ -408,8 +404,6 @@ func runShellPodOnNode(t *testing.T, ctx context.Context,
 		return false
 	}, EventuallyWaitTimeout, WaitInterval, "%s pod should complete", namePrefix)
 }
-
-func hostPathType(t corev1.HostPathType) *corev1.HostPathType { return &t }
 
 // clearNICConditions sends healthy events for both NIC check types
 // through the platform connector, clearing any stale conditions.
@@ -690,20 +684,20 @@ func updateConfigMapSysfsPaths(t *testing.T, ctx context.Context, client klient.
 }
 
 func replaceConfigPaths(configTOML string) string {
-	result := ""
+	var result strings.Builder
 
 	for _, line := range splitLines(configTOML) {
 		switch {
 		case containsKey(line, "sysClassInfinibandPath"):
-			result += "sysClassInfinibandPath = " + quote(FakeSysfsIBPath) + "\n"
+			result.WriteString("sysClassInfinibandPath = " + quote(FakeSysfsIBPath) + "\n")
 		case containsKey(line, "sysClassNetPath"):
-			result += "sysClassNetPath = " + quote(FakeSysfsNetPath) + "\n"
+			result.WriteString("sysClassNetPath = " + quote(FakeSysfsNetPath) + "\n")
 		default:
-			result += line + "\n"
+			result.WriteString(line + "\n")
 		}
 	}
 
-	return result
+	return result.String()
 }
 
 func splitLines(s string) []string {

@@ -26,7 +26,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -155,9 +154,9 @@ func (m *MockK8sClient) GetConfig() *config.TomlConfig {
 
 // MockDatabaseClient is a mock implementation of DatabaseClient
 type MockDatabaseClient struct {
-	updateDocumentFn func(ctx context.Context, filter interface{}, update interface{}) (*client.UpdateResult, error)
-	countDocumentsFn func(ctx context.Context, filter interface{}, options *client.CountOptions) (int64, error)
-	findFn           func(ctx context.Context, filter interface{}, options *client.FindOptions) (client.Cursor, error)
+	updateDocumentFn func(ctx context.Context, filter any, update any) (*client.UpdateResult, error)
+	countDocumentsFn func(ctx context.Context, filter any, options *client.CountOptions) (int64, error)
+	findFn           func(ctx context.Context, filter any, options *client.FindOptions) (client.Cursor, error)
 }
 
 type MockCRStatusChecker struct {
@@ -198,10 +197,8 @@ type MockNodeAnnotationManager struct {
 
 func (m *MockNodeAnnotationManager) node() *corev1.Node {
 	return &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Annotations: m.nodeAnnotations,
-			Labels:      m.nodeLabels,
-		},
+		Annotations: m.nodeAnnotations,
+		Labels:      m.nodeLabels,
 	}
 }
 
@@ -249,21 +246,21 @@ func (m *MockNodeAnnotationManager) RemoveGroupsFromState(ctx context.Context, n
 	return nil
 }
 
-func (m *MockDatabaseClient) UpdateDocument(ctx context.Context, filter interface{}, update interface{}) (*client.UpdateResult, error) {
+func (m *MockDatabaseClient) UpdateDocument(ctx context.Context, filter any, update any) (*client.UpdateResult, error) {
 	if m.updateDocumentFn != nil {
 		return m.updateDocumentFn(ctx, filter, update)
 	}
 	return &client.UpdateResult{ModifiedCount: 1}, nil
 }
 
-func (m *MockDatabaseClient) CountDocuments(ctx context.Context, filter interface{}, options *client.CountOptions) (int64, error) {
+func (m *MockDatabaseClient) CountDocuments(ctx context.Context, filter any, options *client.CountOptions) (int64, error) {
 	if m.countDocumentsFn != nil {
 		return m.countDocumentsFn(ctx, filter, options)
 	}
 	return 0, nil
 }
 
-func (m *MockDatabaseClient) Find(ctx context.Context, filter interface{}, options *client.FindOptions) (client.Cursor, error) {
+func (m *MockDatabaseClient) Find(ctx context.Context, filter any, options *client.FindOptions) (client.Cursor, error) {
 	if m.findFn != nil {
 		return m.findFn(ctx, filter, options)
 	}
@@ -271,23 +268,23 @@ func (m *MockDatabaseClient) Find(ctx context.Context, filter interface{}, optio
 }
 
 // Additional methods required by client.DatabaseClient interface
-func (m *MockDatabaseClient) UpdateDocumentStatus(ctx context.Context, documentID string, statusPath string, status interface{}) error {
+func (m *MockDatabaseClient) UpdateDocumentStatus(ctx context.Context, documentID string, statusPath string, status any) error {
 	return nil
 }
 
-func (m *MockDatabaseClient) UpdateDocumentStatusFields(ctx context.Context, documentID string, fields map[string]interface{}) error {
+func (m *MockDatabaseClient) UpdateDocumentStatusFields(ctx context.Context, documentID string, fields map[string]any) error {
 	return nil
 }
 
-func (m *MockDatabaseClient) UpsertDocument(ctx context.Context, filter interface{}, document interface{}) (*client.UpdateResult, error) {
+func (m *MockDatabaseClient) UpsertDocument(ctx context.Context, filter any, document any) (*client.UpdateResult, error) {
 	return &client.UpdateResult{ModifiedCount: 1}, nil
 }
 
-func (m *MockDatabaseClient) FindOne(ctx context.Context, filter interface{}, options *client.FindOneOptions) (client.SingleResult, error) {
+func (m *MockDatabaseClient) FindOne(ctx context.Context, filter any, options *client.FindOneOptions) (client.SingleResult, error) {
 	return nil, nil
 }
 
-func (m *MockDatabaseClient) Aggregate(ctx context.Context, pipeline interface{}) (client.Cursor, error) {
+func (m *MockDatabaseClient) Aggregate(ctx context.Context, pipeline any) (client.Cursor, error) {
 	return nil, nil
 }
 
@@ -303,7 +300,7 @@ func (m *MockDatabaseClient) DeleteResumeToken(ctx context.Context, tokenConfig 
 	return nil
 }
 
-func (m *MockDatabaseClient) NewChangeStreamWatcher(ctx context.Context, tokenConfig client.TokenConfig, filter interface{}) (client.ChangeStreamWatcher, error) {
+func (m *MockDatabaseClient) NewChangeStreamWatcher(ctx context.Context, tokenConfig client.TokenConfig, filter any) (client.ChangeStreamWatcher, error) {
 	return nil, nil // Simple mock implementation
 }
 
@@ -402,11 +399,9 @@ func TestHandleEvent(t *testing.T) {
 			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 			healthEventData := &events.HealthEventData{
 				ID: uuid.New().String(),
-				HealthEventWithStatus: model.HealthEventWithStatus{
-					HealthEvent: &protos.HealthEvent{
-						NodeName:          tt.nodeName,
-						RecommendedAction: tt.recommendedAction,
-					},
+				HealthEvent: &protos.HealthEvent{
+					NodeName:          tt.nodeName,
+					RecommendedAction: tt.recommendedAction,
 				},
 			}
 			groupConfig := getGroupConfig("restart", nil)
@@ -433,12 +428,10 @@ func TestHandleEvent(t *testing.T) {
 		r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 		healthEventData := &events.HealthEventData{
 			ID: uuid.New().String(),
-			HealthEventWithStatus: model.HealthEventWithStatus{
-				HealthEvent: &protos.HealthEvent{
-					NodeName:                "node-custom",
-					RecommendedAction:       protos.RecommendedAction_CUSTOM,
-					CustomRecommendedAction: "REPLACE_DISK",
-				},
+			HealthEvent: &protos.HealthEvent{
+				NodeName:                "node-custom",
+				RecommendedAction:       protos.RecommendedAction_CUSTOM,
+				CustomRecommendedAction: "REPLACE_DISK",
 			},
 		}
 		groupConfig := getGroupConfig("disk-replace", nil)
@@ -484,14 +477,12 @@ func TestPerformRemediationWithUnsupportedAction(t *testing.T) {
 		UpdateRetryDelay:  1 * time.Microsecond,
 	}
 	healthEvent := events.HealthEventData{
-		HealthEventWithStatus: model.HealthEventWithStatus{
-			CreatedAt:   time.Now(),
-			HealthEvent: activeEvent,
-			HealthEventStatus: &protos.HealthEventStatus{
-				NodeQuarantined:        string(model.Quarantined),
-				UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.StatusSucceeded)},
-				FaultRemediated:        nil,
-			},
+		CreatedAt:   time.Now(),
+		HealthEvent: activeEvent,
+		HealthEventStatus: &protos.HealthEventStatus{
+			NodeQuarantined:        string(model.Quarantined),
+			UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.StatusSucceeded)},
+			FaultRemediated:        nil,
 		},
 	}
 	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
@@ -535,17 +526,15 @@ func TestPerformRemediationWithSuccess(t *testing.T) {
 		UpdateRetryDelay:  1 * time.Microsecond,
 	}
 	healthEvent := events.HealthEventData{
-		HealthEventWithStatus: model.HealthEventWithStatus{
-			CreatedAt: time.Now(),
-			HealthEvent: &protos.HealthEvent{
-				NodeName:          "node1",
-				RecommendedAction: protos.RecommendedAction_RESTART_BM,
-			},
-			HealthEventStatus: &protos.HealthEventStatus{
-				NodeQuarantined:        string(model.Quarantined),
-				UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.StatusSucceeded)},
-				FaultRemediated:        nil,
-			},
+		CreatedAt: time.Now(),
+		HealthEvent: &protos.HealthEvent{
+			NodeName:          "node1",
+			RecommendedAction: protos.RecommendedAction_RESTART_BM,
+		},
+		HealthEventStatus: &protos.HealthEventStatus{
+			NodeQuarantined:        string(model.Quarantined),
+			UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.StatusSucceeded)},
+			FaultRemediated:        nil,
 		},
 	}
 	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
@@ -594,17 +583,15 @@ func TestPerformRemediationWithFailure(t *testing.T) {
 		UpdateRetryDelay:  1 * time.Microsecond,
 	}
 	healthEvent := events.HealthEventData{
-		HealthEventWithStatus: model.HealthEventWithStatus{
-			CreatedAt: time.Now(),
-			HealthEvent: &protos.HealthEvent{
-				NodeName:          "node1",
-				RecommendedAction: protos.RecommendedAction_RESTART_BM,
-			},
-			HealthEventStatus: &protos.HealthEventStatus{
-				NodeQuarantined:        string(model.Quarantined),
-				UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.StatusSucceeded)},
-				FaultRemediated:        nil,
-			},
+		CreatedAt: time.Now(),
+		HealthEvent: &protos.HealthEvent{
+			NodeName:          "node1",
+			RecommendedAction: protos.RecommendedAction_RESTART_BM,
+		},
+		HealthEventStatus: &protos.HealthEventStatus{
+			NodeQuarantined:        string(model.Quarantined),
+			UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.StatusSucceeded)},
+			FaultRemediated:        nil,
 		},
 	}
 	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
@@ -641,17 +628,15 @@ func TestPerformRemediationWithUpdateNodeStateLabelFailures(t *testing.T) {
 		UpdateRetryDelay:  1 * time.Microsecond,
 	}
 	healthEvent := events.HealthEventData{
-		HealthEventWithStatus: model.HealthEventWithStatus{
-			CreatedAt: time.Now(),
-			HealthEvent: &protos.HealthEvent{
-				NodeName:          "node1",
-				RecommendedAction: protos.RecommendedAction_RESTART_BM,
-			},
-			HealthEventStatus: &protos.HealthEventStatus{
-				NodeQuarantined:        string(model.Quarantined),
-				UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.StatusSucceeded)},
-				FaultRemediated:        nil,
-			},
+		CreatedAt: time.Now(),
+		HealthEvent: &protos.HealthEvent{
+			NodeName:          "node1",
+			RecommendedAction: protos.RecommendedAction_RESTART_BM,
+		},
+		HealthEventStatus: &protos.HealthEventStatus{
+			NodeQuarantined:        string(model.Quarantined),
+			UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.StatusSucceeded)},
+			FaultRemediated:        nil,
 		},
 	}
 	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
@@ -970,8 +955,8 @@ func TestUpdateNodeRemediatedStatus(t *testing.T) {
 		{
 			name: "Successful update",
 			eventToken: datastore.EventWithToken{
-				Event: map[string]interface{}{
-					"fullDocument": map[string]interface{}{
+				Event: map[string]any{
+					"fullDocument": map[string]any{
 						"_id": "test-id-1",
 					},
 				},
@@ -984,8 +969,8 @@ func TestUpdateNodeRemediatedStatus(t *testing.T) {
 		{
 			name: "Failed update",
 			eventToken: datastore.EventWithToken{
-				Event: map[string]interface{}{
-					"fullDocument": map[string]interface{}{
+				Event: map[string]any{
+					"fullDocument": map[string]any{
 						"_id": "test-id-2",
 					},
 				},
@@ -1274,17 +1259,15 @@ func TestInProgressCREventRequeuedUntilTerminal(t *testing.T) {
 			}
 
 			healthEventDoc := &events.HealthEventDoc{
-				ID: eventID,
-				HealthEventWithStatus: model.HealthEventWithStatus{
-					CreatedAt: tt.eventCreatedAt,
-					HealthEvent: &protos.HealthEvent{
-						NodeName:          nodeName,
-						RecommendedAction: protos.RecommendedAction_RESTART_BM,
-					},
-					HealthEventStatus: &protos.HealthEventStatus{
-						NodeQuarantined:        string(model.AlreadyQuarantined),
-						UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.AlreadyDrained)},
-					},
+				ID:        eventID,
+				CreatedAt: tt.eventCreatedAt,
+				HealthEvent: &protos.HealthEvent{
+					NodeName:          nodeName,
+					RecommendedAction: protos.RecommendedAction_RESTART_BM,
+				},
+				HealthEventStatus: &protos.HealthEventStatus{
+					NodeQuarantined:        string(model.AlreadyQuarantined),
+					UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.AlreadyDrained)},
 				},
 			}
 			eventWithToken := datastore.EventWithToken{
@@ -1454,14 +1437,12 @@ func TestStaleEventSnapshotResolvedInStoreIsNotRemediated(t *testing.T) {
 			}
 
 			healthEventDoc := &events.HealthEventDoc{
-				ID: eventID,
-				HealthEventWithStatus: model.HealthEventWithStatus{
-					CreatedAt:   time.Date(2026, 7, 24, 2, 43, 11, 0, time.UTC),
-					HealthEvent: healthEvent,
-					HealthEventStatus: &protos.HealthEventStatus{
-						NodeQuarantined:        string(model.Quarantined),
-						UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.StatusSucceeded)},
-					},
+				ID:          eventID,
+				CreatedAt:   time.Date(2026, 7, 24, 2, 43, 11, 0, time.UTC),
+				HealthEvent: healthEvent,
+				HealthEventStatus: &protos.HealthEventStatus{
+					NodeQuarantined:        string(model.Quarantined),
+					UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.StatusSucceeded)},
 				},
 			}
 			eventWithToken := datastore.EventWithToken{
@@ -1645,11 +1626,9 @@ func TestUnsupportedActionSkipMarksEventTerminal(t *testing.T) {
 		},
 	}
 	healthEventDoc := &events.HealthEventDoc{
-		ID: eventID,
-		HealthEventWithStatus: model.HealthEventWithStatus{
-			HealthEvent:       activeEvent,
-			HealthEventStatus: &protos.HealthEventStatus{},
-		},
+		ID:                eventID,
+		HealthEvent:       activeEvent,
+		HealthEventStatus: &protos.HealthEventStatus{},
 	}
 	eventWithToken := datastore.EventWithToken{
 		Event:       testRawHealthEvent(eventID, nodeName, protos.RecommendedAction_CONTACT_SUPPORT),
@@ -1700,14 +1679,12 @@ func TestTrySkipEvent_UnsupportedReplayWithoutLiveQuarantine_MarksTerminalWithou
 	}
 	healthEventDoc := &events.HealthEventDoc{
 		ID: eventID,
-		HealthEventWithStatus: model.HealthEventWithStatus{
-			HealthEvent: &protos.HealthEvent{
-				NodeName:          nodeName,
-				RecommendedAction: protos.RecommendedAction_CONTACT_SUPPORT,
-			},
-			HealthEventStatus: &protos.HealthEventStatus{
-				NodeQuarantined: string(model.Quarantined),
-			},
+		HealthEvent: &protos.HealthEvent{
+			NodeName:          nodeName,
+			RecommendedAction: protos.RecommendedAction_CONTACT_SUPPORT,
+		},
+		HealthEventStatus: &protos.HealthEventStatus{
+			NodeQuarantined: string(model.Quarantined),
 		},
 	}
 	eventWithToken := datastore.EventWithToken{
@@ -1732,10 +1709,8 @@ func TestNodeHasActiveQuarantine_APIReaderHasMatchingEvent_ReturnsTrueWithoutCac
 	activeEvent := testAnnotationHealthEvent(
 		"active-event", nodeName, protos.RecommendedAction_CONTACT_SUPPORT, "GPU-test")
 	liveNode := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        nodeName,
-			Annotations: quarantineAnnotationForTest(t, activeEvent),
-		},
+		Name:        nodeName,
+		Annotations: quarantineAnnotationForTest(t, activeEvent),
 	}
 	mockAnnotationManager := &MockNodeAnnotationManager{
 		getRemediationStateErr: errors.New("cache should not be read"),
@@ -1803,12 +1778,10 @@ func TestTrySkipEvent_UnsupportedReplayDuringNewQuarantine_MarksTerminalWithoutS
 		},
 	}
 	healthEventDoc := &events.HealthEventDoc{
-		ID: staleEventID,
-		HealthEventWithStatus: model.HealthEventWithStatus{
-			HealthEvent: staleEvent,
-			HealthEventStatus: &protos.HealthEventStatus{
-				NodeQuarantined: string(model.Quarantined),
-			},
+		ID:          staleEventID,
+		HealthEvent: staleEvent,
+		HealthEventStatus: &protos.HealthEventStatus{
+			NodeQuarantined: string(model.Quarantined),
 		},
 	}
 	eventWithToken := datastore.EventWithToken{
@@ -1869,10 +1842,8 @@ func TestTrySkipEvent_LiveNodeReadFails_ReturnsErrorWithoutFinalizingEvent(t *te
 		},
 	}
 	healthEventDoc := &events.HealthEventDoc{
-		ID: eventID,
-		HealthEventWithStatus: model.HealthEventWithStatus{
-			HealthEvent: unsupportedEvent,
-		},
+		ID:          eventID,
+		HealthEvent: unsupportedEvent,
 	}
 	eventWithToken := datastore.EventWithToken{
 		Event:       testRawHealthEvent(eventID, nodeName, protos.RecommendedAction_CONTACT_SUPPORT),
@@ -2479,7 +2450,7 @@ func testAnnotationHealthEvent(
 func testRawHealthEvent(id, nodeName string, action protos.RecommendedAction) datastore.Event {
 	return datastore.Event{
 		"_id": id,
-		"healthevent": map[string]interface{}{
+		"healthevent": map[string]any{
 			"version":           1,
 			"agent":             "test-agent",
 			"componentclass":    "GPU",
@@ -2488,18 +2459,18 @@ func testRawHealthEvent(id, nodeName string, action protos.RecommendedAction) da
 			"ishealthy":         false,
 			"message":           "test event",
 			"recommendedaction": int32(action),
-			"errorcode":         []interface{}{"REPRO"},
-			"entitiesimpacted": []interface{}{
-				map[string]interface{}{
+			"errorcode":         []any{"REPRO"},
+			"entitiesimpacted": []any{
+				map[string]any{
 					"entitytype":  "GPU_UUID",
 					"entityvalue": "GPU-test",
 				},
 			},
 			"nodename": nodeName,
 		},
-		"healtheventstatus": map[string]interface{}{
+		"healtheventstatus": map[string]any{
 			"nodequarantined": string(model.AlreadyQuarantined),
-			"userpodsevictionstatus": map[string]interface{}{
+			"userpodsevictionstatus": map[string]any{
 				"status": string(model.AlreadyDrained),
 			},
 		},
@@ -2573,8 +2544,7 @@ func TestLogCollectorOnlyCalledWhenShouldCreateCR(t *testing.T) {
 }
 
 func TestAdaptEvents_DoneChannelClosesOnInputClose(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	in := make(chan datastore.EventWithToken)
 	_, done := AdaptEvents(ctx, in)
@@ -2607,8 +2577,7 @@ func TestAdaptEvents_DoneChannelClosesOnContextCancel(t *testing.T) {
 }
 
 func TestAdaptEvents_ForwardsEvents(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	in := make(chan datastore.EventWithToken, 1)
 	out, _ := AdaptEvents(ctx, in)
@@ -2741,13 +2710,11 @@ func TestDeletedNodeRemediationEventMarkedTerminal(t *testing.T) {
 
 	healthEventDoc := &events.HealthEventDoc{
 		ID: eventID,
-		HealthEventWithStatus: model.HealthEventWithStatus{
-			HealthEvent: &protos.HealthEvent{
-				NodeName:          nodeName,
-				RecommendedAction: protos.RecommendedAction_RESTART_BM,
-			},
-			HealthEventStatus: &protos.HealthEventStatus{},
+		HealthEvent: &protos.HealthEvent{
+			NodeName:          nodeName,
+			RecommendedAction: protos.RecommendedAction_RESTART_BM,
 		},
+		HealthEventStatus: &protos.HealthEventStatus{},
 	}
 	eventWithToken := datastore.EventWithToken{
 		Event:       testRawHealthEvent(eventID, nodeName, protos.RecommendedAction_RESTART_BM),

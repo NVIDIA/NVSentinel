@@ -32,43 +32,43 @@ type mockResumeTokenDBClient struct {
 	deleteErr   error
 }
 
-func (m *mockResumeTokenDBClient) InsertMany(context.Context, []interface{}) (*InsertManyResult, error) {
+func (m *mockResumeTokenDBClient) InsertMany(context.Context, []any) (*InsertManyResult, error) {
 	return nil, nil
 }
 
-func (m *mockResumeTokenDBClient) UpdateDocumentStatus(context.Context, string, string, interface{}) error {
+func (m *mockResumeTokenDBClient) UpdateDocumentStatus(context.Context, string, string, any) error {
 	return nil
 }
 
-func (m *mockResumeTokenDBClient) UpdateDocumentStatusFields(context.Context, string, map[string]interface{}) error {
+func (m *mockResumeTokenDBClient) UpdateDocumentStatusFields(context.Context, string, map[string]any) error {
 	return nil
 }
 
-func (m *mockResumeTokenDBClient) UpdateDocument(context.Context, interface{}, interface{}) (*UpdateResult, error) {
+func (m *mockResumeTokenDBClient) UpdateDocument(context.Context, any, any) (*UpdateResult, error) {
 	return nil, nil
 }
 
-func (m *mockResumeTokenDBClient) UpdateManyDocuments(context.Context, interface{}, interface{}) (*UpdateResult, error) {
+func (m *mockResumeTokenDBClient) UpdateManyDocuments(context.Context, any, any) (*UpdateResult, error) {
 	return nil, nil
 }
 
-func (m *mockResumeTokenDBClient) UpsertDocument(context.Context, interface{}, interface{}) (*UpdateResult, error) {
+func (m *mockResumeTokenDBClient) UpsertDocument(context.Context, any, any) (*UpdateResult, error) {
 	return nil, nil
 }
 
-func (m *mockResumeTokenDBClient) FindOne(context.Context, interface{}, *FindOneOptions) (SingleResult, error) {
+func (m *mockResumeTokenDBClient) FindOne(context.Context, any, *FindOneOptions) (SingleResult, error) {
 	return nil, nil
 }
 
-func (m *mockResumeTokenDBClient) Find(context.Context, interface{}, *FindOptions) (Cursor, error) {
+func (m *mockResumeTokenDBClient) Find(context.Context, any, *FindOptions) (Cursor, error) {
 	return nil, nil
 }
 
-func (m *mockResumeTokenDBClient) CountDocuments(context.Context, interface{}, *CountOptions) (int64, error) {
+func (m *mockResumeTokenDBClient) CountDocuments(context.Context, any, *CountOptions) (int64, error) {
 	return 0, nil
 }
 
-func (m *mockResumeTokenDBClient) Aggregate(context.Context, interface{}) (Cursor, error) {
+func (m *mockResumeTokenDBClient) Aggregate(context.Context, any) (Cursor, error) {
 	return nil, nil
 }
 
@@ -77,7 +77,7 @@ func (m *mockResumeTokenDBClient) Ping(context.Context) error {
 }
 
 func (m *mockResumeTokenDBClient) NewChangeStreamWatcher(
-	context.Context, TokenConfig, interface{},
+	context.Context, TokenConfig, any,
 ) (ChangeStreamWatcher, error) {
 	return nil, nil
 }
@@ -527,8 +527,8 @@ func TestKubernetesResumeControlStore_GetModeCreatesMissingConfigMap(t *testing.
 func TestKubernetesResumeControlStore_GetModeMissingKeyWritesResume(t *testing.T) {
 	ctx := context.Background()
 	clientset := fake.NewSimpleClientset(&corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: "resume-control", Namespace: "nvsentinel"},
-		Data:       map[string]string{"event-exporter": ResumeControlModeCreate},
+		Name: "resume-control", Namespace: "nvsentinel",
+		Data: map[string]string{"event-exporter": ResumeControlModeCreate},
 	})
 	store := &kubernetesResumeControlStore{
 		client:    clientset,
@@ -558,8 +558,8 @@ func TestKubernetesResumeControlStore_GetModeMissingKeyWritesResume(t *testing.T
 func TestKubernetesResumeControlStore_SetModePreservesExistingKeys(t *testing.T) {
 	ctx := context.Background()
 	clientset := fake.NewSimpleClientset(&corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: "resume-control", Namespace: "nvsentinel"},
-		Data:       map[string]string{"event-exporter": ResumeControlModeCreate},
+		Name: "resume-control", Namespace: "nvsentinel",
+		Data: map[string]string{"event-exporter": ResumeControlModeCreate},
 	})
 	store := &kubernetesResumeControlStore{
 		client:    clientset,
@@ -588,8 +588,8 @@ func TestKubernetesResumeControlStore_SetModePreservesExistingKeys(t *testing.T)
 func TestKubernetesResumeControlStore_ColdStartCutoffRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	clientset := fake.NewSimpleClientset(&corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: "resume-control", Namespace: "nvsentinel"},
-		Data:       map[string]string{"node-drainer": ResumeControlModeResume},
+		Name: "resume-control", Namespace: "nvsentinel",
+		Data: map[string]string{"node-drainer": ResumeControlModeResume},
 	})
 	store := &kubernetesResumeControlStore{
 		client:    clientset,
@@ -615,8 +615,8 @@ func TestKubernetesResumeControlStore_ColdStartCutoffRoundTrip(t *testing.T) {
 func TestKubernetesResumeControlStore_BeginCreateSetsPhaseAndCutoff(t *testing.T) {
 	ctx := context.Background()
 	clientset := fake.NewSimpleClientset(&corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: "resume-control", Namespace: "nvsentinel"},
-		Data:       map[string]string{"node-drainer": ResumeControlModeCreate},
+		Name: "resume-control", Namespace: "nvsentinel",
+		Data: map[string]string{"node-drainer": ResumeControlModeCreate},
 	})
 	store := &kubernetesResumeControlStore{
 		client:    clientset,
@@ -646,8 +646,8 @@ func TestKubernetesResumeControlStore_BeginCreateSetsPhaseAndCutoff(t *testing.T
 func TestKubernetesResumeControlStore_BeginCreateOmitsZeroCutoff(t *testing.T) {
 	ctx := context.Background()
 	clientset := fake.NewSimpleClientset(&corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: "resume-control", Namespace: "nvsentinel"},
-		Data:       map[string]string{"fault-quarantine": ResumeControlModeCreate},
+		Name: "resume-control", Namespace: "nvsentinel",
+		Data: map[string]string{"fault-quarantine": ResumeControlModeCreate},
 	})
 	store := &kubernetesResumeControlStore{
 		client:    clientset,

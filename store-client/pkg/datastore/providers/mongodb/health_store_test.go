@@ -35,52 +35,52 @@ type MockDatabaseClient struct {
 	mock.Mock
 }
 
-func (m *MockDatabaseClient) UpdateDocumentStatus(ctx context.Context, documentID string, statusPath string, status interface{}) error {
+func (m *MockDatabaseClient) UpdateDocumentStatus(ctx context.Context, documentID string, statusPath string, status any) error {
 	args := m.Called(ctx, documentID, statusPath, status)
 	return args.Error(0)
 }
 
-func (m *MockDatabaseClient) UpdateDocumentStatusFields(ctx context.Context, documentID string, fields map[string]interface{}) error {
+func (m *MockDatabaseClient) UpdateDocumentStatusFields(ctx context.Context, documentID string, fields map[string]any) error {
 	args := m.Called(ctx, documentID, fields)
 	return args.Error(0)
 }
 
-func (m *MockDatabaseClient) UpdateDocument(ctx context.Context, filter interface{}, update interface{}) (*client.UpdateResult, error) {
+func (m *MockDatabaseClient) UpdateDocument(ctx context.Context, filter any, update any) (*client.UpdateResult, error) {
 	args := m.Called(ctx, filter, update)
 	return args.Get(0).(*client.UpdateResult), args.Error(1)
 }
 
-func (m *MockDatabaseClient) UpdateManyDocuments(ctx context.Context, filter interface{}, update interface{}) (*client.UpdateResult, error) {
+func (m *MockDatabaseClient) UpdateManyDocuments(ctx context.Context, filter any, update any) (*client.UpdateResult, error) {
 	args := m.Called(ctx, filter, update)
 	return args.Get(0).(*client.UpdateResult), args.Error(1)
 }
 
-func (m *MockDatabaseClient) UpsertDocument(ctx context.Context, filter interface{}, document interface{}) (*client.UpdateResult, error) {
+func (m *MockDatabaseClient) UpsertDocument(ctx context.Context, filter any, document any) (*client.UpdateResult, error) {
 	args := m.Called(ctx, filter, document)
 	return args.Get(0).(*client.UpdateResult), args.Error(1)
 }
 
-func (m *MockDatabaseClient) InsertMany(ctx context.Context, documents []interface{}) (*client.InsertManyResult, error) {
+func (m *MockDatabaseClient) InsertMany(ctx context.Context, documents []any) (*client.InsertManyResult, error) {
 	args := m.Called(ctx, documents)
 	return args.Get(0).(*client.InsertManyResult), args.Error(1)
 }
 
-func (m *MockDatabaseClient) FindOne(ctx context.Context, filter interface{}, options *client.FindOneOptions) (client.SingleResult, error) {
+func (m *MockDatabaseClient) FindOne(ctx context.Context, filter any, options *client.FindOneOptions) (client.SingleResult, error) {
 	args := m.Called(ctx, filter, options)
 	return args.Get(0).(client.SingleResult), args.Error(1)
 }
 
-func (m *MockDatabaseClient) Find(ctx context.Context, filter interface{}, options *client.FindOptions) (client.Cursor, error) {
+func (m *MockDatabaseClient) Find(ctx context.Context, filter any, options *client.FindOptions) (client.Cursor, error) {
 	args := m.Called(ctx, filter, options)
 	return args.Get(0).(client.Cursor), args.Error(1)
 }
 
-func (m *MockDatabaseClient) CountDocuments(ctx context.Context, filter interface{}, options *client.CountOptions) (int64, error) {
+func (m *MockDatabaseClient) CountDocuments(ctx context.Context, filter any, options *client.CountOptions) (int64, error) {
 	args := m.Called(ctx, filter, options)
 	return args.Get(0).(int64), args.Error(1)
 }
 
-func (m *MockDatabaseClient) Aggregate(ctx context.Context, pipeline interface{}) (client.Cursor, error) {
+func (m *MockDatabaseClient) Aggregate(ctx context.Context, pipeline any) (client.Cursor, error) {
 	args := m.Called(ctx, pipeline)
 	return args.Get(0).(client.Cursor), args.Error(1)
 }
@@ -90,7 +90,7 @@ func (m *MockDatabaseClient) Ping(ctx context.Context) error {
 	return args.Error(0)
 }
 
-func (m *MockDatabaseClient) NewChangeStreamWatcher(ctx context.Context, tokenConfig client.TokenConfig, pipeline interface{}) (client.ChangeStreamWatcher, error) {
+func (m *MockDatabaseClient) NewChangeStreamWatcher(ctx context.Context, tokenConfig client.TokenConfig, pipeline any) (client.ChangeStreamWatcher, error) {
 	args := m.Called(ctx, tokenConfig, pipeline)
 	return args.Get(0).(client.ChangeStreamWatcher), args.Error(1)
 }
@@ -114,7 +114,7 @@ func (m *MockCursor) Next(ctx context.Context) bool {
 	return args.Bool(0)
 }
 
-func (m *MockCursor) Decode(v interface{}) error {
+func (m *MockCursor) Decode(v any) error {
 	args := m.Called(v)
 	return args.Error(0)
 }
@@ -124,7 +124,7 @@ func (m *MockCursor) Close(ctx context.Context) error {
 	return args.Error(0)
 }
 
-func (m *MockCursor) All(ctx context.Context, results interface{}) error {
+func (m *MockCursor) All(ctx context.Context, results any) error {
 	args := m.Called(ctx, results)
 	return args.Error(0)
 }
@@ -138,7 +138,7 @@ type MockSingleResult struct {
 	mock.Mock
 }
 
-func (m *MockSingleResult) Decode(v interface{}) error {
+func (m *MockSingleResult) Decode(v any) error {
 	args := m.Called(v)
 	return args.Error(0)
 }
@@ -157,7 +157,7 @@ func TestMongoHealthEventStore_FindHealthEventsByNode(t *testing.T) {
 	}
 
 	nodeName := "test-node"
-	expectedFilter := map[string]interface{}{
+	expectedFilter := map[string]any{
 		"healthevent.nodename": nodeName,
 	}
 
@@ -205,7 +205,7 @@ func TestMongoHealthEventStore_CheckIfNodeAlreadyDrained(t *testing.T) {
 	}
 
 	nodeName := "test-node"
-	expectedFilter := map[string]interface{}{
+	expectedFilter := map[string]any{
 		"healthevent.nodename":                            nodeName,
 		"healtheventstatus.userpodsevictionstatus.status": datastore.StatusSucceeded,
 	}
@@ -258,11 +258,11 @@ func TestMongoHealthEventStore_FindLatestEventForNode(t *testing.T) {
 	}
 
 	nodeName := "test-node"
-	expectedFilter := map[string]interface{}{
+	expectedFilter := map[string]any{
 		"healthevent.nodename": nodeName,
 	}
 	expectedOptions := &client.FindOneOptions{
-		Sort: map[string]interface{}{"createdAt": -1},
+		Sort: map[string]any{"createdAt": -1},
 	}
 
 	// Test successful find
@@ -304,11 +304,11 @@ func TestMongoHealthEventStore_FindLatestEventForNode(t *testing.T) {
 // mockQueryBuilder is a minimal QueryBuilder for tests.
 type mockQueryBuilder struct{}
 
-func (mockQueryBuilder) ToMongo() map[string]interface{} {
-	return map[string]interface{}{"status": "active"}
+func (mockQueryBuilder) ToMongo() map[string]any {
+	return map[string]any{"status": "active"}
 }
 
-func (mockQueryBuilder) ToSQL() (string, []interface{}) { return "", nil }
+func (mockQueryBuilder) ToSQL() (string, []any) { return "", nil }
 
 func TestMongoHealthEventStore_FindHealthEventsByQueryBatched(t *testing.T) {
 	ctx := context.Background()
@@ -327,8 +327,8 @@ func TestMongoHealthEventStore_FindHealthEventsByQueryBatched(t *testing.T) {
 		mockCursor.On("Next", ctx).Return(false).Once()
 		mockCursor.On("Decode", mock.AnythingOfType("*map[string]interface {}")).Return(nil).Run(func(args mock.Arguments) {
 			docIdx++
-			doc := args.Get(0).(*map[string]interface{})
-			*doc = map[string]interface{}{
+			doc := args.Get(0).(*map[string]any)
+			*doc = map[string]any{
 				"_id": fmt.Sprintf("event-%d", docIdx),
 			}
 		})
@@ -379,8 +379,8 @@ func TestMongoHealthEventStore_FindHealthEventsByQueryBatched(t *testing.T) {
 
 		mockCursor.On("Next", ctx).Return(true).Once()
 		mockCursor.On("Decode", mock.AnythingOfType("*map[string]interface {}")).Return(nil).Run(func(args mock.Arguments) {
-			doc := args.Get(0).(*map[string]interface{})
-			*doc = map[string]interface{}{"_id": "evt"}
+			doc := args.Get(0).(*map[string]any)
+			*doc = map[string]any{"_id": "evt"}
 		})
 
 		callbackErr := errors.New("stop processing")
@@ -396,8 +396,8 @@ func TestMongoHealthEventStore_FindHealthEventsByQueryBatched(t *testing.T) {
 func TestNormalizeValue(t *testing.T) {
 	tests := []struct {
 		name     string
-		input    interface{}
-		expected interface{}
+		input    any
+		expected any
 	}{
 		{
 			name: "bson.D with nested values",
@@ -409,10 +409,10 @@ func TestNormalizeValue(t *testing.T) {
 					{Key: "zone", Value: "a"},
 				}},
 			},
-			expected: map[string]interface{}{
+			expected: map[string]any{
 				"nodename": "test-node",
 				"status":   "healthy",
-				"metadata": map[string]interface{}{
+				"metadata": map[string]any{
 					"region": "us-west",
 					"zone":   "a",
 				},
@@ -421,7 +421,7 @@ func TestNormalizeValue(t *testing.T) {
 		{
 			name: "bson.D with array containing bson.D",
 			input: bson.D{
-				{Key: "items", Value: []interface{}{
+				{Key: "items", Value: []any{
 					bson.D{
 						{Key: "name", Value: "item1"},
 						{Key: "value", Value: int32(100)},
@@ -432,13 +432,13 @@ func TestNormalizeValue(t *testing.T) {
 					},
 				}},
 			},
-			expected: map[string]interface{}{
-				"items": []interface{}{
-					map[string]interface{}{
+			expected: map[string]any{
+				"items": []any{
+					map[string]any{
 						"name":  "item1",
 						"value": int32(100),
 					},
-					map[string]interface{}{
+					map[string]any{
 						"name":  "item2",
 						"value": int32(200),
 					},
@@ -447,32 +447,32 @@ func TestNormalizeValue(t *testing.T) {
 		},
 		{
 			name: "already normalized map",
-			input: map[string]interface{}{
+			input: map[string]any{
 				"key1": "value1",
-				"key2": map[string]interface{}{
+				"key2": map[string]any{
 					"nested": "value2",
 				},
 			},
-			expected: map[string]interface{}{
+			expected: map[string]any{
 				"key1": "value1",
-				"key2": map[string]interface{}{
+				"key2": map[string]any{
 					"nested": "value2",
 				},
 			},
 		},
 		{
 			name: "array with mixed types",
-			input: []interface{}{
+			input: []any{
 				"string",
 				123,
 				bson.D{{Key: "key", Value: "value"}},
-				map[string]interface{}{"already": "normalized"},
+				map[string]any{"already": "normalized"},
 			},
-			expected: []interface{}{
+			expected: []any{
 				"string",
 				123,
-				map[string]interface{}{"key": "value"},
-				map[string]interface{}{"already": "normalized"},
+				map[string]any{"key": "value"},
+				map[string]any{"already": "normalized"},
 			},
 		},
 		{
@@ -491,15 +491,15 @@ func TestNormalizeValue(t *testing.T) {
 					bson.D{{Key: "name", Value: "item2"}},
 				},
 			},
-			expected: map[string]interface{}{
+			expected: map[string]any{
 				"nodename": "test-node",
-				"metadata": map[string]interface{}{
+				"metadata": map[string]any{
 					"region": "us-west",
 				},
-				"nested_d": map[string]interface{}{"zone": "a"},
-				"items": []interface{}{
-					map[string]interface{}{"name": "item1"},
-					map[string]interface{}{"name": "item2"},
+				"nested_d": map[string]any{"zone": "a"},
+				"items": []any{
+					map[string]any{"name": "item1"},
+					map[string]any{"name": "item2"},
 				},
 			},
 		},

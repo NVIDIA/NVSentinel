@@ -16,6 +16,7 @@ package query
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 	"unicode"
 
@@ -35,11 +36,11 @@ type Builder struct {
 // Condition represents a query condition that can be converted to MongoDB or SQL
 type Condition interface {
 	// ToMongo converts the condition to MongoDB filter format
-	ToMongo() map[string]interface{}
+	ToMongo() map[string]any
 
 	// ToSQL converts the condition to PostgreSQL WHERE clause
 	// Returns the SQL string and parameter values
-	ToSQL(paramNum int) (string, []interface{}, int)
+	ToSQL(paramNum int) (string, []any, int)
 }
 
 // New creates a new query builder
@@ -54,16 +55,16 @@ func (b *Builder) Build(cond Condition) *Builder {
 }
 
 // ToMongo generates a MongoDB filter
-func (b *Builder) ToMongo() map[string]interface{} {
+func (b *Builder) ToMongo() map[string]any {
 	if b == nil || b.root == nil {
-		return map[string]interface{}{}
+		return map[string]any{}
 	}
 
 	return b.root.ToMongo()
 }
 
 // ToSQL generates a PostgreSQL WHERE clause
-func (b *Builder) ToSQL() (string, []interface{}) {
+func (b *Builder) ToSQL() (string, []any) {
 	if b == nil || b.root == nil {
 		return "", nil
 	}
@@ -74,7 +75,7 @@ func (b *Builder) ToSQL() (string, []interface{}) {
 }
 
 // ToSQLWithOffset generates SQL with parameter numbering starting from the given offset
-func (b *Builder) ToSQLWithOffset(startParam int) (string, []interface{}) {
+func (b *Builder) ToSQLWithOffset(startParam int) (string, []any) {
 	if b == nil || b.root == nil {
 		return "", nil
 	}
@@ -87,37 +88,37 @@ func (b *Builder) ToSQLWithOffset(startParam int) (string, []interface{}) {
 // --- Comparison Operators ---
 
 // Eq creates an equality condition (field = value)
-func Eq(field string, value interface{}) Condition {
+func Eq(field string, value any) Condition {
 	return &eqCondition{field: field, value: value}
 }
 
 // Ne creates a not-equal condition (field != value)
-func Ne(field string, value interface{}) Condition {
+func Ne(field string, value any) Condition {
 	return &neCondition{field: field, value: value}
 }
 
 // Gt creates a greater-than condition (field > value)
-func Gt(field string, value interface{}) Condition {
+func Gt(field string, value any) Condition {
 	return &gtCondition{field: field, value: value}
 }
 
 // Gte creates a greater-than-or-equal condition (field >= value)
-func Gte(field string, value interface{}) Condition {
+func Gte(field string, value any) Condition {
 	return &gteCondition{field: field, value: value}
 }
 
 // Lt creates a less-than condition (field < value)
-func Lt(field string, value interface{}) Condition {
+func Lt(field string, value any) Condition {
 	return &ltCondition{field: field, value: value}
 }
 
 // Lte creates a less-than-or-equal condition (field <= value)
-func Lte(field string, value interface{}) Condition {
+func Lte(field string, value any) Condition {
 	return &lteCondition{field: field, value: value}
 }
 
 // In creates an IN condition (field IN (values...))
-func In(field string, values []interface{}) Condition {
+func In(field string, values []any) Condition {
 	return &inCondition{field: field, values: values}
 }
 
@@ -137,20 +138,20 @@ func Or(conditions ...Condition) Condition {
 
 type eqCondition struct {
 	field string
-	value interface{}
+	value any
 }
 
-func (c *eqCondition) ToMongo() map[string]interface{} {
+func (c *eqCondition) ToMongo() map[string]any {
 	if c.field == mongoIDFieldName {
 		c.value = convertToMongoObject(c.value)
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		c.field: c.value,
 	}
 }
 
-func (c *eqCondition) ToSQL(paramNum int) (string, []interface{}, int) {
+func (c *eqCondition) ToSQL(paramNum int) (string, []any, int) {
 	// Convert field path to JSONB syntax if needed
 	sqlField := mongoFieldToJSONB(c.field)
 
@@ -162,27 +163,27 @@ func (c *eqCondition) ToSQL(paramNum int) (string, []interface{}, int) {
 
 	sql := fmt.Sprintf("%s = $%d", sqlField, paramNum)
 
-	return sql, []interface{}{c.value}, paramNum + 1
+	return sql, []any{c.value}, paramNum + 1
 }
 
 // --- Not-Equal Condition ---
 
 type neCondition struct {
 	field string
-	value interface{}
+	value any
 }
 
-func (c *neCondition) ToMongo() map[string]interface{} {
+func (c *neCondition) ToMongo() map[string]any {
 	if c.field == mongoIDFieldName {
 		c.value = convertToMongoObject(c.value)
 	}
 
-	return map[string]interface{}{
-		c.field: map[string]interface{}{"$ne": c.value},
+	return map[string]any{
+		c.field: map[string]any{"$ne": c.value},
 	}
 }
 
-func (c *neCondition) ToSQL(paramNum int) (string, []interface{}, int) {
+func (c *neCondition) ToSQL(paramNum int) (string, []any, int) {
 	sqlField := mongoFieldToJSONB(c.field)
 
 	// Handle nil value specially - PostgreSQL needs IS NOT NULL, not != NULL
@@ -193,117 +194,117 @@ func (c *neCondition) ToSQL(paramNum int) (string, []interface{}, int) {
 
 	sql := fmt.Sprintf("%s != $%d", sqlField, paramNum)
 
-	return sql, []interface{}{c.value}, paramNum + 1
+	return sql, []any{c.value}, paramNum + 1
 }
 
 // --- Greater-Than Condition ---
 
 type gtCondition struct {
 	field string
-	value interface{}
+	value any
 }
 
-func (c *gtCondition) ToMongo() map[string]interface{} {
+func (c *gtCondition) ToMongo() map[string]any {
 	if c.field == mongoIDFieldName {
 		c.value = convertToMongoObject(c.value)
 	}
 
-	return map[string]interface{}{
-		c.field: map[string]interface{}{"$gt": c.value},
+	return map[string]any{
+		c.field: map[string]any{"$gt": c.value},
 	}
 }
 
-func (c *gtCondition) ToSQL(paramNum int) (string, []interface{}, int) {
+func (c *gtCondition) ToSQL(paramNum int) (string, []any, int) {
 	sqlField := mongoFieldToJSONB(c.field)
 
 	sql := fmt.Sprintf("%s > $%d", sqlField, paramNum)
 
-	return sql, []interface{}{c.value}, paramNum + 1
+	return sql, []any{c.value}, paramNum + 1
 }
 
 // --- Greater-Than-Or-Equal Condition ---
 
 type gteCondition struct {
 	field string
-	value interface{}
+	value any
 }
 
-func (c *gteCondition) ToMongo() map[string]interface{} {
+func (c *gteCondition) ToMongo() map[string]any {
 	if c.field == mongoIDFieldName {
 		c.value = convertToMongoObject(c.value)
 	}
 
-	return map[string]interface{}{
-		c.field: map[string]interface{}{"$gte": c.value},
+	return map[string]any{
+		c.field: map[string]any{"$gte": c.value},
 	}
 }
 
-func (c *gteCondition) ToSQL(paramNum int) (string, []interface{}, int) {
+func (c *gteCondition) ToSQL(paramNum int) (string, []any, int) {
 	sqlField := mongoFieldToJSONB(c.field)
 
 	sql := fmt.Sprintf("%s >= $%d", sqlField, paramNum)
 
-	return sql, []interface{}{c.value}, paramNum + 1
+	return sql, []any{c.value}, paramNum + 1
 }
 
 // --- Less-Than Condition ---
 
 type ltCondition struct {
 	field string
-	value interface{}
+	value any
 }
 
-func (c *ltCondition) ToMongo() map[string]interface{} {
+func (c *ltCondition) ToMongo() map[string]any {
 	if c.field == mongoIDFieldName {
 		c.value = convertToMongoObject(c.value)
 	}
 
-	return map[string]interface{}{
-		c.field: map[string]interface{}{"$lt": c.value},
+	return map[string]any{
+		c.field: map[string]any{"$lt": c.value},
 	}
 }
 
-func (c *ltCondition) ToSQL(paramNum int) (string, []interface{}, int) {
+func (c *ltCondition) ToSQL(paramNum int) (string, []any, int) {
 	sqlField := mongoFieldToJSONB(c.field)
 
 	sql := fmt.Sprintf("%s < $%d", sqlField, paramNum)
 
-	return sql, []interface{}{c.value}, paramNum + 1
+	return sql, []any{c.value}, paramNum + 1
 }
 
 // --- Less-Than-Or-Equal Condition ---
 
 type lteCondition struct {
 	field string
-	value interface{}
+	value any
 }
 
-func (c *lteCondition) ToMongo() map[string]interface{} {
+func (c *lteCondition) ToMongo() map[string]any {
 	if c.field == mongoIDFieldName {
 		c.value = convertToMongoObject(c.value)
 	}
 
-	return map[string]interface{}{
-		c.field: map[string]interface{}{"$lte": c.value},
+	return map[string]any{
+		c.field: map[string]any{"$lte": c.value},
 	}
 }
 
-func (c *lteCondition) ToSQL(paramNum int) (string, []interface{}, int) {
+func (c *lteCondition) ToSQL(paramNum int) (string, []any, int) {
 	sqlField := mongoFieldToJSONB(c.field)
 
 	sql := fmt.Sprintf("%s <= $%d", sqlField, paramNum)
 
-	return sql, []interface{}{c.value}, paramNum + 1
+	return sql, []any{c.value}, paramNum + 1
 }
 
 // --- IN Condition ---
 
 type inCondition struct {
 	field  string
-	values []interface{}
+	values []any
 }
 
-func (c *inCondition) ToMongo() map[string]interface{} {
+func (c *inCondition) ToMongo() map[string]any {
 	values := c.values
 	if c.field == mongoIDFieldName {
 		values = nil
@@ -312,17 +313,17 @@ func (c *inCondition) ToMongo() map[string]interface{} {
 		}
 	}
 
-	return map[string]interface{}{
-		c.field: map[string]interface{}{"$in": values},
+	return map[string]any{
+		c.field: map[string]any{"$in": values},
 	}
 }
 
-func (c *inCondition) ToSQL(paramNum int) (string, []interface{}, int) {
+func (c *inCondition) ToSQL(paramNum int) (string, []any, int) {
 	sqlField := mongoFieldToJSONB(c.field)
 
 	// Build placeholders ($1, $2, $3, ...)
 	placeholders := make([]string, len(c.values))
-	args := make([]interface{}, len(c.values))
+	args := make([]any, len(c.values))
 
 	for i, val := range c.values {
 		placeholders[i] = fmt.Sprintf("$%d", paramNum+i)
@@ -340,14 +341,14 @@ type andCondition struct {
 	conditions []Condition
 }
 
-func (c *andCondition) ToMongo() map[string]interface{} {
+func (c *andCondition) ToMongo() map[string]any {
 	if len(c.conditions) == 0 {
-		return map[string]interface{}{}
+		return map[string]any{}
 	}
 
 	// For AND, we can merge conditions into a single map if they're all field conditions
 	// Otherwise, use $and
-	result := make(map[string]interface{})
+	result := make(map[string]any)
 	needsAndOperator := false
 
 	// Try to merge conditions, detecting conflicts
@@ -373,31 +374,29 @@ func (c *andCondition) ToMongo() map[string]interface{} {
 		}
 
 		// No conflict yet, add to result
-		for k, v := range condMap {
-			result[k] = v
-		}
+		maps.Copy(result, condMap)
 	}
 
 	if needsAndOperator {
-		andArray := make([]interface{}, len(c.conditions))
+		andArray := make([]any, len(c.conditions))
 		for i, cond := range c.conditions {
 			andArray[i] = cond.ToMongo()
 		}
 
-		return map[string]interface{}{"$and": andArray}
+		return map[string]any{"$and": andArray}
 	}
 
 	return result
 }
 
-func (c *andCondition) ToSQL(paramNum int) (string, []interface{}, int) {
+func (c *andCondition) ToSQL(paramNum int) (string, []any, int) {
 	if len(c.conditions) == 0 {
 		return "TRUE", nil, paramNum
 	}
 
 	var sqlParts []string
 
-	var allArgs []interface{}
+	var allArgs []any
 
 	currentParam := paramNum
 
@@ -417,27 +416,27 @@ type orCondition struct {
 	conditions []Condition
 }
 
-func (c *orCondition) ToMongo() map[string]interface{} {
+func (c *orCondition) ToMongo() map[string]any {
 	if len(c.conditions) == 0 {
-		return map[string]interface{}{}
+		return map[string]any{}
 	}
 
-	orArray := make([]interface{}, len(c.conditions))
+	orArray := make([]any, len(c.conditions))
 	for i, cond := range c.conditions {
 		orArray[i] = cond.ToMongo()
 	}
 
-	return map[string]interface{}{"$or": orArray}
+	return map[string]any{"$or": orArray}
 }
 
-func (c *orCondition) ToSQL(paramNum int) (string, []interface{}, int) {
+func (c *orCondition) ToSQL(paramNum int) (string, []any, int) {
 	if len(c.conditions) == 0 {
 		return "FALSE", nil, paramNum
 	}
 
 	var sqlParts []string
 
-	var allArgs []interface{}
+	var allArgs []any
 
 	currentParam := paramNum
 
@@ -507,7 +506,7 @@ func mongoFieldToJSONB(fieldPath string) string {
 	return jsonbPath.String()
 }
 
-func convertToMongoObject(id interface{}) interface{} {
+func convertToMongoObject(id any) any {
 	idStr := id.(string)
 
 	objID, err := bson.ObjectIDFromHex(idStr)

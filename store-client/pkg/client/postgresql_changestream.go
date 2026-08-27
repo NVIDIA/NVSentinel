@@ -35,7 +35,7 @@ type PostgreSQLChangeStreamWatcher struct {
 	db          *sql.DB
 	table       string
 	tokenConfig TokenConfig
-	pipeline    []map[string]interface{}
+	pipeline    []map[string]any
 
 	eventChan  chan Event
 	stopChan   chan struct{}
@@ -50,8 +50,8 @@ type postgresqlEvent struct {
 	tableName   string
 	recordID    string
 	operation   string
-	oldValues   map[string]interface{}
-	newValues   map[string]interface{}
+	oldValues   map[string]any
+	newValues   map[string]any
 	changedAt   time.Time
 }
 
@@ -96,17 +96,17 @@ func (e *postgresqlEvent) GetNodeName() (string, error) {
 	)
 }
 
-func extractNodeNameFromValues(values map[string]interface{}) (string, bool) {
+func extractNodeNameFromValues(values map[string]any) (string, bool) {
 	if values == nil {
 		return "", false
 	}
 
-	document, ok := values["document"].(map[string]interface{})
+	document, ok := values["document"].(map[string]any)
 	if !ok {
 		return "", false
 	}
 
-	if healthEvent, ok := document["healthevent"].(map[string]interface{}); ok {
+	if healthEvent, ok := document["healthevent"].(map[string]any); ok {
 		if nodeName, ok := healthEvent["nodename"].(string); ok {
 			return nodeName, true
 		}
@@ -128,10 +128,10 @@ func (e *postgresqlEvent) GetResumeToken() []byte {
 	return []byte(fmt.Sprintf("%d", e.changelogID))
 }
 
-func (e *postgresqlEvent) extractDocument() map[string]interface{} {
+func (e *postgresqlEvent) extractDocument() map[string]any {
 	if e.newValues != nil {
 		if doc, ok := e.newValues["document"]; ok {
-			if m, ok := doc.(map[string]interface{}); ok {
+			if m, ok := doc.(map[string]any); ok {
 				return m
 			}
 		}
@@ -139,7 +139,7 @@ func (e *postgresqlEvent) extractDocument() map[string]interface{} {
 
 	if e.oldValues != nil {
 		if doc, ok := e.oldValues["document"]; ok {
-			if m, ok := doc.(map[string]interface{}); ok {
+			if m, ok := doc.(map[string]any); ok {
 				return m
 			}
 		}
@@ -148,7 +148,7 @@ func (e *postgresqlEvent) extractDocument() map[string]interface{} {
 	return nil
 }
 
-func (e *postgresqlEvent) UnmarshalDocument(v interface{}) error {
+func (e *postgresqlEvent) UnmarshalDocument(v any) error {
 	document := e.extractDocument()
 	if document == nil {
 		return datastore.NewValidationError(
@@ -401,14 +401,14 @@ func (w *PostgreSQLChangeStreamWatcher) matchesPipeline(entry *postgresqlEvent) 
 }
 
 func (w *PostgreSQLChangeStreamWatcher) matchesStage(
-	stage map[string]interface{}, entry *postgresqlEvent,
+	stage map[string]any, entry *postgresqlEvent,
 ) bool {
 	matchFilter, ok := stage[opMatch]
 	if !ok {
 		return true
 	}
 
-	matchMap, ok := matchFilter.(map[string]interface{})
+	matchMap, ok := matchFilter.(map[string]any)
 	if !ok {
 		return true
 	}
@@ -434,26 +434,26 @@ func (w *PostgreSQLChangeStreamWatcher) matchesStage(
 
 // mapOperationTypes maps MongoDB operation type filters to PostgreSQL operation strings.
 // Handles both single strings (opTypeInsert) and $in arrays ({opIn: [opTypeInsert, "update"]}).
-func mapOperationTypes(opType interface{}) []string {
+func mapOperationTypes(opType any) []string {
 	switch v := opType.(type) {
 	case string:
 		if mapped := mapSingleOpType(v); mapped != "" {
 			return []string{mapped}
 		}
-	case map[string]interface{}:
+	case map[string]any:
 		return mapInArrayOpTypes(v)
 	}
 
 	return nil
 }
 
-func mapInArrayOpTypes(filter map[string]interface{}) []string {
+func mapInArrayOpTypes(filter map[string]any) []string {
 	inArray, ok := filter[opIn]
 	if !ok {
 		return nil
 	}
 
-	arr, ok := inArray.([]interface{})
+	arr, ok := inArray.([]any)
 	if !ok {
 		return nil
 	}
@@ -486,8 +486,8 @@ func mapSingleOpType(op string) string {
 
 // matchesFilters checks if event data matches filter criteria
 func (w *PostgreSQLChangeStreamWatcher) matchesFilters(
-	filters map[string]interface{},
-	data map[string]interface{},
+	filters map[string]any,
+	data map[string]any,
 ) bool {
 	for key, expectedValue := range filters {
 		// Skip special operators
@@ -511,21 +511,21 @@ func (w *PostgreSQLChangeStreamWatcher) matchesFilters(
 // (e.g., "fullDocument.healthevent.isfatal"). Numeric segments are
 // interpreted as array indices when the current value is a slice.
 func (w *PostgreSQLChangeStreamWatcher) extractValue(
-	data map[string]interface{}, path string,
-) interface{} {
+	data map[string]any, path string,
+) any {
 	if path == "" {
 		return nil
 	}
 
 	segments := strings.Split(path, ".")
 
-	var current interface{} = data
+	var current any = data
 
 	for _, seg := range segments {
 		switch v := current.(type) {
-		case map[string]interface{}:
+		case map[string]any:
 			current = v[seg]
-		case []interface{}:
+		case []any:
 			idx, err := strconv.Atoi(seg)
 			if err != nil || idx < 0 || idx >= len(v) {
 				return nil
@@ -557,7 +557,7 @@ func (w *PostgreSQLChangeStreamWatcher) loadResumeToken(ctx context.Context) {
 		return
 	}
 
-	var token map[string]interface{}
+	var token map[string]any
 	if err := json.Unmarshal(tokenJSON, &token); err != nil {
 		slog.Warn("Failed to unmarshal resume token", "error", err)
 
@@ -575,7 +575,7 @@ func (w *PostgreSQLChangeStreamWatcher) loadResumeToken(ctx context.Context) {
 
 // saveResumeToken saves the current changelog ID as resume token
 func (w *PostgreSQLChangeStreamWatcher) saveResumeToken(ctx context.Context, changelogID int64) error {
-	token := map[string]interface{}{
+	token := map[string]any{
 		"lastChangelogID": changelogID,
 	}
 

@@ -108,17 +108,15 @@ func TestNewResolverFromConfig(t *testing.T) {
 
 	t.Run("builds the cluster-wide default discoverer", func(t *testing.T) {
 		cfg := &config.Config{
-			FileConfig: config.FileConfig{
-				GangDiscovery: config.GangDiscoveryConfig{
-					Name:           "volcano",
-					AnnotationKeys: []string{"scheduling.k8s.io/group-name"},
-					PodGroupGVR: config.GVRConfig{
-						Group:    "scheduling.volcano.sh",
-						Version:  "v1beta1",
-						Resource: "podgroups",
-					},
-					MinCountExpr: "podGroup.spec.minMember",
+			GangDiscovery: config.GangDiscoveryConfig{
+				Name:           "volcano",
+				AnnotationKeys: []string{"scheduling.k8s.io/group-name"},
+				PodGroupGVR: config.GVRConfig{
+					Group:    "scheduling.volcano.sh",
+					Version:  "v1beta1",
+					Resource: "podgroups",
 				},
+				MinCountExpr: "podGroup.spec.minMember",
 			},
 		}
 
@@ -132,11 +130,9 @@ func TestNewResolverFromConfig(t *testing.T) {
 
 	t.Run("invalid default config fails fast", func(t *testing.T) {
 		cfg := &config.Config{
-			FileConfig: config.FileConfig{
-				GangDiscovery: config.GangDiscoveryConfig{
-					// name set but missing GVR/keys/expr => invalid.
-					Name: "broken",
-				},
+			GangDiscovery: config.GangDiscoveryConfig{
+				// name set but missing GVR/keys/expr => invalid.
+				Name: "broken",
 			},
 		}
 

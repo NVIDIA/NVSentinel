@@ -24,7 +24,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -125,11 +124,11 @@ func defaultPatterns() []config.Pattern {
 func createPodWithDrainCondition(t *testing.T, setup *testSetup, namespace, name, nodeName, message string) {
 	t.Helper()
 
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
+	ns := &corev1.Namespace{Name: namespace}
 	_ = setup.k8sClient.Create(setup.ctx, ns)
 
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
+		Namespace: namespace, Name: name,
 		Spec: corev1.PodSpec{
 			NodeName:   nodeName,
 			Containers: []corev1.Container{{Name: "slurmd", Image: "slurmd:latest"}},
@@ -150,7 +149,7 @@ func createPodWithDrainCondition(t *testing.T, setup *testSetup, namespace, name
 func reconcile(t *testing.T, setup *testSetup, namespace, name string) (ctrl.Result, error) {
 	t.Helper()
 	return setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: namespace, Name: name},
+		Namespace: namespace, Name: name,
 	})
 }
 

@@ -31,7 +31,7 @@ import (
 // This consolidates the common pattern used by fault-quarantine-module,
 // node-drainer, and fault-remediation
 func UpdateHealthEventStatus(ctx context.Context, client DatabaseClient, eventID string,
-	statusField string, status interface{}) error {
+	statusField string, status any) error {
 	statusPath := fmt.Sprintf("healtheventstatus.%s", statusField)
 	return client.UpdateDocumentStatus(ctx, eventID, statusPath, status)
 }
@@ -40,7 +40,7 @@ func UpdateHealthEventStatus(ctx context.Context, client DatabaseClient, eventID
 // Used by fault-quarantine-module
 func UpdateHealthEventNodeQuarantineStatus(ctx context.Context, client DatabaseClient,
 	eventID string, status string, spanID string) error {
-	fields := map[string]interface{}{
+	fields := map[string]any{
 		nodeQuarantinedStatusField: status,
 	}
 
@@ -56,14 +56,14 @@ func UpdateHealthEventNodeQuarantineStatus(ctx context.Context, client DatabaseC
 // UpdateHealthEventPodEvictionStatus updates the pod eviction status
 // Used by node-drainer
 func UpdateHealthEventPodEvictionStatus(ctx context.Context, client DatabaseClient,
-	eventID string, status interface{}) error {
+	eventID string, status any) error {
 	return UpdateHealthEventStatus(ctx, client, eventID, "userpodsevictionstatus", status)
 }
 
 // UpdateHealthEventRemediationStatus updates the remediation status
 // Used by fault-remediation
 func UpdateHealthEventRemediationStatus(ctx context.Context, client DatabaseClient,
-	eventID string, status interface{}) error {
+	eventID string, status any) error {
 	return UpdateHealthEventStatus(ctx, client, eventID, "remediation", status)
 }
 
@@ -115,13 +115,13 @@ func IsNoDocumentsError(err error) bool {
 
 // BuildTimeRangeFilter creates a time range filter using database-agnostic builders
 // This replaces the MongoDB-specific filter construction
-func BuildTimeRangeFilter(field string, after *time.Time, before *time.Time) interface{} {
+func BuildTimeRangeFilter(field string, after *time.Time, before *time.Time) any {
 	builder := NewFilterBuilder()
 
 	switch {
 	case after != nil && before != nil:
 		// Range query: field > after AND field <= before
-		timeRange := map[string]interface{}{}
+		timeRange := map[string]any{}
 		timeRange[opGT] = *after
 		timeRange[opLTE] = *before
 		builder.Eq(field, timeRange)
@@ -136,19 +136,19 @@ func BuildTimeRangeFilter(field string, after *time.Time, before *time.Time) int
 
 // BuildStatusFilter creates a status filter using database-agnostic builders
 // This replaces direct MongoDB filter construction
-func BuildStatusFilter(field string, status interface{}) interface{} {
+func BuildStatusFilter(field string, status any) any {
 	return NewFilterBuilder().Eq(field, status).Build()
 }
 
 // BuildNotNullFilter creates a "not null" filter using database-agnostic builders
 // This replaces direct MongoDB $ne: null usage
-func BuildNotNullFilter(field string) interface{} {
+func BuildNotNullFilter(field string) any {
 	return NewFilterBuilder().Ne(field, nil).Build()
 }
 
 // BuildSetUpdate creates a set update using database-agnostic builders
 // This replaces direct MongoDB $set operator usage
-func BuildSetUpdate(updates map[string]interface{}) interface{} {
+func BuildSetUpdate(updates map[string]any) any {
 	builder := NewUpdateBuilder()
 	for field, value := range updates {
 		builder.Set(field, value)
@@ -164,9 +164,9 @@ func BuildSetUpdate(updates map[string]interface{}) interface{} {
 func FindOneWithExists(
 	ctx context.Context,
 	client DatabaseClient,
-	filter interface{},
+	filter any,
 	options *FindOneOptions,
-	result interface{},
+	result any,
 ) (found bool, err error) {
 	dbResult, err := client.FindOne(ctx, filter, options)
 	if err != nil {
@@ -190,8 +190,8 @@ func FindOneWithExists(
 func UpdateWithResult(
 	ctx context.Context,
 	client DatabaseClient,
-	filter interface{},
-	update interface{},
+	filter any,
+	update any,
 ) (matched int64, modified int64, err error) {
 	result, err := client.UpdateDocument(ctx, filter, update)
 	if err != nil {
@@ -205,8 +205,8 @@ func UpdateWithResult(
 func RetryableUpdateWithResult(
 	ctx context.Context,
 	client DatabaseClient,
-	filter interface{},
-	update interface{},
+	filter any,
+	update any,
 	maxRetries int,
 	retryDelay time.Duration,
 ) (matched int64, modified int64, err error) {
@@ -233,8 +233,8 @@ func RetryableUpdateWithResult(
 func RetryableDocumentUpsertWithResult(
 	ctx context.Context,
 	client DatabaseClient,
-	filter interface{},
-	document interface{},
+	filter any,
+	document any,
 	maxRetries int,
 	retryDelay time.Duration,
 ) (inserted int64, updated int64, err error) {

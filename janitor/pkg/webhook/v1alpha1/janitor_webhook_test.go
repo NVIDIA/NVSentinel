@@ -25,7 +25,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -50,9 +49,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 		// Create a test node
 		testNode = &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-node",
-			},
+			Name: "test-node",
 			Spec: corev1.NodeSpec{},
 		}
 
@@ -73,17 +70,17 @@ var _ = Describe("Janitor Webhook", func() {
 					RebootNode: config.RebootNodeControllerConfig{
 						Enabled:    true,
 						Timeout:    30 * time.Minute,
-						ManualMode: ptr.To(false),
+						ManualMode: new(false),
 					},
 					TerminateNode: config.TerminateNodeControllerConfig{
 						Enabled:    true,
 						Timeout:    30 * time.Minute,
-						ManualMode: ptr.To(false),
+						ManualMode: new(false),
 					},
 					GPUReset: config.GPUResetControllerConfig{
 						Enabled:    true,
 						Timeout:    30 * time.Minute,
-						ManualMode: ptr.To(false),
+						ManualMode: new(false),
 					},
 				},
 				Client: fakeClient,
@@ -95,9 +92,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should admit RebootNode creation when node exists", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot",
-				},
+				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "test-node",
 					Force:    false,
@@ -109,9 +104,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should admit TerminateNode creation when node exists", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.TerminateNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-terminate",
-				},
+				Name: "test-terminate",
 				Spec: janitordgxcnvidiacomv1alpha1.TerminateNodeSpec{
 					NodeName: "test-node",
 					Force:    false,
@@ -123,9 +116,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should admit GPUReset creation when node exists", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-gpu-reset",
-				},
+				Name: "test-gpu-reset",
 				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
 					NodeName: "test-node",
 					Selector: &janitordgxcnvidiacomv1alpha1.GPUSelector{
@@ -139,18 +130,14 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should admit RebootNode updates when node exists", func() {
 			oldObj := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot",
-				},
+				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "test-node",
 					Force:    false,
 				},
 			}
 			newObj := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot",
-				},
+				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "test-node",
 					Force:    true,
@@ -162,9 +149,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should admit RebootNode deletions", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot",
-				},
+				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "test-node",
 					Force:    false,
@@ -185,17 +170,17 @@ var _ = Describe("Janitor Webhook", func() {
 					RebootNode: config.RebootNodeControllerConfig{
 						Enabled:    true,
 						Timeout:    30 * time.Minute,
-						ManualMode: ptr.To(false),
+						ManualMode: new(false),
 					},
 					TerminateNode: config.TerminateNodeControllerConfig{
 						Enabled:    true,
 						Timeout:    30 * time.Minute,
-						ManualMode: ptr.To(false),
+						ManualMode: new(false),
 					},
 					GPUReset: config.GPUResetControllerConfig{
 						Enabled:    true,
 						Timeout:    30 * time.Minute,
-						ManualMode: ptr.To(false),
+						ManualMode: new(false),
 					},
 				},
 				Client: fakeClient,
@@ -207,9 +192,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should reject RebootNode creation when node does not exist", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot",
-				},
+				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "non-existent-node",
 					Force:    false,
@@ -222,9 +205,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should reject TerminateNode creation when node does not exist", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.TerminateNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-terminate",
-				},
+				Name: "test-terminate",
 				Spec: janitordgxcnvidiacomv1alpha1.TerminateNodeSpec{
 					NodeName: "non-existent-node",
 					Force:    false,
@@ -237,9 +218,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should reject GPUReset creation when node does not exist", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-gpu-reset",
-				},
+				Name: "test-gpu-reset",
 				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
 					NodeName: "non-existent-node",
 					Selector: &janitordgxcnvidiacomv1alpha1.GPUSelector{
@@ -254,18 +233,14 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should reject RebootNode updates when node does not exist", func() {
 			oldObj := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot",
-				},
+				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "non-existent-node",
 					Force:    false,
 				},
 			}
 			newObj := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot",
-				},
+				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "non-existent-node",
 					Force:    true,
@@ -278,9 +253,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should accept GPUReset updates when node does not exist", func() {
 			oldObj := &janitordgxcnvidiacomv1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-gpu-reset",
-				},
+				Name: "test-gpu-reset",
 				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
 					NodeName: "non-existent-node",
 					Selector: &janitordgxcnvidiacomv1alpha1.GPUSelector{
@@ -289,9 +262,7 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 			newObj := &janitordgxcnvidiacomv1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-gpu-reset",
-				},
+				Name: "test-gpu-reset",
 				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
 					NodeName: "non-existent-node",
 					Selector: &janitordgxcnvidiacomv1alpha1.GPUSelector{
@@ -314,17 +285,17 @@ var _ = Describe("Janitor Webhook", func() {
 					RebootNode: config.RebootNodeControllerConfig{
 						Enabled:    true,
 						Timeout:    30 * time.Minute,
-						ManualMode: ptr.To(false),
+						ManualMode: new(false),
 					},
 					TerminateNode: config.TerminateNodeControllerConfig{
 						Enabled:    true,
 						Timeout:    30 * time.Minute,
-						ManualMode: ptr.To(false),
+						ManualMode: new(false),
 					},
 					GPUReset: config.GPUResetControllerConfig{
 						Enabled:    true,
 						Timeout:    30 * time.Minute,
-						ManualMode: ptr.To(false),
+						ManualMode: new(false),
 					},
 				},
 				Client: fakeClient,
@@ -335,18 +306,14 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should reject RebootNode creation when an in-progress RebootNode exists", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot",
-				},
+				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "test-node",
 					Force:    false,
 				},
 			}
 			obj2 := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot-2",
-				},
+				Name: "test-reboot-2",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "test-node",
 					Force:    false,
@@ -364,18 +331,14 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should accept RebootNode creation when a completed RebootNode exists", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot",
-				},
+				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "test-node",
 					Force:    false,
 				},
 			}
 			obj2 := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot-2",
-				},
+				Name: "test-reboot-2",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "test-node",
 					Force:    false,
@@ -395,9 +358,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should reject GPUReset creation when an in-progress GPUReset for the same GPU exists", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-gpu-reset",
-				},
+				Name: "test-gpu-reset",
 				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
 					NodeName: "test-node",
 					Selector: &janitordgxcnvidiacomv1alpha1.GPUSelector{
@@ -406,9 +367,7 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 			obj2 := &janitordgxcnvidiacomv1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-gpu-reset-2",
-				},
+				Name: "test-gpu-reset-2",
 				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
 					NodeName: "test-node",
 					Selector: &janitordgxcnvidiacomv1alpha1.GPUSelector{
@@ -428,9 +387,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should accept GPUReset creation when a completed GPUReset for the same GPU exists", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-gpu-reset",
-				},
+				Name: "test-gpu-reset",
 				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
 					NodeName: "test-node",
 					Selector: &janitordgxcnvidiacomv1alpha1.GPUSelector{
@@ -439,9 +396,7 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 			obj2 := &janitordgxcnvidiacomv1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-gpu-reset-2",
-				},
+				Name: "test-gpu-reset-2",
 				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
 					NodeName: "test-node",
 					Selector: &janitordgxcnvidiacomv1alpha1.GPUSelector{
@@ -463,9 +418,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should accept GPUReset creation when an in-progress GPUReset for a different GPU exists", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-gpu-reset",
-				},
+				Name: "test-gpu-reset",
 				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
 					NodeName: "test-node",
 					Selector: &janitordgxcnvidiacomv1alpha1.GPUSelector{
@@ -474,9 +427,7 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 			obj2 := &janitordgxcnvidiacomv1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-gpu-reset-2",
-				},
+				Name: "test-gpu-reset-2",
 				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
 					NodeName: "test-node",
 					Selector: &janitordgxcnvidiacomv1alpha1.GPUSelector{
@@ -504,17 +455,17 @@ var _ = Describe("Janitor Webhook", func() {
 					RebootNode: config.RebootNodeControllerConfig{
 						Enabled:    true,
 						Timeout:    30 * time.Minute,
-						ManualMode: ptr.To(false),
+						ManualMode: new(false),
 					},
 					TerminateNode: config.TerminateNodeControllerConfig{
 						Enabled:    true,
 						Timeout:    30 * time.Minute,
-						ManualMode: ptr.To(false),
+						ManualMode: new(false),
 					},
 					GPUReset: config.GPUResetControllerConfig{
 						Enabled:    true,
 						Timeout:    30 * time.Minute,
-						ManualMode: ptr.To(false),
+						ManualMode: new(false),
 					},
 				},
 				Client: fakeClient,
@@ -525,18 +476,14 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should reject RebootNode updates when node name changes", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot",
-				},
+				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "test-node",
 					Force:    false,
 				},
 			}
 			obj2 := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot-2",
-				},
+				Name: "test-reboot-2",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "test-node-2",
 					Force:    false,
@@ -549,9 +496,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should reject GPUReset updates when node name changes", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-gpu-reset",
-				},
+				Name: "test-gpu-reset",
 				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
 					NodeName: "test-node",
 					Selector: &janitordgxcnvidiacomv1alpha1.GPUSelector{
@@ -560,9 +505,7 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 			obj2 := &janitordgxcnvidiacomv1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-gpu-reset-2",
-				},
+				Name: "test-gpu-reset-2",
 				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
 					NodeName: "test-node-2",
 					Selector: &janitordgxcnvidiacomv1alpha1.GPUSelector{
@@ -577,9 +520,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should reject GPUReset updates when GPUs change", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-gpu-reset",
-				},
+				Name: "test-gpu-reset",
 				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
 					NodeName: "test-node",
 					Selector: &janitordgxcnvidiacomv1alpha1.GPUSelector{
@@ -588,9 +529,7 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 			obj2 := &janitordgxcnvidiacomv1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-gpu-reset-2",
-				},
+				Name: "test-gpu-reset-2",
 				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
 					NodeName: "test-node",
 					Selector: &janitordgxcnvidiacomv1alpha1.GPUSelector{
@@ -605,9 +544,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should accept GPUReset updates when node and GPUs do not change", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-gpu-reset",
-				},
+				Name: "test-gpu-reset",
 				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
 					NodeName: "test-node",
 					Selector: &janitordgxcnvidiacomv1alpha1.GPUSelector{
@@ -616,9 +553,7 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 			obj2 := &janitordgxcnvidiacomv1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-gpu-reset-2",
-				},
+				Name: "test-gpu-reset-2",
 				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
 					NodeName: "test-node",
 					Selector: &janitordgxcnvidiacomv1alpha1.GPUSelector{
@@ -641,17 +576,17 @@ var _ = Describe("Janitor Webhook", func() {
 					RebootNode: config.RebootNodeControllerConfig{
 						Enabled:    false,
 						Timeout:    30 * time.Minute,
-						ManualMode: ptr.To(false),
+						ManualMode: new(false),
 					},
 					TerminateNode: config.TerminateNodeControllerConfig{
 						Enabled:    false,
 						Timeout:    30 * time.Minute,
-						ManualMode: ptr.To(false),
+						ManualMode: new(false),
 					},
 					GPUReset: config.GPUResetControllerConfig{
 						Enabled:    false,
 						Timeout:    30 * time.Minute,
-						ManualMode: ptr.To(false),
+						ManualMode: new(false),
 					},
 				},
 				Client: fakeClient,
@@ -663,9 +598,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should reject RebootNode creation when controller disabled", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot",
-				},
+				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "test-node",
 					Force:    false,
@@ -678,9 +611,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should reject TerminateNode creation when controller disabled", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.TerminateNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-terminate",
-				},
+				Name: "test-terminate",
 				Spec: janitordgxcnvidiacomv1alpha1.TerminateNodeSpec{
 					NodeName: "test-node",
 					Force:    false,
@@ -693,9 +624,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should reject GPUReset creation when controller disabled", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-gpu-reset",
-				},
+				Name: "test-gpu-reset",
 				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
 					NodeName: "test-node",
 					Selector: &janitordgxcnvidiacomv1alpha1.GPUSelector{
@@ -710,18 +639,14 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should reject RebootNode updates when controller disabled", func() {
 			oldObj := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot",
-				},
+				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "test-node",
 					Force:    false,
 				},
 			}
 			newObj := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot",
-				},
+				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "test-node",
 					Force:    true,
@@ -734,9 +659,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should reject RebootNode deletions when controller disabled", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot",
-				},
+				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "test-node",
 					Force:    false,
@@ -759,9 +682,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should reject any CRD creation when config is nil", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot",
-				},
+				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "test-node",
 					Force:    false,
@@ -783,7 +704,7 @@ var _ = Describe("Janitor Webhook", func() {
 					RebootNode: config.RebootNodeControllerConfig{
 						Enabled:    true,
 						Timeout:    30 * time.Minute,
-						ManualMode: ptr.To(false),
+						ManualMode: new(false),
 					},
 				},
 				Client: nil,
@@ -793,9 +714,7 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should reject CRD creation when client is nil", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot",
-				},
+				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "test-node",
 					Force:    false,
@@ -810,12 +729,10 @@ var _ = Describe("Janitor Webhook", func() {
 	Context("When node exclusions are configured", func() {
 		It("Should reject RebootNode creation when node matches exclusion label", func() {
 			excludedNode := &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "excluded-node",
-					Labels: map[string]string{
-						"node-role.kubernetes.io/control-plane": "",
-						"environment":                           "production",
-					},
+				Name: "excluded-node",
+				Labels: map[string]string{
+					"node-role.kubernetes.io/control-plane": "",
+					"environment":                           "production",
 				},
 			}
 
@@ -854,9 +771,7 @@ var _ = Describe("Janitor Webhook", func() {
 			}}
 
 			obj := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot-excluded",
-				},
+				Name: "test-reboot-excluded",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "excluded-node",
 					Force:    false,
@@ -871,11 +786,9 @@ var _ = Describe("Janitor Webhook", func() {
 
 		It("Should admit RebootNode creation when node does not match exclusion labels", func() {
 			normalNode := &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "normal-node",
-					Labels: map[string]string{
-						"environment": "production",
-					},
+				Name: "normal-node",
+				Labels: map[string]string{
+					"environment": "production",
 				},
 			}
 
@@ -914,9 +827,7 @@ var _ = Describe("Janitor Webhook", func() {
 			}}
 
 			obj := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot-normal",
-				},
+				Name: "test-reboot-normal",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "normal-node",
 					Force:    false,
@@ -946,9 +857,7 @@ var _ = Describe("Janitor Webhook", func() {
 			}}
 
 			obj := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-reboot",
-				},
+				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "test-node",
 					Force:    false,
@@ -975,7 +884,7 @@ var _ = Describe("ExternalRemediationRequest Webhook", func() {
 
 	validExtRR := func(name, nodeName string) *janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest {
 		return &janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest{
-			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Name: name,
 			Spec: &protos.ExternalRemediationRequestSpec{
 				HealthEvent: &protos.HealthEvent{
 					Id:       "he-1",
@@ -993,7 +902,7 @@ var _ = Describe("ExternalRemediationRequest Webhook", func() {
 
 		It("rejects an ExtRR with nil spec", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest{
-				ObjectMeta: metav1.ObjectMeta{Name: "extrr-nil-spec"},
+				Name: "extrr-nil-spec",
 			}
 			_, err := val.ValidateCreate(ctx, obj)
 			Expect(err).To(MatchError(ContainSubstring("spec is required")))
@@ -1001,8 +910,8 @@ var _ = Describe("ExternalRemediationRequest Webhook", func() {
 
 		It("rejects an ExtRR with nil spec.healthEvent", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest{
-				ObjectMeta: metav1.ObjectMeta{Name: "extrr-nil-he"},
-				Spec:       &protos.ExternalRemediationRequestSpec{},
+				Name: "extrr-nil-he",
+				Spec: &protos.ExternalRemediationRequestSpec{},
 			}
 			_, err := val.ValidateCreate(ctx, obj)
 			Expect(err).To(MatchError(ContainSubstring("spec.healthEvent is required")))

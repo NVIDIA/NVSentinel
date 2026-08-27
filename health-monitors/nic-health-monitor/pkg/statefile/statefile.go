@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -214,7 +215,7 @@ type CounterBreachFlag struct {
 	Breached  bool      `json:"breached"`
 	CheckName string    `json:"check_name,omitempty"`
 	IsFatal   bool      `json:"is_fatal,omitempty"`
-	Since     time.Time `json:"since,omitempty"`
+	Since     time.Time `json:"since"`
 	Device    string    `json:"device,omitempty"`
 	Port      string    `json:"port,omitempty"`
 }
@@ -511,9 +512,7 @@ func (m *Manager) UpdatePortStates(
 		}
 	}
 
-	for k, v := range portStates {
-		m.state.PortStates[k] = v
-	}
+	maps.Copy(m.state.PortStates, portStates)
 
 	// Rebuild KnownDevices from the current PortStates rather than
 	// merging with stale entries. This ensures disappeared devices are
@@ -783,9 +782,7 @@ func (m *Manager) MissingCharDevices() map[string]MissingCharDeviceFlag {
 	defer m.mu.Unlock()
 
 	out := make(map[string]MissingCharDeviceFlag, len(m.state.MissingCharDevices))
-	for k, v := range m.state.MissingCharDevices {
-		out[k] = v
-	}
+	maps.Copy(out, m.state.MissingCharDevices)
 
 	return out
 }
@@ -820,9 +817,7 @@ func (m *Manager) UpdateMissingCharDevices(flags map[string]MissingCharDeviceFla
 	}
 
 	m.state.MissingCharDevices = make(map[string]MissingCharDeviceFlag, len(flags))
-	for k, v := range flags {
-		m.state.MissingCharDevices[k] = v
-	}
+	maps.Copy(m.state.MissingCharDevices, flags)
 
 	return true
 }
@@ -919,9 +914,7 @@ func (m *Manager) CounterSnapshots() map[string]CounterSnapshot {
 	defer m.mu.Unlock()
 
 	out := make(map[string]CounterSnapshot, len(m.state.CounterSnapshots))
-	for k, v := range m.state.CounterSnapshots {
-		out[k] = v
-	}
+	maps.Copy(out, m.state.CounterSnapshots)
 
 	return out
 }
@@ -961,9 +954,7 @@ func (m *Manager) BreachFlags() map[string]CounterBreachFlag {
 	defer m.mu.Unlock()
 
 	out := make(map[string]CounterBreachFlag, len(m.state.BreachFlags))
-	for k, v := range m.state.BreachFlags {
-		out[k] = v
-	}
+	maps.Copy(out, m.state.BreachFlags)
 
 	return out
 }

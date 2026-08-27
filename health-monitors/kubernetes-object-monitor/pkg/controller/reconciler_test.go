@@ -27,7 +27,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -57,7 +56,7 @@ func TestReconciler_NodeHealthyToUnhealthy(t *testing.T) {
 	createNode(t, setup, nodeName, v1.ConditionTrue)
 
 	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: nodeName},
+		Name: nodeName,
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -67,7 +66,7 @@ func TestReconciler_NodeHealthyToUnhealthy(t *testing.T) {
 	beforeMatches := getCounterVecValue(t, metrics.PolicyMatches, "node-not-ready", nodeName, "Node")
 
 	result, err = setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: nodeName},
+		Name: nodeName,
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -97,7 +96,7 @@ func TestReconciler_NodeUnhealthyToHealthy(t *testing.T) {
 	createNode(t, setup, nodeName, v1.ConditionFalse)
 
 	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: nodeName},
+		Name: nodeName,
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -115,7 +114,7 @@ func TestReconciler_NodeUnhealthyToHealthy(t *testing.T) {
 	setup.publisher.publishedEvents = []mockPublishedEvent{}
 
 	result, err = setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: nodeName},
+		Name: nodeName,
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -143,7 +142,7 @@ func TestReconciler_NodeDeleted(t *testing.T) {
 	node := createNode(t, setup, nodeName, v1.ConditionFalse)
 
 	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: nodeName},
+		Name: nodeName,
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -157,7 +156,7 @@ func TestReconciler_NodeDeleted(t *testing.T) {
 	require.NoError(t, setup.k8sClient.Delete(setup.ctx, node))
 
 	result, err = setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: nodeName},
+		Name: nodeName,
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -181,7 +180,7 @@ func TestReconciler_MultipleNodes(t *testing.T) {
 
 	for _, nodeName := range nodeNames {
 		result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
-			NamespacedName: types.NamespacedName{Name: nodeName},
+			Name: nodeName,
 		})
 		assert.NoError(t, err)
 		assert.Equal(t, ctrl.Result{}, result)
@@ -222,7 +221,7 @@ func TestReconciler_ResourceNotFound(t *testing.T) {
 	nodeName := "non-existent-node"
 
 	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: nodeName},
+		Name: nodeName,
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -258,7 +257,7 @@ func TestReconciler_DisabledPolicy(t *testing.T) {
 	createNode(t, setup, nodeName, v1.ConditionFalse)
 
 	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: nodeName},
+		Name: nodeName,
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -275,7 +274,7 @@ func TestReconciler_ErrorCodePropagation(t *testing.T) {
 	createNode(t, setup, nodeName, v1.ConditionFalse)
 
 	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: nodeName},
+		Name: nodeName,
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -329,7 +328,7 @@ func TestReconciler_CustomResource(t *testing.T) {
 	require.NoError(t, setup.k8sClient.Status().Update(setup.ctx, gpuJob))
 
 	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: jobName, Namespace: namespace},
+		Name: jobName, Namespace: namespace,
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -357,7 +356,7 @@ func TestReconciler_CustomResource(t *testing.T) {
 	require.NoError(t, setup.k8sClient.Delete(setup.ctx, gpuJob))
 
 	result, err = setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: jobName, Namespace: namespace},
+		Name: jobName, Namespace: namespace,
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -415,7 +414,7 @@ func TestReconciler_CustomResourceColdStart(t *testing.T) {
 	require.NoError(t, setup.k8sClient.Status().Update(setup.ctx, gpuJob))
 
 	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: jobName, Namespace: namespace},
+		Name: jobName, Namespace: namespace,
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -435,7 +434,7 @@ func TestReconciler_CustomResourceColdStart(t *testing.T) {
 	require.NoError(t, coldStartSetup.k8sClient.Delete(coldStartSetup.ctx, gpuJob))
 
 	result, err = coldStartSetup.reconciler.Reconcile(coldStartSetup.ctx, ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: jobName, Namespace: namespace},
+		Name: jobName, Namespace: namespace,
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -492,7 +491,7 @@ func TestReconciler_ColdStart(t *testing.T) {
 			node := createNode(t, setup, nodeName, v1.ConditionFalse)
 
 			result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{Name: nodeName},
+				Name: nodeName,
 			})
 			assert.NoError(t, err)
 			assert.Equal(t, ctrl.Result{}, result)
@@ -506,7 +505,7 @@ func TestReconciler_ColdStart(t *testing.T) {
 			tt.postRestartAction(t, coldStartSetup, nodeName, node)
 
 			result, err = coldStartSetup.reconciler.Reconcile(coldStartSetup.ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{Name: nodeName},
+				Name: nodeName,
 			})
 			assert.NoError(t, err)
 			assert.Equal(t, ctrl.Result{}, result)
@@ -548,7 +547,7 @@ func TestReconciler_PodUnhealthyOnNode(t *testing.T) {
 	createPod(t, setup, namespace, podName, nodeName, v1.PodPending)
 
 	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: namespace, Name: podName},
+		Namespace: namespace, Name: podName,
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -586,7 +585,7 @@ func TestReconciler_PodHealthyOnNode(t *testing.T) {
 
 	// First reconcile - should publish unhealthy event
 	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: namespace, Name: podName},
+		Namespace: namespace, Name: podName,
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -600,7 +599,7 @@ func TestReconciler_PodHealthyOnNode(t *testing.T) {
 
 	// Second reconcile - should publish healthy event
 	result, err = setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: namespace, Name: podName},
+		Namespace: namespace, Name: podName,
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -635,7 +634,7 @@ func TestReconciler_PodPolicyNamespaceSkipsOtherNamespaces(t *testing.T) {
 
 	createPod(t, setup, "default", "default-pod", nodeName, v1.PodPending)
 	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "default", Name: "default-pod"},
+		Namespace: "default", Name: "default-pod",
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -643,7 +642,7 @@ func TestReconciler_PodPolicyNamespaceSkipsOtherNamespaces(t *testing.T) {
 
 	createPod(t, setup, "gpu-operator", "gpu-operator-pod", nodeName, v1.PodPending)
 	result, err = setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "gpu-operator", Name: "gpu-operator-pod"},
+		Namespace: "gpu-operator", Name: "gpu-operator-pod",
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -854,7 +853,7 @@ func createNode(t *testing.T, setup *testSetup, name string, readyStatus v1.Cond
 	t.Helper()
 
 	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Status: v1.NodeStatus{
 			Conditions: []v1.NodeCondition{
 				{Type: v1.NodeReady, Status: readyStatus},
@@ -986,9 +985,7 @@ func getCounterVecValue(t *testing.T, counterVec *prometheus.CounterVec, labelVa
 
 func gpuJobCRD() *apiextensionsv1.CustomResourceDefinition {
 	return &apiextensionsv1.CustomResourceDefinition{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "gpujobs.batch.nvidia.com",
-		},
+		Name: "gpujobs.batch.nvidia.com",
 		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
 			Group: "batch.nvidia.com",
 			Names: apiextensionsv1.CustomResourceDefinitionNames{
@@ -1127,7 +1124,7 @@ func createNamespace(t *testing.T, setup *testSetup, name string) {
 	t.Helper()
 
 	ns := &v1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 	}
 	err := setup.k8sClient.Create(setup.ctx, ns)
 	if err != nil && !apierrors.IsAlreadyExists(err) {
@@ -1139,10 +1136,8 @@ func createPod(t *testing.T, setup *testSetup, namespace, name, nodeName string,
 	t.Helper()
 
 	pod := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
+		Name:      name,
+		Namespace: namespace,
 		Spec: v1.PodSpec{
 			NodeName: nodeName,
 			Containers: []v1.Container{

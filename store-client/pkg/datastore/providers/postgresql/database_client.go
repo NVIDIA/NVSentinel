@@ -129,10 +129,10 @@ func NewPostgreSQLDatabaseClientWithConnString(db *sql.DB, tableName string, con
 
 // InsertMany inserts multiple documents into the database
 func (c *PostgreSQLDatabaseClient) InsertMany(
-	ctx context.Context, documents []interface{},
+	ctx context.Context, documents []any,
 ) (*client.InsertManyResult, error) {
 	if len(documents) == 0 {
-		return &client.InsertManyResult{InsertedIDs: []interface{}{}}, nil
+		return &client.InsertManyResult{InsertedIDs: []any{}}, nil
 	}
 
 	slog.Debug("InsertMany called", "documentCount", len(documents), "tableName", c.tableName)
@@ -159,7 +159,7 @@ func (c *PostgreSQLDatabaseClient) InsertMany(
 	}
 	defer stmt.Close()
 
-	insertedIDs := make([]interface{}, 0, len(documents))
+	insertedIDs := make([]any, 0, len(documents))
 	for _, doc := range documents {
 		jsonData, err := json.Marshal(doc)
 		if err != nil {
@@ -187,10 +187,10 @@ func (c *PostgreSQLDatabaseClient) InsertMany(
 
 // insertHealthEvents handles batch insertion of health events using PostgreSQL-specific schema
 func (c *PostgreSQLDatabaseClient) insertHealthEvents(
-	ctx context.Context, documents []interface{},
+	ctx context.Context, documents []any,
 ) (*client.InsertManyResult, error) {
 	healthStore := NewPostgreSQLHealthEventStore(c.db)
-	insertedIDs := make([]interface{}, 0, len(documents))
+	insertedIDs := make([]any, 0, len(documents))
 
 	for _, doc := range documents {
 		modelEvent, ok := doc.(model.HealthEventWithStatus)
@@ -253,7 +253,7 @@ func (c *PostgreSQLDatabaseClient) insertHealthEvents(
 
 // UpdateDocumentStatus updates a specific status field in a document
 func (c *PostgreSQLDatabaseClient) UpdateDocumentStatus(
-	ctx context.Context, documentID string, statusPath string, status interface{},
+	ctx context.Context, documentID string, statusPath string, status any,
 ) error {
 	// Use query builder to create update
 	update := query.NewUpdate().Set(statusPath, status)
@@ -302,7 +302,7 @@ func (c *PostgreSQLDatabaseClient) UpdateDocumentStatus(
 
 // UpdateDocumentStatusFields updates multiple status fields in a document in one operation.
 func (c *PostgreSQLDatabaseClient) UpdateDocumentStatusFields(
-	ctx context.Context, documentID string, fields map[string]interface{},
+	ctx context.Context, documentID string, fields map[string]any,
 ) error {
 	if len(fields) == 0 {
 		return nil
@@ -352,14 +352,14 @@ func (c *PostgreSQLDatabaseClient) UpdateDocumentStatusFields(
 
 // UpdateDocument updates a single document matching the filter
 func (c *PostgreSQLDatabaseClient) UpdateDocument(
-	ctx context.Context, filter interface{}, update interface{},
+	ctx context.Context, filter any, update any,
 ) (*client.UpdateResult, error) {
 	return c.updateDocuments(ctx, filter, update, false)
 }
 
 // UpdateManyDocuments updates all documents matching the filter
 func (c *PostgreSQLDatabaseClient) UpdateManyDocuments(
-	ctx context.Context, filter interface{}, update interface{},
+	ctx context.Context, filter any, update any,
 ) (*client.UpdateResult, error) {
 	return c.updateDocuments(ctx, filter, update, true)
 }
@@ -367,8 +367,8 @@ func (c *PostgreSQLDatabaseClient) UpdateManyDocuments(
 // convertFilterToWhereClause converts various filter formats to SQL WHERE clause
 // The paramOffset parameter specifies where parameter numbering should start
 func (c *PostgreSQLDatabaseClient) convertFilterToWhereClause(
-	filter interface{}, paramOffset int,
-) (string, []interface{}, error) {
+	filter any, paramOffset int,
+) (string, []any, error) {
 	if builder, ok := filter.(*query.Builder); ok {
 		whereClause, filterArgs := builder.ToSQLWithOffset(paramOffset)
 
@@ -407,8 +407,8 @@ func (c *PostgreSQLDatabaseClient) convertFilterToWhereClause(
 
 // convertUpdateToSetClause converts various update formats to SQL SET clause
 func (c *PostgreSQLDatabaseClient) convertUpdateToSetClause(
-	update interface{},
-) (string, []interface{}, error) {
+	update any,
+) (string, []any, error) {
 	if updateBuilder, ok := update.(*query.UpdateBuilder); ok {
 		setClause, updateArgs := updateBuilder.ToSQL()
 
@@ -434,8 +434,8 @@ func (c *PostgreSQLDatabaseClient) convertUpdateToSetClause(
 }
 
 func (c *PostgreSQLDatabaseClient) resolveSetFields(
-	update interface{},
-) (map[string]interface{}, error) {
+	update any,
+) (map[string]any, error) {
 	updateMap := c.convertFilterToMap(update)
 	if updateMap == nil {
 		return nil, fmt.Errorf("unsupported update type: %T", update)
@@ -466,7 +466,7 @@ func (c *PostgreSQLDatabaseClient) resolveSetFields(
 
 // syncDenormalizedColumns updates denormalized columns that must stay in sync with JSONB document fields.
 func (c *PostgreSQLDatabaseClient) syncDenormalizedColumns(
-	builder *query.UpdateBuilder, key string, value interface{},
+	builder *query.UpdateBuilder, key string, value any,
 ) {
 	// For health_events table, also update denormalized columns to keep them in sync
 	// This ensures PostgreSQL changelog triggers capture the correct values
@@ -486,7 +486,7 @@ func (c *PostgreSQLDatabaseClient) syncDenormalizedColumns(
 
 // updateDocuments is the internal implementation for update operations
 func (c *PostgreSQLDatabaseClient) updateDocuments(
-	ctx context.Context, filter interface{}, update interface{}, updateMany bool,
+	ctx context.Context, filter any, update any, updateMany bool,
 ) (*client.UpdateResult, error) {
 	setClause, updateArgs, err := c.convertUpdateToSetClause(update)
 	if err != nil {
@@ -538,7 +538,7 @@ func (c *PostgreSQLDatabaseClient) updateDocuments(
 
 // UpsertDocument inserts or updates a document
 func (c *PostgreSQLDatabaseClient) UpsertDocument(
-	ctx context.Context, filter interface{}, document interface{},
+	ctx context.Context, filter any, document any,
 ) (*client.UpdateResult, error) {
 	// For maintenance_events table, use the specialized store implementation
 	// which properly handles the denormalized schema with indexed columns
@@ -628,8 +628,8 @@ var knownColumnMappings = map[string]string{
 }
 
 // convertMongoSortToSQL converts MongoDB-style sort options to SQL ORDER BY clause
-func convertMongoSortToSQL(sortOptions interface{}) string {
-	sortMap, ok := sortOptions.(map[string]interface{})
+func convertMongoSortToSQL(sortOptions any) string {
+	sortMap, ok := sortOptions.(map[string]any)
 	if !ok {
 		return ""
 	}
@@ -661,7 +661,7 @@ func convertMongoSortToSQL(sortOptions interface{}) string {
 	return ""
 }
 
-func isDescending(direction interface{}) bool {
+func isDescending(direction any) bool {
 	switch v := direction.(type) {
 	case int:
 		return v < 0
@@ -685,9 +685,9 @@ func isDescending(direction interface{}) bool {
 // convertFilterToMap converts various filter types to map[string]interface{}.
 // This handles bson.M and other map-like types that are
 // essentially map[string]interface{} under the hood.
-func (c *PostgreSQLDatabaseClient) convertFilterToMap(filter interface{}) map[string]interface{} {
+func (c *PostgreSQLDatabaseClient) convertFilterToMap(filter any) map[string]any {
 	// Direct type assertion for map[string]interface{}
-	if filterMap, ok := filter.(map[string]interface{}); ok {
+	if filterMap, ok := filter.(map[string]any); ok {
 		return filterMap
 	}
 
@@ -696,7 +696,7 @@ func (c *PostgreSQLDatabaseClient) convertFilterToMap(filter interface{}) map[st
 	// So we can convert it using reflection
 	v := reflect.ValueOf(filter)
 	if v.Kind() == reflect.Map && v.Type().Key().Kind() == reflect.String {
-		result := make(map[string]interface{})
+		result := make(map[string]any)
 
 		for _, key := range v.MapKeys() {
 			result[key.String()] = v.MapIndex(key).Interface()
@@ -710,15 +710,15 @@ func (c *PostgreSQLDatabaseClient) convertFilterToMap(filter interface{}) map[st
 
 // convertToInterfaceSlice converts various slice types to []interface{}.
 // This handles []string, []interface{}, bson.A, and other slice types.
-func (c *PostgreSQLDatabaseClient) convertToInterfaceSlice(value interface{}) []interface{} {
+func (c *PostgreSQLDatabaseClient) convertToInterfaceSlice(value any) []any {
 	// Direct type assertion for []interface{}
-	if slice, ok := value.([]interface{}); ok {
+	if slice, ok := value.([]any); ok {
 		return slice
 	}
 
 	// Handle []string directly (common case)
 	if strSlice, ok := value.([]string); ok {
-		result := make([]interface{}, len(strSlice))
+		result := make([]any, len(strSlice))
 
 		for i, s := range strSlice {
 			result[i] = s
@@ -730,7 +730,7 @@ func (c *PostgreSQLDatabaseClient) convertToInterfaceSlice(value interface{}) []
 	// Use reflection for other slice types (including bson.A which is []interface{})
 	v := reflect.ValueOf(value)
 	if v.Kind() == reflect.Slice {
-		result := make([]interface{}, v.Len())
+		result := make([]any, v.Len())
 
 		for i := range v.Len() {
 			result[i] = v.Index(i).Interface()
@@ -860,11 +860,11 @@ func (c *PostgreSQLDatabaseClient) processLogicalOperator(operator string, value
 //
 //nolint:dupl // Similar structure to Find is intentional - different return types and options handling
 func (c *PostgreSQLDatabaseClient) FindOne(
-	ctx context.Context, filter interface{}, options *client.FindOneOptions,
+	ctx context.Context, filter any, options *client.FindOneOptions,
 ) (client.SingleResult, error) {
 	var whereClause string
 
-	var args []interface{}
+	var args []any
 
 	if builder, ok := filter.(*query.Builder); ok {
 		whereClause, args = builder.ToSQL()
@@ -908,12 +908,12 @@ func (c *PostgreSQLDatabaseClient) FindOne(
 //
 //nolint:dupl // Similar structure to FindOne is intentional - different return types and options handling
 func (c *PostgreSQLDatabaseClient) Find(
-	ctx context.Context, filter interface{}, options *client.FindOptions,
+	ctx context.Context, filter any, options *client.FindOptions,
 ) (client.Cursor, error) {
 	// Convert filter to SQL WHERE clause
 	var whereClause string
 
-	var args []interface{}
+	var args []any
 
 	if builder, ok := filter.(*query.Builder); ok {
 		whereClause, args = builder.ToSQL()
@@ -945,8 +945,8 @@ func (c *PostgreSQLDatabaseClient) Find(
 }
 
 func (c *PostgreSQLDatabaseClient) resolveFilterMapForFind(
-	filter interface{},
-) (string, []interface{}, error) {
+	filter any,
+) (string, []any, error) {
 	if filter == nil {
 		return trueString, nil, nil
 	}
@@ -973,11 +973,11 @@ func (c *PostgreSQLDatabaseClient) resolveFilterMapForFind(
 
 // CountDocuments counts documents matching the filter
 func (c *PostgreSQLDatabaseClient) CountDocuments(
-	ctx context.Context, filter interface{}, options *client.CountOptions,
+	ctx context.Context, filter any, options *client.CountOptions,
 ) (int64, error) {
 	var whereClause string
 
-	var args []interface{}
+	var args []any
 
 	if builder, ok := filter.(*query.Builder); ok {
 		whereClause, args = builder.ToSQL()
@@ -1007,7 +1007,7 @@ func (c *PostgreSQLDatabaseClient) CountDocuments(
 
 // Aggregate performs aggregation operations (limited support for PostgreSQL)
 func (c *PostgreSQLDatabaseClient) Aggregate(
-	ctx context.Context, pipeline interface{},
+	ctx context.Context, pipeline any,
 ) (client.Cursor, error) {
 	slog.Debug("Aggregate called on PostgreSQL database client",
 		"tableName", c.tableName)
@@ -1027,7 +1027,7 @@ func (c *PostgreSQLDatabaseClient) Ping(ctx context.Context) error {
 
 // NewChangeStreamWatcher creates a new change stream watcher
 func (c *PostgreSQLDatabaseClient) NewChangeStreamWatcher(
-	ctx context.Context, tokenConfig client.TokenConfig, pipeline interface{},
+	ctx context.Context, tokenConfig client.TokenConfig, pipeline any,
 ) (client.ChangeStreamWatcher, error) {
 	// Create watcher in hybrid mode (LISTEN/NOTIFY + polling fallback)
 	// c.connString is populated via NewPostgreSQLDatabaseClientWithConnString()
@@ -1077,7 +1077,7 @@ type postgresqlSingleResult struct {
 	err  error
 }
 
-func (r *postgresqlSingleResult) Decode(v interface{}) error {
+func (r *postgresqlSingleResult) Decode(v any) error {
 	if r.err != nil {
 		return r.err
 	}
@@ -1097,7 +1097,7 @@ func (c *postgresqlCursor) Next(ctx context.Context) bool {
 	return c.rows.Next()
 }
 
-func (c *postgresqlCursor) Decode(v interface{}) error {
+func (c *postgresqlCursor) Decode(v any) error {
 	var jsonData []byte
 	if err := c.rows.Scan(&jsonData); err != nil {
 		return fmt.Errorf("failed to scan row: %w", err)
@@ -1114,7 +1114,7 @@ func (c *postgresqlCursor) Err() error {
 	return c.rows.Err()
 }
 
-func (c *postgresqlCursor) All(ctx context.Context, results interface{}) error {
+func (c *postgresqlCursor) All(ctx context.Context, results any) error {
 	// Results should be a pointer to a slice
 	resultsVal := reflect.ValueOf(results)
 	if resultsVal.Kind() != reflect.Pointer || resultsVal.Elem().Kind() != reflect.Slice {

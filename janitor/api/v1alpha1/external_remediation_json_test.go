@@ -22,7 +22,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
@@ -32,14 +31,10 @@ import (
 // diverges from the CRD-required RFC3339 string form.
 func extrrWithTimestamp(at time.Time) *ExternalRemediationRequest {
 	return &ExternalRemediationRequest{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "nvsentinel.dgxc.nvidia.com/v1",
-			Kind:       "ExternalRemediationRequest",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "extrr-roundtrip",
-			Labels: map[string]string{"node": "node-1"},
-		},
+		APIVersion: "nvsentinel.dgxc.nvidia.com/v1",
+		Kind:       "ExternalRemediationRequest",
+		Name:       "extrr-roundtrip",
+		Labels:     map[string]string{"node": "node-1"},
 		Spec: &protos.ExternalRemediationRequestSpec{
 			HealthEvent: &protos.HealthEvent{
 				Id:                "he-1",
@@ -137,11 +132,9 @@ func TestExtRR_MarshalJSON_NilSpecAndStatusOmitted(t *testing.T) {
 	t.Parallel()
 
 	in := &ExternalRemediationRequest{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "nvsentinel.dgxc.nvidia.com/v1",
-			Kind:       "ExternalRemediationRequest",
-		},
-		ObjectMeta: metav1.ObjectMeta{Name: "no-spec-no-status"},
+		APIVersion: "nvsentinel.dgxc.nvidia.com/v1",
+		Kind:       "ExternalRemediationRequest",
+		Name:       "no-spec-no-status",
 	}
 
 	b, err := json.Marshal(in)
@@ -227,11 +220,9 @@ func TestERRList_JSONRoundTrip(t *testing.T) {
 
 	at := time.Date(2026, 6, 5, 15, 30, 45, 0, time.UTC)
 	in := &ExternalRemediationRequestList{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "nvsentinel.dgxc.nvidia.com/v1",
-			Kind:       "ExternalRemediationRequestList",
-		},
-		ListMeta: metav1.ListMeta{ResourceVersion: "42"},
+		APIVersion:      "nvsentinel.dgxc.nvidia.com/v1",
+		Kind:            "ExternalRemediationRequestList",
+		ResourceVersion: "42",
 		Items: []ExternalRemediationRequest{
 			*extrrWithTimestamp(at),
 			*extrrWithTimestamp(at.Add(time.Minute)),

@@ -21,8 +21,8 @@ import (
 )
 
 func Test_matchesPipeline_deleteEventFallback(t *testing.T) {
-	pipeline := []map[string]interface{}{
-		{"$match": map[string]interface{}{
+	pipeline := []map[string]any{
+		{"$match": map[string]any{
 			"operationType":                 "delete",
 			"document.healthevent.nodename": "node-1",
 		}},
@@ -32,9 +32,9 @@ func Test_matchesPipeline_deleteEventFallback(t *testing.T) {
 	t.Run("falls back to oldValues when newValues is nil", func(t *testing.T) {
 		entry := &postgresqlEvent{
 			operation: "DELETE",
-			oldValues: map[string]interface{}{
-				"document": map[string]interface{}{
-					"healthevent": map[string]interface{}{"nodename": "node-1"},
+			oldValues: map[string]any{
+				"document": map[string]any{
+					"healthevent": map[string]any{"nodename": "node-1"},
 				},
 			},
 		}

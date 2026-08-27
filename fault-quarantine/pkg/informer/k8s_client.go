@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"sort"
 	"sync"
@@ -122,7 +123,7 @@ func (c *FaultQuarantineClient) EnsureCircuitBreakerConfigMap(ctx context.Contex
 	}
 
 	cm := &v1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Name: name, Namespace: namespace,
 		Data: map[string]string{
 			"status": string(initialStatus),
 			"cursor": string(breaker.CursorModeResume),
@@ -333,9 +334,7 @@ func (c *FaultQuarantineClient) QuarantineNodeAndSetAnnotations(
 
 func labelsWithSessionWinners(node *v1.Node, labels map[string]string) (map[string]string, error) {
 	labelsToApply := make(map[string]string, len(labels))
-	for key, value := range labels {
-		labelsToApply[key] = value
-	}
+	maps.Copy(labelsToApply, labels)
 
 	appliedLabelsJSON := node.Annotations[common.QuarantineHealthEventAppliedLabelsAnnotationKey]
 	if annotationutil.IsEmptyValue(appliedLabelsJSON) {
@@ -650,9 +649,7 @@ func (c *FaultQuarantineClient) applyLabels(
 
 	slog.InfoContext(ctx, "Adding labels on node", "node", nodename)
 
-	for k, v := range labels {
-		node.Labels[k] = v
-	}
+	maps.Copy(node.Labels, labels)
 }
 
 func (c *FaultQuarantineClient) UnQuarantineNodeAndRemoveAnnotations(
@@ -852,7 +849,5 @@ func (c *FaultQuarantineClient) updateNodeAnnotationsForManualUncordon(
 		delete(node.Annotations, key)
 	}
 
-	for key, value := range annotationsToAdd {
-		node.Annotations[key] = value
-	}
+	maps.Copy(node.Annotations, annotationsToAdd)
 }

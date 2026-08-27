@@ -26,7 +26,6 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
@@ -621,10 +620,8 @@ func updateCircuitBreakerStateConfigMap(ctx context.Context,
 	t.Logf("Updating circuit breaker state configmap to: %s, cursor mode: %s", state, cursorMode)
 
 	cm := &v1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "circuit-breaker",
-			Namespace: NVSentinelNamespace,
-		},
+		Name:      "circuit-breaker",
+		Namespace: NVSentinelNamespace,
 		Data: map[string]string{
 			"status": state,
 			"cursor": cursorMode,
@@ -632,10 +629,8 @@ func updateCircuitBreakerStateConfigMap(ctx context.Context,
 	}
 
 	existingCM := &v1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "circuit-breaker",
-			Namespace: NVSentinelNamespace,
-		},
+		Name:      "circuit-breaker",
+		Namespace: NVSentinelNamespace,
 	}
 	_ = client.Resources().Delete(ctx, existingCM)
 
