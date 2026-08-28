@@ -855,8 +855,8 @@ func (p *PostgreSQLHealthEventStore) FindLatestEventForNode(
 	return decodeHealthEventDocument(documentJSON)
 }
 
-// FindLatestHealthEventByQuery returns the newest matching event (by created_at) using
-// ORDER BY created_at DESC LIMIT 1, so it never loads more than one row.
+// FindLatestHealthEventByQuery returns the newest matching event using creation time
+// and document ID, so it never loads more than one row.
 func (p *PostgreSQLHealthEventStore) FindLatestHealthEventByQuery(ctx context.Context,
 	builder datastore.QueryBuilder) (*datastore.HealthEventWithStatus, error) {
 	if builder == nil {
@@ -872,7 +872,7 @@ func (p *PostgreSQLHealthEventStore) FindLatestHealthEventByQuery(ctx context.Co
 	query := `
 		SELECT created_at, document FROM health_events
 		WHERE ` + whereClause + `
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, id DESC
 		LIMIT 1
 	`
 
@@ -892,7 +892,7 @@ func (p *PostgreSQLHealthEventStore) FindLatestHealthEventByQuery(ctx context.Co
 
 	event, err := decodeHealthEventDocument(documentJSON)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode latest health event: %w", err)
 	}
 
 	event.CreatedAt = createdAt

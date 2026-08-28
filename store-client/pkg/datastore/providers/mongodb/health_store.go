@@ -271,14 +271,16 @@ func (h *MongoHealthEventStore) CheckIfNodeAlreadyDrained(ctx context.Context,
 	return count > 0, nil
 }
 
-// findLatestByFilter returns the newest matching event (createdAt descending) for the
-// given filter, or nil if none match. Errors are returned unwrapped so callers can add
-// their own message and metadata.
+// findLatestByFilter returns the newest matching event by creation time and document ID.
+// Errors are returned unwrapped so callers can add their own message and metadata.
 func (h *MongoHealthEventStore) findLatestByFilter(
 	ctx context.Context, filter map[string]any,
 ) (*datastore.HealthEventWithStatus, error) {
 	options := &client.FindOneOptions{
-		Sort: map[string]any{"createdAt": -1},
+		Sort: bson.D{
+			{Key: "createdAt", Value: -1},
+			{Key: "_id", Value: -1},
+		},
 	}
 
 	result, err := h.databaseClient.FindOne(ctx, filter, options)

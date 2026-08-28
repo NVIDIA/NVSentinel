@@ -262,7 +262,10 @@ func TestMongoHealthEventStore_FindLatestEventForNode(t *testing.T) {
 		"healthevent.nodename": nodeName,
 	}
 	expectedOptions := &client.FindOneOptions{
-		Sort: map[string]any{"createdAt": -1},
+		Sort: bson.D{
+			{Key: "createdAt", Value: -1},
+			{Key: "_id", Value: -1},
+		},
 	}
 
 	// Test successful find
