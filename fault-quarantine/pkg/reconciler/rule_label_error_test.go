@@ -36,7 +36,10 @@ type stubRuleSetEvaluator struct {
 	err    error
 }
 
-func (s *stubRuleSetEvaluator) Evaluate(*protos.HealthEvent) (common.RuleEvaluationResult, error) {
+func (s *stubRuleSetEvaluator) Evaluate(
+	context.Context,
+	*protos.HealthEvent,
+) (common.RuleEvaluationResult, error) {
 	return s.result, s.err
 }
 

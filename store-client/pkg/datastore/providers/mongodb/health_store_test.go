@@ -268,16 +268,17 @@ func TestMongoHealthEventStore_FindLatestEventForNode(t *testing.T) {
 	// Test successful find
 	t.Run("successful find", func(t *testing.T) {
 		mockDB.On("FindOne", ctx, expectedFilter, expectedOptions).Return(mockResult, nil)
-		mockResult.On("Decode", mock.AnythingOfType("*datastore.HealthEventWithStatus")).Return(nil).Run(func(args mock.Arguments) {
+		mockResult.On("Decode", mock.AnythingOfType("*map[string]interface {}")).Return(nil).Run(func(args mock.Arguments) {
 			// Simulate decoding
-			event := args.Get(0).(*datastore.HealthEventWithStatus)
-			event.CreatedAt = time.Now()
+			event := args.Get(0).(*map[string]any)
+			*event = map[string]any{"createdAt": time.Now()}
 		})
 
 		result, err := store.FindLatestEventForNode(ctx, nodeName)
 		assert.NoError(t, err)
 		assert.NotNil(t, result)
 		assert.False(t, result.CreatedAt.IsZero())
+		assert.NotNil(t, result.RawEvent)
 
 		mockDB.AssertExpectations(t)
 		mockResult.AssertExpectations(t)
@@ -289,7 +290,7 @@ func TestMongoHealthEventStore_FindLatestEventForNode(t *testing.T) {
 		mockResult.ExpectedCalls = nil
 
 		mockDB.On("FindOne", ctx, expectedFilter, expectedOptions).Return(mockResult, nil)
-		mockResult.On("Decode", mock.AnythingOfType("*datastore.HealthEventWithStatus")).Return(errors.New("no documents in result"))
+		mockResult.On("Decode", mock.AnythingOfType("*map[string]interface {}")).Return(errors.New("no documents in result"))
 
 		// Need to mock IsNoDocumentsError function behavior
 		result, err := store.FindLatestEventForNode(ctx, nodeName)

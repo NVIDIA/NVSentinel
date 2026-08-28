@@ -869,15 +869,18 @@ func (p *PostgreSQLHealthEventStore) FindLatestHealthEventByQuery(ctx context.Co
 
 	//nolint:gosec // G202 false positive - using parameterized query with placeholders
 	query := `
-		SELECT document FROM health_events
+		SELECT created_at, document FROM health_events
 		WHERE ` + whereClause + `
 		ORDER BY created_at DESC
 		LIMIT 1
 	`
 
-	var documentJSON []byte
+	var (
+		createdAt    time.Time
+		documentJSON []byte
+	)
 
-	err := p.db.QueryRowContext(ctx, query, args...).Scan(&documentJSON)
+	err := p.db.QueryRowContext(ctx, query, args...).Scan(&createdAt, &documentJSON)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -886,7 +889,14 @@ func (p *PostgreSQLHealthEventStore) FindLatestHealthEventByQuery(ctx context.Co
 		return nil, fmt.Errorf("failed to find latest health event by query: %w", err)
 	}
 
-	return decodeHealthEventDocument(documentJSON)
+	event, err := decodeHealthEventDocument(documentJSON)
+	if err != nil {
+		return nil, err
+	}
+
+	event.CreatedAt = createdAt
+
+	return event, nil
 }
 
 // decodeHealthEventDocument unmarshals a health_events.document JSON blob into a typed

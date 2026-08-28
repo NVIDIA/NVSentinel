@@ -206,3 +206,26 @@ func TestFindHealthEventsByQueryBatchedSkipsInvalidDocumentAndAdvancesCursor(t *
 	assert.Equal(t, "00000000-0000-0000-0000-000000000002", recovered[0].RawEvent["id"])
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestFindLatestHealthEventByQueryPreservesCreatedAt(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	store := NewPostgreSQLHealthEventStore(db)
+	createdAt := time.Date(2026, time.August, 28, 10, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(`(?s)SELECT created_at, document FROM health_events.*ORDER BY created_at DESC`).
+		WithArgs("node-a").
+		WillReturnRows(sqlmock.NewRows([]string{"created_at", "document"}).
+			AddRow(createdAt, []byte(`{}`)))
+
+	event, err := store.FindLatestHealthEventByQuery(
+		context.Background(),
+		query.New().Build(query.Eq("node_name", "node-a")),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, event)
+	assert.Equal(t, createdAt, event.CreatedAt)
+	assert.NotNil(t, event.RawEvent)
+	require.NoError(t, mock.ExpectationsWereMet())
+}

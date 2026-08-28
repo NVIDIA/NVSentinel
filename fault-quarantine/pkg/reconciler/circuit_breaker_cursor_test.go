@@ -24,7 +24,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/breaker"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/eventwatcher"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 type cursorModeBreakerStub struct {
@@ -59,6 +61,28 @@ func (s *cursorModeBreakerStub) SetCursorMode(_ context.Context, mode breaker.Cu
 
 type resumeTokenClientStub struct {
 	client.DatabaseClient
+}
+
+type coldStartCallbackWatcherStub struct {
+	eventwatcher.EventWatcherInterface
+	callback func(context.Context) error
+}
+
+func (s *coldStartCallbackWatcherStub) SetColdStartCallback(callback func(context.Context) error) {
+	s.callback = callback
+}
+
+type emptyHealthEventStoreStub struct {
+	datastore.HealthEventStore
+}
+
+func (*emptyHealthEventStoreStub) FindHealthEventsByQueryBatched(
+	context.Context,
+	datastore.QueryBuilder,
+	int,
+	func([]datastore.HealthEventWithStatus) error,
+) error {
+	return nil
 }
 
 func TestHandleCircuitBreakerCreatePersistsCutoffBeforeDeletingToken(t *testing.T) {
@@ -112,4 +136,24 @@ func TestHandleCircuitBreakerCreateKeepsTokenWhenCutoffPersistenceFails(t *testi
 	require.ErrorIs(t, err, persistErr)
 	assert.False(t, startFresh)
 	assert.Equal(t, []string{"persist-cutoff"}, actions)
+}
+
+func TestConfigureColdStartSavesCheckpointAfterSuccessfulScan(t *testing.T) {
+	watcher := &coldStartCallbackWatcherStub{}
+	r := NewReconciler(ReconcilerConfig{}, nil, nil)
+	r.eventWatcher = watcher
+
+	var saved time.Time
+	r.saveColdStartCheckpoint = func(_ context.Context, clientName string, checkpoint time.Time) error {
+		assert.Equal(t, "fault-quarantine", clientName)
+		saved = checkpoint
+
+		return nil
+	}
+
+	r.configureColdStart(
+		context.Background(), false, false, time.Time{}, &emptyHealthEventStoreStub{})
+	require.NotNil(t, watcher.callback)
+	require.NoError(t, watcher.callback(context.Background()))
+	assert.False(t, saved.IsZero())
 }

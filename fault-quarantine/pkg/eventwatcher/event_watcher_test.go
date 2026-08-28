@@ -124,6 +124,13 @@ func storedHealthEvent(id string) datastore.Event {
 	}
 }
 
+func storedHealthEventRecord(id string) datastore.HealthEventWithStatus {
+	return datastore.HealthEventWithStatus{
+		CreatedAt: time.Now(),
+		RawEvent:  storedHealthEvent(id),
+	}
+}
+
 func TestProcessStoredEventUsesLiveProcessingPathAndDeduplicatesReplay(t *testing.T) {
 	dbClient := &databaseClientStub{}
 	objectIDs := &objectIDStoreStub{}
@@ -139,7 +146,7 @@ func TestProcessStoredEventUsesLiveProcessingPathAndDeduplicatesReplay(t *testin
 		return &status
 	})
 
-	result, err := watcher.ProcessStoredEvent(context.Background(), storedHealthEvent("event-uuid"))
+	result, err := watcher.ProcessStoredEvent(context.Background(), storedHealthEventRecord("event-uuid"))
 	require.NoError(t, err)
 	assert.Equal(t, coldstart.ProcessResultProcessed, result)
 	assert.Equal(t, "event-uuid", dbClient.updatedID)
@@ -169,7 +176,7 @@ func TestProcessStoredEventDoesNotDeduplicateSkippedEvent(t *testing.T) {
 		return nil
 	})
 
-	result, err := watcher.ProcessStoredEvent(context.Background(), storedHealthEvent("event-uuid"))
+	result, err := watcher.ProcessStoredEvent(context.Background(), storedHealthEventRecord("event-uuid"))
 	require.NoError(t, err)
 	assert.Equal(t, coldstart.ProcessResultSkipped, result)
 
@@ -192,15 +199,32 @@ func TestProcessStoredEventReturnsStatusUpdateFailure(t *testing.T) {
 		return &status
 	})
 
-	result, err := watcher.ProcessStoredEvent(context.Background(), storedHealthEvent("event-uuid"))
+	result, err := watcher.ProcessStoredEvent(context.Background(), storedHealthEventRecord("event-uuid"))
 	require.ErrorIs(t, err, updateErr)
+	assert.Equal(t, coldstart.ProcessResultFailed, result)
+}
+
+func TestProcessStoredEventReturnsRecordedReconcilerFailure(t *testing.T) {
+	processingErr := errors.New("node API unavailable")
+	watcher := NewEventWatcher(nil, &databaseClientStub{}, time.Minute, &objectIDStoreStub{})
+	watcher.SetProcessEventCallback(func(ctx context.Context, _ *model.HealthEventWithStatus) *model.Status {
+		coldstart.RecordError(ctx, processingErr)
+
+		return nil
+	})
+
+	result, err := watcher.ProcessStoredEvent(
+		context.Background(), storedHealthEventRecord("event-uuid"))
+	require.ErrorIs(t, err, processingErr)
 	assert.Equal(t, coldstart.ProcessResultFailed, result)
 }
 
 func TestProcessStoredEventSkipsInvalidDocument(t *testing.T) {
 	watcher := NewEventWatcher(nil, &databaseClientStub{}, time.Minute, &objectIDStoreStub{})
 
-	result, err := watcher.ProcessStoredEvent(context.Background(), datastore.Event{"id": "invalid"})
+	result, err := watcher.ProcessStoredEvent(context.Background(), datastore.HealthEventWithStatus{
+		RawEvent: datastore.Event{"id": "invalid"},
+	})
 	require.NoError(t, err)
 	assert.Equal(t, coldstart.ProcessResultInvalid, result)
 }
@@ -217,5 +241,19 @@ func TestStartOpensWatcherBeforeColdStartAndClosesOnFailure(t *testing.T) {
 
 	err := watcher.Start(context.Background())
 	require.ErrorIs(t, err, recoveryErr)
+	assert.True(t, changeStream.closed)
+}
+
+func TestStartTreatsColdStartCancellationAsShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	changeStream := &changeStreamWatcherStub{events: make(chan client.Event)}
+	watcher := NewEventWatcher(changeStream, &databaseClientStub{}, time.Minute, &objectIDStoreStub{})
+	watcher.SetColdStartCallback(func(context.Context) error {
+		cancel()
+
+		return context.Canceled
+	})
+
+	require.NoError(t, watcher.Start(ctx))
 	assert.True(t, changeStream.closed)
 }

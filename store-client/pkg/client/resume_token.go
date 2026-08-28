@@ -128,6 +128,38 @@ func ResetResumeTokenForCreate(
 	return resetResumeTokenForCreateWithStore(ctx, dbClient, tokenConfig, store, onTokenDeleted)
 }
 
+// SaveColdStartCheckpoint advances the lower bound for a component's next
+// cold-start scan after the current scan has completed successfully.
+func SaveColdStartCheckpoint(ctx context.Context, clientName string, checkpoint time.Time) error {
+	if checkpoint.IsZero() {
+		return fmt.Errorf("cold-start checkpoint for %s cannot be zero", clientName)
+	}
+
+	store, err := newKubernetesResumeControlStore()
+	if err != nil {
+		return fmt.Errorf("failed to initialize change stream resume control: %w", err)
+	}
+
+	return saveColdStartCheckpointWithStore(ctx, clientName, checkpoint, store)
+}
+
+func saveColdStartCheckpointWithStore(
+	ctx context.Context,
+	clientName string,
+	checkpoint time.Time,
+	store resumeControlStore,
+) error {
+	if checkpoint.IsZero() {
+		return fmt.Errorf("cold-start checkpoint for %s cannot be zero", clientName)
+	}
+
+	if err := store.SetColdStartCutoff(ctx, clientName, checkpoint.UTC()); err != nil {
+		return fmt.Errorf("failed to save cold-start checkpoint for %s: %w", clientName, err)
+	}
+
+	return nil
+}
+
 func resetResumeTokenForCreateWithStore(
 	ctx context.Context,
 	dbClient DatabaseClient,

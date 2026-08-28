@@ -286,13 +286,18 @@ func (h *MongoHealthEventStore) findLatestByFilter(
 		return nil, err
 	}
 
-	var event datastore.HealthEventWithStatus
+	var rawDoc map[string]any
 
-	if err := result.Decode(&event); err != nil {
+	if err := result.Decode(&rawDoc); err != nil {
 		if client.IsNoDocumentsError(err) {
 			return nil, nil // No matching event
 		}
 
+		return nil, err
+	}
+
+	event, err := decodeRawDocToHealthEvent(rawDoc)
+	if err != nil {
 		return nil, err
 	}
 

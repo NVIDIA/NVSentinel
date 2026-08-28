@@ -47,6 +47,7 @@ type EventWatcher struct {
 	lastProcessedObjectID                 LastProcessedObjectIDStore
 	coldStartCallback                     func(ctx context.Context) error
 	recoveredEventIDs                     sync.Map
+	recoveryOverlapStart                  time.Time
 }
 
 type LastProcessedObjectIDStore interface {
@@ -59,7 +60,10 @@ type EventWatcherInterface interface {
 	SetProcessEventCallback(callback func(ctx context.Context, event *model.HealthEventWithStatus) *model.Status)
 	SetFetchDocIDsFn(fn func(ctx context.Context, nodeName string) []string)
 	SetColdStartCallback(callback func(ctx context.Context) error)
-	ProcessStoredEvent(ctx context.Context, event datastore.Event) (coldstart.ProcessResult, error)
+	ProcessStoredEvent(
+		ctx context.Context,
+		event datastore.HealthEventWithStatus,
+	) (coldstart.ProcessResult, error)
 	CancelLatestQuarantiningEvents(ctx context.Context, nodeName string, reason string) error
 }
 
@@ -94,6 +98,7 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 	slog.InfoContext(ctx, "Starting event watcher")
 
 	if w.changeStreamWatcher != nil {
+		w.recoveryOverlapStart = time.Now().UTC()
 		w.changeStreamWatcher.Start(ctx)
 	} else {
 		<-ctx.Done()
@@ -104,6 +109,12 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 		if err := w.coldStartCallback(ctx); err != nil {
 			if closeErr := w.changeStreamWatcher.Close(ctx); closeErr != nil {
 				slog.ErrorContext(ctx, "Failed to close event watcher after cold-start failure", "error", closeErr)
+			}
+
+			if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+				slog.InfoContext(ctx, "Cold-start recovery stopped during shutdown")
+
+				return nil
 			}
 
 			return fmt.Errorf("cold-start recovery failed: %w", err)
@@ -219,33 +230,40 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 // callback and status update path used for live change-stream events.
 func (w *EventWatcher) ProcessStoredEvent(
 	ctx context.Context,
-	event datastore.Event,
+	event datastore.HealthEventWithStatus,
 ) (coldstart.ProcessResult, error) {
-	healthEventWithStatus, err := eventutil.ParseHealthEventFromEvent(event)
+	healthEventWithStatus, err := eventutil.ParseHealthEventFromEvent(event.RawEvent)
 	if err != nil {
 		slog.ErrorContext(ctx, "Skipping invalid stored health event", "error", err)
 
 		return coldstart.ProcessResultInvalid, nil
 	}
 
-	recordUUID, err := utils.ExtractDocumentID(event)
+	recordUUID, err := utils.ExtractDocumentID(event.RawEvent)
 	if err != nil {
 		slog.ErrorContext(ctx, "Skipping stored health event without a document ID", "error", err)
 
 		return coldstart.ProcessResultInvalid, nil
 	}
 
+	recoveryCtx := coldstart.WithRecoveryContext(ctx)
 	processed, err := w.processHealthEvent(
-		coldstart.WithRecoveryContext(ctx), &healthEventWithStatus, recordUUID, recordUUID)
+		recoveryCtx, &healthEventWithStatus, recordUUID, recordUUID)
 	if err != nil {
 		return coldstart.ProcessResultFailed, err
+	}
+
+	if err := coldstart.Error(recoveryCtx); err != nil {
+		return coldstart.ProcessResultFailed, fmt.Errorf("recovered event processing failed: %w", err)
 	}
 
 	if !processed {
 		return coldstart.ProcessResultSkipped, nil
 	}
 
-	w.recoveredEventIDs.Store(recordUUID, struct{}{})
+	if !event.CreatedAt.IsZero() && !event.CreatedAt.Before(w.recoveryOverlapStart) {
+		w.recoveredEventIDs.Store(recordUUID, struct{}{})
+	}
 
 	return coldstart.ProcessResultProcessed, nil
 }

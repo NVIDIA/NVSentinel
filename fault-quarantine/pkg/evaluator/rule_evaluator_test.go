@@ -31,10 +31,22 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
 )
+
+type directNodeReaderStub struct {
+	node  *corev1.Node
+	calls int
+}
+
+func (s *directNodeReaderStub) GetNodeDirect(context.Context, string) (*corev1.Node, error) {
+	s.calls++
+
+	return s.node.DeepCopy(), nil
+}
 
 var (
 	testClient *kubernetes.Clientset
@@ -120,12 +132,58 @@ func TestNodeRuleEvaluatorWithMetadataAndSpecOnly(t *testing.T) {
 		t.Fatalf("NewNodeRuleEvaluator() error = %v", err)
 	}
 
-	result, err := evaluator.Evaluate(&protos.HealthEvent{NodeName: "slim-node"})
+	result, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "slim-node"})
 	if err != nil {
 		t.Fatalf("Evaluate() error = %v", err)
 	}
 	if result != common.RuleEvaluationSuccess {
 		t.Fatalf("Evaluate() = %v, want success", result)
+	}
+}
+
+func TestNodeRuleEvaluatorReadsCurrentNodeDuringRecovery(t *testing.T) {
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	if err := indexer.Add(&corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "node-a",
+			Labels: map[string]string{"state": "stale"},
+		},
+	}); err != nil {
+		t.Fatalf("indexer.Add() error = %v", err)
+	}
+
+	reader := &directNodeReaderStub{node: &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "node-a",
+			Labels: map[string]string{"state": "current"},
+		},
+	}}
+	evaluator, err := newNodeRuleEvaluator(
+		`node.metadata.labels["state"] == "current"`,
+		corelisters.NewNodeLister(indexer),
+		reader,
+	)
+	if err != nil {
+		t.Fatalf("newNodeRuleEvaluator() error = %v", err)
+	}
+
+	result, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "node-a"})
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if result != common.RuleEvaluationFailed || reader.calls != 0 {
+		t.Fatalf("normal evaluation result/calls = %v/%d, want failed/0", result, reader.calls)
+	}
+
+	result, err = evaluator.Evaluate(
+		coldstart.WithRecoveryContext(context.Background()),
+		&protos.HealthEvent{NodeName: "node-a"},
+	)
+	if err != nil {
+		t.Fatalf("recovery Evaluate() error = %v", err)
+	}
+	if result != common.RuleEvaluationSuccess || reader.calls != 1 {
+		t.Fatalf("recovery evaluation result/calls = %v/%d, want success/1", result, reader.calls)
 	}
 }
 
@@ -142,7 +200,7 @@ func TestEvaluate(t *testing.T) {
 		ErrorCode: []string{"31"},
 	}
 
-	result, err := evaluator.Evaluate(eventTrue)
+	result, err := evaluator.Evaluate(context.Background(), eventTrue)
 	if err != nil {
 		t.Fatalf("Failed to evaluate expression: %v", err)
 	}
@@ -157,7 +215,7 @@ func TestEvaluate(t *testing.T) {
 		ErrorCode: []string{"50"},
 	}
 
-	result, err = evaluator.Evaluate(eventFalse)
+	result, err = evaluator.Evaluate(context.Background(), eventFalse)
 	if err != nil {
 		t.Fatalf("Failed to evaluate expression: %v", err)
 	}
@@ -297,7 +355,7 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 				t.Fatalf("Failed to create NodeToSkipLabelRuleEvaluator: %v", err)
 			}
 			if evaluator != nil {
-				isEvaluated, err := evaluator.Evaluate(&protos.HealthEvent{
+				isEvaluated, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{
 					NodeName: nodeName,
 				})
 				if (err != nil) != tt.expectError {

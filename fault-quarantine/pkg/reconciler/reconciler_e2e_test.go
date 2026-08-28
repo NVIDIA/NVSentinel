@@ -689,6 +689,21 @@ type coldStartHealthEventStore struct {
 		int,
 		func([]datastore.HealthEventWithStatus) error,
 	) error
+	findLatest func(
+		context.Context,
+		datastore.QueryBuilder,
+	) (*datastore.HealthEventWithStatus, error)
+}
+
+func (s *coldStartHealthEventStore) FindLatestHealthEventByQuery(
+	ctx context.Context,
+	builder datastore.QueryBuilder,
+) (*datastore.HealthEventWithStatus, error) {
+	if s.findLatest == nil {
+		return nil, nil
+	}
+
+	return s.findLatest(ctx, builder)
 }
 
 func (s *coldStartHealthEventStore) FindHealthEventsByQueryBatched(
@@ -821,7 +836,7 @@ func (m *MockEventWatcher) SetColdStartCallback(_ func(ctx context.Context) erro
 
 func (m *MockEventWatcher) ProcessStoredEvent(
 	_ context.Context,
-	_ datastore.Event,
+	_ datastore.HealthEventWithStatus,
 ) (coldstart.ProcessResult, error) {
 	return coldstart.ProcessResultSkipped, nil
 }
@@ -890,13 +905,15 @@ func TestE2E_ColdStartRecoversMissedFatalEvent(t *testing.T) {
 
 	result, err := processor.ProcessStoredEvent(
 		ctx,
-		directStoredHealthEvent("cleanup-recovery", nodeName, "GpuNvlinkWatch", true, true),
+		datastore.HealthEventWithStatus{
+			RawEvent: directStoredHealthEvent("cleanup-recovery", nodeName, "GpuNvlinkWatch", true, true),
+		},
 	)
 	require.NoError(t, err)
 	assert.Equal(t, coldstart.ProcessResultProcessed, result)
 }
 
-func TestE2E_ColdStartReplaysFailureAndRecoveryInOrder(t *testing.T) {
+func TestE2E_ColdStartSkipsFailureSupersededByRecovery(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
@@ -911,6 +928,9 @@ func TestE2E_ColdStartReplaysFailureAndRecoveryInOrder(t *testing.T) {
 	processor := newColdStartEventProcessor(t, r, dbClient)
 	failure := directStoredHealthEvent("missed-failure", nodeName, "GpuNvlinkWatch", false, true)
 	recovery := directStoredHealthEvent("missed-recovery", nodeName, "GpuNvlinkWatch", true, true)
+	failureAt := time.Now().Add(-time.Minute)
+	recoveryAt := time.Now()
+	recoveryRecord := datastore.HealthEventWithStatus{CreatedAt: recoveryAt, RawEvent: recovery}
 	store := &coldStartHealthEventStore{
 		findBatched: func(
 			_ context.Context,
@@ -919,9 +939,15 @@ func TestE2E_ColdStartReplaysFailureAndRecoveryInOrder(t *testing.T) {
 			fn func([]datastore.HealthEventWithStatus) error,
 		) error {
 			return fn([]datastore.HealthEventWithStatus{
-				{CreatedAt: time.Now().Add(-time.Minute), RawEvent: failure},
-				{CreatedAt: time.Now(), RawEvent: recovery},
+				{CreatedAt: failureAt, RawEvent: failure},
+				recoveryRecord,
 			})
+		},
+		findLatest: func(
+			context.Context,
+			datastore.QueryBuilder,
+		) (*datastore.HealthEventWithStatus, error) {
+			return &recoveryRecord, nil
 		},
 	}
 
@@ -938,8 +964,9 @@ func TestE2E_ColdStartReplaysFailureAndRecoveryInOrder(t *testing.T) {
 	for _, taint := range node.Spec.Taints {
 		assert.NotEqual(t, "nvidia.com/nvlink-failure", taint.Key)
 	}
-	assert.Equal(t, string(model.Quarantined), dbClient.status("missed-failure"))
-	assert.Equal(t, string(model.UnQuarantined), dbClient.status("missed-recovery"))
+	assert.Empty(t, dbClient.status("missed-failure"))
+	assert.Empty(t, dbClient.status("missed-recovery"))
+	assert.Equal(t, 0, dbClient.callCount())
 }
 
 func TestE2E_BasicQuarantineAndUnquarantine(t *testing.T) {
