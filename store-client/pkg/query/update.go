@@ -166,8 +166,24 @@ func (u *UpdateBuilder) categorizeOperation(op UpdateOperation, paramNum int) (s
 func buildChainedJSONBSet(updates []documentUpdate, startParam int) (string, []any) {
 	expr := "document"
 	args := make([]any, 0, len(updates))
+	initializedParents := make(map[string]struct{})
 
 	for i, du := range updates {
+		parts := strings.Split(du.path, ",")
+		for depth := 1; depth < len(parts); depth++ {
+			parentPath := strings.Join(parts[:depth], ",")
+			if _, initialized := initializedParents[parentPath]; initialized {
+				continue
+			}
+
+			parentValue := fmt.Sprintf("%s #> '{%s}'", expr, parentPath)
+			expr = fmt.Sprintf(
+				"jsonb_set(%s, '{%s}', CASE WHEN jsonb_typeof(%s) = 'object' THEN %s ELSE '{}'::jsonb END, true)",
+				expr, parentPath, parentValue, parentValue,
+			)
+			initializedParents[parentPath] = struct{}{}
+		}
+
 		expr = fmt.Sprintf("jsonb_set(%s, '{%s}', $%d::jsonb)", expr, du.path, startParam+i)
 		args = append(args, toJSONBValue(du.value))
 	}

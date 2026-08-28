@@ -55,7 +55,9 @@ func TestUpdateBuilder_Set_NestedField(t *testing.T) {
 
 	// Test SQL output
 	sql, args := update.ToSQL()
-	assert.Equal(t, "document = jsonb_set(document, '{healtheventstatus,nodequarantined}', $1::jsonb)", sql)
+	assert.Contains(t, sql, "jsonb_set(document, '{healtheventstatus}'")
+	assert.Contains(t, sql, "ELSE '{}'::jsonb END, true)")
+	assert.Contains(t, sql, "'{healtheventstatus,nodequarantined}', $1::jsonb)")
 	assert.Equal(t, []any{"\"Quarantined\""}, args)
 }
 
@@ -131,7 +133,9 @@ func TestUpdateBuilder_Set_DeeplyNestedField(t *testing.T) {
 
 	// Test SQL output
 	sql, args := update.ToSQL()
-	assert.Equal(t, "document = jsonb_set(document, '{healtheventstatus,userpodsevictionstatus,status}', $1::jsonb)", sql)
+	assert.Contains(t, sql, "'{healtheventstatus}'")
+	assert.Contains(t, sql, "'{healtheventstatus,userpodsevictionstatus}'")
+	assert.Contains(t, sql, "'{healtheventstatus,userpodsevictionstatus,status}', $1::jsonb)")
 	assert.Equal(t, []any{"\"InProgress\""}, args)
 }
 
@@ -544,7 +548,7 @@ func TestUpdateBuilder_RealCICorruptionScenario(t *testing.T) {
 
 	// Test SQL output (PostgreSQL path)
 	sql, args := update.ToSQL()
-	assert.Contains(t, sql, "document = jsonb_set(document, '{healtheventstatus,userpodsevictionstatus}', $1::jsonb)")
+	assert.Contains(t, sql, "'{healtheventstatus,userpodsevictionstatus}', $1::jsonb)")
 	require.Len(t, args, 1)
 
 	argStr := args[0].(string)

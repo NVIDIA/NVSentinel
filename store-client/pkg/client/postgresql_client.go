@@ -337,6 +337,14 @@ func (c *PostgreSQLClient) UpdateDocumentStatusFields(
 
 		parts := strings.Split(path, ".")
 		jsonbPath := "{" + strings.Join(parts, ",") + "}"
+		for depth := 1; depth < len(parts); depth++ {
+			parentPath := "{" + strings.Join(parts[:depth], ",") + "}"
+			parentValue := fmt.Sprintf("%s #> '%s'", setExpression, parentPath)
+			setExpression = fmt.Sprintf(
+				"jsonb_set(%s, '%s', CASE WHEN jsonb_typeof(%s) = 'object' THEN %s ELSE '{}'::jsonb END, true)",
+				setExpression, parentPath, parentValue, parentValue,
+			)
+		}
 
 		valueJSON, err := json.Marshal(value)
 		if err != nil {
