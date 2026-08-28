@@ -298,7 +298,7 @@ func TestResetResumeTokenOnStartWithStore_CreateDeletesTokenAndResetsMode(t *tes
 	}
 }
 
-func TestResetResumeTokenOnStartWithStore_CreateWithoutColdStartCutoffSupport(t *testing.T) {
+func TestResetResumeTokenOnStartWithStore_FaultQuarantineCreateRecordsCutoff(t *testing.T) {
 	tokenConfig := TokenConfig{
 		ClientName:      "fault-quarantine",
 		TokenDatabase:   "HealthEventsDatabase",
@@ -320,12 +320,12 @@ func TestResetResumeTokenOnStartWithStore_CreateWithoutColdStartCutoffSupport(t 
 		t.Fatal("StartFresh = false, want true")
 	}
 
-	if !decision.ColdStartCutoff.IsZero() {
-		t.Fatalf("ColdStartCutoff = %v, want zero", decision.ColdStartCutoff)
+	if decision.ColdStartCutoff.IsZero() {
+		t.Fatal("ColdStartCutoff is zero, want CREATE cutoff")
 	}
 
-	if !store.setCutoff.IsZero() {
-		t.Fatalf("SetColdStartCutoff got %v, want zero", store.setCutoff)
+	if !store.cutoff.Equal(decision.ColdStartCutoff) {
+		t.Fatalf("BeginCreate cutoff got %v, want %v", store.cutoff, decision.ColdStartCutoff)
 	}
 }
 
@@ -647,7 +647,7 @@ func TestKubernetesResumeControlStore_BeginCreateOmitsZeroCutoff(t *testing.T) {
 	ctx := context.Background()
 	clientset := fake.NewSimpleClientset(&corev1.ConfigMap{
 		Name: "resume-control", Namespace: "nvsentinel",
-		Data: map[string]string{"fault-quarantine": ResumeControlModeCreate},
+		Data: map[string]string{"test-client": ResumeControlModeCreate},
 	})
 	store := &kubernetesResumeControlStore{
 		client:    clientset,
@@ -655,7 +655,7 @@ func TestKubernetesResumeControlStore_BeginCreateOmitsZeroCutoff(t *testing.T) {
 		namespace: "nvsentinel",
 	}
 
-	if err := store.BeginCreate(ctx, "fault-quarantine", time.Time{}); err != nil {
+	if err := store.BeginCreate(ctx, "test-client", time.Time{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -664,11 +664,11 @@ func TestKubernetesResumeControlStore_BeginCreateOmitsZeroCutoff(t *testing.T) {
 		t.Fatalf("expected ConfigMap to exist: %v", err)
 	}
 
-	if got := cm.Data["fault-quarantine"]; got != resumeControlModeCreating {
-		t.Fatalf("fault-quarantine mode = %q, want %q", got, resumeControlModeCreating)
+	if got := cm.Data["test-client"]; got != resumeControlModeCreating {
+		t.Fatalf("test-client mode = %q, want %q", got, resumeControlModeCreating)
 	}
 
-	if _, ok := cm.Data[coldStartCutoffKey("fault-quarantine")]; ok {
-		t.Fatal("fault-quarantine cutoff key was written for module without cold-start cutoff support")
+	if _, ok := cm.Data[coldStartCutoffKey("test-client")]; ok {
+		t.Fatal("cutoff key was written with a zero cutoff")
 	}
 }

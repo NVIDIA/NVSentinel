@@ -312,13 +312,23 @@ func (mockQueryBuilder) ToSQL() (string, []any) { return "", nil }
 
 func TestMongoHealthEventStore_FindHealthEventsByQueryBatched(t *testing.T) {
 	ctx := context.Background()
+	orderedFindOptions := mock.MatchedBy(func(options *client.FindOptions) bool {
+		if options == nil {
+			return false
+		}
+
+		return reflect.DeepEqual(options.Sort, bson.D{
+			{Key: "createdAt", Value: 1},
+			{Key: "_id", Value: 1},
+		})
+	})
 
 	t.Run("delivers events in batches", func(t *testing.T) {
 		mockDB := new(MockDatabaseClient)
 		mockCursor := new(MockCursor)
 		store := &MongoHealthEventStore{databaseClient: mockDB}
 
-		mockDB.On("Find", ctx, mock.Anything, (*client.FindOptions)(nil)).Return(mockCursor, nil)
+		mockDB.On("Find", ctx, mock.Anything, orderedFindOptions).Return(mockCursor, nil)
 		mockCursor.On("Close", ctx).Return(nil)
 
 		// Simulate 3 documents; batch size = 2 → two callback invocations (2 + 1).
@@ -358,7 +368,7 @@ func TestMongoHealthEventStore_FindHealthEventsByQueryBatched(t *testing.T) {
 		mockDB := new(MockDatabaseClient)
 		store := &MongoHealthEventStore{databaseClient: mockDB}
 
-		mockDB.On("Find", ctx, mock.Anything, (*client.FindOptions)(nil)).
+		mockDB.On("Find", ctx, mock.Anything, orderedFindOptions).
 			Return((*MockCursor)(nil), errors.New("db error"))
 
 		err := store.FindHealthEventsByQueryBatched(ctx, mockQueryBuilder{}, 10,
@@ -374,7 +384,7 @@ func TestMongoHealthEventStore_FindHealthEventsByQueryBatched(t *testing.T) {
 		mockCursor := new(MockCursor)
 		store := &MongoHealthEventStore{databaseClient: mockDB}
 
-		mockDB.On("Find", ctx, mock.Anything, (*client.FindOptions)(nil)).Return(mockCursor, nil)
+		mockDB.On("Find", ctx, mock.Anything, orderedFindOptions).Return(mockCursor, nil)
 		mockCursor.On("Close", ctx).Return(nil)
 
 		mockCursor.On("Next", ctx).Return(true).Once()

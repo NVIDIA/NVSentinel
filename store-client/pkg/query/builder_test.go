@@ -60,6 +60,16 @@ func TestBuilder_Eq(t *testing.T) {
 			expectedSQL:  "id = $1",
 			expectedArgs: []any{"123"},
 		},
+		{
+			name:  "numeric JSON field equality",
+			field: "healthevent.processingstrategy",
+			value: int32(1),
+			expectedMongo: map[string]any{
+				"healthevent.processingstrategy": int32(1),
+			},
+			expectedSQL:  "document->'healthevent'->>'processingstrategy' = $1",
+			expectedArgs: []any{"1"},
+		},
 	}
 
 	for _, tt := range tests {

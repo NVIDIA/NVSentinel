@@ -924,23 +924,28 @@ func (p *PostgreSQLHealthEventStore) FindHealthEventsByQuery(ctx context.Context
 	return p.queryHealthEventsWithID(ctx, query, args...)
 }
 
-// FindHealthEventsByQueryBatched iterates matching health events in bounded batches.
-// fn is called once per batch of up to batchSize events. Return a non-nil error from
-// fn to stop iteration early. Uses LIMIT/OFFSET pagination to bound memory.
+// FindHealthEventsByQueryBatched iterates matching health events from oldest to
+// newest in bounded batches. Keyset pagination keeps iteration correct when the
+// callback updates records so they no longer match the query.
 func (p *PostgreSQLHealthEventStore) FindHealthEventsByQueryBatched(ctx context.Context,
 	builder datastore.QueryBuilder, batchSize int,
 	fn func([]datastore.HealthEventWithStatus) error) error {
 	whereClause, args := builder.ToSQL()
+	if whereClause == "" {
+		whereClause = "TRUE"
+	}
 
-	for offset := 0; ; offset += batchSize {
-		//nolint:gosec // G202 false positive - batchSize/offset are integers, not user input
-		q := fmt.Sprintf(
-			"SELECT id, document FROM health_events WHERE %s ORDER BY id LIMIT %d OFFSET %d",
-			whereClause, batchSize, offset)
+	var (
+		lastCreatedAt time.Time
+		lastID        string
+		hasCursor     bool
+	)
 
-		batch, err := p.queryHealthEventsWithID(ctx, q, args...)
+	for {
+		batch, nextCreatedAt, nextID, err := p.queryHealthEventBatch(
+			ctx, whereClause, args, batchSize, lastCreatedAt, lastID, hasCursor)
 		if err != nil {
-			return fmt.Errorf("failed to query health events batch at offset %d: %w", offset, err)
+			return fmt.Errorf("failed to query health events batch: %w", err)
 		}
 
 		if len(batch) == 0 {
@@ -954,9 +959,73 @@ func (p *PostgreSQLHealthEventStore) FindHealthEventsByQueryBatched(ctx context.
 		if len(batch) < batchSize {
 			break
 		}
+
+		lastCreatedAt = nextCreatedAt
+		lastID = nextID
+		hasCursor = true
 	}
 
 	return nil
+}
+
+func (p *PostgreSQLHealthEventStore) queryHealthEventBatch(
+	ctx context.Context,
+	whereClause string,
+	baseArgs []any,
+	batchSize int,
+	lastCreatedAt time.Time,
+	lastID string,
+	hasCursor bool,
+) ([]datastore.HealthEventWithStatus, time.Time, string, error) {
+	args := append([]any(nil), baseArgs...)
+	cursorClause := ""
+
+	if hasCursor {
+		cursorClause = fmt.Sprintf(
+			" AND (created_at, id) > ($%d, $%d)", len(args)+1, len(args)+2)
+		args = append(args, lastCreatedAt, lastID)
+	}
+
+	//nolint:gosec // G202 false positive - batchSize is an integer controlled by the caller
+	q := fmt.Sprintf(
+		"SELECT id, created_at, document FROM health_events WHERE %s%s "+
+			"ORDER BY created_at ASC, id ASC LIMIT %d",
+		whereClause, cursorClause, batchSize)
+
+	rows, err := p.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, time.Time{}, "", fmt.Errorf("failed to query health events: %w", err)
+	}
+	defer rows.Close()
+
+	var (
+		batch         = make([]datastore.HealthEventWithStatus, 0, batchSize)
+		nextCreatedAt time.Time
+		nextID        string
+	)
+
+	for rows.Next() {
+		var documentJSON []byte
+
+		if err := rows.Scan(&nextID, &nextCreatedAt, &documentJSON); err != nil {
+			return nil, time.Time{}, "", fmt.Errorf("failed to scan health event: %w", err)
+		}
+
+		event, err := decodeHealthEventDocument(documentJSON)
+		if err != nil {
+			return nil, time.Time{}, "", err
+		}
+
+		event.CreatedAt = nextCreatedAt
+		event.RawEvent["id"] = nextID
+		batch = append(batch, *event)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, time.Time{}, "", fmt.Errorf("error iterating health event rows: %w", err)
+	}
+
+	return batch, nextCreatedAt, nextID, nil
 }
 
 // queryHealthEventsWithID executes a query that returns (id, document) rows

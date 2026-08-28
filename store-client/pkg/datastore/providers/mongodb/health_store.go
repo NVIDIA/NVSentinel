@@ -388,15 +388,20 @@ func decodeRawDocToHealthEvent(rawDoc map[string]any) (datastore.HealthEventWith
 	return event, nil
 }
 
-// FindHealthEventsByQueryBatched iterates matching health events in bounded batches.
-// fn is called once per batch of up to batchSize events. Return a non-nil error from
-// fn to stop iteration early. Memory is bounded to O(batchSize) at any point.
+// FindHealthEventsByQueryBatched iterates matching health events from oldest to
+// newest in bounded batches. Return a non-nil error from fn to stop iteration.
 func (h *MongoHealthEventStore) FindHealthEventsByQueryBatched(ctx context.Context,
 	builder datastore.QueryBuilder, batchSize int,
 	fn func([]datastore.HealthEventWithStatus) error) error {
 	filter := builder.ToMongo()
+	findOptions := &client.FindOptions{
+		Sort: bson.D{
+			{Key: "createdAt", Value: 1},
+			{Key: "_id", Value: 1},
+		},
+	}
 
-	cursor, err := h.databaseClient.Find(ctx, filter, nil)
+	cursor, err := h.databaseClient.Find(ctx, filter, findOptions)
 	if err != nil {
 		return datastore.NewQueryError(
 			datastore.ProviderMongoDB,

@@ -350,7 +350,7 @@ func coldStartCutoffKey(clientName string) string {
 
 func supportsColdStartCutoff(clientName string) bool {
 	switch clientName {
-	case "node-drainer", "fault-remediation":
+	case "node-drainer", "fault-remediation", "fault-quarantine":
 		return true
 	default:
 		return false
