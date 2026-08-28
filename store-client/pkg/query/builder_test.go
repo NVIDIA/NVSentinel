@@ -399,6 +399,11 @@ func TestMongoFieldToJSONB(t *testing.T) {
 			expectedPath: "COALESCE(document->'healtheventstatus'->>'nodequarantined', document->'healtheventstatus'->>'nodeQuarantined')",
 		},
 		{
+			name:         "protobuf field casing",
+			mongoField:   "healthevent.componentclass",
+			expectedPath: "COALESCE(document->'healthevent'->>'componentclass', document->'healthevent'->>'componentClass')",
+		},
+		{
 			name:         "deeply nested",
 			mongoField:   "healtheventstatus.userpodsevictionstatus.status",
 			expectedPath: "document->'healtheventstatus'->'userpodsevictionstatus'->>'status'",

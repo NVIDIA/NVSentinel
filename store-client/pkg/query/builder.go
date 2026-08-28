@@ -541,6 +541,8 @@ func convertToMongoObject(id any) any {
 func needsDualCaseLookup(fieldName string) bool {
 	// Fields that might be stored in either lowercase or camelCase
 	dualCaseFields := map[string]bool{
+		"componentclass":  true, // Can be componentclass or componentClass
+		"checkname":       true, // Can be checkname or checkName
 		"nodename":        true, // Can be nodename or nodeName
 		"nodequarantined": true, // Can be nodequarantined or nodeQuarantined
 	}
@@ -575,6 +577,10 @@ func buildDualCaseJSONBPath(parts []string) string {
 func toCamelCase(s string) string {
 	// Handle specific known conversions
 	switch s {
+	case "componentclass":
+		return "componentClass"
+	case "checkname":
+		return "checkName"
 	case "nodename":
 		return "nodeName"
 	case "nodequarantined":
