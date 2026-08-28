@@ -71,9 +71,9 @@ kubectl -n nvsentinel scale deployment/fault-quarantine --replicas="${REPLICAS:-
 kubectl -n nvsentinel rollout status deployment/fault-quarantine --timeout=180s
 ```
 
-On a normal `RESUME` startup, fault-quarantine queries the datastore for processable health events that do not have a quarantine status and replays them before consuming live events. A later event that fully replaces an older failure suppresses it, so obsolete history cannot cause transient node changes. Node rules read current API-server state during recovery instead of the informer cache. The live watcher opens first, so events inserted during recovery remain queued for normal processing.
+On a normal `RESUME` startup, fault-quarantine queries the datastore for processable health events that do not have a quarantine status and replays them before consuming live events. An event is suppressed when a later event changes any of the same check, entity, and error-code state. This conservative rule prevents old failures or recoveries from temporarily overwriting newer node state. Node rules read current API-server state during recovery instead of the informer cache. The live watcher opens first, so events inserted during recovery remain queued for normal processing.
 
-Each successful scan saves its upper timestamp as the next lower bound. A failed or interrupted scan does not advance that checkpoint, while completed history is not scanned again on every restart.
+Skipped, invalid, and superseded documents receive a fault-quarantine recovery result in their status. Successful quarantine updates already carry a terminal quarantine status. Both forms are excluded from later scans. Normal recovery does not advance a wall-clock checkpoint, because event creation time and datastore insertion order can differ.
 
 A consumed `CREATE` request skips cold start and records its creation time. Later restarts only consider unresolved events created after that cutoff, so events that an operator deliberately abandoned are not revived.
 

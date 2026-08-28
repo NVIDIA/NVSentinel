@@ -138,15 +138,14 @@ func TestHandleCircuitBreakerCreateKeepsTokenWhenCutoffPersistenceFails(t *testi
 	assert.Equal(t, []string{"persist-cutoff"}, actions)
 }
 
-func TestConfigureColdStartSavesCheckpointAfterSuccessfulScan(t *testing.T) {
+func TestConfigureColdStartDoesNotAdvanceOperatorCutoff(t *testing.T) {
 	watcher := &coldStartCallbackWatcherStub{}
 	r := NewReconciler(ReconcilerConfig{}, nil, nil)
 	r.eventWatcher = watcher
 
-	var saved time.Time
-	r.saveColdStartCheckpoint = func(_ context.Context, clientName string, checkpoint time.Time) error {
-		assert.Equal(t, "fault-quarantine", clientName)
-		saved = checkpoint
+	saveCalled := false
+	r.saveColdStartCheckpoint = func(context.Context, string, time.Time) error {
+		saveCalled = true
 
 		return nil
 	}
@@ -155,5 +154,5 @@ func TestConfigureColdStartSavesCheckpointAfterSuccessfulScan(t *testing.T) {
 		context.Background(), false, false, time.Time{}, &emptyHealthEventStoreStub{})
 	require.NotNil(t, watcher.callback)
 	require.NoError(t, watcher.callback(context.Background()))
-	assert.False(t, saved.IsZero())
+	assert.False(t, saveCalled)
 }

@@ -97,19 +97,22 @@ func (he *HealthEventRuleEvaluator) Evaluate(
 	event *protos.HealthEvent) (common.RuleEvaluationResult, error) {
 	obj, err := RoundTrip(event)
 	if err != nil {
-		return common.RuleEvaluationFailed, fmt.Errorf("error roundtripping event: %w", err)
+		return common.RuleEvaluationFailed, coldstart.PermanentError(
+			fmt.Errorf("error roundtripping event: %w", err))
 	}
 
 	out, _, err := he.program.Eval(map[string]any{
 		eventObjKey: obj,
 	})
 	if err != nil {
-		return common.RuleEvaluationFailed, fmt.Errorf("failed to evaluate expression: %w", err)
+		return common.RuleEvaluationFailed, coldstart.PermanentError(
+			fmt.Errorf("failed to evaluate expression: %w", err))
 	}
 
 	result, ok := out.Value().(bool)
 	if !ok {
-		return common.RuleEvaluationFailed, fmt.Errorf("expression did not return a boolean: %v", out)
+		return common.RuleEvaluationFailed, coldstart.PermanentError(
+			fmt.Errorf("expression did not return a boolean: %v", out))
 	}
 
 	if result {
@@ -179,12 +182,14 @@ func (nm *NodeRuleEvaluator) Evaluate(
 
 	out, _, err := nm.program.Eval(nodeInfo)
 	if err != nil {
-		return common.RuleEvaluationFailed, fmt.Errorf("failed to evaluate expression: %w", err)
+		return common.RuleEvaluationFailed, coldstart.PermanentError(
+			fmt.Errorf("failed to evaluate expression: %w", err))
 	}
 
 	result, ok := out.Value().(bool)
 	if !ok {
-		return common.RuleEvaluationFailed, fmt.Errorf("expression did not return a boolean: %v", out)
+		return common.RuleEvaluationFailed, coldstart.PermanentError(
+			fmt.Errorf("expression did not return a boolean: %v", out))
 	}
 
 	if result {

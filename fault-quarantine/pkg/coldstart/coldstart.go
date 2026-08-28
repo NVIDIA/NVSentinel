@@ -30,13 +30,42 @@ import (
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
 )
 
-const batchSize = 1000
+const (
+	batchSize = 1000
+	// RecoveryCompletionStatusPath stores terminal cold-start decisions.
+	RecoveryCompletionStatusPath = "healtheventstatus.faultquarantinerecovery"
+)
 
 type recoveryContextKey struct{}
 
 type recoveryState struct {
-	mu  sync.Mutex
+	mu           sync.Mutex
+	err          error
+	permanentErr error
+}
+
+type permanentError struct {
 	err error
+}
+
+func (e *permanentError) Error() string { return e.err.Error() }
+func (e *permanentError) Unwrap() error { return e.err }
+
+// PermanentError marks an event-specific processing error that retrying the
+// same stored event cannot resolve.
+func PermanentError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	return &permanentError{err: err}
+}
+
+// IsPermanentError reports whether an error is deterministic for the event.
+func IsPermanentError(err error) bool {
+	var target *permanentError
+
+	return errors.As(err, &target)
 }
 
 // WithRecoveryContext marks event processing as cold-start replay. Consumers
@@ -65,6 +94,19 @@ func RecordError(ctx context.Context, err error) {
 	state.mu.Unlock()
 }
 
+// RecordPermanentError records an event-specific failure that should not
+// block every subsequent startup.
+func RecordPermanentError(ctx context.Context, err error) {
+	state, ok := ctx.Value(recoveryContextKey{}).(*recoveryState)
+	if !ok || err == nil {
+		return
+	}
+
+	state.mu.Lock()
+	state.permanentErr = errors.Join(state.permanentErr, err)
+	state.mu.Unlock()
+}
+
 // Error returns errors recorded while processing the current recovered event.
 func Error(ctx context.Context) error {
 	state, ok := ctx.Value(recoveryContextKey{}).(*recoveryState)
@@ -76,6 +118,20 @@ func Error(ctx context.Context) error {
 	defer state.mu.Unlock()
 
 	return state.err
+}
+
+// RecordedPermanentError returns deterministic errors recorded while
+// processing the current recovered event.
+func RecordedPermanentError(ctx context.Context) error {
+	state, ok := ctx.Value(recoveryContextKey{}).(*recoveryState)
+	if !ok {
+		return nil
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	return state.permanentErr
 }
 
 type ProcessResult string
@@ -93,6 +149,11 @@ type EventProcessor interface {
 		ctx context.Context,
 		event datastore.HealthEventWithStatus,
 	) (ProcessResult, error)
+	CompleteStoredEvent(
+		ctx context.Context,
+		event datastore.HealthEventWithStatus,
+		result ProcessResult,
+	) error
 }
 
 type Dependencies struct {
@@ -102,10 +163,10 @@ type Dependencies struct {
 	ColdStartUntilTime time.Time
 }
 
-// Handle replays unresolved events in creation order. Failures fully replaced
-// by a later event are skipped so obsolete history cannot cause transient node
-// changes. Processing stops on transient failures; invalid stored documents
-// are counted and skipped.
+// Handle replays unresolved events in creation order. Events that overlap
+// newer state are skipped so obsolete history cannot cause transient node
+// changes. Processing stops on transient failures; terminal skip decisions
+// are persisted and excluded from later scans.
 func Handle(ctx context.Context, deps Dependencies) error {
 	if deps.HealthEventStore == nil {
 		return fmt.Errorf("health event store is required")
@@ -130,31 +191,9 @@ func Handle(ctx context.Context, deps Dependencies) error {
 		batchSize,
 		func(events []datastore.HealthEventWithStatus) error {
 			for i := range events {
-				if err := ctx.Err(); err != nil {
+				if err := recoverStoredEvent(ctx, resolver, deps.EventProcessor, events[i]); err != nil {
 					return err
 				}
-
-				superseded, err := resolver.superseded(ctx, events[i])
-				if err != nil {
-					metrics.ColdStartEvents.WithLabelValues(string(ProcessResultFailed)).Inc()
-
-					return fmt.Errorf("failed to resolve stored event state: %w", err)
-				}
-
-				if superseded {
-					metrics.ColdStartEvents.WithLabelValues(string(ProcessResultSuperseded)).Inc()
-
-					continue
-				}
-
-				result, err := deps.EventProcessor.ProcessStoredEvent(ctx, events[i])
-				if err != nil {
-					metrics.ColdStartEvents.WithLabelValues(string(ProcessResultFailed)).Inc()
-
-					return fmt.Errorf("failed to recover stored event: %w", err)
-				}
-
-				metrics.ColdStartEvents.WithLabelValues(string(result)).Inc()
 			}
 
 			return nil
@@ -169,13 +208,77 @@ func Handle(ctx context.Context, deps Dependencies) error {
 	return nil
 }
 
+func recoverStoredEvent(
+	ctx context.Context,
+	resolver *supersessionResolver,
+	processor EventProcessor,
+	event datastore.HealthEventWithStatus,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	superseded, err := resolver.superseded(ctx, event)
+	if err != nil {
+		return recordRecoveryFailure(fmt.Errorf("failed to resolve stored event state: %w", err))
+	}
+
+	if superseded {
+		if err := completeStoredEvent(ctx, processor, event, ProcessResultSuperseded); err != nil {
+			return recordRecoveryFailure(err)
+		}
+
+		metrics.ColdStartEvents.WithLabelValues(string(ProcessResultSuperseded)).Inc()
+
+		return nil
+	}
+
+	result, err := processor.ProcessStoredEvent(ctx, event)
+	if err != nil {
+		return recordRecoveryFailure(fmt.Errorf("failed to recover stored event: %w", err))
+	}
+
+	if result == ProcessResultSkipped || result == ProcessResultInvalid {
+		if err := completeStoredEvent(ctx, processor, event, result); err != nil {
+			return recordRecoveryFailure(err)
+		}
+	}
+
+	metrics.ColdStartEvents.WithLabelValues(string(result)).Inc()
+
+	return nil
+}
+
+func recordRecoveryFailure(err error) error {
+	metrics.ColdStartEvents.WithLabelValues(string(ProcessResultFailed)).Inc()
+
+	return err
+}
+
+func completeStoredEvent(
+	ctx context.Context,
+	processor EventProcessor,
+	event datastore.HealthEventWithStatus,
+	result ProcessResult,
+) error {
+	if err := processor.CompleteStoredEvent(ctx, event, result); err != nil {
+		return fmt.Errorf("failed to record %s recovery completion: %w", result, err)
+	}
+
+	return nil
+}
+
 func coldStartQuery(coldStartAfter, coldStartUntil time.Time) *query.Builder {
 	unresolved := query.Or(
 		query.Eq("healtheventstatus.nodequarantined", nil),
 		query.Eq("healtheventstatus.nodequarantined", ""),
 		query.Eq("healtheventstatus.nodequarantined", string(model.StatusNotStarted)),
 	)
-	condition := query.And(unresolved, processableCondition())
+	recoveryIncomplete := query.Or(
+		query.Eq(RecoveryCompletionStatusPath, nil),
+		query.Eq(RecoveryCompletionStatusPath, ""),
+	)
+	condition := query.And(unresolved, recoveryIncomplete, processableCondition())
 
 	if !coldStartAfter.IsZero() {
 		condition = query.And(query.Gt("createdAt", coldStartAfter), condition)

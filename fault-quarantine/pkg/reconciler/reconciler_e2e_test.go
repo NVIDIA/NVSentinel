@@ -689,21 +689,6 @@ type coldStartHealthEventStore struct {
 		int,
 		func([]datastore.HealthEventWithStatus) error,
 	) error
-	findLatest func(
-		context.Context,
-		datastore.QueryBuilder,
-	) (*datastore.HealthEventWithStatus, error)
-}
-
-func (s *coldStartHealthEventStore) FindLatestHealthEventByQuery(
-	ctx context.Context,
-	builder datastore.QueryBuilder,
-) (*datastore.HealthEventWithStatus, error) {
-	if s.findLatest == nil {
-		return nil, nil
-	}
-
-	return s.findLatest(ctx, builder)
 }
 
 func (s *coldStartHealthEventStore) FindHealthEventsByQueryBatched(
@@ -717,9 +702,10 @@ func (s *coldStartHealthEventStore) FindHealthEventsByQueryBatched(
 
 type coldStartDatabaseClient struct {
 	client.DatabaseClient
-	mu       sync.Mutex
-	statuses map[string]string
-	calls    int
+	mu          sync.Mutex
+	statuses    map[string]string
+	completions map[string]string
+	calls       int
 }
 
 func (c *coldStartDatabaseClient) UpdateDocumentStatusFields(
@@ -730,10 +716,27 @@ func (c *coldStartDatabaseClient) UpdateDocumentStatusFields(
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.statuses[documentID] = fields["healtheventstatus.nodequarantined"].(string)
+	if status, ok := fields["healtheventstatus.nodequarantined"].(string); ok {
+		c.statuses[documentID] = status
+	}
+
+	if completion, ok := fields[coldstart.RecoveryCompletionStatusPath].(string); ok {
+		if c.completions == nil {
+			c.completions = make(map[string]string)
+		}
+
+		c.completions[documentID] = completion
+	}
 	c.calls++
 
 	return nil
+}
+
+func (c *coldStartDatabaseClient) completion(documentID string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.completions[documentID]
 }
 
 func (c *coldStartDatabaseClient) status(documentID string) string {
@@ -841,6 +844,14 @@ func (m *MockEventWatcher) ProcessStoredEvent(
 	return coldstart.ProcessResultSkipped, nil
 }
 
+func (m *MockEventWatcher) CompleteStoredEvent(
+	context.Context,
+	datastore.HealthEventWithStatus,
+	coldstart.ProcessResult,
+) error {
+	return nil
+}
+
 func (m *MockEventWatcher) CancelLatestQuarantiningEvents(ctx context.Context, nodeName string, reason string) error {
 	if m.CancelLatestQuarantiningEventsFn != nil {
 		return m.CancelLatestQuarantiningEventsFn(ctx, nodeName, reason)
@@ -943,12 +954,6 @@ func TestE2E_ColdStartSkipsFailureSupersededByRecovery(t *testing.T) {
 				recoveryRecord,
 			})
 		},
-		findLatest: func(
-			context.Context,
-			datastore.QueryBuilder,
-		) (*datastore.HealthEventWithStatus, error) {
-			return &recoveryRecord, nil
-		},
 	}
 
 	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
@@ -966,7 +971,9 @@ func TestE2E_ColdStartSkipsFailureSupersededByRecovery(t *testing.T) {
 	}
 	assert.Empty(t, dbClient.status("missed-failure"))
 	assert.Empty(t, dbClient.status("missed-recovery"))
-	assert.Equal(t, 0, dbClient.callCount())
+	assert.Equal(t, string(coldstart.ProcessResultSuperseded), dbClient.completion("missed-failure"))
+	assert.Equal(t, string(coldstart.ProcessResultSkipped), dbClient.completion("missed-recovery"))
+	assert.Equal(t, 2, dbClient.callCount())
 }
 
 func TestE2E_BasicQuarantineAndUnquarantine(t *testing.T) {

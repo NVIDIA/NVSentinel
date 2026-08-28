@@ -35,6 +35,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
+const recoveredEventDedupRetention = 24 * time.Hour
+
 type EventWatcher struct {
 	changeStreamWatcher  client.ChangeStreamWatcher
 	databaseClient       client.DatabaseClient
@@ -47,7 +49,6 @@ type EventWatcher struct {
 	lastProcessedObjectID                 LastProcessedObjectIDStore
 	coldStartCallback                     func(ctx context.Context) error
 	recoveredEventIDs                     sync.Map
-	recoveryOverlapStart                  time.Time
 }
 
 type LastProcessedObjectIDStore interface {
@@ -64,6 +65,11 @@ type EventWatcherInterface interface {
 		ctx context.Context,
 		event datastore.HealthEventWithStatus,
 	) (coldstart.ProcessResult, error)
+	CompleteStoredEvent(
+		ctx context.Context,
+		event datastore.HealthEventWithStatus,
+		result coldstart.ProcessResult,
+	) error
 	CancelLatestQuarantiningEvents(ctx context.Context, nodeName string, reason string) error
 }
 
@@ -98,7 +104,6 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 	slog.InfoContext(ctx, "Starting event watcher")
 
 	if w.changeStreamWatcher != nil {
-		w.recoveryOverlapStart = time.Now().UTC()
 		w.changeStreamWatcher.Start(ctx)
 	} else {
 		<-ctx.Done()
@@ -109,7 +114,9 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 		return err
 	}
 
+	w.armRecoveredEventExpiry(time.Now())
 	go w.updateUnprocessedEventsMetric(ctx)
+	go w.expireRecoveredEventIDs(ctx)
 
 	watchDoneCh := make(chan error, 1)
 
@@ -227,10 +234,12 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 
 	w.lastProcessedObjectID.StoreLastProcessedObjectID(eventID)
 
-	if _, recovered := w.recoveredEventIDs.LoadAndDelete(recordUUID); recovered {
-		slog.DebugContext(ctx, "Skipping live duplicate of a recovered event", "eventID", recordUUID)
+	if expiry, recovered := w.recoveredEventIDs.LoadAndDelete(recordUUID); recovered {
+		if expiresAt, ok := expiry.(time.Time); !ok || time.Now().Before(expiresAt) {
+			slog.DebugContext(ctx, "Skipping live duplicate of a recovered event", "eventID", recordUUID)
 
-		return nil
+			return nil
+		}
 	}
 
 	_, err = w.processHealthEvent(ctx, &healthEventWithStatus, recordUUID, eventID)
@@ -273,15 +282,79 @@ func (w *EventWatcher) ProcessStoredEvent(
 		return coldstart.ProcessResultFailed, fmt.Errorf("recovered event processing failed: %w", err)
 	}
 
+	if err := coldstart.RecordedPermanentError(recoveryCtx); err != nil {
+		slog.ErrorContext(ctx, "Skipping stored event with a permanent evaluation error", "error", err)
+
+		if !processed {
+			return coldstart.ProcessResultInvalid, nil
+		}
+	}
+
 	if !processed {
 		return coldstart.ProcessResultSkipped, nil
 	}
 
-	if !event.CreatedAt.IsZero() && !event.CreatedAt.Before(w.recoveryOverlapStart) {
-		w.recoveredEventIDs.Store(recordUUID, struct{}{})
-	}
+	w.rememberRecoveredEvent(recordUUID)
 
 	return coldstart.ProcessResultProcessed, nil
+}
+
+// CompleteStoredEvent prevents an event that recovery intentionally skipped
+// from becoming part of every subsequent startup scan.
+func (w *EventWatcher) CompleteStoredEvent(
+	ctx context.Context,
+	event datastore.HealthEventWithStatus,
+	result coldstart.ProcessResult,
+) error {
+	recordUUID, err := utils.ExtractDocumentID(event.RawEvent)
+	if err != nil {
+		return fmt.Errorf("cannot mark stored event complete: %w", err)
+	}
+
+	if err := w.databaseClient.UpdateDocumentStatusFields(ctx, recordUUID, map[string]any{
+		coldstart.RecoveryCompletionStatusPath: string(result),
+	}); err != nil {
+		return fmt.Errorf("failed to update recovery completion status: %w", err)
+	}
+
+	w.rememberRecoveredEvent(recordUUID)
+
+	return nil
+}
+
+func (w *EventWatcher) rememberRecoveredEvent(eventID string) {
+	w.recoveredEventIDs.Store(eventID, struct{}{})
+}
+
+func (w *EventWatcher) armRecoveredEventExpiry(now time.Time) {
+	expiresAt := now.Add(recoveredEventDedupRetention)
+
+	w.recoveredEventIDs.Range(func(key, _ any) bool {
+		w.recoveredEventIDs.Store(key, expiresAt)
+
+		return true
+	})
+}
+
+func (w *EventWatcher) expireRecoveredEventIDs(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			w.recoveredEventIDs.Range(func(key, value any) bool {
+				expiresAt, ok := value.(time.Time)
+				if !ok || !now.Before(expiresAt) {
+					w.recoveredEventIDs.Delete(key)
+				}
+
+				return true
+			})
+		}
+	}
 }
 
 func (w *EventWatcher) processHealthEvent(

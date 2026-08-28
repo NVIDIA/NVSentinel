@@ -219,6 +219,68 @@ func TestProcessStoredEventReturnsRecordedReconcilerFailure(t *testing.T) {
 	assert.Equal(t, coldstart.ProcessResultFailed, result)
 }
 
+func TestProcessStoredEventClassifiesPermanentEvaluationFailure(t *testing.T) {
+	processingErr := coldstart.PermanentError(errors.New("missing CEL field"))
+	watcher := NewEventWatcher(nil, &databaseClientStub{}, time.Minute, &objectIDStoreStub{})
+	watcher.SetProcessEventCallback(func(ctx context.Context, _ *model.HealthEventWithStatus) *model.Status {
+		coldstart.RecordPermanentError(ctx, processingErr)
+
+		return nil
+	})
+
+	result, err := watcher.ProcessStoredEvent(
+		context.Background(), storedHealthEventRecord("event-uuid"))
+	require.NoError(t, err)
+	assert.Equal(t, coldstart.ProcessResultInvalid, result)
+}
+
+func TestCompleteStoredEventPersistsResultAndDeduplicatesItsUpdate(t *testing.T) {
+	dbClient := &databaseClientStub{}
+	objectIDs := &objectIDStoreStub{}
+	watcher := NewEventWatcher(nil, dbClient, time.Minute, objectIDs)
+
+	callbackCalls := 0
+	watcher.SetProcessEventCallback(func(context.Context, *model.HealthEventWithStatus) *model.Status {
+		callbackCalls++
+
+		return nil
+	})
+
+	record := storedHealthEventRecord("event-uuid")
+	require.NoError(t, watcher.CompleteStoredEvent(
+		context.Background(), record, coldstart.ProcessResultSuperseded))
+	assert.Equal(t, "event-uuid", dbClient.updatedID)
+	assert.Equal(t, string(coldstart.ProcessResultSuperseded),
+		dbClient.updatedFields[coldstart.RecoveryCompletionStatusPath])
+
+	require.NoError(t, watcher.processEvent(context.Background(), &clientEventStub{
+		document:   storedHealthEvent("event-uuid"),
+		eventID:    "44",
+		recordUUID: "event-uuid",
+	}))
+	assert.Equal(t, 0, callbackCalls)
+	assert.Equal(t, "44", objectIDs.last)
+}
+
+func TestExpiredRecoveryDedupEntryDoesNotSuppressLiveEvent(t *testing.T) {
+	watcher := NewEventWatcher(nil, &databaseClientStub{}, time.Minute, &objectIDStoreStub{})
+
+	callbackCalls := 0
+	watcher.SetProcessEventCallback(func(context.Context, *model.HealthEventWithStatus) *model.Status {
+		callbackCalls++
+
+		return nil
+	})
+	watcher.recoveredEventIDs.Store("event-uuid", time.Now().Add(-time.Minute))
+
+	require.NoError(t, watcher.processEvent(context.Background(), &clientEventStub{
+		document:   storedHealthEvent("event-uuid"),
+		eventID:    "45",
+		recordUUID: "event-uuid",
+	}))
+	assert.Equal(t, 1, callbackCalls)
+}
+
 func TestProcessStoredEventSkipsInvalidDocument(t *testing.T) {
 	watcher := NewEventWatcher(nil, &databaseClientStub{}, time.Minute, &objectIDStoreStub{})
 

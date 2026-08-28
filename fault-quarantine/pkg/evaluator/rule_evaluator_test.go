@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -223,6 +225,17 @@ func TestEvaluate(t *testing.T) {
 	if result != common.RuleEvaluationFailed {
 		t.Errorf("Expected evaluation result to be false, got true")
 	}
+}
+
+func TestHealthEventRuleEvaluationErrorIsPermanent(t *testing.T) {
+	ruleEvaluator, err := NewHealthEventRuleEvaluator(
+		`event.metadata["missing"].startsWith("value")`,
+	)
+	require.NoError(t, err)
+
+	_, err = ruleEvaluator.Evaluate(context.Background(), &protos.HealthEvent{})
+	require.Error(t, err)
+	assert.True(t, coldstart.IsPermanentError(err))
 }
 
 func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {

@@ -47,7 +47,9 @@ func (s *healthEventStoreStub) FindHealthEventsByQueryBatched(
 }
 
 type eventProcessorStub struct {
-	process func(context.Context, datastore.HealthEventWithStatus) (ProcessResult, error)
+	process     func(context.Context, datastore.HealthEventWithStatus) (ProcessResult, error)
+	completions []ProcessResult
+	completeErr error
 }
 
 func (s *eventProcessorStub) ProcessStoredEvent(
@@ -55,6 +57,16 @@ func (s *eventProcessorStub) ProcessStoredEvent(
 	event datastore.HealthEventWithStatus,
 ) (ProcessResult, error) {
 	return s.process(ctx, event)
+}
+
+func (s *eventProcessorStub) CompleteStoredEvent(
+	_ context.Context,
+	_ datastore.HealthEventWithStatus,
+	result ProcessResult,
+) error {
+	s.completions = append(s.completions, result)
+
+	return s.completeErr
 }
 
 func TestColdStartQueryMatchesOnlyUnresolvedProcessableEvents(t *testing.T) {
@@ -74,6 +86,10 @@ func TestColdStartQueryMatchesOnlyUnresolvedProcessableEvents(t *testing.T) {
 						map[string]any{"healtheventstatus.nodequarantined": "NotStarted"},
 					}},
 					map[string]any{"$or": []any{
+						map[string]any{RecoveryCompletionStatusPath: nil},
+						map[string]any{RecoveryCompletionStatusPath: ""},
+					}},
+					map[string]any{"$or": []any{
 						map[string]any{"healthevent.processingstrategy": int32(1)},
 						map[string]any{"healthevent.processingStrategy": int32(1)},
 						map[string]any{
@@ -89,12 +105,23 @@ func TestColdStartQueryMatchesOnlyUnresolvedProcessableEvents(t *testing.T) {
 
 	sqlFilter, args := builder.ToSQL()
 	assert.Contains(t, sqlFilter, "created_at > $1")
-	assert.Contains(t, sqlFilter, "created_at <= $6")
+	assert.Contains(t, sqlFilter, "created_at <= $7")
 	assert.Contains(t, sqlFilter, "nodequarantined")
+	assert.Contains(t, sqlFilter, "faultquarantinerecovery")
 	assert.Contains(t, sqlFilter, "processingstrategy")
 	assert.Contains(t, sqlFilter, "processingStrategy")
 	assert.Contains(t, sqlFilter, "IS NULL")
-	assert.Equal(t, []any{cutoff, "", "NotStarted", "1", "1", until}, args)
+	assert.Equal(t, []any{cutoff, "", "NotStarted", "", "1", "1", until}, args)
+}
+
+func TestColdStartQueryWithoutOperatorCutoffHasNoLowerTimestampBound(t *testing.T) {
+	until := time.Date(2026, time.August, 28, 12, 0, 0, 0, time.UTC)
+	builder := coldStartQuery(time.Time{}, until)
+
+	sqlFilter, args := builder.ToSQL()
+	assert.NotContains(t, sqlFilter, "created_at >")
+	assert.Contains(t, sqlFilter, "created_at <= $6")
+	assert.Equal(t, until, args[len(args)-1])
 }
 
 func TestHandleProcessesEveryBatchInOrder(t *testing.T) {
@@ -216,6 +243,35 @@ func TestHandleContinuesPastInvalidStoredEvent(t *testing.T) {
 		EventProcessor:   processor,
 	}))
 	assert.Equal(t, 1, processed)
+	assert.Equal(t, []ProcessResult{ProcessResultInvalid}, processor.completions)
+}
+
+func TestHandleStopsWhenCompletionStatusCannotBePersisted(t *testing.T) {
+	completionErr := errors.New("database unavailable")
+	store := &healthEventStoreStub{
+		findBatched: func(
+			_ context.Context,
+			_ datastore.QueryBuilder,
+			_ int,
+			fn func([]datastore.HealthEventWithStatus) error,
+		) error {
+			return fn([]datastore.HealthEventWithStatus{{
+				RawEvent: datastore.Event{"id": "invalid"},
+			}})
+		},
+	}
+	processor := &eventProcessorStub{
+		process: func(context.Context, datastore.HealthEventWithStatus) (ProcessResult, error) {
+			return ProcessResultInvalid, nil
+		},
+		completeErr: completionErr,
+	}
+
+	err := Handle(context.Background(), Dependencies{
+		HealthEventStore: store,
+		EventProcessor:   processor,
+	})
+	require.ErrorIs(t, err, completionErr)
 }
 
 func TestHandleValidatesDependencies(t *testing.T) {

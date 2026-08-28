@@ -276,20 +276,13 @@ func (r *Reconciler) configureColdStart(
 
 	r.eventWatcher.SetColdStartCallback(func(ctx context.Context) error {
 		coldStartUntil := time.Now().UTC()
-		if err := coldstart.Handle(ctx, coldstart.Dependencies{
+
+		return coldstart.Handle(ctx, coldstart.Dependencies{
 			HealthEventStore:   healthEventStore,
 			EventProcessor:     r.eventWatcher,
 			ColdStartAfterTime: coldStartAfter,
 			ColdStartUntilTime: coldStartUntil,
-		}); err != nil {
-			return err
-		}
-
-		if err := r.saveColdStartCheckpoint(ctx, "fault-quarantine", coldStartUntil); err != nil {
-			return fmt.Errorf("failed to save fault-quarantine cold-start checkpoint: %w", err)
-		}
-
-		return nil
+		})
 	})
 }
 
@@ -986,7 +979,13 @@ func (r *Reconciler) handleRuleEvaluationError(
 		attribute.String("fault_quarantine.error.message", err.Error()),
 	)
 	slog.ErrorContext(ctx, "Rule evaluation failed", "ruleset", evalName, "node", event.NodeName, "error", err)
-	coldstart.RecordError(ctx, err)
+
+	if coldstart.IsPermanentError(err) {
+		coldstart.RecordPermanentError(ctx, err)
+	} else {
+		coldstart.RecordError(ctx, err)
+	}
+
 	metrics.ProcessingErrors.WithLabelValues("ruleset_evaluation_error").Inc()
 	metrics.RulesetEvaluations.WithLabelValues(evalName, metrics.StatusFailed).Inc()
 }

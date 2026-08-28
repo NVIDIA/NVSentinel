@@ -17,7 +17,7 @@ package coldstart
 import (
 	"context"
 	"fmt"
-	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
@@ -26,6 +26,7 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
+	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 )
 
 type eventIdentity struct {
@@ -36,15 +37,16 @@ type eventIdentity struct {
 	version        uint32
 }
 
-type latestEvent struct {
-	event     *model.HealthEventWithStatus
+type orderedEvent struct {
+	event     model.HealthEventWithStatus
 	createdAt time.Time
+	id        string
 }
 
 type supersessionResolver struct {
 	store datastore.HealthEventStore
 	until time.Time
-	cache map[eventIdentity]latestEvent
+	cache map[eventIdentity][]orderedEvent
 }
 
 func newSupersessionResolver(
@@ -54,13 +56,14 @@ func newSupersessionResolver(
 	return &supersessionResolver{
 		store: store,
 		until: until,
-		cache: make(map[eventIdentity]latestEvent),
+		cache: make(map[eventIdentity][]orderedEvent),
 	}
 }
 
-// superseded reports whether a later event fully replaces this failure.
-// Entity-level changes are conservative: the failure is replayed unless every
-// entity and error-code key is covered by the later event.
+// superseded reports whether replaying this event could overwrite newer state.
+// Compound events are skipped as a unit when any affected key changed later;
+// replaying only part would make the status update expose the original full
+// event to downstream consumers.
 func (r *supersessionResolver) superseded(
 	ctx context.Context,
 	record datastore.HealthEventWithStatus,
@@ -74,43 +77,59 @@ func (r *supersessionResolver) superseded(
 		return false, nil //nolint:nilerr // The event processor classifies and skips invalid records.
 	}
 
-	if candidate.HealthEvent.GetIsHealthy() {
-		return false, nil
-	}
-
 	identity := identityFor(candidate.HealthEvent)
 
-	latest, ok := r.cache[identity]
+	timeline, ok := r.cache[identity]
 	if !ok {
-		latest, err = r.findLatest(ctx, identity)
+		timeline, err = r.findTimeline(ctx, identity, record.CreatedAt)
 		if err != nil {
 			return false, err
 		}
 
-		r.cache[identity] = latest
+		r.cache[identity] = timeline
 	}
 
-	if latest.event == nil || !latest.createdAt.After(record.CreatedAt) {
-		return false, nil
+	candidateID, _ := utils.ExtractDocumentID(record.RawEvent)
+	affected := healthEventsAnnotation.NewHealthEventsAnnotationMap()
+	affected.AddOrUpdateEvent(candidate.HealthEvent)
+
+	for i := range timeline {
+		if !eventAfter(timeline[i], record.CreatedAt, candidateID) {
+			continue
+		}
+
+		if candidate.HealthEvent.GetIsHealthy() && len(candidate.HealthEvent.GetEntitiesImpacted()) == 0 {
+			return true, nil
+		}
+
+		if affected.RemoveEvent(timeline[i].event.HealthEvent) > 0 {
+			return true, nil
+		}
 	}
 
-	active := healthEventsAnnotation.NewHealthEventsAnnotationMap()
-	active.AddOrUpdateEvent(candidate.HealthEvent)
-	active.RemoveEvent(latest.event.HealthEvent)
-
-	return active.IsEmpty(), nil
+	return false, nil
 }
 
-func (r *supersessionResolver) findLatest(
+func (r *supersessionResolver) findTimeline(
 	ctx context.Context,
 	identity eventIdentity,
-) (latestEvent, error) {
+	from time.Time,
+) ([]orderedEvent, error) {
+	versionCondition := query.Condition(query.Eq("healthevent.version", identity.version))
+	if identity.version == 0 {
+		versionCondition = query.Or(
+			versionCondition,
+			query.Eq("healthevent.version", nil),
+		)
+	}
+
 	condition := query.And(
 		query.Eq("healthevent.agent", identity.agent),
 		query.Eq("healthevent.componentclass", identity.componentClass),
 		query.Eq("healthevent.checkname", identity.checkName),
 		query.Eq("healthevent.nodename", identity.nodeName),
-		query.Eq("healthevent.version", identity.version),
+		versionCondition,
+		query.Gte("createdAt", from),
 		processableCondition(),
 	)
 
@@ -118,25 +137,53 @@ func (r *supersessionResolver) findLatest(
 		condition = query.And(condition, query.Lte("createdAt", r.until))
 	}
 
-	record, err := r.store.FindLatestHealthEventByQuery(ctx, query.New().Build(condition))
+	records := make([]datastore.HealthEventWithStatus, 0)
+
+	err := r.store.FindHealthEventsByQueryBatched(
+		ctx,
+		query.New().Build(condition),
+		batchSize,
+		func(batch []datastore.HealthEventWithStatus) error {
+			records = append(records, batch...)
+
+			return nil
+		},
+	)
 	if err != nil {
-		return latestEvent{}, fmt.Errorf("failed to find latest health event for %s/%s: %w",
+		return nil, fmt.Errorf("failed to find health-event history for %s/%s: %w",
 			identity.nodeName, identity.checkName, err)
 	}
 
-	if record == nil {
-		return latestEvent{}, nil
+	timeline := make([]orderedEvent, 0, len(records))
+	for i := range records {
+		event, err := parseStoredRecord(records[i])
+		if err != nil {
+			continue
+		}
+
+		id, _ := utils.ExtractDocumentID(records[i].RawEvent)
+		timeline = append(timeline, orderedEvent{
+			event: event, createdAt: records[i].CreatedAt, id: id,
+		})
 	}
 
-	event, err := parseStoredRecord(*record)
-	if err != nil {
-		slog.WarnContext(ctx, "Ignoring invalid latest health event during recovery",
-			"node", identity.nodeName, "checkName", identity.checkName, "error", err)
+	sort.Slice(timeline, func(i, j int) bool {
+		if timeline[i].createdAt.Equal(timeline[j].createdAt) {
+			return timeline[i].id < timeline[j].id
+		}
 
-		return latestEvent{}, nil
+		return timeline[i].createdAt.Before(timeline[j].createdAt)
+	})
+
+	return timeline, nil
+}
+
+func eventAfter(event orderedEvent, createdAt time.Time, id string) bool {
+	if event.createdAt.Equal(createdAt) {
+		return event.id > id
 	}
 
-	return latestEvent{event: &event, createdAt: record.CreatedAt}, nil
+	return event.createdAt.After(createdAt)
 }
 
 func parseStoredRecord(record datastore.HealthEventWithStatus) (model.HealthEventWithStatus, error) {
