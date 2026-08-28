@@ -1,0 +1,194 @@
+// Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package client
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+)
+
+func TestDefaultEventProcessorCheckpointOrdering(t *testing.T) {
+	processingErr := errors.New("processing failed")
+	checkpointErr := errors.New("checkpoint write failed")
+
+	tests := []struct {
+		name          string
+		config        EventProcessorConfig
+		firstEvent    *eventProcessorTestEvent
+		handlerErrors map[string]error
+		markErrors    map[string]error
+		wantErrors    []error
+		wantHandled   []string
+		wantMarkCalls []string
+		wantMarked    []string
+	}{
+		{
+			name:          "handler failure keeps later event unprocessed",
+			firstEvent:    newEventProcessorTestEvent("1"),
+			handlerErrors: map[string]error{"1": processingErr},
+			wantErrors:    []error{processingErr},
+			wantHandled:   []string{"1"},
+		},
+		{
+			name:          "checkpoint failure keeps later event unprocessed",
+			firstEvent:    newEventProcessorTestEvent("1"),
+			markErrors:    map[string]error{"1": checkpointErr},
+			wantErrors:    []error{checkpointErr},
+			wantHandled:   []string{"1"},
+			wantMarkCalls: []string{"1"},
+		},
+		{
+			name:          "configured handler failure skip continues after checkpoint",
+			config:        EventProcessorConfig{MarkProcessedOnError: true},
+			firstEvent:    newEventProcessorTestEvent("1"),
+			handlerErrors: map[string]error{"1": processingErr},
+			wantHandled:   []string{"1", "2"},
+			wantMarkCalls: []string{"1", "2"},
+			wantMarked:    []string{"1", "2"},
+		},
+		{
+			name:          "configured skip stops when checkpoint fails",
+			config:        EventProcessorConfig{MarkProcessedOnError: true},
+			firstEvent:    newEventProcessorTestEvent("1"),
+			handlerErrors: map[string]error{"1": processingErr},
+			markErrors:    map[string]error{"1": checkpointErr},
+			wantErrors:    []error{processingErr, checkpointErr},
+			wantHandled:   []string{"1"},
+			wantMarkCalls: []string{"1"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			watcher := newEventProcessorTestWatcher(test.firstEvent, newEventProcessorTestEvent("2"))
+			watcher.markErrors = test.markErrors
+			processor := newDefaultEventProcessorForTest(watcher, test.config)
+
+			var handled []string
+			processor.SetEventHandler(EventHandlerFunc(
+				func(_ context.Context, event *model.HealthEventWithStatus) error {
+					eventID := event.HealthEvent.GetId()
+					handled = append(handled, eventID)
+
+					return test.handlerErrors[eventID]
+				},
+			))
+
+			err := processor.processEvents(context.Background())
+			if len(test.wantErrors) == 0 {
+				require.NoError(t, err)
+			} else {
+				for _, wantErr := range test.wantErrors {
+					require.ErrorIs(t, err, wantErr)
+				}
+			}
+
+			require.Equal(t, test.wantHandled, handled)
+			require.Equal(t, test.wantMarkCalls, watcher.markCalls)
+			require.Equal(t, test.wantMarked, watcher.markedTokens)
+		})
+	}
+}
+
+func newDefaultEventProcessorForTest(
+	watcher ChangeStreamWatcher, config EventProcessorConfig,
+) *DefaultEventProcessor {
+	return NewEventProcessor(watcher, nil, config).(*DefaultEventProcessor)
+}
+
+type eventProcessorTestEvent struct {
+	id    string
+	token []byte
+}
+
+func newEventProcessorTestEvent(id string) *eventProcessorTestEvent {
+	return &eventProcessorTestEvent{id: id, token: []byte(id)}
+}
+
+func (e *eventProcessorTestEvent) GetDocumentID() (string, error) {
+	return e.id, nil
+}
+
+func (e *eventProcessorTestEvent) GetRecordUUID() (string, error) {
+	return "", nil
+}
+
+func (e *eventProcessorTestEvent) GetNodeName() (string, error) {
+	return "", nil
+}
+
+func (e *eventProcessorTestEvent) GetResumeToken() []byte {
+	return e.token
+}
+
+func (e *eventProcessorTestEvent) UnmarshalDocument(value any) error {
+	event, ok := value.(*model.HealthEventWithStatus)
+	if !ok {
+		return fmt.Errorf("unexpected document type %T", value)
+	}
+
+	event.HealthEvent = &protos.HealthEvent{Id: e.id}
+
+	return nil
+}
+
+type eventProcessorTestWatcher struct {
+	events       chan Event
+	markErrors   map[string]error
+	markCalls    []string
+	markedTokens []string
+}
+
+func newEventProcessorTestWatcher(events ...Event) *eventProcessorTestWatcher {
+	eventChannel := make(chan Event, len(events))
+	for _, event := range events {
+		eventChannel <- event
+	}
+	close(eventChannel)
+
+	return &eventProcessorTestWatcher{
+		events:     eventChannel,
+		markErrors: make(map[string]error),
+	}
+}
+
+func (w *eventProcessorTestWatcher) Start(context.Context) {}
+
+func (w *eventProcessorTestWatcher) Events() <-chan Event {
+	return w.events
+}
+
+func (w *eventProcessorTestWatcher) MarkProcessed(_ context.Context, token []byte) error {
+	tokenString := string(token)
+	w.markCalls = append(w.markCalls, tokenString)
+	if err := w.markErrors[tokenString]; err != nil {
+		return err
+	}
+
+	w.markedTokens = append(w.markedTokens, tokenString)
+
+	return nil
+}
+
+func (w *eventProcessorTestWatcher) Close(context.Context) error {
+	return nil
+}
