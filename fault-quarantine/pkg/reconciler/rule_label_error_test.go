@@ -25,6 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/evaluator"
@@ -79,4 +80,18 @@ func TestApplyRuleLabelsForEvent_EvaluationError_ContinuesToNextEvaluator(t *tes
 	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	require.NoError(t, err)
 	assert.Equal(t, "critical", node.Labels["nvidia.com/gpu-fault"])
+}
+
+func TestEventMatchesAnyRuleRecordsPermanentEvaluationFailure(t *testing.T) {
+	ctx := coldstart.WithRecoveryContext(context.Background())
+	evaluationErr := coldstart.PermanentError(errors.New("invalid CEL expression"))
+	r := &Reconciler{}
+
+	matched := r.eventMatchesAnyRule(ctx, &protos.HealthEvent{}, []evaluator.RuleSetEvaluatorIface{
+		&stubRuleSetEvaluator{name: "broken", err: evaluationErr},
+	})
+
+	assert.False(t, matched)
+	assert.NoError(t, coldstart.Error(ctx))
+	require.ErrorIs(t, coldstart.RecordedPermanentError(ctx), evaluationErr)
 }

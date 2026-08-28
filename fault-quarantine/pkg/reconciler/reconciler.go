@@ -28,6 +28,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	annotationutil "github.com/nvidia/nvsentinel/commons/pkg/annotation"
@@ -95,7 +96,6 @@ type Reconciler struct {
 	resetResumeTokenForCreate func(
 		context.Context, client.DatabaseClient, client.TokenConfig, func() error,
 	) (client.ResumeControlDecision, error)
-	saveColdStartCheckpoint func(context.Context, string, time.Time) error
 
 	// Label keys
 	cordonedByLabelKey        string
@@ -125,7 +125,6 @@ func NewReconciler(
 		k8sClient:                 k8sClient,
 		cb:                        circuitBreaker,
 		resetResumeTokenForCreate: client.ResetResumeTokenForCreate,
-		saveColdStartCheckpoint:   client.SaveColdStartCheckpoint,
 	}
 
 	return r
@@ -1896,7 +1895,12 @@ func (r *Reconciler) getNode(ctx context.Context, nodeName string) (*corev1.Node
 	if coldstart.IsRecoveryContext(ctx) {
 		node, err := r.k8sClient.Clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 		if err != nil {
-			return nil, fmt.Errorf("failed to get node from API server during cold start: %w", err)
+			wrappedErr := fmt.Errorf("failed to get node from API server during cold start: %w", err)
+			if apierrors.IsNotFound(err) {
+				return nil, coldstart.PermanentError(wrappedErr)
+			}
+
+			return nil, wrappedErr
 		}
 
 		return node, nil

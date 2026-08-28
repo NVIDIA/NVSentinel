@@ -976,6 +976,45 @@ func TestE2E_ColdStartSkipsFailureSupersededByRecovery(t *testing.T) {
 	assert.Equal(t, 2, dbClient.callCount())
 }
 
+func TestE2E_ColdStartCompletesEventForDeletedNode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-cold-start-deleted-" + generateShortTestID()
+	r, _, _, _ := setupE2EReconciler(t, ctx, coldStartTestConfig(), nil)
+	dbClient := &coldStartDatabaseClient{statuses: make(map[string]string)}
+	processor := newColdStartEventProcessor(t, r, dbClient)
+	storedEvent := directStoredHealthEvent(
+		"deleted-node-event", nodeName, "GpuNvlinkWatch", false, true)
+	store := &coldStartHealthEventStore{
+		findBatched: func(
+			_ context.Context,
+			_ datastore.QueryBuilder,
+			_ int,
+			fn func([]datastore.HealthEventWithStatus) error,
+		) error {
+			if dbClient.completion("deleted-node-event") != "" {
+				return nil
+			}
+
+			return fn([]datastore.HealthEventWithStatus{{RawEvent: storedEvent}})
+		},
+	}
+
+	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+		HealthEventStore: store,
+		EventProcessor:   processor,
+	}))
+	assert.Empty(t, dbClient.status("deleted-node-event"))
+	assert.Equal(t, string(coldstart.ProcessResultInvalid), dbClient.completion("deleted-node-event"))
+
+	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+		HealthEventStore: store,
+		EventProcessor:   processor,
+	}))
+	assert.Equal(t, 1, dbClient.callCount())
+}
+
 func TestE2E_BasicQuarantineAndUnquarantine(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()

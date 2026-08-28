@@ -298,3 +298,13 @@ func TestHandleValidatesDependencies(t *testing.T) {
 	err = Handle(context.Background(), Dependencies{HealthEventStore: store})
 	assert.EqualError(t, err, "event processor is required")
 }
+
+func TestRecordErrorRoutesPermanentFailures(t *testing.T) {
+	ctx := WithRecoveryContext(context.Background())
+	permanentErr := PermanentError(errors.New("node no longer exists"))
+
+	RecordError(ctx, permanentErr)
+
+	assert.NoError(t, Error(ctx))
+	require.ErrorIs(t, RecordedPermanentError(ctx), permanentErr)
+}

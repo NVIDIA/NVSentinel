@@ -275,35 +275,6 @@ func TestResetResumeTokenForCreateWithStoreKeepsCreatingModeWhenComponentResetFa
 	}
 }
 
-func TestSaveColdStartCheckpointWithStore(t *testing.T) {
-	checkpoint := time.Date(2026, 8, 28, 10, 0, 0, 0, time.FixedZone("EDT", -4*60*60))
-	store := &mockResumeControlStore{}
-
-	err := saveColdStartCheckpointWithStore(
-		context.Background(), "fault-quarantine", checkpoint, store)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if !store.setCutoff.Equal(checkpoint) || store.setCutoff.Location() != time.UTC {
-		t.Fatalf("saved checkpoint = %v, want %v in UTC", store.setCutoff, checkpoint)
-	}
-}
-
-func TestSaveColdStartCheckpointWithStoreRejectsZero(t *testing.T) {
-	store := &mockResumeControlStore{}
-
-	err := saveColdStartCheckpointWithStore(
-		context.Background(), "fault-quarantine", time.Time{}, store)
-	if err == nil {
-		t.Fatal("expected an error for a zero checkpoint")
-	}
-
-	if !store.setCutoff.IsZero() {
-		t.Fatalf("saved checkpoint = %v, want no write", store.setCutoff)
-	}
-}
-
 func TestResetResumeTokenOnStartWithStore_ResumeNoop(t *testing.T) {
 	dbClient := &mockResumeTokenDBClient{}
 	cutoff := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)

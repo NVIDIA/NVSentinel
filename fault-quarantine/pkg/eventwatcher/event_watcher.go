@@ -111,7 +111,14 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 	}
 
 	if err := w.runColdStart(ctx); err != nil {
+		w.closeAfterColdStart(ctx)
+
 		return err
+	}
+	if ctx.Err() != nil {
+		w.closeAfterColdStart(ctx)
+
+		return nil
 	}
 
 	w.armRecoveredEventExpiry(time.Now())
@@ -159,8 +166,6 @@ func (w *EventWatcher) runColdStart(ctx context.Context) error {
 	if err == nil {
 		return nil
 	}
-
-	w.closeAfterColdStart(ctx)
 
 	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 		slog.InfoContext(ctx, "Cold-start recovery stopped during shutdown")

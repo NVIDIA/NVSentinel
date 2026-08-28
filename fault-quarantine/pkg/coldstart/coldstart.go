@@ -84,6 +84,12 @@ func IsRecoveryContext(ctx context.Context) bool {
 // RecordError marks the current recovered event as retryable. Reconciler code
 // calls this when an operation fails but its public status API must return nil.
 func RecordError(ctx context.Context, err error) {
+	if IsPermanentError(err) {
+		RecordPermanentError(ctx, err)
+
+		return
+	}
+
 	state, ok := ctx.Value(recoveryContextKey{}).(*recoveryState)
 	if !ok || err == nil {
 		return

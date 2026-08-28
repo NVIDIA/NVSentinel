@@ -87,6 +87,7 @@ type changeStreamWatcherStub struct {
 	started bool
 	closed  bool
 	events  chan client.Event
+	closeFn func()
 }
 
 func (s *changeStreamWatcherStub) Start(context.Context) {
@@ -103,6 +104,9 @@ func (s *changeStreamWatcherStub) MarkProcessed(context.Context, []byte) error {
 
 func (s *changeStreamWatcherStub) Close(context.Context) error {
 	s.closed = true
+	if s.closeFn != nil {
+		s.closeFn()
+	}
 
 	return nil
 }
@@ -318,4 +322,26 @@ func TestStartTreatsColdStartCancellationAsShutdown(t *testing.T) {
 
 	require.NoError(t, watcher.Start(ctx))
 	assert.True(t, changeStream.closed)
+}
+
+func TestStartDoesNotEnterWatchLoopAfterColdStartCancellation(t *testing.T) {
+	for range 100 {
+		ctx, cancel := context.WithCancel(context.Background())
+		events := make(chan client.Event)
+		changeStream := &changeStreamWatcherStub{
+			events: events,
+			closeFn: func() {
+				close(events)
+			},
+		}
+		watcher := NewEventWatcher(changeStream, &databaseClientStub{}, time.Minute, &objectIDStoreStub{})
+		watcher.SetColdStartCallback(func(context.Context) error {
+			cancel()
+
+			return context.Canceled
+		})
+
+		require.NoError(t, watcher.Start(ctx))
+		assert.True(t, changeStream.closed)
+	}
 }
