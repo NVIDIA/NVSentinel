@@ -51,6 +51,42 @@ nvidia_smi_helper() {
   chroot "$DRIVER_ROOT" nvidia-smi "$@"
 }
 
+# Persistence mode counts as an attachment to the device, so nvidia-smi --gpu-reset
+# is refused with "In use by another client" while it is enabled. Record the
+# per-GPU state so it can be restored exactly, including on the failure path.
+PERSISTENCE_RESTORE=""
+
+disable_persistence_mode() {
+  local uuid
+  local mode
+  for uuid in $(echo "$1" | tr ',' ' '); do
+    # Tolerate an unqueryable GPU: the script runs under `set -e`, and a device
+    # that has dropped off the bus must not abort the whole reset here.
+    mode=$(nvidia_smi_helper --query-gpu=persistence_mode --format=csv,noheader -i "$uuid" 2>/dev/null | tr -d '[:space:]' || true)
+    if [ "$mode" != "Enabled" ]; then
+      continue
+    fi
+    if nvidia_smi_helper -pm 0 -i "$uuid" >/dev/null 2>&1; then
+      PERSISTENCE_RESTORE="${PERSISTENCE_RESTORE}${uuid} "
+      log "INFO: Disabled persistence mode on ${uuid} for the duration of the reset."
+    else
+      log "WARN: Failed to disable persistence mode on ${uuid}; the reset may be refused."
+    fi
+  done
+}
+
+restore_persistence_mode() {
+  local uuid
+  for uuid in $PERSISTENCE_RESTORE; do
+    if nvidia_smi_helper -pm 1 -i "$uuid" >/dev/null 2>&1; then
+      log "INFO: Restored persistence mode on ${uuid}."
+    else
+      log "WARN: Failed to restore persistence mode on ${uuid}."
+    fi
+  done
+  PERSISTENCE_RESTORE=""
+}
+
 prepend_driver_root() {
   if [ "$DRIVER_ROOT" = "/" ]; then
     printf "%s\n" "$1"
@@ -119,7 +155,7 @@ RESET_STATUS=0
 FINAL_EXIT_STATUS=0
 RESET_OUTPUT_FILE=$(mktemp)
 HEALTH_CHECK_OUTPUT_FILE=$(mktemp)
-trap 'rm -f -- "$RESET_OUTPUT_FILE" "$HEALTH_CHECK_OUTPUT_FILE"' EXIT
+trap 'restore_persistence_mode; rm -f -- "$RESET_OUTPUT_FILE" "$HEALTH_CHECK_OUTPUT_FILE"' EXIT
 
 log "INFO: Starting GPU reset workflow..."
 
@@ -148,6 +184,8 @@ echo "${TARGET_UUIDS}" | tr ',' '\n' | sed 's/^/  /'
 #----------------
 # RESET EXECUTION
 #----------------
+
+disable_persistence_mode "${TARGET_UUIDS}"
 
 log "INFO: Resetting GPUs..."
 
