@@ -26,9 +26,12 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
+// TestProcessEvents_EventHandlingAndCheckpointOutcomes_PreserveCheckpointOrdering verifies ordered checkpoints.
 func TestProcessEvents_EventHandlingAndCheckpointOutcomes_PreserveCheckpointOrdering(t *testing.T) {
 	processingErr := errors.New("processing failed")
 	checkpointErr := errors.New("checkpoint write failed")
+	unmarshalErr := errors.New("invalid event")
+	documentIDErr := errors.New("invalid document ID")
 
 	tests := []struct {
 		name          string
@@ -80,10 +83,10 @@ func TestProcessEvents_EventHandlingAndCheckpointOutcomes_PreserveCheckpointOrde
 			firstEvent: &eventProcessorTestEvent{
 				id:           "1",
 				token:        []byte("1"),
-				unmarshalErr: errors.New("invalid event"),
+				unmarshalErr: unmarshalErr,
 			},
 			markErrors:    map[string]error{"1": checkpointErr},
-			wantErrors:    []error{checkpointErr},
+			wantErrors:    []error{unmarshalErr, checkpointErr},
 			wantMarkCalls: []string{"1"},
 		},
 		{
@@ -91,10 +94,10 @@ func TestProcessEvents_EventHandlingAndCheckpointOutcomes_PreserveCheckpointOrde
 			firstEvent: &eventProcessorTestEvent{
 				id:            "1",
 				token:         []byte("1"),
-				documentIDErr: errors.New("invalid document ID"),
+				documentIDErr: documentIDErr,
 			},
 			markErrors:    map[string]error{"1": checkpointErr},
-			wantErrors:    []error{checkpointErr},
+			wantErrors:    []error{documentIDErr, checkpointErr},
 			wantMarkCalls: []string{"1"},
 		},
 		{
