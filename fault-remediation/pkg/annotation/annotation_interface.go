@@ -30,6 +30,7 @@ const (
 type NodeAnnotationManagerInterface interface {
 	GetRemediationState(ctx context.Context, nodeName string) (*RemediationStateAnnotation, *corev1.Node, error)
 	UpdateRemediationState(ctx context.Context, nodeName string, group string, crName string, actionName string) error
+	RecordRemediationAttempt(ctx context.Context, nodeName string, group string) (int, error)
 	ClearRemediationState(ctx context.Context, nodeName string) error
 	RemoveGroupsFromState(ctx context.Context, nodeName string, groups []string) error
 }
@@ -48,7 +49,8 @@ type EquivalenceGroupState struct {
 	// Required to look up the corresponding MaintenanceResource from the TomlConfig
 	ActionName string `json:"actionName"`
 
-	// RetryCount tracks how many remediation attempts have been made for this equivalence group.
-	// Survives pod restarts as it's persisted in the node annotation.
-	RetryCount int `json:"retryCount,omitempty"`
+	// AttemptCount tracks how many remediation attempts have been made for this equivalence
+	// group in the current quarantine session. It is persisted in the node annotation so it
+	// survives pod restarts, and is cleared when the session ends.
+	AttemptCount int `json:"attemptCount,omitempty"`
 }
