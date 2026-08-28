@@ -1891,6 +1891,8 @@ func (r *Reconciler) getNodeQuarantineAnnotations(ctx context.Context, nodeName 
 	return quarantineAnnotations, nil
 }
 
+// getNode bypasses the informer during recovery so reconciliation uses current node state.
+// A node deleted before replay is a permanent event error.
 func (r *Reconciler) getNode(ctx context.Context, nodeName string) (*corev1.Node, error) {
 	if coldstart.IsRecoveryContext(ctx) {
 		node, err := r.k8sClient.Clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})

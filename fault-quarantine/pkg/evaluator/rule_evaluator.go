@@ -200,7 +200,8 @@ func (nm *NodeRuleEvaluator) Evaluate(
 	return common.RuleEvaluationFailed, nil
 }
 
-// getNode gets node metadata and spec from the informer lister.
+// getNode bypasses the informer during recovery so rules see current node state.
+// A node deleted before replay is a permanent event error.
 func (nm *NodeRuleEvaluator) getNode(ctx context.Context, nodeName string) (map[string]any, error) {
 	var (
 		node *corev1.Node
