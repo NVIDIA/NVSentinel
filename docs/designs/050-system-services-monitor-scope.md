@@ -182,9 +182,20 @@ detection is unit-state and query based:
   counter without restarting the process. A decrease therefore re-baselines
   tracking, and a restart observation is recorded only when
   `ExecMainStartTimestamp` changed across the reset (the main process really
-  did restart — unit re-creation, reboot, crash-then-reset). A pure counter
-  flush on a running service records nothing, while a service whose crashes
-  cause reboots still does not go dark to flap detection.
+  did restart — unit re-creation, crash-then-reset). A pure counter flush on
+  a running service records nothing.
+
+  **Flap state is in-memory and boot-scoped, deliberately.** The baseline
+  (`NRestarts` high-water mark, `ExecMainStartTimestamp`, restart deque)
+  lives for the life of the monitor process, and the monitor's DaemonSet pod
+  dies with the node — so a crash loop that *spans node reboots* is not
+  detected by this window, and no host-persisted state file is introduced to
+  chase it (that would add a hostPath write surface and a
+  corruption/staleness contract for marginal gain). Reboot-spanning
+  recurrence is covered by the layer that already owns cross-boot memory:
+  each boot's failure emits its own `FabricManagerServiceDown` transition
+  train, and fault-management escalates on recurrence-after-remediation (see
+  *Remediation classification*).
 - **GPU service lifecycle:** the same `systemctl show` probe for each service in the
   configured list (default `nvidia-persistenced`).
 
@@ -486,8 +497,11 @@ the guarantees and non-guarantees are explicit rather than implied:
   acceptance — concurrent RPCs from other monitors, connector-internal
   queueing — is outside this monitor's control. Transitions carry
   `generatedTimestamp`; a consumer that needs strict per-entity ordering
-  SHOULD reject a transition older than the newest it has applied for the same
-  `(checkName, entity)` key (stale-generation rejection).
+  SHOULD reject a transition older than the newest it has applied for the
+  same canonical key as the entity cache — `checkName`, sorted entities, and
+  instance identity (`svc:<service_name>`) where applicable — so an event for
+  one GPU service can never cause a valid event for a *different* service on
+  the same node to be rejected (stale-generation rejection).
 - **Non-goal, stated deliberately:** enforcing ordering or idempotency inside
   `HealthEventOccurredV1`/platform-connector (stable-ID dedup, per-entity
   sequence numbers) would harden every monitor on this hop equally; like the
@@ -536,7 +550,8 @@ Out of scope (owned elsewhere):
   `FabricManagerServiceDown` (instantaneous liveness); these are different
   conditions with independent recovery, not duplicate events for one
   condition, and each is deduplicated under its own check name
-- State-cache deduplication verified (transition-only emission)
+- State-cache deduplication verified (transition-only emission; instance-keyed for multi-service checks)
+- Flap-state lifetime: a monitor restart clears flap history (fresh baseline, no phantom observations); reboot-spanning recurrence is exercised at the fault-management layer, not here
 - HealthEvent schema compatibility over gRPC
 
 ## Consequences
