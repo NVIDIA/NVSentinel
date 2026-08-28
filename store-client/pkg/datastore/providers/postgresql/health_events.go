@@ -18,6 +18,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -843,7 +844,7 @@ func (p *PostgreSQLHealthEventStore) FindLatestEventForNode(
 	var documentJSON []byte
 
 	err := p.db.QueryRowContext(ctx, query, nodeName).Scan(&documentJSON)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 
@@ -881,7 +882,7 @@ func (p *PostgreSQLHealthEventStore) FindLatestHealthEventByQuery(ctx context.Co
 	)
 
 	err := p.db.QueryRowContext(ctx, query, args...).Scan(&createdAt, &documentJSON)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 
