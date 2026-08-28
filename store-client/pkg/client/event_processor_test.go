@@ -26,7 +26,7 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
-func TestDefaultEventProcessorCheckpointOrdering(t *testing.T) {
+func TestProcessEvents_EventHandlingAndCheckpointOutcomes_PreserveCheckpointOrdering(t *testing.T) {
 	processingErr := errors.New("processing failed")
 	checkpointErr := errors.New("checkpoint write failed")
 
