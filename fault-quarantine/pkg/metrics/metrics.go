@@ -60,7 +60,7 @@ var (
 		prometheus.HistogramOpts{
 			Name:    "fault_quarantine_cold_start_duration_seconds",
 			Help:    "Time spent recovering unresolved events during fault-quarantine startup.",
-			Buckets: prometheus.DefBuckets,
+			Buckets: prometheus.ExponentialBuckets(0.1, 2, 18),
 		},
 	)
 
