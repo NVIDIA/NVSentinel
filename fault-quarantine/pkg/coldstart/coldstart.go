@@ -121,6 +121,7 @@ func Handle(ctx context.Context, deps Dependencies) error {
 	}()
 
 	slog.InfoContext(ctx, "Recovering unresolved fault-quarantine events")
+
 	resolver := newSupersessionResolver(deps.HealthEventStore, deps.ColdStartUntilTime)
 
 	err := deps.HealthEventStore.FindHealthEventsByQueryBatched(

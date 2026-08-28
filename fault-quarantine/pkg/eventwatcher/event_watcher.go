@@ -105,20 +105,8 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 		return nil
 	}
 
-	if w.coldStartCallback != nil {
-		if err := w.coldStartCallback(ctx); err != nil {
-			if closeErr := w.changeStreamWatcher.Close(ctx); closeErr != nil {
-				slog.ErrorContext(ctx, "Failed to close event watcher after cold-start failure", "error", closeErr)
-			}
-
-			if errors.Is(err, context.Canceled) && ctx.Err() != nil {
-				slog.InfoContext(ctx, "Cold-start recovery stopped during shutdown")
-
-				return nil
-			}
-
-			return fmt.Errorf("cold-start recovery failed: %w", err)
-		}
+	if err := w.runColdStart(ctx); err != nil {
+		return err
 	}
 
 	go w.updateUnprocessedEventsMetric(ctx)
@@ -153,6 +141,33 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 	}
 
 	return watchErr
+}
+
+func (w *EventWatcher) runColdStart(ctx context.Context) error {
+	if w.coldStartCallback == nil {
+		return nil
+	}
+
+	err := w.coldStartCallback(ctx)
+	if err == nil {
+		return nil
+	}
+
+	w.closeAfterColdStart(ctx)
+
+	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+		slog.InfoContext(ctx, "Cold-start recovery stopped during shutdown")
+
+		return nil //nolint:nilerr // Cancellation is the expected shutdown path.
+	}
+
+	return fmt.Errorf("cold-start recovery failed: %w", err)
+}
+
+func (w *EventWatcher) closeAfterColdStart(ctx context.Context) {
+	if err := w.changeStreamWatcher.Close(ctx); err != nil {
+		slog.ErrorContext(ctx, "Failed to close event watcher after cold-start failure", "error", err)
+	}
 }
 
 func (w *EventWatcher) watchEvents(ctx context.Context) error {
@@ -247,6 +262,7 @@ func (w *EventWatcher) ProcessStoredEvent(
 	}
 
 	recoveryCtx := coldstart.WithRecoveryContext(ctx)
+
 	processed, err := w.processHealthEvent(
 		recoveryCtx, &healthEventWithStatus, recordUUID, recordUUID)
 	if err != nil {

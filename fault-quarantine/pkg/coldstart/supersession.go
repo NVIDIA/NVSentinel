@@ -70,11 +70,16 @@ func (r *supersessionResolver) superseded(
 	}
 
 	candidate, err := parseStoredRecord(record)
-	if err != nil || candidate.HealthEvent.GetIsHealthy() {
+	if err != nil {
+		return false, nil //nolint:nilerr // The event processor classifies and skips invalid records.
+	}
+
+	if candidate.HealthEvent.GetIsHealthy() {
 		return false, nil
 	}
 
 	identity := identityFor(candidate.HealthEvent)
+
 	latest, ok := r.cache[identity]
 	if !ok {
 		latest, err = r.findLatest(ctx, identity)

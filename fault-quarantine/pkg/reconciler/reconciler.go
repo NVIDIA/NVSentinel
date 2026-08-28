@@ -680,6 +680,7 @@ func (r *Reconciler) hasExistingQuarantine(ctx context.Context, nodeName string)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to fetch annotations for node", "node", nodeName, "error", err)
 		coldstart.RecordError(ctx, err)
+
 		return make(map[string]string), false
 	}
 
@@ -1308,6 +1309,7 @@ func (r *Reconciler) handleUnhealthyEventOnQuarantinedNode(
 		if err := r.addEventToAnnotation(ctx, event); err != nil {
 			slog.ErrorContext(ctx, "Failed to update health events annotation", "error", err)
 			coldstart.RecordError(ctx, err)
+
 			return true
 		}
 	} else {
@@ -1410,6 +1412,7 @@ func (r *Reconciler) handleQuarantinedNode(
 		if !errors.Is(err, errNoQuarantineAnnotation) {
 			coldstart.RecordError(ctx, err)
 		}
+
 		metrics.ProcessingErrors.WithLabelValues("get_node_annotations_error").Inc()
 		tracing.RecordError(span, err)
 		span.SetAttributes(
