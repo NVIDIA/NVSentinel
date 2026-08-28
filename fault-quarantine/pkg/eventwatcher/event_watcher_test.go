@@ -266,6 +266,21 @@ func TestCompleteStoredEventPersistsResultAndDeduplicatesItsUpdate(t *testing.T)
 	assert.Equal(t, "44", objectIDs.last)
 }
 
+func TestCompleteStoredEventReplacesExplicitNullStatus(t *testing.T) {
+	dbClient := &databaseClientStub{}
+	watcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
+	event := storedHealthEventRecord("event-uuid")
+	event.RawEvent["healtheventstatus"] = nil
+
+	require.NoError(t, watcher.CompleteStoredEvent(
+		context.Background(), event, coldstart.ProcessResultInvalid))
+	assert.Equal(t, map[string]any{
+		"healtheventstatus": map[string]any{
+			"faultquarantinerecovery": string(coldstart.ProcessResultInvalid),
+		},
+	}, dbClient.updatedFields)
+}
+
 func TestExpiredRecoveryDedupEntryDoesNotSuppressLiveEvent(t *testing.T) {
 	watcher := NewEventWatcher(nil, &databaseClientStub{}, time.Minute, &objectIDStoreStub{})
 

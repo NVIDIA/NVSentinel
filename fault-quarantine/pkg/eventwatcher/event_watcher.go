@@ -317,9 +317,14 @@ func (w *EventWatcher) CompleteStoredEvent(
 		return fmt.Errorf("cannot mark stored event complete: %w", err)
 	}
 
-	if err := w.databaseClient.UpdateDocumentStatusFields(ctx, recordUUID, map[string]any{
-		coldstart.RecoveryCompletionStatusPath: string(result),
-	}); err != nil {
+	fields := map[string]any{coldstart.RecoveryCompletionStatusPath: string(result)}
+	if status, exists := event.RawEvent["healtheventstatus"]; exists && status == nil {
+		fields = map[string]any{"healtheventstatus": map[string]any{
+			"faultquarantinerecovery": string(result),
+		}}
+	}
+
+	if err := w.databaseClient.UpdateDocumentStatusFields(ctx, recordUUID, fields); err != nil {
 		return fmt.Errorf("failed to update recovery completion status: %w", err)
 	}
 
