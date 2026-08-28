@@ -58,9 +58,9 @@ func newSupersessionResolver(
 	}
 }
 
-// superseded reports whether a later healthy event fully clears this failure.
-// Partial entity recovery is conservative: the failure is replayed unless every
-// entity and error-code key is cleared by the later event.
+// superseded reports whether a later event fully replaces this failure.
+// Entity-level changes are conservative: the failure is replayed unless every
+// entity and error-code key is covered by the later event.
 func (r *supersessionResolver) superseded(
 	ctx context.Context,
 	record datastore.HealthEventWithStatus,
@@ -85,8 +85,7 @@ func (r *supersessionResolver) superseded(
 		r.cache[identity] = latest
 	}
 
-	if latest.event == nil || !latest.createdAt.After(record.CreatedAt) ||
-		!latest.event.HealthEvent.GetIsHealthy() {
+	if latest.event == nil || !latest.createdAt.After(record.CreatedAt) {
 		return false, nil
 	}
 

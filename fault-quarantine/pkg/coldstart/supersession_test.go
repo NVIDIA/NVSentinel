@@ -92,6 +92,18 @@ func TestSupersessionResolverReplaysFailureAfterPartialRecovery(t *testing.T) {
 	assert.False(t, superseded)
 }
 
+func TestSupersessionResolverSkipsFailureReplacedByLaterFailure(t *testing.T) {
+	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	oldFailure := recoveryRecord(base, false, []any{impactedEntity("0")})
+	currentFailure := recoveryRecord(base.Add(time.Minute), false, []any{impactedEntity("0")})
+	store := &latestEventStoreStub{latest: &currentFailure}
+
+	superseded, err := newSupersessionResolver(store, base.Add(time.Hour)).superseded(
+		context.Background(), oldFailure)
+	require.NoError(t, err)
+	assert.True(t, superseded)
+}
+
 func TestSupersessionResolverCachesLatestEventPerCheck(t *testing.T) {
 	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
 	recovery := recoveryRecord(base.Add(time.Hour), true, nil)

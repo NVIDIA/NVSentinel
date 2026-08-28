@@ -102,10 +102,10 @@ type Dependencies struct {
 	ColdStartUntilTime time.Time
 }
 
-// Handle replays unresolved events in creation order. Failures superseded by a
-// later full recovery are skipped so historical state cannot transiently
-// quarantine a healthy node. Processing stops on transient failures; invalid
-// stored documents are counted and skipped.
+// Handle replays unresolved events in creation order. Failures fully replaced
+// by a later event are skipped so obsolete history cannot cause transient node
+// changes. Processing stops on transient failures; invalid stored documents
+// are counted and skipped.
 func Handle(ctx context.Context, deps Dependencies) error {
 	if deps.HealthEventStore == nil {
 		return fmt.Errorf("health event store is required")
