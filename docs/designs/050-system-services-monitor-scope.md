@@ -176,16 +176,22 @@ detection is unit-state and query based:
 - **Flap detection:** each new restart (delta in `NRestarts`) is timestamped into a
   per-service deque; the service is "flapping" when the number of restarts inside
   the window (`--flap-window`, default 600s) reaches the threshold
-  (`--flap-threshold`, default 3). `NRestarts` is not monotonic (it resets on
-  `systemctl reset-failed`, unit re-creation, and reboot); a decrease
-  re-baselines tracking and records one restart observation, so a service whose
-  crashes cause reboots does not go dark to flap detection.
+  (`--flap-threshold`, default 3). `NRestarts` is not monotonic — it resets on
+  `systemctl reset-failed`, unit re-creation, and reboot — and a decrease is
+  **not** itself evidence of a restart: `systemctl reset-failed` flushes the
+  counter without restarting the process. A decrease therefore re-baselines
+  tracking, and a restart observation is recorded only when
+  `ExecMainStartTimestamp` changed across the reset (the main process really
+  did restart — unit re-creation, reboot, crash-then-reset). A pure counter
+  flush on a running service records nothing, while a service whose crashes
+  cause reboots still does not go dark to flap detection.
 - **GPU service lifecycle:** the same `systemctl show` probe for each service in the
   configured list (default `nvidia-persistenced`).
 
 Every host probe is bounded (`systemctl show` runs with a 10 s timeout). A
 probe that fails or times out yields **unknown** state — the monitor logs the
-failure and increments a check-error metric but emits no HealthEvent, because
+failure and increments the check-error counter
+(`fabric_monitor_check_errors_total{check_name}`) but emits no HealthEvent, because
 "the probe could not observe the service" is not evidence that the service is
 down. A hung systemd or D-Bus therefore costs at most one bounded check, and
 cannot wedge the polling loop into false `*_NOT_RUNNING` reporting.
@@ -301,7 +307,8 @@ The table above is the **complete Phase-1 taxonomy**, deliberately small:
 - The `JOURNAL_*` codes of earlier drafts are removed — journal-pattern
   detection belongs to `syslog-health-monitor` (see *Signals delegated*), and
   events from this monitor carry systemd evidence only (`sub_state`,
-  `n_restarts`, `flapping`).
+  `n_restarts`); the flap condition is carried by the `FabricManagerFlapping`
+  event itself, not duplicated as metadata on other events.
 - There is deliberately no `FM_UNRESPONSIVE` code. A dedicated responsiveness
   probe — and with it a distinct unresponsive code, its detection threshold,
   and its `HealthEvent` mapping — is deferred together with the local
@@ -334,9 +341,9 @@ observation, and this ADR does not pretend it can:
   - FM-down or flapping **correlated with NVSwitch/SXID hardware errors** from
     `syslog-health-monitor` on the same node should escalate directly.
 - **This monitor's obligation is evidence, not policy:** transition-only
-  events with absolute state, `n_restarts`/`sub_state`/`flapping` metadata,
-  and timestamps — exactly the inputs recurrence- and correlation-based
-  escalation needs. Encoding the escalation rules is fault-management policy
+  events with absolute state, `n_restarts`/`sub_state` metadata, the
+  `FabricManagerFlapping` condition, and timestamps — exactly the inputs
+  recurrence- and correlation-based escalation needs. Encoding the escalation rules is fault-management policy
   and is out of scope here.
 
 ### HealthEvent schema
@@ -374,7 +381,7 @@ Example — Fabric Manager down (fatal, node-scoped):
   "recommendedAction": "RESTART_BM",
   "errorCode": ["FABRIC_MANAGER_NOT_RUNNING"],
   "entitiesImpacted": [{"entityType": "NODE", "entityValue": "gpu-node-07"}],
-  "metadata": {"sub_state": "failed", "n_restarts": "4", "flapping": "true"},
+  "metadata": {"sub_state": "failed", "n_restarts": "4"},
   "nodeName": "gpu-node-07",
   "processingStrategy": "EXECUTE_REMEDIATION"
 }
@@ -406,9 +413,16 @@ Example — GPU support service down (non-fatal, node-scoped):
 The event processor keeps an in-memory `entity_cache` so an unchanged condition is
 not re-sent every poll interval.
 
-- **Key:** `"<checkName>|<entityType>:<entityValue>"`, built from the impacted
-  entities sorted by `(entityType, entityValue)` so key construction is
-  order-independent (e.g. `FabricManagerServiceDown|NODE:gpu-node-07`).
+- **Key:** `"<checkName>|<entityType>:<entityValue>[|svc:<service_name>]"`,
+  built from the impacted entities sorted by `(entityType, entityValue)` so
+  key construction is order-independent (e.g.
+  `FabricManagerServiceDown|NODE:gpu-node-07`). Checks that cover **multiple
+  instances per entity** append the instance identity: `GpuServiceDown` probes
+  every service in the configurable list against the same NODE entity, so its
+  key includes `metadata["service_name"]`
+  (`GpuServiceDown|NODE:gpu-node-07|svc:nvidia-persistenced`) — without it,
+  two different services down on one node would collide on a single cache
+  entry and suppress or overwrite each other's transitions.
 - **Value:** `CachedEntityState(is_fatal, is_healthy, error_codes)` — the last
   emitted state for that key, where `error_codes` is the normalized (sorted,
   de-duplicated) condition-code set. An event is sent when the key is unseen or
@@ -454,9 +468,9 @@ the guarantees and non-guarantees are explicit rather than implied:
   rollback) can then deliver the same transition again. The monitor does not
   attempt exactly-once and consumers MUST NOT assume it.
 - **Duplicates are identifiable by a stable dedup key.** A transition's
-  identity is `(nodeName, checkName, sorted entitiesImpacted, normalized
-  errorCode set, isFatal, isHealthy)` — the same tuple the entity cache keys
-  on. Because the cache suppresses identical consecutive transitions at the
+  identity is `(nodeName, checkName, sorted entitiesImpacted, instance
+  identity — service_name where applicable, normalized errorCode set,
+  isFatal, isHealthy)` — the same tuple the entity cache keys on. Because the cache suppresses identical consecutive transitions at the
   source, the monitor never *intentionally* emits the same tuple twice in a
   row for an entity: any identical consecutive pair observed downstream is a
   transport-level retry duplicate and is safe to drop. Applying a duplicate is
@@ -515,7 +529,13 @@ Out of scope (owned elsewhere):
 - Device-level faults handled only by `gpu-health-monitor`
 - Journal/kernel-log signals handled only by `syslog-health-monitor`
 - Systemd service-level faults handled only by `system-services-monitor`
-- No overlap in event generation for the same underlying condition
+- No two monitors emit events for the same *signal* (one collection path per
+  signal). Within this monitor, one root cause may intentionally raise
+  multiple **distinct conditions** — a crash-looping FM raises
+  `FabricManagerFlapping` (restart rate) alongside an oscillating
+  `FabricManagerServiceDown` (instantaneous liveness); these are different
+  conditions with independent recovery, not duplicate events for one
+  condition, and each is deduplicated under its own check name
 - State-cache deduplication verified (transition-only emission)
 - HealthEvent schema compatibility over gRPC
 
