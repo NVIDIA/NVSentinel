@@ -186,7 +186,9 @@ func (p *DefaultEventProcessor) handleSingleEvent(ctx context.Context, event Eve
 		p.updateMetrics("unmarshal_error", "", time.Since(startTime), false)
 
 		if markErr := p.markProcessed(ctx, token); markErr != nil {
-			slog.Error("Failed to mark processed after unmarshal error", "error", markErr)
+			return newUncheckpointedEventError(fmt.Errorf(
+				"failed to mark processed after unmarshal error (%w): %w", err, markErr,
+			))
 		}
 
 		return fmt.Errorf("failed to unmarshal event: %w", err)
@@ -197,7 +199,9 @@ func (p *DefaultEventProcessor) handleSingleEvent(ctx context.Context, event Eve
 		p.updateMetrics("document_id_error", "", time.Since(startTime), false)
 
 		if markErr := p.markProcessed(ctx, token); markErr != nil {
-			slog.Error("Failed to mark processed after document ID error", "error", markErr)
+			return newUncheckpointedEventError(fmt.Errorf(
+				"failed to mark processed after document ID error (%w): %w", err, markErr,
+			))
 		}
 
 		return fmt.Errorf("failed to get document ID: %w", err)
