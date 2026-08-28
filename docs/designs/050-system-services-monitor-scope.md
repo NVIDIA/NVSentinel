@@ -191,10 +191,25 @@ down. A hung systemd or D-Bus therefore costs at most one bounded check, and
 cannot wedge the polling loop into false `*_NOT_RUNNING` reporting.
 
 Applicability is checked before health: `LoadState` is queried alongside
-`ActiveState`, and a unit with `LoadState=not-found` (e.g. a host without
-`nvidia-fabricmanager` installed, or an optional support service that is not
-present) is skipped entirely rather than reported as `*_NOT_RUNNING`, so every
-check is self-gating on platform/service presence.
+`ActiveState`. What a missing unit (`LoadState=not-found`) *means* is
+platform-dependent — on a PCIe-only node it is "disabled on purpose", while on
+an NVSwitch platform it is a misconfiguration that would otherwise silently
+hide exactly the failure class this monitor exists to catch. Fabric Manager
+presence is therefore an explicit tri-state (`--fm-presence`, env
+`FM_PRESENCE`, chart value `fabricManager.presence`):
+
+- `auto` (default): `LoadState=not-found` is treated as "not applicable on
+  this platform" and skipped — no `*_NOT_RUNNING` event.
+- `required`: `LoadState=not-found` is a misconfiguration and emits a fatal
+  `FABRIC_MANAGER_NOT_INSTALLED` event with `CONTACT_SUPPORT` — deliberately
+  not `RESTART_BM`, because there is no unit to restart and a reboot will not
+  install one. Operators of NVSwitch fleets SHOULD set `required`.
+- `disabled`: the FM check never runs, regardless of unit presence.
+
+The generic GPU-service list keeps plain `auto` semantics: that list is shared
+fleet-wide configuration, and a listed-but-absent optional support service is
+not evidence of misconfiguration. Only Fabric Manager — the daemon whose
+absence breaks NVSwitch platforms — carries the tri-state.
 
 A boot grace period (`--boot-grace-period`, default 300s) suppresses unhealthy
 alerts during node startup for all service checks.
@@ -261,11 +276,20 @@ category and carries the specific condition in `errorCode`.
 | Condition | `checkName` | `errorCode` | `isFatal` | `recommendedAction` |
 |-----------|-------------|-------------|-----------|---------------------|
 | FM not running | `FabricManagerServiceDown` | `FABRIC_MANAGER_NOT_RUNNING` | true | `RESTART_BM` |
-| FM flapping | `FabricManagerServiceDown` | `FABRIC_MANAGER_FLAPPING` | true | `RESTART_BM` |
+| FM crash-looping | `FabricManagerFlapping` | `FABRIC_MANAGER_FLAPPING` | true | `RESTART_BM` |
+| FM expected but not installed (`--fm-presence=required` only) | `FabricManagerNotInstalled` | `FABRIC_MANAGER_NOT_INSTALLED` | true | `CONTACT_SUPPORT` |
 | GPU support service down | `GpuServiceDown` | `GPU_SERVICE_NOT_RUNNING` | false | `CONTACT_SUPPORT` |
 
-Multiple `errorCode` values combine on a single event (e.g. an FM-down event that
-is also flapping carries `[FABRIC_MANAGER_NOT_RUNNING, FABRIC_MANAGER_FLAPPING]`).
+Flapping is its own `checkName`, not an enrichment code on a "down" event: a
+crash-looping service under `Restart=` reads `active` at most poll instants,
+so a flap condition tied to `FabricManagerServiceDown` would be masked by
+whichever instantaneous state the poll happened to catch. `FabricManagerFlapping`
+emits when the restart threshold is crossed — regardless of the instantaneous
+`ActiveState` — and recovers independently once the window drains. Each
+`checkName` is its own transition-state machine in the entity cache, so a
+crash-looping FM typically raises `FabricManagerFlapping` (stable while the
+loop persists) alongside an oscillating `FabricManagerServiceDown`, and
+remediation keyed on either fires without racing the other's recovery.
 
 The table above is the **complete Phase-1 taxonomy**, deliberately small:
 
@@ -389,9 +413,11 @@ not re-sent every poll interval.
   emitted state for that key, where `error_codes` is the normalized (sorted,
   de-duplicated) condition-code set. An event is sent when the key is unseen or
   any of the three fields differs from the cached value, so a code-only
-  escalation (e.g. `FABRIC_MANAGER_NOT_RUNNING` → `FABRIC_MANAGER_NOT_RUNNING +
-  FABRIC_MANAGER_FLAPPING`) emits a new event even though the fatal/healthy
-  flags are unchanged.
+  change within one `checkName` emits a new event even though the
+  fatal/healthy flags are unchanged. (With flapping split into its own
+  `checkName`, the Phase-1 checks each carry a single code today; the
+  code-set comparison stays in the contract so future multi-code checks
+  inherit it.)
   Normalization keeps the comparison order-independent for equivalent code sets.
 - **Concurrency:** the read-decide-write sequence is guarded by a
   `threading.Lock`. Callbacks fire on a `ThreadPoolExecutor`, so without the lock
