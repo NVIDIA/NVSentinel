@@ -28,6 +28,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	annotationutil "github.com/nvidia/nvsentinel/commons/pkg/annotation"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
@@ -35,6 +36,7 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/breaker"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/evaluator"
@@ -176,11 +178,12 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	// Handle circuit breaker cursor mode BEFORE creating change stream watcher
 	// This ensures resume token is deleted (if cursor=CREATE) before the stream opens
 	// Note: We don't check if tripped here because that requires the node informer to be synced
-	if err := r.handleCircuitBreakerCursorMode(ctx, databaseClient); err != nil {
+	startFreshFromBreaker, err := r.handleCircuitBreakerCursorMode(ctx, databaseClient)
+	if err != nil {
 		return fmt.Errorf("failed to handle circuit breaker cursor mode: %w", err)
 	}
 
-	oldWatcher, err := r.setupChangeStreamWatcher(ctx, datastoreAdapter)
+	oldWatcher, resumeControlDecision, err := r.setupChangeStreamWatcher(ctx, datastoreAdapter)
 	if err != nil {
 		return err
 	}
@@ -236,6 +239,14 @@ func (r *Reconciler) Start(ctx context.Context) error {
 
 	r.eventWatcher.SetFetchDocIDsFn(r.sourceDocIDsFromAnnotation)
 
+	r.configureColdStart(
+		ctx,
+		startFreshFromBreaker,
+		resumeControlDecision.StartFresh,
+		resumeControlDecision.ColdStartCutoff,
+		ds.HealthEventStore(),
+	)
+
 	if err := r.eventWatcher.Start(ctx); err != nil {
 		return fmt.Errorf("event watcher failed: %w", err)
 	}
@@ -245,6 +256,28 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	return nil
 }
 
+func (r *Reconciler) configureColdStart(
+	ctx context.Context,
+	startFreshFromBreaker bool,
+	startFreshFromResumeControl bool,
+	coldStartAfter time.Time,
+	healthEventStore datastore.HealthEventStore,
+) {
+	if startFreshFromBreaker || startFreshFromResumeControl {
+		slog.InfoContext(ctx, "Skipping cold start because CREATE cursor mode was consumed")
+
+		return
+	}
+
+	r.eventWatcher.SetColdStartCallback(func(ctx context.Context) error {
+		return coldstart.Handle(ctx, coldstart.Dependencies{
+			HealthEventStore:   healthEventStore,
+			EventProcessor:     r.eventWatcher,
+			ColdStartAfterTime: coldStartAfter,
+		})
+	})
+}
+
 // setupChangeStreamWatcher creates and unwraps the change stream watcher
 func (r *Reconciler) setupChangeStreamWatcher(
 	ctx context.Context,
@@ -252,11 +285,21 @@ func (r *Reconciler) setupChangeStreamWatcher(
 		CreateChangeStreamWatcher(ctx context.Context, clientName string, pipeline any) (
 			datastore.ChangeStreamWatcher, error)
 	},
-) (client.ChangeStreamWatcher, error) {
+) (client.ChangeStreamWatcher, client.ResumeControlDecision, error) {
 	changeStreamWatcher, err := datastoreAdapter.CreateChangeStreamWatcher(
 		ctx, "fault-quarantine", r.config.DatabasePipeline)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create change stream watcher: %w", err)
+		return nil, client.ResumeControlDecision{}, fmt.Errorf("failed to create change stream watcher: %w", err)
+	}
+
+	var resumeControlDecision client.ResumeControlDecision
+
+	type resumeControlDecisionProvider interface {
+		ResumeControlDecision() client.ResumeControlDecision
+	}
+
+	if provider, ok := changeStreamWatcher.(resumeControlDecisionProvider); ok {
+		resumeControlDecision = provider.ResumeControlDecision()
 	}
 
 	// Unwrap to get client.ChangeStreamWatcher for EventWatcher compatibility
@@ -266,10 +309,11 @@ func (r *Reconciler) setupChangeStreamWatcher(
 
 	unwrapable, ok := changeStreamWatcher.(unwrapper)
 	if !ok {
-		return nil, fmt.Errorf("watcher does not support unwrapping to client.ChangeStreamWatcher")
+		return nil, client.ResumeControlDecision{}, fmt.Errorf(
+			"watcher does not support unwrapping to client.ChangeStreamWatcher")
 	}
 
-	return unwrapable.Unwrap(), nil
+	return unwrapable.Unwrap(), resumeControlDecision, nil
 }
 
 // setupNodeInformerCallbacks configures callbacks on the already-created node informer
@@ -405,15 +449,18 @@ func (r *Reconciler) checkCircuitBreakerAtStartup(ctx context.Context) error {
 	return nil
 }
 
-func (r *Reconciler) handleCircuitBreakerCursorMode(ctx context.Context, dbClient client.DatabaseClient) error {
+func (r *Reconciler) handleCircuitBreakerCursorMode(
+	ctx context.Context,
+	dbClient client.DatabaseClient,
+) (bool, error) {
 	if !r.config.CircuitBreakerEnabled {
-		return nil
+		return false, nil
 	}
 
 	cursorMode, err := r.cb.GetCursorMode(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to read cursor mode, defaulting to RESUME", "error", err)
-		return fmt.Errorf("failed to read cursor mode: %w", err)
+		return false, fmt.Errorf("failed to read cursor mode: %w", err)
 	}
 
 	if cursorMode == breaker.CursorModeCreate {
@@ -421,12 +468,12 @@ func (r *Reconciler) handleCircuitBreakerCursorMode(ctx context.Context, dbClien
 
 		if err := r.deleteResumeToken(ctx, dbClient); err != nil {
 			slog.ErrorContext(ctx, "Failed to delete resume token", "error", err)
-			return fmt.Errorf("failed to delete resume token: %w", err)
+			return false, fmt.Errorf("failed to delete resume token: %w", err)
 		}
 
 		if err := r.cb.SetCursorMode(ctx, breaker.CursorModeResume); err != nil {
 			slog.ErrorContext(ctx, "Failed to reset cursor to RESUME", "error", err)
-			return fmt.Errorf("failed to reset cursor to RESUME: %w", err)
+			return false, fmt.Errorf("failed to reset cursor to RESUME: %w", err)
 		}
 
 		slog.InfoContext(ctx, "Resume token deleted, will start from latest events")
@@ -434,7 +481,7 @@ func (r *Reconciler) handleCircuitBreakerCursorMode(ctx context.Context, dbClien
 		slog.InfoContext(ctx, "Circuit breaker cursor is RESUME, will process accumulated events")
 	}
 
-	return nil
+	return cursorMode == breaker.CursorModeCreate, nil
 }
 
 func (r *Reconciler) deleteResumeToken(ctx context.Context, dbClient client.DatabaseClient) error {
@@ -598,9 +645,9 @@ func (r *Reconciler) handleEvent(
 	taintsToBeApplied := r.collectTaintsToApply(taintAppliedMap)
 	labelsToBeApplied := collectLabelsToApply(&appliedLabelsMap)
 
-	node, err := r.k8sClient.NodeInformer.GetNode(event.HealthEvent.NodeName)
+	node, err := r.getNode(ctx, event.HealthEvent.NodeName)
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to get node from cache", "node", event.HealthEvent.NodeName, "error", err)
+		slog.ErrorContext(ctx, "Failed to get node", "node", event.HealthEvent.NodeName, "error", err)
 		metrics.ProcessingErrors.WithLabelValues("get_node_cache_error").Inc()
 		tracing.RecordError(span, err)
 		span.SetAttributes(
@@ -1801,11 +1848,11 @@ func formatCordonOrUncordonReasonValue(input string, length int) string {
 	return formatted
 }
 
-// getNodeQuarantineAnnotations retrieves quarantine annotations from the informer cache
+// getNodeQuarantineAnnotations retrieves the node's quarantine annotations.
 func (r *Reconciler) getNodeQuarantineAnnotations(ctx context.Context, nodeName string) (map[string]string, error) {
-	node, err := r.k8sClient.NodeInformer.GetNode(nodeName)
+	node, err := r.getNode(ctx, nodeName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get node from cache: %w", err)
+		return nil, fmt.Errorf("failed to get node: %w", err)
 	}
 
 	// Extract only quarantine annotations
@@ -1828,9 +1875,22 @@ func (r *Reconciler) getNodeQuarantineAnnotations(ctx context.Context, nodeName 
 		}
 	}
 
-	slog.DebugContext(ctx, "Retrieved quarantine annotations for node from informer cache", "node", nodeName)
+	slog.DebugContext(ctx, "Retrieved quarantine annotations for node", "node", nodeName)
 
 	return quarantineAnnotations, nil
+}
+
+func (r *Reconciler) getNode(ctx context.Context, nodeName string) (*corev1.Node, error) {
+	if coldstart.IsRecoveryContext(ctx) {
+		node, err := r.k8sClient.Clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to get node from API server during cold start: %w", err)
+		}
+
+		return node, nil
+	}
+
+	return r.k8sClient.NodeInformer.GetNode(nodeName)
 }
 
 func (r *Reconciler) cleanupManualAnnotation(ctx context.Context, nodeName string,

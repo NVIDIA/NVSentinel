@@ -42,6 +42,7 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/breaker"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/evaluator"
@@ -49,6 +50,7 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
 )
@@ -679,6 +681,129 @@ type MockEventWatcher struct {
 	StartFn                          func(ctx context.Context) error
 }
 
+type coldStartHealthEventStore struct {
+	datastore.HealthEventStore
+	findBatched func(
+		context.Context,
+		datastore.QueryBuilder,
+		int,
+		func([]datastore.HealthEventWithStatus) error,
+	) error
+}
+
+func (s *coldStartHealthEventStore) FindHealthEventsByQueryBatched(
+	ctx context.Context,
+	builder datastore.QueryBuilder,
+	batchSize int,
+	fn func([]datastore.HealthEventWithStatus) error,
+) error {
+	return s.findBatched(ctx, builder, batchSize, fn)
+}
+
+type coldStartDatabaseClient struct {
+	client.DatabaseClient
+	mu       sync.Mutex
+	statuses map[string]string
+	calls    int
+}
+
+func (c *coldStartDatabaseClient) UpdateDocumentStatusFields(
+	_ context.Context,
+	documentID string,
+	fields map[string]any,
+) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.statuses[documentID] = fields["healtheventstatus.nodequarantined"].(string)
+	c.calls++
+
+	return nil
+}
+
+func (c *coldStartDatabaseClient) status(documentID string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.statuses[documentID]
+}
+
+func (c *coldStartDatabaseClient) callCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.calls
+}
+
+func directStoredHealthEvent(
+	eventID string,
+	nodeName string,
+	checkName string,
+	isHealthy bool,
+	isFatal bool,
+) datastore.Event {
+	changeEvent := createHealthEventBSON(
+		eventID,
+		nodeName,
+		checkName,
+		isHealthy,
+		isFatal,
+		nil,
+		model.StatusNotStarted,
+	)
+	document := changeEvent["fullDocument"].(datastore.Event)
+	delete(document["healtheventstatus"].(datastore.Event), "nodequarantined")
+
+	return document
+}
+
+func coldStartTestConfig() config.TomlConfig {
+	return config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.RuleSet{
+			{
+				Enabled:  true,
+				Name:     "nvlink-failure",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{{
+						Kind:       "HealthEvent",
+						Expression: "event.checkName == 'GpuNvlinkWatch' && event.isFatal == true",
+					}},
+				},
+				Taint: config.Taint{
+					Key: "nvidia.com/nvlink-failure", Value: "true", Effect: "NoSchedule",
+				},
+				Label:  config.Label{Key: "nvidia.com/gpu-fault", Value: "nvlink"},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+}
+
+func newColdStartEventProcessor(
+	t *testing.T,
+	r *Reconciler,
+	dbClient client.DatabaseClient,
+) *eventwatcher.EventWatcher {
+	t.Helper()
+
+	ruleSetEvals, err := evaluator.InitializeRuleSetEvaluators(
+		r.config.TomlConfig.RuleSets, r.k8sClient.NodeInformer)
+	require.NoError(t, err)
+	rulesets := r.buildRulesetsConfig()
+
+	processor := eventwatcher.NewEventWatcher(nil, dbClient, time.Minute, r)
+	processor.SetProcessEventCallback(
+		func(ctx context.Context, event *model.HealthEventWithStatus) *model.Status {
+			return r.ProcessEvent(ctx, event, ruleSetEvals, rulesets)
+		},
+	)
+
+	return processor
+}
+
 func (m *MockEventWatcher) Start(ctx context.Context) error {
 	if m.StartFn != nil {
 		return m.StartFn(ctx)
@@ -692,12 +817,129 @@ func (m *MockEventWatcher) SetProcessEventCallback(callback func(ctx context.Con
 
 func (m *MockEventWatcher) SetFetchDocIDsFn(_ func(ctx context.Context, nodeName string) []string) {}
 
+func (m *MockEventWatcher) SetColdStartCallback(_ func(ctx context.Context) error) {}
+
+func (m *MockEventWatcher) ProcessStoredEvent(
+	_ context.Context,
+	_ datastore.Event,
+) (coldstart.ProcessResult, error) {
+	return coldstart.ProcessResultSkipped, nil
+}
+
 func (m *MockEventWatcher) CancelLatestQuarantiningEvents(ctx context.Context, nodeName string, reason string) error {
 	if m.CancelLatestQuarantiningEventsFn != nil {
 		return m.CancelLatestQuarantiningEventsFn(ctx, nodeName, reason)
 	}
 	// Default behavior: simulate MongoDB document not found (returns nil as per the real implementation)
 	return nil
+}
+
+func TestE2E_ColdStartRecoversMissedFatalEvent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-cold-start-failure-" + generateShortTestID()
+	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	r, _, _, _ := setupE2EReconciler(t, ctx, coldStartTestConfig(), nil)
+	dbClient := &coldStartDatabaseClient{statuses: make(map[string]string)}
+	processor := newColdStartEventProcessor(t, r, dbClient)
+	storedEvent := directStoredHealthEvent(
+		"missed-nvlink-event", nodeName, "GpuNvlinkWatch", false, true)
+	store := &coldStartHealthEventStore{
+		findBatched: func(
+			_ context.Context,
+			_ datastore.QueryBuilder,
+			_ int,
+			fn func([]datastore.HealthEventWithStatus) error,
+		) error {
+			if dbClient.status("missed-nvlink-event") != "" {
+				return nil
+			}
+
+			return fn([]datastore.HealthEventWithStatus{{RawEvent: storedEvent}})
+		},
+	}
+
+	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+		HealthEventStore: store,
+		EventProcessor:   processor,
+	}))
+
+	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.True(t, node.Spec.Unschedulable)
+	assert.Equal(t, "nvlink", node.Labels["nvidia.com/gpu-fault"])
+	assert.Equal(t, string(statemanager.QuarantinedLabelValue),
+		node.Labels[statemanager.NVSentinelStateLabelKey])
+	require.NotEmpty(t, node.Annotations[common.QuarantineHealthEventAnnotationKey])
+	assert.Contains(t, node.Spec.Taints, corev1.Taint{
+		Key: "nvidia.com/nvlink-failure", Value: "true", Effect: corev1.TaintEffectNoSchedule,
+	})
+	assert.Equal(t, string(model.Quarantined), dbClient.status("missed-nvlink-event"))
+
+	// A restart after the status write must not replay the same event again.
+	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+		HealthEventStore: store,
+		EventProcessor:   processor,
+	}))
+	assert.Equal(t, 1, dbClient.callCount())
+
+	result, err := processor.ProcessStoredEvent(
+		ctx,
+		directStoredHealthEvent("cleanup-recovery", nodeName, "GpuNvlinkWatch", true, true),
+	)
+	require.NoError(t, err)
+	assert.Equal(t, coldstart.ProcessResultProcessed, result)
+}
+
+func TestE2E_ColdStartReplaysFailureAndRecoveryInOrder(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-cold-start-recovery-" + generateShortTestID()
+	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	r, _, _, _ := setupE2EReconciler(t, ctx, coldStartTestConfig(), nil)
+	dbClient := &coldStartDatabaseClient{statuses: make(map[string]string)}
+	processor := newColdStartEventProcessor(t, r, dbClient)
+	failure := directStoredHealthEvent("missed-failure", nodeName, "GpuNvlinkWatch", false, true)
+	recovery := directStoredHealthEvent("missed-recovery", nodeName, "GpuNvlinkWatch", true, true)
+	store := &coldStartHealthEventStore{
+		findBatched: func(
+			_ context.Context,
+			_ datastore.QueryBuilder,
+			_ int,
+			fn func([]datastore.HealthEventWithStatus) error,
+		) error {
+			return fn([]datastore.HealthEventWithStatus{
+				{CreatedAt: time.Now().Add(-time.Minute), RawEvent: failure},
+				{CreatedAt: time.Now(), RawEvent: recovery},
+			})
+		},
+	}
+
+	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+		HealthEventStore: store,
+		EventProcessor:   processor,
+	}))
+
+	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.False(t, node.Spec.Unschedulable)
+	assert.NotContains(t, node.Labels, "nvidia.com/gpu-fault")
+	assert.NotContains(t, node.Labels, statemanager.NVSentinelStateLabelKey)
+	for _, taint := range node.Spec.Taints {
+		assert.NotEqual(t, "nvidia.com/nvlink-failure", taint.Key)
+	}
+	assert.Equal(t, string(model.Quarantined), dbClient.status("missed-failure"))
+	assert.Equal(t, string(model.UnQuarantined), dbClient.status("missed-recovery"))
 }
 
 func TestE2E_BasicQuarantineAndUnquarantine(t *testing.T) {

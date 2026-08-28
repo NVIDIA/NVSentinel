@@ -19,14 +19,19 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
+	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -40,6 +45,8 @@ type EventWatcher struct {
 	fetchDocIDsFn                         func(ctx context.Context, nodeName string) []string
 	unprocessedEventsMetricUpdateInterval time.Duration
 	lastProcessedObjectID                 LastProcessedObjectIDStore
+	coldStartCallback                     func(ctx context.Context) error
+	recoveredEventIDs                     sync.Map
 }
 
 type LastProcessedObjectIDStore interface {
@@ -51,6 +58,8 @@ type EventWatcherInterface interface {
 	Start(ctx context.Context) error
 	SetProcessEventCallback(callback func(ctx context.Context, event *model.HealthEventWithStatus) *model.Status)
 	SetFetchDocIDsFn(fn func(ctx context.Context, nodeName string) []string)
+	SetColdStartCallback(callback func(ctx context.Context) error)
+	ProcessStoredEvent(ctx context.Context, event datastore.Event) (coldstart.ProcessResult, error)
 	CancelLatestQuarantiningEvents(ctx context.Context, nodeName string, reason string) error
 }
 
@@ -77,6 +86,10 @@ func (w *EventWatcher) SetFetchDocIDsFn(fn func(ctx context.Context, nodeName st
 	w.fetchDocIDsFn = fn
 }
 
+func (w *EventWatcher) SetColdStartCallback(callback func(ctx context.Context) error) {
+	w.coldStartCallback = callback
+}
+
 func (w *EventWatcher) Start(ctx context.Context) error {
 	slog.InfoContext(ctx, "Starting event watcher")
 
@@ -85,6 +98,16 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 	} else {
 		<-ctx.Done()
 		return nil
+	}
+
+	if w.coldStartCallback != nil {
+		if err := w.coldStartCallback(ctx); err != nil {
+			if closeErr := w.changeStreamWatcher.Close(ctx); closeErr != nil {
+				slog.ErrorContext(ctx, "Failed to close event watcher after cold-start failure", "error", closeErr)
+			}
+
+			return fmt.Errorf("cold-start recovery failed: %w", err)
+		}
 	}
 
 	go w.updateUnprocessedEventsMetric(ctx)
@@ -178,6 +201,71 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 
 	w.lastProcessedObjectID.StoreLastProcessedObjectID(eventID)
 
+	if _, recovered := w.recoveredEventIDs.LoadAndDelete(recordUUID); recovered {
+		slog.DebugContext(ctx, "Skipping live duplicate of a recovered event", "eventID", recordUUID)
+
+		return nil
+	}
+
+	_, err = w.processHealthEvent(ctx, &healthEventWithStatus, recordUUID, eventID)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// ProcessStoredEvent sends a durable health-event document through the same
+// callback and status update path used for live change-stream events.
+func (w *EventWatcher) ProcessStoredEvent(
+	ctx context.Context,
+	event datastore.Event,
+) (coldstart.ProcessResult, error) {
+	healthEventWithStatus, err := eventutil.ParseHealthEventFromEvent(event)
+	if err != nil {
+		slog.ErrorContext(ctx, "Skipping invalid stored health event", "error", err)
+
+		return coldstart.ProcessResultInvalid, nil
+	}
+
+	recordUUID, err := utils.ExtractDocumentID(event)
+	if err != nil {
+		slog.ErrorContext(ctx, "Skipping stored health event without a document ID", "error", err)
+
+		return coldstart.ProcessResultInvalid, nil
+	}
+
+	processed, err := w.processHealthEvent(
+		coldstart.WithRecoveryContext(ctx), &healthEventWithStatus, recordUUID, recordUUID)
+	if err != nil {
+		return coldstart.ProcessResultFailed, err
+	}
+
+	if !processed {
+		return coldstart.ProcessResultSkipped, nil
+	}
+
+	w.recoveredEventIDs.Store(recordUUID, struct{}{})
+
+	return coldstart.ProcessResultProcessed, nil
+}
+
+func (w *EventWatcher) processHealthEvent(
+	ctx context.Context,
+	healthEventWithStatus *model.HealthEventWithStatus,
+	recordUUID string,
+	eventID string,
+) (bool, error) {
+	if healthEventWithStatus.HealthEvent == nil || healthEventWithStatus.HealthEventStatus == nil {
+		return false, fmt.Errorf("health event or status is nil")
+	}
+
+	if w.processEventCallback == nil {
+		return false, fmt.Errorf("process event callback is not configured")
+	}
+
+	healthEventWithStatus.HealthEvent.Id = recordUUID
+
 	traceID := tracing.TraceIDFromMetadata(healthEventWithStatus.HealthEvent.GetMetadata())
 	parentSpanID := tracing.ParentSpanID(healthEventWithStatus.HealthEventStatus.SpanIds, tracing.ServicePlatformConnector)
 
@@ -203,17 +291,17 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 		sourceDocIDs = w.fetchDocIDsFn(ctx, healthEventWithStatus.HealthEvent.GetNodeName())
 	}
 
-	status := w.processEventCallback(ctx, &healthEventWithStatus)
+	status := w.processEventCallback(ctx, healthEventWithStatus)
 
 	if status != nil {
 		if err := w.updateNodeQuarantineStatus(ctx, recordUUID, status); err != nil {
 			metrics.ProcessingErrors.WithLabelValues("update_quarantine_status_error").Inc()
 			slog.ErrorContext(ctx, "Failed to update node quarantine status", "error", err)
 
-			return fmt.Errorf("failed to update node quarantine status: %w", err)
+			return false, fmt.Errorf("failed to update node quarantine status: %w", err)
 		}
 
-		EmitNodeQuarantineDuration(status, &healthEventWithStatus)
+		EmitNodeQuarantineDuration(status, healthEventWithStatus)
 
 		if *status == model.UnQuarantined {
 			w.emitRemediationDurationFromDocIDs(ctx, sourceDocIDs)
@@ -223,7 +311,7 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 	duration := time.Since(startTime).Seconds()
 	metrics.EventHandlingDuration.Observe(duration)
 
-	return nil
+	return status != nil, nil
 }
 
 func EmitNodeQuarantineDuration(status *model.Status, healthEventWithStatus *model.HealthEventWithStatus) {
