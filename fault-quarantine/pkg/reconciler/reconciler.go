@@ -45,7 +45,6 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
-	storeconfig "github.com/nvidia/nvsentinel/store-client/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
@@ -85,14 +84,17 @@ type selectedLabel struct {
 }
 
 type Reconciler struct {
-	config                ReconcilerConfig
-	k8sClient             *informer.FaultQuarantineClient
-	lastProcessedObjectID atomic.Value
-	cb                    breaker.CircuitBreaker
-	eventWatcher          eventwatcher.EventWatcherInterface
-	taintInitKeys         []keyValTaint // Pre-computed taint keys for map initialization
-	taintUpdateMu         sync.Mutex    // Protects taint priority updates
-	labelUpdateMu         sync.Mutex    // Protects label priority updates
+	config                    ReconcilerConfig
+	k8sClient                 *informer.FaultQuarantineClient
+	lastProcessedObjectID     atomic.Value
+	cb                        breaker.CircuitBreaker
+	eventWatcher              eventwatcher.EventWatcherInterface
+	taintInitKeys             []keyValTaint // Pre-computed taint keys for map initialization
+	taintUpdateMu             sync.Mutex    // Protects taint priority updates
+	labelUpdateMu             sync.Mutex    // Protects label priority updates
+	resetResumeTokenForCreate func(
+		context.Context, client.DatabaseClient, client.TokenConfig, func() error,
+	) (client.ResumeControlDecision, error)
 
 	// Label keys
 	cordonedByLabelKey        string
@@ -118,9 +120,10 @@ func NewReconciler(
 	circuitBreaker breaker.CircuitBreaker,
 ) *Reconciler {
 	r := &Reconciler{
-		config:    cfg,
-		k8sClient: k8sClient,
-		cb:        circuitBreaker,
+		config:                    cfg,
+		k8sClient:                 k8sClient,
+		cb:                        circuitBreaker,
+		resetResumeTokenForCreate: client.ResetResumeTokenForCreate,
 	}
 
 	return r
@@ -466,14 +469,12 @@ func (r *Reconciler) handleCircuitBreakerCursorMode(
 	if cursorMode == breaker.CursorModeCreate {
 		slog.InfoContext(ctx, "Circuit breaker cursor is CREATE, deleting resume token to skip accumulated events")
 
-		if err := r.deleteResumeToken(ctx, dbClient); err != nil {
-			slog.ErrorContext(ctx, "Failed to delete resume token", "error", err)
-			return false, fmt.Errorf("failed to delete resume token: %w", err)
-		}
-
-		if err := r.cb.SetCursorMode(ctx, breaker.CursorModeResume); err != nil {
-			slog.ErrorContext(ctx, "Failed to reset cursor to RESUME", "error", err)
-			return false, fmt.Errorf("failed to reset cursor to RESUME: %w", err)
+		_, err := r.resetResumeTokenForCreate(ctx, dbClient, r.config.TokenConfig, func() error {
+			return r.cb.SetCursorMode(ctx, breaker.CursorModeResume)
+		})
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to consume circuit breaker CREATE cursor", "error", err)
+			return false, fmt.Errorf("failed to consume circuit breaker CREATE cursor: %w", err)
 		}
 
 		slog.InfoContext(ctx, "Resume token deleted, will start from latest events")
@@ -482,27 +483,6 @@ func (r *Reconciler) handleCircuitBreakerCursorMode(
 	}
 
 	return cursorMode == breaker.CursorModeCreate, nil
-}
-
-func (r *Reconciler) deleteResumeToken(ctx context.Context, dbClient client.DatabaseClient) error {
-	tokenConfig, err := storeconfig.TokenConfigFromEnv("fault-quarantine")
-	if err != nil {
-		return fmt.Errorf("failed to load token configuration: %w", err)
-	}
-
-	clientTokenConfig := client.TokenConfig{
-		ClientName:      tokenConfig.ClientName,
-		TokenDatabase:   tokenConfig.TokenDatabase,
-		TokenCollection: tokenConfig.TokenCollection,
-	}
-
-	if err := dbClient.DeleteResumeToken(ctx, clientTokenConfig); err != nil {
-		return fmt.Errorf("failed to delete resume token: %w", err)
-	}
-
-	slog.InfoContext(ctx, "Successfully deleted resume token", "clientName", tokenConfig.ClientName)
-
-	return nil
 }
 
 // ProcessEvent processes a single health event

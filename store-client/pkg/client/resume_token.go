@@ -111,6 +111,68 @@ func ResetResumeTokenOnStartIfConfigured(
 	return resetResumeTokenOnStartWithStore(ctx, dbClient, tokenConfig, store)
 }
 
+// ResetResumeTokenForCreate starts or resumes a durable CREATE transition,
+// deletes the token, and restores RESUME mode. It is used by component-specific
+// controls that predate the shared resume-control ConfigMap.
+func ResetResumeTokenForCreate(
+	ctx context.Context,
+	dbClient DatabaseClient,
+	tokenConfig TokenConfig,
+	onTokenDeleted func() error,
+) (ResumeControlDecision, error) {
+	store, err := newKubernetesResumeControlStore()
+	if err != nil {
+		return ResumeControlDecision{}, fmt.Errorf("failed to initialize change stream resume control: %w", err)
+	}
+
+	return resetResumeTokenForCreateWithStore(ctx, dbClient, tokenConfig, store, onTokenDeleted)
+}
+
+func resetResumeTokenForCreateWithStore(
+	ctx context.Context,
+	dbClient DatabaseClient,
+	tokenConfig TokenConfig,
+	store resumeControlStore,
+	onTokenDeleted func() error,
+) (ResumeControlDecision, error) {
+	mode, cutoff, err := readResumeControl(ctx, tokenConfig.ClientName, store)
+	if err != nil {
+		return ResumeControlDecision{}, fmt.Errorf("failed to read resume-control state: %w", err)
+	}
+
+	if mode != resumeControlModeCreating {
+		mode = ResumeControlModeCreate
+		cutoff = time.Time{}
+	}
+
+	cutoff, err = prepareCreateResumeControl(ctx, tokenConfig.ClientName, mode, cutoff, store)
+	if err != nil {
+		return ResumeControlDecision{}, fmt.Errorf("failed to prepare forced resume-control CREATE: %w", err)
+	}
+
+	slog.InfoContext(ctx, "Deleting change stream resume token on startup",
+		"clientName", tokenConfig.ClientName,
+		"tokenDatabase", tokenConfig.TokenDatabase,
+		"tokenCollection", tokenConfig.TokenCollection)
+
+	if err := dbClient.DeleteResumeToken(ctx, tokenConfig); err != nil {
+		return ResumeControlDecision{}, fmt.Errorf("failed to delete change stream resume token: %w", err)
+	}
+
+	if onTokenDeleted != nil {
+		if err := onTokenDeleted(); err != nil {
+			return ResumeControlDecision{}, fmt.Errorf("failed to complete component CREATE transition: %w", err)
+		}
+	}
+
+	if err := store.SetMode(ctx, tokenConfig.ClientName, ResumeControlModeResume); err != nil {
+		return ResumeControlDecision{}, fmt.Errorf("failed to reset change stream resume control for %s to %s: %w",
+			tokenConfig.ClientName, ResumeControlModeResume, err)
+	}
+
+	return ResumeControlDecision{StartFresh: true, ColdStartCutoff: cutoff}, nil
+}
+
 func resetResumeTokenOnStartWithStore(
 	ctx context.Context,
 	dbClient DatabaseClient,
