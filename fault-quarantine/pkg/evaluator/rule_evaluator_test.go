@@ -26,7 +26,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
@@ -41,11 +43,15 @@ import (
 
 type directNodeReaderStub struct {
 	node  *corev1.Node
+	err   error
 	calls int
 }
 
 func (s *directNodeReaderStub) GetNodeDirect(context.Context, string) (*corev1.Node, error) {
 	s.calls++
+	if s.err != nil {
+		return nil, s.err
+	}
 
 	return s.node.DeepCopy(), nil
 }
@@ -187,6 +193,29 @@ func TestNodeRuleEvaluatorReadsCurrentNodeDuringRecovery(t *testing.T) {
 	if result != common.RuleEvaluationSuccess || reader.calls != 1 {
 		t.Fatalf("recovery evaluation result/calls = %v/%d, want success/1", result, reader.calls)
 	}
+}
+
+func TestNodeRuleEvaluator_DeletedNodeDuringRecovery_ReturnsPermanentError(t *testing.T) {
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	reader := &directNodeReaderStub{
+		err: apierrors.NewNotFound(schema.GroupResource{Resource: "nodes"}, "deleted-node"),
+	}
+	evaluator, err := newNodeRuleEvaluator(
+		`node.metadata.name == "deleted-node"`,
+		corelisters.NewNodeLister(indexer),
+		reader,
+	)
+	require.NoError(t, err)
+
+	result, err := evaluator.Evaluate(
+		coldstart.WithRecoveryContext(context.Background()),
+		&protos.HealthEvent{NodeName: "deleted-node"},
+	)
+
+	assert.Equal(t, common.RuleEvaluationFailed, result)
+	require.Error(t, err)
+	assert.True(t, coldstart.IsPermanentError(err))
+	assert.Equal(t, 1, reader.calls)
 }
 
 func TestEvaluate(t *testing.T) {

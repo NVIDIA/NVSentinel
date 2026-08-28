@@ -25,6 +25,7 @@ import (
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/ext"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	corelisters "k8s.io/client-go/listers/core/v1"
 
@@ -206,14 +207,20 @@ func (nm *NodeRuleEvaluator) getNode(ctx context.Context, nodeName string) (map[
 		err  error
 	)
 
-	if coldstart.IsRecoveryContext(ctx) && nm.nodeReader != nil {
+	isRecoveryRead := coldstart.IsRecoveryContext(ctx) && nm.nodeReader != nil
+	if isRecoveryRead {
 		node, err = nm.nodeReader.GetNodeDirect(ctx, nodeName)
 	} else {
 		node, err = nm.nodeLister.Get(nodeName)
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to get node %s: %w", nodeName, err)
+		wrappedErr := fmt.Errorf("failed to get node %s: %w", nodeName, err)
+		if isRecoveryRead && apierrors.IsNotFound(err) {
+			return nil, coldstart.PermanentError(wrappedErr)
+		}
+
+		return nil, wrappedErr
 	}
 
 	unstructuredObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(node)
