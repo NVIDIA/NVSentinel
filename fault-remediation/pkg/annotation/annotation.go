@@ -104,20 +104,14 @@ func (m *NodeAnnotationManager) UpdateRemediationState(ctx context.Context, node
 			return err
 		}
 
-		// Increment retry count if this group already exists
-		existingGroup, exists := state.EquivalenceGroups[group]
-		retryCount := 1
-
-		if exists {
-			retryCount = existingGroup.RetryCount + 1
-		}
-
+		// Preserve the attempt count: it is owned by RecordRemediationAttempt, which runs
+		// before the CR is created so that failed creations are counted too.
 		// Update state for the group
 		state.EquivalenceGroups[group] = EquivalenceGroupState{
 			MaintenanceCR: crName,
 			CreatedAt:     time.Now().UTC(),
 			ActionName:    actionName,
-			RetryCount:    retryCount,
+			AttemptCount:  state.EquivalenceGroups[group].AttemptCount,
 		}
 
 		// Marshal to JSON
@@ -140,8 +134,7 @@ func (m *NodeAnnotationManager) UpdateRemediationState(ctx context.Context, node
 		slog.InfoContext(ctx, "Updated remediation state annotation for node",
 			"node", nodeName,
 			"group", group,
-			"crName", crName,
-			"retryCount", retryCount)
+			"crName", crName)
 
 		return nil
 	})
@@ -150,6 +143,57 @@ func (m *NodeAnnotationManager) UpdateRemediationState(ctx context.Context, node
 	}
 
 	return nil
+}
+
+// RecordRemediationAttempt increments the attempt counter for a group and returns the new
+// value. It is called before the maintenance CR is created so that attempts which never
+// produce a CR (missing CRD, RBAC denial, rejecting webhook) are still counted and cannot
+// loop past the configured cap. The group entry is created if absent; MaintenanceCR and
+// ActionName stay empty until UpdateRemediationState records the CR that was created.
+func (m *NodeAnnotationManager) RecordRemediationAttempt(ctx context.Context, nodeName string,
+	group string) (int, error) {
+	attemptCount := 0
+
+	err := retry.RetryOnConflict(conflictBackoff, func() error {
+		state, node, err := m.GetRemediationState(ctx, nodeName)
+		if err != nil {
+			return err
+		}
+
+		// A missing key yields the zero struct, so this also covers the first attempt.
+		groupState := state.EquivalenceGroups[group]
+		groupState.AttemptCount++
+		attemptCount = groupState.AttemptCount
+		state.EquivalenceGroups[group] = groupState
+
+		stateJSON, err := json.Marshal(state)
+		if err != nil {
+			return err
+		}
+
+		updatedNode := node.DeepCopy()
+		if updatedNode.Annotations == nil {
+			updatedNode.Annotations = map[string]string{}
+		}
+
+		updatedNode.Annotations[AnnotationKey] = string(stateJSON)
+
+		if err = m.client.Update(ctx, updatedNode); err != nil {
+			return err
+		}
+
+		slog.InfoContext(ctx, "Recorded remediation attempt for node",
+			"node", nodeName,
+			"group", group,
+			"attemptCount", attemptCount)
+
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("failed to record remediation attempt for node %s: %w", nodeName, err)
+	}
+
+	return attemptCount, nil
 }
 
 // ClearRemediationState removes the remediation state annotation from a node
@@ -185,8 +229,33 @@ func (m *NodeAnnotationManager) ClearRemediationState(ctx context.Context, nodeN
 	return nil
 }
 
-// RemoveGroupsFromState removes multiple groups from the remediation state in a single atomic read-modify-write
-// operation. This avoids the race condition that occurs when removing groups one at a time in a loop.
+// endGroupSessions clears the CR reference of each named group while keeping its attempt
+// budget, and drops groups that never recorded an attempt.
+func endGroupSessions(state *RemediationStateAnnotation, groups []string) {
+	for _, group := range groups {
+		groupState, exists := state.EquivalenceGroups[group]
+		if !exists {
+			continue
+		}
+
+		if groupState.AttemptCount == 0 {
+			delete(state.EquivalenceGroups, group)
+			continue
+		}
+
+		state.EquivalenceGroups[group] = EquivalenceGroupState{AttemptCount: groupState.AttemptCount}
+	}
+}
+
+// RemoveGroupsFromState ends the remediation session for multiple groups in a single atomic
+// read-modify-write operation. This avoids the race condition that occurs when removing groups
+// one at a time in a loop.
+//
+// The CR reference is dropped so a new remediation may start, but AttemptCount is carried over:
+// groups are removed precisely when their CR failed or vanished, which is the case the attempt
+// cap exists to stop. Deleting the count here would reset the budget on every failure and the
+// cap could never be reached. The count is cleared by ClearRemediationState when the quarantine
+// session actually ends.
 func (m *NodeAnnotationManager) RemoveGroupsFromState(ctx context.Context, nodeName string, groups []string) error {
 	err := retry.RetryOnConflict(conflictBackoff, func() error {
 		state, node, err := m.GetRemediationState(ctx, nodeName)
@@ -194,10 +263,8 @@ func (m *NodeAnnotationManager) RemoveGroupsFromState(ctx context.Context, nodeN
 			return err
 		}
 
-		// Remove the groups
-		for _, group := range groups {
-			delete(state.EquivalenceGroups, group)
-		}
+		// Drop the CR reference but keep the attempt budget for this session.
+		endGroupSessions(state, groups)
 
 		// If no groups remain, clear the entire annotation
 		if len(state.EquivalenceGroups) == 0 {
