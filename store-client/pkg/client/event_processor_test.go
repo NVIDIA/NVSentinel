@@ -75,6 +75,39 @@ func TestDefaultEventProcessorCheckpointOrdering(t *testing.T) {
 			wantHandled:   []string{"1"},
 			wantMarkCalls: []string{"1"},
 		},
+		{
+			name: "unmarshal error stops when checkpoint fails",
+			firstEvent: &eventProcessorTestEvent{
+				id:           "1",
+				token:        []byte("1"),
+				unmarshalErr: errors.New("invalid event"),
+			},
+			markErrors:    map[string]error{"1": checkpointErr},
+			wantErrors:    []error{checkpointErr},
+			wantMarkCalls: []string{"1"},
+		},
+		{
+			name: "document ID error stops when checkpoint fails",
+			firstEvent: &eventProcessorTestEvent{
+				id:            "1",
+				token:         []byte("1"),
+				documentIDErr: errors.New("invalid document ID"),
+			},
+			markErrors:    map[string]error{"1": checkpointErr},
+			wantErrors:    []error{checkpointErr},
+			wantMarkCalls: []string{"1"},
+		},
+		{
+			name: "invalid event continues after checkpoint",
+			firstEvent: &eventProcessorTestEvent{
+				id:           "1",
+				token:        []byte("1"),
+				unmarshalErr: errors.New("invalid event"),
+			},
+			wantHandled:   []string{"2"},
+			wantMarkCalls: []string{"1", "2"},
+			wantMarked:    []string{"1", "2"},
+		},
 	}
 
 	for _, test := range tests {
@@ -116,8 +149,10 @@ func newDefaultEventProcessorForTest(
 }
 
 type eventProcessorTestEvent struct {
-	id    string
-	token []byte
+	id            string
+	token         []byte
+	unmarshalErr  error
+	documentIDErr error
 }
 
 func newEventProcessorTestEvent(id string) *eventProcessorTestEvent {
@@ -125,7 +160,7 @@ func newEventProcessorTestEvent(id string) *eventProcessorTestEvent {
 }
 
 func (e *eventProcessorTestEvent) GetDocumentID() (string, error) {
-	return e.id, nil
+	return e.id, e.documentIDErr
 }
 
 func (e *eventProcessorTestEvent) GetRecordUUID() (string, error) {
@@ -141,6 +176,10 @@ func (e *eventProcessorTestEvent) GetResumeToken() []byte {
 }
 
 func (e *eventProcessorTestEvent) UnmarshalDocument(value any) error {
+	if e.unmarshalErr != nil {
+		return e.unmarshalErr
+	}
+
 	event, ok := value.(*model.HealthEventWithStatus)
 	if !ok {
 		return fmt.Errorf("unexpected document type %T", value)
