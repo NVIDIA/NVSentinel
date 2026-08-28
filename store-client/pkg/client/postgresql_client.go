@@ -337,14 +337,8 @@ func (c *PostgreSQLClient) UpdateDocumentStatusFields(
 
 		parts := strings.Split(path, ".")
 		jsonbPath := "{" + strings.Join(parts, ",") + "}"
-		for depth := 1; depth < len(parts); depth++ {
-			parentPath := "{" + strings.Join(parts[:depth], ",") + "}"
-			parentValue := fmt.Sprintf("%s #> '%s'", setExpression, parentPath)
-			setExpression = fmt.Sprintf(
-				"jsonb_set(%s, '%s', CASE WHEN jsonb_typeof(%s) = 'object' THEN %s ELSE '{}'::jsonb END, true)",
-				setExpression, parentPath, parentValue, parentValue,
-			)
-		}
+
+		setExpression = initializeJSONBParents(setExpression, parts)
 
 		valueJSON, err := json.Marshal(value)
 		if err != nil {
@@ -409,6 +403,19 @@ func (c *PostgreSQLClient) UpdateDocumentStatusFields(
 	}
 
 	return nil
+}
+
+func initializeJSONBParents(expression string, parts []string) string {
+	for depth := 1; depth < len(parts); depth++ {
+		parentPath := "{" + strings.Join(parts[:depth], ",") + "}"
+		parentValue := fmt.Sprintf("%s #> '%s'", expression, parentPath)
+		expression = fmt.Sprintf(
+			"jsonb_set(%s, '%s', CASE WHEN jsonb_typeof(%s) = 'object' THEN %s ELSE '{}'::jsonb END, true)",
+			expression, parentPath, parentValue, parentValue,
+		)
+	}
+
+	return expression
 }
 
 // UpdateDocument performs a general update operation

@@ -115,10 +115,11 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 
 		return err
 	}
+
 	if ctx.Err() != nil {
 		w.closeAfterColdStart(ctx)
 
-		return nil
+		return nil //nolint:nilerr // Cancellation is the expected shutdown path.
 	}
 
 	w.armRecoveredEventExpiry(time.Now())
