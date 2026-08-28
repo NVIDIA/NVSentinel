@@ -26,6 +26,8 @@ import (
 	"sync"
 	"time"
 
+	"log/slog"
+
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -133,6 +135,26 @@ func (r *GPUResetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 		locked := r.NodeLock.LockNode(ctx, &gpuReset, gpuReset.Spec.NodeName)
 		if !locked {
+			if !reconcileDelete {
+				holder, active, err := activeSameKindHolder(
+					ctx, r.Client, r.NodeLock, gpuReset.Spec.NodeName, "GPUReset",
+				)
+				if err != nil {
+					slog.WarnContext(ctx, "Unable to inspect node lock holder; will retry",
+						"node", gpuReset.Spec.NodeName, "error", err)
+				} else if active {
+					holderGPUReset, ok := holder.(*v1alpha1.GPUReset)
+					if ok && gpuUUIDsOverlap(gpuReset.Spec.Selector, holderGPUReset.Spec.Selector) {
+						return r.reconcileTerminalFailure(
+							ctx,
+							&gpuReset,
+							v1alpha1.ReasonGPUAlreadyUnderMaintenance,
+							fmt.Sprintf("GPUReset/%s is active for this node", holderGPUReset.Name),
+						)
+					}
+				}
+			}
+
 			return ctrl.Result{RequeueAfter: time.Second * 2}, nil
 		}
 
@@ -395,12 +417,8 @@ func (r *GPUResetReconciler) reconcileDelete(ctx context.Context, gr *v1alpha1.G
 	return ctrl.Result{}, nil
 }
 
-// isReady ensures only one GPUReset is executed at a time per node. It finds
-// all pending and in-progress resets for the target node and only allows the
-// oldest one (by creation timestamp) to proceed. All other resets for that node
-// are put into a waiting state with a 'ResourceContention' reason.
-//
-// It also enforces the 'pending' and 'active' gauge metrics based on the current cluster state.
+// isReady records that the GPUReset may proceed after the reconciler has
+// acquired the node-level lease.
 func (r *GPUResetReconciler) isReady(ctx context.Context, gr *v1alpha1.GPUReset) (ctrl.Result, error) {
 	nodeName := gr.Spec.NodeName
 
@@ -1323,6 +1341,8 @@ func reconcilePhase(reason v1alpha1.GPUResetReason) v1alpha1.GPUResetPhase {
 	case v1alpha1.ReasonRestoreTimeoutExceeded:
 		return v1alpha1.ResetFailed
 	case v1alpha1.ReasonInternalError:
+		return v1alpha1.ResetFailed
+	case v1alpha1.ReasonGPUAlreadyUnderMaintenance:
 		return v1alpha1.ResetFailed
 	default:
 		return v1alpha1.ResetUnknown
