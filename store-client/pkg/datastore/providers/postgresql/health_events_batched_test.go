@@ -40,7 +40,7 @@ func TestFindHealthEventsByQueryBatchedUsesStableKeysetPagination(t *testing.T) 
 	t2 := t1.Add(time.Second)
 	t3 := t2.Add(time.Second)
 
-	firstQuery := "SELECT id, created_at, document FROM health_events WHERE node_quarantined IS NULL " +
+	firstQuery := "SELECT id, created_at, document FROM health_events WHERE (node_quarantined IS NULL) " +
 		"ORDER BY created_at ASC, id ASC LIMIT 2"
 	mock.ExpectQuery(regexp.QuoteMeta(firstQuery)).WillReturnRows(
 		sqlmock.NewRows([]string{"id", "created_at", "document"}).
@@ -48,7 +48,7 @@ func TestFindHealthEventsByQueryBatchedUsesStableKeysetPagination(t *testing.T) 
 			AddRow("00000000-0000-0000-0000-000000000002", t2, []byte(`{}`)),
 	)
 
-	secondQuery := "SELECT id, created_at, document FROM health_events WHERE node_quarantined IS NULL " +
+	secondQuery := "SELECT id, created_at, document FROM health_events WHERE (node_quarantined IS NULL) " +
 		"AND (created_at, id) > ($1, $2) ORDER BY created_at ASC, id ASC LIMIT 2"
 	mock.ExpectQuery(regexp.QuoteMeta(secondQuery)).
 		WithArgs(t2, "00000000-0000-0000-0000-000000000002").
@@ -85,7 +85,7 @@ func TestFindHealthEventsByQueryBatchedStopsOnCallbackError(t *testing.T) {
 	store := NewPostgreSQLHealthEventStore(db)
 	filter := query.New().Build(query.Eq("node_quarantined", nil))
 	createdAt := time.Date(2026, time.August, 27, 10, 0, 0, 0, time.UTC)
-	queryText := "SELECT id, created_at, document FROM health_events WHERE node_quarantined IS NULL " +
+	queryText := "SELECT id, created_at, document FROM health_events WHERE (node_quarantined IS NULL) " +
 		"ORDER BY created_at ASC, id ASC LIMIT 1"
 	mock.ExpectQuery(regexp.QuoteMeta(queryText)).WillReturnRows(
 		sqlmock.NewRows([]string{"id", "created_at", "document"}).
@@ -100,5 +100,109 @@ func TestFindHealthEventsByQueryBatchedStopsOnCallbackError(t *testing.T) {
 		func([]datastore.HealthEventWithStatus) error { return callbackErr },
 	)
 	require.ErrorIs(t, err, callbackErr)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestFindHealthEventsByQueryBatchedParenthesizesORFilterBeforeCursor(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	store := NewPostgreSQLHealthEventStore(db)
+	filter := query.New().Build(query.Or(
+		query.Eq("node_quarantined", nil),
+		query.Eq("node_quarantined", "NotStarted"),
+	))
+	t1 := time.Date(2026, time.August, 27, 10, 0, 0, 0, time.UTC)
+	t2 := t1.Add(time.Second)
+
+	firstQuery := "SELECT id, created_at, document FROM health_events WHERE " +
+		"((node_quarantined IS NULL) OR (node_quarantined = $1)) " +
+		"ORDER BY created_at ASC, id ASC LIMIT 1"
+	mock.ExpectQuery(regexp.QuoteMeta(firstQuery)).
+		WithArgs("NotStarted").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "document"}).
+			AddRow("00000000-0000-0000-0000-000000000001", t1, []byte(`{}`)))
+
+	secondQuery := "SELECT id, created_at, document FROM health_events WHERE " +
+		"((node_quarantined IS NULL) OR (node_quarantined = $1)) " +
+		"AND (created_at, id) > ($2, $3) ORDER BY created_at ASC, id ASC LIMIT 1"
+	mock.ExpectQuery(regexp.QuoteMeta(secondQuery)).
+		WithArgs("NotStarted", t1, "00000000-0000-0000-0000-000000000001").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "document"}).
+			AddRow("00000000-0000-0000-0000-000000000002", t2, []byte(`{}`)))
+
+	thirdQuery := "SELECT id, created_at, document FROM health_events WHERE " +
+		"((node_quarantined IS NULL) OR (node_quarantined = $1)) " +
+		"AND (created_at, id) > ($2, $3) ORDER BY created_at ASC, id ASC LIMIT 1"
+	mock.ExpectQuery(regexp.QuoteMeta(thirdQuery)).
+		WithArgs("NotStarted", t2, "00000000-0000-0000-0000-000000000002").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "document"}))
+
+	var ids []any
+	err = store.FindHealthEventsByQueryBatched(
+		context.Background(),
+		filter,
+		1,
+		func(batch []datastore.HealthEventWithStatus) error {
+			for i := range batch {
+				ids = append(ids, batch[i].RawEvent["id"])
+			}
+
+			return nil
+		},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, []any{
+		"00000000-0000-0000-0000-000000000001",
+		"00000000-0000-0000-0000-000000000002",
+	}, ids)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestFindHealthEventsByQueryBatchedSkipsInvalidDocumentAndAdvancesCursor(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	store := NewPostgreSQLHealthEventStore(db)
+	filter := query.New().Build(query.Eq("node_quarantined", nil))
+	t1 := time.Date(2026, time.August, 27, 10, 0, 0, 0, time.UTC)
+	t2 := t1.Add(time.Second)
+
+	firstQuery := "SELECT id, created_at, document FROM health_events WHERE (node_quarantined IS NULL) " +
+		"ORDER BY created_at ASC, id ASC LIMIT 1"
+	mock.ExpectQuery(regexp.QuoteMeta(firstQuery)).WillReturnRows(
+		sqlmock.NewRows([]string{"id", "created_at", "document"}).
+			AddRow("00000000-0000-0000-0000-000000000001", t1, []byte(`{invalid`)),
+	)
+
+	secondQuery := "SELECT id, created_at, document FROM health_events WHERE (node_quarantined IS NULL) " +
+		"AND (created_at, id) > ($1, $2) ORDER BY created_at ASC, id ASC LIMIT 1"
+	mock.ExpectQuery(regexp.QuoteMeta(secondQuery)).
+		WithArgs(t1, "00000000-0000-0000-0000-000000000001").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "document"}).
+			AddRow("00000000-0000-0000-0000-000000000002", t2, []byte(`{}`)))
+
+	thirdQuery := "SELECT id, created_at, document FROM health_events WHERE (node_quarantined IS NULL) " +
+		"AND (created_at, id) > ($1, $2) ORDER BY created_at ASC, id ASC LIMIT 1"
+	mock.ExpectQuery(regexp.QuoteMeta(thirdQuery)).
+		WithArgs(t2, "00000000-0000-0000-0000-000000000002").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "document"}))
+
+	var recovered []datastore.HealthEventWithStatus
+	err = store.FindHealthEventsByQueryBatched(
+		context.Background(),
+		filter,
+		1,
+		func(batch []datastore.HealthEventWithStatus) error {
+			recovered = append(recovered, batch...)
+
+			return nil
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, recovered, 1)
+	assert.Equal(t, "00000000-0000-0000-0000-000000000002", recovered[0].RawEvent["id"])
 	require.NoError(t, mock.ExpectationsWereMet())
 }

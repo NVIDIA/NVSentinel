@@ -942,21 +942,23 @@ func (p *PostgreSQLHealthEventStore) FindHealthEventsByQueryBatched(ctx context.
 	)
 
 	for {
-		batch, nextCreatedAt, nextID, err := p.queryHealthEventBatch(
+		batch, rowsRead, nextCreatedAt, nextID, err := p.queryHealthEventBatch(
 			ctx, whereClause, args, batchSize, lastCreatedAt, lastID, hasCursor)
 		if err != nil {
 			return fmt.Errorf("failed to query health events batch: %w", err)
 		}
 
-		if len(batch) == 0 {
+		if rowsRead == 0 {
 			break
 		}
 
-		if err := fn(batch); err != nil {
-			return err
+		if len(batch) > 0 {
+			if err := fn(batch); err != nil {
+				return err
+			}
 		}
 
-		if len(batch) < batchSize {
+		if rowsRead < batchSize {
 			break
 		}
 
@@ -976,7 +978,7 @@ func (p *PostgreSQLHealthEventStore) queryHealthEventBatch(
 	lastCreatedAt time.Time,
 	lastID string,
 	hasCursor bool,
-) ([]datastore.HealthEventWithStatus, time.Time, string, error) {
+) ([]datastore.HealthEventWithStatus, int, time.Time, string, error) {
 	args := append([]any(nil), baseArgs...)
 	cursorClause := ""
 
@@ -988,32 +990,38 @@ func (p *PostgreSQLHealthEventStore) queryHealthEventBatch(
 
 	//nolint:gosec // G202 false positive - batchSize is an integer controlled by the caller
 	q := fmt.Sprintf(
-		"SELECT id, created_at, document FROM health_events WHERE %s%s "+
+		"SELECT id, created_at, document FROM health_events WHERE (%s)%s "+
 			"ORDER BY created_at ASC, id ASC LIMIT %d",
 		whereClause, cursorClause, batchSize)
 
 	rows, err := p.db.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, time.Time{}, "", fmt.Errorf("failed to query health events: %w", err)
+		return nil, 0, time.Time{}, "", fmt.Errorf("failed to query health events: %w", err)
 	}
 	defer rows.Close()
 
 	var (
 		batch         = make([]datastore.HealthEventWithStatus, 0, batchSize)
+		rowsRead      int
 		nextCreatedAt time.Time
 		nextID        string
 	)
 
 	for rows.Next() {
+		rowsRead++
+
 		var documentJSON []byte
 
 		if err := rows.Scan(&nextID, &nextCreatedAt, &documentJSON); err != nil {
-			return nil, time.Time{}, "", fmt.Errorf("failed to scan health event: %w", err)
+			return nil, 0, time.Time{}, "", fmt.Errorf("failed to scan health event: %w", err)
 		}
 
 		event, err := decodeHealthEventDocument(documentJSON)
 		if err != nil {
-			return nil, time.Time{}, "", err
+			slog.WarnContext(ctx, "Skipping invalid PostgreSQL health event document",
+				"documentID", nextID, "error", err)
+
+			continue
 		}
 
 		event.CreatedAt = nextCreatedAt
@@ -1022,10 +1030,10 @@ func (p *PostgreSQLHealthEventStore) queryHealthEventBatch(
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, time.Time{}, "", fmt.Errorf("error iterating health event rows: %w", err)
+		return nil, 0, time.Time{}, "", fmt.Errorf("error iterating health event rows: %w", err)
 	}
 
-	return batch, nextCreatedAt, nextID, nil
+	return batch, rowsRead, nextCreatedAt, nextID, nil
 }
 
 // queryHealthEventsWithID executes a query that returns (id, document) rows
