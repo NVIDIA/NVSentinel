@@ -142,6 +142,35 @@ func (b *MongoDBPipelineBuilder) BuildProcessableNonFatalUnhealthyInsertsPipelin
 	)
 }
 
+// BuildAnalyzerHealthEventInsertsPipeline creates the analyzer input pipeline.
+// It includes processable healthy events so configured recovery mappings can
+// clear derived conditions, while still excluding analyzer output and
+// observability-only STORE_ONLY events.
+func (b *MongoDBPipelineBuilder) BuildAnalyzerHealthEventInsertsPipeline() datastore.Pipeline {
+	return datastore.ToPipeline(
+		datastore.D(
+			datastore.E(opMatch, datastore.D(
+				datastore.E(fieldOperationType, opTypeInsert),
+				datastore.E("fullDocument.healthevent.agent", datastore.D(datastore.E(opNE, "health-events-analyzer"))),
+				datastore.E("$or", datastore.A(
+					datastore.D(datastore.E(
+						"fullDocument.healthevent.processingstrategy",
+						int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION),
+					)),
+					datastore.D(datastore.E(
+						"fullDocument.healthevent.processingstrategy",
+						int32(protos.ProcessingStrategy_STORE_AND_ANALYSE),
+					)),
+					datastore.D(datastore.E(
+						"fullDocument.healthevent.processingstrategy",
+						datastore.D(datastore.E("$exists", false)),
+					)),
+				)),
+			)),
+		),
+	)
+}
+
 // BuildQuarantinedAndDrainedNodesPipeline creates a pipeline for remediation-ready nodes
 // This watches for insert/update events where both quarantine and eviction status indicate the
 // node is ready for reboot, or where the node has been unquarantined and needs cleanup, or where

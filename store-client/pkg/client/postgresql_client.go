@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -38,13 +39,16 @@ const (
 	jsonbDocumentColumn = "document"
 
 	// MongoDB query operators
-	opLTE = "$lte"
-	opEQ  = "$eq"
-	opGTE = "$gte"
-	opGT  = "$gt"
-	opLT  = "$lt"
-	opNE  = "$ne"
-	opIn  = "$in"
+	opLTE    = "$lte"
+	opEQ     = "$eq"
+	opGTE    = "$gte"
+	opGT     = "$gt"
+	opLT     = "$lt"
+	opNE     = "$ne"
+	opIn     = "$in"
+	opExists = "$exists"
+	opAnd    = "$and"
+	opOr     = "$or"
 
 	// MongoDB aggregation stages and update operators
 	opMatch = "$match"
@@ -808,23 +812,49 @@ func (c *PostgreSQLClient) buildWhereClause(filter any) (string, []any, error) {
 		return sqlTrueClause, []any{}, nil
 	}
 
+	return c.buildWhereClauseMap(filterMap, 1)
+}
+
+func (c *PostgreSQLClient) buildWhereClauseMap(
+	filterMap map[string]any,
+	startParam int,
+) (string, []any, error) {
 	var (
 		conditions []string
 		args       []any
 	)
 
-	paramCount := 1
+	paramCount := startParam
+	keys := make([]string, 0, len(filterMap))
 
-	for key, value := range filterMap {
-		// Handle special operators
-		if key == "$expr" {
-			// Handle $expr operator which allows aggregation expressions in match
+	for key := range filterMap {
+		keys = append(keys, key)
+	}
+
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		value := filterMap[key]
+
+		switch key {
+		case "$expr":
 			exprCondition, err := c.buildExprCondition(value)
 			if err != nil {
 				return "", nil, err
 			}
 
 			conditions = append(conditions, exprCondition)
+
+			continue
+		case opAnd, opOr:
+			condition, logicalArgs, err := c.buildLogicalWhereClause(key, value, paramCount)
+			if err != nil {
+				return "", nil, err
+			}
+
+			conditions = append(conditions, condition)
+			args = append(args, logicalArgs...)
+			paramCount += len(logicalArgs)
 
 			continue
 		}
@@ -851,13 +881,77 @@ func (c *PostgreSQLClient) buildWhereClause(filter any) (string, []any, error) {
 		// Example: {"healthevent.nodename": "node-1"} → document->'healthevent'->>'nodename' = $1
 		jsonPath := c.buildJSONPath(key)
 		conditions = append(conditions, fmt.Sprintf("%s = $%d", jsonPath, paramCount))
-		args = append(args, value)
+		args = append(args, comparisonArgument(jsonPath, value))
 		paramCount++
 	}
 
 	whereClause := strings.Join(conditions, " AND ")
 
 	return whereClause, args, nil
+}
+
+func (c *PostgreSQLClient) buildLogicalWhereClause(
+	operator string,
+	value any,
+	startParam int,
+) (string, []any, error) {
+	logicalValues, ok := logicalFilterValues(value)
+	if !ok || len(logicalValues) == 0 {
+		return "", nil, datastore.NewValidationError(
+			datastore.ProviderPostgreSQL,
+			fmt.Sprintf("%s must contain at least one filter", operator),
+			fmt.Errorf("got type %T", value),
+		)
+	}
+
+	logicalConditions := make([]string, 0, len(logicalValues))
+	logicalArgs := make([]any, 0)
+	paramCount := startParam
+
+	for i, logicalValue := range logicalValues {
+		logicalMap, ok := logicalValue.(map[string]any)
+		if !ok {
+			return "", nil, datastore.NewValidationError(
+				datastore.ProviderPostgreSQL,
+				fmt.Sprintf("%s filter %d must be a map", operator, i),
+				fmt.Errorf("got type %T", logicalValue),
+			)
+		}
+
+		condition, args, err := c.buildWhereClauseMap(logicalMap, paramCount)
+		if err != nil {
+			return "", nil, fmt.Errorf("build %s filter %d: %w", operator, i, err)
+		}
+
+		logicalConditions = append(logicalConditions, condition)
+		logicalArgs = append(logicalArgs, args...)
+		paramCount += len(args)
+	}
+
+	joiner := " OR "
+	if operator == opAnd {
+		joiner = " AND "
+	}
+
+	return "(" + strings.Join(logicalConditions, joiner) + ")", logicalArgs, nil
+}
+
+func logicalFilterValues(value any) ([]any, bool) {
+	switch value := value.(type) {
+	case []any:
+		return value, true
+	case []map[string]any:
+		values := make([]any, len(value))
+		for i := range value {
+			values[i] = value[i]
+		}
+
+		return values, true
+	case datastore.Array:
+		return []any(value), true
+	default:
+		return nil, false
+	}
 }
 
 // buildFieldComparison builds a comparison condition for a field with operators
@@ -874,23 +968,30 @@ func (c *PostgreSQLClient) buildFieldComparison(
 
 	paramCount := startParam
 
-	for op, value := range operators {
-		var sqlOp string
+	operatorNames := make([]string, 0, len(operators))
 
-		switch op {
-		case opGTE:
-			sqlOp = ">="
-		case opGT:
-			sqlOp = ">"
-		case opLTE:
-			sqlOp = "<="
-		case opLT:
-			sqlOp = "<"
-		case opEQ:
-			sqlOp = "="
-		case opNE:
-			sqlOp = "!="
-		default:
+	for op := range operators {
+		operatorNames = append(operatorNames, op)
+	}
+
+	sort.Strings(operatorNames)
+
+	for _, op := range operatorNames {
+		value := operators[op]
+
+		if op == opExists {
+			condition, err := buildExistsCondition(jsonPath, value)
+			if err != nil {
+				return "", nil, err
+			}
+
+			conditions = append(conditions, condition)
+
+			continue
+		}
+
+		sqlOperator, ok := sqlComparisonOperator(op)
+		if !ok {
 			return "", nil, datastore.NewQueryError(
 				datastore.ProviderPostgreSQL,
 				fmt.Sprintf("unsupported comparison operator: %s", op),
@@ -898,14 +999,88 @@ func (c *PostgreSQLClient) buildFieldComparison(
 			)
 		}
 
-		conditions = append(conditions, fmt.Sprintf("%s %s $%d", jsonPath, sqlOp, paramCount))
-		args = append(args, value)
+		conditions = append(conditions, fmt.Sprintf("%s %s $%d", jsonPath, sqlOperator, paramCount))
+		args = append(args, comparisonArgument(jsonPath, value))
 		paramCount++
 	}
 
 	condition := strings.Join(conditions, " AND ")
 
 	return condition, args, nil
+}
+
+func buildExistsCondition(jsonPath string, value any) (string, error) {
+	exists, ok := value.(bool)
+	if !ok {
+		return "", datastore.NewValidationError(
+			datastore.ProviderPostgreSQL,
+			"$exists value must be a boolean",
+			fmt.Errorf("got type %T", value),
+		)
+	}
+
+	if exists {
+		return jsonPath + " IS NOT NULL", nil
+	}
+
+	return jsonPath + " IS NULL", nil
+}
+
+func sqlComparisonOperator(operator string) (string, bool) {
+	switch operator {
+	case opGTE:
+		return ">=", true
+	case opGT:
+		return ">", true
+	case opLTE:
+		return "<=", true
+	case opLT:
+		return "<", true
+	case opEQ:
+		return "=", true
+	case opNE:
+		return "!=", true
+	default:
+		return "", false
+	}
+}
+
+func comparisonArgument(jsonPath string, value any) any {
+	if jsonPath == "created_at" || jsonPath == "updated_at" {
+		return value
+	}
+
+	reflected := reflect.ValueOf(value)
+	if !reflected.IsValid() {
+		return value
+	}
+
+	return formatJSONScalar(reflected, value)
+}
+
+func formatJSONScalar(reflected reflect.Value, fallback any) any {
+	if reflected.Kind() == reflect.Bool {
+		return strconv.FormatBool(reflected.Bool())
+	}
+
+	return formatJSONNumber(reflected, fallback)
+}
+
+func formatJSONNumber(reflected reflect.Value, fallback any) any {
+	kind := reflected.Kind()
+	if kind >= reflect.Int && kind <= reflect.Int64 {
+		return strconv.FormatInt(reflected.Int(), 10)
+	}
+
+	if kind >= reflect.Uint && kind <= reflect.Uint64 {
+		return strconv.FormatUint(reflected.Uint(), 10)
+	}
+
+	if kind == reflect.Float32 || kind == reflect.Float64 {
+		return strconv.FormatFloat(reflected.Float(), 'g', -1, reflected.Type().Bits())
+	}
+
+	return fallback
 }
 
 // buildExprCondition converts MongoDB $expr operator to PostgreSQL SQL
@@ -925,7 +1100,7 @@ func (c *PostgreSQLClient) buildExprCondition(expr any) (string, error) {
 	// Handle logical and comparison operators
 	for op, value := range exprMap {
 		switch op {
-		case "$and":
+		case opAnd:
 			// Handle logical AND
 			andArray, ok := value.([]any)
 			if !ok {
@@ -957,7 +1132,7 @@ func (c *PostgreSQLClient) buildExprCondition(expr any) (string, error) {
 
 			return fmt.Sprintf("(%s)", strings.Join(conditions, " AND ")), nil
 
-		case "$or":
+		case opOr:
 			// Handle logical OR
 			orArray, ok := value.([]any)
 			if !ok {
@@ -1389,7 +1564,7 @@ func (c *PostgreSQLClient) buildExprValue(value any) (string, error) {
 					"sql", sql)
 
 				return sql, nil
-			case "$and":
+			case opAnd:
 				// $and performs logical AND on array of expressions: [expr1, expr2, ...]
 				// PostgreSQL: (expr1 AND expr2 AND ...)
 				operandArray, ok := operand.([]any)
@@ -1715,6 +1890,7 @@ var fieldNameMapping = map[string]string{
 	"entitiesimpacted":   "entitiesImpacted",
 	"generatedtimestamp": "generatedTimestamp",
 	"recommendedaction":  "recommendedAction",
+	"processingstrategy": "processingStrategy",
 	"entitytype":         "entityType",
 	"entityvalue":        "entityValue",
 	// timestamp fields
@@ -1766,6 +1942,13 @@ func (c *PostgreSQLClient) buildJSONPathAsJSONB(fieldPath string) string {
 //	"healthevent.nodename" → "document->'healthevent'->>'nodeName'"
 //	"status.message" → "document->'status'->>'message'"
 func (c *PostgreSQLClient) buildJSONPath(fieldPath string) string {
+	switch strings.ToLower(fieldPath) {
+	case "createdat":
+		return "created_at"
+	case "updatedat":
+		return "updated_at"
+	}
+
 	parts := strings.Split(fieldPath, ".")
 
 	if len(parts) == 1 {

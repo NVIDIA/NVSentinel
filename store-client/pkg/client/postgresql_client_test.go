@@ -16,9 +16,11 @@ package client
 
 import (
 	"context"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
@@ -144,6 +146,11 @@ func TestBuildJSONPath(t *testing.T) {
 			field:    "healthevent.status.message",
 			expected: "document->'healthevent'->'status'->>'message'",
 		},
+		{
+			name:     "createdAt column",
+			field:    "createdAt",
+			expected: "created_at",
+		},
 	}
 
 	for _, tt := range tests {
@@ -153,6 +160,100 @@ func TestBuildJSONPath(t *testing.T) {
 				t.Errorf("expected %q, got %q", tt.expected, result)
 			}
 		})
+	}
+}
+
+func TestAggregationRecoveryBoundaryUsesCreatedAtColumn(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	cutoff := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+
+	query, args, err := client.buildAggregationQuery([]map[string]any{
+		{"$match": map[string]any{"createdAt": map[string]any{"$gt": cutoff}}},
+	})
+	if err != nil {
+		t.Fatalf("buildAggregationQuery() error = %v", err)
+	}
+
+	if !strings.Contains(query, "created_at > $1") {
+		t.Fatalf("query does not use typed created_at boundary: %s", query)
+	}
+
+	if len(args) != 1 || !args[0].(time.Time).Equal(cutoff) {
+		t.Fatalf("args = %v, want [%s]", args, cutoff)
+	}
+}
+
+func TestAggregationRecoveryBoundarySupportsNanosecondEventTime(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+
+	query, _, err := client.buildAggregationQuery([]map[string]any{
+		{"$match": map[string]any{
+			"$expr": map[string]any{
+				"$or": []any{
+					map[string]any{
+						"$gt": []any{"$healthevent.generatedtimestamp.seconds", int64(100)},
+					},
+					map[string]any{
+						"$and": []any{
+							map[string]any{
+								"$eq": []any{"$healthevent.generatedtimestamp.seconds", int64(100)},
+							},
+							map[string]any{
+								"$gt": []any{"$healthevent.generatedtimestamp.nanos", int64(250)},
+							},
+						},
+					},
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildAggregationQuery() error = %v", err)
+	}
+
+	for _, expected := range []string{"generatedTimestamp'->>'seconds')::bigint > 100",
+		"generatedTimestamp'->>'nanos')::bigint > 250", " OR ", " AND "} {
+		if !strings.Contains(query, expected) {
+			t.Fatalf("query does not contain %q: %s", expected, query)
+		}
+	}
+}
+
+func TestAggregationSupportsAnalyzerMandatoryLogicalFilter(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+
+	query, args, err := client.buildAggregationQuery([]map[string]any{
+		{"$match": map[string]any{
+			"healthevent.agent":     map[string]any{"$ne": "health-events-analyzer"},
+			"healthevent.ishealthy": false,
+			"$or": []any{
+				map[string]any{"healthevent.processingstrategy": int32(1)},
+				map[string]any{"healthevent.processingstrategy": int32(2)},
+				map[string]any{
+					"healthevent.processingstrategy": map[string]any{"$exists": false},
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildAggregationQuery() error = %v", err)
+	}
+
+	for _, expected := range []string{" OR ", "IS NULL", "document->'healthevent'->>'processingStrategy'"} {
+		if !strings.Contains(query, expected) {
+			t.Fatalf("query does not contain %q: %s", expected, query)
+		}
+	}
+
+	for _, arg := range args {
+		if _, isMap := arg.(map[string]any); isMap {
+			t.Fatalf("SQL argument must not contain a logical-filter map: %#v", args)
+		}
+	}
+
+	wantArgs := []any{"1", "2", "health-events-analyzer", "false"}
+	if !reflect.DeepEqual(args, wantArgs) {
+		t.Fatalf("args = %#v, want %#v", args, wantArgs)
 	}
 }
 

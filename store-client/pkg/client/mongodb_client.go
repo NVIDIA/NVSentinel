@@ -239,7 +239,7 @@ func BuildQuarantineUpdatePipeline() any {
 	return mongo.Pipeline{
 		bson.D{{Key: opMatch, Value: bson.D{
 			{Key: fieldOperationType, Value: "update"},
-			{Key: "$or", Value: bson.A{
+			{Key: opOr, Value: bson.A{
 				bson.D{{Key: fieldUpdatedFields,
 					Value: bson.D{{Key: nodeQuarantinedStatusField, Value: model.Quarantined}}}},
 				bson.D{{Key: fieldUpdatedFields,

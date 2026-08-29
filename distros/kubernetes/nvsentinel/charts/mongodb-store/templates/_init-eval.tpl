@@ -71,6 +71,12 @@ db.$MONGODB_COLLECTION_NAME.createIndex({
   'healthevent.entitiesimpacted.entityvalue': 1,
   'healthevent.generatedtimestamp.seconds': 1
 });
+db.$MONGODB_COLLECTION_NAME.createIndex({
+  'healthevent.agent': 1,
+  'healthevent.checkname': 1,
+  'healthevent.nodename': 1,
+  'createdAt': -1
+});
 {{- if .Values.mongodb.tls.enabled }}
 // Create X.509 users (TLS only)
 var userExists = db.getSiblingDB('\$external').getUser('$MONGODB_APPLICATION_USER_DN');

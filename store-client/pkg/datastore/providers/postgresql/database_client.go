@@ -931,6 +931,10 @@ func (c *PostgreSQLDatabaseClient) Find(
 
 	// Apply options
 	if options != nil {
+		if options.Sort != nil {
+			query += convertMongoSortToSQL(options.Sort)
+		}
+
 		if options.Limit != nil && *options.Limit > 0 {
 			query += fmt.Sprintf(" LIMIT %d", *options.Limit)
 		}

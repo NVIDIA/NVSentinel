@@ -177,6 +177,34 @@ func (b *PostgreSQLPipelineBuilder) BuildProcessableNonFatalUnhealthyInsertsPipe
 	)
 }
 
+// BuildAnalyzerHealthEventInsertsPipeline creates the analyzer input pipeline.
+// PostgreSQL watches inserts and status updates, matching the existing analyzer
+// pipeline behavior while admitting healthy recovery events.
+func (b *PostgreSQLPipelineBuilder) BuildAnalyzerHealthEventInsertsPipeline() datastore.Pipeline {
+	return datastore.ToPipeline(
+		datastore.D(
+			datastore.E(opMatch, datastore.D(
+				datastore.E(fieldOperationType, datastore.D(datastore.E(opIn, datastore.A(opTypeInsert, "update")))),
+				datastore.E("fullDocument.healthevent.agent", datastore.D(datastore.E(opNE, "health-events-analyzer"))),
+				datastore.E("$or", datastore.A(
+					datastore.D(datastore.E(
+						"fullDocument.healthevent.processingstrategy",
+						int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION),
+					)),
+					datastore.D(datastore.E(
+						"fullDocument.healthevent.processingstrategy",
+						int32(protos.ProcessingStrategy_STORE_AND_ANALYSE),
+					)),
+					datastore.D(datastore.E(
+						"fullDocument.healthevent.processingstrategy",
+						datastore.D(datastore.E("$exists", false)),
+					)),
+				)),
+			)),
+		),
+	)
+}
+
 // BuildQuarantinedAndDrainedNodesPipeline creates a pipeline for remediation-ready nodes
 // Similar to BuildNodeQuarantineStatusPipeline, this supports both UPDATE and INSERT operations
 // to be defensive against PostgreSQL trigger edge cases.

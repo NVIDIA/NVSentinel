@@ -316,21 +316,42 @@ func (f *PipelineFilter) matchesOperators(actualValue any, operators map[string]
 			return !f.matchesEqual(actualValue, opValue)
 		case opEq:
 			return f.matchesEqual(actualValue, opValue)
-		case opGt:
-			return f.matchesGreaterThan(actualValue, opValue)
-		case opGte:
-			return f.matchesGreaterThanOrEqual(actualValue, opValue)
-		case opLt:
-			return f.matchesLessThan(actualValue, opValue)
-		case opLte:
-			return f.matchesLessThanOrEqual(actualValue, opValue)
+		case opExists:
+			return matchesExists(actualValue, opValue)
 		default:
-			slog.Warn("Unsupported operator", "operator", op)
-			return false
+			return f.matchesOrderedOperator(actualValue, op, opValue)
 		}
 	}
 
 	return true
+}
+
+func matchesExists(actualValue, expectedValue any) bool {
+	expected, ok := expectedValue.(bool)
+	if !ok {
+		slog.Warn("$exists operand is not boolean", "type", fmt.Sprintf("%T", expectedValue))
+
+		return false
+	}
+
+	return (actualValue != nil) == expected
+}
+
+func (f *PipelineFilter) matchesOrderedOperator(actualValue any, operator string, expectedValue any) bool {
+	switch operator {
+	case opGt:
+		return f.matchesGreaterThan(actualValue, expectedValue)
+	case opGte:
+		return f.matchesGreaterThanOrEqual(actualValue, expectedValue)
+	case opLt:
+		return f.matchesLessThan(actualValue, expectedValue)
+	case opLte:
+		return f.matchesLessThanOrEqual(actualValue, expectedValue)
+	default:
+		slog.Warn("Unsupported operator", "operator", operator)
+
+		return false
+	}
 }
 
 // matchesNestedFields checks if actualValue (as a map) contains expected fields
