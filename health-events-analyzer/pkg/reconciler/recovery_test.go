@@ -34,9 +34,10 @@ import (
 )
 
 type healthEventCursor struct {
-	events []datamodels.HealthEventWithStatus
-	pos    int
-	err    error
+	events    []datamodels.HealthEventWithStatus
+	pos       int
+	err       error
+	decodeErr error
 }
 
 func newHealthEventCursor(events ...datamodels.HealthEventWithStatus) *healthEventCursor {
@@ -49,6 +50,10 @@ func (c *healthEventCursor) Next(context.Context) bool {
 }
 
 func (c *healthEventCursor) Decode(value any) error {
+	if c.decodeErr != nil {
+		return c.decodeErr
+	}
+
 	if c.pos < 0 || c.pos >= len(c.events) {
 		return nil
 	}
@@ -191,6 +196,34 @@ func TestRecoveryIdentityUsesConfiguredEntitySet(t *testing.T) {
 	event.EntitiesImpacted = []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}}
 	_, ok = recoveryIdentityForEvent(rule, event)
 	require.False(t, ok)
+
+	rule.Recovery.EntityTypes = []string{"GPU_UUID", "PCI"}
+	event.EntitiesImpacted = []*protos.Entity{
+		nil,
+		{EntityType: "GPU_UUID"},
+		{EntityType: "GPU_UUID", EntityValue: "GPU-a"},
+		{EntityType: "PCI", EntityValue: "0000:b4:00.0"},
+	}
+	identity, ok = recoveryIdentityForEvent(rule, event)
+	require.True(t, ok)
+	require.Equal(t, "GPU_UUID", identity.entities[0].EntityType)
+	require.Equal(t, "PCI", identity.entities[1].EntityType)
+}
+
+func TestHandleRecoveryEventsRejectsNonRecoveryInput(t *testing.T) {
+	reconciler := &Reconciler{}
+
+	for name, event := range map[string]*datamodels.HealthEventWithStatus{
+		"nil":           nil,
+		"missing event": {},
+		"unhealthy":     {HealthEvent: &protos.HealthEvent{IsHealthy: false}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			published, err := reconciler.handleRecoveryEvents(context.Background(), event)
+			require.NoError(t, err)
+			require.False(t, published)
+		})
+	}
 }
 
 func TestRecoverySourceMatchesConfiguredSource(t *testing.T) {
@@ -740,4 +773,199 @@ func TestRecoveryEnabledRulePreservesFaultWithoutConfiguredEntity(t *testing.T) 
 	require.NoError(t, err)
 	require.True(t, didPublish)
 	platform.AssertExpectations(t)
+}
+
+func TestRecoveryRuleSkipsDisabledAndIncompleteScope(t *testing.T) {
+	rule := recoveryRule(config.RecoveryScopeEntity)
+	recovery := recoverySource(time.Now().UTC(), "GPU-target")
+	reconciler := newRecoveryReconciler(rule, new(mockDatabaseClient), new(mockPublisher))
+
+	disabled := rule
+	disabled.EvaluateRule = false
+	published, err := reconciler.handleRecoveryRule(context.Background(), &recovery, disabled)
+	require.NoError(t, err)
+	require.False(t, published)
+
+	recovery.HealthEvent.EntitiesImpacted = nil
+	published, err = reconciler.handleRecoveryRule(context.Background(), &recovery, rule)
+	require.NoError(t, err)
+	require.False(t, published)
+}
+
+func TestRecoveryStateQueriesPropagateProviderErrors(t *testing.T) {
+	rule := recoveryRule(config.RecoveryScopeEntity)
+	recovery := recoverySource(time.Now().UTC(), "GPU-target")
+	identity, ok := recoveryIdentityForEvent(rule, recovery.HealthEvent)
+	require.True(t, ok)
+
+	for name, call := range map[string]func(*Reconciler) error{
+		"handle recovery": func(reconciler *Reconciler) error {
+			_, err := reconciler.handleRecoveryRule(context.Background(), &recovery, rule)
+			return err
+		},
+		"current derived state": func(reconciler *Reconciler) error {
+			_, _, err := reconciler.currentDerivedState(context.Background(), rule, identity)
+			return err
+		},
+		"derived fault state": func(reconciler *Reconciler) error {
+			_, _, _, err := reconciler.derivedFaultState(context.Background(), rule, recovery.HealthEvent)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			database := new(mockDatabaseClient)
+			database.On("Find", mock.Anything, mock.Anything, mock.Anything).
+				Return((*healthEventCursor)(nil), errors.New("provider unavailable")).Once()
+			reconciler := newRecoveryReconciler(rule, database, new(mockPublisher))
+			require.ErrorContains(t, call(reconciler), "provider unavailable")
+		})
+	}
+}
+
+func TestRecoveryBoundaryRejectsInvalidIdentityAndMissingSource(t *testing.T) {
+	rule := recoveryRule(config.RecoveryScopeEntity)
+	database := new(mockDatabaseClient)
+	reconciler := &Reconciler{databaseClient: database}
+
+	boundary, err := reconciler.recoveryBoundaryForEvent(context.Background(), rule,
+		&protos.HealthEvent{NodeName: "node-a"})
+	require.NoError(t, err)
+	require.Nil(t, boundary)
+
+	incoming := &protos.HealthEvent{
+		NodeName:         "node-a",
+		EntitiesImpacted: []*protos.Entity{{EntityType: "GPU_UUID", EntityValue: "GPU-target"}},
+	}
+	database.On("Find", mock.Anything, mock.Anything, mock.Anything).Return(
+		newHealthEventCursor(
+			recoverySource(time.Now().UTC(), "GPU-other"),
+			storedEvent(time.Now().UTC(), &protos.HealthEvent{
+				Agent: "syslog-health-monitor", CheckName: "SysLogsXIDError", IsHealthy: true,
+				NodeName: "node-a",
+			}),
+			storedEvent(time.Now().UTC(), nil),
+		), nil,
+	).Once()
+	boundary, err = reconciler.recoveryBoundaryForEvent(context.Background(), rule, incoming)
+	require.NoError(t, err)
+	require.Nil(t, boundary)
+}
+
+func TestFindLatestMatchingEventReportsCursorFailures(t *testing.T) {
+	for name, cursor := range map[string]*healthEventCursor{
+		"decode": {
+			events:    []datamodels.HealthEventWithStatus{derivedEvent(time.Now(), false, "GPU-a")},
+			pos:       -1,
+			decodeErr: errors.New("decode failed"),
+		},
+		"iteration": {pos: -1, err: errors.New("iteration failed")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			database := new(mockDatabaseClient)
+			database.On("Find", mock.Anything, mock.Anything, mock.Anything).Return(cursor, nil).Once()
+			reconciler := &Reconciler{databaseClient: database}
+			_, err := reconciler.findLatestMatchingEvent(
+				context.Background(), map[string]any{}, func(*datamodels.HealthEventWithStatus) bool { return true },
+			)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestRecoveryOrderingFallbacks(t *testing.T) {
+	base := time.Now().UTC()
+	require.True(t, boundaryAfter(
+		recoveryBoundary{createdAt: base.Add(time.Second)},
+		recoveryBoundary{createdAt: base},
+	))
+	require.False(t, boundaryAfter(recoveryBoundary{}, recoveryBoundary{}))
+	require.False(t, sameRecoverySource(nil, nil))
+	require.False(t, sameRecoverySource(
+		&datamodels.HealthEventWithStatus{HealthEvent: &protos.HealthEvent{}}, nil,
+	))
+
+	invalidTimestamp := &timestamppb.Timestamp{Seconds: 253402300800}
+	boundary := boundaryFromEvent(&datamodels.HealthEventWithStatus{
+		CreatedAt:   base,
+		HealthEvent: &protos.HealthEvent{GeneratedTimestamp: invalidTimestamp},
+	})
+	require.Nil(t, boundary.generated)
+}
+
+func TestDerivedPersistenceRetriesProviderError(t *testing.T) {
+	now := time.Now().UTC()
+	rule := recoveryRule(config.RecoveryScopeEntity)
+	source := recoverySource(now, "GPU-target")
+	identity, ok := recoveryIdentityForEvent(rule, source.HealthEvent)
+	require.True(t, ok)
+	database := new(mockDatabaseClient)
+	reconciler := &Reconciler{
+		databaseClient:    database,
+		recoveryPoll:      time.Millisecond,
+		recoveryRepublish: time.Hour,
+	}
+	database.On("Find", mock.Anything, mock.Anything, mock.Anything).
+		Return((*healthEventCursor)(nil), errors.New("temporary query failure")).Once()
+	database.On("Find", mock.Anything, mock.Anything, mock.Anything).
+		Return(newHealthEventCursor(persistedRecovery(now.Add(time.Second), source, rule)), nil).Once()
+
+	publishCalls := 0
+	boundary, err := reconciler.publishDerivedUntilStored(
+		context.Background(), &source, rule, identity, true, "recovery",
+		func() error { publishCalls++; return nil },
+	)
+	require.NoError(t, err)
+	require.Equal(t, now.Add(time.Second), boundary.createdAt)
+	require.Equal(t, 1, publishCalls)
+}
+
+func TestProcessRulePropagatesDerivedStateAndPersistenceErrors(t *testing.T) {
+	now := time.Now().UTC()
+	rule := recoveryRule(config.RecoveryScopeEntity)
+	incoming := storedEvent(now, &protos.HealthEvent{
+		Agent:              "syslog-health-monitor",
+		CheckName:          "SysLogsXIDError",
+		NodeName:           "node-a",
+		ErrorCode:          []string{"94"},
+		EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU_UUID", EntityValue: "GPU-target"}},
+		GeneratedTimestamp: timestamppb.New(now),
+	})
+	identity, ok := recoveryIdentityForEvent(rule, incoming.HealthEvent)
+	require.True(t, ok)
+
+	t.Run("state query", func(t *testing.T) {
+		database := new(mockDatabaseClient)
+		reconciler := newRecoveryReconciler(rule, database, new(mockPublisher))
+		reconciler.rememberRecoveryBoundary(rule.Name, identity, recoveryBoundary{createdAt: now.Add(-time.Minute)})
+		aggregate, _ := createMockCursor([]map[string]any{{"ruleMatched": true}})
+		database.On("Aggregate", mock.Anything, mock.Anything).Return(aggregate, nil).Once()
+		database.On("Find", mock.Anything, mock.Anything, mock.Anything).
+			Return((*healthEventCursor)(nil), errors.New("state query failed")).Once()
+
+		published, err := reconciler.processRule(context.Background(), rule, &incoming)
+		require.False(t, published)
+		require.ErrorContains(t, err, "state query failed")
+	})
+
+	t.Run("persistence wait", func(t *testing.T) {
+		database := new(mockDatabaseClient)
+		platform := new(mockPublisher)
+		reconciler := newRecoveryReconciler(rule, database, platform)
+		reconciler.recoveryPoll = time.Hour
+		reconciler.rememberRecoveryBoundary(rule.Name, identity, recoveryBoundary{createdAt: now.Add(-time.Minute)})
+		reconciler.rememberDerivedState(rule.Name, identity, derivedState{
+			boundary: recoveryBoundary{createdAt: now.Add(-time.Minute)}, isHealthy: true,
+		})
+		aggregate, _ := createMockCursor([]map[string]any{{"ruleMatched": true}})
+		database.On("Aggregate", mock.Anything, mock.Anything).Return(aggregate, nil).Once()
+		database.On("Find", mock.Anything, mock.Anything, mock.Anything).
+			Return(newHealthEventCursor(), nil).Once()
+		ctx, cancel := context.WithCancel(context.Background())
+		platform.On("HealthEventOccurredV1", mock.Anything, mock.Anything).
+			Run(func(mock.Arguments) { cancel() }).Return(&emptypb.Empty{}, nil).Once()
+
+		published, err := reconciler.processRule(ctx, rule, &incoming)
+		require.False(t, published)
+		require.ErrorIs(t, err, context.Canceled)
+	})
 }

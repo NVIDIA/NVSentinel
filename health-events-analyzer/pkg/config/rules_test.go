@@ -52,6 +52,28 @@ entity_types = ["GPU_UUID"]
 	}, cfg.Rules[0].Recovery)
 }
 
+func TestLoadTomlConfigRejectsInvalidRecovery(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rules.toml")
+	contents := `
+[[rules]]
+name = "invalid-recovery"
+
+[rules.recovery]
+scope = "node"
+`
+	require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))
+
+	config, err := LoadTomlConfig(path)
+	require.Nil(t, config)
+	require.ErrorContains(t, err, "invalid health-events-analyzer config")
+	require.ErrorContains(t, err, "source_check_name is required")
+}
+
+func TestRecoveryValidationAllowsRulesWithoutMapping(t *testing.T) {
+	config := &TomlConfig{Rules: []HealthEventsAnalyzerRule{{Name: "manual-recovery"}}}
+	require.NoError(t, config.Validate())
+}
+
 func TestRecoveryMappingValidation(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -108,3 +108,42 @@ func TestPublishRecoveryNodeScopeHasNoEntities(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, client.events.Events[0].EntitiesImpacted)
 }
+
+func TestPublishRecoveryRejectsInvalidProcessingStrategy(t *testing.T) {
+	client := &capturePlatformConnector{}
+	pub := NewPublisher(client, protos.ProcessingStrategy_EXECUTE_REMEDIATION)
+	rule := &config.HealthEventsAnalyzerRule{ProcessingStrategy: "NOT_A_STRATEGY"}
+
+	err := pub.PublishRecovery(context.Background(), &protos.HealthEvent{NodeName: "node-a"},
+		"DerivedCondition", nil, rule)
+	require.ErrorContains(t, err, "unexpected processingStrategy value")
+	require.Nil(t, client.events)
+}
+
+func TestPublishPreservesUnhealthyEventSemantics(t *testing.T) {
+	client := &capturePlatformConnector{}
+	pub := NewPublisher(client, protos.ProcessingStrategy_EXECUTE_REMEDIATION)
+	source := &protos.HealthEvent{
+		Agent:            "source-monitor",
+		CheckName:        "SourceCheck",
+		IsHealthy:        false,
+		IsFatal:          false,
+		EntitiesImpacted: []*protos.Entity{nil, {EntityType: "GPU_UUID", EntityValue: "GPU-1"}},
+	}
+
+	err := pub.Publish(context.Background(), source, protos.RecommendedAction_NONE,
+		"DerivedCondition", "derived", nil)
+	require.NoError(t, err)
+	require.NotNil(t, client.events)
+	derived := client.events.Events[0]
+	require.Equal(t, "health-events-analyzer", derived.Agent)
+	require.Equal(t, "DerivedCondition", derived.CheckName)
+	require.False(t, derived.IsHealthy)
+	require.False(t, derived.IsFatal)
+
+	clones := cloneEntities(source.EntitiesImpacted)
+	require.Len(t, clones, 1)
+	require.True(t, proto.Equal(
+		&protos.Entity{EntityType: "GPU_UUID", EntityValue: "GPU-1"}, clones[0],
+	))
+}
