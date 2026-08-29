@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 // TestPostgreSQLClient_BasicOperations tests basic CRUD operations
@@ -151,6 +153,11 @@ func TestBuildJSONPath(t *testing.T) {
 			field:    "createdAt",
 			expected: "created_at",
 		},
+		{
+			name:     "updatedAt column",
+			field:    "updatedAt",
+			expected: "updated_at",
+		},
 	}
 
 	for _, tt := range tests {
@@ -160,6 +167,121 @@ func TestBuildJSONPath(t *testing.T) {
 				t.Errorf("expected %q, got %q", tt.expected, result)
 			}
 		})
+	}
+}
+
+func TestRecoveryQueryLogicalFilters(t *testing.T) {
+	client := &PostgreSQLClient{}
+
+	for name, value := range map[string]any{
+		"generic slice": []any{map[string]any{"nodeName": "node-a"}},
+		"map slice":     []map[string]any{{"nodeName": "node-a"}},
+		"datastore array": datastore.Array{
+			map[string]any{"nodeName": "node-a"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			clause, args, err := client.buildLogicalWhereClause(opOr, value, 3)
+			if err != nil {
+				t.Fatalf("buildLogicalWhereClause() error = %v", err)
+			}
+			if clause != "(document->>'nodeName' = $3)" {
+				t.Fatalf("clause = %q", clause)
+			}
+			if !reflect.DeepEqual(args, []any{"node-a"}) {
+				t.Fatalf("args = %#v", args)
+			}
+		})
+	}
+
+	clause, args, err := client.buildLogicalWhereClause(opAnd, []any{
+		map[string]any{"nodeName": "node-a"},
+		map[string]any{"createdAt": map[string]any{opGT: time.Unix(10, 0)}},
+	}, 1)
+	if err != nil {
+		t.Fatalf("buildLogicalWhereClause() error = %v", err)
+	}
+	if clause != "(document->>'nodeName' = $1 AND created_at > $2)" || len(args) != 2 {
+		t.Fatalf("clause = %q, args = %#v", clause, args)
+	}
+}
+
+func TestRecoveryQueryLogicalFilterValidation(t *testing.T) {
+	client := &PostgreSQLClient{}
+
+	for name, value := range map[string]any{
+		"wrong type": "node-a",
+		"empty":      []any{},
+		"non-map":    []any{"node-a"},
+		"nested error": []any{
+			map[string]any{"createdAt": map[string]any{"$unsupported": 1}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := client.buildLogicalWhereClause(opOr, value, 1)
+			if err == nil {
+				t.Fatal("buildLogicalWhereClause() expected an error")
+			}
+		})
+	}
+
+	_, _, err := client.buildWhereClauseMap(map[string]any{opOr: "node-a"}, 1)
+	if err == nil {
+		t.Fatal("root logical filter accepted an invalid value")
+	}
+	_, _, err = client.buildWhereClauseMap(map[string]any{
+		"status.value": map[string]any{opExists: "true"},
+	}, 1)
+	if err == nil {
+		t.Fatal("field comparison accepted an invalid $exists value")
+	}
+}
+
+func TestRecoveryQueryComparisonOperators(t *testing.T) {
+	for operator, expected := range map[string]string{
+		opGTE: ">=", opGT: ">", opLTE: "<=", opLT: "<", opEQ: "=", opNE: "!=",
+	} {
+		actual, ok := sqlComparisonOperator(operator)
+		if !ok || actual != expected {
+			t.Fatalf("sqlComparisonOperator(%q) = %q, %v", operator, actual, ok)
+		}
+	}
+	if _, ok := sqlComparisonOperator("$unsupported"); ok {
+		t.Fatal("unsupported operator accepted")
+	}
+
+	for _, test := range []struct {
+		value any
+		want  string
+	}{
+		{true, "true"}, {int32(-2), "-2"}, {uint64(3), "3"}, {float32(1.5), "1.5"},
+	} {
+		if got := comparisonArgument("document->>'count'", test.value); got != test.want {
+			t.Fatalf("comparisonArgument(%#v) = %#v, want %q", test.value, got, test.want)
+		}
+	}
+	if got := comparisonArgument("document->>'value'", nil); got != nil {
+		t.Fatalf("nil comparisonArgument = %#v", got)
+	}
+	cutoff := time.Unix(20, 0)
+	if got := comparisonArgument("updated_at", cutoff); got != cutoff {
+		t.Fatalf("updated_at comparisonArgument = %#v", got)
+	}
+	if got := comparisonArgument("document->>'value'", "raw"); got != "raw" {
+		t.Fatalf("string comparisonArgument = %#v", got)
+	}
+}
+
+func TestRecoveryQueryExistsOperator(t *testing.T) {
+	path := "document->>'value'"
+	for value, expected := range map[bool]string{true: path + " IS NOT NULL", false: path + " IS NULL"} {
+		actual, err := buildExistsCondition(path, value)
+		if err != nil || actual != expected {
+			t.Fatalf("buildExistsCondition(%v) = %q, %v", value, actual, err)
+		}
+	}
+	if _, err := buildExistsCondition(path, "true"); err == nil {
+		t.Fatal("non-boolean $exists value accepted")
 	}
 }
 

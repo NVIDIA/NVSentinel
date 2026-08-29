@@ -20,6 +20,34 @@ import (
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
+func TestRecoveryPipelineOperators(t *testing.T) {
+	filter := &PipelineFilter{}
+
+	if !matchesExists("value", true) || !matchesExists(nil, false) {
+		t.Fatal("$exists did not match field presence")
+	}
+	if matchesExists("value", false) || matchesExists(nil, true) || matchesExists("value", "true") {
+		t.Fatal("$exists accepted a mismatched or invalid operand")
+	}
+
+	for operator, expected := range map[string]bool{
+		opGt: true, opGte: true, opLt: false, opLte: false,
+	} {
+		if actual := filter.matchesOrderedOperator(2, operator, 1); actual != expected {
+			t.Fatalf("matchesOrderedOperator(%q) = %v, want %v", operator, actual, expected)
+		}
+	}
+	if filter.matchesOrderedOperator(2, "$unsupported", 1) {
+		t.Fatal("unsupported ordered operator matched")
+	}
+	if !filter.matchesOperators(1, map[string]any{}) {
+		t.Fatal("empty operator set should match")
+	}
+	if filter.matchesOperators(1, map[string]any{"$unsupported": 1}) {
+		t.Fatal("unsupported operator matched")
+	}
+}
+
 func TestGetFieldValue_CaseInsensitive(t *testing.T) {
 	tests := []struct {
 		name      string
