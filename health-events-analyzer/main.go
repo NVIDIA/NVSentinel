@@ -96,7 +96,7 @@ func loadDatabaseConfig(databaseClientCertMountPath string) (*datastore.DataStor
 
 func createPipeline() any {
 	builder := client.GetPipelineBuilder()
-	return builder.BuildProcessableNonFatalUnhealthyInsertsPipeline()
+	return builder.BuildAnalyzerHealthEventInsertsPipeline()
 }
 
 func connectToPlatform(socket, tokenPath string, processingStrategy protos.ProcessingStrategy) (

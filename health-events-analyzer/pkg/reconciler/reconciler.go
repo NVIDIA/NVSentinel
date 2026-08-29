@@ -18,11 +18,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	multierror "github.com/hashicorp/go-multierror"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	datamodels "github.com/nvidia/nvsentinel/data-models/pkg/model"
@@ -47,6 +49,9 @@ const (
 	// fieldNodeName is the stored document field used to scope rule evaluation
 	// to the node that produced the incoming event.
 	fieldNodeName = "healthevent.nodename"
+	// aggregationOperatorGT is the greater-than operator used in generated
+	// analyzer aggregation stages.
+	aggregationOperatorGT = "$gt"
 )
 
 type HealthEventsAnalyzerReconcilerConfig struct {
@@ -57,12 +62,18 @@ type HealthEventsAnalyzerReconcilerConfig struct {
 }
 
 type Reconciler struct {
-	config         HealthEventsAnalyzerReconcilerConfig
-	datastore      datastore.DataStore
-	databaseClient client.DatabaseClient // MongoDB-specific client for aggregation
-	eventProcessor client.EventProcessor
-	xidDetector    *analyzer.XidBurstDetector // PostgreSQL-specific XID burst detection
-	useXidDetector bool                       // True if using PostgreSQL
+	config             HealthEventsAnalyzerReconcilerConfig
+	datastore          datastore.DataStore
+	databaseClient     client.DatabaseClient // MongoDB-specific client for aggregation
+	eventProcessor     client.EventProcessor
+	xidDetector        *analyzer.XidBurstDetector // PostgreSQL-specific XID burst detection
+	useXidDetector     bool                       // True if using PostgreSQL
+	provider           datastore.DataStoreProvider
+	recoveryMu         sync.RWMutex
+	recoveryBoundaries map[string]recoveryBoundary
+	derivedStates      map[string]derivedState
+	recoveryPoll       time.Duration
+	recoveryRepublish  time.Duration
 }
 
 func NewReconciler(cfg HealthEventsAnalyzerReconcilerConfig) *Reconciler {
@@ -82,6 +93,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	defer ds.Close(ctx)
 
 	r.datastore = ds
+	r.provider = ds.Provider()
 
 	// Check if using PostgreSQL and enable XID burst detector
 	if ds.Provider() == datastore.ProviderPostgreSQL {
@@ -197,24 +209,38 @@ func (r *Reconciler) processHealthEvent(ctx context.Context, event *datamodels.H
 		attribute.Bool("health_events_analyzer.event.published", publishedNewEvent),
 	)
 
-	if publishedNewEvent {
-		slog.InfoContext(ctx, "New fatal event published.")
-		// Only track entity-specific metrics if EntitiesImpacted is not empty
-		if len(event.HealthEvent.EntitiesImpacted) > 0 {
-			fatalEventsPublishedTotal.WithLabelValues(event.HealthEvent.EntitiesImpacted[0].EntityValue).Inc()
-		} else {
-			slog.WarnContext(ctx, "Fatal event published but EntitiesImpacted is empty, using 'unknown' for metrics")
-			fatalEventsPublishedTotal.WithLabelValues("unknown").Inc()
-		}
-	} else {
-		slog.InfoContext(ctx, "Fatal event is not published, rule set criteria didn't match.")
-	}
+	r.recordPublishedEvent(ctx, event.HealthEvent, publishedNewEvent)
 
 	// Track processing duration
 	duration := time.Since(startTime).Seconds()
 	eventHandlingDuration.Observe(duration)
 
 	return nil
+}
+
+func (r *Reconciler) recordPublishedEvent(ctx context.Context, event *protos.HealthEvent, published bool) {
+	if !published {
+		slog.InfoContext(ctx, "No derived event published.")
+
+		return
+	}
+
+	if event.IsHealthy {
+		slog.InfoContext(ctx, "Derived recovery event published.")
+
+		return
+	}
+
+	slog.InfoContext(ctx, "New fatal event published.")
+
+	if len(event.EntitiesImpacted) == 0 {
+		slog.WarnContext(ctx, "Fatal event published but EntitiesImpacted is empty, using 'unknown' for metrics")
+		fatalEventsPublishedTotal.WithLabelValues("unknown").Inc()
+
+		return
+	}
+
+	fatalEventsPublishedTotal.WithLabelValues(event.EntitiesImpacted[0].EntityValue).Inc()
 }
 
 func (r *Reconciler) handleEvent(ctx context.Context, event *datamodels.HealthEventWithStatus) (bool, error) {
@@ -235,10 +261,52 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *datamodels.HealthEv
 		publishedNewEvent = true
 	}
 
-	// Process regular rules
+	published, err = r.processHealthState(ctx, event, span)
+	if err != nil {
+		multiErr = multierror.Append(multiErr, err)
+	}
+
+	publishedNewEvent = published || publishedNewEvent
+
+	if multiErr.ErrorOrNil() != nil {
+		slog.ErrorContext(ctx, "Error in handling the event", "error", multiErr)
+		span.SetAttributes(
+			attribute.String("health_events_analyzer.error.type", "handle_event_error"),
+			attribute.String("health_events_analyzer.error.message", multiErr.Error()),
+		)
+		tracing.RecordError(span, multiErr.ErrorOrNil())
+
+		return publishedNewEvent, fmt.Errorf("error in handling the event: %w", multiErr)
+	}
+
+	return publishedNewEvent, nil
+}
+
+func (r *Reconciler) processHealthState(
+	ctx context.Context,
+	event *datamodels.HealthEventWithStatus,
+	span trace.Span,
+) (bool, error) {
+	if event.HealthEvent.IsHealthy {
+		return r.handleRecoveryEvents(ctx, event)
+	}
+
+	return r.processConfiguredRules(ctx, event, span)
+}
+
+func (r *Reconciler) processConfiguredRules(
+	ctx context.Context,
+	event *datamodels.HealthEventWithStatus,
+	span trace.Span,
+) (bool, error) {
+	var multiErr *multierror.Error
+
+	publishedAny := false
+
 	for _, rule := range r.config.HealthEventsAnalyzerRules.Rules {
 		if !rule.EvaluateRule {
 			slog.InfoContext(ctx, "Skipping rule evaluation", "rule_name", rule.Name)
+
 			continue
 		}
 
@@ -253,23 +321,10 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *datamodels.HealthEv
 			continue
 		}
 
-		if published {
-			publishedNewEvent = true
-		}
+		publishedAny = published || publishedAny
 	}
 
-	if multiErr.ErrorOrNil() != nil {
-		slog.ErrorContext(ctx, "Error in handling the event", "error", multiErr)
-		span.SetAttributes(
-			attribute.String("health_events_analyzer.error.type", "handle_event_error"),
-			attribute.String("health_events_analyzer.error.message", multiErr.Error()),
-		)
-		tracing.RecordError(span, multiErr.ErrorOrNil())
-
-		return publishedNewEvent, fmt.Errorf("error in handling the event: %w", multiErr)
-	}
-
-	return publishedNewEvent, nil
+	return publishedAny, multiErr.ErrorOrNil()
 }
 
 // handleXidDetector handles XID burst detection and history clearing
@@ -349,7 +404,26 @@ func (r *Reconciler) processRule(ctx context.Context,
 		return false, nil
 	}
 
-	err = r.publishMatchedEvent(ctx, rule, event)
+	identity, recoveryEnabled, active, err := r.derivedFaultState(ctx, rule, event.HealthEvent)
+	if err != nil {
+		return false, err
+	}
+
+	if rule.Recovery != nil && !recoveryEnabled {
+		slog.WarnContext(ctx, "Rule match does not contain the configured recovery scope; "+
+			"publishing without automatic recovery",
+			"rule_name", rule.Name,
+			"node", event.HealthEvent.NodeName,
+			"entity_types", rule.Recovery.EntityTypes)
+	}
+
+	if active {
+		return false, nil
+	}
+
+	ruleMatchedTotal.WithLabelValues(rule.Name, event.HealthEvent.NodeName).Inc()
+
+	err = r.publishRuleMatch(ctx, rule, event, identity, recoveryEnabled)
 	if err != nil {
 		slog.ErrorContext(ctx, "Error in publishing the matched event", "error", err)
 		span.SetAttributes(
@@ -364,18 +438,58 @@ func (r *Reconciler) processRule(ctx context.Context,
 	return true, nil
 }
 
+func (r *Reconciler) derivedFaultState(
+	ctx context.Context,
+	rule config.HealthEventsAnalyzerRule,
+	event *protos.HealthEvent,
+) (recoveryIdentity, bool, bool, error) {
+	identity, recoverable := recoveryIdentityForEvent(rule, event)
+	if !recoverable {
+		return recoveryIdentity{}, false, false, nil
+	}
+
+	state, found, err := r.currentDerivedState(ctx, rule, identity)
+	if err != nil {
+		return recoveryIdentity{}, false, false, fmt.Errorf("find current derived state: %w", err)
+	}
+
+	return identity, true, found && !state.isHealthy, nil
+}
+
+func (r *Reconciler) publishRuleMatch(
+	ctx context.Context,
+	rule config.HealthEventsAnalyzerRule,
+	event *datamodels.HealthEventWithStatus,
+	identity recoveryIdentity,
+	recoveryEnabled bool,
+) error {
+	if !recoveryEnabled {
+		return r.publishMatchedEvent(ctx, rule, event.HealthEvent)
+	}
+
+	persistedBoundary, err := r.publishFaultUntilStored(ctx, event, rule, identity)
+	if err != nil {
+		return err
+	}
+
+	r.rememberDerivedState(rule.Name, identity, derivedState{
+		boundary:  persistedBoundary,
+		isHealthy: false,
+	})
+
+	return nil
+}
+
 // publishMatchedEvent publishes an event when a rule matches
 func (r *Reconciler) publishMatchedEvent(ctx context.Context,
 	rule config.HealthEventsAnalyzerRule,
-	event *datamodels.HealthEventWithStatus) error {
+	event *protos.HealthEvent) error {
 	ctx, span := tracing.StartSpan(ctx, "health_events_analyzer.publish_matched_event")
 	defer span.End()
 
-	ruleMatchedTotal.WithLabelValues(rule.Name, event.HealthEvent.NodeName).Inc()
-
 	actionVal := r.getRecommendedActionValue(rule.RecommendedAction, rule.Name)
 
-	err := r.config.Publisher.Publish(ctx, event.HealthEvent, protos.RecommendedAction(actionVal),
+	err := r.config.Publisher.Publish(ctx, event, protos.RecommendedAction(actionVal),
 		rule.Name, rule.Message, &rule)
 	if err != nil {
 		slog.ErrorContext(ctx, "Error in publishing the new fatal event", "error", err)
@@ -423,8 +537,13 @@ func (r *Reconciler) validateAllSequenceCriteria(ctx context.Context, rule confi
 		"error_code", healthEventWithStatus.HealthEvent.ErrorCode,
 		"agent", healthEventWithStatus.HealthEvent.Agent)
 
+	boundary, err := r.recoveryBoundaryForEvent(ctx, rule, healthEventWithStatus.HealthEvent)
+	if err != nil {
+		return false, fmt.Errorf("find recovery boundary: %w", err)
+	}
+
 	// Build aggregation pipeline from stages
-	pipelineStages, err := r.getPipelineStages(rule, healthEventWithStatus)
+	pipelineStages, err := r.getPipelineStages(rule, healthEventWithStatus, boundary)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to build pipeline stages", "error", err)
 		tracing.RecordError(span, err)
@@ -506,29 +625,42 @@ func (r *Reconciler) validateAllSequenceCriteria(ctx context.Context, rule confi
 func (r *Reconciler) getPipelineStages(
 	rule config.HealthEventsAnalyzerRule,
 	healthEventWithStatus datamodels.HealthEventWithStatus,
+	boundary *recoveryBoundary,
 ) ([]map[string]any, error) {
 	// Always start with mandatory filters. The agent filter prevents the analyzer
 	// from matching its own generated events, while the node filter limits each
 	// rule evaluation to events from the node that produced the incoming event.
 	// Keeping the node predicate in the first stage lets the datastore use its
 	// node-prefixed HealthEvents index before evaluating configured rule stages.
+	mandatoryMatch := map[string]any{
+		"healthevent.agent": map[string]any{"$ne": agentName},
+		fieldNodeName:       healthEventWithStatus.HealthEvent.NodeName,
+		"$or": []any{
+			map[string]any{
+				fieldProcessingStrategy: int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION),
+			},
+			map[string]any{
+				fieldProcessingStrategy: int32(protos.ProcessingStrategy_STORE_AND_ANALYSE),
+			},
+			map[string]any{
+				fieldProcessingStrategy: map[string]any{"$exists": false},
+			},
+		},
+	}
+
+	if boundary != nil {
+		if !boundary.createdAt.IsZero() {
+			mandatoryMatch["createdAt"] = map[string]any{aggregationOperatorGT: boundary.createdAt}
+		}
+
+		if boundary.generated != nil {
+			mandatoryMatch["$expr"] = generatedAfterExpression(boundary.generated)
+		}
+	}
+
 	pipeline := []map[string]any{
 		{
-			"$match": map[string]any{
-				"healthevent.agent": map[string]any{"$ne": agentName},
-				fieldNodeName:       healthEventWithStatus.HealthEvent.NodeName,
-				"$or": []any{
-					map[string]any{
-						fieldProcessingStrategy: int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION),
-					},
-					map[string]any{
-						fieldProcessingStrategy: int32(protos.ProcessingStrategy_STORE_AND_ANALYSE),
-					},
-					map[string]any{
-						fieldProcessingStrategy: map[string]any{"$exists": false},
-					},
-				},
-			},
+			"$match": mandatoryMatch,
 		},
 	}
 
@@ -548,6 +680,26 @@ func (r *Reconciler) getPipelineStages(
 	}
 
 	return pipeline, nil
+}
+
+func generatedAfterExpression(timestamp *timestamppb.Timestamp) map[string]any {
+	return map[string]any{
+		"$or": []any{
+			map[string]any{
+				aggregationOperatorGT: []any{"$healthevent.generatedtimestamp.seconds", timestamp.Seconds},
+			},
+			map[string]any{
+				"$and": []any{
+					map[string]any{
+						"$eq": []any{"$healthevent.generatedtimestamp.seconds", timestamp.Seconds},
+					},
+					map[string]any{
+						aggregationOperatorGT: []any{"$healthevent.generatedtimestamp.nanos", int64(timestamp.Nanos)},
+					},
+				},
+			},
+		},
+	}
 }
 
 // shouldProcessXidEvent checks if an event should be processed by the XID burst detector

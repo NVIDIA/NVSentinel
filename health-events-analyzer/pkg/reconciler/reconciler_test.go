@@ -466,7 +466,7 @@ func TestGetPipelineStages(t *testing.T) {
 			},
 		}
 
-		pipeline, err := reconciler.getPipelineStages(rule, event)
+		pipeline, err := reconciler.getPipelineStages(rule, event, nil)
 		assert.NoError(t, err)
 		// Agent filter (1) + configured stages (2) = 3 total
 		assert.Len(t, pipeline, 3)
@@ -507,7 +507,7 @@ func TestGetPipelineStages(t *testing.T) {
 			},
 		}
 
-		pipeline, err := reconciler.getPipelineStages(rule, event)
+		pipeline, err := reconciler.getPipelineStages(rule, event, nil)
 		assert.NoError(t, err)
 		// Agent filter (1) + configured stages (4) = 5 total
 		assert.Len(t, pipeline, 5)
@@ -534,7 +534,7 @@ func TestGetPipelineStages(t *testing.T) {
 			},
 		}
 
-		pipeline, err := reconciler.getPipelineStages(rule, event)
+		pipeline, err := reconciler.getPipelineStages(rule, event, nil)
 		assert.NoError(t, err)
 		// Agent filter (1) + configured stages (1) = 2 total
 		assert.Len(t, pipeline, 2)
@@ -557,7 +557,7 @@ func TestGetPipelineStages(t *testing.T) {
 			},
 		}
 
-		pipeline, err := reconciler.getPipelineStages(rule, event)
+		pipeline, err := reconciler.getPipelineStages(rule, event, nil)
 		assert.Error(t, err)
 		assert.Nil(t, pipeline)
 		assert.Contains(t, err.Error(), "failed to parse stage 0")
@@ -576,7 +576,7 @@ func TestGetPipelineStages(t *testing.T) {
 			},
 		}
 
-		pipeline, err := reconciler.getPipelineStages(rule, event)
+		pipeline, err := reconciler.getPipelineStages(rule, event, nil)
 		assert.Error(t, err)
 		assert.Nil(t, pipeline)
 	})
@@ -592,7 +592,7 @@ func TestGetPipelineStages(t *testing.T) {
 			},
 		}
 
-		pipeline, err := reconciler.getPipelineStages(rule, event)
+		pipeline, err := reconciler.getPipelineStages(rule, event, nil)
 		assert.NoError(t, err)
 		// Even with empty stages, agent filter is always present
 		assert.Len(t, pipeline, 1)
@@ -612,7 +612,7 @@ func TestGetPipelineStages(t *testing.T) {
 			},
 		}
 
-		pipeline, err := reconciler.getPipelineStages(rule, event)
+		pipeline, err := reconciler.getPipelineStages(rule, event, nil)
 		assert.NoError(t, err)
 		// Agent filter (1) + configured stages (2) = 3 total
 		assert.Len(t, pipeline, 3)
@@ -636,7 +636,7 @@ func TestGetPipelineStages(t *testing.T) {
 			},
 		}
 
-		pipeline, err := reconciler.getPipelineStages(rule, event)
+		pipeline, err := reconciler.getPipelineStages(rule, event, nil)
 		assert.NoError(t, err)
 		// Agent filter (1) + configured stages (1) = 2 total
 		assert.Len(t, pipeline, 2)
@@ -682,7 +682,7 @@ func TestGetPipelineStages_ReturnTypeCompatibility(t *testing.T) {
 		},
 	}
 
-	pipeline, err := reconciler.getPipelineStages(rule, event)
+	pipeline, err := reconciler.getPipelineStages(rule, event, nil)
 	assert.NoError(t, err)
 
 	// CRITICAL: Verify the return type is []map[string]interface{}

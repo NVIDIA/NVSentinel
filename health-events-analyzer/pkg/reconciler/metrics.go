@@ -19,13 +19,18 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+const (
+	metricLabelNodeName = "node_name"
+	metricLabelRuleName = "rule_name"
+)
+
 var (
 	totalEventsReceived = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "health_event_analyzer_events_received_total",
 			Help: "Total number of events received from the watcher.",
 		},
-		[]string{"node_name"},
+		[]string{metricLabelNodeName},
 	)
 	totalEventsSuccessfullyProcessed = promauto.NewCounter(
 		prometheus.CounterOpts{
@@ -54,7 +59,15 @@ var (
 			Name: "rule_matched_total",
 			Help: "Total number of times a rule matched for a node",
 		},
-		[]string{"rule_name", "node_name"},
+		[]string{metricLabelRuleName, metricLabelNodeName},
+	)
+
+	recoveryEventsPublishedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "health_event_analyzer_recovery_events_published_total",
+			Help: "Total number of derived healthy transitions published by recovery-enabled rules.",
+		},
+		[]string{metricLabelRuleName, "scope"},
 	)
 
 	mongoQueryExecutionDuration = promauto.NewHistogramVec(
@@ -63,7 +76,7 @@ var (
 			Help:    "Histogram of MongoDB pipeline execution durations.",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"rule_name"},
+		[]string{metricLabelRuleName},
 	)
 
 	// performance metrics
