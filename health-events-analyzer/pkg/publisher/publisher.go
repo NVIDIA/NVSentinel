@@ -118,44 +118,91 @@ func NewPublisher(platformConnectorClient protos.PlatformConnectorClient,
 func (p *PublisherConfig) Publish(ctx context.Context, event *protos.HealthEvent,
 	recommendedAction protos.RecommendedAction, ruleName string, message string,
 	rule *config.HealthEventsAnalyzerRule) error {
+	return p.publish(ctx, event, publishOptions{
+		recommendedAction: recommendedAction,
+		ruleName:          ruleName,
+		message:           message,
+		rule:              rule,
+	})
+}
+
+// PublishRecovery publishes the healthy transition for a derived condition.
+// Error codes are intentionally empty so downstream consumers clear every
+// failure for the selected derived condition and entity scope.
+func (p *PublisherConfig) PublishRecovery(
+	ctx context.Context,
+	event *protos.HealthEvent,
+	ruleName string,
+	entities []*protos.Entity,
+	rule *config.HealthEventsAnalyzerRule,
+) error {
+	return p.publish(ctx, event, publishOptions{
+		recommendedAction: protos.RecommendedAction_NONE,
+		ruleName:          ruleName,
+		message:           fmt.Sprintf("Recovered derived condition %s", ruleName),
+		rule:              rule,
+		isHealthy:         true,
+		entities:          entities,
+	})
+}
+
+type publishOptions struct {
+	recommendedAction protos.RecommendedAction
+	ruleName          string
+	message           string
+	rule              *config.HealthEventsAnalyzerRule
+	isHealthy         bool
+	entities          []*protos.Entity
+}
+
+func (p *PublisherConfig) publish(ctx context.Context, event *protos.HealthEvent, options publishOptions) error {
 	ctx, span := tracing.StartSpan(ctx, "health_events_analyzer.publish")
 	defer span.End()
 
 	span.SetAttributes(
-		attribute.String("health_events_analyzer.publish.rule_name", ruleName),
-		attribute.String("health_events_analyzer.publish.recommended_action", recommendedAction.String()),
+		attribute.String("health_events_analyzer.publish.rule_name", options.ruleName),
+		attribute.String("health_events_analyzer.publish.recommended_action", options.recommendedAction.String()),
+		attribute.Bool("health_events_analyzer.publish.is_healthy", options.isHealthy),
 	)
 
 	newEvent := proto.Clone(event).(*protos.HealthEvent)
 
 	newEvent.Agent = "health-events-analyzer"
-	newEvent.CheckName = ruleName
-	newEvent.RecommendedAction = recommendedAction
-	newEvent.IsHealthy = false
-	newEvent.Message = message
+	newEvent.CheckName = options.ruleName
+	newEvent.RecommendedAction = options.recommendedAction
+	newEvent.IsHealthy = options.isHealthy
+	newEvent.Message = options.message
 
 	// Default from module configuration, with an optional rule-level override.
 	newEvent.ProcessingStrategy = p.processingStrategy
 
-	if rule != nil && rule.ProcessingStrategy != "" {
-		value, ok := protos.ProcessingStrategy_value[rule.ProcessingStrategy]
+	if options.rule != nil && options.rule.ProcessingStrategy != "" {
+		value, ok := protos.ProcessingStrategy_value[options.rule.ProcessingStrategy]
 		if !ok {
 			span.SetAttributes(
 				attribute.String("health_events_analyzer.error.type", "invalid_processing_strategy"),
 				attribute.String("health_events_analyzer.error.message",
-					fmt.Sprintf("unexpected processingStrategy: %q", rule.ProcessingStrategy)),
+					fmt.Sprintf("unexpected processingStrategy: %q", options.rule.ProcessingStrategy)),
 			)
-			tracing.RecordError(span, fmt.Errorf("unexpected processingStrategy value: %q", rule.ProcessingStrategy))
+			tracing.RecordError(span, fmt.Errorf("unexpected processingStrategy value: %q", options.rule.ProcessingStrategy))
 
-			return fmt.Errorf("unexpected processingStrategy value: %q", rule.ProcessingStrategy)
+			return fmt.Errorf("unexpected processingStrategy value: %q", options.rule.ProcessingStrategy)
 		}
 
 		newEvent.ProcessingStrategy = protos.ProcessingStrategy(value)
 	}
 
-	if recommendedAction == protos.RecommendedAction_NONE {
+	switch {
+	case options.isHealthy:
 		newEvent.IsFatal = false
-	} else {
+		newEvent.ErrorCode = nil
+		newEvent.EntitiesImpacted = cloneEntities(options.entities)
+		newEvent.QuarantineOverrides = nil
+		newEvent.DrainOverrides = nil
+		newEvent.CustomRecommendedAction = ""
+	case options.recommendedAction == protos.RecommendedAction_NONE:
+		newEvent.IsFatal = false
+	default:
 		newEvent.IsFatal = true
 	}
 
@@ -165,4 +212,21 @@ func (p *PublisherConfig) Publish(ctx context.Context, event *protos.HealthEvent
 	}
 
 	return p.sendHealthEventWithRetry(ctx, req)
+}
+
+func cloneEntities(entities []*protos.Entity) []*protos.Entity {
+	if len(entities) == 0 {
+		return nil
+	}
+
+	clones := make([]*protos.Entity, 0, len(entities))
+	for _, entity := range entities {
+		if entity == nil {
+			continue
+		}
+
+		clones = append(clones, proto.Clone(entity).(*protos.Entity))
+	}
+
+	return clones
 }

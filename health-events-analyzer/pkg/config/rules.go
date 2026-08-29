@@ -16,9 +16,28 @@ package config
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
 )
+
+type RecoveryScope string
+
+const (
+	RecoveryScopeNode   RecoveryScope = "node"
+	RecoveryScopeEntity RecoveryScope = "entity"
+)
+
+// RecoveryMapping identifies the healthy source event that resolves a derived
+// condition. Rules without this block retain the existing manual-recovery
+// behavior.
+type RecoveryMapping struct {
+	SourceAgent      string        `toml:"source_agent"`
+	SourceCheckName  string        `toml:"source_check_name"`
+	SourceErrorCodes []string      `toml:"source_error_codes"`
+	Scope            RecoveryScope `toml:"scope"`
+	EntityTypes      []string      `toml:"entity_types"`
+}
 
 type HealthEventsAnalyzerRule struct {
 	Name              string   `toml:"name"`
@@ -28,7 +47,8 @@ type HealthEventsAnalyzerRule struct {
 	Message           string   `toml:"message"`
 	EvaluateRule      bool     `toml:"evaluate_rule"`
 	// Optional: override the module-level processing strategy for events published by this rule.
-	ProcessingStrategy string `toml:"processing_strategy"`
+	ProcessingStrategy string           `toml:"processing_strategy"`
+	Recovery           *RecoveryMapping `toml:"recovery"`
 }
 
 type TomlConfig struct {
@@ -41,5 +61,71 @@ func LoadTomlConfig(path string) (*TomlConfig, error) {
 		return nil, fmt.Errorf("failed to decode TOML config from %s: %w", path, err)
 	}
 
+	if err := config.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid health-events-analyzer config: %w", err)
+	}
+
 	return &config, nil
+}
+
+func (c *TomlConfig) Validate() error {
+	for i := range c.Rules {
+		if err := c.Rules[i].validateRecovery(); err != nil {
+			return fmt.Errorf("rule %q: %w", c.Rules[i].Name, err)
+		}
+	}
+
+	return nil
+}
+
+func (r *HealthEventsAnalyzerRule) validateRecovery() error {
+	if r.Recovery == nil {
+		return nil
+	}
+
+	recovery := r.Recovery
+	recovery.SourceAgent = strings.TrimSpace(recovery.SourceAgent)
+	recovery.SourceCheckName = strings.TrimSpace(recovery.SourceCheckName)
+
+	if recovery.SourceCheckName == "" {
+		return fmt.Errorf("recovery.source_check_name is required")
+	}
+
+	switch recovery.Scope {
+	case RecoveryScopeNode:
+		if len(recovery.EntityTypes) != 0 {
+			return fmt.Errorf("recovery.entity_types must be empty for node scope")
+		}
+	case RecoveryScopeEntity:
+		if len(recovery.EntityTypes) == 0 {
+			return fmt.Errorf("recovery.entity_types is required for entity scope")
+		}
+	default:
+		return fmt.Errorf("recovery.scope must be %q or %q", RecoveryScopeNode, RecoveryScopeEntity)
+	}
+
+	if err := validateUniqueNonEmpty("recovery.entity_types", recovery.EntityTypes); err != nil {
+		return err
+	}
+
+	return validateUniqueNonEmpty("recovery.source_error_codes", recovery.SourceErrorCodes)
+}
+
+func validateUniqueNonEmpty(field string, values []string) error {
+	seen := make(map[string]struct{}, len(values))
+
+	for i := range values {
+		values[i] = strings.TrimSpace(values[i])
+		if values[i] == "" {
+			return fmt.Errorf("%s must not contain empty values", field)
+		}
+
+		if _, exists := seen[values[i]]; exists {
+			return fmt.Errorf("%s contains duplicate value %q", field, values[i])
+		}
+
+		seen[values[i]] = struct{}{}
+	}
+
+	return nil
 }
