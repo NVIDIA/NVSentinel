@@ -154,6 +154,7 @@ func (p *PostgreSQLDataStore) NewChangeStreamWatcher(
 	}
 
 	pipelineFilter := buildPipelineFilter(pipeline, tableName, clientName)
+	pipeline, _ = client.ResolvePipelineOptions(pipeline)
 
 	// Convert PascalCase table name to snake_case for PostgreSQL compatibility
 	snakeCaseTableName := toSnakeCase(tableName)

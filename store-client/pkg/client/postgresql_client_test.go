@@ -149,14 +149,14 @@ func TestBuildJSONPath(t *testing.T) {
 			expected: "document->'healthevent'->'status'->>'message'",
 		},
 		{
-			name:     "createdAt column",
+			name:     "createdAt legacy document field",
 			field:    "createdAt",
-			expected: "created_at",
+			expected: "document->>'createdAt'",
 		},
 		{
-			name:     "updatedAt column",
+			name:     "updatedAt legacy document field",
 			field:    "updatedAt",
-			expected: "updated_at",
+			expected: "document->>'updatedAt'",
 		},
 	}
 
@@ -167,6 +167,13 @@ func TestBuildJSONPath(t *testing.T) {
 				t.Errorf("expected %q, got %q", tt.expected, result)
 			}
 		})
+	}
+
+	if got := client.buildJSONPathWithOptions("createdAt", true); got != "created_at" {
+		t.Fatalf("extended createdAt path = %q", got)
+	}
+	if got := client.buildJSONPathWithOptions("updatedAt", true); got != "updated_at" {
+		t.Fatalf("extended updatedAt path = %q", got)
 	}
 }
 
@@ -181,7 +188,7 @@ func TestRecoveryQueryLogicalFilters(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			clause, args, err := client.buildLogicalWhereClause(opOr, value, 3)
+			clause, args, err := client.buildLogicalWhereClause(opOr, value, 3, true)
 			if err != nil {
 				t.Fatalf("buildLogicalWhereClause() error = %v", err)
 			}
@@ -197,7 +204,7 @@ func TestRecoveryQueryLogicalFilters(t *testing.T) {
 	clause, args, err := client.buildLogicalWhereClause(opAnd, []any{
 		map[string]any{"nodeName": "node-a"},
 		map[string]any{"createdAt": map[string]any{opGT: time.Unix(10, 0)}},
-	}, 1)
+	}, 1, true)
 	if err != nil {
 		t.Fatalf("buildLogicalWhereClause() error = %v", err)
 	}
@@ -218,20 +225,20 @@ func TestRecoveryQueryLogicalFilterValidation(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, _, err := client.buildLogicalWhereClause(opOr, value, 1)
+			_, _, err := client.buildLogicalWhereClause(opOr, value, 1, true)
 			if err == nil {
 				t.Fatal("buildLogicalWhereClause() expected an error")
 			}
 		})
 	}
 
-	_, _, err := client.buildWhereClauseMap(map[string]any{opOr: "node-a"}, 1)
+	_, _, err := client.buildWhereClauseMapWithOptions(map[string]any{opOr: "node-a"}, 1, true)
 	if err == nil {
 		t.Fatal("root logical filter accepted an invalid value")
 	}
-	_, _, err = client.buildWhereClauseMap(map[string]any{
+	_, _, err = client.buildWhereClauseMapWithOptions(map[string]any{
 		"status.value": map[string]any{opExists: "true"},
-	}, 1)
+	}, 1, true)
 	if err == nil {
 		t.Fatal("field comparison accepted an invalid $exists value")
 	}
@@ -255,10 +262,10 @@ func TestRecoveryQueryComparisonOperators(t *testing.T) {
 		wantExpression string
 		wantArgument   any
 	}{
-		{true, "(document->>'count')::boolean", true},
-		{int32(-2), "(document->>'count')::numeric", "-2"},
-		{uint64(3), "(document->>'count')::numeric", "3"},
-		{float32(1.5), "(document->>'count')::numeric", "1.5"},
+		{true, "CASE WHEN document->>'count' IS NULL THEN false WHEN document->>'count' IN ('true', 'false') THEN (document->>'count')::boolean END", true},
+		{int32(-2), "CASE WHEN document->>'count' ~ '^-?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$' THEN (document->>'count')::numeric END", "-2"},
+		{uint64(3), "CASE WHEN document->>'count' ~ '^-?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$' THEN (document->>'count')::numeric END", "3"},
+		{float32(1.5), "CASE WHEN document->>'count' ~ '^-?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$' THEN (document->>'count')::numeric END", "1.5"},
 	} {
 		expression, argument := typedComparisonOperand("document->>'count'", test.value)
 		if expression != test.wantExpression || argument != test.wantArgument {
@@ -274,10 +281,10 @@ func TestRecoveryQueryComparisonOperators(t *testing.T) {
 	if expression != "document->>'value'" || argument != "raw" {
 		t.Fatalf("string operand = %q, %#v", expression, argument)
 	}
-	if condition, args := buildScalarComparison("document->>'value'", "=", nil, 1); condition != "document->>'value' IS NULL" || len(args) != 0 {
+	if condition, args := buildScalarComparison("document->>'value'", "=", nil, 1, true); condition != "document->>'value' IS NULL" || len(args) != 0 {
 		t.Fatalf("nil equality = %q, %#v", condition, args)
 	}
-	if condition, args := buildScalarComparison("document->>'value'", "!=", nil, 1); condition != "document->>'value' IS NOT NULL" || len(args) != 0 {
+	if condition, args := buildScalarComparison("document->>'value'", "!=", nil, 1, true); condition != "document->>'value' IS NOT NULL" || len(args) != 0 {
 		t.Fatalf("nil inequality = %q, %#v", condition, args)
 	}
 }
@@ -295,14 +302,59 @@ func TestRecoveryQueryExistsOperator(t *testing.T) {
 	}
 
 	client := &PostgreSQLClient{}
-	clause, args, err := client.buildWhereClause(map[string]any{
+	clause, args, err := client.buildWhereClauseWithOptions(map[string]any{
 		"healthevent.processingstrategy": map[string]any{opExists: false},
-	})
+	}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if clause != "document->'healthevent'->'processingStrategy' IS NULL" || len(args) != 0 {
 		t.Fatalf("$exists clause = %q, args = %#v", clause, args)
+	}
+}
+
+func TestExtendedQueryTranslationRequiresOptIn(t *testing.T) {
+	client := &PostgreSQLClient{}
+	filter := map[string]any{opOr: []any{
+		map[string]any{"healthevent.processingstrategy": int32(1)},
+		map[string]any{"healthevent.processingstrategy": map[string]any{opExists: false}},
+	}}
+
+	legacyClause, _, err := client.buildWhereClause(filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(legacyClause, " OR ") || strings.Contains(legacyClause, "processingStrategy") {
+		t.Fatalf("unscoped filter enabled extended translation: %s", legacyClause)
+	}
+
+	extendedClause, _, err := client.buildWhereClauseWithOptions(filter, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(extendedClause, " OR ") || !strings.Contains(extendedClause, "processingStrategy") {
+		t.Fatalf("scoped filter did not enable extended translation: %s", extendedClause)
+	}
+
+	legacyNilClause, legacyNilArgs, err := client.buildWhereClause(map[string]any{"value": nil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacyNilClause != "document->>'value' = $1" || len(legacyNilArgs) != 1 || legacyNilArgs[0] != nil {
+		t.Fatalf("unscoped nil comparison changed semantics: %s, %#v", legacyNilClause, legacyNilArgs)
+	}
+}
+
+func TestExtendedEmptyMatchUsesTrueClause(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	query, args, err := client.buildAggregationQuery([]map[string]any{
+		{"$match": map[string]any{}},
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "WHERE TRUE") || len(args) != 0 {
+		t.Fatalf("query = %s, args = %#v", query, args)
 	}
 }
 
@@ -312,7 +364,7 @@ func TestAggregationRecoveryBoundaryUsesCreatedAtColumn(t *testing.T) {
 
 	query, args, err := client.buildAggregationQuery([]map[string]any{
 		{"$match": map[string]any{"createdAt": map[string]any{"$gt": cutoff}}},
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("buildAggregationQuery() error = %v", err)
 	}
@@ -349,7 +401,7 @@ func TestAggregationRecoveryBoundarySupportsNanosecondEventTime(t *testing.T) {
 				},
 			},
 		}},
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("buildAggregationQuery() error = %v", err)
 	}
@@ -377,7 +429,7 @@ func TestAggregationSupportsAnalyzerMandatoryLogicalFilter(t *testing.T) {
 				},
 			},
 		}},
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("buildAggregationQuery() error = %v", err)
 	}
@@ -563,7 +615,7 @@ func TestAggregationPipelineConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, err := client.buildAggregationQuery(tt.stages)
+			_, _, err := client.buildAggregationQuery(tt.stages, false)
 
 			if tt.expectError {
 				if err == nil {
@@ -670,7 +722,7 @@ func TestSetWindowFieldsQueryGeneration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			query, _, err := client.buildAggregationQuery(tt.stages)
+			query, _, err := client.buildAggregationQuery(tt.stages, false)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1075,7 +1127,7 @@ func TestAddFieldsWithNewOperators(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			query, _, err := client.buildAggregationQuery(tt.stages)
+			query, _, err := client.buildAggregationQuery(tt.stages, false)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1111,7 +1163,7 @@ func TestCountWithPostMatchFilter(t *testing.T) {
 		{"$match": map[string]any{"count": map[string]any{"$gte": 5}}},
 	}
 
-	query, args, err := client.buildAggregationQuery(stages)
+	query, args, err := client.buildAggregationQuery(stages, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1168,7 +1220,7 @@ func TestCountWithPostMatchFilter_ZeroCount(t *testing.T) {
 		{"$match": map[string]any{"count": map[string]any{"$gte": 5}}},
 	}
 
-	query, args, err := client.buildAggregationQuery(stages)
+	query, args, err := client.buildAggregationQuery(stages, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

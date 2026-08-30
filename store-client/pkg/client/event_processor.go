@@ -231,6 +231,19 @@ func (p *DefaultEventProcessor) handleSingleEvent(ctx context.Context, event Eve
 func (p *DefaultEventProcessor) handleProcessingError(
 	ctx context.Context, eventID string, processErr error, token []byte,
 ) error {
+	if IsPermanentError(processErr) {
+		slog.Warn("Checkpointing event after deterministic processing failure",
+			"eventID", eventID, "error", processErr)
+
+		if markErr := p.markProcessed(ctx, token); markErr != nil {
+			return newUncheckpointedEventError(fmt.Errorf(
+				"failed to mark event as processed after permanent error (%w): %w", processErr, markErr,
+			))
+		}
+
+		return processErr
+	}
+
 	if !p.config.MarkProcessedOnError {
 		slog.Error("Event processing failed, NOT marking as processed - will retry on restart",
 			"eventID", eventID, "error", processErr)

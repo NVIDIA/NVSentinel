@@ -436,7 +436,7 @@ func (r *Reconciler) currentDerivedStatesForNode(
 	for cursor.Next(ctx) {
 		var candidate datamodels.HealthEventWithStatus
 		if err := cursor.Decode(&candidate); err != nil {
-			return nil, fmt.Errorf("decode health event: %w", err)
+			return nil, client.PermanentError(fmt.Errorf("decode health event: %w", err))
 		}
 
 		identity, valid := recoveryIdentityForEvent(rule, candidate.HealthEvent)
@@ -722,7 +722,7 @@ func (r *Reconciler) findLatestMatchingEvent(
 	for cursor.Next(ctx) {
 		var candidate datamodels.HealthEventWithStatus
 		if err := cursor.Decode(&candidate); err != nil {
-			return nil, fmt.Errorf("decode health event: %w", err)
+			return nil, client.PermanentError(fmt.Errorf("decode health event: %w", err))
 		}
 
 		if candidate.HealthEvent == nil || !matches(&candidate) {

@@ -140,6 +140,53 @@ func IsRetryableError(err error) bool {
 	return false
 }
 
+// IsDeterministicError reports datastore failures that replaying the same
+// event cannot repair. Connection, timeout, permission, and unknown query
+// failures remain retryable by the caller.
+func IsDeterministicError(err error) bool {
+	var datastoreErr *DatastoreError
+	if !errors.As(err, &datastoreErr) {
+		return false
+	}
+
+	switch datastoreErr.Type {
+	case ErrorTypeValidation, ErrorTypeSerialization, ErrorTypeConversion, ErrorTypeConfiguration:
+		return true
+	case ErrorTypeQuery:
+		return isDeterministicQueryError(datastoreErr.Cause)
+	case ErrorTypeConnection, ErrorTypeAuthentication, ErrorTypeTimeout, ErrorTypeCertificate,
+		ErrorTypeInsert, ErrorTypeUpdate, ErrorTypeDelete, ErrorTypeTransaction,
+		ErrorTypeDocumentNotFound, ErrorTypeProviderNotFound, ErrorTypeInvalidProvider,
+		ErrorTypeChangeStream, ErrorTypeResumeToken, ErrorTypeUnknown:
+		return false
+	default:
+		return false
+	}
+}
+
+func isDeterministicQueryError(cause error) bool {
+	if cause == nil {
+		return true
+	}
+
+	var postgresErr interface{ SQLState() string }
+	if !errors.As(cause, &postgresErr) {
+		return false
+	}
+
+	code := postgresErr.SQLState()
+	if len(code) >= 2 && code[:2] == "22" {
+		return true
+	}
+
+	switch code {
+	case "42601", "42804", "42883":
+		return true
+	default:
+		return false
+	}
+}
+
 // IsNotFoundError checks if the error indicates a document was not found
 func IsNotFoundError(err error) bool {
 	if datastoreErr, ok := errors.AsType[*DatastoreError](err); ok {

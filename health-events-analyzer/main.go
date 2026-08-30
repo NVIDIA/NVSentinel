@@ -100,7 +100,7 @@ func createPipeline(config *config.TomlConfig) any {
 		return builder.BuildProcessableNonFatalUnhealthyInsertsPipeline()
 	}
 
-	return builder.BuildAnalyzerHealthEventInsertsPipeline()
+	return client.WithExtendedFilters(builder.BuildAnalyzerHealthEventInsertsPipeline())
 }
 
 func connectToPlatform(socket, tokenPath string, processingStrategy protos.ProcessingStrategy) (

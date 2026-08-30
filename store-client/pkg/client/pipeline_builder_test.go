@@ -131,6 +131,7 @@ func TestAnalyzerHealthEventInsertsPipeline(t *testing.T) {
 			assert.Contains(t, serialized, "health-events-analyzer",
 				"analyzer output must remain excluded")
 			assert.Contains(t, serialized, "processingstrategy")
+			assert.Contains(t, serialized, fmt.Sprint(int32(protos.ProcessingStrategy_UNSPECIFIED)))
 			assert.Contains(t, serialized, fmt.Sprint(int32(protos.ProcessingStrategy_STORE_AND_ANALYSE)))
 		})
 	}

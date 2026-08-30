@@ -155,6 +155,10 @@ func (b *MongoDBPipelineBuilder) BuildAnalyzerHealthEventInsertsPipeline() datas
 				datastore.E("$or", datastore.A(
 					datastore.D(datastore.E(
 						"fullDocument.healthevent.processingstrategy",
+						int32(protos.ProcessingStrategy_UNSPECIFIED),
+					)),
+					datastore.D(datastore.E(
+						"fullDocument.healthevent.processingstrategy",
 						int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION),
 					)),
 					datastore.D(datastore.E(

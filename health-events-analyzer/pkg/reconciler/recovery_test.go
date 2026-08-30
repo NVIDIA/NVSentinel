@@ -30,6 +30,7 @@ import (
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/publisher"
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
@@ -1042,8 +1043,43 @@ func TestFindLatestMatchingEventReportsCursorFailures(t *testing.T) {
 				context.Background(), map[string]any{}, func(*datamodels.HealthEventWithStatus) bool { return true },
 			)
 			require.Error(t, err)
+			require.Equal(t, name == "decode", client.IsPermanentError(err))
 		})
 	}
+}
+
+func TestCurrentDerivedStatesMarksDecodeFailurePermanent(t *testing.T) {
+	cursor := &healthEventCursor{
+		events:    []datamodels.HealthEventWithStatus{derivedEvent(time.Now(), false, "GPU-a")},
+		pos:       -1,
+		decodeErr: errors.New("decode failed"),
+	}
+	database := new(mockDatabaseClient)
+	database.On("Find", mock.Anything, mock.Anything, mock.Anything).Return(cursor, nil).Once()
+	reconciler := &Reconciler{databaseClient: database}
+
+	_, err := reconciler.currentDerivedStatesForNode(
+		context.Background(), recoveryRule(config.RecoveryScopeEntity), "node-a",
+	)
+	require.Error(t, err)
+	require.True(t, client.IsPermanentError(err))
+}
+
+func TestHandleEventPreservesPermanentRecoveryFailure(t *testing.T) {
+	rule := recoveryRule(config.RecoveryScopeEntity)
+	database := new(mockDatabaseClient)
+	database.On("Find", mock.Anything, mock.Anything, mock.Anything).Return(&healthEventCursor{
+		events:    []datamodels.HealthEventWithStatus{derivedEvent(time.Now(), false, "GPU-a")},
+		pos:       -1,
+		decodeErr: errors.New("decode failed"),
+	}, nil).Once()
+	reconciler := newRecoveryReconciler(rule, database, new(mockPublisher))
+	recovery := recoverySource(time.Now(), "GPU-a")
+
+	published, err := reconciler.handleEvent(context.Background(), &recovery)
+	require.False(t, published)
+	require.Error(t, err)
+	require.True(t, client.IsPermanentError(err))
 }
 
 func TestRecoveryOrderingFallbacks(t *testing.T) {

@@ -1042,9 +1042,6 @@ func (c *PostgreSQLDatabaseClient) NewChangeStreamWatcher(
 	// 1. Server-side: SQL WHERE clause (built from w.pipeline in fetchNewChanges)
 	// 2. Application-side: PipelineFilter (handles edge cases SQL can't express)
 	if pipeline != nil {
-		// Store raw pipeline for SQL filter building
-		watcher.pipeline = pipeline
-
 		// Create application-side filter as fallback
 		pipelineFilter, err := NewPipelineFilter(pipeline)
 		if err != nil {
@@ -1052,6 +1049,9 @@ func (c *PostgreSQLDatabaseClient) NewChangeStreamWatcher(
 		} else {
 			watcher.pipelineFilter = pipelineFilter
 		}
+
+		// Store the raw pipeline for SQL filter building after consuming options.
+		watcher.pipeline, _ = client.ResolvePipelineOptions(pipeline)
 	}
 
 	// Return the adapter that implements client.ChangeStreamWatcher

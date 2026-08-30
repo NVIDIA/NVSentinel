@@ -19,13 +19,15 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 // PipelineFilter filters events based on MongoDB-style aggregation pipeline
 // This allows PostgreSQL to emulate MongoDB's pipeline filtering at the application level
 type PipelineFilter struct {
-	stages []filterStage
+	stages          []filterStage
+	extendedFilters bool
 }
 
 // filterStage represents a single stage in the pipeline (currently only $match is supported)
@@ -35,12 +37,15 @@ type filterStage struct {
 
 // NewPipelineFilter creates a new pipeline filter from a MongoDB-style pipeline
 func NewPipelineFilter(pipeline any) (*PipelineFilter, error) {
+	pipeline, extendedFilters := client.ResolvePipelineOptions(pipeline)
+
 	if pipeline == nil {
 		return nil, nil
 	}
 
 	filter := &PipelineFilter{
-		stages: make([]filterStage, 0),
+		stages:          make([]filterStage, 0),
+		extendedFilters: extendedFilters,
 	}
 
 	// Handle different pipeline types
@@ -173,6 +178,10 @@ func (f *PipelineFilter) matchesCondition(event map[string]any, key string, expe
 		return result
 	default:
 		// Handle field path matching (e.g., "operationType", "fullDocument.healtheventstatus.faultremediated.value")
+		if !f.extendedFilters {
+			return f.matchesValue(f.getFieldValue(event, key), expectedValue)
+		}
+
 		actualValue, present := f.getFieldValueWithPresence(event, key)
 
 		return f.matchesFieldCondition(actualValue, present, expectedValue)
@@ -335,6 +344,10 @@ func (f *PipelineFilter) matchesMapValue(actualValue any, expectedMap map[string
 
 // matchesOperators processes MongoDB operator expressions
 func (f *PipelineFilter) matchesOperators(actualValue any, operators map[string]any) bool {
+	if !f.extendedFilters {
+		return f.matchesLegacyOperators(actualValue, operators)
+	}
+
 	for op, opValue := range operators {
 		var matches bool
 
@@ -352,6 +365,33 @@ func (f *PipelineFilter) matchesOperators(actualValue any, operators map[string]
 		}
 
 		if !matches {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (f *PipelineFilter) matchesLegacyOperators(actualValue any, operators map[string]any) bool {
+	for op, opValue := range operators {
+		switch op {
+		case opIn:
+			return f.matchesIn(actualValue, opValue)
+		case opNe:
+			return !f.matchesEqual(actualValue, opValue)
+		case opEq:
+			return f.matchesEqual(actualValue, opValue)
+		case opGt:
+			return f.matchesGreaterThan(actualValue, opValue)
+		case opGte:
+			return f.matchesGreaterThanOrEqual(actualValue, opValue)
+		case opLt:
+			return f.matchesLessThan(actualValue, opValue)
+		case opLte:
+			return f.matchesLessThanOrEqual(actualValue, opValue)
+		default:
+			slog.Warn("Unsupported operator", "operator", op)
+
 			return false
 		}
 	}

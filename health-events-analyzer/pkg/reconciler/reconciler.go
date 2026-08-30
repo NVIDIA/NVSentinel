@@ -320,6 +320,17 @@ func (r *Reconciler) processConfiguredRules(
 
 		published, err := r.processRule(ctx, rule, event)
 		if err != nil {
+			if client.IsPermanentError(err) {
+				slog.ErrorContext(ctx, "Skipping rule after deterministic evaluation failure",
+					"rule_name", rule.Name, "error", err)
+				totalEventProcessingError.WithLabelValues("permanent_rule_error").Inc()
+				span.AddEvent("permanent_rule_error", trace.WithAttributes(
+					attribute.String("health_events_analyzer.error.message", err.Error()),
+				))
+
+				continue
+			}
+
 			multiErr = multierror.Append(multiErr, err)
 			span.AddEvent("rule_evaluation_error", trace.WithAttributes(
 				attribute.String("health_events_analyzer.error.type", "rule_evaluation_error"),
@@ -343,14 +354,6 @@ func (r *Reconciler) handleXidDetector(ctx context.Context, event *datamodels.He
 
 	ctx, span := tracing.StartSpan(ctx, "health_events_analyzer.handle_xid_detector")
 	defer span.End()
-
-	// Clear XID burst history when a healthy GPU event is received
-	if r.shouldClearXidHistory(event.HealthEvent) {
-		r.xidDetector.ClearNodeHistory(event.HealthEvent.NodeName)
-		span.SetAttributes(attribute.Bool("health_events_analyzer.xid.history_cleared", true))
-		slog.InfoContext(ctx, "Cleared XID burst history for node due to healthy GPU event",
-			"node", event.HealthEvent.NodeName)
-	}
 
 	// Check for GPU XID errors and detect burst patterns
 	if r.shouldProcessXidEvent(event.HealthEvent) {
@@ -547,7 +550,12 @@ func (r *Reconciler) validateAllSequenceCriteria(ctx context.Context, rule confi
 	slog.DebugContext(ctx, "Executing aggregation pipeline",
 		"rule_name", rule.Name, "pipeline_stages_count", len(pipelineStages))
 
-	cursor, err := r.databaseClient.Aggregate(ctx, pipelineStages)
+	queryPipeline := any(pipelineStages)
+	if rule.Recovery != nil {
+		queryPipeline = client.WithExtendedFilters(pipelineStages)
+	}
+
+	cursor, err := r.databaseClient.Aggregate(ctx, queryPipeline)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to execute aggregation pipeline", "error", err, "rule_name", rule.Name)
 		totalEventProcessingError.WithLabelValues("execute_pipeline_error").Inc()
@@ -558,7 +566,9 @@ func (r *Reconciler) validateAllSequenceCriteria(ctx context.Context, rule confi
 		)
 		tracing.RecordError(span, err)
 
-		return false, fmt.Errorf("failed to execute aggregation pipeline: %w", err)
+		return false, classifyRuleDatastoreError(
+			fmt.Errorf("failed to execute aggregation pipeline: %w", err),
+		)
 	}
 
 	defer cursor.Close(ctx)
@@ -573,7 +583,7 @@ func (r *Reconciler) validateAllSequenceCriteria(ctx context.Context, rule confi
 		)
 		tracing.RecordError(span, err)
 
-		return false, fmt.Errorf("failed to decode cursor: %w", err)
+		return false, classifyRuleDatastoreError(fmt.Errorf("failed to decode cursor: %w", err))
 	}
 
 	slog.DebugContext(ctx, "Aggregation pipeline completed", "rule_name", rule.Name, "result_count", len(result))
@@ -624,6 +634,9 @@ func (r *Reconciler) getPipelineStages(
 		fieldNodeName:       healthEventWithStatus.HealthEvent.NodeName,
 		aggregationOperatorOr: []any{
 			map[string]any{
+				fieldProcessingStrategy: int32(protos.ProcessingStrategy_UNSPECIFIED),
+			},
+			map[string]any{
 				fieldProcessingStrategy: int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION),
 			},
 			map[string]any{
@@ -669,7 +682,7 @@ func (r *Reconciler) getPipelineStages(
 			slog.Error("Failed to parse stage", "stage_index", i, "error", err, "stage_string", stageStr)
 			totalEventProcessingError.WithLabelValues("parse_stage_error").Inc()
 
-			return nil, fmt.Errorf("failed to parse stage %d: %w", i, err)
+			return nil, client.PermanentError(fmt.Errorf("failed to parse stage %d: %w", i, err))
 		}
 
 		slog.Debug("Parsed aggregation stage", "rule_name", rule.Name, "stage_index", i)
@@ -678,6 +691,14 @@ func (r *Reconciler) getPipelineStages(
 	}
 
 	return pipeline, nil
+}
+
+func classifyRuleDatastoreError(err error) error {
+	if datastore.IsDeterministicError(err) {
+		return client.PermanentError(err)
+	}
+
+	return err
 }
 
 func generatedAfterExpression(timestamp *timestamppb.Timestamp) map[string]any {
@@ -707,16 +728,6 @@ func (r *Reconciler) shouldProcessXidEvent(event *protos.HealthEvent) bool {
 		event.ComponentClass == "GPU" &&
 		!event.IsHealthy &&
 		len(event.ErrorCode) > 0 &&
-		event.Agent != agentName // Don't process our own events
-}
-
-// shouldClearXidHistory checks if a healthy GPU event should clear the XID burst history
-// This ensures that when a GPU is healthy again, we don't keep triggering RepeatedXidError
-// based on stale XID history from before the recovery
-func (r *Reconciler) shouldClearXidHistory(event *protos.HealthEvent) bool {
-	return event != nil &&
-		event.ComponentClass == "GPU" &&
-		event.IsHealthy &&
 		event.Agent != agentName // Don't process our own events
 }
 

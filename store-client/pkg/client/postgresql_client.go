@@ -661,6 +661,8 @@ func (c *PostgreSQLClient) CountDocuments(ctx context.Context, filter any, opts 
 //
 //nolint:gocyclo,cyclop,gocognit // Complexity 11: handles pipeline type conversion and stage routing - acceptable
 func (c *PostgreSQLClient) Aggregate(ctx context.Context, pipeline any) (Cursor, error) {
+	pipeline, extendedFilters := ResolvePipelineOptions(pipeline)
+
 	// Convert pipeline to slice of stages
 	var stages []map[string]any
 
@@ -699,7 +701,7 @@ func (c *PostgreSQLClient) Aggregate(ctx context.Context, pipeline any) (Cursor,
 	}
 
 	// Build SQL query from pipeline stages
-	query, args, err := c.buildAggregationQuery(stages)
+	query, args, err := c.buildAggregationQuery(stages, extendedFilters)
 	if err != nil {
 		return nil, err
 	}
@@ -793,6 +795,13 @@ func resolveSQLFilter(filter any) (string, []any, bool) {
 // buildWhereClause converts filters to a PostgreSQL WHERE clause.
 // Accepts a *query.Builder (via ToSQL interface) or a legacy map[string]interface{} filter.
 func (c *PostgreSQLClient) buildWhereClause(filter any) (string, []any, error) {
+	return c.buildWhereClauseWithOptions(filter, false)
+}
+
+func (c *PostgreSQLClient) buildWhereClauseWithOptions(
+	filter any,
+	extendedFilters bool,
+) (string, []any, error) {
 	if filter == nil {
 		return sqlTrueClause, []any{}, nil
 	}
@@ -814,13 +823,19 @@ func (c *PostgreSQLClient) buildWhereClause(filter any) (string, []any, error) {
 		return sqlTrueClause, []any{}, nil
 	}
 
-	return c.buildWhereClauseMap(filterMap, 1)
+	return c.buildWhereClauseMapWithOptions(filterMap, 1, extendedFilters)
 }
 
-func (c *PostgreSQLClient) buildWhereClauseMap(
+//nolint:cyclop // Handles the small set of opt-in logical and field filter forms.
+func (c *PostgreSQLClient) buildWhereClauseMapWithOptions(
 	filterMap map[string]any,
 	startParam int,
+	extendedFilters bool,
 ) (string, []any, error) {
+	if len(filterMap) == 0 {
+		return sqlTrueClause, nil, nil
+	}
+
 	var (
 		conditions []string
 		args       []any
@@ -849,7 +864,11 @@ func (c *PostgreSQLClient) buildWhereClauseMap(
 
 			continue
 		case opAnd, opOr:
-			condition, logicalArgs, err := c.buildLogicalWhereClause(key, value, paramCount)
+			if !extendedFilters {
+				break
+			}
+
+			condition, logicalArgs, err := c.buildLogicalWhereClause(key, value, paramCount, extendedFilters)
 			if err != nil {
 				return "", nil, err
 			}
@@ -864,7 +883,7 @@ func (c *PostgreSQLClient) buildWhereClauseMap(
 		// Check if value is a map containing comparison operators
 		if valueMap, ok := value.(map[string]any); ok {
 			// Handle comparison operators: {"count": {opGTE: 5}} → document->>'count' >= 5
-			condition, valueArgs, err := c.buildFieldComparison(key, valueMap, paramCount)
+			condition, valueArgs, err := c.buildFieldComparison(key, valueMap, paramCount, extendedFilters)
 			if err != nil {
 				return "", nil, err
 			}
@@ -879,8 +898,8 @@ func (c *PostgreSQLClient) buildWhereClauseMap(
 		// Simple equality check on JSONB fields
 		// Example: {"nodeName": "node-1"} → document->>'nodeName' = $1
 		// Example: {"healthevent.nodename": "node-1"} → document->'healthevent'->>'nodename' = $1
-		jsonPath := c.buildJSONPath(key)
-		condition, valueArgs := buildScalarComparison(jsonPath, "=", value, paramCount)
+		jsonPath := c.buildJSONPathWithOptions(key, extendedFilters)
+		condition, valueArgs := buildScalarComparison(jsonPath, "=", value, paramCount, extendedFilters)
 		conditions = append(conditions, condition)
 		args = append(args, valueArgs...)
 		paramCount += len(valueArgs)
@@ -895,6 +914,7 @@ func (c *PostgreSQLClient) buildLogicalWhereClause(
 	operator string,
 	value any,
 	startParam int,
+	extendedFilters bool,
 ) (string, []any, error) {
 	logicalValues, ok := logicalFilterValues(value)
 	if !ok || len(logicalValues) == 0 {
@@ -919,7 +939,7 @@ func (c *PostgreSQLClient) buildLogicalWhereClause(
 			)
 		}
 
-		condition, args, err := c.buildWhereClauseMap(logicalMap, paramCount)
+		condition, args, err := c.buildWhereClauseMapWithOptions(logicalMap, paramCount, extendedFilters)
 		if err != nil {
 			return "", nil, fmt.Errorf("build %s filter %d: %w", operator, i, err)
 		}
@@ -961,13 +981,14 @@ func (c *PostgreSQLClient) buildFieldComparison(
 	fieldPath string,
 	operators map[string]any,
 	startParam int,
+	extendedFilters bool,
 ) (string, []any, error) {
 	var (
 		conditions []string
 		args       []any
 	)
 
-	jsonPath := c.buildJSONPath(fieldPath)
+	jsonPath := c.buildJSONPathWithOptions(fieldPath, extendedFilters)
 	paramCount := startParam
 
 	operatorNames := make([]string, 0, len(operators))
@@ -981,10 +1002,10 @@ func (c *PostgreSQLClient) buildFieldComparison(
 	for _, op := range operatorNames {
 		value := operators[op]
 
-		if op == opExists {
+		if op == opExists && extendedFilters {
 			existsPath := jsonPath
 			if jsonPath != createdAtSQL && jsonPath != updatedAtSQL {
-				existsPath = c.buildJSONPathAsJSONB(fieldPath)
+				existsPath = c.buildJSONPathAsJSONBWithOptions(fieldPath, true)
 			}
 
 			condition, err := buildExistsCondition(existsPath, value)
@@ -1006,7 +1027,7 @@ func (c *PostgreSQLClient) buildFieldComparison(
 			)
 		}
 
-		condition, valueArgs := buildScalarComparison(jsonPath, sqlOperator, value, paramCount)
+		condition, valueArgs := buildScalarComparison(jsonPath, sqlOperator, value, paramCount, extendedFilters)
 		conditions = append(conditions, condition)
 		args = append(args, valueArgs...)
 		paramCount += len(valueArgs)
@@ -1053,7 +1074,16 @@ func sqlComparisonOperator(operator string) (string, bool) {
 	}
 }
 
-func buildScalarComparison(jsonPath, operator string, value any, parameter int) (string, []any) {
+func buildScalarComparison(
+	jsonPath, operator string,
+	value any,
+	parameter int,
+	typed bool,
+) (string, []any) {
+	if !typed {
+		return fmt.Sprintf("%s %s $%d", jsonPath, operator, parameter), []any{value}
+	}
+
 	if value == nil {
 		if operator == "!=" {
 			return jsonPath + " IS NOT NULL", nil
@@ -1078,11 +1108,17 @@ func typedComparisonOperand(jsonPath string, value any) (string, any) {
 	}
 
 	if reflected.Kind() == reflect.Bool {
-		return "(" + jsonPath + ")::boolean", value
+		return fmt.Sprintf(
+			"CASE WHEN %s IS NULL THEN false WHEN %s IN ('true', 'false') THEN (%s)::boolean END",
+			jsonPath, jsonPath, jsonPath,
+		), value
 	}
 
 	if isJSONNumber(reflected.Kind()) {
-		return "(" + jsonPath + ")::numeric", formatJSONNumber(reflected, value)
+		return fmt.Sprintf(
+			"CASE WHEN %s ~ '^-?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$' THEN (%s)::numeric END",
+			jsonPath, jsonPath,
+		), formatJSONNumber(reflected, value)
 	}
 
 	return jsonPath, value
@@ -1916,7 +1952,6 @@ var fieldNameMapping = map[string]string{
 	"entitiesimpacted":   "entitiesImpacted",
 	"generatedtimestamp": "generatedTimestamp",
 	"recommendedaction":  "recommendedAction",
-	"processingstrategy": "processingStrategy",
 	"entitytype":         "entityType",
 	"entityvalue":        "entityValue",
 	// timestamp fields
@@ -1939,6 +1974,14 @@ func normalizeFieldName(fieldName string) string {
 	return fieldName
 }
 
+func normalizeFieldNameWithOptions(fieldName string, extendedFilters bool) string {
+	if extendedFilters && fieldName == "processingstrategy" {
+		return "processingStrategy"
+	}
+
+	return normalizeFieldName(fieldName)
+}
+
 // buildJSONPathAsJSONB converts a MongoDB-style field path to PostgreSQL JSONB path expression
 // that preserves JSONB type (using -> for all parts, including the last one).
 // This is used in aggregation expressions where we need to preserve arrays/objects.
@@ -1948,12 +1991,19 @@ func normalizeFieldName(fieldName string) string {
 //	"healthevent.entitiesimpacted" → "document->'healthevent'->'entitiesImpacted'"
 //	"status.metadata" → "document->'status'->'metadata'"
 func (c *PostgreSQLClient) buildJSONPathAsJSONB(fieldPath string) string {
+	return c.buildJSONPathAsJSONBWithOptions(fieldPath, false)
+}
+
+func (c *PostgreSQLClient) buildJSONPathAsJSONBWithOptions(
+	fieldPath string,
+	extendedFilters bool,
+) string {
 	parts := strings.Split(fieldPath, ".")
 	path := jsonbDocumentColumn
 
 	for _, part := range parts {
 		// Normalize field name to camelCase and use -> to keep JSONB type
-		normalizedPart := normalizeFieldName(part)
+		normalizedPart := normalizeFieldNameWithOptions(part, extendedFilters)
 		path = fmt.Sprintf("%s->'%s'", path, normalizedPart)
 	}
 
@@ -1968,18 +2018,24 @@ func (c *PostgreSQLClient) buildJSONPathAsJSONB(fieldPath string) string {
 //	"healthevent.nodename" → "document->'healthevent'->>'nodeName'"
 //	"status.message" → "document->'status'->>'message'"
 func (c *PostgreSQLClient) buildJSONPath(fieldPath string) string {
-	switch strings.ToLower(fieldPath) {
-	case "createdat":
-		return createdAtSQL
-	case "updatedat":
-		return updatedAtSQL
+	return c.buildJSONPathWithOptions(fieldPath, false)
+}
+
+func (c *PostgreSQLClient) buildJSONPathWithOptions(fieldPath string, extendedFilters bool) string {
+	if extendedFilters {
+		switch strings.ToLower(fieldPath) {
+		case "createdat":
+			return createdAtSQL
+		case "updatedat":
+			return updatedAtSQL
+		}
 	}
 
 	parts := strings.Split(fieldPath, ".")
 
 	if len(parts) == 1 {
 		// Simple field: document->>'fieldName'
-		normalizedPart := normalizeFieldName(parts[0])
+		normalizedPart := normalizeFieldNameWithOptions(parts[0], extendedFilters)
 
 		return fmt.Sprintf("%s->>'%s'", jsonbDocumentColumn, normalizedPart)
 	}
@@ -1990,7 +2046,7 @@ func (c *PostgreSQLClient) buildJSONPath(fieldPath string) string {
 	path := jsonbDocumentColumn
 
 	for i, part := range parts {
-		normalizedPart := normalizeFieldName(part)
+		normalizedPart := normalizeFieldNameWithOptions(part, extendedFilters)
 		if i == len(parts)-1 {
 			// Last part: use ->> to get text value
 			path = fmt.Sprintf("%s->>'%s'", path, normalizedPart)
@@ -2058,10 +2114,14 @@ func (c *PostgreSQLClient) convertDatastoreValue(value any) any {
 }
 
 // buildAggregationQuery builds SQL query from MongoDB aggregation pipeline stages
-func (c *PostgreSQLClient) buildAggregationQuery(stages []map[string]any) (string, []any, error) {
+func (c *PostgreSQLClient) buildAggregationQuery(
+	stages []map[string]any,
+	extendedFilters bool,
+) (string, []any, error) {
 	builder := &aggregationQueryBuilder{
-		client: c,
-		query:  fmt.Sprintf("SELECT id, document FROM %s", c.table),
+		client:          c,
+		query:           fmt.Sprintf("SELECT id, document FROM %s", c.table),
+		extendedFilters: extendedFilters,
 	}
 
 	for i, stage := range stages {
@@ -2089,7 +2149,8 @@ type aggregationQueryBuilder struct {
 	addFields    map[string]any // Fields to add via $addFields
 	// postCountMatch stores $match conditions that come AFTER $count
 	// These filter the count result, not the source rows
-	postCountMatch map[string]any
+	postCountMatch  map[string]any
+	extendedFilters bool
 }
 
 // windowFieldsSpec holds the specification for $setWindowFields
@@ -2169,7 +2230,7 @@ func (b *aggregationQueryBuilder) processMatch(value any) error {
 		return nil
 	}
 
-	whereClause, matchArgs, err := b.client.buildWhereClause(matchMap)
+	whereClause, matchArgs, err := b.client.buildWhereClauseWithOptions(matchMap, b.extendedFilters)
 	if err != nil {
 		return err
 	}

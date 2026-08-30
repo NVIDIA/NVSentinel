@@ -17,11 +17,12 @@ package postgresql
 import (
 	"testing"
 
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 func TestRecoveryPipelineOperators(t *testing.T) {
-	filter := &PipelineFilter{}
+	filter := &PipelineFilter{extendedFilters: true}
 
 	if !matchesExists(true, true) || !matchesExists(false, false) {
 		t.Fatal("$exists did not match field presence")
@@ -76,9 +77,9 @@ func TestExistsDistinguishesMissingAndExplicitNull(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			filter, err := NewPipelineFilter([]any{map[string]any{"$match": map[string]any{
+			filter, err := NewPipelineFilter(client.WithExtendedFilters([]any{map[string]any{"$match": map[string]any{
 				"fullDocument.healthevent.processingstrategy": map[string]any{"$exists": test.exists},
-			}}})
+			}}}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -90,9 +91,9 @@ func TestExistsDistinguishesMissingAndExplicitNull(t *testing.T) {
 }
 
 func TestExistsCombinesWithOtherOperators(t *testing.T) {
-	filter, err := NewPipelineFilter([]any{map[string]any{"$match": map[string]any{
+	filter, err := NewPipelineFilter(client.WithExtendedFilters([]any{map[string]any{"$match": map[string]any{
 		"fullDocument.count": map[string]any{"$exists": true, "$gt": 3},
-	}}})
+	}}}))
 	if err != nil {
 		t.Fatal(err)
 	}

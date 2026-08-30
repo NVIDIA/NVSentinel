@@ -327,6 +327,69 @@ func TestRecoveryWatcherAcknowledgesAfterStorageWithRealProvider(t *testing.T) {
 	require.ErrorIs(t, <-processorDone, context.Canceled)
 }
 
+func TestRecoveryQueryIgnoresNonNumericRowsWithRealPostgreSQL(t *testing.T) {
+	if os.Getenv(recoveryIntegrationEnv) != "1" {
+		t.Skipf("set %s=1 with a real PostgreSQL configuration", recoveryIntegrationEnv)
+	}
+
+	dsConfig, err := datastore.LoadDatastoreConfig()
+	require.NoError(t, err)
+	if dsConfig.Provider != datastore.ProviderPostgreSQL {
+		t.Skip("PostgreSQL-specific numeric-cast regression")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	ds, err := datastore.NewDataStore(ctx, *dsConfig)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, ds.Close(context.Background())) })
+
+	adapter, ok := ds.(interface {
+		GetDatabaseClient() client.DatabaseClient
+	})
+	require.True(t, ok)
+	database := adapter.GetDatabaseClient()
+	require.NoError(t, database.Ping(ctx))
+
+	runID := time.Now().UTC().UnixNano()
+	nodeName := fmt.Sprintf("recovery-poison-node-%d", runID)
+	event := storedEvent(time.Now().UTC(), &protos.HealthEvent{
+		Agent:              "syslog-health-monitor",
+		CheckName:          "SysLogsXIDError",
+		IsHealthy:          false,
+		NodeName:           nodeName,
+		GeneratedTimestamp: timestamppb.Now(),
+		ProcessingStrategy: protos.ProcessingStrategy_EXECUTE_REMEDIATION,
+		RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
+		EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU_UUID", EntityValue: fmt.Sprintf("GPU-%d", runID)}},
+	})
+	insertHealthEvents(t, ctx, database, event)
+
+	updated, err := database.UpdateDocument(ctx,
+		map[string]any{"healthevent.nodename": nodeName},
+		map[string]any{"$set": map[string]any{"healthevent.custommetric": "not-a-number"}},
+	)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, updated.ModifiedCount)
+
+	rule := recoveryRule(config.RecoveryScopeEntity)
+	rule.Stage = []string{
+		`{"$match":{"healthevent.custommetric":{"$gte":1}}}`,
+	}
+	reconciler := &Reconciler{
+		config: HealthEventsAnalyzerReconcilerConfig{
+			HealthEventsAnalyzerRules: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{rule}},
+		},
+		databaseClient: database,
+		provider:       ds.Provider(),
+	}
+
+	matched, err := reconciler.handleEvent(ctx, &event)
+	require.NoError(t, err, "non-numeric stored values must not crash-loop numeric comparisons")
+	require.False(t, matched)
+}
+
 func analyzerPipelineForNode(nodeName string) datastore.Pipeline {
 	pipeline := client.GetPipelineBuilder().BuildAnalyzerHealthEventInsertsPipeline()
 	match := pipeline[0][0].Value.(datastore.Document)

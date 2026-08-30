@@ -248,8 +248,9 @@ func (m *mockDatabaseClient) DeleteResumeToken(ctx context.Context, tokenConfig 
 // Mock cursor for tests
 type mockCursor struct {
 	mock.Mock
-	data []map[string]any
-	pos  int
+	data   []map[string]any
+	pos    int
+	allErr error
 }
 
 func createMockCursor(data []map[string]any) (*mockCursor, error) {
@@ -275,6 +276,10 @@ func (m *mockCursor) Close(ctx context.Context) error {
 }
 
 func (m *mockCursor) All(ctx context.Context, results any) error {
+	if m.allErr != nil {
+		return m.allErr
+	}
+
 	if resultsSlice, ok := results.(*[]map[string]any); ok {
 		*resultsSlice = m.data
 	}
@@ -541,6 +546,67 @@ func TestHandleEvent(t *testing.T) {
 		mockClient.AssertNotCalled(t, "Aggregate")
 		mockPublisher.AssertNotCalled(t, "HealthEventOccurredV1")
 	})
+
+	t.Run("deterministic rule failures are skipped", func(t *testing.T) {
+		for name, test := range map[string]struct {
+			rule         config.HealthEventsAnalyzerRule
+			aggregateErr error
+		}{
+			"invalid stage": {
+				rule: config.HealthEventsAnalyzerRule{
+					Name: "invalid-stage", EvaluateRule: true, Stage: []string{"invalid json"},
+				},
+			},
+			"invalid datastore query": {
+				rule: config.HealthEventsAnalyzerRule{
+					Name: "invalid-query", EvaluateRule: true, Stage: []string{`{"$count": "count"}`},
+				},
+				aggregateErr: datastore.NewValidationError(datastore.ProviderPostgreSQL, "bad pipeline", nil),
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				mockClient := new(mockDatabaseClient)
+				if test.aggregateErr != nil {
+					mockClient.On("Aggregate", mock.Anything, mock.Anything).
+						Return((*mockCursor)(nil), test.aggregateErr).Once()
+				}
+
+				reconciler := &Reconciler{
+					config: HealthEventsAnalyzerReconcilerConfig{
+						HealthEventsAnalyzerRules: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{test.rule}},
+					},
+					databaseClient: mockClient,
+				}
+
+				published, err := reconciler.handleEvent(ctx, &healthEvent_13)
+				assert.NoError(t, err)
+				assert.False(t, published)
+				mockClient.AssertExpectations(t)
+			})
+		}
+	})
+
+	t.Run("deterministic cursor decode failures are skipped", func(t *testing.T) {
+		mockClient := new(mockDatabaseClient)
+		rule := config.HealthEventsAnalyzerRule{
+			Name: "decode-failure", EvaluateRule: true, Stage: []string{`{"$count":"count"}`},
+		}
+		mockClient.On("Aggregate", mock.Anything, mock.Anything).Return(&mockCursor{
+			allErr: datastore.NewSerializationError(datastore.ProviderPostgreSQL, "bad stored row", nil),
+		}, nil).Once()
+		reconciler := &Reconciler{
+			config: HealthEventsAnalyzerReconcilerConfig{
+				HealthEventsAnalyzerRules: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{rule}},
+			},
+			databaseClient: mockClient,
+		}
+
+		published, err := reconciler.handleEvent(ctx, &healthEvent_13)
+		assert.NoError(t, err)
+		assert.False(t, published)
+		mockClient.AssertExpectations(t)
+	})
+
 	t.Run("rule with EvaluateRule false is skipped", func(t *testing.T) {
 		mockClient := new(mockDatabaseClient)
 		mockPublisher := &mockPublisher{}

@@ -24,7 +24,9 @@ import (
 
 func TestAnalyzerPipelineAdmitsRecoveryEvents(t *testing.T) {
 	filter, err := NewPipelineFilter(
-		client.NewPostgreSQLPipelineBuilder().BuildAnalyzerHealthEventInsertsPipeline(),
+		client.WithExtendedFilters(
+			client.NewPostgreSQLPipelineBuilder().BuildAnalyzerHealthEventInsertsPipeline(),
+		),
 	)
 	if err != nil {
 		t.Fatalf("NewPipelineFilter() error = %v", err)
@@ -46,6 +48,8 @@ func TestAnalyzerPipelineAdmitsRecoveryEvents(t *testing.T) {
 			strategy: int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION), isHealthy: true, want: true},
 		{name: "legacy event without strategy", operation: "insert", agent: "custom-monitor",
 			strategy: nil, isHealthy: true, want: true},
+		{name: "explicit unspecified strategy", operation: "insert", agent: "custom-monitor",
+			strategy: int32(protos.ProcessingStrategy_UNSPECIFIED), isHealthy: true, want: true},
 		{name: "analyzer output", operation: "insert", agent: "health-events-analyzer",
 			strategy: int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION), isHealthy: true, want: false},
 		{name: "store only", operation: "insert", agent: "syslog-health-monitor",
@@ -75,5 +79,30 @@ func TestAnalyzerPipelineAdmitsRecoveryEvents(t *testing.T) {
 				t.Fatalf("MatchesEvent() = %t, want %t", got, test.want)
 			}
 		})
+	}
+}
+
+func TestExtendedFiltersDoNotChangeFaultQuarantineAdmission(t *testing.T) {
+	pipeline := client.NewPostgreSQLPipelineBuilder().BuildProcessableHealthEventInsertsPipeline()
+	legacyFilter, err := NewPipelineFilter(pipeline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extendedFilter, err := NewPipelineFilter(client.WithExtendedFilters(pipeline))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	event := datastore.EventWithToken{Event: datastore.Event{
+		"operationType": "insert",
+		"fullDocument": map[string]any{
+			"healthevent": map[string]any{},
+		},
+	}}
+	if legacyFilter.MatchesEvent(event) {
+		t.Fatal("unscoped pipeline unexpectedly changed fault-quarantine admission")
+	}
+	if !extendedFilter.MatchesEvent(event) {
+		t.Fatal("extended pipeline did not admit a legacy event")
 	}
 }

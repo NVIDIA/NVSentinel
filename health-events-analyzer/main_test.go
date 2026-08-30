@@ -48,7 +48,7 @@ func TestCreatePipelineRequiresEnabledRecovery(t *testing.T) {
 				EvaluateRule: true,
 				Recovery:     &config.RecoveryMapping{},
 			}}},
-			want: builder.BuildAnalyzerHealthEventInsertsPipeline(),
+			want: client.WithExtendedFilters(builder.BuildAnalyzerHealthEventInsertsPipeline()),
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
