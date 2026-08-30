@@ -39,6 +39,10 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if include "gpu-health-monitor.dcgmStartupGateEnabled" . }}
+      initContainers:
+        {{- include "gpu-health-monitor.dcgmStartupGate" (dict "root" . "dcgmVersion" "4.x") | nindent 8 }}
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           command: ["gpu_health_monitor"]

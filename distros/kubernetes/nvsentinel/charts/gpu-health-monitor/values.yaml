@@ -59,6 +59,16 @@ dcgm:
   # Set to false only after validating embedded-mode detections on your fleet.
   probeStoreOnly: true
 
+# DCGM connection lifecycle configuration
+dcgmConnectivity:
+  # Optional startup gate for remote DCGM modes. When enabled, an init
+  # container retries until it can connect to DCGM and complete GPU discovery.
+  # Disabled by default to preserve the existing startup behavior.
+  startupGate:
+    enabled: false
+    retryIntervalSeconds: 5
+    connectTimeoutSeconds: 5
+
 # DCGM field-level monitoring feature flags
 dcgmFieldsMonitoring:
   # Enable GpuThermalMarginWatch (DCGM field 153 / GPU T.Limit margin monitoring)
