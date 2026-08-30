@@ -16,10 +16,14 @@ package publisher
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -30,6 +34,16 @@ import (
 
 type capturePlatformConnector struct {
 	events *protos.HealthEvents
+}
+
+type unavailablePlatformConnector struct{}
+
+func (*unavailablePlatformConnector) HealthEventOccurredV1(
+	context.Context,
+	*protos.HealthEvents,
+	...grpc.CallOption,
+) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unavailable, "connector unavailable")
 }
 
 func (c *capturePlatformConnector) HealthEventOccurredV1(
@@ -146,4 +160,15 @@ func TestPublishPreservesUnhealthyEventSemantics(t *testing.T) {
 	require.True(t, proto.Equal(
 		&protos.Entity{EntityType: "GPU_UUID", EntityValue: "GPU-1"}, clones[0],
 	))
+}
+
+func TestPublishRetryHonorsContextDeadline(t *testing.T) {
+	pub := NewPublisher(&unavailablePlatformConnector{}, protos.ProcessingStrategy_EXECUTE_REMEDIATION)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	err := pub.Publish(ctx, &protos.HealthEvent{}, protos.RecommendedAction_NONE,
+		"DerivedCondition", "derived", nil)
+	require.Error(t, err)
+	require.True(t, errors.Is(err, context.DeadlineExceeded), err)
 }

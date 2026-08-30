@@ -74,6 +74,20 @@ func TestRecoveryValidationAllowsRulesWithoutMapping(t *testing.T) {
 	require.NoError(t, config.Validate())
 }
 
+func TestHasEnabledRecovery(t *testing.T) {
+	require.False(t, (*TomlConfig)(nil).HasEnabledRecovery())
+	require.False(t, (&TomlConfig{Rules: []HealthEventsAnalyzerRule{{
+		EvaluateRule: true,
+	}}}).HasEnabledRecovery())
+	require.False(t, (&TomlConfig{Rules: []HealthEventsAnalyzerRule{{
+		Recovery: &RecoveryMapping{},
+	}}}).HasEnabledRecovery())
+	require.True(t, (&TomlConfig{Rules: []HealthEventsAnalyzerRule{{
+		EvaluateRule: true,
+		Recovery:     &RecoveryMapping{},
+	}}}).HasEnabledRecovery())
+}
+
 func TestRecoveryMappingValidation(t *testing.T) {
 	tests := []struct {
 		name    string

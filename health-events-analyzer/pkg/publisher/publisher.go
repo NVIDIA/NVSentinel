@@ -66,7 +66,7 @@ func (p *PublisherConfig) sendHealthEventWithRetry(ctx context.Context, healthEv
 		Jitter:   0.1,
 	}
 
-	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
+	err := wait.ExponentialBackoffWithContext(ctx, backoff, func(ctx context.Context) (bool, error) {
 		_, err := p.platformConnectorClient.HealthEventOccurredV1(ctx, healthEvents)
 		if err == nil {
 			slog.DebugContext(ctx, "Successfully sent health events", "events", healthEvents)

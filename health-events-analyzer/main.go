@@ -94,8 +94,12 @@ func loadDatabaseConfig(databaseClientCertMountPath string) (*datastore.DataStor
 	return config, nil
 }
 
-func createPipeline() any {
+func createPipeline(config *config.TomlConfig) any {
 	builder := client.GetPipelineBuilder()
+	if !config.HasEnabledRecovery() {
+		return builder.BuildProcessableNonFatalUnhealthyInsertsPipeline()
+	}
+
 	return builder.BuildAnalyzerHealthEventInsertsPipeline()
 }
 
@@ -144,8 +148,6 @@ func run() error {
 		return err
 	}
 
-	pipeline := createPipeline()
-
 	value, ok := protos.ProcessingStrategy_value[*processingStrategyFlag]
 	if !ok {
 		return fmt.Errorf("unexpected processingStrategy value: %q", *processingStrategyFlag)
@@ -164,6 +166,8 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("error loading TOML config: %w", err)
 	}
+
+	pipeline := createPipeline(tomlConfig)
 
 	for _, rule := range tomlConfig.Rules {
 		ff.Set(rule.Name, rule.EvaluateRule)

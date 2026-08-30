@@ -69,6 +69,13 @@ var (
 		},
 		[]string{metricLabelRuleName, "scope"},
 	)
+	recoveryPersistenceTimeoutsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "health_event_analyzer_recovery_persistence_timeouts_total",
+			Help: "Total derived transitions not observed in the store before the persistence deadline.",
+		},
+		[]string{metricLabelRuleName, "state"},
+	)
 
 	mongoQueryExecutionDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -84,7 +91,7 @@ var (
 		prometheus.HistogramOpts{
 			Name:    "health_event_analyzer_event_handling_duration_seconds",
 			Help:    "Histogram of event handling durations.",
-			Buckets: prometheus.DefBuckets,
+			Buckets: prometheus.ExponentialBuckets(0.1, 2, 12),
 		},
 	)
 )

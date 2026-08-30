@@ -55,6 +55,20 @@ type TomlConfig struct {
 	Rules []HealthEventsAnalyzerRule `toml:"rules"`
 }
 
+func (c *TomlConfig) HasEnabledRecovery() bool {
+	if c == nil {
+		return false
+	}
+
+	for i := range c.Rules {
+		if c.Rules[i].EvaluateRule && c.Rules[i].Recovery != nil {
+			return true
+		}
+	}
+
+	return false
+}
+
 func LoadTomlConfig(path string) (*TomlConfig, error) {
 	var config TomlConfig
 	if err := configmanager.LoadTOMLConfig(path, &config); err != nil {

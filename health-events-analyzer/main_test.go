@@ -19,12 +19,40 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 )
 
-func TestCreatePipelineUsesAnalyzerHealthEventPipeline(t *testing.T) {
-	require.Equal(t,
-		client.GetPipelineBuilder().BuildAnalyzerHealthEventInsertsPipeline(),
-		createPipeline(),
-	)
+func TestCreatePipelineRequiresEnabledRecovery(t *testing.T) {
+	builder := client.GetPipelineBuilder()
+
+	for name, test := range map[string]struct {
+		config *config.TomlConfig
+		want   any
+	}{
+		"nil config": {
+			want: builder.BuildProcessableNonFatalUnhealthyInsertsPipeline(),
+		},
+		"manual recovery": {
+			config: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{{EvaluateRule: true}}},
+			want:   builder.BuildProcessableNonFatalUnhealthyInsertsPipeline(),
+		},
+		"disabled recovery rule": {
+			config: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{{
+				Recovery: &config.RecoveryMapping{},
+			}}},
+			want: builder.BuildProcessableNonFatalUnhealthyInsertsPipeline(),
+		},
+		"enabled recovery rule": {
+			config: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{{
+				EvaluateRule: true,
+				Recovery:     &config.RecoveryMapping{},
+			}}},
+			want: builder.BuildAnalyzerHealthEventInsertsPipeline(),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, test.want, createPipeline(test.config))
+		})
+	}
 }

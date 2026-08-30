@@ -48,9 +48,15 @@ type derivedState struct {
 	isHealthy bool
 }
 
+type recoveryTarget struct {
+	identity recoveryIdentity
+	state    derivedState
+}
+
 const (
-	defaultRecoveryPollInterval      = 250 * time.Millisecond
-	defaultRecoveryRepublishInterval = 30 * time.Second
+	defaultRecoveryPollInterval       = 250 * time.Millisecond
+	defaultRecoveryRepublishInterval  = 30 * time.Second
+	defaultRecoveryPersistenceTimeout = 2 * time.Minute
 )
 
 func recoveryIdentityForEvent(
@@ -81,30 +87,59 @@ func recoveryIdentityForEvent(
 	return identity, true
 }
 
+func recoveryIdentityForSource(
+	rule config.HealthEventsAnalyzerRule,
+	event *protos.HealthEvent,
+) (identity recoveryIdentity, nodeWide bool, ok bool) {
+	if rule.Recovery == nil || event == nil || event.NodeName == "" {
+		return recoveryIdentity{}, false, false
+	}
+
+	if rule.Recovery.Scope == config.RecoveryScopeNode {
+		identity, ok := recoveryIdentityForEvent(rule, event)
+		return identity, false, ok
+	}
+
+	identity, ok = recoveryIdentityForEvent(rule, event)
+	if ok {
+		return identity, false, true
+	}
+
+	if len(event.EntitiesImpacted) != 0 {
+		return recoveryIdentity{}, false, false
+	}
+
+	return nodeRecoveryIdentity(event.NodeName), true, true
+}
+
+func nodeRecoveryIdentity(nodeName string) recoveryIdentity {
+	return recoveryIdentity{
+		nodeName: nodeName,
+		key:      nodeName + "|*",
+	}
+}
+
 func recoveryEntities(entities []*protos.Entity, entityTypes []string) ([]*protos.Entity, bool) {
 	allowedTypes := make(map[string]struct{}, len(entityTypes))
 	for _, entityType := range entityTypes {
 		allowedTypes[entityType] = struct{}{}
 	}
 
-	selected := make([]*protos.Entity, 0, len(entityTypes))
-	foundTypes := make(map[string]struct{}, len(allowedTypes))
+	selectedByType := make(map[string]*protos.Entity, len(entityTypes))
 
 	for _, entity := range entities {
-		if entity == nil || entity.EntityValue == "" {
-			continue
+		if !selectRecoveryEntity(selectedByType, allowedTypes, entity) {
+			return nil, false
 		}
-
-		if _, ok := allowedTypes[entity.EntityType]; !ok {
-			continue
-		}
-
-		selected = append(selected, proto.Clone(entity).(*protos.Entity))
-		foundTypes[entity.EntityType] = struct{}{}
 	}
 
-	if len(foundTypes) != len(allowedTypes) {
+	if len(selectedByType) != len(allowedTypes) {
 		return nil, false
+	}
+
+	selected := make([]*protos.Entity, 0, len(selectedByType))
+	for _, entity := range selectedByType {
+		selected = append(selected, entity)
 	}
 
 	slices.SortFunc(selected, func(a, b *protos.Entity) int {
@@ -116,6 +151,29 @@ func recoveryEntities(entities []*protos.Entity, entityTypes []string) ([]*proto
 	})
 
 	return selected, true
+}
+
+func selectRecoveryEntity(
+	selected map[string]*protos.Entity,
+	allowed map[string]struct{},
+	entity *protos.Entity,
+) bool {
+	if entity == nil || entity.EntityValue == "" {
+		return true
+	}
+
+	if _, ok := allowed[entity.EntityType]; !ok {
+		return true
+	}
+
+	existing, found := selected[entity.EntityType]
+	if found {
+		return existing.EntityValue == entity.EntityValue
+	}
+
+	selected[entity.EntityType] = proto.Clone(entity).(*protos.Entity)
+
+	return true
 }
 
 func recoveryEntityKey(nodeName string, entities []*protos.Entity) string {
@@ -187,7 +245,7 @@ func (r *Reconciler) handleRecoveryRule(
 		return false, nil
 	}
 
-	identity, ok := recoveryIdentityForEvent(rule, event.HealthEvent)
+	identity, nodeWide, ok := recoveryIdentityForSource(rule, event.HealthEvent)
 	if !ok {
 		slog.WarnContext(ctx, "Recovery event does not contain the configured scope",
 			"rule_name", rule.Name,
@@ -199,36 +257,81 @@ func (r *Reconciler) handleRecoveryRule(
 
 	sourceBoundary := boundaryFromEvent(event)
 
+	targets, err := r.recoveryTargets(ctx, rule, identity, nodeWide)
+	if err != nil {
+		return false, fmt.Errorf("find current states for rule %q: %w", rule.Name, err)
+	}
+
+	if nodeWide {
+		r.rememberRecoveryBoundary(rule.Name, identity, sourceBoundary)
+	} else if len(targets) == 0 {
+		// A verified recovery also resets rule history when there is no derived
+		// condition to clear yet.
+		r.rememberRecoveryBoundary(rule.Name, identity, sourceBoundary)
+	}
+
+	published := false
+
+	return r.publishRecoveryTargets(ctx, event, rule, targets, sourceBoundary, published)
+}
+
+func (r *Reconciler) publishRecoveryTargets(
+	ctx context.Context,
+	event *datamodels.HealthEventWithStatus,
+	rule config.HealthEventsAnalyzerRule,
+	targets []recoveryTarget,
+	sourceBoundary recoveryBoundary,
+	published bool,
+) (bool, error) {
+	for _, target := range targets {
+		// A delayed healthy event must not clear a newer derived condition or
+		// move its history boundary forward.
+		if !boundaryAfter(sourceBoundary, target.state.boundary) {
+			continue
+		}
+
+		r.rememberRecoveryBoundary(rule.Name, target.identity, sourceBoundary)
+
+		if target.state.isHealthy {
+			continue
+		}
+
+		persistedBoundary, didPublish, err := r.publishRecoveryUntilStored(ctx, event, rule, target.identity)
+		if err != nil {
+			return published, fmt.Errorf("publish recovery for rule %q: %w", rule.Name, err)
+		}
+
+		r.rememberDerivedState(rule.Name, target.identity, derivedState{
+			boundary:  persistedBoundary,
+			isHealthy: true,
+		})
+
+		if didPublish {
+			recoveryEventsPublishedTotal.WithLabelValues(rule.Name, string(rule.Recovery.Scope)).Inc()
+
+			published = true
+		}
+	}
+
+	return published, nil
+}
+
+func (r *Reconciler) recoveryTargets(
+	ctx context.Context,
+	rule config.HealthEventsAnalyzerRule,
+	identity recoveryIdentity,
+	nodeWide bool,
+) ([]recoveryTarget, error) {
+	if nodeWide {
+		return r.currentDerivedStatesForNode(ctx, rule, identity.nodeName)
+	}
+
 	state, found, err := r.currentDerivedState(ctx, rule, identity)
-	if err != nil {
-		return false, fmt.Errorf("find current state for rule %q: %w", rule.Name, err)
+	if err != nil || !found {
+		return nil, err
 	}
 
-	// A delayed healthy event must not clear a newer derived condition or move
-	// its history boundary forward. Generated time is authoritative when both
-	// events provide it; persisted time handles legacy events and breaks ties.
-	if found && !boundaryAfter(sourceBoundary, state.boundary) {
-		return false, nil
-	}
-
-	r.rememberRecoveryBoundary(rule.Name, identity, sourceBoundary)
-
-	if !found || state.isHealthy {
-		return false, nil
-	}
-
-	persistedBoundary, err := r.publishRecoveryUntilStored(ctx, event, rule, identity)
-	if err != nil {
-		return false, fmt.Errorf("publish recovery for rule %q: %w", rule.Name, err)
-	}
-
-	r.rememberDerivedState(rule.Name, identity, derivedState{
-		boundary:  persistedBoundary,
-		isHealthy: true,
-	})
-	recoveryEventsPublishedTotal.WithLabelValues(rule.Name, string(rule.Recovery.Scope)).Inc()
-
-	return true, nil
+	return []recoveryTarget{{identity: identity, state: state}}, nil
 }
 
 func (r *Reconciler) recoveryBoundaryForEvent(
@@ -241,8 +344,12 @@ func (r *Reconciler) recoveryBoundaryForEvent(
 		return nil, nil
 	}
 
-	if boundary, found := r.cachedRecoveryBoundary(rule.Name, identity); found {
+	if boundary, found := r.cachedEffectiveRecoveryBoundary(rule, identity); found {
 		return &boundary, nil
+	}
+
+	if r.recoveryLookupLoaded(rule.Name, identity) {
+		return nil, nil
 	}
 
 	latest, err := r.findLatestMatchingEvent(ctx, r.recoveryLookupFilter(
@@ -252,22 +359,36 @@ func (r *Reconciler) recoveryBoundaryForEvent(
 			return false
 		}
 
-		candidateIdentity, valid := recoveryIdentityForEvent(rule, candidate.HealthEvent)
-
-		return valid && candidateIdentity.key == identity.key
+		return recoverySourceAppliesToIdentity(rule, candidate.HealthEvent, identity)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("find latest recovery source: %w", err)
 	}
 
 	if latest == nil {
+		r.rememberRecoveryLookup(rule.Name, identity)
 		return nil, nil
 	}
 
 	boundary := boundaryFromEvent(latest)
-	r.rememberRecoveryBoundary(rule.Name, identity, boundary)
+
+	sourceIdentity, nodeWide, valid := recoveryIdentityForSource(rule, latest.HealthEvent)
+	if valid && nodeWide {
+		r.rememberRecoveryBoundary(rule.Name, sourceIdentity, boundary)
+	} else {
+		r.rememberRecoveryBoundary(rule.Name, identity, boundary)
+	}
 
 	return &boundary, nil
+}
+
+func recoverySourceAppliesToIdentity(
+	rule config.HealthEventsAnalyzerRule,
+	event *protos.HealthEvent,
+	identity recoveryIdentity,
+) bool {
+	sourceIdentity, nodeWide, ok := recoveryIdentityForSource(rule, event)
+	return ok && (nodeWide || sourceIdentity.key == identity.key)
 }
 
 func (r *Reconciler) currentDerivedState(
@@ -299,6 +420,57 @@ func (r *Reconciler) currentDerivedState(
 	}, true, nil
 }
 
+func (r *Reconciler) currentDerivedStatesForNode(
+	ctx context.Context,
+	rule config.HealthEventsAnalyzerRule,
+	nodeName string,
+) ([]recoveryTarget, error) {
+	cursor, err := r.databaseClient.Find(ctx, r.recoveryLookupFilter(agentName, rule.Name, nodeName), nil)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	states := make(map[string]recoveryTarget)
+
+	for cursor.Next(ctx) {
+		var candidate datamodels.HealthEventWithStatus
+		if err := cursor.Decode(&candidate); err != nil {
+			return nil, fmt.Errorf("decode health event: %w", err)
+		}
+
+		identity, valid := recoveryIdentityForEvent(rule, candidate.HealthEvent)
+		if !valid {
+			continue
+		}
+
+		state := derivedState{
+			boundary:  boundaryFromEvent(&candidate),
+			isHealthy: candidate.HealthEvent.IsHealthy,
+		}
+
+		current, found := states[identity.key]
+		if !found || boundaryAfter(state.boundary, current.state.boundary) {
+			states[identity.key] = recoveryTarget{identity: identity, state: state}
+		}
+	}
+
+	if err := cursor.Err(); err != nil {
+		return nil, fmt.Errorf("iterate health events: %w", err)
+	}
+
+	targets := make([]recoveryTarget, 0, len(states))
+	for _, target := range states {
+		targets = append(targets, target)
+	}
+
+	slices.SortFunc(targets, func(a, b recoveryTarget) int {
+		return strings.Compare(a.identity.key, b.identity.key)
+	})
+
+	return targets, nil
+}
+
 // publishRecoveryUntilStored keeps the source event in-flight until the store
 // connector has durably inserted the corresponding derived recovery. The
 // platform-connector RPC acknowledges an in-memory enqueue, so returning after
@@ -309,12 +481,15 @@ func (r *Reconciler) publishRecoveryUntilStored(
 	source *datamodels.HealthEventWithStatus,
 	rule config.HealthEventsAnalyzerRule,
 	identity recoveryIdentity,
-) (recoveryBoundary, error) {
-	return r.publishDerivedUntilStored(ctx, source, rule, identity, true, "recovery", func() error {
-		return r.config.Publisher.PublishRecovery(
-			ctx, source.HealthEvent, rule.Name, identity.entities, &rule,
-		)
-	})
+) (recoveryBoundary, bool, error) {
+	return r.publishDerivedUntilStored(
+		ctx, source, rule, identity, true, "recovery",
+		func(publishCtx context.Context) error {
+			return r.config.Publisher.PublishRecovery(
+				publishCtx, source.HealthEvent, rule.Name, identity.entities, &rule,
+			)
+		},
+	)
 }
 
 func (r *Reconciler) publishFaultUntilStored(
@@ -322,7 +497,7 @@ func (r *Reconciler) publishFaultUntilStored(
 	source *datamodels.HealthEventWithStatus,
 	rule config.HealthEventsAnalyzerRule,
 	identity recoveryIdentity,
-) (recoveryBoundary, error) {
+) (recoveryBoundary, bool, error) {
 	event := source.HealthEvent
 	if rule.Recovery.Scope == config.RecoveryScopeEntity {
 		event = proto.Clone(source.HealthEvent).(*protos.HealthEvent)
@@ -331,9 +506,12 @@ func (r *Reconciler) publishFaultUntilStored(
 
 	action := protos.RecommendedAction(r.getRecommendedActionValue(rule.RecommendedAction, rule.Name))
 
-	return r.publishDerivedUntilStored(ctx, source, rule, identity, false, "fault", func() error {
-		return r.config.Publisher.Publish(ctx, event, action, rule.Name, rule.Message, &rule)
-	})
+	return r.publishDerivedUntilStored(
+		ctx, source, rule, identity, false, "fault",
+		func(publishCtx context.Context) error {
+			return r.config.Publisher.Publish(publishCtx, event, action, rule.Name, rule.Message, &rule)
+		},
+	)
 }
 
 func (r *Reconciler) publishDerivedUntilStored(
@@ -343,37 +521,72 @@ func (r *Reconciler) publishDerivedUntilStored(
 	identity recoveryIdentity,
 	isHealthy bool,
 	stateName string,
-	publish func() error,
-) (recoveryBoundary, error) {
+	publish func(context.Context) error,
+) (recoveryBoundary, bool, error) {
 	pollInterval, republishInterval := r.recoveryIntervals()
 
+	waitCtx, cancel := context.WithTimeout(ctx, r.recoveryPersistenceTimeout())
+
+	defer cancel()
+
 	nextPublish := time.Time{}
+	published := false
 
 	for {
-		nextPublish = publishDerivedIfDue(
-			ctx, publish, stateName, rule.Name, identity.nodeName,
-			nextPublish, pollInterval, republishInterval,
-		)
-
-		persisted, err := r.findPersistedDerived(ctx, source, rule, identity, isHealthy)
+		persisted, err := r.findPersistedDerived(waitCtx, source, rule, identity, isHealthy)
 		if err == nil && persisted != nil {
-			return boundaryFromEvent(persisted), nil
+			return boundaryFromEvent(persisted), published, nil
 		}
 
 		if err != nil {
-			slog.WarnContext(ctx, "Failed to confirm persisted derived event; retrying",
+			slog.WarnContext(waitCtx, "Failed to confirm persisted derived event; retrying",
 				"state", stateName,
 				"rule_name", rule.Name,
 				"node", identity.nodeName,
 				"error", err)
 		}
 
-		select {
-		case <-ctx.Done():
-			return recoveryBoundary{}, ctx.Err()
-		case <-time.After(pollInterval):
+		var didPublish bool
+
+		nextPublish, didPublish = publishDerivedIfDue(
+			waitCtx, publish, stateName, rule.Name, identity.nodeName,
+			nextPublish, republishInterval,
+		)
+		published = didPublish || published
+
+		if err := waitForRecoveryPoll(waitCtx, pollInterval); err != nil {
+			if waitCtx.Err() == context.DeadlineExceeded {
+				recoveryPersistenceTimeoutsTotal.WithLabelValues(rule.Name, stateName).Inc()
+
+				return recoveryBoundary{}, published, fmt.Errorf(
+					"timed out waiting for persisted derived %s for rule %q: %w",
+					stateName, rule.Name, waitCtx.Err(),
+				)
+			}
+
+			return recoveryBoundary{}, published, err
 		}
 	}
+}
+
+func waitForRecoveryPoll(ctx context.Context, interval time.Duration) error {
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (r *Reconciler) recoveryPersistenceTimeout() time.Duration {
+	if r.recoveryTimeout > 0 {
+		return r.recoveryTimeout
+	}
+
+	return defaultRecoveryPersistenceTimeout
 }
 
 func (r *Reconciler) recoveryIntervals() (time.Duration, time.Duration) {
@@ -392,20 +605,19 @@ func (r *Reconciler) recoveryIntervals() (time.Duration, time.Duration) {
 
 func publishDerivedIfDue(
 	ctx context.Context,
-	publish func() error,
+	publish func(context.Context) error,
 	stateName string,
 	ruleName string,
 	nodeName string,
 	nextPublish time.Time,
-	pollInterval time.Duration,
 	republishInterval time.Duration,
-) time.Time {
+) (time.Time, bool) {
 	now := time.Now()
 	if nextPublish.After(now) {
-		return nextPublish
+		return nextPublish, false
 	}
 
-	err := publish()
+	err := publish(ctx)
 	if err != nil {
 		slog.WarnContext(ctx, "Failed to enqueue derived event; retrying",
 			"state", stateName,
@@ -413,10 +625,10 @@ func publishDerivedIfDue(
 			"node", nodeName,
 			"error", err)
 
-		return now.Add(pollInterval)
+		return now.Add(republishInterval), false
 	}
 
-	return now.Add(republishInterval)
+	return now.Add(republishInterval), true
 }
 
 func (r *Reconciler) findPersistedDerived(
@@ -553,12 +765,37 @@ func (r *Reconciler) rememberRecoveryBoundary(
 		r.recoveryBoundaries = make(map[string]recoveryBoundary)
 	}
 
+	if r.recoveryLoaded == nil {
+		r.recoveryLoaded = make(map[string]struct{})
+	}
+
 	key := recoveryStateKey(ruleName, identity)
+	r.recoveryLoaded[key] = struct{}{}
 
 	current, exists := r.recoveryBoundaries[key]
 	if !exists || boundaryAfter(boundary, current) {
 		r.recoveryBoundaries[key] = boundary
 	}
+}
+
+func (r *Reconciler) rememberRecoveryLookup(ruleName string, identity recoveryIdentity) {
+	r.recoveryMu.Lock()
+	defer r.recoveryMu.Unlock()
+
+	if r.recoveryLoaded == nil {
+		r.recoveryLoaded = make(map[string]struct{})
+	}
+
+	r.recoveryLoaded[recoveryStateKey(ruleName, identity)] = struct{}{}
+}
+
+func (r *Reconciler) recoveryLookupLoaded(ruleName string, identity recoveryIdentity) bool {
+	r.recoveryMu.RLock()
+	defer r.recoveryMu.RUnlock()
+
+	_, found := r.recoveryLoaded[recoveryStateKey(ruleName, identity)]
+
+	return found
 }
 
 func (r *Reconciler) cachedRecoveryBoundary(
@@ -571,6 +808,23 @@ func (r *Reconciler) cachedRecoveryBoundary(
 	boundary, found := r.recoveryBoundaries[recoveryStateKey(ruleName, identity)]
 
 	return boundary, found
+}
+
+func (r *Reconciler) cachedEffectiveRecoveryBoundary(
+	rule config.HealthEventsAnalyzerRule,
+	identity recoveryIdentity,
+) (recoveryBoundary, bool) {
+	boundary, found := r.cachedRecoveryBoundary(rule.Name, identity)
+	if rule.Recovery == nil || rule.Recovery.Scope != config.RecoveryScopeEntity {
+		return boundary, found
+	}
+
+	nodeBoundary, nodeFound := r.cachedRecoveryBoundary(rule.Name, nodeRecoveryIdentity(identity.nodeName))
+	if !nodeFound || (found && !boundaryAfter(nodeBoundary, boundary)) {
+		return boundary, found
+	}
+
+	return nodeBoundary, true
 }
 
 func (r *Reconciler) rememberDerivedState(

@@ -49,9 +49,13 @@ const (
 	// fieldNodeName is the stored document field used to scope rule evaluation
 	// to the node that produced the incoming event.
 	fieldNodeName = "healthevent.nodename"
+	// fieldGeneratedTimestamp is used to preserve created-at fallback semantics
+	// for legacy events without a generated timestamp.
+	fieldGeneratedTimestamp = "healthevent.generatedtimestamp"
 	// aggregationOperatorGT is the greater-than operator used in generated
 	// analyzer aggregation stages.
 	aggregationOperatorGT = "$gt"
+	aggregationOperatorOr = "$or"
 )
 
 type HealthEventsAnalyzerReconcilerConfig struct {
@@ -71,9 +75,11 @@ type Reconciler struct {
 	provider           datastore.DataStoreProvider
 	recoveryMu         sync.RWMutex
 	recoveryBoundaries map[string]recoveryBoundary
+	recoveryLoaded     map[string]struct{}
 	derivedStates      map[string]derivedState
 	recoveryPoll       time.Duration
 	recoveryRepublish  time.Duration
+	recoveryTimeout    time.Duration
 }
 
 func NewReconciler(cfg HealthEventsAnalyzerReconcilerConfig) *Reconciler {
@@ -140,9 +146,8 @@ func (r *Reconciler) Start(ctx context.Context) error {
 
 	oldWatcher := unwrapable.Unwrap()
 
-	// Create and configure the unified EventProcessor
-	// Note: EventProcessor no longer retries internally to prevent blocking the event stream
-	// Failed events will be retried on next pod restart (via resume token)
+	// The handler owns bounded retries. If an event remains uncheckpointed, the
+	// processor stops so a later event cannot advance the resume token past it.
 	processorConfig := client.EventProcessorConfig{
 		EnableMetrics:        true,
 		MetricsLabels:        map[string]string{"module": agentName},
@@ -251,17 +256,20 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *datamodels.HealthEv
 
 	publishedNewEvent := false
 
-	// Handle XID detector operations (clear on healthy, detect bursts on unhealthy)
-	published, err := r.handleXidDetector(ctx, event)
-	if err != nil {
-		multiErr = multierror.Append(multiErr, err)
+	// Healthy events are admitted only for configured recovery mappings. Keep
+	// the PostgreSQL XID detector on its existing unhealthy-event input.
+	if !event.HealthEvent.IsHealthy {
+		published, err := r.handleXidDetector(ctx, event)
+		if err != nil {
+			multiErr = multierror.Append(multiErr, err)
+		}
+
+		if published {
+			publishedNewEvent = true
+		}
 	}
 
-	if published {
-		publishedNewEvent = true
-	}
-
-	published, err = r.processHealthState(ctx, event, span)
+	published, err := r.processHealthState(ctx, event, span)
 	if err != nil {
 		multiErr = multierror.Append(multiErr, err)
 	}
@@ -404,10 +412,7 @@ func (r *Reconciler) processRule(ctx context.Context,
 		return false, nil
 	}
 
-	identity, recoveryEnabled, active, err := r.derivedFaultState(ctx, rule, event.HealthEvent)
-	if err != nil {
-		return false, err
-	}
+	identity, recoveryEnabled := recoveryIdentityForEvent(rule, event.HealthEvent)
 
 	if rule.Recovery != nil && !recoveryEnabled {
 		slog.WarnContext(ctx, "Rule match does not contain the configured recovery scope; "+
@@ -417,13 +422,9 @@ func (r *Reconciler) processRule(ctx context.Context,
 			"entity_types", rule.Recovery.EntityTypes)
 	}
 
-	if active {
-		return false, nil
-	}
-
 	ruleMatchedTotal.WithLabelValues(rule.Name, event.HealthEvent.NodeName).Inc()
 
-	err = r.publishRuleMatch(ctx, rule, event, identity, recoveryEnabled)
+	published, err := r.publishRuleMatch(ctx, rule, event, identity, recoveryEnabled)
 	if err != nil {
 		slog.ErrorContext(ctx, "Error in publishing the matched event", "error", err)
 		span.SetAttributes(
@@ -435,25 +436,7 @@ func (r *Reconciler) processRule(ctx context.Context,
 		return false, fmt.Errorf("error in publishing the matched event: %w", err)
 	}
 
-	return true, nil
-}
-
-func (r *Reconciler) derivedFaultState(
-	ctx context.Context,
-	rule config.HealthEventsAnalyzerRule,
-	event *protos.HealthEvent,
-) (recoveryIdentity, bool, bool, error) {
-	identity, recoverable := recoveryIdentityForEvent(rule, event)
-	if !recoverable {
-		return recoveryIdentity{}, false, false, nil
-	}
-
-	state, found, err := r.currentDerivedState(ctx, rule, identity)
-	if err != nil {
-		return recoveryIdentity{}, false, false, fmt.Errorf("find current derived state: %w", err)
-	}
-
-	return identity, true, found && !state.isHealthy, nil
+	return published, nil
 }
 
 func (r *Reconciler) publishRuleMatch(
@@ -462,14 +445,18 @@ func (r *Reconciler) publishRuleMatch(
 	event *datamodels.HealthEventWithStatus,
 	identity recoveryIdentity,
 	recoveryEnabled bool,
-) error {
+) (bool, error) {
 	if !recoveryEnabled {
-		return r.publishMatchedEvent(ctx, rule, event.HealthEvent)
+		if err := r.publishMatchedEvent(ctx, rule, event.HealthEvent); err != nil {
+			return false, err
+		}
+
+		return true, nil
 	}
 
-	persistedBoundary, err := r.publishFaultUntilStored(ctx, event, rule, identity)
+	persistedBoundary, published, err := r.publishFaultUntilStored(ctx, event, rule, identity)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	r.rememberDerivedState(rule.Name, identity, derivedState{
@@ -477,7 +464,7 @@ func (r *Reconciler) publishRuleMatch(
 		isHealthy: false,
 	})
 
-	return nil
+	return published, nil
 }
 
 // publishMatchedEvent publishes an event when a rule matches
@@ -635,7 +622,7 @@ func (r *Reconciler) getPipelineStages(
 	mandatoryMatch := map[string]any{
 		"healthevent.agent": map[string]any{"$ne": agentName},
 		fieldNodeName:       healthEventWithStatus.HealthEvent.NodeName,
-		"$or": []any{
+		aggregationOperatorOr: []any{
 			map[string]any{
 				fieldProcessingStrategy: int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION),
 			},
@@ -654,7 +641,18 @@ func (r *Reconciler) getPipelineStages(
 		}
 
 		if boundary.generated != nil {
-			mandatoryMatch["$expr"] = generatedAfterExpression(boundary.generated)
+			mandatoryMatch["$and"] = []any{
+				map[string]any{
+					aggregationOperatorOr: []any{
+						map[string]any{
+							fieldGeneratedTimestamp: map[string]any{"$exists": false},
+						},
+						map[string]any{
+							"$expr": generatedAfterExpression(boundary.generated),
+						},
+					},
+				},
+			}
 		}
 	}
 
@@ -684,7 +682,7 @@ func (r *Reconciler) getPipelineStages(
 
 func generatedAfterExpression(timestamp *timestamppb.Timestamp) map[string]any {
 	return map[string]any{
-		"$or": []any{
+		aggregationOperatorOr: []any{
 			map[string]any{
 				aggregationOperatorGT: []any{"$healthevent.generatedtimestamp.seconds", timestamp.Seconds},
 			},

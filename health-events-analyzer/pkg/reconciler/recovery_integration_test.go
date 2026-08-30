@@ -141,7 +141,7 @@ func TestRecoveryLifecycleWithRealProvider(t *testing.T) {
 	// does not carry an error code.
 	rule.Recovery.SourceErrorCodes = nil
 	rule.Stage = []string{
-		`{"$match":{"healthevent.checkname":"SysLogsXIDError"}}`,
+		`{"$match":{"healthevent.checkname":"SysLogsXIDError","healthevent.ishealthy":false}}`,
 		`{"$count":"count"}`,
 		`{"$match":{"count":{"$gte":2}}}`,
 	}
@@ -218,8 +218,8 @@ func TestRecoveryLifecycleWithRealProvider(t *testing.T) {
 
 	published, err = reconciler.handleEvent(ctx, &postRecoveryTwo)
 	require.NoError(t, err)
-	require.False(t, published, "an active derived fault must suppress duplicate output")
-	require.EqualValues(t, 4, sink.calls.Load(), "lost accepted fault must also be republished")
+	require.False(t, published, "replayed source must reuse the persisted derived event")
+	require.EqualValues(t, 4, sink.calls.Load(), "replay must not enqueue a duplicate")
 }
 
 func TestRecoveryWatcherAcknowledgesAfterStorageWithRealProvider(t *testing.T) {
