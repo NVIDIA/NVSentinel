@@ -205,11 +205,12 @@ These metrics track the internal ring buffer workqueue performance:
 | `health_event_analyzer_events_received_total` | Counter | `node_name` | Total analyzer input events received from the watcher |
 | `health_event_analyzer_events_successfully_processed_total` | Counter | - | Total analyzer input events processed successfully |
 | `health_event_analyzer_event_processing_errors` | Counter | `error_type` | Total analyzer processing errors |
-| `health_event_analyzer_event_handling_duration_seconds` | Histogram | - | Analyzer event handling duration |
+| `health_event_analyzer_event_handling_duration_seconds` | Histogram | - | Analyzer event handling duration, with buckets from 100 ms through about 205 s |
 | `mongo_query_execution_duration_seconds` | Histogram | `rule_name` | Rule aggregation duration for either supported datastore provider |
 | `rule_matched_total` | Counter | `rule_name`, `node_name` | Total matching rule evaluations |
 | `fatal_events_published_total` | Counter | `entity_value` | Total derived unhealthy events published |
 | `health_event_analyzer_recovery_events_published_total` | Counter | `rule_name`, `scope` | Total derived healthy transitions published by recovery-enabled rules |
+| `health_event_analyzer_recovery_persistence_timeouts_total` | Counter | `rule_name`, `state` | Total derived transitions not observed in the store before the persistence deadline |
 | `fatal_event_publishing_errors` | Counter | `error_type` | Total gRPC publication errors |
 
 ---

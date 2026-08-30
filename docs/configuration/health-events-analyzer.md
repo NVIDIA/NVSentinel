@@ -169,7 +169,7 @@ recommended_action = "CONTACT_SUPPORT"
 message = "Repeated XID 94"
 evaluate_rule = true
 stage = [
-  '{ "$match": { "healthevent.checkname": "SysLogsXIDError" } }',
+  '{ "$match": { "healthevent.checkname": "SysLogsXIDError", "healthevent.ishealthy": false } }',
   '{ "$count": "count" }',
   '{ "$match": { "count": { "$gte": 3 } } }'
 ]
@@ -186,7 +186,8 @@ only when more than one trusted producer may publish the recovery event.
 `source_error_codes` is also optional. Set it only when the healthy source event
 carries a code that identifies the recovery; successful GPU-reset events do not.
 When configured, at least one listed code must be present. Entity scope requires one or more
-`entity_types`; node scope must not set `entity_types`.
+`entity_types`; node scope must not set `entity_types`. Each configured entity type must have
+exactly one value in an entity-scoped event.
 
 The analyzer publishes a derived healthy event only when the latest derived state
 for the same rule, node, and configured entity set is unhealthy. The event uses
@@ -195,16 +196,21 @@ the rule name as `checkName`, sets `isHealthy=true`, `isFatal=false`, and
 fault-quarantine. Replayed recovery events therefore converge without repeatedly
 clearing an already-healthy condition. For entity-scoped rules, derived unhealthy
 and healthy events contain only the configured entity types, so both transitions
-address the same downstream fault keys. If a matching rule input lacks a required
-entity type, the analyzer still publishes the derived fault but leaves that event
-on the existing manual-recovery path.
+address the same downstream fault keys. A matching healthy source with no entities
+is node-wide and clears each active entity-scoped condition for that rule and node;
+a source with only some configured entity types is rejected. If a matching rule
+input lacks a required entity type, the analyzer still publishes the derived fault
+but leaves that event on the existing manual-recovery path.
 
 For recovery-enabled rules, the analyzer does not advance a source event's resume
 token until its matching derived transition is visible in the event store. If the
 platform connector accepts but drops the queued event before storage, the
 analyzer republishes it. This applies to both unhealthy and healthy transitions,
 so a recovery cannot overtake an earlier derived fault. A delayed healthy event
-never clears a derived fault with a newer generation time.
+never clears a derived fault with a newer generation time. If the transition is
+still not visible after two minutes, the processor exits without acknowledging the
+source. The watcher replays the source after restart instead of blocking the event
+stream indefinitely.
 
 The persisted source recovery event also becomes the rule's history boundary.
 Later evaluations exclude records stored or generated at or before that event,
@@ -214,7 +220,7 @@ their rule, node, and entity fields.
 
 Recovery is disabled when `evaluate_rule=false`. Healthy events using
 `STORE_ONLY` are not analyzer inputs. Rules without a `[rules.recovery]` block
-retain manual recovery.
+retain the existing unhealthy-event watcher and manual-recovery behavior.
 
 ### MultipleRemediations Rule
 
