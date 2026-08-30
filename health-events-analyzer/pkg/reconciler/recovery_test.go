@@ -1065,7 +1065,7 @@ func TestCurrentDerivedStatesMarksDecodeFailurePermanent(t *testing.T) {
 	require.True(t, client.IsPermanentError(err))
 }
 
-func TestHandleEventPreservesPermanentRecoveryFailure(t *testing.T) {
+func TestHandleEventSkipsPermanentRecoveryFailure(t *testing.T) {
 	rule := recoveryRule(config.RecoveryScopeEntity)
 	database := new(mockDatabaseClient)
 	database.On("Find", mock.Anything, mock.Anything, mock.Anything).Return(&healthEventCursor{
@@ -1078,8 +1078,7 @@ func TestHandleEventPreservesPermanentRecoveryFailure(t *testing.T) {
 
 	published, err := reconciler.handleEvent(context.Background(), &recovery)
 	require.False(t, published)
-	require.Error(t, err)
-	require.True(t, client.IsPermanentError(err))
+	require.NoError(t, err)
 }
 
 func TestRecoveryOrderingFallbacks(t *testing.T) {
@@ -1128,6 +1127,60 @@ func TestDerivedPersistenceRetriesProviderError(t *testing.T) {
 	require.True(t, published)
 	require.Equal(t, now.Add(time.Second), boundary.createdAt)
 	require.Equal(t, 1, publishCalls)
+}
+
+func TestDerivedPersistenceReturnsPermanentLookupError(t *testing.T) {
+	now := time.Now().UTC()
+	rule := recoveryRule(config.RecoveryScopeEntity)
+	source := recoverySource(now, "GPU-target")
+	identity, ok := recoveryIdentityForEvent(rule, source.HealthEvent)
+	require.True(t, ok)
+	database := new(mockDatabaseClient)
+	database.On("Find", mock.Anything, mock.Anything, mock.Anything).Return(&healthEventCursor{
+		events:    []datamodels.HealthEventWithStatus{derivedEvent(now, true, "GPU-target")},
+		pos:       -1,
+		decodeErr: errors.New("malformed persisted event"),
+	}, nil).Once()
+	reconciler := &Reconciler{databaseClient: database}
+	publishCalls := 0
+
+	_, published, err := reconciler.publishDerivedUntilStored(
+		context.Background(), &source, rule, identity, true, "recovery",
+		func(context.Context) error { publishCalls++; return nil },
+	)
+	require.Error(t, err)
+	require.True(t, client.IsPermanentError(err))
+	require.False(t, published)
+	require.Zero(t, publishCalls)
+}
+
+func TestRecoveryEventsContinueAfterPermanentRuleFailure(t *testing.T) {
+	firstRule := recoveryRule(config.RecoveryScopeEntity)
+	firstRule.Name = "first-rule"
+	secondRule := recoveryRule(config.RecoveryScopeEntity)
+	secondRule.Name = "second-rule"
+	database := new(mockDatabaseClient)
+	database.On("Find", mock.Anything, mock.Anything, mock.Anything).Return(&healthEventCursor{
+		events:    []datamodels.HealthEventWithStatus{derivedEvent(time.Now(), false, "GPU-target")},
+		pos:       -1,
+		decodeErr: errors.New("malformed first-rule state"),
+	}, nil).Once()
+	database.On("Find", mock.Anything, mock.Anything, mock.Anything).
+		Return(newHealthEventCursor(), nil).Once()
+	reconciler := &Reconciler{
+		config: HealthEventsAnalyzerReconcilerConfig{
+			HealthEventsAnalyzerRules: &config.TomlConfig{
+				Rules: []config.HealthEventsAnalyzerRule{firstRule, secondRule},
+			},
+		},
+		databaseClient: database,
+	}
+	source := recoverySource(time.Now(), "GPU-target")
+
+	published, err := reconciler.handleRecoveryEvents(context.Background(), &source)
+	require.NoError(t, err)
+	require.False(t, published)
+	database.AssertExpectations(t)
 }
 
 func TestDerivedPersistenceTimeoutReturnsForReplay(t *testing.T) {

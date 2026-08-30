@@ -222,6 +222,63 @@ func TestRecoveryLifecycleWithRealProvider(t *testing.T) {
 	require.EqualValues(t, 4, sink.calls.Load(), "replay must not enqueue a duplicate")
 }
 
+func TestNonRecoveryRuleWithRealProvider(t *testing.T) {
+	if os.Getenv(recoveryIntegrationEnv) != "1" {
+		t.Skipf("set %s=1 with a real provider configuration", recoveryIntegrationEnv)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	dsConfig, err := datastore.LoadDatastoreConfig()
+	require.NoError(t, err)
+	ds, err := datastore.NewDataStore(ctx, *dsConfig)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, ds.Close(context.Background())) })
+
+	adapter, ok := ds.(interface {
+		GetDatabaseClient() client.DatabaseClient
+	})
+	require.True(t, ok)
+	database := adapter.GetDatabaseClient()
+	require.NoError(t, database.Ping(ctx))
+
+	runID := time.Now().UTC().UnixNano()
+	event := storedEvent(time.Now().UTC(), &protos.HealthEvent{
+		Agent:              "syslog-health-monitor",
+		CheckName:          "SysLogsXIDError",
+		IsHealthy:          false,
+		NodeName:           fmt.Sprintf("non-recovery-node-%d", runID),
+		GeneratedTimestamp: timestamppb.Now(),
+		// UNSPECIFIED is omitted by PostgreSQL protobuf JSON and therefore
+		// exercises the mandatory field-presence branch as well as top-level $or.
+		ProcessingStrategy: protos.ProcessingStrategy_UNSPECIFIED,
+	})
+	insertHealthEvents(t, ctx, database, event)
+
+	rule := config.HealthEventsAnalyzerRule{
+		Name:              "NonRecoveryThreshold",
+		EvaluateRule:      true,
+		RecommendedAction: "CONTACT_SUPPORT",
+		Stage: []string{
+			`{"$match":{"healthevent.checkname":"SysLogsXIDError"}}`,
+			`{"$count":"count"}`,
+			`{"$match":{"count":{"$gte":2}}}`,
+		},
+	}
+	reconciler := &Reconciler{
+		config: HealthEventsAnalyzerReconcilerConfig{
+			HealthEventsAnalyzerRules: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{rule}},
+		},
+		databaseClient: database,
+		provider:       ds.Provider(),
+	}
+
+	published, err := reconciler.handleEvent(ctx, &event)
+	require.NoError(t, err)
+	require.False(t, published)
+}
+
 func TestRecoveryWatcherAcknowledgesAfterStorageWithRealProvider(t *testing.T) {
 	if os.Getenv(recoveryIntegrationEnv) != "1" {
 		t.Skipf("set %s=1 with a real provider configuration", recoveryIntegrationEnv)

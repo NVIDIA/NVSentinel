@@ -844,6 +844,23 @@ func TestGetPipelineStages(t *testing.T) {
 	_ = ctx // suppress unused warning if any
 }
 
+func TestNonRecoveryRuleExtendsOnlyMandatoryStage(t *testing.T) {
+	database := new(mockDatabaseClient)
+	database.On("Aggregate", mock.Anything, mock.MatchedBy(func(pipeline any) bool {
+		options, ok := pipeline.(client.PipelineOptions)
+		return ok && !options.EnableExtendedFilters && options.ExtendedFilterPrefix == 1
+	})).Return(&mockCursor{data: nil, pos: -1}, nil).Once()
+	reconciler := &Reconciler{databaseClient: database}
+	rule := config.HealthEventsAnalyzerRule{
+		Name: "legacy-rule", EvaluateRule: true, Stage: []string{`{"$count":"count"}`},
+	}
+
+	matched, err := reconciler.validateAllSequenceCriteria(context.Background(), rule, healthEvent_13)
+	assert.NoError(t, err)
+	assert.False(t, matched)
+	database.AssertExpectations(t)
+}
+
 // TestGetPipelineStages_ReturnTypeCompatibility ensures the pipeline return type
 // is []map[string]interface{} (not []interface{}) to maintain compatibility with
 // MongoDB's Aggregate function. This test prevents regression of the bug where

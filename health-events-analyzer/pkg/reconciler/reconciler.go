@@ -550,7 +550,7 @@ func (r *Reconciler) validateAllSequenceCriteria(ctx context.Context, rule confi
 	slog.DebugContext(ctx, "Executing aggregation pipeline",
 		"rule_name", rule.Name, "pipeline_stages_count", len(pipelineStages))
 
-	queryPipeline := any(pipelineStages)
+	queryPipeline := any(client.WithExtendedFilterPrefix(pipelineStages, 1))
 	if rule.Recovery != nil {
 		queryPipeline = client.WithExtendedFilters(pipelineStages)
 	}

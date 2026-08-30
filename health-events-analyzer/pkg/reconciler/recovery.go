@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	multierror "github.com/hashicorp/go-multierror"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -224,16 +225,28 @@ func (r *Reconciler) handleRecoveryEvents(
 
 	published := false
 
+	var multiErr *multierror.Error
+
 	for _, rule := range r.config.HealthEventsAnalyzerRules.Rules {
 		recovered, err := r.handleRecoveryRule(ctx, event, rule)
 		if err != nil {
-			return published, err
+			if client.IsPermanentError(err) {
+				slog.ErrorContext(ctx, "Skipping recovery rule after deterministic failure",
+					"rule_name", rule.Name, "error", err)
+				totalEventProcessingError.WithLabelValues("permanent_recovery_rule_error").Inc()
+
+				continue
+			}
+
+			multiErr = multierror.Append(multiErr, err)
+
+			continue
 		}
 
 		published = recovered || published
 	}
 
-	return published, nil
+	return published, multiErr.ErrorOrNil()
 }
 
 func (r *Reconciler) handleRecoveryRule(
@@ -539,6 +552,10 @@ func (r *Reconciler) publishDerivedUntilStored(
 		}
 
 		if err != nil {
+			if client.IsPermanentError(err) {
+				return recoveryBoundary{}, published, err
+			}
+
 			slog.WarnContext(waitCtx, "Failed to confirm persisted derived event; retrying",
 				"state", stateName,
 				"rule_name", rule.Name,

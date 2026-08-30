@@ -158,6 +158,9 @@ Configuration is decoded strictly. Unknown TOML keys, malformed JSON stages,
 and stages containing zero or multiple aggregation operators fail startup instead
 of silently changing rule behavior.
 
+Upgrade note: custom keys that older releases ignored now prevent analyzer startup.
+Remove or correct unknown keys before deploying this version.
+
 The full default ruleset — including all aggregation pipeline stage definitions — is in the chart's `values.yaml` at `distros/kubernetes/nvsentinel/charts/health-events-analyzer/values.yaml`. Refer to that file when writing or reviewing custom rules.
 
 ### Derived-condition recovery
