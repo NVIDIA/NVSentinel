@@ -19,6 +19,7 @@ package client
 type PipelineOptions struct {
 	Pipeline              any
 	EnableExtendedFilters bool
+	ExtendedFilterPrefix  int
 }
 
 // WithExtendedFilters enables MongoDB-compatible logical and field-presence
@@ -28,13 +29,36 @@ func WithExtendedFilters(pipeline any) PipelineOptions {
 	return PipelineOptions{Pipeline: pipeline, EnableExtendedFilters: true}
 }
 
+// WithExtendedFilterPrefix enables extended PostgreSQL translation only for
+// the leading aggregation stages owned by the caller. Later configured stages
+// retain legacy translation semantics.
+func WithExtendedFilterPrefix(pipeline any, stages int) PipelineOptions {
+	return PipelineOptions{Pipeline: pipeline, ExtendedFilterPrefix: max(stages, 0)}
+}
+
 // ResolvePipelineOptions returns the underlying pipeline and whether extended
 // PostgreSQL filter translation was requested.
 func ResolvePipelineOptions(pipeline any) (any, bool) {
+	pipeline, options := ResolvePipelineStageOptions(pipeline)
+
+	return pipeline, options.EnableExtendedFilters
+}
+
+// ResolvePipelineStageOptions returns the underlying pipeline and its
+// stage-scoped PostgreSQL filter options.
+func ResolvePipelineStageOptions(pipeline any) (any, PipelineOptions) {
 	options, ok := pipeline.(PipelineOptions)
 	if !ok {
-		return pipeline, false
+		return pipeline, PipelineOptions{}
 	}
 
-	return options.Pipeline, options.EnableExtendedFilters
+	return options.Pipeline, options
+}
+
+func (o PipelineOptions) extendedFiltersForStage(stage int) bool {
+	return o.EnableExtendedFilters || stage < o.ExtendedFilterPrefix
+}
+
+func (o PipelineOptions) rejectExtendedOperatorsForStage(stage int) bool {
+	return !o.EnableExtendedFilters && o.ExtendedFilterPrefix > 0 && stage >= o.ExtendedFilterPrefix
 }

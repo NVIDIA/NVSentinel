@@ -661,7 +661,7 @@ func (c *PostgreSQLClient) CountDocuments(ctx context.Context, filter any, opts 
 //
 //nolint:gocyclo,cyclop,gocognit // Complexity 11: handles pipeline type conversion and stage routing - acceptable
 func (c *PostgreSQLClient) Aggregate(ctx context.Context, pipeline any) (Cursor, error) {
-	pipeline, extendedFilters := ResolvePipelineOptions(pipeline)
+	pipeline, pipelineOptions := ResolvePipelineStageOptions(pipeline)
 
 	// Convert pipeline to slice of stages
 	var stages []map[string]any
@@ -701,7 +701,7 @@ func (c *PostgreSQLClient) Aggregate(ctx context.Context, pipeline any) (Cursor,
 	}
 
 	// Build SQL query from pipeline stages
-	query, args, err := c.buildAggregationQuery(stages, extendedFilters)
+	query, args, err := c.buildAggregationQuery(stages, pipelineOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -2116,15 +2116,17 @@ func (c *PostgreSQLClient) convertDatastoreValue(value any) any {
 // buildAggregationQuery builds SQL query from MongoDB aggregation pipeline stages
 func (c *PostgreSQLClient) buildAggregationQuery(
 	stages []map[string]any,
-	extendedFilters bool,
+	options PipelineOptions,
 ) (string, []any, error) {
 	builder := &aggregationQueryBuilder{
-		client:          c,
-		query:           fmt.Sprintf("SELECT id, document FROM %s", c.table),
-		extendedFilters: extendedFilters,
+		client: c,
+		query:  fmt.Sprintf("SELECT id, document FROM %s", c.table),
 	}
 
 	for i, stage := range stages {
+		builder.extendedFilters = options.extendedFiltersForStage(i)
+		builder.rejectExtendedOperators = options.rejectExtendedOperatorsForStage(i)
+
 		if err := builder.processStage(i, stage); err != nil {
 			return "", nil, err
 		}
@@ -2149,8 +2151,9 @@ type aggregationQueryBuilder struct {
 	addFields    map[string]any // Fields to add via $addFields
 	// postCountMatch stores $match conditions that come AFTER $count
 	// These filter the count result, not the source rows
-	postCountMatch  map[string]any
-	extendedFilters bool
+	postCountMatch          map[string]any
+	extendedFilters         bool
+	rejectExtendedOperators bool
 }
 
 // windowFieldsSpec holds the specification for $setWindowFields
@@ -2195,7 +2198,7 @@ func (b *aggregationQueryBuilder) processStage(stageIndex int, stage map[string]
 		case "$addFields":
 			return b.processAddFields(value)
 		case "$project", "$lookup", "$unwind", "$facet":
-			return datastore.NewQueryError(
+			return datastore.NewValidationError(
 				datastore.ProviderPostgreSQL,
 				fmt.Sprintf("aggregation operator %s not yet supported", operator),
 				fmt.Errorf("complex aggregation requires custom SQL implementation"),
@@ -2220,6 +2223,18 @@ func (b *aggregationQueryBuilder) processMatch(value any) error {
 			"$match value must be a map",
 			fmt.Errorf("got type %T", value),
 		)
+	}
+
+	if b.rejectExtendedOperators {
+		for _, operator := range []string{opAnd, opOr} {
+			if _, found := matchMap[operator]; found {
+				return datastore.NewValidationError(
+					datastore.ProviderPostgreSQL,
+					fmt.Sprintf("aggregation operator %s requires extended filters", operator),
+					nil,
+				)
+			}
+		}
 	}
 
 	// If $count has already been processed, this is a post-count $match
@@ -2561,22 +2576,29 @@ func (b *aggregationQueryBuilder) buildPostCountCondition(field string, value an
 
 	switch v := value.(type) {
 	case map[string]any:
-		// Handle comparison operators like {$gte: 5}
-		for op, opValue := range v {
+		operatorNames := make([]string, 0, len(v))
+		for op := range v {
+			operatorNames = append(operatorNames, op)
+		}
+
+		sort.Strings(operatorNames)
+
+		conditions := make([]string, 0, len(operatorNames))
+		for _, op := range operatorNames {
+			opValue := v[op]
 			if sqlOp := b.mapComparisonOperator(op); sqlOp != "" {
 				b.args = append(b.args, opValue)
-
-				return fmt.Sprintf("%s %s $%d", fieldPath, sqlOp, len(b.args))
+				conditions = append(conditions, fmt.Sprintf("%s %s $%d", fieldPath, sqlOp, len(b.args)))
 			}
 		}
+
+		return strings.Join(conditions, " AND ")
 	default:
 		// Direct equality comparison
 		b.args = append(b.args, v)
 
 		return fmt.Sprintf("%s = $%d", fieldPath, len(b.args))
 	}
-
-	return ""
 }
 
 // mapComparisonOperator maps MongoDB comparison operators to SQL operators

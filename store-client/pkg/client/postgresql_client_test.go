@@ -345,11 +345,86 @@ func TestExtendedQueryTranslationRequiresOptIn(t *testing.T) {
 	}
 }
 
+func TestAggregationExtendedFilterPrefix(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	stages := []map[string]any{
+		{"$match": map[string]any{opOr: []any{
+			map[string]any{"healthevent.processingstrategy": int32(0)},
+			map[string]any{"healthevent.processingstrategy": int32(1)},
+			map[string]any{"healthevent.processingstrategy": map[string]any{opExists: false}},
+		}}},
+		{"$match": map[string]any{"createdAt": "legacy-custom-rule"}},
+	}
+
+	rawPipeline, options := ResolvePipelineStageOptions(WithExtendedFilterPrefix(stages, 1))
+	query, args, err := client.buildAggregationQuery(rawPipeline.([]map[string]any), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "processingStrategy") || !strings.Contains(query, " OR ") {
+		t.Fatalf("mandatory stage did not use extended translation: %s", query)
+	}
+	if !strings.Contains(query, "document->>'createdAt' = $3") {
+		t.Fatalf("configured stage did not retain legacy translation: %s", query)
+	}
+	if len(args) != 3 {
+		t.Fatalf("args = %#v, want three legacy-compatible parameters", args)
+	}
+}
+
+func TestAggregationExtendedFilterPrefixRejectsLaterLogicalOperators(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	stages := []map[string]any{
+		{"$match": map[string]any{"healthevent.nodename": "node-a"}},
+		{"$match": map[string]any{opOr: []any{
+			map[string]any{"healthevent.checkname": "legacy-custom-rule"},
+		}}},
+	}
+
+	_, err := client.Aggregate(context.Background(), WithExtendedFilterPrefix(stages, 1))
+	if err == nil {
+		t.Fatal("extended-only configured operator accepted outside the enabled prefix")
+	}
+	if !datastore.IsDeterministicError(err) {
+		t.Fatalf("configured operator classified as transient: %v", err)
+	}
+}
+
+func TestPostCountMatchCombinesAllOperators(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	query, args, err := client.buildAggregationQuery([]map[string]any{
+		{"$count": "count"},
+		{"$match": map[string]any{"count": map[string]any{"$gte": 2, "$lte": 5}}},
+	}, PipelineOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "(document->>'count')::bigint >= $1 AND (document->>'count')::bigint <= $2") {
+		t.Fatalf("post-count bounds were not combined: %s", query)
+	}
+	if !reflect.DeepEqual(args, []any{2, 5}) {
+		t.Fatalf("args = %#v, want [2 5]", args)
+	}
+}
+
+func TestUnsupportedAggregationStageIsDeterministic(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	_, _, err := client.buildAggregationQuery([]map[string]any{
+		{"$project": map[string]any{"healthevent": 1}},
+	}, PipelineOptions{})
+	if err == nil {
+		t.Fatal("unsupported PostgreSQL aggregation stage accepted")
+	}
+	if !datastore.IsDeterministicError(err) {
+		t.Fatalf("unsupported stage classified as transient: %v", err)
+	}
+}
+
 func TestExtendedEmptyMatchUsesTrueClause(t *testing.T) {
 	client := &PostgreSQLClient{table: "health_events"}
 	query, args, err := client.buildAggregationQuery([]map[string]any{
 		{"$match": map[string]any{}},
-	}, true)
+	}, PipelineOptions{EnableExtendedFilters: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +439,7 @@ func TestAggregationRecoveryBoundaryUsesCreatedAtColumn(t *testing.T) {
 
 	query, args, err := client.buildAggregationQuery([]map[string]any{
 		{"$match": map[string]any{"createdAt": map[string]any{"$gt": cutoff}}},
-	}, true)
+	}, PipelineOptions{EnableExtendedFilters: true})
 	if err != nil {
 		t.Fatalf("buildAggregationQuery() error = %v", err)
 	}
@@ -401,7 +476,7 @@ func TestAggregationRecoveryBoundarySupportsNanosecondEventTime(t *testing.T) {
 				},
 			},
 		}},
-	}, true)
+	}, PipelineOptions{EnableExtendedFilters: true})
 	if err != nil {
 		t.Fatalf("buildAggregationQuery() error = %v", err)
 	}
@@ -429,7 +504,7 @@ func TestAggregationSupportsAnalyzerMandatoryLogicalFilter(t *testing.T) {
 				},
 			},
 		}},
-	}, true)
+	}, PipelineOptions{EnableExtendedFilters: true})
 	if err != nil {
 		t.Fatalf("buildAggregationQuery() error = %v", err)
 	}
@@ -615,7 +690,7 @@ func TestAggregationPipelineConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, err := client.buildAggregationQuery(tt.stages, false)
+			_, _, err := client.buildAggregationQuery(tt.stages, PipelineOptions{})
 
 			if tt.expectError {
 				if err == nil {
@@ -722,7 +797,7 @@ func TestSetWindowFieldsQueryGeneration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			query, _, err := client.buildAggregationQuery(tt.stages, false)
+			query, _, err := client.buildAggregationQuery(tt.stages, PipelineOptions{})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1127,7 +1202,7 @@ func TestAddFieldsWithNewOperators(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			query, _, err := client.buildAggregationQuery(tt.stages, false)
+			query, _, err := client.buildAggregationQuery(tt.stages, PipelineOptions{})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1163,7 +1238,7 @@ func TestCountWithPostMatchFilter(t *testing.T) {
 		{"$match": map[string]any{"count": map[string]any{"$gte": 5}}},
 	}
 
-	query, args, err := client.buildAggregationQuery(stages, false)
+	query, args, err := client.buildAggregationQuery(stages, PipelineOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1220,7 +1295,7 @@ func TestCountWithPostMatchFilter_ZeroCount(t *testing.T) {
 		{"$match": map[string]any{"count": map[string]any{"$gte": 5}}},
 	}
 
-	query, args, err := client.buildAggregationQuery(stages, false)
+	query, args, err := client.buildAggregationQuery(stages, PipelineOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
