@@ -251,24 +251,34 @@ func TestRecoveryQueryComparisonOperators(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		value any
-		want  string
+		value          any
+		wantExpression string
+		wantArgument   any
 	}{
-		{true, "true"}, {int32(-2), "-2"}, {uint64(3), "3"}, {float32(1.5), "1.5"},
+		{true, "(document->>'count')::boolean", true},
+		{int32(-2), "(document->>'count')::numeric", "-2"},
+		{uint64(3), "(document->>'count')::numeric", "3"},
+		{float32(1.5), "(document->>'count')::numeric", "1.5"},
 	} {
-		if got := comparisonArgument("document->>'count'", test.value); got != test.want {
-			t.Fatalf("comparisonArgument(%#v) = %#v, want %q", test.value, got, test.want)
+		expression, argument := typedComparisonOperand("document->>'count'", test.value)
+		if expression != test.wantExpression || argument != test.wantArgument {
+			t.Fatalf("typedComparisonOperand(%#v) = %q, %#v", test.value, expression, argument)
 		}
 	}
-	if got := comparisonArgument("document->>'value'", nil); got != nil {
-		t.Fatalf("nil comparisonArgument = %#v", got)
-	}
 	cutoff := time.Unix(20, 0)
-	if got := comparisonArgument("updated_at", cutoff); got != cutoff {
-		t.Fatalf("updated_at comparisonArgument = %#v", got)
+	expression, argument := typedComparisonOperand("updated_at", cutoff)
+	if expression != "updated_at" || argument != cutoff {
+		t.Fatalf("updated_at operand = %q, %#v", expression, argument)
 	}
-	if got := comparisonArgument("document->>'value'", "raw"); got != "raw" {
-		t.Fatalf("string comparisonArgument = %#v", got)
+	expression, argument = typedComparisonOperand("document->>'value'", "raw")
+	if expression != "document->>'value'" || argument != "raw" {
+		t.Fatalf("string operand = %q, %#v", expression, argument)
+	}
+	if condition, args := buildScalarComparison("document->>'value'", "=", nil, 1); condition != "document->>'value' IS NULL" || len(args) != 0 {
+		t.Fatalf("nil equality = %q, %#v", condition, args)
+	}
+	if condition, args := buildScalarComparison("document->>'value'", "!=", nil, 1); condition != "document->>'value' IS NOT NULL" || len(args) != 0 {
+		t.Fatalf("nil inequality = %q, %#v", condition, args)
 	}
 }
 
@@ -282,6 +292,17 @@ func TestRecoveryQueryExistsOperator(t *testing.T) {
 	}
 	if _, err := buildExistsCondition(path, "true"); err == nil {
 		t.Fatal("non-boolean $exists value accepted")
+	}
+
+	client := &PostgreSQLClient{}
+	clause, args, err := client.buildWhereClause(map[string]any{
+		"healthevent.processingstrategy": map[string]any{opExists: false},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clause != "document->'healthevent'->'processingStrategy' IS NULL" || len(args) != 0 {
+		t.Fatalf("$exists clause = %q, args = %#v", clause, args)
 	}
 }
 
@@ -373,7 +394,7 @@ func TestAggregationSupportsAnalyzerMandatoryLogicalFilter(t *testing.T) {
 		}
 	}
 
-	wantArgs := []any{"1", "2", "health-events-analyzer", "false"}
+	wantArgs := []any{"1", "2", "health-events-analyzer", false}
 	if !reflect.DeepEqual(args, wantArgs) {
 		t.Fatalf("args = %#v, want %#v", args, wantArgs)
 	}

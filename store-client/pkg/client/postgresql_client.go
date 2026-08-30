@@ -65,6 +65,8 @@ const (
 	// SQL constants
 	orderDESC     = "DESC"
 	sqlTrueClause = "TRUE"
+	createdAtSQL  = "created_at"
+	updatedAtSQL  = "updated_at"
 
 	// SQL window frame bounds
 	frameBoundUnbounded  = "ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING"
@@ -862,9 +864,7 @@ func (c *PostgreSQLClient) buildWhereClauseMap(
 		// Check if value is a map containing comparison operators
 		if valueMap, ok := value.(map[string]any); ok {
 			// Handle comparison operators: {"count": {opGTE: 5}} → document->>'count' >= 5
-			jsonPath := c.buildJSONPath(key)
-
-			condition, valueArgs, err := c.buildFieldComparison(jsonPath, valueMap, paramCount)
+			condition, valueArgs, err := c.buildFieldComparison(key, valueMap, paramCount)
 			if err != nil {
 				return "", nil, err
 			}
@@ -880,9 +880,10 @@ func (c *PostgreSQLClient) buildWhereClauseMap(
 		// Example: {"nodeName": "node-1"} → document->>'nodeName' = $1
 		// Example: {"healthevent.nodename": "node-1"} → document->'healthevent'->>'nodename' = $1
 		jsonPath := c.buildJSONPath(key)
-		conditions = append(conditions, fmt.Sprintf("%s = $%d", jsonPath, paramCount))
-		args = append(args, comparisonArgument(jsonPath, value))
-		paramCount++
+		condition, valueArgs := buildScalarComparison(jsonPath, "=", value, paramCount)
+		conditions = append(conditions, condition)
+		args = append(args, valueArgs...)
+		paramCount += len(valueArgs)
 	}
 
 	whereClause := strings.Join(conditions, " AND ")
@@ -957,7 +958,7 @@ func logicalFilterValues(value any) ([]any, bool) {
 // buildFieldComparison builds a comparison condition for a field with operators
 // Handles operators like $gte, $gt, $lte, $lt, $eq, $ne
 func (c *PostgreSQLClient) buildFieldComparison(
-	jsonPath string,
+	fieldPath string,
 	operators map[string]any,
 	startParam int,
 ) (string, []any, error) {
@@ -966,6 +967,7 @@ func (c *PostgreSQLClient) buildFieldComparison(
 		args       []any
 	)
 
+	jsonPath := c.buildJSONPath(fieldPath)
 	paramCount := startParam
 
 	operatorNames := make([]string, 0, len(operators))
@@ -980,7 +982,12 @@ func (c *PostgreSQLClient) buildFieldComparison(
 		value := operators[op]
 
 		if op == opExists {
-			condition, err := buildExistsCondition(jsonPath, value)
+			existsPath := jsonPath
+			if jsonPath != createdAtSQL && jsonPath != updatedAtSQL {
+				existsPath = c.buildJSONPathAsJSONB(fieldPath)
+			}
+
+			condition, err := buildExistsCondition(existsPath, value)
 			if err != nil {
 				return "", nil, err
 			}
@@ -999,9 +1006,10 @@ func (c *PostgreSQLClient) buildFieldComparison(
 			)
 		}
 
-		conditions = append(conditions, fmt.Sprintf("%s %s $%d", jsonPath, sqlOperator, paramCount))
-		args = append(args, comparisonArgument(jsonPath, value))
-		paramCount++
+		condition, valueArgs := buildScalarComparison(jsonPath, sqlOperator, value, paramCount)
+		conditions = append(conditions, condition)
+		args = append(args, valueArgs...)
+		paramCount += len(valueArgs)
 	}
 
 	condition := strings.Join(conditions, " AND ")
@@ -1045,25 +1053,43 @@ func sqlComparisonOperator(operator string) (string, bool) {
 	}
 }
 
-func comparisonArgument(jsonPath string, value any) any {
-	if jsonPath == "created_at" || jsonPath == "updated_at" {
-		return value
+func buildScalarComparison(jsonPath, operator string, value any, parameter int) (string, []any) {
+	if value == nil {
+		if operator == "!=" {
+			return jsonPath + " IS NOT NULL", nil
+		}
+
+		return jsonPath + " IS NULL", nil
+	}
+
+	expression, argument := typedComparisonOperand(jsonPath, value)
+
+	return fmt.Sprintf("%s %s $%d", expression, operator, parameter), []any{argument}
+}
+
+func typedComparisonOperand(jsonPath string, value any) (string, any) {
+	if jsonPath == createdAtSQL || jsonPath == updatedAtSQL {
+		return jsonPath, value
 	}
 
 	reflected := reflect.ValueOf(value)
 	if !reflected.IsValid() {
-		return value
+		return jsonPath, value
 	}
 
-	return formatJSONScalar(reflected, value)
+	if reflected.Kind() == reflect.Bool {
+		return "(" + jsonPath + ")::boolean", value
+	}
+
+	if isJSONNumber(reflected.Kind()) {
+		return "(" + jsonPath + ")::numeric", formatJSONNumber(reflected, value)
+	}
+
+	return jsonPath, value
 }
 
-func formatJSONScalar(reflected reflect.Value, fallback any) any {
-	if reflected.Kind() == reflect.Bool {
-		return strconv.FormatBool(reflected.Bool())
-	}
-
-	return formatJSONNumber(reflected, fallback)
+func isJSONNumber(kind reflect.Kind) bool {
+	return kind >= reflect.Int && kind <= reflect.Float64 && kind != reflect.Uintptr
 }
 
 func formatJSONNumber(reflected reflect.Value, fallback any) any {
@@ -1944,9 +1970,9 @@ func (c *PostgreSQLClient) buildJSONPathAsJSONB(fieldPath string) string {
 func (c *PostgreSQLClient) buildJSONPath(fieldPath string) string {
 	switch strings.ToLower(fieldPath) {
 	case "createdat":
-		return "created_at"
+		return createdAtSQL
 	case "updatedat":
-		return "updated_at"
+		return updatedAtSQL
 	}
 
 	parts := strings.Split(fieldPath, ".")

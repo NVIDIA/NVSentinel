@@ -400,7 +400,7 @@ func createTables(ctx context.Context, db *sql.DB) error {
 			`WHERE node_quarantined IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_health_events_created_desc ON health_events(created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_health_events_analyzer_lookup ON health_events (` +
-			`node_name, event_type, (document->'healthevent'->>'agent'), created_at DESC)`,
+			`node_name, event_type, created_at DESC, (document->'healthevent'->>'agent'))`,
 		`CREATE INDEX IF NOT EXISTS idx_health_events_document_gin ON health_events USING GIN (document)`,
 
 		// Changelog Indexes
