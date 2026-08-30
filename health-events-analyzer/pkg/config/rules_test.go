@@ -69,6 +69,39 @@ scope = "node"
 	require.ErrorContains(t, err, "source_check_name is required")
 }
 
+func TestLoadTomlConfigRejectsUnknownKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rules.toml")
+	contents := `
+[[rules]]
+name = "misspelled-recovery"
+evaluate_rule = true
+
+[rules.recovery]
+source_agent = "syslog-health-monitor"
+source_check_name = "SysLogsXIDError"
+source_error_code = ["94"]
+scope = "node"
+`
+	require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))
+
+	config, err := LoadTomlConfig(path)
+	require.Nil(t, config)
+	require.ErrorContains(t, err, "source_error_code")
+}
+
+func TestConfigValidationRejectsInvalidStages(t *testing.T) {
+	for name, stage := range map[string]string{
+		"invalid JSON":       `{invalid}`,
+		"empty stage":        `{}`,
+		"multiple operators": `{"$match": {}, "$count": "count"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := &TomlConfig{Rules: []HealthEventsAnalyzerRule{{Name: name, Stage: []string{stage}}}}
+			require.ErrorContains(t, config.Validate(), "stage 0")
+		})
+	}
+}
+
 func TestRecoveryValidationAllowsRulesWithoutMapping(t *testing.T) {
 	config := &TomlConfig{Rules: []HealthEventsAnalyzerRule{{Name: "manual-recovery"}}}
 	require.NoError(t, config.Validate())
@@ -115,6 +148,15 @@ func TestRecoveryMappingValidation(t *testing.T) {
 				Scope: RecoveryScopeNode,
 			},
 			wantErr: "source_check_name is required",
+		},
+		{
+			name: "analyzer source is unreachable",
+			mapping: &RecoveryMapping{
+				SourceAgent:     analyzerAgentName,
+				SourceCheckName: "Recovered",
+				Scope:           RecoveryScopeNode,
+			},
+			wantErr: "excluded from analyzer input",
 		},
 		{
 			name: "invalid scope",

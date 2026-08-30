@@ -15,6 +15,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -26,6 +27,7 @@ type RecoveryScope string
 const (
 	RecoveryScopeNode   RecoveryScope = "node"
 	RecoveryScopeEntity RecoveryScope = "entity"
+	analyzerAgentName                 = "health-events-analyzer"
 )
 
 // RecoveryMapping identifies the healthy source event that resolves a derived
@@ -71,7 +73,7 @@ func (c *TomlConfig) HasEnabledRecovery() bool {
 
 func LoadTomlConfig(path string) (*TomlConfig, error) {
 	var config TomlConfig
-	if err := configmanager.LoadTOMLConfig(path, &config); err != nil {
+	if err := configmanager.LoadTOMLConfigStrict(path, &config); err != nil {
 		return nil, fmt.Errorf("failed to decode TOML config from %s: %w", path, err)
 	}
 
@@ -84,8 +86,27 @@ func LoadTomlConfig(path string) (*TomlConfig, error) {
 
 func (c *TomlConfig) Validate() error {
 	for i := range c.Rules {
+		if err := c.Rules[i].validateStages(); err != nil {
+			return fmt.Errorf("rule %q: %w", c.Rules[i].Name, err)
+		}
+
 		if err := c.Rules[i].validateRecovery(); err != nil {
 			return fmt.Errorf("rule %q: %w", c.Rules[i].Name, err)
+		}
+	}
+
+	return nil
+}
+
+func (r *HealthEventsAnalyzerRule) validateStages() error {
+	for i, stage := range r.Stage {
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(stage), &parsed); err != nil {
+			return fmt.Errorf("stage %d is not valid JSON: %w", i, err)
+		}
+
+		if len(parsed) != 1 {
+			return fmt.Errorf("stage %d must contain exactly one aggregation operator", i)
 		}
 	}
 
@@ -103,6 +124,10 @@ func (r *HealthEventsAnalyzerRule) validateRecovery() error {
 
 	if recovery.SourceCheckName == "" {
 		return fmt.Errorf("recovery.source_check_name is required")
+	}
+
+	if recovery.SourceAgent == analyzerAgentName {
+		return fmt.Errorf("recovery.source_agent %q is excluded from analyzer input", analyzerAgentName)
 	}
 
 	switch recovery.Scope {

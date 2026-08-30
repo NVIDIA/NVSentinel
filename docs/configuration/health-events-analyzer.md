@@ -154,6 +154,10 @@ stage = [
 ]
 ```
 
+Configuration is decoded strictly. Unknown TOML keys, malformed JSON stages,
+and stages containing zero or multiple aggregation operators fail startup instead
+of silently changing rule behavior.
+
 The full default ruleset — including all aggregation pipeline stage definitions — is in the chart's `values.yaml` at `distros/kubernetes/nvsentinel/charts/health-events-analyzer/values.yaml`. Refer to that file when writing or reviewing custom rules.
 
 ### Derived-condition recovery
@@ -183,6 +187,8 @@ entity_types = ["GPU_UUID"]
 
 `source_check_name` and `scope` are required. `source_agent` is optional; omit it
 only when more than one trusted producer may publish the recovery event.
+The analyzer rejects `source_agent = "health-events-analyzer"` because analyzer
+output is excluded from its input stream.
 `source_error_codes` is also optional. Set it only when the healthy source event
 carries a code that identifies the recovery; successful GPU-reset events do not.
 When configured, at least one listed code must be present. Entity scope requires one or more
@@ -211,6 +217,10 @@ never clears a derived fault with a newer generation time. If the transition is
 still not visible after two minutes, the processor exits without acknowledging the
 source. The watcher replays the source after restart instead of blocking the event
 stream indefinitely.
+
+Deterministic failures tied to a rule or stored record are logged, checkpointed,
+and skipped so a poison event cannot halt every later event. Transient datastore
+and publisher failures are not checkpointed and still stop processing for replay.
 
 The persisted source recovery event also becomes the rule's history boundary.
 Later evaluations exclude records stored or generated at or before that event,
