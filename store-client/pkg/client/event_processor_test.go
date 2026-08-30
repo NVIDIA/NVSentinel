@@ -22,157 +22,110 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	datamodels "github.com/nvidia/nvsentinel/data-models/pkg/model"
-	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
-type processorTestEvent struct {
-	document datamodels.HealthEventWithStatus
-	token    []byte
-}
-
-func (e *processorTestEvent) GetDocumentID() (string, error) { return "event-1", nil }
-func (e *processorTestEvent) GetRecordUUID() (string, error) { return "event-1", nil }
-func (e *processorTestEvent) GetNodeName() (string, error)   { return "node-a", nil }
-func (e *processorTestEvent) GetResumeToken() []byte         { return e.token }
-
-func (e *processorTestEvent) UnmarshalDocument(value any) error {
-	target := value.(*datamodels.HealthEventWithStatus)
-	*target = e.document
-
-	return nil
-}
-
-type processorTestWatcher struct {
-	marked chan []byte
-}
-
-func (w *processorTestWatcher) Start(context.Context)       {}
-func (w *processorTestWatcher) Events() <-chan Event        { return nil }
-func (w *processorTestWatcher) Close(context.Context) error { return nil }
-func (w *processorTestWatcher) MarkProcessed(_ context.Context, token []byte) error {
-	w.marked <- append([]byte(nil), token...)
-	return nil
-}
-
-func TestEventProcessorMarksResumeTokenOnlyAfterHandlerCompletes(t *testing.T) {
-	watcher := &processorTestWatcher{marked: make(chan []byte, 1)}
-	processor := NewEventProcessor(watcher, nil, EventProcessorConfig{}).(*DefaultEventProcessor)
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	processor.SetEventHandler(EventHandlerFunc(func(context.Context, *datamodels.HealthEventWithStatus) error {
-		close(entered)
-		<-release
-
-		return nil
-	}))
-
-	event := &processorTestEvent{
-		document: datamodels.HealthEventWithStatus{
-			HealthEvent:       &protos.HealthEvent{NodeName: "node-a"},
-			HealthEventStatus: &protos.HealthEventStatus{},
-		},
-		token: []byte("resume-7"),
-	}
-	done := make(chan error, 1)
-	go func() {
-		done <- processor.handleSingleEvent(context.Background(), event)
-	}()
-
-	<-entered
-	select {
-	case token := <-watcher.marked:
-		t.Fatalf("resume token marked before handler completed: %q", token)
-	default:
-	}
-
-	close(release)
-	require.NoError(t, <-done)
-	require.Equal(t, []byte("resume-7"), <-watcher.marked)
-}
-
-func TestEventProcessorDoesNotMarkResumeTokenWhenHandlerFails(t *testing.T) {
-	watcher := &processorTestWatcher{marked: make(chan []byte, 1)}
-	processor := NewEventProcessor(watcher, nil, EventProcessorConfig{
-		MarkProcessedOnError: false,
-	}).(*DefaultEventProcessor)
-	processor.SetEventHandler(EventHandlerFunc(func(context.Context, *datamodels.HealthEventWithStatus) error {
-		return errors.New("not durable")
-	}))
-
-	event := &processorTestEvent{
-		document: datamodels.HealthEventWithStatus{
-			HealthEvent:       &protos.HealthEvent{NodeName: "node-a"},
-			HealthEventStatus: &protos.HealthEventStatus{},
-		},
-		token: []byte("resume-8"),
-	}
-
-	require.Error(t, processor.handleSingleEvent(context.Background(), event))
-	select {
-	case token := <-watcher.marked:
-		t.Fatalf("resume token marked after handler failure: %q", token)
-	default:
-	}
-}
-
-func TestEventProcessorStopsBeforeLaterUncheckpointedEvent(t *testing.T) {
+// TestProcessEvents_EventHandlingAndCheckpointOutcomes_PreserveCheckpointOrdering verifies ordered checkpoints.
+func TestProcessEvents_EventHandlingAndCheckpointOutcomes_PreserveCheckpointOrdering(t *testing.T) {
 	processingErr := errors.New("processing failed")
-	checkpointErr := errors.New("checkpoint failed")
+	checkpointErr := errors.New("checkpoint write failed")
+	unmarshalErr := errors.New("invalid event")
+	documentIDErr := errors.New("invalid document ID")
 
-	for _, test := range []struct {
+	tests := []struct {
 		name          string
 		config        EventProcessorConfig
-		first         *orderedProcessorEvent
+		firstEvent    *eventProcessorTestEvent
 		handlerErrors map[string]error
 		markErrors    map[string]error
 		wantErrors    []error
 		wantHandled   []string
+		wantMarkCalls []string
 		wantMarked    []string
 	}{
 		{
-			name:          "handler failure",
-			first:         newOrderedProcessorEvent("1"),
+			name:          "handler failure keeps later event unprocessed",
+			firstEvent:    newEventProcessorTestEvent("1"),
 			handlerErrors: map[string]error{"1": processingErr},
 			wantErrors:    []error{processingErr},
 			wantHandled:   []string{"1"},
 		},
 		{
-			name:       "checkpoint failure",
-			first:      newOrderedProcessorEvent("1"),
-			markErrors: map[string]error{"1": checkpointErr},
-			wantErrors: []error{checkpointErr},
-			wantHandled: []string{
-				"1",
-			},
+			name:          "checkpoint failure keeps later event unprocessed",
+			firstEvent:    newEventProcessorTestEvent("1"),
+			markErrors:    map[string]error{"1": checkpointErr},
+			wantErrors:    []error{checkpointErr},
+			wantHandled:   []string{"1"},
+			wantMarkCalls: []string{"1"},
 		},
 		{
-			name:          "configured skip continues after checkpoint",
+			name:          "configured handler failure skip continues after checkpoint",
 			config:        EventProcessorConfig{MarkProcessedOnError: true},
-			first:         newOrderedProcessorEvent("1"),
+			firstEvent:    newEventProcessorTestEvent("1"),
 			handlerErrors: map[string]error{"1": processingErr},
 			wantHandled:   []string{"1", "2"},
+			wantMarkCalls: []string{"1", "2"},
 			wantMarked:    []string{"1", "2"},
 		},
 		{
-			name:  "invalid document continues after checkpoint",
-			first: &orderedProcessorEvent{id: "1", token: []byte("1"), unmarshalErr: processingErr},
-			wantHandled: []string{
-				"2",
-			},
-			wantMarked: []string{"1", "2"},
+			name:          "configured skip stops when checkpoint fails",
+			config:        EventProcessorConfig{MarkProcessedOnError: true},
+			firstEvent:    newEventProcessorTestEvent("1"),
+			handlerErrors: map[string]error{"1": processingErr},
+			markErrors:    map[string]error{"1": checkpointErr},
+			wantErrors:    []error{processingErr, checkpointErr},
+			wantHandled:   []string{"1"},
+			wantMarkCalls: []string{"1"},
 		},
-	} {
+		{
+			name: "unmarshal error stops when checkpoint fails",
+			firstEvent: &eventProcessorTestEvent{
+				id:           "1",
+				token:        []byte("1"),
+				unmarshalErr: unmarshalErr,
+			},
+			markErrors:    map[string]error{"1": checkpointErr},
+			wantErrors:    []error{unmarshalErr, checkpointErr},
+			wantMarkCalls: []string{"1"},
+		},
+		{
+			name: "document ID error stops when checkpoint fails",
+			firstEvent: &eventProcessorTestEvent{
+				id:            "1",
+				token:         []byte("1"),
+				documentIDErr: documentIDErr,
+			},
+			markErrors:    map[string]error{"1": checkpointErr},
+			wantErrors:    []error{documentIDErr, checkpointErr},
+			wantMarkCalls: []string{"1"},
+		},
+		{
+			name: "invalid event continues after checkpoint",
+			firstEvent: &eventProcessorTestEvent{
+				id:           "1",
+				token:        []byte("1"),
+				unmarshalErr: errors.New("invalid event"),
+			},
+			wantHandled:   []string{"2"},
+			wantMarkCalls: []string{"1", "2"},
+			wantMarked:    []string{"1", "2"},
+		},
+	}
+
+	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			watcher := newOrderedProcessorWatcher(test.first, newOrderedProcessorEvent("2"))
+			watcher := newEventProcessorTestWatcher(test.firstEvent, newEventProcessorTestEvent("2"))
 			watcher.markErrors = test.markErrors
-			processor := NewEventProcessor(watcher, nil, test.config).(*DefaultEventProcessor)
+			processor := newDefaultEventProcessorForTest(watcher, test.config)
+
 			var handled []string
 			processor.SetEventHandler(EventHandlerFunc(
-				func(_ context.Context, event *datamodels.HealthEventWithStatus) error {
-					id := event.HealthEvent.GetId()
-					handled = append(handled, id)
-					return test.handlerErrors[id]
+				func(_ context.Context, event *model.HealthEventWithStatus) error {
+					eventID := event.HealthEvent.GetId()
+					handled = append(handled, eventID)
+
+					return test.handlerErrors[eventID]
 				},
 			))
 
@@ -184,66 +137,100 @@ func TestEventProcessorStopsBeforeLaterUncheckpointedEvent(t *testing.T) {
 					require.ErrorIs(t, err, wantErr)
 				}
 			}
+
 			require.Equal(t, test.wantHandled, handled)
-			require.Equal(t, test.wantMarked, watcher.marked)
+			require.Equal(t, test.wantMarkCalls, watcher.markCalls)
+			require.Equal(t, test.wantMarked, watcher.markedTokens)
 		})
 	}
 }
 
-type orderedProcessorEvent struct {
+func newDefaultEventProcessorForTest(
+	watcher ChangeStreamWatcher, config EventProcessorConfig,
+) *DefaultEventProcessor {
+	return NewEventProcessor(watcher, nil, config).(*DefaultEventProcessor)
+}
+
+type eventProcessorTestEvent struct {
 	id            string
 	token         []byte
 	unmarshalErr  error
 	documentIDErr error
 }
 
-func newOrderedProcessorEvent(id string) *orderedProcessorEvent {
-	return &orderedProcessorEvent{id: id, token: []byte(id)}
+func newEventProcessorTestEvent(id string) *eventProcessorTestEvent {
+	return &eventProcessorTestEvent{id: id, token: []byte(id)}
 }
 
-func (e *orderedProcessorEvent) GetDocumentID() (string, error) { return e.id, e.documentIDErr }
-func (e *orderedProcessorEvent) GetRecordUUID() (string, error) { return "", nil }
-func (e *orderedProcessorEvent) GetNodeName() (string, error)   { return "", nil }
-func (e *orderedProcessorEvent) GetResumeToken() []byte         { return e.token }
-func (e *orderedProcessorEvent) UnmarshalDocument(value any) error {
+func (e *eventProcessorTestEvent) GetDocumentID() (string, error) {
+	return e.id, e.documentIDErr
+}
+
+func (e *eventProcessorTestEvent) GetRecordUUID() (string, error) {
+	return "", nil
+}
+
+func (e *eventProcessorTestEvent) GetNodeName() (string, error) {
+	return "", nil
+}
+
+func (e *eventProcessorTestEvent) GetResumeToken() []byte {
+	return e.token
+}
+
+func (e *eventProcessorTestEvent) UnmarshalDocument(value any) error {
 	if e.unmarshalErr != nil {
 		return e.unmarshalErr
 	}
 
-	event, ok := value.(*datamodels.HealthEventWithStatus)
+	event, ok := value.(*model.HealthEventWithStatus)
 	if !ok {
 		return fmt.Errorf("unexpected document type %T", value)
 	}
+
 	event.HealthEvent = &protos.HealthEvent{Id: e.id}
 
 	return nil
 }
 
-type orderedProcessorWatcher struct {
-	events     chan Event
-	markErrors map[string]error
-	marked     []string
+type eventProcessorTestWatcher struct {
+	events       chan Event
+	markErrors   map[string]error
+	markCalls    []string
+	markedTokens []string
 }
 
-func newOrderedProcessorWatcher(events ...Event) *orderedProcessorWatcher {
+func newEventProcessorTestWatcher(events ...Event) *eventProcessorTestWatcher {
 	eventChannel := make(chan Event, len(events))
 	for _, event := range events {
 		eventChannel <- event
 	}
 	close(eventChannel)
 
-	return &orderedProcessorWatcher{events: eventChannel, markErrors: make(map[string]error)}
+	return &eventProcessorTestWatcher{
+		events:     eventChannel,
+		markErrors: make(map[string]error),
+	}
 }
 
-func (w *orderedProcessorWatcher) Start(context.Context)       {}
-func (w *orderedProcessorWatcher) Events() <-chan Event        { return w.events }
-func (w *orderedProcessorWatcher) Close(context.Context) error { return nil }
-func (w *orderedProcessorWatcher) MarkProcessed(_ context.Context, token []byte) error {
-	value := string(token)
-	if err := w.markErrors[value]; err != nil {
+func (w *eventProcessorTestWatcher) Start(context.Context) {}
+
+func (w *eventProcessorTestWatcher) Events() <-chan Event {
+	return w.events
+}
+
+func (w *eventProcessorTestWatcher) MarkProcessed(_ context.Context, token []byte) error {
+	tokenString := string(token)
+	w.markCalls = append(w.markCalls, tokenString)
+	if err := w.markErrors[tokenString]; err != nil {
 		return err
 	}
-	w.marked = append(w.marked, value)
 
+	w.markedTokens = append(w.markedTokens, tokenString)
+
+	return nil
+}
+
+func (w *eventProcessorTestWatcher) Close(context.Context) error {
 	return nil
 }
