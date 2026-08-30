@@ -92,6 +92,8 @@ The reboot Job supports two reboot paths:
 - Default: `chroot /host reboot`
 - SysRq opt-in: `echo b > /proc/sysrq-trigger` via the host `/proc` mount
 
+Before triggering the reboot, the Job writes an attribution entry to host syslog via `chroot /host logger -t nvsentinel-reboot -p daemon.notice "NVSentinel reboot: node=<nodeName>"` (enabled by default via `writeSyslog: true`). On the SysRq path, `sync` is executed before resetting to flush disk buffers.
+
 The SysRq path is intended for bare-metal environments where the standard reboot command is accepted but leaves the node stuck `NotReady`. It bypasses the normal userspace shutdown path, so it is controlled by an explicit feature flag.
 
 **Job specification:**
@@ -116,7 +118,7 @@ spec:
       containers:
         - name: reboot
           image: busybox:1.37
-          command: ["chroot", "/host", "reboot"]
+          command: ["sh", "-c", "chroot /host logger -t nvsentinel-reboot -p daemon.notice \"NVSentinel reboot: node=<target-node>\" || true; chroot /host reboot"]
           securityContext:
             privileged: true
           volumeMounts:
@@ -176,6 +178,7 @@ csp:
     useSysrqReboot: false       # true to use echo b > /proc/sysrq-trigger
     rebootJobNamespace: ""      # defaults to the janitor-provider's own namespace
     rebootJobTTLSeconds: 3600
+    writeSyslog: true           # true to write attribution to syslog before rebooting
 ```
 
 ```yaml
@@ -191,6 +194,8 @@ env:
     value: {{ .Values.csp.generic.rebootJobNamespace | quote }}
   - name: GENERIC_REBOOT_JOB_TTL
     value: {{ .Values.csp.generic.rebootJobTTLSeconds | default 3600 | quote }}
+  - name: GENERIC_REBOOT_WRITE_SYSLOG
+    value: {{ if hasKey .Values.csp.generic "writeSyslog" }}{{ .Values.csp.generic.writeSyslog | quote }}{{ else }}"true"{{ end }}
 ```
 
 ### 4. RBAC
