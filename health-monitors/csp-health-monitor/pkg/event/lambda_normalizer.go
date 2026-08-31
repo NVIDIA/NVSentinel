@@ -58,7 +58,7 @@ var _ Normalizer = (*LambdaNormalizer)(nil)
 // Normalize converts a Lambda mock event into a MaintenanceEvent.
 // rawEvent is unused; all fields are conveyed via additionalInfo[0] (LambdaEventMetadata).
 func (n *LambdaNormalizer) Normalize(
-	rawEvent interface{}, additionalInfo ...interface{},
+	rawEvent any, additionalInfo ...any,
 ) (*model.MaintenanceEvent, error) {
 	if len(additionalInfo) < 1 {
 		return nil, fmt.Errorf("LambdaNormalizer: missing LambdaEventMetadata")

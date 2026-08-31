@@ -44,11 +44,14 @@ const (
 	// fieldProcessingStrategy is the stored document field holding the
 	// per-event processing strategy.
 	fieldProcessingStrategy = "healthevent.processingstrategy"
+	// fieldNodeName is the stored document field used to scope rule evaluation
+	// to the node that produced the incoming event.
+	fieldNodeName = "healthevent.nodename"
 )
 
 type HealthEventsAnalyzerReconcilerConfig struct {
 	DataStoreConfig           *datastore.DataStoreConfig
-	Pipeline                  interface{}
+	Pipeline                  any
 	HealthEventsAnalyzerRules *config.TomlConfig
 	Publisher                 *publisher.PublisherConfig
 }
@@ -98,7 +101,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	datastoreAdapter, ok := ds.(interface {
 		GetDatabaseClient() client.DatabaseClient
 		CreateChangeStreamWatcher(
-			ctx context.Context, clientName string, pipeline interface{},
+			ctx context.Context, clientName string, pipeline any,
 		) (datastore.ChangeStreamWatcher, error)
 	})
 	if !ok {
@@ -433,7 +436,7 @@ func (r *Reconciler) validateAllSequenceCriteria(ctx context.Context, rule confi
 		return false, fmt.Errorf("failed to build pipeline stages: %w", err)
 	}
 
-	var result []map[string]interface{}
+	var result []map[string]any
 
 	slog.DebugContext(ctx, "Executing aggregation pipeline",
 		"rule_name", rule.Name, "pipeline_stages_count", len(pipelineStages))
@@ -503,23 +506,26 @@ func (r *Reconciler) validateAllSequenceCriteria(ctx context.Context, rule confi
 func (r *Reconciler) getPipelineStages(
 	rule config.HealthEventsAnalyzerRule,
 	healthEventWithStatus datamodels.HealthEventWithStatus,
-) ([]map[string]interface{}, error) {
-	// CRITICAL: Always start with agent filter to exclude events from health-events-analyzer itself
-	// This prevents the analyzer from matching its own generated events, which would cause
-	// infinite loops and incorrect rule evaluations
-	pipeline := []map[string]interface{}{
+) ([]map[string]any, error) {
+	// Always start with mandatory filters. The agent filter prevents the analyzer
+	// from matching its own generated events, while the node filter limits each
+	// rule evaluation to events from the node that produced the incoming event.
+	// Keeping the node predicate in the first stage lets the datastore use its
+	// node-prefixed HealthEvents index before evaluating configured rule stages.
+	pipeline := []map[string]any{
 		{
-			"$match": map[string]interface{}{
-				"healthevent.agent": map[string]interface{}{"$ne": agentName},
-				"$or": []interface{}{
-					map[string]interface{}{
+			"$match": map[string]any{
+				"healthevent.agent": map[string]any{"$ne": agentName},
+				fieldNodeName:       healthEventWithStatus.HealthEvent.NodeName,
+				"$or": []any{
+					map[string]any{
 						fieldProcessingStrategy: int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION),
 					},
-					map[string]interface{}{
+					map[string]any{
 						fieldProcessingStrategy: int32(protos.ProcessingStrategy_STORE_AND_ANALYSE),
 					},
-					map[string]interface{}{
-						fieldProcessingStrategy: map[string]interface{}{"$exists": false},
+					map[string]any{
+						fieldProcessingStrategy: map[string]any{"$exists": false},
 					},
 				},
 			},

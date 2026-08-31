@@ -23,7 +23,8 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/model"
 )
 
-func ptr[T any](v T) *T { return &v }
+//go:fix inline
+func ptr[T any](v T) *T { return new(v) }
 
 func TestLambdaNormalizer_Normalize(t *testing.T) {
 	const (
@@ -148,7 +149,7 @@ func TestLambdaNormalizer_Normalize(t *testing.T) {
 				NotBefore:   &notBefore,
 				NodeName:    testNode,
 				ClusterName: testCluster,
-				LastUpdated: ptr(time.Date(2026, 7, 28, 16, 32, 36, 509041000, time.UTC)),
+				LastUpdated: new(time.Date(2026, 7, 28, 16, 32, 36, 509041000, time.UTC)),
 			},
 			check: func(t *testing.T, e *model.MaintenanceEvent) {
 				got, ok := e.Metadata[model.ProviderLastUpdatedKey]
@@ -173,8 +174,8 @@ func TestLambdaNormalizer_Normalize(t *testing.T) {
 			},
 		},
 		{
-			name: "missing metadata returns error",
-			meta: LambdaEventMetadata{},
+			name:  "missing metadata returns error",
+			meta:  LambdaEventMetadata{},
 			check: func(_ *testing.T, _ *model.MaintenanceEvent) {},
 			// Normalize with zero meta — caught by empty ID check first, but also
 			// exercising the path when additionalInfo is omitted entirely.
@@ -207,9 +208,9 @@ func TestLambdaNormalizer_Normalize(t *testing.T) {
 
 func TestMapLambdaStatus(t *testing.T) {
 	tests := []struct {
-		input          string
-		wantInternal   model.InternalStatus
-		wantCSP        model.ProviderStatus
+		input           string
+		wantInternal    model.InternalStatus
+		wantCSP         model.ProviderStatus
 		wantActualStart bool
 		wantActualEnd   bool
 	}{

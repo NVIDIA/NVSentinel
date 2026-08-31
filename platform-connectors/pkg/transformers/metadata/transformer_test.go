@@ -108,13 +108,11 @@ func TestAugmentorTransform(t *testing.T) {
 		{
 			name: "successful augmentation with labels",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-node-1",
-					Labels: map[string]string{
-						"topology.kubernetes.io/zone":      "us-west-2a",
-						"topology.kubernetes.io/region":    "us-west-2",
-						"node.kubernetes.io/instance-type": "p4d.24xlarge",
-					},
+				Name: "test-node-1",
+				Labels: map[string]string{
+					"topology.kubernetes.io/zone":      "us-west-2a",
+					"topology.kubernetes.io/region":    "us-west-2",
+					"node.kubernetes.io/instance-type": "p4d.24xlarge",
 				},
 				Spec: corev1.NodeSpec{
 					ProviderID: "aws:///us-west-2a/i-1234567890abcdef0",
@@ -152,8 +150,8 @@ func TestAugmentorTransform(t *testing.T) {
 		{
 			name: "nil metadata initialization",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-node-2"},
-				Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-abc123"},
+				Name: "test-node-2",
+				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-abc123"},
 			},
 			eventNodeName: "test-node-2",
 			existingMeta:  nil,
@@ -166,8 +164,8 @@ func TestAugmentorTransform(t *testing.T) {
 		{
 			name: "existing metadata preservation",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-node-3"},
-				Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-def456"},
+				Name: "test-node-3",
+				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-def456"},
 			},
 			eventNodeName: "test-node-3",
 			existingMeta:  map[string]string{"existing-key": "existing-value"},
@@ -180,11 +178,9 @@ func TestAugmentorTransform(t *testing.T) {
 		{
 			name: "no provider ID",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "test-node-4",
-					Labels: map[string]string{"test-label": "test-value"},
-				},
-				Spec: corev1.NodeSpec{},
+				Name:   "test-node-4",
+				Labels: map[string]string{"test-label": "test-value"},
+				Spec:   corev1.NodeSpec{},
 			},
 			config: &Config{
 				CacheSize:     100,
@@ -201,8 +197,8 @@ func TestAugmentorTransform(t *testing.T) {
 		{
 			name: "no allowed labels configured",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-node-5"},
-				Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-ghi789"},
+				Name: "test-node-5",
+				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-ghi789"},
 			},
 			eventNodeName: "test-node-5",
 			expectError:   false,
@@ -214,16 +210,14 @@ func TestAugmentorTransform(t *testing.T) {
 		{
 			name: "cloud-specific topology labels",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-node-6",
-					Labels: map[string]string{
-						"topology.k8s.aws/capacity-block-id":    "cbr-01234567",
-						"topology.k8s.aws/network-node-layer-1": "nn-abcd",
-						"oci.oraclecloud.com/host.id":           "971b2",
-						"cloud.google.com/gce-topology-block":   "9b6c",
-						"cloud.google.com/gce-topology-host":    "7007",
-						"node.kubernetes.io/instance-type":      "p4d.24xlarge",
-					},
+				Name: "test-node-6",
+				Labels: map[string]string{
+					"topology.k8s.aws/capacity-block-id":    "cbr-01234567",
+					"topology.k8s.aws/network-node-layer-1": "nn-abcd",
+					"oci.oraclecloud.com/host.id":           "971b2",
+					"cloud.google.com/gce-topology-block":   "9b6c",
+					"cloud.google.com/gce-topology-host":    "7007",
+					"node.kubernetes.io/instance-type":      "p4d.24xlarge",
 				},
 				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-cloud123"},
 			},
@@ -253,15 +247,13 @@ func TestAugmentorTransform(t *testing.T) {
 		{
 			name: "topograph topology labels",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-node-7",
-					Labels: map[string]string{
-						"network.topology.nvidia.com/accelerator": "clique-7",
-						"network.topology.nvidia.com/leaf":        "leaf-42",
-						"network.topology.nvidia.com/spine":       "spine-3",
-						"network.topology.nvidia.com/core":        "core-1",
-						"node.kubernetes.io/instance-type":        "p5.48xlarge",
-					},
+				Name: "test-node-7",
+				Labels: map[string]string{
+					"network.topology.nvidia.com/accelerator": "clique-7",
+					"network.topology.nvidia.com/leaf":        "leaf-42",
+					"network.topology.nvidia.com/spine":       "spine-3",
+					"network.topology.nvidia.com/core":        "core-1",
+					"node.kubernetes.io/instance-type":        "p5.48xlarge",
 				},
 				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-topograph1"},
 			},
@@ -290,22 +282,18 @@ func TestAugmentorTransform(t *testing.T) {
 			name: "multiple nodes enrichment",
 			nodes: []*corev1.Node{
 				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "multi-test-node-1",
-						Labels: map[string]string{
-							"topology.kubernetes.io/zone": "us-west-2a",
-						},
+					Name: "multi-test-node-1",
+					Labels: map[string]string{
+						"topology.kubernetes.io/zone": "us-west-2a",
 					},
 					Spec: corev1.NodeSpec{
 						ProviderID: "aws:///us-west-2a/i-test1",
 					},
 				},
 				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "multi-test-node-2",
-						Labels: map[string]string{
-							"topology.kubernetes.io/zone": "us-west-2b",
-						},
+					Name: "multi-test-node-2",
+					Labels: map[string]string{
+						"topology.kubernetes.io/zone": "us-west-2b",
 					},
 					Spec: corev1.NodeSpec{
 						ProviderID: "aws:///us-west-2b/i-test2",
@@ -378,8 +366,8 @@ func TestAugmentorTransform(t *testing.T) {
 
 func TestProcessorCachingBehavior(t *testing.T) {
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: "cache-test-node"},
-		Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-cache123"},
+		Name: "cache-test-node",
+		Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-cache123"},
 	}
 
 	createTestNode(t, node)
@@ -414,8 +402,8 @@ func TestProcessorCachingBehavior(t *testing.T) {
 
 func TestProcessorContextCancellation(t *testing.T) {
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: "context-test-node"},
-		Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-ctx123"},
+		Name: "context-test-node",
+		Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-ctx123"},
 	}
 
 	createTestNode(t, node)
@@ -444,11 +432,9 @@ func TestProcessorContextCancellation(t *testing.T) {
 
 func TestProcessorConcurrentAugmentations(t *testing.T) {
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "concurrent-test-node",
-			Labels: map[string]string{
-				"test-label": "test-value",
-			},
+		Name: "concurrent-test-node",
+		Labels: map[string]string{
+			"test-label": "test-value",
 		},
 		Spec: corev1.NodeSpec{
 			ProviderID: "aws:///us-west-2a/i-concurrent123",
@@ -468,10 +454,8 @@ func TestProcessorConcurrentAugmentations(t *testing.T) {
 	ctx := context.Background()
 
 	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 10 {
+		wg.Go(func() {
 			event := &pb.HealthEvent{
 				NodeName: "concurrent-test-node",
 				Metadata: make(map[string]string),
@@ -480,7 +464,7 @@ func TestProcessorConcurrentAugmentations(t *testing.T) {
 			assert.NoError(t, err)
 			assert.Equal(t, "aws:///us-west-2a/i-concurrent123", event.Metadata["providerID"])
 			assert.Equal(t, "test-value", event.Metadata["test-label"])
-		}()
+		})
 	}
 
 	wg.Wait()

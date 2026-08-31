@@ -141,7 +141,7 @@ func gangConfigVolumesForCache(volumes []corev1.Volume) []corev1.Volume {
 		cached := corev1.Volume{Name: volume.Name}
 		if volume.ConfigMap != nil {
 			cached.ConfigMap = &corev1.ConfigMapVolumeSource{
-				LocalObjectReference: corev1.LocalObjectReference{Name: volume.ConfigMap.Name},
+				Name: volume.ConfigMap.Name,
 			}
 		}
 

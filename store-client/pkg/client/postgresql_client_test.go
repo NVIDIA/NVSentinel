@@ -54,7 +54,7 @@ func TestBuildWhereClause(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		filter         interface{}
+		filter         any
 		expectedClause string
 		expectedArgs   int
 		expectError    bool
@@ -68,14 +68,14 @@ func TestBuildWhereClause(t *testing.T) {
 		},
 		{
 			name:           "empty filter",
-			filter:         map[string]interface{}{},
+			filter:         map[string]any{},
 			expectedClause: "TRUE",
 			expectedArgs:   0,
 			expectError:    false,
 		},
 		{
 			name: "simple equality",
-			filter: map[string]interface{}{
+			filter: map[string]any{
 				"nodeName": "node-1",
 			},
 			expectedClause: "document->>'nodeName' = $1",
@@ -84,7 +84,7 @@ func TestBuildWhereClause(t *testing.T) {
 		},
 		{
 			name: "nested field",
-			filter: map[string]interface{}{
+			filter: map[string]any{
 				"healthevent.nodename": "node-1",
 			},
 			expectedClause: "document->'healthevent'->>'nodeName' = $1", // nodename is normalized to nodeName
@@ -162,13 +162,13 @@ func TestBuildUpdateClause(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		update      interface{}
+		update      any
 		expectError bool
 	}{
 		{
 			name: "simple $set",
-			update: map[string]interface{}{
-				"$set": map[string]interface{}{
+			update: map[string]any{
+				"$set": map[string]any{
 					"status": "Active",
 				},
 			},
@@ -176,8 +176,8 @@ func TestBuildUpdateClause(t *testing.T) {
 		},
 		{
 			name: "nested $set",
-			update: map[string]interface{}{
-				"$set": map[string]interface{}{
+			update: map[string]any{
+				"$set": map[string]any{
 					"healthevent.status": "Resolved",
 				},
 			},
@@ -185,7 +185,7 @@ func TestBuildUpdateClause(t *testing.T) {
 		},
 		{
 			name: "missing $set",
-			update: map[string]interface{}{
+			update: map[string]any{
 				"status": "Active",
 			},
 			expectError: true,
@@ -222,11 +222,11 @@ func TestUpdateDocumentOffsetsWherePlaceholdersAfterUpdateArgs(t *testing.T) {
 		table: "health_events",
 	}
 
-	filter := map[string]interface{}{
+	filter := map[string]any{
 		"status": "old",
 	}
-	update := map[string]interface{}{
-		"$set": map[string]interface{}{
+	update := map[string]any{
+		"$set": map[string]any{
 			"status": "new",
 		},
 	}
@@ -269,21 +269,21 @@ func TestAggregationPipelineConversion(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		stages      []map[string]interface{}
+		stages      []map[string]any
 		expectError bool
 		errorOp     string
 	}{
 		{
 			name: "basic $match and $sort",
-			stages: []map[string]interface{}{
-				{"$match": map[string]interface{}{"nodeName": "node-1"}},
-				{"$sort": map[string]interface{}{"created_at": -1}},
+			stages: []map[string]any{
+				{"$match": map[string]any{"nodeName": "node-1"}},
+				{"$sort": map[string]any{"created_at": -1}},
 			},
 			expectError: false,
 		},
 		{
 			name: "$limit and $skip",
-			stages: []map[string]interface{}{
+			stages: []map[string]any{
 				{"$limit": 10},
 				{"$skip": 5},
 			},
@@ -291,23 +291,23 @@ func TestAggregationPipelineConversion(t *testing.T) {
 		},
 		{
 			name: "basic $group support",
-			stages: []map[string]interface{}{
-				{"$group": map[string]interface{}{"_id": "$nodeName"}},
+			stages: []map[string]any{
+				{"$group": map[string]any{"_id": "$nodeName"}},
 			},
 			expectError: false,
 		},
 		{
 			name: "supported $setWindowFields with basic spec",
-			stages: []map[string]interface{}{
+			stages: []map[string]any{
 				{
-					"$setWindowFields": map[string]interface{}{
-						"sortBy": map[string]interface{}{
+					"$setWindowFields": map[string]any{
+						"sortBy": map[string]any{
 							"healthevent.generatedtimestamp.seconds": 1,
 						},
-						"output": map[string]interface{}{
-							"allPreviousEvents": map[string]interface{}{
+						"output": map[string]any{
+							"allPreviousEvents": map[string]any{
 								"$push":  "$$ROOT",
-								"window": map[string]interface{}{"documents": []interface{}{"unbounded", -1}},
+								"window": map[string]any{"documents": []any{"unbounded", -1}},
 							},
 						},
 					},
@@ -343,21 +343,21 @@ func TestSetWindowFieldsQueryGeneration(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		stages          []map[string]interface{}
+		stages          []map[string]any
 		expectedInQuery []string // Substrings expected in generated SQL
 	}{
 		{
 			name: "$push with unbounded preceding",
-			stages: []map[string]interface{}{
+			stages: []map[string]any{
 				{
-					"$setWindowFields": map[string]interface{}{
-						"sortBy": map[string]interface{}{
+					"$setWindowFields": map[string]any{
+						"sortBy": map[string]any{
 							"healthevent.generatedtimestamp.seconds": 1,
 						},
-						"output": map[string]interface{}{
-							"allPreviousEvents": map[string]interface{}{
+						"output": map[string]any{
+							"allPreviousEvents": map[string]any{
 								"$push":  "$$ROOT",
-								"window": map[string]interface{}{"documents": []interface{}{"unbounded", -1}},
+								"window": map[string]any{"documents": []any{"unbounded", -1}},
 							},
 						},
 					},
@@ -374,16 +374,16 @@ func TestSetWindowFieldsQueryGeneration(t *testing.T) {
 		},
 		{
 			name: "$sum with conditional expression",
-			stages: []map[string]interface{}{
+			stages: []map[string]any{
 				{
-					"$setWindowFields": map[string]interface{}{
-						"sortBy": map[string]interface{}{
+					"$setWindowFields": map[string]any{
+						"sortBy": map[string]any{
 							"healthevent.generatedtimestamp.seconds": 1,
 						},
-						"output": map[string]interface{}{
-							"burstId": map[string]interface{}{
+						"output": map[string]any{
+							"burstId": map[string]any{
 								"$sum":   1,
-								"window": map[string]interface{}{"documents": []interface{}{"unbounded", "current"}},
+								"window": map[string]any{"documents": []any{"unbounded", "current"}},
 							},
 						},
 					},
@@ -400,14 +400,14 @@ func TestSetWindowFieldsQueryGeneration(t *testing.T) {
 		},
 		{
 			name: "$max with field reference",
-			stages: []map[string]interface{}{
+			stages: []map[string]any{
 				{
-					"$setWindowFields": map[string]interface{}{
-						"sortBy": map[string]interface{}{
+					"$setWindowFields": map[string]any{
+						"sortBy": map[string]any{
 							"_id.burstId": 1,
 						},
-						"output": map[string]interface{}{
-							"maxBurstId": map[string]interface{}{
+						"output": map[string]any{
+							"maxBurstId": map[string]any{
 								"$max": "$_id.burstId",
 							},
 						},
@@ -491,15 +491,15 @@ func TestBuildExprValue_NewOperators(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		expr        interface{}
+		expr        any
 		expectedSQL string
 		expectError bool
 	}{
 		// Test $and operator
 		{
 			name: "$and with two boolean fields",
-			expr: map[string]interface{}{
-				"$and": []interface{}{
+			expr: map[string]any{
+				"$and": []any{
 					"$isStickyXid",
 					"$stickyXidWithin3Hours",
 				},
@@ -509,13 +509,13 @@ func TestBuildExprValue_NewOperators(t *testing.T) {
 		},
 		{
 			name: "$and with comparison expressions",
-			expr: map[string]interface{}{
-				"$and": []interface{}{
-					map[string]interface{}{
-						"$eq": []interface{}{"$status", "$expectedStatus"},
+			expr: map[string]any{
+				"$and": []any{
+					map[string]any{
+						"$eq": []any{"$status", "$expectedStatus"},
 					},
-					map[string]interface{}{
-						"$eq": []interface{}{"$count", 5},
+					map[string]any{
+						"$eq": []any{"$count", 5},
 					},
 				},
 			},
@@ -524,8 +524,8 @@ func TestBuildExprValue_NewOperators(t *testing.T) {
 		},
 		{
 			name: "$and with single expression",
-			expr: map[string]interface{}{
-				"$and": []interface{}{
+			expr: map[string]any{
+				"$and": []any{
 					"$isStickyXid",
 				},
 			},
@@ -534,8 +534,8 @@ func TestBuildExprValue_NewOperators(t *testing.T) {
 		},
 		{
 			name: "$and with empty array",
-			expr: map[string]interface{}{
-				"$and": []interface{}{},
+			expr: map[string]any{
+				"$and": []any{},
 			},
 			expectedSQL: "",
 			expectError: true,
@@ -544,9 +544,9 @@ func TestBuildExprValue_NewOperators(t *testing.T) {
 		// Test $anyElementTrue operator
 		{
 			name: "$anyElementTrue with map result",
-			expr: map[string]interface{}{
-				"$anyElementTrue": map[string]interface{}{
-					"$map": map[string]interface{}{
+			expr: map[string]any{
+				"$anyElementTrue": map[string]any{
+					"$map": map[string]any{
 						"input": "$arrayField",
 						"in":    "$$this.isActive",
 					},
@@ -560,10 +560,10 @@ func TestBuildExprValue_NewOperators(t *testing.T) {
 		// Test $lte operator
 		{
 			name: "$lte with numeric comparison",
-			expr: map[string]interface{}{
-				"$lte": []interface{}{
-					map[string]interface{}{
-						"$subtract": []interface{}{
+			expr: map[string]any{
+				"$lte": []any{
+					map[string]any{
+						"$subtract": []any{
 							"$healthevent.generatedtimestamp.seconds",
 							"$healthevent.prevtimestamp.seconds",
 						},
@@ -577,8 +577,8 @@ func TestBuildExprValue_NewOperators(t *testing.T) {
 		},
 		{
 			name: "$lte with two fields",
-			expr: map[string]interface{}{
-				"$lte": []interface{}{
+			expr: map[string]any{
+				"$lte": []any{
 					"$value1",
 					"$value2",
 				},
@@ -588,8 +588,8 @@ func TestBuildExprValue_NewOperators(t *testing.T) {
 		},
 		{
 			name: "$lte with single operand - should fail",
-			expr: map[string]interface{}{
-				"$lte": []interface{}{
+			expr: map[string]any{
+				"$lte": []any{
 					"$value1",
 				},
 			},
@@ -598,8 +598,8 @@ func TestBuildExprValue_NewOperators(t *testing.T) {
 		},
 		{
 			name: "$lte with three operands - should fail",
-			expr: map[string]interface{}{
-				"$lte": []interface{}{
+			expr: map[string]any{
+				"$lte": []any{
 					"$value1",
 					"$value2",
 					"$value3",
@@ -612,8 +612,8 @@ func TestBuildExprValue_NewOperators(t *testing.T) {
 		// Test $subtract operator
 		{
 			name: "$subtract with two field references",
-			expr: map[string]interface{}{
-				"$subtract": []interface{}{
+			expr: map[string]any{
+				"$subtract": []any{
 					"$healthevent.generatedtimestamp.seconds",
 					"$healthevent.prevtimestamp.seconds",
 				},
@@ -624,8 +624,8 @@ func TestBuildExprValue_NewOperators(t *testing.T) {
 		},
 		{
 			name: "$subtract with field and literal",
-			expr: map[string]interface{}{
-				"$subtract": []interface{}{
+			expr: map[string]any{
+				"$subtract": []any{
 					"$count",
 					5,
 				},
@@ -635,10 +635,10 @@ func TestBuildExprValue_NewOperators(t *testing.T) {
 		},
 		{
 			name: "$subtract with nested expressions",
-			expr: map[string]interface{}{
-				"$subtract": []interface{}{
-					map[string]interface{}{
-						"$subtract": []interface{}{
+			expr: map[string]any{
+				"$subtract": []any{
+					map[string]any{
+						"$subtract": []any{
 							"$value1",
 							"$value2",
 						},
@@ -651,8 +651,8 @@ func TestBuildExprValue_NewOperators(t *testing.T) {
 		},
 		{
 			name: "$subtract with single operand - should fail",
-			expr: map[string]interface{}{
-				"$subtract": []interface{}{
+			expr: map[string]any{
+				"$subtract": []any{
 					"$value1",
 				},
 			},
@@ -663,13 +663,13 @@ func TestBuildExprValue_NewOperators(t *testing.T) {
 		// Test combined operators
 		{
 			name: "$and with $lte and $subtract",
-			expr: map[string]interface{}{
-				"$and": []interface{}{
+			expr: map[string]any{
+				"$and": []any{
 					"$isStickyXid",
-					map[string]interface{}{
-						"$lte": []interface{}{
-							map[string]interface{}{
-								"$subtract": []interface{}{
+					map[string]any{
+						"$lte": []any{
+							map[string]any{
+								"$subtract": []any{
 									"$currentTime",
 									"$eventTime",
 								},
@@ -687,8 +687,8 @@ func TestBuildExprValue_NewOperators(t *testing.T) {
 		// This tests the case where a resolved "this.healthevent.errorcode.0" becomes a literal like "79"
 		{
 			name: "$in with string literal and field reference",
-			expr: map[string]interface{}{
-				"$in": []interface{}{
+			expr: map[string]any{
+				"$in": []any{
 					"79", // Literal string value (resolved from this.healthevent.errorcode.0)
 					"$uniqueXidsInBurst",
 				},
@@ -698,8 +698,8 @@ func TestBuildExprValue_NewOperators(t *testing.T) {
 		},
 		{
 			name: "$in with string literal containing special chars",
-			expr: map[string]interface{}{
-				"$in": []interface{}{
+			expr: map[string]any{
+				"$in": []any{
 					"test'value", // String with single quote (should be escaped)
 					"$arrayField",
 				},
@@ -709,15 +709,15 @@ func TestBuildExprValue_NewOperators(t *testing.T) {
 		},
 		{
 			name: "$in with field reference and literal array",
-			expr: map[string]interface{}{
-				"$in": []interface{}{
-					map[string]interface{}{
-						"$arrayElemAt": []interface{}{
+			expr: map[string]any{
+				"$in": []any{
+					map[string]any{
+						"$arrayElemAt": []any{
 							"$healthevent.errorcode",
 							0,
 						},
 					},
-					[]interface{}{"74", "79", "95", "109", "119"},
+					[]any{"74", "79", "95", "109", "119"},
 				},
 			},
 			expectedSQL: "jsonb_build_array('74', '79', '95', '109', '119')", // Literal array
@@ -756,16 +756,16 @@ func TestAddFieldsWithNewOperators(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		stages          []map[string]interface{}
+		stages          []map[string]any
 		expectedInQuery []string
 	}{
 		{
 			name: "$addFields with $and operator",
-			stages: []map[string]interface{}{
+			stages: []map[string]any{
 				{
-					"$addFields": map[string]interface{}{
-						"isValid": map[string]interface{}{
-							"$and": []interface{}{
+					"$addFields": map[string]any{
+						"isValid": map[string]any{
+							"$and": []any{
 								"$isStickyXid",
 								"$stickyXidWithin3Hours",
 							},
@@ -781,13 +781,13 @@ func TestAddFieldsWithNewOperators(t *testing.T) {
 		},
 		{
 			name: "$addFields with $lte and $subtract",
-			stages: []map[string]interface{}{
+			stages: []map[string]any{
 				{
-					"$addFields": map[string]interface{}{
-						"timeDiffOk": map[string]interface{}{
-							"$lte": []interface{}{
-								map[string]interface{}{
-									"$subtract": []interface{}{
+					"$addFields": map[string]any{
+						"timeDiffOk": map[string]any{
+							"$lte": []any{
+								map[string]any{
+									"$subtract": []any{
 										"$healthevent.generatedtimestamp.seconds",
 										"$healthevent.prevtimestamp.seconds",
 									},
@@ -807,12 +807,12 @@ func TestAddFieldsWithNewOperators(t *testing.T) {
 		},
 		{
 			name: "$addFields with $anyElementTrue",
-			stages: []map[string]interface{}{
+			stages: []map[string]any{
 				{
-					"$addFields": map[string]interface{}{
-						"hasActiveElement": map[string]interface{}{
-							"$anyElementTrue": map[string]interface{}{
-								"$map": map[string]interface{}{
+					"$addFields": map[string]any{
+						"hasActiveElement": map[string]any{
+							"$anyElementTrue": map[string]any{
+								"$map": map[string]any{
 									"input": "$items",
 									"in":    "$$this.isActive",
 								},
@@ -860,11 +860,11 @@ func TestCountWithPostMatchFilter(t *testing.T) {
 	// 2. $match: nodename/isfatal filter
 	// 3. $count: "count"
 	// 4. $match: {count: {$gte: 5}} - FILTER ON COUNT RESULT
-	stages := []map[string]interface{}{
-		{"$match": map[string]interface{}{"healthevent.nodename": "test-node"}},
-		{"$match": map[string]interface{}{"healthevent.isfatal": true}},
+	stages := []map[string]any{
+		{"$match": map[string]any{"healthevent.nodename": "test-node"}},
+		{"$match": map[string]any{"healthevent.isfatal": true}},
 		{"$count": "count"},
-		{"$match": map[string]interface{}{"count": map[string]interface{}{"$gte": 5}}},
+		{"$match": map[string]any{"count": map[string]any{"$gte": 5}}},
 	}
 
 	query, args, err := client.buildAggregationQuery(stages)
@@ -918,10 +918,10 @@ func TestCountWithPostMatchFilter_ZeroCount(t *testing.T) {
 
 	client := &PostgreSQLClient{table: "health_events"}
 
-	stages := []map[string]interface{}{
-		{"$match": map[string]interface{}{"healthevent.nodename": "nonexistent-node"}},
+	stages := []map[string]any{
+		{"$match": map[string]any{"healthevent.nodename": "nonexistent-node"}},
 		{"$count": "count"},
-		{"$match": map[string]interface{}{"count": map[string]interface{}{"$gte": 5}}},
+		{"$match": map[string]any{"count": map[string]any{"$gte": 5}}},
 	}
 
 	query, args, err := client.buildAggregationQuery(stages)

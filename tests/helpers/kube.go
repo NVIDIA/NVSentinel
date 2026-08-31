@@ -51,7 +51,6 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/transport/spdy"
 	"k8s.io/client-go/util/retry"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 	kwokv1alpha1 "sigs.k8s.io/kwok/pkg/apis/v1alpha1"
@@ -68,14 +67,19 @@ const (
 
 var (
 	RebootNodeGVK = schema.GroupVersionKind{
-		Group:   "janitor.dgxc.nvidia.com",
-		Version: "v1alpha1",
+		Group:   RebootNodeCRDGroup,
+		Version: RebootNodeCRDVersion,
 		Kind:    "RebootNode",
 	}
 	GPUResetGVK = schema.GroupVersionKind{
-		Group:   "janitor.dgxc.nvidia.com",
-		Version: "v1alpha1",
+		Group:   RebootNodeCRDGroup,
+		Version: RebootNodeCRDVersion,
 		Kind:    "GPUReset",
+	}
+	TerminateNodeGVK = schema.GroupVersionKind{
+		Group:   RebootNodeCRDGroup,
+		Version: RebootNodeCRDVersion,
+		Kind:    "TerminateNode",
 	}
 	ExternalRemediationRequestGVK = schema.GroupVersionKind{
 		Group:   "nvsentinel.dgxc.nvidia.com",
@@ -113,9 +117,7 @@ func WaitForNodesCordonState(
 
 func CreateNamespace(ctx context.Context, c klient.Client, name string) error {
 	namespace := &v1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-		},
+		Name: name,
 	}
 
 	err := c.Resources().Create(ctx, namespace)
@@ -132,9 +134,7 @@ func CreateNamespace(ctx context.Context, c klient.Client, name string) error {
 
 func DeleteNamespace(ctx context.Context, t *testing.T, c klient.Client, name string) error {
 	namespace := &v1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-		},
+		Name: name,
 	}
 
 	err := c.Resources().Delete(ctx, namespace)
@@ -193,7 +193,7 @@ func StartNodeLabelWatcher(ctx context.Context, t *testing.T, c klient.Client, n
 
 	return c.Resources().Watch(&v1.NodeList{}, resources.WithFieldSelector(
 		labels.FormatLabels(map[string]string{"metadata.name": nodeName}))).
-		WithUpdateFunc(func(updated interface{}) {
+		WithUpdateFunc(func(updated any) {
 			state.handleUpdate(t, ctx, updated, success)
 		}).Start(ctx)
 }
@@ -242,7 +242,7 @@ func newLabelWatcherState(ctx context.Context, t *testing.T, c klient.Client,
 	return state
 }
 
-func (s *labelWatcherState) handleUpdate(t *testing.T, ctx context.Context, updated interface{}, success chan bool) {
+func (s *labelWatcherState) handleUpdate(t *testing.T, ctx context.Context, updated any, success chan bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -630,10 +630,8 @@ func GetNodeByName(ctx context.Context, c klient.Client, nodeName string) (*v1.N
 func DeletePod(ctx context.Context, t *testing.T, c klient.Client, namespace, podName string,
 	waitForRemoval bool) error {
 	pod := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      podName,
-			Namespace: namespace,
-		},
+		Name:      podName,
+		Namespace: namespace,
 	}
 
 	err := c.Resources().Delete(ctx, pod)
@@ -822,16 +820,60 @@ func DeleteCR(ctx context.Context, t *testing.T, c klient.Client, cr *unstructur
 	return nil
 }
 
+// WaitForCRConditionByName polls crName until conditionType has wantStatus, or until the
+// CR reaches completionTime. Returns (true, cr) if the condition matched first, (false, cr)
+// if the CR completed before the condition was seen. Callers should t.Skip when false is
+// returned and the condition requires an active long-running operation.
+func WaitForCRConditionByName(
+	ctx context.Context, t *testing.T, c klient.Client,
+	crName string, gvk schema.GroupVersionKind,
+	conditionType, wantStatus string,
+) (bool, *unstructured.Unstructured) {
+	t.Helper()
+
+	var (
+		conditionMet bool
+		result       *unstructured.Unstructured
+	)
+
+	require.Eventually(t, func() bool {
+		cur := &unstructured.Unstructured{}
+		cur.SetGroupVersionKind(gvk)
+
+		if err := c.Resources().Get(ctx, crName, "", cur); err != nil {
+			return false
+		}
+
+		result = cur
+
+		ct, _, _ := unstructured.NestedString(cur.Object, "status", "completionTime")
+		if ct != "" {
+			return true // CR completed; stop waiting regardless of condition
+		}
+
+		cond := GetCRCondition(cur, conditionType)
+		if cond != nil && cond["status"] == wantStatus {
+			conditionMet = true
+			return true
+		}
+
+		return false
+	}, EventuallyWaitTimeout, WaitInterval,
+		"CR %s should reach condition %s=%s or completionTime", crName, conditionType, wantStatus)
+
+	return conditionMet, result
+}
+
 // GetCRCondition returns the condition map for a given condition type from an unstructured CR's
 // status.conditions array, or nil if the condition is not found.
-func GetCRCondition(cr *unstructured.Unstructured, conditionType string) map[string]interface{} {
+func GetCRCondition(cr *unstructured.Unstructured, conditionType string) map[string]any {
 	conditions, found, err := unstructured.NestedSlice(cr.Object, "status", "conditions")
 	if err != nil || !found {
 		return nil
 	}
 
 	for _, c := range conditions {
-		cond, ok := c.(map[string]interface{})
+		cond, ok := c.(map[string]any)
 		if !ok {
 			continue
 		}
@@ -1040,10 +1082,8 @@ func DrainRunningPodsInNamespace(ctx context.Context, t *testing.T, c klient.Cli
 
 func NewGPUPodSpec(namespace string, gpuCount int) *v1.Pod {
 	return &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: "test-gpu-pod-",
-			Namespace:    namespace,
-		},
+		GenerateName: "test-gpu-pod-",
+		Namespace:    namespace,
 		Spec: v1.PodSpec{
 			Containers: []v1.Container{
 				{
@@ -1142,7 +1182,7 @@ func CreateGPUResetCR(ctx context.Context, c klient.Client, nodeName string, crN
 		return nil, fmt.Errorf("failed to set nodeName in spec: %w", err)
 	}
 
-	err = unstructured.SetNestedSlice(gpuReset.Object, []interface{}{uuid}, "spec", "selector", "uuids")
+	err = unstructured.SetNestedSlice(gpuReset.Object, []any{uuid}, "spec", "selector", "uuids")
 	if err != nil {
 		return nil, fmt.Errorf("failed to set selector.uuids in spec: %w", err)
 	}
@@ -1153,6 +1193,25 @@ func CreateGPUResetCR(ctx context.Context, c klient.Client, nodeName string, crN
 	}
 
 	return gpuReset, nil
+}
+
+func CreateTerminateNodeCR(ctx context.Context, c klient.Client, nodeName string,
+	crName string) (*unstructured.Unstructured, error) {
+	terminateNode := &unstructured.Unstructured{}
+	terminateNode.SetGroupVersionKind(TerminateNodeGVK)
+	terminateNode.SetName(crName)
+
+	err := unstructured.SetNestedField(terminateNode.Object, nodeName, "spec", "nodeName")
+	if err != nil {
+		return nil, fmt.Errorf("failed to set nodeName in spec: %w", err)
+	}
+
+	err = c.Resources().Create(ctx, terminateNode)
+	if err != nil {
+		return nil, err
+	}
+
+	return terminateNode, nil
 }
 
 // CreateExtRRCR returns the apiserver error verbatim so callers can inspect
@@ -1169,7 +1228,7 @@ func CreateExtRRCR(ctx context.Context, c klient.Client, crName, nodeName, healt
 
 // CreateMalformedExtRR lets tests exercise the webhook's rejection paths.
 func CreateMalformedExtRR(ctx context.Context, c klient.Client, crName string,
-	spec map[string]interface{}) (*unstructured.Unstructured, error) {
+	spec map[string]any) (*unstructured.Unstructured, error) {
 	extrr := &unstructured.Unstructured{}
 	extrr.SetGroupVersionKind(ExternalRemediationRequestGVK)
 	extrr.SetName(crName)
@@ -1198,7 +1257,7 @@ func SetExtRRComplete(ctx context.Context, c klient.Client, crName, status, reas
 	}
 
 	conditions, _, _ := unstructured.NestedSlice(cur.Object, "status", "conditions")
-	newCondition := map[string]interface{}{
+	newCondition := map[string]any{
 		"type":               "ExternalRemediationComplete",
 		"status":             status,
 		"reason":             reason,
@@ -1209,7 +1268,7 @@ func SetExtRRComplete(ctx context.Context, c klient.Client, crName, status, reas
 	replaced := false
 
 	for i, cIface := range conditions {
-		cond, ok := cIface.(map[string]interface{})
+		cond, ok := cIface.(map[string]any)
 		if !ok {
 			continue
 		}
@@ -1362,8 +1421,8 @@ func newExtRR(crName, nodeName, healthEventID string) *unstructured.Unstructured
 	extrr.SetGroupVersionKind(ExternalRemediationRequestGVK)
 	extrr.SetName(crName)
 
-	spec := map[string]interface{}{
-		"healthEvent": map[string]interface{}{
+	spec := map[string]any{
+		"healthEvent": map[string]any{
 			"id":                      "he-" + healthEventID,
 			"nodeName":                nodeName,
 			"recommendedAction":       "CUSTOM",
@@ -1398,10 +1457,8 @@ func createConfigMapFromBytes(ctx context.Context, c klient.Client, yamlData []b
 	cm.ManagedFields = nil
 
 	existingCM := &v1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cm.Name,
-			Namespace: cm.Namespace,
-		},
+		Name:      cm.Name,
+		Namespace: cm.Namespace,
 	}
 	_ = c.Resources().Delete(ctx, existingCM)
 
@@ -1436,9 +1493,7 @@ func BackupConfigMap(
 	ctx context.Context, c klient.Client, name, namespace string,
 ) ([]byte, error) {
 	cm := &v1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-		},
+		Name: name,
 	}
 
 	err := c.Resources().Get(ctx, name, namespace, cm)
@@ -1506,7 +1561,7 @@ func ScaleDeployment(ctx context.Context, t *testing.T, c klient.Client, name, n
 			return err
 		}
 
-		current.Spec.Replicas = ptr.To(replicas)
+		current.Spec.Replicas = new(replicas)
 
 		return c.Resources().Update(ctx, current)
 	})
@@ -1996,10 +2051,8 @@ func CheckNodeEventExists(
 
 func PatchServicePort(ctx context.Context, c klient.Client, namespace, serviceName string, targetPort int) error {
 	svc := &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      serviceName,
-			Namespace: namespace,
-		},
+		Name:      serviceName,
+		Namespace: namespace,
 	}
 
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -2200,10 +2253,8 @@ func DeletePodsByNames(ctx context.Context, t *testing.T, client klient.Client, 
 
 	for _, podName := range podNames {
 		pod := &v1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      podName,
-				Namespace: namespace,
-			},
+			Name:      podName,
+			Namespace: namespace,
 		}
 		err := client.Resources().Delete(ctx, pod)
 		require.NoError(t, err, "failed to delete pod %s", podName)
@@ -3349,10 +3400,8 @@ func CleanupDaemonSet(ctx context.Context, t *testing.T, client klient.Client, n
 	t.Helper()
 
 	ds := &appsv1.DaemonSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
+		Name:      name,
+		Namespace: namespace,
 	}
 
 	// Check if DaemonSet exists first - skip cleanup if not found

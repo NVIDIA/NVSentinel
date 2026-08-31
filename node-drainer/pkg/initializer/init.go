@@ -249,7 +249,7 @@ func initializeDatastoreComponents(ctx context.Context, ds datastore.DataStore,
 	datastoreAdapter, ok := ds.(interface {
 		GetDatabaseClient() client.DatabaseClient
 		CreateChangeStreamWatcher(
-			ctx context.Context, clientName string, pipeline interface{},
+			ctx context.Context, clientName string, pipeline any,
 		) (datastore.ChangeStreamWatcher, error)
 	})
 	if !ok {
@@ -365,19 +365,19 @@ type databaseClientAdapter struct {
 }
 
 func (a *databaseClientAdapter) UpdateDocument(
-	ctx context.Context, filter, update interface{},
+	ctx context.Context, filter, update any,
 ) (*client.UpdateResult, error) {
 	return a.client.UpdateDocument(ctx, filter, update)
 }
 
 func (a *databaseClientAdapter) FindDocument(
-	ctx context.Context, filter interface{}, options *client.FindOneOptions,
+	ctx context.Context, filter any, options *client.FindOneOptions,
 ) (client.SingleResult, error) {
 	return a.client.FindOne(ctx, filter, options)
 }
 
 func (a *databaseClientAdapter) FindDocuments(
-	ctx context.Context, filter interface{}, options *client.FindOptions,
+	ctx context.Context, filter any, options *client.FindOptions,
 ) (client.Cursor, error) {
 	return a.client.Find(ctx, filter, options)
 }

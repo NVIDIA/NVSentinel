@@ -290,11 +290,8 @@ func runTest(
 		}
 	}()
 
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
+	for range numWorkers {
+		wg.Go(func() {
 			for nodeName := range workCh {
 				// Random stagger within window
 				if maxStagger > 0 {
@@ -313,7 +310,7 @@ func runTest(
 					mu.Unlock()
 				}
 			}
-		}()
+		})
 	}
 
 	// Queue all nodes
@@ -360,19 +357,13 @@ func runTest(
 			case <-ticker.C:
 				rawCordoned := countCordonedNodes(ctx, clientset)
 				// Measure only new cordons from this run
-				cordoned := rawCordoned - baselineCordoned
-				if cordoned < 0 {
-					cordoned = 0
-				}
+				cordoned := max(rawCordoned-baselineCordoned, 0)
 
 				elapsed := time.Since(startTime).Seconds()
 				rate := float64(cordoned-lastCordoned) / float64(pollInterval)
 				lastCordoned = cordoned
 
-				queueDepth := int(sentCount) - cordoned
-				if queueDepth < 0 {
-					queueDepth = 0
-				}
+				queueDepth := max(int(sentCount)-cordoned, 0)
 
 				snapshot := QueueSnapshot{
 					Timestamp:      time.Now(),

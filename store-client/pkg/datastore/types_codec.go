@@ -139,7 +139,7 @@ type healthEventStatusBSON struct {
 	QuarantineFinishTimestamp *timestamppb.Timestamp `bson:"quarantinefinishtimestamp,omitempty"`
 	UserPodsEvictionStatus    OperationStatus        `bson:"userpodsevictionstatus"`
 	DrainFinishTimestamp      *timestamppb.Timestamp `bson:"drainfinishtimestamp,omitempty"`
-	FaultRemediated           interface{}            `bson:"faultremediated"`
+	FaultRemediated           any                    `bson:"faultremediated"`
 	LastRemediationTimestamp  *timestamppb.Timestamp `bson:"lastremediationtimestamp,omitempty"`
 	SpanIds                   map[string]string      `bson:"spanids,omitempty"`
 }
@@ -149,12 +149,12 @@ type healthEventStatusJSON struct {
 	QuarantineFinishTimestamp *timestamppb.Timestamp `json:"quarantinefinishtimestamp,omitempty"`
 	UserPodsEvictionStatus    OperationStatus        `json:"userpodsevictionstatus"`
 	DrainFinishTimestamp      *timestamppb.Timestamp `json:"drainfinishtimestamp,omitempty"`
-	FaultRemediated           interface{}            `json:"faultremediated"`
+	FaultRemediated           any                    `json:"faultremediated"`
 	LastRemediationTimestamp  *timestamppb.Timestamp `json:"lastremediationtimestamp,omitempty"`
 	SpanIds                   map[string]string      `json:"spanids,omitempty"`
 }
 
-func encodeWrappedBool(value *bool) interface{} {
+func encodeWrappedBool(value *bool) any {
 	if value == nil {
 		return nil
 	}
@@ -162,7 +162,7 @@ func encodeWrappedBool(value *bool) interface{} {
 	return map[string]bool{"value": *value}
 }
 
-func decodeBSONBoolValue(value interface{}) (*bool, error) {
+func decodeBSONBoolValue(value any) (*bool, error) {
 	switch v := value.(type) {
 	case nil:
 		return nil, nil

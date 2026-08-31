@@ -161,7 +161,7 @@ func TestReconciler_AppliesDefaultTTLOnFirstReconcile(t *testing.T) {
 	)
 
 	res, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: rn.Name},
+		Name: rn.Name,
 	})
 	require.NoError(t, err)
 	assert.Greater(t, res.RequeueAfter, time.Duration(0))
@@ -191,7 +191,7 @@ func TestReconciler_DeletesExpiredResource(t *testing.T) {
 	)
 
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: rn.Name},
+		Name: rn.Name,
 	})
 	require.NoError(t, err)
 
@@ -208,7 +208,7 @@ func TestReconciler_IgnoresNotFound(t *testing.T) {
 	)
 
 	res, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: "does-not-exist-" + testCRName(t)},
+		Name: "does-not-exist-" + testCRName(t),
 	})
 
 	require.NoError(t, err)
@@ -230,7 +230,7 @@ func TestReconciler_PreserveAnnotationBlocksDeletion(t *testing.T) {
 	)
 
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: rn.Name},
+		Name: rn.Name,
 	})
 	require.NoError(t, err)
 
@@ -250,7 +250,7 @@ func TestReconciler_IdempotentWhenNotYetExpired(t *testing.T) {
 	)
 
 	res1, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: rn.Name},
+		Name: rn.Name,
 	})
 	require.NoError(t, err)
 	require.Greater(t, res1.RequeueAfter, time.Duration(0))
@@ -261,7 +261,7 @@ func TestReconciler_IdempotentWhenNotYetExpired(t *testing.T) {
 	firstRV := afterFirst.ResourceVersion
 
 	res2, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: rn.Name},
+		Name: rn.Name,
 	})
 	require.NoError(t, err)
 	require.Greater(t, res2.RequeueAfter, time.Duration(0))
@@ -320,7 +320,7 @@ func TestReconciler_IgnoresObjectBeingDeleted(t *testing.T) {
 	)
 
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: rn.Name},
+		Name: rn.Name,
 	})
 	require.NoError(t, err)
 	assert.Empty(t, deletedKinds, "should not trigger delete on an object already being deleted")

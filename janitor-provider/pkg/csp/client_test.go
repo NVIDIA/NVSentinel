@@ -286,8 +286,7 @@ func TestNew_WithContext(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create a context with cancellation
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	// Should succeed with valid context
 	client, err := New(ctx)

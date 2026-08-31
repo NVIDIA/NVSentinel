@@ -48,7 +48,7 @@ func TestNewProcessor(t *testing.T) {
 					{
 						When: "event.agent == 'test'",
 						Override: Override{
-							IsFatal: boolPtr(false),
+							IsFatal: new(false),
 						},
 					},
 				},
@@ -64,7 +64,7 @@ func TestNewProcessor(t *testing.T) {
 					{
 						Name: "test-rule",
 						Override: Override{
-							IsFatal: boolPtr(false),
+							IsFatal: new(false),
 						},
 					},
 				},
@@ -96,7 +96,7 @@ func TestNewProcessor(t *testing.T) {
 						Name: "invalid-cel",
 						When: "event.agent ==",
 						Override: Override{
-							IsFatal: boolPtr(false),
+							IsFatal: new(false),
 						},
 					},
 				},
@@ -113,7 +113,7 @@ func TestNewProcessor(t *testing.T) {
 						Name: "non-boolean",
 						When: "event.agent",
 						Override: Override{
-							IsFatal: boolPtr(false),
+							IsFatal: new(false),
 						},
 					},
 				},
@@ -130,7 +130,7 @@ func TestNewProcessor(t *testing.T) {
 						Name: "test-rule",
 						When: `event.agent == "test"`,
 						Override: Override{
-							IsFatal: boolPtr(false),
+							IsFatal: new(false),
 						},
 					},
 				},
@@ -186,8 +186,8 @@ func TestApplyOverrides(t *testing.T) {
 						Name: "test-rule",
 						When: `event.agent == "test-agent"`,
 						Override: Override{
-							IsFatal:           boolPtr(false),
-							RecommendedAction: stringPtr("NONE"),
+							IsFatal:           new(false),
+							RecommendedAction: new("NONE"),
 						},
 					},
 				},
@@ -209,7 +209,7 @@ func TestApplyOverrides(t *testing.T) {
 						Name: "test-rule",
 						When: `event.agent == "other-agent"`,
 						Override: Override{
-							IsFatal: boolPtr(false),
+							IsFatal: new(false),
 						},
 					},
 				},
@@ -231,14 +231,14 @@ func TestApplyOverrides(t *testing.T) {
 						Name: "first-rule",
 						When: `event.agent == "test-agent"`,
 						Override: Override{
-							RecommendedAction: stringPtr("NONE"),
+							RecommendedAction: new("NONE"),
 						},
 					},
 					{
 						Name: "second-rule",
 						When: `event.agent == "test-agent"`,
 						Override: Override{
-							RecommendedAction: stringPtr("CONTACT_SUPPORT"),
+							RecommendedAction: new("CONTACT_SUPPORT"),
 						},
 					},
 				},
@@ -258,7 +258,7 @@ func TestApplyOverrides(t *testing.T) {
 						Name: "test-rule",
 						When: `event.agent == "test-agent"`,
 						Override: Override{
-							IsFatal: boolPtr(false),
+							IsFatal: new(false),
 						},
 					},
 				},
@@ -290,10 +290,12 @@ func TestApplyOverrides(t *testing.T) {
 	}
 }
 
+//go:fix inline
 func boolPtr(b bool) *bool {
-	return &b
+	return new(b)
 }
 
+//go:fix inline
 func stringPtr(s string) *string {
-	return &s
+	return new(s)
 }

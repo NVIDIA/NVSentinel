@@ -68,10 +68,10 @@ func TestBuildStructFieldUpdates(t *testing.T) {
 		result := c.buildStructFieldUpdates("healtheventstatus", status)
 
 		expected := bson.M{
-			"healtheventstatus.faultremediated": map[string]interface{}{
+			"healtheventstatus.faultremediated": map[string]any{
 				"value": true,
 			},
-			"healtheventstatus.lastremediationtimestamp": map[string]interface{}{
+			"healtheventstatus.lastremediationtimestamp": map[string]any{
 				"seconds": now.Unix(), "nanos": int32(now.Nanosecond()), //nolint:gosec // Nanosecond() returns 0-999999999, fits int32
 			},
 		}
@@ -99,10 +99,10 @@ func TestBuildStructFieldUpdates(t *testing.T) {
 			"healtheventstatus.nodequarantined":                string(datastore.Quarantined),
 			"healtheventstatus.userpodsevictionstatus.status":  string(datastore.StatusSucceeded),
 			"healtheventstatus.userpodsevictionstatus.message": "test message",
-			"healtheventstatus.faultremediated": map[string]interface{}{
+			"healtheventstatus.faultremediated": map[string]any{
 				"value": true,
 			},
-			"healtheventstatus.lastremediationtimestamp": map[string]interface{}{
+			"healtheventstatus.lastremediationtimestamp": map[string]any{
 				"seconds": now.Unix(), "nanos": int32(now.Nanosecond()), //nolint:gosec // Nanosecond() returns 0-999999999, fits int32
 			},
 		}

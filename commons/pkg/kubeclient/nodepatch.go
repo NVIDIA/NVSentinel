@@ -53,7 +53,7 @@ func (p *NodePatcher) Patch(
 ) (bool, error) {
 	var current *v1.Node
 
-	err := retry.OnError(nodePatchBackoff(), isRetryableNodePatchError, func() error {
+	err := retryNodePatch(func() error {
 		var err error
 
 		current, err = p.currentNode(ctx, nodes, nodeName, cached)
@@ -66,7 +66,7 @@ func (p *NodePatcher) Patch(
 
 	changed := false
 
-	err = retry.OnError(nodePatchBackoff(), isRetryableNodePatchError, func() error {
+	err = retryNodePatch(func() error {
 		desired := current.DeepCopy()
 
 		if err := mutate(desired); err != nil {
@@ -148,6 +148,29 @@ func (p *NodePatcher) currentNode(
 	return current, nil
 }
 
+// retryNodePatch retries fn until it succeeds, exhausts the backoff, or fails
+// for a non-retryable reason.
+//
+// retry.OnError replaces a context cancellation or timeout with the last
+// retryable error, which is nil when the attempt failed for a non-retryable
+// reason. Reporting fn's own error keeps a cancelled attempt from looking like
+// a completed one, so callers never continue with an unwritten result.
+func retryNodePatch(fn func() error) error {
+	var lastErr error
+
+	err := retry.OnError(nodePatchBackoff(), isRetryableNodePatchError, func() error {
+		lastErr = fn()
+
+		return lastErr
+	})
+
+	if err == nil && lastErr != nil {
+		return lastErr
+	}
+
+	return err
+}
+
 func nodePatchBackoff() wait.Backoff {
 	return wait.Backoff{
 		Steps:    10,
@@ -213,10 +236,8 @@ func NodeMergePatch(original, modified *v1.Node) ([]byte, error) {
 // helper intentionally supports, preventing callbacks from patching unrelated fields.
 func projectNodePatchableFields(node *v1.Node) *v1.Node {
 	return &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Labels:      node.Labels,
-			Annotations: node.Annotations,
-		},
+		Labels:      node.Labels,
+		Annotations: node.Annotations,
 		Spec: v1.NodeSpec{
 			Taints:        node.Spec.Taints,
 			Unschedulable: node.Spec.Unschedulable,

@@ -67,7 +67,7 @@ type HealthEventStore interface {
 
 	// Query operations
 	FindHealthEventsByNode(ctx context.Context, nodeName string) ([]HealthEventWithStatus, error)
-	FindHealthEventsByFilter(ctx context.Context, filter map[string]interface{}) ([]HealthEventWithStatus, error)
+	FindHealthEventsByFilter(ctx context.Context, filter map[string]any) ([]HealthEventWithStatus, error)
 	FindHealthEventsByStatus(ctx context.Context, status Status) ([]HealthEventWithStatus, error)
 
 	// Query builder operations (database-agnostic)
@@ -79,7 +79,7 @@ type HealthEventStore interface {
 	// Convenience methods for common operations
 	UpdateNodeQuarantineStatus(ctx context.Context, eventID string, status Status, spanID string) error
 	UpdatePodEvictionStatus(ctx context.Context, eventID string, status OperationStatus) error
-	UpdateRemediationStatus(ctx context.Context, eventID string, status interface{}) error
+	UpdateRemediationStatus(ctx context.Context, eventID string, status any) error
 
 	// Writes a service's span ID into the span_ids map for trace context propagation.
 	UpdateSpanID(ctx context.Context, id string, serviceName string, spanID string) error
@@ -106,14 +106,14 @@ type HealthEventStore interface {
 
 // QueryBuilder interface for database-agnostic queries
 type QueryBuilder interface {
-	ToMongo() map[string]interface{}
-	ToSQL() (string, []interface{})
+	ToMongo() map[string]any
+	ToSQL() (string, []any)
 }
 
 // UpdateBuilder interface for database-agnostic updates
 type UpdateBuilder interface {
-	ToMongo() map[string]interface{}
-	ToSQL() (string, []interface{})
+	ToMongo() map[string]any
+	ToSQL() (string, []any)
 }
 
 // ChangeStreamWatcher provides change stream functionality

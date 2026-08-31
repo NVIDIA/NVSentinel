@@ -26,7 +26,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -418,10 +417,8 @@ func (r *DrainRequestReconciler) nodeToMatchingDrainRequests(
 	for i := range drainRequests.Items {
 		if drainRequests.Items[i].Spec.NodeName == node.Name {
 			requests = append(requests, reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      drainRequests.Items[i].Name,
-					Namespace: drainRequests.Items[i].Namespace,
-				},
+				Name:      drainRequests.Items[i].Name,
+				Namespace: drainRequests.Items[i].Namespace,
 			})
 		}
 	}

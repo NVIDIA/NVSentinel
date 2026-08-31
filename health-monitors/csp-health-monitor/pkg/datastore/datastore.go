@@ -111,7 +111,7 @@ func NewStore(ctx context.Context, databaseClientCertMountPath *string) (*Databa
 }
 
 // executeUpsert performs the UpsertDocument with retries for the given merged event using store-client.
-func (s *DatabaseStore) executeUpsert(ctx context.Context, filter map[string]interface{},
+func (s *DatabaseStore) executeUpsert(ctx context.Context, filter map[string]any,
 	event *model.MaintenanceEvent) error {
 	inserted, updated, err := client.RetryableDocumentUpsertWithResult(ctx, s.databaseClient, filter, event,
 		client.DefaultMaxRetries, client.DefaultRetryDelay)
@@ -151,7 +151,7 @@ func (s *DatabaseStore) UpsertMaintenanceEvent(ctx context.Context, event *model
 		return fmt.Errorf("invalid event passed to UpsertMaintenanceEvent (nil or empty EventID)")
 	}
 
-	filter := map[string]interface{}{"eventId": event.EventID}
+	filter := map[string]any{"eventId": event.EventID}
 	event.LastUpdatedTimestamp = time.Now().UTC()
 
 	if hasProviderLastUpdated(event) ||
@@ -179,7 +179,7 @@ func (s *DatabaseStore) UpsertMaintenanceEvent(ctx context.Context, event *model
 // (best-effort) rather than silently dropping the update.
 func (s *DatabaseStore) reconcileWithExisting(
 	ctx context.Context,
-	filter map[string]interface{},
+	filter map[string]any,
 	event *model.MaintenanceEvent,
 ) bool {
 	var existing model.MaintenanceEvent
@@ -398,7 +398,7 @@ func (s *DatabaseStore) UpdateEventStatus(ctx context.Context, eventID string, n
 	}
 
 	filter := client.BuildStatusFilter("eventId", eventID)
-	update := client.BuildSetUpdate(map[string]interface{}{
+	update := client.BuildSetUpdate(map[string]any{
 		"status":                  newStatus,
 		fieldLastUpdatedTimestamp: time.Now().UTC(),
 	})
@@ -437,7 +437,7 @@ func (s *DatabaseStore) GetLastProcessedEventTimestampByCSP(
 
 	filter := builder.Build()
 	findOptions := &client.FindOneOptions{
-		Sort: map[string]interface{}{"eventReceivedTimestamp": -1},
+		Sort: map[string]any{"eventReceivedTimestamp": -1},
 	}
 
 	slog.Debug("Querying for last processed timestamp",
@@ -496,7 +496,7 @@ func (s *DatabaseStore) FindLatestActiveEventByNodeAndType(
 	// If multiple have the exact same LastUpdatedTimestamp, this will pick one arbitrarily among them.
 	// Consider adding a secondary sort key if more deterministic behavior is needed in such rare cases.
 	findOptions := &client.FindOneOptions{
-		Sort: map[string]interface{}{fieldLastUpdatedTimestamp: -1},
+		Sort: map[string]any{fieldLastUpdatedTimestamp: -1},
 	}
 
 	slog.Debug("Querying for latest active event",
@@ -547,7 +547,7 @@ func (s *DatabaseStore) FindLatestOngoingEventByNode(
 		Build()
 
 	opts := &client.FindOneOptions{
-		Sort: map[string]interface{}{fieldLastUpdatedTimestamp: -1},
+		Sort: map[string]any{fieldLastUpdatedTimestamp: -1},
 	}
 
 	var event model.MaintenanceEvent

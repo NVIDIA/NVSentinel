@@ -76,8 +76,9 @@ func (l *Labeler) handleResourceSliceEvent(resourceSlices ...*resourcev1.Resourc
 		return
 	}
 
+	deviceCountCache := l.newDeviceCountReconcileCache()
 	for _, nodeName := range nodeNamesForResourceSlices(resourceSlices...) {
-		if err := l.updateNodeLabels(nodeName); err != nil {
+		if err := l.reconcileNodeLabels(nodeName, deviceCountCache); err != nil {
 			slog.Error("Failed to reconcile node labels after ResourceSlice event",
 				"node", nodeName, "error", err)
 		}

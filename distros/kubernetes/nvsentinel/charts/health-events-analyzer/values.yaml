@@ -115,7 +115,7 @@ config: |
 
   [[rules]]
   name = "RepeatedXIDErrorOnSameGPU"
-  description = "Detect occurrence of fatal XIDs 5 times within 24 hours where the burst window is 3 minutes and sticky XIDs window is 3 hours"
+  description = "Detect occurrence of XID errors (any XID except 31) on the same GPU 5 times within 24 hours where the burst window is 3 minutes and sticky XIDs window is 3 hours"
   recommended_action = "CONTACT_SUPPORT"
   evaluate_rule = {{ .Values.enableRepeatedXIDErrorOnSameGPURule }}
   stage = [

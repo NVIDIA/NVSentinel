@@ -45,7 +45,7 @@ func newNode(name, bootID string, ready bool) corev1.Node {
 	}
 
 	return corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Status: corev1.NodeStatus{
 			NodeInfo: corev1.NodeSystemInfo{BootID: bootID},
 			Conditions: []corev1.NodeCondition{
@@ -124,10 +124,8 @@ func TestSendRebootSignal_CreatesSysrqJob(t *testing.T) {
 	require.Len(t, job.Spec.Template.Spec.Volumes, 1)
 	assert.Equal(t, corev1.Volume{
 		Name: "host-proc",
-		VolumeSource: corev1.VolumeSource{
-			HostPath: &corev1.HostPathVolumeSource{
-				Path: "/proc",
-			},
+		HostPath: &corev1.HostPathVolumeSource{
+			Path: "/proc",
 		},
 	}, job.Spec.Template.Spec.Volumes[0])
 }
@@ -188,13 +186,11 @@ func TestIsNodeReady_BootIDChangedAndReady(t *testing.T) {
 
 func TestIsNodeReady_BootIDChangedAndReady_CleansUpJob(t *testing.T) {
 	job := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "reboot-worker-1-abc12",
-			Namespace: "test-ns",
-			Labels: map[string]string{
-				jobLabelKey:     "true",
-				jobNodeLabelKey: "worker-1",
-			},
+		Name:      "reboot-worker-1-abc12",
+		Namespace: "test-ns",
+		Labels: map[string]string{
+			jobLabelKey:     "true",
+			jobNodeLabelKey: "worker-1",
 		},
 	}
 	client := newTestClient(job)
@@ -212,13 +208,11 @@ func TestIsNodeReady_BootIDChangedAndReady_CleansUpJob(t *testing.T) {
 
 func TestIsNodeReady_ImagePullBackOff(t *testing.T) {
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "reboot-worker-1-pod",
-			Namespace: "test-ns",
-			Labels: map[string]string{
-				jobLabelKey:     "true",
-				jobNodeLabelKey: "worker-1",
-			},
+		Name:      "reboot-worker-1-pod",
+		Namespace: "test-ns",
+		Labels: map[string]string{
+			jobLabelKey:     "true",
+			jobNodeLabelKey: "worker-1",
 		},
 		Status: corev1.PodStatus{
 			Conditions: []corev1.PodCondition{
@@ -247,13 +241,11 @@ func TestIsNodeReady_ImagePullBackOff(t *testing.T) {
 
 func TestIsNodeReady_ErrImagePull(t *testing.T) {
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "reboot-worker-1-pod",
-			Namespace: "test-ns",
-			Labels: map[string]string{
-				jobLabelKey:     "true",
-				jobNodeLabelKey: "worker-1",
-			},
+		Name:      "reboot-worker-1-pod",
+		Namespace: "test-ns",
+		Labels: map[string]string{
+			jobLabelKey:     "true",
+			jobNodeLabelKey: "worker-1",
 		},
 		Status: corev1.PodStatus{
 			Conditions: []corev1.PodCondition{
@@ -282,13 +274,11 @@ func TestIsNodeReady_ErrImagePull(t *testing.T) {
 
 func TestIsNodeReady_ContainerCreating(t *testing.T) {
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "reboot-worker-1-pod",
-			Namespace: "test-ns",
-			Labels: map[string]string{
-				jobLabelKey:     "true",
-				jobNodeLabelKey: "worker-1",
-			},
+		Name:      "reboot-worker-1-pod",
+		Namespace: "test-ns",
+		Labels: map[string]string{
+			jobLabelKey:     "true",
+			jobNodeLabelKey: "worker-1",
 		},
 		Status: corev1.PodStatus{
 			Conditions: []corev1.PodCondition{
@@ -317,13 +307,11 @@ func TestIsNodeReady_ContainerCreating(t *testing.T) {
 
 func TestIsNodeReady_CreateContainerConfigError(t *testing.T) {
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "reboot-worker-1-pod",
-			Namespace: "test-ns",
-			Labels: map[string]string{
-				jobLabelKey:     "true",
-				jobNodeLabelKey: "worker-1",
-			},
+		Name:      "reboot-worker-1-pod",
+		Namespace: "test-ns",
+		Labels: map[string]string{
+			jobLabelKey:     "true",
+			jobNodeLabelKey: "worker-1",
 		},
 		Status: corev1.PodStatus{
 			Conditions: []corev1.PodCondition{

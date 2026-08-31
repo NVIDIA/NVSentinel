@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
@@ -230,13 +231,7 @@ func entityInEvent(key HealthEventKey, event *protos.HealthEvent) bool {
 }
 
 func errorCodeMatches(stored string, incoming []string) bool {
-	for _, c := range incoming {
-		if c == stored {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(incoming, stored)
 }
 
 // getEventByCheck finds any stored event matching the check (ignoring entities)

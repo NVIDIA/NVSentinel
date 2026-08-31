@@ -148,9 +148,9 @@ func (c *PostgreSQLClient) DeleteResumeToken(ctx context.Context, tokenConfig To
 }
 
 // InsertMany inserts multiple documents
-func (c *PostgreSQLClient) InsertMany(ctx context.Context, documents []interface{}) (*InsertManyResult, error) {
+func (c *PostgreSQLClient) InsertMany(ctx context.Context, documents []any) (*InsertManyResult, error) {
 	if len(documents) == 0 {
-		return &InsertManyResult{InsertedIDs: []interface{}{}}, nil
+		return &InsertManyResult{InsertedIDs: []any{}}, nil
 	}
 
 	slog.Debug("InsertMany called", "documentCount", len(documents), "table", c.table)
@@ -158,7 +158,7 @@ func (c *PostgreSQLClient) InsertMany(ctx context.Context, documents []interface
 	// Build batch insert query
 	// INSERT INTO table (document) VALUES ($1), ($2), ... RETURNING id
 	placeholders := make([]string, len(documents))
-	args := make([]interface{}, len(documents))
+	args := make([]any, len(documents))
 
 	for i, doc := range documents {
 		// Marshal document to JSON
@@ -197,7 +197,7 @@ func (c *PostgreSQLClient) InsertMany(ctx context.Context, documents []interface
 	}
 	defer rows.Close()
 
-	var insertedIDs []interface{}
+	var insertedIDs []any
 
 	for rows.Next() {
 		var id string
@@ -225,7 +225,7 @@ func (c *PostgreSQLClient) InsertMany(ctx context.Context, documents []interface
 
 // UpdateDocumentStatus updates a specific status field in a document
 func (c *PostgreSQLClient) UpdateDocumentStatus(
-	ctx context.Context, documentID string, statusPath string, status interface{},
+	ctx context.Context, documentID string, statusPath string, status any,
 ) error {
 	// Build the JSONB path for the status field
 	parts := strings.Split(statusPath, ".")
@@ -247,7 +247,7 @@ func (c *PostgreSQLClient) UpdateDocumentStatus(
 	// For specific status paths, also update the denormalized top-level column
 	var query string
 
-	var args []interface{}
+	var args []any
 
 	//nolint:gosec // G201: table name from config, using parameterized queries ($1, $2)
 
@@ -258,14 +258,14 @@ func (c *PostgreSQLClient) UpdateDocumentStatus(
 			"UPDATE %s SET document = jsonb_set(document, '%s', $1), node_quarantined = $2, updated_at = NOW() WHERE id = $3",
 			c.table, jsonbPath,
 		)
-		args = []interface{}{string(statusJSON), status, documentID}
+		args = []any{string(statusJSON), status, documentID}
 	default:
 		// Only update the JSONB field
 		query = fmt.Sprintf(
 			"UPDATE %s SET document = jsonb_set(document, '%s', $1), updated_at = NOW() WHERE id = $2",
 			c.table, jsonbPath,
 		)
-		args = []interface{}{string(statusJSON), documentID}
+		args = []any{string(statusJSON), documentID}
 	}
 
 	result, err := c.db.ExecContext(ctx, query, args...)
@@ -306,7 +306,7 @@ func (c *PostgreSQLClient) UpdateDocumentStatus(
 // UpdateDocumentStatusFields updates multiple status fields in a document in one operation.
 // Keys in fields are dot-notation paths (e.g. nodeQuarantinedStatusField).
 func (c *PostgreSQLClient) UpdateDocumentStatusFields(
-	ctx context.Context, documentID string, fields map[string]interface{},
+	ctx context.Context, documentID string, fields map[string]any,
 ) error {
 	if len(fields) == 0 {
 		return nil
@@ -314,11 +314,11 @@ func (c *PostgreSQLClient) UpdateDocumentStatusFields(
 
 	var setClauses []string
 
-	var args []interface{}
+	var args []any
 
 	paramCount := 1
 
-	var nodeQuarantinedVal interface{}
+	var nodeQuarantinedVal any
 
 	// Iterate in sorted order for deterministic nested jsonb_set
 	paths := make([]string, 0, len(fields))
@@ -405,7 +405,7 @@ func (c *PostgreSQLClient) UpdateDocumentStatusFields(
 
 // UpdateDocument performs a general update operation
 func (c *PostgreSQLClient) UpdateDocument(
-	ctx context.Context, filter interface{}, update interface{},
+	ctx context.Context, filter any, update any,
 ) (*UpdateResult, error) {
 	// Build SET clause first so its placeholders own the initial parameter range.
 	setClause, updateArgs, err := c.buildUpdateClause(update)
@@ -458,7 +458,7 @@ func (c *PostgreSQLClient) UpdateDocument(
 // UpdateManyDocuments performs a general update operation on multiple documents
 // Same as UpdateDocument but can affect multiple rows
 func (c *PostgreSQLClient) UpdateManyDocuments(
-	ctx context.Context, filter interface{}, update interface{},
+	ctx context.Context, filter any, update any,
 ) (*UpdateResult, error) {
 	// Implementation is identical to UpdateDocument since SQL UPDATE handles multiple rows by default
 	return c.UpdateDocument(ctx, filter, update)
@@ -466,14 +466,14 @@ func (c *PostgreSQLClient) UpdateManyDocuments(
 
 // UpsertDocument performs an upsert operation
 func (c *PostgreSQLClient) UpsertDocument(
-	ctx context.Context, filter interface{}, document interface{},
+	ctx context.Context, filter any, document any,
 ) (*UpdateResult, error) {
 	// For PostgreSQL, we need to determine a unique key from the filter
 	// This is complex for generic filters, so we'll use a simpler approach:
 	// Try to update first, if no rows affected, insert
 
 	// Try update first
-	update := map[string]interface{}{
+	update := map[string]any{
 		opSet: document,
 	}
 
@@ -522,7 +522,7 @@ func (c *PostgreSQLClient) UpsertDocument(
 // FindOne finds a single document
 func (c *PostgreSQLClient) FindOne(
 	ctx context.Context,
-	filter interface{},
+	filter any,
 	opts *FindOneOptions,
 ) (SingleResult, error) {
 	// Build the SQL query
@@ -550,7 +550,7 @@ func (c *PostgreSQLClient) FindOne(
 }
 
 // Find finds multiple documents
-func (c *PostgreSQLClient) Find(ctx context.Context, filter interface{}, opts *FindOptions) (Cursor, error) {
+func (c *PostgreSQLClient) Find(ctx context.Context, filter any, opts *FindOptions) (Cursor, error) {
 	// Build the SQL query
 	whereClause, args, err := c.buildWhereClause(filter)
 	if err != nil {
@@ -597,7 +597,7 @@ func (c *PostgreSQLClient) Find(ctx context.Context, filter interface{}, opts *F
 }
 
 // CountDocuments counts documents matching the filter
-func (c *PostgreSQLClient) CountDocuments(ctx context.Context, filter interface{}, opts *CountOptions) (int64, error) {
+func (c *PostgreSQLClient) CountDocuments(ctx context.Context, filter any, opts *CountOptions) (int64, error) {
 	// Build the SQL query
 	whereClause, args, err := c.buildWhereClause(filter)
 	if err != nil {
@@ -654,14 +654,14 @@ func (c *PostgreSQLClient) CountDocuments(ctx context.Context, filter interface{
 // - $setWindowFields: Window functions with sortBy and output specifications
 //
 //nolint:gocyclo,cyclop,gocognit // Complexity 11: handles pipeline type conversion and stage routing - acceptable
-func (c *PostgreSQLClient) Aggregate(ctx context.Context, pipeline interface{}) (Cursor, error) {
+func (c *PostgreSQLClient) Aggregate(ctx context.Context, pipeline any) (Cursor, error) {
 	// Convert pipeline to slice of stages
-	var stages []map[string]interface{}
+	var stages []map[string]any
 
 	switch p := pipeline.(type) {
-	case []interface{}:
+	case []any:
 		for i, stage := range p {
-			stageMap, ok := stage.(map[string]interface{})
+			stageMap, ok := stage.(map[string]any)
 			if !ok {
 				return nil, datastore.NewValidationError(
 					datastore.ProviderPostgreSQL,
@@ -672,12 +672,12 @@ func (c *PostgreSQLClient) Aggregate(ctx context.Context, pipeline interface{}) 
 
 			stages = append(stages, stageMap)
 		}
-	case []map[string]interface{}:
+	case []map[string]any:
 		stages = p
 	case datastore.Pipeline:
 		// Convert datastore.Pipeline to []map[string]interface{}
 		for _, doc := range p {
-			stageMap := make(map[string]interface{})
+			stageMap := make(map[string]any)
 			for _, elem := range doc {
 				stageMap[elem.Key] = c.convertDatastoreValue(elem.Value)
 			}
@@ -714,15 +714,15 @@ func (c *PostgreSQLClient) Aggregate(ctx context.Context, pipeline interface{}) 
 // NewChangeStreamWatcher creates a new change stream watcher
 // Uses polling-based approach with the datastore_changelog table
 func (c *PostgreSQLClient) NewChangeStreamWatcher(
-	ctx context.Context, tokenConfig TokenConfig, pipeline interface{},
+	ctx context.Context, tokenConfig TokenConfig, pipeline any,
 ) (ChangeStreamWatcher, error) {
 	// Convert pipeline to slice of stages
-	var stages []map[string]interface{}
+	var stages []map[string]any
 
 	switch p := pipeline.(type) {
-	case []interface{}:
+	case []any:
 		for i, stage := range p {
-			stageMap, ok := stage.(map[string]interface{})
+			stageMap, ok := stage.(map[string]any)
 			if !ok {
 				return nil, datastore.NewValidationError(
 					datastore.ProviderPostgreSQL,
@@ -733,12 +733,12 @@ func (c *PostgreSQLClient) NewChangeStreamWatcher(
 
 			stages = append(stages, stageMap)
 		}
-	case []map[string]interface{}:
+	case []map[string]any:
 		stages = p
 	case datastore.Pipeline:
 		// Convert datastore.Pipeline to []map[string]interface{}
 		for _, doc := range p {
-			stageMap := make(map[string]interface{})
+			stageMap := make(map[string]any)
 			for _, elem := range doc {
 				stageMap[elem.Key] = c.convertDatastoreValue(elem.Value)
 			}
@@ -747,7 +747,7 @@ func (c *PostgreSQLClient) NewChangeStreamWatcher(
 		}
 	case nil:
 		// Empty pipeline is OK
-		stages = []map[string]interface{}{}
+		stages = []map[string]any{}
 	default:
 		return nil, datastore.NewValidationError(
 			datastore.ProviderPostgreSQL,
@@ -768,9 +768,9 @@ func (c *PostgreSQLClient) NewChangeStreamWatcher(
 
 // PostgreSQL-specific helper methods
 
-func resolveSQLFilter(filter interface{}) (string, []interface{}, bool) {
+func resolveSQLFilter(filter any) (string, []any, bool) {
 	b, ok := filter.(interface {
-		ToSQL() (string, []interface{})
+		ToSQL() (string, []any)
 	})
 	if !ok {
 		return "", nil, false
@@ -778,7 +778,7 @@ func resolveSQLFilter(filter interface{}) (string, []interface{}, bool) {
 
 	sql, args := b.ToSQL()
 	if sql == "" {
-		return sqlTrueClause, []interface{}{}, true
+		return sqlTrueClause, []any{}, true
 	}
 
 	return sql, args, true
@@ -786,16 +786,16 @@ func resolveSQLFilter(filter interface{}) (string, []interface{}, bool) {
 
 // buildWhereClause converts filters to a PostgreSQL WHERE clause.
 // Accepts a *query.Builder (via ToSQL interface) or a legacy map[string]interface{} filter.
-func (c *PostgreSQLClient) buildWhereClause(filter interface{}) (string, []interface{}, error) {
+func (c *PostgreSQLClient) buildWhereClause(filter any) (string, []any, error) {
 	if filter == nil {
-		return sqlTrueClause, []interface{}{}, nil
+		return sqlTrueClause, []any{}, nil
 	}
 
 	if sql, args, ok := resolveSQLFilter(filter); ok {
 		return sql, args, nil
 	}
 
-	filterMap, ok := filter.(map[string]interface{})
+	filterMap, ok := filter.(map[string]any)
 	if !ok {
 		return "", nil, datastore.NewValidationError(
 			datastore.ProviderPostgreSQL,
@@ -805,12 +805,12 @@ func (c *PostgreSQLClient) buildWhereClause(filter interface{}) (string, []inter
 	}
 
 	if len(filterMap) == 0 {
-		return sqlTrueClause, []interface{}{}, nil
+		return sqlTrueClause, []any{}, nil
 	}
 
 	var (
 		conditions []string
-		args       []interface{}
+		args       []any
 	)
 
 	paramCount := 1
@@ -830,7 +830,7 @@ func (c *PostgreSQLClient) buildWhereClause(filter interface{}) (string, []inter
 		}
 
 		// Check if value is a map containing comparison operators
-		if valueMap, ok := value.(map[string]interface{}); ok {
+		if valueMap, ok := value.(map[string]any); ok {
 			// Handle comparison operators: {"count": {opGTE: 5}} → document->>'count' >= 5
 			jsonPath := c.buildJSONPath(key)
 
@@ -864,12 +864,12 @@ func (c *PostgreSQLClient) buildWhereClause(filter interface{}) (string, []inter
 // Handles operators like $gte, $gt, $lte, $lt, $eq, $ne
 func (c *PostgreSQLClient) buildFieldComparison(
 	jsonPath string,
-	operators map[string]interface{},
+	operators map[string]any,
 	startParam int,
-) (string, []interface{}, error) {
+) (string, []any, error) {
 	var (
 		conditions []string
-		args       []interface{}
+		args       []any
 	)
 
 	paramCount := startParam
@@ -912,8 +912,8 @@ func (c *PostgreSQLClient) buildFieldComparison(
 // This handles aggregation expressions used in $match stages
 //
 //nolint:cyclop,gocognit // Complexity acceptable: handles logical and comparison operators in $match $expr
-func (c *PostgreSQLClient) buildExprCondition(expr interface{}) (string, error) {
-	exprMap, ok := expr.(map[string]interface{})
+func (c *PostgreSQLClient) buildExprCondition(expr any) (string, error) {
+	exprMap, ok := expr.(map[string]any)
 	if !ok {
 		return "", datastore.NewValidationError(
 			datastore.ProviderPostgreSQL,
@@ -927,7 +927,7 @@ func (c *PostgreSQLClient) buildExprCondition(expr interface{}) (string, error) 
 		switch op {
 		case "$and":
 			// Handle logical AND
-			andArray, ok := value.([]interface{})
+			andArray, ok := value.([]any)
 			if !ok {
 				return "", datastore.NewValidationError(
 					datastore.ProviderPostgreSQL,
@@ -959,7 +959,7 @@ func (c *PostgreSQLClient) buildExprCondition(expr interface{}) (string, error) 
 
 		case "$or":
 			// Handle logical OR
-			orArray, ok := value.([]interface{})
+			orArray, ok := value.([]any)
 			if !ok {
 				return "", datastore.NewValidationError(
 					datastore.ProviderPostgreSQL,
@@ -1003,7 +1003,7 @@ func (c *PostgreSQLClient) buildExprCondition(expr interface{}) (string, error) 
 			return c.buildComparisonExpr("!=", value)
 		case opIn:
 			// Handle $in operator for arrays
-			inArray, ok := value.([]interface{})
+			inArray, ok := value.([]any)
 			if !ok || len(inArray) != 2 {
 				return "", datastore.NewValidationError(
 					datastore.ProviderPostgreSQL,
@@ -1050,8 +1050,8 @@ func (c *PostgreSQLClient) buildExprCondition(expr interface{}) (string, error) 
 }
 
 // buildComparisonExpr builds a comparison expression from an array of [leftExpr, rightExpr]
-func (c *PostgreSQLClient) buildComparisonExpr(op string, value interface{}) (string, error) {
-	valueArray, ok := value.([]interface{})
+func (c *PostgreSQLClient) buildComparisonExpr(op string, value any) (string, error) {
+	valueArray, ok := value.([]any)
 	if !ok || len(valueArray) != 2 {
 		return "", datastore.NewValidationError(
 			datastore.ProviderPostgreSQL,
@@ -1076,12 +1076,12 @@ func (c *PostgreSQLClient) buildComparisonExpr(op string, value interface{}) (st
 // buildExprValue converts a MongoDB expression value to SQL
 //
 //nolint:cyclop,gocognit // Complexity acceptable for expression building with many operators
-func (c *PostgreSQLClient) buildExprValue(value interface{}) (string, error) {
+func (c *PostgreSQLClient) buildExprValue(value any) (string, error) {
 	switch v := value.(type) {
 	case string:
 		// Field reference like "$healthevent.generatedtimestamp.seconds"
-		if strings.HasPrefix(v, "$") {
-			fieldPath := strings.TrimPrefix(v, "$")
+		if after, ok := strings.CutPrefix(v, "$"); ok {
+			fieldPath := after
 
 			// Use buildJSONPathWithCast for backward compatibility
 			// This will be overridden in specific operators that need JSONB preservation
@@ -1094,7 +1094,7 @@ func (c *PostgreSQLClient) buildExprValue(value interface{}) (string, error) {
 		escaped := strings.ReplaceAll(v, "'", "''")
 
 		return fmt.Sprintf("'%s'", escaped), nil
-	case map[string]interface{}:
+	case map[string]any:
 		// Handle operators like $subtract, $divide, $toLong, $size, $arrayElemAt, etc.
 		for op, operand := range v {
 			slog.Debug("Building expression for operator",
@@ -1136,7 +1136,7 @@ func (c *PostgreSQLClient) buildExprValue(value interface{}) (string, error) {
 				return sql, nil
 			case "$arrayElemAt":
 				// $arrayElemAt returns element at specified index: [array, index]
-				operandArray, ok := operand.([]interface{})
+				operandArray, ok := operand.([]any)
 				if !ok || len(operandArray) != 2 {
 					return "", datastore.NewValidationError(
 						datastore.ProviderPostgreSQL,
@@ -1170,7 +1170,7 @@ func (c *PostgreSQLClient) buildExprValue(value interface{}) (string, error) {
 			case "$ifNull":
 				// $ifNull returns first non-null value: [expr, defaultValue]
 				// PostgreSQL: COALESCE(expr, defaultValue)
-				operandArray, ok := operand.([]interface{})
+				operandArray, ok := operand.([]any)
 				if !ok || len(operandArray) != 2 {
 					return "", datastore.NewValidationError(
 						datastore.ProviderPostgreSQL,
@@ -1212,7 +1212,7 @@ func (c *PostgreSQLClient) buildExprValue(value interface{}) (string, error) {
 			case "$filter":
 				// $filter filters array elements: {input: array, cond: condition, as: varName}
 				// PostgreSQL: (SELECT jsonb_agg(elem) FROM jsonb_array_elements(input) AS elem WHERE condition)
-				operandMap, ok := operand.(map[string]interface{})
+				operandMap, ok := operand.(map[string]any)
 				if !ok {
 					return "", datastore.NewValidationError(
 						datastore.ProviderPostgreSQL,
@@ -1247,7 +1247,7 @@ func (c *PostgreSQLClient) buildExprValue(value interface{}) (string, error) {
 			case "$map":
 				// $map transforms array elements: {input: array, in: expr, as: varName}
 				// PostgreSQL: (SELECT jsonb_agg(expression) FROM jsonb_array_elements(input) AS elem)
-				operandMap, ok := operand.(map[string]interface{})
+				operandMap, ok := operand.(map[string]any)
 				if !ok {
 					return "", datastore.NewValidationError(
 						datastore.ProviderPostgreSQL,
@@ -1281,7 +1281,7 @@ func (c *PostgreSQLClient) buildExprValue(value interface{}) (string, error) {
 			case "$setIntersection":
 				// $setIntersection returns common elements: [array1, array2, ...]
 				// PostgreSQL: We'll use a subquery with array intersection logic
-				operandArray, ok := operand.([]interface{})
+				operandArray, ok := operand.([]any)
 				if !ok || len(operandArray) < 2 {
 					return "", datastore.NewValidationError(
 						datastore.ProviderPostgreSQL,
@@ -1319,7 +1319,7 @@ func (c *PostgreSQLClient) buildExprValue(value interface{}) (string, error) {
 				return sql, nil
 			case opEQ:
 				// $eq compares two values for equality: [value1, value2]
-				operandArray, ok := operand.([]interface{})
+				operandArray, ok := operand.([]any)
 				if !ok || len(operandArray) != 2 {
 					return "", datastore.NewValidationError(
 						datastore.ProviderPostgreSQL,
@@ -1349,7 +1349,7 @@ func (c *PostgreSQLClient) buildExprValue(value interface{}) (string, error) {
 			case opIn:
 				// $in checks if a value is in an array: [value, array]
 				// PostgreSQL: value IN (array) or for JSONB: value = ANY(array)
-				operandArray, ok := operand.([]interface{})
+				operandArray, ok := operand.([]any)
 				if !ok || len(operandArray) != 2 {
 					return "", datastore.NewValidationError(
 						datastore.ProviderPostgreSQL,
@@ -1392,7 +1392,7 @@ func (c *PostgreSQLClient) buildExprValue(value interface{}) (string, error) {
 			case "$and":
 				// $and performs logical AND on array of expressions: [expr1, expr2, ...]
 				// PostgreSQL: (expr1 AND expr2 AND ...)
-				operandArray, ok := operand.([]interface{})
+				operandArray, ok := operand.([]any)
 				if !ok || len(operandArray) < 1 {
 					return "", datastore.NewValidationError(
 						datastore.ProviderPostgreSQL,
@@ -1445,7 +1445,7 @@ func (c *PostgreSQLClient) buildExprValue(value interface{}) (string, error) {
 			case opLTE:
 				// $lte performs less than or equal comparison: [expr1, expr2]
 				// PostgreSQL: (expr1 <= expr2)
-				operandArray, ok := operand.([]interface{})
+				operandArray, ok := operand.([]any)
 				if !ok || len(operandArray) != 2 {
 					return "", datastore.NewValidationError(
 						datastore.ProviderPostgreSQL,
@@ -1494,7 +1494,7 @@ func (c *PostgreSQLClient) buildExprValue(value interface{}) (string, error) {
 		}
 
 		return "false", nil
-	case []interface{}:
+	case []any:
 		// Array literal (e.g., empty array [] or array with values)
 		// Convert to PostgreSQL JSONB array
 		if len(v) == 0 {
@@ -1511,7 +1511,7 @@ func (c *PostgreSQLClient) buildExprValue(value interface{}) (string, error) {
 			case string:
 				// String literals in arrays - quote them for jsonb_build_array
 				elements = append(elements, fmt.Sprintf("'%s'", elemVal))
-			case map[string]interface{}:
+			case map[string]any:
 				// Convert map to JSON string
 				jsonBytes, err := json.Marshal(elemVal)
 				if err != nil {
@@ -1545,8 +1545,8 @@ func (c *PostgreSQLClient) buildExprValue(value interface{}) (string, error) {
 }
 
 // buildArithmeticExpr builds an arithmetic expression
-func (c *PostgreSQLClient) buildArithmeticExpr(op string, operand interface{}) (string, error) {
-	operandArray, ok := operand.([]interface{})
+func (c *PostgreSQLClient) buildArithmeticExpr(op string, operand any) (string, error) {
+	operandArray, ok := operand.([]any)
 	if !ok || len(operandArray) != 2 {
 		return "", datastore.NewValidationError(
 			datastore.ProviderPostgreSQL,
@@ -1569,11 +1569,11 @@ func (c *PostgreSQLClient) buildArithmeticExpr(op string, operand interface{}) (
 }
 
 // buildFilterCondition builds a filter condition, replacing $$this with elem
-func (c *PostgreSQLClient) buildFilterCondition(cond interface{}) (string, error) {
+func (c *PostgreSQLClient) buildFilterCondition(cond any) (string, error) {
 	// The condition is typically a map with operators like $eq
 	// Example: {"$eq": ["$$this.entitytype", "GPU"]}
 	// We need to replace $$this with elem
-	condMap, ok := cond.(map[string]interface{})
+	condMap, ok := cond.(map[string]any)
 	if !ok {
 		return "", fmt.Errorf("filter condition must be a map, got %T", cond)
 	}
@@ -1581,7 +1581,7 @@ func (c *PostgreSQLClient) buildFilterCondition(cond interface{}) (string, error
 	// Handle the operator in the condition
 	for op, operand := range condMap {
 		if op == opEQ {
-			operandArray, ok := operand.([]interface{})
+			operandArray, ok := operand.([]any)
 			if !ok || len(operandArray) != 2 {
 				return "", fmt.Errorf("$eq in filter must have 2 operands")
 			}
@@ -1605,12 +1605,12 @@ func (c *PostgreSQLClient) buildFilterCondition(cond interface{}) (string, error
 }
 
 // buildFilterOperand builds a filter operand, replacing $$this with elem
-func (c *PostgreSQLClient) buildFilterOperand(operand interface{}) (string, error) {
+func (c *PostgreSQLClient) buildFilterOperand(operand any) (string, error) {
 	switch v := operand.(type) {
 	case string:
-		if strings.HasPrefix(v, "$$this.") {
+		if after, ok := strings.CutPrefix(v, "$$this."); ok {
 			// Replace $$this with elem
-			fieldPath := strings.TrimPrefix(v, "$$this.")
+			fieldPath := after
 			parts := strings.Split(fieldPath, ".")
 
 			// Build JSON path: elem->'field'->>'subfield'
@@ -1637,13 +1637,13 @@ func (c *PostgreSQLClient) buildFilterOperand(operand interface{}) (string, erro
 }
 
 // buildMapExpression builds a map expression, replacing $$this with elem
-func (c *PostgreSQLClient) buildMapExpression(expr interface{}) (string, error) {
+func (c *PostgreSQLClient) buildMapExpression(expr any) (string, error) {
 	// Example: "$$this.entityvalue"
 	switch v := expr.(type) {
 	case string:
-		if strings.HasPrefix(v, "$$this.") {
+		if after, ok := strings.CutPrefix(v, "$$this."); ok {
 			// Replace $$this with elem
-			fieldPath := strings.TrimPrefix(v, "$$this.")
+			fieldPath := after
 			parts := strings.Split(fieldPath, ".")
 
 			// Build JSON path: elem->'field'->>'subfield'
@@ -1795,8 +1795,8 @@ func (c *PostgreSQLClient) buildJSONPath(fieldPath string) string {
 }
 
 // buildOrderByClause converts sort options to PostgreSQL ORDER BY clause
-func (c *PostgreSQLClient) buildOrderByClause(sort interface{}) (string, error) {
-	sortMap, ok := sort.(map[string]interface{})
+func (c *PostgreSQLClient) buildOrderByClause(sort any) (string, error) {
+	sortMap, ok := sort.(map[string]any)
 	if !ok {
 		return "", datastore.NewValidationError(
 			datastore.ProviderPostgreSQL,
@@ -1827,17 +1827,17 @@ func (c *PostgreSQLClient) buildOrderByClause(sort interface{}) (string, error) 
 }
 
 // convertDatastoreValue recursively converts datastore types to standard Go types
-func (c *PostgreSQLClient) convertDatastoreValue(value interface{}) interface{} {
+func (c *PostgreSQLClient) convertDatastoreValue(value any) any {
 	switch v := value.(type) {
 	case datastore.Document:
-		result := make(map[string]interface{})
+		result := make(map[string]any)
 		for _, elem := range v {
 			result[elem.Key] = c.convertDatastoreValue(elem.Value)
 		}
 
 		return result
 	case datastore.Array:
-		result := make([]interface{}, len(v))
+		result := make([]any, len(v))
 		for i, item := range v {
 			result[i] = c.convertDatastoreValue(item)
 		}
@@ -1849,7 +1849,7 @@ func (c *PostgreSQLClient) convertDatastoreValue(value interface{}) interface{} 
 }
 
 // buildAggregationQuery builds SQL query from MongoDB aggregation pipeline stages
-func (c *PostgreSQLClient) buildAggregationQuery(stages []map[string]interface{}) (string, []interface{}, error) {
+func (c *PostgreSQLClient) buildAggregationQuery(stages []map[string]any) (string, []any, error) {
 	builder := &aggregationQueryBuilder{
 		client: c,
 		query:  fmt.Sprintf("SELECT id, document FROM %s", c.table),
@@ -1868,36 +1868,36 @@ func (c *PostgreSQLClient) buildAggregationQuery(stages []map[string]interface{}
 type aggregationQueryBuilder struct {
 	client       *PostgreSQLClient
 	query        string
-	args         []interface{}
+	args         []any
 	whereClauses []string
 	orderBy      string
 	limit        string
 	offset       string
 	isCount      bool
 	countField   string
-	groupBy      map[string]interface{}
+	groupBy      map[string]any
 	windowFields *windowFieldsSpec
-	addFields    map[string]interface{} // Fields to add via $addFields
+	addFields    map[string]any // Fields to add via $addFields
 	// postCountMatch stores $match conditions that come AFTER $count
 	// These filter the count result, not the source rows
-	postCountMatch map[string]interface{}
+	postCountMatch map[string]any
 }
 
 // windowFieldsSpec holds the specification for $setWindowFields
 type windowFieldsSpec struct {
-	sortBy map[string]interface{}
+	sortBy map[string]any
 	output map[string]windowFieldOutput
 }
 
 // windowFieldOutput represents a single output field in $setWindowFields
 type windowFieldOutput struct {
-	operator string                 // $push, $sum, $max, etc.
-	operand  interface{}            // the value to aggregate
-	window   map[string]interface{} // window specification
+	operator string         // $push, $sum, $max, etc.
+	operand  any            // the value to aggregate
+	window   map[string]any // window specification
 }
 
 //nolint:cyclop // Complexity 11: handles multiple aggregation operators - acceptable
-func (b *aggregationQueryBuilder) processStage(stageIndex int, stage map[string]interface{}) error {
+func (b *aggregationQueryBuilder) processStage(stageIndex int, stage map[string]any) error {
 	if len(stage) != 1 {
 		return datastore.NewValidationError(
 			datastore.ProviderPostgreSQL,
@@ -1942,8 +1942,8 @@ func (b *aggregationQueryBuilder) processStage(stageIndex int, stage map[string]
 	return nil
 }
 
-func (b *aggregationQueryBuilder) processMatch(value interface{}) error {
-	matchMap, ok := value.(map[string]interface{})
+func (b *aggregationQueryBuilder) processMatch(value any) error {
+	matchMap, ok := value.(map[string]any)
 	if !ok {
 		return datastore.NewValidationError(
 			datastore.ProviderPostgreSQL,
@@ -1972,8 +1972,8 @@ func (b *aggregationQueryBuilder) processMatch(value interface{}) error {
 	return nil
 }
 
-func (b *aggregationQueryBuilder) processSort(value interface{}) error {
-	sortMap, ok := value.(map[string]interface{})
+func (b *aggregationQueryBuilder) processSort(value any) error {
+	sortMap, ok := value.(map[string]any)
 	if !ok {
 		return datastore.NewValidationError(
 			datastore.ProviderPostgreSQL,
@@ -1992,7 +1992,7 @@ func (b *aggregationQueryBuilder) processSort(value interface{}) error {
 	return nil
 }
 
-func (b *aggregationQueryBuilder) processLimit(value interface{}) error {
+func (b *aggregationQueryBuilder) processLimit(value any) error {
 	limitVal, err := b.extractIntValue(value, "$limit")
 	if err != nil {
 		return err
@@ -2003,7 +2003,7 @@ func (b *aggregationQueryBuilder) processLimit(value interface{}) error {
 	return nil
 }
 
-func (b *aggregationQueryBuilder) processSkip(value interface{}) error {
+func (b *aggregationQueryBuilder) processSkip(value any) error {
 	skipVal, err := b.extractIntValue(value, "$skip")
 	if err != nil {
 		return err
@@ -2014,7 +2014,7 @@ func (b *aggregationQueryBuilder) processSkip(value interface{}) error {
 	return nil
 }
 
-func (b *aggregationQueryBuilder) extractIntValue(value interface{}, operator string) (int, error) {
+func (b *aggregationQueryBuilder) extractIntValue(value any, operator string) (int, error) {
 	if intVal, ok := value.(int); ok {
 		return intVal, nil
 	}
@@ -2030,7 +2030,7 @@ func (b *aggregationQueryBuilder) extractIntValue(value interface{}, operator st
 	)
 }
 
-func (b *aggregationQueryBuilder) processCount(value interface{}) error {
+func (b *aggregationQueryBuilder) processCount(value any) error {
 	countField, ok := value.(string)
 	if !ok {
 		return datastore.NewValidationError(
@@ -2046,8 +2046,8 @@ func (b *aggregationQueryBuilder) processCount(value interface{}) error {
 	return nil
 }
 
-func (b *aggregationQueryBuilder) processGroup(value interface{}) error {
-	groupMap, ok := value.(map[string]interface{})
+func (b *aggregationQueryBuilder) processGroup(value any) error {
+	groupMap, ok := value.(map[string]any)
 	if !ok {
 		return datastore.NewValidationError(
 			datastore.ProviderPostgreSQL,
@@ -2062,8 +2062,8 @@ func (b *aggregationQueryBuilder) processGroup(value interface{}) error {
 }
 
 //nolint:cyclop // Complexity acceptable for window fields processing
-func (b *aggregationQueryBuilder) processSetWindowFields(value interface{}) error {
-	windowMap, ok := value.(map[string]interface{})
+func (b *aggregationQueryBuilder) processSetWindowFields(value any) error {
+	windowMap, ok := value.(map[string]any)
 	if !ok {
 		return datastore.NewValidationError(
 			datastore.ProviderPostgreSQL,
@@ -2078,7 +2078,7 @@ func (b *aggregationQueryBuilder) processSetWindowFields(value interface{}) erro
 
 	// Parse sortBy
 	if sortBy, hasSortBy := windowMap["sortBy"]; hasSortBy {
-		sortByMap, ok := sortBy.(map[string]interface{})
+		sortByMap, ok := sortBy.(map[string]any)
 		if !ok {
 			return datastore.NewValidationError(
 				datastore.ProviderPostgreSQL,
@@ -2101,7 +2101,7 @@ func (b *aggregationQueryBuilder) processSetWindowFields(value interface{}) erro
 		)
 	}
 
-	outputMap, ok := output.(map[string]interface{})
+	outputMap, ok := output.(map[string]any)
 	if !ok {
 		return datastore.NewValidationError(
 			datastore.ProviderPostgreSQL,
@@ -2112,7 +2112,7 @@ func (b *aggregationQueryBuilder) processSetWindowFields(value interface{}) erro
 
 	// Parse each output field
 	for fieldName, fieldSpec := range outputMap {
-		fieldSpecMap, ok := fieldSpec.(map[string]interface{})
+		fieldSpecMap, ok := fieldSpec.(map[string]any)
 		if !ok {
 			return datastore.NewValidationError(
 				datastore.ProviderPostgreSQL,
@@ -2125,7 +2125,7 @@ func (b *aggregationQueryBuilder) processSetWindowFields(value interface{}) erro
 
 		// Extract window specification
 		if window, hasWindow := fieldSpecMap["window"]; hasWindow {
-			windowSpecMap, ok := window.(map[string]interface{})
+			windowSpecMap, ok := window.(map[string]any)
 			if !ok {
 				return datastore.NewValidationError(
 					datastore.ProviderPostgreSQL,
@@ -2167,10 +2167,10 @@ func (b *aggregationQueryBuilder) processSetWindowFields(value interface{}) erro
 	return nil
 }
 
-func (b *aggregationQueryBuilder) processAddFields(value interface{}) error {
+func (b *aggregationQueryBuilder) processAddFields(value any) error {
 	// $addFields adds new fields to documents
 	// Example: {"$addFields": {"field1": expr1, "field2": expr2}}
-	fieldsMap, ok := value.(map[string]interface{})
+	fieldsMap, ok := value.(map[string]any)
 	if !ok {
 		return datastore.NewValidationError(
 			datastore.ProviderPostgreSQL,
@@ -2284,13 +2284,13 @@ func (b *aggregationQueryBuilder) buildPostCountFilter(countQuery string) string
 }
 
 // buildPostCountCondition builds a single condition for filtering count results
-func (b *aggregationQueryBuilder) buildPostCountCondition(field string, value interface{}) string {
+func (b *aggregationQueryBuilder) buildPostCountCondition(field string, value any) string {
 	// The count result is stored as document->>'field'
 	// We need to cast it to a number for comparison
 	fieldPath := fmt.Sprintf("(document->>'%s')::bigint", field)
 
 	switch v := value.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		// Handle comparison operators like {$gte: 5}
 		for op, opValue := range v {
 			if sqlOp := b.mapComparisonOperator(op); sqlOp != "" {
@@ -2357,7 +2357,7 @@ func (b *aggregationQueryBuilder) buildGroupQuery() string {
 		}
 
 		// Check if it's a $sum operator
-		if exprMap, ok := fieldExpr.(map[string]interface{}); ok {
+		if exprMap, ok := fieldExpr.(map[string]any); ok {
 			if sumVal, hasSum := exprMap["$sum"]; hasSum {
 				if sumVal == 1 {
 					// Simple count
@@ -2496,12 +2496,12 @@ func (b *aggregationQueryBuilder) buildWindowFunction(fieldOutput windowFieldOut
 	return fmt.Sprintf("%s %s", pgFunc, overClause)
 }
 
-func (b *aggregationQueryBuilder) buildWindowFrame(windowSpec map[string]interface{}) string {
+func (b *aggregationQueryBuilder) buildWindowFrame(windowSpec map[string]any) string {
 	// Handle MongoDB window specification
 	// Example: {"documents": ["unbounded", -1]} → ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
 	// Example: {"documents": ["unbounded", "current"]} → ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
 	if documents, hasDocuments := windowSpec["documents"]; hasDocuments {
-		docArray, ok := documents.([]interface{})
+		docArray, ok := documents.([]any)
 		if !ok || len(docArray) != 2 {
 			// Invalid specification, use default
 			return frameBoundUnbounded
@@ -2518,7 +2518,7 @@ func (b *aggregationQueryBuilder) buildWindowFrame(windowSpec map[string]interfa
 }
 
 //nolint:cyclop // Complexity acceptable for frame bound building
-func (b *aggregationQueryBuilder) buildFrameBound(bound interface{}, isStart bool) string {
+func (b *aggregationQueryBuilder) buildFrameBound(bound any, isStart bool) string {
 	switch v := bound.(type) {
 	case string:
 		if v == "unbounded" {
@@ -2651,8 +2651,8 @@ func (c *PostgreSQLClient) adjustParameterNumbers(clause string, offset int) str
 
 // buildUpdateClause converts MongoDB-style update operators to PostgreSQL SET clause
 // Supports basic $set operator for now
-func (c *PostgreSQLClient) buildUpdateClause(update interface{}) (string, []interface{}, error) {
-	updateMap, ok := update.(map[string]interface{})
+func (c *PostgreSQLClient) buildUpdateClause(update any) (string, []any, error) {
+	updateMap, ok := update.(map[string]any)
 	if !ok {
 		return "", nil, datastore.NewValidationError(
 			datastore.ProviderPostgreSQL,
@@ -2671,7 +2671,7 @@ func (c *PostgreSQLClient) buildUpdateClause(update interface{}) (string, []inte
 		)
 	}
 
-	setMap, ok := setFields.(map[string]interface{})
+	setMap, ok := setFields.(map[string]any)
 	if !ok {
 		return "", nil, datastore.NewValidationError(
 			datastore.ProviderPostgreSQL,
@@ -2695,7 +2695,7 @@ func (c *PostgreSQLClient) buildUpdateClause(update interface{}) (string, []inte
 
 	var (
 		setClauses []string
-		args       []interface{}
+		args       []any
 	)
 
 	paramCount := 1
@@ -2741,7 +2741,7 @@ type postgresqlSingleResult struct {
 	err   error
 }
 
-func (r *postgresqlSingleResult) Decode(v interface{}) error {
+func (r *postgresqlSingleResult) Decode(v any) error {
 	if r.err != nil {
 		return r.err
 	}
@@ -2779,7 +2779,7 @@ func (r *postgresqlSingleResult) Decode(v interface{}) error {
 	}
 
 	// Add _id field if target is a map (for compatibility with MongoDB)
-	if targetMap, ok := v.(*map[string]interface{}); ok && targetMap != nil {
+	if targetMap, ok := v.(*map[string]any); ok && targetMap != nil {
 		(*targetMap)[fieldID] = id
 	}
 
@@ -2804,7 +2804,7 @@ func (c *postgresqlCursor) Next(ctx context.Context) bool {
 	return c.rows.Next()
 }
 
-func (c *postgresqlCursor) Decode(v interface{}) error {
+func (c *postgresqlCursor) Decode(v any) error {
 	if c.err != nil {
 		return c.err
 	}
@@ -2834,7 +2834,7 @@ func (c *postgresqlCursor) Decode(v interface{}) error {
 	}
 
 	// Add _id field if target is a map (for compatibility with MongoDB)
-	if targetMap, ok := v.(*map[string]interface{}); ok && targetMap != nil {
+	if targetMap, ok := v.(*map[string]any); ok && targetMap != nil {
 		(*targetMap)[fieldID] = id
 	}
 
@@ -2849,7 +2849,7 @@ func (c *postgresqlCursor) Close(ctx context.Context) error {
 	return nil
 }
 
-func (c *postgresqlCursor) All(ctx context.Context, results interface{}) error {
+func (c *postgresqlCursor) All(ctx context.Context, results any) error {
 	if c.err != nil {
 		return c.err
 	}
@@ -2860,7 +2860,7 @@ func (c *postgresqlCursor) All(ctx context.Context, results interface{}) error {
 
 	defer c.rows.Close()
 
-	var documents []map[string]interface{}
+	var documents []map[string]any
 
 	for c.rows.Next() {
 		var (
@@ -2876,7 +2876,7 @@ func (c *postgresqlCursor) All(ctx context.Context, results interface{}) error {
 			)
 		}
 
-		var doc map[string]interface{}
+		var doc map[string]any
 		if err := json.Unmarshal(documentJSON, &doc); err != nil {
 			return datastore.NewSerializationError(
 				datastore.ProviderPostgreSQL,

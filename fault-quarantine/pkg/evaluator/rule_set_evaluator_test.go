@@ -102,11 +102,9 @@ func TestAnyRuleSetEvaluator_Evaluate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			evaluator := &AnyRuleSetEvaluator{
 				evaluators: tt.evaluators,
-				baseRuleSetEvaluator: baseRuleSetEvaluator{
-					Name:     "TestAnyRuleSet",
-					Version:  "1",
-					Priority: 1,
-				},
+				Name:       "TestAnyRuleSet",
+				Version:    "1",
+				Priority:   1,
 			}
 
 			result, err := evaluator.Evaluate(tt.event)
@@ -191,11 +189,9 @@ func TestAllRuleSetEvaluator_Evaluate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			evaluator := &AllRuleSetEvaluator{
 				evaluators: tt.evaluators,
-				baseRuleSetEvaluator: baseRuleSetEvaluator{
-					Name:     "TestAllRuleSet",
-					Version:  "1",
-					Priority: 1,
-				},
+				Name:       "TestAllRuleSet",
+				Version:    "1",
+				Priority:   1,
 			}
 
 			result, err := evaluator.Evaluate(tt.event)

@@ -21,7 +21,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -29,17 +28,13 @@ import (
 
 func newERR() *ExternalRemediationRequest {
 	return &ExternalRemediationRequest{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "nvsentinel.dgxc.nvidia.com/v1",
-			Kind:       "ExternalRemediationRequest",
+		APIVersion: "nvsentinel.dgxc.nvidia.com/v1",
+		Kind:       "ExternalRemediationRequest",
+		Name:       "gpu0-xid79-node-01",
+		Labels: map[string]string{
+			"nvsentinel.dgxc.nvidia.com/node": "node-01.example-cluster.internal",
 		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "gpu0-xid79-node-01",
-			Labels: map[string]string{
-				"nvsentinel.dgxc.nvidia.com/node": "node-01.example-cluster.internal",
-			},
-			Finalizers: []string{"nvsentinel.dgxc.nvidia.com/external-remediation-cleanup"},
-		},
+		Finalizers: []string{"nvsentinel.dgxc.nvidia.com/external-remediation-cleanup"},
 		Spec: &protos.ExternalRemediationRequestSpec{
 			HealthEvent: &protos.HealthEvent{
 				Id:                "he-7f0b3e2c",
@@ -164,11 +159,9 @@ func TestExternalRemediationRequestList_DeepCopy_FieldFidelity(t *testing.T) {
 	t.Parallel()
 
 	original := &ExternalRemediationRequestList{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "nvsentinel.dgxc.nvidia.com/v1",
-			Kind:       "ExternalRemediationRequestList",
-		},
-		Items: []ExternalRemediationRequest{*newERR(), *newERR()},
+		APIVersion: "nvsentinel.dgxc.nvidia.com/v1",
+		Kind:       "ExternalRemediationRequestList",
+		Items:      []ExternalRemediationRequest{*newERR(), *newERR()},
 	}
 
 	copied := original.DeepCopy()

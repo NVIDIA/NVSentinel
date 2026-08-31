@@ -24,7 +24,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/nvidia/nvsentinel/janitor/pkg/metrics"
@@ -66,6 +65,7 @@ status.
 */
 type NodeLock interface {
 	LockNode(ctx context.Context, maintenanceObject client.Object, nodeName string) bool
+	GetHolder(ctx context.Context, nodeName string) (*metav1.OwnerReference, error)
 	CheckUnlock(ctx context.Context, maintenanceObject client.Object, nodeName string) (retryUnlock bool)
 }
 
@@ -125,17 +125,15 @@ func (lock *nodeLock) LockNode(ctx context.Context, maintenanceObject client.Obj
 	}
 
 	lease = &coordinationv1.Lease{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      nodeLockName,
-			Namespace: lock.namespace,
-			OwnerReferences: []metav1.OwnerReference{
-				{
-					APIVersion:         apiVersion,
-					Kind:               kind,
-					Name:               maintenanceObject.GetName(),
-					UID:                maintenanceObject.GetUID(),
-					BlockOwnerDeletion: ptr.To(true),
-				},
+		Name:      nodeLockName,
+		Namespace: lock.namespace,
+		OwnerReferences: []metav1.OwnerReference{
+			{
+				APIVersion:         apiVersion,
+				Kind:               kind,
+				Name:               maintenanceObject.GetName(),
+				UID:                maintenanceObject.GetUID(),
+				BlockOwnerDeletion: new(true),
 			},
 		},
 		// There's no need to populate a HolderIdentity, LeaseDurationSeconds, nor RenewTime in Spec, we only need to identify
@@ -160,6 +158,20 @@ func (lock *nodeLock) LockNode(ctx context.Context, maintenanceObject client.Obj
 		"maintenanceResource", maintenanceObject.GetName(), "nodeLockName", nodeLockName)
 
 	return true
+}
+
+// GetHolder returns the owner of the node's lock lease. Controllers use this
+// after a failed LockNode call to distinguish duplicate work from cross-kind
+// maintenance contention.
+func (lock *nodeLock) GetHolder(ctx context.Context, nodeName string) (*metav1.OwnerReference, error) {
+	_, lease, err := lock.getNodeLockLease(ctx, nodeName)
+	if err != nil {
+		return nil, fmt.Errorf("getting node lock holder for node %q: %w", nodeName, err)
+	}
+
+	owner := lease.GetOwnerReferences()[0]
+
+	return &owner, nil
 }
 
 /*

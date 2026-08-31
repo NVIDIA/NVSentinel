@@ -786,7 +786,7 @@ func TestUnmarshalFullDocumentFromEvent(t *testing.T) {
 			Age  int    `bson:"age"`
 		}
 
-		event := map[string]interface{}{
+		event := map[string]any{
 			"fullDocument": bson.M{
 				"_id":  "test-id",
 				"name": "John Doe",
@@ -807,7 +807,7 @@ func TestUnmarshalFullDocumentFromEvent(t *testing.T) {
 			Name string `bson:"name"`
 		}
 
-		event := map[string]interface{}{
+		event := map[string]any{
 			"operationType": "insert",
 		}
 
@@ -822,7 +822,7 @@ func TestUnmarshalFullDocumentFromEvent(t *testing.T) {
 			Name string `bson:"name"`
 		}
 
-		event := map[string]interface{}{
+		event := map[string]any{
 			"fullDocument": "invalid",
 		}
 
@@ -841,9 +841,9 @@ func TestUnmarshalFullDocumentToJsonTaggedStructFromEvent(t *testing.T) {
 			Age  int    `json:"Age"`
 		}
 
-		bsonTaggedType := CreateBsonTaggedStructType(reflect.TypeOf(TestStruct{}))
+		bsonTaggedType := CreateBsonTaggedStructType(reflect.TypeFor[TestStruct]())
 
-		event := map[string]interface{}{
+		event := map[string]any{
 			"fullDocument": bson.M{
 				"id":   "test-id-json",
 				"name": "Jane Doe",
@@ -864,8 +864,8 @@ func TestUnmarshalFullDocumentToJsonTaggedStructFromEvent(t *testing.T) {
 			Name string `json:"Name"`
 		}
 
-		bsonTaggedType := CreateBsonTaggedStructType(reflect.TypeOf(TestStruct{}))
-		event := map[string]interface{}{
+		bsonTaggedType := CreateBsonTaggedStructType(reflect.TypeFor[TestStruct]())
+		event := map[string]any{
 			"operationType": "update",
 		}
 
@@ -883,7 +883,7 @@ func TestCreateBsonTaggedStructType(t *testing.T) {
 			Value int    `json:"Value"`
 		}
 
-		bsonType := CreateBsonTaggedStructType(reflect.TypeOf(SimpleStruct{}))
+		bsonType := CreateBsonTaggedStructType(reflect.TypeFor[SimpleStruct]())
 		require.Equal(t, 2, bsonType.NumField())
 
 		field0 := bsonType.Field(0)
@@ -904,7 +904,7 @@ func TestCreateBsonTaggedStructType(t *testing.T) {
 			Nested NestedStruct `json:"Nested"`
 		}
 
-		bsonType := CreateBsonTaggedStructType(reflect.TypeOf(OuterStruct{}))
+		bsonType := CreateBsonTaggedStructType(reflect.TypeFor[OuterStruct]())
 		require.Equal(t, 2, bsonType.NumField())
 
 		nestedField := bsonType.Field(1)
@@ -917,7 +917,7 @@ func TestCreateBsonTaggedStructType(t *testing.T) {
 			Name string `json:"Name"`
 		}
 
-		bsonType := CreateBsonTaggedStructType(reflect.TypeOf(&TestStruct{}))
+		bsonType := CreateBsonTaggedStructType(reflect.TypeFor[*TestStruct]())
 		require.Equal(t, 1, bsonType.NumField())
 	})
 }

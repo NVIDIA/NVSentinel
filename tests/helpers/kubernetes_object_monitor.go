@@ -174,13 +174,11 @@ func BuildTestDaemonSet(name, namespace, nodeName string, failureType DaemonSetF
 	}
 
 	return &appsv1.DaemonSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			Labels: map[string]string{
-				labelApp:  selectorLabel,
-				labelTest: "kubernetes-object-monitor",
-			},
+		Name:      name,
+		Namespace: namespace,
+		Labels: map[string]string{
+			labelApp:  selectorLabel,
+			labelTest: "kubernetes-object-monitor",
 		},
 		Spec: appsv1.DaemonSetSpec{
 			Selector: &metav1.LabelSelector{

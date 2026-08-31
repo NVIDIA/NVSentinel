@@ -27,7 +27,6 @@ import (
 	"github.com/nvidia/nvsentinel/preflight/pkg/webhook"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -251,13 +250,11 @@ func (c *GangController) ensureNCCLTopoConfigMap(ctx context.Context, namespace 
 	}
 
 	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      gcfg.NCCLTopoConfigMap,
-			Namespace: namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/component": "nccl-topo",
-				"app.kubernetes.io/name":      "nvsentinel",
-			},
+		Name:      gcfg.NCCLTopoConfigMap,
+		Namespace: namespace,
+		Labels: map[string]string{
+			"app.kubernetes.io/component": "nccl-topo",
+			"app.kubernetes.io/name":      "nvsentinel",
 		},
 		Data: map[string]string{
 			"topo.xml": gcfg.NCCLTopoData,
