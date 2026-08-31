@@ -390,6 +390,46 @@ func TestAggregationExtendedFilterPrefixRejectsLaterLogicalOperators(t *testing.
 	}
 }
 
+func TestAnalyzerAggregationRejectsUnsupportedMatchShapes(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	tests := map[string]any{
+		"extended nor": WithExtendedFilters([]map[string]any{
+			{"$match": map[string]any{"$nor": []any{
+				map[string]any{"healthevent.checkname": "custom-rule"},
+			}}},
+		}),
+		"nested nor": WithExtendedFilters([]map[string]any{
+			{"$match": map[string]any{opOr: []any{
+				map[string]any{"$nor": []any{
+					map[string]any{"healthevent.checkname": "custom-rule"},
+				}},
+			}}},
+		}),
+		"later nor": WithExtendedFilterPrefix([]map[string]any{
+			{"$match": map[string]any{"healthevent.nodename": "node-a"}},
+			{"$match": map[string]any{"$nor": []any{
+				map[string]any{"healthevent.checkname": "custom-rule"},
+			}}},
+		}, 1),
+		"later array equality": WithExtendedFilterPrefix([]map[string]any{
+			{"$match": map[string]any{"healthevent.nodename": "node-a"}},
+			{"$match": map[string]any{"healthevent.errorcode": []any{"94"}}},
+		}, 1),
+	}
+
+	for name, pipeline := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := client.Aggregate(context.Background(), pipeline)
+			if err == nil {
+				t.Fatal("unsupported PostgreSQL $match shape accepted")
+			}
+			if !datastore.IsDeterministicError(err) {
+				t.Fatalf("unsupported shape classified as transient: %v", err)
+			}
+		})
+	}
+}
+
 func TestPostCountMatchCombinesAllOperators(t *testing.T) {
 	client := &PostgreSQLClient{table: "health_events"}
 	query, args, err := client.buildAggregationQuery([]map[string]any{

@@ -2225,15 +2225,9 @@ func (b *aggregationQueryBuilder) processMatch(value any) error {
 		)
 	}
 
-	if b.rejectExtendedOperators {
-		for _, operator := range []string{opAnd, opOr} {
-			if _, found := matchMap[operator]; found {
-				return datastore.NewValidationError(
-					datastore.ProviderPostgreSQL,
-					fmt.Sprintf("aggregation operator %s requires extended filters", operator),
-					nil,
-				)
-			}
+	if b.extendedFilters || b.rejectExtendedOperators {
+		if err := validateAnalyzerMatchShape(matchMap, b.extendedFilters); err != nil {
+			return err
 		}
 	}
 
@@ -2255,6 +2249,100 @@ func (b *aggregationQueryBuilder) processMatch(value any) error {
 	b.args = append(b.args, matchArgs...)
 
 	return nil
+}
+
+func validateAnalyzerMatchShape(matchMap map[string]any, extendedFilters bool) error {
+	for field, value := range matchMap {
+		if err := validateAnalyzerMatchEntry(field, value, extendedFilters); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateAnalyzerMatchEntry(field string, value any, extendedFilters bool) error {
+	if field == "$expr" {
+		return nil
+	}
+
+	if field == opAnd || field == opOr {
+		return validateAnalyzerLogicalMatch(field, value, extendedFilters)
+	}
+
+	if strings.HasPrefix(field, "$") {
+		return datastore.NewValidationError(
+			datastore.ProviderPostgreSQL,
+			fmt.Sprintf("aggregation operator %s is not supported in PostgreSQL $match", field),
+			nil,
+		)
+	}
+
+	return validateAnalyzerFieldMatch(field, value)
+}
+
+func validateAnalyzerLogicalMatch(operator string, value any, extendedFilters bool) error {
+	if !extendedFilters {
+		return datastore.NewValidationError(
+			datastore.ProviderPostgreSQL,
+			fmt.Sprintf("aggregation operator %s requires extended filters", operator),
+			nil,
+		)
+	}
+
+	logicalValues, ok := logicalFilterValues(value)
+	if !ok || len(logicalValues) == 0 {
+		return nil
+	}
+
+	for _, logicalValue := range logicalValues {
+		logicalMap, ok := logicalValue.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		if err := validateAnalyzerMatchShape(logicalMap, true); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateAnalyzerFieldMatch(field string, value any) error {
+	if operators, ok := value.(map[string]any); ok {
+		for operator, operand := range operators {
+			if _, supported := sqlComparisonOperator(operator); supported && isCompositeMatchValue(operand) {
+				return nonScalarMatchValueError(field, operand)
+			}
+		}
+
+		return nil
+	}
+
+	if isCompositeMatchValue(value) {
+		return nonScalarMatchValueError(field, value)
+	}
+
+	return nil
+}
+
+func isCompositeMatchValue(value any) bool {
+	if value == nil {
+		return false
+	}
+
+	kind := reflect.ValueOf(value).Kind()
+
+	return kind == reflect.Array || kind == reflect.Map || kind == reflect.Slice
+}
+
+func nonScalarMatchValueError(field string, value any) error {
+	return datastore.NewValidationError(
+		datastore.ProviderPostgreSQL,
+		fmt.Sprintf("$match field %q requires a scalar comparison value", field),
+		fmt.Errorf("got type %T", value),
+	)
 }
 
 func (b *aggregationQueryBuilder) processSort(value any) error {
