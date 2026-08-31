@@ -74,3 +74,17 @@ func TestResolveMongoUpdate_QueryBuilder_UsesNullSafePipeline(t *testing.T) {
 
 	assert.Equal(t, update.ToMongoPipeline(), resolveMongoUpdate(update))
 }
+
+func TestResolveMongoUpdate_ClientOperatorsRemainOrdinaryUpdateDocuments(t *testing.T) {
+	update := NewUpdateBuilder().
+		Set("state", "ready").
+		Unset("obsolete").
+		Inc("attempts", 1).
+		Build()
+
+	assert.Equal(t, map[string]any{
+		"$set":   map[string]any{"state": "ready"},
+		"$unset": map[string]any{"obsolete": ""},
+		"$inc":   map[string]any{"attempts": 1},
+	}, resolveMongoUpdate(update))
+}
