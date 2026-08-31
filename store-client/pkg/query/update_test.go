@@ -17,6 +17,7 @@ package query
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -209,6 +210,24 @@ func TestToMongoPipeline_OverlappingPaths_PreservesOperationOrder(t *testing.T) 
 			assert.Equal(t, test.wantSQLArgs, args)
 		})
 	}
+}
+
+func TestUpdateBuilder_ChildAfterParentOverwriteReinitializesParent(t *testing.T) {
+	update := NewUpdate().
+		Set("state.first", "one").
+		Set("state", "scalar").
+		Set("state.second", "two")
+
+	pipeline := update.ToMongoPipeline()
+	require.Len(t, pipeline, 3)
+	thirdSet := pipeline[2].(map[string]any)[opSet].(map[string]any)
+	thirdValue := thirdSet["state"].(map[string]any)
+	assert.Contains(t, thirdValue, "$mergeObjects")
+
+	sql, args := update.ToSQL()
+	assert.GreaterOrEqual(t, strings.Count(sql, "CASE WHEN jsonb_typeof("), 2,
+		"PostgreSQL must recheck a parent after an intervening overwrite")
+	assert.Equal(t, []any{"\"one\"", "\"scalar\"", "\"two\""}, args)
 }
 
 func TestUpdateBuilder_EmptyUpdate(t *testing.T) {

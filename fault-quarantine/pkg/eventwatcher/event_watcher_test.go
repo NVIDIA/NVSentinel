@@ -49,6 +49,10 @@ type databaseClientStub struct {
 	completionErr   error
 	actions         *[]string
 	completed       map[string]bool
+	countCalls      int
+	countFilter     any
+	countResult     int64
+	countErr        error
 }
 
 func (s *databaseClientStub) UpdateDocumentStatus(
@@ -89,6 +93,17 @@ func (s *databaseClientStub) UpdateManyDocuments(
 	s.updateManyCalls++
 
 	return &client.UpdateResult{}, s.updateErr
+}
+
+func (s *databaseClientStub) CountDocuments(
+	_ context.Context,
+	filter any,
+	_ *client.CountOptions,
+) (int64, error) {
+	s.countCalls++
+	s.countFilter = filter
+
+	return s.countResult, s.countErr
 }
 
 func (s *databaseClientStub) UpdateDocumentStatusFields(
@@ -269,7 +284,7 @@ func TestProcessStoredEvent_LivePath_DeduplicatesReplay(t *testing.T) {
 	assert.Equal(t, 1, dbClient.updateCalls)
 }
 
-func TestProcessStoredEvent_SkippedEvent_DoesNotDeduplicate(t *testing.T) {
+func TestProcessStoredEvent_SkippedEvent_DeduplicatesAfterCompletion(t *testing.T) {
 	dbClient := &databaseClientStub{}
 	watcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
 
@@ -284,6 +299,10 @@ func TestProcessStoredEvent_SkippedEvent_DoesNotDeduplicate(t *testing.T) {
 		context.Background(), parsedStoredHealthEvent(t, "event-uuid"), "event-uuid")
 	require.NoError(t, err)
 	assert.Equal(t, coldstart.ProcessResultSkipped, result)
+	require.NoError(t, watcher.CompleteStoredEvents(context.Background(), []coldstart.StoredEventCompletion{{
+		DocumentID: coldstart.StoredDocumentID{String: "event-uuid", Native: "event-uuid"},
+		Result:     result,
+	}}))
 
 	err = watcher.processEvent(context.Background(), &clientEventStub{
 		document:   storedHealthEvent("event-uuid"),
@@ -291,7 +310,8 @@ func TestProcessStoredEvent_SkippedEvent_DoesNotDeduplicate(t *testing.T) {
 		recordUUID: "event-uuid",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, 2, callbackCalls)
+	assert.Equal(t, 1, callbackCalls,
+		"a terminal recovery skip must not be re-decided by its buffered live copy")
 }
 
 func TestProcessEvent_IntentionallySkippedMarksRecoveryComplete(t *testing.T) {
@@ -396,12 +416,115 @@ func TestWatchEvents_SkippedCompletionFailureDoesNotCheckpoint(t *testing.T) {
 	assert.Zero(t, changeStream.markCalls, "a live skip without its durable marker must remain replayable")
 }
 
-func TestLiveSkippedEventIsExcludedFromLaterColdStart(t *testing.T) {
-	dbClient := &databaseClientStub{}
+func TestWatchEvents_RecoveryOverlapLookupFailureDoesNotCheckpoint(t *testing.T) {
+	lookupErr := errors.New("database unavailable")
+	document := storedHealthEvent("event-uuid")
+	document["createdAt"] = time.Now().Add(-time.Minute)
+	events := make(chan client.Event, 1)
+	events <- &clientEventStub{
+		document:   document,
+		eventID:    "50",
+		recordUUID: "event-uuid",
+		token:      []byte("resume-token"),
+	}
+	close(events)
+
+	changeStream := &changeStreamWatcherStub{events: events}
+	dbClient := &databaseClientStub{countErr: lookupErr}
+	watcher := NewEventWatcher(changeStream, dbClient, time.Minute, &objectIDStoreStub{})
+	watcher.recoveryOverlapCutoff = time.Now()
+	watcher.SetProcessEventCallback(func(context.Context, *model.HealthEventWithStatus) (*model.Status, error) {
+		t.Fatal("event must not be processed when its durable overlap state is unknown")
+
+		return nil, nil
+	})
+
+	err := watcher.watchEvents(context.Background())
+	require.ErrorIs(t, err, lookupErr)
+	assert.Zero(t, changeStream.markCalls, "an overlap event with unknown durable state must remain replayable")
+}
+
+func TestProcessEvent_UnresolvedRecoveryOverlapStillProcesses(t *testing.T) {
+	now := time.Now().UTC()
+	document := storedHealthEvent("event-uuid")
+	document["createdAt"] = now.Add(-time.Minute)
+	dbClient := &databaseClientStub{countResult: 0}
 	watcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
+	watcher.recoveryOverlapCutoff = now
+
 	callbackCalls := 0
 	watcher.SetProcessEventCallback(func(context.Context, *model.HealthEventWithStatus) (*model.Status, error) {
 		callbackCalls++
+		status := model.Quarantined
+
+		return &status, nil
+	})
+
+	require.NoError(t, watcher.processEvent(context.Background(), &clientEventStub{
+		document: document, eventID: "52", recordUUID: "event-uuid",
+	}))
+	assert.Equal(t, 1, dbClient.countCalls)
+	assert.Equal(t, 1, callbackCalls, "an unresolved overlap event must not be mistaken for terminal")
+	assert.Equal(t, 1, dbClient.updateCalls)
+}
+
+func TestProcessEvent_PostCutoffEventBypassesRecoveryLookup(t *testing.T) {
+	now := time.Now().UTC()
+	document := storedHealthEvent("event-uuid")
+	document["createdAt"] = now.Add(time.Minute)
+	dbClient := &databaseClientStub{countErr: errors.New("lookup must not run")}
+	watcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
+	watcher.recoveryOverlapCutoff = now
+
+	callbackCalls := 0
+	watcher.SetProcessEventCallback(func(context.Context, *model.HealthEventWithStatus) (*model.Status, error) {
+		callbackCalls++
+		status := model.Quarantined
+
+		return &status, nil
+	})
+
+	require.NoError(t, watcher.processEvent(context.Background(), &clientEventStub{
+		document: document, eventID: "53", recordUUID: "event-uuid",
+	}))
+	assert.Zero(t, dbClient.countCalls, "events created after recovery opened cannot overlap the cold-start scan")
+	assert.Equal(t, 1, callbackCalls)
+}
+
+func TestRecoveryOverlapLookup_PredicateCoversEveryTerminalState(t *testing.T) {
+	now := time.Now().UTC()
+	dbClient := &databaseClientStub{}
+	watcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
+	watcher.recoveryOverlapCutoff = now
+
+	terminal, err := watcher.recoveryOverlapEventAlreadyTerminal(
+		context.Background(), now.Add(-time.Minute), "event-uuid")
+	require.NoError(t, err)
+	assert.False(t, terminal)
+
+	filter, ok := dbClient.countFilter.(datastore.QueryBuilder)
+	require.True(t, ok)
+	sql, args := filter.ToSQL()
+	assert.Contains(t, sql, "id = $1")
+	assert.Contains(t, sql, "faultquarantinerecovery")
+	assert.Contains(t, sql, "nodequarantined")
+	assert.Contains(t, sql, "IS NOT NULL")
+	assert.Equal(t, []any{
+		"event-uuid", coldstart.RecoveryCompletionValue, "", string(model.StatusNotStarted),
+	}, args)
+
+	mongoFilter := filter.ToMongo()
+	assert.Contains(t, fmt.Sprint(mongoFilter), coldstart.RecoveryCompletionStatusPath)
+	assert.Contains(t, fmt.Sprint(mongoFilter), "healtheventstatus.nodequarantined")
+	assert.Contains(t, fmt.Sprint(mongoFilter), string(model.StatusNotStarted))
+}
+
+func TestLiveSkippedEventIsExcludedFromLaterColdStart(t *testing.T) {
+	dbClient := &databaseClientStub{}
+	watcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
+	liveCallbackCalls := 0
+	watcher.SetProcessEventCallback(func(context.Context, *model.HealthEventWithStatus) (*model.Status, error) {
+		liveCallbackCalls++
 
 		return nil, nil
 	})
@@ -412,6 +535,19 @@ func TestLiveSkippedEventIsExcludedFromLaterColdStart(t *testing.T) {
 		recordUUID: "event-uuid",
 	}))
 	require.True(t, dbClient.completed["event-uuid"])
+	assert.Equal(t, 1, liveCallbackCalls)
+
+	// Simulate a rule change: this same event would now quarantine the node if a
+	// fresh cold start were allowed to replay it.
+	coldStartCallbackCalls := 0
+	cordoned := false
+	watcher.SetProcessEventCallback(func(context.Context, *model.HealthEventWithStatus) (*model.Status, error) {
+		coldStartCallbackCalls++
+		cordoned = true
+		status := model.Quarantined
+
+		return &status, nil
+	})
 
 	now := time.Now().UTC()
 	store := &completionFilteringHealthStoreStub{
@@ -427,10 +563,36 @@ func TestLiveSkippedEventIsExcludedFromLaterColdStart(t *testing.T) {
 		ColdStartAfterTime: now.Add(-time.Minute),
 		ColdStartUntilTime: now.Add(time.Minute),
 	}))
-	assert.Equal(t, 1, store.scanned)
+	assert.Equal(t, 2, store.scanned, "cold start scans bounded fault and healthy phases")
 	require.NotNil(t, store.query)
 	assert.Contains(t, fmt.Sprint(store.query.ToMongo()), coldstart.RecoveryCompletionStatusPath)
-	assert.Equal(t, 1, callbackCalls, "the terminal live skip must not be replayed during cold start")
+	assert.Zero(t, coldStartCallbackCalls, "the terminal live skip must not be replayed under changed rules")
+	assert.False(t, cordoned, "an event skipped live must not cordon the node after a rule change")
+
+	// A failed later recovery can restart the process before the original stream
+	// token advances. A fresh watcher must reconstruct this decision from the
+	// durable marker rather than its empty in-memory dedup map.
+	dbClient.countResult = 1
+	restartedWatcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
+	restartedWatcher.recoveryOverlapCutoff = now.Add(time.Minute)
+	restartedWatcher.SetProcessEventCallback(func(context.Context, *model.HealthEventWithStatus) (*model.Status, error) {
+		cordoned = true
+		status := model.Quarantined
+
+		return &status, nil
+	})
+	overlapDocument := storedHealthEvent("event-uuid")
+	overlapDocument["createdAt"] = now
+	require.NoError(t, restartedWatcher.processEvent(context.Background(), &clientEventStub{
+		document:   overlapDocument,
+		eventID:    "48",
+		recordUUID: "event-uuid",
+	}))
+	assert.False(t, cordoned, "a restart must not reapply a durably completed overlap event")
+	assert.Equal(t, 1, dbClient.countCalls)
+	overlapFilter, ok := dbClient.countFilter.(datastore.QueryBuilder)
+	require.True(t, ok)
+	assert.Contains(t, fmt.Sprint(overlapFilter.ToMongo()), coldstart.RecoveryCompletionStatusPath)
 }
 
 func TestProcessStoredEvent_StatusUpdateFailure_ReturnsError(t *testing.T) {
@@ -506,7 +668,7 @@ func TestProcessStoredEvent_MixedPermanentAndTransientFailures_Replays(t *testin
 	assert.Equal(t, coldstart.ProcessResultFailed, result)
 }
 
-func TestProcessStoredEvent_TransientFailureAfterStatusUpdate_Replays(t *testing.T) {
+func TestProcessStoredEvent_TransientFailureDoesNotPersistPartialStatus(t *testing.T) {
 	processingErr := errors.New("node API unavailable")
 	dbClient := &databaseClientStub{}
 	watcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
@@ -520,10 +682,31 @@ func TestProcessStoredEvent_TransientFailureAfterStatusUpdate_Replays(t *testing
 		context.Background(), parsedStoredHealthEvent(t, "event-uuid"), "event-uuid")
 	require.ErrorIs(t, err, processingErr)
 	assert.Equal(t, coldstart.ProcessResultFailed, result)
-	assert.Equal(t, 1, dbClient.updateCalls)
+	assert.Zero(t, dbClient.updateCalls,
+		"a partial status would exclude the event from the next cold-start scan")
 }
 
-func TestCompleteStoredEvents_MixedTerminalResults_PersistsAllAndDeduplicatesOnlyTerminalDrops(t *testing.T) {
+func TestProcessEvent_LiveTransientFailureStillPersistsStatus(t *testing.T) {
+	processingErr := errors.New("node API unavailable")
+	dbClient := &databaseClientStub{}
+	watcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
+	watcher.SetProcessEventCallback(func(context.Context, *model.HealthEventWithStatus) (*model.Status, error) {
+		status := model.Quarantined
+
+		return &status, processingErr
+	})
+
+	err := watcher.processEvent(context.Background(), &clientEventStub{
+		document:   storedHealthEvent("event-uuid"),
+		eventID:    "51",
+		recordUUID: "event-uuid",
+	})
+	require.ErrorIs(t, err, processingErr)
+	assert.Equal(t, 1, dbClient.updateCalls,
+		"withholding partial status is recovery-only and must not change the established live path")
+}
+
+func TestCompleteStoredEvents_MixedTerminalResults_PersistsAndDeduplicatesAll(t *testing.T) {
 	dbClient := &databaseClientStub{}
 	objectIDs := &objectIDStoreStub{}
 	watcher := NewEventWatcher(nil, dbClient, time.Minute, objectIDs)
@@ -575,8 +758,38 @@ func TestCompleteStoredEvents_MixedTerminalResults_PersistsAllAndDeduplicatesOnl
 			recordUUID: eventID,
 		}))
 	}
-	assert.Equal(t, 1, callbackCalls, "only the intentionally skipped event should be replayed live")
+	assert.Zero(t, callbackCalls, "no terminal recovery decision should be replayed live")
 	assert.Equal(t, "event-superseded-token", objectIDs.last)
+}
+
+func TestCompleteStoredEvents_SkippedDecisionSuppressesRestartOverlap(t *testing.T) {
+	dbClient := &databaseClientStub{}
+	recoveringWatcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
+	require.NoError(t, recoveringWatcher.CompleteStoredEvents(
+		context.Background(), []coldstart.StoredEventCompletion{{
+			DocumentID: coldstart.StoredDocumentID{String: "event-skipped", Native: "event-skipped"},
+			Result:     coldstart.ProcessResultSkipped,
+		}}))
+	assert.Equal(t, 1, dbClient.updateManyCalls)
+
+	dbClient.countResult = 1
+	now := time.Now().UTC()
+	restartedWatcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
+	restartedWatcher.recoveryOverlapCutoff = now
+	callbackCalls := 0
+	restartedWatcher.SetProcessEventCallback(func(context.Context, *model.HealthEventWithStatus) (*model.Status, error) {
+		callbackCalls++
+
+		return nil, nil
+	})
+	document := storedHealthEvent("event-skipped")
+	document["createdAt"] = now.Add(-time.Minute)
+	require.NoError(t, restartedWatcher.processEvent(context.Background(), &clientEventStub{
+		document: document, eventID: "event-skipped-token", recordUUID: "event-skipped",
+	}))
+	assert.Zero(t, callbackCalls,
+		"a completed recovery skip must not be re-decided after a restart")
+	assert.Equal(t, 1, dbClient.countCalls)
 }
 
 func TestExpireRecoveredEventIDs_ExpiredEntry_DoesNotSuppressLiveEvent(t *testing.T) {

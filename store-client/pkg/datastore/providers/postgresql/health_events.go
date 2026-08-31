@@ -904,17 +904,17 @@ func (p *PostgreSQLHealthEventStore) FindLatestHealthEventByQuery(ctx context.Co
 // HealthEventWithStatus and also preserves the raw map in RawEvent (needed for
 // cold-start support).
 func decodeHealthEventDocument(documentJSON []byte) (*datastore.HealthEventWithStatus, error) {
-	var event datastore.HealthEventWithStatus
-	if err := json.Unmarshal(documentJSON, &event); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal health event: %w", err)
-	}
-
 	var rawEvent map[string]any
 	if err := json.Unmarshal(documentJSON, &rawEvent); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal raw event: %w", err)
 	}
 
+	var event datastore.HealthEventWithStatus
+
 	event.RawEvent = rawEvent
+	if err := json.Unmarshal(documentJSON, &event); err != nil {
+		return &event, fmt.Errorf("failed to unmarshal health event: %w", err)
+	}
 
 	return &event, nil
 }
@@ -1029,10 +1029,17 @@ func (p *PostgreSQLHealthEventStore) queryHealthEventBatch(
 
 		event, err := decodeHealthEventDocument(documentJSON)
 		if err != nil {
-			slog.WarnContext(ctx, "Skipping invalid PostgreSQL health event document",
-				"documentID", nextID, "error", err)
+			if event == nil || event.RawEvent == nil {
+				slog.WarnContext(ctx, "Skipping unreadable PostgreSQL health event document",
+					"documentID", nextID, "error", err)
 
-			continue
+				continue
+			}
+
+			// Cold-start supersession can still use readable identity and
+			// health-state fields when only the typed status is malformed.
+			slog.WarnContext(ctx, "Preserving raw PostgreSQL health event after typed conversion failed",
+				"documentID", nextID, "error", err)
 		}
 
 		event.CreatedAt = nextCreatedAt

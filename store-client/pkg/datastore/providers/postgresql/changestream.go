@@ -890,7 +890,15 @@ func (w *PostgreSQLChangeStreamWatcher) parseDocumentValues(
 		return nil, false, false
 	}
 
+	outerDoc := doc
+
 	doc, innerExtracted = w.extractInnerDocument(doc)
+	if innerExtracted {
+		if databaseCreatedAt, exists := outerDoc["created_at"]; exists {
+			doc = maps.Clone(doc)
+			doc["createdAt"] = databaseCreatedAt
+		}
+	}
 
 	return doc, innerExtracted, true
 }
@@ -941,6 +949,12 @@ func (w *PostgreSQLChangeStreamWatcher) findUpdatedFields(
 		}
 	}
 
+	for key := range oldDoc {
+		if _, exists := newDoc[key]; !exists {
+			updatedFields[key] = nil
+		}
+	}
+
 	return updatedFields
 }
 
@@ -961,20 +975,42 @@ func (w *PostgreSQLChangeStreamWatcher) flattenMap(
 		prefix = parentPrefix + "." + currentKey
 	}
 
+	if len(currentValue) == 0 && oldMap == nil {
+		result[prefix] = currentValue
+
+		return
+	}
+
 	for k, v := range currentValue {
 		fullKey := prefix + "." + k
 
 		var oldV any
+
+		existed := false
 		if oldMap != nil {
-			oldV = oldMap[k]
+			oldV, existed = oldMap[k]
 		}
 
 		// Recursively flatten nested maps
 		if vMap, ok := v.(map[string]any); ok {
 			w.flattenMap(prefix, k, vMap, oldV, result)
-		} else if !w.valuesEqual(oldV, v) {
+		} else if !existed || !w.valuesEqual(oldV, v) {
 			// Only include if the value actually changed
 			result[fullKey] = v
+		}
+	}
+
+	recordRemovedMapFields(prefix, oldMap, currentValue, result)
+}
+
+func recordRemovedMapFields(
+	prefix string,
+	oldValue, currentValue map[string]any,
+	result map[string]any,
+) {
+	for key := range oldValue {
+		if _, exists := currentValue[key]; !exists {
+			result[prefix+"."+key] = nil
 		}
 	}
 }

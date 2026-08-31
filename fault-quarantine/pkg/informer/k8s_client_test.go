@@ -728,12 +728,13 @@ func TestTaintAndCordonNode_OverwriteAnnotation(t *testing.T) {
 func TestUnTaintAndUnCordonNode_NonExistentTaintRemoval(t *testing.T) {
 	ctx := context.Background()
 	nodeName := testutils.GenerateTestNodeName("test-nonexistent-taint-")
+	const annotationKey = "recovery-marker"
 
 	taints := []v1.Taint{
 		{Key: "taint1", Value: "val1", Effect: v1.TaintEffectNoSchedule},
 	}
 
-	createTestNode(ctx, t, nodeName, nil, nil, taints, false)
+	createTestNode(ctx, t, nodeName, map[string]string{annotationKey: "present"}, nil, taints, true)
 	defer func() {
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 	}()
@@ -741,7 +742,8 @@ func TestUnTaintAndUnCordonNode_NonExistentTaintRemoval(t *testing.T) {
 	k8sClient := setupTestClient(t)
 
 	taintsToRemove := []config.Taint{{Key: "taint-nonexistent", Value: "valX", Effect: "NoSchedule"}}
-	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(ctx, nodeName, taintsToRemove, true, nil, []string{}, map[string]string{})
+	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(
+		ctx, nodeName, taintsToRemove, true, []string{annotationKey}, []string{}, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -761,6 +763,12 @@ func TestUnTaintAndUnCordonNode_NonExistentTaintRemoval(t *testing.T) {
 	// Original taint should remain as we tried to remove a non-existent taint
 	if len(testTaints) != 1 {
 		t.Errorf("Expected 1 test taint to remain, got %d", len(testTaints))
+	}
+	if updatedNode.Spec.Unschedulable {
+		t.Errorf("Expected absent requested taint not to prevent uncordoning")
+	}
+	if _, exists := updatedNode.Annotations[annotationKey]; exists {
+		t.Errorf("Expected absent requested taint not to prevent annotation cleanup")
 	}
 }
 

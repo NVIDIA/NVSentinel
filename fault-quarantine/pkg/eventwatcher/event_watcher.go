@@ -38,8 +38,22 @@ type liveSkipCompletionError struct {
 	err error
 }
 
-func (e *liveSkipCompletionError) Error() string { return e.err.Error() }
-func (e *liveSkipCompletionError) Unwrap() error { return e.err }
+func (e *liveSkipCompletionError) Error() string       { return e.err.Error() }
+func (e *liveSkipCompletionError) Unwrap() error       { return e.err }
+func (e *liveSkipCompletionError) withholdCheckpoint() {}
+
+type recoveryOverlapLookupError struct {
+	err error
+}
+
+func (e *recoveryOverlapLookupError) Error() string       { return e.err.Error() }
+func (e *recoveryOverlapLookupError) Unwrap() error       { return e.err }
+func (e *recoveryOverlapLookupError) withholdCheckpoint() {}
+
+type checkpointWithholdingError interface {
+	error
+	withholdCheckpoint()
+}
 
 type EventWatcher struct {
 	changeStreamWatcher  client.ChangeStreamWatcher
@@ -53,6 +67,7 @@ type EventWatcher struct {
 	lastProcessedObjectID                 LastProcessedObjectIDStore
 	coldStartCallback                     func(ctx context.Context) error
 	recoveredEventIDs                     sync.Map
+	recoveryOverlapCutoff                 time.Time
 }
 
 type LastProcessedObjectIDStore interface {
@@ -108,6 +123,9 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 	slog.InfoContext(ctx, "Starting event watcher")
 
 	if w.changeStreamWatcher != nil {
+		// Events at or before this boundary may also be handled by cold start.
+		// Keep it before opening the stream so there is no unchecked overlap gap.
+		w.recoveryOverlapCutoff = time.Now().UTC()
 		w.changeStreamWatcher.Start(ctx)
 	} else {
 		<-ctx.Done()
@@ -196,9 +214,9 @@ func (w *EventWatcher) watchEvents(ctx context.Context) error {
 		metrics.TotalEventsReceived.Inc()
 
 		if processErr := w.processEvent(ctx, event); processErr != nil {
-			var completionErr *liveSkipCompletionError
-			if errors.As(processErr, &completionErr) {
-				return fmt.Errorf("skipped live event was not checkpointed: %w", processErr)
+			var withholdErr checkpointWithholdingError
+			if errors.As(processErr, &withholdErr) {
+				return fmt.Errorf("live event requires replay before checkpointing: %w", processErr)
 			}
 
 			slog.ErrorContext(ctx, "Event processing failed, but still marking as processed to proceed ahead",
@@ -253,13 +271,14 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 
 	w.lastProcessedObjectID.StoreLastProcessedObjectID(eventID)
 
-	if expiry, recovered := w.recoveredEventIDs.LoadAndDelete(recordUUID); recovered {
-		expiresAt, ok := expiry.(time.Time)
-		if ok && (expiresAt.IsZero() || time.Now().Before(expiresAt)) {
-			slog.DebugContext(ctx, "Skipping live duplicate of a recovered event", "eventID", recordUUID)
+	skip, err := w.shouldSkipRecoveredLiveEvent(
+		ctx, healthEventWithStatus.CreatedAt, recordUUID)
+	if err != nil {
+		return err
+	}
 
-			return nil
-		}
+	if skip {
+		return nil
 	}
 
 	processed, err := w.processHealthEvent(ctx, &healthEventWithStatus, recordUUID, eventID)
@@ -268,6 +287,63 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 	}
 
 	return w.completeLiveEventIfSkipped(ctx, recordUUID, processed)
+}
+
+func (w *EventWatcher) shouldSkipRecoveredLiveEvent(
+	ctx context.Context,
+	createdAt time.Time,
+	recordUUID string,
+) (bool, error) {
+	if expiry, recovered := w.recoveredEventIDs.LoadAndDelete(recordUUID); recovered {
+		expiresAt, ok := expiry.(time.Time)
+		if ok && (expiresAt.IsZero() || time.Now().Before(expiresAt)) {
+			slog.DebugContext(ctx, "Skipping live duplicate of a recovered event", "eventID", recordUUID)
+
+			return true, nil
+		}
+	}
+
+	alreadyTerminal, err := w.recoveryOverlapEventAlreadyTerminal(ctx, createdAt, recordUUID)
+	if err != nil {
+		return false, err
+	}
+
+	if alreadyTerminal {
+		slog.DebugContext(ctx, "Skipping durably completed recovery-overlap event", "eventID", recordUUID)
+	}
+
+	return alreadyTerminal, nil
+}
+
+func (w *EventWatcher) recoveryOverlapEventAlreadyTerminal(
+	ctx context.Context,
+	createdAt time.Time,
+	recordUUID string,
+) (bool, error) {
+	if w.recoveryOverlapCutoff.IsZero() ||
+		(!createdAt.IsZero() && createdAt.After(w.recoveryOverlapCutoff)) {
+		return false, nil
+	}
+
+	nodeStatusPath := "healtheventstatus.nodequarantined"
+	terminalStatus := query.Or(
+		query.Eq(coldstart.RecoveryCompletionStatusPath, coldstart.RecoveryCompletionValue),
+		query.And(
+			query.Ne(nodeStatusPath, nil),
+			query.Ne(nodeStatusPath, ""),
+			query.Ne(nodeStatusPath, string(model.StatusNotStarted)),
+		),
+	)
+	filter := query.New().Build(query.And(query.Eq("_id", recordUUID), terminalStatus))
+	limit := int64(1)
+
+	count, err := w.databaseClient.CountDocuments(ctx, filter, &client.CountOptions{Limit: &limit})
+	if err != nil {
+		return false, &recoveryOverlapLookupError{err: fmt.Errorf(
+			"failed to check recovery-overlap state for event %s: %w", recordUUID, err)}
+	}
+
+	return count > 0, nil
 }
 
 func (w *EventWatcher) completeLiveEventIfSkipped(
@@ -373,10 +449,11 @@ func completionIDs(completions []coldstart.StoredEventCompletion) ([]any, map[st
 			continue
 		}
 
-		if completion.Result == coldstart.ProcessResultInvalid ||
-			completion.Result == coldstart.ProcessResultSuperseded {
-			deduplicated[id.String] = struct{}{}
-		}
+		// Every completion is a terminal recovery decision. Suppress its buffered
+		// live copy regardless of whether recovery processed, skipped, rejected, or
+		// superseded it; replaying any of those decisions under a different state
+		// or rule configuration is precisely what the completion marker prevents.
+		deduplicated[id.String] = struct{}{}
 
 		if _, exists := seen[id.String]; exists {
 			continue
@@ -469,6 +546,13 @@ func (w *EventWatcher) processHealthEvent(
 	}
 
 	status, processErr := w.processEventCallback(ctx, healthEventWithStatus)
+	if withholdTransientRecoveryStatus(ctx, processErr) {
+		// A partial status would remove this event from the next cold-start query,
+		// permanently losing any rule action skipped by the transient failure.
+		metrics.EventHandlingDuration.Observe(time.Since(startTime).Seconds())
+
+		return false, processErr
+	}
 
 	if status != nil {
 		if err := w.updateNodeQuarantineStatus(ctx, recordUUID, status); err != nil {
@@ -489,6 +573,10 @@ func (w *EventWatcher) processHealthEvent(
 	metrics.EventHandlingDuration.Observe(duration)
 
 	return status != nil, processErr
+}
+
+func withholdTransientRecoveryStatus(ctx context.Context, err error) bool {
+	return coldstart.IsRecoveryContext(ctx) && err != nil && !coldstart.IsPermanentError(err)
 }
 
 func EmitNodeQuarantineDuration(status *model.Status, healthEventWithStatus *model.HealthEventWithStatus) {

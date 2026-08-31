@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	multierror "github.com/hashicorp/go-multierror"
 	"github.com/nvidia/nvsentinel/commons/pkg/healthstatus"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
@@ -84,19 +85,12 @@ func IsPermanentError(err error) bool {
 		return true
 	}
 
+	if aggregate, ok := err.(*multierror.Error); ok { //nolint:errorlint // Multierror's chain hides the current child.
+		return allPermanentErrors(aggregate.Errors)
+	}
+
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		children := joined.Unwrap()
-		if len(children) == 0 {
-			return false
-		}
-
-		for _, child := range children {
-			if !IsPermanentError(child) {
-				return false
-			}
-		}
-
-		return true
+		return allPermanentErrors(joined.Unwrap())
 	}
 
 	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
@@ -104,6 +98,20 @@ func IsPermanentError(err error) bool {
 	}
 
 	return false
+}
+
+func allPermanentErrors(errs []error) bool {
+	if len(errs) == 0 {
+		return false
+	}
+
+	for _, err := range errs {
+		if !IsPermanentError(err) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // WithRecoveryContext marks event processing as cold-start replay. Consumers
@@ -201,11 +209,10 @@ type recoveryProgress struct {
 	failures int
 }
 
-// Handle replays unresolved events in creation order. Events that overlap
-// newer state are skipped so obsolete history cannot cause transient node
-// changes. Event-local transient failures are collected while the sweep
-// continues; terminal skip decisions are persisted and excluded from later
-// scans.
+// Handle replays unresolved current state. Faults are applied before healthy
+// recoveries so an older recovery cannot transiently uncordon a node before a
+// newer fault in the same scan is restored. Events that overlap newer state
+// are projected or skipped; terminal decisions are persisted for later scans.
 func Handle(ctx context.Context, deps Dependencies) error {
 	if deps.HealthEventStore == nil {
 		return fmt.Errorf("health event store is required")
@@ -234,16 +241,34 @@ func Handle(ctx context.Context, deps Dependencies) error {
 	resolver := newSupersessionResolver(deps.HealthEventStore, deps.ColdStartUntilTime)
 	progress := &recoveryProgress{}
 
+	recoveryQuery := coldStartQuery(deps.ColdStartAfterTime, deps.ColdStartUntilTime)
+
 	err := deps.HealthEventStore.FindHealthEventsByQueryBatched(
 		ctx,
-		coldStartQuery(deps.ColdStartAfterTime, deps.ColdStartUntilTime),
+		recoveryQuery,
 		batchSize,
 		func(events []datastore.HealthEventWithStatus) error {
-			return progress.recoverBatch(ctx, resolver, deps.EventProcessor, events)
+			return progress.recoverBatch(ctx, resolver, deps.EventProcessor, events, false)
 		},
 	)
 	if err != nil {
 		return fmt.Errorf("fault-quarantine cold start failed: %w", err)
+	}
+
+	// If any fault failed transiently, do not run recoveries against incomplete
+	// fault state. They remain unresolved and will retry on the next startup.
+	if progress.firstErr == nil {
+		err = deps.HealthEventStore.FindHealthEventsByQueryBatched(
+			ctx,
+			recoveryQuery,
+			batchSize,
+			func(events []datastore.HealthEventWithStatus) error {
+				return progress.recoverBatch(ctx, resolver, deps.EventProcessor, events, true)
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("fault-quarantine healthy recovery phase failed: %w", err)
+		}
 	}
 
 	if progress.firstErr != nil {
@@ -257,6 +282,28 @@ func Handle(ctx context.Context, deps Dependencies) error {
 }
 
 func (p *recoveryProgress) recoverBatch(
+	ctx context.Context,
+	resolver *supersessionResolver,
+	processor EventProcessor,
+	events []datastore.HealthEventWithStatus,
+	recoverHealthy bool,
+) error {
+	selected := make([]datastore.HealthEventWithStatus, 0, len(events))
+	for i := range events {
+		parsed, err := parseStoredRecord(events[i])
+
+		isHealthy := err == nil && parsed.HealthEvent != nil && parsed.HealthEvent.GetIsHealthy()
+		if isHealthy != recoverHealthy {
+			continue
+		}
+
+		selected = append(selected, events[i])
+	}
+
+	return p.recoverEvents(ctx, resolver, processor, selected)
+}
+
+func (p *recoveryProgress) recoverEvents(
 	ctx context.Context,
 	resolver *supersessionResolver,
 	processor EventProcessor,
@@ -338,7 +385,7 @@ func recoverStoredEvent(
 		return nil, recordRecoveryFailure(fmt.Errorf("cannot identify stored event: %w", idErr))
 	}
 
-	superseded, err := resolver.superseded(ctx, parsed, event.CreatedAt, documentID.String)
+	superseded, effects, err := resolver.resolve(ctx, parsed, event.CreatedAt, documentID.String)
 	if err != nil {
 		return nil, recordRecoveryFailure(fmt.Errorf("failed to resolve stored event state: %w", err))
 	}
@@ -347,7 +394,8 @@ func recoverStoredEvent(
 		return &StoredEventCompletion{DocumentID: documentID, Result: ProcessResultSuperseded}, nil
 	}
 
-	result, err := processor.ProcessStoredEvent(ctx, parsed, documentID.String)
+	result, err := processor.ProcessStoredEvent(
+		withRecoveryEffects(ctx, effects), parsed, documentID.String)
 	if err != nil {
 		return nil, recordRecoveryFailure(fmt.Errorf("failed to recover stored event: %w", err))
 	}
@@ -384,11 +432,7 @@ func coldStartQuery(coldStartAfter, coldStartUntil time.Time) *query.Builder {
 		query.Eq("healtheventstatus.nodequarantined", ""),
 		query.Eq("healtheventstatus.nodequarantined", string(model.StatusNotStarted)),
 	)
-	recoveryIncomplete := query.Or(
-		query.Eq(RecoveryCompletionStatusPath, nil),
-		query.Eq(RecoveryCompletionStatusPath, ""),
-	)
-	condition := query.And(unresolved, recoveryIncomplete, processableCondition())
+	condition := query.And(unresolved, recoveryIncompleteCondition(), processableCondition())
 
 	if !coldStartAfter.IsZero() {
 		condition = query.And(query.Gt("createdAt", coldStartAfter), condition)
@@ -399,4 +443,11 @@ func coldStartQuery(coldStartAfter, coldStartUntil time.Time) *query.Builder {
 	}
 
 	return query.New().Build(condition)
+}
+
+func recoveryIncompleteCondition() query.Condition {
+	return query.Or(
+		query.Eq(RecoveryCompletionStatusPath, nil),
+		query.Eq(RecoveryCompletionStatusPath, ""),
+	)
 }

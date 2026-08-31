@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 
@@ -514,12 +515,10 @@ func (h *MongoHealthEventStore) readHealthEventBatch(
 
 		position = batchedQueryPosition{createdAt: createdAt, id: id, set: true}
 
-		event, err := decodeRawDocToHealthEvent(rawDoc)
+		event, err := decodeBatchedHealthEvent(ctx, rawDoc, createdAt)
 		if err != nil {
-			slog.ErrorContext(ctx, "Skipping document that failed struct conversion in batched query",
-				"error", err)
-
-			continue
+			return nil, rowsRead, position, datastore.NewQueryError(
+				datastore.ProviderMongoDB, "document has invalid batched-query createdAt", err)
 		}
 
 		batch = append(batch, event)
@@ -539,6 +538,42 @@ func (h *MongoHealthEventStore) readHealthEventBatch(
 	}
 
 	return batch, rowsRead, position, nil
+}
+
+func decodeBatchedHealthEvent(
+	ctx context.Context,
+	rawDoc map[string]any,
+	createdAt any,
+) (datastore.HealthEventWithStatus, error) {
+	recordCreatedAt, err := batchedHealthEventCreatedAt(createdAt)
+	if err != nil {
+		return datastore.HealthEventWithStatus{}, err
+	}
+
+	event, err := decodeRawDocToHealthEvent(rawDoc)
+	if err != nil {
+		// Cold-start supersession can still use readable identity and
+		// health-state fields when only a typed status field is malformed.
+		slog.WarnContext(ctx, "Preserving raw document after struct conversion failed in batched query",
+			"error", err)
+
+		event = datastore.HealthEventWithStatus{RawEvent: rawDoc}
+	}
+
+	event.CreatedAt = recordCreatedAt
+
+	return event, nil
+}
+
+func batchedHealthEventCreatedAt(value any) (time.Time, error) {
+	switch createdAt := value.(type) {
+	case time.Time:
+		return createdAt, nil
+	case bson.DateTime:
+		return createdAt.Time(), nil
+	default:
+		return time.Time{}, fmt.Errorf("unsupported createdAt type %T", value)
+	}
 }
 
 // normalizeHealthEvents converts bson.M types to map[string]interface{} in HealthEvent fields

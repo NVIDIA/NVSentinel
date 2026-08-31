@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
 	"sync"
 
@@ -41,34 +42,60 @@ type mongoEvent struct {
 
 // UpdatedFields exposes change-stream update metadata to optional consumers.
 func (e *mongoEvent) UpdatedFields() map[string]any {
-	updateDescription, ok := e.rawEvent["updateDescription"]
+	description, ok := mongoUpdateDescription(e.rawEvent["updateDescription"])
 	if !ok {
 		return nil
 	}
 
-	var description map[string]any
+	updated := make(map[string]any)
+	copyMongoUpdatedFields(updated, description["updatedFields"])
+	addMongoRemovedFields(updated, description["removedFields"])
 
-	switch value := updateDescription.(type) {
-	case map[string]any:
-		description = value
-	case bson.M:
-		description = map[string]any(value)
-	default:
+	if len(updated) == 0 {
 		return nil
 	}
 
-	updatedFields, ok := description["updatedFields"]
-	if !ok {
-		return nil
+	return updated
+}
+
+func mongoUpdateDescription(value any) (map[string]any, bool) {
+	switch description := value.(type) {
+	case map[string]any:
+		return description, true
+	case bson.M:
+		return map[string]any(description), true
+	default:
+		return nil, false
+	}
+}
+
+func copyMongoUpdatedFields(updated map[string]any, value any) {
+	switch fields := value.(type) {
+	case map[string]any:
+		maps.Copy(updated, fields)
+	case bson.M:
+		maps.Copy(updated, map[string]any(fields))
+	}
+}
+
+func addMongoRemovedFields(updated map[string]any, value any) {
+	var removedValues []any
+
+	switch removed := value.(type) {
+	case []string:
+		for _, field := range removed {
+			updated[field] = nil
+		}
+	case bson.A:
+		removedValues = removed
+	case []any:
+		removedValues = removed
 	}
 
-	switch value := updatedFields.(type) {
-	case map[string]any:
-		return value
-	case bson.M:
-		return map[string]any(value)
-	default:
-		return nil
+	for _, removed := range removedValues {
+		if field, ok := removed.(string); ok {
+			updated[field] = nil
+		}
 	}
 }
 

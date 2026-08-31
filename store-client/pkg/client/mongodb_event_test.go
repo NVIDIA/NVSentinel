@@ -67,6 +67,22 @@ func TestMongoEvent_CompletionOnlyUpdate_ExposesUpdatedFields(t *testing.T) {
 	assert.True(t, EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath))
 }
 
+func TestMongoEvent_CompletionAndRemovalExposesBothChanges(t *testing.T) {
+	event := &mongoEvent{rawEvent: mongoWatcher.Event{
+		"updateDescription": bson.M{
+			"updatedFields": bson.M{healthstatus.FaultQuarantineRecoveryPath: "completed"},
+			"removedFields": bson.A{"healtheventstatus.obsolete"},
+		},
+	}}
+
+	assert.Equal(t, map[string]any{
+		healthstatus.FaultQuarantineRecoveryPath: "completed",
+		"healtheventstatus.obsolete":             nil,
+	}, event.UpdatedFields())
+	assert.False(t, EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath),
+		"a completion marker must not conceal an unrelated field removal")
+}
+
 // TestResolveMongoUpdate_QueryBuilder_UsesNullSafePipeline verifies that query
 // builders use aggregation-pipeline updates for nested fields.
 func TestResolveMongoUpdate_QueryBuilder_UsesNullSafePipeline(t *testing.T) {

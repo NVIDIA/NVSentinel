@@ -663,9 +663,7 @@ func (c *FaultQuarantineClient) UnQuarantineNodeAndRemoveAnnotations(
 ) error {
 	updateFn := func(node *v1.Node) error {
 		if len(taints) > 0 {
-			if shouldReturn := c.removeTaints(ctx, node, taints, nodename); shouldReturn {
-				return nil
-			}
+			c.removeTaints(ctx, node, taints, nodename)
 		}
 
 		if shouldUncordon {
@@ -707,10 +705,10 @@ func (c *FaultQuarantineClient) removeLabels(
 
 func (c *FaultQuarantineClient) removeTaints(
 	ctx context.Context, node *v1.Node, taints []config.Taint, nodename string,
-) bool {
+) {
 	if c.DryRunMode {
 		slog.InfoContext(ctx, "DryRun mode enabled, skipping taint removal", "node", nodename)
-		return false
+		return
 	}
 
 	taintsAlreadyPresentOnNodeMap := map[config.Taint]bool{}
@@ -736,14 +734,12 @@ func (c *FaultQuarantineClient) removeTaints(
 	}
 
 	if len(taintsToActuallyRemove) == 0 {
-		return true
+		return
 	}
 
 	slog.InfoContext(ctx, "Untainting node", "node", nodename, "taints", taintsToActuallyRemove)
 
 	c.removeNodeTaints(ctx, node, taintsToActuallyRemove)
-
-	return false
 }
 
 func (c *FaultQuarantineClient) handleUncordon(

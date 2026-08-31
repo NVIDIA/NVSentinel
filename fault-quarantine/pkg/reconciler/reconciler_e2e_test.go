@@ -1007,7 +1007,7 @@ func TestE2E_ColdStartSkipsFailureSupersededByRecovery(t *testing.T) {
 	assert.Empty(t, dbClient.status("missed-recovery"))
 	assert.Equal(t, coldstart.RecoveryCompletionValue, dbClient.completion("missed-failure"))
 	assert.Equal(t, coldstart.RecoveryCompletionValue, dbClient.completion("missed-recovery"))
-	assert.Equal(t, 1, dbClient.callCount())
+	assert.Equal(t, 2, dbClient.callCount(), "fault and healthy phases persist terminal decisions separately")
 }
 
 func TestE2E_ColdStartCompletesEventForDeletedNode(t *testing.T) {

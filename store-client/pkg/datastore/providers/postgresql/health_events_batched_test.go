@@ -207,6 +207,44 @@ func TestFindHealthEventsByQueryBatched_InvalidDocument_SkipsAndAdvancesCursor(t
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestFindHealthEventsByQueryBatched_MalformedStatusPreservesRawHealthState(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	store := NewPostgreSQLHealthEventStore(db)
+	filter := query.New().Build(query.Eq("node_quarantined", nil))
+	createdAt := time.Date(2026, time.August, 31, 10, 0, 0, 0, time.UTC)
+	queryText := "SELECT id, created_at, document FROM health_events WHERE (node_quarantined IS NULL) " +
+		"ORDER BY created_at ASC, id ASC LIMIT 2"
+	document := []byte(`{
+		"healthevent":{"agent":"agent","componentClass":"GPU","checkName":"check","nodeName":"node-a","isHealthy":false},
+		"healtheventstatus":{"lastremediationtimestamp":"not-a-timestamp"}
+	}`)
+	mock.ExpectQuery(regexp.QuoteMeta(queryText)).WillReturnRows(
+		sqlmock.NewRows([]string{"id", "created_at", "document"}).
+			AddRow("00000000-0000-0000-0000-000000000001", createdAt, document),
+	)
+
+	var recovered []datastore.HealthEventWithStatus
+	err = store.FindHealthEventsByQueryBatched(
+		context.Background(), filter, 2,
+		func(batch []datastore.HealthEventWithStatus) error {
+			recovered = append(recovered, batch...)
+
+			return nil
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, recovered, 1)
+	assert.Equal(t, createdAt, recovered[0].CreatedAt)
+	assert.Equal(t, "00000000-0000-0000-0000-000000000001", recovered[0].RawEvent["id"])
+	rawHealth, ok := recovered[0].RawEvent["healthevent"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, false, rawHealth["isHealthy"])
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestFindLatestHealthEventByQuery_Result_PreservesCreatedAt(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)

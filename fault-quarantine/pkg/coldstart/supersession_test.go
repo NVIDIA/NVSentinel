@@ -16,12 +16,15 @@ package coldstart
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 )
@@ -104,7 +107,9 @@ func resolveSupersession(
 	documentID, err := utils.ExtractDocumentID(record.RawEvent)
 	require.NoError(t, err)
 
-	return resolver.superseded(context.Background(), parsed, record.CreatedAt, documentID)
+	resolved, _, err := resolver.resolve(context.Background(), parsed, record.CreatedAt, documentID)
+
+	return resolved, err
 }
 
 func TestSupersessionResolver_FullyClearedFailure_SkipsEvent(t *testing.T) {
@@ -166,16 +171,24 @@ func TestSupersessionResolver_CompleteCoverage_StopsReading(t *testing.T) {
 	assert.Equal(t, 1, store.batchCalls)
 }
 
-func TestSupersessionResolver_HealthyBeforeLaterFailure_SkipsHealthyEvent(t *testing.T) {
+func TestSupersessionResolver_HealthyWildcardPreservesOtherErrorCodeRecovery(t *testing.T) {
 	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
 	healthy := recoveryRecord(base, true, []any{impactedEntity("0")})
 	failure := withErrorCodes(
 		recoveryRecord(base.Add(time.Minute), false, []any{impactedEntity("0")}), "79")
 	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{healthy, failure}}
 
-	superseded, err := resolveSupersession(t, newSupersessionResolver(store, base.Add(time.Hour)), healthy)
+	parsed, err := parseStoredRecord(healthy)
 	require.NoError(t, err)
-	assert.True(t, superseded)
+	resolved, effects, err := newSupersessionResolver(store, base.Add(time.Hour)).resolve(
+		context.Background(), parsed, healthy.CreatedAt, "event-id")
+	require.NoError(t, err)
+	assert.False(t, resolved,
+		"a newer scoped fault must not discard recovery of unrelated stored error codes")
+	ctx := withRecoveryEffects(context.Background(), effects)
+	assert.False(t, ShouldRecoverEffect(ctx, "GPU", "0", "79"))
+	assert.True(t, ShouldRecoverEffect(ctx, "GPU", "0", "48"))
+	assert.True(t, ShouldRecoverEffect(ctx, "GPU", "0", ""))
 }
 
 func TestSupersessionResolver_UncodedFailureAfterScopedRecovery_KeepsFailure(t *testing.T) {
@@ -188,6 +201,286 @@ func TestSupersessionResolver_UncodedFailureAfterScopedRecovery_KeepsFailure(t *
 	superseded, err := resolveSupersession(t, newSupersessionResolver(store, base.Add(time.Hour)), failure)
 	require.NoError(t, err)
 	assert.False(t, superseded)
+}
+
+func TestSupersessionResolver_UncodedFailureSurvivesScopedFailureAndRecovery(t *testing.T) {
+	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	uncodedFailure := recoveryRecord(base, false, []any{impactedEntity("0")})
+	scopedFailure := withErrorCodes(
+		recoveryRecord(base.Add(time.Minute), false, []any{impactedEntity("0")}), "79")
+	scopedRecovery := withErrorCodes(
+		recoveryRecord(base.Add(2*time.Minute), true, []any{impactedEntity("0")}), "79")
+	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{
+		uncodedFailure, scopedFailure, scopedRecovery,
+	}}
+
+	superseded, err := resolveSupersession(
+		t, newSupersessionResolver(store, base.Add(time.Hour)), uncodedFailure)
+	require.NoError(t, err)
+	assert.False(t, superseded,
+		"a scoped failure and recovery must not erase an earlier uncoded fault")
+}
+
+func TestSupersessionResolver_UnhealthyUncodedFaultDoesNotCoverScopedFault(t *testing.T) {
+	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	scopedFailure := withErrorCodes(
+		recoveryRecord(base, false, []any{impactedEntity("0")}), "79")
+	uncodedFailure := recoveryRecord(base.Add(time.Minute), false, []any{impactedEntity("0")})
+	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{scopedFailure, uncodedFailure}}
+
+	superseded, err := resolveSupersession(
+		t, newSupersessionResolver(store, base.Add(time.Hour)), scopedFailure)
+	require.NoError(t, err)
+	assert.False(t, superseded,
+		"an unhealthy no-code event is a distinct fault, not a wildcard over scoped faults")
+}
+
+func TestSupersessionResolver_ExplicitEmptyCodeRecoveryIsNotWildcard(t *testing.T) {
+	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	scopedFailure := withErrorCodes(
+		recoveryRecord(base, false, []any{impactedEntity("0")}), "79")
+	explicitUncodedRecovery := withErrorCodes(
+		recoveryRecord(base.Add(time.Minute), true, []any{impactedEntity("0")}), "")
+	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{
+		scopedFailure, explicitUncodedRecovery,
+	}}
+
+	superseded, err := resolveSupersession(
+		t, newSupersessionResolver(store, base.Add(time.Hour)), scopedFailure)
+	require.NoError(t, err)
+	assert.False(t, superseded,
+		"only an absent healthy errorCode is a wildcard; an explicit empty code clears the uncoded key")
+}
+
+func TestSupersessionResolver_UnhealthyCheckWideFaultDoesNotCoverEntityFault(t *testing.T) {
+	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	entityFailure := withErrorCodes(
+		recoveryRecord(base, false, []any{impactedEntity("0")}), "79")
+	checkWideFailure := withErrorCodes(recoveryRecord(base.Add(time.Minute), false, nil), "79")
+	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{
+		entityFailure, checkWideFailure,
+	}}
+
+	superseded, err := resolveSupersession(
+		t, newSupersessionResolver(store, base.Add(time.Hour)), entityFailure)
+	require.NoError(t, err)
+	assert.False(t, superseded,
+		"an unhealthy check-wide event is a distinct fault, not a wildcard over entity faults")
+}
+
+func TestSupersessionResolver_HealthyWildcardClearsOnlyEffectsNotShadowedByUncodedFault(t *testing.T) {
+	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	healthy := recoveryRecord(base, true, []any{impactedEntity("0")})
+	uncodedFailure := recoveryRecord(base.Add(time.Minute), false, []any{impactedEntity("0")})
+	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{healthy, uncodedFailure}}
+
+	parsed, err := parseStoredRecord(healthy)
+	require.NoError(t, err)
+	resolved, effects, err := newSupersessionResolver(store, base.Add(time.Hour)).resolve(
+		context.Background(), parsed, healthy.CreatedAt, "event-id")
+	require.NoError(t, err)
+	assert.False(t, resolved)
+	ctx := withRecoveryEffects(context.Background(), effects)
+	assert.False(t, ShouldRecoverEffect(ctx, "GPU", "0", ""),
+		"the newer uncoded fault must survive the old wildcard recovery")
+	assert.True(t, ShouldRecoverEffect(ctx, "GPU", "0", "48"))
+	assert.True(t, ShouldRecoverEffect(ctx, "GPU", "0", "79"))
+}
+
+func TestSupersessionResolver_HealthyCheckWideClearsEntitiesButNotNewerCheckWideFault(t *testing.T) {
+	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	healthy := withErrorCodes(recoveryRecord(base, true, nil), "79")
+	checkWideFailure := withErrorCodes(recoveryRecord(base.Add(time.Minute), false, nil), "79")
+	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{healthy, checkWideFailure}}
+
+	parsed, err := parseStoredRecord(healthy)
+	require.NoError(t, err)
+	resolved, effects, err := newSupersessionResolver(store, base.Add(time.Hour)).resolve(
+		context.Background(), parsed, healthy.CreatedAt, "event-id")
+	require.NoError(t, err)
+	assert.False(t, resolved)
+	ctx := withRecoveryEffects(context.Background(), effects)
+	assert.True(t, ShouldRecoverEffect(ctx, "GPU", "A", "79"))
+	assert.True(t, ShouldRecoverEffect(ctx, "GPU", "B", "79"))
+	assert.False(t, ShouldRecoverEffect(ctx, "", "", "79"),
+		"the newer check-wide fault must survive the old check-wide recovery")
+}
+
+func TestSupersessionResolver_MalformedNewerEventBlocksHealthyClear(t *testing.T) {
+	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	healthy := recoveryRecord(base, true, []any{impactedEntity("0")})
+	malformed := recoveryRecord(base.Add(time.Minute), false, []any{impactedEntity("0")})
+	malformed.RawEvent["id"] = "malformed-event"
+	malformed.RawEvent["healthevent"].(map[string]any)["isHealthy"] = "not-a-bool"
+	_, parseErr := parseStoredRecord(malformed)
+	require.Error(t, parseErr)
+	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{healthy, malformed}}
+
+	superseded, err := resolveSupersession(t, newSupersessionResolver(store, base.Add(time.Hour)), healthy)
+	require.NoError(t, err)
+	assert.True(t, superseded, "an unreadable newer state must not allow an old healthy clear")
+}
+
+func TestSupersessionResolver_MalformedNewerEventDoesNotBlockFailure(t *testing.T) {
+	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	failure := recoveryRecord(base, false, []any{impactedEntity("0")})
+	malformed := recoveryRecord(base.Add(time.Minute), false, []any{impactedEntity("0")})
+	malformed.RawEvent["id"] = "malformed-event"
+	malformed.RawEvent["healthevent"].(map[string]any)["isHealthy"] = "not-a-bool"
+	_, parseErr := parseStoredRecord(malformed)
+	require.Error(t, parseErr)
+	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{failure, malformed}}
+
+	superseded, err := resolveSupersession(t, newSupersessionResolver(store, base.Add(time.Hour)), failure)
+	require.NoError(t, err)
+	assert.False(t, superseded, "an unreadable newer state must not suppress a conservative fault replay")
+}
+
+func TestRecoverStoredEvent_ProjectsNonRectangularResidualBeforeRuleEvaluation(t *testing.T) {
+	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	failure := withErrorCodes(
+		recoveryRecord(base, false, []any{impactedEntity("A"), impactedEntity("B")}), "48", "79")
+	recovery := withErrorCodes(
+		recoveryRecord(base.Add(time.Minute), true, []any{impactedEntity("A")}), "79")
+	recovery.RawEvent["id"] = "recovery-id"
+	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{failure, recovery}}
+
+	var projected []*protos.HealthEvent
+	processor := &eventProcessorStub{process: func(
+		ctx context.Context,
+		event model.HealthEventWithStatus,
+		_ string,
+	) (ProcessResult, error) {
+		var projectionErr error
+		projected, projectionErr = ProjectHealthEvent(ctx, event.HealthEvent)
+		require.NoError(t, projectionErr)
+
+		return ProcessResultProcessed, nil
+	}}
+	completion, err := recoverStoredEvent(
+		context.Background(), newSupersessionResolver(store, base.Add(time.Hour)), processor, failure)
+	require.NoError(t, err)
+	assert.Nil(t, completion)
+	require.Len(t, projected, 2)
+	assert.Equal(t, []string{"48"}, projected[0].GetErrorCode())
+	assert.Equal(t, []string{"A", "B"}, []string{
+		projected[0].GetEntitiesImpacted()[0].GetEntityValue(),
+		projected[0].GetEntitiesImpacted()[1].GetEntityValue(),
+	})
+	assert.Equal(t, []string{"48", "79"}, projected[1].GetErrorCode())
+	require.Len(t, projected[1].GetEntitiesImpacted(), 1)
+	assert.Equal(t, "B", projected[1].GetEntitiesImpacted()[0].GetEntityValue(),
+		"the recovered A/79 effect must not reach rule evaluation while B keeps both codes")
+}
+
+func TestRecoverStoredEvent_ProjectsResidualCheckWideErrorCodes(t *testing.T) {
+	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	failure := withErrorCodes(recoveryRecord(base, false, nil), "48", "79")
+	recovery := withErrorCodes(recoveryRecord(base.Add(time.Minute), true, nil), "79")
+	recovery.RawEvent["id"] = "recovery-id"
+	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{failure, recovery}}
+
+	var projected []*protos.HealthEvent
+	processor := &eventProcessorStub{process: func(
+		ctx context.Context,
+		event model.HealthEventWithStatus,
+		_ string,
+	) (ProcessResult, error) {
+		var projectionErr error
+		projected, projectionErr = ProjectHealthEvent(ctx, event.HealthEvent)
+		require.NoError(t, projectionErr)
+
+		return ProcessResultProcessed, nil
+	}}
+	completion, err := recoverStoredEvent(
+		context.Background(), newSupersessionResolver(store, base.Add(time.Hour)), processor, failure)
+	require.NoError(t, err)
+	assert.Nil(t, completion)
+	require.Len(t, projected, 1)
+	assert.Empty(t, projected[0].GetEntitiesImpacted())
+	assert.Equal(t, []string{"48"}, projected[0].GetErrorCode(),
+		"the recovered check-wide 79 effect must not reach rule evaluation")
+}
+
+func TestRecoverStoredEvent_PreservesResidualExplicitBlankCode(t *testing.T) {
+	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	failure := withErrorCodes(recoveryRecord(base, false, nil), "", "79")
+	recovery := withErrorCodes(recoveryRecord(base.Add(time.Minute), true, nil), "79")
+	recovery.RawEvent["id"] = "recovery-id"
+	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{failure, recovery}}
+
+	var projected []*protos.HealthEvent
+	processor := &eventProcessorStub{process: func(
+		ctx context.Context,
+		event model.HealthEventWithStatus,
+		_ string,
+	) (ProcessResult, error) {
+		var projectionErr error
+		projected, projectionErr = ProjectHealthEvent(ctx, event.HealthEvent)
+		require.NoError(t, projectionErr)
+
+		return ProcessResultProcessed, nil
+	}}
+	completion, err := recoverStoredEvent(
+		context.Background(), newSupersessionResolver(store, base.Add(time.Hour)), processor, failure)
+	require.NoError(t, err)
+	assert.Nil(t, completion)
+	require.Len(t, projected, 1)
+	assert.Empty(t, projected[0].GetEntitiesImpacted())
+	assert.Equal(t, []string{""}, projected[0].GetErrorCode(),
+		"an explicit blank code must remain distinct from an absent wildcard")
+}
+
+func TestProjectHealthEvent_PreservesAbsentCodeAsWildcard(t *testing.T) {
+	event := &protos.HealthEvent{
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU", EntityValue: "A"},
+			{EntityType: "GPU", EntityValue: "B"},
+		},
+	}
+	ctx := withRecoveryEffects(context.Background(), &eventCoverage{
+		remaining: map[eventEffect]struct{}{
+			{entityType: "GPU", entityValue: "B", errorCode: ""}: {},
+		},
+		projected: true,
+	})
+
+	projected, err := ProjectHealthEvent(ctx, event)
+	require.NoError(t, err)
+	require.Len(t, projected, 1)
+	assert.Empty(t, projected[0].GetErrorCode(), "an absent code must remain a wildcard")
+}
+
+func TestProjectHealthEvent_UsesConservativeFallbackForComplexResidual(t *testing.T) {
+	const dimension = 9 // 2^9-1 intersections exceed the projection cap.
+	remaining := make(map[eventEffect]struct{})
+	event := &protos.HealthEvent{}
+	for entityIndex := range dimension {
+		entityValue := fmt.Sprintf("entity-%d", entityIndex)
+		event.EntitiesImpacted = append(event.EntitiesImpacted, &protos.Entity{
+			EntityType: "GPU", EntityValue: entityValue,
+		})
+		for codeIndex := range dimension {
+			code := fmt.Sprintf("code-%d", codeIndex)
+			if entityIndex == 0 {
+				event.ErrorCode = append(event.ErrorCode, code)
+			}
+			if entityIndex != codeIndex {
+				remaining[eventEffect{
+					entityType: "GPU", entityValue: entityValue, errorCode: code,
+				}] = struct{}{}
+			}
+		}
+	}
+	ctx := withRecoveryEffects(context.Background(), &eventCoverage{
+		remaining: remaining, projected: true,
+	})
+
+	projected, err := ProjectHealthEvent(ctx, event)
+	require.NoError(t, err)
+	require.Len(t, projected, 1)
+	assert.Same(t, event, projected[0],
+		"overflow must fail closed for rule evaluation without cloning exponential output")
 }
 
 func TestSupersessionResolver_CheckWideRecoveryAfterDifferentErrorCode_KeepsRecovery(t *testing.T) {

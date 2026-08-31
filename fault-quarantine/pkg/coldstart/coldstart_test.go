@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	multierror "github.com/hashicorp/go-multierror"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -85,6 +86,13 @@ func replayRecord(id string) datastore.HealthEventWithStatus {
 		},
 		"healtheventstatus": map[string]any{},
 	}}
+}
+
+func healthyReplayRecord(id string) datastore.HealthEventWithStatus {
+	record := replayRecord(id)
+	record.RawEvent["healthevent"].(map[string]any)["isHealthy"] = true
+
+	return record
 }
 
 func TestStoredDocumentID_NativeDatabaseKey_PreservesValue(t *testing.T) {
@@ -192,6 +200,77 @@ func TestHandle_MultipleBatches_ProcessesInOrder(t *testing.T) {
 	require.Len(t, processedIDs, eventCount)
 	assert.Equal(t, "event-0000", processedIDs[0])
 	assert.Equal(t, fmt.Sprintf("event-%04d", eventCount-1), processedIDs[eventCount-1])
+}
+
+func TestHandle_ProcessesFaultsBeforeHealthyEventsAcrossBatches(t *testing.T) {
+	firstBatch := []datastore.HealthEventWithStatus{
+		healthyReplayRecord("healthy-old"), replayRecord("fault-old"),
+	}
+	secondBatch := []datastore.HealthEventWithStatus{
+		healthyReplayRecord("healthy-new"), replayRecord("fault-new"),
+	}
+	store := &healthEventStoreStub{findBatched: func(
+		_ context.Context,
+		_ datastore.QueryBuilder,
+		_ int,
+		visit func([]datastore.HealthEventWithStatus) error,
+	) error {
+		if err := visit(firstBatch); err != nil {
+			return err
+		}
+
+		return visit(secondBatch)
+	}}
+	var processed []string
+	processor := &eventProcessorStub{process: func(
+		_ context.Context,
+		_ model.HealthEventWithStatus,
+		documentID string,
+	) (ProcessResult, error) {
+		processed = append(processed, documentID)
+
+		return ProcessResultProcessed, nil
+	}}
+
+	require.NoError(t, Handle(context.Background(), Dependencies{
+		HealthEventStore: store, EventProcessor: processor,
+	}))
+	assert.Equal(t, []string{"fault-old", "fault-new", "healthy-old", "healthy-new"}, processed)
+}
+
+func TestHandle_FaultFailureDefersHealthyEventsUntilRestart(t *testing.T) {
+	processErr := errors.New("temporary fault failure")
+	events := []datastore.HealthEventWithStatus{
+		healthyReplayRecord("healthy"), replayRecord("fault"),
+	}
+	store := &healthEventStoreStub{findBatched: func(
+		_ context.Context,
+		_ datastore.QueryBuilder,
+		_ int,
+		visit func([]datastore.HealthEventWithStatus) error,
+	) error {
+		return visit(events)
+	}}
+	var processed []string
+	processor := &eventProcessorStub{process: func(
+		_ context.Context,
+		_ model.HealthEventWithStatus,
+		documentID string,
+	) (ProcessResult, error) {
+		processed = append(processed, documentID)
+		if documentID == "fault" {
+			return ProcessResultFailed, processErr
+		}
+
+		return ProcessResultProcessed, nil
+	}}
+
+	err := Handle(context.Background(), Dependencies{
+		HealthEventStore: store, EventProcessor: processor,
+	})
+	require.ErrorIs(t, err, processErr)
+	assert.Equal(t, []string{"fault"}, processed,
+		"a recovery must remain unresolved while the preceding fault phase is incomplete")
 }
 
 func TestHandle_EventProcessingFailure_ContinuesBatch(t *testing.T) {
@@ -425,6 +504,8 @@ func TestIsPermanentError_JoinedFailures_RequiresEveryFailurePermanent(t *testin
 	assert.True(t, IsPermanentError(fmt.Errorf("evaluate event: %w", permanentErr)))
 	assert.True(t, IsPermanentError(errors.Join(permanentErr, otherPermanentErr)))
 	assert.False(t, IsPermanentError(errors.Join(permanentErr, transientErr)))
+	assert.True(t, IsPermanentError(multierror.Append(nil, permanentErr, otherPermanentErr)))
+	assert.False(t, IsPermanentError(multierror.Append(nil, permanentErr, transientErr)))
 }
 
 func TestGetRecoveryNode_RepeatedRead_UsesOneSanitizedSnapshot(t *testing.T) {

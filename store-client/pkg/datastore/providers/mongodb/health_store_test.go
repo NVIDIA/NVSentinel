@@ -24,6 +24,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
@@ -438,6 +439,51 @@ func TestMongoHealthEventStore_FindHealthEventsByQueryBatched(t *testing.T) {
 		assert.ErrorIs(t, err, callbackErr)
 
 		mockDB.AssertExpectations(t)
+	})
+
+	t.Run("malformed typed status preserves raw health state", func(t *testing.T) {
+		mockDB := new(MockDatabaseClient)
+		mockCursor := new(MockCursor)
+		store := &MongoHealthEventStore{databaseClient: mockDB}
+		createdAt := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+
+		mockDB.On("Find", ctx, mock.Anything, orderedFindOptions(10)).Return(mockCursor, nil)
+		mockCursor.On("Close", ctx).Return(nil)
+		mockCursor.On("Next", ctx).Return(true).Once()
+		mockCursor.On("Next", ctx).Return(false).Once()
+		mockCursor.On("Decode", mock.AnythingOfType("*map[string]interface {}")).Return(nil).
+			Run(func(args mock.Arguments) {
+				doc := args.Get(0).(*map[string]any)
+				*doc = map[string]any{
+					"_id": "event-1", "createdAt": createdAt,
+					"healthevent": map[string]any{
+						"agent": "agent", "componentclass": "GPU", "checkname": "check",
+						"nodename": "node-a", "ishealthy": false,
+					},
+					"healtheventstatus": map[string]any{
+						"lastremediationtimestamp": "not-a-timestamp",
+					},
+				}
+			})
+		mockCursor.On("Err").Return(nil)
+
+		var recovered []datastore.HealthEventWithStatus
+		err := store.FindHealthEventsByQueryBatched(ctx, mockQueryBuilder{}, 10,
+			func(batch []datastore.HealthEventWithStatus) error {
+				recovered = append(recovered, batch...)
+
+				return nil
+			})
+		require.NoError(t, err)
+		require.Len(t, recovered, 1)
+		assert.Equal(t, createdAt, recovered[0].CreatedAt)
+		assert.Equal(t, "event-1", recovered[0].RawEvent["_id"])
+		rawHealth, ok := recovered[0].RawEvent["healthevent"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, false, rawHealth["ishealthy"])
+
+		mockDB.AssertExpectations(t)
+		mockCursor.AssertExpectations(t)
 	})
 }
 

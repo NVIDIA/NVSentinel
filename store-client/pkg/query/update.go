@@ -247,9 +247,18 @@ func buildChainedJSONBSet(updates []documentUpdate, startParam int) (string, []a
 
 		expr = fmt.Sprintf("jsonb_set(%s, '{%s}', $%d::jsonb)", expr, du.path, startParam+i)
 		args = append(args, toJSONBValue(du.value))
+		invalidateInitializedParents(initializedParents, du.path)
 	}
 
 	return "document = " + expr, args
+}
+
+func invalidateInitializedParents(initialized map[string]struct{}, overwrittenPath string) {
+	for path := range initialized {
+		if path == overwrittenPath || strings.HasPrefix(path, overwrittenPath+",") {
+			delete(initialized, path)
+		}
+	}
 }
 
 // --- Set Operation ---
