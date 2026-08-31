@@ -16,6 +16,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -70,6 +71,24 @@ type DefaultEventProcessor struct {
 	config              EventProcessorConfig
 	eventHandler        EventHandler
 	stopCh              chan struct{}
+}
+
+// uncheckpointedEventError indicates that the processor must stop before
+// consuming another event, because the current event remains unresolved.
+type uncheckpointedEventError struct {
+	cause error
+}
+
+func (e *uncheckpointedEventError) Error() string {
+	return fmt.Sprintf("event was not checkpointed: %v", e.cause)
+}
+
+func (e *uncheckpointedEventError) Unwrap() error {
+	return e.cause
+}
+
+func newUncheckpointedEventError(cause error) error {
+	return &uncheckpointedEventError{cause: cause}
 }
 
 // NewEventProcessor creates a new unified event processor
@@ -140,11 +159,20 @@ func (p *DefaultEventProcessor) processEvents(ctx context.Context) error {
 				return nil
 			}
 
-			eventID, _ := event.GetDocumentID()
+			eventID, err := event.GetDocumentID()
+			if err != nil || eventID == "" {
+				eventID = "unknown"
+			}
+
 			slog.Debug("Processing event", "eventID", eventID)
 
 			if err := p.handleSingleEvent(ctx, event); err != nil {
 				slog.Error("Failed to handle event", "eventID", eventID, "error", err)
+
+				var uncheckpointedErr *uncheckpointedEventError
+				if errors.As(err, &uncheckpointedErr) {
+					return fmt.Errorf("stopping at uncheckpointed event %q: %w", eventID, err)
+				}
 			}
 		}
 	}
@@ -162,7 +190,9 @@ func (p *DefaultEventProcessor) handleSingleEvent(ctx context.Context, event Eve
 		p.updateMetrics("unmarshal_error", "", time.Since(startTime), false)
 
 		if markErr := p.markProcessed(ctx, token); markErr != nil {
-			slog.Error("Failed to mark processed after unmarshal error", "error", markErr)
+			return newUncheckpointedEventError(fmt.Errorf(
+				"failed to mark processed after unmarshal error (%w): %w", err, markErr,
+			))
 		}
 
 		return fmt.Errorf("failed to unmarshal event: %w", err)
@@ -173,7 +203,9 @@ func (p *DefaultEventProcessor) handleSingleEvent(ctx context.Context, event Eve
 		p.updateMetrics("document_id_error", "", time.Since(startTime), false)
 
 		if markErr := p.markProcessed(ctx, token); markErr != nil {
-			slog.Error("Failed to mark processed after document ID error", "error", markErr)
+			return newUncheckpointedEventError(fmt.Errorf(
+				"failed to mark processed after document ID error (%w): %w", err, markErr,
+			))
 		}
 
 		return fmt.Errorf("failed to get document ID: %w", err)
@@ -194,7 +226,7 @@ func (p *DefaultEventProcessor) handleSingleEvent(ctx context.Context, event Eve
 	if markErr := p.markProcessed(ctx, token); markErr != nil {
 		p.updateMetrics("mark_processed_error", eventID, time.Since(startTime), false)
 
-		return fmt.Errorf("failed to mark event as processed: %w", markErr)
+		return newUncheckpointedEventError(fmt.Errorf("failed to mark event as processed: %w", markErr))
 	}
 
 	return nil
@@ -207,7 +239,7 @@ func (p *DefaultEventProcessor) handleProcessingError(
 		slog.Error("Event processing failed, NOT marking as processed - will retry on restart",
 			"eventID", eventID, "error", processErr)
 
-		return processErr
+		return newUncheckpointedEventError(processErr)
 	}
 
 	slog.Warn("Marking failed event as processed due to MarkProcessedOnError=true",
@@ -216,7 +248,9 @@ func (p *DefaultEventProcessor) handleProcessingError(
 	if markErr := p.markProcessed(ctx, token); markErr != nil {
 		slog.Error("Failed to mark processed after error", "error", markErr)
 
-		return fmt.Errorf("failed to mark event as processed: %w", markErr)
+		return newUncheckpointedEventError(fmt.Errorf(
+			"failed to mark event as processed after processing error (%w): %w", processErr, markErr,
+		))
 	}
 
 	return processErr
