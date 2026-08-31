@@ -8,10 +8,10 @@ require (
 	github.com/nvidia/nvsentinel/data-models v0.0.0
 	github.com/stretchr/testify v1.12.1
 	google.golang.org/grpc v1.83.2
-	k8s.io/api v0.36.4
-	k8s.io/apimachinery v0.36.4
-	k8s.io/client-go v0.36.4
-	k8s.io/kubelet v0.36.4
+	k8s.io/api v0.37.0
+	k8s.io/apimachinery v0.37.0
+	k8s.io/client-go v0.37.0
+	k8s.io/kubelet v0.37.0
 )
 
 require (

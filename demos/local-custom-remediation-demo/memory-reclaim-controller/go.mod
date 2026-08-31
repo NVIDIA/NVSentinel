@@ -3,9 +3,9 @@ module github.com/nvidia/nvsentinel/demos/local-custom-remediation-demo/memory-r
 go 1.27.0
 
 require (
-	k8s.io/api v0.36.4
-	k8s.io/apimachinery v0.36.4
-	k8s.io/client-go v0.36.4
+	k8s.io/api v0.37.0
+	k8s.io/apimachinery v0.37.0
+	k8s.io/client-go v0.37.0
 )
 
 require (
