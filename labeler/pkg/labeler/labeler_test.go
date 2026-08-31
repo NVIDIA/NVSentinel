@@ -27,7 +27,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -962,7 +961,7 @@ func TestAssumeDCGMAvailableWhenPodSourceMissing(t *testing.T) {
 				node.Labels[DCGMVersionLabel] = tt.existingLabel
 			}
 
-			l.updateDriverAndDCGMLabels(node, "", "")
+			l.setDriverAndDCGMLabelValues(node, "", "")
 
 			if tt.wantLabel == "" {
 				require.NotContains(t, node.Labels, DCGMVersionLabel)
@@ -1147,16 +1146,17 @@ func TestLabelerInformerTransforms_EndToEnd(t *testing.T) {
 		isReady, _ := isTargetPod(cachedPod, true, nil)
 		assert.True(t, isReady)
 
-		dcgmVersion, err := labeler.getDCGMVersionForNode(node.Name, nil)
+		dcgmVersion, err := labeler.resolveDCGMVersionLabelValue(node, nil)
 		require.NoError(t, err)
 		assert.Equal(t, dcgmVersion4, dcgmVersion)
 
 		cachedNode, err := labeler.getNodeFromCache(node.Name)
 		require.NoError(t, err)
+		assert.NotEmpty(t, cachedNode.ResourceVersion)
 		assert.Equal(t, &corev1.Node{
 			Name:            node.Name,
 			UID:             node.UID,
-			ResourceVersion: node.ResourceVersion,
+			ResourceVersion: cachedNode.ResourceVersion,
 			Labels:          node.Labels,
 			Annotations: map[string]string{
 				DCGMBootstrapCompletedAnnotation: "true",
@@ -1238,6 +1238,7 @@ func TestLabelerInformerTransforms_EndToEnd(t *testing.T) {
 
 		stop()
 	})
+
 }
 
 func startTransformTestLabeler(
@@ -1343,6 +1344,11 @@ func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, labeler.resourceSliceInformer)
 		require.Len(t, labeler.informersSynced, 5)
+		require.Contains(
+			t,
+			labeler.resourceSliceInformer.GetIndexer().GetIndexers(),
+			devicecounts.ResourceSliceNodeNameIndex,
+		)
 	})
 }
 
@@ -1458,48 +1464,6 @@ func TestLabelerNodeRequiresReconciliation_AllocatableChanges(t *testing.T) {
 	})
 }
 
-func TestLabelerResourceSlicesForNodeFiltersByNodeName(t *testing.T) {
-	labeler, err := NewLabeler(
-		fake.NewSimpleClientset(),
-		time.Minute,
-		"nvidia-dcgm",
-		"nvidia-driver-daemonset",
-		"nvidia-driver-installer",
-		"",
-		false,
-		false,
-		testResourceSliceDeviceCountConfig(),
-		false,
-	)
-	require.NoError(t, err)
-	require.NotNil(t, labeler.resourceSliceInformer)
-
-	nodeName := "node-a"
-	otherNodeName := "node-b"
-
-	require.NoError(t, labeler.resourceSliceInformer.GetStore().Add(&resourcev1.ResourceSlice{
-		Name: "slice-a",
-		Spec: resourcev1.ResourceSliceSpec{
-			NodeName: &nodeName,
-		},
-	}))
-	require.NoError(t, labeler.resourceSliceInformer.GetStore().Add(&resourcev1.ResourceSlice{
-		Name: "slice-b",
-		Spec: resourcev1.ResourceSliceSpec{
-			NodeName: &otherNodeName,
-		},
-	}))
-	require.NoError(t, labeler.resourceSliceInformer.GetStore().Add(&resourcev1.ResourceSlice{
-		Name: "global-slice",
-	}))
-
-	resourceSlices := labeler.resourceSlicesForNode(&corev1.Node{
-		Name: nodeName,
-	})
-
-	require.Len(t, resourceSlices, 1)
-	require.Equal(t, "slice-a", resourceSlices[0].Name)
-}
 
 func testDeviceCountConfig() devicecounts.Config {
 	return devicecounts.Config{
@@ -2231,8 +2195,8 @@ func generateNodeUpdates(t *testing.T, ctx context.Context, cli kubernetes.Inter
 }
 
 // errNodeLister is a NodeLister that always returns a non-NotFound error from Get,
-// used to exercise the fail-closed paths in reconcileNodeLabelsInPlace and
-// updateNodeLabelsForPod.
+// used to exercise the fail-closed paths in calculateAndSetNodeLabels and
+// reconcilePodDerivedLabels.
 type errNodeLister struct{}
 
 func (e errNodeLister) List(_ labels.Selector) ([]*corev1.Node, error) { return nil, nil }
@@ -2249,16 +2213,16 @@ func nodeIndexerLister(nodes ...*corev1.Node) listersv1.NodeLister {
 	return listersv1.NewNodeLister(indexer)
 }
 
-// TestReconcileNodeLabelsInPlace_KataAndDriverLabelsMissing_AppliesBothInOnePass
+// TestCalculateAndSetNodeLabels_KataAndDriverLabelsMissing_AppliesBoth
 // covers a node that needs its Kata label and its driver label at the same time.
 //
 // The two results were combined with `needsUpdate ||
-// l.updateDriverAndDCGMLabels(...)`, and || short-circuits: once the Kata label had
+// l.setDriverAndDCGMLabelValues(...)`, and || short-circuits: once the Kata label had
 // been set, the driver and DCGM labels were never evaluated. A second reconcile pass
 // hid this, because by then the Kata label was already correct and the short circuit
 // no longer triggered — so the labels arrived one pass later than they should, and
 // only if a second pass happened at all.
-func TestReconcileNodeLabelsInPlace_KataAndDriverLabelsMissing_AppliesBothInOnePass(t *testing.T) {
+func TestCalculateAndSetNodeLabels_KataAndDriverLabelsMissing_AppliesBoth(t *testing.T) {
 	node := &corev1.Node{
 		Name:   "kata-and-driver-node",
 		Labels: map[string]string{gpuPresentLabel: LabelValueTrue},
@@ -2268,15 +2232,30 @@ func TestReconcileNodeLabelsInPlace_KataAndDriverLabelsMissing_AppliesBothInOneP
 	// hold the node: the device-count pass is disabled here but still lists the store.
 	nodeInformer := cache.NewSharedIndexInformer(&cache.ListWatch{}, &corev1.Node{}, 0, cache.Indexers{})
 	require.NoError(t, nodeInformer.GetStore().Add(node))
+	podInformer := cache.NewSharedIndexInformer(&cache.ListWatch{}, &corev1.Pod{}, 0, cache.Indexers{
+		NodeDriverIndex: podNodeIndexerByLabel("app", "nvidia-driver-daemonset"),
+		NodeDCGMIndex:   podNodeIndexerByLabel("app", "nvidia-dcgm"),
+	})
+	require.NoError(t, podInformer.GetStore().Add(&corev1.Pod{
+		Name:   "driver-pod",
+		Labels: map[string]string{"app": "nvidia-driver-daemonset"},
+		Spec: corev1.PodSpec{NodeName: node.Name},
+		Status: corev1.PodStatus{Conditions: []corev1.PodCondition{{
+			Type:   corev1.PodReady,
+			Status: corev1.ConditionTrue,
+		}}},
+	}))
 
 	l := &Labeler{
 		ctx:          context.Background(),
 		nodeInformer: nodeInformer,
 		nodeLister:   listersv1.NewNodeLister(nodeInformer.GetIndexer()),
+		podInformer:  podInformer,
 	}
 
 	target := node.DeepCopy()
-	changed := l.reconcileNodeLabelsInPlace(target, LabelValueTrue, "")
+	changed, err := l.calculateAndSetNodeLabels(target, l.newDeviceCountReconcileCache())
+	require.NoError(t, err)
 
 	assert.True(t, changed, "both labels are missing, so an update is needed")
 	assert.Equal(t, LabelValueFalse, target.Labels[KataEnabledLabel])
@@ -2284,7 +2263,7 @@ func TestReconcileNodeLabelsInPlace_KataAndDriverLabelsMissing_AppliesBothInOneP
 		"the driver label must not be skipped just because the kata label changed")
 }
 
-func TestReconcileNodeLabelsInPlace_ManagedGate(t *testing.T) {
+func TestCalculateAndSetNodeLabels_ManagedGate(t *testing.T) {
 	t.Run("strips detection labels when node is opted out", func(t *testing.T) {
 		node := &corev1.Node{
 			Name: "opted-out-node",
@@ -2301,7 +2280,8 @@ func TestReconcileNodeLabelsInPlace_ManagedGate(t *testing.T) {
 		}
 
 		target := node.DeepCopy()
-		changed := l.reconcileNodeLabelsInPlace(target, "true", "3.x")
+		changed, err := l.calculateAndSetNodeLabels(target, l.newDeviceCountReconcileCache())
+		require.NoError(t, err)
 
 		assert.True(t, changed, "should report labels changed")
 		assert.NotContains(t, target.Labels, DCGMVersionLabel, "DCGM label must be stripped")
@@ -2321,7 +2301,8 @@ func TestReconcileNodeLabelsInPlace_ManagedGate(t *testing.T) {
 			nodeLister: nodeIndexerLister(node),
 		}
 		target := node.DeepCopy()
-		changed := l.reconcileNodeLabelsInPlace(target, "", "")
+		changed, err := l.calculateAndSetNodeLabels(target, l.newDeviceCountReconcileCache())
+		require.NoError(t, err)
 		assert.False(t, changed, "no labels to strip → no update needed")
 	})
 
@@ -2335,7 +2316,8 @@ func TestReconcileNodeLabelsInPlace_ManagedGate(t *testing.T) {
 			nodeLister: errNodeLister{},
 		}
 		target := node.DeepCopy()
-		changed := l.reconcileNodeLabelsInPlace(target, "true", "3.x")
+		changed, err := l.calculateAndSetNodeLabels(target, l.newDeviceCountReconcileCache())
+		require.NoError(t, err)
 
 		assert.False(t, changed, "lister error must not report changes")
 		assert.Contains(t, target.Labels, DCGMVersionLabel, "lister error must not strip labels")
@@ -2344,7 +2326,7 @@ func TestReconcileNodeLabelsInPlace_ManagedGate(t *testing.T) {
 
 }
 
-func TestUpdateNodeLabelsForPod_ManagedGate(t *testing.T) {
+func TestReconcilePodDerivedLabels_ManagedGate(t *testing.T) {
 	t.Run("skips update when node is opted out", func(t *testing.T) {
 		node := &corev1.Node{
 			Name: "opted-out-node",
@@ -2360,7 +2342,7 @@ func TestUpdateNodeLabelsForPod_ManagedGate(t *testing.T) {
 			clientset:  clientset,
 		}
 
-		err := l.updateNodeLabelsForPod(node.Name, "true", "3.x")
+		err := l.reconcilePodDerivedLabels(node.Name, nil)
 		require.NoError(t, err, "opted-out skip must not return an error")
 
 		// Verify the clientset was never called to update labels.
@@ -2383,7 +2365,7 @@ func TestUpdateNodeLabelsForPod_ManagedGate(t *testing.T) {
 			clientset:  clientset,
 		}
 
-		err := l.updateNodeLabelsForPod(node.Name, "true", "3.x")
+		err := l.reconcilePodDerivedLabels(node.Name, nil)
 		require.NoError(t, err, "fail-closed skip must not propagate as an error")
 
 		updated, getErr := clientset.CoreV1().Nodes().Get(context.Background(), node.Name, metav1.GetOptions{})
@@ -2434,9 +2416,9 @@ func newLabelerWithCachedDriverPods(t *testing.T, node *corev1.Node,
 	}, clientset
 }
 
-// TestUpdateNodeLabels_DriverPodDeletedDuringReconcile_DeleteWins verifies that a
+// TestReconcileNodeLabels_DriverPodDeletedDuringReconcile_DeleteWins verifies that a
 // startup reconcile cannot overwrite a concurrent pod-deletion result.
-func TestUpdateNodeLabels_DriverPodDeletedDuringReconcile_DeleteWins(t *testing.T) {
+func TestReconcileNodeLabels_DriverPodDeletedDuringReconcile_DeleteWins(t *testing.T) {
 	const nodeName = "test-node"
 
 	node := &corev1.Node{
@@ -2473,7 +2455,9 @@ func TestUpdateNodeLabels_DriverPodDeletedDuringReconcile_DeleteWins(t *testing.
 	})
 
 	reconcileDone := make(chan error, 1)
-	go func() { reconcileDone <- l.updateNodeLabels(nodeName) }()
+	go func() {
+		reconcileDone <- l.reconcileNodeLabels(nodeName, l.newDeviceCountReconcileCache())
+	}()
 	<-reconcileReachedPatch
 
 	// Informer stores remove an object before invoking its delete handler.
@@ -2496,9 +2480,9 @@ func TestUpdateNodeLabels_DriverPodDeletedDuringReconcile_DeleteWins(t *testing.
 	assert.NotContains(t, updated.Labels, DriverInstalledLabel)
 }
 
-// TestUpdateNodeLabels_CachedNode_UsesPatchOnly pins the API-call budget and payload
+// TestReconcileNodeLabels_CachedNode_UsesPatchOnly pins the API-call budget and payload
 // of the label write path.
-func TestUpdateNodeLabels_CachedNode_UsesPatchOnly(t *testing.T) {
+func TestReconcileNodeLabels_CachedNode_UsesPatchOnly(t *testing.T) {
 	const nodeName = "gpu-node"
 
 	clientset := fake.NewSimpleClientset(&corev1.Node{
@@ -2544,7 +2528,7 @@ func TestUpdateNodeLabels_CachedNode_UsesPatchOnly(t *testing.T) {
 			tt.setup(t)
 			clientset.ClearActions()
 
-			require.NoError(t, labeler.updateNodeLabels(nodeName))
+			require.NoError(t, labeler.reconcileNodeLabels(nodeName, labeler.newDeviceCountReconcileCache()))
 
 			expectedPatchCount := 0
 			if tt.expectedPatch != "" {
@@ -2567,7 +2551,7 @@ func TestUpdateNodeLabels_CachedNode_UsesPatchOnly(t *testing.T) {
 	}
 }
 
-func TestUpdateNodeLabels_DelayedInformerEvent_EventuallyConverges(t *testing.T) {
+func TestReconcileNodeLabels_DelayedInformerEvent_EventuallyConverges(t *testing.T) {
 	const nodeName = "delayed-node"
 
 	initial := &corev1.Node{
@@ -2605,7 +2589,7 @@ func TestUpdateNodeLabels_DelayedInformerEvent_EventuallyConverges(t *testing.T)
 	// A reconcile against the stale projection computes the stale derived value and
 	// correctly emits no write.
 	clientset.ClearActions()
-	require.NoError(t, labeler.updateNodeLabels(nodeName))
+	require.NoError(t, labeler.reconcileNodeLabels(nodeName, labeler.newDeviceCountReconcileCache()))
 	assert.Empty(t, clientset.Actions())
 
 	// Deliver the delayed input event. Its handler must reconcile from the new cache

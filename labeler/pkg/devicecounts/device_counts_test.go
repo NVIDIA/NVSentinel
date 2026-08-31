@@ -96,7 +96,7 @@ func TestExpectedDeviceCountsLearnFromPeerNodeLabels(t *testing.T) {
 	})
 
 	manager := newTestManager(t, config)
-	updated := manager.ReconcileNodeLabelsInPlace(
+	updated := manager.CalculateAndSetDeviceCountLabels(
 		context.Background(),
 		nodeB,
 		[]*corev1.Node{nodeA, nodeB},
@@ -136,7 +136,7 @@ func TestExpectedDeviceCountsOverridePrecedence(t *testing.T) {
 	})
 
 	manager := newTestManager(t, config)
-	updated := manager.ReconcileNodeLabelsInPlace(
+	updated := manager.CalculateAndSetDeviceCountLabels(
 		context.Background(),
 		node,
 		[]*corev1.Node{node},
@@ -170,7 +170,7 @@ func TestExpectedDeviceCountsFromAllocatableResourceQuantity(t *testing.T) {
 	}
 
 	manager := newTestManager(t, config)
-	updated := manager.ReconcileNodeLabelsInPlace(
+	updated := manager.CalculateAndSetDeviceCountLabels(
 		context.Background(),
 		node,
 		[]*corev1.Node{node},
