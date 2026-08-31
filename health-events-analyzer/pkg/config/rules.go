@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
+	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 type RecoveryScope string
@@ -86,6 +87,10 @@ func LoadTomlConfig(path string) (*TomlConfig, error) {
 
 func (c *TomlConfig) Validate() error {
 	for i := range c.Rules {
+		if err := c.Rules[i].validateProcessingStrategy(); err != nil {
+			return fmt.Errorf("rule %q: %w", c.Rules[i].Name, err)
+		}
+
 		if err := c.Rules[i].validateStages(); err != nil {
 			return fmt.Errorf("rule %q: %w", c.Rules[i].Name, err)
 		}
@@ -93,6 +98,18 @@ func (c *TomlConfig) Validate() error {
 		if err := c.Rules[i].validateRecovery(); err != nil {
 			return fmt.Errorf("rule %q: %w", c.Rules[i].Name, err)
 		}
+	}
+
+	return nil
+}
+
+func (r *HealthEventsAnalyzerRule) validateProcessingStrategy() error {
+	if r.ProcessingStrategy == "" {
+		return nil
+	}
+
+	if _, ok := protos.ProcessingStrategy_value[r.ProcessingStrategy]; !ok {
+		return fmt.Errorf("processing_strategy has invalid value %q", r.ProcessingStrategy)
 	}
 
 	return nil

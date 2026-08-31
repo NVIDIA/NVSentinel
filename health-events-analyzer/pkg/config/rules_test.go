@@ -102,6 +102,24 @@ func TestConfigValidationRejectsInvalidStages(t *testing.T) {
 	}
 }
 
+func TestConfigValidationRejectsInvalidProcessingStrategy(t *testing.T) {
+	for _, strategy := range []string{"UNSPECIFIED", "EXECUTE_REMEDIATION", "STORE_ONLY", "STORE_AND_ANALYSE"} {
+		t.Run(strategy, func(t *testing.T) {
+			config := &TomlConfig{Rules: []HealthEventsAnalyzerRule{{
+				Name:               "valid-strategy",
+				ProcessingStrategy: strategy,
+			}}}
+			require.NoError(t, config.Validate())
+		})
+	}
+
+	config := &TomlConfig{Rules: []HealthEventsAnalyzerRule{{
+		Name:               "invalid-strategy",
+		ProcessingStrategy: "STORE-ONLY",
+	}}}
+	require.ErrorContains(t, config.Validate(), `processing_strategy has invalid value "STORE-ONLY"`)
+}
+
 func TestRecoveryValidationAllowsRulesWithoutMapping(t *testing.T) {
 	config := &TomlConfig{Rules: []HealthEventsAnalyzerRule{{Name: "manual-recovery"}}}
 	require.NoError(t, config.Validate())

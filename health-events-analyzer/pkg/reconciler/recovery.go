@@ -16,8 +16,12 @@ package reconciler
 
 import (
 	"context"
+	"database/sql/driver"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"slices"
 	"strings"
 	"time"
@@ -275,17 +279,24 @@ func (r *Reconciler) handleRecoveryRule(
 		return false, fmt.Errorf("find current states for rule %q: %w", rule.Name, err)
 	}
 
-	if nodeWide {
-		r.rememberRecoveryBoundary(rule.Name, identity, sourceBoundary)
-	} else if len(targets) == 0 {
+	if !nodeWide && len(targets) == 0 {
 		// A verified recovery also resets rule history when there is no derived
 		// condition to clear yet.
 		r.rememberRecoveryBoundary(rule.Name, identity, sourceBoundary)
 	}
 
-	published := false
+	published, err := r.publishRecoveryTargets(ctx, event, rule, targets, sourceBoundary, false)
+	if err != nil {
+		return published, err
+	}
 
-	return r.publishRecoveryTargets(ctx, event, rule, targets, sourceBoundary, published)
+	// A node-wide boundary affects every entity on the node, so expose it only
+	// after all applicable derived conditions have been durably recovered.
+	if nodeWide {
+		r.rememberRecoveryBoundary(rule.Name, identity, sourceBoundary)
+	}
+
+	return published, nil
 }
 
 func (r *Reconciler) publishRecoveryTargets(
@@ -303,9 +314,8 @@ func (r *Reconciler) publishRecoveryTargets(
 			continue
 		}
 
-		r.rememberRecoveryBoundary(rule.Name, target.identity, sourceBoundary)
-
 		if target.state.isHealthy {
+			r.rememberRecoveryBoundary(rule.Name, target.identity, sourceBoundary)
 			continue
 		}
 
@@ -314,6 +324,7 @@ func (r *Reconciler) publishRecoveryTargets(
 			return published, fmt.Errorf("publish recovery for rule %q: %w", rule.Name, err)
 		}
 
+		r.rememberRecoveryBoundary(rule.Name, target.identity, sourceBoundary)
 		r.rememberDerivedState(rule.Name, target.identity, derivedState{
 			boundary:  persistedBoundary,
 			isHealthy: true,
@@ -365,15 +376,7 @@ func (r *Reconciler) recoveryBoundaryForEvent(
 		return nil, nil
 	}
 
-	latest, err := r.findLatestMatchingEvent(ctx, r.recoveryLookupFilter(
-		rule.Recovery.SourceAgent, rule.Recovery.SourceCheckName, identity.nodeName,
-	), func(candidate *datamodels.HealthEventWithStatus) bool {
-		if !recoverySourceMatches(rule.Recovery, candidate.HealthEvent) {
-			return false
-		}
-
-		return recoverySourceAppliesToIdentity(rule, candidate.HealthEvent, identity)
-	})
+	latest, err := r.latestRecoverySource(ctx, rule, identity)
 	if err != nil {
 		return nil, fmt.Errorf("find latest recovery source: %w", err)
 	}
@@ -385,14 +388,62 @@ func (r *Reconciler) recoveryBoundaryForEvent(
 
 	boundary := boundaryFromEvent(latest)
 
-	sourceIdentity, nodeWide, valid := recoveryIdentityForSource(rule, latest.HealthEvent)
+	effective, err := r.recoveryBoundaryIsEffective(ctx, rule, identity, boundary)
+	if err != nil {
+		return nil, fmt.Errorf("find derived state for recovery boundary: %w", err)
+	}
+
+	if !effective {
+		return nil, nil
+	}
+
+	r.rememberRecoveryBoundaryFromSource(rule, identity, latest.HealthEvent, boundary)
+
+	return &boundary, nil
+}
+
+func (r *Reconciler) latestRecoverySource(
+	ctx context.Context,
+	rule config.HealthEventsAnalyzerRule,
+	identity recoveryIdentity,
+) (*datamodels.HealthEventWithStatus, error) {
+	return r.findLatestMatchingEvent(ctx, r.recoveryLookupFilter(
+		rule.Recovery.SourceAgent, rule.Recovery.SourceCheckName, identity.nodeName,
+	), func(candidate *datamodels.HealthEventWithStatus) bool {
+		return recoverySourceMatches(rule.Recovery, candidate.HealthEvent) &&
+			recoverySourceAppliesToIdentity(rule, candidate.HealthEvent, identity)
+	})
+}
+
+func (r *Reconciler) recoveryBoundaryIsEffective(
+	ctx context.Context,
+	rule config.HealthEventsAnalyzerRule,
+	identity recoveryIdentity,
+	boundary recoveryBoundary,
+) (bool, error) {
+	state, found, err := r.currentDerivedState(ctx, rule, identity)
+	if err != nil {
+		return false, err
+	}
+
+	// A healthy source is not an effective history boundary while a preceding
+	// derived condition is still unhealthy. This can happen when recovery
+	// publication failed and the source event was later checkpointed as poison.
+	return !found || state.isHealthy || !boundaryAfter(boundary, state.boundary), nil
+}
+
+func (r *Reconciler) rememberRecoveryBoundaryFromSource(
+	rule config.HealthEventsAnalyzerRule,
+	identity recoveryIdentity,
+	source *protos.HealthEvent,
+	boundary recoveryBoundary,
+) {
+	sourceIdentity, nodeWide, valid := recoveryIdentityForSource(rule, source)
 	if valid && nodeWide {
 		r.rememberRecoveryBoundary(rule.Name, sourceIdentity, boundary)
 	} else {
 		r.rememberRecoveryBoundary(rule.Name, identity, boundary)
 	}
-
-	return &boundary, nil
 }
 
 func recoverySourceAppliesToIdentity(
@@ -449,7 +500,7 @@ func (r *Reconciler) currentDerivedStatesForNode(
 	for cursor.Next(ctx) {
 		var candidate datamodels.HealthEventWithStatus
 		if err := cursor.Decode(&candidate); err != nil {
-			return nil, client.PermanentError(fmt.Errorf("decode health event: %w", err))
+			return nil, classifyRecoveryDecodeError(ctx, err)
 		}
 
 		identity, valid := recoveryIdentityForEvent(rule, candidate.HealthEvent)
@@ -739,7 +790,7 @@ func (r *Reconciler) findLatestMatchingEvent(
 	for cursor.Next(ctx) {
 		var candidate datamodels.HealthEventWithStatus
 		if err := cursor.Decode(&candidate); err != nil {
-			return nil, client.PermanentError(fmt.Errorf("decode health event: %w", err))
+			return nil, classifyRecoveryDecodeError(ctx, err)
 		}
 
 		if candidate.HealthEvent == nil || !matches(&candidate) {
@@ -757,6 +808,27 @@ func (r *Reconciler) findLatestMatchingEvent(
 	}
 
 	return latest, nil
+}
+
+func classifyRecoveryDecodeError(ctx context.Context, err error) error {
+	wrapped := fmt.Errorf("decode health event: %w", err)
+
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("%w: %w", wrapped, ctxErr)
+	}
+
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, driver.ErrBadConn) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		datastore.IsConnectionError(err) || datastore.IsRetryableError(err) {
+		return wrapped
+	}
+
+	var networkError net.Error
+	if errors.As(err, &networkError) {
+		return wrapped
+	}
+
+	return client.PermanentError(wrapped)
 }
 
 func boundaryFromEvent(event *datamodels.HealthEventWithStatus) recoveryBoundary {
