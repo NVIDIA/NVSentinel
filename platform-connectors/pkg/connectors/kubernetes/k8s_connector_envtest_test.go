@@ -58,10 +58,8 @@ func TestK8sConnector_WithEnvtest_NodeConditionUpdate(t *testing.T) {
 	defer testEnv.Stop()
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "test-node",
-			Labels: map[string]string{},
-		},
+		Name:   "test-node",
+		Labels: map[string]string{},
 	}
 	_, err := cli.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	require.NoError(t, err, "failed to create node")
@@ -115,10 +113,8 @@ func TestK8sConnector_WithEnvtest_NodeConditionClear(t *testing.T) {
 	defer testEnv.Stop()
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "test-node",
-			Labels: map[string]string{},
-		},
+		Name:   "test-node",
+		Labels: map[string]string{},
 		Status: corev1.NodeStatus{
 			Conditions: []corev1.NodeCondition{
 				{
@@ -197,10 +193,8 @@ func TestK8sConnector_WithEnvtest_NodeEventCreation(t *testing.T) {
 
 	// Create a test node
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "test-node",
-			Labels: map[string]string{},
-		},
+		Name:   "test-node",
+		Labels: map[string]string{},
 	}
 	_, err := cli.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	require.NoError(t, err, "failed to create node")
@@ -256,9 +250,7 @@ func TestK8sConnector_WithEnvtest_AddMessages(t *testing.T) {
 	defer testEnv.Stop()
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-node",
-		},
+		Name: "test-node",
 		Status: corev1.NodeStatus{
 			Conditions: []corev1.NodeCondition{
 				{
@@ -316,9 +308,7 @@ func TestK8sConnector_WithEnvtest_RemoveMessages(t *testing.T) {
 	defer testEnv.Stop()
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-node",
-		},
+		Name: "test-node",
 		Status: corev1.NodeStatus{
 			Conditions: []corev1.NodeCondition{
 				{
@@ -374,9 +364,7 @@ func TestK8sConnector_WithEnvtest_MultipleEventsForSameNode(t *testing.T) {
 	defer testEnv.Stop()
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-node",
-		},
+		Name: "test-node",
 	}
 	_, err := cli.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	require.NoError(t, err, "failed to create node")
@@ -447,9 +435,7 @@ func TestK8sConnector_WithEnvtest_TransitionTimeUpdates(t *testing.T) {
 
 	initialTime := time.Now().Add(-1 * time.Hour)
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-node",
-		},
+		Name: "test-node",
 		Status: corev1.NodeStatus{
 			Conditions: []corev1.NodeCondition{
 				{
@@ -507,9 +493,7 @@ func TestK8sConnector_WithEnvtest_EventCountIncrement(t *testing.T) {
 	defer testEnv.Stop()
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-node",
-		},
+		Name: "test-node",
 	}
 	_, err := cli.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	require.NoError(t, err, "failed to create node")
@@ -596,7 +580,7 @@ func TestK8sConnector_WithEnvtest_EventDedupeCacheRecovery(t *testing.T) {
 
 			nodeName := "test-node"
 			_, err := cli.CoreV1().Nodes().Create(ctx, &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+				Name: nodeName,
 			}, metav1.CreateOptions{})
 			require.NoError(t, err, "failed to create node")
 
@@ -707,10 +691,8 @@ func TestK8sConnector_WithEnvtest_EmptyHealthEvents(t *testing.T) {
 	defer testEnv.Stop()
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "test-node",
-			Labels: map[string]string{},
-		},
+		Name:   "test-node",
+		Labels: map[string]string{},
 	}
 	_, err := cli.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	require.NoError(t, err, "failed to create node")
@@ -736,10 +718,8 @@ func TestK8sConnector_WithEnvtest_MultipleEntities(t *testing.T) {
 	defer testEnv.Stop()
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "test-node",
-			Labels: map[string]string{},
-		},
+		Name:   "test-node",
+		Labels: map[string]string{},
 	}
 	_, err := cli.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	require.NoError(t, err, "failed to create node")
@@ -800,10 +780,8 @@ func TestK8sConnector_WithEnvtest_SpecialCharactersInMessage(t *testing.T) {
 	defer testEnv.Stop()
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "test-node",
-			Labels: map[string]string{},
-		},
+		Name:   "test-node",
+		Labels: map[string]string{},
 	}
 	_, err := cli.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	require.NoError(t, err, "failed to create node")
@@ -859,7 +837,7 @@ func TestK8sConnector_WithEnvtest_CompactionAndDeduplication(t *testing.T) {
 	testEnv, cli := setupEnvtest(t)
 	defer testEnv.Stop()
 
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "test-node"}}
+	node := &corev1.Node{Name: "test-node"}
 	_, err := cli.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	require.NoError(t, err, "failed to create node")
 
@@ -871,7 +849,7 @@ func TestK8sConnector_WithEnvtest_CompactionAndDeduplication(t *testing.T) {
 	// 5 messages total ~990 bytes < 1024 — no compaction should fire yet.
 	// The timestamp is embedded in the diagnostic text and falls within the
 	// 72-byte compacted prefix, so it distinguishes entries after compaction.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		events := []*protos.HealthEvent{
 			{
 				CheckName: "GpuXidError",
@@ -1001,10 +979,8 @@ func TestK8sConnector_WithEnvtest_MultipleCheckTypes(t *testing.T) {
 	defer testEnv.Stop()
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "test-node",
-			Labels: map[string]string{},
-		},
+		Name:   "test-node",
+		Labels: map[string]string{},
 	}
 	_, err := cli.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	require.NoError(t, err, "failed to create node")

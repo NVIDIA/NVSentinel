@@ -68,7 +68,7 @@ func extractInstanceNameFromFQN(resourceNameFQN string) string {
 
 // extractNodeAndCluster validates additionalInfo and returns nodeName and clusterName.
 // It centralises validation to keep Normalize concise.
-func extractNodeAndCluster(additionalInfo []interface{}) (string, string, error) {
+func extractNodeAndCluster(additionalInfo []any) (string, string, error) {
 	if len(additionalInfo) < 2 {
 		return "", "", fmt.Errorf("missing nodeName or clusterName in additionalInfo")
 	}
@@ -111,8 +111,8 @@ func decodeAuditPayload(entry *logging.Entry) (*auditpb.AuditLog, error) {
 
 // Normalize converts a GCP Cloud Logging entry into a standard MaintenanceEvent.
 func (n *GCPNormalizer) Normalize(
-	rawEvent interface{},
-	additionalInfo ...interface{},
+	rawEvent any,
+	additionalInfo ...any,
 ) (*model.MaintenanceEvent, error) {
 	entry, ok := rawEvent.(*logging.Entry)
 	if !ok {

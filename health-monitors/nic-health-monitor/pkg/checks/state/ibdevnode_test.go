@@ -209,7 +209,7 @@ func newCharDevCheckWithManager(
 func runQuietPolls(t *testing.T, check *InfiniBandCharDeviceCheck, n int) {
 	t.Helper()
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		events, err := check.Run()
 		require.NoError(t, err)
 		assert.Emptyf(t, events, "poll %d of %d should be silent (debounce window)", i+1, n)
@@ -291,7 +291,7 @@ func TestIBCharDev_OnePollBlipIsSwallowed(t *testing.T) {
 
 	f.mad = fullMad
 
-	for i := 0; i < 2*charDevMissThreshold; i++ {
+	for range 2 * charDevMissThreshold {
 		events, err = check.Run()
 		require.NoError(t, err)
 		assert.Empty(t, events, "a one-poll blip must never produce a fatal or recovery")
@@ -450,7 +450,7 @@ func TestIBCharDev_DeviceBlipHoldsLatch(t *testing.T) {
 	// Device disappears from enumeration (discovery still Complete).
 	delete(node.ib, "mlx5_0")
 
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		events, err = check.Run()
 		require.NoError(t, err)
 		assert.Empty(t, events, "device absence must hold the latch, not fabricate a recovery")

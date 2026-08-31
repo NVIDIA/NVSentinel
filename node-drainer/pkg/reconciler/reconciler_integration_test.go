@@ -85,7 +85,7 @@ func (m *mockDataStore) storeEvent(nodeName string, event map[string]any) {
 	m.documents[nodeName] = event
 }
 
-func (m *mockDataStore) UpdateDocument(ctx context.Context, filter, update interface{}) (*sdkclient.UpdateResult, error) {
+func (m *mockDataStore) UpdateDocument(ctx context.Context, filter, update any) (*sdkclient.UpdateResult, error) {
 	// Mock implementation - just return success
 	return &sdkclient.UpdateResult{
 		MatchedCount:  1,
@@ -93,7 +93,7 @@ func (m *mockDataStore) UpdateDocument(ctx context.Context, filter, update inter
 	}, nil
 }
 
-func (m *mockDataStore) FindDocument(ctx context.Context, filter interface{}, options *sdkclient.FindOneOptions) (sdkclient.SingleResult, error) {
+func (m *mockDataStore) FindDocument(ctx context.Context, filter any, options *sdkclient.FindOneOptions) (sdkclient.SingleResult, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -115,7 +115,7 @@ func (m *mockDataStore) FindDocument(ctx context.Context, filter interface{}, op
 	return &mockSingleResult{document: event}, nil
 }
 
-func (m *mockDataStore) FindDocuments(ctx context.Context, filter interface{}, options *sdkclient.FindOptions) (sdkclient.Cursor, error) {
+func (m *mockDataStore) FindDocuments(ctx context.Context, filter any, options *sdkclient.FindOptions) (sdkclient.Cursor, error) {
 	// Mock implementation - return nil for now
 	return nil, nil
 }
@@ -504,12 +504,11 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), "waiting for pods to complete")
 
-				nodeEvents, err := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, metav1.ListOptions{FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Node", nodeName)})
-				require.NoError(t, err)
-				require.Len(t, nodeEvents.Items, 1, "only one event should be created despite multiple reconciliations")
-				require.Equal(t, nodeEvents.Items[0].Reason, "AwaitingPodCompletion")
+				nodeEvent := requireSingleNodeEvent(t, client, ctx, nodeName, 5)
+				require.Equal(t, v1.EventTypeNormal, nodeEvent.Type)
+				require.Equal(t, "AwaitingPodCompletion", nodeEvent.Reason)
 				expectedMessage := "Waiting for following pods to finish: [completion-test/running-pod-1]"
-				require.Equal(t, expectedMessage, nodeEvents.Items[0].Message, "only expected pods should be drained")
+				require.Equal(t, expectedMessage, nodeEvent.Message, "only expected pods should be drained")
 			},
 		},
 		{
@@ -661,12 +660,11 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), "failed timeout eviction for node test-node: waiting for 1 pods to complete or timeout")
 
-				nodeEvents, err := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, metav1.ListOptions{FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Node", nodeName)})
-				require.NoError(t, err)
-				require.Len(t, nodeEvents.Items, 1, "only one event should be created despite multiple reconciliations")
-				require.Equal(t, nodeEvents.Items[0].Reason, "WaitingBeforeForceDelete")
+				nodeEvent := requireSingleNodeEvent(t, client, ctx, nodeName, 1)
+				require.Equal(t, v1.EventTypeNormal, nodeEvent.Type)
+				require.Equal(t, "WaitingBeforeForceDelete", nodeEvent.Reason)
 				expectedMessage := "Waiting for following pods to finish: [pod-1] in namespace: [timeout-test] or they will be force deleted on:"
-				require.Contains(t, nodeEvents.Items[0].Message, expectedMessage, "only expected pods should be drained")
+				require.Contains(t, nodeEvent.Message, expectedMessage, "only expected pods should be drained")
 			},
 		},
 		{
@@ -785,7 +783,7 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			nodeQuarantined:   model.AlreadyQuarantined,
 			pods:              []*v1.Pod{},
 			expectError:       false,
-			expectedNodeLabel: ptr.To(""),
+			expectedNodeLabel: new(""),
 			validateFunc: func(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, err error) {
 				assert.NoError(t, err)
 
@@ -892,12 +890,11 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), "waiting for pods to complete")
 
-				nodeEvents, err := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, metav1.ListOptions{FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Node", nodeName)})
-				require.NoError(t, err)
-				require.Len(t, nodeEvents.Items, 1, "only one event should be created despite multiple reconciliations")
-				require.Equal(t, nodeEvents.Items[0].Reason, "AwaitingPodCompletion")
+				nodeEvent := requireSingleNodeEvent(t, client, ctx, nodeName, 5)
+				require.Equal(t, v1.EventTypeNormal, nodeEvent.Type)
+				require.Equal(t, "AwaitingPodCompletion", nodeEvent.Reason)
 				expectedMessage := "Waiting for following pods to finish: [completion-test/running-pod-1 completion-test/running-pod-2 completion-test/running-pod-3]"
-				require.Equal(t, expectedMessage, nodeEvents.Items[0].Message, "pod list should be in sorted order")
+				require.Equal(t, expectedMessage, nodeEvent.Message, "pod list should be in sorted order")
 
 				for _, podName := range []string{"running-pod-1", "running-pod-2", "running-pod-3"} {
 					pod, err := client.CoreV1().Pods("completion-test").Get(ctx, podName, metav1.GetOptions{})
@@ -940,6 +937,10 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			}
 
 			createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, tt.nodeName, nodeLabels, nodeAnnotations)
+			// Some cases (AlreadyQuarantined) read the node through the
+			// informer cache immediately; wait for watch delivery so the
+			// evaluation does not race it.
+			waitForNodeInInformer(t, setup.informersInstance, tt.nodeName)
 
 			for _, ns := range tt.namespaces {
 				createNamespace(setup.ctx, t, setup.client, ns)
@@ -1102,7 +1103,7 @@ func TestReconciler_AllowCompletionRequeue(t *testing.T) {
 			pod.Finalizers = nil
 			_, _ = setup.client.CoreV1().Pods("completion-test").Update(setup.ctx, pod, metav1.UpdateOptions{})
 			_ = setup.client.CoreV1().Pods("completion-test").Delete(setup.ctx, "running-pod", metav1.DeleteOptions{
-				GracePeriodSeconds: ptr.To(int64(0)),
+				GracePeriodSeconds: new(int64(0)),
 			})
 		}
 		pods, _ := setup.client.CoreV1().Pods("completion-test").List(setup.ctx, metav1.ListOptions{})
@@ -1170,7 +1171,7 @@ func TestReconciler_DeleteAfterTimeoutThenAllowCompletion(t *testing.T) {
 	// Simulate DeleteAfterTimeout completion by deleting the timeout pod
 	t.Log("Simulating DeleteAfterTimeout completion - deleting timeout-pod")
 	err := setup.client.CoreV1().Pods("timeout-test").Delete(setup.ctx, "timeout-pod", metav1.DeleteOptions{
-		GracePeriodSeconds: ptr.To(int64(0)),
+		GracePeriodSeconds: new(int64(0)),
 	})
 	require.NoError(t, err)
 
@@ -1215,7 +1216,7 @@ func TestReconciler_DeleteAfterTimeoutThenAllowCompletion(t *testing.T) {
 			pod.Finalizers = nil
 			_, _ = setup.client.CoreV1().Pods("completion-test").Update(setup.ctx, pod, metav1.UpdateOptions{})
 			_ = setup.client.CoreV1().Pods("completion-test").Delete(setup.ctx, "completion-pod", metav1.DeleteOptions{
-				GracePeriodSeconds: ptr.To(int64(0)),
+				GracePeriodSeconds: new(int64(0)),
 			})
 		}
 		return false
@@ -1227,9 +1228,9 @@ func TestReconciler_DeleteAfterTimeoutThenAllowCompletion(t *testing.T) {
 
 type MockMongoCollection struct {
 	// Database-agnostic functions
-	UpdateDocumentFunc func(ctx context.Context, filter interface{}, update interface{}) (*sdkclient.UpdateResult, error)
-	FindDocumentFunc   func(ctx context.Context, filter interface{}, options *sdkclient.FindOneOptions) (sdkclient.SingleResult, error)
-	FindDocumentsFunc  func(ctx context.Context, filter interface{}, options *sdkclient.FindOptions) (sdkclient.Cursor, error)
+	UpdateDocumentFunc func(ctx context.Context, filter any, update any) (*sdkclient.UpdateResult, error)
+	FindDocumentFunc   func(ctx context.Context, filter any, options *sdkclient.FindOneOptions) (sdkclient.SingleResult, error)
+	FindDocumentsFunc  func(ctx context.Context, filter any, options *sdkclient.FindOptions) (sdkclient.Cursor, error)
 
 	// In-memory store keyed by string _id, used by the worker's lazy fetch.
 	mu        sync.RWMutex
@@ -1248,11 +1249,11 @@ func (m *MockMongoCollection) StoreDocument(id string, doc map[string]any) {
 
 // mockSingleResult implements sdkclient.SingleResult interface for testing
 type mockSingleResult struct {
-	document map[string]interface{}
+	document map[string]any
 	err      error
 }
 
-func (m *mockSingleResult) Decode(v interface{}) error {
+func (m *mockSingleResult) Decode(v any) error {
 	if m.err != nil {
 		return m.err
 	}
@@ -1279,20 +1280,20 @@ func (m *mockSingleResult) Err() error {
 }
 
 // DataStore interface methods
-func (m *MockMongoCollection) UpdateDocument(ctx context.Context, filter interface{}, update interface{}) (*sdkclient.UpdateResult, error) {
+func (m *MockMongoCollection) UpdateDocument(ctx context.Context, filter any, update any) (*sdkclient.UpdateResult, error) {
 	if m.UpdateDocumentFunc != nil {
 		return m.UpdateDocumentFunc(ctx, filter, update)
 	}
 	return &sdkclient.UpdateResult{ModifiedCount: 1}, nil
 }
 
-func (m *MockMongoCollection) FindDocument(ctx context.Context, filter interface{}, options *sdkclient.FindOneOptions) (sdkclient.SingleResult, error) {
+func (m *MockMongoCollection) FindDocument(ctx context.Context, filter any, options *sdkclient.FindOneOptions) (sdkclient.SingleResult, error) {
 	if m.FindDocumentFunc != nil {
 		return m.FindDocumentFunc(ctx, filter, options)
 	}
 
 	// Handle _id-based lookup used by the worker's lazy fetch.
-	if filterMap, ok := filter.(map[string]interface{}); ok {
+	if filterMap, ok := filter.(map[string]any); ok {
 		if id, exists := filterMap["_id"]; exists {
 			idStr := fmt.Sprintf("%v", id)
 			m.mu.RLock()
@@ -1307,7 +1308,7 @@ func (m *MockMongoCollection) FindDocument(ctx context.Context, filter interface
 	return &MockSingleResult{}, nil
 }
 
-func (m *MockMongoCollection) FindDocuments(ctx context.Context, filter interface{}, options *sdkclient.FindOptions) (sdkclient.Cursor, error) {
+func (m *MockMongoCollection) FindDocuments(ctx context.Context, filter any, options *sdkclient.FindOptions) (sdkclient.Cursor, error) {
 	if m.FindDocumentsFunc != nil {
 		return m.FindDocumentsFunc(ctx, filter, options)
 	}
@@ -1316,11 +1317,11 @@ func (m *MockMongoCollection) FindDocuments(ctx context.Context, filter interfac
 
 // Mock implementations for client interfaces
 type MockSingleResult struct {
-	DecodeFunc func(v interface{}) error
+	DecodeFunc func(v any) error
 	ErrFunc    func() error
 }
 
-func (m *MockSingleResult) Decode(v interface{}) error {
+func (m *MockSingleResult) Decode(v any) error {
 	if m.DecodeFunc != nil {
 		return m.DecodeFunc(v)
 	}
@@ -1335,14 +1336,14 @@ func (m *MockSingleResult) Err() error {
 }
 
 type MockCursor struct {
-	AllFunc    func(ctx context.Context, results interface{}) error
+	AllFunc    func(ctx context.Context, results any) error
 	NextFunc   func(ctx context.Context) bool
 	CloseFunc  func(ctx context.Context) error
-	DecodeFunc func(val interface{}) error
+	DecodeFunc func(val any) error
 	ErrFunc    func() error
 }
 
-func (m *MockCursor) All(ctx context.Context, results interface{}) error {
+func (m *MockCursor) All(ctx context.Context, results any) error {
 	if m.AllFunc != nil {
 		return m.AllFunc(ctx, results)
 	}
@@ -1363,7 +1364,7 @@ func (m *MockCursor) Close(ctx context.Context) error {
 	return nil
 }
 
-func (m *MockCursor) Decode(val interface{}) error {
+func (m *MockCursor) Decode(val any) error {
 	if m.DecodeFunc != nil {
 		return m.DecodeFunc(val)
 	}
@@ -1392,6 +1393,31 @@ type testSetup struct {
 	restConfig        *rest.Config
 	dynamicClient     dynamic.Interface
 	mockDB            *mockDataStore
+}
+
+func requireSingleNodeEvent(
+	t *testing.T,
+	client kubernetes.Interface,
+	ctx context.Context,
+	nodeName string,
+	expectedCount int32,
+) v1.Event {
+	t.Helper()
+
+	eventListOptions := metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Node", nodeName),
+	}
+	require.Eventually(t, func() bool {
+		nodeEvents, err := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, eventListOptions)
+		return err == nil && len(nodeEvents.Items) == 1 && nodeEvents.Items[0].Count == expectedCount
+	}, 5*time.Second, 50*time.Millisecond, "node event should be recorded asynchronously with count %d", expectedCount)
+
+	nodeEvents, err := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, eventListOptions)
+	require.NoError(t, err)
+	require.Len(t, nodeEvents.Items, 1, "only one event should be created despite multiple reconciliations")
+	require.Equal(t, expectedCount, nodeEvents.Items[0].Count)
+
+	return nodeEvents.Items[0]
 }
 
 func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun bool, drainGPUPods ...bool) *testSetup {
@@ -1442,7 +1468,7 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 	informersInstance, err := informers.NewInformers(
 		client,
 		1*time.Minute,
-		ptr.To(2),
+		new(2),
 		enableDrainGPUPods,
 		dryRun,
 		tomlConfig.SystemNamespaces,
@@ -1545,7 +1571,7 @@ func setupCustomDrainTest(t *testing.T, customDrainConfig config.CustomDrainConf
 	informersInstance, err := informers.NewInformers(
 		client,
 		1*time.Minute,
-		ptr.To(2),
+		new(2),
 		false,
 		false,
 		tomlConfig.SystemNamespaces,
@@ -1575,6 +1601,20 @@ func setupCustomDrainTest(t *testing.T, customDrainConfig config.CustomDrainConf
 func createNode(ctx context.Context, t *testing.T, client kubernetes.Interface, nodeName string) {
 	t.Helper()
 	createNodeWithLabelsAndAnnotations(ctx, t, client, nodeName, map[string]string{"test": "true"}, nil)
+}
+
+// waitForNodeInInformer blocks until the node created through the API server
+// becomes visible in the shared informer's local cache. Node creation and the
+// informer's watch delivery are asynchronous, so tests that evaluate a health
+// event immediately after creating the node race the cache and flake on
+// loaded runners without this wait.
+func waitForNodeInInformer(t *testing.T, inf *informers.Informers, nodeName string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		_, err := inf.GetNode(nodeName)
+		return err == nil
+	}, 30*time.Second, 50*time.Millisecond,
+		"node %s should become visible in the informer cache", nodeName)
 }
 
 func createNodeWithLabelsAndAnnotations(ctx context.Context, t *testing.T, client kubernetes.Interface,
@@ -1623,7 +1663,7 @@ type healthEventOptions struct {
 	entitiesImpacted  []*protos.Entity
 }
 
-func createHealthEvent(opts healthEventOptions) map[string]interface{} {
+func createHealthEvent(opts healthEventOptions) map[string]any {
 	eventID := opts.nodeName + "-event"
 	if opts.eventID != "" {
 		eventID = opts.eventID
@@ -1645,7 +1685,7 @@ func createHealthEvent(opts healthEventOptions) map[string]interface{} {
 		healthEvent.DrainOverrides = &protos.BehaviourOverrides{Force: true}
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"_id":         eventID,
 		"healthevent": healthEvent,
 		"healtheventstatus": &protos.HealthEventStatus{
@@ -1712,7 +1752,7 @@ func assertPodsEvicted(t *testing.T, client kubernetes.Interface, ctx context.Co
 		for _, p := range pods.Items {
 			if p.DeletionTimestamp != nil {
 				_ = client.CoreV1().Pods(namespace).Delete(ctx, p.Name, metav1.DeleteOptions{
-					GracePeriodSeconds: ptr.To(int64(0)),
+					GracePeriodSeconds: new(int64(0)),
 				})
 			}
 		}
@@ -1731,7 +1771,7 @@ func TestMetrics_ProcessingErrors(t *testing.T) {
 	nodeName := "test-node"
 	beforeError := getCounterVecValue(t, metrics.ProcessingErrors, "unmarshal_error", nodeName)
 
-	invalidEvent := map[string]interface{}{
+	invalidEvent := map[string]any{
 		"invalid": "structure",
 	}
 	_ = setup.reconciler.ProcessEventGeneric(setup.ctx, invalidEvent, setup.mockCollection, setup.healthEventStore, nodeName)
@@ -1789,6 +1829,10 @@ func TestMetrics_AlreadyQuarantinedDoesNotIncrementDrainSuccess(t *testing.T) {
 	assert.NoError(t, err)
 	createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, nodeName, map[string]string{"test": "true"},
 		map[string]string{common.QuarantineHealthEventAnnotationKey: annotationValue})
+	// The AlreadyQuarantined path reads the node through the informer cache,
+	// which learns about the node asynchronously; without this wait the
+	// evaluation below races the watch delivery and flakes on loaded runners.
+	waitForNodeInInformer(t, setup.informersInstance, nodeName)
 
 	setup.healthEventStore.healthEvents = []datastore.HealthEventWithStatus{
 		{
@@ -2070,15 +2114,15 @@ func TestReconciler_UnQuarantineCancellationDoesNotCancelFreshSession(t *testing
 		model.UnQuarantined, baseTime.Add(time.Second))
 
 	cancelledUpdates := make(map[string]bool)
-	setup.mockCollection.UpdateDocumentFunc = func(_ context.Context, filter interface{},
-		update interface{}) (*sdkclient.UpdateResult, error) {
+	setup.mockCollection.UpdateDocumentFunc = func(_ context.Context, filter any,
+		update any) (*sdkclient.UpdateResult, error) {
 		filterMap, ok := filter.(map[string]any)
 		require.True(t, ok)
 
 		documentID := fmt.Sprintf("%v", filterMap["_id"])
 		if updateMap, ok := update.(map[string]any); ok {
 			if setMap, ok := updateMap["$set"].(map[string]any); ok {
-				if statusMap, ok := setMap["healtheventstatus.userpodsevictionstatus"].(map[string]interface{}); ok {
+				if statusMap, ok := setMap["healtheventstatus.userpodsevictionstatus"].(map[string]any); ok {
 					cancelledUpdates[documentID] = statusMap["status"] == string(model.Cancelled)
 				}
 			}
@@ -2127,15 +2171,15 @@ func TestReconciler_UnQuarantineCutoffStillCancelsUntrackedOldEventsAfterFreshSe
 		model.UnQuarantined, baseTime.Add(time.Second))
 
 	cancelledUpdates := make(map[string]bool)
-	setup.mockCollection.UpdateDocumentFunc = func(_ context.Context, filter interface{},
-		update interface{}) (*sdkclient.UpdateResult, error) {
+	setup.mockCollection.UpdateDocumentFunc = func(_ context.Context, filter any,
+		update any) (*sdkclient.UpdateResult, error) {
 		filterMap, ok := filter.(map[string]any)
 		require.True(t, ok)
 
 		documentID := fmt.Sprintf("%v", filterMap["_id"])
 		if updateMap, ok := update.(map[string]any); ok {
 			if setMap, ok := updateMap["$set"].(map[string]any); ok {
-				if statusMap, ok := setMap["healtheventstatus.userpodsevictionstatus"].(map[string]interface{}); ok {
+				if statusMap, ok := setMap["healtheventstatus.userpodsevictionstatus"].(map[string]any); ok {
 					cancelledUpdates[documentID] = statusMap["status"] == string(model.Cancelled)
 				}
 			}
@@ -2179,15 +2223,15 @@ func TestReconciler_UnQuarantineCutoffDoesNotCancelFreshTimeoutEviction(t *testi
 		model.UnQuarantined, baseTime.Add(time.Second))
 
 	cancelledUpdates := make(map[string]bool)
-	setup.mockCollection.UpdateDocumentFunc = func(_ context.Context, filter interface{},
-		update interface{}) (*sdkclient.UpdateResult, error) {
+	setup.mockCollection.UpdateDocumentFunc = func(_ context.Context, filter any,
+		update any) (*sdkclient.UpdateResult, error) {
 		filterMap, ok := filter.(map[string]any)
 		require.True(t, ok)
 
 		documentID := fmt.Sprintf("%v", filterMap["_id"])
 		if updateMap, ok := update.(map[string]any); ok {
 			if setMap, ok := updateMap["$set"].(map[string]any); ok {
-				if statusMap, ok := setMap["healtheventstatus.userpodsevictionstatus"].(map[string]interface{}); ok {
+				if statusMap, ok := setMap["healtheventstatus.userpodsevictionstatus"].(map[string]any); ok {
 					cancelledUpdates[documentID] = statusMap["status"] == string(model.Cancelled)
 				}
 			}
@@ -2458,7 +2502,7 @@ func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {
 	informersInstance, err := informers.NewInformers(
 		client,
 		1*time.Minute,
-		ptr.To(2),
+		new(2),
 		false,
 		false,
 		tomlConfig.SystemNamespaces,

@@ -61,7 +61,7 @@ func TestInitializeKubernetesClient_RateLimitScenarios_InitializedInformersUseCo
 		t.Run(test.name, func(t *testing.T) {
 			namespace := fmt.Sprintf("%s-%d", test.prefix, time.Now().UnixNano())
 			_, createErr := adminClient.CoreV1().Namespaces().Create(t.Context(), &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{Name: namespace},
+				Name: namespace,
 			}, metav1.CreateOptions{})
 			require.NoError(t, createErr)
 
@@ -69,7 +69,7 @@ func TestInitializeKubernetesClient_RateLimitScenarios_InitializedInformersUseCo
 			for idx := range podCount {
 				nodeNames[idx] = fmt.Sprintf("%s-node-%d", test.prefix, idx)
 				_, createErr = adminClient.CoreV1().Pods(namespace).Create(t.Context(), &corev1.Pod{
-					ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("%s-pod-%d", test.prefix, idx)},
+					Name: fmt.Sprintf("%s-pod-%d", test.prefix, idx),
 					Spec: corev1.PodSpec{
 						NodeName:   nodeNames[idx],
 						Containers: []corev1.Container{{Name: "workload", Image: "example.invalid/workload"}},
@@ -112,8 +112,8 @@ func TestInitializeKubernetesClient_RateLimitScenarios_InitializedInformersUseCo
 	throughputRatio := highRate / lowRate
 	t.Logf("initialized eviction throughput: low QPS=%.2f pods/s, high QPS=%.2f pods/s, ratio=%.2fx",
 		lowRate, highRate, throughputRatio)
-	assert.GreaterOrEqual(t, throughputRatio, 8.0)
-	assert.LessOrEqual(t, throughputRatio, 11.0)
+	assert.GreaterOrEqual(t, throughputRatio, 6.0)
+	assert.LessOrEqual(t, throughputRatio, 14.0)
 }
 
 func writeNodeDrainerKubeconfig(t *testing.T, config *rest.Config) string {

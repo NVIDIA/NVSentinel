@@ -462,21 +462,21 @@ func TestPriorityQueue_NonComparableDocumentID_DoesNotPanic(t *testing.T) {
 // Mock DataStore for testing
 type mockDataStore struct{}
 
-func (m *mockDataStore) UpdateDocument(ctx context.Context, filter interface{}, update interface{}) (*client.UpdateResult, error) {
+func (m *mockDataStore) UpdateDocument(ctx context.Context, filter any, update any) (*client.UpdateResult, error) {
 	return &client.UpdateResult{ModifiedCount: 1, MatchedCount: 1}, nil
 }
 
-func (m *mockDataStore) FindDocument(ctx context.Context, filter interface{}, options *client.FindOneOptions) (client.SingleResult, error) {
+func (m *mockDataStore) FindDocument(ctx context.Context, filter any, options *client.FindOneOptions) (client.SingleResult, error) {
 	return mockSingleResult{}, nil
 }
 
-func (m *mockDataStore) FindDocuments(ctx context.Context, filter interface{}, options *client.FindOptions) (client.Cursor, error) {
+func (m *mockDataStore) FindDocuments(ctx context.Context, filter any, options *client.FindOptions) (client.Cursor, error) {
 	return mockCursor{}, nil
 }
 
 type mockSingleResult struct{}
 
-func (m mockSingleResult) Decode(v interface{}) error {
+func (m mockSingleResult) Decode(v any) error {
 	return nil
 }
 
@@ -490,7 +490,7 @@ func (m mockCursor) Next(ctx context.Context) bool {
 	return false
 }
 
-func (m mockCursor) Decode(v interface{}) error {
+func (m mockCursor) Decode(v any) error {
 	return nil
 }
 
@@ -498,7 +498,7 @@ func (m mockCursor) Close(ctx context.Context) error {
 	return nil
 }
 
-func (m mockCursor) All(ctx context.Context, results interface{}) error {
+func (m mockCursor) All(ctx context.Context, results any) error {
 	return nil
 }
 

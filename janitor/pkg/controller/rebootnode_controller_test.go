@@ -23,13 +23,14 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
@@ -126,9 +127,7 @@ var _ = Describe("RebootNode Controller", func() {
 
 		// Create test node
 		testNode = &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: nodeName,
-			},
+			Name: nodeName,
 			Status: corev1.NodeStatus{
 				Conditions: []corev1.NodeCondition{
 					{
@@ -142,9 +141,7 @@ var _ = Describe("RebootNode Controller", func() {
 
 		// Create test RebootNode
 		testRebootNode = &janitordgxcnvidiacomv1alpha1.RebootNode{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: crName,
-			},
+			Name: crName,
 			Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 				NodeName: nodeName,
 				Force:    false,
@@ -158,12 +155,12 @@ var _ = Describe("RebootNode Controller", func() {
 			Scheme: scheme.Scheme,
 			Config: &config.RebootNodeControllerConfig{
 				Timeout:    30 * time.Minute,
-				ManualMode: ptr.To(false),
+				ManualMode: new(false),
 			},
 			dialProviderFunc: func(_ context.Context) (cspv1alpha1.CSPProviderServiceClient, func(), error) {
 				return mockCSP.Client, func() {}, nil
 			},
-			NodeLock:  distributedlock.NewNodeLock(k8sClient, "default"),
+			NodeLock: distributedlock.NewNodeLock(k8sClient, "default"),
 		}
 
 		// Default to success behavior - tests can override as needed
@@ -181,9 +178,7 @@ var _ = Describe("RebootNode Controller", func() {
 		It("should initialize conditions and send reboot signal exactly once", func() {
 			// First reconciliation
 			req := reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name: testRebootNode.Name,
-				},
+				Name: testRebootNode.Name,
 			}
 
 			result, err := reconciler.Reconcile(ctx, req)
@@ -220,13 +215,47 @@ var _ = Describe("RebootNode Controller", func() {
 		It("should NOT send multiple reboot signals on subsequent reconciliations", func() {
 			// First reconciliation - should send reboot signal
 			req := reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name: testRebootNode.Name,
-				},
+				Name: testRebootNode.Name,
 			}
 
 			_, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Context("when another RebootNode holds the node lock", func() {
+		It("marks the incoming RebootNode terminal with holder feedback", func() {
+			t := GinkgoT()
+			holderRequest := reconcile.Request{NamespacedName: types.NamespacedName{Name: testRebootNode.Name}}
+			_, err := reconciler.Reconcile(ctx, holderRequest)
+			require.NoError(t, err)
+
+			duplicate := &janitordgxcnvidiacomv1alpha1.RebootNode{
+				ObjectMeta: metav1.ObjectMeta{Name: crName + "-duplicate"},
+				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
+					NodeName: nodeName,
+				},
+			}
+			require.NoError(t, k8sClient.Create(ctx, duplicate))
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: duplicate.Name},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, reconcile.Result{}, result)
+
+			var updated janitordgxcnvidiacomv1alpha1.RebootNode
+			require.NoError(t, k8sClient.Get(ctx, types.NamespacedName{Name: duplicate.Name}, &updated))
+			require.NotNil(t, updated.Status.CompletionTime)
+
+			condition := findCondition(
+				updated.Status.Conditions,
+				janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady,
+			)
+			require.NotNil(t, condition)
+			assert.Equal(t, metav1.ConditionFalse, condition.Status)
+			assert.Equal(t, nodeAlreadyUnderMaintenanceReason, condition.Reason)
+			assert.Equal(t, fmt.Sprintf("RebootNode/%s is active for this node", crName), condition.Message)
 		})
 	})
 
@@ -258,9 +287,7 @@ var _ = Describe("RebootNode Controller", func() {
 
 		It("should monitor node status and complete when node is ready", func() {
 			req := reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name: testRebootNode.Name,
-				},
+				Name: testRebootNode.Name,
 			}
 
 			result, err := reconciler.Reconcile(ctx, req)
@@ -286,9 +313,7 @@ var _ = Describe("RebootNode Controller", func() {
 			mockCSP.Server.SetNodeReady(false)
 
 			req := reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name: testRebootNode.Name,
-				},
+				Name: testRebootNode.Name,
 			}
 
 			result, err := reconciler.Reconcile(ctx, req)
@@ -310,9 +335,7 @@ var _ = Describe("RebootNode Controller", func() {
 			mockCSP.Server.SetNodeReadyError(status.Errorf(codes.Unavailable, "transient"))
 
 			req := reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name: testRebootNode.Name,
-				},
+				Name: testRebootNode.Name,
 			}
 
 			result, err := reconciler.Reconcile(ctx, req)
@@ -334,9 +357,7 @@ var _ = Describe("RebootNode Controller", func() {
 			mockCSP.Server.SetFailure()
 
 			req := reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name: testRebootNode.Name,
-				},
+				Name: testRebootNode.Name,
 			}
 
 			result, err := reconciler.Reconcile(ctx, req)
@@ -404,13 +425,11 @@ var _ = Describe("RebootNode Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			req := reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name: testRebootNode.Name,
-				},
+				Name: testRebootNode.Name,
 			}
 
 			// Simulate 5 rapid reconciliations (as would happen from watch events)
-			for i := 0; i < 5; i++ {
+			for range 5 {
 				_, err := reconciler.Reconcile(ctx, req)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -460,13 +479,11 @@ var _ = Describe("RebootNode Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			req := reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name: testRebootNode.Name,
-				},
+				Name: testRebootNode.Name,
 			}
 
 			// Simulate 25 rapid reconciliations (more than MaxRebootRetries of 20)
-			for i := 0; i < 25; i++ {
+			for range 25 {
 				_, err := reconciler.Reconcile(ctx, req)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -496,9 +513,7 @@ var _ = Describe("RebootNode Controller", func() {
 
 			// Create a fresh RebootNode with no status
 			freshRebootNode := &janitordgxcnvidiacomv1alpha1.RebootNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "fresh-rebootnode",
-				},
+				Name: "fresh-rebootnode",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 					NodeName: "test-node",
 					Force:    false,
@@ -538,15 +553,13 @@ var _ = Describe("RebootNode Controller", func() {
 	Context("when manual mode is enabled", func() {
 		BeforeEach(func() {
 			// Enable manual mode in the reconciler config
-			reconciler.Config.ManualMode = ptr.To(true)
+			reconciler.Config.ManualMode = new(true)
 		})
 
 		It("should set ManualMode condition on the first reconciliation", func() {
 			// First reconciliation with manual mode enabled
 			req := reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name: testRebootNode.Name,
-				},
+				Name: testRebootNode.Name,
 			}
 
 			result, err := reconciler.Reconcile(ctx, req)
@@ -577,9 +590,7 @@ var _ = Describe("RebootNode Controller", func() {
 		It("should not ever send reboot signal", func() {
 			// Multiple reconciliations should never trigger reboot signal in manual mode
 			req := reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name: testRebootNode.Name,
-				},
+				Name: testRebootNode.Name,
 			}
 
 			// First reconciliation
@@ -607,9 +618,7 @@ var _ = Describe("RebootNode Controller", func() {
 		It("should continue monitoring the node if an outside actor sends a reboot signal", func() {
 			// First reconciliation - sets up manual mode
 			req := reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name: testRebootNode.Name,
-				},
+				Name: testRebootNode.Name,
 			}
 
 			_, err := reconciler.Reconcile(ctx, req)

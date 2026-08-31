@@ -28,8 +28,8 @@ import (
 )
 
 // fetchEventFromDB retrieves the full event document from the database by its native ID.
-func fetchEventFromDB(ctx context.Context, documentID interface{}, database DataStore) (datastore.Event, error) {
-	filter := map[string]interface{}{"_id": documentID}
+func fetchEventFromDB(ctx context.Context, documentID any, database DataStore) (datastore.Event, error) {
+	filter := map[string]any{"_id": documentID}
 
 	result, err := database.FindDocument(ctx, filter, nil)
 	if err != nil {

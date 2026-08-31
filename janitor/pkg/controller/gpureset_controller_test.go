@@ -16,6 +16,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	prmproto "github.com/prometheus/client_model/go"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -50,10 +53,18 @@ import (
 // isReady method of this controller which prevents concurrent GPUResets on the same node. The locking functionality in
 // NodeLock will take precedence over the existing logic in this controller. As a result, we should remove the locking
 // functionality in isReady and remove the corresponding tests.
-type mockNodeLock struct{}
+type mockNodeLock struct {
+	contended bool
+	holder    *metav1.OwnerReference
+	holderErr error
+}
 
 func (m *mockNodeLock) LockNode(ctx context.Context, maintenanceObject client.Object, nodeName string) bool {
-	return true
+	return !m.contended
+}
+
+func (m *mockNodeLock) GetHolder(ctx context.Context, nodeName string) (*metav1.OwnerReference, error) {
+	return m.holder, m.holderErr
 }
 
 func (m *mockNodeLock) CheckUnlock(ctx context.Context, maintenanceObject client.Object, nodeName string) (retryUnlock bool) {
@@ -102,9 +113,7 @@ var _ = Describe("GPUReset Controller", func() {
 		})).To(Succeed())
 
 		janitorNamespace := &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "dgxc-janitor-system",
-			},
+			Name: "dgxc-janitor-system",
 		}
 		err = mgrClient.Create(ctx, janitorNamespace)
 		Expect(client.IgnoreAlreadyExists(err)).NotTo(HaveOccurred())
@@ -112,14 +121,12 @@ var _ = Describe("GPUReset Controller", func() {
 		testServiceManager := gpuOperatorServiceManager
 
 		customTemplate := &batchv1.JobTemplateSpec{
-			ObjectMeta: metav1.ObjectMeta{
-				Namespace: "default",
-				Labels: map[string]string{
-					"test.label": "true",
-				},
-				Annotations: map[string]string{
-					"test.annotation": "true",
-				},
+			Namespace: "default",
+			Labels: map[string]string{
+				"test.label": "true",
+			},
+			Annotations: map[string]string{
+				"test.annotation": "true",
 			},
 			Spec: batchv1.JobSpec{
 				BackoffLimit:            &defaultBackOffLimit,
@@ -180,6 +187,113 @@ var _ = Describe("GPUReset Controller", func() {
 		cancel()
 	})
 
+	Context("Node lock contention", func() {
+		DescribeTable("evaluates selector overlap",
+			func(incomingSelector, holderSelector *v1alpha1.GPUSelector, expectTerminal bool) {
+				t := GinkgoT()
+				suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+				nodeName := "contention-node-" + suffix
+				holder := &v1alpha1.GPUReset{
+					ObjectMeta: metav1.ObjectMeta{Name: "holder-" + suffix},
+					Spec: v1alpha1.GPUResetSpec{
+						NodeName: nodeName,
+						Selector: holderSelector,
+					},
+				}
+				incoming := &v1alpha1.GPUReset{
+					ObjectMeta: metav1.ObjectMeta{Name: "incoming-" + suffix},
+					Spec: v1alpha1.GPUResetSpec{
+						NodeName: nodeName,
+						Selector: incomingSelector,
+					},
+				}
+
+				require.NoError(t, k8sClient.Create(ctx, &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+				}))
+				require.NoError(t, k8sClient.Create(ctx, holder))
+				require.NoError(t, k8sClient.Create(ctx, incoming))
+				DeferCleanup(func() {
+					require.NoError(t, client.IgnoreNotFound(k8sClient.Delete(ctx, incoming)))
+					require.NoError(t, client.IgnoreNotFound(k8sClient.Delete(ctx, holder)))
+					require.NoError(t, client.IgnoreNotFound(k8sClient.Delete(ctx, &corev1.Node{
+						ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+					})))
+				})
+
+				Eventually(func(g Gomega) {
+					var cachedHolder v1alpha1.GPUReset
+					g.Expect(mgrClient.Get(ctx, types.NamespacedName{Name: holder.Name}, &cachedHolder)).To(Succeed())
+					var cachedIncoming v1alpha1.GPUReset
+					g.Expect(mgrClient.Get(ctx, types.NamespacedName{Name: incoming.Name}, &cachedIncoming)).To(Succeed())
+				}, "10s", "100ms").Should(Succeed())
+
+				reconciler.NodeLock = &mockNodeLock{
+					contended: true,
+					holder: &metav1.OwnerReference{
+						Kind: "GPUReset",
+						Name: holder.Name,
+						UID:  holder.UID,
+					},
+				}
+
+				result, err := reconciler.Reconcile(ctx, ctrl.Request{
+					NamespacedName: types.NamespacedName{Name: incoming.Name},
+				})
+				require.NoError(t, err)
+
+				var updated v1alpha1.GPUReset
+				require.NoError(t, k8sClient.Get(ctx, types.NamespacedName{Name: incoming.Name}, &updated))
+
+				if !expectTerminal {
+					assert.Equal(t, 2*time.Second, result.RequeueAfter)
+					assert.Nil(t, updated.Status.CompletionTime)
+
+					return
+				}
+
+				assert.Equal(t, ctrl.Result{}, result)
+				require.NotNil(t, updated.Status.CompletionTime)
+				assert.Equal(t, v1alpha1.ResetFailed, updated.Status.Phase)
+
+				condition := meta.FindStatusCondition(updated.Status.Conditions, string(v1alpha1.Complete))
+				require.NotNil(t, condition)
+				assert.Equal(t, string(v1alpha1.ReasonGPUAlreadyUnderMaintenance), condition.Reason)
+				assert.Equal(t, fmt.Sprintf("GPUReset/%s is active for this node", holder.Name), condition.Message)
+			},
+			Entry(
+				"matching UUIDs set terminal status",
+				&v1alpha1.GPUSelector{UUIDs: []string{"GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"}},
+				&v1alpha1.GPUSelector{UUIDs: []string{"GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"}},
+				true,
+			),
+			Entry(
+				"a nil selector overlaps a specific GPU",
+				nil,
+				&v1alpha1.GPUSelector{UUIDs: []string{"GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"}},
+				true,
+			),
+			Entry(
+				"an empty selector overlaps a specific GPU",
+				&v1alpha1.GPUSelector{},
+				&v1alpha1.GPUSelector{UUIDs: []string{"GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"}},
+				true,
+			),
+			Entry(
+				"matching PCI bus IDs set terminal status",
+				&v1alpha1.GPUSelector{PCIBusIDs: []string{"0000:01:00.0"}},
+				&v1alpha1.GPUSelector{PCIBusIDs: []string{"0000:01:00.0"}},
+				true,
+			),
+			Entry(
+				"known distinct GPU UUIDs remain queued",
+				&v1alpha1.GPUSelector{UUIDs: []string{"GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"}},
+				&v1alpha1.GPUSelector{UUIDs: []string{"GPU-b2c3d4e5-f6a7-b8c9-d0e1-f2a3b4c5d6e7"}},
+				false,
+			),
+		)
+	})
+
 	Context("Successful Workflow with GPU Service Manager", func() {
 		var nodeName = "success-test-node"
 		var resetName = "success-test-reset"
@@ -188,7 +302,7 @@ var _ = Describe("GPUReset Controller", func() {
 
 		BeforeEach(func() {
 			By("Creating a test node")
-			node = &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: make(map[string]string)}}
+			node = &corev1.Node{Name: nodeName, Labels: make(map[string]string)}
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 		})
 
@@ -197,7 +311,7 @@ var _ = Describe("GPUReset Controller", func() {
 			if err := k8sClient.Delete(ctx, node); err != nil && !apierrors.IsNotFound(err) {
 				Expect(err).NotTo(HaveOccurred())
 			}
-			reset := &v1alpha1.GPUReset{ObjectMeta: metav1.ObjectMeta{Name: resetName}}
+			reset := &v1alpha1.GPUReset{Name: resetName}
 			if err := k8sClient.Delete(ctx, reset); err != nil && !apierrors.IsNotFound(err) {
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -215,7 +329,7 @@ var _ = Describe("GPUReset Controller", func() {
 		It("should reconcile a GPUReset through all states successfully", func() {
 			By("Creating a new GPUReset resource")
 			reset := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: resetName},
+				Name: resetName,
 				Spec: v1alpha1.GPUResetSpec{
 					NodeName: nodeName,
 					Selector: &v1alpha1.GPUSelector{
@@ -351,7 +465,7 @@ var _ = Describe("GPUReset Controller", func() {
 
 		BeforeEach(func() {
 			By("Creating a test node")
-			node = &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: make(map[string]string)}}
+			node = &corev1.Node{Name: nodeName, Labels: make(map[string]string)}
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 		})
 
@@ -360,7 +474,7 @@ var _ = Describe("GPUReset Controller", func() {
 			if err := k8sClient.Delete(ctx, node); err != nil && !apierrors.IsNotFound(err) {
 				Expect(err).NotTo(HaveOccurred())
 			}
-			reset := &v1alpha1.GPUReset{ObjectMeta: metav1.ObjectMeta{Name: resetName}}
+			reset := &v1alpha1.GPUReset{Name: resetName}
 			if err := k8sClient.Delete(ctx, reset); err != nil && !apierrors.IsNotFound(err) {
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -378,7 +492,7 @@ var _ = Describe("GPUReset Controller", func() {
 		It("should reconcile a GPUReset through all states successfully when node is deleted", func() {
 			By("Creating a new GPUReset resource")
 			reset := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: resetName},
+				Name: resetName,
 				Spec: v1alpha1.GPUResetSpec{
 					NodeName: nodeName,
 					Selector: &v1alpha1.GPUSelector{
@@ -489,7 +603,7 @@ var _ = Describe("GPUReset Controller", func() {
 
 		BeforeEach(func() {
 			By("Creating a test node")
-			node = &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: make(map[string]string)}}
+			node = &corev1.Node{Name: nodeName, Labels: make(map[string]string)}
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
 			originalManager = reconciler.Config.ServiceManager
@@ -509,7 +623,7 @@ var _ = Describe("GPUReset Controller", func() {
 			if err := k8sClient.Delete(ctx, node); err != nil && !apierrors.IsNotFound(err) {
 				Expect(err).NotTo(HaveOccurred())
 			}
-			reset := &v1alpha1.GPUReset{ObjectMeta: metav1.ObjectMeta{Name: resetName}}
+			reset := &v1alpha1.GPUReset{Name: resetName}
 			if err := k8sClient.Delete(ctx, reset); err != nil && !apierrors.IsNotFound(err) {
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -527,7 +641,7 @@ var _ = Describe("GPUReset Controller", func() {
 		It("should skip service handling and complete when no manager is specified", func() {
 			By("Creating a new GPUReset without a services manager")
 			reset := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: resetName},
+				Name: resetName,
 				Spec: v1alpha1.GPUResetSpec{
 					NodeName: nodeName,
 					// GPUServicesManagerName intentionally omitted
@@ -610,7 +724,7 @@ var _ = Describe("GPUReset Controller", func() {
 
 		BeforeEach(func() {
 			By("Creating a test node")
-			node = &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: make(map[string]string)}}
+			node = &corev1.Node{Name: nodeName, Labels: make(map[string]string)}
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 		})
 
@@ -619,7 +733,7 @@ var _ = Describe("GPUReset Controller", func() {
 			if err := k8sClient.Delete(ctx, node); err != nil && !apierrors.IsNotFound(err) {
 				Expect(err).NotTo(HaveOccurred())
 			}
-			reset := &v1alpha1.GPUReset{ObjectMeta: metav1.ObjectMeta{Name: resetName}}
+			reset := &v1alpha1.GPUReset{Name: resetName}
 			if err := k8sClient.Delete(ctx, reset); err != nil && !apierrors.IsNotFound(err) {
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -643,7 +757,7 @@ var _ = Describe("GPUReset Controller", func() {
 
 			By("Creating a new GPUReset resource")
 			reset := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: resetName},
+				Name: resetName,
 				Spec: v1alpha1.GPUResetSpec{
 					NodeName: nodeName,
 				},
@@ -676,7 +790,7 @@ var _ = Describe("GPUReset Controller", func() {
 
 		BeforeEach(func() {
 			By("Creating a test node")
-			node = &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: make(map[string]string)}}
+			node = &corev1.Node{Name: nodeName, Labels: make(map[string]string)}
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 		})
 
@@ -685,7 +799,7 @@ var _ = Describe("GPUReset Controller", func() {
 			if err := k8sClient.Delete(ctx, node); err != nil && !apierrors.IsNotFound(err) {
 				Expect(err).NotTo(HaveOccurred())
 			}
-			reset := &v1alpha1.GPUReset{ObjectMeta: metav1.ObjectMeta{Name: resetName}}
+			reset := &v1alpha1.GPUReset{Name: resetName}
 			if err := k8sClient.Delete(ctx, reset); err != nil && !apierrors.IsNotFound(err) {
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -701,7 +815,6 @@ var _ = Describe("GPUReset Controller", func() {
 		})
 
 		It("should NOT remove pre-existing env vars when adding GPU ID env var", func() {
-
 			By("Configuring container with env var")
 			customTemplate := reconciler.Config.ResolvedJobTemplate.DeepCopy()
 			customTemplate.Spec.Template.Spec.Containers = []corev1.Container{
@@ -717,7 +830,7 @@ var _ = Describe("GPUReset Controller", func() {
 
 			By("Creating a new GPUReset resource")
 			reset := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: resetName},
+				Name: resetName,
 				Spec: v1alpha1.GPUResetSpec{
 					NodeName: nodeName,
 					Selector: &v1alpha1.GPUSelector{
@@ -755,41 +868,6 @@ var _ = Describe("GPUReset Controller", func() {
 		})
 	})
 
-	Context("Node Lock", func() {
-		var nodeName = "node-lock-test-node"
-		var node *corev1.Node
-
-		BeforeEach(func() {
-			node = &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: make(map[string]string)}}
-			Expect(k8sClient.Create(ctx, node)).To(Succeed())
-		})
-
-		AfterEach(func() {
-			if err := k8sClient.Delete(ctx, node); err != nil && !apierrors.IsNotFound(err) {
-				Expect(err).NotTo(HaveOccurred())
-			}
-			var resets v1alpha1.GPUResetList
-			Expect(k8sClient.List(ctx, &resets)).To(Succeed())
-			for _, r := range resets.Items {
-				if r.Spec.NodeName == nodeName {
-					if err := k8sClient.Delete(ctx, &r); err != nil && !apierrors.IsNotFound(err) {
-						Expect(err).NotTo(HaveOccurred())
-					}
-				}
-			}
-
-			var jobList batchv1.JobList
-			Expect(k8sClient.List(ctx, &jobList, client.InNamespace("default"))).To(Succeed())
-			for _, job := range jobList.Items {
-				if strings.HasPrefix(job.Name, "first-reset") || strings.HasPrefix(job.Name, "second-reset") {
-					if err := k8sClient.Delete(ctx, &job, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
-						Expect(err).NotTo(HaveOccurred())
-					}
-				}
-			}
-		})
-	})
-
 	Context("Failure Scenarios", func() {
 		var nodeName = "fail-test-node"
 		var resetName = "fail-test-reset"
@@ -797,7 +875,7 @@ var _ = Describe("GPUReset Controller", func() {
 		var node *corev1.Node
 
 		BeforeEach(func() {
-			node = &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: make(map[string]string)}}
+			node = &corev1.Node{Name: nodeName, Labels: make(map[string]string)}
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 		})
 
@@ -806,7 +884,7 @@ var _ = Describe("GPUReset Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 			}
 
-			reset := &v1alpha1.GPUReset{ObjectMeta: metav1.ObjectMeta{Name: resetName}}
+			reset := &v1alpha1.GPUReset{Name: resetName}
 			if err := k8sClient.Delete(ctx, reset); err != nil && !apierrors.IsNotFound(err) {
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -837,7 +915,7 @@ var _ = Describe("GPUReset Controller", func() {
 
 		It("should move to a Failed state if node is not found", func() {
 			reset := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: resetName},
+				Name: resetName,
 				Spec: v1alpha1.GPUResetSpec{
 					NodeName: "non-existent-node",
 				},
@@ -865,7 +943,7 @@ var _ = Describe("GPUReset Controller", func() {
 			reconciler.serviceManager = reconciler.Config.ServiceManager
 
 			reset := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: resetName},
+				Name: resetName,
 				Spec: v1alpha1.GPUResetSpec{
 					NodeName: nodeName,
 					Selector: &v1alpha1.GPUSelector{
@@ -904,7 +982,7 @@ var _ = Describe("GPUReset Controller", func() {
 			reconciler.serviceManager = reconciler.Config.ServiceManager
 
 			reset := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: resetName},
+				Name: resetName,
 				Spec: v1alpha1.GPUResetSpec{
 					NodeName: nodeName,
 					Selector: &v1alpha1.GPUSelector{
@@ -981,7 +1059,7 @@ var _ = Describe("GPUReset Controller", func() {
 
 		It("should move to Failed state if the reset job is deleted before finished", func() {
 			reset := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: resetName},
+				Name: resetName,
 				Spec: v1alpha1.GPUResetSpec{
 					NodeName: nodeName,
 					Selector: &v1alpha1.GPUSelector{
@@ -1007,10 +1085,8 @@ var _ = Describe("GPUReset Controller", func() {
 
 			By("Manually deleting the job")
 			jobToDelete := &batchv1.Job{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      updatedReset.Status.JobRef.Name,
-					Namespace: updatedReset.Status.JobRef.Namespace,
-				},
+				Name:      updatedReset.Status.JobRef.Name,
+				Namespace: updatedReset.Status.JobRef.Namespace,
 			}
 			Expect(k8sClient.Delete(ctx, jobToDelete, client.PropagationPolicy(metav1.DeletePropagationBackground))).To(Succeed())
 
@@ -1033,7 +1109,7 @@ var _ = Describe("GPUReset Controller", func() {
 
 		It("should restore services and move to a Failed state if job fails", func() {
 			reset := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: resetName},
+				Name: resetName,
 				Spec: v1alpha1.GPUResetSpec{
 					NodeName: nodeName,
 					Selector: &v1alpha1.GPUSelector{
@@ -1093,7 +1169,7 @@ var _ = Describe("GPUReset Controller", func() {
 		var node *corev1.Node
 
 		BeforeEach(func() {
-			node = &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: make(map[string]string)}}
+			node = &corev1.Node{Name: nodeName, Labels: make(map[string]string)}
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
 			reconciler.checkPodsTerminatedFn = func(ctx context.Context, nodeName string) (bool, error) {
@@ -1106,7 +1182,7 @@ var _ = Describe("GPUReset Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 			}
 
-			reset := &v1alpha1.GPUReset{ObjectMeta: metav1.ObjectMeta{Name: resetName}}
+			reset := &v1alpha1.GPUReset{Name: resetName}
 			if err := k8sClient.Delete(ctx, reset); err != nil && !apierrors.IsNotFound(err) {
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -1137,7 +1213,7 @@ var _ = Describe("GPUReset Controller", func() {
 
 		It("should detect pod state drift and re-initiate teardown", func() {
 			reset := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: resetName},
+				Name: resetName,
 				Spec: v1alpha1.GPUResetSpec{
 					NodeName: nodeName,
 					Selector: &v1alpha1.GPUSelector{
@@ -1205,7 +1281,7 @@ var _ = Describe("GPUReset Controller", func() {
 		var originalManager gpuservices.Manager
 
 		BeforeEach(func() {
-			node = &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: make(map[string]string)}}
+			node = &corev1.Node{Name: nodeName, Labels: make(map[string]string)}
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
 			originalManager = reconciler.Config.ServiceManager
@@ -1240,7 +1316,7 @@ var _ = Describe("GPUReset Controller", func() {
 
 			By("Creating the GPUReset resource")
 			reset := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: resetName},
+				Name: resetName,
 				Spec: v1alpha1.GPUResetSpec{
 					NodeName: nodeName,
 				},
@@ -1276,7 +1352,7 @@ var _ = Describe("GPUReset Controller", func() {
 
 		It("should restore managed services when deleted mid-workflow", func() {
 			reset := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: resetName},
+				Name: resetName,
 				Spec: v1alpha1.GPUResetSpec{
 					NodeName: nodeName,
 				},
@@ -1335,7 +1411,7 @@ var _ = Describe("GPUReset Controller", func() {
 
 		It("should allow GPUReset deletion if node is deleted", func() {
 			reset := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: resetName},
+				Name: resetName,
 				Spec: v1alpha1.GPUResetSpec{
 					NodeName: nodeName,
 				},
@@ -1388,7 +1464,7 @@ var _ = Describe("GPUReset Controller", func() {
 			typeNamespacedName = types.NamespacedName{Name: resetName}
 
 			By("Creating a test node for metrics")
-			node = &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: make(map[string]string)}}
+			node = &corev1.Node{Name: nodeName, Labels: make(map[string]string)}
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
 			// Mock pod checks
@@ -1405,7 +1481,7 @@ var _ = Describe("GPUReset Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 			}
 
-			reset := &v1alpha1.GPUReset{ObjectMeta: metav1.ObjectMeta{Name: resetName}}
+			reset := &v1alpha1.GPUReset{Name: resetName}
 			if err := k8sClient.Delete(ctx, reset); err != nil && !apierrors.IsNotFound(err) {
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -1437,8 +1513,8 @@ var _ = Describe("GPUReset Controller", func() {
 		It("should correctly increment lifecycle metrics for a successful reset", func() {
 			By("Creating a new GPUReset resource")
 			reset := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: resetName},
-				Spec:       v1alpha1.GPUResetSpec{NodeName: nodeName},
+				Name: resetName,
+				Spec: v1alpha1.GPUResetSpec{NodeName: nodeName},
 			}
 			Expect(k8sClient.Create(ctx, reset)).To(Succeed())
 
@@ -1528,8 +1604,8 @@ var _ = Describe("GPUReset Controller", func() {
 		It("should correctly increment failure metrics for a failed reset", func() {
 			By("Creating a new GPUReset resource")
 			reset := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: resetName},
-				Spec:       v1alpha1.GPUResetSpec{NodeName: nodeName},
+				Name: resetName,
+				Spec: v1alpha1.GPUResetSpec{NodeName: nodeName},
 			}
 			Expect(k8sClient.Create(ctx, reset)).To(Succeed())
 
@@ -1637,7 +1713,7 @@ func TestExpectedJobName(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			gr := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: tc.crName},
+				Name: tc.crName,
 			}
 			jobName := r.expectedJobName(gr)
 

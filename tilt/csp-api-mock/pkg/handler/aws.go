@@ -64,14 +64,14 @@ func (h *AWSHandler) describeEvents(w http.ResponseWriter) {
 	h.store.IncrementPollCount(store.CSPAWS)
 
 	events := h.store.ListByCSP(store.CSPAWS)
-	awsEvents := make([]map[string]interface{}, 0, len(events))
+	awsEvents := make([]map[string]any, 0, len(events))
 
 	for _, e := range events {
 		awsEvents = append(awsEvents, h.toAWSEvent(e))
 	}
 
 	w.Header().Set("Content-Type", "application/x-amz-json-1.1")
-	json.NewEncoder(w).Encode(map[string]interface{}{"events": awsEvents})
+	writeJSON(w, map[string]any{"events": awsEvents})
 }
 
 func (h *AWSHandler) describeEntities(w http.ResponseWriter, r *http.Request) {
@@ -80,16 +80,20 @@ func (h *AWSHandler) describeEntities(w http.ResponseWriter, r *http.Request) {
 			EventArns []string `json:"eventArns"`
 		} `json:"filter"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
 
 	events := h.store.ListByCSP(store.CSPAWS)
-	var entities []map[string]interface{}
+
+	var entities []map[string]any
 
 	for _, e := range events {
 		arn := h.eventARN(e)
 		for _, targetArn := range req.Filter.EventArns {
 			if arn == targetArn {
-				entities = append(entities, map[string]interface{}{
+				entities = append(entities, map[string]any{
 					"entityValue":     e.InstanceID,
 					"eventArn":        arn,
 					"entityArn":       e.EntityARN,
@@ -102,23 +106,27 @@ func (h *AWSHandler) describeEntities(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/x-amz-json-1.1")
-	json.NewEncoder(w).Encode(map[string]interface{}{"entities": entities})
+	writeJSON(w, map[string]any{"entities": entities})
 }
 
 func (h *AWSHandler) describeDetails(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		EventArns []string `json:"eventArns"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
 
 	events := h.store.ListByCSP(store.CSPAWS)
-	var details []map[string]interface{}
+
+	var details []map[string]any
 
 	for _, e := range events {
 		arn := h.eventARN(e)
 		for _, targetArn := range req.EventArns {
 			if arn == targetArn {
-				details = append(details, map[string]interface{}{
+				details = append(details, map[string]any{
 					"event":            h.toAWSEvent(e),
 					"eventDescription": map[string]string{"latestDescription": e.Description},
 				})
@@ -127,31 +135,33 @@ func (h *AWSHandler) describeDetails(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/x-amz-json-1.1")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, map[string]any{
 		"successfulSet": details,
-		"failedSet":     []interface{}{},
+		"failedSet":     []any{},
 	})
 }
 
-func (h *AWSHandler) toAWSEvent(e *store.MaintenanceEvent) map[string]interface{} {
+func (h *AWSHandler) toAWSEvent(e *store.MaintenanceEvent) map[string]any {
 	status := e.Status
 	if status == "" {
 		status = "upcoming"
 	}
+
 	eventType := e.EventTypeCode
 	if eventType == "" {
-		eventType = "AWS_EC2_MAINTENANCE_SCHEDULED"
+		eventType = awsEventTypeMaintenanceScheduled
 	}
 
 	var startTime, endTime float64
 	if e.ScheduledStart != nil {
 		startTime = float64(e.ScheduledStart.Unix())
 	}
+
 	if e.ScheduledEnd != nil {
 		endTime = float64(e.ScheduledEnd.Unix())
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"arn":               h.eventARN(e),
 		"availabilityZone":  e.Zone,
 		"service":           "EC2",
@@ -170,11 +180,34 @@ func (h *AWSHandler) eventARN(e *store.MaintenanceEvent) string {
 	if e.EventARN != "" {
 		return e.EventARN
 	}
+
 	eventType := e.EventTypeCode
 	if eventType == "" {
-		eventType = "AWS_EC2_MAINTENANCE_SCHEDULED"
+		eventType = awsEventTypeMaintenanceScheduled
 	}
+
 	return fmt.Sprintf("arn:aws:health:%s::event/EC2/%s/%s", e.Region, eventType, e.ID)
+}
+
+// applyInjectDefaults fills in the fields a newly injected event leaves empty.
+func (h *AWSHandler) applyInjectDefaults(req *store.MaintenanceEvent) {
+	if req.Status == "" {
+		req.Status = "upcoming"
+	}
+
+	if req.EventTypeCode == "" {
+		req.EventTypeCode = awsEventTypeMaintenanceScheduled
+	}
+
+	if req.EventARN == "" {
+		req.EventARN = h.eventARN(req)
+	}
+
+	if req.EntityARN == "" {
+		req.EntityARN = fmt.Sprintf("arn:aws:ec2:%s:%s:instance/%s", req.Region, req.AccountID, req.InstanceID)
+	}
+
+	req.AffectedEntities = []string{req.InstanceID}
 }
 
 func (h *AWSHandler) handleInject(w http.ResponseWriter, r *http.Request) {
@@ -192,9 +225,11 @@ func (h *AWSHandler) handleInject(w http.ResponseWriter, r *http.Request) {
 	if req.ID == "" {
 		req.ID = fmt.Sprintf("aws-event-%d", time.Now().UnixNano())
 	}
+
 	if req.Region == "" {
 		req.Region = "us-east-1"
 	}
+
 	req.CSP = store.CSPAWS
 
 	existing, exists := h.store.Get(req.ID)
@@ -203,29 +238,19 @@ func (h *AWSHandler) handleInject(w http.ResponseWriter, r *http.Request) {
 	if exists {
 		mergeEvent(existing, &req)
 		h.store.Update(existing)
+
 		statusCode = http.StatusOK
+
 		log.Printf("AWS: Updated event %s", existing.ID)
 	} else {
-		if req.Status == "" {
-			req.Status = "upcoming"
-		}
-		if req.EventTypeCode == "" {
-			req.EventTypeCode = "AWS_EC2_MAINTENANCE_SCHEDULED"
-		}
-		if req.EventARN == "" {
-			req.EventARN = h.eventARN(&req)
-		}
-		if req.EntityARN == "" {
-			req.EntityARN = fmt.Sprintf("arn:aws:ec2:%s:%s:instance/%s", req.Region, req.AccountID, req.InstanceID)
-		}
-		req.AffectedEntities = []string{req.InstanceID}
+		h.applyInjectDefaults(&req)
 		h.store.Add(&req)
 		log.Printf("AWS: Created event %s", req.ID)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(map[string]string{
+	writeJSON(w, map[string]string{
 		"eventId":   req.ID,
 		"eventArn":  h.eventARN(&req),
 		"entityArn": req.EntityARN,
@@ -234,23 +259,24 @@ func (h *AWSHandler) handleInject(w http.ResponseWriter, r *http.Request) {
 
 func (h *AWSHandler) handleListEvents(w http.ResponseWriter, r *http.Request) {
 	events := h.store.ListByCSP(store.CSPAWS)
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(events)
+	writeJSON(w, events)
 }
 
 func (h *AWSHandler) handleClear(w http.ResponseWriter, r *http.Request) {
 	h.store.ClearByCSP(store.CSPAWS)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "cleared"})
+	writeJSON(w, map[string]string{keyStatus: "cleared"})
 }
 
 func (h *AWSHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]int64{"pollCount": h.store.GetPollCount(store.CSPAWS)})
+	writeJSON(w, map[string]int64{"pollCount": h.store.GetPollCount(store.CSPAWS)})
 }
 
 func (h *AWSHandler) handleResetStats(w http.ResponseWriter, r *http.Request) {
 	h.store.ResetPollCount(store.CSPAWS)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "reset"})
+	writeJSON(w, map[string]string{keyStatus: "reset"})
 }

@@ -42,10 +42,13 @@ else
 fi
 
 echo "Gate 2/5: database initialization job (timeout $JOB_TIMEOUT)..."
-if kubectl wait job/create-mongodb-database -n "$NS" --for=condition=complete --timeout="$JOB_TIMEOUT" >/dev/null 2>&1; then
-  row PASS "create-mongodb-database" "job Complete"
+mongodb_job=$(kubectl get job -n "$NS" -l app.kubernetes.io/name=create-mongodb-database \
+  --sort-by=.metadata.creationTimestamp \
+  -o jsonpath='{.items[-1:].metadata.name}' 2>/dev/null || true)
+if [[ -n "$mongodb_job" ]] && kubectl wait "job/$mongodb_job" -n "$NS" --for=condition=complete --timeout="$JOB_TIMEOUT" >/dev/null 2>&1; then
+  row PASS "create-mongodb-database" "job $mongodb_job Complete"
 else
-  row FAIL "create-mongodb-database" "job not complete; check: kubectl logs -n $NS job/create-mongodb-database"
+  row FAIL "create-mongodb-database" "job not complete; check: kubectl logs -n $NS -l app.kubernetes.io/name=create-mongodb-database"
 fi
 
 echo "Gate 3/5: mongod pods ready (timeout $POD_TIMEOUT)..."

@@ -122,11 +122,11 @@ func TestGetPipelineStages_AlwaysIncludesAgentFilter(t *testing.T) {
 			// CRITICAL CHECK: First stage must be the agent filter
 			firstStage := pipeline[0]
 
-			matchStage, ok := firstStage["$match"].(map[string]interface{})
+			matchStage, ok := firstStage["$match"].(map[string]any)
 			require.True(t, ok, "First stage should be a $match stage")
 
 			// Verify the agent filter exists and excludes "health-events-analyzer"
-			agentFilter, ok := matchStage["healthevent.agent"].(map[string]interface{})
+			agentFilter, ok := matchStage["healthevent.agent"].(map[string]any)
 			require.True(t, ok, "Agent filter must be present in first $match stage")
 
 			excludeValue, ok := agentFilter["$ne"].(string)
@@ -141,6 +141,36 @@ func TestGetPipelineStages_AlwaysIncludesAgentFilter(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGetPipelineStages_AlwaysIncludesNodeFilter verifies that rule evaluation
+// is scoped to the node from the incoming event before configured stages run.
+func TestGetPipelineStages_AlwaysIncludesNodeFilter(t *testing.T) {
+	reconciler := &Reconciler{
+		config: HealthEventsAnalyzerReconcilerConfig{},
+	}
+	rule := config.HealthEventsAnalyzerRule{
+		Name: "time-window-rule",
+		Stage: []string{
+			`{"$match": {"$expr": {"$gte": ["$healthevent.generatedtimestamp.seconds", 1000]}}}`,
+			`{"$count": "total"}`,
+		},
+	}
+	event := datamodels.HealthEventWithStatus{
+		HealthEvent: &protos.HealthEvent{
+			NodeName: "test-node",
+			Agent:    "gpu-health-monitor",
+		},
+	}
+
+	pipeline, err := reconciler.getPipelineStages(rule, event)
+	require.NoError(t, err)
+	require.Len(t, pipeline, 3)
+
+	firstMatch, ok := pipeline[0]["$match"].(map[string]interface{})
+	require.True(t, ok, "First stage should be a $match stage")
+	assert.Equal(t, event.HealthEvent.NodeName, firstMatch[fieldNodeName],
+		"First stage must scope rule evaluation to the incoming event's node")
 }
 
 // TestGetPipelineStages_AgentFilterPreventsInfiniteLoop tests that events
@@ -174,8 +204,8 @@ func TestGetPipelineStages_AgentFilterPreventsInfiniteLoop(t *testing.T) {
 
 	// Extract the agent filter from the first stage
 	firstStage := pipeline[0]
-	matchStage := firstStage["$match"].(map[string]interface{})
-	agentFilter := matchStage["healthevent.agent"].(map[string]interface{})
+	matchStage := firstStage["$match"].(map[string]any)
+	agentFilter := matchStage["healthevent.agent"].(map[string]any)
 	excludeValue := agentFilter["$ne"].(string)
 
 	// CRITICAL: Verify that the event's agent matches what we're excluding
@@ -218,20 +248,20 @@ func TestGetPipelineStages_AgentFilterPosition(t *testing.T) {
 
 	// Verify first stage is agent filter
 	firstStage := pipeline[0]
-	matchStage := firstStage["$match"].(map[string]interface{})
+	matchStage := firstStage["$match"].(map[string]any)
 	_, hasAgentFilter := matchStage["healthevent.agent"]
 	assert.True(t, hasAgentFilter, "First stage must be the agent filter")
 
 	// Verify second stage is the first configured stage
 	secondStage := pipeline[1]
-	secondMatch := secondStage["$match"].(map[string]interface{})
+	secondMatch := secondStage["$match"].(map[string]any)
 	isFatal, hasIsFatal := secondMatch["healthevent.isfatal"]
 	assert.True(t, hasIsFatal, "Second stage should be first configured stage")
 	assert.Equal(t, true, isFatal, "Second stage should match isfatal: true")
 
 	// Verify third stage is the second configured stage
 	thirdStage := pipeline[2]
-	thirdMatch := thirdStage["$match"].(map[string]interface{})
+	thirdMatch := thirdStage["$match"].(map[string]any)
 	nodeName, hasNodeName := thirdMatch["healthevent.nodename"]
 	assert.True(t, hasNodeName, "Third stage should be second configured stage")
 	assert.Equal(t, "specific-node", nodeName, "Third stage should match specific-node")

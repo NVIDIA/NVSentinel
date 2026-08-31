@@ -146,8 +146,8 @@ func (xidHandler *XIDHandler) parseNVRMGPUMapLine(message string) (string, strin
 }
 
 func (xidHandler *XIDHandler) normalizePCI(pci string) string {
-	if idx := strings.Index(pci, "."); idx != -1 {
-		return pci[:idx]
+	if before, _, ok := strings.Cut(pci, "."); ok {
+		return before
 	}
 
 	return pci

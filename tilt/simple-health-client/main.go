@@ -48,7 +48,8 @@ func main() {
 	dialOpts = append(dialOpts, grpcclient.DialOptions(tokenPath)...)
 
 	log.Printf("Starting health event API server on port %s", port)
-	log.Printf("Using socket path: %s (token auth: %v)", socketPath, tokenPath != "")
+	// G706: socketPath is this process's own flag/env configuration, not request data.
+	log.Printf("Using socket path: %s (token auth: %v)", socketPath, tokenPath != "") //nolint:gosec
 
 	http.HandleFunc("/health-event", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

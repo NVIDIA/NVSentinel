@@ -279,7 +279,8 @@ func detectGPUCount(ctx context.Context) (int, error) {
 }
 
 func validateExecutable(path string) error {
-	info, err := os.Stat(path)
+	// G703: path comes from this check's own configuration, not from untrusted input.
+	info, err := os.Stat(path) //nolint:gosec
 	if err != nil {
 		slog.Error("File stat failed", "path", path, "error", err)
 		return fmt.Errorf("file not found: %w", err)

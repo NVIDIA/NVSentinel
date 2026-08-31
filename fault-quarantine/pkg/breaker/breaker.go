@@ -28,8 +28,6 @@ import (
 	"math"
 	"time"
 
-	"golang.org/x/exp/maps"
-
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 )
 
@@ -95,10 +93,10 @@ func (b *slidingWindowBreaker) slideWindow(now time.Time) {
 			b.buckets[i] = 0
 		}
 
-		maps.Clear(b.nodeToIndex)
+		clear(b.nodeToIndex)
 
 		for i := range b.indexToNodes {
-			maps.Clear(b.indexToNodes[i])
+			clear(b.indexToNodes[i])
 		}
 
 		b.startTime = now.Truncate(b.bucketSize)

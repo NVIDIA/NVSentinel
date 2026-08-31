@@ -17,10 +17,13 @@ package distributedlock
 import (
 	"context"
 	"fmt"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -28,7 +31,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -48,6 +50,34 @@ type mockReconciler struct {
 	nodeLock *nodeLock
 	result   ctrl.Result
 	err      error
+}
+
+func TestNodeLock_GetHolder_ExpectedLeaseOwnerReference(t *testing.T) {
+	t.Parallel()
+
+	testScheme := runtime.NewScheme()
+	require.NoError(t, coordinationv1.AddToScheme(testScheme))
+
+	expected := metav1.OwnerReference{
+		APIVersion: "janitor.dgxc.nvidia.com/v1alpha1",
+		Kind:       "RebootNode",
+		Name:       "test-reboot",
+		UID:        types.UID(testNodeUID),
+	}
+	lease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "test-node",
+			Namespace:       testNamespace,
+			OwnerReferences: []metav1.OwnerReference{expected},
+		},
+	}
+	kubeClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(lease).Build()
+	nodeLock := NewNodeLock(kubeClient, testNamespace)
+
+	holder, err := nodeLock.GetHolder(context.Background(), lease.Name)
+	require.NoError(t, err)
+	require.NotNil(t, holder)
+	assert.Equal(t, expected, *holder)
 }
 
 func (r *mockReconciler) reconcileHelper(_ context.Context, _ ctrl.Request, _ client.Object) (ctrl.Result, error) {
@@ -106,9 +136,7 @@ var _ = Describe("NodeLock", func() {
 		statusSubresource = &janitordgxcnvidiacomv1alpha1.RebootNode{}
 
 		testNode = &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-node",
-			},
+			Name: "test-node",
 			Status: corev1.NodeStatus{
 				Conditions: []corev1.NodeCondition{
 					{
@@ -119,10 +147,8 @@ var _ = Describe("NodeLock", func() {
 			},
 		}
 		testRebootNode = &janitordgxcnvidiacomv1alpha1.RebootNode{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-rebootnode",
-				UID:  testNodeUID,
-			},
+			Name: "test-rebootnode",
+			UID:  testNodeUID,
 			Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
 				NodeName: "test-node",
 				Force:    false,
@@ -132,17 +158,15 @@ var _ = Describe("NodeLock", func() {
 			Name: testRebootNode.Name,
 		}
 		testLeaseLock = &coordinationv1.Lease{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      testNode.GetName(),
-				Namespace: testNamespace,
-				OwnerReferences: []metav1.OwnerReference{
-					{
-						APIVersion:         testRebootNode.GetObjectKind().GroupVersionKind().GroupVersion().String(),
-						Kind:               testRebootNode.GetObjectKind().GroupVersionKind().Kind,
-						Name:               testRebootNode.GetName(),
-						UID:                testRebootNode.GetUID(),
-						BlockOwnerDeletion: ptr.To(true),
-					},
+			Name:      testNode.GetName(),
+			Namespace: testNamespace,
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         testRebootNode.GetObjectKind().GroupVersionKind().GroupVersion().String(),
+					Kind:               testRebootNode.GetObjectKind().GroupVersionKind().Kind,
+					Name:               testRebootNode.GetName(),
+					UID:                testRebootNode.GetUID(),
+					BlockOwnerDeletion: new(true),
 				},
 			},
 		}
@@ -225,7 +249,7 @@ var _ = Describe("NodeLock", func() {
 					Kind:               "RebootNode",
 					Name:               testRebootNode.GetName(),
 					UID:                testRebootNode.GetUID(),
-					BlockOwnerDeletion: ptr.To(true),
+					BlockOwnerDeletion: new(true),
 				},
 			}
 			Expect(createdLease.OwnerReferences).To(Equal(expectedOwnerReferences))

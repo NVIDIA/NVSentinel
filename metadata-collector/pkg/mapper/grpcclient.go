@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"sort"
 
 	"google.golang.org/grpc"
@@ -176,10 +177,8 @@ func sortAndRemoveDuplicateDevices(devicesPerPod map[string]*model.DeviceAnnotat
 
 func isSupportedResourceName(resourceName string) bool {
 	for _, resourceNamesForEntityType := range model.EntityTypeToResourceNames {
-		for _, currentResourceName := range resourceNamesForEntityType {
-			if resourceName == currentResourceName {
-				return true
-			}
+		if slices.Contains(resourceNamesForEntityType, resourceName) {
+			return true
 		}
 	}
 

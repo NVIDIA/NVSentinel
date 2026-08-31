@@ -22,7 +22,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -45,9 +44,7 @@ var _ = Describe("ValidationRequest Controller", func() {
 			err := k8sClient.Get(ctx, typeNamespacedName, validationrequest)
 			if err != nil && errors.IsNotFound(err) {
 				resource := &v1alpha1.ValidationRequest{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: resourceName,
-					},
+					Name: resourceName,
 					Spec: v1alpha1.ValidationRequestSpec{
 						Nodes: []v1alpha1.NodeSpec{
 							{Name: "test-node"},

@@ -24,7 +24,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	commonslambda "github.com/nvidia/nvsentinel/commons/pkg/lambda"
 )
@@ -84,9 +83,9 @@ func blocked(code, desc string) *commonslambda.InstanceAction {
 // kubelet reports.
 func node(providerID, bootID string) corev1.Node {
 	return corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
-		Spec:       corev1.NodeSpec{ProviderID: providerID},
-		Status:     corev1.NodeStatus{NodeInfo: corev1.NodeSystemInfo{BootID: bootID}},
+		Name:   "node-a",
+		Spec:   corev1.NodeSpec{ProviderID: providerID},
+		Status: corev1.NodeStatus{NodeInfo: corev1.NodeSystemInfo{BootID: bootID}},
 	}
 }
 

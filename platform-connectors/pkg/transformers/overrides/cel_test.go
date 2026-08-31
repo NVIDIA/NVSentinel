@@ -211,7 +211,7 @@ func TestCompiledRuleEvaluate(t *testing.T) {
 						Name: "test-rule",
 						When: tt.expression,
 						Override: Override{
-							IsFatal: boolPtr(false),
+							IsFatal: new(false),
 						},
 					},
 				},

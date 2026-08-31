@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
 	"sync"
 
@@ -49,11 +50,11 @@ func NewNodeInformer(k8sClient kubernetes.Interface) (*NodeInformer, error) {
 	informer := factory.Core().V1().Nodes().Informer()
 
 	_, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
+		AddFunc: func(obj any) {
 			node := obj.(*v1.Node)
 			ni.handleNodeAdd(node)
 		},
-		DeleteFunc: func(obj interface{}) {
+		DeleteFunc: func(obj any) {
 			node := obj.(*v1.Node)
 			ni.handleNodeDelete(node)
 		},
@@ -103,9 +104,7 @@ func (ni *NodeInformer) GetInstanceIDs() map[string]string {
 
 	// Return a copy to avoid concurrent access issues
 	instanceIDsCopy := make(map[string]string, len(ni.nodeNameToInstanceIDMap))
-	for k, v := range ni.nodeNameToInstanceIDMap {
-		instanceIDsCopy[k] = v
-	}
+	maps.Copy(instanceIDsCopy, ni.nodeNameToInstanceIDMap)
 
 	return instanceIDsCopy
 }

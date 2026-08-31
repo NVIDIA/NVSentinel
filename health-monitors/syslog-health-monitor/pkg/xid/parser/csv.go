@@ -17,6 +17,7 @@ package parser
 import (
 	"fmt"
 	"log/slog"
+	"maps"
 	"regexp"
 	"strconv"
 	"strings"
@@ -200,16 +201,12 @@ func (p *CSVParser) parseStandardXID(message string) (*Response, error) {
 
 	if xidCode == 13 {
 		xid13Metadata := fetchXID13MetadataFromMessage(message)
-		for k, v := range xid13Metadata {
-			metadata[k] = v
-		}
+		maps.Copy(metadata, xid13Metadata)
 	}
 
 	if xidCode == 74 {
 		nvLinkMetadata := fetchXID74NVLinkData(message)
-		for k, v := range nvLinkMetadata {
-			metadata[k] = v
-		}
+		maps.Copy(metadata, nvLinkMetadata)
 	}
 
 	xidDetails := XIDDetails{

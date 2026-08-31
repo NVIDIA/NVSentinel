@@ -57,3 +57,8 @@ gpu_temp_limit_slowdown_threshold_missing = Counter(
     "gpu_temp_limit_slowdown_threshold_missing",
     "Number of poll cycles where slowdown T.Limit metadata from NVML field 194 is missing",
 )
+gpu_power_brake_reasons_blank = Counter(
+    "gpu_power_brake_reasons_blank",
+    "Number of GPU polls where DCGM clocks-event-reasons was missing or blank, so "
+    "GpuPowerBrakeWatch could not be evaluated",
+)

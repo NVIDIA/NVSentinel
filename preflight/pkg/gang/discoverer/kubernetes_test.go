@@ -21,25 +21,25 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
+//go:fix inline
 func stringPtr(s string) *string {
-	return &s
+	return new(s)
 }
 
 func makePodWithSchedulingGroup(ns, podGroup string) *corev1.Pod {
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Namespace: ns},
+		Namespace: ns,
 	}
 
 	if podGroup != "" {
 		pod.Spec.SchedulingGroup = &corev1.PodSchedulingGroup{
-			PodGroupName: stringPtr(podGroup),
+			PodGroupName: new(podGroup),
 		}
 	}
 
@@ -126,10 +126,8 @@ func makeNativeWorkload(namespace, name string) *unstructured.Unstructured {
 
 func makeSchedulingGroupPod(name, namespace, podGroup, ip string, phase corev1.PodPhase) *corev1.Pod {
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
+		Name:      name,
+		Namespace: namespace,
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{{Name: "c", Image: "img"}},
 		},
@@ -140,7 +138,7 @@ func makeSchedulingGroupPod(name, namespace, podGroup, ip string, phase corev1.P
 	}
 	if podGroup != "" {
 		pod.Spec.SchedulingGroup = &corev1.PodSchedulingGroup{
-			PodGroupName: stringPtr(podGroup),
+			PodGroupName: new(podGroup),
 		}
 	}
 	return pod
@@ -201,7 +199,7 @@ func TestKubernetesDiscoverer_DiscoverPeers(t *testing.T) {
 		c := fake.NewClientBuilder().Build()
 		d := NewKubernetesDiscoverer(c)
 
-		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default"}}
+		pod := &corev1.Pod{Namespace: "default"}
 		info, err := d.DiscoverPeers(context.Background(), pod)
 		require.NoError(t, err)
 		assert.Nil(t, info)

@@ -21,6 +21,9 @@ import (
 
 // Status constants for metrics
 const (
+	// labelNode is the node-name label shared by the metrics below.
+	labelNode = "node"
+
 	StatusPassed = "passed"
 	StatusFailed = "failed"
 )
@@ -53,21 +56,21 @@ var (
 			Name: "fault_quarantine_nodes_quarantined_total",
 			Help: "Total number of nodes quarantined.",
 		},
-		[]string{"node"},
+		[]string{labelNode},
 	)
 	TotalNodesUnquarantined = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "fault_quarantine_nodes_unquarantined_total",
 			Help: "Total number of nodes unquarantined.",
 		},
-		[]string{"node"},
+		[]string{labelNode},
 	)
 	TotalNodesManuallyUncordoned = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "fault_quarantine_nodes_manually_uncordoned_total",
 			Help: "Total number of nodes manually uncordoned.",
 		},
-		[]string{"node"},
+		[]string{labelNode},
 	)
 
 	TotalNodesManuallyUntainted = promauto.NewCounterVec(
@@ -75,14 +78,14 @@ var (
 			Name: "fault_quarantine_nodes_manually_untainted_total",
 			Help: "Total number of nodes manually untainted",
 		},
-		[]string{"node"},
+		[]string{labelNode},
 	)
 	CurrentQuarantinedNodes = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "fault_quarantine_current_quarantined_nodes",
 			Help: "Nodes which are currently quarantined and undergoing breakfix",
 		},
-		[]string{"node"},
+		[]string{labelNode},
 	)
 
 	// Taint and Cordon Metrics
