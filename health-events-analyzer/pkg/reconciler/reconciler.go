@@ -257,7 +257,7 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *datamodels.HealthEv
 	publishedNewEvent := false
 
 	// Healthy events are admitted only for configured recovery mappings. Keep
-	// the PostgreSQL XID detector on its existing unhealthy-event input.
+	// the XID detector on its existing unhealthy-event input.
 	if !event.HealthEvent.IsHealthy {
 		published, err := r.handleXidDetector(ctx, event)
 		if err != nil {

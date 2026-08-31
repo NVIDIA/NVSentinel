@@ -17,6 +17,7 @@ package reconciler
 import (
 	"context"
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -54,16 +56,37 @@ func (c *healthEventCursor) Next(context.Context) bool {
 }
 
 func (c *healthEventCursor) Decode(value any) error {
+	if c.pos < 0 || c.pos >= len(c.events) {
+		return nil
+	}
+
+	if target, ok := value.(*storedRecoveryIdentityDocument); ok {
+		event := c.events[c.pos].HealthEvent
+		if event == nil {
+			return nil
+		}
+
+		target.HealthEvent = &storedRecoveryIdentityEvent{NodeName: event.NodeName}
+		for _, entity := range event.EntitiesImpacted {
+			if entity == nil {
+				continue
+			}
+
+			target.HealthEvent.EntitiesImpacted = append(target.HealthEvent.EntitiesImpacted,
+				storedRecoveryIdentityEntity{
+					EntityType: entity.EntityType, EntityValue: entity.EntityValue,
+				})
+		}
+
+		return nil
+	}
+
 	if err := c.decodeErrs[c.pos]; err != nil {
 		return err
 	}
 
 	if c.decodeErr != nil {
 		return c.decodeErr
-	}
-
-	if c.pos < 0 || c.pos >= len(c.events) {
-		return nil
 	}
 
 	target := value.(*datamodels.HealthEventWithStatus)
@@ -74,6 +97,53 @@ func (c *healthEventCursor) Decode(value any) error {
 func (c *healthEventCursor) Close(context.Context) error    { return nil }
 func (c *healthEventCursor) All(context.Context, any) error { return nil }
 func (c *healthEventCursor) Err() error                     { return c.err }
+
+type recoveryDocumentSetDatabase struct {
+	*mockDatabaseClient
+	events     []datamodels.HealthEventWithStatus
+	decodeErrs map[int]error
+	findCalls  int
+}
+
+func newRecoveryDocumentSetDatabase(
+	events []datamodels.HealthEventWithStatus,
+	decodeErrs map[int]error,
+) *recoveryDocumentSetDatabase {
+	return &recoveryDocumentSetDatabase{
+		mockDatabaseClient: new(mockDatabaseClient),
+		events:             events,
+		decodeErrs:         decodeErrs,
+	}
+}
+
+func (d *recoveryDocumentSetDatabase) Find(
+	context.Context,
+	any,
+	*client.FindOptions,
+) (client.Cursor, error) {
+	d.findCalls++
+	events := append([]datamodels.HealthEventWithStatus(nil), d.events...)
+	decodeErrs := make(map[int]error, len(d.decodeErrs))
+	for index, err := range d.decodeErrs {
+		decodeErrs[index] = err
+	}
+
+	return &healthEventCursor{events: events, pos: -1, decodeErrs: decodeErrs}, nil
+}
+
+func (d *recoveryDocumentSetDatabase) append(event datamodels.HealthEventWithStatus) {
+	d.events = append(d.events, event)
+}
+
+type rawRecoveryIdentityCursor struct {
+	decode func(any) error
+}
+
+func (c *rawRecoveryIdentityCursor) Next(context.Context) bool      { return false }
+func (c *rawRecoveryIdentityCursor) Decode(value any) error         { return c.decode(value) }
+func (c *rawRecoveryIdentityCursor) Close(context.Context) error    { return nil }
+func (c *rawRecoveryIdentityCursor) All(context.Context, any) error { return nil }
+func (c *rawRecoveryIdentityCursor) Err() error                     { return nil }
 
 func recoveryRule(scope config.RecoveryScope) config.HealthEventsAnalyzerRule {
 	rule := config.HealthEventsAnalyzerRule{
@@ -103,6 +173,19 @@ func storedEvent(createdAt time.Time, event *protos.HealthEvent) datamodels.Heal
 		HealthEvent:       event,
 		HealthEventStatus: &protos.HealthEventStatus{},
 	}
+}
+
+func mustRecoveryIdentity(
+	t *testing.T,
+	rule config.HealthEventsAnalyzerRule,
+	event *protos.HealthEvent,
+) recoveryIdentity {
+	t.Helper()
+
+	identity, ok := recoveryIdentityForEvent(rule, event)
+	require.True(t, ok)
+
+	return identity
 }
 
 func recoverySource(createdAt time.Time, gpuUUID string) datamodels.HealthEventWithStatus {
@@ -189,8 +272,8 @@ func persistedFault(
 
 func newRecoveryReconciler(
 	rule config.HealthEventsAnalyzerRule,
-	database *mockDatabaseClient,
-	platform *mockPublisher,
+	database client.DatabaseClient,
+	platform protos.PlatformConnectorClient,
 ) *Reconciler {
 	return &Reconciler{
 		config: HealthEventsAnalyzerReconcilerConfig{
@@ -241,6 +324,42 @@ func TestRecoveryIdentityUsesConfiguredEntitySet(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "GPU_UUID", identity.entities[0].EntityType)
 	require.Equal(t, "PCI", identity.entities[1].EntityType)
+}
+
+func TestRecoveryIdentityCanBeReadAfterFullDocumentDecodeFails(t *testing.T) {
+	rule := recoveryRule(config.RecoveryScopeEntity)
+	jsonDocument := []byte(`{
+		"healthevent": {
+			"nodeName": "node-a",
+			"entitiesImpacted": [{"entityType": "GPU_UUID", "entityValue": "GPU-a"}],
+			"errorCode": {"malformed": true}
+		}
+	}`)
+	bsonDocument, err := bson.Marshal(bson.M{
+		"healthevent": bson.M{
+			"nodename": "node-a",
+			"entitiesimpacted": bson.A{
+				bson.M{"entitytype": "GPU_UUID", "entityvalue": "GPU-a"},
+			},
+			"errorcode": bson.M{"malformed": true},
+		},
+	})
+	require.NoError(t, err)
+
+	for name, decode := range map[string]func(any) error{
+		"json": func(value any) error { return json.Unmarshal(jsonDocument, value) },
+		"bson": func(value any) error { return bson.Unmarshal(bsonDocument, value) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cursor := &rawRecoveryIdentityCursor{decode: decode}
+			var event datamodels.HealthEventWithStatus
+			require.Error(t, cursor.Decode(&event))
+
+			identity, ok := recoveryIdentityFromCurrentDocument(cursor, rule)
+			require.True(t, ok)
+			require.Equal(t, "node-a|8:GPU_UUID=5:GPU-a", identity.key)
+		})
+	}
 }
 
 func TestRecoveryIdentityAllowsEntityOrNodeWideSource(t *testing.T) {
@@ -951,6 +1070,8 @@ func TestFindLatestMatchingEventUsesGenerationOrder(t *testing.T) {
 
 	latest, err := reconciler.findLatestMatchingEvent(
 		context.Background(),
+		nil,
+		nil,
 		"test-rule",
 		"test",
 		map[string]any{"event_type": "RepeatedXID94OnSameGPU"},
@@ -1164,7 +1285,7 @@ func TestRecoveryStateQueriesPropagateProviderErrors(t *testing.T) {
 	}
 }
 
-func TestRecoveryBoundaryRejectsInvalidIdentityAndMissingSource(t *testing.T) {
+func TestRecoveryBoundaryReportsInvalidStoredIdentity(t *testing.T) {
 	rule := recoveryRule(config.RecoveryScopeEntity)
 	database := new(mockDatabaseClient)
 	reconciler := &Reconciler{databaseClient: database}
@@ -1190,10 +1311,7 @@ func TestRecoveryBoundaryRejectsInvalidIdentityAndMissingSource(t *testing.T) {
 		), nil,
 	).Once()
 	boundary, err = reconciler.recoveryBoundaryForEvent(context.Background(), rule, incoming)
-	require.NoError(t, err)
-	require.Nil(t, boundary)
-	boundary, err = reconciler.recoveryBoundaryForEvent(context.Background(), rule, incoming)
-	require.NoError(t, err)
+	require.ErrorContains(t, err, "stored health event has no valid recovery identity")
 	require.Nil(t, boundary)
 	database.AssertNumberOfCalls(t, "Find", 1)
 }
@@ -1212,7 +1330,7 @@ func TestFindLatestMatchingEventReportsCursorFailures(t *testing.T) {
 			database.On("Find", mock.Anything, mock.Anything, mock.Anything).Return(cursor, nil).Once()
 			reconciler := &Reconciler{databaseClient: database}
 			_, err := reconciler.findLatestMatchingEvent(
-				context.Background(), "test-rule", "test", map[string]any{},
+				context.Background(), nil, nil, "test-rule", "test", map[string]any{},
 				func(*datamodels.HealthEventWithStatus) bool { return true },
 			)
 			require.Error(t, err)
@@ -1253,7 +1371,7 @@ func TestRecoveryDecodeCallSitesPreserveTransientFailures(t *testing.T) {
 		},
 		"latest matching event": func(reconciler *Reconciler) error {
 			_, err := reconciler.findLatestMatchingEvent(
-				context.Background(), rule.Name, "test", map[string]any{},
+				context.Background(), nil, nil, rule.Name, "test", map[string]any{},
 				func(*datamodels.HealthEventWithStatus) bool { return true },
 			)
 			return err
@@ -1292,7 +1410,7 @@ func TestCurrentDerivedStatesMarksDecodeFailurePermanent(t *testing.T) {
 	require.True(t, client.IsPermanentError(err))
 }
 
-func TestHandleEventReplaysStoredDocumentDecodeFailure(t *testing.T) {
+func TestHandleEventAllowsCheckpointAfterStoredDocumentDecodeFailure(t *testing.T) {
 	rule := recoveryRule(config.RecoveryScopeEntity)
 	database := new(mockDatabaseClient)
 	database.On("Find", mock.Anything, mock.Anything, mock.Anything).Return(&healthEventCursor{
@@ -1305,18 +1423,25 @@ func TestHandleEventReplaysStoredDocumentDecodeFailure(t *testing.T) {
 
 	published, err := reconciler.handleEvent(context.Background(), &recovery)
 	require.False(t, published)
-	require.Error(t, err)
-	require.False(t, client.IsPermanentError(err), err)
+	require.NoError(t, err)
+	_, cached := reconciler.cachedRecoveryBoundary(rule.Name, mustRecoveryIdentity(t, rule, recovery.HealthEvent))
+	require.False(t, cached)
 }
 
-func TestMalformedStoredDocumentDoesNotConsumeHealSource(t *testing.T) {
+func TestMalformedStoredDocumentRecoversUnaffectedTarget(t *testing.T) {
 	now := time.Now().UTC()
 	rule := recoveryRule(config.RecoveryScopeEntity)
 	rule.Recovery.SourceErrorCodes = nil
 	source := nodeWideRecoverySource(now)
 	goodIdentity, ok := recoveryIdentityForEvent(rule, derivedEvent(now, false, "GPU-good").HealthEvent)
 	require.True(t, ok)
-	database := new(mockDatabaseClient)
+	poisoned := derivedEvent(now.Add(-2*time.Minute), false, "GPU-poisoned")
+	poisonedHealthy := derivedEvent(now.Add(-3*time.Minute), true, "GPU-poisoned")
+	good := derivedEvent(now.Add(-time.Minute), false, "GPU-good")
+	database := newRecoveryDocumentSetDatabase(
+		[]datamodels.HealthEventWithStatus{poisoned, poisonedHealthy, good},
+		map[int]error{0: errors.New("malformed stored document")},
+	)
 	platform := new(mockPublisher)
 	reconciler := newRecoveryReconciler(rule, database, platform)
 	reconciler.recoveryPoll = time.Millisecond
@@ -1325,32 +1450,48 @@ func TestMalformedStoredDocumentDoesNotConsumeHealSource(t *testing.T) {
 		rule.Name, "node_derived_states", "malformed",
 	)
 	before := testutil.ToFloat64(metric)
-	database.On("Find", mock.Anything, mock.Anything, mock.Anything).Return(&healthEventCursor{
-		events: []datamodels.HealthEventWithStatus{
-			derivedEvent(now.Add(-2*time.Minute), false, "GPU-poisoned"),
-			derivedEvent(now.Add(-time.Minute), false, "GPU-good"),
-		},
-		pos:        -1,
-		decodeErrs: map[int]error{0: errors.New("malformed stored document")},
-	}, nil).Once()
-	database.On("Find", mock.Anything, mock.Anything, mock.Anything).
-		Return(newHealthEventCursor(), nil).Once()
-	database.On("Find", mock.Anything, mock.Anything, mock.Anything).
-		Return(newHealthEventCursor(persistedRecoveryForIdentity(
-			now.Add(time.Second), source, rule, goodIdentity,
-		)), nil).Once()
 	platform.On("HealthEventOccurredV1", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			event := proto.Clone(args.Get(1).(*protos.HealthEvents).Events[0]).(*protos.HealthEvent)
+			database.append(storedEvent(now.Add(time.Second), event))
+		}).
 		Return(&emptypb.Empty{}, nil).Once()
 
 	published, err := reconciler.handleRecoveryEvents(context.Background(), &source)
 	require.True(t, published)
-	require.Error(t, err)
-	require.False(t, client.IsPermanentError(err), err)
+	require.NoError(t, err)
 	require.Equal(t, before+1, testutil.ToFloat64(metric))
 	_, nodeBoundaryCached := reconciler.cachedRecoveryBoundary(rule.Name, nodeRecoveryIdentity("node-a"))
 	require.False(t, nodeBoundaryCached)
-	database.AssertExpectations(t)
+	poisonedIdentity := mustRecoveryIdentity(t, rule, poisoned.HealthEvent)
+	_, poisonedBoundaryCached := reconciler.cachedRecoveryBoundary(rule.Name, poisonedIdentity)
+	require.False(t, poisonedBoundaryCached)
+	_, goodBoundaryCached := reconciler.cachedRecoveryBoundary(rule.Name, goodIdentity)
+	require.True(t, goodBoundaryCached)
+	require.GreaterOrEqual(t, database.findCalls, 3)
 	platform.AssertExpectations(t)
+}
+
+func TestInvalidStoredIdentityBlocksNodeBoundaryAndIsCounted(t *testing.T) {
+	now := time.Now().UTC()
+	rule := recoveryRule(config.RecoveryScopeEntity)
+	rule.Recovery.SourceErrorCodes = nil
+	source := nodeWideRecoverySource(now)
+	invalid := derivedEvent(now.Add(-time.Minute), false, "GPU-invalid")
+	invalid.HealthEvent.EntitiesImpacted = nil
+	database := newRecoveryDocumentSetDatabase([]datamodels.HealthEventWithStatus{invalid}, nil)
+	reconciler := newRecoveryReconciler(rule, database, new(mockPublisher))
+	metric := recoveryStoredDocumentDecodeErrorsTotal.WithLabelValues(
+		rule.Name, "node_derived_states", "invalid_identity",
+	)
+	before := testutil.ToFloat64(metric)
+
+	published, err := reconciler.handleRecoveryEvents(context.Background(), &source)
+	require.NoError(t, err)
+	require.False(t, published)
+	require.Equal(t, before+1, testutil.ToFloat64(metric))
+	_, nodeBoundaryCached := reconciler.cachedRecoveryBoundary(rule.Name, nodeRecoveryIdentity("node-a"))
+	require.False(t, nodeBoundaryCached)
 }
 
 func TestRecoveryOrderingFallbacks(t *testing.T) {

@@ -211,6 +211,7 @@ These metrics track the internal ring buffer workqueue performance:
 | `fatal_events_published_total` | Counter | `entity_value` | Total derived unhealthy events published |
 | `health_event_analyzer_recovery_events_published_total` | Counter | `rule_name`, `scope` | Total derived healthy transitions published by recovery-enabled rules |
 | `health_event_analyzer_recovery_persistence_timeouts_total` | Counter | `rule_name`, `state` | Total derived transitions not observed in the store before the persistence deadline |
+| `health_event_analyzer_recovery_stored_document_decode_errors_total` | Counter | `rule_name`, `lookup`, `classification` | Total stored health event documents skipped because they could not be decoded or assigned to a recovery identity |
 | `fatal_event_publishing_errors` | Counter | `error_type` | Total gRPC publication errors |
 
 ---

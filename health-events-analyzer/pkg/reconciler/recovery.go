@@ -59,7 +59,9 @@ type recoveryTarget struct {
 }
 
 type storedDocumentDecodeError struct {
-	cause error
+	cause         error
+	identityKey   string
+	identityKnown bool
 }
 
 func (e *storedDocumentDecodeError) Error() string {
@@ -70,13 +72,73 @@ func (e *storedDocumentDecodeError) Unwrap() error {
 	return e.cause
 }
 
-type replayableStoredDocumentError struct {
-	ruleName string
-	cause    error
+type storedDocumentScanError struct {
+	issues []*storedDocumentDecodeError
 }
 
-func (e *replayableStoredDocumentError) Error() string {
-	return fmt.Sprintf("stored state prevented recovery rule %q from completing: %v", e.ruleName, e.cause)
+func (e *storedDocumentScanError) Error() string {
+	messages := make([]string, 0, len(e.issues))
+	for _, issue := range e.issues {
+		messages = append(messages, issue.Error())
+	}
+
+	return fmt.Sprintf("%d stored health event document(s) were incomplete: %s",
+		len(e.issues), strings.Join(messages, "; "))
+}
+
+func (e *storedDocumentScanError) Unwrap() []error {
+	errs := make([]error, 0, len(e.issues))
+	for _, issue := range e.issues {
+		errs = append(errs, issue)
+	}
+
+	return errs
+}
+
+func (e *storedDocumentScanError) append(issue *storedDocumentDecodeError) {
+	e.issues = append(e.issues, issue)
+}
+
+func (e *storedDocumentScanError) errorOrNil() error {
+	if len(e.issues) == 0 {
+		return nil
+	}
+
+	return e
+}
+
+func (e *storedDocumentScanError) affects(identity recoveryIdentity) bool {
+	for _, issue := range e.issues {
+		if !issue.identityKnown || issue.identityKey == identity.key {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (e *storedDocumentScanError) hasUnknownIdentity() bool {
+	for _, issue := range e.issues {
+		if !issue.identityKnown {
+			return true
+		}
+	}
+
+	return false
+}
+
+type storedRecoveryIdentityDocument struct {
+	HealthEvent *storedRecoveryIdentityEvent `bson:"healthevent" json:"healthevent"`
+}
+
+type storedRecoveryIdentityEvent struct {
+	NodeName         string                         `bson:"nodename" json:"nodeName"`
+	EntitiesImpacted []storedRecoveryIdentityEntity `bson:"entitiesimpacted" json:"entitiesImpacted"`
+}
+
+type storedRecoveryIdentityEntity struct {
+	EntityType  string `bson:"entitytype" json:"entityType"`
+	EntityValue string `bson:"entityvalue" json:"entityValue"`
 }
 
 const (
@@ -257,22 +319,6 @@ func (r *Reconciler) handleRecoveryEvents(
 		if err != nil {
 			published = recovered || published
 
-			var decodeErr *storedDocumentDecodeError
-			if errors.As(err, &decodeErr) {
-				slog.ErrorContext(ctx, "Recovery remains incomplete after stored document decode failure",
-					"rule_name", rule.Name, "error", err)
-				totalEventProcessingError.WithLabelValues("recovery_stored_document_decode_error").Inc()
-				// The malformed document is a dependency of this valid source event.
-				// Do not expose a nested PermanentError to the event processor, which
-				// would checkpoint the source and discard the recovery opportunity.
-				multiErr = multierror.Append(multiErr, &replayableStoredDocumentError{
-					ruleName: rule.Name,
-					cause:    err,
-				})
-
-				continue
-			}
-
 			if client.IsPermanentError(err) {
 				slog.ErrorContext(ctx, "Skipping recovery rule after deterministic failure",
 					"rule_name", rule.Name, "error", err)
@@ -315,11 +361,30 @@ func (r *Reconciler) handleRecoveryRule(
 	sourceBoundary := boundaryFromEvent(event)
 
 	targets, targetErr := r.recoveryTargets(ctx, rule, identity, nodeWide)
-	if targetErr != nil && len(targets) == 0 {
+	scanIncomplete := false
+
+	var scanErr *storedDocumentScanError
+	if errors.As(targetErr, &scanErr) && client.IsPermanentError(scanErr) {
+		scanIncomplete = true
+		before := len(targets)
+		targets = slices.DeleteFunc(targets, func(target recoveryTarget) bool {
+			return scanErr.affects(target.identity)
+		})
+		slog.ErrorContext(ctx, "Checkpointing recovery source after incomplete stored-state scan",
+			"rule_name", rule.Name,
+			"skipped_targets", before-len(targets),
+			"unknown_identity", scanErr.hasUnknownIdentity(),
+			"error", scanErr)
+		totalEventProcessingError.WithLabelValues("recovery_stored_document_incomplete").Inc()
+
+		targetErr = nil
+	}
+
+	if targetErr != nil {
 		return false, fmt.Errorf("find current states for rule %q: %w", rule.Name, targetErr)
 	}
 
-	if !nodeWide && len(targets) == 0 {
+	if !nodeWide && len(targets) == 0 && !scanIncomplete {
 		// A verified recovery also resets rule history when there is no derived
 		// condition to clear yet.
 		r.rememberRecoveryBoundary(rule.Name, identity, sourceBoundary)
@@ -327,20 +392,12 @@ func (r *Reconciler) handleRecoveryRule(
 
 	published, err := r.publishRecoveryTargets(ctx, event, rule, targets, sourceBoundary, false)
 	if err != nil {
-		if targetErr != nil {
-			return published, multierror.Append(nil, targetErr, err).ErrorOrNil()
-		}
-
 		return published, err
-	}
-
-	if targetErr != nil {
-		return published, fmt.Errorf("find current states for rule %q: %w", rule.Name, targetErr)
 	}
 
 	// A node-wide boundary affects every entity on the node, so expose it only
 	// after all applicable derived conditions have been durably recovered.
-	if nodeWide {
+	if nodeWide && !scanIncomplete {
 		r.rememberRecoveryBoundary(rule.Name, identity, sourceBoundary)
 	}
 
@@ -464,7 +521,7 @@ func (r *Reconciler) latestRecoverySource(
 	rule config.HealthEventsAnalyzerRule,
 	identity recoveryIdentity,
 ) (*datamodels.HealthEventWithStatus, error) {
-	return r.findLatestMatchingEvent(ctx, rule.Name, "recovery_source", r.recoveryLookupFilter(
+	return r.findLatestMatchingEvent(ctx, &rule, &identity, rule.Name, "recovery_source", r.recoveryLookupFilter(
 		rule.Recovery.SourceAgent, rule.Recovery.SourceCheckName, identity.nodeName,
 	), func(candidate *datamodels.HealthEventWithStatus) bool {
 		return recoverySourceMatches(rule.Recovery, candidate.HealthEvent) &&
@@ -521,7 +578,7 @@ func (r *Reconciler) currentDerivedState(
 		return state, true, nil
 	}
 
-	latest, err := r.findLatestMatchingEvent(ctx, rule.Name, "derived_state", r.recoveryLookupFilter(
+	latest, err := r.findLatestMatchingEvent(ctx, &rule, &identity, rule.Name, "derived_state", r.recoveryLookupFilter(
 		agentName, rule.Name, identity.nodeName,
 	), func(candidate *datamodels.HealthEventWithStatus) bool {
 		candidateIdentity, valid := recoveryIdentityForEvent(rule, candidate.HealthEvent)
@@ -554,20 +611,24 @@ func (r *Reconciler) currentDerivedStatesForNode(
 
 	states := make(map[string]recoveryTarget)
 
-	var decodeErrs *multierror.Error
+	decodeErrs := &storedDocumentScanError{}
 
 	for cursor.Next(ctx) {
 		var candidate datamodels.HealthEventWithStatus
 		if err := cursor.Decode(&candidate); err != nil {
-			decodeErr := &storedDocumentDecodeError{cause: classifyRecoveryDecodeError(ctx, err)}
-			r.recordStoredDocumentDecodeError(ctx, rule.Name, "node_derived_states", decodeErr)
-			decodeErrs = multierror.Append(decodeErrs, decodeErr)
+			decodeErrs.append(r.newStoredDocumentDecodeError(
+				ctx, cursor, rule.Name, "node_derived_states", &rule, err,
+			))
 
 			continue
 		}
 
 		identity, valid := recoveryIdentityForEvent(rule, candidate.HealthEvent)
 		if !valid {
+			decodeErrs.append(r.newStoredDocumentIdentityError(
+				ctx, rule.Name, "node_derived_states",
+			))
+
 			continue
 		}
 
@@ -595,7 +656,7 @@ func (r *Reconciler) currentDerivedStatesForNode(
 		return strings.Compare(a.identity.key, b.identity.key)
 	})
 
-	return targets, decodeErrs.ErrorOrNil()
+	return targets, decodeErrs.errorOrNil()
 }
 
 // publishRecoveryUntilStored keeps the source event in-flight until the store
@@ -769,7 +830,7 @@ func (r *Reconciler) findPersistedDerived(
 	identity recoveryIdentity,
 	isHealthy bool,
 ) (*datamodels.HealthEventWithStatus, error) {
-	return r.findLatestMatchingEvent(ctx, rule.Name, "persisted_derived", r.recoveryLookupFilter(
+	return r.findLatestMatchingEvent(ctx, &rule, &identity, rule.Name, "persisted_derived", r.recoveryLookupFilter(
 		agentName, rule.Name, identity.nodeName,
 	), func(candidate *datamodels.HealthEventWithStatus) bool {
 		if candidate.HealthEvent.IsHealthy != isHealthy ||
@@ -835,8 +896,11 @@ func (r *Reconciler) recoveryLookupFilter(agent, checkName, nodeName string) map
 	return filter
 }
 
+//nolint:cyclop // The scan keeps decode, identity, match, and iteration failures distinct.
 func (r *Reconciler) findLatestMatchingEvent(
 	ctx context.Context,
+	rule *config.HealthEventsAnalyzerRule,
+	identity *recoveryIdentity,
 	ruleName string,
 	lookup string,
 	filter map[string]any,
@@ -852,19 +916,26 @@ func (r *Reconciler) findLatestMatchingEvent(
 
 	var latest *datamodels.HealthEventWithStatus
 
-	var decodeErrs *multierror.Error
+	decodeErrs := &storedDocumentScanError{}
 
 	for cursor.Next(ctx) {
 		var candidate datamodels.HealthEventWithStatus
 		if err := cursor.Decode(&candidate); err != nil {
-			decodeErr := &storedDocumentDecodeError{cause: classifyRecoveryDecodeError(ctx, err)}
-			r.recordStoredDocumentDecodeError(ctx, ruleName, lookup, decodeErr)
-			decodeErrs = multierror.Append(decodeErrs, decodeErr)
+			decodeErr := r.newStoredDocumentDecodeError(ctx, cursor, ruleName, lookup, rule, err)
+			if identity == nil || !decodeErr.identityKnown || decodeErr.identityKey == identity.key {
+				decodeErrs.append(decodeErr)
+			}
 
 			continue
 		}
 
-		if candidate.HealthEvent == nil || !matches(&candidate) {
+		if candidate.HealthEvent == nil {
+			decodeErrs.append(r.newStoredDocumentIdentityError(ctx, ruleName, lookup))
+
+			continue
+		}
+
+		if !matches(&candidate) {
 			continue
 		}
 
@@ -878,23 +949,85 @@ func (r *Reconciler) findLatestMatchingEvent(
 		return nil, fmt.Errorf("iterate health events: %w", err)
 	}
 
-	return latest, decodeErrs.ErrorOrNil()
+	return latest, decodeErrs.errorOrNil()
 }
 
 func (r *Reconciler) recordStoredDocumentDecodeError(
 	ctx context.Context,
 	ruleName string,
 	lookup string,
+	classification string,
 	err error,
 ) {
+	slog.ErrorContext(ctx, "Skipping unusable stored health event",
+		"rule_name", ruleName, "lookup", lookup, "classification", classification, "error", err)
+	recoveryStoredDocumentDecodeErrorsTotal.WithLabelValues(ruleName, lookup, classification).Inc()
+}
+
+func (r *Reconciler) newStoredDocumentDecodeError(
+	ctx context.Context,
+	cursor client.Cursor,
+	ruleName string,
+	lookup string,
+	rule *config.HealthEventsAnalyzerRule,
+	err error,
+) *storedDocumentDecodeError {
+	cause := classifyRecoveryDecodeError(ctx, err)
+
+	identity, identityKnown := recoveryIdentity{}, false
+	if rule != nil {
+		identity, identityKnown = recoveryIdentityFromCurrentDocument(cursor, *rule)
+	}
+
+	decodeErr := &storedDocumentDecodeError{
+		cause:         cause,
+		identityKey:   identity.key,
+		identityKnown: identityKnown,
+	}
+
 	classification := "transient"
-	if client.IsPermanentError(err) {
+	if client.IsPermanentError(cause) {
 		classification = "malformed"
 	}
 
-	slog.ErrorContext(ctx, "Skipping undecodable stored health event",
-		"rule_name", ruleName, "lookup", lookup, "classification", classification, "error", err)
-	recoveryStoredDocumentDecodeErrorsTotal.WithLabelValues(ruleName, lookup, classification).Inc()
+	r.recordStoredDocumentDecodeError(ctx, ruleName, lookup, classification, decodeErr)
+
+	return decodeErr
+}
+
+func (r *Reconciler) newStoredDocumentIdentityError(
+	ctx context.Context,
+	ruleName string,
+	lookup string,
+) *storedDocumentDecodeError {
+	err := &storedDocumentDecodeError{
+		cause: client.PermanentError(errors.New("stored health event has no valid recovery identity")),
+	}
+	r.recordStoredDocumentDecodeError(ctx, ruleName, lookup, "invalid_identity", err)
+
+	return err
+}
+
+func recoveryIdentityFromCurrentDocument(
+	cursor client.Cursor,
+	rule config.HealthEventsAnalyzerRule,
+) (recoveryIdentity, bool) {
+	var document storedRecoveryIdentityDocument
+	if err := cursor.Decode(&document); err != nil || document.HealthEvent == nil {
+		return recoveryIdentity{}, false
+	}
+
+	event := &protos.HealthEvent{NodeName: document.HealthEvent.NodeName}
+
+	event.EntitiesImpacted = make([]*protos.Entity, 0, len(document.HealthEvent.EntitiesImpacted))
+
+	for _, entity := range document.HealthEvent.EntitiesImpacted {
+		event.EntitiesImpacted = append(event.EntitiesImpacted, &protos.Entity{
+			EntityType: entity.EntityType, EntityValue: entity.EntityValue,
+		})
+	}
+
+	return recoveryIdentityForEvent(rule, event)
 }
 
 func classifyRecoveryDecodeError(ctx context.Context, err error) error {

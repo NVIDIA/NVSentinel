@@ -490,7 +490,7 @@ func requireStoredDerivedState(
 	})
 	require.True(t, ok)
 
-	latest, err := reconciler.findLatestMatchingEvent(ctx, rule.Name, "integration", reconciler.recoveryLookupFilter(
+	latest, err := reconciler.findLatestMatchingEvent(ctx, &rule, &identity, rule.Name, "integration", reconciler.recoveryLookupFilter(
 		agentName, rule.Name, nodeName,
 	), func(candidate *datamodels.HealthEventWithStatus) bool {
 		candidateIdentity, valid := recoveryIdentityForEvent(rule, candidate.HealthEvent)
