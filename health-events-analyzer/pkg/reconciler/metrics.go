@@ -76,6 +76,13 @@ var (
 		},
 		[]string{metricLabelRuleName, "state"},
 	)
+	recoveryStoredDocumentDecodeErrorsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "health_event_analyzer_recovery_stored_document_decode_errors_total",
+			Help: "Total stored health event documents skipped because they could not be decoded.",
+		},
+		[]string{metricLabelRuleName, "lookup", "classification"},
+	)
 
 	mongoQueryExecutionDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{

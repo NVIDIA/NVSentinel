@@ -29,6 +29,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 )
 
 const (
@@ -186,7 +187,9 @@ func (p *PublisherConfig) publish(ctx context.Context, event *protos.HealthEvent
 			)
 			tracing.RecordError(span, fmt.Errorf("unexpected processingStrategy value: %q", options.rule.ProcessingStrategy))
 
-			return fmt.Errorf("unexpected processingStrategy value: %q", options.rule.ProcessingStrategy)
+			return client.PermanentError(
+				fmt.Errorf("unexpected processingStrategy value: %q", options.rule.ProcessingStrategy),
+			)
 		}
 
 		newEvent.ProcessingStrategy = protos.ProcessingStrategy(value)

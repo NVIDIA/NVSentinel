@@ -58,6 +58,27 @@ type recoveryTarget struct {
 	state    derivedState
 }
 
+type storedDocumentDecodeError struct {
+	cause error
+}
+
+func (e *storedDocumentDecodeError) Error() string {
+	return e.cause.Error()
+}
+
+func (e *storedDocumentDecodeError) Unwrap() error {
+	return e.cause
+}
+
+type replayableStoredDocumentError struct {
+	ruleName string
+	cause    error
+}
+
+func (e *replayableStoredDocumentError) Error() string {
+	return fmt.Sprintf("stored state prevented recovery rule %q from completing: %v", e.ruleName, e.cause)
+}
+
 const (
 	defaultRecoveryPollInterval       = 250 * time.Millisecond
 	defaultRecoveryRepublishInterval  = 30 * time.Second
@@ -234,6 +255,24 @@ func (r *Reconciler) handleRecoveryEvents(
 	for _, rule := range r.config.HealthEventsAnalyzerRules.Rules {
 		recovered, err := r.handleRecoveryRule(ctx, event, rule)
 		if err != nil {
+			published = recovered || published
+
+			var decodeErr *storedDocumentDecodeError
+			if errors.As(err, &decodeErr) {
+				slog.ErrorContext(ctx, "Recovery remains incomplete after stored document decode failure",
+					"rule_name", rule.Name, "error", err)
+				totalEventProcessingError.WithLabelValues("recovery_stored_document_decode_error").Inc()
+				// The malformed document is a dependency of this valid source event.
+				// Do not expose a nested PermanentError to the event processor, which
+				// would checkpoint the source and discard the recovery opportunity.
+				multiErr = multierror.Append(multiErr, &replayableStoredDocumentError{
+					ruleName: rule.Name,
+					cause:    err,
+				})
+
+				continue
+			}
+
 			if client.IsPermanentError(err) {
 				slog.ErrorContext(ctx, "Skipping recovery rule after deterministic failure",
 					"rule_name", rule.Name, "error", err)
@@ -253,6 +292,7 @@ func (r *Reconciler) handleRecoveryEvents(
 	return published, multiErr.ErrorOrNil()
 }
 
+//nolint:cyclop // Recovery keeps partial scan, publication, and boundary failures distinct.
 func (r *Reconciler) handleRecoveryRule(
 	ctx context.Context,
 	event *datamodels.HealthEventWithStatus,
@@ -274,9 +314,9 @@ func (r *Reconciler) handleRecoveryRule(
 
 	sourceBoundary := boundaryFromEvent(event)
 
-	targets, err := r.recoveryTargets(ctx, rule, identity, nodeWide)
-	if err != nil {
-		return false, fmt.Errorf("find current states for rule %q: %w", rule.Name, err)
+	targets, targetErr := r.recoveryTargets(ctx, rule, identity, nodeWide)
+	if targetErr != nil && len(targets) == 0 {
+		return false, fmt.Errorf("find current states for rule %q: %w", rule.Name, targetErr)
 	}
 
 	if !nodeWide && len(targets) == 0 {
@@ -287,7 +327,15 @@ func (r *Reconciler) handleRecoveryRule(
 
 	published, err := r.publishRecoveryTargets(ctx, event, rule, targets, sourceBoundary, false)
 	if err != nil {
+		if targetErr != nil {
+			return published, multierror.Append(nil, targetErr, err).ErrorOrNil()
+		}
+
 		return published, err
+	}
+
+	if targetErr != nil {
+		return published, fmt.Errorf("find current states for rule %q: %w", rule.Name, targetErr)
 	}
 
 	// A node-wide boundary affects every entity on the node, so expose it only
@@ -369,6 +417,15 @@ func (r *Reconciler) recoveryBoundaryForEvent(
 	}
 
 	if boundary, found := r.cachedEffectiveRecoveryBoundary(rule, identity); found {
+		effective, err := r.recoveryBoundaryIsEffective(ctx, rule, identity, boundary)
+		if err != nil {
+			return nil, fmt.Errorf("validate cached recovery boundary: %w", err)
+		}
+
+		if !effective {
+			return nil, nil
+		}
+
 		return &boundary, nil
 	}
 
@@ -407,7 +464,7 @@ func (r *Reconciler) latestRecoverySource(
 	rule config.HealthEventsAnalyzerRule,
 	identity recoveryIdentity,
 ) (*datamodels.HealthEventWithStatus, error) {
-	return r.findLatestMatchingEvent(ctx, r.recoveryLookupFilter(
+	return r.findLatestMatchingEvent(ctx, rule.Name, "recovery_source", r.recoveryLookupFilter(
 		rule.Recovery.SourceAgent, rule.Recovery.SourceCheckName, identity.nodeName,
 	), func(candidate *datamodels.HealthEventWithStatus) bool {
 		return recoverySourceMatches(rule.Recovery, candidate.HealthEvent) &&
@@ -464,7 +521,7 @@ func (r *Reconciler) currentDerivedState(
 		return state, true, nil
 	}
 
-	latest, err := r.findLatestMatchingEvent(ctx, r.recoveryLookupFilter(
+	latest, err := r.findLatestMatchingEvent(ctx, rule.Name, "derived_state", r.recoveryLookupFilter(
 		agentName, rule.Name, identity.nodeName,
 	), func(candidate *datamodels.HealthEventWithStatus) bool {
 		candidateIdentity, valid := recoveryIdentityForEvent(rule, candidate.HealthEvent)
@@ -497,10 +554,16 @@ func (r *Reconciler) currentDerivedStatesForNode(
 
 	states := make(map[string]recoveryTarget)
 
+	var decodeErrs *multierror.Error
+
 	for cursor.Next(ctx) {
 		var candidate datamodels.HealthEventWithStatus
 		if err := cursor.Decode(&candidate); err != nil {
-			return nil, classifyRecoveryDecodeError(ctx, err)
+			decodeErr := &storedDocumentDecodeError{cause: classifyRecoveryDecodeError(ctx, err)}
+			r.recordStoredDocumentDecodeError(ctx, rule.Name, "node_derived_states", decodeErr)
+			decodeErrs = multierror.Append(decodeErrs, decodeErr)
+
+			continue
 		}
 
 		identity, valid := recoveryIdentityForEvent(rule, candidate.HealthEvent)
@@ -532,7 +595,7 @@ func (r *Reconciler) currentDerivedStatesForNode(
 		return strings.Compare(a.identity.key, b.identity.key)
 	})
 
-	return targets, nil
+	return targets, decodeErrs.ErrorOrNil()
 }
 
 // publishRecoveryUntilStored keeps the source event in-flight until the store
@@ -706,7 +769,7 @@ func (r *Reconciler) findPersistedDerived(
 	identity recoveryIdentity,
 	isHealthy bool,
 ) (*datamodels.HealthEventWithStatus, error) {
-	return r.findLatestMatchingEvent(ctx, r.recoveryLookupFilter(
+	return r.findLatestMatchingEvent(ctx, rule.Name, "persisted_derived", r.recoveryLookupFilter(
 		agentName, rule.Name, identity.nodeName,
 	), func(candidate *datamodels.HealthEventWithStatus) bool {
 		if candidate.HealthEvent.IsHealthy != isHealthy ||
@@ -774,6 +837,8 @@ func (r *Reconciler) recoveryLookupFilter(agent, checkName, nodeName string) map
 
 func (r *Reconciler) findLatestMatchingEvent(
 	ctx context.Context,
+	ruleName string,
+	lookup string,
 	filter map[string]any,
 	matches func(*datamodels.HealthEventWithStatus) bool,
 ) (*datamodels.HealthEventWithStatus, error) {
@@ -787,10 +852,16 @@ func (r *Reconciler) findLatestMatchingEvent(
 
 	var latest *datamodels.HealthEventWithStatus
 
+	var decodeErrs *multierror.Error
+
 	for cursor.Next(ctx) {
 		var candidate datamodels.HealthEventWithStatus
 		if err := cursor.Decode(&candidate); err != nil {
-			return nil, classifyRecoveryDecodeError(ctx, err)
+			decodeErr := &storedDocumentDecodeError{cause: classifyRecoveryDecodeError(ctx, err)}
+			r.recordStoredDocumentDecodeError(ctx, ruleName, lookup, decodeErr)
+			decodeErrs = multierror.Append(decodeErrs, decodeErr)
+
+			continue
 		}
 
 		if candidate.HealthEvent == nil || !matches(&candidate) {
@@ -807,7 +878,23 @@ func (r *Reconciler) findLatestMatchingEvent(
 		return nil, fmt.Errorf("iterate health events: %w", err)
 	}
 
-	return latest, nil
+	return latest, decodeErrs.ErrorOrNil()
+}
+
+func (r *Reconciler) recordStoredDocumentDecodeError(
+	ctx context.Context,
+	ruleName string,
+	lookup string,
+	err error,
+) {
+	classification := "transient"
+	if client.IsPermanentError(err) {
+		classification = "malformed"
+	}
+
+	slog.ErrorContext(ctx, "Skipping undecodable stored health event",
+		"rule_name", ruleName, "lookup", lookup, "classification", classification, "error", err)
+	recoveryStoredDocumentDecodeErrorsTotal.WithLabelValues(ruleName, lookup, classification).Inc()
 }
 
 func classifyRecoveryDecodeError(ctx context.Context, err error) error {
@@ -818,8 +905,7 @@ func classifyRecoveryDecodeError(ctx context.Context, err error) error {
 	}
 
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
-		errors.Is(err, driver.ErrBadConn) || errors.Is(err, io.ErrUnexpectedEOF) ||
-		datastore.IsConnectionError(err) || datastore.IsRetryableError(err) {
+		errors.Is(err, driver.ErrBadConn) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return wrapped
 	}
 
@@ -903,6 +989,9 @@ func (r *Reconciler) cachedEffectiveRecoveryBoundary(
 	rule config.HealthEventsAnalyzerRule,
 	identity recoveryIdentity,
 ) (recoveryBoundary, bool) {
+	// Cached boundaries are candidates, not pre-approved answers. The caller
+	// must run recoveryBoundaryIsEffective for the exact rule and identity
+	// before serving any candidate, including a node-wide one.
 	boundary, found := r.cachedRecoveryBoundary(rule.Name, identity)
 	if rule.Recovery == nil || rule.Recovery.Scope != config.RecoveryScopeEntity {
 		return boundary, found

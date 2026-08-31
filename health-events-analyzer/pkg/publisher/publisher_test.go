@@ -30,6 +30,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
+	storeclient "github.com/nvidia/nvsentinel/store-client/pkg/client"
 )
 
 type capturePlatformConnector struct {
@@ -131,6 +132,7 @@ func TestPublishRecoveryRejectsInvalidProcessingStrategy(t *testing.T) {
 	err := pub.PublishRecovery(context.Background(), &protos.HealthEvent{NodeName: "node-a"},
 		"DerivedCondition", nil, rule)
 	require.ErrorContains(t, err, "unexpected processingStrategy value")
+	require.True(t, storeclient.IsPermanentError(err))
 	require.Nil(t, client.events)
 }
 
