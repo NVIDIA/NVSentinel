@@ -40,10 +40,18 @@ func TestProcessEvents_EventHandlingAndCheckpointOutcomes_PreserveCheckpointOrde
 		handlerErrors map[string]error
 		markErrors    map[string]error
 		wantErrors    []error
+		wantErrorText string
 		wantHandled   []string
 		wantMarkCalls []string
 		wantMarked    []string
 	}{
+		{
+			name:          "successful events are checkpointed in order",
+			firstEvent:    newEventProcessorTestEvent("1"),
+			wantHandled:   []string{"1", "2"},
+			wantMarkCalls: []string{"1", "2"},
+			wantMarked:    []string{"1", "2"},
+		},
 		{
 			name:          "handler failure keeps later event unprocessed",
 			firstEvent:    newEventProcessorTestEvent("1"),
@@ -92,12 +100,12 @@ func TestProcessEvents_EventHandlingAndCheckpointOutcomes_PreserveCheckpointOrde
 		{
 			name: "document ID error stops when checkpoint fails",
 			firstEvent: &eventProcessorTestEvent{
-				id:            "1",
 				token:         []byte("1"),
 				documentIDErr: documentIDErr,
 			},
 			markErrors:    map[string]error{"1": checkpointErr},
 			wantErrors:    []error{documentIDErr, checkpointErr},
+			wantErrorText: `stopping at uncheckpointed event "unknown"`,
 			wantMarkCalls: []string{"1"},
 		},
 		{
@@ -136,6 +144,9 @@ func TestProcessEvents_EventHandlingAndCheckpointOutcomes_PreserveCheckpointOrde
 				for _, wantErr := range test.wantErrors {
 					require.ErrorIs(t, err, wantErr)
 				}
+			}
+			if test.wantErrorText != "" {
+				require.ErrorContains(t, err, test.wantErrorText)
 			}
 
 			require.Equal(t, test.wantHandled, handled)

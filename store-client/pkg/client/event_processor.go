@@ -159,7 +159,11 @@ func (p *DefaultEventProcessor) processEvents(ctx context.Context) error {
 				return nil
 			}
 
-			eventID, _ := event.GetDocumentID()
+			eventID, err := event.GetDocumentID()
+			if err != nil || eventID == "" {
+				eventID = "unknown"
+			}
+
 			slog.Debug("Processing event", "eventID", eventID)
 
 			if err := p.handleSingleEvent(ctx, event); err != nil {
