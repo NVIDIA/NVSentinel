@@ -67,14 +67,19 @@ const (
 
 var (
 	RebootNodeGVK = schema.GroupVersionKind{
-		Group:   "janitor.dgxc.nvidia.com",
-		Version: "v1alpha1",
+		Group:   RebootNodeCRDGroup,
+		Version: RebootNodeCRDVersion,
 		Kind:    "RebootNode",
 	}
 	GPUResetGVK = schema.GroupVersionKind{
-		Group:   "janitor.dgxc.nvidia.com",
-		Version: "v1alpha1",
+		Group:   RebootNodeCRDGroup,
+		Version: RebootNodeCRDVersion,
 		Kind:    "GPUReset",
+	}
+	TerminateNodeGVK = schema.GroupVersionKind{
+		Group:   RebootNodeCRDGroup,
+		Version: RebootNodeCRDVersion,
+		Kind:    "TerminateNode",
 	}
 	ExternalRemediationRequestGVK = schema.GroupVersionKind{
 		Group:   "nvsentinel.dgxc.nvidia.com",
@@ -815,6 +820,50 @@ func DeleteCR(ctx context.Context, t *testing.T, c klient.Client, cr *unstructur
 	return nil
 }
 
+// WaitForCRConditionByName polls crName until conditionType has wantStatus, or until the
+// CR reaches completionTime. Returns (true, cr) if the condition matched first, (false, cr)
+// if the CR completed before the condition was seen. Callers should t.Skip when false is
+// returned and the condition requires an active long-running operation.
+func WaitForCRConditionByName(
+	ctx context.Context, t *testing.T, c klient.Client,
+	crName string, gvk schema.GroupVersionKind,
+	conditionType, wantStatus string,
+) (bool, *unstructured.Unstructured) {
+	t.Helper()
+
+	var (
+		conditionMet bool
+		result       *unstructured.Unstructured
+	)
+
+	require.Eventually(t, func() bool {
+		cur := &unstructured.Unstructured{}
+		cur.SetGroupVersionKind(gvk)
+
+		if err := c.Resources().Get(ctx, crName, "", cur); err != nil {
+			return false
+		}
+
+		result = cur
+
+		ct, _, _ := unstructured.NestedString(cur.Object, "status", "completionTime")
+		if ct != "" {
+			return true // CR completed; stop waiting regardless of condition
+		}
+
+		cond := GetCRCondition(cur, conditionType)
+		if cond != nil && cond["status"] == wantStatus {
+			conditionMet = true
+			return true
+		}
+
+		return false
+	}, EventuallyWaitTimeout, WaitInterval,
+		"CR %s should reach condition %s=%s or completionTime", crName, conditionType, wantStatus)
+
+	return conditionMet, result
+}
+
 // GetCRCondition returns the condition map for a given condition type from an unstructured CR's
 // status.conditions array, or nil if the condition is not found.
 func GetCRCondition(cr *unstructured.Unstructured, conditionType string) map[string]any {
@@ -1144,6 +1193,25 @@ func CreateGPUResetCR(ctx context.Context, c klient.Client, nodeName string, crN
 	}
 
 	return gpuReset, nil
+}
+
+func CreateTerminateNodeCR(ctx context.Context, c klient.Client, nodeName string,
+	crName string) (*unstructured.Unstructured, error) {
+	terminateNode := &unstructured.Unstructured{}
+	terminateNode.SetGroupVersionKind(TerminateNodeGVK)
+	terminateNode.SetName(crName)
+
+	err := unstructured.SetNestedField(terminateNode.Object, nodeName, "spec", "nodeName")
+	if err != nil {
+		return nil, fmt.Errorf("failed to set nodeName in spec: %w", err)
+	}
+
+	err = c.Resources().Create(ctx, terminateNode)
+	if err != nil {
+		return nil, err
+	}
+
+	return terminateNode, nil
 }
 
 // CreateExtRRCR returns the apiserver error verbatim so callers can inspect
