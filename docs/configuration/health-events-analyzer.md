@@ -211,8 +211,9 @@ a source with only some configured entity types is rejected. If a matching rule
 input lacks a required entity type, the analyzer still publishes the derived fault
 but leaves that event on the existing manual-recovery path.
 
-For recovery-enabled rules, the analyzer does not advance a source event's resume
-token until its matching derived transition is visible in the event store. If the
+For recovery-enabled rules, the analyzer normally does not advance a source event's
+resume token until its matching derived transition is visible in the event store;
+the deterministic stored-record exception is described below. If the
 platform connector accepts but drops the queued event before storage, the
 analyzer republishes it. This applies to both unhealthy and healthy transitions,
 so a recovery cannot overtake an earlier derived fault. A delayed healthy event

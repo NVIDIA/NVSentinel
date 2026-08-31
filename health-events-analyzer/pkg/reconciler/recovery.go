@@ -58,10 +58,19 @@ type recoveryTarget struct {
 	state    derivedState
 }
 
+type storedDocumentTargetScope uint8
+
+const (
+	storedDocumentAffectsNoTargets storedDocumentTargetScope = iota
+	storedDocumentAffectsIdentity
+	storedDocumentAffectsAllTargets
+)
+
 type storedDocumentDecodeError struct {
-	cause         error
-	identityKey   string
-	identityKnown bool
+	cause          error
+	classification string
+	identityKey    string
+	targetScope    storedDocumentTargetScope
 }
 
 func (e *storedDocumentDecodeError) Error() string {
@@ -70,6 +79,19 @@ func (e *storedDocumentDecodeError) Error() string {
 
 func (e *storedDocumentDecodeError) Unwrap() error {
 	return e.cause
+}
+
+func (e *storedDocumentDecodeError) affects(identity recoveryIdentity) bool {
+	switch e.targetScope {
+	case storedDocumentAffectsNoTargets:
+		return false
+	case storedDocumentAffectsAllTargets:
+		return true
+	case storedDocumentAffectsIdentity:
+		return e.identityKey == identity.key
+	}
+
+	return false
 }
 
 type storedDocumentScanError struct {
@@ -109,7 +131,7 @@ func (e *storedDocumentScanError) errorOrNil() error {
 
 func (e *storedDocumentScanError) affects(identity recoveryIdentity) bool {
 	for _, issue := range e.issues {
-		if !issue.identityKnown || issue.identityKey == identity.key {
+		if issue.affects(identity) {
 			return true
 		}
 	}
@@ -117,14 +139,54 @@ func (e *storedDocumentScanError) affects(identity recoveryIdentity) bool {
 	return false
 }
 
-func (e *storedDocumentScanError) hasUnknownIdentity() bool {
+func (e *storedDocumentScanError) hasUnreadableIdentity() bool {
 	for _, issue := range e.issues {
-		if !issue.identityKnown {
+		if issue.targetScope == storedDocumentAffectsAllTargets {
 			return true
 		}
 	}
 
 	return false
+}
+
+func (e *storedDocumentScanError) skippedTargetCount(targets []recoveryTarget) int {
+	skipped := make(map[string]struct{})
+
+	for _, issue := range e.issues {
+		if issue.targetScope == storedDocumentAffectsIdentity {
+			skipped[issue.identityKey] = struct{}{}
+		}
+	}
+
+	for _, target := range targets {
+		if e.affects(target.identity) {
+			skipped[target.identity.key] = struct{}{}
+		}
+	}
+
+	return len(skipped)
+}
+
+type storedDocumentIssueTracker struct {
+	seen map[string]struct{}
+}
+
+type storedDocumentIssueTrackerContextKey struct{}
+
+func withStoredDocumentIssueTracker(ctx context.Context) context.Context {
+	return context.WithValue(ctx, storedDocumentIssueTrackerContextKey{}, &storedDocumentIssueTracker{
+		seen: make(map[string]struct{}),
+	})
+}
+
+func (t *storedDocumentIssueTracker) mark(key string) bool {
+	if _, found := t.seen[key]; found {
+		return false
+	}
+
+	t.seen[key] = struct{}{}
+
+	return true
 }
 
 type storedRecoveryIdentityDocument struct {
@@ -364,23 +426,27 @@ func (r *Reconciler) handleRecoveryRule(
 	scanIncomplete := false
 
 	var scanErr *storedDocumentScanError
-	if errors.As(targetErr, &scanErr) && client.IsPermanentError(scanErr) {
+	if errors.As(targetErr, &scanErr) {
 		scanIncomplete = true
-		before := len(targets)
+		skippedTargets := scanErr.skippedTargetCount(targets)
 		targets = slices.DeleteFunc(targets, func(target recoveryTarget) bool {
 			return scanErr.affects(target.identity)
 		})
-		slog.ErrorContext(ctx, "Checkpointing recovery source after incomplete stored-state scan",
+		checkpointSource := client.IsPermanentError(scanErr)
+		slog.ErrorContext(ctx, "Incomplete stored-state scan limited recovery targets",
 			"rule_name", rule.Name,
-			"skipped_targets", before-len(targets),
-			"unknown_identity", scanErr.hasUnknownIdentity(),
+			"skipped_targets", skippedTargets,
+			"unreadable_identity", scanErr.hasUnreadableIdentity(),
+			"checkpoint_source", checkpointSource,
 			"error", scanErr)
 		totalEventProcessingError.WithLabelValues("recovery_stored_document_incomplete").Inc()
 
-		targetErr = nil
+		if checkpointSource {
+			targetErr = nil
+		}
 	}
 
-	if targetErr != nil {
+	if targetErr != nil && len(targets) == 0 {
 		return false, fmt.Errorf("find current states for rule %q: %w", rule.Name, targetErr)
 	}
 
@@ -392,7 +458,17 @@ func (r *Reconciler) handleRecoveryRule(
 
 	published, err := r.publishRecoveryTargets(ctx, event, rule, targets, sourceBoundary, false)
 	if err != nil {
+		if targetErr != nil {
+			return published, errors.Join(
+				fmt.Errorf("find current states for rule %q: %w", rule.Name, targetErr), err,
+			)
+		}
+
 		return published, err
+	}
+
+	if targetErr != nil {
+		return published, fmt.Errorf("find current states for rule %q: %w", rule.Name, targetErr)
 	}
 
 	// A node-wide boundary affects every entity on the node, so expose it only
@@ -616,18 +692,18 @@ func (r *Reconciler) currentDerivedStatesForNode(
 	for cursor.Next(ctx) {
 		var candidate datamodels.HealthEventWithStatus
 		if err := cursor.Decode(&candidate); err != nil {
-			decodeErrs.append(r.newStoredDocumentDecodeError(
-				ctx, cursor, rule.Name, "node_derived_states", &rule, err,
-			))
+			decodeErr := r.newStoredDocumentDecodeError(ctx, cursor, &rule, err)
+			r.recordStoredDocumentDecodeError(ctx, rule.Name, "node_derived_states", decodeErr)
+			decodeErrs.append(decodeErr)
 
 			continue
 		}
 
 		identity, valid := recoveryIdentityForEvent(rule, candidate.HealthEvent)
 		if !valid {
-			decodeErrs.append(r.newStoredDocumentIdentityError(
-				ctx, rule.Name, "node_derived_states",
-			))
+			identityErr := newStoredDocumentIdentityError()
+			r.recordStoredDocumentDecodeError(ctx, rule.Name, "node_derived_states", identityErr)
+			decodeErrs.append(identityErr)
 
 			continue
 		}
@@ -713,9 +789,10 @@ func (r *Reconciler) publishDerivedUntilStored(
 ) (recoveryBoundary, bool, error) {
 	pollInterval, republishInterval := r.recoveryIntervals()
 
-	waitCtx, cancel := context.WithTimeout(ctx, r.recoveryPersistenceTimeout())
-
+	timeoutCtx, cancel := context.WithTimeout(ctx, r.recoveryPersistenceTimeout())
 	defer cancel()
+
+	waitCtx := withStoredDocumentIssueTracker(timeoutCtx)
 
 	nextPublish := time.Time{}
 	published := false
@@ -921,8 +998,9 @@ func (r *Reconciler) findLatestMatchingEvent(
 	for cursor.Next(ctx) {
 		var candidate datamodels.HealthEventWithStatus
 		if err := cursor.Decode(&candidate); err != nil {
-			decodeErr := r.newStoredDocumentDecodeError(ctx, cursor, ruleName, lookup, rule, err)
-			if identity == nil || !decodeErr.identityKnown || decodeErr.identityKey == identity.key {
+			decodeErr := r.newStoredDocumentDecodeError(ctx, cursor, rule, err)
+			if identity == nil || decodeErr.affects(*identity) {
+				r.recordStoredDocumentDecodeError(ctx, ruleName, lookup, decodeErr)
 				decodeErrs.append(decodeErr)
 			}
 
@@ -930,7 +1008,9 @@ func (r *Reconciler) findLatestMatchingEvent(
 		}
 
 		if candidate.HealthEvent == nil {
-			decodeErrs.append(r.newStoredDocumentIdentityError(ctx, ruleName, lookup))
+			// A decoded row without a health event cannot match this identity.
+			// Count it, but do not let it abort an otherwise valid identity lookup.
+			r.recordStoredDocumentDecodeError(ctx, ruleName, lookup, newStoredDocumentIdentityError())
 
 			continue
 		}
@@ -956,33 +1036,43 @@ func (r *Reconciler) recordStoredDocumentDecodeError(
 	ctx context.Context,
 	ruleName string,
 	lookup string,
-	classification string,
-	err error,
+	issue *storedDocumentDecodeError,
 ) {
+	key := strings.Join([]string{
+		ruleName, lookup, issue.classification, issue.identityKey, issue.Error(),
+	}, "\x00")
+	if tracker, ok := ctx.Value(storedDocumentIssueTrackerContextKey{}).(*storedDocumentIssueTracker); ok &&
+		!tracker.mark(key) {
+		return
+	}
+
 	slog.ErrorContext(ctx, "Skipping unusable stored health event",
-		"rule_name", ruleName, "lookup", lookup, "classification", classification, "error", err)
-	recoveryStoredDocumentDecodeErrorsTotal.WithLabelValues(ruleName, lookup, classification).Inc()
+		"rule_name", ruleName, "lookup", lookup, "classification", issue.classification, "error", issue)
+	recoveryStoredDocumentDecodeErrorsTotal.WithLabelValues(ruleName, lookup, issue.classification).Inc()
 }
 
 func (r *Reconciler) newStoredDocumentDecodeError(
 	ctx context.Context,
 	cursor client.Cursor,
-	ruleName string,
-	lookup string,
 	rule *config.HealthEventsAnalyzerRule,
 	err error,
 ) *storedDocumentDecodeError {
 	cause := classifyRecoveryDecodeError(ctx, err)
 
-	identity, identityKnown := recoveryIdentity{}, false
-	if rule != nil {
-		identity, identityKnown = recoveryIdentityFromCurrentDocument(cursor, *rule)
-	}
+	targetScope := storedDocumentAffectsAllTargets
+	identity := recoveryIdentity{}
 
-	decodeErr := &storedDocumentDecodeError{
-		cause:         cause,
-		identityKey:   identity.key,
-		identityKnown: identityKnown,
+	if rule != nil {
+		var identityDecoded, identityValid bool
+
+		identity, identityDecoded, identityValid = recoveryIdentityFromCurrentDocument(cursor, *rule)
+
+		if identityDecoded {
+			targetScope = storedDocumentAffectsNoTargets
+			if identityValid {
+				targetScope = storedDocumentAffectsIdentity
+			}
+		}
 	}
 
 	classification := "transient"
@@ -990,31 +1080,36 @@ func (r *Reconciler) newStoredDocumentDecodeError(
 		classification = "malformed"
 	}
 
-	r.recordStoredDocumentDecodeError(ctx, ruleName, lookup, classification, decodeErr)
-
-	return decodeErr
+	return &storedDocumentDecodeError{
+		cause:          cause,
+		classification: classification,
+		identityKey:    identity.key,
+		targetScope:    targetScope,
+	}
 }
 
-func (r *Reconciler) newStoredDocumentIdentityError(
-	ctx context.Context,
-	ruleName string,
-	lookup string,
-) *storedDocumentDecodeError {
-	err := &storedDocumentDecodeError{
-		cause: client.PermanentError(errors.New("stored health event has no valid recovery identity")),
+func newStoredDocumentIdentityError() *storedDocumentDecodeError {
+	return &storedDocumentDecodeError{
+		cause:          client.PermanentError(errors.New("stored health event has no valid recovery identity")),
+		classification: "invalid_identity",
+		targetScope:    storedDocumentAffectsNoTargets,
 	}
-	r.recordStoredDocumentDecodeError(ctx, ruleName, lookup, "invalid_identity", err)
-
-	return err
 }
 
 func recoveryIdentityFromCurrentDocument(
 	cursor client.Cursor,
 	rule config.HealthEventsAnalyzerRule,
-) (recoveryIdentity, bool) {
+) (recoveryIdentity, bool, bool) {
 	var document storedRecoveryIdentityDocument
-	if err := cursor.Decode(&document); err != nil || document.HealthEvent == nil {
-		return recoveryIdentity{}, false
+	if err := cursor.Decode(&document); err != nil {
+		// Without readable identity fields, no target can be proven safe. Fail
+		// closed for every target on the node; error classification separately
+		// determines whether the source is checkpointed or replayed.
+		return recoveryIdentity{}, false, false
+	}
+
+	if document.HealthEvent == nil {
+		return recoveryIdentity{}, true, false
 	}
 
 	event := &protos.HealthEvent{NodeName: document.HealthEvent.NodeName}
@@ -1027,7 +1122,9 @@ func recoveryIdentityFromCurrentDocument(
 		})
 	}
 
-	return recoveryIdentityForEvent(rule, event)
+	identity, valid := recoveryIdentityForEvent(rule, event)
+
+	return identity, true, valid
 }
 
 func classifyRecoveryDecodeError(ctx context.Context, err error) error {

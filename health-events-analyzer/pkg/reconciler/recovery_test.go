@@ -39,11 +39,12 @@ import (
 )
 
 type healthEventCursor struct {
-	events     []datamodels.HealthEventWithStatus
-	pos        int
-	err        error
-	decodeErr  error
-	decodeErrs map[int]error
+	events             []datamodels.HealthEventWithStatus
+	pos                int
+	err                error
+	decodeErr          error
+	decodeErrs         map[int]error
+	identityDecodeErrs map[int]error
 }
 
 func newHealthEventCursor(events ...datamodels.HealthEventWithStatus) *healthEventCursor {
@@ -61,6 +62,10 @@ func (c *healthEventCursor) Decode(value any) error {
 	}
 
 	if target, ok := value.(*storedRecoveryIdentityDocument); ok {
+		if err := c.identityDecodeErrs[c.pos]; err != nil {
+			return err
+		}
+
 		event := c.events[c.pos].HealthEvent
 		if event == nil {
 			return nil
@@ -100,9 +105,10 @@ func (c *healthEventCursor) Err() error                     { return c.err }
 
 type recoveryDocumentSetDatabase struct {
 	*mockDatabaseClient
-	events     []datamodels.HealthEventWithStatus
-	decodeErrs map[int]error
-	findCalls  int
+	events             []datamodels.HealthEventWithStatus
+	decodeErrs         map[int]error
+	identityDecodeErrs map[int]error
+	findCalls          int
 }
 
 func newRecoveryDocumentSetDatabase(
@@ -127,8 +133,14 @@ func (d *recoveryDocumentSetDatabase) Find(
 	for index, err := range d.decodeErrs {
 		decodeErrs[index] = err
 	}
+	identityDecodeErrs := make(map[int]error, len(d.identityDecodeErrs))
+	for index, err := range d.identityDecodeErrs {
+		identityDecodeErrs[index] = err
+	}
 
-	return &healthEventCursor{events: events, pos: -1, decodeErrs: decodeErrs}, nil
+	return &healthEventCursor{
+		events: events, pos: -1, decodeErrs: decodeErrs, identityDecodeErrs: identityDecodeErrs,
+	}, nil
 }
 
 func (d *recoveryDocumentSetDatabase) append(event datamodels.HealthEventWithStatus) {
@@ -355,7 +367,8 @@ func TestRecoveryIdentityCanBeReadAfterFullDocumentDecodeFails(t *testing.T) {
 			var event datamodels.HealthEventWithStatus
 			require.Error(t, cursor.Decode(&event))
 
-			identity, ok := recoveryIdentityFromCurrentDocument(cursor, rule)
+			identity, decoded, ok := recoveryIdentityFromCurrentDocument(cursor, rule)
+			require.True(t, decoded)
 			require.True(t, ok)
 			require.Equal(t, "node-a|8:GPU_UUID=5:GPU-a", identity.key)
 		})
@@ -1289,6 +1302,10 @@ func TestRecoveryBoundaryReportsInvalidStoredIdentity(t *testing.T) {
 	rule := recoveryRule(config.RecoveryScopeEntity)
 	database := new(mockDatabaseClient)
 	reconciler := &Reconciler{databaseClient: database}
+	metric := recoveryStoredDocumentDecodeErrorsTotal.WithLabelValues(
+		rule.Name, "recovery_source", "invalid_identity",
+	)
+	before := testutil.ToFloat64(metric)
 
 	boundary, err := reconciler.recoveryBoundaryForEvent(context.Background(), rule,
 		&protos.HealthEvent{NodeName: "node-a"})
@@ -1311,8 +1328,9 @@ func TestRecoveryBoundaryReportsInvalidStoredIdentity(t *testing.T) {
 		), nil,
 	).Once()
 	boundary, err = reconciler.recoveryBoundaryForEvent(context.Background(), rule, incoming)
-	require.ErrorContains(t, err, "stored health event has no valid recovery identity")
+	require.NoError(t, err)
 	require.Nil(t, boundary)
+	require.Equal(t, before+1, testutil.ToFloat64(metric))
 	database.AssertNumberOfCalls(t, "Find", 1)
 }
 
@@ -1479,10 +1497,52 @@ func TestInvalidStoredIdentityBlocksNodeBoundaryAndIsCounted(t *testing.T) {
 	source := nodeWideRecoverySource(now)
 	invalid := derivedEvent(now.Add(-time.Minute), false, "GPU-invalid")
 	invalid.HealthEvent.EntitiesImpacted = nil
-	database := newRecoveryDocumentSetDatabase([]datamodels.HealthEventWithStatus{invalid}, nil)
-	reconciler := newRecoveryReconciler(rule, database, new(mockPublisher))
+	good := derivedEvent(now.Add(-30*time.Second), false, "GPU-good")
+	goodIdentity := mustRecoveryIdentity(t, rule, good.HealthEvent)
+	database := newRecoveryDocumentSetDatabase(
+		[]datamodels.HealthEventWithStatus{invalid, good}, nil,
+	)
+	platform := new(mockPublisher)
+	reconciler := newRecoveryReconciler(rule, database, platform)
+	reconciler.recoveryPoll = time.Millisecond
 	metric := recoveryStoredDocumentDecodeErrorsTotal.WithLabelValues(
 		rule.Name, "node_derived_states", "invalid_identity",
+	)
+	before := testutil.ToFloat64(metric)
+	platform.On("HealthEventOccurredV1", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			event := proto.Clone(args.Get(1).(*protos.HealthEvents).Events[0]).(*protos.HealthEvent)
+			database.append(storedEvent(now.Add(time.Second), event))
+		}).
+		Return(&emptypb.Empty{}, nil).Once()
+
+	published, err := reconciler.handleRecoveryEvents(context.Background(), &source)
+	require.NoError(t, err)
+	require.True(t, published)
+	require.Equal(t, before+1, testutil.ToFloat64(metric))
+	_, nodeBoundaryCached := reconciler.cachedRecoveryBoundary(rule.Name, nodeRecoveryIdentity("node-a"))
+	require.False(t, nodeBoundaryCached)
+	_, goodBoundaryCached := reconciler.cachedRecoveryBoundary(rule.Name, goodIdentity)
+	require.True(t, goodBoundaryCached)
+	platform.AssertExpectations(t)
+}
+
+func TestUnreadableStoredIdentityWithholdsEveryNodeTarget(t *testing.T) {
+	now := time.Now().UTC()
+	rule := recoveryRule(config.RecoveryScopeEntity)
+	rule.Recovery.SourceErrorCodes = nil
+	source := nodeWideRecoverySource(now)
+	corrupt := derivedEvent(now.Add(-time.Minute), false, "GPU-corrupt")
+	good := derivedEvent(now.Add(-30*time.Second), false, "GPU-good")
+	database := newRecoveryDocumentSetDatabase(
+		[]datamodels.HealthEventWithStatus{corrupt, good},
+		map[int]error{0: errors.New("malformed stored document")},
+	)
+	database.identityDecodeErrs = map[int]error{0: errors.New("unreadable recovery identity")}
+	platform := new(mockPublisher)
+	reconciler := newRecoveryReconciler(rule, database, platform)
+	metric := recoveryStoredDocumentDecodeErrorsTotal.WithLabelValues(
+		rule.Name, "node_derived_states", "malformed",
 	)
 	before := testutil.ToFloat64(metric)
 
@@ -1492,6 +1552,130 @@ func TestInvalidStoredIdentityBlocksNodeBoundaryAndIsCounted(t *testing.T) {
 	require.Equal(t, before+1, testutil.ToFloat64(metric))
 	_, nodeBoundaryCached := reconciler.cachedRecoveryBoundary(rule.Name, nodeRecoveryIdentity("node-a"))
 	require.False(t, nodeBoundaryCached)
+	_, goodBoundaryCached := reconciler.cachedRecoveryBoundary(
+		rule.Name, mustRecoveryIdentity(t, rule, good.HealthEvent),
+	)
+	require.False(t, goodBoundaryCached)
+	platform.AssertNotCalled(t, "HealthEventOccurredV1", mock.Anything, mock.Anything)
+}
+
+func TestTransientNodeScanPublishesCleanTargetsBeforeReplay(t *testing.T) {
+	now := time.Now().UTC()
+	rule := recoveryRule(config.RecoveryScopeEntity)
+	rule.Recovery.SourceErrorCodes = nil
+	source := nodeWideRecoverySource(now)
+	transient := derivedEvent(now.Add(-time.Minute), false, "GPU-transient")
+	good := derivedEvent(now.Add(-30*time.Second), false, "GPU-good")
+	database := newRecoveryDocumentSetDatabase(
+		[]datamodels.HealthEventWithStatus{transient, good},
+		map[int]error{0: driver.ErrBadConn},
+	)
+	platform := new(mockPublisher)
+	reconciler := newRecoveryReconciler(rule, database, platform)
+	reconciler.recoveryPoll = time.Millisecond
+	platform.On("HealthEventOccurredV1", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			event := proto.Clone(args.Get(1).(*protos.HealthEvents).Events[0]).(*protos.HealthEvent)
+			database.append(storedEvent(now.Add(time.Second), event))
+		}).
+		Return(&emptypb.Empty{}, nil).Once()
+
+	published, err := reconciler.handleRecoveryEvents(context.Background(), &source)
+	require.Error(t, err)
+	require.False(t, client.IsPermanentError(err))
+	require.True(t, published)
+	_, goodBoundaryCached := reconciler.cachedRecoveryBoundary(
+		rule.Name, mustRecoveryIdentity(t, rule, good.HealthEvent),
+	)
+	require.True(t, goodBoundaryCached)
+	_, nodeBoundaryCached := reconciler.cachedRecoveryBoundary(rule.Name, nodeRecoveryIdentity("node-a"))
+	require.False(t, nodeBoundaryCached)
+	platform.AssertExpectations(t)
+}
+
+func TestStoredDocumentScanCountsKnownTargetWithoutDecodedState(t *testing.T) {
+	scanErr := &storedDocumentScanError{issues: []*storedDocumentDecodeError{{
+		cause:          errors.New("malformed stored document"),
+		classification: "malformed",
+		identityKey:    "node-a|8:GPU_UUID=5:GPU-a",
+		targetScope:    storedDocumentAffectsIdentity,
+	}}}
+
+	require.Equal(t, 1, scanErr.skippedTargetCount(nil))
+}
+
+func TestStoredDocumentIssueTargetScopes(t *testing.T) {
+	target := recoveryIdentity{key: "node-a|8:GPU_UUID=10:GPU-target"}
+	other := recoveryIdentity{key: "node-a|8:GPU_UUID=9:GPU-other"}
+
+	for name, test := range map[string]struct {
+		issue       *storedDocumentDecodeError
+		affectsGood bool
+		affectsElse bool
+	}{
+		"invalid identity affects no target": {
+			issue: &storedDocumentDecodeError{targetScope: storedDocumentAffectsNoTargets},
+		},
+		"readable identity affects only its target": {
+			issue: &storedDocumentDecodeError{
+				identityKey: target.key, targetScope: storedDocumentAffectsIdentity,
+			},
+			affectsGood: true,
+		},
+		"unreadable identity affects every target": {
+			issue:       &storedDocumentDecodeError{targetScope: storedDocumentAffectsAllTargets},
+			affectsGood: true,
+			affectsElse: true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, test.affectsGood, test.issue.affects(target))
+			require.Equal(t, test.affectsElse, test.issue.affects(other))
+		})
+	}
+}
+
+func TestStoredDocumentDecodeMetricIsDeduplicatedAcrossPersistencePolls(t *testing.T) {
+	now := time.Now().UTC()
+	rule := recoveryRule(config.RecoveryScopeEntity)
+	rule.Name = "deduplicated-reporting-rule"
+	source := recoverySource(now, "GPU-target")
+	identity := mustRecoveryIdentity(t, rule, source.HealthEvent)
+	metric := recoveryStoredDocumentDecodeErrorsTotal.WithLabelValues(
+		rule.Name, "persisted_derived", "transient",
+	)
+	before := testutil.ToFloat64(metric)
+	database := new(mockDatabaseClient)
+	transientCursor := func() *healthEventCursor {
+		return &healthEventCursor{
+			events:     []datamodels.HealthEventWithStatus{derivedEvent(now, true, "GPU-target")},
+			pos:        -1,
+			decodeErrs: map[int]error{0: driver.ErrBadConn},
+		}
+	}
+	database.On("Find", mock.Anything, mock.Anything, mock.Anything).
+		Return(transientCursor(), nil).Once()
+	database.On("Find", mock.Anything, mock.Anything, mock.Anything).
+		Return(transientCursor(), nil).Once()
+	database.On("Find", mock.Anything, mock.Anything, mock.Anything).
+		Return(newHealthEventCursor(persistedRecovery(now.Add(time.Second), source, rule)), nil).Once()
+	reconciler := &Reconciler{
+		databaseClient:    database,
+		recoveryPoll:      time.Millisecond,
+		recoveryRepublish: time.Hour,
+	}
+	publishCalls := 0
+
+	_, published, err := reconciler.publishDerivedUntilStored(
+		context.Background(), &source, rule, identity, true, "recovery",
+		func(context.Context) error { publishCalls++; return nil },
+	)
+
+	require.NoError(t, err)
+	require.True(t, published)
+	require.Equal(t, 1, publishCalls)
+	require.Equal(t, before+1, testutil.ToFloat64(metric))
+	database.AssertExpectations(t)
 }
 
 func TestRecoveryOrderingFallbacks(t *testing.T) {

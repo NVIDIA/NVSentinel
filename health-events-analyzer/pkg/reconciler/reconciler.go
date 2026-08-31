@@ -66,12 +66,13 @@ type HealthEventsAnalyzerReconcilerConfig struct {
 }
 
 type Reconciler struct {
-	config             HealthEventsAnalyzerReconcilerConfig
-	datastore          datastore.DataStore
-	databaseClient     client.DatabaseClient // MongoDB-specific client for aggregation
-	eventProcessor     client.EventProcessor
-	xidDetector        *analyzer.XidBurstDetector // PostgreSQL-specific XID burst detection
-	useXidDetector     bool                       // True if using PostgreSQL
+	config         HealthEventsAnalyzerReconcilerConfig
+	datastore      datastore.DataStore
+	databaseClient client.DatabaseClient // MongoDB-specific client for aggregation
+	eventProcessor client.EventProcessor
+	// XID burst detection; enabled only on the PostgreSQL provider (see Start).
+	xidDetector        *analyzer.XidBurstDetector
+	useXidDetector     bool
 	provider           datastore.DataStoreProvider
 	recoveryMu         sync.RWMutex
 	recoveryBoundaries map[string]recoveryBoundary
