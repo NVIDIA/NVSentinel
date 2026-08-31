@@ -35,7 +35,6 @@ func newTestClient(objects ...runtime.Object) *Client {
 		RebootImage:        "busybox:1.37",
 		RebootJobNamespace: "test-ns",
 		RebootJobTTL:       3600,
-		WriteSyslog:        true,
 	})
 }
 
@@ -80,10 +79,7 @@ func TestSendRebootSignal_CreatesJob(t *testing.T) {
 	require.Len(t, job.Spec.Template.Spec.Containers, 1)
 	container := job.Spec.Template.Spec.Containers[0]
 	assert.Equal(t, "busybox:1.37", container.Image)
-	assert.Equal(t, []string{
-		"sh", "-c",
-		"chroot /host logger -t nvsentinel-reboot -p daemon.notice \"NVSentinel reboot: node=worker-1\" || true; chroot /host reboot",
-	}, container.Command)
+	assert.Equal(t, []string{"chroot", hostMountPath, "reboot"}, container.Command)
 	require.NotNil(t, container.SecurityContext)
 	assert.True(t, *container.SecurityContext.Privileged)
 
@@ -97,12 +93,12 @@ func TestSendRebootSignal_CreatesJob(t *testing.T) {
 	assert.Equal(t, int32(3600), *job.Spec.TTLSecondsAfterFinished)
 }
 
-func TestSendRebootSignal_CreatesJob_WithoutSyslog(t *testing.T) {
+func TestSendRebootSignal_CreatesJob_WithSyslog(t *testing.T) {
 	client := NewClientWithK8s(fake.NewSimpleClientset(), Config{
 		RebootImage:        "busybox:1.37",
 		RebootJobNamespace: "test-ns",
 		RebootJobTTL:       3600,
-		WriteSyslog:        false,
+		WriteSyslog:        true,
 	})
 	ctx := context.Background()
 	node := newNode("worker-1", "boot-id-abc", true)
@@ -118,7 +114,10 @@ func TestSendRebootSignal_CreatesJob_WithoutSyslog(t *testing.T) {
 	job := jobs.Items[0]
 	require.Len(t, job.Spec.Template.Spec.Containers, 1)
 	container := job.Spec.Template.Spec.Containers[0]
-	assert.Equal(t, []string{"chroot", hostMountPath, "reboot"}, container.Command)
+	assert.Equal(t, []string{
+		"sh", "-c",
+		"chroot /host logger -t nvsentinel-reboot -p daemon.notice \"NVSentinel reboot: node=worker-1\" || true; chroot /host reboot",
+	}, container.Command)
 }
 
 func TestSendRebootSignal_CreatesSysrqJob_WithSyslog(t *testing.T) {
@@ -195,7 +194,7 @@ func TestSendRebootSignal_CreatesSysrqJob_WithoutSyslog(t *testing.T) {
 	job := jobs.Items[0]
 	require.Len(t, job.Spec.Template.Spec.Containers, 1)
 	container := job.Spec.Template.Spec.Containers[0]
-	assert.Equal(t, []string{"sh", "-c", "echo b > /host-proc/sysrq-trigger"}, container.Command)
+	assert.Equal(t, []string{"sh", "-c", "sync || true; echo b > /host-proc/sysrq-trigger"}, container.Command)
 
 	require.Len(t, container.VolumeMounts, 1)
 	assert.Equal(t, corev1.VolumeMount{
@@ -211,17 +210,30 @@ func TestSendRebootSignal_CreatesSysrqJob_WithoutSyslog(t *testing.T) {
 	}, job.Spec.Template.Spec.Volumes[0])
 }
 
-func TestBuildRebootJob_UsesCommandRebootWhenSyslogDisabled(t *testing.T) {
-	client := NewClientWithK8s(fake.NewSimpleClientset(), Config{
-		RebootImage:        "busybox:1.37",
-		RebootJobNamespace: "test-ns",
-		RebootJobTTL:       3600,
-		WriteSyslog:        false,
-	})
+func TestBuildRebootJob_UsesCommandRebootByDefault(t *testing.T) {
+	client := newTestClient()
 
 	job := client.buildRebootJob("worker-1")
 	container := job.Spec.Template.Spec.Containers[0]
 	assert.Equal(t, []string{"chroot", hostMountPath, "reboot"}, container.Command)
+	require.Len(t, job.Spec.Template.Spec.Volumes, 1)
+	assert.Equal(t, "host-root", job.Spec.Template.Spec.Volumes[0].Name)
+}
+
+func TestBuildRebootJob_UsesSyslogWhenEnabled(t *testing.T) {
+	client := NewClientWithK8s(fake.NewSimpleClientset(), Config{
+		RebootImage:        "busybox:1.37",
+		RebootJobNamespace: "test-ns",
+		RebootJobTTL:       3600,
+		WriteSyslog:        true,
+	})
+
+	job := client.buildRebootJob("worker-1")
+	container := job.Spec.Template.Spec.Containers[0]
+	assert.Equal(t, []string{
+		"sh", "-c",
+		"chroot /host logger -t nvsentinel-reboot -p daemon.notice \"NVSentinel reboot: node=worker-1\" || true; chroot /host reboot",
+	}, container.Command)
 	require.Len(t, job.Spec.Template.Spec.Volumes, 1)
 	assert.Equal(t, "host-root", job.Spec.Template.Spec.Volumes[0].Name)
 }
@@ -464,7 +476,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 		assert.False(t, config.UseSysrqReboot)
 		assert.Equal(t, "", config.RebootJobNamespace)
 		assert.Equal(t, int32(defaultRebootJobTTLSeconds), config.RebootJobTTL)
-		assert.True(t, config.WriteSyslog)
+		assert.False(t, config.WriteSyslog)
 	})
 
 	t.Run("custom values", func(t *testing.T) {
@@ -473,7 +485,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 		t.Setenv("GENERIC_REBOOT_JOB_NAMESPACE", "custom-ns")
 		t.Setenv("GENERIC_REBOOT_JOB_TTL", "7200")
 		t.Setenv("GENERIC_REBOOT_IMAGE_PULL_SECRETS", "secret-a, secret-b")
-		t.Setenv("GENERIC_REBOOT_WRITE_SYSLOG", "false")
+		t.Setenv("GENERIC_REBOOT_WRITE_SYSLOG", "true")
 
 		config := loadConfigFromEnv()
 		assert.Equal(t, "custom-image:latest", config.RebootImage)
@@ -481,7 +493,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 		assert.Equal(t, "custom-ns", config.RebootJobNamespace)
 		assert.Equal(t, int32(7200), config.RebootJobTTL)
 		assert.Equal(t, []string{"secret-a", "secret-b"}, config.RebootJobPullSecrets)
-		assert.False(t, config.WriteSyslog)
+		assert.True(t, config.WriteSyslog)
 	})
 
 	t.Run("invalid sysrq flag uses default", func(t *testing.T) {
@@ -502,6 +514,6 @@ func TestLoadConfigFromEnv(t *testing.T) {
 		t.Setenv("GENERIC_REBOOT_WRITE_SYSLOG", "not-a-bool")
 
 		config := loadConfigFromEnv()
-		assert.True(t, config.WriteSyslog)
+		assert.False(t, config.WriteSyslog)
 	})
 }

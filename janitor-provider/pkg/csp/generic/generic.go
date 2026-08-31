@@ -267,7 +267,7 @@ func (c Config) rebootCommand(nodeName string) []string {
 			}
 		}
 
-		return []string{"sh", "-c", fmt.Sprintf("echo b > %s/sysrq-trigger", hostProcMountPath)}
+		return []string{"sh", "-c", fmt.Sprintf("sync || true; echo b > %s/sysrq-trigger", hostProcMountPath)}
 	}
 
 	if c.WriteSyslog {
@@ -424,12 +424,12 @@ func loadConfigFromEnv() Config {
 		}
 	}
 
-	writeSyslog := true
+	writeSyslog := false
 
 	if writeSyslogStr := os.Getenv("GENERIC_REBOOT_WRITE_SYSLOG"); writeSyslogStr != "" {
 		parsed, err := strconv.ParseBool(writeSyslogStr)
 		if err != nil {
-			slog.Warn("Invalid GENERIC_REBOOT_WRITE_SYSLOG, using default", "value", writeSyslogStr, "default", true)
+			slog.Warn("Invalid GENERIC_REBOOT_WRITE_SYSLOG, using default", "value", writeSyslogStr, "default", false)
 		} else {
 			writeSyslog = parsed
 		}

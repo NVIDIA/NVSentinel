@@ -1323,7 +1323,7 @@ janitor:
       imagePullSecrets: ""
       
       # Write a reboot attribution message to the node's syslog before rebooting
-      writeSyslog: true
+      writeSyslog: false
     
     # AWS-specific configuration (only needed when provider=aws)
     aws:
