@@ -234,7 +234,10 @@ their rule, node, and entity fields.
 
 Recovery is disabled when `evaluate_rule=false`. Healthy events using
 `STORE_ONLY` are not analyzer inputs. Rules without a `[rules.recovery]` block
-retain the existing unhealthy-event watcher and manual-recovery behavior.
+retain manual-recovery behavior. The watcher is process-wide, not per-rule: once
+any enabled rule has a recovery mapping, every rule shares the widened watcher
+that also admits healthy events. Healthy events are still offered only to
+recovery mappings, so non-recovery rules never evaluate them.
 
 ### MultipleRemediations Rule
 

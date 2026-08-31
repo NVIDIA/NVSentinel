@@ -19,6 +19,8 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -1357,6 +1359,34 @@ func TestFindLatestMatchingEventReportsCursorFailures(t *testing.T) {
 	}
 }
 
+func TestOutOfScopeStoredDecodeFailureIsReportedWithoutAbortingLookup(t *testing.T) {
+	rule := recoveryRule(config.RecoveryScopeEntity)
+	rule.Name = "out-of-scope-reporting-rule"
+	target := mustRecoveryIdentity(t, rule, derivedEvent(time.Now(), false, "GPU-target").HealthEvent)
+	cursor := &healthEventCursor{
+		events:     []datamodels.HealthEventWithStatus{derivedEvent(time.Now(), false, "GPU-other")},
+		pos:        -1,
+		decodeErrs: map[int]error{0: errors.New("malformed sibling document")},
+	}
+	database := new(mockDatabaseClient)
+	database.On("Find", mock.Anything, mock.Anything, mock.Anything).Return(cursor, nil).Once()
+	reconciler := &Reconciler{databaseClient: database}
+	metric := recoveryStoredDocumentDecodeErrorsTotal.WithLabelValues(
+		rule.Name, "derived_state", "malformed",
+	)
+	before := testutil.ToFloat64(metric)
+
+	latest, err := reconciler.findLatestMatchingEvent(
+		context.Background(), &rule, &target, rule.Name, "derived_state", map[string]any{},
+		func(*datamodels.HealthEventWithStatus) bool { return true },
+	)
+
+	require.NoError(t, err)
+	require.Nil(t, latest)
+	require.Equal(t, before+1, testutil.ToFloat64(metric))
+	database.AssertExpectations(t)
+}
+
 func TestRecoveryDecodeClassificationPreservesTransientFailures(t *testing.T) {
 	for name, err := range map[string]error{
 		"deadline":       context.DeadlineExceeded,
@@ -1593,6 +1623,38 @@ func TestTransientNodeScanPublishesCleanTargetsBeforeReplay(t *testing.T) {
 	platform.AssertExpectations(t)
 }
 
+func TestTransientNodeScanRemainsReplayableAfterPermanentTargetFailure(t *testing.T) {
+	now := time.Now().UTC()
+	rule := recoveryRule(config.RecoveryScopeEntity)
+	rule.Recovery.SourceErrorCodes = nil
+	source := nodeWideRecoverySource(now)
+	transient := derivedEvent(now.Add(-time.Minute), false, "GPU-transient")
+	good := derivedEvent(now.Add(-30*time.Second), false, "GPU-good")
+	database := new(mockDatabaseClient)
+	database.On("Find", mock.Anything, mock.Anything, mock.Anything).Return(&healthEventCursor{
+		events:     []datamodels.HealthEventWithStatus{transient, good},
+		pos:        -1,
+		decodeErrs: map[int]error{0: driver.ErrBadConn},
+	}, nil).Once()
+	database.On("Find", mock.Anything, mock.Anything, mock.Anything).Return(&healthEventCursor{
+		events:     []datamodels.HealthEventWithStatus{good},
+		pos:        -1,
+		decodeErrs: map[int]error{0: errors.New("malformed target document")},
+	}, nil).Once()
+	platform := new(mockPublisher)
+	reconciler := newRecoveryReconciler(rule, database, platform)
+
+	published, err := reconciler.handleRecoveryEvents(context.Background(), &source)
+
+	require.Error(t, err)
+	require.False(t, client.IsPermanentError(err))
+	require.False(t, published)
+	_, nodeBoundaryCached := reconciler.cachedRecoveryBoundary(rule.Name, nodeRecoveryIdentity("node-a"))
+	require.False(t, nodeBoundaryCached)
+	platform.AssertNotCalled(t, "HealthEventOccurredV1", mock.Anything, mock.Anything)
+	database.AssertExpectations(t)
+}
+
 func TestStoredDocumentScanCountsKnownTargetWithoutDecodedState(t *testing.T) {
 	scanErr := &storedDocumentScanError{issues: []*storedDocumentDecodeError{{
 		cause:          errors.New("malformed stored document"),
@@ -1601,7 +1663,18 @@ func TestStoredDocumentScanCountsKnownTargetWithoutDecodedState(t *testing.T) {
 		targetScope:    storedDocumentAffectsIdentity,
 	}}}
 
-	require.Equal(t, 1, scanErr.skippedTargetCount(nil))
+	require.Equal(t, 1, scanErr.skippedTargetCount(nil, recoveryIdentity{}, true))
+
+	target := recoveryIdentity{key: "node-a|8:GPU_UUID=10:GPU-target"}
+	unreadable := &storedDocumentScanError{issues: []*storedDocumentDecodeError{{
+		targetScope: storedDocumentAffectsAllTargets,
+	}}}
+	require.Equal(t, 1, unreadable.skippedTargetCount(nil, target, false))
+
+	invalid := &storedDocumentScanError{issues: []*storedDocumentDecodeError{{
+		targetScope: storedDocumentAffectsNoTargets,
+	}}}
+	require.True(t, invalid.hasInvalidIdentity())
 }
 
 func TestStoredDocumentIssueTargetScopes(t *testing.T) {
@@ -1613,6 +1686,11 @@ func TestStoredDocumentIssueTargetScopes(t *testing.T) {
 		affectsGood bool
 		affectsElse bool
 	}{
+		"unset scope fails closed": {
+			issue:       &storedDocumentDecodeError{},
+			affectsGood: true,
+			affectsElse: true,
+		},
 		"invalid identity affects no target": {
 			issue: &storedDocumentDecodeError{targetScope: storedDocumentAffectsNoTargets},
 		},
@@ -1633,6 +1711,48 @@ func TestStoredDocumentIssueTargetScopes(t *testing.T) {
 			require.Equal(t, test.affectsElse, test.issue.affects(other))
 		})
 	}
+}
+
+func TestStoredDocumentIssueTrackerSupportsConcurrentContexts(t *testing.T) {
+	tracker := &storedDocumentIssueTracker{seen: make(map[string]struct{})}
+	results := make(chan bool, 64)
+
+	var wait sync.WaitGroup
+
+	for range 64 {
+		wait.Add(1)
+
+		go func() {
+			defer wait.Done()
+			results <- tracker.mark("same-issue")
+		}()
+	}
+
+	wait.Wait()
+	close(results)
+
+	firstReports := 0
+	for first := range results {
+		if first {
+			firstReports++
+		}
+	}
+
+	require.Equal(t, 1, firstReports)
+}
+
+func TestStoredDocumentScanErrorBoundsDetails(t *testing.T) {
+	scanErr := &storedDocumentScanError{}
+	for index := range 5 {
+		scanErr.append(&storedDocumentDecodeError{cause: fmt.Errorf("corrupt row %d", index)})
+	}
+
+	message := scanErr.Error()
+	require.Contains(t, message, "5 stored health event document(s) were incomplete")
+	require.Contains(t, message, "corrupt row 0")
+	require.Contains(t, message, "corrupt row 2")
+	require.NotContains(t, message, "corrupt row 3")
+	require.Contains(t, message, "and 2 more")
 }
 
 func TestStoredDocumentDecodeMetricIsDeduplicatedAcrossPersistencePolls(t *testing.T) {

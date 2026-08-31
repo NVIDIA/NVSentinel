@@ -574,7 +574,7 @@ client: &http.Client{
 | Aggregation pipeline (MongoDB) | `analyzer.mongo.aggregate` child span; `analyzer.mongo.rule_name`, `analyzer.mongo.pipeline.documents_matched` (int); DB latency tracked automatically by store client span (`db.aggregate`, `db.duration_ms`) | How long did the pipeline take? How many documents matched? |
 | Event publication (matched rule) | `analyzer.publish_matched_event` child span; `analyzer.event.rule_name`, `analyzer.event.recommended_action`, `analyzer.event.published` (bool) | Was a matched event published? Which rule triggered it? |
 | gRPC call with retry | `analyzer.grpc.publish` child span; `analyzer.grpc.retry_count` (int), `analyzer.grpc.duration_ms` (float), `analyzer.grpc.status` = "success"/"failure" | How many retries were needed for the gRPC call? What was the latency? |
-| XID detector handling | `analyzer.xid.handle` child span; `analyzer.xid.node`, `analyzer.xid.component_class`, `analyzer.xid.burst_detected` (bool) | Was a burst detected? |
+| XID detector handling | `health_events_analyzer.handle_xid_detector` child span; `health_events_analyzer.published_event` (bool) | Did XID handling publish a derived event? |
 | XID burst detection | `analyzer.xid.burst_detection` child span; `analyzer.xid.node`, `analyzer.xid.error_code`, `analyzer.xid.burst_detected` (bool), `analyzer.xid.burst_count` (int), `analyzer.event.published` (bool), `analyzer.event.published_rule` | Was an XID burst detected? How many bursts? Which XID code? |
 | Errors | `analyzer.error.type`, `analyzer.error.message` on relevant spans | What went wrong in the analyzer and why? |
 

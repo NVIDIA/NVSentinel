@@ -24,6 +24,7 @@ import (
 	"net"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	multierror "github.com/hashicorp/go-multierror"
@@ -61,10 +62,12 @@ type recoveryTarget struct {
 type storedDocumentTargetScope uint8
 
 const (
-	storedDocumentAffectsNoTargets storedDocumentTargetScope = iota
+	storedDocumentAffectsAllTargets storedDocumentTargetScope = iota
+	storedDocumentAffectsNoTargets
 	storedDocumentAffectsIdentity
-	storedDocumentAffectsAllTargets
 )
+
+const maxStoredDocumentErrorDetails = 3
 
 type storedDocumentDecodeError struct {
 	cause          error
@@ -99,9 +102,15 @@ type storedDocumentScanError struct {
 }
 
 func (e *storedDocumentScanError) Error() string {
-	messages := make([]string, 0, len(e.issues))
-	for _, issue := range e.issues {
+	detailCount := min(len(e.issues), maxStoredDocumentErrorDetails)
+	messages := make([]string, 0, detailCount+1)
+
+	for _, issue := range e.issues[:detailCount] {
 		messages = append(messages, issue.Error())
+	}
+
+	if remaining := len(e.issues) - detailCount; remaining > 0 {
+		messages = append(messages, fmt.Sprintf("and %d more", remaining))
 	}
 
 	return fmt.Sprintf("%d stored health event document(s) were incomplete: %s",
@@ -149,7 +158,21 @@ func (e *storedDocumentScanError) hasUnreadableIdentity() bool {
 	return false
 }
 
-func (e *storedDocumentScanError) skippedTargetCount(targets []recoveryTarget) int {
+func (e *storedDocumentScanError) hasInvalidIdentity() bool {
+	for _, issue := range e.issues {
+		if issue.targetScope == storedDocumentAffectsNoTargets {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (e *storedDocumentScanError) skippedTargetCount(
+	targets []recoveryTarget,
+	requested recoveryIdentity,
+	nodeWide bool,
+) int {
 	skipped := make(map[string]struct{})
 
 	for _, issue := range e.issues {
@@ -164,10 +187,15 @@ func (e *storedDocumentScanError) skippedTargetCount(targets []recoveryTarget) i
 		}
 	}
 
+	if !nodeWide && e.affects(requested) {
+		skipped[requested.key] = struct{}{}
+	}
+
 	return len(skipped)
 }
 
 type storedDocumentIssueTracker struct {
+	mu   sync.Mutex
 	seen map[string]struct{}
 }
 
@@ -180,6 +208,9 @@ func withStoredDocumentIssueTracker(ctx context.Context) context.Context {
 }
 
 func (t *storedDocumentIssueTracker) mark(key string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	if _, found := t.seen[key]; found {
 		return false
 	}
@@ -428,7 +459,7 @@ func (r *Reconciler) handleRecoveryRule(
 	var scanErr *storedDocumentScanError
 	if errors.As(targetErr, &scanErr) {
 		scanIncomplete = true
-		skippedTargets := scanErr.skippedTargetCount(targets)
+		skippedTargets := scanErr.skippedTargetCount(targets, identity, nodeWide)
 		targets = slices.DeleteFunc(targets, func(target recoveryTarget) bool {
 			return scanErr.affects(target.identity)
 		})
@@ -437,6 +468,7 @@ func (r *Reconciler) handleRecoveryRule(
 			"rule_name", rule.Name,
 			"skipped_targets", skippedTargets,
 			"unreadable_identity", scanErr.hasUnreadableIdentity(),
+			"invalid_identity", scanErr.hasInvalidIdentity(),
 			"checkpoint_source", checkpointSource,
 			"error", scanErr)
 		totalEventProcessingError.WithLabelValues("recovery_stored_document_incomplete").Inc()
@@ -999,8 +1031,9 @@ func (r *Reconciler) findLatestMatchingEvent(
 		var candidate datamodels.HealthEventWithStatus
 		if err := cursor.Decode(&candidate); err != nil {
 			decodeErr := r.newStoredDocumentDecodeError(ctx, cursor, rule, err)
+			r.recordStoredDocumentDecodeError(ctx, ruleName, lookup, decodeErr)
+
 			if identity == nil || decodeErr.affects(*identity) {
-				r.recordStoredDocumentDecodeError(ctx, ruleName, lookup, decodeErr)
 				decodeErrs.append(decodeErr)
 			}
 
