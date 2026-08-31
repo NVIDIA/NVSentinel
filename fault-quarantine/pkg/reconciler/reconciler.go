@@ -275,14 +275,17 @@ func (r *Reconciler) configureColdStart(
 		return
 	}
 
+	effectiveColdStartAfter := coldStartAfter
+
+	seedColdStartCutoff := effectiveColdStartAfter.IsZero()
+	if seedColdStartCutoff {
+		// Capture a real lower watermark before the live watcher opens. This bounds
+		// the first-upgrade scan without collapsing it to the later upper boundary.
+		effectiveColdStartAfter = time.Now().UTC()
+	}
+
 	r.eventWatcher.SetColdStartCallback(func(ctx context.Context) error {
 		coldStartUntil := time.Now().UTC()
-		effectiveColdStartAfter := coldStartAfter
-		seedColdStartCutoff := effectiveColdStartAfter.IsZero()
-
-		if seedColdStartCutoff {
-			effectiveColdStartAfter = coldStartUntil
-		}
 
 		if err := coldstart.Handle(ctx, coldstart.Dependencies{
 			HealthEventStore:   healthEventStore,

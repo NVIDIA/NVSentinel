@@ -32,7 +32,11 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-const recoveredEventDedupRetention = 24 * time.Hour
+const (
+	recoveredEventDedupRetention      = 24 * time.Hour
+	liveRecoveryStoreRetryAttempts    = 4
+	liveRecoveryStoreRetryInitialWait = 100 * time.Millisecond
+)
 
 type liveSkipCompletionError struct {
 	err error
@@ -337,7 +341,15 @@ func (w *EventWatcher) recoveryOverlapEventAlreadyTerminal(
 	filter := query.New().Build(query.And(query.Eq("_id", recordUUID), terminalStatus))
 	limit := int64(1)
 
-	count, err := w.databaseClient.CountDocuments(ctx, filter, &client.CountOptions{Limit: &limit})
+	var count int64
+
+	err := retryLiveRecoveryStoreOperation(ctx, func() error {
+		var err error
+
+		count, err = w.databaseClient.CountDocuments(ctx, filter, &client.CountOptions{Limit: &limit})
+
+		return err
+	})
 	if err != nil {
 		return false, &recoveryOverlapLookupError{err: fmt.Errorf(
 			"failed to check recovery-overlap state for event %s: %w", recordUUID, err)}
@@ -362,9 +374,11 @@ func (w *EventWatcher) completeLiveEventIfSkipped(
 	// A successful callback with no status is an intentional terminal skip. Record
 	// that decision while the event is live so a later cold start cannot reapply it
 	// under a different rule configuration.
-	if err := w.databaseClient.UpdateDocumentStatus(
-		ctx, recordUUID, coldstart.RecoveryCompletionStatusPath, coldstart.RecoveryCompletionValue,
-	); err != nil {
+	err := retryLiveRecoveryStoreOperation(ctx, func() error {
+		return w.databaseClient.UpdateDocumentStatus(
+			ctx, recordUUID, coldstart.RecoveryCompletionStatusPath, coldstart.RecoveryCompletionValue)
+	})
+	if err != nil {
 		metrics.ProcessingErrors.WithLabelValues("update_recovery_completion_status_error").Inc()
 
 		return &liveSkipCompletionError{err: fmt.Errorf(
@@ -372,6 +386,43 @@ func (w *EventWatcher) completeLiveEventIfSkipped(
 	}
 
 	return nil
+}
+
+func retryLiveRecoveryStoreOperation(ctx context.Context, operation func() error) error {
+	var lastErr error
+
+	for attempt := range liveRecoveryStoreRetryAttempts {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		lastErr = operation()
+		if lastErr == nil {
+			return nil
+		}
+
+		if attempt == liveRecoveryStoreRetryAttempts-1 {
+			break
+		}
+
+		delay := liveRecoveryStoreRetryInitialWait * time.Duration(1<<attempt)
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+
+	return lastErr
 }
 
 // ProcessStoredEvent sends a durable health-event document through the same

@@ -245,6 +245,25 @@ func TestFindHealthEventsByQueryBatched_MalformedStatusPreservesRawHealthState(t
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestDecodeHealthEventDocument_LegacyNullRawEventPreservesRawMap(t *testing.T) {
+	document := []byte(`{
+		"healthevent":{"agent":"agent","componentClass":"GPU","checkName":"check","nodeName":"node-a","isHealthy":false},
+		"healtheventstatus":{},
+		"RawEvent":null
+	}`)
+
+	event, err := decodeHealthEventDocument(document)
+	require.NoError(t, err)
+	require.NotNil(t, event)
+	require.NotNil(t, event.RawEvent)
+	assert.Contains(t, event.RawEvent, "RawEvent")
+	assert.Nil(t, event.RawEvent["RawEvent"])
+
+	rawHealthEvent, ok := event.RawEvent["healthevent"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "node-a", rawHealthEvent["nodeName"])
+}
+
 func TestFindLatestHealthEventByQuery_Result_PreservesCreatedAt(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)

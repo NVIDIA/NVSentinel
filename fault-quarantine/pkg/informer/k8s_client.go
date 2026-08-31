@@ -661,6 +661,12 @@ func (c *FaultQuarantineClient) UnQuarantineNodeAndRemoveAnnotations(
 	labelsToRemove []string,
 	labels map[string]string,
 ) error {
+	if c.DryRunMode {
+		slog.InfoContext(ctx, "DryRun mode enabled, skipping node unquarantine", "node", nodename)
+
+		return nil
+	}
+
 	updateFn := func(node *v1.Node) error {
 		if len(taints) > 0 {
 			c.removeTaints(ctx, node, taints, nodename)

@@ -35,7 +35,8 @@ import (
 )
 
 const (
-	batchSize = 1000
+	batchSize                = 1000
+	defaultColdStartLookback = 24 * time.Hour
 	// RecoveryCompletionStatusPath stores terminal decisions that cold-start
 	// scans must not replay.
 	RecoveryCompletionStatusPath = healthstatus.FaultQuarantineRecoveryPath
@@ -209,6 +210,12 @@ type recoveryProgress struct {
 	failures int
 }
 
+type storedRecoveryEvent struct {
+	record   datastore.HealthEventWithStatus
+	parsed   model.HealthEventWithStatus
+	parseErr error
+}
+
 // Handle replays unresolved current state. Faults are applied before healthy
 // recoveries so an older recovery cannot transiently uncordon a node before a
 // newer fault in the same scan is restored. Events that overlap newer state
@@ -230,11 +237,12 @@ func Handle(ctx context.Context, deps Dependencies) error {
 	slog.InfoContext(ctx, "Recovering unresolved fault-quarantine events")
 
 	if deps.ColdStartAfterTime.IsZero() {
-		// On the first upgrade there is no resume-token cutoff. Starting at the
-		// recovery boundary avoids sweeping the cluster's entire event history.
-		deps.ColdStartAfterTime = deps.ColdStartUntilTime
-		if deps.ColdStartAfterTime.IsZero() {
+		if deps.ColdStartUntilTime.IsZero() {
 			deps.ColdStartAfterTime = startedAt
+		} else {
+			// Callers should supply their startup watermark. Keep a bounded fallback
+			// for direct use so an upper bound cannot produce an empty recovery window.
+			deps.ColdStartAfterTime = deps.ColdStartUntilTime.Add(-defaultColdStartLookback)
 		}
 	}
 
@@ -288,16 +296,17 @@ func (p *recoveryProgress) recoverBatch(
 	events []datastore.HealthEventWithStatus,
 	recoverHealthy bool,
 ) error {
-	selected := make([]datastore.HealthEventWithStatus, 0, len(events))
+	selected := make([]storedRecoveryEvent, 0, len(events))
 	for i := range events {
-		parsed, err := parseStoredRecord(events[i])
+		candidate := parseStoredRecoveryEvent(events[i])
 
-		isHealthy := err == nil && parsed.HealthEvent != nil && parsed.HealthEvent.GetIsHealthy()
+		isHealthy := candidate.parseErr == nil && candidate.parsed.HealthEvent != nil &&
+			candidate.parsed.HealthEvent.GetIsHealthy()
 		if isHealthy != recoverHealthy {
 			continue
 		}
 
-		selected = append(selected, events[i])
+		selected = append(selected, candidate)
 	}
 
 	return p.recoverEvents(ctx, resolver, processor, selected)
@@ -307,7 +316,7 @@ func (p *recoveryProgress) recoverEvents(
 	ctx context.Context,
 	resolver *supersessionResolver,
 	processor EventProcessor,
-	events []datastore.HealthEventWithStatus,
+	events []storedRecoveryEvent,
 ) error {
 	completions := make([]StoredEventCompletion, 0, len(events))
 
@@ -360,18 +369,17 @@ func recoverStoredEvent(
 	ctx context.Context,
 	resolver *supersessionResolver,
 	processor EventProcessor,
-	event datastore.HealthEventWithStatus,
+	event storedRecoveryEvent,
 ) (*StoredEventCompletion, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	documentID, idErr := storedDocumentID(event.RawEvent)
+	documentID, idErr := storedDocumentID(event.record.RawEvent)
 
-	parsed, parseErr := parseStoredRecord(event)
-	if parseErr != nil {
+	if event.parseErr != nil {
 		slog.ErrorContext(ctx, "Skipping invalid stored health event",
-			"documentID", documentID.String, "error", parseErr)
+			"documentID", documentID.String, "error", event.parseErr)
 
 		if idErr != nil {
 			return nil, recordRecoveryFailure(fmt.Errorf(
@@ -385,7 +393,8 @@ func recoverStoredEvent(
 		return nil, recordRecoveryFailure(fmt.Errorf("cannot identify stored event: %w", idErr))
 	}
 
-	superseded, effects, err := resolver.resolve(ctx, parsed, event.CreatedAt, documentID.String)
+	superseded, effects, err := resolver.resolve(
+		ctx, event.parsed, event.record.CreatedAt, documentID.String)
 	if err != nil {
 		return nil, recordRecoveryFailure(fmt.Errorf("failed to resolve stored event state: %w", err))
 	}
@@ -395,7 +404,7 @@ func recoverStoredEvent(
 	}
 
 	result, err := processor.ProcessStoredEvent(
-		withRecoveryEffects(ctx, effects), parsed, documentID.String)
+		withRecoveryEffects(ctx, effects), event.parsed, documentID.String)
 	if err != nil {
 		return nil, recordRecoveryFailure(fmt.Errorf("failed to recover stored event: %w", err))
 	}
@@ -407,6 +416,12 @@ func recoverStoredEvent(
 	metrics.ColdStartEvents.WithLabelValues(string(result)).Inc()
 
 	return nil, nil
+}
+
+func parseStoredRecoveryEvent(record datastore.HealthEventWithStatus) storedRecoveryEvent {
+	parsed, err := parseStoredRecord(record)
+
+	return storedRecoveryEvent{record: record, parsed: parsed, parseErr: err}
 }
 
 func storedDocumentID(event datastore.Event) (StoredDocumentID, error) {

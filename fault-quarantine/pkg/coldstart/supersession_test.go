@@ -336,99 +336,98 @@ func TestSupersessionResolver_MalformedNewerEventDoesNotBlockFailure(t *testing.
 	assert.False(t, superseded, "an unreadable newer state must not suppress a conservative fault replay")
 }
 
-func TestRecoverStoredEvent_ProjectsNonRectangularResidualBeforeRuleEvaluation(t *testing.T) {
-	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
-	failure := withErrorCodes(
-		recoveryRecord(base, false, []any{impactedEntity("A"), impactedEntity("B")}), "48", "79")
-	recovery := withErrorCodes(
-		recoveryRecord(base.Add(time.Minute), true, []any{impactedEntity("A")}), "79")
-	recovery.RawEvent["id"] = "recovery-id"
-	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{failure, recovery}}
+func TestRecoverStoredEvent_ProjectsResidualBeforeRuleEvaluation(t *testing.T) {
+	type projectedEventExpectation struct {
+		codes    []string
+		entities []string
+		message  string
+	}
 
-	var projected []*protos.HealthEvent
-	processor := &eventProcessorStub{process: func(
-		ctx context.Context,
-		event model.HealthEventWithStatus,
-		_ string,
-	) (ProcessResult, error) {
-		var projectionErr error
-		projected, projectionErr = ProjectHealthEvent(ctx, event.HealthEvent)
-		require.NoError(t, projectionErr)
+	tests := []struct {
+		name             string
+		failureEntities  []any
+		failureCodes     []any
+		recoveryEntities []any
+		recoveryCodes    []any
+		expected         []projectedEventExpectation
+	}{
+		{
+			name:             "non-rectangular entity and error-code residual",
+			failureEntities:  []any{impactedEntity("A"), impactedEntity("B")},
+			failureCodes:     []any{"48", "79"},
+			recoveryEntities: []any{impactedEntity("A")},
+			recoveryCodes:    []any{"79"},
+			expected: []projectedEventExpectation{
+				{codes: []string{"48"}, entities: []string{"A", "B"}},
+				{
+					codes: []string{"48", "79"}, entities: []string{"B"},
+					message: "the recovered A/79 effect must not reach rule evaluation " +
+						"while B keeps both codes",
+				},
+			},
+		},
+		{
+			name:          "check-wide error-code residual",
+			failureCodes:  []any{"48", "79"},
+			recoveryCodes: []any{"79"},
+			expected: []projectedEventExpectation{
+				{
+					codes:   []string{"48"},
+					message: "the recovered check-wide 79 effect must not reach rule evaluation",
+				},
+			},
+		},
+		{
+			name:          "explicit blank error-code residual",
+			failureCodes:  []any{"", "79"},
+			recoveryCodes: []any{"79"},
+			expected: []projectedEventExpectation{
+				{
+					codes:   []string{""},
+					message: "an explicit blank code must remain distinct from an absent wildcard",
+				},
+			},
+		},
+	}
 
-		return ProcessResultProcessed, nil
-	}}
-	completion, err := recoverStoredEvent(
-		context.Background(), newSupersessionResolver(store, base.Add(time.Hour)), processor, failure)
-	require.NoError(t, err)
-	assert.Nil(t, completion)
-	require.Len(t, projected, 2)
-	assert.Equal(t, []string{"48"}, projected[0].GetErrorCode())
-	assert.Equal(t, []string{"A", "B"}, []string{
-		projected[0].GetEntitiesImpacted()[0].GetEntityValue(),
-		projected[0].GetEntitiesImpacted()[1].GetEntityValue(),
-	})
-	assert.Equal(t, []string{"48", "79"}, projected[1].GetErrorCode())
-	require.Len(t, projected[1].GetEntitiesImpacted(), 1)
-	assert.Equal(t, "B", projected[1].GetEntitiesImpacted()[0].GetEntityValue(),
-		"the recovered A/79 effect must not reach rule evaluation while B keeps both codes")
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+			failure := withErrorCodes(recoveryRecord(base, false, tt.failureEntities), tt.failureCodes...)
+			recovery := withErrorCodes(
+				recoveryRecord(base.Add(time.Minute), true, tt.recoveryEntities), tt.recoveryCodes...)
+			recovery.RawEvent["id"] = "recovery-id"
+			store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{failure, recovery}}
 
-func TestRecoverStoredEvent_ProjectsResidualCheckWideErrorCodes(t *testing.T) {
-	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
-	failure := withErrorCodes(recoveryRecord(base, false, nil), "48", "79")
-	recovery := withErrorCodes(recoveryRecord(base.Add(time.Minute), true, nil), "79")
-	recovery.RawEvent["id"] = "recovery-id"
-	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{failure, recovery}}
+			var projected []*protos.HealthEvent
+			processor := &eventProcessorStub{process: func(
+				ctx context.Context,
+				event model.HealthEventWithStatus,
+				_ string,
+			) (ProcessResult, error) {
+				var projectionErr error
+				projected, projectionErr = ProjectHealthEvent(ctx, event.HealthEvent)
+				require.NoError(t, projectionErr)
 
-	var projected []*protos.HealthEvent
-	processor := &eventProcessorStub{process: func(
-		ctx context.Context,
-		event model.HealthEventWithStatus,
-		_ string,
-	) (ProcessResult, error) {
-		var projectionErr error
-		projected, projectionErr = ProjectHealthEvent(ctx, event.HealthEvent)
-		require.NoError(t, projectionErr)
+				return ProcessResultProcessed, nil
+			}}
+			completion, err := recoverStoredEvent(
+				context.Background(), newSupersessionResolver(store, base.Add(time.Hour)), processor,
+				parseStoredRecoveryEvent(failure))
+			require.NoError(t, err)
+			assert.Nil(t, completion)
+			require.Len(t, projected, len(tt.expected))
 
-		return ProcessResultProcessed, nil
-	}}
-	completion, err := recoverStoredEvent(
-		context.Background(), newSupersessionResolver(store, base.Add(time.Hour)), processor, failure)
-	require.NoError(t, err)
-	assert.Nil(t, completion)
-	require.Len(t, projected, 1)
-	assert.Empty(t, projected[0].GetEntitiesImpacted())
-	assert.Equal(t, []string{"48"}, projected[0].GetErrorCode(),
-		"the recovered check-wide 79 effect must not reach rule evaluation")
-}
-
-func TestRecoverStoredEvent_PreservesResidualExplicitBlankCode(t *testing.T) {
-	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
-	failure := withErrorCodes(recoveryRecord(base, false, nil), "", "79")
-	recovery := withErrorCodes(recoveryRecord(base.Add(time.Minute), true, nil), "79")
-	recovery.RawEvent["id"] = "recovery-id"
-	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{failure, recovery}}
-
-	var projected []*protos.HealthEvent
-	processor := &eventProcessorStub{process: func(
-		ctx context.Context,
-		event model.HealthEventWithStatus,
-		_ string,
-	) (ProcessResult, error) {
-		var projectionErr error
-		projected, projectionErr = ProjectHealthEvent(ctx, event.HealthEvent)
-		require.NoError(t, projectionErr)
-
-		return ProcessResultProcessed, nil
-	}}
-	completion, err := recoverStoredEvent(
-		context.Background(), newSupersessionResolver(store, base.Add(time.Hour)), processor, failure)
-	require.NoError(t, err)
-	assert.Nil(t, completion)
-	require.Len(t, projected, 1)
-	assert.Empty(t, projected[0].GetEntitiesImpacted())
-	assert.Equal(t, []string{""}, projected[0].GetErrorCode(),
-		"an explicit blank code must remain distinct from an absent wildcard")
+			for i, expected := range tt.expected {
+				assert.Equal(t, expected.codes, projected[i].GetErrorCode(), expected.message)
+				var entities []string
+				for _, entity := range projected[i].GetEntitiesImpacted() {
+					entities = append(entities, entity.GetEntityValue())
+				}
+				assert.Equal(t, expected.entities, entities, expected.message)
+			}
+		})
+	}
 }
 
 func TestProjectHealthEvent_PreservesAbsentCodeAsWildcard(t *testing.T) {

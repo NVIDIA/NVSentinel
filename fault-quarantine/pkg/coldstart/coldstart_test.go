@@ -465,7 +465,7 @@ func TestHandle_MissingCutoff_UsesRecoveryStart(t *testing.T) {
 	assert.False(t, cutoff.After(after))
 }
 
-func TestHandle_MissingCutoffWithUpperBoundary_UsesUpperBoundary(t *testing.T) {
+func TestHandle_MissingCutoffWithUpperBoundary_UsesBoundedLookback(t *testing.T) {
 	until := time.Date(2026, time.August, 31, 12, 0, 0, 0, time.UTC)
 	var captured datastore.QueryBuilder
 	store := &healthEventStoreStub{findBatched: func(
@@ -492,7 +492,7 @@ func TestHandle_MissingCutoffWithUpperBoundary_UsesUpperBoundary(t *testing.T) {
 
 	_, args := captured.ToSQL()
 	require.NotEmpty(t, args)
-	assert.Equal(t, until, args[0])
+	assert.Equal(t, until.Add(-defaultColdStartLookback), args[0])
 	assert.Equal(t, until, args[len(args)-1])
 }
 

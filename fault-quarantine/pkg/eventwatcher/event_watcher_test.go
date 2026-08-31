@@ -47,12 +47,14 @@ type databaseClientStub struct {
 	completionValue any
 	completionCalls int
 	completionErr   error
+	completionErrs  []error
 	actions         *[]string
 	completed       map[string]bool
 	countCalls      int
 	countFilter     any
 	countResult     int64
 	countErr        error
+	countErrs       []error
 }
 
 func (s *databaseClientStub) UpdateDocumentStatus(
@@ -68,6 +70,12 @@ func (s *databaseClientStub) UpdateDocumentStatus(
 	if s.actions != nil {
 		*s.actions = append(*s.actions, "complete")
 	}
+	if index := s.completionCalls - 1; index < len(s.completionErrs) {
+		if err := s.completionErrs[index]; err != nil {
+			return err
+		}
+	}
+
 	if s.completionErr != nil {
 		return s.completionErr
 	}
@@ -102,6 +110,11 @@ func (s *databaseClientStub) CountDocuments(
 ) (int64, error) {
 	s.countCalls++
 	s.countFilter = filter
+	if index := s.countCalls - 1; index < len(s.countErrs) {
+		if err := s.countErrs[index]; err != nil {
+			return 0, err
+		}
+	}
 
 	return s.countResult, s.countErr
 }
@@ -347,8 +360,23 @@ func TestProcessEvent_SkippedCompletionFailureIsReplayable(t *testing.T) {
 		recordUUID: "event-uuid",
 	})
 	require.ErrorIs(t, err, completionErr)
-	assert.Equal(t, 1, dbClient.completionCalls)
+	assert.Equal(t, liveRecoveryStoreRetryAttempts, dbClient.completionCalls)
 	assert.False(t, dbClient.completed["event-uuid"])
+}
+
+func TestProcessEvent_SkippedCompletionRetriesTransientFailure(t *testing.T) {
+	transientErr := errors.New("database temporarily unavailable")
+	dbClient := &databaseClientStub{completionErrs: []error{transientErr, transientErr, nil}}
+	watcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
+	watcher.SetProcessEventCallback(func(context.Context, *model.HealthEventWithStatus) (*model.Status, error) {
+		return nil, nil
+	})
+
+	require.NoError(t, watcher.processEvent(context.Background(), &clientEventStub{
+		document: storedHealthEvent("event-uuid"), eventID: "45", recordUUID: "event-uuid",
+	}))
+	assert.Equal(t, 3, dbClient.completionCalls)
+	assert.True(t, dbClient.completed["event-uuid"])
 }
 
 func TestProcessEvent_CanceledSkipIsNotMarkedComplete(t *testing.T) {
@@ -441,7 +469,25 @@ func TestWatchEvents_RecoveryOverlapLookupFailureDoesNotCheckpoint(t *testing.T)
 
 	err := watcher.watchEvents(context.Background())
 	require.ErrorIs(t, err, lookupErr)
+	assert.Equal(t, liveRecoveryStoreRetryAttempts, dbClient.countCalls)
 	assert.Zero(t, changeStream.markCalls, "an overlap event with unknown durable state must remain replayable")
+}
+
+func TestRecoveryOverlapLookup_RetriesTransientFailure(t *testing.T) {
+	transientErr := errors.New("database temporarily unavailable")
+	now := time.Now().UTC()
+	dbClient := &databaseClientStub{
+		countResult: 1,
+		countErrs:   []error{transientErr, transientErr, nil},
+	}
+	watcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
+	watcher.recoveryOverlapCutoff = now
+
+	terminal, err := watcher.recoveryOverlapEventAlreadyTerminal(
+		context.Background(), now.Add(-time.Minute), "event-uuid")
+	require.NoError(t, err)
+	assert.True(t, terminal)
+	assert.Equal(t, 3, dbClient.countCalls)
 }
 
 func TestProcessEvent_UnresolvedRecoveryOverlapStillProcesses(t *testing.T) {

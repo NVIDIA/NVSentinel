@@ -911,9 +911,13 @@ func decodeHealthEventDocument(documentJSON []byte) (*datastore.HealthEventWithS
 
 	var event datastore.HealthEventWithStatus
 
+	unmarshalErr := json.Unmarshal(documentJSON, &event)
+
+	// Assign this after typed unmarshalling because legacy documents contain a
+	// "RawEvent": null field that would otherwise overwrite the preserved map.
 	event.RawEvent = rawEvent
-	if err := json.Unmarshal(documentJSON, &event); err != nil {
-		return &event, fmt.Errorf("failed to unmarshal health event: %w", err)
+	if unmarshalErr != nil {
+		return &event, fmt.Errorf("failed to unmarshal health event: %w", unmarshalErr)
 	}
 
 	return &event, nil

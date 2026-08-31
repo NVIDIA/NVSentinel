@@ -160,6 +160,7 @@ func TestConfigureColdStart_MissingCutoff_SeedsAndPersistsBoundedWindow(t *testi
 	r.configureColdStart(
 		context.Background(), false, false, time.Time{}, store)
 	require.NotNil(t, watcher.callback)
+	configuredAt := time.Now().UTC()
 	require.NoError(t, watcher.callback(context.Background()))
 
 	_, args := store.builder.ToSQL()
@@ -168,7 +169,8 @@ func TestConfigureColdStart_MissingCutoff_SeedsAndPersistsBoundedWindow(t *testi
 	require.True(t, ok)
 	upperBoundary, ok := args[len(args)-1].(time.Time)
 	require.True(t, ok)
-	assert.Equal(t, upperBoundary, lowerBoundary)
+	assert.True(t, lowerBoundary.Before(upperBoundary), "seeded recovery window must be non-empty")
+	assert.False(t, lowerBoundary.After(configuredAt), "lower watermark must be captured before recovery starts")
 	assert.Equal(t, upperBoundary, persistedCutoff)
 }
 

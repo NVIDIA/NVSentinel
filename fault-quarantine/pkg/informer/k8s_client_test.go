@@ -449,6 +449,57 @@ func TestUnQuarantineNodeAndRemoveAnnotations(t *testing.T) {
 	}
 }
 
+func TestUnQuarantineNodeAndRemoveAnnotations_DryRunDoesNotPatchNode(t *testing.T) {
+	ctx := context.Background()
+	const (
+		nodeName      = "dry-run-unquarantine"
+		annotationKey = "test-annotation"
+	)
+
+	node := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        nodeName,
+			Annotations: map[string]string{annotationKey: "test-value"},
+			Labels: map[string]string{
+				cordonedReasonLabelKey: "gpu-error",
+			},
+		},
+		Spec: v1.NodeSpec{
+			Unschedulable: true,
+			Taints: []v1.Taint{{
+				Key: "test-key", Value: "test-value", Effect: v1.TaintEffectNoSchedule,
+			}},
+		},
+	}
+	clientset := fake.NewSimpleClientset(node)
+	k8sClient := &FaultQuarantineClient{
+		Clientset:  clientset,
+		DryRunMode: true,
+	}
+
+	require.NoError(t, k8sClient.UnQuarantineNodeAndRemoveAnnotations(
+		ctx,
+		nodeName,
+		[]config.Taint{{Key: "test-key", Value: "test-value", Effect: "NoSchedule"}},
+		true,
+		[]string{annotationKey},
+		[]string{cordonedReasonLabelKey},
+		map[string]string{uncordonedByLabelKey: common.ServiceName},
+	))
+
+	updatedNode, err := clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, "test-value", updatedNode.Annotations[annotationKey])
+	assert.Equal(t, "gpu-error", updatedNode.Labels[cordonedReasonLabelKey])
+	assert.NotContains(t, updatedNode.Labels, uncordonedByLabelKey)
+	assert.True(t, updatedNode.Spec.Unschedulable)
+	require.Len(t, updatedNode.Spec.Taints, 1)
+
+	for _, action := range clientset.Actions() {
+		assert.NotEqual(t, "patch", action.GetVerb(), "dry-run unquarantine must not submit a node patch")
+	}
+}
+
 func TestTaintAndCordonNode_NodeNotFound(t *testing.T) {
 	ctx := context.Background()
 	k8sClient := setupTestClient(t)
