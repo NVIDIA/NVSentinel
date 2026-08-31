@@ -104,7 +104,7 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if !completedReconciling {
 		locked := r.NodeLock.LockNode(ctx, &rebootNode, rebootNode.Spec.NodeName)
 		if !locked {
-			return ctrl.Result{RequeueAfter: time.Second * 2}, nil
+			return r.handleRebootLockContention(ctx, &rebootNode)
 		}
 
 		sessionCtx, _ := r.startRebootSessionIfNeeded(ctx, crKey, traceID, spanID)
@@ -131,6 +131,44 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	retryUnlock := r.NodeLock.CheckUnlock(ctx, &rebootNode, rebootNode.Spec.NodeName)
 	if retryUnlock {
 		return ctrl.Result{RequeueAfter: time.Second * 2}, nil
+	}
+
+	return ctrl.Result{}, nil
+}
+
+func (r *RebootNodeReconciler) handleRebootLockContention(
+	ctx context.Context, rebootNode *janitordgxcnvidiacomv1alpha1.RebootNode,
+) (ctrl.Result, error) {
+	holder, active, err := activeSameKindHolder(
+		ctx, r.Client, r.NodeLock, rebootNode.Spec.NodeName, "RebootNode",
+	)
+	if err != nil {
+		slog.WarnContext(ctx, "Unable to inspect node lock holder; will retry",
+			"node", rebootNode.Spec.NodeName, "error", err)
+	} else if active {
+		return r.completeDuplicateReboot(ctx, rebootNode, holder.GetName())
+	}
+
+	return ctrl.Result{RequeueAfter: time.Second * 2}, nil
+}
+
+func (r *RebootNodeReconciler) completeDuplicateReboot(
+	ctx context.Context, rebootNode *janitordgxcnvidiacomv1alpha1.RebootNode, holderName string,
+) (ctrl.Result, error) {
+	original := rebootNode.DeepCopy()
+	rebootNode.SetInitialConditions()
+	rebootNode.SetStartTime()
+	rebootNode.SetCompletionTime()
+	rebootNode.SetCondition(metav1.Condition{
+		Type:               janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             nodeAlreadyUnderMaintenanceReason,
+		Message:            fmt.Sprintf("RebootNode/%s is active for this node", holderName),
+		LastTransitionTime: metav1.Now(),
+	})
+
+	if err := r.updateRebootNodeStatusIfChanged(ctx, original, rebootNode); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
