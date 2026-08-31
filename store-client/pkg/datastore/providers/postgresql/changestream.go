@@ -1399,6 +1399,19 @@ type PostgreSQLEventAdapter struct {
 	resumeToken []byte
 }
 
+// UpdatedFields exposes the same flattened update description used by the
+// provider's pipeline filter.
+func (e *PostgreSQLEventAdapter) UpdatedFields() map[string]any {
+	updateDescription, ok := e.eventData["updateDescription"].(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	updatedFields, _ := updateDescription["updatedFields"].(map[string]any)
+
+	return updatedFields
+}
+
 // GetDocumentID returns the changelog sequence ID for this event.
 // This ID is used for:
 // - Tracking the last processed position in the changestream

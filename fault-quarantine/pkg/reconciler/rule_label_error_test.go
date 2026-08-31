@@ -75,7 +75,7 @@ func TestApplyRuleLabelsForEvent_EvaluationError_ContinuesToNextEvaluator(t *tes
 	}
 
 	err := r.applyRuleLabelsForEvent(ctx, &protos.HealthEvent{NodeName: nodeName}, evaluators, rulesets)
-	require.NoError(t, err)
+	require.EqualError(t, err, "evaluation failed")
 
 	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	require.NoError(t, err)
@@ -83,15 +83,15 @@ func TestApplyRuleLabelsForEvent_EvaluationError_ContinuesToNextEvaluator(t *tes
 }
 
 func TestEventMatchesAnyRuleRecordsPermanentEvaluationFailure(t *testing.T) {
-	ctx := coldstart.WithRecoveryContext(context.Background())
+	ctx := context.Background()
 	evaluationErr := coldstart.PermanentError(errors.New("invalid CEL expression"))
 	r := &Reconciler{}
 
-	matched := r.eventMatchesAnyRule(ctx, &protos.HealthEvent{}, []evaluator.RuleSetEvaluatorIface{
+	matched, err := r.eventMatchesAnyRule(ctx, &protos.HealthEvent{}, []evaluator.RuleSetEvaluatorIface{
 		&stubRuleSetEvaluator{name: "broken", err: evaluationErr},
 	})
 
 	assert.False(t, matched)
-	assert.NoError(t, coldstart.Error(ctx))
-	require.ErrorIs(t, coldstart.RecordedPermanentError(ctx), evaluationErr)
+	require.ErrorIs(t, err, evaluationErr)
+	assert.True(t, coldstart.IsPermanentError(err))
 }

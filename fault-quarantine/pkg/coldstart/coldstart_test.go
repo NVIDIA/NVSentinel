@@ -23,7 +23,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
@@ -47,26 +50,49 @@ func (s *healthEventStoreStub) FindHealthEventsByQueryBatched(
 }
 
 type eventProcessorStub struct {
-	process     func(context.Context, datastore.HealthEventWithStatus) (ProcessResult, error)
-	completions []ProcessResult
-	completeErr error
+	process           func(context.Context, model.HealthEventWithStatus, string) (ProcessResult, error)
+	completionBatches [][]string
+	completeErr       error
 }
 
 func (s *eventProcessorStub) ProcessStoredEvent(
 	ctx context.Context,
-	event datastore.HealthEventWithStatus,
+	event model.HealthEventWithStatus,
+	documentID string,
 ) (ProcessResult, error) {
-	return s.process(ctx, event)
+	return s.process(ctx, event, documentID)
 }
 
-func (s *eventProcessorStub) CompleteStoredEvent(
+func (s *eventProcessorStub) CompleteStoredEvents(
 	_ context.Context,
-	_ datastore.HealthEventWithStatus,
-	result ProcessResult,
+	documentIDs []StoredDocumentID,
 ) error {
-	s.completions = append(s.completions, result)
+	batch := make([]string, 0, len(documentIDs))
+	for i := range documentIDs {
+		batch = append(batch, documentIDs[i].String)
+	}
+
+	s.completionBatches = append(s.completionBatches, batch)
 
 	return s.completeErr
+}
+
+func replayRecord(id string) datastore.HealthEventWithStatus {
+	return datastore.HealthEventWithStatus{RawEvent: datastore.Event{
+		"id": id,
+		"healthevent": map[string]any{
+			"agent": "agent", "componentClass": "GPU", "checkName": "check", "nodeName": "node-a",
+		},
+		"healtheventstatus": map[string]any{},
+	}}
+}
+
+func TestStoredDocumentIDPreservesNativeDatabaseKey(t *testing.T) {
+	id, err := storedDocumentID(datastore.Event{"_id": 42})
+
+	require.NoError(t, err)
+	assert.Equal(t, "42", id.String)
+	assert.Equal(t, 42, id.Native)
 }
 
 func TestColdStartQueryMatchesOnlyUnresolvedProcessableEvents(t *testing.T) {
@@ -114,7 +140,7 @@ func TestColdStartQueryMatchesOnlyUnresolvedProcessableEvents(t *testing.T) {
 	assert.Equal(t, []any{cutoff, "", "NotStarted", "", "1", "1", until}, args)
 }
 
-func TestColdStartQueryWithoutOperatorCutoffHasNoLowerTimestampBound(t *testing.T) {
+func TestColdStartQuerySupportsExplicitlyUnboundedLowerTimestamp(t *testing.T) {
 	until := time.Date(2026, time.August, 28, 12, 0, 0, 0, time.UTC)
 	builder := coldStartQuery(time.Time{}, until)
 
@@ -129,7 +155,7 @@ func TestHandleProcessesEveryBatchInOrder(t *testing.T) {
 
 	events := make([]datastore.HealthEventWithStatus, eventCount)
 	for i := range events {
-		events[i].RawEvent = datastore.Event{"id": fmt.Sprintf("event-%04d", i)}
+		events[i] = replayRecord(fmt.Sprintf("event-%04d", i))
 	}
 
 	store := &healthEventStoreStub{
@@ -151,8 +177,8 @@ func TestHandleProcessesEveryBatchInOrder(t *testing.T) {
 
 	processedIDs := make([]string, 0, eventCount)
 	processor := &eventProcessorStub{
-		process: func(_ context.Context, event datastore.HealthEventWithStatus) (ProcessResult, error) {
-			processedIDs = append(processedIDs, event.RawEvent["id"].(string))
+		process: func(_ context.Context, _ model.HealthEventWithStatus, documentID string) (ProcessResult, error) {
+			processedIDs = append(processedIDs, documentID)
 
 			return ProcessResultProcessed, nil
 		},
@@ -168,12 +194,12 @@ func TestHandleProcessesEveryBatchInOrder(t *testing.T) {
 	assert.Equal(t, fmt.Sprintf("event-%04d", eventCount-1), processedIDs[eventCount-1])
 }
 
-func TestHandleStopsOnProcessingFailure(t *testing.T) {
+func TestHandleContinuesPastProcessingFailure(t *testing.T) {
 	processErr := errors.New("status update failed")
 	events := []datastore.HealthEventWithStatus{
-		{RawEvent: datastore.Event{"id": "first"}},
-		{RawEvent: datastore.Event{"id": "second"}},
-		{RawEvent: datastore.Event{"id": "third"}},
+		replayRecord("first"),
+		replayRecord("second"),
+		replayRecord("third"),
 	}
 
 	store := &healthEventStoreStub{
@@ -189,8 +215,7 @@ func TestHandleStopsOnProcessingFailure(t *testing.T) {
 
 	var processedIDs []string
 	processor := &eventProcessorStub{
-		process: func(_ context.Context, event datastore.HealthEventWithStatus) (ProcessResult, error) {
-			id := event.RawEvent["id"].(string)
+		process: func(_ context.Context, _ model.HealthEventWithStatus, id string) (ProcessResult, error) {
 			processedIDs = append(processedIDs, id)
 			if id == "second" {
 				return ProcessResultFailed, processErr
@@ -205,13 +230,14 @@ func TestHandleStopsOnProcessingFailure(t *testing.T) {
 		EventProcessor:   processor,
 	})
 	require.ErrorIs(t, err, processErr)
-	assert.Equal(t, []string{"first", "second"}, processedIDs)
+	assert.Equal(t, []string{"first", "second", "third"}, processedIDs)
 }
 
 func TestHandleContinuesPastInvalidStoredEvent(t *testing.T) {
 	events := []datastore.HealthEventWithStatus{
-		{RawEvent: datastore.Event{"id": "invalid"}},
-		{RawEvent: datastore.Event{"id": "valid"}},
+		replayRecord("invalid-one"),
+		replayRecord("invalid-two"),
+		replayRecord("valid"),
 	}
 
 	store := &healthEventStoreStub{
@@ -227,8 +253,8 @@ func TestHandleContinuesPastInvalidStoredEvent(t *testing.T) {
 
 	processed := 0
 	processor := &eventProcessorStub{
-		process: func(_ context.Context, event datastore.HealthEventWithStatus) (ProcessResult, error) {
-			if event.RawEvent["id"] == "invalid" {
+		process: func(_ context.Context, _ model.HealthEventWithStatus, documentID string) (ProcessResult, error) {
+			if documentID == "invalid-one" || documentID == "invalid-two" {
 				return ProcessResultInvalid, nil
 			}
 
@@ -243,7 +269,37 @@ func TestHandleContinuesPastInvalidStoredEvent(t *testing.T) {
 		EventProcessor:   processor,
 	}))
 	assert.Equal(t, 1, processed)
-	assert.Equal(t, []ProcessResult{ProcessResultInvalid}, processor.completions)
+	assert.Equal(t, [][]string{{"invalid-one", "invalid-two"}}, processor.completionBatches)
+}
+
+func TestHandleParsesMalformedEventOnceAndCompletesItWithoutProcessing(t *testing.T) {
+	events := []datastore.HealthEventWithStatus{
+		{RawEvent: datastore.Event{"id": "malformed"}},
+		replayRecord("valid"),
+	}
+	store := &healthEventStoreStub{findBatched: func(
+		_ context.Context,
+		_ datastore.QueryBuilder,
+		_ int,
+		fn func([]datastore.HealthEventWithStatus) error,
+	) error {
+		return fn(events)
+	}}
+	var processed []string
+	processor := &eventProcessorStub{process: func(
+		_ context.Context, _ model.HealthEventWithStatus, documentID string,
+	) (ProcessResult, error) {
+		processed = append(processed, documentID)
+
+		return ProcessResultProcessed, nil
+	}}
+
+	require.NoError(t, Handle(context.Background(), Dependencies{
+		HealthEventStore: store,
+		EventProcessor:   processor,
+	}))
+	assert.Equal(t, []string{"valid"}, processed)
+	assert.Equal(t, [][]string{{"malformed"}}, processor.completionBatches)
 }
 
 func TestHandleStopsWhenCompletionStatusCannotBePersisted(t *testing.T) {
@@ -255,13 +311,11 @@ func TestHandleStopsWhenCompletionStatusCannotBePersisted(t *testing.T) {
 			_ int,
 			fn func([]datastore.HealthEventWithStatus) error,
 		) error {
-			return fn([]datastore.HealthEventWithStatus{{
-				RawEvent: datastore.Event{"id": "invalid"},
-			}})
+			return fn([]datastore.HealthEventWithStatus{replayRecord("invalid")})
 		},
 	}
 	processor := &eventProcessorStub{
-		process: func(context.Context, datastore.HealthEventWithStatus) (ProcessResult, error) {
+		process: func(context.Context, model.HealthEventWithStatus, string) (ProcessResult, error) {
 			return ProcessResultInvalid, nil
 		},
 		completeErr: completionErr,
@@ -276,7 +330,7 @@ func TestHandleStopsWhenCompletionStatusCannotBePersisted(t *testing.T) {
 
 func TestHandleValidatesDependencies(t *testing.T) {
 	processor := &eventProcessorStub{
-		process: func(context.Context, datastore.HealthEventWithStatus) (ProcessResult, error) {
+		process: func(context.Context, model.HealthEventWithStatus, string) (ProcessResult, error) {
 			return ProcessResultSkipped, nil
 		},
 	}
@@ -299,12 +353,63 @@ func TestHandleValidatesDependencies(t *testing.T) {
 	assert.EqualError(t, err, "event processor is required")
 }
 
-func TestRecordErrorRoutesPermanentFailures(t *testing.T) {
-	ctx := WithRecoveryContext(context.Background())
+func TestHandleDefaultsMissingCutoffToRecoveryStart(t *testing.T) {
+	var captured datastore.QueryBuilder
+	store := &healthEventStoreStub{findBatched: func(
+		_ context.Context,
+		builder datastore.QueryBuilder,
+		_ int,
+		_ func([]datastore.HealthEventWithStatus) error,
+	) error {
+		captured = builder
+
+		return nil
+	}}
+	processor := &eventProcessorStub{process: func(
+		context.Context, model.HealthEventWithStatus, string,
+	) (ProcessResult, error) {
+		return ProcessResultProcessed, nil
+	}}
+
+	before := time.Now().UTC()
+	require.NoError(t, Handle(context.Background(), Dependencies{
+		HealthEventStore: store,
+		EventProcessor:   processor,
+	}))
+	after := time.Now().UTC()
+
+	sql, args := captured.ToSQL()
+	require.Contains(t, sql, "created_at > $1")
+	cutoff, ok := args[0].(time.Time)
+	require.True(t, ok)
+	assert.False(t, cutoff.Before(before))
+	assert.False(t, cutoff.After(after))
+}
+
+func TestIsPermanentErrorRequiresEveryJoinedFailureToBePermanent(t *testing.T) {
 	permanentErr := PermanentError(errors.New("node no longer exists"))
+	otherPermanentErr := PermanentError(errors.New("invalid CEL expression"))
+	transientErr := errors.New("API server unavailable")
 
-	RecordError(ctx, permanentErr)
+	assert.True(t, IsPermanentError(fmt.Errorf("evaluate event: %w", permanentErr)))
+	assert.True(t, IsPermanentError(errors.Join(permanentErr, otherPermanentErr)))
+	assert.False(t, IsPermanentError(errors.Join(permanentErr, transientErr)))
+}
 
-	assert.NoError(t, Error(ctx))
-	require.ErrorIs(t, RecordedPermanentError(ctx), permanentErr)
+func TestGetRecoveryNodeLoadsOneSnapshotPerEvent(t *testing.T) {
+	ctx := WithRecoveryContext(context.Background())
+	calls := 0
+	load := func() (*corev1.Node, error) {
+		calls++
+
+		return &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a"}}, nil
+	}
+
+	first, err := GetRecoveryNode(ctx, "node-a", load)
+	require.NoError(t, err)
+	second, err := GetRecoveryNode(ctx, "node-a", load)
+	require.NoError(t, err)
+
+	assert.Same(t, first, second)
+	assert.Equal(t, 1, calls)
 }

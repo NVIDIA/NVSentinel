@@ -235,6 +235,16 @@ postgresql:
               created_at,
               id
           );
+          CREATE INDEX IF NOT EXISTS idx_health_events_fault_quarantine_pending ON health_events (created_at, id)
+          WHERE (
+              COALESCE(document->'healtheventstatus'->>'nodequarantined', document->'healtheventstatus'->>'nodeQuarantined') IS NULL
+              OR COALESCE(document->'healtheventstatus'->>'nodequarantined', document->'healtheventstatus'->>'nodeQuarantined') = ''
+              OR COALESCE(document->'healtheventstatus'->>'nodequarantined', document->'healtheventstatus'->>'nodeQuarantined') = 'NotStarted'
+          )
+          AND (
+              document->'healtheventstatus'->>'faultquarantinerecovery' IS NULL
+              OR document->'healtheventstatus'->>'faultquarantinerecovery' = ''
+          );
           CREATE INDEX IF NOT EXISTS idx_health_events_updated_desc ON health_events(updated_at DESC);
 
           -- GIN index for flexible JSON querying

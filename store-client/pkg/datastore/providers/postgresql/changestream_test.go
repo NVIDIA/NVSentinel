@@ -25,6 +25,8 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 )
 
 func TestPostgreSQLEventAdapter_GetDocumentID(t *testing.T) {
@@ -131,6 +133,17 @@ func TestPostgreSQLEventAdapter_GetDocumentID(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPostgreSQLEventAdapterExposesUpdatedFields(t *testing.T) {
+	const completionPath = "healtheventstatus.faultquarantinerecovery"
+	event := &PostgreSQLEventAdapter{eventData: map[string]any{
+		"updateDescription": map[string]any{
+			"updatedFields": map[string]any{completionPath: "completed"},
+		},
+	}}
+
+	assert.True(t, client.EventUpdatesOnly(event, completionPath))
 }
 
 func TestPostgreSQLEventAdapter_GetRecordUUID(t *testing.T) {

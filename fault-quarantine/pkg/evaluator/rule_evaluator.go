@@ -210,7 +210,9 @@ func (nm *NodeRuleEvaluator) getNode(ctx context.Context, nodeName string) (map[
 
 	isRecoveryRead := coldstart.IsRecoveryContext(ctx) && nm.nodeReader != nil
 	if isRecoveryRead {
-		node, err = nm.nodeReader.GetNodeDirect(ctx, nodeName)
+		node, err = coldstart.GetRecoveryNode(ctx, nodeName, func() (*corev1.Node, error) {
+			return nm.nodeReader.GetNodeDirect(ctx, nodeName)
+		})
 	} else {
 		node, err = nm.nodeLister.Get(nodeName)
 	}

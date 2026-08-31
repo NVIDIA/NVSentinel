@@ -39,6 +39,39 @@ type mongoEvent struct {
 	rawEvent mongoWatcher.Event
 }
 
+// UpdatedFields exposes change-stream update metadata to optional consumers.
+func (e *mongoEvent) UpdatedFields() map[string]any {
+	updateDescription, ok := e.rawEvent["updateDescription"]
+	if !ok {
+		return nil
+	}
+
+	var description map[string]any
+
+	switch value := updateDescription.(type) {
+	case map[string]any:
+		description = value
+	case bson.M:
+		description = map[string]any(value)
+	default:
+		return nil
+	}
+
+	updatedFields, ok := description["updatedFields"]
+	if !ok {
+		return nil
+	}
+
+	switch value := updatedFields.(type) {
+	case map[string]any:
+		return value
+	case bson.M:
+		return map[string]any(value)
+	default:
+		return nil
+	}
+}
+
 func (e *mongoEvent) GetDocumentID() (string, error) {
 	fullDocument, ok := e.rawEvent["fullDocument"]
 	if !ok {
@@ -598,13 +631,23 @@ func resolveMongoFilter(filter any) any {
 	return filter
 }
 
+func resolveMongoUpdate(update any) any {
+	if builder, ok := update.(interface{ ToMongoPipeline() []any }); ok {
+		return builder.ToMongoPipeline()
+	}
+
+	return update
+}
+
 // UpdateDocument performs a general update operation
 func (c *MongoDBClient) UpdateDocument(
 	ctx context.Context, filter any, update any,
 ) (*UpdateResult, error) {
-	return c.executeUpdate(ctx, "db.update_document", filter, update,
+	mongoUpdate := resolveMongoUpdate(update)
+
+	return c.executeUpdate(ctx, "db.update_document", filter, mongoUpdate,
 		func(ctx context.Context) (*mongo.UpdateResult, error) {
-			return c.mongoCol.UpdateOne(ctx, resolveMongoFilter(filter), update)
+			return c.mongoCol.UpdateOne(ctx, resolveMongoFilter(filter), mongoUpdate)
 		})
 }
 
@@ -628,9 +671,11 @@ func (c *MongoDBClient) InsertMany(ctx context.Context, documents []any) (*Inser
 func (c *MongoDBClient) UpdateManyDocuments(
 	ctx context.Context, filter any, update any,
 ) (*UpdateResult, error) {
-	return c.executeUpdate(ctx, "db.update_many_documents", filter, update,
+	mongoUpdate := resolveMongoUpdate(update)
+
+	return c.executeUpdate(ctx, "db.update_many_documents", filter, mongoUpdate,
 		func(ctx context.Context) (*mongo.UpdateResult, error) {
-			return c.mongoCol.UpdateMany(ctx, resolveMongoFilter(filter), update)
+			return c.mongoCol.UpdateMany(ctx, resolveMongoFilter(filter), mongoUpdate)
 		})
 }
 

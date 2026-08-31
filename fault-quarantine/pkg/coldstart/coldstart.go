@@ -28,20 +28,29 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
+	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
+	corev1 "k8s.io/api/core/v1"
 )
 
 const (
 	batchSize = 1000
 	// RecoveryCompletionStatusPath stores terminal cold-start decisions.
 	RecoveryCompletionStatusPath = "healtheventstatus.faultquarantinerecovery"
+	// RecoveryCompletionValue is shared by all terminal decisions. The detailed
+	// result remains available through the cold-start metric label.
+	RecoveryCompletionValue = "completed"
 )
 
 type recoveryContextKey struct{}
 
 type recoveryState struct {
-	mu           sync.Mutex
-	err          error
-	permanentErr error
+	mu    sync.Mutex
+	nodes map[string]recoveryNode
+}
+
+type recoveryNode struct {
+	node *corev1.Node
+	err  error
 }
 
 type permanentError struct {
@@ -63,15 +72,44 @@ func PermanentError(err error) error {
 
 // IsPermanentError reports whether an error is deterministic for the event.
 func IsPermanentError(err error) bool {
-	var target *permanentError
+	if err == nil {
+		return false
+	}
 
-	return errors.As(err, &target)
+	// Check the direct marker before walking wrappers. errors.As cannot distinguish
+	// a permanent wrapper from a joined permanent-plus-transient child.
+	if _, ok := err.(*permanentError); ok { //nolint:errorlint // Directness is required for all-errors classification.
+		return true
+	}
+
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+
+		for _, child := range children {
+			if !IsPermanentError(child) {
+				return false
+			}
+		}
+
+		return true
+	}
+
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return IsPermanentError(wrapped.Unwrap())
+	}
+
+	return false
 }
 
 // WithRecoveryContext marks event processing as cold-start replay. Consumers
 // can use it to bypass eventually-consistent caches between ordered events.
 func WithRecoveryContext(ctx context.Context) context.Context {
-	return context.WithValue(ctx, recoveryContextKey{}, &recoveryState{})
+	return context.WithValue(ctx, recoveryContextKey{}, &recoveryState{
+		nodes: make(map[string]recoveryNode),
+	})
 }
 
 // IsRecoveryContext reports whether the current event came from cold start.
@@ -81,63 +119,30 @@ func IsRecoveryContext(ctx context.Context) bool {
 	return recovering
 }
 
-// RecordError marks the current recovered event as retryable. Reconciler code
-// calls this when an operation fails but its public status API must return nil.
-func RecordError(ctx context.Context, err error) {
-	if IsPermanentError(err) {
-		RecordPermanentError(ctx, err)
-
-		return
-	}
-
-	state, ok := ctx.Value(recoveryContextKey{}).(*recoveryState)
-	if !ok || err == nil {
-		return
-	}
-
-	state.mu.Lock()
-	state.err = errors.Join(state.err, err)
-	state.mu.Unlock()
-}
-
-// RecordPermanentError records an event-specific failure that should not
-// block every subsequent startup.
-func RecordPermanentError(ctx context.Context, err error) {
-	state, ok := ctx.Value(recoveryContextKey{}).(*recoveryState)
-	if !ok || err == nil {
-		return
-	}
-
-	state.mu.Lock()
-	state.permanentErr = errors.Join(state.permanentErr, err)
-	state.mu.Unlock()
-}
-
-// Error returns errors recorded while processing the current recovered event.
-func Error(ctx context.Context) error {
+// GetRecoveryNode returns one consistent API-server snapshot per node and
+// replayed event. The first caller loads it; reconciler and rule evaluators
+// then share the cached value (including a load error).
+func GetRecoveryNode(
+	ctx context.Context,
+	nodeName string,
+	load func() (*corev1.Node, error),
+) (*corev1.Node, error) {
 	state, ok := ctx.Value(recoveryContextKey{}).(*recoveryState)
 	if !ok {
-		return nil
+		return load()
 	}
 
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
-	return state.err
-}
-
-// RecordedPermanentError returns deterministic errors recorded while
-// processing the current recovered event.
-func RecordedPermanentError(ctx context.Context) error {
-	state, ok := ctx.Value(recoveryContextKey{}).(*recoveryState)
-	if !ok {
-		return nil
+	if result, exists := state.nodes[nodeName]; exists {
+		return result.node, result.err
 	}
 
-	state.mu.Lock()
-	defer state.mu.Unlock()
+	node, err := load()
+	state.nodes[nodeName] = recoveryNode{node: node, err: err}
 
-	return state.permanentErr
+	return node, err
 }
 
 type ProcessResult string
@@ -150,15 +155,23 @@ const (
 	ProcessResultFailed     ProcessResult = "failed"
 )
 
+// StoredDocumentID carries both the service-facing string form and the native
+// datastore key. MongoDB bulk filters require the native ObjectID, while
+// PostgreSQL uses the same UUID string for both forms.
+type StoredDocumentID struct {
+	String string
+	Native any
+}
+
 type EventProcessor interface {
 	ProcessStoredEvent(
 		ctx context.Context,
-		event datastore.HealthEventWithStatus,
+		event model.HealthEventWithStatus,
+		documentID string,
 	) (ProcessResult, error)
-	CompleteStoredEvent(
+	CompleteStoredEvents(
 		ctx context.Context,
-		event datastore.HealthEventWithStatus,
-		result ProcessResult,
+		documentIDs []StoredDocumentID,
 	) error
 }
 
@@ -169,10 +182,21 @@ type Dependencies struct {
 	ColdStartUntilTime time.Time
 }
 
+type recoveryProgress struct {
+	firstErr error
+	failures int
+}
+
+type recoveryCompletion struct {
+	documentID StoredDocumentID
+	result     ProcessResult
+}
+
 // Handle replays unresolved events in creation order. Events that overlap
 // newer state are skipped so obsolete history cannot cause transient node
-// changes. Processing stops on transient failures; terminal skip decisions
-// are persisted and excluded from later scans.
+// changes. Event-local transient failures are collected while the sweep
+// continues; terminal skip decisions are persisted and excluded from later
+// scans.
 func Handle(ctx context.Context, deps Dependencies) error {
 	if deps.HealthEventStore == nil {
 		return fmt.Errorf("health event store is required")
@@ -182,34 +206,98 @@ func Handle(ctx context.Context, deps Dependencies) error {
 		return fmt.Errorf("event processor is required")
 	}
 
-	startedAt := time.Now()
+	startedAt := time.Now().UTC()
 	defer func() {
 		metrics.ColdStartDuration.Observe(time.Since(startedAt).Seconds())
 	}()
 
 	slog.InfoContext(ctx, "Recovering unresolved fault-quarantine events")
 
+	if deps.ColdStartAfterTime.IsZero() {
+		// On the first upgrade there is no resume-token cutoff. Starting at the
+		// recovery boundary avoids sweeping the cluster's entire event history.
+		deps.ColdStartAfterTime = startedAt
+	}
+
 	resolver := newSupersessionResolver(deps.HealthEventStore, deps.ColdStartUntilTime)
+	progress := &recoveryProgress{}
 
 	err := deps.HealthEventStore.FindHealthEventsByQueryBatched(
 		ctx,
 		coldStartQuery(deps.ColdStartAfterTime, deps.ColdStartUntilTime),
 		batchSize,
 		func(events []datastore.HealthEventWithStatus) error {
-			for i := range events {
-				if err := recoverStoredEvent(ctx, resolver, deps.EventProcessor, events[i]); err != nil {
-					return err
-				}
-			}
-
-			return nil
+			return progress.recoverBatch(ctx, resolver, deps.EventProcessor, events)
 		},
 	)
 	if err != nil {
 		return fmt.Errorf("fault-quarantine cold start failed: %w", err)
 	}
 
+	if progress.firstErr != nil {
+		return fmt.Errorf("fault-quarantine cold start completed with %d event failures: %w",
+			progress.failures, progress.firstErr)
+	}
+
 	slog.InfoContext(ctx, "Fault-quarantine event recovery completed")
+
+	return nil
+}
+
+func (p *recoveryProgress) recoverBatch(
+	ctx context.Context,
+	resolver *supersessionResolver,
+	processor EventProcessor,
+	events []datastore.HealthEventWithStatus,
+) error {
+	completions := make([]recoveryCompletion, 0, len(events))
+
+	for i := range events {
+		completion, err := recoverStoredEvent(ctx, resolver, processor, events[i])
+		if completion != nil {
+			completions = append(completions, *completion)
+		}
+
+		if err := p.recordFailure(ctx, err); err != nil {
+			return err
+		}
+	}
+
+	if len(completions) == 0 {
+		return nil
+	}
+
+	completionIDs := make([]StoredDocumentID, 0, len(completions))
+	for i := range completions {
+		completionIDs = append(completionIDs, completions[i].documentID)
+	}
+
+	if err := processor.CompleteStoredEvents(ctx, completionIDs); err != nil {
+		return recordRecoveryFailure(fmt.Errorf("failed to record recovery completion batch: %w", err))
+	}
+
+	for i := range completions {
+		metrics.ColdStartEvents.WithLabelValues(string(completions[i].result)).Inc()
+	}
+
+	return nil
+}
+
+func (p *recoveryProgress) recordFailure(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+
+	p.failures++
+	if p.firstErr == nil {
+		p.firstErr = err
+	}
+
+	slog.ErrorContext(ctx, "Stored event recovery failed; continuing with the batch", "error", err)
 
 	return nil
 }
@@ -219,59 +307,68 @@ func recoverStoredEvent(
 	resolver *supersessionResolver,
 	processor EventProcessor,
 	event datastore.HealthEventWithStatus,
-) error {
+) (*recoveryCompletion, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
 
-	superseded, err := resolver.superseded(ctx, event)
+	documentID, idErr := storedDocumentID(event.RawEvent)
+
+	parsed, parseErr := parseStoredRecord(event)
+	if parseErr != nil {
+		slog.ErrorContext(ctx, "Skipping invalid stored health event",
+			"documentID", documentID.String, "error", parseErr)
+
+		if idErr != nil {
+			return nil, recordRecoveryFailure(fmt.Errorf(
+				"cannot identify invalid stored event: %w", idErr))
+		}
+
+		return &recoveryCompletion{documentID: documentID, result: ProcessResultInvalid}, nil
+	}
+
+	if idErr != nil {
+		return nil, recordRecoveryFailure(fmt.Errorf("cannot identify stored event: %w", idErr))
+	}
+
+	superseded, err := resolver.superseded(ctx, parsed, event.CreatedAt, documentID.String)
 	if err != nil {
-		return recordRecoveryFailure(fmt.Errorf("failed to resolve stored event state: %w", err))
+		return nil, recordRecoveryFailure(fmt.Errorf("failed to resolve stored event state: %w", err))
 	}
 
 	if superseded {
-		if err := completeStoredEvent(ctx, processor, event, ProcessResultSuperseded); err != nil {
-			return recordRecoveryFailure(err)
-		}
-
-		metrics.ColdStartEvents.WithLabelValues(string(ProcessResultSuperseded)).Inc()
-
-		return nil
+		return &recoveryCompletion{documentID: documentID, result: ProcessResultSuperseded}, nil
 	}
 
-	result, err := processor.ProcessStoredEvent(ctx, event)
+	result, err := processor.ProcessStoredEvent(ctx, parsed, documentID.String)
 	if err != nil {
-		return recordRecoveryFailure(fmt.Errorf("failed to recover stored event: %w", err))
+		return nil, recordRecoveryFailure(fmt.Errorf("failed to recover stored event: %w", err))
 	}
 
 	if result == ProcessResultSkipped || result == ProcessResultInvalid {
-		if err := completeStoredEvent(ctx, processor, event, result); err != nil {
-			return recordRecoveryFailure(err)
-		}
+		return &recoveryCompletion{documentID: documentID, result: result}, nil
 	}
 
 	metrics.ColdStartEvents.WithLabelValues(string(result)).Inc()
 
-	return nil
+	return nil, nil
+}
+
+func storedDocumentID(event datastore.Event) (StoredDocumentID, error) {
+	stringID, stringErr := utils.ExtractDocumentID(event)
+
+	nativeID, nativeErr := utils.ExtractDocumentIDNative(event)
+	if stringErr != nil || nativeErr != nil {
+		return StoredDocumentID{}, errors.Join(stringErr, nativeErr)
+	}
+
+	return StoredDocumentID{String: stringID, Native: nativeID}, nil
 }
 
 func recordRecoveryFailure(err error) error {
 	metrics.ColdStartEvents.WithLabelValues(string(ProcessResultFailed)).Inc()
 
 	return err
-}
-
-func completeStoredEvent(
-	ctx context.Context,
-	processor EventProcessor,
-	event datastore.HealthEventWithStatus,
-	result ProcessResult,
-) error {
-	if err := processor.CompleteStoredEvent(ctx, event, result); err != nil {
-		return fmt.Errorf("failed to record %s recovery completion: %w", result, err)
-	}
-
-	return nil
 }
 
 func coldStartQuery(coldStartAfter, coldStartUntil time.Time) *query.Builder {

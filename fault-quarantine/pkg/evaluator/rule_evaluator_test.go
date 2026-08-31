@@ -183,8 +183,9 @@ func TestNodeRuleEvaluatorReadsCurrentNodeDuringRecovery(t *testing.T) {
 		t.Fatalf("normal evaluation result/calls = %v/%d, want failed/0", result, reader.calls)
 	}
 
+	recoveryCtx := coldstart.WithRecoveryContext(context.Background())
 	result, err = evaluator.Evaluate(
-		coldstart.WithRecoveryContext(context.Background()),
+		recoveryCtx,
 		&protos.HealthEvent{NodeName: "node-a"},
 	)
 	if err != nil {
@@ -192,6 +193,14 @@ func TestNodeRuleEvaluatorReadsCurrentNodeDuringRecovery(t *testing.T) {
 	}
 	if result != common.RuleEvaluationSuccess || reader.calls != 1 {
 		t.Fatalf("recovery evaluation result/calls = %v/%d, want success/1", result, reader.calls)
+	}
+
+	result, err = evaluator.Evaluate(recoveryCtx, &protos.HealthEvent{NodeName: "node-a"})
+	if err != nil {
+		t.Fatalf("second recovery Evaluate() error = %v", err)
+	}
+	if result != common.RuleEvaluationSuccess || reader.calls != 1 {
+		t.Fatalf("second recovery evaluation result/calls = %v/%d, want success/1", result, reader.calls)
 	}
 }
 

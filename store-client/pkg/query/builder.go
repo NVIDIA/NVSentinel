@@ -527,7 +527,10 @@ func mongoFieldToJSONB(fieldPath string) string {
 }
 
 func convertToMongoObject(id any) any {
-	idStr := id.(string)
+	idStr, ok := id.(string)
+	if !ok {
+		return id
+	}
 
 	objID, err := bson.ObjectIDFromHex(idStr)
 	if err != nil {

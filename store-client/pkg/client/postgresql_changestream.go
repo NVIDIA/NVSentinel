@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -53,6 +54,47 @@ type postgresqlEvent struct {
 	oldValues   map[string]any
 	newValues   map[string]any
 	changedAt   time.Time
+}
+
+// UpdatedFields exposes the flattened document delta for optional consumers.
+func (e *postgresqlEvent) UpdatedFields() map[string]any {
+	if e.operation != "UPDATE" {
+		return nil
+	}
+
+	return changedDocumentFields(e.oldValues, e.newValues)
+}
+
+func changedDocumentFields(oldValues, newValues map[string]any) map[string]any {
+	oldDocument, _ := oldValues["document"].(map[string]any)
+	newDocument, _ := newValues["document"].(map[string]any)
+	updated := make(map[string]any)
+	flattenChangedFields("", oldDocument, newDocument, updated)
+
+	return updated
+}
+
+func flattenChangedFields(prefix string, oldValues, newValues map[string]any, updated map[string]any) {
+	for key, newValue := range newValues {
+		path := key
+		if prefix != "" {
+			path = prefix + "." + key
+		}
+
+		oldValue, existed := oldValues[key]
+		newMap, newIsMap := newValue.(map[string]any)
+		oldMap, oldIsMap := oldValue.(map[string]any)
+
+		if newIsMap && oldIsMap {
+			flattenChangedFields(path, oldMap, newMap, updated)
+
+			continue
+		}
+
+		if !existed || !reflect.DeepEqual(oldValue, newValue) {
+			updated[path] = newValue
+		}
+	}
 }
 
 // GetDocumentID returns the changelog sequence ID (not the record UUID).

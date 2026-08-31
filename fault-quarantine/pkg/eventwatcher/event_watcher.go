@@ -22,16 +22,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
-	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
-	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -43,7 +40,7 @@ type EventWatcher struct {
 	processEventCallback func(
 		ctx context.Context,
 		event *model.HealthEventWithStatus,
-	) *model.Status
+	) (*model.Status, error)
 	fetchDocIDsFn                         func(ctx context.Context, nodeName string) []string
 	unprocessedEventsMetricUpdateInterval time.Duration
 	lastProcessedObjectID                 LastProcessedObjectIDStore
@@ -58,17 +55,17 @@ type LastProcessedObjectIDStore interface {
 
 type EventWatcherInterface interface {
 	Start(ctx context.Context) error
-	SetProcessEventCallback(callback func(ctx context.Context, event *model.HealthEventWithStatus) *model.Status)
+	SetProcessEventCallback(callback func(ctx context.Context, event *model.HealthEventWithStatus) (*model.Status, error))
 	SetFetchDocIDsFn(fn func(ctx context.Context, nodeName string) []string)
 	SetColdStartCallback(callback func(ctx context.Context) error)
 	ProcessStoredEvent(
 		ctx context.Context,
-		event datastore.HealthEventWithStatus,
+		event model.HealthEventWithStatus,
+		documentID string,
 	) (coldstart.ProcessResult, error)
-	CompleteStoredEvent(
+	CompleteStoredEvents(
 		ctx context.Context,
-		event datastore.HealthEventWithStatus,
-		result coldstart.ProcessResult,
+		documentIDs []coldstart.StoredDocumentID,
 	) error
 	CancelLatestQuarantiningEvents(ctx context.Context, nodeName string, reason string) error
 }
@@ -88,7 +85,7 @@ func NewEventWatcher(
 }
 
 func (w *EventWatcher) SetProcessEventCallback(callback func(ctx context.Context,
-	event *model.HealthEventWithStatus) *model.Status) {
+	event *model.HealthEventWithStatus) (*model.Status, error)) {
 	w.processEventCallback = callback
 }
 
@@ -110,6 +107,11 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 		return nil
 	}
 
+	metricCtx, stopMetric := context.WithCancel(ctx)
+	defer stopMetric()
+
+	go w.updateUnprocessedEventsMetric(metricCtx)
+
 	if err := w.runColdStart(ctx); err != nil {
 		w.closeAfterColdStart(ctx)
 
@@ -123,7 +125,6 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 	}
 
 	w.armRecoveredEventExpiry(time.Now())
-	go w.updateUnprocessedEventsMetric(ctx)
 	go w.expireRecoveredEventIDs(ctx)
 
 	watchDoneCh := make(chan error, 1)
@@ -260,36 +261,19 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 // callback and status update path used for live change-stream events.
 func (w *EventWatcher) ProcessStoredEvent(
 	ctx context.Context,
-	event datastore.HealthEventWithStatus,
+	healthEventWithStatus model.HealthEventWithStatus,
+	recordUUID string,
 ) (coldstart.ProcessResult, error) {
-	healthEventWithStatus, err := eventutil.ParseHealthEventFromEvent(event.RawEvent)
-	if err != nil {
-		slog.ErrorContext(ctx, "Skipping invalid stored health event", "error", err)
-
-		return coldstart.ProcessResultInvalid, nil
-	}
-
-	recordUUID, err := utils.ExtractDocumentID(event.RawEvent)
-	if err != nil {
-		slog.ErrorContext(ctx, "Skipping stored health event without a document ID", "error", err)
-
-		return coldstart.ProcessResultInvalid, nil
-	}
-
 	recoveryCtx := coldstart.WithRecoveryContext(ctx)
 
 	processed, err := w.processHealthEvent(
 		recoveryCtx, &healthEventWithStatus, recordUUID, recordUUID)
 	if err != nil {
-		return coldstart.ProcessResultFailed, err
-	}
+		if !coldstart.IsPermanentError(err) {
+			return coldstart.ProcessResultFailed, fmt.Errorf("recovered event processing failed: %w", err)
+		}
 
-	if err := coldstart.Error(recoveryCtx); err != nil {
-		return coldstart.ProcessResultFailed, fmt.Errorf("recovered event processing failed: %w", err)
-	}
-
-	if err := coldstart.RecordedPermanentError(recoveryCtx); err != nil {
-		slog.ErrorContext(ctx, "Skipping stored event with a permanent evaluation error", "error", err)
+		slog.ErrorContext(ctx, "Skipping stored event with a permanent processing error", "error", err)
 
 		if !processed {
 			return coldstart.ProcessResultInvalid, nil
@@ -305,30 +289,48 @@ func (w *EventWatcher) ProcessStoredEvent(
 	return coldstart.ProcessResultProcessed, nil
 }
 
-// CompleteStoredEvent prevents an event that recovery intentionally skipped
-// from becoming part of every subsequent startup scan.
-func (w *EventWatcher) CompleteStoredEvent(
+// CompleteStoredEvents prevents events that recovery intentionally skipped
+// from becoming part of every subsequent startup scan. One update per scan
+// batch avoids a database round trip for every historical event.
+func (w *EventWatcher) CompleteStoredEvents(
 	ctx context.Context,
-	event datastore.HealthEventWithStatus,
-	result coldstart.ProcessResult,
+	documentIDs []coldstart.StoredDocumentID,
 ) error {
-	recordUUID, err := utils.ExtractDocumentID(event.RawEvent)
-	if err != nil {
-		return fmt.Errorf("cannot mark stored event complete: %w", err)
+	if len(documentIDs) == 0 {
+		return nil
 	}
 
-	fields := map[string]any{coldstart.RecoveryCompletionStatusPath: string(result)}
-	if status, exists := event.RawEvent["healtheventstatus"]; exists && status == nil {
-		fields = map[string]any{"healtheventstatus": map[string]any{
-			"faultquarantinerecovery": string(result),
-		}}
+	ids := make([]any, 0, len(documentIDs))
+	seen := make(map[string]struct{}, len(documentIDs))
+
+	for _, id := range documentIDs {
+		if id.String == "" || id.Native == nil {
+			continue
+		}
+
+		if _, exists := seen[id.String]; exists {
+			continue
+		}
+
+		seen[id.String] = struct{}{}
+		ids = append(ids, id.Native)
 	}
 
-	if err := w.databaseClient.UpdateDocumentStatusFields(ctx, recordUUID, fields); err != nil {
-		return fmt.Errorf("failed to update recovery completion status: %w", err)
+	if len(ids) == 0 {
+		return nil
 	}
 
-	w.rememberRecoveredEvent(recordUUID)
+	filter := query.New().Build(query.In("_id", ids))
+	update := query.NewUpdate().Set(
+		coldstart.RecoveryCompletionStatusPath, coldstart.RecoveryCompletionValue)
+
+	if _, err := w.databaseClient.UpdateManyDocuments(ctx, filter, update); err != nil {
+		return fmt.Errorf("failed to update recovery completion statuses: %w", err)
+	}
+
+	for id := range seen {
+		w.rememberRecoveredEvent(id)
+	}
 
 	return nil
 }
@@ -409,14 +411,14 @@ func (w *EventWatcher) processHealthEvent(
 		sourceDocIDs = w.fetchDocIDsFn(ctx, healthEventWithStatus.HealthEvent.GetNodeName())
 	}
 
-	status := w.processEventCallback(ctx, healthEventWithStatus)
+	status, processErr := w.processEventCallback(ctx, healthEventWithStatus)
 
 	if status != nil {
 		if err := w.updateNodeQuarantineStatus(ctx, recordUUID, status); err != nil {
 			metrics.ProcessingErrors.WithLabelValues("update_quarantine_status_error").Inc()
 			slog.ErrorContext(ctx, "Failed to update node quarantine status", "error", err)
 
-			return false, fmt.Errorf("failed to update node quarantine status: %w", err)
+			return false, errors.Join(processErr, fmt.Errorf("failed to update node quarantine status: %w", err))
 		}
 
 		EmitNodeQuarantineDuration(status, healthEventWithStatus)
@@ -429,7 +431,7 @@ func (w *EventWatcher) processHealthEvent(
 	duration := time.Since(startTime).Seconds()
 	metrics.EventHandlingDuration.Observe(duration)
 
-	return status != nil, nil
+	return status != nil, processErr
 }
 
 func EmitNodeQuarantineDuration(status *model.Status, healthEventWithStatus *model.HealthEventWithStatus) {

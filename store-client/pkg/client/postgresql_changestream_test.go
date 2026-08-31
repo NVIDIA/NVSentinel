@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func Test_matchesPipeline_deleteEventFallback(t *testing.T) {
@@ -261,4 +263,23 @@ func Test_postgresqlEvent_GetResumeToken(t *testing.T) {
 	if err != nil {
 		t.Errorf("GetResumeToken() not int-parseable: %v, error: %v", tokenStr, err)
 	}
+}
+
+func TestPostgreSQLEventExposesOnlyUpdateFields(t *testing.T) {
+	const completionPath = "healtheventstatus.faultquarantinerecovery"
+	oldValues := map[string]any{"document": map[string]any{
+		"healtheventstatus": map[string]any{"nodequarantined": ""},
+	}}
+	newValues := map[string]any{"document": map[string]any{
+		"healtheventstatus": map[string]any{
+			"nodequarantined":         "",
+			"faultquarantinerecovery": "completed",
+		},
+	}}
+
+	updated := &postgresqlEvent{operation: "UPDATE", oldValues: oldValues, newValues: newValues}
+	assert.True(t, EventUpdatesOnly(updated, completionPath))
+
+	inserted := &postgresqlEvent{operation: "INSERT", newValues: newValues}
+	assert.False(t, EventUpdatesOnly(inserted, completionPath))
 }

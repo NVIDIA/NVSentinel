@@ -135,6 +135,9 @@ func (r *Reconciler) Start(ctx context.Context) error {
 		EnableMetrics:        true,
 		MetricsLabels:        map[string]string{"module": agentName},
 		MarkProcessedOnError: false, // IMPORTANT: Don't mark failed events as processed
+		SkipEvent: func(event client.Event) bool {
+			return client.EventUpdatesOnly(event, "healtheventstatus.faultquarantinerecovery")
+		},
 	}
 
 	r.eventProcessor = client.NewEventProcessor(oldWatcher, r.databaseClient, processorConfig)

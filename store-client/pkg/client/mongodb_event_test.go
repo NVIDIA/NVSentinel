@@ -22,6 +22,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 
 	mongoWatcher "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers/mongodb/watcher"
+	"github.com/nvidia/nvsentinel/store-client/pkg/query"
 )
 
 func TestMongoEvent_GetResumeToken(t *testing.T) {
@@ -51,4 +52,21 @@ func TestMongoEvent_GetResumeToken(t *testing.T) {
 
 		assert.Empty(t, e.GetResumeToken())
 	})
+}
+
+func TestMongoEventExposesUpdatedFields(t *testing.T) {
+	const completionPath = "healtheventstatus.faultquarantinerecovery"
+	event := &mongoEvent{rawEvent: mongoWatcher.Event{
+		"updateDescription": bson.M{
+			"updatedFields": bson.M{completionPath: "completed"},
+		},
+	}}
+
+	assert.True(t, EventUpdatesOnly(event, completionPath))
+}
+
+func TestResolveMongoUpdateUsesNullSafePipelineForQueryBuilder(t *testing.T) {
+	update := query.NewUpdate().Set("healtheventstatus.faultquarantinerecovery", "completed")
+
+	assert.Equal(t, update.ToMongoPipeline(), resolveMongoUpdate(update))
 }

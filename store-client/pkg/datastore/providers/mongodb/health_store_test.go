@@ -316,42 +316,73 @@ func (mockQueryBuilder) ToSQL() (string, []any) { return "", nil }
 
 func TestMongoHealthEventStore_FindHealthEventsByQueryBatched(t *testing.T) {
 	ctx := context.Background()
-	orderedFindOptions := mock.MatchedBy(func(options *client.FindOptions) bool {
-		if options == nil {
-			return false
-		}
+	orderedFindOptions := func(limit int64) any {
+		return mock.MatchedBy(func(options *client.FindOptions) bool {
+			if options == nil {
+				return false
+			}
 
-		return reflect.DeepEqual(options.Sort, bson.D{
-			{Key: "createdAt", Value: 1},
-			{Key: "_id", Value: 1},
+			return options.Limit != nil && *options.Limit == limit && reflect.DeepEqual(options.Sort, bson.D{
+				{Key: "createdAt", Value: 1},
+				{Key: "_id", Value: 1},
+			})
 		})
-	})
+	}
 
 	t.Run("delivers events in batches", func(t *testing.T) {
 		mockDB := new(MockDatabaseClient)
-		mockCursor := new(MockCursor)
+		firstCursor := new(MockCursor)
+		secondCursor := new(MockCursor)
 		store := &MongoHealthEventStore{databaseClient: mockDB}
+		createdAt := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 
-		mockDB.On("Find", ctx, mock.Anything, orderedFindOptions).Return(mockCursor, nil)
-		mockCursor.On("Close", ctx).Return(nil)
+		mockDB.On("Find", ctx, map[string]any{"status": "active"}, orderedFindOptions(2)).
+			Return(firstCursor, nil).Once()
+		mockDB.On("Find", ctx, mock.MatchedBy(func(filter map[string]any) bool {
+			and, ok := filter["$and"].([]any)
+			if !ok || len(and) != 2 {
+				return false
+			}
 
-		// Simulate 3 documents; batch size = 2 → two callback invocations (2 + 1).
+			return reflect.DeepEqual(and[1], map[string]any{"$or": []any{
+				map[string]any{"createdAt": map[string]any{"$gt": createdAt}},
+				map[string]any{"createdAt": createdAt, "_id": map[string]any{"$gt": "event-2"}},
+			}})
+		}), orderedFindOptions(2)).Return(secondCursor, nil).Once()
+		firstClosed := false
+		secondClosed := false
+		firstCursor.On("Close", ctx).Return(nil).Run(func(mock.Arguments) { firstClosed = true })
+		secondCursor.On("Close", ctx).Return(nil).Run(func(mock.Arguments) { secondClosed = true })
+
 		docIdx := 0
-		mockCursor.On("Next", ctx).Return(true).Times(3)
-		mockCursor.On("Next", ctx).Return(false).Once()
-		mockCursor.On("Decode", mock.AnythingOfType("*map[string]interface {}")).Return(nil).Run(func(args mock.Arguments) {
+		firstCursor.On("Next", ctx).Return(true).Times(2)
+		firstCursor.On("Next", ctx).Return(false).Once()
+		firstCursor.On("Decode", mock.AnythingOfType("*map[string]interface {}")).Return(nil).Run(func(args mock.Arguments) {
 			docIdx++
 			doc := args.Get(0).(*map[string]any)
 			*doc = map[string]any{
-				"_id": fmt.Sprintf("event-%d", docIdx),
+				"_id":       fmt.Sprintf("event-%d", docIdx),
+				"createdAt": createdAt,
 			}
 		})
-		mockCursor.On("Err").Return(nil)
+		firstCursor.On("Err").Return(nil)
+		secondCursor.On("Next", ctx).Return(true).Once()
+		secondCursor.On("Next", ctx).Return(false).Once()
+		secondCursor.On("Decode", mock.AnythingOfType("*map[string]interface {}")).Return(nil).Run(func(args mock.Arguments) {
+			doc := args.Get(0).(*map[string]any)
+			*doc = map[string]any{"_id": "event-3", "createdAt": createdAt.Add(time.Second)}
+		})
+		secondCursor.On("Err").Return(nil)
 
 		var batches [][]datastore.HealthEventWithStatus
 
 		err := store.FindHealthEventsByQueryBatched(ctx, mockQueryBuilder{}, 2,
 			func(batch []datastore.HealthEventWithStatus) error {
+				if len(batches) == 0 {
+					assert.True(t, firstClosed, "the first query cursor must close before its callback")
+				} else {
+					assert.True(t, secondClosed, "the second query cursor must close before its callback")
+				}
 				cp := make([]datastore.HealthEventWithStatus, len(batch))
 				copy(cp, batch)
 				batches = append(batches, cp)
@@ -365,14 +396,15 @@ func TestMongoHealthEventStore_FindHealthEventsByQueryBatched(t *testing.T) {
 		assert.Len(t, batches[1], 1)
 
 		mockDB.AssertExpectations(t)
-		mockCursor.AssertExpectations(t)
+		firstCursor.AssertExpectations(t)
+		secondCursor.AssertExpectations(t)
 	})
 
 	t.Run("find error", func(t *testing.T) {
 		mockDB := new(MockDatabaseClient)
 		store := &MongoHealthEventStore{databaseClient: mockDB}
 
-		mockDB.On("Find", ctx, mock.Anything, orderedFindOptions).
+		mockDB.On("Find", ctx, mock.Anything, orderedFindOptions(10)).
 			Return((*MockCursor)(nil), errors.New("db error"))
 
 		err := store.FindHealthEventsByQueryBatched(ctx, mockQueryBuilder{}, 10,
@@ -388,14 +420,16 @@ func TestMongoHealthEventStore_FindHealthEventsByQueryBatched(t *testing.T) {
 		mockCursor := new(MockCursor)
 		store := &MongoHealthEventStore{databaseClient: mockDB}
 
-		mockDB.On("Find", ctx, mock.Anything, orderedFindOptions).Return(mockCursor, nil)
+		mockDB.On("Find", ctx, mock.Anything, orderedFindOptions(1)).Return(mockCursor, nil)
 		mockCursor.On("Close", ctx).Return(nil)
 
 		mockCursor.On("Next", ctx).Return(true).Once()
+		mockCursor.On("Next", ctx).Return(false).Once()
 		mockCursor.On("Decode", mock.AnythingOfType("*map[string]interface {}")).Return(nil).Run(func(args mock.Arguments) {
 			doc := args.Get(0).(*map[string]any)
-			*doc = map[string]any{"_id": "evt"}
+			*doc = map[string]any{"_id": "evt", "createdAt": time.Now()}
 		})
+		mockCursor.On("Err").Return(nil)
 
 		callbackErr := errors.New("stop processing")
 

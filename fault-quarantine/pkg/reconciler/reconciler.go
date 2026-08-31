@@ -236,7 +236,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	r.initializeQuarantineMetrics(ctx)
 
 	r.eventWatcher.SetProcessEventCallback(
-		func(ctx context.Context, event *model.HealthEventWithStatus) *model.Status {
+		func(ctx context.Context, event *model.HealthEventWithStatus) (*model.Status, error) {
 			return r.ProcessEvent(ctx, event, ruleSetEvals, rulesetsConfig)
 		},
 	)
@@ -495,18 +495,18 @@ func (r *Reconciler) ProcessEvent(
 	event *model.HealthEventWithStatus,
 	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
 	rulesetsConfig rulesetsConfig,
-) *model.Status {
+) (*model.Status, error) {
 	span := tracing.SpanFromContext(ctx)
 
-	if shouldHalt := r.checkCircuitBreakerAndHalt(ctx); shouldHalt {
+	if shouldHalt, err := r.checkCircuitBreakerAndHalt(ctx); shouldHalt {
 		span.SetAttributes(attribute.String("fault_quarantine.event.processing_status", EventProcessingStatusHalted))
 
-		return nil
+		return nil, err
 	}
 
 	slog.DebugContext(ctx, "Processing event", "checkName", event.HealthEvent.CheckName)
 
-	isNodeQuarantined := r.handleEvent(ctx, event, ruleSetEvals, rulesetsConfig)
+	isNodeQuarantined, err := r.handleEvent(ctx, event, ruleSetEvals, rulesetsConfig)
 
 	if isNodeQuarantined == nil {
 		slog.DebugContext(ctx, "Skipped processing event for node, no status update needed",
@@ -533,29 +533,33 @@ func (r *Reconciler) ProcessEvent(
 		)
 	}
 
-	return isNodeQuarantined
+	return isNodeQuarantined, err
 }
 
 // checkCircuitBreakerAndHalt checks if circuit breaker is tripped and returns true if processing should halt
-func (r *Reconciler) checkCircuitBreakerAndHalt(ctx context.Context) bool {
+func (r *Reconciler) checkCircuitBreakerAndHalt(ctx context.Context) (bool, error) {
 	span := tracing.SpanFromContext(ctx)
 
 	if !r.config.CircuitBreakerEnabled {
-		return false
+		return false, nil
 	}
 
 	tripped, err := r.cb.IsTripped(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "Error checking if circuit breaker is tripped", "error", err)
-		coldstart.RecordError(ctx, err)
 		tracing.RecordError(span, err)
 		span.SetAttributes(
 			attribute.String("fault_quarantine.error.type", "check_circuit_breaker_state_error"),
 			attribute.String("fault_quarantine.error.message", err.Error()),
 		)
+
+		if coldstart.IsRecoveryContext(ctx) {
+			return true, fmt.Errorf("check circuit breaker state: %w", err)
+		}
+
 		<-ctx.Done()
 
-		return true
+		return true, nil
 	}
 
 	if tripped {
@@ -566,13 +570,16 @@ func (r *Reconciler) checkCircuitBreakerAndHalt(ctx context.Context) bool {
 			attribute.Bool("fault_quarantine.circuit_breaker.tripped", true),
 		)
 
-		<-ctx.Done()
-		coldstart.RecordError(ctx, ctx.Err())
+		if coldstart.IsRecoveryContext(ctx) {
+			return true, fmt.Errorf("circuit breaker is tripped")
+		}
 
-		return true
+		<-ctx.Done()
+
+		return true, nil
 	}
 
-	return false
+	return false, nil
 }
 
 func (r *Reconciler) handleEvent(
@@ -580,11 +587,17 @@ func (r *Reconciler) handleEvent(
 	event *model.HealthEventWithStatus,
 	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
 	rulesetsConfig rulesetsConfig,
-) *model.Status {
+) (*model.Status, error) {
 	ctx, span := tracing.StartSpan(ctx, "fault_quarantine.handle_event")
 	defer span.End()
 
-	annotations, quarantineAnnotationExists := r.hasExistingQuarantine(ctx, event.HealthEvent.NodeName)
+	annotations, quarantineAnnotationExists, err := r.hasExistingQuarantine(ctx, event.HealthEvent.NodeName)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to determine existing node quarantine",
+			"node", event.HealthEvent.NodeName, "error", err)
+
+		return nil, err
+	}
 
 	if quarantineAnnotationExists {
 		slog.DebugContext(ctx, "Node already has active quarantine annotation, skipping fresh quarantine",
@@ -604,7 +617,7 @@ func (r *Reconciler) handleEvent(
 			attribute.String("fault_quarantine.skip.reason", "No existing quarantine annotation found for node"),
 		)
 
-		return nil
+		return nil, nil
 	}
 
 	taintAppliedMap := make(map[keyValTaint]string, len(r.taintInitKeys))
@@ -623,7 +636,7 @@ func (r *Reconciler) handleEvent(
 
 	selectedLabels := make(map[string]selectedLabel)
 
-	r.evaluateRulesets(
+	evaluationErr := r.evaluateRulesets(
 		ctx, event, ruleSetEvals, rulesetsConfig,
 		taintAppliedMap, &labelsMap, &appliedLabelsMap, selectedLabels, &isCordoned, taintEffectPriorityMap,
 	)
@@ -634,7 +647,6 @@ func (r *Reconciler) handleEvent(
 	node, err := r.getNode(ctx, event.HealthEvent.NodeName)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to get node", "node", event.HealthEvent.NodeName, "error", err)
-		coldstart.RecordError(ctx, err)
 		metrics.ProcessingErrors.WithLabelValues("get_node_cache_error").Inc()
 		tracing.RecordError(span, err)
 		span.SetAttributes(
@@ -642,7 +654,7 @@ func (r *Reconciler) handleEvent(
 			attribute.String("fault_quarantine.error.message", err.Error()),
 		)
 
-		return nil
+		return nil, errors.Join(evaluationErr, err)
 	}
 
 	annotationsMap := r.prepareAnnotations(ctx, node, taintsToBeApplied, labelsToBeApplied, &labelsMap, &isCordoned)
@@ -656,33 +668,33 @@ func (r *Reconciler) handleEvent(
 			attribute.String("fault_quarantine.skip.reason", "No quarantine actions required"),
 		)
 
-		return nil
+		return nil, evaluationErr
 	}
 
-	status := r.applyQuarantine(
+	status, quarantineErr := r.applyQuarantine(
 		ctx, event, annotations, taintsToBeApplied, labelsToBeApplied,
 		annotationsMap, &labelsMap, &isCordoned,
 	)
 
-	return status
+	return status, errors.Join(evaluationErr, quarantineErr)
 }
 
-func (r *Reconciler) hasExistingQuarantine(ctx context.Context, nodeName string) (map[string]string, bool) {
+func (r *Reconciler) hasExistingQuarantine(
+	ctx context.Context,
+	nodeName string,
+) (map[string]string, bool, error) {
 	annotations, err := r.getNodeQuarantineAnnotations(ctx, nodeName)
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to fetch annotations for node", "node", nodeName, "error", err)
-		coldstart.RecordError(ctx, err)
-
-		return make(map[string]string), false
+		return nil, false, fmt.Errorf("failed to fetch annotations for node %s: %w", nodeName, err)
 	}
 
 	if annotations == nil {
-		return make(map[string]string), false
+		return make(map[string]string), false, nil
 	}
 
 	annotationVal, exists := annotations[common.QuarantineHealthEventAnnotationKey]
 
-	return annotations, exists && !isEmptyHealthEventAnnotation(annotationVal)
+	return annotations, exists && !isEmptyHealthEventAnnotation(annotationVal), nil
 }
 
 func isEmptyHealthEventAnnotation(annotationVal string) bool {
@@ -721,18 +733,19 @@ func (r *Reconciler) handleAlreadyQuarantinedNode(
 	event *protos.HealthEvent,
 	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
 	rulesetsConfig rulesetsConfig,
-) *model.Status {
+) (*model.Status, error) {
 	ctx, span := tracing.StartSpan(ctx, "fault_quarantine.handle_already_quarantined_node")
 	defer span.End()
 
-	if !r.shouldProcessAlreadyQuarantinedEvent(ctx, event, ruleSetEvals) {
-		return nil
+	shouldProcess, eligibilityErr := r.shouldProcessAlreadyQuarantinedEvent(ctx, event, ruleSetEvals)
+	if !shouldProcess {
+		return nil, eligibilityErr
 	}
 
 	// Event will modify FQ annotations, proceed with quarantine handling
-	stayQuarantined := r.handleQuarantinedNode(ctx, event, ruleSetEvals, rulesetsConfig)
+	stayQuarantined, processingErr := r.handleQuarantinedNode(ctx, event, ruleSetEvals, rulesetsConfig)
 
-	return r.resolveAlreadyQuarantinedStatus(ctx, event, stayQuarantined)
+	return r.resolveAlreadyQuarantinedStatus(ctx, event, stayQuarantined), errors.Join(eligibilityErr, processingErr)
 }
 
 // shouldProcessAlreadyQuarantinedEvent decides whether an event for an already-quarantined
@@ -743,7 +756,7 @@ func (r *Reconciler) shouldProcessAlreadyQuarantinedEvent(
 	ctx context.Context,
 	event *protos.HealthEvent,
 	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
-) bool {
+) (bool, error) {
 	span := tracing.SpanFromContext(ctx)
 
 	healthEventsAnnotationMap, _, err := r.getHealthEventsFromAnnotation(ctx, event)
@@ -757,18 +770,17 @@ func (r *Reconciler) shouldProcessAlreadyQuarantinedEvent(
 				attribute.String("fault_quarantine.error.message", err.Error()),
 			)
 
-			return false
+			return false, nil
 		}
 
 		metrics.ProcessingErrors.WithLabelValues("get_node_annotations_error").Inc()
-		coldstart.RecordError(ctx, err)
 		tracing.RecordError(span, err)
 		span.SetAttributes(
 			attribute.String("fault_quarantine.error.type", "get_node_annotations_error"),
 			attribute.String("fault_quarantine.error.message", err.Error()),
 		)
 
-		return false
+		return false, err
 	case event.IsHealthy:
 		if _, hasExistingCheck := healthEventsAnnotationMap.GetEvent(event); !hasExistingCheck {
 			span.SetAttributes(
@@ -776,18 +788,27 @@ func (r *Reconciler) shouldProcessAlreadyQuarantinedEvent(
 				attribute.String("fault_quarantine.skip.reason", "No tracking check found for healthy event"),
 			)
 
-			return false
+			return false, nil
 		}
-	case !r.isForceQuarantine(event) && !r.eventMatchesAnyRule(ctx, event, ruleSetEvals):
+
+		return true, nil
+	}
+
+	if r.isForceQuarantine(event) {
+		return true, nil
+	}
+
+	matched, err := r.eventMatchesAnyRule(ctx, event, ruleSetEvals)
+	if !matched {
 		span.SetAttributes(
 			attribute.String("fault_quarantine.event.processing_status", EventProcessingStatusSkipped),
 			attribute.String("fault_quarantine.skip.reason", "No rules matched and no force quarantine override specified"),
 		)
 
-		return false
+		return false, err
 	}
 
-	return true
+	return true, err
 }
 
 // resolveAlreadyQuarantinedStatus maps the outcome of quarantine handling to the node
@@ -830,7 +851,7 @@ func (r *Reconciler) evaluateRulesets(
 	selectedLabels map[string]selectedLabel,
 	isCordoned *atomic.Bool,
 	taintEffectPriorityMap map[keyValTaint]int,
-) {
+) error {
 	ctx, span := tracing.StartSpan(ctx, "fault_quarantine.evaluate_rulesets")
 	defer span.End()
 
@@ -846,7 +867,10 @@ func (r *Reconciler) evaluateRulesets(
 		span.SetAttributes(attribute.String("fault_quarantine.ruleset.override", "force_quarantine"))
 	}
 
-	var wg sync.WaitGroup
+	var (
+		wg    sync.WaitGroup
+		errCh = make(chan error, len(ruleSetEvals))
+	)
 
 	for _, eval := range ruleSetEvals {
 		wg.Add(1)
@@ -866,6 +890,8 @@ func (r *Reconciler) evaluateRulesets(
 				)
 			case err != nil:
 				r.handleRuleEvaluationError(ctx, event.HealthEvent, eval.GetName(), err)
+
+				errCh <- err
 			default:
 				metrics.RulesetEvaluations.WithLabelValues(eval.GetName(), metrics.StatusFailed).Inc()
 			}
@@ -873,6 +899,14 @@ func (r *Reconciler) evaluateRulesets(
 	}
 
 	wg.Wait()
+	close(errCh)
+
+	var evaluationErr error
+	for err := range errCh {
+		evaluationErr = errors.Join(evaluationErr, err)
+	}
+
+	return evaluationErr
 }
 
 // handleSuccessfulRuleEvaluation processes a successful rule evaluation result
@@ -978,12 +1012,6 @@ func (r *Reconciler) handleRuleEvaluationError(
 		attribute.String("fault_quarantine.error.message", err.Error()),
 	)
 	slog.ErrorContext(ctx, "Rule evaluation failed", "ruleset", evalName, "node", event.NodeName, "error", err)
-
-	if coldstart.IsPermanentError(err) {
-		coldstart.RecordPermanentError(ctx, err)
-	} else {
-		coldstart.RecordError(ctx, err)
-	}
 
 	metrics.ProcessingErrors.WithLabelValues("ruleset_evaluation_error").Inc()
 	metrics.RulesetEvaluations.WithLabelValues(evalName, metrics.StatusFailed).Inc()
@@ -1102,7 +1130,7 @@ func (r *Reconciler) applyQuarantine(
 	annotationsMap map[string]string,
 	labelsMap *sync.Map,
 	isCordoned *atomic.Bool,
-) *model.Status {
+) (*model.Status, error) {
 	ctx, span := tracing.StartSpan(ctx, "fault_quarantine.apply_quarantine")
 	defer span.End()
 
@@ -1118,19 +1146,18 @@ func (r *Reconciler) applyQuarantine(
 			attribute.String("fault_quarantine.skip.reason", "Health event already exists for node"),
 		)
 
-		return nil
+		return nil, nil
 	}
 
 	if err := r.addHealthEventAnnotation(healthEvents, annotationsMap); err != nil {
 		slog.ErrorContext(ctx, "Failed to add health event annotation", "error", err, "node", event.HealthEvent.NodeName)
-		coldstart.RecordError(ctx, err)
 		tracing.RecordError(span, err)
 		span.SetAttributes(
 			attribute.String("fault_quarantine.error.type", "add_health_event_annotation_error"),
 			attribute.String("fault_quarantine.error.message", err.Error()),
 		)
 
-		return nil
+		return nil, err
 	}
 
 	slog.DebugContext(ctx, "Added health event annotation successfully", "node", event.HealthEvent.NodeName)
@@ -1144,14 +1171,13 @@ func (r *Reconciler) applyQuarantine(
 			slog.ErrorContext(ctx, "Failed to cleanup manual annotation",
 				"error", err, "node", event.HealthEvent.NodeName, "annotation", annotationKey)
 			metrics.ProcessingErrors.WithLabelValues("cleanup_manual_annotation_error").Inc()
-			coldstart.RecordError(ctx, err)
 			tracing.RecordError(span, err)
 			span.SetAttributes(
 				attribute.String("fault_quarantine.error.type", "cleanup_manual_annotation_error"),
 				attribute.String("fault_quarantine.error.message", err.Error()),
 			)
 
-			return nil
+			return nil, err
 		}
 	}
 
@@ -1172,7 +1198,6 @@ func (r *Reconciler) applyQuarantine(
 	)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to taint and cordon node", "node", event.HealthEvent.NodeName, "error", err)
-		coldstart.RecordError(ctx, err)
 		metrics.ProcessingErrors.WithLabelValues("taint_and_cordon_error").Inc()
 		tracing.RecordError(span, err)
 		span.SetAttributes(
@@ -1180,7 +1205,7 @@ func (r *Reconciler) applyQuarantine(
 			attribute.String("fault_quarantine.error.message", err.Error()),
 		)
 
-		return nil
+		return nil, err
 	}
 
 	slog.DebugContext(ctx, "QuarantineNodeAndSetAnnotations completed successfully", "node", event.HealthEvent.NodeName)
@@ -1192,7 +1217,7 @@ func (r *Reconciler) applyQuarantine(
 		status = model.AlreadyQuarantined
 	}
 
-	return &status
+	return &status, nil
 }
 
 func syncMapToStringMap(m *sync.Map) map[string]string {
@@ -1262,20 +1287,25 @@ func (r *Reconciler) eventMatchesAnyRule(
 	ctx context.Context,
 	event *protos.HealthEvent,
 	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
-) bool {
+) (bool, error) {
+	var (
+		matched       bool
+		evaluationErr error
+	)
+
 	for _, eval := range ruleSetEvals {
 		result, err := eval.Evaluate(ctx, event)
 		if err != nil {
-			coldstart.RecordError(ctx, err)
+			evaluationErr = errors.Join(evaluationErr, err)
 			continue
 		}
 
 		if result == common.RuleEvaluationSuccess {
-			return true
+			matched = true
 		}
 	}
 
-	return false
+	return matched, evaluationErr
 }
 
 // isForceQuarantine checks if the event has the force quarantine override set
@@ -1290,12 +1320,20 @@ func (r *Reconciler) handleUnhealthyEventOnQuarantinedNode(
 	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
 	rulesetsConfig rulesetsConfig,
 	healthEventsAnnotationMap *healthEventsAnnotation.HealthEventsAnnotationMap,
-) bool {
-	if !r.isForceQuarantine(event) && !r.eventMatchesAnyRule(ctx, event, ruleSetEvals) {
+) (bool, error) {
+	var (
+		matched       bool
+		evaluationErr error
+	)
+	if !r.isForceQuarantine(event) {
+		matched, evaluationErr = r.eventMatchesAnyRule(ctx, event, ruleSetEvals)
+	}
+
+	if !r.isForceQuarantine(event) && !matched {
 		slog.InfoContext(ctx, "Unhealthy event on node doesn't match any rules, skipping annotation update",
 			"checkName", event.CheckName, "node", event.NodeName)
 
-		return true
+		return true, evaluationErr
 	}
 
 	added := healthEventsAnnotationMap.AddOrUpdateEvent(event)
@@ -1306,9 +1344,8 @@ func (r *Reconciler) handleUnhealthyEventOnQuarantinedNode(
 
 		if err := r.addEventToAnnotation(ctx, event); err != nil {
 			slog.ErrorContext(ctx, "Failed to update health events annotation", "error", err)
-			coldstart.RecordError(ctx, err)
 
-			return true
+			return true, errors.Join(evaluationErr, err)
 		}
 	} else {
 		slog.DebugContext(ctx, "All entities already tracked for check on node",
@@ -1319,10 +1356,11 @@ func (r *Reconciler) handleUnhealthyEventOnQuarantinedNode(
 		slog.ErrorContext(ctx, "Failed to apply session rule labels for quarantined node",
 			"checkName", event.CheckName, "node", event.NodeName, "error", err)
 		metrics.ProcessingErrors.WithLabelValues("apply_session_rule_labels_error").Inc()
-		coldstart.RecordError(ctx, err)
+
+		return true, errors.Join(evaluationErr, err)
 	}
 
-	return true
+	return true, evaluationErr
 }
 
 func (r *Reconciler) applyRuleLabelsForEvent(
@@ -1331,12 +1369,17 @@ func (r *Reconciler) applyRuleLabelsForEvent(
 	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
 	rulesetsConfig rulesetsConfig,
 ) error {
-	selected := make(map[string]selectedLabel)
+	var (
+		selected      = make(map[string]selectedLabel)
+		evaluationErr error
+	)
 
 	for _, eval := range ruleSetEvals {
 		result, err := eval.Evaluate(ctx, event)
 		if err != nil {
 			r.handleRuleEvaluationError(ctx, event, eval.GetName(), err)
+			evaluationErr = errors.Join(evaluationErr, err)
+
 			continue
 		}
 
@@ -1358,7 +1401,7 @@ func (r *Reconciler) applyRuleLabelsForEvent(
 	}
 
 	if len(selected) == 0 {
-		return nil
+		return evaluationErr
 	}
 
 	appliedLabels := make([]config.AppliedLabel, 0, len(selected))
@@ -1376,7 +1419,7 @@ func (r *Reconciler) applyRuleLabelsForEvent(
 
 	appliedLabelsJSON, err := json.Marshal(appliedLabels)
 	if err != nil {
-		return fmt.Errorf("marshal session applied labels: %w", err)
+		return errors.Join(evaluationErr, fmt.Errorf("marshal session applied labels: %w", err))
 	}
 
 	_, err = r.k8sClient.QuarantineNodeAndSetAnnotations(
@@ -1390,10 +1433,10 @@ func (r *Reconciler) applyRuleLabelsForEvent(
 		labels,
 	)
 	if err != nil {
-		return fmt.Errorf("merge session applied labels: %w", err)
+		return errors.Join(evaluationErr, fmt.Errorf("merge session applied labels: %w", err))
 	}
 
-	return nil
+	return evaluationErr
 }
 
 func (r *Reconciler) handleQuarantinedNode(
@@ -1401,16 +1444,12 @@ func (r *Reconciler) handleQuarantinedNode(
 	event *protos.HealthEvent,
 	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
 	rulesetsConfig rulesetsConfig,
-) bool {
+) (bool, error) {
 	ctx, span := tracing.StartSpan(ctx, "fault_quarantine.handle_quarantined_node")
 	defer span.End()
 
 	healthEventsAnnotationMap, annotations, err := r.getHealthEventsFromAnnotation(ctx, event)
 	if err != nil {
-		if !errors.Is(err, errNoQuarantineAnnotation) {
-			coldstart.RecordError(ctx, err)
-		}
-
 		metrics.ProcessingErrors.WithLabelValues("get_node_annotations_error").Inc()
 		tracing.RecordError(span, err)
 		span.SetAttributes(
@@ -1418,7 +1457,11 @@ func (r *Reconciler) handleQuarantinedNode(
 			attribute.String("fault_quarantine.error.message", err.Error()),
 		)
 
-		return !errors.Is(err, errNoQuarantineAnnotation)
+		if errors.Is(err, errNoQuarantineAnnotation) {
+			return false, nil
+		}
+
+		return true, err
 	}
 
 	_, hasExistingCheck := healthEventsAnnotationMap.GetEvent(event)
@@ -1439,7 +1482,7 @@ func (r *Reconciler) handleQuarantinedNode(
 			attribute.String("fault_quarantine.skip.reason", "Received healthy event for untracked check"),
 		)
 
-		return true
+		return true, nil
 	}
 
 	// Remove the specific entities that have recovered
@@ -1461,14 +1504,13 @@ func (r *Reconciler) handleQuarantinedNode(
 	updatedHealthEventsMap, err := r.removeEventFromAnnotation(ctx, event)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to update health events annotation after recovery", "error", err)
-		coldstart.RecordError(ctx, err)
 		tracing.RecordError(span, err)
 		span.SetAttributes(
 			attribute.String("fault_quarantine.error.type", "update_health_events_annotation_error"),
 			attribute.String("fault_quarantine.error.message", err.Error()),
 		)
 
-		return true
+		return true, err
 	}
 
 	if updatedHealthEventsMap.IsEmpty() {
@@ -1478,7 +1520,6 @@ func (r *Reconciler) handleQuarantinedNode(
 		isUncordoned, err := r.performUncordon(ctx, event, annotations)
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to uncordon node", "error", err, "node", event.NodeName)
-			coldstart.RecordError(ctx, err)
 			metrics.ProcessingErrors.WithLabelValues("uncordon_error").Inc()
 			tracing.RecordError(span, err)
 			span.SetAttributes(
@@ -1487,7 +1528,7 @@ func (r *Reconciler) handleQuarantinedNode(
 			)
 		}
 
-		return isUncordoned
+		return isUncordoned, err
 	}
 
 	slog.InfoContext(ctx, "Node remains quarantined with failing checks",
@@ -1500,7 +1541,7 @@ func (r *Reconciler) handleQuarantinedNode(
 		attribute.Int("fault_quarantine.remaining_failing_checks", updatedHealthEventsMap.Count()),
 	)
 
-	return true
+	return true, nil
 }
 
 func (r *Reconciler) getHealthEventsFromAnnotation(
@@ -1895,7 +1936,9 @@ func (r *Reconciler) getNodeQuarantineAnnotations(ctx context.Context, nodeName 
 // A node deleted before replay is a permanent event error.
 func (r *Reconciler) getNode(ctx context.Context, nodeName string) (*corev1.Node, error) {
 	if coldstart.IsRecoveryContext(ctx) {
-		node, err := r.k8sClient.Clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		node, err := coldstart.GetRecoveryNode(ctx, nodeName, func() (*corev1.Node, error) {
+			return r.k8sClient.Clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		})
 		if err != nil {
 			wrappedErr := fmt.Errorf("failed to get node from API server during cold start: %w", err)
 			if apierrors.IsNotFound(err) {

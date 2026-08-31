@@ -139,6 +139,28 @@ func TestUpdateBuilder_Set_DeeplyNestedField(t *testing.T) {
 	assert.Equal(t, []any{"\"InProgress\""}, args)
 }
 
+func TestUpdateBuilderMongoPipelineReplacesNullParents(t *testing.T) {
+	update := NewUpdate().Set("healtheventstatus.faultquarantinerecovery", "completed")
+
+	assert.Equal(t, []any{map[string]any{
+		"$set": map[string]any{
+			"healtheventstatus": map[string]any{"$mergeObjects": []any{
+				map[string]any{"$cond": []any{
+					map[string]any{"$eq": []any{
+						map[string]any{"$type": "$healtheventstatus"},
+						"object",
+					}},
+					"$healtheventstatus",
+					map[string]any{},
+				}},
+				map[string]any{
+					"faultquarantinerecovery": map[string]any{"$literal": "completed"},
+				},
+			}},
+		},
+	}}, update.ToMongoPipeline())
+}
+
 func TestUpdateBuilder_EmptyUpdate(t *testing.T) {
 	update := NewUpdate()
 
@@ -175,6 +197,11 @@ func TestToJSONBValue(t *testing.T) {
 			name:     "string value",
 			value:    "active",
 			expected: "\"active\"",
+		},
+		{
+			name:     "quoted string value",
+			value:    `value with "quotes"`,
+			expected: `"value with \"quotes\""`,
 		},
 		{
 			name:     "boolean true",

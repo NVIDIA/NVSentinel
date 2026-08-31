@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -38,6 +39,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -52,6 +54,7 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	"github.com/nvidia/nvsentinel/store-client/pkg/query"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
 )
 
@@ -365,7 +368,7 @@ func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2ERec
 	eventStatuses := make(map[string]*model.Status)
 
 	// Setup the reconciler with the callback (mimics Start())
-	processEventFunc := func(ctx context.Context, event *model.HealthEventWithStatus) *model.Status {
+	processEventFunc := func(ctx context.Context, event *model.HealthEventWithStatus) (*model.Status, error) {
 		return r.ProcessEvent(ctx, event, ruleSetEvals, rulesetsConfig)
 	}
 
@@ -384,7 +387,10 @@ func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2ERec
 			}
 
 			// Process event and store status (mimics updateNodeQuarantineStatus in production)
-			status := processEventFunc(ctx, &healthEventWithStatus)
+			status, processErr := processEventFunc(ctx, &healthEventWithStatus)
+			if processErr != nil {
+				continue
+			}
 
 			eventwatcher.EmitNodeQuarantineDuration(status, &healthEventWithStatus)
 
@@ -575,7 +581,7 @@ func runReconcilerAndQuarantineNode(
 
 		mockWatcher := testutils.NewMockChangeStreamWatcher()
 
-		processEventFunc := func(ctx context.Context, event *model.HealthEventWithStatus) *model.Status {
+		processEventFunc := func(ctx context.Context, event *model.HealthEventWithStatus) (*model.Status, error) {
 			return r.ProcessEvent(ctx, event, ruleSetEvals, rulesetsConfig)
 		}
 
@@ -677,7 +683,7 @@ func verifyUnquarantineLabels(t *testing.T, node *corev1.Node) {
 // MockEventWatcher is a test mock for EventWatcherInterface that can simulate various scenarios
 type MockEventWatcher struct {
 	CancelLatestQuarantiningEventsFn func(ctx context.Context, nodeName string, reason string) error
-	ProcessEventCallbackFn           func(ctx context.Context, event *model.HealthEventWithStatus) *model.Status
+	ProcessEventCallbackFn           func(ctx context.Context, event *model.HealthEventWithStatus) (*model.Status, error)
 	StartFn                          func(ctx context.Context) error
 }
 
@@ -730,6 +736,36 @@ func (c *coldStartDatabaseClient) UpdateDocumentStatusFields(
 	c.calls++
 
 	return nil
+}
+
+func (c *coldStartDatabaseClient) UpdateManyDocuments(
+	_ context.Context,
+	filter any,
+	update any,
+) (*client.UpdateResult, error) {
+	queryBuilder, ok := filter.(datastore.QueryBuilder)
+	if !ok {
+		return nil, fmt.Errorf("unexpected bulk filter %T", filter)
+	}
+	updateBuilder, ok := update.(*query.UpdateBuilder)
+	if !ok {
+		return nil, fmt.Errorf("unexpected bulk update %T", update)
+	}
+
+	ids, _ := queryBuilder.ToMongo()["_id"].(map[string]any)["$in"].([]any)
+	completion := updateBuilder.ToMongo()["$set"].(map[string]any)[coldstart.RecoveryCompletionStatusPath].(string)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.completions == nil {
+		c.completions = make(map[string]string)
+	}
+	for _, id := range ids {
+		c.completions[fmt.Sprint(id)] = completion
+	}
+	c.calls++
+
+	return &client.UpdateResult{MatchedCount: int64(len(ids)), ModifiedCount: int64(len(ids))}, nil
 }
 
 func (c *coldStartDatabaseClient) completion(documentID string) string {
@@ -814,7 +850,7 @@ func newColdStartEventProcessor(
 
 	processor := eventwatcher.NewEventWatcher(nil, dbClient, time.Minute, r)
 	processor.SetProcessEventCallback(
-		func(ctx context.Context, event *model.HealthEventWithStatus) *model.Status {
+		func(ctx context.Context, event *model.HealthEventWithStatus) (*model.Status, error) {
 			return r.ProcessEvent(ctx, event, ruleSetEvals, rulesets)
 		},
 	)
@@ -829,7 +865,7 @@ func (m *MockEventWatcher) Start(ctx context.Context) error {
 	return nil
 }
 
-func (m *MockEventWatcher) SetProcessEventCallback(callback func(ctx context.Context, event *model.HealthEventWithStatus) *model.Status) {
+func (m *MockEventWatcher) SetProcessEventCallback(callback func(ctx context.Context, event *model.HealthEventWithStatus) (*model.Status, error)) {
 	m.ProcessEventCallbackFn = callback
 }
 
@@ -839,15 +875,15 @@ func (m *MockEventWatcher) SetColdStartCallback(_ func(ctx context.Context) erro
 
 func (m *MockEventWatcher) ProcessStoredEvent(
 	_ context.Context,
-	_ datastore.HealthEventWithStatus,
+	_ model.HealthEventWithStatus,
+	_ string,
 ) (coldstart.ProcessResult, error) {
 	return coldstart.ProcessResultSkipped, nil
 }
 
-func (m *MockEventWatcher) CompleteStoredEvent(
+func (m *MockEventWatcher) CompleteStoredEvents(
 	context.Context,
-	datastore.HealthEventWithStatus,
-	coldstart.ProcessResult,
+	[]coldstart.StoredDocumentID,
 ) error {
 	return nil
 }
@@ -914,12 +950,10 @@ func TestE2E_ColdStartRecoversMissedFatalEvent(t *testing.T) {
 	}))
 	assert.Equal(t, 1, dbClient.callCount())
 
-	result, err := processor.ProcessStoredEvent(
-		ctx,
-		datastore.HealthEventWithStatus{
-			RawEvent: directStoredHealthEvent("cleanup-recovery", nodeName, "GpuNvlinkWatch", true, true),
-		},
-	)
+	parsedRecovery, err := eventutil.ParseHealthEventFromEvent(
+		directStoredHealthEvent("cleanup-recovery", nodeName, "GpuNvlinkWatch", true, true))
+	require.NoError(t, err)
+	result, err := processor.ProcessStoredEvent(ctx, parsedRecovery, "cleanup-recovery")
 	require.NoError(t, err)
 	assert.Equal(t, coldstart.ProcessResultProcessed, result)
 }
@@ -971,9 +1005,9 @@ func TestE2E_ColdStartSkipsFailureSupersededByRecovery(t *testing.T) {
 	}
 	assert.Empty(t, dbClient.status("missed-failure"))
 	assert.Empty(t, dbClient.status("missed-recovery"))
-	assert.Equal(t, string(coldstart.ProcessResultSuperseded), dbClient.completion("missed-failure"))
-	assert.Equal(t, string(coldstart.ProcessResultSkipped), dbClient.completion("missed-recovery"))
-	assert.Equal(t, 2, dbClient.callCount())
+	assert.Equal(t, coldstart.RecoveryCompletionValue, dbClient.completion("missed-failure"))
+	assert.Equal(t, coldstart.RecoveryCompletionValue, dbClient.completion("missed-recovery"))
+	assert.Equal(t, 1, dbClient.callCount())
 }
 
 func TestE2E_ColdStartCompletesEventForDeletedNode(t *testing.T) {
@@ -1006,7 +1040,7 @@ func TestE2E_ColdStartCompletesEventForDeletedNode(t *testing.T) {
 		EventProcessor:   processor,
 	}))
 	assert.Empty(t, dbClient.status("deleted-node-event"))
-	assert.Equal(t, string(coldstart.ProcessResultInvalid), dbClient.completion("deleted-node-event"))
+	assert.Equal(t, coldstart.RecoveryCompletionValue, dbClient.completion("deleted-node-event"))
 
 	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store,
@@ -4823,23 +4857,25 @@ func TestE2E_ConcurrentUnhealthyEvents_WithDelayedInformer(t *testing.T) {
 
 	var wg sync.WaitGroup
 	statuses := make([]*model.Status, 2)
+	processingErrs := make([]error, 2)
 	startBarrier := make(chan struct{})
 
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		<-startBarrier
-		statuses[0] = r.ProcessEvent(ctx, eventA, ruleSetEvals, rulesetsConfig)
+		statuses[0], processingErrs[0] = r.ProcessEvent(ctx, eventA, ruleSetEvals, rulesetsConfig)
 	}()
 	go func() {
 		defer wg.Done()
 		<-startBarrier
-		statuses[1] = r.ProcessEvent(ctx, eventB, ruleSetEvals, rulesetsConfig)
+		statuses[1], processingErrs[1] = r.ProcessEvent(ctx, eventB, ruleSetEvals, rulesetsConfig)
 	}()
 
 	close(startBarrier)
 	wg.Wait()
 	delayedRT.SetEnabled(false)
+	require.NoError(t, errors.Join(processingErrs...))
 
 	var quarantinedCount, alreadyQuarantinedCount int
 	for _, status := range statuses {
@@ -4908,7 +4944,8 @@ func TestE2E_ConcurrentUnhealthyEvents_WithDelayedInformer(t *testing.T) {
 		},
 	}
 
-	status := r.ProcessEvent(ctx, healthyEventA, ruleSetEvals, rulesetsConfig)
+	status, err := r.ProcessEvent(ctx, healthyEventA, ruleSetEvals, rulesetsConfig)
+	require.NoError(t, err)
 	require.NotNil(t, status)
 	assert.Equal(t, model.AlreadyQuarantined, *status, "first recovery should keep node quarantined")
 
@@ -4929,7 +4966,8 @@ func TestE2E_ConcurrentUnhealthyEvents_WithDelayedInformer(t *testing.T) {
 		return cachedHealthEventsMap.Count() == 1
 	}, 10*time.Second, 100*time.Millisecond, "NodeInformer should observe partial recovery")
 
-	status = r.ProcessEvent(ctx, healthyEventB, ruleSetEvals, rulesetsConfig)
+	status, err = r.ProcessEvent(ctx, healthyEventB, ruleSetEvals, rulesetsConfig)
+	require.NoError(t, err)
 	require.NotNil(t, status)
 	assert.Equal(t, model.UnQuarantined, *status, "second recovery should unquarantine node")
 
@@ -5639,8 +5677,8 @@ func TestE2E_ManualUncordonWithMissingMongoDoc(t *testing.T) {
 	mockEventWatcher.CancelLatestQuarantiningEventsFn = func(ctx context.Context, nodeName string, reason string) error {
 		return fmt.Errorf("error decoding latest quarantining event for node %s: mongo: no documents in result", nodeName)
 	}
-	mockEventWatcher.ProcessEventCallbackFn = func(ctx context.Context, event *model.HealthEventWithStatus) *model.Status {
-		return nil
+	mockEventWatcher.ProcessEventCallbackFn = func(ctx context.Context, event *model.HealthEventWithStatus) (*model.Status, error) {
+		return nil, nil
 	}
 	mockEventWatcher.StartFn = func(ctx context.Context) error {
 		return nil

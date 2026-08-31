@@ -25,8 +25,13 @@ import (
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
-// fieldHealthEventNodeName is the node-name field path in health event documents.
-const fieldHealthEventNodeName = "healthevent.nodename"
+const (
+	// fieldHealthEventNodeName is the node-name field path in health event documents.
+	fieldHealthEventNodeName = "healthevent.nodename"
+	fieldCreatedAt           = "createdAt"
+	fieldDocumentID          = "_id"
+	operatorGreaterThan      = "$gt"
+)
 
 // MongoHealthEventStore implements HealthEventStore for MongoDB
 type MongoHealthEventStore struct {
@@ -278,8 +283,8 @@ func (h *MongoHealthEventStore) findLatestByFilter(
 ) (*datastore.HealthEventWithStatus, error) {
 	options := &client.FindOneOptions{
 		Sort: bson.D{
-			{Key: "createdAt", Value: -1},
-			{Key: "_id", Value: -1},
+			{Key: fieldCreatedAt, Value: -1},
+			{Key: fieldDocumentID, Value: -1},
 		},
 	}
 
@@ -395,78 +400,145 @@ func decodeRawDocToHealthEvent(rawDoc map[string]any) (datastore.HealthEventWith
 	return event, nil
 }
 
+type batchedQueryPosition struct {
+	createdAt any
+	id        any
+	set       bool
+}
+
+func (p batchedQueryPosition) filter(base map[string]any) map[string]any {
+	if !p.set {
+		return base
+	}
+
+	return map[string]any{"$and": []any{
+		base,
+		map[string]any{"$or": []any{
+			map[string]any{fieldCreatedAt: map[string]any{operatorGreaterThan: p.createdAt}},
+			map[string]any{
+				fieldCreatedAt:  p.createdAt,
+				fieldDocumentID: map[string]any{operatorGreaterThan: p.id},
+			},
+		}},
+	}}
+}
+
 // FindHealthEventsByQueryBatched iterates matching health events from oldest to
 // newest in bounded batches. Return a non-nil error from fn to stop iteration.
 func (h *MongoHealthEventStore) FindHealthEventsByQueryBatched(ctx context.Context,
 	builder datastore.QueryBuilder, batchSize int,
 	fn func([]datastore.HealthEventWithStatus) error) error {
-	filter := builder.ToMongo()
+	if batchSize <= 0 {
+		return datastore.NewValidationError(
+			datastore.ProviderMongoDB, "batch size must be greater than zero", nil)
+	}
+
+	baseFilter := builder.ToMongo()
+	position := batchedQueryPosition{}
+
+	for {
+		batch, rowsRead, next, err := h.readHealthEventBatch(
+			ctx, position.filter(baseFilter), batchSize)
+		if err != nil {
+			return err
+		}
+
+		if len(batch) > 0 {
+			normalizeHealthEvents(batch)
+
+			if err := fn(batch); err != nil {
+				return err
+			}
+		}
+
+		if rowsRead < batchSize {
+			break
+		}
+
+		position = next
+	}
+
+	return nil
+}
+
+func (h *MongoHealthEventStore) readHealthEventBatch(
+	ctx context.Context,
+	filter map[string]any,
+	batchSize int,
+) ([]datastore.HealthEventWithStatus, int, batchedQueryPosition, error) {
+	limit := int64(batchSize)
 	findOptions := &client.FindOptions{
 		Sort: bson.D{
-			{Key: "createdAt", Value: 1},
-			{Key: "_id", Value: 1},
+			{Key: fieldCreatedAt, Value: 1},
+			{Key: fieldDocumentID, Value: 1},
 		},
+		Limit: &limit,
 	}
 
 	cursor, err := h.databaseClient.Find(ctx, filter, findOptions)
 	if err != nil {
-		return datastore.NewQueryError(
-			datastore.ProviderMongoDB,
-			"failed to find health events for batched query",
-			err,
-		)
+		return nil, 0, batchedQueryPosition{}, datastore.NewQueryError(
+			datastore.ProviderMongoDB, "failed to find health events for batched query", err)
 	}
-	defer cursor.Close(ctx)
+
+	closed := false
+	defer func() {
+		if !closed {
+			_ = cursor.Close(ctx)
+		}
+	}()
 
 	batch := make([]datastore.HealthEventWithStatus, 0, batchSize)
+	position := batchedQueryPosition{}
+	rowsRead := 0
 
 	for cursor.Next(ctx) {
+		rowsRead++
+
 		var rawDoc map[string]any
 		if err := cursor.Decode(&rawDoc); err != nil {
-			slog.Error("Skipping undecodable document in batched query",
-				"error", err)
-
-			continue
+			return nil, rowsRead, position, datastore.NewQueryError(
+				datastore.ProviderMongoDB, "failed to decode document in batched query", err)
 		}
+
+		createdAt, hasCreatedAt := rawDoc[fieldCreatedAt]
+		id, hasID := rawDoc[fieldDocumentID]
+
+		if !hasCreatedAt || !hasID {
+			return nil, rowsRead, position, datastore.NewQueryError(
+				datastore.ProviderMongoDB,
+				"document is missing the batched-query cursor fields",
+				nil,
+			)
+		}
+
+		position = batchedQueryPosition{createdAt: createdAt, id: id, set: true}
 
 		event, err := decodeRawDocToHealthEvent(rawDoc)
 		if err != nil {
-			slog.Error("Skipping document that failed struct conversion in batched query",
+			slog.ErrorContext(ctx, "Skipping document that failed struct conversion in batched query",
 				"error", err)
 
 			continue
 		}
 
 		batch = append(batch, event)
-
-		if len(batch) >= batchSize {
-			normalizeHealthEvents(batch)
-
-			if err := fn(batch); err != nil {
-				return err
-			}
-
-			batch = make([]datastore.HealthEventWithStatus, 0, batchSize)
-		}
 	}
 
 	if err := cursor.Err(); err != nil {
-		return datastore.NewQueryError(
-			datastore.ProviderMongoDB,
-			"cursor error while iterating batched query",
-			err,
-		)
+		return nil, rowsRead, position, datastore.NewQueryError(
+			datastore.ProviderMongoDB, "cursor error while iterating batched query", err)
 	}
 
-	if len(batch) > 0 {
-		normalizeHealthEvents(batch)
+	closeErr := cursor.Close(ctx)
+	closed = true
 
-		if err := fn(batch); err != nil {
-			return err
-		}
+	if closeErr != nil {
+		return nil, rowsRead, position, datastore.NewQueryError(
+			datastore.ProviderMongoDB, "failed to close cursor for batched query", closeErr)
 	}
 
-	return nil
+	return batch, rowsRead, position, nil
 }
 
 // normalizeHealthEvents converts bson.M types to map[string]interface{} in HealthEvent fields

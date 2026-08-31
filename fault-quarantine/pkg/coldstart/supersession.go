@@ -16,14 +16,13 @@ package coldstart
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"sort"
 	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
 	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
@@ -37,8 +36,7 @@ type eventIdentity struct {
 	version        uint32
 }
 
-type orderedEvent struct {
-	event     model.HealthEventWithStatus
+type eventPosition struct {
 	createdAt time.Time
 	id        string
 }
@@ -46,7 +44,6 @@ type orderedEvent struct {
 type supersessionResolver struct {
 	store datastore.HealthEventStore
 	until time.Time
-	cache map[eventIdentity][]orderedEvent
 }
 
 func newSupersessionResolver(
@@ -56,65 +53,62 @@ func newSupersessionResolver(
 	return &supersessionResolver{
 		store: store,
 		until: until,
-		cache: make(map[eventIdentity][]orderedEvent),
 	}
 }
 
-// superseded reports whether replaying this event could overwrite newer state.
-// Compound events are skipped as a unit when any affected key changed later;
-// replaying only part would make the status update expose the original full
-// event to downstream consumers.
+var errSupersessionResolved = errors.New("supersession resolved")
+
+// superseded reports whether newer events cover every target this event could
+// change. A compound event remains replayable until all of its entities (and
+// error-code scopes) are covered; a check-wide event requires a newer
+// check-wide event.
 func (r *supersessionResolver) superseded(
 	ctx context.Context,
-	record datastore.HealthEventWithStatus,
+	candidate model.HealthEventWithStatus,
+	createdAt time.Time,
+	documentID string,
 ) (bool, error) {
-	if record.CreatedAt.IsZero() {
+	if createdAt.IsZero() || candidate.HealthEvent == nil {
 		return false, nil
 	}
 
-	candidate, err := parseStoredRecord(record)
-	if err != nil {
-		return false, nil //nolint:nilerr // The event processor classifies and skips invalid records.
+	coverage := newEventCoverage(candidate.HealthEvent)
+	resolved := false
+
+	err := r.scanNewerEvents(ctx, identityFor(candidate.HealthEvent), createdAt,
+		func(record datastore.HealthEventWithStatus) error {
+			id, _ := utils.ExtractDocumentID(record.RawEvent)
+			if !eventAfter(eventPosition{createdAt: record.CreatedAt, id: id}, createdAt, documentID) {
+				return nil
+			}
+
+			newer, err := parseStoredRecord(record)
+			if err != nil || newer.HealthEvent == nil {
+				// A malformed newer event cannot prove that the candidate is obsolete.
+				return nil //nolint:nilerr // Keep scanning for a valid covering event.
+			}
+
+			if coverage.add(newer.HealthEvent) {
+				resolved = true
+
+				return errSupersessionResolved
+			}
+
+			return nil
+		})
+	if err != nil && !errors.Is(err, errSupersessionResolved) {
+		return false, err
 	}
 
-	identity := identityFor(candidate.HealthEvent)
-
-	timeline, ok := r.cache[identity]
-	if !ok {
-		timeline, err = r.findTimeline(ctx, identity, record.CreatedAt)
-		if err != nil {
-			return false, err
-		}
-
-		r.cache[identity] = timeline
-	}
-
-	candidateID, _ := utils.ExtractDocumentID(record.RawEvent)
-	affected := healthEventsAnnotation.NewHealthEventsAnnotationMap()
-	affected.AddOrUpdateEvent(candidate.HealthEvent)
-
-	for i := range timeline {
-		if !eventAfter(timeline[i], record.CreatedAt, candidateID) {
-			continue
-		}
-
-		if candidate.HealthEvent.GetIsHealthy() && len(candidate.HealthEvent.GetEntitiesImpacted()) == 0 {
-			return true, nil
-		}
-
-		if affected.RemoveEvent(timeline[i].event.HealthEvent) > 0 {
-			return true, nil
-		}
-	}
-
-	return false, nil
+	return resolved, nil
 }
 
-func (r *supersessionResolver) findTimeline(
+func (r *supersessionResolver) scanNewerEvents(
 	ctx context.Context,
 	identity eventIdentity,
 	from time.Time,
-) ([]orderedEvent, error) {
+	visit func(datastore.HealthEventWithStatus) error,
+) error {
 	versionCondition := query.Condition(query.Eq("healthevent.version", identity.version))
 	if identity.version == 0 {
 		versionCondition = query.Or(
@@ -137,53 +131,127 @@ func (r *supersessionResolver) findTimeline(
 		condition = query.And(condition, query.Lte("createdAt", r.until))
 	}
 
-	records := make([]datastore.HealthEventWithStatus, 0)
-
 	err := r.store.FindHealthEventsByQueryBatched(
 		ctx,
 		query.New().Build(condition),
 		batchSize,
 		func(batch []datastore.HealthEventWithStatus) error {
-			records = append(records, batch...)
+			for i := range batch {
+				if err := visit(batch[i]); err != nil {
+					return err
+				}
+			}
 
 			return nil
 		},
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to find health-event history for %s/%s: %w",
+		return fmt.Errorf("failed to find health-event history for %s/%s: %w",
 			identity.nodeName, identity.checkName, err)
 	}
 
-	timeline := make([]orderedEvent, 0, len(records))
-	for i := range records {
-		event, err := parseStoredRecord(records[i])
-		if err != nil {
-			continue
-		}
-
-		id, _ := utils.ExtractDocumentID(records[i].RawEvent)
-		timeline = append(timeline, orderedEvent{
-			event: event, createdAt: records[i].CreatedAt, id: id,
-		})
-	}
-
-	sort.Slice(timeline, func(i, j int) bool {
-		if timeline[i].createdAt.Equal(timeline[j].createdAt) {
-			return timeline[i].id < timeline[j].id
-		}
-
-		return timeline[i].createdAt.Before(timeline[j].createdAt)
-	})
-
-	return timeline, nil
+	return nil
 }
 
-func eventAfter(event orderedEvent, createdAt time.Time, id string) bool {
+func eventAfter(event eventPosition, createdAt time.Time, id string) bool {
 	if event.createdAt.Equal(createdAt) {
 		return event.id > id
 	}
 
 	return event.createdAt.After(createdAt)
+}
+
+type eventEffect struct {
+	entityType  string
+	entityValue string
+	errorCode   string
+}
+
+type eventCoverage struct {
+	checkWide bool
+	remaining map[eventEffect]struct{}
+}
+
+func newEventCoverage(event *protos.HealthEvent) *eventCoverage {
+	coverage := &eventCoverage{checkWide: len(event.GetEntitiesImpacted()) == 0}
+	if coverage.checkWide {
+		return coverage
+	}
+
+	coverage.remaining = make(map[eventEffect]struct{})
+
+	errorCodes := event.GetErrorCode()
+	if len(errorCodes) == 0 {
+		errorCodes = []string{""}
+	}
+
+	for _, entity := range event.GetEntitiesImpacted() {
+		for _, errorCode := range errorCodes {
+			coverage.remaining[eventEffect{
+				entityType: entity.GetEntityType(), entityValue: entity.GetEntityValue(), errorCode: errorCode,
+			}] = struct{}{}
+		}
+	}
+
+	return coverage
+}
+
+func (c *eventCoverage) add(event *protos.HealthEvent) bool {
+	entities := event.GetEntitiesImpacted()
+	if len(entities) == 0 {
+		return true
+	}
+
+	if c.checkWide {
+		return false
+	}
+
+	errorCodes := normalizedErrorCodes(event.GetErrorCode())
+
+	for candidate := range c.remaining {
+		if effectCoveredBy(candidate, entities, errorCodes) {
+			delete(c.remaining, candidate)
+		}
+	}
+
+	return len(c.remaining) == 0
+}
+
+func effectCoveredBy(
+	candidate eventEffect,
+	entities []*protos.Entity,
+	errorCodes []string,
+) bool {
+	for _, entity := range entities {
+		if candidate.entityType != entity.GetEntityType() ||
+			candidate.entityValue != entity.GetEntityValue() {
+			continue
+		}
+
+		if errorCodeCoveredBy(candidate.errorCode, errorCodes) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func errorCodeCoveredBy(candidate string, newer []string) bool {
+	for _, errorCode := range newer {
+		if candidate == "" || errorCode == "" || candidate == errorCode {
+			return true
+		}
+	}
+
+	return false
+}
+
+func normalizedErrorCodes(errorCodes []string) []string {
+	if len(errorCodes) == 0 {
+		return []string{""}
+	}
+
+	return errorCodes
 }
 
 func parseStoredRecord(record datastore.HealthEventWithStatus) (model.HealthEventWithStatus, error) {

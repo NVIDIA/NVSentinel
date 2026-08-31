@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"sort"
 	"strings"
 )
 
@@ -93,6 +94,66 @@ func (u *UpdateBuilder) ToMongo() map[string]any {
 	return map[string]any{
 		opSet: setDoc,
 	}
+}
+
+// ToMongoPipeline generates an aggregation-pipeline update that safely creates
+// or replaces non-object parents before assigning nested document fields.
+// This is useful for bulk updates that may include legacy documents whose
+// parent field is missing or explicitly null.
+func (u *UpdateBuilder) ToMongoPipeline() []any {
+	setDoc, _ := u.ToMongo()[opSet].(map[string]any)
+	if len(setDoc) == 0 {
+		return nil
+	}
+
+	fields := make([]string, 0, len(setDoc))
+	for field := range setDoc {
+		fields = append(fields, field)
+	}
+
+	sort.Strings(fields)
+	pipeline := make([]any, 0, len(fields))
+
+	for _, field := range fields {
+		parts := strings.Split(field, ".")
+
+		value := any(map[string]any{"$literal": setDoc[field]})
+		if len(parts) > 1 {
+			value = mongoNestedFieldExpression(parts[0], parts[1:], setDoc[field])
+		}
+
+		pipeline = append(pipeline, map[string]any{
+			opSet: map[string]any{parts[0]: value},
+		})
+	}
+
+	return pipeline
+}
+
+func mongoNestedFieldExpression(parent string, remaining []string, value any) map[string]any {
+	fieldValue := any(map[string]any{"$literal": value})
+	if len(remaining) > 1 {
+		fieldValue = mongoNestedFieldExpression(
+			parent+"."+remaining[0], remaining[1:], value)
+	}
+
+	return map[string]any{"$mergeObjects": []any{
+		mongoObjectOrEmpty(parent),
+		map[string]any{remaining[0]: fieldValue},
+	}}
+}
+
+func mongoObjectOrEmpty(field string) map[string]any {
+	reference := "$" + field
+
+	return map[string]any{"$cond": []any{
+		map[string]any{"$eq": []any{
+			map[string]any{"$type": reference},
+			"object",
+		}},
+		reference,
+		map[string]any{},
+	}}
 }
 
 // documentUpdate represents a pending JSONB document field update.
@@ -268,7 +329,9 @@ func mongoFieldToJSONBPath(fieldPath string) string {
 func toJSONBValue(value any) string {
 	switch v := value.(type) {
 	case string:
-		return fmt.Sprintf("\"%s\"", v)
+		encoded, _ := json.Marshal(v)
+
+		return string(encoded)
 	case bool:
 		return fmt.Sprintf("%t", v)
 	case int, int32, int64, uint, uint32, uint64:

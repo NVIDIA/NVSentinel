@@ -23,13 +23,16 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 )
 
 type latestEventStoreStub struct {
 	datastore.HealthEventStore
-	events    []datastore.HealthEventWithStatus
-	findCalls int
-	builder   datastore.QueryBuilder
+	events     []datastore.HealthEventWithStatus
+	batches    [][]datastore.HealthEventWithStatus
+	findCalls  int
+	batchCalls int
+	builder    datastore.QueryBuilder
 }
 
 func (s *latestEventStoreStub) FindHealthEventsByQueryBatched(
@@ -40,7 +43,18 @@ func (s *latestEventStoreStub) FindHealthEventsByQueryBatched(
 ) error {
 	s.findCalls++
 	s.builder = builder
+	if s.batches != nil {
+		for _, batch := range s.batches {
+			s.batchCalls++
+			if err := fn(batch); err != nil {
+				return err
+			}
+		}
 
+		return nil
+	}
+
+	s.batchCalls++
 	return fn(s.events)
 }
 
@@ -72,26 +86,57 @@ func impactedEntity(value string) map[string]any {
 	return map[string]any{"entityType": "GPU", "entityValue": value}
 }
 
+func withErrorCodes(record datastore.HealthEventWithStatus, codes ...any) datastore.HealthEventWithStatus {
+	record.RawEvent["healthevent"].(map[string]any)["errorCode"] = codes
+
+	return record
+}
+
+func resolveSupersession(
+	t *testing.T,
+	resolver *supersessionResolver,
+	record datastore.HealthEventWithStatus,
+) (bool, error) {
+	t.Helper()
+
+	parsed, err := parseStoredRecord(record)
+	require.NoError(t, err)
+	documentID, err := utils.ExtractDocumentID(record.RawEvent)
+	require.NoError(t, err)
+
+	return resolver.superseded(context.Background(), parsed, record.CreatedAt, documentID)
+}
+
 func TestSupersessionResolverSkipsFailureFullyClearedByLaterRecovery(t *testing.T) {
 	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
 	failure := recoveryRecord(base, false, []any{impactedEntity("0"), impactedEntity("1")})
 	recovery := recoveryRecord(base.Add(time.Minute), true, nil)
 	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{failure, recovery}}
 
-	superseded, err := newSupersessionResolver(store, base.Add(time.Hour)).superseded(
-		context.Background(), failure)
+	superseded, err := resolveSupersession(t, newSupersessionResolver(store, base.Add(time.Hour)), failure)
 	require.NoError(t, err)
 	assert.True(t, superseded)
 }
 
-func TestSupersessionResolverSkipsCompoundFailureAfterPartialRecovery(t *testing.T) {
+func TestSupersessionResolverKeepsCompoundFailureAfterPartialRecovery(t *testing.T) {
 	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
 	failure := recoveryRecord(base, false, []any{impactedEntity("0"), impactedEntity("1")})
 	recovery := recoveryRecord(base.Add(time.Minute), true, []any{impactedEntity("0")})
 	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{failure, recovery}}
 
-	superseded, err := newSupersessionResolver(store, base.Add(time.Hour)).superseded(
-		context.Background(), failure)
+	superseded, err := resolveSupersession(t, newSupersessionResolver(store, base.Add(time.Hour)), failure)
+	require.NoError(t, err)
+	assert.False(t, superseded)
+}
+
+func TestSupersessionResolverSkipsCompoundFailureOnlyAfterEveryEntityIsCovered(t *testing.T) {
+	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	failure := recoveryRecord(base, false, []any{impactedEntity("0"), impactedEntity("1")})
+	recovery0 := recoveryRecord(base.Add(time.Minute), true, []any{impactedEntity("0")})
+	recovery1 := recoveryRecord(base.Add(2*time.Minute), true, []any{impactedEntity("1")})
+	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{failure, recovery0, recovery1}}
+
+	superseded, err := resolveSupersession(t, newSupersessionResolver(store, base.Add(time.Hour)), failure)
 	require.NoError(t, err)
 	assert.True(t, superseded)
 }
@@ -102,35 +147,33 @@ func TestSupersessionResolverSkipsFailureReplacedByLaterFailure(t *testing.T) {
 	currentFailure := recoveryRecord(base.Add(time.Minute), false, []any{impactedEntity("0")})
 	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{oldFailure, currentFailure}}
 
-	superseded, err := newSupersessionResolver(store, base.Add(time.Hour)).superseded(
-		context.Background(), oldFailure)
+	superseded, err := resolveSupersession(t, newSupersessionResolver(store, base.Add(time.Hour)), oldFailure)
 	require.NoError(t, err)
 	assert.True(t, superseded)
 }
 
-func TestSupersessionResolverCachesLatestEventPerCheck(t *testing.T) {
+func TestSupersessionResolverStopsReadingAfterCoverageIsComplete(t *testing.T) {
 	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
-	recovery := recoveryRecord(base.Add(time.Hour), true, nil)
-	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{recovery}}
-	resolver := newSupersessionResolver(store, base.Add(2*time.Hour))
+	failure := recoveryRecord(base, false, []any{impactedEntity("0")})
+	recovery := recoveryRecord(base.Add(time.Minute), true, []any{impactedEntity("0")})
+	unreachable := recoveryRecord(base.Add(2*time.Minute), false, []any{impactedEntity("1")})
+	store := &latestEventStoreStub{batches: [][]datastore.HealthEventWithStatus{{failure, recovery}, {unreachable}}}
 
-	for offset := range 2 {
-		failure := recoveryRecord(base.Add(time.Duration(offset)*time.Minute), false, nil)
-		_, err := resolver.superseded(context.Background(), failure)
-		require.NoError(t, err)
-	}
-
+	superseded, err := resolveSupersession(t, newSupersessionResolver(store, base.Add(2*time.Hour)), failure)
+	require.NoError(t, err)
+	assert.True(t, superseded)
 	assert.Equal(t, 1, store.findCalls)
+	assert.Equal(t, 1, store.batchCalls)
 }
 
 func TestSupersessionResolverSkipsHealthyEventBeforeLaterFailure(t *testing.T) {
 	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
 	healthy := recoveryRecord(base, true, []any{impactedEntity("0")})
-	failure := recoveryRecord(base.Add(time.Minute), false, []any{impactedEntity("0")})
+	failure := withErrorCodes(
+		recoveryRecord(base.Add(time.Minute), false, []any{impactedEntity("0")}), "79")
 	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{healthy, failure}}
 
-	superseded, err := newSupersessionResolver(store, base.Add(time.Hour)).superseded(
-		context.Background(), healthy)
+	superseded, err := resolveSupersession(t, newSupersessionResolver(store, base.Add(time.Hour)), healthy)
 	require.NoError(t, err)
 	assert.True(t, superseded)
 }
@@ -144,8 +187,7 @@ func TestSupersessionResolverConsidersEveryLaterEvent(t *testing.T) {
 		oldFailure, recovery, unrelatedFailure,
 	}}
 
-	superseded, err := newSupersessionResolver(store, base.Add(time.Hour)).superseded(
-		context.Background(), oldFailure)
+	superseded, err := resolveSupersession(t, newSupersessionResolver(store, base.Add(time.Hour)), oldFailure)
 	require.NoError(t, err)
 	assert.True(t, superseded)
 }
@@ -158,8 +200,7 @@ func TestSupersessionResolverUsesDocumentIDForTimestampTies(t *testing.T) {
 	recovery.RawEvent["id"] = "event-2"
 	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{recovery, oldFailure}}
 
-	superseded, err := newSupersessionResolver(store, base.Add(time.Hour)).superseded(
-		context.Background(), oldFailure)
+	superseded, err := resolveSupersession(t, newSupersessionResolver(store, base.Add(time.Hour)), oldFailure)
 	require.NoError(t, err)
 	assert.True(t, superseded)
 }
@@ -169,8 +210,7 @@ func TestSupersessionResolverUsesStoredJSONFieldCasing(t *testing.T) {
 	failure := recoveryRecord(base, false, nil)
 	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{failure}}
 
-	_, err := newSupersessionResolver(store, base.Add(time.Hour)).superseded(
-		context.Background(), failure)
+	_, err := resolveSupersession(t, newSupersessionResolver(store, base.Add(time.Hour)), failure)
 	require.NoError(t, err)
 
 	sql, _ := store.builder.ToSQL()
@@ -180,4 +220,16 @@ func TestSupersessionResolverUsesStoredJSONFieldCasing(t *testing.T) {
 	assert.Contains(t, sql, "checkName")
 	assert.Contains(t, sql, "nodename")
 	assert.Contains(t, sql, "nodeName")
+}
+
+func TestSupersessionResolverDoesNotSkipCheckWideRecoveryForEntityUpdate(t *testing.T) {
+	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	checkWideRecovery := recoveryRecord(base, true, nil)
+	entityFailure := recoveryRecord(base.Add(time.Minute), false, []any{impactedEntity("0")})
+	store := &latestEventStoreStub{events: []datastore.HealthEventWithStatus{checkWideRecovery, entityFailure}}
+
+	superseded, err := resolveSupersession(
+		t, newSupersessionResolver(store, base.Add(time.Hour)), checkWideRecovery)
+	require.NoError(t, err)
+	assert.False(t, superseded)
 }
