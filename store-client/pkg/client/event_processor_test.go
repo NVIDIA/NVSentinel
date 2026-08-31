@@ -17,11 +17,246 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
+
+// TestProcessEvents_EventHandlingAndCheckpointOutcomes_PreserveCheckpointOrdering verifies ordered checkpoints.
+func TestProcessEvents_EventHandlingAndCheckpointOutcomes_PreserveCheckpointOrdering(t *testing.T) {
+	processingErr := errors.New("processing failed")
+	checkpointErr := errors.New("checkpoint write failed")
+	unmarshalErr := errors.New("invalid event")
+	documentIDErr := errors.New("invalid document ID")
+
+	tests := []struct {
+		name          string
+		config        EventProcessorConfig
+		firstEvent    *eventProcessorTestEvent
+		handlerErrors map[string]error
+		markErrors    map[string]error
+		wantErrors    []error
+		wantErrorText string
+		wantHandled   []string
+		wantMarkCalls []string
+		wantMarked    []string
+	}{
+		{
+			name:          "successful events are checkpointed in order",
+			firstEvent:    newEventProcessorTestEvent("1"),
+			wantHandled:   []string{"1", "2"},
+			wantMarkCalls: []string{"1", "2"},
+			wantMarked:    []string{"1", "2"},
+		},
+		{
+			name:          "handler failure keeps later event unprocessed",
+			firstEvent:    newEventProcessorTestEvent("1"),
+			handlerErrors: map[string]error{"1": processingErr},
+			wantErrors:    []error{processingErr},
+			wantHandled:   []string{"1"},
+		},
+		{
+			name:          "checkpoint failure keeps later event unprocessed",
+			firstEvent:    newEventProcessorTestEvent("1"),
+			markErrors:    map[string]error{"1": checkpointErr},
+			wantErrors:    []error{checkpointErr},
+			wantHandled:   []string{"1"},
+			wantMarkCalls: []string{"1"},
+		},
+		{
+			name: "filtered event checkpoint failure keeps later event unprocessed",
+			config: EventProcessorConfig{SkipEvent: func(event Event) bool {
+				eventID, _ := event.GetDocumentID()
+
+				return eventID == "1"
+			}},
+			firstEvent:    newEventProcessorTestEvent("1"),
+			markErrors:    map[string]error{"1": checkpointErr},
+			wantErrors:    []error{checkpointErr},
+			wantMarkCalls: []string{"1"},
+		},
+		{
+			name:          "configured handler failure skip continues after checkpoint",
+			config:        EventProcessorConfig{MarkProcessedOnError: true},
+			firstEvent:    newEventProcessorTestEvent("1"),
+			handlerErrors: map[string]error{"1": processingErr},
+			wantHandled:   []string{"1", "2"},
+			wantMarkCalls: []string{"1", "2"},
+			wantMarked:    []string{"1", "2"},
+		},
+		{
+			name:          "configured skip stops when checkpoint fails",
+			config:        EventProcessorConfig{MarkProcessedOnError: true},
+			firstEvent:    newEventProcessorTestEvent("1"),
+			handlerErrors: map[string]error{"1": processingErr},
+			markErrors:    map[string]error{"1": checkpointErr},
+			wantErrors:    []error{processingErr, checkpointErr},
+			wantHandled:   []string{"1"},
+			wantMarkCalls: []string{"1"},
+		},
+		{
+			name: "unmarshal error stops when checkpoint fails",
+			firstEvent: &eventProcessorTestEvent{
+				id:           "1",
+				token:        []byte("1"),
+				unmarshalErr: unmarshalErr,
+			},
+			markErrors:    map[string]error{"1": checkpointErr},
+			wantErrors:    []error{unmarshalErr, checkpointErr},
+			wantMarkCalls: []string{"1"},
+		},
+		{
+			name: "document ID error stops when checkpoint fails",
+			firstEvent: &eventProcessorTestEvent{
+				token:         []byte("1"),
+				documentIDErr: documentIDErr,
+			},
+			markErrors:    map[string]error{"1": checkpointErr},
+			wantErrors:    []error{documentIDErr, checkpointErr},
+			wantErrorText: `stopping at uncheckpointed event "unknown"`,
+			wantMarkCalls: []string{"1"},
+		},
+		{
+			name: "invalid event continues after checkpoint",
+			firstEvent: &eventProcessorTestEvent{
+				id:           "1",
+				token:        []byte("1"),
+				unmarshalErr: errors.New("invalid event"),
+			},
+			wantHandled:   []string{"2"},
+			wantMarkCalls: []string{"1", "2"},
+			wantMarked:    []string{"1", "2"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			watcher := newEventProcessorTestWatcher(test.firstEvent, newEventProcessorTestEvent("2"))
+			watcher.markErrors = test.markErrors
+			processor := newDefaultEventProcessorForTest(watcher, test.config)
+
+			var handled []string
+			processor.SetEventHandler(EventHandlerFunc(
+				func(_ context.Context, event *model.HealthEventWithStatus) error {
+					eventID := event.HealthEvent.GetId()
+					handled = append(handled, eventID)
+
+					return test.handlerErrors[eventID]
+				},
+			))
+
+			err := processor.processEvents(context.Background())
+			if len(test.wantErrors) == 0 {
+				require.NoError(t, err)
+			} else {
+				for _, wantErr := range test.wantErrors {
+					require.ErrorIs(t, err, wantErr)
+				}
+			}
+			if test.wantErrorText != "" {
+				require.ErrorContains(t, err, test.wantErrorText)
+			}
+
+			require.Equal(t, test.wantHandled, handled)
+			require.Equal(t, test.wantMarkCalls, watcher.markCalls)
+			require.Equal(t, test.wantMarked, watcher.markedTokens)
+		})
+	}
+}
+
+func newDefaultEventProcessorForTest(
+	watcher ChangeStreamWatcher, config EventProcessorConfig,
+) *DefaultEventProcessor {
+	return NewEventProcessor(watcher, nil, config).(*DefaultEventProcessor)
+}
+
+type eventProcessorTestEvent struct {
+	id            string
+	token         []byte
+	unmarshalErr  error
+	documentIDErr error
+}
+
+func newEventProcessorTestEvent(id string) *eventProcessorTestEvent {
+	return &eventProcessorTestEvent{id: id, token: []byte(id)}
+}
+
+func (e *eventProcessorTestEvent) GetDocumentID() (string, error) {
+	return e.id, e.documentIDErr
+}
+
+func (e *eventProcessorTestEvent) GetRecordUUID() (string, error) {
+	return "", nil
+}
+
+func (e *eventProcessorTestEvent) GetNodeName() (string, error) {
+	return "", nil
+}
+
+func (e *eventProcessorTestEvent) GetResumeToken() []byte {
+	return e.token
+}
+
+func (e *eventProcessorTestEvent) UnmarshalDocument(value any) error {
+	if e.unmarshalErr != nil {
+		return e.unmarshalErr
+	}
+
+	event, ok := value.(*model.HealthEventWithStatus)
+	if !ok {
+		return fmt.Errorf("unexpected document type %T", value)
+	}
+
+	event.HealthEvent = &protos.HealthEvent{Id: e.id}
+
+	return nil
+}
+
+type eventProcessorTestWatcher struct {
+	events       chan Event
+	markErrors   map[string]error
+	markCalls    []string
+	markedTokens []string
+}
+
+func newEventProcessorTestWatcher(events ...Event) *eventProcessorTestWatcher {
+	eventChannel := make(chan Event, len(events))
+	for _, event := range events {
+		eventChannel <- event
+	}
+	close(eventChannel)
+
+	return &eventProcessorTestWatcher{
+		events:     eventChannel,
+		markErrors: make(map[string]error),
+	}
+}
+
+func (w *eventProcessorTestWatcher) Start(context.Context) {}
+
+func (w *eventProcessorTestWatcher) Events() <-chan Event {
+	return w.events
+}
+
+func (w *eventProcessorTestWatcher) MarkProcessed(_ context.Context, token []byte) error {
+	tokenString := string(token)
+	w.markCalls = append(w.markCalls, tokenString)
+	if err := w.markErrors[tokenString]; err != nil {
+		return err
+	}
+
+	w.markedTokens = append(w.markedTokens, tokenString)
+
+	return nil
+}
+
+func (w *eventProcessorTestWatcher) Close(context.Context) error {
+	return nil
+}
 
 type updatedFieldsTestEvent struct {
 	updated       map[string]any
@@ -39,23 +274,10 @@ func (e *updatedFieldsTestEvent) UnmarshalDocument(any) error {
 	return errors.New("completion-only update must not be decoded")
 }
 
-type markingWatcherStub struct {
-	marked int
-}
-
-func (*markingWatcherStub) Start(context.Context) {}
-func (*markingWatcherStub) Events() <-chan Event  { return nil }
-func (s *markingWatcherStub) MarkProcessed(context.Context, []byte) error {
-	s.marked++
-
-	return nil
-}
-func (*markingWatcherStub) Close(context.Context) error { return nil }
-
 func TestDefaultEventProcessorSkipsCompletionOnlyUpdate(t *testing.T) {
 	const completionPath = "healtheventstatus.faultquarantinerecovery"
 	event := &updatedFieldsTestEvent{updated: map[string]any{completionPath: "completed"}}
-	watcher := &markingWatcherStub{}
+	watcher := &eventProcessorTestWatcher{markErrors: make(map[string]error)}
 	processor := &DefaultEventProcessor{
 		changeStreamWatcher: watcher,
 		config: EventProcessorConfig{SkipEvent: func(event Event) bool {
@@ -64,9 +286,9 @@ func TestDefaultEventProcessorSkipsCompletionOnlyUpdate(t *testing.T) {
 	}
 
 	require.NoError(t, processor.handleSingleEvent(context.Background(), event))
-	assert.False(t, event.unmarshalCall)
-	assert.Equal(t, 1, watcher.marked)
-	assert.False(t, EventUpdatesOnly(&updatedFieldsTestEvent{updated: map[string]any{
+	require.False(t, event.unmarshalCall)
+	require.Equal(t, []string{"token"}, watcher.markedTokens)
+	require.False(t, EventUpdatesOnly(&updatedFieldsTestEvent{updated: map[string]any{
 		completionPath:                      "completed",
 		"healtheventstatus.nodequarantined": "Quarantined",
 	}}, completionPath))
