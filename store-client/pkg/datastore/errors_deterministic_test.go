@@ -56,3 +56,14 @@ func TestIsDeterministicError(t *testing.T) {
 		})
 	}
 }
+
+func TestDeterministicPostgreSQLQuerySQLStates(t *testing.T) {
+	for _, code := range []string{"22000", "42601", "42703", "42804", "42883", "42P01"} {
+		t.Run(code, func(t *testing.T) {
+			err := NewQueryError(ProviderPostgreSQL, "invalid deterministic query", &pq.Error{Code: pq.ErrorCode(code)})
+			if !IsDeterministicError(err) {
+				t.Fatalf("SQLSTATE %s classified as transient", code)
+			}
+		})
+	}
+}

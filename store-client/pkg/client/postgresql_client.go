@@ -18,6 +18,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"reflect"
@@ -1147,15 +1148,40 @@ func formatJSONNumber(reflected reflect.Value, fallback any) any {
 
 // buildExprCondition converts MongoDB $expr operator to PostgreSQL SQL
 // This handles aggregation expressions used in $match stages
-//
-//nolint:cyclop,gocognit // Complexity acceptable: handles logical and comparison operators in $match $expr
 func (c *PostgreSQLClient) buildExprCondition(expr any) (string, error) {
+	condition, err := c.buildExprConditionValue(expr)
+	if err == nil {
+		return condition, nil
+	}
+
+	var datastoreErr *datastore.DatastoreError
+	if errors.As(err, &datastoreErr) {
+		return "", err
+	}
+
+	return "", datastore.NewValidationError(
+		datastore.ProviderPostgreSQL,
+		"invalid $expr",
+		err,
+	)
+}
+
+//nolint:cyclop,gocognit // Complexity acceptable: handles logical and comparison operators in $match $expr.
+func (c *PostgreSQLClient) buildExprConditionValue(expr any) (string, error) {
 	exprMap, ok := expr.(map[string]any)
 	if !ok {
 		return "", datastore.NewValidationError(
 			datastore.ProviderPostgreSQL,
 			"$expr value must be a map",
 			fmt.Errorf("got type %T", expr),
+		)
+	}
+
+	if len(exprMap) != 1 {
+		return "", datastore.NewValidationError(
+			datastore.ProviderPostgreSQL,
+			"$expr must contain exactly one operator",
+			fmt.Errorf("got %d operators", len(exprMap)),
 		)
 	}
 
@@ -2132,7 +2158,12 @@ func (c *PostgreSQLClient) buildAggregationQuery(
 		}
 	}
 
-	return builder.buildFinalQuery(), builder.args, nil
+	query, err := builder.buildFinalQuery()
+	if err != nil {
+		return "", nil, err
+	}
+
+	return query, builder.args, nil
 }
 
 // aggregationQueryBuilder helps build aggregation queries with reduced complexity
@@ -2565,7 +2596,7 @@ func (b *aggregationQueryBuilder) processAddFields(value any) error {
 	return nil
 }
 
-func (b *aggregationQueryBuilder) buildFinalQuery() string {
+func (b *aggregationQueryBuilder) buildFinalQuery() (string, error) {
 	// Handle $count operator
 	if b.isCount {
 		return b.buildCountQuery()
@@ -2573,25 +2604,25 @@ func (b *aggregationQueryBuilder) buildFinalQuery() string {
 
 	// Handle $group operator
 	if b.groupBy != nil {
-		return b.buildGroupQuery()
+		return b.buildGroupQuery(), nil
 	}
 
 	// Handle $setWindowFields operator
 	if b.windowFields != nil {
-		return b.buildWindowFieldsQuery()
+		return b.buildWindowFieldsQuery(), nil
 	}
 
 	// Handle $addFields operator
 	if b.addFields != nil {
-		return b.buildAddFieldsQuery()
+		return b.buildAddFieldsQuery(), nil
 	}
 
 	// Standard query
-	return b.buildStandardQuery()
+	return b.buildStandardQuery(), nil
 }
 
 // buildCountQuery builds the SQL for $count aggregation with optional post-count filtering
-func (b *aggregationQueryBuilder) buildCountQuery() string {
+func (b *aggregationQueryBuilder) buildCountQuery() (string, error) {
 	subquery := b.query
 	if len(b.whereClauses) > 0 {
 		subquery += " WHERE " + strings.Join(b.whereClauses, " AND ")
@@ -2606,7 +2637,7 @@ func (b *aggregationQueryBuilder) buildCountQuery() string {
 		return b.buildPostCountFilter(countQuery)
 	}
 
-	return countQuery
+	return countQuery, nil
 }
 
 // buildStandardQuery builds a standard SELECT query with WHERE, ORDER BY, LIMIT, OFFSET
@@ -2635,35 +2666,57 @@ func (b *aggregationQueryBuilder) buildStandardQuery() string {
 // buildPostCountFilter wraps a count query with a WHERE clause to filter the count result.
 // This handles the MongoDB pattern: $count -> $match (filter on count)
 // Example: {$match: {count: {$gte: 5}}} after $count should return empty if count < 5
-func (b *aggregationQueryBuilder) buildPostCountFilter(countQuery string) string {
+func (b *aggregationQueryBuilder) buildPostCountFilter(countQuery string) (string, error) {
 	// Build WHERE conditions for the count result
 	conditions := []string{}
 
 	for field, value := range b.postCountMatch {
-		condition := b.buildPostCountCondition(field, value)
-		if condition != "" {
-			conditions = append(conditions, condition)
+		condition, err := b.buildPostCountCondition(field, value)
+		if err != nil {
+			return "", err
 		}
+
+		conditions = append(conditions, condition)
 	}
 
 	if len(conditions) == 0 {
-		return countQuery
+		return "", datastore.NewValidationError(
+			datastore.ProviderPostgreSQL,
+			"post-count $match must contain at least one supported condition",
+			nil,
+		)
 	}
 
 	// Wrap the count query and apply the filter on the result
 	// The count result is in document->>'countField', so we filter on that
 	return fmt.Sprintf("SELECT * FROM (%s) as count_result WHERE %s",
-		countQuery, strings.Join(conditions, " AND "))
+		countQuery, strings.Join(conditions, " AND ")), nil
 }
 
 // buildPostCountCondition builds a single condition for filtering count results
-func (b *aggregationQueryBuilder) buildPostCountCondition(field string, value any) string {
+func (b *aggregationQueryBuilder) buildPostCountCondition(field string, value any) (string, error) {
+	if strings.HasPrefix(field, "$") {
+		return "", datastore.NewValidationError(
+			datastore.ProviderPostgreSQL,
+			fmt.Sprintf("operator %s is not supported in a post-count $match", field),
+			nil,
+		)
+	}
+
 	// The count result is stored as document->>'field'
 	// We need to cast it to a number for comparison
 	fieldPath := fmt.Sprintf("(document->>'%s')::bigint", field)
 
 	switch v := value.(type) {
 	case map[string]any:
+		if len(v) == 0 {
+			return "", datastore.NewValidationError(
+				datastore.ProviderPostgreSQL,
+				fmt.Sprintf("post-count $match field %q must contain a comparison operator", field),
+				nil,
+			)
+		}
+
 		operatorNames := make([]string, 0, len(v))
 		for op := range v {
 			operatorNames = append(operatorNames, op)
@@ -2674,18 +2727,34 @@ func (b *aggregationQueryBuilder) buildPostCountCondition(field string, value an
 		conditions := make([]string, 0, len(operatorNames))
 		for _, op := range operatorNames {
 			opValue := v[op]
-			if sqlOp := b.mapComparisonOperator(op); sqlOp != "" {
-				b.args = append(b.args, opValue)
-				conditions = append(conditions, fmt.Sprintf("%s %s $%d", fieldPath, sqlOp, len(b.args)))
+
+			sqlOp := b.mapComparisonOperator(op)
+			if sqlOp == "" {
+				return "", datastore.NewValidationError(
+					datastore.ProviderPostgreSQL,
+					fmt.Sprintf("unsupported post-count comparison operator: %s", op),
+					nil,
+				)
 			}
+
+			if isCompositeMatchValue(opValue) {
+				return "", nonScalarMatchValueError(field, opValue)
+			}
+
+			b.args = append(b.args, opValue)
+			conditions = append(conditions, fmt.Sprintf("%s %s $%d", fieldPath, sqlOp, len(b.args)))
 		}
 
-		return strings.Join(conditions, " AND ")
+		return strings.Join(conditions, " AND "), nil
 	default:
+		if isCompositeMatchValue(v) {
+			return "", nonScalarMatchValueError(field, v)
+		}
+
 		// Direct equality comparison
 		b.args = append(b.args, v)
 
-		return fmt.Sprintf("%s = $%d", fieldPath, len(b.args))
+		return fmt.Sprintf("%s = $%d", fieldPath, len(b.args)), nil
 	}
 }
 

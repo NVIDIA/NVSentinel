@@ -372,6 +372,22 @@ func TestAggregationExtendedFilterPrefix(t *testing.T) {
 	}
 }
 
+func buildResolvedAggregationQueryForTest(
+	t *testing.T,
+	client *PostgreSQLClient,
+	pipeline any,
+) (string, []any, error) {
+	t.Helper()
+
+	rawPipeline, options := ResolvePipelineStageOptions(pipeline)
+	stages, ok := rawPipeline.([]map[string]any)
+	if !ok {
+		t.Fatalf("resolved pipeline has type %T, want []map[string]any", rawPipeline)
+	}
+
+	return client.buildAggregationQuery(stages, options)
+}
+
 func TestAggregationExtendedFilterPrefixRejectsLaterLogicalOperators(t *testing.T) {
 	client := &PostgreSQLClient{table: "health_events"}
 	stages := []map[string]any{
@@ -381,7 +397,7 @@ func TestAggregationExtendedFilterPrefixRejectsLaterLogicalOperators(t *testing.
 		}}},
 	}
 
-	_, err := client.Aggregate(context.Background(), WithExtendedFilterPrefix(stages, 1))
+	_, _, err := buildResolvedAggregationQueryForTest(t, client, WithExtendedFilterPrefix(stages, 1))
 	if err == nil {
 		t.Fatal("extended-only configured operator accepted outside the enabled prefix")
 	}
@@ -419,7 +435,7 @@ func TestAnalyzerAggregationRejectsUnsupportedMatchShapes(t *testing.T) {
 
 	for name, pipeline := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, err := client.Aggregate(context.Background(), pipeline)
+			_, _, err := buildResolvedAggregationQueryForTest(t, client, pipeline)
 			if err == nil {
 				t.Fatal("unsupported PostgreSQL $match shape accepted")
 			}
@@ -444,6 +460,93 @@ func TestPostCountMatchCombinesAllOperators(t *testing.T) {
 	}
 	if !reflect.DeepEqual(args, []any{2, 5}) {
 		t.Fatalf("args = %#v, want [2 5]", args)
+	}
+}
+
+func TestPostCountMatchRejectsUnsupportedShapes(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	tests := map[string]map[string]any{
+		"logical operator": {
+			opOr: []any{map[string]any{"count": map[string]any{opGTE: 5}}},
+		},
+		"expression": {
+			"$expr": map[string]any{opGTE: []any{"$count", 5}},
+		},
+		"array equality": {
+			"count": []any{5, 6},
+		},
+		"array comparison": {
+			"count": map[string]any{opGTE: []any{5}},
+		},
+		"unsupported in": {
+			"count": map[string]any{opIn: []any{5, 6}},
+		},
+		"invalid exists": {
+			"count": map[string]any{opExists: "yes"},
+		},
+	}
+
+	for name, match := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := client.buildAggregationQuery([]map[string]any{
+				{"$count": "count"},
+				{"$match": match},
+			}, PipelineOptions{})
+			if err == nil {
+				t.Fatal("unsupported post-count $match accepted")
+			}
+			if !datastore.IsDeterministicError(err) {
+				t.Fatalf("post-count validation error classified as transient: %v", err)
+			}
+		})
+	}
+}
+
+func TestPostCountMatchNeverDropsNonEmptyFilter(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	query, _, err := client.buildAggregationQuery([]map[string]any{
+		{"$count": "count"},
+		{"$match": map[string]any{"count": map[string]any{opGTE: 5}}},
+	}, PipelineOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "count_result WHERE") {
+		t.Fatalf("post-count filter produced an unfiltered count query: %s", query)
+	}
+}
+
+func TestExprBuilderClassifiesMalformedShapesDeterministically(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	tests := map[string]any{
+		"bad filter condition": map[string]any{
+			opEQ: []any{
+				map[string]any{"$filter": map[string]any{"input": "$items", "cond": "invalid"}},
+				1,
+			},
+		},
+		"bad map expression": map[string]any{
+			opEQ: []any{
+				map[string]any{"$map": map[string]any{"input": "$items", "in": []any{"invalid"}}},
+				1,
+			},
+		},
+		"multiple operators": map[string]any{
+			opGT: []any{"$count", 1},
+			opLT: []any{"$count", 9},
+		},
+	}
+
+	for name, expr := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := client.buildExprCondition(expr)
+			if err == nil {
+				t.Fatal("malformed $expr accepted")
+			}
+			if !datastore.IsDeterministicError(err) {
+				t.Fatalf("malformed $expr classified as transient: %v", err)
+			}
+		})
 	}
 }
 
