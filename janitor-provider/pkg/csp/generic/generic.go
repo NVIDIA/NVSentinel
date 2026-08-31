@@ -267,7 +267,7 @@ func (c Config) rebootCommand(nodeName string) []string {
 			}
 		}
 
-		return []string{"sh", "-c", fmt.Sprintf("sync || true; echo b > %s/sysrq-trigger", hostProcMountPath)}
+		return []string{"sh", "-c", fmt.Sprintf("echo b > %s/sysrq-trigger", hostProcMountPath)}
 	}
 
 	if c.WriteSyslog {

@@ -194,7 +194,7 @@ func TestSendRebootSignal_CreatesSysrqJob_WithoutSyslog(t *testing.T) {
 	job := jobs.Items[0]
 	require.Len(t, job.Spec.Template.Spec.Containers, 1)
 	container := job.Spec.Template.Spec.Containers[0]
-	assert.Equal(t, []string{"sh", "-c", "sync || true; echo b > /host-proc/sysrq-trigger"}, container.Command)
+	assert.Equal(t, []string{"sh", "-c", "echo b > /host-proc/sysrq-trigger"}, container.Command)
 
 	require.Len(t, container.VolumeMounts, 1)
 	assert.Equal(t, corev1.VolumeMount{
