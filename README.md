@@ -51,7 +51,7 @@ helm upgrade --install cert-manager jetstack/cert-manager \
 One command works for both a first install and every later upgrade. By default it only turns on health monitoring: it won't cordon a node, evict a pod, or reboot a machine, so it's safe to run anywhere. The flags below the command are everything you can layer on later; see [Adoption](#adoption) for what each one does.
 
 ```bash
-NVSENTINEL_VERSION=v1.20.0
+NVSENTINEL_VERSION=v1.21.0
 
 helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --version "$NVSENTINEL_VERSION" \
