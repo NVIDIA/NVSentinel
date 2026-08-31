@@ -22,6 +22,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/healthstatus"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
@@ -274,14 +275,17 @@ func (e *updatedFieldsTestEvent) UnmarshalDocument(any) error {
 	return errors.New("completion-only update must not be decoded")
 }
 
-func TestDefaultEventProcessorSkipsCompletionOnlyUpdate(t *testing.T) {
-	const completionPath = "healtheventstatus.faultquarantinerecovery"
-	event := &updatedFieldsTestEvent{updated: map[string]any{completionPath: "completed"}}
+// TestDefaultEventProcessor_HandleCompletionOnlyUpdate_SkipsDecodingAndCheckpoints
+// verifies that internal completion writes do not re-enter analyzer handling.
+func TestDefaultEventProcessor_HandleCompletionOnlyUpdate_SkipsDecodingAndCheckpoints(t *testing.T) {
+	event := &updatedFieldsTestEvent{updated: map[string]any{
+		healthstatus.FaultQuarantineRecoveryPath: "completed",
+	}}
 	watcher := &eventProcessorTestWatcher{markErrors: make(map[string]error)}
 	processor := &DefaultEventProcessor{
 		changeStreamWatcher: watcher,
 		config: EventProcessorConfig{SkipEvent: func(event Event) bool {
-			return EventUpdatesOnly(event, completionPath)
+			return EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath)
 		}},
 	}
 
@@ -289,7 +293,7 @@ func TestDefaultEventProcessorSkipsCompletionOnlyUpdate(t *testing.T) {
 	require.False(t, event.unmarshalCall)
 	require.Equal(t, []string{"token"}, watcher.markedTokens)
 	require.False(t, EventUpdatesOnly(&updatedFieldsTestEvent{updated: map[string]any{
-		completionPath:                      "completed",
-		"healtheventstatus.nodequarantined": "Quarantined",
-	}}, completionPath))
+		healthstatus.FaultQuarantineRecoveryPath: "completed",
+		"healtheventstatus.nodequarantined":      "Quarantined",
+	}}, healthstatus.FaultQuarantineRecoveryPath))
 }

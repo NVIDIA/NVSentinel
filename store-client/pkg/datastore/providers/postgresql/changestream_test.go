@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/healthstatus"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 )
 
@@ -135,15 +136,16 @@ func TestPostgreSQLEventAdapter_GetDocumentID(t *testing.T) {
 	}
 }
 
-func TestPostgreSQLEventAdapterExposesUpdatedFields(t *testing.T) {
-	const completionPath = "healtheventstatus.faultquarantinerecovery"
+// TestPostgreSQLEventAdapter_CompletionOnlyUpdate_ExposesUpdatedFields verifies
+// that the adapter preserves the completion-only update delta.
+func TestPostgreSQLEventAdapter_CompletionOnlyUpdate_ExposesUpdatedFields(t *testing.T) {
 	event := &PostgreSQLEventAdapter{eventData: map[string]any{
 		"updateDescription": map[string]any{
-			"updatedFields": map[string]any{completionPath: "completed"},
+			"updatedFields": map[string]any{healthstatus.FaultQuarantineRecoveryPath: "completed"},
 		},
 	}}
 
-	assert.True(t, client.EventUpdatesOnly(event, completionPath))
+	assert.True(t, client.EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath))
 }
 
 func TestPostgreSQLEventAdapter_GetRecordUUID(t *testing.T) {

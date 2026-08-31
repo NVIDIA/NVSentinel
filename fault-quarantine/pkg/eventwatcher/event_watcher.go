@@ -65,7 +65,7 @@ type EventWatcherInterface interface {
 	) (coldstart.ProcessResult, error)
 	CompleteStoredEvents(
 		ctx context.Context,
-		documentIDs []coldstart.StoredDocumentID,
+		completions []coldstart.StoredEventCompletion,
 	) error
 	CancelLatestQuarantiningEvents(ctx context.Context, nodeName string, reason string) error
 }
@@ -242,7 +242,8 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 	w.lastProcessedObjectID.StoreLastProcessedObjectID(eventID)
 
 	if expiry, recovered := w.recoveredEventIDs.LoadAndDelete(recordUUID); recovered {
-		if expiresAt, ok := expiry.(time.Time); !ok || time.Now().Before(expiresAt) {
+		expiresAt, ok := expiry.(time.Time)
+		if ok && (expiresAt.IsZero() || time.Now().Before(expiresAt)) {
 			slog.DebugContext(ctx, "Skipping live duplicate of a recovered event", "eventID", recordUUID)
 
 			return nil
@@ -289,32 +290,18 @@ func (w *EventWatcher) ProcessStoredEvent(
 	return coldstart.ProcessResultProcessed, nil
 }
 
-// CompleteStoredEvents prevents events that recovery intentionally skipped
-// from becoming part of every subsequent startup scan. One update per scan
-// batch avoids a database round trip for every historical event.
+// CompleteStoredEvents prevents terminal recovery decisions from becoming part
+// of every subsequent startup scan. One update per scan batch avoids a database
+// round trip for every historical event.
 func (w *EventWatcher) CompleteStoredEvents(
 	ctx context.Context,
-	documentIDs []coldstart.StoredDocumentID,
+	completions []coldstart.StoredEventCompletion,
 ) error {
-	if len(documentIDs) == 0 {
+	if len(completions) == 0 {
 		return nil
 	}
 
-	ids := make([]any, 0, len(documentIDs))
-	seen := make(map[string]struct{}, len(documentIDs))
-
-	for _, id := range documentIDs {
-		if id.String == "" || id.Native == nil {
-			continue
-		}
-
-		if _, exists := seen[id.String]; exists {
-			continue
-		}
-
-		seen[id.String] = struct{}{}
-		ids = append(ids, id.Native)
-	}
+	ids, deduplicated := completionIDs(completions)
 
 	if len(ids) == 0 {
 		return nil
@@ -328,15 +315,45 @@ func (w *EventWatcher) CompleteStoredEvents(
 		return fmt.Errorf("failed to update recovery completion statuses: %w", err)
 	}
 
-	for id := range seen {
+	for id := range deduplicated {
 		w.rememberRecoveredEvent(id)
 	}
 
 	return nil
 }
 
+func completionIDs(completions []coldstart.StoredEventCompletion) ([]any, map[string]struct{}) {
+	ids := make([]any, 0, len(completions))
+	seen := make(map[string]struct{}, len(completions))
+	deduplicated := make(map[string]struct{}, len(completions))
+
+	for _, completion := range completions {
+		id := completion.DocumentID
+		if id.String == "" || id.Native == nil {
+			continue
+		}
+
+		if completion.Result == coldstart.ProcessResultInvalid ||
+			completion.Result == coldstart.ProcessResultSuperseded {
+			deduplicated[id.String] = struct{}{}
+		}
+
+		if _, exists := seen[id.String]; exists {
+			continue
+		}
+
+		seen[id.String] = struct{}{}
+		ids = append(ids, id.Native)
+	}
+
+	return ids, deduplicated
+}
+
 func (w *EventWatcher) rememberRecoveredEvent(eventID string) {
-	w.recoveredEventIDs.Store(eventID, struct{}{})
+	// Keep an unarmed deadline until Start gives every recovered ID the same
+	// retention window. Starting it here could expire early IDs during a long
+	// cold start.
+	w.recoveredEventIDs.Store(eventID, time.Time{})
 }
 
 func (w *EventWatcher) armRecoveredEventExpiry(now time.Time) {
@@ -360,7 +377,7 @@ func (w *EventWatcher) expireRecoveredEventIDs(ctx context.Context) {
 		case now := <-ticker.C:
 			w.recoveredEventIDs.Range(func(key, value any) bool {
 				expiresAt, ok := value.(time.Time)
-				if !ok || !now.Before(expiresAt) {
+				if !ok || expiresAt.IsZero() || !now.Before(expiresAt) {
 					w.recoveredEventIDs.Delete(key)
 				}
 

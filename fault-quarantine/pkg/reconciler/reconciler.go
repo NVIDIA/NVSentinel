@@ -96,6 +96,7 @@ type Reconciler struct {
 	resetResumeTokenForCreate func(
 		context.Context, client.DatabaseClient, client.TokenConfig, func() error,
 	) (client.ResumeControlDecision, error)
+	setColdStartCutoff func(context.Context, string, time.Time) error
 
 	// Label keys
 	cordonedByLabelKey        string
@@ -125,6 +126,7 @@ func NewReconciler(
 		k8sClient:                 k8sClient,
 		cb:                        circuitBreaker,
 		resetResumeTokenForCreate: client.ResetResumeTokenForCreate,
+		setColdStartCutoff:        client.SetColdStartCutoff,
 	}
 
 	return r
@@ -275,13 +277,31 @@ func (r *Reconciler) configureColdStart(
 
 	r.eventWatcher.SetColdStartCallback(func(ctx context.Context) error {
 		coldStartUntil := time.Now().UTC()
+		effectiveColdStartAfter := coldStartAfter
+		seedColdStartCutoff := effectiveColdStartAfter.IsZero()
 
-		return coldstart.Handle(ctx, coldstart.Dependencies{
+		if seedColdStartCutoff {
+			effectiveColdStartAfter = coldStartUntil
+		}
+
+		if err := coldstart.Handle(ctx, coldstart.Dependencies{
 			HealthEventStore:   healthEventStore,
 			EventProcessor:     r.eventWatcher,
-			ColdStartAfterTime: coldStartAfter,
+			ColdStartAfterTime: effectiveColdStartAfter,
 			ColdStartUntilTime: coldStartUntil,
-		})
+		}); err != nil {
+			return err
+		}
+
+		if !seedColdStartCutoff {
+			return nil
+		}
+
+		if err := r.setColdStartCutoff(ctx, r.config.TokenConfig.ClientName, coldStartUntil); err != nil {
+			return fmt.Errorf("failed to persist initial fault-quarantine cold-start cutoff: %w", err)
+		}
+
+		return nil
 	})
 }
 
@@ -647,10 +667,10 @@ func (r *Reconciler) handleEvent(
 	node, err := r.getNode(ctx, event.HealthEvent.NodeName)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to get node", "node", event.HealthEvent.NodeName, "error", err)
-		metrics.ProcessingErrors.WithLabelValues("get_node_cache_error").Inc()
+		metrics.ProcessingErrors.WithLabelValues("get_node_error").Inc()
 		tracing.RecordError(span, err)
 		span.SetAttributes(
-			attribute.String("fault_quarantine.error.type", "get_node_cache_error"),
+			attribute.String("fault_quarantine.error.type", "get_node_error"),
 			attribute.String("fault_quarantine.error.message", err.Error()),
 		)
 

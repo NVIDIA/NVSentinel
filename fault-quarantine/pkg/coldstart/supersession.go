@@ -173,16 +173,18 @@ type eventCoverage struct {
 }
 
 func newEventCoverage(event *protos.HealthEvent) *eventCoverage {
-	coverage := &eventCoverage{checkWide: len(event.GetEntitiesImpacted()) == 0}
-	if coverage.checkWide {
-		return coverage
+	coverage := &eventCoverage{
+		checkWide: len(event.GetEntitiesImpacted()) == 0,
+		remaining: make(map[eventEffect]struct{}),
 	}
+	errorCodes := normalizedErrorCodes(event.GetErrorCode())
 
-	coverage.remaining = make(map[eventEffect]struct{})
+	if coverage.checkWide {
+		for _, errorCode := range errorCodes {
+			coverage.remaining[eventEffect{errorCode: errorCode}] = struct{}{}
+		}
 
-	errorCodes := event.GetErrorCode()
-	if len(errorCodes) == 0 {
-		errorCodes = []string{""}
+		return coverage
 	}
 
 	for _, entity := range event.GetEntitiesImpacted() {
@@ -199,17 +201,21 @@ func newEventCoverage(event *protos.HealthEvent) *eventCoverage {
 func (c *eventCoverage) add(event *protos.HealthEvent) bool {
 	entities := event.GetEntitiesImpacted()
 	if len(entities) == 0 {
-		return true
+		for candidate := range c.remaining {
+			if errorCodeCoveredBy(candidate.errorCode, event) {
+				delete(c.remaining, candidate)
+			}
+		}
+
+		return len(c.remaining) == 0
 	}
 
 	if c.checkWide {
 		return false
 	}
 
-	errorCodes := normalizedErrorCodes(event.GetErrorCode())
-
 	for candidate := range c.remaining {
-		if effectCoveredBy(candidate, entities, errorCodes) {
+		if effectCoveredBy(candidate, event) {
 			delete(c.remaining, candidate)
 		}
 	}
@@ -219,16 +225,15 @@ func (c *eventCoverage) add(event *protos.HealthEvent) bool {
 
 func effectCoveredBy(
 	candidate eventEffect,
-	entities []*protos.Entity,
-	errorCodes []string,
+	newer *protos.HealthEvent,
 ) bool {
-	for _, entity := range entities {
+	for _, entity := range newer.GetEntitiesImpacted() {
 		if candidate.entityType != entity.GetEntityType() ||
 			candidate.entityValue != entity.GetEntityValue() {
 			continue
 		}
 
-		if errorCodeCoveredBy(candidate.errorCode, errorCodes) {
+		if errorCodeCoveredBy(candidate.errorCode, newer) {
 			return true
 		}
 	}
@@ -236,9 +241,10 @@ func effectCoveredBy(
 	return false
 }
 
-func errorCodeCoveredBy(candidate string, newer []string) bool {
-	for _, errorCode := range newer {
-		if candidate == "" || errorCode == "" || candidate == errorCode {
+func errorCodeCoveredBy(candidate string, newer *protos.HealthEvent) bool {
+	for _, errorCode := range normalizedErrorCodes(newer.GetErrorCode()) {
+		if errorCode == "" || candidate == errorCode ||
+			(candidate == "" && !newer.GetIsHealthy()) {
 			return true
 		}
 	}

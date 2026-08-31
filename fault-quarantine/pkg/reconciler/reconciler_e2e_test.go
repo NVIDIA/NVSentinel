@@ -883,7 +883,7 @@ func (m *MockEventWatcher) ProcessStoredEvent(
 
 func (m *MockEventWatcher) CompleteStoredEvents(
 	context.Context,
-	[]coldstart.StoredDocumentID,
+	[]coldstart.StoredEventCompletion,
 ) error {
 	return nil
 }

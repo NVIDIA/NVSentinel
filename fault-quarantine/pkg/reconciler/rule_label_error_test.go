@@ -82,7 +82,7 @@ func TestApplyRuleLabelsForEvent_EvaluationError_ContinuesToNextEvaluator(t *tes
 	assert.Equal(t, "critical", node.Labels["nvidia.com/gpu-fault"])
 }
 
-func TestEventMatchesAnyRuleRecordsPermanentEvaluationFailure(t *testing.T) {
+func TestEventMatchesAnyRule_PermanentEvaluationFailure_RecordsError(t *testing.T) {
 	ctx := context.Background()
 	evaluationErr := coldstart.PermanentError(errors.New("invalid CEL expression"))
 	r := &Reconciler{}

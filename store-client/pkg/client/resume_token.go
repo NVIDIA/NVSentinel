@@ -128,6 +128,20 @@ func ResetResumeTokenForCreate(
 	return resetResumeTokenForCreateWithStore(ctx, dbClient, tokenConfig, store, onTokenDeleted)
 }
 
+// SetColdStartCutoff persists the completed recovery boundary for a component.
+func SetColdStartCutoff(ctx context.Context, clientName string, cutoff time.Time) error {
+	store, err := newKubernetesResumeControlStore()
+	if err != nil {
+		return fmt.Errorf("failed to initialize change stream resume control: %w", err)
+	}
+
+	if err := store.SetColdStartCutoff(ctx, clientName, cutoff); err != nil {
+		return fmt.Errorf("failed to persist cold-start cutoff for %s: %w", clientName, err)
+	}
+
+	return nil
+}
+
 func resetResumeTokenForCreateWithStore(
 	ctx context.Context,
 	dbClient DatabaseClient,
@@ -150,27 +164,7 @@ func resetResumeTokenForCreateWithStore(
 		return ResumeControlDecision{}, fmt.Errorf("failed to prepare forced resume-control CREATE: %w", err)
 	}
 
-	slog.InfoContext(ctx, "Deleting change stream resume token on startup",
-		"clientName", tokenConfig.ClientName,
-		"tokenDatabase", tokenConfig.TokenDatabase,
-		"tokenCollection", tokenConfig.TokenCollection)
-
-	if err := dbClient.DeleteResumeToken(ctx, tokenConfig); err != nil {
-		return ResumeControlDecision{}, fmt.Errorf("failed to delete change stream resume token: %w", err)
-	}
-
-	if onTokenDeleted != nil {
-		if err := onTokenDeleted(); err != nil {
-			return ResumeControlDecision{}, fmt.Errorf("failed to complete component CREATE transition: %w", err)
-		}
-	}
-
-	if err := store.SetMode(ctx, tokenConfig.ClientName, ResumeControlModeResume); err != nil {
-		return ResumeControlDecision{}, fmt.Errorf("failed to reset change stream resume control for %s to %s: %w",
-			tokenConfig.ClientName, ResumeControlModeResume, err)
-	}
-
-	return ResumeControlDecision{StartFresh: true, ColdStartCutoff: cutoff}, nil
+	return deleteResumeTokenAndResume(ctx, dbClient, tokenConfig, store, cutoff, onTokenDeleted)
 }
 
 func resetResumeTokenOnStartWithStore(
@@ -193,7 +187,7 @@ func resetResumeTokenOnStartWithStore(
 		return ResumeControlDecision{}, fmt.Errorf("failed to prepare resume-control CREATE: %w", err)
 	}
 
-	return deleteResumeTokenAndResume(ctx, dbClient, tokenConfig, store, cutoff)
+	return deleteResumeTokenAndResume(ctx, dbClient, tokenConfig, store, cutoff, nil)
 }
 
 func readResumeControl(
@@ -255,6 +249,7 @@ func deleteResumeTokenAndResume(
 	tokenConfig TokenConfig,
 	store resumeControlStore,
 	cutoff time.Time,
+	onTokenDeleted func() error,
 ) (ResumeControlDecision, error) {
 	slog.InfoContext(ctx, "Deleting change stream resume token on startup",
 		"clientName", tokenConfig.ClientName,
@@ -263,6 +258,12 @@ func deleteResumeTokenAndResume(
 
 	if err := dbClient.DeleteResumeToken(ctx, tokenConfig); err != nil {
 		return ResumeControlDecision{}, fmt.Errorf("failed to delete change stream resume token: %w", err)
+	}
+
+	if onTokenDeleted != nil {
+		if err := onTokenDeleted(); err != nil {
+			return ResumeControlDecision{}, fmt.Errorf("failed to complete component CREATE transition: %w", err)
+		}
 	}
 
 	if err := store.SetMode(ctx, tokenConfig.ClientName, ResumeControlModeResume); err != nil {

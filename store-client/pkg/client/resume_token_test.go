@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -200,7 +202,9 @@ func TestResumeControlChangeStreamWatcher_ForwardsUnprocessedEventCount(t *testi
 	}
 }
 
-func TestResetResumeTokenForCreateWithStoreReplacesCompletedCutoff(t *testing.T) {
+// TestResetResumeTokenForCreateWithStore_CompletedCutoff_ReplacesBoundary verifies
+// that a new CREATE transition replaces the previous completed cutoff.
+func TestResetResumeTokenForCreateWithStore_CompletedCutoff_ReplacesBoundary(t *testing.T) {
 	oldCutoff := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	dbClient := &mockResumeTokenDBClient{}
 	store := &mockResumeControlStore{mode: ResumeControlModeResume, cutoff: oldCutoff}
@@ -208,45 +212,32 @@ func TestResetResumeTokenForCreateWithStoreReplacesCompletedCutoff(t *testing.T)
 
 	decision, err := resetResumeTokenForCreateWithStore(
 		context.Background(), dbClient, tokenConfig, store, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if !decision.StartFresh || decision.ColdStartCutoff.IsZero() {
-		t.Fatalf("decision = %+v, want a fresh start with cutoff", decision)
-	}
-
-	if !decision.ColdStartCutoff.After(oldCutoff) {
-		t.Fatalf("cutoff = %v, want newer than completed cutoff %v", decision.ColdStartCutoff, oldCutoff)
-	}
-
-	if store.beginCalls != 1 || dbClient.deleteCalls != 1 || store.setCalls != 1 {
-		t.Fatalf("begin/delete/reset calls = %d/%d/%d, want 1/1/1",
-			store.beginCalls, dbClient.deleteCalls, store.setCalls)
-	}
+	require.NoError(t, err)
+	assert.True(t, decision.StartFresh)
+	assert.False(t, decision.ColdStartCutoff.IsZero())
+	assert.True(t, decision.ColdStartCutoff.After(oldCutoff))
+	assert.Equal(t, 1, store.beginCalls)
+	assert.Equal(t, 1, dbClient.deleteCalls)
+	assert.Equal(t, 1, store.setCalls)
 }
 
-func TestResetResumeTokenForCreateWithStoreRetainsInProgressCutoff(t *testing.T) {
+// TestResetResumeTokenForCreateWithStore_CreatingMode_RetainsInProgressCutoff verifies
+// that retrying an interrupted CREATE transition keeps its original boundary.
+func TestResetResumeTokenForCreateWithStore_CreatingMode_RetainsInProgressCutoff(t *testing.T) {
 	existing := time.Date(2026, 8, 28, 14, 0, 0, 0, time.UTC)
 	dbClient := &mockResumeTokenDBClient{}
 	store := &mockResumeControlStore{mode: resumeControlModeCreating, cutoff: existing}
 
 	decision, err := resetResumeTokenForCreateWithStore(
 		context.Background(), dbClient, TokenConfig{ClientName: "fault-quarantine"}, store, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if !decision.ColdStartCutoff.Equal(existing) {
-		t.Fatalf("cutoff = %v, want existing boundary %v", decision.ColdStartCutoff, existing)
-	}
-
-	if store.beginCalls != 0 {
-		t.Fatalf("BeginCreate called %d times, want 0", store.beginCalls)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, existing, decision.ColdStartCutoff)
+	assert.Zero(t, store.beginCalls)
 }
 
-func TestResetResumeTokenForCreateWithStoreKeepsCreatingModeWhenComponentResetFails(t *testing.T) {
+// TestResetResumeTokenForCreateWithStore_ComponentResetFailure_KeepsCreatingMode verifies
+// that a failed component reset leaves CREATE retryable.
+func TestResetResumeTokenForCreateWithStore_ComponentResetFailure_KeepsCreatingMode(t *testing.T) {
 	resetErr := errors.New("circuit breaker update failed")
 	dbClient := &mockResumeTokenDBClient{}
 	store := &mockResumeControlStore{mode: ResumeControlModeResume}
@@ -258,21 +249,10 @@ func TestResetResumeTokenForCreateWithStoreKeepsCreatingModeWhenComponentResetFa
 		store,
 		func() error { return resetErr },
 	)
-	if !errors.Is(err, resetErr) {
-		t.Fatalf("errors.Is(err, resetErr) = false, err=%v", err)
-	}
-
-	if dbClient.deleteCalls != 1 {
-		t.Fatalf("DeleteResumeToken called %d times, want 1", dbClient.deleteCalls)
-	}
-
-	if store.mode != resumeControlModeCreating {
-		t.Fatalf("mode = %q, want %q for a retry", store.mode, resumeControlModeCreating)
-	}
-
-	if store.setCalls != 0 {
-		t.Fatalf("SetMode called %d times, want 0", store.setCalls)
-	}
+	require.ErrorIs(t, err, resetErr)
+	assert.Equal(t, 1, dbClient.deleteCalls)
+	assert.Equal(t, resumeControlModeCreating, store.mode)
+	assert.Zero(t, store.setCalls)
 }
 
 func TestResetResumeTokenOnStartWithStore_ResumeNoop(t *testing.T) {
@@ -373,7 +353,7 @@ func TestResetResumeTokenOnStartWithStore_CreateDeletesTokenAndResetsMode(t *tes
 	}
 }
 
-func TestResetResumeTokenOnStartWithStore_FaultQuarantineCreateRecordsCutoff(t *testing.T) {
+func TestResetResumeTokenOnStartWithStore_FaultQuarantineCreate_RecordsCutoff(t *testing.T) {
 	tokenConfig := TokenConfig{
 		ClientName:      "fault-quarantine",
 		TokenDatabase:   "HealthEventsDatabase",

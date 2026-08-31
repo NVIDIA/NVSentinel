@@ -74,18 +74,22 @@ func (s *coldStartCallbackWatcherStub) SetColdStartCallback(callback func(contex
 
 type emptyHealthEventStoreStub struct {
 	datastore.HealthEventStore
+	builder datastore.QueryBuilder
+	findErr error
 }
 
-func (*emptyHealthEventStoreStub) FindHealthEventsByQueryBatched(
-	context.Context,
-	datastore.QueryBuilder,
-	int,
-	func([]datastore.HealthEventWithStatus) error,
+func (s *emptyHealthEventStoreStub) FindHealthEventsByQueryBatched(
+	_ context.Context,
+	builder datastore.QueryBuilder,
+	_ int,
+	_ func([]datastore.HealthEventWithStatus) error,
 ) error {
-	return nil
+	s.builder = builder
+
+	return s.findErr
 }
 
-func TestHandleCircuitBreakerCreatePersistsCutoffBeforeDeletingToken(t *testing.T) {
+func TestHandleCircuitBreakerCreate_Success_PersistsCutoffBeforeDeletingToken(t *testing.T) {
 	var actions []string
 	tokenConfig := client.TokenConfig{
 		ClientName:      "fault-quarantine",
@@ -118,7 +122,7 @@ func TestHandleCircuitBreakerCreatePersistsCutoffBeforeDeletingToken(t *testing.
 	assert.Equal(t, []string{"persist-cutoff", "delete-token", "reset-breaker"}, actions)
 }
 
-func TestHandleCircuitBreakerCreateKeepsTokenWhenCutoffPersistenceFails(t *testing.T) {
+func TestHandleCircuitBreakerCreate_CutoffPersistenceFailure_KeepsToken(t *testing.T) {
 	var actions []string
 	persistErr := errors.New("config map unavailable")
 	cb := &cursorModeBreakerStub{mode: breaker.CursorModeCreate, actions: &actions}
@@ -138,13 +142,78 @@ func TestHandleCircuitBreakerCreateKeepsTokenWhenCutoffPersistenceFails(t *testi
 	assert.Equal(t, []string{"persist-cutoff"}, actions)
 }
 
-func TestConfigureColdStartRegistersRecovery(t *testing.T) {
+func TestConfigureColdStart_MissingCutoff_SeedsAndPersistsBoundedWindow(t *testing.T) {
 	watcher := &coldStartCallbackWatcherStub{}
-	r := NewReconciler(ReconcilerConfig{}, nil, nil)
+	store := &emptyHealthEventStoreStub{}
+	r := NewReconciler(ReconcilerConfig{TokenConfig: client.TokenConfig{
+		ClientName: "fault-quarantine",
+	}}, nil, nil)
 	r.eventWatcher = watcher
+	var persistedCutoff time.Time
+	r.setColdStartCutoff = func(_ context.Context, clientName string, cutoff time.Time) error {
+		assert.Equal(t, "fault-quarantine", clientName)
+		persistedCutoff = cutoff
+
+		return nil
+	}
 
 	r.configureColdStart(
-		context.Background(), false, false, time.Time{}, &emptyHealthEventStoreStub{})
+		context.Background(), false, false, time.Time{}, store)
 	require.NotNil(t, watcher.callback)
 	require.NoError(t, watcher.callback(context.Background()))
+
+	_, args := store.builder.ToSQL()
+	require.NotEmpty(t, args)
+	lowerBoundary, ok := args[0].(time.Time)
+	require.True(t, ok)
+	upperBoundary, ok := args[len(args)-1].(time.Time)
+	require.True(t, ok)
+	assert.Equal(t, upperBoundary, lowerBoundary)
+	assert.Equal(t, upperBoundary, persistedCutoff)
+}
+
+func TestConfigureColdStart_FailedSweep_DoesNotAdvanceCutoff(t *testing.T) {
+	sweepErr := errors.New("database unavailable")
+	watcher := &coldStartCallbackWatcherStub{}
+	r := NewReconciler(ReconcilerConfig{TokenConfig: client.TokenConfig{
+		ClientName: "fault-quarantine",
+	}}, nil, nil)
+	r.eventWatcher = watcher
+	persistCalls := 0
+	r.setColdStartCutoff = func(context.Context, string, time.Time) error {
+		persistCalls++
+
+		return nil
+	}
+
+	r.configureColdStart(context.Background(), false, false, time.Time{},
+		&emptyHealthEventStoreStub{findErr: sweepErr})
+	require.NotNil(t, watcher.callback)
+	require.ErrorIs(t, watcher.callback(context.Background()), sweepErr)
+	assert.Zero(t, persistCalls)
+}
+
+func TestConfigureColdStart_ExistingCutoff_DoesNotAdvanceWatermark(t *testing.T) {
+	watcher := &coldStartCallbackWatcherStub{}
+	store := &emptyHealthEventStoreStub{}
+	r := NewReconciler(ReconcilerConfig{TokenConfig: client.TokenConfig{
+		ClientName: "fault-quarantine",
+	}}, nil, nil)
+	r.eventWatcher = watcher
+	persistCalls := 0
+	r.setColdStartCutoff = func(context.Context, string, time.Time) error {
+		persistCalls++
+
+		return nil
+	}
+	existingCutoff := time.Date(2026, time.August, 30, 12, 0, 0, 0, time.UTC)
+
+	r.configureColdStart(context.Background(), false, false, existingCutoff, store)
+	require.NotNil(t, watcher.callback)
+	require.NoError(t, watcher.callback(context.Background()))
+
+	_, args := store.builder.ToSQL()
+	require.NotEmpty(t, args)
+	assert.Equal(t, existingCutoff, args[0])
+	assert.Zero(t, persistCalls)
 }

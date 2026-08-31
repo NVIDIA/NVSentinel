@@ -265,7 +265,9 @@ func TestAdjustParameterNumbersHandlesMultiDigitPlaceholders(t *testing.T) {
 	}
 }
 
-func TestUpdateDocumentStatusFieldsInitializesSharedParentOnce(t *testing.T) {
+// TestUpdateDocumentStatusFields_SharedParent_InitializesParentOnce verifies
+// that sibling status updates share one bounded parent initialization chain.
+func TestUpdateDocumentStatusFields_SharedParent_InitializesParentOnce(t *testing.T) {
 	var executedSQL string
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherFunc(
 		func(_ string, actual string) error {

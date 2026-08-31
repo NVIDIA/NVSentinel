@@ -149,7 +149,7 @@ func TestNodeRuleEvaluatorWithMetadataAndSpecOnly(t *testing.T) {
 	}
 }
 
-func TestNodeRuleEvaluatorReadsCurrentNodeDuringRecovery(t *testing.T) {
+func TestNodeRuleEvaluator_RecoveryRead_UsesCurrentNode(t *testing.T) {
 	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
 	if err := indexer.Add(&corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -265,7 +265,7 @@ func TestEvaluate(t *testing.T) {
 	}
 }
 
-func TestHealthEventRuleEvaluationErrorIsPermanent(t *testing.T) {
+func TestHealthEventRuleEvaluator_EvaluationError_ReturnsPermanentError(t *testing.T) {
 	ruleEvaluator, err := NewHealthEventRuleEvaluator(
 		`event.metadata["missing"].startsWith("value")`,
 	)

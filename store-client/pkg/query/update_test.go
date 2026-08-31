@@ -21,6 +21,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/healthstatus"
 )
 
 func TestUpdateBuilder_Set_SimpleField(t *testing.T) {
@@ -139,8 +141,10 @@ func TestUpdateBuilder_Set_DeeplyNestedField(t *testing.T) {
 	assert.Equal(t, []any{"\"InProgress\""}, args)
 }
 
-func TestUpdateBuilderMongoPipelineReplacesNullParents(t *testing.T) {
-	update := NewUpdate().Set("healtheventstatus.faultquarantinerecovery", "completed")
+// TestToMongoPipeline_NullParent_ReplacesWithEmptyObject verifies that nested
+// pipeline updates tolerate legacy documents with a null parent.
+func TestToMongoPipeline_NullParent_ReplacesWithEmptyObject(t *testing.T) {
+	update := NewUpdate().Set(healthstatus.FaultQuarantineRecoveryPath, "completed")
 
 	assert.Equal(t, []any{map[string]any{
 		"$set": map[string]any{
@@ -159,6 +163,52 @@ func TestUpdateBuilderMongoPipelineReplacesNullParents(t *testing.T) {
 			}},
 		},
 	}}, update.ToMongoPipeline())
+}
+
+// TestToMongoPipeline_OverlappingPaths_PreservesOperationOrder verifies that
+// MongoDB and PostgreSQL apply overlapping updates in the same order.
+func TestToMongoPipeline_OverlappingPaths_PreservesOperationOrder(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		update           *UpdateBuilder
+		firstStageNested bool
+		wantSQLArgs      []any
+	}{
+		{
+			name: "child then parent",
+			update: NewUpdate().
+				Set("healtheventstatus.nodequarantined", "child").
+				Set("healtheventstatus", "parent"),
+			firstStageNested: true,
+			wantSQLArgs:      []any{"\"child\"", "\"parent\""},
+		},
+		{
+			name: "parent then child",
+			update: NewUpdate().
+				Set("healtheventstatus", "parent").
+				Set("healtheventstatus.nodequarantined", "child"),
+			firstStageNested: false,
+			wantSQLArgs:      []any{"\"parent\"", "\"child\""},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pipeline := test.update.ToMongoPipeline()
+			require.Len(t, pipeline, 2)
+
+			firstSet := pipeline[0].(map[string]any)[opSet].(map[string]any)
+			firstValue := firstSet["healtheventstatus"].(map[string]any)
+			_, firstIsNested := firstValue["$mergeObjects"]
+			assert.Equal(t, test.firstStageNested, firstIsNested)
+
+			secondSet := pipeline[1].(map[string]any)[opSet].(map[string]any)
+			secondValue := secondSet["healtheventstatus"].(map[string]any)
+			_, secondIsNested := secondValue["$mergeObjects"]
+			assert.NotEqual(t, test.firstStageNested, secondIsNested)
+
+			_, args := test.update.ToSQL()
+			assert.Equal(t, test.wantSQLArgs, args)
+		})
+	}
 }
 
 func TestUpdateBuilder_EmptyUpdate(t *testing.T) {

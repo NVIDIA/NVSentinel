@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/healthstatus"
 	mongoWatcher "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers/mongodb/watcher"
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
 )
@@ -54,19 +55,22 @@ func TestMongoEvent_GetResumeToken(t *testing.T) {
 	})
 }
 
-func TestMongoEventExposesUpdatedFields(t *testing.T) {
-	const completionPath = "healtheventstatus.faultquarantinerecovery"
+// TestMongoEvent_CompletionOnlyUpdate_ExposesUpdatedFields verifies that the
+// adapter exposes MongoDB's completion-only update description.
+func TestMongoEvent_CompletionOnlyUpdate_ExposesUpdatedFields(t *testing.T) {
 	event := &mongoEvent{rawEvent: mongoWatcher.Event{
 		"updateDescription": bson.M{
-			"updatedFields": bson.M{completionPath: "completed"},
+			"updatedFields": bson.M{healthstatus.FaultQuarantineRecoveryPath: "completed"},
 		},
 	}}
 
-	assert.True(t, EventUpdatesOnly(event, completionPath))
+	assert.True(t, EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath))
 }
 
-func TestResolveMongoUpdateUsesNullSafePipelineForQueryBuilder(t *testing.T) {
-	update := query.NewUpdate().Set("healtheventstatus.faultquarantinerecovery", "completed")
+// TestResolveMongoUpdate_QueryBuilder_UsesNullSafePipeline verifies that query
+// builders use aggregation-pipeline updates for nested fields.
+func TestResolveMongoUpdate_QueryBuilder_UsesNullSafePipeline(t *testing.T) {
+	update := query.NewUpdate().Set(healthstatus.FaultQuarantineRecoveryPath, "completed")
 
 	assert.Equal(t, update.ToMongoPipeline(), resolveMongoUpdate(update))
 }

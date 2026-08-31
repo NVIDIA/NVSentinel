@@ -101,30 +101,34 @@ func (u *UpdateBuilder) ToMongo() map[string]any {
 // This is useful for bulk updates that may include legacy documents whose
 // parent field is missing or explicitly null.
 func (u *UpdateBuilder) ToMongoPipeline() []any {
-	setDoc, _ := u.ToMongo()[opSet].(map[string]any)
-	if len(setDoc) == 0 {
+	if u == nil || len(u.operations) == 0 {
 		return nil
 	}
 
-	fields := make([]string, 0, len(setDoc))
-	for field := range setDoc {
-		fields = append(fields, field)
-	}
+	pipeline := make([]any, 0, len(u.operations))
 
-	sort.Strings(fields)
-	pipeline := make([]any, 0, len(fields))
+	for _, op := range u.operations {
+		setDoc, _ := op.ToMongo()[opSet].(map[string]any)
 
-	for _, field := range fields {
-		parts := strings.Split(field, ".")
-
-		value := any(map[string]any{"$literal": setDoc[field]})
-		if len(parts) > 1 {
-			value = mongoNestedFieldExpression(parts[0], parts[1:], setDoc[field])
+		fields := make([]string, 0, len(setDoc))
+		for field := range setDoc {
+			fields = append(fields, field)
 		}
 
-		pipeline = append(pipeline, map[string]any{
-			opSet: map[string]any{parts[0]: value},
-		})
+		sort.Strings(fields)
+
+		for _, field := range fields {
+			parts := strings.Split(field, ".")
+
+			value := any(map[string]any{"$literal": setDoc[field]})
+			if len(parts) > 1 {
+				value = mongoNestedFieldExpression(parts[0], parts[1:], setDoc[field])
+			}
+
+			pipeline = append(pipeline, map[string]any{
+				opSet: map[string]any{parts[0]: value},
+			})
+		}
 	}
 
 	return pipeline

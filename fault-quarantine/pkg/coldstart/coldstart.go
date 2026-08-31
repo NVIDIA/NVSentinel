@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/healthstatus"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
@@ -35,7 +36,7 @@ import (
 const (
 	batchSize = 1000
 	// RecoveryCompletionStatusPath stores terminal cold-start decisions.
-	RecoveryCompletionStatusPath = "healtheventstatus.faultquarantinerecovery"
+	RecoveryCompletionStatusPath = healthstatus.FaultQuarantineRecoveryPath
 	// RecoveryCompletionValue is shared by all terminal decisions. The detailed
 	// result remains available through the cold-start metric label.
 	RecoveryCompletionValue = "completed"
@@ -140,6 +141,11 @@ func GetRecoveryNode(
 	}
 
 	node, err := load()
+	if err == nil && node != nil {
+		node = node.DeepCopy()
+		node.Status = corev1.NodeStatus{}
+	}
+
 	state.nodes[nodeName] = recoveryNode{node: node, err: err}
 
 	return node, err
@@ -163,6 +169,13 @@ type StoredDocumentID struct {
 	Native any
 }
 
+// StoredEventCompletion associates a terminal recovery result with its durable
+// datastore key.
+type StoredEventCompletion struct {
+	DocumentID StoredDocumentID
+	Result     ProcessResult
+}
+
 type EventProcessor interface {
 	ProcessStoredEvent(
 		ctx context.Context,
@@ -171,7 +184,7 @@ type EventProcessor interface {
 	) (ProcessResult, error)
 	CompleteStoredEvents(
 		ctx context.Context,
-		documentIDs []StoredDocumentID,
+		completions []StoredEventCompletion,
 	) error
 }
 
@@ -185,11 +198,6 @@ type Dependencies struct {
 type recoveryProgress struct {
 	firstErr error
 	failures int
-}
-
-type recoveryCompletion struct {
-	documentID StoredDocumentID
-	result     ProcessResult
 }
 
 // Handle replays unresolved events in creation order. Events that overlap
@@ -216,7 +224,10 @@ func Handle(ctx context.Context, deps Dependencies) error {
 	if deps.ColdStartAfterTime.IsZero() {
 		// On the first upgrade there is no resume-token cutoff. Starting at the
 		// recovery boundary avoids sweeping the cluster's entire event history.
-		deps.ColdStartAfterTime = startedAt
+		deps.ColdStartAfterTime = deps.ColdStartUntilTime
+		if deps.ColdStartAfterTime.IsZero() {
+			deps.ColdStartAfterTime = startedAt
+		}
 	}
 
 	resolver := newSupersessionResolver(deps.HealthEventStore, deps.ColdStartUntilTime)
@@ -250,7 +261,7 @@ func (p *recoveryProgress) recoverBatch(
 	processor EventProcessor,
 	events []datastore.HealthEventWithStatus,
 ) error {
-	completions := make([]recoveryCompletion, 0, len(events))
+	completions := make([]StoredEventCompletion, 0, len(events))
 
 	for i := range events {
 		completion, err := recoverStoredEvent(ctx, resolver, processor, events[i])
@@ -267,17 +278,12 @@ func (p *recoveryProgress) recoverBatch(
 		return nil
 	}
 
-	completionIDs := make([]StoredDocumentID, 0, len(completions))
-	for i := range completions {
-		completionIDs = append(completionIDs, completions[i].documentID)
-	}
-
-	if err := processor.CompleteStoredEvents(ctx, completionIDs); err != nil {
+	if err := processor.CompleteStoredEvents(ctx, completions); err != nil {
 		return recordRecoveryFailure(fmt.Errorf("failed to record recovery completion batch: %w", err))
 	}
 
 	for i := range completions {
-		metrics.ColdStartEvents.WithLabelValues(string(completions[i].result)).Inc()
+		metrics.ColdStartEvents.WithLabelValues(string(completions[i].Result)).Inc()
 	}
 
 	return nil
@@ -307,7 +313,7 @@ func recoverStoredEvent(
 	resolver *supersessionResolver,
 	processor EventProcessor,
 	event datastore.HealthEventWithStatus,
-) (*recoveryCompletion, error) {
+) (*StoredEventCompletion, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -324,7 +330,7 @@ func recoverStoredEvent(
 				"cannot identify invalid stored event: %w", idErr))
 		}
 
-		return &recoveryCompletion{documentID: documentID, result: ProcessResultInvalid}, nil
+		return &StoredEventCompletion{DocumentID: documentID, Result: ProcessResultInvalid}, nil
 	}
 
 	if idErr != nil {
@@ -337,7 +343,7 @@ func recoverStoredEvent(
 	}
 
 	if superseded {
-		return &recoveryCompletion{documentID: documentID, result: ProcessResultSuperseded}, nil
+		return &StoredEventCompletion{DocumentID: documentID, Result: ProcessResultSuperseded}, nil
 	}
 
 	result, err := processor.ProcessStoredEvent(ctx, parsed, documentID.String)
@@ -346,7 +352,7 @@ func recoverStoredEvent(
 	}
 
 	if result == ProcessResultSkipped || result == ProcessResultInvalid {
-		return &recoveryCompletion{documentID: documentID, result: result}, nil
+		return &StoredEventCompletion{DocumentID: documentID, Result: result}, nil
 	}
 
 	metrics.ColdStartEvents.WithLabelValues(string(result)).Inc()

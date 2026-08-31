@@ -29,7 +29,7 @@ import (
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
 )
 
-func TestFindHealthEventsByQueryBatchedUsesStableKeysetPagination(t *testing.T) {
+func TestFindHealthEventsByQueryBatched_MultipleRows_UsesStableKeysetPagination(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
@@ -77,7 +77,7 @@ func TestFindHealthEventsByQueryBatchedUsesStableKeysetPagination(t *testing.T) 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestFindHealthEventsByQueryBatchedStopsOnCallbackError(t *testing.T) {
+func TestFindHealthEventsByQueryBatched_CallbackError_StopsIteration(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
@@ -103,7 +103,7 @@ func TestFindHealthEventsByQueryBatchedStopsOnCallbackError(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestFindHealthEventsByQueryBatchedParenthesizesORFilterBeforeCursor(t *testing.T) {
+func TestFindHealthEventsByQueryBatched_ORFilter_ParenthesizesBeforeCursor(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
@@ -160,7 +160,7 @@ func TestFindHealthEventsByQueryBatchedParenthesizesORFilterBeforeCursor(t *test
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestFindHealthEventsByQueryBatchedSkipsInvalidDocumentAndAdvancesCursor(t *testing.T) {
+func TestFindHealthEventsByQueryBatched_InvalidDocument_SkipsAndAdvancesCursor(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
@@ -207,7 +207,7 @@ func TestFindHealthEventsByQueryBatchedSkipsInvalidDocumentAndAdvancesCursor(t *
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestFindLatestHealthEventByQueryPreservesCreatedAt(t *testing.T) {
+func TestFindLatestHealthEventByQuery_Result_PreservesCreatedAt(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })

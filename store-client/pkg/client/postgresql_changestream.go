@@ -76,25 +76,52 @@ func changedDocumentFields(oldValues, newValues map[string]any) map[string]any {
 
 func flattenChangedFields(prefix string, oldValues, newValues map[string]any, updated map[string]any) {
 	for key, newValue := range newValues {
-		path := key
-		if prefix != "" {
-			path = prefix + "." + key
-		}
+		flattenChangedField(changedFieldPath(prefix, key), oldValues, key, newValue, updated)
+	}
 
-		oldValue, existed := oldValues[key]
-		newMap, newIsMap := newValue.(map[string]any)
-		oldMap, oldIsMap := oldValue.(map[string]any)
-
-		if newIsMap && oldIsMap {
-			flattenChangedFields(path, oldMap, newMap, updated)
-
+	for key := range oldValues {
+		if _, exists := newValues[key]; exists {
 			continue
 		}
 
-		if !existed || !reflect.DeepEqual(oldValue, newValue) {
-			updated[path] = newValue
-		}
+		updated[changedFieldPath(prefix, key)] = nil
 	}
+}
+
+func flattenChangedField(
+	path string,
+	oldValues map[string]any,
+	key string,
+	newValue any,
+	updated map[string]any,
+) {
+	oldValue, existed := oldValues[key]
+	newMap, newIsMap := newValue.(map[string]any)
+	oldMap, oldIsMap := oldValue.(map[string]any)
+
+	if newIsMap {
+		if !oldIsMap && len(newMap) == 0 {
+			updated[path] = newValue
+
+			return
+		}
+
+		flattenChangedFields(path, oldMap, newMap, updated)
+
+		return
+	}
+
+	if !existed || !reflect.DeepEqual(oldValue, newValue) {
+		updated[path] = newValue
+	}
+}
+
+func changedFieldPath(prefix, key string) string {
+	if prefix == "" {
+		return key
+	}
+
+	return prefix + "." + key
 }
 
 // GetDocumentID returns the changelog sequence ID (not the record UUID).

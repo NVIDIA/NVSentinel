@@ -166,7 +166,7 @@ func parsedStoredHealthEvent(t *testing.T, id string) model.HealthEventWithStatu
 	return parsed
 }
 
-func TestProcessStoredEventUsesLiveProcessingPathAndDeduplicatesReplay(t *testing.T) {
+func TestProcessStoredEvent_LivePath_DeduplicatesReplay(t *testing.T) {
 	dbClient := &databaseClientStub{}
 	objectIDs := &objectIDStoreStub{}
 	watcher := NewEventWatcher(nil, dbClient, time.Minute, objectIDs)
@@ -201,7 +201,7 @@ func TestProcessStoredEventUsesLiveProcessingPathAndDeduplicatesReplay(t *testin
 	assert.Equal(t, 1, dbClient.updateCalls)
 }
 
-func TestProcessStoredEventDoesNotDeduplicateSkippedEvent(t *testing.T) {
+func TestProcessStoredEvent_SkippedEvent_DoesNotDeduplicate(t *testing.T) {
 	dbClient := &databaseClientStub{}
 	watcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
 
@@ -226,7 +226,7 @@ func TestProcessStoredEventDoesNotDeduplicateSkippedEvent(t *testing.T) {
 	assert.Equal(t, 2, callbackCalls)
 }
 
-func TestProcessStoredEventReturnsStatusUpdateFailure(t *testing.T) {
+func TestProcessStoredEvent_StatusUpdateFailure_ReturnsError(t *testing.T) {
 	updateErr := errors.New("database unavailable")
 	dbClient := &databaseClientStub{updateErr: updateErr}
 	watcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
@@ -242,7 +242,7 @@ func TestProcessStoredEventReturnsStatusUpdateFailure(t *testing.T) {
 	assert.Equal(t, coldstart.ProcessResultFailed, result)
 }
 
-func TestProcessStoredEventReturnsReconcilerFailure(t *testing.T) {
+func TestProcessStoredEvent_ReconcilerFailure_ReturnsError(t *testing.T) {
 	processingErr := errors.New("node API unavailable")
 	watcher := NewEventWatcher(nil, &databaseClientStub{}, time.Minute, &objectIDStoreStub{})
 	watcher.SetProcessEventCallback(func(context.Context, *model.HealthEventWithStatus) (*model.Status, error) {
@@ -255,7 +255,7 @@ func TestProcessStoredEventReturnsReconcilerFailure(t *testing.T) {
 	assert.Equal(t, coldstart.ProcessResultFailed, result)
 }
 
-func TestProcessStoredEventClassifiesPermanentEvaluationFailure(t *testing.T) {
+func TestProcessStoredEvent_PermanentEvaluationFailure_ClassifiesPermanent(t *testing.T) {
 	processingErr := coldstart.PermanentError(errors.New("missing CEL field"))
 	watcher := NewEventWatcher(nil, &databaseClientStub{}, time.Minute, &objectIDStoreStub{})
 	watcher.SetProcessEventCallback(func(context.Context, *model.HealthEventWithStatus) (*model.Status, error) {
@@ -268,7 +268,7 @@ func TestProcessStoredEventClassifiesPermanentEvaluationFailure(t *testing.T) {
 	assert.Equal(t, coldstart.ProcessResultInvalid, result)
 }
 
-func TestProcessStoredEventKeepsSuccessfulStatusWithPermanentEvaluationFailure(t *testing.T) {
+func TestProcessStoredEvent_SuccessfulStatusWithPermanentEvaluationFailure_KeepsSuccess(t *testing.T) {
 	processingErr := coldstart.PermanentError(errors.New("missing CEL field"))
 	dbClient := &databaseClientStub{}
 	watcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
@@ -285,7 +285,7 @@ func TestProcessStoredEventKeepsSuccessfulStatusWithPermanentEvaluationFailure(t
 	assert.Equal(t, 1, dbClient.updateCalls)
 }
 
-func TestProcessStoredEventReplaysMixedPermanentAndTransientFailures(t *testing.T) {
+func TestProcessStoredEvent_MixedPermanentAndTransientFailures_Replays(t *testing.T) {
 	permanentErr := coldstart.PermanentError(errors.New("missing CEL field"))
 	transientErr := errors.New("node API unavailable")
 	watcher := NewEventWatcher(nil, &databaseClientStub{}, time.Minute, &objectIDStoreStub{})
@@ -299,7 +299,7 @@ func TestProcessStoredEventReplaysMixedPermanentAndTransientFailures(t *testing.
 	assert.Equal(t, coldstart.ProcessResultFailed, result)
 }
 
-func TestProcessStoredEventReplaysTransientFailureAfterStatusUpdate(t *testing.T) {
+func TestProcessStoredEvent_TransientFailureAfterStatusUpdate_Replays(t *testing.T) {
 	processingErr := errors.New("node API unavailable")
 	dbClient := &databaseClientStub{}
 	watcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
@@ -316,7 +316,7 @@ func TestProcessStoredEventReplaysTransientFailureAfterStatusUpdate(t *testing.T
 	assert.Equal(t, 1, dbClient.updateCalls)
 }
 
-func TestCompleteStoredEventsUsesOneBulkUpdateAndDeduplicatesItsUpdates(t *testing.T) {
+func TestCompleteStoredEvents_MixedTerminalResults_PersistsAllAndDeduplicatesOnlyTerminalDrops(t *testing.T) {
 	dbClient := &databaseClientStub{}
 	objectIDs := &objectIDStoreStub{}
 	watcher := NewEventWatcher(nil, dbClient, time.Minute, objectIDs)
@@ -329,15 +329,30 @@ func TestCompleteStoredEventsUsesOneBulkUpdateAndDeduplicatesItsUpdates(t *testi
 	})
 
 	require.NoError(t, watcher.CompleteStoredEvents(
-		context.Background(), []coldstart.StoredDocumentID{
-			{String: "event-uuid", Native: "native-one"},
-			{String: "event-uuid", Native: "native-one"},
-			{String: "event-two", Native: "native-two"},
+		context.Background(), []coldstart.StoredEventCompletion{
+			{
+				DocumentID: coldstart.StoredDocumentID{String: "event-invalid", Native: "native-invalid"},
+				Result:     coldstart.ProcessResultInvalid,
+			},
+			{
+				DocumentID: coldstart.StoredDocumentID{String: "event-invalid", Native: "native-invalid"},
+				Result:     coldstart.ProcessResultInvalid,
+			},
+			{
+				DocumentID: coldstart.StoredDocumentID{String: "event-skipped", Native: "native-skipped"},
+				Result:     coldstart.ProcessResultSkipped,
+			},
+			{
+				DocumentID: coldstart.StoredDocumentID{String: "event-superseded", Native: "native-superseded"},
+				Result:     coldstart.ProcessResultSuperseded,
+			},
 		}))
 	assert.Equal(t, 1, dbClient.updateManyCalls)
 	filter, ok := dbClient.batchFilter.(datastore.QueryBuilder)
 	require.True(t, ok)
-	assert.Equal(t, map[string]any{"_id": map[string]any{"$in": []any{"native-one", "native-two"}}},
+	assert.Equal(t, map[string]any{"_id": map[string]any{"$in": []any{
+		"native-invalid", "native-skipped", "native-superseded",
+	}}},
 		filter.ToMongo())
 	update, ok := dbClient.batchUpdate.(*query.UpdateBuilder)
 	require.True(t, ok)
@@ -346,16 +361,18 @@ func TestCompleteStoredEventsUsesOneBulkUpdateAndDeduplicatesItsUpdates(t *testi
 	}}, update.ToMongo())
 	assert.NotEmpty(t, update.ToMongoPipeline(), "bulk updates must tolerate a null status parent")
 
-	require.NoError(t, watcher.processEvent(context.Background(), &clientEventStub{
-		document:   storedHealthEvent("event-uuid"),
-		eventID:    "44",
-		recordUUID: "event-uuid",
-	}))
-	assert.Equal(t, 0, callbackCalls)
-	assert.Equal(t, "44", objectIDs.last)
+	for _, eventID := range []string{"event-invalid", "event-skipped", "event-superseded"} {
+		require.NoError(t, watcher.processEvent(context.Background(), &clientEventStub{
+			document:   storedHealthEvent(eventID),
+			eventID:    eventID + "-token",
+			recordUUID: eventID,
+		}))
+	}
+	assert.Equal(t, 1, callbackCalls, "only the intentionally skipped event should be replayed live")
+	assert.Equal(t, "event-superseded-token", objectIDs.last)
 }
 
-func TestExpiredRecoveryDedupEntryDoesNotSuppressLiveEvent(t *testing.T) {
+func TestExpireRecoveredEventIDs_ExpiredEntry_DoesNotSuppressLiveEvent(t *testing.T) {
 	watcher := NewEventWatcher(nil, &databaseClientStub{}, time.Minute, &objectIDStoreStub{})
 
 	callbackCalls := 0
@@ -374,7 +391,27 @@ func TestExpiredRecoveryDedupEntryDoesNotSuppressLiveEvent(t *testing.T) {
 	assert.Equal(t, 1, callbackCalls)
 }
 
-func TestStartOpensWatcherBeforeColdStartAndClosesOnFailure(t *testing.T) {
+func TestRememberRecoveredEvent_ColdStartEntry_UsesArmedDeadlineShape(t *testing.T) {
+	watcher := NewEventWatcher(nil, &databaseClientStub{}, time.Minute, &objectIDStoreStub{})
+	watcher.rememberRecoveredEvent("event-id")
+
+	value, loaded := watcher.recoveredEventIDs.Load("event-id")
+	require.True(t, loaded)
+	unarmed, ok := value.(time.Time)
+	require.True(t, ok)
+	assert.True(t, unarmed.IsZero())
+
+	now := time.Date(2026, time.August, 31, 12, 0, 0, 0, time.UTC)
+	watcher.armRecoveredEventExpiry(now)
+
+	value, loaded = watcher.recoveredEventIDs.Load("event-id")
+	require.True(t, loaded)
+	armed, ok := value.(time.Time)
+	require.True(t, ok)
+	assert.Equal(t, now.Add(recoveredEventDedupRetention), armed)
+}
+
+func TestStart_ColdStartFailure_OpensWatcherThenCloses(t *testing.T) {
 	recoveryErr := errors.New("recovery failed")
 	changeStream := &changeStreamWatcherStub{events: make(chan client.Event)}
 	watcher := NewEventWatcher(changeStream, &databaseClientStub{}, time.Minute, &objectIDStoreStub{})
@@ -389,7 +426,7 @@ func TestStartOpensWatcherBeforeColdStartAndClosesOnFailure(t *testing.T) {
 	assert.True(t, changeStream.closed)
 }
 
-func TestStartReportsBacklogWhileColdStartIsRunning(t *testing.T) {
+func TestStart_ColdStartInProgress_ReportsBacklog(t *testing.T) {
 	recoveryErr := errors.New("recovery stopped")
 	metricCalls := make(chan struct{}, 1)
 	changeStream := &changeStreamWatcherStub{
@@ -411,7 +448,7 @@ func TestStartReportsBacklogWhileColdStartIsRunning(t *testing.T) {
 	require.ErrorIs(t, err, recoveryErr)
 }
 
-func TestStartTreatsColdStartCancellationAsShutdown(t *testing.T) {
+func TestStart_ColdStartCancellation_TreatsAsShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	changeStream := &changeStreamWatcherStub{events: make(chan client.Event)}
 	watcher := NewEventWatcher(changeStream, &databaseClientStub{}, time.Minute, &objectIDStoreStub{})
@@ -425,7 +462,7 @@ func TestStartTreatsColdStartCancellationAsShutdown(t *testing.T) {
 	assert.True(t, changeStream.closed)
 }
 
-func TestStartDoesNotEnterWatchLoopAfterColdStartCancellation(t *testing.T) {
+func TestStart_ColdStartCancellation_DoesNotEnterWatchLoop(t *testing.T) {
 	for range 100 {
 		ctx, cancel := context.WithCancel(context.Background())
 		events := make(chan client.Event)

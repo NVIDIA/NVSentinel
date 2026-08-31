@@ -65,11 +65,11 @@ func (s *eventProcessorStub) ProcessStoredEvent(
 
 func (s *eventProcessorStub) CompleteStoredEvents(
 	_ context.Context,
-	documentIDs []StoredDocumentID,
+	completions []StoredEventCompletion,
 ) error {
-	batch := make([]string, 0, len(documentIDs))
-	for i := range documentIDs {
-		batch = append(batch, documentIDs[i].String)
+	batch := make([]string, 0, len(completions))
+	for i := range completions {
+		batch = append(batch, completions[i].DocumentID.String)
 	}
 
 	s.completionBatches = append(s.completionBatches, batch)
@@ -87,7 +87,7 @@ func replayRecord(id string) datastore.HealthEventWithStatus {
 	}}
 }
 
-func TestStoredDocumentIDPreservesNativeDatabaseKey(t *testing.T) {
+func TestStoredDocumentID_NativeDatabaseKey_PreservesValue(t *testing.T) {
 	id, err := storedDocumentID(datastore.Event{"_id": 42})
 
 	require.NoError(t, err)
@@ -95,7 +95,7 @@ func TestStoredDocumentIDPreservesNativeDatabaseKey(t *testing.T) {
 	assert.Equal(t, 42, id.Native)
 }
 
-func TestColdStartQueryMatchesOnlyUnresolvedProcessableEvents(t *testing.T) {
+func TestColdStartQuery_StoredEvents_MatchesOnlyUnresolvedProcessable(t *testing.T) {
 	cutoff := time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC)
 	until := cutoff.Add(time.Hour)
 	builder := coldStartQuery(cutoff, until)
@@ -140,7 +140,7 @@ func TestColdStartQueryMatchesOnlyUnresolvedProcessableEvents(t *testing.T) {
 	assert.Equal(t, []any{cutoff, "", "NotStarted", "", "1", "1", until}, args)
 }
 
-func TestColdStartQuerySupportsExplicitlyUnboundedLowerTimestamp(t *testing.T) {
+func TestColdStartQuery_UnboundedLowerTimestamp_OmitsLowerBound(t *testing.T) {
 	until := time.Date(2026, time.August, 28, 12, 0, 0, 0, time.UTC)
 	builder := coldStartQuery(time.Time{}, until)
 
@@ -150,7 +150,7 @@ func TestColdStartQuerySupportsExplicitlyUnboundedLowerTimestamp(t *testing.T) {
 	assert.Equal(t, until, args[len(args)-1])
 }
 
-func TestHandleProcessesEveryBatchInOrder(t *testing.T) {
+func TestHandle_MultipleBatches_ProcessesInOrder(t *testing.T) {
 	const eventCount = batchSize + 7
 
 	events := make([]datastore.HealthEventWithStatus, eventCount)
@@ -194,7 +194,7 @@ func TestHandleProcessesEveryBatchInOrder(t *testing.T) {
 	assert.Equal(t, fmt.Sprintf("event-%04d", eventCount-1), processedIDs[eventCount-1])
 }
 
-func TestHandleContinuesPastProcessingFailure(t *testing.T) {
+func TestHandle_EventProcessingFailure_ContinuesBatch(t *testing.T) {
 	processErr := errors.New("status update failed")
 	events := []datastore.HealthEventWithStatus{
 		replayRecord("first"),
@@ -233,7 +233,7 @@ func TestHandleContinuesPastProcessingFailure(t *testing.T) {
 	assert.Equal(t, []string{"first", "second", "third"}, processedIDs)
 }
 
-func TestHandleContinuesPastInvalidStoredEvent(t *testing.T) {
+func TestHandle_InvalidStoredEvent_ContinuesBatch(t *testing.T) {
 	events := []datastore.HealthEventWithStatus{
 		replayRecord("invalid-one"),
 		replayRecord("invalid-two"),
@@ -272,7 +272,7 @@ func TestHandleContinuesPastInvalidStoredEvent(t *testing.T) {
 	assert.Equal(t, [][]string{{"invalid-one", "invalid-two"}}, processor.completionBatches)
 }
 
-func TestHandleParsesMalformedEventOnceAndCompletesItWithoutProcessing(t *testing.T) {
+func TestHandle_MalformedStoredEvent_ParsesOnceAndCompletes(t *testing.T) {
 	events := []datastore.HealthEventWithStatus{
 		{RawEvent: datastore.Event{"id": "malformed"}},
 		replayRecord("valid"),
@@ -302,7 +302,7 @@ func TestHandleParsesMalformedEventOnceAndCompletesItWithoutProcessing(t *testin
 	assert.Equal(t, [][]string{{"malformed"}}, processor.completionBatches)
 }
 
-func TestHandleStopsWhenCompletionStatusCannotBePersisted(t *testing.T) {
+func TestHandle_CompletionPersistenceFailure_StopsRecovery(t *testing.T) {
 	completionErr := errors.New("database unavailable")
 	store := &healthEventStoreStub{
 		findBatched: func(
@@ -328,7 +328,7 @@ func TestHandleStopsWhenCompletionStatusCannotBePersisted(t *testing.T) {
 	require.ErrorIs(t, err, completionErr)
 }
 
-func TestHandleValidatesDependencies(t *testing.T) {
+func TestHandle_InvalidDependencies_ReturnsError(t *testing.T) {
 	processor := &eventProcessorStub{
 		process: func(context.Context, model.HealthEventWithStatus, string) (ProcessResult, error) {
 			return ProcessResultSkipped, nil
@@ -353,7 +353,7 @@ func TestHandleValidatesDependencies(t *testing.T) {
 	assert.EqualError(t, err, "event processor is required")
 }
 
-func TestHandleDefaultsMissingCutoffToRecoveryStart(t *testing.T) {
+func TestHandle_MissingCutoff_UsesRecoveryStart(t *testing.T) {
 	var captured datastore.QueryBuilder
 	store := &healthEventStoreStub{findBatched: func(
 		_ context.Context,
@@ -386,7 +386,38 @@ func TestHandleDefaultsMissingCutoffToRecoveryStart(t *testing.T) {
 	assert.False(t, cutoff.After(after))
 }
 
-func TestIsPermanentErrorRequiresEveryJoinedFailureToBePermanent(t *testing.T) {
+func TestHandle_MissingCutoffWithUpperBoundary_UsesUpperBoundary(t *testing.T) {
+	until := time.Date(2026, time.August, 31, 12, 0, 0, 0, time.UTC)
+	var captured datastore.QueryBuilder
+	store := &healthEventStoreStub{findBatched: func(
+		_ context.Context,
+		builder datastore.QueryBuilder,
+		_ int,
+		_ func([]datastore.HealthEventWithStatus) error,
+	) error {
+		captured = builder
+
+		return nil
+	}}
+	processor := &eventProcessorStub{process: func(
+		context.Context, model.HealthEventWithStatus, string,
+	) (ProcessResult, error) {
+		return ProcessResultProcessed, nil
+	}}
+
+	require.NoError(t, Handle(context.Background(), Dependencies{
+		HealthEventStore:   store,
+		EventProcessor:     processor,
+		ColdStartUntilTime: until,
+	}))
+
+	_, args := captured.ToSQL()
+	require.NotEmpty(t, args)
+	assert.Equal(t, until, args[0])
+	assert.Equal(t, until, args[len(args)-1])
+}
+
+func TestIsPermanentError_JoinedFailures_RequiresEveryFailurePermanent(t *testing.T) {
 	permanentErr := PermanentError(errors.New("node no longer exists"))
 	otherPermanentErr := PermanentError(errors.New("invalid CEL expression"))
 	transientErr := errors.New("API server unavailable")
@@ -396,13 +427,19 @@ func TestIsPermanentErrorRequiresEveryJoinedFailureToBePermanent(t *testing.T) {
 	assert.False(t, IsPermanentError(errors.Join(permanentErr, transientErr)))
 }
 
-func TestGetRecoveryNodeLoadsOneSnapshotPerEvent(t *testing.T) {
+func TestGetRecoveryNode_RepeatedRead_UsesOneSanitizedSnapshot(t *testing.T) {
 	ctx := WithRecoveryContext(context.Background())
 	calls := 0
+	source := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+		Status: corev1.NodeStatus{
+			Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}},
+		},
+	}
 	load := func() (*corev1.Node, error) {
 		calls++
 
-		return &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a"}}, nil
+		return source, nil
 	}
 
 	first, err := GetRecoveryNode(ctx, "node-a", load)
@@ -411,5 +448,8 @@ func TestGetRecoveryNodeLoadsOneSnapshotPerEvent(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Same(t, first, second)
+	assert.NotSame(t, source, first)
+	assert.Empty(t, first.Status)
+	assert.NotEmpty(t, source.Status)
 	assert.Equal(t, 1, calls)
 }
