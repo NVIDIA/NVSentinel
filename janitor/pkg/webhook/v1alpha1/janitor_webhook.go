@@ -17,7 +17,6 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -152,91 +151,6 @@ func (v *JanitorCustomValidator) validateNodeNotInExclusions(ctx context.Context
 	return nil
 }
 
-// validateNoActiveReboot checks if there's already an active reboot for the node
-func (v *JanitorCustomValidator) validateNoActiveReboot(ctx context.Context, nodeName string) error {
-	if v.Client == nil {
-		return fmt.Errorf("kubernetes client not available for reboot validation")
-	}
-
-	var rebootNodeList janitordgxcnvidiacomv1alpha1.RebootNodeList
-	if err := v.Client.List(ctx, &rebootNodeList); err != nil {
-		return fmt.Errorf("failed to list RebootNode resources: %w", err)
-	}
-
-	for _, rebootNode := range rebootNodeList.Items {
-		// Skip if it's for a different node
-		if rebootNode.Spec.NodeName != nodeName {
-			continue
-		}
-
-		// Check if this reboot is still active (not completed)
-		if rebootNode.Status.CompletionTime == nil {
-			return fmt.Errorf("node '%s' already has an active reboot in progress (RebootNode: %s)", nodeName, rebootNode.Name)
-		}
-	}
-
-	return nil
-}
-
-// validateNoActiveTermination checks if there's already an active termination for the node
-func (v *JanitorCustomValidator) validateNoActiveTermination(ctx context.Context, nodeName string) error {
-	if v.Client == nil {
-		return fmt.Errorf("kubernetes client not available for termination validation")
-	}
-
-	var terminateNodeList janitordgxcnvidiacomv1alpha1.TerminateNodeList
-	if err := v.Client.List(ctx, &terminateNodeList); err != nil {
-		return fmt.Errorf("failed to list TerminateNode resources: %w", err)
-	}
-
-	for _, terminateNode := range terminateNodeList.Items {
-		// Skip if it's for a different node
-		if terminateNode.Spec.NodeName != nodeName {
-			continue
-		}
-
-		// Check if this termination is still active (not completed)
-		if terminateNode.Status.CompletionTime == nil {
-			return fmt.Errorf(
-				"node '%s' already has an active termination in progress (TerminateNode: %s)", // nolint:lll
-				nodeName,
-				terminateNode.Name,
-			)
-		}
-	}
-
-	return nil
-}
-
-func (v *JanitorCustomValidator) validateNoActiveResetForSameGPU(ctx context.Context, nodeName string,
-	currentUUIDs []string) error {
-	if v.Client == nil {
-		return fmt.Errorf("kubernetes client not available for reset validation")
-	}
-
-	var gpuResetList janitordgxcnvidiacomv1alpha1.GPUResetList
-	if err := v.Client.List(ctx, &gpuResetList); err != nil {
-		return fmt.Errorf("failed to list GPUReset resources: %w", err)
-	}
-
-	for _, gpuReset := range gpuResetList.Items {
-		if gpuReset.Spec.NodeName != nodeName {
-			continue
-		}
-
-		if gpuReset.Status.CompletionTime == nil {
-			for _, currentUUID := range currentUUIDs {
-				if slices.Contains(gpuReset.Spec.Selector.UUIDs, currentUUID) {
-					return fmt.Errorf("node '%s' and GPU '%s' already has an active reset in progress (GPUReset: %s)",
-						nodeName, currentUUID, gpuReset.Name)
-				}
-			}
-		}
-	}
-
-	return nil
-}
-
 func (v *JanitorCustomValidator) validateNodeAndGPUs(oldNodeName, newNodeName string,
 	oldUUIDs, newUUIDs []string) error {
 	if oldNodeName != newNodeName {
@@ -325,13 +239,6 @@ func (v *rebootNodeValidator) ValidateCreate(ctx context.Context,
 		return nil, fmt.Errorf("RebootNode controller is disabled in configuration")
 	}
 
-	if err := v.validateNoActiveReboot(ctx, nodeName); err != nil {
-		janitorWebhookLog.Info("Active reboot validation failed",
-			"type", controllerTypeRebootNode, "name", objName, "nodeName", nodeName, "error", err.Error())
-
-		return nil, err
-	}
-
 	return v.validateNodeForCreate(ctx, controllerTypeRebootNode, objName, nodeName)
 }
 
@@ -380,13 +287,6 @@ func (v *terminateNodeValidator) ValidateCreate(ctx context.Context,
 		return nil, fmt.Errorf("TerminateNode controller is disabled in configuration")
 	}
 
-	if err := v.validateNoActiveTermination(ctx, nodeName); err != nil {
-		janitorWebhookLog.Info("Active termination validation failed",
-			"type", controllerTypeTerminateNode, "name", objName, "nodeName", nodeName, "error", err.Error())
-
-		return nil, err
-	}
-
 	return v.validateNodeForCreate(ctx, controllerTypeTerminateNode, objName, nodeName)
 }
 
@@ -429,18 +329,10 @@ func (v *gpuResetValidator) ValidateCreate(ctx context.Context,
 	obj *janitordgxcnvidiacomv1alpha1.GPUReset) (admission.Warnings, error) {
 	objName := obj.GetName()
 	nodeName := obj.Spec.NodeName
-	uuids := obj.Spec.Selector.UUIDs
 
 	if v.Config == nil || !v.Config.GPUReset.Enabled {
 		janitorWebhookLog.Info("GPUReset controller is disabled, rejecting creation", "name", objName)
 		return nil, fmt.Errorf("GPUReset controller is disabled in configuration")
-	}
-
-	if err := v.validateNoActiveResetForSameGPU(ctx, nodeName, uuids); err != nil {
-		janitorWebhookLog.Info("Active reset validation failed",
-			"type", controllerTypeGPUReset, "name", objName, "nodeName", nodeName, "error", err.Error())
-
-		return nil, err
 	}
 
 	return v.validateNodeForCreate(ctx, controllerTypeGPUReset, objName, nodeName)
