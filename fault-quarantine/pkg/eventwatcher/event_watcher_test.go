@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -41,6 +42,41 @@ type databaseClientStub struct {
 	updateManyCalls int
 	batchFilter     any
 	batchUpdate     any
+	completionID    string
+	completionPath  string
+	completionValue any
+	completionCalls int
+	completionErr   error
+	actions         *[]string
+	completed       map[string]bool
+}
+
+func (s *databaseClientStub) UpdateDocumentStatus(
+	_ context.Context,
+	documentID string,
+	statusPath string,
+	status any,
+) error {
+	s.completionID = documentID
+	s.completionPath = statusPath
+	s.completionValue = status
+	s.completionCalls++
+	if s.actions != nil {
+		*s.actions = append(*s.actions, "complete")
+	}
+	if s.completionErr != nil {
+		return s.completionErr
+	}
+
+	if statusPath == coldstart.RecoveryCompletionStatusPath && status == coldstart.RecoveryCompletionValue {
+		if s.completed == nil {
+			s.completed = make(map[string]bool)
+		}
+
+		s.completed[documentID] = true
+	}
+
+	return nil
 }
 
 func (s *databaseClientStub) UpdateManyDocuments(
@@ -69,6 +105,29 @@ func (s *databaseClientStub) UpdateDocumentStatusFields(
 
 type objectIDStoreStub struct {
 	last string
+}
+
+type completionFilteringHealthStoreStub struct {
+	datastore.HealthEventStore
+	db      *databaseClientStub
+	record  datastore.HealthEventWithStatus
+	query   datastore.QueryBuilder
+	scanned int
+}
+
+func (s *completionFilteringHealthStoreStub) FindHealthEventsByQueryBatched(
+	_ context.Context,
+	builder datastore.QueryBuilder,
+	_ int,
+	fn func([]datastore.HealthEventWithStatus) error,
+) error {
+	s.query = builder
+	s.scanned++
+	if s.db.completed["event-uuid"] {
+		return nil
+	}
+
+	return fn([]datastore.HealthEventWithStatus{s.record})
 }
 
 func (s *objectIDStoreStub) StoreLastProcessedObjectID(id string) {
@@ -106,6 +165,9 @@ type changeStreamWatcherStub struct {
 	events      chan client.Event
 	closeFn     func()
 	metricCalls chan struct{}
+	markCalls   int
+	markTokens  [][]byte
+	actions     *[]string
 }
 
 func (s *changeStreamWatcherStub) GetUnprocessedEventCount(context.Context, string) (int64, error) {
@@ -127,7 +189,13 @@ func (s *changeStreamWatcherStub) Events() <-chan client.Event {
 	return s.events
 }
 
-func (s *changeStreamWatcherStub) MarkProcessed(context.Context, []byte) error {
+func (s *changeStreamWatcherStub) MarkProcessed(_ context.Context, token []byte) error {
+	s.markCalls++
+	s.markTokens = append(s.markTokens, token)
+	if s.actions != nil {
+		*s.actions = append(*s.actions, "checkpoint")
+	}
+
 	return nil
 }
 
@@ -224,6 +292,145 @@ func TestProcessStoredEvent_SkippedEvent_DoesNotDeduplicate(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 2, callbackCalls)
+}
+
+func TestProcessEvent_IntentionallySkippedMarksRecoveryComplete(t *testing.T) {
+	dbClient := &databaseClientStub{}
+	watcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
+	watcher.SetProcessEventCallback(func(context.Context, *model.HealthEventWithStatus) (*model.Status, error) {
+		return nil, nil
+	})
+
+	err := watcher.processEvent(context.Background(), &clientEventStub{
+		document:   storedHealthEvent("event-uuid"),
+		eventID:    "44",
+		recordUUID: "event-uuid",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "event-uuid", dbClient.completionID)
+	assert.Equal(t, coldstart.RecoveryCompletionStatusPath, dbClient.completionPath)
+	assert.Equal(t, coldstart.RecoveryCompletionValue, dbClient.completionValue)
+	assert.Equal(t, 1, dbClient.completionCalls)
+}
+
+func TestProcessEvent_SkippedCompletionFailureIsReplayable(t *testing.T) {
+	completionErr := errors.New("database unavailable")
+	dbClient := &databaseClientStub{completionErr: completionErr}
+	watcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
+	watcher.SetProcessEventCallback(func(context.Context, *model.HealthEventWithStatus) (*model.Status, error) {
+		return nil, nil
+	})
+
+	err := watcher.processEvent(context.Background(), &clientEventStub{
+		document:   storedHealthEvent("event-uuid"),
+		eventID:    "45",
+		recordUUID: "event-uuid",
+	})
+	require.ErrorIs(t, err, completionErr)
+	assert.Equal(t, 1, dbClient.completionCalls)
+	assert.False(t, dbClient.completed["event-uuid"])
+}
+
+func TestProcessEvent_CanceledSkipIsNotMarkedComplete(t *testing.T) {
+	dbClient := &databaseClientStub{}
+	watcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
+	watcher.SetProcessEventCallback(func(context.Context, *model.HealthEventWithStatus) (*model.Status, error) {
+		return nil, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := watcher.processEvent(ctx, &clientEventStub{
+		document:   storedHealthEvent("event-uuid"),
+		eventID:    "46",
+		recordUUID: "event-uuid",
+	})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, dbClient.completionCalls)
+}
+
+func TestWatchEvents_SkippedCompletionPrecedesCheckpoint(t *testing.T) {
+	var actions []string
+	events := make(chan client.Event, 1)
+	events <- &clientEventStub{
+		document:   storedHealthEvent("event-uuid"),
+		eventID:    "47",
+		recordUUID: "event-uuid",
+		token:      []byte("resume-token"),
+	}
+	close(events)
+
+	changeStream := &changeStreamWatcherStub{events: events, actions: &actions}
+	dbClient := &databaseClientStub{actions: &actions}
+	watcher := NewEventWatcher(changeStream, dbClient, time.Minute, &objectIDStoreStub{})
+	watcher.SetProcessEventCallback(func(context.Context, *model.HealthEventWithStatus) (*model.Status, error) {
+		return nil, nil
+	})
+
+	require.NoError(t, watcher.watchEvents(context.Background()))
+	assert.Equal(t, []string{"complete", "checkpoint"}, actions)
+	assert.Equal(t, 1, changeStream.markCalls)
+	assert.Equal(t, [][]byte{[]byte("resume-token")}, changeStream.markTokens)
+}
+
+func TestWatchEvents_SkippedCompletionFailureDoesNotCheckpoint(t *testing.T) {
+	completionErr := errors.New("database unavailable")
+	events := make(chan client.Event, 1)
+	events <- &clientEventStub{
+		document:   storedHealthEvent("event-uuid"),
+		eventID:    "49",
+		recordUUID: "event-uuid",
+		token:      []byte("resume-token"),
+	}
+	close(events)
+
+	changeStream := &changeStreamWatcherStub{events: events}
+	dbClient := &databaseClientStub{completionErr: completionErr}
+	watcher := NewEventWatcher(changeStream, dbClient, time.Minute, &objectIDStoreStub{})
+	watcher.SetProcessEventCallback(func(context.Context, *model.HealthEventWithStatus) (*model.Status, error) {
+		return nil, nil
+	})
+
+	err := watcher.watchEvents(context.Background())
+	require.ErrorIs(t, err, completionErr)
+	assert.Zero(t, changeStream.markCalls, "a live skip without its durable marker must remain replayable")
+}
+
+func TestLiveSkippedEventIsExcludedFromLaterColdStart(t *testing.T) {
+	dbClient := &databaseClientStub{}
+	watcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
+	callbackCalls := 0
+	watcher.SetProcessEventCallback(func(context.Context, *model.HealthEventWithStatus) (*model.Status, error) {
+		callbackCalls++
+
+		return nil, nil
+	})
+
+	require.NoError(t, watcher.processEvent(context.Background(), &clientEventStub{
+		document:   storedHealthEvent("event-uuid"),
+		eventID:    "48",
+		recordUUID: "event-uuid",
+	}))
+	require.True(t, dbClient.completed["event-uuid"])
+
+	now := time.Now().UTC()
+	store := &completionFilteringHealthStoreStub{
+		db: dbClient,
+		record: datastore.HealthEventWithStatus{
+			RawEvent:  storedHealthEvent("event-uuid"),
+			CreatedAt: now,
+		},
+	}
+	require.NoError(t, coldstart.Handle(context.Background(), coldstart.Dependencies{
+		HealthEventStore:   store,
+		EventProcessor:     watcher,
+		ColdStartAfterTime: now.Add(-time.Minute),
+		ColdStartUntilTime: now.Add(time.Minute),
+	}))
+	assert.Equal(t, 1, store.scanned)
+	require.NotNil(t, store.query)
+	assert.Contains(t, fmt.Sprint(store.query.ToMongo()), coldstart.RecoveryCompletionStatusPath)
+	assert.Equal(t, 1, callbackCalls, "the terminal live skip must not be replayed during cold start")
 }
 
 func TestProcessStoredEvent_StatusUpdateFailure_ReturnsError(t *testing.T) {

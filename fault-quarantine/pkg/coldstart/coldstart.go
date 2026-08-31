@@ -35,7 +35,8 @@ import (
 
 const (
 	batchSize = 1000
-	// RecoveryCompletionStatusPath stores terminal cold-start decisions.
+	// RecoveryCompletionStatusPath stores terminal decisions that cold-start
+	// scans must not replay.
 	RecoveryCompletionStatusPath = healthstatus.FaultQuarantineRecoveryPath
 	// RecoveryCompletionValue is shared by all terminal decisions. The detailed
 	// result remains available through the cold-start metric label.

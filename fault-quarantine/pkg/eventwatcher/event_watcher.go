@@ -34,6 +34,13 @@ import (
 
 const recoveredEventDedupRetention = 24 * time.Hour
 
+type liveSkipCompletionError struct {
+	err error
+}
+
+func (e *liveSkipCompletionError) Error() string { return e.err.Error() }
+func (e *liveSkipCompletionError) Unwrap() error { return e.err }
+
 type EventWatcher struct {
 	changeStreamWatcher  client.ChangeStreamWatcher
 	databaseClient       client.DatabaseClient
@@ -189,6 +196,11 @@ func (w *EventWatcher) watchEvents(ctx context.Context) error {
 		metrics.TotalEventsReceived.Inc()
 
 		if processErr := w.processEvent(ctx, event); processErr != nil {
+			var completionErr *liveSkipCompletionError
+			if errors.As(processErr, &completionErr) {
+				return fmt.Errorf("skipped live event was not checkpointed: %w", processErr)
+			}
+
 			slog.ErrorContext(ctx, "Event processing failed, but still marking as processed to proceed ahead",
 				"error", processErr)
 		}
@@ -250,9 +262,37 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 		}
 	}
 
-	_, err = w.processHealthEvent(ctx, &healthEventWithStatus, recordUUID, eventID)
+	processed, err := w.processHealthEvent(ctx, &healthEventWithStatus, recordUUID, eventID)
 	if err != nil {
 		return err
+	}
+
+	return w.completeLiveEventIfSkipped(ctx, recordUUID, processed)
+}
+
+func (w *EventWatcher) completeLiveEventIfSkipped(
+	ctx context.Context,
+	recordUUID string,
+	processed bool,
+) error {
+	if processed {
+		return nil
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	// A successful callback with no status is an intentional terminal skip. Record
+	// that decision while the event is live so a later cold start cannot reapply it
+	// under a different rule configuration.
+	if err := w.databaseClient.UpdateDocumentStatus(
+		ctx, recordUUID, coldstart.RecoveryCompletionStatusPath, coldstart.RecoveryCompletionValue,
+	); err != nil {
+		metrics.ProcessingErrors.WithLabelValues("update_recovery_completion_status_error").Inc()
+
+		return &liveSkipCompletionError{err: fmt.Errorf(
+			"failed to record skipped live event completion: %w", err)}
 	}
 
 	return nil
