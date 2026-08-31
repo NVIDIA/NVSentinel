@@ -98,14 +98,14 @@ func NewClientWithK8s(k8sClient kubernetes.Interface, config Config) *Client {
 
 // SendRebootSignal creates a privileged Job on the target node that executes
 // the configured reboot command. Returns the node's pre-reboot bootID as the requestID.
-func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
+func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node, crName string) (model.ResetSignalRequestRef, error) {
 	preRebootBootID := node.Status.NodeInfo.BootID
 	if preRebootBootID == "" {
 		slog.ErrorContext(ctx, "Node has no bootID", "node", node.Name)
 		return "", fmt.Errorf("node %s has no bootID", node.Name)
 	}
 
-	job := c.buildRebootJob(node.Name)
+	job := c.buildRebootJob(node.Name, crName)
 
 	slog.InfoContext(ctx, "Creating reboot Job", "node", node.Name, "namespace", c.config.RebootJobNamespace,
 		"useSysrqReboot", c.config.UseSysrqReboot, "writeSyslog", c.config.WriteSyslog)
@@ -159,10 +159,10 @@ func (c *Client) SendTerminateSignal(ctx context.Context, node corev1.Node) (mod
 }
 
 // buildRebootJob constructs the privileged batchv1.Job specification for rebooting the node.
-func (c *Client) buildRebootJob(nodeName string) *batchv1.Job {
+func (c *Client) buildRebootJob(nodeName, crName string) *batchv1.Job {
 	image := c.config.RebootImage
 	ttl := c.config.RebootJobTTL
-	command := c.config.rebootCommand(nodeName)
+	command := c.config.rebootCommand(nodeName, crName)
 
 	var (
 		volumeMounts []corev1.VolumeMount
@@ -257,13 +257,18 @@ func (c *Client) buildRebootJob(nodeName string) *batchv1.Job {
 }
 
 // rebootCommand generates the container command slice based on sysrq and syslog settings.
-func (c Config) rebootCommand(nodeName string) []string {
+func (c Config) rebootCommand(nodeName, crName string) []string {
+	attribution := fmt.Sprintf("NVSentinel reboot: node=%s", nodeName)
+	if crName != "" {
+		attribution = fmt.Sprintf("NVSentinel reboot: node=%s cr=%s", nodeName, crName)
+	}
+
 	if c.UseSysrqReboot {
 		if c.WriteSyslog {
 			return []string{
 				"sh", "-c",
 				fmt.Sprintf("chroot %s logger -t nvsentinel-reboot -p daemon.notice %q || true; sync || true; echo b > %s/sysrq-trigger",
-					hostMountPath, fmt.Sprintf("NVSentinel reboot: node=%s", nodeName), hostProcMountPath),
+					hostMountPath, attribution, hostProcMountPath),
 			}
 		}
 
@@ -274,7 +279,7 @@ func (c Config) rebootCommand(nodeName string) []string {
 		return []string{
 			"sh", "-c",
 			fmt.Sprintf("chroot %s logger -t nvsentinel-reboot -p daemon.notice %q || true; chroot %s reboot",
-				hostMountPath, fmt.Sprintf("NVSentinel reboot: node=%s", nodeName), hostMountPath),
+				hostMountPath, attribution, hostMountPath),
 		}
 	}
 

@@ -43,7 +43,7 @@ func NewClient(ctx context.Context) (*Client, error) {
 }
 
 // SendRebootSignal simulates sending a reboot signal for a kind node
-func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
+func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node, _ string) (model.ResetSignalRequestRef, error) {
 	// nolint:gosec // G404: Using weak random for simulation is acceptable
 	// wait some random time to simulate a real csp (very short for fast tests)
 	time.Sleep(time.Duration(3+rand.IntN(3)) * time.Second)

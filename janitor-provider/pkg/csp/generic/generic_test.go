@@ -62,7 +62,7 @@ func TestSendRebootSignal_CreatesJob(t *testing.T) {
 	ctx := context.Background()
 	node := newNode("worker-1", "boot-id-abc", true)
 
-	ref, err := client.SendRebootSignal(ctx, node)
+	ref, err := client.SendRebootSignal(ctx, node, "")
 	require.NoError(t, err)
 	assert.Equal(t, model.ResetSignalRequestRef("boot-id-abc"), ref)
 
@@ -103,7 +103,7 @@ func TestSendRebootSignal_CreatesJob_WithSyslog(t *testing.T) {
 	ctx := context.Background()
 	node := newNode("worker-1", "boot-id-abc", true)
 
-	ref, err := client.SendRebootSignal(ctx, node)
+	ref, err := client.SendRebootSignal(ctx, node, "")
 	require.NoError(t, err)
 	assert.Equal(t, model.ResetSignalRequestRef("boot-id-abc"), ref)
 
@@ -120,6 +120,33 @@ func TestSendRebootSignal_CreatesJob_WithSyslog(t *testing.T) {
 	}, container.Command)
 }
 
+func TestSendRebootSignal_CreatesJob_WithSyslogAndCRName(t *testing.T) {
+	client := NewClientWithK8s(fake.NewSimpleClientset(), Config{
+		RebootImage:        "busybox:1.37",
+		RebootJobNamespace: "test-ns",
+		RebootJobTTL:       3600,
+		WriteSyslog:        true,
+	})
+	ctx := context.Background()
+	node := newNode("worker-1", "boot-id-abc", true)
+
+	ref, err := client.SendRebootSignal(ctx, node, "rebootnode-worker-1-xyz")
+	require.NoError(t, err)
+	assert.Equal(t, model.ResetSignalRequestRef("boot-id-abc"), ref)
+
+	jobs, err := client.k8sClient.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, jobs.Items, 1)
+
+	job := jobs.Items[0]
+	require.Len(t, job.Spec.Template.Spec.Containers, 1)
+	container := job.Spec.Template.Spec.Containers[0]
+	assert.Equal(t, []string{
+		"sh", "-c",
+		"chroot /host logger -t nvsentinel-reboot -p daemon.notice \"NVSentinel reboot: node=worker-1 cr=rebootnode-worker-1-xyz\" || true; chroot /host reboot",
+	}, container.Command)
+}
+
 func TestSendRebootSignal_CreatesSysrqJob_WithSyslog(t *testing.T) {
 	client := NewClientWithK8s(fake.NewSimpleClientset(), Config{
 		RebootImage:        "busybox:1.37",
@@ -131,7 +158,7 @@ func TestSendRebootSignal_CreatesSysrqJob_WithSyslog(t *testing.T) {
 	ctx := context.Background()
 	node := newNode("worker-1", "boot-id-abc", true)
 
-	ref, err := client.SendRebootSignal(ctx, node)
+	ref, err := client.SendRebootSignal(ctx, node, "")
 	require.NoError(t, err)
 	assert.Equal(t, model.ResetSignalRequestRef("boot-id-abc"), ref)
 
@@ -172,6 +199,34 @@ func TestSendRebootSignal_CreatesSysrqJob_WithSyslog(t *testing.T) {
 	}, job.Spec.Template.Spec.Volumes[1])
 }
 
+func TestSendRebootSignal_CreatesSysrqJob_WithSyslogAndCRName(t *testing.T) {
+	client := NewClientWithK8s(fake.NewSimpleClientset(), Config{
+		RebootImage:        "busybox:1.37",
+		UseSysrqReboot:     true,
+		RebootJobNamespace: "test-ns",
+		RebootJobTTL:       3600,
+		WriteSyslog:        true,
+	})
+	ctx := context.Background()
+	node := newNode("worker-1", "boot-id-abc", true)
+
+	ref, err := client.SendRebootSignal(ctx, node, "rebootnode-worker-1-xyz")
+	require.NoError(t, err)
+	assert.Equal(t, model.ResetSignalRequestRef("boot-id-abc"), ref)
+
+	jobs, err := client.k8sClient.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, jobs.Items, 1)
+
+	job := jobs.Items[0]
+	require.Len(t, job.Spec.Template.Spec.Containers, 1)
+	container := job.Spec.Template.Spec.Containers[0]
+	assert.Equal(t, []string{
+		"sh", "-c",
+		"chroot /host logger -t nvsentinel-reboot -p daemon.notice \"NVSentinel reboot: node=worker-1 cr=rebootnode-worker-1-xyz\" || true; sync || true; echo b > /host-proc/sysrq-trigger",
+	}, container.Command)
+}
+
 func TestSendRebootSignal_CreatesSysrqJob_WithoutSyslog(t *testing.T) {
 	client := NewClientWithK8s(fake.NewSimpleClientset(), Config{
 		RebootImage:        "busybox:1.37",
@@ -183,7 +238,7 @@ func TestSendRebootSignal_CreatesSysrqJob_WithoutSyslog(t *testing.T) {
 	ctx := context.Background()
 	node := newNode("worker-1", "boot-id-abc", true)
 
-	ref, err := client.SendRebootSignal(ctx, node)
+	ref, err := client.SendRebootSignal(ctx, node, "")
 	require.NoError(t, err)
 	assert.Equal(t, model.ResetSignalRequestRef("boot-id-abc"), ref)
 
@@ -213,7 +268,7 @@ func TestSendRebootSignal_CreatesSysrqJob_WithoutSyslog(t *testing.T) {
 func TestBuildRebootJob_UsesCommandRebootByDefault(t *testing.T) {
 	client := newTestClient()
 
-	job := client.buildRebootJob("worker-1")
+	job := client.buildRebootJob("worker-1", "")
 	container := job.Spec.Template.Spec.Containers[0]
 	assert.Equal(t, []string{"chroot", hostMountPath, "reboot"}, container.Command)
 	require.Len(t, job.Spec.Template.Spec.Volumes, 1)
@@ -228,7 +283,7 @@ func TestBuildRebootJob_UsesSyslogWhenEnabled(t *testing.T) {
 		WriteSyslog:        true,
 	})
 
-	job := client.buildRebootJob("worker-1")
+	job := client.buildRebootJob("worker-1", "")
 	container := job.Spec.Template.Spec.Containers[0]
 	assert.Equal(t, []string{
 		"sh", "-c",
@@ -243,7 +298,7 @@ func TestSendRebootSignal_EmptyBootID(t *testing.T) {
 	ctx := context.Background()
 	node := newNode("worker-1", "", true)
 
-	_, err := client.SendRebootSignal(ctx, node)
+	_, err := client.SendRebootSignal(ctx, node, "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no bootID")
 }
@@ -456,14 +511,14 @@ func TestSendRebootSignal_JobCreationFailure(t *testing.T) {
 	ctx := context.Background()
 	node := newNode("worker-1", "boot-id-abc", true)
 
-	_, err := client.SendRebootSignal(ctx, node)
+	_, err := client.SendRebootSignal(ctx, node, "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to create reboot job")
 }
 
 func TestBuildRebootJob_UsesGenerateName(t *testing.T) {
 	client := newTestClient()
-	job := client.buildRebootJob("worker-1")
+	job := client.buildRebootJob("worker-1", "")
 
 	assert.Empty(t, job.Name)
 	assert.Equal(t, "reboot-worker-1-", job.GenerateName)
