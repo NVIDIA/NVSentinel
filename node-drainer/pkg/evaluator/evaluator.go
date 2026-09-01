@@ -37,6 +37,11 @@ import (
 
 const (
 	customDrainPollInterval = 30 * time.Second
+
+	// Drain scope values, used as a metric label so an operator can tell a whole-node drain
+	// from one scoped to a single entity.
+	DrainScopeFull    = "full"
+	DrainScopePartial = "partial"
 )
 
 func NewNodeDrainEvaluator(
@@ -696,17 +701,47 @@ drain, we will return an error. For all other recommended actions, we will proce
 */
 func (e *NodeDrainEvaluator) shouldExecutePartialDrain(
 	healthEvent *protos.HealthEvent) (*protos.Entity, error) {
-	if e.config.PartialDrainEnabled && healthEvent.RecommendedAction == protos.RecommendedAction_COMPONENT_RESET {
-		for _, entity := range healthEvent.GetEntitiesImpacted() {
-			_, supportedEntity := model.EntityTypeToResourceNames[entity.EntityType]
-			if supportedEntity && len(entity.EntityValue) != 0 {
-				return entity, nil
-			}
-		}
-
-		return nil, fmt.Errorf("no supported entities for a partial drain found in health event for node: %s",
-			healthEvent.NodeName)
+	if !isPartialDrainCandidate(healthEvent, e.config.PartialDrainEnabled) {
+		return nil, nil
 	}
 
-	return nil, nil
+	if entity := PartialDrainEntity(healthEvent, e.config.PartialDrainEnabled); entity != nil {
+		return entity, nil
+	}
+
+	return nil, fmt.Errorf("no supported entities for a partial drain found in health event for node: %s",
+		healthEvent.NodeName)
+}
+
+// isPartialDrainCandidate reports whether the event is eligible for a partial drain at all,
+// before looking for a usable entity.
+func isPartialDrainCandidate(healthEvent *protos.HealthEvent, partialDrainEnabled bool) bool {
+	return partialDrainEnabled && healthEvent.GetRecommendedAction() == protos.RecommendedAction_COMPONENT_RESET
+}
+
+// PartialDrainEntity returns the entity a partial drain would target for this event, or nil
+// when the event drains the whole node. Exported so callers that only need the decision, such
+// as metric labelling, reach it the same way the evaluator does rather than restating it.
+func PartialDrainEntity(healthEvent *protos.HealthEvent, partialDrainEnabled bool) *protos.Entity {
+	if !isPartialDrainCandidate(healthEvent, partialDrainEnabled) {
+		return nil
+	}
+
+	for _, entity := range healthEvent.GetEntitiesImpacted() {
+		if _, supported := model.EntityTypeToResourceNames[entity.EntityType]; supported &&
+			len(entity.EntityValue) != 0 {
+			return entity
+		}
+	}
+
+	return nil
+}
+
+// DrainScope returns the scope label for this event, for use as a metric dimension.
+func DrainScope(healthEvent *protos.HealthEvent, partialDrainEnabled bool) string {
+	if PartialDrainEntity(healthEvent, partialDrainEnabled) != nil {
+		return DrainScopePartial
+	}
+
+	return DrainScopeFull
 }
