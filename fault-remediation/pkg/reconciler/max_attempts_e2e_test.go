@@ -21,6 +21,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -37,10 +38,11 @@ import (
 // end-to-end cap never engaged.
 
 // newCappedReconciler builds a reconciler whose config caps remediation attempts per group.
-func newCappedReconciler(t *testing.T, maxAttempts int) (*FaultRemediationReconciler,
+func newCappedReconciler(t *testing.T, maxAttempts int, enableLogCollector ...bool) (*FaultRemediationReconciler,
 	*MockChangeStreamWatcher, *MockHealthEventStore) {
 	t.Helper()
 
+	logCollectorEnabled := len(enableLogCollector) > 0 && enableLogCollector[0]
 	remediationClient, err := remediation.NewRemediationClient(ctrlRuntimeClient, false, config.TomlConfig{
 		Template:               config.Template{MountPath: "./templates"},
 		RemediationActions:     restartRemediationActions,
@@ -56,11 +58,12 @@ func newCappedReconciler(t *testing.T, maxAttempts int) (*FaultRemediationReconc
 	watcher := NewMockChangeStreamWatcher()
 
 	cfg := ReconcilerConfig{
-		RemediationClient: remediationClient,
-		StateManager:      statemanager.NewStateManager(testClient),
-		NodeReader:        ctrlRuntimeAPIReader,
-		UpdateMaxRetries:  3,
-		UpdateRetryDelay:  100 * time.Millisecond,
+		RemediationClient:  remediationClient,
+		EnableLogCollector: logCollectorEnabled,
+		StateManager:       statemanager.NewStateManager(testClient),
+		NodeReader:         ctrlRuntimeAPIReader,
+		UpdateMaxRetries:   3,
+		UpdateRetryDelay:   100 * time.Millisecond,
 	}
 
 	return NewFaultRemediationReconciler(nil, watcher, store, cfg, false), watcher, store
@@ -124,6 +127,34 @@ func nodeStateLabel(ctx context.Context, t *testing.T, nodeName string) string {
 	require.NoError(t, err)
 
 	return node.Labels[statemanager.NVSentinelStateLabelKey]
+}
+
+func TestLogCollectorRequeuesDoNotConsumeAttemptBudget(t *testing.T) {
+	ctx := t.Context()
+	t.Setenv(remediation.LogCollectorManifestPathEnv, "../remediation/templates/log-collector-job.yaml")
+	_, err := testClient.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "test"},
+	}, metav1.CreateOptions{})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		require.NoError(t, testClient.CoreV1().Namespaces().Delete(cleanupCtx, "test", metav1.DeleteOptions{}))
+	})
+	nodeName := "log-collector-attempt-budget"
+	r, _, _ := newCappedReconciler(t, 1, true)
+	prepareQuarantinedNode(ctx, t, r, nodeName)
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		require.NoError(t, testClient.CoreV1().Nodes().Delete(cleanupCtx, nodeName, metav1.DeleteOptions{}))
+	})
+
+	require.NoError(t, reconcileQuarantineEvent(ctx, t, r, nodeName, "log-collector-event"))
+	require.NoError(t, reconcileQuarantineEvent(ctx, t, r, nodeName, "log-collector-event"))
+
+	state, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
+	require.NoError(t, err)
+	assert.Zero(t, state.EquivalenceGroups["restart"].AttemptCount)
+	assert.Empty(t, currentCR(ctx, t, r, nodeName))
 }
 
 var rebootNodeGVR = schema.GroupVersionResource{
