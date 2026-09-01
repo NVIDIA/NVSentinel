@@ -1045,21 +1045,6 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 		return res, err
 	}
 
-	// Stop remediating this group once it has spent its attempt budget for the session.
-	// groupConfig is non-nil here: trySkipEvent finalizes events without a group config.
-	maxAttempts := r.Config.RemediationClient.GetConfig().MaxRemediationAttempts
-	if maxAttempts > 0 {
-		res, err, done := r.tryStopAtMaxAttempts(ctx, nodeName, groupConfig.EffectiveEquivalenceGroup,
-			maxAttempts, eventWithToken, watcherInstance, healthEventStore)
-		if done {
-			span.SetAttributes(
-				attribute.String("fault_remediation.status", "max_attempts_reached"),
-			)
-
-			return res, err
-		}
-	}
-
 	result, err := r.runLogCollectorAndRemediate(ctx, healthEvent, healthEventWithStatus, eventWithToken,
 		watcherInstance, healthEventStore, groupConfig, nodeName)
 	if err != nil {
@@ -1538,7 +1523,7 @@ func (r *FaultRemediationReconciler) runLogCollectorAndRemediate(
 	healthEvent *protos.HealthEvent,
 	healthEventWithStatus *events.HealthEventDoc,
 	eventWithToken datastore.EventWithToken,
-	_ datastore.ChangeStreamWatcher,
+	watcherInstance datastore.ChangeStreamWatcher,
 	healthEventStore datastore.HealthEventStore,
 	groupConfig *common.EquivalenceGroupConfig,
 	nodeName string,
@@ -1552,6 +1537,19 @@ func (r *FaultRemediationReconciler) runLogCollectorAndRemediate(
 
 	if !result.IsZero() {
 		return result, nil
+	}
+
+	// Count the attempt only after log collection completes. The collector requeues this event
+	// while its Job is running, and those polling passes are not remediation attempts.
+	maxAttempts := r.Config.RemediationClient.GetConfig().MaxRemediationAttempts
+	if maxAttempts > 0 {
+		result, err, done := r.tryStopAtMaxAttempts(ctx, nodeName, groupConfig.EffectiveEquivalenceGroup,
+			maxAttempts, eventWithToken, watcherInstance, healthEventStore)
+		if done {
+			span.SetAttributes(attribute.String("fault_remediation.status", "max_attempts_reached"))
+
+			return result, err
+		}
 	}
 
 	_, performRemediationErr := r.performRemediation(ctx, healthEventWithStatus, groupConfig)
