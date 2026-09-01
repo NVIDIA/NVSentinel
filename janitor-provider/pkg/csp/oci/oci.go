@@ -119,7 +119,7 @@ func NewClientFromEnv(ctx context.Context) (*Client, error) {
 }
 
 // SendRebootSignal sends a reboot signal to OCI for the given node.
-func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
+func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node, _ string) (model.ResetSignalRequestRef, error) {
 	_, err := c.compute.InstanceAction(ctx, core.InstanceActionRequest{
 		InstanceId: &node.Spec.ProviderID,
 		Action:     core.InstanceActionActionSoftreset,

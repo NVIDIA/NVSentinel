@@ -29,7 +29,7 @@ type TerminateNodeRequestRef string
 // CSPClient defines the interface for cloud service provider operations
 type CSPClient interface {
 	// SendRebootSignal sends a reboot signal to the node via the CSP
-	SendRebootSignal(ctx context.Context, node corev1.Node) (ResetSignalRequestRef, error)
+	SendRebootSignal(ctx context.Context, node corev1.Node, crName string) (ResetSignalRequestRef, error)
 
 	// IsNodeReady checks if the node is ready after a reboot operation
 	// requestID is the reference returned by SendRebootSignal to track the operation
