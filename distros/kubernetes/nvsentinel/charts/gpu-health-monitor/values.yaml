@@ -82,9 +82,17 @@ dcgmFieldsMonitoring:
 
 # DCGM health check incident suppression
 dcgmHealthCheck:
-  # DCGM error codes to drop before they become health events
-  # Example: ["DCGM_FR_CLOCK_THROTTLE_POWER"]
-  suppressedErrorCodes: []
+  # DCGM error codes to drop before they become health events. The default is
+  # the throttling the POWER and THERMAL watches report: it maps to NONE in
+  # dcgmerrorsmapping.csv and tracks load rather than a fault. Each code is
+  # listed twice because DCGM_FR_CLOCK_THROTTLE_* is a deprecated alias of
+  # DCGM_FR_CLOCKS_EVENT_* with the same number and either name can be
+  # reported. Set to [] to report throttling too.
+  suppressedErrorCodes:
+    - DCGM_FR_CLOCK_THROTTLE_POWER
+    - DCGM_FR_CLOCKS_EVENT_POWER
+    - DCGM_FR_CLOCK_THROTTLE_THERMAL
+    - DCGM_FR_CLOCKS_EVENT_THERMAL
   # Consecutive GpuDcgmConnectivityFailure cycles after which the recommended
   # action escalates from CONTACT_SUPPORT to RESTART_BM. Enable only when the
   # endpoint is node-local and repeated unreachability is known to represent a
