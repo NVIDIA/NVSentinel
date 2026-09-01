@@ -435,7 +435,7 @@ health-events-analyzer:
 
     [[rules]]
     name = "RepeatedXIDErrorOnSameGPU"
-    description = "Detect occurrence of fatal XIDs 2 times within 2 minutes where the burst window is 15 seconds and sticky XIDs window is 30 seconds (test config)"
+    description = "Detect occurrence of XID errors (any XID except 31) on the same GPU 2 times within 2 minutes where the burst window is 15 seconds and sticky XIDs window is 30 seconds (test config)"
     recommended_action = "CONTACT_SUPPORT"
     evaluate_rule = true
     stage = [
