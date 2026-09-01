@@ -17,6 +17,7 @@ package metadata
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
@@ -30,11 +31,15 @@ const (
 // Config holds MetadataAugmentor settings including the optional managed-label
 // gate that marks events for opted-out nodes as STORE_ONLY.
 type Config struct {
-	CacheSize          int           `toml:"cacheSize"`
-	CacheTTL           time.Duration `toml:"cacheTTL"`
-	AllowedLabels      []string      `toml:"allowedLabels"`
-	SkipNodeLabelKey   string        `toml:"skipNodeLabelKey"`
-	SkipNodeLabelValue string        `toml:"skipNodeLabelValue"`
+	CacheSize     int           `toml:"cacheSize"`
+	CacheTTL      time.Duration `toml:"cacheTTL"`
+	AllowedLabels []string      `toml:"allowedLabels"`
+	// SkipNodeLabel is a "key=value" string. When the target node carries this
+	// label, the event is downgraded to STORE_ONLY. Leave empty to disable.
+	SkipNodeLabel string `toml:"skipNodeLabel"`
+
+	skipLabelKey   string
+	skipLabelValue string
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -67,12 +72,14 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("cacheTTL must be positive")
 	}
 
-	if c.SkipNodeLabelKey == "" && c.SkipNodeLabelValue != "" {
-		return fmt.Errorf("skipNodeLabelValue is set but skipNodeLabelKey is empty")
-	}
+	if c.SkipNodeLabel != "" {
+		parts := strings.SplitN(c.SkipNodeLabel, "=", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return fmt.Errorf("skipNodeLabel must be in key=value format, got %q", c.SkipNodeLabel)
+		}
 
-	if c.SkipNodeLabelKey != "" && c.SkipNodeLabelValue == "" {
-		return fmt.Errorf("skipNodeLabelKey is set but skipNodeLabelValue is empty")
+		c.skipLabelKey = parts[0]
+		c.skipLabelValue = parts[1]
 	}
 
 	return nil

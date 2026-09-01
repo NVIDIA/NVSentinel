@@ -61,10 +61,10 @@ func warnIfSkipLabelConfigured(ctx context.Context, cfg *pipeline.Config) {
 		return
 	}
 
-	if metadataCfg.SkipNodeLabelKey != "" {
+	if metadataCfg.SkipNodeLabel != "" {
 		slog.WarnContext(ctx,
-			"MetadataAugmentor is DISABLED but skipNodeLabelKey is configured; "+
+			"MetadataAugmentor is DISABLED but skipNodeLabel is configured; "+
 				"the managed-label gate will NOT enforce STORE_ONLY for opted-out nodes",
-			"skipNodeLabelKey", metadataCfg.SkipNodeLabelKey)
+			"skipNodeLabel", metadataCfg.SkipNodeLabel)
 	}
 }

@@ -398,15 +398,14 @@ platformConnector:
       cacheSize: 50
       # How long cached node metadata is considered fresh. Lower values mean
       # label changes (e.g. managed=false) take effect faster, at the cost of
-      # more Kubernetes API GET calls. 30s bounds ownership-state staleness to
-      # ~30 seconds in either direction.
-      cacheTTLSeconds: 30
-      # Managed-label gate: when a node carries this key=value pair, its events
-      # are set to STORE_ONLY (stored for audit but no remediation or Kubernetes
-      # side effects). Example: managed: "false" gates the node.
+      # more Kubernetes API GET calls. 60s bounds ownership-state staleness to
+      # ~60 seconds in either direction.
+      cacheTTLSeconds: 60
+      # Managed-label gate: when a node carries this label, its events are set
+      # to STORE_ONLY (stored for audit but no remediation or Kubernetes side
+      # effects). Format is "key=value". Leave empty to disable.
       # Must match commons/pkg/managed.ManagedLabelKey and ManagedLabelValueFalse.
-      skipNodeLabelKey: "nvsentinel.dgxc.nvidia.com/managed"
-      skipNodeLabelValue: "false"
+      skipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false"
       allowedLabels:
         - "topology.kubernetes.io/zone"
         - "topology.kubernetes.io/region"

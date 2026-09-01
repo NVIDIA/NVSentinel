@@ -365,14 +365,12 @@ platformConnector:
       cacheSize: 50
       # Cache TTL in seconds (supports duration strings like "1h", "30m")
       # How long to cache node metadata before refreshing
-      cacheTTLSeconds: 30
-      # Node label key/value to gate events as STORE_ONLY.
-      # When the target node carries this label with this value, the event
-      # is stored but does not trigger remediation or Kubernetes side-effects.
-      # Leave skipNodeLabelKey empty to disable the gate.
+      cacheTTLSeconds: 60
+      # Managed-label gate: when a node carries this label, its events are set
+      # to STORE_ONLY (stored for audit but no remediation or Kubernetes side
+      # effects). Format is "key=value". Leave empty to disable.
       # Must match commons/pkg/managed.ManagedLabelKey and ManagedLabelValueFalse.
-      skipNodeLabelKey: "nvsentinel.dgxc.nvidia.com/managed"
-      skipNodeLabelValue: "false"
+      skipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false"
       # Node labels to include in health event metadata
       # Only these labels will be copied from nodes to events
       # This allows CEL rules to match on topology, instance type, etc.

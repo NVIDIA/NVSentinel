@@ -58,8 +58,7 @@ func New(ctx context.Context, config *Config, clientset kubernetes.Interface) (*
 		"cacheSize", config.CacheSize,
 		"cacheTTL", config.CacheTTL,
 		"allowedLabels", config.AllowedLabels,
-		"skipNodeLabelKey", config.SkipNodeLabelKey,
-		"skipNodeLabelValue", config.SkipNodeLabelValue)
+		"skipNodeLabel", config.SkipNodeLabel)
 
 	return &Augmentor{
 		config:    config,
@@ -123,7 +122,7 @@ func (a *Augmentor) Transform(ctx context.Context, event *pb.HealthEvent) error 
 		)
 		slog.InfoContext(ctx, "Event gated to STORE_ONLY by managed-label check",
 			"node", event.NodeName,
-			"skipLabelKey", a.config.SkipNodeLabelKey)
+			"skipNodeLabel", a.config.SkipNodeLabel)
 	}
 
 	span.SetAttributes(
@@ -181,8 +180,8 @@ func (a *Augmentor) fetchNodeMetadata(ctx context.Context, nodeName string) (*No
 		}
 	}
 
-	if a.config.SkipNodeLabelKey != "" {
-		if val, ok := node.Labels[a.config.SkipNodeLabelKey]; ok && val == a.config.SkipNodeLabelValue {
+	if a.config.skipLabelKey != "" {
+		if val, ok := node.Labels[a.config.skipLabelKey]; ok && val == a.config.skipLabelValue {
 			metadata.SkipMatched = true
 		}
 	}

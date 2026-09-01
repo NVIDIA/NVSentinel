@@ -73,7 +73,9 @@ func deleteTestNode(t *testing.T, nodeName string) {
 	assert.NoError(t, err, "failed to delete test node")
 }
 
-func createTestAugmentor(config *Config) *Augmentor {
+func createTestAugmentor(t *testing.T, config *Config) *Augmentor {
+	t.Helper()
+
 	if config == nil {
 		config = &Config{
 			CacheSize:     100,
@@ -81,6 +83,9 @@ func createTestAugmentor(config *Config) *Augmentor {
 			AllowedLabels: []string{},
 		}
 	}
+
+	require.NoError(t, config.Validate(), "test config must be valid")
+
 	cache := expirable.NewLRU[string, *NodeMetadata](
 		config.CacheSize,
 		nil,
@@ -295,11 +300,10 @@ func TestAugmentorTransform(t *testing.T) {
 				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-skip1"},
 			},
 			config: &Config{
-				CacheSize:          100,
-				CacheTTL:           1 * time.Hour,
-				AllowedLabels:      []string{"topology.kubernetes.io/zone"},
-				SkipNodeLabelKey:   "nvsentinel.dgxc.nvidia.com/managed",
-				SkipNodeLabelValue: "false",
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				AllowedLabels: []string{"topology.kubernetes.io/zone"},
+				SkipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false",
 			},
 			eventNodeName: "skip-label-node-1",
 			expectError:   false,
@@ -323,11 +327,10 @@ func TestAugmentorTransform(t *testing.T) {
 				Spec: corev1.NodeSpec{ProviderID: "aws:///us-east-1a/i-noskip1"},
 			},
 			config: &Config{
-				CacheSize:          100,
-				CacheTTL:           1 * time.Hour,
-				AllowedLabels:      []string{"topology.kubernetes.io/zone"},
-				SkipNodeLabelKey:   "nvsentinel.dgxc.nvidia.com/managed",
-				SkipNodeLabelValue: "false",
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				AllowedLabels: []string{"topology.kubernetes.io/zone"},
+				SkipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false",
 			},
 			eventNodeName: "skip-label-node-2",
 			expectError:   false,
@@ -349,10 +352,9 @@ func TestAugmentorTransform(t *testing.T) {
 				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-wrongval1"},
 			},
 			config: &Config{
-				CacheSize:          100,
-				CacheTTL:           1 * time.Hour,
-				SkipNodeLabelKey:   "nvsentinel.dgxc.nvidia.com/managed",
-				SkipNodeLabelValue: "false",
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				SkipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false",
 			},
 			eventNodeName: "skip-label-node-3",
 			expectError:   false,
@@ -395,10 +397,9 @@ func TestAugmentorTransform(t *testing.T) {
 				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-healthy1"},
 			},
 			config: &Config{
-				CacheSize:          100,
-				CacheTTL:           1 * time.Hour,
-				SkipNodeLabelKey:   "nvsentinel.dgxc.nvidia.com/managed",
-				SkipNodeLabelValue: "false",
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				SkipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false",
 			},
 			eventNodeName: "skip-label-node-5",
 			expectError:   false,
@@ -446,7 +447,7 @@ func TestAugmentorTransform(t *testing.T) {
 					defer deleteTestNode(t, node.Name)
 				}
 
-				p := createTestAugmentor(tt.config)
+				p := createTestAugmentor(t, tt.config)
 				ctx := context.Background()
 
 				for _, node := range tt.nodes {
@@ -467,7 +468,7 @@ func TestAugmentorTransform(t *testing.T) {
 				defer deleteTestNode(t, tt.node.Name)
 			}
 
-			p := createTestAugmentor(tt.config)
+			p := createTestAugmentor(t, tt.config)
 
 			ctx := context.Background()
 			event := &pb.HealthEvent{
@@ -506,7 +507,7 @@ func TestProcessorCachingBehavior(t *testing.T) {
 		CacheTTL:  1 * time.Hour,
 	}
 
-	p := createTestAugmentor(config)
+	p := createTestAugmentor(t, config)
 	ctx := context.Background()
 
 	event1 := &pb.HealthEvent{
@@ -543,7 +544,7 @@ func TestProcessorContextCancellation(t *testing.T) {
 		CacheTTL:  1 * time.Hour,
 	}
 
-	p := createTestAugmentor(config)
+	p := createTestAugmentor(t, config)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -577,7 +578,7 @@ func TestProcessorConcurrentAugmentations(t *testing.T) {
 		AllowedLabels: []string{"test-label"},
 	}
 
-	p := createTestAugmentor(config)
+	p := createTestAugmentor(t, config)
 	ctx := context.Background()
 
 	var wg sync.WaitGroup
@@ -625,26 +626,37 @@ func TestNewProcessorValidation(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "skipNodeLabelValue without key is invalid",
+			name: "skipNodeLabel missing equals sign is invalid",
 			config: &Config{
-				CacheSize:          100,
-				CacheTTL:           1 * time.Hour,
-				SkipNodeLabelValue: "false",
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				SkipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed",
 			},
 			clientset:   testClient,
 			expectError: true,
-			errorMsg:    "skipNodeLabelValue is set but skipNodeLabelKey is empty",
+			errorMsg:    "skipNodeLabel must be in key=value format",
 		},
 		{
-			name: "skipNodeLabelKey without value is invalid",
+			name: "skipNodeLabel with empty value is invalid",
 			config: &Config{
-				CacheSize:        100,
-				CacheTTL:         1 * time.Hour,
-				SkipNodeLabelKey: "nvsentinel.dgxc.nvidia.com/managed",
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				SkipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=",
 			},
 			clientset:   testClient,
 			expectError: true,
-			errorMsg:    "skipNodeLabelKey is set but skipNodeLabelValue is empty",
+			errorMsg:    "skipNodeLabel must be in key=value format",
+		},
+		{
+			name: "skipNodeLabel with empty key is invalid",
+			config: &Config{
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				SkipNodeLabel: "=false",
+			},
+			clientset:   testClient,
+			expectError: true,
+			errorMsg:    "skipNodeLabel must be in key=value format",
 		},
 	}
 

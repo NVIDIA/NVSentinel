@@ -57,11 +57,8 @@ data:
     {{- with .Values.platformConnector.transformers.MetadataAugmentor.allowedLabels }}
     allowedLabels = {{ . | toJson }}
     {{- end }}
-    {{- with .Values.platformConnector.transformers.MetadataAugmentor.skipNodeLabelKey }}
-    skipNodeLabelKey = {{ . | quote }}
-    {{- end }}
-    {{- with .Values.platformConnector.transformers.MetadataAugmentor.skipNodeLabelValue }}
-    skipNodeLabelValue = {{ . | quote }}
+    {{- with .Values.platformConnector.transformers.MetadataAugmentor.skipNodeLabel }}
+    skipNodeLabel = {{ . | quote }}
     {{- end }}
   {{- end }}
   {{- if .Values.platformConnector.transformers.OverrideTransformer }}
