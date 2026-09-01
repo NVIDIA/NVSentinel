@@ -978,8 +978,14 @@ gpu-health-monitor:
   dcgmHealthCheck:
     # List of error code names to suppress (native DCGM codes like
     # DCGM_FR_CLOCK_THROTTLE_POWER, or custom field-monitor codes like
-    # GPU_TEMP_HW_SLOWDOWN_VIOLATION). Empty by default (no suppression).
-    suppressedErrorCodes: []
+    # GPU_TEMP_HW_SLOWDOWN_VIOLATION). Defaults to POWER/THERMAL watch
+    # throttling, under both its canonical and deprecated alias names.
+    # Set to [] to report throttling too.
+    suppressedErrorCodes:
+      - DCGM_FR_CLOCK_THROTTLE_POWER
+      - DCGM_FR_CLOCKS_EVENT_POWER
+      - DCGM_FR_CLOCK_THROTTLE_THERMAL
+      - DCGM_FR_CLOCKS_EVENT_THERMAL
 
     # Consecutive GpuDcgmConnectivityFailure cycles after which the recommended
     # action escalates from CONTACT_SUPPORT to RESTART_BM. Enable only for a

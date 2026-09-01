@@ -146,26 +146,42 @@ Drops DCGM health check incidents matching specific error codes before they gene
 ```yaml
 gpu-health-monitor:
   dcgmHealthCheck:
-    suppressedErrorCodes: []
+    suppressedErrorCodes:
+      - DCGM_FR_CLOCK_THROTTLE_POWER
+      - DCGM_FR_CLOCKS_EVENT_POWER
+      - DCGM_FR_CLOCK_THROTTLE_THERMAL
+      - DCGM_FR_CLOCKS_EVENT_THERMAL
 ```
 
 ### suppressedErrorCodes
-List of DCGM error code names (as reported by DCGM, e.g. `DCGM_FR_CLOCK_THROTTLE_POWER`) to suppress. Empty by default (no suppression). Suppression is scoped to the listed error codes only — other incidents on the same health watch (e.g. other `GpuPowerWatch` error codes) are still reported.
+List of DCGM error code names (as reported by DCGM, e.g. `DCGM_FR_CLOCK_THROTTLE_POWER`) to suppress. Suppression is scoped to the listed error codes only — other incidents on the same health watch (e.g. other `GpuPowerWatch` error codes) are still reported.
 
-### Example: Suppress power-cap throttle flaps
+The default is throttling: of the errors these two watches raise, it is the only one that tracks load rather than a fault, and it maps to `NONE`, so it only ever produced node events.
+
+| Watch | Suppressed | Still reported |
+| --- | --- | --- |
+| `GpuPowerWatch` | `DCGM_FR_CLOCKS_EVENT_POWER` (12) | `DCGM_FR_POWER_UNREADABLE`, `DCGM_FR_XID_ERROR` (XIDs 54, 56, 58, 78) |
+| `GpuThermalWatch` | `DCGM_FR_CLOCKS_EVENT_THERMAL` (10) | `DCGM_FR_THERMAL_VIOLATIONS`, `DCGM_FR_XID_ERROR` (XID 61) |
+
+Four names, two codes: `DCGM_FR_CLOCK_THROTTLE_*` is a deprecated alias of `DCGM_FR_CLOCKS_EVENT_*` with the same number, and either name can be reported, so both are listed.
+
+Genuine power and cooling faults are unaffected, arriving as `GPU_HW_POWER_BRAKE_VIOLATION` via [`GpuPowerBrakeWatch`](#hardware-power-brake-detection) and `GPU_TEMP_HW_SLOWDOWN_VIOLATION` via `GpuThermalMarginWatch`, both `CONTACT_SUPPORT`. `DCGM_FR_THROTTLING_VIOLATION` is not suppressed either: it comes only from `dcgmi diag`, not these watches.
+
+### Example: Report throttling again
+
+Use this to investigate throttling on a specific cluster; it restores the `GpuPowerWatch` and `GpuThermalWatch` events.
 
 ```yaml
 gpu-health-monitor:
   dcgmHealthCheck:
-    suppressedErrorCodes:
-      - DCGM_FR_CLOCK_THROTTLE_POWER
+    suppressedErrorCodes: []
 ```
 
 ## Hardware Power Brake Detection
 
 `GpuPowerBrakeWatch` fails a GPU whose clocks-event-reasons mask has the hardware power brake bit (`0x80`) set, meaning the power delivery path is forcing clocks down. It reads `DCGM_FI_DEV_CLOCKS_EVENT_REASONS` directly, in the same way `GpuThermalMarginWatch` reads field 153, because DCGM's POWER health watch does not report the brake.
 
-That distinction matters. The POWER watch's dominant code, `DCGM_FR_CLOCK_THROTTLE_POWER`, tracks power-capped clock throttling, maps to `NONE`, and is the worked example under [DCGM Health Check Incident Suppression](#dcgm-health-check-incident-suppression) above. On a 288-node GB200 cluster it was observed active on 69% of nodes while exactly 50% had a brake asserted, correlating with neither the brake bit nor the SW power cap bit (`0x04`). A sustained brake is a power delivery fault, so it needs its own signal rather than sharing a non-actionable one.
+That distinction matters. The POWER watch's dominant code, `DCGM_FR_CLOCK_THROTTLE_POWER`, tracks power-capped clock throttling, maps to `NONE`, and is suppressed by default under [DCGM Health Check Incident Suppression](#dcgm-health-check-incident-suppression) above. On a 288-node GB200 cluster it was observed active on 69% of nodes while exactly 50% had a brake asserted, correlating with neither the brake bit nor the SW power cap bit (`0x04`). A sustained brake is a power delivery fault, so it needs its own signal rather than sharing a non-actionable one.
 
 `GPU_HW_POWER_BRAKE_VIOLATION` maps to `CONTACT_SUPPORT` in `dcgmerrorsmapping.csv`, matching the thermal precedent: an asserted brake is a facility or power delivery problem, not something a node reboot resolves.
 
