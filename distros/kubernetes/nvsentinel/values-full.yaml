@@ -347,7 +347,7 @@ platformConnector:
   pipeline:
     # Metadata augmentor - enriches events with node labels and provider info
     - name: MetadataAugmentor
-      enabled: false  # Disabled by default
+      enabled: true
       config: /etc/config/metadata.toml
     
     # Property overrides - uses CEL expressions to override event properties
@@ -365,7 +365,12 @@ platformConnector:
       cacheSize: 50
       # Cache TTL in seconds (supports duration strings like "1h", "30m")
       # How long to cache node metadata before refreshing
-      cacheTTLSeconds: 3600
+      cacheTTLSeconds: 60
+      # Managed-label gate: when a node carries this label, its events are set
+      # to STORE_ONLY (stored for audit but no remediation or Kubernetes side
+      # effects). Format is "key=value". Leave empty to disable.
+      # Must match commons/pkg/managed.ManagedLabelKey and ManagedLabelValueFalse.
+      skipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false"
       # Node labels to include in health event metadata
       # Only these labels will be copied from nodes to events
       # This allows CEL rules to match on topology, instance type, etc.
