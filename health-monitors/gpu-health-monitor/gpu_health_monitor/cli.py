@@ -27,6 +27,35 @@ from gpu_health_monitor.protos import health_event_pb2 as platformconnector_pb2
 from gpu_health_monitor.logger import set_default_structured_logger_with_level
 
 
+def _parse_min_consecutive_polls(raw: str) -> dict[str, int]:
+    """Parse ``CODE=N`` pairs from the INI value into a per-error-code threshold map.
+
+    INI has no nested sections, so the chart renders the values map as a comma
+    separated list. A malformed entry is logged and skipped rather than taken as a
+    reason to refuse to start, since the fail-open outcome is today's behaviour for
+    that one code.
+    """
+    thresholds: dict[str, int] = {}
+
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+
+        code, separator, polls = entry.partition("=")
+        code, polls = code.strip(), polls.strip()
+
+        # isascii guards the isdigit/int mismatch: "²".isdigit() is True but int("²")
+        # raises, which would crash startup instead of skipping the entry.
+        if not separator or not code or not (polls.isascii() and polls.isdigit()):
+            log.warning(f"Ignoring malformed MinConsecutivePolls entry {entry!r}; expected CODE=N")
+            continue
+
+        thresholds[code] = int(polls)
+
+    return thresholds
+
+
 def _init_event_processor(
     event_processor_name: str,
     config: configparser.ConfigParser,
@@ -231,6 +260,7 @@ def cli(
 
     suppressed_error_codes = frozenset()
     connectivity_failure_escalation_threshold = 0
+    health_check_min_consecutive_polls: dict[str, int] = {}
     if config.has_section("dcgmhealthcheck"):
         health_check_config = config["dcgmhealthcheck"]
         suppressed_error_codes_raw = health_check_config.get("SuppressedErrorCodes", fallback="")
@@ -248,6 +278,12 @@ def cli(
                 "DCGM connectivity failures escalate to RESTART_BM after %d consecutive cycles",
                 connectivity_failure_escalation_threshold,
             )
+
+        health_check_min_consecutive_polls = _parse_min_consecutive_polls(
+            health_check_config.get("MinConsecutivePolls", fallback="")
+        )
+        if health_check_min_consecutive_polls:
+            log.info(f"DCGM incident debounce thresholds: {health_check_min_consecutive_polls}")
 
     enabled_event_processor_names = cli_config["EnabledEventProcessors"].split(",")
     enabled_event_processors = []
@@ -300,6 +336,7 @@ def cli(
         probe_deadline_seconds=probe_deadline_seconds,
         power_brake_enabled=power_brake_enabled,
         power_brake_min_consecutive_polls=power_brake_min_consecutive_polls,
+        health_check_min_consecutive_polls=health_check_min_consecutive_polls,
     )
     dcgm_watcher.start([], exit)
 

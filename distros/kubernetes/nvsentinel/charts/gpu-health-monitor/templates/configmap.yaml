@@ -44,6 +44,11 @@ data:
     [dcgmhealthcheck]
     SuppressedErrorCodes = {{ .Values.dcgmHealthCheck.suppressedErrorCodes | join "," }}
     ConnectivityFailureEscalationThreshold = {{ .Values.dcgmHealthCheck.connectivityFailureEscalationThreshold }}
+{{- $debounce := list }}
+{{- range $code, $polls := .Values.dcgmHealthCheck.minConsecutivePolls }}
+{{- $debounce = append $debounce (printf "%s=%d" $code (int $polls)) }}
+{{- end }}
+    MinConsecutivePolls = {{ join "," $debounce }}
 
     [eventprocessors.kubernetes]
     ConflictRetryCount = 10
