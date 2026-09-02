@@ -994,6 +994,14 @@ gpu-health-monitor:
     # 0 disables escalation.
     connectivityFailureEscalationThreshold: 0
 
+    # Consecutive polls an incident must persist, per error code and GPU, before it
+    # is published. Codes left out publish on first observation. Motivating case:
+    # SXM DCGM_FR_NVLINK_DOWN is briefly asserted after every boot while links train.
+    # Example:
+    #   minConsecutivePolls:
+    #     DCGM_FR_NVLINK_DOWN: 2
+    minConsecutivePolls: {}
+
   # Additional volume mounts for GPU health monitor
   # Use when monitor needs access to host files
   # Example:
@@ -1530,6 +1538,15 @@ mongodb-store:
   # TTL expireAfterSeconds. Default 2592000 (30d); production often 604800 (7d).
   # In-cluster and external Mongo. Job name includes this value so helm/argo rerun collMod.
   collectionExpirySeconds: 2592000
+
+  # Oplog size in MiB (MongoDB minimum 990). Set this from the sizing
+  # guidance in docs/configuration/mongodb-store.md; the chart does not
+  # derive it from the PVC. In-cluster init Job only.
+  # Never shrinks a live oplog unless oplogAllowShrink is true.
+  # Must match mongodb.extraFlags --oplogSize= (Bitnami) and, when Percona
+  # is on, psmdb-db.replsets.rs0.configuration replication.oplogSizeMB.
+  oplogSizeMB: 990
+  oplogAllowShrink: false
 
   # MongoDB replica configuration
   mongodb:
