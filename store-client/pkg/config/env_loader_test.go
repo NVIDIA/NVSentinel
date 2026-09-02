@@ -76,7 +76,7 @@ func TestNewPostgreSQLCompatibleConfig_WithoutPassword(t *testing.T) {
 	}
 }
 
-func TestNewPostgreSQLCompatibleConfig_PasswordWithExplicitCA(t *testing.T) {
+func TestNewPostgreSQLCompatibleConfig_PasswordWithExplicitCA_QuotesCAAndExcludesBundledClientCerts(t *testing.T) {
 	setPostgreSQLEnv(t)
 	t.Setenv("DATASTORE_PASSWORD", "s3cret")
 	t.Setenv("DATASTORE_SSLROOTCERT", "/etc/ssl/external postgres/ca.crt")
