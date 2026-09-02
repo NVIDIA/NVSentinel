@@ -99,6 +99,13 @@ dcgmHealthCheck:
   # wedged driver; a shared service or network outage is not fixed by rebooting
   # this node. 0 disables escalation and keeps failures at CONTACT_SUPPORT.
   connectivityFailureEscalationThreshold: 0
+  # Consecutive polls an incident must persist, per error code and GPU, before it is
+  # published. Codes left out publish on first observation. Motivating case: SXM
+  # DCGM_FR_NVLINK_DOWN is briefly asserted after every boot while links train.
+  # Example:
+  #   minConsecutivePolls:
+  #     DCGM_FR_NVLINK_DOWN: 2
+  minConsecutivePolls: {}
 
 # Use host networking for GPU health monitor pods. external-hostengine mode
 # enables host networking automatically because the configured endpoint is
