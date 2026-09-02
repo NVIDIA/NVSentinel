@@ -111,6 +111,13 @@ type MonitorState struct {
 	// removes it. Keys are "<kind>/<device>_<port>".
 	MissingCharDevices map[string]MissingCharDeviceFlag `json:"missing_char_devices,omitempty"`
 
+	// CharDeviceIssmMode records the charDeviceCheck.issm mode the last run
+	// used. When it differs from the configured mode at startup the
+	// InfiniBandCharDeviceCheck owes a baseline reconciliation so a mode
+	// change (e.g. flipping issm to never/auto) clears now-stale issm
+	// conditions instead of holding them until the next reboot.
+	CharDeviceIssmMode string `json:"chardev_issm_mode,omitempty"`
+
 	// Counter detection state — produced by InfiniBandDegradationCheck
 	// and EthernetDegradationCheck. Both maps key on
 	// `<device>:<port>:<counter_name>` so the IB and Ethernet checks
@@ -359,6 +366,7 @@ func (m *Manager) Load() error {
 			DisappearedDevices: stripDeviceBootMarkers(loaded.DisappearedDevices),
 			DisappearedPorts:   stripPortBootMarkers(loaded.DisappearedPorts),
 			MissingCharDevices: loaded.MissingCharDevices,
+			CharDeviceIssmMode: loaded.CharDeviceIssmMode,
 		}
 		m.loaded = true
 		m.bootIDChanged = true
@@ -402,6 +410,7 @@ func (m *Manager) Load() error {
 			DisappearedDevices: loaded.DisappearedDevices,
 			DisappearedPorts:   loaded.DisappearedPorts,
 			MissingCharDevices: loaded.MissingCharDevices,
+			CharDeviceIssmMode: loaded.CharDeviceIssmMode,
 			CounterSnapshots:   loaded.CounterSnapshots,
 			BreachFlags:        loaded.BreachFlags,
 			PendingBaselines:   loaded.PendingBaselines,
@@ -818,6 +827,30 @@ func (m *Manager) UpdateMissingCharDevices(flags map[string]MissingCharDeviceFla
 
 	m.state.MissingCharDevices = make(map[string]MissingCharDeviceFlag, len(flags))
 	maps.Copy(m.state.MissingCharDevices, flags)
+
+	return true
+}
+
+// CharDeviceIssmMode returns the charDeviceCheck.issm mode persisted by the
+// last run, or "" when none was recorded (legacy state or fresh install).
+func (m *Manager) CharDeviceIssmMode() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.state.CharDeviceIssmMode
+}
+
+// SetCharDeviceIssmMode records the issm mode the current run is using and
+// reports whether it changed the persisted value. Persisted on the next Save.
+func (m *Manager) SetCharDeviceIssmMode(mode string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.state.CharDeviceIssmMode == mode {
+		return false
+	}
+
+	m.state.CharDeviceIssmMode = mode
 
 	return true
 }
