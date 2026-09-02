@@ -226,8 +226,8 @@ func (b *slidingWindowBreaker) tripThreshold(totalNodes int) (int, string) {
 // It returns true if:
 // 1. The breaker is already in TRIPPED state, OR
 // 2. Recent cordon events reach the configured threshold
-// The threshold is the lower of TripPercentage * GPU nodes and TripMaxNodes, whichever
-// bounds are configured. The method automatically trips the breaker if it is exceeded.
+// The threshold is the lower of the configured percentage of GPU nodes and TripMaxNodes,
+// clamped to the fleet size. The breaker trips when the recent-cordon count reaches it.
 func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 	b.mu.RLock()
 
