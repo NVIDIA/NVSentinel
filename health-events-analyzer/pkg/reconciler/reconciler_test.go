@@ -318,7 +318,7 @@ func TestHandleEvent(t *testing.T) {
 				// metadata the source event already carried.
 				!e.GetGeneratedTimestamp().AsTime().Before(src.GetGeneratedTimestamp().AsTime()) &&
 				e.GetMetadata()["SerialNumber"] == src.GetMetadata()["SerialNumber"] &&
-				e.GetMetadata()["nvsentinel.nvidia.com/source-generated-timestamp"] ==
+				e.GetMetadata()["source_generated_timestamp"] ==
 					src.GetGeneratedTimestamp().AsTime().UTC().Format(time.RFC3339Nano)
 		}
 
