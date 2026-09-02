@@ -31,7 +31,7 @@ import (
 // The version is "v1" because protoc-gen-crd hardcodes that version.
 // Despite the v1 version string, the MR API is still pre-stable;
 // ADR-051 governs its lifecycle.
-var MRGroupVersion = schema.GroupVersion{Group: managed.MRApiGroup, Version: managed.MRVersion}
+var MRGroupVersion = schema.GroupVersion{Group: managed.MRAPIGroup, Version: managed.MRVersion}
 
 // MRSchemeBuilder is the SchemeBuilder for the nvsentinel.dgxc.nvidia.com
 // API group. It is independent of the SchemeBuilder for nvsentinel.nvidia.com

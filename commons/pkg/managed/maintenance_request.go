@@ -15,7 +15,7 @@
 package managed
 
 const (
-	MRApiGroup = "nvsentinel.dgxc.nvidia.com"
+	MRAPIGroup = "nvsentinel.dgxc.nvidia.com"
 	MRVersion  = "v1"
 	MRKind     = "MaintenanceRequest"
 	MRResource = "maintenancerequests"
