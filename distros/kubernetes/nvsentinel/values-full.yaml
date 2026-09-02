@@ -1547,6 +1547,15 @@ mongodb-store:
   # In-cluster and external Mongo. Job name includes this value so helm/argo rerun collMod.
   collectionExpirySeconds: 2592000
 
+  # Oplog size in MiB (MongoDB minimum 990). Set this from the sizing
+  # guidance in docs/configuration/mongodb-store.md; the chart does not
+  # derive it from the PVC. In-cluster init Job only.
+  # Never shrinks a live oplog unless oplogAllowShrink is true.
+  # Must match mongodb.extraFlags --oplogSize= (Bitnami) and, when Percona
+  # is on, psmdb-db.replsets.rs0.configuration replication.oplogSizeMB.
+  oplogSizeMB: 990
+  oplogAllowShrink: false
+
   # MongoDB replica configuration
   mongodb:
     # Bitnami PVC size (default 8Gi). Percona: psmdb-db.replsets.rs0.volumeSpec.pvc.resources.requests.storage
