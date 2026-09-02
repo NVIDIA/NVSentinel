@@ -208,6 +208,7 @@ class DCGMWatcher:
         probe_deadline_seconds: float = 0.0,
         power_brake_enabled: bool = False,
         power_brake_min_consecutive_polls: int = 1,
+        health_check_min_consecutive_polls: dict[str, int] | None = None,
     ) -> None:
         self._addr = addr
         self._poll_interval_seconds = poll_interval_seconds
@@ -240,6 +241,24 @@ class DCGMWatcher:
                 DCGM_FIELDS_MONITORING["gpupowerbrakemonitoringenabled"].field_id,
                 HW_POWER_BRAKE_REASON_BIT,
                 self._power_brake_min_consecutive_polls,
+            )
+        # An incident published from a single poll can be a transient: SXM NVLink
+        # links are briefly down after every boot while they train. Codes listed
+        # here must persist for N consecutive polls per GPU; anything unlisted
+        # keeps today's behaviour of publishing on the first observation.
+        # A threshold of 1 or less is today's behaviour, so those are dropped here
+        # and no streak is ever tracked for them.
+        self._health_check_min_consecutive_polls = {
+            code: polls for code, polls in (health_check_min_consecutive_polls or {}).items() if polls > 1
+        }
+        self._incident_streaks: dict[tuple[str, int], int] = {}
+        if self._health_check_min_consecutive_polls:
+            log.info(
+                "DCGM health check incident debounce: %s",
+                ", ".join(
+                    f"{code}={polls} consecutive poll(s)"
+                    for code, polls in sorted(self._health_check_min_consecutive_polls.items())
+                ),
             )
         self._metadata_reader = metadata_reader
         self._suppress_unbridged_pcie_nvlink_down = suppress_unbridged_pcie_nvlink_down
@@ -400,6 +419,55 @@ class DCGMWatcher:
 
         return True
 
+    def _is_incident_debounced(self, error_code: str, gpu_id: int) -> bool:
+        """Return True when this incident has not yet persisted for the configured
+        number of consecutive polls, so it must be withheld this cycle.
+
+        The streak is keyed on ``(error_code, gpu_id)`` so a debounced code on one
+        GPU never delays a different code, or the same code on another GPU.
+        """
+        threshold = self._health_check_min_consecutive_polls.get(error_code)
+        if threshold is None:
+            return False
+
+        key = (error_code, gpu_id)
+        streak = self._incident_streaks.get(key, 0) + 1
+        self._incident_streaks[key] = streak
+
+        if streak >= threshold:
+            log.debug(
+                "Incident %s on GPU %s has persisted %d consecutive poll(s); publishing",
+                error_code,
+                gpu_id,
+                streak,
+            )
+            return False
+
+        log.debug(
+            "Incident %s on GPU %s seen %d/%d consecutive polls; withholding",
+            error_code,
+            gpu_id,
+            streak,
+            threshold,
+        )
+        metrics.dcgm_health_check_debounced_incidents.labels(error_code, str(gpu_id)).inc()
+
+        return True
+
+    def _reset_absent_incident_streaks(self, seen_this_poll: set[tuple[str, int]]) -> None:
+        """Drop the streak for every tracked incident absent from this poll.
+
+        A code that appears for a GPU on alternate polls therefore restarts from zero
+        each time and never reaches its threshold. The key is the code and GPU, not the
+        individual link, so a GPU reporting one link on one poll and another link on the
+        next keeps its streak: that GPU has had a link down continuously.
+
+        Only called after a successful health check, since a failed poll observed
+        nothing and must not clear a streak.
+        """
+        for key in [key for key in self._incident_streaks if key not in seen_this_poll]:
+            del self._incident_streaks[key]
+
     def _fire_callback_funcs(self, func_name: str, args: list[any]):
         def done_callback(class_name: str, func_name: str, future):
             e = future.exception()
@@ -510,6 +578,12 @@ class DCGMWatcher:
             health_status = self._get_health_status_dict()
             # Temporary dict to accumulate multiple failures per GPU
             gpu_failures_accumulator = {}
+            # One debounce decision per (error code, GPU) per poll. DCGM reports an
+            # incident per down link, so a GPU with several down links produces several
+            # records for the same code; advancing the streak once per record would
+            # reach the threshold inside a single poll. Keys also record presence,
+            # which is what keeps a streak alive.
+            debounce_decisions: dict[tuple[str, int], bool] = {}
 
             log.debug(
                 f"Health check returned: overallHealth={health_details.overallHealth}, "
@@ -550,6 +624,17 @@ class DCGMWatcher:
                 if self._is_nvlink_down_false_positive(watch_name, gpu_id, error_code):
                     continue
 
+                # Evaluated after suppression: a suppressed incident is not an
+                # observation, so it must not build a streak.
+                debounce_key = (error_code, gpu_id)
+                if debounce_key not in debounce_decisions:
+                    debounce_decisions[debounce_key] = self._is_incident_debounced(error_code, gpu_id)
+
+                # A debounced incident must neither degrade the watch status nor
+                # land in the accumulator, exactly like a suppressed one.
+                if debounce_decisions[debounce_key]:
+                    continue
+
                 health_status[watch_name].status = types.HealthStatus(int(incident.health))
 
                 # Create a key for accumulating failures per GPU per watch
@@ -568,6 +653,8 @@ class DCGMWatcher:
                 health_status[watch_name].entity_failures[gpu_id] = types.ErrorDetails(
                     message=combined_message, code=failure_data["code"]
                 )
+
+            self._reset_absent_incident_streaks(set(debounce_decisions))
 
             log.debug(f"filled in health details is {health_status}")
             return health_status, True

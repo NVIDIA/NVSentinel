@@ -162,6 +162,8 @@ mongodb-store:
         name: rs0
         size: 3
         configuration: |
+          replication:
+            oplogSizeMB: 990
           setParameter:
             authenticationMechanisms: "MONGODB-X509,SCRAM-SHA-256,SCRAM-SHA-1"
         replsetOverrides:
@@ -175,7 +177,8 @@ mongodb-store:
           pvc:
             resources:
               requests:
-                storage: "1Gi"
+                # 2Gi is enough for Tilt Percona plus MongoDB's 990 MiB oplog floor.
+                storage: "2Gi"
         nodeSelector:
           node-role.kubernetes.io/control-plane: ""
         tolerations:
