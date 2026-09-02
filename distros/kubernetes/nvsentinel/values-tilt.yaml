@@ -435,7 +435,7 @@ health-events-analyzer:
 
     [[rules]]
     name = "RepeatedXIDErrorOnSameGPU"
-    description = "Detect occurrence of XID errors (any XID except 31) on the same GPU 2 times within 2 minutes where the burst window is 15 seconds and sticky XIDs window is 30 seconds (test config)"
+    description = "Detect occurrence of XID errors (any XID except 31 and 45) on the same GPU 2 times within 2 minutes where the burst window is 15 seconds and sticky XIDs window is 30 seconds (test config)"
     recommended_action = "CONTACT_SUPPORT"
     evaluate_rule = true
     stage = [
@@ -483,6 +483,10 @@ health-events-analyzer:
       ''',
       # Candidate docs must also be XID events so non-XID unhealthy events on
       # the same node are not merged into GPU burst counts.
+      #
+      # Excluded codes: 31 has its own dedicated rules; 45 is preemptive channel cleanup that
+      # the Xid catalogue resolves as "Not Solo: IGNORE (follow other Xid)", and a repeat is
+      # never solo.
       '''
       {
         "$match": {
@@ -491,7 +495,7 @@ health-events-analyzer:
           "healthevent.nodename": "this.healthevent.nodename",
           "$expr": {
           "$and": [
-            {"$ne": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, "31"]},
+            {"$not": [{"$in": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, ["31", "45"]]}]},
             {
               "$gt": [
                 {
