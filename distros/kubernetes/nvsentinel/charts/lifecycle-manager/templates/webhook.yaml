@@ -71,9 +71,31 @@ webhooks:
         operations:
           - CREATE
           - UPDATE
-          - DELETE
         resources:
           - validationrequests
+        scope: "Cluster"
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: 10
+  - name: vmaintenancerequest-v1.kb.io
+    clientConfig:
+      service:
+        name: {{ include "lifecycle-manager.fullname" . }}
+        namespace: {{ .Release.Namespace }}
+        path: /validate-nvsentinel-dgxc-nvidia-com-v1-maintenancerequest
+        port: {{ .Values.webhook.port }}
+    rules:
+      - apiGroups:
+          - nvsentinel.dgxc.nvidia.com
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - maintenancerequests
         scope: "Cluster"
     admissionReviewVersions:
       - v1
