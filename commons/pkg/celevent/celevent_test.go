@@ -146,6 +146,20 @@ func TestBuildEventMap_ZeroValueEvent_DoesNotPanic(t *testing.T) {
 	assert.NotPanics(t, func() { BuildEventMap(nil) })
 }
 
+func TestBuildEventMap_ErrorCodeIsCloned_SoCallersCannotMutateTheEvent(t *testing.T) {
+	event := testEvent()
+
+	eventMap := BuildEventMap(event)
+	codes, ok := eventMap["errorCode"].([]string)
+	require.True(t, ok)
+	require.NotEmpty(t, codes)
+
+	codes[0] = "MUTATED"
+
+	assert.Equal(t, "45", event.GetErrorCode()[0],
+		"the event's own errorCode slice must be unaffected")
+}
+
 func TestBuildEventMap_MetadataIsCloned_SoCallersCannotMutateTheEvent(t *testing.T) {
 	event := testEvent()
 

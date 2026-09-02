@@ -23,6 +23,7 @@ package celevent
 import (
 	"fmt"
 	"maps"
+	"slices"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -103,12 +104,16 @@ func (f *Filter) Matches(event *pb.HealthEvent) (bool, error) {
 //
 // Note errorCode is a repeated field, so it binds as a list: match it with
 // `'45' in event.errorCode`, not `event.errorCode == '45'`.
+//
+// errorCode and metadata are both cloned. CEL evaluation cannot mutate them, but this is
+// exported, and handing a caller the event's own slice and map would let it mutate the
+// event through the returned map.
 func BuildEventMap(event *pb.HealthEvent) map[string]any {
 	return map[string]any{
 		"agent":             event.GetAgent(),
 		"checkName":         event.GetCheckName(),
 		"componentClass":    event.GetComponentClass(),
-		"errorCode":         event.GetErrorCode(),
+		"errorCode":         slices.Clone(event.GetErrorCode()),
 		"isFatal":           event.GetIsFatal(),
 		"isHealthy":         event.GetIsHealthy(),
 		"recommendedAction": event.GetRecommendedAction().String(),
