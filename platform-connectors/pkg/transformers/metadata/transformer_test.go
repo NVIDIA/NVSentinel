@@ -658,6 +658,39 @@ func TestNewProcessorValidation(t *testing.T) {
 			expectError: true,
 			errorMsg:    "skipNodeLabel must be in key=value format",
 		},
+		{
+			name: "skipNodeLabel with invalid Kubernetes label key is rejected",
+			config: &Config{
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				SkipNodeLabel: "!!!invalid/key=false",
+			},
+			clientset:   testClient,
+			expectError: true,
+			errorMsg:    "not a valid Kubernetes label name",
+		},
+		{
+			name: "skipNodeLabel with invalid Kubernetes label value is rejected",
+			config: &Config{
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				SkipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=.starts-with-dot",
+			},
+			clientset:   testClient,
+			expectError: true,
+			errorMsg:    "not a valid Kubernetes label value",
+		},
+		{
+			name: "skipNodeLabel with equals in value is rejected",
+			config: &Config{
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				SkipNodeLabel: "valid/key=val=ue",
+			},
+			clientset:   testClient,
+			expectError: true,
+			errorMsg:    "not a valid Kubernetes label value",
+		},
 	}
 
 	for _, tt := range tests {

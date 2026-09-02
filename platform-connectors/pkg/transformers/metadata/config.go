@@ -20,6 +20,8 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/util/validation"
+
 	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
 )
 
@@ -76,6 +78,14 @@ func (c *Config) Validate() error {
 		parts := strings.SplitN(c.SkipNodeLabel, "=", 2)
 		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 			return fmt.Errorf("skipNodeLabel must be in key=value format, got %q", c.SkipNodeLabel)
+		}
+
+		if errs := validation.IsQualifiedName(parts[0]); len(errs) > 0 {
+			return fmt.Errorf("skipNodeLabel key %q is not a valid Kubernetes label name: %s", parts[0], strings.Join(errs, "; "))
+		}
+
+		if errs := validation.IsValidLabelValue(parts[1]); len(errs) > 0 {
+			return fmt.Errorf("skipNodeLabel value %q is not a valid Kubernetes label value: %s", parts[1], strings.Join(errs, "; "))
 		}
 
 		c.skipLabelKey = parts[0]
