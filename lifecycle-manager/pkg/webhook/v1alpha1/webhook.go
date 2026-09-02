@@ -29,7 +29,10 @@ import (
 
 var webhookLog = logf.Log.WithName("validationrequest-webhook")
 
-func SetupWebhookWithManager(mgr ctrl.Manager, cfg *v1alpha1.ValidationConfiguration, enabled bool) error {
+func SetupWebhookWithManager(
+	mgr ctrl.Manager, cfg *v1alpha1.ValidationConfiguration,
+	validationEnabled, maintenanceEnabled bool,
+) error {
 	uncachedClient, err := client.New(mgr.GetConfig(), client.Options{
 		Scheme: mgr.GetScheme(),
 	})
@@ -38,13 +41,24 @@ func SetupWebhookWithManager(mgr ctrl.Manager, cfg *v1alpha1.ValidationConfigura
 	}
 
 	validator := &ValidationRequestValidator{
-		Enabled: enabled,
+		Enabled: validationEnabled,
 		Config:  cfg,
 		Client:  uncachedClient,
 	}
 
 	if err := ctrl.NewWebhookManagedBy(mgr, &v1alpha1.ValidationRequest{}).
 		WithValidator(validator).
+		Complete(); err != nil {
+		return err
+	}
+
+	mrValidator := &MaintenanceRequestValidator{
+		Enabled: maintenanceEnabled,
+		Client:  uncachedClient,
+	}
+
+	if err := ctrl.NewWebhookManagedBy(mgr, &v1alpha1.MaintenanceRequest{}).
+		WithValidator(mrValidator).
 		Complete(); err != nil {
 		return err
 	}

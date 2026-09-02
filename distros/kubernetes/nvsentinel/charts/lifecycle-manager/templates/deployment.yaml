@@ -55,6 +55,10 @@ spec:
             {{- if .Values.controllers.validationRequest.enabled }}
             - "--config=/etc/nvsentinel/lifecycle-manager/config.yaml"
             {{- end }}
+            - "--enable-maintenance-controller={{ .Values.controllers.maintenanceRequest.enabled }}"
+            {{- if .Values.controllers.maintenanceRequest.enabled }}
+            - "--platform-connector-socket=unix://{{ ((.Values.global).socketPath) | default "/var/run/nvsentinel.sock" }}"
+            {{- end }}
             - "--webhook-cert-path={{ .Values.webhook.certDir }}"
             - "--webhook-cert-name=tls.crt"
             - "--webhook-cert-key=tls.key"
@@ -118,6 +122,11 @@ spec:
             - name: webhook-certs
               mountPath: {{ .Values.webhook.certDir }}
               readOnly: true
+            {{- if .Values.controllers.maintenanceRequest.enabled }}
+            - name: platform-connector-socket
+              mountPath: /var/run
+              readOnly: true
+            {{- end }}
             {{- if .Values.metrics.tls.enabled }}
             - name: metrics-certs
               mountPath: {{ .Values.metrics.tls.certDir }}
@@ -132,6 +141,12 @@ spec:
         - name: templates
           configMap:
             name: {{ include "lifecycle-manager.fullname" . }}-templates
+        {{- end }}
+        {{- if .Values.controllers.maintenanceRequest.enabled }}
+        - name: platform-connector-socket
+          hostPath:
+            path: /var/run/nvsentinel
+            type: DirectoryOrCreate
         {{- end }}
         - name: webhook-certs
           secret:

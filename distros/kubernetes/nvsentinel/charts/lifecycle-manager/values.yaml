@@ -113,6 +113,8 @@ config:
 controllers:
   validationRequest:
     enabled: true
+  maintenanceRequest:
+    enabled: true
 
 leaderElection:
   enabled: true

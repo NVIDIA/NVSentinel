@@ -181,6 +181,20 @@ ruleSets:
 
   - enabled: true
     version: "1"
+    name: "Maintenance request quarantine ruleset"
+    match:
+      all:
+        - kind: "HealthEvent"
+          expression: "has(event.metadata) && 'maintenanceRequestName' in event.metadata"
+        - kind: "Node"
+          expression: >-
+            !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
+            !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")
+    cordon:
+      shouldCordon: true
+
+  - enabled: true
+    version: "1"
     name: "Preflight check fatal error ruleset"
     # Preflight checks (dcgm-diag, nccl-loopback, nccl-allreduce) emit HealthEvents
     # under agent names prefixed with "preflight-". Non-hardware failures such as
