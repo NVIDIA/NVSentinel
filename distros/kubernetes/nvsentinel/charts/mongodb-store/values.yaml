@@ -41,6 +41,20 @@ collectionExpirySeconds: 2592000
 # Percona: psmdb-db.replsets.rs0.volumeSpec.pvc.resources.requests.storage
 # Existing Bound PVCs do not grow on helm upgrade (StatefulSet VCT is immutable).
 
+# Oplog size in MiB (MongoDB minimum 990). The operator computes this from
+# event rate, TTL, and the desired change-stream window; the chart does not
+# derive it from the PVC. See docs/configuration/mongodb-store.md#oplog-size.
+# Written into mongod startup so a new empty member starts at this size.
+# Keep the same integer in mongodb.extraFlags (--oplogSize=) and, when Percona
+# is on, in psmdb-db.replsets.rs0.configuration (replication.oplogSizeMB).
+# Helm fails if they differ. Do not mount a snippet mongodb.conf and do not
+# edit vendored Bitnami/Percona templates. Init Job still runs
+# replSetResizeOplog on live members. Not applied to external Mongo. The job
+# never shrinks an existing oplog unless oplogAllowShrink is true (truncating
+# the window drops change-stream resume tokens; see issue 1594).
+oplogSizeMB: 990
+oplogAllowShrink: false
+
 # SCRAM application user (created when mongodb.tls.enabled is false).
 # Instead of X.509 cert-based users, the Job creates a SCRAM-SHA-256 user
 # with readWrite access to the NVSentinel database.
@@ -242,6 +256,11 @@ mongodb:
   extraFlags:
     - "--setParameter"
     - "authenticationMechanisms=MONGODB-X509,SCRAM-SHA-256"
+    # Must match oplogSizeMB. Flags are appended after Bitnami's generated
+    # mongodb.conf, so dbPath/logpath stay intact. Do not set
+    # mongodb.existingConfigmap to a snippet file: the image then skips those
+    # settings and crashloops (--fork without --logpath).
+    - "--oplogSize=990"
 
   tolerations: []
   
@@ -292,7 +311,11 @@ psmdb-db:
     rs0:
       name: rs0
       size: 3
+      # Must match mongodb-store.oplogSizeMB. The operator merges this into
+      # mongod.conf. Overriding this block replaces the whole string.
       configuration: |
+        replication:
+          oplogSizeMB: 990
         setParameter:
           authenticationMechanisms: "MONGODB-X509,SCRAM-SHA-256,SCRAM-SHA-1"
       replsetOverrides:

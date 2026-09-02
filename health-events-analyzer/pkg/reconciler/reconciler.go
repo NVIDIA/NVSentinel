@@ -390,7 +390,8 @@ func (r *Reconciler) publishMatchedEvent(ctx context.Context,
 		return fmt.Errorf("error in publishing the new fatal event: %w", err)
 	}
 
-	slog.InfoContext(ctx, "New event successfully published for matching rule", "rule_name", rule.Name)
+	slog.InfoContext(ctx, "New event successfully published for matching rule",
+		"rule_name", rule.Name, "node", event.HealthEvent.NodeName)
 
 	return nil
 }
