@@ -20,10 +20,12 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/cel-go/cel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"k8s.io/apimachinery/pkg/util/wait"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/celevent"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -42,6 +44,8 @@ type HealthEventsExporter struct {
 	sink           sink.EventSink
 	hasResumeToken bool
 	workers        int
+	// filter is nil when no expression is configured, meaning export everything.
+	filter cel.Program
 }
 
 func New(
@@ -52,7 +56,12 @@ func New(
 	sink sink.EventSink,
 	hasResumeToken bool,
 	workers int,
-) *HealthEventsExporter {
+) (*HealthEventsExporter, error) {
+	filter, err := cfg.Exporter.Filter.Compile()
+	if err != nil {
+		return nil, fmt.Errorf("compile filter expression: %w", err)
+	}
+
 	return &HealthEventsExporter{
 		cfg:            cfg,
 		dbClient:       dbClient,
@@ -61,7 +70,34 @@ func New(
 		sink:           sink,
 		hasResumeToken: hasResumeToken,
 		workers:        workers,
+		filter:         filter,
+	}, nil
+}
+
+// shouldExport reports whether an event passes the configured filter.
+//
+// It fails open: an evaluation error exports the event and increments a counter, because
+// dropping events on a filter bug is silent data loss, while exporting an extra event is
+// merely noise the sink already tolerates.
+func (e *HealthEventsExporter) shouldExport(ctx context.Context, event *pb.HealthEvent) bool {
+	if e.filter == nil {
+		return true
 	}
+
+	matched, err := celevent.EvaluateBool(e.filter, event)
+	if err != nil {
+		slog.WarnContext(ctx, "Filter evaluation failed, exporting event",
+			"error", err, "checkName", event.GetCheckName())
+		metrics.FilterErrors.Inc()
+
+		return true
+	}
+
+	if !matched {
+		metrics.EventsFiltered.Inc()
+	}
+
+	return matched
 }
 
 func (e *HealthEventsExporter) Run(ctx context.Context) error {
@@ -235,6 +271,10 @@ func (e *HealthEventsExporter) processBackfillCursor(ctx context.Context, cursor
 
 		if healthEvent == nil {
 			slog.DebugContext(ctx, "Skipping nil health event")
+			continue
+		}
+
+		if !e.shouldExport(ctx, healthEvent) {
 			continue
 		}
 
@@ -417,6 +457,12 @@ func (e *HealthEventsExporter) processEvent(ctx context.Context, rawEvent client
 
 	if healthEventWithStatus.HealthEvent == nil {
 		slog.DebugContext(ctx, "Skipping nil health event")
+		return nil
+	}
+
+	// Returning nil marks the sequence completed, so the resume token still advances past a
+	// filtered event. Skipping without completing would stall the token behind it.
+	if !e.shouldExport(ctx, healthEventWithStatus.HealthEvent) {
 		return nil
 	}
 
