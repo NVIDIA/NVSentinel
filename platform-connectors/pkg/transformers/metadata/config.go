@@ -81,11 +81,13 @@ func (c *Config) Validate() error {
 		}
 
 		if errs := validation.IsQualifiedName(parts[0]); len(errs) > 0 {
-			return fmt.Errorf("skipNodeLabel key %q is not a valid Kubernetes label name: %s", parts[0], strings.Join(errs, "; "))
+			return fmt.Errorf("skipNodeLabel key %q is not a valid Kubernetes label name: %s",
+				parts[0], strings.Join(errs, "; "))
 		}
 
 		if errs := validation.IsValidLabelValue(parts[1]); len(errs) > 0 {
-			return fmt.Errorf("skipNodeLabel value %q is not a valid Kubernetes label value: %s", parts[1], strings.Join(errs, "; "))
+			return fmt.Errorf("skipNodeLabel value %q is not a valid Kubernetes label value: %s",
+				parts[1], strings.Join(errs, "; "))
 		}
 
 		c.skipLabelKey = parts[0]
