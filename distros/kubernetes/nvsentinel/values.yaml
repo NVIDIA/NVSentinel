@@ -363,6 +363,8 @@ platformConnector:
   # unbounded, and nodeName: a pod-to-node join gives the receiving connector's node, which
   # is the faulty node for the DaemonSet monitors but not for health-events-analyzer.
   promConnector:
+    # true registers the counter on the existing metrics endpoint; false skips the
+    # connector entirely, so no ring buffer is attached and nothing is recorded.
     enabled: true
 
   k8sConnector:

@@ -99,6 +99,30 @@ func TestRecordEvent_NilEvent_DoesNotPanic(t *testing.T) {
 	assert.NotPanics(t, func() { recordEvent(nil) })
 }
 
+// startConnector runs the processing loop and stops it when the test ends. Cancellation
+// alone cannot release a worker parked in Dequeue (see the cancellation test below), so the
+// queue has to be shut down or the goroutine outlives the test.
+func startConnector(t *testing.T, ctx context.Context, buffer *ringbuffer.RingBuffer, c *PromConnector) {
+	t.Helper()
+
+	done := make(chan struct{})
+
+	go func() {
+		c.FetchAndProcessHealthMetric(ctx)
+		close(done)
+	}()
+
+	t.Cleanup(func() {
+		buffer.ShutDownHealthMetricQueue()
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("processing loop did not stop during cleanup")
+		}
+	})
+}
+
 func TestFetchAndProcessHealthMetric_QueuedBatch_CountsEveryEvent(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -116,7 +140,7 @@ func TestFetchAndProcessHealthMetric_QueuedBatch_CountsEveryEvent(t *testing.T) 
 		},
 	}))
 
-	go connector.FetchAndProcessHealthMetric(ctx)
+	startConnector(t, ctx, buffer, connector)
 
 	assert.Eventually(t, func() bool {
 		return counter(t, "nic-health-monitor", "NicLinkWatch", "RESTART_BM", "true", "false") == before+2
@@ -132,7 +156,7 @@ func TestFetchAndProcessHealthMetric_EmptyBatch_CompletesWithoutStalling(t *test
 	buffer := ringbuffer.NewRingBuffer("prom-test-empty", ctx)
 	connector := InitializePromConnector(buffer)
 
-	go connector.FetchAndProcessHealthMetric(ctx)
+	startConnector(t, ctx, buffer, connector)
 
 	buffer.Enqueue(ringbuffer.NewQueuedHealthEvents(&protos.HealthEvents{Version: 1}))
 
