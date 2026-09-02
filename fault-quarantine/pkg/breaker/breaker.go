@@ -180,19 +180,25 @@ func (b *slidingWindowBreaker) sumBuckets() int {
 	return sum
 }
 
-// Names for the configured bounds, used in logs and the binding-bound metric.
+// Bound names the configured limit that produced the effective threshold. It appears in
+// logs and as the label on fault_quarantine_breaker_threshold_nodes.
+type Bound string
+
 const (
-	boundPercentage = "percentage"
-	boundMaxNodes   = "maxNodes"
-	// Reported when the configured bound exceeds the fleet size and was clamped to it.
-	boundFleetSize = "fleetSize"
+	// boundNone is the zero value, reported when no bound is configured.
+	boundNone       Bound = ""
+	boundPercentage Bound = "percentage"
+	boundMaxNodes   Bound = "maxNodes"
+	// boundFleetSize is reported when a configured bound exceeded the fleet size and was
+	// clamped to it.
+	boundFleetSize Bound = "fleetSize"
 )
 
 // tripThreshold returns the recent-cordon count that trips the breaker for the given GPU
 // node count, along with the bound that produced it. When both bounds are configured the
 // lower one binds, so growing the fleet cannot silently raise the effective limit.
-func (b *slidingWindowBreaker) tripThreshold(totalNodes int) (int, string) {
-	threshold, bound := 0, ""
+func (b *slidingWindowBreaker) tripThreshold(totalNodes int) (int, Bound) {
+	threshold, bound := 0, boundNone
 
 	if b.cfg.TripPercentage > 0 {
 		// Compared as a float before converting: a percentage large enough to exceed
@@ -271,7 +277,7 @@ func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 		"bindingBound", bindingBound)
 
 	metrics.SetFaultQuarantineBreakerUtilization(float64(recentCordonedNodes) / float64(totalNodes))
-	metrics.SetFaultQuarantineBreakerThresholdNodes(float64(threshold), bindingBound)
+	metrics.SetFaultQuarantineBreakerThresholdNodes(float64(threshold), string(bindingBound))
 
 	if shouldTrip {
 		err := b.ForceState(ctx, StateTripped)

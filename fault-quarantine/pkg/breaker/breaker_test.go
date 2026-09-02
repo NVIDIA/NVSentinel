@@ -496,7 +496,7 @@ func TestTripThreshold_ConfiguredBounds_ReturnsEffectiveThreshold(t *testing.T) 
 		maxNodes      int
 		totalNodes    int
 		wantThreshold int
-		wantBound     string
+		wantBound     Bound
 	}{
 		{
 			name:          "percentage only, unchanged from previous behaviour",
@@ -559,7 +559,7 @@ func TestTripThreshold_ConfiguredBounds_ReturnsEffectiveThreshold(t *testing.T) 
 			name:          "neither bound set yields no threshold",
 			totalNodes:    288,
 			wantThreshold: 0,
-			wantBound:     "",
+			wantBound:     boundNone,
 		},
 		{
 			// Without the clamp this would be unreachable and disable the breaker.
