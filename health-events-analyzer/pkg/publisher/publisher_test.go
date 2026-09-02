@@ -80,6 +80,23 @@ func TestPublish_LaggingSourceEvent_StampsPublishTimeAndKeepsSourceTimestamp(t *
 		published.GetMetadata()[sourceGeneratedTimestampMetadataKey])
 }
 
+// Asserts the wire key literally rather than through the constant, so a rename cannot
+// silently change what consumers see while the tests still pass.
+func TestPublish_DerivedEvent_UsesTheDocumentedMetadataKey(t *testing.T) {
+	client := &fakePlatformConnectorClient{}
+	pub := NewPublisher(client, protos.ProcessingStrategy_EXECUTE_REMEDIATION)
+
+	sourceTime := time.Date(2026, 8, 21, 8, 27, 36, 0, time.UTC)
+
+	err := pub.Publish(context.Background(), sourceEvent(sourceTime),
+		protos.RecommendedAction_NONE, "XIDErrorSoloNoBurst", "no action", nil)
+	require.NoError(t, err)
+
+	published := client.events.GetEvents()[0]
+	require.Equal(t, sourceTime.Format(time.RFC3339Nano),
+		published.GetMetadata()["source_generated_timestamp"])
+}
+
 func TestPublish_SourceWithMetadata_PreservesExistingKeys(t *testing.T) {
 	client := &fakePlatformConnectorClient{}
 	pub := NewPublisher(client, protos.ProcessingStrategy_EXECUTE_REMEDIATION)
