@@ -114,7 +114,10 @@ controllers:
   validationRequest:
     enabled: true
   maintenanceRequest:
-    enabled: true
+    # Enable the MaintenanceRequest controller and its validating webhook.
+    # When true, the deployment also mounts the platform-connector socket
+    # and the controller publishes health events for accepted MRs.
+    enabled: false
 
 leaderElection:
   enabled: true

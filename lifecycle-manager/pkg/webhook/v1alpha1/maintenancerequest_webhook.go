@@ -17,6 +17,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -25,14 +26,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 )
 
-var mrWebhookLog = logf.Log.WithName("maintenancerequest-webhook")
+var mrLog = slog.With("webhook", "maintenancerequest")
 
 // MaintenanceRequestValidator validates MaintenanceRequest objects.
 // +kubebuilder:object:generate=false
@@ -43,7 +43,7 @@ type MaintenanceRequestValidator struct {
 
 func (v *MaintenanceRequestValidator) ValidateCreate(ctx context.Context,
 	obj *v1alpha1.MaintenanceRequest) (admission.Warnings, error) {
-	mrWebhookLog.Info("Validating MaintenanceRequest on create", "name", obj.Name)
+	mrLog.Info("Validating MaintenanceRequest on create", "name", obj.Name)
 
 	if !v.Enabled {
 		return nil, fmt.Errorf("MaintenanceRequest controller is disabled")
@@ -80,7 +80,7 @@ func (v *MaintenanceRequestValidator) ValidateCreate(ctx context.Context,
 
 func (v *MaintenanceRequestValidator) ValidateUpdate(_ context.Context,
 	oldObj, newObj *v1alpha1.MaintenanceRequest) (admission.Warnings, error) {
-	mrWebhookLog.Info("Validating MaintenanceRequest on update", "name", newObj.Name)
+	mrLog.Info("Validating MaintenanceRequest on update", "name", newObj.Name)
 
 	if !v.Enabled {
 		return nil, fmt.Errorf("MaintenanceRequest controller is disabled")
@@ -117,7 +117,7 @@ func (v *MaintenanceRequestValidator) ValidateUpdate(_ context.Context,
 
 func (v *MaintenanceRequestValidator) ValidateDelete(_ context.Context,
 	obj *v1alpha1.MaintenanceRequest) (admission.Warnings, error) {
-	mrWebhookLog.Info("Validating MaintenanceRequest on delete", "name", obj.Name)
+	mrLog.Info("Validating MaintenanceRequest on delete", "name", obj.Name)
 
 	return nil, nil
 }
@@ -132,7 +132,9 @@ func (v *MaintenanceRequestValidator) checkNoDuplicateMR(ctx context.Context, no
 
 	var list v1alpha1.MaintenanceRequestList
 	if err := v.Client.List(ctx, &list); err != nil {
-		mrWebhookLog.Error(err, "failed to list MaintenanceRequests; allowing request to avoid blocking on transient errors")
+		mrLog.Error("Failed to list MaintenanceRequests; allowing request to avoid blocking on transient errors",
+			"error", err)
+
 		return nil
 	}
 
@@ -161,9 +163,8 @@ func (v *MaintenanceRequestValidator) checkNodeExists(ctx context.Context, nodeN
 			return fmt.Errorf("spec.healthEvent.nodeName references non-existent node %q", nodeName)
 		}
 
-		mrWebhookLog.Error(err,
-			"failed to look up node; allowing request to avoid blocking on transient errors",
-			"node", nodeName)
+		mrLog.Error("Failed to look up node; allowing request to avoid blocking on transient errors",
+			"error", err, "node", nodeName)
 	}
 
 	return nil

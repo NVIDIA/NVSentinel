@@ -108,12 +108,12 @@ func (r *MaintenanceRequestReconciler) initializeFinalizer(
 ) (ctrl.Result, error) {
 	controllerutil.AddFinalizer(mr, mrFinalizerName)
 
-	r.setCondition(mr, conditionHealthEventEmitted, "Unknown", "Initializing",
-		"MaintenanceRequest accepted; preparing to emit health event.")
-
 	if err := r.Update(ctx, mr); err != nil {
 		return ctrl.Result{}, err
 	}
+
+	r.setCondition(mr, conditionHealthEventEmitted, "Unknown", "Initializing",
+		"MaintenanceRequest accepted; preparing to emit health event.")
 
 	if statusErr := r.Status().Update(ctx, mr); statusErr != nil {
 		log.Error("Failed to seed initial status", "error", statusErr)
@@ -153,11 +153,8 @@ func (r *MaintenanceRequestReconciler) claimAndEmit(
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
-	r.setCondition(mr, conditionHealthEventEmitted, "True", reasonEmitted,
-		"Submitted health event to platform-connector.")
-
-	if statusErr := r.Status().Update(ctx, mr); statusErr != nil {
-		return ctrl.Result{}, statusErr
+	if err := r.persistEmittedCondition(ctx, mr); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	log.Info("Successfully emitted opening health event", "node", nodeName)
@@ -165,17 +162,37 @@ func (r *MaintenanceRequestReconciler) claimAndEmit(
 	return ctrl.Result{}, nil
 }
 
+func (r *MaintenanceRequestReconciler) persistEmittedCondition(
+	ctx context.Context, mr *v1alpha1.MaintenanceRequest,
+) error {
+	r.setCondition(mr, conditionHealthEventEmitted, "True", reasonEmitted,
+		"Submitted health event to platform-connector.")
+
+	statusErr := r.Status().Update(ctx, mr)
+	if statusErr == nil || !apierrors.IsConflict(statusErr) {
+		return statusErr
+	}
+
+	if err := r.Get(ctx, client.ObjectKeyFromObject(mr), mr); err != nil {
+		return err
+	}
+
+	r.setCondition(mr, conditionHealthEventEmitted, "True", reasonEmitted,
+		"Submitted health event to platform-connector.")
+
+	return r.Status().Update(ctx, mr)
+}
+
 // handleDeletion runs the cleanup path when DeletionTimestamp is set.
 //
 // Every step is idempotent so a crash at any point produces a clean
 // retry:
+//   - removeNodeAnnotation runs first so a new MR is not blocked while
+//     the clearing event is retried. It is idempotent and ownership-
+//     checked; repeated calls (e.g. across retries) are safe.
 //   - emitClearingEvent may re-fire; platform-connector treats
 //     duplicate isHealthy=true events as no-ops. Only fires if the
 //     opening event was previously emitted (condition=True).
-//   - removeNodeAnnotation runs unconditionally (claimNode may have
-//     written it before a failed emit) and is guarded by an ownership
-//     check. If it fails, the error is returned and the finalizer
-//     stays put, forcing a retry.
 //   - The finalizer is removed only after all cleanup succeeds.
 func (r *MaintenanceRequestReconciler) handleDeletion(
 	ctx context.Context, log *slog.Logger, mr *v1alpha1.MaintenanceRequest,
@@ -190,6 +207,14 @@ func (r *MaintenanceRequestReconciler) handleDeletion(
 	}
 
 	if nodeName != "" {
+		// Release the node claim early so a new MR is not blocked
+		// while the clearing event is retried. removeNodeAnnotation
+		// is idempotent and ownership-checked, so calling it again
+		// after the clearing event succeeds is safe.
+		if err := r.removeNodeAnnotation(ctx, log, nodeName, mr.Name); err != nil {
+			return ctrl.Result{}, err
+		}
+
 		// Only emit a clearing event if we previously emitted an
 		// opening event. If emit never succeeded, there is nothing to
 		// clear in the pipeline.
@@ -200,13 +225,6 @@ func (r *MaintenanceRequestReconciler) handleDeletion(
 			}
 
 			log.Info("Successfully emitted clearing health event", "node", nodeName)
-		}
-
-		// Always attempt annotation cleanup — claimNode may have
-		// written the annotation before a failed emit, and skipping
-		// removal would permanently block new MRs for this node.
-		if err := r.removeNodeAnnotation(ctx, log, nodeName, mr.Name); err != nil {
-			return ctrl.Result{}, err
 		}
 	}
 

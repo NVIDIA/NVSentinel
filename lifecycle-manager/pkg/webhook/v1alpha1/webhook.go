@@ -60,7 +60,7 @@ func SetupWebhookWithManager(
 	if err := ctrl.NewWebhookManagedBy(mgr, &v1alpha1.MaintenanceRequest{}).
 		WithValidator(mrValidator).
 		Complete(); err != nil {
-		return err
+		return fmt.Errorf("register MaintenanceRequest validating webhook: %w", err)
 	}
 
 	return nil
