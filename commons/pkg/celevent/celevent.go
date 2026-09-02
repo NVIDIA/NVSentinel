@@ -33,10 +33,15 @@ import (
 
 // Filter is a compiled boolean CEL expression over a health event.
 //
-// It deliberately hides the cel-go types. Callers depend on this package rather than on
-// cel-go directly, so the dependency lives in exactly one place: cel-go moves its module
-// path to cel.dev/cel-go in v0.32.0, and confining it here keeps that migration to this
-// file rather than spreading it across every component that filters events.
+// It deliberately hides the cel-go types, so a caller filtering health events depends on
+// this package rather than on cel-go directly. cel-go moves its module path to
+// cel.dev/cel-go in v0.32.0, and this keeps that migration out of the health-event filter
+// path.
+//
+// It does not remove the dependency repo-wide: fault-quarantine, labeler, preflight and
+// kubernetes-object-monitor build their own CEL environments over different inputs and
+// still import cel-go directly. Those are separate vocabularies, not health events, so
+// they are deliberately not routed through here.
 type Filter struct {
 	program cel.Program
 }
