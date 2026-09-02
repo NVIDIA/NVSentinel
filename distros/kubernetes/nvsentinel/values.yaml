@@ -357,6 +357,14 @@ platformConnector:
     # already writes to.
     tokenPath: ""
 
+  # Records every health event reaching the platform connector as the Prometheus counter
+  # health_events_total{agent,check_name,recommended_action,is_fatal,is_healthy}.
+  # Observation only: no sink and no external dependency. Labels omit errorCode, which is
+  # unbounded, and nodeName: a pod-to-node join gives the receiving connector's node, which
+  # is the faulty node for the DaemonSet monitors but not for health-events-analyzer.
+  promConnector:
+    enabled: true
+
   k8sConnector:
     enabled: true
     maxNodeConditionMessageLength: 1024

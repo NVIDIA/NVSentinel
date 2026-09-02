@@ -179,6 +179,56 @@ submitting health events naming another node. See
 | `k8s_platform_connector_node_condition_update_duration_milliseconds` | Histogram | - | Duration of node condition updates in milliseconds. Uses linear buckets (0, 10, 500) |
 | `k8s_platform_connector_node_event_update_create_duration_milliseconds` | Histogram | - | Duration of node event updates/creations in milliseconds. Uses linear buckets (0, 10, 500) |
 
+### Prometheus Connector Metrics
+
+Every health monitor publishes through the platform connector, so this one metric covers
+`gpu-health-monitor`, `syslog-health-monitor`, `nic-health-monitor`, `csp-health-monitor`,
+`kubernetes-object-monitor` and `health-events-analyzer` without per-monitor instrumentation.
+Enabled with `platformConnector.promConnector.enabled` (default `true`).
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `health_events_total` | Counter | `agent`, `check_name`, `recommended_action`, `is_fatal`, `is_healthy` | Health events received by the platform connector. `recommended_action` is the enum name (`NONE`, `CONTACT_SUPPORT`, `RESTART_VM`, …); a `CUSTOM` action reports as `CUSTOM` rather than expanding `customRecommendedAction`, which is operator-defined and unbounded |
+
+Labels deliberately omit two fields. `errorCode` is excluded because it is unbounded:
+suffixed XIDs such as `145.RLW_SRC_TRACK` would grow the series set without limit.
+`nodeName` is omitted because the connector is a DaemonSet, so a pod-to-node join covers
+the common case, the same way `dcgm_health_active_events` is used.
+
+> **What the pod-to-node join actually tells you.** It attributes an event to the node of
+> the **connector pod that received it**, which is not always the node the event is about.
+> The DaemonSet monitors (`gpu-health-monitor`, `syslog-health-monitor`,
+> `nic-health-monitor`, `kubernetes-object-monitor`) publish over the node-local socket
+> `/var/run/nvsentinel.sock`, so for them the two are the same node.
+> **`health-events-analyzer` is a Deployment**: its derived events describe other nodes but
+> are counted wherever the analyzer happens to be scheduled. The same applies to any
+> allowlisted cross-node publisher (see
+> [Health Event Authentication](platform-connectors.md#health-event-node-binding)).
+> Filter to the DaemonSet agents when joining by node, and use the datastore when per-node
+> attribution must hold for every agent.
+
+`is_fatal` is kept even though producers derive it as `recommendedAction != NONE`. The
+redundancy is the point: a producer that disagrees with that derivation becomes visible
+rather than silent.
+
+Useful queries:
+
+```promql
+# Actionable event rate by action, fleet-wide
+sum by (recommended_action) (rate(health_events_total{recommended_action!="NONE"}[5m]))
+
+# Which agent and check is producing the actionable events
+sum by (agent, check_name) (rate(health_events_total{recommended_action!="NONE",is_healthy="false"}[1h]))
+
+# Per node, restricted to the agents that publish node-locally. See the caveat above:
+# health-events-analyzer is excluded because it is a Deployment, so its events would be
+# attributed to whichever node it is scheduled on rather than the node they describe.
+sum by (node) (
+  rate(health_events_total{recommended_action!="NONE",agent!="health-events-analyzer"}[1h])
+  * on (pod) group_left(node) kube_pod_info
+)
+```
+
 ### Workqueue Metrics
 
 These metrics track the internal ring buffer workqueue performance:
