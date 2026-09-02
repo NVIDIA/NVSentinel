@@ -113,3 +113,32 @@ if (scramUser) {
 }
 {{- end }}
 {{- end }}
+
+{{/*
+replSetResizeOplog must run with directConnection against each member.
+An existing replica set stores capped size in WiredTiger metadata, so extraFlags
+and rs0.configuration do not resize a member that already has data. Those
+startup settings still set the size for a new empty data directory (replaced
+PVC, new replica).
+*/}}
+{{- define "mongodb-store.oplogEval" -}}
+var raw = '$MONGODB_OPLOG_SIZE_MB';
+var mb = Number(raw);
+if (raw === '' || !Number.isInteger(mb) || mb < 990) {
+  throw new Error('MONGODB_OPLOG_SIZE_MB must be an integer >= 990, got ' + JSON.stringify(raw));
+}
+var allowShrink = ('$MONGODB_OPLOG_ALLOW_SHRINK' === 'true');
+var hello = db.hello();
+var stats = db.getSiblingDB('local').oplog.rs.stats();
+var currentMB = Math.floor(Number(stats.maxSize) / (1024 * 1024));
+print('Oplog resize on ' + (hello.me || 'unknown') + ' currentMB=' + currentMB + ' targetMB=' + mb + ' allowShrink=' + allowShrink);
+if (!allowShrink && currentMB >= mb) {
+  print('Oplog already ' + currentMB + ' MB (>= ' + mb + '); skip resize to avoid truncating the window');
+} else {
+  var res = db.adminCommand({ replSetResizeOplog: 1, size: mb });
+  if (res.ok !== 1) {
+    throw new Error('replSetResizeOplog failed: ' + tojson(res));
+  }
+  print('Oplog resized to ' + mb + ' MB');
+}
+{{- end }}

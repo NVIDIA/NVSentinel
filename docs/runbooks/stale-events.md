@@ -69,3 +69,5 @@ kubectl logs -n nvsentinel deployment/node-drainer -f
 ```
 
 The modules will now start processing events from the current point in the change stream. They will **not** retroactively process old events that accumulated while the resume tokens were stale.
+
+If this happens often, the oplog is too small for the write rate and the length of outages. Helm changing `mongodb-store.mongodb.persistence.size` (or the Percona rs0 PVC) does **not** expand an already-Bound volume. Expand and verify the live PVC with the backend’s supported procedure, then raise `mongodb-store.oplogSizeMB` (integer megabytes; keep it under about half the live volume). The init Job will not shrink a larger live oplog unless `mongodb-store.oplogAllowShrink` is true. How to pick the integer (measure wrap time, or the 24h / 100k-node example) is in [MongoDB Store Configuration](../configuration/mongodb-store.md#oplog-size).
