@@ -994,6 +994,14 @@ gpu-health-monitor:
     # 0 disables escalation.
     connectivityFailureEscalationThreshold: 0
 
+    # Consecutive polls an incident must persist, per error code and GPU, before it
+    # is published. Codes left out publish on first observation. Motivating case:
+    # SXM DCGM_FR_NVLINK_DOWN is briefly asserted after every boot while links train.
+    # Example:
+    #   minConsecutivePolls:
+    #     DCGM_FR_NVLINK_DOWN: 2
+    minConsecutivePolls: {}
+
   # Additional volume mounts for GPU health monitor
   # Use when monitor needs access to host files
   # Example:

@@ -247,6 +247,25 @@ Defaults to `0`, which disables escalation and keeps every connectivity failure 
 
 > **Note**: Both settings recommend `RESTART_BM`, which fault-remediation maps to a `RebootNode` CR. A reboot is the practical recovery when an on-node DCGM probe will not return — whether the underlying cause is a wedged driver or DCGM userspace holding driver locks. Nodes are drained before the reboot by node-drainer. Note that `probeStoreOnly` gates this for `GpuDcgmUnresponsive`, while `connectivityFailureEscalationThreshold` is opt-in by being `0` by default.
 
+### minConsecutivePolls
+
+Number of consecutive polls a health check incident must persist, per error code and GPU, before it is published. Codes absent from the map publish on their first observation, which is the default behaviour.
+
+```yaml
+gpu-health-monitor:
+  dcgmHealthCheck:
+    minConsecutivePolls:
+      DCGM_FR_NVLINK_DOWN: 2
+```
+
+Use this for a code whose single-poll occurrences are transients rather than faults. `DCGM_FR_NVLINK_DOWN` is the motivating case: on SXM systems the NVLink links are briefly down after every node boot while they train, so a routine maintenance reboot otherwise produces a FATAL event carrying `RESTART_VM`. `_is_nvlink_down_false_positive` cannot cover this, because it is metadata-based and deliberately fails closed on SXM where an untrained link is indistinguishable from a dead one. A time-based threshold separates them: an untrained link trains, a dead one does not.
+
+The streak is keyed on `(error code, GPU)` and resets whenever the code is absent for that GPU in a poll, so a code that appears on alternate polls for a GPU never accumulates and is never published. Note the key is the code and GPU, not the individual link: a GPU reporting one down link on one poll and a different one on the next keeps its streak, because that GPU has had a link down continuously. A streak also survives a failed poll, since a DCGM timeout observes nothing and must not clear it.
+
+**Tradeoff**: a threshold of `N` delays a genuinely sustained fault by up to `N-1` poll intervals. At the default `pollIntervalSeconds: 15`, a threshold of `2` costs at most 15 seconds of detection latency. Prefer the smallest threshold that suppresses the transient; permanently suppressing the code via `suppressedErrorCodes` would also mask genuine failures, which this avoids.
+
+Withheld incidents are counted by `dcgm_health_check_debounced_incidents{error_code, gpu_id}`, so suppression stays observable per GPU. It increments once per poll per `(error code, GPU)`, not once per incident record.
+
 ## Additional Volumes
 
 Extension point for mounting additional host paths required by DCGM in specific environments.
