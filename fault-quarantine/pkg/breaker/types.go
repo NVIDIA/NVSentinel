@@ -17,6 +17,9 @@ package breaker
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"math"
 	"sync"
 	"time"
 )
@@ -79,8 +82,14 @@ type Config struct {
 
 	// TripPercentage is the percentage of GPU nodes that, if reached by recent
 	// cordon events within Window, will trip the breaker (e.g., 50 for 50%).
-	// Default: 50 (50% of GPU nodes).
+	// Default: 50 (50% of GPU nodes). Zero disables the percentage bound.
 	TripPercentage float64
+
+	// TripMaxNodes is an absolute node count that, if reached by recent cordon
+	// events within Window, will trip the breaker regardless of fleet size. Zero
+	// disables it. When both bounds are set the lower one binds, so a fleet that
+	// grows cannot silently raise the effective limit.
+	TripMaxNodes int
 
 	// K8sClient provides operations for node counts and ConfigMap state persistence
 	K8sClient K8sClientOperations
@@ -102,6 +111,36 @@ type Config struct {
 	// MaxRetryDelay caps the maximum delay between retry attempts
 	// Default: 5 seconds (prevents excessive delays)
 	MaxRetryDelay time.Duration
+}
+
+// validateBounds rejects a configuration that cannot act as a limit. It lives here rather
+// than in the initializer so every caller is covered, including tests that build a Config
+// directly.
+//
+// Neither bound set leaves the threshold at 0, and IsTripped compares with >=, so the
+// breaker would trip on its first evaluation with no cordons at all. A negative value is
+// ignored by tripThreshold, so it silently does nothing rather than what it looks like.
+func (c Config) validateBounds() error {
+	// NaN passes every comparison below and survives into tripThreshold as int(NaN), which
+	// is 0, leaving the breaker tripped from startup with no cordons at all. Infinities are
+	// caught by the fleet-size clamp, but rejecting them here is explicit rather than lucky.
+	if math.IsNaN(c.TripPercentage) || math.IsInf(c.TripPercentage, 0) {
+		return fmt.Errorf("circuit breaker percentage must be a finite number, got %v", c.TripPercentage)
+	}
+
+	if c.TripPercentage < 0 {
+		return fmt.Errorf("circuit breaker percentage must not be negative, got %v", c.TripPercentage)
+	}
+
+	if c.TripMaxNodes < 0 {
+		return fmt.Errorf("circuit breaker maxNodes must not be negative, got %d", c.TripMaxNodes)
+	}
+
+	if c.TripPercentage == 0 && c.TripMaxNodes == 0 {
+		return errors.New("circuit breaker requires percentage or maxNodes to be set to a positive value")
+	}
+
+	return nil
 }
 
 // slidingWindowBreaker implements CircuitBreaker using a ring buffer approach.

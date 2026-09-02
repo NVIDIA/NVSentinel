@@ -199,6 +199,13 @@ var (
 			Help: "Utilization of the fault quarantine breaker.",
 		},
 	)
+	FaultQuarantineBreakerThresholdNodes = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "fault_quarantine_breaker_threshold_nodes",
+			Help: "Effective trip threshold of the fault quarantine breaker in nodes, by binding bound.",
+		},
+		[]string{"bound"},
+	)
 	FaultQuarantineGetTotalNodesDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "fault_quarantine_get_total_nodes_duration_seconds",
@@ -225,6 +232,13 @@ var (
 
 func SetFaultQuarantineBreakerUtilization(utilization float64) {
 	FaultQuarantineBreakerUtilization.Set(utilization)
+}
+
+// SetFaultQuarantineBreakerThresholdNodes reports the effective threshold and which bound
+// produced it. Reset first so a change of binding bound leaves no stale series behind.
+func SetFaultQuarantineBreakerThresholdNodes(threshold float64, bound string) {
+	FaultQuarantineBreakerThresholdNodes.Reset()
+	FaultQuarantineBreakerThresholdNodes.WithLabelValues(bound).Set(threshold)
 }
 
 func SetFaultQuarantineBreakerState(state string) {
