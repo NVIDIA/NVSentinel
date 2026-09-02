@@ -184,15 +184,20 @@ func initializeCircuitBreaker(
 		return nil, fmt.Errorf("invalid circuit breaker duration %q: %w", cbConfig.Duration, err)
 	}
 
+	// Bounds are validated by NewSlidingWindowBreaker below, so a caller that builds the
+	// config directly cannot bypass the check.
+
 	slog.InfoContext(ctx, "Initializing circuit breaker",
 		"configMap", circuitBreakerName,
 		"namespace", namespace,
 		"percentage", cbConfig.Percentage,
+		"maxNodes", cbConfig.MaxNodes,
 		"duration", cbConfig.Duration)
 
 	cb, err := breaker.NewSlidingWindowBreaker(ctx, breaker.Config{
 		Window:             duration,
 		TripPercentage:     float64(cbConfig.Percentage),
+		TripMaxNodes:       cbConfig.MaxNodes,
 		K8sClient:          k8sClient,
 		ConfigMapName:      circuitBreakerName,
 		ConfigMapNamespace: namespace,

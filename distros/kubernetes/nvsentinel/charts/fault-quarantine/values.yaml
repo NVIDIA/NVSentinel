@@ -65,6 +65,15 @@ circuitBreaker:
   # before the circuit breaker trips.
   # Example: 50 means if 50% or more GPU nodes are cordoned, no new quarantines will be allowed
   percentage: 50
+  # Optional absolute cap on cordoned nodes within the window, independent of fleet size.
+  # 0 disables it. When both are set the lower bound binds, so "percentage: 5, maxNodes: 10"
+  # means 5% but never more than 10 nodes.
+  #
+  # Prefer this when the blast radius you care about is a number of machines rather than a
+  # share of the fleet, since a percentage silently changes meaning as the fleet grows. Note
+  # it is per cluster by nature: an operator running many clusters of differing size will
+  # need to tune it per cluster, or leave it 0 and rely on percentage alone.
+  maxNodes: 0
   # Time window for the sliding window circuit breaker
   # The circuit breaker counts cordon events within this time window
   # Example: "5m" means if 50% of GPU nodes are cordoned within any 5-minute window, the circuit breaker trips
