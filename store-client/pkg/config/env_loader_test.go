@@ -42,6 +42,13 @@ func TestNewPostgreSQLCompatibleConfig_WithPassword(t *testing.T) {
 	if !strings.Contains(uri, "password=s3cret") {
 		t.Errorf("expected connection URI to contain password=s3cret, got: %s", uri)
 	}
+
+	for _, parameter := range []string{"sslcert=", "sslkey=", "sslrootcert="} {
+		if strings.Contains(uri, parameter) {
+			t.Errorf("expected password authentication not to infer %s from the bundled certificate path, got: %s",
+				parameter, uri)
+		}
+	}
 }
 
 func TestNewPostgreSQLCompatibleConfig_WithoutPassword(t *testing.T) {
@@ -57,20 +64,35 @@ func TestNewPostgreSQLCompatibleConfig_WithoutPassword(t *testing.T) {
 	if strings.Contains(uri, "password=") {
 		t.Errorf("expected connection URI to not contain password=, got: %s", uri)
 	}
+
+	for _, expected := range []string{
+		"sslcert=/certs/tls.crt",
+		"sslkey=/certs/tls.key",
+		"sslrootcert=/certs/ca.crt",
+	} {
+		if !strings.Contains(uri, expected) {
+			t.Errorf("expected certificate authentication URI to contain %s, got: %s", expected, uri)
+		}
+	}
 }
 
-func TestNewPostgreSQLCompatibleConfig_PasswordWithSpecialChars(t *testing.T) {
+func TestNewPostgreSQLCompatibleConfig_PasswordWithExplicitCA(t *testing.T) {
 	setPostgreSQLEnv(t)
-	t.Setenv("DATASTORE_PASSWORD", "p@ss w'ord\\1")
+	t.Setenv("DATASTORE_PASSWORD", "s3cret")
+	t.Setenv("DATASTORE_SSLROOTCERT", "/etc/ssl/external postgres/ca.crt")
 
-	cfg, err := newPostgreSQLCompatibleConfig("/certs", "", "default_table")
+	cfg, err := newPostgreSQLCompatibleConfig("/bundled-postgres-certs", "", "default_table")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	uri := cfg.GetConnectionURI()
-	// Password with special chars should be single-quoted and escaped
-	if !strings.Contains(uri, "password='p@ss w\\'ord\\\\1'") {
-		t.Errorf("expected properly quoted password in URI, got: %s", uri)
+	if !strings.Contains(uri, "sslrootcert='/etc/ssl/external postgres/ca.crt'") {
+		t.Errorf("expected connection URI to contain the explicitly configured CA, got: %s", uri)
+	}
+
+	if strings.Contains(uri, "sslcert=") || strings.Contains(uri, "sslkey=") ||
+		strings.Contains(uri, "/bundled-postgres-certs") {
+		t.Errorf("expected explicit CA-only password authentication not to infer client certificates, got: %s", uri)
 	}
 }

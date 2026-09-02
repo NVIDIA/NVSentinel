@@ -40,12 +40,13 @@ spec:
       labels:
         {{- include "csp-health-monitor.selectorLabels" . | nindent 8 }}
     spec:
+      {{- $pgClientCert := eq (include "nvsentinel.datastore.postgresClientCertEnabled" .) "true" }}
       {{- with ((.Values.global).imagePullSecrets | default .Values.imagePullSecrets) }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "csp-health-monitor.fullname" . }}
-      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+      {{- if $pgClientCert }}
       initContainers:
         - name: fix-cert-permissions
           image: "{{ .Values.global.initContainerImage.repository }}:{{ .Values.global.initContainerImage.tag }}"
@@ -80,7 +81,7 @@ spec:
           items:
           - key: config.toml
             path: config.toml
-      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+      {{- if $pgClientCert }}
       - name: postgresql-client-cert-original
         secret:
           secretName: postgresql-client-cert

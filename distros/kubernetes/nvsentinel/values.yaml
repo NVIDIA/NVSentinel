@@ -135,6 +135,13 @@ global:
   #   credentialsFromSecret:
   #     name: ""
   #
+  #   # --- PostgreSQL password ---
+  #   # For PostgreSQL password authentication, set credentialsFromSecret.name;
+  #   # the referenced Secret must define DATASTORE_PASSWORD.
+  #   # Configure host, database, username, and sslmode under connection below.
+  #   # Client certificates are not inferred in password mode. Set connection.sslcert,
+  #   # connection.sslkey, and/or connection.sslrootcert explicitly when required.
+  #
   #   # --- Connection metadata ---
   #   # Individual fields (PostgreSQL; optional MongoDB metadata such as database/collection names).
   #   # For external MongoDB, connection.database etc. still configure collection env vars;

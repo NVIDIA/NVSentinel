@@ -238,6 +238,20 @@ true
 {{- end -}}
 
 {{/*
+Whether PostgreSQL should use the bundled client certificate. A credentials
+Secret selects password authentication instead.
+*/}}
+{{- define "nvsentinel.datastore.postgresClientCertEnabled" -}}
+{{- $isPostgres := and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") -}}
+{{- $hasPasswordSecret := and $isPostgres .Values.global.datastore.credentialsFromSecret .Values.global.datastore.credentialsFromSecret.name -}}
+{{- if and $isPostgres (not $hasPasswordSecret) -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- end -}}
+
+{{/*
 Returns the effective MongoDB cert mount path for a pod.
 - Returns .Values.clientCertMountPath if explicitly set (covers x509 client-cert and CA-only modes).
 - Returns /etc/ssl/mongo-ca only for external MongoDB SCRAM + custom CA (caSecretName set,
@@ -248,6 +262,10 @@ Returns the effective MongoDB cert mount path for a pod.
 - Returns empty string otherwise.
 */}}
 {{- define "nvsentinel.mongodb.certMountPath" -}}
+{{- $isPostgresPassword := and .Values.global.datastore
+                                (eq .Values.global.datastore.provider "postgresql")
+                                (ne (include "nvsentinel.datastore.postgresClientCertEnabled" .) "true") -}}
+{{- if not $isPostgresPassword -}}
 {{- if .Values.clientCertMountPath -}}
 {{ .Values.clientCertMountPath }}
 {{- else -}}
@@ -265,6 +283,7 @@ Returns the effective MongoDB cert mount path for a pod.
   {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- end -}}
 
 {{/*
 Same path resolution as nvsentinel.mongodb.certMountPath but reads
@@ -272,6 +291,10 @@ Same path resolution as nvsentinel.mongodb.certMountPath but reads
 Use this only from charts that store the path under mongodbStore.
 */}}
 {{- define "nvsentinel.mongodb.certMountPathFromMongoStore" -}}
+{{- $isPostgresPassword := and .Values.global.datastore
+                                (eq .Values.global.datastore.provider "postgresql")
+                                (ne (include "nvsentinel.datastore.postgresClientCertEnabled" .) "true") -}}
+{{- if not $isPostgresPassword -}}
 {{- if .Values.mongodbStore.clientCertMountPath -}}
 {{ .Values.mongodbStore.clientCertMountPath }}
 {{- else -}}
@@ -289,6 +312,7 @@ Use this only from charts that store the path under mongodbStore.
   {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- end -}}
 
 {{/*
 Name of existing Secret that holds MONGODB_URI for external MongoDB (provider mongodb).
@@ -301,16 +325,33 @@ Required whenever global.datastore is enabled with provider mongodb. Returns emp
 {{- end -}}
 
 {{/*
-Extra envFrom entry for MongoDB: Secret must define key MONGODB_URI (same as the env var).
+Extra envFrom entry for the configured datastore credentials Secret.
 Indent with nindent 12 to match sibling configMapRef under envFrom.
 */}}
 {{- define "nvsentinel.datastore.secretEnvFrom" -}}
-{{- $sn := include "nvsentinel.datastore.mongodbUriSecretName" . | trim -}}
-{{- if and .Values.global.datastore (eq .Values.global.datastore.provider "mongodb") $sn }}
+{{- if .Values.global.datastore -}}
+{{- $sn := "" -}}
+{{- if eq .Values.global.datastore.provider "mongodb" -}}
+{{- $sn = include "nvsentinel.datastore.mongodbUriSecretName" . | trim -}}
+{{- else if eq .Values.global.datastore.provider "postgresql" -}}
+{{- $sn = include "nvsentinel.datastore.postgresPasswordSecretName" . | trim -}}
+{{- end -}}
+{{- if $sn }}
 - secretRef:
     name: {{ $sn | quote }}
     optional: false
 {{- end }}
+{{- end }}
+{{- end -}}
+
+{{/*
+Name of existing Secret that holds DATASTORE_PASSWORD for PostgreSQL password
+authentication. Returns empty when unset.
+*/}}
+{{- define "nvsentinel.datastore.postgresPasswordSecretName" -}}
+{{- if and .Values.global.datastore .Values.global.datastore.credentialsFromSecret .Values.global.datastore.credentialsFromSecret.name -}}
+{{- .Values.global.datastore.credentialsFromSecret.name | trim -}}
+{{- end -}}
 {{- end -}}
 
 {{/*

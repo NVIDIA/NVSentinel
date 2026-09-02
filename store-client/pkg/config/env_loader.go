@@ -278,15 +278,43 @@ func newPostgreSQLCompatibleConfig(certMountPath, tableEnvVar, defaultTable stri
 
 	port := getEnvWithDefault("DATASTORE_PORT", "5432")
 	sslmode := getEnvWithDefault("DATASTORE_SSLMODE", "require")
-	sslcert := getEnvWithDefault("DATASTORE_SSLCERT", filepath.Join(certMountPath, "tls.crt"))
-	sslkey := getEnvWithDefault("DATASTORE_SSLKEY", filepath.Join(certMountPath, "tls.key"))
-	sslrootcert := getEnvWithDefault("DATASTORE_SSLROOTCERT", filepath.Join(certMountPath, "ca.crt"))
-
 	password := os.Getenv("DATASTORE_PASSWORD")
 
+	// Use explicit TLS settings when provided. Otherwise, infer certificates
+	// from certMountPath only for certificate-based authentication.
+	sslcert := os.Getenv("DATASTORE_SSLCERT")
+	sslkey := os.Getenv("DATASTORE_SSLKEY")
+	sslrootcert := os.Getenv("DATASTORE_SSLROOTCERT")
+
+	if password == "" && certMountPath != "" {
+		if sslcert == "" {
+			sslcert = filepath.Join(certMountPath, "tls.crt")
+		}
+
+		if sslkey == "" {
+			sslkey = filepath.Join(certMountPath, "tls.key")
+		}
+
+		if sslrootcert == "" {
+			sslrootcert = filepath.Join(certMountPath, "ca.crt")
+		}
+	}
+
 	// Build connection URI in PostgreSQL format
-	connectionURI := fmt.Sprintf("host=%s port=%s dbname=%s user=%s sslmode=%s sslcert=%s sslkey=%s sslrootcert=%s",
-		host, port, database, username, sslmode, sslcert, sslkey, sslrootcert)
+	connectionURI := fmt.Sprintf("host=%s port=%s dbname=%s user=%s sslmode=%s",
+		host, port, database, username, sslmode)
+
+	if sslcert != "" {
+		connectionURI += " sslcert=" + utils.QuotePQValue(sslcert)
+	}
+
+	if sslkey != "" {
+		connectionURI += " sslkey=" + utils.QuotePQValue(sslkey)
+	}
+
+	if sslrootcert != "" {
+		connectionURI += " sslrootcert=" + utils.QuotePQValue(sslrootcert)
+	}
 
 	if password != "" {
 		connectionURI += " password=" + utils.QuotePQValue(password)
