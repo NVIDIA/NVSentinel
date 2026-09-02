@@ -15,13 +15,20 @@
 package config
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
 
 func setPostgreSQLEnv(t *testing.T) {
 	t.Helper()
+	for _, name := range []string{
+		"DATASTORE_PASSWORD",
+		"DATASTORE_SSLCERT",
+		"DATASTORE_SSLKEY",
+		"DATASTORE_SSLROOTCERT",
+	} {
+		t.Setenv(name, "")
+	}
 	t.Setenv("DATASTORE_HOST", "localhost")
 	t.Setenv("DATASTORE_PORT", "5432")
 	t.Setenv("DATASTORE_DATABASE", "testdb")
@@ -53,7 +60,6 @@ func TestNewPostgreSQLCompatibleConfig_WithPassword(t *testing.T) {
 
 func TestNewPostgreSQLCompatibleConfig_WithoutPassword(t *testing.T) {
 	setPostgreSQLEnv(t)
-	os.Unsetenv("DATASTORE_PASSWORD")
 
 	cfg, err := newPostgreSQLCompatibleConfig("/certs", "", "default_table")
 	if err != nil {
