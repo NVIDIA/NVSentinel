@@ -358,10 +358,9 @@ platformConnector:
     tokenPath: ""
 
   # Records every health event reaching the platform connector as the Prometheus counter
-  # health_events_total{agent,check_name,recommended_action,is_fatal,is_healthy}.
-  # Observation only: no sink and no external dependency. Labels omit errorCode, which is
-  # unbounded, and nodeName: a pod-to-node join gives the receiving connector's node, which
-  # is the faulty node for the DaemonSet monitors but not for health-events-analyzer.
+  # health_events_total{node,agent,check_name,recommended_action,is_fatal,is_healthy}.
+  # Observation only: no sink and no external dependency. errorCode is not a label, being
+  # unbounded. See docs/METRICS.md for the label semantics.
   promConnector:
     # true registers the counter on the existing metrics endpoint; false skips the
     # connector entirely, so no ring buffer is attached and nothing is recorded.
@@ -409,8 +408,8 @@ platformConnector:
       cacheSize: 50
       # How long cached node metadata is considered fresh. Lower values mean
       # label changes (e.g. managed=false) take effect faster, at the cost of
-      # more Kubernetes API GET calls. 60s bounds ownership-state staleness to
-      # ~60 seconds in either direction.
+      # more Kubernetes API GET calls. Failed lookups proceed ungated, so the
+      # gating window can exceed this during a Kubernetes API outage.
       cacheTTLSeconds: 60
       # Managed-label gate: when a node carries this label, its events are set
       # to STORE_ONLY (stored for audit but no remediation or Kubernetes side
