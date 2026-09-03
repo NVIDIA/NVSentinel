@@ -37,11 +37,15 @@ import (
 
 const (
 	customDrainPollInterval = 30 * time.Second
+)
 
-	// Drain scope values, used as a metric label so an operator can tell a whole-node drain
-	// from one scoped to a single entity.
-	DrainScopeFull    = "full"
-	DrainScopePartial = "partial"
+// DrainScope distinguishes a whole-node drain from one scoped to a single entity. It is used
+// as a metric label, so it is a small fixed set rather than a free-form string.
+type DrainScope string
+
+const (
+	DrainScopeFull    DrainScope = "full"
+	DrainScopePartial DrainScope = "partial"
 )
 
 func NewNodeDrainEvaluator(
@@ -737,11 +741,14 @@ func PartialDrainEntity(healthEvent *protos.HealthEvent, partialDrainEnabled boo
 	return nil
 }
 
-// DrainScope returns the scope label for this event, for use as a metric dimension.
-func DrainScope(healthEvent *protos.HealthEvent, partialDrainEnabled bool) string {
-	if PartialDrainEntity(healthEvent, partialDrainEnabled) != nil {
-		return DrainScopePartial
+// DrainScopeFor reports whether the event drains the whole node or a single entity, and the
+// entity when the drain is partial. Callers need both, so returning them together keeps the
+// scope label and the entity from being derived independently and drifting apart.
+func DrainScopeFor(healthEvent *protos.HealthEvent, partialDrainEnabled bool) (DrainScope, *protos.Entity) {
+	entity := PartialDrainEntity(healthEvent, partialDrainEnabled)
+	if entity == nil {
+		return DrainScopeFull, nil
 	}
 
-	return DrainScopeFull
+	return DrainScopePartial, entity
 }

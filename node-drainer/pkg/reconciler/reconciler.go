@@ -972,7 +972,7 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 		"documentID", documentID,
 		"evictionStatus", userPodsEvictionStatus.Status,
 		"drainScope", drainScope)
-	metrics.EventsProcessed.WithLabelValues(drainStatus, nodeName, drainScope).Inc()
+	metrics.EventsProcessed.WithLabelValues(drainStatus, nodeName, string(drainScope)).Inc()
 
 	if partialEntity != nil {
 		metrics.RecordPartialDrain(nodeName, partialEntity.GetEntityType(), partialEntity.GetEntityValue())
@@ -981,24 +981,16 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 	return nil
 }
 
-// drainScopeFor reports whether the event drains the whole node or a single entity, and the
-// entity when partial. Derived through the evaluator's exported decision so this cannot drift
-// from what the drain actually did. An unparseable event is reported as a full drain, which
-// matches the behaviour when partial drain is disabled.
-func (r *Reconciler) drainScopeFor(event datastore.Event) (string, *protos.Entity) {
+// drainScopeFor parses the event and delegates to the evaluator, which already makes this
+// decision for the drain itself. An unparseable event is reported as a full drain, matching
+// the behaviour when partial drain is disabled.
+func (r *Reconciler) drainScopeFor(event datastore.Event) (evaluator.DrainScope, *protos.Entity) {
 	healthEvent, err := eventutil.ParseHealthEventFromEvent(event)
 	if err != nil {
 		return evaluator.DrainScopeFull, nil
 	}
 
-	partialDrainEnabled := r.Config.TomlConfig.PartialDrainEnabled
-
-	entity := evaluator.PartialDrainEntity(healthEvent.HealthEvent, partialDrainEnabled)
-	if entity == nil {
-		return evaluator.DrainScopeFull, nil
-	}
-
-	return evaluator.DrainScopePartial, entity
+	return evaluator.DrainScopeFor(healthEvent.HealthEvent, r.Config.TomlConfig.PartialDrainEnabled)
 }
 
 // observeEvictionDurationIfSucceeded observes eviction duration metric if status is succeeded and timestamp is present
