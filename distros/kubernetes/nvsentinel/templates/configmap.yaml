@@ -38,6 +38,7 @@ data:
       ,"GRPCSinkTarget": "{{ .Values.platformConnector.grpcSinkConnector.target }}"
       ,"GRPCSinkConnectorMaxRetries": {{ .Values.platformConnector.grpcSinkConnector.maxRetries }}
       ,"GRPCSinkTokenPath": "{{ .Values.platformConnector.grpcSinkConnector.tokenPath }}"
+      ,"enablePromPlatformConnector": "{{ .Values.platformConnector.promConnector.enabled }}"
       {{- $pipeline := (.Values.platformConnector.pipeline | default list) }}
       {{- with .Values.platformConnector.dedup }}
       {{- $pipeline = append $pipeline (dict "name" "Deduplicator" "enabled" .enabled "config" "/etc/config/dedup.toml") }}

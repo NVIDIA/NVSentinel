@@ -35,6 +35,7 @@ spec:
       labels:
         {{- include "fault-remediation.selectorLabels" . | nindent 8 }}
     spec:
+      {{- $pgClientCert := eq (include "nvsentinel.datastore.postgresClientCertEnabled" .) "true" }}
       {{- with ((.Values.global).imagePullSecrets | default .Values.imagePullSecrets) }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -44,12 +45,12 @@ spec:
       securityContext:
         fsGroup: 65532
       {{- end }}
-      {{- if or .Values.global.auditLogging.enabled (and .Values.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql")) }}
+      {{- if or .Values.global.auditLogging.enabled (and .Values.clientCertMountPath $pgClientCert) }}
       initContainers:
         {{- if .Values.global.auditLogging.enabled }}
         {{- include "nvsentinel.auditLogging.initContainer" . | nindent 8 }}
         {{- end }}
-      {{- if and .Values.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+      {{- if and .Values.clientCertMountPath $pgClientCert }}
         - name: fix-cert-permissions
           image: "{{ .Values.global.initContainerImage.repository }}:{{ .Values.global.initContainerImage.tag }}"
           imagePullPolicy: {{ .Values.global.initContainerImage.pullPolicy }}
@@ -174,7 +175,7 @@ spec:
                 optional: true
             {{- include "nvsentinel.datastore.secretEnvFrom" . | nindent 12 }}
       volumes:
-      {{- if and .Values.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+      {{- if and .Values.clientCertMountPath $pgClientCert }}
       - name: postgresql-client-cert-original
         secret:
           secretName: postgresql-client-cert
