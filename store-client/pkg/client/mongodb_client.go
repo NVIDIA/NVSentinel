@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
 	"sync"
 
@@ -37,6 +38,65 @@ import (
 // mongoEvent implements the Event interface for MongoDB
 type mongoEvent struct {
 	rawEvent mongoWatcher.Event
+}
+
+// UpdatedFields exposes change-stream update metadata to optional consumers.
+func (e *mongoEvent) UpdatedFields() map[string]any {
+	description, ok := mongoUpdateDescription(e.rawEvent["updateDescription"])
+	if !ok {
+		return nil
+	}
+
+	updated := make(map[string]any)
+	copyMongoUpdatedFields(updated, description["updatedFields"])
+	addMongoRemovedFields(updated, description["removedFields"])
+
+	if len(updated) == 0 {
+		return nil
+	}
+
+	return updated
+}
+
+func mongoUpdateDescription(value any) (map[string]any, bool) {
+	switch description := value.(type) {
+	case map[string]any:
+		return description, true
+	case bson.M:
+		return map[string]any(description), true
+	default:
+		return nil, false
+	}
+}
+
+func copyMongoUpdatedFields(updated map[string]any, value any) {
+	switch fields := value.(type) {
+	case map[string]any:
+		maps.Copy(updated, fields)
+	case bson.M:
+		maps.Copy(updated, map[string]any(fields))
+	}
+}
+
+func addMongoRemovedFields(updated map[string]any, value any) {
+	var removedValues []any
+
+	switch removed := value.(type) {
+	case []string:
+		for _, field := range removed {
+			updated[field] = nil
+		}
+	case bson.A:
+		removedValues = removed
+	case []any:
+		removedValues = removed
+	}
+
+	for _, removed := range removedValues {
+		if field, ok := removed.(string); ok {
+			updated[field] = nil
+		}
+	}
 }
 
 func (e *mongoEvent) GetDocumentID() (string, error) {
@@ -598,13 +658,23 @@ func resolveMongoFilter(filter any) any {
 	return filter
 }
 
+func resolveMongoUpdate(update any) any {
+	if builder, ok := update.(interface{ ToMongoPipeline() []any }); ok {
+		return builder.ToMongoPipeline()
+	}
+
+	return update
+}
+
 // UpdateDocument performs a general update operation
 func (c *MongoDBClient) UpdateDocument(
 	ctx context.Context, filter any, update any,
 ) (*UpdateResult, error) {
-	return c.executeUpdate(ctx, "db.update_document", filter, update,
+	mongoUpdate := resolveMongoUpdate(update)
+
+	return c.executeUpdate(ctx, "db.update_document", filter, mongoUpdate,
 		func(ctx context.Context) (*mongo.UpdateResult, error) {
-			return c.mongoCol.UpdateOne(ctx, resolveMongoFilter(filter), update)
+			return c.mongoCol.UpdateOne(ctx, resolveMongoFilter(filter), mongoUpdate)
 		})
 }
 
@@ -628,9 +698,11 @@ func (c *MongoDBClient) InsertMany(ctx context.Context, documents []any) (*Inser
 func (c *MongoDBClient) UpdateManyDocuments(
 	ctx context.Context, filter any, update any,
 ) (*UpdateResult, error) {
-	return c.executeUpdate(ctx, "db.update_many_documents", filter, update,
+	mongoUpdate := resolveMongoUpdate(update)
+
+	return c.executeUpdate(ctx, "db.update_many_documents", filter, mongoUpdate,
 		func(ctx context.Context) (*mongo.UpdateResult, error) {
-			return c.mongoCol.UpdateMany(ctx, resolveMongoFilter(filter), update)
+			return c.mongoCol.UpdateMany(ctx, resolveMongoFilter(filter), mongoUpdate)
 		})
 }
 

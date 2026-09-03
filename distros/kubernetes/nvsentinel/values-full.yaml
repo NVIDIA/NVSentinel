@@ -347,7 +347,7 @@ platformConnector:
   pipeline:
     # Metadata augmentor - enriches events with node labels and provider info
     - name: MetadataAugmentor
-      enabled: false  # Disabled by default
+      enabled: true
       config: /etc/config/metadata.toml
     
     # Property overrides - uses CEL expressions to override event properties
@@ -365,7 +365,12 @@ platformConnector:
       cacheSize: 50
       # Cache TTL in seconds (supports duration strings like "1h", "30m")
       # How long to cache node metadata before refreshing
-      cacheTTLSeconds: 3600
+      cacheTTLSeconds: 60
+      # Managed-label gate: when a node carries this label, its events are set
+      # to STORE_ONLY (stored for audit but no remediation or Kubernetes side
+      # effects). Format is "key=value". Leave empty to disable.
+      # Must match commons/pkg/managed.ManagedLabelKey and ManagedLabelValueFalse.
+      skipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false"
       # Node labels to include in health event metadata
       # Only these labels will be copied from nodes to events
       # This allows CEL rules to match on topology, instance type, etc.
@@ -491,7 +496,15 @@ fault-quarantine:
     # Example: 50 means if 50% or more GPU nodes are already cordoned,
     # no new quarantines will be allowed
     # Range: 1-100
+    # Set to 0 to bound by maxNodes alone.
     percentage: 50
+    # Absolute ceiling on cordoned nodes within the window, independent of cluster size.
+    # 0 disables this bound. When both are set the lower one binds, so percentage: 5 with
+    # maxNodes: 10 means 5% but never more than 10 nodes. Prefer it when the blast radius
+    # you care about is a number of machines rather than a share of the fleet, since a
+    # percentage silently changes meaning as the fleet grows. At least one of percentage
+    # and maxNodes must be positive.
+    maxNodes: 0
     # Cooldown period after circuit breaker trips
     # Circuit breaker waits this long before attempting to close again
     # Even if node count drops below threshold during cooldown, it stays open

@@ -24,6 +24,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/healthstatus"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	datamodels "github.com/nvidia/nvsentinel/data-models/pkg/model"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -135,6 +136,9 @@ func (r *Reconciler) Start(ctx context.Context) error {
 		EnableMetrics:        true,
 		MetricsLabels:        map[string]string{"module": agentName},
 		MarkProcessedOnError: false, // IMPORTANT: Don't mark failed events as processed
+		SkipEvent: func(event client.Event) bool {
+			return client.EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath)
+		},
 	}
 
 	r.eventProcessor = client.NewEventProcessor(oldWatcher, r.databaseClient, processorConfig)
