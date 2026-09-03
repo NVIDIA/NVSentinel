@@ -23,6 +23,9 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,6 +39,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/pkg/config"
+	"github.com/nvidia/nvsentinel/lifecycle-manager/pkg/metrics"
 )
 
 const (
@@ -150,6 +154,8 @@ requests before interleaving calls to reconcileForIterations/reconcileUntilPhase
 type validationRequestTestCase struct {
 	// Provide a custom ValidationConfiguration for the given test. If not provided, the test will call defaultTestConfig()
 	config *config.Config
+	// Provide a custom client for the reconciler under test. If not provided, the global k8sClient is used.
+	client client.Client
 	// The set of nodes to create prior to running the given test case
 	nodeNames []string
 	// The ValidationRequest to use for the given test case
@@ -203,7 +209,7 @@ func defaultTestConfig() *config.Config {
 						BatchFailurePolicy:    v1alpha1.BatchFailurePolicyFail,
 						Image:                 "test-image:latest",
 						Command:               []string{"bash", "-c", "echo hello"},
-						Env:                   []v1alpha1.EnvVarConfig{{Name: "ENV_KEY", Value: "env-val"}},
+						Env:                   []corev1.EnvVar{{Name: "ENV_KEY", Value: "env-val"}},
 					},
 				},
 				DefaultTests: []string{"basic"},
@@ -263,10 +269,14 @@ func newValidationRequestTestSetup(ctx context.Context, vrName string,
 	if cfg == nil {
 		cfg = defaultTestConfig()
 	}
-	reconciler, err := NewValidationRequestReconciler(k8sClient, k8sClient, k8sClient.Scheme(), cfg, testNamespace)
+	testClient := testCase.client
+	if testClient == nil {
+		testClient = k8sClient
+	}
+	reconciler, err := NewValidationRequestReconciler(testClient, testClient, testClient.Scheme(), cfg, testNamespace)
 	Expect(err).NotTo(HaveOccurred())
 	for _, name := range testCase.nodeNames {
-		Expect(k8sClient.Create(ctx, &corev1.Node{
+		Expect(testClient.Create(ctx, &corev1.Node{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:   name,
 				Labels: map[string]string{"ready": "true"}},
@@ -276,7 +286,7 @@ func newValidationRequestTestSetup(ctx context.Context, vrName string,
 		ObjectMeta: metav1.ObjectMeta{Name: vrName},
 		Spec:       testCase.spec,
 	}
-	Expect(k8sClient.Create(ctx, validationRequest)).To(Succeed())
+	Expect(testClient.Create(ctx, validationRequest)).To(Succeed())
 	DeferCleanup(func() {
 		cleanupValidationRequestTest(ctx, vrName, testCase.nodeNames)
 	})
@@ -1289,6 +1299,48 @@ var _ = Describe("ValidationRequest Controller", func() {
 			Expect(after.Status.Phase).To(Equal(v1alpha1.PhaseSucceeded))
 			Expect(after.Status.CompletionTime).To(Equal(vr.Status.CompletionTime))
 		})
+
+		It("does not start a pending group until the previous attempt's provider resource is deleted", func() {
+			vrName, nodeName := "vr-"+suffix, "node-"+suffix
+
+			testCfg := defaultTestConfig()
+			p := testCfg.Validation.Spec.Providers["test-provider"]
+			p.Retries = 1
+			testCfg.Validation.Spec.Providers["test-provider"] = p
+
+			// This test provides its own client that leaves the foreground deletion finalizer in place until it's
+			// manually cleared.
+			testClient, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+			Expect(err).NotTo(HaveOccurred())
+
+			reconciler, req := newValidationRequestTestSetup(ctx, vrName, validationRequestTestCase{
+				config:    testCfg,
+				client:    testClient,
+				nodeNames: []string{nodeName},
+				spec:      v1alpha1.ValidationRequestSpec{Nodes: []v1alpha1.NodeSpec{{Name: nodeName}}},
+			})
+
+			vr := reconcileUntilPhase(ctx, reconciler, req, v1alpha1.PhaseRunning, 5)
+			objectName := vr.Status.TestGroups[0].Attempts[0].ObjectName
+			Expect(updateObjectStatus(ctx, objectName, testFailedCondType)).To(Succeed())
+
+			afterFirstReconcile := reconcileForIterations(ctx, reconciler, req, 1)
+			Expect(afterFirstReconcile.Status.TestGroups[0].Attempts).To(HaveLen(1))
+			Expect(afterFirstReconcile.Status.TestGroups[0].Attempts[0].EndTime).NotTo(BeNil())
+
+			stillWaiting := reconcileForIterations(ctx, reconciler, req, 5)
+			Expect(stillWaiting.Status.TestGroups[0].Attempts).To(HaveLen(1))
+
+			// Simulate the garbage collector removing foreground deletion finalizer
+			var job unstructured.Unstructured
+			job.SetGroupVersionKind(testJobGVK)
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: objectName, Namespace: testNamespace}, &job)).To(Succeed())
+			job.SetFinalizers(nil)
+			Expect(k8sClient.Update(ctx, &job)).To(Succeed())
+
+			finalVR := reconcileUntilPhase(ctx, reconciler, req, v1alpha1.PhaseRunning, 5)
+			Expect(finalVR.Status.TestGroups[0].Attempts).To(HaveLen(2))
+		})
 	})
 
 	Context("group failures failures", func() {
@@ -2133,4 +2185,79 @@ var _ = Describe("ValidationRequest Controller", func() {
 			Expect(actualObjectJSON).To(MatchJSON(expectedObjectJSON))
 		})
 	})
+
+	Context("metrics", func() {
+		It("increments validation_requests_total and the succeeded completion/duration metrics", func() {
+			vrName, nodeName := "vr-"+suffix, "node-"+suffix
+			cfg := defaultTestConfig()
+			t := cfg.Validation.Spec.Tests["basic"]
+			t.MinimumNodesPerBatch = 2
+			t.BatchFailurePolicy = v1alpha1.BatchFailurePolicyIgnore
+			cfg.Validation.Spec.Tests["basic"] = t
+
+			totalBefore := testutil.ToFloat64(metrics.ValidationRequestsTotal)
+			completedBefore := testutil.ToFloat64(metrics.ValidationRequestsCompletedTotal.WithLabelValues(metrics.StatusSuccess))
+			countBefore, sumBefore := histogramSample(metrics.ValidationRequestsDurationSeconds, metrics.StatusSuccess)
+
+			vr := runValidationRequestTest(ctx, vrName, validationRequestTestCase{
+				config:    cfg,
+				nodeNames: []string{nodeName},
+				spec:      v1alpha1.ValidationRequestSpec{Nodes: []v1alpha1.NodeSpec{{Name: nodeName}}},
+			})
+			Expect(vr.Status.Phase).To(Equal(v1alpha1.PhaseSucceeded))
+
+			Expect(testutil.ToFloat64(metrics.ValidationRequestsTotal) - totalBefore).To(Equal(1.0))
+
+			completedAfter := testutil.ToFloat64(metrics.ValidationRequestsCompletedTotal.WithLabelValues(metrics.StatusSuccess))
+			Expect(completedAfter - completedBefore).To(Equal(1.0))
+
+			countAfter, sumAfter := histogramSample(metrics.ValidationRequestsDurationSeconds, metrics.StatusSuccess)
+			Expect(countAfter - countBefore).To(Equal(uint64(1)))
+			Expect(sumAfter).To(BeNumerically(">", sumBefore))
+		})
+
+		It("increments validation_requests_total and the failed completion/duration metrics", func() {
+			vrName, nodeName := "vr-"+suffix, "node-"+suffix
+			cfg := defaultTestConfig()
+			t := cfg.Validation.Spec.Tests["basic"]
+			t.MinimumNodesPerBatch = 2
+			t.BatchFailurePolicy = v1alpha1.BatchFailurePolicyFail
+			cfg.Validation.Spec.Tests["basic"] = t
+
+			totalBefore := testutil.ToFloat64(metrics.ValidationRequestsTotal)
+			completedBefore := testutil.ToFloat64(metrics.ValidationRequestsCompletedTotal.WithLabelValues(metrics.StatusFailure))
+			countBefore, sumBefore := histogramSample(metrics.ValidationRequestsDurationSeconds, metrics.StatusFailure)
+
+			vr := runValidationRequestTest(ctx, vrName, validationRequestTestCase{
+				config:    cfg,
+				nodeNames: []string{nodeName},
+				spec:      v1alpha1.ValidationRequestSpec{Nodes: []v1alpha1.NodeSpec{{Name: nodeName}}},
+			})
+			Expect(vr.Status.Phase).To(Equal(v1alpha1.PhaseFailed))
+
+			Expect(testutil.ToFloat64(metrics.ValidationRequestsTotal) - totalBefore).To(Equal(1.0))
+
+			completedAfter := testutil.ToFloat64(metrics.ValidationRequestsCompletedTotal.WithLabelValues(metrics.StatusFailure))
+			Expect(completedAfter - completedBefore).To(Equal(1.0))
+
+			countAfter, sumAfter := histogramSample(metrics.ValidationRequestsDurationSeconds, metrics.StatusFailure)
+			Expect(countAfter - countBefore).To(Equal(uint64(1)))
+			Expect(sumAfter).To(BeNumerically(">", sumBefore))
+		})
+	})
 })
+
+func histogramSample(vec *prometheus.HistogramVec, labelValues ...string) (count uint64, sum float64) {
+	observer := vec.WithLabelValues(labelValues...)
+
+	metric, ok := observer.(prometheus.Metric)
+	Expect(ok).To(BeTrue(), "Observer returned by WithLabelValues must implement prometheus.Metric")
+
+	var pb dto.Metric
+	Expect(metric.Write(&pb)).To(Succeed())
+
+	h := pb.GetHistogram()
+	Expect(h).NotTo(BeNil(), "expected a histogram value")
+
+	return h.GetSampleCount(), h.GetSampleSum()
+}

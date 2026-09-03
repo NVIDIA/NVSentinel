@@ -15,6 +15,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -79,7 +80,7 @@ type NewNodeValidationConfig struct {
 	// already been validated. The controller requires this condition to be absent or false before
 	// targeting a node, and sets it to True once a ValidationRequest is created.
 	// +optional
-	Condition string `json:"condition,omitempty"`
+	Condition corev1.NodeConditionType `json:"condition,omitempty"`
 
 	// Criteria are CEL expressions evaluated against each node to determine whether it requires
 	// new node validation. All expressions must evaluate to true.
@@ -136,20 +137,10 @@ type TaintConfig struct {
 	Value string `json:"value,omitempty"`
 	// Effect is the taint effect: NoSchedule, PreferNoSchedule, or NoExecute.
 	// +optional
-	Effect string `json:"effect,omitempty"`
+	Effect corev1.TaintEffect `json:"effect,omitempty"`
 	// Remove indicates whether this taint should be lifted after validation completes.
 	// +optional
 	Remove bool `json:"remove,omitempty"`
-}
-
-// EnvVarConfig defines a single environment variable for a k8s-job-provider test's container.
-type EnvVarConfig struct {
-	// Name is the environment variable name.
-	// +required
-	Name string `json:"name"`
-	// Value is the environment variable value.
-	// +optional
-	Value string `json:"value,omitempty"`
 }
 
 // ProviderConfig defines a test provider configuration.
@@ -206,7 +197,7 @@ type ConditionMatch struct {
 	Type string `json:"type"`
 	// Status is the condition status to match.
 	// +required
-	Status string `json:"status"`
+	Status metav1.ConditionStatus `json:"status"`
 }
 
 // BatchFailurePolicy controls how a test group is handled when batch minimums are not met.
@@ -236,7 +227,7 @@ type TestConfig struct {
 
 	// Env sets environment variables on test provider resource templates.
 	// +optional
-	Env []EnvVarConfig `json:"env,omitempty"`
+	Env []corev1.EnvVar `json:"env,omitempty"`
 
 	// SupportsBatchingNodes indicates whether multiple nodes can be tested together in a
 	// single provider resource.

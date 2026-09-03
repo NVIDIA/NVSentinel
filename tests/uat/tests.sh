@@ -18,6 +18,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
+# date -d is not a valid option on macOS
+get_epoch_time() {
+    local ts=$1
+    date -d "$ts" +%s 2>/dev/null || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$ts" +%s 2>/dev/null
+}
+
 get_boot_id() {
     local node=$1
     local boot_id
@@ -335,7 +341,7 @@ wait_for_gpu_reset() {
             if [ -z "$start_time" ] || [ "$start_time" == "null" ]; then
                 continue
             fi
-            local start_ts=$(date -d "$start_time" +%s)
+            local start_ts=$(get_epoch_time "$start_time")
 
             if [ "$start_ts" -gt "$current_ts" ] && [ "$current_node" == "$node" ]; then
                 for current_uuid in $uuids; do
@@ -362,10 +368,51 @@ wait_for_gpu_reset() {
     wait_for_node_unquarantine "$node"
 }
 
+verify_validation_request() {
+    local node=$1
+    local current_ts=$2
+
+    log "Checking for a succeeded ValidationRequest for node $node..."
+
+    local vr_list
+    vr_list=$(kubectl get validationrequests -o json | jq -c '.items[]')
+    local IFS=$'\n'
+    local matching_vr=""
+
+    for vr in $vr_list; do
+        local created=$(echo "$vr" | jq -r '.metadata.creationTimestamp')
+        local vr_node=$(echo "$vr" | jq -r '.spec.nodes[0].name')
+
+        if [ -z "$created" ] || [ "$created" == "null" ]; then
+            continue
+        fi
+        local created_ts=$(get_epoch_time "$created")
+
+        if [ "$created_ts" -gt "$current_ts" ] && [ "$vr_node" == "$node" ]; then
+            matching_vr="$vr"
+        fi
+    done
+
+    if [ -z "$matching_vr" ]; then
+        error "No ValidationRequest found for node $node created after test start"
+    fi
+
+    local vr_name=$(echo "$matching_vr" | jq -r '.metadata.name')
+    local phase=$(echo "$matching_vr" | jq -r '.status.phase')
+
+    if [ "$phase" != "Succeeded" ]; then
+        error "ValidationRequest $vr_name for node $node did not succeed (phase=$phase)"
+    fi
+
+    log "ValidationRequest $vr_name for node $node succeeded"
+}
+
 test_gpu_monitoring_dcgm() {
     log "========================================="
     log "Test 1: GPU monitoring via DCGM"
     log "========================================="
+
+    local current_ts=$(date +%s)
 
     local gpu_node
     gpu_node=$(get_gpu_node_with_healthy_gpu_monitor)
@@ -429,6 +476,8 @@ test_gpu_monitoring_dcgm() {
     log "Waiting for node to reboot and recover..."
     wait_for_boot_id_change "$gpu_node" "$original_boot_id"
 
+    verify_validation_request "$gpu_node" "$current_ts"
+
     log "Test 1 PASSED ✓"
 }
 
@@ -436,6 +485,8 @@ test_xid_monitoring_syslog() {
     log "======================================================"
     log "Test 2: XID monitoring via syslog triggers RESTART_VM"
     log "======================================================"
+
+    local current_ts=$(date +%s)
 
     local gpu_node
     gpu_node=$(get_gpu_node_with_healthy_syslog_monitor)
@@ -461,6 +512,8 @@ test_xid_monitoring_syslog() {
 
     log "Waiting for node to reboot and recover..."
     wait_for_boot_id_change "$gpu_node" "$original_boot_id"
+
+    verify_validation_request "$gpu_node" "$current_ts"
 
     delete_node_debug_pod
 

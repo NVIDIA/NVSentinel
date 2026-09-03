@@ -16,24 +16,16 @@ package controller
 
 import (
 	"fmt"
-	"hash/fnv"
 	"sort"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/pkg/config"
 )
 
-const (
-	groupNameSuffix = "-group-"
-	// maxGroupBaseLength limits the base portion of a group name, reserving room for the groupNameSuffix,
-	// up to a 4-digit index, and the "-<hash>" suffix appended when truncated. This ensures the final name never
-	// exceeds the Kubernetes DNS-1123 label length limit.
-	maxGroupBaseLength = validation.DNS1123LabelMaxLength - len(groupNameSuffix) - 4 - 1 - 8
-)
+const groupNameSuffix = "-group-"
 
 type groupTestGroupIdentifier struct {
 	provider string
@@ -296,13 +288,5 @@ func groupName(tests []string, index int) string {
 	sorted := append([]string{}, tests...)
 	sort.Strings(sorted)
 
-	base := strings.Join(sorted, "-")
-
-	if len(base) > maxGroupBaseLength {
-		h := fnv.New32a()
-		h.Write([]byte(base))
-		base = fmt.Sprintf("%s-%08x", base[:maxGroupBaseLength], h.Sum32())
-	}
-
-	return fmt.Sprintf("%s%s%d", base, groupNameSuffix, index)
+	return fmt.Sprintf("%s%s%d", strings.Join(sorted, "-"), groupNameSuffix, index)
 }

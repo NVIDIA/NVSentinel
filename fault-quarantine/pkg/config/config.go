@@ -66,10 +66,27 @@ type RuleSet struct {
 	Taint    Taint  `toml:"taint"`
 	Label    Label  `toml:"label"`
 	Cordon   Cordon `toml:"cordon"`
+	// Tests lists post-remediation validation test names. This is only populated for Validation.RuleSets
+	Tests []string `toml:"tests"`
+}
+
+// The ValidationConfig configures how fault-quarantine creates ValidationRequest CRDs after a quarantine
+// session's unhealthy events have all recovered and at least 1 event from the quarantine session required
+// a validation test according to Validation.RuleSets.
+type ValidationConfig struct {
+	Enabled           bool      `toml:"enabled"`
+	ApiGroup          string    `toml:"apiGroup"`
+	Version           string    `toml:"version"`
+	Kind              string    `toml:"kind"`
+	Resource          string    `toml:"resource"`
+	TemplateMountPath string    `toml:"templateMountPath"`
+	TemplateFileName  string    `toml:"templateFileName"`
+	RuleSets          []RuleSet `toml:"ruleSets"`
 }
 
 type TomlConfig struct {
-	LabelPrefix    string         `toml:"label-prefix"`
-	CircuitBreaker CircuitBreaker `toml:"circuitBreaker"`
-	RuleSets       []RuleSet      `toml:"rule-sets"`
+	LabelPrefix    string           `toml:"label-prefix"`
+	CircuitBreaker CircuitBreaker   `toml:"circuitBreaker"`
+	RuleSets       []RuleSet        `toml:"rule-sets"`
+	Validation     ValidationConfig `toml:"validation"`
 }

@@ -26,9 +26,11 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -80,9 +82,38 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(cfg).NotTo(BeNil())
 
-	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
+	watchClient, err := client.NewWithWatch(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
-	Expect(k8sClient).NotTo(BeNil())
+	Expect(watchClient).NotTo(BeNil())
+
+	// We use DeletePropagationForeground for all delete requests for TestProvider resources. We need to mimic what
+	// the garbage-collector does and remove the foreground deletion finalizer for our unit tests to be able to delete
+	// these resources.
+	k8sClient = interceptor.NewClient(watchClient, interceptor.Funcs{
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			if err := c.Delete(ctx, obj, opts...); err != nil {
+				return err
+			}
+
+			deleteOpts := &client.DeleteOptions{}
+			deleteOpts.ApplyOptions(opts)
+
+			if deleteOpts.PropagationPolicy == nil || *deleteOpts.PropagationPolicy != metav1.DeletePropagationForeground {
+				return nil
+			}
+
+			current, ok := obj.DeepCopyObject().(client.Object)
+			Expect(ok).To(BeTrue())
+
+			if err := c.Get(ctx, client.ObjectKeyFromObject(obj), current); err != nil {
+				return client.IgnoreNotFound(err)
+			}
+
+			current.SetFinalizers(nil)
+
+			return client.IgnoreNotFound(c.Update(ctx, current))
+		},
+	})
 })
 
 var _ = AfterSuite(func() {
