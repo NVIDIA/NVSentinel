@@ -26,12 +26,28 @@ type Options struct {
 	KubeconfigPath string
 }
 
+// Factory creates a Transformer from its pipeline config and shared options.
 type Factory func(cfg *Config, opts Options) (Transformer, error)
 
-var registry = map[string]Factory{}
+// DisabledCheck is called when a stage is skipped (Enabled=false).
+// Implementations should log warnings for misconfigurations that become
+// silent when the stage is off (e.g. a skip-label key configured but no
+// transformer to enforce it).
+type DisabledCheck func(ctx context.Context, cfg *Config)
+
+var (
+	registry       = map[string]Factory{}
+	disabledChecks = map[string]DisabledCheck{}
+)
 
 func Register(name string, factory Factory) {
 	registry[name] = factory
+}
+
+// RegisterDisabledCheck registers an optional callback invoked when the
+// named stage is present in the pipeline config but disabled.
+func RegisterDisabledCheck(name string, check DisabledCheck) {
+	disabledChecks[name] = check
 }
 
 func Create(cfg *Config, opts Options) (Transformer, error) {
@@ -51,6 +67,11 @@ func NewFromConfigs(ctx context.Context, configs []Config, opts Options) (*Pipel
 	for _, cfg := range configs {
 		if !cfg.Enabled {
 			slog.InfoContext(ctx, "Pipeline stage disabled", "name", cfg.Name)
+
+			if check, ok := disabledChecks[cfg.Name]; ok {
+				check(ctx, &cfg)
+			}
+
 			continue
 		}
 

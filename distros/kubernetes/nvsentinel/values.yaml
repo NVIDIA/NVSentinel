@@ -384,7 +384,7 @@ platformConnector:
   pipeline:
     # List of transformers to execute (in order)
     - name: MetadataAugmentor
-      enabled: false
+      enabled: true
       config: /etc/config/metadata.toml
     
     - name: OverrideTransformer
@@ -396,7 +396,16 @@ platformConnector:
     # Metadata augmentor - enriches events with node labels and provider info
     MetadataAugmentor:
       cacheSize: 50
-      cacheTTLSeconds: 3600
+      # How long cached node metadata is considered fresh. Lower values mean
+      # label changes (e.g. managed=false) take effect faster, at the cost of
+      # more Kubernetes API GET calls. 60s bounds ownership-state staleness to
+      # ~60 seconds in either direction.
+      cacheTTLSeconds: 60
+      # Managed-label gate: when a node carries this label, its events are set
+      # to STORE_ONLY (stored for audit but no remediation or Kubernetes side
+      # effects). Format is "key=value". Leave empty to disable.
+      # Must match commons/pkg/managed.ManagedLabelKey and ManagedLabelValueFalse.
+      skipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false"
       allowedLabels:
         - "topology.kubernetes.io/zone"
         - "topology.kubernetes.io/region"
