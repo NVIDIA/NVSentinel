@@ -313,11 +313,27 @@ actually true:
 > collection is receiving inserts, or whenever the watcher's read loop is live. It does **not**
 > detect a stalled consumer on a collection receiving only updates and deletes.
 
-**A blocked read loop is already covered, for insert traffic.** No new metric is needed for it:
-`max(_id)` is queried against the collection and is therefore independent of the cursor, so head
-keeps advancing while the loop is stuck and `changestream_lag_seconds` rises. Distinguishing
-"blocked" from "idle" is exactly the head-versus-position comparison this ADR is built on, and it
-already works whenever inserts are flowing.
+**A blocked read loop is already covered, for insert traffic, given ordered `_id`s.** No new
+metric is needed for it: `max(_id)` is queried against the collection and is therefore
+independent of the cursor, so head keeps advancing while the loop is stuck and
+`changestream_lag_seconds` rises. Distinguishing "blocked" from "idle" is the head-versus-position
+comparison this ADR is built on, and it works whenever inserts are flowing.
+
+The assumption in "given ordered `_id`s" is worth naming, because `max(_id)` advances only for an
+insert whose `_id` sorts after the current maximum. Health events carry driver-generated
+ObjectIDs, with no explicit `_id` set on insert, and an ObjectID is a 4-byte timestamp followed by
+a per-process random value and a counter. Across processes **within the same second** the ordering
+is therefore effectively random, not chronological, so an insert can land below the current
+maximum and leave head unmoved. Beyond a one-second window the timestamp dominates and ordering
+holds, modulo writer clock skew.
+
+The practical effect is bounded by that window and is immaterial against a 60s poll and a
+900s alert threshold, but it means the guarantee is "head advances within about a second of an
+insert", not "head advances on every insert". The existing count metric already depends on the
+same ordering, since it filters `_id > lastProcessedID`
+(`store-client/pkg/datastore/providers/mongodb/watcher/watch_store.go:563`), so this assumption is
+inherited rather than introduced here. The blocked-cursor test uses a **non-monotonic `_id`** so
+the assumption is exercised rather than assumed.
 
 **A read-loop heartbeat is not available, and should not be faked.** An earlier revision of this
 ADR proposed a `changestream_reads_total` counter as a liveness signal, alerting when its rate
@@ -494,7 +510,9 @@ the worst case, stops updating its own lag metric and looks frozen rather than b
   assert head time advances. Under `max(_id)` alone it does not, so this test distinguishes the
   two designs. Cover deletes and an explicitly non-monotonic `_id` the same way.
 - **Blocked cursor, insert traffic**: with the watcher's read loop blocked, assert head still
-  advances from `max(_id)` so lag does not collapse to zero.
+  advances from `max(_id)` so lag does not collapse to zero. Run it twice, once with ascending
+  `_id`s and once with a **non-monotonic** `_id` inserted below the current maximum, so the
+  documented ordering assumption is exercised rather than trusted.
 - **Blocked cursor, update-only traffic**: the documented limitation. Assert that lag does *not*
   detect it, so the gap is pinned by a test rather than left to be rediscovered. A test that
   asserts the known-false thing is what stops someone later "fixing" the metric by widening the
@@ -529,9 +547,14 @@ the worst case, stops updating its own lag metric and looks frozen rather than b
    other's blind spot:
    - `changestream_lag_seconds > 900` for 10m, tuned per fleet, qualified by
      `changestream_position_known == 1`. The primary "behind" alert, and the one that catches a
-     blocked read loop whenever inserts are flowing.
-   - `changestream_position_known == 0` persisting. Covers a consumer stalled since before
-     rollout, which no lag series can see.
+     blocked read loop whenever inserts are flowing. The threshold must stay well above the
+     sub-second `_id` ordering window described above, which 900s comfortably is.
+   - `changestream_position_known == 0` for longer than a startup grace period, suggested at
+     3 poll intervals or 10 minutes, whichever is longer. This is a **"stalled or uninitialized"**
+     alert, not a stall alert: a consumer that has just started, or one that has never yet
+     processed an event on a quiet stream, sits legitimately at zero. Without the grace period it
+     pages on every rollout. Naming it for both states is deliberate, since "uninitialized for
+     ten minutes on a busy cluster" is itself worth looking at.
 
    Also document the MongoDB caveats explicitly: what `documents_behind` counts, and that lag
    does not detect a stalled consumer on a collection receiving only updates and deletes.
