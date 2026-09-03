@@ -858,9 +858,8 @@ func TestIBCharDev_IssmModeChangeClearsLatchedFault(t *testing.T) {
 
 	// A confirmed issm fault under always mode, then a config change to never
 	// (e.g. upgrading a GB300 node to the default, or an operator opting issm
-	// out): the mode change owes a baseline reconciliation so the stale
-	// REPLACE_VM condition is cleared on the next pod start instead of being
-	// held until the next reboot.
+	// out): the now-stale issm condition is released with an issm-scoped clear
+	// on the next pod start instead of being held until the next reboot.
 	mgr, statePath, bootIDPath := newStateManagerForTest(t, "boot-1")
 
 	_, f := singleIBNode(t)
@@ -883,25 +882,70 @@ func TestIBCharDev_IssmModeChangeClearsLatchedFault(t *testing.T) {
 
 	events, err = check2.Run()
 	require.NoError(t, err)
-	require.Len(t, events, 1, "mode change must emit the baseline clear")
+	require.Len(t, events, 1, "mode change must release the stale issm latch")
 	assert.True(t, events[0].IsHealthy)
-	assert.Empty(t, events[0].EntitiesImpacted, "baseline clear is check-scoped (no entities)")
+	assert.Equal(t, []string{"issm"}, events[0].ErrorCode, "clear must be issm-scoped, not a check-wide baseline")
+	assertPortEntities(t, events[0], "mlx5_0", 1)
 
-	// The latch is dropped by the clear; steady state is quiet (issm no longer
-	// expected), and the mode is persisted so a further restart does not
-	// re-baseline.
+	// The latch is dropped by the clear; steady state is then quiet.
 	runQuietPolls(t, check2, 2*charDevMissThreshold)
 
 	mgr3 := statefile.NewManagerWithPaths(statePath, bootIDPath)
 	require.NoError(t, mgr3.Load())
-	assert.Equal(t, config.IssmModeNever, mgr3.CharDeviceIssmMode())
-	assert.Empty(t, mgr3.MissingCharDevices(), "issm latch must be cleared after the mode-change baseline")
+	assert.Empty(t, mgr3.MissingCharDevices(), "issm latch must be cleared after the mode change")
 
 	check3 := newCharDevCheckWithConfig(t, f, reader, mgr3, issmModeCfg(config.IssmModeNever), false)
 
 	events, err = check3.Run()
 	require.NoError(t, err)
-	assert.Empty(t, events, "no re-baseline once the mode is persisted")
+	assert.Empty(t, events, "nothing to release once the latch is cleared")
+}
+
+func TestIBCharDev_IssmModeChangePreservesUmadLatch(t *testing.T) {
+	t.Parallel()
+
+	// A device missing BOTH issm and umad confirms two fatals under always.
+	// Switching issm to never must release ONLY the issm condition; the umad
+	// fault is unrelated to the issm config, its device is still missing, so
+	// its latch (and downstream condition) must be preserved untouched.
+	mgr, statePath, bootIDPath := newStateManagerForTest(t, "boot-1")
+
+	_, f := singleIBNode(t)
+	f.mad = nil // drop both umad and issm.
+	reader := f.reader()
+	check := newCharDevCheckWithConfig(t, f, reader, mgr, issmModeCfg(config.IssmModeAlways), false)
+
+	runQuietPolls(t, check, charDevMissThreshold-1)
+
+	events, err := check.Run()
+	require.NoError(t, err)
+	require.Len(t, fatalEvents(events), 2, "both issm and umad must fatal under always")
+
+	// Restart on the same boot with issm=never.
+	mgr2 := statefile.NewManagerWithPaths(statePath, bootIDPath)
+	require.NoError(t, mgr2.Load())
+
+	check2 := newCharDevCheckWithConfig(t, f, reader, mgr2, issmModeCfg(config.IssmModeNever), false)
+
+	events, err = check2.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 1, "only the issm condition is released")
+	assert.True(t, events[0].IsHealthy)
+	assert.Equal(t, []string{"issm"}, events[0].ErrorCode)
+
+	// The umad latch must survive: it is still expected, still missing, so it
+	// stays latched (steady faulted state, silent) and its condition is intact.
+	runQuietPolls(t, check2, 2*charDevMissThreshold)
+
+	mgr3 := statefile.NewManagerWithPaths(statePath, bootIDPath)
+	require.NoError(t, mgr3.Load())
+
+	remaining := mgr3.MissingCharDevices()
+	require.Len(t, remaining, 1, "umad latch must be preserved, issm dropped")
+
+	for _, flag := range remaining {
+		assert.Equal(t, "umad", flag.Kind, "the surviving latch must be umad, not issm")
+	}
 }
 
 // dropKind removes every mad entry whose directory name starts with the

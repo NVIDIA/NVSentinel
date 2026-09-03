@@ -123,9 +123,10 @@ type InfiniBandCharDeviceCheck struct {
 	state              *statefile.Manager
 
 	// issmMode is the canonicalised charDeviceCheck.issm mode (empty config
-	// resolves to "auto"). It gates the per-port issm expectation and, when
-	// it differs from the persisted mode at startup, forces a baseline
-	// reconciliation so a mode change clears stale issm conditions.
+	// resolves to "never"). It gates the per-port issm expectation. When issm
+	// is not expected, any issm latch carried over from a previous "always"
+	// run (or a build that predates this option) is released with a scoped
+	// clear on the next poll — see evaluatePoll.
 	issmMode string
 
 	// emitHealthyBaselines requests a check-scoped baseline clear on the
@@ -194,24 +195,10 @@ func NewInfiniBandCharDeviceCheck(
 		latched[keyOfFlag(flag)] = true
 	}
 
-	// A change to the issm mode owes a baseline reconciliation ONLY when
-	// there are latched conditions to clear: the check-scoped clear voids
-	// stale issm FATALs that would otherwise be held (not recovered) until
-	// the next reboot once issm stops being expected (e.g. switching
-	// auto→never on a GB300 node, or upgrading from a build that predates
-	// this field). With no latches a fresh start needs no clear, so the
-	// normal boot baseline suffices and the first poll stays quiet.
-	modeChanged := stateManager.CharDeviceIssmMode() != issmMode && len(latched) > 0
-
-	pendingBaseline := bootIDChanged || modeChanged ||
-		stateManager.PendingBaseline(checks.InfiniBandCharDeviceCheckName)
+	pendingBaseline := bootIDChanged || stateManager.PendingBaseline(checks.InfiniBandCharDeviceCheckName)
 	if pendingBaseline {
 		stateManager.SetPendingBaseline(checks.InfiniBandCharDeviceCheckName)
 	}
-
-	// Always record the current mode so a later change is detected against a
-	// concrete previous value rather than the empty legacy default.
-	stateManager.SetCharDeviceIssmMode(issmMode)
 
 	return &InfiniBandCharDeviceCheck{
 		nodeName:             nodeName,
@@ -367,7 +354,9 @@ func (c *InfiniBandCharDeviceCheck) Discard() {
 //   - expected + missing + unlatched  → debounce; FATAL + latch once the
 //     key has been missing charDevMissThreshold consecutive polls.
 //   - expected + missing + latched    → steady faulted state, silent.
-//   - not expected + latched          → held: no event, latch kept.
+//   - not expected + latched          → held: no event, latch kept, EXCEPT
+//     an issm latch while issm checking is disabled by config, which is
+//     released with an issm-scoped clear (umad/uverbs latches untouched).
 //
 // On a baseline run the check-scoped clear voids every downstream
 // condition, so still-missing latched keys immediately re-assert their
@@ -400,11 +389,28 @@ func (c *InfiniBandCharDeviceCheck) evaluatePoll(
 	// without IB ports): hold them — absence is not positive evidence of
 	// recovery. On a baseline run they are dropped instead: the clear has
 	// voided their downstream conditions.
+	//
+	// The exception is an issm latch while issm checking is disabled by
+	// configuration (mode != always): that is a deterministic
+	// no-longer-a-fault, not an uncertain absence, so it is released with an
+	// entity-scoped clear rather than held to the next reboot. The clear is
+	// scoped to the issm key alone, so a concurrent umad/uverbs latch on the
+	// same device is left untouched.
+	issmDisabled := !expectIssm(c.issmMode)
+
 	if !baselineRun {
 		for key := range c.latched {
-			if _, isExpected := expected.keys[key]; !isExpected {
-				nextLatched[key] = true
+			if _, isExpected := expected.keys[key]; isExpected {
+				continue
 			}
+
+			if key.kind == kindIssm && issmDisabled {
+				events = append(events, c.issmDisabledClearEvent(key))
+
+				continue
+			}
+
+			nextLatched[key] = true
 		}
 	}
 
@@ -672,6 +678,22 @@ func (c *InfiniBandCharDeviceCheck) missingEvent(key charDevKey) *pb.HealthEvent
 // character device reappears, so the platform can clear the node condition.
 func (c *InfiniBandCharDeviceCheck) recoveryEvent(key charDevKey) *pb.HealthEvent {
 	msg := fmt.Sprintf("InfiniBand character device %s for %s is present again", key.kind, c.entityDesc(key))
+
+	return withCharDevCode(checks.NewHealthEvent(
+		c.nodeName, c.Name(), msg, c.entitiesFor(key),
+		false, true, pb.RecommendedAction_NONE, c.processingStrategy,
+	), key.kind)
+}
+
+// issmDisabledClearEvent builds the healthy event that releases a latched
+// issm condition when issm checking is turned off by configuration
+// (charDeviceCheck.issm != always). It is scoped to the issm key (its
+// ErrorCode and entities), so it clears only the issm condition and leaves a
+// concurrent umad/uverbs latch on the same device intact.
+func (c *InfiniBandCharDeviceCheck) issmDisabledClearEvent(key charDevKey) *pb.HealthEvent {
+	msg := fmt.Sprintf(
+		"issm character-device check disabled by configuration; clearing issm condition for %s",
+		c.entityDesc(key))
 
 	return withCharDevCode(checks.NewHealthEvent(
 		c.nodeName, c.Name(), msg, c.entitiesFor(key),
