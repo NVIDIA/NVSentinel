@@ -15,8 +15,10 @@
 package metadata
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -84,6 +86,21 @@ const testMetadataNoChassisSerial = `{
   "nvswitches": []
 }`
 
+func atomicReplace(t *testing.T, path string, data []byte) {
+	t.Helper()
+	tmp := path + ".next"
+	require.NoError(t, os.WriteFile(tmp, data, 0600))
+	require.NoError(t, os.Rename(tmp, path))
+}
+
+func metadataWithGPU0UUID(uuid string) string {
+	return strings.Replace(testMetadataJSON, "GPU-00000000-0000-0000-0000-000000000000", uuid, 1)
+}
+
+func metadataWithDriverVersion(version string) string {
+	return strings.Replace(testMetadataJSON, `"node_name": "test-node",`, `"node_name": "test-node",`+"\n  \"driver_version\": \""+version+"\",", 1)
+}
+
 func TestReaderLazyLoading(t *testing.T) {
 	tmpDir := t.TempDir()
 	metadataFile := filepath.Join(tmpDir, "gpu_metadata.json")
@@ -115,6 +132,110 @@ func TestReaderConcurrentAccess(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+func TestReaderRefreshesPCIToUUIDAfterAtomicReplacement(t *testing.T) {
+	tmpDir := t.TempDir()
+	metadataFile := filepath.Join(tmpDir, "gpu_metadata.json")
+	require.NoError(t, os.WriteFile(metadataFile, []byte(testMetadataJSON), 0600))
+
+	reader := NewReader(metadataFile)
+	gpu, err := reader.GetGPUByPCI("0000:17:00.0")
+	require.NoError(t, err)
+	require.Equal(t, "GPU-00000000-0000-0000-0000-000000000000", gpu.UUID)
+
+	atomicReplace(t, metadataFile, []byte(metadataWithGPU0UUID("GPU-refreshed")))
+	gpu, err = reader.GetGPUByPCI("0000:17:00.0")
+	require.NoError(t, err)
+	require.Equal(t, "GPU-refreshed", gpu.UUID)
+	_, err = reader.GetInfoByUUID("GPU-00000000-0000-0000-0000-000000000000")
+	require.Error(t, err)
+}
+
+func TestReaderMalformedReplacementKeepsLastSuccessfulSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+	metadataFile := filepath.Join(tmpDir, "gpu_metadata.json")
+	require.NoError(t, os.WriteFile(metadataFile, []byte(testMetadataJSON), 0600))
+
+	reader := NewReader(metadataFile)
+	_, err := reader.GetGPUByPCI("0000:17:00.0")
+	require.NoError(t, err)
+
+	atomicReplace(t, metadataFile, []byte("{malformed"))
+	gpu, err := reader.GetGPUByPCI("0000:17:00.0")
+	require.NoError(t, err)
+	require.Equal(t, "GPU-00000000-0000-0000-0000-000000000000", gpu.UUID)
+
+	atomicReplace(t, metadataFile, []byte(metadataWithGPU0UUID("GPU-recovered")))
+	gpu, err = reader.GetGPUByPCI("0000:17:00.0")
+	require.NoError(t, err)
+	require.Equal(t, "GPU-recovered", gpu.UUID)
+}
+
+func TestGetDriverVersionRefreshesEmptyValueAfterAtomicReplacement(t *testing.T) {
+	tmpDir := t.TempDir()
+	metadataFile := filepath.Join(tmpDir, "gpu_metadata.json")
+	require.NoError(t, os.WriteFile(metadataFile, []byte(testMetadataJSON), 0600))
+
+	reader := NewReader(metadataFile)
+	require.Empty(t, reader.GetDriverVersion())
+
+	atomicReplace(t, metadataFile, []byte(metadataWithDriverVersion("575.57.08")))
+	require.Equal(t, "575.57.08", reader.GetDriverVersion())
+}
+
+func TestGetDriverVersionMalformedReplacementKeepsLastSuccessfulValue(t *testing.T) {
+	tmpDir := t.TempDir()
+	metadataFile := filepath.Join(tmpDir, "gpu_metadata.json")
+	require.NoError(t, os.WriteFile(metadataFile, []byte(metadataWithDriverVersion("575.57.08")), 0600))
+
+	reader := NewReader(metadataFile)
+	require.Equal(t, "575.57.08", reader.GetDriverVersion())
+
+	atomicReplace(t, metadataFile, []byte("{malformed"))
+	require.Equal(t, "575.57.08", reader.GetDriverVersion())
+}
+
+func TestReaderConcurrentLookupsDuringAtomicReplacement(t *testing.T) {
+	tmpDir := t.TempDir()
+	metadataFile := filepath.Join(tmpDir, "gpu_metadata.json")
+	require.NoError(t, os.WriteFile(metadataFile, []byte(testMetadataJSON), 0600))
+
+	reader := NewReader(metadataFile)
+	_, err := reader.GetGPUByPCI("0000:17:00.0")
+	require.NoError(t, err)
+
+	errCh := make(chan error, 8)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 100 {
+				gpu, lookupErr := reader.GetGPUByPCI("0000:17:00.0")
+				if lookupErr != nil {
+					errCh <- lookupErr
+					return
+				}
+				if gpu.UUID != "GPU-00000000-0000-0000-0000-000000000000" && gpu.UUID != "GPU-refreshed" {
+					errCh <- fmt.Errorf("unexpected UUID %q", gpu.UUID)
+					return
+				}
+			}
+		}()
+	}
+	for i := range 50 {
+		uuid := "GPU-00000000-0000-0000-0000-000000000000"
+		if i%2 == 0 {
+			uuid = "GPU-refreshed"
+		}
+		atomicReplace(t, metadataFile, []byte(metadataWithGPU0UUID(uuid)))
+	}
+	wg.Wait()
+	close(errCh)
+	for concurrentErr := range errCh {
+		require.NoError(t, concurrentErr)
+	}
 }
 
 func TestGetGPUByPCI(t *testing.T) {
