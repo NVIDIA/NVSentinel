@@ -449,7 +449,7 @@ func TestUnQuarantineNodeAndRemoveAnnotations(t *testing.T) {
 	}
 }
 
-func TestUnQuarantineNodeAndRemoveAnnotations_DryRunDoesNotPatchNode(t *testing.T) {
+func TestUnQuarantineNodeAndRemoveAnnotations_DryRunRemovesAnnotationsOnly(t *testing.T) {
 	ctx := context.Background()
 	const (
 		nodeName      = "dry-run-unquarantine"
@@ -489,15 +489,19 @@ func TestUnQuarantineNodeAndRemoveAnnotations_DryRunDoesNotPatchNode(t *testing.
 
 	updatedNode, err := clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	require.NoError(t, err)
-	assert.Equal(t, "test-value", updatedNode.Annotations[annotationKey])
+	assert.NotContains(t, updatedNode.Annotations, annotationKey)
 	assert.Equal(t, "gpu-error", updatedNode.Labels[cordonedReasonLabelKey])
 	assert.NotContains(t, updatedNode.Labels, uncordonedByLabelKey)
 	assert.True(t, updatedNode.Spec.Unschedulable)
 	require.Len(t, updatedNode.Spec.Taints, 1)
 
+	patches := 0
 	for _, action := range clientset.Actions() {
-		assert.NotEqual(t, "patch", action.GetVerb(), "dry-run unquarantine must not submit a node patch")
+		if action.GetVerb() == "patch" {
+			patches++
+		}
 	}
+	assert.Equal(t, 1, patches, "dry-run unquarantine should patch only the annotation removal")
 }
 
 func TestTaintAndCordonNode_NodeNotFound(t *testing.T) {

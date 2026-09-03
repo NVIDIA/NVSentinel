@@ -661,12 +661,6 @@ func (c *FaultQuarantineClient) UnQuarantineNodeAndRemoveAnnotations(
 	labelsToRemove []string,
 	labels map[string]string,
 ) error {
-	if c.DryRunMode {
-		slog.InfoContext(ctx, "DryRun mode enabled, skipping node unquarantine", "node", nodename)
-
-		return nil
-	}
-
 	updateFn := func(node *v1.Node) error {
 		if len(taints) > 0 {
 			c.removeTaints(ctx, node, taints, nodename)
@@ -677,6 +671,8 @@ func (c *FaultQuarantineClient) UnQuarantineNodeAndRemoveAnnotations(
 		}
 
 		if len(annotationKeys) > 0 {
+			// Dry-run quarantine writes annotations for observability, so cleanup must
+			// remove them as well while the spec and label guards prevent real actions.
 			for _, annotationKey := range annotationKeys {
 				slog.InfoContext(ctx, "Removing annotation key from node", "key", annotationKey, "node", nodename)
 				delete(node.Annotations, annotationKey)

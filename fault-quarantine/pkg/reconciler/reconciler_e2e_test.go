@@ -4215,8 +4215,51 @@ func TestE2E_DryRunMode(t *testing.T) {
 
 	node, err = e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	require.NoError(t, err)
+	assert.NotContains(t, node.Annotations, common.QuarantineHealthEventAnnotationKey,
+		"Dry-run recovery should clear the tracked health event")
+	assert.NotContains(t, node.Annotations, common.QuarantineHealthEventAppliedTaintsAnnotationKey,
+		"Dry-run recovery should clear the intended taints annotation")
+	assert.NotContains(t, node.Annotations, common.QuarantineHealthEventAppliedLabelsAnnotationKey,
+		"Dry-run recovery should clear the intended labels annotation")
+	assert.NotContains(t, node.Annotations, common.QuarantineHealthEventIsCordonedAnnotationKey,
+		"Dry-run recovery should clear the intended cordon annotation")
+	assert.False(t, node.Spec.Unschedulable, "Dry-run recovery should not change the node spec")
+	for _, taint := range node.Spec.Taints {
+		assert.NotEqual(t, "nvidia.com/gpu-xid-error", taint.Key,
+			"Dry-run recovery should not add the rule taint")
+	}
 	assert.Equal(t, "pre-existing", node.Labels["nvidia.com/gpu-fault"],
 		"Dry run should not remove a rule label during recovery")
+
+	t.Log("Send another unhealthy event after recovery")
+	secondUnhealthyID := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		secondUnhealthyID,
+		nodeName,
+		"GpuXidError",
+		false,
+		true,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		model.StatusInProgress,
+	)}
+
+	require.Eventually(t, func() bool {
+		status := getStatus(secondUnhealthyID)
+		return status != nil && *status == model.Quarantined
+	}, statusCheckTimeout, statusCheckPollInterval,
+		"A fault after dry-run recovery should be evaluated as a fresh quarantine")
+
+	node, err = e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.NotEmpty(t, node.Annotations[common.QuarantineHealthEventAnnotationKey],
+		"The new fault should restore dry-run observability annotations")
+	assert.False(t, node.Spec.Unschedulable, "The node should remain schedulable in dry-run mode")
+	for _, taint := range node.Spec.Taints {
+		assert.NotEqual(t, "nvidia.com/gpu-xid-error", taint.Key,
+			"The node should remain free of the rule taint in dry-run mode")
+	}
+	assert.Equal(t, "pre-existing", node.Labels["nvidia.com/gpu-fault"],
+		"Dry run should not overwrite a rule label on the next fault")
 }
 
 func TestE2E_TaintOnlyThenCordonRule(t *testing.T) {
