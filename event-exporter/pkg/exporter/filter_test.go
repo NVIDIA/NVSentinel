@@ -51,59 +51,98 @@ func filterEvent(action pb.RecommendedAction, codes ...string) *pb.HealthEvent {
 	}
 }
 
-func TestShouldExport_NoExpression_ExportsEverything(t *testing.T) {
-	e := exporterWithFilter(t, "")
+// TestShouldExport drives the filter decision over the fields an operator actually writes
+// expressions against. The CEL semantics themselves live in commons/pkg/celevent's tests; what
+// is exercised here is this package's use of them, including the fail-open behaviour.
+func TestShouldExport(t *testing.T) {
+	tests := []struct {
+		name       string
+		expression string
+		action     pb.RecommendedAction
+		codes      []string
+		want       bool
+	}{
+		{
+			name:   "no expression exports a non-actionable event",
+			action: pb.RecommendedAction_NONE,
+			codes:  []string{"45"},
+			want:   true,
+		},
+		{
+			name:   "no expression exports an actionable event",
+			action: pb.RecommendedAction_CONTACT_SUPPORT,
+			codes:  []string{"31"},
+			want:   true,
+		},
+		{
+			name:       "whitespace-only expression exports everything",
+			expression: "   ",
+			action:     pb.RecommendedAction_NONE,
+			want:       true,
+		},
+		{
+			// The motivating case from #1702: 99.1% of this fleet's events are NONE.
+			name:       "actionable-only drops NONE",
+			expression: `event.recommendedAction != 'NONE'`,
+			action:     pb.RecommendedAction_NONE,
+			codes:      []string{"45"},
+			want:       false,
+		},
+		{
+			name:       "actionable-only keeps CONTACT_SUPPORT",
+			expression: `event.recommendedAction != 'NONE'`,
+			action:     pb.RecommendedAction_CONTACT_SUPPORT,
+			codes:      []string{"31"},
+			want:       true,
+		},
+		{
+			name:       "actionable-only keeps RESTART_VM",
+			expression: `event.recommendedAction != 'NONE'`,
+			action:     pb.RecommendedAction_RESTART_VM,
+			codes:      []string{"74"},
+			want:       true,
+		},
+		{
+			name:       "errorCode exclusion drops the excluded code",
+			expression: `event.recommendedAction != 'NONE' && !('45' in event.errorCode)`,
+			action:     pb.RecommendedAction_CONTACT_SUPPORT,
+			codes:      []string{"45"},
+			want:       false,
+		},
+		{
+			name:       "errorCode exclusion keeps other codes",
+			expression: `event.recommendedAction != 'NONE' && !('45' in event.errorCode)`,
+			action:     pb.RecommendedAction_CONTACT_SUPPORT,
+			codes:      []string{"31"},
+			want:       true,
+		},
+		{
+			// Membership, not equality: any matching code excludes the event.
+			name:       "errorCode exclusion drops a multi-code event containing the code",
+			expression: `event.recommendedAction != 'NONE' && !('45' in event.errorCode)`,
+			action:     pb.RecommendedAction_CONTACT_SUPPORT,
+			codes:      []string{"31", "45"},
+			want:       false,
+		},
+		{
+			// Fails open deliberately: exporting an extra event is noise, dropping events on a
+			// filter bug is silent data loss.
+			name:       "a field missing at runtime fails open",
+			expression: `event.notAField == 'x'`,
+			action:     pb.RecommendedAction_NONE,
+			want:       true,
+		},
+	}
 
-	assert.True(t, e.shouldExport(context.Background(), filterEvent(pb.RecommendedAction_NONE, "45")))
-	assert.True(t, e.shouldExport(context.Background(),
-		filterEvent(pb.RecommendedAction_CONTACT_SUPPORT, "31")))
-}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := exporterWithFilter(t, tc.expression)
 
-func TestShouldExport_WhitespaceOnlyExpression_ExportsEverything(t *testing.T) {
-	e := exporterWithFilter(t, "   ")
+			got := e.shouldExport(context.Background(), filterEvent(tc.action, tc.codes...))
 
-	assert.Nil(t, e.filter, "a blank expression must not compile to a program")
-	assert.True(t, e.shouldExport(context.Background(), filterEvent(pb.RecommendedAction_NONE)))
-}
-
-func TestShouldExport_ActionableOnlyFilter_DropsTheNonActionableMajority(t *testing.T) {
-	// The motivating case from #1702: 99.1% of this fleet's events are NONE.
-	e := exporterWithFilter(t, `event.recommendedAction != 'NONE'`)
-
-	assert.False(t, e.shouldExport(context.Background(), filterEvent(pb.RecommendedAction_NONE, "45")))
-	assert.True(t, e.shouldExport(context.Background(),
-		filterEvent(pb.RecommendedAction_CONTACT_SUPPORT, "31")))
-	assert.True(t, e.shouldExport(context.Background(),
-		filterEvent(pb.RecommendedAction_RESTART_VM, "74")))
-}
-
-func TestShouldExport_ErrorCodeExclusion_UsesListMembership(t *testing.T) {
-	e := exporterWithFilter(t, `event.recommendedAction != 'NONE' && !('45' in event.errorCode)`)
-
-	assert.False(t, e.shouldExport(context.Background(),
-		filterEvent(pb.RecommendedAction_CONTACT_SUPPORT, "45")))
-	assert.True(t, e.shouldExport(context.Background(),
-		filterEvent(pb.RecommendedAction_CONTACT_SUPPORT, "31")))
-	// A multi-code event is excluded when any of its codes matches.
-	assert.False(t, e.shouldExport(context.Background(),
-		filterEvent(pb.RecommendedAction_CONTACT_SUPPORT, "31", "45")))
-}
-
-func TestCompile_BareFieldRead_IsRejectedBeforeStartup(t *testing.T) {
-	// A bare field read is untyped, so it never becomes a running filter. Rejected at
-	// config time rather than failing open per event.
-	filter := config.FilterConfig{Expression: `event.agent`}
-
-	_, err := filter.Compile()
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "must return boolean")
-}
-
-func TestShouldExport_MissingFieldAtRuntime_FailsOpen(t *testing.T) {
-	e := exporterWithFilter(t, `event.notAField == 'x'`)
-
-	assert.True(t, e.shouldExport(context.Background(), filterEvent(pb.RecommendedAction_NONE)))
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
 
 // fakeEvent is a client.Event carrying one health event, so the real processEvent can be

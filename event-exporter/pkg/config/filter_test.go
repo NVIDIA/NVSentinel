@@ -35,46 +35,83 @@ func validConfig(expression string) *Config {
 	return cfg
 }
 
-func TestValidate_NoFilterExpression_IsValid(t *testing.T) {
-	require.NoError(t, validConfig("").Validate())
-}
+// TestFilterConfig_Compile covers what this package owns: turning the configured string into
+// a program, and treating a blank one as "export everything". The CEL rules themselves
+// (which expressions are valid, why a bare field read is rejected) are commons/pkg/celevent's
+// and are tested there, so only one invalid case appears here, to prove the error propagates.
+func TestFilterConfig_Compile(t *testing.T) {
+	tests := []struct {
+		name           string
+		expression     string
+		wantProgram    bool
+		wantErrContains string
+	}{
+		{name: "empty means export everything", expression: ""},
+		{name: "spaces mean export everything", expression: "   "},
+		{name: "tabs and newlines mean export everything", expression: "\t\n"},
+		{
+			name:        "a valid expression compiles",
+			expression:  `!('45' in event.errorCode)`,
+			wantProgram: true,
+		},
+		{
+			name:            "an invalid expression propagates the error with the expression in it",
+			expression:      `event.recommendedAction !=`,
+			wantErrContains: `event.recommendedAction !=`,
+		},
+	}
 
-func TestValidate_ValidFilterExpression_IsValid(t *testing.T) {
-	require.NoError(t, validConfig(`event.recommendedAction != 'NONE'`).Validate())
-}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			filter := FilterConfig{Expression: tc.expression}
 
-func TestValidate_MalformedFilterExpression_FailsAtStartup(t *testing.T) {
-	// The point of validating here: a filter can legitimately drop almost every event, so
-	// a typo discovered at runtime looks identical to "nothing is happening".
-	err := validConfig(`event.recommendedAction !=`).Validate()
+			program, err := filter.Compile()
 
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "filter expression is invalid")
-}
+			if tc.wantErrContains != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErrContains)
 
-func TestValidate_NonBooleanFilterExpression_FailsAtStartup(t *testing.T) {
-	err := validConfig(`1 + 1`).Validate()
+				return
+			}
 
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "filter expression is invalid")
-}
+			require.NoError(t, err)
 
-func TestCompile_BlankExpression_YieldsNoProgram(t *testing.T) {
-	for _, expression := range []string{"", "   ", "\t\n"} {
-		filter := FilterConfig{Expression: expression}
-
-		program, err := filter.Compile()
-
-		require.NoError(t, err)
-		assert.Nil(t, program, "a blank expression means export everything")
+			if tc.wantProgram {
+				assert.NotNil(t, program)
+			} else {
+				assert.Nil(t, program, "a blank expression must not compile to a program")
+			}
+		})
 	}
 }
 
-func TestCompile_ValidExpression_YieldsAProgram(t *testing.T) {
-	filter := FilterConfig{Expression: `!('45' in event.errorCode)`}
+// TestConfig_Validate_FilterExpression checks the wiring rather than the CEL rules: a bad
+// expression has to stop startup, because a filter can legitimately drop almost every event,
+// so a typo discovered at runtime looks identical to "nothing is happening".
+func TestConfig_Validate_FilterExpression(t *testing.T) {
+	tests := []struct {
+		name       string
+		expression string
+		wantErr    bool
+	}{
+		{name: "no expression is valid", expression: ""},
+		{name: "valid expression is valid", expression: `event.recommendedAction != 'NONE'`},
+		{name: "malformed expression fails startup", expression: `event.recommendedAction !=`, wantErr: true},
+		{name: "non-boolean expression fails startup", expression: `1 + 1`, wantErr: true},
+	}
 
-	program, err := filter.Compile()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validConfig(tc.expression).Validate()
 
-	require.NoError(t, err)
-	assert.NotNil(t, program)
+			if !tc.wantErr {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "filter expression is invalid")
+		})
+	}
 }
