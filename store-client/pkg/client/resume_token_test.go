@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -200,6 +202,59 @@ func TestResumeControlChangeStreamWatcher_ForwardsUnprocessedEventCount(t *testi
 	}
 }
 
+// TestResetResumeTokenForCreateWithStore_CompletedCutoff_ReplacesBoundary verifies
+// that a new CREATE transition replaces the previous completed cutoff.
+func TestResetResumeTokenForCreateWithStore_CompletedCutoff_ReplacesBoundary(t *testing.T) {
+	oldCutoff := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	dbClient := &mockResumeTokenDBClient{}
+	store := &mockResumeControlStore{mode: ResumeControlModeResume, cutoff: oldCutoff}
+	tokenConfig := TokenConfig{ClientName: "fault-quarantine"}
+
+	decision, err := resetResumeTokenForCreateWithStore(
+		context.Background(), dbClient, tokenConfig, store, nil)
+	require.NoError(t, err)
+	assert.True(t, decision.StartFresh)
+	assert.False(t, decision.ColdStartCutoff.IsZero())
+	assert.True(t, decision.ColdStartCutoff.After(oldCutoff))
+	assert.Equal(t, 1, store.beginCalls)
+	assert.Equal(t, 1, dbClient.deleteCalls)
+	assert.Equal(t, 1, store.setCalls)
+}
+
+// TestResetResumeTokenForCreateWithStore_CreatingMode_RetainsInProgressCutoff verifies
+// that retrying an interrupted CREATE transition keeps its original boundary.
+func TestResetResumeTokenForCreateWithStore_CreatingMode_RetainsInProgressCutoff(t *testing.T) {
+	existing := time.Date(2026, 8, 28, 14, 0, 0, 0, time.UTC)
+	dbClient := &mockResumeTokenDBClient{}
+	store := &mockResumeControlStore{mode: resumeControlModeCreating, cutoff: existing}
+
+	decision, err := resetResumeTokenForCreateWithStore(
+		context.Background(), dbClient, TokenConfig{ClientName: "fault-quarantine"}, store, nil)
+	require.NoError(t, err)
+	assert.Equal(t, existing, decision.ColdStartCutoff)
+	assert.Zero(t, store.beginCalls)
+}
+
+// TestResetResumeTokenForCreateWithStore_ComponentResetFailure_KeepsCreatingMode verifies
+// that a failed component reset leaves CREATE retryable.
+func TestResetResumeTokenForCreateWithStore_ComponentResetFailure_KeepsCreatingMode(t *testing.T) {
+	resetErr := errors.New("circuit breaker update failed")
+	dbClient := &mockResumeTokenDBClient{}
+	store := &mockResumeControlStore{mode: ResumeControlModeResume}
+
+	_, err := resetResumeTokenForCreateWithStore(
+		context.Background(),
+		dbClient,
+		TokenConfig{ClientName: "fault-quarantine"},
+		store,
+		func() error { return resetErr },
+	)
+	require.ErrorIs(t, err, resetErr)
+	assert.Equal(t, 1, dbClient.deleteCalls)
+	assert.Equal(t, resumeControlModeCreating, store.mode)
+	assert.Zero(t, store.setCalls)
+}
+
 func TestResetResumeTokenOnStartWithStore_ResumeNoop(t *testing.T) {
 	dbClient := &mockResumeTokenDBClient{}
 	cutoff := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
@@ -298,7 +353,7 @@ func TestResetResumeTokenOnStartWithStore_CreateDeletesTokenAndResetsMode(t *tes
 	}
 }
 
-func TestResetResumeTokenOnStartWithStore_CreateWithoutColdStartCutoffSupport(t *testing.T) {
+func TestResetResumeTokenOnStartWithStore_FaultQuarantineCreate_RecordsCutoff(t *testing.T) {
 	tokenConfig := TokenConfig{
 		ClientName:      "fault-quarantine",
 		TokenDatabase:   "HealthEventsDatabase",
@@ -320,12 +375,12 @@ func TestResetResumeTokenOnStartWithStore_CreateWithoutColdStartCutoffSupport(t 
 		t.Fatal("StartFresh = false, want true")
 	}
 
-	if !decision.ColdStartCutoff.IsZero() {
-		t.Fatalf("ColdStartCutoff = %v, want zero", decision.ColdStartCutoff)
+	if decision.ColdStartCutoff.IsZero() {
+		t.Fatal("ColdStartCutoff is zero, want CREATE cutoff")
 	}
 
-	if !store.setCutoff.IsZero() {
-		t.Fatalf("SetColdStartCutoff got %v, want zero", store.setCutoff)
+	if !store.cutoff.Equal(decision.ColdStartCutoff) {
+		t.Fatalf("BeginCreate cutoff got %v, want %v", store.cutoff, decision.ColdStartCutoff)
 	}
 }
 
@@ -647,7 +702,7 @@ func TestKubernetesResumeControlStore_BeginCreateOmitsZeroCutoff(t *testing.T) {
 	ctx := context.Background()
 	clientset := fake.NewSimpleClientset(&corev1.ConfigMap{
 		Name: "resume-control", Namespace: "nvsentinel",
-		Data: map[string]string{"fault-quarantine": ResumeControlModeCreate},
+		Data: map[string]string{"test-client": ResumeControlModeCreate},
 	})
 	store := &kubernetesResumeControlStore{
 		client:    clientset,
@@ -655,7 +710,7 @@ func TestKubernetesResumeControlStore_BeginCreateOmitsZeroCutoff(t *testing.T) {
 		namespace: "nvsentinel",
 	}
 
-	if err := store.BeginCreate(ctx, "fault-quarantine", time.Time{}); err != nil {
+	if err := store.BeginCreate(ctx, "test-client", time.Time{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -664,11 +719,11 @@ func TestKubernetesResumeControlStore_BeginCreateOmitsZeroCutoff(t *testing.T) {
 		t.Fatalf("expected ConfigMap to exist: %v", err)
 	}
 
-	if got := cm.Data["fault-quarantine"]; got != resumeControlModeCreating {
-		t.Fatalf("fault-quarantine mode = %q, want %q", got, resumeControlModeCreating)
+	if got := cm.Data["test-client"]; got != resumeControlModeCreating {
+		t.Fatalf("test-client mode = %q, want %q", got, resumeControlModeCreating)
 	}
 
-	if _, ok := cm.Data[coldStartCutoffKey("fault-quarantine")]; ok {
-		t.Fatal("fault-quarantine cutoff key was written for module without cold-start cutoff support")
+	if _, ok := cm.Data[coldStartCutoffKey("test-client")]; ok {
+		t.Fatal("cutoff key was written with a zero cutoff")
 	}
 }

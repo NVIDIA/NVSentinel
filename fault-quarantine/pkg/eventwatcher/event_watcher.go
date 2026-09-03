@@ -19,16 +19,45 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
 	"go.opentelemetry.io/otel/attribute"
 )
+
+const (
+	recoveredEventDedupRetention      = 24 * time.Hour
+	liveRecoveryStoreRetryAttempts    = 4
+	liveRecoveryStoreRetryInitialWait = 100 * time.Millisecond
+)
+
+type liveSkipCompletionError struct {
+	err error
+}
+
+func (e *liveSkipCompletionError) Error() string       { return e.err.Error() }
+func (e *liveSkipCompletionError) Unwrap() error       { return e.err }
+func (e *liveSkipCompletionError) withholdCheckpoint() {}
+
+type recoveryOverlapLookupError struct {
+	err error
+}
+
+func (e *recoveryOverlapLookupError) Error() string       { return e.err.Error() }
+func (e *recoveryOverlapLookupError) Unwrap() error       { return e.err }
+func (e *recoveryOverlapLookupError) withholdCheckpoint() {}
+
+type checkpointWithholdingError interface {
+	error
+	withholdCheckpoint()
+}
 
 type EventWatcher struct {
 	changeStreamWatcher  client.ChangeStreamWatcher
@@ -36,10 +65,13 @@ type EventWatcher struct {
 	processEventCallback func(
 		ctx context.Context,
 		event *model.HealthEventWithStatus,
-	) *model.Status
+	) (*model.Status, error)
 	fetchDocIDsFn                         func(ctx context.Context, nodeName string) []string
 	unprocessedEventsMetricUpdateInterval time.Duration
 	lastProcessedObjectID                 LastProcessedObjectIDStore
+	coldStartCallback                     func(ctx context.Context) error
+	recoveredEventIDs                     sync.Map
+	recoveryOverlapCutoff                 time.Time
 }
 
 type LastProcessedObjectIDStore interface {
@@ -49,8 +81,18 @@ type LastProcessedObjectIDStore interface {
 
 type EventWatcherInterface interface {
 	Start(ctx context.Context) error
-	SetProcessEventCallback(callback func(ctx context.Context, event *model.HealthEventWithStatus) *model.Status)
+	SetProcessEventCallback(callback func(ctx context.Context, event *model.HealthEventWithStatus) (*model.Status, error))
 	SetFetchDocIDsFn(fn func(ctx context.Context, nodeName string) []string)
+	SetColdStartCallback(callback func(ctx context.Context) error)
+	ProcessStoredEvent(
+		ctx context.Context,
+		event model.HealthEventWithStatus,
+		documentID string,
+	) (coldstart.ProcessResult, error)
+	CompleteStoredEvents(
+		ctx context.Context,
+		completions []coldstart.StoredEventCompletion,
+	) error
 	CancelLatestQuarantiningEvents(ctx context.Context, nodeName string, reason string) error
 }
 
@@ -69,7 +111,7 @@ func NewEventWatcher(
 }
 
 func (w *EventWatcher) SetProcessEventCallback(callback func(ctx context.Context,
-	event *model.HealthEventWithStatus) *model.Status) {
+	event *model.HealthEventWithStatus) (*model.Status, error)) {
 	w.processEventCallback = callback
 }
 
@@ -77,17 +119,42 @@ func (w *EventWatcher) SetFetchDocIDsFn(fn func(ctx context.Context, nodeName st
 	w.fetchDocIDsFn = fn
 }
 
+func (w *EventWatcher) SetColdStartCallback(callback func(ctx context.Context) error) {
+	w.coldStartCallback = callback
+}
+
 func (w *EventWatcher) Start(ctx context.Context) error {
 	slog.InfoContext(ctx, "Starting event watcher")
 
 	if w.changeStreamWatcher != nil {
+		// Events at or before this boundary may also be handled by cold start.
+		// Keep it before opening the stream so there is no unchecked overlap gap.
+		w.recoveryOverlapCutoff = time.Now().UTC()
 		w.changeStreamWatcher.Start(ctx)
 	} else {
 		<-ctx.Done()
 		return nil
 	}
 
-	go w.updateUnprocessedEventsMetric(ctx)
+	metricCtx, stopMetric := context.WithCancel(ctx)
+	defer stopMetric()
+
+	go w.updateUnprocessedEventsMetric(metricCtx)
+
+	if err := w.runColdStart(ctx); err != nil {
+		w.closeAfterColdStart(ctx)
+
+		return err
+	}
+
+	if ctx.Err() != nil {
+		w.closeAfterColdStart(ctx)
+
+		return nil //nolint:nilerr // Cancellation is the expected shutdown path.
+	}
+
+	w.armRecoveredEventExpiry(time.Now())
+	go w.expireRecoveredEventIDs(ctx)
 
 	watchDoneCh := make(chan error, 1)
 
@@ -121,11 +188,41 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 	return watchErr
 }
 
+func (w *EventWatcher) runColdStart(ctx context.Context) error {
+	if w.coldStartCallback == nil {
+		return nil
+	}
+
+	err := w.coldStartCallback(ctx)
+	if err == nil {
+		return nil
+	}
+
+	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+		slog.InfoContext(ctx, "Cold-start recovery stopped during shutdown")
+
+		return nil //nolint:nilerr // Cancellation is the expected shutdown path.
+	}
+
+	return fmt.Errorf("cold-start recovery failed: %w", err)
+}
+
+func (w *EventWatcher) closeAfterColdStart(ctx context.Context) {
+	if err := w.changeStreamWatcher.Close(ctx); err != nil {
+		slog.ErrorContext(ctx, "Failed to close event watcher after cold-start failure", "error", err)
+	}
+}
+
 func (w *EventWatcher) watchEvents(ctx context.Context) error {
 	for event := range w.changeStreamWatcher.Events() {
 		metrics.TotalEventsReceived.Inc()
 
 		if processErr := w.processEvent(ctx, event); processErr != nil {
+			var withholdErr checkpointWithholdingError
+			if errors.As(processErr, &withholdErr) {
+				return fmt.Errorf("live event requires replay before checkpointing: %w", processErr)
+			}
+
 			slog.ErrorContext(ctx, "Event processing failed, but still marking as processed to proceed ahead",
 				"error", processErr)
 		}
@@ -178,6 +275,302 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 
 	w.lastProcessedObjectID.StoreLastProcessedObjectID(eventID)
 
+	skip, err := w.shouldSkipRecoveredLiveEvent(
+		ctx, healthEventWithStatus.CreatedAt, recordUUID)
+	if err != nil {
+		return err
+	}
+
+	if skip {
+		return nil
+	}
+
+	processed, err := w.processHealthEvent(ctx, &healthEventWithStatus, recordUUID, eventID)
+	if err != nil {
+		return err
+	}
+
+	return w.completeLiveEventIfSkipped(ctx, recordUUID, processed)
+}
+
+func (w *EventWatcher) shouldSkipRecoveredLiveEvent(
+	ctx context.Context,
+	createdAt time.Time,
+	recordUUID string,
+) (bool, error) {
+	if expiry, recovered := w.recoveredEventIDs.LoadAndDelete(recordUUID); recovered {
+		expiresAt, ok := expiry.(time.Time)
+		if ok && (expiresAt.IsZero() || time.Now().Before(expiresAt)) {
+			slog.DebugContext(ctx, "Skipping live duplicate of a recovered event", "eventID", recordUUID)
+
+			return true, nil
+		}
+	}
+
+	alreadyTerminal, err := w.recoveryOverlapEventAlreadyTerminal(ctx, createdAt, recordUUID)
+	if err != nil {
+		return false, err
+	}
+
+	if alreadyTerminal {
+		slog.DebugContext(ctx, "Skipping durably completed recovery-overlap event", "eventID", recordUUID)
+	}
+
+	return alreadyTerminal, nil
+}
+
+func (w *EventWatcher) recoveryOverlapEventAlreadyTerminal(
+	ctx context.Context,
+	createdAt time.Time,
+	recordUUID string,
+) (bool, error) {
+	if w.recoveryOverlapCutoff.IsZero() ||
+		(!createdAt.IsZero() && createdAt.After(w.recoveryOverlapCutoff)) {
+		return false, nil
+	}
+
+	nodeStatusPath := "healtheventstatus.nodequarantined"
+	terminalStatus := query.Or(
+		query.Eq(coldstart.RecoveryCompletionStatusPath, coldstart.RecoveryCompletionValue),
+		query.And(
+			query.Ne(nodeStatusPath, nil),
+			query.Ne(nodeStatusPath, ""),
+			query.Ne(nodeStatusPath, string(model.StatusNotStarted)),
+		),
+	)
+	filter := query.New().Build(query.And(query.Eq("_id", recordUUID), terminalStatus))
+	limit := int64(1)
+
+	var count int64
+
+	err := retryLiveRecoveryStoreOperation(ctx, func() error {
+		var err error
+
+		count, err = w.databaseClient.CountDocuments(ctx, filter, &client.CountOptions{Limit: &limit})
+
+		return err
+	})
+	if err != nil {
+		return false, &recoveryOverlapLookupError{err: fmt.Errorf(
+			"failed to check recovery-overlap state for event %s: %w", recordUUID, err)}
+	}
+
+	return count > 0, nil
+}
+
+func (w *EventWatcher) completeLiveEventIfSkipped(
+	ctx context.Context,
+	recordUUID string,
+	processed bool,
+) error {
+	if processed {
+		return nil
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	// A successful callback with no status is an intentional terminal skip. Record
+	// that decision while the event is live so a later cold start cannot reapply it
+	// under a different rule configuration.
+	err := retryLiveRecoveryStoreOperation(ctx, func() error {
+		return w.databaseClient.UpdateDocumentStatus(
+			ctx, recordUUID, coldstart.RecoveryCompletionStatusPath, coldstart.RecoveryCompletionValue)
+	})
+	if err != nil {
+		metrics.ProcessingErrors.WithLabelValues("update_recovery_completion_status_error").Inc()
+
+		return &liveSkipCompletionError{err: fmt.Errorf(
+			"failed to record skipped live event completion: %w", err)}
+	}
+
+	return nil
+}
+
+func retryLiveRecoveryStoreOperation(ctx context.Context, operation func() error) error {
+	var lastErr error
+
+	for attempt := range liveRecoveryStoreRetryAttempts {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		lastErr = operation()
+		if lastErr == nil {
+			return nil
+		}
+
+		if attempt == liveRecoveryStoreRetryAttempts-1 {
+			break
+		}
+
+		delay := liveRecoveryStoreRetryInitialWait * time.Duration(1<<attempt)
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+
+	return lastErr
+}
+
+// ProcessStoredEvent sends a durable health-event document through the same
+// callback and status update path used for live change-stream events.
+func (w *EventWatcher) ProcessStoredEvent(
+	ctx context.Context,
+	healthEventWithStatus model.HealthEventWithStatus,
+	recordUUID string,
+) (coldstart.ProcessResult, error) {
+	recoveryCtx := coldstart.WithRecoveryContext(ctx)
+
+	processed, err := w.processHealthEvent(
+		recoveryCtx, &healthEventWithStatus, recordUUID, recordUUID)
+	if err != nil {
+		if !coldstart.IsPermanentError(err) {
+			return coldstart.ProcessResultFailed, fmt.Errorf("recovered event processing failed: %w", err)
+		}
+
+		slog.ErrorContext(ctx, "Skipping stored event with a permanent processing error", "error", err)
+
+		if !processed {
+			return coldstart.ProcessResultInvalid, nil
+		}
+	}
+
+	if !processed {
+		return coldstart.ProcessResultSkipped, nil
+	}
+
+	w.rememberRecoveredEvent(recordUUID)
+
+	return coldstart.ProcessResultProcessed, nil
+}
+
+// CompleteStoredEvents prevents terminal recovery decisions from becoming part
+// of every subsequent startup scan. One update per scan batch avoids a database
+// round trip for every historical event.
+func (w *EventWatcher) CompleteStoredEvents(
+	ctx context.Context,
+	completions []coldstart.StoredEventCompletion,
+) error {
+	if len(completions) == 0 {
+		return nil
+	}
+
+	ids, deduplicated := completionIDs(completions)
+
+	if len(ids) == 0 {
+		return nil
+	}
+
+	filter := query.New().Build(query.In("_id", ids))
+	update := query.NewUpdate().Set(
+		coldstart.RecoveryCompletionStatusPath, coldstart.RecoveryCompletionValue)
+
+	if _, err := w.databaseClient.UpdateManyDocuments(ctx, filter, update); err != nil {
+		return fmt.Errorf("failed to update recovery completion statuses: %w", err)
+	}
+
+	for id := range deduplicated {
+		w.rememberRecoveredEvent(id)
+	}
+
+	return nil
+}
+
+func completionIDs(completions []coldstart.StoredEventCompletion) ([]any, map[string]struct{}) {
+	ids := make([]any, 0, len(completions))
+	seen := make(map[string]struct{}, len(completions))
+	deduplicated := make(map[string]struct{}, len(completions))
+
+	for _, completion := range completions {
+		id := completion.DocumentID
+		if id.String == "" || id.Native == nil {
+			continue
+		}
+
+		// Every completion is a terminal recovery decision. Suppress its buffered
+		// live copy regardless of whether recovery processed, skipped, rejected, or
+		// superseded it; replaying any of those decisions under a different state
+		// or rule configuration is precisely what the completion marker prevents.
+		deduplicated[id.String] = struct{}{}
+
+		if _, exists := seen[id.String]; exists {
+			continue
+		}
+
+		seen[id.String] = struct{}{}
+		ids = append(ids, id.Native)
+	}
+
+	return ids, deduplicated
+}
+
+func (w *EventWatcher) rememberRecoveredEvent(eventID string) {
+	// Keep an unarmed deadline until Start gives every recovered ID the same
+	// retention window. Starting it here could expire early IDs during a long
+	// cold start.
+	w.recoveredEventIDs.Store(eventID, time.Time{})
+}
+
+func (w *EventWatcher) armRecoveredEventExpiry(now time.Time) {
+	expiresAt := now.Add(recoveredEventDedupRetention)
+
+	w.recoveredEventIDs.Range(func(key, _ any) bool {
+		w.recoveredEventIDs.Store(key, expiresAt)
+
+		return true
+	})
+}
+
+func (w *EventWatcher) expireRecoveredEventIDs(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			w.recoveredEventIDs.Range(func(key, value any) bool {
+				expiresAt, ok := value.(time.Time)
+				if !ok || expiresAt.IsZero() || !now.Before(expiresAt) {
+					w.recoveredEventIDs.Delete(key)
+				}
+
+				return true
+			})
+		}
+	}
+}
+
+func (w *EventWatcher) processHealthEvent(
+	ctx context.Context,
+	healthEventWithStatus *model.HealthEventWithStatus,
+	recordUUID string,
+	eventID string,
+) (bool, error) {
+	if healthEventWithStatus.HealthEvent == nil || healthEventWithStatus.HealthEventStatus == nil {
+		return false, fmt.Errorf("health event or status is nil")
+	}
+
+	if w.processEventCallback == nil {
+		return false, fmt.Errorf("process event callback is not configured")
+	}
+
+	healthEventWithStatus.HealthEvent.Id = recordUUID
+
 	traceID := tracing.TraceIDFromMetadata(healthEventWithStatus.HealthEvent.GetMetadata())
 	parentSpanID := tracing.ParentSpanID(healthEventWithStatus.HealthEventStatus.SpanIds, tracing.ServicePlatformConnector)
 
@@ -203,17 +596,24 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 		sourceDocIDs = w.fetchDocIDsFn(ctx, healthEventWithStatus.HealthEvent.GetNodeName())
 	}
 
-	status := w.processEventCallback(ctx, &healthEventWithStatus)
+	status, processErr := w.processEventCallback(ctx, healthEventWithStatus)
+	if withholdTransientRecoveryStatus(ctx, processErr) {
+		// A partial status would remove this event from the next cold-start query,
+		// permanently losing any rule action skipped by the transient failure.
+		metrics.EventHandlingDuration.Observe(time.Since(startTime).Seconds())
+
+		return false, processErr
+	}
 
 	if status != nil {
 		if err := w.updateNodeQuarantineStatus(ctx, recordUUID, status); err != nil {
 			metrics.ProcessingErrors.WithLabelValues("update_quarantine_status_error").Inc()
 			slog.ErrorContext(ctx, "Failed to update node quarantine status", "error", err)
 
-			return fmt.Errorf("failed to update node quarantine status: %w", err)
+			return false, errors.Join(processErr, fmt.Errorf("failed to update node quarantine status: %w", err))
 		}
 
-		EmitNodeQuarantineDuration(status, &healthEventWithStatus)
+		EmitNodeQuarantineDuration(status, healthEventWithStatus)
 
 		if *status == model.UnQuarantined {
 			w.emitRemediationDurationFromDocIDs(ctx, sourceDocIDs)
@@ -223,7 +623,11 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 	duration := time.Since(startTime).Seconds()
 	metrics.EventHandlingDuration.Observe(duration)
 
-	return nil
+	return status != nil, processErr
+}
+
+func withholdTransientRecoveryStatus(ctx context.Context, err error) bool {
+	return coldstart.IsRecoveryContext(ctx) && err != nil && !coldstart.IsPermanentError(err)
 }
 
 func EmitNodeQuarantineDuration(status *model.Status, healthEventWithStatus *model.HealthEventWithStatus) {
