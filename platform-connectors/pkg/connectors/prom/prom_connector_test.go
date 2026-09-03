@@ -39,45 +39,45 @@ func event(agent, checkName string, action protos.RecommendedAction, isHealthy b
 }
 
 // counter reads the current value of one label combination.
-func counter(t *testing.T, agent, checkName, action, isFatal, isHealthy string) float64 {
+func counter(t *testing.T, node, agent, checkName, action, isFatal, isHealthy string) float64 {
 	t.Helper()
 
-	metric, err := healthEventsTotal.GetMetricWithLabelValues(agent, checkName, action, isFatal, isHealthy)
+	metric, err := healthEventsTotal.GetMetricWithLabelValues(node, agent, checkName, action, isFatal, isHealthy)
 	require.NoError(t, err)
 
 	return testutil.ToFloat64(metric)
 }
 
 func TestRecordEvent_FatalEvent_CountsAgainstItsActionAndAgent(t *testing.T) {
-	before := counter(t, "syslog-health-monitor", "SysLogsXIDError", "CONTACT_SUPPORT", "true", "false")
+	before := counter(t, "node-1", "syslog-health-monitor", "SysLogsXIDError", "CONTACT_SUPPORT", "true", "false")
 
 	recordEvent(event("syslog-health-monitor", "SysLogsXIDError",
 		protos.RecommendedAction_CONTACT_SUPPORT, false))
 
 	assert.Equal(t, before+1,
-		counter(t, "syslog-health-monitor", "SysLogsXIDError", "CONTACT_SUPPORT", "true", "false"))
+		counter(t, "node-1", "syslog-health-monitor", "SysLogsXIDError", "CONTACT_SUPPORT", "true", "false"))
 }
 
 func TestRecordEvent_NonActionableEvent_IsStillCounted(t *testing.T) {
 	// 99% of this fleet's events are NONE. They must be counted, not dropped, because the
 	// ratio of NONE to actionable is itself the thing operators need to see.
-	before := counter(t, "gpu-health-monitor", "GpuPowerWatch", "NONE", "false", "false")
+	before := counter(t, "node-1", "gpu-health-monitor", "GpuPowerWatch", "NONE", "false", "false")
 
 	recordEvent(event("gpu-health-monitor", "GpuPowerWatch", protos.RecommendedAction_NONE, false))
 
-	assert.Equal(t, before+1, counter(t, "gpu-health-monitor", "GpuPowerWatch", "NONE", "false", "false"))
+	assert.Equal(t, before+1, counter(t, "node-1", "gpu-health-monitor", "GpuPowerWatch", "NONE", "false", "false"))
 }
 
 func TestRecordEvent_HealthyAndUnhealthy_AreSeparateSeries(t *testing.T) {
-	unhealthyBefore := counter(t, "gpu-health-monitor", "GpuNvlinkWatch", "NONE", "false", "false")
-	healthyBefore := counter(t, "gpu-health-monitor", "GpuNvlinkWatch", "NONE", "false", "true")
+	unhealthyBefore := counter(t, "node-1", "gpu-health-monitor", "GpuNvlinkWatch", "NONE", "false", "false")
+	healthyBefore := counter(t, "node-1", "gpu-health-monitor", "GpuNvlinkWatch", "NONE", "false", "true")
 
 	recordEvent(event("gpu-health-monitor", "GpuNvlinkWatch", protos.RecommendedAction_NONE, false))
 
 	assert.Equal(t, unhealthyBefore+1,
-		counter(t, "gpu-health-monitor", "GpuNvlinkWatch", "NONE", "false", "false"))
+		counter(t, "node-1", "gpu-health-monitor", "GpuNvlinkWatch", "NONE", "false", "false"))
 	assert.Equal(t, healthyBefore,
-		counter(t, "gpu-health-monitor", "GpuNvlinkWatch", "NONE", "false", "true"),
+		counter(t, "node-1", "gpu-health-monitor", "GpuNvlinkWatch", "NONE", "false", "true"),
 		"recovery series must not move when an unhealthy event is recorded")
 }
 
@@ -87,12 +87,12 @@ func TestRecordEvent_IsFatalDisagreeingWithAction_IsVisibleRatherThanHidden(t *t
 	e := event("health-events-analyzer", "RepeatedXIDErrorOnSameGPU", protos.RecommendedAction_NONE, false)
 	e.IsFatal = true
 
-	before := counter(t, "health-events-analyzer", "RepeatedXIDErrorOnSameGPU", "NONE", "true", "false")
+	before := counter(t, "node-1", "health-events-analyzer", "RepeatedXIDErrorOnSameGPU", "NONE", "true", "false")
 
 	recordEvent(e)
 
 	assert.Equal(t, before+1,
-		counter(t, "health-events-analyzer", "RepeatedXIDErrorOnSameGPU", "NONE", "true", "false"))
+		counter(t, "node-1", "health-events-analyzer", "RepeatedXIDErrorOnSameGPU", "NONE", "true", "false"))
 }
 
 func TestRecordEvent_NilEvent_DoesNotPanic(t *testing.T) {
@@ -130,7 +130,7 @@ func TestFetchAndProcessHealthMetric_QueuedBatch_CountsEveryEvent(t *testing.T) 
 	buffer := ringbuffer.NewRingBuffer("prom-test-batch", ctx)
 	connector := InitializePromConnector(buffer)
 
-	before := counter(t, "nic-health-monitor", "NicLinkWatch", "RESTART_BM", "true", "false")
+	before := counter(t, "node-1", "nic-health-monitor", "NicLinkWatch", "RESTART_BM", "true", "false")
 
 	buffer.Enqueue(ringbuffer.NewQueuedHealthEvents(&protos.HealthEvents{
 		Version: 1,
@@ -143,7 +143,7 @@ func TestFetchAndProcessHealthMetric_QueuedBatch_CountsEveryEvent(t *testing.T) 
 	startConnector(t, ctx, buffer, connector)
 
 	assert.Eventually(t, func() bool {
-		return counter(t, "nic-health-monitor", "NicLinkWatch", "RESTART_BM", "true", "false") == before+2
+		return counter(t, "node-1", "nic-health-monitor", "NicLinkWatch", "RESTART_BM", "true", "false") == before+2
 	}, 5*time.Second, 10*time.Millisecond, "both events in the batch should be counted")
 }
 
@@ -160,7 +160,7 @@ func TestFetchAndProcessHealthMetric_EmptyBatch_CompletesWithoutStalling(t *test
 
 	buffer.Enqueue(ringbuffer.NewQueuedHealthEvents(&protos.HealthEvents{Version: 1}))
 
-	before := counter(t, "csp-health-monitor", "CspMaintenance", "NONE", "false", "false")
+	before := counter(t, "node-1", "csp-health-monitor", "CspMaintenance", "NONE", "false", "false")
 
 	buffer.Enqueue(ringbuffer.NewQueuedHealthEvents(&protos.HealthEvents{
 		Version: 1,
@@ -170,7 +170,7 @@ func TestFetchAndProcessHealthMetric_EmptyBatch_CompletesWithoutStalling(t *test
 	}))
 
 	assert.Eventually(t, func() bool {
-		return counter(t, "csp-health-monitor", "CspMaintenance", "NONE", "false", "false") == before+1
+		return counter(t, "node-1", "csp-health-monitor", "CspMaintenance", "NONE", "false", "false") == before+1
 	}, 5*time.Second, 10*time.Millisecond, "an empty batch must not block the next one")
 }
 

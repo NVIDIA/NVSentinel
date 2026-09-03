@@ -365,7 +365,8 @@ platformConnector:
   promConnector:
     # true registers the counter on the existing metrics endpoint; false skips the
     # connector entirely, so no ring buffer is attached and nothing is recorded.
-    enabled: true
+    # Off by default, like the other optional connectors.
+    enabled: false
 
   k8sConnector:
     enabled: true

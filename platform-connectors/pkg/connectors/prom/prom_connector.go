@@ -73,6 +73,7 @@ func recordEvent(event *protos.HealthEvent) {
 	}
 
 	healthEventsTotal.WithLabelValues(
+		event.GetNodeName(),
 		event.GetAgent(),
 		event.GetCheckName(),
 		event.GetRecommendedAction().String(),

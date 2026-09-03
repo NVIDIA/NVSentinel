@@ -248,14 +248,14 @@ connectors it shares the event fan-out with.
 ```yaml
 platformConnector:
   promConnector:
-    enabled: true
+    enabled: false
 ```
 
 ### Parameters
 
 #### enabled
-Registers `health_events_total{agent, check_name, recommended_action, is_fatal, is_healthy}`
-on the existing metrics endpoint. Defaults to `true`.
+Registers `health_events_total{node, agent, check_name, recommended_action, is_fatal, is_healthy}`
+on the existing metrics endpoint. Defaults to `false`, like the other optional connectors.
 
 ### Why it lives here rather than in each monitor
 

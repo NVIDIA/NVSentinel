@@ -22,21 +22,22 @@ import (
 // healthEventsTotal counts every health event reaching the platform connector, broken
 // down by the fields an operator needs to answer "what is actionable right now".
 //
-// Labels deliberately exclude nodeName and errorCode. errorCode is unbounded (suffixed
-// XIDs such as 145.RLW_SRC_TRACK), which would make this series set grow without limit.
+// node carries the event's own nodeName rather than relying on a pod-to-node join. The
+// join would attribute an event to the node of the connector pod that received it, which
+// is the faulty node for the DaemonSet monitors but not for health-events-analyzer: that
+// is a Deployment, so its derived events describe other nodes while being received
+// wherever it happens to be scheduled. Labelling explicitly makes every agent correct and
+// keeps the metric dashboardable on its own.
 //
-// Omitting nodeName means a pod-to-node join attributes an event to the node of the
-// *connector pod that received it*. For the DaemonSet monitors that is the faulty node,
-// because they publish over the node-local socket at /var/run/nvsentinel.sock. It is not
-// the faulty node for health-events-analyzer, which is a Deployment: its derived events
-// describe other nodes but are counted wherever it happens to be scheduled. Use the
-// datastore when per-node attribution has to hold for every agent.
+// errorCode is still excluded: it is unbounded (suffixed XIDs such as
+// 145.RLW_SRC_TRACK), so it would grow the series set without limit. node is bounded by
+// the fleet.
 //
 // is_fatal is retained even though producers derive it as recommendedAction != NONE:
 // keeping both makes a producer that disagrees with that derivation visible rather than
 // silent, which is the shape of the XID 45 escalation bug in #1710.
 var healthEventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "health_events_total",
-	Help: "Total number of health events received by the platform connector, by agent, " +
+	Help: "Total number of health events received by the platform connector, by node, agent, " +
 		"check name, recommended action, and fatal/healthy status",
-}, []string{"agent", "check_name", "recommended_action", "is_fatal", "is_healthy"})
+}, []string{"node", "agent", "check_name", "recommended_action", "is_fatal", "is_healthy"})
