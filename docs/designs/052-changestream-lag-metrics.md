@@ -109,7 +109,7 @@ Emit lag metrics from the **shared `store-client` watcher layer**, labelled by t
 client name, so every consumer gets them without per-module wiring. Export **two** signals:
 
 - `changestream_lag_seconds{client}` — head time minus position time. The primary signal.
-- `changestream_events_behind{client}` — count after position. Secondary, and rate-limited.
+- `changestream_documents_behind{client}` — count after position. Secondary, and rate-limited.
 
 Do **not** export raw position age as a lag metric, for the reason above.
 
@@ -177,6 +177,27 @@ could adopt the count metric. Carrying the id alongside the timestamps is what m
 capability shared rather than per-module. Its shape is provider-defined and opaque to the
 poller, so this does not commit the shared layer to a position representation.
 
+#### The count is a document backlog, and the name has to say so
+
+The count signal is renamed **`changestream_documents_behind`**, not `events_behind`, because on
+MongoDB it cannot be an event count and should not claim to be one.
+
+MongoDB's existing implementation is
+`CountDocuments({_id: {$gt: lastProcessedID}})`
+(`store-client/pkg/datastore/providers/mongodb/watcher/watch_store.go:563-574`). That counts
+*documents* newer than the position, so it misses every in-place update and every delete, for the
+same reason `max(_id)` fails as a head estimate. A consumer 500 status updates behind on old
+documents would count zero. Getting the true event backlog would mean scanning the oplog, which
+needs privileges the application user should not require, so it is out of scope.
+
+On PostgreSQL the two coincide: `datastore_changelog` holds one row per change, so counting rows
+after the position *is* the event count. Rather than give one metric name two meanings, the name
+describes the weaker guarantee that holds on both, and the docs state where it is exact.
+
+This is deliberately the lesser signal. `changestream_lag_seconds` is the one that captures
+update and delete traffic, which is why it is the primary and default-on metric and the count is
+opt-in.
+
 ### Per-provider derivation
 
 **PostgreSQL** is straightforward, because the changelog already carries a timestamp
@@ -218,8 +239,10 @@ and the choice matters:
   token and never sees the event. `processNextEvent`
   (`store-client/pkg/datastore/providers/mongodb/watcher/watch_store.go:434-438`) decodes the
   full change event into a `bson.M`, so `event["clusterTime"]` and
-  `event["documentKey"]["_id"]` are both available there and must be carried alongside the
-  per-event token that already flows to the consumer.
+  `event["documentKey"]["_id"]` are both available there.
+
+  How that metadata reaches `MarkProcessed` is a design question rather than a detail, so it is
+  specified below.
 - **Rejected: decode the resume token's `_data`.** A MongoDB resume token's `_data` hex encodes
   the cluster time, and decoding it is how the original 11 day lag was actually measured
   operationally. But that encoding is a **driver implementation detail with no public API**, so
@@ -227,6 +250,51 @@ and the choice matters:
 
 The stored-timestamp approach also degrades gracefully: a consumer that has not yet saved a
 token reports `HasPosition: false` and no lag series, rather than a misleading zero.
+
+#### Getting the metadata from the event to the stored token
+
+The handoff carries only two fields today:
+
+```go
+// store-client/pkg/datastore/types.go:106-109
+type EventWithToken struct {
+    Event       Event
+    ResumeToken []byte
+}
+```
+
+So the metadata decoded in `processNextEvent` has no route to `MarkProcessed`, and a design that
+does not say how it travels will either lose it or, worse, pair a position time with the wrong
+token. Both halves need stating:
+
+**Travel.** `EventWithToken` gains the position metadata, additively, so existing readers are
+unaffected. `MarkProcessed(ctx, token)` keeps its signature and gains a sibling that takes the
+metadata explicitly, letting consumers migrate rather than break. For a consumer that still
+calls the old method, the watcher falls back to an in-flight lookup keyed by token, covering
+only events between the cursor and the consumer's position. On a miss it writes the token with
+**no** position and leaves `HasPosition: false`, because a missing lag series is recoverable and
+a wrong one is not.
+
+**Atomicity.** This comes free, and it is worth recording why. `MarkProcessed` already persists
+via a single upsert on the client's own document:
+
+```go
+// store-client/pkg/datastore/providers/mongodb/watcher/watch_store.go:537-541
+w.resumeTokenCol.UpdateOne(
+    ctx,
+    bson.M{fieldClientName: w.clientName},
+    bson.M{"$set": bson.M{"resumeToken": resumeTokenToStore}},
+    options.UpdateOne().SetUpsert(true),
+)
+```
+
+Adding `positionTime` and `positionId` to that same `$set` makes all three fields one
+single-document write, which MongoDB guarantees atomically. There is no window in which the
+stored token and the stored position describe different events, and no second write to reconcile
+after a crash. `TokenDoc` (`watch_store.go:93-95`) gains the two fields to read them back.
+
+This needs a **restart acknowledgement test**: process events, restart mid-stream, and assert the
+resumed position time matches the token actually stored rather than the newest event seen.
 
 #### MongoDB head time is the subtle half
 
@@ -254,17 +322,37 @@ Neither alone is sufficient, and the reason is worth stating because it is the s
 ADR rejects elsewhere. Candidate 2 alone fails when the watcher's own read loop is blocked,
 since `processNextEvent` stops advancing and head freezes at the position, reporting zero lag
 for a consumer that is badly behind. That is the "derive lag from arriving events" trap under a
-different name. Candidate 1 alone fails on update-only traffic. Their maximum is correct
-whenever either mechanism is live, and both are wrong only when the collection is genuinely
-idle, which is when zero is the right answer anyway.
+different name. Candidate 1 alone fails on update-only traffic.
 
-Cluster `operationTime` from a `hello` command was considered as a third candidate and
+**The residual gap, stated rather than claimed away.** Their maximum is not sufficient either.
+The two failure conditions intersect: a **blocked read loop** *and* **update-or-delete-only
+traffic** leaves candidate 2 frozen and candidate 1 unmoved, so `HeadTime` goes stale and lag
+reads near zero for a stalled consumer. That corner is not exotic, because a blocked read loop is
+exactly the state this ADR exists to detect. So the MongoDB guarantee is narrowed to what is
+actually true:
+
+> On MongoDB, `changestream_lag_seconds` detects a consumer that is behind whenever the
+> collection is receiving inserts, or whenever the watcher's read loop is live. It does **not**
+> detect a stalled consumer on a collection receiving only updates and deletes.
+
+Two things close it, and both are cheaper than an exact head:
+
+- **A watcher liveness signal.** A `changestream_reads_total{client}` counter incremented in
+  `processNextEvent` makes "the read loop is not advancing" directly observable, so the blocked
+  case is caught by a stalled counter rather than inferred from lag. This is the honest way to
+  use position age: not as lag, but as a stall detector qualified by liveness.
+- **An exact head, later, if it proves necessary.** A maintained `updatedAt` on health-event
+  writes would make `MAX(updatedAt)` an exact head for inserts and updates. That is a change to
+  every writer rather than to the watcher, so it is deliberately not part of this ADR; the
+  narrowed guarantee plus the liveness counter should be measured first.
+
+Cluster `operationTime` from a `hello` command was considered as a third head candidate and
 **rejected**: it advances on any activity anywhere in the deployment, so an idle watched
 collection would report continuously growing lag. That is the position-age failure mode.
 
 ### Cost control
 
-`events_behind` is the expensive one. It is:
+`documents_behind` is the expensive one. It is:
 
 - **polled on a separate, longer interval** from `lag_seconds`, configurable, defaulting to
   something like 60s for lag and 300s for the count;
@@ -278,22 +366,28 @@ collection would report continuously growing lag. That is the position-age failu
 ### Metrics
 
 ```text
-changestream_lag_seconds{client}        gauge   head time minus position time, 0 when caught up
-changestream_events_behind{client}      gauge   events after position, -1 when not collected
-changestream_position_known{client}     gauge   1 once the consumer has saved a position, else 0
+changestream_lag_seconds{client}      gauge     head time minus position time, 0 when caught up
+changestream_documents_behind{client} gauge     documents after position, -1 when not collected
+changestream_position_known{client}   gauge     1 once the consumer has saved a position, else 0
+changestream_reads_total{client}      counter   events read off the cursor, for liveness
 ```
 
 `client` is the existing `TokenConfig.ClientName` / `fieldClientName`, so the label space is
 the set of consumers and nothing more.
 
-The `-1` convention for `events_behind` marks "not collected" distinctly from "zero behind",
+The `-1` convention for `documents_behind` marks "not collected" distinctly from "zero behind",
 which is better than a missing series or a misleading zero. `fault-quarantine` set this
 precedent for "interface unavailable", though as noted above that branch has never actually
 fired.
 
-`changestream_position_known` is not a diagnostic afterthought; it is what makes the other two
-interpretable. A zero lag reading means "caught up" only when the position is known, so any
-alert on `changestream_lag_seconds` must be qualified by it.
+The last two are not diagnostic afterthoughts; they are what make the first two interpretable,
+and each covers a case where a zero lag reading is a lie:
+
+- `changestream_position_known` — a zero lag reading means "caught up" only when the position is
+  known, so any alert on `changestream_lag_seconds` must be qualified by it.
+- `changestream_reads_total` — incremented in `processNextEvent`, so a flat counter means the
+  read loop is not advancing. That is the one case where head time can go stale on MongoDB, and
+  it is the honest use of position age: a stall detector qualified by liveness, never lag.
 
 ## Rationale
 
@@ -345,7 +439,7 @@ than a few poll intervals is itself the alert** for a consumer that has started 
 processed an event. That condition is exactly "stalled or brand new", and it must be documented
 as alertable alongside the lag threshold rather than treated as a startup detail.
 
-`changestream_events_behind` does not close this gap either, since `PositionID` is stored by the
+`changestream_documents_behind` does not close this gap either, since `PositionID` is stored by the
 same write that stores `positionTime`.
 
 ### Other mitigations
@@ -404,8 +498,18 @@ the worst case, stops updating its own lag metric and looks frozen rather than b
 - **MongoDB head time under updates**: insert events, then update the *oldest* document, and
   assert head time advances. Under `max(_id)` alone it does not, so this test distinguishes the
   two designs. Cover deletes and an explicitly non-monotonic `_id` the same way.
-- **Blocked cursor**: with the watcher's read loop blocked, assert head still advances from
-  `max(_id)` so lag does not collapse to zero.
+- **Blocked cursor, insert traffic**: with the watcher's read loop blocked, assert head still
+  advances from `max(_id)` so lag does not collapse to zero.
+- **Blocked cursor, update-only traffic**: the documented limitation. Assert that lag does *not*
+  detect it and that `changestream_reads_total` stays flat, so the gap is pinned by a test rather
+  than left to be rediscovered. A test that asserts the known-false thing is what stops someone
+  later "fixing" the metric by widening the guarantee in the docs.
+- **Restart acknowledgement**: process events, restart mid-stream, and assert the resumed
+  position time matches the token actually stored, not the newest event seen. This is what
+  catches a position paired with the wrong token.
+- **Count semantics**: on MongoDB, update an old document and assert `documents_behind` does not
+  move, matching the documented meaning; on PostgreSQL assert the same scenario *does* move it,
+  since the changelog has one row per change.
 - **PostgreSQL query plan**: assert the head lookup uses `idx_changelog_table_changed_at` rather
   than a sequential scan, since the cost argument depends on it.
 - **Integration**: with `envtest` plus a real MongoDB, stop a consumer, insert events, restart
@@ -419,14 +523,20 @@ the worst case, stops updating its own lag metric and looks frozen rather than b
 
 1. Add the PostgreSQL `(table_name, changed_at)` index, ahead of anything that queries it.
 2. Add the `ChangeStreamPosition` interface and implement it for both providers, plus the shared
-   poller, default on for `lag_seconds` and off for `events_behind`.
+   poller, default on for `lag_seconds` and off for `documents_behind`.
 3. Leave `fault_quarantine_event_backlog_count` and its ticker in place for one release so
    dashboards can move, then remove the ticker in favour of the shared metric.
-4. Document in `docs/METRICS.md`: the idle-stream caveat, a lag alert
-   (`changestream_lag_seconds > 900` for 10m, tuned per fleet, qualified by
-   `changestream_position_known == 1`), and a separate alert on
-   `changestream_position_known == 0` persisting, which is the only signal that covers a
-   consumer stalled since before rollout.
+4. Document in `docs/METRICS.md`, as three alerts rather than one, because no single series
+   covers every way a consumer goes silent:
+   - `changestream_lag_seconds > 900` for 10m, tuned per fleet, qualified by
+     `changestream_position_known == 1`. The primary "behind" alert.
+   - `changestream_position_known == 0` persisting. Covers a consumer stalled since before
+     rollout, which no lag series can see.
+   - `rate(changestream_reads_total[15m]) == 0` while the pod is running. Covers a blocked read
+     loop, which is the case where head time itself can go stale.
+
+   Also document the MongoDB caveats explicitly: what `documents_behind` counts, and that lag
+   does not detect a stalled consumer on update-only traffic.
 
 Fixing `fault-quarantine`'s MongoDB count and removing `event-exporter`'s dead gauge are
 tracked separately, since both are pre-existing bugs that stand on their own.
