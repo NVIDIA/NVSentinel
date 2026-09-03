@@ -90,6 +90,9 @@ global:
   janitor:
     enabled: true
 
+  lifecycleManager:
+    enabled: true
+
   janitorProvider:
     enabled: true
 
@@ -4362,3 +4365,22 @@ event-exporter:
       initialBackoff: "1s"
       maxBackoff: "10s"
       backoffMultiplier: 2.0
+
+lifecycle-manager:
+  config:
+    readinessCriteria:
+      - name: not-under-quarantine
+        expression: >-
+          !(has(node.metadata.annotations) &&
+          "quarantineHealthEvent" in node.metadata.annotations)
+    tests:
+      e2e-smoke-test:
+        provider: k8s-job-provider
+        image: alpine:3.21
+        command:
+          - sh
+          - -c
+          - "sleep 5"
+        supportsBatchingNodes: false
+        minimumNodesPerBatch: 1
+        batchFailurePolicy: fail
