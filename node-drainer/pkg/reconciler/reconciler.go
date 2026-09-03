@@ -602,7 +602,8 @@ func (r *Reconciler) executeSkip(ctx context.Context,
 		podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
 		podsEvictionStatus.Status = string(model.StatusSucceeded)
 
-		if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus, nodeName,
+		if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, healthEvent.HealthEvent,
+			podsEvictionStatus, nodeName,
 			metrics.DrainStatusCancelled); err != nil {
 			slog.ErrorContext(ctx, "Failed to update MongoDB status for unquarantined node",
 				"node", nodeName,
@@ -781,7 +782,7 @@ func (r *Reconciler) executeMarkAlreadyDrained(ctx context.Context,
 	podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
 	podsEvictionStatus.Status = string(status)
 
-	return r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus,
+	return r.updateNodeUserPodsEvictedStatus(ctx, database, event, healthEvent.HealthEvent, podsEvictionStatus,
 		nodeName, metrics.DrainStatusSkipped)
 }
 
@@ -802,7 +803,7 @@ func (r *Reconciler) executeCancelStatus(ctx context.Context,
 	podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
 	podsEvictionStatus.Status = string(status)
 
-	if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus,
+	if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, healthEvent.HealthEvent, podsEvictionStatus,
 		nodeName, metrics.DrainStatusCancelled); err != nil {
 		tracing.RecordError(span, err)
 		span.SetAttributes(
@@ -861,7 +862,7 @@ func (r *Reconciler) executeUpdateStatus(ctx context.Context, healthEvent model.
 		r.queueManager.ClearNodeDraining(nodeName)
 	}
 
-	return r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus,
+	return r.updateNodeUserPodsEvictedStatus(ctx, database, event, healthEvent.HealthEvent, podsEvictionStatus,
 		nodeName, metrics.DrainStatusDrained)
 }
 
@@ -912,7 +913,7 @@ func (r *Reconciler) updateNodeDrainStatus(ctx context.Context,
 }
 
 func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, database queue.DataStore,
-	event datastore.Event, userPodsEvictionStatus *protos.OperationStatus,
+	event datastore.Event, healthEvent *protos.HealthEvent, userPodsEvictionStatus *protos.OperationStatus,
 	nodeName string, drainStatus string) error {
 	ctx, span := tracing.StartSpan(ctx, "node_drainer.update_user_pods_eviction_status")
 	defer span.End()
@@ -966,7 +967,7 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 		attribute.String("node_drainer.user_pods_eviction_status", string(userPodsEvictionStatus.Status)),
 	)
 
-	drainScope, partialEntity := r.drainScopeFor(event)
+	drainScope, partialEntity := evaluator.DrainScopeFor(healthEvent, r.Config.TomlConfig.PartialDrainEnabled)
 
 	slog.InfoContext(ctx, "Health event status has been updated",
 		"documentID", documentID,
@@ -979,18 +980,6 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 	}
 
 	return nil
-}
-
-// drainScopeFor parses the event and delegates to the evaluator, which already makes this
-// decision for the drain itself. An unparseable event is reported as a full drain, matching
-// the behaviour when partial drain is disabled.
-func (r *Reconciler) drainScopeFor(event datastore.Event) (evaluator.DrainScope, *protos.Entity) {
-	healthEvent, err := eventutil.ParseHealthEventFromEvent(event)
-	if err != nil {
-		return evaluator.DrainScopeFull, nil
-	}
-
-	return evaluator.DrainScopeFor(healthEvent.HealthEvent, r.Config.TomlConfig.PartialDrainEnabled)
 }
 
 // observeEvictionDurationIfSucceeded observes eviction duration metric if status is succeeded and timestamp is present
@@ -1220,7 +1209,8 @@ func (r *Reconciler) handleCancelledEvent(ctx context.Context, nodeName string,
 	podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
 	podsEvictionStatus.Status = string(model.Cancelled)
 
-	if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus, nodeName,
+	if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, healthEvent.HealthEvent,
+		podsEvictionStatus, nodeName,
 		metrics.DrainStatusCancelled); err != nil {
 		slog.ErrorContext(ctx, "Failed to update MongoDB status for cancelled event",
 			"node", nodeName,
