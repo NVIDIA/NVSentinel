@@ -26,6 +26,8 @@ ARTIFACTS_BASE="${ARTIFACTS_BASE:-/artifacts}"
 ARTIFACTS_DIR="${ARTIFACTS_BASE}/${NODE_NAME}/${TIMESTAMP}"
 GPU_OPERATOR_NAMESPACE="${GPU_OPERATOR_NAMESPACE:-gpu-operator}"
 DRIVER_CONTAINER_NAME="${DRIVER_CONTAINER_NAME:-nvidia-driver-ctr}"
+# GPU Operator installs NVIDIA binaries under this root, not on default kubectl-exec PATH.
+DRIVER_ROOT="${DRIVER_ROOT:-/run/nvidia/driver}"
 MUST_GATHER_SCRIPT_URL="${MUST_GATHER_SCRIPT_URL:-https://raw.githubusercontent.com/NVIDIA/gpu-operator/main/hack/must-gather.sh}"
 ENABLE_GCP_SOS_COLLECTION="${ENABLE_GCP_SOS_COLLECTION:-false}"
 ENABLE_AWS_SOS_COLLECTION="${ENABLE_AWS_SOS_COLLECTION:-false}"
@@ -51,7 +53,7 @@ if [ "${MOCK_MODE}" = "true" ]; then
 fi
 
 mkdir -p "${ARTIFACTS_DIR}"
-echo "[INFO] Target node: ${NODE_NAME} | GPU Operator namespace: ${GPU_OPERATOR_NAMESPACE} | Driver container: ${DRIVER_CONTAINER_NAME}"
+echo "[INFO] Target node: ${NODE_NAME} | GPU Operator namespace: ${GPU_OPERATOR_NAMESPACE} | Driver container: ${DRIVER_CONTAINER_NAME} | DRIVER_ROOT: ${DRIVER_ROOT}"
 
 is_running_on_gcp() {
   local timeout=5
@@ -134,14 +136,37 @@ else
   BUG_REPORT_LOCAL_BASE="${ARTIFACTS_DIR}/nvidia-bug-report-${NODE_NAME}-${TIMESTAMP}"
   BUG_REPORT_REMOTE_PATH="${BUG_REPORT_REMOTE_BASE}.log.gz"
 
+  # Direct exec of nvidia-bug-report.sh fails on GPU Operator driver containers because
+  # the binary lives under ${DRIVER_ROOT}/usr/bin, not on $PATH. Prefer PATH lookup,
+  # then chroot into DRIVER_ROOT (same pattern as gpu-reset). If chroot wrote the
+  # report under the driver root, copy it to the container path kubectl cp expects.
+  # $1/$2/$PATH must expand in the remote shell, not this script.
+  # shellcheck disable=SC2016
   kubectl -n "${GPU_OPERATOR_NAMESPACE}" exec -c "${DRIVER_CONTAINER_NAME}" "${DRIVER_POD_NAME}" -- \
-    nvidia-bug-report.sh --output-file "${BUG_REPORT_REMOTE_BASE}.log"
+    sh -c 'DRIVER_ROOT="$1"; OUT="$2"; export PATH="${DRIVER_ROOT}/usr/bin:${PATH}"
+      if command -v nvidia-bug-report.sh >/dev/null 2>&1; then
+        nvidia-bug-report.sh --output-file "$OUT"
+      elif [ -x "${DRIVER_ROOT}/usr/bin/nvidia-bug-report.sh" ]; then
+        mkdir -p "${DRIVER_ROOT}/$(dirname "$OUT")"
+        if ! chroot "${DRIVER_ROOT}" nvidia-bug-report.sh --output-file "$OUT"; then
+          echo "[ERROR] chroot nvidia-bug-report.sh failed (DRIVER_ROOT=${DRIVER_ROOT})" >&2
+          exit 1
+        fi
+        if [ -f "${DRIVER_ROOT}${OUT}.gz" ] && [ ! -f "${OUT}.gz" ]; then
+          mkdir -p "$(dirname "$OUT")"
+          cp "${DRIVER_ROOT}${OUT}.gz" "${OUT}.gz"
+        fi
+      else
+        echo "[ERROR] nvidia-bug-report.sh not found on PATH or ${DRIVER_ROOT}/usr/bin" >&2
+        exit 1
+      fi' \
+    sh "${DRIVER_ROOT}" "${BUG_REPORT_REMOTE_BASE}.log"
 
   # Copy the bug report with retry
   BUG_REPORT_LOCAL="${BUG_REPORT_LOCAL_BASE}.log.gz"
-  if ! kubectl -n "${GPU_OPERATOR_NAMESPACE}" cp "${DRIVER_POD_NAME}:${BUG_REPORT_REMOTE_PATH}" "${BUG_REPORT_LOCAL}"; then
+  if ! kubectl -n "${GPU_OPERATOR_NAMESPACE}" cp -c "${DRIVER_CONTAINER_NAME}" "${DRIVER_POD_NAME}:${BUG_REPORT_REMOTE_PATH}" "${BUG_REPORT_LOCAL}"; then
     sleep 2
-    kubectl -n "${GPU_OPERATOR_NAMESPACE}" cp "${DRIVER_POD_NAME}:${BUG_REPORT_REMOTE_PATH}" "${BUG_REPORT_LOCAL}"
+    kubectl -n "${GPU_OPERATOR_NAMESPACE}" cp -c "${DRIVER_CONTAINER_NAME}" "${DRIVER_POD_NAME}:${BUG_REPORT_REMOTE_PATH}" "${BUG_REPORT_LOCAL}"
   fi
   echo "[INFO] Bug report saved to ${BUG_REPORT_LOCAL}"
 fi

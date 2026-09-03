@@ -70,7 +70,7 @@ func NewClient(ctx context.Context) (*Client, error) {
 }
 
 // SendRebootSignal sends a reboot signal to Azure for the node.
-func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
+func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node, _ string) (model.ResetSignalRequestRef, error) {
 	// Get the Azure client
 	vmssClient, err := c.getVMSSClient(ctx)
 	if err != nil {

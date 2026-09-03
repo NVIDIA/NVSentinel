@@ -57,6 +57,9 @@ data:
     {{- with .Values.platformConnector.transformers.MetadataAugmentor.allowedLabels }}
     allowedLabels = {{ . | toJson }}
     {{- end }}
+    {{- with .Values.platformConnector.transformers.MetadataAugmentor.skipNodeLabel }}
+    skipNodeLabel = {{ . | quote }}
+    {{- end }}
   {{- end }}
   {{- if .Values.platformConnector.transformers.OverrideTransformer }}
   overrides.toml: |

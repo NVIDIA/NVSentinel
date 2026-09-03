@@ -19,6 +19,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"log"
+	"math"
 	"math/big"
 	"os"
 	"testing"
@@ -486,4 +487,217 @@ func getHistogramVecCount(t *testing.T, histogramVec *prometheus.HistogramVec, l
 	}
 
 	return 0
+}
+
+func TestTripThreshold_ConfiguredBounds_ReturnsEffectiveThreshold(t *testing.T) {
+	tests := []struct {
+		name          string
+		percentage    float64
+		maxNodes      int
+		totalNodes    int
+		wantThreshold int
+		wantBound     Bound
+	}{
+		{
+			name:          "percentage only, unchanged from previous behaviour",
+			percentage:    50,
+			totalNodes:    10,
+			wantThreshold: 5,
+			wantBound:     boundPercentage,
+		},
+		{
+			name:          "percentage rounds up, so 1 percent of 288 is 3 not 2",
+			percentage:    1,
+			totalNodes:    288,
+			wantThreshold: 3,
+			wantBound:     boundPercentage,
+		},
+		{
+			name:          "maxNodes only, independent of fleet size",
+			maxNodes:      5,
+			totalNodes:    288,
+			wantThreshold: 5,
+			wantBound:     boundMaxNodes,
+		},
+		{
+			name:          "both set, maxNodes is lower so it binds",
+			percentage:    50,
+			maxNodes:      10,
+			totalNodes:    288,
+			wantThreshold: 10,
+			wantBound:     boundMaxNodes,
+		},
+		{
+			name:          "both set, percentage is lower so it binds",
+			percentage:    1,
+			maxNodes:      100,
+			totalNodes:    288,
+			wantThreshold: 3,
+			wantBound:     boundPercentage,
+		},
+		{
+			name:          "both set and equal, percentage binds",
+			percentage:    50,
+			maxNodes:      5,
+			totalNodes:    10,
+			wantThreshold: 5,
+			wantBound:     boundPercentage,
+		},
+		{
+			// The motivating case: a percentage silently tracks fleet growth, an absolute
+			// bound does not.
+			name:          "fleet growth cannot raise the effective limit past maxNodes",
+			percentage:    5,
+			maxNodes:      10,
+			totalNodes:    1000,
+			wantThreshold: 10,
+			wantBound:     boundMaxNodes,
+		},
+		{
+			// The initializer rejects this config; asserted here so the reason the guard
+			// exists stays visible.
+			name:          "neither bound set yields no threshold",
+			totalNodes:    288,
+			wantThreshold: 0,
+			wantBound:     boundNone,
+		},
+		{
+			// Without the clamp this would be unreachable and disable the breaker.
+			name:          "maxNodes above the fleet size is clamped to it",
+			maxNodes:      1000,
+			totalNodes:    288,
+			wantThreshold: 288,
+			wantBound:     boundFleetSize,
+		},
+		{
+			name:          "percentage above 100 is clamped to the fleet size",
+			percentage:    150,
+			totalNodes:    288,
+			wantThreshold: 288,
+			wantBound:     boundFleetSize,
+		},
+		{
+			// A percentage this large makes the float-to-int conversion
+			// implementation-defined, so the comparison happens in float space.
+			name:          "percentage large enough to overflow int still clamps",
+			percentage:    3.3e18,
+			totalNodes:    288,
+			wantThreshold: 288,
+			wantBound:     boundFleetSize,
+		},
+		{
+			name:          "maxNodes equal to the fleet size still binds as maxNodes",
+			maxNodes:      288,
+			totalNodes:    288,
+			wantThreshold: 288,
+			wantBound:     boundMaxNodes,
+		},
+		{
+			name:          "percentage of 100 is exactly the fleet size and is not clamped",
+			percentage:    100,
+			totalNodes:    288,
+			wantThreshold: 288,
+			wantBound:     boundPercentage,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &slidingWindowBreaker{
+				cfg: Config{TripPercentage: tc.percentage, TripMaxNodes: tc.maxNodes},
+			}
+
+			threshold, bound := b.tripThreshold(tc.totalNodes)
+
+			assert.Equal(t, tc.wantThreshold, threshold, "threshold")
+			assert.Equal(t, tc.wantBound, bound, "binding bound")
+		})
+	}
+}
+
+func TestValidateBounds_RejectsConfigsThatCannotLimit(t *testing.T) {
+	tests := []struct {
+		name       string
+		percentage float64
+		maxNodes   int
+		wantErr    string
+	}{
+		{
+			name:       "percentage only is valid",
+			percentage: 50,
+		},
+		{
+			name:     "maxNodes only is valid",
+			maxNodes: 5,
+		},
+		{
+			name:       "both set is valid",
+			percentage: 10,
+			maxNodes:   20,
+		},
+		{
+			// Would leave threshold 0, and IsTripped compares with >=, so the breaker
+			// would trip immediately with no cordons.
+			name:    "neither bound set is rejected",
+			wantErr: "requires percentage or maxNodes",
+		},
+		{
+			// NaN passes every ordinary comparison, then becomes int(NaN) == 0, which trips
+			// the breaker at startup with no cordons.
+			name:       "NaN percentage is rejected",
+			percentage: math.NaN(),
+			wantErr:    "must be a finite number",
+		},
+		{
+			name:       "infinite percentage is rejected",
+			percentage: math.Inf(1),
+			wantErr:    "must be a finite number",
+		},
+		{
+			name:       "negative percentage is rejected rather than ignored",
+			percentage: -10,
+			wantErr:    "percentage must not be negative",
+		},
+		{
+			name:     "negative maxNodes is rejected rather than ignored",
+			maxNodes: -10,
+			wantErr:  "maxNodes must not be negative",
+		},
+		{
+			// A negative alongside a usable bound is still a config error, not a typo to
+			// silently drop.
+			name:       "negative maxNodes is rejected even with a valid percentage",
+			percentage: 50,
+			maxNodes:   -1,
+			wantErr:    "maxNodes must not be negative",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := Config{TripPercentage: tc.percentage, TripMaxNodes: tc.maxNodes}.validateBounds()
+
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+func TestNewSlidingWindowBreaker_NoBoundsConfigured_ReturnsError(t *testing.T) {
+	b, err := NewSlidingWindowBreaker(context.Background(), Config{
+		Window:             time.Second,
+		K8sClient:          setupTestClient(t),
+		ConfigMapName:      "test-breaker-unbounded",
+		ConfigMapNamespace: "default",
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, b)
+	assert.Contains(t, err.Error(), "requires percentage or maxNodes")
 }
