@@ -44,6 +44,12 @@ dcgm_health_check_suppressed_incidents = Counter(
     "Number of DCGM health check incidents suppressed due to a non-actionable error code",
     labelnames=["error_code"],
 )
+dcgm_health_check_debounced_incidents = Counter(
+    "dcgm_health_check_debounced_incidents",
+    "Number of DCGM health check polls where an error code was withheld for a GPU because it "
+    "had not yet persisted for its configured minimum consecutive polls",
+    labelnames=["error_code", "gpu_id"],
+)
 dcgm_probe_hangs = Counter(
     "dcgm_probe_hangs",
     "Number of DCGM probes that exceeded the watchdog deadline without returning",

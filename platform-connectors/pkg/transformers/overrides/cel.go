@@ -18,24 +18,15 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"maps"
 
-	"github.com/google/cel-go/cel"
-	"github.com/google/cel-go/common/types"
-
+	"github.com/nvidia/nvsentinel/commons/pkg/celevent"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 type compiledRule struct {
 	name     string
-	program  cel.Program
+	filter   *celevent.Filter
 	override Override
-}
-
-func buildCELEnvironment() (*cel.Env, error) {
-	return cel.NewEnv(
-		cel.Variable("event", cel.MapType(cel.StringType, cel.DynType)),
-	)
 }
 
 func compileRules(config *Config) ([]compiledRule, error) {
@@ -43,42 +34,20 @@ func compileRules(config *Config) ([]compiledRule, error) {
 		return nil, nil
 	}
 
-	env, err := buildCELEnvironment()
-	if err != nil {
-		slog.ErrorContext(context.Background(), "Failed to create CEL environment", "error", err)
-		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
-	}
-
 	compiled := make([]compiledRule, 0, len(config.Rules))
 
 	for i, rule := range config.Rules {
-		ast, issues := env.Compile(rule.When)
-		if issues != nil && issues.Err() != nil {
-			slog.ErrorContext(context.Background(), "Failed to compile CEL expression", "rule", rule.Name, "error", issues.Err())
-
-			return nil, fmt.Errorf("rule[%d] (%s): CEL compilation failed: %w",
-				i, rule.Name, issues.Err())
-		}
-
-		if ast.OutputType() != cel.BoolType {
-			slog.ErrorContext(context.Background(), "Failed to compile CEL expression",
-				"rule", rule.Name, "error", ast.OutputType())
-
-			return nil, fmt.Errorf("rule[%d] (%s): expression must return boolean, got %v",
-				i, rule.Name, ast.OutputType())
-		}
-
-		program, err := env.Program(ast)
+		filter, err := celevent.Compile(rule.When)
 		if err != nil {
-			slog.ErrorContext(context.Background(), "Failed to create CEL program", "rule", rule.Name, "error", err)
+			slog.ErrorContext(context.Background(), "Failed to compile CEL expression",
+				"rule", rule.Name, "error", err)
 
-			return nil, fmt.Errorf("rule[%d] (%s): failed to create program: %w",
-				i, rule.Name, err)
+			return nil, fmt.Errorf("rule[%d] (%s): %w", i, rule.Name, err)
 		}
 
 		compiled = append(compiled, compiledRule{
 			name:     rule.Name,
-			program:  program,
+			filter:   filter,
 			override: rule.Override,
 		})
 	}
@@ -87,43 +56,12 @@ func compileRules(config *Config) ([]compiledRule, error) {
 }
 
 func (r *compiledRule) evaluate(ctx context.Context, event *pb.HealthEvent) (bool, error) {
-	eventMap := buildEventMap(event)
-
-	result, _, err := r.program.Eval(map[string]any{
-		"event": eventMap,
-	})
+	matched, err := r.filter.Matches(event)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to evaluate CEL expression", "rule", r.name, "error", err)
 
-		return false, fmt.Errorf("evaluation failed: %w", err)
+		return false, fmt.Errorf("rule %s: %w", r.name, err)
 	}
 
-	if result == types.False {
-		return false, nil
-	}
-
-	if result == types.True {
-		return true, nil
-	}
-
-	if boolVal, ok := result.Value().(bool); ok {
-		return boolVal, nil
-	}
-
-	return false, fmt.Errorf("expression returned non-boolean: %T", result.Value())
-}
-
-func buildEventMap(event *pb.HealthEvent) map[string]any {
-	return map[string]any{
-		"agent":             event.Agent,
-		"checkName":         event.CheckName,
-		"componentClass":    event.ComponentClass,
-		"errorCode":         event.ErrorCode,
-		"isFatal":           event.IsFatal,
-		"isHealthy":         event.IsHealthy,
-		"recommendedAction": event.RecommendedAction.String(),
-		"nodeName":          event.NodeName,
-		"metadata":          maps.Clone(event.Metadata),
-		"message":           event.Message,
-	}
+	return matched, nil
 }

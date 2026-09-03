@@ -90,6 +90,9 @@ global:
   janitor:
     enabled: true
 
+  lifecycleManager:
+    enabled: true
+
   janitorProvider:
     enabled: true
 
@@ -162,6 +165,8 @@ mongodb-store:
         name: rs0
         size: 3
         configuration: |
+          replication:
+            oplogSizeMB: 990
           setParameter:
             authenticationMechanisms: "MONGODB-X509,SCRAM-SHA-256,SCRAM-SHA-1"
         replsetOverrides:
@@ -175,7 +180,8 @@ mongodb-store:
           pvc:
             resources:
               requests:
-                storage: "1Gi"
+                # 2Gi is enough for Tilt Percona plus MongoDB's 990 MiB oplog floor.
+                storage: "2Gi"
         nodeSelector:
           node-role.kubernetes.io/control-plane: ""
         tolerations:
@@ -4194,7 +4200,9 @@ platformConnector:
   transformers:
     MetadataAugmentor:
       cacheSize: 50
-      cacheTTLSeconds: 3600
+      cacheTTLSeconds: 60
+      # Must match commons/pkg/managed.ManagedLabelKey and ManagedLabelValueFalse.
+      skipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false"
       allowedLabels:
         - "topology.kubernetes.io/zone"
         - "topology.kubernetes.io/region"
@@ -4357,3 +4365,22 @@ event-exporter:
       initialBackoff: "1s"
       maxBackoff: "10s"
       backoffMultiplier: 2.0
+
+lifecycle-manager:
+  config:
+    readinessCriteria:
+      - name: not-under-quarantine
+        expression: >-
+          !(has(node.metadata.annotations) &&
+          "quarantineHealthEvent" in node.metadata.annotations)
+    tests:
+      e2e-smoke-test:
+        provider: k8s-job-provider
+        image: alpine:3.21
+        command:
+          - sh
+          - -c
+          - "sleep 5"
+        supportsBatchingNodes: false
+        minimumNodesPerBatch: 1
+        batchFailurePolicy: fail

@@ -39,6 +39,9 @@ type EventProcessorConfig struct {
 	// Set to false (default) to preserve event for retry on next restart
 	// Set to true to skip failed events and continue (use with caution - may lose events)
 	MarkProcessedOnError bool
+	// SkipEvent can suppress provider-specific change events before document
+	// decoding while still advancing the stream checkpoint.
+	SkipEvent func(Event) bool
 }
 
 // EventProcessor provides a unified interface for processing change stream events
@@ -184,6 +187,17 @@ func (p *DefaultEventProcessor) processEvents(ctx context.Context) error {
 func (p *DefaultEventProcessor) handleSingleEvent(ctx context.Context, event Event) error {
 	startTime := time.Now()
 	token := event.GetResumeToken()
+
+	if p.config.SkipEvent != nil && p.config.SkipEvent(event) {
+		p.updateMetrics("processing_skipped", "", time.Since(startTime), true)
+
+		if markErr := p.markProcessed(ctx, token); markErr != nil {
+			return newUncheckpointedEventError(
+				fmt.Errorf("failed to mark skipped event as processed: %w", markErr))
+		}
+
+		return nil
+	}
 
 	var healthEventWithStatus model.HealthEventWithStatus
 	if err := event.UnmarshalDocument(&healthEventWithStatus); err != nil {

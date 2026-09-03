@@ -59,10 +59,11 @@ import (
 )
 
 const (
-	EventuallyWaitTimeout = 10 * time.Minute
-	NeverWaitTimeout      = 10 * time.Second
-	WaitInterval          = 5 * time.Second
-	NVSentinelNamespace   = "nvsentinel"
+	EventuallyWaitTimeout         = 10 * time.Minute
+	NeverWaitTimeout              = 10 * time.Second
+	WaitInterval                  = 5 * time.Second
+	validationRequestPollInterval = 1 * time.Second
+	NVSentinelNamespace           = "nvsentinel"
 )
 
 var (
@@ -86,6 +87,17 @@ var (
 		Version: "v1",
 		Kind:    "ExternalRemediationRequest",
 	}
+	ValidationRequestGVK = schema.GroupVersionKind{
+		Group:   "nvsentinel.nvidia.com",
+		Version: "v1alpha1",
+		Kind:    "ValidationRequest",
+	}
+)
+
+// Node annotations the validation-controller manages while a ValidationRequest runs against a node.
+const (
+	AnnotationActiveValidationRequest = "nvsentinel.nvidia.com/active-validation-request"
+	AnnotationValidationSession       = "nvsentinel.nvidia.com/validation-session"
 )
 
 func WaitForNodesCordonState(
@@ -783,6 +795,29 @@ func WaitForCRByName(ctx context.Context, t *testing.T, c klient.Client, crName 
 	return resultCR
 }
 
+// WaitForValidationRequestPhase waits for the named ValidationRequest to reach a given phase
+func WaitForValidationRequestPhase(ctx context.Context, t *testing.T, c klient.Client,
+	crName, phase string) *unstructured.Unstructured {
+	t.Helper()
+
+	vr := &unstructured.Unstructured{}
+	vr.SetGroupVersionKind(ValidationRequestGVK)
+
+	require.Eventually(t, func() bool {
+		if err := c.Resources().Get(ctx, crName, "", vr); err != nil {
+			t.Logf("failed to get ValidationRequest %s: %v", crName, err)
+			return false
+		}
+
+		currentPhase, _, _ := unstructured.NestedString(vr.Object, "status", "phase")
+		t.Logf("ValidationRequest %s phase: %q (want %q)", crName, currentPhase, phase)
+
+		return currentPhase == phase
+	}, EventuallyWaitTimeout, validationRequestPollInterval, "ValidationRequest %s should reach phase %q", crName, phase)
+
+	return vr
+}
+
 func DeleteAllCRs(ctx context.Context, t *testing.T, c klient.Client, groupVersionKind schema.GroupVersionKind) error {
 	crList, err := ListAllCRs(ctx, c, groupVersionKind)
 	if err != nil {
@@ -801,6 +836,10 @@ func DeleteAllCRs(ctx context.Context, t *testing.T, c klient.Client, groupVersi
 
 func DeleteCR(ctx context.Context, t *testing.T, c klient.Client, cr *unstructured.Unstructured,
 	waitForRemoval bool) error {
+	if cr == nil {
+		return nil
+	}
+
 	err := c.Resources().Delete(ctx, cr)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -1169,6 +1208,38 @@ func CreateRebootNodeCR(ctx context.Context, c klient.Client, nodeName string,
 	}
 
 	return rebootNode, nil
+}
+
+// CreateValidationRequest creates a cluster-scoped ValidationRequest targeting the given nodes and tests
+func CreateValidationRequest(ctx context.Context, c klient.Client, crName string,
+	nodeNames, tests []string) (*unstructured.Unstructured, error) {
+	vr := &unstructured.Unstructured{}
+	vr.SetGroupVersionKind(ValidationRequestGVK)
+	vr.SetName(crName)
+
+	nodes := make([]interface{}, len(nodeNames))
+	for i, n := range nodeNames {
+		nodes[i] = map[string]interface{}{fieldNameKey: n}
+	}
+
+	if err := unstructured.SetNestedSlice(vr.Object, nodes, "spec", "nodes"); err != nil {
+		return nil, fmt.Errorf("failed to set nodes in spec: %w", err)
+	}
+
+	testsAny := make([]interface{}, len(tests))
+	for i, testName := range tests {
+		testsAny[i] = testName
+	}
+
+	if err := unstructured.SetNestedSlice(vr.Object, testsAny, "spec", "tests"); err != nil {
+		return nil, fmt.Errorf("failed to set tests in spec: %w", err)
+	}
+
+	if err := c.Resources().Create(ctx, vr); err != nil {
+		return nil, fmt.Errorf("failed to create ValidationRequest %s: %w", crName, err)
+	}
+
+	return vr, nil
 }
 
 func CreateGPUResetCR(ctx context.Context, c klient.Client, nodeName string, crName string,
