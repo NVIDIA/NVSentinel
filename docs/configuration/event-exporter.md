@@ -253,9 +253,9 @@ CEL over the health event. Must evaluate to a boolean; an event whose expression
 
 ### When to use it
 
-The original design exports everything to a data lake and filters at the destination, and that remains the default. A source filter earns its place when the sink is a **notification path** rather than a lake.
+Use it when you want to drop events before they reach the sink. This is common when the sink sends out notifications rather than archiving everything, since most events recommend no action and are not worth notifying on.
 
-For scale, on a 288-node GB200 fleet: about 190,000 events per day, of which **99.1% carry `recommendedAction: NONE`**. Delivering the ~200 actionable events in a 3-day window means the sink must otherwise accept roughly 570,000.
+Exporting everything to a data lake and filtering at the destination remains the default.
 
 ### Available fields
 
