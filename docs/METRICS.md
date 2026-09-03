@@ -26,6 +26,8 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 | `fault_quarantine_events_received_total` | Counter | - | Total number of events received from the watcher |
 | `fault_quarantine_events_successfully_processed_total` | Counter | - | Total number of events successfully processed |
 | `fault_quarantine_processing_errors_total` | Counter | `error_type` | Total number of errors encountered during event processing |
+| `fault_quarantine_cold_start_events_total` | Counter | `result` | Health events examined during startup recovery, labeled `processed`, `skipped`, `superseded`, `invalid`, or `failed` |
+| `fault_quarantine_cold_start_duration_seconds` | Histogram | - | Startup recovery duration. Buckets: ExponentialBuckets(start=0.1s, factor=2, count=18), max ~3.6 hours |
 | `fault_quarantine_event_backlog_count` | Gauge | - | Number of health events which fault quarantine is yet to process |
 | `fault_quarantine_event_handling_duration_seconds` | Histogram | - | Histogram of event handling durations |
 
@@ -63,6 +65,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 |------------|------|--------|-------------|
 | `fault_quarantine_breaker_state` | Gauge | `state` | State of the fault quarantine breaker |
 | `fault_quarantine_breaker_utilization` | Gauge | - | Fraction of GPU nodes cordoned within the circuit breaker's sliding window |
+| `fault_quarantine_breaker_threshold_nodes` | Gauge | `bound` | Cordoned-node count that trips the circuit breaker, and which configured bound produced it (`percentage`, `maxNodes`, or `fleetSize` when clamped) |
 | `fault_quarantine_get_total_nodes_duration_seconds` | Histogram | `result` | Duration of getTotalNodesWithRetry calls in seconds |
 | `fault_quarantine_get_total_nodes_errors_total` | Counter | `error_type` | Total number of errors from getTotalNodesWithRetry |
 | `fault_quarantine_get_total_nodes_retry_attempts` | Histogram | - | Number of retry attempts needed for getTotalNodesWithRetry (buckets: 0, 1, 2, 3, 5, 10) |

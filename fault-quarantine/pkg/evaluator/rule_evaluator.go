@@ -15,6 +15,7 @@
 package evaluator
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -23,10 +24,13 @@ import (
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/ext"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	corelisters "k8s.io/client-go/listers/core/v1"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 )
 
@@ -36,7 +40,7 @@ const (
 )
 
 type RuleEvaluator interface {
-	Evaluate(healthEvent *protos.HealthEvent) (common.RuleEvaluationResult, error)
+	Evaluate(context.Context, *protos.HealthEvent) (common.RuleEvaluationResult, error)
 }
 
 type HealthEventRuleEvaluator struct {
@@ -48,6 +52,11 @@ type NodeRuleEvaluator struct {
 	expression string
 	program    cel.Program
 	nodeLister corelisters.NodeLister
+	nodeReader nodeReader
+}
+
+type nodeReader interface {
+	GetNodeDirect(context.Context, string) (*corev1.Node, error)
 }
 
 // NewHealthEventRuleEvaluator creates a new HealthEventRuleEvaluator with dynamic declarations
@@ -85,22 +94,26 @@ func NewHealthEventRuleEvaluator(expression string) (*HealthEventRuleEvaluator, 
 
 // evaluates the CEL expression against the provided HealthEvent
 func (he *HealthEventRuleEvaluator) Evaluate(
+	_ context.Context,
 	event *protos.HealthEvent) (common.RuleEvaluationResult, error) {
 	obj, err := RoundTrip(event)
 	if err != nil {
-		return common.RuleEvaluationFailed, fmt.Errorf("error roundtripping event: %w", err)
+		return common.RuleEvaluationFailed, coldstart.PermanentError(
+			fmt.Errorf("error roundtripping event: %w", err))
 	}
 
 	out, _, err := he.program.Eval(map[string]any{
 		eventObjKey: obj,
 	})
 	if err != nil {
-		return common.RuleEvaluationFailed, fmt.Errorf("failed to evaluate expression: %w", err)
+		return common.RuleEvaluationFailed, coldstart.PermanentError(
+			fmt.Errorf("failed to evaluate expression: %w", err))
 	}
 
 	result, ok := out.Value().(bool)
 	if !ok {
-		return common.RuleEvaluationFailed, fmt.Errorf("expression did not return a boolean: %v", out)
+		return common.RuleEvaluationFailed, coldstart.PermanentError(
+			fmt.Errorf("expression did not return a boolean: %v", out))
 	}
 
 	if result {
@@ -112,6 +125,14 @@ func (he *HealthEventRuleEvaluator) Evaluate(
 
 // NewNodeRuleEvaluator creates a new NodeRuleEvaluator
 func NewNodeRuleEvaluator(expression string, nodeLister corelisters.NodeLister) (*NodeRuleEvaluator, error) {
+	return newNodeRuleEvaluator(expression, nodeLister, nil)
+}
+
+func newNodeRuleEvaluator(
+	expression string,
+	nodeLister corelisters.NodeLister,
+	nodeReader nodeReader,
+) (*NodeRuleEvaluator, error) {
 	slog.Info("Creating NodeRuleEvaluator", "expression", expression)
 
 	// Create a CEL environment for the cached Node metadata and spec.
@@ -143,26 +164,33 @@ func NewNodeRuleEvaluator(expression string, nodeLister corelisters.NodeLister) 
 		expression: expression,
 		program:    program,
 		nodeLister: nodeLister,
+		nodeReader: nodeReader,
 	}, nil
 }
 
-// Evaluate the CEL expression against cached node metadata and spec.
-func (nm *NodeRuleEvaluator) Evaluate(event *protos.HealthEvent) (common.RuleEvaluationResult, error) {
+// Evaluate the CEL expression against node metadata and spec. Recovery reads
+// directly from the API server; live processing uses the informer cache.
+func (nm *NodeRuleEvaluator) Evaluate(
+	ctx context.Context,
+	event *protos.HealthEvent,
+) (common.RuleEvaluationResult, error) {
 	slog.Info("Evaluating NodeRuleEvaluator for node", "node", event.NodeName)
 
-	nodeInfo, err := nm.getNode(event.NodeName)
+	nodeInfo, err := nm.getNode(ctx, event.NodeName)
 	if err != nil {
 		return common.RuleEvaluationFailed, fmt.Errorf("failed to get node metadata: %w", err)
 	}
 
 	out, _, err := nm.program.Eval(nodeInfo)
 	if err != nil {
-		return common.RuleEvaluationFailed, fmt.Errorf("failed to evaluate expression: %w", err)
+		return common.RuleEvaluationFailed, coldstart.PermanentError(
+			fmt.Errorf("failed to evaluate expression: %w", err))
 	}
 
 	result, ok := out.Value().(bool)
 	if !ok {
-		return common.RuleEvaluationFailed, fmt.Errorf("expression did not return a boolean: %v", out)
+		return common.RuleEvaluationFailed, coldstart.PermanentError(
+			fmt.Errorf("expression did not return a boolean: %v", out))
 	}
 
 	if result {
@@ -172,11 +200,30 @@ func (nm *NodeRuleEvaluator) Evaluate(event *protos.HealthEvent) (common.RuleEva
 	return common.RuleEvaluationFailed, nil
 }
 
-// getNode gets node metadata and spec from the informer lister.
-func (nm *NodeRuleEvaluator) getNode(nodeName string) (map[string]any, error) {
-	node, err := nm.nodeLister.Get(nodeName)
+// getNode bypasses the informer during recovery so rules see current node state.
+// A node deleted before replay is a permanent event error.
+func (nm *NodeRuleEvaluator) getNode(ctx context.Context, nodeName string) (map[string]any, error) {
+	var (
+		node *corev1.Node
+		err  error
+	)
+
+	isRecoveryRead := coldstart.IsRecoveryContext(ctx) && nm.nodeReader != nil
+	if isRecoveryRead {
+		node, err = coldstart.GetRecoveryNode(ctx, nodeName, func() (*corev1.Node, error) {
+			return nm.nodeReader.GetNodeDirect(ctx, nodeName)
+		})
+	} else {
+		node, err = nm.nodeLister.Get(nodeName)
+	}
+
 	if err != nil {
-		return nil, fmt.Errorf("failed to get node %s from informer cache: %w", nodeName, err)
+		wrappedErr := fmt.Errorf("failed to get node %s: %w", nodeName, err)
+		if isRecoveryRead && apierrors.IsNotFound(err) {
+			return nil, coldstart.PermanentError(wrappedErr)
+		}
+
+		return nil, wrappedErr
 	}
 
 	unstructuredObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(node)

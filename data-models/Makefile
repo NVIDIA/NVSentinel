@@ -76,6 +76,16 @@ PROTOC_CRD_CMD = protoc --plugin=protoc-gen-crd=$(PROTOC_GEN_CRD) -I=protobufs -
 # PROTOC_COMMAND against CRD_OUT_DIR.
 PROTOC_COMMAND = $(call PROTOC_CRD_CMD,$(CRD_OUT_DIR))
 
+# protoc-gen-crd unconditionally emits empty maps/sequences (annotations: {},
+# shortNames: [], additionalPrinterColumns: []) that Kubernetes strips on
+# apply, causing permanent ArgoCD OutOfSync drift. Strip them post-generation.
+# Usage: $(call STRIP_EMPTY_CRD_FIELDS,<crd-file>)
+define STRIP_EMPTY_CRD_FIELDS
+	yq -i 'del(.metadata.annotations | select(length == 0))' $(1)
+	yq -i 'del(.spec.names.shortNames | select(length == 0))' $(1)
+	yq -i 'del(.spec.versions[].additionalPrinterColumns | select(length == 0))' $(1)
+endef
+
 # Install protoc-gen-crd from github (default)
 .PHONY: install-plugin-remote
 install-plugin-remote:
@@ -103,6 +113,7 @@ $(CRD_FILE): vendor-proto protobufs/health_event.proto install-plugin-remote
 	@echo "Generating CRD YAML at $(CRD_FILE)..."
 	mkdir -p $(CRD_OUT_DIR)
 	$(call PROTOC_CRD_CMD,$(CRD_OUT_DIR)) health_event.proto
+	$(call STRIP_EMPTY_CRD_FIELDS,$(CRD_FILE))
 	@ls -l $(CRD_FILE) || (echo "CRD file not generated!" && exit 1)
 
 # Generate CRD YAML for external_remediation.proto into the janitor chart.
@@ -116,6 +127,7 @@ $(EXTRR_CRD_FILE): vendor-proto protobufs/external_remediation.proto protobufs/h
 	mkdir -p $(EXTRR_CRD_OUT_DIR)
 	$(call PROTOC_CRD_CMD,$(EXTRR_CRD_OUT_DIR)) external_remediation.proto
 	@rm -f $(EXTRR_CRD_OUT_DIR)/health_event.crd.yaml
+	$(call STRIP_EMPTY_CRD_FIELDS,$(EXTRR_CRD_FILE))
 	@ls -l $(EXTRR_CRD_FILE) || (echo "ExtRR CRD file not generated!" && exit 1)
 
 .PHONY: compile-crd-server

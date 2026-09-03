@@ -162,6 +162,8 @@ mongodb-store:
         name: rs0
         size: 3
         configuration: |
+          replication:
+            oplogSizeMB: 990
           setParameter:
             authenticationMechanisms: "MONGODB-X509,SCRAM-SHA-256,SCRAM-SHA-1"
         replsetOverrides:
@@ -175,7 +177,8 @@ mongodb-store:
           pvc:
             resources:
               requests:
-                storage: "1Gi"
+                # 2Gi is enough for Tilt Percona plus MongoDB's 990 MiB oplog floor.
+                storage: "2Gi"
         nodeSelector:
           node-role.kubernetes.io/control-plane: ""
         tolerations:
@@ -435,7 +438,7 @@ health-events-analyzer:
 
     [[rules]]
     name = "RepeatedXIDErrorOnSameGPU"
-    description = "Detect occurrence of fatal XIDs 2 times within 2 minutes where the burst window is 15 seconds and sticky XIDs window is 30 seconds (test config)"
+    description = "Detect occurrence of XID errors (any XID except 31 and 45) on the same GPU 2 times within 2 minutes where the burst window is 15 seconds and sticky XIDs window is 30 seconds (test config)"
     recommended_action = "CONTACT_SUPPORT"
     evaluate_rule = true
     stage = [
@@ -483,6 +486,10 @@ health-events-analyzer:
       ''',
       # Candidate docs must also be XID events so non-XID unhealthy events on
       # the same node are not merged into GPU burst counts.
+      #
+      # Excluded codes: 31 has its own dedicated rules; 45 is preemptive channel cleanup that
+      # the Xid catalogue resolves as "Not Solo: IGNORE (follow other Xid)", and a repeat is
+      # never solo.
       '''
       {
         "$match": {
@@ -491,7 +498,7 @@ health-events-analyzer:
           "healthevent.nodename": "this.healthevent.nodename",
           "$expr": {
           "$and": [
-            {"$ne": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, "31"]},
+            {"$not": [{"$in": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, ["31", "45"]]}]},
             {
               "$gt": [
                 {
@@ -4190,7 +4197,9 @@ platformConnector:
   transformers:
     MetadataAugmentor:
       cacheSize: 50
-      cacheTTLSeconds: 3600
+      cacheTTLSeconds: 60
+      # Must match commons/pkg/managed.ManagedLabelKey and ManagedLabelValueFalse.
+      skipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false"
       allowedLabels:
         - "topology.kubernetes.io/zone"
         - "topology.kubernetes.io/region"

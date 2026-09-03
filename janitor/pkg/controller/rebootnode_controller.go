@@ -518,6 +518,7 @@ func (r *RebootNodeReconciler) sendRebootSignalAndSetCondition(
 
 	rsp, rebootErr := cspClient.SendRebootSignal(ctx, &cspv1alpha1.SendRebootSignalRequest{
 		NodeName: node.Name,
+		CrName:   rebootNode.Name,
 	})
 	if rebootErr == nil {
 		rebootNode.SetCondition(metav1.Condition{

@@ -38,6 +38,7 @@ const (
 type SendRebootSignalRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NodeName      string                 `protobuf:"bytes,1,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
+	CrName        string                 `protobuf:"bytes,2,opt,name=cr_name,json=crName,proto3" json:"cr_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -75,6 +76,13 @@ func (*SendRebootSignalRequest) Descriptor() ([]byte, []int) {
 func (x *SendRebootSignalRequest) GetNodeName() string {
 	if x != nil {
 		return x.NodeName
+	}
+	return ""
+}
+
+func (x *SendRebootSignalRequest) GetCrName() string {
+	if x != nil {
+		return x.CrName
 	}
 	return ""
 }
@@ -311,9 +319,10 @@ var File_csp_v1alpha1_provider_proto protoreflect.FileDescriptor
 
 const file_csp_v1alpha1_provider_proto_rawDesc = "" +
 	"\n" +
-	"\x1bcsp/v1alpha1/provider.proto\x12\"nvidia.nvsentinel.janitor.v1alpha1\"6\n" +
+	"\x1bcsp/v1alpha1/provider.proto\x12\"nvidia.nvsentinel.janitor.v1alpha1\"O\n" +
 	"\x17SendRebootSignalRequest\x12\x1b\n" +
-	"\tnode_name\x18\x01 \x01(\tR\bnodeName\"9\n" +
+	"\tnode_name\x18\x01 \x01(\tR\bnodeName\x12\x17\n" +
+	"\acr_name\x18\x02 \x01(\tR\x06crName\"9\n" +
 	"\x18SendRebootSignalResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\"P\n" +

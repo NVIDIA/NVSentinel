@@ -44,11 +44,18 @@ var _ model.CSPClient = (*Client)(nil)
 
 // Config holds the configuration for the generic provider.
 type Config struct {
-	RebootImage          string
-	UseSysrqReboot       bool
-	RebootJobNamespace   string
-	RebootJobTTL         int32
+	// RebootImage is the container image used for the reboot Job.
+	RebootImage string
+	// UseSysrqReboot triggers an immediate kernel reboot via sysrq-trigger when true.
+	UseSysrqReboot bool
+	// RebootJobNamespace is the namespace where reboot Jobs are spawned.
+	RebootJobNamespace string
+	// RebootJobTTL is the TTL in seconds after finish for the reboot Job.
+	RebootJobTTL int32
+	// RebootJobPullSecrets lists image pull secrets for the reboot Job image.
 	RebootJobPullSecrets []string
+	// WriteSyslog writes an attribution entry to host syslog before rebooting when true.
+	WriteSyslog bool
 }
 
 // Client is the generic bare-metal implementation of the CSP Client interface.
@@ -91,17 +98,17 @@ func NewClientWithK8s(k8sClient kubernetes.Interface, config Config) *Client {
 
 // SendRebootSignal creates a privileged Job on the target node that executes
 // the configured reboot command. Returns the node's pre-reboot bootID as the requestID.
-func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
+func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node, crName string) (model.ResetSignalRequestRef, error) {
 	preRebootBootID := node.Status.NodeInfo.BootID
 	if preRebootBootID == "" {
 		slog.ErrorContext(ctx, "Node has no bootID", "node", node.Name)
 		return "", fmt.Errorf("node %s has no bootID", node.Name)
 	}
 
-	job := c.buildRebootJob(node.Name)
+	job := c.buildRebootJob(node.Name, crName)
 
 	slog.InfoContext(ctx, "Creating reboot Job", "node", node.Name, "namespace", c.config.RebootJobNamespace,
-		"useSysrqReboot", c.config.UseSysrqReboot)
+		"useSysrqReboot", c.config.UseSysrqReboot, "writeSyslog", c.config.WriteSyslog)
 
 	created, err := c.k8sClient.BatchV1().Jobs(c.config.RebootJobNamespace).Create(ctx, job, metav1.CreateOptions{})
 	if err != nil {
@@ -110,7 +117,7 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 
 	slog.InfoContext(ctx, "Reboot Job created", "node", node.Name, "job", created.Name,
 		"jobNamespace", c.config.RebootJobNamespace, "bootID", preRebootBootID,
-		"useSysrqReboot", c.config.UseSysrqReboot)
+		"useSysrqReboot", c.config.UseSysrqReboot, "writeSyslog", c.config.WriteSyslog)
 
 	return model.ResetSignalRequestRef(preRebootBootID), nil
 }
@@ -151,10 +158,11 @@ func (c *Client) SendTerminateSignal(ctx context.Context, node corev1.Node) (mod
 	return "", fmt.Errorf("terminate operation is not supported for generic provider (node: %s)", node.Name)
 }
 
-func (c *Client) buildRebootJob(nodeName string) *batchv1.Job {
+// buildRebootJob constructs the privileged batchv1.Job specification for rebooting the node.
+func (c *Client) buildRebootJob(nodeName, crName string) *batchv1.Job {
 	image := c.config.RebootImage
 	ttl := c.config.RebootJobTTL
-	command := c.config.rebootCommand()
+	command := c.config.rebootCommand(nodeName, crName)
 
 	var (
 		volumeMounts []corev1.VolumeMount
@@ -175,6 +183,19 @@ func (c *Client) buildRebootJob(nodeName string) *batchv1.Job {
 					Path: "/proc",
 				},
 			},
+		}
+
+		if c.config.WriteSyslog {
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      "host-root",
+				MountPath: hostMountPath,
+			})
+			volumes = append(volumes, corev1.Volume{
+				Name: "host-root",
+				HostPath: &corev1.HostPathVolumeSource{
+					Path: "/",
+				},
+			})
 		}
 	} else {
 		volumeMounts = []corev1.VolumeMount{
@@ -235,9 +256,31 @@ func (c *Client) buildRebootJob(nodeName string) *batchv1.Job {
 	}
 }
 
-func (c Config) rebootCommand() []string {
+// rebootCommand generates the container command slice based on sysrq and syslog settings.
+func (c Config) rebootCommand(nodeName, crName string) []string {
+	attribution := fmt.Sprintf("NVSentinel reboot: node=%s", nodeName)
+	if crName != "" {
+		attribution = fmt.Sprintf("NVSentinel reboot: node=%s cr=%s", nodeName, crName)
+	}
+
 	if c.UseSysrqReboot {
+		if c.WriteSyslog {
+			return []string{
+				"sh", "-c",
+				fmt.Sprintf("chroot %s logger -t nvsentinel-reboot -p daemon.notice %q || true; sync || true; echo b > %s/sysrq-trigger",
+					hostMountPath, attribution, hostProcMountPath),
+			}
+		}
+
 		return []string{"sh", "-c", fmt.Sprintf("echo b > %s/sysrq-trigger", hostProcMountPath)}
+	}
+
+	if c.WriteSyslog {
+		return []string{
+			"sh", "-c",
+			fmt.Sprintf("chroot %s logger -t nvsentinel-reboot -p daemon.notice %q || true; chroot %s reboot",
+				hostMountPath, attribution, hostMountPath),
+		}
 	}
 
 	return []string{"chroot", hostMountPath, "reboot"}
@@ -346,6 +389,7 @@ func isNodeReady(node corev1.Node) bool {
 	return false
 }
 
+// loadConfigFromEnv loads generic provider configuration from environment variables.
 func loadConfigFromEnv() Config {
 	image := os.Getenv("GENERIC_REBOOT_IMAGE")
 	if image == "" {
@@ -385,11 +429,23 @@ func loadConfigFromEnv() Config {
 		}
 	}
 
+	writeSyslog := false
+
+	if writeSyslogStr := os.Getenv("GENERIC_REBOOT_WRITE_SYSLOG"); writeSyslogStr != "" {
+		parsed, err := strconv.ParseBool(writeSyslogStr)
+		if err != nil {
+			slog.Warn("Invalid GENERIC_REBOOT_WRITE_SYSLOG, using default", "value", writeSyslogStr, "default", false)
+		} else {
+			writeSyslog = parsed
+		}
+	}
+
 	return Config{
 		RebootImage:          image,
 		UseSysrqReboot:       useSysrqReboot,
 		RebootJobNamespace:   namespace,
 		RebootJobTTL:         ttl,
 		RebootJobPullSecrets: pullSecrets,
+		WriteSyslog:          writeSyslog,
 	}
 }
