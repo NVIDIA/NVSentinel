@@ -43,7 +43,7 @@ Current adoption:
 
 | Consumer | Stream backlog metric | Notes |
 | --- | --- | --- |
-| `fault-quarantine` | **wired, but broken on MongoDB** | ticker at `fault-quarantine/pkg/eventwatcher/event_watcher.go:787-798` sets `fault_quarantine_event_backlog_count`. Works on PostgreSQL; reports `0` forever on MongoDB. See below |
+| `fault-quarantine` | **yes, works** | ticker at `fault-quarantine/pkg/eventwatcher/event_watcher.go:787-798` sets `fault_quarantine_event_backlog_count`; sets `-1` when the watcher lacks the interface. Counts documents rather than change events, see below |
 | `event-exporter` | **declared, never set** | `health_events_exporter_event_backlog_size` is created at `event-exporter/pkg/metrics/metrics.go:73` and assigned nowhere in the module, so it reports `0` forever |
 | `health-events-analyzer` | none | no reference to `ChangeStreamMetrics` anywhere in the module. This is the consumer that went 2.4M events behind |
 | `fault-remediation` | none | |
@@ -53,37 +53,6 @@ Current adoption:
 
 `node_drainer_queue_depth` exists but measures node-drainer's own in-process work queue, not
 stream position, so it does not cover this.
-
-### The one working metric does not work on MongoDB
-
-Worth stating separately, because it changes the premise: on MongoDB **no consumer has stream
-backlog visibility at all**, including the one that appears to.
-
-The MongoDB watcher's method is
-`GetUnprocessedEventCount(ctx, lastProcessedID bson.ObjectID, additionalFilters ...bson.M)`
-(`store-client/pkg/datastore/providers/mongodb/watcher/watch_store.go:561-562`), while the
-interface requires `(ctx, lastProcessedID string)`
-(`store-client/pkg/client/interfaces.go:104-106`). The signatures differ, so the MongoDB
-watcher does not satisfy `ChangeStreamMetrics`. PostgreSQL's does
-(`store-client/pkg/datastore/providers/postgresql/changestream.go:1390-1393`).
-
-What makes this silent rather than obvious is the wrapper chain. `fault-quarantine` receives
-`resumeControlChangeStreamWatcher` (unwrapped at
-`fault-quarantine/pkg/reconciler/reconciler.go:340-346`), and that wrapper *does* declare the
-method, so the type assertion at `event_watcher.go:787` **succeeds**. The forwarding assertion
-inside it then fails on the MongoDB watcher
-(`store-client/pkg/client/resume_token.go:79-82`) and returns an error, so `event_watcher.go:789`
-logs at `Debug` and `continue`s without setting the gauge. Two consequences:
-
-- `fault_quarantine_event_backlog_count` is **never written** on MongoDB, so it reports `0`:
-  the same false-healthy failure as `event-exporter`'s gauge, but disguised as working code.
-- The `-1` "interface unavailable" fallback at `event_watcher.go:798` is **unreachable** for any
-  factory-built watcher, because the wrapper always satisfies the assertion.
-
-This is a pre-existing bug rather than something this ADR introduces, and it is filed
-separately. It matters here for two reasons: the `-1` convention this ADR reuses has never
-actually fired, and a design that adds methods to `ChangeStreamMetrics` inherits exactly this
-failure mode.
 
 ### Three candidate signals, and why the obvious one is wrong
 
@@ -137,11 +106,14 @@ store-client/pkg/datastore/providers/postgresql/
 
 ### A separate interface, not an extension
 
-The first instinct is to add `StreamPosition` to `ChangeStreamMetrics`. That is wrong, and the
-reason is the assertion chain above: `ChangeStreamMetrics` is an **optional interface satisfied
-by whole-type assertion**, so adding a method to it means an implementation providing only
-`GetUnprocessedEventCount` stops satisfying it and loses the **count** metric it already had.
-Capabilities checked this way have to be split per capability, not grouped:
+The first instinct is to add `StreamPosition` to `ChangeStreamMetrics`. That is wrong.
+`ChangeStreamMetrics` is an **optional interface satisfied by whole-type assertion**, checked at
+`store-client/pkg/client/resume_token.go:79` and
+`fault-quarantine/pkg/eventwatcher/event_watcher.go:787`, so adding a method to it means an
+implementation providing only `GetUnprocessedEventCount` stops satisfying it and loses the
+**count** metric it already had. That would break `fault-quarantine`'s working metric on both
+providers until every implementation caught up. Capabilities checked this way have to be split
+per capability, not grouped:
 
 ```go
 // ChangeStreamPosition is a separate optional interface, so a watcher that implements only
@@ -407,8 +379,7 @@ the set of consumers and nothing more.
 
 The `-1` convention for `documents_behind` marks "not collected" distinctly from "zero behind",
 which is better than a missing series or a misleading zero. `fault-quarantine` set this
-precedent for "interface unavailable", though as noted above that branch has never actually
-fired.
+precedent for "interface unavailable".
 
 `changestream_position_known` is not a diagnostic afterthought; it is what makes the other two
 interpretable. A zero lag reading means "caught up" only when the position is known, so any
@@ -423,9 +394,8 @@ alert on `changestream_lag_seconds` must be qualified by it.
 - **The expensive query is opt-out, the cheap one is always on.** The failure mode this catches
   is severe enough to warrant a default-on metric, but not at the cost of a `COUNT(*)` over
   millions of documents every few seconds.
-- **It reuses what exists.** `GetUnprocessedEventCount` is implemented on both providers
-  already; the timestamp pair and the position identifier are what is new. On MongoDB it also
-  finally gets a caller that works.
+- **It reuses what exists.** `GetUnprocessedEventCount` is implemented and working on both
+  providers already; the timestamp pair and the position identifier are what is new.
 
 ## Consequences
 
@@ -433,7 +403,7 @@ alert on `changestream_lag_seconds` must be qualified by it.
 
 - A consumer falling behind becomes alertable, in one dashboard, for every module.
 - The failure that took manual token decoding to find becomes a single PromQL query.
-- Backlog visibility on MongoDB, which today has none on any consumer.
+- Six consumers that have no backlog or lag visibility today get both, with no per-module wiring.
 
 ### Negative
 
