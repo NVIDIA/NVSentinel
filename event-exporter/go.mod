@@ -3,7 +3,6 @@ module github.com/nvidia/nvsentinel/event-exporter
 go 1.27.0
 
 require (
-	github.com/google/cel-go v0.31.0
 	github.com/google/uuid v1.6.0
 	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/nvidia/nvsentinel/data-models v0.0.0
