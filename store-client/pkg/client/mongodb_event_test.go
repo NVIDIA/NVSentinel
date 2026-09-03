@@ -21,7 +21,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/healthstatus"
 	mongoWatcher "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers/mongodb/watcher"
+	"github.com/nvidia/nvsentinel/store-client/pkg/query"
 )
 
 func TestMongoEvent_GetResumeToken(t *testing.T) {
@@ -51,4 +53,54 @@ func TestMongoEvent_GetResumeToken(t *testing.T) {
 
 		assert.Empty(t, e.GetResumeToken())
 	})
+}
+
+// TestMongoEvent_CompletionOnlyUpdate_ExposesUpdatedFields verifies that the
+// adapter exposes MongoDB's completion-only update description.
+func TestMongoEvent_CompletionOnlyUpdate_ExposesUpdatedFields(t *testing.T) {
+	event := &mongoEvent{rawEvent: mongoWatcher.Event{
+		"updateDescription": bson.M{
+			"updatedFields": bson.M{healthstatus.FaultQuarantineRecoveryPath: "completed"},
+		},
+	}}
+
+	assert.True(t, EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath))
+}
+
+func TestMongoEvent_CompletionAndRemovalExposesBothChanges(t *testing.T) {
+	event := &mongoEvent{rawEvent: mongoWatcher.Event{
+		"updateDescription": bson.M{
+			"updatedFields": bson.M{healthstatus.FaultQuarantineRecoveryPath: "completed"},
+			"removedFields": bson.A{"healtheventstatus.obsolete"},
+		},
+	}}
+
+	assert.Equal(t, map[string]any{
+		healthstatus.FaultQuarantineRecoveryPath: "completed",
+		"healtheventstatus.obsolete":             nil,
+	}, event.UpdatedFields())
+	assert.False(t, EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath),
+		"a completion marker must not conceal an unrelated field removal")
+}
+
+// TestResolveMongoUpdate_QueryBuilder_UsesNullSafePipeline verifies that query
+// builders use aggregation-pipeline updates for nested fields.
+func TestResolveMongoUpdate_QueryBuilder_UsesNullSafePipeline(t *testing.T) {
+	update := query.NewUpdate().Set(healthstatus.FaultQuarantineRecoveryPath, "completed")
+
+	assert.Equal(t, update.ToMongoPipeline(), resolveMongoUpdate(update))
+}
+
+func TestResolveMongoUpdate_ClientOperatorsRemainOrdinaryUpdateDocuments(t *testing.T) {
+	update := NewUpdateBuilder().
+		Set("state", "ready").
+		Unset("obsolete").
+		Inc("attempts", 1).
+		Build()
+
+	assert.Equal(t, map[string]any{
+		"$set":   map[string]any{"state": "ready"},
+		"$unset": map[string]any{"obsolete": ""},
+		"$inc":   map[string]any{"attempts": 1},
+	}, resolveMongoUpdate(update))
 }
