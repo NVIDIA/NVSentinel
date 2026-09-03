@@ -49,6 +49,20 @@ var (
 		},
 		[]string{"error_type"},
 	)
+	ColdStartEvents = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "fault_quarantine_cold_start_events_total",
+			Help: "Health events examined during fault-quarantine cold start.",
+		},
+		[]string{"result"},
+	)
+	ColdStartDuration = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "fault_quarantine_cold_start_duration_seconds",
+			Help:    "Time spent recovering unresolved events during fault-quarantine startup.",
+			Buckets: prometheus.ExponentialBuckets(0.1, 2, 18),
+		},
+	)
 
 	// Node Quarantine Metrics
 	TotalNodesQuarantined = promauto.NewCounterVec(

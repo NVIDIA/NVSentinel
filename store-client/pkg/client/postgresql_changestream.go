@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -53,6 +54,74 @@ type postgresqlEvent struct {
 	oldValues   map[string]any
 	newValues   map[string]any
 	changedAt   time.Time
+}
+
+// UpdatedFields exposes the flattened document delta for optional consumers.
+func (e *postgresqlEvent) UpdatedFields() map[string]any {
+	if e.operation != "UPDATE" {
+		return nil
+	}
+
+	return changedDocumentFields(e.oldValues, e.newValues)
+}
+
+func changedDocumentFields(oldValues, newValues map[string]any) map[string]any {
+	oldDocument, _ := oldValues["document"].(map[string]any)
+	newDocument, _ := newValues["document"].(map[string]any)
+	updated := make(map[string]any)
+	flattenChangedFields("", oldDocument, newDocument, updated)
+
+	return updated
+}
+
+func flattenChangedFields(prefix string, oldValues, newValues map[string]any, updated map[string]any) {
+	for key, newValue := range newValues {
+		flattenChangedField(changedFieldPath(prefix, key), oldValues, key, newValue, updated)
+	}
+
+	for key := range oldValues {
+		if _, exists := newValues[key]; exists {
+			continue
+		}
+
+		updated[changedFieldPath(prefix, key)] = nil
+	}
+}
+
+func flattenChangedField(
+	path string,
+	oldValues map[string]any,
+	key string,
+	newValue any,
+	updated map[string]any,
+) {
+	oldValue, existed := oldValues[key]
+	newMap, newIsMap := newValue.(map[string]any)
+	oldMap, oldIsMap := oldValue.(map[string]any)
+
+	if newIsMap {
+		if !oldIsMap && len(newMap) == 0 {
+			updated[path] = newValue
+
+			return
+		}
+
+		flattenChangedFields(path, oldMap, newMap, updated)
+
+		return
+	}
+
+	if !existed || !reflect.DeepEqual(oldValue, newValue) {
+		updated[path] = newValue
+	}
+}
+
+func changedFieldPath(prefix, key string) string {
+	if prefix == "" {
+		return key
+	}
+
+	return prefix + "." + key
 }
 
 // GetDocumentID returns the changelog sequence ID (not the record UUID).
