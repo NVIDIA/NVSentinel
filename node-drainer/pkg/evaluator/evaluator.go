@@ -16,13 +16,13 @@ package evaluator
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/drain"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -32,7 +32,6 @@ import (
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/customdrain"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/queue"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
-	"github.com/nvidia/nvsentinel/store-client/pkg/query"
 )
 
 const (
@@ -586,111 +585,25 @@ func (e *NodeDrainEvaluator) isNodeAlreadyDrained(ctx context.Context, currentEv
 	slog.InfoContext(ctx, "HealthEvents which are part of quarantineHealthEvent annotation",
 		"eventCount", len(healthEventsMap.Events))
 
+	events := make([]*protos.HealthEvent, 0, len(healthEventsMap.Events))
 	for _, healthEventFromAnnotation := range healthEventsMap.Events {
-		id := healthEventFromAnnotation.Id
-		if len(id) == 0 {
+		if len(healthEventFromAnnotation.Id) == 0 {
 			slog.ErrorContext(ctx, "HealthEvent is missing ID for database lookup, expected for old events",
 				"message", healthEventFromAnnotation.Message)
 
 			continue
 		}
 
-		if id == currentEventId {
-			continue
-		}
-
-		healthEventWithStatus, healthEvent, err := getHealthEventFromId(ctx, id, nodeName, healthEventStore)
-		if err != nil {
-			return false, true, err
-		}
-		// none of HealthEventStatus, UserPodsEvictionStatus, or Status are ptr values
-		drainCompleted := healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus.Status == datastore.StatusSucceeded
-
-		partialDrainEntity, err := e.shouldExecutePartialDrain(healthEvent)
-		if err != nil {
-			return false, true, err
-		}
-
-		skipDrain := canSkipDrain(ctx, drainCompleted, partialDrainEntity, currentPartialDrainEntity, id, nodeName)
-		if skipDrain {
-			return true, true, nil
-		}
-		// continue checking any other HealthEvents on quarantineHealthEvent annotation
+		events = append(events, healthEventFromAnnotation)
 	}
 
-	return false, true, nil
-}
-
-func getHealthEventFromId(ctx context.Context, id string, nodeName string,
-	healthEventStore datastore.HealthEventStore) (*datastore.HealthEventWithStatus, *protos.HealthEvent, error) {
-	q := query.New().Build(
-		query.Eq("_id", id),
-	)
-
-	events, err := healthEventStore.FindHealthEventsByQuery(ctx, q)
+	alreadyDrained, err := drain.IsNodeDrained(ctx, healthEventStore, nodeName, events, currentEventId,
+		currentPartialDrainEntity, e.shouldExecutePartialDrain)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to query health events for node %s and event ID %s: %w", nodeName, id, err)
+		return false, true, err
 	}
 
-	if len(events) != 1 {
-		return nil, nil, fmt.Errorf("unexpected number of events for node %s and event ID %s: %d", nodeName, id, len(events))
-	}
-
-	healthEventWithStatus := events[0]
-
-	// We have custom types in datastore which aren't from model nor protos packages. For example,
-	// datastore.HealthEventWithStatus.HealthEvent has type interface{}. If we check the underlying
-	// type, we are returned with map[string]interface{}. To convert this to protos.HealthEvent, we will convert to
-	// and from json rather than try to manually extract our fields.
-	healthEventBytes, err := json.Marshal(healthEventWithStatus.HealthEvent)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to marshal health event for node %s: %w", nodeName, err)
-	}
-
-	var healthEvent protos.HealthEvent
-	if err := json.Unmarshal(healthEventBytes, &healthEvent); err != nil {
-		return nil, nil, fmt.Errorf("failed to unmarshal health event for node %s: %w", nodeName, err)
-	}
-
-	return &healthEventWithStatus, &healthEvent, nil
-}
-
-func canSkipDrain(
-	ctx context.Context, drainCompleted bool,
-	partialDrainEntity, currentPartialDrainEntity *protos.Entity,
-	id, nodeName string,
-) bool {
-	if drainCompleted {
-		// We previously executed a full drain and it's complete. We can skip the current drain whether it's a full
-		// drain or a partial drain.
-		if partialDrainEntity == nil {
-			slog.InfoContext(ctx, "Full drain previously completed for node as part of old event, skipping drain",
-				"node", nodeName, "id", id)
-
-			return true
-		}
-		// If we previously completed a partial drain, we can skip the current drain if it's also a partial drain
-		// that matches the same impacted entity
-		if currentPartialDrainEntity != nil { // partialDrainEntity != nil
-			// The protos.Entity struct type cannot be compared with equals operator. As a result,
-			// we will check the identifying fields for EntityType and EntityValue rather than directly compare
-			// the structs via *partialDrainEntity == *currentPartialDrainEntity
-			partialDrainCompletedForSameEntity := partialDrainEntity.EntityType == currentPartialDrainEntity.EntityType &&
-				partialDrainEntity.EntityValue == currentPartialDrainEntity.EntityValue
-			if partialDrainCompletedForSameEntity {
-				slog.InfoContext(ctx, "Partial drain previously completed for entity as part of old event, skipping drain",
-					"node", nodeName, "id", id, "entityValue", currentPartialDrainEntity.EntityValue)
-
-				return true
-			}
-
-			slog.InfoContext(ctx, "Partial drain previously completed for a different entity as part of old event",
-				"node", nodeName, "id", id, "currentEntityValue", currentPartialDrainEntity.EntityValue,
-				"oldEntityValue", partialDrainEntity.EntityValue)
-		}
-	}
-
-	return false
+	return alreadyDrained, true, nil
 }
 
 /*
@@ -703,50 +616,24 @@ have a COMPONENT_RESET recommended action and have a GPU_UUID impacted entity.
 If the recommended action is COMPONENT_RESET but the given HealthEvent does not include a supported entity for partial
 drain, we will return an error. For all other recommended actions, we will proceed with a full drain.
 */
-func (e *NodeDrainEvaluator) shouldExecutePartialDrain(
-	healthEvent *protos.HealthEvent) (*protos.Entity, error) {
-	if !isPartialDrainCandidate(healthEvent, e.config.PartialDrainEnabled) {
-		return nil, nil
+func (e *NodeDrainEvaluator) shouldExecutePartialDrain(healthEvent *protos.HealthEvent) (*protos.Entity, error) {
+	if e.config.PartialDrainEnabled {
+		return drain.PartialDrainEntity(healthEvent)
 	}
 
-	if entity := partialDrainEntity(healthEvent, e.config.PartialDrainEnabled); entity != nil {
-		return entity, nil
-	}
-
-	return nil, fmt.Errorf("no supported entities for a partial drain found in health event for node: %s",
-		healthEvent.NodeName)
-}
-
-// isPartialDrainCandidate reports whether the event is eligible for a partial drain at all,
-// before looking for a usable entity.
-func isPartialDrainCandidate(healthEvent *protos.HealthEvent, partialDrainEnabled bool) bool {
-	return partialDrainEnabled && healthEvent.GetRecommendedAction() == protos.RecommendedAction_COMPONENT_RESET
-}
-
-// partialDrainEntity returns the entity a partial drain would target for this event, or nil
-// when the event drains the whole node. Callers outside the package reach this through
-// DrainScopeFor, which returns the scope alongside it.
-func partialDrainEntity(healthEvent *protos.HealthEvent, partialDrainEnabled bool) *protos.Entity {
-	if !isPartialDrainCandidate(healthEvent, partialDrainEnabled) {
-		return nil
-	}
-
-	for _, entity := range healthEvent.GetEntitiesImpacted() {
-		if _, supported := model.EntityTypeToResourceNames[entity.EntityType]; supported &&
-			len(entity.EntityValue) != 0 {
-			return entity
-		}
-	}
-
-	return nil
+	return nil, nil
 }
 
 // DrainScopeFor reports whether the event drains the whole node or a single entity, and the
 // entity when the drain is partial. Callers need both, so returning them together keeps the
 // scope label and the entity from being derived independently and drifting apart.
 func DrainScopeFor(healthEvent *protos.HealthEvent, partialDrainEnabled bool) (DrainScope, *protos.Entity) {
-	entity := partialDrainEntity(healthEvent, partialDrainEnabled)
-	if entity == nil {
+	if !partialDrainEnabled {
+		return DrainScopeFull, nil
+	}
+
+	entity, err := drain.PartialDrainEntity(healthEvent)
+	if err != nil || entity == nil {
 		return DrainScopeFull, nil
 	}
 

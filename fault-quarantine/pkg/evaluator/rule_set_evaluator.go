@@ -25,7 +25,7 @@ import (
 )
 
 func InitializeRuleSetEvaluators(
-	ruleSets []config.RuleSet,
+	ruleSets []config.RuleSetMeta,
 	nodeInformer *informer.NodeInformer,
 ) ([]RuleSetEvaluatorIface, error) {
 	var (

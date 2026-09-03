@@ -49,7 +49,7 @@ func (allEval *AllRuleSetEvaluator) Evaluate(
 	return common.RuleEvaluationSuccess, errs.ErrorOrNil()
 }
 
-func NewAllRuleSetEvaluator(evaluators []RuleEvaluator, ruleset config.RuleSet) *AllRuleSetEvaluator {
+func NewAllRuleSetEvaluator(evaluators []RuleEvaluator, ruleset config.RuleSetMeta) *AllRuleSetEvaluator {
 	return &AllRuleSetEvaluator{
 		Name:       ruleset.Name,
 		Version:    ruleset.Version,
