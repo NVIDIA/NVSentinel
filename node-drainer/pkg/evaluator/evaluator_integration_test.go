@@ -736,17 +736,26 @@ func TestDrainScopeFor_VaryingEventShapes_ReturnsEntityAndMatchingScope(t *testi
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			entity := partialDrainEntity(tc.event, tc.enabled)
+			assertEntity := func(t *testing.T, entity *protos.Entity) {
+				t.Helper()
 
-			if tc.wantEntity == "" {
-				assert.Nil(t, entity)
-			} else {
+				if tc.wantEntity == "" {
+					assert.Nil(t, entity)
+					return
+				}
+
 				require.NotNil(t, entity)
 				assert.Equal(t, tc.wantEntity, entity.GetEntityValue())
 			}
 
-			gotScope, _ := DrainScopeFor(tc.event, tc.enabled)
+			assertEntity(t, partialDrainEntity(tc.event, tc.enabled))
+
+			// Assert both return values of the exported wrapper. Checking only the scope
+			// would let a regression in the entity it returns pass, since that is the
+			// value callers outside the package act on.
+			gotScope, gotEntity := DrainScopeFor(tc.event, tc.enabled)
 			assert.Equal(t, tc.wantScope, gotScope)
+			assertEntity(t, gotEntity)
 		})
 	}
 }
