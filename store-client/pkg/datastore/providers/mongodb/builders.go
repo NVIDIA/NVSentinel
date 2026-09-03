@@ -44,7 +44,7 @@ func (fb *mongoFilterBuilder) Ne(field string, value any) client.FilterBuilder {
 
 // Gt adds a greater-than filter
 func (fb *mongoFilterBuilder) Gt(field string, value any) client.FilterBuilder {
-	fb.filter[field] = bson.M{"$gt": value}
+	fb.filter[field] = bson.M{operatorGreaterThan: value}
 	return fb
 }
 

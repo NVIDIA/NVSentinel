@@ -71,6 +71,14 @@ kubectl -n nvsentinel scale deployment/fault-quarantine --replicas="${REPLICAS:-
 kubectl -n nvsentinel rollout status deployment/fault-quarantine --timeout=180s
 ```
 
+On a normal `RESUME` startup, fault-quarantine queries the datastore for processable health events that do not have a quarantine status and replays them before consuming live events. An event is suppressed only when later events collectively cover every check, entity, and error-code scope it could change; a check-wide event therefore requires a later check-wide event. This conservative rule prevents old failures or recoveries from temporarily overwriting newer node state. Recovery uses one current API-server node snapshot per replayed event instead of the informer cache. The live watcher opens first, so events inserted during recovery remain queued for normal processing.
+
+Skipped, invalid, and superseded documents receive a terminal fault-quarantine recovery marker in their status; the detailed result remains available through the recovery metric. Successful quarantine updates already carry a terminal quarantine status. Both forms are excluded from later scans. Normal recovery does not advance a wall-clock checkpoint, because event creation time and datastore insertion order can differ. If an installation has no persisted cutoff, as on the first upgrade to this behavior, the lower bound is initialized and persisted at the current startup boundary rather than scanning the cluster's entire history.
+
+A consumed `CREATE` request skips cold start and records its creation time. Later restarts only consider unresolved events created after that cutoff, so events that an operator deliberately abandoned are not revived.
+
+Cold-start activity is exposed through `fault_quarantine_cold_start_events_total{result=...}` and `fault_quarantine_cold_start_duration_seconds`.
+
 ### Label Prefix
 
 Defines the prefix for all node labels created by the module to track cordon/uncordon lifecycle.

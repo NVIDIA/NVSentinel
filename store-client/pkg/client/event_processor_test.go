@@ -22,6 +22,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/healthstatus"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
@@ -65,6 +66,18 @@ func TestProcessEvents_EventHandlingAndCheckpointOutcomes_PreserveCheckpointOrde
 			markErrors:    map[string]error{"1": checkpointErr},
 			wantErrors:    []error{checkpointErr},
 			wantHandled:   []string{"1"},
+			wantMarkCalls: []string{"1"},
+		},
+		{
+			name: "filtered event checkpoint failure keeps later event unprocessed",
+			config: EventProcessorConfig{SkipEvent: func(event Event) bool {
+				eventID, _ := event.GetDocumentID()
+
+				return eventID == "1"
+			}},
+			firstEvent:    newEventProcessorTestEvent("1"),
+			markErrors:    map[string]error{"1": checkpointErr},
+			wantErrors:    []error{checkpointErr},
 			wantMarkCalls: []string{"1"},
 		},
 		{
@@ -244,4 +257,43 @@ func (w *eventProcessorTestWatcher) MarkProcessed(_ context.Context, token []byt
 
 func (w *eventProcessorTestWatcher) Close(context.Context) error {
 	return nil
+}
+
+type updatedFieldsTestEvent struct {
+	updated       map[string]any
+	unmarshalCall bool
+}
+
+func (*updatedFieldsTestEvent) GetDocumentID() (string, error)  { return "1", nil }
+func (*updatedFieldsTestEvent) GetRecordUUID() (string, error)  { return "event-1", nil }
+func (*updatedFieldsTestEvent) GetNodeName() (string, error)    { return "node-a", nil }
+func (*updatedFieldsTestEvent) GetResumeToken() []byte          { return []byte("token") }
+func (e *updatedFieldsTestEvent) UpdatedFields() map[string]any { return e.updated }
+func (e *updatedFieldsTestEvent) UnmarshalDocument(any) error {
+	e.unmarshalCall = true
+
+	return errors.New("completion-only update must not be decoded")
+}
+
+// TestDefaultEventProcessor_HandleCompletionOnlyUpdate_SkipsDecodingAndCheckpoints
+// verifies that internal completion writes do not re-enter analyzer handling.
+func TestDefaultEventProcessor_HandleCompletionOnlyUpdate_SkipsDecodingAndCheckpoints(t *testing.T) {
+	event := &updatedFieldsTestEvent{updated: map[string]any{
+		healthstatus.FaultQuarantineRecoveryPath: "completed",
+	}}
+	watcher := &eventProcessorTestWatcher{markErrors: make(map[string]error)}
+	processor := &DefaultEventProcessor{
+		changeStreamWatcher: watcher,
+		config: EventProcessorConfig{SkipEvent: func(event Event) bool {
+			return EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath)
+		}},
+	}
+
+	require.NoError(t, processor.handleSingleEvent(context.Background(), event))
+	require.False(t, event.unmarshalCall)
+	require.Equal(t, []string{"token"}, watcher.markedTokens)
+	require.False(t, EventUpdatesOnly(&updatedFieldsTestEvent{updated: map[string]any{
+		healthstatus.FaultQuarantineRecoveryPath: "completed",
+		"healtheventstatus.nodequarantined":      "Quarantined",
+	}}, healthstatus.FaultQuarantineRecoveryPath))
 }

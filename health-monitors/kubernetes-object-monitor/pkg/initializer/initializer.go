@@ -18,8 +18,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -103,7 +105,7 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 
 	pub := publisher.New(pcClient, params.PlatformConnectorSocket, pb.ProcessingStrategy(strategyValue))
 
-	mgr, err := createManager(params, cfg.Policies)
+	mgr, lookupGVKs, err := createManager(params, cfg.Policies)
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to create manager: %w", err)
@@ -114,11 +116,16 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 		return nil, fmt.Errorf("failed to setup health checks: %w", err)
 	}
 
-	celEnv, err := celenv.NewEnvironment(mgr.GetClient())
+	// The API reader is what lookup() falls back to. A GVK it names that the
+	// cache has no pruned entry for must not be read through the cached client,
+	// which would start a cluster-wide informer for it and hold it in full.
+	celEnv, err := celenv.NewEnvironment(mgr.GetAPIReader())
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
 	}
+
+	celEnv.UseCacheForLookups(mgr.GetCache(), lookupGVKs)
 
 	evaluator, err := policy.NewEvaluator(celEnv, cfg.Policies)
 	if err != nil {
@@ -141,25 +148,25 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 	}, nil
 }
 
-func createManager(params Params, policies []config.Policy) (ctrl.Manager, error) {
+func createManager(params Params, policies []config.Policy) (ctrl.Manager, []schema.GroupVersionKind, error) {
 	restConfig, err := ctrl.GetConfig()
 	if err != nil {
-		return nil, fmt.Errorf("getting kubeconfig: %w", err)
+		return nil, nil, fmt.Errorf("getting kubeconfig: %w", err)
 	}
 
-	cacheOptions, err := buildCacheOptions(restConfig, policies, params.ResyncPeriod)
+	plan, err := buildCachePlan(restConfig, policies, params.ResyncPeriod)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	mgrOpts := buildManagerOptions(params, cacheOptions)
+	mgrOpts := buildManagerOptions(params, plan.options)
 
 	mgr, err := ctrl.NewManager(restConfig, mgrOpts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create manager: %w", err)
+		return nil, nil, fmt.Errorf("failed to create manager: %w", err)
 	}
 
-	return mgr, nil
+	return mgr, plan.lookupGVKs, nil
 }
 
 func buildManagerOptions(params Params, cacheOptions cache.Options) ctrl.Options {
@@ -169,41 +176,125 @@ func buildManagerOptions(params Params, cacheOptions cache.Options) ctrl.Options
 		},
 		HealthProbeBindAddress: params.HealthProbeBindAddress,
 		Cache:                  cacheOptions,
+		// Serve the watched objects from the informer cache. Unstructured reads
+		// bypass it by default, which would put a live GET on the API server in
+		// every reconcile of every object.
+		Client: client.Options{
+			Cache: &client.CacheOptions{Unstructured: true},
+		},
 		Controller: ctrlconfig.Controller{
 			CacheSyncTimeout: params.CacheSyncTimeout,
 		},
 	}
 }
 
-func buildCacheOptions(
+// cachePlan is what the enabled policies imply for the cache: the options to
+// build the manager with, and the GVKs a lookup() may read from it.
+type cachePlan struct {
+	options cache.Options
+	// lookupGVKs each have an entry retaining every field the policies read off
+	// a looked-up object of that GVK, and are cached cluster-wide so that
+	// whichever namespace a lookup names is present.
+	lookupGVKs []schema.GroupVersionKind
+}
+
+func buildCachePlan(
 	restConfig *rest.Config,
 	policies []config.Policy,
 	resyncPeriod time.Duration,
-) (cache.Options, error) {
+) (cachePlan, error) {
 	httpClient, err := rest.HTTPClientFor(restConfig)
 	if err != nil {
-		return cache.Options{}, fmt.Errorf("failed to create Kubernetes HTTP client: %w", err)
+		return cachePlan{}, fmt.Errorf("failed to create Kubernetes HTTP client: %w", err)
 	}
 
 	restMapper, err := apiutil.NewDynamicRESTMapper(restConfig, httpClient)
 	if err != nil {
-		return cache.Options{}, fmt.Errorf("failed to create Kubernetes REST mapper: %w", err)
+		return cachePlan{}, fmt.Errorf("failed to create Kubernetes REST mapper: %w", err)
 	}
 
-	return buildCacheOptionsWithRESTMapper(restMapper, policies, resyncPeriod)
+	return buildCachePlanWithRESTMapper(restMapper, policies, resyncPeriod)
 }
 
-func buildCacheOptionsWithRESTMapper(
+func buildCachePlanWithRESTMapper(
 	restMapper meta.RESTMapper,
 	policies []config.Policy,
 	resyncPeriod time.Duration,
-) (cache.Options, error) {
+) (cachePlan, error) {
 	opts := cache.Options{
 		SyncPeriod: &resyncPeriod,
 	}
 
-	namespacesByGVK := make(map[schema.GroupVersionKind]map[string]cache.Config)
-	allNamespacesByGVK := make(map[schema.GroupVersionKind]bool)
+	scopes, err := collectWatchScopes(restMapper, policies)
+	if err != nil {
+		return cachePlan{}, err
+	}
+
+	if len(scopes.watched) == 0 {
+		return cachePlan{options: opts}, nil
+	}
+
+	compiler, err := celenv.NewCompilerEnvironment()
+	if err != nil {
+		return cachePlan{}, fmt.Errorf("failed to create CEL environment for cache field derivation: %w", err)
+	}
+
+	entries := buildCacheEntries(compiler, policies)
+
+	// Every GVK the policies reach gets an entry, cluster-scoped ones included,
+	// because the entry is where the transform lives. Namespaces stays nil to
+	// cache cluster-wide, which controller-runtime also requires of an entry for
+	// a cluster-scoped kind.
+	opts.ByObject = make(map[client.Object]cache.ByObject, len(entries))
+
+	var lookupGVKs []schema.GroupVersionKind
+
+	for gvk, entry := range entries {
+		namespaces := scopes.namespaces[gvk]
+
+		opts.ByObject[newUnstructuredForGVK(gvk)] = cache.ByObject{
+			Namespaces: namespaces,
+			Transform:  entry.transform,
+		}
+
+		if !entry.servesLookups {
+			continue
+		}
+
+		// A lookup names any namespace it likes, and reading an entry that
+		// holds only some of them fails for the rest.
+		if namespaces != nil {
+			slog.Info("Reading lookup() through the API: the GVK is cached for named namespaces only",
+				"gvk", gvk.String(), "namespaces", slices.Sorted(maps.Keys(namespaces)))
+
+			continue
+		}
+
+		lookupGVKs = append(lookupGVKs, gvk)
+	}
+
+	return cachePlan{options: opts, lookupGVKs: lookupGVKs}, nil
+}
+
+// watchScopes is the namespace scope each watched GVK is cached at.
+type watchScopes struct {
+	watched map[schema.GroupVersionKind]bool
+	// namespaces holds the cache configuration per namespace for a GVK watched
+	// in named namespaces only. A GVK cached cluster-wide is absent from it.
+	namespaces map[schema.GroupVersionKind]map[string]cache.Config
+}
+
+// collectWatchScopes reads the resource stanza of every enabled policy to work
+// out which GVKs are watched and at which namespace scope. One policy naming no
+// namespace caches the GVK cluster-wide whatever the others ask for, since a
+// wider cache answers their reads too.
+func collectWatchScopes(restMapper meta.RESTMapper, policies []config.Policy) (watchScopes, error) {
+	scopes := watchScopes{
+		watched:    make(map[schema.GroupVersionKind]bool),
+		namespaces: make(map[schema.GroupVersionKind]map[string]cache.Config),
+	}
+
+	clusterWide := make(map[schema.GroupVersionKind]bool)
 
 	for _, p := range policies {
 		if !p.Enabled {
@@ -211,40 +302,31 @@ func buildCacheOptionsWithRESTMapper(
 		}
 
 		gvk := policyGVK(p)
+		scopes.watched[gvk] = true
+
 		if p.Resource.Namespace == "" {
-			allNamespacesByGVK[gvk] = true
-			delete(namespacesByGVK, gvk)
+			clusterWide[gvk] = true
+			delete(scopes.namespaces, gvk)
 
 			continue
 		}
 
 		if err := validateResourceNamespaceScope(restMapper, p, gvk); err != nil {
-			return cache.Options{}, err
+			return watchScopes{}, err
 		}
 
-		if allNamespacesByGVK[gvk] {
+		if clusterWide[gvk] {
 			continue
 		}
 
-		if namespacesByGVK[gvk] == nil {
-			namespacesByGVK[gvk] = make(map[string]cache.Config)
+		if scopes.namespaces[gvk] == nil {
+			scopes.namespaces[gvk] = make(map[string]cache.Config)
 		}
 
-		namespacesByGVK[gvk][p.Resource.Namespace] = cache.Config{}
+		scopes.namespaces[gvk][p.Resource.Namespace] = cache.Config{}
 	}
 
-	if len(namespacesByGVK) == 0 {
-		return opts, nil
-	}
-
-	opts.ByObject = make(map[client.Object]cache.ByObject, len(namespacesByGVK))
-	for gvk, namespaces := range namespacesByGVK {
-		opts.ByObject[newUnstructuredForGVK(gvk)] = cache.ByObject{
-			Namespaces: namespaces,
-		}
-	}
-
-	return opts, nil
+	return scopes, nil
 }
 
 func validateResourceNamespaceScope(
