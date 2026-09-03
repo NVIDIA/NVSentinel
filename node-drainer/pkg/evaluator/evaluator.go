@@ -709,7 +709,7 @@ func (e *NodeDrainEvaluator) shouldExecutePartialDrain(
 		return nil, nil
 	}
 
-	if entity := PartialDrainEntity(healthEvent, e.config.PartialDrainEnabled); entity != nil {
+	if entity := partialDrainEntity(healthEvent, e.config.PartialDrainEnabled); entity != nil {
 		return entity, nil
 	}
 
@@ -723,10 +723,10 @@ func isPartialDrainCandidate(healthEvent *protos.HealthEvent, partialDrainEnable
 	return partialDrainEnabled && healthEvent.GetRecommendedAction() == protos.RecommendedAction_COMPONENT_RESET
 }
 
-// PartialDrainEntity returns the entity a partial drain would target for this event, or nil
-// when the event drains the whole node. Exported so callers that only need the decision, such
-// as metric labelling, reach it the same way the evaluator does rather than restating it.
-func PartialDrainEntity(healthEvent *protos.HealthEvent, partialDrainEnabled bool) *protos.Entity {
+// partialDrainEntity returns the entity a partial drain would target for this event, or nil
+// when the event drains the whole node. Callers outside the package reach this through
+// DrainScopeFor, which returns the scope alongside it.
+func partialDrainEntity(healthEvent *protos.HealthEvent, partialDrainEnabled bool) *protos.Entity {
 	if !isPartialDrainCandidate(healthEvent, partialDrainEnabled) {
 		return nil
 	}
@@ -745,7 +745,7 @@ func PartialDrainEntity(healthEvent *protos.HealthEvent, partialDrainEnabled boo
 // entity when the drain is partial. Callers need both, so returning them together keeps the
 // scope label and the entity from being derived independently and drifting apart.
 func DrainScopeFor(healthEvent *protos.HealthEvent, partialDrainEnabled bool) (DrainScope, *protos.Entity) {
-	entity := PartialDrainEntity(healthEvent, partialDrainEnabled)
+	entity := partialDrainEntity(healthEvent, partialDrainEnabled)
 	if entity == nil {
 		return DrainScopeFull, nil
 	}

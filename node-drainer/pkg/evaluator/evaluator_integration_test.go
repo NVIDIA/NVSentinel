@@ -736,7 +736,7 @@ func TestDrainScopeFor_VaryingEventShapes_ReturnsEntityAndMatchingScope(t *testi
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			entity := PartialDrainEntity(tc.event, tc.enabled)
+			entity := partialDrainEntity(tc.event, tc.enabled)
 
 			if tc.wantEntity == "" {
 				assert.Nil(t, entity)
