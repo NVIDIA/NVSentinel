@@ -271,9 +271,15 @@ token. Both halves need stating:
 unaffected. `MarkProcessed(ctx, token)` keeps its signature and gains a sibling that takes the
 metadata explicitly, letting consumers migrate rather than break. For a consumer that still
 calls the old method, the watcher falls back to an in-flight lookup keyed by token, covering
-only events between the cursor and the consumer's position. On a miss it writes the token with
-**no** position and leaves `HasPosition: false`, because a missing lag series is recoverable and
-a wrong one is not.
+only events between the cursor and the consumer's position.
+
+On a miss it writes the token with **no** position, because a missing lag series is recoverable
+and a wrong one is not. "No position" has to mean **actively cleared**, not merely unwritten: the
+document may already hold `positionTime` and `positionId` from an earlier token, and a token-only
+update would leave that metadata describing a different event than the token beside it. That is
+the precise failure this section exists to prevent, so the fallback path must `$unset` both
+fields in the same update that writes the token. One write, three fields, no combination of them
+that a reader can mistake for a valid position.
 
 **Atomicity.** This comes free, and it is worth recording why. `MarkProcessed` already persists
 via a single upsert on the client's own document:
@@ -335,16 +341,38 @@ actually true:
 > collection is receiving inserts, or whenever the watcher's read loop is live. It does **not**
 > detect a stalled consumer on a collection receiving only updates and deletes.
 
-Two things close it, and both are cheaper than an exact head:
+**A blocked read loop is already covered, for insert traffic.** No new metric is needed for it:
+`max(_id)` is queried against the collection and is therefore independent of the cursor, so head
+keeps advancing while the loop is stuck and `changestream_lag_seconds` rises. Distinguishing
+"blocked" from "idle" is exactly the head-versus-position comparison this ADR is built on, and it
+already works whenever inserts are flowing.
 
-- **A watcher liveness signal.** A `changestream_reads_total{client}` counter incremented in
-  `processNextEvent` makes "the read loop is not advancing" directly observable, so the blocked
-  case is caught by a stalled counter rather than inferred from lag. This is the honest way to
-  use position age: not as lag, but as a stall detector qualified by liveness.
-- **An exact head, later, if it proves necessary.** A maintained `updatedAt` on health-event
-  writes would make `MAX(updatedAt)` an exact head for inserts and updates. That is a change to
-  every writer rather than to the watcher, so it is deliberately not part of this ADR; the
-  narrowed guarantee plus the liveness counter should be measured first.
+**A read-loop heartbeat is not available, and should not be faked.** An earlier revision of this
+ADR proposed a `changestream_reads_total` counter as a liveness signal, alerting when its rate
+hit zero. That is wrong, and wrong in the specific way this ADR spends its Context section
+warning about: the counter is flat on a healthy idle stream and flat on a blocked read loop, so
+the alert fires on a quiet cluster. It is the position-age mistake wearing a different name, and
+it is dropped rather than kept with caveats.
+
+Nor is there an easy fix at a different granularity. The loop blocks inside
+`w.changeStream.Next(ctx)`
+(`store-client/pkg/datastore/providers/mongodb/watcher/watch_store.go:411-431`), which does not
+return until an event arrives or the context is cancelled, so a per-iteration heartbeat sits
+frozen on an idle stream too and inherits the same ambiguity. A genuine heartbeat needs the loop
+restructured around `TryNext` with its own tick, which is a change to the read path's shape and
+performance profile, not an observability addition.
+
+So the residual gap stays open and named, with the two ways to close it recorded as future work
+rather than smuggled in here:
+
+- **An exact head.** A maintained `updatedAt` on health-event writes would make `MAX(updatedAt)`
+  an exact head for inserts and updates, closing the gap without a heartbeat at all. It is a
+  change to every writer rather than to the watcher.
+- **A real heartbeat.** `TryNext` plus a loop tick would make read-loop liveness observable
+  independently of traffic, at the cost of restructuring the read path.
+
+Measure the narrowed guarantee first. Shipping a second metric whose flat value has two meanings
+would cost more credibility than the gap does.
 
 Cluster `operationTime` from a `hello` command was considered as a third head candidate and
 **rejected**: it advances on any activity anywhere in the deployment, so an idle watched
@@ -366,11 +394,13 @@ collection would report continuously growing lag. That is the position-age failu
 ### Metrics
 
 ```text
-changestream_lag_seconds{client}      gauge     head time minus position time, 0 when caught up
-changestream_documents_behind{client} gauge     documents after position, -1 when not collected
-changestream_position_known{client}   gauge     1 once the consumer has saved a position, else 0
-changestream_reads_total{client}      counter   events read off the cursor, for liveness
+changestream_lag_seconds{client}      gauge   head time minus position time, 0 when caught up
+changestream_documents_behind{client} gauge   documents after position, -1 when not collected
+changestream_position_known{client}   gauge   1 once the consumer has saved a position, else 0
 ```
+
+Three metrics, deliberately. Every candidate fourth one considered here had a flat or zero value
+with two possible meanings, which is the defect this ADR exists to remove rather than add.
 
 `client` is the existing `TokenConfig.ClientName` / `fieldClientName`, so the label space is
 the set of consumers and nothing more.
@@ -380,14 +410,9 @@ which is better than a missing series or a misleading zero. `fault-quarantine` s
 precedent for "interface unavailable", though as noted above that branch has never actually
 fired.
 
-The last two are not diagnostic afterthoughts; they are what make the first two interpretable,
-and each covers a case where a zero lag reading is a lie:
-
-- `changestream_position_known` — a zero lag reading means "caught up" only when the position is
-  known, so any alert on `changestream_lag_seconds` must be qualified by it.
-- `changestream_reads_total` — incremented in `processNextEvent`, so a flat counter means the
-  read loop is not advancing. That is the one case where head time can go stale on MongoDB, and
-  it is the honest use of position age: a stall detector qualified by liveness, never lag.
+`changestream_position_known` is not a diagnostic afterthought; it is what makes the other two
+interpretable. A zero lag reading means "caught up" only when the position is known, so any
+alert on `changestream_lag_seconds` must be qualified by it.
 
 ## Rationale
 
@@ -501,9 +526,13 @@ the worst case, stops updating its own lag metric and looks frozen rather than b
 - **Blocked cursor, insert traffic**: with the watcher's read loop blocked, assert head still
   advances from `max(_id)` so lag does not collapse to zero.
 - **Blocked cursor, update-only traffic**: the documented limitation. Assert that lag does *not*
-  detect it and that `changestream_reads_total` stays flat, so the gap is pinned by a test rather
-  than left to be rediscovered. A test that asserts the known-false thing is what stops someone
-  later "fixing" the metric by widening the guarantee in the docs.
+  detect it, so the gap is pinned by a test rather than left to be rediscovered. A test that
+  asserts the known-false thing is what stops someone later "fixing" the metric by widening the
+  guarantee in the docs.
+- **Idle versus blocked, on the same metrics**: a healthy idle stream and a blocked read loop
+  must be distinguishable. With inserts flowing, the blocked case shows rising lag and the idle
+  case does not. This is the test that would have caught the rejected heartbeat counter, which
+  read identically in both.
 - **Restart acknowledgement**: process events, restart mid-stream, and assert the resumed
   position time matches the token actually stored, not the newest event seen. This is what
   catches a position paired with the wrong token.
@@ -526,17 +555,16 @@ the worst case, stops updating its own lag metric and looks frozen rather than b
    poller, default on for `lag_seconds` and off for `documents_behind`.
 3. Leave `fault_quarantine_event_backlog_count` and its ticker in place for one release so
    dashboards can move, then remove the ticker in favour of the shared metric.
-4. Document in `docs/METRICS.md`, as three alerts rather than one, because no single series
-   covers every way a consumer goes silent:
+4. Document in `docs/METRICS.md`, as two alerts rather than one, because neither covers the
+   other's blind spot:
    - `changestream_lag_seconds > 900` for 10m, tuned per fleet, qualified by
-     `changestream_position_known == 1`. The primary "behind" alert.
+     `changestream_position_known == 1`. The primary "behind" alert, and the one that catches a
+     blocked read loop whenever inserts are flowing.
    - `changestream_position_known == 0` persisting. Covers a consumer stalled since before
      rollout, which no lag series can see.
-   - `rate(changestream_reads_total[15m]) == 0` while the pod is running. Covers a blocked read
-     loop, which is the case where head time itself can go stale.
 
    Also document the MongoDB caveats explicitly: what `documents_behind` counts, and that lag
-   does not detect a stalled consumer on update-only traffic.
+   does not detect a stalled consumer on a collection receiving only updates and deletes.
 
 Fixing `fault-quarantine`'s MongoDB count and removing `event-exporter`'s dead gauge are
 tracked separately, since both are pre-existing bugs that stand on their own.
