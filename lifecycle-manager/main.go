@@ -222,7 +222,7 @@ func newPublisher(
 	if err != nil {
 		slog.Error("Failed to create gRPC client for platform-connector", "error", err)
 
-		return nil, err
+		return nil, fmt.Errorf("create platform-connector gRPC client: %w", err)
 	}
 
 	return healthpub.New(
