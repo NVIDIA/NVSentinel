@@ -120,7 +120,11 @@ func (r *Reader) load() error {
 	return nil
 }
 
-func buildMaps(metadata *model.GPUMetadata) (map[string]*model.GPUInfo, map[string]*model.GPUInfo, map[string]map[int]*gpuLinkInfo) {
+func buildMaps(metadata *model.GPUMetadata) (
+	map[string]*model.GPUInfo,
+	map[string]*model.GPUInfo,
+	map[string]map[int]*gpuLinkInfo,
+) {
 	pciToGPU := make(map[string]*model.GPUInfo)
 	uuidToInfo := make(map[string]*model.GPUInfo)
 	nvswitchLinks := make(map[string]map[int]*gpuLinkInfo)
@@ -149,12 +153,16 @@ func buildMaps(metadata *model.GPUMetadata) (map[string]*model.GPUInfo, map[stri
 }
 
 func sameFileVersion(previous, current os.FileInfo) bool {
-	return previous != nil && os.SameFile(previous, current) && previous.Size() == current.Size() && previous.ModTime().Equal(current.ModTime())
+	return previous != nil &&
+		os.SameFile(previous, current) &&
+		previous.Size() == current.Size() &&
+		previous.ModTime().Equal(current.ModTime())
 }
 
 func (r *Reader) GetInfoByUUID(uuid string) (*model.GPUInfo, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	if err := r.ensureFreshLocked(); err != nil {
 		return nil, fmt.Errorf("failed to load metadata for UUID lookup %s: %w", uuid, err)
 	}
@@ -170,6 +178,7 @@ func (r *Reader) GetInfoByUUID(uuid string) (*model.GPUInfo, error) {
 func (r *Reader) GetGPUByPCI(pci string) (*model.GPUInfo, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	if err := r.ensureFreshLocked(); err != nil {
 		return nil, fmt.Errorf("failed to load metadata for PCI lookup %s: %w", pci, err)
 	}
@@ -187,6 +196,7 @@ func (r *Reader) GetGPUByPCI(pci string) (*model.GPUInfo, error) {
 func (r *Reader) GetGPUByNVSwitchLink(nvswitchPCI string, linkID int) (*model.GPUInfo, int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	if err := r.ensureFreshLocked(); err != nil {
 		return nil, -1, fmt.Errorf("failed to load metadata for NVSwitch lookup %s link %d: %w", nvswitchPCI, linkID, err)
 	}
@@ -210,6 +220,7 @@ func (r *Reader) GetGPUByNVSwitchLink(nvswitchPCI string, linkID int) (*model.GP
 func (r *Reader) GetChassisSerial() *string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	if err := r.ensureFreshLocked(); err != nil {
 		return nil
 	}
@@ -230,6 +241,7 @@ func (r *Reader) GetDriverVersion() string {
 		if !r.loaded || r.metadata == nil {
 			slog.Warn("Failed to load GPU metadata for driver version",
 				"path", r.path, "error", err)
+
 			return ""
 		}
 	}
