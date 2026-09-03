@@ -81,6 +81,7 @@ spec:
           items:
           - key: config.toml
             path: config.toml
+      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
       {{- if $pgClientCert }}
       - name: postgresql-client-cert-original
         secret:
@@ -88,6 +89,7 @@ spec:
           optional: false
       - name: client-certs-fixed
         emptyDir: {}
+      {{- end }}
       {{- else }}
       {{- include "nvsentinel.mongodb.certVolume" . | nindent 6 }}
       {{- end }}

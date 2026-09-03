@@ -211,10 +211,14 @@ Returns "true" if a MongoDB cert volume will be rendered by nvsentinel.mongodb.c
 "false" otherwise. Use this to conditionally render the corresponding volume mount.
 */}}
 {{- define "nvsentinel.mongodb.hasCertVolume" -}}
+{{- $isPostgres := and .Values.global.datastore
+                        (eq .Values.global.datastore.provider "postgresql") -}}
 {{- $useExternal := and .Values.global.datastore
                         (eq .Values.global.datastore.provider "mongodb")
                         (not .Values.global.mongodbStore.enabled) -}}
-{{- if $useExternal -}}
+{{- if $isPostgres -}}
+false
+{{- else if $useExternal -}}
   {{- $authMechanism := "scram" -}}
   {{- if and .Values.global.datastore.auth .Values.global.datastore.auth.mechanism -}}
   {{- $authMechanism = .Values.global.datastore.auth.mechanism -}}
