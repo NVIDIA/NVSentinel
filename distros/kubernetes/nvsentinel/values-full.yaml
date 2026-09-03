@@ -1777,6 +1777,21 @@ event-exporter:
       # Recommended: 2.0 for standard exponential backoff
       backoffMultiplier: 2.0
 
+    # Selects which events reach the sink. Empty exports everything, which is the
+    # default and matches previous behaviour.
+    filter:
+      # CEL over the health event, and must evaluate to a boolean. Compiled at
+      # startup, so a syntax error or a non-boolean expression stops the exporter
+      # rather than silently dropping events. Write a comparison, not a bare field:
+      # `event.isFatal == true`, not `event.isFatal`.
+      #
+      # Note errorCode is a list, so match it with membership:
+      #   expression: "event.recommendedAction != 'NONE' && !('45' in event.errorCode)"
+      #
+      # Filtered events still advance the resume token, so the stream keeps progressing.
+      # See docs/configuration/event-exporter.md for the available fields.
+      expression: ""
+
 ################################################################################
 # PREFLIGHT CONFIGURATION
 #
