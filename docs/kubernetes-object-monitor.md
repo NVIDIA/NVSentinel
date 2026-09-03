@@ -129,6 +129,20 @@ nodeAssociation:
     lookup('v1', 'Pod', resource.metadata.namespace, resource.spec.podName).spec.nodeName
 ```
 
+#### Cached Fields
+
+The `resource` variable is served from the informer cache, not fetched per evaluation. Policies are read once at startup, so the fields each expression touches are derived from the compiled CEL and the cache keeps only those, plus the metadata the informer itself needs (`apiVersion`, `kind`, `metadata.name`, `metadata.namespace`, `metadata.uid`, `metadata.resourceVersion`, `metadata.deletionTimestamp`). A node object is mostly labels, annotations, managed fields and cached image lists, none of which a typical predicate reads, so this cuts the cache to a fraction of its former size on large clusters. The retained fields are logged per resource kind at startup.
+
+A recorded field keeps its whole subtree, so comprehensions and computed map keys need no special care: `resource.status.conditions.filter(c, c.type == "Ready")` keeps every field of every condition, and `resource.metadata.labels[resource.spec.nodeName]` keeps all of `metadata.labels`.
+
+An expression that uses the resource as a whole rather than through a field access, such as `size(resource)`, cannot be reduced to a set of fields. That resource kind is then cached in full, which is correct but gives up the saving for every policy on that kind. Prefer reading the specific fields you need.
+
+The same derivation covers `lookup()`. A call that gives its apiVersion and kind as string literals, as in `lookup('v1', 'Pod', resource.metadata.namespace, resource.spec.podName).spec.nodeName`, has the fields it reads off the returned object derived too, and that kind is cached cluster-wide pruned to them. Such a kind needs `get`, `list` and `watch` on it cluster-wide: `get` for the calls that read through the API server, `list` and `watch` because the cache watches every object of the kind. Grant all three in the ClusterRole for any kind a policy looks up but no policy watches, as the generated rules cover only the kinds policies watch. Where `list` and `watch` are missing the call reads through the API server instead, and logs once that it did.
+
+The informer for such a kind is created by the first call that needs it and lists every object of the kind before it can answer. Calls read through the API server until it has caught up, so that no evaluation waits on it.
+
+A call that computes its apiVersion or kind, whose result is used as a whole, that sits in an expression using the watched resource as a whole, or that names a kind cached for particular namespaces only, always reads through the API server. Each read is then one request per evaluation, so a policy that looks up a literal kind and reads named fields off it is the cheaper shape by a wide margin.
+
 #### Health Event Template
 ```yaml
 healthEvent:
