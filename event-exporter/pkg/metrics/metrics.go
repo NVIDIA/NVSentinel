@@ -86,13 +86,6 @@ var (
 		},
 	)
 
-	EventBacklogSize = promauto.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "health_events_exporter_event_backlog_size",
-			Help: "Number of unprocessed events in the backlog.",
-		},
-	)
-
 	ResumeTokenUpdateTimestamp = promauto.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "health_events_exporter_resume_token_update_timestamp",
