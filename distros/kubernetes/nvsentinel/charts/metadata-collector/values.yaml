@@ -27,8 +27,35 @@ resources:
     cpu: 100m
     memory: 128Mi
 
-# Runtime class name for the pod. If empty or not set, the field will be omitted.
+# Runtime class name for the pod. The default "nvidia" is rendered on the
+# DaemonSet. Set runtimeClassName: "" to omit the field (CRI-O, and NRI-mode
+# clusters with no matching RuntimeClass). In NRI mode, also mount host driver
+# libraries via additionalHostVolumes / additionalVolumeMounts (and extraEnv
+# if LD_LIBRARY_PATH is needed).
 runtimeClassName: "nvidia"
+
+# Extra environment variables for the metadata-collector container (optional).
+# extraEnv:
+#   - name: LD_LIBRARY_PATH
+#     value: /usr/local/nvidia/lib
+extraEnv: []
+
+# Additional volume mounts for metadata-collector (optional).
+# Use with additionalHostVolumes to mount host driver libraries when
+# RuntimeClass-based injection is unavailable (NRI-mode clusters).
+# additionalVolumeMounts:
+#   - name: nvidia-driver-libs
+#     mountPath: /usr/local/nvidia/lib
+#     readOnly: true
+additionalVolumeMounts: []
+
+# Additional host volumes for metadata-collector (optional).
+# additionalHostVolumes:
+#   - name: nvidia-driver-libs
+#     hostPath:
+#       path: /usr/lib/x86_64-linux-gnu   # amd64; use /usr/lib/aarch64-linux-gnu on arm64
+#       type: Directory
+additionalHostVolumes: []
 
 # Kubelet host used by the pod device mapper. By default, the Downward API
 # resolves the node's primary IP, which works whether kubelet binds to
