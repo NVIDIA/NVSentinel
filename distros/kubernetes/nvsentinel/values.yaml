@@ -376,9 +376,6 @@ platformConnector:
 
   k8sConnector:
     enabled: true
-    # Retry transient Kubernetes API failures while preserving event order.
-    # Total processing attempts = 1 initial + maxRetries retries.
-    maxRetries: 3
     maxNodeConditionMessageLength: 1024
     # Max length of the compacted message prefix (before Recommended Action) per health event
     compactedHealthEventMsgLen: 72

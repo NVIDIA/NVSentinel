@@ -314,9 +314,6 @@ platformConnector:
   # Kubernetes connector configuration
   # Handles updating Kubernetes node status and conditions
   k8sConnector:
-    # Number of ordered retries for transient Kubernetes API failures.
-    # Total processing attempts = 1 initial + maxRetries retries.
-    maxRetries: 3
     # Maximum length of the node condition message
     # This is the maximum length of the node condition message that will be stored in the Kubernetes node status
     # If the node condition message is longer than this value, it will be truncated
