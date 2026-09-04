@@ -165,6 +165,9 @@ The full default ruleset — including all aggregation pipeline stage definition
 
 ### Derived-condition recovery
 
+The design rationale, tradeoffs, and alternatives are documented in
+[ADR-053](../designs/053-derived-condition-recovery.md).
+
 Rules may opt into automatic recovery by mapping a verified healthy source event
 to the derived condition:
 
