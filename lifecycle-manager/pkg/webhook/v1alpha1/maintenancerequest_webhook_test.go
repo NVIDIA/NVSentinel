@@ -36,6 +36,7 @@ func validMR() *v1alpha1.MaintenanceRequest {
 				NodeName:          "node-1",
 				Agent:             "maintenance-controller",
 				CheckName:         "planned-maintenance",
+				Version:           1,
 				IsFatal:           true,
 				IsHealthy:         false,
 				RecommendedAction: protos.RecommendedAction_NONE,
@@ -103,6 +104,18 @@ func TestValidateCreate_EmptyNodeName_Rejects(t *testing.T) {
 	_, err := v.ValidateCreate(context.Background(), mr)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nodeName is required")
+}
+
+func TestValidateCreate_ZeroVersion_Rejects(t *testing.T) {
+	t.Parallel()
+
+	v := &MaintenanceRequestValidator{Enabled: true}
+	mr := validMR()
+	mr.Spec.HealthEvent.Version = 0
+
+	_, err := v.ValidateCreate(context.Background(), mr)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "spec.healthEvent.version is required")
 }
 
 func TestValidateCreate_IsHealthyTrue_Rejects(t *testing.T) {
