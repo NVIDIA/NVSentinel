@@ -17,6 +17,7 @@ package postgresql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -91,6 +92,11 @@ func NewPostgreSQLStore(ctx context.Context, config datastore.DataStoreConfig) (
 		db.Close()
 		return nil, fmt.Errorf("failed to create tables: %w", err)
 	}
+
+	// Runtime upgrades use statements such as CREATE INDEX CONCURRENTLY that
+	// PostgreSQL forbids inside a transaction. Keep them separate from schema
+	// setup and non-fatal so a performance migration cannot prevent startup.
+	runRuntimeUpgrades(ctx, db)
 
 	store := &PostgreSQLDataStore{
 		db:         db,
@@ -333,12 +339,62 @@ var recoveryIndexStatements = []string{
 		`document->'healtheventstatus'->>'faultquarantinerecovery' = '')`,
 }
 
-// runtimeUpgradeIndexStatements are executed on every datastore startup. Keep
-// them idempotent so existing databases receive indexes added after initial
-// provisioning, not only databases created by the Helm init script.
-var runtimeUpgradeIndexStatements = []string{
-	`CREATE INDEX IF NOT EXISTS idx_health_events_analyzer_lookup ON health_events (` +
-		`node_name, event_type, created_at DESC, (document->'healthevent'->>'agent'))`,
+type runtimeUpgradeIndex struct {
+	name            string
+	createStatement string
+	dropStatement   string
+}
+
+// runtimeUpgradeIndexes are checked on every datastore startup so existing
+// databases receive indexes added after initial Helm provisioning.
+var runtimeUpgradeIndexes = []runtimeUpgradeIndex{
+	{
+		name: "idx_health_events_analyzer_lookup",
+		createStatement: `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_health_events_analyzer_lookup ` +
+			`ON health_events (node_name, event_type, created_at DESC, ` +
+			`(document->'healthevent'->>'agent'))`,
+		dropStatement: `DROP INDEX CONCURRENTLY IF EXISTS idx_health_events_analyzer_lookup`,
+	},
+}
+
+const runtimeUpgradeIndexValidityQuery = `SELECT idx.indisvalid
+	FROM pg_catalog.pg_index AS idx
+	WHERE idx.indexrelid = pg_catalog.to_regclass($1)`
+
+// runRuntimeUpgrades executes each statement directly through the connection
+// pool, outside an explicit transaction block. Do not wrap this function in
+// BeginTx: PostgreSQL rejects CREATE INDEX CONCURRENTLY inside a transaction
+// block.
+func runRuntimeUpgrades(ctx context.Context, db *sql.DB) {
+	for _, index := range runtimeUpgradeIndexes {
+		var valid bool
+
+		err := db.QueryRowContext(ctx, runtimeUpgradeIndexValidityQuery, index.name).Scan(&valid)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			slog.WarnContext(ctx, "Failed to inspect PostgreSQL runtime upgrade index",
+				"index", index.name, "error", err)
+
+			continue
+		}
+
+		if err == nil && valid {
+			continue
+		}
+
+		if err == nil {
+			if _, err := db.ExecContext(ctx, index.dropStatement); err != nil {
+				slog.WarnContext(ctx, "Failed to remove invalid PostgreSQL runtime upgrade index",
+					"index", index.name, "error", err)
+
+				continue
+			}
+		}
+
+		if _, err := db.ExecContext(ctx, index.createStatement); err != nil {
+			slog.WarnContext(ctx, "Failed to apply PostgreSQL runtime upgrade",
+				"index", index.name, "error", err)
+		}
+	}
 }
 
 func createTables(ctx context.Context, db *sql.DB) error {
@@ -442,7 +498,6 @@ func createTables(ctx context.Context, db *sql.DB) error {
 			ON datastore_changelog(table_name, changed_at, id)
 			WHERE processed = FALSE`,
 	}
-	indexes = append(indexes, runtimeUpgradeIndexStatements...)
 	indexes = append(indexes, recoveryIndexStatements...)
 
 	// Execute schema creation

@@ -16,7 +16,9 @@ package postgresql
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -255,19 +257,93 @@ func TestRecoveryIndexesIncludePartialPendingEventCursor(t *testing.T) {
 }
 
 func TestRuntimeUpgradeIndexes_ExistingDatabase_IncludesAnalyzerLookup(t *testing.T) {
-	var analyzerIndex string
-	for _, statement := range runtimeUpgradeIndexStatements {
-		if strings.Contains(statement, "idx_health_events_analyzer_lookup") {
-			analyzerIndex = statement
+	var analyzerIndex runtimeUpgradeIndex
+	for _, index := range runtimeUpgradeIndexes {
+		if index.name == "idx_health_events_analyzer_lookup" {
+			analyzerIndex = index
 
 			break
 		}
 	}
 
-	require.NotEmpty(t, analyzerIndex)
-	assert.Contains(t, analyzerIndex, "CREATE INDEX IF NOT EXISTS")
-	assert.Contains(t, analyzerIndex, "ON health_events (node_name, event_type, created_at DESC")
-	assert.Contains(t, analyzerIndex, "document->'healthevent'->>'agent'")
+	require.NotEmpty(t, analyzerIndex.name)
+	assert.Contains(t, analyzerIndex.createStatement, "CREATE INDEX CONCURRENTLY IF NOT EXISTS")
+	assert.Contains(t, analyzerIndex.createStatement, "ON health_events (node_name, event_type, created_at DESC")
+	assert.Contains(t, analyzerIndex.createStatement, "document->'healthevent'->>'agent'")
+	assert.Equal(t, "DROP INDEX CONCURRENTLY IF EXISTS idx_health_events_analyzer_lookup", analyzerIndex.dropStatement)
+}
+
+func TestRunRuntimeUpgrades_ConcurrentIndex_ExecutesOutsideTransaction(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	for _, index := range runtimeUpgradeIndexes {
+		mock.ExpectQuery(regexp.QuoteMeta(runtimeUpgradeIndexValidityQuery)).
+			WithArgs(index.name).
+			WillReturnError(sql.ErrNoRows)
+		mock.ExpectExec(regexp.QuoteMeta(index.createStatement)).WillReturnResult(sqlmock.NewResult(0, 0))
+	}
+
+	runRuntimeUpgrades(context.Background(), db)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRunRuntimeUpgrades_OneStatementFails_ContinuesRemainingStatements(t *testing.T) {
+	originalIndexes := runtimeUpgradeIndexes
+	runtimeUpgradeIndexes = []runtimeUpgradeIndex{
+		{name: "first_index", createStatement: "first concurrent index"},
+		{name: "second_index", createStatement: "second concurrent index"},
+	}
+	t.Cleanup(func() { runtimeUpgradeIndexes = originalIndexes })
+
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	for _, index := range runtimeUpgradeIndexes {
+		mock.ExpectQuery(regexp.QuoteMeta(runtimeUpgradeIndexValidityQuery)).
+			WithArgs(index.name).
+			WillReturnError(sql.ErrNoRows)
+		if index.name == "first_index" {
+			mock.ExpectExec(regexp.QuoteMeta(index.createStatement)).WillReturnError(assert.AnError)
+		} else {
+			mock.ExpectExec(regexp.QuoteMeta(index.createStatement)).WillReturnResult(sqlmock.NewResult(0, 0))
+		}
+	}
+
+	runRuntimeUpgrades(context.Background(), db)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRunRuntimeUpgrades_InvalidIndex_RecreatesConcurrently(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	index := runtimeUpgradeIndexes[0]
+	mock.ExpectQuery(regexp.QuoteMeta(runtimeUpgradeIndexValidityQuery)).
+		WithArgs(index.name).
+		WillReturnRows(sqlmock.NewRows([]string{"indisvalid"}).AddRow(false))
+	mock.ExpectExec(regexp.QuoteMeta(index.dropStatement)).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta(index.createStatement)).WillReturnResult(sqlmock.NewResult(0, 0))
+
+	runRuntimeUpgrades(context.Background(), db)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRunRuntimeUpgrades_ValidIndex_SkipsMigration(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	index := runtimeUpgradeIndexes[0]
+	mock.ExpectQuery(regexp.QuoteMeta(runtimeUpgradeIndexValidityQuery)).
+		WithArgs(index.name).
+		WillReturnRows(sqlmock.NewRows([]string{"indisvalid"}).AddRow(true))
+
+	runRuntimeUpgrades(context.Background(), db)
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestPostgreSQLDataStore_Provider(t *testing.T) {

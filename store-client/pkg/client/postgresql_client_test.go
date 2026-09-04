@@ -289,12 +289,13 @@ func TestRecoveryQueryComparisonOperators(t *testing.T) {
 	if condition, args := buildScalarComparison("document->>'value'", "!=", nil, 1, true); condition != "document->>'value' IS NOT NULL" || len(args) != 0 {
 		t.Fatalf("nil inequality = %q, %#v", condition, args)
 	}
-	if condition, args := buildScalarComparison("document->>'value'", "IS DISTINCT FROM", "analyzer", 1, true); condition != "document->>'value' IS DISTINCT FROM $1" || !reflect.DeepEqual(args, []any{"analyzer"}) {
-		t.Fatalf("null-safe inequality = %q, %#v", condition, args)
-	}
-	if condition, args := buildScalarComparison("document->>'value'", "IS DISTINCT FROM", false, 1, true); condition != "CASE WHEN document->>'value' IN ('true', 'false') THEN (document->>'value')::boolean END IS DISTINCT FROM $1" || !reflect.DeepEqual(args, []any{false}) {
-		t.Fatalf("null-safe boolean inequality = %q, %#v", condition, args)
-	}
+	condition, args := buildScalarComparison("document->>'value'", "IS DISTINCT FROM", "analyzer", 1, true)
+	assert.Equal(t, "document->>'value' IS DISTINCT FROM $1", condition)
+	assert.Equal(t, []any{"analyzer"}, args)
+
+	condition, args = buildScalarComparison("document->>'value'", "IS DISTINCT FROM", false, 1, true)
+	assert.Equal(t, "CASE WHEN document->>'value' IN ('true', 'false') THEN (document->>'value')::boolean END IS DISTINCT FROM $1", condition)
+	assert.Equal(t, []any{false}, args)
 }
 
 func TestRecoveryQueryExistsOperator(t *testing.T) {
