@@ -93,9 +93,8 @@ func NewPostgreSQLStore(ctx context.Context, config datastore.DataStoreConfig) (
 		return nil, fmt.Errorf("failed to create tables: %w", err)
 	}
 
-	// Runtime upgrades use statements such as CREATE INDEX CONCURRENTLY that
-	// PostgreSQL forbids inside a transaction. Keep them separate from schema
-	// setup and non-fatal so a performance migration cannot prevent startup.
+	// Apply upgrade indexes separately so existing databases receive them
+	// without blocking writes. Keep this performance migration non-fatal.
 	runRuntimeUpgrades(ctx, db)
 
 	store := &PostgreSQLDataStore{

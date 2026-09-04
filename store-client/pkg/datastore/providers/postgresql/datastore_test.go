@@ -341,9 +341,14 @@ func TestRunRuntimeUpgrades_ValidIndex_SkipsMigration(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(runtimeUpgradeIndexValidityQuery)).
 		WithArgs(index.name).
 		WillReturnRows(sqlmock.NewRows([]string{"indisvalid"}).AddRow(true))
+	// sqlmock has no negative expectations. Queue both destructive statements
+	// and require them to remain unmet so removing the valid-index guard fails
+	// this test instead of being hidden by the helper's best-effort error path.
+	mock.ExpectExec(regexp.QuoteMeta(index.dropStatement)).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta(index.createStatement)).WillReturnResult(sqlmock.NewResult(0, 0))
 
 	runRuntimeUpgrades(context.Background(), db)
-	require.NoError(t, mock.ExpectationsWereMet())
+	require.Error(t, mock.ExpectationsWereMet())
 }
 
 func TestPostgreSQLDataStore_Provider(t *testing.T) {
