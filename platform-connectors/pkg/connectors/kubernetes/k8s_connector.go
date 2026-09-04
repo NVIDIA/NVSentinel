@@ -16,6 +16,7 @@ package kubernetes
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -193,8 +194,8 @@ func (r *K8sConnector) logTerminalProcessingFailure(
 	err error,
 ) {
 	switch {
-	case ctx.Err() != nil:
-		slog.InfoContext(ctx, "Kubernetes health event processing stopped with context cancellation",
+	case ctx.Err() != nil || errors.Is(err, context.Canceled):
+		slog.InfoContext(ctx, "Kubernetes health event processing stopped during shutdown",
 			"error", err,
 			"eventCount", len(healthEvents.GetEvents()))
 	case isKubernetesConnectorRetryableError(err) && retryCount >= r.config.MaxRetries:
@@ -255,7 +256,7 @@ func (r *K8sConnector) processHealthEventsWithRetry(
 			"maxRetries", r.config.MaxRetries,
 			"retryDelay", retryDelay)
 
-		if err := waitForKubernetesRetry(ctx, retryDelay); err != nil {
+		if err := waitForKubernetesRetry(ctx, r.stopCh, retryDelay); err != nil {
 			return retryCount, err
 		}
 
@@ -267,13 +268,15 @@ func isKubernetesConnectorRetryableError(err error) bool {
 	return apierrors.IsConflict(err) || isTemporaryError(err)
 }
 
-func waitForKubernetesRetry(ctx context.Context, delay time.Duration) error {
+func waitForKubernetesRetry(ctx context.Context, stopCh <-chan struct{}, delay time.Duration) error {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-stopCh:
+		return context.Canceled
 	case <-timer.C:
 		return nil
 	}

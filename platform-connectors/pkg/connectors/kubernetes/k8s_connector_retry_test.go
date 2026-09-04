@@ -47,12 +47,14 @@ func retryTestConnector(
 	}
 }
 
+// TestNewK8sConnectorDefaultsMaxRetries verifies the default outer retry limit.
 func TestNewK8sConnectorDefaultsMaxRetries(t *testing.T) {
 	connector := NewK8sConnector(nil, nil, nil, context.Background(), K8sConnectorConfig{})
 
 	require.Equal(t, DefaultMaxRetries, connector.config.MaxRetries)
 }
 
+// TestInitializeK8sConnectorRejectsNegativeMaxRetries verifies invalid retry limits fail initialization.
 func TestInitializeK8sConnectorRejectsNegativeMaxRetries(t *testing.T) {
 	_, _, err := InitializeK8sConnector(
 		context.Background(), nil, 1, 1, nil,
@@ -67,6 +69,7 @@ func TestInitializeK8sConnectorRejectsNegativeMaxRetries(t *testing.T) {
 	require.EqualError(t, err, "maxRetries must not be negative, got -1")
 }
 
+// TestProcessHealthEventsWithRetry verifies retry bounds, error classification, and cancellation.
 func TestProcessHealthEventsWithRetry(t *testing.T) {
 	t.Run("transient failure succeeds", func(t *testing.T) {
 		calls := 0
@@ -128,6 +131,51 @@ func TestProcessHealthEventsWithRetry(t *testing.T) {
 	})
 }
 
+// TestProcessHealthEventsWithRetryStopsDuringBackoff verifies connector shutdown interrupts an active retry wait.
+func TestProcessHealthEventsWithRetryStopsDuringBackoff(t *testing.T) {
+	stopCh := make(chan struct{})
+	firstAttempt := make(chan struct{}, 1)
+	connector := retryTestConnector(3, func(context.Context, *protos.HealthEvents) error {
+		select {
+		case firstAttempt <- struct{}{}:
+		default:
+		}
+
+		return apierrors.NewServiceUnavailable("unavailable during shutdown")
+	})
+	connector.stopCh = stopCh
+	connector.retryBaseDelay = time.Minute
+	connector.retryMaxDelay = time.Minute
+
+	type result struct {
+		retries int
+		err     error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		retries, err := connector.processHealthEventsWithRetry(context.Background(), &protos.HealthEvents{})
+		resultCh <- result{retries: retries, err: err}
+	}()
+
+	select {
+	case <-firstAttempt:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the first processing attempt")
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	close(stopCh)
+
+	select {
+	case result := <-resultCh:
+		require.ErrorIs(t, result.err, context.Canceled)
+		require.Equal(t, 1, result.retries)
+	case <-time.After(time.Second):
+		t.Fatal("retry backoff did not stop promptly")
+	}
+}
+
+// TestFetchAndProcessHealthMetricRetriesBeforeDequeuingRecovery verifies batches retain queue order during retries.
 func TestFetchAndProcessHealthMetricRetriesBeforeDequeuingRecovery(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -193,6 +241,7 @@ func TestFetchAndProcessHealthMetricRetriesBeforeDequeuingRecovery(t *testing.T)
 	require.Equal(t, []string{"fault", "fault", "recovery"}, attempts)
 }
 
+// TestFetchAndProcessHealthMetricRetriesRecoveryAfterClientGoExhaustion verifies outer retries persist a recovery.
 func TestFetchAndProcessHealthMetricRetriesRecoveryAfterClientGoExhaustion(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
