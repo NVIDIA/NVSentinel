@@ -226,7 +226,7 @@ Two classes of publisher share the per-node Unix socket:
 | Class | Components | Names other nodes? |
 |-------|------------|--------------------|
 | Node-local | gpu, syslog, nic, preflight checks, custom monitors | No — always their own node |
-| Cluster-scoped | csp-health-monitor, kubernetes-object-monitor, slurm-drain-monitor, health-events-analyzer | Yes, by design |
+| Cluster-scoped | csp-health-monitor, kubernetes-object-monitor, nvcre-certification-monitor, slurm-drain-monitor, health-events-analyzer | Yes, by design |
 
 Every first-party monitor presents a credential: a projected Kubernetes
 ServiceAccount token minted for a dedicated audience, validated with the
@@ -330,10 +330,11 @@ refusing. A value that is neither `true` nor `false` fails startup as well.
 
 #### Where to run the cluster-scoped monitors
 
-The four cluster-scoped publishers — `csp-health-monitor`,
-`kubernetes-object-monitor`, `slurm-drain-monitor` and `health-events-analyzer` —
-are the only bundled identities allowed to name a node other than their own, and
-all four ship **disabled by default** (`global.<monitor>.enabled: false`). Their
+The five cluster-scoped publishers — `csp-health-monitor`,
+`kubernetes-object-monitor`, `nvcre-certification-monitor`, `slurm-drain-monitor`
+and `health-events-analyzer` — are the only bundled identities allowed to name a
+node other than their own, and all five ship **disabled by default**
+(`global.<monitor>.enabled: false`). Their
 usernames are derived from the release namespace for whichever are enabled, so
 enabling one is what grants it cross-node reach — a deliberate act, because it
 lets that ServiceAccount have any node in the cluster cordoned, drained and

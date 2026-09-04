@@ -56,6 +56,7 @@ Individual component feature documentation:
 - [Node Drainer](./node-drainer.md)
 - [Fault Remediation](./fault-remediation.md)
 - [Kubernetes Object Monitor](./kubernetes-object-monitor.md)
+- [NVCRE Certification Monitor](./nvcre-certification-monitor.md)
 - [Circuit Breaker](./circuit-breaker.md)
 - [Cancelling Breakfix](./cancelling-breakfix.md)
 - [Event Exporter](./event-exporter.md)

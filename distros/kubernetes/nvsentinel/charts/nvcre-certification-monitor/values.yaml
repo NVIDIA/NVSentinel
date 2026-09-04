@@ -1,0 +1,82 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Default values for nvcre-certification-monitor.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Log level of the monitor process: debug, info, warn or error.
+logLevel: info
+
+# Container image. An empty tag means the chart appVersion, unless
+# global.image.tag is set on the parent chart.
+image:
+  repository: ghcr.io/nvidia/nvsentinel/nvcre-certification-monitor
+  pullPolicy: IfNotPresent
+  tag: ""
+
+# Extra annotations for the monitor pod. The chart already adds a checksum of
+# the rendered config, so a policy change restarts the pod on its own.
+podAnnotations: {}
+
+# How often a full sweep of all Certification CRs runs (Go duration, e.g. 5m,
+# 15m, 1h). There is no event-driven trigger, so a Certification reaching a
+# terminal state is noticed within one interval. Shorter values detect failures
+# sooner at the cost of more API reads per sweep.
+resyncInterval: 15m
+
+# Policies select which Certification failedNode entries trigger health events.
+# Each policy's `match` is a CEL expression evaluated against every
+# (category, failedNode) entry of a failed Certification. If it evaluates to
+# true, an unhealthy health event is published and the (node, variant, reason)
+# tuple is tracked in the node annotation
+# nvsentinel.dgxc.nvidia.com/nvcre-cert-failures-details.
+
+policies:
+  - name: certification-failures
+    match: "(failedNode.reason == 'ThresholdViolation') || (failedNode.reason == 'WorkloadFailed')"
+
+# Requests and limits for the single monitor container. Memory is dominated by
+# the Node informer, which keeps only each Node's name, UID, labels and the one
+# annotation the monitor reads, so the cache stays small on large clusters.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# Volumes added to the pod. The `socket` entry is required: it is mounted at
+# /var/run inside the container so the platform-connector Unix socket
+# (global.socketPath, default /var/run/nvsentinel.sock) that the monitor
+# publishes health events through is reachable. Change `path` only if
+# platform-connectors was installed with a different host directory.
+volumes:
+  - name: socket
+    hostPath:
+      path: /var/run/nvsentinel
+      type: DirectoryOrCreate
+
+# Processing strategy for health events
+# valid values: EXECUTE_REMEDIATION, STORE_ONLY
+# default: EXECUTE_REMEDIATION
+# EXECUTE_REMEDIATION: normal behavior; downstream modules may update cluster state.
+# STORE_ONLY: observability-only behavior; event should be persisted/exported but should not modify cluster resources (i.e., no node conditions, no quarantine, no drain, no remediation).
+# The monitor's own bookkeeping is written in both modes: the Node annotation and label that record held failures, and the
+# Certification cert-processed / error-recovered annotations. See docs/configuration/nvcre-certification-monitor.md.
+processingStrategy: EXECUTE_REMEDIATION
+
+# Pod priority for this component. Overridden by the matching global when that is set.
+priorityClassName: ""

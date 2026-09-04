@@ -67,6 +67,9 @@ dependencies:
   - name: kubernetes-object-monitor
     version: "0.1.0"
     condition: global.kubernetesObjectMonitor.enabled
+  - name: nvcre-certification-monitor
+    version: "0.1.0"
+    condition: global.nvcreCertificationMonitor.enabled
   - name: event-exporter
     version: "0.1.0"
     condition: global.eventExporter.enabled
