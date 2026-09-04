@@ -182,6 +182,43 @@ submitting health events naming another node. See
 | `k8s_platform_connector_node_condition_update_duration_milliseconds` | Histogram | - | Duration of node condition updates in milliseconds. Uses linear buckets (0, 10, 500) |
 | `k8s_platform_connector_node_event_update_create_duration_milliseconds` | Histogram | - | Duration of node event updates/creations in milliseconds. Uses linear buckets (0, 10, 500) |
 
+### Prometheus Connector Metrics
+
+Every health monitor publishes through the platform connector, so this one metric covers
+`gpu-health-monitor`, `syslog-health-monitor`, `nic-health-monitor`, `csp-health-monitor`,
+`kubernetes-object-monitor` and `health-events-analyzer` without per-monitor instrumentation.
+Enabled with `platformConnector.promConnector.enabled` (default `false`, like the other optional connectors).
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `health_events_total` | Counter | `node`, `agent`, `check_name`, `recommended_action`, `is_fatal`, `is_healthy` | Health events received by the platform connector. `recommended_action` is the enum name (`NONE`, `CONTACT_SUPPORT`, `RESTART_VM`, …); a `CUSTOM` action reports as `CUSTOM` rather than expanding `customRecommendedAction`, which is operator-defined and unbounded |
+
+`node` carries the **event's own** `nodeName`, not the node of the connector pod that
+received it. That distinction matters: the DaemonSet monitors publish over the node-local
+socket so the two coincide, but `health-events-analyzer` is a Deployment whose derived
+events describe other nodes, and an allowlisted cross-node publisher can name any node. An
+explicit label makes every agent correct without a `kube_pod_info` join.
+
+`errorCode` is excluded because it is unbounded: suffixed XIDs such as
+`145.RLW_SRC_TRACK` would grow the series set without limit. `node` is bounded by the fleet.
+
+`is_fatal` is kept even though producers derive it as `recommendedAction != NONE`. The
+redundancy is the point: a producer that disagrees with that derivation becomes visible
+rather than silent.
+
+Useful queries:
+
+```promql
+# Actionable event rate by action, fleet-wide
+sum by (recommended_action) (rate(health_events_total{recommended_action!="NONE"}[5m]))
+
+# Which agent and check is producing the actionable events
+sum by (agent, check_name) (rate(health_events_total{recommended_action!="NONE",is_healthy="false"}[1h]))
+
+# Per node, correct for every agent including health-events-analyzer
+sum by (node) (rate(health_events_total{recommended_action!="NONE"}[1h]))
+```
+
 ### Workqueue Metrics
 
 These metrics track the internal ring buffer workqueue performance:
