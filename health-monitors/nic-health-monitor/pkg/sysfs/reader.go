@@ -104,6 +104,10 @@ func (r *fsReader) ReadIBPortCounter(device string, port int, counterPath string
 	return readUint64(filepath.Join(r.IBPortPath(device, port), counterPath))
 }
 
+func (r *fsReader) ReadIBDeviceHWCounter(device, counter string) (uint64, error) {
+	return readUint64(filepath.Join(r.ibBase, device, "hw_counters", counter))
+}
+
 func (r *fsReader) ReadNetStatistic(iface, counter string) (uint64, error) {
 	return readUint64(filepath.Join(r.netBase, iface, "statistics", counter))
 }
@@ -158,6 +162,20 @@ func (r *fsReader) IsVirtualFunction(device string) bool {
 	_, err := os.Lstat(path)
 
 	return err == nil
+}
+
+// ReadIBDeviceDriver returns the basename of the `device/driver` symlink
+// target, which the kernel points at the bound driver's sysfs entry
+// (e.g. /sys/bus/pci/drivers/efa → "efa").
+func (r *fsReader) ReadIBDeviceDriver(device string) (string, error) {
+	path := filepath.Join(r.ibBase, device, "device", "driver")
+
+	target, err := os.Readlink(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read driver symlink %s: %w", path, err)
+	}
+
+	return filepath.Base(target), nil
 }
 
 // ParsePortState extracts the trailing state name from a sysfs value such

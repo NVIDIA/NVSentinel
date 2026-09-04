@@ -23,6 +23,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
+	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/topology"
 )
 
 const (
@@ -40,7 +41,20 @@ type counterDefinition struct {
 	path        string
 	isFatal     bool
 	description string
+	// linkLayers restricts the counter to ports of the listed link
+	// layers (topology.LinkLayer* values). nil means every layer — used
+	// for netdev-tree counters, which exist on any adapter with a
+	// network interface. The IB-tree counters below are driver specific:
+	// mlx5 exposes the IBTA port counters and RoCE hw_counters, while the
+	// efa driver exposes its own hw_counters set, and reading one
+	// driver's counters on the other's ports is guaranteed to fail.
+	linkLayers []string
 }
+
+var (
+	mlx5LinkLayers = []string{topology.LinkLayerInfiniBand, topology.LinkLayerEthernet}
+	efaLinkLayers  = []string{topology.LinkLayerEFA}
+)
 
 var counterDefinitions = map[string]counterDefinition{
 	// /sys/class/infiniband/<dev>/ports/<port>/counters/
@@ -48,61 +62,73 @@ var counterDefinitions = map[string]counterDefinition{
 		path:        "counters/excessive_buffer_overrun_errors",
 		isFatal:     true,
 		description: "HCA internal buffer overflow - lossless contract violated",
+		linkLayers:  mlx5LinkLayers,
 	},
 	"link_downed": {
 		path:        "counters/link_downed",
 		isFatal:     true,
 		description: "Port Training State Machine failed - QP disconnect",
+		linkLayers:  mlx5LinkLayers,
 	},
 	"link_error_recovery": {
 		path:        "counters/link_error_recovery",
 		isFatal:     false,
 		description: "Link retraining events - micro-flapping",
+		linkLayers:  mlx5LinkLayers,
 	},
 	"local_link_integrity_errors": {
 		path:        "counters/local_link_integrity_errors",
 		isFatal:     true,
 		description: "Physical errors exceed LocalPhyErrors hardware cap",
+		linkLayers:  mlx5LinkLayers,
 	},
 	"port_rcv_discards": {
 		path:        "counters/port_rcv_discards",
 		isFatal:     false,
 		description: "RX discards due to congestion or buffer pressure",
+		linkLayers:  mlx5LinkLayers,
 	},
 	"port_rcv_errors": {
 		path:        "counters/port_rcv_errors",
 		isFatal:     false,
 		description: "Malformed packets received",
+		linkLayers:  mlx5LinkLayers,
 	},
 	"port_rcv_remote_physical_errors": {
 		path:        "counters/port_rcv_remote_physical_errors",
 		isFatal:     false,
 		description: "Remote physical-layer errors received on this port",
+		linkLayers:  mlx5LinkLayers,
 	},
 	"port_rcv_switch_relay_errors": {
 		path:        "counters/port_rcv_switch_relay_errors",
 		isFatal:     false,
 		description: "Packets discarded because switch relay forwarding failed",
+		linkLayers:  mlx5LinkLayers,
 	},
 	"port_xmit_discards": {
 		path:        "counters/port_xmit_discards",
 		isFatal:     false,
 		description: "TX discards due to congestion",
+		linkLayers:  mlx5LinkLayers,
 	},
 	"port_xmit_wait": {
 		path:        "counters/port_xmit_wait",
 		isFatal:     false,
 		description: "TX wait ticks - congestion backpressure",
+		linkLayers:  mlx5LinkLayers,
 	},
 	"symbol_error": {
 		path:        "counters/symbol_error",
 		isFatal:     false,
 		description: "PHY bit errors before FEC - physical layer degradation",
+		linkLayers:  mlx5LinkLayers,
 	},
 	"symbol_error_fatal": {
 		path:        "counters/symbol_error",
 		isFatal:     true,
 		description: "Symbol errors exceed IBTA BER threshold (10E-12) - link outside spec",
+		linkLayers:  mlx5LinkLayers,
 	},
 
 	// /sys/class/infiniband/<dev>/ports/<port>/hw_counters/
@@ -110,36 +136,123 @@ var counterDefinitions = map[string]counterDefinition{
 		path:        "hw_counters/implied_nak_seq_err",
 		isFatal:     false,
 		description: "Implied NAK sequence errors - retransmission pressure",
+		linkLayers:  mlx5LinkLayers,
 	},
 	"local_ack_timeout_err": {
 		path:        "hw_counters/local_ack_timeout_err",
 		isFatal:     false,
 		description: "ACK timeout - potential fabric black hole",
+		linkLayers:  mlx5LinkLayers,
 	},
 	"out_of_sequence": {
 		path:        "hw_counters/out_of_sequence",
 		isFatal:     false,
 		description: "Fabric routing issues - out of sequence packets",
+		linkLayers:  mlx5LinkLayers,
 	},
 	"packet_seq_err": {
 		path:        "hw_counters/packet_seq_err",
 		isFatal:     false,
 		description: "Packet sequence errors - retransmission pressure",
+		linkLayers:  mlx5LinkLayers,
 	},
 	"req_transport_retries_exceeded": {
 		path:        "hw_counters/req_transport_retries_exceeded",
 		isFatal:     true,
 		description: "Requester transport retry limit exceeded",
+		linkLayers:  mlx5LinkLayers,
 	},
 	"rnr_nak_retry_err": {
 		path:        "hw_counters/rnr_nak_retry_err",
 		isFatal:     true,
 		description: "Receiver Not Ready NAK retry exhausted - connection severed",
+		linkLayers:  mlx5LinkLayers,
 	},
 	"roce_slow_restart": {
 		path:        "hw_counters/roce_slow_restart",
 		isFatal:     false,
 		description: "Victim flow oscillation",
+		linkLayers:  mlx5LinkLayers,
+	},
+
+	// AWS Elastic Fabric Adapter (efa driver). Per-port statistics live
+	// under /sys/class/infiniband/<dev>/ports/<port>/hw_counters/ ...
+	"efa_rx_drops": {
+		path:        "hw_counters/rx_drops",
+		isFatal:     false,
+		description: "EFA RX packets dropped by the adapter - fabric congestion or receive pressure",
+		linkLayers:  efaLinkLayers,
+	},
+	"efa_rdma_read_wr_err": {
+		path:        "hw_counters/rdma_read_wr_err",
+		isFatal:     false,
+		description: "EFA RDMA read work requests completed with error",
+		linkLayers:  efaLinkLayers,
+	},
+	"efa_rdma_write_wr_err": {
+		path:        "hw_counters/rdma_write_wr_err",
+		isFatal:     false,
+		description: "EFA RDMA write work requests completed with error",
+		linkLayers:  efaLinkLayers,
+	},
+	"efa_unresponsive_remote_err": {
+		path:        "hw_counters/unresponsive_remote_err",
+		isFatal:     false,
+		description: "EFA remote peer unresponsive - potential fabric black hole",
+		linkLayers:  efaLinkLayers,
+	},
+	"efa_impaired_remote_conn_err": {
+		path:        "hw_counters/impaired_remote_conn_err",
+		isFatal:     false,
+		description: "EFA connection to remote peer impaired - excessive packet loss",
+		linkLayers:  efaLinkLayers,
+	},
+
+	// ... and device-wide admin-queue statistics under
+	// /sys/class/infiniband/<dev>/hw_counters/ (the "device_hw_counters/"
+	// path class). EFA adapters expose a single port, so these are
+	// evaluated and reported against port 1.
+	"efa_no_completion_cmds": {
+		path:        "device_hw_counters/no_completion_cmds",
+		isFatal:     true,
+		description: "EFA admin command never completed - device firmware unresponsive",
+		linkLayers:  efaLinkLayers,
+	},
+	"efa_cmds_err": {
+		path:        "device_hw_counters/cmds_err",
+		isFatal:     false,
+		description: "EFA admin commands failed - control plane errors",
+		linkLayers:  efaLinkLayers,
+	},
+	"efa_keep_alive_rcvd": {
+		path:        "device_hw_counters/keep_alive_rcvd",
+		isFatal:     false,
+		description: "EFA keep-alive events received from the device",
+		linkLayers:  efaLinkLayers,
+	},
+	"efa_reg_mr_err": {
+		path:        "device_hw_counters/reg_mr_err",
+		isFatal:     false,
+		description: "EFA memory region registration failures",
+		linkLayers:  efaLinkLayers,
+	},
+	"efa_create_qp_err": {
+		path:        "device_hw_counters/create_qp_err",
+		isFatal:     false,
+		description: "EFA queue pair creation failures",
+		linkLayers:  efaLinkLayers,
+	},
+	"efa_create_cq_err": {
+		path:        "device_hw_counters/create_cq_err",
+		isFatal:     false,
+		description: "EFA completion queue creation failures",
+		linkLayers:  efaLinkLayers,
+	},
+	"efa_create_ah_err": {
+		path:        "device_hw_counters/create_ah_err",
+		isFatal:     false,
+		description: "EFA address handle creation failures",
+		linkLayers:  efaLinkLayers,
 	},
 
 	// /sys/class/net/<iface>/ (netdev-root attribute — carrier_changes
@@ -247,6 +360,26 @@ type CounterConfig struct {
 	Threshold     float64 `toml:"threshold"`
 	VelocityUnit  string  `toml:"velocityUnit,omitempty"`
 	Description   string  `toml:"-"`
+	// LinkLayers is the set of port link layers the counter exists on
+	// (owned by code, see counterDefinition.linkLayers). Empty means all.
+	LinkLayers []string `toml:"-"`
+}
+
+// AppliesToLinkLayer reports whether the counter should be read on a port
+// of the given link layer. Counters without a layer restriction apply
+// everywhere.
+func (c *CounterConfig) AppliesToLinkLayer(linkLayer string) bool {
+	if len(c.LinkLayers) == 0 {
+		return true
+	}
+
+	for _, l := range c.LinkLayers {
+		if strings.EqualFold(l, linkLayer) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // LoadConfig reads and parses the TOML configuration file.
@@ -423,6 +556,7 @@ func applyCounterDefinition(c *CounterConfig) error {
 	c.Path = def.path
 	c.IsFatal = def.isFatal
 	c.Description = def.description
+	c.LinkLayers = def.linkLayers
 
 	return nil
 }

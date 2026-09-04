@@ -3903,7 +3903,7 @@ health-events-analyzer:
               {
                 "$in": [
                   "this.healthevent.checkname",
-                  ["InfiniBandDegradationCheck", "EthernetDegradationCheck"]
+                  ["InfiniBandDegradationCheck", "EthernetDegradationCheck", "EFADegradationCheck"]
                 ]
               }
             ]
@@ -3915,7 +3915,7 @@ health-events-analyzer:
       {
         "$match": {
           "healthevent.agent": "nic-health-monitor",
-          "healthevent.checkname": {"$in": ["InfiniBandDegradationCheck", "EthernetDegradationCheck"]},
+          "healthevent.checkname": {"$in": ["InfiniBandDegradationCheck", "EthernetDegradationCheck", "EFADegradationCheck"]},
           "healthevent.isfatal": false,
           "healthevent.ishealthy": false,
           "healthevent.nodename": "this.healthevent.nodename"
@@ -4142,6 +4142,26 @@ syslog-health-monitor:
         processingStrategy: EXECUTE_REMEDIATION
 
       - name: mlx5_napi_soft_lockup
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: efa_admin_cmd_timeout
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: efa_admin_queue_closed
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: efa_admin_cmd_failed
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: efa_device_reset_failed
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: efa_device_not_ready
         enabled: true
         processingStrategy: EXECUTE_REMEDIATION
 

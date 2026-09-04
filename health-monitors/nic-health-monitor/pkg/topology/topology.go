@@ -270,9 +270,22 @@ func (c *Classifier) classify(device string) Role {
 		return RoleManagement
 	}
 
+	levels := c.topology[device]
+
+	// An EFA adapter is a purpose-built compute fabric NIC: it carries no
+	// IP default route (AWS instances route through a separate ENA
+	// function) and exists solely for RDMA traffic between GPU nodes.
+	// When the `nvidia-smi topo -m` matrix carries no entry for it, the
+	// NUMA fallback below would otherwise demote it to management on
+	// instance types that report numa_node = -1 for every PCI function.
+	if len(levels) == 0 && c.isEFADevice(device) {
+		slog.Debug("Classifying EFA device without topology entry as compute", "device", device)
+
+		return RoleCompute
+	}
+
 	numaOnGPUSocket := c.nicOnGPUNUMA(device)
 
-	levels := c.topology[device]
 	hasCompute, hasStorage, allSYS := summarizeLevels(levels)
 
 	switch {
@@ -351,6 +364,17 @@ func (c *Classifier) isBlueFieldDPU(device string) bool {
 	}
 
 	return false
+}
+
+// isEFADevice reports whether the device's PCI function is bound to the
+// AWS Elastic Fabric Adapter driver.
+func (c *Classifier) isEFADevice(device string) bool {
+	driver, err := c.reader.ReadIBDeviceDriver(device)
+	if err != nil {
+		return false
+	}
+
+	return strings.TrimSpace(driver) == efaDriverName
 }
 
 // isInfiniBandDevice checks whether the NIC's port 1 link layer is

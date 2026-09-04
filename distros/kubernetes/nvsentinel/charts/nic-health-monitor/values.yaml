@@ -38,12 +38,22 @@ resources:
 #   - EthernetStateCheck: Monitors Ethernet/RoCE interface state (operstate), device disappearance,
 #       card homogeneity anomalies; auto-excludes management NICs via NUMA topology
 #   - EthernetDegradationCheck: Monitors Ethernet/RoCE counter thresholds
+#   - EFAStateCheck: Monitors AWS Elastic Fabric Adapter (efa driver) link state via the adapter's
+#       netdev operstate/carrier (the efa driver hard-codes ACTIVE/LinkUp in sysfs), device
+#       disappearance and card homogeneity anomalies. EFA-only adapters without a netdev are
+#       covered by disappearance detection and the EFA counter check.
+#   - EFADegradationCheck: Monitors EFA counter thresholds (per-port hw_counters such as rx_drops
+#       and device-level admin-queue statistics such as no_completion_cmds / cmds_err)
+# Checks whose device family is absent from a node are silent no-ops, so the full list is safe
+# on every platform; trim it to the families present in your fleet to reduce log noise.
 enabledChecks:
   - InfiniBandStateCheck
   - InfiniBandDegradationCheck
   - InfiniBandCharDeviceCheck
   - EthernetStateCheck
   - EthernetDegradationCheck
+  - EFAStateCheck
+  - EFADegradationCheck
 
 # Polling interval for state checks. Counter checks run on their own
 # fixed 1s cadence (not configurable here) so delta counters stay
@@ -106,6 +116,18 @@ counterDetection:
   #   statistics/: rx_crc_errors, rx_errors, rx_missed_errors,
   #     tx_carrier_errors, tx_errors
   #   netdev root (/sys/class/net/<iface>/): carrier_changes
+  #   AWS EFA, per-port hw_counters/ (EFADegradationCheck only):
+  #     efa_rx_drops, efa_rdma_read_wr_err, efa_rdma_write_wr_err,
+  #     efa_unresponsive_remote_err, efa_impaired_remote_conn_err
+  #   AWS EFA, device-level /sys/class/infiniband/<dev>/hw_counters/
+  #   (EFADegradationCheck only): efa_no_completion_cmds (fatal),
+  #     efa_cmds_err, efa_keep_alive_rcvd, efa_reg_mr_err, efa_create_qp_err,
+  #     efa_create_cq_err, efa_create_ah_err
+  #
+  # Each counter is read only on ports of the link layers it exists on:
+  # the IBTA/mlx5 sets on InfiniBand and RoCE ports, the efa_* set on
+  # EFA ports, and the statistics/ and netdev counters on every adapter
+  # that exposes a network interface.
   #
   # Example allowed-counter customization:
   #   - name: rx_missed_errors
@@ -192,6 +214,44 @@ counterDetection:
       enabled: true
       thresholdType: delta
       threshold: 2
+
+    #--------------------------------------------------------------------------
+    # AWS ELASTIC FABRIC ADAPTER (EFADegradationCheck)
+    #--------------------------------------------------------------------------
+
+    # Fatal: an admin command never completed - the device firmware stopped
+    # responding to the driver.
+    - name: efa_no_completion_cmds
+      enabled: true
+      thresholdType: delta
+      threshold: 0
+
+    # Admin command failures (control plane). Individual failures can be
+    # application-induced (e.g. invalid QP attributes), so alert on a rate.
+    - name: efa_cmds_err
+      enabled: true
+      thresholdType: velocity
+      threshold: 10.0
+      velocityUnit: minute
+
+    # Fabric-side degradation
+    - name: efa_rx_drops
+      enabled: true
+      thresholdType: velocity
+      threshold: 100.0
+      velocityUnit: second
+
+    - name: efa_unresponsive_remote_err
+      enabled: true
+      thresholdType: velocity
+      threshold: 1.0
+      velocityUnit: second
+
+    - name: efa_impaired_remote_conn_err
+      enabled: true
+      thresholdType: velocity
+      threshold: 1.0
+      velocityUnit: second
 
 # Scheduling configuration
 nodeSelector: {}

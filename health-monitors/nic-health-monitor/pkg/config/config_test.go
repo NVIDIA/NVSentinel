@@ -20,6 +20,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/topology"
 )
 
 func validDeltaCounter() CounterConfig {
@@ -185,6 +187,57 @@ func TestValidateCounter_AllowedCounterSelections(t *testing.T) {
 		assert.NoError(t, validateCounter(&c), "counter %q should be valid", name)
 		assert.NotEmpty(t, c.Path, "counter %q should get a path from code definitions", name)
 	}
+}
+
+func TestValidateCounter_EFACounterSelections(t *testing.T) {
+	for name, want := range map[string]struct {
+		path  string
+		fatal bool
+	}{
+		"efa_rx_drops":                 {path: "hw_counters/rx_drops"},
+		"efa_rdma_read_wr_err":         {path: "hw_counters/rdma_read_wr_err"},
+		"efa_rdma_write_wr_err":        {path: "hw_counters/rdma_write_wr_err"},
+		"efa_unresponsive_remote_err":  {path: "hw_counters/unresponsive_remote_err"},
+		"efa_impaired_remote_conn_err": {path: "hw_counters/impaired_remote_conn_err"},
+		"efa_no_completion_cmds":       {path: "device_hw_counters/no_completion_cmds", fatal: true},
+		"efa_cmds_err":                 {path: "device_hw_counters/cmds_err"},
+		"efa_keep_alive_rcvd":          {path: "device_hw_counters/keep_alive_rcvd"},
+		"efa_reg_mr_err":               {path: "device_hw_counters/reg_mr_err"},
+		"efa_create_qp_err":            {path: "device_hw_counters/create_qp_err"},
+		"efa_create_cq_err":            {path: "device_hw_counters/create_cq_err"},
+		"efa_create_ah_err":            {path: "device_hw_counters/create_ah_err"},
+	} {
+		c := validDeltaCounter()
+		c.Name = name
+		require.NoError(t, validateCounter(&c), "counter %q should be valid", name)
+		assert.Equal(t, want.path, c.Path, name)
+		assert.Equal(t, want.fatal, c.IsFatal, name)
+		assert.Equal(t, []string{topology.LinkLayerEFA}, c.LinkLayers, name)
+		assert.True(t, c.AppliesToLinkLayer(topology.LinkLayerEFA), name)
+		assert.False(t, c.AppliesToLinkLayer(topology.LinkLayerInfiniBand), name)
+		assert.False(t, c.AppliesToLinkLayer(topology.LinkLayerEthernet), name)
+	}
+}
+
+func TestCounterConfig_LinkLayerScoping(t *testing.T) {
+	mlx := validDeltaCounter() // link_downed: IBTA port counter
+	require.NoError(t, validateCounter(&mlx))
+	assert.True(t, mlx.AppliesToLinkLayer(topology.LinkLayerInfiniBand))
+	assert.True(t, mlx.AppliesToLinkLayer(topology.LinkLayerEthernet))
+	assert.False(t, mlx.AppliesToLinkLayer(topology.LinkLayerEFA),
+		"mlx5 counters must not be read on EFA ports")
+
+	net := validDeltaCounter()
+	net.Name = "carrier_changes"
+	require.NoError(t, validateCounter(&net))
+	assert.Empty(t, net.LinkLayers, "netdev counters are layer-agnostic")
+
+	for _, layer := range []string{topology.LinkLayerInfiniBand, topology.LinkLayerEthernet, topology.LinkLayerEFA} {
+		assert.True(t, net.AppliesToLinkLayer(layer), layer)
+	}
+
+	unscoped := CounterConfig{}
+	assert.True(t, unscoped.AppliesToLinkLayer("anything"))
 }
 
 func TestValidateCounter_InvalidThresholdValue(t *testing.T) {

@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package discovery enumerates InfiniBand/RoCE devices and their ports
-// from sysfs. SR-IOV Virtual Functions are auto-detected (via the
+// Package discovery enumerates InfiniBand/RoCE/EFA devices and their
+// ports from sysfs. SR-IOV Virtual Functions are auto-detected (via the
 // `device/physfn` symlink) and flagged in the returned device records so
 // callers can skip them — unassigned VFs are expected to remain DOWN and
 // reporting them would produce false positives.
@@ -33,16 +33,22 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/topology"
 )
 
-// Vendor identifies the NIC vendor. Only Mellanox/NVIDIA is supported today.
+// Vendor identifies the NIC vendor. Mellanox/NVIDIA (InfiniBand and
+// RoCE) and Amazon (Elastic Fabric Adapter) are supported.
 type Vendor string
 
 const (
 	VendorMellanox Vendor = "mellanox"
+	VendorAmazon   Vendor = "amazon"
 	VendorUnknown  Vendor = "unknown"
 
-	// mellanoxPCIVendorID is the PCI vendor ID reported in
-	// /sys/class/infiniband/<dev>/device/vendor.
+	// PCI vendor IDs reported in /sys/class/infiniband/<dev>/device/vendor.
 	mellanoxPCIVendorID = "0x15b3"
+	amazonPCIVendorID   = "0x1d0f"
+
+	// EFADriverName is the kernel driver bound to AWS Elastic Fabric
+	// Adapter PCI functions (basename of the `device/driver` symlink).
+	EFADriverName = "efa"
 )
 
 // IBPort represents the state of a single port on an IB/RoCE device.
@@ -51,13 +57,14 @@ type IBPort struct {
 	Port          int    `json:"port"`
 	State         string `json:"state"`          // e.g., "ACTIVE", "DOWN"
 	PhysicalState string `json:"physical_state"` // e.g., "LinkUp", "Disabled"
-	LinkLayer     string `json:"link_layer"`     // "InfiniBand" or "Ethernet"
+	LinkLayer     string `json:"link_layer"`     // "InfiniBand", "Ethernet" or "EFA"
 }
 
 // IBDevice represents a discovered NIC device.
 type IBDevice struct {
-	Name               string   `json:"name"`   // e.g., "mlx5_0"
-	Vendor             Vendor   `json:"vendor"` // detected from sysfs vendor ID
+	Name               string   `json:"name"`             // e.g., "mlx5_0", "rdmap0s6"
+	Vendor             Vendor   `json:"vendor"`           // detected from sysfs vendor ID
+	Driver             string   `json:"driver,omitempty"` // kernel driver, e.g. "mlx5_core", "efa"
 	HCAType            string   `json:"hca_type,omitempty"`
 	FWVersion          string   `json:"fw_ver,omitempty"`
 	Ports              []IBPort `json:"ports"`
@@ -195,6 +202,14 @@ func discoverDevice(reader sysfs.Reader, devName string) (*IBDevice, error) {
 		IsVF:   reader.IsVirtualFunction(devName),
 	}
 
+	// The driver binding is best-effort: it refines classification (EFA
+	// detection) but the vendor ID already establishes support, so an
+	// unreadable symlink must not turn the device into an uncertain
+	// observation.
+	if driver, err := reader.ReadIBDeviceDriver(devName); err == nil {
+		dev.Driver = strings.TrimSpace(driver)
+	}
+
 	if hcaType, err := reader.ReadIBDeviceField(devName, "hca_type"); err == nil {
 		dev.HCAType = hcaType
 	}
@@ -229,6 +244,13 @@ func discoverDevice(reader sysfs.Reader, devName string) (*IBDevice, error) {
 			// port-disappearance FATAL. Unreadable devices instead flow
 			// into the callers' hold-last-known-state machinery.
 			return nil, fmt.Errorf("device %s: %w", devName, err)
+		}
+
+		if IsEFADevice(dev) {
+			// The efa driver reports an unspecified link layer ("Unknown"
+			// in sysfs). Normalise it so EFA ports are addressed by the
+			// EFA checks only and never mistaken for a RoCE or IB port.
+			port.LinkLayer = topology.LinkLayerEFA
 		}
 
 		dev.Ports = append(dev.Ports, port)
@@ -267,21 +289,25 @@ func readPort(reader sysfs.Reader, device string, port int) (IBPort, error) {
 	return p, nil
 }
 
-// detectVendor classifies the IB device's PCI vendor ID. We match only
-// Mellanox (0x15b3) today; everything else is reported as Unknown so
-// the caller can skip it. A read error is returned as an error — it is
-// an observation failure, not evidence of an unsupported vendor.
+// detectVendor classifies the IB device's PCI vendor ID. Mellanox
+// (0x15b3) and Amazon (0x1d0f, EFA) are recognised; everything else is
+// reported as Unknown so the caller can skip it. A read error is
+// returned as an error — it is an observation failure, not evidence of
+// an unsupported vendor.
 func detectVendor(reader sysfs.Reader, device string) (Vendor, error) {
 	vendorID, err := reader.ReadIBDeviceField(device, "device/vendor")
 	if err != nil {
 		return VendorUnknown, fmt.Errorf("read vendor: %w", err)
 	}
 
-	if strings.TrimSpace(vendorID) == mellanoxPCIVendorID {
+	switch strings.TrimSpace(vendorID) {
+	case mellanoxPCIVendorID:
 		return VendorMellanox, nil
+	case amazonPCIVendorID:
+		return VendorAmazon, nil
+	default:
+		return VendorUnknown, nil
 	}
-
-	return VendorUnknown, nil
 }
 
 // firstNetDevForIBDevice returns the first entry in
@@ -299,9 +325,28 @@ func firstNetDevForIBDevice(reader sysfs.Reader, device string) string {
 	return entries[0]
 }
 
-// IsSupportedVendor reports whether the device is from a vendor we monitor.
+// IsSupportedVendor reports whether the device is from a vendor we
+// monitor: Mellanox/NVIDIA HCAs, or AWS Elastic Fabric Adapters.
 func IsSupportedVendor(dev *IBDevice) bool {
-	return dev.Vendor == VendorMellanox
+	return dev.Vendor == VendorMellanox || IsEFADevice(dev)
+}
+
+// IsEFADevice reports whether the device is an AWS Elastic Fabric
+// Adapter. The `device/driver` symlink is authoritative; when it could
+// not be read, an Amazon PCI vendor ID is accepted as a fallback because
+// EFA is the only Amazon device that registers with the RDMA core.
+func IsEFADevice(dev *IBDevice) bool {
+	if dev.Driver != "" {
+		return dev.Driver == EFADriverName
+	}
+
+	return dev.Vendor == VendorAmazon
+}
+
+// IsEFAPort reports whether the port belongs to an EFA device (link
+// layer normalised to topology.LinkLayerEFA by discovery).
+func IsEFAPort(port *IBPort) bool {
+	return strings.EqualFold(port.LinkLayer, topology.LinkLayerEFA)
 }
 
 // IsIBPort reports whether the port uses the InfiniBand link layer.
