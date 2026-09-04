@@ -380,7 +380,8 @@ func TestRunRuntimeUpgrades_ValidIndex_SkipsMigration(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(index.createStatement)).WillReturnResult(sqlmock.NewResult(0, 0))
 
 	runRuntimeUpgrades(context.Background(), db)
-	require.Error(t, mock.ExpectationsWereMet())
+	expectationsErr := mock.ExpectationsWereMet()
+	require.ErrorContains(t, expectationsErr, "ExpectedExec")
 }
 
 func TestPostgreSQLDataStore_Provider(t *testing.T) {
