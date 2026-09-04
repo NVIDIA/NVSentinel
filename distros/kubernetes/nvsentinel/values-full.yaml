@@ -398,10 +398,10 @@ platformConnector:
         - "cloud.google.com/gce-topology-subblock"
         # Topograph-applied topology labels (present when Topograph is deployed in the cluster;
         # see https://github.com/NVIDIA/topograph/blob/main/docs/reference/node-labels.md)
-        - "network.topology.nvidia.com/accelerator"
-        - "network.topology.nvidia.com/leaf"
-        - "network.topology.nvidia.com/spine"
-        - "network.topology.nvidia.com/core"
+        - "accelerator.topograph.run/domain"
+        - "fabric.topograph.run/tier-0"
+        - "fabric.topograph.run/tier-1"
+        - "fabric.topograph.run/tier-2"
 
     # Property overrides configuration
     # Uses CEL expressions to modify health event properties
