@@ -62,6 +62,9 @@ spec:
             - name: KUBELET_HOST
               {{- toYaml .Values.kubeletHost | nindent 14 }}
             {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
@@ -73,6 +76,9 @@ spec:
             - mountPath: /var/lib/kubelet/pod-resources
               name: pod-gpu-resources
               readOnly: true
+            {{- with .Values.additionalVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: output
           hostPath:
@@ -86,6 +92,9 @@ spec:
           hostPath:
             path: /var/lib/kubelet/pod-resources
             type: Directory
+        {{- with .Values.additionalHostVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       nodeSelector:
         nvidia.com/gpu.present: "true"
         nvsentinel.dgxc.nvidia.com/driver.installed: "true"

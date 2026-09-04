@@ -50,6 +50,7 @@ import (
 	annotation "github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/customdrain"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/evaluator"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/informers"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/queue"
@@ -1848,14 +1849,14 @@ func TestMetrics_AlreadyQuarantinedDoesNotIncrementDrainSuccess(t *testing.T) {
 		},
 	}
 
-	beforeSkipped := getCounterVecValue(t, metrics.EventsProcessed, metrics.DrainStatusSkipped, nodeName)
+	beforeSkipped := getCounterVecValue(t, metrics.EventsProcessed, metrics.DrainStatusSkipped, nodeName, string(evaluator.DrainScopeFull))
 
 	_ = processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, setup.healthEventStore, healthEventOptions{
 		nodeName:        nodeName,
 		nodeQuarantined: model.AlreadyQuarantined,
 	})
 
-	afterSkipped := getCounterVecValue(t, metrics.EventsProcessed, metrics.DrainStatusSkipped, nodeName)
+	afterSkipped := getCounterVecValue(t, metrics.EventsProcessed, metrics.DrainStatusSkipped, nodeName, string(evaluator.DrainScopeFull))
 	assert.GreaterOrEqual(t, afterSkipped, beforeSkipped+1, "EventsProcessed with drain_status=skipped should increment for already drained nodes")
 }
 

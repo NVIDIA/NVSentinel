@@ -48,14 +48,20 @@ var (
 		},
 	)
 
-	// EventsProcessed tracks events processed by drain outcome
+	// EventsProcessed tracks events processed by drain outcome and scope
 	EventsProcessed = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "node_drainer_events_processed_total",
-			Help: "Total number of events processed by drain status outcome.",
+			Help: "Total number of events processed by drain status outcome and drain scope.",
 		},
-		[]string{"drain_status", labelNode},
+		[]string{"drain_status", labelNode, "drain_scope"},
 	)
+
+	// PartialDrains counts partial drains by the entity they targeted. Registered only when
+	// partialDrainEntityMetricEnabled is set, because entity_value carries a GPU UUID and some
+	// operators will not accept UUIDs as label values. node_drainer_events_processed_total
+	// already reports partial against full without it.
+	PartialDrains *prometheus.CounterVec
 
 	// ProcessingErrors tracks all errors (event processing and node draining)
 	ProcessingErrors = promauto.NewCounterVec(
@@ -140,3 +146,30 @@ var (
 		[]string{labelNode},
 	)
 )
+
+// EnablePartialDrainEntityMetric registers node_drainer_partial_drains_total. Call once at
+// startup, before workers run, when the operator has opted in. Repeat calls are ignored so
+// registering twice cannot panic.
+func EnablePartialDrainEntityMetric() {
+	if PartialDrains != nil {
+		return
+	}
+
+	PartialDrains = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "node_drainer_partial_drains_total",
+			Help: "Total number of partial drains by the entity they targeted.",
+		},
+		[]string{labelNode, "entity_type", "entity_value"},
+	)
+}
+
+// RecordPartialDrain records a partial drain against the entity it targeted. It is a no-op
+// unless EnablePartialDrainEntityMetric has been called.
+func RecordPartialDrain(node, entityType, entityValue string) {
+	if PartialDrains == nil {
+		return
+	}
+
+	PartialDrains.WithLabelValues(node, entityType, entityValue).Inc()
+}
