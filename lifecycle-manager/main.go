@@ -340,12 +340,24 @@ func run() error {
 		return err
 	}
 
-	if err := setupControllers(mgr, cfg, enableValidationController, enableMaintenanceController, publisher, namespace); err != nil {
+	if err := setupControllers(
+		mgr, cfg, enableValidationController, enableMaintenanceController, publisher, namespace,
+	); err != nil {
 		slog.Error("Failed to set up controllers", "error", err)
 
 		return err
 	}
 
+	if err := addHealthChecks(mgr); err != nil {
+		return err
+	}
+
+	slog.Info("Starting manager")
+
+	return mgr.Start(ctrl.SetupSignalHandler())
+}
+
+func addHealthChecks(mgr ctrl.Manager) error {
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		slog.Error("Failed to set up health check", "error", err)
 
@@ -358,9 +370,7 @@ func run() error {
 		return err
 	}
 
-	slog.Info("Starting manager")
-
-	return mgr.Start(ctrl.SetupSignalHandler())
+	return nil
 }
 
 func main() {

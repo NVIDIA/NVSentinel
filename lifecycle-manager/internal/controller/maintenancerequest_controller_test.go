@@ -71,6 +71,7 @@ func newTestMR(name, nodeName string) *v1alpha1.MaintenanceRequest {
 				NodeName:          nodeName,
 				Agent:             "maintenance-controller",
 				CheckName:         "planned-maintenance",
+				Version:           1,
 				IsFatal:           true,
 				IsHealthy:         false,
 				RecommendedAction: pb.RecommendedAction_NONE,
@@ -113,16 +114,25 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 	})
 
 	Context("handleCreateOrUpdate", func() {
-		It("adds finalizer and seeds status on first reconcile", func() {
+		It("adds finalizer and proceeds to emit in one reconcile", func() {
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "node-init-fin"},
+			}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, node)
+			})
+
 			mr := newTestMR("mr-init-finalizer", "node-init-fin")
 			Expect(k8sClient.Create(ctx, mr)).To(Succeed())
 			DeferCleanup(func() {
-				_ = k8sClient.Delete(ctx, mr)
+				removeFinalizer(ctx, mr.Name)
 			})
 
 			result, err := r.Reconcile(ctx, reconcileRequest(mr.Name))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(time.Second))
+			Expect(result).To(Equal(reconcile.Result{}))
+			Expect(fc.calls.Load()).To(Equal(int64(1)))
 
 			var updated v1alpha1.MaintenanceRequest
 			Expect(k8sClient.Get(ctx,
@@ -131,14 +141,11 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 
 			Expect(controllerutil.ContainsFinalizer(
 				&updated, mrFinalizerName)).To(BeTrue())
-			Expect(updated.Status).NotTo(BeNil())
-			Expect(updated.Status.Conditions).To(HaveLen(1))
-			Expect(updated.Status.Conditions[0].Type).To(
-				Equal(conditionHealthEventEmitted))
-			Expect(updated.Status.Conditions[0].Status).To(Equal("Unknown"))
+			Expect(isConditionTrue(
+				&updated, conditionHealthEventEmitted)).To(BeTrue())
 		})
 
-		It("returns early with nil spec", func() {
+		It("returns error and sets condition with nil spec", func() {
 			mr := &v1alpha1.MaintenanceRequest{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "mr-nil-spec",
@@ -150,13 +157,12 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 				removeFinalizer(ctx, mr.Name)
 			})
 
-			result, err := r.Reconcile(ctx, reconcileRequest(mr.Name))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal(reconcile.Result{}))
+			_, err := r.Reconcile(ctx, reconcileRequest(mr.Name))
+			Expect(err).To(MatchError(ContainSubstring("spec.healthEvent is required")))
 			Expect(fc.calls.Load()).To(BeZero())
 		})
 
-		It("returns early with nil healthEvent", func() {
+		It("returns error and sets condition with nil healthEvent", func() {
 			mr := &v1alpha1.MaintenanceRequest{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "mr-nil-he",
@@ -169,13 +175,12 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 				removeFinalizer(ctx, mr.Name)
 			})
 
-			result, err := r.Reconcile(ctx, reconcileRequest(mr.Name))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal(reconcile.Result{}))
+			_, err := r.Reconcile(ctx, reconcileRequest(mr.Name))
+			Expect(err).To(MatchError(ContainSubstring("spec.healthEvent is required")))
 			Expect(fc.calls.Load()).To(BeZero())
 		})
 
-		It("returns early with empty nodeName", func() {
+		It("returns error and sets condition with empty nodeName", func() {
 			mr := &v1alpha1.MaintenanceRequest{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "mr-empty-node",
@@ -190,9 +195,8 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 				removeFinalizer(ctx, mr.Name)
 			})
 
-			result, err := r.Reconcile(ctx, reconcileRequest(mr.Name))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal(reconcile.Result{}))
+			_, err := r.Reconcile(ctx, reconcileRequest(mr.Name))
+			Expect(err).To(MatchError(ContainSubstring("spec.healthEvent.nodeName is required")))
 			Expect(fc.calls.Load()).To(BeZero())
 		})
 
@@ -239,13 +243,7 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 				removeFinalizer(ctx, mr.Name)
 			})
 
-			// First reconcile: add finalizer
 			result, err := r.Reconcile(ctx, reconcileRequest(mr.Name))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(time.Second))
-
-			// Second reconcile: claim + emit
-			result, err = r.Reconcile(ctx, reconcileRequest(mr.Name))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal(reconcile.Result{}))
 			Expect(fc.calls.Load()).To(Equal(int64(1)))
@@ -333,11 +331,9 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 				removeFinalizer(ctx, mr.Name)
 			})
 
-			result, err := r.Reconcile(
+			_, err := r.Reconcile(
 				ctx, reconcileRequest(mr.Name))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(
-				Equal(10 * time.Second))
+			Expect(err).To(HaveOccurred())
 
 			var updated v1alpha1.MaintenanceRequest
 			Expect(k8sClient.Get(ctx,
@@ -404,8 +400,6 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			mr := newTestMR("mr-full-del", "node-full-del")
 			Expect(k8sClient.Create(ctx, mr)).To(Succeed())
 
-			// Reconcile twice: finalizer + emit
-			_, _ = r.Reconcile(ctx, reconcileRequest(mr.Name))
 			_, _ = r.Reconcile(ctx, reconcileRequest(mr.Name))
 			Expect(fc.calls.Load()).To(Equal(int64(1)))
 
@@ -443,12 +437,20 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 					_ = k8sClient.Delete(ctx, node)
 				})
 
+				// Make the publisher fail so the emit never succeeds
+				fc.responseFn = func(_ int) error {
+					return fmt.Errorf("publisher unavailable")
+				}
+
 				mr := newTestMR("mr-skip-clear", "node-skip-clear")
 				Expect(k8sClient.Create(ctx, mr)).To(Succeed())
 
-				// Only one reconcile: adds finalizer but no emit
+				// Reconcile: adds finalizer, claims node, but emit fails
 				_, _ = r.Reconcile(ctx, reconcileRequest(mr.Name))
-				Expect(fc.calls.Load()).To(BeZero())
+
+				// Reset publisher for deletion
+				fc.responseFn = nil
+				fc.calls.Store(0)
 
 				var fetched v1alpha1.MaintenanceRequest
 				Expect(k8sClient.Get(ctx,
@@ -479,8 +481,6 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			mr := newTestMR("mr-clear-fail", "node-clear-fail")
 			Expect(k8sClient.Create(ctx, mr)).To(Succeed())
 
-			// Reconcile twice: finalizer + emit
-			_, _ = r.Reconcile(ctx, reconcileRequest(mr.Name))
 			_, _ = r.Reconcile(ctx, reconcileRequest(mr.Name))
 			Expect(fc.calls.Load()).To(Equal(int64(1)))
 
@@ -506,11 +506,9 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 				&fetched)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, &fetched)).To(Succeed())
 
-			result, err := r.Reconcile(
+			_, err := r.Reconcile(
 				ctx, reconcileRequest(mr.Name))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(
-				Equal(10 * time.Second))
+			Expect(err).To(HaveOccurred())
 
 			// Finalizer should still be present (clearing not done)
 			var updated v1alpha1.MaintenanceRequest
@@ -591,19 +589,16 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 	})
 
 	Context("autoPopulateEventFields", func() {
-		It("fills missing id, version, and timestamp", func() {
+		It("fills missing id and timestamp", func() {
 			mr := newTestMR("mr-auto", "node-auto")
 			mr.UID = types.UID("test-uid-123")
 			mr.Spec.HealthEvent.Id = ""
-			mr.Spec.HealthEvent.Version = 0
 			mr.Spec.HealthEvent.GeneratedTimestamp = nil
 
 			r.autoPopulateEventFields(mr)
 
 			Expect(mr.Spec.HealthEvent.Id).To(
-				Equal("he-mr-test-uid-123"))
-			Expect(mr.Spec.HealthEvent.Version).To(
-				Equal(uint32(1)))
+				Equal("test-uid-123"))
 			Expect(mr.Spec.HealthEvent.GeneratedTimestamp).NotTo(
 				BeNil())
 		})
@@ -613,14 +608,11 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 				time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 			mr := newTestMR("mr-keep", "node-keep")
 			mr.Spec.HealthEvent.Id = "custom-id"
-			mr.Spec.HealthEvent.Version = 42
 			mr.Spec.HealthEvent.GeneratedTimestamp = ts
 
 			r.autoPopulateEventFields(mr)
 
 			Expect(mr.Spec.HealthEvent.Id).To(Equal("custom-id"))
-			Expect(mr.Spec.HealthEvent.Version).To(
-				Equal(uint32(42)))
 			Expect(mr.Spec.HealthEvent.GeneratedTimestamp).To(
 				Equal(ts))
 		})

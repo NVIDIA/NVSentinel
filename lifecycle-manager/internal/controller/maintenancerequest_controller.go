@@ -23,11 +23,14 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/condition"
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -82,18 +85,34 @@ func (r *MaintenanceRequestReconciler) handleCreateOrUpdate(
 	ctx context.Context, log *slog.Logger, mr *v1alpha1.MaintenanceRequest,
 ) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(mr, mrFinalizerName) {
-		return r.initializeFinalizer(ctx, log, mr)
+		controllerutil.AddFinalizer(mr, mrFinalizerName)
+
+		if err := r.Update(ctx, mr); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	if mr.Spec == nil || mr.Spec.HealthEvent == nil {
-		log.Error("MaintenanceRequest has nil spec or healthEvent")
-		return ctrl.Result{}, nil
+		r.setCondition(mr, conditionHealthEventEmitted, "False", "InvalidSpec",
+			"spec.healthEvent is required")
+
+		if statusErr := r.Status().Update(ctx, mr); statusErr != nil {
+			log.Error("Failed to update status for invalid spec", "error", statusErr)
+		}
+
+		return ctrl.Result{}, fmt.Errorf("spec.healthEvent is required")
 	}
 
 	nodeName := mr.Spec.HealthEvent.NodeName
 	if nodeName == "" {
-		log.Error("MaintenanceRequest has empty nodeName")
-		return ctrl.Result{}, nil
+		r.setCondition(mr, conditionHealthEventEmitted, "False", "InvalidSpec",
+			"spec.healthEvent.nodeName is required")
+
+		if statusErr := r.Status().Update(ctx, mr); statusErr != nil {
+			log.Error("Failed to update status for missing nodeName", "error", statusErr)
+		}
+
+		return ctrl.Result{}, fmt.Errorf("spec.healthEvent.nodeName is required")
 	}
 
 	if isConditionTrue(mr, conditionHealthEventEmitted) {
@@ -101,25 +120,6 @@ func (r *MaintenanceRequestReconciler) handleCreateOrUpdate(
 	}
 
 	return r.claimAndEmit(ctx, log, mr, nodeName)
-}
-
-func (r *MaintenanceRequestReconciler) initializeFinalizer(
-	ctx context.Context, log *slog.Logger, mr *v1alpha1.MaintenanceRequest,
-) (ctrl.Result, error) {
-	controllerutil.AddFinalizer(mr, mrFinalizerName)
-
-	if err := r.Update(ctx, mr); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	r.setCondition(mr, conditionHealthEventEmitted, "Unknown", "Initializing",
-		"MaintenanceRequest accepted; preparing to emit health event.")
-
-	if statusErr := r.Status().Update(ctx, mr); statusErr != nil {
-		log.Error("Failed to seed initial status", "error", statusErr)
-	}
-
-	return ctrl.Result{RequeueAfter: time.Second}, nil
 }
 
 func (r *MaintenanceRequestReconciler) claimAndEmit(
@@ -150,7 +150,7 @@ func (r *MaintenanceRequestReconciler) claimAndEmit(
 			log.Error("Failed to update status after emit failure", "error", statusErr)
 		}
 
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		return ctrl.Result{}, err
 	}
 
 	if err := r.persistEmittedCondition(ctx, mr); err != nil {
@@ -165,18 +165,6 @@ func (r *MaintenanceRequestReconciler) claimAndEmit(
 func (r *MaintenanceRequestReconciler) persistEmittedCondition(
 	ctx context.Context, mr *v1alpha1.MaintenanceRequest,
 ) error {
-	r.setCondition(mr, conditionHealthEventEmitted, "True", reasonEmitted,
-		"Submitted health event to platform-connector.")
-
-	statusErr := r.Status().Update(ctx, mr)
-	if statusErr == nil || !apierrors.IsConflict(statusErr) {
-		return statusErr
-	}
-
-	if err := r.Get(ctx, client.ObjectKeyFromObject(mr), mr); err != nil {
-		return err
-	}
-
 	r.setCondition(mr, conditionHealthEventEmitted, "True", reasonEmitted,
 		"Submitted health event to platform-connector.")
 
@@ -220,8 +208,7 @@ func (r *MaintenanceRequestReconciler) handleDeletion(
 		// clear in the pipeline.
 		if isConditionTrue(mr, conditionHealthEventEmitted) {
 			if err := r.emitClearingEvent(ctx, log, mr); err != nil {
-				log.Error("Failed to emit clearing event; will retry", "error", err)
-				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+				return ctrl.Result{}, fmt.Errorf("emit clearing event: %w", err)
 			}
 
 			log.Info("Successfully emitted clearing health event", "node", nodeName)
@@ -302,15 +289,11 @@ func (r *MaintenanceRequestReconciler) autoPopulateEventFields(mr *v1alpha1.Main
 	he := mr.Spec.HealthEvent
 
 	if he.Id == "" {
-		he.Id = fmt.Sprintf("he-mr-%s", mr.UID)
-	}
-
-	if he.Version == 0 {
-		he.Version = 1
+		he.Id = string(mr.UID)
 	}
 
 	if he.GeneratedTimestamp == nil {
-		he.GeneratedTimestamp = timestamppb.Now()
+		he.GeneratedTimestamp = timestamppb.New(mr.CreationTimestamp.Time)
 	}
 }
 
@@ -356,7 +339,7 @@ func (r *MaintenanceRequestReconciler) emitClearingEvent(
 		RecommendedAction:  pb.RecommendedAction_NONE,
 		Message:            fmt.Sprintf("MaintenanceRequest %s cleared.", mr.Name),
 		GeneratedTimestamp: timestamppb.Now(),
-		Id:                 fmt.Sprintf("he-mr-clear-%s", mr.UID),
+		Id:                 fmt.Sprintf("clear-%s", mr.UID),
 		Metadata:           openingEvent.Metadata,
 	}
 
@@ -402,31 +385,15 @@ func (r *MaintenanceRequestReconciler) setCondition(
 		mr.Status = &pb.MaintenanceRequestStatus{}
 	}
 
-	now := timestamppb.Now()
-
-	for i, c := range mr.Status.Conditions {
-		if c.Type == condType {
-			if c.Status != status {
-				mr.Status.Conditions[i].Status = status
-				mr.Status.Conditions[i].LastTransitionTime = now
-			}
-
-			mr.Status.Conditions[i].Reason = reason
-			mr.Status.Conditions[i].Message = message
-			mr.Status.Conditions[i].ObservedGeneration = mr.Generation
-
-			return
-		}
-	}
-
-	mr.Status.Conditions = append(mr.Status.Conditions, &pb.Condition{
+	metav1Conds := condition.ToMetav1Slice(mr.Status.Conditions)
+	meta.SetStatusCondition(&metav1Conds, metav1.Condition{
 		Type:               condType,
-		Status:             status,
+		Status:             metav1.ConditionStatus(status),
+		ObservedGeneration: mr.Generation,
 		Reason:             reason,
 		Message:            message,
-		LastTransitionTime: now,
-		ObservedGeneration: mr.Generation,
 	})
+	mr.Status.Conditions = condition.FromMetav1Slice(metav1Conds)
 }
 
 func isConditionTrue(mr *v1alpha1.MaintenanceRequest, condType string) bool {
@@ -434,11 +401,7 @@ func isConditionTrue(mr *v1alpha1.MaintenanceRequest, condType string) bool {
 		return false
 	}
 
-	for _, c := range mr.Status.Conditions {
-		if c.Type == condType && c.Status == "True" {
-			return true
-		}
-	}
-
-	return false
+	return meta.IsStatusConditionTrue(
+		condition.ToMetav1Slice(mr.Status.Conditions), condType,
+	)
 }
