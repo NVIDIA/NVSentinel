@@ -529,7 +529,7 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 
 			// Allow clearing to succeed and reconcile again
 			fc.responseFn = nil
-			result, err = r.Reconcile(
+			result, err := r.Reconcile(
 				ctx, reconcileRequest(mr.Name))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal(reconcile.Result{}))
