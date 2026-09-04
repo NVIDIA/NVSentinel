@@ -143,9 +143,19 @@ func initializeK8sConnector(
 		return nil, fmt.Errorf("failed to convert K8sConnectorBurst to int: %v", config["K8sConnectorBurst"])
 	}
 
+	maxRetries := int64(k8sconnector.DefaultMaxRetries)
+	if configuredMaxRetries, configured := config["K8sConnectorMaxRetries"]; configured {
+		maxRetries, ok = configuredMaxRetries.(int64)
+		if !ok || maxRetries <= 0 {
+			return nil, fmt.Errorf("K8sConnectorMaxRetries must be a positive integer, got %v",
+				configuredMaxRetries)
+		}
+	}
+
 	k8sConnectorCfg := k8sconnector.K8sConnectorConfig{
 		MaxNodeConditionMessageLength: maxNodeConditionMessageLength,
 		CompactedHealthEventMsgLen:    compactedEventMsgLen,
+		MaxRetries:                    int(maxRetries),
 	}
 
 	k8sConnector, _, err := k8sconnector.InitializeK8sConnector(

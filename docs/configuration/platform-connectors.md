@@ -277,6 +277,7 @@ Configures the Kubernetes API client for creating node conditions and events.
 platformConnector:
   k8sConnector:
     enabled: true
+    maxRetries: 3
     maxNodeConditionMessageLength: 1024
     qps: 5.0
     burst: 10
@@ -286,6 +287,11 @@ platformConnector:
 
 #### enabled
 Enables Kubernetes connector for creating node conditions and events.
+
+#### maxRetries
+Number of ordered retries for transient Kubernetes API failures. The connector
+holds the current batch during retry so a newer fault or recovery cannot overtake
+it. Defaults to `3`; total processing attempts are one initial attempt plus this value.
 
 #### maxNodeConditionMessageLength
 Maximum length of node condition messages in characters.
