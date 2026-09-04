@@ -398,10 +398,10 @@ platformConnector:
         - "cloud.google.com/gce-topology-subblock"
         # Topograph-applied topology labels (present when Topograph is deployed in the cluster;
         # see https://github.com/NVIDIA/topograph/blob/main/docs/reference/node-labels.md)
-        - "network.topology.nvidia.com/accelerator"
-        - "network.topology.nvidia.com/leaf"
-        - "network.topology.nvidia.com/spine"
-        - "network.topology.nvidia.com/core"
+        - "accelerator.topograph.run/domain"
+        - "fabric.topograph.run/tier-0"
+        - "fabric.topograph.run/tier-1"
+        - "fabric.topograph.run/tier-2"
 
     # Property overrides configuration
     # Uses CEL expressions to modify health event properties
@@ -1776,6 +1776,21 @@ event-exporter:
       #   Retry 1: 1s, Retry 2: 2s, Retry 3: 4s, Retry 4: 8s, etc.
       # Recommended: 2.0 for standard exponential backoff
       backoffMultiplier: 2.0
+
+    # Selects which events reach the sink. Empty exports everything, which is the
+    # default and matches previous behaviour.
+    filter:
+      # CEL over the health event, and must evaluate to a boolean. Compiled at
+      # startup, so a syntax error or a non-boolean expression stops the exporter
+      # rather than silently dropping events. Write a comparison, not a bare field:
+      # `event.isFatal == true`, not `event.isFatal`.
+      #
+      # Note errorCode is a list, so match it with membership:
+      #   expression: "event.recommendedAction != 'NONE' && !('45' in event.errorCode)"
+      #
+      # Filtered events still advance the resume token, so the stream keeps progressing.
+      # See docs/configuration/event-exporter.md for the available fields.
+      expression: ""
 
 ################################################################################
 # PREFLIGHT CONFIGURATION

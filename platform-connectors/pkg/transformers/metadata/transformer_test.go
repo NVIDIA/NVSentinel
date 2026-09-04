@@ -258,11 +258,11 @@ func TestAugmentorTransform(t *testing.T) {
 			node: &corev1.Node{
 				Name: "test-node-7",
 				Labels: map[string]string{
-					"network.topology.nvidia.com/accelerator": "clique-7",
-					"network.topology.nvidia.com/leaf":        "leaf-42",
-					"network.topology.nvidia.com/spine":       "spine-3",
-					"network.topology.nvidia.com/core":        "core-1",
-					"node.kubernetes.io/instance-type":        "p5.48xlarge",
+					"accelerator.topograph.run/domain": "clique-7",
+					"fabric.topograph.run/tier-0":      "leaf-42",
+					"fabric.topograph.run/tier-1":      "spine-3",
+					"fabric.topograph.run/tier-2":      "core-1",
+					"node.kubernetes.io/instance-type": "p5.48xlarge",
 				},
 				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-topograph1"},
 			},
@@ -270,20 +270,20 @@ func TestAugmentorTransform(t *testing.T) {
 				CacheSize: 100,
 				CacheTTL:  1 * time.Hour,
 				AllowedLabels: []string{
-					"network.topology.nvidia.com/accelerator",
-					"network.topology.nvidia.com/leaf",
-					"network.topology.nvidia.com/spine",
-					"network.topology.nvidia.com/core",
+					"accelerator.topograph.run/domain",
+					"fabric.topograph.run/tier-0",
+					"fabric.topograph.run/tier-1",
+					"fabric.topograph.run/tier-2",
 				},
 			},
 			eventNodeName: "test-node-7",
 			expectError:   false,
 			validateResult: func(t *testing.T, event *pb.HealthEvent) {
 				assert.Equal(t, "aws:///us-west-2a/i-topograph1", event.Metadata["providerID"])
-				assert.Equal(t, "clique-7", event.Metadata["network.topology.nvidia.com/accelerator"])
-				assert.Equal(t, "leaf-42", event.Metadata["network.topology.nvidia.com/leaf"])
-				assert.Equal(t, "spine-3", event.Metadata["network.topology.nvidia.com/spine"])
-				assert.Equal(t, "core-1", event.Metadata["network.topology.nvidia.com/core"])
+				assert.Equal(t, "clique-7", event.Metadata["accelerator.topograph.run/domain"])
+				assert.Equal(t, "leaf-42", event.Metadata["fabric.topograph.run/tier-0"])
+				assert.Equal(t, "spine-3", event.Metadata["fabric.topograph.run/tier-1"])
+				assert.Equal(t, "core-1", event.Metadata["fabric.topograph.run/tier-2"])
 				assert.NotContains(t, event.Metadata, "node.kubernetes.io/instance-type", "should not include non-allowed labels")
 			},
 		},
@@ -375,8 +375,8 @@ func TestAugmentorTransform(t *testing.T) {
 				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-nogate1"},
 			},
 			config: &Config{
-				CacheSize:        100,
-				CacheTTL:         1 * time.Hour,
+				CacheSize: 100,
+				CacheTTL:  1 * time.Hour,
 			},
 			eventNodeName: "skip-label-node-4",
 			expectError:   false,

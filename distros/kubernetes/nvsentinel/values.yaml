@@ -135,6 +135,13 @@ global:
   #   credentialsFromSecret:
   #     name: ""
   #
+  #   # --- PostgreSQL password ---
+  #   # For PostgreSQL password authentication, set credentialsFromSecret.name;
+  #   # the referenced Secret must define DATASTORE_PASSWORD.
+  #   # Configure host, database, username, and sslmode under connection below.
+  #   # Client certificates are not inferred in password mode. Set connection.sslcert,
+  #   # connection.sslkey, and/or connection.sslrootcert explicitly when required.
+  #
   #   # --- Connection metadata ---
   #   # Individual fields (PostgreSQL; optional MongoDB metadata such as database/collection names).
   #   # For external MongoDB, connection.database etc. still configure collection env vars;
@@ -357,6 +364,16 @@ platformConnector:
     # already writes to.
     tokenPath: ""
 
+  # Records every health event reaching the platform connector as the Prometheus counter
+  # health_events_total{node,agent,check_name,recommended_action,is_fatal,is_healthy}.
+  # Observation only: no sink and no external dependency. errorCode is not a label, being
+  # unbounded. See docs/METRICS.md for the label semantics.
+  promConnector:
+    # true registers the counter on the existing metrics endpoint; false skips the
+    # connector entirely, so no ring buffer is attached and nothing is recorded.
+    # Off by default, like the other optional connectors.
+    enabled: false
+
   k8sConnector:
     enabled: true
     maxNodeConditionMessageLength: 1024
@@ -398,8 +415,8 @@ platformConnector:
       cacheSize: 50
       # How long cached node metadata is considered fresh. Lower values mean
       # label changes (e.g. managed=false) take effect faster, at the cost of
-      # more Kubernetes API GET calls. 60s bounds ownership-state staleness to
-      # ~60 seconds in either direction.
+      # more Kubernetes API GET calls. Failed lookups proceed ungated, so the
+      # gating window can exceed this during a Kubernetes API outage.
       cacheTTLSeconds: 60
       # Managed-label gate: when a node carries this label, its events are set
       # to STORE_ONLY (stored for audit but no remediation or Kubernetes side
@@ -430,10 +447,10 @@ platformConnector:
         - "cloud.google.com/gce-topology-subblock"
         # Topograph-applied topology labels (present when Topograph is deployed in the cluster;
         # see https://github.com/NVIDIA/topograph/blob/main/docs/reference/node-labels.md)
-        - "network.topology.nvidia.com/accelerator"
-        - "network.topology.nvidia.com/leaf"
-        - "network.topology.nvidia.com/spine"
-        - "network.topology.nvidia.com/core"
+        - "accelerator.topograph.run/domain"
+        - "fabric.topograph.run/tier-0"
+        - "fabric.topograph.run/tier-1"
+        - "fabric.topograph.run/tier-2"
 
     # Property overrides - uses CEL expressions to override event properties
     OverrideTransformer:
