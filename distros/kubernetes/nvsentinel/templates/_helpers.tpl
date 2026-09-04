@@ -535,7 +535,7 @@ runtime. Only monitors that are actually enabled are included.
 */ -}}
 {{- $ns := .Release.Namespace -}}
 {{- $derived := list -}}
-{{- range $key, $sa := dict "cspHealthMonitor" "csp-health-monitor" "kubernetesObjectMonitor" "kubernetes-object-monitor" "slurmDrainMonitor" "slurm-drain-monitor" "healthEventsAnalyzer" "health-events-analyzer" -}}
+{{- range $key, $sa := dict "cspHealthMonitor" "csp-health-monitor" "kubernetesObjectMonitor" "kubernetes-object-monitor" "nvcreCertificationMonitor" "nvcre-certification-monitor" "slurmDrainMonitor" "slurm-drain-monitor" "healthEventsAnalyzer" "health-events-analyzer" -}}
   {{- if (index (($.Values.global) | default dict) $key | default dict).enabled -}}
     {{- $derived = append $derived (printf "system:serviceaccount:%s:%s" $ns $sa) -}}
   {{- end -}}

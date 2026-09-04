@@ -102,8 +102,8 @@ global:
     # the cluster cordoned, drained and rebooted, so add sparingly.
     #
     # The bundled cluster-scoped monitors — csp-health-monitor,
-    # kubernetes-object-monitor, slurm-drain-monitor and health-events-analyzer
-    # — do NOT belong here. They are derived from the release namespace at
+    # kubernetes-object-monitor, nvcre-certification-monitor, slurm-drain-monitor
+    # and health-events-analyzer — do NOT belong here. They are derived from the release namespace at
     # render time for whichever of them are enabled, so installing into a
     # namespace other than nvsentinel needs no edit. Listing them by hand is
     # what used to break such an install: a hardcoded namespace rendered
@@ -290,6 +290,10 @@ global:
   mongodbStore:
     enabled: false
   kubernetesObjectMonitor:
+    enabled: false
+  # Enables the nvcre-certification-monitor sub-chart, which publishes health
+  # events for nodes that failed an NVCRE Certification. Disabled by default.
+  nvcreCertificationMonitor:
     enabled: false
   eventExporter:
     enabled: false
