@@ -63,11 +63,11 @@ func (v *MaintenanceRequestValidator) ValidateCreate(ctx context.Context,
 		return nil, fmt.Errorf("spec.healthEvent.isHealthy must be false for an opening event")
 	}
 
-	if err := v.checkNodeExists(ctx, he.NodeName); err != nil {
-		return nil, err
+	if he.Version == 0 {
+		return nil, fmt.Errorf("spec.healthEvent.version is required")
 	}
 
-	if err := v.checkNoDuplicateMR(ctx, he.NodeName, obj.Name); err != nil {
+	if err := v.checkNodeExists(ctx, he.NodeName); err != nil {
 		return nil, err
 	}
 
@@ -116,40 +116,8 @@ func (v *MaintenanceRequestValidator) ValidateUpdate(_ context.Context,
 }
 
 func (v *MaintenanceRequestValidator) ValidateDelete(_ context.Context,
-	obj *v1alpha1.MaintenanceRequest) (admission.Warnings, error) {
-	mrLog.Info("Validating MaintenanceRequest on delete", "name", obj.Name)
-
+	_ *v1alpha1.MaintenanceRequest) (admission.Warnings, error) {
 	return nil, nil
-}
-
-// checkNoDuplicateMR is a best-effort early rejection of a second MR for the
-// same node. It uses a List, so two concurrent creates can both pass; the
-// controller's annotation-based claimNode provides the authoritative guard.
-func (v *MaintenanceRequestValidator) checkNoDuplicateMR(ctx context.Context, nodeName, selfName string) error {
-	if v.Client == nil {
-		return nil
-	}
-
-	var list v1alpha1.MaintenanceRequestList
-	if err := v.Client.List(ctx, &list); err != nil {
-		mrLog.Error("Failed to list MaintenanceRequests; allowing request to avoid blocking on transient errors",
-			"error", err)
-
-		return nil
-	}
-
-	for i := range list.Items {
-		mr := &list.Items[i]
-		if mr.Name == selfName {
-			continue
-		}
-
-		if mr.Spec != nil && mr.Spec.HealthEvent != nil && mr.Spec.HealthEvent.NodeName == nodeName {
-			return fmt.Errorf("node %q already has an active MaintenanceRequest %q", nodeName, mr.Name)
-		}
-	}
-
-	return nil
 }
 
 func (v *MaintenanceRequestValidator) checkNodeExists(ctx context.Context, nodeName string) error {
