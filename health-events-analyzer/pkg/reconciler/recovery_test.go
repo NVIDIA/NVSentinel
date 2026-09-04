@@ -753,8 +753,23 @@ func TestPersistedRecoveryMustBelongToCurrentSource(t *testing.T) {
 	require.False(t, sameRecoverySource(&old, &source))
 	require.True(t, sameRecoverySource(&newer, &source))
 
+	// Current publishers give the derived event a fresh generated timestamp and
+	// preserve the source timestamp in metadata.
 	newer.HealthEvent.GeneratedTimestamp = timestamppb.New(now.Add(time.Second))
+	newer.HealthEvent.Metadata = map[string]string{
+		publisher.SourceGeneratedTimestampMetadataKey: source.HealthEvent.GeneratedTimestamp.AsTime().
+			UTC().Format(time.RFC3339Nano),
+	}
+	require.True(t, sameRecoverySource(&newer, &source))
+
+	newer.HealthEvent.Metadata[publisher.SourceGeneratedTimestampMetadataKey] = now.Add(time.Hour).Format(time.RFC3339Nano)
 	require.False(t, sameRecoverySource(&newer, &source))
+
+	// Legacy sources without a generated timestamp fall back to datastore order.
+	source.HealthEvent.GeneratedTimestamp = nil
+	delete(newer.HealthEvent.Metadata, publisher.SourceGeneratedTimestampMetadataKey)
+	require.True(t, sameRecoverySource(&newer, &source))
+	require.False(t, sameRecoverySource(&old, &source))
 }
 
 func TestRecoveryDoesNotPublishWithoutActiveDerivedFault(t *testing.T) {

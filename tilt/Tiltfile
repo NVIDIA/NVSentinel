@@ -167,6 +167,7 @@ include('../labeler/Tiltfile')
 include('../log-collector/Tiltfile')
 include('../preflight/Tiltfile')
 include('../gpu-reset/Tiltfile')
+include('../lifecycle-manager/Tiltfile')
 values_files = [
     '../distros/kubernetes/nvsentinel/values.yaml',
     '../distros/kubernetes/nvsentinel/values-tilt.yaml',
@@ -262,7 +263,9 @@ preflight_enabled = effective_values.get('global', {}).get('preflight', {}).get(
 cert_manager_objects = [
     'janitor-webhook-cert:certificate',
     'janitor-selfsigned-issuer:issuer',
-    'janitor-provider-grpc-cert:certificate'
+    'janitor-provider-grpc-cert:certificate',
+    'lifecycle-manager-webhook-cert:certificate',
+    'lifecycle-manager-selfsigned-issuer:issuer',
 ]
 if preflight_enabled:
     cert_manager_objects.extend([
@@ -318,6 +321,17 @@ k8s_resource(
 k8s_resource(
     'janitor-provider',
     resource_deps=['janitor', 'wait-for-janitor-provider-cert'],
+)
+
+local_resource(
+    'wait-for-lifecycle-manager-cert',
+    cmd='kubectl wait --for=condition=Ready --timeout=300s certificate/lifecycle-manager-webhook-cert -n nvsentinel',
+    resource_deps=['cert-manager-resources'],
+)
+
+k8s_resource(
+    'lifecycle-manager',
+    resource_deps=['wait-for-lifecycle-manager-cert'],
 )
 
 if use_percona:

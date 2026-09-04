@@ -36,12 +36,13 @@ spec:
       labels:
         {{- include "health-events-analyzer.labels" . | nindent 8 }}
     spec:
+      {{- $pgClientCert := eq (include "nvsentinel.datastore.postgresClientCertEnabled" .) "true" }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "health-events-analyzer.fullname" . }}
-      {{- if and .Values.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+      {{- if and .Values.clientCertMountPath $pgClientCert }}
       initContainers:
         - name: fix-cert-permissions
           image: "{{ .Values.global.initContainerImage.repository }}:{{ .Values.global.initContainerImage.tag }}"
@@ -179,7 +180,7 @@ spec:
           path: /var/run/nvsentinel
           # DirectoryOrCreate avoids MountVolume failures when the path is not yet a directory (race with other workloads).
           type: DirectoryOrCreate
-      {{- if and .Values.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+      {{- if and .Values.clientCertMountPath $pgClientCert }}
       - name: postgresql-client-cert-original
         secret:
           secretName: postgresql-client-cert

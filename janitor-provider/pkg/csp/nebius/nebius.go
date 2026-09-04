@@ -130,7 +130,7 @@ func (c *Client) getInstanceService(ctx context.Context) (InstanceService, func(
 // Nebius doesn't have a direct reboot API, so we stop the instance first.
 // This method waits for the stop operation to complete before returning.
 // The instance will be started in IsNodeReady when it detects the STOPPED state.
-func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
+func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node, _ string) (model.ResetSignalRequestRef, error) {
 	// Fetch the node's provider ID
 	providerID := node.Spec.ProviderID
 	if providerID == "" {

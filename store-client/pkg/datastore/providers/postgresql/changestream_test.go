@@ -18,6 +18,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"testing"
 	"time"
@@ -25,6 +26,10 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/healthstatus"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 )
 
 func TestPostgreSQLEventAdapter_GetDocumentID(t *testing.T) {
@@ -131,6 +136,91 @@ func TestPostgreSQLEventAdapter_GetDocumentID(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPostgreSQLEventAdapter_CompletionOnlyUpdate_ExposesUpdatedFields verifies
+// that the adapter preserves the completion-only update delta.
+func TestPostgreSQLEventAdapter_CompletionOnlyUpdate_ExposesUpdatedFields(t *testing.T) {
+	event := &PostgreSQLEventAdapter{eventData: map[string]any{
+		"updateDescription": map[string]any{
+			"updatedFields": map[string]any{healthstatus.FaultQuarantineRecoveryPath: "completed"},
+		},
+	}}
+
+	assert.True(t, client.EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath))
+}
+
+func TestPostgreSQLChangeStream_CompletionAndRemovalExposesBothChanges(t *testing.T) {
+	watcher := &PostgreSQLChangeStreamWatcher{}
+	oldDocument := map[string]any{
+		"healtheventstatus": map[string]any{"obsolete": "remove-me"},
+	}
+	newDocument := map[string]any{
+		"healtheventstatus": map[string]any{"faultquarantinerecovery": "completed"},
+	}
+
+	updatedFields := watcher.findUpdatedFields(oldDocument, newDocument)
+	assert.Equal(t, map[string]any{
+		healthstatus.FaultQuarantineRecoveryPath: "completed",
+		"healtheventstatus.obsolete":             nil,
+	}, updatedFields)
+
+	event := &PostgreSQLEventAdapter{eventData: map[string]any{
+		"updateDescription": map[string]any{"updatedFields": updatedFields},
+	}}
+	assert.False(t, client.EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath),
+		"a completion marker must not conceal an unrelated field removal")
+}
+
+func TestPostgreSQLChangeStream_CompletionAndEmptyObjectTransitionExposesBothChanges(t *testing.T) {
+	watcher := &PostgreSQLChangeStreamWatcher{}
+	oldDocument := map[string]any{
+		"state":             "scalar",
+		"healtheventstatus": map[string]any{},
+	}
+	newDocument := map[string]any{
+		"state": map[string]any{},
+		"healtheventstatus": map[string]any{
+			"faultquarantinerecovery": "completed",
+		},
+	}
+
+	updatedFields := watcher.findUpdatedFields(oldDocument, newDocument)
+	assert.Equal(t, map[string]any{
+		"state":                                  map[string]any{},
+		healthstatus.FaultQuarantineRecoveryPath: "completed",
+	}, updatedFields)
+
+	event := &PostgreSQLEventAdapter{eventData: map[string]any{
+		"updateDescription": map[string]any{"updatedFields": updatedFields},
+	}}
+	assert.False(t, client.EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath),
+		"a completion marker must not conceal a scalar-to-object transition")
+}
+
+func TestPostgreSQLChangeStream_CompletionAndAddedNullExposesBothChanges(t *testing.T) {
+	watcher := &PostgreSQLChangeStreamWatcher{}
+	oldDocument := map[string]any{
+		"healtheventstatus": map[string]any{},
+	}
+	newDocument := map[string]any{
+		"healtheventstatus": map[string]any{
+			"faultquarantinerecovery": "completed",
+			"other":                   nil,
+		},
+	}
+
+	updatedFields := watcher.findUpdatedFields(oldDocument, newDocument)
+	assert.Equal(t, map[string]any{
+		healthstatus.FaultQuarantineRecoveryPath: "completed",
+		"healtheventstatus.other":                nil,
+	}, updatedFields)
+
+	event := &PostgreSQLEventAdapter{eventData: map[string]any{
+		"updateDescription": map[string]any{"updatedFields": updatedFields},
+	}}
+	assert.False(t, client.EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath),
+		"a completion marker must not conceal an unrelated null insertion")
 }
 
 func TestPostgreSQLEventAdapter_GetRecordUUID(t *testing.T) {
@@ -500,6 +590,23 @@ func TestTimestampBasedResume_ExtractsTimestampFromEvent(t *testing.T) {
 	assert.Equal(t, changedAt.Unix(), ts.Unix(), "clusterTime should match changed_at")
 
 	t.Logf("Event clusterTime: %v", ts)
+}
+
+func TestBuildEventDocument_HealthEventUsesDatabaseCreatedAt(t *testing.T) {
+	databaseCreatedAt := time.Date(2026, 8, 31, 19, 0, 0, 0, time.UTC)
+	connectorCreatedAt := databaseCreatedAt.Add(time.Hour)
+	watcher := &PostgreSQLChangeStreamWatcher{tableName: "health_events"}
+	newValues := sql.NullString{Valid: true, String: fmt.Sprintf(
+		`{"created_at":%q,"document":{"createdAt":%q,"healthevent":{},"healtheventstatus":{}}}`,
+		databaseCreatedAt.Format(time.RFC3339Nano), connectorCreatedAt.Format(time.RFC3339Nano))}
+
+	eventData := watcher.buildEventDocument(
+		140, "event-uuid", "INSERT", sql.NullString{}, newValues, databaseCreatedAt)
+	adapter := &PostgreSQLEventAdapter{eventData: eventData}
+	var event model.HealthEventWithStatus
+	require.NoError(t, adapter.UnmarshalDocument(&event))
+	assert.Equal(t, databaseCreatedAt, event.CreatedAt,
+		"live replay and cold-start bounds must use the same database clock")
 }
 
 // TestTimestampBasedResume_ReplayScenario simulates the actual test failure scenario

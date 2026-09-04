@@ -59,6 +59,7 @@ func (c *capturePlatformConnector) HealthEventOccurredV1(
 func TestPublishRecovery(t *testing.T) {
 	client := &capturePlatformConnector{}
 	pub := NewPublisher(client, protos.ProcessingStrategy_EXECUTE_REMEDIATION)
+	sourceGeneratedTime := time.Date(2026, 8, 21, 8, 27, 36, 0, time.UTC)
 	source := &protos.HealthEvent{
 		Version:                 1,
 		Agent:                   "syslog-health-monitor",
@@ -74,7 +75,7 @@ func TestPublishRecovery(t *testing.T) {
 			{EntityType: "GPU_UUID", EntityValue: "GPU-123"},
 		},
 		Metadata:            map[string]string{"source": "reboot-check"},
-		GeneratedTimestamp:  timestamppb.Now(),
+		GeneratedTimestamp:  timestamppb.New(sourceGeneratedTime),
 		NodeName:            "node-a",
 		QuarantineOverrides: &protos.BehaviourOverrides{Force: true},
 		DrainOverrides:      &protos.BehaviourOverrides{Skip: true},
@@ -85,6 +86,7 @@ func TestPublishRecovery(t *testing.T) {
 		Name:               "RepeatedXID94OnSameGPU",
 		ProcessingStrategy: "EXECUTE_REMEDIATION",
 	}
+	before := time.Now()
 
 	err := pub.PublishRecovery(context.Background(), source, rule.Name,
 		[]*protos.Entity{{EntityType: "GPU_UUID", EntityValue: "GPU-123"}}, rule)
@@ -105,8 +107,12 @@ func TestPublishRecovery(t *testing.T) {
 	require.Nil(t, recovery.QuarantineOverrides)
 	require.Nil(t, recovery.DrainOverrides)
 	require.Equal(t, protos.ProcessingStrategy_EXECUTE_REMEDIATION, recovery.ProcessingStrategy)
-	require.Equal(t, source.Metadata, recovery.Metadata)
-	require.True(t, proto.Equal(source.GeneratedTimestamp, recovery.GeneratedTimestamp))
+	require.Equal(t, "reboot-check", recovery.Metadata["source"])
+	require.Equal(t, sourceGeneratedTime.Format(time.RFC3339Nano),
+		recovery.Metadata[SourceGeneratedTimestampMetadataKey])
+	require.NotNil(t, recovery.GeneratedTimestamp)
+	require.NotEqual(t, sourceGeneratedTime, recovery.GeneratedTimestamp.AsTime())
+	require.False(t, recovery.GeneratedTimestamp.AsTime().Before(before.Add(-time.Second)))
 	require.Equal(t, source.NodeName, recovery.NodeName)
 }
 
@@ -173,4 +179,125 @@ func TestPublishRetryHonorsContextDeadline(t *testing.T) {
 		"DerivedCondition", "derived", nil)
 	require.Error(t, err)
 	require.True(t, errors.Is(err, context.DeadlineExceeded), err)
+}
+
+type fakePlatformConnectorClient struct {
+	events *protos.HealthEvents
+}
+
+func (f *fakePlatformConnectorClient) HealthEventOccurredV1(
+	_ context.Context, events *protos.HealthEvents, _ ...grpc.CallOption,
+) (*emptypb.Empty, error) {
+	f.events = events
+
+	return &emptypb.Empty{}, nil
+}
+
+// sourceEvent is a detector event from the past, standing in for one replayed off a lagging
+// change stream.
+func sourceEvent(generated time.Time) *protos.HealthEvent {
+	return &protos.HealthEvent{
+		Agent:              "syslog-health-monitor",
+		CheckName:          "SysLogsXIDError",
+		ComponentClass:     "GPU",
+		NodeName:           "node-1",
+		ErrorCode:          []string{"31"},
+		IsHealthy:          false,
+		GeneratedTimestamp: timestamppb.New(generated),
+	}
+}
+
+func TestPublish_LaggingSourceEvent_StampsPublishTimeAndKeepsSourceTimestamp(t *testing.T) {
+	client := &fakePlatformConnectorClient{}
+	pub := NewPublisher(client, protos.ProcessingStrategy_EXECUTE_REMEDIATION)
+
+	sourceTime := time.Date(2026, 8, 21, 8, 27, 36, 0, time.UTC)
+	before := time.Now()
+
+	err := pub.Publish(context.Background(), sourceEvent(sourceTime),
+		protos.RecommendedAction_RUN_DCGMEUD, "RepeatedXID31OnSameGPU", "run field diagnostics", nil)
+	require.NoError(t, err)
+	require.NotNil(t, client.events)
+	require.Len(t, client.events.GetEvents(), 1)
+
+	published := client.events.GetEvents()[0]
+
+	// The derived event must be stamped at publish time, not inherit the source timestamp.
+	require.NotNil(t, published.GetGeneratedTimestamp())
+	require.False(t, published.GetGeneratedTimestamp().AsTime().Equal(sourceTime),
+		"derived event inherited the source generated timestamp")
+	require.False(t, published.GetGeneratedTimestamp().AsTime().Before(before.Add(-time.Second)),
+		"derived event timestamp predates the publish call")
+
+	// The source timestamp is preserved so provenance is not lost.
+	require.Equal(t, sourceTime.Format(time.RFC3339Nano),
+		published.GetMetadata()[SourceGeneratedTimestampMetadataKey])
+}
+
+// Asserts the wire key literally rather than through the constant, so a rename cannot
+// silently change what consumers see while the tests still pass.
+func TestPublish_DerivedEvent_UsesTheDocumentedMetadataKey(t *testing.T) {
+	client := &fakePlatformConnectorClient{}
+	pub := NewPublisher(client, protos.ProcessingStrategy_EXECUTE_REMEDIATION)
+
+	sourceTime := time.Date(2026, 8, 21, 8, 27, 36, 0, time.UTC)
+
+	err := pub.Publish(context.Background(), sourceEvent(sourceTime),
+		protos.RecommendedAction_NONE, "XIDErrorSoloNoBurst", "no action", nil)
+	require.NoError(t, err)
+
+	published := client.events.GetEvents()[0]
+	require.Equal(t, sourceTime.Format(time.RFC3339Nano),
+		published.GetMetadata()["source_generated_timestamp"])
+}
+
+func TestPublish_SourceWithMetadata_PreservesExistingKeys(t *testing.T) {
+	client := &fakePlatformConnectorClient{}
+	pub := NewPublisher(client, protos.ProcessingStrategy_EXECUTE_REMEDIATION)
+
+	sourceTime := time.Date(2026, 8, 21, 8, 27, 36, 0, time.UTC)
+	src := sourceEvent(sourceTime)
+	src.Metadata = map[string]string{"existing": "value"}
+
+	err := pub.Publish(context.Background(), src,
+		protos.RecommendedAction_NONE, "XIDErrorSoloNoBurst", "no action", nil)
+	require.NoError(t, err)
+
+	published := client.events.GetEvents()[0]
+	require.Equal(t, "value", published.GetMetadata()["existing"])
+	require.Equal(t, sourceTime.Format(time.RFC3339Nano),
+		published.GetMetadata()[SourceGeneratedTimestampMetadataKey])
+}
+
+func TestPublish_SourceWithoutTimestamp_StampsWithoutSourceMetadata(t *testing.T) {
+	client := &fakePlatformConnectorClient{}
+	pub := NewPublisher(client, protos.ProcessingStrategy_EXECUTE_REMEDIATION)
+
+	src := sourceEvent(time.Time{})
+	src.GeneratedTimestamp = nil
+
+	err := pub.Publish(context.Background(), src,
+		protos.RecommendedAction_NONE, "XIDErrorSoloNoBurst", "no action", nil)
+	require.NoError(t, err)
+
+	published := client.events.GetEvents()[0]
+	require.NotNil(t, published.GetGeneratedTimestamp())
+	require.NotContains(t, published.GetMetadata(), SourceGeneratedTimestampMetadataKey)
+}
+
+func TestPublish_AnySourceEvent_DoesNotMutateCaller(t *testing.T) {
+	client := &fakePlatformConnectorClient{}
+	pub := NewPublisher(client, protos.ProcessingStrategy_EXECUTE_REMEDIATION)
+
+	sourceTime := time.Date(2026, 8, 21, 8, 27, 36, 0, time.UTC)
+	src := sourceEvent(sourceTime)
+
+	err := pub.Publish(context.Background(), src,
+		protos.RecommendedAction_RUN_DCGMEUD, "RepeatedXID31OnSameGPU", "run field diagnostics", nil)
+	require.NoError(t, err)
+
+	// Publish clones, so the caller's event must be untouched.
+	require.True(t, src.GetGeneratedTimestamp().AsTime().Equal(sourceTime))
+	require.Equal(t, "syslog-health-monitor", src.GetAgent())
+	require.NotContains(t, src.GetMetadata(), SourceGeneratedTimestampMetadataKey)
 }

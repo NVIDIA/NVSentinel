@@ -34,6 +34,7 @@ import (
 	datamodels "github.com/nvidia/nvsentinel/data-models/pkg/model"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
+	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/publisher"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
@@ -961,11 +962,30 @@ func sameRecoverySource(
 		return false
 	}
 
-	if !proto.Equal(candidate.HealthEvent.GeneratedTimestamp, source.HealthEvent.GeneratedTimestamp) {
+	if !recoverySourceTimestampMatches(candidate.HealthEvent, source.HealthEvent) {
 		return false
 	}
 
 	return source.CreatedAt.IsZero() || !candidate.CreatedAt.Before(source.CreatedAt)
+}
+
+func recoverySourceTimestampMatches(candidate, source *protos.HealthEvent) bool {
+	sourceTimestamp := source.GeneratedTimestamp
+	preservedTimestamp, hasPreservedTimestamp := candidate.Metadata[publisher.SourceGeneratedTimestampMetadataKey]
+
+	if sourceTimestamp == nil {
+		// Current publishers cannot preserve a timestamp that the source did not
+		// provide, so datastore order is the only available correlation signal.
+		return !hasPreservedTimestamp
+	}
+
+	if hasPreservedTimestamp {
+		return preservedTimestamp == sourceTimestamp.AsTime().UTC().Format(time.RFC3339Nano)
+	}
+
+	// Backward compatibility for derived events persisted before publishers began
+	// stamping their own generated timestamp and preserving the source in metadata.
+	return proto.Equal(candidate.GeneratedTimestamp, sourceTimestamp)
 }
 
 func boundaryAfter(candidate, current recoveryBoundary) bool {

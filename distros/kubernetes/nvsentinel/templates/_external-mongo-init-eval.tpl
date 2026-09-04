@@ -51,6 +51,16 @@ function ensureTTL(collName, field) {
 }
 ensureTTL('$MONGODB_COLLECTION_NAME', 'createdAt');
 ensureTTL('$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME', 'actualEndTime');
+db.$MONGODB_COLLECTION_NAME.createIndex({ 'createdAt': 1, '_id': 1 });
+db.$MONGODB_COLLECTION_NAME.createIndex({
+  'healthevent.agent': 1,
+  'healthevent.componentclass': 1,
+  'healthevent.checkname': 1,
+  'healthevent.nodename': 1,
+  'healthevent.version': 1,
+  'createdAt': 1,
+  '_id': 1
+});
 db.$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME.createIndex(
   { 'scheduledStartTime': 1 }
 );

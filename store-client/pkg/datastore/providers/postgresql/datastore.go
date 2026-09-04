@@ -311,6 +311,28 @@ func buildConnectionString(conn datastore.ConnectionConfig) string {
 }
 
 // createTables creates the necessary tables if they don't exist
+var recoveryIndexStatements = []string{
+	`CREATE INDEX IF NOT EXISTS idx_health_events_recovery_identity ON health_events (` +
+		`(document->'healthevent'->>'agent'), ` +
+		`(COALESCE(document->'healthevent'->>'componentclass', ` +
+		`document->'healthevent'->>'componentClass')), ` +
+		`(COALESCE(document->'healthevent'->>'checkname', ` +
+		`document->'healthevent'->>'checkName')), ` +
+		`(COALESCE(document->'healthevent'->>'nodename', ` +
+		`document->'healthevent'->>'nodeName')), ` +
+		`(document->'healthevent'->>'version'), created_at, id)`,
+	`CREATE INDEX IF NOT EXISTS idx_health_events_fault_quarantine_pending ` +
+		`ON health_events (created_at, id) WHERE (` +
+		`COALESCE(document->'healtheventstatus'->>'nodequarantined', ` +
+		`document->'healtheventstatus'->>'nodeQuarantined') IS NULL OR ` +
+		`COALESCE(document->'healtheventstatus'->>'nodequarantined', ` +
+		`document->'healtheventstatus'->>'nodeQuarantined') = '' OR ` +
+		`COALESCE(document->'healtheventstatus'->>'nodequarantined', ` +
+		`document->'healtheventstatus'->>'nodeQuarantined') = 'NotStarted') AND (` +
+		`document->'healtheventstatus'->>'faultquarantinerecovery' IS NULL OR ` +
+		`document->'healtheventstatus'->>'faultquarantinerecovery' = '')`,
+}
+
 func createTables(ctx context.Context, db *sql.DB) error {
 	schemas := []string{
 		`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`,
@@ -400,6 +422,7 @@ func createTables(ctx context.Context, db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_health_events_quarantined ON health_events(node_quarantined) ` +
 			`WHERE node_quarantined IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_health_events_created_desc ON health_events(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_health_events_created_id ON health_events(created_at, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_health_events_analyzer_lookup ON health_events (` +
 			`node_name, event_type, created_at DESC, (document->'healthevent'->>'agent'))`,
 		`CREATE INDEX IF NOT EXISTS idx_health_events_document_gin ON health_events USING GIN (document)`,
@@ -413,6 +436,7 @@ func createTables(ctx context.Context, db *sql.DB) error {
 			ON datastore_changelog(table_name, changed_at, id)
 			WHERE processed = FALSE`,
 	}
+	indexes = append(indexes, recoveryIndexStatements...)
 
 	// Execute schema creation
 	for _, schema := range schemas {

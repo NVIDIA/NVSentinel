@@ -96,7 +96,7 @@ func WithEC2Client(ctx context.Context) ClientOptionFunc {
 }
 
 // SendRebootSignal sends a reboot signal to AWS EC2 for the given node.
-func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
+func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node, _ string) (model.ResetSignalRequestRef, error) {
 	// Fetch the node's provider ID
 	providerID := node.Spec.ProviderID
 	if providerID == "" {

@@ -60,9 +60,13 @@ config:
       remove: true
   readinessCriteria:
     - name: gpu-allocatable
-      expression: 'node.status.allocatable["nvidia.com/gpu"] > 0'
+      expression: >-
+        has(node.status.allocatable) && "nvidia.com/gpu" in node.status.allocatable &&
+        quantity(node.status.allocatable["nvidia.com/gpu"]) > 0
     - name: not-under-quarantine
-      expression: '!("nvsentinel.nvidia.com/quarantineHealthEvent" in node.metadata.annotations)'
+      expression: >-
+        !(has(node.metadata.annotations) &&
+        "quarantineHealthEvent" in node.metadata.annotations)
   defaultTests:
     - dcgm-diag-test
   templateMountPath: /etc/nvsentinel/templates
@@ -75,7 +79,7 @@ config:
       templateFile: k8s-job-template.yaml
       supportsTestBatching: false
       retries: 5
-      timeout: 30m
+      timeoutSeconds: 1800
       successfulCondition:
         type: Complete
         status: "True"
@@ -86,7 +90,15 @@ config:
   tests:
     dcgm-diag-test:
       provider: k8s-job-provider
-      image: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag
+      image: nvcr.io/nvidia/cloud-native/dcgm:4.5.2-1-ubuntu22.04
+      command:
+        - dcgmi
+        - diag
+        - --host
+        - "nvidia-dcgm.gpu-operator.svc:5555"
+        - --run
+        - "2"
+        - --json
       supportsBatchingNodes: false
       minimumNodesPerBatch: 1
       batchFailurePolicy: fail
@@ -99,16 +111,31 @@ config:
         name: {{.ValidationRequestName}}-{{.TestGroupName}}
         namespace: {{.Namespace}}
       spec:
-        activeDeadlineSeconds: {{.Timeout}}
+        activeDeadlineSeconds: {{.TimeoutSeconds}}
+        backoffLimit: 0
         template:
           spec:
-            runtimeClassName: nvidia
             nodeName: {{(index .Nodes 0).NodeName}}
             restartPolicy: Never
+            tolerations:
+              {{- range .Tolerations}}
+              - key: {{.Key}}
+                value: {{.Value}}
+                operator: {{.Operator}}
+                effect: {{.Effect}}
+              {{- end}}
             containers:
               - name: test
                 image: {{.Image}}
-                command: {{.Command}}
+                command:
+                  {{- range .Command}}
+                  - {{quote .}}
+                  {{- end}}
+                env:
+                  {{- range .Env}}
+                  - name: {{.Name}}
+                    value: {{quote .Value}}
+                  {{- end}}
   
 controllers:
   validationRequest:
