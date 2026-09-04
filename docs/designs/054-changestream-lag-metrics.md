@@ -1,4 +1,4 @@
-# ADR-053: `Observability` — change stream consumer lag metrics
+# ADR-054: `Observability` — change stream consumer lag metrics
 
 ## Table of contents
 
