@@ -23,30 +23,33 @@ false positives from NTP clock adjustments.
 import socket
 import threading
 import time
+from dataclasses import dataclass, field
 from http.server import ThreadingHTTPServer
 
 from prometheus_client import MetricsHandler
 
 
-class _last_reconcile:
+@dataclass
+class _LastReconcile:
     """Thread-safe tracker for the last successful reconcile timestamp.
 
     Uses time.monotonic() for NTP-immune elapsed time measurement.
     Module-scoped singleton — one tracker per process.
     """
 
-    _lock = threading.Lock()
-    _timestamp: float = time.monotonic()
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    timestamp: float = field(default_factory=time.monotonic)
 
-    @classmethod
-    def mark_alive(cls) -> None:
-        with cls._lock:
-            cls._timestamp = time.monotonic()
+    def mark_alive(self) -> None:
+        with self.lock:
+            self.timestamp = time.monotonic()
 
-    @classmethod
-    def seconds_since_last(cls) -> float:
-        with cls._lock:
-            return time.monotonic() - cls._timestamp
+    def seconds_since_last(self) -> float:
+        with self.lock:
+            return time.monotonic() - self.timestamp
+
+
+_last_reconcile = _LastReconcile()
 
 
 # Module-level staleness threshold (seconds). Set by start_server().
@@ -103,13 +106,13 @@ def start_server(
     # Reset the grace period to start from server startup, not module import.
     _last_reconcile.mark_alive()
 
-    server_cls = ThreadingHTTPServer
-    if ":" in addr:
-        # ThreadingHTTPServer defaults to AF_INET, which cannot bind an IPv6 literal.
-        server_cls = type(
-            "_ThreadingHTTPServerV6", (ThreadingHTTPServer,), {"address_family": socket.AF_INET6}
-        )
-    httpd = server_cls((addr, port), _HealthMetricsHandler)
+    family, _, _, _, bind_address = socket.getaddrinfo(addr, port, type=socket.SOCK_STREAM)[0]
+    server_cls = type("_AddressAwareThreadingHTTPServer", (ThreadingHTTPServer,), {"address_family": family})
+    httpd = server_cls(bind_address, _HealthMetricsHandler, bind_and_activate=False)
+    if family == socket.AF_INET6:
+        httpd.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+    httpd.server_bind()
+    httpd.server_activate()
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
 

@@ -68,7 +68,7 @@ def _init_event_processor(
     store_only_checks: frozenset[str],
     connectivity_failure_escalation_threshold: int,
     platform_connector_token_path: str,
-):
+) -> platform_connector.PlatformConnectorEventProcessor:
     platform_connector_config = config["eventprocessors.platformconnector"]
     match event_processor_name:
         case platform_connector.PlatformConnectorEventProcessor.__name__:
@@ -156,20 +156,20 @@ def _init_event_processor(
     ),
 )
 def cli(
-    dcgm_addr,
-    dcgm_mode,
-    dcgm_error_mapping_config_file,
-    config_file,
-    port,
-    metrics_addr,
-    verbose,
-    state_file,
-    dcgm_k8s_service_enabled,
-    metadata_path,
-    processing_strategy,
-    platform_connector_token_path,
-    suppress_nvlink_down_unbridged_pcie,
-):
+    dcgm_addr: str,
+    dcgm_mode: str,
+    dcgm_error_mapping_config_file: str,
+    config_file: str,
+    port: int,
+    metrics_addr: str,
+    verbose: bool,
+    state_file: str,
+    dcgm_k8s_service_enabled: bool,
+    metadata_path: str,
+    processing_strategy: str,
+    platform_connector_token_path: str,
+    suppress_nvlink_down_unbridged_pcie: bool,
+) -> None:
     exit = Event()
     config = configparser.ConfigParser()
     # By default, the Python ConfigParser module reads keys case-insensitively and converts them to lowercase.

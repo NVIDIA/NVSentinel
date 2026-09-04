@@ -275,6 +275,7 @@ global:
     enabled: false
   janitor:
     enabled: false
+  # Enables lifecycle-manager reconciliation of maintenance requests.
   lifecycleManager:
     enabled: false
   janitorProvider:

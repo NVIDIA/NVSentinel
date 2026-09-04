@@ -14,10 +14,12 @@
 
 """Tests for the gpu-health-monitor CLI, focused on the metrics server binding."""
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from click.testing import CliRunner
+from click import Parameter
+from click.testing import CliRunner, Result
 
 from gpu_health_monitor.cli import _parse_min_consecutive_polls, cli
 
@@ -63,14 +65,15 @@ class TestParseMinConsecutivePolls:
     def test_last_value_wins_on_a_duplicated_code(self) -> None:
         assert _parse_min_consecutive_polls("DCGM_FR_NVLINK_DOWN=2,DCGM_FR_NVLINK_DOWN=5") == {"DCGM_FR_NVLINK_DOWN": 5}
 
-def _find_option(param_name):
+
+def _find_option(param_name: str) -> Parameter | None:
     for param in cli.params:
         if param.name == param_name:
             return param
     return None
 
 
-def test_metrics_addr_option_defaults_to_ipv4():
+def test_metrics_addr_option_defaults_to_ipv4() -> None:
     """--metrics-addr exists and defaults to 0.0.0.0 (no behavior change by default)."""
     option = _find_option("metrics_addr")
     assert option is not None
@@ -78,7 +81,7 @@ def test_metrics_addr_option_defaults_to_ipv4():
     assert option.required is False
 
 
-def _write_config(tmp_path):
+def _write_config(tmp_path: Path) -> tuple[Path, Path]:
     config_file = tmp_path / "config.ini"
     config_file.write_text(
         "[logging]\n"
@@ -94,7 +97,7 @@ def _write_config(tmp_path):
     return config_file, mapping_file
 
 
-def _run_cli(tmp_path, extra_args):
+def _run_cli(tmp_path: Path, extra_args: list[str]) -> tuple[Result, MagicMock, MagicMock]:
     config_file, mapping_file = _write_config(tmp_path)
     args = [
         "--dcgm-addr",
@@ -120,7 +123,7 @@ def _run_cli(tmp_path, extra_args):
     return result, mock_start, mock_watcher
 
 
-def test_health_server_binds_explicit_metrics_addr(tmp_path):
+def test_health_server_binds_explicit_metrics_addr(tmp_path: Path) -> None:
     """--metrics-addr :: is passed through to the health server as addr='::'."""
     result, mock_start, _ = _run_cli(tmp_path, ["--metrics-addr", "::"])
     assert result.exit_code == 0, result.output
@@ -129,7 +132,7 @@ def test_health_server_binds_explicit_metrics_addr(tmp_path):
     assert mock_start.call_args.kwargs["addr"] == "::"
 
 
-def test_health_server_defaults_to_ipv4(tmp_path):
+def test_health_server_defaults_to_ipv4(tmp_path: Path) -> None:
     """Without --metrics-addr the server still binds 0.0.0.0 (backward compatible)."""
     result, mock_start, _ = _run_cli(tmp_path, [])
     assert result.exit_code == 0, result.output
