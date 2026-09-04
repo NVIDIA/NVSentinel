@@ -21,8 +21,15 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/timestamppb"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
+	clientretry "k8s.io/client-go/util/retry"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
@@ -184,4 +191,86 @@ func TestFetchAndProcessHealthMetricRetriesBeforeDequeuingRecovery(t *testing.T)
 	}
 
 	require.Equal(t, []string{"fault", "fault", "recovery"}, attempts)
+}
+
+func TestFetchAndProcessHealthMetricRetriesRecoveryAfterClientGoExhaustion(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const (
+		nodeName      = "retry-recovery-node"
+		conditionType = corev1.NodeConditionType("DerivedCondition")
+	)
+
+	client := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}})
+	recoveryFailures := 0
+	client.Fake.PrependReactor("update", "nodes", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		updatedNode := action.(k8stesting.UpdateAction).GetObject().(*corev1.Node)
+		condition, _, found := findNodeCondition(updatedNode, conditionType)
+		if found && condition.Status == corev1.ConditionFalse && recoveryFailures < clientretry.DefaultRetry.Steps {
+			recoveryFailures++
+			return true, nil, apierrors.NewServiceUnavailable("recovery write unavailable")
+		}
+
+		return false, nil, nil
+	})
+
+	buffer := ringbuffer.NewRingBuffer("kubernetes-client-recovery-retry", ctx)
+	connector := NewK8sConnector(
+		client,
+		buffer,
+		make(chan struct{}),
+		ctx,
+		K8sConnectorConfig{
+			MaxNodeConditionMessageLength: 1024,
+			CompactedHealthEventMsgLen:    72,
+			MaxRetries:                    1,
+		},
+	)
+	connector.retryBaseDelay = time.Nanosecond
+	connector.retryMaxDelay = time.Nanosecond
+	faultTime := timestamppb.Now()
+	recoveryTime := timestamppb.New(faultTime.AsTime().Add(time.Second))
+
+	buffer.Enqueue(ringbuffer.NewQueuedHealthEvents(&protos.HealthEvents{Events: []*protos.HealthEvent{{
+		Agent:              "health-events-analyzer",
+		CheckName:          string(conditionType),
+		NodeName:           nodeName,
+		IsFatal:            true,
+		GeneratedTimestamp: faultTime,
+		ProcessingStrategy: protos.ProcessingStrategy_EXECUTE_REMEDIATION,
+	}}}))
+	buffer.Enqueue(ringbuffer.NewQueuedHealthEvents(&protos.HealthEvents{Events: []*protos.HealthEvent{{
+		Agent:              "health-events-analyzer",
+		CheckName:          string(conditionType),
+		NodeName:           nodeName,
+		IsHealthy:          true,
+		GeneratedTimestamp: recoveryTime,
+		ProcessingStrategy: protos.ProcessingStrategy_EXECUTE_REMEDIATION,
+	}}}))
+
+	exited := make(chan struct{})
+	go func() {
+		defer close(exited)
+		connector.FetchAndProcessHealthMetric(ctx)
+	}()
+
+	require.Eventually(t, func() bool {
+		node, err := client.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		condition, _, found := findNodeCondition(node, conditionType)
+		return found && condition.Status == corev1.ConditionFalse
+	}, 5*time.Second, 10*time.Millisecond)
+
+	buffer.ShutDownHealthMetricQueue()
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for connector shutdown")
+	}
+
+	require.Equal(t, clientretry.DefaultRetry.Steps, recoveryFailures)
 }
