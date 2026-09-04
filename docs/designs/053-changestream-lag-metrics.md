@@ -1,4 +1,4 @@
-# ADR-052: `Observability` — change stream consumer lag metrics
+# ADR-053: `Observability` — change stream consumer lag metrics
 
 ## Table of contents
 
@@ -27,44 +27,35 @@ resolved faults while ignoring current ones.
 Requested in #1709, split out of #1704 because it applies to every change stream consumer
 rather than to `health-events-analyzer` alone.
 
-### Current adoption
-
-| Consumer | Stream backlog metric | Notes |
-| --- | --- | --- |
-| `fault-quarantine` | **yes, works** | ticker at `fault-quarantine/pkg/eventwatcher/event_watcher.go:787-798` sets `fault_quarantine_event_backlog_count` |
-| `event-exporter` | **declared, never set** | `health_events_exporter_event_backlog_size` is created at `event-exporter/pkg/metrics/metrics.go:73` and assigned nowhere in the module, so it reports `0` forever. Removal in #1739 |
-| `health-events-analyzer` | none | no reference to `ChangeStreamMetrics` anywhere in the module. This is the consumer that went 2.4M events behind |
-| `fault-remediation` | none | |
-| `janitor` | none | |
-| `lifecycle-manager` | none | |
-| `labeler` | none | |
-
-`node_drainer_queue_depth` exists but measures node-drainer's own in-process work queue, not
-stream position, so it does not cover this.
-
-### Every consumer watches a different, filtered stream
+### The five change stream consumers, and what each one watches
 
 This is the fact that determines the whole design, so it comes before the candidate signals.
 
-Each consumer opens its change stream with **its own aggregation pipeline**, and most of them
-are narrow:
+Every consumer opens its stream with **its own aggregation pipeline**, and only one of the five
+is unfiltered:
 
-| Consumer | Pipeline | Admits |
-| --- | --- | --- |
-| `fault-quarantine` | `BuildAllHealthEventInsertsPipeline` | every health event insert |
-| `node-drainer` | `BuildNodeQuarantineStatusPipeline` (`store-client/pkg/client/mongodb_pipeline_builder.go:44-71`) | only `update` operations that set `nodeQuarantinedStatus` to Quarantined, AlreadyQuarantined, UnQuarantined or Cancelled |
-| `fault-remediation` | `BuildQuarantinedAndDrainedNodesPipeline` | only quarantined-and-drained node transitions |
+| Consumer | Pipeline | Admits | Backlog metric today |
+| --- | --- | --- | --- |
+| `event-exporter` | `BuildAllHealthEventInsertsPipeline` | every health event insert | none. `health_events_exporter_event_backlog_size` was registered and never set; removed in #1739 |
+| `fault-quarantine` | `BuildProcessableHealthEventInsertsPipeline` | inserts filtered by processing strategy | yes, `fault_quarantine_event_backlog_count` |
+| `health-events-analyzer` | `BuildProcessableNonFatalUnhealthyInsertsPipeline` | non-fatal unhealthy inserts | none. This is the consumer that went 2.4M events behind |
+| `node-drainer` | `BuildNodeQuarantineStatusPipeline` | only `update` operations setting `nodeQuarantinedStatus` to Quarantined, AlreadyQuarantined, UnQuarantined or Cancelled | none |
+| `fault-remediation` | `BuildQuarantinedAndDrainedNodesPipeline` | only quarantined-and-drained node transitions | none |
+
+`janitor`, `labeler` and `lifecycle-manager` do not read a change stream at all, so they are out
+of scope. `node_drainer_queue_depth` exists but measures node-drainer's own in-process work
+queue, not stream position.
 
 A consumer's position therefore advances only when an event **its own filter admits** is
-processed. On a healthy cluster, or any cluster with `global.faultQuarantine.enabled: false`,
-no node is ever quarantined, so `node-drainer` and `fault-remediation` match **zero events,
-ever**, and their positions never move off the initial token while health events keep arriving
-by the thousand.
+processed. On a healthy cluster, or any cluster with `global.faultQuarantine.enabled: false`, no
+node is ever quarantined, so `node-drainer` and `fault-remediation` match **zero events, ever**,
+and their positions never move off the initial token while health events keep arriving by the
+thousand.
 
-Any signal that compares a consumer's filtered position against the unfiltered stream will
-therefore report enormous lag for those two consumers permanently, while they are perfectly
-healthy. That rules out a family of otherwise-appealing designs, including the one this ADR
-proposed in its first four revisions.
+Any signal comparing a consumer's filtered position against the unfiltered stream will therefore
+report enormous lag for those two consumers permanently, while they are perfectly healthy. That
+rules out a family of otherwise-appealing designs, including the one this ADR proposed in its
+first four revisions.
 
 ### Candidate signals, and why the obvious ones are wrong
 
@@ -98,37 +89,57 @@ The watcher tracks two timestamps in memory:
 - **`lastEventReadAt`** — the server-side timestamp of the most recent event the watcher read.
 
 ```text
-changestream_lag_seconds = now - max(lastEmptyBatchAt, lastEventReadAt)
+change_stream_lag_seconds = now - max(lastEmptyBatchAt, lastEventReadAt)
 ```
 
 Computed fresh on each scrape, so it keeps growing while a consumer is stuck rather than
 freezing at its last update.
 
-Do **not** export raw position age, and do not compare a filtered position against an
-unfiltered head. Both are covered under Alternatives.
+Do **not** export raw position age, and do not compare a filtered position against an unfiltered
+head. Both are covered under Alternatives.
 
 This design was raised by @KaivalyaMDabhadkar in review on #1738.
 
 ## Implementation
 
-### Where it lives
+### Where it lives, and the import cycle that constrains it
+
+`store-client/pkg/client` already imports the MongoDB watcher package, so the watcher cannot
+import a reporter that lives in `pkg/client` without creating a cycle. The split follows from
+that:
 
 ```text
-store-client/pkg/client/
-  lagreporter.go          # owns the two timestamps and the gauge
 store-client/pkg/datastore/providers/mongodb/watcher/
-  watch_store.go          # eventLoop switches to TryNext, records both timestamps
+  watch_store.go     # records the two timestamps, exposes them as accessors. No metrics.
 store-client/pkg/datastore/providers/postgresql/
-  changestream.go         # poller records both timestamps
+  changestream.go    # same, for the poller
+store-client/pkg/client/
+  lagreporter.go     # the wrapper owns the gauges and reads the accessors
 ```
 
-No new interface, no provider method for head time, and no change to `ChangeStreamMetrics`. That
-interface is satisfied by whole-type assertion at `store-client/pkg/client/resume_token.go:79`
-and `fault-quarantine/pkg/eventwatcher/event_watcher.go:787`, so adding a method to it would
-drop any implementation providing only `GetUnprocessedEventCount` and cost it the count metric it
-already has. Leaving it untouched avoids that entirely.
+So the providers own the *facts* and the `pkg/client` wrapper owns the *metrics*. No new
+interface on `ChangeStreamMetrics`: it is satisfied by whole-type assertion at
+`store-client/pkg/client/resume_token.go:79` and
+`fault-quarantine/pkg/eventwatcher/event_watcher.go:787`, so adding a method would drop any
+implementation providing only `GetUnprocessedEventCount` and cost it the count metric it has.
 
-### MongoDB: the read loop has to change
+### The gauges have to reach each consumer's registry
+
+`store-client` registers its metrics on the **default** Prometheus registry via `promauto`.
+`fault-remediation` serves only controller-runtime's registry, registering everything with
+`promauto.With(crmetrics.Registry)` (`fault-remediation/pkg/metrics/metrics.go:37-66`) and
+passing `metrics.WithRegisterer(crmetrics.Registry)` at `fault-remediation/main.go:109`.
+
+A gauge registered by `store-client` on the default registry would therefore **never appear on
+fault-remediation's metrics endpoint**. Shipping it that way would leave the one signal this ADR
+exists to provide missing from a consumer that needs it.
+
+So `store-client` must accept a **caller-supplied registerer**, defaulting to the default
+registry so existing callers are unaffected, and `fault-remediation` must pass
+`crmetrics.Registry`. Each consumer's wiring needs checking against its own registry rather than
+assumed.
+
+### MongoDB: `TryNext` with an explicit await window
 
 Today the loop blocks:
 
@@ -139,8 +150,15 @@ hasNext := w.changeStream.Next(ctx)
 
 `Next` does not return until an event arrives or the context is cancelled, so an idle stream is
 indistinguishable from a stalled one and there is no moment at which "caught up" can be recorded.
-`TryNext` returns immediately when nothing is available, which is precisely the empty-batch
-signal:
+`TryNext` returns as soon as the server's await window closes with nothing to deliver, which is
+precisely the empty-batch signal.
+
+**No sleep or pacing is needed.** `TryNext` issues a `getMore` that the server holds for its
+await window, and `Next` makes the same calls in an internal loop, so idle cost is unchanged. The
+loop should set `MaxAwaitTime` **explicitly** rather than relying on the server default; the
+stream is currently opened with only `SetFullDocument(options.UpdateLookup)`
+(`watch_store.go:168`) and sets no await time. That interval then bounds the resolution of
+`lastEmptyBatchAt`.
 
 ```go
 if w.changeStream.TryNext(ctx) {
@@ -149,18 +167,17 @@ if w.changeStream.TryNext(ctx) {
 } else if err := w.changeStream.Err(); err != nil {
     w.handleChangeStreamError(err)
     return
+} else if w.changeStream.ID() == 0 {
+    // Server closed the cursor. TryNext returns false with no error in this state, so
+    // without this check the loop would record "caught up" on every tick against a dead
+    // stream. Treat it as an error and reopen. The existing Next loop spins the same way
+    // today, so this fixes a live bug as well as enabling the metric.
+    w.handleChangeStreamError(errStreamClosed)
+    return
 } else {
     w.recordCaughtUp()                        // lastEmptyBatchAt
-    // pace the loop; see below
 }
 ```
-
-**`TryNext` needs pacing.** It returns immediately, so a bare loop busy-polls a core whenever the
-stream is idle, which on this fleet is most of the time. The empty branch needs a short sleep or
-ticker, and that interval sets the resolution of `lastEmptyBatchAt`. Somewhere in the hundreds of
-milliseconds to low seconds keeps idle CPU negligible while keeping lag resolution far finer than
-any sane alert threshold. **Idle CPU must be measured before and after**, since this is the one
-place the design trades cost for signal.
 
 `lastEventReadAt` comes from the event's own server-side timestamp. `processNextEvent`
 (`watch_store.go:434-438`) already decodes the full change event into a `bson.M`, so
@@ -173,7 +190,7 @@ The poller already runs on an interval and already distinguishes a poll that ret
 one that did not. A poll returning zero rows **is** the empty batch, so it records
 `lastEmptyBatchAt`; a poll returning rows records `lastEventReadAt` from
 `datastore_changelog.changed_at` on the newest row read. No schema change and no new index,
-because nothing queries for a stream head any more.
+because nothing queries for a stream head.
 
 ### Startup, and why lag must be allowed to be unknown
 
@@ -185,37 +202,49 @@ rather than guess:
   false-healthy failure this ADR exists to remove.
 - Reporting `now - processStart` would page on every rollout.
 
-So `changestream_lag_seconds` is **not exported at all** until one of the two timestamps is set,
-and `changestream_lag_known{client}` reports `0` until then and `1` afterwards. In practice that
-gap is one poll interval on PostgreSQL and one `TryNext` on MongoDB, so it closes in
-milliseconds on a live stream, but it must be explicit rather than incidental.
+So `change_stream_lag_seconds` is **not exported at all** until one of the two timestamps is set,
+and `change_stream_lag_known{client}` reports `0` until then and `1` afterwards. In practice that
+gap closes in milliseconds on a live stream, but it must be explicit rather than incidental.
 
 A consumer whose watcher never starts, or is wedged before its first read, therefore shows
-`changestream_lag_known == 0` persistently, which is itself alertable and is the only signal that
-covers that state.
+`change_stream_lag_known == 0` persistently, which is itself alertable.
 
 ### Metrics
 
 ```text
-changestream_lag_seconds{client}  gauge  now - max(lastEmptyBatchAt, lastEventReadAt); absent until known
-changestream_lag_known{client}    gauge  1 once either timestamp has been set, else 0
+change_stream_lag_seconds{client}  gauge  now - max(lastEmptyBatchAt, lastEventReadAt); absent until known
+change_stream_lag_known{client}    gauge  1 once either timestamp has been set, else 0
 ```
 
-Two metrics. Every additional candidate considered during review had a flat or zero value with
-two possible meanings, which is the defect this ADR removes rather than adds.
+The `change_stream_` prefix matches the existing `change_stream_resume_token_recoveries_total`
+already emitted by `store-client`, so the family stays consistent.
+
+Two metrics, deliberately. Every additional candidate considered during review had a flat or zero
+value with two possible meanings, which is the defect this ADR removes rather than adds.
 
 `client` is the existing `TokenConfig.ClientName` / `fieldClientName`, so the label space is the
 set of consumers and nothing more.
 
-### What this does and does not measure
+### Three things this metric does not cover
 
-It measures **the watcher's progress against its own stream**, not the durability of the
-consumer's stored position. A consumer that reads and processes an event and then dies before
-`MarkProcessed` succeeds looks healthy by this metric, because the read did happen.
+Stated explicitly, because each one is a way a consumer can be behind while the gauge reads zero.
 
-That is the right trade for a lag signal, and it should not be oversold: this is not also a
-resume-token correctness check. `fault_quarantine_event_backlog_count` stays in place for the one
-consumer that has a durable-position count today.
+**1. Replication lag.** The stream is opened with `SecondaryPreferred` and **no max staleness**
+(`watch_store.go:263`, `watch_store.go:291`). An empty batch therefore means "caught up with the
+secondary I am reading", not "caught up with the primary". If that secondary falls behind, lag
+still reads zero. Replication lag is a separate signal and is not covered here.
+
+**2. Skipped data after a resume-token recovery.** When a stored token is too old for the oplog,
+the watcher deletes it and reopens the stream from now (`watch_store.go:485`). Lag then reads
+near zero precisely when the most data was skipped. The existing
+`change_stream_resume_token_recoveries_total` counter is what covers that case, and the two must
+be read together: a lag of zero is only reassuring if the recoveries counter has not moved.
+
+**3. Durable position.** This measures **the watcher's progress against its own stream**, not
+whether the consumer's position was persisted. A consumer that reads and processes an event and
+then dies before `MarkProcessed` succeeds looks healthy here, because the read did happen. That
+is the right trade for a lag signal, but it means this is not also a resume-token correctness
+check.
 
 ## Rationale
 
@@ -225,11 +254,13 @@ consumer that has a durable-position count today.
 - **It is correct for every consumer, not just the unfiltered one.** `node-drainer` and
   `fault-remediation` are the consumers most likely to sit idle for weeks, and are exactly the
   ones the rejected designs got wrong.
-- **One implementation, every consumer.** Seven consumers have no lag visibility; wiring each
-  separately is seven chances to omit the eighth.
+- **One implementation, every consumer.** Four of the five consumers have no lag visibility;
+  wiring each one separately is four chances to omit the fifth.
 - **It deletes machinery rather than adding it.** No head-time query, no `max(_id)` ordering
   assumption, no new PostgreSQL index, no `ResumeTokens` schema change, no interface change, and
   no `COUNT(*)`.
+- **It fixes a live bug on the way.** The closed-cursor check the metric needs also stops the
+  existing `Next` loop spinning against a dead stream.
 
 ## Consequences
 
@@ -240,16 +271,19 @@ consumer that has a durable-position count today.
 - A blocked or wedged read loop is caught by the same metric, because neither timestamp advances
   while the wall clock does.
 - Correct on filtered streams, which is what makes it usable on a detection-only deployment.
+- The closed-cursor spin is fixed for every consumer.
 
 ### Negative
 
-- **The MongoDB read loop changes shape.** `Next` to `TryNext` plus pacing touches the hot path
-  of every consumer, and it is the main risk in this ADR.
-- Idle CPU rises from "blocked in a syscall" to "wakes on a tick". Expected to be negligible, but
-  it must be measured rather than assumed.
+- **The MongoDB read loop changes shape.** `Next` to `TryNext` touches the hot path of every
+  consumer, and it is the main risk in this ADR.
+- `store-client` gains a registerer parameter, so every consumer's metrics wiring must be checked
+  rather than assumed.
 - Lag is unknown for a moment after every restart, and needs the companion metric to stay honest
   about it.
 - In-memory state means the metric says nothing about history before the current process.
+- Three named blind spots remain: replication lag, skipped data after a token recovery, and
+  durable position.
 
 ## Alternatives Considered
 
@@ -259,7 +293,7 @@ consumer that has a durable-position count today.
 
 Head is a property of the whole collection; position is a property of the consumer's **filtered**
 stream. Comparing them is only meaningful for a consumer whose pipeline admits everything, which
-is `fault-quarantine` alone. For `node-drainer` and `fault-remediation`, whose pipelines match
+is `event-exporter` alone. For `node-drainer` and `fault-remediation`, whose pipelines match
 nothing at all on a cluster where quarantine is disabled, it reports time-since-deployment as
 lag, permanently, on two healthy consumers. That is the same false alarm as position age, reached
 by a longer route.
@@ -305,8 +339,8 @@ the worst case, stops updating its own lag metric and looks frozen rather than b
 
 ## Testing
 
-- **Idle stream, caught up**: no events for many multiples of the pacing interval, assert lag
-  stays near zero. This is the test that fails under position age.
+- **Idle stream, caught up**: no events for many multiples of the await window, assert lag stays
+  near zero. This is the test that fails under position age.
 - **Narrow pipeline, caught up**: a consumer whose filter admits nothing while the collection
   receives a steady insert load, assert lag stays near zero. **This is the test that fails under
   head minus position**, and it is the reason for the redesign, so it belongs in the suite
@@ -317,31 +351,40 @@ the worst case, stops updating its own lag metric and looks frozen rather than b
   time.
 - **Slow consumer**: with the consumer not draining the event channel, so the read loop blocks on
   send, assert lag grows. This distinguishes "reading fine, processing slowly" from healthy.
-- **Restart**: assert `changestream_lag_seconds` is **absent** and `changestream_lag_known` is
+- **Closed cursor**: with the server closing the stream, assert the loop treats it as an error
+  and reopens rather than recording "caught up" on every tick. This is a regression test for the
+  existing spin as much as for the new metric.
+- **Restart**: assert `change_stream_lag_seconds` is **absent** and `change_stream_lag_known` is
   `0` before the first read or empty batch, and that both become live immediately afterwards.
   Assert lag is never reported as `0` while unknown.
-- **Idle CPU**: measure the watcher's CPU on an idle stream before and after the `TryNext`
-  change, and assert the pacing interval bounds it. The one performance-sensitive part of this
-  design deserves a number rather than a claim.
+- **Registry wiring**: assert both gauges appear on **fault-remediation's** metrics endpoint,
+  since it serves controller-runtime's registry rather than the default one. A unit test that
+  only checks the default registry would pass while the real endpoint stayed empty.
 - **Both providers**: every case above against MongoDB and PostgreSQL, since the empty-batch
   signal is derived differently in each.
-- **Integration**: with `envtest` plus a real MongoDB, stop a consumer, insert events, restart
-  it, and assert lag rises and then returns to near zero as it drains. This reproduces the #1704
-  shape directly.
+- **Integration**: the `kind` plus Tilt suite under `tests/`, which has a real MongoDB. Stop a
+  consumer, insert events, restart it, and assert lag rises and then returns to near zero as it
+  drains. This reproduces the #1704 shape directly. Not `envtest`, which provides a Kubernetes
+  API server and no datastore.
 
 ## Rollout
 
-1. Add the lag reporter and the two metrics behind the PostgreSQL path first, since it needs no
+1. Add the caller-supplied registerer to `store-client` and pass `crmetrics.Registry` from
+   `fault-remediation`, before any gauge depends on it.
+2. Add the lag reporter and the two metrics behind the PostgreSQL path first, since it needs no
    read-loop change and exercises the shared layer.
-2. Change the MongoDB read loop to `TryNext` with pacing, with the idle-CPU measurement from the
-   test plan as the gate on merging it.
-3. Document in `docs/METRICS.md`, as two alerts:
-   - `changestream_lag_seconds > 900` for 10m, tuned per fleet. The primary "behind" alert. It
+3. Change the MongoDB read loop to `TryNext` with an explicit `MaxAwaitTime` and the closed-cursor
+   check.
+4. Document in `docs/METRICS.md`, as two alerts:
+   - `change_stream_lag_seconds > 900` for 10m, tuned per fleet. The primary "behind" alert. It
      needs no `lag_known` qualifier, because the series is absent rather than zero while unknown.
-   - `changestream_lag_known == 0` for longer than a startup grace period, suggested at 10
+   - `change_stream_lag_known == 0` for longer than a startup grace period, suggested at 10
      minutes. Covers a watcher that never started or is wedged before its first read.
-4. Leave `fault_quarantine_event_backlog_count` in place. It answers a different question, a
+
+   Document the three blind spots alongside them, and note that
+   `change_stream_resume_token_recoveries_total` must be read together with the lag gauge.
+5. Leave `fault_quarantine_event_backlog_count` in place. It answers a different question, a
    durable-position count for one consumer, and nothing here replaces it.
 
-Removing `event-exporter`'s dead gauge is tracked separately in #1739, and #1743 covers the
-Kubernetes connector dropping events on write failure, which is adjacent but independent.
+Removing `event-exporter`'s dead gauge landed in #1739, and #1743 covers the Kubernetes connector
+dropping events on write failure, which is adjacent but independent.
