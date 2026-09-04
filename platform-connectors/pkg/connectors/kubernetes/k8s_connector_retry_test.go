@@ -47,15 +47,15 @@ func retryTestConnector(
 	}
 }
 
-// TestNewK8sConnectorDefaultsMaxRetries verifies the default outer retry limit.
-func TestNewK8sConnectorDefaultsMaxRetries(t *testing.T) {
+// TestNewK8sConnector_DefaultConfig_UsesDefaultMaxRetries verifies the default outer retry limit.
+func TestNewK8sConnector_DefaultConfig_UsesDefaultMaxRetries(t *testing.T) {
 	connector := NewK8sConnector(nil, nil, nil, context.Background(), K8sConnectorConfig{})
 
 	require.Equal(t, DefaultMaxRetries, connector.config.MaxRetries)
 }
 
-// TestInitializeK8sConnectorRejectsNegativeMaxRetries verifies invalid retry limits fail initialization.
-func TestInitializeK8sConnectorRejectsNegativeMaxRetries(t *testing.T) {
+// TestInitializeK8sConnector_NegativeMaxRetries_ReturnsError verifies invalid retry limits fail initialization.
+func TestInitializeK8sConnector_NegativeMaxRetries_ReturnsError(t *testing.T) {
 	_, _, err := InitializeK8sConnector(
 		context.Background(), nil, 1, 1, nil,
 		K8sConnectorConfig{
@@ -69,8 +69,8 @@ func TestInitializeK8sConnectorRejectsNegativeMaxRetries(t *testing.T) {
 	require.EqualError(t, err, "maxRetries must not be negative, got -1")
 }
 
-// TestProcessHealthEventsWithRetry verifies retry bounds, error classification, and cancellation.
-func TestProcessHealthEventsWithRetry(t *testing.T) {
+// TestProcessHealthEventsWithRetry_RetryScenarios_EnforcePolicy verifies retry bounds, error classification, and cancellation.
+func TestProcessHealthEventsWithRetry_RetryScenarios_EnforcePolicy(t *testing.T) {
 	t.Run("transient failure succeeds", func(t *testing.T) {
 		calls := 0
 		connector := retryTestConnector(3, func(context.Context, *protos.HealthEvents) error {
@@ -131,8 +131,8 @@ func TestProcessHealthEventsWithRetry(t *testing.T) {
 	})
 }
 
-// TestProcessHealthEventsWithRetryStopsDuringBackoff verifies connector shutdown interrupts an active retry wait.
-func TestProcessHealthEventsWithRetryStopsDuringBackoff(t *testing.T) {
+// TestProcessHealthEventsWithRetry_StopDuringBackoff_ReturnsCanceled verifies shutdown interrupts an active retry wait.
+func TestProcessHealthEventsWithRetry_StopDuringBackoff_ReturnsCanceled(t *testing.T) {
 	stopCh := make(chan struct{})
 	firstAttempt := make(chan struct{}, 1)
 	connector := retryTestConnector(3, func(context.Context, *protos.HealthEvents) error {
@@ -175,8 +175,8 @@ func TestProcessHealthEventsWithRetryStopsDuringBackoff(t *testing.T) {
 	}
 }
 
-// TestFetchAndProcessHealthMetricRetriesBeforeDequeuingRecovery verifies batches retain queue order during retries.
-func TestFetchAndProcessHealthMetricRetriesBeforeDequeuingRecovery(t *testing.T) {
+// TestFetchAndProcessHealthMetric_TransientFaultFailure_PreservesFaultRecoveryOrder verifies retries retain queue order.
+func TestFetchAndProcessHealthMetric_TransientFaultFailure_PreservesFaultRecoveryOrder(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -241,8 +241,8 @@ func TestFetchAndProcessHealthMetricRetriesBeforeDequeuingRecovery(t *testing.T)
 	require.Equal(t, []string{"fault", "fault", "recovery"}, attempts)
 }
 
-// TestFetchAndProcessHealthMetricRetriesRecoveryAfterClientGoExhaustion verifies outer retries persist a recovery.
-func TestFetchAndProcessHealthMetricRetriesRecoveryAfterClientGoExhaustion(t *testing.T) {
+// TestFetchAndProcessHealthMetric_ClientGoRetryExhaustion_PersistsRecovery verifies outer retries persist a recovery.
+func TestFetchAndProcessHealthMetric_ClientGoRetryExhaustion_PersistsRecovery(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
