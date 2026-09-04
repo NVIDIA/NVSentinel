@@ -38,6 +38,9 @@ func TestIsDeterministicError(t *testing.T) {
 			err:  NewQueryError(ProviderPostgreSQL, "bad SQL", &pq.Error{Code: "42601"}),
 			want: true,
 		},
+		"postgres undefined table": {
+			err: NewQueryError(ProviderPostgreSQL, "table not provisioned yet", &pq.Error{Code: "42P01"}),
+		},
 		"postgres permission error": {
 			err: NewQueryError(ProviderPostgreSQL, "permission", &pq.Error{Code: "42501"}),
 		},
@@ -58,7 +61,7 @@ func TestIsDeterministicError(t *testing.T) {
 }
 
 func TestDeterministicPostgreSQLQuerySQLStates(t *testing.T) {
-	for _, code := range []string{"22000", "42601", "42703", "42804", "42883", "42P01"} {
+	for _, code := range []string{"22000", "42601", "42703", "42804", "42883"} {
 		t.Run(code, func(t *testing.T) {
 			err := NewQueryError(ProviderPostgreSQL, "invalid deterministic query", &pq.Error{Code: pq.ErrorCode(code)})
 			if !IsDeterministicError(err) {

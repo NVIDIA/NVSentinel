@@ -180,7 +180,7 @@ func isDeterministicQueryError(cause error) bool {
 	}
 
 	switch code {
-	case "42601", "42703", "42804", "42883", "42P01":
+	case "42601", "42703", "42804", "42883":
 		return true
 	default:
 		return false

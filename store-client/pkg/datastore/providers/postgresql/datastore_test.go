@@ -254,6 +254,22 @@ func TestRecoveryIndexesIncludePartialPendingEventCursor(t *testing.T) {
 		"document->'healtheventstatus'->>'faultquarantinerecovery' IS NULL")
 }
 
+func TestRuntimeUpgradeIndexes_ExistingDatabase_IncludesAnalyzerLookup(t *testing.T) {
+	var analyzerIndex string
+	for _, statement := range runtimeUpgradeIndexStatements {
+		if strings.Contains(statement, "idx_health_events_analyzer_lookup") {
+			analyzerIndex = statement
+
+			break
+		}
+	}
+
+	require.NotEmpty(t, analyzerIndex)
+	assert.Contains(t, analyzerIndex, "CREATE INDEX IF NOT EXISTS")
+	assert.Contains(t, analyzerIndex, "ON health_events (node_name, event_type, created_at DESC")
+	assert.Contains(t, analyzerIndex, "document->'healthevent'->>'agent'")
+}
+
 func TestPostgreSQLDataStore_Provider(t *testing.T) {
 	db, _, err := sqlmock.New()
 	require.NoError(t, err)

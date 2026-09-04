@@ -333,6 +333,14 @@ var recoveryIndexStatements = []string{
 		`document->'healtheventstatus'->>'faultquarantinerecovery' = '')`,
 }
 
+// runtimeUpgradeIndexStatements are executed on every datastore startup. Keep
+// them idempotent so existing databases receive indexes added after initial
+// provisioning, not only databases created by the Helm init script.
+var runtimeUpgradeIndexStatements = []string{
+	`CREATE INDEX IF NOT EXISTS idx_health_events_analyzer_lookup ON health_events (` +
+		`node_name, event_type, created_at DESC, (document->'healthevent'->>'agent'))`,
+}
+
 func createTables(ctx context.Context, db *sql.DB) error {
 	schemas := []string{
 		`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`,
@@ -423,8 +431,6 @@ func createTables(ctx context.Context, db *sql.DB) error {
 			`WHERE node_quarantined IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_health_events_created_desc ON health_events(created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_health_events_created_id ON health_events(created_at, id)`,
-		`CREATE INDEX IF NOT EXISTS idx_health_events_analyzer_lookup ON health_events (` +
-			`node_name, event_type, created_at DESC, (document->'healthevent'->>'agent'))`,
 		`CREATE INDEX IF NOT EXISTS idx_health_events_document_gin ON health_events USING GIN (document)`,
 
 		// Changelog Indexes
@@ -436,6 +442,7 @@ func createTables(ctx context.Context, db *sql.DB) error {
 			ON datastore_changelog(table_name, changed_at, id)
 			WHERE processed = FALSE`,
 	}
+	indexes = append(indexes, runtimeUpgradeIndexStatements...)
 	indexes = append(indexes, recoveryIndexStatements...)
 
 	// Execute schema creation

@@ -716,7 +716,15 @@ func (r *Reconciler) currentDerivedStatesForNode(
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer func() {
+		if closeErr := cursor.Close(ctx); closeErr != nil {
+			slog.WarnContext(ctx, "Failed to close recovery cursor",
+				"rule", rule.Name,
+				"lookup", "node_derived_states",
+				"error", closeErr,
+			)
+		}
+	}()
 
 	states := make(map[string]recoveryTarget)
 
@@ -1041,7 +1049,15 @@ func (r *Reconciler) findLatestMatchingEvent(
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer func() {
+		if closeErr := cursor.Close(ctx); closeErr != nil {
+			slog.WarnContext(ctx, "Failed to close recovery cursor",
+				"rule", ruleName,
+				"lookup", lookup,
+				"error", closeErr,
+			)
+		}
+	}()
 
 	var latest *datamodels.HealthEventWithStatus
 

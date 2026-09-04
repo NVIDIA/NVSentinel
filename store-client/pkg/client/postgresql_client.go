@@ -67,6 +67,7 @@ const (
 	// SQL constants
 	orderDESC     = "DESC"
 	sqlTrueClause = "TRUE"
+	sqlDistinct   = "IS DISTINCT FROM"
 	createdAtSQL  = "created_at"
 	updatedAtSQL  = "updated_at"
 
@@ -1048,7 +1049,7 @@ func sqlComparisonOperator(operator string) (string, bool) {
 	case opEQ:
 		return "=", true
 	case opNE:
-		return "!=", true
+		return sqlDistinct, true
 	default:
 		return "", false
 	}
@@ -1065,7 +1066,7 @@ func buildScalarComparison(
 	}
 
 	if value == nil {
-		if operator == "!=" {
+		if operator == "!=" || operator == sqlDistinct {
 			return jsonPath + " IS NOT NULL", nil
 		}
 
@@ -1073,6 +1074,15 @@ func buildScalarComparison(
 	}
 
 	expression, argument := typedComparisonOperand(jsonPath, value)
+	if operator == sqlDistinct {
+		reflected := reflect.ValueOf(value)
+		if reflected.IsValid() && reflected.Kind() == reflect.Bool {
+			expression = fmt.Sprintf(
+				"CASE WHEN %s IN ('true', 'false') THEN (%s)::boolean END",
+				jsonPath, jsonPath,
+			)
+		}
+	}
 
 	return fmt.Sprintf("%s %s $%d", expression, operator, parameter), []any{argument}
 }
@@ -2648,8 +2658,17 @@ func (b *aggregationQueryBuilder) buildStandardQuery() string {
 func (b *aggregationQueryBuilder) buildPostCountFilter(countQuery string) (string, error) {
 	// Build WHERE conditions for the count result
 	conditions := []string{}
+	fields := make([]string, 0, len(b.postCountMatch))
 
-	for field, value := range b.postCountMatch {
+	for field := range b.postCountMatch {
+		fields = append(fields, field)
+	}
+
+	sort.Strings(fields)
+
+	for _, field := range fields {
+		value := b.postCountMatch[field]
+
 		condition, err := b.buildPostCountCondition(field, value)
 		if err != nil {
 			return "", err

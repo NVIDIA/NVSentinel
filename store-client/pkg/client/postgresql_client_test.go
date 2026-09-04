@@ -248,7 +248,7 @@ func TestRecoveryQueryLogicalFilterValidation(t *testing.T) {
 
 func TestRecoveryQueryComparisonOperators(t *testing.T) {
 	for operator, expected := range map[string]string{
-		opGTE: ">=", opGT: ">", opLTE: "<=", opLT: "<", opEQ: "=", opNE: "!=",
+		opGTE: ">=", opGT: ">", opLTE: "<=", opLT: "<", opEQ: "=", opNE: "IS DISTINCT FROM",
 	} {
 		actual, ok := sqlComparisonOperator(operator)
 		if !ok || actual != expected {
@@ -288,6 +288,12 @@ func TestRecoveryQueryComparisonOperators(t *testing.T) {
 	}
 	if condition, args := buildScalarComparison("document->>'value'", "!=", nil, 1, true); condition != "document->>'value' IS NOT NULL" || len(args) != 0 {
 		t.Fatalf("nil inequality = %q, %#v", condition, args)
+	}
+	if condition, args := buildScalarComparison("document->>'value'", "IS DISTINCT FROM", "analyzer", 1, true); condition != "document->>'value' IS DISTINCT FROM $1" || !reflect.DeepEqual(args, []any{"analyzer"}) {
+		t.Fatalf("null-safe inequality = %q, %#v", condition, args)
+	}
+	if condition, args := buildScalarComparison("document->>'value'", "IS DISTINCT FROM", false, 1, true); condition != "CASE WHEN document->>'value' IN ('true', 'false') THEN (document->>'value')::boolean END IS DISTINCT FROM $1" || !reflect.DeepEqual(args, []any{false}) {
+		t.Fatalf("null-safe boolean inequality = %q, %#v", condition, args)
 	}
 }
 
@@ -462,6 +468,31 @@ func TestPostCountMatchCombinesAllOperators(t *testing.T) {
 	}
 	if !reflect.DeepEqual(args, []any{2, 5}) {
 		t.Fatalf("args = %#v, want [2 5]", args)
+	}
+}
+
+func TestPostCountMatch_MultipleFields_OrdersFieldsDeterministically(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	wantQuery := "(document->>'critical')::bigint >= $1 AND (document->>'total')::bigint <= $2"
+	wantArgs := []any{2, 5}
+
+	for range 20 {
+		query, args, err := client.buildAggregationQuery([]map[string]any{
+			{"$count": "count"},
+			{"$match": map[string]any{
+				"total":    map[string]any{"$lte": 5},
+				"critical": map[string]any{"$gte": 2},
+			}},
+		}, PipelineOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(query, wantQuery) {
+			t.Fatalf("post-count fields are not ordered: %s", query)
+		}
+		if !reflect.DeepEqual(args, wantArgs) {
+			t.Fatalf("args = %#v, want %#v", args, wantArgs)
+		}
 	}
 }
 
@@ -658,6 +689,9 @@ func TestAggregationSupportsAnalyzerMandatoryLogicalFilter(t *testing.T) {
 		if !strings.Contains(query, expected) {
 			t.Fatalf("query does not contain %q: %s", expected, query)
 		}
+	}
+	if !strings.Contains(query, "document->'healthevent'->>'agent' IS DISTINCT FROM") {
+		t.Fatalf("agent exclusion is not null-safe: %s", query)
 	}
 
 	for _, arg := range args {

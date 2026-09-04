@@ -26,7 +26,7 @@ import (
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
-func TestPermanentErrorClassification(t *testing.T) {
+func TestPermanentError_WrappedAndJoinedErrors_ClassifiesOnlyFullyPermanentChains(t *testing.T) {
 	permanent := PermanentError(errors.New("invalid event"))
 	require.True(t, IsPermanentError(permanent))
 	require.True(t, IsPermanentError(fmt.Errorf("wrapped: %w", permanent)))
@@ -35,7 +35,7 @@ func TestPermanentErrorClassification(t *testing.T) {
 	require.False(t, IsPermanentError(nil))
 }
 
-func TestEventProcessorCheckpointsPermanentFailureAndContinues(t *testing.T) {
+func TestEventProcessor_PermanentHandlerFailure_CheckpointsAndContinues(t *testing.T) {
 	events := make(chan Event, 2)
 	events <- newPermanentErrorTestEvent("1")
 	events <- newPermanentErrorTestEvent("2")
@@ -59,7 +59,7 @@ func TestEventProcessorCheckpointsPermanentFailureAndContinues(t *testing.T) {
 	require.Equal(t, []string{"1", "2"}, watcher.marked)
 }
 
-func TestEventProcessorStopsWhenPermanentFailureCannotBeCheckpointed(t *testing.T) {
+func TestEventProcessor_PermanentFailureCheckpointFails_StopsAtUncheckpointedEvent(t *testing.T) {
 	events := make(chan Event, 1)
 	events <- newPermanentErrorTestEvent("1")
 	close(events)

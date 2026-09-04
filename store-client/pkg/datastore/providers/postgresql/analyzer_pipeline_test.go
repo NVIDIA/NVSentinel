@@ -50,6 +50,8 @@ func TestAnalyzerPipelineAdmitsRecoveryEvents(t *testing.T) {
 			strategy: nil, isHealthy: true, want: true},
 		{name: "explicit unspecified strategy", operation: "insert", agent: "custom-monitor",
 			strategy: int32(protos.ProcessingStrategy_UNSPECIFIED), isHealthy: true, want: true},
+		{name: "legacy event without agent", operation: "insert",
+			strategy: int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION), isHealthy: true, want: true},
 		{name: "analyzer output", operation: "insert", agent: "health-events-analyzer",
 			strategy: int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION), isHealthy: true, want: false},
 		{name: "store only", operation: "insert", agent: "syslog-health-monitor",
@@ -61,8 +63,10 @@ func TestAnalyzerPipelineAdmitsRecoveryEvents(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			healthEvent := map[string]any{
-				"agent":     test.agent,
 				"ishealthy": test.isHealthy,
+			}
+			if test.agent != "" {
+				healthEvent["agent"] = test.agent
 			}
 			if test.strategy != nil {
 				healthEvent["processingstrategy"] = test.strategy
