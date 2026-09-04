@@ -29,6 +29,8 @@ Polls `/sys/class/infiniband/` sysfs files at `statePollingInterval` (1s by defa
 
 Management NICs (on NUMA nodes without GPUs, or carrying the host's default route) are automatically excluded. SR-IOV Virtual Functions are automatically filtered. No per-GPU-type configuration is required.
 
+On AWS, Elastic Fabric Adapters (`efa` driver, `/sys/class/infiniband/rdmap*`) are monitored by `EFAStateCheck`. The `efa` driver hard-codes `state=ACTIVE` / `phys_state=LinkUp` in sysfs, so the check derives link state from the adapter's network interface instead (`operstate` and `carrier` under `/sys/class/infiniband/<dev>/device/net/<iface>/`): a down operstate or lost carrier is reported as a fatal port DOWN with the same latching, recovery and persistence semantics as a RoCE port. EFA-only adapters that expose no network interface are covered by device-disappearance detection and the EFA counter check.
+
 ### Layer 2: Link Counter Detection (NIC Health Monitor DaemonSet)
 
 Polls InfiniBand hardware counters every second for error rate violations:
@@ -45,6 +47,12 @@ Polls InfiniBand hardware counters every second for error rate violations:
 - `link_error_recovery` > 5/min — link flapping
 - `roce_slow_restart` > 10/sec — grey failure straggler indicator
 - `carrier_changes`, `port_rcv_errors`, and others
+
+**AWS EFA counters** (`EFADegradationCheck`, read from the `efa` driver's per-port `hw_counters/` and device-level `/sys/class/infiniband/<dev>/hw_counters/`):
+- `efa_no_completion_cmds` — admin command never completed; firmware unresponsive → **Fatal** (`REPLACE_VM`)
+- `efa_cmds_err` > 10/min — admin command failures (control plane)
+- `efa_rx_drops` > 100/sec — packets dropped by the adapter
+- `efa_unresponsive_remote_err`, `efa_impaired_remote_conn_err` > 1/sec — fabric black-hole / impaired-peer indicators
 
 Counter breach state is persisted across pod restarts. Recovery events are emitted automatically when an admin resets counters (e.g. `perfquery -r` or `perfquery -R`) or when the node reboots.
 
@@ -63,6 +71,13 @@ Watches journald for `mlx5_core` kernel messages that indicate driver/firmware f
 - `Detected insufficient power on the PCIe slot`
 - `Port module event.*High Temperature`
 - `Cable unplugged`, `ACCESS_REG failed`
+
+**AWS EFA patterns** (`efa` kernel driver, prefixed `efa <bdf>:` or `infiniband rdmap*:`):
+- `Wait for completion (polling) timeout` / `The device didn't send any completion for admin cmd` — admin command timeout → **Fatal**
+- `Admin queue is closed` — driver closed the admin queue after a timeout → **Fatal**
+- `Reset indication didn't turn on|off`, `Device isn't ready, can't reset device` — device reset failed → **Fatal**
+- `Device isn't ready, abort com init` — device not ready at driver init → **Fatal**
+- `Failed to process command` / `Failed to submit command` — admin command error → non-fatal
 
 Repeated non-fatal syslog patterns (3 in 1 hour on the same node) escalate to `CONTACT_SUPPORT` via the Health Events Analyzer.
 
@@ -88,19 +103,25 @@ The monitors follow NVSentinel's **"Report Raw, Correlate Centrally"** pattern: 
 
 | Detection Layer | Data Source | Fatal Condition | Non-Fatal (Degradation) |
 |----------------|-------------|-----------------|-------------------------|
-| **Link State** | `/sys/class/infiniband/*/ports/*/state` | Port DOWN, device disappeared, uncabled anomaly | INIT/ARMED/Polling states (transient) |
-| **Link Counter** | `/sys/class/infiniband/*/ports/*/counters/` | `link_downed`, `rnr_nak_retry_err`, buffer overrun, BER >120/hour | Symbol errors, link recovery, congestion |
-| **Syslog** | journald / dmesg | `cmd_exec timeout`, health poll failed, unrecoverable, NAPI soft lockup | TX/RX timeouts, thermal, power, SFP events |
+| **Link State** | `/sys/class/infiniband/*/ports/*/state` (EFA: netdev `operstate`/`carrier`) | Port DOWN, device disappeared, uncabled anomaly | INIT/ARMED/Polling states (transient) |
+| **Link Counter** | `/sys/class/infiniband/*/ports/*/counters/`, `hw_counters/` (EFA: also `/sys/class/infiniband/*/hw_counters/`) | `link_downed`, `rnr_nak_retry_err`, buffer overrun, BER >120/hour, `efa_no_completion_cmds` | Symbol errors, link recovery, congestion, EFA drops / admin errors |
+| **Syslog** | journald / dmesg | `cmd_exec timeout`, health poll failed, unrecoverable, NAPI soft lockup, EFA admin timeout / reset failure | TX/RX timeouts, thermal, power, SFP events, EFA admin command errors |
 
 ## Supported Hardware
 
-> **Current scope**: Mellanox/NVIDIA InfiniBand and RoCE devices only. The architecture is designed to be extensible for future NIC vendors.
-
 | Vendor | Detection | State Monitoring | Counter Monitoring | Syslog Monitoring |
 |--------|-----------|-----------------|-------------------|-------------------|
-| **Mellanox ConnectX (IB/RoCE)** | Device name `mlx5_*` or driver symlink | Yes | Yes | Yes (`mlx5_core` patterns) |
+| **Mellanox ConnectX (IB/RoCE)** | PCI vendor `0x15b3` | Yes | Yes | Yes (`mlx5_core` patterns) |
+| **AWS Elastic Fabric Adapter (EFA)** | `device/driver` symlink → `efa` (PCI vendor `0x1d0f` as fallback) | Yes, via the adapter's netdev (`EFAStateCheck`) | Yes (`EFADegradationCheck`, `efa_*` counters) | Yes (`efa_*` patterns) |
 
-Validated on: DGX A100, DGX H100, H100 OCI, A100 OCI RoCE, L40S OCI, on-prem L40S, GB200 NVL4.
+Validated on: DGX A100, DGX H100, H100 OCI, A100 OCI RoCE, L40S OCI, on-prem L40S, GB200 NVL4. EFA support is validated against the sysfs layout of the upstream `efa` driver in unit tests; field validation on p4d/p5 instances is welcome.
+
+### AWS EFA notes
+
+- EFA devices are named `rdmap<bus>s<slot>` by rdma-core's predictable naming (or `efa_N` without it); detection keys off the driver binding, not the name.
+- The `efa` driver reports an unspecified link layer (`link_layer` reads `Unknown`). Discovery normalises it to `EFA` so EFA ports are owned exclusively by the EFA checks and never mistaken for RoCE or InfiniBand ports.
+- EFA is a purpose-built compute fabric NIC and never carries the host's default route (that is the ENA function). When the `nvidia-smi topo -m` matrix carries no entry for an EFA device, it is classified as a compute NIC rather than falling through the NUMA heuristic (which would exclude it on instance types reporting `numa_node = -1`).
+- Only counters that exist on a given adapter family are read on it: mlx5 IBTA/RoCE counters are skipped on EFA ports and `efa_*` counters on Mellanox ports, so one shared `counterDetection.counters` list serves every check without spurious "counter not readable" warnings.
 
 ## Configuration
 
@@ -119,6 +140,29 @@ syslog-health-monitor:
     - SysLogsNICDriverError  # NIC driver/firmware error patterns
 ```
 
+On AWS, add the EFA checks (present in the default `enabledChecks`) and the `efa_*` syslog patterns:
+
+```yaml
+nic-health-monitor:
+  enabledChecks:
+    - EFAStateCheck
+    - EFADegradationCheck
+
+syslog-health-monitor:
+  nicDriverDetection:
+    patterns:
+      - name: efa_admin_cmd_timeout
+        enabled: true
+      - name: efa_admin_queue_closed
+        enabled: true
+      - name: efa_device_reset_failed
+        enabled: true
+      - name: efa_device_not_ready
+        enabled: true
+      - name: efa_admin_cmd_failed
+        enabled: true
+```
+
 The NIC Health Monitor DaemonSet requires the metadata collector to be running on the same node (provides GPU↔NIC topology for management NIC exclusion and role classification). The monitor fails to start if the metadata file is missing — except when `nicInclusionRegexOverride` is set, which bypasses automatic discovery and the metadata dependency entirely.
 
 For counter threshold customization, NIC exclusion patterns, and advanced configuration, see [NIC Health Monitor Configuration](./configuration/nic-health-monitor.md).
@@ -126,7 +170,7 @@ For counter threshold customization, NIC exclusion patterns, and advanced config
 ## Key Features
 
 ### Zero-Configuration NIC Role Classification
-Automatically classifies NICs as Compute, Storage, or Management using a combination of NUMA locality, the `nvidia-smi topo -m` GPU↔NIC matrix, link layer (InfiniBand vs Ethernet), and default-route detection. Works across DGX, HGX, Grace-based (GB200/GH200), OEM, and cloud platforms without any per-GPU-type static configuration.
+Automatically classifies NICs as Compute, Storage, or Management using a combination of NUMA locality, the `nvidia-smi topo -m` GPU↔NIC matrix, link layer (InfiniBand vs Ethernet), driver binding (EFA adapters are always compute), and default-route detection. Works across DGX, HGX, Grace-based (GB200/GH200), OEM, and cloud platforms without any per-GPU-type static configuration.
 
 ### Pre-Failure Detection
 Tracks InfiniBand symbol error rates against the IBTA 10E-12 BER specification. Detects when FEC is approaching exhaustion and reports a fatal event before the link drops to zero — draining the node before the "cliff effect" causes 100% packet loss.

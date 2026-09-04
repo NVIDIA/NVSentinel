@@ -53,6 +53,11 @@ type Reader interface {
 	// ReadIBPortCounter reads a uint64 counter from the port's sysfs tree.
 	// counterPath is relative to the port directory, e.g. "counters/link_downed".
 	ReadIBPortCounter(device string, port int, counterPath string) (uint64, error)
+	// ReadIBDeviceHWCounter reads a uint64 counter from the device-level
+	// hardware counter directory, /sys/class/infiniband/<dev>/hw_counters/<counter>.
+	// Drivers such as efa expose device-wide statistics (admin command
+	// errors, keep-alive events) here rather than under a port.
+	ReadIBDeviceHWCounter(device, counter string) (uint64, error)
 	// ReadNetStatistic reads a uint64 counter from /sys/class/net/<iface>/statistics/<counter>.
 	ReadNetStatistic(iface, counter string) (uint64, error)
 
@@ -70,4 +75,8 @@ type Reader interface {
 	// IsVirtualFunction reports whether the IB device exposes the
 	// `device/physfn` symlink (present on VFs only).
 	IsVirtualFunction(device string) bool
+	// ReadIBDeviceDriver resolves the kernel driver bound to the IB
+	// device's PCI function from the `device/driver` symlink and returns
+	// its basename (e.g. "mlx5_core", "efa").
+	ReadIBDeviceDriver(device string) (string, error)
 }
