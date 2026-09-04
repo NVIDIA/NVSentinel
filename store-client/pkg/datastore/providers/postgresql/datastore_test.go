@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
@@ -190,6 +191,37 @@ func TestPostgreSQLDataStore_Close(t *testing.T) {
 	err = ds.Close(context.Background())
 	assert.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPostgreSQLDataStore_RuntimeUpgrades_RunInBackgroundAndStopOnClose(t *testing.T) {
+	originalIndexes := runtimeUpgradeIndexes
+	runtimeUpgradeIndexes = []runtimeUpgradeIndex{{
+		name:            "delayed_index",
+		createStatement: "delayed concurrent index",
+	}}
+	t.Cleanup(func() { runtimeUpgradeIndexes = originalIndexes })
+
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+
+	mock.ExpectQuery(regexp.QuoteMeta(runtimeUpgradeIndexValidityQuery)).
+		WithArgs("delayed_index").
+		WillDelayFor(5 * time.Second).
+		WillReturnError(sql.ErrNoRows)
+
+	ds := &PostgreSQLDataStore{db: db}
+	startedAt := time.Now()
+	ds.startRuntimeUpgrades()
+	require.Less(t, time.Since(startedAt), time.Second)
+
+	require.Eventually(t, func() bool {
+		return mock.ExpectationsWereMet() == nil
+	}, time.Second, 10*time.Millisecond)
+	mock.ExpectClose()
+	closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, ds.Close(closeCtx))
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestPostgreSQLDataStore_Ping(t *testing.T) {

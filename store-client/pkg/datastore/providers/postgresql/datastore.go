@@ -39,6 +39,8 @@ type PostgreSQLDataStore struct {
 	connString            string // Connection string for creating LISTEN connections
 	maintenanceEventStore datastore.MaintenanceEventStore
 	healthEventStore      datastore.HealthEventStore
+	runtimeUpgradeCancel  context.CancelFunc
+	runtimeUpgradeDone    <-chan struct{}
 }
 
 // NewPostgreSQLStore creates a new PostgreSQL datastore
@@ -93,16 +95,13 @@ func NewPostgreSQLStore(ctx context.Context, config datastore.DataStoreConfig) (
 		return nil, fmt.Errorf("failed to create tables: %w", err)
 	}
 
-	// Apply upgrade indexes separately so existing databases receive them
-	// without blocking writes. Keep this performance migration non-fatal.
-	runRuntimeUpgrades(ctx, db)
-
 	store := &PostgreSQLDataStore{
 		db:         db,
 		connString: connectionString, // Store for LISTEN connections
 	}
 	store.maintenanceEventStore = NewPostgreSQLMaintenanceEventStore(db)
 	store.healthEventStore = NewPostgreSQLHealthEventStore(db)
+	store.startRuntimeUpgrades()
 
 	slog.Info("Successfully connected to PostgreSQL database", "host", config.Connection.Host)
 
@@ -126,6 +125,18 @@ func (p *PostgreSQLDataStore) Ping(ctx context.Context) error {
 
 // Close closes the database connection
 func (p *PostgreSQLDataStore) Close(ctx context.Context) error {
+	if p.runtimeUpgradeCancel != nil {
+		p.runtimeUpgradeCancel()
+	}
+
+	if p.runtimeUpgradeDone != nil {
+		select {
+		case <-p.runtimeUpgradeDone:
+		case <-ctx.Done():
+			return errors.Join(ctx.Err(), p.db.Close())
+		}
+	}
+
 	return p.db.Close()
 }
 
@@ -360,6 +371,32 @@ const runtimeUpgradeIndexValidityQuery = `SELECT idx.indisvalid
 	FROM pg_catalog.pg_index AS idx
 	WHERE idx.indexrelid = pg_catalog.to_regclass($1)`
 
+// startRuntimeUpgrades applies performance migrations outside the datastore
+// startup critical path. Close cancels and joins the task before closing the
+// connection pool; an interrupted concurrent index build is retried on the
+// next startup by runRuntimeUpgrades.
+func (p *PostgreSQLDataStore) startRuntimeUpgrades() {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	p.runtimeUpgradeCancel = cancel
+	p.runtimeUpgradeDone = done
+
+	go func() {
+		defer close(done)
+
+		runRuntimeUpgrades(ctx, p.db)
+	}()
+}
+
+func warnRuntimeUpgradeError(ctx context.Context, message, index string, err error) {
+	if ctx.Err() != nil {
+		return
+	}
+
+	slog.WarnContext(ctx, message, "index", index, "error", err)
+}
+
 // runRuntimeUpgrades executes each statement directly through the connection
 // pool, outside an explicit transaction block. Do not wrap this function in
 // BeginTx: PostgreSQL rejects CREATE INDEX CONCURRENTLY inside a transaction
@@ -370,8 +407,7 @@ func runRuntimeUpgrades(ctx context.Context, db *sql.DB) {
 
 		err := db.QueryRowContext(ctx, runtimeUpgradeIndexValidityQuery, index.name).Scan(&valid)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			slog.WarnContext(ctx, "Failed to inspect PostgreSQL runtime upgrade index",
-				"index", index.name, "error", err)
+			warnRuntimeUpgradeError(ctx, "Failed to inspect PostgreSQL runtime upgrade index", index.name, err)
 
 			continue
 		}
@@ -382,16 +418,15 @@ func runRuntimeUpgrades(ctx context.Context, db *sql.DB) {
 
 		if err == nil {
 			if _, err := db.ExecContext(ctx, index.dropStatement); err != nil {
-				slog.WarnContext(ctx, "Failed to remove invalid PostgreSQL runtime upgrade index",
-					"index", index.name, "error", err)
+				warnRuntimeUpgradeError(ctx,
+					"Failed to remove invalid PostgreSQL runtime upgrade index", index.name, err)
 
 				continue
 			}
 		}
 
 		if _, err := db.ExecContext(ctx, index.createStatement); err != nil {
-			slog.WarnContext(ctx, "Failed to apply PostgreSQL runtime upgrade",
-				"index", index.name, "error", err)
+			warnRuntimeUpgradeError(ctx, "Failed to apply PostgreSQL runtime upgrade", index.name, err)
 		}
 	}
 }
