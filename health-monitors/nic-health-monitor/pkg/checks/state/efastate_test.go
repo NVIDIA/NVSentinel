@@ -130,6 +130,33 @@ func TestEFAState_NetdevOperstateDownIsFatalThenRecovers(t *testing.T) {
 	assert.Equal(t, "EFA port rdmap0s6 port 1: healthy (ACTIVE, LinkUp)", events[0].Message)
 }
 
+func TestEFAState_NetdevDownOnFirstPollIsFatalWithHealthyPeer(t *testing.T) {
+	// The port has never been observed healthy, so the first-poll
+	// severity gate needs peer evidence: the card must count as
+	// anomalous against its healthy sibling. That only works if the
+	// active-port aggregate is built from the netdev-aware snapshot;
+	// the efa driver's raw sysfs state is ACTIVE/LinkUp regardless.
+	node := newEFANode(t, true)
+	node.tree.SetNetDev(t, "ens6", "down", "0")
+
+	check := node.newCheck(t, false)
+
+	events := runPoll(t, check)
+	require.Len(t, events, 1, "first poll must report the DOWN port when its peer is active")
+	assert.True(t, events[0].IsFatal)
+	assert.False(t, events[0].IsHealthy)
+	assert.Equal(t, "rdmap0s6", events[0].EntitiesImpacted[0].EntityValue)
+	assert.Contains(t, events[0].Message, "state DOWN, phys_state LinkDown, operstate down (ens6)")
+
+	assert.Empty(t, runPoll(t, check), "a port that stays DOWN must not re-emit")
+
+	node.tree.SetNetDev(t, "ens6", "up", "1")
+
+	events = runPoll(t, check)
+	require.Len(t, events, 1)
+	assert.True(t, events[0].IsHealthy)
+}
+
 func TestEFAState_LostCarrierWithUnknownOperstateIsFatal(t *testing.T) {
 	node := newEFANode(t, true)
 	check := node.newCheck(t, false)
