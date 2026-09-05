@@ -104,7 +104,10 @@ func NewReconciler(
 		}
 	}
 
-	drainEvaluator := evaluator.NewNodeDrainEvaluator(cfg.TomlConfig, informersInstance, customDrainClient)
+	drainEvaluator, err := evaluator.NewNodeDrainEvaluator(cfg.TomlConfig, informersInstance, customDrainClient)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize drain evaluator: %w", err)
+	}
 
 	reconciler := &Reconciler{
 		Config:              cfg,
@@ -633,7 +636,7 @@ func (r *Reconciler) executeImmediateEviction(ctx context.Context, action *evalu
 
 	for _, namespace := range action.Namespaces {
 		if err := r.informers.EvictAllPodsInImmediateMode(ctx, namespace, nodeName, action.Timeout,
-			partialDrainEntity); err != nil {
+			partialDrainEntity, action.PodFilter); err != nil {
 			metrics.ProcessingErrors.WithLabelValues("immediate_eviction_error", nodeName).Inc()
 
 			span := tracing.SpanFromContext(ctx)
@@ -668,7 +671,7 @@ func (r *Reconciler) executeTimeoutEviction(ctx context.Context, action *evaluat
 	}
 
 	if err := r.informers.DeletePodsAfterTimeout(ctx,
-		nodeName, action.Namespaces, timeoutMinutes, &healthEvent, partialDrainEntity); err != nil {
+		nodeName, action.Namespaces, timeoutMinutes, &healthEvent, partialDrainEntity, action.PodFilter); err != nil {
 		if r.isTimeoutEvictionCancelled(ctx, eventID, nodeName, healthEvent.CreatedAt) {
 			return nil
 		}
@@ -715,7 +718,8 @@ func (r *Reconciler) executeCheckCompletion(ctx context.Context, action *evaluat
 	var remainingPods []string
 
 	for _, namespace := range action.Namespaces {
-		pods, err := r.informers.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity)
+		pods, err := r.informers.FindEvictablePodsInNamespaceAndNode(
+			namespace, nodeName, partialDrainEntity, action.PodFilter)
 		if err != nil {
 			tracing.RecordError(span, err)
 			span.SetAttributes(

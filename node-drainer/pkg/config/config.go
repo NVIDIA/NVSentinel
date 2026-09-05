@@ -64,6 +64,7 @@ type TomlConfig struct {
 	NotReadyTimeoutMinutes int               `toml:"notReadyTimeoutMinutes"`
 	DrainGPUPods           bool              `toml:"drainGPUPods"`
 	UserNamespaces         []UserNamespace   `toml:"userNamespaces"`
+	PodDrainPolicies       []PodDrainPolicy  `toml:"podDrainPolicies"`
 	CustomDrain            CustomDrainConfig `toml:"customDrain"`
 	PartialDrainEnabled    bool              `toml:"partialDrainEnabled"`
 	// Registers node_drainer_partial_drains_total, which labels partial drains with the
@@ -117,6 +118,10 @@ func validateCustomDrainConfig(config *TomlConfig) error {
 		return fmt.Errorf("cannot use both customDrain.enabled=true and userNamespaces configuration")
 	}
 
+	if len(config.PodDrainPolicies) > 0 {
+		return fmt.Errorf("cannot use both customDrain.enabled=true and podDrainPolicies configuration")
+	}
+
 	requiredFields := map[string]string{
 		"templateMountPath":     config.CustomDrain.TemplateMountPath,
 		"templateFileName":      config.CustomDrain.TemplateFileName,
@@ -142,6 +147,10 @@ func validateCustomDrainConfig(config *TomlConfig) error {
 }
 
 func validateAndSetDefaults(config *TomlConfig) (*TomlConfig, error) {
+	if _, err := CompilePodDrainPolicies(config.PodDrainPolicies); err != nil {
+		return nil, err
+	}
+
 	if err := validateCustomDrainConfig(config); err != nil {
 		return nil, err
 	}

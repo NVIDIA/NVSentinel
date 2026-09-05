@@ -62,8 +62,12 @@ type Informers struct {
 	dryRunMode             []string
 }
 
+// PodFilter narrows an action to pods assigned to its drain mode.
+type PodFilter func(*v1.Pod) bool
+
 func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
-	notReadyTimeoutMinutes *int, drainGPUPods bool, dryRun bool, systemNamespaces string) (*Informers, error) {
+	notReadyTimeoutMinutes *int, drainGPUPods bool, dryRun bool, systemNamespaces string,
+	podLabelKeys ...string) (*Informers, error) {
 	informerFactory := informers.NewSharedInformerFactoryWithOptions(
 		clientset,
 		resyncPeriod,
@@ -76,7 +80,7 @@ func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		return nil, fmt.Errorf("failed to compile system namespaces regex: %w", err)
 	}
 
-	if err := podInformer.SetTransform(excludedPodTransform(systemNamespacesRegex)); err != nil {
+	if err := podInformer.SetTransform(excludedPodTransform(systemNamespacesRegex, podLabelKeys...)); err != nil {
 		return nil, fmt.Errorf("failed to set pod informer transform: %w", err)
 	}
 
@@ -116,7 +120,7 @@ func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	}, nil
 }
 
-func excludedPodTransform(systemNamespacesRegex *regexp.Regexp) cache.TransformFunc {
+func excludedPodTransform(systemNamespacesRegex *regexp.Regexp, podLabelKeys ...string) cache.TransformFunc {
 	return func(obj any) (any, error) {
 		pod, ok := obj.(*v1.Pod)
 		if !ok {
@@ -125,7 +129,7 @@ func excludedPodTransform(systemNamespacesRegex *regexp.Regexp) cache.TransformF
 
 		isSystemNamespace := systemNamespacesRegex != nil && systemNamespacesRegex.MatchString(pod.Namespace)
 		if !isSystemNamespace && !isDaemonSetOwned(pod.OwnerReferences) {
-			return drainEligiblePodCacheObject(pod), nil
+			return drainEligiblePodCacheObject(pod, podLabelKeys...), nil
 		}
 
 		return &v1.Pod{
@@ -142,7 +146,19 @@ func excludedPodTransform(systemNamespacesRegex *regexp.Regexp) cache.TransformF
 
 // drainEligiblePodCacheObject retains only fields used by pod indexes and drain decisions.
 // Keep this contract in sync with the cached Pod reads in this package.
-func drainEligiblePodCacheObject(pod *v1.Pod) *v1.Pod {
+func drainEligiblePodCacheObject(pod *v1.Pod, podLabelKeys ...string) *v1.Pod {
+	var podLabels map[string]string
+
+	for _, key := range podLabelKeys {
+		if value, exists := pod.Labels[key]; exists {
+			if podLabels == nil {
+				podLabels = make(map[string]string)
+			}
+
+			podLabels[key] = value
+		}
+	}
+
 	var annotations map[string]string
 	if devices, exists := pod.Annotations[model.PodDeviceAnnotationName]; exists {
 		annotations = map[string]string{model.PodDeviceAnnotationName: devices}
@@ -169,6 +185,7 @@ func drainEligiblePodCacheObject(pod *v1.Pod) *v1.Pod {
 		Namespace:         pod.Namespace,
 		UID:               pod.UID,
 		ResourceVersion:   pod.ResourceVersion,
+		Labels:            podLabels,
 		Annotations:       annotations,
 		OwnerReferences:   ownerReferences,
 		DeletionTimestamp: deletionTimestamp,
@@ -315,7 +332,7 @@ func (i *Informers) Run(ctx context.Context) error {
 }
 
 func (i *Informers) FindEvictablePodsInNamespaceAndNode(namespace, nodeName string,
-	partialDrainEntity *protos.Entity) ([]*v1.Pod, error) {
+	partialDrainEntity *protos.Entity, podFilters ...PodFilter) ([]*v1.Pod, error) {
 	compositeKey := fmt.Sprintf("%s/%s", namespace, nodeName)
 
 	objs, err := i.podInformer.GetIndexer().ByIndex(NamespaceNodeIndex, compositeKey)
@@ -328,7 +345,9 @@ func (i *Informers) FindEvictablePodsInNamespaceAndNode(namespace, nodeName stri
 
 	for _, obj := range objs {
 		if pod, ok := obj.(*v1.Pod); ok {
-			pods = append(pods, pod)
+			if matchesPodFilters(pod, podFilters) {
+				pods = append(pods, pod)
+			}
 		}
 	}
 
@@ -344,6 +363,16 @@ func (i *Informers) FindEvictablePodsInNamespaceAndNode(namespace, nodeName stri
 	}
 
 	return pods, nil
+}
+
+func matchesPodFilters(pod *v1.Pod, filters []PodFilter) bool {
+	for _, filter := range filters {
+		if filter != nil && !filter(pod) {
+			return false
+		}
+	}
+
+	return true
 }
 
 /*
@@ -590,8 +619,8 @@ func (i *Informers) isPodNotReady(pod *v1.Pod) bool {
 }
 
 func (i *Informers) EvictAllPodsInImmediateMode(ctx context.Context,
-	namespace, nodeName string, timeout time.Duration, partialDrainEntity *protos.Entity) error {
-	pods, err := i.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity)
+	namespace, nodeName string, timeout time.Duration, partialDrainEntity *protos.Entity, podFilters ...PodFilter) error {
+	pods, err := i.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity, podFilters...)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to find evictable pods in namespace on node",
 			"namespace", namespace,
@@ -673,6 +702,7 @@ func (i *Informers) sendEvictionRequestForPod(ctx context.Context, namespace str
 		DeleteOptions: &metav1.DeleteOptions{
 			GracePeriodSeconds: new(int64(timeout.Seconds())),
 			DryRun:             i.dryRunMode,
+			Preconditions:      podDeletionPreconditions(pod),
 		},
 	}
 
@@ -729,7 +759,7 @@ func (i *Informers) GetNode(nodeName string) (*v1.Node, error) {
 }
 
 func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string, namespaces []string,
-	timeout int, event *model.HealthEventWithStatus, partialDrainEntity *protos.Entity) error {
+	timeout int, event *model.HealthEventWithStatus, partialDrainEntity *protos.Entity, podFilters ...PodFilter) error {
 	drainTimeout, err := i.getNodeDrainTimeout(timeout, event)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to get node drain timeout", "error", err)
@@ -740,7 +770,8 @@ func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string,
 	deleteDateTimeUTC := timeoutDeadline.UTC().Format(time.RFC3339)
 	timeoutReached := drainTimeout <= 0
 
-	evicted, remainingPods := i.checkIfPodsPresentInNamespaceAndNode(namespaces, nodeName, partialDrainEntity)
+	evicted, remainingPods := i.checkIfPodsPresentInNamespaceAndNode(
+		namespaces, nodeName, partialDrainEntity, podFilters...)
 	if evicted {
 		slog.InfoContext(ctx, "All pods on node have been deleted", "node", nodeName)
 		metrics.NodeDrainTimeout.WithLabelValues(nodeName).Set(0)
@@ -753,10 +784,7 @@ func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string,
 			"node", nodeName,
 			"count", len(remainingPods))
 
-		// Track timeout reached for each namespace
-		for _, ns := range namespaces {
-			metrics.NodeDrainTimeoutReached.WithLabelValues(nodeName, ns).Inc()
-		}
+		recordTimeoutNamespaces(nodeName, remainingPods)
 
 		metrics.NodeDrainTimeout.WithLabelValues(nodeName).Set(0)
 
@@ -804,6 +832,16 @@ func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string,
 		len(remainingPods), drainTimeout, nodeName)
 }
 
+func recordTimeoutNamespaces(nodeName string, pods []*v1.Pod) {
+	seen := make(map[string]bool)
+	for _, pod := range pods {
+		if !seen[pod.Namespace] {
+			metrics.NodeDrainTimeoutReached.WithLabelValues(nodeName, pod.Namespace).Inc()
+			seen[pod.Namespace] = true
+		}
+	}
+}
+
 func (i *Informers) getNodeDrainTimeout(timeout int,
 	event *model.HealthEventWithStatus) (time.Duration, error) {
 	elapsed := time.Since(event.CreatedAt)
@@ -830,6 +868,7 @@ func (i *Informers) forceDeletePods(ctx context.Context, pods []*v1.Pod) error {
 			err := i.clientset.CoreV1().Pods(p.Namespace).Delete(ctx, p.Name, metav1.DeleteOptions{
 				GracePeriodSeconds: &gracePeriod,
 				DryRun:             i.dryRunMode,
+				Preconditions:      podDeletionPreconditions(p),
 			})
 			if err != nil {
 				if !errors.IsNotFound(err) {
@@ -854,6 +893,21 @@ func (i *Informers) forceDeletePods(ctx context.Context, pods []*v1.Pod) error {
 	wg.Wait()
 
 	return result.ErrorOrNil()
+}
+
+// A pod can be relabelled or replaced between cache selection and deletion.
+// Retry against a fresh observation instead of evicting a different policy's pod.
+func podDeletionPreconditions(pod *v1.Pod) *metav1.Preconditions {
+	preconditions := &metav1.Preconditions{}
+	if pod.UID != "" {
+		preconditions.UID = new(pod.UID)
+	}
+
+	if pod.ResourceVersion != "" {
+		preconditions.ResourceVersion = new(pod.ResourceVersion)
+	}
+
+	return preconditions
 }
 
 func (i *Informers) GetNamespacesMatchingPattern(ctx context.Context,
@@ -948,13 +1002,13 @@ func (i *Informers) convertSetToSlice(namespaceSet map[string]struct{}) []string
 }
 
 func (i *Informers) checkIfPodsPresentInNamespaceAndNode(namespaces []string, nodeName string,
-	partialDrainEntity *protos.Entity) (bool, []*v1.Pod) {
+	partialDrainEntity *protos.Entity, podFilters ...PodFilter) (bool, []*v1.Pod) {
 	allEvicted := true
 
 	var remainingPods []*v1.Pod
 
 	for _, namespace := range namespaces {
-		pods, err := i.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity)
+		pods, err := i.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity, podFilters...)
 		if err != nil {
 			slog.Error("Failed to check namespace on node",
 				"namespace", namespace,
@@ -976,8 +1030,10 @@ func (i *Informers) checkIfPodsPresentInNamespaceAndNode(namespaces []string, no
 }
 
 func (i *Informers) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context,
-	namespaces []string, nodeName string, timeout time.Duration, partialDrainEntity *protos.Entity) bool {
-	allEvicted, remainingPods := i.checkIfPodsPresentInNamespaceAndNode(namespaces, nodeName, partialDrainEntity)
+	namespaces []string, nodeName string, timeout time.Duration, partialDrainEntity *protos.Entity,
+	podFilters ...PodFilter) bool {
+	allEvicted, remainingPods := i.checkIfPodsPresentInNamespaceAndNode(
+		namespaces, nodeName, partialDrainEntity, podFilters...)
 
 	if allEvicted {
 		slog.InfoContext(ctx, "All pods evicted in namespace from node",
@@ -1019,7 +1075,7 @@ func (i *Informers) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context,
 			return false
 		}
 
-		allEvicted, _ = i.checkIfPodsPresentInNamespaceAndNode(namespaces, nodeName, partialDrainEntity)
+		allEvicted, _ = i.checkIfPodsPresentInNamespaceAndNode(namespaces, nodeName, partialDrainEntity, podFilters...)
 		if allEvicted {
 			slog.InfoContext(ctx, "All pods evicted after force deletion on node",
 				"node", nodeName)

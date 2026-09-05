@@ -148,6 +148,38 @@ annotations:
 - **When disabled (`false`)**: All eligible pods in configured namespaces are evicted (default behavior)
 - Pods without GPU requests are preserved, maintaining critical infrastructure services
 
+## Pod Drain Policies
+
+Use `podDrainPolicies` when workloads in the same namespace need different drain modes. Policies match pod labels using standard [Kubernetes label selector syntax](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors). The first matching policy wins. Pods that match no policy use the existing `userNamespaces` configuration.
+
+```yaml
+node-drainer:
+  podDrainPolicies:
+    - name: finish-training
+      namespace: training-*
+      podSelector: "example.com/drain-mode=finish"
+      mode: AllowCompletion
+    - name: replaceable-workers
+      podSelector: "example.com/drain-mode in (immediate,replaceable)"
+      mode: Immediate
+    - name: bounded-shutdown
+      podSelector: "example.com/drain-mode=timeout"
+      mode: DeleteAfterTimeout
+  userNamespaces:
+    - name: "*"
+      mode: AllowCompletion
+```
+
+Each policy has a unique, non-empty `name`, a non-empty `podSelector`, and a `mode` (`Immediate`, `AllowCompletion`, or `DeleteAfterTimeout`). `namespace` is an optional namespace-name glob; omitting it matches all user namespaces. Selectors support equality, set membership, and key existence. As in Kubernetes, `key!=value` and `key notin (value)` also match pods without that key; add a key-existence requirement if absent labels should not match.
+
+Policy order takes precedence over mode: an early `AllowCompletion` match cannot be overridden by a later `Immediate` match. The fallback retains the existing namespace precedence for overlapping patterns: `Immediate`, then `DeleteAfterTimeout`, then `AllowCompletion`. Pods matching neither a policy nor a namespace rule are outside the drain scope. Keep a `userNamespaces` catch-all when all user workloads must participate.
+
+Policies narrow eligible workloads; system namespace exclusions, DaemonSet exclusions, GPU-only filtering and partial GPU drain scope still apply. `DrainOverrides.Force` changes the selected pods' mode to `Immediate` without widening that scope. `DrainOverrides.Skip` retains its existing behavior. Custom drain configuration cannot be combined with pod drain policies.
+
+Pod labels are read from the informer cache on each reconciliation and before eviction or timeout deletion. Changing a relevant label changes the policy on a subsequent observation. API deletion preconditions prevent a stale observation from deleting a relabelled or replaced pod. Configuration changes require restarting node-drainer. Only label keys referenced by policies are retained in its pod cache.
+
+`DeleteAfterTimeout` continues to use `deleteAfterTimeoutMinutes` measured from the health event's creation, including after a restart. Policies do not introduce a new timeout or automatically choose a mode based on workload kind; workload owners opt in through labels.
+
 ## User Namespaces
 
 Defines eviction behavior for user workloads based on namespace patterns.

@@ -52,12 +52,18 @@ func NewNodeDrainEvaluator(
 	cfg config.TomlConfig,
 	informers InformersInterface,
 	customDrainClient CustomDrainClientInterface,
-) DrainEvaluator {
+) (DrainEvaluator, error) {
+	policies, err := config.CompilePodDrainPolicies(cfg.PodDrainPolicies)
+	if err != nil {
+		return nil, err
+	}
+
 	return &NodeDrainEvaluator{
 		config:            cfg,
 		informers:         informers,
 		customDrainClient: customDrainClient,
-	}
+		podPolicies:       policies,
+	}, nil
 }
 
 // EvaluateEvent method has been removed - use EvaluateEventWithDatabase instead
@@ -196,6 +202,10 @@ func (e *NodeDrainEvaluator) handleAlreadyQuarantined(ctx context.Context, statu
 
 func (e *NodeDrainEvaluator) evaluateUserNamespaceActions(ctx context.Context,
 	healthEvent model.HealthEventWithStatus, partialDrainEntity *protos.Entity) (*DrainActionResult, error) {
+	if len(e.config.PodDrainPolicies) > 0 {
+		return e.evaluatePodPolicyActions(ctx, healthEvent, partialDrainEntity)
+	}
+
 	nodeName := healthEvent.HealthEvent.NodeName
 
 	systemNamespaces := e.config.SystemNamespaces
@@ -253,7 +263,7 @@ func (e *NodeDrainEvaluator) getAction(ctx context.Context, ns namespaces, nodeN
 	if len(ns.immediateEvictionNamespaces) > 0 {
 		timeout := e.config.EvictionTimeoutInSeconds.Duration
 		if !e.informers.CheckIfAllPodsAreEvictedInImmediateMode(ctx, ns.immediateEvictionNamespaces, nodeName,
-			timeout, partialDrainEntity) {
+			timeout, partialDrainEntity, ns.podFilters[config.ModeImmediateEvict]) {
 			slog.InfoContext(ctx, "Performing immediate eviction for node", "node", nodeName)
 
 			return &DrainActionResult{
@@ -261,6 +271,7 @@ func (e *NodeDrainEvaluator) getAction(ctx context.Context, ns namespaces, nodeN
 				Namespaces:         ns.immediateEvictionNamespaces,
 				Timeout:            timeout,
 				PartialDrainEntity: partialDrainEntity,
+				PodFilter:          ns.podFilters[config.ModeImmediateEvict],
 			}
 		}
 	}
@@ -296,7 +307,8 @@ func (e *NodeDrainEvaluator) handleAllowCompletionNamespaces(ctx context.Context
 	hasRemainingPods := false
 
 	for _, namespace := range ns.allowCompletionNamespaces {
-		pods, err := e.informers.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity)
+		pods, err := e.informers.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity,
+			ns.podFilters[config.ModeAllowCompletion])
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to check pods in namespace on node",
 				"namespace", namespace,
@@ -322,6 +334,7 @@ func (e *NodeDrainEvaluator) handleAllowCompletionNamespaces(ctx context.Context
 			Action:             ActionCheckCompletion,
 			Namespaces:         ns.allowCompletionNamespaces,
 			PartialDrainEntity: partialDrainEntity,
+			PodFilter:          ns.podFilters[config.ModeAllowCompletion],
 		}
 	}
 
@@ -333,7 +346,8 @@ func (e *NodeDrainEvaluator) handleDeleteAfterTimeoutNamespaces(ctx context.Cont
 	hasRemainingPods := false
 
 	for _, namespace := range ns.deleteAfterTimeoutNamespaces {
-		pods, err := e.informers.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity)
+		pods, err := e.informers.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity,
+			ns.podFilters[config.ModeDeleteAfterTimeout])
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to check pods in namespace on node",
 				"namespace", namespace,
@@ -360,6 +374,7 @@ func (e *NodeDrainEvaluator) handleDeleteAfterTimeoutNamespaces(ctx context.Cont
 			Namespaces:         ns.deleteAfterTimeoutNamespaces,
 			Timeout:            time.Duration(e.config.DeleteAfterTimeoutMinutes) * time.Minute,
 			PartialDrainEntity: partialDrainEntity,
+			PodFilter:          ns.podFilters[config.ModeDeleteAfterTimeout],
 		}
 	}
 

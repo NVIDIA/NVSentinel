@@ -35,6 +35,14 @@ data:
     mode = {{ .mode | quote }}
     {{- end }}
 
+    {{- range .Values.podDrainPolicies }}
+    [[podDrainPolicies]]
+    name = {{ .name | quote }}
+    namespace = {{ .namespace | default "*" | quote }}
+    podSelector = {{ .podSelector | quote }}
+    mode = {{ .mode | quote }}
+    {{- end }}
+
     {{- if .Values.customDrain.enabled }}
     [customDrain]
       enabled = true

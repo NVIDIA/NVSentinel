@@ -99,12 +99,18 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		return nil, fmt.Errorf("failed to initialize dynamic client and mapper: %w", err)
 	}
 
+	podPolicies, err := config.CompilePodDrainPolicies(configs.tomlCfg.PodDrainPolicies)
+	if err != nil {
+		return nil, err
+	}
+
 	informersInstance, err := initializeInformers(
 		clientSet,
 		&configs.tomlCfg.NotReadyTimeoutMinutes,
 		configs.tomlCfg.DrainGPUPods,
 		params.DryRun,
 		configs.tomlCfg.SystemNamespaces,
+		podPolicies.LabelKeys()...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("error while initializing informers: %w", err)
@@ -310,7 +316,8 @@ func initializeKubernetesClient(params InitializationParams) (kubernetes.Interfa
 }
 
 func initializeInformers(clientset kubernetes.Interface,
-	notReadyTimeoutMinutes *int, drainGPUPods bool, dryRun bool, systemNamespaces string) (*informers.Informers, error) {
+	notReadyTimeoutMinutes *int, drainGPUPods bool, dryRun bool, systemNamespaces string,
+	podLabelKeys ...string) (*informers.Informers, error) {
 	return informers.NewInformers(
 		clientset,
 		time.Hour,
@@ -318,6 +325,7 @@ func initializeInformers(clientset kubernetes.Interface,
 		drainGPUPods,
 		dryRun,
 		systemNamespaces,
+		podLabelKeys...,
 	)
 }
 
