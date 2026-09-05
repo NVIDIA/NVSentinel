@@ -65,6 +65,8 @@ type Informers struct {
 // PodFilter narrows an action to pods assigned to its drain mode.
 type PodFilter func(*v1.Pod) bool
 
+// NewInformers creates the pod and node informers used to observe drainable workloads.
+// The pod cache retains only the labels named by podLabelKeys.
 func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	notReadyTimeoutMinutes *int, drainGPUPods bool, dryRun bool, systemNamespaces string,
 	podLabelKeys ...string) (*Informers, error) {
@@ -120,6 +122,8 @@ func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	}, nil
 }
 
+// excludedPodTransform keeps only identity for system and DaemonSet pods so they
+// stay out of node indexes, and retains drain fields and requested labels for other pods.
 func excludedPodTransform(systemNamespacesRegex *regexp.Regexp, podLabelKeys ...string) cache.TransformFunc {
 	return func(obj any) (any, error) {
 		pod, ok := obj.(*v1.Pod)
@@ -331,6 +335,8 @@ func (i *Informers) Run(ctx context.Context) error {
 	return nil
 }
 
+// FindEvictablePodsInNamespaceAndNode returns cached pods that pass the drain eligibility,
+// GPU, partial-drain, and supplied pod filters. All non-nil pod filters must match.
 func (i *Informers) FindEvictablePodsInNamespaceAndNode(namespace, nodeName string,
 	partialDrainEntity *protos.Entity, podFilters ...PodFilter) ([]*v1.Pod, error) {
 	compositeKey := fmt.Sprintf("%s/%s", namespace, nodeName)
@@ -365,6 +371,7 @@ func (i *Informers) FindEvictablePodsInNamespaceAndNode(namespace, nodeName stri
 	return pods, nil
 }
 
+// matchesPodFilters accepts a pod when every non-nil filter accepts it.
 func matchesPodFilters(pod *v1.Pod, filters []PodFilter) bool {
 	for _, filter := range filters {
 		if filter != nil && !filter(pod) {
@@ -618,6 +625,8 @@ func (i *Informers) isPodNotReady(pod *v1.Pod) bool {
 	return false
 }
 
+// EvictAllPodsInImmediateMode requests eviction of eligible pods within the supplied filters.
+// A nil error means the requests succeeded, not that the pods have finished terminating.
 func (i *Informers) EvictAllPodsInImmediateMode(ctx context.Context,
 	namespace, nodeName string, timeout time.Duration, partialDrainEntity *protos.Entity, podFilters ...PodFilter) error {
 	pods, err := i.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity, podFilters...)
@@ -694,6 +703,8 @@ func (i *Informers) evictPodsInNamespaceAndNode(ctx context.Context,
 	return result.ErrorOrNil()
 }
 
+// sendEvictionRequestForPod sends an eviction with the observed pod's deletion preconditions.
+// Missing pods are treated as already evicted; API conflicts are returned for a fresh observation.
 func (i *Informers) sendEvictionRequestForPod(ctx context.Context, namespace string,
 	timeout time.Duration, pod *v1.Pod) error {
 	eviction := &policyv1.Eviction{
@@ -758,6 +769,8 @@ func (i *Informers) GetNode(nodeName string) (*v1.Node, error) {
 	return node, nil
 }
 
+// DeletePodsAfterTimeout waits for selected pods until timeout minutes after event creation,
+// then requests force deletion. It returns an error until a later observation finds no pods.
 func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string, namespaces []string,
 	timeout int, event *model.HealthEventWithStatus, partialDrainEntity *protos.Entity, podFilters ...PodFilter) error {
 	drainTimeout, err := i.getNodeDrainTimeout(timeout, event)
@@ -832,6 +845,7 @@ func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string,
 		len(remainingPods), drainTimeout, nodeName)
 }
 
+// recordTimeoutNamespaces increments the timeout metric once per namespace in the selected pods.
 func recordTimeoutNamespaces(nodeName string, pods []*v1.Pod) {
 	seen := make(map[string]bool)
 	for _, pod := range pods {
@@ -850,6 +864,8 @@ func (i *Informers) getNodeDrainTimeout(timeout int,
 	return drainTimeout - elapsed, nil
 }
 
+// forceDeletePods requests deletion with zero grace and each observed pod's preconditions.
+// It ignores missing pods and returns other API errors, including stale-observation conflicts.
 func (i *Informers) forceDeletePods(ctx context.Context, pods []*v1.Pod) error {
 	gracePeriod := int64(0)
 
@@ -1001,6 +1017,8 @@ func (i *Informers) convertSetToSlice(namespaceSet map[string]struct{}) []string
 	return namespaceNames
 }
 
+// checkIfPodsPresentInNamespaceAndNode returns whether all selected pods are gone and
+// any remaining pods. A cache lookup error prevents reporting that all pods are gone.
 func (i *Informers) checkIfPodsPresentInNamespaceAndNode(namespaces []string, nodeName string,
 	partialDrainEntity *protos.Entity, podFilters ...PodFilter) (bool, []*v1.Pod) {
 	allEvicted := true
@@ -1029,6 +1047,8 @@ func (i *Informers) checkIfPodsPresentInNamespaceAndNode(namespaces []string, no
 	return allEvicted, remainingPods
 }
 
+// CheckIfAllPodsAreEvictedInImmediateMode reports whether the selected drain scope is empty.
+// If a selected pod exceeds its termination deadline, it requests force deletion of the remaining scope.
 func (i *Informers) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context,
 	namespaces []string, nodeName string, timeout time.Duration, partialDrainEntity *protos.Entity,
 	podFilters ...PodFilter) bool {

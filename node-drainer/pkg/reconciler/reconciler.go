@@ -81,6 +81,8 @@ type Reconciler struct {
 	nodeEventsMapMu     sync.Mutex
 }
 
+// NewReconciler creates the drain evaluator and registers the reconciler with its event queue.
+// It returns an error if policy compilation or custom-drain client initialization fails.
 func NewReconciler(
 	cfg config.ReconcilerConfig,
 	dryRunEnabled bool,
@@ -630,6 +632,8 @@ func (r *Reconciler) executeSkip(ctx context.Context,
 	return nil
 }
 
+// executeImmediateEviction applies the action's pod filter in each namespace and
+// returns an error to requeue the event for eviction completion checks.
 func (r *Reconciler) executeImmediateEviction(ctx context.Context, action *evaluator.DrainActionResult,
 	healthEvent model.HealthEventWithStatus, partialDrainEntity *protos.Entity) error {
 	nodeName := healthEvent.HealthEvent.NodeName
@@ -653,6 +657,8 @@ func (r *Reconciler) executeImmediateEviction(ctx context.Context, action *evalu
 	return fmt.Errorf("immediate eviction completed, requeuing for status verification")
 }
 
+// executeTimeoutEviction runs the filtered deadline-based drain unless the event was cancelled.
+// Active events are requeued to verify completion; cancelled events return nil.
 func (r *Reconciler) executeTimeoutEviction(ctx context.Context, action *evaluator.DrainActionResult,
 	healthEvent model.HealthEventWithStatus, eventID string, partialDrainEntity *protos.Entity) error {
 	span := tracing.SpanFromContext(ctx)
@@ -708,6 +714,8 @@ func (r *Reconciler) isTimeoutEvictionCancelled(
 	return false
 }
 
+// executeCheckCompletion observes the action's selected pods without evicting them.
+// It requeues while pods remain and again after completion so the evaluator can update status.
 func (r *Reconciler) executeCheckCompletion(ctx context.Context, action *evaluator.DrainActionResult,
 	healthEvent model.HealthEventWithStatus, partialDrainEntity *protos.Entity) error {
 	span := tracing.SpanFromContext(ctx)

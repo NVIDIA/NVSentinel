@@ -48,6 +48,8 @@ const (
 	DrainScopePartial DrainScope = "partial"
 )
 
+// NewNodeDrainEvaluator compiles pod drain policies and creates a drain evaluator.
+// It returns an error when a configured pod drain policy is invalid.
 func NewNodeDrainEvaluator(
 	cfg config.TomlConfig,
 	informers InformersInterface,
@@ -55,7 +57,7 @@ func NewNodeDrainEvaluator(
 ) (DrainEvaluator, error) {
 	policies, err := config.CompilePodDrainPolicies(cfg.PodDrainPolicies)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("compile pod drain policies: %w", err)
 	}
 
 	return &NodeDrainEvaluator{
@@ -200,6 +202,8 @@ func (e *NodeDrainEvaluator) handleAlreadyQuarantined(ctx context.Context, statu
 	return nil
 }
 
+// evaluateUserNamespaceActions selects the next drain action using pod policies
+// when configured, or the legacy namespace rules otherwise.
 func (e *NodeDrainEvaluator) evaluateUserNamespaceActions(ctx context.Context,
 	healthEvent model.HealthEventWithStatus, partialDrainEntity *protos.Entity) (*DrainActionResult, error) {
 	if len(e.config.PodDrainPolicies) > 0 {
@@ -258,6 +262,8 @@ func mapUserNamespacesToMode(
 	}
 }
 
+// getAction checks Immediate, DeleteAfterTimeout, then AllowCompletion workloads,
+// carrying each mode's pod filter into the returned action.
 func (e *NodeDrainEvaluator) getAction(ctx context.Context, ns namespaces, nodeName string,
 	partialDrainEntity *protos.Entity) *DrainActionResult {
 	if len(ns.immediateEvictionNamespaces) > 0 {
@@ -302,6 +308,8 @@ func (e *NodeDrainEvaluator) getAction(ctx context.Context, ns namespaces, nodeN
 	}
 }
 
+// handleAllowCompletionNamespaces requests a completion check while selected pods
+// remain or cannot be listed, and returns nil once no selected pods remain.
 func (e *NodeDrainEvaluator) handleAllowCompletionNamespaces(ctx context.Context, ns namespaces, nodeName string,
 	partialDrainEntity *protos.Entity) *DrainActionResult {
 	hasRemainingPods := false
@@ -341,6 +349,8 @@ func (e *NodeDrainEvaluator) handleAllowCompletionNamespaces(ctx context.Context
 	return nil
 }
 
+// handleDeleteAfterTimeoutNamespaces requests a deadline-based drain while selected
+// pods remain or cannot be listed, and returns nil once no selected pods remain.
 func (e *NodeDrainEvaluator) handleDeleteAfterTimeoutNamespaces(ctx context.Context, ns namespaces, nodeName string,
 	partialDrainEntity *protos.Entity) *DrainActionResult {
 	hasRemainingPods := false

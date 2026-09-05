@@ -25,6 +25,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
@@ -55,7 +56,9 @@ func TestNodeDrainerPodPolicies(t *testing.T) {
 		} {
 			names := []string{workload.name}
 			pod := &v1.Pod{
-				Name: workload.name, Namespace: namespace, Labels: workload.labels,
+				ObjectMeta: metav1.ObjectMeta{
+					Name: workload.name, Namespace: namespace, Labels: workload.labels,
+				},
 				Spec: v1.PodSpec{NodeName: testCtx.NodeName,
 					Containers: []v1.Container{{Name: "workload", Image: "busybox:latest", Command: []string{"sleep", "3600"}}}},
 			}

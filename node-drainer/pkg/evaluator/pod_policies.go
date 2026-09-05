@@ -27,6 +27,8 @@ import (
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/informers"
 )
 
+// evaluatePodPolicyActions applies pod policies with namespace fallback and checks
+// the entire selected scope again before reporting success after per-mode checks.
 func (e *NodeDrainEvaluator) evaluatePodPolicyActions(ctx context.Context,
 	healthEvent model.HealthEventWithStatus, partialDrainEntity *protos.Entity) (*DrainActionResult, error) {
 	nodeName := healthEvent.HealthEvent.NodeName
@@ -38,7 +40,7 @@ func (e *NodeDrainEvaluator) evaluatePodPolicyActions(ctx context.Context,
 
 	fallback, err := e.namespaceFallback(ctx, nodeName)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build namespace fallback: %w", err)
 	}
 
 	force := healthEvent.HealthEvent.GetDrainOverrides().GetForce()
@@ -77,11 +79,10 @@ func (e *NodeDrainEvaluator) evaluatePodPolicyActions(ctx context.Context,
 	return action, nil
 }
 
+// namespaceFallback resolves legacy namespace rules for pods with no matching policy.
+// Overlapping rules prefer Immediate, then DeleteAfterTimeout, then AllowCompletion.
 func (e *NodeDrainEvaluator) namespaceFallback(ctx context.Context,
 	nodeName string) (map[string]config.EvictMode, error) {
-	// Preserve legacy precedence for overlapping namespace patterns: Immediate,
-	// then DeleteAfterTimeout, then AllowCompletion. Pod policies take priority
-	// over that fallback, including when several workloads share a namespace.
 	legacy := namespaces{}
 
 	for _, rule := range e.config.UserNamespaces {
@@ -109,6 +110,8 @@ func (e *NodeDrainEvaluator) namespaceFallback(ctx context.Context,
 	return fallback, nil
 }
 
+// podModeFilter selects pods assigned to mode; an empty mode selects the whole drain scope.
+// Force changes matched pods to Immediate without including otherwise unmatched pods.
 func (e *NodeDrainEvaluator) podModeFilter(mode config.EvictMode,
 	fallback map[string]config.EvictMode, force bool) informers.PodFilter {
 	return func(pod *v1.Pod) bool {

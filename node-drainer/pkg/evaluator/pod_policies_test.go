@@ -63,7 +63,7 @@ func (i *relabellingInformers) FindEvictablePodsInNamespaceAndNode(_, _ string,
 	return []*v1.Pod{i.pod}, nil
 }
 
-func TestPodPolicyRelabelDoesNotCompleteDrainPrematurely(t *testing.T) {
+func TestEvaluatePodPolicyActions_RelabelDuringModeChecks_WaitsThenEvicts(t *testing.T) {
 	cfg := config.TomlConfig{PodDrainPolicies: []config.PodDrainPolicy{
 		{Name: "finish", PodSelector: "mode=completion", Mode: config.ModeAllowCompletion},
 		{Name: "replace", PodSelector: "mode=immediate", Mode: config.ModeImmediateEvict},

@@ -23,7 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func TestPodDrainPoliciesMatchAndPrecedence(t *testing.T) {
+func TestPodPolicyMatcherMatch_OverlappingPolicies_SelectsFirstMatchingMode(t *testing.T) {
 	cfg, err := LoadTomlConfigFromString(`
 [[podDrainPolicies]]
 name = "protected-training"
@@ -68,7 +68,7 @@ mode = "DeleteAfterTimeout"
 	}
 }
 
-func TestInvalidPodDrainPoliciesRejectedAtStartup(t *testing.T) {
+func TestLoadTomlConfigFromString_InvalidPodPolicies_ReturnsValidationError(t *testing.T) {
 	valid := `[[podDrainPolicies]]
 name = "workers"
 podSelector = "app=worker"
@@ -92,7 +92,7 @@ mode = "Immediate"
 	}
 }
 
-func TestNamespaceOnlyConfigNeedsNoPodLabels(t *testing.T) {
+func TestPodPolicyMatcherLabelKeys_NamespaceOnlyConfig_ReturnsNoKeys(t *testing.T) {
 	cfg, err := LoadTomlConfigFromString("[[userNamespaces]]\nname = \"*\"\nmode = \"AllowCompletion\"\n")
 	require.NoError(t, err)
 	matcher, err := CompilePodDrainPolicies(cfg.PodDrainPolicies)

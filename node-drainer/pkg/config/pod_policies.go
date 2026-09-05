@@ -82,6 +82,8 @@ func CompilePodDrainPolicies(policies []PodDrainPolicy) (*PodPolicyMatcher, erro
 	return matcher, nil
 }
 
+// compilePodDrainPolicy validates the mode and namespace glob and parses the pod selector.
+// An omitted namespace matches all namespaces.
 func compilePodDrainPolicy(policy PodDrainPolicy) (compiledPodDrainPolicy, error) {
 	switch policy.Mode {
 	case ModeImmediateEvict, ModeAllowCompletion, ModeDeleteAfterTimeout:

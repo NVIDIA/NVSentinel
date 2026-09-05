@@ -87,7 +87,7 @@ func finishPolicyPodDeletion(t *testing.T, setup *testSetup, name string) {
 		metav1.DeleteOptions{GracePeriodSeconds: new(int64(0))}))
 }
 
-func TestReconcilerPodPoliciesMixedModesAndRestart(t *testing.T) {
+func TestProcessEventGeneric_PodPoliciesMixedModesAndRestart_PreservesDrainModes(t *testing.T) {
 	setup := setupConfiguredTest(t, podPolicyTestConfig(), false)
 	const node = "policy-node"
 	createNode(setup.ctx, t, setup.client, node)
@@ -157,7 +157,7 @@ func containsPolicyWait(message string) bool {
 	return strings.Contains(message, "waiting for 1 pods to complete or timeout")
 }
 
-func TestReconcilerPodPoliciesPartialDrainAndForce(t *testing.T) {
+func TestProcessEventGeneric_PodPoliciesForcePartialDrain_EvictsOnlyAffectedGPU(t *testing.T) {
 	setup := setupConfiguredTest(t, podPolicyTestConfig(), false)
 	const node = "partial-policy-node"
 	createNode(setup.ctx, t, setup.client, node)
@@ -184,7 +184,7 @@ func TestReconcilerPodPoliciesPartialDrainAndForce(t *testing.T) {
 	requirePolicyPodRunning(t, setup, "workloads", "cpu-only")
 }
 
-func TestReconcilerPodPoliciesDryRun(t *testing.T) {
+func TestProcessEventGeneric_PodPoliciesDryRun_PreservesPods(t *testing.T) {
 	setup := setupConfiguredTest(t, podPolicyTestConfig(), true)
 	const node = "dry-run-policy-node"
 	createNode(setup.ctx, t, setup.client, node)
@@ -203,7 +203,7 @@ func TestReconcilerPodPoliciesDryRun(t *testing.T) {
 	requirePolicyPodRunning(t, setup, "workloads", "protected")
 }
 
-func TestReconcilerPodPoliciesObserveLabelChangesWithoutNamespaceFallback(t *testing.T) {
+func TestProcessEventGeneric_PodPoliciesWithoutNamespaceFallback_ObservesRelabelAndPreservesUnmatchedPods(t *testing.T) {
 	cfg := podPolicyTestConfig()
 	cfg.UserNamespaces = nil
 	setup := setupConfiguredTest(t, cfg, false)

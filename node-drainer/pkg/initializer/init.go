@@ -101,7 +101,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 
 	podPolicies, err := config.CompilePodDrainPolicies(configs.tomlCfg.PodDrainPolicies)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to compile pod drain policies: %w", err)
 	}
 
 	informersInstance, err := initializeInformers(
@@ -315,6 +315,7 @@ func initializeKubernetesClient(params InitializationParams) (kubernetes.Interfa
 	return clientSet, restConfig, nil
 }
 
+// initializeInformers creates drain informers with an hourly resync and the configured policy label keys.
 func initializeInformers(clientset kubernetes.Interface,
 	notReadyTimeoutMinutes *int, drainGPUPods bool, dryRun bool, systemNamespaces string,
 	podLabelKeys ...string) (*informers.Informers, error) {

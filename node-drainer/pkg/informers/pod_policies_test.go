@@ -27,7 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
-func TestPodPolicyLabelsSurviveInformerTransform(t *testing.T) {
+func TestExcludedPodTransform_PodPolicyLabels_PreservesOnlyRequiredKeys(t *testing.T) {
 	pod := richDrainEligiblePod("workload", "worker", "node-a")
 	pod.Labels = map[string]string{"drain": "immediate", "team": "training", "unrelated": "discard"}
 	transform := excludedPodTransform(regexp.MustCompile(`^kube-system$`), "drain", "team", "absent")
@@ -47,7 +47,7 @@ func TestPodPolicyLabelsSurviveInformerTransform(t *testing.T) {
 
 // Exercise the API server's preconditions, including the eviction subresource.
 // A fake client would not prove that Kubernetes protects a newly selected pod.
-func TestStalePodObservationCannotEvictOrDelete(t *testing.T) {
+func TestSendEvictionRequestForPodAndForceDeletePods_StaleObservation_RejectsActions(t *testing.T) {
 	environment := &envtest.Environment{}
 	cfg, err := environment.Start()
 	require.NoError(t, err)
@@ -55,7 +55,7 @@ func TestStalePodObservationCannotEvictOrDelete(t *testing.T) {
 	client, err := kubernetes.NewForConfig(cfg)
 	require.NoError(t, err)
 	ctx := t.Context()
-	i := &Informers{clientset: client}
+	informersInstance := &Informers{clientset: client}
 	for _, operation := range []string{"evict", "delete"} {
 		t.Run(operation, func(t *testing.T) {
 			pod := &v1.Pod{Name: operation, Namespace: "default", Labels: map[string]string{"mode": "immediate"},
@@ -68,9 +68,9 @@ func TestStalePodObservationCannotEvictOrDelete(t *testing.T) {
 			require.NoError(t, updateErr)
 			act := func() error {
 				if operation == "evict" {
-					return i.sendEvictionRequestForPod(ctx, "default", time.Second, observed)
+					return informersInstance.sendEvictionRequestForPod(ctx, "default", time.Second, observed)
 				}
-				return i.forceDeletePods(ctx, []*v1.Pod{observed})
+				return informersInstance.forceDeletePods(ctx, []*v1.Pod{observed})
 			}
 			actionErr := act()
 			require.Error(t, actionErr, "stale labels must cause an API conflict")
