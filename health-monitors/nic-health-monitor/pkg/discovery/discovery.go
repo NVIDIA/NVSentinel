@@ -44,7 +44,7 @@ const (
 
 	// PCI vendor IDs reported in /sys/class/infiniband/<dev>/device/vendor.
 	mellanoxPCIVendorID = "0x15b3"
-	amazonPCIVendorID   = "0x1d0f"
+	amazonPCIVendorID   = topology.AmazonPCIVendorID
 
 	// EFADriverName is the kernel driver bound to AWS Elastic Fabric
 	// Adapter PCI functions (basename of the `device/driver` symlink).

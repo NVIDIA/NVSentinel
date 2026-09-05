@@ -374,7 +374,13 @@ func (c *netdevStateCheck) recordPort(
 	st.currentPorts[key] = snap
 	st.cardTotal[card]++
 
-	if p.State == checks.IBStateActive && p.PhysicalState == checks.IBPhysLinkUp {
+	// Count active ports from the flavor snapshot, not the raw sysfs
+	// port. For EFA the driver hard-codes ACTIVE/LinkUp, so only the
+	// snapshot (which folds in the netdev link) can mark a port DOWN;
+	// counting the raw state would hide the peer anomaly that permits a
+	// first-poll fatal verdict and leave the DOWN snapshot persisted
+	// with no transition left to report.
+	if snap.State == checks.IBStateActive && snap.PhysicalState == checks.IBPhysLinkUp {
 		st.cardActive[card]++
 	}
 

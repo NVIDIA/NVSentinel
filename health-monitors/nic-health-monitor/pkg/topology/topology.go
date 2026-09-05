@@ -366,15 +366,24 @@ func (c *Classifier) isBlueFieldDPU(device string) bool {
 	return false
 }
 
-// isEFADevice reports whether the device's PCI function is bound to the
-// AWS Elastic Fabric Adapter driver.
+// isEFADevice reports whether the device is an AWS Elastic Fabric
+// Adapter. The `device/driver` symlink is authoritative; when it cannot
+// be read, an Amazon PCI vendor ID is accepted as a fallback. This is
+// the same predicate discovery applies (discovery.IsEFADevice), so a
+// device discovery tags as EFA is never classified by the NUMA fallback
+// here and silently dropped from compute NIC monitoring.
 func (c *Classifier) isEFADevice(device string) bool {
 	driver, err := c.reader.ReadIBDeviceDriver(device)
+	if err == nil {
+		return strings.TrimSpace(driver) == efaDriverName
+	}
+
+	vendor, err := c.reader.ReadIBDeviceField(device, "device/vendor")
 	if err != nil {
 		return false
 	}
 
-	return strings.TrimSpace(driver) == efaDriverName
+	return strings.TrimSpace(vendor) == AmazonPCIVendorID
 }
 
 // isInfiniBandDevice checks whether the NIC's port 1 link layer is
