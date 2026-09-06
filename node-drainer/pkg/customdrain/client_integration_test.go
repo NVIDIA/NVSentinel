@@ -51,8 +51,10 @@ func setupTestEnvironment(t *testing.T) {
 	t.Helper()
 
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths: []string{filepath.Join("testdata", "crds")},
+		CRDDirectoryPaths:     []string{filepath.Join("testdata", "drainrequest_crd.yaml")},
+		ErrorIfCRDPathMissing: true,
 	}
+	t.Cleanup(func() { teardownTestEnvironment(t) })
 
 	var err error
 	cfg, err = testEnv.Start()
@@ -92,7 +94,6 @@ func teardownTestEnvironment(t *testing.T) {
 
 func TestCustomDrainClient_Integration(t *testing.T) {
 	setupTestEnvironment(t)
-	defer teardownTestEnvironment(t)
 
 	t.Run("CRDNotFound", func(t *testing.T) {
 		testCRDNotFound(t)

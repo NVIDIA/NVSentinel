@@ -73,6 +73,15 @@ userNamespaces:
     # - "DeleteAfterTimeout": Wait for deleteAfterTimeoutMinutes, then force delete if still running
     mode: "AllowCompletion"
 
+# Ordered pod-label policies override userNamespaces for matching workloads.
+# The first matching policy wins; unmatched pods use userNamespaces.
+# podSelector uses Kubernetes label selector syntax; namespace is an optional glob.
+podDrainPolicies: []
+#  - name: replaceable-workers
+#    namespace: training-*
+#    podSelector: "example.com/drain-mode=immediate"
+#    mode: Immediate
+
 # If enabled, the node-drainer will only drain pods which are leveraging the GPU_UUID impacted entity in
 # COMPONENT_RESET HealthEvents. If disabled, the node-drainer will drain all eligible pods
 # on the impacted node for the configured namespaces regardless of the remediation action.

@@ -23,6 +23,7 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/informers"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/queue"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
@@ -37,12 +38,14 @@ type NodeDrainEvaluator struct {
 	config            config.TomlConfig
 	informers         InformersInterface
 	customDrainClient CustomDrainClientInterface
+	podPolicies       *config.PodPolicyMatcher
 }
 
 type InformersInterface interface {
 	GetNamespacesMatchingPattern(context.Context, string, string, string) ([]string, error)
-	CheckIfAllPodsAreEvictedInImmediateMode(context.Context, []string, string, time.Duration, *protos.Entity) bool
-	FindEvictablePodsInNamespaceAndNode(string, string, *protos.Entity) ([]*v1.Pod, error)
+	CheckIfAllPodsAreEvictedInImmediateMode(context.Context, []string, string, time.Duration,
+		*protos.Entity, ...informers.PodFilter) bool
+	FindEvictablePodsInNamespaceAndNode(string, string, *protos.Entity, ...informers.PodFilter) ([]*v1.Pod, error)
 	GetNode(string) (*v1.Node, error)
 }
 
@@ -72,6 +75,7 @@ type DrainActionResult struct {
 	WaitDelay          time.Duration // For ActionWait
 	Status             model.Status  // For ActionUpdateStatus and ActionCancel
 	PartialDrainEntity *protos.Entity
+	PodFilter          informers.PodFilter
 }
 
 var drainActionNames = map[DrainAction]string{
@@ -98,4 +102,5 @@ type namespaces struct {
 	immediateEvictionNamespaces  []string
 	allowCompletionNamespaces    []string
 	deleteAfterTimeoutNamespaces []string
+	podFilters                   map[config.EvictMode]informers.PodFilter
 }
