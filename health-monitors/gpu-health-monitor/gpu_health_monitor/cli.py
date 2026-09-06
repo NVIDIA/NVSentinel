@@ -68,7 +68,7 @@ def _init_event_processor(
     store_only_checks: frozenset[str],
     connectivity_failure_escalation_threshold: int,
     platform_connector_token_path: str,
-):
+) -> platform_connector.PlatformConnectorEventProcessor:
     platform_connector_config = config["eventprocessors.platformconnector"]
     match event_processor_name:
         case platform_connector.PlatformConnectorEventProcessor.__name__:
@@ -103,6 +103,14 @@ def _init_event_processor(
 )
 @click.option("--config-file", type=click.Path(), help="Path to config file", required=True)
 @click.option("--port", type=int, help="Port to use for metrics server", required=True)
+@click.option(
+    "--metrics-addr",
+    type=str,
+    default="0.0.0.0",
+    show_default=True,
+    help="Address the metrics server binds to. Use '::' for IPv6 / dual-stack clusters.",
+    required=False,
+)
 @click.option("--verbose", type=bool, default=False, help="Enable debug logging", required=False)
 @click.option("--state-file", type=click.Path(), help="gpu health monitor state file path", required=True)
 @click.option("--dcgm-k8s-service-enabled", type=bool, help="Is DCGM K8s service Enabled", required=True)
@@ -148,19 +156,20 @@ def _init_event_processor(
     ),
 )
 def cli(
-    dcgm_addr,
-    dcgm_mode,
-    dcgm_error_mapping_config_file,
-    config_file,
-    port,
-    verbose,
-    state_file,
-    dcgm_k8s_service_enabled,
-    metadata_path,
-    processing_strategy,
-    platform_connector_token_path,
-    suppress_nvlink_down_unbridged_pcie,
-):
+    dcgm_addr: str,
+    dcgm_mode: str,
+    dcgm_error_mapping_config_file: str,
+    config_file: str,
+    port: int,
+    metrics_addr: str,
+    verbose: bool,
+    state_file: str,
+    dcgm_k8s_service_enabled: bool,
+    metadata_path: str,
+    processing_strategy: str,
+    platform_connector_token_path: str,
+    suppress_nvlink_down_unbridged_pcie: bool,
+) -> None:
     exit = Event()
     config = configparser.ConfigParser()
     # By default, the Python ConfigParser module reads keys case-insensitively and converts them to lowercase.
@@ -313,7 +322,7 @@ def cli(
     # expose a documented fixed RPC timeout, so fleets should validate this
     # deadline in STORE_ONLY mode before enabling remediation. Set to 0 to disable.
     probe_deadline_seconds = dcgm_config.getfloat("ProbeDeadlineSeconds", fallback=poll_interval * 3)
-    prom_server, t = start_health_server(port, staleness_seconds=poll_interval * 3)
+    prom_server, t = start_health_server(port, staleness_seconds=poll_interval * 3, addr=metrics_addr)
 
     def process_exit_signal(signum, frame):
         exit.set()
