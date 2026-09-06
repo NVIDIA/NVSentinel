@@ -85,6 +85,14 @@ type TomlConfig struct {
 
 	// Common configuration
 	UpdateRetry UpdateRetry `toml:"updateRetry"`
+
+	// MaxRemediationAttempts caps how many remediation attempts a single equivalence group
+	// may accumulate within one quarantine session. Attempts are counted, not retries: a
+	// value of 1 allows one attempt and no retry, 3 allows two retries after the first
+	// attempt. The count is reset when the quarantine session ends (cancellation event) and
+	// is unrelated to updateRetry.maxRetries, which retries a failing API update.
+	// Zero disables the cap (legacy behavior).
+	MaxRemediationAttempts int `toml:"maxRemediationAttempts"`
 }
 
 // Validate checks the configuration for consistency and completeness.
@@ -101,6 +109,11 @@ type TomlConfig struct {
 // surface their own error before any cross-reference error they may also
 // participate in.
 func (c *TomlConfig) Validate() error {
+	if c.MaxRemediationAttempts < 0 {
+		return fmt.Errorf("maxRemediationAttempts must be non-negative (got %d); use 0 to disable the cap",
+			c.MaxRemediationAttempts)
+	}
+
 	if err := c.validateTemplate(); err != nil {
 		return err
 	}
