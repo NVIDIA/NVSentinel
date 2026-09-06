@@ -126,6 +126,9 @@ jobs:
           - component: preflight-nccl-loopback
             make_command: 'make -C preflight-checks/nccl-loopback docker-publish'
             container_name: 'nvsentinel/preflight-nccl-loopback'
+          - component: preflight-cuda-validation
+            make_command: 'make -C preflight-checks/cuda-validation docker-publish'
+            container_name: 'nvsentinel/preflight-cuda-validation'
           - component: gpu-reset
             make_command: 'make -C gpu-reset docker-publish'
             container_name: 'nvsentinel/gpu-reset'
