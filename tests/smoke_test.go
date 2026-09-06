@@ -24,6 +24,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 	"tests/helpers"
@@ -32,6 +33,8 @@ import (
 )
 
 func TestFatalHealthEvent(t *testing.T) {
+	var validationRequestName string
+
 	feature := features.New("TestFatalHealthEventEndToEnd").
 		WithLabel("suite", "smoke")
 
@@ -190,6 +193,45 @@ func TestFatalHealthEvent(t *testing.T) {
 		return ctx
 	})
 
+	feature.Assess("Node condition becomes healthy", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		nodeName := ctx.Value(keyNodeName).(string)
+
+		client, err := c.NewClient()
+		assert.NoError(t, err, "failed to create kubernetes client")
+
+		// Wait for node condition to be updated to healthy
+		t.Logf("Waiting for node %s condition to become healthy", nodeName)
+		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName, "GpuXidError",
+			"No Health Failures", "GpuXidErrorIsHealthy", v1.ConditionFalse)
+
+		return ctx
+	})
+
+	feature.Assess("ValidationRequest is created for the node", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		nodeName := ctx.Value(keyNodeName).(string)
+
+		client, err := c.NewClient()
+		assert.NoError(t, err, "failed to create kubernetes client")
+
+		t.Logf("Waiting for a ValidationRequest to be created for node %s", nodeName)
+		vr := helpers.WaitForValidationRequestForNode(ctx, t, client, nodeName)
+
+		validationRequestName = vr.GetName()
+
+		return ctx
+	})
+
+	feature.Assess("ValidationRequest reaches Succeeded", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		vrName := validationRequestName
+
+		client, err := c.NewClient()
+		assert.NoError(t, err, "failed to create kubernetes client")
+
+		helpers.WaitForValidationRequestPhase(ctx, t, client, vrName, "Succeeded")
+
+		return ctx
+	})
+
 	feature.Assess("Node is uncordoned", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		nodeName := ctx.Value(keyNodeName).(string)
 
@@ -198,11 +240,6 @@ func TestFatalHealthEvent(t *testing.T) {
 
 		t.Logf("Waiting for node %s to be uncordoned", nodeName)
 		helpers.WaitForNodesCordonState(ctx, t, client, []string{nodeName}, false)
-
-		// Wait for node condition to be updated to healthy
-		t.Logf("Waiting for node %s condition to become healthy", nodeName)
-		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName, "GpuXidError",
-			"No Health Failures", "GpuXidErrorIsHealthy", v1.ConditionFalse)
 
 		node, err := helpers.GetNodeByName(ctx, client, nodeName)
 		assert.NoError(t, err, "failed to get node after uncordoning")
@@ -233,6 +270,15 @@ func TestFatalHealthEvent(t *testing.T) {
 		namespaceName := ctx.Value(keyNamespace).(string)
 		err = helpers.DeleteNamespace(ctx, t, client, namespaceName)
 		assert.NoError(t, err, "failed to delete workloads namespace")
+
+		if len(validationRequestName) != 0 {
+			target := &unstructured.Unstructured{}
+			target.SetGroupVersionKind(helpers.ValidationRequestGVK)
+			target.SetName(validationRequestName)
+
+			err = helpers.DeleteCR(ctx, t, client, target, true)
+			assert.NoError(t, err, "failed to delete ValidationRequest")
+		}
 
 		helpers.RestoreQuarantineConfig(ctx, t, c)
 		helpers.RestoreNodeDrainerConfig(ctx, t, c)

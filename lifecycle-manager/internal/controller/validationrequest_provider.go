@@ -18,8 +18,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"hash/fnv"
 	"path/filepath"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -44,7 +44,7 @@ type TemplateContext struct {
 	Tests                 []string
 	Image                 string
 	Command               []string
-	Env                   []EnvVarTemplateContext
+	Env                   []corev1.EnvVar
 	Tolerations           []TolerationTemplateContext
 }
 
@@ -57,11 +57,6 @@ type TolerationTemplateContext struct {
 	Value    string
 	Operator string
 	Effect   string
-}
-
-type EnvVarTemplateContext struct {
-	Name  string
-	Value string
 }
 
 func (r *ValidationRequestReconciler) createTestGroupObject(ctx context.Context, vr *v1alpha1.ValidationRequest,
@@ -91,14 +86,30 @@ func (r *ValidationRequestReconciler) deleteTestGroupObject(ctx context.Context,
 	u.SetName(objectName)
 	u.SetNamespace(r.Namespace)
 
-	// Explicitly request background cascading deletion. Some providers like kinds like Jobs default to
-	// orphaning dependents on delete.
-	deleteOpt := client.PropagationPolicy(metav1.DeletePropagationBackground)
+	deleteOpt := client.PropagationPolicy(metav1.DeletePropagationForeground)
 	if err := r.Delete(ctx, u, deleteOpt); client.IgnoreNotFound(err) != nil {
 		return fmt.Errorf("delete provider resource %q: %w", objectName, err)
 	}
 
 	return nil
+}
+
+func (r *ValidationRequestReconciler) checkTestGroupObjectDeleted(ctx context.Context, group *v1alpha1.TestGroupStatus,
+	objectName string) (bool, error) {
+	providerCfg := r.Config.Validation.Spec.Providers[group.Provider]
+
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(providerGVK(providerCfg))
+
+	if err := r.Get(ctx, types.NamespacedName{Name: objectName, Namespace: r.Namespace}, u); err != nil {
+		if apierrors.IsNotFound(err) {
+			return true, nil
+		}
+
+		return false, fmt.Errorf("checking provider resource %q is deleted: %w", objectName, err)
+	}
+
+	return false, nil
 }
 
 func (r *ValidationRequestReconciler) checkTestGroupObjectStatus(ctx context.Context, group *v1alpha1.TestGroupStatus,
@@ -134,7 +145,8 @@ func (r *ValidationRequestReconciler) checkTestGroupObjectStatus(ctx context.Con
 		}
 
 		condType, _ := cond["type"].(string)
-		condStatus, _ := cond["status"].(string)
+		condStatusStr, _ := cond["status"].(string)
+		condStatus := metav1.ConditionStatus(condStatusStr)
 
 		switch {
 		case condType == providerCfg.SuccessfulCondition.Type && condStatus == providerCfg.SuccessfulCondition.Status:
@@ -180,17 +192,14 @@ func (r *ValidationRequestReconciler) renderTestGroupObject(vr *v1alpha1.Validat
 	var (
 		image   string
 		command []string
-		env     []EnvVarTemplateContext
+		env     []corev1.EnvVar
 	)
 
 	if len(group.Tests) > 0 {
 		testCfg := r.Config.Validation.Spec.Tests[group.Tests[0]]
 		image = testCfg.Image
 		command = testCfg.Command
-
-		for _, e := range testCfg.Env {
-			env = append(env, EnvVarTemplateContext{Name: e.Name, Value: e.Value})
-		}
+		env = testCfg.Env
 	}
 
 	tolerations := []TolerationTemplateContext{
@@ -212,7 +221,7 @@ func (r *ValidationRequestReconciler) renderTestGroupObject(vr *v1alpha1.Validat
 				Key:      t.Key,
 				Value:    t.Value,
 				Operator: operator,
-				Effect:   t.Effect,
+				Effect:   string(t.Effect),
 			})
 		}
 	}
@@ -248,37 +257,46 @@ func (r *ValidationRequestReconciler) renderTestGroupObject(vr *v1alpha1.Validat
 }
 
 /*
-The groupName is pre-determined by the groupName function which is derived from the set of tests and the TestGroup
-index. The attemptObjectName is determined from the ValidationRequest, groupName for the current TestGroup, and the
-attempt number.
+attemptObjectName builds a valid K8s object name that adheres to DNS1123. This function ensures uniqueness of
+TestGroup object names within the same ValidationRequest as well as across ValidationRequests. In general, object
+names will follow this format: <validationRequestName>-<testGroupName>-<attemptNumber>
+
+Recall that the TestGroup name is constructed from the list of tests covered by the group along with an index.
+If the resulting name exceeds the DNS1123 label limit, we will use it to generate an 8 character hash and include
+that within the attemptObjectName while trimming the original name to meet our limit.
 
 1. No hash needed
 Input: tests: ["dcgm-level4", "nccl-loopback"], vrName: "vr-8f3a2b", attempt 1
-groupName  = dcgm-level4-nccl-loopback-group-1
+groupName   = dcgm-level4-nccl-loopback-group-1
 attemptName = vr-8f3a2b-dcgm-level4-nccl-loopback-group-1-1
 
-2. Hash required for long test names
+2. Hash required
 Input: tests: ["multi-node-nccl-all-reduce-benchmark", "nemotron4-15b-goodput-check"], vrName: "vr-8f3a2b", attempt 1
-groupName  = multi-node-nccl-all-reduce-benchmark-nemotr-4c26a2c1-group-2
-attemptName = multi-node-nccl-all-reduce-benchmark-nemotr-4c26a2c1-group-2-1
+groupName   = multi-node-nccl-all-reduce-benchmark-nemotron4-15b-goodput-check-group-2
+attemptName = vr-8f3a2b-multi-node-nccl-all-reduce-benchmark-nemot-517b70b0-1
 */
 func attemptObjectName(vrName, grpName string, attemptNumber int) string {
-	suffix := fmt.Sprintf("%s-%d", grpName, attemptNumber)
+	attemptSuffix := fmt.Sprintf("-%d", attemptNumber)
+	baseObjectName := fmt.Sprintf("%s-%s", vrName, grpName)
+	maxBaseObjectName := validation.DNS1123LabelMaxLength - len(attemptSuffix)
 
-	if len(suffix) >= validation.DNS1123LabelMaxLength {
-		return strings.TrimRight(suffix[:validation.DNS1123LabelMaxLength], "-")
+	return hashTruncate(baseObjectName, maxBaseObjectName) + attemptSuffix
+}
+
+func hashTruncate(base string, maxBase int) string {
+	if len(base) <= maxBase {
+		return base
 	}
 
-	remaining := validation.DNS1123LabelMaxLength - len(suffix) - 1
-	if remaining <= 0 {
-		return suffix
+	h := fnv.New32a()
+	h.Write([]byte(base))
+	hash := fmt.Sprintf("%08x", h.Sum32())
+
+	if maxBase <= len(hash) {
+		return hash[:maxBase]
 	}
 
-	if len(vrName) > remaining {
-		vrName = vrName[:remaining]
-	}
-
-	return fmt.Sprintf("%s-%s", vrName, suffix)
+	return fmt.Sprintf("%s-%s", base[:maxBase-len(hash)-1], hash)
 }
 
 func providerGVK(p v1alpha1.ProviderConfig) schema.GroupVersionKind {

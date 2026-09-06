@@ -37,6 +37,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/pkg/config"
+	"github.com/nvidia/nvsentinel/lifecycle-manager/pkg/metrics"
 )
 
 const (
@@ -186,6 +187,8 @@ func (r *ValidationRequestReconciler) reconcileInit(ctx context.Context,
 		return ctrl.Result{}, fmt.Errorf("update ValidationRequest %q status to pending: %w",
 			validationRequest.Name, err)
 	}
+
+	metrics.ValidationRequestsTotal.Inc()
 
 	return ctrl.Result{}, nil
 }
@@ -443,6 +446,16 @@ func (r *ValidationRequestReconciler) completeValidationRequest(ctx context.Cont
 			validationRequest.Name, phase, err)
 	}
 
+	metricStatus := metrics.StatusFailure
+	if phase == v1alpha1.PhaseSucceeded {
+		metricStatus = metrics.StatusSuccess
+	}
+
+	metrics.ValidationRequestsCompletedTotal.WithLabelValues(metricStatus).Inc()
+
+	duration := now.Sub(validationRequest.Status.StartTime.Time)
+	metrics.ValidationRequestsDurationSeconds.WithLabelValues(metricStatus).Observe(duration.Seconds())
+
 	return ctrl.Result{}, nil
 }
 
@@ -571,6 +584,14 @@ func (r *ValidationRequestReconciler) reconcileRunningTestGroup(ctx context.Cont
 		return nil
 	}
 
+	return r.finalizeTestGroupAttempt(ctx, currentTestGroup, testGroupAttempt, newGroupPhase, attemptPhase,
+		attemptFailureReason, failedNodes)
+}
+
+func (r *ValidationRequestReconciler) finalizeTestGroupAttempt(ctx context.Context,
+	currentTestGroup *v1alpha1.TestGroupStatus, testGroupAttempt *v1alpha1.AttemptStatus,
+	newGroupPhase, attemptPhase v1alpha1.Phase, attemptFailureReason v1alpha1.FailureReason,
+	failedNodes []string) error {
 	currentTestGroup.Phase = newGroupPhase
 	testGroupAttempt.Phase = attemptPhase
 	testGroupAttempt.FailureReason = attemptFailureReason
@@ -578,7 +599,11 @@ func (r *ValidationRequestReconciler) reconcileRunningTestGroup(ctx context.Cont
 	testGroupAttempt.EndTime = &now
 	testGroupAttempt.FailedNodes = failedNodes
 
-	return r.deleteTestGroupObject(ctx, currentTestGroup, testGroupAttempt.ObjectName)
+	if err := r.deleteTestGroupObject(ctx, currentTestGroup, testGroupAttempt.ObjectName); err != nil {
+		return fmt.Errorf("deleting provider resource %q: %w", testGroupAttempt.ObjectName, err)
+	}
+
+	return nil
 }
 
 func (r *ValidationRequestReconciler) startPendingTestGroups(ctx context.Context,
@@ -632,19 +657,12 @@ func (r *ValidationRequestReconciler) startPendingTestGroup(ctx context.Context,
 		}
 	}
 
-	deletedNodes, nodesFailingReadiness, err := r.fetchDeletedAndNotReadyNodes(ctx, currentPendingTestGroup)
+	isBlocked, err := r.checkPendingTestGroupBlocked(ctx, validationRequest, currentPendingTestGroup)
 	if err != nil {
-		return false, fmt.Errorf("checking group nodes for %q: %w", currentPendingTestGroup.Name, err)
+		return false, err
 	}
 
-	if len(deletedNodes) > 0 {
-		nextPhase := removeDeletedNodesFromTestGroup(validationRequest, currentPendingTestGroup, deletedNodes, r.Config)
-		if nextPhase != v1alpha1.PhasePending {
-			return false, nil
-		}
-	}
-
-	if len(nodesFailingReadiness) > 0 {
+	if isBlocked {
 		return false, nil
 	}
 
@@ -667,6 +685,38 @@ func (r *ValidationRequestReconciler) startPendingTestGroup(ctx context.Context,
 	}
 
 	return true, nil
+}
+
+func (r *ValidationRequestReconciler) checkPendingTestGroupBlocked(ctx context.Context,
+	validationRequest *v1alpha1.ValidationRequest, currentPendingTestGroup *v1alpha1.TestGroupStatus) (bool, error) {
+	deletedNodes, nodesFailingReadiness, err := r.fetchDeletedAndNotReadyNodes(ctx, currentPendingTestGroup)
+	if err != nil {
+		return false, fmt.Errorf("checking group nodes for %q: %w", currentPendingTestGroup.Name, err)
+	}
+
+	if len(deletedNodes) > 0 {
+		nextPhase := removeDeletedNodesFromTestGroup(validationRequest, currentPendingTestGroup, deletedNodes, r.Config)
+		if nextPhase != v1alpha1.PhasePending {
+			return true, nil
+		}
+	}
+
+	if len(nodesFailingReadiness) > 0 {
+		return true, nil
+	}
+
+	if len(currentPendingTestGroup.Attempts) == 0 {
+		return false, nil
+	}
+
+	previousAttempt := currentPendingTestGroup.Attempts[len(currentPendingTestGroup.Attempts)-1]
+
+	deleted, err := r.checkTestGroupObjectDeleted(ctx, currentPendingTestGroup, previousAttempt.ObjectName)
+	if err != nil {
+		return false, fmt.Errorf("checking previous attempt %q is deleted: %w", previousAttempt.ObjectName, err)
+	}
+
+	return !deleted, nil
 }
 
 func terminalPhase(hasFailedTestGroups bool, validationRequest *v1alpha1.ValidationRequest) v1alpha1.Phase {

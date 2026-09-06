@@ -28,7 +28,10 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -53,6 +56,7 @@ var customBackoff = wait.Backoff{
 
 type FaultQuarantineClient struct {
 	Clientset                kubernetes.Interface
+	DynamicClient            dynamic.Interface
 	DryRunMode               bool
 	NodeInformer             *NodeInformer
 	cordonedReasonLabelKey   string
@@ -90,18 +94,39 @@ func newFaultQuarantineClient(config *rest.Config, dryRun bool,
 		return nil, fmt.Errorf("error creating clientset: %w", err)
 	}
 
+	dynamicClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("error creating dynamic client: %w", err)
+	}
+
 	nodeInformer, err := NewNodeInformer(clientset, resyncPeriod, gpuNodeLabelKey, gpuNodeLabelValue)
 	if err != nil {
 		return nil, fmt.Errorf("error creating node informer: %w", err)
 	}
 
 	client := &FaultQuarantineClient{
-		Clientset:    clientset,
-		DryRunMode:   dryRun,
-		NodeInformer: nodeInformer,
+		Clientset:     clientset,
+		DynamicClient: dynamicClient,
+		DryRunMode:    dryRun,
+		NodeInformer:  nodeInformer,
 	}
 
 	return client, nil
+}
+
+func (c *FaultQuarantineClient) CreateValidationRequestResource(ctx context.Context, gvr schema.GroupVersionResource,
+	obj *unstructured.Unstructured) error {
+	if c.DryRunMode {
+		slog.InfoContext(ctx, "DryRun mode enabled, skipping ValidationRequest creation", "name", obj.GetName())
+		return nil
+	}
+
+	_, err := c.DynamicClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
+	if err != nil && !errors.IsAlreadyExists(err) {
+		return fmt.Errorf("failed to create ValidationRequest %s: %w", obj.GetName(), err)
+	}
+
+	return nil
 }
 
 func (c *FaultQuarantineClient) EnsureCircuitBreakerConfigMap(ctx context.Context,

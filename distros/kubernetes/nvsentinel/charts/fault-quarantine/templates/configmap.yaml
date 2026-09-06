@@ -71,3 +71,50 @@ data:
       [rule-sets.cordon]
         shouldCordon = {{ .cordon.shouldCordon }}
     {{- end }}
+
+    {{- if .Values.validation.enabled }}
+    [validation]
+      enabled = {{ .Values.validation.enabled }}
+      apiGroup = {{ .Values.validation.apiGroup | quote }}
+      version = {{ .Values.validation.version | quote }}
+      kind = {{ .Values.validation.kind | quote }}
+      resource = {{ printf "%ss" (.Values.validation.kind | lower) | quote }}
+      templateFileName = {{ .Values.validation.templateFileName | quote }}
+      templateMountPath = "/etc/config"
+    {{- end }}
+
+    {{- range .Values.validation.ruleSets }}
+    [[validation.ruleSets]]
+      enabled = {{ if hasKey . "enabled" }}{{ .enabled }}{{ else }}true{{ end }}
+      version = {{ .version | quote }}
+      name = {{ .name | quote }}
+      priority = {{ .priority | default 0 }}
+      tests = {{ .tests | toJson }}
+      {{- if .match.all }}
+      {{- range .match.all }}
+
+      [[validation.ruleSets.match.all]]
+        kind = {{ .kind | quote }}
+        expression = {{ if contains "\n" .expression }}'''
+            {{ .expression | trim }}
+        '''{{ else }}{{ .expression | quote }}{{ end }}
+      {{- end }}
+      {{- end }}
+      {{- if .match.any }}
+      {{- range .match.any }}
+
+      [[validation.ruleSets.match.any]]
+        kind = {{ .kind | quote }}
+        expression = {{ if contains "\n" .expression }}'''
+            {{ .expression | trim }}
+        '''{{ else }}{{ .expression | quote }}{{ end }}
+      {{- end }}
+      {{- end }}
+    {{- end }}
+
+  {{- if and .Values.validation.enabled .Values.validation.templates }}
+  {{- range $templateName, $templateContent := .Values.validation.templates }}
+  {{ $templateName }}: |
+{{- $templateContent | nindent 4 }}
+  {{- end }}
+  {{- end }}

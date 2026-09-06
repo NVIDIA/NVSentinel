@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -45,6 +46,7 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/validation"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
@@ -97,6 +99,8 @@ type Reconciler struct {
 		context.Context, client.DatabaseClient, client.TokenConfig, func() error,
 	) (client.ResumeControlDecision, error)
 	setColdStartCutoff func(context.Context, string, time.Time) error
+	// validationClient is nil when validation.enabled is false or no validation.ruleSets are configured
+	validationClient *validation.ValidationClient
 
 	// Label keys
 	cordonedByLabelKey        string
@@ -219,23 +223,10 @@ func (r *Reconciler) Start(ctx context.Context) error {
 
 	slog.InfoContext(ctx, "Node informer started and synced")
 
-	// Check circuit breaker state AFTER informer is synced (IsTripped needs node counts from informer)
-	if err := r.checkCircuitBreakerAtStartup(ctx); err != nil {
-		return fmt.Errorf("failed to check circuit breaker at startup: %w", err)
-	}
-
-	ruleSetEvals, err := r.initializeRuleSetEvaluators()
+	ruleSetEvals, rulesetsConfig, err := r.prepareEventProcessing(ctx, ds)
 	if err != nil {
-		return fmt.Errorf("failed to initialize rule set evaluators: %w", err)
+		return err
 	}
-
-	r.setupLabelKeys()
-
-	rulesetsConfig := r.buildRulesetsConfig()
-
-	r.precomputeTaintInitKeys(ctx, ruleSetEvals, rulesetsConfig)
-
-	r.initializeQuarantineMetrics(ctx)
 
 	r.eventWatcher.SetProcessEventCallback(
 		func(ctx context.Context, event *model.HealthEventWithStatus) (*model.Status, error) {
@@ -260,6 +251,36 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	slog.InfoContext(ctx, "Event watcher stopped, exiting fault-quarantine reconciler.")
 
 	return nil
+}
+
+func (r *Reconciler) prepareEventProcessing(ctx context.Context,
+	ds datastore.DataStore) ([]evaluator.RuleSetEvaluatorIface, rulesetsConfig, error) {
+	// Check circuit breaker state AFTER informer is synced (IsTripped needs node counts from informer)
+	if err := r.checkCircuitBreakerAtStartup(ctx); err != nil {
+		return nil, rulesetsConfig{}, fmt.Errorf("failed to check circuit breaker at startup: %w", err)
+	}
+
+	ruleSetEvals, err := r.initializeRuleSetEvaluators()
+	if err != nil {
+		return nil, rulesetsConfig{}, fmt.Errorf("failed to initialize rule set evaluators: %w", err)
+	}
+
+	validationClient, err := validation.NewValidationClient(r.config.TomlConfig, r.k8sClient, ds.HealthEventStore())
+	if err != nil {
+		return nil, rulesetsConfig{}, fmt.Errorf("failed to initialize validation client: %w", err)
+	}
+
+	r.validationClient = validationClient
+
+	r.setupLabelKeys()
+
+	cfg := r.buildRulesetsConfig()
+
+	r.precomputeTaintInitKeys(ctx, ruleSetEvals, cfg)
+
+	r.initializeQuarantineMetrics(ctx)
+
+	return ruleSetEvals, cfg, nil
 }
 
 func (r *Reconciler) configureColdStart(
@@ -1237,6 +1258,19 @@ func (r *Reconciler) applyQuarantine(
 
 	slog.DebugContext(ctx, "Added health event annotation successfully", "node", event.HealthEvent.NodeName)
 
+	// Case 1: on Quarantine events, we evaluate if we need to update the quarantineValidationHealthEvent annotation
+	// if the initial unhealthy event requires post-remediation validation tests.
+	if err := r.updateValidationAnnotation(ctx, annotationsMap, event.HealthEvent); err != nil {
+		slog.ErrorContext(ctx, "Failed to add validation annotation", "error", err, "node", event.HealthEvent.NodeName)
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("fault_quarantine.error.type", "add_validation_annotation_error"),
+			attribute.String("fault_quarantine.error.message", err.Error()),
+		)
+
+		return nil, err
+	}
+
 	// Remove manual uncordon/untaint annotations if present before applying new quarantine
 	for _, annotationKey := range []string{
 		common.QuarantinedNodeUncordonedManuallyAnnotationKey,
@@ -1711,10 +1745,35 @@ func (r *Reconciler) addEventToAnnotation(
 		slog.DebugContext(ctx, "Added/updated event for node",
 			"node", event.NodeName, "totalEntityLevelEvents", healthEventsMap.Count())
 
-		return nil
+		// Case 2: on AlreadyQuarantined events, we evaluate if we need to update the quarantineValidationHealthEvent
+		// annotation if this subsequent unhealthy event requires post-remediation validation tests.
+		return r.updateValidationAnnotation(ctx, node.Annotations, event)
 	}
 
 	return r.k8sClient.UpdateNode(ctx, event.NodeName, updateFn)
+}
+
+// updateValidationAnnotation adds or updates a HealthEvent to the node's quarantineValidationHealthEvent if
+// validation is enabled, one or more validation.ruleSets exist, and the given HealthEvent requires one or more tests
+// when evaluated against validation.ruleSets.
+func (r *Reconciler) updateValidationAnnotation(ctx context.Context, annotationsMap map[string]string,
+	event *protos.HealthEvent) error {
+	if r.validationClient == nil {
+		return nil
+	}
+
+	existing := annotationsMap[common.QuarantineValidationHealthEventAnnotationKey]
+
+	updated, err := r.validationClient.UpdateQuarantineValidationAnnotation(ctx, existing, event)
+	if err != nil {
+		return fmt.Errorf("failed to merge validation annotation for node %s: %w", event.NodeName, err)
+	}
+
+	if len(updated) != 0 {
+		annotationsMap[common.QuarantineValidationHealthEventAnnotationKey] = updated
+	}
+
+	return nil
 }
 
 // removeEventFromAnnotation removes entities from a health event in the node's quarantine annotation
@@ -1839,6 +1898,9 @@ func (r *Reconciler) performUncordon(
 		return false, nil
 	}
 
+	annotationsToBeRemoved, taintsToBeRemoved, isUnCordon = r.triggerValidationOnUncordon(ctx, span, event, annotations,
+		annotationsToBeRemoved, taintsToBeRemoved, isUnCordon)
+
 	if !r.config.CircuitBreakerEnabled {
 		slog.InfoContext(ctx, "Circuit breaker is disabled, proceeding with unquarantine action for node",
 			"node", event.NodeName)
@@ -1882,6 +1944,78 @@ func (r *Reconciler) performUncordon(
 	)
 
 	return false, nil
+}
+
+// triggerValidationOnUncordon will create a ValidationRequest if the node has a quarantineValidationHealthEvent
+// annotation present when it is being unquarantined. Note that we also require that the node was fully drained
+// as part of its quarantine session so it's possible that ValidationRequest creation is skipped even if the
+// annotation present. If a ValidationRequest is created, we will skip removing any cordon or taints applied by
+// fault-quarantine as part of the quarantine session.
+func (r *Reconciler) triggerValidationOnUncordon(ctx context.Context, span trace.Span, event *protos.HealthEvent,
+	annotations map[string]string, annotationsToBeRemoved []string, taintsToBeRemoved []config.Taint,
+	isUnCordon bool) ([]string, []config.Taint, bool) {
+	if _, exists := annotations[common.QuarantineValidationHealthEventAnnotationKey]; !exists {
+		return annotationsToBeRemoved, taintsToBeRemoved, isUnCordon
+	}
+
+	annotationsToBeRemoved = append(annotationsToBeRemoved, common.QuarantineValidationHealthEventAnnotationKey)
+
+	validationRequestCreated, err := r.checkIfValidationRequested(ctx, event, annotations)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to create ValidationRequest for node", "node", event.NodeName, "error", err)
+		metrics.ProcessingErrors.WithLabelValues("create_validation_request_error").Inc()
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("fault_quarantine.error.type", "create_validation_request_error"),
+			attribute.String("fault_quarantine.error.message", err.Error()),
+		)
+	}
+
+	if validationRequestCreated {
+		taintsToBeRemoved = nil
+		isUnCordon = false
+
+		span.SetAttributes(attribute.Bool("fault_quarantine.validation_request.created", true))
+	}
+
+	return annotationsToBeRemoved, taintsToBeRemoved, isUnCordon
+}
+
+func (r *Reconciler) checkIfValidationRequested(ctx context.Context, event *protos.HealthEvent,
+	annotations map[string]string) (created bool, err error) {
+	// This check is present if a stale validationHealthEvent annotation exists on a node before the feature was
+	// disabled (validation.enabled is false or validation.ruleSets is empty)
+	if r.validationClient == nil {
+		return false, nil
+	}
+
+	nodeName := event.NodeName
+
+	tests, sessionID, err := r.validationClient.FetchValidationTestsFromQuarantineSession(
+		ctx, nodeName, annotations[common.QuarantineValidationHealthEventAnnotationKey])
+	if err != nil {
+		return false, fmt.Errorf("failed to aggregate validation session for node %s: %w", nodeName, err)
+	}
+
+	if len(tests) == 0 {
+		return false, nil
+	}
+
+	node, err := r.k8sClient.NodeInformer.GetNode(nodeName)
+	if err != nil {
+		return false, fmt.Errorf("failed to get node %s: %w", nodeName, err)
+	}
+
+	traceID := tracing.TraceIDFromMetadata(event.GetMetadata())
+	spanID := tracing.SpanIDFromSpan(tracing.SpanFromContext(ctx))
+
+	if err := r.validationClient.CreateValidationRequest(ctx, node, tests, sessionID, traceID, spanID); err != nil {
+		return false, err
+	}
+
+	slog.InfoContext(ctx, "Created ValidationRequest", "node", nodeName, "tests", tests)
+
+	return true, nil
 }
 
 // prepareUncordonParams prepares parameters for uncordoning a node
@@ -1999,6 +2133,7 @@ func (r *Reconciler) getNodeQuarantineAnnotations(ctx context.Context, nodeName 
 		common.QuarantineHealthEventCordonPreExistingAnnotationKey,
 		common.QuarantinedNodeUncordonedManuallyAnnotationKey,
 		common.QuarantinedNodeIsUntaintedManuallyAnnotationKey,
+		common.QuarantineValidationHealthEventAnnotationKey,
 	}
 
 	if node.Annotations != nil {
@@ -2084,13 +2219,15 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 	slog.DebugContext(ctx, "Retrieved node annotations for manual uncordon",
 		"node", nodeName, "annotationCount", len(annotations))
 
-	annotationsToRemove := []string{}
+	// Remove the applied taints annotation (but keep the taints themselves on the node).
+	annotationsToRemove := appendIfPresent(annotations, nil,
+		common.QuarantineHealthEventAppliedTaintsAnnotationKey,
+		common.QuarantineHealthEventAnnotationKey,
+		common.QuarantineHealthEventIsCordonedAnnotationKey,
+		common.QuarantineHealthEventCordonPreExistingAnnotationKey,
+		common.QuarantineValidationHealthEventAnnotationKey,
+	)
 	labelsToRemove := []string{statemanager.NVSentinelStateLabelKey}
-
-	// Remove the applied taints annotation (but keep the taints themselves on the node)
-	if _, exists := annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey]; exists {
-		annotationsToRemove = append(annotationsToRemove, common.QuarantineHealthEventAppliedTaintsAnnotationKey)
-	}
 
 	labelAnnotationsToRemove, _, err := appliedLabelCleanupParams(annotations)
 	if err != nil {
@@ -2098,18 +2235,6 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 	}
 
 	annotationsToRemove = append(annotationsToRemove, labelAnnotationsToRemove...)
-
-	if _, exists := annotations[common.QuarantineHealthEventAnnotationKey]; exists {
-		annotationsToRemove = append(annotationsToRemove, common.QuarantineHealthEventAnnotationKey)
-	}
-
-	if _, exists := annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]; exists {
-		annotationsToRemove = append(annotationsToRemove, common.QuarantineHealthEventIsCordonedAnnotationKey)
-	}
-
-	if _, exists := annotations[common.QuarantineHealthEventCordonPreExistingAnnotationKey]; exists {
-		annotationsToRemove = append(annotationsToRemove, common.QuarantineHealthEventCordonPreExistingAnnotationKey)
-	}
 
 	slog.DebugContext(ctx, "Prepared annotations to remove", "node", nodeName, "count", len(annotationsToRemove))
 
@@ -2165,6 +2290,16 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 	slog.InfoContext(ctx, "Successfully completed manual uncordon handling", "node", nodeName)
 
 	return nil
+}
+
+func appendIfPresent(annotations map[string]string, toRemove []string, keys ...string) []string {
+	for _, key := range keys {
+		if _, exists := annotations[key]; exists {
+			toRemove = append(toRemove, key)
+		}
+	}
+
+	return toRemove
 }
 
 // handleManualUntaint handles the case when a node is manually untainted while having FQ annotations

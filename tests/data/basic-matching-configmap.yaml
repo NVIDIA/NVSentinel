@@ -22,7 +22,7 @@ data:
     [circuitBreaker]
       percentage = 50
       duration = "5m"
-    
+
     [[rule-sets]]
       enabled = true
       name = "Basic-Match-Rule"
@@ -36,3 +36,37 @@ data:
       [rule-sets.cordon]
         shouldCordon = true
 
+    [validation]
+      enabled = true
+      apiGroup = "nvsentinel.nvidia.com"
+      version = "v1alpha1"
+      kind = "ValidationRequest"
+      resource = "validationrequests"
+      templateFileName = "validation-request-template.yaml"
+      templateMountPath = "/etc/config"
+
+    [[validation.ruleSets]]
+      enabled = true
+      version = "1"
+      name = "VM/BM restart validation"
+      tests = ["dcgm-diag-test"]
+      [[validation.ruleSets.match.all]]
+        kind = "HealthEvent"
+        expression = "event.componentClass == 'GPU' && event.isFatal == true && event.recommendedAction in [15, 24]"
+  validation-request-template.yaml: |
+    apiVersion: nvsentinel.nvidia.com/v1alpha1
+    kind: ValidationRequest
+    metadata:
+      name: {{ .NodeName }}-validation-{{ .SessionID }}
+      labels:
+        app.kubernetes.io/managed-by: nvsentinel
+      annotations:
+        nvsentinel.nvidia.com/trace-id: "{{ .TraceID }}"
+        nvsentinel.nvidia.com/span-id: "{{ .SpanID }}"
+    spec:
+      nodes:
+        - name: {{ .NodeName }}
+      tests:
+        {{- range .Tests }}
+        - {{ . }}
+        {{- end }}

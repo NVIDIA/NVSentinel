@@ -91,14 +91,42 @@ config:
     dcgm-diag-test:
       provider: k8s-job-provider
       image: nvcr.io/nvidia/cloud-native/dcgm:4.5.2-1-ubuntu22.04
+      # Add dcgmi diag retries for runtime errors which indicate that dcgmi diag failed to run compared to
+      # the command failing due to detecting a GPU health issue. Specifically, we have observed that dcgm-diag-test
+      # retries can result in a DCGM_ST_IN_USE runtime error because a previous request to nv-hostengine does not
+      # terminate if the client disconnects (for example if our dcgmi process has terminated). An optimization to
+      # this script would be to call dcgmi diag --stop on exit or start-up. A related issue was observed in preflight
+      # DCGM tests: https://github.com/NVIDIA/NVSentinel/issues/1363
       command:
-        - dcgmi
-        - diag
-        - --host
-        - "nvidia-dcgm.gpu-operator.svc:5555"
-        - --run
-        - "2"
-        - --json
+        - sh
+        - -c
+        - |
+          i=0
+          max=10
+          while [ "$i" -lt "$max" ]; do
+            dcgmi diag --host nvidia-dcgm.gpu-operator.svc:5555 --run 2 --json > /tmp/dcgm-diag-out.json 2>&1
+            rc=$?
+            cat /tmp/dcgm-diag-out.json
+
+            if [ "$rc" -eq 0 ]; then
+              exit 0
+            fi
+
+            if ! grep -q '"runtime_error"' /tmp/dcgm-diag-out.json; then
+              echo "dcgmi diag failed with a diagnostic result (exit $rc); not retrying" >&2
+              exit "$rc"
+            fi
+
+            i=$((i + 1))
+
+            if [ "$i" -ge "$max" ]; then
+              echo "dcgmi diag returned a runtime_error after $max attempts; giving up" >&2
+              exit "$rc"
+            fi
+
+            echo "dcgmi diag returned a runtime_error (attempt $i/$max); retrying" >&2
+            sleep 30
+          done
       supportsBatchingNodes: false
       minimumNodesPerBatch: 1
       batchFailurePolicy: fail

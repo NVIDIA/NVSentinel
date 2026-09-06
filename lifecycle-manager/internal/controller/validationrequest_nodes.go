@@ -355,7 +355,7 @@ func removeConfiguredTaints(taints []corev1.Taint, configuredTaints []v1alpha1.T
 func taintMatches(nodeTaint corev1.Taint, taintCfg v1alpha1.TaintConfig) bool {
 	return nodeTaint.Key == taintCfg.Key &&
 		nodeTaint.Value == taintCfg.Value &&
-		string(nodeTaint.Effect) == taintCfg.Effect
+		nodeTaint.Effect == taintCfg.Effect
 }
 
 func sameTests(a, b []string) bool {

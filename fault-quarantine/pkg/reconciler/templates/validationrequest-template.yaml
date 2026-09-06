@@ -12,20 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# ARM64-specific overrides for Tilt development
-mongodb-store:
-  mongodb:
-    image:
-      repository: "dlavrenuek/bitnami-mongodb-arm"
-      tag: "8.0.4"
-
-lifecycle-manager:
-  config:
-    tests:
-      dcgm-diag-test:
-        image: alpine:3.21
-        command:
-          - sh
-          - -c
-          - "exit 0"
-
+apiVersion: nvsentinel.nvidia.com/v1alpha1
+kind: ValidationRequest
+metadata:
+  name: vr-{{.SessionID}}
+  annotations:
+    nvsentinel.nvidia.com/trace-id: "{{.TraceID}}"
+    nvsentinel.nvidia.com/span-id: "{{.SpanID}}"
+spec:
+  nodes:
+    - name: "{{ .NodeName }}"
+  tests:
+{{- range .Tests }}
+    - "{{ . }}"
+{{- end }}

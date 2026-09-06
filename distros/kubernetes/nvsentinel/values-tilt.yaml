@@ -272,6 +272,9 @@ gpu-health-monitor:
 fault-quarantine:
   logLevel: debug
 
+  validation:
+    enabled: true
+
   affinity:
     podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
