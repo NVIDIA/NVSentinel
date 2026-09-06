@@ -1,0 +1,110 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: system-services-monitor
+  namespace: nvsentinel
+  labels:
+    app.kubernetes.io/name: system-services-monitor
+    app.kubernetes.io/instance: nvsentinel
+    app.kubernetes.io/component: metrics
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: system-services-monitor
+      app.kubernetes.io/instance: nvsentinel
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: system-services-monitor
+        app.kubernetes.io/instance: nvsentinel
+        app.kubernetes.io/component: metrics
+    spec:
+      serviceAccountName: system-services-monitor
+      # hostPID + privileged (below) are required by the probe mechanism:
+      # nsenter -t 1 -m needs the host PID namespace and privilege to enter
+      # PID 1's mount namespace. This matches the in-tree
+      # system-services-monitor Helm subchart. The namespace must allow the
+      # `privileged` Pod Security level; see "Security model" in the README.
+      hostPID: true
+      nodeSelector:
+        # Matches any node with NVIDIA GPUs (set by GPU Feature Discovery).
+        # Because this pod is privileged, consider narrowing the rollout to
+        # an explicitly trusted node pool, e.g. by adding:
+        #   node-pool.example.com/trusted-gpu-monitoring: "true"
+        feature.node.kubernetes.io/pci-10de.present: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: monitor
+          # Pin to a specific semver tag (or @sha256:<digest> in production).
+          # Demo image; replace with your registry path when deploying.
+          # 0.1.0 is a demo-local pin, independent of the Helm chart appVersion.
+          image: system-services-monitor:0.1.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: system-services-monitor
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - name: metrics
+              containerPort: 9101
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          securityContext:
+            privileged: true  # Required for nsenter into host mount namespace
+      # No hostPath volumes: nsenter -t 1 -m runs every probe inside the
+      # host's own mount namespace, so the host's /run/dbus etc. are already
+      # visible to the probes without mounting anything into the container.
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: system-services-monitor
+  namespace: nvsentinel
+  labels:
+    app.kubernetes.io/name: system-services-monitor
+    app.kubernetes.io/instance: nvsentinel
+    app.kubernetes.io/component: metrics
+spec:
+  selector:
+    app.kubernetes.io/name: system-services-monitor
+    app.kubernetes.io/instance: nvsentinel
+  ports:
+    - name: metrics
+      port: 9101
+      targetPort: 9101
+      protocol: TCP
+  clusterIP: None  # Headless — each pod scraped individually
