@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"google.golang.org/grpc"
@@ -31,11 +32,134 @@ import (
 	config "github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/publisher"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 // Mock Publisher
 type mockPublisher struct {
 	mock.Mock
+}
+
+type startTestClientWatcher struct {
+	events  chan client.Event
+	started chan struct{}
+}
+
+func (w *startTestClientWatcher) Start(ctx context.Context) {
+	close(w.started)
+	<-ctx.Done()
+}
+
+func (w *startTestClientWatcher) Events() <-chan client.Event { return w.events }
+func (w *startTestClientWatcher) MarkProcessed(context.Context, []byte) error {
+	return nil
+}
+func (w *startTestClientWatcher) Close(context.Context) error { return nil }
+
+type startTestWatcher struct {
+	inner  *startTestClientWatcher
+	events chan datastore.EventWithToken
+}
+
+func (w *startTestWatcher) Events() <-chan datastore.EventWithToken { return w.events }
+func (w *startTestWatcher) Start(ctx context.Context)               { w.inner.Start(ctx) }
+func (w *startTestWatcher) MarkProcessed(context.Context, []byte) error {
+	return nil
+}
+func (w *startTestWatcher) Close(context.Context) error        { return nil }
+func (w *startTestWatcher) Unwrap() client.ChangeStreamWatcher { return w.inner }
+
+type startTestDataStore struct {
+	provider datastore.DataStoreProvider
+	database client.DatabaseClient
+	watcher  datastore.ChangeStreamWatcher
+}
+
+func (s *startTestDataStore) MaintenanceEventStore() datastore.MaintenanceEventStore { return nil }
+func (s *startTestDataStore) HealthEventStore() datastore.HealthEventStore           { return nil }
+func (s *startTestDataStore) Ping(context.Context) error                             { return nil }
+func (s *startTestDataStore) Close(context.Context) error                            { return nil }
+func (s *startTestDataStore) Provider() datastore.DataStoreProvider                  { return s.provider }
+func (s *startTestDataStore) GetDatabaseClient() client.DatabaseClient               { return s.database }
+func (s *startTestDataStore) CreateChangeStreamWatcher(
+	context.Context, string, any,
+) (datastore.ChangeStreamWatcher, error) {
+	return s.watcher, nil
+}
+
+func TestStartWiresProviderAndProcessor(t *testing.T) {
+	provider := datastore.DataStoreProvider("health-events-analyzer-start-test")
+	inner := &startTestClientWatcher{
+		events:  make(chan client.Event),
+		started: make(chan struct{}),
+	}
+	store := &startTestDataStore{
+		provider: provider,
+		database: new(mockDatabaseClient),
+		watcher: &startTestWatcher{
+			inner: inner, events: make(chan datastore.EventWithToken),
+		},
+	}
+	datastore.RegisterProvider(provider, func(context.Context, datastore.DataStoreConfig) (datastore.DataStore, error) {
+		return store, nil
+	})
+
+	reconciler := NewReconciler(HealthEventsAnalyzerReconcilerConfig{
+		DataStoreConfig:           &datastore.DataStoreConfig{Provider: provider},
+		HealthEventsAnalyzerRules: &config.TomlConfig{},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- reconciler.Start(ctx) }()
+	<-inner.started
+	cancel()
+
+	assert.ErrorIs(t, <-done, context.Canceled)
+	assert.Equal(t, provider, reconciler.provider)
+	assert.NotNil(t, reconciler.eventProcessor)
+}
+
+func TestRecordPublishedEventMetrics(t *testing.T) {
+	reconciler := &Reconciler{}
+	ctx := context.Background()
+
+	reconciler.recordPublishedEvent(ctx, &protos.HealthEvent{}, false)
+	reconciler.recordPublishedEvent(ctx, &protos.HealthEvent{IsHealthy: true}, true)
+
+	fatalEventsPublishedTotal.WithLabelValues("unknown")
+	unknownBefore := fatalEventCounterValue(t, "unknown")
+	reconciler.recordPublishedEvent(ctx, &protos.HealthEvent{}, true)
+	assert.Equal(t, unknownBefore+1, fatalEventCounterValue(t, "unknown"))
+
+	entity := "GPU-record-published-test"
+	fatalEventsPublishedTotal.WithLabelValues(entity)
+	entityBefore := fatalEventCounterValue(t, entity)
+	reconciler.recordPublishedEvent(ctx, &protos.HealthEvent{
+		EntitiesImpacted: []*protos.Entity{{EntityValue: entity}},
+	}, true)
+	assert.Equal(t, entityBefore+1, fatalEventCounterValue(t, entity))
+}
+
+func fatalEventCounterValue(t *testing.T, entity string) float64 {
+	t.Helper()
+
+	families, err := prometheus.DefaultGatherer.Gather()
+	assert.NoError(t, err)
+	for _, family := range families {
+		if family.GetName() != "fatal_events_published_total" {
+			continue
+		}
+		for _, metric := range family.Metric {
+			for _, label := range metric.Label {
+				if label.GetName() == "entity_value" && label.GetValue() == entity {
+					return metric.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+
+	t.Fatalf("fatal event metric for %q not found", entity)
+	return 0
 }
 
 func (m *mockPublisher) HealthEventOccurredV1(ctx context.Context, events *protos.HealthEvents, opts ...grpc.CallOption) (*emptypb.Empty, error) {
@@ -124,8 +248,9 @@ func (m *mockDatabaseClient) DeleteResumeToken(ctx context.Context, tokenConfig 
 // Mock cursor for tests
 type mockCursor struct {
 	mock.Mock
-	data []map[string]any
-	pos  int
+	data   []map[string]any
+	pos    int
+	allErr error
 }
 
 func createMockCursor(data []map[string]any) (*mockCursor, error) {
@@ -151,6 +276,10 @@ func (m *mockCursor) Close(ctx context.Context) error {
 }
 
 func (m *mockCursor) All(ctx context.Context, results any) error {
+	if m.allErr != nil {
+		return m.allErr
+	}
+
 	if resultsSlice, ok := results.(*[]map[string]any); ok {
 		*resultsSlice = m.data
 	}
@@ -423,6 +552,67 @@ func TestHandleEvent(t *testing.T) {
 		mockClient.AssertNotCalled(t, "Aggregate")
 		mockPublisher.AssertNotCalled(t, "HealthEventOccurredV1")
 	})
+
+	t.Run("deterministic rule failures are skipped", func(t *testing.T) {
+		for name, test := range map[string]struct {
+			rule         config.HealthEventsAnalyzerRule
+			aggregateErr error
+		}{
+			"invalid stage": {
+				rule: config.HealthEventsAnalyzerRule{
+					Name: "invalid-stage", EvaluateRule: true, Stage: []string{"invalid json"},
+				},
+			},
+			"invalid datastore query": {
+				rule: config.HealthEventsAnalyzerRule{
+					Name: "invalid-query", EvaluateRule: true, Stage: []string{`{"$count": "count"}`},
+				},
+				aggregateErr: datastore.NewValidationError(datastore.ProviderPostgreSQL, "bad pipeline", nil),
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				mockClient := new(mockDatabaseClient)
+				if test.aggregateErr != nil {
+					mockClient.On("Aggregate", mock.Anything, mock.Anything).
+						Return((*mockCursor)(nil), test.aggregateErr).Once()
+				}
+
+				reconciler := &Reconciler{
+					config: HealthEventsAnalyzerReconcilerConfig{
+						HealthEventsAnalyzerRules: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{test.rule}},
+					},
+					databaseClient: mockClient,
+				}
+
+				published, err := reconciler.handleEvent(ctx, &healthEvent_13)
+				assert.NoError(t, err)
+				assert.False(t, published)
+				mockClient.AssertExpectations(t)
+			})
+		}
+	})
+
+	t.Run("deterministic cursor decode failures are skipped", func(t *testing.T) {
+		mockClient := new(mockDatabaseClient)
+		rule := config.HealthEventsAnalyzerRule{
+			Name: "decode-failure", EvaluateRule: true, Stage: []string{`{"$count":"count"}`},
+		}
+		mockClient.On("Aggregate", mock.Anything, mock.Anything).Return(&mockCursor{
+			allErr: datastore.NewSerializationError(datastore.ProviderPostgreSQL, "bad stored row", nil),
+		}, nil).Once()
+		reconciler := &Reconciler{
+			config: HealthEventsAnalyzerReconcilerConfig{
+				HealthEventsAnalyzerRules: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{rule}},
+			},
+			databaseClient: mockClient,
+		}
+
+		published, err := reconciler.handleEvent(ctx, &healthEvent_13)
+		assert.NoError(t, err)
+		assert.False(t, published)
+		mockClient.AssertExpectations(t)
+	})
+
 	t.Run("rule with EvaluateRule false is skipped", func(t *testing.T) {
 		mockClient := new(mockDatabaseClient)
 		mockPublisher := &mockPublisher{}
@@ -472,7 +662,7 @@ func TestGetPipelineStages(t *testing.T) {
 			},
 		}
 
-		pipeline, err := reconciler.getPipelineStages(rule, event)
+		pipeline, err := reconciler.getPipelineStages(rule, event, nil)
 		assert.NoError(t, err)
 		// Agent filter (1) + configured stages (2) = 3 total
 		assert.Len(t, pipeline, 3)
@@ -513,7 +703,7 @@ func TestGetPipelineStages(t *testing.T) {
 			},
 		}
 
-		pipeline, err := reconciler.getPipelineStages(rule, event)
+		pipeline, err := reconciler.getPipelineStages(rule, event, nil)
 		assert.NoError(t, err)
 		// Agent filter (1) + configured stages (4) = 5 total
 		assert.Len(t, pipeline, 5)
@@ -540,7 +730,7 @@ func TestGetPipelineStages(t *testing.T) {
 			},
 		}
 
-		pipeline, err := reconciler.getPipelineStages(rule, event)
+		pipeline, err := reconciler.getPipelineStages(rule, event, nil)
 		assert.NoError(t, err)
 		// Agent filter (1) + configured stages (1) = 2 total
 		assert.Len(t, pipeline, 2)
@@ -563,7 +753,7 @@ func TestGetPipelineStages(t *testing.T) {
 			},
 		}
 
-		pipeline, err := reconciler.getPipelineStages(rule, event)
+		pipeline, err := reconciler.getPipelineStages(rule, event, nil)
 		assert.Error(t, err)
 		assert.Nil(t, pipeline)
 		assert.Contains(t, err.Error(), "failed to parse stage 0")
@@ -582,7 +772,7 @@ func TestGetPipelineStages(t *testing.T) {
 			},
 		}
 
-		pipeline, err := reconciler.getPipelineStages(rule, event)
+		pipeline, err := reconciler.getPipelineStages(rule, event, nil)
 		assert.Error(t, err)
 		assert.Nil(t, pipeline)
 	})
@@ -598,7 +788,7 @@ func TestGetPipelineStages(t *testing.T) {
 			},
 		}
 
-		pipeline, err := reconciler.getPipelineStages(rule, event)
+		pipeline, err := reconciler.getPipelineStages(rule, event, nil)
 		assert.NoError(t, err)
 		// Even with empty stages, agent filter is always present
 		assert.Len(t, pipeline, 1)
@@ -618,7 +808,7 @@ func TestGetPipelineStages(t *testing.T) {
 			},
 		}
 
-		pipeline, err := reconciler.getPipelineStages(rule, event)
+		pipeline, err := reconciler.getPipelineStages(rule, event, nil)
 		assert.NoError(t, err)
 		// Agent filter (1) + configured stages (2) = 3 total
 		assert.Len(t, pipeline, 3)
@@ -642,7 +832,7 @@ func TestGetPipelineStages(t *testing.T) {
 			},
 		}
 
-		pipeline, err := reconciler.getPipelineStages(rule, event)
+		pipeline, err := reconciler.getPipelineStages(rule, event, nil)
 		assert.NoError(t, err)
 		// Agent filter (1) + configured stages (1) = 2 total
 		assert.Len(t, pipeline, 2)
@@ -658,6 +848,23 @@ func TestGetPipelineStages(t *testing.T) {
 	})
 
 	_ = ctx // suppress unused warning if any
+}
+
+func TestNonRecoveryRuleExtendsOnlyMandatoryStage(t *testing.T) {
+	database := new(mockDatabaseClient)
+	database.On("Aggregate", mock.Anything, mock.MatchedBy(func(pipeline any) bool {
+		options, ok := pipeline.(client.PipelineOptions)
+		return ok && !options.EnableExtendedFilters && options.ExtendedFilterPrefix == 1
+	})).Return(&mockCursor{data: nil, pos: -1}, nil).Once()
+	reconciler := &Reconciler{databaseClient: database}
+	rule := config.HealthEventsAnalyzerRule{
+		Name: "legacy-rule", EvaluateRule: true, Stage: []string{`{"$count":"count"}`},
+	}
+
+	matched, err := reconciler.validateAllSequenceCriteria(context.Background(), rule, healthEvent_13)
+	assert.NoError(t, err)
+	assert.False(t, matched)
+	database.AssertExpectations(t)
 }
 
 // TestGetPipelineStages_ReturnTypeCompatibility ensures the pipeline return type
@@ -688,7 +895,7 @@ func TestGetPipelineStages_ReturnTypeCompatibility(t *testing.T) {
 		},
 	}
 
-	pipeline, err := reconciler.getPipelineStages(rule, event)
+	pipeline, err := reconciler.getPipelineStages(rule, event, nil)
 	assert.NoError(t, err)
 
 	// CRITICAL: Verify the return type is []map[string]interface{}

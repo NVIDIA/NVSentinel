@@ -41,6 +41,11 @@ type PipelineBuilder interface {
 	// Used by: health-events-analyzer to analyze EXECUTE_REMEDIATION and STORE_AND_ANALYSE source events.
 	BuildProcessableNonFatalUnhealthyInsertsPipeline() datastore.Pipeline
 
+	// BuildAnalyzerHealthEventInsertsPipeline watches processable healthy and
+	// unhealthy source events. Health-events-analyzer uses healthy events for
+	// configured derived-condition recovery mappings.
+	BuildAnalyzerHealthEventInsertsPipeline() datastore.Pipeline
+
 	// BuildQuarantinedAndDrainedNodesPipeline creates a pipeline for remediation-ready nodes
 	// Used by: fault-remediation to detect when nodes are ready for reboot
 	BuildQuarantinedAndDrainedNodesPipeline() datastore.Pipeline

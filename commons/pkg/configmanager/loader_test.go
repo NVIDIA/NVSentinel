@@ -17,6 +17,7 @@ package configmanager
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -91,5 +92,52 @@ enabled = true
 	err := LoadTOMLConfig(configPath, &cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid TOML syntax, got nil")
+	}
+}
+
+func TestLoadTOMLConfigStrictRejectsUnknownKeys(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	contents := "name = \"test\"\nunknown_option = true\n"
+	if err := os.WriteFile(configPath, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var cfg testTOMLConfig
+	err := LoadTOMLConfigStrict(configPath, &cfg)
+	if err == nil || !strings.Contains(err.Error(), "unknown_option") {
+		t.Fatalf("LoadTOMLConfigStrict() error = %v", err)
+	}
+}
+
+func TestLoadTOMLConfigStrictAcceptsKnownKeys(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte("name = \"test\"\nport = 8080\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var cfg testTOMLConfig
+	if err := LoadTOMLConfigStrict(configPath, &cfg); err != nil {
+		t.Fatalf("LoadTOMLConfigStrict() error = %v", err)
+	}
+	if cfg.Name != "test" || cfg.Port != 8080 {
+		t.Fatalf("LoadTOMLConfigStrict() config = %#v", cfg)
+	}
+}
+
+func TestLoadTOMLConfigStrictRejectsInvalidTOML(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte("name = [invalid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var cfg testTOMLConfig
+	if err := LoadTOMLConfigStrict(configPath, &cfg); err == nil {
+		t.Fatal("LoadTOMLConfigStrict() accepted invalid TOML")
 	}
 }

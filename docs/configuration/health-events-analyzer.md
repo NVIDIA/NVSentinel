@@ -154,11 +154,97 @@ stage = [
 ]
 ```
 
+Configuration is decoded strictly. Unknown TOML keys, malformed JSON stages,
+and stages containing zero or multiple aggregation operators fail startup instead
+of silently changing rule behavior.
+
+Upgrade note: custom keys that older releases ignored now prevent analyzer startup.
+Remove or correct unknown keys before deploying this version.
+
 The full default ruleset — including all aggregation pipeline stage definitions — is in the chart's `values.yaml` at `distros/kubernetes/nvsentinel/charts/health-events-analyzer/values.yaml`. Refer to that file when writing or reviewing custom rules.
+
+### Derived-condition recovery
+
+The design rationale, tradeoffs, and alternatives are documented in
+[ADR-053](../designs/053-derived-condition-recovery.md).
+
+Rules may opt into automatic recovery by mapping a verified healthy source event
+to the derived condition:
+
+```toml
+[[rules]]
+name = "RepeatedXID94OnSameGPU"
+description = "Repeated XID 94 events on one GPU"
+recommended_action = "CONTACT_SUPPORT"
+message = "Repeated XID 94"
+evaluate_rule = true
+stage = [
+  '{ "$match": { "healthevent.checkname": "SysLogsXIDError", "healthevent.ishealthy": false } }',
+  '{ "$count": "count" }',
+  '{ "$match": { "count": { "$gte": 3 } } }'
+]
+
+[rules.recovery]
+source_agent = "syslog-health-monitor"
+source_check_name = "SysLogsXIDError"
+scope = "entity"
+entity_types = ["GPU_UUID"]
+```
+
+`source_check_name` and `scope` are required. `source_agent` is optional; omit it
+only when more than one trusted producer may publish the recovery event.
+The analyzer rejects `source_agent = "health-events-analyzer"` because analyzer
+output is excluded from its input stream.
+`source_error_codes` is also optional. Set it only when the healthy source event
+carries a code that identifies the recovery; successful GPU-reset events do not.
+When configured, at least one listed code must be present. Entity scope requires one or more
+`entity_types`; node scope must not set `entity_types`. Each configured entity type must have
+exactly one value in an entity-scoped event.
+
+The analyzer publishes a derived healthy event only when the latest derived state
+for the same rule, node, and configured entity set is unhealthy. The event uses
+the rule name as `checkName`, sets `isHealthy=true`, `isFatal=false`, and
+`recommendedAction=NONE`, and leaves the final uncordon decision to
+fault-quarantine. Replayed recovery events therefore converge without repeatedly
+clearing an already-healthy condition. For entity-scoped rules, derived unhealthy
+and healthy events contain only the configured entity types, so both transitions
+address the same downstream fault keys. A matching healthy source with no entities
+is node-wide and clears each active entity-scoped condition for that rule and node;
+a source with only some configured entity types is rejected. If a matching rule
+input lacks a required entity type, the analyzer still publishes the derived fault
+but leaves that event on the existing manual-recovery path.
+
+For recovery-enabled rules, the analyzer normally does not advance a source event's
+resume token until its matching derived transition is visible in the event store;
+the deterministic stored-record exception is described below. If the
+platform connector accepts but drops the queued event before storage, the
+analyzer republishes it. This applies to both unhealthy and healthy transitions,
+so a recovery cannot overtake an earlier derived fault. A delayed healthy event
+never clears a derived fault with a newer generation time. If the transition is
+still not visible after two minutes, the processor exits without acknowledging the
+source. The watcher replays the source after restart instead of blocking the event
+stream indefinitely.
+
+Deterministic failures tied to a rule or stored record are logged, checkpointed,
+and skipped so a poison event cannot halt every later event. Transient datastore
+and publisher failures are not checkpointed and still stop processing for replay.
+
+The persisted source recovery event also becomes the rule's history boundary.
+Later evaluations exclude records stored or generated at or before that event,
+so pre-recovery history and delayed old records cannot immediately recreate the
+condition. Existing derived events do not require migration: state matching uses
+their rule, node, and entity fields.
+
+Recovery is disabled when `evaluate_rule=false`. Healthy events using
+`STORE_ONLY` are not analyzer inputs. Rules without a `[rules.recovery]` block
+retain manual-recovery behavior. The watcher is process-wide, not per-rule: once
+any enabled rule has a recovery mapping, every rule shares the widened watcher
+that also admits healthy events. Healthy events are still offered only to
+recovery mappings, so non-recovery rules never evaluate them.
 
 ### MultipleRemediations Rule
 
-The `MultipleRemediations` rule fires when five or more remediations have been performed on the same node within the preceding 7 days. Unlike other rules, **it applies a node condition that NVSentinel does not automatically clear**, because the rule does not emit healthy events.
+The `MultipleRemediations` rule fires when five or more remediations have been performed on the same node within the preceding 7 days. Its default configuration has no recovery mapping, so **it applies a node condition that NVSentinel does not automatically clear**.
 
 After the underlying hardware issue is resolved, remove the condition manually:
 

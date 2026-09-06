@@ -152,6 +152,8 @@ func (a *AdaptedMongoStore) GetCollectionClient() client.CollectionClient {
 // CreateChangeStreamWatcher creates a change stream watcher
 func (a *AdaptedMongoStore) CreateChangeStreamWatcher(ctx context.Context, clientName string,
 	pipeline any) (datastore.ChangeStreamWatcher, error) {
+	pipeline, _ = client.ResolvePipelineOptions(pipeline)
+
 	// Use our existing factory to create a change stream watcher
 	// Note: Token configuration is loaded from environment variables by the factory
 	// via config.TokenConfigFromEnv(clientName). To customize token collection,

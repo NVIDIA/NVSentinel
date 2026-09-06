@@ -16,13 +16,17 @@ package client
 
 import (
 	"context"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 // TestPostgreSQLClient_BasicOperations tests basic CRUD operations
@@ -146,6 +150,16 @@ func TestBuildJSONPath(t *testing.T) {
 			field:    "healthevent.status.message",
 			expected: "document->'healthevent'->'status'->>'message'",
 		},
+		{
+			name:     "createdAt legacy document field",
+			field:    "createdAt",
+			expected: "document->>'createdAt'",
+		},
+		{
+			name:     "updatedAt legacy document field",
+			field:    "updatedAt",
+			expected: "document->>'updatedAt'",
+		},
 	}
 
 	for _, tt := range tests {
@@ -155,6 +169,541 @@ func TestBuildJSONPath(t *testing.T) {
 				t.Errorf("expected %q, got %q", tt.expected, result)
 			}
 		})
+	}
+
+	if got := client.buildJSONPathWithOptions("createdAt", true); got != "created_at" {
+		t.Fatalf("extended createdAt path = %q", got)
+	}
+	if got := client.buildJSONPathWithOptions("updatedAt", true); got != "updated_at" {
+		t.Fatalf("extended updatedAt path = %q", got)
+	}
+}
+
+func TestRecoveryQueryLogicalFilters(t *testing.T) {
+	client := &PostgreSQLClient{}
+
+	for name, value := range map[string]any{
+		"generic slice": []any{map[string]any{"nodeName": "node-a"}},
+		"map slice":     []map[string]any{{"nodeName": "node-a"}},
+		"datastore array": datastore.Array{
+			map[string]any{"nodeName": "node-a"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			clause, args, err := client.buildLogicalWhereClause(opOr, value, 3, true)
+			if err != nil {
+				t.Fatalf("buildLogicalWhereClause() error = %v", err)
+			}
+			if clause != "(document->>'nodeName' = $3)" {
+				t.Fatalf("clause = %q", clause)
+			}
+			if !reflect.DeepEqual(args, []any{"node-a"}) {
+				t.Fatalf("args = %#v", args)
+			}
+		})
+	}
+
+	clause, args, err := client.buildLogicalWhereClause(opAnd, []any{
+		map[string]any{"nodeName": "node-a"},
+		map[string]any{"createdAt": map[string]any{opGT: time.Unix(10, 0)}},
+	}, 1, true)
+	if err != nil {
+		t.Fatalf("buildLogicalWhereClause() error = %v", err)
+	}
+	if clause != "(document->>'nodeName' = $1 AND created_at > $2)" || len(args) != 2 {
+		t.Fatalf("clause = %q, args = %#v", clause, args)
+	}
+}
+
+func TestRecoveryQueryLogicalFilterValidation(t *testing.T) {
+	client := &PostgreSQLClient{}
+
+	for name, value := range map[string]any{
+		"wrong type": "node-a",
+		"empty":      []any{},
+		"non-map":    []any{"node-a"},
+		"nested error": []any{
+			map[string]any{"createdAt": map[string]any{"$unsupported": 1}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := client.buildLogicalWhereClause(opOr, value, 1, true)
+			if err == nil {
+				t.Fatal("buildLogicalWhereClause() expected an error")
+			}
+		})
+	}
+
+	_, _, err := client.buildWhereClauseMapWithOptions(map[string]any{opOr: "node-a"}, 1, true)
+	if err == nil {
+		t.Fatal("root logical filter accepted an invalid value")
+	}
+	_, _, err = client.buildWhereClauseMapWithOptions(map[string]any{
+		"status.value": map[string]any{opExists: "true"},
+	}, 1, true)
+	if err == nil {
+		t.Fatal("field comparison accepted an invalid $exists value")
+	}
+}
+
+func TestRecoveryQueryComparisonOperators(t *testing.T) {
+	for operator, expected := range map[string]string{
+		opGTE: ">=", opGT: ">", opLTE: "<=", opLT: "<", opEQ: "=", opNE: "IS DISTINCT FROM",
+	} {
+		actual, ok := sqlComparisonOperator(operator)
+		if !ok || actual != expected {
+			t.Fatalf("sqlComparisonOperator(%q) = %q, %v", operator, actual, ok)
+		}
+	}
+	if _, ok := sqlComparisonOperator("$unsupported"); ok {
+		t.Fatal("unsupported operator accepted")
+	}
+
+	for _, test := range []struct {
+		value          any
+		wantExpression string
+		wantArgument   any
+	}{
+		{true, "CASE WHEN document->>'count' IS NULL THEN false WHEN document->>'count' IN ('true', 'false') THEN (document->>'count')::boolean END", true},
+		{int32(-2), "CASE WHEN document->>'count' ~ '^-?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$' THEN (document->>'count')::numeric END", "-2"},
+		{uint64(3), "CASE WHEN document->>'count' ~ '^-?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$' THEN (document->>'count')::numeric END", "3"},
+		{float32(1.5), "CASE WHEN document->>'count' ~ '^-?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$' THEN (document->>'count')::numeric END", "1.5"},
+	} {
+		expression, argument := typedComparisonOperand("document->>'count'", test.value)
+		if expression != test.wantExpression || argument != test.wantArgument {
+			t.Fatalf("typedComparisonOperand(%#v) = %q, %#v", test.value, expression, argument)
+		}
+	}
+	cutoff := time.Unix(20, 0)
+	expression, argument := typedComparisonOperand("updated_at", cutoff)
+	if expression != "updated_at" || argument != cutoff {
+		t.Fatalf("updated_at operand = %q, %#v", expression, argument)
+	}
+	expression, argument = typedComparisonOperand("document->>'value'", "raw")
+	if expression != "document->>'value'" || argument != "raw" {
+		t.Fatalf("string operand = %q, %#v", expression, argument)
+	}
+	if condition, args := buildScalarComparison("document->>'value'", "=", nil, 1, true); condition != "document->>'value' IS NULL" || len(args) != 0 {
+		t.Fatalf("nil equality = %q, %#v", condition, args)
+	}
+	if condition, args := buildScalarComparison("document->>'value'", "!=", nil, 1, true); condition != "document->>'value' IS NOT NULL" || len(args) != 0 {
+		t.Fatalf("nil inequality = %q, %#v", condition, args)
+	}
+	condition, args := buildScalarComparison("document->>'value'", "IS DISTINCT FROM", "analyzer", 1, true)
+	assert.Equal(t, "document->>'value' IS DISTINCT FROM $1", condition)
+	assert.Equal(t, []any{"analyzer"}, args)
+
+	condition, args = buildScalarComparison("document->>'value'", "IS DISTINCT FROM", false, 1, true)
+	assert.Equal(t, "CASE WHEN document->>'value' IN ('true', 'false') THEN (document->>'value')::boolean END IS DISTINCT FROM $1", condition)
+	assert.Equal(t, []any{false}, args)
+}
+
+func TestRecoveryQueryExistsOperator(t *testing.T) {
+	path := "document->>'value'"
+	for value, expected := range map[bool]string{true: path + " IS NOT NULL", false: path + " IS NULL"} {
+		actual, err := buildExistsCondition(path, value)
+		if err != nil || actual != expected {
+			t.Fatalf("buildExistsCondition(%v) = %q, %v", value, actual, err)
+		}
+	}
+	if _, err := buildExistsCondition(path, "true"); err == nil {
+		t.Fatal("non-boolean $exists value accepted")
+	}
+
+	client := &PostgreSQLClient{}
+	clause, args, err := client.buildWhereClauseWithOptions(map[string]any{
+		"healthevent.processingstrategy": map[string]any{opExists: false},
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clause != "document->'healthevent'->'processingStrategy' IS NULL" || len(args) != 0 {
+		t.Fatalf("$exists clause = %q, args = %#v", clause, args)
+	}
+}
+
+func TestExtendedQueryTranslationRequiresOptIn(t *testing.T) {
+	client := &PostgreSQLClient{}
+	filter := map[string]any{opOr: []any{
+		map[string]any{"healthevent.processingstrategy": int32(1)},
+		map[string]any{"healthevent.processingstrategy": map[string]any{opExists: false}},
+	}}
+
+	legacyClause, _, err := client.buildWhereClause(filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(legacyClause, " OR ") || strings.Contains(legacyClause, "processingStrategy") {
+		t.Fatalf("unscoped filter enabled extended translation: %s", legacyClause)
+	}
+
+	extendedClause, _, err := client.buildWhereClauseWithOptions(filter, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(extendedClause, " OR ") || !strings.Contains(extendedClause, "processingStrategy") {
+		t.Fatalf("scoped filter did not enable extended translation: %s", extendedClause)
+	}
+
+	legacyNilClause, legacyNilArgs, err := client.buildWhereClause(map[string]any{"value": nil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacyNilClause != "document->>'value' = $1" || len(legacyNilArgs) != 1 || legacyNilArgs[0] != nil {
+		t.Fatalf("unscoped nil comparison changed semantics: %s, %#v", legacyNilClause, legacyNilArgs)
+	}
+}
+
+func TestAggregationExtendedFilterPrefix(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	stages := []map[string]any{
+		{"$match": map[string]any{opOr: []any{
+			map[string]any{"healthevent.processingstrategy": int32(0)},
+			map[string]any{"healthevent.processingstrategy": int32(1)},
+			map[string]any{"healthevent.processingstrategy": map[string]any{opExists: false}},
+		}}},
+		{"$match": map[string]any{"createdAt": "legacy-custom-rule"}},
+	}
+
+	rawPipeline, options := ResolvePipelineStageOptions(WithExtendedFilterPrefix(stages, 1))
+	query, args, err := client.buildAggregationQuery(rawPipeline.([]map[string]any), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "processingStrategy") || !strings.Contains(query, " OR ") {
+		t.Fatalf("mandatory stage did not use extended translation: %s", query)
+	}
+	if !strings.Contains(query, "document->>'createdAt' = $3") {
+		t.Fatalf("configured stage did not retain legacy translation: %s", query)
+	}
+	if len(args) != 3 {
+		t.Fatalf("args = %#v, want three legacy-compatible parameters", args)
+	}
+}
+
+func buildResolvedAggregationQueryForTest(
+	t *testing.T,
+	client *PostgreSQLClient,
+	pipeline any,
+) (string, []any, error) {
+	t.Helper()
+
+	rawPipeline, options := ResolvePipelineStageOptions(pipeline)
+	stages, ok := rawPipeline.([]map[string]any)
+	if !ok {
+		t.Fatalf("resolved pipeline has type %T, want []map[string]any", rawPipeline)
+	}
+
+	return client.buildAggregationQuery(stages, options)
+}
+
+func TestAggregationExtendedFilterPrefixRejectsLaterLogicalOperators(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	stages := []map[string]any{
+		{"$match": map[string]any{"healthevent.nodename": "node-a"}},
+		{"$match": map[string]any{opOr: []any{
+			map[string]any{"healthevent.checkname": "legacy-custom-rule"},
+		}}},
+	}
+
+	_, _, err := buildResolvedAggregationQueryForTest(t, client, WithExtendedFilterPrefix(stages, 1))
+	if err == nil {
+		t.Fatal("extended-only configured operator accepted outside the enabled prefix")
+	}
+	if !datastore.IsDeterministicError(err) {
+		t.Fatalf("configured operator classified as transient: %v", err)
+	}
+}
+
+func TestAnalyzerAggregationRejectsUnsupportedMatchShapes(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	tests := map[string]any{
+		"extended nor": WithExtendedFilters([]map[string]any{
+			{"$match": map[string]any{"$nor": []any{
+				map[string]any{"healthevent.checkname": "custom-rule"},
+			}}},
+		}),
+		"nested nor": WithExtendedFilters([]map[string]any{
+			{"$match": map[string]any{opOr: []any{
+				map[string]any{"$nor": []any{
+					map[string]any{"healthevent.checkname": "custom-rule"},
+				}},
+			}}},
+		}),
+		"later nor": WithExtendedFilterPrefix([]map[string]any{
+			{"$match": map[string]any{"healthevent.nodename": "node-a"}},
+			{"$match": map[string]any{"$nor": []any{
+				map[string]any{"healthevent.checkname": "custom-rule"},
+			}}},
+		}, 1),
+		"later array equality": WithExtendedFilterPrefix([]map[string]any{
+			{"$match": map[string]any{"healthevent.nodename": "node-a"}},
+			{"$match": map[string]any{"healthevent.errorcode": []any{"94"}}},
+		}, 1),
+	}
+
+	for name, pipeline := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := buildResolvedAggregationQueryForTest(t, client, pipeline)
+			if err == nil {
+				t.Fatal("unsupported PostgreSQL $match shape accepted")
+			}
+			if !datastore.IsDeterministicError(err) {
+				t.Fatalf("unsupported shape classified as transient: %v", err)
+			}
+		})
+	}
+}
+
+func TestPostCountMatchCombinesAllOperators(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	query, args, err := client.buildAggregationQuery([]map[string]any{
+		{"$count": "count"},
+		{"$match": map[string]any{"count": map[string]any{"$gte": 2, "$lte": 5}}},
+	}, PipelineOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "(document->>'count')::bigint >= $1 AND (document->>'count')::bigint <= $2") {
+		t.Fatalf("post-count bounds were not combined: %s", query)
+	}
+	if !reflect.DeepEqual(args, []any{2, 5}) {
+		t.Fatalf("args = %#v, want [2 5]", args)
+	}
+}
+
+func TestPostCountMatch_MultipleFields_OrdersFieldsDeterministically(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	wantQuery := "(document->>'critical')::bigint >= $1 AND (document->>'total')::bigint <= $2"
+	wantArgs := []any{2, 5}
+
+	for range 20 {
+		query, args, err := client.buildAggregationQuery([]map[string]any{
+			{"$count": "count"},
+			{"$match": map[string]any{
+				"total":    map[string]any{"$lte": 5},
+				"critical": map[string]any{"$gte": 2},
+			}},
+		}, PipelineOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(query, wantQuery) {
+			t.Fatalf("post-count fields are not ordered: %s", query)
+		}
+		if !reflect.DeepEqual(args, wantArgs) {
+			t.Fatalf("args = %#v, want %#v", args, wantArgs)
+		}
+	}
+}
+
+func TestPostCountMatchRejectsUnsupportedShapes(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	tests := map[string]map[string]any{
+		"logical operator": {
+			opOr: []any{map[string]any{"count": map[string]any{opGTE: 5}}},
+		},
+		"expression": {
+			"$expr": map[string]any{opGTE: []any{"$count", 5}},
+		},
+		"array equality": {
+			"count": []any{5, 6},
+		},
+		"array comparison": {
+			"count": map[string]any{opGTE: []any{5}},
+		},
+		"unsupported in": {
+			"count": map[string]any{opIn: []any{5, 6}},
+		},
+		"invalid exists": {
+			"count": map[string]any{opExists: "yes"},
+		},
+	}
+
+	for name, match := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := client.buildAggregationQuery([]map[string]any{
+				{"$count": "count"},
+				{"$match": match},
+			}, PipelineOptions{})
+			if err == nil {
+				t.Fatal("unsupported post-count $match accepted")
+			}
+			if !datastore.IsDeterministicError(err) {
+				t.Fatalf("post-count validation error classified as transient: %v", err)
+			}
+		})
+	}
+}
+
+func TestPostCountMatchNeverDropsNonEmptyFilter(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	query, _, err := client.buildAggregationQuery([]map[string]any{
+		{"$count": "count"},
+		{"$match": map[string]any{"count": map[string]any{opGTE: 5}}},
+	}, PipelineOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "count_result WHERE") {
+		t.Fatalf("post-count filter produced an unfiltered count query: %s", query)
+	}
+}
+
+func TestExprBuilderClassifiesMalformedShapesDeterministically(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	tests := map[string]any{
+		"bad filter condition": map[string]any{
+			opEQ: []any{
+				map[string]any{"$filter": map[string]any{"input": "$items", "cond": "invalid"}},
+				1,
+			},
+		},
+		"bad map expression": map[string]any{
+			opEQ: []any{
+				map[string]any{"$map": map[string]any{"input": "$items", "in": []any{"invalid"}}},
+				1,
+			},
+		},
+		"multiple operators": map[string]any{
+			opGT: []any{"$count", 1},
+			opLT: []any{"$count", 9},
+		},
+	}
+
+	for name, expr := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := client.buildExprCondition(expr)
+			if err == nil {
+				t.Fatal("malformed $expr accepted")
+			}
+			if !datastore.IsDeterministicError(err) {
+				t.Fatalf("malformed $expr classified as transient: %v", err)
+			}
+		})
+	}
+}
+
+func TestUnsupportedAggregationStageIsDeterministic(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	_, _, err := client.buildAggregationQuery([]map[string]any{
+		{"$project": map[string]any{"healthevent": 1}},
+	}, PipelineOptions{})
+	if err == nil {
+		t.Fatal("unsupported PostgreSQL aggregation stage accepted")
+	}
+	if !datastore.IsDeterministicError(err) {
+		t.Fatalf("unsupported stage classified as transient: %v", err)
+	}
+}
+
+func TestExtendedEmptyMatchUsesTrueClause(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	query, args, err := client.buildAggregationQuery([]map[string]any{
+		{"$match": map[string]any{}},
+	}, PipelineOptions{EnableExtendedFilters: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "WHERE TRUE") || len(args) != 0 {
+		t.Fatalf("query = %s, args = %#v", query, args)
+	}
+}
+
+func TestAggregationRecoveryBoundaryUsesCreatedAtColumn(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+	cutoff := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+
+	query, args, err := client.buildAggregationQuery([]map[string]any{
+		{"$match": map[string]any{"createdAt": map[string]any{"$gt": cutoff}}},
+	}, PipelineOptions{EnableExtendedFilters: true})
+	if err != nil {
+		t.Fatalf("buildAggregationQuery() error = %v", err)
+	}
+
+	if !strings.Contains(query, "created_at > $1") {
+		t.Fatalf("query does not use typed created_at boundary: %s", query)
+	}
+
+	if len(args) != 1 || !args[0].(time.Time).Equal(cutoff) {
+		t.Fatalf("args = %v, want [%s]", args, cutoff)
+	}
+}
+
+func TestAggregationRecoveryBoundarySupportsNanosecondEventTime(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+
+	query, _, err := client.buildAggregationQuery([]map[string]any{
+		{"$match": map[string]any{
+			"$expr": map[string]any{
+				"$or": []any{
+					map[string]any{
+						"$gt": []any{"$healthevent.generatedtimestamp.seconds", int64(100)},
+					},
+					map[string]any{
+						"$and": []any{
+							map[string]any{
+								"$eq": []any{"$healthevent.generatedtimestamp.seconds", int64(100)},
+							},
+							map[string]any{
+								"$gt": []any{"$healthevent.generatedtimestamp.nanos", int64(250)},
+							},
+						},
+					},
+				},
+			},
+		}},
+	}, PipelineOptions{EnableExtendedFilters: true})
+	if err != nil {
+		t.Fatalf("buildAggregationQuery() error = %v", err)
+	}
+
+	for _, expected := range []string{"generatedTimestamp'->>'seconds')::bigint > 100",
+		"generatedTimestamp'->>'nanos')::bigint > 250", " OR ", " AND "} {
+		if !strings.Contains(query, expected) {
+			t.Fatalf("query does not contain %q: %s", expected, query)
+		}
+	}
+}
+
+func TestAggregationSupportsAnalyzerMandatoryLogicalFilter(t *testing.T) {
+	client := &PostgreSQLClient{table: "health_events"}
+
+	query, args, err := client.buildAggregationQuery([]map[string]any{
+		{"$match": map[string]any{
+			"healthevent.agent":     map[string]any{"$ne": "health-events-analyzer"},
+			"healthevent.ishealthy": false,
+			"$or": []any{
+				map[string]any{"healthevent.processingstrategy": int32(1)},
+				map[string]any{"healthevent.processingstrategy": int32(2)},
+				map[string]any{
+					"healthevent.processingstrategy": map[string]any{"$exists": false},
+				},
+			},
+		}},
+	}, PipelineOptions{EnableExtendedFilters: true})
+	if err != nil {
+		t.Fatalf("buildAggregationQuery() error = %v", err)
+	}
+
+	for _, expected := range []string{" OR ", "IS NULL", "document->'healthevent'->>'processingStrategy'"} {
+		if !strings.Contains(query, expected) {
+			t.Fatalf("query does not contain %q: %s", expected, query)
+		}
+	}
+	if !strings.Contains(query, "document->'healthevent'->>'agent' IS DISTINCT FROM") {
+		t.Fatalf("agent exclusion is not null-safe: %s", query)
+	}
+
+	for _, arg := range args {
+		if _, isMap := arg.(map[string]any); isMap {
+			t.Fatalf("SQL argument must not contain a logical-filter map: %#v", args)
+		}
+	}
+
+	wantArgs := []any{"1", "2", "health-events-analyzer", false}
+	if !reflect.DeepEqual(args, wantArgs) {
+		t.Fatalf("args = %#v, want %#v", args, wantArgs)
 	}
 }
 
@@ -348,7 +897,7 @@ func TestAggregationPipelineConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, err := client.buildAggregationQuery(tt.stages)
+			_, _, err := client.buildAggregationQuery(tt.stages, PipelineOptions{})
 
 			if tt.expectError {
 				if err == nil {
@@ -455,7 +1004,7 @@ func TestSetWindowFieldsQueryGeneration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			query, _, err := client.buildAggregationQuery(tt.stages)
+			query, _, err := client.buildAggregationQuery(tt.stages, PipelineOptions{})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -860,7 +1409,7 @@ func TestAddFieldsWithNewOperators(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			query, _, err := client.buildAggregationQuery(tt.stages)
+			query, _, err := client.buildAggregationQuery(tt.stages, PipelineOptions{})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -896,7 +1445,7 @@ func TestCountWithPostMatchFilter(t *testing.T) {
 		{"$match": map[string]any{"count": map[string]any{"$gte": 5}}},
 	}
 
-	query, args, err := client.buildAggregationQuery(stages)
+	query, args, err := client.buildAggregationQuery(stages, PipelineOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -953,7 +1502,7 @@ func TestCountWithPostMatchFilter_ZeroCount(t *testing.T) {
 		{"$match": map[string]any{"count": map[string]any{"$gte": 5}}},
 	}
 
-	query, args, err := client.buildAggregationQuery(stages)
+	query, args, err := client.buildAggregationQuery(stages, PipelineOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

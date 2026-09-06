@@ -299,7 +299,7 @@ func BuildQuarantineUpdatePipeline() any {
 	return mongo.Pipeline{
 		bson.D{{Key: opMatch, Value: bson.D{
 			{Key: fieldOperationType, Value: "update"},
-			{Key: "$or", Value: bson.A{
+			{Key: opOr, Value: bson.A{
 				bson.D{{Key: fieldUpdatedFields,
 					Value: bson.D{{Key: nodeQuarantinedStatusField, Value: model.Quarantined}}}},
 				bson.D{{Key: fieldUpdatedFields,
@@ -834,6 +834,8 @@ func (c *MongoDBClient) CountDocuments(ctx context.Context, filter any, opts *Co
 
 // Aggregate performs an aggregation query
 func (c *MongoDBClient) Aggregate(ctx context.Context, pipeline any) (Cursor, error) {
+	pipeline, _ = ResolvePipelineOptions(pipeline)
+
 	// Convert datastore.Pipeline to mongo.Pipeline if needed
 	var mongoPipeline any
 
@@ -885,6 +887,8 @@ func (c *MongoDBClient) Ping(ctx context.Context) error {
 // NewChangeStreamWatcher creates a new change stream watcher using the existing implementation
 func (c *MongoDBClient) NewChangeStreamWatcher(ctx context.Context, tokenConfig TokenConfig,
 	pipeline any) (ChangeStreamWatcher, error) {
+	pipeline, _ = ResolvePipelineOptions(pipeline)
+
 	// Convert to the existing configuration format
 	mongoConfig := mongoWatcher.MongoDBConfig{
 		URI:        c.config.GetConnectionURI(),

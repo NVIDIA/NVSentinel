@@ -17,6 +17,7 @@ package postgresql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -38,6 +39,8 @@ type PostgreSQLDataStore struct {
 	connString            string // Connection string for creating LISTEN connections
 	maintenanceEventStore datastore.MaintenanceEventStore
 	healthEventStore      datastore.HealthEventStore
+	runtimeUpgradeCancel  context.CancelFunc
+	runtimeUpgradeDone    <-chan struct{}
 }
 
 // NewPostgreSQLStore creates a new PostgreSQL datastore
@@ -98,6 +101,7 @@ func NewPostgreSQLStore(ctx context.Context, config datastore.DataStoreConfig) (
 	}
 	store.maintenanceEventStore = NewPostgreSQLMaintenanceEventStore(db)
 	store.healthEventStore = NewPostgreSQLHealthEventStore(db)
+	store.startRuntimeUpgrades()
 
 	slog.Info("Successfully connected to PostgreSQL database", "host", config.Connection.Host)
 
@@ -121,6 +125,18 @@ func (p *PostgreSQLDataStore) Ping(ctx context.Context) error {
 
 // Close closes the database connection
 func (p *PostgreSQLDataStore) Close(ctx context.Context) error {
+	if p.runtimeUpgradeCancel != nil {
+		p.runtimeUpgradeCancel()
+	}
+
+	if p.runtimeUpgradeDone != nil {
+		select {
+		case <-p.runtimeUpgradeDone:
+		case <-ctx.Done():
+			return errors.Join(ctx.Err(), p.db.Close())
+		}
+	}
+
 	return p.db.Close()
 }
 
@@ -154,6 +170,7 @@ func (p *PostgreSQLDataStore) NewChangeStreamWatcher(
 	}
 
 	pipelineFilter := buildPipelineFilter(pipeline, tableName, clientName)
+	pipeline, _ = client.ResolvePipelineOptions(pipeline)
 
 	// Convert PascalCase table name to snake_case for PostgreSQL compatibility
 	snakeCaseTableName := toSnakeCase(tableName)
@@ -330,6 +347,88 @@ var recoveryIndexStatements = []string{
 		`document->'healtheventstatus'->>'nodeQuarantined') = 'NotStarted') AND (` +
 		`document->'healtheventstatus'->>'faultquarantinerecovery' IS NULL OR ` +
 		`document->'healtheventstatus'->>'faultquarantinerecovery' = '')`,
+}
+
+type runtimeUpgradeIndex struct {
+	name            string
+	createStatement string
+	dropStatement   string
+}
+
+// runtimeUpgradeIndexes are checked on every datastore startup so existing
+// databases receive indexes added after initial Helm provisioning.
+var runtimeUpgradeIndexes = []runtimeUpgradeIndex{
+	{
+		name: "idx_health_events_analyzer_lookup",
+		createStatement: `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_health_events_analyzer_lookup ` +
+			`ON health_events (node_name, event_type, created_at DESC, ` +
+			`(document->'healthevent'->>'agent'))`,
+		dropStatement: `DROP INDEX CONCURRENTLY IF EXISTS idx_health_events_analyzer_lookup`,
+	},
+}
+
+const runtimeUpgradeIndexValidityQuery = `SELECT idx.indisvalid
+	FROM pg_catalog.pg_index AS idx
+	WHERE idx.indexrelid = pg_catalog.to_regclass($1)`
+
+// startRuntimeUpgrades applies performance migrations outside the datastore
+// startup critical path. Close cancels and joins the task before closing the
+// connection pool; an interrupted concurrent index build is retried on the
+// next startup by runRuntimeUpgrades.
+func (p *PostgreSQLDataStore) startRuntimeUpgrades() {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	p.runtimeUpgradeCancel = cancel
+	p.runtimeUpgradeDone = done
+
+	go func() {
+		defer close(done)
+
+		runRuntimeUpgrades(ctx, p.db)
+	}()
+}
+
+func warnRuntimeUpgradeError(ctx context.Context, message, index string, err error) {
+	if ctx.Err() != nil {
+		return
+	}
+
+	slog.WarnContext(ctx, message, "index", index, "error", err)
+}
+
+// runRuntimeUpgrades executes each statement directly through the connection
+// pool, outside an explicit transaction block. Do not wrap this function in
+// BeginTx: PostgreSQL rejects CREATE INDEX CONCURRENTLY inside a transaction
+// block.
+func runRuntimeUpgrades(ctx context.Context, db *sql.DB) {
+	for _, index := range runtimeUpgradeIndexes {
+		var valid bool
+
+		err := db.QueryRowContext(ctx, runtimeUpgradeIndexValidityQuery, index.name).Scan(&valid)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			warnRuntimeUpgradeError(ctx, "Failed to inspect PostgreSQL runtime upgrade index", index.name, err)
+
+			continue
+		}
+
+		if err == nil && valid {
+			continue
+		}
+
+		if err == nil {
+			if _, err := db.ExecContext(ctx, index.dropStatement); err != nil {
+				warnRuntimeUpgradeError(ctx,
+					"Failed to remove invalid PostgreSQL runtime upgrade index", index.name, err)
+
+				continue
+			}
+		}
+
+		if _, err := db.ExecContext(ctx, index.createStatement); err != nil {
+			warnRuntimeUpgradeError(ctx, "Failed to apply PostgreSQL runtime upgrade", index.name, err)
+		}
+	}
 }
 
 func createTables(ctx context.Context, db *sql.DB) error {

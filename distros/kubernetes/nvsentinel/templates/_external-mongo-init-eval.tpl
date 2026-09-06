@@ -73,6 +73,12 @@ db.$MONGODB_COLLECTION_NAME.createIndex({
   'healthevent.entitiesimpacted.entityvalue': 1,
   'healthevent.generatedtimestamp.seconds': 1
 });
+db.$MONGODB_COLLECTION_NAME.createIndex({
+  'healthevent.checkname': 1,
+  'healthevent.nodename': 1,
+  'createdAt': -1,
+  'healthevent.agent': 1
+});
 
 {{- if eq $authMechanism "x509" }}
 // X.509 user creation (only for x509 auth mechanism)

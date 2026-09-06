@@ -16,9 +16,12 @@ package postgresql
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
@@ -190,6 +193,37 @@ func TestPostgreSQLDataStore_Close(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestPostgreSQLDataStore_RuntimeUpgrades_RunInBackgroundAndStopOnClose(t *testing.T) {
+	originalIndexes := runtimeUpgradeIndexes
+	runtimeUpgradeIndexes = []runtimeUpgradeIndex{{
+		name:            "delayed_index",
+		createStatement: "delayed concurrent index",
+	}}
+	t.Cleanup(func() { runtimeUpgradeIndexes = originalIndexes })
+
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+
+	mock.ExpectQuery(regexp.QuoteMeta(runtimeUpgradeIndexValidityQuery)).
+		WithArgs("delayed_index").
+		WillDelayFor(5 * time.Second).
+		WillReturnError(sql.ErrNoRows)
+
+	ds := &PostgreSQLDataStore{db: db}
+	startedAt := time.Now()
+	ds.startRuntimeUpgrades()
+	require.Less(t, time.Since(startedAt), time.Second)
+
+	require.Eventually(t, func() bool {
+		return mock.ExpectationsWereMet() == nil
+	}, time.Second, 10*time.Millisecond)
+	mock.ExpectClose()
+	closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, ds.Close(closeCtx))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestPostgreSQLDataStore_Ping(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
 	require.NoError(t, err)
@@ -252,6 +286,102 @@ func TestRecoveryIndexesIncludePartialPendingEventCursor(t *testing.T) {
 	assert.Contains(t, pendingIndex, "= 'NotStarted'")
 	assert.Contains(t, pendingIndex,
 		"document->'healtheventstatus'->>'faultquarantinerecovery' IS NULL")
+}
+
+func TestRuntimeUpgradeIndexes_ExistingDatabase_IncludesAnalyzerLookup(t *testing.T) {
+	var analyzerIndex runtimeUpgradeIndex
+	for _, index := range runtimeUpgradeIndexes {
+		if index.name == "idx_health_events_analyzer_lookup" {
+			analyzerIndex = index
+
+			break
+		}
+	}
+
+	require.NotEmpty(t, analyzerIndex.name)
+	assert.Contains(t, analyzerIndex.createStatement, "CREATE INDEX CONCURRENTLY IF NOT EXISTS")
+	assert.Contains(t, analyzerIndex.createStatement, "ON health_events (node_name, event_type, created_at DESC")
+	assert.Contains(t, analyzerIndex.createStatement, "document->'healthevent'->>'agent'")
+	assert.Equal(t, "DROP INDEX CONCURRENTLY IF EXISTS idx_health_events_analyzer_lookup", analyzerIndex.dropStatement)
+}
+
+func TestRunRuntimeUpgrades_ConcurrentIndex_ExecutesOutsideTransaction(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	for _, index := range runtimeUpgradeIndexes {
+		mock.ExpectQuery(regexp.QuoteMeta(runtimeUpgradeIndexValidityQuery)).
+			WithArgs(index.name).
+			WillReturnError(sql.ErrNoRows)
+		mock.ExpectExec(regexp.QuoteMeta(index.createStatement)).WillReturnResult(sqlmock.NewResult(0, 0))
+	}
+
+	runRuntimeUpgrades(context.Background(), db)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRunRuntimeUpgrades_OneStatementFails_ContinuesRemainingStatements(t *testing.T) {
+	originalIndexes := runtimeUpgradeIndexes
+	runtimeUpgradeIndexes = []runtimeUpgradeIndex{
+		{name: "first_index", createStatement: "first concurrent index"},
+		{name: "second_index", createStatement: "second concurrent index"},
+	}
+	t.Cleanup(func() { runtimeUpgradeIndexes = originalIndexes })
+
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	for _, index := range runtimeUpgradeIndexes {
+		mock.ExpectQuery(regexp.QuoteMeta(runtimeUpgradeIndexValidityQuery)).
+			WithArgs(index.name).
+			WillReturnError(sql.ErrNoRows)
+		if index.name == "first_index" {
+			mock.ExpectExec(regexp.QuoteMeta(index.createStatement)).WillReturnError(assert.AnError)
+		} else {
+			mock.ExpectExec(regexp.QuoteMeta(index.createStatement)).WillReturnResult(sqlmock.NewResult(0, 0))
+		}
+	}
+
+	runRuntimeUpgrades(context.Background(), db)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRunRuntimeUpgrades_InvalidIndex_RecreatesConcurrently(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	index := runtimeUpgradeIndexes[0]
+	mock.ExpectQuery(regexp.QuoteMeta(runtimeUpgradeIndexValidityQuery)).
+		WithArgs(index.name).
+		WillReturnRows(sqlmock.NewRows([]string{"indisvalid"}).AddRow(false))
+	mock.ExpectExec(regexp.QuoteMeta(index.dropStatement)).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta(index.createStatement)).WillReturnResult(sqlmock.NewResult(0, 0))
+
+	runRuntimeUpgrades(context.Background(), db)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRunRuntimeUpgrades_ValidIndex_SkipsMigration(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	index := runtimeUpgradeIndexes[0]
+	mock.ExpectQuery(regexp.QuoteMeta(runtimeUpgradeIndexValidityQuery)).
+		WithArgs(index.name).
+		WillReturnRows(sqlmock.NewRows([]string{"indisvalid"}).AddRow(true))
+	// sqlmock has no negative expectations. Queue both destructive statements
+	// and require them to remain unmet so removing the valid-index guard fails
+	// this test instead of being hidden by the helper's best-effort error path.
+	mock.ExpectExec(regexp.QuoteMeta(index.dropStatement)).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta(index.createStatement)).WillReturnResult(sqlmock.NewResult(0, 0))
+
+	runRuntimeUpgrades(context.Background(), db)
+	expectationsErr := mock.ExpectationsWereMet()
+	require.ErrorContains(t, expectationsErr, "ExpectedExec")
 }
 
 func TestPostgreSQLDataStore_Provider(t *testing.T) {

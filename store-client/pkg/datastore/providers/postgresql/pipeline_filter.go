@@ -19,13 +19,15 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 // PipelineFilter filters events based on MongoDB-style aggregation pipeline
 // This allows PostgreSQL to emulate MongoDB's pipeline filtering at the application level
 type PipelineFilter struct {
-	stages []filterStage
+	stages          []filterStage
+	extendedFilters bool
 }
 
 // filterStage represents a single stage in the pipeline (currently only $match is supported)
@@ -35,12 +37,15 @@ type filterStage struct {
 
 // NewPipelineFilter creates a new pipeline filter from a MongoDB-style pipeline
 func NewPipelineFilter(pipeline any) (*PipelineFilter, error) {
+	pipeline, extendedFilters := client.ResolvePipelineOptions(pipeline)
+
 	if pipeline == nil {
 		return nil, nil
 	}
 
 	filter := &PipelineFilter{
-		stages: make([]filterStage, 0),
+		stages:          make([]filterStage, 0),
+		extendedFilters: extendedFilters,
 	}
 
 	// Handle different pipeline types
@@ -173,12 +178,43 @@ func (f *PipelineFilter) matchesCondition(event map[string]any, key string, expe
 		return result
 	default:
 		// Handle field path matching (e.g., "operationType", "fullDocument.healtheventstatus.faultremediated.value")
-		actualValue := f.getFieldValue(event, key)
+		if !f.extendedFilters {
+			return f.matchesValue(f.getFieldValue(event, key), expectedValue)
+		}
 
-		result := f.matchesValue(actualValue, expectedValue)
+		actualValue, present := f.getFieldValueWithPresence(event, key)
 
-		return result
+		return f.matchesFieldCondition(actualValue, present, expectedValue)
 	}
+}
+
+func (f *PipelineFilter) matchesFieldCondition(actualValue any, present bool, expectedValue any) bool {
+	expectedMap, ok := filterMap(expectedValue)
+	if !ok {
+		return f.matchesValue(actualValue, expectedValue)
+	}
+
+	expectedExists, hasExists := expectedMap[opExists]
+	if !hasExists {
+		return f.matchesValue(actualValue, expectedValue)
+	}
+
+	if !matchesExists(present, expectedExists) {
+		return false
+	}
+
+	if len(expectedMap) == 1 {
+		return true
+	}
+
+	remaining := make(map[string]any, len(expectedMap)-1)
+	for operator, value := range expectedMap {
+		if operator != opExists {
+			remaining[operator] = value
+		}
+	}
+
+	return f.matchesValue(actualValue, remaining)
 }
 
 // matchesOr handles $or conditions
@@ -308,6 +344,35 @@ func (f *PipelineFilter) matchesMapValue(actualValue any, expectedMap map[string
 
 // matchesOperators processes MongoDB operator expressions
 func (f *PipelineFilter) matchesOperators(actualValue any, operators map[string]any) bool {
+	if !f.extendedFilters {
+		return f.matchesLegacyOperators(actualValue, operators)
+	}
+
+	for op, opValue := range operators {
+		var matches bool
+
+		switch op {
+		case opIn:
+			matches = f.matchesIn(actualValue, opValue)
+		case opNe:
+			matches = !f.matchesEqual(actualValue, opValue)
+		case opEq:
+			matches = f.matchesEqual(actualValue, opValue)
+		case opExists:
+			matches = matchesExists(actualValue != nil, opValue)
+		default:
+			matches = f.matchesOrderedOperator(actualValue, op, opValue)
+		}
+
+		if !matches {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (f *PipelineFilter) matchesLegacyOperators(actualValue any, operators map[string]any) bool {
 	for op, opValue := range operators {
 		switch op {
 		case opIn:
@@ -326,11 +391,58 @@ func (f *PipelineFilter) matchesOperators(actualValue any, operators map[string]
 			return f.matchesLessThanOrEqual(actualValue, opValue)
 		default:
 			slog.Warn("Unsupported operator", "operator", op)
+
 			return false
 		}
 	}
 
 	return true
+}
+
+func filterMap(value any) (map[string]any, bool) {
+	if mapped, ok := value.(map[string]any); ok {
+		return mapped, true
+	}
+
+	document, ok := value.(datastore.Document)
+	if !ok {
+		return nil, false
+	}
+
+	mapped := make(map[string]any, len(document))
+	for _, element := range document {
+		mapped[element.Key] = element.Value
+	}
+
+	return mapped, true
+}
+
+func matchesExists(present bool, expectedValue any) bool {
+	expected, ok := expectedValue.(bool)
+	if !ok {
+		slog.Warn("$exists operand is not boolean", "type", fmt.Sprintf("%T", expectedValue))
+
+		return false
+	}
+
+	return present == expected
+}
+
+func (f *PipelineFilter) matchesOrderedOperator(actualValue any, operator string, expectedValue any) bool {
+	switch operator {
+	case opGt:
+		return f.matchesGreaterThan(actualValue, expectedValue)
+	case opGte:
+		return f.matchesGreaterThanOrEqual(actualValue, expectedValue)
+	case opLt:
+		return f.matchesLessThan(actualValue, expectedValue)
+	case opLte:
+		return f.matchesLessThanOrEqual(actualValue, expectedValue)
+	default:
+		slog.Warn("Unsupported operator", "operator", operator)
+
+		return false
+	}
 }
 
 // matchesNestedFields checks if actualValue (as a map) contains expected fields
@@ -521,6 +633,12 @@ func (f *PipelineFilter) matchesLessThanOrEqual(actual, expected any) bool {
 // e.g., "operationType" or "fullDocument.healthevent.isfatal"
 // Performs case-insensitive key matching to handle MongoDB (lowercase) vs PostgreSQL (camelCase) differences
 func (f *PipelineFilter) getFieldValue(event map[string]any, fieldPath string) any {
+	value, _ := f.getFieldValueWithPresence(event, fieldPath)
+
+	return value
+}
+
+func (f *PipelineFilter) getFieldValueWithPresence(event map[string]any, fieldPath string) (any, bool) {
 	parts := strings.Split(fieldPath, ".")
 	current := any(event)
 
@@ -548,14 +666,14 @@ func (f *PipelineFilter) getFieldValue(event map[string]any, fieldPath string) a
 			}
 
 			if !found {
-				return nil // Path doesn't exist
+				return nil, false
 			}
 		} else {
-			return nil // Path doesn't exist
+			return nil, false
 		}
 	}
 
-	return current
+	return current, true
 }
 
 // toFloat64 converts various numeric types to float64

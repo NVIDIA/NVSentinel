@@ -10,6 +10,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 - [Labeler Module](#labeler)
 - [Janitor](#janitor)
 - [Platform Connectors](#platform-connectors)
+- [Health Events Analyzer](#health-events-analyzer)
 - [Health Monitors](#health-monitors)
   - [GPU Health Monitor](#gpu-health-monitor)
   - [Syslog Health Monitor](#syslog-health-monitor)
@@ -234,6 +235,24 @@ These metrics track the internal ring buffer workqueue performance:
 | `platform_connector_workqueue_unfinished_work_seconds_{name}` | Gauge | `workqueue` | The total time in seconds of work in progress in Platform connector workqueue |
 
 **Note:** `{name}` in the metric names is replaced with the actual workqueue name at runtime.
+
+---
+
+## Health Events Analyzer
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `health_event_analyzer_events_received_total` | Counter | `node_name` | Total analyzer input events received from the watcher |
+| `health_event_analyzer_events_successfully_processed_total` | Counter | - | Total analyzer input events processed successfully |
+| `health_event_analyzer_event_processing_errors` | Counter | `error_type` | Total analyzer processing errors |
+| `health_event_analyzer_event_handling_duration_seconds` | Histogram | - | Analyzer event handling duration, with buckets from 100 ms through about 205 s |
+| `mongo_query_execution_duration_seconds` | Histogram | `rule_name` | Rule aggregation duration for either supported datastore provider |
+| `rule_matched_total` | Counter | `rule_name`, `node_name` | Total matching rule evaluations |
+| `fatal_events_published_total` | Counter | `entity_value` | Total derived unhealthy events published |
+| `health_event_analyzer_recovery_events_published_total` | Counter | `rule_name`, `scope` | Total derived healthy transitions published by recovery-enabled rules |
+| `health_event_analyzer_recovery_persistence_timeouts_total` | Counter | `rule_name`, `state` | Total derived transitions not observed in the store before the persistence deadline |
+| `health_event_analyzer_recovery_stored_document_decode_errors_total` | Counter | `rule_name`, `lookup`, `classification` | Stored health event decode or identity failures observed during recovery lookups, including out-of-scope rows; repeated observations within one persistence wait are counted once |
+| `fatal_event_publishing_errors` | Counter | `error_type` | Total gRPC publication errors |
 
 ---
 
