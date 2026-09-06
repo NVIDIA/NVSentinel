@@ -105,6 +105,9 @@ global:
   kubernetesObjectMonitor:
     enabled: true
 
+  nvcreCertificationMonitor:
+    enabled: true
+
   slurmDrainMonitor:
     enabled: true
 
@@ -4301,6 +4304,14 @@ kubernetes-object-monitor:
           matchLabels:
             kubernetes.io/metadata.name: kube-system
         topologyKey: kubernetes.io/hostname
+
+nvcre-certification-monitor:
+  logLevel: debug
+  # Short sweep interval for faster test feedback (production default is 15m).
+  # Tilt does not install the cluster-readiness-engine Certification CRD. Until
+  # one is applied to the kind cluster every sweep logs
+  # "Failed to list Certification CRs" and does nothing else; the pod stays Running.
+  resyncInterval: 30s
 
 event-exporter:
   replicaCount: 1

@@ -926,6 +926,23 @@ kubernetes-object-monitor:
   cacheSyncTimeout: 10m
 
 ################################################################################
+# NVCRE-CERTIFICATION-MONITOR CONFIGURATION
+#
+# Watches NVIDIA Cluster Readiness Engine (NVCRE) Certification CRs and
+# publishes one health event per (node, variant, reason) failure. Requires the
+# cluster-readiness-engine operator and its Certification CRD to be installed.
+################################################################################
+nvcre-certification-monitor:
+  # How often a full reconciliation of all Certification CRs runs.
+  resyncInterval: 15m
+
+  # CEL policies evaluated against every (category, failedNode) entry of a
+  # failed Certification; a true result publishes an unhealthy event.
+  policies:
+    - name: certification-failures
+      match: "(failedNode.reason == 'ThresholdViolation') || (failedNode.reason == 'WorkloadFailed')"
+
+################################################################################
 # GPU-HEALTH-MONITOR CONFIGURATION
 #
 # Monitors GPU hardware health using NVIDIA DCGM (Data Center GPU Manager).

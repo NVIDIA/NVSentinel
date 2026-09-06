@@ -158,6 +158,7 @@ Each module has additional configuration options documented in its dedicated gui
 - [Syslog Health Monitor](./syslog-health-monitor.md)
 - [CSP Health Monitor](./csp-health-monitor.md)
 - [Kubernetes Object Monitor](./kubernetes-object-monitor.md)
+- [NVCRE Certification Monitor](./nvcre-certification-monitor.md)
 - [Platform Connectors](./platform-connectors.md)
 - [Metadata Collector](./metadata-collector.md)
 - [Labeler](./labeler.md)

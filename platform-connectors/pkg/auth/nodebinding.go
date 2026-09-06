@@ -22,7 +22,8 @@
 //     projected ServiceAccount token whose node claim attests where they run;
 //     tokenless callers are also still accepted, pinned to this node.
 //   - Cluster-scoped publishers (csp-health-monitor, kubernetes-object-monitor,
-//     slurm-drain-monitor, health-events-analyzer) run centrally and must be
+//     nvcre-certification-monitor, slurm-drain-monitor, health-events-analyzer)
+//     run centrally and must be
 //     able to name any node in the cluster. They present a projected
 //     ServiceAccount token minted for a dedicated audience, and their
 //     ServiceAccounts are explicitly allowlisted.

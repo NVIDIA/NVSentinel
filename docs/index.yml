@@ -46,6 +46,8 @@ navigation:
         path: nic-health-monitor.md
       - page: Kubernetes Object Monitor
         path: kubernetes-object-monitor.md
+      - page: NVCRE Certification Monitor
+        path: nvcre-certification-monitor.md
       - page: Event Exporter
         path: event-exporter.md
       - page: Metadata Collector
@@ -104,6 +106,8 @@ navigation:
         path: configuration/nic-health-monitor.md
       - page: Kubernetes Object Monitor
         path: configuration/kubernetes-object-monitor.md
+      - page: NVCRE Certification Monitor
+        path: configuration/nvcre-certification-monitor.md
       - page: Fault Quarantine
         path: configuration/fault-quarantine.md
       - page: Node Drainer

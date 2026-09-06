@@ -12,6 +12,7 @@ GO_HEALTH_MONITORS := \
 	syslog-health-monitor \
 	csp-health-monitor \
 	kubernetes-object-monitor \
+	nvcre-certification-monitor \
 	slurm-drain-monitor
 
 PYTHON_HEALTH_MONITORS := \
@@ -60,6 +61,10 @@ lint-test-gpu-health-monitor:
 lint-test-kubernetes-object-monitor:
 	$(MAKE) -C kubernetes-object-monitor lint-test
 
+.PHONY: lint-test-nvcre-certification-monitor
+lint-test-nvcre-certification-monitor:
+	$(MAKE) -C nvcre-certification-monitor lint-test
+
 .PHONY: lint-test-slurm-drain-monitor
 lint-test-slurm-drain-monitor:
 	$(MAKE) -C slurm-drain-monitor lint-test
@@ -92,6 +97,10 @@ build-gpu-health-monitor:
 build-kubernetes-object-monitor:
 	$(MAKE) -C kubernetes-object-monitor build
 
+.PHONY: build-nvcre-certification-monitor
+build-nvcre-certification-monitor:
+	$(MAKE) -C nvcre-certification-monitor build
+
 .PHONY: build-slurm-drain-monitor
 build-slurm-drain-monitor:
 	$(MAKE) -C slurm-drain-monitor build
@@ -123,6 +132,10 @@ clean-gpu-health-monitor:
 .PHONY: clean-kubernetes-object-monitor
 clean-kubernetes-object-monitor:
 	$(MAKE) -C kubernetes-object-monitor clean
+
+.PHONY: clean-nvcre-certification-monitor
+clean-nvcre-certification-monitor:
+	$(MAKE) -C nvcre-certification-monitor clean
 
 .PHONY: clean-slurm-drain-monitor
 clean-slurm-drain-monitor:
