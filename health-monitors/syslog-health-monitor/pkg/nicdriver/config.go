@@ -134,7 +134,54 @@ var patternDefinitions = map[string]patternDefinition{
 		recommendedAction: pb.RecommendedAction_NONE,
 		description:       "SFP/transceiver cable unplugged",
 	},
+
+	// AWS Elastic Fabric Adapter (efa driver). Messages emitted through
+	// ibdev_err() carry the "infiniband <ibdev>:" prefix (the RDMA device
+	// is named rdmap<bus>s<slot> by rdma-core's predictable naming, or
+	// efa_N without it); messages emitted before the RDMA device is
+	// registered carry the "efa <bdf>:" prefix. The ENA network driver
+	// shares several message texts (e.g. the reset indication ones), so
+	// every pattern is anchored on one of those prefixes.
+	"efa_admin_cmd_timeout": {
+		re: regexp.MustCompile(
+			efaPrefix + `.*(Wait for completion \(polling\) timeout|` +
+				`The device didn't send any completion for admin cmd)`),
+		isFatal:           true,
+		recommendedAction: pb.RecommendedAction_REPLACE_VM,
+		description:       "EFA admin command timed out - device firmware unresponsive",
+	},
+	"efa_admin_queue_closed": {
+		re:                regexp.MustCompile(efaPrefix + `.*Admin queue is closed`),
+		isFatal:           true,
+		recommendedAction: pb.RecommendedAction_REPLACE_VM,
+		description:       "EFA admin queue closed after a command timeout - device unusable until reset",
+	},
+	"efa_admin_cmd_failed": {
+		re:                regexp.MustCompile(efaPrefix + `.*Failed to (process|submit) command`),
+		isFatal:           false,
+		recommendedAction: pb.RecommendedAction_NONE,
+		description:       "EFA admin command failed - control plane error",
+	},
+	"efa_device_reset_failed": {
+		re: regexp.MustCompile(
+			efaPrefix + `.*(Reset indication didn't turn (on|off)|` +
+				`Device isn't ready, can't reset device)`),
+		isFatal:           true,
+		recommendedAction: pb.RecommendedAction_REPLACE_VM,
+		description:       "EFA device reset failed - adapter not responding",
+	},
+	"efa_device_not_ready": {
+		re:                regexp.MustCompile(efaPrefix + `.*Device isn't ready, abort com init`),
+		isFatal:           true,
+		recommendedAction: pb.RecommendedAction_REPLACE_VM,
+		description:       "EFA device not ready during driver initialization",
+	},
 }
+
+// efaPrefix matches the kernel log prefix of the efa driver: either
+// "efa <bdf>:" (pre-registration dev_err) or "infiniband <ibdev>:"
+// (ibdev_err on a registered EFA device, named rdmap* or efa_*).
+const efaPrefix = `\b(efa [0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-9a-fA-F]|infiniband (rdmap|efa_)\S*):`
 
 // LoadConfig reads and validates the TOML configuration, returning only the
 // enabled pattern definitions requested by name.

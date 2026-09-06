@@ -16,6 +16,7 @@ package topology
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -326,6 +327,113 @@ func TestClassify_DeviceMissingFromTopologyUsesNUMADefault(t *testing.T) {
 	c2, err := LoadFromMetadata(path, reader2)
 	require.NoError(t, err)
 	assert.Equal(t, RoleStorage, c2.RoleOf("mlx5_other"))
+}
+
+func TestClassify_EFAWithoutTopologyEntryIsCompute(t *testing.T) {
+	// AWS EFA adapters are compute-fabric NICs by construction. When the
+	// nvidia-smi topology matrix carries no entry for them (and the VM
+	// reports numa_node = -1 for every PCI function), the efa driver
+	// binding must classify them as compute instead of the management
+	// fallback that would silently drop them from monitoring.
+	path := writeMetadata(t, &model.GPUMetadata{
+		GPUs: []model.GPUInfo{{PCIAddress: "0000:0f:00.0", NUMANode: 0}},
+		NICTopology: map[string][]string{
+			"mlx5_0": {"PIX"},
+		},
+	})
+
+	reader := readerForTest(
+		map[string]int{"rdmap0s6": -1, "rdmap16s27": 0, "efa_unbound": -1},
+		map[string]string{},
+	)
+	reader.(*sysfs.MockReader).ReadIBDeviceDriverFunc = func(device string) (string, error) {
+		switch device {
+		case "rdmap0s6", "rdmap16s27":
+			return "efa", nil
+		default:
+			return "", fmt.Errorf("no driver symlink for %s", device)
+		}
+	}
+
+	c, err := LoadFromMetadata(path, reader)
+	require.NoError(t, err)
+
+	assert.Equal(t, RoleCompute, c.RoleOf("rdmap0s6"), "EFA on unknown NUMA")
+	assert.Equal(t, RoleCompute, c.RoleOf("rdmap16s27"), "EFA on GPU NUMA")
+	assert.Equal(t, RoleManagement, c.RoleOf("efa_unbound"),
+		"non-EFA device without topology keeps the NUMA fallback")
+	assert.False(t, c.IsManagementNIC("rdmap0s6"))
+}
+
+func TestClassify_EFAWithoutDriverSymlinkUsesVendorFallback(t *testing.T) {
+	// Discovery accepts an Amazon PCI vendor ID as EFA when the
+	// device/driver symlink cannot be read (see discovery.IsEFADevice).
+	// The classifier must apply the same predicate: an EFA adapter with
+	// no topology entry and an unreadable driver symlink is still
+	// compute, not the NUMA fallback (which would call it management on
+	// numa_node = -1 and drop it from compute NIC monitoring).
+	path := writeMetadata(t, &model.GPUMetadata{
+		GPUs: []model.GPUInfo{{PCIAddress: "0000:0f:00.0", NUMANode: 0}},
+		NICTopology: map[string][]string{
+			"mlx5_0": {"PIX"},
+		},
+	})
+
+	reader := readerForTest(
+		map[string]int{"rdmap0s6": -1, "other0": -1},
+		map[string]string{},
+	)
+	mock := reader.(*sysfs.MockReader)
+	mock.ReadIBDeviceDriverFunc = func(device string) (string, error) {
+		return "", fmt.Errorf("no driver symlink for %s", device)
+	}
+	mock.ReadIBDeviceFieldFunc = func(device, field string) (string, error) {
+		if field != "device/vendor" {
+			return "", nil
+		}
+
+		switch device {
+		case "rdmap0s6":
+			return AmazonPCIVendorID + "\n", nil
+		default:
+			return "0x1234", nil
+		}
+	}
+
+	c, err := LoadFromMetadata(path, reader)
+	require.NoError(t, err)
+
+	assert.Equal(t, RoleCompute, c.RoleOf("rdmap0s6"),
+		"Amazon vendor without driver symlink → EFA → compute")
+	assert.False(t, c.IsManagementNIC("rdmap0s6"))
+	assert.Equal(t, RoleManagement, c.RoleOf("other0"),
+		"non-Amazon device without driver symlink keeps the NUMA fallback")
+}
+
+func TestClassify_EFAWithTopologyEntryFollowsMatrix(t *testing.T) {
+	// When nvidia-smi does list the EFA device, the matrix wins as for
+	// any other NIC.
+	path := writeMetadata(t, &model.GPUMetadata{
+		GPUs: []model.GPUInfo{{PCIAddress: "0000:0f:00.0", NUMANode: 0}},
+		NICTopology: map[string][]string{
+			"rdmap0s6": {"PXB", "SYS"},
+			"rdmap0s7": {"SYS", "SYS"},
+		},
+	})
+
+	reader := readerForTest(
+		map[string]int{"rdmap0s6": 1, "rdmap0s7": 1},
+		map[string]string{},
+	)
+	reader.(*sysfs.MockReader).ReadIBDeviceDriverFunc = func(string) (string, error) {
+		return "efa", nil
+	}
+
+	c, err := LoadFromMetadata(path, reader)
+	require.NoError(t, err)
+
+	assert.Equal(t, RoleCompute, c.RoleOf("rdmap0s6"))
+	assert.Equal(t, RoleManagement, c.RoleOf("rdmap0s7"), "all-SYS on a non-GPU NUMA stays management")
 }
 
 func TestClassify_ComputeOverridesNUMAGate(t *testing.T) {

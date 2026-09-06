@@ -24,7 +24,12 @@ import (
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
-const mlx5CoreDriver = "mlx5_core"
+// nicDrivers lists the kernel drivers whose PCI functions may be tagged
+// as NIC entities on a matched line.
+var nicDrivers = map[string]bool{
+	"mlx5_core": true, // Mellanox/NVIDIA ConnectX (InfiniBand / RoCE)
+	"efa":       true, // AWS Elastic Fabric Adapter
+}
 
 // NewNICDriverHandler creates a handler from the configured pattern file and
 // sysfs root. Invalid pattern configuration is treated as a startup error.
@@ -136,14 +141,22 @@ func (h *NICDriverHandler) buildEvent(
 	var entities []*pb.Entity
 
 	// Best-effort NIC entity enrichment. Defensive guard: only attach a NIC
-	// entity if the BDF actually resolves to mlx5_core.
+	// entity if the BDF actually resolves to a supported NIC driver.
+	// Lines logged through ibdev_err() carry the RDMA device name instead
+	// of a BDF ("infiniband rdmap0s6: ..."), which is already the entity
+	// value the NIC health monitor reports on.
 	if hasBDF {
-		if driver, device, ok := h.resolver.Resolve(bdf); ok && driver == mlx5CoreDriver && device != "" {
+		if driver, device, ok := h.resolver.Resolve(bdf); ok && nicDrivers[driver] && device != "" {
 			entities = append(entities, &pb.Entity{
 				EntityType:  "NIC",
 				EntityValue: device,
 			})
 		}
+	} else if device, ok := extractIBDevice(message); ok {
+		entities = append(entities, &pb.Entity{
+			EntityType:  "NIC",
+			EntityValue: device,
+		})
 	}
 
 	sev := "non_fatal"

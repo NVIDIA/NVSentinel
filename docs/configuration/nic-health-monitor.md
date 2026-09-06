@@ -70,7 +70,11 @@ nic-health-monitor:
     - InfiniBandCharDeviceCheck
     - EthernetStateCheck
     - EthernetDegradationCheck
+    - EFAStateCheck
+    - EFADegradationCheck
 ```
+
+A check whose adapter family is absent from a node is a silent no-op, so the full list is safe on every platform.
 
 ### Check Types
 
@@ -90,6 +94,12 @@ Same as `InfiniBandStateCheck` but for Ethernet/RoCE devices (reads `link_layer 
 
 #### EthernetDegradationCheck
 Same as `InfiniBandDegradationCheck` but for Ethernet/RoCE devices. Tracks the same counter set where available on RoCE adapters; additionally monitors `/sys/class/net/{iface}/statistics/carrier_changes`.
+
+#### EFAStateCheck
+Link-state check for AWS Elastic Fabric Adapters (devices whose `/sys/class/infiniband/<dev>/device/driver` symlink resolves to `efa`). The `efa` driver hard-codes `state=ACTIVE` and `phys_state=LinkUp`, so the check derives the port's health from the adapter's network interface (`/sys/class/infiniband/<dev>/device/net/<iface>/`): `operstate` other than `up`/`unknown`, or `carrier = 0`, is reported as `state DOWN, phys_state LinkDown` with the same fatal `REPLACE_VM` semantics, first-poll peer-evidence gate, latching and recovery as a RoCE port DOWN. Device and port disappearance detection and card homogeneity apply unchanged. EFA-only adapters without a network interface are monitored for disappearance only. State is persisted under its own `EFA` link-layer namespace in the shared state file.
+
+#### EFADegradationCheck
+Counter check for EFA adapters. Reads the `efa_*` counters from the driver's per-port `ports/1/hw_counters/` (`rx_drops`, RDMA work-request errors, remote-peer errors) and device-level `/sys/class/infiniband/<dev>/hw_counters/` (admin-queue statistics: `no_completion_cmds`, `cmds_err`, `keep_alive_rcvd`, resource-creation errors), plus the layer-agnostic netdev `statistics/` counters when the adapter exposes a network interface. `efa_no_completion_cmds` is fatal; the others are non-fatal degradation signals. Events are reported against `NIC=<device>`, `NICPort=1`.
 
 ## State Polling Interval
 
@@ -281,6 +291,14 @@ Counters outside this list are rejected at startup with a validation error.
 **Ethernet statistics** (`statistics/`):
 `carrier_changes`, `rx_crc_errors`, `rx_errors`, `rx_missed_errors`, `tx_carrier_errors`, `tx_errors`
 
+**AWS EFA per-port counters** (`ports/1/hw_counters/`, `EFADegradationCheck` only):
+`efa_rx_drops`, `efa_rdma_read_wr_err`, `efa_rdma_write_wr_err`, `efa_unresponsive_remote_err`, `efa_impaired_remote_conn_err`
+
+**AWS EFA device-level counters** (`/sys/class/infiniband/<dev>/hw_counters/`, `EFADegradationCheck` only):
+`efa_no_completion_cmds` (fatal), `efa_cmds_err`, `efa_keep_alive_rcvd`, `efa_reg_mr_err`, `efa_create_qp_err`, `efa_create_cq_err`, `efa_create_ah_err`
+
+Each counter is only read on ports of the link layers it exists on: the standard and extended sets on InfiniBand and RoCE ports, the `efa_*` set on EFA ports, and the Ethernet statistics on any adapter with a network interface. Enabling an `efa_*` counter on a Mellanox-only node (or vice versa) is therefore harmless.
+
 ### Counter Customization Examples
 
 #### Stricter BER threshold
@@ -378,7 +396,29 @@ syslog-health-monitor:
 
       - name: access_reg_failed       # Non-fatal: monitoring tool conflict noise
         enabled: true
+
+      # AWS Elastic Fabric Adapter (efa driver)
+      - name: efa_admin_cmd_timeout   # Fatal: admin command never completed - firmware unresponsive
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: efa_admin_queue_closed  # Fatal: admin queue closed after a timeout - device unusable
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: efa_device_reset_failed # Fatal: device reset did not complete
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: efa_device_not_ready    # Fatal: device not ready during driver init
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: efa_admin_cmd_failed    # Non-fatal: admin command completed with error
+        enabled: true
 ```
+
+EFA patterns are anchored on the `efa <bdf>:` or `infiniband rdmap*:`/`infiniband efa_*:` kernel log prefixes so that the identically-worded messages of the ENA network driver are never attributed to EFA. Lines carrying the RDMA device name are tagged with a `NIC=<device>` entity directly; lines carrying a PCI address are resolved through sysfs and tagged only when the address is bound to the `efa` or `mlx5_core` driver.
 
 See [Syslog Health Monitor Configuration](./syslog-health-monitor.md) for complete syslog-health-monitor options.
 
