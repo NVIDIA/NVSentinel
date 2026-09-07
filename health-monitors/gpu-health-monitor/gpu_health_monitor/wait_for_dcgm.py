@@ -18,6 +18,8 @@ import signal
 import sys
 import time
 from collections.abc import Callable
+from types import FrameType
+from typing import NoReturn
 
 import click
 import dcgm_fields
@@ -28,6 +30,7 @@ _LOG_FORMAT = "%(asctime)s %(levelname)s %(message)s"
 
 
 def _configure_logging() -> None:
+    """Configure logging for the init process and readiness probe children."""
     log.basicConfig(level=log.INFO, format=_LOG_FORMAT)
 
 
@@ -69,7 +72,11 @@ def _stop_process(process: multiprocessing.Process) -> None:
         process.join(timeout=1)
     if process.is_alive():
         process.kill()
-        process.join()
+        process.join(timeout=1)
+    if process.is_alive():
+        log.error("DCGM readiness probe process %s did not stop after terminate and kill", process.pid)
+        return
+
     process.close()
 
 
@@ -109,7 +116,7 @@ def wait_for_dcgm(
         sleep(retry_interval_seconds)
 
 
-def _exit_on_sigterm(_signum, _frame) -> None:
+def _exit_on_sigterm(_signum: int, _frame: FrameType | None) -> NoReturn:
     """Allow finally blocks to terminate an active probe during pod shutdown."""
     raise SystemExit(0)
 
