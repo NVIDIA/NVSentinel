@@ -3,6 +3,7 @@ module github.com/nvidia/nvsentinel/fault-remediation
 go 1.27.0
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/go-logr/logr v1.4.4
 	github.com/google/uuid v1.6.0
 	github.com/nvidia/nvsentinel/commons v0.0.0
@@ -24,7 +25,6 @@ require (
 )
 
 require (
-	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/XSAM/otelsql v0.43.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect

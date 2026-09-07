@@ -190,9 +190,11 @@ type MockNodeAnnotationManager struct {
 	existingCRs            map[string]string
 	existingCRCreated      time.Time
 	createdByGroup         map[string]time.Time
+	attemptCounts          map[string]int
 	nodeAnnotations        map[string]string
 	nodeLabels             map[string]string
 	getRemediationStateErr error
+	recordAttemptErr       error
 }
 
 func (m *MockNodeAnnotationManager) node() *corev1.Node {
@@ -208,9 +210,17 @@ func (m *MockNodeAnnotationManager) GetRemediationState(ctx context.Context, nod
 	}
 
 	if m.existingCRs == nil {
-		return &annotation.RemediationStateAnnotation{
+		annotationState := &annotation.RemediationStateAnnotation{
 			EquivalenceGroups: make(map[string]annotation.EquivalenceGroupState),
-		}, m.node(), nil
+		}
+		// Counter-only entries: a group whose CR was cleared but whose attempt budget stands.
+		for groupName, attempts := range m.attemptCounts {
+			annotationState.EquivalenceGroups[groupName] = annotation.EquivalenceGroupState{
+				AttemptCount: attempts,
+			}
+		}
+
+		return annotationState, m.node(), nil
 	}
 
 	annotationState := &annotation.RemediationStateAnnotation{
@@ -228,6 +238,7 @@ func (m *MockNodeAnnotationManager) GetRemediationState(ctx context.Context, nod
 		annotationState.EquivalenceGroups[groupName] = annotation.EquivalenceGroupState{
 			MaintenanceCR: crName,
 			CreatedAt:     groupCreatedAt,
+			AttemptCount:  m.attemptCounts[groupName],
 		}
 	}
 	return annotationState, m.node(), nil
@@ -235,14 +246,46 @@ func (m *MockNodeAnnotationManager) GetRemediationState(ctx context.Context, nod
 
 func (m *MockNodeAnnotationManager) UpdateRemediationState(ctx context.Context, nodeName string,
 	group string, crName string, actionName string) error {
+	if m.existingCRs == nil {
+		m.existingCRs = make(map[string]string)
+	}
+
+	m.existingCRs[group] = crName
+
 	return nil
+}
+
+// RecordRemediationAttempt mirrors the real manager: it increments the persisted counter and
+// returns the new value, so tests exercise the same cap arithmetic as production.
+func (m *MockNodeAnnotationManager) RecordRemediationAttempt(ctx context.Context, nodeName string,
+	group string) (int, error) {
+	if m.recordAttemptErr != nil {
+		return 0, m.recordAttemptErr
+	}
+
+	if m.attemptCounts == nil {
+		m.attemptCounts = make(map[string]int)
+	}
+
+	m.attemptCounts[group]++
+
+	return m.attemptCounts[group], nil
 }
 
 func (m *MockNodeAnnotationManager) ClearRemediationState(ctx context.Context, nodeName string) error {
+	m.existingCRs = nil
+	m.attemptCounts = nil
+
 	return nil
 }
 
+// RemoveGroupsFromState mirrors the real manager: the CR reference is dropped but the attempt
+// budget is kept, which is what makes the cap survive a failed CR.
 func (m *MockNodeAnnotationManager) RemoveGroupsFromState(ctx context.Context, nodeName string, groups []string) error {
+	for _, group := range groups {
+		delete(m.existingCRs, group)
+	}
+
 	return nil
 }
 
