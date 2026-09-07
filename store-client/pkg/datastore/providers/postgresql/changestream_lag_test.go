@@ -32,7 +32,7 @@ func changelogRows() *sqlmock.Rows {
 
 // A watcher that has not polled yet has no evidence either way, and must report neither
 // timestamp rather than claiming to be caught up.
-func TestLagStateIsUnknownBeforeFirstPoll(t *testing.T) {
+func TestLagState_BeforeFirstPoll_ReportsUnknown(t *testing.T) {
 	db, _, err := sqlmock.New()
 	require.NoError(t, err)
 
@@ -48,7 +48,7 @@ func TestLagStateIsUnknownBeforeFirstPoll(t *testing.T) {
 
 // A poll that returns no rows is the empty batch: affirmative evidence that this consumer is
 // caught up with its own filtered view of the changelog.
-func TestEmptyPollRecordsCaughtUp(t *testing.T) {
+func TestFetchNewChanges_NoRows_RecordsCaughtUp(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 
@@ -70,7 +70,7 @@ func TestEmptyPollRecordsCaughtUp(t *testing.T) {
 
 // A poll that returns rows records the newest changed_at, so a consumer working through a
 // backlog reports the age of what it is reading rather than zero.
-func TestPollWithRowsRecordsNewestChangedAt(t *testing.T) {
+func TestFetchNewChanges_WithRows_RecordsNewestChangedAt(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 
@@ -96,7 +96,7 @@ func TestPollWithRowsRecordsNewestChangedAt(t *testing.T) {
 
 // Rows arriving out of order must not pull the recorded position backwards, which would make a
 // lagging consumer look closer to caught up than it is.
-func TestOutOfOrderRowsDoNotRewindLag(t *testing.T) {
+func TestFetchNewChanges_OutOfOrderRows_DoesNotRewindLag(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 
@@ -119,7 +119,7 @@ func TestOutOfOrderRowsDoNotRewindLag(t *testing.T) {
 
 // Draining a backlog and then finding nothing left is the sequence a recovering consumer goes
 // through: the empty batch that follows is what brings reported lag back down.
-func TestDrainThenEmptyPollRecordsCaughtUp(t *testing.T) {
+func TestFetchNewChanges_BacklogThenEmpty_RecordsCaughtUp(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 
@@ -150,7 +150,7 @@ func TestDrainThenEmptyPollRecordsCaughtUp(t *testing.T) {
 
 // A failed poll is not evidence of anything. Recording it either way would report a healthy
 // consumer while the query is broken.
-func TestFailedPollRecordsNothing(t *testing.T) {
+func TestFetchNewChanges_QueryFails_RecordsNothing(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 

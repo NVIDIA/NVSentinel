@@ -24,7 +24,7 @@ import (
 
 // The zero Tracker must report both timestamps as zero, which callers read as "lag unknown".
 // Reporting anything else here would let a watcher that has not been observed look caught up.
-func TestZeroTrackerReportsNoObservation(t *testing.T) {
+func TestLagState_ZeroTracker_ReportsNoObservation(t *testing.T) {
 	var tracker Tracker
 
 	lastEmptyBatch, lastEventRead := tracker.LagState()
@@ -33,7 +33,7 @@ func TestZeroTrackerReportsNoObservation(t *testing.T) {
 	assert.True(t, lastEventRead.IsZero())
 }
 
-func TestRecordCaughtUpAndEventReadAreIndependent(t *testing.T) {
+func TestLagState_BothRecorded_ReportsEachIndependently(t *testing.T) {
 	var tracker Tracker
 
 	caughtUp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -50,7 +50,7 @@ func TestRecordCaughtUpAndEventReadAreIndependent(t *testing.T) {
 
 // An out-of-order or replayed event must not pull lastEventRead backwards, which would make a
 // lagging consumer look caught up.
-func TestRecordEventReadIsMonotonic(t *testing.T) {
+func TestRecordEventRead_OlderEvent_KeepsNewestTimestamp(t *testing.T) {
 	var tracker Tracker
 
 	newest := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -63,7 +63,7 @@ func TestRecordEventReadIsMonotonic(t *testing.T) {
 	assert.Equal(t, newest, lastEventRead)
 }
 
-func TestZeroTimestampsAreIgnored(t *testing.T) {
+func TestRecordCaughtUp_ZeroTimestamp_IsIgnored(t *testing.T) {
 	var tracker Tracker
 
 	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -81,7 +81,7 @@ func TestZeroTimestampsAreIgnored(t *testing.T) {
 
 // The writer is a watcher's read loop and the reader is a metrics collector on an unrelated
 // goroutine, so this runs under -race in CI.
-func TestTrackerIsSafeForConcurrentUse(t *testing.T) {
+func TestTracker_ConcurrentRecordAndRead_StaysConsistent(t *testing.T) {
 	var tracker Tracker
 
 	var wg sync.WaitGroup

@@ -15,7 +15,6 @@
 package client
 
 import (
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -33,23 +32,30 @@ const (
 	lagKnownName   = "change_stream_lag_known"
 )
 
-// lagCollector reports one watcher's lag. It is a Collector rather than a gauge because lag has
-// to be computed at scrape time: a gauge set on each read would freeze at its last update, which
-// is exactly the case that needs to be visible.
+// lagCollector reports the lag of every watcher registered against one registry.
+//
+// It is a Collector rather than a gauge because lag has to be computed at scrape time: a gauge
+// set on each read would freeze at its last update, which is exactly the case that needs to be
+// visible.
+//
+// One collector serves every client, rather than one collector per client. Because `client` is a
+// variable label, per-client collectors would all carry identical descriptors, and Prometheus
+// identifies a collector by its descriptors: registering the second one returns
+// AlreadyRegisteredError and that client's lag is never exported.
 type lagCollector struct {
-	clientName string
-	provider   lagstate.Provider
-	now        func() time.Time
+	now func() time.Time
 
 	lagDesc   *prometheus.Desc
 	knownDesc *prometheus.Desc
+
+	mu        sync.Mutex
+	providers map[string]lagstate.Provider
 }
 
-func newLagCollector(clientName string, provider lagstate.Provider) *lagCollector {
+func newLagCollector() *lagCollector {
 	return &lagCollector{
-		clientName: clientName,
-		provider:   provider,
-		now:        time.Now,
+		now:       time.Now,
+		providers: map[string]lagstate.Provider{},
 		lagDesc: prometheus.NewDesc(
 			lagSecondsName,
 			"Seconds since this consumer last had evidence it was caught up with its own change "+
@@ -68,6 +74,32 @@ func newLagCollector(clientName string, provider lagstate.Provider) *lagCollecto
 	}
 }
 
+// add registers a client's provider, reporting whether it was newly added.
+func (c *lagCollector) add(clientName string, provider lagstate.Provider) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if _, exists := c.providers[clientName]; exists {
+		return false
+	}
+
+	c.providers[clientName] = provider
+
+	return true
+}
+
+func (c *lagCollector) snapshot() map[string]lagstate.Provider {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	providers := make(map[string]lagstate.Provider, len(c.providers))
+	for clientName, provider := range c.providers {
+		providers[clientName] = provider
+	}
+
+	return providers
+}
+
 func (c *lagCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.lagDesc
 
@@ -75,43 +107,39 @@ func (c *lagCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *lagCollector) Collect(ch chan<- prometheus.Metric) {
-	lastEmptyBatch, lastEventRead := c.provider.LagState()
+	for clientName, provider := range c.snapshot() {
+		lastEmptyBatch, lastEventRead := provider.LagState()
 
-	observed := lastEmptyBatch
-	if lastEventRead.After(observed) {
-		observed = lastEventRead
+		observed := lastEmptyBatch
+		if lastEventRead.After(observed) {
+			observed = lastEventRead
+		}
+
+		if observed.IsZero() {
+			ch <- prometheus.MustNewConstMetric(c.knownDesc, prometheus.GaugeValue, 0, clientName)
+
+			continue
+		}
+
+		ch <- prometheus.MustNewConstMetric(c.knownDesc, prometheus.GaugeValue, 1, clientName)
+
+		// lastEventRead is a database server timestamp compared against the local clock, so skew
+		// can make a caught-up consumer look slightly ahead of itself. Report that as zero lag.
+		lag := c.now().Sub(observed).Seconds()
+		if lag < 0 {
+			lag = 0
+		}
+
+		ch <- prometheus.MustNewConstMetric(c.lagDesc, prometheus.GaugeValue, lag, clientName)
 	}
-
-	if observed.IsZero() {
-		ch <- prometheus.MustNewConstMetric(c.knownDesc, prometheus.GaugeValue, 0, c.clientName)
-
-		return
-	}
-
-	ch <- prometheus.MustNewConstMetric(c.knownDesc, prometheus.GaugeValue, 1, c.clientName)
-
-	// lastEventRead is a database server timestamp compared against the local clock, so skew can
-	// make a caught-up consumer look slightly ahead of itself. Report that as zero lag.
-	lag := c.now().Sub(observed).Seconds()
-	if lag < 0 {
-		lag = 0
-	}
-
-	ch <- prometheus.MustNewConstMetric(c.lagDesc, prometheus.GaugeValue, lag, c.clientName)
 }
 
-// registeredLag tracks which (registerer, client) pairs already have a collector, because a
-// second collector for the same client would emit a duplicate label set and fail the whole
-// scrape rather than just its own metric.
+// collectors holds the one collector per registry, so a second client joins the existing
+// collector instead of trying to register a duplicate.
 var (
-	registeredLagMu sync.Mutex
-	registeredLag   = map[lagKey]struct{}{}
+	collectorsMu sync.Mutex
+	collectors   = map[prometheus.Registerer]*lagCollector{}
 )
-
-type lagKey struct {
-	registerer prometheus.Registerer
-	client     string
-}
 
 // RegisterChangeStreamLag exports the lag metrics for watcher, if it reports lag state. Watchers
 // that do not are left alone, so this is safe to call on any watcher.
@@ -138,29 +166,38 @@ func RegisterChangeStreamLag(reg prometheus.Registerer, clientName string, watch
 		reg = prometheus.DefaultRegisterer
 	}
 
-	registeredLagMu.Lock()
-	defer registeredLagMu.Unlock()
-
-	key := lagKey{registerer: reg, client: clientName}
-	if _, exists := registeredLag[key]; exists {
+	collector, usable := collectorFor(reg)
+	if !usable {
 		return
 	}
 
-	if err := reg.Register(newLagCollector(clientName, provider)); err != nil {
-		var alreadyRegistered prometheus.AlreadyRegisteredError
-		if errors.As(err, &alreadyRegistered) {
-			registeredLag[key] = struct{}{}
-
-			return
-		}
-
-		slog.Warn("Failed to register change stream lag metrics",
-			"client", clientName, "error", err)
-
+	if !collector.add(clientName, provider) {
 		return
 	}
-
-	registeredLag[key] = struct{}{}
 
 	slog.Info("Registered change stream lag metrics", "client", clientName)
+}
+
+// collectorFor returns the collector serving reg, creating and registering it on first use. The
+// second return value reports whether the collector is usable; a failed registration is logged
+// once and leaves the metrics off rather than failing the caller's startup.
+func collectorFor(reg prometheus.Registerer) (*lagCollector, bool) {
+	collectorsMu.Lock()
+	defer collectorsMu.Unlock()
+
+	if collector, exists := collectors[reg]; exists {
+		return collector, true
+	}
+
+	collector := newLagCollector()
+
+	if err := reg.Register(collector); err != nil {
+		slog.Warn("Failed to register change stream lag metrics", "error", err)
+
+		return collector, false
+	}
+
+	collectors[reg] = collector
+
+	return collector, true
 }

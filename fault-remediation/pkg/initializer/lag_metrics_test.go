@@ -34,7 +34,7 @@ func (stubLagProvider) LagState() (lastEmptyBatch, lastEventRead time.Time) {
 // This service serves only controller-runtime's registry, so store-client's change stream
 // metrics have to be registered there. A test against the default registry would pass while
 // /metrics stayed empty, which is the failure this covers.
-func TestChangeStreamLagMetricsReachControllerRuntimeRegistry(t *testing.T) {
+func TestRegisterChangeStreamLag_ControllerRuntimeRegistry_ExportsBothMetrics(t *testing.T) {
 	client.RegisterChangeStreamLag(crmetrics.Registry, t.Name(), stubLagProvider{})
 
 	families, err := crmetrics.Registry.Gather()

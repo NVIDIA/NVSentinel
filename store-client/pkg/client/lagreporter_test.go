@@ -37,8 +37,9 @@ func (f fakeLagProvider) LagState() (lastEmptyBatch, lastEventRead time.Time) {
 type nonProvider struct{}
 
 func collectorAt(now time.Time, provider fakeLagProvider) *lagCollector {
-	collector := newLagCollector("test-client", provider)
+	collector := newLagCollector()
 	collector.now = func() time.Time { return now }
+	collector.add("test-client", provider)
 
 	return collector
 }
@@ -72,7 +73,7 @@ func scrape(t *testing.T, collector prometheus.Collector) map[string]float64 {
 // Before the first read or empty batch the watcher has no evidence either way. Reporting zero
 // would claim a caught-up consumer that has not been observed at all, so the lag series must be
 // absent and only change_stream_lag_known is reported.
-func TestLagIsAbsentUntilObserved(t *testing.T) {
+func TestCollect_NoObservationYet_OmitsLagSeriesAndReportsLagUnknown(t *testing.T) {
 	now := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 	reported := scrape(t, collectorAt(now, fakeLagProvider{}))
 
@@ -80,7 +81,7 @@ func TestLagIsAbsentUntilObserved(t *testing.T) {
 	assert.Equal(t, map[string]float64{lagKnownName: 0}, reported)
 }
 
-func TestLagKnownFlipsOnceObserved(t *testing.T) {
+func TestCollect_AfterFirstObservation_ReportsLagKnownAndSeconds(t *testing.T) {
 	now := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 	provider := fakeLagProvider{lastEmptyBatch: now.Add(-30 * time.Second)}
 
@@ -92,7 +93,7 @@ func TestLagKnownFlipsOnceObserved(t *testing.T) {
 
 // Lag is measured from the more recent of the two observations: a consumer that just read an old
 // event is behind, but one that has since seen an empty batch is not.
-func TestLagUsesTheMoreRecentObservation(t *testing.T) {
+func TestCollect_TwoObservations_MeasuresFromTheMoreRecent(t *testing.T) {
 	now := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 
 	tests := map[string]struct {
@@ -128,7 +129,7 @@ func TestLagUsesTheMoreRecentObservation(t *testing.T) {
 
 // Event timestamps come from the database server, so skew against the local clock can put an
 // observation in the future. Report that as caught up rather than as negative lag.
-func TestClockSkewIsReportedAsZeroLag(t *testing.T) {
+func TestCollect_ObservationInTheFuture_ReportsZeroLag(t *testing.T) {
 	now := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 	provider := fakeLagProvider{lastEventRead: now.Add(2 * time.Second)}
 
@@ -139,12 +140,13 @@ func TestClockSkewIsReportedAsZeroLag(t *testing.T) {
 
 // Lag is computed at scrape time, so a stuck consumer keeps growing rather than freezing at the
 // value it had when it stopped reading.
-func TestLagGrowsBetweenScrapes(t *testing.T) {
+func TestCollect_StuckConsumer_LagGrowsBetweenScrapes(t *testing.T) {
 	observed := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 
 	now := observed
-	collector := newLagCollector("test-client", fakeLagProvider{lastEmptyBatch: observed})
+	collector := newLagCollector()
 	collector.now = func() time.Time { return now }
+	collector.add("test-client", fakeLagProvider{lastEmptyBatch: observed})
 
 	assert.Equal(t, float64(0), scrape(t, collector)[lagSecondsName])
 
@@ -156,7 +158,7 @@ func TestLagGrowsBetweenScrapes(t *testing.T) {
 // A consumer that serves its own registry rather than the default one must still get the
 // metrics. A test that only checked the default registry would pass while that endpoint stayed
 // empty, which is the failure this guards.
-func TestRegisterUsesTheSuppliedRegistry(t *testing.T) {
+func TestRegisterChangeStreamLag_SuppliedRegistry_ExportsThereNotOnDefault(t *testing.T) {
 	registry := prometheus.NewPedanticRegistry()
 
 	RegisterChangeStreamLag(registry, t.Name(), fakeLagProvider{lastEmptyBatch: time.Now()})
@@ -168,7 +170,7 @@ func TestRegisterUsesTheSuppliedRegistry(t *testing.T) {
 		"nothing should have reached the default registry")
 }
 
-func TestRegisterSkipsWatchersWithoutLagState(t *testing.T) {
+func TestRegisterChangeStreamLag_WatcherWithoutLagState_RegistersNothing(t *testing.T) {
 	registry := prometheus.NewPedanticRegistry()
 
 	RegisterChangeStreamLag(registry, t.Name(), nonProvider{})
@@ -178,7 +180,7 @@ func TestRegisterSkipsWatchersWithoutLagState(t *testing.T) {
 
 // A second collector for the same client would emit a duplicate label set and fail the whole
 // scrape rather than just its own metric, so registration has to be idempotent.
-func TestRegisterIsIdempotentPerClient(t *testing.T) {
+func TestRegisterChangeStreamLag_SameClientTwice_ExportsOneSeries(t *testing.T) {
 	registry := prometheus.NewPedanticRegistry()
 	provider := fakeLagProvider{lastEmptyBatch: time.Now()}
 
@@ -209,4 +211,29 @@ func lagMetricNames(t *testing.T, gatherer prometheus.Gatherer) []string {
 	}
 
 	return names
+}
+
+// Two watchers in one process must both be visible. Per-client collectors would carry identical
+// descriptors, so the registry would treat the second as already registered and silently drop
+// it, leaving that consumer looking like it had never been observed.
+func TestRegisterChangeStreamLag_TwoClients_ExportsBoth(t *testing.T) {
+	registry := prometheus.NewPedanticRegistry()
+	observed := time.Now()
+
+	RegisterChangeStreamLag(registry, "client-a", fakeLagProvider{lastEmptyBatch: observed})
+	RegisterChangeStreamLag(registry, "client-b", fakeLagProvider{lastEventRead: observed})
+
+	families, err := registry.Gather()
+	require.NoError(t, err)
+
+	seen := map[string][]string{}
+
+	for _, family := range families {
+		for _, metric := range family.GetMetric() {
+			seen[family.GetName()] = append(seen[family.GetName()], metric.GetLabel()[0].GetValue())
+		}
+	}
+
+	assert.ElementsMatch(t, []string{"client-a", "client-b"}, seen[lagKnownName])
+	assert.ElementsMatch(t, []string{"client-a", "client-b"}, seen[lagSecondsName])
 }

@@ -44,7 +44,7 @@ type plainWatcher struct {
 // AdaptedChangeStreamWatcher wraps an interface, so a missing pass-through here would answer for
 // the adapter rather than the watcher underneath and report a permanently unknown lag. That is
 // the mistake this test exists to catch.
-func TestAdapterPassesLagStateThrough(t *testing.T) {
+func TestAdaptedChangeStreamWatcher_WrappedProvider_PassesLagStateThrough(t *testing.T) {
 	caughtUp := time.Date(2026, 5, 6, 7, 8, 9, 0, time.UTC)
 	eventRead := caughtUp.Add(-time.Minute)
 
@@ -64,7 +64,7 @@ func TestAdapterPassesLagStateThrough(t *testing.T) {
 
 // Wrapping a watcher that reports no lag state yields two zero times, which callers read as
 // unknown. It must not look caught up.
-func TestAdapterReportsUnknownForWatchersWithoutLagState(t *testing.T) {
+func TestAdaptedChangeStreamWatcher_WatcherWithoutLagState_ReportsUnknown(t *testing.T) {
 	adapter := NewAdaptedChangeStreamWatcher(&plainWatcher{})
 
 	provider, ok := adapter.(lagstate.Provider)

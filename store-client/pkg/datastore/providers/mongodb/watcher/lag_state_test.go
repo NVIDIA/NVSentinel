@@ -27,7 +27,7 @@ import (
 // clusterTimeOf asserts on a concrete BSON type, so this pins the type the driver actually
 // decodes a change event's clusterTime into. If that changes, the assertion would start failing
 // silently and every consumer would report an unknown lag.
-func TestClusterTimeOfDecodesBSONTimestamp(t *testing.T) {
+func TestClusterTimeOf_BSONTimestamp_ReturnsServerTime(t *testing.T) {
 	raw, err := bson.Marshal(bson.M{"clusterTime": bson.Timestamp{T: 1788779000, I: 3}})
 	require.NoError(t, err)
 
@@ -42,7 +42,7 @@ func TestClusterTimeOfDecodesBSONTimestamp(t *testing.T) {
 
 // An event with no usable clusterTime yields the zero time, which the tracker ignores rather
 // than recording as an observation.
-func TestClusterTimeOfReturnsZeroWhenAbsent(t *testing.T) {
+func TestClusterTimeOf_MissingOrWrongType_ReturnsZero(t *testing.T) {
 	tests := map[string]bson.M{
 		"missing":    {"operationType": "insert"},
 		"wrong type": {"clusterTime": "1788779000"},
@@ -59,7 +59,7 @@ func TestClusterTimeOfReturnsZeroWhenAbsent(t *testing.T) {
 // The closed-cursor case is the one TryNext cannot express: it returns false with no error, the
 // same as an empty batch. Reading it as an empty batch records "caught up" on every tick against
 // a dead stream, which is the spin the existing Next loop has today.
-func TestClassifyStreamStep(t *testing.T) {
+func TestClassifyStreamStep_EachStreamState_ReturnsExpectedStep(t *testing.T) {
 	streamErr := errors.New("connection reset")
 
 	tests := map[string]struct {
@@ -114,7 +114,7 @@ func TestClassifyStreamStep(t *testing.T) {
 
 // A watcher that has not read anything must report neither timestamp, so callers treat its lag
 // as unknown rather than as zero.
-func TestLagStateIsUnknownBeforeFirstRead(t *testing.T) {
+func TestLagState_BeforeFirstRead_ReportsUnknown(t *testing.T) {
 	watcher := &ChangeStreamWatcher{}
 
 	lastEmptyBatch, lastEventRead := watcher.LagState()
@@ -123,7 +123,7 @@ func TestLagStateIsUnknownBeforeFirstRead(t *testing.T) {
 	assert.True(t, lastEventRead.IsZero())
 }
 
-func TestLagStateReportsWhatTheLoopRecorded(t *testing.T) {
+func TestLagState_AfterLoopRecords_ReportsBothTimestamps(t *testing.T) {
 	watcher := &ChangeStreamWatcher{}
 
 	caughtUp := time.Date(2026, 5, 6, 7, 8, 9, 0, time.UTC)
