@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/nvcre-certification-monitor/pkg/metrics"
 )
 
 const (
@@ -120,8 +122,12 @@ func (p *Publisher) PublishHealthEvent(
 		"node", nodeName, "isHealthy", isHealthy, "errorCode", errorCode)
 
 	if err := p.sendWithRetry(ctx, healthEvents); err != nil {
+		metrics.HealthEventPublishErrors.WithLabelValues(nodeName, strconv.FormatBool(isHealthy)).Inc()
+
 		return fmt.Errorf("failed to send health event for node %s: %w", nodeName, err)
 	}
+
+	metrics.HealthEventsPublished.WithLabelValues(nodeName, strconv.FormatBool(isHealthy)).Inc()
 
 	return nil
 }

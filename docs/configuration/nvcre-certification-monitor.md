@@ -2,13 +2,15 @@
 
 ## Overview
 
-The NVCRE Certification Monitor reads NVIDIA Cluster Readiness Engine (NVCRE) `Certification` custom resources and publishes one health event per failed `(node, variant, reason)`. This document covers every Helm configuration option, the state the monitor writes to the cluster, and how to observe and troubleshoot it. For the design and decision tables see [ADR-055](../designs/055-nvcre-certification-monitor.md).
+The NVCRE Certification Monitor reads NVIDIA Cluster Readiness Engine (NVCRE) `Certification` custom resources and publishes one health event per failed `(node, variant, reason)`. This document covers every Helm configuration option, the state the monitor writes to the cluster, and how to observe and troubleshoot it.
 
 ## Prerequisites
 
-### Certification CRD
+### NVCRE
 
-The monitor reads `nvcre.nvidia.com/v1alpha1` `Certification` resources in all namespaces. The CRD does not have to exist when the monitor starts. Without it, every sweep logs `Failed to list Certification CRs` with a `no matches for kind "Certification"` error and returns; the pod stays `Running` and passes its readiness probe. Once the CRD is installed the next sweep proceeds normally with no restart.
+The NVIDIA Cluster Readiness Engine must be installed in the cluster: its controller, the `nvcre.nvidia.com/v1alpha1` `Certification` CRD and the workload dependencies it brings in. Follow the [NVCRE installation guide](https://github.com/NVIDIA/cluster-readiness-engine/blob/main/docs/getting-started/install.md).
+
+The monitor tolerates NVCRE being installed later. Without the CRD, every sweep logs `Failed to list Certification CRs` with a `no matches for kind "Certification"` error and returns; the pod stays `Running` and passes its readiness probe. Once NVCRE is installed the next sweep proceeds normally with no restart.
 
 ### Cross-node identity
 
@@ -212,6 +214,23 @@ kubectl get certification -n <namespace> <name> \
   -o jsonpath='{.metadata.annotations}'
 ```
 
+### Metrics
+
+The monitor exports Prometheus metrics on the `metrics` container port
+(`global.metricsPort`, default 2112) at `/metrics`.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `nvcre_certification_monitor_sweep_errors_total` | counter | `error_type` = `list_certs`, `completion_time`, `configmap_not_found`, `configmap_get`, `configmap_decode`, `node_not_found`, `node_get` | Errors hit during a sweep; `list_certs`, `configmap_get` and a failed-nodes `configmap_decode` abort the sweep, the rest skip the affected cert, category or tuple |
+| `nvcre_certification_monitor_sweep_duration_seconds` | histogram | | Duration of one sweep |
+| `nvcre_certification_monitor_health_events_published_total` | counter | `node`, `is_healthy` = `true`, `false` | Health events accepted by platform-connectors |
+| `nvcre_certification_monitor_health_event_publish_errors_total` | counter | `node`, `is_healthy` | Health events that failed to publish after retries |
+| `nvcre_certification_monitor_active_failures` | gauge | | `(node, variant, reason)` failures asserted by terminal Certifications |
+| `nvcre_certification_monitor_malformed_node_annotations` | gauge | | Nodes skipped in the last sweep because their annotation is unparsable |
+
+A non-zero `malformed_node_annotations`, a rising `sweep_errors_total` or a
+rising `publish_errors_total` means the monitor cannot record or deliver failures and needs attention.
+
 ## Recovery and Operator Actions
 
 | Situation | What to do | What the monitor does on the next sweep |
@@ -246,7 +265,7 @@ ConfigMaps are fetched directly from the API server rather than through an infor
 
 | Log line | Level | Meaning | Action |
 |----------|-------|---------|--------|
-| `Failed to list Certification CRs` with `no matches for kind "Certification"` | error, every sweep | The Certification CRD is not installed | Install NVCRE; no restart needed |
+| `Failed to list Certification CRs` with `no matches for kind "Certification"` | error, every sweep | NVCRE is not installed | Install NVCRE ([installation guide](https://github.com/NVIDIA/cluster-readiness-engine/blob/main/docs/getting-started/install.md)); no restart needed |
 | `Result ConfigMap not found, treating category as having no entries` | warn | A category's `failedNodesRef` or `succeededNodesRef` points at a ConfigMap that no longer exists. NVCRE writes the ConfigMap before it publishes the reference, so it was deleted by hand or its namespace is being deleted | The category asserts nothing, so its failures heal as if the Certification had been deleted. Re-running certification re-asserts any node that still fails |
 | `Failed to reconcile` with `failed to decode failed-nodes ConfigMap` | error | A category's failed-nodes ConfigMap exists but its `failed-nodes.json.gz` is not valid gzip or JSON. NVCRE writes the ConfigMap in a single update, so this is corruption or tampering rather than a transient state | The whole sweep aborts and retries on the next interval; nothing is published or healed until the ConfigMap is repaired or deleted (a deleted ConfigMap is treated as "no entries", see the row above) |
 | `Skipping certification failure for a node that does not exist` | warn | A failed row names a node that is not in the cluster | Nothing published; re-evaluated each sweep in case the node reappears |

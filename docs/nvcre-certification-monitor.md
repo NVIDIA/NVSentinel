@@ -2,7 +2,7 @@
 
 ## Overview
 
-The NVCRE Certification Monitor connects NVIDIA Cluster Readiness Engine (NVCRE) certification results to NVSentinel's remediation pipeline. NVCRE runs GPU cluster burn-in tests such as NCCL collectives, training workloads and DCGM diagnostics, and records which nodes failed each test category in `Certification` custom resources. NVCRE itself never taints, cordons or marks a node, so after a failed certification the failed nodes stay schedulable.
+The NVCRE Certification Monitor connects [NVIDIA Cluster Readiness Engine (NVCRE)](https://github.com/NVIDIA/cluster-readiness-engine) certification results to NVSentinel's remediation pipeline. NVCRE runs GPU cluster burn-in tests such as NCCL collectives, training workloads and DCGM diagnostics, and records which nodes failed each test category in `Certification` custom resources. NVCRE itself never taints, cordons or marks a node, so after a failed certification the failed nodes stay schedulable.
 
 This monitor reads every `Certification` in the cluster, turns each failed node into a health event, and publishes it to Platform Connectors. From there the standard pipeline takes over: Platform Connectors set a Node Condition and Fault Quarantine applies a `NoSchedule` taint. When a later certification run passes the node, or the failing `Certification` is deleted, the monitor publishes a healthy event and the taint is released.
 

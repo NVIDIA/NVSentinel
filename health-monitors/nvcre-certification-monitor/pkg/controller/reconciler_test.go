@@ -19,7 +19,6 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
-	"k8s.io/apimachinery/pkg/types"
 	"testing"
 	"time"
 
@@ -27,13 +26,14 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	nvcrev1alpha1 "github.com/NVIDIA/cluster-readiness-engine/api/v1alpha1"
-
 	"github.com/nvidia/nvsentinel/health-monitors/nvcre-certification-monitor/pkg/config"
+	"github.com/nvidia/nvsentinel/health-monitors/nvcre-certification-monitor/pkg/nvcre"
 	"github.com/nvidia/nvsentinel/health-monitors/nvcre-certification-monitor/pkg/publisher"
 	"github.com/nvidia/nvsentinel/health-monitors/nvcre-certification-monitor/pkg/state"
 )
@@ -80,19 +80,15 @@ func mustGzipJSON(t *testing.T, v any) []byte {
 	return mustGzip(t, b)
 }
 
-func newCert(name, namespace string, condType, condStatus string, categories []nvcrev1alpha1.CertificationCategoryStatus) *nvcrev1alpha1.Certification {
-	cert := &nvcrev1alpha1.Certification{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Status: nvcrev1alpha1.CertificationStatus{
-			CategoryStatuses: categories,
-		},
-	}
+func newCert(name, namespace string, condType, condStatus string, categories []nvcre.CategoryStatus) *unstructured.Unstructured {
+	cert := nvcre.NewCertification()
+	cert.SetName(name)
+	cert.SetNamespace(namespace)
+
+	status := nvcre.Status{CategoryStatuses: categories}
 
 	if condType != "" {
-		cert.Status.Conditions = []metav1.Condition{
+		status.Conditions = []metav1.Condition{
 			{
 				Type:               condType,
 				Status:             metav1.ConditionStatus(condStatus),
@@ -101,7 +97,34 @@ func newCert(name, namespace string, condType, condStatus string, categories []n
 		}
 	}
 
+	if err := nvcre.SetStatus(cert, status); err != nil {
+		panic(err)
+	}
+
 	return cert
+}
+
+// completionTime returns the lastTransitionTime of the cert's first condition.
+func completionTime(t *testing.T, cert *unstructured.Unstructured) time.Time {
+	t.Helper()
+
+	status, err := nvcre.GetStatus(cert)
+	require.NoError(t, err)
+	require.NotEmpty(t, status.Conditions)
+
+	return status.Conditions[0].LastTransitionTime.Time
+}
+
+// setCompletionTime overwrites the lastTransitionTime of the cert's first condition.
+func setCompletionTime(t *testing.T, cert *unstructured.Unstructured, at time.Time) {
+	t.Helper()
+
+	status, err := nvcre.GetStatus(cert)
+	require.NoError(t, err)
+	require.NotEmpty(t, status.Conditions)
+
+	status.Conditions[0].LastTransitionTime = metav1.NewTime(at)
+	require.NoError(t, nvcre.SetStatus(cert, status))
 }
 
 func newNodeWithCertFailures(name, annotationValue string) *corev1.Node {
@@ -118,7 +141,6 @@ func newTestReconciler(t *testing.T, recorder *testRecorder, objects ...runtime.
 	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, nvcrev1alpha1.AddToScheme(scheme))
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -147,7 +169,7 @@ func TestProcessDesiredAndObserved_DesiredAndObserved_NoOp(t *testing.T) {
 	recorder := newTestRecorder()
 	r := newTestReconciler(t, recorder)
 
-	var certs []*nvcrev1alpha1.Certification
+	var certs []*unstructured.Unstructured
 
 	desired := map[TupleKey]NodeCertFailure{
 		{Node: "gpu-01", Variant: "nccl-all-gather", Reason: "WorkloadFailed"}: {
@@ -170,16 +192,16 @@ func TestProcessDesiredAndObserved_DesiredAndObserved_NoOp(t *testing.T) {
 // branch, or an operator clear later re-publishes its failure as "new".
 func TestProcessDesiredAndObserved_DesiredAndObserved_StampsUnstampedOwner(t *testing.T) {
 	recorder := newTestRecorder()
-	cats := []nvcrev1alpha1.CertificationCategoryStatus{{
+	cats := []nvcre.CategoryStatus{{
 		Domain:  "nccl",
 		Variant: "nccl-all-gather",
-		Status:  nvcrev1alpha1.CertificationFailed,
+		Status:  nvcre.CertificationFailed,
 	}}
-	stamped := newCert("cert-1", "ns", nvcrev1alpha1.CertificationFailed, "True", cats)
-	stamped.Annotations = map[string]string{
-		state.CertProcessedKey: stamped.Status.Conditions[0].LastTransitionTime.UTC().Format(time.RFC3339),
-	}
-	dup := newCert("cert-2", "ns", nvcrev1alpha1.CertificationFailed, "True", cats)
+	stamped := newCert("cert-1", "ns", nvcre.CertificationFailed, "True", cats)
+	stamped.SetAnnotations(map[string]string{
+		state.CertProcessedKey: completionTime(t, stamped).UTC().Format(time.RFC3339),
+	})
+	dup := newCert("cert-2", "ns", nvcre.CertificationFailed, "True", cats)
 	r := newTestReconciler(t, recorder, stamped, dup)
 
 	desired := map[TupleKey]NodeCertFailure{
@@ -203,7 +225,7 @@ func TestProcessDesiredAndObserved_ObservedNotDesired_PublishesHealthy(t *testin
 	recorder := newTestRecorder()
 	r := newTestReconciler(t, recorder)
 
-	var certs []*nvcrev1alpha1.Certification
+	var certs []*unstructured.Unstructured
 
 	desired := map[TupleKey]NodeCertFailure{}
 	observed := map[string]map[string]struct{}{
@@ -221,8 +243,8 @@ func TestProcessDesiredAndObserved_ObservedNotDesired_PublishesHealthy(t *testin
 // downstream consumers can only fail the condition update for a missing Node.
 func TestProcessDesiredAndObserved_DesiredNotObserved_NodeMissing_Skips(t *testing.T) {
 	recorder := newTestRecorder()
-	cert := newCert("cert-1", "ns", nvcrev1alpha1.CertificationFailed, "True", nil)
-	certs := []*nvcrev1alpha1.Certification{cert}
+	cert := newCert("cert-1", "ns", nvcre.CertificationFailed, "True", nil)
+	certs := []*unstructured.Unstructured{cert}
 	r := newTestReconciler(t, recorder, cert)
 
 	desired := map[TupleKey]NodeCertFailure{
@@ -241,9 +263,9 @@ func TestProcessDesiredAndObserved_DesiredNotObserved_NodeMissing_Skips(t *testi
 
 func TestProcessDesiredAndObserved_DesiredNotObserved_NodeExists_PublishesUnhealthy(t *testing.T) {
 	recorder := newTestRecorder()
-	cert := newCert("cert-1", "ns", nvcrev1alpha1.CertificationFailed, "True", nil)
+	cert := newCert("cert-1", "ns", nvcre.CertificationFailed, "True", nil)
 	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "gpu-01"}}
-	certs := []*nvcrev1alpha1.Certification{cert}
+	certs := []*unstructured.Unstructured{cert}
 	r := newTestReconciler(t, recorder, cert, node)
 
 	desired := map[TupleKey]NodeCertFailure{
@@ -278,14 +300,14 @@ func TestProcessDesiredAndObserved_DesiredNotObserved_NodeExists_PublishesUnheal
 // the other certs are processed normally.
 func TestTerminalCerts_ZeroTransitionTime_IsSkipped(t *testing.T) {
 	good := failedCert("results")
-	noTime := newCert("cert-no-time", "ns", nvcrev1alpha1.CertificationFailed, "True", nil)
-	noTime.Status.Conditions[0].LastTransitionTime = metav1.Time{}
+	noTime := newCert("cert-no-time", "ns", nvcre.CertificationFailed, "True", nil)
+	setCompletionTime(t, noTime, time.Time{})
 	inProgress := newCert("cert-running", "ns", "", "", nil)
 
-	completed, certTimes := terminalCerts([]nvcrev1alpha1.Certification{*noTime, *good, *inProgress})
+	completed, certTimes := terminalCerts([]unstructured.Unstructured{*noTime, *good, *inProgress})
 
 	require.Len(t, completed, 1)
-	require.Equal(t, "cert-1", completed[0].Name)
+	require.Equal(t, "cert-1", completed[0].GetName())
 	require.Len(t, certTimes, 1)
 	require.Contains(t, certTimes, CertRef{Name: "cert-1", Namespace: "ns"})
 }
@@ -294,26 +316,26 @@ func TestGetCompletionTime_UsesTrueTerminalCondition(t *testing.T) {
 	created := metav1.NewTime(time.Date(2026, 9, 4, 7, 0, 0, 0, time.UTC))
 	finished := metav1.NewTime(created.Add(10 * time.Minute))
 
-	cert := &nvcrev1alpha1.Certification{
-		ObjectMeta: metav1.ObjectMeta{Name: "cert-ok", Namespace: "ns"},
-		Status: nvcrev1alpha1.CertificationStatus{
-			Conditions: []metav1.Condition{
-				{Type: nvcrev1alpha1.CertificationFailed, Status: metav1.ConditionFalse, LastTransitionTime: created},
-				{Type: nvcrev1alpha1.CertificationSucceeded, Status: metav1.ConditionTrue, LastTransitionTime: finished},
-			},
+	cert := newCert("cert-ok", "ns", "", "", nil)
+	status := nvcre.Status{
+		Conditions: []metav1.Condition{
+			{Type: nvcre.CertificationFailed, Status: metav1.ConditionFalse, LastTransitionTime: created},
+			{Type: nvcre.CertificationSucceeded, Status: metav1.ConditionTrue, LastTransitionTime: finished},
 		},
 	}
+	require.NoError(t, nvcre.SetStatus(cert, status))
 
 	got, err := getCompletionTime(cert)
 	require.NoError(t, err)
-	assert.Equal(t, finished.Time, got)
+	assert.True(t, finished.Time.Equal(got), "got %v, want %v", got, finished.Time)
 
-	cert.Status.Conditions[1].Status = metav1.ConditionFalse
+	status.Conditions[1].Status = metav1.ConditionFalse
+	require.NoError(t, nvcre.SetStatus(cert, status))
 	_, err = getCompletionTime(cert)
 	require.Error(t, err, "a cert with no True terminal condition has no completion time")
 }
 
-func certTimesFor(t *testing.T, certs ...*nvcrev1alpha1.Certification) map[CertRef]time.Time {
+func certTimesFor(t *testing.T, certs ...*unstructured.Unstructured) map[CertRef]time.Time {
 	t.Helper()
 
 	out := make(map[CertRef]time.Time, len(certs))
@@ -322,7 +344,7 @@ func certTimesFor(t *testing.T, certs ...*nvcrev1alpha1.Certification) map[CertR
 		ct, err := getCompletionTime(c)
 		require.NoError(t, err)
 
-		out[CertRef{Name: c.Name, Namespace: c.Namespace}] = ct
+		out[CertRef{Name: c.GetName(), Namespace: c.GetNamespace()}] = ct
 	}
 
 	return out
@@ -334,10 +356,10 @@ func certTimesFor(t *testing.T, certs ...*nvcrev1alpha1.Certification) map[CertR
 // rows are published as new holds rather than "operator recovered".
 func TestProcessDesiredAndObserved_ReopenedCert_RepublishesUnhealthy(t *testing.T) {
 	recorder := newTestRecorder()
-	cert := newCert("cert-1", "ns", nvcrev1alpha1.CertificationFailed, "True", nil)
-	t3 := cert.Status.Conditions[0].LastTransitionTime.Time
+	cert := newCert("cert-1", "ns", nvcre.CertificationFailed, "True", nil)
+	t3 := completionTime(t, cert)
 	t1 := t3.Add(-10 * time.Minute)
-	cert.Annotations = map[string]string{state.CertProcessedKey: t1.UTC().Format(time.RFC3339)}
+	cert.SetAnnotations(map[string]string{state.CertProcessedKey: t1.UTC().Format(time.RFC3339)})
 	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "gpu-01"}}
 	r := newTestReconciler(t, recorder, cert, node)
 
@@ -355,25 +377,25 @@ func TestProcessDesiredAndObserved_ReopenedCert_RepublishesUnhealthy(t *testing.
 	assert.False(t, recorder.events[0].IsHealthy, "reopened cert must publish a hold, not a recovery")
 	assert.Equal(t, t3, certsToMark[CertRef{Name: "cert-1", Namespace: "ns"}])
 
-	got := &nvcrev1alpha1.Certification{}
+	got := nvcre.NewCertification()
 	require.NoError(t, r.client.Get(context.Background(), client.ObjectKey{Name: "cert-1", Namespace: "ns"}, got))
-	assert.Empty(t, got.Annotations[state.ErrorRecoveredKey])
+	assert.Empty(t, got.GetAnnotations()[state.ErrorRecoveredKey])
 }
 
 // A Failed category whose result ConfigMap is gone must not abort the sweep.
 // The category contributes nothing and the sweep continues.
 func TestBuildDesired_MissingFailedNodesConfigMap_SkipsCategory(t *testing.T) {
 	recorder := newTestRecorder()
-	cert := newCert("cert-1", "ns", nvcrev1alpha1.CertificationFailed, "True",
-		[]nvcrev1alpha1.CertificationCategoryStatus{{
+	cert := newCert("cert-1", "ns", nvcre.CertificationFailed, "True",
+		[]nvcre.CategoryStatus{{
 			Domain:         "nccl",
 			Variant:        "nccl-all-gather",
-			Status:         nvcrev1alpha1.CertificationFailed,
-			FailedNodesRef: &corev1.TypedLocalObjectReference{Name: "does-not-exist"},
+			Status:         nvcre.CertificationFailed,
+			FailedNodesRef: &nvcre.LocalObjectReference{Name: "does-not-exist"},
 		}})
 	r := newTestReconciler(t, recorder, cert)
 
-	desired, err := r.buildDesired(context.Background(), []nvcrev1alpha1.Certification{*cert})
+	desired, err := r.buildDesired(context.Background(), []unstructured.Unstructured{*cert})
 	require.NoError(t, err)
 	assert.Empty(t, desired)
 }
@@ -382,12 +404,12 @@ func TestBuildDesired_MissingFailedNodesConfigMap_SkipsCategory(t *testing.T) {
 // the sweep: treating it as empty would heal every hold the category asserts.
 func TestBuildDesired_CorruptFailedNodesConfigMap_AbortsSweep(t *testing.T) {
 	recorder := newTestRecorder()
-	cert := newCert("cert-1", "ns", nvcrev1alpha1.CertificationFailed, "True",
-		[]nvcrev1alpha1.CertificationCategoryStatus{{
+	cert := newCert("cert-1", "ns", nvcre.CertificationFailed, "True",
+		[]nvcre.CategoryStatus{{
 			Domain:         "nccl",
 			Variant:        "nccl-all-gather",
-			Status:         nvcrev1alpha1.CertificationFailed,
-			FailedNodesRef: &corev1.TypedLocalObjectReference{Name: "results"},
+			Status:         nvcre.CertificationFailed,
+			FailedNodesRef: &nvcre.LocalObjectReference{Name: "results"},
 		}})
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "results", Namespace: "ns"},
@@ -395,27 +417,27 @@ func TestBuildDesired_CorruptFailedNodesConfigMap_AbortsSweep(t *testing.T) {
 	}
 	r := newTestReconciler(t, recorder, cert, cm)
 
-	desired, err := r.buildDesired(context.Background(), []nvcrev1alpha1.Certification{*cert})
+	desired, err := r.buildDesired(context.Background(), []unstructured.Unstructured{*cert})
 	require.ErrorContains(t, err, "failed to decode failed-nodes ConfigMap ns/results")
 	assert.Nil(t, desired)
 }
 
-func failedCert(cmName string) *nvcrev1alpha1.Certification {
-	return newCert("cert-1", "ns", nvcrev1alpha1.CertificationFailed, "True",
-		[]nvcrev1alpha1.CertificationCategoryStatus{{
+func failedCert(cmName string) *unstructured.Unstructured {
+	return newCert("cert-1", "ns", nvcre.CertificationFailed, "True",
+		[]nvcre.CategoryStatus{{
 			Domain:         "nccl",
 			Variant:        "nccl-all-gather",
-			Status:         nvcrev1alpha1.CertificationFailed,
-			FailedNodesRef: &corev1.TypedLocalObjectReference{Name: cmName},
+			Status:         nvcre.CertificationFailed,
+			FailedNodesRef: &nvcre.LocalObjectReference{Name: cmName},
 		}})
 }
 
 func failedRowsCM(t *testing.T, name, rv string, nodes ...string) *corev1.ConfigMap {
 	t.Helper()
 
-	rows := make([]nvcrev1alpha1.FailedNode, 0, len(nodes))
+	rows := make([]nvcre.FailedNode, 0, len(nodes))
 	for _, n := range nodes {
-		rows = append(rows, nvcrev1alpha1.FailedNode{Name: n, Reason: "WorkloadFailed", Message: "m"})
+		rows = append(rows, nvcre.FailedNode{Name: n, Reason: "WorkloadFailed", Message: "m"})
 	}
 
 	return &corev1.ConfigMap{
@@ -430,7 +452,7 @@ func TestBuildDesired_ResultDecodeIsMemoisedByResourceVersion(t *testing.T) {
 	cert := failedCert("results")
 	cm := failedRowsCM(t, "results", "", "gpu-01")
 	r := newTestReconciler(t, newTestRecorder(), cert, cm)
-	certs := []nvcrev1alpha1.Certification{*cert}
+	certs := []unstructured.Unstructured{*cert}
 	key := types.NamespacedName{Namespace: "ns", Name: "results"}
 
 	desired, err := r.buildDesired(context.Background(), certs)
@@ -441,7 +463,7 @@ func TestBuildDesired_ResultDecodeIsMemoisedByResourceVersion(t *testing.T) {
 	// Plant a different decoded result at the current resourceVersion. If the
 	// memo is honoured, the planted rows win over the stored payload.
 	planted := r.results[key]
-	planted.failed = []nvcrev1alpha1.FailedNode{
+	planted.failed = []nvcre.FailedNode{
 		{Name: "gpu-01", Reason: "WorkloadFailed", Message: "m"},
 		{Name: "gpu-02", Reason: "WorkloadFailed", Message: "m"},
 	}
@@ -470,7 +492,7 @@ func TestBuildDesired_PrunesMemoForRetiredCerts(t *testing.T) {
 	r := newTestReconciler(t, newTestRecorder(), cert, cm)
 	key := types.NamespacedName{Namespace: "ns", Name: "results"}
 
-	_, err := r.buildDesired(context.Background(), []nvcrev1alpha1.Certification{*cert})
+	_, err := r.buildDesired(context.Background(), []unstructured.Unstructured{*cert})
 	require.NoError(t, err)
 	require.Contains(t, r.results, key)
 
@@ -503,18 +525,18 @@ func TestProcessCertificationCRs_MalformedNodeAnnotation_LeavesNodeUntouched(t *
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "failed-nodes-cm", Namespace: "test-ns"},
 		BinaryData: map[string][]byte{
-			"failed-nodes.json.gz": mustGzipJSON(t, []nvcrev1alpha1.FailedNode{
-				{Name: "gpu-01", Reason: nvcrev1alpha1.NodeFailureWorkloadFailed, Message: "held"},
-				{Name: "gpu-02", Reason: nvcrev1alpha1.NodeFailureWorkloadFailed, Message: "held"},
+			"failed-nodes.json.gz": mustGzipJSON(t, []nvcre.FailedNode{
+				{Name: "gpu-01", Reason: nvcre.NodeFailureWorkloadFailed, Message: "held"},
+				{Name: "gpu-02", Reason: nvcre.NodeFailureWorkloadFailed, Message: "held"},
 			}),
 		},
 	}
-	cert := newCert("cert-1", "test-ns", "Failed", "True", []nvcrev1alpha1.CertificationCategoryStatus{{
-		Domain: "communication", Variant: "nccl-all-gather", Status: nvcrev1alpha1.CertificationFailed,
-		FailedNodesRef: &corev1.TypedLocalObjectReference{Name: "failed-nodes-cm"},
+	cert := newCert("cert-1", "test-ns", "Failed", "True", []nvcre.CategoryStatus{{
+		Domain: "communication", Variant: "nccl-all-gather", Status: nvcre.CertificationFailed,
+		FailedNodesRef: &nvcre.LocalObjectReference{Name: "failed-nodes-cm"},
 	}})
-	terminal := cert.Status.Conditions[0].LastTransitionTime.Time
-	cert.Annotations = map[string]string{state.CertProcessedKey: terminal.UTC().Format(time.RFC3339)}
+	terminal := completionTime(t, cert)
+	cert.SetAnnotations(map[string]string{state.CertProcessedKey: terminal.UTC().Format(time.RFC3339)})
 	good := newNodeWithCertFailures("gpu-01", `["nccl-all-gather/WorkloadFailed"]`)
 	bad := newNodeWithCertFailures("gpu-02", "not-json")
 
@@ -522,14 +544,14 @@ func TestProcessCertificationCRs_MalformedNodeAnnotation_LeavesNodeUntouched(t *
 	r := newTestReconciler(t, recorder, cm, cert, good, bad)
 	ctx := context.Background()
 
-	require.NoError(t, r.processCertificationCRs(ctx, []nvcrev1alpha1.Certification{*cert}, certTimesFor(t, cert)))
+	require.NoError(t, r.processCertificationCRs(ctx, []unstructured.Unstructured{*cert}, certTimesFor(t, cert)))
 
 	assert.Empty(t, recorder.events, "no event for the malformed node, and gpu-01 is already held")
 
-	gotCert := &nvcrev1alpha1.Certification{}
+	gotCert := nvcre.NewCertification()
 	require.NoError(t, r.client.Get(ctx, types.NamespacedName{Name: "cert-1", Namespace: "test-ns"}, gotCert))
-	assert.NotContains(t, gotCert.Annotations, state.ErrorRecoveredKey, "the tuple is not read as an operator clear")
-	assert.Equal(t, terminal.UTC().Format(time.RFC3339), gotCert.Annotations[state.CertProcessedKey],
+	assert.NotContains(t, gotCert.GetAnnotations(), state.ErrorRecoveredKey, "the tuple is not read as an operator clear")
+	assert.Equal(t, terminal.UTC().Format(time.RFC3339), gotCert.GetAnnotations()[state.CertProcessedKey],
 		"an existing stamp is kept")
 
 	gotNode := &corev1.Node{}
@@ -545,15 +567,15 @@ func TestProcessCertificationCRs_MalformedNodeAnnotation_NewFailureHeldUntilRepa
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "failed-nodes-cm", Namespace: "test-ns"},
 		BinaryData: map[string][]byte{
-			"failed-nodes.json.gz": mustGzipJSON(t, []nvcrev1alpha1.FailedNode{
-				{Name: "gpu-01", Reason: nvcrev1alpha1.NodeFailureWorkloadFailed, Message: "new"},
-				{Name: "gpu-02", Reason: nvcrev1alpha1.NodeFailureWorkloadFailed, Message: "new"},
+			"failed-nodes.json.gz": mustGzipJSON(t, []nvcre.FailedNode{
+				{Name: "gpu-01", Reason: nvcre.NodeFailureWorkloadFailed, Message: "new"},
+				{Name: "gpu-02", Reason: nvcre.NodeFailureWorkloadFailed, Message: "new"},
 			}),
 		},
 	}
-	cert := newCert("cert-1", "test-ns", "Failed", "True", []nvcrev1alpha1.CertificationCategoryStatus{{
-		Domain: "communication", Variant: "nccl-all-gather", Status: nvcrev1alpha1.CertificationFailed,
-		FailedNodesRef: &corev1.TypedLocalObjectReference{Name: "failed-nodes-cm"},
+	cert := newCert("cert-1", "test-ns", "Failed", "True", []nvcre.CategoryStatus{{
+		Domain: "communication", Variant: "nccl-all-gather", Status: nvcre.CertificationFailed,
+		FailedNodesRef: &nvcre.LocalObjectReference{Name: "failed-nodes-cm"},
 	}})
 	good := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "gpu-01"}}
 	bad := newNodeWithCertFailures("gpu-02", "not-json")
@@ -561,7 +583,7 @@ func TestProcessCertificationCRs_MalformedNodeAnnotation_NewFailureHeldUntilRepa
 	recorder := newTestRecorder()
 	r := newTestReconciler(t, recorder, cm, cert, good, bad)
 	ctx := context.Background()
-	certs := []nvcrev1alpha1.Certification{*cert}
+	certs := []unstructured.Unstructured{*cert}
 
 	require.NoError(t, r.processCertificationCRs(ctx, certs, certTimesFor(t, cert)))
 
@@ -569,9 +591,9 @@ func TestProcessCertificationCRs_MalformedNodeAnnotation_NewFailureHeldUntilRepa
 	assert.Equal(t, "gpu-01", recorder.events[0].Node)
 	assert.False(t, recorder.events[0].IsHealthy)
 
-	gotCert := &nvcrev1alpha1.Certification{}
+	gotCert := nvcre.NewCertification()
 	require.NoError(t, r.client.Get(ctx, types.NamespacedName{Name: "cert-1", Namespace: "test-ns"}, gotCert))
-	assert.NotContains(t, gotCert.Annotations, state.CertProcessedKey, "stamp held while gpu-02 is unwritten")
+	assert.NotContains(t, gotCert.GetAnnotations(), state.CertProcessedKey, "stamp held while gpu-02 is unwritten")
 
 	// Second sweep with the annotation still broken: nothing new is published.
 	require.NoError(t, r.processCertificationCRs(ctx, certs, certTimesFor(t, cert)))
@@ -589,15 +611,15 @@ func TestProcessCertificationCRs_MalformedNodeAnnotation_NewFailureHeldUntilRepa
 	assert.False(t, recorder.events[1].IsHealthy)
 
 	require.NoError(t, r.client.Get(ctx, types.NamespacedName{Name: "cert-1", Namespace: "test-ns"}, gotCert))
-	assert.Contains(t, gotCert.Annotations, state.CertProcessedKey)
+	assert.Contains(t, gotCert.GetAnnotations(), state.CertProcessedKey)
 }
 
 // --- handleCategoryFailure tests ---
 
 func TestHandleCategoryFailure_AddsToDesired(t *testing.T) {
-	failedRows := []nvcrev1alpha1.FailedNode{
-		{Name: "gpu-01", Reason: nvcrev1alpha1.NodeFailureWorkloadFailed, Message: "workload deleted"},
-		{Name: "gpu-02", Reason: nvcrev1alpha1.NodeFailureThresholdViolation, Message: "bandwidth low"},
+	failedRows := []nvcre.FailedNode{
+		{Name: "gpu-01", Reason: nvcre.NodeFailureWorkloadFailed, Message: "workload deleted"},
+		{Name: "gpu-02", Reason: nvcre.NodeFailureThresholdViolation, Message: "bandwidth low"},
 	}
 
 	cm := &corev1.ConfigMap{
@@ -612,10 +634,10 @@ func TestHandleCategoryFailure_AddsToDesired(t *testing.T) {
 	r := newTestReconciler(t, recorder, cm)
 
 	desired := make(map[TupleKey]NodeCertFailure)
-	cat := nvcrev1alpha1.CertificationCategoryStatus{
+	cat := nvcre.CategoryStatus{
 		Domain: "communication", Variant: "nccl-all-gather",
-		Status:         nvcrev1alpha1.CertificationFailed,
-		FailedNodesRef: &corev1.TypedLocalObjectReference{Name: "failed-nodes-cm"},
+		Status:         nvcre.CertificationFailed,
+		FailedNodesRef: &nvcre.LocalObjectReference{Name: "failed-nodes-cm"},
 	}
 
 	err := r.handleCategoryFailure(context.Background(), cert, desired, cat, CertRef{Name: "cert-1", Namespace: "test-ns"}, map[types.NamespacedName]struct{}{})
@@ -629,8 +651,8 @@ func TestHandleCategoryFailure_AddsToDesired(t *testing.T) {
 }
 
 func TestHandleCategoryFailure_FCFS_KeepsFirstCert_AppendsCertRef(t *testing.T) {
-	failedRows := []nvcrev1alpha1.FailedNode{
-		{Name: "gpu-01", Reason: nvcrev1alpha1.NodeFailureWorkloadFailed, Message: "second cert message"},
+	failedRows := []nvcre.FailedNode{
+		{Name: "gpu-01", Reason: nvcre.NodeFailureWorkloadFailed, Message: "second cert message"},
 	}
 
 	cm := &corev1.ConfigMap{
@@ -652,10 +674,10 @@ func TestHandleCategoryFailure_FCFS_KeepsFirstCert_AppendsCertRef(t *testing.T) 
 		},
 	}
 
-	cat := nvcrev1alpha1.CertificationCategoryStatus{
+	cat := nvcre.CategoryStatus{
 		Domain: "communication", Variant: "nccl-all-gather",
-		Status:         nvcrev1alpha1.CertificationFailed,
-		FailedNodesRef: &corev1.TypedLocalObjectReference{Name: "failed-nodes-cm"},
+		Status:         nvcre.CertificationFailed,
+		FailedNodesRef: &nvcre.LocalObjectReference{Name: "failed-nodes-cm"},
 	}
 
 	err := r.handleCategoryFailure(context.Background(), cert2, desired, cat, CertRef{Name: "cert-2", Namespace: "test-ns"}, map[types.NamespacedName]struct{}{})
@@ -669,8 +691,8 @@ func TestHandleCategoryFailure_FCFS_KeepsFirstCert_AppendsCertRef(t *testing.T) 
 }
 
 func TestHandleCategoryFailure_ErrorRecoveredSkip(t *testing.T) {
-	failedRows := []nvcrev1alpha1.FailedNode{
-		{Name: "gpu-01", Reason: nvcrev1alpha1.NodeFailureWorkloadFailed, Message: "should be skipped"},
+	failedRows := []nvcre.FailedNode{
+		{Name: "gpu-01", Reason: nvcre.NodeFailureWorkloadFailed, Message: "should be skipped"},
 	}
 
 	cm := &corev1.ConfigMap{
@@ -681,19 +703,19 @@ func TestHandleCategoryFailure_ErrorRecoveredSkip(t *testing.T) {
 	}
 
 	cert := newCert("cert-1", "test-ns", "Failed", "True", nil)
-	cert.Annotations = map[string]string{
+	cert.SetAnnotations(map[string]string{
 		state.ErrorRecoveredKey: `["gpu-01#nccl-all-gather/WorkloadFailed"]`,
-		state.CertProcessedKey:  cert.Status.Conditions[0].LastTransitionTime.UTC().Format(time.RFC3339),
-	}
+		state.CertProcessedKey:  completionTime(t, cert).UTC().Format(time.RFC3339),
+	})
 
 	recorder := newTestRecorder()
 	r := newTestReconciler(t, recorder, cm)
 
 	desired := make(map[TupleKey]NodeCertFailure)
-	cat := nvcrev1alpha1.CertificationCategoryStatus{
+	cat := nvcre.CategoryStatus{
 		Domain: "communication", Variant: "nccl-all-gather",
-		Status:         nvcrev1alpha1.CertificationFailed,
-		FailedNodesRef: &corev1.TypedLocalObjectReference{Name: "failed-nodes-cm"},
+		Status:         nvcre.CertificationFailed,
+		FailedNodesRef: &nvcre.LocalObjectReference{Name: "failed-nodes-cm"},
 	}
 
 	err := r.handleCategoryFailure(context.Background(), cert, desired, cat, CertRef{Name: "cert-1", Namespace: "test-ns"}, map[types.NamespacedName]struct{}{})
@@ -703,9 +725,9 @@ func TestHandleCategoryFailure_ErrorRecoveredSkip(t *testing.T) {
 }
 
 func TestHandleCategoryFailure_PolicyFilter(t *testing.T) {
-	failedRows := []nvcrev1alpha1.FailedNode{
-		{Name: "gpu-01", Reason: nvcrev1alpha1.NodeFailureWorkloadFailed, Message: "should match"},
-		{Name: "gpu-02", Reason: nvcrev1alpha1.NodeFailureHardwareDetected, Message: "should not match"},
+	failedRows := []nvcre.FailedNode{
+		{Name: "gpu-01", Reason: nvcre.NodeFailureWorkloadFailed, Message: "should match"},
+		{Name: "gpu-02", Reason: nvcre.NodeFailureHardwareDetected, Message: "should not match"},
 	}
 
 	cm := &corev1.ConfigMap{
@@ -717,7 +739,6 @@ func TestHandleCategoryFailure_PolicyFilter(t *testing.T) {
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, nvcrev1alpha1.AddToScheme(scheme))
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(cm).Build()
 
 	evaluator, err := config.NewEvaluator([]config.Policy{
@@ -734,10 +755,10 @@ func TestHandleCategoryFailure_PolicyFilter(t *testing.T) {
 
 	cert := newCert("cert-1", "test-ns", "Failed", "True", nil)
 	desired := make(map[TupleKey]NodeCertFailure)
-	cat := nvcrev1alpha1.CertificationCategoryStatus{
+	cat := nvcre.CategoryStatus{
 		Domain: "communication", Variant: "nccl-all-gather",
-		Status:         nvcrev1alpha1.CertificationFailed,
-		FailedNodesRef: &corev1.TypedLocalObjectReference{Name: "failed-nodes-cm"},
+		Status:         nvcre.CertificationFailed,
+		FailedNodesRef: &nvcre.LocalObjectReference{Name: "failed-nodes-cm"},
 	}
 
 	err = r.handleCategoryFailure(context.Background(), cert, desired, cat, CertRef{Name: "cert-1", Namespace: "test-ns"}, map[types.NamespacedName]struct{}{})
@@ -768,10 +789,10 @@ func TestHandleCategorySuccess_ClearsAllReasons(t *testing.T) {
 		{Node: "gpu-01", Variant: "nemotron5-8b", Reason: "WorkloadFailed"}:        {},
 	}
 
-	cat := nvcrev1alpha1.CertificationCategoryStatus{
+	cat := nvcre.CategoryStatus{
 		Domain: "communication", Variant: "nccl-all-gather",
-		Status:            nvcrev1alpha1.CertificationSucceeded,
-		SucceededNodesRef: &corev1.TypedLocalObjectReference{Name: "succeeded-nodes-cm"},
+		Status:            nvcre.CertificationSucceeded,
+		SucceededNodesRef: &nvcre.LocalObjectReference{Name: "succeeded-nodes-cm"},
 	}
 
 	err := r.handleCategorySuccess(context.Background(), desired, cat, "test-ns", map[types.NamespacedName]struct{}{})
@@ -788,8 +809,8 @@ func TestBuildDesired_SingleFailedCert(t *testing.T) {
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "failed-nodes-cm", Namespace: "test-ns"},
 		BinaryData: map[string][]byte{
-			"failed-nodes.json.gz": mustGzipJSON(t, []nvcrev1alpha1.FailedNode{
-				{Name: "gpu-01", Reason: nvcrev1alpha1.NodeFailureWorkloadFailed, Message: "workload deleted"},
+			"failed-nodes.json.gz": mustGzipJSON(t, []nvcre.FailedNode{
+				{Name: "gpu-01", Reason: nvcre.NodeFailureWorkloadFailed, Message: "workload deleted"},
 			}),
 		},
 	}
@@ -797,11 +818,11 @@ func TestBuildDesired_SingleFailedCert(t *testing.T) {
 	recorder := newTestRecorder()
 	r := newTestReconciler(t, recorder, cm)
 
-	certs := []nvcrev1alpha1.Certification{
-		*newCert("cert-1", "test-ns", "Failed", "True", []nvcrev1alpha1.CertificationCategoryStatus{
+	certs := []unstructured.Unstructured{
+		*newCert("cert-1", "test-ns", "Failed", "True", []nvcre.CategoryStatus{
 			{
-				Domain: "communication", Variant: "nccl-all-gather", Status: nvcrev1alpha1.CertificationFailed,
-				FailedNodesRef: &corev1.TypedLocalObjectReference{Name: "failed-nodes-cm"},
+				Domain: "communication", Variant: "nccl-all-gather", Status: nvcre.CertificationFailed,
+				FailedNodesRef: &nvcre.LocalObjectReference{Name: "failed-nodes-cm"},
 			},
 		}),
 	}
@@ -820,8 +841,8 @@ func TestBuildDesired_RerunRecovery_SucceededClearsFailure(t *testing.T) {
 	failedCM := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "failed-nodes-cm", Namespace: "test-ns"},
 		BinaryData: map[string][]byte{
-			"failed-nodes.json.gz": mustGzipJSON(t, []nvcrev1alpha1.FailedNode{
-				{Name: "gpu-01", Reason: nvcrev1alpha1.NodeFailureWorkloadFailed, Message: "workload deleted"},
+			"failed-nodes.json.gz": mustGzipJSON(t, []nvcre.FailedNode{
+				{Name: "gpu-01", Reason: nvcre.NodeFailureWorkloadFailed, Message: "workload deleted"},
 			}),
 		},
 	}
@@ -835,17 +856,17 @@ func TestBuildDesired_RerunRecovery_SucceededClearsFailure(t *testing.T) {
 	recorder := newTestRecorder()
 	r := newTestReconciler(t, recorder, failedCM, succeededCM)
 
-	certs := []nvcrev1alpha1.Certification{
-		*newCert("cert-old", "test-ns", "Failed", "True", []nvcrev1alpha1.CertificationCategoryStatus{
+	certs := []unstructured.Unstructured{
+		*newCert("cert-old", "test-ns", "Failed", "True", []nvcre.CategoryStatus{
 			{
-				Domain: "communication", Variant: "nccl-all-gather", Status: nvcrev1alpha1.CertificationFailed,
-				FailedNodesRef: &corev1.TypedLocalObjectReference{Name: "failed-nodes-cm"},
+				Domain: "communication", Variant: "nccl-all-gather", Status: nvcre.CertificationFailed,
+				FailedNodesRef: &nvcre.LocalObjectReference{Name: "failed-nodes-cm"},
 			},
 		}),
-		*newCert("cert-rerun", "test-ns", "Succeeded", "True", []nvcrev1alpha1.CertificationCategoryStatus{
+		*newCert("cert-rerun", "test-ns", "Succeeded", "True", []nvcre.CategoryStatus{
 			{
-				Domain: "communication", Variant: "nccl-all-gather", Status: nvcrev1alpha1.CertificationSucceeded,
-				SucceededNodesRef: &corev1.TypedLocalObjectReference{Name: "succeeded-nodes-cm"},
+				Domain: "communication", Variant: "nccl-all-gather", Status: nvcre.CertificationSucceeded,
+				SucceededNodesRef: &nvcre.LocalObjectReference{Name: "succeeded-nodes-cm"},
 			},
 		}),
 	}
@@ -863,8 +884,8 @@ func TestBuildDesired_RerunRecovery_LaterFailureSurvivesEarlierPass(t *testing.T
 	failedA := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "failed-a", Namespace: "test-ns"},
 		BinaryData: map[string][]byte{
-			"failed-nodes.json.gz": mustGzipJSON(t, []nvcrev1alpha1.FailedNode{
-				{Name: "gpu-01", Reason: nvcrev1alpha1.NodeFailureWorkloadFailed, Message: "first failure"},
+			"failed-nodes.json.gz": mustGzipJSON(t, []nvcre.FailedNode{
+				{Name: "gpu-01", Reason: nvcre.NodeFailureWorkloadFailed, Message: "first failure"},
 			}),
 		},
 	}
@@ -877,8 +898,8 @@ func TestBuildDesired_RerunRecovery_LaterFailureSurvivesEarlierPass(t *testing.T
 	failedB := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "failed-b", Namespace: "test-ns"},
 		BinaryData: map[string][]byte{
-			"failed-nodes.json.gz": mustGzipJSON(t, []nvcrev1alpha1.FailedNode{
-				{Name: "gpu-01", Reason: nvcrev1alpha1.NodeFailureWorkloadFailed, Message: "second failure"},
+			"failed-nodes.json.gz": mustGzipJSON(t, []nvcre.FailedNode{
+				{Name: "gpu-01", Reason: nvcre.NodeFailureWorkloadFailed, Message: "second failure"},
 			}),
 		},
 	}
@@ -886,32 +907,32 @@ func TestBuildDesired_RerunRecovery_LaterFailureSurvivesEarlierPass(t *testing.T
 	recorder := newTestRecorder()
 	r := newTestReconciler(t, recorder, failedA, succeededC, failedB)
 
-	certA := newCert("cert-a", "test-ns", "Failed", "True", []nvcrev1alpha1.CertificationCategoryStatus{
+	certA := newCert("cert-a", "test-ns", "Failed", "True", []nvcre.CategoryStatus{
 		{
-			Domain: "communication", Variant: "nccl-all-gather", Status: nvcrev1alpha1.CertificationFailed,
-			FailedNodesRef: &corev1.TypedLocalObjectReference{Name: "failed-a"},
+			Domain: "communication", Variant: "nccl-all-gather", Status: nvcre.CertificationFailed,
+			FailedNodesRef: &nvcre.LocalObjectReference{Name: "failed-a"},
 		},
 	})
-	certC := newCert("cert-c", "test-ns", "Succeeded", "True", []nvcrev1alpha1.CertificationCategoryStatus{
+	certC := newCert("cert-c", "test-ns", "Succeeded", "True", []nvcre.CategoryStatus{
 		{
-			Domain: "communication", Variant: "nccl-all-gather", Status: nvcrev1alpha1.CertificationSucceeded,
-			SucceededNodesRef: &corev1.TypedLocalObjectReference{Name: "succeeded-c"},
+			Domain: "communication", Variant: "nccl-all-gather", Status: nvcre.CertificationSucceeded,
+			SucceededNodesRef: &nvcre.LocalObjectReference{Name: "succeeded-c"},
 		},
 	})
-	certB := newCert("cert-b", "test-ns", "Failed", "True", []nvcrev1alpha1.CertificationCategoryStatus{
+	certB := newCert("cert-b", "test-ns", "Failed", "True", []nvcre.CategoryStatus{
 		{
-			Domain: "communication", Variant: "nccl-all-gather", Status: nvcrev1alpha1.CertificationFailed,
-			FailedNodesRef: &corev1.TypedLocalObjectReference{Name: "failed-b"},
+			Domain: "communication", Variant: "nccl-all-gather", Status: nvcre.CertificationFailed,
+			FailedNodesRef: &nvcre.LocalObjectReference{Name: "failed-b"},
 		},
 	})
 
 	base := time.Now().Truncate(time.Second)
-	certA.Status.Conditions[0].LastTransitionTime = metav1.NewTime(base)
-	certC.Status.Conditions[0].LastTransitionTime = metav1.NewTime(base.Add(time.Minute))
-	certB.Status.Conditions[0].LastTransitionTime = metav1.NewTime(base.Add(2 * time.Minute))
+	setCompletionTime(t, certA, base)
+	setCompletionTime(t, certC, base.Add(time.Minute))
+	setCompletionTime(t, certB, base.Add(2*time.Minute))
 
 	// buildDesired receives the certs already sorted by completion time.
-	desired, err := r.buildDesired(context.Background(), []nvcrev1alpha1.Certification{*certA, *certC, *certB})
+	desired, err := r.buildDesired(context.Background(), []unstructured.Unstructured{*certA, *certC, *certB})
 	require.NoError(t, err)
 
 	key := TupleKey{Node: "gpu-01", Variant: "nccl-all-gather", Reason: "WorkloadFailed"}
@@ -925,16 +946,16 @@ func TestBuildDesired_FCFS_OlderCertOwns_BothContribute(t *testing.T) {
 	cm1 := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "failed-cm-1", Namespace: "ns-1"},
 		BinaryData: map[string][]byte{
-			"failed-nodes.json.gz": mustGzipJSON(t, []nvcrev1alpha1.FailedNode{
-				{Name: "gpu-01", Reason: nvcrev1alpha1.NodeFailureWorkloadFailed, Message: "first cert"},
+			"failed-nodes.json.gz": mustGzipJSON(t, []nvcre.FailedNode{
+				{Name: "gpu-01", Reason: nvcre.NodeFailureWorkloadFailed, Message: "first cert"},
 			}),
 		},
 	}
 	cm2 := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "failed-cm-2", Namespace: "ns-2"},
 		BinaryData: map[string][]byte{
-			"failed-nodes.json.gz": mustGzipJSON(t, []nvcrev1alpha1.FailedNode{
-				{Name: "gpu-01", Reason: nvcrev1alpha1.NodeFailureWorkloadFailed, Message: "second cert"},
+			"failed-nodes.json.gz": mustGzipJSON(t, []nvcre.FailedNode{
+				{Name: "gpu-01", Reason: nvcre.NodeFailureWorkloadFailed, Message: "second cert"},
 			}),
 		},
 	}
@@ -942,27 +963,27 @@ func TestBuildDesired_FCFS_OlderCertOwns_BothContribute(t *testing.T) {
 	recorder := newTestRecorder()
 	r := newTestReconciler(t, recorder, cm1, cm2)
 
-	older := newCert("cert-1", "ns-1", "Failed", "True", []nvcrev1alpha1.CertificationCategoryStatus{
+	older := newCert("cert-1", "ns-1", "Failed", "True", []nvcre.CategoryStatus{
 		{
-			Domain: "communication", Variant: "nccl-all-gather", Status: nvcrev1alpha1.CertificationFailed,
-			FailedNodesRef: &corev1.TypedLocalObjectReference{Name: "failed-cm-1"},
+			Domain: "communication", Variant: "nccl-all-gather", Status: nvcre.CertificationFailed,
+			FailedNodesRef: &nvcre.LocalObjectReference{Name: "failed-cm-1"},
 		},
 	})
-	newer := newCert("cert-2", "ns-2", "Failed", "True", []nvcrev1alpha1.CertificationCategoryStatus{
+	newer := newCert("cert-2", "ns-2", "Failed", "True", []nvcre.CategoryStatus{
 		{
-			Domain: "communication", Variant: "nccl-all-gather", Status: nvcrev1alpha1.CertificationFailed,
-			FailedNodesRef: &corev1.TypedLocalObjectReference{Name: "failed-cm-2"},
+			Domain: "communication", Variant: "nccl-all-gather", Status: nvcre.CertificationFailed,
+			FailedNodesRef: &nvcre.LocalObjectReference{Name: "failed-cm-2"},
 		},
 	})
 
 	// Give the certs distinct completion times and list the newer one first, so
 	// that slice order and time order disagree: only completion time may decide
 	// the owner.
-	t1 := metav1.NewTime(time.Date(2026, 9, 4, 7, 0, 0, 0, time.UTC))
-	older.Status.Conditions[0].LastTransitionTime = t1
-	newer.Status.Conditions[0].LastTransitionTime = metav1.NewTime(t1.Add(10 * time.Minute))
+	t1 := time.Date(2026, 9, 4, 7, 0, 0, 0, time.UTC)
+	setCompletionTime(t, older, t1)
+	setCompletionTime(t, newer, t1.Add(10*time.Minute))
 
-	certs := []nvcrev1alpha1.Certification{*newer, *older}
+	certs := []unstructured.Unstructured{*newer, *older}
 	sortByCompletionTime(certs)
 
 	desired, err := r.buildDesired(context.Background(), certs)
@@ -984,42 +1005,42 @@ func TestProcessCertificationCRs_ReopenedCertRepublishesReleasedTuple(t *testing
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "failed-nodes-cm", Namespace: "test-ns"},
 		BinaryData: map[string][]byte{
-			"failed-nodes.json.gz": mustGzipJSON(t, []nvcrev1alpha1.FailedNode{
-				{Name: "gpu-01", Reason: nvcrev1alpha1.NodeFailureWorkloadFailed, Message: "failed again"},
+			"failed-nodes.json.gz": mustGzipJSON(t, []nvcre.FailedNode{
+				{Name: "gpu-01", Reason: nvcre.NodeFailureWorkloadFailed, Message: "failed again"},
 			}),
 		},
 	}
 
-	cert := newCert("cert-1", "test-ns", "Failed", "True", []nvcrev1alpha1.CertificationCategoryStatus{
+	cert := newCert("cert-1", "test-ns", "Failed", "True", []nvcre.CategoryStatus{
 		{
-			Domain: "communication", Variant: "nccl-all-gather", Status: nvcrev1alpha1.CertificationFailed,
-			FailedNodesRef: &corev1.TypedLocalObjectReference{Name: "failed-nodes-cm"},
+			Domain: "communication", Variant: "nccl-all-gather", Status: nvcre.CertificationFailed,
+			FailedNodesRef: &nvcre.LocalObjectReference{Name: "failed-nodes-cm"},
 		},
 	})
-	terminal := cert.Status.Conditions[0].LastTransitionTime.Time
-	cert.Annotations = map[string]string{
+	terminal := completionTime(t, cert)
+	cert.SetAnnotations(map[string]string{
 		state.CertProcessedKey:  terminal.Add(-10 * time.Minute).UTC().Format(time.RFC3339),
 		state.ErrorRecoveredKey: `["gpu-01#nccl-all-gather/WorkloadFailed"]`,
-	}
+	})
 	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "gpu-01"}}
 
 	recorder := newTestRecorder()
 	r := newTestReconciler(t, recorder, cm, cert, node)
 	ctx := context.Background()
 
-	require.NoError(t, r.processCertificationCRs(ctx, []nvcrev1alpha1.Certification{*cert}, certTimesFor(t, cert)))
+	require.NoError(t, r.processCertificationCRs(ctx, []unstructured.Unstructured{*cert}, certTimesFor(t, cert)))
 
 	require.Len(t, recorder.events, 1, "the re-failed tuple is a new failure")
 	assert.Equal(t, "gpu-01", recorder.events[0].Node)
 	assert.False(t, recorder.events[0].IsHealthy)
 	assert.Equal(t, "nccl-all-gather/WorkloadFailed", recorder.events[0].ErrorCode)
 
-	got := &nvcrev1alpha1.Certification{}
+	got := nvcre.NewCertification()
 	require.NoError(t, r.client.Get(ctx, types.NamespacedName{Name: "cert-1", Namespace: "test-ns"}, got))
-	assert.Equal(t, terminal.UTC().Format(time.RFC3339), got.Annotations[state.CertProcessedKey])
-	assert.NotContains(t, got.Annotations, state.ErrorRecoveredKey)
+	assert.Equal(t, terminal.UTC().Format(time.RFC3339), got.GetAnnotations()[state.CertProcessedKey])
+	assert.NotContains(t, got.GetAnnotations(), state.ErrorRecoveredKey)
 
-	require.NoError(t, r.processCertificationCRs(ctx, []nvcrev1alpha1.Certification{*got}, certTimesFor(t, got)))
+	require.NoError(t, r.processCertificationCRs(ctx, []unstructured.Unstructured{*got}, certTimesFor(t, got)))
 	assert.Len(t, recorder.events, 1, "desired and observed: nothing more to publish")
 }
 
@@ -1027,16 +1048,16 @@ func TestBuildDesired_ErrorRecoveredSkip_FallsThrough(t *testing.T) {
 	cm1 := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "failed-cm-1", Namespace: "test-ns"},
 		BinaryData: map[string][]byte{
-			"failed-nodes.json.gz": mustGzipJSON(t, []nvcrev1alpha1.FailedNode{
-				{Name: "gpu-01", Reason: nvcrev1alpha1.NodeFailureWorkloadFailed, Message: "from cert-old"},
+			"failed-nodes.json.gz": mustGzipJSON(t, []nvcre.FailedNode{
+				{Name: "gpu-01", Reason: nvcre.NodeFailureWorkloadFailed, Message: "from cert-old"},
 			}),
 		},
 	}
 	cm2 := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "failed-cm-2", Namespace: "test-ns"},
 		BinaryData: map[string][]byte{
-			"failed-nodes.json.gz": mustGzipJSON(t, []nvcrev1alpha1.FailedNode{
-				{Name: "gpu-01", Reason: nvcrev1alpha1.NodeFailureWorkloadFailed, Message: "from cert-new"},
+			"failed-nodes.json.gz": mustGzipJSON(t, []nvcre.FailedNode{
+				{Name: "gpu-01", Reason: nvcre.NodeFailureWorkloadFailed, Message: "from cert-new"},
 			}),
 		},
 	}
@@ -1044,25 +1065,25 @@ func TestBuildDesired_ErrorRecoveredSkip_FallsThrough(t *testing.T) {
 	recorder := newTestRecorder()
 	r := newTestReconciler(t, recorder, cm1, cm2)
 
-	certOld := newCert("cert-old", "test-ns", "Failed", "True", []nvcrev1alpha1.CertificationCategoryStatus{
+	certOld := newCert("cert-old", "test-ns", "Failed", "True", []nvcre.CategoryStatus{
 		{
-			Domain: "communication", Variant: "nccl-all-gather", Status: nvcrev1alpha1.CertificationFailed,
-			FailedNodesRef: &corev1.TypedLocalObjectReference{Name: "failed-cm-1"},
+			Domain: "communication", Variant: "nccl-all-gather", Status: nvcre.CertificationFailed,
+			FailedNodesRef: &nvcre.LocalObjectReference{Name: "failed-cm-1"},
 		},
 	})
-	certOld.Annotations = map[string]string{
+	certOld.SetAnnotations(map[string]string{
 		state.ErrorRecoveredKey: `["gpu-01#nccl-all-gather/WorkloadFailed"]`,
 		state.CertProcessedKey:  "true",
-	}
+	})
 
-	certNew := newCert("cert-new", "test-ns", "Failed", "True", []nvcrev1alpha1.CertificationCategoryStatus{
+	certNew := newCert("cert-new", "test-ns", "Failed", "True", []nvcre.CategoryStatus{
 		{
-			Domain: "communication", Variant: "nccl-all-gather", Status: nvcrev1alpha1.CertificationFailed,
-			FailedNodesRef: &corev1.TypedLocalObjectReference{Name: "failed-cm-2"},
+			Domain: "communication", Variant: "nccl-all-gather", Status: nvcre.CertificationFailed,
+			FailedNodesRef: &nvcre.LocalObjectReference{Name: "failed-cm-2"},
 		},
 	})
 
-	certs := []nvcrev1alpha1.Certification{*certOld, *certNew}
+	certs := []unstructured.Unstructured{*certOld, *certNew}
 
 	desired, err := r.buildDesired(context.Background(), certs)
 	require.NoError(t, err)
@@ -1083,12 +1104,12 @@ func TestBuildDesired_ErrorRecoveredSkip_FallsThrough(t *testing.T) {
 // read as an operator clear once the annotation is repaired.
 func TestProcessDesiredAndObserved_MalformedAnnotationAtWrite_HoldsStampForWholeCert(t *testing.T) {
 	recorder := newTestRecorder()
-	cats := []nvcrev1alpha1.CertificationCategoryStatus{{
+	cats := []nvcre.CategoryStatus{{
 		Domain:  "nccl",
 		Variant: "nccl-all-gather",
-		Status:  nvcrev1alpha1.CertificationFailed,
+		Status:  nvcre.CertificationFailed,
 	}}
-	cert := newCert("cert-1", "ns", nvcrev1alpha1.CertificationFailed, "True", cats)
+	cert := newCert("cert-1", "ns", nvcre.CertificationFailed, "True", cats)
 	good := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "gpu-01"}}
 	bad := newNodeWithCertFailures("gpu-02", "not-json")
 	r := newTestReconciler(t, recorder, cert, good, bad)
@@ -1112,12 +1133,12 @@ func TestProcessDesiredAndObserved_MalformedAnnotationAtWrite_HoldsStampForWhole
 
 func TestProcessDesiredAndObserved_MalformedAnnotationAtWrite_SkipsTupleWithoutStamping(t *testing.T) {
 	recorder := newTestRecorder()
-	cats := []nvcrev1alpha1.CertificationCategoryStatus{{
+	cats := []nvcre.CategoryStatus{{
 		Domain:  "nccl",
 		Variant: "nccl-all-gather",
-		Status:  nvcrev1alpha1.CertificationFailed,
+		Status:  nvcre.CertificationFailed,
 	}}
-	cert := newCert("cert-1", "ns", nvcrev1alpha1.CertificationFailed, "True", cats)
+	cert := newCert("cert-1", "ns", nvcre.CertificationFailed, "True", cats)
 	node := newNodeWithCertFailures("gpu-01", "not-json")
 	r := newTestReconciler(t, recorder, cert, node)
 

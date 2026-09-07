@@ -16,15 +16,13 @@ package controller
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
-	nvcrev1alpha1 "github.com/NVIDIA/cluster-readiness-engine/api/v1alpha1"
-	compress "github.com/NVIDIA/cluster-readiness-engine/pkg/controller/compress"
-	"github.com/NVIDIA/cluster-readiness-engine/pkg/noderesults"
-	corev1 "k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/nvidia/nvsentinel/health-monitors/nvcre-certification-monitor/pkg/nvcre"
 )
 
 // TupleKey is the deduplication identity: (node, variant, reason).
@@ -54,39 +52,52 @@ type CertRef struct {
 	Namespace string
 }
 
-func isCertificationTerminal(cert *nvcrev1alpha1.Certification) bool {
-	return meta.IsStatusConditionTrue(cert.Status.Conditions, nvcrev1alpha1.CertificationFailed) ||
-		meta.IsStatusConditionTrue(cert.Status.Conditions, nvcrev1alpha1.CertificationSucceeded)
-}
+// terminalCondition returns the True Failed or Succeeded condition, or nil
+// when the cert has not reached a terminal state or its status cannot be read.
+func terminalCondition(cert *unstructured.Unstructured) (*metav1.Condition, error) {
+	status, err := nvcre.GetStatus(cert)
+	if err != nil {
+		return nil, err
+	}
 
-func getCompletionTime(cert *nvcrev1alpha1.Certification) (time.Time, error) {
 	// CRE keeps all terminal conditions on the cert; the one that did not
 	// happen is Status=False and still carries a lastTransitionTime. Only the
 	// True condition marks when the cert actually completed.
-	var cond *metav1.Condition
-
-	for _, condType := range []string{nvcrev1alpha1.CertificationFailed, nvcrev1alpha1.CertificationSucceeded} {
-		if c := meta.FindStatusCondition(cert.Status.Conditions, condType); c != nil && c.Status == metav1.ConditionTrue {
-			cond = c
-
-			break
+	for _, condType := range []string{nvcre.CertificationFailed, nvcre.CertificationSucceeded} {
+		if c := meta.FindStatusCondition(status.Conditions, condType); c != nil && c.Status == metav1.ConditionTrue {
+			return c, nil
 		}
+	}
+
+	return nil, nil
+}
+
+func isCertificationTerminal(cert *unstructured.Unstructured) bool {
+	cond, err := terminalCondition(cert)
+
+	return err == nil && cond != nil
+}
+
+func getCompletionTime(cert *unstructured.Unstructured) (time.Time, error) {
+	cond, err := terminalCondition(cert)
+	if err != nil {
+		return time.Time{}, err
 	}
 
 	if cond == nil {
 		return time.Time{}, fmt.Errorf("cert %s/%s has no terminal condition (Failed or Succeeded)",
-			cert.Namespace, cert.Name)
+			cert.GetNamespace(), cert.GetName())
 	}
 
 	if cond.LastTransitionTime.IsZero() {
 		return time.Time{}, fmt.Errorf("cert %s/%s: terminal condition %s has no lastTransitionTime",
-			cert.Namespace, cert.Name, cond.Type)
+			cert.GetNamespace(), cert.GetName(), cond.Type)
 	}
 
 	return cond.LastTransitionTime.Time, nil
 }
 
-func getFailedNodesRef(cat nvcrev1alpha1.CertificationCategoryStatus) string {
+func getFailedNodesRef(cat nvcre.CategoryStatus) string {
 	if cat.FailedNodesRef == nil {
 		return ""
 	}
@@ -94,42 +105,10 @@ func getFailedNodesRef(cat nvcrev1alpha1.CertificationCategoryStatus) string {
 	return cat.FailedNodesRef.Name
 }
 
-func getSucceededNodesRef(cat nvcrev1alpha1.CertificationCategoryStatus) string {
+func getSucceededNodesRef(cat nvcre.CategoryStatus) string {
 	if cat.SucceededNodesRef == nil {
 		return ""
 	}
 
 	return cat.SucceededNodesRef.Name
-}
-
-// decodeSucceededNodesFromConfigMap reads the gzip-compressed, comma-separated
-// node list written by CRE into a succeeded-nodes ConfigMap.
-//
-// CRE exports a decoder for failed nodes but not for succeeded nodes — its
-// equivalent lives in the unexported controller helper mergeSucceededNodesCSV —
-// so the encoding is reproduced here and must track that function.
-func decodeSucceededNodesFromConfigMap(cm *corev1.ConfigMap) ([]string, error) {
-	if cm == nil {
-		return nil, nil
-	}
-
-	raw := cm.BinaryData[noderesults.SucceededNodesConfigMapKey]
-	if len(raw) == 0 {
-		return nil, nil
-	}
-
-	decoded, err := compress.GunzipString(raw)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode succeeded-nodes entry: %w", err)
-	}
-
-	var names []string
-
-	for _, name := range strings.Split(decoded, ",") {
-		if name = strings.TrimSpace(name); name != "" {
-			names = append(names, name)
-		}
-	}
-
-	return names, nil
 }

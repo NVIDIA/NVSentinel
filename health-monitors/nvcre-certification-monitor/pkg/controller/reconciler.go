@@ -27,15 +27,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	nvcrev1alpha1 "github.com/NVIDIA/cluster-readiness-engine/api/v1alpha1"
-	"github.com/NVIDIA/cluster-readiness-engine/pkg/noderesults"
-
 	"github.com/nvidia/nvsentinel/health-monitors/nvcre-certification-monitor/pkg/config"
+	"github.com/nvidia/nvsentinel/health-monitors/nvcre-certification-monitor/pkg/metrics"
+	"github.com/nvidia/nvsentinel/health-monitors/nvcre-certification-monitor/pkg/nvcre"
 	"github.com/nvidia/nvsentinel/health-monitors/nvcre-certification-monitor/pkg/publisher"
 	"github.com/nvidia/nvsentinel/health-monitors/nvcre-certification-monitor/pkg/state"
 )
@@ -59,7 +60,7 @@ type Reconciler struct {
 
 type decodedResult struct {
 	resourceVersion string
-	failed          []nvcrev1alpha1.FailedNode
+	failed          []nvcre.FailedNode
 	succeeded       []string
 }
 
@@ -113,19 +114,19 @@ func (r *Reconciler) Start(ctx context.Context) error {
 // buildDesired relies on this order: the earliest failing cert owns a tuple
 // (first-come-first-served) and a pass clears only failures that completed
 // before it.
-func sortByCompletionTime(certs []nvcrev1alpha1.Certification) {
+func sortByCompletionTime(certs []unstructured.Unstructured) {
 	sort.Slice(certs, func(i, j int) bool {
 		ti, errI := getCompletionTime(&certs[i])
 		tj, errJ := getCompletionTime(&certs[j])
 
 		if errI != nil {
-			slog.Error("Failed to get completion time", "cert", certs[i].Name, "error", errI)
+			slog.Error("Failed to get completion time", "cert", certs[i].GetName(), "error", errI)
 
 			return false
 		}
 
 		if errJ != nil {
-			slog.Error("Failed to get completion time", "cert", certs[j].Name, "error", errJ)
+			slog.Error("Failed to get completion time", "cert", certs[j].GetName(), "error", errJ)
 
 			return true
 		}
@@ -141,8 +142,8 @@ func sortByCompletionTime(certs []nvcrev1alpha1.Certification) {
 // lastTransitionTime cannot be ordered or stamped, so it is skipped with a
 // warning instead of failing the sweep; CRE always sets the time, so this
 // only happens to a hand-edited cert.
-func terminalCerts(items []nvcrev1alpha1.Certification) ([]nvcrev1alpha1.Certification, map[CertRef]time.Time) {
-	completed := make([]nvcrev1alpha1.Certification, 0, len(items))
+func terminalCerts(items []unstructured.Unstructured) ([]unstructured.Unstructured, map[CertRef]time.Time) {
+	completed := make([]unstructured.Unstructured, 0, len(items))
 	certTimes := make(map[CertRef]time.Time, len(items))
 
 	for i := range items {
@@ -153,23 +154,32 @@ func terminalCerts(items []nvcrev1alpha1.Certification) ([]nvcrev1alpha1.Certifi
 
 		t, err := getCompletionTime(cert)
 		if err != nil {
+			metrics.SweepErrors.WithLabelValues(metrics.ErrCompletionTime).Inc()
 			slog.Warn("Skipping terminal Certification without a usable completion time",
-				"cert", cert.Name, "namespace", cert.Namespace, "error", err)
+				"cert", cert.GetName(), "namespace", cert.GetNamespace(), "error", err)
 
 			continue
 		}
 
 		completed = append(completed, *cert)
-		certTimes[CertRef{Name: cert.Name, Namespace: cert.Namespace}] = t
+		certTimes[CertRef{Name: cert.GetName(), Namespace: cert.GetNamespace()}] = t
 	}
 
 	return completed, certTimes
 }
 
 func (r *Reconciler) reconcile(ctx context.Context) error {
-	certList := &nvcrev1alpha1.CertificationList{}
+	timer := prometheus.NewTimer(metrics.SweepDuration)
+	defer timer.ObserveDuration()
+
+	return r.sweep(ctx)
+}
+
+func (r *Reconciler) sweep(ctx context.Context) error {
+	certList := nvcre.NewCertificationList()
 
 	if err := r.client.List(ctx, certList); err != nil {
+		metrics.SweepErrors.WithLabelValues(metrics.ErrListCerts).Inc()
 		slog.Error("Failed to list Certification CRs", "error", err)
 
 		return fmt.Errorf("failed to list Certification CRs: %w", err)
@@ -189,7 +199,7 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 }
 
 func (r *Reconciler) processCertificationCRs(
-	ctx context.Context, certs []nvcrev1alpha1.Certification, certTimes map[CertRef]time.Time,
+	ctx context.Context, certs []unstructured.Unstructured, certTimes map[CertRef]time.Time,
 ) error {
 	desired, err := r.buildDesired(ctx, certs)
 	if err != nil {
@@ -200,6 +210,9 @@ func (r *Reconciler) processCertificationCRs(
 	if err != nil {
 		return fmt.Errorf("failed to get observed set: %w", err)
 	}
+
+	metrics.ActiveFailures.Set(float64(len(desired)))
+	metrics.MalformedNodeAnnotations.Set(float64(len(malformed)))
 
 	certsToMark, err := r.processDesiredAndObserved(ctx, desired, observed, malformed, certTimes)
 	if err != nil {
@@ -321,7 +334,7 @@ func (r *Reconciler) healObservedNotDesired(
 // written while the cert carries the matching cert-processed stamp; a stale
 // stamp means CRE reopened and re-finished the cert since, so its rows are a
 // new failure and the old release does not apply to them.
-func (r *Reconciler) releasedForCurrentState(cert *nvcrev1alpha1.Certification, tupleKeyStr string) bool {
+func (r *Reconciler) releasedForCurrentState(cert *unstructured.Unstructured, tupleKeyStr string) bool {
 	if !r.certAnnotator.IsRecovered(cert, tupleKeyStr) {
 		return false
 	}
@@ -335,22 +348,27 @@ func (r *Reconciler) releasedForCurrentState(cert *nvcrev1alpha1.Certification, 
 }
 
 func (r *Reconciler) buildDesired(ctx context.Context,
-	certs []nvcrev1alpha1.Certification) (map[TupleKey]NodeCertFailure, error) {
+	certs []unstructured.Unstructured) (map[TupleKey]NodeCertFailure, error) {
 	desired := make(map[TupleKey]NodeCertFailure)
 	seen := make(map[types.NamespacedName]struct{})
 
 	for i := range certs {
 		cert := &certs[i]
-		certRef := CertRef{Name: cert.Name, Namespace: cert.Namespace}
+		certRef := CertRef{Name: cert.GetName(), Namespace: cert.GetNamespace()}
 
-		for _, cat := range cert.Status.CategoryStatuses {
+		status, err := nvcre.GetStatus(cert)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, cat := range status.CategoryStatuses {
 			switch cat.Status {
-			case nvcrev1alpha1.CertificationFailed:
+			case nvcre.CertificationFailed:
 				if err := r.handleCategoryFailure(ctx, cert, desired, cat, certRef, seen); err != nil {
 					return nil, fmt.Errorf("failed to handle category failure: %w", err)
 				}
-			case nvcrev1alpha1.CertificationSucceeded:
-				if err := r.handleCategorySuccess(ctx, desired, cat, cert.Namespace, seen); err != nil {
+			case nvcre.CertificationSucceeded:
+				if err := r.handleCategorySuccess(ctx, desired, cat, certRef.Namespace, seen); err != nil {
 					return nil, fmt.Errorf("failed to handle category success: %w", err)
 				}
 			}
@@ -373,10 +391,13 @@ func (r *Reconciler) getResultConfigMap(ctx context.Context, key types.Namespace
 	cm := &corev1.ConfigMap{}
 	if err := r.client.Get(ctx, key, cm); err != nil {
 		if apierrors.IsNotFound(err) {
+			metrics.SweepErrors.WithLabelValues(metrics.ErrConfigMapNotFound).Inc()
 			slog.Warn("Result ConfigMap not found, treating category as having no entries", "configMap", key.String())
 
 			return nil, nil
 		}
+
+		metrics.SweepErrors.WithLabelValues(metrics.ErrConfigMapGet).Inc()
 
 		return nil, fmt.Errorf("failed to get result ConfigMap %s: %w", key.String(), err)
 	}
@@ -393,7 +414,7 @@ func (r *Reconciler) getResultConfigMap(ctx context.Context, key types.Namespace
 // heal every hold the category asserts.
 func (r *Reconciler) getFailedRows(
 	ctx context.Context, key types.NamespacedName, seen map[types.NamespacedName]struct{},
-) ([]nvcrev1alpha1.FailedNode, error) {
+) ([]nvcre.FailedNode, error) {
 	cm, err := r.getResultConfigMap(ctx, key)
 	if err != nil || cm == nil {
 		return nil, err
@@ -405,8 +426,10 @@ func (r *Reconciler) getFailedRows(
 		return cached.failed, nil
 	}
 
-	rows, err := noderesults.DecodeFailedNodesFromConfigMap(cm)
+	rows, err := nvcre.DecodeFailedNodes(cm)
 	if err != nil {
+		metrics.SweepErrors.WithLabelValues(metrics.ErrConfigMapDecode).Inc()
+
 		return nil, fmt.Errorf("failed to decode failed-nodes ConfigMap %s: %w", key.String(), err)
 	}
 
@@ -433,8 +456,9 @@ func (r *Reconciler) getSucceededNodes(
 		return cached.succeeded, nil
 	}
 
-	nodes, err := decodeSucceededNodesFromConfigMap(cm)
+	nodes, err := nvcre.DecodeSucceededNodes(cm)
 	if err != nil {
+		metrics.SweepErrors.WithLabelValues(metrics.ErrConfigMapDecode).Inc()
 		slog.Warn("Unreadable succeeded-nodes ConfigMap, treating category as having no entries",
 			"configMap", key.String(), "error", err)
 
@@ -487,7 +511,7 @@ func (r *Reconciler) getObserved(
 func (r *Reconciler) handleCategorySuccess(
 	ctx context.Context,
 	desired map[TupleKey]NodeCertFailure,
-	cat nvcrev1alpha1.CertificationCategoryStatus,
+	cat nvcre.CategoryStatus,
 	certNamespace string,
 	seen map[types.NamespacedName]struct{},
 ) error {
@@ -521,9 +545,9 @@ func (r *Reconciler) handleCategorySuccess(
 
 func (r *Reconciler) handleCategoryFailure(
 	ctx context.Context,
-	cert *nvcrev1alpha1.Certification,
+	cert *unstructured.Unstructured,
 	desired map[TupleKey]NodeCertFailure,
-	cat nvcrev1alpha1.CertificationCategoryStatus,
+	cat nvcre.CategoryStatus,
 	certRef CertRef,
 	seen map[types.NamespacedName]struct{},
 ) error {
@@ -541,7 +565,7 @@ func (r *Reconciler) handleCategoryFailure(
 		if ok, _ := r.evaluator.Matches(config.EvalContext{
 			FailedNode: map[string]string{
 				"name":    row.Name,
-				"reason":  string(row.Reason),
+				"reason":  row.Reason,
 				"message": row.Message,
 			},
 			Category: map[string]string{
@@ -552,7 +576,7 @@ func (r *Reconciler) handleCategoryFailure(
 			continue
 		}
 
-		key := TupleKey{Node: row.Name, Variant: cat.Variant, Reason: string(row.Reason)}
+		key := TupleKey{Node: row.Name, Variant: cat.Variant, Reason: row.Reason}
 		tupleKeyStr := key.Node + "#" + key.ErrorCode()
 
 		if existing, exists := desired[key]; exists {
@@ -597,7 +621,7 @@ func (r *Reconciler) markObservedOwners(
 			continue
 		}
 
-		cert := &nvcrev1alpha1.Certification{}
+		cert := nvcre.NewCertification()
 		if err := r.client.Get(ctx, client.ObjectKey{Name: ref.Name, Namespace: ref.Namespace}, cert); err != nil {
 			if apierrors.IsNotFound(err) {
 				continue
@@ -631,7 +655,7 @@ func (r *Reconciler) handleDesiredNotObserved(
 		return fmt.Errorf("cert %s/%s has no usable terminal time", owner.Namespace, owner.Name)
 	}
 
-	cert := &nvcrev1alpha1.Certification{}
+	cert := nvcre.NewCertification()
 	if err := r.client.Get(ctx, client.ObjectKey{Name: owner.Name, Namespace: owner.Namespace}, cert); err != nil {
 		return fmt.Errorf("failed to get cert %s/%s: %w", owner.Namespace, owner.Name, err)
 	}
@@ -661,12 +685,15 @@ func (r *Reconciler) handleNewFailure(
 	node := &corev1.Node{}
 	if err := r.client.Get(ctx, client.ObjectKey{Name: key.Node}, node); err != nil {
 		if apierrors.IsNotFound(err) {
+			metrics.SweepErrors.WithLabelValues(metrics.ErrNodeNotFound).Inc()
 			slog.Warn("Skipping certification failure for a node that does not exist",
 				"node", key.Node, "variant", key.Variant, "reason", key.Reason,
 				"ownerCert", owner.Name)
 
 			return nil
 		}
+
+		metrics.SweepErrors.WithLabelValues(metrics.ErrNodeGet).Inc()
 
 		return fmt.Errorf("failed to get node %s: %w", key.Node, err)
 	}

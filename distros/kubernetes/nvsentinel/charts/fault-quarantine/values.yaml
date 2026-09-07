@@ -191,8 +191,10 @@ ruleSets:
   - enabled: true
     version: "1"
     name: "NVCRE certification monitor failure ruleset"
-    # Certification failures taint the node instead of cordoning it, so
-    # already-running workloads keep going while new scheduling is blocked.
+    # Certification failures taint the node instead of cordoning it. NVCRE
+    # reports a cordoned node as HardwareFailureDetected and skips it, so a
+    # cordoned node could never be re-certified. A dedicated taint keeps
+    # ordinary workloads off while certification pods tolerate it and rerun.
     match:
       all:
         - kind: "HealthEvent"

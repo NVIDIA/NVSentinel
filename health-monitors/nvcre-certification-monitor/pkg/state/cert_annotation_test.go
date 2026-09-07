@@ -21,20 +21,20 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	nvcrev1alpha1 "github.com/NVIDIA/cluster-readiness-engine/api/v1alpha1"
+	"github.com/nvidia/nvsentinel/health-monitors/nvcre-certification-monitor/pkg/nvcre"
 )
 
-func certWithProcessed(value string) *nvcrev1alpha1.Certification {
-	c := &nvcrev1alpha1.Certification{
-		ObjectMeta: metav1.ObjectMeta{Name: "cert-1", Namespace: "ns"},
-	}
+func certWithProcessed(value string) *unstructured.Unstructured {
+	c := nvcre.NewCertification()
+	c.SetName("cert-1")
+	c.SetNamespace("ns")
+
 	if value != "" {
-		c.Annotations = map[string]string{CertProcessedKey: value}
+		c.SetAnnotations(map[string]string{CertProcessedKey: value})
 	}
 
 	return c
@@ -65,11 +65,8 @@ func TestIsProcessed(t *testing.T) {
 }
 
 func TestSetProcessed_WritesRFC3339UTC(t *testing.T) {
-	scheme := runtime.NewScheme()
-	require.NoError(t, nvcrev1alpha1.AddToScheme(scheme))
-
 	cert := certWithProcessed("")
-	c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(cert).Build()
+	c := fake.NewClientBuilder().WithRuntimeObjects(cert).Build()
 	h := NewCertAnnotationHelper(c)
 
 	loc := time.FixedZone("IST", 5*3600+1800)
@@ -77,27 +74,26 @@ func TestSetProcessed_WritesRFC3339UTC(t *testing.T) {
 
 	require.NoError(t, h.SetProcessed(context.Background(), "cert-1", "ns", terminal))
 
-	got := &nvcrev1alpha1.Certification{}
+	got := nvcre.NewCertification()
 	require.NoError(t, c.Get(context.Background(), types.NamespacedName{Name: "cert-1", Namespace: "ns"}, got))
-	assert.Equal(t, "2026-09-02T07:12:45Z", got.Annotations[CertProcessedKey])
+	assert.Equal(t, "2026-09-02T07:12:45Z", got.GetAnnotations()[CertProcessedKey])
 	assert.True(t, h.IsProcessed(got, terminal))
 }
 
 func TestSetProcessed_ClearsErrorRecovered(t *testing.T) {
-	scheme := runtime.NewScheme()
-	require.NoError(t, nvcrev1alpha1.AddToScheme(scheme))
-
 	terminal := time.Date(2026, 9, 2, 7, 12, 45, 0, time.UTC)
 	cert := certWithProcessed(terminal.Add(-10 * time.Minute).Format(time.RFC3339))
-	cert.Annotations[ErrorRecoveredKey] = `["gpu-01#nccl-all-gather/WorkloadFailed"]`
-	c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(cert).Build()
+	ann := cert.GetAnnotations()
+	ann[ErrorRecoveredKey] = `["gpu-01#nccl-all-gather/WorkloadFailed"]`
+	cert.SetAnnotations(ann)
+	c := fake.NewClientBuilder().WithRuntimeObjects(cert).Build()
 	h := NewCertAnnotationHelper(c)
 
 	require.NoError(t, h.SetProcessed(context.Background(), "cert-1", "ns", terminal))
 
-	got := &nvcrev1alpha1.Certification{}
+	got := nvcre.NewCertification()
 	require.NoError(t, c.Get(context.Background(), types.NamespacedName{Name: "cert-1", Namespace: "ns"}, got))
-	assert.Equal(t, terminal.Format(time.RFC3339), got.Annotations[CertProcessedKey])
-	assert.NotContains(t, got.Annotations, ErrorRecoveredKey,
+	assert.Equal(t, terminal.Format(time.RFC3339), got.GetAnnotations()[CertProcessedKey])
+	assert.NotContains(t, got.GetAnnotations(), ErrorRecoveredKey,
 		"the release list belongs to the previous terminal state")
 }

@@ -80,7 +80,7 @@ flowchart LR
 
 The monitor is sweep-only: there is no controller-runtime watch or other event-driven trigger on `Certification`. A periodic full **sweep** (default every 15 minutes via `--resync-interval` / the chart's `resyncInterval`, with the first sweep at startup) lists all Certification CRs and all annotated nodes and reconciles them together. This makes the decision logic stateless and restart-safe — the monitor holds no authoritative in-memory state; every sweep recomputes from the cluster. Detection latency is bounded by the sweep interval.
 
-The NVCRE CRD does not have to be installed before the monitor starts. Certifications are listed through the manager's cache, whose informer starts on first use, so a missing CRD does not stop the manager: the pod stays `Running`, each sweep logs `Failed to list Certification CRs` and does nothing else, and once the CRD is installed the next sweep succeeds without a restart. The Tilt environment relies on this, since it does not install the CRD.
+The NVCRE CRD does not have to be installed before the monitor starts. Certifications are listed through the manager's cache, whose informer starts on first use, so a missing CRD does not stop the manager: the pod stays `Running`, each sweep logs `Failed to list Certification CRs` and does nothing else, and once the CRD is installed the next sweep succeeds without a restart. The Tilt environment installs only the CRD, not the NVCRE controller; the e2e test in `tests/nvcre_certification_monitor_test.go` writes Certification status directly.
 
 ### Certification CR contract
 
@@ -154,8 +154,8 @@ For each category the monitor resolves the ref **selected by the category `statu
 
 1. If the category is `Failed`, take `failedNodesRef`; if `Succeeded`, take `succeededNodesRef`. A **nil** ref (or a category still `InProgress`) means no relevant node detail is available — skip it.
 2. `Get` the referenced ConfigMap in the Certification's namespace.
-3. **Failed category** — decode via `noderesults.DecodeFailedNodesFromConfigMap`, which gunzips `binaryData["failed-nodes.json.gz"]` and unmarshals the JSON array into `[]FailedNode`. Using the upstream decoder keeps the monitor insulated from future encoding changes.
-4. **Succeeded category** — gunzip `binaryData["succeeded-nodes.csv.gz"]` and split on `,` → passed node names. Node names are DNS-1123 subdomains and never contain a comma, so no escaping is needed. NVCRE exports a decoder for failed nodes but not for succeeded nodes (its equivalent is the unexported `mergeSucceededNodesCSV`), so the monitor carries its own `decodeSucceededNodesFromConfigMap` that must track that function.
+3. **Failed category** — decode via the monitor's own `nvcre.DecodeFailedNodes`, which gunzips `binaryData["failed-nodes.json.gz"]` and unmarshals the JSON array into `[]FailedNode`.
+4. **Succeeded category** — gunzip `binaryData["succeeded-nodes.csv.gz"]` and split on `,` → passed node names. Node names are DNS-1123 subdomains and never contain a comma, so no escaping is needed. The monitor's `nvcre.DecodeSucceededNodes` mirrors NVCRE's unexported `mergeSucceededNodesCSV` and must track it.
 
 Both ConfigMaps are written by NVCRE on category completion and gzip-compressed (~93% smaller) to stay well under the ConfigMap/etcd ~1 MiB limit at thousands of nodes. The monitor reads them with a live GET (not from a cache) and distinguishes three failure modes:
 
@@ -283,7 +283,7 @@ Worked example — `gpu-01` fails both `nccl-all-gather/WorkloadFailed` and `nem
 
 ### Fault Quarantine ruleset configuration
 
-Monitor health events are processed by Fault Quarantine using a dedicated ruleset that only applies a taint — no cordon. This keeps the node schedulable for existing workloads while preventing new certification workloads from being scheduled on failed nodes.
+Monitor health events are processed by Fault Quarantine using a dedicated ruleset that only applies a taint — no cordon. NVCRE reports a cordoned node as `HardwareFailureDetected` and skips it, so a cordoned node could never be re-certified. A dedicated taint keeps ordinary workloads off the failed node while certification pods tolerate it and can rerun there.
 
 ```toml
 # Fault Quarantine ruleset for nvcre-certification-monitor events

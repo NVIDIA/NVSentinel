@@ -4308,9 +4308,9 @@ kubernetes-object-monitor:
 nvcre-certification-monitor:
   logLevel: debug
   # Short sweep interval for faster test feedback (production default is 15m).
-  # Tilt does not install the cluster-readiness-engine Certification CRD. Until
-  # one is applied to the kind cluster every sweep logs
-  # "Failed to list Certification CRs" and does nothing else; the pod stays Running.
+  # Tilt installs only the cluster-readiness-engine Certification CRD
+  # (tilt/nvcre-certification-crd.yaml), not the NVCRE controller; the e2e test
+  # writes Certification status itself.
   resyncInterval: 30s
 
 event-exporter:

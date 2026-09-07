@@ -396,9 +396,17 @@ k8s_resource(
     resource_deps=['platform-connectors']
 )
 
+# Only the NVCRE Certification CRD is installed (no controller); the e2e test
+# fakes Certification status so the monitor can be tested without GPUs.
+k8s_yaml('./nvcre-certification-crd.yaml')
+k8s_resource(
+    new_name='nvcre-certification-crd',
+    objects=['certifications.nvcre.nvidia.com:customresourcedefinition']
+)
+
 k8s_resource(
     'nvcre-certification-monitor',
-    resource_deps=['platform-connectors']
+    resource_deps=['platform-connectors', 'nvcre-certification-crd']
 )
 
 k8s_resource(

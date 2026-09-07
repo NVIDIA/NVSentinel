@@ -267,6 +267,13 @@ global:
   preflight:
     enabled: false
 
+  # NVCRE Certification Monitor - publishes health events for nodes that failed
+  # an NVCRE Certification, one per (node, variant, reason)
+  # Requires: cluster-readiness-engine installed (Certification CRD present),
+  # fault-quarantine enabled for the taint to be applied
+  nvcreCertificationMonitor:
+    enabled: false
+
 ################################################################################
 # PLATFORM CONNECTOR CONFIGURATION
 #
@@ -622,6 +629,28 @@ fault-quarantine:
               !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
       cordon:
         shouldCordon: true
+
+    # Example rule 6: Taint nodes that failed an NVCRE certification
+    # NVCRE does not run on cordoned nodes (it reports them as
+    # HardwareFailureDetected and skips them), so a cordoned node could never be
+    # re-certified. Taint instead: ordinary workloads stay off the node while
+    # certification pods tolerate the taint and can rerun.
+    - enabled: true
+      version: "1"
+      name: "NVCRE certification monitor failure ruleset"
+      match:
+        all:
+          - kind: "HealthEvent"
+            expression: "event.agent == 'nvcre-certification-monitor' && event.checkName == 'NVCRECertFailed' && event.isFatal == true"
+          - kind: "Node"
+            expression: |
+              !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
+      cordon:
+        shouldCordon: false
+      taint:
+        key: "nvsentinel.dgxc.nvidia.com/nvcre-cert-failed"
+        value: "true"
+        effect: "NoSchedule"
 
 ################################################################################
 # NODE-DRAINER MODULE CONFIGURATION

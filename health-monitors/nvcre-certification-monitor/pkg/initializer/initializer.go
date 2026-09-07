@@ -38,7 +38,6 @@ import (
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	nvcrev1alpha1 "github.com/NVIDIA/cluster-readiness-engine/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 
@@ -173,10 +172,6 @@ func createManager(params Params) (ctrl.Manager, error) {
 	mgr, err := ctrl.NewManager(cfg, mgrOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create manager: %w", err)
-	}
-
-	if err := nvcrev1alpha1.AddToScheme(mgr.GetScheme()); err != nil {
-		return nil, fmt.Errorf("failed to register Certification scheme: %w", err)
 	}
 
 	return mgr, nil

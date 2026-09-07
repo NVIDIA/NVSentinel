@@ -21,10 +21,11 @@ import (
 	"log/slog"
 	"time"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	nvcrev1alpha1 "github.com/NVIDIA/cluster-readiness-engine/api/v1alpha1"
+	"github.com/nvidia/nvsentinel/health-monitors/nvcre-certification-monitor/pkg/nvcre"
 )
 
 const (
@@ -51,7 +52,7 @@ const legacyProcessedValue = "true"
 // cert's current terminal state. The annotation holds the terminal
 // condition's lastTransitionTime at publish time; a stored value older than
 // terminalTime means CRE reopened the cert and it finished again since.
-func (h *CertAnnotationHelper) IsProcessed(cert *nvcrev1alpha1.Certification, terminalTime time.Time) bool {
+func (h *CertAnnotationHelper) IsProcessed(cert *unstructured.Unstructured, terminalTime time.Time) bool {
 	raw, ok := cert.GetAnnotations()[CertProcessedKey]
 	if !ok {
 		return false
@@ -64,7 +65,7 @@ func (h *CertAnnotationHelper) IsProcessed(cert *nvcrev1alpha1.Certification, te
 	processedAt, err := time.Parse(time.RFC3339, raw)
 	if err != nil {
 		slog.Warn("Unparseable cert-processed annotation, treating cert as unprocessed",
-			"cert", cert.Name, "namespace", cert.Namespace, "value", raw)
+			"cert", cert.GetName(), "namespace", cert.GetNamespace(), "value", raw)
 
 		return false
 	}
@@ -85,7 +86,7 @@ func (h *CertAnnotationHelper) SetProcessed(
 }
 
 // IsRecovered checks if a specific tuple has been marked as operator-recovered on this cert.
-func (h *CertAnnotationHelper) IsRecovered(cert *nvcrev1alpha1.Certification, tupleKey string) bool {
+func (h *CertAnnotationHelper) IsRecovered(cert *unstructured.Unstructured, tupleKey string) bool {
 	annotations := cert.GetAnnotations()
 	if annotations == nil {
 		return false
@@ -100,7 +101,7 @@ func (h *CertAnnotationHelper) IsRecovered(cert *nvcrev1alpha1.Certification, tu
 
 	if err := json.Unmarshal([]byte(raw), &keys); err != nil {
 		slog.Warn("Failed to parse error-recovered annotation",
-			"cert", cert.Name, "namespace", cert.Namespace, "error", err)
+			"cert", cert.GetName(), "namespace", cert.GetNamespace(), "error", err)
 
 		return false
 	}
@@ -116,7 +117,7 @@ func (h *CertAnnotationHelper) IsRecovered(cert *nvcrev1alpha1.Certification, tu
 
 // AddRecovered appends a tuple key to the cert's error-recovered annotation.
 func (h *CertAnnotationHelper) AddRecovered(ctx context.Context, certName, certNamespace, tupleKey string) error {
-	cert := &nvcrev1alpha1.Certification{}
+	cert := nvcre.NewCertification()
 	if err := h.client.Get(ctx, types.NamespacedName{Name: certName, Namespace: certNamespace}, cert); err != nil {
 		return fmt.Errorf("failed to get cert %s/%s: %w", certNamespace, certName, err)
 	}
@@ -154,7 +155,7 @@ func (h *CertAnnotationHelper) patchAnnotation(ctx context.Context, certName, ce
 }
 
 func (h *CertAnnotationHelper) patch(ctx context.Context, certName, certNamespace, key, patch string) error {
-	cert := &nvcrev1alpha1.Certification{}
+	cert := nvcre.NewCertification()
 	cert.SetName(certName)
 	cert.SetNamespace(certNamespace)
 
