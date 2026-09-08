@@ -108,8 +108,13 @@ cancellations:
       - onErrorCode: "162"
         cancelErrorCodes: ["163"]
 
-# Rolling update budget for this DaemonSet. maxUnavailable counts pods stranded on
-# unreachable nodes as well, so a cluster with many nodes down may need it raised.
+# DaemonSet rolling update strategy. Shared by both generated DaemonSet variants,
+# syslog-health-monitor-regular and syslog-health-monitor-kata.
+# type: RollingUpdate or OnDelete. rollingUpdate is only rendered for RollingUpdate.
+# maxUnavailable counts pods stranded on unreachable nodes as well, so a cluster with
+# many nodes down for service may need it raised or the rollout cannot start.
+# Example, absolute count instead of a percentage:
+#   updateStrategy: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 34}}
 updateStrategy:
   type: RollingUpdate
   rollingUpdate:
