@@ -105,6 +105,9 @@ global:
   kubernetesObjectMonitor:
     enabled: true
 
+  nvcreCertificationMonitor:
+    enabled: true
+
   slurmDrainMonitor:
     enabled: true
 
@@ -4321,6 +4324,14 @@ kubernetes-object-monitor:
           matchLabels:
             kubernetes.io/metadata.name: kube-system
         topologyKey: kubernetes.io/hostname
+
+nvcre-certification-monitor:
+  logLevel: debug
+  # Short sweep interval for faster test feedback (production default is 15m).
+  # Tilt installs only the cluster-readiness-engine Certification CRD
+  # (tilt/nvcre-certification-crd.yaml), not the NVCRE controller; the e2e test
+  # writes Certification status itself.
+  resyncInterval: 30s
 
 event-exporter:
   replicaCount: 1

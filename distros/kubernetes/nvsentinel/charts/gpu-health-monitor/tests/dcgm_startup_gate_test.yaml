@@ -1,0 +1,114 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: DCGM startup gate
+templates:
+  - templates/daemonset-dcgm-4.x.yaml
+  - templates/daemonset-dcgm-3.x.yaml
+  - templates/configmap.yaml
+tests:
+  - it: is disabled by default
+    template: templates/daemonset-dcgm-4.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+    asserts:
+      - notExists:
+          path: spec.template.spec.initContainers
+
+  - it: waits for operator-service DCGM with the 4.x image
+    template: templates/daemonset-dcgm-4.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+      dcgmConnectivity.startupGate.enabled: true
+      dcgmConnectivity.startupGate.retryIntervalSeconds: 7
+      dcgmConnectivity.startupGate.connectTimeoutSeconds: 9
+      image.tag: test
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: wait-for-dcgm
+      - equal:
+          path: spec.template.spec.initContainers[0].command[0]
+          value: gpu_health_monitor_wait_for_dcgm
+      - equal:
+          path: spec.template.spec.initContainers[0].args
+          value:
+            - --dcgm-addr
+            - nvidia-dcgm.gpu-operator.svc:5555
+            - --retry-interval-seconds
+            - "7"
+            - --connect-timeout-seconds
+            - "9"
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: ghcr.io/nvidia/nvsentinel/gpu-health-monitor:test-dcgm-4.x
+
+  - it: uses the external hostengine endpoint with the 3.x image
+    template: templates/daemonset-dcgm-3.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+      dcgm.mode: external-hostengine
+      dcgm.externalHostengine.endpoint: 192.0.2.10
+      dcgm.externalHostengine.port: 6666
+      dcgmConnectivity.startupGate.enabled: true
+      image.tag: test
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].args[1]
+          value: 192.0.2.10:6666
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: ghcr.io/nvidia/nvsentinel/gpu-health-monitor:test-dcgm-3.x
+
+      - equal:
+          path: spec.template.spec.initContainers[0].args[5]
+          value: "10"
+  - it: rejects the startup gate in embedded mode
+    template: templates/daemonset-dcgm-4.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+      dcgm.mode: embedded-mode
+      dcgmConnectivity.startupGate.enabled: true
+    asserts:
+      - failedTemplate:
+          errorMessage: gpu-health-monitor.dcgmConnectivity.startupGate.enabled cannot be true in embedded-mode because the main container starts DCGM
+
+  - it: rejects a non-positive retry interval
+    template: templates/daemonset-dcgm-4.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+      dcgmConnectivity.startupGate.enabled: true
+      dcgmConnectivity.startupGate.retryIntervalSeconds: 0
+    asserts:
+      - failedTemplate:
+          errorMessage: gpu-health-monitor.dcgmConnectivity.startupGate.retryIntervalSeconds must be greater than zero
+
+  - it: rejects a non-positive connection timeout
+    template: templates/daemonset-dcgm-4.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+      dcgmConnectivity.startupGate.enabled: true
+      dcgmConnectivity.startupGate.connectTimeoutSeconds: 0
+    asserts:
+      - failedTemplate:
+          errorMessage: gpu-health-monitor.dcgmConnectivity.startupGate.connectTimeoutSeconds must be greater than zero
+
+  - it: rejects a quoted enabled value
+    template: templates/daemonset-dcgm-4.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+      dcgmConnectivity.startupGate.enabled: "true"
+    asserts:
+      - failedTemplate:
+          errorMessage: gpu-health-monitor.dcgmConnectivity.startupGate.enabled must be a boolean, got string "true"

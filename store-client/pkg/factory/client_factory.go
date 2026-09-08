@@ -195,7 +195,15 @@ func (f *ClientFactory) CreateChangeStreamWatcher(
 		).WithMetadata("clientName", clientName).WithMetadata("tokenConfig", tokenConfig)
 	}
 
-	return client.NewChangeStreamWatcherWithResumeControl(watcher, resumeControlDecision), nil
+	wrapped := client.NewChangeStreamWatcherWithResumeControl(watcher, resumeControlDecision)
+
+	// Every consumer that builds its watcher through this factory registers here, including
+	// event-exporter, which reaches neither provider adapter. The default registry is correct
+	// for those; consumers serving their own registry register again via their adapter, and
+	// registration is idempotent per registry and client.
+	client.RegisterChangeStreamLag(nil, clientName, wrapped)
+
+	return wrapped, nil
 }
 
 // GetDatabaseConfig returns the database configuration used by this factory

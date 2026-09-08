@@ -151,6 +151,62 @@ namespace. An endpoint override does not change this networking contract.
 {{- if or .Values.useHostNetworking (eq (include "gpu-health-monitor.dcgmMode" .) "external-hostengine") -}}true{{- end -}}
 {{- end }}
 
+{{/*
+Validate and render the optional DCGM startup gate. The gate cannot be used in
+embedded-mode because the main container is responsible for starting DCGM.
+*/}}
+{{- define "gpu-health-monitor.dcgmStartupGateEnabled" -}}
+{{- $enabled := .Values.dcgmConnectivity.startupGate.enabled -}}
+{{- if not (kindIs "bool" $enabled) -}}
+{{- fail (printf "gpu-health-monitor.dcgmConnectivity.startupGate.enabled must be a boolean, got %s %#v" (kindOf $enabled) $enabled) -}}
+{{- end -}}
+{{- if and $enabled (eq (include "gpu-health-monitor.dcgmMode" .) "embedded-mode") -}}
+{{- fail "gpu-health-monitor.dcgmConnectivity.startupGate.enabled cannot be true in embedded-mode because the main container starts DCGM" -}}
+{{- end -}}
+{{- if $enabled -}}true{{- end -}}
+{{- end }}
+
+{{- define "gpu-health-monitor.dcgmStartupGateRetryInterval" -}}
+{{- $interval := .Values.dcgmConnectivity.startupGate.retryIntervalSeconds -}}
+{{- if not (or (kindIs "float64" $interval) (kindIs "int" $interval) (kindIs "int64" $interval)) -}}
+{{- fail (printf "gpu-health-monitor.dcgmConnectivity.startupGate.retryIntervalSeconds must be a number, got %s %#v" (kindOf $interval) $interval) -}}
+{{- end -}}
+{{- if le (float64 $interval) 0.0 -}}
+{{- fail "gpu-health-monitor.dcgmConnectivity.startupGate.retryIntervalSeconds must be greater than zero" -}}
+{{- end -}}
+{{- $interval -}}
+{{- end }}
+
+{{- define "gpu-health-monitor.dcgmStartupGateConnectTimeout" -}}
+{{- $timeout := .Values.dcgmConnectivity.startupGate.connectTimeoutSeconds -}}
+{{- if not (or (kindIs "float64" $timeout) (kindIs "int" $timeout) (kindIs "int64" $timeout)) -}}
+{{- fail (printf "gpu-health-monitor.dcgmConnectivity.startupGate.connectTimeoutSeconds must be a number, got %s %#v" (kindOf $timeout) $timeout) -}}
+{{- end -}}
+{{- if le (float64 $timeout) 0.0 -}}
+{{- fail "gpu-health-monitor.dcgmConnectivity.startupGate.connectTimeoutSeconds must be greater than zero" -}}
+{{- end -}}
+{{- $timeout -}}
+{{- end }}
+
+{{- define "gpu-health-monitor.dcgmStartupGate" -}}
+{{- $root := .root -}}
+- name: wait-for-dcgm
+  command: ["gpu_health_monitor_wait_for_dcgm"]
+  args:
+    - --dcgm-addr
+    - {{ include "gpu-health-monitor.dcgmAddr" $root | quote }}
+    - --retry-interval-seconds
+    - {{ include "gpu-health-monitor.dcgmStartupGateRetryInterval" $root | quote }}
+    - --connect-timeout-seconds
+    - {{ include "gpu-health-monitor.dcgmStartupGateConnectTimeout" $root | quote }}
+  securityContext:
+    runAsUser: 0
+  image: "{{ $root.Values.image.repository }}:{{ $root.Values.image.tag | default (($root.Values.global).image).tag | default $root.Chart.AppVersion }}-dcgm-{{ .dcgmVersion }}"
+  imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+  resources:
+    {{- toYaml $root.Values.resources | nindent 4 }}
+{{- end }}
+
 
 {{/*
 Chart-local copies of the umbrella chart's nvsentinel.pcAuth.* helpers, so this
