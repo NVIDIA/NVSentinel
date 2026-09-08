@@ -15,6 +15,7 @@
 package state
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -130,31 +131,79 @@ func TestEFAState_NetdevOperstateDownIsFatalThenRecovers(t *testing.T) {
 	assert.Equal(t, "EFA port rdmap0s6 port 1: healthy (ACTIVE, LinkUp)", events[0].Message)
 }
 
-func TestEFAState_NetdevDownOnFirstPollIsFatalWithHealthyPeer(t *testing.T) {
+// newEFANodeN builds an n-adapter EFA fixture (rdmap0s6, rdmap0s7, ...)
+// with ENA netdev siblings ens6, ens7, ... all up.
+func newEFANodeN(t *testing.T, n int) *efaNode {
+	t.Helper()
+
+	tree := sysfstest.New(t)
+	topo := map[string][]string{}
+
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("rdmap0s%d", 6+i)
+		tree.AddEFA(t, name, sysfstest.EFAOpts{
+			Driver:     "efa",
+			PCIAddress: fmt.Sprintf("0000:00:%02x.0", 6+i),
+			NetDev:     fmt.Sprintf("ens%d", 6+i),
+			Operstate:  "up",
+			Carrier:    "1",
+		})
+		topo[name] = []string{"PIX"}
+	}
+
+	reader := sysfs.NewReader(tree.IBBase, tree.NetBase)
+	classifier := buildClassifier(t, reader, []string{"0000:10:1c.0"}, topo, writeProcNetRoute(t, "eth0"))
+
+	return &efaNode{tree: tree, reader: reader, classifier: classifier}
+}
+
+func TestEFAState_NetdevDownOnFirstPollIsFatalWithHealthyPeers(t *testing.T) {
 	// The port has never been observed healthy, so the first-poll
 	// severity gate needs peer evidence: the card must count as
-	// anomalous against its healthy sibling. That only works if the
-	// active-port aggregate is built from the netdev-aware snapshot;
+	// anomalous against a decisive majority of healthy siblings (two
+	// cards would tie and be skipped, so use three). That only works if
+	// the active-port aggregate is built from the netdev-aware snapshot;
 	// the efa driver's raw sysfs state is ACTIVE/LinkUp regardless.
-	node := newEFANode(t, true)
+	node := newEFANodeN(t, 3)
 	node.tree.SetNetDev(t, "ens6", "down", "0")
 
 	check := node.newCheck(t, false)
 
+	// Expect both the port DOWN event and the card-homogeneity anomaly
+	// that supplied the peer evidence for it.
 	events := runPoll(t, check)
-	require.Len(t, events, 1, "first poll must report the DOWN port when its peer is active")
-	assert.True(t, events[0].IsFatal)
-	assert.False(t, events[0].IsHealthy)
-	assert.Equal(t, "rdmap0s6", events[0].EntitiesImpacted[0].EntityValue)
-	assert.Contains(t, events[0].Message, "state DOWN, phys_state LinkDown, operstate down (ens6)")
+	require.Len(t, events, 2, "first poll must report the DOWN port and its card anomaly")
+
+	var portEvt, cardEvt *pb.HealthEvent
+
+	for _, evt := range events {
+		require.True(t, evt.IsFatal)
+		require.False(t, evt.IsHealthy)
+
+		switch evt.EntitiesImpacted[0].EntityValue {
+		case "rdmap0s6":
+			portEvt = evt
+		case "0000:00:06":
+			cardEvt = evt
+		}
+	}
+
+	require.NotNil(t, portEvt, "port DOWN event for rdmap0s6")
+	require.NotNil(t, cardEvt, "card anomaly event for 0000:00:06")
+	assert.Contains(t, portEvt.Message, "state DOWN, phys_state LinkDown, operstate down (ens6)")
+	assert.Contains(t, cardEvt.Message, "has 0 active ports, expected 1")
 
 	assert.Empty(t, runPoll(t, check), "a port that stays DOWN must not re-emit")
 
 	node.tree.SetNetDev(t, "ens6", "up", "1")
 
+	// Recovery clears both the port and the card anomaly latch.
 	events = runPoll(t, check)
-	require.Len(t, events, 1)
-	assert.True(t, events[0].IsHealthy)
+	require.NotEmpty(t, events)
+
+	for _, evt := range events {
+		assert.True(t, evt.IsHealthy, "recovery event should be healthy: %s", evt.Message)
+	}
 }
 
 func TestEFAState_LostCarrierWithUnknownOperstateIsFatal(t *testing.T) {
