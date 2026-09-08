@@ -154,13 +154,8 @@ func SetStatus(cert *unstructured.Unstructured, status Status) error {
 }
 
 // DecodeFailedNodes parses the failed-nodes entry (a gzip'd JSON array of
-// {name, reason, message} objects) from a result ConfigMap. A nil ConfigMap
-// or a missing entry yields nil.
+// {name, reason, message} objects) from a result ConfigMap.
 func DecodeFailedNodes(cm *corev1.ConfigMap) ([]FailedNode, error) {
-	if cm == nil {
-		return nil, nil
-	}
-
 	raw := cm.BinaryData[FailedNodesConfigMapKey]
 	if len(raw) == 0 {
 		return nil, nil
@@ -180,13 +175,8 @@ func DecodeFailedNodes(cm *corev1.ConfigMap) ([]FailedNode, error) {
 }
 
 // DecodeSucceededNodes parses the succeeded-nodes entry (a gzip'd
-// comma-separated node list) from a result ConfigMap. A nil ConfigMap or a
-// missing entry yields nil.
+// comma-separated node list) from a result ConfigMap.
 func DecodeSucceededNodes(cm *corev1.ConfigMap) ([]string, error) {
-	if cm == nil {
-		return nil, nil
-	}
-
 	raw := cm.BinaryData[SucceededNodesConfigMapKey]
 	if len(raw) == 0 {
 		return nil, nil

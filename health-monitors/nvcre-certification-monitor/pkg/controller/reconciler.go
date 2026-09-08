@@ -138,31 +138,41 @@ func sortByCompletionTime(certs []unstructured.Unstructured) {
 // terminalCerts keeps the certs that reached a terminal state and returns
 // them with their completion time, the terminal transition time that is also
 // used as the cert-processed value so a cert that CRE reopens and re-fails is
-// seen as new again. A terminal cert whose condition carries no
-// lastTransitionTime cannot be ordered or stamped, so it is skipped with a
-// warning instead of failing the sweep; CRE always sets the time, so this
-// only happens to a hand-edited cert.
+// seen as new again. Two kinds of cert are skipped with a warning and a
+// completion_time sweep error instead of failing the sweep: one whose status
+// cannot be decoded, and a terminal one whose condition carries no
+// lastTransitionTime and so cannot be ordered or stamped. CRE always writes
+// both correctly, so either only happens to a hand-edited cert.
 func terminalCerts(items []unstructured.Unstructured) ([]unstructured.Unstructured, map[CertRef]time.Time) {
 	completed := make([]unstructured.Unstructured, 0, len(items))
 	certTimes := make(map[CertRef]time.Time, len(items))
 
 	for i := range items {
 		cert := &items[i]
-		if !isCertificationTerminal(cert) {
-			continue
-		}
 
-		t, err := getCompletionTime(cert)
+		cond, err := terminalCondition(cert)
 		if err != nil {
 			metrics.SweepErrors.WithLabelValues(metrics.ErrCompletionTime).Inc()
-			slog.Warn("Skipping terminal Certification without a usable completion time",
+			slog.Warn("Skipping Certification with unreadable status",
 				"cert", cert.GetName(), "namespace", cert.GetNamespace(), "error", err)
 
 			continue
 		}
 
+		if cond == nil {
+			continue
+		}
+
+		if cond.LastTransitionTime.IsZero() {
+			metrics.SweepErrors.WithLabelValues(metrics.ErrCompletionTime).Inc()
+			slog.Warn("Skipping terminal Certification without a usable completion time",
+				"cert", cert.GetName(), "namespace", cert.GetNamespace(), "condition", cond.Type)
+
+			continue
+		}
+
 		completed = append(completed, *cert)
-		certTimes[CertRef{Name: cert.GetName(), Namespace: cert.GetNamespace()}] = t
+		certTimes[CertRef{Name: cert.GetName(), Namespace: cert.GetNamespace()}] = cond.LastTransitionTime.Time
 	}
 
 	return completed, certTimes

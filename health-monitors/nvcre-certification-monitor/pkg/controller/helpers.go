@@ -72,12 +72,6 @@ func terminalCondition(cert *unstructured.Unstructured) (*metav1.Condition, erro
 	return nil, nil
 }
 
-func isCertificationTerminal(cert *unstructured.Unstructured) bool {
-	cond, err := terminalCondition(cert)
-
-	return err == nil && cond != nil
-}
-
 func getCompletionTime(cert *unstructured.Unstructured) (time.Time, error) {
 	cond, err := terminalCondition(cert)
 	if err != nil {

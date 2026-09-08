@@ -87,12 +87,7 @@ func (h *CertAnnotationHelper) SetProcessed(
 
 // IsRecovered checks if a specific tuple has been marked as operator-recovered on this cert.
 func (h *CertAnnotationHelper) IsRecovered(cert *unstructured.Unstructured, tupleKey string) bool {
-	annotations := cert.GetAnnotations()
-	if annotations == nil {
-		return false
-	}
-
-	raw, ok := annotations[ErrorRecoveredKey]
+	raw, ok := cert.GetAnnotations()[ErrorRecoveredKey]
 	if !ok || raw == "" {
 		return false
 	}

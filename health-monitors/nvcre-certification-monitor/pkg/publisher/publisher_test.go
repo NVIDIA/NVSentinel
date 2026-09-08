@@ -25,6 +25,9 @@ import (
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
+// testTarget is a non-unix target so healthpub skips its socket-presence gate.
+const testTarget = "passthrough:///platform-connector"
+
 // capturingClient records the HealthEvents sent through HealthEventOccurredV1.
 type capturingClient struct {
 	sent []*pb.HealthEvents
@@ -40,7 +43,7 @@ func (c *capturingClient) HealthEventOccurredV1(
 
 func TestPublishHealthEvent_EmptyMessageUsesFallback(t *testing.T) {
 	client := &capturingClient{}
-	p := New(client, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+	p := New(client, testTarget, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 
 	err := p.PublishHealthEvent(context.Background(), "node-a", false, "", "nccl-all-gather/WorkloadFailed")
 	require.NoError(t, err)
@@ -65,7 +68,7 @@ func TestPublishHealthEvent_EmptyMessageUsesFallback(t *testing.T) {
 
 func TestPublishHealthEvent_NonEmptyMessagePreserved(t *testing.T) {
 	client := &capturingClient{}
-	p := New(client, pb.ProcessingStrategy_STORE_ONLY)
+	p := New(client, testTarget, pb.ProcessingStrategy_STORE_ONLY)
 
 	msg := `Threshold "busBandwidthGBps" violated: measured 12.34, expression: value >= 400`
 
@@ -80,7 +83,7 @@ func TestPublishHealthEvent_NonEmptyMessagePreserved(t *testing.T) {
 
 func TestPublishHealthEvent_HealthyEventIsNotFatal(t *testing.T) {
 	client := &capturingClient{}
-	p := New(client, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+	p := New(client, testTarget, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 
 	err := p.PublishHealthEvent(context.Background(), "node-c", true, "", "nccl-all-gather/WorkloadFailed")
 	require.NoError(t, err)

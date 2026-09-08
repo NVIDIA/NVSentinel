@@ -91,7 +91,7 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 
 	slog.Info("Event handling strategy configured", "processingStrategy", params.ProcessingStrategy)
 
-	pub := publisher.New(pcClient, pb.ProcessingStrategy(strategyValue))
+	pub := publisher.New(pcClient, params.PlatformConnectorSocket, pb.ProcessingStrategy(strategyValue))
 
 	cfg, err := config.Load(params.ConfigPath)
 	if err != nil {

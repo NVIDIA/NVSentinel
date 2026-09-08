@@ -72,7 +72,7 @@ func (m *AnnotationManager) AddTuple(ctx context.Context, nodeName, key string) 
 		return append(keys, key), true
 	}); err != nil {
 		if !errors.Is(err, ErrMalformedAnnotation) {
-			slog.Error("failed to add tuple", "error", err, "key", key, "nodeName", nodeName)
+			slog.Error("Failed to add tuple", "error", err, "key", key, "node", nodeName)
 		}
 
 		return fmt.Errorf("failed to add tuple %q on node %s: %w", key, nodeName, err)
@@ -94,7 +94,7 @@ func (m *AnnotationManager) RemoveTuple(ctx context.Context, nodeName, key strin
 		return keys, false
 	}); err != nil {
 		if !errors.Is(err, ErrMalformedAnnotation) {
-			slog.Error("failed to remove tuple", "error", err, "key", key, "nodeName", nodeName)
+			slog.Error("Failed to remove tuple", "error", err, "key", key, "node", nodeName)
 		}
 
 		return fmt.Errorf("failed to remove tuple %q from node %s: %w", key, nodeName, err)
@@ -149,7 +149,7 @@ func (m *AnnotationManager) updateAnnotation(
 		} else {
 			b, err := json.Marshal(updated)
 			if err != nil {
-				slog.Error("failed to marshal annotation", "error", err, "nodeName", nodeName)
+				slog.Error("Failed to marshal annotation", "error", err, "node", nodeName)
 
 				return fmt.Errorf("failed to marshal annotation: %w", err)
 			}
@@ -190,10 +190,6 @@ func parseExistingKeys(raw string) ([]string, error) {
 // annotation (or an empty list). A non-nil error means the annotation is
 // present but malformed and wraps ErrMalformedAnnotation.
 func (m *AnnotationManager) ParseAnnotation(node *corev1.Node) (map[string]struct{}, error) {
-	if node.Annotations == nil {
-		return nil, nil
-	}
-
 	raw, ok := node.Annotations[AnnotationKey]
 	if !ok || raw == "" {
 		return nil, nil

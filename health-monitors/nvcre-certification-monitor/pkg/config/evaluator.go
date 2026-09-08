@@ -59,7 +59,7 @@ func NewEvaluator(policies []Policy) (*Evaluator, error) {
 
 	for _, p := range policies {
 		ast, issues := env.Compile(p.Match)
-		if issues != nil && issues.Err() != nil {
+		if issues.Err() != nil {
 			slog.Error("Failed to compile match expression", "policy", p.Name, "error", issues.Err())
 
 			return nil, fmt.Errorf("policy %q: failed to compile match expression: %w", p.Name, issues.Err())
