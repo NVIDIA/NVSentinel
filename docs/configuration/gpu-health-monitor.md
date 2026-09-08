@@ -215,10 +215,12 @@ gpu-health-monitor:
     startupGate:
       enabled: true
       retryIntervalSeconds: 5
-      connectTimeoutSeconds: 5
+      connectTimeoutSeconds: 10
 ```
 
 When enabled, the chart adds a `wait-for-dcgm` init container. Each attempt creates a DCGM handle and performs supported-GPU discovery; opening the TCP port alone is not considered ready. Failed attempts are retried indefinitely at `retryIntervalSeconds`. Each attempt runs in a child process bounded by `connectTimeoutSeconds`, so a blocked native DCGM call can be terminated without restarting the init container. The init container does not publish health events, so an unavailable DCGM endpoint during installation or restart cannot create node conditions, quarantine nodes, or trigger remediation before the monitor has established its first connection.
+
+The default 10-second hard timeout leaves time for DCGM's own 5-second connection timeout to return and log a specific connection error first; the parent timeout remains a backstop for a genuinely stuck native call.
 
 The gate is disabled by default for backward compatibility and supports `operator-service` and `external-hostengine`. It cannot be enabled in `embedded-mode`, because the main GPU health monitor container starts the embedded hostengine; Helm rejects that combination rather than creating a pod that can never leave init.
 

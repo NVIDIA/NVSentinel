@@ -127,6 +127,34 @@ def test_wait_for_dcgm_retries_until_ready(is_ready: MagicMock) -> None:
     assert sleep.call_args_list == [call(2.5), call(2.5)]
 
 
+@patch("gpu_health_monitor.wait_for_dcgm.wait_for_dcgm")
+def test_cli_uses_documented_timeout_defaults(wait_for_dcgm_mock: MagicMock) -> None:
+    """The CLI defaults leave time for DCGM's own connection error to surface."""
+    result = CliRunner().invoke(cli, ["--dcgm-addr", "dcgm.example:5555"])
+
+    assert result.exit_code == 0
+    wait_for_dcgm_mock.assert_called_once_with("dcgm.example:5555", 5.0, 10.0)
+
+
+@patch("gpu_health_monitor.wait_for_dcgm.wait_for_dcgm")
+def test_cli_accepts_positive_subsecond_intervals(wait_for_dcgm_mock: MagicMock) -> None:
+    """Any value greater than zero is accepted for both timing options."""
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--dcgm-addr",
+            "dcgm.example:5555",
+            "--retry-interval-seconds",
+            "0.01",
+            "--connect-timeout-seconds",
+            "0.02",
+        ],
+    )
+
+    assert result.exit_code == 0
+    wait_for_dcgm_mock.assert_called_once_with("dcgm.example:5555", 0.01, 0.02)
+
+
 def test_cli_rejects_non_positive_retry_interval() -> None:
     """The CLI rejects retry intervals that could create a busy loop."""
     result = CliRunner().invoke(

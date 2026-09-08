@@ -125,15 +125,15 @@ def _exit_on_sigterm(_signum: int, _frame: FrameType | None) -> NoReturn:
 @click.option("--dcgm-addr", required=True, help="Host:Port where DCGM is running")
 @click.option(
     "--retry-interval-seconds",
-    type=click.FloatRange(min=0.1),
+    type=click.FloatRange(min=0.0, min_open=True),
     default=5.0,
     show_default=True,
     help="Seconds to wait between DCGM readiness attempts.",
 )
 @click.option(
     "--connect-timeout-seconds",
-    type=click.FloatRange(min=0.1),
-    default=5.0,
+    type=click.FloatRange(min=0.0, min_open=True),
+    default=10.0,
     show_default=True,
     help="Maximum seconds allowed for one functional DCGM readiness check.",
 )
