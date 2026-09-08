@@ -545,7 +545,11 @@ func createChangeTriggers(ctx context.Context, db *sql.DB) error {
 					AFTER INSERT OR UPDATE OR DELETE ON maintenance_events
 					FOR EACH ROW EXECUTE FUNCTION log_table_changes();
 			END IF;
-		END
+		EXCEPTION
+			-- Another datastore may create the trigger after the existence check.
+			WHEN duplicate_object THEN
+				NULL;
+		END;
 		$$`,
 		`DO $$
 		BEGIN
@@ -560,7 +564,11 @@ func createChangeTriggers(ctx context.Context, db *sql.DB) error {
 					AFTER INSERT OR UPDATE OR DELETE ON health_events
 					FOR EACH ROW EXECUTE FUNCTION log_table_changes();
 			END IF;
-		END
+		EXCEPTION
+			-- Another datastore may create the trigger after the existence check.
+			WHEN duplicate_object THEN
+				NULL;
+		END;
 		$$`,
 	}
 

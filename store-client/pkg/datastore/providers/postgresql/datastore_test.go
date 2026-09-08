@@ -254,7 +254,7 @@ func TestRecoveryIndexesIncludePartialPendingEventCursor(t *testing.T) {
 		"document->'healtheventstatus'->>'faultquarantinerecovery' IS NULL")
 }
 
-func TestCreateChangeTriggersCreatesOnlyMissingTriggers(t *testing.T) {
+func TestCreateChangeTriggersCreatesMissingTriggersRaceSafely(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer db.Close()
@@ -263,11 +263,13 @@ func TestCreateChangeTriggersCreatesOnlyMissingTriggers(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(
 		`(?s)DO \$\$.*IF NOT EXISTS.*tgname = 'maintenance_events_changes'.*` +
-			`CREATE TRIGGER maintenance_events_changes`,
+			`CREATE TRIGGER maintenance_events_changes.*EXCEPTION.*` +
+			`WHEN duplicate_object THEN.*NULL`,
 	).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(
 		`(?s)DO \$\$.*IF NOT EXISTS.*tgname = 'health_events_changes'.*` +
-			`CREATE TRIGGER health_events_changes`,
+			`CREATE TRIGGER health_events_changes.*EXCEPTION.*` +
+			`WHEN duplicate_object THEN.*NULL`,
 	).WillReturnResult(sqlmock.NewResult(0, 0))
 
 	require.NoError(t, createChangeTriggers(context.Background(), db))
