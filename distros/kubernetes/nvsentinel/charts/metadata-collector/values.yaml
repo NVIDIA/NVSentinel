@@ -74,3 +74,14 @@ kubeletHost:
 
 # Pod priority for this component. Overridden by the matching global when that is set.
 priorityClassName: ""
+
+# DaemonSet rolling update strategy.
+# type: RollingUpdate or OnDelete. rollingUpdate is only rendered for RollingUpdate.
+# maxUnavailable counts pods stranded on unreachable nodes as well, so a cluster with
+# many nodes down for service may need it raised or the rollout cannot start.
+# Example, absolute count instead of a percentage:
+#   updateStrategy: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 34}}
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 5%

@@ -496,3 +496,14 @@ podMonitor:
   # scrapeTimeout: ""  # Scrape timeout (defaults to Prometheus default if not specified)
   # metricsPath: "/metrics"  # Metrics path (defaults to /metrics)
   # labels: {}  # Additional labels for the PodMonitor resource
+
+# DaemonSet rolling update strategy for the platform-connectors DaemonSet.
+# type: RollingUpdate or OnDelete. rollingUpdate is only rendered for RollingUpdate.
+# maxUnavailable counts pods stranded on unreachable nodes as well, so a cluster with
+# many nodes down for service may need it raised or the rollout cannot start.
+# Example, absolute count instead of a percentage:
+#   updateStrategy: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 34}}
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 5%

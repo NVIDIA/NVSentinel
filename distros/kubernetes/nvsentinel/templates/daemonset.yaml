@@ -20,9 +20,11 @@ metadata:
     {{- include "nvsentinel.labels" . | nindent 4 }}
 spec:
   updateStrategy:
-    type: RollingUpdate
+    type: {{ .Values.updateStrategy.type }}
+    {{- if eq .Values.updateStrategy.type "RollingUpdate" }}
     rollingUpdate:
-      maxUnavailable: 5%
+      maxUnavailable: {{ .Values.updateStrategy.rollingUpdate.maxUnavailable }}
+    {{- end }}
   selector:
     matchLabels:
       {{- include "nvsentinel.selectorLabels" . | nindent 6 }}
