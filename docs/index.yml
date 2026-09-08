@@ -16,6 +16,8 @@ navigation:
 
   - section: Tutorials
     contents:
+      - page: Integrating Node Problem Detector
+        path: tutorials/integrating-node-problem-detector.md
       - page: Writing a Health Monitor
         path: tutorials/writing-a-health-monitor.md
       - page: Writing a Preflight Check

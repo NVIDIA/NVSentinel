@@ -976,6 +976,20 @@ gpu-health-monitor:
     # Set to false only after validating embedded-mode detections on your fleet.
     probeStoreOnly: true
 
+  # DCGM connection lifecycle configuration
+  dcgmConnectivity:
+    # Optional startup gate for remote DCGM modes. The init container waits
+    # indefinitely until a functional DCGM API request succeeds. It is disabled
+    # by default for backward compatibility and cannot be used in embedded-mode.
+    startupGate:
+      # Enables the startup gate. This value must be a YAML boolean.
+      enabled: false
+      # Seconds to wait between failed readiness attempts.
+      retryIntervalSeconds: 5
+      # Maximum seconds allowed for one DCGM connection and discovery attempt.
+      # A timed-out attempt is terminated before the next retry begins.
+      connectTimeoutSeconds: 10
+
   # Use host networking for GPU health monitor pods
   # Required when:
   # - DCGM is running as hostProcess (not as service)
