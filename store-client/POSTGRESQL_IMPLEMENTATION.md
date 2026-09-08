@@ -558,8 +558,8 @@ CREATE TABLE resume_tokens (
 
 ### Schema Location
 
-The complete PostgreSQL schema with triggers is located at:
-**`docs/postgresql-schema.sql`**
+The canonical PostgreSQL schema is the ordered migration set at:
+**`pkg/datastore/providers/postgresql/migrations/`**
 
 ## JSONB Path Translation
 
@@ -645,8 +645,10 @@ docker run -d \
   -p 5432:5432 \
   postgres:15
 
-# Initialize schema
-psql -h localhost -U postgres -d nvsentinel < docs/postgresql-schema.sql
+# Apply schema migrations
+for migration in pkg/datastore/providers/postgresql/migrations/*.sql; do
+  psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d nvsentinel -f "$migration"
+done
 
 # Set environment variables
 export DATASTORE_PROVIDER=postgresql
@@ -754,7 +756,7 @@ make build
 
 **Issue**: Change stream events not received (PostgreSQL)
 - **Cause**: Triggers may not be installed
-- **Solution**: Run PostgreSQL schema with triggers: `psql < docs/postgresql-schema.sql`
+- **Solution**: Apply `pkg/datastore/providers/postgresql/migrations/*.sql` in filename order
 
 **Issue**: "data must be a map[string]interface{}"
 - **Cause**: Incorrect filter/update format
