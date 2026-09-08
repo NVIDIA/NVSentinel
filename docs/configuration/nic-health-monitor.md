@@ -292,7 +292,7 @@ Counters outside this list are rejected at startup with a validation error.
 `carrier_changes`, `rx_crc_errors`, `rx_errors`, `rx_missed_errors`, `tx_carrier_errors`, `tx_errors`
 
 **AWS EFA per-port counters** (`ports/1/hw_counters/`, `EFADegradationCheck` only):
-`efa_rx_drops`, `efa_rdma_read_wr_err`, `efa_rdma_write_wr_err`, `efa_unresponsive_remote_err`, `efa_impaired_remote_conn_err`
+`efa_rx_drops`, `efa_rdma_read_wr_err`, `efa_rdma_write_wr_err`, `efa_retrans_timeout_events`, `efa_unresponsive_remote_events`, `efa_impaired_remote_conn_events` (the last three are EFA SRD counters, present on Nitro v4+ only)
 
 **AWS EFA device-level counters** (`/sys/class/infiniband/<dev>/hw_counters/`, `EFADegradationCheck` only):
 `efa_no_completion_cmds` (fatal), `efa_cmds_err`, `efa_keep_alive_rcvd`, `efa_reg_mr_err`, `efa_create_qp_err`, `efa_create_cq_err`, `efa_create_ah_err`

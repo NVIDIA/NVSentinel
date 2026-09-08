@@ -118,7 +118,8 @@ counterDetection:
   #   netdev root (/sys/class/net/<iface>/): carrier_changes
   #   AWS EFA, per-port hw_counters/ (EFADegradationCheck only):
   #     efa_rx_drops, efa_rdma_read_wr_err, efa_rdma_write_wr_err,
-  #     efa_unresponsive_remote_err, efa_impaired_remote_conn_err
+  #     efa_retrans_timeout_events, efa_unresponsive_remote_events,
+  #     efa_impaired_remote_conn_events (SRD counters: Nitro v4+ only)
   #   AWS EFA, device-level /sys/class/infiniband/<dev>/hw_counters/
   #   (EFADegradationCheck only): efa_no_completion_cmds (fatal),
   #     efa_cmds_err, efa_keep_alive_rcvd, efa_reg_mr_err, efa_create_qp_err,
@@ -241,13 +242,21 @@ counterDetection:
       threshold: 100.0
       velocityUnit: second
 
-    - name: efa_unresponsive_remote_err
+    # EFA SRD counters (Nitro v4+ only; skipped when absent). AWS documents
+    # these as the indicators of path instability and degraded/failed peers.
+    - name: efa_retrans_timeout_events
       enabled: true
       thresholdType: velocity
       threshold: 1.0
       velocityUnit: second
 
-    - name: efa_impaired_remote_conn_err
+    - name: efa_unresponsive_remote_events
+      enabled: true
+      thresholdType: velocity
+      threshold: 1.0
+      velocityUnit: second
+
+    - name: efa_impaired_remote_conn_events
       enabled: true
       thresholdType: velocity
       threshold: 1.0

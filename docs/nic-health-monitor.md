@@ -52,7 +52,7 @@ Polls InfiniBand hardware counters every second for error rate violations:
 - `efa_no_completion_cmds` — admin command never completed; firmware unresponsive → **Fatal** (`REPLACE_VM`)
 - `efa_cmds_err` > 10/min — admin command failures (control plane)
 - `efa_rx_drops` > 100/sec — packets dropped by the adapter
-- `efa_unresponsive_remote_err`, `efa_impaired_remote_conn_err` > 1/sec — fabric black-hole / impaired-peer indicators
+- `efa_retrans_timeout_events`, `efa_unresponsive_remote_events`, `efa_impaired_remote_conn_events` > 1/sec — the EFA SRD indicators AWS documents for path instability, unresponsive peers and impaired connections (Nitro v4+ only; skipped when the counter is absent)
 
 Counter breach state is persisted across pod restarts. Recovery events are emitted automatically when an admin resets counters (e.g. `perfquery -r` or `perfquery -R`) or when the node reboots.
 

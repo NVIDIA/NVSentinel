@@ -195,16 +195,26 @@ var counterDefinitions = map[string]counterDefinition{
 		description: "EFA RDMA write work requests completed with error",
 		linkLayers:  efaLinkLayers,
 	},
-	"efa_unresponsive_remote_err": {
-		path:        "hw_counters/unresponsive_remote_err",
+	// EFA SRD counters. AWS documents these as the indicators of network
+	// path instability / degraded or failed peer connections
+	// (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa-working-monitor.html).
+	// They exist only on Nitro v4+ instances; absent counters are skipped.
+	"efa_retrans_timeout_events": {
+		path:        "hw_counters/retrans_timeout_events",
+		isFatal:     false,
+		description: "EFA SRD retransmit timeouts that caused a network path change - path instability",
+		linkLayers:  efaLinkLayers,
+	},
+	"efa_unresponsive_remote_events": {
+		path:        "hw_counters/unresponsive_remote_events",
 		isFatal:     false,
 		description: "EFA remote peer unresponsive - potential fabric black hole",
 		linkLayers:  efaLinkLayers,
 	},
-	"efa_impaired_remote_conn_err": {
-		path:        "hw_counters/impaired_remote_conn_err",
+	"efa_impaired_remote_conn_events": {
+		path:        "hw_counters/impaired_remote_conn_events",
 		isFatal:     false,
-		description: "EFA connection to remote peer impaired - excessive packet loss",
+		description: "EFA connection to remote peer impaired - reduced throughput from packet loss",
 		linkLayers:  efaLinkLayers,
 	},
 
