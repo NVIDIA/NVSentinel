@@ -194,19 +194,19 @@ func TestValidateCounter_EFACounterSelections(t *testing.T) {
 		path  string
 		fatal bool
 	}{
-		"efa_rx_drops":                 {path: "hw_counters/rx_drops"},
-		"efa_rdma_read_wr_err":         {path: "hw_counters/rdma_read_wr_err"},
-		"efa_rdma_write_wr_err":        {path: "hw_counters/rdma_write_wr_err"},
+		"efa_rx_drops":                    {path: "hw_counters/rx_drops"},
+		"efa_rdma_read_wr_err":            {path: "hw_counters/rdma_read_wr_err"},
+		"efa_rdma_write_wr_err":           {path: "hw_counters/rdma_write_wr_err"},
 		"efa_retrans_timeout_events":      {path: "hw_counters/retrans_timeout_events"},
 		"efa_unresponsive_remote_events":  {path: "hw_counters/unresponsive_remote_events"},
 		"efa_impaired_remote_conn_events": {path: "hw_counters/impaired_remote_conn_events"},
-		"efa_no_completion_cmds":       {path: "device_hw_counters/no_completion_cmds", fatal: true},
-		"efa_cmds_err":                 {path: "device_hw_counters/cmds_err"},
-		"efa_keep_alive_rcvd":          {path: "device_hw_counters/keep_alive_rcvd"},
-		"efa_reg_mr_err":               {path: "device_hw_counters/reg_mr_err"},
-		"efa_create_qp_err":            {path: "device_hw_counters/create_qp_err"},
-		"efa_create_cq_err":            {path: "device_hw_counters/create_cq_err"},
-		"efa_create_ah_err":            {path: "device_hw_counters/create_ah_err"},
+		"efa_no_completion_cmds":          {path: "device_hw_counters/no_completion_cmds", fatal: true},
+		"efa_cmds_err":                    {path: "device_hw_counters/cmds_err"},
+		"efa_keep_alive_rcvd":             {path: "device_hw_counters/keep_alive_rcvd"},
+		"efa_reg_mr_err":                  {path: "device_hw_counters/reg_mr_err"},
+		"efa_create_qp_err":               {path: "device_hw_counters/create_qp_err"},
+		"efa_create_cq_err":               {path: "device_hw_counters/create_cq_err"},
+		"efa_create_ah_err":               {path: "device_hw_counters/create_ah_err"},
 	} {
 		c := validDeltaCounter()
 		c.Name = name
