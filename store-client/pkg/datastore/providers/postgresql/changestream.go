@@ -30,6 +30,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	"github.com/nvidia/nvsentinel/store-client/pkg/lagstate"
 )
 
 const (
@@ -89,6 +90,16 @@ type PostgreSQLChangeStreamWatcher struct {
 	listener       *pq.Listener // LISTEN connection for notifications
 	lastNotifyTime time.Time    // Last time we received a NOTIFY
 	connString     string       // Connection string for LISTEN
+
+	// lag carries the two timestamps change_stream_lag_seconds is derived from. See ADR-054.
+	lag lagstate.Tracker
+}
+
+// LagState reports when this poller last saw a poll return no rows and the changed_at of the
+// newest row it read. Either may be zero before the first poll completes, which callers must
+// treat as "unknown" rather than as caught up: see ADR-054.
+func (w *PostgreSQLChangeStreamWatcher) LagState() (lastEmptyBatch, lastEventRead time.Time) {
+	return w.lag.LagState()
 }
 
 // NewPostgreSQLChangeStreamWatcher creates a new PostgreSQL change stream watcher
@@ -684,6 +695,13 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNewChanges(ctx context.Context) err
 
 	slog.Debug("Fetched events from changelog", "client", w.clientName, "eventCount", len(events))
 
+	// A poll that returned nothing is the empty batch: the changelog holds no row past this
+	// consumer's position that its server-side filter would accept. Rows are recorded in
+	// processChangelogRows as they are scanned.
+	if len(events) == 0 {
+		w.lag.RecordCaughtUp(time.Now())
+	}
+
 	return w.sendEventsToChannel(ctx, events)
 }
 
@@ -744,6 +762,10 @@ func (w *PostgreSQLChangeStreamWatcher) processChangelogRows(rows *sql.Rows) ([]
 
 			return nil, fmt.Errorf("failed to scan changelog row: %w", err)
 		}
+
+		// Rows come back ordered by changed_at, and the tracker keeps the maximum, so this ends
+		// up holding the newest row read regardless of ordering.
+		w.lag.RecordEventRead(changedAt)
 
 		event := w.buildEventDocument(id, recordID, operation, oldValues, newValues, changedAt)
 		token := []byte(fmt.Sprintf("%d", id))
@@ -1708,6 +1730,11 @@ func (a *PostgreSQLChangeStreamAdapter) Close(ctx context.Context) error {
 	return a.watcher.Close(ctx)
 }
 
+// LagState delegates to the wrapped watcher so lag survives the adapter.
+func (a *PostgreSQLChangeStreamAdapter) LagState() (lastEmptyBatch, lastEventRead time.Time) {
+	return a.watcher.LagState()
+}
+
 // PostgreSQLChangeStreamWatcherWithUnwrap wraps PostgreSQLChangeStreamWatcher
 // and provides the Unwrap() method without creating interface conflicts.
 // This wrapper implements datastore.ChangeStreamWatcher and can be unwrapped to client.ChangeStreamWatcher.
@@ -1753,6 +1780,20 @@ func (w *PostgreSQLChangeStreamWatcherWithUnwrap) MarkProcessed(ctx context.Cont
 func (w *PostgreSQLChangeStreamWatcherWithUnwrap) Close(ctx context.Context) error {
 	return w.watcher.Close(ctx)
 }
+
+// LagState delegates to the wrapped watcher so lag survives the wrapper.
+func (w *PostgreSQLChangeStreamWatcherWithUnwrap) LagState() (lastEmptyBatch, lastEventRead time.Time) {
+	return w.watcher.LagState()
+}
+
+// Every type a consumer can be handed must report lag, or the assertion that looks for it
+// answers for the wrapper instead of the watcher underneath. Asserted here so adding a wrapper
+// without the pass-through fails the build rather than silently reporting no lag.
+var (
+	_ lagstate.Provider = (*PostgreSQLChangeStreamWatcher)(nil)
+	_ lagstate.Provider = (*PostgreSQLChangeStreamAdapter)(nil)
+	_ lagstate.Provider = (*PostgreSQLChangeStreamWatcherWithUnwrap)(nil)
+)
 
 // Unwrap returns the adapter as client.ChangeStreamWatcher for backward compatibility
 // This allows services to unwrap the PostgreSQL watcher to the legacy interface
