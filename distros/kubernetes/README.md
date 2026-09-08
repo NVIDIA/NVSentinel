@@ -316,6 +316,20 @@ janitor:
       principalId: "ocid1.principal.oc1..aaa..."
 ```
 
+##### Label provider
+
+Requests reboot and terminate by labeling the Node. An external controller such as NKE watches those labels and performs the action.
+
+```yaml
+janitor-provider:
+  csp:
+    provider: "label"
+    label:
+      rebootKey: "nke.nvidia.com/reboot"
+      terminateKey: "nke.nvidia.com/terminate"
+      value: "requested-by-nvsentinel"
+```
+
 ### Complete Configuration Reference
 
 For detailed documentation of all available configuration options, see:
