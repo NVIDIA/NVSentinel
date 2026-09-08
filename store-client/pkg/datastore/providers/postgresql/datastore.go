@@ -44,7 +44,8 @@ type PostgreSQLDataStore struct {
 	metricsRegisterer prometheus.Registerer
 }
 
-// NewPostgreSQLStore creates a new PostgreSQL datastore
+// NewPostgreSQLStore creates a PostgreSQL datastore without managing or
+// validating its schema. Startup code must ensure schema compatibility.
 func NewPostgreSQLStore(ctx context.Context, config datastore.DataStoreConfig) (datastore.DataStore, error) {
 	// Validate configuration
 	if config.Connection.Host == "" {
@@ -88,11 +89,6 @@ func NewPostgreSQLStore(ctx context.Context, config datastore.DataStoreConfig) (
 		otelsql.WithAttributes(semconv.DBSystemPostgreSQL),
 	); err != nil {
 		slog.Warn("Failed to register DB stats metrics", "error", err)
-	}
-
-	if err := ValidateSchemaVersion(ctx, db); err != nil {
-		db.Close()
-		return nil, err
 	}
 
 	store := &PostgreSQLDataStore{

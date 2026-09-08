@@ -216,9 +216,12 @@ Apply all migrations to an in-cluster PostgreSQL instance:
 ```bash
 for migration in store-client/pkg/datastore/providers/postgresql/migrations/*.sql; do
   kubectl exec -i nvsentinel-postgresql-0 -n nvsentinel -- \
-    psql -v ON_ERROR_STOP=1 -U postgresql -d nvsentinel < "$migration"
+    psql -v ON_ERROR_STOP=1 -U postgres -d nvsentinel < "$migration"
 done
 ```
+
+Replace `postgres` with the configured DDL-capable database role when using a
+custom PostgreSQL user.
 
 For an external database, use the same ordered files with `psql`, Terraform, or
 your database release pipeline. Query the applied version with:
