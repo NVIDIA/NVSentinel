@@ -190,3 +190,10 @@ processingStrategy: EXECUTE_REMEDIATION
 # present at boot. GPUs with no NVLink silicon (L40, A40) are always
 # suppressed regardless of this value.
 suppressNvlinkDownOnUnbridgedPcie: "False"
+
+# Rolling update budget for this DaemonSet. maxUnavailable counts pods stranded on
+# unreachable nodes as well, so a cluster with many nodes down may need it raised.
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 5%

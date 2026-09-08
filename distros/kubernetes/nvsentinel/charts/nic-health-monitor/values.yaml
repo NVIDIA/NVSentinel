@@ -209,3 +209,10 @@ logLevel: info
 # EXECUTE_REMEDIATION: normal behavior; downstream modules may update cluster state.
 # STORE_ONLY: observability-only behavior; event should be persisted/exported but should not modify cluster resources.
 processingStrategy: EXECUTE_REMEDIATION
+
+# Rolling update budget for this DaemonSet. maxUnavailable counts pods stranded on
+# unreachable nodes as well, so a cluster with many nodes down may need it raised.
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 5%
