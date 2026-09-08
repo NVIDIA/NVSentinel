@@ -17,6 +17,7 @@ package datastore
 import (
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -38,6 +39,12 @@ type DataStoreConfig struct {
 	Provider   DataStoreProvider `json:"provider" yaml:"provider"`
 	Connection ConnectionConfig  `json:"connection" yaml:"connection"`
 	Options    map[string]string `json:"options,omitempty" yaml:"options,omitempty"`
+
+	// MetricsRegisterer is where change stream metrics are registered. Nil means the default
+	// Prometheus registry. A consumer that serves a different registry, such as
+	// controller-runtime's, must set this or those metrics never reach its endpoint.
+	// Not part of the serialized configuration.
+	MetricsRegisterer prometheus.Registerer `json:"-" yaml:"-"`
 }
 
 // ConnectionConfig holds generic connection parameters
