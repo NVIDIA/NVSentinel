@@ -197,13 +197,21 @@ func TestEFAState_NetdevDownOnFirstPollIsFatalWithHealthyPeers(t *testing.T) {
 
 	node.tree.SetNetDev(t, "ens6", "up", "1")
 
-	// Recovery clears both the port and the card anomaly latch.
+	// Recovery clears both latches: one healthy event for the port and
+	// one for the card anomaly.
 	events = runPoll(t, check)
-	require.NotEmpty(t, events)
+	require.Len(t, events, 2, "recovery must report both the port and the card")
+
+	recovered := map[string]bool{}
 
 	for _, evt := range events {
 		assert.True(t, evt.IsHealthy, "recovery event should be healthy: %s", evt.Message)
+		assert.False(t, evt.IsFatal)
+		recovered[evt.EntitiesImpacted[0].EntityValue] = true
 	}
+
+	assert.True(t, recovered["rdmap0s6"], "port recovery for rdmap0s6")
+	assert.True(t, recovered["0000:00:06"], "card anomaly recovery for 0000:00:06")
 }
 
 func TestEFAState_LostCarrierWithUnknownOperstateIsFatal(t *testing.T) {
