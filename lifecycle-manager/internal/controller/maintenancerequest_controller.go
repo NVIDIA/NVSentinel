@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,8 +30,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/condition"
+	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
-	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 )
@@ -51,6 +50,7 @@ type MaintenanceRequestReconciler struct {
 	client.Client
 	Scheme    *runtime.Scheme
 	Publisher *healthpub.Publisher
+	NodeLock  distributedlock.NodeLock
 }
 
 // SetupWithManager registers the reconciler with the manager.
@@ -126,12 +126,15 @@ func (r *MaintenanceRequestReconciler) claimAndEmit(
 	ctx context.Context, log *slog.Logger,
 	mr *v1alpha1.MaintenanceRequest, nodeName string,
 ) (ctrl.Result, error) {
-	claimed, err := r.claimNode(ctx, log, mr, nodeName)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
+	locked := r.NodeLock.LockNode(ctx, mr, nodeName)
+	if !locked {
+		r.setCondition(mr, conditionHealthEventEmitted, "False", reasonBlocked,
+			fmt.Sprintf("Node %s is locked by another maintenance operation.", nodeName))
 
-	if !claimed {
+		if statusErr := r.Status().Update(ctx, mr); statusErr != nil {
+			log.Error("Failed to update blocked status", "error", statusErr)
+		}
+
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
@@ -175,12 +178,12 @@ func (r *MaintenanceRequestReconciler) persistEmittedCondition(
 //
 // Every step is idempotent so a crash at any point produces a clean
 // retry:
-//   - removeNodeAnnotation runs first so a new MR is not blocked while
-//     the clearing event is retried. It is idempotent and ownership-
-//     checked; repeated calls (e.g. across retries) are safe.
-//   - emitClearingEvent may re-fire; platform-connector treats
-//     duplicate isHealthy=true events as no-ops. Only fires if the
-//     opening event was previously emitted (condition=True).
+//   - emitClearingEvent fires first (only if the opening event was
+//     previously emitted). The node lock is held during this step so
+//     no other maintenance operation can start on the node.
+//   - CheckUnlock releases the lease after the clearing event succeeds.
+//     If the MR is force-deleted, K8s GC cleans up the lease via the
+//     owner reference.
 //   - The finalizer is removed only after all cleanup succeeds.
 func (r *MaintenanceRequestReconciler) handleDeletion(
 	ctx context.Context, log *slog.Logger, mr *v1alpha1.MaintenanceRequest,
@@ -195,14 +198,6 @@ func (r *MaintenanceRequestReconciler) handleDeletion(
 	}
 
 	if nodeName != "" {
-		// Release the node claim early so a new MR is not blocked
-		// while the clearing event is retried. removeNodeAnnotation
-		// is idempotent and ownership-checked, so calling it again
-		// after the clearing event succeeds is safe.
-		if err := r.removeNodeAnnotation(ctx, log, nodeName, mr.Name); err != nil {
-			return ctrl.Result{}, err
-		}
-
 		// Only emit a clearing event if we previously emitted an
 		// opening event. If emit never succeeded, there is nothing to
 		// clear in the pipeline.
@@ -213,6 +208,13 @@ func (r *MaintenanceRequestReconciler) handleDeletion(
 
 			log.Info("Successfully emitted clearing health event", "node", nodeName)
 		}
+
+		// Release the node lock after the clearing event succeeds.
+		// CheckUnlock is idempotent: if the lease was already deleted
+		// (e.g. by K8s GC via the owner reference), it returns false.
+		if retryUnlock := r.NodeLock.CheckUnlock(ctx, mr, nodeName); retryUnlock {
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
 	}
 
 	controllerutil.RemoveFinalizer(mr, mrFinalizerName)
@@ -222,67 +224,6 @@ func (r *MaintenanceRequestReconciler) handleDeletion(
 	}
 
 	return ctrl.Result{}, nil
-}
-
-// claimNode atomically checks that no other MR owns the node and writes
-// this MR's name into the node annotation in a single Update call.
-// The Update uses the node's resourceVersion from the preceding Get, so
-// concurrent claimNode calls for the same node will produce a conflict
-// error on all but one, eliminating the TOCTOU window.
-//
-// Returns (true, nil) if the node is now claimed by this MR,
-// (false, nil) if the node is blocked by a different MR, or
-// (false, err) on transient errors (conflict included — caller requeues).
-func (r *MaintenanceRequestReconciler) claimNode(
-	ctx context.Context, log *slog.Logger,
-	mr *v1alpha1.MaintenanceRequest, nodeName string,
-) (bool, error) {
-	var node corev1.Node
-	if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err != nil {
-		if apierrors.IsNotFound(err) {
-			// Node doesn't exist yet; nothing to block on and nothing
-			// to annotate. Proceed — the event will reference the node
-			// by name regardless of whether it's registered.
-			return true, nil
-		}
-
-		return false, err
-	}
-
-	activeMR := node.Annotations[managed.AnnotationActiveMR]
-	if activeMR != "" && activeMR != mr.Name {
-		log.Info("Node already has an active MaintenanceRequest; blocking",
-			"node", nodeName, "existingMR", activeMR)
-
-		r.setCondition(mr, conditionHealthEventEmitted, "False", reasonBlocked,
-			fmt.Sprintf("Node %s already has active MaintenanceRequest %s.", nodeName, activeMR))
-
-		if statusErr := r.Status().Update(ctx, mr); statusErr != nil {
-			log.Error("Failed to update blocked status", "error", statusErr)
-		}
-
-		return false, nil
-	}
-
-	if activeMR == mr.Name {
-		return true, nil
-	}
-
-	if node.Annotations == nil {
-		node.Annotations = make(map[string]string)
-	}
-
-	node.Annotations[managed.AnnotationActiveMR] = mr.Name
-
-	if err := r.Update(ctx, &node); err != nil {
-		// Conflict means another MR claimed the node between our Get
-		// and Update. Return the error so the caller requeues; the
-		// next reconcile will re-read the annotation and either block
-		// or succeed.
-		return false, err
-	}
-
-	return true, nil
 }
 
 func (r *MaintenanceRequestReconciler) autoPopulateEventFields(mr *v1alpha1.MaintenanceRequest) {
@@ -354,28 +295,6 @@ func (r *MaintenanceRequestReconciler) emitClearingEvent(
 		"checkName", openingEvent.CheckName)
 
 	return r.Publisher.Publish(ctx, events)
-}
-
-func (r *MaintenanceRequestReconciler) removeNodeAnnotation(
-	ctx context.Context, log *slog.Logger, nodeName, mrName string,
-) error {
-	var node corev1.Node
-	if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-
-		return err
-	}
-
-	currentMR, exists := node.Annotations[managed.AnnotationActiveMR]
-	if !exists || currentMR != mrName {
-		return nil
-	}
-
-	delete(node.Annotations, managed.AnnotationActiveMR)
-
-	return r.Update(ctx, &node)
 }
 
 func (r *MaintenanceRequestReconciler) setCondition(

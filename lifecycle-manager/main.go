@@ -42,6 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
+	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
@@ -198,6 +199,9 @@ func setupControllers(
 			Client:    mgr.GetClient(),
 			Scheme:    mgr.GetScheme(),
 			Publisher: publisher,
+			NodeLock: distributedlock.NewNodeLock(
+				mgr.GetClient(), mgr.GetScheme(), namespace, nil,
+			),
 		}).SetupWithManager(mgr); err != nil {
 			return fmt.Errorf("failed to create MaintenanceRequest controller: %w", err)
 		}

@@ -12,11 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package managed
+package metrics
 
-const (
-	MRAPIGroup = "nvsentinel.dgxc.nvidia.com"
-	MRVersion  = "v1"
-	MRKind     = "MaintenanceRequest"
-	MRResource = "maintenancerequests"
-)
+// JanitorLockMetrics adapts the global janitor metrics to the
+// commons/pkg/distributedlock.LockMetrics interface.
+type JanitorLockMetrics struct{}
+
+// IncLockFailure records a lock acquisition failure.
+func (JanitorLockMetrics) IncLockFailure(nodeName string) {
+	IncActionCount(ActionTypeLock, StatusFailed, nodeName)
+}
+
+// IncUnlockFailure records a lock release failure.
+func (JanitorLockMetrics) IncUnlockFailure(nodeName string) {
+	IncActionCount(ActionTypeUnlock, StatusFailed, nodeName)
+}

@@ -43,10 +43,10 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
-	"github.com/nvidia/nvsentinel/janitor/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/janitor/pkg/gpuservices"
 	"github.com/nvidia/nvsentinel/janitor/pkg/metrics"
 )
@@ -282,7 +282,9 @@ func (r *GPUResetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.checkPodsReadyFn = r.checkPodsReady
 
 	// Initialize NodeLock for distributed locking across maintenance operations
-	r.NodeLock = distributedlock.NewNodeLock(mgr.GetClient(), r.LockNamespace)
+	r.NodeLock = distributedlock.NewNodeLock(
+		mgr.GetClient(), mgr.GetScheme(), r.LockNamespace, metrics.JanitorLockMetrics{},
+	)
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.GPUReset{}).

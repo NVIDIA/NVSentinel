@@ -25,14 +25,16 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
-	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 )
@@ -95,6 +97,8 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 		ctx context.Context
 	)
 
+	const lockNamespace = "default"
+
 	BeforeEach(func() {
 		ctx = context.Background()
 		fc = &fakePCClient{}
@@ -102,6 +106,9 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Client:    k8sClient,
 			Scheme:    k8sClient.Scheme(),
 			Publisher: newTestPublisher(fc),
+			NodeLock: distributedlock.NewNodeLock(
+				k8sClient, scheme.Scheme, lockNamespace, nil,
+			),
 		}
 	})
 
@@ -228,7 +235,7 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 				Expect(fc.calls.Load()).To(BeZero())
 			})
 
-		It("claims node and emits event on happy path", func() {
+		It("locks node and emits event on happy path", func() {
 			node := &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{Name: "node-happy"},
 			}
@@ -241,6 +248,7 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Expect(k8sClient.Create(ctx, mr)).To(Succeed())
 			DeferCleanup(func() {
 				removeFinalizer(ctx, mr.Name)
+				deleteLease(ctx, "node-happy", lockNamespace)
 			})
 
 			result, err := r.Reconcile(ctx, reconcileRequest(mr.Name))
@@ -263,27 +271,46 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Expect(updated.Spec.HealthEvent.Metadata).To(
 				HaveKey("maintenanceRequestName"))
 
-			var updatedNode corev1.Node
+			// Verify a lease was created for the node
+			var lease coordinationv1.Lease
 			Expect(k8sClient.Get(ctx,
-				types.NamespacedName{Name: "node-happy"},
-				&updatedNode)).To(Succeed())
-			Expect(updatedNode.Annotations[managed.AnnotationActiveMR]).To(
-				Equal(mr.Name))
+				types.NamespacedName{
+					Name: "node-happy", Namespace: lockNamespace,
+				}, &lease)).To(Succeed())
+			Expect(lease.OwnerReferences).To(HaveLen(1))
+			Expect(lease.OwnerReferences[0].Name).To(Equal(mr.Name))
 		})
 
-		It("blocks when node has active MR from another request",
+		It("blocks when node is locked by another operation",
 			func() {
 				node := &corev1.Node{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "node-blocked",
-						Annotations: map[string]string{
-							managed.AnnotationActiveMR: "other-mr",
-						},
 					},
 				}
 				Expect(k8sClient.Create(ctx, node)).To(Succeed())
 				DeferCleanup(func() {
 					_ = k8sClient.Delete(ctx, node)
+				})
+
+				// Pre-create a lease held by a different resource
+				existingLease := &coordinationv1.Lease{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "node-blocked",
+						Namespace: lockNamespace,
+						OwnerReferences: []metav1.OwnerReference{
+							{
+								APIVersion: "janitor.dgxc.nvidia.com/v1alpha1",
+								Kind:       "RebootNode",
+								Name:       "other-reboot",
+								UID:        "other-uid-123",
+							},
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, existingLease)).To(Succeed())
+				DeferCleanup(func() {
+					_ = k8sClient.Delete(ctx, existingLease)
 				})
 
 				mr := newTestMR("mr-blocked", "node-blocked")
@@ -318,6 +345,7 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 			DeferCleanup(func() {
 				_ = k8sClient.Delete(ctx, node)
+				deleteLease(ctx, "node-pub-fail", lockNamespace)
 			})
 
 			fc.responseFn = func(_ int) error {
@@ -350,6 +378,7 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Expect(k8sClient.Create(ctx, mr)).To(Succeed())
 			DeferCleanup(func() {
 				removeFinalizer(ctx, mr.Name)
+				deleteLease(ctx, "nonexistent-node", lockNamespace)
 			})
 
 			result, err := r.Reconcile(
@@ -385,7 +414,7 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 				Expect(fc.calls.Load()).To(BeZero())
 			})
 
-		It("emits clearing event, removes annotation, "+
+		It("emits clearing event, releases lease, "+
 			"and removes finalizer", func() {
 			node := &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
@@ -417,12 +446,13 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Expect(result).To(Equal(reconcile.Result{}))
 			Expect(fc.calls.Load()).To(Equal(int64(2)))
 
-			var updatedNode corev1.Node
-			Expect(k8sClient.Get(ctx,
-				types.NamespacedName{Name: "node-full-del"},
-				&updatedNode)).To(Succeed())
-			Expect(updatedNode.Annotations).NotTo(
-				HaveKey(managed.AnnotationActiveMR))
+			// Lease should be deleted after successful unlock
+			var lease coordinationv1.Lease
+			err = k8sClient.Get(ctx,
+				types.NamespacedName{
+					Name: "node-full-del", Namespace: lockNamespace,
+				}, &lease)
+			Expect(err).To(HaveOccurred())
 		})
 
 		It("skips clearing event when opening event was never emitted",
@@ -466,8 +496,7 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 				Expect(fc.calls.Load()).To(BeZero())
 			})
 
-		It("retries clearing but removes annotation immediately "+
-			"so node is not permanently blocked", func() {
+		It("retries clearing while keeping node locked", func() {
 			node := &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "node-clear-fail",
@@ -484,19 +513,19 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			_, _ = r.Reconcile(ctx, reconcileRequest(mr.Name))
 			Expect(fc.calls.Load()).To(Equal(int64(1)))
 
-			// Verify the node was claimed
-			var claimedNode corev1.Node
+			// Verify the lease was created
+			var lease coordinationv1.Lease
 			Expect(k8sClient.Get(ctx,
-				types.NamespacedName{Name: "node-clear-fail"},
-				&claimedNode)).To(Succeed())
-			Expect(claimedNode.Annotations[managed.AnnotationActiveMR]).To(
-				Equal(mr.Name))
+				types.NamespacedName{
+					Name: "node-clear-fail", Namespace: lockNamespace,
+				}, &lease)).To(Succeed())
 
 			// Fail on the clearing event
 			fc.responseFn = func(call int) error {
 				if call > 1 {
 					return fmt.Errorf("clearing event failed")
 				}
+
 				return nil
 			}
 
@@ -518,14 +547,13 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Expect(controllerutil.ContainsFinalizer(
 				&updated, mrFinalizerName)).To(BeTrue())
 
-			// Annotation must already be removed even though
-			// clearing is still retrying — this is the bug fix.
-			var freedNode corev1.Node
+			// Lease should still exist — node stays locked while
+			// clearing is retrying (unlike the old annotation
+			// approach, the lock prevents other operations).
 			Expect(k8sClient.Get(ctx,
-				types.NamespacedName{Name: "node-clear-fail"},
-				&freedNode)).To(Succeed())
-			Expect(freedNode.Annotations).NotTo(
-				HaveKey(managed.AnnotationActiveMR))
+				types.NamespacedName{
+					Name: "node-clear-fail", Namespace: lockNamespace,
+				}, &lease)).To(Succeed())
 
 			// Allow clearing to succeed and reconcile again
 			fc.responseFn = nil
@@ -558,14 +586,11 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 		})
 	})
 
-	Context("claimNode", func() {
-		It("returns true when already claimed by self", func() {
+	Context("NodeLock re-acquire", func() {
+		It("re-acquires lock when already held by self", func() {
 			node := &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "node-self-claim",
-					Annotations: map[string]string{
-						managed.AnnotationActiveMR: "mr-self",
-					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
@@ -574,17 +599,32 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			})
 
 			mr := newTestMR("mr-self", "node-self-claim")
-			mr.Finalizers = []string{mrFinalizerName}
 			Expect(k8sClient.Create(ctx, mr)).To(Succeed())
 			DeferCleanup(func() {
 				removeFinalizer(ctx, mr.Name)
+				deleteLease(ctx, "node-self-claim", lockNamespace)
 			})
 
+			// First reconcile: acquires lock + emits
 			result, err := r.Reconcile(
 				ctx, reconcileRequest(mr.Name))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal(reconcile.Result{}))
 			Expect(fc.calls.Load()).To(Equal(int64(1)))
+
+			// Verify lease exists with correct owner
+			var lease coordinationv1.Lease
+			Expect(k8sClient.Get(ctx,
+				types.NamespacedName{
+					Name: "node-self-claim", Namespace: lockNamespace,
+				}, &lease)).To(Succeed())
+
+			var updated v1alpha1.MaintenanceRequest
+			Expect(k8sClient.Get(ctx,
+				types.NamespacedName{Name: mr.Name},
+				&updated)).To(Succeed())
+			Expect(lease.OwnerReferences[0].UID).To(
+				Equal(updated.UID))
 		})
 	})
 
@@ -784,4 +824,15 @@ func removeFinalizer(ctx context.Context, name string) {
 	controllerutil.RemoveFinalizer(&mr, mrFinalizerName)
 	_ = k8sClient.Update(ctx, &mr)
 	_ = k8sClient.Delete(ctx, &mr)
+}
+
+func deleteLease(ctx context.Context, name, namespace string) {
+	var lease coordinationv1.Lease
+	if err := k8sClient.Get(ctx,
+		types.NamespacedName{Name: name, Namespace: namespace},
+		&lease); err != nil {
+		return
+	}
+
+	_ = k8sClient.Delete(ctx, &lease)
 }
