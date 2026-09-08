@@ -254,7 +254,9 @@ func TestRecoveryIndexesIncludePartialPendingEventCursor(t *testing.T) {
 		"document->'healtheventstatus'->>'faultquarantinerecovery' IS NULL")
 }
 
-func TestCreateChangeTriggersCreatesMissingTriggersRaceSafely(t *testing.T) {
+// TestCreateChangeTriggers_MissingTriggers_CreatedRaceSafely verifies that
+// trigger creation SQL handles concurrent duplicate creation.
+func TestCreateChangeTriggers_MissingTriggers_CreatedRaceSafely(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer db.Close()
