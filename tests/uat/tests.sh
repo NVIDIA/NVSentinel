@@ -18,6 +18,30 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
+# Whether NVSentinel runs in dry-run mode, where it logs the actions it would
+# have taken and takes none. It is one switch across the modules, so
+# fault-remediation is representative.
+# Sets: NVSENTINEL_DRY_RUN
+discover_dry_run() {
+    local args
+
+    # Selected by label because the deployment name carries the release prefix.
+    # An unreadable deployment is fatal rather than assumed false: guessing wrong
+    # costs hours waiting for a reboot that is not coming.
+    if ! args=$(kubectl get deployment -n nvsentinel -l app.kubernetes.io/name=fault-remediation \
+        -o jsonpath='{.items[*].spec.template.spec.containers[*].args}') || [[ -z "$args" ]]; then
+        error "Failed to read the fault-remediation deployment to determine whether NVSentinel runs in dry-run mode"
+    fi
+
+    if [[ "$args" == *"--dry-run=true"* ]]; then
+        NVSENTINEL_DRY_RUN=true
+    else
+        NVSENTINEL_DRY_RUN=false
+    fi
+
+    log "NVSentinel dry-run mode: $NVSENTINEL_DRY_RUN"
+}
+
 get_boot_id() {
     local node=$1
     local boot_id
@@ -149,7 +173,13 @@ create_node_debug_pod() {
     local node=$1
 
     NODE_NS=nvsentinel
-    NODE_POD=$(sed "s|NODE_NAME|$node|" "${SCRIPT_DIR}/nvsentinel-debug-pod-template.yaml" \
+
+    # Clusters whose NVIDIA toolkit is not wired into the container runtime
+    # have no usable RuntimeClass; setting UAT_DEBUG_RUNTIME_CLASS empty
+    # renders "runtimeClassName:", which is null and so leaves it unset.
+    NODE_POD=$(sed -e "s|NODE_NAME|$node|" \
+        -e "s|RUNTIME_CLASS_NAME|${UAT_DEBUG_RUNTIME_CLASS-nvidia}|" \
+        "${SCRIPT_DIR}/nvsentinel-debug-pod-template.yaml" \
         | kubectl create -f - -o jsonpath='{.metadata.name}')
     trap 'delete_node_debug_pod' EXIT
 
@@ -221,10 +251,49 @@ wait_for_any_node_condition() {
 }
 
 
+# In dry-run, fault-quarantine applies no cordon but still annotates the
+# decision, so assert that instead. A cluster left in dry-run by accident then
+# still fails here if the quarantine decision was never reached.
+wait_for_dry_run_quarantine_annotation() {
+    local node=$1
+    local timeout=${UAT_QUARANTINE_TIMEOUT:-120}
+    local elapsed=0
+
+    log "fault-quarantine is in dry-run, waiting for the quarantine decision on node $node..."
+
+    while [[ $elapsed -lt $timeout ]]; do
+        local annotations
+        annotations=$(kubectl get node "$node" -o json | jq -r '.metadata.annotations // {}')
+
+        local is_cordoned
+        is_cordoned=$(echo "$annotations" | jq -r '.quarantineHealthEventIsCordoned // ""')
+
+        local event_count
+        event_count=$(echo "$annotations" | jq -r '.quarantineHealthEvent // "[]"' | jq 'length' || true)
+
+        if [[ "$is_cordoned" == "True" && "${event_count:-0}" -gt 0 ]]; then
+            log "Node $node is annotated with the cordon it would have applied ✓"
+            echo "$annotations" | jq -r '.quarantineHealthEvent' \
+                | jq -r '.[] | "  checkName=\(.checkName) isFatal=\(.isFatal) nodeName=\(.nodeName)"'
+            return 0
+        fi
+
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    error "Timeout waiting for the quarantine decision on node $node: fault-quarantine is in dry-run, so it cordons nothing, but must still set quarantineHealthEventIsCordoned=True"
+}
+
 wait_for_node_quarantine() {
     local node=$1
     local timeout=${UAT_QUARANTINE_TIMEOUT:-120}
     local elapsed=0
+
+    if [[ "${NVSENTINEL_DRY_RUN:-false}" == "true" ]]; then
+        wait_for_dry_run_quarantine_annotation "$node"
+        return 0
+    fi
 
     log "Waiting for node $node to be quarantined (cordoned)..."
 
@@ -249,6 +318,14 @@ wait_for_node_unquarantine() {
     local timeout=${UAT_UNQUARANTINE_TIMEOUT:-300}
     local elapsed=0
 
+    # The one wait with no dry-run equivalent: the node was never cordoned, and
+    # the annotations only clear once it reports healthy again, which needs the
+    # remediation that dry-run suppressed.
+    if [[ "${NVSENTINEL_DRY_RUN:-false}" == "true" ]]; then
+        log "fault-quarantine is in dry-run and never cordoned node $node, nothing to wait for"
+        return 0
+    fi
+
     log "Waiting for node $node to be uncordoned..."
     while [[ $elapsed -lt $timeout ]]; do
         local is_cordoned
@@ -271,12 +348,47 @@ wait_for_node_unquarantine() {
     error "Timeout waiting for node $node to be uncordoned"
 }
 
+# In dry-run, fault-remediation returns before rendering the template, so no
+# RebootNode, GPUReset or ExternalRemediationRequest is created and nothing
+# downstream runs. It still logs the decision per node, which is the last
+# observable of the remediation half.
+wait_for_dry_run_remediation_decision() {
+    local node=$1
+    local timeout=${UAT_REBOOT_TIMEOUT:-600}
+    local elapsed=0
+
+    log "fault-remediation is in dry-run, waiting for the skipped remediation on node $node..."
+
+    while [[ $elapsed -lt $timeout ]]; do
+        local logged
+        logged=$(kubectl logs -n nvsentinel -l app.kubernetes.io/name=fault-remediation --since=15m --tail=-1 \
+            | grep -F "DRY-RUN: Skipping custom resource creation" \
+            | grep -F "\"node\":\"$node\"" | tail -1 || true)
+
+        if [[ -n "$logged" ]]; then
+            log "fault-remediation logged the remediation it skipped for node $node ✓"
+            log "  $logged"
+            return 0
+        fi
+
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    error "Timeout waiting for fault-remediation to log a skipped remediation for node $node: in dry-run it creates no custom resource, but must still log the decision"
+}
+
 wait_for_boot_id_change() {
     local node=$1
     local original_boot_id=$2
     local timeout=${UAT_REBOOT_TIMEOUT:-600}
     local elapsed=0
     local boot_id_changed=false
+
+    if [[ "${NVSENTINEL_DRY_RUN:-false}" == "true" ]]; then
+        wait_for_dry_run_remediation_decision "$node"
+        return 0
+    fi
 
     # Trim original boot ID for consistent comparison
     original_boot_id=$(echo "$original_boot_id" | tr -d '[:space:]')
@@ -320,6 +432,11 @@ wait_for_gpu_reset() {
     local timeout=${UAT_RESET_TIMEOUT:-600}
     local elapsed=0
     local matching_crd=""
+
+    if [[ "${NVSENTINEL_DRY_RUN:-false}" == "true" ]]; then
+        wait_for_dry_run_remediation_decision "$node"
+        return 0
+    fi
 
     log "Waiting for GPU reset for $uuid on $node (matching GPUReset CRD)..."
 
@@ -480,6 +597,16 @@ test_xid_monitoring_syslog_gpu_reset() {
         return 0
     fi
 
+    # This test resolves the GPU UUID with nvidia-smi, which the debug pod only
+    # gets from the NVIDIA toolkit that a RuntimeClass selects. Skip when the
+    # cluster has no such RuntimeClass; when it has one, a missing nvidia-smi
+    # is a real fault and fails below.
+    local runtime_class="${UAT_DEBUG_RUNTIME_CLASS:-nvidia}"
+    if ! kubectl get runtimeclass "$runtime_class" >/dev/null 2>&1; then
+        log "RuntimeClass $runtime_class does not exist, so nvidia-smi is unavailable, skipping Test 3"
+        return 0
+    fi
+
     local current_ts=$(date +%s)
 
     local gpu_node
@@ -633,6 +760,8 @@ main() {
     if kubectl get cm circuit-breaker -n nvsentinel -o jsonpath='{.data.status}' | grep -q "TRIPPED"; then
         error "Circuit breaker is TRIPPED, please reset it manually"
     fi
+
+    discover_dry_run
 
     test_gpu_monitoring_dcgm
 

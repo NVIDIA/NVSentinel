@@ -21,7 +21,10 @@ metadata:
     app.kubernetes.io/name: uat-node-debug
 spec:
   nodeName: NODE_NAME
-  runtimeClassName: nvidia
+  # Substituted from UAT_DEBUG_RUNTIME_CLASS, which may be empty on clusters
+  # with no usable RuntimeClass. Tests that only write to /dev/kmsg get that
+  # from privileged and need no toolkit.
+  runtimeClassName: RUNTIME_CLASS_NAME
   restartPolicy: Never
   tolerations:
     - operator: Exists
