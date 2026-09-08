@@ -137,7 +137,7 @@ func (c *Client) applyLabel(ctx context.Context, nodeName, key, value string) er
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		current, err := c.k8sClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 		if err != nil {
-			return fmt.Errorf("failed to get node %s: %w", nodeName, err)
+			return err
 		}
 
 		if current.Labels == nil {

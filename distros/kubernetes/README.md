@@ -318,7 +318,7 @@ janitor:
 
 ##### Label provider
 
-Requests reboot and terminate by labeling the Node. An external controller such as NKE watches those labels and performs the action.
+Requests reboot and terminate by labeling the Node. An external controller such as NKE watches those labels and performs the action. After reboot completion, that controller must remove the reboot label.
 
 ```yaml
 janitor-provider:

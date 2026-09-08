@@ -2160,6 +2160,7 @@ janitor-provider:
   janitorServiceAccountName: "janitor"
   csp:
     # Set provider to "label" on Forge/NKE (or any platform that remediates from node labels).
+    # After reboot completion, the external controller must remove the reboot label.
     # provider: "label"
     label:
       rebootKey: "nke.nvidia.com/reboot"
