@@ -23,19 +23,38 @@ import (
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	"github.com/nvidia/nvsentinel/store-client/pkg/lagstate"
 )
 
-type stubLagProvider struct{}
+// lagStateWatcher is a watcher that reports lag state, standing in for the MongoDB watcher at
+// the bottom of the chain.
+type lagStateWatcher struct {
+	client.ChangeStreamWatcher
 
-func (stubLagProvider) LagState() (lastEmptyBatch, lastEventRead time.Time) {
-	return time.Now(), time.Time{}
+	observed time.Time
+}
+
+func (w *lagStateWatcher) LagState() (lastEmptyBatch, lastEventRead time.Time) {
+	return w.observed, time.Time{}
 }
 
 // This service serves only controller-runtime's registry, so store-client's change stream
 // metrics have to be registered there. A test against the default registry would pass while
-// /metrics stayed empty, which is the failure this covers.
-func TestRegisterChangeStreamLag_ControllerRuntimeRegistry_ExportsBothMetrics(t *testing.T) {
-	client.RegisterChangeStreamLag(crmetrics.Registry, t.Name(), stubLagProvider{})
+// /metrics stayed empty.
+//
+// The watcher is wrapped the way the factory wraps it in production, because an earlier version
+// of this test passed a bare stub and therefore passed while the real MongoDB chain registered
+// nothing: the resume-control wrapper had no LagState, so the assertion inside
+// RegisterChangeStreamLag answered for the wrapper. Registering the unwrapped watcher tests a
+// path production never takes.
+func TestRegisterChangeStreamLag_ProductionChain_ExportsOnControllerRuntimeRegistry(t *testing.T) {
+	inner := &lagStateWatcher{observed: time.Now()}
+	wrapped := client.NewChangeStreamWatcherWithResumeControl(inner, client.ResumeControlDecision{})
+
+	require.Implements(t, (*lagstate.Provider)(nil), wrapped,
+		"the resume-control wrapper must pass LagState through, or nothing registers")
+
+	client.RegisterChangeStreamLag(crmetrics.Registry, t.Name(), wrapped)
 
 	families, err := crmetrics.Registry.Gather()
 	require.NoError(t, err)

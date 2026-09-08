@@ -349,7 +349,11 @@ The CSP health monitor tracks cloud provider maintenance events and node health 
 
 Emitted by `store-client`, so they appear on every module that reads the change stream:
 `event-exporter`, `fault-quarantine`, `health-events-analyzer`, `node-drainer`, and
-`fault-remediation`. The `client` label is the consumer's name.
+`fault-remediation`, on both the MongoDB and PostgreSQL providers. The `client` label is the
+consumer's name.
+
+`fault-remediation` serves only controller-runtime's registry, so it passes that registry
+explicitly; the others use the default registry.
 
 | Metric Name | Type | Labels | Description |
 |------------|------|--------|-------------|

@@ -21,6 +21,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/store-client/pkg/lagstate"
 )
 
 // fakeLagProvider stands in for a watcher, so the collector can be exercised without a datastore.
@@ -237,3 +239,45 @@ func TestRegisterChangeStreamLag_TwoClients_ExportsBoth(t *testing.T) {
 	assert.ElementsMatch(t, []string{"client-a", "client-b"}, seen[lagKnownName])
 	assert.ElementsMatch(t, []string{"client-a", "client-b"}, seen[lagSecondsName])
 }
+
+// wrappedLagProvider is a ChangeStreamWatcher that reports lag state, so the resume-control
+// wrapper can be built over something real rather than a bare stub.
+type wrappedLagProvider struct {
+	ChangeStreamWatcher
+
+	observed time.Time
+}
+
+func (w *wrappedLagProvider) LagState() (lastEmptyBatch, lastEventRead time.Time) {
+	return w.observed, time.Time{}
+}
+
+// Every consumer's watcher reaches RegisterChangeStreamLag through the resume-control wrapper,
+// because that is what the client factory returns. Before this pass-through existed the
+// assertion inside RegisterChangeStreamLag answered for the wrapper, so no MongoDB consumer
+// exported lag at all while the tests passed against unwrapped stubs.
+func TestRegisterChangeStreamLag_ResumeControlWrapper_StillExports(t *testing.T) {
+	registry := prometheus.NewPedanticRegistry()
+	inner := &wrappedLagProvider{observed: time.Now()}
+	wrapped := NewChangeStreamWatcherWithResumeControl(inner, ResumeControlDecision{})
+
+	require.Implements(t, (*lagstate.Provider)(nil), wrapped)
+
+	RegisterChangeStreamLag(registry, t.Name(), wrapped)
+
+	assert.ElementsMatch(t, []string{lagSecondsName, lagKnownName}, lagMetricNames(t, registry))
+}
+
+// A wrapper over a watcher that does not report lag must yield "unknown", never a spurious zero.
+func TestLagState_ResumeControlWrapperOverPlainWatcher_ReportsUnknown(t *testing.T) {
+	wrapped := NewChangeStreamWatcherWithResumeControl(nonProviderWatcher{}, ResumeControlDecision{})
+
+	provider, ok := wrapped.(lagstate.Provider)
+	require.True(t, ok)
+
+	lastEmptyBatch, lastEventRead := provider.LagState()
+	assert.True(t, lastEmptyBatch.IsZero())
+	assert.True(t, lastEventRead.IsZero())
+}
+
+type nonProviderWatcher struct{ ChangeStreamWatcher }
