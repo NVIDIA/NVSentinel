@@ -10,7 +10,7 @@ NVSentinel supports PostgreSQL as an alternative datastore to MongoDB. The Postg
 - **TLS/SSL support** with client certificate authentication
 - **Change stream emulation** using triggers and polling
 - **JSONB storage** for flexible document-like data structures
-- **Automatic schema management** with tables, indexes, and triggers
+- **Versioned SQL migrations** managed separately from application runtime
 - **Production-ready** with connection pooling and error handling
 
 ## When to Use PostgreSQL
@@ -153,9 +153,11 @@ tilt up
 
 The `values-tilt-postgresql.yaml` file includes:
 - Single-replica PostgreSQL for faster startup
-- Development password (`nvsentinel-dev`)
-- Auto-initialized schema with tables and triggers
+- Certificate-based authentication
 - Control plane node selector for PostgreSQL pod
+
+Helm and Tilt do not apply the database schema. After PostgreSQL is ready, apply
+the versioned SQL migrations as described in [Schema Management](#schema-management).
 
 ## Migration Guide
 
@@ -198,32 +200,40 @@ kubectl logs -n nvsentinel deployment/fault-quarantine | grep -i postgres
 
 ## Schema Management
 
-### Automatic Initialization
+### Versioned Migrations
 
-The PostgreSQL subchart automatically runs initialization scripts that:
-- Create tables if they don't exist
-- Create indexes for query performance
-- Set up triggers for change tracking
-- Create helper functions
+The canonical schema is the ordered SQL migration set in
+`store-client/pkg/datastore/providers/postgresql/migrations`. Each migration
+records its version in `nvsentinel_schema_migrations`.
 
-### Manual Schema Updates
+NVSentinel applications never apply DDL. Apply migrations before deploying an
+application version that requires them, using a separate DDL-capable role. The
+application role only needs DML permissions and read access to
+`nvsentinel_schema_migrations`.
 
-If you need to modify the schema:
+Apply all migrations to an in-cluster PostgreSQL instance:
 
-1. Connect to PostgreSQL:
-   ```bash
-   kubectl exec -it nvsentinel-postgresql-0 -n nvsentinel -- psql -U postgres -d nvsentinel
-   ```
+```bash
+for migration in store-client/pkg/datastore/providers/postgresql/migrations/*.sql; do
+  kubectl exec -i nvsentinel-postgresql-0 -n nvsentinel -- \
+    psql -v ON_ERROR_STOP=1 -U postgres -d nvsentinel < "$migration"
+done
+```
 
-2. Run your schema updates:
-   ```sql
-   -- Example: Add a new index
-   CREATE INDEX idx_custom ON health_events ((document->>'customField'));
-   ```
+Replace `postgres` with the configured DDL-capable database role when using a
+custom PostgreSQL user.
 
-### Schema Reference
+For an external database, use the same ordered files with `psql`, Terraform, or
+your database release pipeline. Query the applied version with:
 
-See [postgresql-schema.sql](./postgresql-schema.sql) for the complete schema definition.
+```sql
+SELECT version, description, applied_at
+FROM nvsentinel_schema_migrations
+ORDER BY version;
+```
+
+Migrations are forward-only. Use expand/contract changes for compatibility;
+recover destructive changes from backup or with a forward-fix migration.
 
 ## Performance Tuning
 
@@ -413,7 +423,7 @@ kubectl exec -i nvsentinel-postgresql-0 -n nvsentinel -- \
 - [PostgreSQL Official Documentation](https://www.postgresql.org/docs/)
 - [PostgreSQL JSONB Documentation](https://www.postgresql.org/docs/current/datatype-json.html)
 - [Bitnami PostgreSQL Helm Chart](https://github.com/bitnami/charts/tree/main/bitnami/postgresql)
-- [NVSentinel PostgreSQL Schema](./postgresql-schema.sql)
+- [NVSentinel PostgreSQL Migrations](../store-client/pkg/datastore/providers/postgresql/migrations/)
 
 ## Support
 

@@ -957,10 +957,6 @@ help: ## Display available make targets
 #==============================================================================
 
 .PHONY: validate-postgres-schema
-validate-postgres-schema: ## Validate PostgreSQL schema consistency between docs and Helm values
+validate-postgres-schema: ## Validate versioned PostgreSQL migration files
 	@./scripts/validate-postgres-schema.sh
-
-.PHONY: update-helm-postgres-schema
-update-helm-postgres-schema: ## Update Helm values file with schema from docs/postgresql-schema.sql
-	@./scripts/update-helm-postgres-schema.sh
 

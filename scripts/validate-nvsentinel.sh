@@ -305,7 +305,7 @@ if [[ "$DATASTORE" == "mongodb" ]]; then
         error "create-mongodb-database job not found (label app.kubernetes.io/name=create-mongodb-database)"
     fi
 else
-    ok "no initialization jobs required for postgresql (schema auto-initialized)"
+    ok "PostgreSQL schema migrations are managed outside the NVSentinel application"
 fi
 
 # Check deployments (application components)

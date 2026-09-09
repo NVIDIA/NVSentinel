@@ -459,7 +459,7 @@ Choose the right API for your use case:
 | Symptom | Likely Cause | Solution |
 |---------|--------------|----------|
 | `"unsupported provider: postgresql"` | Provider not imported | Add `_ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers"` |
-| No change stream events (PostgreSQL) | Missing database triggers | Run `docs/postgresql-schema.sql` to create triggers |
+| No change stream events (PostgreSQL) | Missing database migrations | Apply `pkg/datastore/providers/postgresql/migrations/*.sql` in filename order |
 | Resume token errors after restart | Stale tokens from schema change | Clear the `resume_tokens` table |
 | `"data must be a map[string]interface{}"` | Incorrect filter format | Use query builders for type safety |
 | Query returns no results (PostgreSQL) | Case sensitivity or type mismatch | Verify JSONB paths and value types match database data |

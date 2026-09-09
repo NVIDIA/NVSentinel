@@ -102,6 +102,16 @@ func (f *ClientFactory) CreateDatabaseClient(ctx context.Context) (client.Databa
 			)
 		}
 
+		if err := providers_postgresql.ValidateSchemaVersion(ctx, db); err != nil {
+			db.Close()
+
+			return nil, datastore.NewConnectionError(
+				datastore.ProviderPostgreSQL,
+				"PostgreSQL schema is not compatible",
+				err,
+			)
+		}
+
 		// Return the provider's PostgreSQL database client which has health event field extraction
 		tableName := f.dbConfig.GetCollectionName() // In PostgreSQL context, collection = table
 

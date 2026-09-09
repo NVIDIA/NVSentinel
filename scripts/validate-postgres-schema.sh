@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,125 +14,73 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-#===============================================================================
-# PostgreSQL Schema Validation Script
-#===============================================================================
-#
-# Purpose:
-#   Ensures PostgreSQL schema consistency between:
-#   1. docs/postgresql-schema.sql (canonical source)
-#   2. distros/kubernetes/nvsentinel/values-tilt-postgresql.yaml (Helm initdb)
-#
-# Usage:
-#   ./scripts/validate-postgres-schema.sh
-#   make validate-postgres-schema
-#
-# Exit Codes:
-#   0  - Schemas are in sync
-#   1  - Schemas differ or validation failed
-#
-#===============================================================================
+# Validates the repository contract for manually applied PostgreSQL migrations.
+# This script does not connect to a database or apply DDL.
 
 set -euo pipefail
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
-# Paths
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-CANONICAL_SCHEMA="${REPO_ROOT}/docs/postgresql-schema.sql"
-HELM_VALUES="${REPO_ROOT}/distros/kubernetes/nvsentinel/values-tilt-postgresql.yaml"
+MIGRATION_DIR="${REPO_ROOT}/store-client/pkg/datastore/providers/postgresql/migrations"
+SCHEMA_VERSION_SOURCE="${REPO_ROOT}/store-client/pkg/datastore/providers/postgresql/schema_version.go"
+DATASTORE_SOURCE="${REPO_ROOT}/store-client/pkg/datastore/providers/postgresql/datastore.go"
+HELM_VALUES=(
+    "${REPO_ROOT}/distros/kubernetes/nvsentinel/values-tilt-postgresql.yaml"
+    "${REPO_ROOT}/distros/kubernetes/nvsentinel/values-postgresql.yaml"
+)
 
-echo "==================================================================="
-echo "PostgreSQL Schema Validation"
-echo "==================================================================="
-echo ""
-
-# Check if files exist
-if [[ ! -f "${CANONICAL_SCHEMA}" ]]; then
-    echo -e "${RED}ERROR: Canonical schema not found: ${CANONICAL_SCHEMA}${NC}"
+fail() {
+    echo "ERROR: $*" >&2
     exit 1
-fi
-
-if [[ ! -f "${HELM_VALUES}" ]]; then
-    echo -e "${RED}ERROR: Helm values file not found: ${HELM_VALUES}${NC}"
-    exit 1
-fi
-
-# Check if yq is installed
-if ! command -v yq &> /dev/null; then
-    echo -e "${RED}ERROR: yq is required but not installed${NC}"
-    echo "Install yq:"
-    echo "  macOS:  brew install yq"
-    echo "  Linux:  https://github.com/mikefarah/yq#install"
-    exit 1
-fi
-
-echo "✓ Found canonical schema: docs/postgresql-schema.sql"
-echo "✓ Found Helm values:       distros/kubernetes/nvsentinel/values-tilt-postgresql.yaml"
-echo ""
-
-# Extract SQL from Helm values file
-TEMP_DIR="$(mktemp -d)"
-trap 'rm -rf "${TEMP_DIR}"' EXIT
-
-HELM_SCHEMA="${TEMP_DIR}/helm-schema.sql"
-yq eval '.postgresql.primary.initdb.scripts."00-init.sql"' "${HELM_VALUES}" > "${HELM_SCHEMA}"
-
-if [[ ! -s "${HELM_SCHEMA}" ]]; then
-    echo -e "${RED}ERROR: Failed to extract schema from Helm values${NC}"
-    exit 1
-fi
-
-echo "Comparing schemas..."
-echo ""
-
-# Normalize schemas for comparison (remove comments, empty lines, extra whitespace)
-normalize_sql() {
-    local file="$1"
-    grep -v '^--' "$file" | \
-        grep -v '^\s*$' | \
-        sed 's/[[:space:]]\+/ /g' | \
-        sed 's/^[[:space:]]*//' | \
-        sed 's/[[:space:]]*$//' | \
-        sort
 }
 
-CANONICAL_NORMALIZED="${TEMP_DIR}/canonical-normalized.sql"
-HELM_NORMALIZED="${TEMP_DIR}/helm-normalized.sql"
+[[ -d "${MIGRATION_DIR}" ]] || fail "migration directory not found: ${MIGRATION_DIR}"
+[[ -f "${SCHEMA_VERSION_SOURCE}" ]] || fail "schema version source not found"
 
-normalize_sql "${CANONICAL_SCHEMA}" > "${CANONICAL_NORMALIZED}"
-normalize_sql "${HELM_SCHEMA}" > "${HELM_NORMALIZED}"
+shopt -s nullglob
+migration_files=("${MIGRATION_DIR}"/[0-9][0-9][0-9][0-9][0-9]_*.sql)
+(( ${#migration_files[@]} > 0 )) || fail "no PostgreSQL migrations found"
 
-# Compare normalized schemas
-if diff -u "${CANONICAL_NORMALIZED}" "${HELM_NORMALIZED}" > "${TEMP_DIR}/schema-diff.txt" 2>&1; then
-    echo -e "${GREEN}✅ SUCCESS: PostgreSQL schemas are in sync!${NC}"
-    echo ""
-    echo "Both files contain identical schema definitions:"
-    echo "  • docs/postgresql-schema.sql"
-    echo "  • distros/kubernetes/nvsentinel/values-tilt-postgresql.yaml"
-    echo ""
-    exit 0
-else
-    echo -e "${RED}❌ ERROR: PostgreSQL schemas are OUT OF SYNC!${NC}"
-    echo ""
-    echo "Differences found between:"
-    echo "  • docs/postgresql-schema.sql (canonical)"
-    echo "  • distros/kubernetes/nvsentinel/values-tilt-postgresql.yaml (Helm)"
-    echo ""
-    echo "Diff output:"
-    echo "-------------------------------------------------------------------"
-    cat "${TEMP_DIR}/schema-diff.txt"
-    echo "-------------------------------------------------------------------"
-    echo ""
-    echo -e "${YELLOW}To fix this issue:${NC}"
-    echo "  1. Update docs/postgresql-schema.sql with your schema changes"
-    echo "  2. Run: make update-helm-postgres-schema"
-    echo "  3. Commit both files together"
-    echo ""
-    exit 1
+expected_version=1
+for migration_file in "${migration_files[@]}"; do
+    filename="$(basename "${migration_file}")"
+    version_text="${filename%%_*}"
+    version=$((10#${version_text}))
+
+    (( version == expected_version )) ||
+        fail "expected migration version ${expected_version}, found ${filename}"
+
+    grep -Eq '^BEGIN;$' "${migration_file}" ||
+        fail "${filename} must start a transaction"
+    grep -Eq '^COMMIT;$' "${migration_file}" ||
+        fail "${filename} must commit its transaction"
+    grep -q 'INSERT INTO nvsentinel_schema_migrations' "${migration_file}" ||
+        fail "${filename} must record its applied version"
+    grep -Eq "VALUES[[:space:]]*\\(${version}," "${migration_file}" ||
+        fail "${filename} records a version that does not match its filename"
+
+    expected_version=$((expected_version + 1))
+done
+
+latest_version=$((expected_version - 1))
+required_version="$(
+    awk '/const RequiredSchemaVersion int64 =/ { print $NF }' "${SCHEMA_VERSION_SOURCE}"
+)"
+
+[[ "${required_version}" == "${latest_version}" ]] ||
+    fail "RequiredSchemaVersion=${required_version:-missing}, latest migration=${latest_version}"
+
+if grep -Eq \
+    'CREATE[[:space:]]+(TABLE|INDEX|TRIGGER|EXTENSION)|ALTER[[:space:]]+TABLE|DROP[[:space:]]+TRIGGER|CREATE[[:space:]]+OR[[:space:]]+REPLACE[[:space:]]+FUNCTION' \
+    "${DATASTORE_SOURCE}"; then
+    fail "application datastore code must not contain PostgreSQL DDL"
 fi
+
+for values_file in "${HELM_VALUES[@]}"; do
+    [[ -f "${values_file}" ]] || fail "Helm values file not found: ${values_file}"
+    if grep -q '00-init.sql' "${values_file}"; then
+        fail "$(basename "${values_file}") must not embed the PostgreSQL schema"
+    fi
+done
+
+echo "PostgreSQL migrations are valid (latest version: ${latest_version})"
