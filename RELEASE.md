@@ -63,26 +63,10 @@ graph LR
 
 ## Released Components
 
-**Container Images**, all published under `ghcr.io/nvidia/nvsentinel/`. The `versions.txt` asset on each GitHub release is the authoritative list for that version — prefer it over this list, which is a snapshot:
+**Container Images** are published under `ghcr.io/nvidia/nvsentinel/`. This document deliberately does not list them — a static inventory drifts. There are two sources of truth:
 
-- `csp-health-monitor`
-- `event-exporter`
-- `fault-quarantine`
-- `fault-remediation`
-- `file-server-cleanup`
-- `gpu-health-monitor` (two tags per release: `-dcgm-3.x` and `-dcgm-4.x`)
-- `gpu-reset`
-- `health-events-analyzer`
-- `janitor`
-- `janitor-provider`
-- `kubernetes-object-monitor`
-- `labeler`
-- `log-collector`
-- `metadata-collector`
-- `node-drainer`
-- `platform-connectors`
-- `slinky-drainer`
-- `syslog-health-monitor`
+- **For a released version**: the `versions.txt` asset on that [GitHub release](https://github.com/NVIDIA/NVSentinel/releases), which pins every image and tag actually published.
+- **For what a release will contain**: [`scripts/build-image-list.sh`](scripts/build-image-list.sh), which generates `versions.txt`. Adding a component means adding it there.
 
 **Artifacts**:
 - GitHub release with `versions.txt`
@@ -120,8 +104,9 @@ helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel --version v1.2.3
 ### Generated Artifacts (Example: v1.2.3)
 
 **Container Images** published to `ghcr.io/nvidia/nvsentinel/`:
-- All component images tagged with `v1.2.3`
-- Example: `ghcr.io/nvidia/nvsentinel/fault-quarantine:v1.2.3`
+- Most component images are tagged with the release tag, e.g. `ghcr.io/nvidia/nvsentinel/fault-quarantine:v1.2.3`
+- `gpu-health-monitor` is the exception: it ships one image per DCGM major version, tagged `v1.2.3-dcgm-3.x` and `v1.2.3-dcgm-4.x`
+- See the release's `versions.txt` for the exact set
 
 **Helm Chart**: `oci://ghcr.io/nvidia/nvsentinel:v1.2.3`
 

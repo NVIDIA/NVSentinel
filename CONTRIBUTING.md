@@ -68,7 +68,9 @@ For anything beyond a trivial fix (typos, small doc tweaks), open an issue descr
 
 **Commit Message Format**:
 
-We loosely follow [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): summary`, e.g. `fix(node-drainer): handle nil taint list`. Common types are `feat`, `fix`, `docs`, `test`, `refactor`, and `chore`. The `scope` is typically the affected module or component.
+Commit messages and pull request titles follow [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): summary`, e.g. `fix(node-drainer): handle nil taint list`. Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`. The `scope` is the affected module or component.
+
+The PR title matters more than it looks: this repository squash-merges, so the title becomes the commit message on `main` and cannot be corrected afterwards. Nothing in CI enforces the format today, so please get it right before merge.
 
 **Review Process**:
 

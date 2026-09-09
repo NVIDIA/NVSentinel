@@ -14,22 +14,32 @@ Act as a Principal Engineer working on production Kubernetes infrastructure in G
 
 NVSentinel is a GPU node resilience system for Kubernetes. It detects, classifies and remediates hardware and software faults on GPU nodes.
 
-**Pipeline:** Detect → Analyze → Quarantine → Drain → Remediate
+**Pipeline:** Detect → Ingest → Act
 
-```
-┌──────────┐   ┌──────────┐   ┌────────────┐   ┌─────────┐   ┌─────────────┐
-│  Health  │──▶│  Health  │──▶│   Fault    │──▶│  Node   │──▶│    Fault    │
-│ Monitors │   │  Events  │   │ Quarantine │   │ Drainer │   │ Remediation │
-│          │   │ Analyzer │   │  (cordon)  │   │ (evict) │   │  (reboot)   │
-└──────────┘   └──────────┘   └────────────┘   └─────────┘   └─────────────┘
-      │              │               │              │               │
-      ▼              ▼               ▼              ▼               ▼
-   DCGM,         classify       mark node       evict pods     break-fix via
-   syslog,       + route        unschedulable   safely         CSP / janitor
-   CSP, KOM
+```text
+ Health Monitors             Ingestion                 Fault Management
+┌───────────────────┐                            ┌───────────────────────┐
+│ GPU (DCGM)        │                            │ Fault Quarantine      │
+│ Syslog            │  gRPC   ┌──────────────┐   │  (cordon / taint)     │
+│ CSP               │────────▶│   Platform   │   │ Node Drainer          │
+│ NIC               │         │  Connectors  │   │  (evict)              │
+│ Kubernetes Object │         └───────┬──────┘   │ Fault Remediation     │
+│ Health Events     │                 │ persist  │  (creates maint. CR)  │
+│   Analyzer        │                 ▼          └───────────┬───────────┘
+└───────────────────┘      ┌────────────────────┐      ▲     │ maintenance
+                           │    Event Store     │──────┘     │     CR
+                           │ MongoDB/PostgreSQL │  reconcile ▼
+                           └────────────────────┘   ┌──────────────────┐
+                                                    │ Janitor          │
+                                                    │  (reset/reboot)  │
+                                                    └──────────────────┘
 ```
 
-Health monitors publish events over gRPC to platform-connectors, which persists them to the event store (MongoDB with change streams, or PostgreSQL). Downstream modules consume the store and act.
+**Every health monitor is peer to every other one.** GPU, syslog, CSP, NIC, Kubernetes Object Monitor and the Health Events Analyzer are all just health monitors — the analyzer detects patterns across events rather than reading a device, but it has no special status in the pipeline and publishes over the same gRPC interface as the rest. Treat "add a monitor" as the same shape of task regardless of which one you are looking at.
+
+Platform-connectors persists events to the store (MongoDB with change streams, or PostgreSQL) and updates node conditions on the Kubernetes API. Fault Quarantine, Node Drainer and Fault Remediation reconcile from the store and act on the cluster. Janitor is driven differently — it reconciles the maintenance CRs that Fault Remediation creates, via the Kubernetes API rather than the store.
+
+**No module calls another module directly.** Coordination happens through the shared event store and the Kubernetes API. A change that introduces a direct call between two modules is almost certainly wrong — check [docs/designs/](docs/designs/) before proposing one.
 
 **Tech stack:** Go 1.27.0, Python 3.10+ (Poetry), Kubernetes, gRPC + protobuf, MongoDB / PostgreSQL, Helm, DCGM. Tool versions are pinned in `.versions.yaml` — that file is the single source of truth; read it with `make show-versions`, never hardcode a version elsewhere.
 
@@ -80,6 +90,8 @@ make help         # every target
 6. **3-strike rule** — after 3 failed attempts at the same fix, stop and reassess rather than piling on changes.
 7. **Every I/O path takes a `context.Context`** with cancellation honoured, and long-running loops must check `ctx.Done()`.
 8. **Remediation is destructive** — code that cordons, drains, reboots or resets a node needs a test proving it does *not* fire in the healthy case.
+9. **Read the ADRs before changing behaviour** — see [Architecture Decision Records](#architecture-decision-records).
+10. **Every change must be backwards compatible** — see [Backwards Compatibility](#backwards-compatibility).
 
 ## Out of Scope for Agents
 
@@ -93,11 +105,75 @@ Do not do these without an explicit human instruction:
 - **Do not add a dependency** without saying so; this project ships to customers and every dependency is a supply-chain surface.
 - **Do not add `Co-Authored-By` or agent-attribution trailers** to commits.
 
+## Architecture Decision Records
+
+**Read the relevant ADRs before you change behaviour.** They live in [docs/designs/](docs/designs/), numbered `NNN-title.md` — there are more than fifty. They record *why* the system is shaped the way it is, and that reasoning is almost never recoverable from the code alone. A change that looks like an obvious improvement is frequently something that was considered and rejected for a reason still documented there.
+
+**Before changing anything non-trivial:**
+
+1. Scan the index at [docs/designs/README.md](docs/designs/README.md) for records covering the subsystem you are touching, then grep for specifics (`grep -ril "node drainer" docs/designs/`).
+2. Read the matching ADR's **Decision**, **Rationale**, and **Alternatives Considered** sections. If your intended approach appears under Alternatives Considered as rejected, do not implement it without addressing the stated reason.
+3. Reference the ADR in your PR description when your change touches an area one covers.
+
+**If you believe an ADR's decision is now wrong**, say so explicitly rather than quietly implementing something that contradicts it. Superseding a decision is a legitimate outcome — silently diverging from one is not, because the next reader will find the ADR and the code disagreeing with no explanation of which is current.
+
+**Write a new ADR** when a change introduces a new module or health monitor, changes how modules coordinate, alters a persisted schema or public interface, adds a dependency on an external system, or picks between approaches with long-lived consequences.
+
+- Write it **before** implementing, not as a retroactive justification — the point is to surface the decision while it can still change cheaply.
+- Copy [docs/designs/template.md](docs/designs/template.md) and keep its structure: Context, Decision, Implementation, Rationale, Consequences (Positive / Negative / Mitigations), Alternatives Considered, Notes, References.
+- Take the next free number and **never reuse one**, even if a record was withdrawn. Numbers are allocated, not contiguous.
+- When superseding, leave the old record in place and mark it superseded at the top; name what you supersede in the new record's References. Deleting it destroys the decision trail.
+- Add the record to the index table in [docs/designs/README.md](docs/designs/README.md) in the same change.
+
+**An agent may draft an ADR; a maintainer owns the decision.** Propose it and wait for a human to accept it — do not treat a self-authored ADR as settled and start building against it.
+
+## Backwards Compatibility
+
+**Every change must be backwards compatible.** This is stricter than it sounds, and it is not primarily about end users. NVSentinel modules are deployed independently and upgraded by a rolling Helm release, so during any upgrade **old and new versions of different modules run against each other and against data written by the previous version**. A change that is only self-consistent will break mid-upgrade in a live cluster.
+
+The compatibility surfaces, roughly in order of how easily they break:
+
+| Surface | Rule |
+|---|---|
+| Protobuf / gRPC (`data-models/`) | Add fields, never renumber, reuse, retype or remove them. A monitor built from the old schema must still talk to the new platform-connectors, and vice versa |
+| Event store schema | New code must read events written by the previous version; old code must tolerate events written by the new one. Add optional fields, do not repurpose existing ones |
+| Helm values (`distros/kubernetes/`) | Never rename or remove a key that users set. Add new keys with defaults that preserve current behaviour |
+| CRDs (`*/api/v1alpha1/`) | Objects already in etcd must still deserialize. Add optional fields; do not remove or retype existing ones |
+| Node labels, annotations, conditions | External automation keys off these — e.g. `nvsentinel.dgxc.nvidia.com/kata.enabled`. Treat them as public API |
+| Metrics names and labels | Renaming one silently breaks dashboards and alerts |
+| CLI flags and environment variables | Keep the old spelling working |
+
+**CI will not catch this for you.** `make protos-lint` only verifies that generated files are up to date — there is no `buf breaking` check, no API-diff gate, and no schema compatibility test. The `v1alpha1` on the CRDs describes their maturity, not permission to break them.
+
+Since nothing gates it, check the surfaces yourself before opening a PR. Derive the paths rather than hardcoding them, so a CRD added later cannot fall outside the check:
+
+```bash
+SURFACES="data-models distros/kubernetes/nvsentinel/values.yaml $(ls -d */api/v1alpha1)"
+git diff --stat origin/main...HEAD -- $SURFACES
+```
+
+A non-empty diff is a prompt to look, not proof of a break — most changes to these paths are additive. Read the diff and decide. Node labels, metrics and CLI flags are not path-derivable; if you touched any, check those by hand.
+
+**When a break is genuinely necessary**, it is a maintainer decision and needs an ADR. Default to the additive path: add the new field or key alongside the old one, make the old one continue to work, mark it deprecated in docs, and let it be removed in a later release once nothing depends on it.
+
+```go
+// BAD - renaming the field breaks every monitor still on the old build
+type HealthEvent struct {
+    NodeID string `protobuf:"bytes,3,opt,name=node_id"`  // was node_name
+}
+
+// GOOD - add alongside, keep the old field populated and working
+type HealthEvent struct {
+    NodeName string `protobuf:"bytes,3,opt,name=node_name"` // deprecated, still populated
+    NodeID   string `protobuf:"bytes,7,opt,name=node_id"`
+}
+```
+
 ## Git Configuration
 
 - Branch from and target `main`.
 - **Every commit must be DCO signed off**: `git commit -s`. CI enforces this via `.github/dco.yml`; an unsigned commit blocks the merge.
-- Commit messages and **PR titles** follow [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): summary` — e.g. `fix(node-drainer): handle nil taint list`. Types in use: `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `build`, `ci`.
+- Commit messages and **PR titles** follow [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): summary` — e.g. `fix(node-drainer): handle nil taint list`. Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`. The `scope` is the affected module or component. Nothing in CI enforces this today, so it is on you to get it right.
 - **The repo is squash-merge only, and the squash commit body is blank** — the PR title becomes the entire commit message on `main` and cannot be fixed after merge. Spend the effort on the title.
 
 ## Secrets and Credentials
@@ -115,7 +191,7 @@ Do not do these without an explicit human instruction:
 | Path | Purpose |
 |---|---|
 | `health-monitors/` | Fault detection. `gpu-health-monitor` (Python, DCGM), `syslog-health-monitor`, `csp-health-monitor`, `kubernetes-object-monitor` (CEL policies), `nic-health-monitor`, `slurm-drain-monitor`, `nvcre-certification-monitor` |
-| `health-events-analyzer/` | Classifies and routes health events |
+| `health-events-analyzer/` | Another health monitor — detects patterns across events instead of reading a device. Same gRPC publish path as the rest |
 | `fault-quarantine/` | Cordons faulty nodes |
 | `node-drainer/` | Evicts workloads from quarantined nodes |
 | `fault-remediation/` | Break-fix automation (reboot, GPU reset) |
@@ -129,6 +205,7 @@ Do not do these without an explicit human instruction:
 | `distros/kubernetes/` | Helm charts — user-facing config surface |
 | `make/` | Shared Makefile fragments: `common.mk` (vars), `go.mk`, `python.mk`, `docker.mk` |
 | `tilt/` | Local dev mocks and Tiltfile |
+| `docs/designs/` | **ADRs** — 50+ numbered decision records plus `template.md`. Read before changing behaviour |
 | `docs/`, `fern/` | Documentation source for docs.nvidia.com/nvsentinel |
 
 Each Go module is a **separate Go module with its own `go.mod`**, wired together by a Go workspace. Adding a cross-module import means updating `go.mod` replace directives — run `make dependencies-sync` rather than hand-editing.
@@ -241,6 +318,9 @@ Everything the rule sections above cover is authoritative and not repeated here.
 | Swallowing an error with `_ =` or a bare `continue` | Handle it, or `slog.Warn` with the error and say why continuing is safe |
 | Broad refactor bundled into a bug fix | Separate PRs — this repo squash-merges, so the fix and the refactor become one unreviewable commit |
 | Assuming MongoDB | The store is pluggable; PostgreSQL is a supported backend and is covered in the E2E matrix |
+| Implementing an approach an ADR already rejected | Read `docs/designs/` first; if the rejection no longer holds, say so and propose superseding the ADR |
+| Treating `health-events-analyzer` as a distinct pipeline stage | It is a health monitor like any other — same gRPC publish path |
+| Renaming a proto field, Helm value, metric, or node label | Add the new one alongside; keep the old working. Nothing in CI catches this |
 | Adding retry/fallback around an internal call "just in case" | Only add retries where a real transient failure exists; invented resilience hides bugs |
 
 ## Pull Request Requirements
@@ -289,4 +369,5 @@ This file is deliberately a starting point. For depth:
 - [RELEASE.md](RELEASE.md) — release process
 - [SECURITY.md](SECURITY.md) — vulnerability reporting, supply chain artifacts (SBOM, SLSA provenance)
 - [ROADMAP.md](ROADMAP.md) — direction
-- [docs/](docs/) — architecture, design docs, operational runbooks
+- [docs/designs/](docs/designs/) — ADRs: why the system is shaped the way it is. Read these before changing behaviour
+- [docs/](docs/) — architecture, operational runbooks

@@ -100,9 +100,12 @@ updates:
         patterns: ["*"]
 
   # Docker
-  # Base images are pinned to digests, so these updates are what refresh the
-  # digests when upstream rebuilds a tag — keep the interval at weekly so base
-  # image CVE fixes are picked up promptly.
+  # Base images with a static tag are pinned to digests, so these updates are
+  # what refresh the digests when upstream rebuilds a tag — keep the interval at
+  # weekly so base image CVE fixes are picked up promptly.
+  # Exception: the DCGM and PyTorch base images in gpu-health-monitor, dcgm-diag,
+  # nccl-allreduce and nccl-loopback are selected by a build ARG to produce image
+  # variants, so they cannot be digest-pinned and Dependabot cannot update them.
   - package-ecosystem: "docker"
     directories:
       - "/demos/local-custom-remediation-demo/memory-pressure-monitor"
