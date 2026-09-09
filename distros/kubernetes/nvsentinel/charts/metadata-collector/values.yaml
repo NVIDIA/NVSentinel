@@ -74,3 +74,10 @@ kubeletHost:
 
 # Pod priority for this component. Overridden by the matching global when that is set.
 priorityClassName: ""
+
+podMapper:
+  # Consecutive failed poll cycles tolerated before the container exits non-zero. The poll
+  # period is 30s, so the default rides out 5 minutes of failures, enough to outlast a
+  # credential rotation or a kubelet restart while still failing loudly if the collector is
+  # genuinely broken. Minimum 1, which restores exiting on the first failure.
+  maxConsecutiveFailures: 10

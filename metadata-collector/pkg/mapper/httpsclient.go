@@ -27,6 +27,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 )
 
@@ -37,6 +38,16 @@ const (
 	bearerTokenPath     = "/var/run/secrets/kubernetes.io/serviceaccount/token" //nolint:gosec // not a credential
 	listPodsURLTemplate = "https://%s/pods"
 )
+
+// client-go's retry.DefaultRetry is documented for resource-version conflicts and waits about
+// 40ms in total, which is too short to outlast a rotated credential or a restarting kubelet.
+// These steps wait roughly 7.5s, well inside the caller's poll period.
+var defaultListPodsBackoff = wait.Backoff{
+	Steps:    5,
+	Duration: 500 * time.Millisecond,
+	Factor:   2.0,
+	Jitter:   0.1,
+}
 
 type KubeletHTTPSClient interface {
 	ListPods() ([]corev1.Pod, error)
@@ -51,6 +62,7 @@ type kubeletHTTPSClient struct {
 	staticBearerToken string
 	bearerTokenPath   string
 	listPodsURI       string
+	listPodsBackoff   wait.Backoff
 }
 
 // NewKubeletHTTPSClient creates an HTTPS client configured to communicate with the local
@@ -76,6 +88,7 @@ func NewKubeletHTTPSClient(ctx context.Context) (KubeletHTTPSClient, error) {
 		httpRoundTripper: transport,
 		bearerTokenPath:  bearerTokenPath,
 		listPodsURI:      fmt.Sprintf(listPodsURLTemplate, net.JoinHostPort(kubeletHost, kubeSecurePort)),
+		listPodsBackoff:  defaultListPodsBackoff,
 	}, nil
 }
 
@@ -107,53 +120,14 @@ Example for how to make an equivalent request via CLI:
 curl -k -H "Authorization: Bearer $TOKEN" https://localhost:10250/pods
 */
 func (client *kubeletHTTPSClient) ListPods() ([]corev1.Pod, error) {
-	// We should read the token file on every request to prevent caching a stale service account token rotated
-	// via a projected volume.
-	token := client.staticBearerToken
-	if len(token) == 0 {
-		tokenBytes, err := os.ReadFile(client.bearerTokenPath)
-		if err != nil {
-			return nil, err
-		}
-
-		token = string(tokenBytes)
-	}
-
-	req, err := http.NewRequestWithContext(client.ctx, "GET", client.listPodsURI, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
-	req.Header.Add("Accept", "application/json")
-
 	var podBytes []byte
 
-	err = retry.OnError(retry.DefaultRetry, retryAllErrors, func() error {
-		resp, err := client.httpRoundTripper.RoundTrip(req)
-		if err != nil {
-			return fmt.Errorf("got an error making HTTP request to /pods endpoint: %w", err)
-		}
-		defer resp.Body.Close()
+	err := retry.OnError(client.listPodsBackoff, retryAllErrors, func() error {
+		var err error
 
-		if resp.StatusCode != http.StatusOK {
-			snippet := make([]byte, 512)
-			n, _ := resp.Body.Read(snippet)
+		podBytes, err = client.fetchPods()
 
-			if n > 0 {
-				return fmt.Errorf("got a non-200 response code from /pods endpoint: %d, body: %s",
-					resp.StatusCode, string(snippet[:n]))
-			}
-
-			return fmt.Errorf("got a non-200 response code from /pods endpoint: %d", resp.StatusCode)
-		}
-
-		podBytes, err = io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("got an error reading response body from /pods endpoint: %w", err)
-		}
-
-		return nil
+		return err
 	})
 	if err != nil {
 		return nil, err
@@ -167,6 +141,63 @@ func (client *kubeletHTTPSClient) ListPods() ([]corev1.Pod, error) {
 	}
 
 	return pods.Items, nil
+}
+
+// fetchPods performs one attempt at the /pods request. Both the token and the request are built
+// here rather than once per ListPods call, because the backoff now spans several seconds and a
+// credential rotated part way through it is exactly what that wait is for; a token read once up
+// front would leave every attempt presenting the same expired credential.
+func (client *kubeletHTTPSClient) fetchPods() ([]byte, error) {
+	token, err := client.bearerToken()
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(client.ctx, http.MethodGet, client.listPodsURI, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
+	req.Header.Add("Accept", "application/json")
+
+	resp, err := client.httpRoundTripper.RoundTrip(req)
+	if err != nil {
+		return nil, fmt.Errorf("got an error making HTTP request to /pods endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		snippet := make([]byte, 512)
+		n, _ := resp.Body.Read(snippet)
+
+		if n > 0 {
+			return nil, fmt.Errorf("got a non-200 response code from /pods endpoint: %d, body: %s",
+				resp.StatusCode, string(snippet[:n]))
+		}
+
+		return nil, fmt.Errorf("got a non-200 response code from /pods endpoint: %d", resp.StatusCode)
+	}
+
+	podBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("got an error reading response body from /pods endpoint: %w", err)
+	}
+
+	return podBytes, nil
+}
+
+func (client *kubeletHTTPSClient) bearerToken() (string, error) {
+	if len(client.staticBearerToken) > 0 {
+		return client.staticBearerToken, nil
+	}
+
+	tokenBytes, err := os.ReadFile(client.bearerTokenPath)
+	if err != nil {
+		return "", err
+	}
+
+	return string(tokenBytes), nil
 }
 
 func retryAllErrors(_ error) bool {
