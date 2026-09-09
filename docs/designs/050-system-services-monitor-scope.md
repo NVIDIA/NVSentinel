@@ -173,7 +173,8 @@ one condition, one rule, and one KOM policy under the same pattern:
     "invoke_interval": "30s",
     "timeout": "15s",
     "max_output_length": 120,
-    "concurrency": 1
+    "concurrency": 1,
+    "skip_initial_status": true
   },
   "source": "nvsentinel-gpu-services",
   "metricsReporting": false,
@@ -215,9 +216,12 @@ flowchart LR
 Provided as opt-in values in the ADR-053 pattern, excluded from defaults for
 the same reason: NVSentinel does not own the NPD install, and an operator may
 already have different ownership or remediation rules for these conditions.
-Each policy watches `core/v1/Node`, matches its condition at
-`status == "True"` with the expected reason, and keeps identity fields stable
-between unhealthy and healthy HealthEvents.
+Each condition a policy matches is **defined by the reference NPD
+configuration above** (the `conditions` array with its healthy defaults) —
+the operator applies that configuration to their NPD deployment first, then
+enables these policies. Each policy watches `core/v1/Node`, matches its
+condition at `status == "True"` with the expected reason, and keeps identity
+fields stable between unhealthy and healthy HealthEvents.
 
 The `FabricManagerDown` policy:
 
@@ -255,21 +259,23 @@ one policy per per-service condition, matching the check inventory.
 
 **Recovery semantics and their limits.** A KOM predicate matches only
 `status == "True"` with the expected reason; anything else — including an
-`Unknown` condition after a plugin timeout, or the condition reset that
-follows an NPD restart — reads as the predicate not matching, which KOM
-reports as the healthy transition. Two consequences, stated deliberately:
+`Unknown` condition after a plugin timeout — reads as the predicate not
+matching, which KOM reports as the healthy transition. The reference
+configuration narrows this on two fronts:
 
-- The plugin scripts minimize the `Unknown` window by bounding their own
-  probes (above), so a down service reports as `True` again within one
-  `invoke_interval` even after a transient unknown or an NPD restart — the
-  false-recovery window is bounded by the probe interval, unlike the
-  log-matched ADR-053 rules, which cannot re-detect at all.
-- Within that window the ADR-053 mitigations apply verbatim: do not restart
-  NPD mid-remediation, and do not treat a post-restart or post-unknown
-  `False`/absent condition as proof of recovery. Making KOM itself
-  distinguish `Unknown` from `False` (three-state condition handling) would
-  harden every ADR-053 check equally; it is a platform-level follow-up, not
-  re-specified per check here.
+- `skip_initial_status: true` prevents NPD from publishing the default
+  (healthy) conditions on startup, so an NPD restart does **not** emit a
+  `False` for a still-broken service before the first real probe completes —
+  the restart-reset false recovery documented for ADR-053's log-matched rules
+  does not apply to these checks.
+- The plugin scripts bound their own probes (above), so a down service
+  reports `True` again within one `invoke_interval` after a transient
+  unknown; the remaining false-recovery window is the probe interval, during
+  which the ADR-053 mitigations apply (do not treat a transient
+  `False`/absent condition mid-remediation as proof of recovery). Making KOM
+  itself distinguish `Unknown` from `False` (three-state condition handling)
+  would harden every ADR-053 check equally; it is a platform-level follow-up,
+  not re-specified per check here.
 
 ## Signal Ownership
 
@@ -335,10 +341,10 @@ pretend it can:
   to the condition message text.
 - The flap window's state file is a per-host contract the documentation must
   specify precisely (location under `/run`, format, boot-scoped lifetime).
-- NPD restarts clear these conditions; as with ADR-053, a post-restart
-  `False` is not proof of recovery, though the next probe cycle re-detects a
-  still-broken service (bounded by the plugin interval, unlike the
-  log-matched rules).
+- With `skip_initial_status: true`, an NPD restart publishes no default
+  conditions before the first probe completes; a still-broken service
+  re-reports within one probe interval, and the transient-`Unknown` window
+  remains the one recovery caveat (see Recovery semantics).
 
 ## References
 
