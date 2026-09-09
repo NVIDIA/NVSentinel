@@ -25,6 +25,9 @@ data:
     sysClassNetPath = "{{ .Values.sysClassNetPath }}"
     sysClassInfinibandPath = "{{ .Values.sysClassInfinibandPath }}"
 
+    [charDeviceCheck]
+    issm = {{ .Values.charDeviceCheck.issm | quote }}
+
     [counterDetection]
     enabled = {{ .Values.counterDetection.enabled }}
     {{- range .Values.counterDetection.counters }}

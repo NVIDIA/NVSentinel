@@ -32,6 +32,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/store-client/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	storequery "github.com/nvidia/nvsentinel/store-client/pkg/query"
 )
 
 const (
@@ -312,15 +313,8 @@ func (c *PostgreSQLClient) UpdateDocumentStatusFields(
 		return nil
 	}
 
-	var setClauses []string
-
-	var args []any
-
-	paramCount := 1
-
-	var nodeQuarantinedVal any
-
-	// Iterate in sorted order for deterministic nested jsonb_set
+	// Iterate in sorted order for deterministic SQL and reuse the update
+	// builder's shared-parent tracking so nested initialization grows linearly.
 	paths := make([]string, 0, len(fields))
 
 	for path := range fields {
@@ -329,52 +323,37 @@ func (c *PostgreSQLClient) UpdateDocumentStatusFields(
 
 	sort.Strings(paths)
 
-	// Build nested jsonb_set for document
-	setExpression := jsonbDocumentColumn
+	var (
+		update             = storequery.NewUpdate()
+		nodeQuarantinedVal any
+	)
 
 	for _, path := range paths {
 		value := fields[path]
-
-		parts := strings.Split(path, ".")
-		jsonbPath := "{" + strings.Join(parts, ",") + "}"
-
-		valueJSON, err := json.Marshal(value)
-		if err != nil {
-			return datastore.NewSerializationError(
-				datastore.ProviderPostgreSQL,
-				fmt.Sprintf("failed to marshal value for field %s", path),
-				err,
-			)
-		}
-
-		setExpression = fmt.Sprintf("jsonb_set(%s, '%s', $%d)", setExpression, jsonbPath, paramCount)
-
-		args = append(args, string(valueJSON))
+		update.SetDocumentField(strings.ReplaceAll(path, ".", ","), value)
 
 		if path == nodeQuarantinedStatusField {
 			nodeQuarantinedVal = value
 		}
-
-		paramCount++
 	}
 
-	setClauses = append(setClauses, fmt.Sprintf("%s = %s", jsonbDocumentColumn, setExpression))
+	setClause, args := update.ToSQL()
+	setClauses := []string{setClause}
 
 	if nodeQuarantinedVal != nil {
-		setClauses = append(setClauses, fmt.Sprintf("node_quarantined = $%d", paramCount))
+		setClauses = append(setClauses, fmt.Sprintf("node_quarantined = $%d", len(args)+1))
 		args = append(args, nodeQuarantinedVal)
-		paramCount++
 	}
 
 	args = append(args, documentID)
 
 	//nolint:gosec // G201: table name from config
-	query := fmt.Sprintf(
+	sqlQuery := fmt.Sprintf(
 		"UPDATE %s SET %s, updated_at = NOW() WHERE id = $%d",
-		c.table, strings.Join(setClauses, ", "), paramCount,
+		c.table, strings.Join(setClauses, ", "), len(args),
 	)
 
-	result, err := c.db.ExecContext(ctx, query, args...)
+	result, err := c.db.ExecContext(ctx, sqlQuery, args...)
 	if err != nil {
 		return datastore.NewUpdateError(
 			datastore.ProviderPostgreSQL,
@@ -2652,6 +2631,16 @@ func (c *PostgreSQLClient) adjustParameterNumbers(clause string, offset int) str
 // buildUpdateClause converts MongoDB-style update operators to PostgreSQL SET clause
 // Supports basic $set operator for now
 func (c *PostgreSQLClient) buildUpdateClause(update any) (string, []any, error) {
+	if builder, ok := update.(interface{ ToSQL() (string, []any) }); ok {
+		setClause, args := builder.ToSQL()
+		if setClause == "" {
+			return "", nil, datastore.NewValidationError(
+				datastore.ProviderPostgreSQL, "update cannot be empty", nil)
+		}
+
+		return setClause, args, nil
+	}
+
 	updateMap, ok := update.(map[string]any)
 	if !ok {
 		return "", nil, datastore.NewValidationError(

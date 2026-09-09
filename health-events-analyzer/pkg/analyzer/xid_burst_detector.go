@@ -356,6 +356,19 @@ func (d *XidBurstDetector) ProcessEvent(event *protos.HealthEvent) (shouldTrigge
 
 	nodeName := event.NodeName
 	xidCode := event.ErrorCode[0]
+
+	if event.GeneratedTimestamp == nil {
+		// Skip events without a timestamp instead of panicking. A panic here
+		// kills the analyzer, and since failed events are redelivered via the
+		// resume token, it would crash-loop forever on the same poison event.
+		// This mirrors the defensive handling in platform-connectors'
+		// safeTimestamp ("HealthEvent has nil GeneratedTimestamp").
+		slog.Warn("XID event has nil GeneratedTimestamp; skipping burst detection",
+			"node", nodeName, "errorCode", xidCode)
+
+		return false, 0
+	}
+
 	timestamp := time.Unix(event.GeneratedTimestamp.Seconds, 0)
 	gpuIDs := extractGPUIDs(event.EntitiesImpacted)
 

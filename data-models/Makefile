@@ -64,6 +64,10 @@ CRD_FILE = $(CRD_OUT_DIR)/health_event.crd.yaml
 EXTRR_CRD_OUT_DIR = ../distros/kubernetes/nvsentinel/charts/janitor/crds
 EXTRR_CRD_FILE = $(EXTRR_CRD_OUT_DIR)/external_remediation.crd.yaml
 
+# MR CRD lands in the lifecycle-manager chart, where its reconciler ships.
+MR_CRD_OUT_DIR = ../distros/kubernetes/nvsentinel/charts/lifecycle-manager/crds
+MR_CRD_FILE = $(MR_CRD_OUT_DIR)/maintenance_request.crd.yaml
+
 # Path to vendored crd.proto
 PROTO_OPTIONS = vendor/github.com/yandex/protoc-gen-crd/library/go/k8s/protoc_gen_crd/proto/crd.proto
 
@@ -130,13 +134,25 @@ $(EXTRR_CRD_FILE): vendor-proto protobufs/external_remediation.proto protobufs/h
 	$(call STRIP_EMPTY_CRD_FIELDS,$(EXTRR_CRD_FILE))
 	@ls -l $(EXTRR_CRD_FILE) || (echo "ExtRR CRD file not generated!" && exit 1)
 
+# MR CRD: maintenance_request.proto transitively imports health_event and
+# external_remediation, each of which carries a k8s_crd option, so
+# protoc-gen-crd emits stray CRD files for them — remove those after
+# generation since the canonical copies live in other charts.
+$(MR_CRD_FILE): vendor-proto protobufs/maintenance_request.proto protobufs/health_event.proto protobufs/external_remediation.proto install-plugin-remote
+	@echo "Generating CRD YAML at $(MR_CRD_FILE)..."
+	mkdir -p $(MR_CRD_OUT_DIR)
+	$(call PROTOC_CRD_CMD,$(MR_CRD_OUT_DIR)) maintenance_request.proto
+	@rm -f $(MR_CRD_OUT_DIR)/health_event.crd.yaml $(MR_CRD_OUT_DIR)/external_remediation.crd.yaml
+	$(call STRIP_EMPTY_CRD_FIELDS,$(MR_CRD_FILE))
+	@ls -l $(MR_CRD_FILE) || (echo "MR CRD file not generated!" && exit 1)
+
 .PHONY: compile-crd-server
-compile-crd-server: $(CRD_FILE) $(EXTRR_CRD_FILE)
+compile-crd-server: $(CRD_FILE) $(EXTRR_CRD_FILE) $(MR_CRD_FILE)
 
 # Clean generated CRD YAML
 .PHONY: crd-clean
 crd-clean:
-	rm -f $(CRD_FILE) $(EXTRR_CRD_FILE)
+	rm -f $(CRD_FILE) $(EXTRR_CRD_FILE) $(MR_CRD_FILE)
 
 # Generate Go protobuf files for data-models (shared across all Go modules)
 .PHONY: protos-generate
@@ -153,7 +169,8 @@ protos-generate: vendor-proto protos-clean compile-crd-server
 		--go_out=pkg/protos/ --go_opt=paths=source_relative \
 		--go-grpc_out=pkg/protos/ --go-grpc_opt=paths=source_relative \
 		protobufs/health_event.proto \
-		protobufs/external_remediation.proto
+		protobufs/external_remediation.proto \
+		protobufs/maintenance_request.proto
 
 # Clean generated Go protobuf files
 .PHONY: protos-clean

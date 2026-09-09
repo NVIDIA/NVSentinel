@@ -384,15 +384,18 @@ test_gpu_monitoring_dcgm() {
 
     discover_dcgm_target "$gpu_node"
 
-    kubectl exec -n "$GPU_HM_NS" "$GPU_HM_POD" -- dcgmi test --host "$DCGM_HOST" --inject --gpuid 0 -f 240 -v 99999 # power watch error
+    # Any non-zero pending page retirement count fails the MEM watch with
+    # DCGM_FR_PENDING_PAGE_RETIREMENTS, which maps to NONE. The power watch is
+    # not used for this: its throttling codes are suppressed by default.
+    kubectl exec -n "$GPU_HM_NS" "$GPU_HM_POD" -- dcgmi test --host "$DCGM_HOST" --inject --gpuid 0 -f 392 -v 1
 
     log "Waiting for node events to appear..."
     local max_wait=${UAT_EVENT_TIMEOUT:-30}
     local waited=0
     while [[ $waited -lt $max_wait ]]; do
-        power_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "GpuPowerWatchIsNotHealthy") | .reason')
-        if [[ -n "$power_event" ]]; then
-            log "Found power event"
+        nonfatal_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "GpuMemWatchIsNotHealthy") | .reason')
+        if [[ -n "$nonfatal_event" ]]; then
+            log "Found non-fatal memory event"
             break
         fi
         sleep 2
@@ -402,11 +405,17 @@ test_gpu_monitoring_dcgm() {
     log "Verifying node events are populated (non-fatal errors appear here)"
     kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason | contains("IsNotHealthy")) | "\(.reason) Message=\(.message)"' | head -5
 
-    power_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "GpuPowerWatchIsNotHealthy") | .reason')
-    if [[ -z "$power_event" ]]; then
-        error "GpuPowerWatch event not found (non-fatal errors should create events)"
+    nonfatal_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "GpuMemWatchIsNotHealthy") | .reason')
+    if [[ -z "$nonfatal_event" ]]; then
+        error "GpuMemWatch event not found (non-fatal errors should create events)"
     fi
-    log "Node event verified: GpuPowerWatch is non-fatal, appears in events ✓"
+    log "Node event verified: pending page retirements are non-fatal, appear in events ✓"
+
+    # Clear it before injecting the fatal error. The monitor keeps one error
+    # code per watch and GPU, set by the first incident it sees, so leaving a
+    # non-fatal MEM incident live could mask the fatal one below on the DCGM
+    # versions that also report XID 95 under GpuMemWatch.
+    kubectl exec -n "$GPU_HM_NS" "$GPU_HM_POD" -- dcgmi test --host "$DCGM_HOST" --inject --gpuid 0 -f 392 -v 0
 
     # XID 95 results in DCGM_FR_UNCONTAINED_ERROR which requires a RESTART_VM action.
     # DCGM 4.2.x maps this to DCGM_HEALTH_WATCH_MEM (GpuMemWatch).

@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
@@ -34,6 +35,10 @@ import (
 const (
 	maxRetries int           = 5
 	delay      time.Duration = 5 * time.Second
+
+	// Carries the triggering event's generated timestamp, which the derived event replaces
+	// with its own.
+	sourceGeneratedTimestampMetadataKey = "source_generated_timestamp"
 )
 
 type PublisherConfig struct {
@@ -114,7 +119,8 @@ func NewPublisher(platformConnectorClient protos.PlatformConnectorClient,
 
 // Publish clones the incoming health event, updates the fields defined by the
 // rule (agent, check name, recommended action, isFatal, and processing strategy),
-// and sends the resulting event to the platform-connector with retries.
+// stamps its own generated timestamp, and sends the resulting event to the
+// platform-connector with retries.
 func (p *PublisherConfig) Publish(ctx context.Context, event *protos.HealthEvent,
 	recommendedAction protos.RecommendedAction, ruleName string, message string,
 	rule *config.HealthEventsAnalyzerRule) error {
@@ -133,6 +139,18 @@ func (p *PublisherConfig) Publish(ctx context.Context, event *protos.HealthEvent
 	newEvent.RecommendedAction = recommendedAction
 	newEvent.IsHealthy = false
 	newEvent.Message = message
+
+	// The clone inherits the triggering event's timestamp, which dates the derived event to
+	// the original fault rather than to detection. The source value is kept in metadata.
+	if src := event.GetGeneratedTimestamp(); src != nil {
+		if newEvent.Metadata == nil {
+			newEvent.Metadata = make(map[string]string, 1)
+		}
+
+		newEvent.Metadata[sourceGeneratedTimestampMetadataKey] = src.AsTime().UTC().Format(time.RFC3339Nano)
+	}
+
+	newEvent.GeneratedTimestamp = timestamppb.New(time.Now())
 
 	// Default from module configuration, with an optional rule-level override.
 	newEvent.ProcessingStrategy = p.processingStrategy

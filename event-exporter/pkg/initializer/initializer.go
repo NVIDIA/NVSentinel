@@ -78,7 +78,7 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 		return nil, fmt.Errorf("failed to initialize datastore: %w", err)
 	}
 
-	exp := exporter.New(
+	exp, err := exporter.New(
 		cfg,
 		datastoreBundle.DatabaseClient,
 		datastoreBundle.ChangeStreamWatcher,
@@ -87,6 +87,10 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 		hasResumeToken,
 		params.Workers,
 	)
+	if err != nil {
+		slog.Error("Failed to initialize exporter", "error", err)
+		return nil, fmt.Errorf("failed to initialize exporter: %w", err)
+	}
 
 	return &Components{
 		Exporter:        exp,

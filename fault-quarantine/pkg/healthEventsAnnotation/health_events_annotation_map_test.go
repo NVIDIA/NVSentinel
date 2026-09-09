@@ -16,10 +16,14 @@ package healthEventsAnnotation
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestHealthEventsAnnotationMap_AddOrUpdateEvent tests adding and updating events
@@ -939,5 +943,162 @@ func TestGetEvent_AsymmetricErrorCodeMatching(t *testing.T) {
 
 	if got.ErrorCode[0] != "98" {
 		t.Errorf("matched event ErrorCode = %v, want [98]", got.ErrorCode)
+	}
+}
+
+func TestAddOrUpdateEventFiltered_PartialCompoundProjectionSurvivesJSONRoundTrip(t *testing.T) {
+	event := &protos.HealthEvent{
+		Version: 1, Agent: "agent", ComponentClass: "GPU", CheckName: "check", NodeName: "node-a",
+		ErrorCode: []string{"48", "79"},
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU", EntityValue: "A"},
+			{EntityType: "GPU", EntityValue: "B"},
+		},
+	}
+	annotation := NewHealthEventsAnnotationMap()
+	require.True(t, annotation.AddOrUpdateEventFiltered(event, func(key HealthEventKey) bool {
+		return !(key.EntityValue == "A" && key.ErrorCode == "79")
+	}))
+	require.Equal(t, 3, annotation.Count())
+
+	encoded, err := json.Marshal(annotation)
+	require.NoError(t, err)
+	roundTripped := NewHealthEventsAnnotationMap()
+	require.NoError(t, json.Unmarshal(encoded, roundTripped))
+	require.Equal(t, 3, roundTripped.Count())
+	_, exists := roundTripped.Events[HealthEventKey{
+		Agent: "agent", ComponentClass: "GPU", CheckName: "check", NodeName: "node-a",
+		Version: 1, EntityType: "GPU", EntityValue: "A", ErrorCode: "79",
+	}]
+	require.False(t, exists, "serialization must not recreate a filtered-out effect")
+}
+
+func TestAddOrUpdateEventFiltered_PartialEscalationSurvivesJSONRoundTrip(t *testing.T) {
+	compound := &protos.HealthEvent{
+		Version: 1, Agent: "agent", ComponentClass: "GPU", CheckName: "check", NodeName: "node-a",
+		ErrorCode:         []string{"79"},
+		RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU", EntityValue: "A"},
+			{EntityType: "GPU", EntityValue: "B"},
+		},
+	}
+	escalated := proto.Clone(compound).(*protos.HealthEvent)
+	escalated.RecommendedAction = protos.RecommendedAction_CONTACT_SUPPORT
+
+	annotation := NewHealthEventsAnnotationMap()
+	require.True(t, annotation.AddOrUpdateEvent(compound))
+	require.True(t, annotation.AddOrUpdateEventFiltered(escalated, func(key HealthEventKey) bool {
+		return key.EntityValue == "A"
+	}))
+
+	for range 20 {
+		encoded, err := json.Marshal(annotation)
+		require.NoError(t, err)
+		roundTripped := NewHealthEventsAnnotationMap()
+		require.NoError(t, json.Unmarshal(encoded, roundTripped))
+
+		for key, event := range roundTripped.Events {
+			switch key.EntityValue {
+			case "A":
+				assert.Equal(t, protos.RecommendedAction_CONTACT_SUPPORT, event.GetRecommendedAction())
+			case "B":
+				assert.Equal(t, protos.RecommendedAction_COMPONENT_RESET, event.GetRecommendedAction())
+			default:
+				t.Fatalf("unexpected entity %q", key.EntityValue)
+			}
+		}
+		annotation = roundTripped
+	}
+}
+
+func TestAddOrUpdateEventFiltered_CompoundEventsRemainCompact(t *testing.T) {
+	annotation := NewHealthEventsAnnotationMap()
+	for eventIndex := range 10 {
+		compound := &protos.HealthEvent{
+			Version: 1, Agent: "agent", ComponentClass: "GPU",
+			CheckName: fmt.Sprintf("check-%d", eventIndex), NodeName: "node-a",
+			ErrorCode: []string{"48", "79", "94", "95"},
+			Message:   strings.Repeat("diagnostic detail ", 256),
+		}
+		for entityIndex := range 8 {
+			compound.EntitiesImpacted = append(compound.EntitiesImpacted, &protos.Entity{
+				EntityType: "GPU", EntityValue: fmt.Sprintf("GPU-%d", entityIndex),
+			})
+		}
+		require.True(t, annotation.AddOrUpdateEvent(compound))
+
+		escalated := proto.Clone(compound).(*protos.HealthEvent)
+		escalated.RecommendedAction = protos.RecommendedAction_CONTACT_SUPPORT
+		require.True(t, annotation.AddOrUpdateEventFiltered(escalated, func(key HealthEventKey) bool {
+			return key.EntityValue == "GPU-0"
+		}))
+	}
+
+	encoded, err := json.Marshal(annotation)
+	require.NoError(t, err)
+	assert.Less(t, len(encoded), 256*1024,
+		"exact projections must stay within Kubernetes' total annotation budget")
+
+	roundTripped := NewHealthEventsAnnotationMap()
+	require.NoError(t, json.Unmarshal(encoded, roundTripped))
+	assert.Equal(t, 10*8*4, roundTripped.Count())
+	for key, event := range roundTripped.Events {
+		if key.EntityValue == "GPU-0" {
+			assert.Equal(t, protos.RecommendedAction_CONTACT_SUPPORT, event.GetRecommendedAction())
+		} else {
+			assert.Equal(t, protos.RecommendedAction_NONE, event.GetRecommendedAction())
+		}
+	}
+}
+
+func TestRemoveEventFiltered_CheckWideRecoveryPreservesShadowedEntity(t *testing.T) {
+	annotation := NewHealthEventsAnnotationMap()
+	for _, entity := range []string{"A", "B"} {
+		require.True(t, annotation.AddOrUpdateEvent(&protos.HealthEvent{
+			Version: 1, Agent: "agent", ComponentClass: "GPU", CheckName: "check", NodeName: "node-a",
+			EntitiesImpacted: []*protos.Entity{{EntityType: "GPU", EntityValue: entity}},
+		}))
+	}
+	recovery := &protos.HealthEvent{
+		Version: 1, Agent: "agent", ComponentClass: "GPU", CheckName: "check", NodeName: "node-a",
+		IsHealthy: true,
+	}
+
+	removed := annotation.RemoveEventFiltered(recovery, func(key HealthEventKey) bool {
+		return key.EntityValue != "A"
+	})
+	require.Equal(t, 1, removed)
+	require.Equal(t, 1, annotation.Count())
+	for key := range annotation.Events {
+		require.Equal(t, "A", key.EntityValue)
+	}
+}
+
+func TestRemoveEvent_PartialCompoundRemovalSurvivesJSONRoundTrip(t *testing.T) {
+	annotation := NewHealthEventsAnnotationMap()
+	compound := &protos.HealthEvent{
+		Version: 1, Agent: "agent", ComponentClass: "GPU", CheckName: "check", NodeName: "node-a",
+		ErrorCode: []string{"79"},
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU", EntityValue: "A"},
+			{EntityType: "GPU", EntityValue: "B"},
+		},
+	}
+	require.True(t, annotation.AddOrUpdateEvent(compound))
+	require.Equal(t, 1, annotation.RemoveEvent(&protos.HealthEvent{
+		Version: 1, Agent: "agent", ComponentClass: "GPU", CheckName: "check", NodeName: "node-a",
+		IsHealthy: true, ErrorCode: []string{"79"},
+		EntitiesImpacted: []*protos.Entity{{EntityType: "GPU", EntityValue: "A"}},
+	}))
+
+	encoded, err := json.Marshal(annotation)
+	require.NoError(t, err)
+	roundTripped := NewHealthEventsAnnotationMap()
+	require.NoError(t, json.Unmarshal(encoded, roundTripped))
+	require.Equal(t, 1, roundTripped.Count())
+	for key := range roundTripped.Events {
+		require.Equal(t, "B", key.EntityValue)
+		require.Equal(t, "79", key.ErrorCode)
 	}
 }

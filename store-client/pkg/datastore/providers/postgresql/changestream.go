@@ -30,6 +30,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	"github.com/nvidia/nvsentinel/store-client/pkg/lagstate"
 )
 
 const (
@@ -89,6 +90,16 @@ type PostgreSQLChangeStreamWatcher struct {
 	listener       *pq.Listener // LISTEN connection for notifications
 	lastNotifyTime time.Time    // Last time we received a NOTIFY
 	connString     string       // Connection string for LISTEN
+
+	// lag carries the two timestamps change_stream_lag_seconds is derived from. See ADR-054.
+	lag lagstate.Tracker
+}
+
+// LagState reports when this poller last saw a poll return no rows and the changed_at of the
+// newest row it read. Either may be zero before the first poll completes, which callers must
+// treat as "unknown" rather than as caught up: see ADR-054.
+func (w *PostgreSQLChangeStreamWatcher) LagState() (lastEmptyBatch, lastEventRead time.Time) {
+	return w.lag.LagState()
 }
 
 // NewPostgreSQLChangeStreamWatcher creates a new PostgreSQL change stream watcher
@@ -684,6 +695,13 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNewChanges(ctx context.Context) err
 
 	slog.Debug("Fetched events from changelog", "client", w.clientName, "eventCount", len(events))
 
+	// A poll that returned nothing is the empty batch: the changelog holds no row past this
+	// consumer's position that its server-side filter would accept. Rows are recorded in
+	// processChangelogRows as they are scanned.
+	if len(events) == 0 {
+		w.lag.RecordCaughtUp(time.Now())
+	}
+
 	return w.sendEventsToChannel(ctx, events)
 }
 
@@ -744,6 +762,10 @@ func (w *PostgreSQLChangeStreamWatcher) processChangelogRows(rows *sql.Rows) ([]
 
 			return nil, fmt.Errorf("failed to scan changelog row: %w", err)
 		}
+
+		// Rows come back ordered by changed_at, and the tracker keeps the maximum, so this ends
+		// up holding the newest row read regardless of ordering.
+		w.lag.RecordEventRead(changedAt)
 
 		event := w.buildEventDocument(id, recordID, operation, oldValues, newValues, changedAt)
 		token := []byte(fmt.Sprintf("%d", id))
@@ -890,7 +912,15 @@ func (w *PostgreSQLChangeStreamWatcher) parseDocumentValues(
 		return nil, false, false
 	}
 
+	outerDoc := doc
+
 	doc, innerExtracted = w.extractInnerDocument(doc)
+	if innerExtracted {
+		if databaseCreatedAt, exists := outerDoc["created_at"]; exists {
+			doc = maps.Clone(doc)
+			doc["createdAt"] = databaseCreatedAt
+		}
+	}
 
 	return doc, innerExtracted, true
 }
@@ -941,6 +971,12 @@ func (w *PostgreSQLChangeStreamWatcher) findUpdatedFields(
 		}
 	}
 
+	for key := range oldDoc {
+		if _, exists := newDoc[key]; !exists {
+			updatedFields[key] = nil
+		}
+	}
+
 	return updatedFields
 }
 
@@ -961,20 +997,42 @@ func (w *PostgreSQLChangeStreamWatcher) flattenMap(
 		prefix = parentPrefix + "." + currentKey
 	}
 
+	if len(currentValue) == 0 && oldMap == nil {
+		result[prefix] = currentValue
+
+		return
+	}
+
 	for k, v := range currentValue {
 		fullKey := prefix + "." + k
 
 		var oldV any
+
+		existed := false
 		if oldMap != nil {
-			oldV = oldMap[k]
+			oldV, existed = oldMap[k]
 		}
 
 		// Recursively flatten nested maps
 		if vMap, ok := v.(map[string]any); ok {
 			w.flattenMap(prefix, k, vMap, oldV, result)
-		} else if !w.valuesEqual(oldV, v) {
+		} else if !existed || !w.valuesEqual(oldV, v) {
 			// Only include if the value actually changed
 			result[fullKey] = v
+		}
+	}
+
+	recordRemovedMapFields(prefix, oldMap, currentValue, result)
+}
+
+func recordRemovedMapFields(
+	prefix string,
+	oldValue, currentValue map[string]any,
+	result map[string]any,
+) {
+	for key := range oldValue {
+		if _, exists := currentValue[key]; !exists {
+			result[prefix+"."+key] = nil
 		}
 	}
 }
@@ -1399,6 +1457,19 @@ type PostgreSQLEventAdapter struct {
 	resumeToken []byte
 }
 
+// UpdatedFields exposes the same flattened update description used by the
+// provider's pipeline filter.
+func (e *PostgreSQLEventAdapter) UpdatedFields() map[string]any {
+	updateDescription, ok := e.eventData["updateDescription"].(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	updatedFields, _ := updateDescription["updatedFields"].(map[string]any)
+
+	return updatedFields
+}
+
 // GetDocumentID returns the changelog sequence ID for this event.
 // This ID is used for:
 // - Tracking the last processed position in the changestream
@@ -1659,6 +1730,11 @@ func (a *PostgreSQLChangeStreamAdapter) Close(ctx context.Context) error {
 	return a.watcher.Close(ctx)
 }
 
+// LagState delegates to the wrapped watcher so lag survives the adapter.
+func (a *PostgreSQLChangeStreamAdapter) LagState() (lastEmptyBatch, lastEventRead time.Time) {
+	return a.watcher.LagState()
+}
+
 // PostgreSQLChangeStreamWatcherWithUnwrap wraps PostgreSQLChangeStreamWatcher
 // and provides the Unwrap() method without creating interface conflicts.
 // This wrapper implements datastore.ChangeStreamWatcher and can be unwrapped to client.ChangeStreamWatcher.
@@ -1704,6 +1780,20 @@ func (w *PostgreSQLChangeStreamWatcherWithUnwrap) MarkProcessed(ctx context.Cont
 func (w *PostgreSQLChangeStreamWatcherWithUnwrap) Close(ctx context.Context) error {
 	return w.watcher.Close(ctx)
 }
+
+// LagState delegates to the wrapped watcher so lag survives the wrapper.
+func (w *PostgreSQLChangeStreamWatcherWithUnwrap) LagState() (lastEmptyBatch, lastEventRead time.Time) {
+	return w.watcher.LagState()
+}
+
+// Every type a consumer can be handed must report lag, or the assertion that looks for it
+// answers for the wrapper instead of the watcher underneath. Asserted here so adding a wrapper
+// without the pass-through fails the build rather than silently reporting no lag.
+var (
+	_ lagstate.Provider = (*PostgreSQLChangeStreamWatcher)(nil)
+	_ lagstate.Provider = (*PostgreSQLChangeStreamAdapter)(nil)
+	_ lagstate.Provider = (*PostgreSQLChangeStreamWatcherWithUnwrap)(nil)
+)
 
 // Unwrap returns the adapter as client.ChangeStreamWatcher for backward compatibility
 // This allows services to unwrap the PostgreSQL watcher to the legacy interface

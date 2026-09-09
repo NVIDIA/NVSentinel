@@ -1039,30 +1039,10 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 		return res, err
 	}
 
-	decision, err := r.checkExistingCRStatus(ctx, healthEvent,
-		healthEventWithStatus.CreatedAt, groupConfig)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			slog.WarnContext(ctx, "Node no longer exists, marking remediation event as stale", "node", nodeName)
-
-			return r.markEventTerminalAndProcessed(ctx, healthEventStore, eventWithToken, watcherInstance, nodeName, false)
-		}
-
-		metrics.ProcessingErrors.WithLabelValues("cr_status_check_error", nodeName).Inc()
-		slog.ErrorContext(ctx, "Error checking existing CR status", "node", nodeName, "error", err)
-
-		span.SetAttributes(
-			attribute.String("fault_remediation.error.type", "cr_status_check_error"),
-			attribute.String("fault_remediation.error.message", err.Error()),
-		)
-		tracing.RecordError(span, err)
-
-		return ctrl.Result{}, fmt.Errorf("error checking existing CR status: %w", err)
-	}
-
-	if !decision.shouldCreate {
-		return r.handleEventCoveredByExistingCR(ctx, decision, eventWithToken, watcherInstance, healthEventStore,
-			nodeName)
+	res, err, done = r.tryHandleExistingCR(ctx, span, healthEventWithStatus, groupConfig, eventWithToken,
+		watcherInstance, healthEventStore, nodeName)
+	if done {
+		return res, err
 	}
 
 	result, err := r.runLogCollectorAndRemediate(ctx, healthEvent, healthEventWithStatus, eventWithToken,
@@ -1078,6 +1058,52 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 	metrics.EventsProcessed.WithLabelValues(metrics.CRStatusCreated, nodeName).Inc()
 
 	return r.markProcessedOrError(ctx, watcherInstance, eventWithToken, nodeName)
+}
+
+// tryHandleExistingCR checks the current CR status and returns (result, err, true) when the
+// event is terminal (node gone), errored, or already covered by an existing CR; otherwise it
+// returns (zero, nil, false) to signal that a new remediation should proceed.
+func (r *FaultRemediationReconciler) tryHandleExistingCR(
+	ctx context.Context,
+	span oteltrace.Span,
+	healthEventWithStatus *events.HealthEventDoc,
+	groupConfig *common.EquivalenceGroupConfig,
+	eventWithToken datastore.EventWithToken,
+	watcherInstance datastore.ChangeStreamWatcher,
+	healthEventStore datastore.HealthEventStore,
+	nodeName string,
+) (ctrl.Result, error, bool) {
+	decision, err := r.checkExistingCRStatus(ctx, healthEventWithStatus.HealthEvent,
+		healthEventWithStatus.CreatedAt, groupConfig)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			slog.WarnContext(ctx, "Node no longer exists, marking remediation event as stale", "node", nodeName)
+
+			res, err := r.markEventTerminalAndProcessed(ctx, healthEventStore, eventWithToken, watcherInstance, nodeName, false)
+
+			return res, err, true
+		}
+
+		metrics.ProcessingErrors.WithLabelValues("cr_status_check_error", nodeName).Inc()
+		slog.ErrorContext(ctx, "Error checking existing CR status", "node", nodeName, "error", err)
+
+		span.SetAttributes(
+			attribute.String("fault_remediation.error.type", "cr_status_check_error"),
+			attribute.String("fault_remediation.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
+
+		return ctrl.Result{}, fmt.Errorf("error checking existing CR status: %w", err), true
+	}
+
+	if !decision.shouldCreate {
+		res, err := r.handleEventCoveredByExistingCR(ctx, decision, eventWithToken, watcherInstance, healthEventStore,
+			nodeName)
+
+		return res, err, true
+	}
+
+	return ctrl.Result{}, nil, false
 }
 
 // trySkipEvent returns (result, err, true) when the event should be skipped; otherwise (zero, nil, false).
@@ -1161,6 +1187,75 @@ func (r *FaultRemediationReconciler) trySkipResolvedEvent(
 	return result, err, true
 }
 
+// tryStopAtMaxAttempts records one remediation attempt for the equivalence group and returns
+// (result, err, true) when the group has spent its attempt budget, so no CR is created.
+//
+// The attempt is recorded before the CR is created on purpose: an attempt that never produces
+// a CR (missing CRD, RBAC denial, rejecting webhook) still consumes budget and cannot loop.
+// The counter survives a failed CR because RemoveGroupsFromState keeps it, and is cleared with
+// the rest of the state when the quarantine session ends.
+func (r *FaultRemediationReconciler) tryStopAtMaxAttempts(
+	ctx context.Context,
+	nodeName string,
+	effectiveEquivalenceGroup string,
+	maxAttempts int,
+	eventWithToken datastore.EventWithToken,
+	watcherInstance datastore.ChangeStreamWatcher,
+	healthEventStore datastore.HealthEventStore,
+) (ctrl.Result, error, bool) {
+	attemptCount, err := r.annotationManager.RecordRemediationAttempt(ctx, nodeName, effectiveEquivalenceGroup)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			// The node is gone; finalize the event rather than remediating a node that
+			// no longer exists, mirroring the node-deleted path in tryHandleExistingCR.
+			slog.WarnContext(ctx, "Node no longer exists, marking remediation event as stale", "node", nodeName)
+
+			res, err := r.markEventTerminalAndProcessed(ctx, healthEventStore, eventWithToken, watcherInstance,
+				nodeName, false)
+
+			return res, err, true
+		}
+
+		slog.ErrorContext(ctx, "Failed to record remediation attempt",
+			"node", nodeName,
+			"group", effectiveEquivalenceGroup,
+			"error", err)
+
+		return ctrl.Result{}, fmt.Errorf("failed to record remediation attempt: %w", err), true
+	}
+
+	if attemptCount <= maxAttempts {
+		return ctrl.Result{}, nil, false
+	}
+
+	slog.WarnContext(ctx, "Maximum remediation attempts reached for equivalence group, giving up",
+		"node", nodeName,
+		"group", effectiveEquivalenceGroup,
+		"attemptCount", attemptCount,
+		"maxAttempts", maxAttempts)
+
+	metrics.EventsProcessed.WithLabelValues(metrics.CRStatusSkipped, nodeName).Inc()
+
+	// Label the node remediation-failed, as #1543 asks, so it matches the CONTACT_SUPPORT
+	// path operators are told to look for. This is rewritten on every capped event because
+	// fault-quarantine and node-drainer re-stamp the label as new events arrive.
+	if _, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName,
+		statemanager.RemediationFailedLabelValue, false); err != nil {
+		slog.ErrorContext(ctx, "Error updating node label after reaching max remediation attempts",
+			"node", nodeName,
+			"label", statemanager.RemediationFailedLabelValue,
+			"error", err)
+		metrics.ProcessingErrors.WithLabelValues("label_update_error", nodeName).Inc()
+
+		return ctrl.Result{}, fmt.Errorf("failed to label node %s as remediation-failed: %w", nodeName, err), true
+	}
+
+	res, err := r.markEventTerminalAndProcessed(ctx, healthEventStore, eventWithToken, watcherInstance,
+		nodeName, false)
+
+	return res, err, true
+}
+
 // handleEventCoveredByExistingCR routes a shouldCreate=false decision: an event behind a
 // still-in-progress CR is requeued, an event covered by a terminal CR is finalized.
 func (r *FaultRemediationReconciler) handleEventCoveredByExistingCR(
@@ -1222,7 +1317,14 @@ func (r *FaultRemediationReconciler) closeStaleEquivalentEvents(
 	}
 
 	coveredGroups := make(map[string]struct{}, len(remediationState.EquivalenceGroups))
-	for groupName := range remediationState.EquivalenceGroups {
+
+	for groupName, groupState := range remediationState.EquivalenceGroups {
+		// Counter-only entries track a spent attempt budget, not a remediation that ran.
+		// Treating them as covered would close events this session never remediated.
+		if groupState.MaintenanceCR == "" {
+			continue
+		}
+
 		coveredGroups[groupName] = struct{}{}
 	}
 
@@ -1421,7 +1523,7 @@ func (r *FaultRemediationReconciler) runLogCollectorAndRemediate(
 	healthEvent *protos.HealthEvent,
 	healthEventWithStatus *events.HealthEventDoc,
 	eventWithToken datastore.EventWithToken,
-	_ datastore.ChangeStreamWatcher,
+	watcherInstance datastore.ChangeStreamWatcher,
 	healthEventStore datastore.HealthEventStore,
 	groupConfig *common.EquivalenceGroupConfig,
 	nodeName string,
@@ -1435,6 +1537,19 @@ func (r *FaultRemediationReconciler) runLogCollectorAndRemediate(
 
 	if !result.IsZero() {
 		return result, nil
+	}
+
+	// Count the attempt only after log collection completes. The collector requeues this event
+	// while its Job is running, and those polling passes are not remediation attempts.
+	maxAttempts := r.Config.RemediationClient.GetConfig().MaxRemediationAttempts
+	if maxAttempts > 0 {
+		result, err, done := r.tryStopAtMaxAttempts(ctx, nodeName, groupConfig.EffectiveEquivalenceGroup,
+			maxAttempts, eventWithToken, watcherInstance, healthEventStore)
+		if done {
+			span.SetAttributes(attribute.String("fault_remediation.status", "max_attempts_reached"))
+
+			return result, err
+		}
 	}
 
 	_, performRemediationErr := r.performRemediation(ctx, healthEventWithStatus, groupConfig)
@@ -1620,18 +1735,9 @@ func (r *FaultRemediationReconciler) checkExistingCRStatus(ctx context.Context, 
 
 	groupStates := sortedEquivalenceGroupStates(common.FilterEquivalenceGroupStates(groupConfig, state))
 
-	var groupsToRemove []string
-
-	for _, groupState := range groupStates {
-		decision := r.evaluateExistingCR(ctx, statusChecker, groupState, eventCreatedAt, nodeName)
-		if !decision.shouldCreate {
-			return decision, nil
-		}
-
-		if decision.removeGroup {
-			groupsToRemove = append(groupsToRemove, groupState.name)
-			continue
-		}
+	decision, groupsToRemove := r.evaluateExistingCRs(ctx, statusChecker, groupStates, eventCreatedAt, nodeName)
+	if !decision.shouldCreate {
+		return decision, nil
 	}
 
 	if len(groupsToRemove) > 0 {
@@ -1641,6 +1747,37 @@ func (r *FaultRemediationReconciler) checkExistingCRStatus(ctx context.Context, 
 	}
 
 	return allowCreate, nil
+}
+
+// evaluateExistingCRs walks the recorded groups newest first and returns the first decision
+// that blocks creating a new CR, along with the groups whose CR is finished and can be cleared.
+func (r *FaultRemediationReconciler) evaluateExistingCRs(
+	ctx context.Context,
+	statusChecker crstatus.CRStatusCheckerInterface,
+	groupStates []namedEquivalenceGroupState,
+	eventCreatedAt time.Time,
+	nodeName string,
+) (existingCRDecision, []string) {
+	var groupsToRemove []string
+
+	for _, groupState := range groupStates {
+		// A counter-only entry (attempt budget kept after a failed CR was cleared) has no CR
+		// to evaluate; skipping it avoids a pointless lookup for an empty action name.
+		if groupState.state.MaintenanceCR == "" {
+			continue
+		}
+
+		decision := r.evaluateExistingCR(ctx, statusChecker, groupState, eventCreatedAt, nodeName)
+		if !decision.shouldCreate {
+			return decision, nil
+		}
+
+		if decision.removeGroup {
+			groupsToRemove = append(groupsToRemove, groupState.name)
+		}
+	}
+
+	return existingCRDecision{shouldCreate: true}, groupsToRemove
 }
 
 type existingCRDecision struct {

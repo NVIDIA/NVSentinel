@@ -345,6 +345,7 @@ janitor-provider:
       rebootJobNamespace: ""
       rebootJobTTLSeconds: 3600
       imagePullSecrets: ""
+      writeSyslog: false
 ```
 
 ### rebootImage
@@ -363,3 +364,6 @@ Time in seconds after Job completion before Kubernetes deletes the Job and its p
 
 ### imagePullSecrets
 Name of an image pull secret to attach to the reboot Job, if `rebootImage` is pulled from a private registry.
+
+### writeSyslog
+When `true`, the Job writes an attribution entry to the node's syslog via `logger` before executing the reboot command. Defaults to `false`.

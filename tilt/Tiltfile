@@ -160,6 +160,7 @@ include('../event-exporter/Tiltfile')
 include('../health-monitors/gpu-health-monitor/Tiltfile')
 include('../health-monitors/csp-health-monitor/Tiltfile')
 include('../health-monitors/kubernetes-object-monitor/Tiltfile')
+include('../health-monitors/nvcre-certification-monitor/Tiltfile')
 include('../health-monitors/syslog-health-monitor/Tiltfile')
 include('../health-monitors/slurm-drain-monitor/Tiltfile')
 include('../health-monitors/nic-health-monitor/Tiltfile')
@@ -167,6 +168,7 @@ include('../labeler/Tiltfile')
 include('../log-collector/Tiltfile')
 include('../preflight/Tiltfile')
 include('../gpu-reset/Tiltfile')
+include('../lifecycle-manager/Tiltfile')
 values_files = [
     '../distros/kubernetes/nvsentinel/values.yaml',
     '../distros/kubernetes/nvsentinel/values-tilt.yaml',
@@ -262,7 +264,9 @@ preflight_enabled = effective_values.get('global', {}).get('preflight', {}).get(
 cert_manager_objects = [
     'janitor-webhook-cert:certificate',
     'janitor-selfsigned-issuer:issuer',
-    'janitor-provider-grpc-cert:certificate'
+    'janitor-provider-grpc-cert:certificate',
+    'lifecycle-manager-webhook-cert:certificate',
+    'lifecycle-manager-selfsigned-issuer:issuer',
 ]
 if preflight_enabled:
     cert_manager_objects.extend([
@@ -318,6 +322,17 @@ k8s_resource(
 k8s_resource(
     'janitor-provider',
     resource_deps=['janitor', 'wait-for-janitor-provider-cert'],
+)
+
+local_resource(
+    'wait-for-lifecycle-manager-cert',
+    cmd='kubectl wait --for=condition=Ready --timeout=300s certificate/lifecycle-manager-webhook-cert -n nvsentinel',
+    resource_deps=['cert-manager-resources'],
+)
+
+k8s_resource(
+    'lifecycle-manager',
+    resource_deps=['wait-for-lifecycle-manager-cert'],
 )
 
 if use_percona:
@@ -379,6 +394,19 @@ k8s_resource(
 k8s_resource(
     'kubernetes-object-monitor',
     resource_deps=['platform-connectors']
+)
+
+# Only the NVCRE Certification CRD is installed (no controller); the e2e test
+# fakes Certification status so the monitor can be tested without GPUs.
+k8s_yaml('./nvcre-certification-crd.yaml')
+k8s_resource(
+    new_name='nvcre-certification-crd',
+    objects=['certifications.nvcre.nvidia.com:customresourcedefinition']
+)
+
+k8s_resource(
+    'nvcre-certification-monitor',
+    resource_deps=['platform-connectors', 'nvcre-certification-crd']
 )
 
 k8s_resource(

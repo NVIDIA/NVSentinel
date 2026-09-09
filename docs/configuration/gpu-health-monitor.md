@@ -146,26 +146,42 @@ Drops DCGM health check incidents matching specific error codes before they gene
 ```yaml
 gpu-health-monitor:
   dcgmHealthCheck:
-    suppressedErrorCodes: []
+    suppressedErrorCodes:
+      - DCGM_FR_CLOCK_THROTTLE_POWER
+      - DCGM_FR_CLOCKS_EVENT_POWER
+      - DCGM_FR_CLOCK_THROTTLE_THERMAL
+      - DCGM_FR_CLOCKS_EVENT_THERMAL
 ```
 
 ### suppressedErrorCodes
-List of DCGM error code names (as reported by DCGM, e.g. `DCGM_FR_CLOCK_THROTTLE_POWER`) to suppress. Empty by default (no suppression). Suppression is scoped to the listed error codes only — other incidents on the same health watch (e.g. other `GpuPowerWatch` error codes) are still reported.
+List of DCGM error code names (as reported by DCGM, e.g. `DCGM_FR_CLOCK_THROTTLE_POWER`) to suppress. Suppression is scoped to the listed error codes only — other incidents on the same health watch (e.g. other `GpuPowerWatch` error codes) are still reported.
 
-### Example: Suppress power-cap throttle flaps
+The default is throttling: of the errors these two watches raise, it is the only one that tracks load rather than a fault, and it maps to `NONE`, so it only ever produced node events.
+
+| Watch | Suppressed | Still reported |
+| --- | --- | --- |
+| `GpuPowerWatch` | `DCGM_FR_CLOCKS_EVENT_POWER` (12) | `DCGM_FR_POWER_UNREADABLE`, `DCGM_FR_XID_ERROR` (XIDs 54, 56, 58, 78) |
+| `GpuThermalWatch` | `DCGM_FR_CLOCKS_EVENT_THERMAL` (10) | `DCGM_FR_THERMAL_VIOLATIONS`, `DCGM_FR_XID_ERROR` (XID 61) |
+
+Four names, two codes: `DCGM_FR_CLOCK_THROTTLE_*` is a deprecated alias of `DCGM_FR_CLOCKS_EVENT_*` with the same number, and either name can be reported, so both are listed.
+
+Genuine power and cooling faults are unaffected, arriving as `GPU_HW_POWER_BRAKE_VIOLATION` via [`GpuPowerBrakeWatch`](#hardware-power-brake-detection) and `GPU_TEMP_HW_SLOWDOWN_VIOLATION` via `GpuThermalMarginWatch`, both `CONTACT_SUPPORT`. `DCGM_FR_THROTTLING_VIOLATION` is not suppressed either: it comes only from `dcgmi diag`, not these watches.
+
+### Example: Report throttling again
+
+Use this to investigate throttling on a specific cluster; it restores the `GpuPowerWatch` and `GpuThermalWatch` events.
 
 ```yaml
 gpu-health-monitor:
   dcgmHealthCheck:
-    suppressedErrorCodes:
-      - DCGM_FR_CLOCK_THROTTLE_POWER
+    suppressedErrorCodes: []
 ```
 
 ## Hardware Power Brake Detection
 
 `GpuPowerBrakeWatch` fails a GPU whose clocks-event-reasons mask has the hardware power brake bit (`0x80`) set, meaning the power delivery path is forcing clocks down. It reads `DCGM_FI_DEV_CLOCKS_EVENT_REASONS` directly, in the same way `GpuThermalMarginWatch` reads field 153, because DCGM's POWER health watch does not report the brake.
 
-That distinction matters. The POWER watch's dominant code, `DCGM_FR_CLOCK_THROTTLE_POWER`, tracks power-capped clock throttling, maps to `NONE`, and is the worked example under [DCGM Health Check Incident Suppression](#dcgm-health-check-incident-suppression) above. On a 288-node GB200 cluster it was observed active on 69% of nodes while exactly 50% had a brake asserted, correlating with neither the brake bit nor the SW power cap bit (`0x04`). A sustained brake is a power delivery fault, so it needs its own signal rather than sharing a non-actionable one.
+That distinction matters. The POWER watch's dominant code, `DCGM_FR_CLOCK_THROTTLE_POWER`, tracks power-capped clock throttling, maps to `NONE`, and is suppressed by default under [DCGM Health Check Incident Suppression](#dcgm-health-check-incident-suppression) above. On a 288-node GB200 cluster it was observed active on 69% of nodes while exactly 50% had a brake asserted, correlating with neither the brake bit nor the SW power cap bit (`0x04`). A sustained brake is a power delivery fault, so it needs its own signal rather than sharing a non-actionable one.
 
 `GPU_HW_POWER_BRAKE_VIOLATION` maps to `CONTACT_SUPPORT` in `dcgmerrorsmapping.csv`, matching the thermal precedent: an asserted brake is a facility or power delivery problem, not something a node reboot resolves.
 
@@ -188,6 +204,60 @@ Dry run. When true, this check's events are emitted with `processingStrategy=STO
 ### gpuPowerBrakeMinConsecutivePolls
 
 Consecutive polls with the bit set before the GPU is failed. A brake asserted for a single poll can be a load transient; a sustained assertion is the actionable case. A clear resets the counter, so a flapping brake never accumulates to a failure. `1` fails on first observation. A GPU with no usable sample is skipped and keeps its counter, so a gap in DCGM data neither raises nor clears a finding. This includes DCGM's int64 "no data" sentinels, whose low byte has the brake bit set and which would otherwise read as an assertion.
+
+## DCGM Startup Gate
+
+For remote DCGM modes, the GPU health monitor can wait for a functional DCGM API before its main container starts:
+
+```yaml
+gpu-health-monitor:
+  dcgmConnectivity:
+    startupGate:
+      enabled: true
+      retryIntervalSeconds: 5
+      connectTimeoutSeconds: 10
+```
+
+When enabled, the chart adds a `wait-for-dcgm` init container. Each attempt creates a DCGM handle and performs supported-GPU discovery; opening the TCP port alone is not considered ready. Failed attempts are retried indefinitely at `retryIntervalSeconds`. Each attempt runs in a child process bounded by `connectTimeoutSeconds`, so a blocked native DCGM call can be terminated without restarting the init container. The init container does not publish health events, so an unavailable DCGM endpoint during installation or restart cannot create node conditions, quarantine nodes, or trigger remediation before the monitor has established its first connection.
+
+The default 10-second hard timeout leaves time for DCGM's own 5-second connection timeout to return and log a specific connection error first; the parent timeout remains a backstop for a genuinely stuck native call.
+
+The gate is disabled by default for backward compatibility and supports `operator-service` and `external-hostengine`. It cannot be enabled in `embedded-mode`, because the main GPU health monitor container starts the embedded hostengine; Helm rejects that combination rather than creating a pod that can never leave init.
+
+While DCGM remains unavailable, the pod stays in `Init:0/1`; ordinary readiness failures do not restart the init container. This state should be monitored with the deployment's existing pod-state alerts (for example, kube-state-metrics). An `Init:CrashLoopBackOff` instead indicates an image, configuration, or implementation failure. After startup, runtime DCGM failures are still handled by the GPU health monitor's connectivity checks; the startup gate does not replace runtime failure handling or debouncing.
+
+For example, alert when the startup gate has been waiting for more than five minutes:
+
+```yaml
+- alert: NVSentinelGPUHealthMonitorWaitingForDCGM
+  expr: |
+    kube_pod_init_container_status_running{
+      container="wait-for-dcgm"
+    } == 1
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "gpu-health-monitor is waiting for DCGM"
+    description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has been waiting for DCGM for more than 5 minutes."
+```
+
+Alert separately when the init program itself is repeatedly failing:
+
+```yaml
+- alert: NVSentinelGPUHealthMonitorDCGMInitFailed
+  expr: |
+    kube_pod_init_container_status_waiting_reason{
+      container="wait-for-dcgm",
+      reason="CrashLoopBackOff"
+    } == 1
+  for: 2m
+  labels:
+    severity: critical
+  annotations:
+    summary: "gpu-health-monitor DCGM startup gate is failing"
+    description: "The wait-for-dcgm init container in {{ $labels.namespace }}/{{ $labels.pod }} is repeatedly failing."
+```
 
 ## Unresponsive DCGM Detection
 
@@ -230,6 +300,25 @@ Enable this only when the configured DCGM endpoint is node-local and repeated un
 Defaults to `0`, which disables escalation and keeps every connectivity failure at `CONTACT_SUPPORT`. The counter resets once connectivity is restored, and the escalated event is published once rather than on every subsequent cycle.
 
 > **Note**: Both settings recommend `RESTART_BM`, which fault-remediation maps to a `RebootNode` CR. A reboot is the practical recovery when an on-node DCGM probe will not return — whether the underlying cause is a wedged driver or DCGM userspace holding driver locks. Nodes are drained before the reboot by node-drainer. Note that `probeStoreOnly` gates this for `GpuDcgmUnresponsive`, while `connectivityFailureEscalationThreshold` is opt-in by being `0` by default.
+
+### minConsecutivePolls
+
+Number of consecutive polls a health check incident must persist, per error code and GPU, before it is published. Codes absent from the map publish on their first observation, which is the default behaviour.
+
+```yaml
+gpu-health-monitor:
+  dcgmHealthCheck:
+    minConsecutivePolls:
+      DCGM_FR_NVLINK_DOWN: 2
+```
+
+Use this for a code whose single-poll occurrences are transients rather than faults. `DCGM_FR_NVLINK_DOWN` is the motivating case: on SXM systems the NVLink links are briefly down after every node boot while they train, so a routine maintenance reboot otherwise produces a FATAL event carrying `RESTART_VM`. `_is_nvlink_down_false_positive` cannot cover this, because it is metadata-based and deliberately fails closed on SXM where an untrained link is indistinguishable from a dead one. A time-based threshold separates them: an untrained link trains, a dead one does not.
+
+The streak is keyed on `(error code, GPU)` and resets whenever the code is absent for that GPU in a poll, so a code that appears on alternate polls for a GPU never accumulates and is never published. Note the key is the code and GPU, not the individual link: a GPU reporting one down link on one poll and a different one on the next keeps its streak, because that GPU has had a link down continuously. A streak also survives a failed poll, since a DCGM timeout observes nothing and must not clear it.
+
+**Tradeoff**: a threshold of `N` delays a genuinely sustained fault by up to `N-1` poll intervals. At the default `pollIntervalSeconds: 15`, a threshold of `2` costs at most 15 seconds of detection latency. Prefer the smallest threshold that suppresses the transient; permanently suppressing the code via `suppressedErrorCodes` would also mask genuine failures, which this avoids.
+
+Withheld incidents are counted by `dcgm_health_check_debounced_incidents{error_code, gpu_id}`, so suppression stays observable per GPU. It increments once per poll per `(error code, GPU)`, not once per incident record.
 
 ## Additional Volumes
 

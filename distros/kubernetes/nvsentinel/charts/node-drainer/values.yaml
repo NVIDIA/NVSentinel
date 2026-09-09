@@ -83,6 +83,11 @@ userNamespaces:
 # action, pods which weren't drained would be restarted as part of the reboot.
 partialDrainEnabled: false
 
+# Registers node_drainer_partial_drains_total{node, entity_type, entity_value}. Off by default:
+# entity_value is a GPU UUID, so it adds a series per GPU. The drain_scope label on
+# node_drainer_events_processed_total already separates partial from full without it.
+partialDrainEntityMetricEnabled: false
+
 # Custom drain configuration for extensible drain handling
 # When enabled, node-drainer creates a customer-defined CR from a template instead of evicting pods directly
 # The customer controller is responsible for draining pods and updating the CR status

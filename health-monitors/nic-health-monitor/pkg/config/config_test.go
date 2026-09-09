@@ -66,6 +66,24 @@ func TestValidateInclusionRegexList_AllowsUnsetAndUsablePatterns(t *testing.T) {
 	}
 }
 
+func TestValidateIssmMode_AcceptsSupportedValues(t *testing.T) {
+	for _, mode := range []string{IssmModeNever, IssmModeAlways} {
+		t.Run(mode, func(t *testing.T) {
+			assert.NoError(t, validateIssmMode(mode))
+		})
+	}
+}
+
+func TestValidateIssmMode_RejectsUnknownValue(t *testing.T) {
+	for _, mode := range []string{"", "auto", "on", "off", "Always", "enabled"} {
+		t.Run(mode, func(t *testing.T) {
+			err := validateIssmMode(mode)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "must be one of")
+		})
+	}
+}
+
 func TestValidateCounterDetection_DisabledSkipsValidation(t *testing.T) {
 	cd := CounterDetectionConfig{
 		Enabled:  false,

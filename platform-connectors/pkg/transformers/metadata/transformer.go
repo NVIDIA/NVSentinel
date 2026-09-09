@@ -29,9 +29,11 @@ import (
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
+// NodeMetadata holds cached node information fetched from the Kubernetes API.
 type NodeMetadata struct {
-	ProviderID string
-	Labels     map[string]string
+	ProviderID  string
+	Labels      map[string]string
+	SkipMatched bool
 }
 
 type Augmentor struct {
@@ -55,7 +57,8 @@ func New(ctx context.Context, config *Config, clientset kubernetes.Interface) (*
 	slog.InfoContext(ctx, "Metadata augmentor initialized",
 		"cacheSize", config.CacheSize,
 		"cacheTTL", config.CacheTTL,
-		"allowedLabels", config.AllowedLabels)
+		"allowedLabels", config.AllowedLabels,
+		"skipNodeLabel", config.SkipNodeLabel)
 
 	return &Augmentor{
 		config:    config,
@@ -74,13 +77,23 @@ func (a *Augmentor) Transform(ctx context.Context, event *pb.HealthEvent) error 
 
 	metadata, err := a.getOrFetchMetadata(ctx, event.NodeName)
 	if err != nil {
+		// Fail-open: when the Kubernetes lookup fails the event proceeds with
+		// its original ProcessingStrategy. This is intentional -- a transient
+		// API error should not silently drop a legitimate health event. The
+		// fail-open window lasts for the duration of the lookup failure, not
+		// just the cache TTL. A Prometheus counter tracks these occurrences.
+		metadataLookupFailureCounter.Inc()
 		tracing.RecordError(span, err)
 		span.SetAttributes(
 			attribute.String("platform_connector.transformer.metadata.error.type", "failed_to_get_metadata"),
 			attribute.String("platform_connector.transformer.metadata.error.message", err.Error()),
 		)
 
-		return fmt.Errorf("failed to get metadata for node %s: %w", event.NodeName, err)
+		slog.WarnContext(ctx, "Metadata lookup failed, proceeding ungated (fail-open)",
+			"node", event.NodeName,
+			"error", err)
+
+		return nil
 	}
 
 	if event.Metadata == nil {
@@ -98,6 +111,18 @@ func (a *Augmentor) Transform(ctx context.Context, event *pb.HealthEvent) error 
 			event.Metadata[labelKey] = labelValue
 			labelsAdded++
 		}
+	}
+
+	if metadata.SkipMatched {
+		event.ProcessingStrategy = pb.ProcessingStrategy_STORE_ONLY
+
+		skipLabelGatedCounter.Inc()
+		span.SetAttributes(
+			attribute.Bool("metadata.skip_label_matched", true),
+		)
+		slog.InfoContext(ctx, "Event gated to STORE_ONLY by managed-label check",
+			"node", event.NodeName,
+			"skipNodeLabel", a.config.SkipNodeLabel)
 	}
 
 	span.SetAttributes(
@@ -152,6 +177,12 @@ func (a *Augmentor) fetchNodeMetadata(ctx context.Context, nodeName string) (*No
 	for _, labelKey := range a.config.AllowedLabels {
 		if labelValue, exists := node.Labels[labelKey]; exists {
 			metadata.Labels[labelKey] = labelValue
+		}
+	}
+
+	if a.config.skipLabelKey != "" {
+		if val, ok := node.Labels[a.config.skipLabelKey]; ok && val == a.config.skipLabelValue {
+			metadata.SkipMatched = true
 		}
 	}
 

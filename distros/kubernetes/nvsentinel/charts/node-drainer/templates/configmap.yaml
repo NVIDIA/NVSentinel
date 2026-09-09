@@ -27,6 +27,7 @@ data:
     notReadyTimeoutMinutes = {{ .Values.notReadyTimeoutMinutes }}
     drainGPUPods = {{ .Values.drainGPUPods }}
     partialDrainEnabled = {{ .Values.partialDrainEnabled }}
+    partialDrainEntityMetricEnabled = {{ .Values.partialDrainEntityMetricEnabled | default false }}
     
     {{- range .Values.userNamespaces }}
     [[userNamespaces]]

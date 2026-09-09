@@ -69,6 +69,28 @@ type Event interface {
 	UnmarshalDocument(v any) error
 }
 
+type updatedFieldsEvent interface {
+	UpdatedFields() map[string]any
+}
+
+// EventUpdatesOnly reports whether an update changed exactly the named field.
+// Insert events and providers without update metadata return false.
+func EventUpdatesOnly(event Event, field string) bool {
+	updated, ok := event.(updatedFieldsEvent)
+	if !ok {
+		return false
+	}
+
+	fields := updated.UpdatedFields()
+	if len(fields) != 1 {
+		return false
+	}
+
+	_, exists := fields[field]
+
+	return exists
+}
+
 // ChangeStreamWatcher abstracts change stream operations
 type ChangeStreamWatcher interface {
 	Start(ctx context.Context)

@@ -295,29 +295,35 @@ func TestHandleEvent(t *testing.T) {
 			databaseClient: mockClient,
 		}
 
-		// Create the expected health event that the publisher will create (transformed)
-		expectedTransformedEvent := &protos.HealthEvent{
-			Version:            healthEvent_13.HealthEvent.Version,
-			Agent:              "health-events-analyzer", // Publisher sets this
-			CheckName:          "rule2",                  // Publisher sets this to ruleName
-			ComponentClass:     healthEvent_13.HealthEvent.ComponentClass,
-			Message:            "XID error occurred",                     // From rule2.Message
-			RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT, // From rule2
-			ErrorCode:          healthEvent_13.HealthEvent.ErrorCode,
-			IsHealthy:          false, // Publisher sets this
-			IsFatal:            true,  // Publisher sets this
-			EntitiesImpacted:   healthEvent_13.HealthEvent.EntitiesImpacted,
-			Metadata:           healthEvent_13.HealthEvent.Metadata,
-			GeneratedTimestamp: healthEvent_13.HealthEvent.GeneratedTimestamp,
-			NodeName:           healthEvent_13.HealthEvent.NodeName,
-			ProcessingStrategy: protos.ProcessingStrategy_EXECUTE_REMEDIATION, // Publisher sets this from config
-		}
-		expectedHealthEvents := &protos.HealthEvents{
-			Version: 1,
-			Events:  []*protos.HealthEvent{expectedTransformedEvent},
+		// Matched on fields rather than the whole message: the publisher stamps its own
+		// GeneratedTimestamp and adds the source value to metadata, so neither is fixed.
+		matchesTransformedEvent := func(got *protos.HealthEvents) bool {
+			if got.GetVersion() != 1 || len(got.GetEvents()) != 1 {
+				return false
+			}
+
+			src := healthEvent_13.HealthEvent
+			e := got.GetEvents()[0]
+
+			return e.GetVersion() == src.GetVersion() &&
+				e.GetAgent() == "health-events-analyzer" &&
+				e.GetCheckName() == "rule2" &&
+				e.GetComponentClass() == src.GetComponentClass() &&
+				e.GetMessage() == "XID error occurred" &&
+				e.GetRecommendedAction() == protos.RecommendedAction_CONTACT_SUPPORT &&
+				e.GetIsFatal() && !e.GetIsHealthy() &&
+				e.GetNodeName() == src.GetNodeName() &&
+				e.GetProcessingStrategy() == protos.ProcessingStrategy_EXECUTE_REMEDIATION &&
+				// Stamped at publish time, and the source value kept alongside the
+				// metadata the source event already carried.
+				!e.GetGeneratedTimestamp().AsTime().Before(src.GetGeneratedTimestamp().AsTime()) &&
+				e.GetMetadata()["SerialNumber"] == src.GetMetadata()["SerialNumber"] &&
+				e.GetMetadata()["source_generated_timestamp"] ==
+					src.GetGeneratedTimestamp().AsTime().UTC().Format(time.RFC3339Nano)
 		}
 
-		mockPublisher.On("HealthEventOccurredV1", mock.Anything, expectedHealthEvents).Return(&emptypb.Empty{}, nil)
+		mockPublisher.On("HealthEventOccurredV1", mock.Anything,
+			mock.MatchedBy(matchesTransformedEvent)).Return(&emptypb.Empty{}, nil)
 
 		// Rule2 requires 3 occurrences, so return ruleMatched: true
 		cursor, _ := createMockCursor([]map[string]any{

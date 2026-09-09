@@ -86,7 +86,7 @@ func (s *janitorProviderServer) SendRebootSignal(
 		return nil, status.Errorf(codes.Internal, "failed to get node: %v", err)
 	}
 
-	requestID, err := s.cspClient.SendRebootSignal(ctx, *node)
+	requestID, err := s.cspClient.SendRebootSignal(ctx, *node, req.CrName)
 	if err != nil {
 		span.SetAttributes(
 			attribute.String("janitor_provider.error.type", "csp_api_error"),

@@ -15,13 +15,15 @@
 package evaluator
 
 import (
+	"context"
+
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 )
 
 // Interfaces and base structs
 type RuleSetEvaluatorIface interface {
-	Evaluate(healthEvent *protos.HealthEvent) (common.RuleEvaluationResult, error)
+	Evaluate(context.Context, *protos.HealthEvent) (common.RuleEvaluationResult, error)
 	GetName() string
 	GetVersion() string
 	GetPriority() int

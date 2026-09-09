@@ -17,7 +17,10 @@ package metadata
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
+
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
 )
@@ -27,10 +30,18 @@ const (
 	DefaultCacheTTL  = 1 * time.Hour
 )
 
+// Config holds MetadataAugmentor settings including the optional managed-label
+// gate that marks events for opted-out nodes as STORE_ONLY.
 type Config struct {
 	CacheSize     int           `toml:"cacheSize"`
 	CacheTTL      time.Duration `toml:"cacheTTL"`
 	AllowedLabels []string      `toml:"allowedLabels"`
+	// SkipNodeLabel is a "key=value" string. When the target node carries this
+	// label, the event is downgraded to STORE_ONLY. Leave empty to disable.
+	SkipNodeLabel string `toml:"skipNodeLabel"`
+
+	skipLabelKey   string
+	skipLabelValue string
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -61,6 +72,26 @@ func (c *Config) Validate() error {
 
 	if c.CacheTTL <= 0 {
 		return fmt.Errorf("cacheTTL must be positive")
+	}
+
+	if c.SkipNodeLabel != "" {
+		parts := strings.SplitN(c.SkipNodeLabel, "=", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return fmt.Errorf("skipNodeLabel must be in key=value format, got %q", c.SkipNodeLabel)
+		}
+
+		if errs := validation.IsQualifiedName(parts[0]); len(errs) > 0 {
+			return fmt.Errorf("skipNodeLabel key %q is not a valid Kubernetes label name: %s",
+				parts[0], strings.Join(errs, "; "))
+		}
+
+		if errs := validation.IsValidLabelValue(parts[1]); len(errs) > 0 {
+			return fmt.Errorf("skipNodeLabel value %q is not a valid Kubernetes label value: %s",
+				parts[1], strings.Join(errs, "; "))
+		}
+
+		c.skipLabelKey = parts[0]
+		c.skipLabelValue = parts[1]
 	}
 
 	return nil

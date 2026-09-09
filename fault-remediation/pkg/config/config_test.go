@@ -19,6 +19,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
 
 func TestTomlConfig_Validate(t *testing.T) {
@@ -47,11 +49,36 @@ func TestTomlConfig_Validate(t *testing.T) {
 		{
 			name: "empty template mountPath should be rejected",
 			config: TomlConfig{
-				Template:          Template{MountPath: ""},
+				Template:           Template{MountPath: ""},
 				RemediationActions: map[string]MaintenanceResource{},
 			},
 			expectError: true,
 			errorSubstr: "template mountPath must be non-empty",
+		},
+		{
+			name: "negative maxRemediationAttempts should be rejected",
+			config: TomlConfig{
+				Template:               Template{MountPath: tempDir},
+				MaxRemediationAttempts: -1,
+				RemediationActions:     map[string]MaintenanceResource{},
+			},
+			expectError: true,
+			errorSubstr: "maxRemediationAttempts must be non-negative",
+		},
+		{
+			name: "zero maxRemediationAttempts should be accepted (cap disabled)",
+			config: TomlConfig{
+				Template:               Template{MountPath: tempDir},
+				MaxRemediationAttempts: 0,
+				RemediationActions: map[string]MaintenanceResource{
+					"ACTION_A": {
+						TemplateFileName: "template-a.yaml",
+						Scope:            "Cluster",
+						EquivalenceGroup: "restart",
+					},
+				},
+			},
+			expectError: false,
 		},
 		{
 			name: "valid config with matching templates",
@@ -316,6 +343,52 @@ func TestTomlConfig_Validate(t *testing.T) {
 				if err != nil {
 					t.Errorf("Expected no validation error but got: %v", err)
 				}
+			}
+		})
+	}
+}
+
+// TestMaxRemediationAttemptsDecodesFromTOML guards the key's position in config.toml.
+// maxRemediationAttempts is a top-level key, so it must appear before the first [section]
+// header. Placed after one, TOML reads it as a sub-key of that section and the decoder
+// silently leaves the field at 0, which looks configured but disables the cap.
+func TestMaxRemediationAttemptsDecodesFromTOML(t *testing.T) {
+	tests := []struct {
+		name string
+		toml string
+		want int
+	}{
+		{
+			name: "top-level key before any section is decoded",
+			toml: "maxRemediationAttempts = 3\n\n[template]\nmountPath = \"/etc/config\"\n\n[updateRetry]\nmaxRetries = 5\n",
+			want: 3,
+		},
+		{
+			name: "key placed after a section header is swallowed by that section",
+			toml: "[template]\nmountPath = \"/etc/config\"\n\n[updateRetry]\nmaxRetries = 5\nmaxRemediationAttempts = 3\n",
+			want: 0,
+		},
+		{
+			name: "absent key leaves the cap disabled",
+			toml: "[template]\nmountPath = \"/etc/config\"\n",
+			want: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(tt.toml), 0o600); err != nil {
+				t.Fatalf("failed to write config: %v", err)
+			}
+
+			var cfg TomlConfig
+			if _, err := toml.DecodeFile(path, &cfg); err != nil {
+				t.Fatalf("failed to decode config: %v", err)
+			}
+
+			if cfg.MaxRemediationAttempts != tt.want {
+				t.Errorf("MaxRemediationAttempts = %d, want %d", cfg.MaxRemediationAttempts, tt.want)
 			}
 		})
 	}

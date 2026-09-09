@@ -19,6 +19,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 func TestBuilder_Eq(t *testing.T) {
@@ -59,6 +60,16 @@ func TestBuilder_Eq(t *testing.T) {
 			},
 			expectedSQL:  "id = $1",
 			expectedArgs: []any{"123"},
+		},
+		{
+			name:  "numeric JSON field equality",
+			field: "healthevent.processingstrategy",
+			value: int32(1),
+			expectedMongo: map[string]any{
+				"healthevent.processingstrategy": int32(1),
+			},
+			expectedSQL:  "document->'healthevent'->>'processingstrategy' = $1",
+			expectedArgs: []any{"1"},
 		},
 	}
 
@@ -112,6 +123,15 @@ func TestBuilder_In(t *testing.T) {
 	sql, args := builder.ToSQL()
 	assert.Equal(t, "document->>'myField' IN ($1, $2)", sql)
 	assert.Equal(t, []any{"active", "pending"}, args)
+}
+
+func TestBuilder_In_NativeMongoIDPreserved(t *testing.T) {
+	objectID := bson.NewObjectID()
+	builder := New().Build(In("_id", []any{objectID}))
+
+	assert.Equal(t, map[string]any{
+		"_id": map[string]any{"$in": []any{objectID}},
+	}, builder.ToMongo())
 }
 
 func TestBuilder_Gt(t *testing.T) {
@@ -387,6 +407,11 @@ func TestMongoFieldToJSONB(t *testing.T) {
 			name:         "nested three levels",
 			mongoField:   "healtheventstatus.nodequarantined",
 			expectedPath: "COALESCE(document->'healtheventstatus'->>'nodequarantined', document->'healtheventstatus'->>'nodeQuarantined')",
+		},
+		{
+			name:         "protobuf field casing",
+			mongoField:   "healthevent.componentclass",
+			expectedPath: "COALESCE(document->'healthevent'->>'componentclass', document->'healthevent'->>'componentClass')",
 		},
 		{
 			name:         "deeply nested",
