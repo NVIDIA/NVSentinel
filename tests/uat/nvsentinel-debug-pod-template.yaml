@@ -21,9 +21,7 @@ metadata:
     app.kubernetes.io/name: uat-node-debug
 spec:
   nodeName: NODE_NAME
-  # Substituted from UAT_DEBUG_RUNTIME_CLASS, which may be empty on clusters
-  # with no usable RuntimeClass. Tests that only write to /dev/kmsg get that
-  # from privileged and need no toolkit.
+  # UAT_DEBUG_RUNTIME_CLASS; empty leaves this unset.
   runtimeClassName: RUNTIME_CLASS_NAME
   restartPolicy: Never
   tolerations:
