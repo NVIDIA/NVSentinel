@@ -69,3 +69,4 @@ Each record states one decision: the context that forced it, what was decided, w
 | 053 | [Monitoring — Integrate Default NPD Node Conditions](053-npd-checks-integration.md) |
 | 054 | [`Observability` — change stream consumer lag metrics](054-changestream-lag-metrics.md) |
 | 055 | [Health Monitors — NVCRE Certification Monitor](055-nvcre-certification-monitor.md) |
+| 056 | [Janitor — GPU Reset Provider Delegation](056-gpu-reset-provider-delegation.md) |
