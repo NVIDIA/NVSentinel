@@ -21,8 +21,7 @@ metadata:
     app.kubernetes.io/name: uat-node-debug
 spec:
   nodeName: NODE_NAME
-  # UAT_DEBUG_RUNTIME_CLASS; empty leaves this unset.
-  runtimeClassName: RUNTIME_CLASS_NAME
+  runtimeClassName: nvidia
   restartPolicy: Never
   tolerations:
     - operator: Exists

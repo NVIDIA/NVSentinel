@@ -41,13 +41,15 @@ discover_dry_run() {
     log "NVSentinel dry-run mode: $NVSENTINEL_DRY_RUN"
 }
 
-# Dry-run never remediates, and FQ will not remove the state label even if
-# the node recovers. Strip leftover NVSentinel node state so the next test
-# cannot pass on it. Injected faults themselves are not cleared.
-reset_dry_run_node_state() {
-    local node=$1
+# Dry-run does not reboot. After Test 1 we restart the node-local DCGM
+# hostengine (clears the injected XID) and strip FQ/FR node metadata (FQ will
+# not remove the state label in dry-run). Same strip on EXIT.
+UAT_CLEANUP_NODE=""
 
-    if [[ "${NVSENTINEL_DRY_RUN:-false}" != "true" ]]; then
+reset_dry_run_node_state() {
+    local node=${1:-}
+
+    if [[ "${NVSENTINEL_DRY_RUN:-false}" != "true" || -z "$node" ]]; then
         return 0
     fi
 
@@ -60,7 +62,7 @@ reset_dry_run_node_state() {
 
     kubectl patch node "$node" --type=merge -p "$patch" >/dev/null
 
-    # Drop NVSentinel conditions so a later run cannot match last run's ErrorCode.
+    # Drop NVSentinel conditions so a rerun cannot match leftover Gpu*Watch.
     local conditions
     conditions=$(kubectl get node "$node" -o json \
         | jq -c '[.status.conditions[] | select((.reason // "") | test("IsHealthy$|IsNotHealthy$") | not)]')
@@ -68,7 +70,15 @@ reset_dry_run_node_state() {
     kubectl patch node "$node" --subresource=status --type=merge \
         -p "{\"status\":{\"conditions\":$conditions}}" >/dev/null
 
-    log "Cleared any NVSentinel state left on node $node by an earlier test"
+    log "Cleared NVSentinel annotations and labels on $node"
+}
+
+cleanup_uat() {
+    if [[ -n "${NODE_POD:-}" ]]; then
+        delete_node_debug_pod
+    fi
+    recover_injected_dcgm "${UAT_CLEANUP_NODE:-}"
+    reset_dry_run_node_state "${UAT_CLEANUP_NODE:-}"
 }
 
 get_boot_id() {
@@ -174,7 +184,7 @@ verify_gpu_driver_pod_exists() {
 # are always injected from the gpu-health-monitor pod, against the same
 # engine address the monitor itself watches (its --dcgm-addr argument): the
 # pod-local embedded engine, the GPU Operator DCGM service (node-local via
-# internalTrafficPolicy: Local), or an external host engine. Set
+# internalTrafficPolicy: Local), or an external hostengine. Set
 # UAT_DCGM_HOST to override the dcgmi --host value.
 # Sets: GPU_HM_NS, GPU_HM_POD, DCGM_HOST
 discover_dcgm_target() {
@@ -195,6 +205,41 @@ discover_dcgm_target() {
     log "Using monitor pod for DCGM injection: $GPU_HM_NS/$GPU_HM_POD (dcgmi host: $DCGM_HOST)"
 }
 
+# Dry-run cannot reboot, so restart the process that owns the injected XID:
+# the monitor itself when --dcgm-addr is loopback (embedded-mode), otherwise
+# the node-local nvidia-dcgm pod (not the whole DaemonSet).
+recover_injected_dcgm() {
+    local node=${1:-}
+
+    if [[ "${NVSENTINEL_DRY_RUN:-false}" != "true" || -z "$node" || "${UAT_DCGM_RECOVERED:-}" == "true" ]]; then
+        return 0
+    fi
+
+    local ns name selector
+    if [[ "${DCGM_HOST:-}" == localhost* || "${DCGM_HOST:-}" == 127.0.0.1* ]]; then
+        ns=$GPU_HM_NS
+        name=$GPU_HM_POD
+        selector="app.kubernetes.io/name=gpu-health-monitor"
+    else
+        read -r ns name < <(kubectl get pods -A -l app=nvidia-dcgm -o json \
+            | jq -r --arg node "$node" '
+                .items[] | select(.spec.nodeName == $node)
+                | "\(.metadata.namespace) \(.metadata.name)"' | head -1)
+        selector="app=nvidia-dcgm"
+    fi
+
+    if [[ -z "${ns:-}" || -z "${name:-}" ]]; then
+        log "No DCGM hostengine pod on node $node to restart; injected DCGM state is unchanged"
+        return 0
+    fi
+
+    log "Restarting $ns/$name on node $node to drop the injected DCGM error"
+    kubectl delete pod -n "$ns" "$name" --wait=true >/dev/null
+    kubectl wait -n "$ns" --for=condition=Ready pod -l "$selector" \
+        --field-selector="spec.nodeName=$node" --timeout=180s >/dev/null
+    UAT_DCGM_RECOVERED=true
+}
+
 # Privileged helper pod for node-level test operations (/dev/kmsg writes,
 # nvidia-smi queries) on the given node, from nvsentinel-debug-pod-template.yaml.
 # Sets: NODE_NS, NODE_POD
@@ -203,12 +248,9 @@ create_node_debug_pod() {
 
     NODE_NS=nvsentinel
 
-    # Empty UAT_DEBUG_RUNTIME_CLASS renders runtimeClassName: (unset).
     NODE_POD=$(sed -e "s|NODE_NAME|$node|" \
-        -e "s|RUNTIME_CLASS_NAME|${UAT_DEBUG_RUNTIME_CLASS-nvidia}|" \
         "${SCRIPT_DIR}/nvsentinel-debug-pod-template.yaml" \
         | kubectl create -f - -o jsonpath='{.metadata.name}')
-    trap 'delete_node_debug_pod' EXIT
 
     if ! kubectl wait --for=condition=Ready pod -n "$NODE_NS" "$NODE_POD" --timeout=120s >/dev/null; then
         error "Debug pod $NODE_NS/$NODE_POD did not become Ready on node $node"
@@ -217,9 +259,12 @@ create_node_debug_pod() {
 }
 
 delete_node_debug_pod() {
+    if [[ -z "${NODE_POD:-}" ]]; then
+        return 0
+    fi
     kubectl delete pod -n "${NODE_NS:-nvsentinel}" "$NODE_POD" --ignore-not-found --wait=false >/dev/null
-    trap - EXIT
     log "Node debug pod deleted"
+    NODE_POD=""
 }
 
 
@@ -346,7 +391,7 @@ wait_for_node_unquarantine() {
     local timeout=${UAT_UNQUARANTINE_TIMEOUT:-300}
     local elapsed=0
 
-    # Never cordoned in dry-run; leftover annotations are cleared by reset.
+    # Never cordoned in dry-run.
     if [[ "${NVSENTINEL_DRY_RUN:-false}" == "true" ]]; then
         log "fault-quarantine is in dry-run and never cordoned node $node, nothing to wait for"
         return 0
@@ -519,7 +564,7 @@ test_gpu_monitoring_dcgm() {
     fi
 
     log "Selected GPU node: $gpu_node"
-
+    UAT_CLEANUP_NODE=$gpu_node
     reset_dry_run_node_state "$gpu_node"
 
     verify_gpu_driver_pod_exists "$gpu_node"
@@ -574,14 +619,28 @@ test_gpu_monitoring_dcgm() {
 
     log "Waiting for node to reboot and recover..."
     wait_for_boot_id_change "$gpu_node" "$original_boot_id"
+    recover_injected_dcgm "$gpu_node"
+    reset_dry_run_node_state "$gpu_node"
 
     log "Test 1 PASSED ✓"
+}
+
+# Syslog faults only go healthy on a node boot-ID change. Dry-run never
+# reboots the node (DCGM XIDs are cleared by restarting nv-hostengine instead).
+skip_syslog_tests_in_dry_run() {
+    if [[ "${NVSENTINEL_DRY_RUN:-false}" == "true" ]]; then
+        log "Skipping syslog tests in dry-run (recovery needs a node reboot, not a pod restart)"
+        return 0
+    fi
+    return 1
 }
 
 test_xid_monitoring_syslog() {
     log "======================================================"
     log "Test 2: XID monitoring via syslog triggers RESTART_VM"
     log "======================================================"
+
+    skip_syslog_tests_in_dry_run && return 0
 
     local gpu_node
     gpu_node=$(get_gpu_node_with_healthy_syslog_monitor)
@@ -591,8 +650,6 @@ test_xid_monitoring_syslog() {
     fi
 
     log "Selected GPU node: $gpu_node (has healthy syslog-health-monitor)"
-
-    reset_dry_run_node_state "$gpu_node"
 
     local original_boot_id
     original_boot_id=$(get_boot_id "$gpu_node")
@@ -620,18 +677,13 @@ test_xid_monitoring_syslog_gpu_reset() {
     log "Test 3: XID monitoring via syslog triggers COMPONENT_RESET"
     log "=========================================================="
 
+    skip_syslog_tests_in_dry_run && return 0
+
     local drainer_configmap
     drainer_configmap=$(kubectl get configmaps -n nvsentinel node-drainer -o jsonpath="{.data.config\.toml}")
 
     if ! echo "$drainer_configmap" | grep -q "partialDrainEnabled = true"; then
         log "GPU reset is not enabled, skipping Test 3"
-        return 0
-    fi
-
-    # nvidia-smi needs a RuntimeClass; missing nvidia-smi after that is a fail.
-    local runtime_class="${UAT_DEBUG_RUNTIME_CLASS:-nvidia}"
-    if ! kubectl get runtimeclass "$runtime_class" >/dev/null 2>&1; then
-        log "RuntimeClass $runtime_class does not exist, so nvidia-smi is unavailable, skipping Test 3"
         return 0
     fi
 
@@ -645,8 +697,6 @@ test_xid_monitoring_syslog_gpu_reset() {
     fi
 
     log "Selected GPU node: $gpu_node (has healthy syslog-health-monitor)"
-
-    reset_dry_run_node_state "$gpu_node"
 
     local initial_boot_id
     initial_boot_id=$(get_boot_id "$gpu_node")
@@ -699,6 +749,8 @@ test_sxid_monitoring_syslog() {
     log "Test 4: SXID monitoring (NVSwitch errors)"
     log "========================================="
 
+    skip_syslog_tests_in_dry_run && return 0
+
     local gpu_node
     gpu_node=$(get_gpu_node_with_healthy_syslog_monitor)
 
@@ -707,8 +759,6 @@ test_sxid_monitoring_syslog() {
     fi
 
     log "Selected GPU node: $gpu_node (has healthy syslog-health-monitor)"
-
-    reset_dry_run_node_state "$gpu_node"
 
     local original_boot_id
     original_boot_id=$(get_boot_id "$gpu_node")
@@ -794,12 +844,14 @@ main() {
     fi
 
     discover_dry_run
+    trap cleanup_uat EXIT
 
     test_gpu_monitoring_dcgm
 
-    # Wait for syslog-health-monitor to complete first initialization poll
-    log "Waiting for syslog-health-monitor to initialize (60s)..."
-    sleep 60
+    if [[ "${NVSENTINEL_DRY_RUN:-false}" != "true" ]]; then
+        log "Waiting for syslog-health-monitor to initialize (60s)..."
+        sleep 60
+    fi
 
     test_xid_monitoring_syslog
 
