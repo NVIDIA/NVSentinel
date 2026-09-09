@@ -282,6 +282,24 @@ defer resp.Body.Close()
 
 **Protobuf**: there are two `.proto` trees — `data-models/protobufs/` and `api/proto/` (`device/v1alpha1`, `csp/v1alpha1`). Edit either and run `make protos-generate`, which drives both. Never hand-edit generated code — CI diffs the regenerated output and fails on drift.
 
+## Markdown Style
+
+**Do not hard-wrap prose.** Write each paragraph, list item and table row as one long line and let the editor soft-wrap it. Hard wrapping at a fixed column makes every later edit reflow the whole paragraph, so a one-word change shows up as a five-line diff and review comments anchor to the wrong line.
+
+```markdown
+<!-- BAD - rewording the first clause reflows all three lines -->
+The node drainer evicts workloads from a quarantined node. It respects
+pod disruption budgets and will not evict pods that have no
+controller managing them.
+
+<!-- GOOD - a reworded sentence is a one-line diff -->
+The node drainer evicts workloads from a quarantined node. It respects pod disruption budgets and will not evict pods that have no controller managing them.
+```
+
+This applies to new files and to sections you add. When editing a file that is already hard-wrapped throughout — `CODE_OF_CONDUCT.md`, for instance, which carries upstream Contributor Covenant text — match the surrounding style rather than leaving one reflowed paragraph in an otherwise wrapped document.
+
+Also: fenced code blocks need a language (` ```bash `, ` ```go `, ` ```text ` for diagrams), and blank lines go before and after headings, lists and fences.
+
 ## Testing
 
 **Use `envtest`, not fake clients, for anything touching the Kubernetes API.** Fake clients do not enforce validation, admission, or optimistic concurrency, so they pass while the real thing fails — which for this project means a drain bug that only shows up in a live cluster.

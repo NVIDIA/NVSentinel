@@ -1,20 +1,13 @@
 # Architecture Decision Records
 
-Each record states one decision: the context that forced it, what was decided, what it
-costs, and which alternatives were rejected and why. That reasoning is rarely recoverable
-from the code alone.
+Each record states one decision: the context that forced it, what was decided, what it costs, and which alternatives were rejected and why. That reasoning is rarely recoverable from the code alone.
 
 ## Conventions
 
-- The file name carries the number: `NNN-short-description.md`, and the record's `# ADR-NNN:`
-  heading matches it.
-- New records follow [template.md](template.md): Context, Decision, Implementation, Rationale,
-  Consequences (Positive / Negative / Mitigations), Alternatives Considered, Notes, References.
-- Take the next free number. **Never reuse a number**, even if a record was withdrawn — a
-  reused number silently breaks every reference pointing at the original.
-- Superseding a decision is normal; deleting the record is not. Leave the old record in place,
-  mark it superseded at the top, and have the new record name what it supersedes in its
-  References section. The decision trail is the point.
+- The file name carries the number: `NNN-short-description.md`, and the record's `# ADR-NNN:` heading matches it.
+- New records follow [template.md](template.md): Context, Decision, Implementation, Rationale, Consequences (Positive / Negative / Mitigations), Alternatives Considered, Notes, References.
+- Take the next free number. **Never reuse a number**, even if a record was withdrawn — a reused number silently breaks every reference pointing at the original.
+- Superseding a decision is normal; deleting the record is not. Leave the old record in place, mark it superseded at the top, and have the new record name what it supersedes in its References section. The decision trail is the point.
 - Numbers are allocated, not contiguous. Gaps are expected.
 
 ## Index
