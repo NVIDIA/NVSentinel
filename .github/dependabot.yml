@@ -100,8 +100,13 @@ updates:
         patterns: ["*"]
 
   # Docker
+  # Base images are pinned to digests, so these updates are what refresh the
+  # digests when upstream rebuilds a tag — keep the interval at weekly so base
+  # image CVE fixes are picked up promptly.
   - package-ecosystem: "docker"
     directories:
+      - "/demos/local-custom-remediation-demo/memory-pressure-monitor"
+      - "/demos/local-custom-remediation-demo/memory-reclaim-controller"
       - "/gpu-reset"
       - "/health-monitors/gpu-health-monitor"
       - "/health-monitors/syslog-health-monitor"
@@ -117,7 +122,7 @@ updates:
       - "/tilt/simple-health-client"
     target-branch: "main"
     schedule:
-      interval: "monthly"
+      interval: "weekly"
     labels: ["dependencies"]
     groups:
       docker-dependencies:

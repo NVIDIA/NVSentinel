@@ -21,7 +21,7 @@ ARG NCCL_TESTS_VERSION=v2.13.11
 # =============================================================================
 # Build stage: Compile Go binary
 # =============================================================================
-FROM public.ecr.aws/docker/library/golang:1.27.0-trixie AS go-builder
+FROM public.ecr.aws/docker/library/golang:1.27.0-trixie@sha256:df98008ecd2b0ecc9f0a94d1b07e3564a9c92b555369b33d9b5f60d0765b2db7 AS go-builder
 
 ARG VERSION="dev"
 ARG GIT_COMMIT="none"
@@ -63,6 +63,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # We compile nccl-tests from source to get deterministic binary paths and
 # ensure version compatibility with the bundled NCCL.
 # =============================================================================
+# Not digest-pinned: the tag is a build-matrix parameter (see Makefile) used to produce multiple image variants.
 FROM nvcr.io/nvidia/pytorch:${PYTORCH_VERSION} AS runtime
 
 ARG NCCL_TESTS_VERSION

@@ -21,6 +21,10 @@ To report a potential security vulnerability in any NVIDIA product:
 
 NVIDIA offers acknowledgement for externally reported security issues under our coordinated vulnerability disclosure policy. Visit [PSIRT Policies](https://www.nvidia.com/en-us/security/psirt-policies/) for details.
 
+## Supported Versions
+
+NVSentinel does not currently maintain long-term-support branches. Security and bug fixes are applied to the `main` branch and released as part of the latest tagged release; only the most recent release receives fixes. See [RELEASE.md](RELEASE.md) for the release process, including the emergency hotfix procedure used for urgent fixes.
+
 ## Product Security Resources
 
 For all security-related concerns: https://www.nvidia.com/en-us/security

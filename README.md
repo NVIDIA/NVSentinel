@@ -259,6 +259,20 @@ Validated on NVIDIA Volta, Ampere, Hopper, Ada Lovelace and Blackwell architectu
 
 For more, including configuration options, external database setup, writing custom health checks, and operational runbooks, visit [docs.nvidia.com/nvsentinel](https://docs.nvidia.com/nvsentinel/).
 
+## Distribution
+
+NVSentinel is published exclusively through the channels below. There is no other official distribution — if you obtained NVSentinel elsewhere, treat it as untrusted.
+
+| Channel | Location |
+|---|---|
+| Helm chart (OCI) | `oci://ghcr.io/nvidia/nvsentinel` |
+| Container images | `ghcr.io/nvidia/nvsentinel/<component>` — e.g. `ghcr.io/nvidia/nvsentinel/labeler` |
+| Releases | [GitHub Releases](https://github.com/NVIDIA/NVSentinel/releases), each with a `versions.txt` pinning every component image for that version |
+| Source | [github.com/NVIDIA/NVSentinel](https://github.com/NVIDIA/NVSentinel) |
+| Documentation | [docs.nvidia.com/nvsentinel](https://docs.nvidia.com/nvsentinel/) |
+
+Container images are signed with Sigstore cosign and carry SPDX SBOM and SLSA provenance attestations. See [SECURITY.md](SECURITY.md) for how to verify them.
+
 
 ## Contributing
 
@@ -276,6 +290,7 @@ Getting Started:
 1. Read the [Contributing Guide](CONTRIBUTING.md) for guidelines
 2. Check the [Development Guide](DEVELOPMENT.md) for setup instructions
 3. Browse [open issues](https://github.com/NVIDIA/NVSentinel/issues) for opportunities
+4. Review our [Code of Conduct](CODE_OF_CONDUCT.md)
 
 ## Support
 
