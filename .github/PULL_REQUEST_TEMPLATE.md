@@ -12,10 +12,14 @@
 
 ## Component(s) Affected
 - [ ] Core Services
-- [ ] Documentation/CI
-- [ ] Fault Management
 - [ ] Health Monitors
+- [ ] Fault Management
+- [ ] Deployment/Config
+- [ ] API/Interface
+- [ ] Preflight
+- [ ] Plugins
 - [ ] Janitor
+- [ ] Documentation/CI
 - [ ] Other: ____________
 
 ## Testing
