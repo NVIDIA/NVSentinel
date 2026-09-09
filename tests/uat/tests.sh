@@ -234,9 +234,16 @@ recover_injected_dcgm() {
     fi
 
     log "Restarting $ns/$name on node $node to drop the injected DCGM error"
-    kubectl delete pod -n "$ns" "$name" --wait=true >/dev/null
-    kubectl wait -n "$ns" --for=condition=Ready pod -l "$selector" \
-        --field-selector="spec.nodeName=$node" --timeout=180s >/dev/null
+    # Failures here must not abort the EXIT trap: reset_dry_run_node_state
+    # still has to strip FQ/FR metadata even if hostengine did not come back.
+    if ! kubectl delete pod -n "$ns" "$name" --wait=true >/dev/null; then
+        log "WARN: Failed to delete $ns/$name; injected DCGM state may persist"
+        return 0
+    fi
+    if ! kubectl wait -n "$ns" --for=condition=Ready pod -l "$selector" \
+        --field-selector="spec.nodeName=$node" --timeout=180s >/dev/null; then
+        log "WARN: Replacement DCGM pod on node $node did not become Ready in 180s"
+    fi
     UAT_DCGM_RECOVERED=true
 }
 
