@@ -140,6 +140,16 @@ var _ = Describe("NodeLock", func() {
 		)
 	})
 
+	Context("Testing GetHolder", func() {
+		It("returns a contextual error when the lease cannot be fetched", func() {
+			holder, err := lock.GetHolder(ctx, "missing-node")
+			Expect(holder).To(BeNil())
+			Expect(err).To(MatchError(ContainSubstring(
+				`getting node lock holder for node "missing-node"`)))
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		})
+	})
+
 	Context("Testing LockNode", func() {
 		It("lock re-acquired: node lease lock exists and matches current resource", func() {
 			isLocked := lock.LockNode(ctx, testResource, testNode.GetName())
@@ -322,10 +332,30 @@ var _ = Describe("NodeLock", func() {
 	})
 
 	Context("Testing resolveGVK", func() {
+		It("uses the GVK set on the object", func() {
+			testResource.SetGroupVersionKind(schema.GroupVersionKind{
+				Group:   "maintenance.nvidia.com",
+				Version: "v1alpha1",
+				Kind:    "Maintenance",
+			})
+
+			apiVersion, kind := lock.resolveGVK(testResource)
+			Expect(kind).To(Equal("Maintenance"))
+			Expect(apiVersion).To(Equal("maintenance.nvidia.com/v1alpha1"))
+		})
+
 		It("uses scheme when object GVK is not set", func() {
 			apiVersion, kind := lock.resolveGVK(testResource)
 			Expect(kind).To(Equal("ConfigMap"))
 			Expect(apiVersion).To(Equal("v1"))
+		})
+
+		It("returns empty values when neither object nor scheme resolves a GVK", func() {
+			lock.scheme = nil
+
+			apiVersion, kind := lock.resolveGVK(testResource)
+			Expect(kind).To(BeEmpty())
+			Expect(apiVersion).To(BeEmpty())
 		})
 	})
 

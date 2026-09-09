@@ -17,6 +17,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync/atomic"
 	"time"
 
@@ -30,6 +31,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -118,9 +122,73 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal(reconcile.Result{}))
 		})
+
+		It("returns client errors", func() {
+			expectedErr := fmt.Errorf("get maintenance request")
+			r.Client = fake.NewClientBuilder().
+				WithScheme(scheme.Scheme).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(
+						_ context.Context, _ client.WithWatch,
+						_ client.ObjectKey, _ client.Object,
+						_ ...client.GetOption,
+					) error {
+						return expectedErr
+					},
+				}).
+				Build()
+
+			result, err := r.Reconcile(ctx, reconcileRequest("unavailable"))
+			Expect(err).To(MatchError(expectedErr))
+			Expect(result).To(Equal(reconcile.Result{}))
+		})
 	})
 
 	Context("handleCreateOrUpdate", func() {
+		It("returns an error when adding the finalizer cannot be persisted", func() {
+			expectedErr := fmt.Errorf("update finalizer")
+			mr := newTestMR("mr-finalizer-update-fails", "node")
+			r.Client = fake.NewClientBuilder().
+				WithScheme(scheme.Scheme).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Update: func(
+						_ context.Context, _ client.WithWatch,
+						_ client.Object, _ ...client.UpdateOption,
+					) error {
+						return expectedErr
+					},
+				}).
+				Build()
+
+			result, err := r.handleCreateOrUpdate(ctx, slog.Default(), mr)
+			Expect(err).To(MatchError(expectedErr))
+			Expect(result).To(Equal(reconcile.Result{}))
+			Expect(fc.calls.Load()).To(BeZero())
+		})
+
+		It("returns an error when populated event fields cannot be persisted", func() {
+			expectedErr := fmt.Errorf("update populated event")
+			mr := newTestMR("mr-event-update-fails", "node")
+			mr.Finalizers = []string{mrFinalizerName}
+			r.Client = fake.NewClientBuilder().
+				WithScheme(scheme.Scheme).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Update: func(
+						_ context.Context, _ client.WithWatch,
+						_ client.Object, _ ...client.UpdateOption,
+					) error {
+						return expectedErr
+					},
+				}).
+				Build()
+			r.NodeLock = &stubNodeLock{lockResult: true}
+
+			result, err := r.handleCreateOrUpdate(ctx, slog.Default(), mr)
+			Expect(err).To(MatchError(expectedErr))
+			Expect(result).To(Equal(reconcile.Result{}))
+			Expect(fc.calls.Load()).To(BeZero())
+		})
+
 		It("adds finalizer and proceeds to emit in one reconcile", func() {
 			node := &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{Name: "node-init-fin"},
@@ -397,6 +465,45 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 	})
 
 	Context("handleDeletion", func() {
+		It("requeues while node unlock needs to be retried", func() {
+			mr := newTestMR("mr-unlock-retry", "node-unlock-retry")
+			mr.Finalizers = []string{mrFinalizerName}
+			mr.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+			r.NodeLock = &stubNodeLock{retryUnlock: true}
+
+			result, err := r.handleDeletion(ctx, slog.Default(), mr)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(time.Second))
+			Expect(controllerutil.ContainsFinalizer(mr, mrFinalizerName)).To(BeTrue())
+			Expect(fc.calls.Load()).To(BeZero())
+		})
+
+		It("returns an error when finalizer removal cannot be persisted", func() {
+			expectedErr := fmt.Errorf("update removed finalizer")
+			mr := &v1alpha1.MaintenanceRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              "mr-finalizer-removal-fails",
+					Finalizers:        []string{mrFinalizerName},
+					DeletionTimestamp: &metav1.Time{Time: time.Now()},
+				},
+			}
+			r.Client = fake.NewClientBuilder().
+				WithScheme(scheme.Scheme).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Update: func(
+						_ context.Context, _ client.WithWatch,
+						_ client.Object, _ ...client.UpdateOption,
+					) error {
+						return expectedErr
+					},
+				}).
+				Build()
+
+			result, err := r.handleDeletion(ctx, slog.Default(), mr)
+			Expect(err).To(MatchError(expectedErr))
+			Expect(result).To(Equal(reconcile.Result{}))
+		})
+
 		It("returns immediately when no finalizer is present",
 			func() {
 				mr := &v1alpha1.MaintenanceRequest{
@@ -835,4 +942,27 @@ func deleteLease(ctx context.Context, name, namespace string) {
 	}
 
 	_ = k8sClient.Delete(ctx, &lease)
+}
+
+type stubNodeLock struct {
+	lockResult  bool
+	retryUnlock bool
+}
+
+func (s *stubNodeLock) LockNode(
+	_ context.Context, _ client.Object, _ string,
+) bool {
+	return s.lockResult
+}
+
+func (s *stubNodeLock) GetHolder(
+	_ context.Context, _ string,
+) (*metav1.OwnerReference, error) {
+	return nil, nil
+}
+
+func (s *stubNodeLock) CheckUnlock(
+	_ context.Context, _ client.Object, _ string,
+) bool {
+	return s.retryUnlock
 }
