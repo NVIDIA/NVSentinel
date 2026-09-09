@@ -41,13 +41,18 @@ const (
 
 // client-go's retry.DefaultRetry is documented for resource-version conflicts and waits about
 // 40ms in total, which is too short to outlast a rotated credential or a restarting kubelet.
-// These steps wait roughly 7.5s, well inside the caller's poll period.
+// Five steps sleep four times, so these wait roughly 7.5s.
 var defaultListPodsBackoff = wait.Backoff{
 	Steps:    5,
 	Duration: 500 * time.Millisecond,
 	Factor:   2.0,
 	Jitter:   0.1,
 }
+
+// Ceiling on one whole ListPods call. The caller polls every 30s, so a call slower than this is
+// already failing to keep up; bounding it turns that into a counted failure the poll threshold
+// can absorb, rather than a poll that silently overruns its period.
+const defaultListPodsTimeout = 20 * time.Second
 
 type KubeletHTTPSClient interface {
 	ListPods() ([]corev1.Pod, error)
@@ -63,6 +68,7 @@ type kubeletHTTPSClient struct {
 	bearerTokenPath   string
 	listPodsURI       string
 	listPodsBackoff   wait.Backoff
+	listPodsTimeout   time.Duration
 }
 
 // NewKubeletHTTPSClient creates an HTTPS client configured to communicate with the local
@@ -89,6 +95,7 @@ func NewKubeletHTTPSClient(ctx context.Context) (KubeletHTTPSClient, error) {
 		bearerTokenPath:  bearerTokenPath,
 		listPodsURI:      fmt.Sprintf(listPodsURLTemplate, net.JoinHostPort(kubeletHost, kubeSecurePort)),
 		listPodsBackoff:  defaultListPodsBackoff,
+		listPodsTimeout:  defaultListPodsTimeout,
 	}, nil
 }
 
@@ -120,12 +127,20 @@ Example for how to make an equivalent request via CLI:
 curl -k -H "Authorization: Bearer $TOKEN" https://localhost:10250/pods
 */
 func (client *kubeletHTTPSClient) ListPods() ([]corev1.Pod, error) {
+	// One deadline for the whole call: every attempt, its response-body read, and the sleeps
+	// between them. Neither half is bounded otherwise. The transport's timeouts cover only the
+	// header exchange, io.ReadAll has no deadline of its own, and retry.OnError sleeps through
+	// wait.ExponentialBackoff, which never consults a context. So a hung kubelet could hold
+	// ListPods well past the caller's poll period.
+	ctx, cancel := context.WithTimeout(client.ctx, client.listPodsTimeout)
+	defer cancel()
+
 	var podBytes []byte
 
-	err := retry.OnError(client.listPodsBackoff, retryAllErrors, func() error {
+	err := retry.OnError(client.listPodsBackoff, retriableUntil(ctx), func() error {
 		var err error
 
-		podBytes, err = client.fetchPods()
+		podBytes, err = client.fetchPods(ctx)
 
 		return err
 	})
@@ -147,13 +162,13 @@ func (client *kubeletHTTPSClient) ListPods() ([]corev1.Pod, error) {
 // here rather than once per ListPods call, because the backoff now spans several seconds and a
 // credential rotated part way through it is exactly what that wait is for; a token read once up
 // front would leave every attempt presenting the same expired credential.
-func (client *kubeletHTTPSClient) fetchPods() ([]byte, error) {
+func (client *kubeletHTTPSClient) fetchPods(ctx context.Context) ([]byte, error) {
 	token, err := client.bearerToken()
 	if err != nil {
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(client.ctx, http.MethodGet, client.listPodsURI, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, client.listPodsURI, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -194,12 +209,24 @@ func (client *kubeletHTTPSClient) bearerToken() (string, error) {
 
 	tokenBytes, err := os.ReadFile(client.bearerTokenPath)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("could not read service account token %q: %w", client.bearerTokenPath, err)
 	}
 
 	return string(tokenBytes), nil
 }
 
+// retriableUntil retries any error until ctx is done. Returning false there is what stops
+// retry.OnError sleeping past the deadline, since its backoff never consults a context.
+func retriableUntil(ctx context.Context) func(error) bool {
+	return func(_ error) bool {
+		return ctx.Err() == nil
+	}
+}
+
+// Still used by the gRPC client. Retrying every error is not right: a permanent fault such as a
+// wrong bearerTokenPath is retried and then reported as though it were transient. Classifying
+// retryable against permanent is worth doing, but it interacts with the caller's failure
+// threshold, so it belongs in its own change.
 func retryAllErrors(_ error) bool {
 	return true
 }
