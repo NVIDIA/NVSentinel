@@ -113,8 +113,10 @@ type ResetJobConfig struct {
 	ImageConfig      ImageConfig          `mapstructure:"imageConfig" json:"imageConfig"`
 	Resources        ResourceRequirements `mapstructure:"resources" json:"resources"`
 	RuntimeClassName string               `mapstructure:"runtimeClassName" json:"runtimeClassName"`
-	WriteSysLogEvent *bool                `mapstructure:"writeSysLogEvent" json:"writeSysLogEvent"`
-	UploadURL        string               `mapstructure:"uploadURL" json:"uploadURL"`
+	// HostDriverRootPath is mounted at DriverRootMountPath in the reset container.
+	HostDriverRootPath string `mapstructure:"hostDriverRootPath" json:"hostDriverRootPath"`
+	WriteSysLogEvent   *bool  `mapstructure:"writeSysLogEvent" json:"writeSysLogEvent"`
+	UploadURL          string `mapstructure:"uploadURL" json:"uploadURL"`
 }
 
 type ResourceRequirements struct {
@@ -176,15 +178,13 @@ func LoadConfig(configPath string, namespace string) (*Config, error) {
 			return nil, fmt.Errorf("ResetJob.ImageConfig.Image is required but not set")
 		}
 
-		if config.GPUReset.ResetJob.WriteSysLogEvent == nil {
-			config.GPUReset.ResetJob.WriteSysLogEvent = new(true)
-		}
+		applyResetJobDefaults(&config.GPUReset.ResetJob)
 
 		resetJobConfig := config.GPUReset.ResetJob
 
 		jobTemplate, err := getDefaultGPUResetJobTemplate(namespace, resetJobConfig.ImageConfig.Image,
-			resetJobConfig.ImageConfig.ImagePullSecrets, resetJobConfig.Resources, resetJobConfig.RuntimeClassName,
-			*resetJobConfig.WriteSysLogEvent, resetJobConfig.UploadURL)
+			resetJobConfig.ImageConfig.ImagePullSecrets, resetJobConfig.Resources, resetJobConfig.HostDriverRootPath,
+			resetJobConfig.RuntimeClassName, *resetJobConfig.WriteSysLogEvent, resetJobConfig.UploadURL)
 		if err != nil {
 			return nil, err
 		}
