@@ -318,16 +318,15 @@ janitor:
 
 ##### Label provider
 
-Requests reboot and terminate by labeling the Node. An external controller such as NKE watches those labels and performs the action. After reboot completion, that controller must remove the reboot label.
+Requests reboot and terminate by labeling the Node. An external controller running on the Kubernetes control plane can watch those labels and perform the required action. After reboot completion, that controller **MUST** remove the reboot label.
 
 ```yaml
 janitor-provider:
   csp:
     provider: "label"
     label:
-      rebootKey: "nke.nvidia.com/reboot"
-      terminateKey: "nke.nvidia.com/terminate"
-      value: "requested-by-nvsentinel"
+      rebootKey: "nke.nvidia.com/reboot=requested-by-nvsentinel"
+      terminateKey: "nke.nvidia.com/terminate=requested-by-nvsentinel"
 ```
 
 ### Complete Configuration Reference

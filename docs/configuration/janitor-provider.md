@@ -370,23 +370,19 @@ When `true`, the Job writes an attribution entry to the node's syslog via `logge
 
 ## Label provider
 
-Requests reboot and terminate by labeling the Node. An external controller such as NKE watches those labels and performs the action. The node is considered ready once the reboot label is removed.
+Requests reboot and terminate by labeling the Node. An external controller running on the Kubernetes control plane can watch those labels and perform the required action. After reboot completion, that controller **MUST** remove the reboot label. The node is considered ready once the reboot label is removed and the node's boot ID has changed.
 
 ```yaml
 janitor-provider:
   csp:
     provider: "label"
     label:
-      rebootKey: "nke.nvidia.com/reboot"
-      terminateKey: "nke.nvidia.com/terminate"
-      value: "requested-by-nvsentinel"
+      rebootKey: "nke.nvidia.com/reboot=requested-by-nvsentinel"
+      terminateKey: "nke.nvidia.com/terminate=requested-by-nvsentinel"
 ```
 
 ### rebootKey
-Node label used to request a reboot. Defaults to `nke.nvidia.com/reboot`.
+Node label spec used to request a reboot, in `key=value` form so reboot and terminate can use different values. Defaults to `nke.nvidia.com/reboot=requested-by-nvsentinel`.
 
 ### terminateKey
-Node label used to request termination. Defaults to `nke.nvidia.com/terminate`.
-
-### value
-Value written on the request label. Defaults to `requested-by-nvsentinel`.
+Node label spec used to request termination, in `key=value` form. Defaults to `nke.nvidia.com/terminate=requested-by-nvsentinel`.
