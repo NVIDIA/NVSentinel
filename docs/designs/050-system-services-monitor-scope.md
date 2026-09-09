@@ -90,7 +90,7 @@ in ADR-053 does not apply to these checks.
 | `FabricManagerDown` | `nvidia-fabricmanager` unit is loaded but not `active`. On NVSwitch platforms a dead FM stops NVLink error-recovery coordination and new fabric registrations while DCGM's latched fabric state still reads healthy. | `CustomPluginMonitor` | Permanent | The systemd liveness gap is the core signal no existing monitor sees (issue #883). | `RESTART_BM` |
 | `FabricManagerFlapping` | FM is crash-looping: the restarts observed inside a sliding window reach a threshold. Detected via systemd `NRestarts` deltas with reset disambiguation (below); reported independently of instantaneous `ActiveState`, which a crash-looping unit reads as `active` at most probe instants. | `CustomPluginMonitor` | Permanent | A flap condition tied to instantaneous liveness would be masked by whichever state the probe caught. | `RESTART_BM` |
 | `FabricManagerNotInstalled` | The `nvidia-fabricmanager` unit is absent (`LoadState=not-found`) on a platform where the operator declared it required. Distinguishes misconfiguration from "disabled on purpose". | `CustomPluginMonitor` | Permanent | A silently missing FM on an NVSwitch platform hides exactly the failure class these checks exist for. | `CONTACT_SUPPORT` |
-| `GpuServiceDown` | A configured GPU-support service (default `nvidia-persistenced`) is loaded but not `active`. | `CustomPluginMonitor` | Permanent | Support-service lifecycle has no DCGM watch. | `CONTACT_SUPPORT` |
+| `<Service>Down` (e.g. `NvidiaPersistencedDown`) | A configured GPU-support service is loaded but not `active`. **One condition type per service**: NPD binds each permanent rule to exactly one condition by type, so a shared condition would let one service's result overwrite another's status. The reference configuration ships `NvidiaPersistencedDown`; additional services follow the same naming pattern with their own rule, condition, and KOM policy. | `CustomPluginMonitor` | Permanent | Support-service lifecycle has no DCGM watch. | `CONTACT_SUPPORT` |
 
 Platform applicability replaces the earlier in-monitor `fm-presence` flag with
 configuration presence: operators of NVSwitch fleets install the
@@ -114,16 +114,30 @@ condition message.
   not evidence of "down".
 - **`check_fm_flapping.sh`** — reads `NRestarts` and
   `ExecMainStartTimestamp`, keeps its baseline and restart-window samples in a
-  state file under `/run` (tmpfs: state is boot-scoped by construction, and a
-  crash loop spanning node reboots is out of scope here — cross-boot
-  recurrence belongs to fault-management's recurrence-after-remediation
-  escalation). `NRestarts` is not monotonic and a decrease is not itself a
-  restart: `systemctl reset-failed` flushes the counter without restarting the
-  process. On a decrease the script re-baselines, and records a restart
-  observation only when `ExecMainStartTimestamp` changed across the reset; a
-  pure counter flush records nothing. Exits `1` while the windowed count is at
-  or above the threshold (defaults: 3 restarts within 600 s), `0` once the
-  window drains.
+  state file on the **host's** `/run` (tmpfs: state is boot-scoped by
+  construction, and a crash loop spanning node reboots is out of scope here —
+  cross-boot recurrence belongs to fault-management's
+  recurrence-after-remediation escalation). The state-file contract is part of
+  the operator documentation and applies per NPD deployment shape:
+  - **Host-service NPD:** the script writes
+    `/run/nvsentinel-npd/fm-flap.state` directly.
+  - **DaemonSet NPD:** the pod MUST hostPath-mount the host's
+    `/run/nvsentinel-npd` at the same path — a pod-local `/run` would reset
+    the baseline on every pod replacement, silently weakening flap detection
+    without a node reboot. If an operator chooses not to mount it, the
+    boot-scoped guarantee explicitly degrades to pod-scoped and the
+    documentation says so.
+  - The state directory is `root:root` mode `0700`; updates are atomic
+    (write temp file + `rename`); an unreadable or invalid state file is
+    treated as a fresh baseline (re-baseline, no phantom restart
+    observations).
+
+  `NRestarts` is not monotonic and a decrease is not itself a restart:
+  `systemctl reset-failed` flushes the counter without restarting the process.
+  On a decrease the script re-baselines, and records a restart observation
+  only when `ExecMainStartTimestamp` changed across the reset; a pure counter
+  flush records nothing. Exits `1` while the windowed count is at or above the
+  threshold (defaults: 3 restarts within 600 s), `0` once the window drains.
 - **`check_fm_installed.sh`** — exits `1` when `LoadState=not-found`, `0`
   otherwise. Only installed by operators declaring FM required.
 - **`check_gpu_service.sh <unit>`** — the liveness contract of
@@ -133,6 +147,53 @@ The scripts require the same host visibility NPD's own service checks use
 (access to systemd via D-Bus or `systemctl`); the documentation records the
 requirement for both host-service and DaemonSet NPD deployments rather than
 prescribing one privilege model, since the operator owns the NPD install.
+
+To keep UNKNOWN distinct from DOWN under NPD's exit-code protocol, each script
+bounds its own probes (e.g. `systemctl` with an internal timeout **shorter
+than** the rule's `timeout`): a wedged probe then reports as the script's own
+deliberate exit — unknown when the service could not be observed — rather
+than as an NPD plugin timeout, and a genuinely stopped service always reports
+as unhealthy within one interval.
+
+### Reference NPD configuration
+
+The complete `CustomPluginMonitor` configuration ships in the operator
+documentation, which also pins the NPD release the reference was validated
+against (the exit-status and permanent-condition contract used here is per
+NPD's `custom_plugin_monitor` documentation and predates the current release
+line). Every permanent rule references a condition declared in `conditions`
+with its healthy default — NPD rejects a configuration that omits this.
+Abbreviated to one service for readability; each additional GPU service adds
+one condition, one rule, and one KOM policy under the same pattern:
+
+```json
+{
+  "plugin": "custom",
+  "pluginConfig": {
+    "invoke_interval": "30s",
+    "timeout": "15s",
+    "max_output_length": 120,
+    "concurrency": 1
+  },
+  "source": "nvsentinel-gpu-services",
+  "metricsReporting": false,
+  "conditions": [
+    { "type": "FabricManagerDown", "reason": "FabricManagerActive", "message": "nvidia-fabricmanager is active" },
+    { "type": "FabricManagerFlapping", "reason": "FabricManagerStable", "message": "nvidia-fabricmanager restart rate is normal" },
+    { "type": "FabricManagerNotInstalled", "reason": "FabricManagerInstalled", "message": "nvidia-fabricmanager unit is present" },
+    { "type": "NvidiaPersistencedDown", "reason": "NvidiaPersistencedActive", "message": "nvidia-persistenced is active" }
+  ],
+  "rules": [
+    { "type": "permanent", "condition": "FabricManagerDown", "reason": "FabricManagerNotActive", "path": "/etc/npd-plugins/check_fm_active.sh", "timeout": "12s" },
+    { "type": "permanent", "condition": "FabricManagerFlapping", "reason": "FabricManagerFlapping", "path": "/etc/npd-plugins/check_fm_flapping.sh", "timeout": "12s" },
+    { "type": "permanent", "condition": "FabricManagerNotInstalled", "reason": "FabricManagerUnitNotFound", "path": "/etc/npd-plugins/check_fm_installed.sh", "timeout": "12s" },
+    { "type": "permanent", "condition": "NvidiaPersistencedDown", "reason": "NvidiaPersistencedNotActive", "path": "/etc/npd-plugins/check_gpu_service.sh", "args": ["nvidia-persistenced"], "timeout": "12s" }
+  ]
+}
+```
+
+The `FabricManagerNotInstalled` condition and rule are included only by
+operators declaring FM required (see platform applicability above).
 
 ### Architecture
 
@@ -184,10 +245,31 @@ The `FabricManagerDown` policy:
 
 The remaining three follow the same shape with their own reasons, codes, and
 actions: `NPDFabricManagerFlapping` (fatal, `RESTART_BM`,
-`NPD_FABRIC_MANAGER_FLAPPING`), `NPDFabricManagerNotInstalled` (fatal,
-`CONTACT_SUPPORT` — there is no unit to restart, and a reboot will not install
-one; `NPD_FABRIC_MANAGER_NOT_INSTALLED`), and `NPDGpuServiceDown` (non-fatal,
-`CONTACT_SUPPORT`, `NPD_GPU_SERVICE_NOT_RUNNING`).
+`NPD_FABRIC_MANAGER_FLAPPING`, reason `FabricManagerFlapping`),
+`NPDFabricManagerNotInstalled` (fatal, `CONTACT_SUPPORT` — there is no unit to
+restart, and a reboot will not install one;
+`NPD_FABRIC_MANAGER_NOT_INSTALLED`, reason `FabricManagerUnitNotFound`), and
+`NPDNvidiaPersistencedDown` (non-fatal, `CONTACT_SUPPORT`,
+`NPD_NVIDIA_PERSISTENCED_NOT_RUNNING`, reason `NvidiaPersistencedNotActive`) —
+one policy per per-service condition, matching the check inventory.
+
+**Recovery semantics and their limits.** A KOM predicate matches only
+`status == "True"` with the expected reason; anything else — including an
+`Unknown` condition after a plugin timeout, or the condition reset that
+follows an NPD restart — reads as the predicate not matching, which KOM
+reports as the healthy transition. Two consequences, stated deliberately:
+
+- The plugin scripts minimize the `Unknown` window by bounding their own
+  probes (above), so a down service reports as `True` again within one
+  `invoke_interval` even after a transient unknown or an NPD restart — the
+  false-recovery window is bounded by the probe interval, unlike the
+  log-matched ADR-053 rules, which cannot re-detect at all.
+- Within that window the ADR-053 mitigations apply verbatim: do not restart
+  NPD mid-remediation, and do not treat a post-restart or post-unknown
+  `False`/absent condition as proof of recovery. Making KOM itself
+  distinguish `Unknown` from `False` (three-state condition handling) would
+  harden every ADR-053 check equally; it is a platform-level follow-up, not
+  re-specified per check here.
 
 ## Signal Ownership
 
