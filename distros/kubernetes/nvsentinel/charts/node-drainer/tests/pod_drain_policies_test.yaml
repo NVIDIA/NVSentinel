@@ -27,6 +27,7 @@ tests:
 
   - it: renders ordered policies and defaults an omitted namespace to all namespaces
     set:
+      userNamespaces: []
       podDrainPolicies:
         - name: protected
           namespace: training-*
@@ -39,3 +40,29 @@ tests:
       - matchRegex:
           path: data["config.toml"]
           pattern: '(?s)\[\[podDrainPolicies\]\]\s+name = "protected"\s+namespace = "training-\*"\s+podSelector = "app in \(trainer,worker\),!disposable"\s+mode = "AllowCompletion"\s+\[\[podDrainPolicies\]\]\s+name = "workers"\s+namespace = "\*"\s+podSelector = "app=worker"\s+mode = "Immediate"'
+      - notMatchRegex:
+          path: data["config.toml"]
+          pattern: '\[\[userNamespaces\]\]'
+
+  - it: rejects policies combined with default namespace rules
+    set:
+      podDrainPolicies:
+        - name: workers
+          podSelector: app=worker
+          mode: Immediate
+    asserts:
+      - failedTemplate:
+          errorMessage: "userNamespaces and podDrainPolicies are mutually exclusive; set userNamespaces: [] when using podDrainPolicies"
+
+  - it: rejects policies combined with explicit namespace rules
+    set:
+      userNamespaces:
+        - name: training-*
+          mode: Immediate
+      podDrainPolicies:
+        - name: workers
+          podSelector: app=worker
+          mode: AllowCompletion
+    asserts:
+      - failedTemplate:
+          errorMessage: "userNamespaces and podDrainPolicies are mutually exclusive; set userNamespaces: [] when using podDrainPolicies"

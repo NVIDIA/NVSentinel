@@ -39,7 +39,6 @@ func podPolicyTestConfig() config.TomlConfig {
 		NotReadyTimeoutMinutes:    5,
 		SystemNamespaces:          "^system-",
 		PartialDrainEnabled:       true,
-		UserNamespaces:            []config.UserNamespace{{Name: "workloads", Mode: config.ModeImmediateEvict}},
 		PodDrainPolicies: []config.PodDrainPolicy{
 			{Name: "protected", Namespace: "workloads", PodSelector: "protected=yes", Mode: config.ModeAllowCompletion},
 			{Name: "replaceable", Namespace: "workloads", PodSelector: "role in (worker,overlap)", Mode: config.ModeImmediateEvict},
@@ -96,7 +95,7 @@ func TestProcessEventGeneric_PodPoliciesMixedModesAndRestart_PreservesDrainModes
 		createNamespace(setup.ctx, t, setup.client, ns)
 	}
 	createPolicyPod(t, setup, "workloads", "immediate", node, map[string]string{"role": "worker"}, "")
-	createPolicyPod(t, setup, "workloads", "fallback", node, nil, "")
+	createPolicyPod(t, setup, "workloads", "unmatched", node, nil, "")
 	createPolicyPod(t, setup, "workloads", "protected", node, map[string]string{"role": "overlap", "protected": "yes"}, "")
 	createPolicyPod(t, setup, "workloads", "bounded", node, map[string]string{"role": "bounded"}, "")
 	createPolicyPod(t, setup, "unmanaged", "outside-policy-namespace", node, map[string]string{"role": "worker"}, "")
@@ -111,7 +110,7 @@ func TestProcessEventGeneric_PodPoliciesMixedModesAndRestart_PreservesDrainModes
 	err := processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, setup.healthEventStore, opts)
 	require.ErrorContains(t, err, "immediate eviction")
 	finishPolicyPodDeletion(t, setup, "immediate")
-	finishPolicyPodDeletion(t, setup, "fallback")
+	requirePolicyPodRunning(t, setup, "workloads", "unmatched")
 	requirePolicyPodRunning(t, setup, "workloads", "protected")
 	requirePolicyPodRunning(t, setup, "workloads", "bounded")
 	requirePolicyPodRunning(t, setup, "workloads", "other-node")
@@ -141,6 +140,7 @@ func TestProcessEventGeneric_PodPoliciesMixedModesAndRestart_PreservesDrainModes
 		err := processHealthEvent(setup.ctx, t, restarted, setup.mockCollection, setup.healthEventStore, opts)
 		return err != nil && strings.Contains(err.Error(), "waiting for pods to complete: 1")
 	}, 10*time.Second, 50*time.Millisecond)
+	requirePolicyPodRunning(t, setup, "workloads", "unmatched")
 	protected, err := setup.client.CoreV1().Pods("workloads").Get(setup.ctx, "protected", metav1.GetOptions{})
 	require.NoError(t, err)
 	protected.Status.Phase = v1.PodSucceeded
@@ -150,6 +150,7 @@ func TestProcessEventGeneric_PodPoliciesMixedModesAndRestart_PreservesDrainModes
 		return processHealthEvent(setup.ctx, t, restarted, setup.mockCollection, setup.healthEventStore, opts) == nil
 	}, 10*time.Second, 50*time.Millisecond)
 	assertNodeLabel(t, setup.client, setup.ctx, node, statemanager.DrainSucceededLabelValue)
+	requirePolicyPodRunning(t, setup, "workloads", "unmatched")
 	requirePolicyPodRunning(t, setup, "unmanaged", "outside-policy-namespace")
 }
 
@@ -203,10 +204,8 @@ func TestProcessEventGeneric_PodPoliciesDryRun_PreservesPods(t *testing.T) {
 	requirePolicyPodRunning(t, setup, "workloads", "protected")
 }
 
-func TestProcessEventGeneric_PodPoliciesWithoutNamespaceFallback_ObservesRelabelAndPreservesUnmatchedPods(t *testing.T) {
-	cfg := podPolicyTestConfig()
-	cfg.UserNamespaces = nil
-	setup := setupConfiguredTest(t, cfg, false)
+func TestProcessEventGeneric_PodPoliciesRelabel_ObservesNewModeAndPreservesUnmatchedPods(t *testing.T) {
+	setup := setupConfiguredTest(t, podPolicyTestConfig(), false)
 	const node = "relabel-policy-node"
 	createNode(setup.ctx, t, setup.client, node)
 	waitForNodeInInformer(t, setup.informersInstance, node)

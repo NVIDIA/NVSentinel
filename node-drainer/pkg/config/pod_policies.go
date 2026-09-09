@@ -24,7 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
-// PodDrainPolicy overrides the namespace drain mode for matching pods.
+// PodDrainPolicy selects the drain mode for matching pods.
 // Policies are evaluated in order; the first match wins.
 type PodDrainPolicy struct {
 	Name        string    `toml:"name"`
@@ -101,7 +101,7 @@ func compilePodDrainPolicy(policy PodDrainPolicy) (compiledPodDrainPolicy, error
 	}
 
 	if strings.TrimSpace(policy.PodSelector) == "" {
-		return compiledPodDrainPolicy{}, fmt.Errorf("podSelector must not be empty; use userNamespaces for a fallback")
+		return compiledPodDrainPolicy{}, fmt.Errorf("podSelector must not be empty")
 	}
 
 	selector, err := labels.Parse(policy.PodSelector)
@@ -117,7 +117,7 @@ func (m *PodPolicyMatcher) LabelKeys() []string {
 	return append([]string(nil), m.labelKeys...)
 }
 
-// Match returns the first matching policy's mode, or false for namespace fallback.
+// Match returns the first matching policy's mode, or false for pods outside the drain scope.
 func (m *PodPolicyMatcher) Match(pod *v1.Pod) (EvictMode, bool) {
 	for _, policy := range m.policies {
 		namespaceMatches, _ := filepath.Match(policy.namespace, pod.Namespace)

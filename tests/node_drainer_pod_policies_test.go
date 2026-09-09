@@ -52,7 +52,7 @@ func TestNodeDrainerPodPolicies(t *testing.T) {
 			{"immediate", map[string]string{"role": "worker"}},
 			{"protected", map[string]string{"role": "overlap", "protected": "yes"}},
 			{"bounded", map[string]string{"role": "bounded"}},
-			{"fallback", nil},
+			{"unmatched", nil},
 		} {
 			names := []string{workload.name}
 			pod := &v1.Pod{
@@ -86,12 +86,13 @@ func TestNodeDrainerPodPolicies(t *testing.T) {
 			WithErrorCode("79").WithMessage("pod policy drain integration test"))
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
 		helpers.WaitForPodsDeleted(ctx, t, client, namespace, pods["immediate"])
-		helpers.WaitForPodsDeleted(ctx, t, client, namespace, pods["fallback"])
+		assertRunning("unmatched")
 		assertRunning("protected")
 		assertRunning("bounded")
 
 		require.NoError(t, helpers.RestartDeployment(ctx, t, client, "node-drainer", helpers.NVSentinelNamespace))
 		helpers.WaitForPodsDeleted(ctx, t, client, namespace, pods["bounded"])
+		assertRunning("unmatched")
 		assertRunning("protected")
 		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
 		require.NoError(t, err)
@@ -112,6 +113,7 @@ func TestNodeDrainerPodPolicies(t *testing.T) {
 		}
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
 			statemanager.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
+		assertRunning("unmatched")
 		for _, name := range pods["protected"] {
 			pod := &v1.Pod{}
 			require.NoError(t, client.Resources().Get(ctx, name, namespace, pod))

@@ -150,6 +150,10 @@ func validateCustomDrainConfig(config *TomlConfig) error {
 
 // validateAndSetDefaults validates drain policies and fills in omitted timeouts.
 func validateAndSetDefaults(config *TomlConfig) (*TomlConfig, error) {
+	if len(config.UserNamespaces) > 0 && len(config.PodDrainPolicies) > 0 {
+		return nil, fmt.Errorf("cannot use both userNamespaces and podDrainPolicies configuration")
+	}
+
 	if _, err := CompilePodDrainPolicies(config.PodDrainPolicies); err != nil {
 		return nil, fmt.Errorf("validate pod drain policies: %w", err)
 	}

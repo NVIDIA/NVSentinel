@@ -64,6 +64,7 @@ drainGPUPods: false
 # User namespace configuration with eviction modes
 # Defines how pods in different namespaces should be evicted during node drain
 # Each entry specifies a namespace pattern and its corresponding eviction mode
+# Mutually exclusive with podDrainPolicies; set userNamespaces: [] to use pod policies.
 userNamespaces:
   # Namespace name or pattern (* matches all user namespaces)
   - name: "*"
@@ -73,8 +74,9 @@ userNamespaces:
     # - "DeleteAfterTimeout": Wait for deleteAfterTimeoutMinutes, then force delete if still running
     mode: "AllowCompletion"
 
-# Ordered pod-label policies override userNamespaces for matching workloads.
-# The first matching policy wins; unmatched pods use userNamespaces.
+# Ordered pod-label policies are mutually exclusive with userNamespaces and customDrain.
+# Set userNamespaces: [] above when enabling policies.
+# The first matching policy wins; unmatched pods are outside the drain scope.
 # podSelector uses Kubernetes label selector syntax; namespace is an optional glob.
 podDrainPolicies: []
 #  - name: replaceable-workers
@@ -100,7 +102,7 @@ partialDrainEntityMetricEnabled: false
 # Custom drain configuration for extensible drain handling
 # When enabled, node-drainer creates a customer-defined CR from a template instead of evicting pods directly
 # The customer controller is responsible for draining pods and updating the CR status
-# Mutually exclusive with userNamespaces (only one can be enabled)
+# Mutually exclusive with userNamespaces and podDrainPolicies (only one can be enabled)
 customDrain:
   # Enable custom drain mechanism
   enabled: false

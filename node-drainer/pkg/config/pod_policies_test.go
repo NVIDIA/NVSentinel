@@ -56,8 +56,8 @@ mode = "DeleteAfterTimeout"
 		{"nonexistence requirement", "train-a", map[string]string{"app": "worker", "checkpoint": "yes", "disposable": ""}, ModeImmediateEvict, true},
 		{"set exclusion", "train-a", map[string]string{"app": "trainer", "deadline": "yes"}, ModeDeleteAfterTimeout, true},
 		{"Kubernetes notin matches absent key", "train-a", map[string]string{"deadline": "yes"}, ModeDeleteAfterTimeout, true},
-		{"unmatched falls back", "train-a", map[string]string{"app": "trainer"}, "", false},
-		{"unlabelled falls back", "train-a", nil, "", false},
+		{"unmatched stays outside scope", "train-a", map[string]string{"app": "trainer"}, "", false},
+		{"unlabelled stays outside scope", "train-a", nil, "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -83,6 +83,7 @@ mode = "Immediate"
 		"invalid mode":          strings.Replace(valid, "Immediate", "DeleteEverything", 1),
 		"invalid namespace":     valid + "namespace = \"[\"\n",
 		"custom drain conflict": valid + "[customDrain]\nenabled = true\n",
+		"namespace conflict":    valid + "[[userNamespaces]]\nname = \"*\"\nmode = \"AllowCompletion\"\n",
 	}
 	for name, input := range tests {
 		t.Run(name, func(t *testing.T) {

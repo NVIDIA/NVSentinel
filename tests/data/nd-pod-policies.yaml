@@ -25,10 +25,6 @@ data:
     notReadyTimeoutMinutes = 5
     partialDrainEnabled = true
 
-    [[userNamespaces]]
-    name = "pod-policies-test"
-    mode = "Immediate"
-
     [[podDrainPolicies]]
     name = "protected-workers"
     namespace = "pod-policies-test"
