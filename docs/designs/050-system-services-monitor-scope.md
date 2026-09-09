@@ -159,9 +159,10 @@ as unhealthy within one interval.
 
 The complete `CustomPluginMonitor` configuration ships in the operator
 documentation, which also pins the NPD release the reference was validated
-against (the exit-status and permanent-condition contract used here is per
-NPD's `custom_plugin_monitor` documentation and predates the current release
-line). Every permanent rule references a condition declared in `conditions`
+against — **v1.36.0** at the time of writing (the exit-status and
+permanent-condition contract used here predates that release line; the
+restart and batching behavior cited below is verified against the v1.36.0
+source). Every permanent rule references a condition declared in `conditions`
 with its healthy default — NPD rejects a configuration that omits this.
 Abbreviated to one service for readability; each additional GPU service adds
 one condition, one rule, and one KOM policy under the same pattern:
@@ -173,7 +174,7 @@ one condition, one rule, and one KOM policy under the same pattern:
     "invoke_interval": "30s",
     "timeout": "15s",
     "max_output_length": 120,
-    "concurrency": 1,
+    "concurrency": 4,
     "skip_initial_status": true
   },
   "source": "nvsentinel-gpu-services",
@@ -192,6 +193,14 @@ one condition, one rule, and one KOM policy under the same pattern:
   ]
 }
 ```
+
+`concurrency` is sized to the rule count. NPD runs each interval's rules as
+one batch under the concurrency semaphore and waits for the whole batch,
+dropping ticker ticks while it runs — at `concurrency: 1`, four wedged
+probes would serialize into a 48 s batch and stretch the probe cadence past
+`invoke_interval`; at the rule count, the worst-case batch is a single rule
+`timeout`. Operators adding services scale `concurrency` with the rule
+count.
 
 The `FabricManagerNotInstalled` condition and rule are included only by
 operators declaring FM required (see platform applicability above).
@@ -264,18 +273,25 @@ matching, which KOM reports as the healthy transition. The reference
 configuration narrows this on two fronts:
 
 - `skip_initial_status: true` prevents NPD from publishing the default
-  (healthy) conditions on startup, so an NPD restart does **not** emit a
-  `False` for a still-broken service before the first real probe completes —
-  the restart-reset false recovery documented for ADR-053's log-matched rules
-  does not apply to these checks.
+  (healthy) conditions on startup. It narrows, but does not eliminate, the
+  restart reset documented for ADR-053: NPD still initializes its in-memory
+  conditions to their healthy defaults, and every per-result status carries
+  the monitor's **full** condition slice (v1.36.0
+  `custom_plugin_monitor.go`), so between the first and last completions of
+  the first post-restart batch, a not-yet-probed condition can be written
+  back at its default `False`. The exposure is the completion skew inside
+  that one batch — milliseconds when probes respond, bounded by the slowest
+  rule `timeout` when one wedges — rather than the whole
+  startup-to-first-probe window, and the ADR-053 mitigation (do not treat a
+  transition observed around an NPD restart as proof of recovery) covers it.
 - The plugin scripts bound their own probes (above), so a down service
-  reports `True` again within one `invoke_interval` after a transient
-  unknown; the remaining false-recovery window is the probe interval, during
-  which the ADR-053 mitigations apply (do not treat a transient
-  `False`/absent condition mid-remediation as proof of recovery). Making KOM
-  itself distinguish `Unknown` from `False` (three-state condition handling)
-  would harden every ADR-053 check equally; it is a platform-level follow-up,
-  not re-specified per check here.
+  reports `True` again within one `invoke_interval` plus the rule `timeout`
+  after a transient unknown; the remaining false-recovery exposure is that
+  probe cycle, during which the ADR-053 mitigations apply (do not treat a
+  transient `False`/absent condition mid-remediation as proof of recovery).
+  Making KOM itself distinguish `Unknown` from `False` (three-state
+  condition handling) would harden every ADR-053 check equally; it is a
+  platform-level follow-up, not re-specified per check here.
 
 ## Signal Ownership
 
@@ -341,10 +357,11 @@ pretend it can:
   to the condition message text.
 - The flap window's state file is a per-host contract the documentation must
   specify precisely (location under `/run`, format, boot-scoped lifetime).
-- With `skip_initial_status: true`, an NPD restart publishes no default
-  conditions before the first probe completes; a still-broken service
-  re-reports within one probe interval, and the transient-`Unknown` window
-  remains the one recovery caveat (see Recovery semantics).
+- Recovery caveats persist in narrowed form: an NPD restart can still blip a
+  not-yet-probed condition to its default `False` for the first batch's
+  completion skew, and a plugin timeout reads as `Unknown` for one probe
+  cycle (see Recovery semantics) — around NPD restarts and remediation,
+  condition transitions are validated rather than trusted.
 
 ## References
 
