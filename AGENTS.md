@@ -125,6 +125,8 @@ Do not do these without an explicit human instruction:
 - When superseding, leave the old record in place and mark it superseded at the top; name what you supersede in the new record's References. Deleting it destroys the decision trail.
 - Add the record to the index table in [docs/designs/README.md](docs/designs/README.md) in the same change.
 
+**Do not edit an existing ADR to describe a new feature.** This is the most common way to damage the record. An ADR captures what was decided and why at the time; rewriting it to cover later work destroys that history and leaves the rationale describing a system that no longer matches it. Adding a feature usually means updating [docs/](docs/) and the configuration reference, not the ADR that happens to mention the subsystem. Write a new record only when your change alters a decision an existing one made — and then supersede it properly rather than editing in place. Fixing a factual error or a broken link in an old record is fine.
+
 **An agent may draft an ADR; a maintainer owns the decision.** Propose it and wait for a human to accept it — do not treat a self-authored ADR as settled and start building against it.
 
 ## Backwards Compatibility
@@ -282,7 +284,19 @@ defer resp.Body.Close()
 
 **Protobuf**: there are two `.proto` trees — `data-models/protobufs/` and `api/proto/` (`device/v1alpha1`, `csp/v1alpha1`). Edit either and run `make protos-generate`, which drives both. Never hand-edit generated code — CI diffs the regenerated output and fails on drift.
 
-## Markdown Style
+## Documentation Style
+
+**Write in [ASD-STE100 Simplified Technical English](https://www.asd-ste100.org/).** It keeps documentation clear for every reader, including the many whose first language is not English. In practice:
+
+- One idea per sentence. Keep instructions under 20 words and descriptions under 25.
+- Active voice with a clear actor: "the drainer evicts the pod", not "the pod is evicted".
+- One word, one meaning. Pick a term and reuse it — a node is *cordoned*, never variously "cordoned", "blocked" or "fenced".
+- Simple, common words. Prefer "use" over "utilise", "before" over "prior to", "start" over "initiate".
+- Say what to do, not what to avoid, unless the hazard is the point.
+
+This is a house style for prose, not a linter. Do not mangle a precise technical term to satisfy it.
+
+**Keep any single document under 15 minutes of reading**, roughly 3000 words of prose. Past that, readers skim and stop finding things. Split by topic into documents that each stand alone, and link between them — one long page is harder to use than four short ones. Reference material that grows without bound (a command catalogue, a troubleshooting matrix) belongs in its own file from the start.
 
 **Do not hard-wrap prose.** Write each paragraph, list item and table row as one long line and let the editor soft-wrap it. Hard wrapping at a fixed column makes every later edit reflow the whole paragraph, so a one-word change shows up as a five-line diff and review comments anchor to the wrong line.
 
@@ -323,6 +337,22 @@ defer testEnv.Stop()
 - Tests run with `-race`; a data race is a failure, not a flake.
 - Aim for >80% coverage on critical paths — remediation and drain logic especially.
 
+**Never wait with `time.Sleep`.** A fixed sleep is either longer than necessary, which slows the suite, or shorter than the machine needs, which produces a flake that only appears in CI. Poll for the condition instead:
+
+```go
+// BAD - passes on a fast machine, flakes on a loaded CI runner
+time.Sleep(2 * time.Second)
+require.True(t, node.Spec.Unschedulable)
+
+// GOOD - waits only as long as needed, fails with a clear timeout
+require.Eventually(t, func() bool {
+    require.NoError(t, c.Get(ctx, key, node))
+    return node.Spec.Unschedulable
+}, 30*time.Second, 100*time.Millisecond)
+```
+
+Use `require.Never` for the inverse — proving a node is *not* cordoned when it should not be. That pairing matters here: remediation code needs a test showing it does not fire in the healthy case, and `require.Never` is how you write it.
+
 ## Anti-Patterns
 
 Everything the rule sections above cover is authoritative and not repeated here.
@@ -356,7 +386,9 @@ Everything the rule sections above cover is authoritative and not repeated here.
 
 **Merge gate on `main`** (enforced, not advisory): 1 approving review, all required status checks green (every module's lint-test plus the full E2E matrix across AMD64/ARM64 and MongoDB/Percona/PostgreSQL), branch up to date with `main`, linear history, and all review conversations resolved. Pushing new commits dismisses stale approvals, so batch your responses to review rather than pushing one commit per comment.
 
-**Non-trivial changes start with an issue.** See [CONTRIBUTING.md](CONTRIBUTING.md) for the issue-first workflow and the review process.
+**Non-trivial changes start with an issue, and the issue carries the detail.** Open it before writing code, and make it stand on its own: what the problem is, how to reproduce it or why the feature is needed, the affected component, and the intended approach. A reviewer should be able to judge whether the approach is right from the issue alone, before any diff exists — that is the point of going issue-first, and it is where an approach gets corrected cheaply.
+
+Trivial fixes — a typo, a broken link, a stale command — do not need one. If you are unsure, open the issue; a redundant issue costs nothing next to a rewritten PR. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and the review process.
 
 ## Troubleshooting
 

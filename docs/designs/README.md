@@ -8,6 +8,7 @@ Each record states one decision: the context that forced it, what was decided, w
 - New records follow [template.md](template.md): Context, Decision, Implementation, Rationale, Consequences (Positive / Negative / Mitigations), Alternatives Considered, Notes, References.
 - Take the next free number. **Never reuse a number**, even if a record was withdrawn — a reused number silently breaks every reference pointing at the original.
 - Superseding a decision is normal; deleting the record is not. Leave the old record in place, mark it superseded at the top, and have the new record name what it supersedes in its References section. The decision trail is the point.
+- **Do not edit an existing record to describe a new feature.** A record captures what was decided and why at the time it was written; rewriting it to cover later work destroys that history and leaves the rationale describing a system that no longer matches it. Build on a record instead: put user-facing behaviour in [docs/](../) and the configuration reference, and write a new record only when the change alters a decision an existing one made. Correcting a factual error or a broken link in an old record is fine.
 - Numbers are allocated, not contiguous. Gaps are expected.
 
 ## Index
