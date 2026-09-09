@@ -137,6 +137,8 @@ jobs:
             path: ./cmd/maintenance-notifier
           - module: health-monitors/kubernetes-object-monitor
             path: .
+          - module: health-monitors/nvcre-certification-monitor
+            path: .
           - module: health-monitors/nic-health-monitor
             path: .
           - module: event-exporter

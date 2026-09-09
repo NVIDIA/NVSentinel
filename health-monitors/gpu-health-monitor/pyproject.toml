@@ -26,6 +26,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
 gpu_health_monitor = "gpu_health_monitor.cli:cli"
+gpu_health_monitor_wait_for_dcgm = "gpu_health_monitor.wait_for_dcgm:cli"
 
 [tool.black]
 line-length = 120

@@ -76,6 +76,8 @@ func (f *PostgreSQLWatcherFactory) CreateChangeStreamWatcher(
 
 	f.applyPipelineFilter(changeStreamWatcher, config.Pipeline, tableName)
 
+	client.RegisterChangeStreamLag(pgStore.metricsRegisterer, clientName, changeStreamWatcher)
+
 	return NewPostgreSQLChangeStreamWatcherWithUnwrap(changeStreamWatcher, resumeControlDecision), nil
 }
 

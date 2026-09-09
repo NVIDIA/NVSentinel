@@ -30,6 +30,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
+
+	"github.com/nvidia/nvsentinel/store-client/pkg/lagstate"
 )
 
 const (
@@ -70,6 +72,19 @@ func NewChangeStreamWatcherWithResumeControl(
 func (w *resumeControlChangeStreamWatcher) ResumeControlDecision() ResumeControlDecision {
 	return w.decision
 }
+
+// LagState forwards lag state to the wrapped watcher when supported. Every consumer's watcher
+// reaches RegisterChangeStreamLag through this wrapper, so without this pass-through the
+// assertion there answers for the wrapper and no consumer's lag is ever exported.
+func (w *resumeControlChangeStreamWatcher) LagState() (lastEmptyBatch, lastEventRead time.Time) {
+	if provider, ok := w.ChangeStreamWatcher.(lagstate.Provider); ok {
+		return provider.LagState()
+	}
+
+	return time.Time{}, time.Time{}
+}
+
+var _ lagstate.Provider = (*resumeControlChangeStreamWatcher)(nil)
 
 // GetUnprocessedEventCount forwards backlog metrics to the wrapped watcher when supported.
 func (w *resumeControlChangeStreamWatcher) GetUnprocessedEventCount(

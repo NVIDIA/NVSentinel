@@ -32,6 +32,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -191,6 +192,16 @@ func createManager() (ctrl.Manager, error) {
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
 			BindAddress: metricsAddr,
+		},
+		// Nodes are only ever read by name (pkg/annotation, pkg/remediation, pkg/reconciler);
+		// the only List in this component is over Jobs. Serving those point reads from the
+		// manager's cache starts a cluster-wide Node informer on the first remediation, which
+		// retains every Node untransformed (~8.5 GB at 53k nodes) and blocks that first
+		// reconcile for ~43s while it lists and syncs. Read Nodes live instead.
+		Client: client.Options{
+			Cache: &client.CacheOptions{
+				DisableFor: []client.Object{&corev1.Node{}},
+			},
 		},
 		HealthProbeBindAddress:  healthAddr,
 		LeaderElection:          enableLeaderElection,

@@ -22,6 +22,12 @@ metadata:
     argocd.argoproj.io/sync-wave: "-1"
 data:
   config.toml: |
+    # Top-level keys must stay above the first [section] header, otherwise the TOML
+    # parser reads them as sub-keys of that section and the loader silently ignores them.
+    {{- if .Values.maxRemediationAttempts }}
+    maxRemediationAttempts = {{ .Values.maxRemediationAttempts }}
+    {{- end }}
+
     [template]
     mountPath = "/etc/config"
     

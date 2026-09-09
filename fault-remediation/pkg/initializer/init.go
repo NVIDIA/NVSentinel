@@ -35,6 +35,7 @@ import (
 	_ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers"
 	"github.com/nvidia/nvsentinel/store-client/pkg/watcher"
 	ctrlruntimeClient "sigs.k8s.io/controller-runtime/pkg/client"
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 type InitializationParams struct {
@@ -170,6 +171,10 @@ func initDatastoreAndWatcher(
 		return nil, nil, nil, nil, client.ResumeControlDecision{},
 			fmt.Errorf("failed to load datastore configuration: %w", err)
 	}
+
+	// This service serves only controller-runtime's registry, so store-client's change stream
+	// metrics have to be registered there or they never reach /metrics.
+	datastoreConfig.MetricsRegisterer = crmetrics.Registry
 
 	ds, err := datastore.NewDataStore(ctx, *datastoreConfig)
 	if err != nil {
