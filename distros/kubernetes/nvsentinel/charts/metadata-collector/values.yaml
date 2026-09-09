@@ -81,3 +81,14 @@ podMapper:
   # credential rotation or a kubelet restart while still failing loudly if the collector is
   # genuinely broken. Minimum 1, which restores exiting on the first failure.
   maxConsecutiveFailures: 10
+
+# DaemonSet rolling update strategy.
+# type: RollingUpdate or OnDelete. rollingUpdate is only rendered for RollingUpdate.
+# maxUnavailable counts pods stranded on unreachable nodes as well, so a cluster with
+# many nodes down for service may need it raised or the rollout cannot start.
+# Example, absolute count instead of a percentage:
+#   updateStrategy: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 34}}
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 5%
