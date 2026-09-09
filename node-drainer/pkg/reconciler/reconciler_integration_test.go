@@ -1421,6 +1421,7 @@ func requireSingleNodeEvent(
 	return nodeEvents.Items[0]
 }
 
+// setupDirectTest builds the legacy namespace configuration used by reconciler API tests.
 func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun bool, drainGPUPods ...bool) *testSetup {
 	t.Helper()
 
@@ -1441,6 +1442,8 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 	return setupConfiguredTest(t, tomlConfig, dryRun)
 }
 
+// setupConfiguredTest
+// starts an API server, syncs the policy-aware informer and constructs a reconciler with a mock datastore.
 func setupConfiguredTest(t *testing.T, tomlConfig config.TomlConfig, dryRun bool) *testSetup {
 	t.Helper()
 	ctx := t.Context()

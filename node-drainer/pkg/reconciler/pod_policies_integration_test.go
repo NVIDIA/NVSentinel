@@ -32,6 +32,7 @@ import (
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/reconciler"
 )
 
+// podPolicyTestConfig defines overlapping selectors and all three drain modes for API regression tests.
 func podPolicyTestConfig() config.TomlConfig {
 	return config.TomlConfig{
 		EvictionTimeoutInSeconds:  config.Duration{Duration: time.Second},
@@ -47,6 +48,7 @@ func podPolicyTestConfig() config.TomlConfig {
 	}
 }
 
+// createPolicyPod creates a running API pod with optional GPU metadata for drain-scope tests.
 func createPolicyPod(t *testing.T, setup *testSetup, namespace, name, node string,
 	labels map[string]string, gpu string) *v1.Pod {
 	t.Helper()
@@ -66,6 +68,7 @@ func createPolicyPod(t *testing.T, setup *testSetup, namespace, name, node strin
 	return created
 }
 
+// requirePolicyPodRunning asserts that the drainer has neither evicted nor completed the given workload.
 func requirePolicyPodRunning(t *testing.T, setup *testSetup, namespace, name string) {
 	t.Helper()
 	pod, err := setup.client.CoreV1().Pods(namespace).Get(setup.ctx, name, metav1.GetOptions{})
@@ -74,6 +77,7 @@ func requirePolicyPodRunning(t *testing.T, setup *testSetup, namespace, name str
 	require.Equal(t, v1.PodRunning, pod.Status.Phase)
 }
 
+// finishPolicyPodDeletion simulates kubelet completion only after the drainer has requested deletion.
 func finishPolicyPodDeletion(t *testing.T, setup *testSetup, name string) {
 	t.Helper()
 	pod, err := setup.client.CoreV1().Pods("workloads").Get(setup.ctx, name, metav1.GetOptions{})
@@ -86,6 +90,8 @@ func finishPolicyPodDeletion(t *testing.T, setup *testSetup, name string) {
 		metav1.DeleteOptions{GracePeriodSeconds: new(int64(0))}))
 }
 
+// TestProcessEventGeneric_PodPoliciesMixedModesAndRestart_PreservesDrainModes
+// checks mode isolation, event-based deadlines and unmatched-pod preservation across restart.
 func TestProcessEventGeneric_PodPoliciesMixedModesAndRestart_PreservesDrainModes(t *testing.T) {
 	setup := setupConfiguredTest(t, podPolicyTestConfig(), false)
 	const node = "policy-node"
@@ -154,10 +160,13 @@ func TestProcessEventGeneric_PodPoliciesMixedModesAndRestart_PreservesDrainModes
 	requirePolicyPodRunning(t, setup, "unmanaged", "outside-policy-namespace")
 }
 
+// containsPolicyWait identifies the expected wait for a single timeout-mode workload.
 func containsPolicyWait(message string) bool {
 	return strings.Contains(message, "waiting for 1 pods to complete or timeout")
 }
 
+// TestProcessEventGeneric_PodPoliciesForcePartialDrain_EvictsOnlyAffectedGPU
+// checks that force does not expand the partial-GPU drain scope.
 func TestProcessEventGeneric_PodPoliciesForcePartialDrain_EvictsOnlyAffectedGPU(t *testing.T) {
 	setup := setupConfiguredTest(t, podPolicyTestConfig(), false)
 	const node = "partial-policy-node"
@@ -185,6 +194,8 @@ func TestProcessEventGeneric_PodPoliciesForcePartialDrain_EvictsOnlyAffectedGPU(
 	requirePolicyPodRunning(t, setup, "workloads", "cpu-only")
 }
 
+// TestProcessEventGeneric_PodPoliciesDryRun_PreservesPods
+// checks that dry-run eviction leaves selected workloads untouched.
 func TestProcessEventGeneric_PodPoliciesDryRun_PreservesPods(t *testing.T) {
 	setup := setupConfiguredTest(t, podPolicyTestConfig(), true)
 	const node = "dry-run-policy-node"
@@ -204,6 +215,8 @@ func TestProcessEventGeneric_PodPoliciesDryRun_PreservesPods(t *testing.T) {
 	requirePolicyPodRunning(t, setup, "workloads", "protected")
 }
 
+// TestProcessEventGeneric_PodPoliciesRelabel_ObservesNewModeAndPreservesUnmatchedPods
+// checks that label updates change the drain mode while force leaves unmatched pods untouched.
 func TestProcessEventGeneric_PodPoliciesRelabel_ObservesNewModeAndPreservesUnmatchedPods(t *testing.T) {
 	setup := setupConfiguredTest(t, podPolicyTestConfig(), false)
 	const node = "relabel-policy-node"

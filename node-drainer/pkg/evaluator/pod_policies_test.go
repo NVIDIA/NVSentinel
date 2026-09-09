@@ -36,10 +36,13 @@ type relabellingInformers struct {
 	relabel bool
 }
 
+// GetNamespacesMatchingPattern returns the relabelling stub's single workload namespace.
 func (i *relabellingInformers) GetNamespacesMatchingPattern(context.Context, string, string, string) ([]string, error) {
 	return []string{"workloads"}, nil
 }
 
+// CheckIfAllPodsAreEvictedInImmediateMode
+// changes the pod label after the immediate-mode observation to simulate a concurrent update.
 func (i *relabellingInformers) CheckIfAllPodsAreEvictedInImmediateMode(_ context.Context, _ []string,
 	_ string, _ time.Duration, _ *protos.Entity, filters ...informers.PodFilter) bool {
 	pods, _ := i.FindEvictablePodsInNamespaceAndNode("workloads", "node-a", nil, filters...)
@@ -50,6 +53,7 @@ func (i *relabellingInformers) CheckIfAllPodsAreEvictedInImmediateMode(_ context
 	return len(pods) == 0
 }
 
+// FindEvictablePodsInNamespaceAndNode applies the supplied filters to the stub's unfinished pod.
 func (i *relabellingInformers) FindEvictablePodsInNamespaceAndNode(_, _ string,
 	_ *protos.Entity, filters ...informers.PodFilter) ([]*v1.Pod, error) {
 	if i.pod.Status.Phase == v1.PodSucceeded {
@@ -63,6 +67,8 @@ func (i *relabellingInformers) FindEvictablePodsInNamespaceAndNode(_, _ string,
 	return []*v1.Pod{i.pod}, nil
 }
 
+// TestEvaluatePodPolicyActions_RelabelDuringModeChecks_WaitsThenEvicts
+// guards against completing a drain when a pod moves to a previously checked mode.
 func TestEvaluatePodPolicyActions_RelabelDuringModeChecks_WaitsThenEvicts(t *testing.T) {
 	cfg := config.TomlConfig{PodDrainPolicies: []config.PodDrainPolicy{
 		{Name: "finish", PodSelector: "mode=completion", Mode: config.ModeAllowCompletion},

@@ -27,6 +27,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
+// TestExcludedPodTransform_PodPolicyLabels_PreservesOnlyRequiredKeys
+// checks selective label retention, map isolation and system-pod exclusion.
 func TestExcludedPodTransform_PodPolicyLabels_PreservesOnlyRequiredKeys(t *testing.T) {
 	pod := richDrainEligiblePod("workload", "worker", "node-a")
 	pod.Labels = map[string]string{"drain": "immediate", "team": "training", "unrelated": "discard"}

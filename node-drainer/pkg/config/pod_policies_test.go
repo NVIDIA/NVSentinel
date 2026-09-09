@@ -23,6 +23,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// TestPodPolicyMatcherMatch_OverlappingPolicies_SelectsFirstMatchingMode
+// checks selector semantics and policy precedence.
 func TestPodPolicyMatcherMatch_OverlappingPolicies_SelectsFirstMatchingMode(t *testing.T) {
 	cfg, err := LoadTomlConfigFromString(`
 [[podDrainPolicies]]
@@ -68,6 +70,8 @@ mode = "DeleteAfterTimeout"
 	}
 }
 
+// TestLoadTomlConfigFromString_InvalidPodPolicies_ReturnsValidationError
+// rejects malformed or conflicting policies at startup.
 func TestLoadTomlConfigFromString_InvalidPodPolicies_ReturnsValidationError(t *testing.T) {
 	valid := `[[podDrainPolicies]]
 name = "workers"
@@ -93,6 +97,8 @@ mode = "Immediate"
 	}
 }
 
+// TestPodPolicyMatcherLabelKeys_NamespaceOnlyConfig_ReturnsNoKeys
+// keeps namespace-only deployments from retaining policy labels.
 func TestPodPolicyMatcherLabelKeys_NamespaceOnlyConfig_ReturnsNoKeys(t *testing.T) {
 	cfg, err := LoadTomlConfigFromString("[[userNamespaces]]\nname = \"*\"\nmode = \"AllowCompletion\"\n")
 	require.NoError(t, err)

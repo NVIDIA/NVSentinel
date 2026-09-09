@@ -47,6 +47,7 @@ var (
 	restMapper    *restmapper.DeferredDiscoveryRESTMapper
 )
 
+// setupTestEnvironment starts the custom-drain API fixture and waits for CRD discovery, with cleanup registered.
 func setupTestEnvironment(t *testing.T) {
 	t.Helper()
 
