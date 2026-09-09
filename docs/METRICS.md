@@ -14,6 +14,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
   - [GPU Health Monitor](#gpu-health-monitor)
   - [Syslog Health Monitor](#syslog-health-monitor)
   - [CSP Health Monitor](#csp-health-monitor)
+- [Change Stream Metrics](#change-stream-metrics)
 
 ---
 
@@ -341,6 +342,58 @@ The CSP health monitor tracks cloud provider maintenance events and node health 
 | `csp_health_monitor_trigger_uds_send_errors_total` | Counter | - | Total number of errors encountered when sending events via UDS |
 | `csp_health_monitor_node_not_ready_timeout_total` | Counter | `node_name` | Total number of nodes that remained not ready after the timeout period |
 | `csp_health_monitor_node_readiness_monitoring_started_total` | Counter | `node_name` | Total number of times background node readiness monitoring was started |
+
+---
+
+## Change Stream Metrics
+
+Emitted by `store-client`, so they appear on every module that reads the change stream:
+`event-exporter`, `fault-quarantine`, `health-events-analyzer`, `node-drainer`, and
+`fault-remediation`, on both the MongoDB and PostgreSQL providers. The `client` label is the
+consumer's name.
+
+`fault-remediation` serves only controller-runtime's registry, so it passes that registry
+explicitly; the others use the default registry.
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `change_stream_lag_seconds` | Gauge | `client` | Seconds since this consumer last had evidence it was caught up with its own change stream, from either an empty batch or the server-side timestamp of the last event it read. Absent until one of those has been observed |
+| `change_stream_lag_known` | Gauge | `client` | 1 once `change_stream_lag_seconds` can be computed for this consumer, 0 before then |
+| `change_stream_resume_token_recoveries_total` | Counter | `client`, `phase` | Times a stale or invalid resume token was deleted, restarting the stream from the current position |
+
+Lag is measured against the consumer's **own filtered stream**, so a module whose pipeline
+admits nothing still reports zero lag while it is caught up. See
+[ADR-054](designs/054-changestream-lag-metrics.md).
+
+### Suggested alerts
+
+```yaml
+# A consumer is behind. Tune the threshold per fleet; no lag_known qualifier is needed,
+# because the series is absent rather than zero while lag is unknown.
+- alert: ChangeStreamConsumerBehind
+  expr: change_stream_lag_seconds > 900
+  for: 10m
+
+# A watcher that never started, or is wedged before its first read. The grace period covers
+# normal startup, which closes in milliseconds on a live stream.
+- alert: ChangeStreamLagUnknown
+  expr: change_stream_lag_known == 0
+  for: 10m
+```
+
+### What zero lag does not tell you
+
+Each of these is a way a consumer can be behind while the gauge reads zero.
+
+1. **Replication lag.** The MongoDB stream is opened `SecondaryPreferred` with no max staleness,
+   so an empty batch means "caught up with the secondary I am reading", not with the primary.
+2. **Data skipped after a resume-token recovery.** When a stored token is too old for the oplog
+   the watcher reopens from now, so lag reads near zero precisely when the most was skipped.
+   Read `change_stream_lag_seconds` together with `change_stream_resume_token_recoveries_total`:
+   a lag of zero is only reassuring if the recoveries counter has not moved.
+3. **Durable position.** This measures the watcher's progress against its own stream, not
+   whether its position was persisted. A consumer that reads an event and dies before
+   `MarkProcessed` succeeds looks healthy here, because the read did happen.
 
 ---
 

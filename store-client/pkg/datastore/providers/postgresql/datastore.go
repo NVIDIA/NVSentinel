@@ -24,6 +24,7 @@ import (
 
 	"github.com/XSAM/otelsql"
 	_ "github.com/lib/pq" // PostgreSQL driver
+	"github.com/prometheus/client_golang/prometheus"
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
@@ -38,6 +39,9 @@ type PostgreSQLDataStore struct {
 	connString            string // Connection string for creating LISTEN connections
 	maintenanceEventStore datastore.MaintenanceEventStore
 	healthEventStore      datastore.HealthEventStore
+	// metricsRegisterer is where change stream metrics are registered; nil means the default
+	// Prometheus registry.
+	metricsRegisterer prometheus.Registerer
 }
 
 // NewPostgreSQLStore creates a new PostgreSQL datastore
@@ -93,8 +97,9 @@ func NewPostgreSQLStore(ctx context.Context, config datastore.DataStoreConfig) (
 	}
 
 	store := &PostgreSQLDataStore{
-		db:         db,
-		connString: connectionString, // Store for LISTEN connections
+		db:                db,
+		connString:        connectionString, // Store for LISTEN connections
+		metricsRegisterer: config.MetricsRegisterer,
 	}
 	store.maintenanceEventStore = NewPostgreSQLMaintenanceEventStore(db)
 	store.healthEventStore = NewPostgreSQLHealthEventStore(db)
@@ -168,6 +173,8 @@ func (p *PostgreSQLDataStore) NewChangeStreamWatcher(
 	watcher := NewPostgreSQLChangeStreamWatcher(p.db, clientName, snakeCaseTableName, p.connString, ModeHybrid)
 	watcher.pipeline = pipeline
 	watcher.pipelineFilter = pipelineFilter
+
+	client.RegisterChangeStreamLag(p.metricsRegisterer, clientName, watcher)
 
 	// Wrap the watcher to provide Unwrap() support for backward compatibility
 	return NewPostgreSQLChangeStreamWatcherWithUnwrap(watcher, resumeControlDecision), nil
