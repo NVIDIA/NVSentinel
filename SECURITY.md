@@ -42,9 +42,8 @@ Export variables for the image you want to verify, for example:
 
 ```shell
 export IMAGE="ghcr.io/nvidia/nvsentinel/fault-quarantine"
-export DIGEST="sha256:4558fc8a81f26e9dffa513c253de45ffaaca0b41e0bdd7842938778b63c66e1d"
+export DIGEST="$(crane digest "$IMAGE:v1.22.0")"
 export IMAGE_DIGEST="$IMAGE@$DIGEST"
-export IMAGE_SBOM="$IMAGE:sha256-$(echo "$DIGEST" | cut -d: -f2).sbom"
 ```
 
 **Authentication** (if needed):
@@ -52,51 +51,40 @@ export IMAGE_SBOM="$IMAGE:sha256-$(echo "$DIGEST" | cut -d: -f2).sbom"
 docker login ghcr.io
 ```
 
-### SPDX SBOM (Software Bill of Materials)
+### CycloneDX SBOM (Software Bill of Materials)
 
-A Software Bill of Materials (SBOM) provides a detailed inventory of all components in a container image. NVSentinel generates SBOMs in [SPDX](https://spdx.dev/) v2.3 format.
-
-**Query SBOM**:
+A Software Bill of Materials (SBOM) provides a detailed inventory of all components in a container image. NVSentinel generates SBOMs in [CycloneDX](https://cyclonedx.org/) JSON format with [Syft](https://github.com/anchore/syft), and attaches each one to its image as a Sigstore attestation:
 
 ```shell
-# Get SBOM manifest digest
-export SBOM_DIGEST=$(crane manifest $IMAGE_SBOM | jq -r '.layers[0].digest')
-
-# Retrieve SBOM content
-crane blob "$IMAGE@$SBOM_DIGEST"
+cosign attest --predicate sbom-<component>.cdx.json --type cyclonedx "$IMAGE_DIGEST"
 ```
 
-**Example SBOM output** (abbreviated):
+**Retrieve the SBOM attestation**:
 
-```json
-{
-  "SPDXID": "SPDXRef-DOCUMENT",
-  "name": "sbom-sha256:4558fc8a...",
-  "spdxVersion": "SPDX-2.3",
-  "creationInfo": {
-    "created": "2025-10-13T16:04:04Z",
-    "creators": ["Tool: ko v0.18.0"]
-  },
-  "packages": [
-    {
-      "SPDXID": "SPDXRef-Package-sha256-850e8fd3...",
-      "name": "sha256:850e8fd3...",
-      "primaryPackagePurpose": "CONTAINER",
-      "externalRefs": [
-        {
-          "referenceCategory": "PACKAGE-MANAGER",
-          "referenceType": "purl"
-        }
-      ]
-    }
-  ]
-}
+```shell
+cosign verify-attestation \
+  --type cyclonedx \
+  --certificate-identity-regexp '^https://github.com/NVIDIA/NVSentinel/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  "$IMAGE_DIGEST" \
+  | jq -r .payload | base64 -d | jq .predicate
 ```
+
+Images are not signed with `cosign sign`, so there is no standalone signature to verify — the SBOM and provenance attestations are themselves signed, and verifying an attestation is what establishes provenance.
 ### SLSA Build Provenance
 
 SLSA (Supply chain Levels for Software Artifacts) provides verifiable information about how images were built.
 
-NVSentinel images include SLSA Build Provenance attestations that can be verified both manually (using CLI tools) and automatically (using Kubernetes admission policies). 
+NVSentinel images include SLSA Build Provenance attestations that can be verified both manually (using CLI tools) and automatically (using Kubernetes admission policies).
+
+The quickest check uses the GitHub CLI, which needs no local tooling beyond `gh`:
+
+```shell
+gh attestation verify oci://ghcr.io/nvidia/nvsentinel/fault-quarantine:v1.22.0 \
+  --repo NVIDIA/NVSentinel
+```
+
+A successful run reports the predicate type `https://slsa.dev/provenance/v1` and the workflow that produced the image, for example `.github/workflows/publish.yml@refs/tags/v1.22.0`.
 
 Refer to [distros/kubernetes/nvsentinel/policies/README.md](distros/kubernetes/nvsentinel/policies/README.md) for:
 
