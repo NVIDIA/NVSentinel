@@ -39,10 +39,21 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
+	"github.com/nvidia/nvsentinel/store-client/pkg/lagstate"
 )
 
 // fieldClientName is the resume-token document field identifying the watcher.
 const fieldClientName = "clientName"
+
+// changeStreamMaxAwaitTime is how long the server holds a getMore with nothing to deliver.
+// It bounds both the idle cost of the TryNext loop and the resolution of the caught-up
+// timestamp behind change_stream_lag_seconds, so it wants to be well under any lag alert
+// threshold without making the loop chatty.
+const changeStreamMaxAwaitTime = 1 * time.Second
+
+// errChangeStreamClosed reports a server-closed cursor, which TryNext signals as "no event
+// and no error". Treated as an error so the stream is reopened rather than spun on.
+var errChangeStreamClosed = errors.New("change stream cursor closed by server")
 
 var resumeTokenRecoveries = promauto.NewCounterVec(
 	prometheus.CounterOpts{
@@ -113,6 +124,17 @@ type ChangeStreamWatcher struct {
 	done chan struct{}
 	// cancel cancels the internal context to stop the event loop
 	cancel context.CancelFunc
+
+	// lag carries the two timestamps change_stream_lag_seconds is derived from. Embedded so
+	// this watcher satisfies the optional lag-state interface pkg/client asserts on.
+	lag lagstate.Tracker
+}
+
+// LagState reports when the watcher last observed itself caught up and the server time of the
+// last event it read. Either may be zero before the first read, which callers must treat as
+// "unknown" rather than as caught up: see ADR-054.
+func (w *ChangeStreamWatcher) LagState() (lastEmptyBatch, lastEventRead time.Time) {
+	return w.lag.LagState()
 }
 
 func NewChangeStreamWatcher(
@@ -164,8 +186,12 @@ func NewChangeStreamWatcher(
 	tokenCollOpts := options.Collection().SetWriteConcern(wc).SetReadConcern(rc).SetReadPreference(rp)
 	tokenColl := client.Database(tokenConfig.TokenDatabase).Collection(tokenConfig.TokenCollection, tokenCollOpts)
 
-	// Change stream options
-	opts := options.ChangeStream().SetFullDocument(options.UpdateLookup)
+	// Change stream options. MaxAwaitTime is set explicitly rather than left to the server
+	// default: with TryNext in the event loop it is what bounds how long an idle poll blocks,
+	// and therefore the resolution of the caught-up timestamp behind change_stream_lag_seconds.
+	opts := options.ChangeStream().
+		SetFullDocument(options.UpdateLookup).
+		SetMaxAwaitTime(changeStreamMaxAwaitTime)
 
 	var storedToken TokenDoc
 
@@ -408,6 +434,36 @@ func (w *ChangeStreamWatcher) Start(ctx context.Context) {
 	}()
 }
 
+// streamStep is what a single TryNext told the read loop.
+type streamStep int
+
+const (
+	// stepEvent means an event is waiting to be decoded.
+	stepEvent streamStep = iota
+	// stepCaughtUp means the await window closed with nothing to deliver, which is affirmative
+	// evidence of being caught up with this consumer's own filtered stream.
+	stepCaughtUp
+	// stepFailed means the stream has to be reopened.
+	stepFailed
+)
+
+// classifyStreamStep decides what one TryNext meant. Separate from the loop because the
+// closed-cursor case is otherwise only reachable against a live server: TryNext reports it as
+// "no event and no error", which is indistinguishable from an empty batch except by the cursor
+// ID, and treating it as an empty batch spins forever against a dead stream.
+func classifyStreamStep(hasNext bool, csErr error, cursorID int64) (streamStep, error) {
+	switch {
+	case hasNext:
+		return stepEvent, nil
+	case csErr != nil:
+		return stepFailed, csErr
+	case cursorID == 0:
+		return stepFailed, errChangeStreamClosed
+	default:
+		return stepCaughtUp, nil
+	}
+}
+
 func (w *ChangeStreamWatcher) eventLoop(ctx context.Context) {
 	for {
 		select {
@@ -415,17 +471,29 @@ func (w *ChangeStreamWatcher) eventLoop(ctx context.Context) {
 			slog.Info("ChangeStreamWatcher context cancelled, stopping event processing", "client", w.clientName)
 			return
 		default:
-			// Use read lock to allow concurrent Next() calls but prevent Close() during Next()
+			// TryNext rather than Next so an idle stream is distinguishable from a stalled
+			// one: it returns once the server's await window closes with nothing to deliver,
+			// which is the only moment "caught up" can be recorded. Idle cost is unchanged,
+			// because both issue a getMore the server holds for changeStreamMaxAwaitTime.
+			//
+			// Read lock allows concurrent cursor reads but prevents Close() during one.
 			w.closeMu.RLock()
-			hasNext := w.changeStream.Next(ctx)
+			hasNext := w.changeStream.TryNext(ctx)
 			csErr := w.changeStream.Err()
+			cursorID := w.changeStream.ID()
 			w.closeMu.RUnlock()
 
-			if hasNext {
+			step, stepErr := classifyStreamStep(hasNext, csErr, cursorID)
+
+			switch step {
+			case stepEvent:
 				w.processNextEvent(ctx)
-			} else if csErr != nil {
-				w.handleChangeStreamError(csErr)
+			case stepFailed:
+				w.handleChangeStreamError(stepErr)
+
 				return
+			case stepCaughtUp:
+				w.lag.RecordCaughtUp(time.Now())
 			}
 		}
 	}
@@ -442,6 +510,10 @@ func (w *ChangeStreamWatcher) processNextEvent(ctx context.Context) {
 		slog.Error("Failed to decode change stream event", "client", w.clientName, "error", err)
 		return
 	}
+
+	// Record the event's own server-side time, not time.Now(): lag is the age of what the
+	// consumer is reading, so a backlog of old events must read as old.
+	w.lag.RecordEventRead(clusterTimeOf(event))
 
 	// Attach this event's resume token (read via mongoEvent.GetResumeToken) so
 	// consumers can checkpoint exactly at the event they processed. The change
@@ -461,6 +533,17 @@ func (w *ChangeStreamWatcher) processNextEvent(ctx context.Context) {
 		slog.Info("Context cancelled while sending event, stopping", "client", w.clientName)
 	case w.eventChannel <- genericEvent:
 	}
+}
+
+// clusterTimeOf extracts a change event's server-side timestamp. Returns the zero time when
+// the field is absent or not a timestamp, which recordEventRead then ignores.
+func clusterTimeOf(event bson.M) time.Time {
+	ts, ok := event["clusterTime"].(bson.Timestamp)
+	if !ok {
+		return time.Time{}
+	}
+
+	return time.Unix(int64(ts.T), 0).UTC()
 }
 
 func (w *ChangeStreamWatcher) handleChangeStreamError(csErr error) {
