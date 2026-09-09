@@ -57,7 +57,7 @@ make -C labeler test         # gotestsum, race detector on
 make -C labeler coverage     # coverage report
 
 # Single test
-cd labeler && go test -race -run TestLabeler_KataEnabled ./...
+cd labeler && go test -race -run TestKataLabelDetection ./...
 
 # Local cluster (ctlptl-managed Kind + registry, driven by Tilt)
 make dev-env         # create cluster + start Tilt
@@ -201,6 +201,7 @@ type HealthEvent struct {
 | `platform-connectors/` | gRPC ingest from monitors; CSP integration (AWS, GCP, Azure) |
 | `store-client/` | Event store client (MongoDB change streams, PostgreSQL) |
 | `data-models/` | Protobuf definitions — **edit `.proto` here, never the generated files** |
+| `api/` | Second protobuf tree (`api/proto/`) plus its generated Go under `api/gen/`. Same rule: edit the `.proto`, never the generated output |
 | `commons/` | Shared Go utilities |
 | `labeler/` | Node labeling (DCGM version, driver status, Kata detection) |
 | `preflight/`, `preflight-checks/` | Pre-workload cluster validation (DCGM diag, NCCL tests) |
@@ -279,7 +280,7 @@ defer resp.Body.Close()
 
 **Python** (`gpu-health-monitor`, `dcgm-diag`, `nccl-allreduce`, `log-collector`): Poetry for dependencies, PEP 8, Black for formatting, type hints on all functions.
 
-**Protobuf**: edit `.proto` files under `data-models/protobufs/` and run `make protos-generate`. Never hand-edit generated code — CI diffs the regenerated output and fails on drift.
+**Protobuf**: there are two `.proto` trees — `data-models/protobufs/` and `api/proto/` (`device/v1alpha1`, `csp/v1alpha1`). Edit either and run `make protos-generate`, which drives both. Never hand-edit generated code — CI diffs the regenerated output and fails on drift.
 
 ## Testing
 

@@ -64,13 +64,16 @@ cosign attest --predicate sbom-<component>.cdx.json --type cyclonedx "$IMAGE_DIG
 ```shell
 cosign verify-attestation \
   --type cyclonedx \
-  --certificate-identity-regexp '^https://github.com/NVIDIA/NVSentinel/' \
+  --certificate-identity-regexp '^https://github\.com/NVIDIA/NVSentinel/\.github/workflows/publish\.yml@refs/(heads|tags)/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   "$IMAGE_DIGEST" \
   | jq -r .payload | base64 -d | jq .predicate
 ```
 
-Images are not signed with `cosign sign`, so there is no standalone signature to verify — the SBOM and provenance attestations are themselves signed, and verifying an attestation is what establishes provenance.
+That identity is the same one the in-cluster policies enforce, so a check that passes here matches what the admission controller will accept.
+
+Images are not signed with `cosign sign`, so there is no standalone image signature to verify. Verifying this attestation authenticates the SBOM contents — it does not establish how the image was built. Build provenance comes from the SLSA attestation below.
+
 ### SLSA Build Provenance
 
 SLSA (Supply chain Levels for Software Artifacts) provides verifiable information about how images were built.
@@ -81,7 +84,8 @@ The quickest check uses the GitHub CLI, which needs no local tooling beyond `gh`
 
 ```shell
 gh attestation verify oci://ghcr.io/nvidia/nvsentinel/fault-quarantine:v1.22.0 \
-  --repo NVIDIA/NVSentinel
+  --repo NVIDIA/NVSentinel \
+  --signer-workflow NVIDIA/NVSentinel/.github/workflows/publish.yml
 ```
 
 A successful run reports the predicate type `https://slsa.dev/provenance/v1` and the workflow that produced the image, for example `.github/workflows/publish.yml@refs/tags/v1.22.0`.
