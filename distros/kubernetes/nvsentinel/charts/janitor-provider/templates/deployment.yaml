@@ -106,6 +106,13 @@ spec:
               value: {{ .Values.csp.generic.imagePullSecrets | quote }}
             {{- end }}
             {{- end }}
+            {{- if eq (lower (.Values.csp.provider | default "kind")) "label" }}
+            # Label provider environment variables (key=value specs)
+            - name: LABEL_REBOOT_KEY
+              value: {{ ((.Values.csp.label).rebootKey) | default "nke.nvidia.com/reboot=requested-by-nvsentinel" | quote }}
+            - name: LABEL_TERMINATE_KEY
+              value: {{ ((.Values.csp.label).terminateKey) | default "nke.nvidia.com/terminate=requested-by-nvsentinel" | quote }}
+            {{- end }}
             {{- if eq (.Values.csp.provider | default "kind") "aws" }}
             # AWS-specific environment variables
             {{- if .Values.csp.aws.region }}

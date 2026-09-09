@@ -35,6 +35,11 @@ const (
 	defaultAgentName              = "metadata-collector"
 	defaultOutputPath             = "/var/lib/nvsentinel/gpu_metadata.json"
 	defaultPodDeviceMonitorPeriod = time.Second * 30
+
+	// At the 30s poll period this is 5 minutes of a collector that cannot do its job: long
+	// enough to ride out a credential rotation or a kubelet restart, short enough to still be
+	// a loud failure.
+	defaultMaxConsecutivePodMapperFailures = 10
 )
 
 var (
@@ -43,6 +48,10 @@ var (
 	date    = "unknown"
 
 	outputPath = flag.String("output-path", defaultOutputPath, "Path to write the GPU metadata JSON file")
+
+	maxConsecutivePodMapperFailures = flag.Int("pod-mapper-max-consecutive-failures",
+		defaultMaxConsecutivePodMapperFailures,
+		"Consecutive pod device mapper poll failures tolerated before exiting non-zero. Minimum 1.")
 )
 
 func main() {
@@ -79,15 +88,46 @@ func runMapper(ctx context.Context) error {
 	ticker := time.NewTicker(defaultPodDeviceMonitorPeriod)
 	defer ticker.Stop()
 
+	return pollPodDevices(ctx, podDeviceMapper, ticker.C, *maxConsecutivePodMapperFailures)
+}
+
+// pollPodDevices updates pod device annotations on every tick, returning only when ctx is done
+// or maxConsecutiveFailures polls have failed in a row.
+//
+// The threshold is the point: a single failed poll used to return, which main turns into
+// os.Exit(1), so one rotated credential restarted every pod in the fleet at once. Failing
+// loudly is still wanted, just once the failures look permanent rather than transient.
+func pollPodDevices(ctx context.Context, podDeviceMapper mapper.PodDeviceMapper,
+	ticks <-chan time.Time, maxConsecutiveFailures int) error {
+	if maxConsecutiveFailures < 1 {
+		return fmt.Errorf("pod-mapper-max-consecutive-failures must be at least 1, got %d", maxConsecutiveFailures)
+	}
+
+	consecutiveFailures := 0
+
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-ticker.C:
+		case <-ticks:
 			numUpdates, err := podDeviceMapper.UpdatePodDevicesAnnotations()
 			if err != nil {
-				return fmt.Errorf("could not update mapper pod devices annotations: %w", err)
+				consecutiveFailures++
+
+				if consecutiveFailures >= maxConsecutiveFailures {
+					return fmt.Errorf("could not update mapper pod devices annotations, %d consecutive failures: %w",
+						consecutiveFailures, err)
+				}
+
+				slog.Error("Could not update mapper pod devices annotations, retrying on the next tick",
+					"consecutiveFailures", consecutiveFailures,
+					"threshold", maxConsecutiveFailures,
+					"error", err)
+
+				continue
 			}
+
+			consecutiveFailures = 0
 
 			slog.Info("Device mapper pod annotation updates", "podCount", numUpdates)
 		}
