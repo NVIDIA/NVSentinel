@@ -25,6 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/evaluator"
@@ -36,7 +37,10 @@ type stubRuleSetEvaluator struct {
 	err    error
 }
 
-func (s *stubRuleSetEvaluator) Evaluate(*protos.HealthEvent) (common.RuleEvaluationResult, error) {
+func (s *stubRuleSetEvaluator) Evaluate(
+	context.Context,
+	*protos.HealthEvent,
+) (common.RuleEvaluationResult, error) {
 	return s.result, s.err
 }
 
@@ -71,9 +75,23 @@ func TestApplyRuleLabelsForEvent_EvaluationError_ContinuesToNextEvaluator(t *tes
 	}
 
 	err := r.applyRuleLabelsForEvent(ctx, &protos.HealthEvent{NodeName: nodeName}, evaluators, rulesets)
-	require.NoError(t, err)
+	require.EqualError(t, err, "evaluation failed")
 
 	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	require.NoError(t, err)
 	assert.Equal(t, "critical", node.Labels["nvidia.com/gpu-fault"])
+}
+
+func TestEventMatchesAnyRule_PermanentEvaluationFailure_RecordsError(t *testing.T) {
+	ctx := context.Background()
+	evaluationErr := coldstart.PermanentError(errors.New("invalid CEL expression"))
+	r := &Reconciler{}
+
+	matched, err := r.eventMatchesAnyRule(ctx, &protos.HealthEvent{}, []evaluator.RuleSetEvaluatorIface{
+		&stubRuleSetEvaluator{name: "broken", err: evaluationErr},
+	})
+
+	assert.False(t, matched)
+	require.ErrorIs(t, err, evaluationErr)
+	assert.True(t, coldstart.IsPermanentError(err))
 }

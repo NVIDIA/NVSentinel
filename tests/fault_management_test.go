@@ -137,6 +137,70 @@ func TestDryRunMode(t *testing.T) {
 		return ctx
 	})
 
+	feature.Assess("healthy event clears dry-run annotations", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
+		require.Eventually(t, func() bool {
+			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			if err != nil {
+				return false
+			}
+
+			annotationKeys := []string{
+				"quarantineHealthEvent",
+				"quarantineHealthEventAppliedTaints",
+				"quarantineHealthEventIsCordoned",
+			}
+			for _, key := range annotationKeys {
+				if _, exists := node.Annotations[key]; exists {
+					return false
+				}
+			}
+
+			if node.Spec.Unschedulable {
+				return false
+			}
+
+			for _, taint := range node.Spec.Taints {
+				if taint.Key == "AggregatedNodeHealth" {
+					return false
+				}
+			}
+
+			return true
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+			"Healthy dry-run event should clear observability annotations without changing the node spec")
+
+		return ctx
+	})
+
+	feature.Assess("next fault is evaluated fresh after dry-run recovery", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		event := helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("79").
+			WithMessage("XID error occurred after recovery")
+		helpers.SendHealthEvent(ctx, t, event)
+
+		var node *v1.Node
+		require.Eventually(t, func() bool {
+			node, err = helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			return err == nil && node.Annotations["quarantineHealthEvent"] != ""
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+			"A new fault should restore dry-run observability annotations")
+
+		assert.False(t, node.Spec.Unschedulable, "Node should remain schedulable in dry-run mode")
+		for _, taint := range node.Spec.Taints {
+			assert.NotEqual(t, "AggregatedNodeHealth", taint.Key,
+				"Node should remain free of the rule taint in dry-run mode")
+		}
+
+		return ctx
+	})
+
 	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err)

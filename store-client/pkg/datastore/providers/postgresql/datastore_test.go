@@ -17,6 +17,7 @@ package postgresql
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -232,6 +233,25 @@ func TestPostgreSQLDataStore_Ping(t *testing.T) {
 			assert.NoError(t, mock.ExpectationsWereMet())
 		})
 	}
+}
+
+func TestRecoveryIndexesIncludePartialPendingEventCursor(t *testing.T) {
+	var pendingIndex string
+	for _, statement := range recoveryIndexStatements {
+		if strings.Contains(statement, "idx_health_events_fault_quarantine_pending") {
+			pendingIndex = statement
+
+			break
+		}
+	}
+
+	require.NotEmpty(t, pendingIndex)
+	assert.Contains(t, pendingIndex, "ON health_events (created_at, id) WHERE")
+	assert.Contains(t, pendingIndex,
+		"COALESCE(document->'healtheventstatus'->>'nodequarantined', document->'healtheventstatus'->>'nodeQuarantined')")
+	assert.Contains(t, pendingIndex, "= 'NotStarted'")
+	assert.Contains(t, pendingIndex,
+		"document->'healtheventstatus'->>'faultquarantinerecovery' IS NULL")
 }
 
 func TestPostgreSQLDataStore_Provider(t *testing.T) {

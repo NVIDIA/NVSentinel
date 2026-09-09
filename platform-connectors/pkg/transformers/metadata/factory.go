@@ -19,6 +19,7 @@ package metadata
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"k8s.io/client-go/kubernetes"
 
@@ -28,6 +29,7 @@ import (
 
 func init() {
 	pipeline.Register("MetadataAugmentor", newFromConfig)
+	pipeline.RegisterDisabledCheck("MetadataAugmentor", warnIfSkipLabelConfigured)
 }
 
 func newFromConfig(cfg *pipeline.Config, opts pipeline.Options) (pipeline.Transformer, error) {
@@ -51,4 +53,18 @@ func newFromConfig(cfg *pipeline.Config, opts pipeline.Options) (pipeline.Transf
 	}
 
 	return New(context.Background(), metadataCfg, clientset)
+}
+
+func warnIfSkipLabelConfigured(ctx context.Context, cfg *pipeline.Config) {
+	metadataCfg, err := LoadConfig(cfg.ConfigPath)
+	if err != nil {
+		return
+	}
+
+	if metadataCfg.SkipNodeLabel != "" {
+		slog.WarnContext(ctx,
+			"MetadataAugmentor is DISABLED but skipNodeLabel is configured; "+
+				"the managed-label gate will NOT enforce STORE_ONLY for opted-out nodes",
+			"skipNodeLabel", metadataCfg.SkipNodeLabel)
+	}
 }

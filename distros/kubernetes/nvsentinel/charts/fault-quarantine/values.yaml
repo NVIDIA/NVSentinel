@@ -65,6 +65,15 @@ circuitBreaker:
   # before the circuit breaker trips.
   # Example: 50 means if 50% or more GPU nodes are cordoned, no new quarantines will be allowed
   percentage: 50
+  # Optional absolute cap on cordoned nodes within the window, independent of fleet size.
+  # 0 disables it. When both are set the lower bound binds, so "percentage: 5, maxNodes: 10"
+  # means 5% but never more than 10 nodes.
+  #
+  # Prefer this when the blast radius you care about is a number of machines rather than a
+  # share of the fleet, since a percentage silently changes meaning as the fleet grows. Note
+  # it is per cluster by nature: an operator running many clusters of differing size will
+  # need to tune it per cluster, or leave it 0 and rely on percentage alone.
+  maxNodes: 0
   # Time window for the sliding window circuit breaker
   # The circuit breaker counts cordon events within this time window
   # Example: "5m" means if 50% of GPU nodes are cordoned within any 5-minute window, the circuit breaker trips
@@ -178,6 +187,28 @@ ruleSets:
             !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")
     cordon:
       shouldCordon: true
+
+  - enabled: true
+    version: "1"
+    name: "NVCRE certification monitor failure ruleset"
+    # Certification failures taint the node instead of cordoning it. NVCRE
+    # reports a cordoned node as HardwareFailureDetected and skips it, so a
+    # cordoned node could never be re-certified. A dedicated taint keeps
+    # ordinary workloads off while certification pods tolerate it and rerun.
+    match:
+      all:
+        - kind: "HealthEvent"
+          expression: "event.agent == 'nvcre-certification-monitor' && event.checkName == 'NVCRECertFailed' && event.isFatal == true"
+        - kind: "Node"
+          expression: >-
+            !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
+            !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")
+    cordon:
+      shouldCordon: false
+    taint:
+      key: "nvsentinel.dgxc.nvidia.com/nvcre-cert-failed"
+      value: "true"
+      effect: "NoSchedule"
 
   - enabled: true
     version: "1"

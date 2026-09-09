@@ -235,6 +235,77 @@ The default of `10` handles clusters up to ~3,300 nodes at typical event rates.
 
 If your publish latency is lower (e.g., 100ms for a co-located endpoint), each worker handles proportionally more events — divide the latency ratio to estimate your actual throughput.
 
+## Event Filter
+
+Selects which events reach the sink. An empty expression exports everything, which is the default and matches previous behaviour.
+
+```yaml
+event-exporter:
+  exporter:
+    filter:
+      expression: "event.recommendedAction != 'NONE' && !('45' in event.errorCode)"
+```
+
+### Parameters
+
+#### expression
+CEL over the health event. Must evaluate to a boolean; an event whose expression is false is not published.
+
+### When to use it
+
+Use it when you want to drop events before they reach the sink. This is common when the sink sends out notifications rather than archiving everything, since most events recommend no action and are not worth notifying on.
+
+Exporting everything to a data lake and filtering at the destination remains the default.
+
+### Available fields
+
+The expression is evaluated against the vocabulary in `commons/pkg/celevent`, shared with the platform connector's [override transformer](platform-connectors.md#override-transformer-configuration), so an expression learned for one works in the other:
+
+| Field | Type |
+| --- | --- |
+| `event.agent` | string |
+| `event.checkName` | string |
+| `event.componentClass` | string |
+| `event.errorCode` | **list of string** |
+| `event.isFatal` | bool |
+| `event.isHealthy` | bool |
+| `event.recommendedAction` | string, the enum name such as `NONE` or `CONTACT_SUPPORT` |
+| `event.nodeName` | string |
+| `event.metadata` | map of string to string |
+| `event.message` | string |
+
+> **`errorCode` is a list, not a string.** A health event can carry several codes, so match with membership: `'45' in event.errorCode`, not `event.errorCode == '45'`. The latter is a type error, not a false match.
+
+### Examples
+
+```yaml
+# Actionable events only. Drops the ~99% that recommend no action.
+expression: "event.recommendedAction != 'NONE'"
+
+# Actionable, but exclude a known-noisy code.
+expression: "event.recommendedAction != 'NONE' && !('45' in event.errorCode)"
+
+# One agent's fatal events, plus their recoveries.
+expression: "event.agent == 'gpu-health-monitor' && (event.isFatal == true || event.isHealthy == true)"
+
+# Everything except a specific check.
+expression: "event.checkName != 'GpuPowerWatch'"
+```
+
+### Operational notes
+
+**Validated at startup.** The expression is compiled during config validation, so a syntax error or a non-boolean expression stops the exporter from starting rather than failing per event.
+
+> **Write a comparison, not a bare field.** `event` is bound as a dynamically typed map, so a bare read is untyped and rejected, *including* a semantically boolean one. Use `event.isFatal == true`, not `event.isFatal`. This is stricter than strictly necessary for the boolean fields, and it is the trade that lets `event.agent` be caught at startup instead of on the first event. The error message names the working form.
+
+**It fails open.** An evaluation error exports the event and increments `health_events_exporter_filter_errors_total`. Dropping events because of a filter bug is silent data loss, whereas exporting an extra event is noise the sink already tolerates. Alert on that counter being non-zero.
+
+**Filtered events still advance the resume token.** A filtered event is completed rather than skipped, so the stream makes progress. This matters: were it skipped, one filtered event at the head of the stream would stall the token and a restart would redeliver everything after it, which with a filter dropping 99% of events would mean never making progress.
+
+**It applies to backfill too**, so a backfill run exports the same subset as the live stream.
+
+`health_events_exporter_events_filtered_total` counts events the filter dropped.
+
 ## Failure Handling
 
 Configures retry behavior for failed export attempts.

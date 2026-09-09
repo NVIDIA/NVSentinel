@@ -23,6 +23,8 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
@@ -218,6 +220,42 @@ var _ = Describe("RebootNode Controller", func() {
 
 			_, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Context("when another RebootNode holds the node lock", func() {
+		It("marks the incoming RebootNode terminal with holder feedback", func() {
+			t := GinkgoT()
+			holderRequest := reconcile.Request{NamespacedName: types.NamespacedName{Name: testRebootNode.Name}}
+			_, err := reconciler.Reconcile(ctx, holderRequest)
+			require.NoError(t, err)
+
+			duplicate := &janitordgxcnvidiacomv1alpha1.RebootNode{
+				ObjectMeta: metav1.ObjectMeta{Name: crName + "-duplicate"},
+				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
+					NodeName: nodeName,
+				},
+			}
+			require.NoError(t, k8sClient.Create(ctx, duplicate))
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: duplicate.Name},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, reconcile.Result{}, result)
+
+			var updated janitordgxcnvidiacomv1alpha1.RebootNode
+			require.NoError(t, k8sClient.Get(ctx, types.NamespacedName{Name: duplicate.Name}, &updated))
+			require.NotNil(t, updated.Status.CompletionTime)
+
+			condition := findCondition(
+				updated.Status.Conditions,
+				janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady,
+			)
+			require.NotNil(t, condition)
+			assert.Equal(t, metav1.ConditionFalse, condition.Status)
+			assert.Equal(t, nodeAlreadyUnderMaintenanceReason, condition.Reason)
+			assert.Equal(t, fmt.Sprintf("RebootNode/%s is active for this node", crName), condition.Message)
 		})
 	})
 

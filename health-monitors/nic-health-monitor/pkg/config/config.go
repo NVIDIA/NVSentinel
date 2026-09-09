@@ -199,6 +199,36 @@ type Config struct {
 
 	// CounterDetection contains counter monitoring configuration
 	CounterDetection CounterDetectionConfig `toml:"counterDetection"`
+
+	// CharDeviceCheck tunes the InfiniBandCharDeviceCheck.
+	CharDeviceCheck CharDeviceCheckConfig `toml:"charDeviceCheck"`
+}
+
+// IssmMode selects whether InfiniBandCharDeviceCheck expects the per-port
+// issm character device.
+//
+// issm presence is architecture- and provider-dependent and, unlike umad, is
+// NOT reliably signalled by any port attribute: on a fabric run by an external
+// subnet manager every compute port reads SM_DISABLED (cap_mask bit 0x400)
+// whether or not issm exists, so that bit cannot gate the check. The
+// expectation is therefore an explicit operator opt-in rather than an
+// inferred default.
+const (
+	// IssmModeNever never expects issm. This is the default: umad and uverbs
+	// still cover the RDMA-fatal cases, and a platform that legitimately does
+	// not create issm nodes (e.g. GB300) is never falsely flagged.
+	IssmModeNever = "never"
+	// IssmModeAlways expects one issm per InfiniBand-mode port (the pre-1663
+	// behaviour). Enable it only where issm is guaranteed to be created.
+	IssmModeAlways = "always"
+)
+
+// CharDeviceCheckConfig tunes InfiniBandCharDeviceCheck. umad and uverbs are
+// always required; only the issm expectation is configurable because its
+// presence is architecture-dependent.
+type CharDeviceCheckConfig struct {
+	// Issm is one of "never" (default) or "always".
+	Issm string `toml:"issm"`
 }
 
 // CounterDetectionConfig contains the configuration for counter-based monitoring.
@@ -246,7 +276,27 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("invalid counterDetection: %w", err)
 	}
 
+	if cfg.CharDeviceCheck.Issm == "" {
+		cfg.CharDeviceCheck.Issm = IssmModeNever
+	}
+
+	if err := validateIssmMode(cfg.CharDeviceCheck.Issm); err != nil {
+		return nil, fmt.Errorf("invalid charDeviceCheck: %w", err)
+	}
+
 	return cfg, nil
+}
+
+// validateIssmMode rejects any charDeviceCheck.issm value outside the
+// supported set so a typo fails fast at startup rather than silently
+// falling back to a mode the operator did not choose.
+func validateIssmMode(mode string) error {
+	switch mode {
+	case IssmModeNever, IssmModeAlways:
+		return nil
+	default:
+		return fmt.Errorf("issm %q must be one of %q, %q", mode, IssmModeNever, IssmModeAlways)
+	}
 }
 
 func validateRegexList(commaSeparated string) error {

@@ -253,6 +253,31 @@ func TestExtRRLifecycleHappyPath(t *testing.T) {
 			return ctx
 		})
 
+	// While managed=false is set, platform-connector's MetadataAugmentor
+	// should downgrade any incoming health event to STORE_ONLY, preventing
+	// fault-quarantine from cordoning or remediating the node.
+	feature.Assess("unhealthy event does not trigger remediation while node is released",
+		func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			client, err := c.NewClient()
+			require.NoError(t, err)
+
+			event := helpers.NewHealthEvent(nodeName).
+				WithErrorCode("79").
+				WithMessage("XID error during external remediation")
+			helpers.SendHealthEvent(ctx, t, event)
+
+			assert.Never(t, func() bool {
+				node, err := helpers.GetNodeByName(ctx, client, nodeName)
+				if err != nil {
+					return false
+				}
+				return node.Spec.Unschedulable
+			}, helpers.NeverWaitTimeout, helpers.WaitInterval,
+				"node %s must not be cordoned while managed=false is set", nodeName)
+
+			return ctx
+		})
+
 	feature.Assess("Complete=True scrubs the Node; ExtRR stays as historical record",
 		func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			client, err := c.NewClient()

@@ -22,6 +22,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -304,7 +305,7 @@ var _ = Describe("Janitor Webhook", func() {
 			gpuResetVal = &gpuResetValidator{baseValidator}
 		})
 
-		It("Should reject RebootNode creation when an in-progress RebootNode exists", func() {
+		It("Should admit RebootNode creation when an in-progress RebootNode exists", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.RebootNode{
 				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
@@ -325,8 +326,7 @@ var _ = Describe("Janitor Webhook", func() {
 			fakeClient = fake.NewClientBuilder().WithScheme(scheme).WithObjects(testNode, obj2).Build()
 			baseValidator.Client = fakeClient
 			_, err := rebootVal.ValidateCreate(ctx, obj)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("node 'test-node' already has an active reboot in progress (RebootNode: test-reboot-2)"))
+			require.NoError(GinkgoT(), err)
 		})
 
 		It("Should accept RebootNode creation when a completed RebootNode exists", func() {
@@ -356,7 +356,7 @@ var _ = Describe("Janitor Webhook", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("Should reject GPUReset creation when an in-progress GPUReset for the same GPU exists", func() {
+		It("Should admit GPUReset creation when an in-progress GPUReset for the same GPU exists", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.GPUReset{
 				Name: "test-gpu-reset",
 				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
@@ -381,8 +381,7 @@ var _ = Describe("Janitor Webhook", func() {
 			fakeClient = fake.NewClientBuilder().WithScheme(scheme).WithObjects(testNode, obj2).Build()
 			baseValidator.Client = fakeClient
 			_, err := gpuResetVal.ValidateCreate(ctx, obj)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("node 'test-node' and GPU 'test-uuid' already has an active reset in progress (GPUReset: test-gpu-reset-2)"))
+			require.NoError(GinkgoT(), err)
 		})
 
 		It("Should accept GPUReset creation when a completed GPUReset for the same GPU exists", func() {

@@ -24,6 +24,7 @@ import (
 
 	"github.com/XSAM/otelsql"
 	_ "github.com/lib/pq" // PostgreSQL driver
+	"github.com/prometheus/client_golang/prometheus"
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
@@ -38,6 +39,9 @@ type PostgreSQLDataStore struct {
 	connString            string // Connection string for creating LISTEN connections
 	maintenanceEventStore datastore.MaintenanceEventStore
 	healthEventStore      datastore.HealthEventStore
+	// metricsRegisterer is where change stream metrics are registered; nil means the default
+	// Prometheus registry.
+	metricsRegisterer prometheus.Registerer
 }
 
 // NewPostgreSQLStore creates a new PostgreSQL datastore
@@ -93,8 +97,9 @@ func NewPostgreSQLStore(ctx context.Context, config datastore.DataStoreConfig) (
 	}
 
 	store := &PostgreSQLDataStore{
-		db:         db,
-		connString: connectionString, // Store for LISTEN connections
+		db:                db,
+		connString:        connectionString, // Store for LISTEN connections
+		metricsRegisterer: config.MetricsRegisterer,
 	}
 	store.maintenanceEventStore = NewPostgreSQLMaintenanceEventStore(db)
 	store.healthEventStore = NewPostgreSQLHealthEventStore(db)
@@ -168,6 +173,8 @@ func (p *PostgreSQLDataStore) NewChangeStreamWatcher(
 	watcher := NewPostgreSQLChangeStreamWatcher(p.db, clientName, snakeCaseTableName, p.connString, ModeHybrid)
 	watcher.pipeline = pipeline
 	watcher.pipelineFilter = pipelineFilter
+
+	client.RegisterChangeStreamLag(p.metricsRegisterer, clientName, watcher)
 
 	// Wrap the watcher to provide Unwrap() support for backward compatibility
 	return NewPostgreSQLChangeStreamWatcherWithUnwrap(watcher, resumeControlDecision), nil
@@ -310,6 +317,28 @@ func buildConnectionString(conn datastore.ConnectionConfig) string {
 }
 
 // createTables creates the necessary tables if they don't exist
+var recoveryIndexStatements = []string{
+	`CREATE INDEX IF NOT EXISTS idx_health_events_recovery_identity ON health_events (` +
+		`(document->'healthevent'->>'agent'), ` +
+		`(COALESCE(document->'healthevent'->>'componentclass', ` +
+		`document->'healthevent'->>'componentClass')), ` +
+		`(COALESCE(document->'healthevent'->>'checkname', ` +
+		`document->'healthevent'->>'checkName')), ` +
+		`(COALESCE(document->'healthevent'->>'nodename', ` +
+		`document->'healthevent'->>'nodeName')), ` +
+		`(document->'healthevent'->>'version'), created_at, id)`,
+	`CREATE INDEX IF NOT EXISTS idx_health_events_fault_quarantine_pending ` +
+		`ON health_events (created_at, id) WHERE (` +
+		`COALESCE(document->'healtheventstatus'->>'nodequarantined', ` +
+		`document->'healtheventstatus'->>'nodeQuarantined') IS NULL OR ` +
+		`COALESCE(document->'healtheventstatus'->>'nodequarantined', ` +
+		`document->'healtheventstatus'->>'nodeQuarantined') = '' OR ` +
+		`COALESCE(document->'healtheventstatus'->>'nodequarantined', ` +
+		`document->'healtheventstatus'->>'nodeQuarantined') = 'NotStarted') AND (` +
+		`document->'healtheventstatus'->>'faultquarantinerecovery' IS NULL OR ` +
+		`document->'healtheventstatus'->>'faultquarantinerecovery' = '')`,
+}
+
 func createTables(ctx context.Context, db *sql.DB) error {
 	schemas := []string{
 		`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`,
@@ -399,6 +428,7 @@ func createTables(ctx context.Context, db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_health_events_quarantined ON health_events(node_quarantined) ` +
 			`WHERE node_quarantined IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_health_events_created_desc ON health_events(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_health_events_created_id ON health_events(created_at, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_health_events_document_gin ON health_events USING GIN (document)`,
 
 		// Changelog Indexes
@@ -410,6 +440,7 @@ func createTables(ctx context.Context, db *sql.DB) error {
 			ON datastore_changelog(table_name, changed_at, id)
 			WHERE processed = FALSE`,
 	}
+	indexes = append(indexes, recoveryIndexStatements...)
 
 	// Execute schema creation
 	for _, schema := range schemas {

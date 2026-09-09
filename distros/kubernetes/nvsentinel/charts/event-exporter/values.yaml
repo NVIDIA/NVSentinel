@@ -92,5 +92,13 @@ exporter:
     maxBackoff: "5m"
     backoffMultiplier: 2.0
 
+  # Selects which events reach the sink. Empty exports everything, today's behaviour.
+  # CEL over the health event; must return a boolean, and is compiled at startup so a
+  # typo fails fast rather than silently dropping everything. errorCode is a list, so
+  # match it with membership. Filtered events still advance the resume token.
+  # Example: 'event.recommendedAction != \'NONE\' && !(\'45\' in event.errorCode)'
+  filter:
+    expression: ""
+
 # Pod priority for this component. Overridden by the matching global when that is set.
 priorityClassName: ""

@@ -105,7 +105,7 @@ func getNodeFields(node corev1.Node) (*gcpNodeFields, error) {
 }
 
 // SendRebootSignal resets a GCE node by stopping and starting the instance.
-func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
+func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node, _ string) (model.ResetSignalRequestRef, error) {
 	instancesClient, nodeFields, err := prepareInstanceOp(ctx, node)
 	if err != nil {
 		return "", err

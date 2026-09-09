@@ -92,6 +92,16 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if !completedReconciling {
 		locked := r.NodeLock.LockNode(ctx, &terminateNode, terminateNode.Spec.NodeName)
 		if !locked {
+			holder, active, err := activeSameKindHolder(
+				ctx, r.Client, r.NodeLock, terminateNode.Spec.NodeName, "TerminateNode",
+			)
+			if err != nil {
+				slog.WarnContext(ctx, "Unable to inspect node lock holder; will retry",
+					"node", terminateNode.Spec.NodeName, "error", err)
+			} else if active {
+				return r.completeDuplicateTermination(ctx, &terminateNode, holder.GetName())
+			}
+
 			return ctrl.Result{RequeueAfter: time.Second * 2}, nil
 		}
 
@@ -122,6 +132,50 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *TerminateNodeReconciler) completeDuplicateTermination(
+	ctx context.Context, terminateNode *janitordgxcnvidiacomv1alpha1.TerminateNode, holderName string,
+) (ctrl.Result, error) {
+	terminateNode.SetInitialConditions()
+	terminateNode.SetStartTime()
+	terminateNode.SetCompletionTime()
+	terminateNode.SetCondition(metav1.Condition{
+		Type:               janitordgxcnvidiacomv1alpha1.TerminateNodeConditionNodeTerminated,
+		Status:             metav1.ConditionFalse,
+		Reason:             nodeAlreadyUnderMaintenanceReason,
+		Message:            fmt.Sprintf("TerminateNode/%s is active for this node", holderName),
+		LastTransitionTime: metav1.Now(),
+	})
+
+	if err := r.updateTerminateNodeStatus(ctx, terminateNode); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
+}
+
+func (r *TerminateNodeReconciler) updateTerminateNodeStatus(
+	ctx context.Context, terminateNode *janitordgxcnvidiacomv1alpha1.TerminateNode,
+) error {
+	var latest janitordgxcnvidiacomv1alpha1.TerminateNode
+
+	key := client.ObjectKey{Name: terminateNode.Name, Namespace: terminateNode.Namespace}
+
+	if err := r.Get(ctx, key, &latest); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+
+		return fmt.Errorf("getting latest TerminateNode %q: %w", terminateNode.Name, err)
+	}
+
+	latest.Status = terminateNode.Status
+	if err := r.Status().Update(ctx, &latest); err != nil {
+		return fmt.Errorf("updating TerminateNode %q status: %w", terminateNode.Name, err)
+	}
+
+	return nil
 }
 
 // startTerminateSessionIfNeeded creates or retrieves the long-lived "janitor.terminatenode.terminate_session" span

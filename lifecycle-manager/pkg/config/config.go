@@ -15,6 +15,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 )
@@ -47,6 +49,14 @@ type Config struct {
 
 var funcMap = template.FuncMap{
 	"join": strings.Join,
+	"quote": func(s string) (string, error) {
+		b, err := json.Marshal(s)
+		if err != nil {
+			return "", fmt.Errorf("quote %q: %w", s, err)
+		}
+
+		return string(b), nil
+	},
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -219,8 +229,8 @@ func validateProvider(prefix string, p v1alpha1.ProviderConfig) []error {
 		errs = append(errs, fmt.Errorf("%s.retries: must be >= 0", prefix))
 	}
 
-	if p.Timeout.Duration <= 0 {
-		errs = append(errs, fmt.Errorf("%s.timeout: must be greater than zero", prefix))
+	if p.TimeoutSeconds <= 0 {
+		errs = append(errs, fmt.Errorf("%s.timeoutSeconds: must be greater than zero", prefix))
 	}
 
 	errs = append(errs, validateConditionSpec(prefix+".successfulCondition", p.SuccessfulCondition)...)
@@ -247,40 +257,82 @@ func validateConditionSpec(prefix string, c v1alpha1.ConditionMatch) []error {
 	return errs
 }
 
+func validateTestNameList(prefix string, names []string, tests map[string]v1alpha1.TestConfig) []error {
+	var errs []error
+
+	seen := make(map[string]bool, len(names))
+
+	for _, name := range names {
+		if _, ok := tests[name]; !ok {
+			errs = append(errs, fmt.Errorf("%s: references unknown test %q", prefix, name))
+		}
+
+		if seen[name] {
+			errs = append(errs, fmt.Errorf("%s: contains duplicate test %q", prefix, name))
+		}
+
+		seen[name] = true
+	}
+
+	return errs
+}
+
+func validateCriteriaList(prefix string, criteria []v1alpha1.CriteriaSpec) []error {
+	var errs []error
+
+	for i, c := range criteria {
+		if len(c.Name) == 0 {
+			errs = append(errs, fmt.Errorf("%s[%d].name: must not be empty", prefix, i))
+		}
+
+		if len(c.Expression) == 0 {
+			errs = append(errs, fmt.Errorf("%s[%d].expression: must not be empty", prefix, i))
+		}
+	}
+
+	return errs
+}
+
 func validateTests(cfg *v1alpha1.ValidationConfiguration) []error {
 	var errs []error
 
-	seenDefaultTests := make(map[string]bool, len(cfg.Spec.DefaultTests))
-	for _, name := range cfg.Spec.DefaultTests {
-		if _, ok := cfg.Spec.Tests[name]; !ok {
-			errs = append(errs, fmt.Errorf("spec.defaultTests: references unknown test %q", name))
-		}
-
-		if seenDefaultTests[name] {
-			errs = append(errs, fmt.Errorf("spec.defaultTests: contains duplicate test %q", name))
-		}
-
-		seenDefaultTests[name] = true
-	}
+	errs = append(errs, validateTestNameList("spec.defaultTests", cfg.Spec.DefaultTests, cfg.Spec.Tests)...)
 
 	for name, t := range cfg.Spec.Tests {
-		prefix := fmt.Sprintf("spec.tests[%s]", name)
+		errs = append(errs, validateTest(cfg, name, t)...)
+	}
 
-		if len(t.Provider) == 0 {
-			errs = append(errs, fmt.Errorf("%s.provider: must not be empty", prefix))
-		} else if _, ok := cfg.Spec.Providers[t.Provider]; !ok {
-			errs = append(errs, fmt.Errorf("%s.provider: references unknown provider %q", prefix, t.Provider))
-		}
+	return errs
+}
 
-		if t.MinimumNodesPerBatch < 1 {
-			errs = append(errs, fmt.Errorf("%s.minimumNodesPerBatch: must be >= 1", prefix))
-		}
+func validateTest(cfg *v1alpha1.ValidationConfiguration, name string, t v1alpha1.TestConfig) []error {
+	var errs []error
 
-		if t.BatchFailurePolicy != v1alpha1.BatchFailurePolicyFail &&
-			t.BatchFailurePolicy != v1alpha1.BatchFailurePolicyIgnore {
-			errs = append(errs, fmt.Errorf("%s.batchFailurePolicy: must be %q or %q, got %q",
-				prefix, v1alpha1.BatchFailurePolicyFail, v1alpha1.BatchFailurePolicyIgnore, t.BatchFailurePolicy))
-		}
+	prefix := fmt.Sprintf("spec.tests[%s]", name)
+
+	if msgs := validation.IsDNS1123Label(name); len(msgs) != 0 {
+		errs = append(errs, fmt.Errorf("%s: invalid test name %q: %s", prefix, name, strings.Join(msgs, ", ")))
+	}
+
+	if len(t.Provider) == 0 {
+		errs = append(errs, fmt.Errorf("%s.provider: must not be empty", prefix))
+	} else if _, ok := cfg.Spec.Providers[t.Provider]; !ok {
+		errs = append(errs, fmt.Errorf("%s.provider: references unknown provider %q", prefix, t.Provider))
+	}
+
+	if t.MinimumNodesPerBatch < 1 {
+		errs = append(errs, fmt.Errorf("%s.minimumNodesPerBatch: must be >= 1", prefix))
+	} else if !t.SupportsBatchingNodes && t.MinimumNodesPerBatch > 1 {
+		errs = append(errs, fmt.Errorf(
+			"%s.minimumNodesPerBatch: must be 1 when supportsBatchingNodes is false, got %d "+
+				"(each TestGroup only ever covers 1 node when batching is unsupported)",
+			prefix, t.MinimumNodesPerBatch))
+	}
+
+	if t.BatchFailurePolicy != v1alpha1.BatchFailurePolicyFail &&
+		t.BatchFailurePolicy != v1alpha1.BatchFailurePolicyIgnore {
+		errs = append(errs, fmt.Errorf("%s.batchFailurePolicy: must be %q or %q, got %q",
+			prefix, v1alpha1.BatchFailurePolicyFail, v1alpha1.BatchFailurePolicyIgnore, t.BatchFailurePolicy))
 	}
 
 	return errs
@@ -297,46 +349,17 @@ func validateNewNodeValidation(cfg *v1alpha1.ValidationConfiguration) []error {
 		errs = append(errs, fmt.Errorf("spec.newNodeValidation: newNodeTests and defaultTests are both empty"))
 	}
 
-	seenNewNodeTests := make(map[string]bool, len(cfg.Spec.NewNodeValidation.NewNodeTests))
-	for _, name := range cfg.Spec.NewNodeValidation.NewNodeTests {
-		if _, ok := cfg.Spec.Tests[name]; !ok {
-			errs = append(errs, fmt.Errorf("spec.newNodeValidation.newNodeTests: references unknown test %q", name))
-		}
+	errs = append(errs, validateTestNameList("spec.newNodeValidation.newNodeTests",
+		cfg.Spec.NewNodeValidation.NewNodeTests, cfg.Spec.Tests)...)
 
-		if seenNewNodeTests[name] {
-			errs = append(errs, fmt.Errorf("spec.newNodeValidation.newNodeTests: contains duplicate test %q", name))
-		}
-
-		seenNewNodeTests[name] = true
-	}
-
-	for i, c := range cfg.Spec.NewNodeValidation.Criteria {
-		if len(c.Name) == 0 {
-			errs = append(errs, fmt.Errorf("spec.newNodeValidation.criteria[%d].name: must not be empty", i))
-		}
-
-		if len(c.Expression) == 0 {
-			errs = append(errs, fmt.Errorf("spec.newNodeValidation.criteria[%d].expression: must not be empty", i))
-		}
-	}
+	errs = append(errs, validateCriteriaList("spec.newNodeValidation.criteria",
+		cfg.Spec.NewNodeValidation.Criteria)...)
 
 	return errs
 }
 
 func validateReadinessCriteria(cfg *v1alpha1.ValidationConfiguration) []error {
-	var errs []error
-
-	for i, c := range cfg.Spec.ReadinessCriteria {
-		if len(c.Name) == 0 {
-			errs = append(errs, fmt.Errorf("spec.readinessCriteria[%d].name: must not be empty", i))
-		}
-
-		if len(c.Expression) == 0 {
-			errs = append(errs, fmt.Errorf("spec.readinessCriteria[%d].expression: must not be empty", i))
-		}
-	}
-
-	return errs
+	return validateCriteriaList("spec.readinessCriteria", cfg.Spec.ReadinessCriteria)
 }
 
 func validateSchedulingGate(cfg *v1alpha1.ValidationConfiguration) []error {

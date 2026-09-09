@@ -15,6 +15,8 @@
 package evaluator
 
 import (
+	"context"
+
 	multierror "github.com/hashicorp/go-multierror"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -29,12 +31,13 @@ type AnyRuleSetEvaluator struct {
 }
 
 func (anyEval *AnyRuleSetEvaluator) Evaluate(
+	ctx context.Context,
 	healthEvent *protos.HealthEvent,
 ) (common.RuleEvaluationResult, error) {
 	var errs *multierror.Error
 
 	for _, evaluator := range anyEval.evaluators {
-		ruleEvaluatedResult, err := evaluator.Evaluate(healthEvent)
+		ruleEvaluatedResult, err := evaluator.Evaluate(ctx, healthEvent)
 		if ruleEvaluatedResult == common.RuleEvaluationSuccess {
 			return common.RuleEvaluationSuccess, nil
 		}

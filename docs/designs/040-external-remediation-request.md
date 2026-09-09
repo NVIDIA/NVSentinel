@@ -302,11 +302,20 @@ When `node-labeler` removes those detection labels in response to `managed="fals
 
 `metadata-collector` is included in the list above for completeness: it gates on `driver.installed` AND `nvidia.com/gpu.present`. When `driver.installed` is withheld, the AND fails and `metadata-collector` is evicted too. This is the desired behaviour during external remediation — NVSentinel's collection should also stop on a released node.
 
-#### Cluster-scope monitors: code-level emission gating
+#### Cluster-scope monitors: platform-connector gating
 
-Cluster-scope monitors (`csp-health-monitor`, `kubernetes-object-monitor`, `slurm-drain-monitor`) run as `Deployment`s, not DaemonSets, and target nodes by name from outside the node. They cannot be evicted from a node because they do not run on it. Instead, each cluster-scope monitor reads the target node's `managed` label from its Kubernetes informer cache and skips emission when `managed="false"`. Any other state (label absent, label set to `"true"`, or any other value) means the cluster-scope monitor emits as usual.
+Cluster-scope monitors (`csp-health-monitor`, `kubernetes-object-monitor`, `slurm-drain-monitor`) run as `Deployment`s, not DaemonSets, and target nodes by name from outside the node. They cannot be evicted from a node because they do not run on it. Instead of adding per-monitor gating logic, events from all monitors (including cluster-scope monitors) are gated centrally in `platform-connector`'s MetadataAugmentor transformer.
 
-A shared helper in `commons/pkg/` provides the lookup so the check is centralized; each cluster-scope monitor calls into it before emitting events for a given node. The check is part of the emission code path, not the scrape/poll loop — monitors keep observing, they just refuse to emit for nodes that are explicitly opted out.
+MetadataAugmentor looks up the target node's labels from an LRU cache (backed by Kubernetes API calls with a short TTL, default 60 seconds) and checks for the configured skip label (`nvsentinel.dgxc.nvidia.com/managed=false`). When matched, the event's `ProcessingStrategy` is set to `STORE_ONLY`. The event still reaches the datastore for auditability, but `STORE_ONLY` bypasses remediation, Kubernetes side-effects (node conditions), and analysis.
+
+This approach was chosen over the originally planned per-monitor `commons/pkg/` helper for several reasons: it covers all monitors (including future or third-party monitors) without requiring each to opt in, it avoids complicating monitor-internal state tracking (CSP's datastore polling, KOM's annotation-based dedup), and it reuses the existing MetadataAugmentor cache infrastructure rather than adding node informers to the DaemonSet. The trade-off is a bounded cache-staleness window (up to the cache TTL) and a fail-open posture on lookup failure; both are documented below.
+
+**Known limitations of the platform-connector gate:**
+
+- **Cache staleness:** Up to the cache TTL (default 60s) of delay in both directions: when `managed=false` is applied, and when it is removed. During this window, events may be processed normally for an opted-out node, or dropped for a node that has been returned to NVSentinel ownership.
+- **Fail-open on lookup failure:** If the Kubernetes API lookup fails (e.g. during cold start before the cache is populated, or during a transient API error), the event proceeds with its original ProcessingStrategy. This is intentional: a false positive (briefly acting on an opted-out node) is recoverable, while a false negative (silently dropping a real fault) is not. A Prometheus counter (`nvsentinel_platform_connector_metadata_lookup_failures_total`) tracks these occurrences.
+- **Monitor state sync:** Cluster-scope monitors maintain internal state (KOM uses node annotations, CSP uses a database). When platform-connector gates an event, the monitor does not know the event was suppressed. If the monitor deduplicates based on its internal state, the first event after the node returns from external remediation may be skipped. This is a known limitation that requires a broader solution (e.g. event replay or state-reset mechanism) and is deferred to a follow-up ADR.
+- **Deduplicator guard:** The Deduplicator transformer in the pipeline has an early return for `STORE_ONLY` events to prevent it from overwriting the gated strategy with `STORE_AND_ANALYSE`.
 
 #### ERR reconciler interaction
 

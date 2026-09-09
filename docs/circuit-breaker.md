@@ -46,6 +46,7 @@ fault-quarantine:
   circuitBreaker:
     enabled: true      # Enable or disable the protection
     percentage: 50     # Percentage of GPU nodes that can be cordoned
+    maxNodes: 0        # Absolute node ceiling; 0 disables this bound
     duration: "5m"     # Time window to monitor
 ```
 
@@ -53,9 +54,12 @@ Only nodes labeled `nvidia.com/gpu.present=true` are included when calculating t
 
 **Example:** With `percentage: 50` and `duration: "5m"`, if 50% or more of your GPU nodes are cordoned within any 5-minute period, the circuit breaker will trip.
 
+`maxNodes` bounds the same window by an absolute count instead. When both are set the lower one binds, so `percentage: 10` with `maxNodes: 20` trips at 20 nodes on a 300 node cluster and at 10% on a 100 node one. Use it when a percentage chosen for one cluster size would become too permissive as the fleet grows. At least one of the two must be positive.
+
 **Recommended Settings:**
 - For production clusters with 10+ GPU nodes: Keep enabled with 50% threshold
 - For small clusters (< 10 GPU nodes): Consider disabling or using a higher percentage
+- For a fleet of differently sized clusters: set both, so one config bounds every cluster
 
 ## Monitoring the Circuit Breaker
 

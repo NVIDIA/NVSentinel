@@ -17,8 +17,10 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/celevent"
 	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
 )
 
@@ -40,6 +42,16 @@ type ExporterConfig struct {
 	Backfill        BackfillConfig        `toml:"backfill"`
 	ResumeToken     ResumeTokenConfig     `toml:"resume_token"`
 	FailureHandling FailureHandlingConfig `toml:"failure_handling"`
+	Filter          FilterConfig          `toml:"filter"`
+}
+
+// FilterConfig selects which events reach the sink. An empty Expression exports
+// everything, which is the default behaviour.
+type FilterConfig struct {
+	// Expression is CEL over the health event, and must evaluate to a boolean. An event
+	// whose expression is false is not published. See commons/pkg/celevent for the bound
+	// fields; note errorCode is a list, so match it with `'45' in event.errorCode`.
+	Expression string `toml:"expression"`
 }
 
 type MetadataConfig map[string]string
@@ -162,7 +174,28 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("resume_token database is required")
 	}
 
+	// Compiled here so a typo fails at startup. Given that a filter can legitimately drop
+	// almost every event, silent total suppression at runtime is the worst outcome.
+	if _, err := c.Exporter.Filter.Compile(); err != nil {
+		return fmt.Errorf("filter expression is invalid: %w", err)
+	}
+
 	return nil
+}
+
+// Compile returns the compiled filter program, or nil when no expression is configured.
+// A nil program means "export everything".
+func (c *FilterConfig) Compile() (*celevent.Filter, error) {
+	if strings.TrimSpace(c.Expression) == "" {
+		return nil, nil
+	}
+
+	filter, err := celevent.Compile(c.Expression)
+	if err != nil {
+		return nil, fmt.Errorf("filter expression %q: %w", c.Expression, err)
+	}
+
+	return filter, nil
 }
 
 func Load(path string) (*Config, error) {

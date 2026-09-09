@@ -24,6 +24,8 @@ Complete catalog of all Prometheus metrics exposed by NVSentinel components. Use
 **Step-by-step developer guides**  
 Hands-on walkthroughs for extending NVSentinel:
 
+- [Integrating Node Problem Detector](./tutorials/integrating-node-problem-detector.md) — install
+  NPD, enable its KOM policies, validate the integration, and monitor custom NPD Node Conditions.
 - [Writing a New Health Monitor](./tutorials/writing-a-health-monitor.md) — build, deploy, and
   verify a custom fault detector end-to-end (no GPU required).
 - [Writing a Preflight Check](./tutorials/writing-a-preflight-check.md) — build an init-container
@@ -56,6 +58,7 @@ Individual component feature documentation:
 - [Node Drainer](./node-drainer.md)
 - [Fault Remediation](./fault-remediation.md)
 - [Kubernetes Object Monitor](./kubernetes-object-monitor.md)
+- [NVCRE Certification Monitor](./nvcre-certification-monitor.md)
 - [Circuit Breaker](./circuit-breaker.md)
 - [Cancelling Breakfix](./cancelling-breakfix.md)
 - [Event Exporter](./event-exporter.md)

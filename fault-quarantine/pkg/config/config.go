@@ -48,6 +48,7 @@ type Cordon struct {
 
 type CircuitBreaker struct {
 	Percentage int    `toml:"percentage"`
+	MaxNodes   int    `toml:"maxNodes"`
 	Duration   string `toml:"duration"`
 }
 

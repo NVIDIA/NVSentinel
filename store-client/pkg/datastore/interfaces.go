@@ -94,10 +94,11 @@ type HealthEventStore interface {
 	// matching event into memory.
 	FindLatestHealthEventByQuery(ctx context.Context, builder QueryBuilder) (*HealthEventWithStatus, error)
 
-	// Cold-start support: iterates matching events in bounded batches.
+	// Cold-start support: iterates matching events in bounded batches, ordered
+	// from oldest to newest by creation time and document ID.
 	// fn is called once per batch; return a non-nil error from fn to stop iteration.
-	// MongoDB: cursor-based batch iteration
-	// PostgreSQL: LIMIT/OFFSET pagination
+	// Implementations must remain correct when fn updates records so they no
+	// longer match the query.
 	FindHealthEventsByQueryBatched(
 		ctx context.Context, builder QueryBuilder, batchSize int,
 		fn func([]HealthEventWithStatus) error,

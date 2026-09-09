@@ -690,6 +690,172 @@ class TestDCGMHealthChecks:
         incident.entityInfo.entityId = entity_id
         return incident
 
+    def _make_debounce_watcher(self, thresholds: dict[str, int]) -> dcgm.DCGMWatcher:
+        return dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            health_check_min_consecutive_polls=thresholds,
+        )
+
+    @staticmethod
+    def _health_response(incidents: list) -> dcgm_structs.c_dcgmHealthResponse_v4:
+        """Build a health check response carrying the given incidents."""
+        response = dcgm_structs.c_dcgmHealthResponse_v4()
+        response.version = dcgm_structs.dcgmHealthResponse_version4
+        response.overallHealth = (
+            dcgm_structs.DCGM_HEALTH_RESULT_FAIL if incidents else dcgm_structs.DCGM_DIAG_RESULT_PASS
+        )
+        response.incidentCount = len(incidents)
+        # Allocated per response rather than on the class, so one test cannot leak
+        # incidents into the next.
+        response.incidents = (dcgm_structs.c_dcgmIncidentInfo_t * dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS)()
+        for index, incident in enumerate(incidents):
+            response.incidents[index] = incident
+        return response
+
+    def _poll(self, watcher: dcgm.DCGMWatcher, dcgm_group_mock: MagicMock, incidents: list) -> dict:
+        dcgm_group_mock.health.Check.return_value = self._health_response(incidents)
+        health_status, _ = watcher._perform_health_check(dcgm_group_mock)
+        return health_status
+
+    def test_incident_debounce_publishes_first_observation_by_default(self) -> None:
+        """With no thresholds configured, an incident is published on the poll it appears."""
+        watcher = self._make_debounce_watcher({})
+
+        health_status = self._poll(watcher, MagicMock(), [self._get_nvlink_incident(0, 1, 16)])
+
+        assert health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[1].code == "DCGM_FR_NVLINK_DOWN"
+        # Unconfigured codes are never tracked, so the dict stays empty.
+        assert watcher._incident_streaks == {}
+
+    def test_incident_debounce_withholds_until_threshold_is_reached(self) -> None:
+        """A threshold of 2 withholds the first observation and publishes the second."""
+        watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
+        dcgm_group_mock = MagicMock()
+        incidents = [self._get_nvlink_incident(0, 1, 16)]
+
+        first = self._poll(watcher, dcgm_group_mock, incidents)
+        assert first["DCGM_HEALTH_WATCH_NVLINK"] == dcgm.types.HealthDetails(
+            status=dcgm.types.HealthStatus.PASS, entity_failures={}
+        )
+
+        second = self._poll(watcher, dcgm_group_mock, incidents)
+        assert second["DCGM_HEALTH_WATCH_NVLINK"].status == dcgm.types.HealthStatus.FAIL
+        assert second["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[1].code == "DCGM_FR_NVLINK_DOWN"
+
+    def test_incident_debounce_keeps_publishing_past_the_threshold(self) -> None:
+        """A sustained fault keeps publishing once the threshold is met."""
+        watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
+        dcgm_group_mock = MagicMock()
+        incidents = [self._get_nvlink_incident(0, 1, 16)]
+
+        self._poll(watcher, dcgm_group_mock, incidents)
+
+        for _ in range(3):
+            health_status = self._poll(watcher, dcgm_group_mock, incidents)
+            assert health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[1].code == "DCGM_FR_NVLINK_DOWN"
+
+    def test_incident_debounce_counts_one_streak_per_gpu_per_poll(self) -> None:
+        """DCGM reports one incident per down link, so a GPU with several down links
+        yields several records for the same code in a single poll. The streak must
+        advance once per poll, or the threshold is reached within the first poll and
+        the debounce is defeated."""
+        watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
+        dcgm_group_mock = MagicMock()
+        two_links_one_gpu = [self._get_nvlink_incident(0, 3, 16), self._get_nvlink_incident(0, 3, 17)]
+
+        first = self._poll(watcher, dcgm_group_mock, two_links_one_gpu)
+        assert first["DCGM_HEALTH_WATCH_NVLINK"].entity_failures == {}
+        assert watcher._incident_streaks == {("DCGM_FR_NVLINK_DOWN", 3): 1}
+
+        # Both records are published together once the threshold is genuinely met.
+        second = self._poll(watcher, dcgm_group_mock, two_links_one_gpu)
+        failure = second["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[3]
+        assert failure.code == "DCGM_FR_NVLINK_DOWN"
+        assert "link 16" in failure.message
+        assert "link 17" in failure.message
+
+    def test_incident_debounce_streak_resets_when_incident_is_absent(self) -> None:
+        """A link down on alternate polls never reaches its threshold."""
+        watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
+        dcgm_group_mock = MagicMock()
+        down = [self._get_nvlink_incident(0, 1, 16)]
+
+        for incidents in (down, [], down, [], down):
+            health_status = self._poll(watcher, dcgm_group_mock, incidents)
+            assert health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures == {}
+
+        assert watcher._incident_streaks == {("DCGM_FR_NVLINK_DOWN", 1): 1}
+
+    def test_incident_debounce_is_tracked_per_gpu(self) -> None:
+        """Reaching the threshold on one GPU does not publish another GPU's first observation."""
+        watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
+        dcgm_group_mock = MagicMock()
+
+        self._poll(watcher, dcgm_group_mock, [self._get_nvlink_incident(0, 1, 16)])
+        health_status = self._poll(
+            watcher,
+            dcgm_group_mock,
+            [self._get_nvlink_incident(0, 1, 16), self._get_nvlink_incident(0, 2, 16)],
+        )
+
+        failures = health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures
+        assert 1 in failures
+        assert 2 not in failures
+
+    def test_incident_debounce_only_applies_to_configured_codes(self) -> None:
+        """An unconfigured code in the same poll is published immediately."""
+        watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
+
+        health_status = self._poll(
+            watcher,
+            MagicMock(),
+            [self._get_nvlink_incident(0, 1, 16), self._get_pcie_incident(0, 1)],
+        )
+
+        assert health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures == {}
+        assert health_status["DCGM_HEALTH_WATCH_PCIE"].entity_failures[1].code == "DCGM_FR_PCI_REPLAY_RATE"
+
+    def test_incident_debounce_failed_poll_does_not_reset_the_streak(self) -> None:
+        """A poll that observed nothing must not clear a streak, so a fault spanning a
+        DCGM timeout still publishes on its next observation."""
+        watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
+        dcgm_group_mock = MagicMock()
+        incidents = [self._get_nvlink_incident(0, 1, 16)]
+
+        self._poll(watcher, dcgm_group_mock, incidents)
+
+        dcgm_group_mock.health.Check.side_effect = dcgm_structs.DCGMError_Timeout()
+        _, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
+        assert connectivity_success is False
+        assert watcher._incident_streaks == {("DCGM_FR_NVLINK_DOWN", 1): 1}
+
+        dcgm_group_mock.health.Check.side_effect = None
+        health_status = self._poll(watcher, dcgm_group_mock, incidents)
+        assert health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[1].code == "DCGM_FR_NVLINK_DOWN"
+
+    def test_incident_debounce_counts_withheld_incidents(self) -> None:
+        """Withheld incidents are observable via the debounced counter."""
+        watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
+        counter = dcgm.metrics.dcgm_health_check_debounced_incidents.labels("DCGM_FR_NVLINK_DOWN", "1")
+        before = counter._value.get()
+
+        # Two links on GPU 1 in one poll must count once, not twice.
+        self._poll(watcher, MagicMock(), [self._get_nvlink_incident(0, 1, 16), self._get_nvlink_incident(0, 1, 17)])
+
+        assert counter._value.get() == before + 1
+
+    def test_incident_debounce_threshold_of_one_is_not_tracked(self) -> None:
+        """A configured threshold of 1 is today's behaviour, so no streak is kept."""
+        watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 1})
+
+        health_status = self._poll(watcher, MagicMock(), [self._get_nvlink_incident(0, 1, 16)])
+
+        assert health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[1].code == "DCGM_FR_NVLINK_DOWN"
+        assert watcher._health_check_min_consecutive_polls == {}
+
     def test_perform_health_check_multiple_failures_same_gpu(self):
         """Test that multiple failures for the same GPU are aggregated into a single error message."""
         watcher = dcgm.DCGMWatcher(

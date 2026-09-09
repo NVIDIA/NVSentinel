@@ -45,6 +45,10 @@ var (
 // It prevents cordoning more than a specified percentage of nodes within a time window.
 // The breaker uses a ring buffer with 1-second granularity to track unique cordoned nodes.
 func NewSlidingWindowBreaker(ctx context.Context, cfg Config) (CircuitBreaker, error) {
+	if err := cfg.validateBounds(); err != nil {
+		return nil, fmt.Errorf("validate circuit breaker bounds: %w", err)
+	}
+
 	numBuckets := int((cfg.Window + time.Second - 1) / time.Second)
 	b := &slidingWindowBreaker{
 		cfg:          cfg,
@@ -176,11 +180,60 @@ func (b *slidingWindowBreaker) sumBuckets() int {
 	return sum
 }
 
+// Bound names the configured limit that produced the effective threshold. It appears in
+// logs and as the label on fault_quarantine_breaker_threshold_nodes.
+type Bound string
+
+const (
+	// boundNone is the zero value, reported when no bound is configured.
+	boundNone       Bound = ""
+	boundPercentage Bound = "percentage"
+	boundMaxNodes   Bound = "maxNodes"
+	// boundFleetSize is reported when a configured bound exceeded the fleet size and was
+	// clamped to it.
+	boundFleetSize Bound = "fleetSize"
+)
+
+// tripThreshold returns the recent-cordon count that trips the breaker for the given GPU
+// node count, along with the bound that produced it. When both bounds are configured the
+// lower one binds, so growing the fleet cannot silently raise the effective limit.
+func (b *slidingWindowBreaker) tripThreshold(totalNodes int) (int, Bound) {
+	threshold, bound := 0, boundNone
+
+	if b.cfg.TripPercentage > 0 {
+		// Compared as a float before converting: a percentage large enough to exceed
+		// math.MaxInt makes the int conversion implementation-defined per the Go spec, and
+		// a negative result would slip past the clamp below and trip on every evaluation.
+		scaled := math.Ceil(float64(totalNodes) * b.cfg.TripPercentage / 100)
+		if scaled > float64(totalNodes) {
+			threshold, bound = totalNodes, boundFleetSize
+		} else {
+			threshold, bound = int(scaled), boundPercentage
+		}
+	}
+
+	if b.cfg.TripMaxNodes > 0 && (threshold == 0 || b.cfg.TripMaxNodes < threshold) {
+		threshold = b.cfg.TripMaxNodes
+		bound = boundMaxNodes
+	}
+
+	// A threshold above the fleet size can never be reached, which would turn either
+	// bound into an off switch for the breaker. Clamp so a too-large value degrades to
+	// "every node" instead of "never trip"; the bound label reports when this happens.
+	if threshold > totalNodes {
+		threshold = totalNodes
+		bound = boundFleetSize
+	}
+
+	return threshold, bound
+}
+
 // IsTripped checks if the circuit breaker should prevent further node cordoning.
 // It returns true if:
 // 1. The breaker is already in TRIPPED state, OR
-// 2. Recent cordon events reach the configured threshold (TripPercentage * GPU nodes)
-// The method automatically trips the breaker if the threshold is exceeded.
+// 2. Recent cordon events reach the configured threshold
+// The threshold is the lower of the configured percentage of GPU nodes and TripMaxNodes,
+// clamped to the fleet size. The breaker trips when the recent-cordon count reaches it.
 func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 	b.mu.RLock()
 
@@ -210,7 +263,7 @@ func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 
 	b.slideWindow(now)
 	recentCordonedNodes := b.sumBuckets()
-	threshold := int(math.Ceil(float64(totalNodes) * b.cfg.TripPercentage / 100))
+	threshold, bindingBound := b.tripThreshold(totalNodes)
 	shouldTrip := recentCordonedNodes >= threshold
 
 	b.mu.Unlock()
@@ -218,9 +271,13 @@ func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 	slog.DebugContext(ctx, "Recent cordoned nodes status",
 		"recentCordonedNodes", recentCordonedNodes,
 		"totalNodes", totalNodes,
-		"tripPercentage", b.cfg.TripPercentage)
+		"tripPercentage", b.cfg.TripPercentage,
+		"tripMaxNodes", b.cfg.TripMaxNodes,
+		"threshold", threshold,
+		"bindingBound", bindingBound)
 
 	metrics.SetFaultQuarantineBreakerUtilization(float64(recentCordonedNodes) / float64(totalNodes))
+	metrics.SetFaultQuarantineBreakerThresholdNodes(float64(threshold), string(bindingBound))
 
 	if shouldTrip {
 		err := b.ForceState(ctx, StateTripped)

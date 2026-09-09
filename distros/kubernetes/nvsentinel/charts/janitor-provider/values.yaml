@@ -128,6 +128,8 @@ csp:
     rebootJobTTLSeconds: 3600
     # Comma-separated image pull secret names for the reboot Job (optional)
     imagePullSecrets: ""
+    # Write a reboot attribution message to the node's syslog before rebooting
+    writeSyslog: false
 
   # AWS-specific configuration (only required when provider=aws)
   aws:

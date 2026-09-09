@@ -86,7 +86,7 @@ func createEvaluators(rules []config.Rule, nodeInformer *informer.NodeInformer) 
 			if nodeInformer == nil {
 				err = fmt.Errorf("NodeInformer must be provided for Node rule kind")
 			} else {
-				eval, err = NewNodeRuleEvaluator(rule.Expression, nodeInformer.Lister())
+				eval, err = newNodeRuleEvaluator(rule.Expression, nodeInformer.Lister(), nodeInformer)
 			}
 
 		default:

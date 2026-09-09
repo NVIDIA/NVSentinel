@@ -258,7 +258,7 @@ func ApplyPreflightInheritanceTestConfig(
 
 func preflightInheritanceTestInitContainer(name string, inherit bool) map[string]any {
 	return map[string]any{
-		"name":                    name,
+		fieldNameKey:              name,
 		"image":                   busyboxImage,
 		"command":                 []string{shellBinary, "-c"},
 		"args":                    []string{"true"},
@@ -540,8 +540,8 @@ func NewKAIPodGroup(namespace, name string) *unstructured.Unstructured {
 			"apiVersion": "scheduling.run.ai/v2alpha2",
 			"kind":       "PodGroup",
 			"metadata": map[string]any{
-				"name":      name,
-				"namespace": namespace,
+				fieldNameKey: name,
+				"namespace":  namespace,
 			},
 		},
 	}

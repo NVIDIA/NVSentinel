@@ -24,6 +24,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/healthstatus"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	datamodels "github.com/nvidia/nvsentinel/data-models/pkg/model"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -44,6 +45,9 @@ const (
 	// fieldProcessingStrategy is the stored document field holding the
 	// per-event processing strategy.
 	fieldProcessingStrategy = "healthevent.processingstrategy"
+	// fieldNodeName is the stored document field used to scope rule evaluation
+	// to the node that produced the incoming event.
+	fieldNodeName = "healthevent.nodename"
 )
 
 type HealthEventsAnalyzerReconcilerConfig struct {
@@ -132,6 +136,9 @@ func (r *Reconciler) Start(ctx context.Context) error {
 		EnableMetrics:        true,
 		MetricsLabels:        map[string]string{"module": agentName},
 		MarkProcessedOnError: false, // IMPORTANT: Don't mark failed events as processed
+		SkipEvent: func(event client.Event) bool {
+			return client.EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath)
+		},
 	}
 
 	r.eventProcessor = client.NewEventProcessor(oldWatcher, r.databaseClient, processorConfig)
@@ -387,7 +394,8 @@ func (r *Reconciler) publishMatchedEvent(ctx context.Context,
 		return fmt.Errorf("error in publishing the new fatal event: %w", err)
 	}
 
-	slog.InfoContext(ctx, "New event successfully published for matching rule", "rule_name", rule.Name)
+	slog.InfoContext(ctx, "New event successfully published for matching rule",
+		"rule_name", rule.Name, "node", event.HealthEvent.NodeName)
 
 	return nil
 }
@@ -504,13 +512,16 @@ func (r *Reconciler) getPipelineStages(
 	rule config.HealthEventsAnalyzerRule,
 	healthEventWithStatus datamodels.HealthEventWithStatus,
 ) ([]map[string]any, error) {
-	// CRITICAL: Always start with agent filter to exclude events from health-events-analyzer itself
-	// This prevents the analyzer from matching its own generated events, which would cause
-	// infinite loops and incorrect rule evaluations
+	// Always start with mandatory filters. The agent filter prevents the analyzer
+	// from matching its own generated events, while the node filter limits each
+	// rule evaluation to events from the node that produced the incoming event.
+	// Keeping the node predicate in the first stage lets the datastore use its
+	// node-prefixed HealthEvents index before evaluating configured rule stages.
 	pipeline := []map[string]any{
 		{
 			"$match": map[string]any{
 				"healthevent.agent": map[string]any{"$ne": agentName},
+				fieldNodeName:       healthEventWithStatus.HealthEvent.NodeName,
 				"$or": []any{
 					map[string]any{
 						fieldProcessingStrategy: int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION),

@@ -71,6 +71,14 @@ kubectl -n nvsentinel scale deployment/fault-quarantine --replicas="${REPLICAS:-
 kubectl -n nvsentinel rollout status deployment/fault-quarantine --timeout=180s
 ```
 
+On a normal `RESUME` startup, fault-quarantine queries the datastore for processable health events that do not have a quarantine status and replays them before consuming live events. An event is suppressed only when later events collectively cover every check, entity, and error-code scope it could change; a check-wide event therefore requires a later check-wide event. This conservative rule prevents old failures or recoveries from temporarily overwriting newer node state. Recovery uses one current API-server node snapshot per replayed event instead of the informer cache. The live watcher opens first, so events inserted during recovery remain queued for normal processing.
+
+Skipped, invalid, and superseded documents receive a terminal fault-quarantine recovery marker in their status; the detailed result remains available through the recovery metric. Successful quarantine updates already carry a terminal quarantine status. Both forms are excluded from later scans. Normal recovery does not advance a wall-clock checkpoint, because event creation time and datastore insertion order can differ. If an installation has no persisted cutoff, as on the first upgrade to this behavior, the lower bound is initialized and persisted at the current startup boundary rather than scanning the cluster's entire history.
+
+A consumed `CREATE` request skips cold start and records its creation time. Later restarts only consider unresolved events created after that cutoff, so events that an operator deliberately abandoned are not revived.
+
+Cold-start activity is exposed through `fault_quarantine_cold_start_events_total{result=...}` and `fault_quarantine_cold_start_duration_seconds`.
+
 ### Label Prefix
 
 Defines the prefix for all node labels created by the module to track cordon/uncordon lifecycle.
@@ -101,6 +109,7 @@ fault-quarantine:
   circuitBreaker:
     enabled: true
     percentage: 50
+    maxNodes: 0
     duration: "5m"
 ```
 
@@ -110,10 +119,21 @@ fault-quarantine:
 Enables or disables circuit breaker protection. When disabled, unlimited nodes can be quarantined.
 
 #### percentage
-Maximum percentage of total cluster nodes that can be quarantined within the time window. When exceeded, the circuit breaker trips and blocks all new quarantine actions.
+Maximum percentage of GPU nodes that can be quarantined within the time window. When reached, the circuit breaker trips and blocks all new quarantine actions. Rounds up, so `1` on a 288-node cluster is 3 nodes, not 2. Set to `0` to bound by `maxNodes` alone.
+
+#### maxNodes
+Maximum absolute number of nodes that can be quarantined within the time window, independent of cluster size. Defaults to `0`, which disables this bound and preserves the percentage-only behaviour.
+
+When both bounds are set, **the lower one binds**. This is the point of the setting: a percentage silently tracks fleet growth, so a limit chosen for a 100 node cluster becomes three times as permissive at 300 nodes, while an absolute bound does not move. Fleet-wide operators can therefore express "no more than X% *and* never more than N nodes" in one config that stays correct as clusters grow.
+
+At least one of `percentage` and `maxNodes` must be positive, and a negative value for either is rejected rather than ignored. The breaker refuses to start otherwise, so it cannot be silently reduced to a no-op while `enabled: true`. For the same reason, a threshold above the fleet size is clamped to the fleet size rather than being left unreachable, and the `bound` label described below reports `fleetSize` when that happens. To turn the breaker off, use `enabled: false` rather than an unreachable threshold.
 
 #### duration
 Time window for tracking cordon events. The circuit breaker counts unique node cordons within this sliding window.
+
+### Observability
+
+`fault_quarantine_breaker_threshold_nodes{bound}` reports the effective threshold in nodes, with `bound` naming what produced it: `percentage`, `maxNodes`, or `fleetSize` when a configured bound exceeded the cluster size and was clamped. `fault_quarantine_breaker_utilization` keeps its existing meaning, the recent cordon count as a fraction of GPU nodes, so existing dashboards and alerts are unaffected.
 
 ### Configuration Examples
 
@@ -131,6 +151,24 @@ circuitBreaker:
   enabled: true
   percentage: 75
   duration: "3m"
+```
+
+Percentage with an absolute ceiling, for a fleet whose clusters vary in size:
+```yaml
+circuitBreaker:
+  enabled: true
+  percentage: 10
+  maxNodes: 20
+  duration: "5m"
+```
+
+Absolute bound only, for "never cordon more than 2 nodes regardless of cluster size":
+```yaml
+circuitBreaker:
+  enabled: true
+  percentage: 0
+  maxNodes: 2
+  duration: "5m"
 ```
 
 Disabled:

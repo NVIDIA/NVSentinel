@@ -31,6 +31,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
@@ -59,6 +60,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(v1alpha1.AddToScheme(scheme))
+	utilruntime.Must(v1alpha1.AddMRToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -159,7 +161,7 @@ func addCertWatchers(mgr ctrl.Manager, setup serverSetup) error {
 	return nil
 }
 
-func setupControllers(mgr ctrl.Manager, cfg *config.Config, enableValidationController bool) error {
+func setupControllers(mgr ctrl.Manager, cfg *config.Config, enableValidationController bool, namespace string) error {
 	var validation *v1alpha1.ValidationConfiguration
 	if cfg != nil {
 		validation = cfg.Validation
@@ -170,11 +172,13 @@ func setupControllers(mgr ctrl.Manager, cfg *config.Config, enableValidationCont
 	}
 
 	if enableValidationController {
-		if err := (&controller.ValidationRequestReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
-			Config: cfg,
-		}).SetupWithManager(mgr); err != nil {
+		reconciler, err := controller.NewValidationRequestReconciler(mgr.GetClient(), mgr.GetAPIReader(),
+			mgr.GetScheme(), cfg, namespace)
+		if err != nil {
+			return fmt.Errorf("failed to create ValidationRequest reconciler: %w", err)
+		}
+
+		if err := reconciler.SetupWithManager(mgr); err != nil {
 			return fmt.Errorf("failed to create ValidationRequest controller: %w", err)
 		}
 	}
@@ -226,6 +230,11 @@ func run() error {
 
 	flag.Parse()
 
+	namespace := os.Getenv("POD_NAMESPACE")
+	if len(namespace) == 0 {
+		return fmt.Errorf("POD_NAMESPACE environment variable is not set")
+	}
+
 	var cfg *config.Config
 
 	if enableValidationController {
@@ -260,6 +269,7 @@ func run() error {
 		LeaseDuration:          &leaseDuration,
 		RenewDeadline:          &renewDeadline,
 		RetryPeriod:            &retryPeriod,
+		Cache:                  cache.Options{DefaultNamespaces: map[string]cache.Config{namespace: {}}},
 	})
 	if err != nil {
 		slog.Error("Failed to start manager", "error", err)
@@ -273,7 +283,7 @@ func run() error {
 		return err
 	}
 
-	if err := setupControllers(mgr, cfg, enableValidationController); err != nil {
+	if err := setupControllers(mgr, cfg, enableValidationController, namespace); err != nil {
 		slog.Error("Failed to set up controllers", "error", err)
 
 		return err
