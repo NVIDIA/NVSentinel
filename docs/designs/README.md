@@ -45,7 +45,7 @@ from the code alone.
 | 022 | [Circuit Breaker — Reset Mechanism](022-circuit-breaker-reset-mechanism.md) |
 | 023 | [Architecture — Health Event Transformer Pipeline](023-health-event-transformer-pipeline.md) |
 | 024 | [Implement WORKFLOW_NVLINK_ERR](024-workflow-nvlink-err.md) |
-| 025 | [Health Event Processing Strategy ](025-processing-strategy-for-health-checks.md) |
+| 025 | [Health Event Processing Strategy](025-processing-strategy-for-health-checks.md) |
 | 026 | [Feature — Preflight Checks](026-preflight-checks.md) |
 | 027 | [Kubernetes Data Store (CRD) for HealthEvent](027-kubernetes-data-store.md) |
 | 028 | [Janitor — Generic Bare-Metal Reboot Provider](028-generic-baremetal-reboot-provider.md) |

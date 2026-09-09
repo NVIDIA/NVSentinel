@@ -271,7 +271,7 @@ NVSentinel is published exclusively through the channels below. There is no othe
 | Source | [github.com/NVIDIA/NVSentinel](https://github.com/NVIDIA/NVSentinel) |
 | Documentation | [docs.nvidia.com/nvsentinel](https://docs.nvidia.com/nvsentinel/) |
 
-Container images are signed with Sigstore cosign and carry SPDX SBOM and SLSA provenance attestations. See [SECURITY.md](SECURITY.md) for how to verify them.
+Container images carry a Sigstore-signed CycloneDX SBOM attestation and a SLSA build provenance attestation. See [SECURITY.md](SECURITY.md) for how to verify them.
 
 
 ## Contributing

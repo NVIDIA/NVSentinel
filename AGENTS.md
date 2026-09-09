@@ -148,7 +148,9 @@ The compatibility surfaces, roughly in order of how easily they break:
 Since nothing gates it, check the surfaces yourself before opening a PR. Derive the paths rather than hardcoding them, so a CRD added later cannot fall outside the check:
 
 ```bash
-SURFACES="data-models distros/kubernetes/nvsentinel/values.yaml $(ls -d */api/v1alpha1)"
+# find, not `ls -d */api/v1alpha1` — that only matches one level deep and
+# silently drops nested CRDs such as plugins/slinky-drainer/api/v1alpha1.
+SURFACES="data-models distros/kubernetes/nvsentinel/values.yaml $(find . -type d -path '*/api/v1alpha1')"
 git diff --stat origin/main...HEAD -- $SURFACES
 ```
 

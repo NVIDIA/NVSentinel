@@ -14,8 +14,6 @@
 
 # syntax=docker/dockerfile:1.6
 
-ARG TAG=v3.1.13
-ARG IMG=nvcr.io/nvidia/distroless/go
 
 FROM public.ecr.aws/docker/library/golang:1.27.0-trixie@sha256:df98008ecd2b0ecc9f0a94d1b07e3564a9c92b555369b33d9b5f60d0765b2db7 AS builder
 
@@ -46,7 +44,7 @@ COPY commons/ ../../commons/
 RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -o simple-health-client main.go
 
-FROM ${IMG}:${TAG}
+FROM nvcr.io/nvidia/distroless/go:v3.1.13@sha256:694780ff504fb1c5e25b1f7fa4d618e55db8dcc12b8ca98b37b8959eb3f94e89
 
 WORKDIR /app
 
