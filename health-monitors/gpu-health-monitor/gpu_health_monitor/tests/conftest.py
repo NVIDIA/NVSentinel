@@ -161,8 +161,12 @@ class MockDCGMErrors:
     DCGM_FR_THERMAL_VIOLATIONS = 3
     DCGM_FR_CLOCK_THROTTLE_POWER = 4
     DCGM_FR_NVLINK_ERROR_THRESHOLD = 113
+    # Both are raised under the NVLINK watch, which is what makes suppressing one of
+    # them able to hide the other. Values match DCGM 4.x.
+    DCGM_FR_IMEX_UNHEALTHY = 122
+    DCGM_FR_FABRIC_PROBE_STATE = 123
 
-    # Add more error codes as needed by tests (6 manual + 108 generated = 114 total)
+    # Add more error codes as needed by tests (8 manual + 108 generated = 116 total)
     for i in range(5, 113):
         locals()[f"DCGM_FR_ERROR_{i}"] = i
 
