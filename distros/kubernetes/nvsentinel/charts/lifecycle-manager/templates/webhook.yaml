@@ -80,3 +80,62 @@ webhooks:
     sideEffects: None
     failurePolicy: Fail
     timeoutSeconds: 10
+  - name: vmaintenancerequest-v1.kb.io
+    clientConfig:
+      service:
+        name: {{ include "lifecycle-manager.fullname" . }}
+        namespace: {{ .Release.Namespace }}
+        path: /validate-nvsentinel-dgxc-nvidia-com-v1-maintenancerequest
+        port: {{ .Values.webhook.port }}
+    rules:
+      - apiGroups:
+          - nvsentinel.dgxc.nvidia.com
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - maintenancerequests
+        scope: "Cluster"
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: 10
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "lifecycle-manager.fullname" . }}-mutating-webhook
+  labels:
+    {{- include "lifecycle-manager.labels" . | nindent 4 }}
+  annotations:
+{{- if eq .Values.webhook.certProvider "openshift-service-ca" }}
+    service.beta.openshift.io/inject-cabundle: "true"
+{{- else }}
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "lifecycle-manager.fullname" . }}-webhook-cert
+{{- end }}
+webhooks:
+  - name: mmaintenancerequest-v1.kb.io
+    clientConfig:
+      service:
+        name: {{ include "lifecycle-manager.fullname" . }}
+        namespace: {{ .Release.Namespace }}
+        path: /mutate-nvsentinel-dgxc-nvidia-com-v1-maintenancerequest
+        port: {{ .Values.webhook.port }}
+    rules:
+      - apiGroups:
+          - nvsentinel.dgxc.nvidia.com
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+        resources:
+          - maintenancerequests
+        scope: "Cluster"
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: 10

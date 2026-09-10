@@ -165,7 +165,7 @@ The MR carries one condition and no `completionTime`. Its lifecycle is *present 
 
 **Init** (neither finalizer nor initial condition present):
 1. Add the cleanup finalizer and seed `HealthEventEmitted=Unknown`.
-2. Emit `spec.healthEvent` as authored. Stamp the MR's name and UID into `healthEvent.metadata["maintenanceRequestName"]` and `["maintenanceRequestUID"]`. That metadata serves **observability only**: it lets an operator trace a remediation back to the MR that triggered it. Nothing consumes it, and no other component changes for it.
+2. Emit a copy of `spec.healthEvent`. Stamp the MR's name and UID into the copy's `healthEvent.metadata["maintenanceRequestName"]` and `["maintenanceRequestUID"]`; do not update the persisted spec. That metadata serves **observability only**: it lets an operator trace a remediation back to the MR that triggered it. Nothing consumes it, and no other component changes for it.
 3. On success, set `HealthEventEmitted=True`. On failure, return an error and requeue. The emit is gated on `HealthEventEmitted != True`, so the reconciler retries a failed emission rather than stranding it.
 
 **Open** (`HealthEventEmitted=True`): idle. The reconciler takes no further action, and it does **not** watch the remediation it triggered. The MR stays in this state until the requester deletes it.
@@ -177,6 +177,10 @@ The MR carries one condition and no `completionTime`. Its lifecycle is *present 
 For this first iteration NVSentinel performs **no automatic cleanup**. The requester deletes the MR when it wants the node marked healthy again. Auto-deletion on remediation completion is deliberately deferred (see [Alternatives Considered](#alternatives-considered)).
 
 MR and the remediation it triggers are otherwise fully decoupled: no owner-reference, label, or watch links them. The remediation CR runs its own lifecycle, and its own reconciler or TTL cleans it up (ADR-040 for ERR, ADR-037 for the others).
+
+### Mutating admission webhook
+
+On creation, the webhook defaults a missing health-event ID to a new UUID, sets a missing `generatedTimestamp` to admission time, initializes metadata, and records the MaintenanceRequest name. These values are persisted with the initial object, so the reconciler does not need to update the spec. The Kubernetes API server assigns the object UID after admission; the reconciler therefore adds `maintenanceRequestUID` only to the event copy sent to the platform-connector.
 
 ### Validating admission webhook
 

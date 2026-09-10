@@ -17,9 +17,9 @@ package v1alpha1
 import (
 	"context"
 	"testing"
-
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -27,25 +27,6 @@ import (
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 )
-
-func validMR() *v1alpha1.MaintenanceRequest {
-	return &v1alpha1.MaintenanceRequest{
-		Name: "test-mr",
-		Spec: &protos.MaintenanceRequestSpec{
-			HealthEvent: &protos.HealthEvent{
-				NodeName:          "node-1",
-				Agent:             "maintenance-controller",
-				CheckName:         "planned-maintenance",
-				Version:           1,
-				IsFatal:           true,
-				IsHealthy:         false,
-				RecommendedAction: protos.RecommendedAction_NONE,
-				Message:           "Planned maintenance window",
-			},
-			StartTime: timestamppb.New(time.Now().Add(1 * time.Hour)),
-		},
-	}
-}
 
 func TestValidateCreate_ValidMR_Succeeds(t *testing.T) {
 	t.Parallel()
@@ -244,23 +225,198 @@ func TestValidateUpdate_StartTimeUnchanged_Succeeds(t *testing.T) {
 	assert.Nil(t, warnings)
 }
 
-func TestValidateUpdate_ControllerAutoPopulatedFields_Succeeds(t *testing.T) {
+func TestDefault_PopulatesMissingEventFields(t *testing.T) {
 	t.Parallel()
 
-	v := &MaintenanceRequestValidator{Enabled: true}
-	oldMR := validMR()
-	newMR := oldMR.DeepCopy()
-	newMR.Spec.HealthEvent.Id = "he-mr-auto-populated"
-	newMR.Spec.HealthEvent.Version = 1
-	newMR.Spec.HealthEvent.GeneratedTimestamp = timestamppb.Now()
-	newMR.Spec.HealthEvent.Metadata = map[string]string{
-		"maintenanceRequestName": "test-mr",
-		"maintenanceRequestUID":  "some-uid",
+	mr := validMR()
+	mr.Spec.HealthEvent.Metadata = map[string]string{
+		"existing":               "value",
+		"maintenanceRequestName": "spoofed-name",
+		"maintenanceRequestUID":  "spoofed-uid",
 	}
 
-	warnings, err := v.ValidateUpdate(context.Background(), oldMR, newMR)
-	assert.NoError(t, err, "controller-populated fields (id, version, generatedTimestamp, metadata) must not trigger immutability rejection")
-	assert.Nil(t, warnings)
+	before := time.Now()
+	err := (&MaintenanceRequestDefaulter{}).Default(context.Background(), mr)
+	after := time.Now()
+
+	require.NoError(t, err)
+	_, err = uuid.Parse(mr.Spec.HealthEvent.Id)
+	assert.NoError(t, err)
+	require.NotNil(t, mr.Spec.HealthEvent.GeneratedTimestamp)
+	assert.False(t, mr.Spec.HealthEvent.GeneratedTimestamp.AsTime().Before(before))
+	assert.False(t, mr.Spec.HealthEvent.GeneratedTimestamp.AsTime().After(after))
+	assert.Equal(t, "value", mr.Spec.HealthEvent.Metadata["existing"])
+	assert.Equal(t, "test-mr",
+		mr.Spec.HealthEvent.Metadata["maintenanceRequestName"])
+	assert.NotContains(t, mr.Spec.HealthEvent.Metadata,
+		"maintenanceRequestUID")
+}
+
+func TestDefault_PreservesExistingEventFields(t *testing.T) {
+	t.Parallel()
+
+	mr := validMR()
+	timestamp := timestamppb.New(time.Date(
+		2026, 1, 1, 0, 0, 0, 0, time.UTC,
+	))
+	mr.Spec.HealthEvent.Id = "existing-id"
+	mr.Spec.HealthEvent.GeneratedTimestamp = timestamp
+
+	err := (&MaintenanceRequestDefaulter{}).Default(context.Background(), mr)
+
+	require.NoError(t, err)
+	assert.Equal(t, "existing-id", mr.Spec.HealthEvent.Id)
+	assert.Equal(t, timestamp, mr.Spec.HealthEvent.GeneratedTimestamp)
+}
+
+func TestDefault_DefaultsFieldsIndependently(t *testing.T) {
+	t.Parallel()
+
+	timestamp := timestamppb.New(time.Date(
+		2026, 1, 1, 0, 0, 0, 0, time.UTC,
+	))
+	tests := []struct {
+		name            string
+		id              string
+		timestamp       *timestamppb.Timestamp
+		wantIDPreserved bool
+		wantTSPreserved bool
+	}{
+		{
+			name:            "missing ID only",
+			timestamp:       timestamp,
+			wantTSPreserved: true,
+		},
+		{
+			name:            "missing timestamp only",
+			id:              "existing-id",
+			wantIDPreserved: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mr := validMR()
+			mr.Spec.HealthEvent.Id = tt.id
+			mr.Spec.HealthEvent.GeneratedTimestamp = tt.timestamp
+
+			err := (&MaintenanceRequestDefaulter{}).Default(
+				context.Background(), mr,
+			)
+
+			require.NoError(t, err)
+			assert.NotEmpty(t, mr.Spec.HealthEvent.Id)
+			assert.NotNil(t, mr.Spec.HealthEvent.GeneratedTimestamp)
+			if tt.wantIDPreserved {
+				assert.Equal(t, tt.id, mr.Spec.HealthEvent.Id)
+			}
+			if tt.wantTSPreserved {
+				assert.Equal(t, tt.timestamp,
+					mr.Spec.HealthEvent.GeneratedTimestamp)
+			}
+		})
+	}
+}
+
+func TestDefault_MissingRequiredFieldsDoNotFail(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		mr   *v1alpha1.MaintenanceRequest
+	}{
+		{
+			name: "nil spec",
+			mr: &v1alpha1.MaintenanceRequest{
+				Name: "missing-spec",
+			},
+		},
+		{
+			name: "nil health event",
+			mr: &v1alpha1.MaintenanceRequest{
+				Name: "missing-health-event",
+				Spec: &protos.MaintenanceRequestSpec{},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := (&MaintenanceRequestDefaulter{}).Default(
+				context.Background(), tt.mr,
+			)
+
+			assert.NoError(t, err)
+		})
+	}
+}
+
+func TestValidateUpdate_DefaultedFieldsAreImmutable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		field  string
+		mutate func(*protos.HealthEvent)
+	}{
+		{
+			name:  "id",
+			field: "id",
+			mutate: func(event *protos.HealthEvent) {
+				event.Id = "different-id"
+			},
+		},
+		{
+			name:  "version",
+			field: "version",
+			mutate: func(event *protos.HealthEvent) {
+				event.Version = 2
+			},
+		},
+		{
+			name:  "generated timestamp",
+			field: "generatedTimestamp",
+			mutate: func(event *protos.HealthEvent) {
+				event.GeneratedTimestamp = timestamppb.Now()
+			},
+		},
+		{
+			name:  "metadata",
+			field: "metadata",
+			mutate: func(event *protos.HealthEvent) {
+				event.Metadata = map[string]string{"changed": "value"}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			v := &MaintenanceRequestValidator{Enabled: true}
+			oldMR := validMR()
+			oldMR.Spec.HealthEvent.Id = "original-id"
+			oldMR.Spec.HealthEvent.GeneratedTimestamp = timestamppb.New(
+				time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			)
+			oldMR.Spec.HealthEvent.Metadata = map[string]string{
+				"maintenanceRequestName": "test-mr",
+			}
+			newMR := oldMR.DeepCopy()
+			tt.mutate(newMR.Spec.HealthEvent)
+
+			_, err := v.ValidateUpdate(
+				context.Background(), oldMR, newMR,
+			)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.field)
+			assert.Contains(t, err.Error(), "immutable")
+		})
+	}
 }
 
 func TestValidateUpdate_StatusOnlyChange_Succeeds(t *testing.T) {
@@ -292,4 +448,23 @@ func TestValidateDelete_AlwaysAllowed(t *testing.T) {
 	warnings, err := v.ValidateDelete(context.Background(), mr)
 	assert.NoError(t, err)
 	assert.Nil(t, warnings)
+}
+
+func validMR() *v1alpha1.MaintenanceRequest {
+	return &v1alpha1.MaintenanceRequest{
+		Name: "test-mr",
+		Spec: &protos.MaintenanceRequestSpec{
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          "node-1",
+				Agent:             "maintenance-controller",
+				CheckName:         "planned-maintenance",
+				Version:           1,
+				IsFatal:           true,
+				IsHealthy:         false,
+				RecommendedAction: protos.RecommendedAction_NONE,
+				Message:           "Planned maintenance window",
+			},
+			StartTime: timestamppb.New(time.Now().Add(1 * time.Hour)),
+		},
+	}
 }

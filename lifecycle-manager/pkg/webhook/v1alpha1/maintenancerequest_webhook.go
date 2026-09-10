@@ -18,9 +18,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"time"
 
+	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
@@ -33,6 +35,36 @@ import (
 )
 
 var mrLog = slog.With("webhook", "maintenancerequest")
+
+// MaintenanceRequestDefaulter populates event fields before admission.
+// +kubebuilder:object:generate=false
+type MaintenanceRequestDefaulter struct{}
+
+func (*MaintenanceRequestDefaulter) Default(
+	_ context.Context, obj *v1alpha1.MaintenanceRequest,
+) error {
+	if obj.Spec == nil || obj.Spec.HealthEvent == nil {
+		return nil
+	}
+
+	healthEvent := obj.Spec.HealthEvent
+	if healthEvent.Id == "" {
+		healthEvent.Id = uuid.NewString()
+	}
+
+	if healthEvent.GeneratedTimestamp == nil {
+		healthEvent.GeneratedTimestamp = timestamppb.Now()
+	}
+
+	if healthEvent.Metadata == nil {
+		healthEvent.Metadata = make(map[string]string)
+	}
+
+	healthEvent.Metadata["maintenanceRequestName"] = obj.Name
+	delete(healthEvent.Metadata, "maintenanceRequestUID")
+
+	return nil
+}
 
 // MaintenanceRequestValidator validates MaintenanceRequest objects.
 // +kubebuilder:object:generate=false
@@ -138,11 +170,9 @@ func (v *MaintenanceRequestValidator) checkNodeExists(ctx context.Context, nodeN
 	return nil
 }
 
-// checkUserFieldsImmutable verifies that the user-specified fields on a
-// HealthEvent have not changed between old and new. The controller
-// auto-populates id, version, generatedTimestamp, and metadata after
-// creation, so those fields are deliberately excluded — comparing the
-// full proto would reject the controller's own spec-persist Update.
+// checkUserFieldsImmutable verifies that the HealthEvent has not changed
+// between old and new. Defaulted fields are persisted at admission, so the
+// controller never needs to update the spec.
 func checkUserFieldsImmutable(old, new *pb.HealthEvent) error {
 	if old == nil {
 		return nil
@@ -164,6 +194,8 @@ func checkScalarFieldsImmutable(old, new *pb.HealthEvent) error {
 		name    string
 		changed bool
 	}{
+		{"id", old.Id != new.Id},
+		{"version", old.Version != new.Version},
 		{"agent", old.Agent != new.Agent},
 		{"componentClass", old.ComponentClass != new.ComponentClass},
 		{"checkName", old.CheckName != new.CheckName},
@@ -200,6 +232,14 @@ func checkCompositeFieldsImmutable(old, new *pb.HealthEvent) error {
 
 	if !entitiesEqual(old.EntitiesImpacted, new.EntitiesImpacted) {
 		return fmt.Errorf("spec.healthEvent.entitiesImpacted is immutable after creation")
+	}
+
+	if !proto.Equal(old.GeneratedTimestamp, new.GeneratedTimestamp) {
+		return fmt.Errorf("spec.healthEvent.generatedTimestamp is immutable after creation")
+	}
+
+	if !maps.Equal(old.Metadata, new.Metadata) {
+		return fmt.Errorf("spec.healthEvent.metadata is immutable after creation")
 	}
 
 	return nil

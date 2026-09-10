@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"time"
 
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -138,13 +139,6 @@ func (r *MaintenanceRequestReconciler) claimAndEmit(
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	r.autoPopulateEventFields(mr)
-	r.stampTraceability(mr)
-
-	if err := r.Update(ctx, mr); err != nil {
-		return ctrl.Result{}, err
-	}
-
 	if err := r.emitOpeningEvent(ctx, log, mr); err != nil {
 		r.setCondition(mr, conditionHealthEventEmitted, "False", reasonEmitFailed,
 			fmt.Sprintf("Failed to emit health event: %v", err))
@@ -226,40 +220,19 @@ func (r *MaintenanceRequestReconciler) handleDeletion(
 	return ctrl.Result{}, nil
 }
 
-func (r *MaintenanceRequestReconciler) autoPopulateEventFields(mr *v1alpha1.MaintenanceRequest) {
-	he := mr.Spec.HealthEvent
-
-	if he.Id == "" {
-		he.Id = string(mr.UID)
-	}
-
-	if he.GeneratedTimestamp == nil {
-		he.GeneratedTimestamp = timestamppb.New(mr.CreationTimestamp.Time)
-	}
-}
-
-func (r *MaintenanceRequestReconciler) stampTraceability(mr *v1alpha1.MaintenanceRequest) {
-	he := mr.Spec.HealthEvent
-	if he.Metadata == nil {
-		he.Metadata = make(map[string]string)
-	}
-
-	he.Metadata["maintenanceRequestName"] = mr.Name
-	he.Metadata["maintenanceRequestUID"] = string(mr.UID)
-}
-
 func (r *MaintenanceRequestReconciler) emitOpeningEvent(
 	ctx context.Context, log *slog.Logger, mr *v1alpha1.MaintenanceRequest,
 ) error {
+	openingEvent := eventForPublishing(mr)
 	events := &pb.HealthEvents{
 		Version: 1,
-		Events:  []*pb.HealthEvent{mr.Spec.HealthEvent},
+		Events:  []*pb.HealthEvent{openingEvent},
 	}
 
 	log.Info("Emitting opening health event",
-		"node", mr.Spec.HealthEvent.NodeName,
-		"agent", mr.Spec.HealthEvent.Agent,
-		"checkName", mr.Spec.HealthEvent.CheckName)
+		"node", openingEvent.NodeName,
+		"agent", openingEvent.Agent,
+		"checkName", openingEvent.CheckName)
 
 	return r.Publisher.Publish(ctx, events)
 }
@@ -267,7 +240,7 @@ func (r *MaintenanceRequestReconciler) emitOpeningEvent(
 func (r *MaintenanceRequestReconciler) emitClearingEvent(
 	ctx context.Context, log *slog.Logger, mr *v1alpha1.MaintenanceRequest,
 ) error {
-	openingEvent := mr.Spec.HealthEvent
+	openingEvent := eventForPublishing(mr)
 
 	clearingEvent := &pb.HealthEvent{
 		Version:            openingEvent.Version,
@@ -295,6 +268,29 @@ func (r *MaintenanceRequestReconciler) emitClearingEvent(
 		"checkName", openingEvent.CheckName)
 
 	return r.Publisher.Publish(ctx, events)
+}
+
+func eventForPublishing(mr *v1alpha1.MaintenanceRequest) *pb.HealthEvent {
+	healthEvent := proto.Clone(mr.Spec.HealthEvent).(*pb.HealthEvent)
+
+	// The webhook persists these fields for new production objects. Keep
+	// deterministic fallbacks for legacy objects and direct controller tests.
+	if healthEvent.Id == "" {
+		healthEvent.Id = string(mr.UID)
+	}
+
+	if healthEvent.GeneratedTimestamp == nil {
+		healthEvent.GeneratedTimestamp = timestamppb.New(mr.CreationTimestamp.Time)
+	}
+
+	if healthEvent.Metadata == nil {
+		healthEvent.Metadata = make(map[string]string)
+	}
+
+	healthEvent.Metadata["maintenanceRequestName"] = mr.Name
+	healthEvent.Metadata["maintenanceRequestUID"] = string(mr.UID)
+
+	return healthEvent
 }
 
 func (r *MaintenanceRequestReconciler) setCondition(

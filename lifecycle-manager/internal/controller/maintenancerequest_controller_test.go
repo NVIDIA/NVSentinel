@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -46,13 +47,15 @@ import (
 // fakePCClient implements pb.PlatformConnectorClient for tests.
 type fakePCClient struct {
 	calls      atomic.Int64
+	events     atomic.Pointer[pb.HealthEvents]
 	responseFn func(call int) error
 }
 
 func (f *fakePCClient) HealthEventOccurredV1(
-	_ context.Context, _ *pb.HealthEvents, _ ...grpc.CallOption,
+	_ context.Context, events *pb.HealthEvents, _ ...grpc.CallOption,
 ) (*emptypb.Empty, error) {
 	n := int(f.calls.Add(1))
+	f.events.Store(proto.Clone(events).(*pb.HealthEvents))
 	if f.responseFn != nil {
 		if err := f.responseFn(n); err != nil {
 			return nil, err
@@ -166,27 +169,30 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Expect(fc.calls.Load()).To(BeZero())
 		})
 
-		It("returns an error when populated event fields cannot be persisted", func() {
-			expectedErr := fmt.Errorf("update populated event")
-			mr := newTestMR("mr-event-update-fails", "node")
+		It("does not update the spec before publishing", func() {
+			mr := newTestMR("mr-no-spec-update", "node")
 			mr.Finalizers = []string{mrFinalizerName}
 			r.Client = fake.NewClientBuilder().
 				WithScheme(scheme.Scheme).
+				WithStatusSubresource(
+					&v1alpha1.MaintenanceRequest{},
+				).
+				WithObjects(mr).
 				WithInterceptorFuncs(interceptor.Funcs{
 					Update: func(
 						_ context.Context, _ client.WithWatch,
 						_ client.Object, _ ...client.UpdateOption,
 					) error {
-						return expectedErr
+						return fmt.Errorf("unexpected spec update")
 					},
 				}).
 				Build()
 			r.NodeLock = &stubNodeLock{lockResult: true}
 
 			result, err := r.handleCreateOrUpdate(ctx, slog.Default(), mr)
-			Expect(err).To(MatchError(expectedErr))
+			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal(reconcile.Result{}))
-			Expect(fc.calls.Load()).To(BeZero())
+			Expect(fc.calls.Load()).To(Equal(int64(1)))
 		})
 
 		It("adds finalizer and proceeds to emit in one reconcile", func() {
@@ -331,13 +337,18 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 
 			Expect(isConditionTrue(
 				&updated, conditionHealthEventEmitted)).To(BeTrue())
-			Expect(updated.Spec.HealthEvent.Id).NotTo(BeEmpty())
-			Expect(updated.Spec.HealthEvent.Version).To(
-				Equal(uint32(1)))
-			Expect(updated.Spec.HealthEvent.GeneratedTimestamp).NotTo(
+			Expect(updated.Spec.HealthEvent.Id).To(BeEmpty())
+			Expect(updated.Spec.HealthEvent.GeneratedTimestamp).To(
 				BeNil())
-			Expect(updated.Spec.HealthEvent.Metadata).To(
-				HaveKey("maintenanceRequestName"))
+			Expect(updated.Spec.HealthEvent.Metadata).To(BeNil())
+
+			publishedEvent := fc.events.Load().Events[0]
+			Expect(publishedEvent.Id).To(Equal(string(updated.UID)))
+			Expect(publishedEvent.GeneratedTimestamp).NotTo(BeNil())
+			Expect(publishedEvent.Metadata).To(HaveKeyWithValue(
+				"maintenanceRequestName", updated.Name))
+			Expect(publishedEvent.Metadata).To(HaveKeyWithValue(
+				"maintenanceRequestUID", string(updated.UID)))
 
 			// Verify a lease was created for the node
 			var lease coordinationv1.Lease
@@ -552,6 +563,11 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal(reconcile.Result{}))
 			Expect(fc.calls.Load()).To(Equal(int64(2)))
+			clearingEvent := fc.events.Load().Events[0]
+			Expect(clearingEvent.Metadata).To(HaveKeyWithValue(
+				"maintenanceRequestName", fetched.Name))
+			Expect(clearingEvent.Metadata).To(HaveKeyWithValue(
+				"maintenanceRequestUID", string(fetched.UID)))
 
 			// Lease should be deleted after successful unlock
 			var lease coordinationv1.Lease
@@ -735,66 +751,51 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 		})
 	})
 
-	Context("autoPopulateEventFields", func() {
-		It("fills missing id and timestamp", func() {
-			mr := newTestMR("mr-auto", "node-auto")
+	Context("eventForPublishing", func() {
+		It("fills missing fields on a copy", func() {
+			mr := newTestMR("mr-copy", "node-copy")
 			mr.UID = types.UID("test-uid-123")
 			mr.Spec.HealthEvent.Id = ""
 			mr.Spec.HealthEvent.GeneratedTimestamp = nil
+			mr.Spec.HealthEvent.Metadata = nil
 
-			r.autoPopulateEventFields(mr)
+			event := eventForPublishing(mr)
 
-			Expect(mr.Spec.HealthEvent.Id).To(
-				Equal("test-uid-123"))
-			Expect(mr.Spec.HealthEvent.GeneratedTimestamp).NotTo(
-				BeNil())
+			Expect(event.Id).To(Equal("test-uid-123"))
+			Expect(event.GeneratedTimestamp).NotTo(BeNil())
+			Expect(event.Metadata).To(HaveKeyWithValue(
+				"maintenanceRequestName", "mr-copy"))
+			Expect(event.Metadata).To(HaveKeyWithValue(
+				"maintenanceRequestUID", "test-uid-123"))
+			Expect(mr.Spec.HealthEvent.Id).To(BeEmpty())
+			Expect(mr.Spec.HealthEvent.GeneratedTimestamp).To(BeNil())
+			Expect(mr.Spec.HealthEvent.Metadata).To(BeNil())
 		})
 
-		It("does not overwrite existing values", func() {
+		It("preserves existing fields and metadata", func() {
 			ts := timestamppb.New(
 				time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 			mr := newTestMR("mr-keep", "node-keep")
+			mr.UID = types.UID("uid-keep")
 			mr.Spec.HealthEvent.Id = "custom-id"
 			mr.Spec.HealthEvent.GeneratedTimestamp = ts
-
-			r.autoPopulateEventFields(mr)
-
-			Expect(mr.Spec.HealthEvent.Id).To(Equal("custom-id"))
-			Expect(mr.Spec.HealthEvent.GeneratedTimestamp).To(
-				Equal(ts))
-		})
-	})
-
-	Context("stampTraceability", func() {
-		It("sets metadata with MR name and UID", func() {
-			mr := newTestMR("mr-trace", "node-trace")
-			mr.UID = types.UID("uid-abc")
-			mr.Spec.HealthEvent.Metadata = nil
-
-			r.stampTraceability(mr)
-
-			Expect(mr.Spec.HealthEvent.Metadata).To(
-				HaveKeyWithValue(
-					"maintenanceRequestName", "mr-trace"))
-			Expect(mr.Spec.HealthEvent.Metadata).To(
-				HaveKeyWithValue(
-					"maintenanceRequestUID", "uid-abc"))
-		})
-
-		It("preserves existing metadata entries", func() {
-			mr := newTestMR("mr-trace2", "node-trace2")
-			mr.UID = types.UID("uid-def")
 			mr.Spec.HealthEvent.Metadata = map[string]string{
 				"existingKey": "existingValue",
 			}
 
-			r.stampTraceability(mr)
+			event := eventForPublishing(mr)
 
-			Expect(mr.Spec.HealthEvent.Metadata).To(
+			Expect(event.Id).To(Equal("custom-id"))
+			Expect(event.GeneratedTimestamp).To(Equal(ts))
+			Expect(event.Metadata).To(
 				HaveKeyWithValue("existingKey", "existingValue"))
-			Expect(mr.Spec.HealthEvent.Metadata).To(
+			Expect(event.Metadata).To(
 				HaveKeyWithValue(
-					"maintenanceRequestName", "mr-trace2"))
+					"maintenanceRequestName", "mr-keep"))
+			Expect(event.Metadata).To(
+				HaveKeyWithValue("maintenanceRequestUID", "uid-keep"))
+			Expect(mr.Spec.HealthEvent.Metadata).NotTo(
+				HaveKey("maintenanceRequestUID"))
 		})
 	})
 
