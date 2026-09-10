@@ -110,12 +110,12 @@ type GPUResetControllerConfig struct {
 }
 
 type ResetJobConfig struct {
-	ImageConfig      ImageConfig          `mapstructure:"imageConfig" json:"imageConfig"`
-	Resources        ResourceRequirements `mapstructure:"resources" json:"resources"`
-	RuntimeClassName string               `mapstructure:"runtimeClassName" json:"runtimeClassName"`
-	HostDriverRootPath string `mapstructure:"hostDriverRootPath" json:"hostDriverRootPath"`
-	WriteSysLogEvent   *bool  `mapstructure:"writeSysLogEvent" json:"writeSysLogEvent"`
-	UploadURL          string `mapstructure:"uploadURL" json:"uploadURL"`
+	ImageConfig        ImageConfig          `mapstructure:"imageConfig" json:"imageConfig"`
+	Resources          ResourceRequirements `mapstructure:"resources" json:"resources"`
+	RuntimeClassName   string               `mapstructure:"runtimeClassName" json:"runtimeClassName"`
+	HostDriverRootPath string               `mapstructure:"hostDriverRootPath" json:"hostDriverRootPath"`
+	WriteSysLogEvent   *bool                `mapstructure:"writeSysLogEvent" json:"writeSysLogEvent"`
+	UploadURL          string               `mapstructure:"uploadURL" json:"uploadURL"`
 }
 
 type ResourceRequirements struct {
