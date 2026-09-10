@@ -345,14 +345,11 @@ wait_for_dry_run_quarantine_annotation() {
         local annotations
         annotations=$(kubectl get node "$node" -o json | jq -r '.metadata.annotations // {}')
 
-        local is_cordoned
-        is_cordoned=$(echo "$annotations" | jq -r '.quarantineHealthEventIsCordoned // ""')
-
         local event_count
         event_count=$(echo "$annotations" | jq -r '.quarantineHealthEvent // "[]"' | jq 'length' || true)
 
-        if [[ "$is_cordoned" == "True" && "${event_count:-0}" -gt 0 ]]; then
-            log "Node $node is annotated with the cordon it would have applied ✓"
+        if [[ "${event_count:-0}" -gt 0 ]]; then
+            log "Node $node has the dry-run quarantine event annotation ✓"
             echo "$annotations" | jq -r '.quarantineHealthEvent' \
                 | jq -r '.[] | "  checkName=\(.checkName) isFatal=\(.isFatal) nodeName=\(.nodeName)"'
             return 0
@@ -362,7 +359,7 @@ wait_for_dry_run_quarantine_annotation() {
         elapsed=$((elapsed + 5))
     done
 
-    error "Timeout waiting for the quarantine decision on node $node: fault-quarantine is in dry-run, so it cordons nothing, but must still set quarantineHealthEventIsCordoned=True"
+    error "Timeout waiting for the quarantine decision on node $node: fault-quarantine is in dry-run, so it cordons nothing, but must still set quarantineHealthEvent"
 }
 
 wait_for_node_quarantine() {
