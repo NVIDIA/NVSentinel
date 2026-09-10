@@ -20,13 +20,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"slices"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/semaphore"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -42,14 +42,8 @@ import (
 // server.
 const IdempotencyKeyHeader = "idempotency-key"
 
-// ErrPublishQueueFull is returned by Publish in direct mode when the bounded
-// client queue is at its batch or byte cap; the batch is rejected, not
-// queued. Callers must NOT advance any local "have I sent this?" cache on
-// this error so the next poll re-emits with a fresh GeneratedTimestamp.
-var ErrPublishQueueFull = errors.New("health event publish queue full; batch rejected")
-
 // ErrPublisherClosed is returned by Publish in direct mode after Close has
-// begun; no new batches are accepted during or after the drain.
+// begun; no new batches are accepted while the calls in progress finish.
 var ErrPublisherClosed = errors.New("health event publisher is closed")
 
 // ErrPublishRejected is returned by Publish when the server would refuse the
@@ -65,25 +59,29 @@ var ErrPublishRejected = errors.New("health event batch rejected")
 // withdrawn. The caller must not record it as reported.
 var ErrPublishDropped = errors.New("health event batch dropped")
 
-// errWithdrawn is the drop cause of a batch whose caller stopped waiting.
-var errWithdrawn = errors.New("caller stopped waiting for the batch")
+// errRetryWindowEnded is the drop cause of a batch whose window ran out
+// before the next attempt could start, typically while it waited for the send
+// slot behind an outage.
+var errRetryWindowEnded = errors.New("retry window ended before the next attempt")
 
 // withDirect switches the Publisher to direct publishing against the
 // deployment platform connector. DialFromEnvOr builds it in direct mode with
 // the already-validated tuning and the dialed conn, which the Publisher then
 // owns (Close closes it).
 //
-// In direct mode Publish enqueues onto a bounded FIFO queue and waits for the
-// batch's outcome: one background sender delivers the batches in order, one
-// at a time, each with a stable idempotency key and one retry window counted
-// from enqueue, and Publish returns nil once the server has stored the batch
-// or an error once it was dropped. A caller whose context ends withdraws its
-// batch, so an error never leaves a batch behind that could still be stored
-// next to the caller's re-emit. So, as on the socket path, a monitor records
-// an event as reported only when it really was. Sending one batch at a time
-// and waiting for the acknowledgement is what keeps a monitor's events in
-// order on the server. The socket-presence gate is skipped: gRPC reconnection
-// replaces it.
+// In direct mode Publish does the sending itself, on the caller's goroutine,
+// and returns nil once the server has stored the batch or an error once the
+// batch was given up on. One batch is sent at a time: a call takes the
+// publisher's single send slot, retries its batch in place until it is stored
+// or dropped, and only then hands the slot to the next call. So a batch is in
+// the datastore before the next one leaves the monitor, which is what keeps a
+// monitor's events in order on the server, also when several goroutines
+// publish at once. Every retry carries the same idempotency key, and the
+// retry window is counted from the Publish call, waiting for the slot
+// included, so a batch stuck behind an outage is dropped rather than
+// delivered late. As on the socket path, a monitor records an event as
+// reported only when it really was. The socket-presence gate is skipped:
+// gRPC reconnection replaces it.
 func withDirect(conn io.Closer, tune directTuning) Option {
 	return func(p *Publisher) {
 		p.direct = &directState{
@@ -93,335 +91,201 @@ func withDirect(conn io.Closer, tune directTuning) Option {
 	}
 }
 
-// queuedBatch is one Publish call waiting in the direct-mode queue. The
-// idempotency key is generated once at enqueue and reused verbatim on every
-// retry, so the server can detect replays across connections and replicas.
-type queuedBatch struct {
+// pendingBatch is one Publish call in progress. The idempotency key is
+// generated once and reused verbatim on every retry, so the server can detect
+// replays across connections and replicas.
+type pendingBatch struct {
 	events *pb.HealthEvents
 	key    string
-	bytes  int64
 
-	// spanCtx is the caller's span context captured at Publish time and
-	// injected into every send, so the server joins the trace the monitor
-	// started; the RPC runs on the sender goroutine under the publisher's
-	// lifecycle context, not the caller's.
+	// spanCtx is the caller's span at Publish time, propagated on every
+	// attempt so the server's spans join the monitor's trace.
 	spanCtx trace.SpanContext
 
-	// enqueuedAt is when the batch was accepted; see WaitingOnServer.
-	enqueuedAt time.Time
-
-	// deadline ends the retry window: enqueue time plus the window. Queue
-	// residence, attempts and backoff sleeps all count against it, so during
-	// a long outage old batches expire and make room for fresh state instead
-	// of being delivered hours later. backoff paces the retries inside the
-	// window, the same way the socket mode paces its attempts.
+	// deadline is when the retry window ends: the Publish call plus the
+	// window. Waiting for the slot, attempts and backoff all count against it.
 	deadline time.Time
+
 	backoff  wait.Backoff
 	attempts int
-
-	// done carries the batch's outcome to the waiting Publish call: nil once
-	// stored, an error once dropped.
-	done chan error
-
-	// withdrawn is closed when the caller stopped waiting: the batch gets no
-	// further attempt, and an attempt already in flight decides its outcome.
-	withdrawn    chan struct{}
-	withdrawOnce sync.Once
 }
 
-// finish reports the batch's outcome to its Publish call, once.
-func (b *queuedBatch) finish(err error) {
-	select {
-	case b.done <- err:
-	default:
-	}
-}
-
-// withdraw marks the batch as no longer waited for, once.
-func (b *queuedBatch) withdraw() {
-	b.withdrawOnce.Do(func() { close(b.withdrawn) })
-}
-
-// isWithdrawn reports whether the caller stopped waiting for the batch.
-func (b *queuedBatch) isWithdrawn() bool {
-	select {
-	case <-b.withdrawn:
-		return true
-	default:
-		return false
-	}
-}
-
-// directState is the direct-mode half of a Publisher: the bounded FIFO queue,
-// the single background sender, and the owned connection.
+// directState is the direct-mode half of a Publisher: the single send slot,
+// the Publish calls in progress, and the owned connection.
 type directState struct {
 	monitor string
 	tune    directTuning
+	// backoff is the retry pacing every batch starts from: the publisher's
+	// policy, capped at maxRetrySleep.
+	backoff wait.Backoff
 
-	initialBackoff time.Duration
-	backoffFactor  float64
-	backoffJitter  float64
-
-	// ctx is the sender's lifecycle; cancel aborts in-flight sends and sleeps
-	// when the Close drain deadline expires.
+	// ctx is the publisher's lifecycle; cancel ends attempts, backoff sleeps
+	// and slot waits once Close's deadline has passed.
 	ctx    context.Context
 	cancel context.CancelFunc
 
 	client pb.PlatformConnectorClient
 	conn   io.Closer
 
-	// mu guards the queue; cond wakes the sender on enqueue and close.
-	mu          sync.Mutex
-	cond        *sync.Cond
-	queue       []*queuedBatch
-	queuedBytes int64
-	closed      bool
-	// inFlight is the queue head while the sender works on it; a withdrawal
-	// must not take that batch away from under its attempt.
-	inFlight *queuedBatch
+	// slot admits one send at a time. A Publish call holds it from its first
+	// attempt to its outcome. The semaphore serves waiters in the order they
+	// arrived, so calls waiting for the slot get it in the order they were
+	// made.
+	slot *semaphore.Weighted
 
-	senderDone chan struct{}
-	closeOnce  sync.Once
-	closeErr   error
+	// mu guards closed and pending.
+	mu      sync.Mutex
+	closed  bool
+	pending map[*pendingBatch]struct{}
+	// inProgress counts Publish calls between admission and return; Close
+	// waits for it.
+	inProgress sync.WaitGroup
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
-// start finalizes the direct state from the fully-optioned Publisher and
-// launches the background sender. Called once from New.
+// start finalizes the direct state from the fully-optioned Publisher. Called
+// once from New.
 func (d *directState) start(p *Publisher) {
 	d.monitor = p.monitor
 	d.client = p.client
-	d.initialBackoff = p.initialBackoff
-	d.backoffFactor = p.backoffFactor
-	d.backoffJitter = p.backoffJitter
-	d.cond = sync.NewCond(&d.mu)
+	d.backoff = wait.Backoff{
+		Duration: p.initialBackoff,
+		Factor:   p.backoffFactor,
+		Jitter:   p.backoffJitter,
+		Steps:    retryBackoffSteps,
+		Cap:      maxRetrySleep,
+	}
 	d.ctx, d.cancel = context.WithCancel(context.Background())
-	d.senderDone = make(chan struct{})
-
-	go d.run()
+	d.slot = semaphore.NewWeighted(1)
+	d.pending = make(map[*pendingBatch]struct{})
 }
 
-// enqueue appends a batch to the bounded FIFO queue and waits for its
-// outcome. It refuses at once when the caller's context has already ended,
-// when the publisher is closed, when the batch is larger than the server
-// receives (metered as rejected; refusing it here rather than on the wire is
-// also what lets a RESOURCE_EXHAUSTED answer be retried as the transient
-// condition gRPC uses that status for), or when the batch or byte cap is
-// reached (metered as queue_full).
-func (d *directState) enqueue(ctx context.Context, events *pb.HealthEvents) error {
+// publish sends one batch to its outcome on the caller's goroutine. It
+// refuses at once when the caller's context has already ended, when the
+// publisher is closed, or when the batch is larger than the server receives
+// (metered as rejected; refusing it here rather than on the wire is also what
+// lets a RESOURCE_EXHAUSTED answer be retried as the transient condition gRPC
+// uses that status for). The batch is the caller's message: it is read until
+// publish returns and never kept afterwards.
+func (d *directState) publish(ctx context.Context, events *pb.HealthEvents) error {
 	// Nothing is accepted for a caller that has already left.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	// The queue holds the publisher's own copy, so the caller may reuse or
-	// change its message as soon as Publish returns.
-	copied, ok := proto.Clone(events).(*pb.HealthEvents)
-	if !ok {
-		return fmt.Errorf("unexpected health events message type %T", events)
+	batch := &pendingBatch{
+		events:   events,
+		key:      newIdempotencyKey(),
+		spanCtx:  trace.SpanContextFromContext(ctx),
+		deadline: time.Now().Add(d.tune.retryWindow),
+		backoff:  d.backoff,
 	}
 
-	now := time.Now()
-	size := int64(proto.Size(copied))
-	batch := &queuedBatch{
-		events:     copied,
-		key:        newIdempotencyKey(),
-		bytes:      size,
-		spanCtx:    trace.SpanContextFromContext(ctx),
-		enqueuedAt: now,
-		deadline:   now.Add(d.tune.retryWindow),
-		backoff:    d.newBackoff(),
-		done:       make(chan error, 1),
-		withdrawn:  make(chan struct{}),
+	if err := d.admit(batch); err != nil {
+		return err
 	}
 
-	d.mu.Lock()
+	defer d.release(batch)
 
-	if d.closed {
-		d.mu.Unlock()
-
-		return ErrPublisherClosed
-	}
-
+	size := int64(proto.Size(events))
 	if d.tune.maxMessageBytes > 0 && size > d.tune.maxMessageBytes {
-		d.mu.Unlock()
-
 		sendsDropped.WithLabelValues(d.monitor, dropReasonRejected).Inc()
 		slog.Error("Health event batch exceeds the maximum message size; rejecting it.",
 			"monitor", d.monitor,
 			"bytes", size,
 			"maxBytes", d.tune.maxMessageBytes,
-			"eventCount", len(copied.GetEvents()))
+			"eventCount", len(events.GetEvents()))
 
 		return fmt.Errorf("%w: %d bytes exceed the %d byte message limit",
 			ErrPublishRejected, size, d.tune.maxMessageBytes)
 	}
 
-	if len(d.queue) >= d.tune.maxBatches || d.queuedBytes+size > d.tune.maxBytes {
-		depth, queuedBytes := len(d.queue), d.queuedBytes
-		d.mu.Unlock()
-
-		sendsDropped.WithLabelValues(d.monitor, dropReasonQueueFull).Inc()
-		slog.Warn("Direct publish queue full; rejecting batch.",
-			"monitor", d.monitor,
-			"queuedBatches", depth,
-			"queuedBytes", queuedBytes,
-			"maxBatches", d.tune.maxBatches,
-			"maxBytes", d.tune.maxBytes)
-
-		return fmt.Errorf("%w: %d batches / %d bytes queued", ErrPublishQueueFull, depth, queuedBytes)
-	}
-
-	d.queue = append(d.queue, batch)
-	d.queuedBytes += size
-	d.updateQueueGauges()
-	d.cond.Signal()
-	d.mu.Unlock()
-
-	select {
-	case err := <-batch.done:
+	if err := d.acquireSlot(ctx, batch); err != nil {
 		return err
-	case <-ctx.Done():
-		return d.withdraw(batch, ctx.Err())
 	}
+
+	defer d.slot.Release(1)
+
+	return d.deliver(ctx, batch)
 }
 
-// withdraw takes a batch back for a caller whose context ended. A batch still
-// waiting in the queue is removed and dropped as withdrawn, so the caller's
-// re-emit cannot end up stored next to it. A batch whose attempt is in flight
-// keeps that attempt, since the server may already have stored it, and is
-// dropped after it unless it succeeded. Either way the caller gets the batch's
-// real outcome: nil only if it was stored.
-func (d *directState) withdraw(batch *queuedBatch, cause error) error {
+// admit registers a Publish call, or refuses it once Close has begun. The
+// closed check and the WaitGroup increment happen under one lock so Close,
+// which sets closed before waiting, never misses a call.
+func (d *directState) admit(batch *pendingBatch) error {
 	d.mu.Lock()
+	defer d.mu.Unlock()
 
-	removed := d.inFlight != batch && d.removeQueued(batch)
-	if !removed {
-		batch.withdraw()
+	if d.closed {
+		return ErrPublisherClosed
 	}
 
+	d.pending[batch] = struct{}{}
+	d.inProgress.Add(1)
+
+	return nil
+}
+
+// release forgets a Publish call that returned.
+func (d *directState) release(batch *pendingBatch) {
+	d.mu.Lock()
+	delete(d.pending, batch)
 	d.mu.Unlock()
 
-	if removed {
-		d.drop(batch, dropReasonWithdrawn, cause)
-	}
-
-	return <-batch.done
+	d.inProgress.Done()
 }
 
-// removeQueued takes a batch that is not in flight out of the queue and
-// reports whether it was still there. Callers hold d.mu.
-func (d *directState) removeQueued(batch *queuedBatch) bool {
-	idx := slices.Index(d.queue, batch)
-	if idx < 0 {
-		return false
-	}
+// acquireSlot waits for the send slot. The wait ends early when the caller
+// leaves (the batch is withdrawn, never sent), when the publisher shuts down,
+// or when the batch's own window ends first, typically behind an outage: then
+// it is dropped without an attempt, so an old batch is never delivered late.
+func (d *directState) acquireSlot(ctx context.Context, batch *pendingBatch) error {
+	// One context for the three ways the wait can end: the caller leaving,
+	// the batch's deadline passing, and the publisher's lifecycle ending.
+	waitCtx, cancel := context.WithDeadline(ctx, batch.deadline)
+	defer cancel()
 
-	d.queue = slices.Delete(d.queue, idx, idx+1)
-	d.queuedBytes -= batch.bytes
-	d.updateQueueGauges()
+	stop := context.AfterFunc(d.ctx, cancel)
+	defer stop()
 
-	return true
-}
-
-// waitingOnServer reports whether a batch is pending within its retry window,
-// that is, whether a caller is legitimately waiting for the server. Every
-// pending batch is resolved within its window plus one attempt, so an older
-// head means the publisher itself is stuck, which must not count as waiting.
-func (d *directState) waitingOnServer() bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if len(d.queue) == 0 {
-		return false
-	}
-
-	return time.Since(d.queue[0].enqueuedAt) <= d.tune.retryWindow+d.tune.rpcTimeout
-}
-
-// updateQueueGauges publishes the queue-pressure gauges. Callers hold d.mu.
-func (d *directState) updateQueueGauges() {
-	queueBatches.WithLabelValues(d.monitor).Set(float64(len(d.queue)))
-	queueBytes.WithLabelValues(d.monitor).Set(float64(d.queuedBytes))
-}
-
-// run is the single background sender: it processes the queue head to a
-// terminal outcome (delivered or dropped) before moving on, preserving FIFO
-// order, and exits when Close has drained the queue or cancelled the
-// lifecycle.
-func (d *directState) run() {
-	defer close(d.senderDone)
-
-	for {
-		batch, ok := d.next()
-		if !ok {
-			return
+	if err := d.slot.Acquire(waitCtx, 1); err != nil {
+		switch {
+		case d.ctx.Err() != nil:
+			return d.drop(batch, dropReasonShutdown, context.Cause(d.ctx))
+		case ctx.Err() != nil:
+			return d.drop(batch, dropReasonWithdrawn, context.Cause(ctx))
+		default:
+			return d.drop(batch, dropReasonRetryWindowExhausted, errRetryWindowEnded)
 		}
-
-		d.process(batch)
-		d.remove(batch)
 	}
+
+	return nil
 }
 
-// next blocks until a batch is available, returning false when the publisher
-// is closed with an empty queue or the lifecycle context is cancelled.
-func (d *directState) next() (*queuedBatch, bool) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	for len(d.queue) == 0 && !d.closed && d.ctx.Err() == nil {
-		d.cond.Wait()
-	}
-
-	if d.ctx.Err() != nil || len(d.queue) == 0 {
-		return nil, false
-	}
-
-	d.inFlight = d.queue[0]
-
-	return d.inFlight, true
-}
-
-// remove pops the processed batch off the queue head.
-func (d *directState) remove(batch *queuedBatch) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	d.inFlight = nil
-
-	if len(d.queue) > 0 && d.queue[0] == batch {
-		d.queue[0] = nil
-		d.queue = d.queue[1:]
-		d.queuedBytes -= batch.bytes
-		d.updateQueueGauges()
-	}
-}
-
-// process retries one batch to a terminal outcome: a rejection the server
-// would repeat (an invalid batch, a scope violation) drops at once,
-// and every other failure, transport, UNAVAILABLE and auth alike, retries
-// with jittered exponential backoff until the batch's retry window ends,
-// then drops. A batch whose window ended while it waited in the queue, or
-// whose caller stopped waiting, is dropped without another attempt. Auth
-// failures retry because the projected token is rewritten by the kubelet, so
-// a later attempt can succeed with a fresh read.
-func (d *directState) process(batch *queuedBatch) {
+// deliver retries one batch to a terminal outcome while the caller holds the
+// slot: a rejection the server would repeat (an invalid batch, a scope
+// violation) drops at once, and every other failure, transport, UNAVAILABLE
+// and auth alike, retries with jittered exponential backoff until the batch's
+// retry window ends, then drops. Auth failures retry because the projected
+// token is rewritten by the kubelet, so a later attempt can succeed with a
+// fresh read. An attempt runs on the publisher's lifecycle, not the caller's
+// context: an attempt already on the wire may have stored the batch, so it is
+// allowed to finish and its answer decides. A caller that left is noticed
+// between attempts and gets no retry.
+func (d *directState) deliver(ctx context.Context, batch *pendingBatch) error {
 	for {
 		if d.ctx.Err() != nil {
-			d.drop(batch, dropReasonShutdown, context.Cause(d.ctx))
-
-			return
+			return d.drop(batch, dropReasonShutdown, context.Cause(d.ctx))
 		}
 
-		if batch.isWithdrawn() {
-			d.drop(batch, dropReasonWithdrawn, errWithdrawn)
-
-			return
+		if ctx.Err() != nil {
+			return d.drop(batch, dropReasonWithdrawn, context.Cause(ctx))
 		}
 
 		if time.Until(batch.deadline) <= 0 {
-			d.drop(batch, dropReasonRetryWindowExhausted, errRetryWindowEnded)
-
-			return
+			return d.drop(batch, dropReasonRetryWindowExhausted, errRetryWindowEnded)
 		}
 
 		err := d.send(batch)
@@ -429,63 +293,44 @@ func (d *directState) process(batch *queuedBatch) {
 			sendsSuccess.WithLabelValues(d.monitor).Inc()
 			slog.Info("Successfully sent health events",
 				"monitor", d.monitor, "count", len(batch.events.GetEvents()))
-			batch.finish(nil)
 
-			return
+			return nil
 		}
 
 		if d.ctx.Err() != nil {
-			d.drop(batch, dropReasonShutdown, err)
-
-			return
+			return d.drop(batch, dropReasonShutdown, err)
 		}
 
-		if done := d.handleSendFailure(batch, err); done {
-			return
+		if isPermanentRejection(err) {
+			return d.drop(batch, dropReasonRejected, err)
 		}
+
+		if ctx.Err() != nil {
+			// The caller left during the attempt, and the attempt did not store
+			// the batch; nothing waits for a retry.
+			return d.drop(batch, dropReasonWithdrawn, errors.Join(context.Cause(ctx), err))
+		}
+
+		remaining := time.Until(batch.deadline)
+		if remaining <= d.tune.finalAttemptWindow {
+			// Too little of the window is left for another attempt to succeed.
+			return d.drop(batch, dropReasonRetryWindowExhausted, err)
+		}
+
+		batch.attempts++
+
+		slog.Warn("Error sending health events to deployment platform connector; will retry.",
+			"monitor", d.monitor,
+			"error", err,
+			"retries", batch.attempts,
+			"remainingWindow", remaining,
+			"idempotencyKey", batch.key)
+
+		// Back off, but never past the point where a final attempt can still
+		// start finalAttemptWindow before the deadline: the window is used
+		// whole instead of ending unused in the middle of a sleep.
+		d.sleep(ctx, min(batch.backoff.Step(), remaining-d.tune.finalAttemptWindow))
 	}
-}
-
-// handleSendFailure classifies one failed attempt; true means the batch
-// reached a terminal drop, false means process should retry it.
-func (d *directState) handleSendFailure(batch *queuedBatch, err error) bool {
-	if isPermanentRejection(err) {
-		d.drop(batch, dropReasonRejected, err)
-
-		return true
-	}
-
-	if batch.isWithdrawn() {
-		// The caller left during the attempt; nothing waits for a retry.
-		d.drop(batch, dropReasonWithdrawn, err)
-
-		return true
-	}
-
-	remaining := time.Until(batch.deadline)
-	if remaining <= d.tune.finalAttemptWindow {
-		// Too little of the window is left for another attempt to succeed.
-		d.drop(batch, dropReasonRetryWindowExhausted, err)
-
-		return true
-	}
-
-	batch.attempts++
-
-	sendRetries.WithLabelValues(d.monitor).Inc()
-	slog.Warn("Error sending health events to deployment platform connector; will retry.",
-		"monitor", d.monitor,
-		"error", err,
-		"retries", batch.attempts,
-		"remainingWindow", remaining,
-		"idempotencyKey", batch.key)
-
-	// Back off, but never past the point where a final attempt can still start
-	// finalAttemptWindow before the deadline: the window is used whole instead
-	// of ending unused in the middle of a sleep.
-	d.sleep(batch, min(batch.backoff.Step(), remaining-d.tune.finalAttemptWindow))
-
-	return false
 }
 
 // permanentRejectionCodes are the status codes the server would answer the
@@ -495,8 +340,8 @@ func (d *directState) handleSendFailure(batch *queuedBatch, err error) bool {
 // RPC (Unimplemented). Unauthenticated is deliberately not here: the token
 // rotates, so it is retried. Neither is ResourceExhausted: gRPC uses it for
 // transient overload and quotas as well as for oversize messages, and an
-// oversize batch is refused at enqueue, before any attempt. The Python client
-// uses the same set.
+// oversize batch is refused before any attempt. The Python client uses the
+// same set.
 var permanentRejectionCodes = map[codes.Code]bool{
 	codes.InvalidArgument:  true,
 	codes.PermissionDenied: true,
@@ -512,10 +357,16 @@ func isPermanentRejection(err error) bool {
 }
 
 // send performs one RPC attempt with the batch's stable idempotency key and
-// its trace context injected into the outgoing metadata (trace
-// propagation, W3C traceparent via propagation.TraceContext). The attempt
-// never outlives the batch's retry window.
-func (d *directState) send(batch *queuedBatch) error {
+// its trace context injected into the outgoing metadata (trace propagation,
+// W3C traceparent via propagation.TraceContext). The attempt never outlives
+// the batch's retry window. Every attempt after the first is metered as a
+// retry here, when it really runs: a backoff sleep cut short by the caller or
+// by Close ends in a drop, not in a retry.
+func (d *directState) send(batch *pendingBatch) error {
+	if batch.attempts > 0 {
+		sendRetries.WithLabelValues(d.monitor).Inc()
+	}
+
 	timeout := d.tune.rpcTimeout
 	if remaining := time.Until(batch.deadline); remaining < timeout {
 		timeout = remaining
@@ -541,9 +392,9 @@ func (d *directState) send(batch *queuedBatch) error {
 	return err
 }
 
-// drop meters a permanent drop by reason, logs the batch identity and reports
-// the outcome to the waiting Publish call.
-func (d *directState) drop(batch *queuedBatch, reason string, err error) {
+// drop meters a permanent drop by reason, logs the batch identity and returns
+// the error the Publish call reports.
+func (d *directState) drop(batch *pendingBatch, reason string, err error) error {
 	sendsDropped.WithLabelValues(d.monitor, reason).Inc()
 	slog.Error("Dropping health event batch permanently.",
 		"monitor", d.monitor,
@@ -554,18 +405,11 @@ func (d *directState) drop(batch *queuedBatch, reason string, err error) {
 		"idempotencyKey", batch.key)
 
 	if reason == dropReasonRejected {
-		batch.finish(fmt.Errorf("%w: %w", ErrPublishRejected, err))
-
-		return
+		return fmt.Errorf("%w: %w", ErrPublishRejected, err)
 	}
 
-	batch.finish(fmt.Errorf("%w (%s): %w", ErrPublishDropped, reason, err))
+	return fmt.Errorf("%w (%s): %w", ErrPublishDropped, reason, err)
 }
-
-// errRetryWindowEnded is the drop cause of a batch whose window ran out
-// before an attempt could be made, typically while it waited in the queue
-// behind an outage.
-var errRetryWindowEnded = errors.New("retry window ended before the next attempt")
 
 // maxRetrySleep caps the backoff between attempts; wait.Backoff stops growing
 // the delay once it reaches the cap.
@@ -576,21 +420,9 @@ const maxRetrySleep = 30 * time.Second
 // freeze the delay at its initial value.
 const retryBackoffSteps = 64
 
-// newBackoff is the retry pacing of one batch: the publisher's policy, capped
-// at maxRetrySleep.
-func (d *directState) newBackoff() wait.Backoff {
-	return wait.Backoff{
-		Duration: d.initialBackoff,
-		Factor:   d.backoffFactor,
-		Jitter:   d.backoffJitter,
-		Steps:    retryBackoffSteps,
-		Cap:      maxRetrySleep,
-	}
-}
-
-// sleep waits for delay, cut short by the lifecycle context or by the batch's
+// sleep waits for delay, cut short by the publisher's lifecycle or by the
 // caller leaving.
-func (d *directState) sleep(batch *queuedBatch, delay time.Duration) {
+func (d *directState) sleep(ctx context.Context, delay time.Duration) {
 	if delay <= 0 {
 		return
 	}
@@ -600,61 +432,77 @@ func (d *directState) sleep(batch *queuedBatch, delay time.Duration) {
 
 	select {
 	case <-d.ctx.Done():
-	case <-batch.withdrawn:
+	case <-ctx.Done():
 	case <-timer.C:
 	}
 }
 
-// close stops accepting new batches, lets the sender drain the queue until
-// ctx is done, then cancels the remainder (metered under the shutdown drop
-// reason) and closes the connection. Idempotent; later calls return the
-// first result.
+// waitingOnServer reports whether a Publish call is pending within its retry
+// window, that is, whether a caller is legitimately waiting for the server.
+// Every pending call is resolved within its window plus one attempt, so a
+// call older than that means the publisher itself is stuck, which must not
+// count as waiting.
+func (d *directState) waitingOnServer() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if len(d.pending) == 0 {
+		return false
+	}
+
+	for batch := range d.pending {
+		// Past its deadline by more than one attempt: nothing legitimate can
+		// still be waiting for that call.
+		if time.Until(batch.deadline) < -d.tune.rpcTimeout {
+			return false
+		}
+	}
+
+	return true
+}
+
+// close stops admitting new batches, lets the Publish calls in progress
+// finish until ctx is done, then cancels them and closes the connection. A
+// cancelled call whose attempt was already on the wire keeps that attempt's
+// result; every other one is metered under the shutdown drop reason and
+// reports ErrPublishDropped. Idempotent; later calls return the first result.
 func (d *directState) close(ctx context.Context) error {
 	d.closeOnce.Do(func() {
 		d.mu.Lock()
 		d.closed = true
-		d.cond.Broadcast()
 		d.mu.Unlock()
 
+		finished := make(chan struct{})
+
+		go func() {
+			d.inProgress.Wait()
+			close(finished)
+		}()
+
+		var cutShort int
+
 		select {
-		case <-d.senderDone:
+		case <-finished:
 		case <-ctx.Done():
-			d.cancel()
-
 			d.mu.Lock()
-			d.cond.Broadcast()
+			cutShort = len(d.pending)
 			d.mu.Unlock()
-
-			<-d.senderDone
 		}
 
+		// Ends the attempts, sleeps and slot waits of the calls cut short; a
+		// no-op when every call already finished.
 		d.cancel()
-		d.closeErr = errors.Join(d.dropRemainder(), d.closeConn())
+		<-finished
+
+		d.closeErr = d.closeConn()
+		if cutShort > 0 {
+			d.closeErr = errors.Join(
+				fmt.Errorf("shutdown deadline reached with %d publish call(s) still pending; cancelled them", cutShort),
+				d.closeErr)
+		}
 	})
 
 	return d.closeErr
-}
-
-// dropRemainder empties whatever the drain deadline left behind, metering
-// each batch under the shutdown drop reason.
-func (d *directState) dropRemainder() error {
-	d.mu.Lock()
-	remainder := d.queue
-	d.queue = nil
-	d.queuedBytes = 0
-	d.updateQueueGauges()
-	d.mu.Unlock()
-
-	for _, batch := range remainder {
-		d.drop(batch, dropReasonShutdown, context.Canceled)
-	}
-
-	if len(remainder) > 0 {
-		return fmt.Errorf("shutdown deadline reached before the queue drained: dropped %d queued batches",
-			len(remainder))
-	}
-
-	return nil
 }
 
 // closeConn closes the owned connection.
@@ -702,8 +550,9 @@ func (c MetadataCarrier) Keys() []string {
 }
 
 // newIdempotencyKey mints the per-batch idempotency key: a random UUID (36
-// chars, within the server's ^[A-Za-z0-9._:-]{1,128}$ format), as the Python
-// client does. Generated once per batch and reused verbatim on every retry.
+// chars, within the server's ^[A-Za-z0-9._:-]{1,128}$ format; the Python
+// client uses the same UUID without dashes). Generated once per batch and
+// reused verbatim on every retry.
 func newIdempotencyKey() string {
 	return uuid.NewString()
 }

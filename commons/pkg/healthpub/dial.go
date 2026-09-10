@@ -50,22 +50,14 @@ const (
 	envTokenPath = "HEALTH_PUBLISH_TOKEN_PATH"
 	// envInsecure permits a plaintext direct connection; development only.
 	envInsecure = "HEALTH_PUBLISH_INSECURE"
-	// envRetryWindow is the retry budget of a queued batch, counted from the
-	// moment it is queued: waiting in the queue, attempts and backoff all
-	// spend it (default 5m).
+	// envRetryWindow is the retry budget of a batch, counted from the Publish
+	// call: waiting for the send slot, attempts and backoff all spend it
+	// (default 5m).
 	envRetryWindow = "HEALTH_PUBLISH_RETRY_WINDOW"
-	// envQueueMaxBatches bounds the direct-mode client queue in batches
-	// (default 1024).
-	envQueueMaxBatches = "HEALTH_PUBLISH_QUEUE_MAX_BATCHES"
-	// envQueueMaxBytes bounds the direct-mode client queue in serialized bytes
-	// (default 64 MiB).
-	envQueueMaxBytes = "HEALTH_PUBLISH_QUEUE_MAX_BYTES"
 )
 
 const (
-	defaultRetryWindow     = 5 * time.Minute
-	defaultQueueMaxBatches = 1024
-	defaultQueueMaxBytes   = 67108864
+	defaultRetryWindow = 5 * time.Minute
 	// defaultRPCTimeout bounds one send. The server writes the batch to the
 	// datastore and updates the node condition inside the request, so this
 	// leaves room for both, and for a MongoDB primary election.
@@ -73,7 +65,7 @@ const (
 
 	// defaultMaxSendBytes matches the gRPC server's default receive limit (4
 	// MiB): a batch over it would be rejected by the server on every retry, so
-	// the client refuses it at enqueue as rejected.
+	// the client refuses it before the first attempt as rejected.
 	defaultMaxSendBytes = 4194304
 
 	// defaultFinalAttemptWindow is the least time the last attempt of a batch
@@ -92,8 +84,8 @@ const (
 // sites pass the returned values straight through in both modes.
 //
 // With HEALTH_PUBLISH_TARGET set (direct mode) it validates the direct-mode
-// tuning environment (retry window and queue bounds, so a misconfigured value
-// fails at startup instead of being silently defaulted later), dials the
+// tuning environment (the retry window, so a misconfigured value fails at
+// startup instead of being silently defaulted later), dials the
 // deployment platform connector with TLS verified against
 // HEALTH_PUBLISH_TLS_CA_FILE (plaintext only with HEALTH_PUBLISH_INSECURE=true)
 // and bearer-token authentication from HEALTH_PUBLISH_TOKEN_PATH, and returns
@@ -227,15 +219,13 @@ func directConnectParams() grpc.ConnectParams {
 	return grpc.ConnectParams{Backoff: cfg, MinConnectTimeout: directConnectMinTimeout}
 }
 
-// directTuning carries the direct-mode queue and retry configuration.
+// directTuning carries the direct-mode retry configuration.
 type directTuning struct {
 	retryWindow time.Duration
-	maxBatches  int
-	maxBytes    int64
 	rpcTimeout  time.Duration
-	// maxMessageBytes is the largest batch accepted into the queue: the
-	// server's receive limit, checked here so an oversize batch is refused at
-	// once instead of failing on the wire. Zero disables the check.
+	// maxMessageBytes is the largest batch accepted: the server's receive
+	// limit, checked before the first attempt so an oversize batch is refused
+	// at once instead of failing on the wire. Zero disables the check.
 	maxMessageBytes int64
 	// finalAttemptWindow is the least time the last attempt of a batch gets
 	// before its retry window ends; see defaultFinalAttemptWindow.
@@ -243,13 +233,11 @@ type directTuning struct {
 }
 
 // defaultDirectTuning returns the contract defaults: a 5 minute retry window
-// whose last attempt starts a second before it ends, a 1024-batch / 64 MiB
-// queue and the 4 MiB message limit.
+// whose last attempt starts a second before it ends, and the 4 MiB message
+// limit.
 func defaultDirectTuning() directTuning {
 	return directTuning{
 		retryWindow:        defaultRetryWindow,
-		maxBatches:         defaultQueueMaxBatches,
-		maxBytes:           defaultQueueMaxBytes,
 		rpcTimeout:         defaultRPCTimeout,
 		maxMessageBytes:    defaultMaxSendBytes,
 		finalAttemptWindow: defaultFinalAttemptWindow,
@@ -270,43 +258,10 @@ func directTuningFromEnv() (directTuning, error) {
 		tune.retryWindow = window
 	}
 
-	maxBatches, err := positiveIntFromEnv(envQueueMaxBatches, int64(tune.maxBatches))
-	if err != nil {
-		return tune, err
-	}
-
-	tune.maxBatches = int(maxBatches)
-
-	tune.maxBytes, err = positiveIntFromEnv(envQueueMaxBytes, tune.maxBytes)
-	if err != nil {
-		return tune, err
-	}
-
-	if tune.maxBytes < tune.maxMessageBytes {
-		return tune, fmt.Errorf("invalid %s value %d: below the %d byte message limit, no full-size batch could be queued",
-			envQueueMaxBytes, tune.maxBytes, tune.maxMessageBytes)
-	}
-
 	if tune.retryWindow <= tune.finalAttemptWindow {
 		return tune, fmt.Errorf("invalid %s value %s: must exceed the %s final-attempt window, or no retry could ever run",
 			envRetryWindow, tune.retryWindow, tune.finalAttemptWindow)
 	}
 
 	return tune, nil
-}
-
-// positiveIntFromEnv reads a positive integer from the named variable,
-// returning fallback when it is unset.
-func positiveIntFromEnv(name string, fallback int64) (int64, error) {
-	raw := os.Getenv(name)
-	if raw == "" {
-		return fallback, nil
-	}
-
-	value, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || value <= 0 {
-		return 0, fmt.Errorf("invalid %s value %q: must be a positive integer", name, raw)
-	}
-
-	return value, nil
 }

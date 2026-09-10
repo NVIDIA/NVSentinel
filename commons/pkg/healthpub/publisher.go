@@ -82,10 +82,10 @@ type Publisher struct {
 	backoffFactor  float64
 	backoffJitter  float64
 
-	// direct, when non-nil, switches Publish to the direct mode: a
-	// bounded queue plus background sender against the deployment platform
-	// connector, with the socket gate skipped. Set via the direct option
-	// DialFromEnvOr returns.
+	// direct, when non-nil, switches Publish to the direct mode: one send at
+	// a time to the deployment platform connector, retried within a window,
+	// with the socket gate skipped. Set via the direct option DialFromEnvOr
+	// returns.
 	direct *directState
 }
 
@@ -156,10 +156,10 @@ func New(client pb.PlatformConnectorClient, target, monitor string, opts ...Opti
 func (p *Publisher) SocketPath() string { return p.socketPath }
 
 // Close shuts the publisher down. In direct mode it stops accepting new
-// batches, lets the background sender drain the queue until ctx is done,
-// then drops the remainder (metered under the shutdown drop reason) and
-// closes the owned connection. In socket mode it is a no-op: the caller owns
-// that connection, as today. Idempotent.
+// batches, lets the Publish calls in progress finish until ctx is done, then
+// cancels them (metered under the shutdown drop reason) and closes the owned
+// connection. In socket mode it is a no-op: the caller owns that connection,
+// as today. Idempotent.
 func (p *Publisher) Close(ctx context.Context) error {
 	if p.direct == nil {
 		return nil
@@ -181,12 +181,31 @@ func (p *Publisher) CloseWithTimeout(timeout time.Duration) {
 	}
 }
 
+// TimedCloser is what CloseWhenDone shuts down: a Publisher, or a monitor's
+// wrapper around one.
+type TimedCloser interface {
+	CloseWithTimeout(timeout time.Duration)
+}
+
+// CloseWhenDone runs closer.CloseWithTimeout(timeout) as soon as ctx ends, so
+// that a monitor's shutdown starts the publisher's bounded drain the moment
+// its root context is cancelled, not after its loops return. That matters
+// because an attempt already on the wire runs on the publisher's lifecycle,
+// not on the loop's context: a loop that first waits for a stalled server to
+// answer could spend the whole termination grace period there. Close is
+// idempotent, so the explicit close a main runs after its loops stays correct
+// for every other exit. The returned stop function releases the hook and
+// reports false once the hook has run.
+func CloseWhenDone(ctx context.Context, closer TimedCloser, timeout time.Duration) (stop func() bool) {
+	return context.AfterFunc(ctx, func() { closer.CloseWithTimeout(timeout) })
+}
+
 // WaitingOnServer reports whether a batch is pending in direct mode within
 // its retry window: a caller blocked in Publish is then waiting for the
 // deployment platform connector, not hung. A monitor's liveness check can
 // stay green while this is true. Every pending batch is resolved within its
 // window plus one attempt, so a wedged publisher cannot hide behind it.
-// Always false in socket mode, where Publish never waits on a queue.
+// Always false in socket mode, where Publish never waits for a window.
 func (p *Publisher) WaitingOnServer() bool {
 	return p.direct != nil && p.direct.waitingOnServer()
 }
@@ -195,24 +214,26 @@ func (p *Publisher) WaitingOnServer() bool {
 // success, ErrPlatformConnectorUnavailable when the unix socket is absent (no
 // retries, no cache mutation expected from caller), ErrPublishRejected when
 // the server refuses the batch for good, or any other error after retries are
-// exhausted. In direct mode it queues the batch and waits for its outcome:
-// nil once the server has stored it, ErrPublishRejected when the server would
-// refuse it on every attempt (or it exceeds the message limit),
-// ErrPublishDropped when its retry window ended, the publisher closed while
-// it waited, or the caller's context ended and the batch was withdrawn,
-// ErrPublishQueueFull when the bounded queue turns it away, or
-// ErrPublisherClosed after Close. A context that ends withdraws the batch:
-// removed if still queued, or dropped after its attempt in flight unless that
+// exhausted. In direct mode it sends the batch itself, one batch at a time
+// across all callers, and waits for the outcome: nil once the server has
+// stored it, ErrPublishRejected when the server would refuse it on every
+// attempt (or it exceeds the message limit), ErrPublishDropped when its retry
+// window ended, the publisher closed while it waited, or the caller's context
+// ended and the batch was withdrawn, or ErrPublisherClosed after Close. A
+// context that ends withdraws the batch: never sent if it was still waiting
+// for the send slot, or dropped after its attempt in flight unless that
 // attempt stored it, in which case Publish still returns nil. In every case
-// but nil the batch is not stored and will not be, so the caller must not
-// record the events as reported and may safely re-emit them.
+// but nil no acknowledgement was received and no further attempt will be
+// made, so the caller must not record the events as reported and should
+// re-emit them (a duplicate is possible only if an attempt timed out after the
+// server had stored the batch; the server tolerates that).
 func (p *Publisher) Publish(ctx context.Context, events *pb.HealthEvents) error {
 	if events == nil || len(events.GetEvents()) == 0 {
 		return nil
 	}
 
 	if p.direct != nil {
-		return p.direct.enqueue(ctx, events)
+		return p.direct.publish(ctx, events)
 	}
 
 	if !p.socketPresent() {

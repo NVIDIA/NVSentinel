@@ -22,12 +22,11 @@ import (
 // labelMonitor is the agent-name label shared by every publisher counter.
 const labelMonitor = "monitor"
 
-// Direct-mode drop reasons (bounded cardinality). queue_full and rejected
-// mean the publisher never took the batch; retry_window_exhausted, shutdown
-// and withdrawn mean it took the batch and then gave up on it. The Python
-// client meters the same conditions under the same strings.
+// Direct-mode drop reasons (bounded cardinality). rejected means the batch
+// can never be stored; retry_window_exhausted, shutdown and withdrawn mean the
+// publisher took the batch and then gave up on it. The Python client meters
+// the same conditions under the same strings.
 const (
-	dropReasonQueueFull            = "queue_full"
 	dropReasonRejected             = "rejected"
 	dropReasonRetryWindowExhausted = "retry_window_exhausted"
 	dropReasonShutdown             = "shutdown"
@@ -62,7 +61,7 @@ var (
 		[]string{labelMonitor, "code"},
 	)
 
-	// Direct-mode counters and queue-pressure gauges.
+	// Direct-mode counters.
 
 	sendsDropped = promauto.NewCounterVec(
 		prometheus.CounterOpts{
@@ -76,22 +75,6 @@ var (
 		prometheus.CounterOpts{
 			Name: "nvsentinel_health_events_publisher_retries_total",
 			Help: "Total retried health-event batch sends in direct mode.",
-		},
-		[]string{labelMonitor},
-	)
-
-	queueBatches = promauto.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "nvsentinel_health_events_publisher_queue_batches",
-			Help: "Health-event batches currently held in the direct-mode publish queue.",
-		},
-		[]string{labelMonitor},
-	)
-
-	queueBytes = promauto.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "nvsentinel_health_events_publisher_queue_bytes",
-			Help: "Serialized bytes currently held in the direct-mode publish queue.",
 		},
 		[]string{labelMonitor},
 	)

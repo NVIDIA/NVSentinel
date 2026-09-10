@@ -53,7 +53,7 @@ func clearPublishEnv(t *testing.T) {
 
 	for _, key := range []string{
 		envTarget, envTLSCAFile, envTLSServerName, envTokenPath,
-		envInsecure, envRetryWindow, envQueueMaxBatches, envQueueMaxBytes,
+		envInsecure, envRetryWindow,
 	} {
 		t.Setenv(key, "")
 	}
@@ -188,12 +188,6 @@ func TestDialFromEnvOr_InvalidEnvRejected(t *testing.T) {
 		{"bad_insecure", envInsecure, "notabool"},
 		{"bad_retry_window", envRetryWindow, "5minutes"},
 		{"negative_retry_window", envRetryWindow, "-1m"},
-		{"bad_queue_batches", envQueueMaxBatches, "many"},
-		{"zero_queue_batches", envQueueMaxBatches, "0"},
-		{"bad_queue_bytes", envQueueMaxBytes, "64MiB"},
-		{"negative_queue_bytes", envQueueMaxBytes, "-1"},
-		// A queue smaller than one full-size batch could never hold one.
-		{"queue_bytes_below_message_limit", envQueueMaxBytes, "1000"},
 		// A window no longer than the final-attempt allowance could never retry.
 		{"retry_window_within_final_attempt_window", envRetryWindow, "1s"},
 	}
@@ -262,14 +256,10 @@ func TestDialFromEnvOr_RefusesTargetWithoutServerName(t *testing.T) {
 func TestDirectTuningFromEnv_ValidOverrides(t *testing.T) {
 	clearPublishEnv(t)
 	t.Setenv(envRetryWindow, "90s")
-	t.Setenv(envQueueMaxBatches, "7")
-	t.Setenv(envQueueMaxBytes, "8388608")
 
 	tune, err := directTuningFromEnv()
 	require.NoError(t, err)
 	assert.Equal(t, 90*time.Second, tune.retryWindow)
-	assert.Equal(t, 7, tune.maxBatches)
-	assert.Equal(t, int64(8388608), tune.maxBytes)
 
 	clearPublishEnv(t)
 
