@@ -75,9 +75,9 @@ func testClient(compute Compute) *Client {
 	return &Client{compute: compute}
 }
 
-// TestSendRebootSignalSuccess verifies that a successful reboot request returns
-// a timestamp reference and configures the OCI retry policy.
-func TestSendRebootSignalSuccess(t *testing.T) {
+// TestSendRebootSignal_ComputeSucceeds_ReturnsTimestampAndRetryPolicy verifies
+// that a successful reboot request returns a timestamp and configures retries.
+func TestSendRebootSignal_ComputeSucceeds_ReturnsTimestampAndRetryPolicy(t *testing.T) {
 	compute := &fakeCompute{}
 	ref, err := testClient(compute).SendRebootSignal(context.Background(), testNode(), "")
 
@@ -91,9 +91,9 @@ func TestSendRebootSignalSuccess(t *testing.T) {
 	assert.Equal(t, uint(rebootRetryAttempts), retryPolicy.MaximumNumberAttempts)
 }
 
-// TestSendRebootSignalReturnsComputeError verifies that a failed OCI request
-// returns its error to the caller.
-func TestSendRebootSignalReturnsComputeError(t *testing.T) {
+// TestSendRebootSignal_ComputeFails_ReturnsError verifies that a failed OCI
+// request returns its error to the caller.
+func TestSendRebootSignal_ComputeFails_ReturnsError(t *testing.T) {
 	compute := &fakeCompute{actionErrors: []error{errors.New("permission denied")}}
 	_, err := testClient(compute).SendRebootSignal(context.Background(), testNode(), "")
 
@@ -101,9 +101,9 @@ func TestSendRebootSignalReturnsComputeError(t *testing.T) {
 	assert.Len(t, compute.actionRequests, 1)
 }
 
-// TestIsRetryableRebootError verifies the OCI default retry classifications
-// and the additional instance-modification conflict.
-func TestIsRetryableRebootError(t *testing.T) {
+// TestIsRetryableRebootError_VariousErrors_ReturnsExpectedClassification
+// verifies the OCI defaults and the additional instance-modification conflict.
+func TestIsRetryableRebootError_VariousErrors_ReturnsExpectedClassification(t *testing.T) {
 	tests := []struct {
 		name      string
 		err       error
@@ -203,9 +203,9 @@ func TestIsRetryableRebootError(t *testing.T) {
 	}
 }
 
-// TestRebootRetryPolicyUsesRetryableErrorClassification verifies that the
-// request policy delegates retry decisions to the reboot error classifier.
-func TestRebootRetryPolicyUsesRetryableErrorClassification(t *testing.T) {
+// TestRebootRetryPolicy_RetryableAndPermanentErrors_ReturnsExpectedDecision
+// verifies that the request policy delegates to the reboot error classifier.
+func TestRebootRetryPolicy_RetryableAndPermanentErrors_ReturnsExpectedDecision(t *testing.T) {
 	policy := rebootRetryPolicy()
 
 	assert.True(t, policy.ShouldRetryOperation(common.OCIOperationResponse{
