@@ -265,6 +265,12 @@ func (r *GPUResetReconciler) reconcileHelper(ctx context.Context, gr *v1alpha1.G
 // for GPUResets and owned Jobs, and adds field indexers for efficient lookups
 // of GPUResets by node name and Jobs by their controlling owner.
 func (r *GPUResetReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if !r.Config.Enabled {
+		slog.Info("GPUReset controller is disabled; skipping registration")
+
+		return nil
+	}
+
 	gpuServiceManager, err := gpuservices.NewManager(r.Config.ServiceManager.Name, r.Config.ServiceManager.Spec)
 	if err != nil {
 		return fmt.Errorf("failed to construct GPU service manager: %w", err)
