@@ -677,6 +677,125 @@ class TestDCGMHealthChecks:
         )
         assert health_status == expected_response
 
+    def _get_nvlink_watch_incident(self, entity_id, error_code, error_msg):
+        """Helper to create an arbitrary NVLINK-watch incident for testing."""
+        incident = dcgm_structs.c_dcgmIncidentInfo_t()
+        incident.system = dcgm_structs.DCGM_HEALTH_WATCH_NVLINK
+        incident.health = dcgm_structs.DCGM_HEALTH_RESULT_FAIL
+        incident.error = dcgm_structs.c_dcgmDiagErrorDetail_t()
+        incident.error.msg = error_msg
+        incident.error.code = error_code
+        incident.entityInfo = dcgm_structs.c_dcgmGroupEntityPair_t()
+        incident.entityInfo.entityGroupId = 0
+        incident.entityInfo.entityId = entity_id
+        return incident
+
+    def _make_suppressing_watcher(self, codes: set[str], **kwargs) -> dcgm.DCGMWatcher:
+        return dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            suppressed_error_codes=frozenset(codes),
+            **kwargs,
+        )
+
+    def _poll_with_suppression(self, watcher: dcgm.DCGMWatcher, dcgm_group_mock: MagicMock, incidents: list) -> dict:
+        health_status = self._poll(watcher, dcgm_group_mock, incidents)
+        watcher._suppress_configured_error_codes(health_status)
+        return health_status
+
+    def test_suppressed_code_keeps_other_incidents_on_the_same_gpu(self) -> None:
+        watcher = self._make_suppressing_watcher({"DCGM_FR_IMEX_UNHEALTHY"})
+
+        health_status = self._poll_with_suppression(
+            watcher,
+            MagicMock(),
+            [
+                self._get_nvlink_watch_incident(0, dcgm_errors.DCGM_FR_IMEX_UNHEALTHY, "GPU 0 IMEX is not healthy"),
+                self._get_nvlink_watch_incident(
+                    0, dcgm_errors.DCGM_FR_FABRIC_PROBE_STATE, "GPU 0 fabric probe state is not complete"
+                ),
+            ],
+        )
+
+        details = health_status["DCGM_HEALTH_WATCH_NVLINK"]
+        assert details.status == dcgm.types.HealthStatus.FAIL
+        # The surviving incident keeps its own code — the code drives remediation —
+        # and the suppressed incident's message is not merged into it.
+        assert details.entity_failures == {
+            0: dcgm.types.ErrorDetails(
+                code="DCGM_FR_FABRIC_PROBE_STATE",
+                message="GPU 0 fabric probe state is not complete",
+            )
+        }
+
+    def test_suppressed_code_alone_leaves_the_watch_passing(self) -> None:
+        """A GPU whose only incident is suppressed still reports nothing, and the watch
+        it was raised under stays PASS."""
+        watcher = self._make_suppressing_watcher({"DCGM_FR_IMEX_UNHEALTHY"})
+
+        health_status = self._poll_with_suppression(
+            watcher,
+            MagicMock(),
+            [self._get_nvlink_watch_incident(0, dcgm_errors.DCGM_FR_IMEX_UNHEALTHY, "GPU 0 IMEX is not healthy")],
+        )
+
+        assert health_status["DCGM_HEALTH_WATCH_NVLINK"] == dcgm.types.HealthDetails(
+            status=dcgm.types.HealthStatus.PASS, entity_failures={}
+        )
+
+    def test_suppressed_code_on_one_gpu_keeps_another_gpus_fault(self) -> None:
+        """Suppression is scoped to the incident, so a genuine fault on a different GPU
+        under the same watch is reported and degrades the watch."""
+        watcher = self._make_suppressing_watcher({"DCGM_FR_IMEX_UNHEALTHY"})
+
+        health_status = self._poll_with_suppression(
+            watcher,
+            MagicMock(),
+            [
+                self._get_nvlink_watch_incident(0, dcgm_errors.DCGM_FR_IMEX_UNHEALTHY, "GPU 0 IMEX is not healthy"),
+                self._get_nvlink_incident(0, 1, 16),
+            ],
+        )
+
+        details = health_status["DCGM_HEALTH_WATCH_NVLINK"]
+        assert details.status == dcgm.types.HealthStatus.FAIL
+        assert 0 not in details.entity_failures
+        assert details.entity_failures[1].code == "DCGM_FR_NVLINK_DOWN"
+
+    def test_suppressed_incidents_are_counted_per_incident(self) -> None:
+        """Withheld incidents stay observable: the counter advances once per suppressed
+        incident record, matching the metric's name and _is_nvlink_down_false_positive."""
+        watcher = self._make_suppressing_watcher({"DCGM_FR_IMEX_UNHEALTHY"})
+        counter = dcgm.metrics.dcgm_health_check_suppressed_incidents.labels("DCGM_FR_IMEX_UNHEALTHY")
+        before = counter._value.get()
+
+        self._poll_with_suppression(
+            watcher,
+            MagicMock(),
+            [
+                self._get_nvlink_watch_incident(0, dcgm_errors.DCGM_FR_IMEX_UNHEALTHY, "GPU 0 IMEX is not healthy"),
+                self._get_nvlink_watch_incident(1, dcgm_errors.DCGM_FR_IMEX_UNHEALTHY, "GPU 1 IMEX is not healthy"),
+            ],
+        )
+
+        assert counter._value.get() == before + 2
+
+    def test_suppressed_code_does_not_build_a_debounce_streak(self) -> None:
+        """A suppressed incident is not an observation, so it must not advance the
+        streak of a code that is also debounced."""
+        watcher = self._make_suppressing_watcher(
+            {"DCGM_FR_NVLINK_DOWN"}, health_check_min_consecutive_polls={"DCGM_FR_NVLINK_DOWN": 2}
+        )
+        dcgm_group_mock = MagicMock()
+
+        for _ in range(3):
+            health_status = self._poll_with_suppression(watcher, dcgm_group_mock, [self._get_nvlink_incident(0, 1, 16)])
+            assert health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures == {}
+
+        assert watcher._incident_streaks == {}
+
     def _get_nvlink_incident(self, group_id, entity_id, link_id):
         """Helper to create NvLink down incident for testing."""
         incident = dcgm_structs.c_dcgmIncidentInfo_t()
