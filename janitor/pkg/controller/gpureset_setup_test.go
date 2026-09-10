@@ -22,6 +22,8 @@ import (
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
 )
 
+// TestGPUResetReconcilerSetupWithManager_ControllerState_ValidatesRequiredConfiguration verifies that disabled
+// controllers skip setup while enabled controllers validate required configuration.
 func TestGPUResetReconcilerSetupWithManager_ControllerState_ValidatesRequiredConfiguration(t *testing.T) {
 	tests := []struct {
 		name        string
