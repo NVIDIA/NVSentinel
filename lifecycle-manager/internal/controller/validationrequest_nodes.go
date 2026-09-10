@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"slices"
 	"sort"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -28,8 +29,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
+	"github.com/nvidia/nvsentinel/commons/pkg/labels"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 )
+
+const uncordonReasonValidationSucceeded = "ValidationSucceeded"
 
 type sessionEntry struct {
 	Name   string   `json:"name"`
@@ -333,6 +337,10 @@ func applySchedulingGateRelease(node *corev1.Node, schedulingGate *v1alpha1.Sche
 	if schedulingGate.Cordon.Remove && node.Spec.Unschedulable {
 		node.Spec.Unschedulable = false
 		changed = true
+
+		if len(schedulingGate.Cordon.LabelPrefix) != 0 {
+			releaseCordonLabels(node, schedulingGate.Cordon.LabelPrefix)
+		}
 	}
 
 	remainingTaints, taintsChanged := removeConfiguredTaints(node.Spec.Taints, schedulingGate.Taints)
@@ -340,6 +348,20 @@ func applySchedulingGateRelease(node *corev1.Node, schedulingGate *v1alpha1.Sche
 	changed = changed || taintsChanged
 
 	return changed
+}
+
+func releaseCordonLabels(node *corev1.Node, prefix string) {
+	if node.Labels == nil {
+		node.Labels = map[string]string{}
+	}
+
+	delete(node.Labels, labels.Key(prefix, labels.CordonedBySuffix))
+	delete(node.Labels, labels.Key(prefix, labels.CordonedReasonSuffix))
+	delete(node.Labels, labels.Key(prefix, labels.CordonedTimestampSuffix))
+
+	node.Labels[labels.Key(prefix, labels.UncordonedBySuffix)] = labels.ServiceName
+	node.Labels[labels.Key(prefix, labels.UncordonedTimestampSuffix)] = time.Now().UTC().Format(labels.TimestampFormat)
+	node.Labels[labels.Key(prefix, labels.UncordonedReasonSuffix)] = uncordonReasonValidationSucceeded
 }
 
 func removeConfiguredTaints(taints []corev1.Taint, configuredTaints []v1alpha1.TaintConfig) ([]corev1.Taint, bool) {
@@ -355,7 +377,7 @@ func removeConfiguredTaints(taints []corev1.Taint, configuredTaints []v1alpha1.T
 func taintMatches(nodeTaint corev1.Taint, taintCfg v1alpha1.TaintConfig) bool {
 	return nodeTaint.Key == taintCfg.Key &&
 		nodeTaint.Value == taintCfg.Value &&
-		string(nodeTaint.Effect) == taintCfg.Effect
+		nodeTaint.Effect == taintCfg.Effect
 }
 
 func sameTests(a, b []string) bool {
