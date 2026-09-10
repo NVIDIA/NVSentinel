@@ -272,7 +272,7 @@ class TestDCGMHealthChecks:
             dcgm_k8s_service_enabled=False,
         )
         error_codes = watcher._get_available_error_codes()
-        assert len(error_codes) == 114
+        assert len(error_codes) == 116
 
     def test_get_available_fields(self):
         watcher = dcgm.DCGMWatcher(
