@@ -124,6 +124,37 @@ type Validator struct {
 	retryWindow time.Duration
 	backoff     wait.Backoff
 	now         func() time.Time
+
+	// successLogLevel is the level of the per-request "Request authenticated"
+	// audit line. Info by default; a fleet-facing server that would otherwise
+	// emit one line per accepted request can lower it to debug with
+	// WithSuccessLogLevel. Failures always log at their existing levels.
+	successLogLevel slog.Level
+
+	// cacheSize bounds the verdict cache; cacheMaxEntries unless WithCacheSize
+	// raised it.
+	cacheSize int
+}
+
+// ValidatorOption customizes a Validator at construction time.
+type ValidatorOption func(*Validator)
+
+// WithSuccessLogLevel lowers (or raises) ONLY the success audit log emitted
+// for each authenticated request. It does not affect failure logging.
+func WithSuccessLogLevel(level slog.Level) ValidatorOption {
+	return func(v *Validator) {
+		v.successLogLevel = level
+	}
+}
+
+// WithCacheSize sets how many token verdicts the cache holds. The default
+// suits one node's callers; a server that authenticates every publisher in
+// the fleet sizes it to the number of caller tokens plus the extra ones that
+// exist while tokens rotate, so steady-state requests keep hitting the cache.
+func WithCacheSize(size int) ValidatorOption {
+	return func(v *Validator) {
+		v.cacheSize = size
+	}
 }
 
 // NewValidator builds a Validator.
@@ -131,7 +162,7 @@ type Validator struct {
 // audience must be non-empty: an audience-less TokenReview accepts the generic
 // API-server token that every pod already has mounted, which is not an
 // authentication decision worth making.
-func NewValidator(client kubernetes.Interface, audience string) (*Validator, error) {
+func NewValidator(client kubernetes.Interface, audience string, opts ...ValidatorOption) (*Validator, error) {
 	if client == nil {
 		return nil, fmt.Errorf("kubernetes client is required")
 	}
@@ -140,19 +171,32 @@ func NewValidator(client kubernetes.Interface, audience string) (*Validator, err
 		return nil, fmt.Errorf("audience is required")
 	}
 
-	cache, err := newVerdictCache()
+	v := &Validator{
+		client:          client,
+		audience:        audience,
+		retryWindow:     DefaultTokenReviewRetryWindow,
+		backoff:         DefaultTokenReviewBackoff,
+		now:             time.Now,
+		successLogLevel: slog.LevelInfo,
+		cacheSize:       cacheMaxEntries,
+	}
+
+	for _, opt := range opts {
+		opt(v)
+	}
+
+	if v.cacheSize <= 0 {
+		return nil, fmt.Errorf("cache size must be positive, got %d", v.cacheSize)
+	}
+
+	cache, err := newVerdictCache(v.cacheSize)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Validator{
-		client:      client,
-		audience:    audience,
-		cache:       cache,
-		retryWindow: DefaultTokenReviewRetryWindow,
-		backoff:     DefaultTokenReviewBackoff,
-		now:         time.Now,
-	}, nil
+	v.cache = cache
+
+	return v, nil
 }
 
 // Authenticate submits token to the TokenReview API and returns the caller's
@@ -171,12 +215,13 @@ func (v *Validator) Authenticate(ctx context.Context, token string) (*Identity, 
 		v.cache.put(token, identity, v.now())
 	}
 
-	// The full attested tuple, on every accepted call, at info: this is the
-	// audit record that lets a decision be traced back to one pod instance on
-	// one node. UIDs matter because names are reused — a deleted and recreated
-	// ServiceAccount, pod or node keeps its name but never its UID.
+	// The full attested tuple, on every accepted call, at successLogLevel
+	// (info by default): this is the audit record that lets a decision be
+	// traced back to one pod instance on one node. UIDs matter because names
+	// are reused — a deleted and recreated ServiceAccount, pod or node keeps
+	// its name but never its UID.
 	// The token itself is deliberately never logged.
-	slog.InfoContext(ctx, "Request authenticated",
+	slog.Log(ctx, v.successLogLevel, "Request authenticated",
 		"user", identity.Username, "userUID", identity.UID,
 		"pod", identity.PodName, "podUID", identity.PodUID,
 		"node", identity.NodeName, "nodeUID", identity.NodeUID,

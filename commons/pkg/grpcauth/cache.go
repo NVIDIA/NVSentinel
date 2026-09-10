@@ -23,10 +23,11 @@ import (
 )
 
 const (
-	// cacheMaxEntries bounds the cache. Each entry is one live publisher's
-	// token, so this is far above the number of pods that can address a single
-	// node's platform-connector; the bound exists so a caller presenting many
-	// distinct tokens cannot grow the map without limit.
+	// cacheMaxEntries is the default bound of the cache. Each entry is one live
+	// publisher's token, so this is far above the number of pods that can
+	// address a single node's platform-connector; the bound exists so a caller
+	// presenting many distinct tokens cannot grow the map without limit. A
+	// server that authenticates the whole fleet raises it with WithCacheSize.
 	cacheMaxEntries = 4096
 
 	// cacheTTL is how long a positive verdict is remembered, for every caller.
@@ -58,8 +59,8 @@ type cacheEntry struct {
 	expires  time.Time
 }
 
-func newVerdictCache() (*verdictCache, error) {
-	entries, err := lru.New[[sha256.Size]byte, cacheEntry](cacheMaxEntries)
+func newVerdictCache(maxEntries int) (*verdictCache, error) {
+	entries, err := lru.New[[sha256.Size]byte, cacheEntry](maxEntries)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build verdict cache: %w", err)
 	}

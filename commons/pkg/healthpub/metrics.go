@@ -22,6 +22,18 @@ import (
 // labelMonitor is the agent-name label shared by every publisher counter.
 const labelMonitor = "monitor"
 
+// Direct-mode drop reasons (bounded cardinality). queue_full and rejected
+// mean the publisher never took the batch; retry_window_exhausted, shutdown
+// and withdrawn mean it took the batch and then gave up on it. The Python
+// client meters the same conditions under the same strings.
+const (
+	dropReasonQueueFull            = "queue_full"
+	dropReasonRejected             = "rejected"
+	dropReasonRetryWindowExhausted = "retry_window_exhausted"
+	dropReasonShutdown             = "shutdown"
+	dropReasonWithdrawn            = "withdrawn"
+)
+
 // Counters are registered against the default registry via promauto.
 // The `monitor` label is the agent name; `code` on sendsError is a gRPC
 // status-code string (bounded cardinality, ~17 values).
@@ -48,5 +60,39 @@ var (
 			Help: "Total failed health-event sends after retries exhausted (excluding socket-missing skips).",
 		},
 		[]string{labelMonitor, "code"},
+	)
+
+	// Direct-mode counters and queue-pressure gauges.
+
+	sendsDropped = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "nvsentinel_health_events_publisher_dropped_total",
+			Help: "Total health-event batches dropped by the direct-mode publisher, by reason.",
+		},
+		[]string{labelMonitor, "reason"},
+	)
+
+	sendRetries = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "nvsentinel_health_events_publisher_retries_total",
+			Help: "Total retried health-event batch sends in direct mode.",
+		},
+		[]string{labelMonitor},
+	)
+
+	queueBatches = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "nvsentinel_health_events_publisher_queue_batches",
+			Help: "Health-event batches currently held in the direct-mode publish queue.",
+		},
+		[]string{labelMonitor},
+	)
+
+	queueBytes = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "nvsentinel_health_events_publisher_queue_bytes",
+			Help: "Serialized bytes currently held in the direct-mode publish queue.",
+		},
+		[]string{labelMonitor},
 	)
 )
