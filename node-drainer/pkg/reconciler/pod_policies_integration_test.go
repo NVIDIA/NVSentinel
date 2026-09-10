@@ -249,3 +249,49 @@ func TestProcessEventGeneric_PodPoliciesRelabel_ObservesNewModeAndPreservesUnmat
 	assertNodeLabel(t, setup.client, setup.ctx, node, statemanager.DrainSucceededLabelValue)
 	requirePolicyPodRunning(t, setup, "workloads", "unmatched")
 }
+
+// TestProcessEventGeneric_PodPoliciesPartialTerminationTimeout_DeletesOnlySelectedGPU
+// checks that partial drains still force-delete expired immediate-mode pods on the affected GPU.
+func TestProcessEventGeneric_PodPoliciesPartialTerminationTimeout_DeletesOnlySelectedGPU(t *testing.T) {
+	setup := setupConfiguredTest(t, podPolicyTestConfig(), false)
+	const node = "policy-timeout-node"
+	createNode(setup.ctx, t, setup.client, node)
+	waitForNodeInInformer(t, setup.informersInstance, node)
+	createNamespace(setup.ctx, t, setup.client, "workloads")
+	createPolicyPod(t, setup, "workloads", "immediate", node, map[string]string{"role": "worker"}, "GPU-0")
+	createPolicyPod(t, setup, "workloads", "protected", node, map[string]string{"protected": "yes"}, "GPU-0")
+	createPolicyPod(t, setup, "workloads", "unmatched", node, nil, "GPU-0")
+	createPolicyPod(t, setup, "workloads", "healthy-gpu", node, map[string]string{"role": "worker"}, "GPU-1")
+	target := &protos.Entity{EntityType: "GPU_UUID", EntityValue: "GPU-0"}
+	require.NoError(t, setup.client.CoreV1().Pods("workloads").Delete(setup.ctx, "immediate",
+		metav1.DeleteOptions{GracePeriodSeconds: new(int64(1))}))
+	require.Eventually(t, func() bool {
+		pods, err := setup.informersInstance.FindEvictablePodsInNamespaceAndNode("workloads", node, target)
+		if err != nil || len(pods) != 3 {
+			return false
+		}
+		for _, pod := range pods {
+			if pod.Name == "immediate" && pod.DeletionTimestamp != nil {
+				gracePeriod := time.Duration(*pod.Spec.TerminationGracePeriodSeconds) * time.Second
+				deadline := pod.DeletionTimestamp.Add(gracePeriod + time.Second)
+				return time.Now().After(deadline)
+			}
+		}
+		return false
+	}, 40*time.Second, 50*time.Millisecond)
+
+	opts := healthEventOptions{nodeName: node, nodeQuarantined: model.Quarantined,
+		recommendedAction: protos.RecommendedAction_COMPONENT_RESET, entitiesImpacted: []*protos.Entity{target}}
+	_ = processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, setup.healthEventStore, opts)
+	require.Eventually(t, func() bool {
+		_, err := setup.client.CoreV1().Pods("workloads").Get(setup.ctx, "immediate", metav1.GetOptions{})
+		return errors.IsNotFound(err)
+	}, 10*time.Second, 50*time.Millisecond)
+	requirePolicyPodRunning(t, setup, "workloads", "protected")
+	requirePolicyPodRunning(t, setup, "workloads", "unmatched")
+	requirePolicyPodRunning(t, setup, "workloads", "healthy-gpu")
+	require.Eventually(t, func() bool {
+		err := processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, setup.healthEventStore, opts)
+		return err != nil && strings.Contains(err.Error(), "waiting for pods to complete: 1")
+	}, 10*time.Second, 50*time.Millisecond)
+}

@@ -27,8 +27,8 @@ import (
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/informers"
 )
 
-// evaluatePodPolicyActions applies pod policies and checks
-// the entire selected scope again before reporting success after per-mode checks.
+// evaluatePodPolicyActions lists each namespace once to group eligible pods by mode,
+// then checks the entire selected scope again before reporting success.
 func (e *NodeDrainEvaluator) evaluatePodPolicyActions(ctx context.Context,
 	healthEvent model.HealthEventWithStatus, partialDrainEntity *protos.Entity) (*DrainActionResult, error) {
 	nodeName := healthEvent.HealthEvent.NodeName
@@ -40,25 +40,41 @@ func (e *NodeDrainEvaluator) evaluatePodPolicyActions(ctx context.Context,
 
 	force := healthEvent.HealthEvent.GetDrainOverrides().GetForce()
 
-	filters := make(map[config.EvictMode]informers.PodFilter)
-	for _, mode := range []config.EvictMode{
-		config.ModeImmediateEvict, config.ModeDeleteAfterTimeout, config.ModeAllowCompletion,
+	podsByMode, err := e.listPodsByMode(allNamespaces, nodeName, partialDrainEntity, force)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, candidate := range []struct {
+		mode    config.EvictMode
+		action  DrainAction
+		timeout time.Duration
+	}{
+		{config.ModeImmediateEvict, ActionEvictImmediate, e.config.EvictionTimeoutInSeconds.Duration},
+		{config.ModeDeleteAfterTimeout, ActionEvictWithTimeout,
+			time.Duration(e.config.DeleteAfterTimeoutMinutes) * time.Minute},
+		{config.ModeAllowCompletion, ActionCheckCompletion, 0},
 	} {
-		filters[mode] = e.podModeFilter(mode, force)
+		pods := podsByMode[candidate.mode]
+		if len(pods) == 0 {
+			continue
+		}
+
+		filter := e.podModeFilter(candidate.mode, force)
+		if candidate.mode == config.ModeImmediateEvict &&
+			e.informers.CheckIfObservedPodsAreEvictedInImmediateMode(ctx, allNamespaces, nodeName,
+				candidate.timeout, partialDrainEntity, pods, filter) {
+			continue
+		}
+
+		return &DrainActionResult{
+			Action: candidate.action, Namespaces: allNamespaces, Timeout: candidate.timeout,
+			PartialDrainEntity: partialDrainEntity, PodFilter: filter,
+		}, nil
 	}
 
-	action := e.getAction(ctx, namespaces{
-		immediateEvictionNamespaces:  allNamespaces,
-		deleteAfterTimeoutNamespaces: allNamespaces,
-		allowCompletionNamespaces:    allNamespaces,
-		podFilters:                   filters,
-	}, nodeName, partialDrainEntity)
-	if action.Action != ActionUpdateStatus || action.Status != model.StatusSucceeded {
-		return action, nil
-	}
-
-	// A label update can move a pod into a mode that was already checked. Before
-	// completing the drain, check the selected scope without separating modes.
+	// A cache update may change the selected scope after the initial observation.
+	// Refresh it before completing the drain, including after force deletion.
 	selected := e.podModeFilter("", force)
 	for _, namespace := range allNamespaces {
 		pods, err := e.informers.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity, selected)
@@ -71,7 +87,36 @@ func (e *NodeDrainEvaluator) evaluatePodPolicyActions(ctx context.Context,
 		}
 	}
 
-	return action, nil
+	return &DrainActionResult{Action: ActionUpdateStatus, Status: model.StatusSucceeded}, nil
+}
+
+// listPodsByMode groups one observation of each namespace by its first matching policy.
+func (e *NodeDrainEvaluator) listPodsByMode(namespaces []string, nodeName string,
+	partialDrainEntity *protos.Entity, force bool) (map[config.EvictMode][]*v1.Pod, error) {
+	podsByMode := make(map[config.EvictMode][]*v1.Pod)
+
+	for _, namespace := range namespaces {
+		pods, err := e.informers.FindEvictablePodsInNamespaceAndNode(namespace, nodeName,
+			partialDrainEntity, e.podModeFilter("", force))
+		if err != nil {
+			return nil, fmt.Errorf("list pods for drain policies in namespace %q: %w", namespace, err)
+		}
+
+		for _, pod := range pods {
+			mode, matches := e.podPolicies.Match(pod)
+			if !matches {
+				continue
+			}
+
+			if force {
+				mode = config.ModeImmediateEvict
+			}
+
+			podsByMode[mode] = append(podsByMode[mode], pod)
+		}
+	}
+
+	return podsByMode, nil
 }
 
 // podModeFilter selects pods assigned to mode; an empty mode selects the whole drain scope.

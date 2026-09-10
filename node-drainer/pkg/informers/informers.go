@@ -1063,6 +1063,23 @@ func (i *Informers) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context,
 		return true
 	}
 
+	if len(remainingPods) == 0 {
+		return false // A cache lookup failed; an empty result does not establish completion.
+	}
+
+	return i.CheckIfObservedPodsAreEvictedInImmediateMode(ctx, namespaces, nodeName, timeout,
+		partialDrainEntity, remainingPods, podFilters...)
+}
+
+// CheckIfObservedPodsAreEvictedInImmediateMode checks a previously listed immediate-mode scope,
+// enforcing termination deadlines and refreshing the cache after any force deletion.
+func (i *Informers) CheckIfObservedPodsAreEvictedInImmediateMode(ctx context.Context,
+	namespaces []string, nodeName string, timeout time.Duration, partialDrainEntity *protos.Entity,
+	remainingPods []*v1.Pod, podFilters ...PodFilter) bool {
+	if len(remainingPods) == 0 {
+		return true
+	}
+
 	now := time.Now()
 	shouldForceDelete := false
 
@@ -1095,7 +1112,7 @@ func (i *Informers) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context,
 			return false
 		}
 
-		allEvicted, _ = i.checkIfPodsPresentInNamespaceAndNode(namespaces, nodeName, partialDrainEntity, podFilters...)
+		allEvicted, _ := i.checkIfPodsPresentInNamespaceAndNode(namespaces, nodeName, partialDrainEntity, podFilters...)
 		if allEvicted {
 			slog.InfoContext(ctx, "All pods evicted after force deletion on node",
 				"node", nodeName)
