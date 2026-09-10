@@ -28,6 +28,7 @@ import (
 
 	"log/slog"
 
+	"github.com/go-logr/logr"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -1035,6 +1036,29 @@ func (r *GPUResetReconciler) getJob(ctx context.Context, gr *v1alpha1.GPUReset) 
 		job.Name, metav1.GetControllerOf(job), gr.Name)
 }
 
+func setEnvVarOnContainers(log logr.Logger, containers []corev1.Container, envVar corev1.EnvVar) {
+	for i := range containers {
+		envVarIndex := -1
+
+		for j, env := range containers[i].Env {
+			if env.Name == envVar.Name {
+				envVarIndex = j
+				break
+			}
+		}
+
+		if envVarIndex >= 0 {
+			log.V(1).Info("Overriding existing environment variable", "env_var", envVar.Name, "container",
+				containers[i].Name, "new_value", envVar.Value, "old_value", containers[i].Env[envVarIndex].Value)
+			containers[i].Env[envVarIndex] = envVar
+		} else {
+			log.V(1).Info("Adding environment variable", "env_var", envVar.Name, "container", containers[i].Name,
+				"value", envVar.Value)
+			containers[i].Env = append(containers[i].Env, envVar)
+		}
+	}
+}
+
 // newGpuResetJob constructs the Kubernetes Job object responsible for performing the GPU reset.
 func (r *GPUResetReconciler) newGpuResetJob(ctx context.Context, gr *v1alpha1.GPUReset) (*batchv1.Job, error) {
 	log := log.FromContext(ctx)
@@ -1083,28 +1107,9 @@ func (r *GPUResetReconciler) newGpuResetJob(ctx context.Context, gr *v1alpha1.GP
 		Value: gpuIDString,
 	}
 
-	for i, container := range jobSpec.Template.Spec.Containers {
-		envVarIndex := -1
-
-		for j, env := range jobSpec.Template.Spec.Containers[i].Env {
-			if env.Name == gpuResetEnvVar.Name {
-				envVarIndex = j
-				break
-			}
-		}
-
-		if envVarIndex >= 0 {
-			oldValue := jobSpec.Template.Spec.Containers[i].Env[envVarIndex]
-			log.V(1).Info("Overriding existing environment variable", "env_var", gpuResetEnvVar.Name, "job", jobName,
-				"namespace", jobNamespace, "container", container.Name, "new_value", gpuResetEnvVar.Value, "old_value",
-				oldValue.Value)
-			jobSpec.Template.Spec.Containers[i].Env[envVarIndex] = gpuResetEnvVar
-		} else {
-			log.V(1).Info("Adding environment variable", "env_var", gpuResetEnvVar.Name, "job", jobName, "namespace",
-				jobNamespace, "container", container.Name, "value", gpuResetEnvVar.Value)
-			jobSpec.Template.Spec.Containers[i].Env = append(jobSpec.Template.Spec.Containers[i].Env, gpuResetEnvVar)
-		}
-	}
+	jobLog := log.WithValues("job", jobName, "namespace", jobNamespace)
+	setEnvVarOnContainers(jobLog, jobSpec.Template.Spec.InitContainers, gpuResetEnvVar)
+	setEnvVarOnContainers(jobLog, jobSpec.Template.Spec.Containers, gpuResetEnvVar)
 
 	job := &batchv1.Job{
 		ObjectMeta: jobMeta,

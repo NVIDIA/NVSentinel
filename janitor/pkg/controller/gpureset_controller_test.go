@@ -812,6 +812,23 @@ var _ = Describe("GPUReset Controller", func() {
 					}
 				}
 			}
+
+			// Specs here share resetName, and the finalizer makes the delete above only mark
+			// the reset terminating, which conflicts with the next spec recreating it.
+			Eventually(func(g Gomega) {
+				err := k8sClient.Get(ctx, typeNamespacedName, reset)
+				if apierrors.IsNotFound(err) {
+					return
+				}
+				g.Expect(err).NotTo(HaveOccurred())
+
+				if controllerutil.ContainsFinalizer(reset, gpuResetFinalizer) {
+					controllerutil.RemoveFinalizer(reset, gpuResetFinalizer)
+					g.Expect(k8sClient.Update(ctx, reset)).To(Succeed())
+				}
+
+				g.Expect(apierrors.IsNotFound(k8sClient.Get(ctx, typeNamespacedName, reset))).To(BeTrue())
+			}, "20s", "250ms").Should(Succeed())
 		})
 
 		It("should NOT remove pre-existing env vars when adding GPU ID env var", func() {
@@ -865,6 +882,66 @@ var _ = Describe("GPUReset Controller", func() {
 
 			By("Verifying the Job's Pod template container still has pre-existing env vars")
 			Expect(targetContainer.Env).To(ContainElement(corev1.EnvVar{Name: "PRE_EXISTING_ENV", Value: "foo"}))
+		})
+
+		It("should add the GPU ID env var to init containers", func() {
+			By("Configuring an init container that overrides the GPU ID env var")
+			customTemplate := reconciler.Config.ResolvedJobTemplate.DeepCopy()
+			customTemplate.Spec.Template.Spec.InitContainers = []corev1.Container{
+				{
+					Name:            "pre-reset-hook",
+					Image:           "nvcr.io/nv-ngc-devops/gpu-reset:latest",
+					SecurityContext: &defaultSecurityContext,
+					Resources:       defaultResources,
+					Env: []corev1.EnvVar{
+						{Name: "PRE_EXISTING_ENV", Value: "foo"},
+						{Name: "NVIDIA_GPU_RESETS", Value: "stale"},
+					},
+				},
+			}
+			reconciler.Config.ResolvedJobTemplate = customTemplate
+
+			By("Creating a new GPUReset resource")
+			reset := &v1alpha1.GPUReset{
+				Name: resetName,
+				Spec: v1alpha1.GPUResetSpec{
+					NodeName: nodeName,
+					Selector: &v1alpha1.GPUSelector{
+						UUIDs: []string{"GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, reset)).To(Succeed())
+
+			By("Waiting for the reset job to be created")
+			var updatedReset v1alpha1.GPUReset
+			var createdJob batchv1.Job
+			Eventually(func(g Gomega) {
+				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(updatedReset.Status.JobRef).NotTo(BeNil())
+
+				jobKey := types.NamespacedName{Name: updatedReset.Status.JobRef.Name, Namespace: updatedReset.Status.JobRef.Namespace}
+				g.Expect(k8sClient.Get(ctx, jobKey, &createdJob)).To(Succeed())
+			}, "10s", "250ms").Should(Succeed())
+
+			Expect(createdJob.Spec.Template.Spec.InitContainers).To(HaveLen(1))
+			initContainer := createdJob.Spec.Template.Spec.InitContainers[0]
+
+			By("Verifying the init container's GPU ID env var was replaced, not duplicated")
+			expectedEnvVar := corev1.EnvVar{
+				Name:  "NVIDIA_GPU_RESETS",
+				Value: "GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6",
+			}
+			Expect(initContainer.Env).To(ContainElement(expectedEnvVar))
+			Expect(initContainer.Env).NotTo(ContainElement(corev1.EnvVar{Name: "NVIDIA_GPU_RESETS", Value: "stale"}))
+
+			By("Verifying the init container still has pre-existing env vars")
+			Expect(initContainer.Env).To(ContainElement(corev1.EnvVar{Name: "PRE_EXISTING_ENV", Value: "foo"}))
+
+			By("Verifying the main container also has the GPU ID env var")
+			Expect(createdJob.Spec.Template.Spec.Containers).To(HaveLen(1))
+			Expect(createdJob.Spec.Template.Spec.Containers[0].Env).To(ContainElement(expectedEnvVar))
 		})
 	})
 
