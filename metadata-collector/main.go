@@ -61,7 +61,9 @@ var (
 		defaultMaxConsecutivePodMapperFailures,
 		"Consecutive pod device mapper poll failures tolerated before exiting non-zero. Minimum 1.")
 
-	metricsPort = flag.Int("metrics-port", defaultMetricsPort, "Port for the Prometheus metrics endpoint.")
+	metricsPort = flag.Int("metrics-port", defaultMetricsPort,
+		"Port for the Prometheus metrics endpoint. 0 disables it, which matters here because this "+
+			"runs with hostNetwork and so binds on the node.")
 )
 
 func main() {
@@ -85,12 +87,23 @@ func main() {
 	// threshold's non-zero exit intact.
 	group, groupCtx := errgroup.WithContext(ctx)
 
-	group.Go(func() error {
-		return server.NewServer(
-			server.WithPort(*metricsPort),
-			server.WithPrometheusMetrics(),
-		).Serve(groupCtx)
-	})
+	if *metricsPort > 0 {
+		group.Go(func() error {
+			err := server.NewServer(
+				server.WithPort(*metricsPort),
+				server.WithPrometheusMetrics(),
+			).Serve(groupCtx)
+			// Deliberately not returned. The port is on the host network here, so a collision
+			// with a node service (kube-vip also uses 2112) would otherwise crash-loop this
+			// DaemonSet fleet-wide — the failure this component's whole issue is about. Losing
+			// metrics is worth strictly less than losing the collector.
+			if err != nil {
+				slog.Error("Metrics endpoint stopped; continuing without it", "error", err)
+			}
+
+			return nil
+		})
+	}
 
 	group.Go(func() error {
 		return runMapper(groupCtx, newPodMapperMetrics(prometheus.DefaultRegisterer))

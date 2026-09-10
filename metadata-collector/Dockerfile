@@ -29,7 +29,9 @@ RUN go mod download
 
 COPY metadata-collector/ .
 
-RUN CGO_ENABLED=1 GOOS=linux go build -a -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${GIT_COMMIT} -X main.date=${BUILD_DATE}" -o metadata-collector main.go
+# Builds the package, not a file list: `go build main.go` silently omits every other file in
+# package main, so adding one breaks the image while `go build ./...` and the tests still pass.
+RUN CGO_ENABLED=1 GOOS=linux go build -a -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${GIT_COMMIT} -X main.date=${BUILD_DATE}" -o metadata-collector .
 
 FROM nvcr.io/nvidia/cuda:13.3.1-base-ubuntu22.04
 

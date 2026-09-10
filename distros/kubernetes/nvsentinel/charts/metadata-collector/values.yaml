@@ -75,6 +75,13 @@ kubeletHost:
 # Pod priority for this component. Overridden by the matching global when that is set.
 priorityClassName: ""
 
+# Prometheus metrics endpoint. Chart-local rather than global.metricsPort because this
+# DaemonSet is hostNetwork, so the port binds on the node and can collide with a host service
+# (kube-vip also uses 2112). Set enabled: false to run with no endpoint at all.
+metrics:
+  enabled: true
+  port: 2112
+
 podMapper:
   # Consecutive failed poll cycles tolerated before the container exits non-zero. The poll
   # period is 30s, so the default rides out 5 minutes of failures, enough to outlast a
