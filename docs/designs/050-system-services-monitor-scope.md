@@ -1,10 +1,5 @@
 # ADR-050: Monitoring — GPU System Services via NPD Custom Plugins
 
-- **Status:** Proposed
-- **Date:** 2026-03-20 (revised 2026-09-10; re-homed onto the ADR-053 NPD
-  integration path)
-- **Author:** dmvevents
-
 ## Context
 
 NVSentinel has no monitoring of the *systemd unit layer* on GPU nodes. The
@@ -150,15 +145,15 @@ condition message.
   debounce); one NPD rule per configured service.
 
 **Per-check state.** Each check persists a small state file under the
-**host's** `/run/nvsentinel-npd` (tmpfs — boot-scoped by construction): the
+**host's** `/var/run/nvsentinel/npd` (tmpfs — boot-scoped by construction): the
 flap baseline and window samples, the liveness checks' consecutive-failure
 counts, and each check's last confirmed state. The contract is part of the
 operator documentation and applies per NPD deployment shape:
 
-- **Host-service NPD:** scripts write `/run/nvsentinel-npd/<check>.state`
+- **Host-service NPD:** scripts write `/var/run/nvsentinel/npd/<check>.state`
   directly.
 - **DaemonSet NPD:** the pod MUST hostPath-mount the host's
-  `/run/nvsentinel-npd` at the same path — a pod-local `/run` would reset
+  `/var/run/nvsentinel/npd` at the same path — a pod-local `/run` would reset
   baselines on every pod replacement, silently weakening flap detection and
   the debounce without a node reboot. If an operator chooses not to mount
   it, the boot-scoped guarantee explicitly degrades to pod-scoped and the
@@ -293,15 +288,98 @@ The `FabricManagerDown` policy:
       - NPD_FABRIC_MANAGER_NOT_RUNNING
 ```
 
-The remaining three follow the same shape with their own reasons, codes, and
-actions: `NPDFabricManagerFlapping` (fatal, `RESTART_BM`,
-`NPD_FABRIC_MANAGER_FLAPPING`, reason `FabricManagerFlapping`),
-`NPDFabricManagerNotInstalled` (fatal, `CONTACT_SUPPORT` — there is no unit to
-restart, and a reboot will not install one;
-`NPD_FABRIC_MANAGER_NOT_INSTALLED`, reason `FabricManagerUnitNotFound`), and
-`NPDNvidiaPersistencedDown` (non-fatal, `CONTACT_SUPPORT`,
-`NPD_NVIDIA_PERSISTENCED_NOT_RUNNING`, reason `NvidiaPersistencedNotActive`) —
-one policy per per-service condition, matching the check inventory.
+The `FabricManagerFlapping` policy:
+
+```yaml
+- name: NPDFabricManagerFlapping
+  enabled: true
+  resource:
+    group: ""
+    version: v1
+    kind: Node
+  predicate:
+    expression: |
+      resource.status.conditions.exists(c,
+        c.type == "FabricManagerFlapping" &&
+        c.status == "True" &&
+        c.reason == "FabricManagerFlapping")
+  healthEvent:
+    componentClass: Node
+    isFatal: true
+    message: "NPD reported nvidia-fabricmanager is crash-looping"
+    recommendedAction: RESTART_BM
+    errorCode:
+      - NPD_FABRIC_MANAGER_FLAPPING
+```
+
+The `FabricManagerNotInstalled` policy — `CONTACT_SUPPORT` because there is
+no unit to restart, and a reboot will not install one:
+
+```yaml
+- name: NPDFabricManagerNotInstalled
+  enabled: true
+  resource:
+    group: ""
+    version: v1
+    kind: Node
+  predicate:
+    expression: |
+      resource.status.conditions.exists(c,
+        c.type == "FabricManagerNotInstalled" &&
+        c.status == "True" &&
+        c.reason == "FabricManagerUnitNotFound")
+  healthEvent:
+    componentClass: Node
+    isFatal: true
+    message: "NPD reported the nvidia-fabricmanager unit is not installed"
+    recommendedAction: CONTACT_SUPPORT
+    errorCode:
+      - NPD_FABRIC_MANAGER_NOT_INSTALLED
+```
+
+The `NvidiaPersistencedDown` policy — non-fatal: persistenced affects
+initialization latency and settings persistence, not active workload
+correctness:
+
+```yaml
+- name: NPDNvidiaPersistencedDown
+  enabled: true
+  resource:
+    group: ""
+    version: v1
+    kind: Node
+  predicate:
+    expression: |
+      resource.status.conditions.exists(c,
+        c.type == "NvidiaPersistencedDown" &&
+        c.status == "True" &&
+        c.reason == "NvidiaPersistencedNotActive")
+  healthEvent:
+    componentClass: Node
+    isFatal: false
+    message: "NPD reported nvidia-persistenced is not running"
+    recommendedAction: CONTACT_SUPPORT
+    errorCode:
+      - NPD_NVIDIA_PERSISTENCED_NOT_RUNNING
+```
+
+### Configuration matrix
+
+What is enabled where, per fleet scenario — the operator declares the
+scenario (they know how FM is deployed on their nodes):
+
+| Fleet scenario | NPD side (monitor configurations registered) | NVSentinel side (KOM policies enabled in the opt-in values) |
+| --- | --- | --- |
+| NVSwitch, FM as host systemd service | `custom-plugin-fm-liveness.json`, `custom-plugin-fm-flap.json`, `custom-plugin-fm-presence.json`, `custom-plugin-persistenced.json` | `NPDFabricManagerDown`, `NPDFabricManagerFlapping`, `NPDFabricManagerNotInstalled`, `NPDNvidiaPersistencedDown` |
+| NVSwitch, FM in the GPU Operator driver container | `custom-plugin-persistenced.json` only (FM liveness/flap would be inert on a `not-found` unit; FM presence would false-fire) | `NPDNvidiaPersistencedDown` only |
+| PCIe-only (no FM) | `custom-plugin-persistenced.json` | `NPDNvidiaPersistencedDown` |
+
+Both sides are explicit artifacts: the NPD side is the list of configuration
+files registered on `--config.custom-plugin-monitor`, and the NVSentinel
+side is the policy list in the opt-in values file (a policy is disabled by
+removing it or setting `enabled: false`). Enabling a KOM policy whose NPD
+configuration is not applied is safe but inert — the condition never
+appears; the operator documentation pairs the two per scenario.
 
 **Recovery semantics and their limits.** A KOM predicate matches only
 `status == "True"` with the expected reason; anything else — including an
@@ -333,17 +411,6 @@ configuration addresses this on two fronts:
   `False` (three-state condition handling) remains the shared
   platform-level hardening for every ADR-053-pattern check.
 
-## Signal Ownership
-
-| Signal | Source | Owner |
-|--------|--------|-------|
-| PCIe / NVLink / thermal / clock | DCGM health watches via `pydcgm` | `gpu-health-monitor` |
-| DCGM host-engine connectivity | `pydcgm` connect | `gpu-health-monitor` |
-| NVSwitch fabric registration / probe state | `DCGM_FR_FABRIC_PROBE_STATE` (DCGM ≥ 4.5.2) | `gpu-health-monitor` |
-| XID / SXID and journal-pattern signals | journald/kernel log parsing | `syslog-health-monitor` |
-| Filesystem / platform-hardware conditions | upstream default NPD rules | NPD + KOM (ADR-053) |
-| FM liveness, flap, presence; GPU service lifecycle | NPD custom plugins (this ADR) | NPD + KOM (operator-applied config) |
-
 ## Remediation classification: restart-fixable vs. hardware-return
 
 Operational experience on NVSwitch platforms (NVL72/36) shows Fabric Manager
@@ -359,17 +426,25 @@ pretend it can:
   hardware errors arrive via `syslog-health-monitor`, fabric-probe failures
   via `gpu-health-monitor`, and unit-lifecycle conditions via this path;
   `health-events-analyzer` sees all three plus remediation history.
-- **Escalation mechanism.** `health-events-analyzer` evaluates
+- **Escalation mechanism.** The KOM policy itself is static: every time
+  the condition transitions to `True` it publishes the same fatal
+  `RESTART_BM` event — nothing in this path suppresses the Nth trigger.
+  The recurrence backstop is `health-events-analyzer`, which evaluates
   TOML-configured aggregation rules over the health-events collection and
-  emits synthetic events that flow through the standard
-  quarantine/remediation pipeline. Its shipped `MultipleRemediations` rule
-  already fires when a node is remediated more than once inside its window —
-  with no automatic healthy clear, forcing operator investigation — which is
-  the recurrence backstop for a `RESTART_BM` loop on these conditions. A
-  dedicated rule keyed on the `NPD_FABRIC_MANAGER_*` error codes (recurrence
-  after remediation, or correlation with NVSwitch/SXID events on the same
-  node) follows the same rule mechanism and can ship alongside the KOM
-  policies as follow-up configuration.
+  emits synthetic events into the standard quarantine/remediation
+  pipeline: its shipped `MultipleRemediations` rule fires when a node is
+  remediated more than once inside its window, and its event has **no
+  automatic healthy clear** — the node stays quarantined pending operator
+  investigation rather than being returned to service for another cycle.
+  The loop therefore stops at the node level even though the per-cycle
+  KOM event still publishes (at most one already-triggered remediation
+  can overlap the backstop firing). Suppressing the trigger itself —
+  recurrence-aware action escalation, e.g. replacing `RESTART_BM` with
+  `CONTACT_SUPPORT` on the same check after N occurrences, which
+  fault-quarantine's event map already supports by overwriting a stored
+  event whose `RecommendedAction` changed — is a platform-level
+  capability shared by every recurring KOM condition, tracked as
+  follow-up alongside a dedicated `NPD_FABRIC_MANAGER_*` analyzer rule.
 
 ## Rationale
 
@@ -384,7 +459,9 @@ pretend it can:
   failure.
 - Active custom-plugin probes clear their conditions on recovery, avoiding
   the `SystemLogMonitor` latching documented in ADR-053.
-- One collection path per signal is preserved (ownership table above).
+- One collection path per signal is preserved: DCGM telemetry stays with
+  `gpu-health-monitor`, journal patterns with `syslog-health-monitor`, and
+  systemd unit state arrives only through these NPD checks.
 
 ## Consequences
 
