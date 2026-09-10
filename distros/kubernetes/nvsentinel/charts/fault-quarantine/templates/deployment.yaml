@@ -123,8 +123,7 @@ spec:
             failureThreshold: 3
           volumeMounts:
           - name: config-volume
-            mountPath: /etc/config/config.toml
-            subPath: config.toml
+            mountPath: /etc/config
           {{- $certMountPath := include "nvsentinel.mongodb.certMountPath" . }}
           {{- if $certMountPath }}
           {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
@@ -182,9 +181,6 @@ spec:
       - name: config-volume
         configMap:
           name: {{ include "fault-quarantine.fullname" . }}
-          items:
-          - key: config.toml
-            path: config.toml
       {{- if and .Values.clientCertMountPath $pgClientCert }}
       - name: postgresql-client-cert-original
         secret:

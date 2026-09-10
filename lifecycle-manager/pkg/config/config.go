@@ -380,7 +380,7 @@ func validateSchedulingGate(cfg *v1alpha1.ValidationConfiguration) []error {
 			corev1.TaintEffectNoExecute,
 			"",
 		}
-		if !slices.Contains(validEffects, corev1.TaintEffect(t.Effect)) {
+		if !slices.Contains(validEffects, t.Effect) {
 			errs = append(errs, fmt.Errorf(
 				"spec.schedulingGate.taints[%d].effect: must be NoSchedule, PreferNoSchedule, or NoExecute, got %q",
 				i, t.Effect))
