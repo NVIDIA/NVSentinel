@@ -12,22 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Webhooks are selected by name rather than by array index. An index would
+# silently start asserting against a different entry the moment another
+# webhook is added ahead of it, and a filter that matches nothing fails with
+# "unknown path" rather than passing vacuously.
 suite: maintenancerequest webhook registration
 templates:
   - templates/webhook.yaml
 release:
   namespace: nvsentinel
 tests:
+  # controller-runtime derives the served path from the GVK as
+  # "/mutate-" + group with dots replaced by dashes + "-" + version + "-" +
+  # lowercased kind (pkg/builder/webhook.go). With the MR group
+  # nvsentinel.dgxc.nvidia.com, version v1 and kind MaintenanceRequest, that is
+  # the path below. A chart that names any other path is accepted by the API
+  # server and simply never reaches the webhook.
   - it: registers the mutating webhook that defaults health event fields
     documentSelector:
       path: kind
       value: MutatingWebhookConfiguration
     asserts:
       - equal:
-          path: webhooks[0].name
-          value: mmaintenancerequest-v1.kb.io
-      - equal:
-          path: webhooks[0].clientConfig.service.path
+          path: 'webhooks[?(@.name=="mmaintenancerequest-v1.kb.io")].clientConfig.service.path'
           value: /mutate-nvsentinel-dgxc-nvidia-com-v1-maintenancerequest
 
   - it: registers the validating webhook for MaintenanceRequest
@@ -36,11 +43,20 @@ tests:
       value: ValidatingWebhookConfiguration
     asserts:
       - equal:
-          path: webhooks[1].name
-          value: vmaintenancerequest-v1.kb.io
-      - equal:
-          path: webhooks[1].clientConfig.service.path
+          path: 'webhooks[?(@.name=="vmaintenancerequest-v1.kb.io")].clientConfig.service.path'
           value: /validate-nvsentinel-dgxc-nvidia-com-v1-maintenancerequest
+
+  # The pre-existing ValidationRequest webhook is served by the same binary and
+  # must keep its own path. It is the working reference for the rule above, so a
+  # change here means the derivation itself was misunderstood.
+  - it: leaves the ValidationRequest webhook path untouched
+    documentSelector:
+      path: kind
+      value: ValidatingWebhookConfiguration
+    asserts:
+      - equal:
+          path: 'webhooks[?(@.name=="vvalidationrequest-v1alpha1.kb.io")].clientConfig.service.path'
+          value: /validate-nvsentinel-nvidia-com-v1alpha1-validationrequest
 
   # ValidateDelete is an unconditional no-op that only exists to satisfy the
   # CustomValidator interface. Registering DELETE against failurePolicy: Fail
@@ -53,7 +69,7 @@ tests:
       value: ValidatingWebhookConfiguration
     asserts:
       - equal:
-          path: webhooks[1].rules[0].operations
+          path: 'webhooks[?(@.name=="vmaintenancerequest-v1.kb.io")].rules[0].operations'
           value:
             - CREATE
             - UPDATE
@@ -68,17 +84,33 @@ tests:
       value: MutatingWebhookConfiguration
     asserts:
       - equal:
-          path: webhooks[0].rules[0].apiGroups
+          path: 'webhooks[?(@.name=="mmaintenancerequest-v1.kb.io")].rules[0].apiGroups'
           value:
             - nvsentinel.dgxc.nvidia.com
       - equal:
-          path: webhooks[0].rules[0].apiVersions
+          path: 'webhooks[?(@.name=="mmaintenancerequest-v1.kb.io")].rules[0].apiVersions'
           value:
             - v1
       - equal:
-          path: webhooks[0].rules[0].resources
+          path: 'webhooks[?(@.name=="mmaintenancerequest-v1.kb.io")].rules[0].resources'
           value:
             - maintenancerequests
+
+  # MaintenanceRequest is cluster-scoped. A namespaced rule never matches it.
+  - it: scopes both webhooks to cluster-scoped resources
+    asserts:
+      - equal:
+          path: 'webhooks[?(@.name=="mmaintenancerequest-v1.kb.io")].rules[0].scope'
+          value: Cluster
+        documentSelector:
+          path: kind
+          value: MutatingWebhookConfiguration
+      - equal:
+          path: 'webhooks[?(@.name=="vmaintenancerequest-v1.kb.io")].rules[0].scope'
+          value: Cluster
+        documentSelector:
+          path: kind
+          value: ValidatingWebhookConfiguration
 
   # Defaults are applied once, at creation, and the validating webhook then
   # freezes them. Adding UPDATE here would let the defaulter rewrite fields
@@ -89,7 +121,7 @@ tests:
       value: MutatingWebhookConfiguration
     asserts:
       - equal:
-          path: webhooks[0].rules[0].operations
+          path: 'webhooks[?(@.name=="mmaintenancerequest-v1.kb.io")].rules[0].operations'
           value:
             - CREATE
 
@@ -102,7 +134,7 @@ tests:
       value: MutatingWebhookConfiguration
     asserts:
       - equal:
-          path: webhooks[0].failurePolicy
+          path: 'webhooks[?(@.name=="mmaintenancerequest-v1.kb.io")].failurePolicy'
           value: Fail
 
   - it: injects the cert-manager CA bundle by default
