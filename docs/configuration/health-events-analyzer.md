@@ -69,6 +69,23 @@ Events are persisted and ingested by the Health Events Analyzer for rule evaluat
 #### STORE_ONLY
 Observability-only mode. Derived events are persisted and exported but do not modify any cluster resources. Use this mode to shadow-test new or customised rules in production before enabling full remediation.
 
+### Matched-entity metric
+
+`rule_matched_total` is labeled `{rule_name, node_name}` only. Rules that select on a GPU, GPC, TPC, or NIC therefore fire without saying which unit they selected. The optional counter below adds that identity; it is off by default because the extra labels raise cardinality.
+
+```yaml
+health-events-analyzer:
+  ruleMatchedEntityMetricEnabled: false
+```
+
+When enabled, a match on an entity-keyed rule increments:
+
+```text
+rule_matched_entity_total{rule_name, node_name, entity_type, entity_value}
+```
+
+`entity_type` / `entity_value` come from the triggering event's impacted entities. GPU UUID is never exported; PCI or GPU index is used instead. Node-scoped rules (for example `MultipleRemediations`) do not emit this series.
+
 ### Client Certificate Mount Path
 
 Path inside the container where TLS client certificates are mounted for authenticated MongoDB connections. Certificates are typically provisioned by cert-manager and mounted via a Kubernetes secret volume.
