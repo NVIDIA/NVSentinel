@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM public.ecr.aws/docker/library/golang:1.27.0-trixie AS builder
+FROM public.ecr.aws/docker/library/golang:1.27.0-trixie@sha256:df98008ecd2b0ecc9f0a94d1b07e3564a9c92b555369b33d9b5f60d0765b2db7 AS builder
 
 WORKDIR /app
 COPY go.mod go.sum ./
@@ -21,7 +21,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o csp-api-mock .
 
-FROM public.ecr.aws/docker/library/debian:trixie-slim AS runtime
+FROM public.ecr.aws/docker/library/debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS runtime
 
 COPY --from=builder /app/csp-api-mock /app/csp-api-mock
 

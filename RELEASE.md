@@ -63,19 +63,10 @@ graph LR
 
 ## Released Components
 
-**Container Images** (13 components):
-- `gpu-health-monitor-dcgm3` / `gpu-health-monitor-dcgm4`
-- `syslog-health-monitor`
-- `csp-health-monitor`
-- `health-event-client`
-- `platform-connectors`
-- `health-events-analyzer`
-- `fault-quarantine`
-- `labeler`
-- `node-drainer`
-- `fault-remediation`
-- `log-collector`
-- `file-server-cleanup`
+**Container Images** are published under `ghcr.io/nvidia/nvsentinel/`. This document deliberately does not list them — a static inventory drifts. There are two sources of truth:
+
+- **For a released version**: the `versions.txt` asset on that [GitHub release](https://github.com/NVIDIA/NVSentinel/releases), which pins every image and tag actually published.
+- **For what a release will contain**: [`scripts/build-image-list.sh`](scripts/build-image-list.sh), which generates `versions.txt`. Adding a component means adding it there.
 
 **Artifacts**:
 - GitHub release with `versions.txt`
@@ -86,7 +77,7 @@ graph LR
 All releases must pass:
 - **Lint checks**: Code style, license headers, protobuf validation
 - **Unit tests**: All Go modules and Python packages
-- **Container builds**: All 13 components must build successfully
+- **Container builds**: All component images must build successfully
 - **E2E tests**: Integration testing (on PR/push)
 
 ## Troubleshooting
@@ -112,9 +103,10 @@ helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel --version v1.2.3
 
 ### Generated Artifacts (Example: v1.2.3)
 
-**Container Images** published to `ghcr.io/nvidia/`:
-- All 13 components tagged with `v1.2.3`
-- Example: `fault-quarantine:v1.2.3`
+**Container Images** published to `ghcr.io/nvidia/nvsentinel/`:
+- Most component images are tagged with the release tag, e.g. `ghcr.io/nvidia/nvsentinel/fault-quarantine:v1.2.3`
+- `gpu-health-monitor` is the exception: it ships one image per DCGM major version, tagged `v1.2.3-dcgm-3.x` and `v1.2.3-dcgm-4.x`
+- See the release's `versions.txt` for the exact set
 
 **Helm Chart**: `oci://ghcr.io/nvidia/nvsentinel:v1.2.3`
 
@@ -130,7 +122,7 @@ helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel --version v1.2.3
 **Commands**:
 ```bash
 # Pull container image
-docker pull ghcr.io/nvidia/syslog-health-monitor:v1.2.3
+docker pull ghcr.io/nvidia/nvsentinel/syslog-health-monitor:v1.2.3
 
 # Install Helm chart
 helm install test oci://ghcr.io/nvidia/nvsentinel --version v1.2.3

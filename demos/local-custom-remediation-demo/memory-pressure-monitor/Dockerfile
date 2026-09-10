@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM public.ecr.aws/docker/library/golang:1.27.0-trixie AS builder
+FROM public.ecr.aws/docker/library/golang:1.27.0-trixie@sha256:df98008ecd2b0ecc9f0a94d1b07e3564a9c92b555369b33d9b5f60d0765b2db7 AS builder
 
 WORKDIR /go/src/nvsentinel
 
@@ -27,7 +27,7 @@ COPY data-models/ data-models/
 RUN cd demos/local-custom-remediation-demo/memory-pressure-monitor && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o memory-pressure-monitor main.go
 
-FROM gcr.io/distroless/static-debian13
+FROM gcr.io/distroless/static-debian13:latest@sha256:f2ea2709ac8db56323cbd7d014277f32cb572d9ea124b0076f7aafe5980678fe
 
 COPY --from=builder /go/src/nvsentinel/demos/local-custom-remediation-demo/memory-pressure-monitor/memory-pressure-monitor /memory-pressure-monitor
 

@@ -20,11 +20,16 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 )
@@ -465,6 +470,11 @@ func (m *MockHTTPRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	return resp, args.Error(1)
 }
 
+// The production backoff waits about 7.5s across its five steps, which would make every
+// error-path test here that slow. These tests are about which requests are made, not how long
+// the waits are, so they keep the step count and drop the waiting.
+var fastTestBackoff = wait.Backoff{Steps: 5, Duration: time.Microsecond, Factor: 1.0}
+
 func newTestKubeletHTTPSClient(responseCode int, responseBody string) *kubeletHTTPSClient {
 	mockRoundTripper := new(MockHTTPRoundTripper)
 	mockRoundTripper.On("RoundTrip", mock.Anything).Return(&http.Response{
@@ -476,8 +486,14 @@ func newTestKubeletHTTPSClient(responseCode int, responseBody string) *kubeletHT
 		httpRoundTripper:  mockRoundTripper,
 		staticBearerToken: "authToken",
 		listPodsURI:       "https://localhost:10250/pods",
+		listPodsBackoff:   fastTestBackoff,
+		listPodsTimeout:   testCallTimeout,
 	}
 }
+
+// Generous, because these tests assert on which requests are made, not on timing. A zero value
+// would be an already-expired deadline and no attempt would run at all.
+const testCallTimeout = time.Minute
 
 func TestListPods(t *testing.T) {
 	client := newTestKubeletHTTPSClient(http.StatusOK, podJson)
@@ -508,9 +524,12 @@ func TestListPodsWithReadFileError(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// This used to set client.ctx = nil, which no longer reaches http.NewRequestWithContext:
+// ListPods derives its deadline from that context first, and deriving from nil panics. An
+// unparseable URI hits the same error path and is a state the client could actually be in.
 func TestListPodsWithNewRequestError(t *testing.T) {
 	client := newTestKubeletHTTPSClient(http.StatusOK, podJson)
-	client.ctx = nil
+	client.listPodsURI = "://not-a-url"
 	_, err := client.ListPods()
 	assert.Error(t, err)
 }
@@ -546,10 +565,127 @@ func TestListPodsWithRetry(t *testing.T) {
 		httpRoundTripper:  mockRoundTripper,
 		staticBearerToken: "authToken",
 		listPodsURI:       "https://localhost:10250/pods",
+		listPodsBackoff:   fastTestBackoff,
+		listPodsTimeout:   testCallTimeout,
 	}
 	pods, err := client.ListPods()
 	assert.NoError(t, err)
 	assert.NotNil(t, pods)
+}
+
+// The point of widening the backoff is to outlast a credential rotation, which only works if a
+// later attempt picks the new token up. Reading the token once per ListPods call would leave
+// every attempt presenting the same expired one, so this asserts the second attempt sends the
+// token that was written after the first attempt failed.
+func TestListPods_TokenRotatedMidRetry_SecondAttemptSendsTheNewToken(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenPath, []byte("stale-token"), 0o600))
+
+	var sentTokens []string
+
+	client := &kubeletHTTPSClient{
+		ctx:             context.Background(),
+		bearerTokenPath: tokenPath,
+		listPodsURI:     "https://localhost:10250/pods",
+		listPodsBackoff: fastTestBackoff,
+		listPodsTimeout: testCallTimeout,
+		httpRoundTripper: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			sentTokens = append(sentTokens, req.Header.Get("Authorization"))
+
+			if len(sentTokens) == 1 {
+				// Stand in for the kubelet rejecting the rotated-out credential, then the
+				// kubelet refreshing the projected volume before the next attempt.
+				require.NoError(t, os.WriteFile(tokenPath, []byte("fresh-token"), 0o600))
+
+				return &http.Response{
+					StatusCode: http.StatusUnauthorized,
+					Body:       io.NopCloser(strings.NewReader("Unauthorized")),
+				}, nil
+			}
+
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(podJson)),
+			}, nil
+		}),
+	}
+
+	pods, err := client.ListPods()
+	require.NoError(t, err)
+	assert.Len(t, pods, 2)
+
+	require.Len(t, sentTokens, 2)
+	assert.Equal(t, "Bearer stale-token", sentTokens[0])
+	assert.Equal(t, "Bearer fresh-token", sentTokens[1],
+		"the retry must re-read the token file, or widening the backoff cannot ride out a rotation")
+}
+
+// A kubelet that accepts the connection and then never answers is bounded by nothing else: the
+// transport's timeouts cover only the header exchange, io.ReadAll has no deadline, and the
+// retry sleeps ignore any context. Only the whole-call deadline cuts this short.
+func TestListPods_HungKubelet_ReturnsWhenTheCallDeadlinePasses(t *testing.T) {
+	const callTimeout = 150 * time.Millisecond
+
+	client := &kubeletHTTPSClient{
+		ctx:               context.Background(),
+		staticBearerToken: "authToken",
+		listPodsURI:       "https://localhost:10250/pods",
+		listPodsBackoff:   fastTestBackoff,
+		listPodsTimeout:   callTimeout,
+		httpRoundTripper: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			<-req.Context().Done()
+
+			return nil, req.Context().Err()
+		}),
+	}
+
+	start := time.Now()
+	_, err := client.ListPods()
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.GreaterOrEqual(t, elapsed, callTimeout)
+	assert.Less(t, elapsed, 5*time.Second, "the deadline must abort the request, not wait it out")
+}
+
+// The invariant chain the production settings have to satisfy. retry.DefaultRetry waits about
+// 40ms in total, shorter than any credential rotation, which is what #1767 traced the
+// fleet-wide restarts to; but a long backoff is only safe if the whole call is bounded below
+// the caller's poll period.
+func TestNewKubeletHTTPSClient_BackoffOutlastsARotationAndStaysInsideThePollPeriod(t *testing.T) {
+	client, err := NewKubeletHTTPSClient(context.Background())
+	require.NoError(t, err)
+
+	kubeletClient := client.(*kubeletHTTPSClient)
+	backoff := kubeletClient.listPodsBackoff
+
+	// wait.ExponentialBackoff sleeps *between* attempts and breaks before the last one, so
+	// Steps attempts sleep Steps-1 times. Counting Steps sleeps overstates the total.
+	require.Greater(t, backoff.Steps, 1)
+
+	sleeps := time.Duration(0)
+	step := backoff.Duration
+
+	for range backoff.Steps - 1 {
+		sleeps += step
+		step = time.Duration(float64(step) * backoff.Factor)
+	}
+
+	assert.Greater(t, sleeps, 5*time.Second, "must outlast a credential rotation")
+	assert.Less(t, sleeps, kubeletClient.listPodsTimeout,
+		"the sleeps alone must not exhaust the call deadline, or no attempt gets to run")
+	assert.Less(t, kubeletClient.listPodsTimeout, defaultPodDeviceMonitorPeriodForTest,
+		"one call must finish inside the caller's poll period")
+}
+
+// The poll period lives in package main, so it is restated here rather than imported. Keep the
+// two in step: the assertion above is only meaningful against the real cadence.
+const defaultPodDeviceMonitorPeriodForTest = 30 * time.Second
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func TestListPodsWithUnmarshalError(t *testing.T) {

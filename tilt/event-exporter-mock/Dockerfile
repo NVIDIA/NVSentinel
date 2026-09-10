@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM public.ecr.aws/docker/library/golang:1.27.1-alpine AS builder
+FROM public.ecr.aws/docker/library/golang:1.27.1-alpine@sha256:cf6fca6641884b8433441b2b0652976f975e1d0fdd26d177eaaf8596087f3125 AS builder
 WORKDIR /app
 COPY go.mod ./
 COPY main.go ./
 RUN go build -o mock-server main.go
 
-FROM public.ecr.aws/docker/library/alpine:latest
+FROM public.ecr.aws/docker/library/alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
 RUN apk --no-cache add ca-certificates
 WORKDIR /root/
 COPY --from=builder /app/mock-server .
