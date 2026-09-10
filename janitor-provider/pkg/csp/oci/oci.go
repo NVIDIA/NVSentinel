@@ -16,10 +16,12 @@ package oci
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/oracle/oci-go-sdk/v65/common"
@@ -34,6 +36,8 @@ import (
 var (
 	_ model.CSPClient = (*Client)(nil)
 )
+
+const rebootRetryAttempts = 6
 
 // Compute provides a wrapper around a subset of the OCI Compute client interface,
 // to enable mocking/stubbing for testing.
@@ -119,13 +123,25 @@ func NewClientFromEnv(ctx context.Context) (*Client, error) {
 }
 
 // SendRebootSignal sends a reboot signal to OCI for the given node.
-func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node, _ string) (model.ResetSignalRequestRef, error) {
+func (c *Client) SendRebootSignal(
+	ctx context.Context,
+	node corev1.Node,
+	_ string,
+) (model.ResetSignalRequestRef, error) {
+	retryPolicy := rebootRetryPolicy()
 	_, err := c.compute.InstanceAction(ctx, core.InstanceActionRequest{
 		InstanceId: &node.Spec.ProviderID,
 		Action:     core.InstanceActionActionSoftreset,
+		RequestMetadata: common.RequestMetadata{
+			RetryPolicy: &retryPolicy,
+		},
 	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf(
+			"send soft reset action for OCI instance %q: %w",
+			node.Spec.ProviderID,
+			err,
+		)
 	}
 
 	return model.ResetSignalRequestRef(time.Now().UTC().Format(time.RFC3339)), nil
@@ -147,6 +163,31 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID st
 	}
 
 	return true, nil
+}
+
+func rebootRetryPolicy() common.RetryPolicy {
+	return common.NewRetryPolicyWithOptions(
+		common.ReplaceWithValuesFromRetryPolicy(common.DefaultRetryPolicyWithoutEventualConsistency()),
+		common.WithMaximumNumberAttempts(rebootRetryAttempts),
+		common.WithShouldRetryOperation(func(response common.OCIOperationResponse) bool {
+			return isRetryableRebootError(response.Error)
+		}),
+	)
+}
+
+func isRetryableRebootError(err error) bool {
+	if common.IsErrorRetryableByDefault(err) {
+		return true
+	}
+
+	var serviceErr common.ServiceError
+	if !errors.As(err, &serviceErr) {
+		return false
+	}
+
+	return serviceErr.GetHTTPStatusCode() == http.StatusConflict &&
+		serviceErr.GetCode() == "Conflict" &&
+		strings.Contains(strings.ToLower(serviceErr.GetMessage()), "currently being modified")
 }
 
 // SendTerminateSignal is not implemented for OCI.
