@@ -43,6 +43,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
+	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
@@ -214,15 +215,29 @@ func setupControllers(
 // newPublisher creates a healthpub.Publisher backed by a gRPC connection
 // to the platform-connector socket. Returns (nil, nil) when the
 // maintenance controller is disabled.
+//
+// A MaintenanceRequest names any node in the cluster, but this component
+// is a Deployment running on one. platform-connector therefore scopes it
+// to its own node unless it presents a projected ServiceAccount token
+// whose identity is on the cross-node allowlist, so tokenPath must be set
+// wherever node-binding auth is enabled. An empty tokenPath contributes no
+// dial options, which is the tokenless behaviour auth-disabled clusters expect.
 func newPublisher(
-	enabled bool, socketTarget string,
+	enabled bool, socketTarget, tokenPath string,
 ) (*healthpub.Publisher, error) {
 	if !enabled {
 		return nil, nil
 	}
 
-	conn, err := grpc.NewClient(socketTarget,
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	opts := append(
+		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
+		grpcclient.DialOptions(tokenPath)...,
+	)
+
+	slog.Info("Dialing platform-connector",
+		"socket", socketTarget, "tokenAuthEnabled", tokenPath != "")
+
+	conn, err := grpc.NewClient(socketTarget, opts...)
 	if err != nil {
 		slog.Error("Failed to create gRPC client for platform-connector", "error", err)
 
@@ -250,6 +265,7 @@ func run() error {
 		enableValidationController                       bool
 		enableMaintenanceController                      bool
 		platformConnectorSocket                          string
+		platformConnectorTokenPath                       string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to. "+
@@ -283,6 +299,10 @@ func run() error {
 	flag.StringVar(&platformConnectorSocket, "platform-connector-socket",
 		"unix:///var/run/nvsentinel.sock",
 		"gRPC target for the platform-connector socket used by the MaintenanceRequest controller.")
+	flag.StringVar(&platformConnectorTokenPath, "platform-connector-token-path", "",
+		"Path to a projected ServiceAccount token presented to platform-connector. "+
+			"A MaintenanceRequest names any node in the cluster, so this is required for "+
+			"reporting on nodes other than the one this pod runs on; empty disables token authentication.")
 
 	flag.Parse()
 
@@ -339,7 +359,9 @@ func run() error {
 		return err
 	}
 
-	publisher, err := newPublisher(enableMaintenanceController, platformConnectorSocket)
+	publisher, err := newPublisher(
+		enableMaintenanceController, platformConnectorSocket, platformConnectorTokenPath,
+	)
 	if err != nil {
 		return err
 	}
