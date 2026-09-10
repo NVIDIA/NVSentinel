@@ -24,7 +24,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"golang.org/x/sync/errgroup"
+
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/collector"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/mapper"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nvml"
@@ -40,6 +44,10 @@ const (
 	// enough to ride out a credential rotation or a kubelet restart, short enough to still be
 	// a loud failure.
 	defaultMaxConsecutivePodMapperFailures = 10
+
+	// Matches every other NVSentinel component, and the chart's PodMonitor scrapes a container
+	// port named "metrics" rather than a number.
+	defaultMetricsPort = 2112
 )
 
 var (
@@ -52,6 +60,10 @@ var (
 	maxConsecutivePodMapperFailures = flag.Int("pod-mapper-max-consecutive-failures",
 		defaultMaxConsecutivePodMapperFailures,
 		"Consecutive pod device mapper poll failures tolerated before exiting non-zero. Minimum 1.")
+
+	metricsPort = flag.Int("metrics-port", defaultMetricsPort,
+		"Port for the Prometheus metrics endpoint. 0 disables it, which matters here because this "+
+			"runs with hostNetwork and so binds on the node.")
 )
 
 func main() {
@@ -70,7 +82,34 @@ func main() {
 
 	slog.Info("Metadata collector completed successfully, starting pod device mapper")
 
-	if err := runMapper(ctx); err != nil {
+	// The mapper loops until the context ends, so the metrics endpoint has to run alongside it
+	// rather than after it. Either goroutine returning cancels the other, which keeps the
+	// threshold's non-zero exit intact.
+	group, groupCtx := errgroup.WithContext(ctx)
+
+	if *metricsPort > 0 {
+		group.Go(func() error {
+			err := server.NewServer(
+				server.WithPort(*metricsPort),
+				server.WithPrometheusMetrics(),
+			).Serve(groupCtx)
+			// Deliberately not returned. The port is on the host network here, so a collision
+			// with a node service (kube-vip also uses 2112) would otherwise crash-loop this
+			// DaemonSet fleet-wide — the failure this component's whole issue is about. Losing
+			// metrics is worth strictly less than losing the collector.
+			if err != nil {
+				slog.Error("Metrics endpoint stopped; continuing without it", "error", err)
+			}
+
+			return nil
+		})
+	}
+
+	group.Go(func() error {
+		return runMapper(groupCtx, newPodMapperMetrics(prometheus.DefaultRegisterer))
+	})
+
+	if err := group.Wait(); err != nil {
 		slog.Error("Pod device mapper failed", "error", err)
 		cancel()
 		os.Exit(1)
@@ -79,7 +118,7 @@ func main() {
 	slog.Info("Pod device mapper completed successfully")
 }
 
-func runMapper(ctx context.Context) error {
+func runMapper(ctx context.Context, metrics *podMapperMetrics) error {
 	podDeviceMapper, err := mapper.NewPodDeviceMapper(ctx)
 	if err != nil {
 		return fmt.Errorf("could not create mapper: %w", err)
@@ -88,7 +127,7 @@ func runMapper(ctx context.Context) error {
 	ticker := time.NewTicker(defaultPodDeviceMonitorPeriod)
 	defer ticker.Stop()
 
-	return pollPodDevices(ctx, podDeviceMapper, ticker.C, *maxConsecutivePodMapperFailures)
+	return pollPodDevices(ctx, podDeviceMapper, ticker.C, *maxConsecutivePodMapperFailures, metrics)
 }
 
 // pollPodDevices updates pod device annotations on every tick, returning only when ctx is done
@@ -98,7 +137,7 @@ func runMapper(ctx context.Context) error {
 // os.Exit(1), so one rotated credential restarted every pod in the fleet at once. Failing
 // loudly is still wanted, just once the failures look permanent rather than transient.
 func pollPodDevices(ctx context.Context, podDeviceMapper mapper.PodDeviceMapper,
-	ticks <-chan time.Time, maxConsecutiveFailures int) error {
+	ticks <-chan time.Time, maxConsecutiveFailures int, metrics *podMapperMetrics) error {
 	if maxConsecutiveFailures < 1 {
 		return fmt.Errorf("pod-mapper-max-consecutive-failures must be at least 1, got %d", maxConsecutiveFailures)
 	}
@@ -113,6 +152,9 @@ func pollPodDevices(ctx context.Context, podDeviceMapper mapper.PodDeviceMapper,
 			numUpdates, err := podDeviceMapper.UpdatePodDevicesAnnotations()
 			if err != nil {
 				consecutiveFailures++
+				// Recorded before the threshold check, so the final streak is visible on the
+				// scrape that precedes the exit rather than being lost with the process.
+				metrics.recordFailure(consecutiveFailures)
 
 				if consecutiveFailures >= maxConsecutiveFailures {
 					return fmt.Errorf("could not update mapper pod devices annotations, %d consecutive failures: %w",
@@ -128,6 +170,8 @@ func pollPodDevices(ctx context.Context, podDeviceMapper mapper.PodDeviceMapper,
 			}
 
 			consecutiveFailures = 0
+
+			metrics.recordSuccess()
 
 			slog.Info("Device mapper pod annotation updates", "podCount", numUpdates)
 		}
