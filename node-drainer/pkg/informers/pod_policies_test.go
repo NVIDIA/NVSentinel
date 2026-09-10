@@ -101,3 +101,57 @@ func TestSendEvictionRequestForPodAndForceDeletePods_StaleObservation_RejectsAct
 		})
 	}
 }
+
+// TestCheckIfObservedPodsAreEvictedInImmediateMode_RelabelledPods_RejectsStaleDeletion
+// verifies API resource-version preconditions after an immediate-mode timeout observation.
+func TestCheckIfObservedPodsAreEvictedInImmediateMode_RelabelledPods_RejectsStaleDeletion(t *testing.T) {
+	environment := &envtest.Environment{}
+	cfg, err := environment.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, environment.Stop()) })
+	client, err := kubernetes.NewForConfig(cfg)
+	require.NoError(t, err)
+	ctx := t.Context()
+	observedInformers, err := NewInformers(client, 0, new(5), false, false, "", "mode")
+	require.NoError(t, err)
+	require.NoError(t, observedInformers.Run(ctx))
+	for _, mode := range []string{"completion", "unmatched"} {
+		t.Run(mode, func(t *testing.T) {
+			pod := &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: mode, Namespace: "default", Labels: map[string]string{"mode": "immediate"},
+				},
+				Spec: v1.PodSpec{NodeName: "node-a", TerminationGracePeriodSeconds: new(int64(1)),
+					Containers: []v1.Container{{Name: "worker", Image: "busybox"}}},
+			}
+			created, err := client.CoreV1().Pods("default").Create(ctx, pod, metav1.CreateOptions{})
+			require.NoError(t, err)
+			created.Status.Phase = v1.PodRunning
+			_, err = client.CoreV1().Pods("default").UpdateStatus(ctx, created, metav1.UpdateOptions{})
+			require.NoError(t, err)
+			require.NoError(t, client.CoreV1().Pods("default").Delete(ctx, mode,
+				metav1.DeleteOptions{GracePeriodSeconds: new(int64(1))}))
+			observed, err := client.CoreV1().Pods("default").Get(ctx, mode, metav1.GetOptions{})
+			require.NoError(t, err)
+			require.NotNil(t, observed.DeletionTimestamp)
+			updated := observed.DeepCopy()
+			updated.Labels["mode"] = mode
+			updated, err = client.CoreV1().Pods("default").Update(ctx, updated, metav1.UpdateOptions{})
+			require.NoError(t, err)
+			require.NotEqual(t, observed.ResourceVersion, updated.ResourceVersion)
+			deadline := observed.DeletionTimestamp.Add(2 * time.Second)
+			require.Eventually(t, func() bool {
+				return time.Now().After(deadline)
+			}, 5*time.Second, 20*time.Millisecond)
+			filter := func(p *v1.Pod) bool { return p.Labels["mode"] == "immediate" }
+			require.False(t, observedInformers.CheckIfObservedPodsAreEvictedInImmediateMode(ctx,
+				[]string{"default"}, "node-a", time.Second, nil, []*v1.Pod{observed}, filter))
+			current, err := client.CoreV1().Pods("default").Get(ctx, mode, metav1.GetOptions{})
+			require.NoError(t, err, "the stale timeout observation must not force-delete the relabelled pod")
+			require.Equal(t, updated.ResourceVersion, current.ResourceVersion)
+			require.Equal(t, mode, current.Labels["mode"])
+			require.Equal(t, observed.UID, current.UID)
+			require.Equal(t, observed.DeletionTimestamp, current.DeletionTimestamp)
+		})
+	}
+}

@@ -1102,6 +1102,8 @@ func (i *Informers) CheckIfObservedPodsAreEvictedInImmediateMode(ctx context.Con
 		slog.InfoContext(ctx, "Pods on node exceeded timeout, attempting force deletion",
 			"node", nodeName)
 
+		// Delete using the observed UID and resource version. A relabelled or replaced
+		// pod causes an API conflict, so this snapshot cannot delete its current state.
 		err := i.forceDeletePods(ctx, remainingPods)
 		if err != nil {
 			metrics.ProcessingErrors.WithLabelValues("pods_force_deletion_error", nodeName).Inc()
