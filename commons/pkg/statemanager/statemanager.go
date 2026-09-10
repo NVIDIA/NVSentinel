@@ -90,6 +90,7 @@
 //
 //	Remediation Phase:
 //	  drain-succeeded → remediating              (fault-remediation starts remediation)
+//	  drain-succeeded → remediation-failed       (recommended action is unsupported)
 //	  remediating → remediation-succeeded        (fault-remediation: success)
 //	  remediating → remediation-failed           (fault-remediation: failure)
 //
@@ -135,13 +136,16 @@
 //  2. Failed remediation:
 //     none → quarantined → draining → drain-succeeded → remediating → remediation-failed [TERMINAL]
 //
-//  3. No pods to drain:
+//  3. Unsupported remediation:
+//     none → quarantined → draining → drain-succeeded → remediation-failed [TERMINAL]
+//
+//  4. No pods to drain:
 //     none → quarantined → drain-succeeded → remediating → remediation-succeeded → (no label)
 //
-//  4. Failed draining:
+//  5. Failed draining:
 //     none → quarantined → draining → drain-failed [TERMINAL]
 //
-//  5. Canceled drain (healthy event):
+//  6. Canceled drain (healthy event):
 //     none → quarantined → draining → (no label)
 //
 // # Validation Behavior
@@ -409,7 +413,7 @@ func validateStateTransition(nodeName, currentValue string, exists bool, targetS
 	validTransitions := map[NVSentinelStateLabelValue][]NVSentinelStateLabelValue{
 		QuarantinedLabelValue:    {DrainingLabelValue, DrainSucceededLabelValue},
 		DrainingLabelValue:       {DrainSucceededLabelValue, DrainFailedLabelValue},
-		DrainSucceededLabelValue: {RemediatingLabelValue},
+		DrainSucceededLabelValue: {RemediatingLabelValue, RemediationFailedLabelValue},
 		DrainFailedLabelValue:    {}, // Terminal state - fault-remediation doesn't consume drain-failed
 		RemediatingLabelValue:    {RemediationSucceededLabelValue, RemediationFailedLabelValue},
 		// remediation-succeeded and remediation-failed are terminal for a single failure, but a
