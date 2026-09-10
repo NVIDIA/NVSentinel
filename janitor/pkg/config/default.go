@@ -25,18 +25,19 @@ import (
 )
 
 const (
-	GPUResetContainerName  = "gpu-reset"
-	HostDevVolumeName      = "host-dev"
-	HostDevPath            = "/dev"
-	HostDevLogVolumeName   = "dev-log"
-	HostDevLogPath         = "/run/systemd/journal/dev-log"
-	DriverRootVolumeName   = "driver-root"
-	DriverRootPath         = "/run/nvidia/driver"
-	HostSysVolumeName      = "host-sys"
-	HostSysPath            = "/sys"
-	WriteSyslogEventEnvVar = "WRITE_SYSLOG_EVENT"
-	NodeNameEnvVar         = "NODE_NAME"
-	UploadURLBaseEnvVar    = "UPLOAD_URL_BASE"
+	GPUResetContainerName     = "gpu-reset"
+	HostDevVolumeName         = "host-dev"
+	HostDevPath               = "/dev"
+	HostDevLogVolumeName      = "dev-log"
+	HostDevLogPath            = "/run/systemd/journal/dev-log"
+	DriverRootVolumeName      = "driver-root"
+	DefaultHostDriverRootPath = "/run/nvidia/driver"
+	DriverRootMountPath       = "/run/nvidia/driver"
+	HostSysVolumeName         = "host-sys"
+	HostSysPath               = "/sys"
+	WriteSyslogEventEnvVar    = "WRITE_SYSLOG_EVENT"
+	NodeNameEnvVar            = "NODE_NAME"
+	UploadURLBaseEnvVar       = "UPLOAD_URL_BASE"
 )
 
 func applyConfigDefaults(config *Config) {
@@ -139,6 +140,16 @@ func applyCSPProviderHostDefaults(config *Config) {
 	}
 }
 
+func applyResetJobDefaults(config *ResetJobConfig) {
+	if config.WriteSysLogEvent == nil {
+		config.WriteSysLogEvent = new(true)
+	}
+
+	if config.HostDriverRootPath == "" {
+		config.HostDriverRootPath = DefaultHostDriverRootPath
+	}
+}
+
 func getResources(resources ResourceRequirements) (*corev1.ResourceRequirements, error) {
 	limits, err := parseResourceList(resources.Limits)
 	if err != nil {
@@ -184,9 +195,13 @@ func getImagePullSecrets(imagePullSecrets []ImagePullSecret) []corev1.LocalObjec
 
 // getDefaultGPUResetJobTemplate returns the default JobTemplateSpec for GPU reset jobs.
 func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []ImagePullSecret,
-	resources ResourceRequirements, runtimeClassName string, writeSyslogEvent bool,
+	resources ResourceRequirements, hostDriverRootPath string, runtimeClassName string, writeSyslogEvent bool,
 	uploadURL string) (*batchv1.JobTemplateSpec, error) {
 	imagePullSecrets := getImagePullSecrets(secrets)
+
+	if hostDriverRootPath == "" {
+		hostDriverRootPath = DefaultHostDriverRootPath
+	}
 
 	containerResources, err := getResources(resources)
 	if err != nil {
@@ -217,7 +232,7 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 						{
 							Name: DriverRootVolumeName,
 							HostPath: &corev1.HostPathVolumeSource{
-								Path: DriverRootPath,
+								Path: hostDriverRootPath,
 							},
 						},
 						{
@@ -240,7 +255,7 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 								},
 								{
 									Name:  "DRIVER_ROOT",
-									Value: DriverRootPath,
+									Value: DriverRootMountPath,
 								},
 								{
 									Name:  WriteSyslogEventEnvVar,
@@ -270,11 +285,11 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 								},
 								{
 									Name:      DriverRootVolumeName,
-									MountPath: DriverRootPath,
+									MountPath: DriverRootMountPath,
 								},
 								{
 									Name:      HostSysVolumeName,
-									MountPath: DriverRootPath + HostSysPath,
+									MountPath: DriverRootMountPath + HostSysPath,
 								},
 							},
 							SecurityContext: &corev1.SecurityContext{
