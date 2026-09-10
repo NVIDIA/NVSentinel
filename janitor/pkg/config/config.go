@@ -115,6 +115,9 @@ type ResetJobConfig struct {
 	RuntimeClassName string               `mapstructure:"runtimeClassName" json:"runtimeClassName"`
 	WriteSysLogEvent *bool                `mapstructure:"writeSysLogEvent" json:"writeSysLogEvent"`
 	UploadURL        string               `mapstructure:"uploadURL" json:"uploadURL"`
+	// JobTemplate replaces the built-in template entirely, ignoring the other ResetJob fields.
+	// Kept as a string because viper lowercases config keys, which would drop volumeMounts.
+	JobTemplate string `mapstructure:"jobTemplate" json:"jobTemplate,omitempty"`
 }
 
 type ResourceRequirements struct {
@@ -172,19 +175,7 @@ func LoadConfig(configPath string, namespace string) (*Config, error) {
 	applyConfigDefaults(&config)
 
 	if config.GPUReset.Enabled {
-		if len(config.GPUReset.ResetJob.ImageConfig.Image) == 0 {
-			return nil, fmt.Errorf("ResetJob.ImageConfig.Image is required but not set")
-		}
-
-		if config.GPUReset.ResetJob.WriteSysLogEvent == nil {
-			config.GPUReset.ResetJob.WriteSysLogEvent = new(true)
-		}
-
-		resetJobConfig := config.GPUReset.ResetJob
-
-		jobTemplate, err := getDefaultGPUResetJobTemplate(namespace, resetJobConfig.ImageConfig.Image,
-			resetJobConfig.ImageConfig.ImagePullSecrets, resetJobConfig.Resources, resetJobConfig.RuntimeClassName,
-			*resetJobConfig.WriteSysLogEvent, resetJobConfig.UploadURL)
+		jobTemplate, err := resolveGPUResetJobTemplate(&config.GPUReset.ResetJob, namespace)
 		if err != nil {
 			return nil, err
 		}

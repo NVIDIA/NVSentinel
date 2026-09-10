@@ -1,0 +1,109 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: gpuReset resetJob.jobTemplate
+templates:
+  - templates/configmap.yaml
+tests:
+  - it: must not emit jobTemplate when it is not set
+    asserts:
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: "jobTemplate"
+
+  # Janitor reads jobTemplate as one opaque string, so every line must be indented under it.
+  - it: must render a structured jobTemplate as an indented block scalar
+    set:
+      config.controllers.gpuReset.resetJob.jobTemplate:
+        spec:
+          backoffLimit: 1
+          template:
+            spec:
+              containers:
+                - name: gpu-reset
+                  image: registry.example.com/gpu-reset:v1
+                  volumeMounts:
+                    - name: driver-root
+                      mountPath: /home/kubernetes/bin/nvidia
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "\n    jobTemplate: \\|\n      spec:\n"
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "\n        backoffLimit: 1\n"
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "\n              volumeMounts:\n              - mountPath: /home/kubernetes/bin/nvidia\n"
+
+  # These four carry chart defaults, so leaving them in would make janitor's "ignoring other
+  # resetJob fields" warning fire for every operator using a jobTemplate.
+  - it: must omit the built-in template keys when a jobTemplate is set
+    set:
+      config.controllers.gpuReset.resetJob.jobTemplate:
+        spec:
+          template:
+            spec:
+              containers:
+                - name: gpu-reset
+                  image: registry.example.com/gpu-reset:v1
+    asserts:
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: "\n    writeSysLogEvent:"
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: "\n    runtimeClassName:"
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: "\n    imageConfig:"
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: "\n    resources:"
+
+  - it: must keep the built-in template keys when no jobTemplate is set
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "\n    writeSysLogEvent:"
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "\n    runtimeClassName:"
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "\n    imageConfig:"
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "\n    resources:"
+
+  # Parsing the ConfigMap at all proves the block scalar is well formed; serviceManager proves the
+  # keys after it land in gpuResetController rather than inside the template.
+  - it: must keep the ConfigMap parseable with a jobTemplate set
+    set:
+      config.controllers.gpuReset.resetJob.jobTemplate:
+        spec:
+          template:
+            spec:
+              containers:
+                - name: gpu-reset
+                  image: registry.example.com/gpu-reset:v1
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "^global:\n"
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "\n  serviceManager:\n    name: gpu-operator\n"

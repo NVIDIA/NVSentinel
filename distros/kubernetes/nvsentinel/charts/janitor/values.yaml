@@ -186,6 +186,12 @@ config:
           limits:
             cpu: "100m"
             memory: "128Mi"
+        # Optional batchv1.JobTemplateSpec that fully replaces the built-in GPU reset Job
+        # template. Every other key under resetJob is then ignored, so the template must supply
+        # its own image, volumes, resources and environment. Use it when the built-in template
+        # does not fit the node, for example when the host installs the driver instead of the
+        # GPU Operator. See docs/configuration/janitor.md for an example.
+        jobTemplate: {}
 
 # TTL-based cleanup of completed maintenance CRs (RebootNode / GPUReset /
 # TerminateNode). See docs/designs/037-janitor-cr-ttl-cleanup.md for details.

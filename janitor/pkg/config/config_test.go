@@ -22,7 +22,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/yaml"
 
 	"github.com/nvidia/nvsentinel/janitor/pkg/gpuservices"
 )
@@ -600,4 +603,271 @@ global:
 	require.Len(t, config.RebootNode.Exclusions[1].MatchExpressions, 1)
 	assert.Equal(t, "node-role.kubernetes.io/control-plane", config.RebootNode.Exclusions[1].MatchExpressions[0].Key)
 	assert.Equal(t, metav1.LabelSelectorOpExists, config.RebootNode.Exclusions[1].MatchExpressions[0].Operator)
+}
+
+const gpuResetDefaultTemplateConfig = `
+gpuResetController:
+  enabled: true
+  resetJob:
+    writeSysLogEvent: true
+    runtimeClassName: "nvidia"
+    uploadURL: "http://nvsentinel-incluster-file-server.nvsentinel.svc.cluster.local/upload"
+    imageConfig:
+      image: "ghcr.io/nvidia/nvsentinel/gpu-reset:1.16.0"
+      imagePullSecrets:
+      - name: pull-secret
+    resources:
+      limits:
+        cpu: 100m
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+`
+
+func loadConfigFromString(t *testing.T, configContent string) (*Config, error) {
+	t.Helper()
+
+	configPath := filepath.Join(t.TempDir(), "janitor-config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(configContent), 0644))
+
+	return LoadConfig(configPath, testNamespace)
+}
+
+// jobTemplateConfig serialises jobTemplate into a block scalar, the way the chart renders it.
+func jobTemplateConfig(t *testing.T, jobTemplate string) string {
+	t.Helper()
+
+	out, err := yaml.Marshal(map[string]any{
+		"gpuResetController": map[string]any{
+			"enabled":  true,
+			"resetJob": map[string]any{"jobTemplate": jobTemplate},
+		},
+	})
+	require.NoError(t, err)
+
+	return string(out)
+}
+
+const gpuResetMinimalJobTemplate = `spec:
+  template:
+    spec:
+      containers:
+      - name: gpu-reset
+        image: registry.example.com/gpu-reset:v1
+`
+
+// The golden file is a copy of the built-in template taken before jobTemplate existed. Comparing
+// against getDefaultGPUResetJobTemplate instead would pass for any change to that function.
+func TestLoadConfig_NoJobTemplate_MatchesDefaultTemplateGolden(t *testing.T) {
+	config, err := loadConfigFromString(t, gpuResetDefaultTemplateConfig)
+	require.NoError(t, err)
+	require.NotNil(t, config.GPUReset.ResolvedJobTemplate)
+
+	actual, err := yaml.Marshal(config.GPUReset.ResolvedJobTemplate)
+	require.NoError(t, err)
+
+	golden, err := os.ReadFile(filepath.Join("testdata", "default-gpu-reset-job-template.yaml"))
+	require.NoError(t, err)
+
+	assert.YAMLEq(t, string(golden), string(actual))
+}
+
+func TestLoadConfig_JobTemplate_ReplacesDefaultTemplate(t *testing.T) {
+	jobTemplate := `metadata:
+  labels:
+    owner: platform
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      containers:
+      - name: gpu-reset
+        image: registry.example.com/gpu-reset:v1
+        volumeMounts:
+        - name: driver-root
+          mountPath: /home/kubernetes/bin/nvidia
+      volumes:
+      - name: driver-root
+        hostPath:
+          path: /home/kubernetes/bin/nvidia
+`
+
+	config, err := loadConfigFromString(t, jobTemplateConfig(t, jobTemplate))
+	require.NoError(t, err)
+	require.NotNil(t, config.GPUReset.ResolvedJobTemplate)
+
+	resolved := config.GPUReset.ResolvedJobTemplate
+	assert.Equal(t, testNamespace, resolved.Namespace)
+	assert.Equal(t, map[string]string{"owner": "platform"}, resolved.Labels)
+	assert.Equal(t, int32(1), *resolved.Spec.BackoffLimit)
+
+	assert.Nil(t, resolved.Spec.TTLSecondsAfterFinished)
+	assert.Nil(t, resolved.Spec.ActiveDeadlineSeconds)
+	assert.Empty(t, resolved.Spec.Template.Spec.Tolerations)
+	assert.Nil(t, resolved.Spec.Template.Spec.RuntimeClassName)
+
+	podSpec := resolved.Spec.Template.Spec
+	require.Len(t, podSpec.Containers, 1)
+	assert.Equal(t, "registry.example.com/gpu-reset:v1", podSpec.Containers[0].Image)
+	assert.Empty(t, podSpec.Containers[0].Env)
+
+	require.Len(t, podSpec.Containers[0].VolumeMounts, 1)
+	assert.Equal(t, "/home/kubernetes/bin/nvidia", podSpec.Containers[0].VolumeMounts[0].MountPath)
+	require.Len(t, podSpec.Volumes, 1)
+	require.NotNil(t, podSpec.Volumes[0].HostPath)
+	assert.Equal(t, "/home/kubernetes/bin/nvidia", podSpec.Volumes[0].HostPath.Path)
+}
+
+func TestLoadConfig_JobTemplate_ParsesResourceQuantities(t *testing.T) {
+	jobTemplate := `spec:
+  template:
+    spec:
+      containers:
+      - name: gpu-reset
+        image: registry.example.com/gpu-reset:v1
+        resources:
+          limits:
+            cpu: 100m
+            memory: 1Gi
+`
+
+	config, err := loadConfigFromString(t, jobTemplateConfig(t, jobTemplate))
+	require.NoError(t, err)
+
+	limits := config.GPUReset.ResolvedJobTemplate.Spec.Template.Spec.Containers[0].Resources.Limits
+	assert.True(t, resource.MustParse("1Gi").Equal(limits[corev1.ResourceMemory]))
+	assert.True(t, resource.MustParse("100m").Equal(limits[corev1.ResourceCPU]))
+}
+
+func TestLoadConfig_JobTemplate_InvalidReturnsError(t *testing.T) {
+	tests := []struct {
+		name        string
+		jobTemplate string
+		expectedErr string
+	}{
+		{
+			name: "unknown field",
+			jobTemplate: `spec:
+  template:
+    spec:
+      restartPolicyy: OnFailure
+      containers:
+      - name: gpu-reset
+        image: registry.example.com/gpu-reset:v1
+`,
+			expectedErr: "restartPolicyy",
+		},
+		{
+			name: "nodeName set",
+			jobTemplate: `spec:
+  template:
+    spec:
+      nodeName: gpu-node-1
+      containers:
+      - name: gpu-reset
+        image: registry.example.com/gpu-reset:v1
+`,
+			expectedErr: "must not set spec.template.spec.nodeName",
+		},
+		{
+			name: "no containers",
+			jobTemplate: `spec:
+  template:
+    spec:
+      containers: []
+`,
+			expectedErr: "at least one container",
+		},
+		{
+			name:        "foreign namespace",
+			jobTemplate: "metadata:\n  namespace: other\n" + gpuResetMinimalJobTemplate,
+			expectedErr: `metadata.namespace "other"`,
+		},
+		{
+			name:        "name set",
+			jobTemplate: "metadata:\n  name: my-reset-job\n" + gpuResetMinimalJobTemplate,
+			expectedErr: `must not set metadata.name "my-reset-job"`,
+		},
+		{
+			name:        "generateName set",
+			jobTemplate: "metadata:\n  generateName: my-reset-job-\n" + gpuResetMinimalJobTemplate,
+			expectedErr: `must not set metadata.generateName "my-reset-job-"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config, err := loadConfigFromString(t, jobTemplateConfig(t, tt.jobTemplate))
+			require.Error(t, err)
+			require.Nil(t, config)
+			assert.Contains(t, err.Error(), tt.expectedErr)
+		})
+	}
+}
+
+func TestLoadConfig_JobTemplate_NamespaceDefaultsToJanitorNamespace(t *testing.T) {
+	tests := []struct {
+		name        string
+		jobTemplate string
+	}{
+		{
+			name:        "namespace omitted",
+			jobTemplate: gpuResetMinimalJobTemplate,
+		},
+		{
+			name:        "namespace matches",
+			jobTemplate: "metadata:\n  namespace: " + testNamespace + "\n" + gpuResetMinimalJobTemplate,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config, err := loadConfigFromString(t, jobTemplateConfig(t, tt.jobTemplate))
+			require.NoError(t, err)
+			assert.Equal(t, testNamespace, config.GPUReset.ResolvedJobTemplate.Namespace)
+		})
+	}
+}
+
+func TestLoadConfig_JobTemplate_ImageConfigNotRequired(t *testing.T) {
+	config, err := loadConfigFromString(t, jobTemplateConfig(t, gpuResetMinimalJobTemplate))
+	require.NoError(t, err)
+	assert.Empty(t, config.GPUReset.ResetJob.ImageConfig.Image)
+}
+
+func TestIgnoredResetJobFields_ReturnsFieldsThatAreSet(t *testing.T) {
+	tests := []struct {
+		name     string
+		resetJob ResetJobConfig
+		expected []string
+	}{
+		{
+			name:     "only jobTemplate set",
+			resetJob: ResetJobConfig{JobTemplate: gpuResetMinimalJobTemplate},
+		},
+		{
+			name: "every other field set",
+			resetJob: ResetJobConfig{
+				ImageConfig: ImageConfig{
+					Image:            "registry.example.com/gpu-reset:v1",
+					ImagePullSecrets: []ImagePullSecret{{Name: "pull-secret"}},
+				},
+				Resources:        ResourceRequirements{Limits: map[string]string{"cpu": "100m"}},
+				RuntimeClassName: "nvidia",
+				WriteSysLogEvent: new(false),
+				UploadURL:        "http://file-server/upload",
+			},
+			expected: []string{
+				"imageConfig.image", "imageConfig.imagePullSecrets", "resources",
+				"runtimeClassName", "writeSysLogEvent", "uploadURL",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, ignoredResetJobFields(&tt.resetJob))
+		})
+	}
 }

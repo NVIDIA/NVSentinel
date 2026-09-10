@@ -16,12 +16,14 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"sigs.k8s.io/yaml"
 )
 
 const (
@@ -137,6 +139,97 @@ func applyCSPProviderHostDefaults(config *Config) {
 	if len(config.TerminateNode.CSPProviderTokenPath) == 0 {
 		config.TerminateNode.CSPProviderTokenPath = config.Global.CSPProviderTokenPath
 	}
+}
+
+func resolveGPUResetJobTemplate(resetJob *ResetJobConfig, namespace string) (*batchv1.JobTemplateSpec, error) {
+	if resetJob.JobTemplate != "" {
+		if ignored := ignoredResetJobFields(resetJob); len(ignored) > 0 {
+			slog.Warn("resetJob.jobTemplate replaces the built-in template, ignoring other resetJob fields",
+				"fields", ignored)
+		}
+
+		return parseGPUResetJobTemplate(namespace, resetJob.JobTemplate)
+	}
+
+	if len(resetJob.ImageConfig.Image) == 0 {
+		return nil, fmt.Errorf("ResetJob.ImageConfig.Image is required but not set")
+	}
+
+	if resetJob.WriteSysLogEvent == nil {
+		resetJob.WriteSysLogEvent = new(true)
+	}
+
+	return getDefaultGPUResetJobTemplate(namespace, resetJob.ImageConfig.Image, resetJob.ImageConfig.ImagePullSecrets,
+		resetJob.Resources, resetJob.RuntimeClassName, *resetJob.WriteSysLogEvent, resetJob.UploadURL)
+}
+
+// parseGPUResetJobTemplate uses sigs.k8s.io/yaml rather than mapstructure so that decoding
+// honours the Kubernetes json tags and the resource.Quantity unmarshaller.
+func parseGPUResetJobTemplate(namespace, raw string) (*batchv1.JobTemplateSpec, error) {
+	var tmpl batchv1.JobTemplateSpec
+
+	if err := yaml.UnmarshalStrict([]byte(raw), &tmpl); err != nil {
+		return nil, fmt.Errorf("failed to parse resetJob.jobTemplate: %w", err)
+	}
+
+	switch {
+	case tmpl.Namespace == "":
+		tmpl.Namespace = namespace
+	case tmpl.Namespace != namespace:
+		return nil, fmt.Errorf("resetJob.jobTemplate metadata.namespace %q must be empty or the janitor "+
+			"namespace %q, which is where the controller looks for its jobs", tmpl.Namespace, namespace)
+	}
+
+	if len(tmpl.Spec.Template.Spec.Containers) == 0 {
+		return nil, fmt.Errorf("resetJob.jobTemplate must define at least one container")
+	}
+
+	if tmpl.Spec.Template.Spec.NodeName != "" {
+		return nil, fmt.Errorf("resetJob.jobTemplate must not set spec.template.spec.nodeName %q, "+
+			"the controller sets it from the GPUReset it is reconciling", tmpl.Spec.Template.Spec.NodeName)
+	}
+
+	if tmpl.Name != "" {
+		return nil, fmt.Errorf("resetJob.jobTemplate must not set metadata.name %q, "+
+			"the controller derives it from the GPUReset it is reconciling", tmpl.Name)
+	}
+
+	if tmpl.GenerateName != "" {
+		return nil, fmt.Errorf("resetJob.jobTemplate must not set metadata.generateName %q, "+
+			"the controller derives metadata.name from the GPUReset it is reconciling", tmpl.GenerateName)
+	}
+
+	return &tmpl, nil
+}
+
+func ignoredResetJobFields(resetJob *ResetJobConfig) []string {
+	var ignored []string
+
+	if resetJob.ImageConfig.Image != "" {
+		ignored = append(ignored, "imageConfig.image")
+	}
+
+	if len(resetJob.ImageConfig.ImagePullSecrets) > 0 {
+		ignored = append(ignored, "imageConfig.imagePullSecrets")
+	}
+
+	if len(resetJob.Resources.Limits) > 0 || len(resetJob.Resources.Requests) > 0 {
+		ignored = append(ignored, "resources")
+	}
+
+	if resetJob.RuntimeClassName != "" {
+		ignored = append(ignored, "runtimeClassName")
+	}
+
+	if resetJob.WriteSysLogEvent != nil {
+		ignored = append(ignored, "writeSysLogEvent")
+	}
+
+	if resetJob.UploadURL != "" {
+		ignored = append(ignored, "uploadURL")
+	}
+
+	return ignored
 }
 
 func getResources(resources ResourceRequirements) (*corev1.ResourceRequirements, error) {

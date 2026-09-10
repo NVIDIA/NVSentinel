@@ -226,6 +226,94 @@ Container image for the GPU reset Job. Leave `tag` empty to use the chart defaul
 ### resetJob.resources
 Resource requests and limits for the GPU reset Job container.
 
+### resetJob.jobTemplate
+An optional `batchv1.JobTemplateSpec` that fully replaces the built-in GPU reset Job template. It is empty by default, and the built-in template is used.
+
+Use `jobTemplate` when the built-in template does not fit the node. The built-in template mounts the GPU Operator driver root from the host path `/run/nvidia/driver`, and sets `DRIVER_ROOT` to the same path. On a cluster where the host installs the driver instead of the GPU Operator, that path does not exist and the reset job fails.
+
+The Janitor validates the template when it starts:
+
+- An unknown field is an error. A typo fails at startup, not at the first reset.
+- The template must define at least one container.
+- `metadata.namespace` must be empty or the Janitor namespace. The controller finds its jobs by that namespace.
+- `metadata.name` and `metadata.generateName` must be empty. The controller derives the job name from the `GPUReset` CR.
+- `spec.template.spec.nodeName` must be empty. The controller sets it to the node named by the `GPUReset` CR.
+
+The Janitor sets three things on each job it creates from the template: `spec.template.spec.nodeName`, the `GPU_RESETS` environment variable on every container, and the owner reference to the `GPUReset` CR. Everything else comes from the template, so the template must supply its own image, volumes, resources and environment.
+
+**A replacement inherits no defaults from the built-in template.** The built-in template sets `activeDeadlineSeconds: 300`, `backoffLimit: 2` and `ttlSecondsAfterFinished: 86400`. Your template gets none of them unless you set them. Set `activeDeadlineSeconds` in particular: without it, a reset Job that hangs runs until the Janitor timeout instead of failing, and the node stays cordoned for longer. Without `ttlSecondsAfterFinished`, completed reset Jobs are never garbage collected.
+
+The other keys under `resetJob` build the built-in template only. When you set `jobTemplate`, the chart stops emitting them and the Janitor ignores any that remain, logging a warning that names each one.
+
+#### Example: driver installed by the host
+
+This example resets GPUs on GKE, where `kube-system/nvidia-driver-installer` installs the driver at `/home/kubernetes/bin/nvidia`. It is the built-in template with the driver root moved to the host path, and it also shows that the template owns the fields the built-in path sets for you.
+
+```yaml
+janitor:
+  config:
+    controllers:
+      gpuReset:
+        resetJob:
+          jobTemplate:
+            spec:
+              activeDeadlineSeconds: 300
+              backoffLimit: 2
+              ttlSecondsAfterFinished: 86400
+              template:
+                spec:
+                  runtimeClassName: nvidia
+                  restartPolicy: OnFailure
+                  tolerations:
+                    - operator: Exists
+                  containers:
+                    - name: gpu-reset
+                      image: ghcr.io/nvidia/nvsentinel/gpu-reset:v1.20.0
+                      imagePullPolicy: Always
+                      securityContext:
+                        privileged: true
+                      env:
+                        - name: NVIDIA_VISIBLE_DEVICES
+                          value: void
+                        - name: DRIVER_ROOT
+                          value: /home/kubernetes/bin/nvidia
+                        - name: WRITE_SYSLOG_EVENT
+                          value: "true"
+                        - name: NODE_NAME
+                          valueFrom:
+                            fieldRef:
+                              fieldPath: spec.nodeName
+                      resources:
+                        requests:
+                          cpu: 50m
+                          memory: 64Mi
+                        limits:
+                          cpu: 100m
+                          memory: 128Mi
+                      volumeMounts:
+                        - name: host-dev
+                          mountPath: /dev
+                        - name: dev-log
+                          mountPath: /run/systemd/journal/dev-log
+                        - name: driver-root
+                          mountPath: /home/kubernetes/bin/nvidia
+                        - name: host-sys
+                          mountPath: /home/kubernetes/bin/nvidia/sys
+                  volumes:
+                    - name: host-dev
+                      hostPath:
+                        path: /dev
+                    - name: dev-log
+                      hostPath:
+                        path: /run/systemd/journal/dev-log
+                    - name: driver-root
+                      hostPath:
+                        path: /home/kubernetes/bin/nvidia
+                    - name: host-sys
+                      hostPath:
+                        path: /sys
+```
+
 ## TTL-Based CR Cleanup
 
 Completed CRs are automatically deleted after the TTL expires.

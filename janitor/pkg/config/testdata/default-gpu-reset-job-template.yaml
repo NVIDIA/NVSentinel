@@ -1,0 +1,63 @@
+metadata:
+  namespace: nvsentinel
+spec:
+  activeDeadlineSeconds: 300
+  backoffLimit: 2
+  template:
+    metadata: {}
+    spec:
+      containers:
+      - env:
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: void
+        - name: DRIVER_ROOT
+          value: /run/nvidia/driver
+        - name: WRITE_SYSLOG_EVENT
+          value: "true"
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: UPLOAD_URL_BASE
+          value: http://nvsentinel-incluster-file-server.nvsentinel.svc.cluster.local/upload
+        image: ghcr.io/nvidia/nvsentinel/gpu-reset:1.16.0
+        imagePullPolicy: Always
+        name: gpu-reset
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - mountPath: /dev
+          name: host-dev
+        - mountPath: /run/systemd/journal/dev-log
+          name: dev-log
+        - mountPath: /run/nvidia/driver
+          name: driver-root
+        - mountPath: /run/nvidia/driver/sys
+          name: host-sys
+      imagePullSecrets:
+      - name: pull-secret
+      restartPolicy: OnFailure
+      runtimeClassName: nvidia
+      tolerations:
+      - operator: Exists
+      volumes:
+      - hostPath:
+          path: /dev
+        name: host-dev
+      - hostPath:
+          path: /run/systemd/journal/dev-log
+        name: dev-log
+      - hostPath:
+          path: /run/nvidia/driver
+        name: driver-root
+      - hostPath:
+          path: /sys
+        name: host-sys
+  ttlSecondsAfterFinished: 86400

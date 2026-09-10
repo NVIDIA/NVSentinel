@@ -91,12 +91,14 @@ data:
       {{- end }}
       {{- if .Values.config.controllers.gpuReset.resetJob }}
       {{- $gpuResetUploadURL := .Values.config.controllers.gpuReset.resetJob.uploadURL | default $defaultGPUResetUploadURL }}
+      {{- $gpuResetJobTemplate := .Values.config.controllers.gpuReset.resetJob.jobTemplate }}
       resetJob:
-        writeSysLogEvent: "{{ .Values.config.controllers.gpuReset.resetJob.writeSysLogEvent }}"
-        runtimeClassName: "{{ .Values.config.controllers.gpuReset.resetJob.runtimeClassName }}"
         {{- if $gpuResetUploadURL }}
         uploadURL: {{ $gpuResetUploadURL | quote }}
         {{- end }}
+        {{- if not $gpuResetJobTemplate }}
+        writeSysLogEvent: "{{ .Values.config.controllers.gpuReset.resetJob.writeSysLogEvent }}"
+        runtimeClassName: "{{ .Values.config.controllers.gpuReset.resetJob.runtimeClassName }}"
         imageConfig:
           image: "{{ .Values.config.controllers.gpuReset.resetJob.image.repository }}:{{ .Values.config.controllers.gpuReset.resetJob.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
           {{- with (.Values.config.controllers.gpuReset.resetJob.image.imagePullSecrets | default  (.Values.global).imagePullSecrets) }}
@@ -105,6 +107,11 @@ data:
           {{- end }}
         resources:
           {{- toYaml .Values.config.controllers.gpuReset.resetJob.resources | nindent 10 }}
+        {{- end }}
+        {{- with $gpuResetJobTemplate }}
+        jobTemplate: |
+{{ toYaml . | indent 10 }}
+        {{- end }}
       {{- end }}
       {{- if .Values.config.controllers.gpuReset.serviceManager }}
       serviceManager:

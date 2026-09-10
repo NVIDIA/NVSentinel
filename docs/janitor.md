@@ -50,6 +50,8 @@ Issues a terminate or stop API call to the cloud provider. Used for `REPLACE_VM`
 
 Runs a privileged Kubernetes Job on the target node that performs an in-place GPU reset via `nvidia-smi`. The GPU Operator DaemonSet is paused on the node during the reset to prevent interference. On completion, the Job writes a syslog event so the Syslog Health Monitor can confirm the reset succeeded.
 
+The Janitor builds this Job from a built-in template that expects the GPU Operator to publish the driver root at `/run/nvidia/driver`. To reset GPUs on a node where that path does not apply, replace the whole template with [`resetJob.jobTemplate`](configuration/janitor.md#resetjobjobtemplate).
+
 ## Configuration
 
 Configure the Janitor and Janitor Provider through Helm values:
