@@ -79,7 +79,9 @@ priorityClassName: ""
 # DaemonSet is hostNetwork, so the port binds on the node and can collide with a host service
 # (kube-vip also uses 2112). Set enabled: false to run with no endpoint at all.
 metrics:
+  # Unquoted boolean only; a quoted "false" is truthy and the render refuses it.
   enabled: true
+  # Move it if the node already uses 2112, e.g. 2113 under kube-vip.
   port: 2112
 
 podMapper:

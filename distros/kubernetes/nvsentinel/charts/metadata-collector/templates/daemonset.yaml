@@ -55,13 +55,13 @@ spec:
           args:
             - --output-path={{ .Values.global.metadataPath }}
             - --pod-mapper-max-consecutive-failures={{ .Values.podMapper.maxConsecutiveFailures }}
-            {{- if .Values.metrics.enabled }}
+            {{- if include "metadata-collector.metricsEnabled" . }}
             - --metrics-port={{ .Values.metrics.port }}
             {{- else }}
             # 0 disables the endpoint. Omitting the flag would leave the binary on its default.
             - --metrics-port=0
             {{- end }}
-          {{- if .Values.metrics.enabled }}
+          {{- if include "metadata-collector.metricsEnabled" . }}
           ports:
             # The chart's PodMonitor selects on the release instance label and scrapes a port
             # named "metrics", so this name is what gets these pods scraped.
