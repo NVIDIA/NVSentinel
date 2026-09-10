@@ -1,10 +1,9 @@
 # ADR-050: Monitoring — GPU System Services via NPD Custom Plugins
 
 - **Status:** Proposed
-- **Date:** 2026-03-20 (revised 2026-09-09; re-homed onto the ADR-053 NPD
+- **Date:** 2026-03-20 (revised 2026-09-10; re-homed onto the ADR-053 NPD
   integration path)
 - **Author:** dmvevents
-- **Reviewers:** XRFXLP, lalitadithya, deesharma24
 
 ## Context
 
@@ -41,9 +40,7 @@ configuration that the operator applies to their own NPD deployment.
 This ADR defines the systemd-layer checks as an extension of that path:
 NPD `CustomPluginMonitor` configuration for the GPU-critical host services,
 plus the opt-in KOM policies that turn the resulting conditions into
-remediation-bearing HealthEvents. Earlier revisions of this ADR proposed a
-dedicated in-tree monitor DaemonSet; that component is withdrawn in favor of
-the shared NPD/KOM machinery.
+remediation-bearing HealthEvents.
 
 ## Problem Statement
 
@@ -88,16 +85,28 @@ in ADR-053 does not apply to these checks.
 
 | Check | Description | NPD monitor | Type | Rationale | Action |
 | --- | --- | --- | --- | --- | --- |
-| `FabricManagerDown` | `nvidia-fabricmanager` unit is loaded but not `active`. On NVSwitch platforms a dead FM stops NVLink error-recovery coordination and new fabric registrations while DCGM's latched fabric state still reads healthy. | `CustomPluginMonitor` | Permanent | The systemd liveness gap is the core signal no existing monitor sees (issue #883). | `RESTART_BM` |
+| `FabricManagerDown` | `nvidia-fabricmanager` unit is loaded but persistently not `active` (consecutive-probe debounce; see script contracts). On NVSwitch platforms a dead FM stops NVLink error-recovery coordination and new fabric registrations while DCGM's latched fabric state still reads healthy. | `CustomPluginMonitor` | Permanent | The systemd liveness gap is the core signal no existing monitor sees (issue #883). | `RESTART_BM` |
 | `FabricManagerFlapping` | FM is crash-looping: the restarts observed inside a sliding window reach a threshold. Detected via systemd `NRestarts` deltas with reset disambiguation (below); reported independently of instantaneous `ActiveState`, which a crash-looping unit reads as `active` at most probe instants. | `CustomPluginMonitor` | Permanent | A flap condition tied to instantaneous liveness would be masked by whichever state the probe caught. | `RESTART_BM` |
 | `FabricManagerNotInstalled` | The `nvidia-fabricmanager` unit is absent (`LoadState=not-found`) on a platform where the operator declared it required. Distinguishes misconfiguration from "disabled on purpose". | `CustomPluginMonitor` | Permanent | A silently missing FM on an NVSwitch platform hides exactly the failure class these checks exist for. | `CONTACT_SUPPORT` |
 | `<Service>Down` (e.g. `NvidiaPersistencedDown`) | A configured GPU-support service is loaded but not `active`. **One condition type per service**: NPD binds each permanent rule to exactly one condition by type, so a shared condition would let one service's result overwrite another's status. The reference ships `NvidiaPersistencedDown`; additional services follow the same naming pattern with their own configuration file, condition, and KOM policy. | `CustomPluginMonitor` | Permanent | Support-service lifecycle has no DCGM watch. | `CONTACT_SUPPORT` |
 
-Platform applicability replaces the earlier in-monitor `fm-presence` flag with
-configuration presence: operators of NVSwitch fleets install the
-`FabricManagerNotInstalled` check (the `required` semantics); PCIe-only fleets
-simply omit it, and the liveness check skips a `not-found` unit rather than
-reporting it down (`auto`); omitting the FM checks entirely is `disabled`.
+**These checks observe host-systemd-managed services only.** Some
+deployments run Fabric Manager elsewhere — the GPU Operator, for example,
+can run FM inside the driver container
+([`nvidia-driver-ctr`](https://github.com/NVIDIA/gpu-driver-container/blob/ccc2bd607912c8d8a4fd2bde2b0aaf1cac902d71/ubuntu24.04/nvidia-driver#L634-L660)),
+where no host unit exists even though FM is running. On such nodes the
+presence check would report a false `FabricManagerNotInstalled`, so
+platform applicability is declared by configuration presence:
+
+- **Required** (NVSwitch fleets with host-systemd-managed FM): install all
+  FM configurations including the presence check.
+- **Auto** (mixed or container-managed-FM fleets): omit the presence check;
+  the liveness and flap checks skip a `not-found` unit rather than
+  reporting it down, so they are inert where FM is container-managed.
+- **Disabled** (PCIe-only fleets): omit the FM configurations entirely.
+
+Monitoring container-managed FM is out of scope for this ADR and can be
+addressed separately.
 
 ## Implementation
 
@@ -109,52 +118,71 @@ condition message.
 
 - **`check_fm_active.sh`** — `systemctl show nvidia-fabricmanager
   --property=LoadState,ActiveState,SubState`. `LoadState=not-found` exits `0`
-  (not applicable on this host); `ActiveState=active` exits `0`; otherwise
-  exits `1` with the sub-state in the message. A probe failure (systemd/D-Bus
-  unreachable, timeout) exits with the unknown status — "could not observe" is
-  not evidence of "down".
+  (not applicable on this host; see platform applicability).
+  `ActiveState=active` confirms healthy (exit `0`) and resets the check's
+  consecutive-failure count. Transitional states (`activating`,
+  `deactivating`, `reloading`) neither confirm health nor count as down —
+  the script holds its last confirmed state, so a service starting up or in
+  a planned restart never fires the condition; systemd's own start timeout
+  turns a stuck `activating` into `failed`, which does count. A non-running
+  observation (`inactive`, `failed`) reports down (exit `1`, sub-state in
+  the message) only when observed on a threshold of consecutive probes
+  (default 3, ≈ 90 s at the reference interval): detection latency for a
+  genuine death is threshold × `invoke_interval`, traded against firing on
+  planned restarts.
 - **`check_fm_flapping.sh`** — reads `NRestarts` and
-  `ExecMainStartTimestamp`, keeps its baseline and restart-window samples in a
-  state file on the **host's** `/run` (tmpfs: state is boot-scoped by
-  construction, and a crash loop spanning node reboots is out of scope here —
-  cross-boot recurrence belongs to fault-management's
-  recurrence-after-remediation escalation). The state-file contract is part of
-  the operator documentation and applies per NPD deployment shape:
-  - **Host-service NPD:** the script writes
-    `/run/nvsentinel-npd/fm-flap.state` directly.
-  - **DaemonSet NPD:** the pod MUST hostPath-mount the host's
-    `/run/nvsentinel-npd` at the same path — a pod-local `/run` would reset
-    the baseline on every pod replacement, silently weakening flap detection
-    without a node reboot. If an operator chooses not to mount it, the
-    boot-scoped guarantee explicitly degrades to pod-scoped and the
-    documentation says so.
-  - The state directory is `root:root` mode `0700`; updates are atomic
-    (write temp file + `rename`); an unreadable or invalid state file is
-    treated as a fresh baseline (re-baseline, no phantom restart
-    observations).
-
-  `NRestarts` is not monotonic and a decrease is not itself a restart:
-  `systemctl reset-failed` flushes the counter without restarting the process.
-  On a decrease the script re-baselines, and records a restart observation
-  only when `ExecMainStartTimestamp` changed across the reset; a pure counter
-  flush records nothing. Exits `1` while the windowed count is at or above the
-  threshold (defaults: 3 restarts within 600 s), `0` once the window drains.
+  `ExecMainStartTimestamp`, keeping its baseline and restart-window samples
+  in the per-check state (below); the window is boot-scoped by construction,
+  and a crash loop spanning node reboots is out of scope here — cross-boot
+  recurrence belongs to the analyzer-rule escalation path (see Remediation
+  classification). `NRestarts` is not monotonic and a decrease is not itself
+  a restart: `systemctl reset-failed` flushes the counter without restarting
+  the process. On a decrease the script re-baselines, and records a restart
+  observation only when `ExecMainStartTimestamp` changed across the reset; a
+  pure counter flush records nothing. Exits `1` while the windowed count is
+  at or above the threshold (defaults: 3 restarts within 600 s), `0` once
+  the window drains.
 - **`check_fm_installed.sh`** — exits `1` when `LoadState=not-found`, `0`
-  otherwise. Only installed by operators declaring FM required.
+  otherwise. Only installed by operators declaring FM required and
+  host-systemd-managed.
 - **`check_gpu_service.sh <unit>`** — the liveness contract of
-  `check_fm_active.sh`, parameterized; one NPD rule per configured service.
+  `check_fm_active.sh`, parameterized (including the consecutive-probe
+  debounce); one NPD rule per configured service.
+
+**Per-check state.** Each check persists a small state file under the
+**host's** `/run/nvsentinel-npd` (tmpfs — boot-scoped by construction): the
+flap baseline and window samples, the liveness checks' consecutive-failure
+counts, and each check's last confirmed state. The contract is part of the
+operator documentation and applies per NPD deployment shape:
+
+- **Host-service NPD:** scripts write `/run/nvsentinel-npd/<check>.state`
+  directly.
+- **DaemonSet NPD:** the pod MUST hostPath-mount the host's
+  `/run/nvsentinel-npd` at the same path — a pod-local `/run` would reset
+  baselines on every pod replacement, silently weakening flap detection and
+  the debounce without a node reboot. If an operator chooses not to mount
+  it, the boot-scoped guarantee explicitly degrades to pod-scoped and the
+  documentation says so.
+- The state directory is `root:root` mode `0700`; updates are atomic (write
+  temp file + `rename`); an unreadable or invalid state file is treated as
+  a fresh baseline (no phantom observations, no held state).
 
 The scripts require the same host visibility NPD's own service checks use
 (access to systemd via D-Bus or `systemctl`); the documentation records the
 requirement for both host-service and DaemonSet NPD deployments rather than
 prescribing one privilege model, since the operator owns the NPD install.
 
-To keep UNKNOWN distinct from DOWN under NPD's exit-code protocol, each script
-bounds its own probes (e.g. `systemctl` with an internal timeout **shorter
-than** the rule's `timeout`): a wedged probe then reports as the script's own
-deliberate exit — unknown when the service could not be observed — rather
-than as an NPD plugin timeout, and a genuinely stopped service always reports
-as unhealthy within one interval.
+**Probe failures are bounded and never clear a fault.** Each script bounds
+its own probes (`systemctl` with an internal timeout **shorter than** the
+rule's `timeout`), so a wedged probe reports as the script's own deliberate
+exit rather than as an NPD plugin timeout. On a probe failure (systemd/D-Bus
+unreachable, timeout) the script reports its **last confirmed state**: a
+check whose condition is unhealthy keeps reporting unhealthy — with a
+"holding: probe failing" message — until a probe confirms recovery, and a
+previously healthy check holds healthy for a bounded number of consecutive
+failures (default 4) before reporting unknown. Recovery therefore always
+requires a confirming observation; lost observability alone can neither set
+nor clear a fault (see Recovery semantics for the KOM consequence).
 
 ### Reference NPD configuration
 
@@ -293,14 +321,17 @@ configuration addresses this on two fronts:
   briefly publishing not-yet-probed conditions at their defaults during the
   first post-restart batch — which is why the reference splits the
   configurations.
-- The plugin scripts bound their own probes (above), so a down service
-  reports `True` again within one `invoke_interval` plus the rule `timeout`
-  after a transient unknown; the remaining false-recovery exposure is that
-  probe cycle, during which the ADR-053 mitigations apply (do not treat a
-  transient `False`/absent condition mid-remediation as proof of recovery).
-  Making KOM itself distinguish `Unknown` from `False` (three-state
-  condition handling) would harden every ADR-053 check equally; it is a
-  platform-level follow-up, not re-specified per check here.
+- Probe failures cannot cancel remediation: KOM's transition detector
+  treats any non-matching observation — including `Unknown` — as the
+  healthy edge, and a persistent probe failure would otherwise hold that
+  false edge for as long as observability is lost. The
+  hold-last-confirmed-state contract (above) closes this at the source: a
+  condition that has triggered remediation stays `True` through observation
+  outages and transitions only on a confirming probe, so `Unknown` can only
+  arise from previously healthy or freshly initialized checks, where no
+  break-fix is pending. Making KOM itself distinguish `Unknown` from
+  `False` (three-state condition handling) remains the shared
+  platform-level hardening for every ADR-053-pattern check.
 
 ## Signal Ownership
 
@@ -327,22 +358,30 @@ pretend it can:
 - **Classification is cross-signal and belongs downstream.** NVSwitch/SXID
   hardware errors arrive via `syslog-health-monitor`, fabric-probe failures
   via `gpu-health-monitor`, and unit-lifecycle conditions via this path;
-  `health-events-analyzer` / fault-management see all three plus remediation
-  history. FM-down recurring shortly after an executed `RESTART_BM` should
-  escalate to `CONTACT_SUPPORT` rather than loop reboots, and FM faults
-  correlated with NVSwitch/SXID errors on the same node should escalate
-  directly.
+  `health-events-analyzer` sees all three plus remediation history.
+- **Escalation mechanism.** `health-events-analyzer` evaluates
+  TOML-configured aggregation rules over the health-events collection and
+  emits synthetic events that flow through the standard
+  quarantine/remediation pipeline. Its shipped `MultipleRemediations` rule
+  already fires when a node is remediated more than once inside its window —
+  with no automatic healthy clear, forcing operator investigation — which is
+  the recurrence backstop for a `RESTART_BM` loop on these conditions. A
+  dedicated rule keyed on the `NPD_FABRIC_MANAGER_*` error codes (recurrence
+  after remediation, or correlation with NVSwitch/SXID events on the same
+  node) follows the same rule mechanism and can ship alongside the KOM
+  policies as follow-up configuration.
 
 ## Rationale
 
 - Reuses the ADR-053 pipeline end to end: no new collector, DaemonSet,
   privileged pod, transport, or transition cache — KOM already owns the Node
   watch, deduplication, and health-event publishing.
-- The reviewed detection semantics survive intact in the plugin contracts:
-  presence-as-configuration replaces the tri-state flag, the
-  reset-vs-restart rule and boot-scoped window carry over verbatim, and
-  UNKNOWN (probe failure) stays distinct from DOWN via the NPD exit-code
-  protocol.
+- Detection semantics live in the plugin contracts: platform applicability
+  is declared by configuration presence, restart accounting disambiguates
+  `reset-failed` from real restarts inside a boot-scoped window, startup
+  and planned restarts are debounced, and a probe failure holds the last
+  confirmed state so lost observability is never mistaken for recovery or
+  failure.
 - Active custom-plugin probes clear their conditions on recovery, avoiding
   the `SystemLogMonitor` latching documented in ADR-053.
 - One collection path per signal is preserved (ownership table above).
@@ -361,16 +400,18 @@ pretend it can:
 
 - Not out-of-the-box: the operator must apply the NPD configuration and
   enable the KOM policies; fleets without NPD must deploy it first.
-- Node Conditions carry only reason/message — the richer per-check metadata
-  of the earlier in-tree design (e.g. `n_restarts`, `sub_state`) is reduced
-  to the condition message text.
-- The flap window's state file is a per-host contract the documentation must
+- Node Conditions carry only reason/message — richer per-check detail
+  (restart counts, sub-states) travels as condition message text set at
+  transition time.
+- The per-check state files are a per-host contract the documentation must
   specify precisely (location under `/run`, format, boot-scoped lifetime).
-- One recovery caveat remains: a plugin timeout or probe failure reads as
-  `Unknown` — the predicate not matching — for up to one probe cycle (see
-  Recovery semantics); mid-remediation, condition transitions are validated
-  rather than trusted. The NPD restart reset does not apply to these checks
-  (per-condition monitors plus `skip_initial_status`).
+- Recovery correctness leans on the per-check state under `/run`: an NPD
+  restart cannot reset conditions (per-condition monitors plus
+  `skip_initial_status`), and probe failures hold the last confirmed state
+  rather than clearing faults. The residual exposure is a node reboot
+  wiping the state directory mid-remediation, after which the first
+  confirming probe re-reports within one cycle — mid-remediation, condition
+  transitions are validated rather than trusted.
 - Four small single-condition monitor configurations instead of one file:
   slightly more operator surface, traded for eliminating the restart-reset
   window by construction.
