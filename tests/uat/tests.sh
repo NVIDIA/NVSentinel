@@ -24,6 +24,69 @@ get_epoch_time() {
     date -d "$ts" +%s 2>/dev/null || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$ts" +%s 2>/dev/null
 }
 
+# Written by fault-remediation in dry-run as well as live.
+NVSENTINEL_STATE_LABEL="dgxc.nvidia.com/nvsentinel-state"
+
+# Helm global.dryRun is one switch; fault-remediation's args are enough.
+# Sets: NVSENTINEL_DRY_RUN
+discover_dry_run() {
+    local args
+
+    # Name is release-prefixed; an unread deployment must not look like live.
+    if ! args=$(kubectl get deployment -n nvsentinel -l app.kubernetes.io/name=fault-remediation \
+        -o jsonpath='{.items[*].spec.template.spec.containers[*].args}') || [[ -z "$args" ]]; then
+        error "Failed to read the fault-remediation deployment to determine whether NVSentinel runs in dry-run mode"
+    fi
+
+    if [[ "$args" == *'"--dry-run"'* || "$args" == *"--dry-run=true"* ]]; then
+        NVSENTINEL_DRY_RUN=true
+    else
+        NVSENTINEL_DRY_RUN=false
+    fi
+
+    log "NVSentinel dry-run mode: $NVSENTINEL_DRY_RUN"
+}
+
+# Dry-run does not reboot. After Test 1 we restart the node-local DCGM
+# hostengine (clears the injected XID) and strip FQ/FR node metadata (FQ will
+# not remove the state label in dry-run). Same strip on EXIT.
+UAT_CLEANUP_NODE=""
+
+reset_dry_run_node_state() {
+    local node=${1:-}
+
+    if [[ "${NVSENTINEL_DRY_RUN:-false}" != "true" || -z "$node" ]]; then
+        return 0
+    fi
+
+    local patch
+    patch=$(kubectl get node "$node" -o json | jq -c --arg label "$NVSENTINEL_STATE_LABEL" '
+        (.metadata.annotations // {} | keys
+            | map(select(startswith("quarantineHealthEvent") or . == "latestFaultRemediationState"))
+            | map({(.): null}) | add // {}) as $annotations
+        | {metadata: {annotations: $annotations, labels: {($label): null}}}')
+
+    kubectl patch node "$node" --type=merge -p "$patch" >/dev/null
+
+    # Drop NVSentinel conditions so a rerun cannot match leftover Gpu*Watch.
+    local conditions
+    conditions=$(kubectl get node "$node" -o json \
+        | jq -c '[.status.conditions[] | select((.reason // "") | test("IsHealthy$|IsNotHealthy$") | not)]')
+
+    kubectl patch node "$node" --subresource=status --type=merge \
+        -p "{\"status\":{\"conditions\":$conditions}}" >/dev/null
+
+    log "Cleared NVSentinel annotations and labels on $node"
+}
+
+cleanup_uat() {
+    if [[ -n "${NODE_POD:-}" ]]; then
+        delete_node_debug_pod
+    fi
+    recover_injected_dcgm "${UAT_CLEANUP_NODE:-}"
+    reset_dry_run_node_state "${UAT_CLEANUP_NODE:-}"
+}
+
 get_boot_id() {
     local node=$1
     local boot_id
@@ -127,7 +190,7 @@ verify_gpu_driver_pod_exists() {
 # are always injected from the gpu-health-monitor pod, against the same
 # engine address the monitor itself watches (its --dcgm-addr argument): the
 # pod-local embedded engine, the GPU Operator DCGM service (node-local via
-# internalTrafficPolicy: Local), or an external host engine. Set
+# internalTrafficPolicy: Local), or an external hostengine. Set
 # UAT_DCGM_HOST to override the dcgmi --host value.
 # Sets: GPU_HM_NS, GPU_HM_POD, DCGM_HOST
 discover_dcgm_target() {
@@ -148,6 +211,48 @@ discover_dcgm_target() {
     log "Using monitor pod for DCGM injection: $GPU_HM_NS/$GPU_HM_POD (dcgmi host: $DCGM_HOST)"
 }
 
+# Dry-run cannot reboot, so restart the process that owns the injected XID:
+# the monitor itself when --dcgm-addr is loopback (embedded-mode), otherwise
+# the node-local nvidia-dcgm pod (not the whole DaemonSet).
+recover_injected_dcgm() {
+    local node=${1:-}
+
+    if [[ "${NVSENTINEL_DRY_RUN:-false}" != "true" || -z "$node" || "${UAT_DCGM_RECOVERED:-}" == "true" ]]; then
+        return 0
+    fi
+
+    local ns name selector
+    if [[ "${DCGM_HOST:-}" == localhost* || "${DCGM_HOST:-}" == 127.0.0.1* ]]; then
+        ns=$GPU_HM_NS
+        name=$GPU_HM_POD
+        selector="app.kubernetes.io/name=gpu-health-monitor"
+    else
+        read -r ns name < <(kubectl get pods -A -l app=nvidia-dcgm -o json \
+            | jq -r --arg node "$node" '
+                .items[] | select(.spec.nodeName == $node)
+                | "\(.metadata.namespace) \(.metadata.name)"' | head -1)
+        selector="app=nvidia-dcgm"
+    fi
+
+    if [[ -z "${ns:-}" || -z "${name:-}" ]]; then
+        log "No DCGM hostengine pod on node $node to restart; injected DCGM state is unchanged"
+        return 0
+    fi
+
+    log "Restarting $ns/$name on node $node to drop the injected DCGM error"
+    # Failures here must not abort the EXIT trap: reset_dry_run_node_state
+    # still has to strip FQ/FR metadata even if hostengine did not come back.
+    if ! kubectl delete pod -n "$ns" "$name" --wait=true >/dev/null; then
+        log "WARN: Failed to delete $ns/$name; injected DCGM state may persist"
+        return 0
+    fi
+    if ! kubectl wait -n "$ns" --for=condition=Ready pod -l "$selector" \
+        --field-selector="spec.nodeName=$node" --timeout=180s >/dev/null; then
+        log "WARN: Replacement DCGM pod on node $node did not become Ready in 180s"
+    fi
+    UAT_DCGM_RECOVERED=true
+}
+
 # Privileged helper pod for node-level test operations (/dev/kmsg writes,
 # nvidia-smi queries) on the given node, from nvsentinel-debug-pod-template.yaml.
 # Sets: NODE_NS, NODE_POD
@@ -155,9 +260,10 @@ create_node_debug_pod() {
     local node=$1
 
     NODE_NS=nvsentinel
-    NODE_POD=$(sed "s|NODE_NAME|$node|" "${SCRIPT_DIR}/nvsentinel-debug-pod-template.yaml" \
+
+    NODE_POD=$(sed -e "s|NODE_NAME|$node|" \
+        "${SCRIPT_DIR}/nvsentinel-debug-pod-template.yaml" \
         | kubectl create -f - -o jsonpath='{.metadata.name}')
-    trap 'delete_node_debug_pod' EXIT
 
     if ! kubectl wait --for=condition=Ready pod -n "$NODE_NS" "$NODE_POD" --timeout=120s >/dev/null; then
         error "Debug pod $NODE_NS/$NODE_POD did not become Ready on node $node"
@@ -166,25 +272,31 @@ create_node_debug_pod() {
 }
 
 delete_node_debug_pod() {
+    if [[ -z "${NODE_POD:-}" ]]; then
+        return 0
+    fi
     kubectl delete pod -n "${NODE_NS:-nvsentinel}" "$NODE_POD" --ignore-not-found --wait=false >/dev/null
-    trap - EXIT
     log "Node debug pod deleted"
+    NODE_POD=""
 }
 
 
+# Optional error code so two injections that share a condition (e.g. SXID
+# 28002 then 20034) are not confused with each other.
 wait_for_node_condition() {
     local node=$1
     local condition_type=$2
+    local error_code=${3:-}
     local timeout=${UAT_CONDITION_TIMEOUT:-60}
     local elapsed=0
 
-    log "Waiting for node condition '$condition_type' to appear on node $node..."
+    log "Waiting for node condition '$condition_type'${error_code:+ (ErrorCode:$error_code)} to appear on node $node..."
 
     while [[ $elapsed -lt $timeout ]]; do
-        local condition_status
-        condition_status=$(kubectl get node "$node" -o json | jq -r ".status.conditions[] | select(.type == \"$condition_type\" and .status == \"True\") | .type")
+        local message
+        message=$(kubectl get node "$node" -o json | jq -r ".status.conditions[] | select(.type == \"$condition_type\" and .status == \"True\") | .message")
 
-        if [[ -n "$condition_status" ]]; then
+        if [[ -n "$message" && ( -z "$error_code" || "$message" == *"ErrorCode:$error_code"* ) ]]; then
             log "Node condition '$condition_type' found ✓"
             kubectl get node "$node" -o json | jq -r ".status.conditions[] | select(.type == \"$condition_type\") | \"  Status=\(.status) Reason=\(.reason)\""
             return 0
@@ -227,10 +339,44 @@ wait_for_any_node_condition() {
 }
 
 
+# Dry-run does not cordon; the annotation is the quarantine decision.
+wait_for_dry_run_quarantine_annotation() {
+    local node=$1
+    local timeout=${UAT_QUARANTINE_TIMEOUT:-120}
+    local elapsed=0
+
+    log "fault-quarantine is in dry-run, waiting for the quarantine decision on node $node..."
+
+    while [[ $elapsed -lt $timeout ]]; do
+        local annotations
+        annotations=$(kubectl get node "$node" -o json | jq -r '.metadata.annotations // {}')
+
+        local event_count
+        event_count=$(echo "$annotations" | jq -r '.quarantineHealthEvent // "[]"' | jq 'length' || true)
+
+        if [[ "${event_count:-0}" -gt 0 ]]; then
+            log "Node $node has the dry-run quarantine event annotation ✓"
+            echo "$annotations" | jq -r '.quarantineHealthEvent' \
+                | jq -r '.[] | "  checkName=\(.checkName) isFatal=\(.isFatal) nodeName=\(.nodeName)"'
+            return 0
+        fi
+
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    error "Timeout waiting for the quarantine decision on node $node: fault-quarantine is in dry-run, so it cordons nothing, but must still set quarantineHealthEvent"
+}
+
 wait_for_node_quarantine() {
     local node=$1
     local timeout=${UAT_QUARANTINE_TIMEOUT:-120}
     local elapsed=0
+
+    if [[ "${NVSENTINEL_DRY_RUN:-false}" == "true" ]]; then
+        wait_for_dry_run_quarantine_annotation "$node"
+        return 0
+    fi
 
     log "Waiting for node $node to be quarantined (cordoned)..."
 
@@ -255,6 +401,12 @@ wait_for_node_unquarantine() {
     local timeout=${UAT_UNQUARANTINE_TIMEOUT:-600}
     local elapsed=0
 
+    # Never cordoned in dry-run.
+    if [[ "${NVSENTINEL_DRY_RUN:-false}" == "true" ]]; then
+        log "fault-quarantine is in dry-run and never cordoned node $node, nothing to wait for"
+        return 0
+    fi
+
     log "Waiting for node $node to be uncordoned..."
     while [[ $elapsed -lt $timeout ]]; do
         local is_cordoned
@@ -277,12 +429,48 @@ wait_for_node_unquarantine() {
     error "Timeout waiting for node $node to be uncordoned"
 }
 
+# Dry-run creates no CR. remediation-succeeded is set after that skipped
+# create, so it is the last remediation signal.
+wait_for_dry_run_remediation_decision() {
+    local node=$1
+    local timeout=$2
+    local elapsed=0
+
+    log "fault-remediation is in dry-run, waiting for the remediation state on node $node..."
+
+    while [[ $elapsed -lt $timeout ]]; do
+        local state
+        state=$(kubectl get node "$node" -o json \
+            | jq -r --arg label "$NVSENTINEL_STATE_LABEL" '.metadata.labels[$label] // ""')
+
+        case "$state" in
+            remediation-succeeded)
+                log "fault-remediation completed on node $node with no custom resource created ✓"
+                return 0
+                ;;
+            remediation-failed)
+                error "fault-remediation gave up on node $node: $NVSENTINEL_STATE_LABEL=$state"
+                ;;
+        esac
+
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    error "Timeout waiting for fault-remediation to record a remediation state on node $node: in dry-run it creates no custom resource, but must still label the node"
+}
+
 wait_for_boot_id_change() {
     local node=$1
     local original_boot_id=$2
     local timeout=${UAT_REBOOT_TIMEOUT:-600}
     local elapsed=0
     local boot_id_changed=false
+
+    if [[ "${NVSENTINEL_DRY_RUN:-false}" == "true" ]]; then
+        wait_for_dry_run_remediation_decision "$node" "$timeout"
+        return 0
+    fi
 
     # Trim original boot ID for consistent comparison
     original_boot_id=$(echo "$original_boot_id" | tr -d '[:space:]')
@@ -326,6 +514,11 @@ wait_for_gpu_reset() {
     local timeout=${UAT_RESET_TIMEOUT:-600}
     local elapsed=0
     local matching_crd=""
+
+    if [[ "${NVSENTINEL_DRY_RUN:-false}" == "true" ]]; then
+        wait_for_dry_run_remediation_decision "$node" "$timeout"
+        return 0
+    fi
 
     log "Waiting for GPU reset for $uuid on $node (matching GPUReset CRD)..."
 
@@ -371,6 +564,11 @@ wait_for_gpu_reset() {
 verify_validation_request() {
     local node=$1
     local current_ts=$2
+
+    if [[ "${NVSENTINEL_DRY_RUN:-false}" == "true" ]]; then
+        log "fault-remediation is in dry-run, skipping ValidationRequest check"
+        return 0
+    fi
 
     local fault_quarantine_configmap
     fault_quarantine_configmap=$(kubectl get configmaps -n nvsentinel fault-quarantine -o jsonpath="{.data.config\.toml}")
@@ -430,6 +628,8 @@ test_gpu_monitoring_dcgm() {
     fi
 
     log "Selected GPU node: $gpu_node"
+    UAT_CLEANUP_NODE=$gpu_node
+    reset_dry_run_node_state "$gpu_node"
 
     verify_gpu_driver_pod_exists "$gpu_node"
 
@@ -483,16 +683,30 @@ test_gpu_monitoring_dcgm() {
 
     log "Waiting for node to reboot and recover..."
     wait_for_boot_id_change "$gpu_node" "$original_boot_id"
+    recover_injected_dcgm "$gpu_node"
+    reset_dry_run_node_state "$gpu_node"
 
     verify_validation_request "$gpu_node" "$current_ts"
 
     log "Test 1 PASSED ✓"
 }
 
+# Syslog faults only go healthy on a node boot-ID change. Dry-run never
+# reboots the node (DCGM XIDs are cleared by restarting nv-hostengine instead).
+skip_syslog_tests_in_dry_run() {
+    if [[ "${NVSENTINEL_DRY_RUN:-false}" == "true" ]]; then
+        log "Skipping syslog tests in dry-run (recovery needs a node reboot, not a pod restart)"
+        return 0
+    fi
+    return 1
+}
+
 test_xid_monitoring_syslog() {
     log "======================================================"
     log "Test 2: XID monitoring via syslog triggers RESTART_VM"
     log "======================================================"
+
+    skip_syslog_tests_in_dry_run && return 0
 
     local current_ts=$(date +%s)
 
@@ -514,7 +728,7 @@ test_xid_monitoring_syslog() {
     log "Injecting XID 79 via /dev/kmsg on pod: $NODE_NS/$NODE_POD"
     kubectl exec -n "$NODE_NS" "$NODE_POD" -- sh -c 'echo "<3>[6085126.134786] NVRM: Xid (PCI:0002:00:00): 79, pid=1582259, name=nvc:[driver], GPU has fallen off the bus." > /dev/kmsg'
 
-    wait_for_node_condition "$gpu_node" "SysLogsXIDError"
+    wait_for_node_condition "$gpu_node" "SysLogsXIDError" "79"
 
     wait_for_node_quarantine "$gpu_node"
 
@@ -532,6 +746,8 @@ test_xid_monitoring_syslog_gpu_reset() {
     log "=========================================================="
     log "Test 3: XID monitoring via syslog triggers COMPONENT_RESET"
     log "=========================================================="
+
+    skip_syslog_tests_in_dry_run && return 0
 
     local drainer_configmap
     drainer_configmap=$(kubectl get configmaps -n nvsentinel node-drainer -o jsonpath="{.data.config\.toml}")
@@ -576,7 +792,7 @@ test_xid_monitoring_syslog_gpu_reset() {
     log "Injecting XID 119 on GPU $uuid via /dev/kmsg on pod: $NODE_NS/$NODE_POD"
     kubectl exec -n "$NODE_NS" "$NODE_POD" -- sh -c "echo '<3>[6085126.134786] NVRM: Xid (PCI:$pci): 119, pid=1582259, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU1 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8).' > /dev/kmsg"
 
-    wait_for_node_condition "$gpu_node" "SysLogsXIDError"
+    wait_for_node_condition "$gpu_node" "SysLogsXIDError" "119"
 
     wait_for_node_quarantine "$gpu_node"
 
@@ -602,6 +818,8 @@ test_sxid_monitoring_syslog() {
     log "========================================="
     log "Test 4: SXID monitoring (NVSwitch errors)"
     log "========================================="
+
+    skip_syslog_tests_in_dry_run && return 0
 
     local gpu_node
     gpu_node=$(get_gpu_node_with_healthy_syslog_monitor)
@@ -675,7 +893,7 @@ test_sxid_monitoring_syslog() {
     log "  - SXID 20034 (Fatal): LTSSM Fault Up on Link $link_number"
     kubectl exec -n "$NODE_NS" "$NODE_POD" -- sh -c "echo '<3>[6085126.134786] nvidia-nvswitch3: SXid (PCI:${pci_id}): 20034, Fatal, Link ${link_number} LTSSM Fault Up' > /dev/kmsg"
 
-    wait_for_node_condition "$gpu_node" "SysLogsSXIDError"
+    wait_for_node_condition "$gpu_node" "SysLogsSXIDError" "20034"
 
     wait_for_node_quarantine "$gpu_node"
 
@@ -695,11 +913,15 @@ main() {
         error "Circuit breaker is TRIPPED, please reset it manually"
     fi
 
+    discover_dry_run
+    trap cleanup_uat EXIT
+
     test_gpu_monitoring_dcgm
 
-    # Wait for syslog-health-monitor to complete first initialization poll
-    log "Waiting for syslog-health-monitor to initialize (60s)..."
-    sleep 60
+    if [[ "${NVSENTINEL_DRY_RUN:-false}" != "true" ]]; then
+        log "Waiting for syslog-health-monitor to initialize (60s)..."
+        sleep 60
+    fi
 
     test_xid_monitoring_syslog
 
