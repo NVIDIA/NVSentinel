@@ -13,14 +13,18 @@
 // limitations under the License.
 
 // Package healthpub is the shared health-event publisher used by every
-// nvsentinel health monitor. It centralises the gRPC retry policy
-// against platform-connector and gates every send on the
-// platform-connector Unix socket being present, so events are never
-// queued in the retry loop with a stale GeneratedTimestamp.
+// nvsentinel health monitor. It has two modes, chosen by DialFromEnvOr.
 //
-// platform-connector removes the socket on shutdown and on startup
-// before binding (see platform-connectors/main.go), so file-presence
-// is a faithful proxy for "PC is up" on this node.
+// In socket mode (HEALTH_PUBLISH_TARGET unset) it centralises the gRPC retry
+// policy against the node-local platform-connector and gates every send on the
+// platform-connector Unix socket being present, so events are never queued in
+// the retry loop with a stale GeneratedTimestamp. platform-connector removes
+// the socket on shutdown and on startup before binding (see
+// platform-connectors/main.go), so file-presence is a faithful proxy for "PC
+// is up" on this node.
+//
+// In direct mode (HEALTH_PUBLISH_TARGET set) it publishes to the deployment
+// platform connector over TLS with a projected token: see direct.go.
 package healthpub
 
 import (
@@ -32,6 +36,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -77,13 +82,31 @@ type Publisher struct {
 	initialBackoff time.Duration
 	backoffFactor  float64
 	backoffJitter  float64
+
+	// direct, when non-nil, switches Publish to the direct mode: one send at
+	// a time to the deployment platform connector, retried within a window,
+	// with the socket gate skipped. Set via the direct option DialFromEnvOr
+	// returns.
+	direct *directState
+
+	// conn is the connection DialFromEnvOr dialed for this publisher, in
+	// either mode; Close closes it. Nil when the caller dialed itself.
+	conn io.Closer
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // Option configures a Publisher.
 type Option func(*Publisher)
 
-// WithRetryPolicy overrides the default backoff (5 / 2s / 1.5 / 0.1).
-// Primarily for tests; production should accept defaults.
+// WithRetryPolicy overrides the socket mode's default backoff (5 attempts /
+// 2s / 1.5 / 0.1). Primarily for tests; production should accept defaults.
+// The direct mode is not affected: its attempts are paced by the retry policy
+// on the connection DialFromEnvOr dials (see retryInterceptor) and end with
+// the batch's retry window, not with an attempt count. A factor below 1 would
+// shrink the delay towards zero and hammer the server for the remaining
+// attempts, so it keeps the default.
 func WithRetryPolicy(maxRetries int, initialBackoff time.Duration, factor, jitter float64) Option {
 	return func(p *Publisher) {
 		if maxRetries > 0 {
@@ -94,7 +117,7 @@ func WithRetryPolicy(maxRetries int, initialBackoff time.Duration, factor, jitte
 			p.initialBackoff = initialBackoff
 		}
 
-		if factor > 0 {
+		if factor >= 1 {
 			p.backoffFactor = factor
 		}
 
@@ -104,9 +127,16 @@ func WithRetryPolicy(maxRetries int, initialBackoff time.Duration, factor, jitte
 	}
 }
 
+// withOwnedConn hands the Publisher the connection DialFromEnvOr dialed for
+// it, so Close closes it in socket mode too.
+func withOwnedConn(conn io.Closer) Option {
+	return func(p *Publisher) { p.conn = conn }
+}
+
 // New constructs a Publisher. client must already be dialed. target is
 // the gRPC dial target; its unix-socket path drives the existence gate
-// (non-unix schemes bypass the gate). monitor is the Prometheus label.
+// (non-unix schemes bypass the gate). monitor is the Prometheus label. Nil
+// options are skipped.
 func New(client pb.PlatformConnectorClient, target, monitor string, opts ...Option) *Publisher {
 	p := &Publisher{
 		client:         client,
@@ -120,7 +150,15 @@ func New(client pb.PlatformConnectorClient, target, monitor string, opts ...Opti
 	p.socketPath = unixSocketPathFromTarget(target)
 
 	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+
 		opt(p)
+	}
+
+	if p.direct != nil {
+		p.direct.start(p)
 	}
 
 	return p
@@ -130,13 +168,63 @@ func New(client pb.PlatformConnectorClient, target, monitor string, opts ...Opti
 // targets. Exposed for tests.
 func (p *Publisher) SocketPath() string { return p.socketPath }
 
-// Publish sends a batch of health events. Returns nil on success,
-// ErrPlatformConnectorUnavailable when the unix socket is absent (no
-// retries, no cache mutation expected from caller), or any other error
-// after retries are exhausted.
+// Close shuts the publisher down. In direct mode it stops accepting new
+// batches and ends the Publish calls in progress (their callers get
+// ErrPublishDropped, metered under the shutdown drop reason). In either mode
+// it then closes the connection DialFromEnvOr dialed for it; a publisher built
+// around a connection the caller dialed leaves that connection to the caller.
+// It waits for nothing: a monitor ends its own publishing by cancelling the
+// context it publishes with, and Close runs after that. Idempotent.
+func (p *Publisher) Close() error {
+	p.closeOnce.Do(func() {
+		if p.direct != nil {
+			p.direct.stop()
+		}
+
+		if p.conn != nil {
+			if err := p.conn.Close(); err != nil {
+				p.closeErr = fmt.Errorf("closing platform connector connection: %w", err)
+			}
+		}
+	})
+
+	return p.closeErr
+}
+
+// WaitingOnServer reports whether a batch is pending in direct mode: a caller
+// blocked in Publish is then waiting for the deployment platform connector,
+// not hung, and a monitor's liveness check can stay green while this is true.
+// Every pending batch is resolved within its retry window, so the wait is
+// bounded. Always false in socket mode, where Publish never waits for a
+// window.
+func (p *Publisher) WaitingOnServer() bool {
+	return p.direct != nil && p.direct.waitingOnServer()
+}
+
+// Publish sends a batch of health events. In socket mode it returns nil on
+// success, ErrPlatformConnectorUnavailable when the unix socket is absent (no
+// retries, no cache mutation expected from caller), ErrPublishRejected when
+// the server refuses the batch for good, or any other error after retries are
+// exhausted. In direct mode it sends the batch itself, one batch at a time
+// across all callers, and waits for the outcome: nil once the server has
+// stored it, ErrPublishRejected when the server would refuse it on every
+// attempt (an oversize batch included), ErrPublishDropped when its retry
+// window ended, the publisher closed while it waited, or the caller's context
+// ended and the batch was withdrawn, or ErrPublisherClosed after Close. A
+// context that ends withdraws the batch at once, whether it was waiting for
+// the send slot or on the wire. In every case but nil no acknowledgement was
+// received and no further attempt will be made, so the caller must not record
+// the events as reported; it should re-emit them later, except a rejected
+// batch, which the server would refuse again (a duplicate is possible if an
+// attempt was cut or timed out after the server had stored the batch; the
+// server tolerates that).
 func (p *Publisher) Publish(ctx context.Context, events *pb.HealthEvents) error {
 	if events == nil || len(events.GetEvents()) == 0 {
 		return nil
+	}
+
+	if p.direct != nil {
+		return p.direct.publish(ctx, events)
 	}
 
 	if !p.socketPresent() {
@@ -193,6 +281,12 @@ func (p *Publisher) attemptSend(
 
 		slog.Error("Non-retryable error sending health events.",
 			"monitor", p.monitor, "error", sendErr)
+
+		if isPermanentRejection(sendErr) {
+			// The server would answer the same on every attempt; callers can
+			// tell this apart from a connector that is unavailable.
+			return false, fmt.Errorf("%w: %w", ErrPublishRejected, sendErr)
+		}
 
 		return false, fmt.Errorf("non-retryable error sending health events: %w", sendErr)
 	}
@@ -259,26 +353,8 @@ func isRetryable(err error) bool {
 	}
 
 	if s, ok := status.FromError(err); ok {
-		switch s.Code() {
-		case codes.Unavailable, codes.DeadlineExceeded:
+		if code := s.Code(); code == codes.Unavailable || code == codes.DeadlineExceeded {
 			return true
-		case codes.OK,
-			codes.Canceled,
-			codes.Unknown,
-			codes.InvalidArgument,
-			codes.NotFound,
-			codes.AlreadyExists,
-			codes.PermissionDenied,
-			codes.ResourceExhausted,
-			codes.FailedPrecondition,
-			codes.Aborted,
-			codes.OutOfRange,
-			codes.Unimplemented,
-			codes.Internal,
-			codes.DataLoss,
-			codes.Unauthenticated:
-			// Non-retryable gRPC codes; fall through to the
-			// connection-level checks below.
 		}
 	}
 
