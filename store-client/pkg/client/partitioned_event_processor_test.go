@@ -261,3 +261,44 @@ func TestPartitionedEventProcessor_TimeoutNotCheckpointed(t *testing.T) {
 		assert.NotEqual(t, "timeout-event", token, "timeout event must not be checkpointed")
 	}
 }
+
+func TestPartitionedEventProcessor_DiscardBufferedTasksOnCancellation(t *testing.T) {
+	// When context is canceled during shutdown, any buffered tasks in worker channels
+	// must be discarded without calling the handler or advancing the checkpoint.
+	event1 := newNodeTestEvent("event-1", "node-a")
+	event2 := newNodeTestEvent("event-2", "node-a")
+	event3 := newNodeTestEvent("event-3", "node-a")
+
+	watcher := newEventProcessorTestWatcher(event1, event2, event3)
+
+	processor := NewPartitionedEventProcessor(watcher, nil, EventProcessorConfig{
+		Workers:              1,
+		MarkProcessedOnError: true,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	processor.SetEventHandler(EventHandlerFunc(func(_ context.Context, e *model.HealthEventWithStatus) error {
+		if e.HealthEvent.Id == "event-1" {
+			// Cancel context while event 2 and 3 are buffered in the worker channel
+			cancel()
+
+			return nil
+		}
+
+		if e.HealthEvent.Id == "event-2" || e.HealthEvent.Id == "event-3" {
+			t.Errorf("Event %s should not have been executed after cancellation", e.HealthEvent.Id)
+		}
+
+		return nil
+	}))
+
+	_ = processor.Start(ctx)
+
+	// Neither event-2 nor event-3 should have been marked
+	for _, token := range watcher.markedTokens {
+		assert.NotEqual(t, "event-2", token)
+		assert.NotEqual(t, "event-3", token)
+	}
+}
+

@@ -182,6 +182,10 @@ func (p *PartitionedEventProcessor) processEvents(ctx context.Context) error {
 			if !ok {
 				slog.Info("Event channel closed, stopping processor")
 
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+
 				return nil
 			}
 
@@ -204,6 +208,15 @@ func (p *PartitionedEventProcessor) runWorker(ctx context.Context, id int, ch <-
 	slog.Debug("Starting worker goroutine", "workerID", id)
 
 	for task := range ch {
+		select {
+		case <-ctx.Done():
+			slog.Debug("Discarding uncheckpointed task during shutdown",
+				"workerID", id, "seq", task.seq)
+
+			continue
+		default:
+		}
+
 		if err := p.handleTask(ctx, task); err != nil {
 			slog.Error("Worker failed to handle task", "workerID", id, "seq", task.seq, "error", err)
 
