@@ -370,6 +370,30 @@ func TestConstructMongoClientOptions_NoTLS(t *testing.T) {
 	}
 }
 
+// TestConstructMongoClientOptions_MaxPoolSize pins the pool cap contract: a
+// configured MaxPoolSize must reach the driver options, and zero must leave
+// the option unset so the driver default (100) applies.
+func TestConstructMongoClientOptions_MaxPoolSize(t *testing.T) {
+	mongoConfig := MongoDBConfig{
+		URI:                      "mongodb://localhost:27017",
+		Database:                 "test",
+		Collection:               "test",
+		TotalPingTimeoutSeconds:  5,
+		TotalPingIntervalSeconds: 1,
+		MaxPoolSize:              8,
+	}
+
+	opts, err := constructMongoClientOptions(mongoConfig)
+	require.NoError(t, err)
+	require.NotNil(t, opts.MaxPoolSize, "configured pool size must be applied")
+	require.Equal(t, uint64(8), *opts.MaxPoolSize)
+
+	mongoConfig.MaxPoolSize = 0
+	opts, err = constructMongoClientOptions(mongoConfig)
+	require.NoError(t, err)
+	require.Nil(t, opts.MaxPoolSize, "zero must keep the driver default")
+}
+
 // TestConstructMongoClientOptions_BSONOptions_PreserveV1DecodeShape guards the two
 // driver v1 -> v2 decode behaviour changes this package depends on:
 //

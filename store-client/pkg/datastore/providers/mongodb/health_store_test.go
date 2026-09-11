@@ -66,6 +66,21 @@ func (m *MockDatabaseClient) InsertMany(ctx context.Context, documents []any) (*
 	return args.Get(0).(*client.InsertManyResult), args.Error(1)
 }
 
+func (m *MockDatabaseClient) InsertManyIdempotent(ctx context.Context, documents []any) (*client.InsertManyResult, error) {
+	args := m.Called(ctx, documents)
+	return args.Get(0).(*client.InsertManyResult), args.Error(1)
+}
+
+func (m *MockDatabaseClient) EnsureHealthEventIdempotencyIndex(ctx context.Context) error {
+	args := m.Called(ctx)
+	return args.Error(0)
+}
+
+func (m *MockDatabaseClient) VerifyHealthEventIdempotencyIndex(ctx context.Context) error {
+	args := m.Called(ctx)
+	return args.Error(0)
+}
+
 func (m *MockDatabaseClient) FindOne(ctx context.Context, filter any, options *client.FindOneOptions) (client.SingleResult, error) {
 	args := m.Called(ctx, filter, options)
 	return args.Get(0).(client.SingleResult), args.Error(1)

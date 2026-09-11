@@ -102,3 +102,24 @@ func TestNewPostgreSQLCompatibleConfig_PasswordWithExplicitCA_QuotesCAAndExclude
 		t.Errorf("expected explicit CA-only password authentication not to infer client certificates, got: %s", uri)
 	}
 }
+
+// TestNewDatabaseConfigFromEnv_AppName locks the seam the platform connector
+// write path depends on: APP_NAME must surface through GetAppName so the
+// MongoDB driver appName identifies the client (daemonset and deployment
+// platform connector alike) in currentOp and server logs.
+func TestNewDatabaseConfigFromEnv_AppName(t *testing.T) {
+	t.Setenv("DATASTORE_PROVIDER", "mongodb")
+	t.Setenv("MONGODB_URI", "mongodb://example.invalid:27017/")
+	t.Setenv("MONGODB_DATABASE_NAME", "testdb")
+	t.Setenv("MONGODB_COLLECTION_NAME", "HealthEvents")
+	t.Setenv("APP_NAME", "platform-connector-deployment")
+
+	cfg, err := NewDatabaseConfigFromEnvWithDefaults("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := cfg.GetAppName(); got != "platform-connector-deployment" {
+		t.Errorf("expected GetAppName to surface APP_NAME, got: %q", got)
+	}
+}
