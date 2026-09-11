@@ -21,48 +21,61 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLoadDatastoreConfigPoolOptions(t *testing.T) {
-	t.Run("max connections environment variable populates Options", func(t *testing.T) {
-		t.Setenv("DATASTORE_PROVIDER", string(ProviderMongoDB))
-		t.Setenv("DATASTORE_MAX_CONNECTIONS", "30")
+func TestLoadDatastoreConfig_MaxConnectionsEnv_PopulatesOptions(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider DataStoreProvider
+		env      string
+		wantSet  bool
+		want     string
+	}{
+		{name: "set value lands in the maxConnections option", provider: ProviderMongoDB, env: "30", wantSet: true, want: "30"},
+		{name: "unset leaves the option absent", provider: ProviderPostgreSQL, env: "", wantSet: false},
+	}
 
-		config, err := LoadDatastoreConfig()
-		require.NoError(t, err)
-		assert.Equal(t, "30", config.Options["maxConnections"])
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("DATASTORE_PROVIDER", string(tt.provider))
+			t.Setenv("DATASTORE_MAX_CONNECTIONS", tt.env)
 
-	t.Run("unset max connections leaves Options empty", func(t *testing.T) {
-		t.Setenv("DATASTORE_PROVIDER", string(ProviderPostgreSQL))
-		t.Setenv("DATASTORE_MAX_CONNECTIONS", "")
+			config, err := LoadDatastoreConfig()
+			require.NoError(t, err)
 
-		config, err := LoadDatastoreConfig()
-		require.NoError(t, err)
-		assert.NotContains(t, config.Options, "maxConnections")
-	})
+			got, set := config.Options["maxConnections"]
+			assert.Equal(t, tt.wantSet, set)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
 
-func TestMaxConnections(t *testing.T) {
-	t.Run("nothing configured means the provider default", func(t *testing.T) {
-		t.Setenv("DATASTORE_MAX_CONNECTIONS", "")
-		assert.Equal(t, 0, MaxConnections(nil))
-		assert.Equal(t, 0, MaxConnections(map[string]string{}))
-	})
+func TestMaxConnections_Precedence_OptionThenEnvironmentThenZero(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     string
+		options map[string]string
+		want    int
+	}{
+		{name: "nothing configured is zero, the provider default", env: "", options: nil, want: 0},
+		{name: "empty options and no environment is zero", env: "", options: map[string]string{}, want: 0},
+		{
+			name: "the option wins over the environment",
+			env:  "40", options: map[string]string{"maxConnections": "10"}, want: 10,
+		},
+		{name: "the environment is the fallback", env: "40", options: nil, want: 40},
+		{
+			name: "an invalid option falls through to the environment",
+			env:  "40", options: map[string]string{"maxConnections": "abc"}, want: 40,
+		},
+		{
+			name: "invalid values everywhere fall through to zero",
+			env:  "-5", options: map[string]string{"maxConnections": "0"}, want: 0,
+		},
+	}
 
-	t.Run("the option wins over the environment", func(t *testing.T) {
-		t.Setenv("DATASTORE_MAX_CONNECTIONS", "40")
-		assert.Equal(t, 10, MaxConnections(map[string]string{"maxConnections": "10"}))
-	})
-
-	t.Run("the environment is the fallback", func(t *testing.T) {
-		t.Setenv("DATASTORE_MAX_CONNECTIONS", "40")
-		assert.Equal(t, 40, MaxConnections(nil))
-	})
-
-	t.Run("invalid values fall through", func(t *testing.T) {
-		t.Setenv("DATASTORE_MAX_CONNECTIONS", "40")
-		assert.Equal(t, 40, MaxConnections(map[string]string{"maxConnections": "abc"}))
-
-		t.Setenv("DATASTORE_MAX_CONNECTIONS", "-5")
-		assert.Equal(t, 0, MaxConnections(map[string]string{"maxConnections": "0"}))
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("DATASTORE_MAX_CONNECTIONS", tt.env)
+			assert.Equal(t, tt.want, MaxConnections(tt.options))
+		})
+	}
 }

@@ -40,9 +40,6 @@ const (
 	healthEventIdempotencyKeyJSONPath = "{healthevent,metadata," +
 		datastore.HealthEventIdempotencyKeyMetadataField + "}"
 
-	// pqUniqueViolationCode is the SQLSTATE code for unique_violation.
-	pqUniqueViolationCode = "23505"
-
 	// dropIdempotencyIndexStatement removes a leftover INVALID build, or a
 	// mismatched definition, of the idempotency index without blocking
 	// writers. It must run outside a transaction block, like the CONCURRENTLY
@@ -52,8 +49,15 @@ const (
 )
 
 // InsertManyIdempotent inserts documents one at a time, in order, through
-// InsertManyIdempotentWith.
+// InsertManyIdempotentWith. The idempotency index lives on the health events
+// table, so a client configured for any other table is refused: there a
+// resend would be stored again and reported as new.
 func (c *PostgreSQLClient) InsertManyIdempotent(ctx context.Context, documents []any) (*InsertManyResult, error) {
+	if c.table != healthEventsTableName {
+		return nil, fmt.Errorf("idempotent inserts are defined for the %s table only, which carries the idempotency index; "+
+			"this client writes to %s", healthEventsTableName, c.table)
+	}
+
 	//nolint:gosec // G201: table name from config, values are parameterized
 	query := fmt.Sprintf("INSERT INTO %s (document) VALUES ($1) RETURNING id", c.table)
 
@@ -146,7 +150,7 @@ func ClassifyPostgresDocumentError(documentIndex int, err error) (datastore.Bulk
 
 	docErr := datastore.BulkDocumentError{DocumentIndex: documentIndex, Message: pqErr.Message}
 
-	if string(pqErr.Code) == pqUniqueViolationCode {
+	if pqErr.Code == pqerror.UniqueViolation {
 		docErr.IndexName = pqErr.Constraint
 		docErr.Duplicate = true
 	}

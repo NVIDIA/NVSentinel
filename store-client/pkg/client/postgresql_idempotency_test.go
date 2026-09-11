@@ -23,6 +23,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/lib/pq"
+	"github.com/lib/pq/pqerror"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -32,7 +33,7 @@ import (
 func TestClassifyPostgresDocumentError(t *testing.T) {
 	t.Run("unique violation is a duplicate with the constraint name", func(t *testing.T) {
 		pqErr := &pq.Error{
-			Code:       pqUniqueViolationCode,
+			Code:       pqerror.UniqueViolation,
 			Constraint: datastore.HealthEventIdempotencyIndexName,
 			Message:    "duplicate key value violates unique constraint",
 		}
@@ -46,7 +47,7 @@ func TestClassifyPostgresDocumentError(t *testing.T) {
 	})
 
 	t.Run("wrapped unique violation is classified", func(t *testing.T) {
-		pqErr := &pq.Error{Code: pqUniqueViolationCode, Constraint: "some_index"}
+		pqErr := &pq.Error{Code: pqerror.UniqueViolation, Constraint: "some_index"}
 		wrapped := fmt.Errorf("failed to insert document: %w", pqErr)
 
 		docErr, answered := ClassifyPostgresDocumentError(0, wrapped)
@@ -139,6 +140,18 @@ func TestPostgreSQLClientInsertManyIdempotent(t *testing.T) {
 
 	insertQuery := "INSERT INTO health_events (document) VALUES ($1) RETURNING id"
 
+	t.Run("a client for another table is refused before any insert", func(t *testing.T) {
+		db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+		require.NoError(t, err)
+		t.Cleanup(func() { db.Close() })
+
+		_, err = NewPostgreSQLClientFromDB(db, "maintenance_events").InsertManyIdempotent(context.Background(),
+			[]any{map[string]any{"a": 1}})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), healthEventsTableName, "the index lives on the health events table")
+		assert.NoError(t, mock.ExpectationsWereMet(), "nothing was sent to the database")
+	})
+
 	t.Run("empty input returns empty result", func(t *testing.T) {
 		client, _ := newClient(t)
 
@@ -162,7 +175,7 @@ func TestPostgreSQLClientInsertManyIdempotent(t *testing.T) {
 	t.Run("duplicate does not stop the remaining inserts", func(t *testing.T) {
 		client, mock := newClient(t)
 		mock.ExpectQuery(insertQuery).WillReturnError(&pq.Error{
-			Code:       pqUniqueViolationCode,
+			Code:       pqerror.UniqueViolation,
 			Constraint: datastore.HealthEventIdempotencyIndexName,
 			Message:    "duplicate key value violates unique constraint",
 		})
@@ -180,7 +193,7 @@ func TestPostgreSQLClientInsertManyIdempotent(t *testing.T) {
 		func(t *testing.T) {
 			client, mock := newClient(t)
 			mock.ExpectQuery(insertQuery).WillReturnError(&pq.Error{
-				Code:       pqUniqueViolationCode,
+				Code:       pqerror.UniqueViolation,
 				Constraint: datastore.HealthEventIdempotencyIndexName,
 			})
 			mock.ExpectQuery(insertQuery).WillReturnError(&pq.Error{Code: "23514", Message: "check constraint violated"})
@@ -219,7 +232,7 @@ func TestPostgreSQLClientInsertManyIdempotent(t *testing.T) {
 	t.Run("a duplicate on another unique index stops the insert", func(t *testing.T) {
 		client, mock := newClient(t)
 		mock.ExpectQuery(insertQuery).WillReturnError(&pq.Error{
-			Code:       pqUniqueViolationCode,
+			Code:       pqerror.UniqueViolation,
 			Constraint: "health_events_pkey",
 		})
 
