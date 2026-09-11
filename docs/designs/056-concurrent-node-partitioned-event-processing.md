@@ -86,7 +86,7 @@ ChangeStreamWatcher (Events channel)
    - Implements `client.EventProcessor`.
    - Manages $N$ worker goroutines and per-worker buffered channels.
    - Maps events to workers via `hash(nodeName) % N` using FNV-32a. Events without a node name route to worker 0.
-   - Enforces backpressure: when uncheckpointed in-flight events reach `MaxInFlight`, suspends reading from the watcher.
+   - Enforces backpressure: when uncheckpointed in-flight events reach `MaxInFlight`, suspends reading from the watcher. Note that `MaxInFlight` bounds registered in-flight events; upstream buffers (including the PostgreSQL watcher and adapter channels of up to 100 events each) and materialized payloads can also reside in memory.
    - Handles poison events vs transient errors: when `MarkProcessedOnError=true` (as in `health-events-analyzer`), only terminal poison errors (such as unmarshaling failures or document ID errors) are marked resolved in the tracker to prevent stream stalling. Transient conditions—specifically context cancellations (`context.Canceled`) and timeouts (`context.DeadlineExceeded`)—are never marked as completed, ensuring the low-water mark does not advance past them and that they are retried on pod restart rather than permanently lost.
    - Preserves checkpoint ordering: serializes watermark advancement and datastore writes under a checkpoint mutex, and retains unpersisted checkpoint tokens for shutdown retry.
 
@@ -107,7 +107,7 @@ ChangeStreamWatcher (Events channel)
 ### Positive
 - **Linear Throughput Scaling:** With $N$ workers, maximum throughput increases from ~57 events/s to $\approx N \times 57$ events/s (e.g., 16 workers yield ~900 events/s; 64 workers yield ~3,600 events/s).
 - **Zero Query Semantic Changes:** No database queries, rule configurations, or aggregation pipelines need modification.
-- **Contained Memory Usage:** `MaxInFlight` backpressure ensures heap growth is strictly bounded even during database latency spikes.
+- **Contained Memory Usage:** `MaxInFlight` backpressure bounds registered in-flight events during database latency spikes. Note that heap usage is not bounded by `MaxInFlight` alone; it also includes upstream datastore buffers (such as the PostgreSQL watcher and adapter channels buffering up to 100 events each) and variable-sized event payloads materialized prior to registration.
 
 ### Negative
 - **Increased Datastore Connection Concurrency:** $N$ concurrent workers make $N$ simultaneous aggregation queries. The database connection pool must support this concurrency.
