@@ -161,6 +161,8 @@ Each provider plugin selects the canonical gRPC code and `failure_class` from it
 
 A plugin marks an error transient only when repetition is safe. It uses stable SDK classifiers and provider error codes when available. It can use a narrow message predicate only when no stable field exists. All other errors are permanent for automatic retry. No downstream component parses provider messages.
 
+For example, a `RebootNode` readiness success produces `Succeeded`. A safe transient rejection produces `TransientFailure`. Permanent or ambiguous submission errors produce `PermanentFailure`. A readiness timeout also produces `PermanentFailure` by default. A duplicate lock produces `Superseded`, and a missing target node produces `Cancelled`.
+
 ### Idempotency
 
 Create one stable operation ID for an equivalence group in one quarantine session. Persist it in the node remediation-state annotation and copy it to every maintenance CR created for that operation.
@@ -206,21 +208,44 @@ AttemptComplete=True, reason=Cancelled
 
 An attempt limit includes the first maintenance CR. A limit of three permits the first attempt and two later attempts.
 
-### Terminal path classification
+### Retry execution policy
 
-Use these classifications for `RebootNode`:
+The failure classification decides whether Fault Remediation can retry. The retry policy decides when it retries and when it stops.
 
-- A successful readiness check produces `Succeeded`.
-- A permanent signal-submission error produces `PermanentFailure`.
-- An explicit transient rejection produces `TransientFailure` after the same-CR retry deadline.
-- An ambiguous signal-submission result produces `PermanentFailure`.
-- A readiness timeout after an accepted reboot produces `PermanentFailure` by default.
-- Repeated readiness-check transport failures produce `PermanentFailure` when the reboot deadline expires.
-- A duplicate lock holder produces `Superseded` and identifies the active CR.
-- Manual mode remains nonterminal until the external actor reports an outcome.
-- A missing target node produces `Cancelled` and cannot trigger a new destructive request.
+The first attempt starts immediately. After attempt `k` returns `TransientFailure`, Fault Remediation calculates this backoff cap:
 
-### Attempt state and policy
+```text
+min(maxBackoff, initialBackoff * 2^(k-1))
+```
+
+Fault Remediation uses full jitter and selects the actual delay between zero and the cap. It persists the resulting `NextAttemptAt` value before it schedules another attempt. A controller restart must not reset the delay.
+
+The CSP plugin can use its provider SDK retry policy inside one RPC. That policy must be bounded by the RPC context, reuse the operation ID, and honor a provider retry delay when the SDK supports one.
+
+Fault Remediation checks `maxAttempts` before it reserves a new CR. When `AttemptCount` equals `maxAttempts`, it:
+
+1. Does not create another maintenance CR.
+2. Persists `TerminalReason=AttemptsExhausted` in the v2 state.
+3. Marks the health event terminal with remediation unsuccessful.
+4. Marks the node remediation state failed and keeps the node quarantined.
+5. Emits a structured log, metric, and Kubernetes event.
+
+No automatic retry occurs again in the same quarantine session. An operator must resolve the node condition before a new session can start.
+
+For example, this policy allows three attempts:
+
+```yaml
+maintenance:
+  retryPolicies:
+    restart:
+      maxAttempts: 3
+      initialBackoffSeconds: 30
+      maxBackoffSeconds: 600
+```
+
+Attempt 1 starts immediately. A transient failure waits up to 30 seconds before attempt 2. Another transient failure waits up to 60 seconds before attempt 3. A transient failure from attempt 3 produces `AttemptsExhausted`; attempt 4 is not created.
+
+### Persisted attempt state and configuration
 
 Create a versioned `remediation-state-v2` node annotation. Do not add safety fields to the existing typed annotation because an old writer drops unknown JSON fields.
 
@@ -231,7 +256,9 @@ Store these fields in each v2 equivalence-group entry:
 - `OperationID`: supplies the cross-attempt idempotency key.
 - `AttemptCount`: counts attempts that were reserved.
 - `PendingAttempt`: records the reserved attempt number and deterministic CR name.
+- `NextAttemptAt`: preserves the backoff deadline across restarts.
 - `LastOutcome`: preserves terminal outcome after CR deletion.
+- `TerminalReason`: records why the session stopped.
 
 Treat malformed or unsupported annotation state as an error. Fault Remediation must stop instead of returning an empty state.
 
@@ -248,6 +275,8 @@ maintenance:
   retryPolicies:
     restart:
       maxAttempts: 3
+      initialBackoffSeconds: 30
+      maxBackoffSeconds: 600
   actions:
     RESTART_VM:
       completeConditionType: NodeReady
