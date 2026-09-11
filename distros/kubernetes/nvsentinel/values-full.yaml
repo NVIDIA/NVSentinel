@@ -722,7 +722,13 @@ node-drainer:
   # Default: false if not specified
   drainGPUPods: false
 
-  # Namespace-specific eviction strategies
+  # Pod-label eviction strategies, evaluated in order; the first matching policy wins.
+  # Set userNamespaces: [] before adding policies; both lists cannot be non-empty.
+  # Unmatched pods are outside the drain scope. Cannot be combined with customDrain.
+  # See docs/configuration/node-drainer.md#pod-drain-policies for examples.
+  podDrainPolicies: []
+
+  # Namespace-specific eviction strategies (alternative to podDrainPolicies)
   # Define how pods in different namespaces should be evicted
   # Multiple rules can be defined with namespace patterns
   userNamespaces:
