@@ -17,12 +17,12 @@ package healthpub
 import (
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/retry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
 
@@ -63,37 +63,28 @@ const (
 	// leaves room for both, and for a MongoDB primary election.
 	defaultRPCTimeout = 30 * time.Second
 
-	// defaultMaxSendBytes matches the gRPC server's default receive limit (4
-	// MiB): a batch over it would be rejected by the server on every retry, so
-	// the client refuses it before the first attempt as rejected.
-	defaultMaxSendBytes = 4194304
-
-	// defaultFinalAttemptWindow is the least time the last attempt of a batch
-	// gets: the last backoff sleep is cut so that attempt starts this long
-	// before the retry window ends, and a batch with less than this left after
-	// a failure is dropped rather than attempted with no time to succeed.
-	defaultFinalAttemptWindow = time.Second
+	// maxRetryBackoff caps the pause between a batch's attempts. The pause
+	// starts at defaultInitialBackoff and doubles after every failure, with
+	// defaultBackoffJitter of jitter, until it reaches the cap.
+	maxRetryBackoff = 30 * time.Second
 )
 
 // DialFromEnvOr decides the publishing mode from the HEALTH_PUBLISH_*
-// environment in one call.
+// environment in one call and returns the connection, a client on it and the
+// Option that hands the connection to the Publisher, which closes it in Close.
 //
-// With HEALTH_PUBLISH_TARGET unset (socket mode) it runs fallback — the
-// caller's legacy node-local dial, unchanged — and returns its connection
-// wrapped in a client with a nil directOpt. New skips nil options, so call
-// sites pass the returned values straight through in both modes.
+// With HEALTH_PUBLISH_TARGET unset (socket mode) it runs fallback, the
+// caller's legacy node-local dial, unchanged.
 //
 // With HEALTH_PUBLISH_TARGET set (direct mode) it validates the direct-mode
 // tuning environment (the retry window, so a misconfigured value fails at
-// startup instead of being silently defaulted later), dials the
-// deployment platform connector with TLS verified against
-// HEALTH_PUBLISH_TLS_CA_FILE (plaintext only with HEALTH_PUBLISH_INSECURE=true)
-// and bearer-token authentication from HEALTH_PUBLISH_TOKEN_PATH, and returns
-// a non-nil directOpt carrying the validated tuning and the conn. Passing
-// directOpt to New hands the conn's lifecycle to the Publisher (Close closes
-// it).
+// startup instead of being silently defaulted later), dials the deployment
+// platform connector with TLS verified against HEALTH_PUBLISH_TLS_CA_FILE
+// (plaintext only with HEALTH_PUBLISH_INSECURE=true) and bearer-token
+// authentication from HEALTH_PUBLISH_TOKEN_PATH, and the Option also switches
+// the Publisher to direct mode with the validated tuning.
 func DialFromEnvOr(fallback func() (*grpc.ClientConn, error)) (
-	conn *grpc.ClientConn, client pb.PlatformConnectorClient, directOpt Option, err error,
+	conn *grpc.ClientConn, client pb.PlatformConnectorClient, opt Option, err error,
 ) {
 	target := os.Getenv(envTarget)
 	if target == "" {
@@ -102,7 +93,7 @@ func DialFromEnvOr(fallback func() (*grpc.ClientConn, error)) (
 			return nil, nil, nil, fmt.Errorf("legacy platform-connector dial failed: %w", err)
 		}
 
-		return conn, pb.NewPlatformConnectorClient(conn), nil, nil
+		return conn, pb.NewPlatformConnectorClient(conn), withOwnedConn(conn), nil
 	}
 
 	tune, err := directTuningFromEnv()
@@ -118,7 +109,7 @@ func DialFromEnvOr(fallback func() (*grpc.ClientConn, error)) (
 			envTokenPath, envTarget)
 	}
 
-	conn, err = dialDirectFromEnv(target, tokenPath)
+	conn, err = dialDirectFromEnv(target, tokenPath, tune)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -132,9 +123,10 @@ func DialFromEnvOr(fallback func() (*grpc.ClientConn, error)) (
 }
 
 // dialDirectFromEnv creates a direct-mode client connection to target using
-// the HEALTH_PUBLISH_* transport environment and the token at tokenPath.
-func dialDirectFromEnv(target, tokenPath string) (*grpc.ClientConn, error) {
-	opts, err := directDialOptionsFromEnv(target, tokenPath)
+// the HEALTH_PUBLISH_* transport environment, the token at tokenPath and the
+// retry policy from tune.
+func dialDirectFromEnv(target, tokenPath string, tune directTuning) (*grpc.ClientConn, error) {
+	opts, err := directDialOptionsFromEnv(target, tokenPath, tune)
 	if err != nil {
 		return nil, err
 	}
@@ -149,9 +141,11 @@ func dialDirectFromEnv(target, tokenPath string) (*grpc.ClientConn, error) {
 
 // directDialOptionsFromEnv builds the dial options for a direct connection:
 // TLS from the CA file (with the per-handshake reload), the pinned ServerName
-// (override or the target host), bearer-token authentication, and a send-size
-// cap matching the server's default receive limit.
-func directDialOptionsFromEnv(target, tokenPath string) ([]grpc.DialOption, error) {
+// (override or the target host), the retry policy every RPC on the connection
+// runs under, and bearer-token authentication inside it, so every attempt
+// re-reads the projected token file and a token the kubelet rotated during a
+// call's retry window is picked up by the next attempt.
+func directDialOptionsFromEnv(target, tokenPath string, tune directTuning) ([]grpc.DialOption, error) {
 	allowInsecure := false
 
 	if raw := os.Getenv(envInsecure); raw != "" {
@@ -171,16 +165,10 @@ func directDialOptionsFromEnv(target, tokenPath string) ([]grpc.DialOption, erro
 	}
 
 	// The server certificate is verified against this name; with none the
-	// hostname check would be skipped, and with a name that is not a host
-	// (a resolver form such as "dns:host:port" left intact) every handshake
-	// would fail. Both need the explicit override.
+	// host name check would be skipped, so a target the name cannot be derived
+	// from needs the explicit override.
 	if caFile != "" && serverName == "" {
 		return nil, fmt.Errorf("cannot derive a TLS server name from %s %q; set %s", envTarget, target, envTLSServerName)
-	}
-
-	if caFile != "" && net.ParseIP(serverName) == nil && strings.ContainsAny(serverName, ":/") {
-		return nil, fmt.Errorf("TLS server name %q derived from %s %q is not a host name; set %s",
-			serverName, envTarget, target, envTLSServerName)
 	}
 
 	creds, err := buildTransportCredentials(caFile, serverName, allowInsecure)
@@ -188,14 +176,13 @@ func directDialOptionsFromEnv(target, tokenPath string) ([]grpc.DialOption, erro
 		return nil, err
 	}
 
-	opts := []grpc.DialOption{
+	// Chained interceptors run in order, so the token interceptor runs once
+	// per attempt, inside the retries.
+	return []grpc.DialOption{
 		grpc.WithTransportCredentials(creds),
 		grpc.WithConnectParams(directConnectParams()),
-		grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(defaultMaxSendBytes)),
-	}
-	opts = append(opts, grpcclient.DialOptions(tokenPath)...)
-
-	return opts, nil
+		grpc.WithChainUnaryInterceptor(retryInterceptor(tune), grpcclient.TokenInterceptor(tokenPath)),
+	}, nil
 }
 
 // maxReconnectDelay caps the pause between the channel's attempts to reconnect
@@ -219,28 +206,51 @@ func directConnectParams() grpc.ConnectParams {
 	return grpc.ConnectParams{Backoff: cfg, MinConnectTimeout: directConnectMinTimeout}
 }
 
-// directTuning carries the direct-mode retry configuration.
+// retryAttemptLimit is the attempt count the retry interceptor requires. A
+// batch's retries end with its retry window, which publish sets as the call's
+// deadline, so the count only has to stay out of reach at the production pace
+// of at least about two seconds between attempts. It still bounds a call made
+// without a deadline, which no caller of this connection makes.
+const retryAttemptLimit = 10_000
+
+// retryInterceptor is the retry policy of every direct-mode RPC, installed on
+// the connection: a failed attempt is repeated after a jittered exponential
+// pause (tune.backoffInitial, doubling up to tune.backoffMax), each attempt
+// bounded by tune.rpcTimeout, until the call's deadline ends the retries.
+// Rejections the server would repeat on every attempt are not retried. The
+// per-call option publish adds meters and logs the retries.
+func retryInterceptor(tune directTuning) grpc.UnaryClientInterceptor {
+	return retry.UnaryClientInterceptor(
+		retry.WithMax(retryAttemptLimit),
+		retry.WithBackoff(retry.BackoffExponentialWithJitterBounded(
+			tune.backoffInitial, tune.backoffJitter, tune.backoffMax)),
+		retry.WithPerRetryTimeout(tune.rpcTimeout),
+		retry.WithRetriable(retriable),
+	)
+}
+
+// directTuning carries the direct-mode retry configuration: the window a
+// batch may spend, the bound of one attempt and the pacing between attempts.
 type directTuning struct {
 	retryWindow time.Duration
 	rpcTimeout  time.Duration
-	// maxMessageBytes is the largest batch accepted: the server's receive
-	// limit, checked before the first attempt so an oversize batch is refused
-	// at once instead of failing on the wire. Zero disables the check.
-	maxMessageBytes int64
-	// finalAttemptWindow is the least time the last attempt of a batch gets
-	// before its retry window ends; see defaultFinalAttemptWindow.
-	finalAttemptWindow time.Duration
+	// backoffInitial is the pause after the first failed attempt; it doubles
+	// after every further failure, jittered by the backoffJitter fraction, up
+	// to backoffMax.
+	backoffInitial time.Duration
+	backoffMax     time.Duration
+	backoffJitter  float64
 }
 
 // defaultDirectTuning returns the contract defaults: a 5 minute retry window
-// whose last attempt starts a second before it ends, and the 4 MiB message
-// limit.
+// and 30 second attempts paced from 2 seconds up to 30 seconds apart.
 func defaultDirectTuning() directTuning {
 	return directTuning{
-		retryWindow:        defaultRetryWindow,
-		rpcTimeout:         defaultRPCTimeout,
-		maxMessageBytes:    defaultMaxSendBytes,
-		finalAttemptWindow: defaultFinalAttemptWindow,
+		retryWindow:    defaultRetryWindow,
+		rpcTimeout:     defaultRPCTimeout,
+		backoffInitial: defaultInitialBackoff,
+		backoffMax:     maxRetryBackoff,
+		backoffJitter:  defaultBackoffJitter,
 	}
 }
 
@@ -256,11 +266,6 @@ func directTuningFromEnv() (directTuning, error) {
 		}
 
 		tune.retryWindow = window
-	}
-
-	if tune.retryWindow <= tune.finalAttemptWindow {
-		return tune, fmt.Errorf("invalid %s value %s: must exceed the %s final-attempt window, or no retry could ever run",
-			envRetryWindow, tune.retryWindow, tune.finalAttemptWindow)
 	}
 
 	return tune, nil

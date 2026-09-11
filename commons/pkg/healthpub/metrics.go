@@ -56,7 +56,8 @@ var (
 	sendsError = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "nvsentinel_health_events_publisher_sends_error_total",
-			Help: "Total failed health-event sends after retries exhausted (excluding socket-missing skips).",
+			Help: "Socket-path health-event sends that failed after retries were exhausted " +
+				"(excluding socket-missing skips); the direct path meters drops instead",
 		},
 		[]string{labelMonitor, "code"},
 	)

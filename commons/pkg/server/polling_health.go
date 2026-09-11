@@ -53,8 +53,8 @@ type PollingHealthChecker struct {
 	// Defaults to monoNow; overridden in tests for determinism.
 	clock func() int64
 	// waiting, when set, reports that the loop is blocked on a dependency it
-	// legitimately waits for; see AllowWaitingOn.
-	waiting atomic.Pointer[func() bool]
+	// legitimately waits for; see AllowWaitingOn. Set once, before serving.
+	waiting func() bool
 }
 
 func monoNow() int64 {
@@ -85,16 +85,17 @@ func (h *PollingHealthChecker) MarkAlive() {
 // the deployment platform connector to store a batch. While it returns true
 // the checker reports healthy even if MarkAlive has not been called: the
 // loop is waiting, not hung. The function must bound its own answer, or a
-// hung dependency would hide behind it.
+// hung dependency would hide behind it. Call it before the server starts
+// serving; the field is not synchronised.
 func (h *PollingHealthChecker) AllowWaitingOn(waiting func() bool) {
-	h.waiting.Store(&waiting)
+	h.waiting = waiting
 }
 
 // Healthy implements HealthChecker. It returns nil if MarkAlive was
 // called within the staleness threshold, or the loop is known to be waiting
 // on a dependency, or an error otherwise.
 func (h *PollingHealthChecker) Healthy(_ context.Context) error {
-	if waiting := h.waiting.Load(); waiting != nil && (*waiting)() {
+	if h.waiting != nil && h.waiting() {
 		return nil
 	}
 

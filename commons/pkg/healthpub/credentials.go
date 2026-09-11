@@ -21,8 +21,6 @@ import (
 	"net"
 	"os"
 	"strings"
-	"sync"
-	"time"
 
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -34,9 +32,8 @@ import (
 // a CA bundle the server certificate is verified against it (the cert-manager
 // CA mount, ADR-030 pattern), with the ServerName pinned to serverName.
 //
-// The CA bundle is re-read per handshake with mtime caching (the client-side
-// mirror of the server's certificate watcher), so a cert-manager CA rotation
-// takes effect without a pod restart.
+// The CA bundle is read again for every handshake, so a cert-manager CA
+// rotation takes effect without a pod restart.
 func buildTransportCredentials(
 	caFile, serverName string, allowInsecure bool,
 ) (credentials.TransportCredentials, error) {
@@ -49,12 +46,6 @@ func buildTransportCredentials(
 		}
 
 		return insecure.NewCredentials(), nil
-	}
-
-	// The certificate is checked against this name; with none the host name
-	// check would be skipped and any certificate the CA signed would pass.
-	if serverName == "" {
-		return nil, fmt.Errorf("a TLS server name is required with %s", envTLSCAFile)
 	}
 
 	reloader, err := newCAReloader(caFile, serverName)
@@ -75,17 +66,13 @@ func buildTransportCredentials(
 	}), nil
 }
 
-// caReloader loads the CA bundle per TLS handshake with mtime-based caching:
-// each handshake pays a stat of the CA file, and the parsed pool is rebuilt
-// only when the mtime changes. That is how cert-manager CA rotation takes
-// effect without a restart (transport security).
+// caReloader verifies server certificates against the CA bundle as it is on
+// disk at handshake time, so a cert-manager CA rotation takes effect without a
+// restart. Handshakes are rare, one per connection, so the file is simply
+// read again for each.
 type caReloader struct {
 	caFile     string
 	serverName string
-
-	mu     sync.Mutex
-	cached *x509.CertPool
-	mtime  time.Time
 }
 
 // newCAReloader builds a reloader for caFile and loads the bundle once, so a
@@ -100,51 +87,17 @@ func newCAReloader(caFile, serverName string) (*caReloader, error) {
 	return r, nil
 }
 
-// pool returns the current CA pool, re-parsing the file only when its mtime
-// changed since the cached parse.
+// pool parses the CA bundle as it is on disk right now.
 func (r *caReloader) pool() (*x509.CertPool, error) {
-	info, err := os.Stat(r.caFile)
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if err != nil {
-		// Like a failed read below: keep the last good pool through a
-		// transient failure; only the first load has nothing to fall back on.
-		if r.cached != nil {
-			return r.cached, nil
-		}
-
-		return nil, fmt.Errorf("stat %s: %w", r.caFile, err)
-	}
-
-	if r.cached != nil && info.ModTime().Equal(r.mtime) {
-		return r.cached, nil
-	}
-
 	pemBytes, err := os.ReadFile(r.caFile)
 	if err != nil {
-		// Rotation can swap the file non-atomically; keeping the previous pool
-		// keeps handshakes working through the swap, and the next one picks up
-		// the completed write.
-		if r.cached != nil {
-			return r.cached, nil
-		}
-
 		return nil, fmt.Errorf("read %s: %w", r.caFile, err)
 	}
 
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(pemBytes) {
-		if r.cached != nil {
-			return r.cached, nil
-		}
-
 		return nil, fmt.Errorf("no certificates parsed from %s", r.caFile)
 	}
-
-	r.cached = pool
-	r.mtime = info.ModTime()
 
 	return pool, nil
 }

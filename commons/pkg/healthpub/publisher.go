@@ -36,6 +36,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -87,18 +88,25 @@ type Publisher struct {
 	// with the socket gate skipped. Set via the direct option DialFromEnvOr
 	// returns.
 	direct *directState
+
+	// conn is the connection DialFromEnvOr dialed for this publisher, in
+	// either mode; Close closes it. Nil when the caller dialed itself.
+	conn io.Closer
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // Option configures a Publisher.
 type Option func(*Publisher)
 
-// WithRetryPolicy overrides the default backoff (5 / 2s / 1.5 / 0.1).
-// Primarily for tests; production should accept defaults. maxRetries applies
-// to the socket mode only: the direct mode retries inside each batch's retry
-// window instead and ignores the attempt count, while initialBackoff, factor
-// and jitter pace both modes. A factor below 1 would shrink the delay towards
-// zero and hammer the server for the rest of the window, so it keeps the
-// default.
+// WithRetryPolicy overrides the socket mode's default backoff (5 attempts /
+// 2s / 1.5 / 0.1). Primarily for tests; production should accept defaults.
+// The direct mode is not affected: its attempts are paced by the retry policy
+// on the connection DialFromEnvOr dials (see retryInterceptor) and end with
+// the batch's retry window, not with an attempt count. A factor below 1 would
+// shrink the delay towards zero and hammer the server for the remaining
+// attempts, so it keeps the default.
 func WithRetryPolicy(maxRetries int, initialBackoff time.Duration, factor, jitter float64) Option {
 	return func(p *Publisher) {
 		if maxRetries > 0 {
@@ -119,11 +127,16 @@ func WithRetryPolicy(maxRetries int, initialBackoff time.Duration, factor, jitte
 	}
 }
 
+// withOwnedConn hands the Publisher the connection DialFromEnvOr dialed for
+// it, so Close closes it in socket mode too.
+func withOwnedConn(conn io.Closer) Option {
+	return func(p *Publisher) { p.conn = conn }
+}
+
 // New constructs a Publisher. client must already be dialed. target is
 // the gRPC dial target; its unix-socket path drives the existence gate
-// (non-unix schemes bypass the gate). monitor is the Prometheus label.
-// Nil options are skipped, so the Option DialFromEnvOr returns (nil in
-// socket mode) can be passed through unconditionally.
+// (non-unix schemes bypass the gate). monitor is the Prometheus label. Nil
+// options are skipped.
 func New(client pb.PlatformConnectorClient, target, monitor string, opts ...Option) *Publisher {
 	p := &Publisher{
 		client:         client,
@@ -156,56 +169,34 @@ func New(client pb.PlatformConnectorClient, target, monitor string, opts ...Opti
 func (p *Publisher) SocketPath() string { return p.socketPath }
 
 // Close shuts the publisher down. In direct mode it stops accepting new
-// batches, lets the Publish calls in progress finish until ctx is done, then
-// cancels them (metered under the shutdown drop reason) and closes the owned
-// connection. In socket mode it is a no-op: the caller owns that connection,
-// as today. Idempotent.
-func (p *Publisher) Close(ctx context.Context) error {
-	if p.direct == nil {
-		return nil
-	}
+// batches and ends the Publish calls in progress (their callers get
+// ErrPublishDropped, metered under the shutdown drop reason). In either mode
+// it then closes the connection DialFromEnvOr dialed for it; a publisher built
+// around a connection the caller dialed leaves that connection to the caller.
+// It waits for nothing: a monitor ends its own publishing by cancelling the
+// context it publishes with, and Close runs after that. Idempotent.
+func (p *Publisher) Close() error {
+	p.closeOnce.Do(func() {
+		if p.direct != nil {
+			p.direct.stop()
+		}
 
-	return p.direct.close(ctx)
+		if p.conn != nil {
+			if err := p.conn.Close(); err != nil {
+				p.closeErr = fmt.Errorf("closing platform connector connection: %w", err)
+			}
+		}
+	})
+
+	return p.closeErr
 }
 
-// CloseWithTimeout is Close bounded by a fresh timeout context, with the
-// error logged instead of returned. It exists for shutdown epilogues that
-// have nothing left to do with the error.
-func (p *Publisher) CloseWithTimeout(timeout time.Duration) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	if err := p.Close(ctx); err != nil {
-		slog.Warn("Error closing health event publisher.",
-			"monitor", p.monitor, "error", err)
-	}
-}
-
-// TimedCloser is what CloseWhenDone shuts down: a Publisher, or a monitor's
-// wrapper around one.
-type TimedCloser interface {
-	CloseWithTimeout(timeout time.Duration)
-}
-
-// CloseWhenDone runs closer.CloseWithTimeout(timeout) as soon as ctx ends, so
-// that a monitor's shutdown starts the publisher's bounded drain the moment
-// its root context is cancelled, not after its loops return. That matters
-// because an attempt already on the wire runs on the publisher's lifecycle,
-// not on the loop's context: a loop that first waits for a stalled server to
-// answer could spend the whole termination grace period there. Close is
-// idempotent, so the explicit close a main runs after its loops stays correct
-// for every other exit. The returned stop function releases the hook and
-// reports false once the hook has run.
-func CloseWhenDone(ctx context.Context, closer TimedCloser, timeout time.Duration) (stop func() bool) {
-	return context.AfterFunc(ctx, func() { closer.CloseWithTimeout(timeout) })
-}
-
-// WaitingOnServer reports whether a batch is pending in direct mode within
-// its retry window: a caller blocked in Publish is then waiting for the
-// deployment platform connector, not hung. A monitor's liveness check can
-// stay green while this is true. Every pending batch is resolved within its
-// window plus one attempt, so a wedged publisher cannot hide behind it.
-// Always false in socket mode, where Publish never waits for a window.
+// WaitingOnServer reports whether a batch is pending in direct mode: a caller
+// blocked in Publish is then waiting for the deployment platform connector,
+// not hung, and a monitor's liveness check can stay green while this is true.
+// Every pending batch is resolved within its retry window, so the wait is
+// bounded. Always false in socket mode, where Publish never waits for a
+// window.
 func (p *Publisher) WaitingOnServer() bool {
 	return p.direct != nil && p.direct.waitingOnServer()
 }
@@ -217,16 +208,16 @@ func (p *Publisher) WaitingOnServer() bool {
 // exhausted. In direct mode it sends the batch itself, one batch at a time
 // across all callers, and waits for the outcome: nil once the server has
 // stored it, ErrPublishRejected when the server would refuse it on every
-// attempt (or it exceeds the message limit), ErrPublishDropped when its retry
+// attempt (an oversize batch included), ErrPublishDropped when its retry
 // window ended, the publisher closed while it waited, or the caller's context
 // ended and the batch was withdrawn, or ErrPublisherClosed after Close. A
-// context that ends withdraws the batch: never sent if it was still waiting
-// for the send slot, or dropped after its attempt in flight unless that
-// attempt stored it, in which case Publish still returns nil. In every case
-// but nil no acknowledgement was received and no further attempt will be
-// made, so the caller must not record the events as reported and should
-// re-emit them (a duplicate is possible only if an attempt timed out after the
-// server had stored the batch; the server tolerates that).
+// context that ends withdraws the batch at once, whether it was waiting for
+// the send slot or on the wire. In every case but nil no acknowledgement was
+// received and no further attempt will be made, so the caller must not record
+// the events as reported; it should re-emit them later, except a rejected
+// batch, which the server would refuse again (a duplicate is possible if an
+// attempt was cut or timed out after the server had stored the batch; the
+// server tolerates that).
 func (p *Publisher) Publish(ctx context.Context, events *pb.HealthEvents) error {
 	if events == nil || len(events.GetEvents()) == 0 {
 		return nil
@@ -362,26 +353,8 @@ func isRetryable(err error) bool {
 	}
 
 	if s, ok := status.FromError(err); ok {
-		switch s.Code() {
-		case codes.Unavailable, codes.DeadlineExceeded:
+		if code := s.Code(); code == codes.Unavailable || code == codes.DeadlineExceeded {
 			return true
-		case codes.OK,
-			codes.Canceled,
-			codes.Unknown,
-			codes.InvalidArgument,
-			codes.NotFound,
-			codes.AlreadyExists,
-			codes.PermissionDenied,
-			codes.ResourceExhausted,
-			codes.FailedPrecondition,
-			codes.Aborted,
-			codes.OutOfRange,
-			codes.Unimplemented,
-			codes.Internal,
-			codes.DataLoss,
-			codes.Unauthenticated:
-			// Non-retryable gRPC codes; fall through to the
-			// connection-level checks below.
 		}
 	}
 

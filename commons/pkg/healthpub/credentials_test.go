@@ -145,10 +145,10 @@ func TestVerifyChain_Rejections(t *testing.T) {
 		"a handshake presenting no certificate must be rejected")
 }
 
-// TestCAReloader_RotationAndGarbageFallback: an mtime-bumped rewrite must
-// swap the trusted pool (CA-A out, CA-B in), and a later garbage overwrite
-// must keep serving the cached CA-B pool instead of failing handshakes.
-func TestCAReloader_RotationAndGarbageFallback(t *testing.T) {
+// TestCAReloader_ReadsTheBundlePerHandshake: a rewrite of the CA file swaps
+// the trusted pool (CA-A out, CA-B in) for the next handshake, and a garbage
+// overwrite fails the handshake instead of passing anything.
+func TestCAReloader_ReadsTheBundlePerHandshake(t *testing.T) {
 	caA := newTestCA(t, "healthpub-test-ca-a")
 	caB := newTestCA(t, "healthpub-test-ca-b")
 
@@ -164,14 +164,7 @@ func TestCAReloader_RotationAndGarbageFallback(t *testing.T) {
 	require.NoError(t, r.verifyChain(parseChain(t, leafA)))
 	require.Error(t, r.verifyChain(parseChain(t, leafB)))
 
-	// The mtime is bumped explicitly: coarse filesystem timestamps could
-	// otherwise make the rewrite invisible to the mtime cache.
-	info, err := os.Stat(caPath)
-	require.NoError(t, err)
-
 	caB.writePEM(t, caPath)
-	require.NoError(t, os.Chtimes(caPath,
-		info.ModTime().Add(time.Second), info.ModTime().Add(time.Second)))
 
 	assert.NoError(t, r.verifyChain(parseChain(t, leafB)),
 		"after rotation the CA-B leaf must verify without a restart")
@@ -179,15 +172,8 @@ func TestCAReloader_RotationAndGarbageFallback(t *testing.T) {
 		"after rotation the CA-A leaf must no longer verify")
 
 	require.NoError(t, os.WriteFile(caPath, []byte("not a certificate"), 0o600))
-	require.NoError(t, os.Chtimes(caPath,
-		info.ModTime().Add(2*time.Second), info.ModTime().Add(2*time.Second)))
-
-	pool, err := r.pool()
-	require.NoError(t, err, "a garbage overwrite must not surface as a pool error")
-	require.NotNil(t, pool)
-
-	assert.NoError(t, r.verifyChain(parseChain(t, leafB)),
-		"the cached CA-B pool must keep handshakes working through a bad rewrite")
+	assert.Error(t, r.verifyChain(parseChain(t, leafB)),
+		"a garbage bundle fails the handshake; the next handshake reads the file again")
 }
 
 // TestNewCAReloader_ConstructionErrors: a garbage or missing CA file must

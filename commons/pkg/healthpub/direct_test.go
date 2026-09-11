@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -31,6 +32,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -139,13 +141,60 @@ func (f *fakeCloser) Close() error {
 	return nil
 }
 
-// fastDirectTuning keeps direct-mode tests in the millisecond range.
+// retryingClient puts a fake behind the retry interceptor of dial.go, the way
+// a dialed connection carries it, by standing in for the connection the
+// generated client invokes. The direct-mode tests so run the retry policy the
+// monitors run.
+func retryingClient(client pb.PlatformConnectorClient, tune directTuning) pb.PlatformConnectorClient {
+	return pb.NewPlatformConnectorClient(&interceptedConn{client: client, intercept: retryInterceptor(tune)})
+}
+
+type interceptedConn struct {
+	client    pb.PlatformConnectorClient
+	intercept grpc.UnaryClientInterceptor
+}
+
+func (c *interceptedConn) Invoke(ctx context.Context, method string, args, reply any, opts ...grpc.CallOption) error {
+	invoke := func(ctx context.Context, _ string, args, reply any, _ *grpc.ClientConn, opts ...grpc.CallOption) error {
+		events, ok := args.(*pb.HealthEvents)
+		if !ok {
+			return fmt.Errorf("unexpected request type %T", args)
+		}
+
+		resp, err := c.client.HealthEventOccurredV1(ctx, events, opts...)
+		if err != nil {
+			return err
+		}
+
+		out, ok := reply.(proto.Message)
+		if !ok {
+			return fmt.Errorf("unexpected reply type %T", reply)
+		}
+
+		proto.Merge(out, resp)
+
+		return nil
+	}
+
+	return c.intercept(ctx, method, args, reply, nil, invoke, opts...)
+}
+
+func (c *interceptedConn) NewStream(
+	context.Context, *grpc.StreamDesc, string, ...grpc.CallOption,
+) (grpc.ClientStream, error) {
+	return nil, errors.New("the health publisher makes no streaming calls")
+}
+
+// fastDirectTuning keeps direct-mode tests in the millisecond range: attempts
+// start a millisecond apart, doubling to a second, without jitter, so counts
+// and timings are exact.
 func fastDirectTuning() directTuning {
 	return directTuning{
-		retryWindow:        5 * time.Second,
-		rpcTimeout:         2 * time.Second,
-		maxMessageBytes:    defaultMaxSendBytes,
-		finalAttemptWindow: 5 * time.Millisecond,
+		retryWindow:    5 * time.Second,
+		rpcTimeout:     2 * time.Second,
+		backoffInitial: time.Millisecond,
+		backoffMax:     time.Second,
+		backoffJitter:  0,
 	}
 }
 
@@ -180,7 +229,7 @@ func pendingCount(p *Publisher) int {
 	p.direct.mu.Lock()
 	defer p.direct.mu.Unlock()
 
-	return len(p.direct.pending)
+	return p.direct.pending
 }
 
 // waitForPending blocks until n Publish calls are in progress.
@@ -191,41 +240,35 @@ func waitForPending(t *testing.T, p *Publisher, n int) {
 		5*time.Second, time.Millisecond, "expected %d pending publishes", n)
 }
 
-// newDirectPublisher wires a Publisher in direct mode around fakes. The
+// newDirectPublisher wires a Publisher in direct mode around fakes: the fake
+// client behind the retry interceptor, as on a dialed connection. The
 // returned closer is the fake owned connection.
 func newDirectPublisher(
 	monitor string, client pb.PlatformConnectorClient, tune directTuning,
 ) (*Publisher, *fakeCloser) {
 	conn := &fakeCloser{}
-	p := New(client, "dns:///pcd.nvsentinel:50051", monitor,
-		WithRetryPolicy(1, time.Millisecond, 1.0, 0),
-		withDirect(conn, tune),
-	)
+	p := New(retryingClient(client, tune), "dns:///pcd.nvsentinel:50051", monitor,
+		withDirect(conn, tune))
 
 	return p, conn
 }
 
-// newSlowBackoffPublisher is newDirectPublisher with a 10s backoff, far longer
-// than any test window, for tests that must catch a call inside its sleep.
+// newSlowBackoffPublisher is newDirectPublisher with a 10s pause before every
+// retry, far longer than any test window, for tests that must catch a call
+// inside its backoff sleep.
 func newSlowBackoffPublisher(
 	monitor string, client pb.PlatformConnectorClient, tune directTuning,
 ) (*Publisher, *fakeCloser) {
-	conn := &fakeCloser{}
-	p := New(client, "dns:///pcd.nvsentinel:50051", monitor,
-		WithRetryPolicy(1, 10*time.Second, 1.0, 0),
-		withDirect(conn, tune),
-	)
+	tune.backoffInitial = 10 * time.Second
+	tune.backoffMax = 10 * time.Second
 
-	return p, conn
+	return newDirectPublisher(monitor, client, tune)
 }
 
 func closePublisher(t *testing.T, p *Publisher) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	require.NoError(t, p.Close(ctx))
+	require.NoError(t, p.Close())
 }
 
 // TestDirectPublish_DeliversWithKey: the happy path. Publish sends the batch
@@ -404,8 +447,8 @@ func TestDirectPublish_UnauthenticatedRetries(t *testing.T) {
 }
 
 // TestDirectPublish_ResourceExhaustedIsRetried: gRPC uses RESOURCE_EXHAUSTED
-// for transient overload and quotas too, so it is retried inside the window
-// like any other transient failure.
+// for transient overload and quotas, and a proxy may answer it for throttling,
+// so it is retried inside the window like any other transient failure.
 func TestDirectPublish_ResourceExhaustedIsRetried(t *testing.T) {
 	monitor := "test-direct-resource-exhausted"
 	fc := &directFakeClient{responseFn: func(call int) error {
@@ -621,55 +664,57 @@ func TestDirectPublish_AttemptNeverOutlivesTheWindow(t *testing.T) {
 	closePublisher(t, p)
 }
 
-// TestDirectPublish_LastAttemptRunsAtTheDeadline: the last backoff sleep is
-// cut short so a final attempt still starts inside the window, instead of the
-// window ending unused in the middle of a sleep.
-func TestDirectPublish_LastAttemptRunsAtTheDeadline(t *testing.T) {
-	monitor := "test-direct-final-attempt"
+// TestDirectPublish_WindowEndsDuringBackoff: a backoff pause longer than what
+// is left of the window ends with the window, not after the pause: the batch
+// drops as retry_window_exhausted at the deadline, with no further attempt.
+func TestDirectPublish_WindowEndsDuringBackoff(t *testing.T) {
+	monitor := "test-direct-window-ends-in-backoff"
 	fc := &directFakeClient{responseFn: func(_ int) error {
 		return status.Error(codes.Unavailable, "down")
 	}}
 
 	tune := fastDirectTuning()
 	tune.retryWindow = 200 * time.Millisecond
-	tune.finalAttemptWindow = 50 * time.Millisecond
 
-	// A backoff far longer than the window: uncut, the call would sleep
-	// through the deadline after one attempt.
+	// A 10s pause: uncut, the call would sleep far past the deadline.
 	p, _ := newSlowBackoffPublisher(monitor, fc, tune)
+
+	droppedBefore := testutil.ToFloat64(
+		sendsDropped.WithLabelValues(monitor, dropReasonRetryWindowExhausted))
 
 	start := time.Now()
 	err := p.Publish(context.Background(), sampleEvents())
 	elapsed := time.Since(start)
 
 	require.ErrorIs(t, err, ErrPublishDropped)
-	assert.Equal(t, int64(2), fc.calls.Load(),
-		"one attempt at once and one final attempt just before the deadline")
-	assert.Less(t, elapsed, 2*time.Second, "the 10s backoff sleep is cut to the window")
+	assert.Contains(t, err.Error(), dropReasonRetryWindowExhausted)
+	assert.Equal(t, int64(1), fc.calls.Load(), "the one attempt fails and the pause outlasts the window")
+	assert.GreaterOrEqual(t, elapsed, 150*time.Millisecond, "the call lasts until the window ends")
+	assert.Less(t, elapsed, 2*time.Second, "the 10s pause is cut by the deadline")
+	assert.Equal(t, droppedBefore+1,
+		testutil.ToFloat64(sendsDropped.WithLabelValues(monitor, dropReasonRetryWindowExhausted)))
 
 	closePublisher(t, p)
 }
 
-// TestDirectPublish_DefaultFinalAttemptWindowKeepsRetrying: with the
-// production final-attempt allowance a failing batch retries until about a
-// second before its window ends, then drops; no override is needed for a
-// window that leaves room to retry.
-func TestDirectPublish_DefaultFinalAttemptWindowKeepsRetrying(t *testing.T) {
-	monitor := "test-direct-default-final-window"
+// TestDirectPublish_RetriesUntilTheWindowEnds: a failing batch keeps
+// retrying, each pause twice the previous, until its window ends, then drops.
+func TestDirectPublish_RetriesUntilTheWindowEnds(t *testing.T) {
+	monitor := "test-direct-retries-until-window"
 	fc := &directFakeClient{responseFn: func(_ int) error {
 		return status.Error(codes.Unavailable, "down")
 	}}
 
+	// The production pacing at a tenth of its scale and without jitter, in a
+	// 2.5 s window: attempts at 0, 0.2, 0.6 and 1.4 s, then the window ends
+	// during the fourth pause, which would have lasted until 3 s.
 	tune := defaultDirectTuning()
-	tune.retryWindow = 3 * time.Second
+	tune.retryWindow = 2500 * time.Millisecond
+	tune.backoffInitial = 200 * time.Millisecond
+	tune.backoffMax = 3 * time.Second
+	tune.backoffJitter = 0
 
-	// A 200 ms pace: a handful of retries proves the point without flooding
-	// the log for two seconds.
-	conn := &fakeCloser{}
-	p := New(fc, "dns:///pcd.nvsentinel:50051", monitor,
-		WithRetryPolicy(1, 200*time.Millisecond, 1.0, 0),
-		withDirect(conn, tune),
-	)
+	p, _ := newDirectPublisher(monitor, fc, tune)
 
 	retriesBefore := testutil.ToFloat64(sendRetries.WithLabelValues(monitor))
 
@@ -678,116 +723,25 @@ func TestDirectPublish_DefaultFinalAttemptWindowKeepsRetrying(t *testing.T) {
 	elapsed := time.Since(start)
 
 	require.ErrorIs(t, err, ErrPublishDropped)
-	assert.GreaterOrEqual(t, elapsed, 1900*time.Millisecond, "retries run until the final-attempt window")
+	assert.Equal(t, int64(4), fc.calls.Load(), "attempts at 0, 0.2, 0.6 and 1.4 s")
+	assert.GreaterOrEqual(t, elapsed, 2400*time.Millisecond, "retries run until the window ends")
 	assert.Less(t, elapsed, 3500*time.Millisecond)
-	assert.GreaterOrEqual(t, testutil.ToFloat64(sendRetries.WithLabelValues(monitor)), retriesBefore+1)
+	assert.Equal(t, retriesBefore+3, testutil.ToFloat64(sendRetries.WithLabelValues(monitor)))
 
 	closePublisher(t, p)
 }
 
-// TestClose_WaitsForPublishesInProgress: Close with a generous deadline must
-// let every call in progress finish, report success to each of them, then
-// close the connection.
-func TestClose_WaitsForPublishesInProgress(t *testing.T) {
-	monitor := "test-direct-close-waits"
-	gate := make(chan struct{})
-	fc := &directFakeClient{gate: gate}
-
-	p, conn := newDirectPublisher(monitor, fc, fastDirectTuning())
-
-	const batches = 5
-
-	results := make([]<-chan error, 0, batches)
-	for range batches {
-		results = append(results, publishAsync(context.Background(), p, sampleEvents()))
-	}
-
-	waitForPending(t, p, batches)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	closed := make(chan error, 1)
-
-	go func() { closed <- p.Close(ctx) }()
-
-	select {
-	case err := <-closed:
-		t.Fatalf("Close returned %v while publishes were still in progress", err)
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	require.ErrorIs(t, p.Publish(context.Background(), sampleEvents()), ErrPublisherClosed,
-		"no new batch is admitted once Close has begun")
-
-	close(gate)
-
-	require.NoError(t, <-closed)
-	assert.Equal(t, int64(batches), fc.calls.Load(), "every call in progress was allowed to send")
-
-	for _, result := range results {
-		require.NoError(t, awaitPublish(t, result), "a finished call is reported as delivered")
-	}
-
-	assert.True(t, conn.closed.Load())
-	require.NoError(t, p.Close(ctx), "Close must be idempotent")
-}
-
-// TestClose_DeadlineDropsPending: with the server wedged, Close must give up
-// at its deadline, drop every call still pending under the shutdown reason,
-// in flight or waiting for the slot alike, tell every caller, and still close
-// the connection.
-func TestClose_DeadlineDropsPending(t *testing.T) {
-	monitor := "test-direct-close-deadline"
-	gate := make(chan struct{})
-
-	defer close(gate)
-
-	fc := &directFakeClient{gate: gate}
-
-	p, conn := newDirectPublisher(monitor, fc, fastDirectTuning())
-
-	droppedBefore := testutil.ToFloat64(sendsDropped.WithLabelValues(monitor, dropReasonShutdown))
-
-	const batches = 3
-
-	results := make([]<-chan error, 0, batches)
-	for range batches {
-		results = append(results, publishAsync(context.Background(), p, sampleEvents()))
-	}
-
-	waitForPending(t, p, batches)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-
-	err := p.Close(ctx)
-	require.Error(t, err, "a cut-short shutdown must be reported")
-	assert.Contains(t, err.Error(), "cancelled")
-
-	for _, result := range results {
-		require.ErrorIs(t, awaitPublish(t, result), ErrPublishDropped,
-			"every undelivered batch is reported to its caller")
-	}
-
-	assert.Equal(t, droppedBefore+batches,
-		testutil.ToFloat64(sendsDropped.WithLabelValues(monitor, dropReasonShutdown)),
-		"every undelivered batch, in flight included, must be metered as a shutdown drop")
-	assert.True(t, conn.closed.Load(), "the connection must close even when the shutdown is cut short")
-	assert.Zero(t, pendingCount(p))
-}
-
-// TestClose_PromptDuringBackoffSleep: Close's deadline must interrupt a long
-// backoff sleep instead of waiting it out, dropping the batch under the
-// shutdown reason.
-func TestClose_PromptDuringBackoffSleep(t *testing.T) {
+// TestClose_EndsACallInBackoff: Close ends a call in the middle of a long
+// backoff pause at once, dropping the batch under the shutdown reason, and
+// closes the connection.
+func TestClose_EndsACallInBackoff(t *testing.T) {
 	monitor := "test-direct-close-backoff"
 	fc := &directFakeClient{responseFn: func(_ int) error {
 		return status.Error(codes.Unavailable, "down")
 	}}
 
-	// A window longer than the backoff, so the call enters the sleep instead
-	// of dropping the batch as expired.
+	// A window longer than the pause, so the call enters the pause instead of
+	// dropping the batch as expired.
 	tune := fastDirectTuning()
 	tune.retryWindow = time.Minute
 
@@ -798,39 +752,67 @@ func TestClose_PromptDuringBackoffSleep(t *testing.T) {
 	result := publishAsync(context.Background(), p, sampleEvents())
 
 	require.Eventually(t, func() bool { return fc.calls.Load() >= 1 }, 5*time.Second, time.Millisecond,
-		"the first attempt must fail so the call enters its backoff sleep")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+		"the first attempt must fail so the call enters its backoff pause")
 
 	start := time.Now()
-	_ = p.Close(ctx)
-	elapsed := time.Since(start)
+	require.NoError(t, p.Close())
 
-	assert.Less(t, elapsed, 2*time.Second,
-		"Close must interrupt the 10s backoff sleep, not wait it out")
-	require.ErrorIs(t, awaitPublish(t, result), ErrPublishDropped,
-		"the caller learns its batch was not delivered")
+	err := awaitPublish(t, result)
+	require.ErrorIs(t, err, ErrPublishDropped, "the caller learns its batch was not delivered")
+	assert.Contains(t, err.Error(), dropReasonShutdown)
+	assert.Less(t, time.Since(start), 2*time.Second, "Close ends the 10s pause, it does not wait it out")
 	assert.Equal(t, droppedBefore+1,
 		testutil.ToFloat64(sendsDropped.WithLabelValues(monitor, dropReasonShutdown)),
-		"the batch stuck in backoff must be metered as a shutdown drop")
+		"the batch in its pause is metered as a shutdown drop")
 	assert.True(t, conn.closed.Load())
+	assert.Zero(t, pendingCount(p))
+}
+
+// TestClose_EndsACallInFlight: Close ends an attempt on the wire at once too;
+// the call reports a shutdown drop and the connection is closed without
+// waiting for the server.
+func TestClose_EndsACallInFlight(t *testing.T) {
+	monitor := "test-direct-close-in-flight"
+	gate := make(chan struct{})
+	fc := &directFakeClient{gate: gate}
+
+	p, conn := newDirectPublisher(monitor, fc, fastDirectTuning())
+
+	droppedBefore := testutil.ToFloat64(sendsDropped.WithLabelValues(monitor, dropReasonShutdown))
+
+	result := publishAsync(context.Background(), p, sampleEvents())
+
+	require.Eventually(t, func() bool { return fc.calls.Load() == 1 }, 5*time.Second, time.Millisecond,
+		"the batch is inside its attempt")
+
+	start := time.Now()
+	require.NoError(t, p.Close())
+
+	err := awaitPublish(t, result)
+	require.ErrorIs(t, err, ErrPublishDropped)
+	assert.Contains(t, err.Error(), dropReasonShutdown)
+	assert.Less(t, time.Since(start), 2*time.Second, "Close does not wait for the server")
+	assert.Equal(t, droppedBefore+1,
+		testutil.ToFloat64(sendsDropped.WithLabelValues(monitor, dropReasonShutdown)))
+	assert.True(t, conn.closed.Load())
+
+	close(gate)
+	assert.Zero(t, pendingCount(p))
 }
 
 // TestDirectPublish_ConcurrentPublishRacingClose: under -race, every Publish
 // that returned nil was delivered, every one reporting a drop was metered as
-// a shutdown drop, the rest were refused as closed, and nothing may be
-// delivered after Close returns.
+// a shutdown drop, and the rest were refused as closed.
 func TestDirectPublish_ConcurrentPublishRacingClose(t *testing.T) {
 	monitor := "test-direct-publish-close-race"
 	fc := &directFakeClient{responseFn: func(_ int) error {
-		// Slow the sends slightly so Close's deadline cuts real work short.
+		// Slow the sends slightly so Close cuts real work short.
 		time.Sleep(time.Millisecond)
 
 		return nil
 	}}
 
-	p, _ := newDirectPublisher(monitor, fc, fastDirectTuning())
+	p, conn := newDirectPublisher(monitor, fc, fastDirectTuning())
 
 	successBefore := testutil.ToFloat64(sendsSuccess.WithLabelValues(monitor))
 	shutdownBefore := testutil.ToFloat64(sendsDropped.WithLabelValues(monitor, dropReasonShutdown))
@@ -864,70 +846,66 @@ func TestDirectPublish_ConcurrentPublishRacingClose(t *testing.T) {
 		}()
 	}
 
-	time.Sleep(10 * time.Millisecond)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	defer cancel()
-
-	_ = p.Close(ctx)
-
-	callsAtCloseReturn := fc.calls.Load()
+	require.Eventually(t, func() bool { return delivered.Load() > 0 }, 5*time.Second, time.Millisecond,
+		"batches deliver before Close")
+	require.NoError(t, p.Close())
 
 	wg.Wait()
-	time.Sleep(50 * time.Millisecond)
 
-	assert.Equal(t, callsAtCloseReturn, fc.calls.Load(),
-		"nothing may be delivered after Close returns")
-
+	assert.True(t, conn.closed.Load())
+	assert.Equal(t, int64(publishers*perPublisher), delivered.Load()+droppedOnShutdown.Load()+refused.Load())
+	assert.Positive(t, refused.Load(), "calls made after Close were refused")
 	assert.Equal(t, float64(delivered.Load()),
 		testutil.ToFloat64(sendsSuccess.WithLabelValues(monitor))-successBefore,
 		"every Publish that returned nil was delivered, and nothing else was")
 	assert.Equal(t, float64(droppedOnShutdown.Load()),
 		testutil.ToFloat64(sendsDropped.WithLabelValues(monitor, dropReasonShutdown))-shutdownBefore,
-		"every Publish reporting a drop was metered as a shutdown drop")
-	assert.Equal(t, int64(publishers*perPublisher), delivered.Load()+droppedOnShutdown.Load()+refused.Load())
+		"every drop reported was metered as a shutdown drop")
+	assert.Zero(t, pendingCount(p))
 }
 
-// TestCloseWithTimeout_WaitsForPublishInProgress: the convenience wrapper must
-// behave like Close with a deadline: let the call in progress finish, then
-// close the owned connection.
-func TestCloseWithTimeout_WaitsForPublishInProgress(t *testing.T) {
-	monitor := "test-direct-close-with-timeout"
-	gate := make(chan struct{})
-	fc := &directFakeClient{gate: gate}
+// TestDirectPublish_OversizeBatchIsRejected: a batch larger than the server
+// receives could never be delivered, so Publish refuses it at once as
+// rejected, metered but never attempted, instead of spending its window.
+func TestDirectPublish_OversizeBatchIsRejected(t *testing.T) {
+	monitor := "test-direct-oversize"
+	fc := &directFakeClient{}
 
-	p, conn := newDirectPublisher(monitor, fc, fastDirectTuning())
+	p, _ := newDirectPublisher(monitor, fc, fastDirectTuning())
 
-	result := publishAsync(context.Background(), p, sampleEvents())
-	waitForPending(t, p, 1)
+	rejectedBefore := testutil.ToFloat64(sendsDropped.WithLabelValues(monitor, dropReasonRejected))
 
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		close(gate)
-	}()
+	events := sampleEvents()
+	events.Events[0].Message = strings.Repeat("x", maxSendBytes+1)
 
-	p.CloseWithTimeout(5 * time.Second)
+	require.ErrorIs(t, p.Publish(context.Background(), events), ErrPublishRejected)
+	assert.Equal(t, rejectedBefore+1, testutil.ToFloat64(sendsDropped.WithLabelValues(monitor, dropReasonRejected)))
+	assert.Equal(t, int64(0), fc.calls.Load(), "an oversize batch is never sent")
+	assert.Zero(t, pendingCount(p))
 
-	require.NoError(t, awaitPublish(t, result), "the call in progress finished before the connection closed")
-	assert.Equal(t, int64(1), fc.calls.Load())
-	assert.True(t, conn.closed.Load())
+	closePublisher(t, p)
 }
 
-// TestDirectPublish_PreCancelledContextIsRefused: a caller that has already
-// left gets its context error back and nothing is attempted.
-func TestDirectPublish_PreCancelledContextIsRefused(t *testing.T) {
+// TestDirectPublish_PreCancelledContextIsWithdrawn: a caller that has already
+// left gets its batch withdrawn before anything is attempted.
+func TestDirectPublish_PreCancelledContextIsWithdrawn(t *testing.T) {
 	monitor := "test-direct-precancelled"
 	fc := &directFakeClient{}
 
 	p, _ := newDirectPublisher(monitor, fc, fastDirectTuning())
 
+	withdrawnBefore := testutil.ToFloat64(sendsDropped.WithLabelValues(monitor, dropReasonWithdrawn))
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	require.ErrorIs(t, p.Publish(ctx, sampleEvents()), context.Canceled)
+	err := p.Publish(ctx, sampleEvents())
+	require.ErrorIs(t, err, ErrPublishDropped)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, withdrawnBefore+1, testutil.ToFloat64(sendsDropped.WithLabelValues(monitor, dropReasonWithdrawn)))
 
 	closePublisher(t, p)
-	assert.Equal(t, int64(0), fc.calls.Load(), "a refused batch never reaches the wire")
+	assert.Equal(t, int64(0), fc.calls.Load(), "a withdrawn batch never reaches the wire")
 	assert.Zero(t, pendingCount(p))
 }
 
@@ -973,15 +951,17 @@ func TestDirectPublish_CancelledCallerWaitingForTheSlotIsWithdrawn(t *testing.T)
 	assert.Equal(t, []string{"head"}, fc.recordedCheckNames(), "the withdrawn batch is never sent")
 }
 
-// TestDirectPublish_CancelledCallerKeepsTheAttemptInFlight: an attempt already
-// on the wire may have stored the batch, so a caller leaving during it waits
-// for that attempt's answer and learns the real outcome.
-func TestDirectPublish_CancelledCallerKeepsTheAttemptInFlight(t *testing.T) {
+// TestDirectPublish_CancelledCallerEndsTheAttemptInFlight: a caller that
+// leaves while its attempt is on the wire gets its batch withdrawn at once;
+// the attempt is cut with the caller's context, not waited for.
+func TestDirectPublish_CancelledCallerEndsTheAttemptInFlight(t *testing.T) {
 	monitor := "test-direct-withdraw-in-flight"
 	gate := make(chan struct{})
 	fc := &directFakeClient{gate: gate}
 
 	p, _ := newDirectPublisher(monitor, fc, fastDirectTuning())
+
+	withdrawnBefore := testutil.ToFloat64(sendsDropped.WithLabelValues(monitor, dropReasonWithdrawn))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -990,22 +970,25 @@ func TestDirectPublish_CancelledCallerKeepsTheAttemptInFlight(t *testing.T) {
 
 	require.Eventually(t, func() bool { return fc.calls.Load() == 1 }, 5*time.Second, time.Millisecond,
 		"the batch is inside its attempt")
+
+	start := time.Now()
+
 	cancel()
 
-	select {
-	case err := <-result:
-		t.Fatalf("Publish returned %v while its attempt was still in flight", err)
-	case <-time.After(50 * time.Millisecond):
-	}
+	err := awaitPublish(t, result)
+	require.ErrorIs(t, err, ErrPublishDropped)
+	require.ErrorIs(t, err, context.Canceled, "the caller's cancellation stays readable in the error")
+	assert.Less(t, time.Since(start), 2*time.Second, "the attempt ends with the caller, not with the gate")
+	assert.Equal(t, int64(1), fc.calls.Load(), "no retry for a caller that left")
+	assert.Equal(t, withdrawnBefore+1,
+		testutil.ToFloat64(sendsDropped.WithLabelValues(monitor, dropReasonWithdrawn)))
 
 	close(gate)
-	require.NoError(t, awaitPublish(t, result), "the attempt stored the batch, and the caller is told so")
-
 	closePublisher(t, p)
 }
 
 // TestDirectPublish_CancelledCallerStopsRetries: once the caller has left, a
-// failed attempt is not retried, even in the middle of a long backoff.
+// failed attempt is not retried, even in the middle of a long backoff pause.
 func TestDirectPublish_CancelledCallerStopsRetries(t *testing.T) {
 	monitor := "test-direct-withdraw-retries"
 	fc := &directFakeClient{responseFn: func(_ int) error {
@@ -1025,7 +1008,7 @@ func TestDirectPublish_CancelledCallerStopsRetries(t *testing.T) {
 	result := publishAsync(ctx, p, sampleEvents())
 
 	require.Eventually(t, func() bool { return fc.calls.Load() == 1 }, 5*time.Second, time.Millisecond,
-		"the first attempt fails and the call enters its backoff sleep")
+		"the first attempt fails and the call enters its backoff pause")
 
 	start := time.Now()
 
@@ -1034,7 +1017,7 @@ func TestDirectPublish_CancelledCallerStopsRetries(t *testing.T) {
 	err := awaitPublish(t, result)
 	require.ErrorIs(t, err, ErrPublishDropped)
 	require.ErrorIs(t, err, context.Canceled, "the caller's cancellation stays readable in the error")
-	assert.Less(t, time.Since(start), 2*time.Second, "the backoff sleep ends with the caller")
+	assert.Less(t, time.Since(start), 2*time.Second, "the backoff pause ends with the caller")
 	assert.Equal(t, int64(1), fc.calls.Load(), "no attempt is made for a caller that left")
 	assert.Equal(t, withdrawnBefore+1,
 		testutil.ToFloat64(sendsDropped.WithLabelValues(monitor, dropReasonWithdrawn)))
@@ -1042,10 +1025,9 @@ func TestDirectPublish_CancelledCallerStopsRetries(t *testing.T) {
 	closePublisher(t, p)
 }
 
-// TestPublisher_WaitingOnServer: while a call is pending inside its window a
-// caller is waiting for the server, which a liveness check may treat as
-// alive; an idle publisher, a publisher with a call older than its window
-// plus one attempt (stuck), and a socket-mode publisher never report waiting.
+// TestPublisher_WaitingOnServer: while a call is pending a caller is waiting
+// for the server, which a liveness check may treat as alive; an idle
+// publisher and a socket-mode publisher never report waiting.
 func TestPublisher_WaitingOnServer(t *testing.T) {
 	monitor := "test-direct-waiting"
 	gate := make(chan struct{})
@@ -1058,23 +1040,6 @@ func TestPublisher_WaitingOnServer(t *testing.T) {
 	result := publishAsync(context.Background(), p, sampleEvents())
 	require.Eventually(t, p.WaitingOnServer, 5*time.Second, time.Millisecond, "a pending call is a wait")
 
-	// A call still pending past its window plus one attempt would mean the
-	// publisher is stuck; that must not pass for waiting. Registered directly,
-	// since a real call can never get there.
-	stuck := &pendingBatch{deadline: time.Now().Add(-(fastDirectTuning().rpcTimeout + time.Second))}
-
-	p.direct.mu.Lock()
-	p.direct.pending[stuck] = struct{}{}
-	p.direct.mu.Unlock()
-
-	assert.False(t, p.WaitingOnServer(), "a call older than its window plus one attempt is not a wait")
-
-	p.direct.mu.Lock()
-	delete(p.direct.pending, stuck)
-	p.direct.mu.Unlock()
-
-	assert.True(t, p.WaitingOnServer(), "the real pending call is a wait again")
-
 	close(gate)
 	require.NoError(t, awaitPublish(t, result))
 	assert.False(t, p.WaitingOnServer(), "delivered: nothing pending")
@@ -1083,85 +1048,4 @@ func TestPublisher_WaitingOnServer(t *testing.T) {
 
 	socket := New(&fakePCClient{}, "unix:///nonexistent/nvsentinel.sock", monitor)
 	assert.False(t, socket.WaitingOnServer(), "socket mode never waits for a window")
-}
-
-// TestDirectPublish_OversizeBatchIsRejected: a batch larger than the server
-// receives could never be delivered, so Publish refuses it at once as
-// rejected, metered but never attempted.
-func TestDirectPublish_OversizeBatchIsRejected(t *testing.T) {
-	monitor := "test-direct-oversize"
-	fc := &directFakeClient{}
-
-	tune := fastDirectTuning()
-	tune.maxMessageBytes = 8
-
-	p, _ := newDirectPublisher(monitor, fc, tune)
-
-	rejectedBefore := testutil.ToFloat64(sendsDropped.WithLabelValues(monitor, dropReasonRejected))
-
-	require.ErrorIs(t, p.Publish(context.Background(), sampleEvents()), ErrPublishRejected)
-	assert.Equal(t, rejectedBefore+1, testutil.ToFloat64(sendsDropped.WithLabelValues(monitor, dropReasonRejected)))
-
-	closePublisher(t, p)
-	assert.Equal(t, int64(0), fc.calls.Load(), "an oversize batch is never sent")
-	assert.Zero(t, pendingCount(p))
-}
-
-// TestDirectPublish_OversizeAfterCloseIsClosed: after Close, an oversize batch
-// is refused as closed like any other, not metered as rejected.
-func TestDirectPublish_OversizeAfterCloseIsClosed(t *testing.T) {
-	monitor := "test-direct-oversize-closed"
-	fc := &directFakeClient{}
-
-	tune := fastDirectTuning()
-	tune.maxMessageBytes = 8
-
-	p, _ := newDirectPublisher(monitor, fc, tune)
-	closePublisher(t, p)
-
-	rejectedBefore := testutil.ToFloat64(sendsDropped.WithLabelValues(monitor, dropReasonRejected))
-
-	require.ErrorIs(t, p.Publish(context.Background(), sampleEvents()), ErrPublisherClosed)
-	assert.Equal(t, rejectedBefore, testutil.ToFloat64(sendsDropped.WithLabelValues(monitor, dropReasonRejected)),
-		"a closed publisher does not count the batch as an oversize drop")
-}
-
-// TestCloseWhenDone_EndsAStalledPublishOnContextEnd: a main that closes its
-// publisher only after its loops return would first wait for an attempt that
-// is stalled on the wire, since attempts run on the publisher's lifecycle and
-// not on the loop's context. CloseWhenDone starts the bounded close the moment
-// the root context ends, so the attempt is cut short within the timeout and
-// the caller learns the drop.
-func TestCloseWhenDone_EndsAStalledPublishOnContextEnd(t *testing.T) {
-	monitor := "test-direct-close-when-done"
-	fc := &directFakeClient{gate: make(chan struct{})}
-
-	p, conn := newDirectPublisher(monitor, fc, fastDirectTuning())
-
-	root, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	stop := CloseWhenDone(root, p, 50*time.Millisecond)
-	defer stop()
-
-	// A Publish under a Background context stands in for a loop that has not
-	// noticed the shutdown yet; the attempt itself never watched the root
-	// context anyway.
-	result := publishAsync(context.Background(), p, sampleEvents())
-
-	require.Eventually(t, func() bool { return fc.calls.Load() == 1 }, 5*time.Second, time.Millisecond,
-		"the attempt is on the wire and stalled")
-
-	start := time.Now()
-
-	cancel()
-
-	err := awaitPublish(t, result)
-	require.ErrorIs(t, err, ErrPublishDropped, "the stalled attempt is cut short and reported")
-	assert.Contains(t, err.Error(), dropReasonShutdown)
-	assert.Less(t, time.Since(start), time.Second,
-		"the close starts with the context, not after the attempt's own timeout")
-	// Close finishes a moment after the last call returned.
-	require.Eventually(t, conn.closed.Load, time.Second, time.Millisecond, "the owned connection is closed")
-	assert.False(t, stop(), "the hook has already run")
 }

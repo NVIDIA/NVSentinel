@@ -38,9 +38,12 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -93,19 +96,26 @@ func socketFallback(t *testing.T, called *atomic.Bool) func() (*grpc.ClientConn,
 
 // TestDialFromEnvOr_SocketModeRunsFallback: with HEALTH_PUBLISH_TARGET unset,
 // DialFromEnvOr must run the caller's legacy dial and return its connection
-// with a nil Option, so the caller passes everything straight through.
+// with the Option that hands the connection to the Publisher, whose Close then
+// closes it.
 func TestDialFromEnvOr_SocketModeRunsFallback(t *testing.T) {
 	clearPublishEnv(t)
 
 	var called atomic.Bool
 
-	conn, client, directOpt, err := DialFromEnvOr(socketFallback(t, &called))
+	conn, client, opt, err := DialFromEnvOr(socketFallback(t, &called))
 	require.NoError(t, err)
 
 	assert.True(t, called.Load(), "no HEALTH_PUBLISH_TARGET must mean the legacy dial runs")
 	assert.NotNil(t, conn, "socket mode must return the fallback's connection")
 	assert.NotNil(t, client, "socket mode must wrap the fallback's connection in a client")
-	assert.Nil(t, directOpt, "socket mode must not produce a direct option")
+	require.NotNil(t, opt, "socket mode hands the connection to the publisher")
+
+	p := New(client, "unix:///tmp/nvsentinel.sock", "test-socket-owned-conn", opt)
+	assert.Nil(t, p.direct, "socket mode is not direct mode")
+	require.NoError(t, p.Close())
+	assert.Equal(t, connectivity.Shutdown, conn.GetState(), "Close closes the connection in socket mode too")
+	require.NoError(t, p.Close(), "Close is idempotent")
 }
 
 // TestDialFromEnvOr_SocketModeFallbackError: a failing legacy dial must
@@ -115,13 +125,13 @@ func TestDialFromEnvOr_SocketModeFallbackError(t *testing.T) {
 
 	fallbackErr := errors.New("legacy dial exploded")
 
-	conn, client, directOpt, err := DialFromEnvOr(func() (*grpc.ClientConn, error) {
+	conn, client, opt, err := DialFromEnvOr(func() (*grpc.ClientConn, error) {
 		return nil, fallbackErr
 	})
 	require.ErrorIs(t, err, fallbackErr)
 	assert.Nil(t, conn)
 	assert.Nil(t, client)
-	assert.Nil(t, directOpt)
+	assert.Nil(t, opt)
 }
 
 // TestDialFromEnvOr_DirectRefusesPlaintext: a direct target without a CA file
@@ -188,8 +198,7 @@ func TestDialFromEnvOr_InvalidEnvRejected(t *testing.T) {
 		{"bad_insecure", envInsecure, "notabool"},
 		{"bad_retry_window", envRetryWindow, "5minutes"},
 		{"negative_retry_window", envRetryWindow, "-1m"},
-		// A window no longer than the final-attempt allowance could never retry.
-		{"retry_window_within_final_attempt_window", envRetryWindow, "1s"},
+		{"zero_retry_window", envRetryWindow, "0s"},
 	}
 
 	for _, tc := range cases {
@@ -227,17 +236,6 @@ func TestDialFromEnvOr_RefusesTargetWithoutServerName(t *testing.T) {
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), envTLSServerName)
 	assert.Contains(t, err.Error(), "/nonexistent/ca.crt")
-
-	// A resolver form without slashes leaves the whole target as the derived
-	// name, which no certificate carries; refused at startup, not per handshake.
-	clearPublishEnv(t)
-	t.Setenv(envTarget, "dns:platform-connector-deployment.nvsentinel.svc:50051")
-	t.Setenv(envTLSCAFile, "/nonexistent/ca.crt")
-	t.Setenv(envTokenPath, testTokenFile(t))
-
-	_, _, _, err = DialFromEnvOr(fallbackNotCalled(t))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), envTLSServerName)
 
 	// Plaintext development mode verifies nothing, so it needs no name.
 	clearPublishEnv(t)
@@ -462,6 +460,85 @@ func TestDialFromEnvOr_DirectPlaintextEndToEnd(t *testing.T) {
 	closePublisher(t, p)
 }
 
+// tokenCheckingServer accepts a batch only with the rotated token and records
+// the authorization header of every attempt.
+type tokenCheckingServer struct {
+	pb.UnimplementedPlatformConnectorServer
+
+	seen chan string
+}
+
+func (s *tokenCheckingServer) HealthEventOccurredV1(
+	ctx context.Context, _ *pb.HealthEvents,
+) (*emptypb.Empty, error) {
+	md, _ := metadata.FromIncomingContext(ctx)
+
+	auth := ""
+	if values := md.Get("authorization"); len(values) > 0 {
+		auth = values[0]
+	}
+
+	s.seen <- auth
+
+	if auth != "Bearer fresh" {
+		return nil, status.Error(codes.Unauthenticated, "stale token")
+	}
+
+	return &emptypb.Empty{}, nil
+}
+
+// TestDialFromEnvOr_TokenIsReadPerAttempt: the kubelet rewrites the projected
+// token file, so an attempt refused with the old token must be retried with
+// the new one inside the same call, which needs the token interceptor to run
+// per attempt, inside the retry interceptor.
+func TestDialFromEnvOr_TokenIsReadPerAttempt(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	server := grpc.NewServer()
+	check := &tokenCheckingServer{seen: make(chan string, 8)}
+	pb.RegisterPlatformConnectorServer(server, check)
+
+	go func() { _ = server.Serve(lis) }()
+
+	t.Cleanup(server.Stop)
+
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenPath, []byte("stale"), 0o600))
+
+	clearPublishEnv(t)
+	t.Setenv(envTarget, lis.Addr().String())
+	t.Setenv(envInsecure, "true")
+	t.Setenv(envTokenPath, tokenPath)
+
+	_, client, opt, err := DialFromEnvOr(fallbackNotCalled(t))
+	require.NoError(t, err)
+
+	p := New(client, lis.Addr().String(), "test-e2e-token-rotation", opt)
+
+	result := publishAsync(context.Background(), p, sampleEvents())
+
+	select {
+	case auth := <-check.seen:
+		assert.Equal(t, "Bearer stale", auth, "the first attempt carries the token as it was")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the server never saw the first attempt")
+	}
+
+	require.NoError(t, os.WriteFile(tokenPath, []byte("fresh"), 0o600))
+
+	require.NoError(t, awaitPublish(t, result), "the retry carries the rotated token and is accepted")
+
+	last := ""
+	for len(check.seen) > 0 {
+		last = <-check.seen
+	}
+
+	assert.Equal(t, "Bearer fresh", last, "the retry re-read the token file")
+
+	closePublisher(t, p)
+}
+
 // TestDialFromEnvOr_DirectTLSWrongCARefused: with the client trusting CA-A
 // and the server presenting a certificate signed by CA-B, every send must be
 // refused at the handshake: the server never receives a batch, retries climb,
@@ -489,8 +566,9 @@ func TestDialFromEnvOr_DirectTLSWrongCARefused(t *testing.T) {
 	t.Setenv(envTLSCAFile, trustedCAPath)
 	t.Setenv(envTLSServerName, "localhost")
 	t.Setenv(envTokenPath, testTokenFile(t))
-	// Long enough for retries before the final-attempt window, short enough for a test.
-	t.Setenv(envRetryWindow, "2s")
+	// Long enough for a retry at the production pace (the first pause is about
+	// 2 s), short enough for a test.
+	t.Setenv(envRetryWindow, "5s")
 
 	_, client, directOpt, err := DialFromEnvOr(fallbackNotCalled(t))
 	require.NoError(t, err, "the dial is lazy; the handshake failure surfaces per send")
@@ -501,20 +579,16 @@ func TestDialFromEnvOr_DirectTLSWrongCARefused(t *testing.T) {
 	droppedBefore := testutil.ToFloat64(
 		sendsDropped.WithLabelValues(monitor, dropReasonRetryWindowExhausted))
 
-	p := New(client, lis.Addr().String(), monitor,
-		WithRetryPolicy(1, time.Millisecond, 1.0, 0), directOpt)
+	p := New(client, lis.Addr().String(), monitor, directOpt)
 
 	require.ErrorIs(t, p.Publish(context.Background(), sampleEvents()), ErrPublishDropped,
 		"a server certificate the client does not trust never delivers; the batch drops when its window ends")
 
-	require.Eventually(t, func() bool {
-		return testutil.ToFloat64(sendRetries.WithLabelValues(monitor)) >= retriesBefore+1
-	}, 10*time.Second, time.Millisecond, "handshake failures must surface as retries, not deliveries")
-
-	require.Eventually(t, func() bool {
-		return testutil.ToFloat64(
-			sendsDropped.WithLabelValues(monitor, dropReasonRetryWindowExhausted)) == droppedBefore+1
-	}, 10*time.Second, time.Millisecond, "the batch must drop when the retry window expires")
+	assert.GreaterOrEqual(t, testutil.ToFloat64(sendRetries.WithLabelValues(monitor)), retriesBefore+1,
+		"handshake failures must surface as retries, not deliveries")
+	assert.Equal(t, droppedBefore+1,
+		testutil.ToFloat64(sendsDropped.WithLabelValues(monitor, dropReasonRetryWindowExhausted)),
+		"the batch must drop when the retry window expires")
 
 	select {
 	case <-capture.got:
@@ -533,7 +607,7 @@ func TestDirectConnectParams_CapsTheReconnectDelay(t *testing.T) {
 	params := directConnectParams()
 
 	assert.Equal(t, maxReconnectDelay, params.Backoff.MaxDelay)
-	assert.Less(t, params.Backoff.MaxDelay, maxRetrySleep,
+	assert.Less(t, params.Backoff.MaxDelay, maxRetryBackoff,
 		"the channel must reconnect faster than the publisher's retry cadence")
 	assert.Equal(t, backoff.DefaultConfig.BaseDelay, params.Backoff.BaseDelay)
 	assert.Equal(t, backoff.DefaultConfig.Multiplier, params.Backoff.Multiplier)

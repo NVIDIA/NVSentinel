@@ -348,9 +348,8 @@ func TestPublish_ContextCancellationStopsRetries(t *testing.T) {
 		"retries must stop when the context is cancelled, not exhaust the full budget")
 }
 
-// TestNew_SkipsNilOptions: New must skip nil options so the Option
-// DialFromEnvOr returns (nil in socket mode) can be passed through
-// unconditionally.
+// TestNew_SkipsNilOptions: a nil Option is skipped, so an optional option can
+// be passed through unconditionally.
 func TestNew_SkipsNilOptions(t *testing.T) {
 	monitor := "test-nil-options"
 
@@ -363,10 +362,11 @@ func TestNew_SkipsNilOptions(t *testing.T) {
 		"nil options must be ignored, leaving the publisher fully functional")
 }
 
-// TestSocketMode_CloseIsNoOp: in socket mode the caller owns the connection,
-// so Close and CloseWithTimeout must be repeatable no-ops that leave the
-// publisher usable.
-func TestSocketMode_CloseIsNoOp(t *testing.T) {
+// TestClose_WithoutOwnedConnIsNoOp: a publisher built around a connection the
+// caller dialed itself (no option from DialFromEnvOr) leaves that connection
+// to the caller, so Close must be a repeatable no-op that keeps the publisher
+// usable.
+func TestClose_WithoutOwnedConnIsNoOp(t *testing.T) {
 	tmp := t.TempDir()
 	socket := filepath.Join(tmp, "nvsentinel.sock")
 	touchSocket(t, socket)
@@ -377,14 +377,10 @@ func TestSocketMode_CloseIsNoOp(t *testing.T) {
 
 	p := New(fc, "unix://"+socket, monitor)
 
-	ctx := context.Background()
-	require.NoError(t, p.Close(ctx))
-	require.NoError(t, p.Close(ctx), "socket-mode Close must stay a no-op on repeat calls")
+	require.NoError(t, p.Close())
+	require.NoError(t, p.Close(), "socket-mode Close must stay a no-op on repeat calls")
 
-	p.CloseWithTimeout(time.Millisecond)
-	p.CloseWithTimeout(time.Millisecond)
-
-	require.NoError(t, p.Publish(ctx, sampleEvents()),
+	require.NoError(t, p.Publish(context.Background(), sampleEvents()),
 		"socket-mode Close must not shut anything down; the caller owns the connection")
 	assert.Equal(t, int64(1), fc.calls.Load())
 }

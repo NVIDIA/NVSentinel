@@ -419,36 +419,25 @@ func BearerTokenFromContext(ctx context.Context) (string, bool, error) {
 	return token, true, nil
 }
 
-// tokenReviewError maps a failed TokenReview call to a gRPC status.
-//
-// The only distinction that matters to a caller is retryable vs not.
-// Unavailable is the one code every NVSentinel publisher treats as retryable
-// (commons/pkg/healthpub isRetryable additionally retries DeadlineExceeded;
-// health-events-analyzer retries Unavailable alone), so returning it for a
-// transient outage keeps a health event alive across a control-plane blip, and
-// returning Internal for a permanent fault stops the publisher from hiding a
-// misconfiguration behind an endless retry loop.
 // AuthBackendUnavailableReason marks a failure that happened while
-// AUTHENTICATING the caller, before the RPC handler ran.
+// authenticating the caller, before the RPC handler ran.
 //
-// It exists because Unavailable alone is ambiguous to a client: a connection
-// that dropped after the server acted looks identical to one that never
-// arrived. For an idempotent call that does not matter, but a client driving a
-// destructive RPC — terminating a node — cannot safely retry an ambiguous
-// failure, because the node may already be gone.
-//
-// A status carrying this reason is unambiguous: the server-side interceptor
-// produced it before dispatch, so the handler never ran and no CSP action was
-// taken. Retrying is then provably safe.
+// It exists because Unavailable alone does not say what was unreachable: the
+// server that authenticates the caller answers Unavailable for an
+// authentication backend outage, and the same code arrives when the server
+// itself cannot be reached. The socket-path publisher tells the two apart on
+// its send error metric (commons/pkg/healthpub errorCodeLabel), because one
+// is a control-plane problem affecting every node and the other is local to
+// this node; the direct path retries both alike within its window.
 const AuthBackendUnavailableReason = "NVSENTINEL_AUTH_BACKEND_UNAVAILABLE"
 
 // authErrorDomain scopes the reason above to this project.
 const authErrorDomain = "nvsentinel.nvidia.com"
 
-// withAuthUnavailableDetail tags st so a caller can tell a pre-handler
-// authentication outage from an ambiguous transport failure. If the detail
-// cannot be attached the bare status is returned: losing the hint costs a
-// retry, never correctness.
+// withAuthUnavailableDetail tags st so a caller can tell an authentication
+// backend outage from the server being unreachable. If the detail cannot be
+// attached the bare status is returned: losing the hint costs a metric label,
+// never correctness.
 func withAuthUnavailableDetail(st *status.Status) error {
 	detailed, err := st.WithDetails(&errdetails.ErrorInfo{
 		Reason: AuthBackendUnavailableReason,
@@ -461,9 +450,10 @@ func withAuthUnavailableDetail(st *status.Status) error {
 	return detailed.Err()
 }
 
-// IsAuthBackendUnavailable reports whether err is an authentication-backend
-// outage raised before the handler ran, and is therefore safe to retry even for
-// a non-idempotent RPC.
+// IsAuthBackendUnavailable reports whether err is an authentication backend
+// outage raised before the handler ran, rather than the server itself being
+// unreachable. The socket-path publisher labels its send error metric with
+// the answer.
 func IsAuthBackendUnavailable(err error) bool {
 	st, ok := status.FromError(err)
 	if !ok || st.Code() != codes.Unavailable {
@@ -477,8 +467,7 @@ func IsAuthBackendUnavailable(err error) bool {
 		}
 
 		// Domain as well as reason: the reason string alone could be produced by
-		// any service in the call path, and this decides whether a destructive
-		// RPC is safe to repeat.
+		// any service in the call path.
 		if info.GetReason() == AuthBackendUnavailableReason && info.GetDomain() == authErrorDomain {
 			return true
 		}
@@ -487,6 +476,15 @@ func IsAuthBackendUnavailable(err error) bool {
 	return false
 }
 
+// tokenReviewError maps a failed TokenReview call to a gRPC status.
+//
+// The only distinction that matters to a caller is retryable vs not. Every
+// NVSentinel publisher retries Unavailable (the socket path retries
+// Unavailable and DeadlineExceeded, the direct path everything but a permanent
+// rejection, within its window), so returning it for a transient outage keeps
+// a health event alive across a control-plane blip. A permanent fault returns
+// Internal, which the socket path does not retry and the direct path drops
+// once its window ends, so a misconfiguration surfaces as failed sends.
 func tokenReviewError(ctx context.Context, err error) error {
 	// The caller gave up, or its deadline passed. This is not a fault of the
 	// API server and must not be reported as one.
