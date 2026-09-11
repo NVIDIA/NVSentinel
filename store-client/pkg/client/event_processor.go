@@ -49,8 +49,8 @@ type EventProcessorConfig struct {
 	// MaxInFlight specifies the maximum number of uncheckpointed in-flight events
 	// before applying backpressure to the change stream reader (default: 1000).
 	MaxInFlight int
-	// EventTimeout specifies the per-event processing timeout context (default: 30s).
-	// Set to 0 to disable per-event timeout.
+	// EventTimeout specifies an optional per-event processing timeout context.
+	// When <= 0 (default), per-event timeout is disabled and the parent context is used directly.
 	EventTimeout time.Duration
 	// PartitionKeyFunc specifies an optional custom partition key function.
 	// If nil, defaults to extracting Event.GetNodeName().
