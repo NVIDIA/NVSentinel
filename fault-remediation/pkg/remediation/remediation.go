@@ -15,7 +15,6 @@
 package remediation
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -30,12 +29,12 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
+	crdtemplates "github.com/nvidia/nvsentinel/commons/pkg/templates"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -94,7 +93,7 @@ func NewRemediationClient(
 			return nil, fmt.Errorf("remediation action %s is missing template file configuration", actionName)
 		}
 
-		tmpl, err := loadAndParseTemplate(templateMountPath, maintenanceResource.TemplateFileName, actionName)
+		tmpl, err := crdtemplates.LoadTemplate(templateMountPath, maintenanceResource.TemplateFileName, actionName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load template for action %s: %w", actionName, err)
 		}
@@ -132,31 +131,6 @@ func NewRemediationClient(
 	)
 
 	return ctrlRuntimeRemediationClient, nil
-}
-
-// loadAndParseTemplate loads and parses a template file
-func loadAndParseTemplate(mountPath, fileName, templateName string) (*template.Template, error) {
-	templatePath := filepath.Join(mountPath, fileName)
-
-	// Check if the template file exists
-	if _, err := os.Stat(templatePath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("template file does not exist: %s", templatePath)
-	}
-
-	// Read and parse the template
-	templateContent, err := os.ReadFile(templatePath)
-	if err != nil {
-		return nil, fmt.Errorf("error reading template file: %w", err)
-	}
-
-	tmpl := template.New(templateName)
-
-	tmpl, err = tmpl.Parse(string(templateContent))
-	if err != nil {
-		return nil, fmt.Errorf("error parsing template: %w", err)
-	}
-
-	return tmpl, nil
 }
 
 func (c *FaultRemediationClient) GetAnnotationManager() annotation.NodeAnnotationManagerInterface {
@@ -282,7 +256,7 @@ func (c *FaultRemediationClient) createMaintenanceCR(ctx context.Context, select
 		"template", actionKey,
 		"nodeUID", node.UID)
 
-	maintenance, yamlStr, err := renderMaintenanceFromTemplate(selectedTemplate, templateData)
+	maintenance, yamlStr, err := crdtemplates.Render(selectedTemplate, templateData)
 	if err != nil {
 		tracing.RecordError(span, err)
 		span.SetAttributes(
@@ -295,7 +269,7 @@ func (c *FaultRemediationClient) createMaintenanceCR(ctx context.Context, select
 	}
 
 	slog.DebugContext(ctx, "Generated YAML from template", "template", actionKey, "yaml", yamlStr)
-	setNodeOwnerRef(ctx, maintenance, node)
+	crdtemplates.SetNodeOwnerRef(maintenance, node)
 
 	err = c.client.Create(ctx, maintenance)
 	if err != nil {
@@ -365,40 +339,6 @@ func (c *FaultRemediationClient) updateRemediationAnnotationIfNeeded(ctx context
 	}
 
 	return nil
-}
-
-func renderMaintenanceFromTemplate(
-	tmpl *template.Template,
-	data TemplateData,
-) (*unstructured.Unstructured, string, error) {
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return nil, "", err
-	}
-
-	var obj map[string]any
-	if err := yaml.Unmarshal(buf.Bytes(), &obj); err != nil {
-		return nil, "", err
-	}
-
-	return &unstructured.Unstructured{Object: obj}, buf.String(), nil
-}
-
-func setNodeOwnerRef(ctx context.Context, maintenance *unstructured.Unstructured, node *corev1.Node) {
-	ownerRef := metav1.OwnerReference{
-		APIVersion:         "v1",
-		Kind:               "Node",
-		Name:               node.Name,
-		UID:                node.UID,
-		Controller:         new(false),
-		BlockOwnerDeletion: new(false),
-	}
-	maintenance.SetOwnerReferences([]metav1.OwnerReference{ownerRef})
-
-	slog.InfoContext(ctx, "Added owner reference to CR for automatic garbage collection",
-		"node", node.Name,
-		"nodeUID", node.UID,
-		"crName", maintenance.GetName())
 }
 
 func (c *FaultRemediationClient) selectRemediationActionAndTemplate(

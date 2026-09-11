@@ -27,7 +27,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
@@ -47,16 +46,7 @@ func TestValidationController(t *testing.T) {
 		require.NoError(t, err, "failed to get real node")
 		t.Logf("Selected node for validation-controller test: %s", nodeName)
 
-		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			node, err := helpers.GetNodeByName(ctx, client, nodeName)
-			if err != nil {
-				return err
-			}
-
-			node.Spec.Unschedulable = true
-
-			return client.Resources().Update(ctx, node)
-		})
+		err = helpers.SetNodeCordon(ctx, client, nodeName, true)
 		require.NoError(t, err, "failed to cordon node")
 		t.Logf("Node %s cordoned", nodeName)
 
@@ -132,20 +122,7 @@ func TestValidationController(t *testing.T) {
 
 		nodeName := ctx.Value(keyNodeName).(string)
 
-		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			node, err := helpers.GetNodeByName(ctx, client, nodeName)
-			if err != nil {
-				return err
-			}
-
-			if !node.Spec.Unschedulable {
-				return nil
-			}
-
-			node.Spec.Unschedulable = false
-
-			return client.Resources().Update(ctx, node)
-		})
+		err = helpers.SetNodeCordon(ctx, client, nodeName, false)
 		require.NoError(t, err, "failed to uncordon node")
 
 		target := &unstructured.Unstructured{}
