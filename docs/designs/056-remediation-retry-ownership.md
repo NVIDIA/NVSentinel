@@ -10,7 +10,7 @@ The remediation path has three retry layers:
 
 1. A CSP SDK can retry one API request.
 2. Janitor can [requeue the same maintenance CR after a transient CSP plugin error](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor/pkg/controller/rebootnode_controller.go#L518-L544).
-3. Fault Remediation can create another maintenance CR as a new remediation attempt.
+3. Fault Remediation [allows another attempt after a failed or missing CR](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/fault-remediation/pkg/reconciler/reconciler.go#L1800-L1818) and [creates the next maintenance resource](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/fault-remediation/pkg/reconciler/reconciler.go#L413-L421).
 
 These layers do not currently share a failure contract. The janitor-provider converts all CSP failures to gRPC `Internal`. Janitor treats only `Unavailable` and `DeadlineExceeded` as transient. Fault Remediation checks one configured completion condition and cannot distinguish a transient failure from a permanent failure.
 
