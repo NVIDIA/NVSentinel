@@ -639,6 +639,23 @@ func GetNodeByName(ctx context.Context, c klient.Client, nodeName string) (*v1.N
 	return &node, nil
 }
 
+func SetNodeCordon(ctx context.Context, c klient.Client, nodeName string, cordoned bool) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		node, err := GetNodeByName(ctx, c, nodeName)
+		if err != nil {
+			return err
+		}
+
+		if node.Spec.Unschedulable == cordoned {
+			return nil
+		}
+
+		node.Spec.Unschedulable = cordoned
+
+		return c.Resources().Update(ctx, node)
+	})
+}
+
 func DeletePod(ctx context.Context, t *testing.T, c klient.Client, namespace, podName string,
 	waitForRemoval bool) error {
 	pod := &v1.Pod{
@@ -1483,6 +1500,49 @@ func ScrubExtRRStateFromNode(ctx context.Context, c klient.Client, nodeName stri
 	}
 
 	return c.Resources().Update(ctx, node)
+}
+
+func WaitForValidationRequestForNode(ctx context.Context, t *testing.T, c klient.Client,
+	nodeName string) *unstructured.Unstructured {
+	t.Helper()
+
+	var resultCR *unstructured.Unstructured
+
+	require.Eventually(t, func() bool {
+		crList, err := ListAllCRs(ctx, c, ValidationRequestGVK)
+		if err != nil {
+			t.Logf("failed to list ValidationRequests: %v", err)
+			return false
+		}
+
+		for i := range crList.Items {
+			item := &crList.Items[i]
+
+			nodes, found, err := unstructured.NestedSlice(item.Object, "spec", "nodes")
+			if err != nil || !found {
+				continue
+			}
+
+			for _, n := range nodes {
+				nodeEntry, ok := n.(map[string]any)
+				if !ok || nodeEntry["name"] != nodeName {
+					continue
+				}
+
+				t.Logf("Found ValidationRequest %s targeting node %s", item.GetName(), nodeName)
+
+				resultCR = item
+
+				return true
+			}
+		}
+
+		t.Logf("No ValidationRequest found targeting node %s yet", nodeName)
+
+		return false
+	}, EventuallyWaitTimeout, WaitInterval, "a ValidationRequest should be created targeting node %s", nodeName)
+
+	return resultCR
 }
 
 // newExtRR builds an unstructured ExternalRemediationRequest with a minimal

@@ -522,11 +522,7 @@ func TestManualUncordonPropagation(t *testing.T) {
 		require.NoError(t, err)
 
 		t.Log("Operator manually uncordons the node")
-		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-		require.NoError(t, err)
-
-		node.Spec.Unschedulable = false
-		err = client.Resources().Update(ctx, node)
+		err = helpers.SetNodeCordon(ctx, client, testCtx.NodeName, false)
 		require.NoError(t, err)
 
 		return ctx
@@ -681,11 +677,7 @@ func TestManualUncordonWithFaultRemediation(t *testing.T) {
 		require.NoError(t, err)
 
 		t.Log("Operator manually uncordons the node")
-		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-		require.NoError(t, err)
-
-		node.Spec.Unschedulable = false
-		err = client.Resources().Update(ctx, node)
+		err = helpers.SetNodeCordon(ctx, client, testCtx.NodeName, false)
 		require.NoError(t, err)
 
 		return ctx
