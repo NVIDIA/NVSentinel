@@ -122,10 +122,24 @@ func TestGetDefaultGPUResetJobTemplate_DriverRoot_SetsEnvAndMounts(t *testing.T)
 	}
 }
 
-func TestGetDefaultGPUResetJobTemplate_RelativeDriverRoot_ReturnsError(t *testing.T) {
-	template, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
-		ResourceRequirements{}, DefaultHostDriverRootPath, "run/nvidia/driver", "", true, "")
-	require.Error(t, err)
-	assert.Nil(t, template)
-	assert.Contains(t, err.Error(), "resetJob.driverRoot")
+func TestGetDefaultGPUResetJobTemplate_InvalidDriverRoot_ReturnsError(t *testing.T) {
+	tests := []struct {
+		name       string
+		driverRoot string
+	}{
+		{name: "relative path", driverRoot: "run/nvidia/driver"},
+		{name: "double slash", driverRoot: "//"},
+		{name: "trailing slash", driverRoot: "/run/nvidia/driver/"},
+		{name: "parent traversal", driverRoot: "/run/nvidia/../nvidia/driver"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			template, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
+				ResourceRequirements{}, DefaultHostDriverRootPath, test.driverRoot, "", true, "")
+			require.Error(t, err)
+			assert.Nil(t, template)
+			assert.Contains(t, err.Error(), "resetJob.driverRoot")
+		})
+	}
 }

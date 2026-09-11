@@ -217,9 +217,10 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 	}
 
 	// Reject here, at janitor startup, rather than when a Job is created for a node that is
-	// already cordoned and drained.
-	if !filepath.IsAbs(driverRoot) {
-		return nil, fmt.Errorf("resetJob.driverRoot %q must be an absolute path", driverRoot)
+	// already cordoned and drained. A path such as "//" is absolute but is not ContainerDriverRoot,
+	// so it would mount the host driver root over the container root.
+	if !filepath.IsAbs(driverRoot) || filepath.Clean(driverRoot) != driverRoot {
+		return nil, fmt.Errorf("resetJob.driverRoot %q must be an absolute, clean path", driverRoot)
 	}
 
 	containerResources, err := getResources(resources)
