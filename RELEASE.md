@@ -100,12 +100,26 @@ so a release can move them without that being visible from the version alone.
 
 The callout must cover three things:
 
-1. **Whether the replica set will roll.** `crVersion`, `initImage` and the mongod image are all
-   fields of the `PerconaServerMongoDB` resource, so changing any of them makes the operator run
-   SmartUpdate over every member: secondaries first, then a primary step-down. Say it plainly, in
-   the form "this will roll your replica set". An operator adopting a release to pick up a
-   monitoring fix has no reason to expect their health-event datastore to fail over, and that
-   datastore holds every health event.
+1. **Whether the replica set will roll, and say which of the four changed.** `crVersion`,
+   `initImage` and the mongod image are fields of the `PerconaServerMongoDB` resource, so changing
+   any of them restarts every replica-set member. The **operator image tag is different**: it
+   changes only the operator Deployment, so on its own it restarts the operator pod and leaves the
+   replica set alone. Distinguishing the two is the most useful thing the note can do, because it
+   tells a reader whether they are taking a datastore outage or not.
+
+   Where the members do roll, the order depends on `spec.updateStrategy` on the resource, which the
+   chart sets to `SmartUpdate` by default but which an operator can override:
+
+   - **`SmartUpdate`** (chart default): the operator drives it, secondaries first, then a primary
+     step-down, so the exposure is one brief election.
+   - **`RollingUpdate`**: Kubernetes drives the StatefulSet rollout, with no primary step-down
+     coordination.
+   - **`OnDelete`**: nothing restarts until the pods are deleted by hand, so the new version does
+     not take effect on adoption at all.
+
+   Say it plainly, in the form "this will roll your replica set". An operator adopting a release to
+   pick up a monitoring fix has no reason to expect their health-event datastore to fail over, and
+   that datastore holds every health event.
 2. **That the operator upgrade cannot skip a minor version.** Percona's
    [upgrade documentation](https://docs.percona.com/percona-operator-for-mongodb/update-operator.html)
    permits moving only to the nearest `major.minor`. A deployment more than one minor behind the
@@ -119,13 +133,31 @@ The callout must cover three things:
 
 ### Finding the bundled versions
 
-The NVSentinel release number says nothing about them. Read the subchart directly:
+The NVSentinel release number says nothing about them. Unpack the published chart and read the two
+subcharts directly:
 
 ```bash
 helm pull oci://ghcr.io/nvidia/nvsentinel --version <release> --untar
-grep -E 'version|appVersion' nvsentinel/charts/mongodb-store/charts/psmdb-db/Chart.yaml
-grep -E 'crVersion|tag:' nvsentinel/charts/mongodb-store/charts/psmdb-db/values.yaml
+C=nvsentinel/charts/mongodb-store/charts
 ```
+
+| Value | File | Key |
+| --- | --- | --- |
+| operator image tag | `$C/psmdb-operator/values.yaml` | top-level `image.tag` |
+| `crVersion` | `$C/psmdb-db/values.yaml` | top-level `crVersion` |
+| mongod image tag | `$C/psmdb-db/values.yaml` | top-level `image.tag` |
+| init image tag | `$C/psmdb-db/values.yaml` | top-level `initImage.tag` |
+| subchart versions | `$C/psmdb-{operator,db}/Chart.yaml` | `version`, `appVersion` |
+
+**Read the top-level keys, not a grep for `tag:`.** `psmdb-db/values.yaml` contains several other
+`image:` blocks further down for the backup, PMM and fluentbit sidecars, so a bare `grep 'tag:'`
+returns those too and it is easy to report the wrong one. The mongod tag is the one inside the
+top-level `image:` block.
+
+Note also that `initImage` is commented out by default. Left unset, the operator derives the
+reference itself from `crVersion`, which resolves to a public registry and will therefore fail on a
+mirror-only or air-gapped cluster. If a release changes `crVersion`, that implicitly changes the
+init image those deployments need.
 
 `charts/mongodb-store/Chart.yaml` also carries the rule that `psmdb-operator` and `psmdb-db` must
 be bumped together and kept matched.
