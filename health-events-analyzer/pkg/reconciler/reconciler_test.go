@@ -236,6 +236,21 @@ func TestEventProcessorConfigCheckpointsHandlerErrors(t *testing.T) {
 	assert.True(t, processorConfig.MarkProcessedOnError)
 }
 
+func TestEventProcessorConfigConcurrencySettings(t *testing.T) {
+	defaultConfig := newEventProcessorConfig()
+	assert.True(t, defaultConfig.MarkProcessedOnError)
+	assert.Equal(t, 1, defaultConfig.Workers)
+	assert.Equal(t, 1000, defaultConfig.MaxInFlight)
+
+	customConfig := newEventProcessorConfig(HealthEventsAnalyzerReconcilerConfig{
+		Workers:     16,
+		MaxInFlight: 500,
+	})
+	assert.True(t, customConfig.MarkProcessedOnError)
+	assert.Equal(t, 16, customConfig.Workers)
+	assert.Equal(t, 500, customConfig.MaxInFlight)
+}
+
 func TestCheckRule(t *testing.T) {
 	ctx := context.Background()
 
