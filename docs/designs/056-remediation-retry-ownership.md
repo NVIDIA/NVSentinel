@@ -9,7 +9,7 @@ The OCI janitor provider can return transient errors when it sends a reboot requ
 The remediation path has three retry layers:
 
 1. A CSP SDK can retry one API request.
-2. Janitor can retry communication with a CSP plugin while it reconciles one maintenance CR.
+2. Janitor can [requeue the same maintenance CR after a transient CSP plugin error](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor/pkg/controller/rebootnode_controller.go#L518-L544).
 3. Fault Remediation can create another maintenance CR as a new remediation attempt.
 
 These layers do not currently share a failure contract. The janitor-provider converts all CSP failures to gRPC `Internal`. Janitor treats only `Unavailable` and `DeadlineExceeded` as transient. Fault Remediation checks one configured completion condition and cannot distinguish a transient failure from a permanent failure.
@@ -57,6 +57,58 @@ status:
       reason: TransientFailure
       message: OCI reported that the instance is currently being modified
 ```
+
+Do not append one `AttemptComplete` condition for each retry. Kubernetes conditions represent the current state of one object, not an attempt history. Each maintenance CR represents one attempt.
+
+For example, the first CR records a transient failure:
+
+```yaml
+apiVersion: janitor.dgxc.nvidia.com/v1alpha1
+kind: RebootNode
+metadata:
+  name: maintenance-node-a-event-b-attempt-1
+  annotations:
+    nvsentinel.dgxc.nvidia.com/remediation-session-id: session-123
+    nvsentinel.dgxc.nvidia.com/remediation-operation-id: operation-456
+    nvsentinel.dgxc.nvidia.com/remediation-attempt: "1"
+spec:
+  force: false
+  nodeName: node-a
+status:
+  completionTime: "2026-09-10T23:00:00Z"
+  conditions:
+    - type: AttemptComplete
+      status: "True"
+      observedGeneration: 1
+      reason: TransientFailure
+      message: OCI reported that the instance is currently being modified
+```
+
+Fault Remediation then creates a second CR for the next attempt:
+
+```yaml
+apiVersion: janitor.dgxc.nvidia.com/v1alpha1
+kind: RebootNode
+metadata:
+  name: maintenance-node-a-event-b-attempt-2
+  annotations:
+    nvsentinel.dgxc.nvidia.com/remediation-session-id: session-123
+    nvsentinel.dgxc.nvidia.com/remediation-operation-id: operation-456
+    nvsentinel.dgxc.nvidia.com/remediation-attempt: "2"
+spec:
+  force: false
+  nodeName: node-a
+status:
+  completionTime: "2026-09-10T23:02:00Z"
+  conditions:
+    - type: AttemptComplete
+      status: "True"
+      observedGeneration: 1
+      reason: Succeeded
+      message: The node became ready after the reboot
+```
+
+Both CRs use the same session ID and operation ID. The v2 node annotation stores `AttemptCount=2` and `LastOutcome=Succeeded`. It does not store an unbounded history array.
 
 Keep `SignalSent` and `NodeReady` as step conditions. They describe what happened inside the attempt. They do not control cross-CR retries.
 
