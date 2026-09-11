@@ -171,19 +171,42 @@ func setupControllers(mgr ctrl.Manager, cfg *config.Config, enableValidationCont
 		return fmt.Errorf("failed to set up webhook: %w", err)
 	}
 
-	if enableValidationController {
-		reconciler, err := controller.NewValidationRequestReconciler(mgr.GetClient(), mgr.GetAPIReader(),
-			mgr.GetScheme(), cfg, namespace)
-		if err != nil {
-			return fmt.Errorf("failed to create ValidationRequest reconciler: %w", err)
-		}
+	if !enableValidationController {
+		// +kubebuilder:scaffold:builder
+		return nil
+	}
 
-		if err := reconciler.SetupWithManager(mgr); err != nil {
-			return fmt.Errorf("failed to create ValidationRequest controller: %w", err)
+	reconciler, err := controller.NewValidationRequestReconciler(mgr.GetClient(), mgr.GetAPIReader(),
+		mgr.GetScheme(), cfg, namespace)
+	if err != nil {
+		return fmt.Errorf("failed to create ValidationRequest reconciler: %w", err)
+	}
+
+	if err := reconciler.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("failed to create ValidationRequest controller: %w", err)
+	}
+
+	if validation.Spec.NewNodeValidation != nil {
+		if err := setupNodeValidationController(mgr, cfg); err != nil {
+			return err
 		}
 	}
 
 	// +kubebuilder:scaffold:builder
+	return nil
+}
+
+func setupNodeValidationController(mgr ctrl.Manager, cfg *config.Config) error {
+	nodeReconciler, err := controller.NewNodeValidationReconciler(mgr.GetClient(), mgr.GetAPIReader(),
+		mgr.GetScheme(), cfg)
+	if err != nil {
+		return fmt.Errorf("failed to create NodeValidation reconciler: %w", err)
+	}
+
+	if err := nodeReconciler.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("failed to create NodeValidation controller: %w", err)
+	}
+
 	return nil
 }
 

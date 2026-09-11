@@ -4387,6 +4387,17 @@ lifecycle-manager:
         expression: >-
           !(has(node.metadata.annotations) &&
           "quarantineHealthEvent" in node.metadata.annotations)
+    newNodeValidation:
+      batchPeriodSeconds: 5
+      criteria:
+        - name: recently-joined
+          expression: >-
+            has(node.metadata.creationTimestamp) &&
+            now() - timestamp(node.metadata.creationTimestamp) < duration("2h")
+        - name: gpu-present
+          expression: >-
+            has(node.metadata.labels) && "nvidia.com/gpu.present" in node.metadata.labels &&
+            node.metadata.labels["nvidia.com/gpu.present"] == "true"
     tests:
       e2e-smoke-test:
         provider: k8s-job-provider

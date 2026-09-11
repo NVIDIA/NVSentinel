@@ -88,7 +88,7 @@ func (r *ValidationRequestReconciler) addToSessionAndCheckEligibility(ctx contex
 		return true, false, nil
 	}
 
-	failedCriteria, err := r.evaluateNodeReadinessCriteria(&node, criteria)
+	failedCriteria, err := evaluateCriteria(&node, criteria, r.ReadinessPrograms)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to check node readiness", "node", ns.Name, "error", err)
 		return true, false, fmt.Errorf("failed to check node readiness: %w", err)
@@ -265,7 +265,7 @@ func (r *ValidationRequestReconciler) fetchDeletedAndNotReadyNodes(ctx context.C
 			return nil, nil, fmt.Errorf("get node %q: %w", nodeName, err)
 		}
 
-		failedCriteria, err := r.evaluateNodeReadinessCriteria(&node, r.Config.Validation.Spec.ReadinessCriteria)
+		failedCriteria, err := evaluateCriteria(&node, r.Config.Validation.Spec.ReadinessCriteria, r.ReadinessPrograms)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to check node readiness: %w", err)
 		}
