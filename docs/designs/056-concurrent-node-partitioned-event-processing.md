@@ -86,7 +86,9 @@ ChangeStreamWatcher (Events channel)
    - Implements `client.EventProcessor`.
    - Manages $N$ worker goroutines and per-worker buffered channels.
    - Maps events to workers via `hash(nodeName) % N` using FNV-32a. Events without a node name route to worker 0.
-   - Handles poison events vs transient errors: when `MarkProcessedOnError=true` (as in `health-events-analyzer`), only terminal errors (e.g., permanent unmarshaling failures or handler rejections) are marked resolved in the tracker to prevent poison pills from blocking stream progress. Transient conditions—specifically context cancellations (`context.Canceled`) and timeouts (`context.DeadlineExceeded`)—are never marked as completed, ensuring the low-water mark does not advance past them and that they are retried on pod restart rather than permanently lost.
+   - Enforces backpressure: when uncheckpointed in-flight events reach `MaxInFlight`, suspends reading from the watcher.
+   - Handles poison events vs transient errors: when `MarkProcessedOnError=true` (as in `health-events-analyzer`), only terminal poison errors (such as unmarshaling failures or document ID errors) are marked resolved in the tracker to prevent stream stalling. Transient conditions—specifically context cancellations (`context.Canceled`) and timeouts (`context.DeadlineExceeded`)—are never marked as completed, ensuring the low-water mark does not advance past them and that they are retried on pod restart rather than permanently lost.
+   - Preserves checkpoint ordering: serializes watermark advancement and datastore writes under a checkpoint mutex, and retains unpersisted checkpoint tokens for shutdown retry.
 
 3. **`health-events-analyzer` Integration**:
    - `health-events-analyzer/main.go`: adds CLI flags `--workers` (default `1`) and `--max-in-flight` (default `1000`).
@@ -112,7 +114,7 @@ ChangeStreamWatcher (Events channel)
 - **Potential Head-of-Line Blocking per Worker:** A very slow query on Node A may delay Node C if both hash to the same worker.
 
 ### Mitigations
-- **Event Timeouts:** Each event evaluation runs with a bounded context timeout (`EventTimeout`, default 30s) to prevent a hung query from stalling a worker indefinitely.
+- **Event Timeouts:** Per-event timeout enforcement is opt-in via `EventProcessorConfig.EventTimeout`. It is disabled when unset or non-positive (`<= 0`) so existing handlers run without synthetic timeouts unless explicitly configured.
 - **Sized Connection Pool:** The datastore connection pool defaults in `store-client` accommodate concurrent operations; default worker count is conservative (`workers: 1`).
 
 ## Alternatives Considered
@@ -134,9 +136,14 @@ ChangeStreamWatcher (Events channel)
   - Verify same-node events execute sequentially.
   - Verify different-node events execute concurrently.
   - Verify backpressure blocks consumption when `MaxInFlight` is reached.
-  - Verify graceful shutdown flushes the final low-water mark.
+  - Verify terminal poison errors advance the watermark under `MarkProcessedOnError=true`.
+  - Verify transient timeouts (`context.DeadlineExceeded`) and context cancellations are never checkpointed as processed.
+  - Verify worker channels discard buffered tasks on cancellation during shutdown.
+  - Verify serialization of watermark advancement and datastore checkpointing under `checkpointMu`.
+  - Verify unpersisted checkpoint tokens are retained and retried on shutdown with a bounded context.
 - Integration tests in `health-events-analyzer/pkg/reconciler/reconciler_test.go`:
   - Verify reconciler initializes and processes events under multi-worker configuration.
+  - Verify rule matching, synthetic remediation event generation, and gRPC publishing.
 
 ## Rollout
 
