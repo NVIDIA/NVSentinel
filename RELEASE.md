@@ -102,20 +102,24 @@ The callout must cover three things:
 
 1. **Whether the replica set will roll, and say which of the four changed.** `crVersion`,
    `initImage` and the mongod image are fields of the `PerconaServerMongoDB` resource, so changing
-   any of them restarts every replica-set member. The **operator image tag is different**: it
-   changes only the operator Deployment, so on its own it restarts the operator pod and leaves the
-   replica set alone. Distinguishing the two is the most useful thing the note can do, because it
-   tells a reader whether they are taking a datastore outage or not.
+   any of them changes the desired state of every replica-set member. The **operator image tag is
+   different**: it changes only the operator Deployment, so on its own it restarts the operator pod
+   and leaves the replica set alone. Distinguishing the two is the most useful thing the note can
+   do, because it tells a reader whether they are taking a datastore outage or not.
 
-   Where the members do roll, the order depends on `spec.updateStrategy` on the resource, which the
-   chart sets to `SmartUpdate` by default but which an operator can override:
+   When the members do change, whether and when they actually restart depends on
+   `spec.updateStrategy` on the resource, which the chart sets to `SmartUpdate` by default but
+   which an operator can override:
 
-   - **`SmartUpdate`** (chart default): the operator drives it, secondaries first, then a primary
-     step-down, so the exposure is one brief election.
+   - **`SmartUpdate`** (chart default): the operator drives the rollout, secondaries first, then a
+     primary step-down, so the exposure is one brief election.
    - **`RollingUpdate`**: Kubernetes drives the StatefulSet rollout, with no primary step-down
      coordination.
-   - **`OnDelete`**: nothing restarts until the pods are deleted by hand, so the new version does
-     not take effect on adoption at all.
+   - **`OnDelete`**: existing pods are left alone. The new values apply only as each pod is deleted
+     by hand, so adopting the release changes nothing until an operator acts.
+
+   Scope the claim accordingly rather than promising a restart: under `OnDelete` a reader who
+   expects one will not get it, and a reader who expects none under `SmartUpdate` will.
 
    Say it plainly, in the form "this will roll your replica set". An operator adopting a release to
    pick up a monitoring fix has no reason to expect their health-event datastore to fail over, and
@@ -154,10 +158,21 @@ C=nvsentinel/charts/mongodb-store/charts
 returns those too and it is easy to report the wrong one. The mongod tag is the one inside the
 top-level `image:` block.
 
-Note also that `initImage` is commented out by default. Left unset, the operator derives the
-reference itself from `crVersion`, which resolves to a public registry and will therefore fail on a
-mirror-only or air-gapped cluster. If a release changes `crVersion`, that implicitly changes the
-init image those deployments need.
+Note also that `initImage` is commented out by default, and what the operator derives when it is
+unset depends on whether `crVersion` matches the operator's own version
+(`pkg/psmdb/init/init.go`):
+
+- **Versions match:** the init container uses the **operator pod's own image**, verbatim. A
+  deployment that mirrors the operator image therefore needs nothing extra.
+- **Versions differ:** the operator keeps its own image *repository* but substitutes the tag,
+  giving `<operator-repository>:<crVersion>`.
+
+The second case is the one worth a release note, because it is exactly the state an existing
+deployment lands in when a release bumps the bundled operator ahead of a pinned `crVersion`. The
+repository is whatever the operator runs from, so it stays inside a private mirror, but the **tag
+is one a mirror-only deployment has no reason to have mirrored**, since operators mirror the
+versions they run rather than older `crVersion` values. Say so when a release changes either
+version, and note that pinning `initImage` explicitly avoids the question entirely.
 
 `charts/mongodb-store/Chart.yaml` also carries the rule that `psmdb-operator` and `psmdb-db` must
 be bumped together and kept matched.
