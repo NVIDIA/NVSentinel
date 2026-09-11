@@ -123,7 +123,7 @@ The CSP plugin classifies the original error before gRPC removes provider-specif
 Use this versioned contract:
 
 - `ErrorInfo.domain`: `csp.nvsentinel.nvidia.com`
-- `ErrorInfo.reason`: a stable failure reason such as `RESOURCE_BUSY`, `RATE_LIMITED`, or `PERMISSION_DENIED`
+- `ErrorInfo.reason`: a stable failure reason
 - `ErrorInfo.metadata["contract_version"]`: `1`
 - `ErrorInfo.metadata["failure_class"]`: `TRANSIENT` or `PERMANENT`
 - `ErrorInfo.metadata["operation"]`: `reboot` or `terminate`
@@ -131,18 +131,13 @@ Use this versioned contract:
 - `ErrorInfo.metadata["provider_code"]`: the provider error code, when available
 - `ErrorInfo.metadata["http_status_code"]`: the HTTP status code, when available
 
-The initial reason vocabulary is:
+The initial reason vocabulary contains only the failures required by [issue #1805](https://github.com/NVIDIA/NVSentinel/issues/1805):
 
-- `RESOURCE_BUSY`
-- `RATE_LIMITED`
-- `SERVICE_UNAVAILABLE`
-- `INVALID_REQUEST`
-- `AUTHENTICATION_FAILED`
-- `PERMISSION_DENIED`
-- `RESOURCE_NOT_FOUND`
-- `UNSUPPORTED_OPERATION`
-- `AMBIGUOUS_RESULT`
-- `PROVIDER_ERROR`
+- `RESOURCE_BUSY`: the provider cannot accept the operation because it is modifying the resource.
+- `REQUEST_TIMEOUT`: the provider request exceeded its deadline.
+- `PROVIDER_ERROR`: no more specific stable reason exists.
+
+Add a new reason only when a real failure needs distinct operator diagnostics. Do not add reasons to predict future provider behavior.
 
 For example:
 
