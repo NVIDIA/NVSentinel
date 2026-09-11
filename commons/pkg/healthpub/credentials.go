@@ -15,8 +15,10 @@
 package healthpub
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -48,91 +50,94 @@ func buildTransportCredentials(
 		return insecure.NewCredentials(), nil
 	}
 
-	reloader, err := newCAReloader(caFile, serverName)
-	if err != nil {
-		return nil, err
-	}
-
-	// InsecureSkipVerify disables only the stack's built-in verification, which
-	// would freeze the CA pool at dial time; VerifyConnection performs the full
-	// chain verification, including the DNSName check against the pinned
-	// ServerName, with a CA pool re-read from disk, and runs on resumed
-	// sessions too. ServerName stays set so SNI is still sent.
-	return credentials.NewTLS(&tls.Config{
-		ServerName:         reloader.serverName,
-		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: true, //nolint:gosec // G402: verified in VerifyConnection.
-		VerifyConnection:   reloader.verifyConnection,
-	}), nil
+	return newReloadingCredentials(caFile, serverName)
 }
 
-// caReloader verifies server certificates against the CA bundle as it is on
-// disk at handshake time, so a cert-manager CA rotation takes effect without a
-// restart. Handshakes are rare, one per connection, so the file is simply
-// read again for each.
-type caReloader struct {
+// reloadingCredentials are client transport credentials that verify the
+// server against the CA bundle as it is on disk at handshake time, so a
+// cert-manager CA rotation takes effect without a restart. Every handshake
+// reads the bundle into the roots of a fresh TLS configuration and hands the
+// connection to gRPC's standard TLS credentials, so the verification itself
+// is the standard library's. Handshakes are rare, one per connection, so the
+// file is simply read again for each.
+type reloadingCredentials struct {
 	caFile     string
 	serverName string
 }
 
-// newCAReloader builds a reloader for caFile and loads the bundle once, so a
-// broken CA file fails startup rather than the first handshake.
-func newCAReloader(caFile, serverName string) (*caReloader, error) {
-	r := &caReloader{caFile: caFile, serverName: serverName}
+// newReloadingCredentials loads the bundle once, so a broken CA file fails
+// startup rather than the first handshake.
+func newReloadingCredentials(caFile, serverName string) (*reloadingCredentials, error) {
+	c := &reloadingCredentials{caFile: caFile, serverName: serverName}
 
-	if _, err := r.pool(); err != nil {
+	if _, err := c.pool(); err != nil {
 		return nil, fmt.Errorf("failed to load deployment platform connector CA bundle from %s: %w", caFile, err)
 	}
 
-	return r, nil
+	return c, nil
 }
 
 // pool parses the CA bundle as it is on disk right now.
-func (r *caReloader) pool() (*x509.CertPool, error) {
-	pemBytes, err := os.ReadFile(r.caFile)
+func (c *reloadingCredentials) pool() (*x509.CertPool, error) {
+	pemBytes, err := os.ReadFile(c.caFile)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", r.caFile, err)
+		return nil, fmt.Errorf("read %s: %w", c.caFile, err)
 	}
 
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(pemBytes) {
-		return nil, fmt.Errorf("no certificates parsed from %s", r.caFile)
+		return nil, fmt.Errorf("no certificates parsed from %s", c.caFile)
 	}
 
 	return pool, nil
 }
 
-// verifyConnection performs the verification InsecureSkipVerify turned off,
-// on every handshake including resumed ones, against the CA pool as it is on
-// disk right now and the pinned server name.
-func (r *caReloader) verifyConnection(cs tls.ConnectionState) error {
-	return r.verifyChain(cs.PeerCertificates)
+// ClientHandshake implements credentials.TransportCredentials with the roots
+// read for this handshake. The standard credentials take the name to verify
+// from the authority they are given, so the pinned server name is passed in
+// place of the dial authority: verification and SNI both use it, which is
+// what HEALTH_PUBLISH_TLS_SERVER_NAME promises when it differs from the
+// target host.
+func (c *reloadingCredentials) ClientHandshake(
+	ctx context.Context, _ string, rawConn net.Conn,
+) (net.Conn, credentials.AuthInfo, error) {
+	roots, err := c.pool()
+	if err != nil {
+		_ = rawConn.Close()
+
+		return nil, nil, err
+	}
+
+	return credentials.NewTLS(&tls.Config{
+		ServerName: c.serverName,
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    roots,
+	}).ClientHandshake(ctx, c.serverName, rawConn)
 }
 
-// verifyChain checks the presented chain: the leaf must chain to the current
-// CA pool through the presented intermediates and carry the pinned name.
-func (r *caReloader) verifyChain(certs []*x509.Certificate) error {
-	if len(certs) == 0 {
-		return fmt.Errorf("deployment platform connector presented no certificate")
-	}
+// ServerHandshake implements credentials.TransportCredentials; these
+// credentials only dial.
+func (c *reloadingCredentials) ServerHandshake(net.Conn) (net.Conn, credentials.AuthInfo, error) {
+	return nil, nil, errors.New("deployment platform connector credentials are for dialing only")
+}
 
-	roots, err := r.pool()
-	if err != nil {
-		return err
-	}
+// Info implements credentials.TransportCredentials with what the standard
+// TLS credentials report for the same configuration.
+func (c *reloadingCredentials) Info() credentials.ProtocolInfo {
+	return credentials.NewTLS(&tls.Config{ServerName: c.serverName, MinVersion: tls.VersionTLS12}).Info()
+}
 
-	intermediates := x509.NewCertPool()
-	for _, cert := range certs[1:] {
-		intermediates.AddCert(cert)
-	}
+// Clone implements credentials.TransportCredentials.
+func (c *reloadingCredentials) Clone() credentials.TransportCredentials {
+	clone := *c
 
-	if _, err := certs[0].Verify(x509.VerifyOptions{
-		Roots:         roots,
-		Intermediates: intermediates,
-		DNSName:       r.serverName,
-	}); err != nil {
-		return fmt.Errorf("failed to verify deployment platform connector certificate: %w", err)
-	}
+	return &clone
+}
+
+// OverrideServerName implements credentials.TransportCredentials; gRPC has
+// deprecated it in favour of grpc.WithAuthority but still requires it.
+func (c *reloadingCredentials) OverrideServerName(name string) error {
+	c.serverName = name
 
 	return nil
 }

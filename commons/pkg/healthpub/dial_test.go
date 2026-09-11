@@ -82,15 +82,10 @@ func socketFallback(t *testing.T, called *atomic.Bool) func() (*grpc.ClientConn,
 	return func() (*grpc.ClientConn, error) {
 		called.Store(true)
 
-		conn, err := grpc.NewClient("unix:///run/nvsentinel/nvsentinel.sock",
+		// The connection is handed to the publisher through the returned
+		// Option, and Publisher.Close is its only owner: no cleanup here.
+		return grpc.NewClient("unix:///run/nvsentinel/nvsentinel.sock",
 			grpc.WithTransportCredentials(insecure.NewCredentials()))
-		if err != nil {
-			return nil, err
-		}
-
-		t.Cleanup(func() { _ = conn.Close() })
-
-		return conn, nil
 	}
 }
 
