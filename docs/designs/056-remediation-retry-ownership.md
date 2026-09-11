@@ -16,7 +16,7 @@ These layers do not currently share a failure contract. The janitor-provider con
 
 Fault Remediation already persists [`AttemptCount`](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/fault-remediation/pkg/annotation/annotation_interface.go#L52-L55) in the node remediation-state annotation. [`RecordRemediationAttempt`](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/fault-remediation/pkg/annotation/annotation.go#L147-L166) increments the count before maintenance CR creation. The count belongs to one equivalence group in one quarantine session. The current global `maxRemediationAttempts` value limits the count when it is greater than zero. Its default value of zero preserves unlimited legacy retries.
 
-Setting `RebootNode.status.conditions[NodeReady]` to `False` for every signal failure does not solve the problem safely. Janitor stops after it sets `completionTime`, but Fault Remediation interprets the false completion condition as permission to create another CR. With an unlimited attempt policy, this can create maintenance CRs indefinitely. A timeout can also have an ambiguous outcome: OCI might have accepted the reboot even when the client did not receive a response.
+Setting `RebootNode.status.conditions[NodeReady]` to `False` for every signal failure does not solve the problem safely. Janitor stops after it sets `completionTime`, but Fault Remediation interprets the false completion condition as permission to create another CR. With an unlimited attempt policy, this can create maintenance CRs indefinitely. A timeout can also have an ambiguous outcome: the provider might have accepted the reboot even when the client did not receive a response.
 
 Fault Remediation currently marks the health event remediated after it creates a maintenance CR. It does not watch maintenance CR status changes. A terminal Janitor status update therefore does not start a new Fault Remediation reconciliation.
 
@@ -55,7 +55,7 @@ status:
       status: "True"
       observedGeneration: 1
       reason: TransientFailure
-      message: OCI reported that the instance is currently being modified
+      message: The provider reported that the instance is busy
 ```
 
 Do not append one `AttemptComplete` condition for each retry. Kubernetes conditions represent the current state of one object, not an attempt history. Each maintenance CR represents one attempt.
@@ -81,7 +81,7 @@ status:
       status: "True"
       observedGeneration: 1
       reason: TransientFailure
-      message: OCI reported that the instance is currently being modified
+      message: The provider reported that the instance is busy
 ```
 
 Fault Remediation then creates a second CR for the next attempt:
@@ -131,7 +131,7 @@ Use this versioned contract:
 - `ErrorInfo.metadata["provider_code"]`: the provider error code, when available
 - `ErrorInfo.metadata["http_status_code"]`: the HTTP status code, when available
 
-The initial reason vocabulary contains only the failures required by [issue #1805](https://github.com/NVIDIA/NVSentinel/issues/1805):
+The initial reason vocabulary contains only the required failure modes:
 
 - `RESOURCE_BUSY`: the provider cannot accept the operation because it is modifying the resource.
 - `REQUEST_TIMEOUT`: the provider request exceeded its deadline.
@@ -148,8 +148,8 @@ metadata:
   contract_version: "1"
   failure_class: TRANSIENT
   operation: reboot
-  provider: oci
-  provider_code: Conflict
+  provider: example-csp
+  provider_code: ResourceBusy
   http_status_code: "409"
 ```
 
@@ -157,11 +157,9 @@ A valid `failure_class` controls automatic retry. `ErrorInfo.reason` describes t
 
 A missing detail, malformed detail, unsupported version, or invalid `failure_class` produces `PermanentFailure`. A Go type in janitor-provider can implement this contract, but it is not the public contract.
 
-Use `Unavailable`, `ResourceExhausted`, or `Aborted` with `failure_class=TRANSIENT`. Use the most specific non-retryable canonical code with `failure_class=PERMANENT`. Treat `DeadlineExceeded`, `Unknown`, and `Internal` as permanent for automatic retry unless a valid transient class proves that durable idempotency makes another request safe.
+Each provider plugin selects the canonical gRPC code and `failure_class` from its provider-specific semantics. Consumers must not infer `failure_class` from the gRPC code alone.
 
-Classify an error as transient only when the provider proves that it did not accept the operation or when the same idempotency key makes repetition safe. Classify all other errors as permanent for automatic retry. This includes invalid credentials, permission denial, malformed provider IDs, unsupported actions, and ambiguous transport failures.
-
-The OCI provider can classify `409 IncorrectState`, `409 LockConflict`, rate limiting, and the observed instance-modification conflict as transient. OCI does not provide a distinct error code for the last case. The OCI classifier can use a narrow status, code, and message predicate at the provider boundary until OCI provides a stable field. An unmatched message is permanent for automatic retry. No downstream component parses the provider message.
+A plugin marks an error transient only when repetition is safe. It uses stable SDK classifiers and provider error codes when available. It can use a narrow message predicate only when no stable field exists. All other errors are permanent for automatic retry. No downstream component parses provider messages.
 
 ### Idempotency
 
@@ -296,7 +294,7 @@ An old plugin returns no valid failure detail. Janitor records `PermanentFailure
 - Reuse the operation ID for provider idempotency where the provider supports it.
 - Treat ambiguous timeouts as permanent when the provider cannot prove idempotency.
 
-The OCI provider continues to use the OCI SDK retry classifier. It adds the observed `409 Conflict` response with the `currently being modified` message because the OCI default classifier does not include that response.
+Each provider implementation uses its SDK retry classifier where available. Provider-specific exceptions stay inside that provider package.
 
 ### Janitor
 
@@ -360,7 +358,7 @@ The OCI provider continues to use the OCI SDK retry classifier. It adds the obse
 
 ### Positive
 
-- Transient OCI failures can recover without losing the remediation request.
+- Transient CSP failures can recover without losing the remediation request.
 - Permanent failures stop without creating repeated CRs.
 - Ambiguous outcomes do not cause an automatic duplicate reboot.
 - Operators can inspect the session, attempt count, and failure class.
@@ -387,49 +385,25 @@ The OCI provider continues to use the OCI SDK retry classifier. It adds the obse
 
 ## Alternatives Considered
 
-### Retry only inside the OCI provider
+### Keep all retries in the provider or Janitor
 
-**Rejected** because: Provider retries solve short API failures but do not define terminal state or cross-CR attempt limits.
-
-### Set `NodeReady=False` for every signal failure
-
-**Rejected** because: Fault Remediation treats the condition as permission to create another CR. The legacy unlimited policy can cause an infinite loop.
-
-### Let Janitor own all retries
-
-**Rejected** because: Janitor does not own the health event, equivalence group, or quarantine-session attempt budget.
+**Rejected** because: Neither component owns the quarantine-session attempt budget.
 
 ### Retry every failed maintenance CR
 
-**Rejected** because: Permission errors and malformed requests cannot recover through repetition. Ambiguous timeouts can also duplicate a destructive operation.
+**Rejected** because: Permanent and ambiguous failures can cause repeated destructive operations.
 
-### Parse error messages outside the provider
+### Store retry state only on maintenance CRs
 
-**Rejected** because: Provider messages are not stable cross-module interfaces. A provider-local classifier can use a narrow, tested fallback and fail closed on unmatched text.
+**Rejected** because: Each attempt creates a new CR, and TTL cleanup removes old CRs.
 
-### Change the meaning of `maxRemediationAttempts=0`
+### Infer retryability from gRPC codes or messages
 
-**Rejected** because: Zero currently means unlimited attempts. Reinterpreting the existing value breaks user configuration.
+**Rejected** because: Codes do not show whether the provider accepted a request, and messages are not stable interfaces.
 
-### Store the attempt count only on each maintenance CR
+### Reuse the unlimited legacy attempt policy
 
-**Rejected** because: Each retry creates a new CR. No individual CR can represent the complete quarantine-session budget.
-
-### Poll maintenance CR status from the original health event
-
-**Rejected** because: Long-running polling adds Kubernetes API load and depends on one in-memory workqueue item. Informer events provide restart-safe status triggers.
-
-### Use only gRPC status codes for classification
-
-**Rejected** because: A transport timeout can occur before or after the provider accepts the operation. The same code can therefore represent safe and ambiguous outcomes.
-
-### Store terminal outcome only on the maintenance CR
-
-**Rejected** because: TTL or operator deletion removes the evidence. The workflow state must retain the last outcome before the CR disappears.
-
-### Count attempts per action
-
-**Rejected** because: Fault Remediation deduplicates and supersedes work by equivalence group. Action-scoped counters can bypass the shared group budget.
+**Rejected** because: Destructive retries need a finite limit. Changing the meaning of the existing zero value would break compatibility.
 
 ## Notes
 
@@ -437,8 +411,8 @@ The OCI provider continues to use the OCI SDK retry classifier. It adds the obse
 - Coordination continues through maintenance CR status and versioned node annotations.
 - The first implementation target is `RebootNode`.
 - Other built-in maintenance CRs can adopt the same contract in later changes.
-- This ADR does not approve unlimited automatic retries for destructive operations.
-- Pull request #1806 implements only bounded OCI SDK request retries. It does not implement cross-CR retries or this status contract.
+- An action that uses this retry contract must set `maxAttempts` to a value greater than zero. It cannot use unlimited automatic retries.
+- Provider-specific request retries are separate from cross-CR retries and this status contract.
 - A maintainer must accept this proposed ADR before implementation starts.
 
 ## References
