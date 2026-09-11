@@ -44,7 +44,7 @@ COPY commons/ ../../commons/
 RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -o simple-health-client main.go
 
-FROM nvcr.io/nvidia/distroless/go:v3.1.13@sha256:694780ff504fb1c5e25b1f7fa4d618e55db8dcc12b8ca98b37b8959eb3f94e89
+FROM nvcr.io/nvidia/distroless/go:v4.1.2@sha256:731531712c92ee24001a4a6e0a0897c4fa542432d7186c5d73b0110ba6d0da16
 
 WORKDIR /app
 
