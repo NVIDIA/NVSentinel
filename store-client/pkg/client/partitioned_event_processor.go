@@ -123,11 +123,13 @@ func (p *PartitionedEventProcessor) Start(ctx context.Context) error {
 
 	p.wg.Wait()
 
+	p.checkpointMu.Lock()
 	if flushToken := p.tracker.Flush(); len(flushToken) > 0 {
 		if markErr := p.markProcessed(ctx, flushToken); markErr != nil {
 			slog.Error("Failed to mark final checkpoint token", "error", markErr)
 		}
 	}
+	p.checkpointMu.Unlock()
 
 	return err
 }
@@ -307,13 +309,13 @@ func (p *PartitionedEventProcessor) handleTask(ctx context.Context, task *partit
 }
 
 func (p *PartitionedEventProcessor) onTaskCompleted(ctx context.Context, seq uint64) {
+	p.checkpointMu.Lock()
+	defer p.checkpointMu.Unlock()
+
 	advancedToken := p.tracker.MarkDone(seq)
 	if len(advancedToken) == 0 {
 		return
 	}
-
-	p.checkpointMu.Lock()
-	defer p.checkpointMu.Unlock()
 
 	if markErr := p.markProcessed(ctx, advancedToken); markErr != nil {
 		slog.Error("Failed to checkpoint low-water mark resume token", "error", markErr)
