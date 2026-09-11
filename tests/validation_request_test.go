@@ -19,21 +19,23 @@ package tests
 
 import (
 	"context"
-	"fmt"
 	"testing"
-	"time"
 
 	"tests/helpers"
 
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
 
+type validationContextKey string
+
+const keyVRName validationContextKey = "vrName"
+
 func TestValidationController(t *testing.T) {
-	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	vrName := "e2e-vr-" + suffix
+	const gpuPresentLabel = "nvidia.com/gpu.present"
 
 	feature := features.New("TestValidationController").
 		WithLabel("suite", "validation-controller")
@@ -50,27 +52,35 @@ func TestValidationController(t *testing.T) {
 		require.NoError(t, err, "failed to cordon node")
 		t.Logf("Node %s cordoned", nodeName)
 
+		err = helpers.SetNodeLabel(ctx, client, nodeName, gpuPresentLabel, "true")
+		require.NoError(t, err, "failed to label node as gpu-present")
+		t.Logf("Labeled node %s as %s=true to trigger newNodeValidation", nodeName, gpuPresentLabel)
+
 		return context.WithValue(ctx, keyNodeName, nodeName)
 	})
 
-	feature.Assess("ValidationRequest is created and reaches Running", func(ctx context.Context, t *testing.T,
-		c *envconf.Config) context.Context {
-		nodeName := ctx.Value(keyNodeName).(string)
+	feature.Assess("ValidationRequest is automatically created for a new node",
+		func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			nodeName := ctx.Value(keyNodeName).(string)
 
-		client, err := c.NewClient()
-		require.NoError(t, err, "failed to create kubernetes client")
+			client, err := c.NewClient()
+			require.NoError(t, err, "failed to create kubernetes client")
 
-		_, err = helpers.CreateValidationRequest(ctx, client, vrName, []string{nodeName}, []string{"e2e-smoke-test"})
-		require.NoError(t, err, "ValidationRequest should be created successfully")
+			vr := helpers.WaitForValidationRequestForNode(ctx, t, client, nodeName)
+			require.NotNil(t, vr, "a ValidationRequest should be automatically for the new node")
 
-		helpers.WaitForValidationRequestPhase(ctx, t, client, vrName, "Running")
+			helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName, "NewNodeValidated", "", "",
+				corev1.ConditionTrue)
 
-		return ctx
-	})
+			helpers.WaitForValidationRequestPhase(ctx, t, client, vr.GetName(), "Running")
+
+			return context.WithValue(ctx, keyVRName, vr.GetName())
+		})
 
 	feature.Assess("Node has active-validation-request and validation-session annotations", func(ctx context.Context,
 		t *testing.T, c *envconf.Config) context.Context {
 		nodeName := ctx.Value(keyNodeName).(string)
+		vrName := ctx.Value(keyVRName).(string)
 
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
@@ -88,6 +98,8 @@ func TestValidationController(t *testing.T) {
 
 	feature.Assess("ValidationRequest reaches Succeeded", func(ctx context.Context, t *testing.T,
 		c *envconf.Config) context.Context {
+		vrName := ctx.Value(keyVRName).(string)
+
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
 
@@ -124,6 +136,11 @@ func TestValidationController(t *testing.T) {
 
 		err = helpers.SetNodeCordon(ctx, client, nodeName, false)
 		require.NoError(t, err, "failed to uncordon node")
+
+		err = helpers.RemoveNodeLabel(ctx, client, nodeName, gpuPresentLabel)
+		require.NoError(t, err, "failed to remove gpu-present label")
+
+		vrName := ctx.Value(keyVRName).(string)
 
 		target := &unstructured.Unstructured{}
 		target.SetGroupVersionKind(helpers.ValidationRequestGVK)

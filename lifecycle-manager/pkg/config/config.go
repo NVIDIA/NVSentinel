@@ -22,10 +22,8 @@ import (
 	"slices"
 	"strings"
 	"text/template"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
@@ -37,8 +35,6 @@ import (
 const (
 	defaultMaxConcurrentGroups  = 3
 	defaultMinimumNodesPerBatch = 1
-	defaultNewNodeBatchPeriod   = 5 * time.Minute
-	defaultNewNodeCondition     = "NewNodeValidated"
 )
 
 // Config holds the ValidationConfiguration and provider templates
@@ -146,16 +142,6 @@ func applyDefaults(cfg *v1alpha1.ValidationConfiguration) {
 		}
 
 		cfg.Spec.Tests[name] = t
-	}
-
-	if cfg.Spec.NewNodeValidation != nil {
-		if cfg.Spec.NewNodeValidation.BatchPeriod.Duration == 0 {
-			cfg.Spec.NewNodeValidation.BatchPeriod = metav1.Duration{Duration: defaultNewNodeBatchPeriod}
-		}
-
-		if len(cfg.Spec.NewNodeValidation.Condition) == 0 {
-			cfg.Spec.NewNodeValidation.Condition = defaultNewNodeCondition
-		}
 	}
 }
 
@@ -341,8 +327,12 @@ func validateTest(cfg *v1alpha1.ValidationConfiguration, name string, t v1alpha1
 func validateNewNodeValidation(cfg *v1alpha1.ValidationConfiguration) []error {
 	var errs []error
 
-	if cfg.Spec.NewNodeValidation.BatchPeriod.Duration < 0 {
-		errs = append(errs, fmt.Errorf("spec.newNodeValidation.batchPeriod: must be greater than zero"))
+	if len(cfg.Spec.NewNodeValidation.Condition) == 0 {
+		errs = append(errs, fmt.Errorf("spec.newNodeValidation.condition: must not be empty"))
+	}
+
+	if cfg.Spec.NewNodeValidation.BatchPeriodSeconds <= 0 {
+		errs = append(errs, fmt.Errorf("spec.newNodeValidation.batchPeriodSeconds: must be greater than zero"))
 	}
 
 	if len(cfg.Spec.NewNodeValidation.NewNodeTests) == 0 && len(cfg.Spec.DefaultTests) == 0 {

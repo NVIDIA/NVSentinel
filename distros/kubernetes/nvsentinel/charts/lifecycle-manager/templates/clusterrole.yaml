@@ -67,6 +67,14 @@ rules:
   - update
   - patch
   - delete
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+  - update
 {{- /*
   Add permissions for API groups and resources from config.providers.
 */}}
