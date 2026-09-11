@@ -16,6 +16,8 @@ package config
 
 import (
 	"fmt"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"time"
 
@@ -38,6 +40,9 @@ const (
 	WriteSyslogEventEnvVar    = "WRITE_SYSLOG_EVENT"
 	NodeNameEnvVar            = "NODE_NAME"
 	UploadURLBaseEnvVar       = "UPLOAD_URL_BASE"
+	// ContainerDriverRoot is the driverRoot that makes the reset command chroot into the reset
+	// container itself instead of into the mounted driver filesystem.
+	ContainerDriverRoot = "/"
 )
 
 func applyConfigDefaults(config *Config) {
@@ -148,6 +153,10 @@ func applyResetJobDefaults(config *ResetJobConfig) {
 	if config.HostDriverRootPath == "" {
 		config.HostDriverRootPath = DefaultHostDriverRootPath
 	}
+
+	if config.DriverRoot == "" {
+		config.DriverRoot = DriverRootMountPath
+	}
 }
 
 func getResources(resources ResourceRequirements) (*corev1.ResourceRequirements, error) {
@@ -195,12 +204,22 @@ func getImagePullSecrets(imagePullSecrets []ImagePullSecret) []corev1.LocalObjec
 
 // getDefaultGPUResetJobTemplate returns the default JobTemplateSpec for GPU reset jobs.
 func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []ImagePullSecret,
-	resources ResourceRequirements, hostDriverRootPath string, runtimeClassName string, writeSyslogEvent bool,
-	uploadURL string) (*batchv1.JobTemplateSpec, error) {
+	resources ResourceRequirements, hostDriverRootPath string, driverRoot string, runtimeClassName string,
+	writeSyslogEvent bool, uploadURL string) (*batchv1.JobTemplateSpec, error) {
 	imagePullSecrets := getImagePullSecrets(secrets)
 
 	if hostDriverRootPath == "" {
 		hostDriverRootPath = DefaultHostDriverRootPath
+	}
+
+	if driverRoot == "" {
+		driverRoot = DriverRootMountPath
+	}
+
+	// Reject here, at janitor startup, rather than when a Job is created for a node that is
+	// already cordoned and drained.
+	if !filepath.IsAbs(driverRoot) {
+		return nil, fmt.Errorf("resetJob.driverRoot %q must be an absolute path", driverRoot)
 	}
 
 	containerResources, err := getResources(resources)
@@ -255,7 +274,7 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 								},
 								{
 									Name:  "DRIVER_ROOT",
-									Value: DriverRootMountPath,
+									Value: driverRoot,
 								},
 								{
 									Name:  WriteSyslogEventEnvVar,
@@ -285,11 +304,11 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 								},
 								{
 									Name:      DriverRootVolumeName,
-									MountPath: DriverRootMountPath,
+									MountPath: driverRoot,
 								},
 								{
 									Name:      HostSysVolumeName,
-									MountPath: DriverRootMountPath + HostSysPath,
+									MountPath: filepath.Join(driverRoot, HostSysPath),
 								},
 							},
 							SecurityContext: &corev1.SecurityContext{
@@ -308,6 +327,17 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 	}
 	if len(runtimeClassName) > 0 {
 		job.Spec.Template.Spec.RuntimeClassName = &runtimeClassName
+	}
+
+	// Kubernetes cannot mount the host driver root over "/", and a chroot into "/" is a no-op,
+	// so the reset command uses the nvidia-smi of the reset container image instead.
+	if driverRoot == ContainerDriverRoot {
+		podSpec := &job.Spec.Template.Spec
+		podSpec.Volumes = slices.DeleteFunc(podSpec.Volumes, func(volume corev1.Volume) bool {
+			return volume.Name == DriverRootVolumeName
+		})
+		podSpec.Containers[0].VolumeMounts = slices.DeleteFunc(podSpec.Containers[0].VolumeMounts,
+			func(mount corev1.VolumeMount) bool { return mount.Name == DriverRootVolumeName })
 	}
 
 	return job, nil
