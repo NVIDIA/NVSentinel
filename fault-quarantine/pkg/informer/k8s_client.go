@@ -28,7 +28,10 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -53,6 +56,7 @@ var customBackoff = wait.Backoff{
 
 type FaultQuarantineClient struct {
 	Clientset                kubernetes.Interface
+	DynamicClient            dynamic.Interface
 	DryRunMode               bool
 	NodeInformer             *NodeInformer
 	cordonedReasonLabelKey   string
@@ -90,18 +94,39 @@ func newFaultQuarantineClient(config *rest.Config, dryRun bool,
 		return nil, fmt.Errorf("error creating clientset: %w", err)
 	}
 
+	dynamicClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("error creating dynamic client: %w", err)
+	}
+
 	nodeInformer, err := NewNodeInformer(clientset, resyncPeriod, gpuNodeLabelKey, gpuNodeLabelValue)
 	if err != nil {
 		return nil, fmt.Errorf("error creating node informer: %w", err)
 	}
 
 	client := &FaultQuarantineClient{
-		Clientset:    clientset,
-		DryRunMode:   dryRun,
-		NodeInformer: nodeInformer,
+		Clientset:     clientset,
+		DynamicClient: dynamicClient,
+		DryRunMode:    dryRun,
+		NodeInformer:  nodeInformer,
 	}
 
 	return client, nil
+}
+
+func (c *FaultQuarantineClient) CreateValidationRequestResource(ctx context.Context, gvr schema.GroupVersionResource,
+	obj *unstructured.Unstructured) error {
+	if c.DryRunMode {
+		slog.InfoContext(ctx, "DryRun mode enabled, skipping ValidationRequest creation", "name", obj.GetName())
+		return nil
+	}
+
+	_, err := c.DynamicClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
+	if err != nil && !errors.IsAlreadyExists(err) {
+		return fmt.Errorf("failed to create ValidationRequest %s: %w", obj.GetName(), err)
+	}
+
+	return nil
 }
 
 func (c *FaultQuarantineClient) EnsureCircuitBreakerConfigMap(ctx context.Context,
@@ -424,6 +449,13 @@ func (c *FaultQuarantineClient) handleCordon(ctx context.Context, node *v1.Node,
 	}
 }
 
+var annotationMergers = map[string]func(existingValue, incomingValue string) (string, error){
+	common.QuarantineHealthEventAnnotationKey:              mergeQuarantineHealthEventAnnotation,
+	common.QuarantineHealthEventAppliedTaintsAnnotationKey: mergeAppliedTaintsAnnotation,
+	common.QuarantineHealthEventAppliedLabelsAnnotationKey: mergeAppliedLabelsAnnotation,
+	common.QuarantineValidationHealthEventAnnotationKey:    mergeQuarantineValidationHealthEventAnnotation,
+}
+
 func (c *FaultQuarantineClient) applyAnnotations(
 	ctx context.Context, node *v1.Node, annotations map[string]string, nodename string,
 ) error {
@@ -434,26 +466,8 @@ func (c *FaultQuarantineClient) applyAnnotations(
 	slog.InfoContext(ctx, "Setting annotations on node", "node", nodename, "annotations", annotations)
 
 	for annotationKey, annotationValue := range annotations {
-		if annotationKey == common.QuarantineHealthEventAnnotationKey {
-			mergedValue, err := mergeQuarantineHealthEventAnnotation(node.Annotations[annotationKey], annotationValue)
-			if err != nil {
-				return fmt.Errorf("failed to merge annotation %q on node %s: %w", annotationKey, nodename, err)
-			}
-
-			annotationValue = mergedValue
-		}
-
-		if annotationKey == common.QuarantineHealthEventAppliedTaintsAnnotationKey {
-			mergedValue, err := mergeAppliedTaintsAnnotation(node.Annotations[annotationKey], annotationValue)
-			if err != nil {
-				return fmt.Errorf("failed to merge annotation %q on node %s: %w", annotationKey, nodename, err)
-			}
-
-			annotationValue = mergedValue
-		}
-
-		if annotationKey == common.QuarantineHealthEventAppliedLabelsAnnotationKey {
-			mergedValue, err := mergeAppliedLabelsAnnotation(node.Annotations[annotationKey], annotationValue)
+		if merge, ok := annotationMergers[annotationKey]; ok {
+			mergedValue, err := merge(node.Annotations[annotationKey], annotationValue)
 			if err != nil {
 				return fmt.Errorf("failed to merge annotation %q on node %s: %w", annotationKey, nodename, err)
 			}
@@ -503,6 +517,30 @@ func mergeAppliedLabelsAnnotation(existingValue, incomingValue string) (string, 
 		parseAppliedLabelsAnnotation,
 		mergeAppliedLabels,
 	)
+}
+
+func mergeQuarantineValidationHealthEventAnnotation(existingValue, incomingValue string) (string, error) {
+	return mergeAnnotation(
+		existingValue,
+		incomingValue,
+		"quarantine validation health event",
+		parseQuarantineValidationHealthEventAnnotation,
+		mergeQuarantineValidationHealthEvents,
+	)
+}
+
+func parseQuarantineValidationHealthEventAnnotation(value string) ([]common.HealthEventWithTests, error) {
+	var events []common.HealthEventWithTests
+	if err := json.Unmarshal([]byte(value), &events); err != nil {
+		return nil, err
+	}
+
+	return events, nil
+}
+
+func mergeQuarantineValidationHealthEvents(existing,
+	incoming []common.HealthEventWithTests) []common.HealthEventWithTests {
+	return append(existing, incoming...)
 }
 
 func mergeAnnotation[T any](

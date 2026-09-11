@@ -18,6 +18,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
+# date -d is not a valid option on macOS
+get_epoch_time() {
+    local ts=$1
+    date -d "$ts" +%s 2>/dev/null || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$ts" +%s 2>/dev/null
+}
+
 # Written by fault-remediation in dry-run as well as live.
 NVSENTINEL_STATE_LABEL="dgxc.nvidia.com/nvsentinel-state"
 
@@ -392,7 +398,7 @@ wait_for_node_quarantine() {
 
 wait_for_node_unquarantine() {
     local node=$1
-    local timeout=${UAT_UNQUARANTINE_TIMEOUT:-300}
+    local timeout=${UAT_UNQUARANTINE_TIMEOUT:-600}
     local elapsed=0
 
     # Never cordoned in dry-run.
@@ -528,7 +534,7 @@ wait_for_gpu_reset() {
             if [ -z "$start_time" ] || [ "$start_time" == "null" ]; then
                 continue
             fi
-            local start_ts=$(date -d "$start_time" +%s)
+            local start_ts=$(get_epoch_time "$start_time")
 
             if [ "$start_ts" -gt "$current_ts" ] && [ "$current_node" == "$node" ]; then
                 for current_uuid in $uuids; do
@@ -555,10 +561,64 @@ wait_for_gpu_reset() {
     wait_for_node_unquarantine "$node"
 }
 
+verify_validation_request() {
+    local node=$1
+    local current_ts=$2
+
+    if [[ "${NVSENTINEL_DRY_RUN:-false}" == "true" ]]; then
+        log "fault-remediation is in dry-run, skipping ValidationRequest check"
+        return 0
+    fi
+
+    local fault_quarantine_configmap
+    fault_quarantine_configmap=$(kubectl get configmaps -n nvsentinel fault-quarantine -o jsonpath="{.data.config\.toml}")
+
+    if ! echo "$fault_quarantine_configmap" | grep -A1 "^\[validation\]" | grep -q "enabled = true"; then
+        log "Post-remediation validation is not enabled, skipping ValidationRequest check"
+        return 0
+    fi
+
+    log "Checking for a succeeded ValidationRequest for node $node..."
+
+    local vr_list
+    vr_list=$(kubectl get validationrequests -o json | jq -c '.items[]')
+    local IFS=$'\n'
+    local matching_vr=""
+
+    for vr in $vr_list; do
+        local created=$(echo "$vr" | jq -r '.metadata.creationTimestamp')
+        local vr_node=$(echo "$vr" | jq -r '.spec.nodes[0].name')
+
+        if [ -z "$created" ] || [ "$created" == "null" ]; then
+            continue
+        fi
+        local created_ts=$(get_epoch_time "$created")
+
+        if [ "$created_ts" -gt "$current_ts" ] && [ "$vr_node" == "$node" ]; then
+            matching_vr="$vr"
+        fi
+    done
+
+    if [ -z "$matching_vr" ]; then
+        error "No ValidationRequest found for node $node created after test start"
+    fi
+
+    local vr_name=$(echo "$matching_vr" | jq -r '.metadata.name')
+    local phase=$(echo "$matching_vr" | jq -r '.status.phase')
+
+    if [ "$phase" != "Succeeded" ]; then
+        error "ValidationRequest $vr_name for node $node did not succeed (phase=$phase)"
+    fi
+
+    log "ValidationRequest $vr_name for node $node succeeded"
+}
+
 test_gpu_monitoring_dcgm() {
     log "========================================="
     log "Test 1: GPU monitoring via DCGM"
     log "========================================="
+
+    local current_ts=$(date +%s)
 
     local gpu_node
     gpu_node=$(get_gpu_node_with_healthy_gpu_monitor)
@@ -626,6 +686,8 @@ test_gpu_monitoring_dcgm() {
     recover_injected_dcgm "$gpu_node"
     reset_dry_run_node_state "$gpu_node"
 
+    verify_validation_request "$gpu_node" "$current_ts"
+
     log "Test 1 PASSED ✓"
 }
 
@@ -645,6 +707,8 @@ test_xid_monitoring_syslog() {
     log "======================================================"
 
     skip_syslog_tests_in_dry_run && return 0
+
+    local current_ts=$(date +%s)
 
     local gpu_node
     gpu_node=$(get_gpu_node_with_healthy_syslog_monitor)
@@ -670,6 +734,8 @@ test_xid_monitoring_syslog() {
 
     log "Waiting for node to reboot and recover..."
     wait_for_boot_id_change "$gpu_node" "$original_boot_id"
+
+    verify_validation_request "$gpu_node" "$current_ts"
 
     delete_node_debug_pod
 

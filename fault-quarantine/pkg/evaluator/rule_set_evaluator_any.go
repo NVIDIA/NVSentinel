@@ -54,7 +54,7 @@ func (anyEval *AnyRuleSetEvaluator) Evaluate(
 	return common.RuleEvaluationFailed, nil
 }
 
-func NewAnyRuleSetEvaluator(evaluators []RuleEvaluator, ruleset config.RuleSet) *AnyRuleSetEvaluator {
+func NewAnyRuleSetEvaluator(evaluators []RuleEvaluator, ruleset config.RuleSetMeta) *AnyRuleSetEvaluator {
 	return &AnyRuleSetEvaluator{
 		Name:       ruleset.Name,
 		Version:    ruleset.Version,

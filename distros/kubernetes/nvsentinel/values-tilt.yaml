@@ -275,6 +275,9 @@ gpu-health-monitor:
 fault-quarantine:
   logLevel: debug
 
+  validation:
+    enabled: true
+
   affinity:
     podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
@@ -4387,7 +4390,7 @@ lifecycle-manager:
     tests:
       e2e-smoke-test:
         provider: k8s-job-provider
-        image: alpine:3.21
+        image: public.ecr.aws/docker/library/alpine:3.21
         command:
           - sh
           - -c

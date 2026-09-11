@@ -78,7 +78,7 @@ List of accepted token audiences. Must include the value set in `janitor.config.
 ```yaml
 janitor-provider:
   csp:
-    provider: "kind"  # Options: kind, kwok, aws, gcp, azure, oci, nebius, lambda, generic
+    provider: "kind"  # Options: kind, kwok, aws, gcp, azure, oci, nebius, lambda, generic, label
 ```
 
 Only one provider is active at a time. `kind` and `kwok` are for development only; they simulate reboots without contacting any cloud API.
@@ -367,3 +367,22 @@ Name of an image pull secret to attach to the reboot Job, if `rebootImage` is pu
 
 ### writeSyslog
 When `true`, the Job writes an attribution entry to the node's syslog via `logger` before executing the reboot command. Defaults to `false`.
+
+## Label provider
+
+Requests reboot and terminate by labeling the Node. An external controller running on the Kubernetes control plane can watch those labels and perform the required action. After reboot completion, that controller **MUST** remove the reboot label. The node is considered ready once the reboot label is removed and the node's boot ID has changed.
+
+```yaml
+janitor-provider:
+  csp:
+    provider: "label"
+    label:
+      rebootKey: "nke.nvidia.com/reboot=requested-by-nvsentinel"
+      terminateKey: "nke.nvidia.com/terminate=requested-by-nvsentinel"
+```
+
+### rebootKey
+Node label spec used to request a reboot, in `key=value` form so reboot and terminate can use different values. Defaults to `nke.nvidia.com/reboot=requested-by-nvsentinel`.
+
+### terminateKey
+Node label spec used to request termination, in `key=value` form. Defaults to `nke.nvidia.com/terminate=requested-by-nvsentinel`.
