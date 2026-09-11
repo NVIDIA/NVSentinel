@@ -10,15 +10,15 @@
 
 The current retry behavior is split across three components:
 
-1. A provider implementation calls its SDK. SDK retry behavior varies by provider. The OCI implementation makes one [`InstanceAction`](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor-provider/pkg/csp/oci/oci.go#L121-L130) call without an explicit retry policy.
-2. Janitor-provider converts every provider submission error to gRPC [`Internal`](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor-provider/main.go#L70-L98).
-3. Janitor treats context deadline errors and gRPC `Unavailable` or `DeadlineExceeded` as [transient](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor/pkg/controller/rebootnode_controller.go#L332-L351).
+1. A provider implementation calls its SDK. SDK retry behavior varies by provider. The OCI implementation makes one [`InstanceAction`](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor-provider/pkg/csp/oci/oci.go#L122-L129) call without an explicit retry policy.
+2. For `SendRebootSignal`, Janitor-provider converts a provider error to gRPC [`Internal`](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor-provider/main.go#L89-L97).
+3. Janitor treats context deadline errors and gRPC `Unavailable` or `DeadlineExceeded` as [transient](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor/pkg/controller/rebootnode_controller.go#L334-L350).
 
-Janitor [requeues the same `RebootNode` after 30 seconds](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor/pkg/controller/rebootnode_controller.go#L518-L544) for a transient signal error. The CR does not persist a retry count or next retry time. This loop has no signal-submission attempt limit. A non-transient error [sets `SignalSent=False` and `completionTime`](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor/pkg/controller/rebootnode_controller.go#L546-L563).
+Janitor [requeues the same `RebootNode` after 30 seconds](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor/pkg/controller/rebootnode_controller.go#L519-L544) for a transient signal error. The CR does not persist a retry count or next retry time. This loop has no signal-submission attempt limit. A non-transient error [sets `SignalSent=False` and `completionTime`](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor/pkg/controller/rebootnode_controller.go#L547-L563).
 
-Fault Remediation does not watch maintenance CR status. It watches only event-store and cold-start channels ([code](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/fault-remediation/pkg/reconciler/reconciler.go#L1944-L1969)). Another maintenance CR is possible only when another event is reconciled and the recorded CR is failed or missing ([code](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/fault-remediation/pkg/reconciler/reconciler.go#L1792-L1819)).
+Fault Remediation does not watch maintenance CR status. It watches only event-store and cold-start channels ([code](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/fault-remediation/pkg/reconciler/reconciler.go#L1947-L1968)). Another maintenance CR is possible only when another event is reconciled and the recorded CR is failed or missing ([code](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/fault-remediation/pkg/reconciler/reconciler.go#L1793-L1818)).
 
-Fault Remediation's `maxRemediationAttempts` limits maintenance CR creation for an equivalence group. It does not limit provider calls on one CR. [`AttemptCount`](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/fault-remediation/pkg/annotation/annotation_interface.go#L52-L55) is persisted only when the configured limit is greater than zero ([code](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/fault-remediation/pkg/reconciler/reconciler.go#L1540-L1553)).
+Fault Remediation's `maxRemediationAttempts` limits maintenance CR creation for an equivalence group. It does not limit provider calls on one CR. [`AttemptCount`](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/fault-remediation/pkg/annotation/annotation_interface.go#L52-L55) is persisted only when the configured limit is greater than zero ([code](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/fault-remediation/pkg/reconciler/reconciler.go#L1544-L1553)).
 
 These retry paths use different meanings of "attempt":
 
@@ -40,7 +40,7 @@ A maintenance CR represents one requested maintenance operation. Janitor perform
 
 Provider implementations disable SDK retries for destructive submissions by default. A provider can enable a bounded SDK retry policy only when every repeated HTTP request uses provider-supported idempotency. The Janitor attempt limit bounds signal RPCs; it does not count SDK HTTP retries.
 
-A provider can derive its idempotency token from the existing [`SendRebootSignalRequest.cr_name`](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/api/proto/csp/v1alpha1/provider.proto#L25-L29). This decision does not add another operation identifier.
+A provider can derive its idempotency token from the existing [`SendRebootSignalRequest.cr_name`](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/api/proto/csp/v1alpha1/provider.proto#L26-L29). This decision does not add another operation identifier.
 
 ### Provider retry contract
 
@@ -194,7 +194,7 @@ If the final allowed call returns a retry-safe rejection, Janitor:
 
 1. Sets `SignalSent=False` with reason `AttemptsExhausted`.
 2. Clears `nextAttemptTime` and sets `completionTime`.
-3. Adds `nvsentinel.nvidia.com/preserve: "true"` to prevent TTL cleanup ([code](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor/pkg/ttl/ttl.go#L128-L138)).
+3. Adds the [`nvsentinel.nvidia.com/preserve`](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor/pkg/ttl/ttl.go#L42-L44) annotation with value `"true"`, which [prevents TTL cleanup](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor/pkg/ttl/ttl.go#L134-L138).
 4. Emits a metric and Kubernetes Event with the attempt count and last failure reason.
 5. Leaves the node quarantined for operator review.
 
