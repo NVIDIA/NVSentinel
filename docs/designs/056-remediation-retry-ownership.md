@@ -1,447 +1,312 @@
-# ADR-056: `Reliability` — Remediation Retry Ownership and Failure Classification
+# ADR-056: `Reliability` — Bounded Provider Signal Retries
 
 > Status: Proposed
 
 ## Context
 
-The OCI janitor provider can return transient errors when it sends a reboot request. Examples include request timeouts and conflicts while OCI modifies an instance. [Issue #1805](https://github.com/NVIDIA/NVSentinel/issues/1805) reports that these errors currently terminate a `RebootNode` operation.
+[Issue #1805](https://github.com/NVIDIA/NVSentinel/issues/1805) reports transient failures when the OCI janitor provider submits a reboot. The provider can reject a request temporarily while another instance operation is active.
 
-The remediation path has three retry layers:
+### Current behavior
 
-1. A CSP SDK can retry one API request.
-2. Janitor can [requeue the same maintenance CR after a transient CSP plugin error](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor/pkg/controller/rebootnode_controller.go#L518-L544).
-3. Fault Remediation [allows another attempt after a failed or missing CR](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/fault-remediation/pkg/reconciler/reconciler.go#L1800-L1818) and [creates the next maintenance resource](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/fault-remediation/pkg/reconciler/reconciler.go#L413-L421).
+The current retry behavior is split across three components:
 
-These layers do not currently share a failure contract. The janitor-provider converts all CSP failures to gRPC `Internal`. Janitor treats only `Unavailable` and `DeadlineExceeded` as transient. Fault Remediation checks one configured completion condition and cannot distinguish a transient failure from a permanent failure.
+1. A provider implementation calls its SDK. SDK retry behavior varies by provider. The OCI implementation makes one [`InstanceAction`](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor-provider/pkg/csp/oci/oci.go#L121-L130) call without an explicit retry policy.
+2. Janitor-provider converts every provider submission error to gRPC [`Internal`](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor-provider/main.go#L70-L98).
+3. Janitor treats context deadline errors and gRPC `Unavailable` or `DeadlineExceeded` as [transient](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor/pkg/controller/rebootnode_controller.go#L332-L351).
 
-Fault Remediation already persists [`AttemptCount`](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/fault-remediation/pkg/annotation/annotation_interface.go#L52-L55) in the node remediation-state annotation. [`RecordRemediationAttempt`](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/fault-remediation/pkg/annotation/annotation.go#L147-L166) increments the count before maintenance CR creation. The count belongs to one equivalence group in one quarantine session. The current global `maxRemediationAttempts` value limits the count when it is greater than zero. Its default value of zero preserves unlimited legacy retries.
+Janitor [requeues the same `RebootNode` after 30 seconds](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor/pkg/controller/rebootnode_controller.go#L518-L544) for a transient signal error. The CR does not persist a retry count or next retry time. This loop has no signal-submission attempt limit. A non-transient error [sets `SignalSent=False` and `completionTime`](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor/pkg/controller/rebootnode_controller.go#L546-L563).
 
-Setting `RebootNode.status.conditions[NodeReady]` to `False` for every signal failure does not solve the problem safely. Janitor stops after it sets `completionTime`, but Fault Remediation interprets the false completion condition as permission to create another CR. With an unlimited attempt policy, this can create maintenance CRs indefinitely. A timeout can also have an ambiguous outcome: the provider might have accepted the reboot even when the client did not receive a response.
+Fault Remediation does not watch maintenance CR status. It watches only event-store and cold-start channels ([code](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/fault-remediation/pkg/reconciler/reconciler.go#L1944-L1969)). Another maintenance CR is possible only when another event is reconciled and the recorded CR is failed or missing ([code](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/fault-remediation/pkg/reconciler/reconciler.go#L1792-L1819)).
 
-Fault Remediation currently marks the health event remediated after it creates a maintenance CR. It does not watch maintenance CR status changes. A terminal Janitor status update therefore does not start a new Fault Remediation reconciliation.
+Fault Remediation's `maxRemediationAttempts` limits maintenance CR creation for an equivalence group. It does not limit provider calls on one CR. [`AttemptCount`](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/fault-remediation/pkg/annotation/annotation_interface.go#L52-L55) is persisted only when the configured limit is greater than zero ([code](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/fault-remediation/pkg/reconciler/reconciler.go#L1540-L1553)).
 
-The current counter increments before it checks the limit. A denied fourth attempt can therefore leave `AttemptCount=4` when only three attempts ran. Failed CR removal preserves the count, but malformed annotation JSON returns an empty state and silently resets the safety budget.
+These retry paths use different meanings of "attempt":
 
-Maintenance CR names are deterministic from the node and health event. Repeating CR creation after a failure can resolve to the same failed object through `AlreadyExists`. TTL cleanup can later remove that object, after which Fault Remediation treats the missing CR as permission to retry.
+- A signal attempt is one Janitor call to the provider plugin.
+- A remediation attempt is one maintenance CR created by Fault Remediation.
+- Provider SDK retries can make multiple HTTP calls inside one signal attempt.
 
-The system needs to persist both facts:
-
-- How many remediation attempts have occurred in the current quarantine session.
-- Whether the latest terminal failure is transient or permanent for automatic retry.
+A destructive submission is safe to repeat only when the provider confirms that repetition is safe. A lost response can mean that the provider accepted the first request. Retrying that request without provider evidence can reboot the node twice.
 
 ## Decision
 
-Separate request retry from remediation retry. The CSP plugin owns bounded retries for one idempotent CSP request. Janitor records the terminal result of one maintenance CR. Fault Remediation owns cross-CR retry decisions and the remediation attempt budget.
+A maintenance CR represents one requested maintenance operation. Janitor performs bounded signal retries on that CR. Fault Remediation does not create another CR to retry a provider submission error.
 
-Persist the workflow state in a versioned node annotation. Persist each attempt result on its maintenance CR while that CR exists.
+### Retry ownership
 
-### Maintenance CR outcome
+- The provider plugin decides whether repeating a provider operation is safe.
+- Janitor owns signal retry count, backoff, and terminal state for one maintenance CR.
+- Fault Remediation continues to own event-to-CR creation, equivalence-group deduplication, and its existing remediation CR limit.
 
-Add an `AttemptComplete` condition to built-in Janitor maintenance CRs. The condition becomes `True` only when the attempt is terminal. Its reason is the machine-readable outcome:
+Provider implementations disable SDK retries for destructive submissions by default. A provider can enable a bounded SDK retry policy only when every repeated HTTP request uses provider-supported idempotency. The Janitor attempt limit bounds signal RPCs; it does not count SDK HTTP retries.
 
-- `Succeeded`: the requested maintenance operation succeeded.
-- `TransientFailure`: the operation was not accepted, and another attempt is safe.
-- `PermanentFailure`: automatic retry is not safe or cannot succeed without an external change.
-- `Superseded`: another maintenance CR owns the same operation.
-- `Cancelled`: the target or quarantine session no longer exists.
+A provider can derive its idempotency token from the existing [`SendRebootSignalRequest.cr_name`](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/api/proto/csp/v1alpha1/provider.proto#L25-L29). This decision does not add another operation identifier.
 
-Use the condition as follows:
+### Provider retry contract
 
-```yaml
-status:
-  completionTime: "2026-09-10T23:00:00Z"
-  conditions:
-    - type: AttemptComplete
-      status: "True"
-      observedGeneration: 1
-      reason: TransientFailure
-      message: The provider reported that the instance is busy
-```
+Janitor-provider returns gRPC `Aborted` with a standard `google.rpc.RetryInfo` detail only when the provider confirms that it rejected the operation and another signal attempt is safe. Janitor requires both `Aborted` and valid `RetryInfo` to retry.
 
-Do not append one `AttemptComplete` condition for each retry. Kubernetes conditions represent the current state of one object, not an attempt history. Each maintenance CR represents one attempt.
+A bare gRPC code does not authorize retry. A missing or malformed `RetryInfo`, a lost response, and a transport timeout are permanent for automatic retry.
 
-For example, the first CR records a transient failure:
-
-```yaml
-apiVersion: janitor.dgxc.nvidia.com/v1alpha1
-kind: RebootNode
-metadata:
-  name: maintenance-node-a-event-b-attempt-1
-  annotations:
-    nvsentinel.dgxc.nvidia.com/remediation-session-id: session-123
-    nvsentinel.dgxc.nvidia.com/remediation-operation-id: operation-456
-    nvsentinel.dgxc.nvidia.com/remediation-attempt: "1"
-spec:
-  force: false
-  nodeName: node-a
-status:
-  completionTime: "2026-09-10T23:00:00Z"
-  conditions:
-    - type: AttemptComplete
-      status: "True"
-      observedGeneration: 1
-      reason: TransientFailure
-      message: The provider reported that the instance is busy
-```
-
-Fault Remediation then creates a second CR for the next attempt:
-
-```yaml
-apiVersion: janitor.dgxc.nvidia.com/v1alpha1
-kind: RebootNode
-metadata:
-  name: maintenance-node-a-event-b-attempt-2
-  annotations:
-    nvsentinel.dgxc.nvidia.com/remediation-session-id: session-123
-    nvsentinel.dgxc.nvidia.com/remediation-operation-id: operation-456
-    nvsentinel.dgxc.nvidia.com/remediation-attempt: "2"
-spec:
-  force: false
-  nodeName: node-a
-status:
-  completionTime: "2026-09-10T23:02:00Z"
-  conditions:
-    - type: AttemptComplete
-      status: "True"
-      observedGeneration: 1
-      reason: Succeeded
-      message: The node became ready after the reboot
-```
-
-Both CRs use the same session ID and operation ID. The v2 node annotation stores `AttemptCount=2` and `LastOutcome=Succeeded`. It does not store an unbounded history array.
-
-Keep `SignalSent` and `NodeReady` as step conditions. They describe what happened inside the attempt. They do not control cross-CR retries.
-
-For a signal failure, Janitor leaves `NodeReady=Unknown` and sets `AttemptComplete=True`. This prevents an older Fault Remediation instance from interpreting the new status as permission to retry.
-
-Janitor sets `completionTime` only with `AttemptComplete=True`. Janitor includes `observedGeneration` on every terminal condition. The admission webhook rejects maintenance CR spec changes after processing starts.
-
-### Failure classification contract
-
-The CSP plugin classifies the original error before gRPC removes provider-specific information. It returns a canonical gRPC status with a structured `google.rpc.ErrorInfo` detail.
-
-Use this versioned contract:
-
-- `ErrorInfo.domain`: `csp.nvsentinel.nvidia.com`
-- `ErrorInfo.reason`: a stable failure reason
-- `ErrorInfo.metadata["contract_version"]`: `1`
-- `ErrorInfo.metadata["failure_class"]`: `TRANSIENT` or `PERMANENT`
-- `ErrorInfo.metadata["operation"]`: `reboot` or `terminate`
-- `ErrorInfo.metadata["provider"]`: the configured provider name
-- `ErrorInfo.metadata["provider_code"]`: the provider error code, when available
-- `ErrorInfo.metadata["http_status_code"]`: the HTTP status code, when available
-
-The initial reason vocabulary contains only the required failure modes:
+The provider can also attach `google.rpc.ErrorInfo` for diagnostics. `ErrorInfo.reason` records a stable provider-independent reason. The initial reasons are:
 
 - `RESOURCE_BUSY`: the provider cannot accept the operation because it is modifying the resource.
 - `REQUEST_TIMEOUT`: the provider request exceeded its deadline.
 - `PROVIDER_ERROR`: no more specific stable reason exists.
 
-Add a new reason only when a real failure needs distinct operator diagnostics. Do not add reasons to predict future provider behavior.
+Add another reason only when a real failure needs distinct operator diagnostics. Janitor does not derive retryability from `ErrorInfo.reason`, provider messages, HTTP status, or gRPC code.
 
-For example:
+For example, a provider can return both details:
 
 ```yaml
-domain: csp.nvsentinel.nvidia.com
-reason: RESOURCE_BUSY
-metadata:
-  contract_version: "1"
-  failure_class: TRANSIENT
-  operation: reboot
-  provider: example-csp
-  provider_code: ResourceBusy
-  http_status_code: "409"
+retryInfo:
+  retryDelay: 30s
+errorInfo:
+  domain: csp.nvsentinel.nvidia.com
+  reason: RESOURCE_BUSY
+  metadata:
+    provider: example-csp
+    provider_code: ResourceBusy
 ```
 
-A valid `failure_class` controls automatic retry. `ErrorInfo.reason` describes the failure and must not control retry. Consumers accept new reason values without changing retry behavior.
+Each provider owns the mapping from its SDK errors to this contract. It can use stable SDK classifiers and provider error codes. Provider-specific message matching stays inside the provider package.
 
-A missing detail, malformed detail, unsupported version, or invalid `failure_class` produces `PermanentFailure`. A Go type in janitor-provider can implement this contract, but it is not the public contract.
+### Persisted retry state
 
-Each provider plugin selects the canonical gRPC code and `failure_class` from its provider-specific semantics. Consumers must not infer `failure_class` from the gRPC code alone.
+Add `signalRetry` to the maintenance CR status:
 
-A plugin marks an error transient only when repetition is safe. It uses stable SDK classifiers and provider error codes when available. It can use a narrow message predicate only when no stable field exists. All other errors are permanent for automatic retry. No downstream component parses provider messages.
+```yaml
+status:
+  signalRetry:
+    attempts: 1
+    nextAttemptTime: "2026-09-10T23:00:30Z"
+    lastFailure:
+      class: Transient
+      reason: RESOURCE_BUSY
+  conditions:
+    - type: SignalSent
+      status: "Unknown"
+      observedGeneration: 1
+      reason: RetryScheduled
+      message: The provider reported that the resource is busy
+```
 
-For example, a `RebootNode` readiness success produces `Succeeded`. A safe transient rejection produces `TransientFailure`. Permanent or ambiguous submission errors produce `PermanentFailure`. A readiness timeout also produces `PermanentFailure` by default. A duplicate lock produces `Superseded`, and a missing target node produces `Cancelled`.
+The fields have these meanings:
 
-### Idempotency
+- `attempts`: the number of provider signal calls that Janitor started.
+- `nextAttemptTime`: the absolute time of the scheduled retry. Omit it when no retry is scheduled.
+- `lastFailure.class`: `Transient` when `Aborted` and valid `RetryInfo` permit another call. Otherwise, use `Permanent`.
+- `lastFailure.reason`: the stable diagnostic reason from `ErrorInfo.reason`.
 
-Create one stable operation ID for an equivalence group in one quarantine session. Persist it in the node remediation-state annotation and copy it to every maintenance CR created for that operation.
+No retry field belongs in `spec`. The spec contains the requested operation, not controller progress. No new retry annotation or attempt-history array is required.
 
-Add an optional `operation_id` field to the CSP gRPC requests. This protobuf change is additive. Janitor passes the persisted operation ID to the plugin. A provider with idempotency support derives its provider token from this ID and reuses the token across RPC and CR retries.
+Janitor sets `observedGeneration` on every `SignalSent` and `NodeReady` condition. The admission webhook rejects all `RebootNode.spec` changes after `signalRetry` or `startTime` is present. Retry state never carries across a spec generation change.
 
-A provider without durable idempotency must classify an ambiguous outcome as permanent. Fault Remediation does not retry it automatically.
+Multiple signal attempts remain on one CR. For example, after the second signal attempt succeeds:
 
-### Retry ownership
+```yaml
+status:
+  signalRetry:
+    attempts: 2
+  conditions:
+    - type: SignalSent
+      status: "True"
+      observedGeneration: 1
+      reason: Succeeded
+      message: request-123
+```
 
-The CSP plugin retries transient provider errors within one RPC. These retries are bounded, context-aware, and use one idempotency token.
+Conditions show the current CR state. Logs, metrics, traces, and Kubernetes Events contain per-attempt history.
 
-Janitor can retry communication with the plugin on the same CR. A configurable signal retry deadline bounds this loop. Same-CR retries do not increment the remediation attempt count.
+### State transitions
 
-When the same-CR deadline expires, Janitor records one terminal attempt outcome. Explicit safe rejection becomes `TransientFailure`. Ambiguous dispatch becomes `PermanentFailure`.
-
-Fault Remediation watches maintenance CR status through shared informers. It does not mark the health event remediated when it only creates a CR. It updates the event and retry state after it observes `AttemptComplete=True`.
-
-Fault Remediation applies this state machine:
+Janitor persists retry state before each external call:
 
 ```text
-AttemptComplete is absent or not True
-  -> keep waiting
+New CR
+  -> set attempts=1 and SignalSent=Unknown/Dispatching
+  -> call the provider
 
-AttemptComplete=True, reason=Succeeded
-  -> finish the remediation session successfully
+Provider accepts the signal
+  -> set SignalSent=True
+  -> continue the existing readiness loop
 
-AttemptComplete=True, reason=TransientFailure, attempt count below the limit
-  -> reserve and create one new maintenance CR
+Provider returns Aborted with valid RetryInfo and attempts < maxAttempts
+  -> set lastFailure.class=Transient
+  -> persist nextAttemptTime
+  -> requeue the same CR
 
-AttemptComplete=True, reason=TransientFailure, attempt count at the limit
-  -> declare remediation failed
+Provider does not authorize retry
+  -> set lastFailure.class=Permanent
+  -> set SignalSent=False and completionTime
 
-AttemptComplete=True, reason=PermanentFailure
-  -> declare remediation failed
-
-AttemptComplete=True, reason=Superseded
-  -> follow the active maintenance CR without consuming another attempt
-
-AttemptComplete=True, reason=Cancelled
-  -> close the remediation session without retry
+Provider authorizes retry after the final allowed call
+  -> set SignalSent=False/AttemptsExhausted and completionTime
 ```
 
-An attempt limit includes the first maintenance CR. A limit of three permits the first attempt and two later attempts.
+Janitor clears `nextAttemptTime` when it starts the next call or reaches a terminal state.
+
+If Janitor restarts while `SignalSent` has reason `Dispatching`, the provider outcome is ambiguous. Janitor fails closed and does not call the provider again.
+
+Readiness checks do not consume signal attempts. The existing operation timeout continues to bound readiness observation after the provider accepts the signal.
 
 ### Retry execution policy
 
-The failure classification decides whether Fault Remediation can retry. The retry policy decides when it retries and when it stops.
+Configure signal retry independently from Fault Remediation's `maxRemediationAttempts`:
 
-The first attempt starts immediately. After attempt `k` returns `TransientFailure`, Fault Remediation calculates this backoff cap:
+```yaml
+rebootNodeController:
+  signalRetry:
+    maxAttempts: 3
+    initialBackoffSeconds: 30
+    maxBackoffSeconds: 600
+```
+
+`maxAttempts` includes the first provider call. It must be greater than zero. `initialBackoffSeconds` must be greater than zero. `maxBackoffSeconds` must be greater than or equal to the initial value.
+
+The default policy uses three attempts, a 30-second initial backoff, and a 600-second maximum backoff. Setting `maxAttempts` to one disables signal retry.
+
+To disable signal retry while keeping the initial provider call:
+
+```yaml
+rebootNodeController:
+  signalRetry:
+    maxAttempts: 1
+```
+
+Zero is invalid because `maxAttempts` includes the initial call. With a value of one, Janitor makes the initial call but never schedules another call. Provider SDK retries are separate and remain disabled by default for destructive submissions.
+
+After failed attempt `n`, Janitor calculates the backoff cap:
 
 ```text
-min(maxBackoff, initialBackoff * 2^(k-1))
+min(maxBackoff, initialBackoff * 2^(n-1))
 ```
 
-Fault Remediation uses full jitter and selects the actual delay between zero and the cap. It persists the resulting `NextAttemptAt` value before it schedules another attempt. A controller restart must not reset the delay.
+Janitor uses full jitter and selects a delay between zero and the cap. If `RetryInfo.retry_delay` is longer, Janitor uses the provider delay. Janitor persists the resulting absolute `nextAttemptTime` before it returns `RequeueAfter`.
 
-The CSP plugin can use its provider SDK retry policy inside one RPC. That policy must be bounded by the RPC context, reuse the operation ID, and honor a provider retry delay when the SDK supports one.
+A controller restart reads `attempts` and `nextAttemptTime` from the CR. It does not reset the count or backoff.
 
-Fault Remediation checks `maxAttempts` before it reserves a new CR. When `AttemptCount` equals `maxAttempts`, it:
+### Retry exhaustion
 
-1. Does not create another maintenance CR.
-2. Persists `TerminalReason=AttemptsExhausted` in the v2 state.
-3. Marks the health event terminal with remediation unsuccessful.
-4. Marks the node remediation state failed and keeps the node quarantined.
-5. Emits a structured log, metric, and Kubernetes event.
+Before a call, Janitor checks the persisted count. If `attempts` is greater than or equal to `maxAttempts`, it does not start another call. Otherwise, it increments and persists `attempts`, sets `SignalSent=Unknown` with reason `Dispatching`, and starts the call. A call that increments `attempts` to `maxAttempts` is allowed.
 
-No automatic retry occurs again in the same quarantine session. An operator must resolve the node condition before a new session can start.
+If the final allowed call returns a retry-safe rejection, Janitor:
 
-For example, this policy allows three attempts:
+1. Sets `SignalSent=False` with reason `AttemptsExhausted`.
+2. Clears `nextAttemptTime` and sets `completionTime`.
+3. Adds `nvsentinel.nvidia.com/preserve: "true"` to prevent TTL cleanup ([code](https://github.com/NVIDIA/NVSentinel/blob/67240a6c7754feda59488850b5360982e81839ab/janitor/pkg/ttl/ttl.go#L128-L138)).
+4. Emits a metric and Kubernetes Event with the attempt count and last failure reason.
+5. Leaves the node quarantined for operator review.
 
-```yaml
-maintenance:
-  retryPolicies:
-    restart:
-      maxAttempts: 3
-      initialBackoffSeconds: 30
-      maxBackoffSeconds: 600
-```
+Janitor persists the `preserve` annotation before it writes terminal status. If the metadata update fails, Janitor returns an error and does not set `completionTime`. It writes `SignalSent=False` and `completionTime` only after preservation succeeds.
 
-Attempt 1 starts immediately. A transient failure waits up to 30 seconds before attempt 2. Another transient failure waits up to 60 seconds before attempt 3. A transient failure from attempt 3 produces `AttemptsExhausted`; attempt 4 is not created.
-
-### Persisted attempt state and configuration
-
-Create a versioned `remediation-state-v2` node annotation. Do not add safety fields to the existing typed annotation because an old writer drops unknown JSON fields.
-
-Store these fields in each v2 equivalence-group entry:
-
-- `SessionID`: identifies the quarantine session.
-- `SessionStartedAt`: rejects stale cancellation events.
-- `OperationID`: supplies the cross-attempt idempotency key.
-- `AttemptCount`: counts attempts that were reserved.
-- `PendingAttempt`: records the reserved attempt number and deterministic CR name.
-- `NextAttemptAt`: preserves the backoff deadline across restarts.
-- `LastOutcome`: preserves terminal outcome after CR deletion.
-- `TerminalReason`: records why the session stopped.
-
-Treat malformed or unsupported annotation state as an error. Fault Remediation must stop instead of returning an empty state.
-
-Reserve an attempt atomically before CR creation. The reservation checks the limit before it increments the counter. A rejected reservation does not increment `AttemptCount`. A failed CR creation consumes the reserved attempt. A reconciliation after a crash reuses `PendingAttempt` instead of reserving another number.
-
-Use a unique deterministic name for each attempt. Include a bounded hash and the attempt number. `AlreadyExists` is success only when the existing CR carries the same session ID, operation ID, and attempt number.
-
-Copy the health event ID, equivalence group, session ID, operation ID, and attempt number to maintenance CR annotations. Fault Remediation uses these values to map informer events back to persisted workflow state.
-
-Define retry limits by equivalence group because the persisted counter has that scope:
-
-```yaml
-maintenance:
-  retryPolicies:
-    restart:
-      maxAttempts: 3
-      initialBackoffSeconds: 30
-      maxBackoffSeconds: 600
-  actions:
-    RESTART_VM:
-      completeConditionType: NodeReady
-      attemptOutcomeConditionType: AttemptComplete
-      equivalenceGroup: restart
-```
-
-The configured policy name must match `equivalenceGroup`. All actions in one group therefore share one limit. `maxAttempts` must be greater than zero.
-
-Keep `completeConditionType` unchanged for legacy status handling. Add the optional `attemptOutcomeConditionType` and `retryPolicies` keys. Keep the existing global `maxRemediationAttempts` key and its zero-value semantics for actions without the new contract.
-
-Persist `LastOutcome` before removing a CR reference. A missing or TTL-deleted CR uses the persisted outcome. If neither the CR nor a persisted outcome exists, classify the result as permanent and do not retry.
-
-A cancellation event clears state only when it belongs to the current session. An older cancellation event cannot clear a newer session budget.
+Janitor uses the same terminal handling for a permanent or ambiguous signal error. No automatic signal retry occurs after terminal failure. An operator removes `preserve` only after verifying provider state and ending the quarantine session. Removing it while the session remains active can let TTL deletion make Fault Remediation treat the CR as missing.
 
 ### Compatibility and rollout
 
-The new condition, protobuf field, CR annotations, and configuration keys are additive. Existing objects continue to deserialize.
+The new CR status fields are optional and additive. Existing CRs continue to deserialize.
 
-New Fault Remediation reads `AttemptComplete` when the configured condition exists. It falls back to the unchanged `completeConditionType` for CRs written by an older Janitor. Legacy `NodeReady=True` means success. Legacy `NodeReady=False` becomes `PermanentFailure` and cannot start an automatic retry. Legacy `NodeReady=Unknown` remains in progress.
+Before upgrading Janitor, stop new `RebootNode` creation and resolve every nonterminal existing CR. The object alone cannot distinguish an unprocessed new CR from a legacy CR whose provider response was lost. Resume CR creation only after all Janitor replicas run the new version.
 
-An older Fault Remediation instance continues to read `NodeReady`. A new Janitor leaves `NodeReady=Unknown` for every non-success terminal outcome, including signal failure, readiness timeout, readiness-check failure, and superseded work. The older instance therefore fails closed.
+Deploy Janitor before or with the provider change. Old Janitor treats `Aborted` as terminal, and new Janitor treats an old provider error as terminal. Mixed versions therefore fail closed. The retry contract does not constrain rollback order.
 
-Use a two-release rollout because an already released Fault Remediation binary does not understand the v2 annotation:
-
-1. Release a compatibility Fault Remediation version that detects `remediation-state-v2` and stops legacy processing for that node.
-2. Deploy the compatibility version to all Fault Remediation replicas.
-3. Release and enable v2 Fault Remediation with the new informer, state format, outcome handling, and legacy fallback.
-4. Release Janitor with `AttemptComplete`.
-5. Release CSP plugins with the operation ID and structured error details.
-
-Do not roll back Fault Remediation below the compatibility version while any v2 annotation exists. The upgrade and rollback runbooks must check this condition.
-
-An old plugin returns no valid failure detail. Janitor records `PermanentFailure`, which stops automatic retries.
+This decision does not change the meaning of `FaultRemediated`, add a Fault Remediation CR informer, add a node-state annotation, or add a new operation-ID protobuf field.
 
 ## Implementation
 
 ### Janitor-provider
 
-- Implement the versioned `google.rpc.ErrorInfo` contract in shared gRPC server code.
-- Map provider SDK errors to transient or permanent.
-- Add the optional `operation_id` protobuf request field and regenerate bindings.
-- Keep provider SDK retries bounded and context-aware.
-- Reuse the operation ID for provider idempotency where the provider supports it.
-- Treat ambiguous timeouts as permanent when the provider cannot prove idempotency.
-
-Each provider implementation uses its SDK retry classifier where available. Provider-specific exceptions stay inside that provider package.
+- Map each provider's retry-safe errors to `Aborted` with `RetryInfo`.
+- Add optional `ErrorInfo` diagnostics.
+- Return no `RetryInfo` for ambiguous or permanent errors.
+- Keep provider SDK retries disabled for destructive submissions unless the provider guarantees idempotency.
 
 ### Janitor
 
-- Decode the structured gRPC failure detail.
-- Pass the operation ID to the plugin.
-- Bound same-CR signal retries with a persisted deadline.
-- Set `AttemptComplete` and `completionTime` when the attempt ends.
-- Keep `SignalSent` and `NodeReady` for step-level observability, but leave `NodeReady=Unknown` for non-success terminal outcomes.
-- Record `PermanentFailure` when the plugin returns an unstructured, malformed, or unsupported error detail.
-- Set `observedGeneration` and reject spec mutation after processing starts.
+- Add `signalRetry` to `RebootNodeStatus` and the CRD.
+- Add retry configuration and validation.
+- Persist `Dispatching`, attempt count, and retry deadline before external calls.
+- Implement bounded exponential backoff with full jitter.
+- Reject spec changes after retry processing starts.
+- Persist `preserve` before terminal status.
+- Preserve terminal signal failures from TTL cleanup.
+- Emit retry and exhaustion metrics and Kubernetes Events.
 
 ### Fault Remediation
 
-- Add shared informers for every configured maintenance GVK and enqueue status changes.
-- Stop marking a health event remediated immediately after CR creation.
-- Extend the CR status checker to return the attempt outcome.
-- Keep compatibility with `completeConditionType` and map an unclassified legacy failure to permanent.
-- Add `attemptOutcomeConditionType` and equivalence-group retry policies.
-- Store and validate retry safety state in the separate v2 node annotation.
-- Add the v2 guard in a compatibility release before enabling v2 writers.
-- Reserve each attempt atomically and reuse pending reservations after a crash.
-- Create another CR only for `TransientFailure` and only below the configured limit.
-- Use a unique deterministic CR name for each attempt.
-- Persist terminal outcomes before a CR can be deleted.
-- Set the node state to `remediation-failed` for permanent or exhausted failures.
-- Mark the health event terminal when no more attempts are allowed.
-
-### Documentation and observability
-
-- Document the equivalence-group retry policy in the Helm values and configuration guide.
-- Emit metrics for transient, permanent, and exhausted outcomes.
-- Include the session ID, operation ID, attempt number, and outcome in structured logs and traces.
-- Document how operators manually start a new session after they verify a permanent outcome.
+- Keep the current event-to-CR architecture.
+- Keep `maxRemediationAttempts` as the separate limit for maintenance CR creation.
+- Do not use it to limit Janitor provider calls.
 
 ### Testing
 
-- Test that a healthy node does not receive an additional reboot request.
-- Test that one operation reuses its idempotency token across RPC and CR retries.
-- Test that a permanent failure creates no additional maintenance CR.
-- Test that an unclassified or ambiguous failure creates no additional maintenance CR.
-- Test that a transient failure creates no more than the configured number of CRs.
-- Test that a denied attempt does not increment the count.
-- Test that pending attempt reservations survive crashes.
-- Test that attempt counts and outcomes survive controller restarts, CR removal, and TTL cleanup.
-- Test that malformed annotation state blocks remediation.
-- Test that a stale cancellation cannot clear a newer session.
-- Test every terminal `RebootNode` path.
-- Test rolling combinations of old and new Fault Remediation, Janitor, and janitor-provider versions.
+- Test one retry-safe failure followed by success.
+- Test that provider calls never exceed `maxAttempts`.
+- Test that the call which reaches `maxAttempts` is allowed.
+- Test that Janitor makes no call before `nextAttemptTime`.
+- Test that count and deadline survive restart.
+- Test that a bare timeout or gRPC `Unavailable` does not retry.
+- Test that restart from `Dispatching` fails closed.
+- Test that a spec change after processing starts is rejected.
+- Test that terminal status is not written when preservation fails.
+- Test that a healthy node receives no additional reboot signal.
+- Test that exhausted and permanent failures become terminal and preserved.
+- Test new Janitor with an old provider.
+- Test old Janitor with a new provider.
 
 ## Rationale
 
-- A CSP plugin has the provider-specific information needed to classify failures.
-- Janitor owns the maintenance CR and must publish an accurate attempt result.
-- Fault Remediation owns the remediation workflow and must control cross-CR attempts.
-- An explicit outcome condition is observable and does not require message parsing.
-- A finite equivalence-group limit prevents infinite destructive remediation loops.
-- Ambiguous and unclassified outcomes become permanent and fail closed.
-- Legacy fallback supports rolling upgrades and existing CRs.
+- The provider has the information required to authorize a safe retry.
+- Janitor owns the maintenance CR and can persist signal retry progress on that CR.
+- One CR continues to represent one requested maintenance operation.
+- Fault Remediation keeps its current event-to-CR responsibility.
+- Standard gRPC details avoid a custom cross-language retry protocol.
+- A finite persisted budget prevents unbounded destructive calls.
 
 ## Consequences
 
 ### Positive
 
-- Transient CSP failures can recover without losing the remediation request.
-- Permanent failures stop without creating repeated CRs.
-- Ambiguous outcomes do not cause an automatic duplicate reboot.
-- Operators can inspect the session, attempt count, and failure class.
-- Retry ownership is explicit across all three modules.
-- CR deletion cannot erase the retry decision.
+- Transient provider rejections can recover after Janitor restarts.
+- Ambiguous outcomes fail closed.
+- Operators can inspect retry count, next retry time, and failure reason on the CR.
+- The design does not add another workflow store or controller.
 
 ### Negative
 
-- The status contract becomes more complex.
-- Custom maintenance controllers must publish the configured conditions to use classified retries.
-- Ambiguous failures require operator verification before a new session.
-- The rollout spans Fault Remediation, Janitor, and CSP plugins.
-- Fault Remediation must watch dynamically configured maintenance CRDs.
-- Equivalence-group retry policy adds Helm and TOML configuration.
+- Providers must classify retry-safe errors.
+- A conservative classification can require operator action for a recoverable error.
+- Terminal signal failures remain preserved until an operator removes the annotation.
 
 ### Mitigations
 
-- Keep the legacy completion key and add an optional outcome key.
-- Treat missing classification as permanent.
-- Keep the existing global attempt setting unchanged.
-- Provide tested built-in defaults for Janitor CRs.
-- Persist workflow state before maintenance CR cleanup.
-- Add runbook steps for ambiguous outcomes and manual recovery.
+- Start with a small provider-specific classifier.
+- Add reasons only for observed failures.
+- Document how operators verify provider state and release preserved CRs.
 
 ## Alternatives Considered
 
-### Keep all retries in the provider or Janitor
+### Provider-only retry
 
-**Rejected** because: Neither component owns the quarantine-session attempt budget.
+**Rejected** because: Janitor restart would lose the retry budget and deadline.
 
-### Retry every failed maintenance CR
+### New maintenance CR for each signal retry
 
-**Rejected** because: Permanent and ambiguous failures can cause repeated destructive operations.
-
-### Store retry state only on maintenance CRs
-
-**Rejected** because: Each attempt creates a new CR, and TTL cleanup removes old CRs.
+**Rejected** because: One requested operation could produce multiple CRs and duplicate destructive calls.
 
 ### Infer retryability from gRPC codes or messages
 
-**Rejected** because: Codes do not show whether the provider accepted a request, and messages are not stable interfaces.
+**Rejected** because: Transport errors can have ambiguous outcomes, and messages are unstable.
 
-### Reuse the unlimited legacy attempt policy
+### Unbounded Janitor requeue
 
-**Rejected** because: Destructive retries need a finite limit. Changing the meaning of the existing zero value would break compatibility.
+**Rejected** because: Destructive provider calls require a finite retry budget.
 
 ## Notes
 
-- This decision does not require direct calls between Fault Remediation and Janitor.
-- Coordination continues through maintenance CR status and versioned node annotations.
-- The first implementation target is `RebootNode`.
-- Other built-in maintenance CRs can adopt the same contract in later changes.
-- An action that uses this retry contract must set `maxAttempts` to a value greater than zero. It cannot use unlimited automatic retries.
-- Provider-specific request retries are separate from cross-CR retries and this status contract.
+- The first implementation applies to `RebootNode.SendRebootSignal`.
+- The same contract can support other destructive provider submissions after separate review.
+- [Pull request #1806](https://github.com/NVIDIA/NVSentinel/pull/1806) implements provider SDK retries only. It does not persist a Janitor retry budget.
 - A maintainer must accept this proposed ADR before implementation starts.
 
 ## References
@@ -452,5 +317,4 @@ Each provider implementation uses its SDK retry classifier where available. Prov
 - [ADR-009: Fault Remediation Triggering](009-fault-remediation-triggering.md)
 - [ADR-017: Remediation Plugins](017-remediation-plugins.md)
 - [ADR-037: Janitor CR TTL Cleanup](037-janitor-cr-ttl-cleanup.md)
-- [Kubernetes API conventions](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md)
-- [gRPC status codes](https://grpc.io/docs/guides/status-codes/)
+- [gRPC richer error model](https://grpc.io/docs/guides/error/)
