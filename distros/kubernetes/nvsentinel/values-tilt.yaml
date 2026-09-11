@@ -4394,6 +4394,20 @@ lifecycle-manager:
         expression: >-
           !(has(node.metadata.annotations) &&
           "quarantineHealthEvent" in node.metadata.annotations)
+    newNodeValidation:
+      batchPeriodSeconds: 5
+      criteria:
+        - name: recently-joined
+          expression: >-
+            has(node.metadata.creationTimestamp) &&
+            now() - timestamp(node.metadata.creationTimestamp) < duration("2h")
+        - name: targeted-for-new-node-validation-test
+          expression: >-
+            has(node.metadata.labels) &&
+            "nvsentinel.dgxc.nvidia.com/new-node-validation-test" in node.metadata.labels &&
+            node.metadata.labels["nvsentinel.dgxc.nvidia.com/new-node-validation-test"] == "true"
+      newNodeTests:
+        - e2e-smoke-test
     tests:
       e2e-smoke-test:
         provider: k8s-job-provider
