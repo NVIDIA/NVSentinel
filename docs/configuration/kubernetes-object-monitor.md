@@ -64,6 +64,14 @@ Maximum time to wait for informer caches to synchronize on startup. Increase thi
 
 Policies define which Kubernetes resources to monitor and when to generate health events.
 
+The default chart configures only the `ReplaceNotReadyNode` policy. NPD condition
+policies are intentionally opt-in because NVSentinel does not install or own
+the cluster's NPD configuration. See the
+[NPD integration tutorial](../tutorials/integrating-node-problem-detector.md)
+and
+[NPD remediation values](../../distros/kubernetes/nvsentinel/values-npd-remediation.yaml)
+before making NPD conditions actionable.
+
 ### Policy Structure
 
 ```yaml

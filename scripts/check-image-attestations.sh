@@ -63,6 +63,7 @@ KO_IMAGES=(
     "nvsentinel/csp-health-monitor"
     "nvsentinel/maintenance-notifier"
     "nvsentinel/kubernetes-object-monitor"
+    "nvsentinel/nvcre-certification-monitor"
     "nvsentinel/labeler"
     "nvsentinel/node-drainer"
     "nvsentinel/janitor"

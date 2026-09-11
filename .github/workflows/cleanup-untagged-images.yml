@@ -84,6 +84,7 @@ jobs:
           - nvsentinel/maintenance-notifier
           - nvsentinel/event-exporter
           - nvsentinel/kubernetes-object-monitor
+          - nvsentinel/nvcre-certification-monitor
           - nvsentinel-log-collector
           - nvsentinel-file-server-cleanup
           - nvsentinel-health-events-analyzer
@@ -93,6 +94,7 @@ jobs:
           - nvsentinel/preflight-dcgm-diag
           - nvsentinel/nic-health-monitor
           - nvsentinel/preflight-nccl-allreduce
+          - nvsentinel/slurm-drain-monitor
 
     steps:
       - name: Delete untagged images for ${{ matrix.package }}

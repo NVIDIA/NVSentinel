@@ -27,7 +27,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
-	"go.mongodb.org/mongo-driver/v2/bson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -38,6 +37,7 @@ import (
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/publisher"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
 )
 
 type healthEventCursor struct {
@@ -349,20 +349,20 @@ func TestRecoveryIdentityCanBeReadAfterFullDocumentDecodeFails(t *testing.T) {
 			"errorCode": {"malformed": true}
 		}
 	}`)
-	bsonDocument, err := bson.Marshal(bson.M{
-		"healthevent": bson.M{
+	decodeBSON, err := testutils.NewBSONDecoder(map[string]any{
+		"healthevent": map[string]any{
 			"nodename": "node-a",
-			"entitiesimpacted": bson.A{
-				bson.M{"entitytype": "GPU_UUID", "entityvalue": "GPU-a"},
+			"entitiesimpacted": []any{
+				map[string]any{"entitytype": "GPU_UUID", "entityvalue": "GPU-a"},
 			},
-			"errorcode": bson.M{"malformed": true},
+			"errorcode": map[string]any{"malformed": true},
 		},
 	})
 	require.NoError(t, err)
 
 	for name, decode := range map[string]func(any) error{
 		"json": func(value any) error { return json.Unmarshal(jsonDocument, value) },
-		"bson": func(value any) error { return bson.Unmarshal(bsonDocument, value) },
+		"bson": decodeBSON,
 	} {
 		t.Run(name, func(t *testing.T) {
 			cursor := &rawRecoveryIdentityCursor{decode: decode}

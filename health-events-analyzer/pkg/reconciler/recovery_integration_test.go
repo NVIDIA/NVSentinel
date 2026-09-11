@@ -359,9 +359,8 @@ func TestRecoveryWatcherAcknowledgesAfterStorageWithRealProvider(t *testing.T) {
 		marked:              make(chan error, 1),
 	}
 
-	processor := client.NewEventProcessor(observingWatcher, database, client.EventProcessorConfig{
-		MarkProcessedOnError: false,
-	})
+	processor := client.NewEventProcessor(observingWatcher, database,
+		newEventProcessorConfig(reconciler.config.HealthEventsAnalyzerRules))
 	processor.SetEventHandler(client.EventHandlerFunc(reconciler.processHealthEvent))
 	processorDone := make(chan error, 1)
 	go func() { processorDone <- processor.Start(ctx) }()

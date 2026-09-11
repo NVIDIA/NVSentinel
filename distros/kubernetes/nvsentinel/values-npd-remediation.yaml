@@ -1,0 +1,134 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# --------------------------------------------------------------------------
+# Opt-in remediation policies for Node Problem Detector (NPD) conditions.
+#
+# NVSentinel does not install or configure NPD. Apply this overlay only after
+# confirming that the cluster's NPD installation publishes the exact condition
+# types and reasons below and that NVSentinel should own their remediation.
+#
+# This file enables Kubernetes Object Monitor and its NPD policies, but it does
+# not enable the quarantine, drain, or remediation components. To execute the
+# REPLACE_VM actions, layer it with values-remediation.yaml:
+#
+#   helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
+#     --version "$NVSENTINEL_VERSION" \
+#     --namespace nvsentinel --create-namespace \
+#     -f values-remediation.yaml \
+#     -f values-npd-remediation.yaml
+#
+# For validation without node changes, add processingStrategy: STORE_ONLY to
+# each NPD policy's healthEvent block before installing this overlay.
+#
+# Helm replaces lists rather than merging their entries. Applying this overlay
+# replaces any previously configured KOM policy list, including custom
+# policies. Before each install or upgrade, add every policy that must be
+# retained to the list below. The default ReplaceNotReadyNode policy is repeated
+# here so applying this overlay preserves it.
+# --------------------------------------------------------------------------
+
+global:
+  kubernetesObjectMonitor:
+    enabled: true
+
+kubernetes-object-monitor:
+  policies:
+    - name: ReplaceNotReadyNode
+      enabled: true
+      resource:
+        group: ""
+        version: v1
+        kind: Node
+      predicate:
+        expression: |
+          resource.status.conditions.exists(c,
+            c.type == "Ready"
+            && c.status != "True"
+            && timestamp(c.lastTransitionTime) + duration("7200s") < now)
+      healthEvent:
+        componentClass: Node
+        isFatal: true
+        message: "Node has been in NotReady state for an extended period and needs to be replaced"
+        recommendedAction: REPLACE_VM
+        errorCode:
+          - NODE_NOT_READY_TIMEOUT
+        drainOverrides:
+          skip: true
+
+    # Detects when NPD reports that XFS forcibly shut down a filesystem after a
+    # serious filesystem or storage error.
+    - name: NPDXfsShutdown
+      enabled: true
+      resource:
+        group: ""
+        version: v1
+        kind: Node
+      predicate:
+        expression: |
+          resource.status.conditions.exists(c,
+            c.type == "XfsShutdown" &&
+            c.status == "True" &&
+            c.reason == "XfsHasShutdown")
+      healthEvent:
+        componentClass: Node
+        isFatal: true
+        message: "NPD reported an XFS filesystem shutdown"
+        recommendedAction: REPLACE_VM
+        errorCode:
+          - NPD_XFS_SHUTDOWN
+
+    # Detects an NPD-reported fatal UEFI CPER indicating an uncorrectable
+    # platform hardware failure, such as a CPU, memory, or PCIe failure.
+    - name: NPDCperHardwareErrorFatal
+      enabled: true
+      resource:
+        group: ""
+        version: v1
+        kind: Node
+      predicate:
+        expression: |
+          resource.status.conditions.exists(c,
+            c.type == "CperHardwareErrorFatal" &&
+            c.status == "True" &&
+            c.reason == "CperHardwareErrorFatal")
+      healthEvent:
+        componentClass: Node
+        isFatal: true
+        message: "NPD reported a fatal CPER hardware error"
+        recommendedAction: REPLACE_VM
+        errorCode:
+          - NPD_CPER_HARDWARE_ERROR_FATAL
+
+    # Detects when NPD reports that a filesystem was remounted read-only,
+    # preventing writes.
+    - name: NPDReadonlyFilesystem
+      enabled: true
+      resource:
+        group: ""
+        version: v1
+        kind: Node
+      predicate:
+        expression: |
+          resource.status.conditions.exists(c,
+            c.type == "ReadonlyFilesystem" &&
+            c.status == "True" &&
+            c.reason == "FilesystemIsReadOnly")
+      healthEvent:
+        componentClass: Node
+        isFatal: true
+        message: "NPD reported a read-only filesystem"
+        recommendedAction: REPLACE_VM
+        errorCode:
+          - NPD_READONLY_FILESYSTEM

@@ -21,6 +21,7 @@ import (
 	"maps"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-logr/logr"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -33,6 +34,7 @@ import (
 	"github.com/nvidia/nvsentinel/store-client/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	mongoWatcher "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers/mongodb/watcher"
+	"github.com/nvidia/nvsentinel/store-client/pkg/lagstate"
 )
 
 // mongoEvent implements the Event interface for MongoDB
@@ -1079,6 +1081,13 @@ func (w *mongoChangeStreamWatcher) GetUnprocessedEventCount(ctx context.Context,
 func (w *mongoChangeStreamWatcher) Close(ctx context.Context) error {
 	return w.watcher.Close(ctx)
 }
+
+// LagState delegates to the wrapped watcher so lag survives the string/ObjectID adapter.
+func (w *mongoChangeStreamWatcher) LagState() (lastEmptyBatch, lastEventRead time.Time) {
+	return w.watcher.LagState()
+}
+
+var _ lagstate.Provider = (*mongoChangeStreamWatcher)(nil)
 
 // Helper function to extract map keys for error metadata
 func getMapKeys(m any) []string {

@@ -90,6 +90,20 @@ func NewReconciler(cfg HealthEventsAnalyzerReconcilerConfig) *Reconciler {
 	}
 }
 
+func newEventProcessorConfig(rules *config.TomlConfig) client.EventProcessorConfig {
+	// Recovery requires ordered replay: a later event must not advance the token
+	// past a failed transition. Without recovery, retain the default skip-on-error
+	// behavior. Checkpoint failures stop processing in either mode.
+	return client.EventProcessorConfig{
+		EnableMetrics:        true,
+		MetricsLabels:        map[string]string{"module": agentName},
+		MarkProcessedOnError: !rules.HasEnabledRecovery(),
+		SkipEvent: func(event client.Event) bool {
+			return client.EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath)
+		},
+	}
+}
+
 // Start begins the reconciliation process by listening to change stream events
 // and processing them accordingly.
 func (r *Reconciler) Start(ctx context.Context) error {
@@ -148,16 +162,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 
 	oldWatcher := unwrapable.Unwrap()
 
-	// The handler owns bounded retries. If an event remains uncheckpointed, the
-	// processor stops so a later event cannot advance the resume token past it.
-	processorConfig := client.EventProcessorConfig{
-		EnableMetrics:        true,
-		MetricsLabels:        map[string]string{"module": agentName},
-		MarkProcessedOnError: false, // IMPORTANT: Don't mark failed events as processed
-		SkipEvent: func(event client.Event) bool {
-			return client.EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath)
-		},
-	}
+	processorConfig := newEventProcessorConfig(r.config.HealthEventsAnalyzerRules)
 
 	r.eventProcessor = client.NewEventProcessor(oldWatcher, r.databaseClient, processorConfig)
 
@@ -198,8 +203,8 @@ func (r *Reconciler) processHealthEvent(ctx context.Context, event *datamodels.H
 	// Process the event using existing business logic
 	publishedNewEvent, err := r.handleEvent(ctx, event)
 	if err != nil {
-		// Return error - EventProcessor will NOT mark as processed
-		// Event will be retried on next pod restart
+		// With recovery enabled, transient failures stop processing for replay.
+		// Permanent failures can be checkpointed in either mode.
 		totalEventProcessingError.WithLabelValues("handle_event_error").Inc()
 		slog.ErrorContext(ctx, "Failed to process health event", "error", err, "nodeName", labelValue)
 

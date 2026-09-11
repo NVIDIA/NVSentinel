@@ -39,3 +39,18 @@ app.kubernetes.io/name: {{ include "metadata-collector.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
+
+{{/*
+Whether the Prometheus metrics endpoint is enabled, as a template-truthy string.
+
+Must be a real YAML boolean. Go-template truthiness would otherwise decide it for us: the string
+"false" is truthy and would leave the endpoint ENABLED, binding a port on the node because this
+DaemonSet is hostNetwork. Fail the render instead, matching nvsentinel.pcAuth.enabled.
+*/}}
+{{- define "metadata-collector.metricsEnabled" -}}
+{{- $enabled := (.Values.metrics | default dict).enabled -}}
+{{- if not (kindIs "bool" $enabled) -}}
+{{- fail (printf "metadata-collector.metrics.enabled must be a boolean (true or false), got %s %#v. Quoted strings, null and numbers are refused because they would silently enable or disable the endpoint, which binds a host port here." (kindOf $enabled) $enabled) -}}
+{{- end -}}
+{{- if $enabled -}}true{{- end -}}
+{{- end -}}

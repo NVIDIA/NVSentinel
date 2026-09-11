@@ -59,6 +59,29 @@ dcgm:
   # Set to false only after validating embedded-mode detections on your fleet.
   probeStoreOnly: true
 
+# DCGM connection lifecycle configuration
+dcgmConnectivity:
+  # Optional startup gate for remote DCGM modes. When enabled, an init
+  # container retries until it can connect to DCGM and complete GPU discovery.
+  # Disabled by default to preserve the existing startup behavior.
+  startupGate:
+    # Enables the startup gate. This value must be a YAML boolean.
+    enabled: false
+    # Seconds to wait between failed readiness attempts.
+    retryIntervalSeconds: 5
+    # Maximum seconds allowed for one DCGM connection and discovery attempt.
+    # A timed-out attempt is terminated before the next retry begins.
+    connectTimeoutSeconds: 10
+  # Debounce runtime connectivity transitions after the monitor has started.
+  # Defaults preserve the existing fail-once, recover-once behavior.
+  runtimeDebounce:
+    # Example: failureThreshold: 4 and successThreshold: 2 publishes failure
+    # after four failed cycles and recovery after two successful cycles.
+    # Consecutive failed cycles required to publish an unhealthy event.
+    failureThreshold: 1
+    # Consecutive successful cycles required to clear a published failure.
+    successThreshold: 1
+
 # DCGM field-level monitoring feature flags
 dcgmFieldsMonitoring:
   # Enable GpuThermalMarginWatch (DCGM field 153 / GPU T.Limit margin monitoring)
@@ -176,3 +199,15 @@ processingStrategy: EXECUTE_REMEDIATION
 # present at boot. GPUs with no NVLink silicon (L40, A40) are always
 # suppressed regardless of this value.
 suppressNvlinkDownOnUnbridgedPcie: "False"
+
+# DaemonSet rolling update strategy. Shared by the dcgm-3.x and dcgm-4.x DaemonSets;
+# both are generated from this chart and only one is scheduled per node's DCGM major.
+# type: RollingUpdate or OnDelete. rollingUpdate is only rendered for RollingUpdate.
+# maxUnavailable counts pods stranded on unreachable nodes as well, so a cluster with
+# many nodes down for service may need it raised or the rollout cannot start.
+# Example, absolute count instead of a percentage:
+#   updateStrategy: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 34}}
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 5%

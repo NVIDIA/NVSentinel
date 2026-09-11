@@ -35,7 +35,9 @@ cacheSyncTimeout: 10m # Duration limiting startup cache synchronization.
 # Nodes always get write permissions (patch/update) for annotations.
 # All other resources get read-only permissions (get/list/watch).
 policies:
-  - name: node-not-ready
+  # Detects when a node's Ready condition remains False or Unknown for more
+  # than two hours and emits a fatal replacement event.
+  - name: ReplaceNotReadyNode
     enabled: true
     resource:
       group: ""
@@ -43,22 +45,24 @@ policies:
       kind: Node
     predicate:
       expression: |
-        resource.status.conditions.filter(c, c.type == "Ready" && c.status == "False").size() > 0
+        resource.status.conditions.exists(c,
+          c.type == "Ready"
+          && c.status != "True"
+          && timestamp(c.lastTransitionTime) + duration("7200s") < now)
     healthEvent:
       componentClass: Node
       isFatal: true
-      message: "Node is not ready"
-      recommendedAction: CONTACT_SUPPORT
+      message: "Node has been in NotReady state for an extended period and needs to be replaced"
+      recommendedAction: REPLACE_VM
       errorCode:
-        - NODE_NOT_READY
-      # Optional behavior overrides for this policy's generated HealthEvents.
-      # Set either force or skip, never both in the same override block.
+        - NODE_NOT_READY_TIMEOUT
+      # Replacement should not wait for workloads to drain from an unresponsive node.
+      drainOverrides:
+        skip: true
+      # Optional quarantine behavior override:
       # quarantineOverrides:
       #   force: true  # Force node cordon even if normal quarantine rules would not.
       #   skip: true   # Skip node cordon for this health event.
-      # drainOverrides:
-      #   force: true  # Force immediate pod eviction regardless of namespace drain mode.
-      #   skip: true   # Skip pod eviction and mark the event as already drained.
 
   # Example: Monitor a custom resource (e.g., a GPU Job)
   # Uncomment and modify to monitor your own custom resources

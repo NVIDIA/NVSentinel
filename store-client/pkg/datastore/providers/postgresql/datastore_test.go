@@ -426,3 +426,27 @@ func TestPostgreSQLDataStore_HealthEventStore(t *testing.T) {
 	assert.NotNil(t, store)
 	assert.IsType(t, &PostgreSQLHealthEventStore{}, store)
 }
+
+// TestCreateChangeTriggers_MissingTriggers_CreatedRaceSafely verifies that
+// trigger creation SQL handles concurrent duplicate creation.
+func TestCreateChangeTriggers_MissingTriggers_CreatedRaceSafely(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	mock.ExpectExec(`(?s)CREATE OR REPLACE FUNCTION log_table_changes\(\)`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(
+		`(?s)DO \$\$.*IF NOT EXISTS.*tgname = 'maintenance_events_changes'.*` +
+			`CREATE TRIGGER maintenance_events_changes.*EXCEPTION.*` +
+			`WHEN duplicate_object THEN.*NULL`,
+	).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(
+		`(?s)DO \$\$.*IF NOT EXISTS.*tgname = 'health_events_changes'.*` +
+			`CREATE TRIGGER health_events_changes.*EXCEPTION.*` +
+			`WHEN duplicate_object THEN.*NULL`,
+	).WillReturnResult(sqlmock.NewResult(0, 0))
+
+	require.NoError(t, createChangeTriggers(context.Background(), db))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

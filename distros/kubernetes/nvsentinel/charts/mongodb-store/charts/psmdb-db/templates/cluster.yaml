@@ -6,9 +6,14 @@ metadata:
 {{ .Values.annotations | toYaml | indent 4 }}
   {{- end }}
   name: {{ include "psmdb-database.fullname" . }}
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "psmdb-database.namespace" . }}
   labels:
 {{ include "psmdb-database.labels" . | indent 4 }}
+  {{- /* NVSentinel local patch (PR #1230), not present upstream: keep this guard when
+         re-vendoring the chart. We set `finalizers: []`, which renders an empty list that
+         the apiserver strips, leaving the PerconaServerMongoDB CR perpetually OutOfSync in
+         ArgoCD. Setting `finalizers: null` instead is not a safe substitute: on Helm 3.16
+         (bundled with ArgoCD 2.14) it silently restores Percona's default finalizer. */}}
   {{- if .Values.finalizers }}
   finalizers:
 {{ .Values.finalizers | toYaml | indent 4 }}
@@ -20,9 +25,48 @@ spec:
   {{- if .Values.platform }}
   platform: {{ .Values.platform }}
   {{- end }}
+  {{- if .Values.vault }}
+  vault:
+    {{- if .Values.vault.endpointURL }}
+    endpointURL: {{ .Values.vault.endpointURL }}
+    {{- end }}
+    {{- if .Values.vault.tlsSecret }}
+    tlsSecret: {{ .Values.vault.tlsSecret }}
+    {{- end }}
+    {{- if .Values.vault.syncUsers }}
+    syncUsers:
+      {{- if .Values.vault.syncUsers.role }}
+      role: {{ .Values.vault.syncUsers.role }}
+      {{- end }}
+      {{- if .Values.vault.syncUsers.mountPath }}
+      mountPath: {{ .Values.vault.syncUsers.mountPath }}
+      {{- end }}
+      {{- if .Values.vault.syncUsers.keyPath }}
+      keyPath: {{ .Values.vault.syncUsers.keyPath }}
+      {{- end }}
+      {{- if .Values.vault.syncUsers.tokenSecret }}
+      tokenSecret: {{ .Values.vault.syncUsers.tokenSecret }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
   enableVolumeExpansion: {{ .Values.enableVolumeExpansion }}
   {{- if hasKey .Values "enableExternalVolumeAutoscaling" }}
   enableExternalVolumeAutoscaling: {{ .Values.enableExternalVolumeAutoscaling }}
+  {{- end }}
+  {{- if .Values.defaultRWConcern }}
+  defaultRWConcern:
+    {{- if .Values.defaultRWConcern.readConcern }}
+    readConcern: {{ .Values.defaultRWConcern.readConcern }}
+    {{- end }}
+    {{- with .Values.defaultRWConcern.writeConcern }}
+    writeConcern:
+      {{- if .w }}
+      w: {{ .w | quote }}
+      {{- end }}
+      {{- if hasKey . "wtimeout" }}
+      wtimeout: {{ .wtimeout }}
+      {{- end }}
+    {{- end }}
   {{- end }}
   {{- if .Values.clusterServiceDNSSuffix }}
   clusterServiceDNSSuffix: {{ .Values.clusterServiceDNSSuffix }}
@@ -79,15 +123,37 @@ spec:
     schedule: {{ .Values.upgradeOptions.schedule }}
     setFCV: {{ .Values.upgradeOptions.setFCV }}
   {{- end }}
+  {{- if .Values.storageScaling }}
+  storageScaling:
+    {{- if hasKey .Values.storageScaling "enableVolumeScaling" }}
+    enableVolumeScaling: {{ .Values.storageScaling.enableVolumeScaling }}
+    {{- end }}
+    {{- if hasKey .Values.storageScaling "enableExternalAutoscaling" }}
+    enableExternalAutoscaling: {{ .Values.storageScaling.enableExternalAutoscaling }}
+    {{- end }}
+    {{- if .Values.storageScaling.autoscaling }}
+    autoscaling:
+      enabled: {{ .Values.storageScaling.autoscaling.enabled }}
+      {{- if .Values.storageScaling.autoscaling.triggerThresholdPercent }}
+      triggerThresholdPercent: {{ .Values.storageScaling.autoscaling.triggerThresholdPercent }}
+      {{- end }}
+      {{- if .Values.storageScaling.autoscaling.growthStep }}
+      growthStep: {{ .Values.storageScaling.autoscaling.growthStep }}
+      {{- end }}
+      {{- if .Values.storageScaling.autoscaling.maxSize }}
+      maxSize: {{ .Values.storageScaling.autoscaling.maxSize }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
   pmm:
     enabled: {{ .Values.pmm.enabled }}
     image: "{{ .Values.pmm.image.repository }}:{{ .Values.pmm.image.tag }}"
     serverHost: {{ .Values.pmm.serverHost }}
     {{- if .Values.pmm.mongodParams }}
-    mongodParams: {{ .Values.pmm.mongodParams }}
+    mongodParams: {{ tpl .Values.pmm.mongodParams $ }}
     {{- end }}
     {{- if .Values.pmm.mongosParams }}
-    mongosParams: {{ .Values.pmm.mongosParams }}
+    mongosParams: {{ tpl .Values.pmm.mongosParams $ }}
     {{- end }}
     {{- if .Values.pmm.resources }}
     resources:
@@ -99,6 +165,17 @@ spec:
     {{- end }}
     {{- if .Values.pmm.customClusterName }}
     customClusterName: {{ .Values.pmm.customClusterName }}
+    {{- end }}
+    {{- if .Values.pmm.authenticationMechanism }}
+    authenticationMechanism: {{ .Values.pmm.authenticationMechanism }}
+    {{- end }}
+    {{- if .Values.pmm.livenessProbe }}
+    livenessProbe:
+{{ .Values.pmm.livenessProbe | toYaml | indent 6 }}
+    {{- end }}
+    {{- if .Values.pmm.readinessProbe }}
+    readinessProbe:
+{{ .Values.pmm.readinessProbe | toYaml | indent 6 }}
     {{- end }}
 
   replsets:
@@ -118,7 +195,20 @@ spec:
     {{- end }}
     {{- if $replset.configuration }}
     configuration: |
-{{ $replset.configuration | indent 6 }}
+{{ tpl $replset.configuration $ | trimSuffix "\n" | indent 6 }}
+    {{- end }}
+    {{- if $replset.hookScript }}
+    hookScript:
+      {{- if $replset.hookScript.configMapRef }}
+      configMapRef:
+        {{- if $replset.hookScript.configMapRef.name }}
+        name: {{ $replset.hookScript.configMapRef.name }}
+        {{- end }}
+      {{- end }}
+      {{- if $replset.hookScript.script }}
+      script: |
+{{ $replset.hookScript.script | indent 8 }}
+      {{- end }}
     {{- end }}
     {{- if $replset.topologySpreadConstraints }}
     topologySpreadConstraints:
@@ -139,7 +229,7 @@ spec:
     priorityClassName: {{ $replset.priorityClass }}
     {{- end }}
     {{- if $replset.primaryPreferTagSelector }}
-    primaryPreferTagSelector: 
+    primaryPreferTagSelector:
 {{ $replset.primaryPreferTagSelector | toYaml | indent 6 }}
     {{- end }}
     {{- if $replset.annotations }}
@@ -177,6 +267,14 @@ spec:
     {{- if $replset.containerSecurityContext }}
     containerSecurityContext:
 {{ $replset.containerSecurityContext | toYaml | indent 6 }}
+    {{- end }}
+    {{- if $replset.env }}
+    env:
+{{ $replset.env | toYaml | indent 6 }}
+    {{- end }}
+    {{- if $replset.envFrom }}
+    envFrom:
+{{ $replset.envFrom | toYaml | indent 6 }}
     {{- end }}
     {{- if $replset.runtimeClass }}
     runtimeClassName: {{ $replset.runtimeClass }}
@@ -262,6 +360,10 @@ spec:
     hostAliases:
 {{ $replset.hostAliases | toYaml | indent 6 }}
     {{- end }}
+    {{- if $replset.search }}
+    search:
+{{ $replset.search | toYaml | indent 6 }}
+    {{- end }}
 
 {{- if $replset.hidden }}
     hidden:
@@ -269,7 +371,23 @@ spec:
       size: {{ $replset.hidden.size }}
       {{- if $replset.hidden.configuration }}
       configuration: |
-{{ $replset.hidden.configuration | indent 8 }}
+{{ tpl $replset.hidden.configuration $ | trimSuffix "\n" | indent 8 }}
+      {{- end }}
+      {{- if $replset.hidden.serviceAccountName }}
+      serviceAccountName: {{ $replset.hidden.serviceAccountName }}
+      {{- end }}
+      {{- if $replset.hidden.hookScript }}
+      hookScript:
+        {{- if $replset.hidden.hookScript.configMapRef }}
+        configMapRef:
+          {{- if $replset.hidden.hookScript.configMapRef.name }}
+          name: {{ $replset.hidden.hookScript.configMapRef.name }}
+          {{- end }}
+        {{- end }}
+        {{- if $replset.hidden.hookScript.script }}
+        script: |
+{{ $replset.hidden.hookScript.script | indent 10 }}
+        {{- end }}
       {{- end }}
       affinity:
       {{- if $replset.hidden.affinity }}
@@ -293,6 +411,14 @@ spec:
       {{- if $replset.hidden.containerSecurityContext }}
       containerSecurityContext:
 {{ $replset.hidden.containerSecurityContext | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.hidden.env }}
+      env:
+{{ $replset.hidden.env | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.hidden.envFrom }}
+      envFrom:
+{{ $replset.hidden.envFrom | toYaml | indent 8 }}
       {{- end }}
       {{- if $replset.hidden.nodeSelector }}
       nodeSelector:
@@ -338,7 +464,20 @@ spec:
       size: {{ $replset.nonvoting.size }}
       {{- if $replset.nonvoting.configuration }}
       configuration: |
-{{ $replset.nonvoting.configuration | indent 8 }}
+{{ tpl $replset.nonvoting.configuration $ | trimSuffix "\n" | indent 8 }}
+      {{- end }}
+      {{- if $replset.nonvoting.hookScript }}
+      hookScript:
+        {{- if $replset.nonvoting.hookScript.configMapRef }}
+        configMapRef:
+          {{- if $replset.nonvoting.hookScript.configMapRef.name }}
+          name: {{ $replset.nonvoting.hookScript.configMapRef.name }}
+          {{- end }}
+        {{- end }}
+        {{- if $replset.nonvoting.hookScript.script }}
+        script: |
+{{ $replset.nonvoting.hookScript.script | indent 10 }}
+        {{- end }}
       {{- end }}
       {{- if $replset.nonvoting.serviceAccountName }}
       serviceAccountName: {{ $replset.nonvoting.serviceAccountName }}
@@ -365,6 +504,14 @@ spec:
       {{- if $replset.nonvoting.containerSecurityContext }}
       containerSecurityContext:
 {{ $replset.nonvoting.containerSecurityContext | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.nonvoting.env }}
+      env:
+{{ $replset.nonvoting.env | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.nonvoting.envFrom }}
+      envFrom:
+{{ $replset.nonvoting.envFrom | toYaml | indent 8 }}
       {{- end }}
       {{- if $replset.nonvoting.nodeSelector }}
       nodeSelector:
@@ -411,7 +558,28 @@ spec:
       {{- if $replset.arbiter.serviceAccountName }}
       serviceAccountName: {{ $replset.arbiter.serviceAccountName }}
       {{- end }}
-      {{- if $replset.affinity }}
+      {{- if $replset.arbiter.hookScript }}
+      hookScript:
+        {{- if $replset.arbiter.hookScript.configMapRef }}
+        configMapRef:
+          {{- if $replset.arbiter.hookScript.configMapRef.name }}
+          name: {{ $replset.arbiter.hookScript.configMapRef.name }}
+          {{- end }}
+        {{- end }}
+        {{- if $replset.arbiter.hookScript.script }}
+        script: |
+{{ $replset.arbiter.hookScript.script | indent 10 }}
+        {{- end }}
+      {{- end }}
+      {{- if $replset.arbiter.env }}
+      env:
+{{ $replset.arbiter.env | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.arbiter.envFrom }}
+      envFrom:
+{{ $replset.arbiter.envFrom | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.arbiter.affinity }}
       affinity:
 {{ $replset.arbiter.affinity | toYaml | indent 8 }}
       {{- end }}
@@ -457,7 +625,20 @@ spec:
       {{- end }}
       {{- if .Values.sharding.configrs.configuration }}
       configuration: |
-{{ .Values.sharding.configrs.configuration | indent 8 }}
+{{ tpl .Values.sharding.configrs.configuration  . | trimSuffix "\n" | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.hookScript }}
+      hookScript:
+        {{- if .Values.sharding.configrs.hookScript.configMapRef }}
+        configMapRef:
+          {{- if .Values.sharding.configrs.hookScript.configMapRef.name }}
+          name: {{ .Values.sharding.configrs.hookScript.configMapRef.name }}
+          {{- end }}
+        {{- end }}
+        {{- if .Values.sharding.configrs.hookScript.script }}
+        script: |
+{{ .Values.sharding.configrs.hookScript.script | indent 10 }}
+        {{- end }}
       {{- end }}
       {{- if .Values.sharding.configrs.topologySpreadConstraints }}
       topologySpreadConstraints:
@@ -506,6 +687,14 @@ spec:
       {{- if .Values.sharding.configrs.containerSecurityContext }}
       containerSecurityContext:
 {{ .Values.sharding.configrs.containerSecurityContext | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.env }}
+      env:
+{{ .Values.sharding.configrs.env | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.envFrom }}
+      envFrom:
+{{ .Values.sharding.configrs.envFrom | toYaml | indent 8 }}
       {{- end }}
       {{- if .Values.sharding.configrs.runtimeClass }}
       runtimeClassName: {{ .Values.sharding.configrs.runtimeClass }}
@@ -593,7 +782,20 @@ spec:
       {{- end }}
       {{- if .Values.sharding.mongos.configuration }}
       configuration: |
-{{ .Values.sharding.mongos.configuration | indent 8 }}
+{{ tpl .Values.sharding.mongos.configuration . | trimSuffix "\n"| indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.mongos.hookScript }}
+      hookScript:
+        {{- if .Values.sharding.mongos.hookScript.configMapRef }}
+        configMapRef:
+          {{- if .Values.sharding.mongos.hookScript.configMapRef.name }}
+          name: {{ .Values.sharding.mongos.hookScript.configMapRef.name }}
+          {{- end }}
+        {{- end }}
+        {{- if .Values.sharding.mongos.hookScript.script }}
+        script: |
+{{ .Values.sharding.mongos.hookScript.script | indent 10 }}
+        {{- end }}
       {{- end }}
       {{- if .Values.sharding.mongos.topologySpreadConstraints }}
       topologySpreadConstraints:
@@ -638,6 +840,14 @@ spec:
       {{- if .Values.sharding.mongos.containerSecurityContext }}
       containerSecurityContext:
 {{ .Values.sharding.mongos.containerSecurityContext | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.mongos.env }}
+      env:
+{{ .Values.sharding.mongos.env | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.mongos.envFrom }}
+      envFrom:
+{{ .Values.sharding.mongos.envFrom | toYaml | indent 8 }}
       {{- end }}
       {{- if .Values.sharding.mongos.runtimeClass }}
       runtimeClassName: {{ .Values.sharding.mongos.runtimeClass }}
@@ -729,6 +939,19 @@ spec:
     annotations:
 {{ .Values.backup.annotations | toYaml | indent 6 }}
     {{- end }}
+    {{- if .Values.backup.hookScript }}
+    hookScript:
+      {{- if .Values.backup.hookScript.configMapRef }}
+      configMapRef:
+        {{- if .Values.backup.hookScript.configMapRef.name }}
+        name: {{ .Values.backup.hookScript.configMapRef.name }}
+        {{- end }}
+      {{- end }}
+      {{- if .Values.backup.hookScript.script }}
+      script: |
+{{ .Values.backup.hookScript.script | indent 8 }}
+      {{- end }}
+    {{- end }}
     {{- if .Values.backup.podSecurityContext }}
     podSecurityContext:
 {{ .Values.backup.podSecurityContext | toYaml | indent 6 }}
@@ -737,15 +960,31 @@ spec:
     containerSecurityContext:
 {{ .Values.backup.containerSecurityContext | toYaml | indent 6 }}
     {{- end }}
+    {{- if .Values.backup.env }}
+    env:
+{{ .Values.backup.env | toYaml | indent 6 }}
+    {{- end }}
+    {{- if .Values.backup.envFrom }}
+    envFrom:
+{{ .Values.backup.envFrom | toYaml | indent 6 }}
+    {{- end }}
     image: "{{ .Values.backup.image.repository }}:{{ .Values.backup.image.tag }}"
     {{- if .Values.backup.resources }}
     resources:
 {{ .Values.backup.resources | toYaml | indent 6 }}
     {{- end }}
+    {{- if .Values.backup.livenessProbe }}
+    livenessProbe:
+{{ .Values.backup.livenessProbe | toYaml | indent 6 }}
+    {{- end }}
+    {{- if .Values.backup.readinessProbe }}
+    readinessProbe:
+{{ .Values.backup.readinessProbe | toYaml | indent 6 }}
+    {{- end }}
     storages:
-{{ .Values.backup.storages | toYaml | indent 6 }}
+{{ (default (dict) .Values.backup.storages) | toYaml | indent 6 }}
     volumeMounts:
-{{ .Values.backup.volumeMounts | toYaml | indent 6 }}
+{{ (default (list) .Values.backup.volumeMounts) | toYaml | indent 6 }}
     pitr:
     {{- if and .Values.backup.enabled .Values.backup.pitr.enabled }}
       enabled: true
@@ -769,14 +1008,123 @@ spec:
 {{ .Values.backup.configuration | toYaml | indent 6 }}
     {{- end }}
     tasks:
-{{ .Values.backup.tasks | toYaml | indent 6 }}
+{{ (default (list) .Values.backup.tasks) | toYaml | indent 6 }}
   logcollector:
     enabled: {{ .Values.logcollector.enabled }}
     image: "{{ .Values.logcollector.image.repository }}:{{ .Values.logcollector.image.tag }}"
     {{- if .Values.logcollector.configuration }}
     configuration: {{ .Values.logcollector.configuration }}
     {{- end }}
+    {{- if .Values.logcollector.env }}
+    env:
+{{ .Values.logcollector.env | toYaml | indent 6 }}
+    {{- end }}
+    {{- if .Values.logcollector.envFrom }}
+    envFrom:
+{{ .Values.logcollector.envFrom | toYaml | indent 6 }}
+    {{- end }}
     {{- if .Values.logcollector.resources }}
     resources:
 {{ .Values.logcollector.resources | toYaml | indent 6 }}
     {{- end }}
+    {{- if .Values.logcollector.containerSecurityContext }}
+    containerSecurityContext:
+{{ .Values.logcollector.containerSecurityContext | toYaml | nindent 6 }}
+    {{- end }}
+    {{- if .Values.logcollector.livenessProbe }}
+    livenessProbe:
+{{ .Values.logcollector.livenessProbe | toYaml | indent 6 }}
+    {{- end }}
+    {{- if .Values.logcollector.readinessProbe }}
+    readinessProbe:
+{{ .Values.logcollector.readinessProbe | toYaml | indent 6 }}
+    {{- end }}
+    {{- if .Values.logcollector.logrotate }}
+    logrotate:
+      {{- if .Values.logcollector.logrotate.configuration }}
+      configuration: |
+{{ .Values.logcollector.logrotate.configuration | indent 8 }}
+      {{- end }}
+      {{- if .Values.logcollector.logrotate.extraConfig }}
+      extraConfig:
+{{ .Values.logcollector.logrotate.extraConfig | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.logcollector.logrotate.schedule }}
+      schedule: {{ .Values.logcollector.logrotate.schedule | quote }}
+      {{- end }}
+      {{- if .Values.logcollector.logrotate.livenessProbe }}
+      livenessProbe:
+{{ .Values.logcollector.logrotate.livenessProbe | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.logcollector.logrotate.readinessProbe }}
+      readinessProbe:
+{{ .Values.logcollector.logrotate.readinessProbe | toYaml | indent 8 }}
+      {{- end }}
+    {{- end }}
+
+  {{- if .Values.search }}
+  search:
+    enabled: {{ .Values.search.enabled }}
+    {{- if .Values.search.image }}
+    image: "{{ .Values.search.image.repository }}:{{ .Values.search.image.tag }}"
+    {{- end }}
+    {{- if .Values.search.imagePullPolicy }}
+    imagePullPolicy: {{ .Values.search.imagePullPolicy }}
+    {{- end }}
+    {{- if .Values.search.size }}
+    size: {{ .Values.search.size }}
+    {{- end }}
+    {{- if .Values.search.configuration }}
+    configuration: |
+{{ .Values.search.configuration | indent 6 }}
+    {{- end }}
+    {{- if .Values.search.storage }}
+    storage:
+{{ .Values.search.storage | toYaml | indent 6 }}
+    {{- end }}
+    {{- if .Values.search.resources }}
+    resources:
+{{ .Values.search.resources | toYaml | indent 6 }}
+    {{- end }}
+    {{- if .Values.search.jvmFlags }}
+    jvmFlags:
+{{ .Values.search.jvmFlags | toYaml | indent 6 }}
+    {{- end }}
+    {{- if .Values.search.affinity }}
+    affinity:
+{{ .Values.search.affinity | toYaml | indent 6 }}
+    {{- end }}
+    {{- if .Values.search.nodeSelector }}
+    nodeSelector:
+{{ .Values.search.nodeSelector | toYaml | indent 6 }}
+    {{- end }}
+    {{- if .Values.search.tolerations }}
+    tolerations:
+{{ .Values.search.tolerations | toYaml | indent 6 }}
+    {{- end }}
+    {{- if .Values.search.annotations }}
+    annotations:
+{{ .Values.search.annotations | toYaml | indent 6 }}
+    {{- end }}
+    {{- if .Values.search.labels }}
+    labels:
+{{ .Values.search.labels | toYaml | indent 6 }}
+    {{- end }}
+    {{- if .Values.search.podSecurityContext }}
+    podSecurityContext:
+{{ .Values.search.podSecurityContext | toYaml | indent 6 }}
+    {{- end }}
+    {{- if .Values.search.containerSecurityContext }}
+    containerSecurityContext:
+{{ .Values.search.containerSecurityContext | toYaml | indent 6 }}
+    {{- end }}
+    {{- if .Values.search.livenessProbe }}
+    livenessProbe:
+{{ .Values.search.livenessProbe | toYaml | indent 6 }}
+    {{- end }}
+    {{- if .Values.search.readinessProbe }}
+    readinessProbe:
+{{ .Values.search.readinessProbe | toYaml | indent 6 }}
+    {{- end }}
+  {{- end }}
+

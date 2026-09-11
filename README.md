@@ -51,7 +51,7 @@ helm upgrade --install cert-manager jetstack/cert-manager \
 One command works for both a first install and every later upgrade. By default it only turns on health monitoring: it won't cordon a node, evict a pod, or reboot a machine, so it's safe to run anywhere. The flags below the command are everything you can layer on later; see [Adoption](#adoption) for what each one does.
 
 ```bash
-NVSENTINEL_VERSION=v1.21.0
+NVSENTINEL_VERSION=v1.22.0
 
 helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --version "$NVSENTINEL_VERSION" \
@@ -259,6 +259,20 @@ Validated on NVIDIA Volta, Ampere, Hopper, Ada Lovelace and Blackwell architectu
 
 For more, including configuration options, external database setup, writing custom health checks, and operational runbooks, visit [docs.nvidia.com/nvsentinel](https://docs.nvidia.com/nvsentinel/).
 
+## Distribution
+
+NVSentinel is published exclusively through the channels below. There is no other official distribution — if you obtained NVSentinel elsewhere, treat it as untrusted.
+
+| Channel | Location |
+|---|---|
+| Helm chart (OCI) | `oci://ghcr.io/nvidia/nvsentinel` |
+| Container images | `ghcr.io/nvidia/nvsentinel/<component>` — e.g. `ghcr.io/nvidia/nvsentinel/labeler` |
+| Releases | [GitHub Releases](https://github.com/NVIDIA/NVSentinel/releases), each with a `versions.txt` pinning every component image for that version |
+| Source | [github.com/NVIDIA/NVSentinel](https://github.com/NVIDIA/NVSentinel) |
+| Documentation | [docs.nvidia.com/nvsentinel](https://docs.nvidia.com/nvsentinel/) |
+
+Container images carry a Sigstore-signed CycloneDX SBOM attestation and a SLSA build provenance attestation. See [SECURITY.md](SECURITY.md) for how to verify them.
+
 
 ## Contributing
 
@@ -276,6 +290,7 @@ Getting Started:
 1. Read the [Contributing Guide](CONTRIBUTING.md) for guidelines
 2. Check the [Development Guide](DEVELOPMENT.md) for setup instructions
 3. Browse [open issues](https://github.com/NVIDIA/NVSentinel/issues) for opportunities
+4. Review our [Code of Conduct](CODE_OF_CONDUCT.md)
 
 ## Support
 

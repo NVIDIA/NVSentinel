@@ -1,4 +1,20 @@
-# ADR-053: Health Events Analyzer — Derived-Condition Recovery
+<!--
+Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+
+# ADR-056: Health Events Analyzer — Derived-Condition Recovery
 
 ## Context
 
@@ -56,6 +72,22 @@ node-scoped mapping, an entity-scoped mapping without entity types, and
 from input, so accepting it as a recovery source would create an unreachable and
 misleading configuration.
 
+### How an operator requests recovery
+
+The operator requests recovery by completing a verified recovery workflow that publishes a healthy source event. The analyzer does not provide a new recovery command, REST endpoint, or Kubernetes resource.
+
+1. Configure the affected rule's `[rules.recovery]` mapping before starting the workflow.
+2. Repair the affected node or device and verify its health.
+3. Have the configured monitor or operator automation publish the matching healthy event through `PlatformConnector.HealthEventOccurredV1`.
+4. The platform connector stores the source event. The analyzer matches its rule, node, and entity identity.
+5. The analyzer publishes the derived healthy event and waits for storage confirmation. Downstream components apply their normal recovery policies.
+
+An existing producer is the GPU reset workflow. After a successful reset workflow, `gpu-reset/gpu_reset.sh` writes `GPU reset executed: <GPU_UUID>, success: true` to syslog. This requires `WRITE_SYSLOG_EVENT=true`, which is the default. The syslog health monitor reads this record, resolves the GPU UUID and PCI address, and publishes a healthy `SysLogsXIDError` event. A rule can map `source_agent="syslog-health-monitor"`, `source_check_name="SysLogsXIDError"`, and `scope="entity"` with `entity_types=["GPU_UUID"]`. Successful reset events have no error code, so this mapping omits `source_error_codes`. A failed reset produces an unhealthy event and cannot clear the derived condition. Enable this mapping only when a successful reset is sufficient evidence that the derived condition has recovered.
+
+When no existing monitor emits a suitable recovery signal, an operator must supply that producer. For example, operator automation can verify a repaired GPU and publish `agent="operator-recovery"`, `checkName="VerifiedGPURecovery"`, and `isHealthy=true`. Configure those exact source values on the affected rule. The event must name the repaired node and GPU and use the verification time as `generatedTimestamp`. These names are an example configuration, not a built-in monitor.
+
+The [operator recovery procedure](../configuration/health-events-analyzer.md#requesting-recovery) provides the matching configuration and publisher example. It uses the existing health-monitor gRPC transport and deployment authentication. The example uses `STORE_AND_ANALYSE` for the source event; the derived event retains the rule's processing strategy. Configure that strategy as `EXECUTE_REMEDIATION` when the derived event must update node conditions. An accepted RPC alone does not confirm that the derived condition has cleared.
+
 ### Recovery identity and transition
 
 The identity of a derived condition is the rule name, node name, and, for entity
@@ -89,8 +121,11 @@ The persisted recovery source becomes the rule's history boundary. Later rule
 evaluation excludes records stored or generated at or before that boundary, so
 delayed pre-recovery history cannot immediately recreate the condition.
 
-Transient datastore and publisher errors leave the source unacknowledged and
-stop processing so the change stream can replay it. Confirmation is bounded by
+When recovery is enabled, transient datastore and publisher errors leave the
+source unacknowledged and stop the shared processor for replay. This applies to
+all inputs on that processor. Without enabled recovery mappings, handler errors
+retain the default checkpoint-and-continue behavior. Checkpoint failures stop
+processing in either mode. Confirmation is bounded by
 a two-minute deadline; expiration exits processing without acknowledging the
 source rather than blocking the stream forever. Deterministic configuration or
 stored-record failures are logged, counted, and checkpointed after applying the
@@ -142,7 +177,8 @@ the task, and a missing or invalid index is retried on a later startup.
 - Rule configuration becomes more complex and an incorrect source mapping can
   prevent a legitimate recovery from matching.
 - Enabling recovery for one rule widens the process-wide watcher input for all
-  rules, increasing read and dispatch work.
+  rules, increasing read and dispatch work. A transient processing failure then
+  stops the shared stream until restart, preserving recovery ordering.
 - State confirmation and boundary queries add datastore load and make recovery
   eventually consistent rather than instantaneous.
 - Deterministically malformed stored records may conservatively withhold a

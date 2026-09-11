@@ -205,6 +205,106 @@ Dry run. When true, this check's events are emitted with `processingStrategy=STO
 
 Consecutive polls with the bit set before the GPU is failed. A brake asserted for a single poll can be a load transient; a sustained assertion is the actionable case. A clear resets the counter, so a flapping brake never accumulates to a failure. `1` fails on first observation. A GPU with no usable sample is skipped and keeps its counter, so a gap in DCGM data neither raises nor clears a finding. This includes DCGM's int64 "no data" sentinels, whose low byte has the brake bit set and which would otherwise read as an assertion.
 
+## DCGM Startup Gate
+
+For remote DCGM modes, the GPU health monitor can wait for a functional DCGM API before its main container starts:
+
+```yaml
+gpu-health-monitor:
+  dcgmConnectivity:
+    startupGate:
+      enabled: true
+      retryIntervalSeconds: 5
+      connectTimeoutSeconds: 10
+```
+
+When enabled, the chart adds a `wait-for-dcgm` init container. Each attempt creates a DCGM handle and performs supported-GPU discovery; opening the TCP port alone is not considered ready. Failed attempts are retried indefinitely at `retryIntervalSeconds`. Each attempt runs in a child process bounded by `connectTimeoutSeconds`, so a blocked native DCGM call can be terminated without restarting the init container. The init container does not publish health events, so an unavailable DCGM endpoint during installation or restart cannot create node conditions, quarantine nodes, or trigger remediation before the monitor has established its first connection.
+
+The default 10-second hard timeout leaves time for DCGM's own 5-second connection timeout to return and log a specific connection error first; the parent timeout remains a backstop for a genuinely stuck native call.
+
+The gate is disabled by default for backward compatibility and supports `operator-service` and `external-hostengine`. It cannot be enabled in `embedded-mode`, because the main GPU health monitor container starts the embedded hostengine; Helm rejects that combination rather than creating a pod that can never leave init.
+
+While DCGM remains unavailable, the pod stays in `Init:0/1`; ordinary readiness failures do not restart the init container. This state should be monitored with the deployment's existing pod-state alerts (for example, kube-state-metrics). An `Init:CrashLoopBackOff` instead indicates an image, configuration, or implementation failure. After startup, runtime DCGM failures are still handled by the GPU health monitor's connectivity checks; the startup gate does not replace runtime failure handling or debouncing.
+
+For example, alert when the startup gate has been waiting for more than five minutes:
+
+```yaml
+- alert: NVSentinelGPUHealthMonitorWaitingForDCGM
+  expr: |
+    kube_pod_init_container_status_running{
+      container="wait-for-dcgm"
+    } == 1
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "gpu-health-monitor is waiting for DCGM"
+    description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has been waiting for DCGM for more than 5 minutes."
+```
+
+Alert separately when the init program itself is repeatedly failing:
+
+```yaml
+- alert: NVSentinelGPUHealthMonitorDCGMInitFailed
+  expr: |
+    kube_pod_init_container_status_waiting_reason{
+      container="wait-for-dcgm",
+      reason="CrashLoopBackOff"
+    } == 1
+  for: 2m
+  labels:
+    severity: critical
+  annotations:
+    summary: "gpu-health-monitor DCGM startup gate is failing"
+    description: "The wait-for-dcgm init container in {{ $labels.namespace }}/{{ $labels.pod }} is repeatedly failing."
+```
+
+## Runtime DCGM Connectivity Debounce
+
+After the main container has started, transient DCGM timeouts or connection errors can be debounced before they become `GpuDcgmConnectivityFailure` transitions. For example, the following configuration requires three consecutive failures:
+
+```yaml
+gpu-health-monitor:
+  dcgmConnectivity:
+    runtimeDebounce:
+      failureThreshold: 3
+      successThreshold: 1
+```
+
+`failureThreshold` is the number of consecutive failed DCGM connectivity cycles required before the unhealthy event is published. A successful cycle before the threshold resets the failure streak, so intermittent failures do not accumulate across healthy polls.
+
+`successThreshold` is the number of consecutive successful cycles required to clear an already-published connectivity failure. A failed cycle during recovery resets the success streak and keeps the existing unhealthy event active. The threshold does not delay the initial healthy baseline event emitted for a node with no prior connectivity state.
+
+Both values must be integers greater than or equal to `1`. They default to `1`, preserving the existing fail-once and recover-once behavior. Raising `failureThreshold` filters shorter connectivity interruptions at the cost of up to `failureThreshold - 1` additional poll intervals of detection latency.
+
+The debounce state belongs to the running monitor process and is not persisted. Restarting the process resets both observation streaks. The replacement process emits its normal initial healthy baseline as soon as a complete health check succeeds, allowing platform state left by the previous process to converge without waiting for `successThreshold`.
+
+The following metric exposes the current streaks:
+
+```text
+dcgm_connectivity_consecutive_observations{result="failure"}
+dcgm_connectivity_consecutive_observations{result="success"}
+```
+
+Runtime debounce and the startup gate address different phases:
+
+- `startupGate` prevents the monitor from starting and publishing connectivity failures before DCGM has been functional once.
+- `runtimeDebounce` filters short connectivity transitions after the monitor is running.
+- The probe watchdog is not delayed by `failureThreshold`: a DCGM call that has stopped returning may have no later poll from which to build a failure streak.
+
+`dcgmHealthCheck.connectivityFailureEscalationThreshold` continues to count consecutive failed observations. If its threshold is lower than the debounce failure threshold, the first published unhealthy event may already recommend `RESTART_BM`; configure escalation at or above `failureThreshold` when a preliminary `CONTACT_SUPPORT` event is desired.
+
+Example behavior for `failureThreshold: 4` and `successThreshold: 2`:
+
+```text
+failure 1-3  -> no unhealthy event
+failure 4    -> publish GpuDcgmConnectivityFailure
+success 1    -> keep the unhealthy event active
+failure      -> reset the recovery streak
+success 1    -> keep the unhealthy event active
+success 2    -> publish the healthy recovery event
+```
+
 ## Unresponsive DCGM Detection
 
 A DCGM call that stops answering never returns an error — callers park and the probe blocks forever rather than raising `DCGMError_Timeout`. Meanwhile the node can still report `Ready` with every GPU allocatable and no taint, so no other signal in the stack registers a fault. In `embedded-mode` that hang is node-local, but it is not yet proof of a kernel-driver wedge: DCGM userspace deadlock or lock contention can look the same until an independent NVML/`nvidia-smi` probe confirms the driver itself.

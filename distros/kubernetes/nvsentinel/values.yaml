@@ -102,8 +102,8 @@ global:
     # the cluster cordoned, drained and rebooted, so add sparingly.
     #
     # The bundled cluster-scoped monitors — csp-health-monitor,
-    # kubernetes-object-monitor, slurm-drain-monitor and health-events-analyzer
-    # — do NOT belong here. They are derived from the release namespace at
+    # kubernetes-object-monitor, nvcre-certification-monitor, slurm-drain-monitor
+    # and health-events-analyzer — do NOT belong here. They are derived from the release namespace at
     # render time for whichever of them are enabled, so installing into a
     # namespace other than nvsentinel needs no edit. Listing them by hand is
     # what used to break such an install: a hardcoded namespace rendered
@@ -290,6 +290,8 @@ global:
   mongodbStore:
     enabled: false
   kubernetesObjectMonitor:
+    enabled: false
+  nvcreCertificationMonitor:
     enabled: false
   eventExporter:
     enabled: false
@@ -496,3 +498,14 @@ podMonitor:
   # scrapeTimeout: ""  # Scrape timeout (defaults to Prometheus default if not specified)
   # metricsPath: "/metrics"  # Metrics path (defaults to /metrics)
   # labels: {}  # Additional labels for the PodMonitor resource
+
+# DaemonSet rolling update strategy for the platform-connectors DaemonSet.
+# type: RollingUpdate or OnDelete. rollingUpdate is only rendered for RollingUpdate.
+# maxUnavailable counts pods stranded on unreachable nodes as well, so a cluster with
+# many nodes down for service may need it raised or the rollout cannot start.
+# Example, absolute count instead of a percentage:
+#   updateStrategy: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 34}}
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 5%

@@ -1,0 +1,67 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: DCGM runtime connectivity debounce
+templates:
+  - templates/configmap.yaml
+tests:
+  - it: preserves fail-once recover-once defaults
+    set:
+      global.platformConnectorAuth.enabled: false
+    asserts:
+      - matchRegex:
+          path: data["config.ini"]
+          pattern: "(?s)\\[dcgmconnectivity\\].*FailureThreshold = 1.*SuccessThreshold = 1"
+
+  - it: renders custom thresholds
+    set:
+      global.platformConnectorAuth.enabled: false
+      dcgmConnectivity.runtimeDebounce.failureThreshold: 4
+      dcgmConnectivity.runtimeDebounce.successThreshold: 2
+    asserts:
+      - matchRegex:
+          path: data["config.ini"]
+          pattern: "(?s)\\[dcgmconnectivity\\].*FailureThreshold = 4.*SuccessThreshold = 2"
+
+  - it: rejects a zero failure threshold
+    set:
+      global.platformConnectorAuth.enabled: false
+      dcgmConnectivity.runtimeDebounce.failureThreshold: 0
+    asserts:
+      - failedTemplate:
+          errorMessage: gpu-health-monitor.dcgmConnectivity.runtimeDebounce.failureThreshold must be an integer greater than or equal to 1
+
+  - it: rejects a negative success threshold
+    set:
+      global.platformConnectorAuth.enabled: false
+      dcgmConnectivity.runtimeDebounce.successThreshold: -1
+    asserts:
+      - failedTemplate:
+          errorMessage: gpu-health-monitor.dcgmConnectivity.runtimeDebounce.successThreshold must be an integer greater than or equal to 1
+
+  - it: rejects a fractional failure threshold
+    set:
+      global.platformConnectorAuth.enabled: false
+      dcgmConnectivity.runtimeDebounce.failureThreshold: 1.5
+    asserts:
+      - failedTemplate:
+          errorMessage: gpu-health-monitor.dcgmConnectivity.runtimeDebounce.failureThreshold must be an integer greater than or equal to 1
+
+  - it: rejects a quoted success threshold
+    set:
+      global.platformConnectorAuth.enabled: false
+      dcgmConnectivity.runtimeDebounce.successThreshold: "2"
+    asserts:
+      - failedTemplate:
+          errorMessage: gpu-health-monitor.dcgmConnectivity.runtimeDebounce.successThreshold must be an integer, got string "2"
