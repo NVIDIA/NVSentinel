@@ -240,19 +240,15 @@ This decision does not change the meaning of `FaultRemediated`, add a Fault Reme
 
 ### Testing
 
-- Test one retry-safe failure followed by success.
-- Test that provider calls never exceed `maxAttempts`.
-- Test that the call which reaches `maxAttempts` is allowed.
-- Test that Janitor makes no call before `nextAttemptTime`.
-- Test that count and deadline survive restart.
-- Test that a bare timeout or gRPC `Unavailable` does not retry.
-- Test that restart from `Dispatching` fails closed.
+- Test that a retry-safe failure persists its schedule and succeeds after restart.
+- Test that Janitor waits until `nextAttemptTime`.
+- Test that `maxAttempts` includes the final call and prevents later calls.
+- Test that exhaustion and permanent failure produce preserved terminal CRs.
+- Test that ambiguous timeout, `Unavailable`, and restart from `Dispatching` fail closed.
 - Test that a spec change after processing starts is rejected.
 - Test that terminal status is not written when preservation fails.
 - Test that a healthy node receives no additional reboot signal.
-- Test that exhausted and permanent failures become terminal and preserved.
-- Test new Janitor with an old provider.
-- Test old Janitor with a new provider.
+- Test that mixed Janitor-provider versions fail closed in both directions.
 
 ## Rationale
 
@@ -267,21 +263,17 @@ This decision does not change the meaning of `FaultRemediated`, add a Fault Reme
 
 ### Positive
 
-- Transient provider rejections can recover after Janitor restarts.
-- Ambiguous outcomes fail closed.
-- Operators can inspect retry count, next retry time, and failure reason on the CR.
-- The design does not add another workflow store or controller.
+- Bounded signal retries survive Janitor restarts.
+- Ambiguous outcomes fail closed without another workflow store.
 
 ### Negative
 
 - Providers must classify retry-safe errors.
-- A conservative classification can require operator action for a recoverable error.
-- Terminal signal failures remain preserved until an operator removes the annotation.
+- Terminal signal failures require operator verification and cleanup.
 
 ### Mitigations
 
 - Start with a small provider-specific classifier.
-- Add reasons only for observed failures.
 - Document how operators verify provider state and release preserved CRs.
 
 ## Alternatives Considered
