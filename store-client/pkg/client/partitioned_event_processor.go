@@ -28,7 +28,8 @@ import (
 )
 
 const (
-	defaultMaxInFlight = 1000
+	defaultMaxInFlight     = 1000
+	defaultShutdownTimeout = 5 * time.Second
 )
 
 type partitionedTask struct {
@@ -43,17 +44,18 @@ type partitionedTask struct {
 // Checkpoints (resume tokens) are advanced using a low-water mark tracker to guarantee that
 // out-of-order completions never advance the checkpoint past an unresolved earlier event.
 type PartitionedEventProcessor struct {
-	changeStreamWatcher ChangeStreamWatcher
-	databaseClient      DatabaseClient
-	config              EventProcessorConfig
-	eventHandler        EventHandler
-	workers             int
-	workerChs           []chan *partitionedTask
-	tracker             *LowWaterMarkTracker
-	stopCh              chan struct{}
-	stopOnce            sync.Once
-	checkpointMu        sync.Mutex
-	wg                  sync.WaitGroup
+	changeStreamWatcher    ChangeStreamWatcher
+	databaseClient         DatabaseClient
+	config                 EventProcessorConfig
+	eventHandler           EventHandler
+	workers                int
+	workerChs              []chan *partitionedTask
+	tracker                *LowWaterMarkTracker
+	stopCh                 chan struct{}
+	stopOnce               sync.Once
+	checkpointMu           sync.Mutex
+	pendingCheckpointToken []byte
+	wg                     sync.WaitGroup
 }
 
 // NewPartitionedEventProcessor creates a new PartitionedEventProcessor.
@@ -124,9 +126,20 @@ func (p *PartitionedEventProcessor) Start(ctx context.Context) error {
 	p.wg.Wait()
 
 	p.checkpointMu.Lock()
+	tokenToFlush := p.pendingCheckpointToken
 	if flushToken := p.tracker.Flush(); len(flushToken) > 0 {
-		if markErr := p.markProcessed(ctx, flushToken); markErr != nil {
+		tokenToFlush = flushToken
+	}
+
+	if len(tokenToFlush) > 0 {
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), defaultShutdownTimeout)
+		defer cancelShutdown()
+
+		if markErr := p.markProcessed(shutdownCtx, tokenToFlush); markErr != nil {
 			slog.Error("Failed to mark final checkpoint token", "error", markErr)
+			p.pendingCheckpointToken = tokenToFlush
+		} else {
+			p.pendingCheckpointToken = nil
 		}
 	}
 	p.checkpointMu.Unlock()
@@ -313,12 +326,18 @@ func (p *PartitionedEventProcessor) onTaskCompleted(ctx context.Context, seq uin
 	defer p.checkpointMu.Unlock()
 
 	advancedToken := p.tracker.MarkDone(seq)
-	if len(advancedToken) == 0 {
+	if len(advancedToken) > 0 {
+		p.pendingCheckpointToken = advancedToken
+	}
+
+	if len(p.pendingCheckpointToken) == 0 {
 		return
 	}
 
-	if markErr := p.markProcessed(ctx, advancedToken); markErr != nil {
+	if markErr := p.markProcessed(ctx, p.pendingCheckpointToken); markErr != nil {
 		slog.Error("Failed to checkpoint low-water mark resume token", "error", markErr)
+	} else {
+		p.pendingCheckpointToken = nil
 	}
 }
 

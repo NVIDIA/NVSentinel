@@ -16,6 +16,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -301,4 +302,53 @@ func TestPartitionedEventProcessor_DiscardBufferedTasksOnCancellation(t *testing
 		assert.NotEqual(t, "event-3", token)
 	}
 }
+
+type retryTestWatcher struct {
+	*eventProcessorTestWatcher
+	failCount atomic.Int32
+}
+
+func (w *retryTestWatcher) MarkProcessed(ctx context.Context, token []byte) error {
+	if w.failCount.Add(1) == 1 {
+		return errors.New("simulated transient checkpoint error")
+	}
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	return w.eventProcessorTestWatcher.MarkProcessed(ctx, token)
+}
+
+func TestPartitionedEventProcessor_RetainFailedCheckpointForShutdownRetry(t *testing.T) {
+	// If checkpoint write fails during execution, LowWaterMarkTracker.MarkDone has already
+	// popped the entries. The processor must retain the unpersisted token and retry it during
+	// shutdown using a fresh bounded context, even if the parent context was canceled.
+	event1 := newNodeTestEvent("event-1", "node-a")
+	baseWatcher := newEventProcessorTestWatcher(event1)
+	watcher := &retryTestWatcher{eventProcessorTestWatcher: baseWatcher}
+
+	processor := NewPartitionedEventProcessor(watcher, nil, EventProcessorConfig{
+		Workers:              1,
+		MarkProcessedOnError: true,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	processor.SetEventHandler(EventHandlerFunc(func(_ context.Context, e *model.HealthEventWithStatus) error {
+		if e.HealthEvent.Id == "event-1" {
+			// Cancel parent context during event execution to simulate shutdown
+			cancel()
+		}
+
+		return nil
+	}))
+
+	_ = processor.Start(ctx)
+
+	// Verify retry succeeded on shutdown with fresh context
+	assert.Equal(t, int32(2), watcher.failCount.Load(), "should have attempted checkpoint twice (task completion + shutdown)")
+	assert.Contains(t, baseWatcher.markedTokens, "event-1", "event-1 should be marked during shutdown retry")
+}
+
 
