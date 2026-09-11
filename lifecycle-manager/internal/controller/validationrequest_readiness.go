@@ -16,6 +16,7 @@ package controller
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -34,6 +35,13 @@ func buildCELEnvironment() (*cel.Env, error) {
 		cel.Function("quantity",
 			cel.Overload("quantity_string", []*cel.Type{cel.StringType}, cel.DoubleType,
 				cel.UnaryBinding(quantityToDouble),
+			),
+		),
+		cel.Function("now",
+			cel.Overload("now_", nil, cel.TimestampType,
+				cel.FunctionBinding(func(_ ...ref.Val) ref.Val {
+					return types.Timestamp{Time: time.Now()}
+				}),
 			),
 		),
 	)
@@ -58,15 +66,18 @@ func quantityToDouble(val ref.Val) ref.Val {
 	return types.Double(q.AsApproximateFloat64())
 }
 
-func (r *ValidationRequestReconciler) evaluateNodeReadinessCriteria(node *corev1.Node,
-	criteria []v1alpha1.CriteriaSpec) (string, error) {
+// evaluateCriteria evaluates each CEL criterion against the given node in order. It returns the name of the first
+// criterion that fails, or an empty string if all criteria evaluate to true. This is shared by
+// theValidationRequestReconciler and NodeValidationReconciler, which each maintain their own compiled program map.
+func evaluateCriteria(node *corev1.Node, criteria []v1alpha1.CriteriaSpec,
+	programs map[string]cel.Program) (string, error) {
 	nodeMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(node)
 	if err != nil {
 		return "", fmt.Errorf("convert node %s to unstructured: %w", node.Name, err)
 	}
 
 	for _, c := range criteria {
-		ok, err := r.evalReadinessCriterion(c.Expression, nodeMap)
+		ok, err := evalCriterion(programs, c.Expression, nodeMap)
 		if err != nil {
 			return c.Name, fmt.Errorf("criterion %q: %w", c.Name, err)
 		}
@@ -79,8 +90,8 @@ func (r *ValidationRequestReconciler) evaluateNodeReadinessCriteria(node *corev1
 	return "", nil
 }
 
-func (r *ValidationRequestReconciler) evalReadinessCriterion(expr string, nodeMap map[string]any) (bool, error) {
-	prg, ok := r.ReadinessPrograms[expr]
+func evalCriterion(programs map[string]cel.Program, expr string, nodeMap map[string]any) (bool, error) {
+	prg, ok := programs[expr]
 	if !ok {
 		return false, fmt.Errorf("no compiled program for expression %q ", expr)
 	}

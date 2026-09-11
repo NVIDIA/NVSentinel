@@ -132,6 +132,21 @@ config:
       minimumNodesPerBatch: 1
       batchFailurePolicy: fail
 
+  newNodeValidation:
+    condition: NewNodeValidated
+    batchPeriodSeconds: 900
+    criteria:
+      - name: recently-joined
+        expression: >-
+          has(node.metadata.creationTimestamp) &&
+          now() - timestamp(node.metadata.creationTimestamp) < duration("30m")
+      - name: gpu-present
+        expression: >-
+          has(node.metadata.labels) && "nvidia.com/gpu.present" in node.metadata.labels &&
+          node.metadata.labels["nvidia.com/gpu.present"] == "true"
+    newNodeTests:
+      - dcgm-diag-test
+
   templates:
     "k8s-job-template.yaml": |
       apiVersion: batch/v1
