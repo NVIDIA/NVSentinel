@@ -230,8 +230,34 @@ func TestPublish_NonRetryableErrorReturnsImmediately(t *testing.T) {
 	err := p.Publish(context.Background(), sampleEvents())
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrPlatformConnectorUnavailable)
+	assert.ErrorIs(t, err, ErrPublishRejected,
+		"a rejection the server would repeat is marked so callers can stop offering the batch")
+	assert.Equal(t, codes.InvalidArgument, status.Code(err), "the server's status stays readable")
 	assert.Equal(t, int64(1), fc.calls.Load(),
 		"non-retryable errors must NOT trigger retries")
+}
+
+// TestPublish_NonRetryableButNotPermanentIsNotRejected: a status that is
+// neither retried nor a permanent rejection (the token may rotate) is
+// returned as a plain error, so callers keep the batch for a later cycle.
+func TestPublish_NonRetryableButNotPermanentIsNotRejected(t *testing.T) {
+	tmp := t.TempDir()
+	socket := filepath.Join(tmp, "nvsentinel.sock")
+	touchSocket(t, socket)
+
+	fc := &fakePCClient{
+		responseFn: func(_ int) error {
+			return status.Error(codes.Unauthenticated, "token expired")
+		},
+	}
+
+	p := New(fc, "unix://"+socket, "test-unauthenticated-socket", fastRetryOpt())
+
+	err := p.Publish(context.Background(), sampleEvents())
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrPublishRejected)
+	assert.NotErrorIs(t, err, ErrPlatformConnectorUnavailable)
+	assert.Equal(t, int64(1), fc.calls.Load())
 }
 
 // TestUnixSocketPathFromTarget covers both Unix-socket URI variants
@@ -320,6 +346,43 @@ func TestPublish_ContextCancellationStopsRetries(t *testing.T) {
 		"expected a context-related error, got %v", err)
 	assert.Less(t, fc.calls.Load(), int64(20),
 		"retries must stop when the context is cancelled, not exhaust the full budget")
+}
+
+// TestNew_SkipsNilOptions: a nil Option is skipped, so an optional option can
+// be passed through unconditionally.
+func TestNew_SkipsNilOptions(t *testing.T) {
+	monitor := "test-nil-options"
+
+	fc := &fakePCClient{}
+
+	p := New(fc, "127.0.0.1:5555", monitor, nil, fastRetryOpt(), nil)
+
+	require.NoError(t, p.Publish(context.Background(), sampleEvents()))
+	assert.Equal(t, int64(1), fc.calls.Load(),
+		"nil options must be ignored, leaving the publisher fully functional")
+}
+
+// TestClose_WithoutOwnedConnIsNoOp: a publisher built around a connection the
+// caller dialed itself (no option from DialFromEnvOr) leaves that connection
+// to the caller, so Close must be a repeatable no-op that keeps the publisher
+// usable.
+func TestClose_WithoutOwnedConnIsNoOp(t *testing.T) {
+	tmp := t.TempDir()
+	socket := filepath.Join(tmp, "nvsentinel.sock")
+	touchSocket(t, socket)
+
+	monitor := "test-socket-close-noop"
+
+	fc := &fakePCClient{}
+
+	p := New(fc, "unix://"+socket, monitor)
+
+	require.NoError(t, p.Close())
+	require.NoError(t, p.Close(), "socket-mode Close must stay a no-op on repeat calls")
+
+	require.NoError(t, p.Publish(context.Background(), sampleEvents()),
+		"socket-mode Close must not shut anything down; the caller owns the connection")
+	assert.Equal(t, int64(1), fc.calls.Load())
 }
 
 // An authentication-backend outage and an unreachable platform-connector both

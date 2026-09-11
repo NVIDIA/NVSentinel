@@ -67,6 +67,21 @@ type janitorProviderServer struct {
 	k8sClient kubernetes.Interface
 }
 
+// translateCSPError preserves provider gRPC status codes and maps unclassified
+// provider errors to Internal.
+func translateCSPError(err error, operation string) error {
+	if err == nil {
+		return nil
+	}
+
+	grpcStatus, ok := status.FromError(err)
+	if !ok || grpcStatus.Code() == codes.Unknown {
+		return status.Errorf(codes.Internal, "%s: %v", operation, err)
+	}
+
+	return status.Errorf(grpcStatus.Code(), "%s: %s", operation, grpcStatus.Message())
+}
+
 func (s *janitorProviderServer) SendRebootSignal(
 	ctx context.Context, req *cspv1alpha1.SendRebootSignalRequest,
 ) (*cspv1alpha1.SendRebootSignalResponse, error) {
@@ -94,7 +109,7 @@ func (s *janitorProviderServer) SendRebootSignal(
 		)
 		tracing.RecordError(span, err)
 
-		return nil, status.Errorf(codes.Internal, "failed to send reboot signal: %v", err)
+		return nil, translateCSPError(err, "failed to send reboot signal")
 	}
 
 	span.SetAttributes(
@@ -133,7 +148,7 @@ func (s *janitorProviderServer) IsNodeReady(
 		)
 		tracing.RecordError(span, err)
 
-		return nil, status.Errorf(codes.Internal, "failed to check if node is ready: %v", err)
+		return nil, translateCSPError(err, "failed to check if node is ready")
 	}
 
 	span.SetAttributes(attribute.Bool("janitor_provider.node_ready.ready", isReady))
@@ -170,7 +185,7 @@ func (s *janitorProviderServer) SendTerminateSignal(
 		)
 		tracing.RecordError(span, err)
 
-		return nil, status.Errorf(codes.Internal, "failed to send terminate signal: %v", err)
+		return nil, translateCSPError(err, "failed to send terminate signal")
 	}
 
 	span.SetAttributes(
