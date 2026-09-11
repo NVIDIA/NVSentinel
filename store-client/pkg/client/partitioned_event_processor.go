@@ -28,8 +28,7 @@ import (
 )
 
 const (
-	defaultMaxInFlight  = 1000
-	defaultEventTimeout = 30 * time.Second
+	defaultMaxInFlight = 1000
 )
 
 type partitionedTask struct {
@@ -256,13 +255,14 @@ func (p *PartitionedEventProcessor) handleTask(ctx context.Context, task *partit
 		return newUncheckpointedEventError(fmt.Errorf("failed to get document ID: %w", err))
 	}
 
-	eventTimeout := p.config.EventTimeout
-	if eventTimeout <= 0 {
-		eventTimeout = defaultEventTimeout
-	}
+	eventCtx := ctx
 
-	eventCtx, cancel := context.WithTimeout(ctx, eventTimeout)
-	defer cancel()
+	if p.config.EventTimeout > 0 {
+		var cancel context.CancelFunc
+
+		eventCtx, cancel = context.WithTimeout(ctx, p.config.EventTimeout)
+		defer cancel()
+	}
 
 	slog.Debug("Processing event", "eventID", eventID, "seq", seq)
 
@@ -270,6 +270,12 @@ func (p *PartitionedEventProcessor) handleTask(ctx context.Context, task *partit
 	if processErr != nil {
 		p.updateMetrics("processing_failed", eventID, time.Since(startTime), false)
 		slog.Error("Event processing failed", "eventID", eventID, "seq", seq, "error", processErr)
+
+		// Context cancellations and timeouts are transient conditions and must not be marked
+		// as processed, allowing the event to be retried on restart rather than permanently skipped.
+		if errors.Is(processErr, context.Canceled) || errors.Is(processErr, context.DeadlineExceeded) || ctx.Err() != nil {
+			return newUncheckpointedEventError(processErr)
+		}
 
 		if p.config.MarkProcessedOnError {
 			slog.Warn("Marking failed event as processed due to MarkProcessedOnError=true", "eventID", eventID)

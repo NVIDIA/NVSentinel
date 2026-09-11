@@ -220,3 +220,44 @@ func TestPartitionedEventProcessor_PoisonPillHandling(t *testing.T) {
 
 	assert.True(t, goodProcessed.Load(), "good-event should be processed after poison-event")
 }
+
+func TestPartitionedEventProcessor_TimeoutNotCheckpointed(t *testing.T) {
+	// A timeout (context.DeadlineExceeded) is a transient condition and must NOT be marked
+	// as processed, even if MarkProcessedOnError=true, so it can be retried on restart.
+	event1 := newNodeTestEvent("timeout-event", "node-a")
+	event2 := newNodeTestEvent("good-event", "node-b")
+
+	watcher := newEventProcessorTestWatcher(event1, event2)
+
+	processor := NewPartitionedEventProcessor(watcher, nil, EventProcessorConfig{
+		Workers:              2,
+		MarkProcessedOnError: true,
+	})
+
+	event2Processed := make(chan struct{})
+
+	processor.SetEventHandler(EventHandlerFunc(func(_ context.Context, e *model.HealthEventWithStatus) error {
+		if e.HealthEvent.Id == "timeout-event" {
+			// Simulate transient context timeout
+			return context.DeadlineExceeded
+		}
+		if e.HealthEvent.Id == "good-event" {
+			close(event2Processed)
+		}
+
+		return nil
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := processor.Start(ctx)
+	require.NoError(t, err)
+
+	<-event2Processed
+
+	// Verify that event1's token was NOT checkpointed because timeout is transient
+	for _, token := range watcher.markedTokens {
+		assert.NotEqual(t, "timeout-event", token, "timeout event must not be checkpointed")
+	}
+}

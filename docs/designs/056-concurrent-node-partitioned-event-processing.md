@@ -86,8 +86,7 @@ ChangeStreamWatcher (Events channel)
    - Implements `client.EventProcessor`.
    - Manages $N$ worker goroutines and per-worker buffered channels.
    - Maps events to workers via `hash(nodeName) % N` using FNV-32a. Events without a node name route to worker 0.
-   - Enforces backpressure: when uncheckpointed in-flight events reach `MaxInFlight`, suspends reading from the watcher.
-   - Handles poison events: when `MarkProcessedOnError=true` (as in `health-events-analyzer`), failed events are marked resolved in the tracker to prevent stream stalling.
+   - Handles poison events vs transient errors: when `MarkProcessedOnError=true` (as in `health-events-analyzer`), only terminal errors (e.g., permanent unmarshaling failures or handler rejections) are marked resolved in the tracker to prevent poison pills from blocking stream progress. Transient conditions—specifically context cancellations (`context.Canceled`) and timeouts (`context.DeadlineExceeded`)—are never marked as completed, ensuring the low-water mark does not advance past them and that they are retried on pod restart rather than permanently lost.
 
 3. **`health-events-analyzer` Integration**:
    - `health-events-analyzer/main.go`: adds CLI flags `--workers` (default `1`) and `--max-in-flight` (default `1000`).
