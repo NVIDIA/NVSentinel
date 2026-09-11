@@ -14,6 +14,7 @@
 
 """Keep incident codes distinct from polling through event publication and recovery."""
 
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
@@ -54,21 +55,41 @@ def processor(tmp_path: Path) -> platform_connector.PlatformConnectorEventProces
     return result
 
 
-def incident(code: str, message: str, gpu_id: int = 0) -> SimpleNamespace:
+@dataclass(frozen=True)
+class IncidentError:
+    code: int
+    msg: str
+
+
+@dataclass(frozen=True)
+class IncidentEntityInfo:
+    entityId: int
+    entityGroupId: int
+
+
+@dataclass(frozen=True)
+class Incident:
+    system: int
+    health: int
+    error: IncidentError
+    entityInfo: IncidentEntityInfo
+
+
+def incident(code: str, message: str, gpu_id: int = 0) -> Incident:
     """Construct the DCGM incident shape without a GPU or DCGM host engine."""
-    return SimpleNamespace(
+    return Incident(
         system=dcgm_structs.DCGM_HEALTH_WATCH_NVLINK,
         health=(
             dcgm_structs.DCGM_HEALTH_RESULT_WARN
             if code == "DCGM_FR_IMEX_UNHEALTHY"
             else dcgm_structs.DCGM_HEALTH_RESULT_FAIL
         ),
-        error=SimpleNamespace(code=getattr(dcgm_errors, code), msg=message),
-        entityInfo=SimpleNamespace(entityId=gpu_id, entityGroupId=dcgm_structs.DCGM_FE_GPU),
+        error=IncidentError(code=getattr(dcgm_errors, code), msg=message),
+        entityInfo=IncidentEntityInfo(entityId=gpu_id, entityGroupId=dcgm_structs.DCGM_FE_GPU),
     )
 
 
-def poll(watcher: dcgm.DCGMWatcher, incidents: list[SimpleNamespace]) -> dict[str, dcgm.types.HealthDetails]:
+def poll(watcher: dcgm.DCGMWatcher, incidents: list[Incident]) -> dict[str, dcgm.types.HealthDetails]:
     """Run incident suppression, debounce and accumulation in the real watcher."""
     group = MagicMock()
     group.health.Check.return_value = SimpleNamespace(
@@ -84,7 +105,9 @@ def poll(watcher: dcgm.DCGMWatcher, incidents: list[SimpleNamespace]) -> dict[st
 
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize("send_succeeds", [False, True])
-def test_distinct_codes_survive_publication_and_recovery(processor, reverse: bool, send_succeeds: bool) -> None:
+def test_distinct_codes_survive_publication_and_recovery(
+    processor: platform_connector.PlatformConnectorEventProcessor, reverse: bool, send_succeeds: bool
+) -> None:
     """Each code keeps its own message and action, including after a failed delivery."""
     watcher = dcgm.DCGMWatcher("localhost:5555", 10, [], False)
     incidents = [
@@ -132,7 +155,9 @@ def test_distinct_codes_survive_publication_and_recovery(processor, reverse: boo
 
 
 @pytest.mark.parametrize("reverse", [False, True])
-def test_repeated_code_combines_only_its_own_messages(processor, reverse: bool) -> None:
+def test_repeated_code_combines_only_its_own_messages(
+    processor: platform_connector.PlatformConnectorEventProcessor, reverse: bool
+) -> None:
     """Same-code deduplication cannot mix another code's remediation evidence."""
     watcher = dcgm.DCGMWatcher("localhost:5555", 10, [], False)
     incidents = [
@@ -152,7 +177,9 @@ def test_repeated_code_combines_only_its_own_messages(processor, reverse: bool) 
 
 @pytest.mark.parametrize("suppressed", list(CODES))
 @pytest.mark.parametrize("reverse", [False, True])
-def test_suppression_preserves_the_other_code(processor, suppressed: str, reverse: bool) -> None:
+def test_suppression_preserves_the_other_code(
+    processor: platform_connector.PlatformConnectorEventProcessor, suppressed: str, reverse: bool
+) -> None:
     """Suppressing either code leaves the other's original message and action."""
     watcher = dcgm.DCGMWatcher("localhost:5555", 10, [], False, suppressed_error_codes=frozenset({suppressed}))
     incidents = [incident(code, code) for code in CODES]
@@ -166,7 +193,9 @@ def test_suppression_preserves_the_other_code(processor, suppressed: str, revers
     assert events[0].recommendedAction == pb.RecommendedAction.Value(CODES[expected])
 
 
-def test_debounced_second_code_is_published_after_its_threshold(processor) -> None:
+def test_debounced_second_code_is_published_after_its_threshold(
+    processor: platform_connector.PlatformConnectorEventProcessor,
+) -> None:
     """A cached first code cannot conceal a later code when its debounce matures."""
     watcher = dcgm.DCGMWatcher(
         "localhost:5555", 10, [], False, health_check_min_consecutive_polls={"DCGM_FR_FABRIC_PROBE_STATE": 2}
