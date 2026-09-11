@@ -123,14 +123,46 @@ The CSP plugin classifies the original error before gRPC removes provider-specif
 Use this versioned contract:
 
 - `ErrorInfo.domain`: `csp.nvsentinel.nvidia.com`
-- `ErrorInfo.reason`: `CSP_OPERATION_TRANSIENT` or `CSP_OPERATION_PERMANENT`
+- `ErrorInfo.reason`: a stable failure reason such as `RESOURCE_BUSY`, `RATE_LIMITED`, or `PERMISSION_DENIED`
 - `ErrorInfo.metadata["contract_version"]`: `1`
+- `ErrorInfo.metadata["failure_class"]`: `TRANSIENT` or `PERMANENT`
 - `ErrorInfo.metadata["operation"]`: `reboot` or `terminate`
 - `ErrorInfo.metadata["provider"]`: the configured provider name
+- `ErrorInfo.metadata["provider_code"]`: the provider error code, when available
+- `ErrorInfo.metadata["http_status_code"]`: the HTTP status code, when available
 
-A valid `ErrorInfo` detail is authoritative. A missing detail, malformed detail, or unsupported version produces `PermanentFailure`. A Go type in janitor-provider can implement this contract, but it is not the public contract.
+The initial reason vocabulary is:
 
-Use `Unavailable`, `ResourceExhausted`, or `Aborted` with `CSP_OPERATION_TRANSIENT`. Use the most specific non-retryable canonical code with `CSP_OPERATION_PERMANENT`. Treat `DeadlineExceeded`, `Unknown`, and `Internal` as permanent for automatic retry unless a valid transient detail proves that durable idempotency makes another request safe.
+- `RESOURCE_BUSY`
+- `RATE_LIMITED`
+- `SERVICE_UNAVAILABLE`
+- `INVALID_REQUEST`
+- `AUTHENTICATION_FAILED`
+- `PERMISSION_DENIED`
+- `RESOURCE_NOT_FOUND`
+- `UNSUPPORTED_OPERATION`
+- `AMBIGUOUS_RESULT`
+- `PROVIDER_ERROR`
+
+For example:
+
+```yaml
+domain: csp.nvsentinel.nvidia.com
+reason: RESOURCE_BUSY
+metadata:
+  contract_version: "1"
+  failure_class: TRANSIENT
+  operation: reboot
+  provider: oci
+  provider_code: Conflict
+  http_status_code: "409"
+```
+
+A valid `failure_class` controls automatic retry. `ErrorInfo.reason` describes the failure and must not control retry. Consumers accept new reason values without changing retry behavior.
+
+A missing detail, malformed detail, unsupported version, or invalid `failure_class` produces `PermanentFailure`. A Go type in janitor-provider can implement this contract, but it is not the public contract.
+
+Use `Unavailable`, `ResourceExhausted`, or `Aborted` with `failure_class=TRANSIENT`. Use the most specific non-retryable canonical code with `failure_class=PERMANENT`. Treat `DeadlineExceeded`, `Unknown`, and `Internal` as permanent for automatic retry unless a valid transient class proves that durable idempotency makes another request safe.
 
 Classify an error as transient only when the provider proves that it did not accept the operation or when the same idempotency key makes repetition safe. Classify all other errors as permanent for automatic retry. This includes invalid credentials, permission denial, malformed provider IDs, unsupported actions, and ambiguous transport failures.
 
