@@ -16,6 +16,7 @@ package oci
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -27,6 +28,8 @@ import (
 	"github.com/oracle/oci-go-sdk/v65/common"
 	"github.com/oracle/oci-go-sdk/v65/common/auth"
 	"github.com/oracle/oci-go-sdk/v65/core"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
@@ -36,8 +39,6 @@ import (
 var (
 	_ model.CSPClient = (*Client)(nil)
 )
-
-const rebootRetryAttempts = 6
 
 // Compute provides a wrapper around a subset of the OCI Compute client interface,
 // to enable mocking/stubbing for testing.
@@ -126,22 +127,15 @@ func NewClientFromEnv(ctx context.Context) (*Client, error) {
 func (c *Client) SendRebootSignal(
 	ctx context.Context,
 	node corev1.Node,
-	_ string,
+	crName string,
 ) (model.ResetSignalRequestRef, error) {
-	retryPolicy := rebootRetryPolicy()
 	_, err := c.compute.InstanceAction(ctx, core.InstanceActionRequest{
-		InstanceId: &node.Spec.ProviderID,
-		Action:     core.InstanceActionActionSoftreset,
-		RequestMetadata: common.RequestMetadata{
-			RetryPolicy: &retryPolicy,
-		},
+		InstanceId:    &node.Spec.ProviderID,
+		Action:        core.InstanceActionActionSoftreset,
+		OpcRetryToken: rebootRetryToken(node.Spec.ProviderID, crName),
 	})
 	if err != nil {
-		return "", fmt.Errorf(
-			"send soft reset action for OCI instance %q: %w",
-			node.Spec.ProviderID,
-			err,
-		)
+		return "", translateRebootError(node.Spec.ProviderID, err)
 	}
 
 	return model.ResetSignalRequestRef(time.Now().UTC().Format(time.RFC3339)), nil
@@ -165,14 +159,25 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID st
 	return true, nil
 }
 
-func rebootRetryPolicy() common.RetryPolicy {
-	return common.NewRetryPolicyWithOptions(
-		common.ReplaceWithValuesFromRetryPolicy(common.DefaultRetryPolicyWithoutEventualConsistency()),
-		common.WithMaximumNumberAttempts(rebootRetryAttempts),
-		common.WithShouldRetryOperation(func(response common.OCIOperationResponse) bool {
-			return isRetryableRebootError(response.Error)
-		}),
-	)
+// rebootRetryToken returns a stable OCI idempotency token for retries of one
+// RebootNode request. OCI retry tokens are limited to 64 characters.
+func rebootRetryToken(providerID, crName string) *string {
+	if crName == "" {
+		return nil
+	}
+
+	token := fmt.Sprintf("%x", sha256.Sum256([]byte(providerID+"\x00"+crName)))
+
+	return &token
+}
+
+func translateRebootError(providerID string, err error) error {
+	contextualErr := fmt.Errorf("send soft reset action for OCI instance %q: %w", providerID, err)
+	if isRetryableRebootError(err) {
+		return status.Error(codes.Unavailable, contextualErr.Error())
+	}
+
+	return contextualErr
 }
 
 func isRetryableRebootError(err error) bool {
