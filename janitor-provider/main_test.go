@@ -24,6 +24,8 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// TestTranslateCSPError_VariousErrors_ReturnsExpectedStatus verifies that CSP
+// errors retain known gRPC codes and plain errors become Internal errors.
 func TestTranslateCSPError_VariousErrors_ReturnsExpectedStatus(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -63,6 +65,8 @@ func TestTranslateCSPError_VariousErrors_ReturnsExpectedStatus(t *testing.T) {
 	}
 }
 
+// TestTranslateCSPError_NilError_ReturnsNil verifies that the translator does
+// not create an error when the provider returns nil.
 func TestTranslateCSPError_NilError_ReturnsNil(t *testing.T) {
 	require.NoError(t, translateCSPError(nil, "perform CSP operation"))
 }

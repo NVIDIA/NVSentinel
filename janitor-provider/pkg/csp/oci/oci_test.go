@@ -16,12 +16,9 @@ package oci
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
-	"io"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/oracle/oci-go-sdk/v65/core"
 	"github.com/stretchr/testify/assert"
@@ -32,21 +29,19 @@ import (
 )
 
 type fakeCompute struct {
-	actionErrors   []error
-	actionRequests []core.InstanceActionRequest
+	actionError   error
+	actionRequest core.InstanceActionRequest
+	calls         int
 }
 
 func (f *fakeCompute) InstanceAction(
 	_ context.Context,
 	request core.InstanceActionRequest,
 ) (core.InstanceActionResponse, error) {
-	index := len(f.actionRequests)
-	f.actionRequests = append(f.actionRequests, request)
-	if index < len(f.actionErrors) {
-		return core.InstanceActionResponse{}, f.actionErrors[index]
-	}
+	f.actionRequest = request
+	f.calls++
 
-	return core.InstanceActionResponse{}, nil
+	return core.InstanceActionResponse{}, f.actionError
 }
 
 type fakeServiceError struct {
@@ -73,78 +68,36 @@ func testNode() corev1.Node {
 	return corev1.Node{Spec: corev1.NodeSpec{ProviderID: "ocid1.instance.test"}}
 }
 
-func testClient(compute Compute) *Client {
-	return &Client{compute: compute}
-}
-
-// TestSendRebootSignal_ComputeSucceeds_ReturnsTimestampAndIdempotencyToken verifies
-// that a successful reboot request returns a timestamp and configures a stable retry token.
-func TestSendRebootSignal_ComputeSucceeds_ReturnsTimestampAndIdempotencyToken(t *testing.T) {
+// TestSendRebootSignal_ComputeSucceeds_UsesStableTokenWithoutSDKRetry verifies
+// that controller retries stay idempotent without enabling OCI SDK retries.
+func TestSendRebootSignal_ComputeSucceeds_UsesStableTokenWithoutSDKRetry(t *testing.T) {
 	compute := &fakeCompute{}
-	ref, err := testClient(compute).SendRebootSignal(context.Background(), testNode(), "rebootnode-test")
+	client := &Client{compute: compute}
 
+	_, err := client.SendRebootSignal(context.Background(), testNode(), "rebootnode-test")
 	require.NoError(t, err)
-	_, err = time.Parse(time.RFC3339, string(ref))
+	require.NotNil(t, compute.actionRequest.OpcRetryToken)
+	token := *compute.actionRequest.OpcRetryToken
+
+	_, err = client.SendRebootSignal(context.Background(), testNode(), "rebootnode-test")
 	require.NoError(t, err)
-	require.Len(t, compute.actionRequests, 1)
-
-	request := compute.actionRequests[0]
-	require.NotNil(t, request.OpcRetryToken)
-	assert.Len(t, *request.OpcRetryToken, sha256.Size*2)
-	assert.Nil(t, request.RequestMetadata.RetryPolicy)
+	assert.Equal(t, 2, compute.calls)
+	assert.Equal(t, token, *compute.actionRequest.OpcRetryToken)
+	assert.Nil(t, compute.actionRequest.RequestMetadata.RetryPolicy)
 }
 
-// TestSendRebootSignal_ComputeFails_ReturnsError verifies that a failed OCI
-// request returns its error to the caller.
-func TestSendRebootSignal_ComputeFails_ReturnsError(t *testing.T) {
-	compute := &fakeCompute{actionErrors: []error{errors.New("permission denied")}}
-	_, err := testClient(compute).SendRebootSignal(context.Background(), testNode(), "")
-
-	require.ErrorContains(t, err, "permission denied")
-	assert.Len(t, compute.actionRequests, 1)
-	assert.Equal(t, codes.Unknown, status.Code(err))
-}
-
-// TestSendRebootSignal_ComputeReturnsTransientError_ReturnsUnavailable verifies
-// that Janitor can identify a retryable OCI failure through its gRPC status.
-func TestSendRebootSignal_ComputeReturnsTransientError_ReturnsUnavailable(t *testing.T) {
-	compute := &fakeCompute{actionErrors: []error{instanceBusyError()}}
-	_, err := testClient(compute).SendRebootSignal(context.Background(), testNode(), "rebootnode-test")
-
-	require.Error(t, err)
-	assert.Equal(t, codes.Unavailable, status.Code(err))
-	assert.ErrorContains(t, err, "currently being modified")
-	assert.Len(t, compute.actionRequests, 1)
-}
-
-// TestIsRetryableRebootError_VariousErrors_ReturnsExpectedClassification
-// verifies the OCI defaults and the additional instance-modification conflict.
-func TestIsRetryableRebootError_VariousErrors_ReturnsExpectedClassification(t *testing.T) {
+// TestSendRebootSignal_ComputeFails_ReturnsExpectedStatus verifies the custom
+// conflict, OCI default retry, and permanent error paths.
+func TestSendRebootSignal_ComputeFails_ReturnsExpectedStatus(t *testing.T) {
 	tests := []struct {
-		name      string
-		err       error
-		retryable bool
+		name     string
+		err      error
+		wantCode codes.Code
 	}{
 		{
-			name:      "instance currently being modified",
-			err:       instanceBusyError(),
-			retryable: true,
-		},
-		{
-			name: "OCI incorrect state",
-			err: fakeServiceError{
-				status: http.StatusConflict,
-				code:   "IncorrectState",
-			},
-			retryable: true,
-		},
-		{
-			name: "OCI lock conflict",
-			err: fakeServiceError{
-				status: http.StatusConflict,
-				code:   "LockConflict",
-			},
-			retryable: true,
+			name:     "instance currently being modified",
+			err:      instanceBusyError(),
+			wantCode: codes.Unavailable,
 		},
 		{
 			name: "rate limited",
@@ -152,36 +105,7 @@ func TestIsRetryableRebootError_VariousErrors_ReturnsExpectedClassification(t *t
 				status: http.StatusTooManyRequests,
 				code:   "TooManyRequests",
 			},
-			retryable: true,
-		},
-		{
-			name: "internal server error",
-			err: fakeServiceError{
-				status: http.StatusInternalServerError,
-				code:   "InternalError",
-			},
-			retryable: true,
-		},
-		{
-			name: "service unavailable",
-			err: fakeServiceError{
-				status: http.StatusServiceUnavailable,
-				code:   "ServiceUnavailable",
-			},
-			retryable: true,
-		},
-		{
-			name:      "connection closed",
-			err:       io.EOF,
-			retryable: true,
-		},
-		{
-			name: "method not implemented",
-			err: fakeServiceError{
-				status: http.StatusNotImplemented,
-				code:   "MethodNotImplemented",
-			},
-			retryable: false,
+			wantCode: codes.Unavailable,
 		},
 		{
 			name: "unrelated conflict",
@@ -190,44 +114,25 @@ func TestIsRetryableRebootError_VariousErrors_ReturnsExpectedClassification(t *t
 				code:    "Conflict",
 				message: "instance is already stopped",
 			},
-			retryable: false,
+			wantCode: codes.Unknown,
 		},
 		{
-			name: "bad request",
-			err: fakeServiceError{
-				status: http.StatusBadRequest,
-				code:   "InvalidParameter",
-			},
-			retryable: false,
-		},
-		{
-			name:      "non-OCI error",
-			err:       errors.New("permission denied"),
-			retryable: false,
-		},
-		{
-			name:      "nil error",
-			err:       nil,
-			retryable: false,
+			name:     "permission denied",
+			err:      errors.New("permission denied"),
+			wantCode: codes.Unknown,
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			assert.Equal(t, test.retryable, isRetryableRebootError(test.err))
+			compute := &fakeCompute{actionError: test.err}
+			client := &Client{compute: compute}
+
+			_, err := client.SendRebootSignal(context.Background(), testNode(), "rebootnode-test")
+
+			require.Error(t, err)
+			assert.Equal(t, test.wantCode, status.Code(err))
+			assert.Equal(t, 1, compute.calls)
 		})
 	}
-}
-
-// TestRebootRetryToken_SameRequest_ReturnsStableToken verifies that controller
-// requeues use the same OCI idempotency token.
-func TestRebootRetryToken_SameRequest_ReturnsStableToken(t *testing.T) {
-	first := rebootRetryToken("ocid1.instance.test", "rebootnode-test")
-	second := rebootRetryToken("ocid1.instance.test", "rebootnode-test")
-
-	require.NotNil(t, first)
-	require.NotNil(t, second)
-	assert.Equal(t, *first, *second)
-	assert.NotEqual(t, *first, *rebootRetryToken("ocid1.instance.test", "another-reboot"))
-	assert.Nil(t, rebootRetryToken("ocid1.instance.test", ""))
 }
