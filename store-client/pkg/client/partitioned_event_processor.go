@@ -258,7 +258,7 @@ func (p *PartitionedEventProcessor) runWorker(ctx context.Context, id int, ch <-
 			slog.Error("Worker failed to handle task", "workerID", id, "seq", task.seq, "error", err)
 
 			var uncheckpointedErr *uncheckpointedEventError
-			if errors.As(err, &uncheckpointedErr) && !p.config.MarkProcessedOnError {
+			if errors.As(err, &uncheckpointedErr) {
 				if stopErr := p.Stop(ctx); stopErr != nil {
 					slog.Error("Failed to stop processor on uncheckpointed error", "error", stopErr)
 				}

@@ -263,6 +263,42 @@ func TestPartitionedEventProcessor_TimeoutNotCheckpointed(t *testing.T) {
 	}
 }
 
+func TestPartitionedEventProcessor_UncheckpointedErrorStopsProcessor(t *testing.T) {
+	// When an uncheckpointed error occurs (e.g. transient timeout), the processor must stop
+	// so that subsequent events on that partition are not processed out-of-order,
+	// even if MarkProcessedOnError is true.
+	event1 := newNodeTestEvent("timeout-event", "node-a")
+	event2 := newNodeTestEvent("subsequent-event", "node-a")
+
+	watcher := newEventProcessorTestWatcher(event1, event2)
+
+	processor := NewPartitionedEventProcessor(watcher, nil, EventProcessorConfig{
+		Workers:              2,
+		MarkProcessedOnError: true,
+	})
+
+	var subsequentProcessed atomic.Bool
+
+	processor.SetEventHandler(EventHandlerFunc(func(_ context.Context, e *model.HealthEventWithStatus) error {
+		if e.HealthEvent.Id == "timeout-event" {
+			return context.DeadlineExceeded
+		}
+		if e.HealthEvent.Id == "subsequent-event" {
+			subsequentProcessed.Store(true)
+		}
+
+		return nil
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := processor.Start(ctx)
+	require.NoError(t, err)
+
+	assert.False(t, subsequentProcessed.Load(), "subsequent event on same node must not be processed after uncheckpointed error")
+}
+
 func TestPartitionedEventProcessor_DiscardBufferedTasksOnCancellation(t *testing.T) {
 	// When context is canceled during shutdown, any buffered tasks in worker channels
 	// must be discarded without calling the handler or advancing the checkpoint.
