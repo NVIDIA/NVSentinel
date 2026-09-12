@@ -1,0 +1,118 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "system-services-monitor.fullname" . }}
+  labels:
+    {{- include "system-services-monitor.labels" . | nindent 4 }}
+spec:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 5%
+  selector:
+    matchLabels:
+      {{- include "system-services-monitor.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "system-services-monitor.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: metrics
+    spec:
+      serviceAccountName: {{ include "system-services-monitor.fullname" . }}
+      # hostPID is required so the monitor can use nsenter against the host
+      # PID 1 mount namespace to read systemd state and run nvidia-smi.
+      hostPID: true
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: monitor
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # ENTRYPOINT is `system_services_monitor` (Click CLI). The socket flag
+          # is required=True with no env fallback; the app prepends `unix://` to
+          # the value, so pass a bare filesystem path here.
+          args:
+            - "--platform-connector-socket"
+            - "{{ ((.Values.global).socketPath) | default "/var/run/nvsentinel.sock" }}"
+            - "--port"
+            - "{{ .Values.global.metricsPort }}"
+            - "--poll-interval"
+            - "{{ .Values.pollInterval }}"
+            - "--boot-grace-period"
+            - "{{ .Values.bootGracePeriod }}"
+            - "--flap-window"
+            - "{{ .Values.flapWindow }}"
+            - "--flap-threshold"
+            - "{{ .Values.flapThreshold }}"
+            {{- if .Values.enableFabricCheck }}
+            - "--enable-fabric-check"
+            {{- else }}
+            - "--disable-fabric-check"
+            {{- end }}
+            - "--processing-strategy"
+            - "{{ .Values.processingStrategy }}"
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: LOG_LEVEL
+              value: "{{ .Values.logLevel }}"
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.global.metricsPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            # privileged is required for nsenter into the host PID 1 mount
+            # namespace to inspect host systemd services and run nvidia-smi.
+            privileged: true
+          volumeMounts:
+            # platform-connector Unix domain socket (gRPC target). The host
+            # directory /var/run/nvsentinel is mounted at /var/run so the socket
+            # resolves in-container at /var/run/nvsentinel.sock.
+            - name: var-run-vol
+              mountPath: /var/run/
+      volumes:
+        - name: var-run-vol
+          hostPath:
+            path: /var/run/nvsentinel
+            type: DirectoryOrCreate
+      nodeSelector:
+        {{- with (.Values.global.nodeSelector | default .Values.nodeSelector) }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with (.Values.global.affinity | default .Values.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.global.tolerations | default .Values.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

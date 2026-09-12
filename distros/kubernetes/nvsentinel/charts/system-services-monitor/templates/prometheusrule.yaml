@@ -1,0 +1,90 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+{{- if .Values.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "system-services-monitor.fullname" . }}
+  labels:
+    {{- include "system-services-monitor.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: gpu-node-health
+      rules:
+        # Critical: Fabric Manager down for 5 minutes.
+        - alert: FabricManagerServiceDown
+          expr: fabric_manager_up == 0
+          for: 5m
+          labels:
+            severity: critical
+            component: system-services-monitor
+          annotations:
+            summary: "Fabric Manager down on {{`{{ $labels.node }}`}}"
+            description: >-
+              Fabric Manager has been down for more than 5 minutes on node
+              {{`{{ $labels.node }}`}}. NVLink/NVSwitch fabric is non-functional.
+              Multi-GPU workloads will fail silently or hang.
+            runbook: "ssh to node and run: sudo systemctl restart nvidia-fabricmanager"
+
+        # Warning: Fabric Manager flapping (restarting repeatedly).
+        # Backed by the fabric_manager_restarts_total counter the app
+        # increments from the systemd NRestarts delta observed between poll
+        # cycles. The window and threshold are templated from the same
+        # .Values.flapWindow / .Values.flapThreshold the DaemonSet passes to
+        # the monitor, and the comparison is >= to match ServiceChecker's
+        # is_flapping (which flags AT the threshold), so the alert fires on
+        # exactly the condition the monitor reports — including when a user
+        # overrides either value.
+        - alert: FabricManagerFlapping
+          expr: increase(fabric_manager_restarts_total[{{ .Values.flapWindow }}s]) >= {{ .Values.flapThreshold }}
+          for: 5m
+          labels:
+            severity: warning
+            component: system-services-monitor
+          annotations:
+            summary: "Fabric Manager flapping on {{`{{ $labels.node }}`}}"
+            description: >-
+              Fabric Manager is restarting repeatedly on {{`{{ $labels.node }}`}}.
+              Check journalctl -u nvidia-fabricmanager for root cause.
+
+        # Critical: Per-GPU fabric state unhealthy.
+        - alert: FabricStateUnhealthy
+          expr: fabric_state_healthy == 0
+          for: 5m
+          labels:
+            severity: critical
+            component: system-services-monitor
+          annotations:
+            summary: "Fabric state unhealthy on {{`{{ $labels.node }}`}} GPU {{`{{ $labels.gpu_index }}`}}"
+            description: >-
+              Fabric Manager orchestration is in a bad state for GPU
+              {{`{{ $labels.gpu_index }}`}} on {{`{{ $labels.node }}`}}.
+              Check nvidia-smi -q for fabric.state and fabric.status.
+
+        # Warning: GPU systemd service down (non-fatal per PR classification).
+        - alert: GpuServiceDown
+          expr: nvidia_service_up == 0
+          for: 3m
+          labels:
+            severity: warning
+            component: system-services-monitor
+          annotations:
+            summary: "{{`{{ $labels.service_name }}`}} down on {{`{{ $labels.node }}`}}"
+            description: >-
+              NVIDIA service {{`{{ $labels.service_name }}`}} has been down for more
+              than 3 minutes on {{`{{ $labels.node }}`}}.
+{{- end }}

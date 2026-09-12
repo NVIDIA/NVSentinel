@@ -1,0 +1,94 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Container image for the monitor DaemonSet. `tag` empty means the chart
+# appVersion is used.
+image:
+  repository: ghcr.io/nvidia/nvsentinel/system-services-monitor
+  pullPolicy: IfNotPresent
+  tag: ""
+
+# Extra annotations applied to every monitor pod (e.g. scrape hints).
+podAnnotations: {}
+
+# Pod resource requests/limits. The monitor is a light poller; the defaults
+# are deliberately small.
+resources:
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+# Polling interval (seconds) between service health check cycles.
+# Passed as --poll-interval.
+pollInterval: "30"
+
+# Boot grace period (seconds) — unhealthy results within this window after
+# startup are suppressed. Passed as --boot-grace-period.
+bootGracePeriod: "300"
+
+# Flap detection window (seconds) over which flapThreshold restarts are counted.
+# Passed as --flap-window.
+flapWindow: "600"
+
+# Restart-count threshold within flapWindow that flags Fabric Manager as
+# flapping. Passed as --flap-threshold.
+flapThreshold: "3"
+
+# Enable the Fabric Manager + GPU systemd service checks. When false the app
+# is launched with --disable-fabric-check. Use an unquoted YAML boolean
+# (true/false, not "true"/"false").
+enableFabricCheck: true
+
+# Processing strategy for emitted health events.
+# valid values: EXECUTE_REMEDIATION, STORE_ONLY
+processingStrategy: EXECUTE_REMEDIATION
+
+# ServiceMonitor (Prometheus Operator) for auto-discovery. Disabled by default
+# to match the sibling health-monitor charts, which do not ship one enabled.
+# `enabled` must be an unquoted YAML boolean.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  # Extra labels required by the cluster's Prometheus operator selector.
+  # Most operator installs expect `release: <prometheus-release>`; set it here
+  # when enabling, e.g. labels: { release: prometheus }.
+  labels: {}
+
+# PrometheusRule with FabricManager / GPU service alert definitions. Disabled by
+# default to match the sibling health-monitor charts. `enabled` must be an
+# unquoted YAML boolean.
+prometheusRule:
+  enabled: false
+  labels: {}
+
+# Scheduling. Default selector targets nodes that expose NVIDIA PCI devices
+# (label set by the GPU Feature Discovery operator).
+nodeSelector:
+  feature.node.kubernetes.io/pci-10de.present: "true"
+
+tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+
+# Standard pod affinity/anti-affinity rules, merged verbatim into the pod
+# spec. The DaemonSet already targets GPU nodes via nodeSelector above.
+affinity: {}
+
+# Application log level: DEBUG, INFO, WARNING, or ERROR (passed as LOG_LEVEL).
+logLevel: INFO
