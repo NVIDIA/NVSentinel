@@ -1,0 +1,69 @@
+[tool.poetry]
+name = "system-services-monitor"
+version = "0.1.0"
+description = "GPU node health monitor for Fabric Manager and infrastructure failures"
+authors = ["Community Contributors"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+click = "^8.3.1"
+grpcio = "^1.78.0"
+prometheus-client = "^0.24.1"
+protobuf = ">=6.31.1,<7.0.0"
+googleapis-common-protos = ">=1.56.0"
+structlog = "^25.1.0"
+
+[tool.poetry.group.dev.dependencies]
+black = "^26.1.0"
+coverage = "^7.13.4"
+grpcio-tools = "^1.78.0"
+pytest = "^9.0.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+system_services_monitor = "system_services_monitor.cli:cli"
+
+[tool.black]
+line-length = 120
+include = '\.pyi?$'
+exclude = '''
+
+(
+  /(
+      \.eggs         # exclude a few common directories in the
+    | \.git          # root of the project
+    | \.hg
+    | \.mypy_cache
+    | \.tox
+    | \.venv
+    | _build
+    | buck-out
+    | build
+    | dist
+  )/
+  | system_services_monitor/protos
+
+)
+'''
+
+[tool.coverage.report]
+exclude_also = [
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+omit = [
+    "tests/*",
+    "system_services_monitor/protos/*"
+]
