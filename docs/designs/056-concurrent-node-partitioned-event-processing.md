@@ -42,35 +42,61 @@ PR #1676 established the prerequisite for parallelization: it enforced a mandato
 
 ### Architecture Overview
 
-```text
-ChangeStreamWatcher (Events channel)
-            │
-            ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                      PartitionedEventProcessor                         │
-│                                                                        │
-│   1. Assign monotonically increasing sequence S_k to incoming Event    │
-│   2. Register (S_k, Token_k, Pending) in LowWaterMarkTracker           │
-│   3. Apply backpressure if in-flight >= MaxInFlight                    │
-│   4. Route to worker: workerIdx = hash(Event.NodeName) % NumWorkers   │
-│   5. Enqueue to Worker Queue W_i                                       │
-│                                                                        │
-│   Worker Queues (FIFO per worker):                                     │
-│   ┌───────────────┐      ┌───────────────┐      ┌───────────────┐      │
-│   │   Worker 0    │      │   Worker 1    │ ...  │   Worker N-1  │      │
-│   │ (Nodes A, C)  │      │ (Nodes B, D)  │      │ (Nodes E, F)  │      │
-│   └───────┬───────┘      └───────┬───────┘      └───────┬───────┘      │
-│           │                      │                      │              │
-│           ▼                      ▼                      ▼              │
-│       EventHandler.ProcessEvent(ctx, &HealthEventWithStatus)           │
-│           │                      │                      │              │
-│           └──────────────────────┼──────────────────────┘              │
-│                                  ▼                                     │
-│                        LowWaterMarkTracker                             │
-│                  - MarkComplete(S_k)                                   │
-│                  - Advance low-water mark past contiguous completed    │
-│                  - Checkpoint highest contiguous Token to Datastore    │
-└────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    Watcher["ChangeStreamWatcher (Events Channel)"] --> Ingestion
+
+    subgraph Ingestion ["Event Ingestion & Routing"]
+        AssignSeq["1. Assign Monotonic Sequence S_k"]
+        RegTracker["2. Register (S_k, Token_k, Pending) in Tracker"]
+        Backpressure{"3. In-flight >= MaxInFlight?"}
+        Pause["Suspend Reading (Wait on DrainCh)"]
+        HashRoute["4. workerIdx = hash(NodeName) % NumWorkers"]
+
+        AssignSeq --> RegTracker
+        RegTracker --> Backpressure
+        Backpressure -->|Yes| Pause
+        Backpressure -->|No| HashRoute
+        Pause -->|Drain Signal| HashRoute
+    end
+
+    subgraph WorkerQueues ["Worker Channels (FIFO per Worker)"]
+        W0["Worker 0 (Nodes A, C, ...)"]
+        W1["Worker 1 (Nodes B, D, ...)"]
+        Wdots["..."]
+        Wn["Worker N-1 (Nodes E, F, ...)"]
+    end
+
+    HashRoute -->|Enqueue| W0
+    HashRoute -->|Enqueue| W1
+    HashRoute -->|Enqueue| Wdots
+    HashRoute -->|Enqueue| Wn
+
+    subgraph Execution ["Parallel Handler Execution"]
+        H0["EventHandler.ProcessEvent"]
+        H1["EventHandler.ProcessEvent"]
+        Hdots["..."]
+        Hn["EventHandler.ProcessEvent"]
+    end
+
+    W0 --> H0
+    W1 --> H1
+    Wdots --> Hdots
+    Wn --> Hn
+
+    subgraph Checkpoint ["LowWaterMarkTracker & Checkpoint Engine"]
+        MarkDone["MarkDone(S_k)"]
+        Advance["Advance past contiguous completed prefix"]
+        CheckpointWrite["Checkpoint highest contiguous resume token to Datastore"]
+
+        MarkDone --> Advance
+        Advance --> CheckpointWrite
+    end
+
+    H0 --> MarkDone
+    H1 --> MarkDone
+    Hdots --> MarkDone
+    Hn --> MarkDone
 ```
 
 ### Key Components
