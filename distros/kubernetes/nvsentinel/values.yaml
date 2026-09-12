@@ -21,6 +21,10 @@ global:
     tag: "12-debian-12-r30"
     pullPolicy: IfNotPresent
   metricsPort: 2112
+  # IPv4 bind address for the GPU health monitor metrics server. Set to "::"
+  # to enable IPv6 / dual-stack binding. This requires an IPv6-capable kernel;
+  # nodes booted with ipv6.disable=1 fail with EAFNOSUPPORT and CrashLoop.
+  metricsAddress: "0.0.0.0"
   # Default Kubernetes API client limits for core controllers. Components can
   # override these with their own qps and burst values.
   # qps: positive values throttle requests, 0 uses the client-go default,
@@ -271,6 +275,7 @@ global:
     enabled: false
   janitor:
     enabled: false
+  # Enables lifecycle-manager reconciliation of maintenance requests.
   lifecycleManager:
     enabled: false
   janitorProvider:
