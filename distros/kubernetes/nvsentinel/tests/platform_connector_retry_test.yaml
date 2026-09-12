@@ -23,3 +23,15 @@ tests:
       - matchRegex:
           path: data["config.json"]
           pattern: '"K8sConnectorMaxRetries": 7'
+  - it: renders the default retry bound
+    asserts:
+      - matchRegex:
+          path: data["config.json"]
+          pattern: '"K8sConnectorMaxRetries": 3'
+  - it: preserves zero for connector defaulting
+    set:
+      platformConnector.k8sConnector.maxRetries: 0
+    asserts:
+      - matchRegex:
+          path: data["config.json"]
+          pattern: '"K8sConnectorMaxRetries": 0'

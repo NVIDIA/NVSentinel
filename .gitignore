@@ -438,6 +438,7 @@ fault-remediation/fault-remediation
 health-events-analyzer/health-events-analyzer
 health-monitors/syslog-health-monitor/syslog-health-monitor
 health-monitors/kubernetes-object-monitor/kubernetes-object-monitor
+health-monitors/nvcre-certification-monitor/nvcre-certification-monitor
 labeler/labeler
 metadata-collector/metadata-collector
 node-drainer/node-drainer
@@ -454,3 +455,7 @@ preflight/preflight
 # Build output of tilt/simple-health-client (an 18MB binary that sits next to its
 # own source, so a bare `git add tilt/` would stage it).
 /tilt/simple-health-client/simple-health-client
+
+# Per-clone agent instruction overlays (see AGENTS.md "Local Overlay")
+/AGENTS.local.md
+/CLAUDE.local.md

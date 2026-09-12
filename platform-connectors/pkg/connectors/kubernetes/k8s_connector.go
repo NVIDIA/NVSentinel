@@ -46,11 +46,13 @@ Hence, ignoring this file as part of unit testing for now.
 type K8sConnectorConfig struct {
 	MaxNodeConditionMessageLength int64
 	CompactedHealthEventMsgLen    int64
-	MaxRetries                    int
+	// MaxRetries counts outer retries after the initial attempt. Zero selects DefaultMaxRetries.
+	MaxRetries int
 }
 
 // DefaultMaxRetries is the number of ordered outer retries after Kubernetes
-// client-go's short in-process retry window is exhausted.
+// client-go's short in-process retry window is exhausted. The default outer
+// delays total 3.5 seconds (500ms + 1s + 2s), excluding API calls and inner retries.
 const DefaultMaxRetries = 3
 
 type K8sConnector struct {
@@ -95,6 +97,8 @@ func NewK8sConnector(
 	return connector
 }
 
+// InitializeK8sConnector validates configuration and constructs a connector with
+// a Kubernetes client. Zero retries uses the default; negative values are rejected.
 func InitializeK8sConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuffer,
 	qps float32, burst int, stopCh <-chan struct{}, cfg K8sConnectorConfig,
 	kubeconfigPath string,
@@ -135,6 +139,8 @@ func InitializeK8sConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuff
 	return kubernetesConnector, clientSet, nil
 }
 
+// FetchAndProcessHealthMetric processes batches sequentially, completing all
+// retry attempts for the current batch before consuming another one.
 func (r *K8sConnector) FetchAndProcessHealthMetric(ctx context.Context) {
 	for {
 		select {
@@ -156,6 +162,7 @@ func (r *K8sConnector) FetchAndProcessHealthMetric(ctx context.Context) {
 	}
 }
 
+// processQueuedHealthEvents records the terminal outcome and releases the batch.
 func (r *K8sConnector) processQueuedHealthEvents(
 	ctx context.Context,
 	queuedHealthEvents *ringbuffer.QueuedHealthEvents,
@@ -187,6 +194,7 @@ func (r *K8sConnector) processQueuedHealthEvents(
 	r.ringBuffer.HealthMetricEleProcessingFailed(queuedHealthEvents)
 }
 
+// logTerminalProcessingFailure distinguishes shutdown from retry exhaustion and permanent errors.
 func (r *K8sConnector) logTerminalProcessingFailure(
 	ctx context.Context,
 	healthEvents *protos.HealthEvents,
@@ -264,10 +272,12 @@ func (r *K8sConnector) processHealthEventsWithRetry(
 	}
 }
 
+// isKubernetesConnectorRetryableError includes conflicts and transient API or transport failures.
 func isKubernetesConnectorRetryableError(err error) bool {
 	return apierrors.IsConflict(err) || isTemporaryError(err)
 }
 
+// waitForKubernetesRetry waits for backoff unless context cancellation or connector shutdown interrupts it.
 func waitForKubernetesRetry(ctx context.Context, stopCh <-chan struct{}, delay time.Duration) error {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()

@@ -37,6 +37,7 @@ updates:
       - "/health-events-analyzer"
       - "/health-monitors/csp-health-monitor"
       - "/health-monitors/kubernetes-object-monitor"
+      - "/health-monitors/nvcre-certification-monitor"
       - "/health-monitors/nic-health-monitor"
       - "/health-monitors/slurm-drain-monitor"
       - "/health-monitors/syslog-health-monitor"
@@ -99,8 +100,17 @@ updates:
         patterns: ["*"]
 
   # Docker
+  # Base images with a static tag are pinned to digests, so these updates are
+  # what refresh the digests when upstream rebuilds a tag — keep the interval at
+  # weekly so base image CVE fixes are picked up promptly.
+  # Exception: the DCGM images (gpu-health-monitor, dcgm-diag, tilt/dcgm-fake)
+  # and the PyTorch image in nccl-allreduce are selected by a build ARG that the
+  # Makefile overrides to produce image variants, so they cannot be digest-pinned
+  # and Dependabot cannot update them. Every other base image is pinned.
   - package-ecosystem: "docker"
     directories:
+      - "/demos/local-custom-remediation-demo/memory-pressure-monitor"
+      - "/demos/local-custom-remediation-demo/memory-reclaim-controller"
       - "/gpu-reset"
       - "/health-monitors/gpu-health-monitor"
       - "/health-monitors/syslog-health-monitor"
@@ -116,7 +126,7 @@ updates:
       - "/tilt/simple-health-client"
     target-branch: "main"
     schedule:
-      interval: "monthly"
+      interval: "weekly"
     labels: ["dependencies"]
     groups:
       docker-dependencies:

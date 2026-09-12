@@ -16,15 +16,20 @@ package oci
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/oracle/oci-go-sdk/v65/common"
 	"github.com/oracle/oci-go-sdk/v65/common/auth"
 	"github.com/oracle/oci-go-sdk/v65/core"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
@@ -119,13 +124,18 @@ func NewClientFromEnv(ctx context.Context) (*Client, error) {
 }
 
 // SendRebootSignal sends a reboot signal to OCI for the given node.
-func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node, _ string) (model.ResetSignalRequestRef, error) {
+func (c *Client) SendRebootSignal(
+	ctx context.Context,
+	node corev1.Node,
+	crName string,
+) (model.ResetSignalRequestRef, error) {
 	_, err := c.compute.InstanceAction(ctx, core.InstanceActionRequest{
-		InstanceId: &node.Spec.ProviderID,
-		Action:     core.InstanceActionActionSoftreset,
+		InstanceId:    &node.Spec.ProviderID,
+		Action:        core.InstanceActionActionSoftreset,
+		OpcRetryToken: rebootRetryToken(node.Spec.ProviderID, crName),
 	})
 	if err != nil {
-		return "", err
+		return "", translateRebootError(node.Spec.ProviderID, err)
 	}
 
 	return model.ResetSignalRequestRef(time.Now().UTC().Format(time.RFC3339)), nil
@@ -147,6 +157,42 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID st
 	}
 
 	return true, nil
+}
+
+// rebootRetryToken returns a stable OCI idempotency token for retries of one
+// RebootNode request. OCI retry tokens are limited to 64 characters.
+func rebootRetryToken(providerID, crName string) *string {
+	if crName == "" {
+		return nil
+	}
+
+	token := fmt.Sprintf("%x", sha256.Sum256([]byte(providerID+"\x00"+crName)))
+
+	return &token
+}
+
+func translateRebootError(providerID string, err error) error {
+	contextualErr := fmt.Errorf("send soft reset action for OCI instance %q: %w", providerID, err)
+	if isRetryableRebootError(err) {
+		return status.Error(codes.Unavailable, contextualErr.Error())
+	}
+
+	return contextualErr
+}
+
+func isRetryableRebootError(err error) bool {
+	if common.IsErrorRetryableByDefault(err) {
+		return true
+	}
+
+	var serviceErr common.ServiceError
+	if !errors.As(err, &serviceErr) {
+		return false
+	}
+
+	return serviceErr.GetHTTPStatusCode() == http.StatusConflict &&
+		serviceErr.GetCode() == "Conflict" &&
+		strings.Contains(strings.ToLower(serviceErr.GetMessage()), "currently being modified")
 }
 
 // SendTerminateSignal is not implemented for OCI.

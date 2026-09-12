@@ -108,6 +108,27 @@ func loadConfig(configFilePath string) (map[string]any, error) {
 	return result, nil
 }
 
+// k8sConnectorMaxRetriesFromConfig applies the same zero-value default as
+// NewK8sConnector and rejects invalid JSON configuration before initialization.
+func k8sConnectorMaxRetriesFromConfig(config map[string]any) (int, error) {
+	configuredMaxRetries, configured := config["K8sConnectorMaxRetries"]
+	if !configured {
+		return k8sconnector.DefaultMaxRetries, nil
+	}
+
+	maxRetries, ok := configuredMaxRetries.(int64)
+	if !ok || maxRetries < 0 {
+		return 0, fmt.Errorf("K8sConnectorMaxRetries must be a non-negative integer (0 uses the default), got %v",
+			configuredMaxRetries)
+	}
+
+	if maxRetries == 0 {
+		return k8sconnector.DefaultMaxRetries, nil
+	}
+
+	return int(maxRetries), nil
+}
+
 // initializeK8sConnector creates the K8s connector and node metadata processor.
 // Processor is returned here because it depends on the clientset from K8s initialization.
 func initializeK8sConnector(
@@ -116,6 +137,11 @@ func initializeK8sConnector(
 	stopCh chan struct{},
 	kubeconfigPath string,
 ) (*ringbuffer.RingBuffer, error) {
+	maxRetries, err := k8sConnectorMaxRetriesFromConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Kubernetes connector retry configuration: %w", err)
+	}
+
 	k8sRingBuffer := ringbuffer.NewRingBuffer("kubernetes", ctx)
 	server.InitializeAndAttachRingBufferForConnectors(k8sRingBuffer)
 
@@ -143,19 +169,10 @@ func initializeK8sConnector(
 		return nil, fmt.Errorf("failed to convert K8sConnectorBurst to int: %v", config["K8sConnectorBurst"])
 	}
 
-	maxRetries := int64(k8sconnector.DefaultMaxRetries)
-	if configuredMaxRetries, configured := config["K8sConnectorMaxRetries"]; configured {
-		maxRetries, ok = configuredMaxRetries.(int64)
-		if !ok || maxRetries <= 0 {
-			return nil, fmt.Errorf("K8sConnectorMaxRetries must be a positive integer, got %v",
-				configuredMaxRetries)
-		}
-	}
-
 	k8sConnectorCfg := k8sconnector.K8sConnectorConfig{
 		MaxNodeConditionMessageLength: maxNodeConditionMessageLength,
 		CompactedHealthEventMsgLen:    compactedEventMsgLen,
-		MaxRetries:                    int(maxRetries),
+		MaxRetries:                    maxRetries,
 	}
 
 	k8sConnector, _, err := k8sconnector.InitializeK8sConnector(

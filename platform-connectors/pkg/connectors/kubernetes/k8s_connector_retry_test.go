@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -35,6 +36,7 @@ import (
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 )
 
+// retryTestConnector uses short delays for retry-policy tests without API calls.
 func retryTestConnector(
 	maxRetries int,
 	process func(context.Context, *protos.HealthEvents) error,
@@ -47,11 +49,21 @@ func retryTestConnector(
 	}
 }
 
-// TestNewK8sConnector_DefaultConfig_UsesDefaultMaxRetries verifies the default outer retry limit.
-func TestNewK8sConnector_DefaultConfig_UsesDefaultMaxRetries(t *testing.T) {
-	connector := NewK8sConnector(nil, nil, nil, context.Background(), K8sConnectorConfig{})
-
-	require.Equal(t, DefaultMaxRetries, connector.config.MaxRetries)
+// TestNewK8sConnector_RetryConfiguration_DefaultsOrPreserves verifies constructor retry defaults and overrides.
+func TestNewK8sConnector_RetryConfiguration_DefaultsOrPreserves(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		configured int
+		want       int
+	}{
+		{name: "zero selects default", want: DefaultMaxRetries},
+		{name: "positive override", configured: 20, want: 20},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			connector := NewK8sConnector(nil, nil, nil, context.Background(), K8sConnectorConfig{MaxRetries: test.configured})
+			require.Equal(t, test.want, connector.config.MaxRetries)
+		})
+	}
 }
 
 // TestInitializeK8sConnector_NegativeMaxRetries_ReturnsError verifies invalid retry limits fail initialization.
@@ -71,107 +83,149 @@ func TestInitializeK8sConnector_NegativeMaxRetries_ReturnsError(t *testing.T) {
 
 // TestProcessHealthEventsWithRetry_RetryScenarios_EnforcePolicy verifies retry bounds, error classification, and cancellation.
 func TestProcessHealthEventsWithRetry_RetryScenarios_EnforcePolicy(t *testing.T) {
-	t.Run("transient failure succeeds", func(t *testing.T) {
-		calls := 0
-		connector := retryTestConnector(3, func(context.Context, *protos.HealthEvents) error {
-			calls++
-			if calls == 1 {
-				return apierrors.NewServiceUnavailable("temporarily unavailable")
+	unavailable := apierrors.NewServiceUnavailable("temporarily unavailable")
+	notFound := apierrors.NewNotFound(schema.GroupResource{Resource: "nodes"}, "node-a")
+	conflict := apierrors.NewConflict(schema.GroupResource{Resource: "nodes"}, "node-a", fmt.Errorf("stale version"))
+	tests := []struct {
+		name          string
+		maxRetries    int
+		attemptErrors []error
+		canceled      bool
+		wantRetries   int
+		wantCalls     int
+		wantErr       error
+	}{
+		{name: "initial success", maxRetries: 3, attemptErrors: []error{nil}, wantCalls: 1},
+		{name: "transient failure succeeds", maxRetries: 3, attemptErrors: []error{unavailable, nil},
+			wantRetries: 1, wantCalls: 2},
+		{name: "conflict succeeds", maxRetries: 3, attemptErrors: []error{conflict, nil},
+			wantRetries: 1, wantCalls: 2},
+		{name: "permanent failure is not retried", maxRetries: 3,
+			attemptErrors: []error{fmt.Errorf("update node status: %w", notFound)}, wantCalls: 1, wantErr: notFound},
+		{name: "transient failure stops at the retry bound", maxRetries: 2, attemptErrors: []error{unavailable},
+			wantRetries: 2, wantCalls: 3, wantErr: unavailable},
+		{name: "canceled context stops retries", maxRetries: 3, attemptErrors: []error{unavailable},
+			canceled: true, wantCalls: 1, wantErr: context.Canceled},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if test.canceled {
+				cancel()
 			}
 
-			return nil
+			calls := 0
+			connector := retryTestConnector(test.maxRetries, func(context.Context, *protos.HealthEvents) error {
+				calls++
+				return test.attemptErrors[min(calls-1, len(test.attemptErrors)-1)]
+			})
+
+			retries, err := connector.processHealthEventsWithRetry(ctx, &protos.HealthEvents{})
+			if test.wantErr == nil {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, test.wantErr)
+			}
+			require.Equal(t, test.wantRetries, retries)
+			require.Equal(t, test.wantCalls, calls)
 		})
-
-		retries, err := connector.processHealthEventsWithRetry(context.Background(), &protos.HealthEvents{})
-		require.NoError(t, err)
-		require.Equal(t, 1, retries)
-		require.Equal(t, 2, calls)
-	})
-
-	t.Run("permanent failure is not retried", func(t *testing.T) {
-		calls := 0
-		notFound := apierrors.NewNotFound(schema.GroupResource{Resource: "nodes"}, "node-a")
-		connector := retryTestConnector(3, func(context.Context, *protos.HealthEvents) error {
-			calls++
-			return fmt.Errorf("update node status: %w", notFound)
-		})
-
-		retries, err := connector.processHealthEventsWithRetry(context.Background(), &protos.HealthEvents{})
-		require.ErrorIs(t, err, notFound)
-		require.Equal(t, 0, retries)
-		require.Equal(t, 1, calls)
-	})
-
-	t.Run("transient failure stops at the retry bound", func(t *testing.T) {
-		calls := 0
-		connector := retryTestConnector(2, func(context.Context, *protos.HealthEvents) error {
-			calls++
-			return apierrors.NewServiceUnavailable("still unavailable")
-		})
-
-		retries, err := connector.processHealthEventsWithRetry(context.Background(), &protos.HealthEvents{})
-		require.Error(t, err)
-		require.Equal(t, 2, retries)
-		require.Equal(t, 3, calls)
-	})
-
-	t.Run("context cancellation stops retries", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-		calls := 0
-		connector := retryTestConnector(3, func(context.Context, *protos.HealthEvents) error {
-			calls++
-			return apierrors.NewServiceUnavailable("unavailable")
-		})
-
-		retries, err := connector.processHealthEventsWithRetry(ctx, &protos.HealthEvents{})
-		require.ErrorIs(t, err, context.Canceled)
-		require.Equal(t, 0, retries)
-		require.Equal(t, 1, calls)
-	})
+	}
 }
 
-// TestProcessHealthEventsWithRetry_StopDuringBackoff_ReturnsCanceled verifies shutdown interrupts an active retry wait.
-func TestProcessHealthEventsWithRetry_StopDuringBackoff_ReturnsCanceled(t *testing.T) {
-	stopCh := make(chan struct{})
-	firstAttempt := make(chan struct{}, 1)
-	connector := retryTestConnector(3, func(context.Context, *protos.HealthEvents) error {
-		select {
-		case firstAttempt <- struct{}{}:
-		default:
-		}
-
-		return apierrors.NewServiceUnavailable("unavailable during shutdown")
-	})
-	connector.stopCh = stopCh
-	connector.retryBaseDelay = time.Minute
-	connector.retryMaxDelay = time.Minute
-
-	type result struct {
-		retries int
-		err     error
+// TestProcessHealthEventsWithRetry_InterruptionDuringBackoff_ReturnsCanceled verifies both shutdown signals
+// interrupt a pending timer without waiting for the retry delay or starting another attempt.
+func TestProcessHealthEventsWithRetry_InterruptionDuringBackoff_ReturnsCanceled(t *testing.T) {
+	tests := []struct {
+		name      string
+		interrupt func(context.CancelFunc, chan struct{})
+	}{
+		{name: "context cancellation", interrupt: func(cancel context.CancelFunc, _ chan struct{}) { cancel() }},
+		{name: "connector shutdown", interrupt: func(_ context.CancelFunc, stopCh chan struct{}) { close(stopCh) }},
 	}
-	resultCh := make(chan result, 1)
-	go func() {
-		retries, err := connector.processHealthEventsWithRetry(context.Background(), &protos.HealthEvents{})
-		resultCh <- result{retries: retries, err: err}
-	}()
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				stopCh := make(chan struct{})
+				defer func() {
+					select {
+					case <-stopCh:
+					default:
+						close(stopCh)
+					}
+				}()
 
-	select {
-	case <-firstAttempt:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for the first processing attempt")
+				calls := 0
+				connector := retryTestConnector(3, func(context.Context, *protos.HealthEvents) error {
+					calls++
+					return apierrors.NewServiceUnavailable("unavailable during shutdown")
+				})
+				connector.stopCh = stopCh
+				connector.retryBaseDelay = time.Minute
+				connector.retryMaxDelay = time.Minute
+
+				type result struct {
+					retries int
+					err     error
+				}
+				resultCh := make(chan result, 1)
+				start := time.Now()
+				go func() {
+					retries, err := connector.processHealthEventsWithRetry(ctx, &protos.HealthEvents{})
+					resultCh <- result{retries: retries, err: err}
+				}()
+
+				// Wait for the worker to block on the real retry timer before interrupting it.
+				synctest.Wait()
+				require.Equal(t, 1, calls)
+				require.Empty(t, resultCh)
+				test.interrupt(cancel, stopCh)
+				synctest.Wait()
+
+				require.Len(t, resultCh, 1, "retry backoff did not stop promptly")
+				got := <-resultCh
+				require.ErrorIs(t, got.err, context.Canceled)
+				require.Equal(t, 1, got.retries)
+				require.Equal(t, 1, calls)
+				require.Zero(t, time.Since(start), "shutdown must not wait for the retry timer")
+			})
+		})
 	}
+}
 
-	time.Sleep(10 * time.Millisecond)
-	close(stopCh)
+// TestProcessHealthEventsWithRetry_ProductionDelays_MatchDocumentedHorizon verifies the default and
+// operator-configured retry budgets with the actual exponential backoff and delay cap.
+func TestProcessHealthEventsWithRetry_ProductionDelays_MatchDocumentedHorizon(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		maxRetries  int
+		wantRetries int
+		wantDelay   time.Duration
+	}{
+		{name: "default", wantRetries: 3, wantDelay: 3500 * time.Millisecond},
+		{name: "longer control plane outage", maxRetries: 20, wantRetries: 20, wantDelay: 54500 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				connector := NewK8sConnector(nil, nil, nil, context.Background(), K8sConnectorConfig{MaxRetries: test.maxRetries})
+				unavailable := apierrors.NewServiceUnavailable("control plane unavailable")
+				calls := 0
+				connector.processEvents = func(context.Context, *protos.HealthEvents) error {
+					calls++
+					return unavailable
+				}
 
-	select {
-	case result := <-resultCh:
-		require.ErrorIs(t, result.err, context.Canceled)
-		require.Equal(t, 1, result.retries)
-	case <-time.After(time.Second):
-		t.Fatal("retry backoff did not stop promptly")
+				start := time.Now()
+				retries, err := connector.processHealthEventsWithRetry(context.Background(), &protos.HealthEvents{})
+				require.ErrorIs(t, err, unavailable)
+				require.Equal(t, test.wantRetries, retries)
+				require.Equal(t, test.wantRetries+1, calls)
+				require.Equal(t, test.wantDelay, time.Since(start))
+			})
+		})
 	}
 }
 

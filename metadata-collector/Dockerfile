@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM public.ecr.aws/docker/library/golang:1.27.0-trixie AS builder
+FROM public.ecr.aws/docker/library/golang:1.27.0-trixie@sha256:df98008ecd2b0ecc9f0a94d1b07e3564a9c92b555369b33d9b5f60d0765b2db7 AS builder
 
 ARG VERSION="dev"
 ARG GIT_COMMIT="none"
@@ -29,9 +29,11 @@ RUN go mod download
 
 COPY metadata-collector/ .
 
-RUN CGO_ENABLED=1 GOOS=linux go build -a -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${GIT_COMMIT} -X main.date=${BUILD_DATE}" -o metadata-collector main.go
+# Builds the package, not a file list: `go build main.go` silently omits every other file in
+# package main, so adding one breaks the image while `go build ./...` and the tests still pass.
+RUN CGO_ENABLED=1 GOOS=linux go build -a -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${GIT_COMMIT} -X main.date=${BUILD_DATE}" -o metadata-collector .
 
-FROM nvcr.io/nvidia/cuda:13.3.1-base-ubuntu22.04
+FROM nvcr.io/nvidia/cuda:13.3.1-base-ubuntu22.04@sha256:ea2a388e99273207c6389b3098a61ebca5ab41d31168dfc4350d0cfa614703e4
 
 RUN groupadd -r nvsentinel && useradd -r -g nvsentinel nvsentinel
 

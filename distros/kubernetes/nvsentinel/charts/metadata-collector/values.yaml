@@ -74,3 +74,30 @@ kubeletHost:
 
 # Pod priority for this component. Overridden by the matching global when that is set.
 priorityClassName: ""
+
+# Prometheus metrics endpoint. Chart-local rather than global.metricsPort because this
+# DaemonSet is hostNetwork, so the port binds on the node and can collide with a host service
+# (kube-vip also uses 2112). Set enabled: false to run with no endpoint at all.
+metrics:
+  # Unquoted boolean only; a quoted "false" is truthy and the render refuses it.
+  enabled: true
+  # Move it if the node already uses 2112, e.g. 2113 under kube-vip.
+  port: 2112
+
+podMapper:
+  # Consecutive failed poll cycles tolerated before the container exits non-zero. The poll
+  # period is 30s, so the default rides out 5 minutes of failures, enough to outlast a
+  # credential rotation or a kubelet restart while still failing loudly if the collector is
+  # genuinely broken. Minimum 1, which restores exiting on the first failure.
+  maxConsecutiveFailures: 10
+
+# DaemonSet rolling update strategy.
+# type: RollingUpdate or OnDelete. rollingUpdate is only rendered for RollingUpdate.
+# maxUnavailable counts pods stranded on unreachable nodes as well, so a cluster with
+# many nodes down for service may need it raised or the rollout cannot start.
+# Example, absolute count instead of a percentage:
+#   updateStrategy: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 34}}
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 5%

@@ -143,6 +143,15 @@ maintenance:
     #     nodeName: {{ .NodeName }}
     #     ttlSecondsAfterFinished: 60
 
+# Maximum number of remediation attempts allowed for one equivalence group (for example
+# "restart") within a single quarantine session. Attempts are counted, not retries: 1 allows
+# one attempt and no retry, 3 allows two retries after the first attempt.
+# Once the cap is reached the node is labelled remediation-failed and left for an operator,
+# which stops the remediation loops described in issue #1543.
+# The counter is reset when the node leaves quarantine.
+# 0 (default) disables the cap and preserves the previous unlimited behavior.
+maxRemediationAttempts: 0
+
 # Retry configuration for maintenance resource updates
 # Used when updating annotations on nodes after creating maintenance resources
 updateRetry:

@@ -190,6 +190,28 @@ ruleSets:
 
   - enabled: true
     version: "1"
+    name: "NVCRE certification monitor failure ruleset"
+    # Certification failures taint the node instead of cordoning it. NVCRE
+    # reports a cordoned node as HardwareFailureDetected and skips it, so a
+    # cordoned node could never be re-certified. A dedicated taint keeps
+    # ordinary workloads off while certification pods tolerate it and rerun.
+    match:
+      all:
+        - kind: "HealthEvent"
+          expression: "event.agent == 'nvcre-certification-monitor' && event.checkName == 'NVCRECertFailed' && event.isFatal == true"
+        - kind: "Node"
+          expression: >-
+            !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
+            !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")
+    cordon:
+      shouldCordon: false
+    taint:
+      key: "nvsentinel.dgxc.nvidia.com/nvcre-cert-failed"
+      value: "true"
+      effect: "NoSchedule"
+
+  - enabled: true
+    version: "1"
     name: "Preflight check fatal error ruleset"
     # Preflight checks (dcgm-diag, nccl-loopback, nccl-allreduce) emit HealthEvents
     # under agent names prefixed with "preflight-". Non-hardware failures such as
@@ -205,3 +227,49 @@ ruleSets:
             !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")
     cordon:
       shouldCordon: true
+
+# The validation section configures post-remediation validation from the fault-quarantine
+# module. If enabled, fault-quarantine will preserve the scheduling gate on a given node
+# when an unquarantine event occurs, and it will create the given validation resource
+# for the requested tests. The list of test is derived from the unhealthy events which
+# occurred during the quarantine session and these tests are derived from the ruleSets
+# section below.
+validation:
+  enabled: false
+  apiGroup: "nvsentinel.nvidia.com"
+  version: "v1alpha1"
+  kind: "ValidationRequest"
+  templateFileName: "validation-request-template.yaml"
+  templates:
+    "validation-request-template.yaml": |
+      apiVersion: nvsentinel.nvidia.com/v1alpha1
+      kind: ValidationRequest
+      metadata:
+        name: {{ .NodeName }}-validation-{{ .SessionID }}
+        labels:
+          app.kubernetes.io/managed-by: nvsentinel
+          nvsentinel.nvidia.com/created-by: fault-quarantine
+        annotations:
+          nvsentinel.nvidia.com/trace-id: "{{ .TraceID }}"
+          nvsentinel.nvidia.com/span-id: "{{ .SpanID }}"
+      spec:
+        nodes:
+          - name: "{{ .NodeName }}"
+        tests:
+          {{- range .Tests }}
+          - "{{ . }}"
+          {{- end }}
+  # We will require a dcgm-diag-test for any unhealthy HealthEvent which
+  # required a RESTART_VM or RESTART_BM remediation action.
+  ruleSets:
+    - enabled: true
+      version: "1"
+      name: "Post-reboot validation"
+      match:
+        all:
+          - kind: "HealthEvent"
+            expression: >-
+              event.componentClass == 'GPU' && event.isFatal == true &&
+              event.recommendedAction in [15, 24]
+      tests:
+        - dcgm-diag-test

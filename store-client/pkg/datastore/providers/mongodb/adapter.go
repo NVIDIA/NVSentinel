@@ -21,11 +21,13 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/factory"
+	"github.com/nvidia/nvsentinel/store-client/pkg/lagstate"
 )
 
 // AdaptedMongoStore adapts our existing MongoDB client to implement the new DataStore interface
@@ -163,6 +165,8 @@ func (a *AdaptedMongoStore) CreateChangeStreamWatcher(ctx context.Context, clien
 		return nil, fmt.Errorf("failed to create change stream watcher: %w", err)
 	}
 
+	client.RegisterChangeStreamLag(a.config.MetricsRegisterer, clientName, watcher)
+
 	// Adapt the existing watcher to the new interface
 	return NewAdaptedChangeStreamWatcher(watcher), nil
 }
@@ -269,6 +273,19 @@ func (a *AdaptedChangeStreamWatcher) MarkProcessed(ctx context.Context, token []
 func (a *AdaptedChangeStreamWatcher) Close(ctx context.Context) error {
 	return a.watcher.Close(ctx)
 }
+
+// LagState delegates to the wrapped watcher so lag survives the adapter. The wrapped value is
+// an interface, so a watcher that does not report lag yields two zero times, which callers read
+// as "unknown" rather than as caught up.
+func (a *AdaptedChangeStreamWatcher) LagState() (lastEmptyBatch, lastEventRead time.Time) {
+	if provider, ok := a.watcher.(lagstate.Provider); ok {
+		return provider.LagState()
+	}
+
+	return time.Time{}, time.Time{}
+}
+
+var _ lagstate.Provider = (*AdaptedChangeStreamWatcher)(nil)
 
 // Unwrap returns the underlying client.ChangeStreamWatcher
 // This is needed for services that still use the old EventWatcher/EventProcessor

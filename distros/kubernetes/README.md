@@ -36,13 +36,13 @@ helm install prometheus prometheus-community/kube-prometheus-stack \
 ```bash
 # Install with default configuration
 helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
-  --version v1.21.0 \
+  --version v1.22.0 \
   --namespace nvsentinel \
   --create-namespace
 
 # Upgrade to a new version
 helm upgrade nvsentinel oci://ghcr.io/nvidia/nvsentinel \
-  --version v1.21.0 \
+  --version v1.22.0 \
   --namespace nvsentinel
 
 # Uninstall
@@ -316,6 +316,19 @@ janitor:
       principalId: "ocid1.principal.oc1..aaa..."
 ```
 
+##### Label provider
+
+Requests reboot and terminate by labeling the Node. An external controller running on the Kubernetes control plane can watch those labels and perform the required action. After reboot completion, that controller **MUST** remove the reboot label.
+
+```yaml
+janitor-provider:
+  csp:
+    provider: "label"
+    label:
+      rebootKey: "nke.nvidia.com/reboot=requested-by-nvsentinel"
+      terminateKey: "nke.nvidia.com/terminate=requested-by-nvsentinel"
+```
+
 ### Complete Configuration Reference
 
 For detailed documentation of all available configuration options, see:
@@ -326,5 +339,5 @@ For detailed documentation of all available configuration options, see:
 To view all options from the published chart:
 
 ```bash
-helm show values oci://ghcr.io/nvidia/nvsentinel --version v1.21.0
+helm show values oci://ghcr.io/nvidia/nvsentinel --version v1.22.0
 ```

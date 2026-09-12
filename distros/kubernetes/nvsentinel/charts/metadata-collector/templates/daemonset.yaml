@@ -20,9 +20,11 @@ metadata:
     {{- include "metadata-collector.labels" . | nindent 4 }}
 spec:
   updateStrategy:
-    type: RollingUpdate
+    type: {{ .Values.updateStrategy.type }}
+    {{- if eq .Values.updateStrategy.type "RollingUpdate" }}
     rollingUpdate:
-      maxUnavailable: 5%
+      maxUnavailable: {{ .Values.updateStrategy.rollingUpdate.maxUnavailable }}
+    {{- end }}
   selector:
     matchLabels:
       {{- include "metadata-collector.selectorLabels" . | nindent 6 }}
@@ -52,6 +54,20 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --output-path={{ .Values.global.metadataPath }}
+            - --pod-mapper-max-consecutive-failures={{ .Values.podMapper.maxConsecutiveFailures }}
+            {{- if include "metadata-collector.metricsEnabled" . }}
+            - --metrics-port={{ .Values.metrics.port }}
+            {{- else }}
+            # 0 disables the endpoint. Omitting the flag would leave the binary on its default.
+            - --metrics-port=0
+            {{- end }}
+          {{- if include "metadata-collector.metricsEnabled" . }}
+          ports:
+            # The chart's PodMonitor selects on the release instance label and scrapes a port
+            # named "metrics", so this name is what gets these pods scraped.
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+          {{- end }}
           env:
             - name: NODE_NAME
               valueFrom:
