@@ -14,7 +14,7 @@
 
 ## Context
 
-`health-events-analyzer` monitors the database change stream for non-fatal, transient health events, correlates them over time windows via rule-driven database aggregation queries, and elevates recurrent failure patterns to fatal events for automated remediation.
+`health-events-analyzer` monitors the database change stream for incoming health events, correlates them over time windows via rule-driven database aggregation queries, and emits synthetic remediation events when failure patterns match configured rules.
 
 In production and scale testing, `health-events-analyzer` operates on a strict serial processing loop. Metrics benchmarked in issue #1800 indicate:
 - Handling duration per event averages **17.67 ms** (sum 1,838.81 s over 104,090 events).
