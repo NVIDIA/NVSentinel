@@ -59,8 +59,25 @@ var blueFieldHCATypes = []string{
 	"MT41692",
 }
 
-// Link-layer type constants shared across packages.
+// efaDriverName is the kernel driver bound to AWS Elastic Fabric Adapter
+// PCI functions.
+const efaDriverName = "efa"
+
+// AmazonPCIVendorID is the PCI vendor ID of Amazon devices. EFA is the
+// only Amazon device that registers with the RDMA core, so an IB device
+// with this vendor ID is treated as EFA when the driver symlink cannot
+// be read. Shared with discovery so both layers apply the same predicate.
+const AmazonPCIVendorID = "0x1d0f"
+
+// Link-layer type constants shared across packages. InfiniBand and
+// Ethernet are the literal values the kernel writes to
+// /sys/class/infiniband/<dev>/ports/<n>/link_layer. EFA is a monitor-side
+// normalisation: the AWS Elastic Fabric Adapter driver reports an
+// unspecified link layer (sysfs shows "Unknown"), so discovery tags ports
+// of efa-bound devices with this value to give them their own check and
+// state-file namespace.
 const (
 	LinkLayerInfiniBand = "InfiniBand"
 	LinkLayerEthernet   = "Ethernet"
+	LinkLayerEFA        = "EFA"
 )

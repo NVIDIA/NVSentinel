@@ -198,6 +198,6 @@ Two NIC rules complement the NIC Health Monitor module:
 
 `enableRepeatedNICDriverErrorRule` — correlates `SysLogsNICDriverError` events from the Syslog Health Monitor. It fires when the same kernel-log error pattern (for example, `mlx5_tx_timeout_detected` or `netdev_watchdog`) occurs three or more times on the same node within one hour, indicating that automatic driver recovery is failing.
 
-`enableRepeatedNICDegradationRule` — correlates `InfiniBandDegradationCheck` and `EthernetDegradationCheck` events from the NIC Health Monitor. It fires when a non-fatal counter degradation occurs three or more times on the same NIC port within one hour, suggesting a persistent physical-layer problem.
+`enableRepeatedNICDegradationRule` — correlates `InfiniBandDegradationCheck`, `EthernetDegradationCheck` and `EFADegradationCheck` events from the NIC Health Monitor. It fires when a non-fatal counter degradation occurs three or more times on the same NIC port within one hour, suggesting a persistent physical-layer problem.
 
 See the [NIC Health Monitor configuration](nic-health-monitor.md) for the corresponding check and detection configuration.
