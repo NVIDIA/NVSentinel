@@ -113,6 +113,7 @@ func (p *PartitionedEventProcessor) Start(ctx context.Context) error {
 
 		go func(workerID int) {
 			defer p.wg.Done()
+
 			p.runWorker(workerCtx, workerID, p.workerChs[workerID])
 		}(i)
 	}
@@ -126,6 +127,7 @@ func (p *PartitionedEventProcessor) Start(ctx context.Context) error {
 	p.wg.Wait()
 
 	p.checkpointMu.Lock()
+
 	tokenToFlush := p.pendingCheckpointToken
 	if flushToken := p.tracker.Flush(); len(flushToken) > 0 {
 		tokenToFlush = flushToken
@@ -137,6 +139,7 @@ func (p *PartitionedEventProcessor) Start(ctx context.Context) error {
 
 		if markErr := p.markProcessed(shutdownCtx, tokenToFlush); markErr != nil {
 			slog.Error("Failed to mark final checkpoint token", "error", markErr)
+
 			p.pendingCheckpointToken = tokenToFlush
 		} else {
 			p.pendingCheckpointToken = nil
@@ -162,6 +165,46 @@ func (p *PartitionedEventProcessor) Stop(ctx context.Context) error {
 	return nil
 }
 
+func (p *PartitionedEventProcessor) waitBackpressure(ctx context.Context, maxInFlight int) error {
+	if p.tracker.InFlightCount() < maxInFlight {
+		return nil
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-p.stopCh:
+		return nil
+	case <-p.tracker.DrainCh():
+		return nil
+	}
+}
+
+func (p *PartitionedEventProcessor) onEventsClosed(ctx context.Context) error {
+	slog.Info("Event channel closed, stopping processor")
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	return nil
+}
+
+func (p *PartitionedEventProcessor) dispatchEvent(ctx context.Context, event Event) error {
+	seq := p.tracker.Register(event.GetResumeToken())
+	task := &partitionedTask{seq: seq, event: event}
+	workerIdx := p.selectWorker(event)
+
+	select {
+	case p.workerChs[workerIdx] <- task:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-p.stopCh:
+		return nil
+	}
+}
+
 func (p *PartitionedEventProcessor) processEvents(ctx context.Context) error {
 	slog.Info("Listening for events on the change stream channel...")
 
@@ -173,15 +216,8 @@ func (p *PartitionedEventProcessor) processEvents(ctx context.Context) error {
 	eventsCh := p.changeStreamWatcher.Events()
 
 	for {
-		if p.tracker.InFlightCount() >= maxInFlight {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-p.stopCh:
-				return nil
-			case <-p.tracker.DrainCh():
-				continue
-			}
+		if err := p.waitBackpressure(ctx, maxInFlight); err != nil {
+			return err
 		}
 
 		select {
@@ -195,25 +231,11 @@ func (p *PartitionedEventProcessor) processEvents(ctx context.Context) error {
 			return nil
 		case event, ok := <-eventsCh:
 			if !ok {
-				slog.Info("Event channel closed, stopping processor")
-
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-
-				return nil
+				return p.onEventsClosed(ctx)
 			}
 
-			seq := p.tracker.Register(event.GetResumeToken())
-			task := &partitionedTask{seq: seq, event: event}
-			workerIdx := p.selectWorker(event)
-
-			select {
-			case p.workerChs[workerIdx] <- task:
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-p.stopCh:
-				return nil
+			if err := p.dispatchEvent(ctx, event); err != nil {
+				return err
 			}
 		}
 	}
@@ -237,7 +259,9 @@ func (p *PartitionedEventProcessor) runWorker(ctx context.Context, id int, ch <-
 
 			var uncheckpointedErr *uncheckpointedEventError
 			if errors.As(err, &uncheckpointedErr) && !p.config.MarkProcessedOnError {
-				p.Stop(ctx)
+				if stopErr := p.Stop(ctx); stopErr != nil {
+					slog.Error("Failed to stop processor on uncheckpointed error", "error", stopErr)
+				}
 
 				return
 			}
@@ -245,20 +269,61 @@ func (p *PartitionedEventProcessor) runWorker(ctx context.Context, id int, ch <-
 	}
 }
 
+func (p *PartitionedEventProcessor) parseEvent(event Event) (*model.HealthEventWithStatus, string, error) {
+	var healthEventWithStatus model.HealthEventWithStatus
+	if err := event.UnmarshalDocument(&healthEventWithStatus); err != nil {
+		return nil, "", fmt.Errorf("failed to unmarshal event: %w", err)
+	}
+
+	eventID, err := event.GetDocumentID()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to get document ID: %w", err)
+	}
+
+	return &healthEventWithStatus, eventID, nil
+}
+
+func (p *PartitionedEventProcessor) shouldSkip(event Event) bool {
+	return p.config.SkipEvent != nil && p.config.SkipEvent(event)
+}
+
+func (p *PartitionedEventProcessor) handleProcessError(
+	ctx context.Context, seq uint64, eventID string, startTime time.Time, processErr error,
+) error {
+	p.updateMetrics("processing_failed", eventID, time.Since(startTime), false)
+	slog.Error("Event processing failed", "eventID", eventID, "seq", seq, "error", processErr)
+
+	// Context cancellations and timeouts are transient conditions and must not be marked
+	// as processed, allowing the event to be retried on restart rather than permanently skipped.
+	if errors.Is(processErr, context.Canceled) || errors.Is(processErr, context.DeadlineExceeded) || ctx.Err() != nil {
+		return newUncheckpointedEventError(processErr)
+	}
+
+	if p.config.MarkProcessedOnError {
+		slog.Warn("Marking failed event as processed due to MarkProcessedOnError=true", "eventID", eventID)
+
+		p.onTaskCompleted(ctx, seq)
+
+		return processErr
+	}
+
+	return newUncheckpointedEventError(processErr)
+}
+
 func (p *PartitionedEventProcessor) handleTask(ctx context.Context, task *partitionedTask) error {
 	startTime := time.Now()
 	event := task.event
 	seq := task.seq
 
-	if p.config.SkipEvent != nil && p.config.SkipEvent(event) {
+	if p.shouldSkip(event) {
 		p.updateMetrics("processing_skipped", "", time.Since(startTime), true)
 		p.onTaskCompleted(ctx, seq)
 
 		return nil
 	}
 
-	var healthEventWithStatus model.HealthEventWithStatus
-	if err := event.UnmarshalDocument(&healthEventWithStatus); err != nil {
+	healthEventWithStatus, eventID, err := p.parseEvent(event)
+	if err != nil {
 		p.updateMetrics("unmarshal_error", "", time.Since(startTime), false)
 
 		if p.config.MarkProcessedOnError {
@@ -267,20 +332,7 @@ func (p *PartitionedEventProcessor) handleTask(ctx context.Context, task *partit
 			return nil
 		}
 
-		return newUncheckpointedEventError(fmt.Errorf("failed to unmarshal event: %w", err))
-	}
-
-	eventID, err := event.GetDocumentID()
-	if err != nil {
-		p.updateMetrics("document_id_error", "", time.Since(startTime), false)
-
-		if p.config.MarkProcessedOnError {
-			p.onTaskCompleted(ctx, seq)
-
-			return nil
-		}
-
-		return newUncheckpointedEventError(fmt.Errorf("failed to get document ID: %w", err))
+		return newUncheckpointedEventError(err)
 	}
 
 	eventCtx := ctx
@@ -294,25 +346,9 @@ func (p *PartitionedEventProcessor) handleTask(ctx context.Context, task *partit
 
 	slog.Debug("Processing event", "eventID", eventID, "seq", seq)
 
-	processErr := p.eventHandler.ProcessEvent(eventCtx, &healthEventWithStatus)
+	processErr := p.eventHandler.ProcessEvent(eventCtx, healthEventWithStatus)
 	if processErr != nil {
-		p.updateMetrics("processing_failed", eventID, time.Since(startTime), false)
-		slog.Error("Event processing failed", "eventID", eventID, "seq", seq, "error", processErr)
-
-		// Context cancellations and timeouts are transient conditions and must not be marked
-		// as processed, allowing the event to be retried on restart rather than permanently skipped.
-		if errors.Is(processErr, context.Canceled) || errors.Is(processErr, context.DeadlineExceeded) || ctx.Err() != nil {
-			return newUncheckpointedEventError(processErr)
-		}
-
-		if p.config.MarkProcessedOnError {
-			slog.Warn("Marking failed event as processed due to MarkProcessedOnError=true", "eventID", eventID)
-			p.onTaskCompleted(ctx, seq)
-
-			return processErr
-		}
-
-		return newUncheckpointedEventError(processErr)
+		return p.handleProcessError(ctx, seq, eventID, startTime, processErr)
 	}
 
 	p.updateMetrics("processing_success", eventID, time.Since(startTime), true)
@@ -342,21 +378,22 @@ func (p *PartitionedEventProcessor) onTaskCompleted(ctx context.Context, seq uin
 }
 
 func (p *PartitionedEventProcessor) selectWorker(event Event) int {
-	if p.config.PartitionKeyFunc != nil {
-		key := p.config.PartitionKeyFunc(event)
-		if key == "" {
-			return 0
-		}
-
-		return int(hashNode(key) % uint32(p.workers))
-	}
-
-	nodeName, err := event.GetNodeName()
-	if err != nil || nodeName == "" {
+	if p.workers <= 1 {
 		return 0
 	}
 
-	return int(hashNode(nodeName) % uint32(p.workers))
+	key := ""
+	if p.config.PartitionKeyFunc != nil {
+		key = p.config.PartitionKeyFunc(event)
+	} else if nodeName, err := event.GetNodeName(); err == nil {
+		key = nodeName
+	}
+
+	if key == "" {
+		return 0
+	}
+
+	return int(hashNode(key)&0x7fffffff) % p.workers
 }
 
 func (p *PartitionedEventProcessor) markProcessed(ctx context.Context, token []byte) error {
