@@ -365,7 +365,12 @@ func TestPartitionedEventProcessor_StopCancelsWorkerContext(t *testing.T) {
 		startDone <- processor.Start(context.Background())
 	}()
 
-	<-handlerStarted
+	select {
+	case <-handlerStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler did not start")
+	}
+
 	err := processor.Stop(context.Background())
 	require.NoError(t, err)
 
