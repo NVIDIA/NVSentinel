@@ -198,6 +198,7 @@ janitor:
           writeSysLogEvent: true
           runtimeClassName: "nvidia"
           hostDriverRootPath: "/run/nvidia/driver"
+          driverRoot: "/run/nvidia/driver"
           image:
             repository: ghcr.io/nvidia/nvsentinel/gpu-reset
             tag: ""
@@ -222,9 +223,18 @@ When `true`, the reset job writes a kernel syslog message on reset completion. U
 NVIDIA RuntimeClass name used by the GPU reset Job. Must match a RuntimeClass installed in the cluster.
 
 ### resetJob.hostDriverRootPath
-Host path containing the NVIDIA driver filesystem. It is mounted at `/run/nvidia/driver` inside the reset container, where the reset command uses it as a chroot.
+Host path containing the NVIDIA driver filesystem. The reset Job mounts it at `resetJob.driverRoot` inside the reset container.
 
 Keep the default `/run/nvidia/driver` for containerized driver installations. Set it to `/` when the driver is installed directly into the host filesystem and `nvidia-smi` is available at a path such as `/usr/bin/nvidia-smi`.
+
+### resetJob.driverRoot
+Path inside the reset container that the reset command chroots into. The reset command runs `chroot <driverRoot> nvidia-smi` for every `nvidia-smi` call, so this path must hold a complete filesystem: the `nvidia-smi` binary, its shared libraries, and a dynamic loader. The reset Job also mounts the host `/sys` at `<driverRoot>/sys`, so the chroot can read sysfs.
+
+Keep the default `/run/nvidia/driver`. The GPU Operator driver container bind-mounts its full container root to that host path, which satisfies the chroot. This default also works with `hostDriverRootPath: "/"`, because the host root filesystem is complete as well.
+
+Set `driverRoot` to `/` when the driver root holds only driver files and not a complete filesystem. A chroot into a partial driver root fails before `nvidia-smi` starts. With `/`, the chroot is a no-op and the reset command uses the `nvidia-smi` in the reset container image. The Job then does not mount `hostDriverRootPath`, and it mounts the host `/sys` at `/sys`.
+
+The value must be an absolute, clean path. The janitor rejects any other value at startup.
 
 ### resetJob.image
 Container image for the GPU reset Job. Leave `tag` empty to use the chart default.

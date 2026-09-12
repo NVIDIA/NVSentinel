@@ -240,7 +240,7 @@ gpuResetController:
 		},
 	}
 	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", imagePullSecrets,
-		resourceRequirements, "/", "nvidia", true,
+		resourceRequirements, "/", DriverRootMountPath, "nvidia", true,
 		"http://nvsentinel-incluster-file-server.nvsentinel.svc.cluster.local/upload")
 	assert.NoError(t, err)
 	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
@@ -343,7 +343,7 @@ gpuResetController:
 	assert.True(t, config.GPUReset.Enabled)
 
 	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
-		ResourceRequirements{}, DefaultHostDriverRootPath, "", true, "")
+		ResourceRequirements{}, DefaultHostDriverRootPath, DriverRootMountPath, "", true, "")
 	assert.NoError(t, err)
 	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
 
@@ -394,7 +394,7 @@ gpuResetController:
 	assert.True(t, config.GPUReset.Enabled)
 
 	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
-		ResourceRequirements{}, DefaultHostDriverRootPath, "", true, "")
+		ResourceRequirements{}, DefaultHostDriverRootPath, DriverRootMountPath, "", true, "")
 	assert.NoError(t, err)
 	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
 
@@ -483,7 +483,7 @@ gpuResetController:
 	assert.True(t, config.GPUReset.Enabled)
 
 	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
-		ResourceRequirements{}, DefaultHostDriverRootPath, "", false, "")
+		ResourceRequirements{}, DefaultHostDriverRootPath, DriverRootMountPath, "", false, "")
 	assert.NoError(t, err)
 	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
 
@@ -639,4 +639,37 @@ global:
 	require.Len(t, config.RebootNode.Exclusions[1].MatchExpressions, 1)
 	assert.Equal(t, "node-role.kubernetes.io/control-plane", config.RebootNode.Exclusions[1].MatchExpressions[0].Key)
 	assert.Equal(t, metav1.LabelSelectorOpExists, config.RebootNode.Exclusions[1].MatchExpressions[0].Operator)
+}
+
+func TestLoadConfig_GPUResetDriverRootOverride(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "janitor-config.yaml")
+
+	configContent := `
+global:
+  timeout: 30m
+  cspProviderHost: janitor-provider.nvsentinel.svc.cluster.local:50051
+
+gpuResetController:
+  enabled: true
+  resetJob:
+    hostDriverRootPath: "/run/nvidia/driver"
+    driverRoot: "/"
+    imageConfig:
+      image: "alpine:latest"
+`
+
+	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	require.NoError(t, err)
+
+	config, err := LoadConfig(configPath, testNamespace)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+
+	assert.Equal(t, ContainerDriverRoot, config.GPUReset.ResetJob.DriverRoot)
+
+	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
+		ResourceRequirements{}, DefaultHostDriverRootPath, ContainerDriverRoot, "", true, "")
+	require.NoError(t, err)
+	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
 }
