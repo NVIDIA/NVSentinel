@@ -131,7 +131,7 @@ func (c *Client) SendRebootSignal(
 ) (model.ResetSignalRequestRef, error) {
 	_, err := c.compute.InstanceAction(ctx, core.InstanceActionRequest{
 		InstanceId:    &node.Spec.ProviderID,
-		Action:        core.InstanceActionActionSoftreset,
+		Action:        core.InstanceActionActionReset,
 		OpcRetryToken: rebootRetryToken(node.Spec.ProviderID, crName),
 	})
 	if err != nil {
@@ -172,7 +172,7 @@ func rebootRetryToken(providerID, crName string) *string {
 }
 
 func translateRebootError(providerID string, err error) error {
-	contextualErr := fmt.Errorf("send soft reset action for OCI instance %q: %w", providerID, err)
+	contextualErr := fmt.Errorf("send reset action for OCI instance %q: %w", providerID, err)
 	if isRetryableRebootError(err) {
 		return status.Error(codes.Unavailable, contextualErr.Error())
 	}
