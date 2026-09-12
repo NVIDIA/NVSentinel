@@ -1,0 +1,104 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# ServiceMonitor for Prometheus Operator auto-discovery
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: system-services-monitor
+  namespace: nvsentinel
+  labels:
+    app.kubernetes.io/name: system-services-monitor
+    app.kubernetes.io/instance: nvsentinel
+    app.kubernetes.io/component: metrics
+    # Must match the Prometheus Operator's release-label selector. The value
+    # below matches a kube-prometheus-stack install whose Helm release is
+    # named kube-prometheus-stack (the chart's default selectors only
+    # discover resources labeled with the release name); adjust to your
+    # installation's release name.
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: system-services-monitor
+      app.kubernetes.io/instance: nvsentinel
+      app.kubernetes.io/component: metrics
+  namespaceSelector:
+    matchNames:
+      - nvsentinel
+  endpoints:
+    - port: metrics
+      interval: 30s
+      scrapeTimeout: 10s
+      path: /metrics
+      scheme: http
+
+---
+# PrometheusRule with alert definitions
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: system-services-monitor
+  namespace: nvsentinel
+  labels:
+    app.kubernetes.io/name: system-services-monitor
+    app.kubernetes.io/instance: nvsentinel
+    # Same release-label constraint as the ServiceMonitor above.
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: gpu-node-health
+      rules:
+        # Critical: Fabric Manager down for 5 minutes
+        - alert: FabricManagerDown
+          expr: fabric_manager_up == 0
+          for: 5m
+          labels:
+            severity: critical
+            component: system-services-monitor
+          annotations:
+            summary: "Fabric Manager down on {{ $labels.node }}"
+            description: >-
+              Fabric Manager has been down for more than 5 minutes on node
+              {{ $labels.node }}. NVLink/NVSwitch fabric is non-functional.
+              Multi-GPU workloads will fail silently or hang.
+            runbook: "ssh to node and run: sudo systemctl restart nvidia-fabricmanager"
+
+        # Warning: Fabric Manager flapping (restarting repeatedly).
+        # Threshold matches ServiceChecker.is_flapping (FLAP_THRESHOLD=3,
+        # `len(history) >= 3`), so >= 3 here rather than > 3.
+        - alert: FabricManagerFlapping
+          expr: increase(fabric_manager_restarts_total[10m]) >= 3
+          for: 5m
+          labels:
+            severity: warning
+            component: system-services-monitor
+          annotations:
+            summary: "Fabric Manager flapping on {{ $labels.node }}"
+            description: >-
+              Fabric Manager is restarting repeatedly on {{ $labels.node }}.
+              Check journalctl -u nvidia-fabricmanager for root cause.
+
+        # Warning: GPU systemd service down (non-fatal per PR classification).
+        - alert: GPUServiceDown
+          expr: nvidia_service_up == 0
+          for: 3m
+          labels:
+            severity: warning
+            component: system-services-monitor
+          annotations:
+            summary: "{{ $labels.service_name }} down on {{ $labels.node }}"
+            description: >-
+              NVIDIA service {{ $labels.service_name }} has been down for more
+              than 3 minutes on {{ $labels.node }}.
