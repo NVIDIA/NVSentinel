@@ -85,6 +85,12 @@ spec:
           - "--tls-enabled=false"
           {{- end }}
           - "--processing-strategy={{ .Values.processingStrategy }}"
+          {{- if .Values.workers }}
+          - "--workers={{ .Values.workers }}"
+          {{- end }}
+          {{- if .Values.maxInFlight }}
+          - "--max-in-flight={{ .Values.maxInFlight }}"
+          {{- end }}
           {{- if include "nvsentinel.pcAuth.enabled" . }}
           {{- /* Republished events keep the original event's node name, so this
                  component reports on nodes other than its own and must present

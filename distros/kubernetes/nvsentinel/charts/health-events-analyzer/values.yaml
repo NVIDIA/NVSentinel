@@ -38,6 +38,12 @@ logLevel: info
 # STORE_ONLY: observability-only behavior; event should be persisted/exported but should not modify cluster resources (i.e., no node conditions, no quarantine, no drain, no remediation).
 processingStrategy: EXECUTE_REMEDIATION
 
+# Number of concurrent workers for event processing partitioned by node (default: 1)
+workers: 1
+
+# Maximum number of uncheckpointed in-flight events before applying backpressure (default: 1000)
+maxInFlight: 1000
+
 # Enable flags for the rules to be evaluated.
 enableMultipleRemediationsRule: true
 enableRepeatedXIDErrorOnSameGPURule: true

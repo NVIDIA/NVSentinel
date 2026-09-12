@@ -55,6 +55,8 @@ type HealthEventsAnalyzerReconcilerConfig struct {
 	Pipeline                  any
 	HealthEventsAnalyzerRules *config.TomlConfig
 	Publisher                 *publisher.PublisherConfig
+	Workers                   int
+	MaxInFlight               int
 }
 
 type Reconciler struct {
@@ -72,13 +74,28 @@ func NewReconciler(cfg HealthEventsAnalyzerReconcilerConfig) *Reconciler {
 	}
 }
 
-func newEventProcessorConfig() client.EventProcessorConfig {
+func newEventProcessorConfig(reconcilerCfg ...HealthEventsAnalyzerReconcilerConfig) client.EventProcessorConfig {
+	workers := 1
+	maxInFlight := 1000
+
+	if len(reconcilerCfg) > 0 {
+		if reconcilerCfg[0].Workers > 0 {
+			workers = reconcilerCfg[0].Workers
+		}
+
+		if reconcilerCfg[0].MaxInFlight > 0 {
+			maxInFlight = reconcilerCfg[0].MaxInFlight
+		}
+	}
+
 	// Keep the stream live after handler failures. The processor records the
 	// failure before checkpointing; checkpoint failures still stop processing.
 	return client.EventProcessorConfig{
 		EnableMetrics:        true,
 		MetricsLabels:        map[string]string{"module": agentName},
 		MarkProcessedOnError: true,
+		Workers:              workers,
+		MaxInFlight:          maxInFlight,
 		SkipEvent: func(event client.Event) bool {
 			return client.EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath)
 		},
@@ -142,7 +159,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 
 	oldWatcher := unwrapable.Unwrap()
 
-	processorConfig := newEventProcessorConfig()
+	processorConfig := newEventProcessorConfig(r.config)
 
 	r.eventProcessor = client.NewEventProcessor(oldWatcher, r.databaseClient, processorConfig)
 
