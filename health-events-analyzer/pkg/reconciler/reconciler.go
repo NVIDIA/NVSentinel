@@ -379,6 +379,7 @@ func (r *Reconciler) publishMatchedEvent(ctx context.Context,
 	defer span.End()
 
 	ruleMatchedTotal.WithLabelValues(rule.Name, event.HealthEvent.NodeName).Inc()
+	recordMatchedEntityMetricForRule(rule, event.HealthEvent)
 
 	actionVal := r.getRecommendedActionValue(rule.RecommendedAction, rule.Name)
 
@@ -643,6 +644,7 @@ func (r *Reconciler) processXidBurstDetection(ctx context.Context, event *protos
 
 	// Track metrics
 	ruleMatchedTotal.WithLabelValues("RepeatedXidError", event.NodeName).Inc()
+	recordMatchedEntityMetric("RepeatedXidError", event.NodeName, event)
 
 	if len(event.EntitiesImpacted) > 0 {
 		fatalEventsPublishedTotal.WithLabelValues(event.EntitiesImpacted[0].EntityValue).Inc()

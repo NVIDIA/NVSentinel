@@ -38,6 +38,12 @@ logLevel: info
 # STORE_ONLY: observability-only behavior; event should be persisted/exported but should not modify cluster resources (i.e., no node conditions, no quarantine, no drain, no remediation).
 processingStrategy: EXECUTE_REMEDIATION
 
+# Registers rule_matched_entity_total{rule_name, node_name, entity_type, entity_value}.
+# Off by default: entity labels add a series per GPU/GPC/TPC on each node.
+# rule_matched_total already reports that a rule fired without this.
+# GPU UUID is never used as entity_value; PCI or GPU index is exported instead.
+ruleMatchedEntityMetricEnabled: false
+
 # Enable flags for the rules to be evaluated.
 enableMultipleRemediationsRule: true
 enableRepeatedXIDErrorOnSameGPURule: true
