@@ -31,6 +31,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	drainv1alpha1 "github.com/nvidia/nvsentinel/plugins/slinky-drainer/api/v1alpha1"
+	"github.com/nvidia/nvsentinel/plugins/slinky-drainer/pkg/cacheconfig"
 	"github.com/nvidia/nvsentinel/plugins/slinky-drainer/pkg/controller"
 )
 
@@ -68,6 +69,7 @@ func main() {
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
+		Cache:                  cacheconfig.Build(slinkyNamespace),
 	})
 	if err != nil {
 		slog.Error("Unable to create manager", "error", err)

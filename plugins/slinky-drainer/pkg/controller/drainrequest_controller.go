@@ -197,10 +197,14 @@ func (r *DrainRequestReconciler) removeNodeAnnotation(ctx context.Context, node 
 
 	slog.Info("Node healthy, removing cordon annotation", "node", node.Name)
 
+	// Patch, not Update: the cached Node is pruned to labels and annotations, so
+	// an Update would send the dropped spec back as empty and uncordon the node.
+	patch := client.MergeFrom(node.DeepCopy())
+
 	delete(node.Annotations, annotationKey)
 
-	if err := r.Update(ctx, node); err != nil {
-		return fmt.Errorf("failed to update node %s: %w", node.Name, err)
+	if err := r.Patch(ctx, node, patch); err != nil {
+		return fmt.Errorf("failed to patch node %s: %w", node.Name, err)
 	}
 
 	return nil
@@ -226,14 +230,17 @@ func (r *DrainRequestReconciler) setNodeAnnotation(
 
 	slog.Info("Setting node annotation", "node", drainReq.Spec.NodeName, "reason", reason)
 
+	// Patch, not Update: see removeNodeAnnotation.
+	patch := client.MergeFrom(node.DeepCopy())
+
 	if node.Annotations == nil {
 		node.Annotations = make(map[string]string)
 	}
 
 	node.Annotations[annotationKey] = reason
 
-	if err := r.Update(ctx, node); err != nil {
-		return fmt.Errorf("failed to update node %s annotations: %w", node.Name, err)
+	if err := r.Patch(ctx, node, patch); err != nil {
+		return fmt.Errorf("failed to patch node %s annotations: %w", node.Name, err)
 	}
 
 	return nil
