@@ -378,6 +378,12 @@ platformConnector:
 
   k8sConnector:
     enabled: true
+    # Retry transient Kubernetes API failures while preserving event order.
+    # Zero or omission selects the default of 3 retries; negative values are invalid.
+    # Total processing attempts = 1 initial + effective retries.
+    # Default outer backoff: 0.5s + 1s + 2s = 3.5s, plus API calls and client-go retries.
+    # Use 20 retries for 54.5s of outer backoff; later batches wait in order.
+    maxRetries: 3
     maxNodeConditionMessageLength: 1024
     # Max length of the compacted message prefix (before Recommended Action) per health event
     compactedHealthEventMsgLen: 72

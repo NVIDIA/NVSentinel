@@ -277,6 +277,7 @@ Configures the Kubernetes API client for creating node conditions and events.
 platformConnector:
   k8sConnector:
     enabled: true
+    maxRetries: 3
     maxNodeConditionMessageLength: 1024
     qps: 5.0
     burst: 10
@@ -286,6 +287,24 @@ platformConnector:
 
 #### enabled
 Enables Kubernetes connector for creating node conditions and events.
+
+#### maxRetries
+
+Number of ordered retries for transient Kubernetes API failures. The connector holds the current batch during retries so a newer fault or recovery cannot overtake it. Total processing attempts are one initial attempt plus the effective retry count.
+
+Omitting the setting or setting it to `0` selects the default of `3`. Zero does not disable retries. Positive integers override the default; negative values and non-integer configuration values are rejected.
+
+The outer retry delays start at 500 milliseconds, double after each retry, and stop increasing at 3 seconds. With the default of three retries, the delays are 0.5, 1, and 2 seconds: **3.5 seconds of outer backoff**. Kubernetes API calls and client-go's inner retries add to that time, so this is not a total processing deadline.
+
+For longer control-plane outages, set a larger retry count. For example, `maxRetries: 20` allows 21 processing attempts and **54.5 seconds of outer backoff**. Later batches wait behind the current batch during that time. Context cancellation and connector shutdown interrupt backoff immediately.
+
+```yaml
+platformConnector:
+  k8sConnector:
+    maxRetries: 20
+```
+
+Choose the retry count based on expected control-plane recovery time and acceptable queue delay. The retry budget is bounded: after exhaustion, the connector logs the failure and drops the batch. If that batch contains a healthy recovery event, the node condition can remain set until another healthy event or operator action clears it. Retries improve delivery through transient failures; they do not guarantee delivery through an arbitrarily long outage or pod restart.
 
 #### maxNodeConditionMessageLength
 Maximum length of node condition messages in characters.
