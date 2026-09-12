@@ -16,16 +16,170 @@ package publisher
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
+	storeclient "github.com/nvidia/nvsentinel/store-client/pkg/client"
 )
+
+type capturePlatformConnector struct {
+	events *protos.HealthEvents
+}
+
+type unavailablePlatformConnector struct{}
+
+func (*unavailablePlatformConnector) HealthEventOccurredV1(
+	context.Context,
+	*protos.HealthEvents,
+	...grpc.CallOption,
+) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unavailable, "connector unavailable")
+}
+
+func (c *capturePlatformConnector) HealthEventOccurredV1(
+	_ context.Context,
+	events *protos.HealthEvents,
+	_ ...grpc.CallOption,
+) (*emptypb.Empty, error) {
+	c.events = proto.Clone(events).(*protos.HealthEvents)
+	return &emptypb.Empty{}, nil
+}
+
+func TestPublishRecovery(t *testing.T) {
+	client := &capturePlatformConnector{}
+	pub := NewPublisher(client, protos.ProcessingStrategy_EXECUTE_REMEDIATION)
+	sourceGeneratedTime := time.Date(2026, 8, 21, 8, 27, 36, 0, time.UTC)
+	source := &protos.HealthEvent{
+		Version:                 1,
+		Agent:                   "syslog-health-monitor",
+		ComponentClass:          "GPU",
+		CheckName:               "SysLogsXIDError",
+		IsFatal:                 true,
+		IsHealthy:               true,
+		RecommendedAction:       protos.RecommendedAction_RESTART_BM,
+		CustomRecommendedAction: "old-custom-action",
+		ErrorCode:               []string{"94"},
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU", EntityValue: "0"},
+			{EntityType: "GPU_UUID", EntityValue: "GPU-123"},
+		},
+		Metadata:            map[string]string{"source": "reboot-check"},
+		GeneratedTimestamp:  timestamppb.New(sourceGeneratedTime),
+		NodeName:            "node-a",
+		QuarantineOverrides: &protos.BehaviourOverrides{Force: true},
+		DrainOverrides:      &protos.BehaviourOverrides{Skip: true},
+		ProcessingStrategy:  protos.ProcessingStrategy_STORE_AND_ANALYSE,
+	}
+	original := proto.Clone(source).(*protos.HealthEvent)
+	rule := &config.HealthEventsAnalyzerRule{
+		Name:               "RepeatedXID94OnSameGPU",
+		ProcessingStrategy: "EXECUTE_REMEDIATION",
+	}
+	before := time.Now()
+
+	err := pub.PublishRecovery(context.Background(), source, rule.Name,
+		[]*protos.Entity{{EntityType: "GPU_UUID", EntityValue: "GPU-123"}}, rule)
+	require.NoError(t, err)
+	require.True(t, proto.Equal(original, source), "publishing must not mutate the source event")
+	require.NotNil(t, client.events)
+	require.Len(t, client.events.Events, 1)
+
+	recovery := client.events.Events[0]
+	require.Equal(t, "health-events-analyzer", recovery.Agent)
+	require.Equal(t, rule.Name, recovery.CheckName)
+	require.True(t, recovery.IsHealthy)
+	require.False(t, recovery.IsFatal)
+	require.Equal(t, protos.RecommendedAction_NONE, recovery.RecommendedAction)
+	require.Empty(t, recovery.CustomRecommendedAction)
+	require.Empty(t, recovery.ErrorCode)
+	require.Equal(t, []*protos.Entity{{EntityType: "GPU_UUID", EntityValue: "GPU-123"}}, recovery.EntitiesImpacted)
+	require.Nil(t, recovery.QuarantineOverrides)
+	require.Nil(t, recovery.DrainOverrides)
+	require.Equal(t, protos.ProcessingStrategy_EXECUTE_REMEDIATION, recovery.ProcessingStrategy)
+	require.Equal(t, "reboot-check", recovery.Metadata["source"])
+	require.Equal(t, sourceGeneratedTime.Format(time.RFC3339Nano),
+		recovery.Metadata[SourceGeneratedTimestampMetadataKey])
+	require.NotNil(t, recovery.GeneratedTimestamp)
+	require.NotEqual(t, sourceGeneratedTime, recovery.GeneratedTimestamp.AsTime())
+	require.False(t, recovery.GeneratedTimestamp.AsTime().Before(before.Add(-time.Second)))
+	require.Equal(t, source.NodeName, recovery.NodeName)
+}
+
+func TestPublishRecoveryNodeScopeHasNoEntities(t *testing.T) {
+	client := &capturePlatformConnector{}
+	pub := NewPublisher(client, protos.ProcessingStrategy_EXECUTE_REMEDIATION)
+
+	err := pub.PublishRecovery(context.Background(), &protos.HealthEvent{
+		NodeName: "node-a",
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU_UUID", EntityValue: "GPU-123"},
+		},
+	}, "NodeDerivedCondition", nil, nil)
+	require.NoError(t, err)
+	require.Empty(t, client.events.Events[0].EntitiesImpacted)
+}
+
+func TestPublishRecoveryRejectsInvalidProcessingStrategy(t *testing.T) {
+	client := &capturePlatformConnector{}
+	pub := NewPublisher(client, protos.ProcessingStrategy_EXECUTE_REMEDIATION)
+	rule := &config.HealthEventsAnalyzerRule{ProcessingStrategy: "NOT_A_STRATEGY"}
+
+	err := pub.PublishRecovery(context.Background(), &protos.HealthEvent{NodeName: "node-a"},
+		"DerivedCondition", nil, rule)
+	require.ErrorContains(t, err, "unexpected processingStrategy value")
+	require.True(t, storeclient.IsPermanentError(err))
+	require.Nil(t, client.events)
+}
+
+func TestPublishPreservesUnhealthyEventSemantics(t *testing.T) {
+	client := &capturePlatformConnector{}
+	pub := NewPublisher(client, protos.ProcessingStrategy_EXECUTE_REMEDIATION)
+	source := &protos.HealthEvent{
+		Agent:            "source-monitor",
+		CheckName:        "SourceCheck",
+		IsHealthy:        false,
+		IsFatal:          false,
+		EntitiesImpacted: []*protos.Entity{nil, {EntityType: "GPU_UUID", EntityValue: "GPU-1"}},
+	}
+
+	err := pub.Publish(context.Background(), source, protos.RecommendedAction_NONE,
+		"DerivedCondition", "derived", nil)
+	require.NoError(t, err)
+	require.NotNil(t, client.events)
+	derived := client.events.Events[0]
+	require.Equal(t, "health-events-analyzer", derived.Agent)
+	require.Equal(t, "DerivedCondition", derived.CheckName)
+	require.False(t, derived.IsHealthy)
+	require.False(t, derived.IsFatal)
+
+	clones := cloneEntities(source.EntitiesImpacted)
+	require.Len(t, clones, 1)
+	require.True(t, proto.Equal(
+		&protos.Entity{EntityType: "GPU_UUID", EntityValue: "GPU-1"}, clones[0],
+	))
+}
+
+func TestPublishRetryHonorsContextDeadline(t *testing.T) {
+	pub := NewPublisher(&unavailablePlatformConnector{}, protos.ProcessingStrategy_EXECUTE_REMEDIATION)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	err := pub.Publish(ctx, &protos.HealthEvent{}, protos.RecommendedAction_NONE,
+		"DerivedCondition", "derived", nil)
+	require.Error(t, err)
+	require.True(t, errors.Is(err, context.DeadlineExceeded), err)
+}
 
 type fakePlatformConnectorClient struct {
 	events *protos.HealthEvents
@@ -77,7 +231,7 @@ func TestPublish_LaggingSourceEvent_StampsPublishTimeAndKeepsSourceTimestamp(t *
 
 	// The source timestamp is preserved so provenance is not lost.
 	require.Equal(t, sourceTime.Format(time.RFC3339Nano),
-		published.GetMetadata()[sourceGeneratedTimestampMetadataKey])
+		published.GetMetadata()[SourceGeneratedTimestampMetadataKey])
 }
 
 // Asserts the wire key literally rather than through the constant, so a rename cannot
@@ -112,7 +266,7 @@ func TestPublish_SourceWithMetadata_PreservesExistingKeys(t *testing.T) {
 	published := client.events.GetEvents()[0]
 	require.Equal(t, "value", published.GetMetadata()["existing"])
 	require.Equal(t, sourceTime.Format(time.RFC3339Nano),
-		published.GetMetadata()[sourceGeneratedTimestampMetadataKey])
+		published.GetMetadata()[SourceGeneratedTimestampMetadataKey])
 }
 
 func TestPublish_SourceWithoutTimestamp_StampsWithoutSourceMetadata(t *testing.T) {
@@ -128,7 +282,7 @@ func TestPublish_SourceWithoutTimestamp_StampsWithoutSourceMetadata(t *testing.T
 
 	published := client.events.GetEvents()[0]
 	require.NotNil(t, published.GetGeneratedTimestamp())
-	require.NotContains(t, published.GetMetadata(), sourceGeneratedTimestampMetadataKey)
+	require.NotContains(t, published.GetMetadata(), SourceGeneratedTimestampMetadataKey)
 }
 
 func TestPublish_AnySourceEvent_DoesNotMutateCaller(t *testing.T) {
@@ -145,5 +299,5 @@ func TestPublish_AnySourceEvent_DoesNotMutateCaller(t *testing.T) {
 	// Publish clones, so the caller's event must be untouched.
 	require.True(t, src.GetGeneratedTimestamp().AsTime().Equal(sourceTime))
 	require.Equal(t, "syslog-health-monitor", src.GetAgent())
-	require.NotContains(t, src.GetMetadata(), sourceGeneratedTimestampMetadataKey)
+	require.NotContains(t, src.GetMetadata(), SourceGeneratedTimestampMetadataKey)
 }

@@ -16,6 +16,7 @@ package client
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -106,6 +107,32 @@ func TestProcessableNonFatalUnhealthyInsertsPipeline(t *testing.T) {
 				"HEA input pipeline should explicitly filter processing strategies")
 			assert.Contains(t, fmt.Sprint(pipeline), fmt.Sprint(int32(protos.ProcessingStrategy_STORE_AND_ANALYSE)),
 				"HEA input pipeline should include STORE_AND_ANALYSE source events")
+		})
+	}
+}
+
+func TestAnalyzerHealthEventInsertsPipeline(t *testing.T) {
+	testCases := []struct {
+		name    string
+		builder PipelineBuilder
+	}{
+		{"MongoDB", NewMongoDBPipelineBuilder()},
+		{"PostgreSQL", NewPostgreSQLPipelineBuilder()},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			pipeline := tc.builder.BuildAnalyzerHealthEventInsertsPipeline()
+			require.Len(t, pipeline, 1)
+
+			serialized := strings.ToLower(fmt.Sprint(pipeline))
+			assert.NotContains(t, serialized, "ishealthy",
+				"analyzer input must admit healthy recovery events")
+			assert.Contains(t, serialized, "health-events-analyzer",
+				"analyzer output must remain excluded")
+			assert.Contains(t, serialized, "processingstrategy")
+			assert.Contains(t, serialized, fmt.Sprint(int32(protos.ProcessingStrategy_UNSPECIFIED)))
+			assert.Contains(t, serialized, fmt.Sprint(int32(protos.ProcessingStrategy_STORE_AND_ANALYSE)))
 		})
 	}
 }

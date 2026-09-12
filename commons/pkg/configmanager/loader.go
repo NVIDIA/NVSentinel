@@ -16,6 +16,7 @@ package configmanager
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -51,4 +52,25 @@ func LoadTOMLConfig[T any](path string, config *T) error {
 	}
 
 	return nil
+}
+
+// LoadTOMLConfigStrict loads TOML and rejects keys that are not represented in
+// the destination struct. Use it where a misspelled key must fail startup.
+func LoadTOMLConfigStrict[T any](path string, config *T) error {
+	metadata, err := toml.DecodeFile(path, config)
+	if err != nil {
+		return fmt.Errorf("failed to decode TOML file %s: %w", path, err)
+	}
+
+	undecoded := metadata.Undecoded()
+	if len(undecoded) == 0 {
+		return nil
+	}
+
+	keys := make([]string, 0, len(undecoded))
+	for _, key := range undecoded {
+		keys = append(keys, key.String())
+	}
+
+	return fmt.Errorf("unknown TOML keys in %s: %s", path, strings.Join(keys, ", "))
 }

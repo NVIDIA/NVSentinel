@@ -17,8 +17,100 @@ package postgresql
 import (
 	"testing"
 
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
+
+func TestRecoveryPipelineOperators(t *testing.T) {
+	filter := &PipelineFilter{extendedFilters: true}
+
+	if !matchesExists(true, true) || !matchesExists(false, false) {
+		t.Fatal("$exists did not match field presence")
+	}
+	if matchesExists(true, false) || matchesExists(false, true) || matchesExists(true, "true") {
+		t.Fatal("$exists accepted a mismatched or invalid operand")
+	}
+	if !filter.matchesOperators(2, map[string]any{opGt: 1, opLt: 3}) ||
+		filter.matchesOperators(2, map[string]any{opGt: 1, opLt: 2}) {
+		t.Fatal("multiple comparison operators were not combined with AND")
+	}
+
+	for operator, expected := range map[string]bool{
+		opGt: true, opGte: true, opLt: false, opLte: false,
+	} {
+		if actual := filter.matchesOrderedOperator(2, operator, 1); actual != expected {
+			t.Fatalf("matchesOrderedOperator(%q) = %v, want %v", operator, actual, expected)
+		}
+	}
+	if filter.matchesOrderedOperator(2, "$unsupported", 1) {
+		t.Fatal("unsupported ordered operator matched")
+	}
+	if !filter.matchesOperators(1, map[string]any{}) {
+		t.Fatal("empty operator set should match")
+	}
+	if filter.matchesOperators(1, map[string]any{"$unsupported": 1}) {
+		t.Fatal("unsupported operator matched")
+	}
+}
+
+func TestExistsDistinguishesMissingAndExplicitNull(t *testing.T) {
+	for name, test := range map[string]struct {
+		event    map[string]any
+		exists   bool
+		expected bool
+	}{
+		"missing matches false": {
+			event:    map[string]any{"fullDocument": map[string]any{"healthevent": map[string]any{}}},
+			expected: true,
+		},
+		"null does not match false": {
+			event: map[string]any{"fullDocument": map[string]any{"healthevent": map[string]any{
+				"processingstrategy": nil,
+			}}},
+		},
+		"null matches true": {
+			event: map[string]any{"fullDocument": map[string]any{"healthevent": map[string]any{
+				"processingstrategy": nil,
+			}}},
+			exists:   true,
+			expected: true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			filter, err := NewPipelineFilter(client.WithExtendedFilters([]any{map[string]any{"$match": map[string]any{
+				"fullDocument.healthevent.processingstrategy": map[string]any{"$exists": test.exists},
+			}}}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := filter.MatchesEvent(datastore.EventWithToken{Event: test.event}); got != test.expected {
+				t.Fatalf("MatchesEvent() = %t, want %t", got, test.expected)
+			}
+		})
+	}
+}
+
+func TestExistsCombinesWithOtherOperators(t *testing.T) {
+	filter, err := NewPipelineFilter(client.WithExtendedFilters([]any{map[string]any{"$match": map[string]any{
+		"fullDocument.count": map[string]any{"$exists": true, "$gt": 3},
+	}}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		event map[string]any
+		want  bool
+	}{
+		{event: map[string]any{"fullDocument": map[string]any{}}, want: false},
+		{event: map[string]any{"fullDocument": map[string]any{"count": 2}}, want: false},
+		{event: map[string]any{"fullDocument": map[string]any{"count": 4}}, want: true},
+	} {
+		if got := filter.MatchesEvent(datastore.EventWithToken{Event: test.event}); got != test.want {
+			t.Fatalf("MatchesEvent(%v) = %t, want %t", test.event, got, test.want)
+		}
+	}
+}
 
 func TestGetFieldValue_CaseInsensitive(t *testing.T) {
 	tests := []struct {

@@ -136,6 +136,8 @@ type SingleResult interface {
 // Cursor represents a query result cursor
 type Cursor interface {
 	Next(ctx context.Context) bool
+	// Decode may be called repeatedly after a successful Next and must decode
+	// the same current document without advancing the cursor.
 	Decode(v any) error
 	Close(ctx context.Context) error
 	All(ctx context.Context, results any) error

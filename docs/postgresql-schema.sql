@@ -133,6 +133,7 @@ AND (
     OR document->'healtheventstatus'->>'faultquarantinerecovery' = ''
 );
 CREATE INDEX IF NOT EXISTS idx_health_events_updated_desc ON health_events(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_health_events_analyzer_lookup ON health_events (node_name, event_type, created_at DESC, (document->'healthevent'->>'agent'));
 
 -- GIN index for flexible JSON querying
 CREATE INDEX IF NOT EXISTS idx_health_events_document_gin ON health_events USING GIN (document);

@@ -154,11 +154,147 @@ stage = [
 ]
 ```
 
+Configuration is decoded strictly. Unknown TOML keys, malformed JSON stages,
+and stages containing zero or multiple aggregation operators fail startup instead
+of silently changing rule behavior.
+
+Upgrade note: custom keys that older releases ignored now prevent analyzer startup.
+Remove or correct unknown keys before deploying this version.
+
 The full default ruleset — including all aggregation pipeline stage definitions — is in the chart's `values.yaml` at `distros/kubernetes/nvsentinel/charts/health-events-analyzer/values.yaml`. Refer to that file when writing or reviewing custom rules.
+
+### Derived-condition recovery
+
+The design rationale, tradeoffs, and alternatives are documented in
+[ADR-056](../designs/056-derived-condition-recovery.md).
+
+Rules may opt into automatic recovery by mapping a verified healthy source event
+to the derived condition:
+
+```toml
+[[rules]]
+name = "RepeatedXID94OnSameGPU"
+description = "Repeated XID 94 events on one GPU"
+recommended_action = "CONTACT_SUPPORT"
+message = "Repeated XID 94"
+evaluate_rule = true
+stage = [
+  '{ "$match": { "healthevent.checkname": "SysLogsXIDError", "healthevent.ishealthy": false } }',
+  '{ "$count": "count" }',
+  '{ "$match": { "count": { "$gte": 3 } } }'
+]
+
+[rules.recovery]
+source_agent = "syslog-health-monitor"
+source_check_name = "SysLogsXIDError"
+scope = "entity"
+entity_types = ["GPU_UUID"]
+```
+
+`source_check_name` and `scope` are required. `source_agent` is optional; omit it
+only when more than one trusted producer may publish the recovery event.
+The analyzer rejects `source_agent = "health-events-analyzer"` because analyzer
+output is excluded from its input stream.
+`source_error_codes` is also optional. Set it only when the healthy source event
+carries a code that identifies the recovery; successful GPU-reset events do not.
+When configured, at least one listed code must be present. Entity scope requires one or more
+`entity_types`; node scope must not set `entity_types`. Each configured entity type must have
+exactly one value in an entity-scoped event.
+
+The analyzer publishes a derived healthy event only when the latest derived state
+for the same rule, node, and configured entity set is unhealthy. The event uses
+the rule name as `checkName`, sets `isHealthy=true`, `isFatal=false`, and
+`recommendedAction=NONE`, and leaves the final uncordon decision to
+fault-quarantine. Replayed recovery events therefore converge without repeatedly
+clearing an already-healthy condition. For entity-scoped rules, derived unhealthy
+and healthy events contain only the configured entity types, so both transitions
+address the same downstream fault keys. A matching healthy source with no entities
+is node-wide and clears each active entity-scoped condition for that rule and node;
+a source with only some configured entity types is rejected. If a matching rule
+input lacks a required entity type, the analyzer still publishes the derived fault
+but leaves that event on the existing manual-recovery path.
+
+For recovery-enabled rules, the analyzer normally does not advance a source event's
+resume token until its matching derived transition is visible in the event store;
+the deterministic stored-record exception is described below. If the
+platform connector accepts but drops the queued event before storage, the
+analyzer republishes it. This applies to both unhealthy and healthy transitions,
+so a recovery cannot overtake an earlier derived fault. A delayed healthy event
+never clears a derived fault with a newer generation time. If the transition is
+still not visible after two minutes, the processor exits without acknowledging the
+source. The watcher replays the source after restart instead of blocking the event
+stream indefinitely.
+
+Deterministic failures tied to a rule or stored record are logged, checkpointed,
+and skipped so a poison event cannot halt every later event. Transient datastore
+and publisher failures stop the shared processor for replay whenever recovery is
+enabled. Without enabled recovery mappings, handler failures retain the default
+checkpoint-and-continue behavior. Checkpoint failures stop processing in either mode.
+
+The persisted source recovery event also becomes the rule's history boundary.
+Later evaluations exclude records stored or generated at or before that event,
+so pre-recovery history and delayed old records cannot immediately recreate the
+condition. Existing derived events do not require migration: state matching uses
+their rule, node, and entity fields.
+
+Recovery is disabled when `evaluate_rule=false`. Healthy events using
+`STORE_ONLY` are not analyzer inputs. Rules without a `[rules.recovery]` block
+retain manual-recovery behavior. The watcher is process-wide, not per-rule: once
+any enabled rule has a recovery mapping, every rule shares the widened watcher
+that also admits healthy events. Healthy events are still offered only to
+recovery mappings, so non-recovery rules never evaluate them.
+
+#### Requesting recovery
+
+Configure the recovery source before starting the recovery workflow. Repair the affected node or GPU, then verify that it is healthy. The configured producer must publish the healthy source event through the existing platform-connector gRPC interface.
+
+For the `SysLogsXIDError` mapping above, the existing GPU reset workflow supplies the event. A successful workflow writes `GPU reset executed: <GPU_UUID>, success: true` when `WRITE_SYSLOG_EVENT=true` (the default). The syslog health monitor converts that record into a healthy `SysLogsXIDError` event with the GPU UUID and PCI address. It requires GPU metadata lookup to succeed. A failed reset emits an unhealthy event, which does not request recovery. Use this mapping only when a successful reset is sufficient to resolve the derived fault.
+
+For an operator verification workflow, replace the example rule's recovery block with:
+
+```toml
+[rules.recovery]
+source_agent = "operator-recovery"
+source_check_name = "VerifiedGPURecovery"
+scope = "entity"
+entity_types = ["GPU_UUID"]
+```
+
+`operator-recovery` is an example producer that the operator must implement. After successful verification, its publishing step can use the following function. `pub` is a configured `commons/pkg/healthpub.Publisher`; `pb` is the `data-models/pkg/protos` package. Set up the transport and deployment permissions as described in [Writing a Health Monitor](../tutorials/writing-a-health-monitor.md). Use the actual node name and GPU UUID. Pass the successful verification time as `verifiedAt`. The caller must supply a bounded context and handle a returned error.
+
+```go
+func publishVerifiedGPURecovery(
+    ctx context.Context, pub *healthpub.Publisher, nodeName, gpuUUID string, verifiedAt time.Time,
+) error {
+    return pub.Publish(ctx, &pb.HealthEvents{
+        Version: 1,
+        Events: []*pb.HealthEvent{{
+            Version:            1,
+            Agent:              "operator-recovery",
+            CheckName:          "VerifiedGPURecovery",
+            ComponentClass:     "GPU",
+            NodeName:           nodeName,
+            EntitiesImpacted:   []*pb.Entity{{EntityType: "GPU_UUID", EntityValue: gpuUUID}},
+            GeneratedTimestamp: timestamppb.New(verifiedAt),
+            IsHealthy:          true,
+            IsFatal:            false,
+            RecommendedAction:  pb.RecommendedAction_NONE,
+            ProcessingStrategy: pb.ProcessingStrategy_STORE_AND_ANALYSE,
+            Message:            "Operator verification passed after GPU repair",
+        }},
+    })
+}
+```
+
+The verification workflow must call this function only after its health checks pass. Send the complete configured entity identity. An empty entity list requests node-wide recovery and can clear every active GPU identity for this rule. Keep the same verification timestamp when retrying one verification result.
+
+The source uses `STORE_AND_ANALYSE` so it reaches the analyzer without directly changing node conditions. The derived healthy event uses the rule's processing strategy. Set the rule's `processing_strategy="EXECUTE_REMEDIATION"` when it must update the node condition; `STORE_ONLY` only records the derived transition.
+
+Confirm that the event store contains a healthy event from `health-events-analyzer` with the rule name and matching node and GPU. Then check the node condition and fault-quarantine state. Other active faults can keep the node cordoned. RPC acceptance alone does not confirm recovery. The analyzer exposes no separate operator recovery command or resource.
 
 ### MultipleRemediations Rule
 
-The `MultipleRemediations` rule fires when five or more remediations have been performed on the same node within the preceding 7 days. Unlike other rules, **it applies a node condition that NVSentinel does not automatically clear**, because the rule does not emit healthy events.
+The `MultipleRemediations` rule fires when five or more remediations have been performed on the same node within the preceding 7 days. Its default configuration has no recovery mapping, so **it applies a node condition that NVSentinel does not automatically clear**.
 
 After the underlying hardware issue is resolved, remove the condition manually:
 
