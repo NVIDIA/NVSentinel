@@ -339,6 +339,50 @@ func TestPartitionedEventProcessor_DiscardBufferedTasksOnCancellation(t *testing
 	}
 }
 
+func TestPartitionedEventProcessor_StopCancelsWorkerContext(t *testing.T) {
+	// Calling Stop must cancel the worker context so active context-aware handlers abort
+	// without waiting indefinitely.
+	event1 := newNodeTestEvent("event-1", "node-a")
+	watcher := newEventProcessorTestWatcher(event1)
+
+	processor := NewPartitionedEventProcessor(watcher, nil, EventProcessorConfig{
+		Workers: 1,
+	})
+
+	handlerStarted := make(chan struct{})
+	contextCancelled := make(chan struct{})
+
+	processor.SetEventHandler(EventHandlerFunc(func(ctx context.Context, _ *model.HealthEventWithStatus) error {
+		close(handlerStarted)
+		<-ctx.Done()
+		close(contextCancelled)
+
+		return ctx.Err()
+	}))
+
+	startDone := make(chan error, 1)
+	go func() {
+		startDone <- processor.Start(context.Background())
+	}()
+
+	<-handlerStarted
+	err := processor.Stop(context.Background())
+	require.NoError(t, err)
+
+	select {
+	case <-contextCancelled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler context was not cancelled by Stop()")
+	}
+
+	select {
+	case err := <-startDone:
+		require.NoError(t, err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("processor.Start did not terminate after Stop()")
+	}
+}
+
 type retryTestWatcher struct {
 	*eventProcessorTestWatcher
 	failCount atomic.Int32

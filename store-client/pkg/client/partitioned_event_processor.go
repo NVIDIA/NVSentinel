@@ -53,6 +53,8 @@ type PartitionedEventProcessor struct {
 	tracker                *LowWaterMarkTracker
 	stopCh                 chan struct{}
 	stopOnce               sync.Once
+	cancelMu               sync.Mutex
+	cancelWorkers          context.CancelFunc
 	checkpointMu           sync.Mutex
 	pendingCheckpointToken []byte
 	wg                     sync.WaitGroup
@@ -108,6 +110,17 @@ func (p *PartitionedEventProcessor) Start(ctx context.Context) error {
 	workerCtx, cancelWorkers := context.WithCancel(ctx)
 	defer cancelWorkers()
 
+	p.cancelMu.Lock()
+	p.cancelWorkers = cancelWorkers
+
+	select {
+	case <-p.stopCh:
+		cancelWorkers()
+	default:
+	}
+
+	p.cancelMu.Unlock()
+
 	for i := range p.workers {
 		p.wg.Add(1)
 
@@ -157,6 +170,12 @@ func (p *PartitionedEventProcessor) Stop(ctx context.Context) error {
 	p.stopOnce.Do(func() {
 		close(p.stopCh)
 	})
+
+	p.cancelMu.Lock()
+	if p.cancelWorkers != nil {
+		p.cancelWorkers()
+	}
+	p.cancelMu.Unlock()
 
 	if p.changeStreamWatcher != nil {
 		return p.changeStreamWatcher.Close(ctx)
