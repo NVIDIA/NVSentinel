@@ -82,6 +82,7 @@ func TestSendRebootSignal_ComputeSucceeds_UsesStableTokenWithoutSDKRetry(t *test
 	_, err = client.SendRebootSignal(context.Background(), testNode(), "rebootnode-test")
 	require.NoError(t, err)
 	assert.Equal(t, 2, compute.calls)
+	assert.Equal(t, core.InstanceActionActionReset, compute.actionRequest.Action)
 	assert.Equal(t, token, *compute.actionRequest.OpcRetryToken)
 	assert.Nil(t, compute.actionRequest.RequestMetadata.RetryPolicy)
 }
