@@ -26,6 +26,8 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -40,8 +42,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
+	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
+	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/internal/controller"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/pkg/config"
@@ -161,13 +167,19 @@ func addCertWatchers(mgr ctrl.Manager, setup serverSetup) error {
 	return nil
 }
 
-func setupControllers(mgr ctrl.Manager, cfg *config.Config, enableValidationController bool, namespace string) error {
+func setupControllers(
+	mgr ctrl.Manager, cfg *config.Config,
+	enableValidationController, enableMaintenanceController bool,
+	publisher *healthpub.Publisher, namespace string,
+) error {
 	var validation *v1alpha1.ValidationConfiguration
 	if cfg != nil {
 		validation = cfg.Validation
 	}
 
-	if err := webhookv1alpha1.SetupWebhookWithManager(mgr, validation, enableValidationController); err != nil {
+	if err := webhookv1alpha1.SetupWebhookWithManager(
+		mgr, validation, enableValidationController, enableMaintenanceController,
+	); err != nil {
 		return fmt.Errorf("failed to set up webhook: %w", err)
 	}
 
@@ -183,8 +195,60 @@ func setupControllers(mgr ctrl.Manager, cfg *config.Config, enableValidationCont
 		}
 	}
 
+	if enableMaintenanceController {
+		if err := (&controller.MaintenanceRequestReconciler{
+			Client:    mgr.GetClient(),
+			Scheme:    mgr.GetScheme(),
+			Publisher: publisher,
+			NodeLock: distributedlock.NewNodeLock(
+				mgr.GetClient(), mgr.GetScheme(), namespace, nil,
+			),
+		}).SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("failed to create MaintenanceRequest controller: %w", err)
+		}
+	}
+
 	// +kubebuilder:scaffold:builder
 	return nil
+}
+
+// newPublisher creates a healthpub.Publisher backed by a gRPC connection
+// to the platform-connector socket. Returns (nil, nil) when the
+// maintenance controller is disabled.
+//
+// A MaintenanceRequest names any node in the cluster, but this component
+// is a Deployment running on one. platform-connector therefore scopes it
+// to its own node unless it presents a projected ServiceAccount token
+// whose identity is on the cross-node allowlist, so tokenPath must be set
+// wherever node-binding auth is enabled. An empty tokenPath contributes no
+// dial options, which is the tokenless behaviour auth-disabled clusters expect.
+func newPublisher(
+	enabled bool, socketTarget, tokenPath string,
+) (*healthpub.Publisher, error) {
+	if !enabled {
+		return nil, nil
+	}
+
+	opts := append(
+		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
+		grpcclient.DialOptions(tokenPath)...,
+	)
+
+	slog.Info("Dialing platform-connector",
+		"socket", socketTarget, "tokenAuthEnabled", tokenPath != "")
+
+	conn, err := grpc.NewClient(socketTarget, opts...)
+	if err != nil {
+		slog.Error("Failed to create gRPC client for platform-connector", "error", err)
+
+		return nil, fmt.Errorf("create platform-connector gRPC client: %w", err)
+	}
+
+	return healthpub.New(
+		pb.NewPlatformConnectorClient(conn),
+		socketTarget,
+		"maintenance-controller",
+	), nil
 }
 
 func run() error {
@@ -199,6 +263,9 @@ func run() error {
 		leaseDuration, renewDeadline, retryPeriod        time.Duration
 		configFile                                       string
 		enableValidationController                       bool
+		enableMaintenanceController                      bool
+		platformConnectorSocket                          string
+		platformConnectorTokenPath                       string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to. "+
@@ -227,6 +294,15 @@ func run() error {
 	flag.StringVar(&configFile, "config", "", "Path to a ValidationConfiguration file.")
 	flag.BoolVar(&enableValidationController, "enable-validation-controller", true,
 		"Enable the ValidationRequest controller and webhook.")
+	flag.BoolVar(&enableMaintenanceController, "enable-maintenance-controller", false,
+		"Enable the MaintenanceRequest controller and webhook.")
+	flag.StringVar(&platformConnectorSocket, "platform-connector-socket",
+		"unix:///var/run/nvsentinel.sock",
+		"gRPC target for the platform-connector socket used by the MaintenanceRequest controller.")
+	flag.StringVar(&platformConnectorTokenPath, "platform-connector-token-path", "",
+		"Path to a projected ServiceAccount token presented to platform-connector. "+
+			"A MaintenanceRequest names any node in the cluster, so this is required for "+
+			"reporting on nodes other than the one this pod runs on; empty disables token authentication.")
 
 	flag.Parse()
 
@@ -283,12 +359,31 @@ func run() error {
 		return err
 	}
 
-	if err := setupControllers(mgr, cfg, enableValidationController, namespace); err != nil {
+	publisher, err := newPublisher(
+		enableMaintenanceController, platformConnectorSocket, platformConnectorTokenPath,
+	)
+	if err != nil {
+		return err
+	}
+
+	if err := setupControllers(
+		mgr, cfg, enableValidationController, enableMaintenanceController, publisher, namespace,
+	); err != nil {
 		slog.Error("Failed to set up controllers", "error", err)
 
 		return err
 	}
 
+	if err := addHealthChecks(mgr); err != nil {
+		return err
+	}
+
+	slog.Info("Starting manager")
+
+	return mgr.Start(ctrl.SetupSignalHandler())
+}
+
+func addHealthChecks(mgr ctrl.Manager) error {
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		slog.Error("Failed to set up health check", "error", err)
 
@@ -301,9 +396,7 @@ func run() error {
 		return err
 	}
 
-	slog.Info("Starting manager")
-
-	return mgr.Start(ctrl.SetupSignalHandler())
+	return nil
 }
 
 func main() {
