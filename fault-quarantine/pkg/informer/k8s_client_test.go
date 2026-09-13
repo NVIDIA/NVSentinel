@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
@@ -1098,6 +1099,28 @@ func TestMergeAppliedTaints_ReplacesValueByKeyAndEffect(t *testing.T) {
 		},
 		{Key: "shared", Value: "keep", Effect: string(v1.TaintEffectNoExecute)},
 	}, merged)
+}
+
+func TestMergeQuarantineValidationHealthEventAnnotation_Concatenates(t *testing.T) {
+	existing, err := json.Marshal([]common.HealthEventWithTests{
+		{HealthEvent: &protos.HealthEvent{Id: "event-1", NodeName: "node-1"}, Tests: []string{"dcgm-diag-test"}},
+	})
+	require.NoError(t, err)
+
+	incoming, err := json.Marshal([]common.HealthEventWithTests{
+		{HealthEvent: &protos.HealthEvent{Id: "event-2", NodeName: "node-1"}, Tests: []string{"nccl-test"}},
+	})
+	require.NoError(t, err)
+
+	merged, err := mergeQuarantineValidationHealthEventAnnotation(string(existing), string(incoming))
+	require.NoError(t, err)
+
+	var mergedEvents []common.HealthEventWithTests
+	require.NoError(t, json.Unmarshal([]byte(merged), &mergedEvents))
+
+	require.Len(t, mergedEvents, 2, "both events should be present, not one overwriting the other")
+	assert.Equal(t, "event-1", mergedEvents[0].Id)
+	assert.Equal(t, "event-2", mergedEvents[1].Id)
 }
 
 // TestHasTaint_MatchesByKeyAndEffect verifies that changing a taint value does

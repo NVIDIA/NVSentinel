@@ -230,6 +230,12 @@ var (
 	}
 )
 
+func TestEventProcessorConfigCheckpointsHandlerErrors(t *testing.T) {
+	processorConfig := newEventProcessorConfig()
+
+	assert.True(t, processorConfig.MarkProcessedOnError)
+}
+
 func TestCheckRule(t *testing.T) {
 	ctx := context.Background()
 

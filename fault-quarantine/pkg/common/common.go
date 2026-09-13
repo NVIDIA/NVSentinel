@@ -14,6 +14,16 @@
 
 package common
 
+import "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+
+// As part of the quarantineValidationHealthEvent annotation, we keep track of HealthEvents which contributed the
+// tests and the tests themselves. We will use the HealthEvent ID to check if the node was fully drained as part
+// of the quarantine session prior to requesting validation for the given set of tests.
+type HealthEventWithTests struct {
+	*protos.HealthEvent
+	Tests []string `json:"tests,omitempty"`
+}
+
 // RuleEvaluationResult represents the result of a rule evaluation
 type RuleEvaluationResult int
 
@@ -35,6 +45,7 @@ const (
 	QuarantinedNodeUncordonedManuallyAnnotationValue      = "True"
 	QuarantinedNodeIsUntaintedManuallyAnnotationKey       = "quarantinedNodeUntaintedManually"
 	QuarantinedNodeIsUntaintedManuallyAnnotationValue     = "True"
+	QuarantineValidationHealthEventAnnotationKey          = "quarantineValidationHealthEvent"
 
 	ServiceName = "NVSentinel"
 )

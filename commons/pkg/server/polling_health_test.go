@@ -101,3 +101,40 @@ func TestPollingHealthChecker_StaleErrorContainsDetails(t *testing.T) {
 		t.Errorf("expected threshold in error, got: %s", msg)
 	}
 }
+
+// TestPollingHealthChecker_AllowWaitingOn: a loop blocked on a dependency it
+// legitimately waits for reports healthy past the staleness threshold, and
+// goes back to the staleness rule as soon as the wait is over.
+func TestPollingHealthChecker_AllowWaitingOn(t *testing.T) {
+	now := int64(0)
+	hc := NewPollingHealthChecker(3 * time.Second)
+	hc.clock = func() int64 { return now }
+	hc.lastMonoNano.Store(hc.clock())
+
+	waiting := false
+	hc.AllowWaitingOn(func() bool { return waiting })
+
+	now = int64(10 * time.Second)
+
+	if err := hc.Healthy(context.Background()); err == nil {
+		t.Fatal("expected unhealthy: stale and not waiting")
+	}
+
+	waiting = true
+
+	if err := hc.Healthy(context.Background()); err != nil {
+		t.Fatalf("waiting on a dependency is not a hang, got %v", err)
+	}
+
+	waiting = false
+
+	if err := hc.Healthy(context.Background()); err == nil {
+		t.Fatal("expected unhealthy: the wait ended without an iteration")
+	}
+
+	hc.MarkAlive()
+
+	if err := hc.Healthy(context.Background()); err != nil {
+		t.Fatalf("expected healthy after MarkAlive, got %v", err)
+	}
+}

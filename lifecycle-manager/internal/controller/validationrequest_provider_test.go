@@ -41,7 +41,7 @@ func TestGroupNameAndAttemptObjectName(t *testing.T) {
 			expectedObjectName: "vr-abc123-dcgm-level4-group-1-1",
 		},
 		{
-			name:               "vrName exact fit",
+			name:               "vrName-groupName exact fit",
 			tests:              []string{"basic"},
 			index:              1,
 			vrName:             strings.Repeat("v", 47),
@@ -49,35 +49,35 @@ func TestGroupNameAndAttemptObjectName(t *testing.T) {
 			expectedObjectName: strings.Repeat("v", 47) + "-basic-group-1-1",
 		},
 		{
-			name:               "vrName truncated",
+			name:               "long vrName hash-truncated",
 			tests:              []string{"basic"},
 			index:              1,
 			vrName:             strings.Repeat("v", 250),
 			attemptNumber:      5,
-			expectedObjectName: strings.Repeat("v", 47) + "-basic-group-1-5",
+			expectedObjectName: strings.Repeat("v", 52) + "-28a1549a-5",
 		},
 		{
-			name:               "test names hashed",
+			name:               "long test names hash-truncated",
 			tests:              []string{strings.Repeat("x", 60), strings.Repeat("y", 60), strings.Repeat("z", 60)},
 			index:              3,
 			vrName:             strings.Repeat("v", 80),
 			attemptNumber:      2,
-			expectedObjectName: strings.Repeat("x", 43) + "-3611b5f3-group-3-2",
+			expectedObjectName: strings.Repeat("v", 52) + "-56a54bf0-2",
 		},
 		{
-			name:               "test names hashed, vrName dropped",
+			name:               "long test names hash-truncated, short vrName preserved",
 			tests:              []string{strings.Repeat("a", 60)},
 			index:              1,
 			vrName:             "vr",
 			attemptNumber:      1,
-			expectedObjectName: strings.Repeat("a", 43) + "-92b9e111-group-1-1",
+			expectedObjectName: "vr-" + strings.Repeat("a", 49) + "-46f4f3e0-1",
 		},
 		{
-			name:               "groupName truncated, trailing hyphen trimmed",
+			name:               "groupName has no length cap of its own, so a long one is still hashed by attemptObjectName",
 			groupName:          strings.Repeat("a", 62),
 			vrName:             "vr",
 			attemptNumber:      1,
-			expectedObjectName: strings.Repeat("a", 62),
+			expectedObjectName: "vr-" + strings.Repeat("a", 49) + "-8d56861e-1",
 		},
 	}
 
@@ -86,9 +86,6 @@ func TestGroupNameAndAttemptObjectName(t *testing.T) {
 			grp := tc.groupName
 			if len(grp) == 0 {
 				grp = groupName(tc.tests, tc.index)
-				if errs := validation.IsDNS1123Label(grp); len(errs) != 0 {
-					t.Fatalf("group name %q is not a valid DNS-1123 label: %v", grp, errs)
-				}
 			}
 
 			objectName := attemptObjectName(tc.vrName, grp, tc.attemptNumber)

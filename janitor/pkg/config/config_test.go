@@ -22,6 +22,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/nvidia/nvsentinel/janitor/pkg/gpuservices"
@@ -149,6 +150,7 @@ gpuResetController:
   resetJob:
     writeSysLogEvent: true
     runtimeClassName: "nvidia"
+    hostDriverRootPath: "/"
     uploadURL: "http://nvsentinel-incluster-file-server.nvsentinel.svc.cluster.local/upload"
     imageConfig:
       image: "alpine:latest"
@@ -216,6 +218,7 @@ gpuResetController:
 	assert.False(t, *config.GPUReset.ManualMode)
 	assert.Equal(t, "http://nvsentinel-incluster-file-server.nvsentinel.svc.cluster.local/upload",
 		config.GPUReset.ResetJob.UploadURL)
+	assert.Equal(t, "/", config.GPUReset.ResetJob.HostDriverRootPath)
 	assert.Len(t, config.GPUReset.Exclusions, 1)
 	assert.Equal(t, "qa", config.GPUReset.Exclusions[0].MatchLabels["environment"])
 	assert.Equal(t, "true", config.GPUReset.Exclusions[0].MatchLabels["critical"])
@@ -237,9 +240,45 @@ gpuResetController:
 		},
 	}
 	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", imagePullSecrets,
-		resourceRequirements, "nvidia", true, "http://nvsentinel-incluster-file-server.nvsentinel.svc.cluster.local/upload")
+		resourceRequirements, "/", "nvidia", true,
+		"http://nvsentinel-incluster-file-server.nvsentinel.svc.cluster.local/upload")
 	assert.NoError(t, err)
 	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
+
+	var driverRootVolume *corev1.Volume
+	for index := range config.GPUReset.ResolvedJobTemplate.Spec.Template.Spec.Volumes {
+		volume := &config.GPUReset.ResolvedJobTemplate.Spec.Template.Spec.Volumes[index]
+		if volume.Name == DriverRootVolumeName {
+			driverRootVolume = volume
+			break
+		}
+	}
+	require.NotNil(t, driverRootVolume)
+	require.NotNil(t, driverRootVolume.HostPath)
+	assert.Equal(t, "/", driverRootVolume.HostPath.Path)
+
+	container := config.GPUReset.ResolvedJobTemplate.Spec.Template.Spec.Containers[0]
+	var driverRootMount *corev1.VolumeMount
+	for index := range container.VolumeMounts {
+		mount := &container.VolumeMounts[index]
+		if mount.Name == DriverRootVolumeName {
+			driverRootMount = mount
+			break
+		}
+	}
+	require.NotNil(t, driverRootMount)
+	assert.Equal(t, DriverRootMountPath, driverRootMount.MountPath)
+
+	var driverRootEnv *corev1.EnvVar
+	for index := range container.Env {
+		env := &container.Env[index]
+		if env.Name == "DRIVER_ROOT" {
+			driverRootEnv = env
+			break
+		}
+	}
+	require.NotNil(t, driverRootEnv)
+	assert.Equal(t, DriverRootMountPath, driverRootEnv.Value)
 
 	expectedServiceManager := gpuservices.Manager{
 		Name: "gpu-operator",
@@ -304,7 +343,7 @@ gpuResetController:
 	assert.True(t, config.GPUReset.Enabled)
 
 	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
-		ResourceRequirements{}, "", true, "")
+		ResourceRequirements{}, DefaultHostDriverRootPath, "", true, "")
 	assert.NoError(t, err)
 	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
 
@@ -355,7 +394,7 @@ gpuResetController:
 	assert.True(t, config.GPUReset.Enabled)
 
 	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
-		ResourceRequirements{}, "", true, "")
+		ResourceRequirements{}, DefaultHostDriverRootPath, "", true, "")
 	assert.NoError(t, err)
 	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
 
@@ -444,7 +483,7 @@ gpuResetController:
 	assert.True(t, config.GPUReset.Enabled)
 
 	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
-		ResourceRequirements{}, "", false, "")
+		ResourceRequirements{}, DefaultHostDriverRootPath, "", false, "")
 	assert.NoError(t, err)
 	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
 

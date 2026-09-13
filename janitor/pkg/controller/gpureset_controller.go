@@ -43,10 +43,10 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
-	"github.com/nvidia/nvsentinel/janitor/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/janitor/pkg/gpuservices"
 	"github.com/nvidia/nvsentinel/janitor/pkg/metrics"
 )
@@ -265,6 +265,12 @@ func (r *GPUResetReconciler) reconcileHelper(ctx context.Context, gr *v1alpha1.G
 // for GPUResets and owned Jobs, and adds field indexers for efficient lookups
 // of GPUResets by node name and Jobs by their controlling owner.
 func (r *GPUResetReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if !r.Config.Enabled {
+		slog.Info("GPUReset controller is disabled; skipping registration")
+
+		return nil
+	}
+
 	gpuServiceManager, err := gpuservices.NewManager(r.Config.ServiceManager.Name, r.Config.ServiceManager.Spec)
 	if err != nil {
 		return fmt.Errorf("failed to construct GPU service manager: %w", err)
@@ -282,7 +288,9 @@ func (r *GPUResetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.checkPodsReadyFn = r.checkPodsReady
 
 	// Initialize NodeLock for distributed locking across maintenance operations
-	r.NodeLock = distributedlock.NewNodeLock(mgr.GetClient(), r.LockNamespace)
+	r.NodeLock = distributedlock.NewNodeLock(
+		mgr.GetClient(), mgr.GetScheme(), r.LockNamespace, metrics.JanitorLockMetrics{},
+	)
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.GPUReset{}).

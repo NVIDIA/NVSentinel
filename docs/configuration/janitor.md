@@ -197,6 +197,7 @@ janitor:
         resetJob:
           writeSysLogEvent: true
           runtimeClassName: "nvidia"
+          hostDriverRootPath: "/run/nvidia/driver"
           image:
             repository: ghcr.io/nvidia/nvsentinel/gpu-reset
             tag: ""
@@ -219,6 +220,11 @@ When `true`, the reset job writes a kernel syslog message on reset completion. U
 
 ### resetJob.runtimeClassName
 NVIDIA RuntimeClass name used by the GPU reset Job. Must match a RuntimeClass installed in the cluster.
+
+### resetJob.hostDriverRootPath
+Host path containing the NVIDIA driver filesystem. It is mounted at `/run/nvidia/driver` inside the reset container, where the reset command uses it as a chroot.
+
+Keep the default `/run/nvidia/driver` for containerized driver installations. Set it to `/` when the driver is installed directly into the host filesystem and `nvidia-smi` is available at a path such as `/usr/bin/nvidia-smi`.
 
 ### resetJob.image
 Container image for the GPU reset Job. Leave `tag` empty to use the chart default.

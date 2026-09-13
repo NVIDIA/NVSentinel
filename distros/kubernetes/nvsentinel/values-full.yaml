@@ -722,7 +722,13 @@ node-drainer:
   # Default: false if not specified
   drainGPUPods: false
 
-  # Namespace-specific eviction strategies
+  # Pod-label eviction strategies, evaluated in order; the first matching policy wins.
+  # Set userNamespaces: [] before adding policies; both lists cannot be non-empty.
+  # Unmatched pods are outside the drain scope. Cannot be combined with customDrain.
+  # See docs/configuration/node-drainer.md#pod-drain-policies for examples.
+  podDrainPolicies: []
+
+  # Namespace-specific eviction strategies (alternative to podDrainPolicies)
   # Define how pods in different namespaces should be evicted
   # Multiple rules can be defined with namespace patterns
   userNamespaces:
@@ -1035,6 +1041,17 @@ gpu-health-monitor:
       # Maximum seconds allowed for one DCGM connection and discovery attempt.
       # A timed-out attempt is terminated before the next retry begins.
       connectTimeoutSeconds: 10
+    # Debounce runtime connectivity transitions after the monitor has started.
+    # Defaults preserve the existing fail-once, recover-once behavior.
+    runtimeDebounce:
+      # Example: failureThreshold: 4 and successThreshold: 2 publishes failure
+      # after four failed cycles and recovery after two successful cycles.
+      # Consecutive failed cycles required to publish an unhealthy event.
+      failureThreshold: 1
+      # Consecutive successful cycles required to clear a published failure.
+      successThreshold: 1
+
+
 
   # Use host networking for GPU health monitor pods
   # Required when:
@@ -1241,7 +1258,7 @@ labeler:
 # Watches maintenance CRDs created by fault-remediation and performs the
 # actual infrastructure operations.
 #
-# Supports: AWS, GCP, Azure, OCI, kind (for testing), kwok (for testing)
+# Supports: AWS, GCP, Azure, OCI, generic, label, kind (for testing), kwok (for testing)
 ################################################################################
 janitor:
   # Number of pod replicas (recommend 1 for consistency)
@@ -2204,3 +2221,10 @@ janitor-provider:
     audience: "nvsentinel-csp-provider"
     allowedUsernames: []
   janitorServiceAccountName: "janitor"
+  csp:
+    # Set provider to "label" on Forge/NKE (or any platform that remediates from node labels).
+    # After reboot completion, the external controller MUST remove the reboot label.
+    # provider: "label"
+    label:
+      rebootKey: "nke.nvidia.com/reboot=requested-by-nvsentinel"
+      terminateKey: "nke.nvidia.com/terminate=requested-by-nvsentinel"

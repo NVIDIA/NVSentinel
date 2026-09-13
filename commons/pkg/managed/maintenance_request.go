@@ -20,8 +20,3 @@ const (
 	MRKind     = "MaintenanceRequest"
 	MRResource = "maintenancerequests"
 )
-
-// AnnotationActiveMR is set on a Node to record the name of the currently
-// active MaintenanceRequest. The controller uses it to block overlapping
-// MRs for the same node.
-const AnnotationActiveMR = "nvsentinel.dgxc.nvidia.com/active-maintenance-request"

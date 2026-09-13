@@ -72,6 +72,19 @@ func NewReconciler(cfg HealthEventsAnalyzerReconcilerConfig) *Reconciler {
 	}
 }
 
+func newEventProcessorConfig() client.EventProcessorConfig {
+	// Keep the stream live after handler failures. The processor records the
+	// failure before checkpointing; checkpoint failures still stop processing.
+	return client.EventProcessorConfig{
+		EnableMetrics:        true,
+		MetricsLabels:        map[string]string{"module": agentName},
+		MarkProcessedOnError: true,
+		SkipEvent: func(event client.Event) bool {
+			return client.EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath)
+		},
+	}
+}
+
 // Start begins the reconciliation process by listening to change stream events
 // and processing them accordingly.
 func (r *Reconciler) Start(ctx context.Context) error {
@@ -129,17 +142,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 
 	oldWatcher := unwrapable.Unwrap()
 
-	// Create and configure the unified EventProcessor
-	// Note: EventProcessor no longer retries internally to prevent blocking the event stream
-	// Failed events will be retried on next pod restart (via resume token)
-	processorConfig := client.EventProcessorConfig{
-		EnableMetrics:        true,
-		MetricsLabels:        map[string]string{"module": agentName},
-		MarkProcessedOnError: false, // IMPORTANT: Don't mark failed events as processed
-		SkipEvent: func(event client.Event) bool {
-			return client.EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath)
-		},
-	}
+	processorConfig := newEventProcessorConfig()
 
 	r.eventProcessor = client.NewEventProcessor(oldWatcher, r.databaseClient, processorConfig)
 

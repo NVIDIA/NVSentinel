@@ -11,6 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+{{- if and .Values.userNamespaces .Values.podDrainPolicies }}
+{{- fail "userNamespaces and podDrainPolicies are mutually exclusive; set userNamespaces: [] when using podDrainPolicies" }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -32,6 +35,14 @@ data:
     {{- range .Values.userNamespaces }}
     [[userNamespaces]]
     name = {{ .name | quote }}
+    mode = {{ .mode | quote }}
+    {{- end }}
+
+    {{- range .Values.podDrainPolicies }}
+    [[podDrainPolicies]]
+    name = {{ .name | quote }}
+    namespace = {{ .namespace | default "*" | quote }}
+    podSelector = {{ .podSelector | quote }}
     mode = {{ .mode | quote }}
     {{- end }}
 

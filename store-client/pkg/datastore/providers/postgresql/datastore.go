@@ -532,14 +532,44 @@ func createChangeTriggers(ctx context.Context, db *sql.DB) error {
 
 	triggers := []string{
 		triggerFunction,
-		`DROP TRIGGER IF EXISTS maintenance_events_changes ON maintenance_events`,
-		`CREATE TRIGGER maintenance_events_changes
-			AFTER INSERT OR UPDATE OR DELETE ON maintenance_events
-			FOR EACH ROW EXECUTE FUNCTION log_table_changes()`,
-		`DROP TRIGGER IF EXISTS health_events_changes ON health_events`,
-		`CREATE TRIGGER health_events_changes
-			AFTER INSERT OR UPDATE OR DELETE ON health_events
-			FOR EACH ROW EXECUTE FUNCTION log_table_changes()`,
+		`DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1
+				FROM pg_trigger
+				WHERE tgname = 'maintenance_events_changes'
+					AND tgrelid = 'maintenance_events'::regclass
+					AND NOT tgisinternal
+			) THEN
+				CREATE TRIGGER maintenance_events_changes
+					AFTER INSERT OR UPDATE OR DELETE ON maintenance_events
+					FOR EACH ROW EXECUTE FUNCTION log_table_changes();
+			END IF;
+		EXCEPTION
+			-- Another datastore may create the trigger after the existence check.
+			WHEN duplicate_object THEN
+				NULL;
+		END;
+		$$`,
+		`DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1
+				FROM pg_trigger
+				WHERE tgname = 'health_events_changes'
+					AND tgrelid = 'health_events'::regclass
+					AND NOT tgisinternal
+			) THEN
+				CREATE TRIGGER health_events_changes
+					AFTER INSERT OR UPDATE OR DELETE ON health_events
+					FOR EACH ROW EXECUTE FUNCTION log_table_changes();
+			END IF;
+		EXCEPTION
+			-- Another datastore may create the trigger after the existence check.
+			WHEN duplicate_object THEN
+				NULL;
+		END;
+		$$`,
 	}
 
 	for _, trigger := range triggers {

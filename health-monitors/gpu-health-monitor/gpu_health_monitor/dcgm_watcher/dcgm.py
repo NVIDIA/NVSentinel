@@ -344,6 +344,17 @@ class DCGMWatcher:
             health_status[system_name] = types.HealthDetails(status=types.HealthStatus.PASS, entity_failures={})
         return health_status
 
+    def _is_suppressed_error_code(self, watch_name: str, gpu_id: int, error_code: str) -> bool:
+        if error_code not in self._suppressed_error_codes:
+            return False
+
+        log.debug(
+            f"Suppressing incident for watch={watch_name} entity={gpu_id} "
+            f"error_code={error_code}: high-frequency non-actionable event"
+        )
+        metrics.dcgm_health_check_suppressed_incidents.labels(error_code).inc()
+        return True
+
     def _suppress_configured_error_codes(self, health_status: dict[str, types.HealthDetails]) -> None:
         if not self._suppressed_error_codes:
             return
@@ -622,6 +633,9 @@ class DCGMWatcher:
                 # degrade the watch status nor land in the accumulator, while
                 # other incidents on the same GPU and watch are kept.
                 if self._is_nvlink_down_false_positive(watch_name, gpu_id, error_code):
+                    continue
+
+                if self._is_suppressed_error_code(watch_name, gpu_id, error_code):
                     continue
 
                 # Evaluated after suppression: a suppressed incident is not an
