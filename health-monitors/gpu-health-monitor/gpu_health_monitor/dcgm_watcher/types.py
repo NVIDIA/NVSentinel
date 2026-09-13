@@ -28,10 +28,15 @@ class ErrorDetails:
     message: str
 
 
+EntityKey = int | tuple[int, int]
+
+
 @dataclasses.dataclass
 class HealthDetails:
     status: HealthStatus
-    entity_failures: dict[int, ErrorDetails]
+    # GPU failures retain their integer key for compatibility. Other DCGM
+    # entities use (entityGroupId, entityId) because IDs are group-local.
+    entity_failures: dict[EntityKey, ErrorDetails]
 
 
 @dataclasses.dataclass(frozen=True)

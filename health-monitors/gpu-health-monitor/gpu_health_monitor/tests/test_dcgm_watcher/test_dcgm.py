@@ -506,6 +506,37 @@ class TestDCGMHealthChecks:
         assert response == expected_response
         assert connectivity_success == True
 
+    def test_perform_health_check_keeps_gpu_and_switch_with_same_id_separate(self):
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+        )
+        dcgm_group_mock = MagicMock()
+        mock_response = dcgm_structs.c_dcgmHealthResponse_v4
+        mock_response.version = dcgm_structs.dcgmHealthResponse_version4
+        mock_response.overallHealth = dcgm_structs.DCGM_HEALTH_RESULT_WARN
+        mock_response.incidentCount = 2
+        mock_response.incidents = (dcgm_structs.c_dcgmIncidentInfo_t * dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS)()
+        gpu_incident = self._get_pcie_incident(dcgm_fields.DCGM_FE_GPU, 0)
+        gpu_incident.error.msg = "GPU 0 PCIe failure"
+        switch_incident = self._get_pcie_incident(dcgm_fields.DCGM_FE_SWITCH, 0)
+        switch_incident.error.msg = "NVSwitch 0 PCIe failure"
+        mock_response.incidents[0] = gpu_incident
+        mock_response.incidents[1] = switch_incident
+        dcgm_group_mock.health.Check.return_value = mock_response()
+
+        response, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
+
+        failures = response["DCGM_HEALTH_WATCH_PCIE"].entity_failures
+        assert connectivity_success is True
+        assert len(failures) == 2
+        assert {failure.message for failure in failures.values()} == {
+            "GPU 0 PCIe failure",
+            "NVSwitch 0 PCIe failure",
+        }
+
     def _get_power_throttle_incident(self, group_id, entity_id):
         """Helper to create a DCGM_FR_CLOCK_THROTTLE_POWER incident for testing."""
         incident = dcgm_structs.c_dcgmIncidentInfo_t()

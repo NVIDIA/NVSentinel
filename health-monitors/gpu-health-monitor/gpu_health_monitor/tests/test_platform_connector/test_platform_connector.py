@@ -25,6 +25,7 @@ import shutil
 import tempfile
 from typing import Any, Iterator
 from concurrent import futures
+import dcgm_fields
 from gpu_health_monitor.dcgm_watcher import types as dcgmtypes
 from gpu_health_monitor.platform_connector import platform_connector
 from gpu_health_monitor.platform_connector import metrics as pc_metrics
@@ -79,6 +80,90 @@ class PlatformConnectorServicer(platformconnector_pb2_grpc.PlatformConnectorServ
 
 
 class TestPlatformConnectors(unittest.TestCase):
+
+    def test_health_event_preserves_nvswitch_identity_and_recovery(self):
+        temp_file_path = metadata_file()
+        processor = platform_connector.PlatformConnectorEventProcessor(
+            socket_path,
+            node_name,
+            Event(),
+            {
+                "GPU_ERROR": "CONTACT_SUPPORT",
+                "SWITCH_ERROR": "CONTACT_SUPPORT",
+            },
+            "statefile",
+            temp_file_path,
+            platformconnector_pb2.STORE_ONLY,
+        )
+        published_events = []
+
+        def capture_events(events, delivery_timeout_seconds=None):
+            published_events.extend(events)
+            return True
+
+        processor.send_health_event_with_retries = capture_events
+
+        try:
+            health_details = {
+                "DCGM_HEALTH_WATCH_PCIE": dcgmtypes.HealthDetails(
+                    status=dcgmtypes.HealthStatus.FAIL,
+                    entity_failures={
+                        0: dcgmtypes.ErrorDetails(code="GPU_ERROR", message="GPU 0 failed"),
+                        (dcgm_fields.DCGM_FE_SWITCH, 0): dcgmtypes.ErrorDetails(
+                            code="SWITCH_ERROR",
+                            message="NVSwitch 0 failed",
+                        ),
+                        (dcgm_fields.DCGM_FE_SWITCH, 10): dcgmtypes.ErrorDetails(
+                            code="SWITCH_ERROR",
+                            message="NVSwitch 10 failed",
+                        ),
+                    },
+                )
+            }
+
+            processor.health_event_occurred(health_details, [0])
+
+            unhealthy_events = [event for event in published_events if not event.isHealthy]
+            assert len(unhealthy_events) == 3
+            assert {
+                (
+                    event.componentClass,
+                    event.entitiesImpacted[0].entityType,
+                    event.entitiesImpacted[0].entityValue,
+                )
+                for event in unhealthy_events
+            } == {
+                ("GPU", "GPU", "0"),
+                ("NVSWITCH", "NVSWITCH", "0"),
+                ("NVSWITCH", "NVSWITCH", "10"),
+            }
+
+            published_events.clear()
+            processor.health_event_occurred(health_details, [0])
+            assert published_events == []
+
+            health_details["DCGM_HEALTH_WATCH_PCIE"] = dcgmtypes.HealthDetails(
+                status=dcgmtypes.HealthStatus.PASS,
+                entity_failures={},
+            )
+            processor.health_event_occurred(health_details, [0])
+
+            assert len(published_events) == 3
+            assert all(event.isHealthy for event in published_events)
+            assert {
+                (
+                    event.componentClass,
+                    event.entitiesImpacted[0].entityType,
+                    event.entitiesImpacted[0].entityValue,
+                )
+                for event in published_events
+            } == {
+                ("GPU", "GPU", "0"),
+                ("NVSWITCH", "NVSWITCH", "0"),
+                ("NVSWITCH", "NVSWITCH", "10"),
+            }
+        finally:
+            os.unlink(temp_file_path)
 
     def test_health_event_occurred(self):
         healthEventProcessor = PlatformConnectorServicer()
