@@ -506,7 +506,7 @@ class TestDCGMHealthChecks:
         assert response == expected_response
         assert connectivity_success == True
 
-    def test_perform_health_check_keeps_gpu_and_switch_with_same_id_separate(self):
+    def test_perform_health_check_keeps_gpu_and_switch_with_same_id_separate(self) -> None:
         watcher = dcgm.DCGMWatcher(
             addr="localhost:5555",
             poll_interval_seconds=10,

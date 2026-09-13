@@ -81,7 +81,7 @@ class PlatformConnectorServicer(platformconnector_pb2_grpc.PlatformConnectorServ
 
 class TestPlatformConnectors(unittest.TestCase):
 
-    def test_health_event_preserves_nvswitch_identity_and_recovery(self):
+    def test_health_event_preserves_nvswitch_identity_and_recovery(self) -> None:
         temp_file_path = metadata_file()
         processor = platform_connector.PlatformConnectorEventProcessor(
             socket_path,
@@ -97,7 +97,10 @@ class TestPlatformConnectors(unittest.TestCase):
         )
         published_events = []
 
-        def capture_events(events, delivery_timeout_seconds=None):
+        def capture_events(
+            events: list[platformconnector_pb2.HealthEvent],
+            delivery_timeout_seconds: float | None = None,
+        ) -> bool:
             published_events.extend(events)
             return True
 
