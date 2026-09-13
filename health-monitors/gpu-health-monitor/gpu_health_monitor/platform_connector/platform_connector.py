@@ -32,6 +32,8 @@ from . import metrics
 from time import monotonic, sleep
 import re
 
+import dcgm_fields
+
 MAX_RETRIES = 10
 INITIAL_DELAY = 5
 GRPC_CALL_TIMEOUT_SECONDS = 5.0
@@ -367,7 +369,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             health_events = []
             # Collect pending cache and metric updates to apply only after successful send
             pending_cache_updates: dict[str, EntityCacheEntry] = {}
-            pending_metric_updates: list[tuple[str, str, int]] = []  # (event_type, entity_id, value)
+            pending_metric_updates: list[tuple[str, int, int]] = []  # (event_type, gpu_id, value)
 
             for watch_name, details in health_details.items():
                 check_name = self._convert_dcgm_watch_name_to_check_name(watch_name)
@@ -461,7 +463,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                     processingStrategy=effective_strategy,
                                 )
                             )
-                            pending_metric_updates.append((check_name, str(gpu_id), 1))
+                            pending_metric_updates.append((check_name, gpu_id, 1))
                     else:
 
                         entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
@@ -511,12 +513,12 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                 )
                             )
                             if had_errors:
-                                pending_metric_updates.append((check_name, str(gpu_id), 0))
+                                pending_metric_updates.append((check_name, gpu_id, 0))
 
                 switch_failures = {
                     entity_key[1]: failure
                     for entity_key, failure in details.entity_failures.items()
-                    if isinstance(entity_key, tuple)
+                    if isinstance(entity_key, tuple) and entity_key[0] == dcgm_fields.DCGM_FE_SWITCH
                 }
                 switch_cache_prefix = f"{check_name}|NVSWITCH|"
                 active_switches = {
@@ -537,7 +539,8 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                         generatedTimestamp=timestamp,
                         entitiesImpacted=[entity],
                         nodeName=self._node_name,
-                        processingStrategy=effective_strategy,
+                        # NVSwitch remediation is deferred until downstream handling is safe.
+                        processingStrategy=platformconnector_pb2.STORE_ONLY,
                     )
 
                     if failure_details is not None:
@@ -553,17 +556,14 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                         event.errorCode.append(failure_details.code)
                         event.message = failure_details.message
                         event.recommendedAction = recommended_action
-                        metric_value = 1
                     elif entry is not None and not entry.is_healthy:
                         pending_cache_updates[key] = EntityCacheEntry()
                         event.isHealthy = True
                         event.message = f"NVSWITCH {self._get_dcgm_watch(watch_name)} watch reported no errors"
-                        metric_value = 0
                     else:
                         continue
 
                     health_events.append(event)
-                    pending_metric_updates.append((check_name, f"NVSWITCH:{switch_id}", metric_value))
             log.debug(f"dcgm health event is {health_events}")
             if len(health_events):
                 try:
@@ -574,11 +574,8 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             log.info(
                                 f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send"
                             )
-                        for event_type, entity_id, value in pending_metric_updates:
-                            metrics.dcgm_health_active_events.labels(
-                                event_type=event_type,
-                                gpu_id=entity_id,
-                            ).set(value)
+                        for event_type, gpu_id, value in pending_metric_updates:
+                            metrics.dcgm_health_active_events.labels(event_type=event_type, gpu_id=gpu_id).set(value)
                 except Exception as e:
                     log.error(f"Exception while sending health events: {e}")
 

@@ -532,10 +532,8 @@ class TestDCGMHealthChecks:
         failures = response["DCGM_HEALTH_WATCH_PCIE"].entity_failures
         assert connectivity_success is True
         assert len(failures) == 2
-        assert {failure.message for failure in failures.values()} == {
-            "GPU 0 PCIe failure",
-            "NVSwitch 0 PCIe failure",
-        }
+        assert failures[0].message == "GPU 0 PCIe failure"
+        assert failures[(dcgm_fields.DCGM_FE_SWITCH, 0)].message == "NVSwitch 0 PCIe failure"
 
     def _get_power_throttle_incident(self, group_id, entity_id):
         """Helper to create a DCGM_FR_CLOCK_THROTTLE_POWER incident for testing."""

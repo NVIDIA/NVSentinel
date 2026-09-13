@@ -34,8 +34,8 @@ EntityKey = int | tuple[int, int]
 @dataclasses.dataclass
 class HealthDetails:
     status: HealthStatus
-    # GPU failures retain their integer key for compatibility. Other DCGM
-    # entities use (entityGroupId, entityId) because IDs are group-local.
+    # GPU failures retain their integer key for compatibility. NVSwitch
+    # failures use (entityGroupId, entityId) because IDs are group-local.
     entity_failures: dict[EntityKey, ErrorDetails]
 
 

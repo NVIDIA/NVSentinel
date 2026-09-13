@@ -93,7 +93,7 @@ class TestPlatformConnectors(unittest.TestCase):
             },
             "statefile",
             temp_file_path,
-            platformconnector_pb2.STORE_ONLY,
+            platformconnector_pb2.EXECUTE_REMEDIATION,
         )
         published_events = []
 
@@ -113,9 +113,9 @@ class TestPlatformConnectors(unittest.TestCase):
                             code="SWITCH_ERROR",
                             message="NVSwitch 0 failed",
                         ),
-                        (dcgm_fields.DCGM_FE_SWITCH, 10): dcgmtypes.ErrorDetails(
+                        (999, 20): dcgmtypes.ErrorDetails(
                             code="SWITCH_ERROR",
-                            message="NVSwitch 10 failed",
+                            message="Unsupported entity failed",
                         ),
                     },
                 )
@@ -124,7 +124,7 @@ class TestPlatformConnectors(unittest.TestCase):
             processor.health_event_occurred(health_details, [0])
 
             unhealthy_events = [event for event in published_events if not event.isHealthy]
-            assert len(unhealthy_events) == 3
+            assert len(unhealthy_events) == 2
             assert {
                 (
                     event.componentClass,
@@ -135,8 +135,11 @@ class TestPlatformConnectors(unittest.TestCase):
             } == {
                 ("GPU", "GPU", "0"),
                 ("NVSWITCH", "NVSWITCH", "0"),
-                ("NVSWITCH", "NVSWITCH", "10"),
             }
+            gpu_event = next(event for event in unhealthy_events if event.componentClass == "GPU")
+            switch_events = [event for event in unhealthy_events if event.componentClass == "NVSWITCH"]
+            assert gpu_event.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+            assert all(event.processingStrategy == platformconnector_pb2.STORE_ONLY for event in switch_events)
 
             published_events.clear()
             processor.health_event_occurred(health_details, [0])
@@ -148,7 +151,7 @@ class TestPlatformConnectors(unittest.TestCase):
             )
             processor.health_event_occurred(health_details, [0])
 
-            assert len(published_events) == 3
+            assert len(published_events) == 2
             assert all(event.isHealthy for event in published_events)
             assert {
                 (
@@ -160,8 +163,11 @@ class TestPlatformConnectors(unittest.TestCase):
             } == {
                 ("GPU", "GPU", "0"),
                 ("NVSWITCH", "NVSWITCH", "0"),
-                ("NVSWITCH", "NVSWITCH", "10"),
             }
+            gpu_event = next(event for event in published_events if event.componentClass == "GPU")
+            switch_events = [event for event in published_events if event.componentClass == "NVSWITCH"]
+            assert gpu_event.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+            assert all(event.processingStrategy == platformconnector_pb2.STORE_ONLY for event in switch_events)
         finally:
             os.unlink(temp_file_path)
 
