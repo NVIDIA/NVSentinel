@@ -300,6 +300,13 @@ mongodb:
 # =============================================================================
 # Percona MongoDB Operator Configuration (used when usePerconaOperator=true)
 # =============================================================================
+
+# Intended operator version, which is also crVersion and the init image tag.
+# Set this alone; the render refuses any disagreement. Empty keeps the subchart
+# defaults. Does not cover mongod: different version line, and the certified
+# pairing is only published at check.percona.com.
+psmdbVersion: ""
+
 psmdb-operator:
   nodeSelector: {}
   tolerations: []
