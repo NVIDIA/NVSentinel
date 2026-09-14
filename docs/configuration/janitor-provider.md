@@ -160,6 +160,8 @@ Client ID of the Managed Identity used for Workload Identity authentication. The
 
 Uses OCI Workload Identity or a credentials file for authentication.
 
+OCI maps all `RebootNode` resources to the `RESET` action. `RESET` powers off the instance immediately without waiting for the operating system. Drain workloads before you create the resource because an immediate power-off can cause data corruption.
+
 ```yaml
 janitor-provider:
   csp:

@@ -1,0 +1,160 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Webhooks are selected by name rather than by array index. An index would
+# silently start asserting against a different entry the moment another
+# webhook is added ahead of it, and a filter that matches nothing fails with
+# "unknown path" rather than passing vacuously.
+suite: maintenancerequest webhook registration
+templates:
+  - templates/webhook.yaml
+release:
+  namespace: nvsentinel
+tests:
+  # controller-runtime derives the served path from the GVK as
+  # "/mutate-" + group with dots replaced by dashes + "-" + version + "-" +
+  # lowercased kind (pkg/builder/webhook.go). With the MR group
+  # nvsentinel.dgxc.nvidia.com, version v1 and kind MaintenanceRequest, that is
+  # the path below. A chart that names any other path is accepted by the API
+  # server and simply never reaches the webhook.
+  - it: registers the mutating webhook that defaults health event fields
+    documentSelector:
+      path: kind
+      value: MutatingWebhookConfiguration
+    asserts:
+      - equal:
+          path: 'webhooks[?(@.name=="mmaintenancerequest-v1.kb.io")].clientConfig.service.path'
+          value: /mutate-nvsentinel-dgxc-nvidia-com-v1-maintenancerequest
+
+  - it: registers the validating webhook for MaintenanceRequest
+    documentSelector:
+      path: kind
+      value: ValidatingWebhookConfiguration
+    asserts:
+      - equal:
+          path: 'webhooks[?(@.name=="vmaintenancerequest-v1.kb.io")].clientConfig.service.path'
+          value: /validate-nvsentinel-dgxc-nvidia-com-v1-maintenancerequest
+
+  # The pre-existing ValidationRequest webhook is served by the same binary and
+  # must keep its own path. It is the working reference for the rule above, so a
+  # change here means the derivation itself was misunderstood.
+  - it: leaves the ValidationRequest webhook path untouched
+    documentSelector:
+      path: kind
+      value: ValidatingWebhookConfiguration
+    asserts:
+      - equal:
+          path: 'webhooks[?(@.name=="vvalidationrequest-v1alpha1.kb.io")].clientConfig.service.path'
+          value: /validate-nvsentinel-nvidia-com-v1alpha1-validationrequest
+
+  # ValidateDelete is an unconditional no-op that only exists to satisfy the
+  # CustomValidator interface. Registering DELETE against failurePolicy: Fail
+  # would block MaintenanceRequest cleanup whenever the webhook is unreachable,
+  # in exchange for no validation at all. The clear-on-delete behaviour comes
+  # from the reconciler's finalizer, not from admission.
+  - it: does not intercept deletes
+    documentSelector:
+      path: kind
+      value: ValidatingWebhookConfiguration
+    asserts:
+      - equal:
+          path: 'webhooks[?(@.name=="vmaintenancerequest-v1.kb.io")].rules[0].operations'
+          value:
+            - CREATE
+            - UPDATE
+
+  # The MR API group is nvsentinel.dgxc.nvidia.com/v1, not the v1alpha1 that
+  # the rest of this chart uses. A rule naming the wrong group or version is
+  # accepted by the API server and simply never matches, so the webhook goes
+  # silently dead rather than failing loudly.
+  - it: scopes the mutating rule to the MaintenanceRequest group and version
+    documentSelector:
+      path: kind
+      value: MutatingWebhookConfiguration
+    asserts:
+      - equal:
+          path: 'webhooks[?(@.name=="mmaintenancerequest-v1.kb.io")].rules[0].apiGroups'
+          value:
+            - nvsentinel.dgxc.nvidia.com
+      - equal:
+          path: 'webhooks[?(@.name=="mmaintenancerequest-v1.kb.io")].rules[0].apiVersions'
+          value:
+            - v1
+      - equal:
+          path: 'webhooks[?(@.name=="mmaintenancerequest-v1.kb.io")].rules[0].resources'
+          value:
+            - maintenancerequests
+
+  # MaintenanceRequest is cluster-scoped. A namespaced rule never matches it.
+  - it: scopes both webhooks to cluster-scoped resources
+    asserts:
+      - equal:
+          path: 'webhooks[?(@.name=="mmaintenancerequest-v1.kb.io")].rules[0].scope'
+          value: Cluster
+        documentSelector:
+          path: kind
+          value: MutatingWebhookConfiguration
+      - equal:
+          path: 'webhooks[?(@.name=="vmaintenancerequest-v1.kb.io")].rules[0].scope'
+          value: Cluster
+        documentSelector:
+          path: kind
+          value: ValidatingWebhookConfiguration
+
+  # Defaults are applied once, at creation, and the validating webhook then
+  # freezes them. Adding UPDATE here would let the defaulter rewrite fields
+  # the validator rejects changes to, deadlocking every update.
+  - it: applies the mutating webhook on create only
+    documentSelector:
+      path: kind
+      value: MutatingWebhookConfiguration
+    asserts:
+      - equal:
+          path: 'webhooks[?(@.name=="mmaintenancerequest-v1.kb.io")].rules[0].operations'
+          value:
+            - CREATE
+
+  # Because the validator freezes the defaulted fields, a request admitted
+  # while the defaulter is unreachable is permanently missing its event ID.
+  # Ignore would make that silent, so this endpoint has to fail closed.
+  - it: fails closed when the defaulter is unreachable
+    documentSelector:
+      path: kind
+      value: MutatingWebhookConfiguration
+    asserts:
+      - equal:
+          path: 'webhooks[?(@.name=="mmaintenancerequest-v1.kb.io")].failurePolicy'
+          value: Fail
+
+  - it: injects the cert-manager CA bundle by default
+    documentSelector:
+      path: kind
+      value: MutatingWebhookConfiguration
+    asserts:
+      - equal:
+          path: metadata.annotations["cert-manager.io/inject-ca-from"]
+          value: nvsentinel/lifecycle-manager-webhook-cert
+
+  - it: injects the OpenShift CA bundle when the service CA is the provider
+    set:
+      webhook.certProvider: openshift-service-ca
+    documentSelector:
+      path: kind
+      value: MutatingWebhookConfiguration
+    asserts:
+      - equal:
+          path: metadata.annotations["service.beta.openshift.io/inject-cabundle"]
+          value: "true"
+      - notExists:
+          path: metadata.annotations["cert-manager.io/inject-ca-from"]
