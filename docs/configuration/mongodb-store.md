@@ -77,7 +77,9 @@ Three values carry the Percona **operator** version and must agree, because the 
 | `psmdb-db.crVersion` | the schema version of the `PerconaServerMongoDB` resource |
 | `psmdb-db.initImage.tag` | the init container, which is the operator image |
 
-Set **`mongodb-store.psmdbVersion`** to declare the intended version once and leave those three at the chart default. The render refuses any disagreement rather than deploying a combination that cannot work. Leaving `psmdbVersion` empty keeps the subchart defaults.
+Set **`mongodb-store.psmdbVersion`** to the version you intend to run. **It asserts rather than sets:** Helm resolves subchart values before any template runs, so a parent chart cannot write into them. Set the three values as usual and set `psmdbVersion` to match; the render then fails if any of them disagrees.
+
+That is what makes it useful. The mistake an operator carrying pins actually makes is a partial edit, raising the operator tag and init image but forgetting `crVersion`, and this refuses that instead of deploying it. Leaving `psmdbVersion` empty disables the assertion; the consistency checks below still run.
 
 The **mongod** version (`psmdb-db.image.tag`) is separate. It is a different product on its own version line, and which mongod a given operator certifies is published at `https://check.percona.com/versions/v1/psmdb-operator/<version>`, which the chart cannot consult while rendering. Check that matrix yourself before changing it; a pairing outside it renders and runs without complaint.
 

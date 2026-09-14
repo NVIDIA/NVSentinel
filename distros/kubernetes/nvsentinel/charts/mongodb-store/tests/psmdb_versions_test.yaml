@@ -126,3 +126,15 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "init container runs the operator image"
+
+  # psmdbVersion asserts, it does not set: Helm resolves subchart values before
+  # templates run, so setting it alone cannot change what the child charts
+  # render and must therefore be refused rather than silently ignored.
+  - it: refuses psmdbVersion set on its own, because it cannot propagate
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+      psmdbVersion: "1.21.0"
+    asserts:
+      - failedTemplate:
+          errorPattern: "psmdbVersion is 1.21.0 but psmdb-operator.image.tag is 1.23.0"
