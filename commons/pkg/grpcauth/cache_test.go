@@ -160,7 +160,7 @@ func TestVerdictCache_EvictsLeastRecentlyUsedWhenFull(t *testing.T) {
 	// The cache is bounded so that a caller replaying distinct tokens cannot
 	// grow it without limit. Past the bound the least recently used entry is
 	// dropped; dropping a verdict only costs a TokenReview, never correctness.
-	c, err := newVerdictCache()
+	c, err := newVerdictCache(cacheMaxEntries)
 	require.NoError(t, err)
 
 	now := time.Now()
