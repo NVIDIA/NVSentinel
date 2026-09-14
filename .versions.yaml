@@ -38,6 +38,15 @@ languages:
 build_tools:
   poetry: '2.3.3'
   poetry_plugin_export: '1.10.0'
+  native_sbom_syft: 'v1.51.1'
+
+# Private runtime for the native GPU monitor release (not the host Python).
+# Pin both the upstream asset URL and its published digest. Qualify each update.
+native_gpu_monitor:
+  python_version: '3.13.15'
+  linux_amd64:
+    url: 'https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.13.15%2B20260901-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz'
+    sha256: '8a689a077337bea6d1c4bc0b7df1d52fcaa28f5f67e50df8bf417c1e3f9d8874'
 
 # Go Development Tools
 go_tools:
@@ -74,6 +83,8 @@ container_tools:
 testing_tools:
   kind: '0.30.0'
   helm: 'v3.19.2'
+  # Official Helm archive digest. Update together with the Helm version.
+  helm_linux_amd64_sha256: '2114c9dea2844dce6d0ee2d792a9aae846be8cf53d5b19dc2988b5a0e8fec26e'
   helm_unittest: 'v1.0.3'
   kwok: 'v0.8.0'
   kwok_chart: '0.3.0'  # KWOK Helm chart version (different from app version); tilt/Tiltfile pins this

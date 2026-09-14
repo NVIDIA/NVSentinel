@@ -1,0 +1,43 @@
+# NVSentinel native-package format 1
+[Unit]
+Description=NVSentinel native GPU health monitor
+Documentation=https://github.com/NVIDIA/NVSentinel
+After=network-online.target nvidia-dcgm.service nvsentinel-platform-connectors.service
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=notify
+NotifyAccess=main
+EnvironmentFile=/etc/nvsentinel/gpu-health-monitor/environment
+EnvironmentFile=/etc/nvsentinel/gpu-health-monitor/node.env
+ExecStart=/opt/nvsentinel/gpu-health-monitor/current/bin/gpu_health_monitor \
+    --config-file /etc/nvsentinel/gpu-health-monitor/config.ini \
+    --dcgm-error-mapping-config-file /opt/nvsentinel/gpu-health-monitor/current/etc/dcgmerrorsmapping.csv \
+    --dcgm-mode remote \
+    --dcgm-addr ${DCGM_ADDR} \
+    --dcgm-k8s-service-enabled false \
+    --port ${GPU_HEALTH_MONITOR_PORT} \
+    --state-file /var/lib/nvsentinel/gpu-health-monitor/statefile \
+    --metadata-path ${GPU_HEALTH_MONITOR_METADATA} \
+    --processing-strategy ${GPU_HEALTH_MONITOR_PROCESSING_STRATEGY} \
+    --suppress-nvlink-down-unbridged-pcie ${GPU_HEALTH_MONITOR_SUPPRESS_UNBRIDGED_NVLINK}
+WatchdogSec=60
+TimeoutStartSec=90
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+StateDirectory=nvsentinel/gpu-health-monitor
+StateDirectoryMode=0750
+UMask=0027
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target
