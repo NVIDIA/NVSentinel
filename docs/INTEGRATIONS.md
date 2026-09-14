@@ -771,6 +771,8 @@ NVSentinel maps DCGM error codes to recommended actions using a canonical CSV fi
 |-------------------------------------|--------------------|------------------------|
 | `DCGM_FR_FAULTY_MEMORY`             | `CONTACT_SUPPORT`  | `GpuMemoryError`       |
 | `DCGM_FR_VOLATILE_DBE_DETECTED`     | `COMPONENT_RESET`  | `GpuMemoryError`       |
+| `DCGM_FR_PENDING_PAGE_RETIREMENTS`  | `COMPONENT_RESET`  | `GpuMemoryError`       |
+| `DCGM_FR_UNCORRECTABLE_ROW_REMAP`   | `COMPONENT_RESET`  | `GpuMemoryError`       |
 | `DCGM_FR_NVLINK_DOWN`               | `RESTART_VM`       | `NVLinkDown`           |
 | `DCGM_FR_NVSWITCH_FATAL_ERROR`      | `CONTACT_SUPPORT`  | `NVSwitchFatalError`   |
 | `DCGM_FR_CLOCK_THROTTLE_THERMAL`    | `NONE`             | `GpuThermalWatch`      |
