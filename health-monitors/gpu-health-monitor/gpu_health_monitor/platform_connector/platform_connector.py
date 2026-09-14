@@ -392,83 +392,87 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 log.debug(f"length of entity_failures are {len(details.entity_failures)}")
                 for gpu_id in gpu_ids:
                     if details.entity_failures.get(gpu_id):
-                        failure_details = details.entity_failures.get(gpu_id)
-                        message = failure_details.message
-                        error_code = [f"{failure_details.code}"]
-                        entities_impacted = []
-                        entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
-                        entities_impacted.append(entity)
-
-                        pci_address = self._metadata_reader.get_pci_address(gpu_id)
-                        if pci_address:
-                            entities_impacted.append(
-                                platformconnector_pb2.Entity(entityType="PCI", entityValue=pci_address)
+                        for failure_details in details.entity_failures[gpu_id]:
+                            message = failure_details.message
+                            error_code = [f"{failure_details.code}"]
+                            entities_impacted = []
+                            entity = platformconnector_pb2.Entity(
+                                entityType=self._component_class, entityValue=str(gpu_id)
                             )
+                            entities_impacted.append(entity)
 
-                        gpu_uuid = self._metadata_reader.get_gpu_uuid(gpu_id)
-                        if gpu_uuid:
-                            entities_impacted.append(
-                                platformconnector_pb2.Entity(entityType="GPU_UUID", entityValue=gpu_uuid)
-                            )
-
-                        entities_impacted_supports_component_reset = pci_address and gpu_uuid
-
-                        recommended_action = self.get_recommended_action_from_dcgm_error_map(failure_details.code)
-                        isHealthy = False
-                        isFatal = recommended_action != platformconnector_pb2.NONE
-                        key = self._build_cache_key(check_name, entity.entityType, entity.entityValue)
-
-                        entry = self.entity_cache.get(key)
-                        if entry is None or failure_details.code not in entry.active_errors:
-                            existing_errors = set(entry.active_errors) if entry else set()
-                            existing_errors.add(failure_details.code)
-                            pending_cache_updates[key] = EntityCacheEntry(active_errors=existing_errors)
-
-                            # The COMPONENT_RESET recommended action requires that the GPU_UUID is present on the
-                            # unhealthy HealthEvent. Sending an event with COMPONENT_RESET that is missing the GPU_UUID
-                            # impacted entity will result in a failed partial drain in node-drainer (as well as a
-                            # failed remediation in fault-remediation). As a result, we are checking that the GPU_UUID
-                            # can be read from the MetadataReader and are falling back to the RESTART_VM action if it
-                            # is not present on the event.
-
-                            # Note that entity-specific HealthEvents require an exact match for the set of impacted
-                            # entities between the initial unhealthy event and the eventual healthy event which clears
-                            # it in fault-quarantine. To ensure that there's a consistent view of impacted
-                            # entities between healthy and unhealthy events, we will only send unhealthy HealthEvents
-                            # for COMPONENT_RESET which include the GPU index, PCI, and GPU_UUID (and the corresponding
-                            # HealthyEvent will include all of these as long as there's no failure extracting the PCI
-                            # or GPU_UUID from the MetadataReader).
-                            if (
-                                recommended_action == platformconnector_pb2.COMPONENT_RESET
-                                and not entities_impacted_supports_component_reset
-                            ):
-                                log.info(f"Overriding action from COMPONENT_RESET to RESTART_VM for {self._node_name}")
-                                recommended_action = platformconnector_pb2.RESTART_VM
-
-                            event_metadata = {}
-                            chassis_serial = self._metadata_reader.get_chassis_serial()
-                            if chassis_serial:
-                                event_metadata["chassis_serial"] = chassis_serial
-
-                            health_events.append(
-                                platformconnector_pb2.HealthEvent(
-                                    version=self._version,
-                                    agent=self._agent,
-                                    componentClass=self._component_class,
-                                    checkName=check_name,
-                                    generatedTimestamp=timestamp,
-                                    isFatal=isFatal,
-                                    isHealthy=isHealthy,
-                                    errorCode=error_code,
-                                    entitiesImpacted=entities_impacted,
-                                    message=message,
-                                    recommendedAction=recommended_action,
-                                    nodeName=self._node_name,
-                                    metadata=event_metadata,
-                                    processingStrategy=effective_strategy,
+                            pci_address = self._metadata_reader.get_pci_address(gpu_id)
+                            if pci_address:
+                                entities_impacted.append(
+                                    platformconnector_pb2.Entity(entityType="PCI", entityValue=pci_address)
                                 )
-                            )
-                            pending_metric_updates.append((check_name, gpu_id, 1))
+
+                            gpu_uuid = self._metadata_reader.get_gpu_uuid(gpu_id)
+                            if gpu_uuid:
+                                entities_impacted.append(
+                                    platformconnector_pb2.Entity(entityType="GPU_UUID", entityValue=gpu_uuid)
+                                )
+
+                            entities_impacted_supports_component_reset = pci_address and gpu_uuid
+
+                            recommended_action = self.get_recommended_action_from_dcgm_error_map(failure_details.code)
+                            isHealthy = False
+                            isFatal = recommended_action != platformconnector_pb2.NONE
+                            key = self._build_cache_key(check_name, entity.entityType, entity.entityValue)
+
+                            entry = pending_cache_updates.get(key, self.entity_cache.get(key))
+                            if entry is None or failure_details.code not in entry.active_errors:
+                                existing_errors = set(entry.active_errors) if entry else set()
+                                existing_errors.add(failure_details.code)
+                                pending_cache_updates[key] = EntityCacheEntry(active_errors=existing_errors)
+
+                                # The COMPONENT_RESET recommended action requires that the GPU_UUID is present on the
+                                # unhealthy HealthEvent. Sending an event with COMPONENT_RESET that is missing the GPU_UUID
+                                # impacted entity will result in a failed partial drain in node-drainer (as well as a
+                                # failed remediation in fault-remediation). As a result, we are checking that the GPU_UUID
+                                # can be read from the MetadataReader and are falling back to the RESTART_VM action if it
+                                # is not present on the event.
+
+                                # Note that entity-specific HealthEvents require an exact match for the set of impacted
+                                # entities between the initial unhealthy event and the eventual healthy event which clears
+                                # it in fault-quarantine. To ensure that there's a consistent view of impacted
+                                # entities between healthy and unhealthy events, we will only send unhealthy HealthEvents
+                                # for COMPONENT_RESET which include the GPU index, PCI, and GPU_UUID (and the corresponding
+                                # HealthyEvent will include all of these as long as there's no failure extracting the PCI
+                                # or GPU_UUID from the MetadataReader).
+                                if (
+                                    recommended_action == platformconnector_pb2.COMPONENT_RESET
+                                    and not entities_impacted_supports_component_reset
+                                ):
+                                    log.info(
+                                        f"Overriding action from COMPONENT_RESET to RESTART_VM for {self._node_name}"
+                                    )
+                                    recommended_action = platformconnector_pb2.RESTART_VM
+
+                                event_metadata = {}
+                                chassis_serial = self._metadata_reader.get_chassis_serial()
+                                if chassis_serial:
+                                    event_metadata["chassis_serial"] = chassis_serial
+
+                                health_events.append(
+                                    platformconnector_pb2.HealthEvent(
+                                        version=self._version,
+                                        agent=self._agent,
+                                        componentClass=self._component_class,
+                                        checkName=check_name,
+                                        generatedTimestamp=timestamp,
+                                        isFatal=isFatal,
+                                        isHealthy=isHealthy,
+                                        errorCode=error_code,
+                                        entitiesImpacted=entities_impacted,
+                                        message=message,
+                                        recommendedAction=recommended_action,
+                                        nodeName=self._node_name,
+                                        metadata=event_metadata,
+                                        processingStrategy=effective_strategy,
+                                    )
+                                )
+                                pending_metric_updates.append((check_name, gpu_id, 1))
                     else:
 
                         entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
@@ -532,43 +536,58 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     if key.startswith(switch_cache_prefix) and not entry.is_healthy
                 }
                 for switch_id in sorted(set(switch_ids or []) | set(switch_failures) | active_switches):
-                    failure_details = switch_failures.get(switch_id)
                     entity = platformconnector_pb2.Entity(entityType="NVSWITCH", entityValue=str(switch_id))
                     key = self._build_cache_key(check_name, entity.entityType, entity.entityValue)
-                    entry = self.entity_cache.get(key)
-                    event = platformconnector_pb2.HealthEvent(
-                        version=self._version,
-                        agent=self._agent,
-                        componentClass="NVSWITCH",
-                        checkName=check_name,
-                        generatedTimestamp=timestamp,
-                        entitiesImpacted=[entity],
-                        nodeName=self._node_name,
-                        # NVSwitch remediation is deferred until downstream handling is safe.
-                        processingStrategy=platformconnector_pb2.STORE_ONLY,
-                    )
 
-                    if failure_details is not None:
-                        if entry is not None and failure_details.code in entry.active_errors:
-                            continue
+                    if switch_id in switch_failures:
+                        for failure_details in switch_failures[switch_id]:
+                            entry = pending_cache_updates.get(key, self.entity_cache.get(key))
+                            if entry is not None and failure_details.code in entry.active_errors:
+                                continue
 
-                        existing_errors = set(entry.active_errors) if entry else set()
-                        existing_errors.add(failure_details.code)
-                        pending_cache_updates[key] = EntityCacheEntry(active_errors=existing_errors)
-                        recommended_action = self.get_recommended_action_from_dcgm_error_map(failure_details.code)
+                            existing_errors = set(entry.active_errors) if entry else set()
+                            existing_errors.add(failure_details.code)
+                            pending_cache_updates[key] = EntityCacheEntry(active_errors=existing_errors)
+                            recommended_action = self.get_recommended_action_from_dcgm_error_map(failure_details.code)
+                            health_events.append(
+                                platformconnector_pb2.HealthEvent(
+                                    version=self._version,
+                                    agent=self._agent,
+                                    componentClass="NVSWITCH",
+                                    checkName=check_name,
+                                    generatedTimestamp=timestamp,
+                                    isFatal=recommended_action != platformconnector_pb2.NONE,
+                                    errorCode=[failure_details.code],
+                                    entitiesImpacted=[entity],
+                                    message=failure_details.message,
+                                    recommendedAction=recommended_action,
+                                    nodeName=self._node_name,
+                                    # NVSwitch remediation is deferred until downstream handling is safe.
+                                    processingStrategy=platformconnector_pb2.STORE_ONLY,
+                                )
+                            )
 
-                        event.isFatal = recommended_action != platformconnector_pb2.NONE
-                        event.errorCode.append(failure_details.code)
-                        event.message = failure_details.message
-                        event.recommendedAction = recommended_action
-                    elif entry is None or not entry.is_healthy:
-                        pending_cache_updates[key] = EntityCacheEntry()
-                        event.isHealthy = True
-                        event.message = f"NVSWITCH {self._get_dcgm_watch(watch_name)} watch reported no errors"
-                    else:
                         continue
 
-                    health_events.append(event)
+                    entry = self.entity_cache.get(key)
+                    if entry is not None and entry.is_healthy:
+                        continue
+
+                    pending_cache_updates[key] = EntityCacheEntry()
+                    health_events.append(
+                        platformconnector_pb2.HealthEvent(
+                            version=self._version,
+                            agent=self._agent,
+                            componentClass="NVSWITCH",
+                            checkName=check_name,
+                            generatedTimestamp=timestamp,
+                            isHealthy=True,
+                            entitiesImpacted=[entity],
+                            message=f"NVSWITCH {self._get_dcgm_watch(watch_name)} watch reported no errors",
+                            nodeName=self._node_name,
+                            processingStrategy=platformconnector_pb2.STORE_ONLY,
+                        )
+                    )
             log.debug(f"dcgm health event is {health_events}")
             if len(health_events):
                 try:

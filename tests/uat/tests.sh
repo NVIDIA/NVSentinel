@@ -639,39 +639,6 @@ test_gpu_monitoring_dcgm() {
 
     discover_dcgm_target "$gpu_node"
 
-    # Any non-zero pending page retirement count fails the MEM watch with
-    # DCGM_FR_PENDING_PAGE_RETIREMENTS, which maps to NONE. The power watch is
-    # not used for this: its throttling codes are suppressed by default.
-    kubectl exec -n "$GPU_HM_NS" "$GPU_HM_POD" -- dcgmi test --host "$DCGM_HOST" --inject --gpuid 0 -f 392 -v 1
-
-    log "Waiting for node events to appear..."
-    local max_wait=${UAT_EVENT_TIMEOUT:-30}
-    local waited=0
-    while [[ $waited -lt $max_wait ]]; do
-        nonfatal_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "GpuMemWatchIsNotHealthy") | .reason')
-        if [[ -n "$nonfatal_event" ]]; then
-            log "Found non-fatal memory event"
-            break
-        fi
-        sleep 2
-        waited=$((waited + 2))
-    done
-
-    log "Verifying node events are populated (non-fatal errors appear here)"
-    kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason | contains("IsNotHealthy")) | "\(.reason) Message=\(.message)"' | head -5
-
-    nonfatal_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "GpuMemWatchIsNotHealthy") | .reason')
-    if [[ -z "$nonfatal_event" ]]; then
-        error "GpuMemWatch event not found (non-fatal errors should create events)"
-    fi
-    log "Node event verified: pending page retirements are non-fatal, appear in events ✓"
-
-    # Clear it before injecting the fatal error. The monitor keeps one error
-    # code per watch and GPU, set by the first incident it sees, so leaving a
-    # non-fatal MEM incident live could mask the fatal one below on the DCGM
-    # versions that also report XID 95 under GpuMemWatch.
-    kubectl exec -n "$GPU_HM_NS" "$GPU_HM_POD" -- dcgmi test --host "$DCGM_HOST" --inject --gpuid 0 -f 392 -v 0
-
     # XID 95 results in DCGM_FR_UNCONTAINED_ERROR which requires a RESTART_VM action.
     # DCGM 4.2.x maps this to DCGM_HEALTH_WATCH_MEM (GpuMemWatch).
     # DCGM 4.4.x+ reclassified it as a "devastating" XID under DCGM_HEALTH_WATCH_ALL (GpuAllWatch).
@@ -703,7 +670,7 @@ skip_syslog_tests_in_dry_run() {
 
 test_xid_monitoring_syslog() {
     log "======================================================"
-    log "Test 2: XID monitoring via syslog triggers RESTART_VM"
+    log "Test 2: XID monitoring via syslog"
     log "======================================================"
 
     skip_syslog_tests_in_dry_run && return 0
@@ -724,6 +691,34 @@ test_xid_monitoring_syslog() {
     log "Original boot ID: $original_boot_id"
 
     create_node_debug_pod "$gpu_node"
+
+    # A fault whose recommended action is NONE creates a node event and no node
+    # condition, so it quarantines nothing. The XID catalog resolves XID 13
+    # (Graphics Exception) to NONE: it is an application fault, not a broken GPU.
+    log "  - XID 13 (non-fatal): Graphics Exception"
+    kubectl exec -n "$NODE_NS" "$NODE_POD" -- sh -c 'echo "<3>[6085126.134786] NVRM: Xid (PCI:000b:00:00): 13, Graphics Exception: ESR 0x57a730=0x1b000b 0x57a734=0x20 0x57a728=0x1f81fb60 0x57a72c=0x1174" > /dev/kmsg'
+
+    local max_wait=${UAT_EVENT_TIMEOUT:-30}
+    local waited=0
+    local nonfatal_event
+    while [[ $waited -lt $max_wait ]]; do
+        nonfatal_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "SysLogsXIDErrorIsNotHealthy") | .reason')
+        if [[ -n "$nonfatal_event" ]]; then
+            log "Found non-fatal XID event"
+            break
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+
+    log "Verifying node events are populated (non-fatal errors appear here)"
+    kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason | contains("IsNotHealthy")) | "\(.reason) Message=\(.message)"' | head -5
+
+    nonfatal_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "SysLogsXIDErrorIsNotHealthy") | .reason')
+    if [[ -z "$nonfatal_event" ]]; then
+        error "SysLogsXIDError event not found (non-fatal errors should create events)"
+    fi
+    log "Node event verified: XID 13 is non-fatal, appears in events ✓"
 
     log "Injecting XID 79 via /dev/kmsg on pod: $NODE_NS/$NODE_POD"
     kubectl exec -n "$NODE_NS" "$NODE_POD" -- sh -c 'echo "<3>[6085126.134786] NVRM: Xid (PCI:0002:00:00): 79, pid=1582259, name=nvc:[driver], GPU has fallen off the bus." > /dev/kmsg'

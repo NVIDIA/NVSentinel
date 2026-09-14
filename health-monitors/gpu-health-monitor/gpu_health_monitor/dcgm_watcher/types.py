@@ -36,7 +36,7 @@ EntityKey = int | tuple[int, int]
 @dataclasses.dataclass
 class HealthDetails:
     status: HealthStatus
-    entity_failures: dict[EntityKey, ErrorDetails]
+    entity_failures: dict[EntityKey, list[ErrorDetails]]
 
 
 @dataclasses.dataclass(frozen=True)
