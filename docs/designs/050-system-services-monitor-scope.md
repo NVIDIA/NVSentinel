@@ -399,17 +399,21 @@ configuration addresses this on two fronts:
   briefly publishing not-yet-probed conditions at their defaults during the
   first post-restart batch — which is why the reference splits the
   configurations.
-- Probe failures cannot cancel remediation: KOM's transition detector
-  treats any non-matching observation — including `Unknown` — as the
-  healthy edge, and a persistent probe failure would otherwise hold that
-  false edge for as long as observability is lost. The
-  hold-last-confirmed-state contract (above) closes this at the source: a
-  condition that has triggered remediation stays `True` through observation
-  outages and transitions only on a confirming probe, so `Unknown` can only
-  arise from previously healthy or freshly initialized checks, where no
-  break-fix is pending. Making KOM itself distinguish `Unknown` from
-  `False` (three-state condition handling) remains the shared
-  platform-level hardening for every ADR-053-pattern check.
+- Probe failures cannot cancel remediation **through the script path**:
+  KOM's transition detector treats any non-matching observation — including
+  `Unknown` — as the healthy edge, so each script holds its last confirmed
+  state through probe failures, and bounds its internal probes at 8 s
+  (under the 12 s rule timeout) so the NPD-side kill is normally
+  unreachable. What the scripts cannot intercept is an `Unknown` that NPD
+  itself generates without running them to completion: plugin exec failure,
+  a script crash, or the outer-timeout kill (v1.36.0 `plugin.go` returns
+  Unknown on each). Those paths are narrow — exec failure and crash are
+  deploy-time misconfigurations the operator documentation validates for,
+  and the kill requires the shell itself to wedge inside the 4 s of slack —
+  but they are real, and they are exactly what KOM-side three-state
+  handling (`Unknown` is not the healthy edge) closes platform-wide. That
+  follow-up is therefore the completing piece for this ADR's recovery
+  semantics, not optional hardening.
 
 ## Remediation classification: restart-fixable vs. hardware-return
 
@@ -432,13 +436,16 @@ pretend it can:
   The recurrence backstop is `health-events-analyzer`, which evaluates
   TOML-configured aggregation rules over the health-events collection and
   emits synthetic events into the standard quarantine/remediation
-  pipeline: its shipped `MultipleRemediations` rule fires when a node is
-  remediated more than once inside its window, and its event has **no
-  automatic healthy clear** — the node stays quarantined pending operator
-  investigation rather than being returned to service for another cycle.
-  The loop therefore stops at the node level even though the per-cycle
-  KOM event still publishes (at most one already-triggered remediation
-  can overlap the backstop firing). Suppressing the trigger itself —
+  pipeline: its shipped `MultipleRemediations` rule fires when a node
+  accumulates **five or more** executed remediations within 7 days (the
+  shipped default; the TOML rule is operator-tunable), and its event has
+  **no automatic healthy clear** — the node stays quarantined pending
+  operator investigation rather than being returned to service for another
+  cycle. The backstop bounds the loop at the node level; it does not make
+  it short — up to the threshold's worth of remediation cycles can execute
+  before it fires. Fleets wanting a tighter bound for these conditions
+  tune that rule or add the dedicated `NPD_FABRIC_MANAGER_*` rule below
+  with a lower threshold. Suppressing the trigger itself —
   recurrence-aware action escalation, e.g. replacing `RESTART_BM` with
   `CONTACT_SUPPORT` on the same check after N occurrences, which
   fault-quarantine's event map already supports by overwriting a stored
