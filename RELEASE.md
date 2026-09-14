@@ -118,12 +118,19 @@ The callout must cover three things:
    - **`OnDelete`**: existing pods are left alone. The new values apply only as each pod is deleted
      by hand, so adopting the release changes nothing until an operator acts.
 
-   Scope the claim accordingly rather than promising a restart: under `OnDelete` a reader who
-   expects one will not get it, and a reader who expects none under `SmartUpdate` will.
+   Write the sentence to match the case, rather than reaching for a stock phrase:
 
-   Say it plainly, in the form "this will roll your replica set". An operator adopting a release to
-   pick up a monitoring fix has no reason to expect their health-event datastore to fail over, and
-   that datastore holds every health event.
+   - **A resource field changed and `updateStrategy` is `SmartUpdate` or `RollingUpdate`:** say
+     plainly that **this will roll your replica set**. That is the sentence that matters, because
+     an operator adopting a release to pick up a monitoring fix has no reason to expect their
+     health-event datastore to fail over, and that datastore holds every health event.
+   - **A resource field changed and `updateStrategy` is `OnDelete`:** say the new values apply only
+     as pods are deleted by hand, so adopting the release changes nothing on its own.
+   - **Only the operator image tag changed:** say the operator pod restarts and the replica set is
+     untouched.
+
+   Getting this wrong in either direction misleads: a reader promised a roll that does not happen
+   stops trusting the notes, and a reader not warned about one takes an unplanned failover.
 2. **That the operator upgrade cannot skip a minor version.** Percona's
    [upgrade documentation](https://docs.percona.com/percona-operator-for-mongodb/update-operator.html)
    permits moving only to the nearest `major.minor`. A deployment more than one minor behind the
