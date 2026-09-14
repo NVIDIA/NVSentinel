@@ -352,7 +352,12 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 log.error(f"Exception while sending DCGM responsive events: {e}")
                 raise
 
-    def health_event_occurred(self, health_details: dict[str, dcgmtypes.HealthDetails], gpu_ids: list) -> None:
+    def health_event_occurred(
+        self,
+        health_details: dict[str, dcgmtypes.HealthDetails],
+        gpu_ids: list[int],
+        switch_ids: list[int] | None = None,
+    ) -> None:
         with metrics.dcgm_health_events_publish_time_to_grpc_channel.labels(
             "dcgm_health_events_to_grpc_channel"
         ).time():
@@ -526,7 +531,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     for key, entry in self.entity_cache.items()
                     if key.startswith(switch_cache_prefix) and not entry.is_healthy
                 }
-                for switch_id in sorted(set(switch_failures) | active_switches):
+                for switch_id in sorted(set(switch_ids or []) | set(switch_failures) | active_switches):
                     failure_details = switch_failures.get(switch_id)
                     entity = platformconnector_pb2.Entity(entityType="NVSWITCH", entityValue=str(switch_id))
                     key = self._build_cache_key(check_name, entity.entityType, entity.entityValue)
@@ -556,7 +561,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                         event.errorCode.append(failure_details.code)
                         event.message = failure_details.message
                         event.recommendedAction = recommended_action
-                    elif entry is not None and not entry.is_healthy:
+                    elif entry is None or not entry.is_healthy:
                         pending_cache_updates[key] = EntityCacheEntry()
                         event.isHealthy = True
                         event.message = f"NVSWITCH {self._get_dcgm_watch(watch_name)} watch reported no errors"

@@ -37,14 +37,21 @@ class FakeEventProcessorInTest(dcgm.types.CallbackInterface):
     def __init__(self) -> None:
         self.health_details = None
         self.gpu_id = None
+        self.switch_ids = None
         self.error_num = None
         self.serial = None
         self.fields_changes = None
         self.connectivity_failed_called = False
         self.probe_unresponsive_calls: list[tuple[str, float, str]] = []
 
-    def health_event_occurred(self, health_details: dict[str, dcgm.types.HealthDetails], gpu_ids: list[int]) -> None:
+    def health_event_occurred(
+        self,
+        health_details: dict[str, dcgm.types.HealthDetails],
+        gpu_ids: list[int],
+        switch_ids: list[int] | None = None,
+    ) -> None:
         self.health_details = health_details
+        self.switch_ids = switch_ids
 
     def dcgm_connectivity_failed(self) -> bool:
         self.connectivity_failed_called = True
@@ -114,7 +121,7 @@ class TestDCGMHealthChecks:
         )
         dcgm_group = MagicMock()
         dcgm_group.GetGpuIds.return_value = [0]
-        watcher._create_dcgm_group_with_all_entities = MagicMock(return_value=dcgm_group)
+        watcher._create_dcgm_group_with_all_entities = MagicMock(return_value=(dcgm_group, []))
         watcher._get_gpu_serial_numbers = MagicMock(return_value={})
 
         watcher._initialize_dcgm_monitoring(MagicMock())
@@ -414,11 +421,12 @@ class TestDCGMHealthChecks:
         dcgm_system_mock.discovery.GetEntityGroupEntities = MagicMock(side_effect=GetEntityGroupEntities_mock)
         dcgm_handle_mock.GetSystem.return_value = dcgm_system_mock
 
-        dcgm_group = watcher._create_dcgm_group_with_all_entities(dcgm_handle_mock)
+        dcgm_group, switch_ids = watcher._create_dcgm_group_with_all_entities(dcgm_handle_mock)
         for gpu in supported_gpus:
             dcgm_group.AddEntity.assert_any_call(dcgm_fields.DCGM_FE_GPU, gpu)
         for switch in supported_switches:
             dcgm_group.AddEntity.assert_any_call(dcgm_fields.DCGM_FE_SWITCH, switch)
+        assert switch_ids == supported_switches
 
     def test_perform_health_check_all_watch_pass(self):
         watcher = dcgm.DCGMWatcher(
@@ -1365,7 +1373,7 @@ class TestDCGMHealthChecks:
         dcgm_handle_mock.GetSystem.return_value = dcgm_system_mock
 
         # Call the method
-        group, gpu_ids, gpu_serials = watcher._initialize_dcgm_monitoring(dcgm_handle_mock)
+        group, gpu_ids, switch_ids, gpu_serials = watcher._initialize_dcgm_monitoring(dcgm_handle_mock)
 
         # Verify results
         # Note: group will be the conftest.py mock object, not our dcgm_group_mock
@@ -1373,6 +1381,7 @@ class TestDCGMHealthChecks:
         assert hasattr(group, "health")
         assert hasattr(group, "GetGpuIds")
         assert gpu_ids == [0, 1, 2, 3]
+        assert switch_ids == [0, 1, 2, 3]
         assert len(gpu_serials) == 4
         # Verify that health.Set was called on the actual group object
         group.health.Set.assert_called_once()

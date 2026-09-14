@@ -56,7 +56,12 @@ class FieldDetails:
 
 class CallbackInterface(abc.ABC):
     @abc.abstractmethod
-    def health_event_occurred(self, health_details: dict[str, HealthDetails], gpu_ids: list[int]):
+    def health_event_occurred(
+        self,
+        health_details: dict[str, HealthDetails],
+        gpu_ids: list[int],
+        switch_ids: list[int] | None = None,
+    ) -> None:
         pass
 
     @abc.abstractmethod

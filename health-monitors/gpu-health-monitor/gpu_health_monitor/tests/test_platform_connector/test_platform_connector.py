@@ -174,6 +174,80 @@ class TestPlatformConnectors(unittest.TestCase):
         finally:
             os.unlink(temp_file_path)
 
+    def test_health_event_reports_healthy_nvswitch_after_restart(self) -> None:
+        temp_file_path = metadata_file()
+        with tempfile.NamedTemporaryFile(delete=False) as state_file:
+            state_file_path = state_file.name
+
+        def make_processor(
+            published_events: list[platformconnector_pb2.HealthEvent],
+        ) -> platform_connector.PlatformConnectorEventProcessor:
+            processor = platform_connector.PlatformConnectorEventProcessor(
+                socket_path,
+                node_name,
+                Event(),
+                {"SWITCH_ERROR": "CONTACT_SUPPORT"},
+                state_file_path,
+                temp_file_path,
+                platformconnector_pb2.EXECUTE_REMEDIATION,
+            )
+
+            def capture_events(
+                events: list[platformconnector_pb2.HealthEvent],
+                delivery_timeout_seconds: float | None = None,
+            ) -> bool:
+                published_events.extend(events)
+                return True
+
+            processor.send_health_event_with_retries = capture_events
+            return processor
+
+        try:
+            unhealthy_events: list[platformconnector_pb2.HealthEvent] = []
+            processor = make_processor(unhealthy_events)
+            processor.health_event_occurred(
+                {
+                    "DCGM_HEALTH_WATCH_PCIE": dcgmtypes.HealthDetails(
+                        status=dcgmtypes.HealthStatus.FAIL,
+                        entity_failures={
+                            (dcgm_fields.DCGM_FE_SWITCH, 0): dcgmtypes.ErrorDetails(
+                                code="SWITCH_ERROR",
+                                message="NVSwitch 0 failed",
+                            )
+                        },
+                    )
+                },
+                [],
+                [0],
+            )
+            assert any(event.componentClass == "NVSWITCH" and not event.isHealthy for event in unhealthy_events)
+
+            recovered_events: list[platformconnector_pb2.HealthEvent] = []
+            restarted_processor = make_processor(recovered_events)
+            assert restarted_processor.entity_cache == {}
+
+            restarted_processor.health_event_occurred(
+                {
+                    "DCGM_HEALTH_WATCH_PCIE": dcgmtypes.HealthDetails(
+                        status=dcgmtypes.HealthStatus.PASS,
+                        entity_failures={},
+                    )
+                },
+                [],
+                [0],
+            )
+
+            switch_events = [event for event in recovered_events if event.componentClass == "NVSWITCH"]
+            assert len(switch_events) == 1
+            assert switch_events[0].isHealthy
+            assert switch_events[0].entitiesImpacted == [
+                platformconnector_pb2.Entity(entityType="NVSWITCH", entityValue="0")
+            ]
+            assert switch_events[0].processingStrategy == platformconnector_pb2.STORE_ONLY
+        finally:
+            os.unlink(temp_file_path)
+            os.unlink(state_file_path)
+
     def test_health_event_occurred(self):
         healthEventProcessor = PlatformConnectorServicer()
         server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))

@@ -535,7 +535,10 @@ class DCGMWatcher:
             return contextlib.nullcontext()
         return self._probe_watchdog.probe(operation)
 
-    def _create_dcgm_group_with_all_entities(self, dcgm_handle: pydcgm.DcgmHandle) -> pydcgm.DcgmGroup:
+    def _create_dcgm_group_with_all_entities(
+        self,
+        dcgm_handle: pydcgm.DcgmHandle,
+    ) -> tuple[pydcgm.DcgmGroup, list[int]]:
         dcgm_system = dcgm_handle.GetSystem()
 
         with metrics.dcgm_api_latency.labels("discovery_get_entity_group_entities").time():
@@ -554,7 +557,7 @@ class DCGMWatcher:
             with metrics.dcgm_api_latency.labels("discovery_group_add_entity").time():
                 dcgm_group.AddEntity(dcgm_fields.DCGM_FE_SWITCH, switch)
 
-        return dcgm_group
+        return dcgm_group, supported_switches
 
     def _get_gpu_serial_numbers(self, dcgm_handle: pydcgm.DcgmHandle) -> dict[int, str]:
         dcgm_system = dcgm_handle.GetSystem()
@@ -924,16 +927,19 @@ class DCGMWatcher:
             metrics.dcgm_api_failures.labels("ErrorInitDCGMHandle").inc()
             return None
 
-    def _initialize_dcgm_monitoring(self, dcgm_handle: pydcgm.DcgmHandle) -> tuple:
+    def _initialize_dcgm_monitoring(
+        self,
+        dcgm_handle: pydcgm.DcgmHandle,
+    ) -> tuple[pydcgm.DcgmGroup, list[int], list[int], dict[int, str]]:
         """Initialize DCGM monitoring components.
 
         Returns:
-            A tuple of (dcgm_group, gpu_ids, gpu_serials)
+            A tuple of (dcgm_group, gpu_ids, switch_ids, gpu_serials)
 
         If any step after group creation fails the group is deleted before the
         exception propagates so that it does not leak on the DCGM server.
         """
-        dcgm_group = self._create_dcgm_group_with_all_entities(dcgm_handle)
+        dcgm_group, switch_ids = self._create_dcgm_group_with_all_entities(dcgm_handle)
         self._field_group = None
         try:
             with metrics.dcgm_api_latency.labels("group_health_set").time():
@@ -983,7 +989,7 @@ class DCGMWatcher:
                     self._poll_interval_seconds,
                 )
 
-            return dcgm_group, gpu_ids, gpu_serials
+            return dcgm_group, gpu_ids, switch_ids, gpu_serials
         except Exception as e:
             log.warning(f"DCGM monitoring initialization failed, rolling back group: {e}")
             if self._field_group is not None:
@@ -1049,6 +1055,7 @@ class DCGMWatcher:
         dcgm_handle = None
         dcgm_group = None
         gpu_ids = []
+        switch_ids = []
 
         # Tied to loop teardown rather than to the process exit event: on SIGTERM
         # during a hang the loop cannot return, and the stuck probe still needs
@@ -1084,7 +1091,9 @@ class DCGMWatcher:
                                 self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
                                 continue
                             with self._probe("dcgm_initialize_monitoring"):
-                                dcgm_group, gpu_ids, _gpu_serials = self._initialize_dcgm_monitoring(dcgm_handle)
+                                dcgm_group, gpu_ids, switch_ids, _gpu_serials = self._initialize_dcgm_monitoring(
+                                    dcgm_handle
+                                )
                         except Exception as e:
                             log.error(f"Error getting DCGM handle: {e}")
                             self._report_connectivity_failed()
@@ -1092,6 +1101,7 @@ class DCGMWatcher:
                             dcgm_handle = None
                             dcgm_group = None
                             gpu_ids = []
+                            switch_ids = []
                     else:
                         log.debug("Running health check")
                         with self._probe("dcgm_health_check"):
@@ -1107,6 +1117,7 @@ class DCGMWatcher:
                             dcgm_handle = None
                             dcgm_group = None
                             gpu_ids = []
+                            switch_ids = []
                         else:
                             with self._probe("dcgm_thermal_margin"):
                                 margin_details = self._evaluate_gpu_thermal_margin(dcgm_group, gpu_ids)
@@ -1124,7 +1135,7 @@ class DCGMWatcher:
                             log.debug("Publish DCGM health checks")
                             self._fire_callback_funcs(
                                 types.CallbackInterface.health_event_occurred.__name__,
-                                [health_status, gpu_ids],
+                                [health_status, gpu_ids, switch_ids],
                             )
         finally:
             # Stop the watchdog before teardown cleanup. A slow Shutdown() during
