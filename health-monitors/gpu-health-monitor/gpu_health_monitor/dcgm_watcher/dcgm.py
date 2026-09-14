@@ -360,22 +360,20 @@ class DCGMWatcher:
             return
 
         for watch_name, details in health_status.items():
-            suppressed_gpu_ids = [
-                gpu_id
-                for gpu_id, failure in details.entity_failures.items()
-                if failure.code in self._suppressed_error_codes
-            ]
-            for gpu_id in suppressed_gpu_ids:
-                error_code = details.entity_failures[gpu_id].code
-                log.debug(
-                    f"Suppressing incident for watch={watch_name} entity={gpu_id} "
-                    f"error_code={error_code}: high-frequency non-actionable event"
-                )
-                metrics.dcgm_health_check_suppressed_incidents.labels(error_code).inc()
-                del details.entity_failures[gpu_id]
+            had_failures = bool(details.entity_failures)
+            for gpu_id, failures in list(details.entity_failures.items()):
+                remaining = [
+                    failure
+                    for failure in failures
+                    if not self._is_suppressed_error_code(watch_name, gpu_id, failure.code)
+                ]
+                if remaining:
+                    details.entity_failures[gpu_id] = remaining
+                else:
+                    del details.entity_failures[gpu_id]
 
             # A watch with no remaining failures is healthy again.
-            if suppressed_gpu_ids and not details.entity_failures:
+            if had_failures and not details.entity_failures:
                 details.status = types.HealthStatus.PASS
 
     def _is_nvlink_down_false_positive(self, watch_name: str, gpu_id: int, error_code: str) -> bool:
@@ -587,8 +585,8 @@ class DCGMWatcher:
             log.debug(f"initial health status is {health_details}")
 
             health_status = self._get_health_status_dict()
-            # Temporary dict to accumulate multiple failures per GPU
-            gpu_failures_accumulator = {}
+            # Group repeated incidents by watch, GPU and error code.
+            gpu_failures_accumulator: dict[tuple[str, int, str], list[str]] = {}
             # One debounce decision per (error code, GPU) per poll. DCGM reports an
             # incident per down link, so a GPU with several down links produces several
             # records for the same code; advancing the streak once per record would
@@ -649,23 +647,17 @@ class DCGMWatcher:
                 if debounce_decisions[debounce_key]:
                     continue
 
-                health_status[watch_name].status = types.HealthStatus(int(incident.health))
+                health_status[watch_name].status = types.HealthStatus(
+                    max(health_status[watch_name].status.value, int(incident.health))
+                )
 
-                # Create a key for accumulating failures per GPU per watch
-                accumulator_key = (watch_name, gpu_id)
+                # Keep messages with their code: each code determines its own remediation.
+                accumulator_key = (watch_name, gpu_id, error_code)
+                gpu_failures_accumulator.setdefault(accumulator_key, []).append(error_msg)
 
-                if accumulator_key not in gpu_failures_accumulator:
-                    gpu_failures_accumulator[accumulator_key] = {"code": error_code, "messages": []}
-
-                # Accumulate all error messages for this GPU and watch type
-                gpu_failures_accumulator[accumulator_key]["messages"].append(error_msg)
-
-            # Now consolidate accumulated failures into health_status
-            for (watch_name, gpu_id), failure_data in gpu_failures_accumulator.items():
-                # Combine all messages with semicolon separator
-                combined_message = "; ".join(failure_data["messages"])
-                health_status[watch_name].entity_failures[gpu_id] = types.ErrorDetails(
-                    message=combined_message, code=failure_data["code"]
+            for (watch_name, gpu_id, error_code), messages in sorted(gpu_failures_accumulator.items()):
+                health_status[watch_name].entity_failures.setdefault(gpu_id, []).append(
+                    types.ErrorDetails(message="; ".join(messages), code=error_code)
                 )
 
             self._reset_absent_incident_streaks(set(debounce_decisions))
@@ -748,10 +740,12 @@ class DCGMWatcher:
                     slowdown_threshold,
                 )
                 margin_details.status = types.HealthStatus.FAIL
-                margin_details.entity_failures[gpu_id] = types.ErrorDetails(
-                    message=f"GPU {gpu_id} thermal margin {margin_c}°C below HW slowdown T.Limit (slowdown={slowdown_threshold}°C)",
-                    code=monitor.violation_code,
-                )
+                margin_details.entity_failures[gpu_id] = [
+                    types.ErrorDetails(
+                        message=f"GPU {gpu_id} thermal margin {margin_c}°C below HW slowdown T.Limit (slowdown={slowdown_threshold}°C)",
+                        code=monitor.violation_code,
+                    )
+                ]
             else:
                 log.debug(
                     "GPU %s thermal margin %s°C at or above HW slowdown T.Limit (slowdown=%s°C) for GpuThermalMarginWatch",
@@ -858,13 +852,15 @@ class DCGMWatcher:
                     streak,
                 )
                 brake_details.status = types.HealthStatus.FAIL
-                brake_details.entity_failures[gpu_id] = types.ErrorDetails(
-                    message=(
-                        f"GPU {gpu_id} hardware power brake asserted for {streak} consecutive "
-                        f"poll(s) (clocks event reasons mask 0x{reasons_mask:x})"
-                    ),
-                    code=monitor.violation_code,
-                )
+                brake_details.entity_failures[gpu_id] = [
+                    types.ErrorDetails(
+                        message=(
+                            f"GPU {gpu_id} hardware power brake asserted for {streak} consecutive "
+                            f"poll(s) (clocks event reasons mask 0x{reasons_mask:x})"
+                        ),
+                        code=monitor.violation_code,
+                    )
+                ]
             else:
                 self._power_brake_streaks.pop(gpu_id, None)
 
