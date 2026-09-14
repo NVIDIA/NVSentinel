@@ -19,13 +19,18 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+const (
+	metricLabelNodeName = "node_name"
+	metricLabelRuleName = "rule_name"
+)
+
 var (
 	totalEventsReceived = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "health_event_analyzer_events_received_total",
 			Help: "Total number of events received from the watcher.",
 		},
-		[]string{"node_name"},
+		[]string{metricLabelNodeName},
 	)
 	totalEventsSuccessfullyProcessed = promauto.NewCounter(
 		prometheus.CounterOpts{
@@ -54,7 +59,29 @@ var (
 			Name: "rule_matched_total",
 			Help: "Total number of times a rule matched for a node",
 		},
-		[]string{"rule_name", "node_name"},
+		[]string{metricLabelRuleName, metricLabelNodeName},
+	)
+
+	recoveryEventsPublishedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "health_event_analyzer_recovery_events_published_total",
+			Help: "Total number of derived healthy transitions published by recovery-enabled rules.",
+		},
+		[]string{metricLabelRuleName, "scope"},
+	)
+	recoveryPersistenceTimeoutsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "health_event_analyzer_recovery_persistence_timeouts_total",
+			Help: "Total derived transitions not observed in the store before the persistence deadline.",
+		},
+		[]string{metricLabelRuleName, "state"},
+	)
+	recoveryStoredDocumentDecodeErrorsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "health_event_analyzer_recovery_stored_document_decode_errors_total",
+			Help: "Total stored health event documents skipped because they could not be decoded or scoped.",
+		},
+		[]string{metricLabelRuleName, "lookup", "classification"},
 	)
 
 	mongoQueryExecutionDuration = promauto.NewHistogramVec(
@@ -63,7 +90,7 @@ var (
 			Help:    "Histogram of MongoDB pipeline execution durations.",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"rule_name"},
+		[]string{metricLabelRuleName},
 	)
 
 	// performance metrics
@@ -71,7 +98,7 @@ var (
 		prometheus.HistogramOpts{
 			Name:    "health_event_analyzer_event_handling_duration_seconds",
 			Help:    "Histogram of event handling durations.",
-			Buckets: prometheus.DefBuckets,
+			Buckets: prometheus.ExponentialBuckets(0.1, 2, 12),
 		},
 	)
 )

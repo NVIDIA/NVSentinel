@@ -15,10 +15,14 @@
 package postgresql
 
 import (
+	"context"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
 )
 
@@ -223,5 +227,30 @@ func TestFindOneFilterGeneration(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFindAppliesDescendingCreatedAtSort(t *testing.T) {
+	db, sqlMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New() error = %v", err)
+	}
+	defer db.Close()
+
+	databaseClient := NewPostgreSQLDatabaseClient(db, "HealthEvents")
+	sqlMock.ExpectQuery(regexp.QuoteMeta(
+		"SELECT document FROM health_events WHERE event_type = $1 ORDER BY created_at DESC",
+	)).WithArgs("DerivedCondition").WillReturnRows(sqlmock.NewRows([]string{"document"}))
+
+	cursor, err := databaseClient.Find(context.Background(), map[string]any{
+		"event_type": "DerivedCondition",
+	}, &client.FindOptions{Sort: map[string]any{"createdAt": -1}})
+	if err != nil {
+		t.Fatalf("Find() error = %v", err)
+	}
+	defer cursor.Close(context.Background())
+
+	if err := sqlMock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectation: %v", err)
 	}
 }

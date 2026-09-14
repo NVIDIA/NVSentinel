@@ -616,10 +616,8 @@ func (d *XidBurstDetector) GetPerGPUBurstStats() map[string]map[string]int {
 	return stats
 }
 
-// ClearNodeHistory clears all XID event history for a specific node across
-// every GPU. This should be called when a healthy event is received for the
-// node, indicating that the GPU issues have been resolved and we should start
-// fresh.
+// ClearNodeHistory clears all XID event history for a node. It is retained for
+// direct detector tests; production history expires by age.
 func (d *XidBurstDetector) ClearNodeHistory(nodeName string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

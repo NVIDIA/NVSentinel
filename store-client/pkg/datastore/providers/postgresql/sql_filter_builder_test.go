@@ -170,8 +170,7 @@ func TestSQLFilterBuilder_NeOperator(t *testing.T) {
 		clause := builder.GetWhereClause()
 		args := builder.GetArgs()
 
-		assert.Contains(t, clause, "IS NULL OR")
-		assert.Contains(t, clause, "!=")
+		assert.Contains(t, clause, "IS DISTINCT FROM $4")
 		assert.Len(t, args, 1)
 		assert.Equal(t, "HealthCheck", args[0])
 	})
@@ -191,9 +190,9 @@ func TestSQLFilterBuilder_NeOperator(t *testing.T) {
 
 		clause := builder.GetWhereClause()
 
-		// $ne: true means field is false or missing
-		assert.Contains(t, clause, "= false")
-		assert.Contains(t, clause, "IS NULL")
+		// IS DISTINCT FROM includes both false and missing values.
+		assert.Contains(t, clause, "::boolean IS DISTINCT FROM $4")
+		assert.Equal(t, []any{true}, builder.GetArgs())
 	})
 }
 
@@ -404,6 +403,7 @@ func TestSQLFilterBuilder_HealthEventsAnalyzerPipeline(t *testing.T) {
 
 	// Should filter by agent != "health-events-analyzer"
 	assert.Contains(t, clause, "healthevent'->>'agent'")
+	assert.Contains(t, clause, "healthevent'->>'agent' IS DISTINCT FROM")
 
 	// Should filter by operationType using operation column
 	assert.Contains(t, clause, "operation IN")
