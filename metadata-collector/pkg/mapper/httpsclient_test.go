@@ -520,6 +520,7 @@ func TestListPods(t *testing.T) {
 func TestListPodsWithReadFileError(t *testing.T) {
 	client := newTestKubeletHTTPSClient(http.StatusOK, podJson)
 	client.staticBearerToken = ""
+	client.bearerTokenPath = filepath.Join(t.TempDir(), "missing-token")
 	_, err := client.ListPods()
 	assert.Error(t, err)
 }

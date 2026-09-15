@@ -17,10 +17,16 @@ package mapper
 import (
 	"context"
 	"errors"
+	"net"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	v1 "k8s.io/kubelet/pkg/apis/podresources/v1"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
@@ -153,6 +159,7 @@ func newTestKubeletGRPCClient(err error, errReturnCount int, podDevices map[stri
 	return &kubeletGRPClient{
 		ctx:                context.Background(),
 		podResourcesClient: mockPodResourcesServer,
+		requestTimeout:     testCallTimeout,
 	}
 }
 
@@ -190,4 +197,96 @@ func TestListPodResourcesErrorWithRetry(t *testing.T) {
 	devicesPerPod, err := kubeletGRPCClient.ListPodResources()
 	assert.NoError(t, err)
 	assert.NotNil(t, devicesPerPod)
+}
+
+type podResourcesFixture struct {
+	v1.UnimplementedPodResourcesListerServer
+	response *v1.ListPodResourcesResponse
+}
+
+func (s *podResourcesFixture) List(context.Context, *v1.ListPodResourcesRequest) (*v1.ListPodResourcesResponse, error) {
+	return s.response, nil
+}
+
+// startPodResourcesFixture serves the real gRPC protocol on an isolated Unix socket.
+func startPodResourcesFixture(t *testing.T, socket string, fixture v1.PodResourcesListerServer) *grpc.Server {
+	t.Helper()
+
+	listener, err := net.Listen("unix", socket)
+	require.NoError(t, err)
+	server := grpc.NewServer()
+	v1.RegisterPodResourcesListerServer(server, fixture)
+	go func() {
+		assert.NoError(t, server.Serve(listener))
+	}()
+	t.Cleanup(server.Stop)
+
+	return server
+}
+
+// testPodResourcesSocket keeps the Unix socket path below macOS's 104-byte limit.
+func testPodResourcesSocket(t *testing.T) string {
+	t.Helper()
+
+	require.NoError(t, os.MkdirAll("tmp", 0o700))
+	dir, err := os.MkdirTemp("tmp", "mc-")
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, os.RemoveAll(dir)) })
+
+	return filepath.Join(dir, "k.sock")
+}
+
+func TestPodResources_DelayedSocketAndRestart_Reconnects(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	socket := testPodResourcesSocket(t)
+	client, err := newKubeletGRPClient(ctx, socket)
+	require.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.ListPodResources()
+		done <- err
+	}()
+
+	// Prove a request reached the absent socket before bringing the fixture up.
+	require.Eventually(t, func() bool {
+		return client.connection.GetState() == connectivity.TransientFailure
+	}, 5*time.Second, time.Millisecond)
+	fixture := &podResourcesFixture{response: &v1.ListPodResourcesResponse{}}
+	server := startPodResourcesFixture(t, socket, fixture)
+	require.NoError(t, <-done)
+	server.Stop()
+
+	startPodResourcesFixture(t, socket, fixture)
+	_, err = client.ListPodResources()
+	require.NoError(t, err)
+
+	cancel()
+	require.Eventually(t, func() bool {
+		return client.connection.GetState() == connectivity.Shutdown
+	}, time.Second, time.Millisecond)
+}
+
+func TestPodResources_UnavailableSocket_RequestIsBounded(t *testing.T) {
+	client, err := newKubeletGRPClient(t.Context(), testPodResourcesSocket(t))
+	require.NoError(t, err)
+	client.requestTimeout = 100 * time.Millisecond
+
+	_, err = client.ListPodResources()
+	require.ErrorContains(t, err, "DeadlineExceeded")
+}
+
+func TestPodResources_CancelledContext_StopsWaiting(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	client, err := newKubeletGRPClient(ctx, testPodResourcesSocket(t))
+	require.NoError(t, err)
+	cancel()
+
+	_, err = client.ListPodResources()
+	require.Error(t, err)
+	require.Eventually(t, func() bool {
+		return client.connection.GetState() == connectivity.Shutdown
+	}, time.Second, time.Millisecond)
 }

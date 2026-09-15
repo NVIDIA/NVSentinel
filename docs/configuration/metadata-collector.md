@@ -76,3 +76,43 @@ metadata-collector:
 ```
 
 `additionalHostVolumes`, `additionalVolumeMounts`, and `extraEnv` default to empty lists. Existing RuntimeClass-based installs are unchanged.
+
+## Host-native authentication
+
+Use two explicit kubeconfigs when the collector runs outside a pod:
+
+```bash
+metadata-collector \
+  --kubeconfig=/etc/nvsentinel/metadata-collector/apiserver.kubeconfig \
+  --kubelet-kubeconfig=/etc/nvsentinel/metadata-collector/kubelet.kubeconfig \
+  --output-path=/var/lib/nvsentinel/gpu_metadata.json
+```
+
+| Flag | Purpose | Default |
+|---|---|---|
+| `--kubeconfig` | Kubernetes API endpoint, trust, and credentials for pod annotation updates | In-cluster configuration |
+| `--kubelet-kubeconfig` | Kubelet HTTPS endpoint, trust, and credentials for `/pods` | `KUBELET_HOST:10250` and the projected ServiceAccount token |
+
+An absent `KUBELET_HOST` defaults to `localhost`. An explicit kubelet kubeconfig overrides that variable. The collector does not reuse API server credentials for the kubelet. It does not load `KUBECONFIG` or a home-directory kubeconfig implicitly.
+
+Explicit configurations must use HTTPS, verify server certificates, and provide credentials. Set the kubelet server to an address in its serving certificate, such as `https://gpu-node.example:10250`. Provide the correct CA and, if needed, `tls-server-name`. The existing in-cluster kubelet TLS behavior is unchanged.
+
+### Credentials and permissions
+
+Provision credentials at node runtime. Keep kubeconfig and credential files accessible only to the service account or root. Kubeconfigs are trusted input: client-go can execute a configured credential plugin.
+
+- The Kubernetes API identity needs `patch` on pods in each workload namespace.
+- The kubelet identity needs permission to read `/pods`. With fine-grained kubelet authorization, use `get` on `nodes/pods`. Other configurations require `get` on `nodes/proxy`, which grants broader access.
+- The process needs access to `/var/lib/kubelet/pod-resources/kubelet.sock`, NVIDIA devices and libraries, and its output directory.
+
+Authentication does not grant permissions. Do not assume the kubelet's own client identity can patch workload pods. This feature creates no credentials or RBAC bindings.
+
+Client-go supports kubeconfig bearer tokens, token files, client certificates, and configured credential providers. Prefer rotating file credentials over embedded long-lived credentials. Token-file reload is periodic, so provision a new token before the old token expires. Restart the collector after changes to kubeconfig settings or CA trust. Client certificate files reload through client-go; embedded certificate data does not reload.
+
+### Startup and failure handling
+
+Hardware inventory and pod-to-GPU mapping remain enabled. A missing PodResources socket no longer fails client construction. Each PodResources call waits up to 20 seconds for readiness and honors cancellation. The connection can recover after kubelet restarts.
+
+The existing 30-second poll period and `--pod-mapper-max-consecutive-failures` limit remain unchanged. The default limit is 10 failed polls. Persistent authentication, authorization, or socket failures remain errors; the collector does not report them as successful mapping.
+
+A missing kubeconfig or credential file is a configuration error. HTTP 401 indicates rejected credentials. HTTP 403 indicates denied permission. TLS errors require correct CA trust and server identity; do not disable verification to work around them.
