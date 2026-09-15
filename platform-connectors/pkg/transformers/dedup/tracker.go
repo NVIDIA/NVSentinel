@@ -23,24 +23,40 @@ import (
 	"time"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 type trackerOption func(*tracker)
 
+// seenEvent is one tracked key: when it was first seen, and the idempotency
+// key of the event that first announced it (empty on the socket path, which
+// stamps none).
+type seenEvent struct {
+	at             time.Time
+	idempotencyKey string
+}
+
 // tracker remembers recently seen health-event keys for one burst window.
 type tracker struct {
-	mu   sync.RWMutex
-	seen map[eventKey]time.Time
-	ttl  time.Duration
-	now  func() time.Time
+	mu         sync.RWMutex
+	seen       map[eventKey]seenEvent
+	ttl        time.Duration
+	maxEntries int
+	now        func() time.Time
+}
+
+// withMaxEntries bounds the tracker to n distinct keys.
+func withMaxEntries(n int) trackerOption {
+	return func(t *tracker) { t.maxEntries = n }
 }
 
 // newTracker creates a tracker that treats repeated keys within ttl as duplicates.
 func newTracker(ttl time.Duration, opts ...trackerOption) *tracker {
 	t := &tracker{
-		seen: make(map[eventKey]time.Time),
-		ttl:  ttl,
-		now:  time.Now,
+		seen:       make(map[eventKey]seenEvent),
+		ttl:        ttl,
+		maxEntries: DefaultMaxEntries,
+		now:        time.Now,
 	}
 
 	for _, opt := range opts {
@@ -53,19 +69,39 @@ func newTracker(ttl time.Duration, opts ...trackerOption) *tracker {
 // checkAndMark returns true if the event's key is already tracked within ttl.
 // Otherwise it records the key before returning false. The check and mark happen
 // under one lock so concurrent callers cannot both treat the same new key as unique.
+//
+// A resend of the very event that first announced the key is not a duplicate.
+// The deployment platform connector stamps a per-event idempotency key and
+// runs this stage before the datastore write; when the write fails, the client
+// resends the batch with the same key, and that resend must keep the decision
+// the first attempt made instead of being downgraded as a repeat.
 func (t *tracker) checkAndMark(event *pb.HealthEvent) bool {
 	k := keyWithHealthState(event, event.GetIsHealthy())
 	now := t.now()
+	idempotencyKey := event.GetMetadata()[datastore.HealthEventIdempotencyKeyMetadataField]
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	firstSeen, ok := t.seen[k]
-	if ok && now.Sub(firstSeen) < t.ttl {
-		return true
+	seen, ok := t.seen[k]
+	if ok && now.Sub(seen.at) < t.ttl {
+		return idempotencyKey == "" || idempotencyKey != seen.idempotencyKey
 	}
 
-	t.seen[k] = now
+	t.seen[k] = seenEvent{at: now, idempotencyKey: idempotencyKey}
+
+	// Bounded: over capacity, one other entry goes (map iteration order is
+	// random). Losing an entry only lets one repeat through to remediation
+	// once more, which beats unbounded memory and a long cleanup scan.
+	if len(t.seen) > t.maxEntries {
+		for other := range t.seen {
+			if other != k {
+				delete(t.seen, other)
+
+				break
+			}
+		}
+	}
 
 	return false
 }
@@ -102,8 +138,8 @@ func (t *tracker) evictExpired() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	for k, firstSeen := range t.seen {
-		if now.Sub(firstSeen) >= t.ttl {
+	for k, seen := range t.seen {
+		if now.Sub(seen.at) >= t.ttl {
 			delete(t.seen, k)
 		}
 	}

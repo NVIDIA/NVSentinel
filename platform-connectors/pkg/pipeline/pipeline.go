@@ -18,6 +18,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -30,6 +31,15 @@ import (
 type Transformer interface {
 	Transform(ctx context.Context, event *pb.HealthEvent) error
 	Name() string
+}
+
+// Prewarmer is a transformer that can prepare for a whole batch at once, for
+// example by reading every distinct node of the batch concurrently, so the
+// per-event pass does not pay for misses one after another. The error reports
+// work the batch budget cut short, so the caller can defer the batch instead
+// of processing events whose gate could not be evaluated.
+type Prewarmer interface {
+	Prewarm(ctx context.Context, events []*pb.HealthEvent) error
 }
 
 // Pipeline runs configured transformers for each event.
@@ -53,6 +63,23 @@ func (p *Pipeline) Close() {
 			slog.Warn("Failed to close pipeline transformer", "transformer", t.Name(), "error", err)
 		}
 	}
+}
+
+// Prewarm lets every transformer that can prepare for the batch do so, before
+// the events are processed one by one. The returned error joins what they
+// could not finish inside the budget; nil in the common case.
+func (p *Pipeline) Prewarm(ctx context.Context, events []*pb.HealthEvent) error {
+	var errs []error
+
+	for _, t := range p.transformers {
+		if prewarmer, ok := t.(Prewarmer); ok {
+			if err := prewarmer.Prewarm(ctx, events); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
 // Process applies the pipeline to the event.

@@ -17,10 +17,12 @@ package server
 import (
 	"context"
 	"testing"
+	"time"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
 	"github.com/stretchr/testify/assert"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type storeOnlyTransformer struct {
@@ -103,4 +105,23 @@ func TestHealthEventOccurredV1_PipelineMutationsKeepFullBatch(t *testing.T) {
 	assert.Equal(t, pb.ProcessingStrategy_EXECUTE_REMEDIATION, healthEvents.Events[0].ProcessingStrategy)
 	assert.Equal(t, "duplicate", healthEvents.Events[1].CheckName)
 	assert.Equal(t, pb.ProcessingStrategy_STORE_ONLY, healthEvents.Events[1].ProcessingStrategy)
+}
+
+func TestApplyEventDefaultsAndValidate_StampsMissingGeneratedTimestamp(t *testing.T) {
+	missing := &pb.HealthEvent{NodeName: "node-a", CheckName: "check"}
+	kept := &pb.HealthEvent{
+		NodeName:           "node-a",
+		CheckName:          "check",
+		GeneratedTimestamp: timestamppb.New(time.Unix(1700000000, 0)),
+	}
+
+	before := time.Now().Add(-time.Second)
+
+	assert.NoError(t, ApplyEventDefaultsAndValidate([]*pb.HealthEvent{missing, kept}))
+
+	// The event that arrived without a timestamp carries the arrival time;
+	// the one that had a timestamp keeps it.
+	assert.NotNil(t, missing.GeneratedTimestamp)
+	assert.False(t, missing.GeneratedTimestamp.AsTime().Before(before))
+	assert.Equal(t, int64(1700000000), kept.GeneratedTimestamp.GetSeconds())
 }

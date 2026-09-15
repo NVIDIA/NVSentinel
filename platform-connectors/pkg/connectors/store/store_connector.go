@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,8 +29,18 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	_ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers"
 	"github.com/nvidia/nvsentinel/store-client/pkg/factory"
+)
+
+// Outcomes of a successful batch insert.
+const (
+	// OutcomeStored means every document of the batch was inserted.
+	OutcomeStored = "stored"
+	// OutcomeDuplicate means the only failures were duplicate-key violations of
+	// the idempotency index, i.e. a replayed batch whose events already exist.
+	OutcomeDuplicate = "duplicate"
 )
 
 type DatabaseStoreConnector struct {
@@ -39,29 +48,14 @@ type DatabaseStoreConnector struct {
 	databaseClient client.DatabaseClient
 	// resourceSinkClients are client for pushing data to the resource count sink
 	ringBuffer *ringbuffer.RingBuffer
-	nodeName   string
 	maxRetries int
-}
-
-func new(
-	databaseClient client.DatabaseClient,
-	ringBuffer *ringbuffer.RingBuffer,
-	nodeName string,
-	maxRetries int,
-) *DatabaseStoreConnector {
-	return &DatabaseStoreConnector{
-		databaseClient: databaseClient,
-		ringBuffer:     ringBuffer,
-		nodeName:       nodeName,
-		maxRetries:     maxRetries,
-	}
 }
 
 func InitializeDatabaseStoreConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuffer,
 	clientCertMountPath string, maxRetries int) (*DatabaseStoreConnector, error) {
-	nodeName := os.Getenv("NODE_NAME")
-	if nodeName == "" {
-		return nil, fmt.Errorf("NODE_NAME is not set")
+	connector := &DatabaseStoreConnector{
+		ringBuffer: ringbuffer,
+		maxRetries: maxRetries,
 	}
 
 	// Create database client factory using store-client
@@ -76,9 +70,48 @@ func InitializeDatabaseStoreConnector(ctx context.Context, ringbuffer *ringbuffe
 		return nil, fmt.Errorf("failed to create database client: %w", err)
 	}
 
-	slog.InfoContext(ctx, "Successfully initialized database store connector", "maxRetries", maxRetries)
+	connector.databaseClient = databaseClient
 
-	return new(databaseClient, ringbuffer, nodeName, maxRetries), nil
+	slog.InfoContext(ctx, "Successfully initialized database store connector",
+		"maxRetries", maxRetries)
+
+	return connector, nil
+}
+
+// EnsureIdempotencyIndex builds a short-lived database client and idempotently
+// creates the unique partial idempotency index on the health events
+// collection. It backs the PC_MODE=ensure-idempotency-index Job; the caller
+// owns the bound of one attempt, and the Job retries a failed attempt.
+func EnsureIdempotencyIndex(ctx context.Context, clientCertMountPath string) error {
+	clientFactory, err := createClientFactory(clientCertMountPath)
+	if err != nil {
+		return fmt.Errorf("failed to create database client factory: %w", err)
+	}
+
+	databaseClient, err := clientFactory.CreateDatabaseClient(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create database client: %w", err)
+	}
+
+	defer func() {
+		if closeErr := databaseClient.Close(ctx); closeErr != nil {
+			slog.WarnContext(ctx, "Error closing database client after index ensure", "error", closeErr)
+		}
+	}()
+
+	if err := databaseClient.EnsureHealthEventIdempotencyIndex(ctx); err != nil {
+		return fmt.Errorf("failed to ensure idempotency index: %w", err)
+	}
+
+	return nil
+}
+
+// VerifyIdempotencyIndex reports whether the idempotency index exists with the
+// expected full definition and a completed build. The deployment platform
+// connector gates its readiness on this, so no client can write before the
+// index Job has completed.
+func (r *DatabaseStoreConnector) VerifyIdempotencyIndex(ctx context.Context) error {
+	return r.databaseClient.VerifyHealthEventIdempotencyIndex(ctx)
 }
 
 func createClientFactory(databaseClientCertMountPath string) (*factory.ClientFactory, error) {
@@ -114,7 +147,7 @@ func (r *DatabaseStoreConnector) FetchAndProcessHealthMetric(ctx context.Context
 
 			eventCount := len(healthEvents.GetEvents())
 
-			err := r.insertHealthEvents(batchCtx, healthEvents)
+			_, err := r.insertHealthEvents(batchCtx, healthEvents, false)
 			if err != nil {
 				retryCount := r.ringBuffer.NumRequeues(queuedHealthEvents)
 
@@ -183,10 +216,32 @@ func (r *DatabaseStoreConnector) Disconnect(ctx context.Context) error {
 	return nil
 }
 
+// InsertBatch inserts one batch and reports its outcome (OutcomeStored or
+// OutcomeDuplicate), or an error the caller may retry. The deployment platform
+// connector calls it from inside the request instead of through the queue.
+func (r *DatabaseStoreConnector) InsertBatch(
+	ctx context.Context,
+	healthEvents *protos.HealthEvents,
+) (string, error) {
+	return r.insertHealthEvents(ctx, healthEvents, true)
+}
+
+// insertHealthEvents writes one batch. With idempotent set (the deployment
+// platform connector) the insert is ordered, resumes past duplicates on the
+// idempotency index, and such a duplicate counts as success; otherwise it is
+// today's single ordered InsertMany, unchanged for the node-local DaemonSet.
 func (r *DatabaseStoreConnector) insertHealthEvents(
 	ctx context.Context,
 	healthEvents *protos.HealthEvents,
-) error {
+	idempotent bool,
+) (string, error) {
+	// An empty batch is a success before any datastore call: on MongoDB the
+	// driver rejects an empty insert with ErrEmptySlice, which classifies as
+	// retryable and would burn the whole retry budget.
+	if len(healthEvents.GetEvents()) == 0 {
+		return OutcomeStored, nil
+	}
+
 	// Prepare all documents for batch insertion
 	ctx, span := tracing.StartSpan(ctx, "platform_connector.store.insert_health_events")
 	defer span.End()
@@ -208,6 +263,13 @@ func (r *DatabaseStoreConnector) insertHealthEvents(
 		}
 
 		clonedHealthEvent.Metadata[tracing.MetadataKeyTraceID] = traceID
+
+		if !idempotent {
+			// Only the deployment platform connector stamps this key. One that
+			// arrives on the socket path was copied from a stored document (a
+			// derived event) and would collide with it under the unique index.
+			delete(clonedHealthEvent.Metadata, datastore.HealthEventIdempotencyKeyMetadataField)
+		}
 
 		slog.DebugContext(ctx, "Processing health event for insertion", "index", i, "nodeName", clonedHealthEvent.NodeName)
 
@@ -233,24 +295,60 @@ func (r *DatabaseStoreConnector) insertHealthEvents(
 	dbCtx, dbSpan := tracing.StartSpan(ctx, "platform_connector.db.insert")
 	defer dbSpan.End()
 
-	// Insert all documents in a single batch operation
-	// This ensures MongoDB generates INSERT operations (not UPDATE) for change streams
-	// Note: InsertMany is already atomic - either all documents are inserted or none are
-	_, err := r.databaseClient.InsertMany(dbCtx, healthEventWithStatusList)
+	var (
+		result *client.InsertManyResult
+		err    error
+	)
+
+	if idempotent {
+		// In order, and past a document that already exists under the
+		// idempotency index, so a resent batch inserts only its missing events
+		// and a monitor's events land in the order it sent them.
+		result, err = r.databaseClient.InsertManyIdempotent(dbCtx, healthEventWithStatusList)
+	} else {
+		// Insert all documents in a single batch operation. This ensures
+		// MongoDB generates INSERT operations (not UPDATE) for change streams.
+		// The insert is ordered, not atomic: it stops at the first failure and
+		// the documents before it stay stored, and without an idempotency key
+		// a resend of the batch stores those again.
+		result, err = r.databaseClient.InsertMany(dbCtx, healthEventWithStatusList)
+	}
+
 	if err != nil {
-		slog.ErrorContext(ctx, "InsertMany failed", "error", err)
+		slog.ErrorContext(ctx, "Insert failed", "error", err, "idempotent", idempotent)
 		tracing.RecordError(dbSpan, err)
 		dbSpan.SetAttributes(
 			attribute.String("platform_connector.error.type", "insert_many_failed"),
 			attribute.String("platform_connector.error.message", err.Error()),
 		)
 
-		return fmt.Errorf("insertMany failed: %w", err)
+		return "", fmt.Errorf("insertMany failed: %w", err)
+	}
+
+	if result != nil && result.DuplicateCount > 0 {
+		// Documents already stored under the idempotency index are a resent
+		// batch: exactly the success the key is for.
+		if len(result.InsertedIDs) > 0 {
+			// A resend after a partial write: the missing events are now
+			// stored, so this is a store, not a pure replay.
+			slog.InfoContext(ctx, "Resent batch stored its missing events",
+				"insertedCount", len(result.InsertedIDs),
+				"duplicateCount", result.DuplicateCount)
+			dbSpan.SetAttributes(attribute.String("platform_connector.store.status", "partial_resend"))
+
+			return OutcomeStored, nil
+		}
+
+		slog.InfoContext(ctx, "Resent batch detected, events already stored",
+			"duplicateCount", result.DuplicateCount)
+		dbSpan.SetAttributes(attribute.String("platform_connector.store.status", "duplicate"))
+
+		return OutcomeDuplicate, nil
 	}
 
 	slog.DebugContext(ctx, "InsertMany completed successfully")
 
-	return nil
+	return OutcomeStored, nil
 }
 
 func GenerateRandomObjectID() string {

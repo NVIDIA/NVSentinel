@@ -15,6 +15,7 @@
 package dedup
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -24,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 func withNow(now func() time.Time) trackerOption {
@@ -255,4 +257,45 @@ func TestClearUnhealthyCounterpartNoopForUnhealthyEvent(t *testing.T) {
 
 	assert.False(t, cleared)
 	assert.True(t, tracker.checkAndMark(event))
+}
+
+// TestCheckAndMark_SameIdempotencyKeyResend_NotDuplicate: the deployment platform
+// connector stamps a per-event idempotency key and runs dedup before the
+// write. A resend with the same key (the write failed, the client retried)
+// keeps its first decision; a different batch with the same content is a
+// duplicate; events without a key (the socket path) behave as before.
+func TestCheckAndMark_SameIdempotencyKeyResend_NotDuplicate(t *testing.T) {
+	tracker := newTracker(time.Minute)
+
+	stamped := func(key string) *pb.HealthEvent {
+		return &pb.HealthEvent{
+			NodeName:  "node-a",
+			CheckName: "SysLogsXIDError",
+			ErrorCode: []string{"79"},
+			Metadata:  map[string]string{datastore.HealthEventIdempotencyKeyMetadataField: key},
+		}
+	}
+
+	require.False(t, tracker.checkAndMark(stamped("pod-1#k1#0")))
+	assert.False(t, tracker.checkAndMark(stamped("pod-1#k1#0")), "the resend keeps its first decision")
+	assert.True(t, tracker.checkAndMark(stamped("pod-1#k2#0")), "another batch with the same content is a duplicate")
+	assert.False(t, tracker.checkAndMark(stamped("pod-1#k1#0")), "and the resend still is not")
+
+	unstamped := newTracker(time.Minute)
+	plain := &pb.HealthEvent{NodeName: "node-a", CheckName: "SysLogsXIDError", ErrorCode: []string{"79"}}
+	require.False(t, unstamped.checkAndMark(plain))
+	assert.True(t, unstamped.checkAndMark(plain), "without keys every repeat is a duplicate")
+}
+
+// TestCheckAndMark_CapacityReached_StaysBounded: the tracker never holds more than maxEntries keys;
+// the key just marked always survives the eviction.
+func TestCheckAndMark_CapacityReached_StaysBounded(t *testing.T) {
+	tracker := newTracker(time.Hour, withMaxEntries(8))
+
+	for i := range 50 {
+		event := &pb.HealthEvent{NodeName: fmt.Sprintf("node-%d", i), CheckName: "SysLogsXIDError", ErrorCode: []string{"79"}}
+		require.False(t, tracker.checkAndMark(event))
+		assert.LessOrEqual(t, len(tracker.seen), 8)
+		assert.True(t, tracker.checkAndMark(event), "the key just marked is still remembered")
+	}
 }

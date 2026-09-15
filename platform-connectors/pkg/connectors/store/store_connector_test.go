@@ -17,7 +17,6 @@ package store
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
@@ -25,9 +24,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 // Mock DatabaseClient
@@ -129,7 +130,6 @@ func (m *mockDatabaseClient) VerifyHealthEventIdempotencyIndex(ctx context.Conte
 
 func TestInsertHealthEvents(t *testing.T) {
 	ringBuffer := ringbuffer.NewRingBuffer("testRingBuffer", context.Background())
-	nodeName := "testNode"
 
 	t.Run("successful insertion", func(t *testing.T) {
 		mockClient := &mockDatabaseClient{}
@@ -140,15 +140,15 @@ func TestInsertHealthEvents(t *testing.T) {
 		connector := &DatabaseStoreConnector{
 			databaseClient: mockClient,
 			ringBuffer:     ringBuffer,
-			nodeName:       nodeName,
 		}
 
 		healthEvents := &protos.HealthEvents{
 			Events: []*protos.HealthEvent{{ComponentClass: "abc"}},
 		}
 
-		err := connector.insertHealthEvents(context.Background(), healthEvents)
+		outcome, err := connector.insertHealthEvents(context.Background(), healthEvents, false)
 		require.NoError(t, err)
+		require.Equal(t, OutcomeStored, outcome)
 		mockClient.AssertExpectations(t)
 	})
 
@@ -161,16 +161,50 @@ func TestInsertHealthEvents(t *testing.T) {
 		connector := &DatabaseStoreConnector{
 			databaseClient: mockClient,
 			ringBuffer:     ringBuffer,
-			nodeName:       nodeName,
 		}
 
 		healthEvents := &protos.HealthEvents{
 			Events: []*protos.HealthEvent{{ComponentClass: "abc"}},
 		}
 
-		err := connector.insertHealthEvents(context.Background(), healthEvents)
+		_, err := connector.insertHealthEvents(context.Background(), healthEvents, false)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "insertMany failed")
+		mockClient.AssertExpectations(t)
+	})
+
+	t.Run("socket path strips an inherited idempotency key", func(t *testing.T) {
+		// A derived event cloned from a stored document carries that
+		// document's key; stored as is on the socket path it would collide
+		// with it under the unique index and be dropped after the ack.
+		mockClient := &mockDatabaseClient{}
+		mockClient.On("InsertMany", mock.Anything, mock.MatchedBy(func(docs []any) bool {
+			doc, ok := docs[0].(model.HealthEventWithStatus)
+			if !ok {
+				return false
+			}
+
+			_, hasKey := doc.HealthEvent.GetMetadata()[datastore.HealthEventIdempotencyKeyMetadataField]
+
+			return !hasKey && doc.HealthEvent.GetMetadata()["providerID"] == "aws:///i-1"
+		})).Return(&client.InsertManyResult{InsertedIDs: []any{"id1"}}, nil)
+
+		connector := &DatabaseStoreConnector{databaseClient: mockClient, ringBuffer: ringBuffer}
+
+		healthEvents := &protos.HealthEvents{Events: []*protos.HealthEvent{{
+			ComponentClass: "abc",
+			Metadata: map[string]string{
+				datastore.HealthEventIdempotencyKeyMetadataField: "pod-uid#key#0",
+				"providerID": "aws:///i-1",
+			},
+		}}}
+
+		outcome, err := connector.insertHealthEvents(context.Background(), healthEvents, false)
+		require.NoError(t, err)
+		require.Equal(t, OutcomeStored, outcome)
+		require.Equal(t, "pod-uid#key#0",
+			healthEvents.Events[0].Metadata[datastore.HealthEventIdempotencyKeyMetadataField],
+			"the incoming event is left as it was; only the stored copy loses the key")
 		mockClient.AssertExpectations(t)
 	})
 }
@@ -181,7 +215,6 @@ func TestFetchAndProcessHealthMetric(t *testing.T) {
 		defer cancel()
 
 		ringBuffer := ringbuffer.NewRingBuffer("testRingBuffer1", ctx)
-		nodeName := "testNode1"
 		mockClient := &mockDatabaseClient{}
 
 		// Setup mock expectations
@@ -190,7 +223,6 @@ func TestFetchAndProcessHealthMetric(t *testing.T) {
 		connector := &DatabaseStoreConnector{
 			databaseClient: mockClient,
 			ringBuffer:     ringBuffer,
-			nodeName:       nodeName,
 		}
 
 		healthEvent := &protos.HealthEvent{}
@@ -222,7 +254,6 @@ func TestFetchAndProcessHealthMetric(t *testing.T) {
 		defer cancel()
 
 		ringBuffer := ringbuffer.NewRingBuffer("testRingBuffer2", ctx)
-		nodeName := "testNode2"
 		mockClient := &mockDatabaseClient{}
 
 		// Setup mock expectations for failure
@@ -231,7 +262,6 @@ func TestFetchAndProcessHealthMetric(t *testing.T) {
 		connector := &DatabaseStoreConnector{
 			databaseClient: mockClient,
 			ringBuffer:     ringBuffer,
-			nodeName:       nodeName,
 		}
 
 		healthEvent := &protos.HealthEvent{
@@ -306,26 +336,6 @@ func TestGenerateRandomObjectID(t *testing.T) {
 	require.Len(t, objectID, 36) // UUID string is 36 characters
 }
 
-func TestInitializeDatabaseStoreConnector(t *testing.T) {
-	t.Run("missing NODE_NAME environment variable", func(t *testing.T) {
-		// Unset NODE_NAME if it exists
-		originalNodeName := os.Getenv("NODE_NAME")
-		os.Unsetenv("NODE_NAME")
-		defer func() {
-			if originalNodeName != "" {
-				os.Setenv("NODE_NAME", originalNodeName)
-			}
-		}()
-
-		ringBuffer := ringbuffer.NewRingBuffer("test", context.Background())
-		connector, err := InitializeDatabaseStoreConnector(context.Background(), ringBuffer, "", 3)
-
-		require.Error(t, err)
-		require.Nil(t, connector)
-		require.Contains(t, err.Error(), "NODE_NAME is not set")
-	})
-}
-
 // TestMessageRetriedOnMongoDBFailure verifies that
 // messages are retried with exponential backoff when MongoDB write fails.
 func TestMessageRetriedOnMongoDBFailure(t *testing.T) {
@@ -334,7 +344,6 @@ func TestMessageRetriedOnMongoDBFailure(t *testing.T) {
 
 	ringBuffer := ringbuffer.NewRingBuffer("testRetryBehavior", ctx,
 		ringbuffer.WithRetryConfig(10*time.Millisecond, 50*time.Millisecond))
-	nodeName := "testNode"
 	mockClient := &mockDatabaseClient{}
 
 	// First 2 calls fail, 3rd call succeeds
@@ -346,7 +355,6 @@ func TestMessageRetriedOnMongoDBFailure(t *testing.T) {
 	connector := &DatabaseStoreConnector{
 		databaseClient: mockClient,
 		ringBuffer:     ringBuffer,
-		nodeName:       nodeName,
 		maxRetries:     3,
 	}
 
@@ -387,7 +395,6 @@ func TestMessageDroppedAfterMaxRetries(t *testing.T) {
 
 	ringBuffer := ringbuffer.NewRingBuffer("testMaxRetries", ctx,
 		ringbuffer.WithRetryConfig(10*time.Millisecond, 50*time.Millisecond))
-	nodeName := "testNode"
 	mockClient := &mockDatabaseClient{}
 
 	// Always fail to simulate persistent MongoDB outage
@@ -399,7 +406,6 @@ func TestMessageDroppedAfterMaxRetries(t *testing.T) {
 	connector := &DatabaseStoreConnector{
 		databaseClient: mockClient,
 		ringBuffer:     ringBuffer,
-		nodeName:       nodeName,
 		maxRetries:     3,
 	}
 
@@ -431,4 +437,89 @@ func TestMessageDroppedAfterMaxRetries(t *testing.T) {
 	// Verify we attempted initial call plus 3 retries (4 total)
 	mockClient.AssertNumberOfCalls(t, "InsertMany", 4)
 	cancel()
+}
+
+// simpleHealthEvents builds a one-event batch for the tests below.
+func simpleHealthEvents() *protos.HealthEvents {
+	return &protos.HealthEvents{
+		Events: []*protos.HealthEvent{{
+			NodeName:           "gpu-node-1",
+			GeneratedTimestamp: timestamppb.New(time.Now()),
+			CheckName:          "GpuXidError",
+		}},
+	}
+}
+
+// TestDuplicateOnlyReplayIsSuccess verifies idempotency: a resend whose every
+// document was already stored under the idempotency index inserted nothing
+// and counts as success, with no retry.
+func TestDuplicateOnlyReplayIsSuccess(t *testing.T) {
+	mockClient := &mockDatabaseClient{}
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Return(&client.InsertManyResult{InsertedIDs: []any{}, DuplicateCount: 1}, nil).Once()
+
+	connector := &DatabaseStoreConnector{databaseClient: mockClient, maxRetries: 3}
+
+	outcome, err := connector.InsertBatch(context.Background(), simpleHealthEvents())
+	require.NoError(t, err)
+	require.Equal(t, OutcomeDuplicate, outcome)
+	mockClient.AssertNumberOfCalls(t, "InsertManyIdempotent", 1)
+}
+
+// TestPartialReplayStoresMissingEvents pins partial replay: a resend that
+// inserted some documents and skipped the rest as already stored is terminal
+// success, no retry, and the outcome is "stored", not "duplicate", because
+// something was written.
+func TestPartialReplayStoresMissingEvents(t *testing.T) {
+	mockClient := &mockDatabaseClient{}
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Return(&client.InsertManyResult{InsertedIDs: []any{"id-2"}, DuplicateCount: 1}, nil).Once()
+
+	connector := &DatabaseStoreConnector{databaseClient: mockClient}
+
+	outcome, err := connector.InsertBatch(context.Background(), simpleHealthEvents())
+	require.NoError(t, err)
+	require.Equal(t, OutcomeStored, outcome, "the resend inserted something, so it is a store")
+	mockClient.AssertExpectations(t)
+}
+
+// TestEmptyBatchIsTerminalSuccess verifies an empty batch never reaches the
+// datastore: on MongoDB the driver would return ErrEmptySlice, which
+// classifies as retryable and would burn the whole retry budget.
+func TestEmptyBatchIsTerminalSuccess(t *testing.T) {
+	mockClient := &mockDatabaseClient{} // deliberately NO InsertManyIdempotent expectation
+
+	connector := &DatabaseStoreConnector{databaseClient: mockClient, maxRetries: 3}
+
+	outcome, err := connector.InsertBatch(context.Background(), &protos.HealthEvents{})
+	require.NoError(t, err)
+	require.Equal(t, OutcomeStored, outcome)
+	mockClient.AssertNotCalled(t, "InsertManyIdempotent")
+	mockClient.AssertExpectations(t)
+}
+
+// TestDuplicateOnOtherIndexStaysError verifies the boundary: a duplicate on
+// any unique constraint other than the idempotency index remains a failure,
+// and the server's answer about the document survives into the error.
+func TestDuplicateOnOtherIndexStaysError(t *testing.T) {
+	otherIndexFailure := &datastore.BulkWriteFailure{
+		Failed: datastore.BulkDocumentError{
+			DocumentIndex: 0,
+			IndexName:     "some_other_unique_index",
+			Duplicate:     true,
+			Message:       "E11000 duplicate key error collection: db.HealthEvents index: some_other_unique_index",
+		},
+	}
+
+	mockClient := &mockDatabaseClient{}
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Return(nil, error(otherIndexFailure))
+
+	connector := &DatabaseStoreConnector{databaseClient: mockClient}
+
+	_, err := connector.InsertBatch(context.Background(), simpleHealthEvents())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "insertMany failed")
+	require.Contains(t, err.Error(), `duplicate on index "some_other_unique_index"`)
+	require.Contains(t, err.Error(), "E11000", "the database's answer is kept for the log")
 }

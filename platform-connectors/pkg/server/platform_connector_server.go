@@ -24,6 +24,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -52,6 +53,39 @@ type PlatformConnectorServer struct {
 	Pipeline *pipeline.Pipeline
 }
 
+// ApplyEventDefaultsAndValidate fills per-event defaults in place and rejects
+// batches that violate the request contract. It is shared by the node-local
+// handler below and the deployment platform connector, so both roles accept
+// exactly the same batches.
+//
+// An event without a GeneratedTimestamp is stamped with the arrival time:
+// every consumer of the stored event reads the timestamp, and the health
+// events analyzer cannot process an event that has none, so storing one would
+// leave the analyzer stuck at that event on every restart.
+func ApplyEventDefaultsAndValidate(events []*pb.HealthEvent) error {
+	for _, event := range events {
+		// Custom monitors that don't set processingStrategy will default to EXECUTE_REMEDIATION.
+		if event.ProcessingStrategy == pb.ProcessingStrategy_UNSPECIFIED {
+			event.ProcessingStrategy = pb.ProcessingStrategy_EXECUTE_REMEDIATION
+		}
+
+		if event.GeneratedTimestamp == nil {
+			slog.Warn("HealthEvent has nil GeneratedTimestamp, stamping the arrival time",
+				"node", event.NodeName, "agent", event.Agent, "check", event.CheckName)
+
+			event.GeneratedTimestamp = timestamppb.Now()
+		}
+
+		if event.RecommendedAction == pb.RecommendedAction_CUSTOM && event.CustomRecommendedAction == "" {
+			return status.Errorf(codes.InvalidArgument,
+				"recommendedAction is CUSTOM but customRecommendedAction is empty (node=%s, agent=%s)",
+				event.NodeName, event.Agent)
+		}
+	}
+
+	return nil
+}
+
 func (p *PlatformConnectorServer) HealthEventOccurredV1(ctx context.Context,
 	he *pb.HealthEvents) (*empty.Empty, error) {
 	ctx, span := tracing.StartSpan(ctx, "platform_connector.grpc.health_events_received")
@@ -65,17 +99,8 @@ func (p *PlatformConnectorServer) HealthEventOccurredV1(ctx context.Context,
 	slog.InfoContext(ctx, "Health events received", "events", he)
 	healthEventsReceived.Add(float64(eventCount))
 
-	for _, event := range he.Events {
-		// Custom monitors that don't set processingStrategy will default to EXECUTE_REMEDIATION.
-		if event.ProcessingStrategy == pb.ProcessingStrategy_UNSPECIFIED {
-			event.ProcessingStrategy = pb.ProcessingStrategy_EXECUTE_REMEDIATION
-		}
-
-		if event.RecommendedAction == pb.RecommendedAction_CUSTOM && event.CustomRecommendedAction == "" {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"recommendedAction is CUSTOM but customRecommendedAction is empty (node=%s, agent=%s)",
-				event.NodeName, event.Agent)
-		}
+	if err := ApplyEventDefaultsAndValidate(he.Events); err != nil {
+		return nil, err
 	}
 
 	if p.Pipeline != nil {

@@ -126,3 +126,26 @@ func TestPipelineOrder(t *testing.T) {
 
 	assert.Equal(t, []string{"first", "second"}, order)
 }
+
+// budgetPrewarmer is a transformer whose batch preparation reports what the
+// budget cut short.
+type budgetPrewarmer struct {
+	mockTransformer
+	err error
+}
+
+func (b *budgetPrewarmer) Prewarm(context.Context, []*pb.HealthEvent) error { return b.err }
+
+// TestPipeline_PrewarmReportsWhatTheBudgetCutShort: the pipeline surfaces a
+// prewarmer's error so the caller can defer the batch; transformers that do
+// not prewarm, and prewarmers that finished, add nothing.
+func TestPipeline_PrewarmReportsWhatTheBudgetCutShort(t *testing.T) {
+	cut := &budgetPrewarmer{mockTransformer: mockTransformer{name: "cut"}, err: fmt.Errorf("2 of 3 nodes unread")}
+	done := &budgetPrewarmer{mockTransformer: mockTransformer{name: "done"}}
+	plain := &mockTransformer{name: "plain"}
+
+	err := New(plain, done, cut).Prewarm(context.Background(), []*pb.HealthEvent{{NodeName: "n1"}})
+	assert.ErrorContains(t, err, "2 of 3 nodes unread")
+
+	assert.NoError(t, New(plain, done).Prewarm(context.Background(), []*pb.HealthEvent{{NodeName: "n1"}}))
+}

@@ -22,7 +22,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -84,18 +83,10 @@ func createTestAugmentor(t *testing.T, config *Config) *Augmentor {
 		}
 	}
 
-	require.NoError(t, config.Validate(), "test config must be valid")
+	augmentor, err := New(context.Background(), config, testClient)
+	require.NoError(t, err, "test config must be valid")
 
-	cache := expirable.NewLRU[string, *NodeMetadata](
-		config.CacheSize,
-		nil,
-		config.CacheTTL,
-	)
-	return &Augmentor{
-		config:    config,
-		clientset: testClient,
-		cache:     cache,
-	}
+	return augmentor
 }
 
 // TestAugmentorTransform tests various augmentation scenarios

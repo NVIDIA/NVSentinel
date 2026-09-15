@@ -178,8 +178,8 @@ submitting health events naming another node. See
 
 | Metric Name | Type | Labels | Description |
 |------------|------|--------|-------------|
-| `k8s_platform_connector_node_condition_update_total` | Counter | `status` | Total number of node condition updates by status. Status values: `success`, `failed` |
-| `k8s_platform_connector_node_event_operations_total` | Counter | `node_name`, `operation`, `status` | Total number of node event operations by type and status. Operation values: `create`, `update`. Status values: `success`, `failed` |
+| `k8s_platform_connector_node_condition_update_total` | Counter | `status` | Total number of node condition updates by status. Status values: `success`, `failed`, `skipped` (the deployment platform connector skips updates that would change nothing) |
+| `k8s_platform_connector_node_event_operations_total` | Counter | `operation`, `status` | Total number of node event operations by type and status. Operation values: `create`, `update`. Status values: `success`, `failed`, `skipped` (the deployment platform connector skips repeats of a fault whose Event is already written) |
 | `k8s_platform_connector_node_condition_update_duration_milliseconds` | Histogram | - | Duration of node condition updates in milliseconds. Uses linear buckets (0, 10, 500) |
 | `k8s_platform_connector_node_event_update_create_duration_milliseconds` | Histogram | - | Duration of node event updates/creations in milliseconds. Uses linear buckets (0, 10, 500) |
 
@@ -219,6 +219,16 @@ sum by (agent, check_name) (rate(health_events_total{recommended_action!="NONE",
 # Per node, correct for every agent including health-events-analyzer
 sum by (node) (rate(health_events_total{recommended_action!="NONE"}[1h]))
 ```
+
+### Deployment Platform Connector Metrics
+
+The central role (`PC_MODE=deployment`) exposes the metrics above for its Kubernetes connector plus these request-level ones. Alert on the last two. With `platformConnector.promConnector.enabled` it also counts every accepted batch in `health_events_total` (see the Prometheus connector section above), so the same dashboards work in both modes.
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `platform_connector_deployment_request_duration_seconds` | Histogram | `outcome` | Duration of health event batch requests, by outcome: `stored`, `duplicate` (a resend already stored), `rejected` (the batch is invalid or outside the caller's scope), `failed` (the write did not succeed; the client retries); `deferred` is a batch answered Unavailable before any write because the node metadata of a node it names was not read inside the pipeline budget, so the caller resends it. |
+| `platform_connector_deployment_condition_update_failures_total` | Counter | `reason` | Node condition updates that failed (`failed`) or ran out of time (`timeout`) after the batch was acknowledged; the node shows the old state until the monitor next reports |
+| `platform_connector_deployment_scope_violations_total` | Counter | `class` | Batches rejected for naming a node outside the caller token's scope: `no-node-claim` (the token is bound to no node) or `node-scope` (a node-local publisher named another node) |
 
 ### Workqueue Metrics
 

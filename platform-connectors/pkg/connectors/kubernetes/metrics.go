@@ -23,6 +23,10 @@ import (
 const (
 	StatusSuccess = "success"
 	StatusFailed  = "failed"
+	// StatusSkipped counts writes that were not made because they would have
+	// changed nothing: a batch that leaves the node condition as it is, or a
+	// repeat of a fault whose Event is already written (UpdateOnlyOnChange).
+	StatusSkipped = "skipped"
 )
 
 // Operation constants for metrics
@@ -38,10 +42,12 @@ var (
 		Help: "The total number of node condition updates by status",
 	}, []string{"status"})
 
+	// No node_name label: the deployment platform connector writes Events for
+	// the whole fleet, and one series per node would be fleet-sized per replica.
 	nodeEventOperationsCounter = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "k8s_platform_connector_node_event_operations_total",
 		Help: "The total number of node event operations by type and status",
-	}, []string{"node_name", "operation", "status"})
+	}, []string{"operation", "status"})
 
 	nodeConditionUpdateDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "k8s_platform_connector_node_condition_update_duration_milliseconds",

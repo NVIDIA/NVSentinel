@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log/slog"
 	"net"
@@ -69,6 +70,8 @@ func (r *K8sConnector) updateNodeConditions(ctx context.Context, healthEvents []
 		attribute.Int("platform_connector.k8s.node_condition_update_count", len(conditionEventsMap)),
 	)
 
+	skipped := false
+
 	err := retry.OnError(retry.DefaultRetry, func(err error) bool {
 		isRetriable := apierrors.IsConflict(err) || isTemporaryError(err)
 		if isRetriable {
@@ -82,19 +85,20 @@ func (r *K8sConnector) updateNodeConditions(ctx context.Context, healthEvents []
 
 		return isRetriable
 	}, func() error {
-		node, err := r.clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-		if err != nil {
-			return err
-		}
+		var err error
 
-		for conditionType, events := range conditionEventsMap {
-			r.processNodeCondition(ctx, node, conditionType, events)
-		}
-
-		_, err = r.clientset.CoreV1().Nodes().UpdateStatus(ctx, node, metav1.UpdateOptions{})
+		skipped, err = r.readAndUpdateNode(ctx, nodeName, conditionEventsMap)
 
 		return err
 	})
+
+	if skipped {
+		nodeConditionUpdateCounter.WithLabelValues(StatusSkipped).Inc()
+		slog.DebugContext(ctx, "Node conditions unchanged by batch, skipping update", "node", nodeName)
+
+		return false, nil
+	}
+
 	if err != nil {
 		conditionTypes := make([]string, 0, len(conditionEventsMap))
 		for ct := range conditionEventsMap {
@@ -118,10 +122,43 @@ func (r *K8sConnector) updateNodeConditions(ctx context.Context, healthEvents []
 	return true, nil
 }
 
+// readAndUpdateNode is one attempt of updateNodeConditions: read the node,
+// fold the events into its conditions and write the status back. It reports
+// skipped=true when the batch would leave the node showing what it already
+// shows and UpdateOnlyOnChange is set: a repeat from a monitor that reports
+// every cycle, or a resent batch, then costs no update call.
+func (r *K8sConnector) readAndUpdateNode(
+	ctx context.Context, nodeName string,
+	conditionEventsMap map[corev1.NodeConditionType][]*protos.HealthEvent,
+) (bool, error) {
+	node, err := r.clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		return false, err
+	}
+
+	changed := false
+
+	for conditionType, events := range conditionEventsMap {
+		if r.processNodeCondition(ctx, node, conditionType, events) {
+			changed = true
+		}
+	}
+
+	if r.config.UpdateOnlyOnChange && !changed {
+		return true, nil
+	}
+
+	_, err = r.clientset.CoreV1().Nodes().UpdateStatus(ctx, node, metav1.UpdateOptions{})
+
+	return false, err
+}
+
 func sortHealthEventsByTimestamp(events []*protos.HealthEvent) []*protos.HealthEvent {
 	sorted := slices.Clone(events)
 
-	slices.SortFunc(sorted, func(a, b *protos.HealthEvent) int {
+	// Stable, so events with equal timestamps keep their wire order and every
+	// path that sorts a batch or a subset of it agrees.
+	slices.SortStableFunc(sorted, func(a, b *protos.HealthEvent) int {
 		ti := a.GeneratedTimestamp
 		tj := b.GeneratedTimestamp
 
@@ -158,12 +195,16 @@ func buildConditionEventsMap(events []*protos.HealthEvent) map[corev1.NodeCondit
 	return conditionMap
 }
 
+// processNodeCondition folds events into the node's condition of the given
+// type, in place. It reports whether the condition's status, reason or message
+// changed (a new condition counts as a change); a refreshed heartbeat alone
+// does not.
 func (r *K8sConnector) processNodeCondition(
 	ctx context.Context, node *corev1.Node,
 	conditionType corev1.NodeConditionType, events []*protos.HealthEvent,
-) {
+) bool {
 	if len(events) == 0 {
-		return
+		return false
 	}
 
 	latestEvent := events[len(events)-1]
@@ -202,11 +243,18 @@ func (r *K8sConnector) processNodeCondition(
 		matchedCondition.LastTransitionTime = latestTime
 	}
 
-	if conditionExists {
-		node.Status.Conditions[conditionIndex] = matchedCondition
-	} else {
+	if !conditionExists {
 		node.Status.Conditions = append(node.Status.Conditions, matchedCondition)
+
+		return true
 	}
+
+	previous := node.Status.Conditions[conditionIndex]
+	node.Status.Conditions[conditionIndex] = matchedCondition
+
+	return previous.Status != matchedCondition.Status ||
+		previous.Reason != matchedCondition.Reason ||
+		previous.Message != matchedCondition.Message
 }
 
 func safeTimestamp(ctx context.Context, ts *timestamppb.Timestamp) time.Time {
@@ -312,6 +360,15 @@ func (r *K8sConnector) addMessageIfNotExist(messages []string, healthEvent *prot
 
 	for _, msg := range messages {
 		if fmt.Sprintf("%s;", msg) == newMessage {
+			return messages
+		}
+
+		// Updating on change only: an entry naming the same fault (error
+		// codes, entity, action) is that fault, whatever its text. Compaction
+		// at the length cap rewrites the text, so without this a saturated
+		// message would gain the fault again, move it, and count as a change
+		// on every repeat.
+		if r.config.UpdateOnlyOnChange && messagesMatchByIdentity(msg, newMessage[:len(newMessage)-1]) {
 			return messages
 		}
 	}
@@ -490,46 +547,176 @@ func messageMatchesAnyErrorCode(msg string, errorCodes []string) bool {
 	return false
 }
 
-// maxCachedNodeEventNames bounds the dedupe cache; overflow evicts only
-// the least-recently-used entry.
-const maxCachedNodeEventNames = 1024
+// maxRememberedNodeChecks bounds the Event memory of the node-local
+// connector, which serves one node; the deployment platform connector sizes
+// it for the fleet (K8sConnectorConfig.NodeEventMemorySize). Overflow evicts
+// only the least-recently-used entry, which costs one extra Event write.
+const maxRememberedNodeChecks = 1024
 
-// nodeEventDedupeKey identifies a logically-identical node event.
-func nodeEventDedupeKey(event *corev1.Event, nodeName string) string {
-	return fmt.Sprintf("%s\x00%s\x00%s\x00%s", nodeName, event.Type, event.Reason, event.Message)
+// nodeEventRefreshInterval is how long UpdateOnlyOnChange skips repeats of a
+// fault whose Event is already written. Once it has passed, the next repeat
+// refreshes the Event (count and timestamp), so a fault that lasts stays in
+// the Event list, which drops Events an hour after their last write. It also
+// bounds how long a replica can miss a recurrence when the recovery in
+// between was reported to another replica.
+const nodeEventRefreshInterval = 10 * time.Minute
+
+// maxRememberedMessagesPerCheck bounds the Events remembered for one check
+// on one node. A check reports a handful of distinct faults at a time, and
+// the message is producer-controlled, so the map must not grow with it; past
+// the bound the check's memory is dropped and its faults are announced again,
+// which costs one extra Event write each.
+const maxRememberedMessagesPerCheck = 32
+
+// rememberedEvent is the Kubernetes Event last written for one fault, with
+// the entities it named so a recovery of those entities can forget it. The
+// Event's name is not kept: it is derived from the fault (nodeEventName), so
+// the Event being written carries it.
+type rememberedEvent struct {
+	entities  []string
+	writtenAt time.Time
 }
 
-// nodeEventCache lazily initializes the LRU so struct-literal construction works.
-func (r *K8sConnector) nodeEventCache() *expirable.LRU[string, string] {
+// nodeCheckKey identifies one check on one node in the Event memory. Callers
+// pass the Event's Type field, which carries the check name (pre-existing
+// behaviour of createK8sEvent), not the Kubernetes Normal/Warning type.
+func nodeCheckKey(nodeName, checkName string) string {
+	return nodeName + "\x00" + checkName
+}
+
+// entityKeys names the entities a health event reports on, as type:value.
+func entityKeys(healthEvent *protos.HealthEvent) []string {
+	keys := make([]string, 0, len(healthEvent.EntitiesImpacted))
+	for _, entity := range healthEvent.EntitiesImpacted {
+		keys = append(keys, entity.EntityType+":"+entity.EntityValue)
+	}
+
+	return keys
+}
+
+// sharesEntity reports whether the two entity lists have an entity in common.
+func sharesEntity(a, b []string) bool {
+	for _, x := range a {
+		if slices.Contains(b, x) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// nodeEventMemory returns the memory, initialized lazily so struct-literal
+// construction works. Callers hold nodeEventMu.
+func (r *K8sConnector) nodeEventMemory() *expirable.LRU[string, map[string]rememberedEvent] {
+	if r.nodeEvents == nil {
+		size := r.config.NodeEventMemorySize
+		if size <= 0 {
+			size = maxRememberedNodeChecks
+		}
+
+		r.nodeEvents = expirable.NewLRU[string, map[string]rememberedEvent](size, nil, 0)
+	}
+
+	return r.nodeEvents
+}
+
+// rememberedNodeEvent returns the Event last written for this fault, if any.
+func (r *K8sConnector) rememberedNodeEvent(nodeName string, event *corev1.Event) (rememberedEvent, bool) {
 	r.nodeEventMu.Lock()
 	defer r.nodeEventMu.Unlock()
 
-	if r.nodeEventNames == nil {
-		r.nodeEventNames = expirable.NewLRU[string, string](maxCachedNodeEventNames, nil, 0)
+	written, ok := r.nodeEventMemory().Get(nodeCheckKey(nodeName, event.Type))
+	if !ok {
+		return rememberedEvent{}, false
 	}
 
-	return r.nodeEventNames
+	remembered, ok := written[event.Message]
+
+	return remembered, ok
 }
 
-func (r *K8sConnector) getCachedNodeEventName(key string) (string, bool) {
-	return r.nodeEventCache().Get(key)
+// rememberNodeEvent records that this fault's Event, named after the fault,
+// was just written.
+func (r *K8sConnector) rememberNodeEvent(nodeName string, event *corev1.Event, entities []string) {
+	r.nodeEventMu.Lock()
+	defer r.nodeEventMu.Unlock()
+
+	key := nodeCheckKey(nodeName, event.Type)
+
+	written, ok := r.nodeEventMemory().Get(key)
+	if !ok {
+		written = map[string]rememberedEvent{}
+		r.nodeEventMemory().Add(key, written)
+	}
+
+	// A refresh of a remembered message must not cost the other messages
+	// their memory; only a new message arriving at capacity starts over.
+	if _, exists := written[event.Message]; !exists && len(written) >= maxRememberedMessagesPerCheck {
+		clear(written)
+	}
+
+	written[event.Message] = rememberedEvent{entities: entities, writtenAt: time.Now()}
 }
 
-func (r *K8sConnector) setCachedNodeEventName(key, name string) {
-	r.nodeEventCache().Add(key, name)
+// forgetNodeEvent drops the memory of one fault's Event because the Event no
+// longer exists.
+func (r *K8sConnector) forgetNodeEvent(nodeName string, event *corev1.Event) {
+	r.nodeEventMu.Lock()
+	defer r.nodeEventMu.Unlock()
+
+	key := nodeCheckKey(nodeName, event.Type)
+
+	if written, ok := r.nodeEventMemory().Get(key); ok {
+		delete(written, event.Message)
+
+		if len(written) == 0 {
+			r.nodeEventMemory().Remove(key)
+		}
+	}
 }
 
-func (r *K8sConnector) dropCachedNodeEventName(key string) {
-	r.nodeEventCache().Remove(key)
+// forgetNodeCheck drops the memory of the Events written for a check on a
+// node: those naming one of the recovered entities, or all of them when the
+// healthy report names no entity. Called on a healthy report with
+// UpdateOnlyOnChange, so the fault's next occurrence is announced again
+// instead of skipped as a repeat.
+func (r *K8sConnector) forgetNodeCheck(nodeName, checkName string, recovered []string) {
+	r.nodeEventMu.Lock()
+	defer r.nodeEventMu.Unlock()
+
+	key := nodeCheckKey(nodeName, checkName)
+
+	if len(recovered) == 0 {
+		r.nodeEventMemory().Remove(key)
+
+		return
+	}
+
+	written, ok := r.nodeEventMemory().Get(key)
+	if !ok {
+		return
+	}
+
+	for message, remembered := range written {
+		if sharesEntity(remembered.entities, recovered) {
+			delete(written, message)
+		}
+	}
+
+	if len(written) == 0 {
+		r.nodeEventMemory().Remove(key)
+	}
 }
 
-// updateCachedNodeEvent attempts to increment the count of the cached event identified by name.
-// It returns (true, nil) on success, (false, nil) when the cached name is stale and a fresh
-// event should be created, and (true, error) for unexpected lookup or update failures.
-func (r *K8sConnector) updateCachedNodeEvent(
-	ctx context.Context, span trace.Span, name string, event *corev1.Event,
-	nodeName, dedupeKey string,
+// refreshNodeEvent bumps the count and timestamp of the Event written for this
+// fault before, which carries the same derived name as event. It returns
+// (true, nil) on success, (false, nil) when the Event is gone and a fresh one
+// should be created, and (true, error) for other lookup or update failures.
+func (r *K8sConnector) refreshNodeEvent(
+	ctx context.Context, span trace.Span, remembered rememberedEvent, event *corev1.Event, nodeName string,
 ) (bool, error) {
+	name := event.Name
+
 	existingEvent, getErr := r.clientset.CoreV1().Events(DefaultNamespace).Get(ctx, name, metav1.GetOptions{})
 
 	switch {
@@ -541,13 +728,14 @@ func (r *K8sConnector) updateCachedNodeEvent(
 
 		switch {
 		case err == nil:
-			nodeEventOperationsCounter.WithLabelValues(nodeName, OperationUpdate, StatusSuccess).Inc()
+			r.rememberNodeEvent(nodeName, event, remembered.entities)
+			nodeEventOperationsCounter.WithLabelValues(OperationUpdate, StatusSuccess).Inc()
 
 			return true, nil
 		case apierrors.IsNotFound(err):
 			// Deleted between lookup and update: fall through and create a fresh event.
 		default:
-			nodeEventOperationsCounter.WithLabelValues(nodeName, OperationUpdate, StatusFailed).Inc()
+			nodeEventOperationsCounter.WithLabelValues(OperationUpdate, StatusFailed).Inc()
 			span.AddEvent("platform_connector.k8s.node_event_update_failed", trace.WithAttributes(
 				attribute.String("platform_connector.k8s.error.type", "node_event_update_failed"),
 				attribute.String("platform_connector.k8s.error.message", err.Error()),
@@ -556,53 +744,95 @@ func (r *K8sConnector) updateCachedNodeEvent(
 			return true, fmt.Errorf("failed to update event for node %s: %w", nodeName, err)
 		}
 	case apierrors.IsNotFound(getErr):
-		// Stale cache entry: fall through and create a fresh event.
+		// The Event expired or was deleted: fall through and create a fresh event.
 	default:
 		return true, fmt.Errorf("failed to look up event %s for node %s: %w", name, nodeName, getErr)
 	}
 
-	// The cached name no longer refers to a live event.
-	r.dropCachedNodeEventName(dedupeKey)
+	// The Event is gone; forget it so the next report creates a fresh one.
+	r.forgetNodeEvent(nodeName, event)
 
 	return false, nil
 }
 
-func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, nodeName string) error {
+// createOrRefreshNodeEvent creates the fault's Event. When it already exists,
+// written by another replica or by an earlier life of this one, it refreshes
+// that Event instead of writing a second one. An Event that disappears
+// between the create and the refresh is not chased: the next report of the
+// fault creates it again.
+func (r *K8sConnector) createOrRefreshNodeEvent(
+	ctx context.Context, span trace.Span, event *corev1.Event, nodeName string, entities []string,
+) error {
+	_, err := r.clientset.CoreV1().Events(DefaultNamespace).Create(ctx, event, metav1.CreateOptions{})
+
+	switch {
+	case err == nil:
+		r.rememberNodeEvent(nodeName, event, entities)
+		nodeEventOperationsCounter.WithLabelValues(OperationCreate, StatusSuccess).Inc()
+
+		return nil
+	case apierrors.IsAlreadyExists(err):
+		found := rememberedEvent{entities: entities}
+
+		refreshed, refreshErr := r.refreshNodeEvent(ctx, span, found, event, nodeName)
+		if refreshErr == nil && !refreshed {
+			// Gone between the create and the refresh: not chased, the next
+			// report creates it again, but the write did not happen.
+			nodeEventOperationsCounter.WithLabelValues(OperationCreate, StatusSkipped).Inc()
+		}
+
+		return refreshErr
+	default:
+		nodeEventOperationsCounter.WithLabelValues(OperationCreate, StatusFailed).Inc()
+
+		return fmt.Errorf("failed to create event for node %s: %w", nodeName, err)
+	}
+}
+
+// writeNodeEvent announces a non-fatal fault as a Kubernetes Event. The first
+// write of a fault creates the Event; a repeat refreshes it by its derived
+// name, a single-key GET, because an involvedObject LIST is an
+// unindexed full-range etcd scan. The name is derived from the fault, so a
+// replica with no memory of it (another replica wrote it, or this one
+// restarted or evicted the entry) learns from the create's AlreadyExists
+// answer and refreshes that Event instead of writing a second one. With
+// UpdateOnlyOnChange a repeat inside nodeEventRefreshInterval is skipped
+// without any API call.
+func (r *K8sConnector) writeNodeEvent(ctx context.Context, healthEvent *protos.HealthEvent) (bool, error) {
 	ctx, span := tracing.StartSpan(ctx, "platform_connector.k8s.update_node_event")
 	defer span.End()
+
+	nodeName := healthEvent.NodeName
+	event := r.createK8sEvent(ctx, healthEvent)
 
 	span.SetAttributes(
 		attribute.String("platform_connector.k8s.event_reason", event.Reason),
 		attribute.String("platform_connector.k8s.event_type", string(event.Type)),
 	)
 
-	dedupeKey := nodeEventDedupeKey(event, nodeName)
+	remembered, known := r.rememberedNodeEvent(nodeName, event)
+	if known && r.config.UpdateOnlyOnChange && time.Since(remembered.writtenAt) < nodeEventRefreshInterval {
+		nodeEventOperationsCounter.WithLabelValues(OperationUpdate, StatusSkipped).Inc()
+
+		return true, nil
+	}
+
+	entities := entityKeys(healthEvent)
 
 	err := retry.OnError(retry.DefaultRetry, func(err error) bool {
 		return apierrors.IsConflict(err) || isTemporaryError(err)
 	}, func() error {
-		// An involvedObject LIST is an unindexed full-range etcd scan, so
-		// dedupe via the cached name: a single-key GET.
-		if name, ok := r.getCachedNodeEventName(dedupeKey); ok {
-			updated, err := r.updateCachedNodeEvent(ctx, span, name, event, nodeName, dedupeKey)
-			if updated {
+		if known {
+			refreshed, err := r.refreshNodeEvent(ctx, span, remembered, event, nodeName)
+			if refreshed {
 				return err
 			}
+
+			// Gone: a retry goes straight to the create.
+			known = false
 		}
 
-		// No live matching event, create a new event with count 1
-		event.Count = 1
-
-		created, err := r.clientset.CoreV1().Events(DefaultNamespace).Create(ctx, event, metav1.CreateOptions{})
-		if err != nil {
-			nodeEventOperationsCounter.WithLabelValues(nodeName, OperationCreate, StatusFailed).Inc()
-			return fmt.Errorf("failed to create event for node %s: %w", nodeName, err)
-		}
-
-		r.setCachedNodeEventName(dedupeKey, created.Name)
-		nodeEventOperationsCounter.WithLabelValues(nodeName, OperationCreate, StatusSuccess).Inc()
-
-		return nil
+		return r.createOrRefreshNodeEvent(ctx, span, event, nodeName, entities)
 	})
 	if err != nil {
 		tracing.RecordError(span, err)
@@ -612,7 +842,7 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, 
 		)
 	}
 
-	return err
+	return false, err
 }
 
 func (r *K8sConnector) updateHealthEventReason(checkName string, isHealthy bool) string {
@@ -680,22 +910,39 @@ func filterProcessableEvents(ctx context.Context, healthEvents *protos.HealthEve
 	return processableEvents
 }
 
+// nodeEventName derives the Event name from the fault it announces (node,
+// check, reason and message), so every replica, and every life of one, names
+// the same fault the same way and finds the Event another one wrote instead of
+// writing a second one.
+func nodeEventName(nodeName, checkName, reason, message string) string {
+	h := fnv.New64a()
+
+	for _, part := range []string{nodeName, checkName, reason, message} {
+		h.Write([]byte(part))
+		h.Write([]byte{0})
+	}
+
+	return fmt.Sprintf("%s.%016x", nodeName, h.Sum64())
+}
+
 // createK8sEvent creates a Kubernetes event from a health event.
 func (r *K8sConnector) createK8sEvent(ctx context.Context, healthEvent *protos.HealthEvent) *corev1.Event {
 	ts := safeTimestamp(ctx, healthEvent.GeneratedTimestamp)
+	reason := r.updateHealthEventReason(healthEvent.CheckName, healthEvent.IsHealthy)
+	message := r.fetchHealthEventMessage(healthEvent)
 
 	return &corev1.Event{
-		Name:      fmt.Sprintf("%s.%x", healthEvent.NodeName, metav1.Now().UnixNano()),
+		Name:      nodeEventName(healthEvent.NodeName, healthEvent.CheckName, reason, message),
 		Namespace: DefaultNamespace,
 		InvolvedObject: corev1.ObjectReference{
 			Kind: "Node",
 			Name: healthEvent.NodeName,
 			UID:  types.UID(healthEvent.NodeName),
 		},
-		Reason:              r.updateHealthEventReason(healthEvent.CheckName, healthEvent.IsHealthy),
+		Reason:              reason,
 		ReportingController: healthEvent.Agent,
 		ReportingInstance:   healthEvent.NodeName,
-		Message:             r.fetchHealthEventMessage(healthEvent),
+		Message:             message,
 		Count:               1,
 		Source: corev1.EventSource{
 			Component: healthEvent.Agent,
@@ -711,7 +958,9 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *pr
 	ctx, span := tracing.StartSpan(ctx, "platform_connector.k8s.process_health_events")
 	defer span.End()
 
-	processableEvents := filterProcessableEvents(ctx, healthEvents)
+	// One order for the whole batch: the condition and Event paths both see
+	// a recovery and a later return of the same fault in that order.
+	processableEvents := sortHealthEventsByTimestamp(filterProcessableEvents(ctx, healthEvents))
 
 	span.SetAttributes(
 		attribute.Int("platform_connector.k8s.processable_events", len(processableEvents)),
@@ -734,23 +983,51 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *pr
 		}
 	}
 
-	for _, healthEvent := range processableEvents {
-		if !healthEvent.IsHealthy && !healthEvent.IsFatal {
-			start := time.Now()
-			err := r.writeNodeEvent(ctx, r.createK8sEvent(ctx, healthEvent), healthEvent.NodeName)
+	if err := r.writeNodeEvents(ctx, span, processableEvents); err != nil && firstErr == nil {
+		firstErr = err
+	}
 
-			nodeEventUpdateCreateDuration.Observe(float64(time.Since(start).Milliseconds()))
+	return firstErr
+}
 
-			if err != nil {
-				if firstErr == nil {
-					firstErr = fmt.Errorf("failed to write node event for %s: %w", healthEvent.NodeName, err)
-				}
+// writeNodeEvents writes the Kubernetes Events of a batch, which
+// processHealthEvents hands over in timestamp order like the condition path,
+// so a recovery and a later return of the same fault in one batch are seen in
+// that order. It returns the first write error.
+func (r *K8sConnector) writeNodeEvents(ctx context.Context, span trace.Span, events []*protos.HealthEvent) error {
+	var firstErr error
 
-				span.AddEvent("platform_connector.k8s.node_event_write_failed", trace.WithAttributes(
-					attribute.String("platform_connector.k8s.error.type", "node_event_write_failed"),
-					attribute.String("platform_connector.k8s.error.message", err.Error()),
-				))
+	for _, healthEvent := range events {
+		if healthEvent.IsHealthy {
+			// The check recovered for these entities: their next fault is a
+			// change again, not a repeat of an Event already written.
+			if r.config.UpdateOnlyOnChange {
+				r.forgetNodeCheck(healthEvent.NodeName, healthEvent.CheckName, entityKeys(healthEvent))
 			}
+
+			continue
+		}
+
+		if healthEvent.IsFatal {
+			continue
+		}
+
+		start := time.Now()
+		skipped, err := r.writeNodeEvent(ctx, healthEvent)
+
+		if !skipped {
+			nodeEventUpdateCreateDuration.Observe(float64(time.Since(start).Milliseconds()))
+		}
+
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("failed to write node event for %s: %w", healthEvent.NodeName, err)
+			}
+
+			span.AddEvent("platform_connector.k8s.node_event_write_failed", trace.WithAttributes(
+				attribute.String("platform_connector.k8s.error.type", "node_event_write_failed"),
+				attribute.String("platform_connector.k8s.error.message", err.Error()),
+			))
 		}
 	}
 

@@ -544,15 +544,18 @@ func TestK8sConnector_WithEnvtest_EventCountIncrement(t *testing.T) {
 }
 
 // TestK8sConnector_WithEnvtest_EventDedupeCacheRecovery tests the cases where the
-// node-event dedupe cache does not resolve to a live event: the cached event was deleted
-// (or TTL-expired) out from under the connector, and the connector restarted with an empty
-// cache. Both must create a fresh event rather than increment or fail.
+// connector's memory of a node event does not resolve to a live event: the remembered
+// event was deleted (or TTL-expired) out from under the connector, so a fresh one is
+// created; and the connector restarted with an empty memory, where the event's name,
+// derived from the fault, lets it find and refresh the existing event instead of
+// writing a second one.
 func TestK8sConnector_WithEnvtest_EventDedupeCacheRecovery(t *testing.T) {
 	tests := []struct {
 		name                string
 		deleteExistingEvent bool
 		restartConnector    bool
 		expectedEvents      int
+		expectedCount       int32
 		description         string
 	}{
 		{
@@ -560,14 +563,16 @@ func TestK8sConnector_WithEnvtest_EventDedupeCacheRecovery(t *testing.T) {
 			deleteExistingEvent: true,
 			restartConnector:    false,
 			expectedEvents:      1,
-			description:         "stale cache entry should fall back to creating a fresh event",
+			expectedCount:       1,
+			description:         "stale memory should fall back to creating a fresh event",
 		},
 		{
 			name:                "connector restarted with empty cache",
 			deleteExistingEvent: false,
 			restartConnector:    true,
-			expectedEvents:      2,
-			description:         "restarted connector should create a fresh event, not increment",
+			expectedEvents:      1,
+			expectedCount:       2,
+			description:         "restarted connector should refresh the existing event, not write a second one",
 		},
 	}
 
@@ -643,7 +648,7 @@ func TestK8sConnector_WithEnvtest_EventDedupeCacheRecovery(t *testing.T) {
 			require.Len(t, events, tt.expectedEvents, tt.description)
 
 			for _, event := range events {
-				assert.EqualValues(t, 1, event.Count, "events should be created fresh, not incremented")
+				assert.Equal(t, tt.expectedCount, event.Count, tt.description)
 			}
 		})
 	}

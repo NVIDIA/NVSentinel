@@ -36,8 +36,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
@@ -47,7 +49,23 @@ var (
 	k8sConnector *K8sConnector
 	clientSet    *fake.Clientset
 	ctx          context.Context
+
+	// One envtest API server for the whole package: the tests that assert on
+	// what the API server recorded (node resourceVersion, Event objects and
+	// counts) share it and keep to nodes of their own. Started in TestMain;
+	// a start failure is kept so those tests fail with the reason instead of
+	// a nil pointer.
+	sharedEnvtestCli *kubernetes.Clientset
+	sharedEnvtestErr error
 )
+
+// envtestClient returns the package's shared envtest client.
+func envtestClient(t *testing.T) *kubernetes.Clientset {
+	t.Helper()
+	require.NoError(t, sharedEnvtestErr, "envtest is not available; run make dev-env-setup and export KUBEBUILDER_ASSETS")
+
+	return sharedEnvtestCli
+}
 
 func TestMain(m *testing.M) {
 	clientSet = fake.NewSimpleClientset()
@@ -59,7 +77,20 @@ func TestMain(m *testing.M) {
 		CompactedHealthEventMsgLen:    72,
 	}
 	k8sConnector = NewK8sConnector(clientSet, ringBuffer, stopCh, ctx, cfg)
+
+	sharedEnv := &envtest.Environment{}
+	if restCfg, err := sharedEnv.Start(); err != nil {
+		sharedEnvtestErr = err
+	} else if sharedEnvtestCli, err = kubernetes.NewForConfig(restCfg); err != nil {
+		sharedEnvtestErr = err
+	}
+
 	exitVal := m.Run()
+
+	if sharedEnvtestErr == nil {
+		_ = sharedEnv.Stop()
+	}
+
 	os.Exit(exitVal)
 }
 
@@ -2360,9 +2391,9 @@ func TestWriteNodeEvent_UpdateRacesDeletion(t *testing.T) {
 		NodeName:           nodeName,
 	}
 	healthEvents := &protos.HealthEvents{Version: 1, Events: []*protos.HealthEvent{healthEvent}}
-	dedupeKey := nodeEventDedupeKey(connector.createK8sEvent(localCtx, healthEvent), nodeName)
+	k8sEvent := connector.createK8sEvent(localCtx, healthEvent)
 
-	// First write populates the dedupe cache.
+	// First write populates the Event memory.
 	require.NoError(t, connector.processHealthEvents(localCtx, healthEvents))
 
 	events, err := localClientSet.CoreV1().Events(DefaultNamespace).List(localCtx, metav1.ListOptions{})
@@ -2370,9 +2401,8 @@ func TestWriteNodeEvent_UpdateRacesDeletion(t *testing.T) {
 	require.Len(t, events.Items, 1, "First health event should create exactly one Kubernetes event")
 
 	firstName := events.Items[0].Name
-	cachedName, ok := connector.getCachedNodeEventName(dedupeKey)
-	require.True(t, ok, "First write should cache the created event name")
-	require.Equal(t, firstName, cachedName)
+	_, ok := connector.rememberedNodeEvent(nodeName, k8sEvent)
+	require.True(t, ok, "First write should remember the created event")
 
 	// Delete the raced event from the tracker so the NotFound reflects real state.
 	var (
@@ -2395,37 +2425,40 @@ func TestWriteNodeEvent_UpdateRacesDeletion(t *testing.T) {
 	events, err = localClientSet.CoreV1().Events(DefaultNamespace).List(localCtx, metav1.ListOptions{})
 	require.NoError(t, err)
 	require.Len(t, events.Items, 1, "A racing deletion should be recovered by creating one replacement event")
-	assert.NotEqual(t, firstName, events.Items[0].Name, "The deleted event should not have been resurrected")
+	assert.Equal(t, firstName, events.Items[0].Name, "The fault keeps its name, derived from what it announces")
+	assert.Equal(t, int32(1), events.Items[0].Count, "The replacement is a fresh Event, not the deleted one bumped")
 
-	cachedName, ok = connector.getCachedNodeEventName(dedupeKey)
-	require.True(t, ok, "The recreated event name should be cached")
-	assert.Equal(t, events.Items[0].Name, cachedName, "The cache should hold the replacement event name")
-	assert.NotEqual(t, firstName, cachedName, "The stale cache entry should have been replaced")
+	_, ok = connector.rememberedNodeEvent(nodeName, k8sEvent)
+	require.True(t, ok, "The recreated event should be remembered")
 }
 
-func TestK8sConnector_NodeEventCache_EvictsOnlyOldest(t *testing.T) {
+func TestK8sConnector_NodeEventMemory_EvictsOnlyOldest(t *testing.T) {
 	connector := &K8sConnector{}
-
-	for i := range maxCachedNodeEventNames {
-		connector.setCachedNodeEventName(fmt.Sprintf("key-%d", i), fmt.Sprintf("event-%d", i))
+	eventFor := func(check string) *corev1.Event {
+		return &corev1.Event{Type: check, Message: "message"}
 	}
 
-	// Refresh key-0's recency so overflow must evict key-1 instead.
-	_, ok := connector.getCachedNodeEventName("key-0")
-	require.True(t, ok, "Filling the cache to capacity should not evict")
+	for i := range maxRememberedNodeChecks {
+		connector.rememberNodeEvent("node", eventFor(fmt.Sprintf("check-%d", i)), nil)
+	}
 
-	connector.setCachedNodeEventName("overflow-key", "overflow-event")
+	// Refresh check-0's recency so overflow must evict check-1 instead.
+	_, ok := connector.rememberedNodeEvent("node", eventFor("check-0"))
+	require.True(t, ok, "Filling the memory to capacity should not evict")
 
-	_, ok = connector.getCachedNodeEventName("key-1")
+	connector.rememberNodeEvent("node", eventFor("overflow"), nil)
+
+	_, ok = connector.rememberedNodeEvent("node", eventFor("check-1"))
 	assert.False(t, ok, "Overflow should evict the least-recently-used entry")
 
-	_, ok = connector.getCachedNodeEventName("key-0")
+	_, ok = connector.rememberedNodeEvent("node", eventFor("check-0"))
 	assert.True(t, ok, "A recently-read entry should survive overflow")
 
-	name, ok := connector.getCachedNodeEventName("overflow-key")
-	require.True(t, ok, "The overflowing entry should be cached")
-	assert.Equal(t, "overflow-event", name)
+	_, ok = connector.rememberedNodeEvent("node", eventFor("overflow"))
+	require.True(t, ok, "The overflowing entry should be remembered")
 
-	assert.Equal(t, maxCachedNodeEventNames, connector.nodeEventCache().Len(),
-		"Overflow should evict exactly one entry, not flush the cache")
+	connector.nodeEventMu.Lock()
+	defer connector.nodeEventMu.Unlock()
+	assert.Equal(t, maxRememberedNodeChecks, connector.nodeEventMemory().Len(),
+		"Overflow should evict exactly one entry, not flush the memory")
 }

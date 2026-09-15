@@ -16,12 +16,16 @@ package metadata
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
-	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"go.opentelemetry.io/otel/attribute"
+	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/singleflight"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -37,10 +41,11 @@ type NodeMetadata struct {
 }
 
 type Augmentor struct {
-	config    *Config
-	clientset kubernetes.Interface
-	cache     *expirable.LRU[string, *NodeMetadata]
-	fetchMu   sync.Mutex
+	config        *Config
+	clientset     kubernetes.Interface
+	cache         *expirable.LRU[string, *NodeMetadata]
+	fetches       singleflight.Group
+	lookupTimeout time.Duration
 }
 
 func New(ctx context.Context, config *Config, clientset kubernetes.Interface) (*Augmentor, error) {
@@ -54,16 +59,23 @@ func New(ctx context.Context, config *Config, clientset kubernetes.Interface) (*
 		config.CacheTTL,
 	)
 
+	lookupTimeout := config.LookupTimeout
+	if lookupTimeout == 0 {
+		lookupTimeout = DefaultLookupTimeout
+	}
+
 	slog.InfoContext(ctx, "Metadata augmentor initialized",
 		"cacheSize", config.CacheSize,
 		"cacheTTL", config.CacheTTL,
+		"lookupTimeout", lookupTimeout,
 		"allowedLabels", config.AllowedLabels,
 		"skipNodeLabel", config.SkipNodeLabel)
 
 	return &Augmentor{
-		config:    config,
-		clientset: clientset,
-		cache:     cache,
+		config:        config,
+		clientset:     clientset,
+		cache:         cache,
+		lookupTimeout: lookupTimeout,
 	}, nil
 }
 
@@ -129,7 +141,9 @@ func (a *Augmentor) Transform(ctx context.Context, event *pb.HealthEvent) error 
 		attribute.Int("metadata.labels_added", labelsAdded),
 	)
 
-	slog.InfoContext(ctx, "Metadata augmented",
+	// Per-event, so debug only: at info this is one log line per fleet event
+	// now that the pipeline also runs centrally.
+	slog.DebugContext(ctx, "Metadata augmented",
 		"node", event.NodeName,
 		"providerID", metadata.ProviderID,
 		"labelsAdded", labelsAdded)
@@ -141,29 +155,126 @@ func (a *Augmentor) Name() string {
 	return "MetadataAugmentor"
 }
 
+// maxPrewarmReads bounds how many node reads one batch runs at once. The
+// client's rate limiter and the lookup timeout already cap the API calls; the
+// bound keeps a batch naming thousands of nodes from starting as many
+// goroutines and connections at once.
+const maxPrewarmReads = 64
+
+// ErrBudgetExhausted reports that a batch's budget ended before the metadata
+// of every node it names was read, so the managed-label gate could not be
+// evaluated for the rest. The caller defers the batch; the reads that were
+// started finish detached and warm the cache for the resend.
+var ErrBudgetExhausted = errors.New("node metadata not read within the batch budget")
+
+// Prewarm reads the metadata of every distinct uncached node in the batch
+// concurrently, up to maxPrewarmReads at a time, so the per-event pass finds
+// it cached. The events of a batch are processed one after another inside one
+// budget; without this, a cross-node batch naming many uncached nodes would
+// spend the budget on the first few. A read that fails inside the budget is
+// left to the per-event pass, which reports it and fails open; the nodes the
+// budget ended before reading are reported as ErrBudgetExhausted instead, so
+// the batch is deferred rather than passing the skip-label gate unread.
+func (a *Augmentor) Prewarm(ctx context.Context, events []*pb.HealthEvent) error {
+	var (
+		group  errgroup.Group
+		unread atomic.Int32
+	)
+
+	group.SetLimit(maxPrewarmReads)
+
+	started := map[string]bool{}
+
+	for _, event := range events {
+		name := event.GetNodeName()
+		if name == "" || started[name] {
+			continue
+		}
+
+		started[name] = true
+
+		if _, found := a.cache.Get(name); found {
+			continue
+		}
+
+		group.Go(func() error {
+			// A read that ended without metadata once the budget was spent
+			// was cut short by it, whether it never started or was running.
+			if _, err := a.getOrFetchMetadata(ctx, name); err != nil && ctx.Err() != nil {
+				unread.Add(1)
+			}
+
+			return nil
+		})
+	}
+
+	_ = group.Wait()
+
+	if n := unread.Load(); n > 0 {
+		return fmt.Errorf("%w: %d of %d node(s)", ErrBudgetExhausted, n, len(started))
+	}
+
+	return nil
+}
+
+// getOrFetchMetadata serves a node's metadata from the cache and reads it
+// from the API on a miss. Concurrent misses for the same node share one read;
+// misses for different nodes proceed independently (across requests, and
+// within a batch through Prewarm). The shared read does not die with the
+// caller that happened to start it: it runs detached from that caller's
+// cancellation, bounded by the lookup timeout, and each waiter leaves on its
+// own context instead.
 func (a *Augmentor) getOrFetchMetadata(ctx context.Context, nodeName string) (*NodeMetadata, error) {
 	if metadata, found := a.cache.Get(nodeName); found {
 		return metadata, nil
 	}
 
-	a.fetchMu.Lock()
-	defer a.fetchMu.Unlock()
-
-	if metadata, found := a.cache.Get(nodeName); found {
-		return metadata, nil
-	}
-
-	metadata, err := a.fetchNodeMetadata(ctx, nodeName)
-	if err != nil {
+	// A caller whose budget is already spent must not start a read it will
+	// not wait for: a large batch past its budget would otherwise fan out one
+	// detached read per remaining node.
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	a.cache.Add(nodeName, metadata)
+	results := a.fetches.DoChan(nodeName, func() (any, error) {
+		if metadata, found := a.cache.Get(nodeName); found {
+			return metadata, nil
+		}
 
-	return metadata, nil
+		metadata, err := a.fetchNodeMetadata(context.WithoutCancel(ctx), nodeName)
+		if err != nil {
+			return nil, err
+		}
+
+		a.cache.Add(nodeName, metadata)
+
+		return metadata, nil
+	})
+
+	select {
+	case result := <-results:
+		if result.Err != nil {
+			return nil, result.Err
+		}
+
+		metadata, ok := result.Val.(*NodeMetadata)
+		if !ok {
+			return nil, fmt.Errorf("unexpected metadata type %T", result.Val)
+		}
+
+		return metadata, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
+// fetchNodeMetadata reads one node, bounded by the lookup timeout so a
+// stalled API server cannot hold the event (and its acknowledgement) longer
+// than that; the caller fails open on the timeout.
 func (a *Augmentor) fetchNodeMetadata(ctx context.Context, nodeName string) (*NodeMetadata, error) {
+	ctx, cancel := context.WithTimeout(ctx, a.lookupTimeout)
+	defer cancel()
+
 	node, err := a.clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get node from API: %w", err)

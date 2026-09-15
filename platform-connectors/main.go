@@ -26,10 +26,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-logr/logr"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"k8s.io/apimachinery/pkg/util/json"
 	"k8s.io/client-go/kubernetes"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/flags"
@@ -39,6 +41,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/auth"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/central"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/grpcsink"
 	k8sconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/kubernetes"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/prom"
@@ -64,7 +67,25 @@ var (
 )
 
 func main() {
+	// the central deployment platform connector role and the
+	// idempotency-index migration Job are modes of this binary (one image,
+	// mode-selected).
+	switch mode := os.Getenv("PC_MODE"); mode {
+	case "deployment":
+		central.Main(version)
+		return
+	case "ensure-idempotency-index":
+		os.Exit(runEnsureIdempotencyIndexMode())
+	case "":
+		// The node-local role below.
+	default:
+		fmt.Fprintf(os.Stderr, "unknown PC_MODE %q: use \"deployment\", \"ensure-idempotency-index\" "+
+			"or leave it unset for the node-local role\n", mode)
+		os.Exit(1)
+	}
+
 	logger.SetDefaultStructuredLoggerWithTraceCorrelation("platform-connectors", version)
+	setControllerRuntimeLogger()
 
 	initCtx := context.Background()
 	slog.InfoContext(initCtx, "Starting platform-connectors", "version", version, "commit", commit, "date", date)
@@ -90,6 +111,56 @@ func main() {
 	if err := auditlogger.CloseAuditLogger(); err != nil {
 		slog.WarnContext(initCtx, "Failed to close audit logger", "error", err)
 	}
+}
+
+// defaultIndexEnsureTimeout bounds one attempt of the index Job, which the
+// Job itself retries. The bound covers the index build, which on a large
+// existing table can take a while.
+const defaultIndexEnsureTimeout = time.Hour
+
+// setControllerRuntimeLogger routes controller-runtime's logr output (the
+// certificate watchers) through the process's slog handler; without a sink
+// controller-runtime drops those lines and prints a "SetLogger(...) was never
+// called" warning with a stack trace.
+func setControllerRuntimeLogger() {
+	ctrllog.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
+}
+
+// runEnsureIdempotencyIndexMode implements the PC_MODE=ensure-idempotency-index
+// migration Job: idempotently create the unique partial idempotency index the
+// deployment platform connector replicas verify before reporting ready. A
+// failure exits non-zero and the Job's backoffLimit retries the pod, so a
+// datastore that is still coming up does not fail the release.
+// Returns the process exit code: 0 on success, 1 on timeout or fatal error.
+func runEnsureIdempotencyIndexMode() int {
+	logger.SetDefaultStructuredLoggerWithTraceCorrelation("platform-connectors", version)
+	setControllerRuntimeLogger()
+
+	timeout := defaultIndexEnsureTimeout
+
+	if raw := os.Getenv("INDEX_ENSURE_TIMEOUT"); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed <= 0 {
+			slog.Error("Invalid INDEX_ENSURE_TIMEOUT, must be a positive duration", "value", raw, "error", err)
+			return 1
+		}
+
+		timeout = parsed
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	slog.Info("Ensuring health event idempotency index", "timeout", timeout)
+
+	if err := store.EnsureIdempotencyIndex(ctx, central.DatastoreCertMountPath()); err != nil {
+		slog.Error("Failed to ensure idempotency index", "timeout", timeout, "error", err)
+		return 1
+	}
+
+	slog.Info("Health event idempotency index ensured")
+
+	return 0
 }
 
 func loadConfig(configFilePath string) (map[string]any, error) {
@@ -183,46 +254,6 @@ func initializeDatabaseStoreConnector(
 	go storeConnector.FetchAndProcessHealthMetric(ctx)
 
 	return storeConnector, nil
-}
-
-func initializePipeline(ctx context.Context, config map[string]any, opts pipeline.Options) (*pipeline.Pipeline, error) {
-	pipelineCfg, ok := config["pipeline"].([]any)
-	if !ok || len(pipelineCfg) == 0 {
-		slog.ErrorContext(ctx, "No pipeline configuration found, events will not be transformed")
-		return pipeline.New(), fmt.Errorf("no pipeline configuration found")
-	}
-
-	var transformerConfigs []pipeline.Config
-
-	for _, item := range pipelineCfg {
-		configMap, ok := item.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("failed to convert pipeline configuration to map: %v", item)
-		}
-
-		name, ok := configMap["name"].(string)
-		if !ok {
-			return nil, fmt.Errorf("pipeline config missing or invalid 'name' field: %v", configMap["name"])
-		}
-
-		enabled, ok := configMap["enabled"].(bool)
-		if !ok {
-			return nil, fmt.Errorf("pipeline config missing or invalid 'enabled' field: %v", configMap["enabled"])
-		}
-
-		configPath, ok := configMap["config"].(string)
-		if !ok {
-			return nil, fmt.Errorf("pipeline config missing or invalid 'config' field: %v", configMap["config"])
-		}
-
-		transformerConfigs = append(transformerConfigs, pipeline.Config{
-			Name:       name,
-			Enabled:    enabled,
-			ConfigPath: configPath,
-		})
-	}
-
-	return pipeline.NewFromConfigs(ctx, transformerConfigs, opts)
 }
 
 func startGRPCServer(
@@ -803,7 +834,7 @@ func run() error {
 		return fmt.Errorf("failed to initialize connectors: %w", err)
 	}
 
-	pipeline, err := initializePipeline(ctx, config, pipeline.Options{
+	pipeline, err := pipeline.NewFromRawConfig(ctx, config, pipeline.Options{
 		KubeconfigPath: cfg.kubeconfigPath,
 	})
 	if err != nil {
