@@ -24,6 +24,7 @@ data:
       "enableK8sPlatformConnector": "{{ .Values.platformConnector.k8sConnector.enabled }}",
       "K8sConnectorQps": {{ printf "%.2f" .Values.platformConnector.k8sConnector.qps }},
       "K8sConnectorBurst": {{ .Values.platformConnector.k8sConnector.burst }},
+      "K8sConnectorMaxRetries": {{ .Values.platformConnector.k8sConnector.maxRetries }},
       "MaxNodeConditionMessageLength": {{ .Values.platformConnector.k8sConnector.maxNodeConditionMessageLength }},
       "CompactedHealthEventMsgLen": {{ .Values.platformConnector.k8sConnector.compactedHealthEventMsgLen }},
       "StoreConnectorMaxRetries": {{ .Values.platformConnector.mongodbStore.maxRetries }},
