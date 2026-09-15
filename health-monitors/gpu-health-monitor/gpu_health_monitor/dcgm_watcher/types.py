@@ -28,10 +28,15 @@ class ErrorDetails:
     message: str
 
 
+# GPU keys remain integer IDs for compatibility. NVSwitch keys are
+# (entityGroupId, entityId) tuples because DCGM IDs are group-local.
+EntityKey = int | tuple[int, int]
+
+
 @dataclasses.dataclass
 class HealthDetails:
     status: HealthStatus
-    entity_failures: dict[int, list[ErrorDetails]]
+    entity_failures: dict[EntityKey, list[ErrorDetails]]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -51,7 +56,12 @@ class FieldDetails:
 
 class CallbackInterface(abc.ABC):
     @abc.abstractmethod
-    def health_event_occurred(self, health_details: dict[str, HealthDetails], gpu_ids: list[int]):
+    def health_event_occurred(
+        self,
+        health_details: dict[str, HealthDetails],
+        gpu_ids: list[int],
+        switch_ids: list[int] | None = None,
+    ) -> None:
         pass
 
     @abc.abstractmethod
