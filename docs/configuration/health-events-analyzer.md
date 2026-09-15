@@ -96,6 +96,23 @@ Use the following reference table to configure `workers` and `maxInFlight` based
 
 `maxInFlight` bounds uncheckpointed in-flight events in memory. When in-flight events reach this limit, stream ingestion pauses until workers resolve earlier events. Increase `maxInFlight` proportionally for larger worker counts to absorb bursty event traffic without stalling ingestion.
 
+### Matched-entity metric
+
+`rule_matched_total` is labeled `{rule_name, node_name}` only. Rules that select on a GPU, GPC, TPC, or NIC therefore fire without saying which unit they selected. The optional counter below adds that identity; it is off by default because the extra labels raise cardinality.
+
+```yaml
+health-events-analyzer:
+  ruleMatchedEntityMetricEnabled: false
+```
+
+When enabled, a match on an entity-keyed rule increments:
+
+```text
+rule_matched_entity_total{rule_name, node_name, entity_type, entity_value}
+```
+
+`entity_type` / `entity_value` come from the triggering event's impacted entities. Only PCI, GPU, GPC, TPC, NVLINK, NIC, NICPort, and NVSwitch are exported, using the producer spelling. GPU UUID is never exported; PCI or GPU index is used instead. Node-scoped rules (for example `MultipleRemediations`) do not emit this series. `RepeatedXidError` does.
+
 ### Client Certificate Mount Path
 
 Path inside the container where TLS client certificates are mounted for authenticated MongoDB connections. Certificates are typically provisioned by cert-manager and mounted via a Kubernetes secret volume.

@@ -20,4 +20,5 @@ metadata:
     argocd.argoproj.io/sync-wave: "-1"
 data:
   config.toml: |
-    {{ tpl .Values.config . | nindent 6 }}
+    ruleMatchedEntityMetricEnabled = {{ .Values.ruleMatchedEntityMetricEnabled | default false }}
+    {{ tpl .Values.config . | nindent 4 }}
