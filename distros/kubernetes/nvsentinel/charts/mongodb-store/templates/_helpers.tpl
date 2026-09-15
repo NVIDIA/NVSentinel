@@ -211,3 +211,58 @@ Create the name of the service account to use
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Refuse a Percona version set that cannot work, and let psmdbVersion declare the
+intended one so an operator sets a single value instead of three.
+
+Permits one minor of operator-ahead-of-crVersion skew on purpose: that is
+Percona's documented upgrade path, so demanding equality would block the very
+staged upgrade Percona requires.
+*/}}
+{{- define "mongodb-store.validatePsmdbVersions" -}}
+{{- if .Values.usePerconaOperator -}}
+{{- $semver := "^[0-9]+\\.[0-9]+\\.[0-9]+" -}}
+{{- $doc := "See docs/configuration/mongodb-store.md#percona-versions" -}}
+{{- $operator := index .Values "psmdb-operator" | default dict -}}
+{{- $opTag := (index ($operator.image | default dict) "tag") | default "" | toString -}}
+{{- $db := index .Values "psmdb-db" | default dict -}}
+{{- $crVersion := (index $db "crVersion") | default "" | toString -}}
+{{- $initTag := (index (index $db "initImage" | default dict) "tag") | default "" | toString -}}
+{{- $declared := .Values.psmdbVersion | default "" | toString -}}
+
+{{/* One declared version, enforced against every knob that carries it. */}}
+{{- if $declared -}}
+{{- if and $opTag (ne $opTag $declared) -}}
+{{- fail (printf "mongodb-store.psmdbVersion is %s but psmdb-operator.image.tag is %s. Set psmdbVersion alone and leave the tags at the chart default, or make them agree. %s" $declared $opTag $doc) -}}
+{{- end -}}
+{{- if and $crVersion (ne $crVersion $declared) -}}
+{{- fail (printf "mongodb-store.psmdbVersion is %s but psmdb-db.crVersion is %s. Set psmdbVersion alone and leave crVersion at the chart default, or make them agree. %s" $declared $crVersion $doc) -}}
+{{- end -}}
+{{- if and $initTag (ne $initTag $declared) -}}
+{{- fail (printf "mongodb-store.psmdbVersion is %s but psmdb-db.initImage.tag is %s. The init container runs the operator image, so its tag tracks the operator version. %s" $declared $initTag $doc) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* initImage is the operator image, so a different tag pulls a different operator. */}}
+{{- if and $opTag $initTag (ne $opTag $initTag) -}}
+{{- fail (printf "psmdb-db.initImage.tag is %s but psmdb-operator.image.tag is %s. The init container runs the operator image, so these must match or the init container runs a different operator build than the operator. %s" $initTag $opTag $doc) -}}
+{{- end -}}
+
+{{/* Percona permits upgrading only to the nearest major.minor. */}}
+{{- if and (regexMatch $semver $opTag) (regexMatch $semver $crVersion) -}}
+{{- $op := semver $opTag -}}
+{{- $cr := semver $crVersion -}}
+{{- if ne (int $op.Major) (int $cr.Major) -}}
+{{- fail (printf "psmdb-operator.image.tag is %s and psmdb-db.crVersion is %s, which differ by a major version. Percona permits upgrading only to the nearest major.minor, so this must be done one step at a time. %s" $opTag $crVersion $doc) -}}
+{{- end -}}
+{{- $skew := sub (int $op.Minor) (int $cr.Minor) -}}
+{{- if lt $skew 0 -}}
+{{- fail (printf "psmdb-db.crVersion is %s but psmdb-operator.image.tag is only %s. The custom resource cannot be ahead of the operator that reconciles it. %s" $crVersion $opTag $doc) -}}
+{{- end -}}
+{{- if gt $skew 1 -}}
+{{- fail (printf "psmdb-operator.image.tag is %s but psmdb-db.crVersion is %s, which skips %d minor versions. Percona permits upgrading only to the nearest major.minor: move the operator and crVersion up one minor at a time. %s" $opTag $crVersion $skew $doc) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end }}

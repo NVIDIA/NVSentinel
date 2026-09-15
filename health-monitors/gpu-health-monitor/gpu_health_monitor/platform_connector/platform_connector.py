@@ -98,6 +98,8 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         store_only_checks: frozenset[str] = frozenset(),
         connectivity_failure_escalation_threshold: int = 0,
         token_path: str | None = None,
+        connectivity_failure_threshold: int = 1,
+        connectivity_success_threshold: int = 1,
     ) -> None:
         self._exit = exit
         self._socket_path = socket_path
@@ -121,8 +123,13 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self._processing_strategy = processing_strategy
         self._store_only_checks = store_only_checks
         self._connectivity_failure_escalation_threshold = connectivity_failure_escalation_threshold
+        self._connectivity_failure_threshold = connectivity_failure_threshold
+        self._connectivity_success_threshold = connectivity_success_threshold
         self._consecutive_connectivity_failures = 0
+        self._consecutive_connectivity_successes = 0
         self._connectivity_escalated = False
+        metrics.dcgm_connectivity_consecutive_observations.labels(result="failure").set(0)
+        metrics.dcgm_connectivity_consecutive_observations.labels(result="success").set(0)
         # Strategy used for the active local-managed probe-hang event. Restored
         # from the marker so a clear after a liveness restart still matches the
         # unhealthy event even if Helm config changed in between.
@@ -213,10 +220,31 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         check_name = "GpuDcgmConnectivityFailure"
 
         self._consecutive_connectivity_failures = 0
-        self._connectivity_escalated = False
+        metrics.dcgm_connectivity_consecutive_observations.labels(result="failure").set(0)
 
         key = self._build_cache_key(check_name, "DCGM", "ALL")
         entry = self.entity_cache.get(key)
+        if entry is not None and entry.is_healthy:
+            self._consecutive_connectivity_successes = 0
+            metrics.dcgm_connectivity_consecutive_observations.labels(result="success").set(0)
+            return
+
+        # Preserve the existing first-poll healthy baseline. The success
+        # threshold only confirms recovery after an unhealthy event has been
+        # published; it must not delay initial Condition creation.
+        if entry is not None:
+            self._consecutive_connectivity_successes += 1
+            metrics.dcgm_connectivity_consecutive_observations.labels(result="success").set(
+                self._consecutive_connectivity_successes
+            )
+            if self._consecutive_connectivity_successes < self._connectivity_success_threshold:
+                log.info(
+                    "DCGM connectivity recovery observed %d/%d consecutive successful cycles",
+                    self._consecutive_connectivity_successes,
+                    self._connectivity_success_threshold,
+                )
+                return
+
         if entry is None or not entry.is_healthy:
             event_metadata = {}
             chassis_serial = self._metadata_reader.get_chassis_serial()
@@ -248,6 +276,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     delivery_timeout_seconds=CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS,
                 ):
                     self.entity_cache[key] = EntityCacheEntry()
+                    self._consecutive_connectivity_successes = 0
+                    self._connectivity_escalated = False
+                    metrics.dcgm_connectivity_consecutive_observations.labels(result="success").set(0)
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
                     metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="").set(0)
             except Exception as e:
@@ -354,83 +385,87 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 log.debug(f"length of entity_failures are {len(details.entity_failures)}")
                 for gpu_id in gpu_ids:
                     if details.entity_failures.get(gpu_id):
-                        failure_details = details.entity_failures.get(gpu_id)
-                        message = failure_details.message
-                        error_code = [f"{failure_details.code}"]
-                        entities_impacted = []
-                        entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
-                        entities_impacted.append(entity)
-
-                        pci_address = self._metadata_reader.get_pci_address(gpu_id)
-                        if pci_address:
-                            entities_impacted.append(
-                                platformconnector_pb2.Entity(entityType="PCI", entityValue=pci_address)
+                        for failure_details in details.entity_failures[gpu_id]:
+                            message = failure_details.message
+                            error_code = [f"{failure_details.code}"]
+                            entities_impacted = []
+                            entity = platformconnector_pb2.Entity(
+                                entityType=self._component_class, entityValue=str(gpu_id)
                             )
+                            entities_impacted.append(entity)
 
-                        gpu_uuid = self._metadata_reader.get_gpu_uuid(gpu_id)
-                        if gpu_uuid:
-                            entities_impacted.append(
-                                platformconnector_pb2.Entity(entityType="GPU_UUID", entityValue=gpu_uuid)
-                            )
-
-                        entities_impacted_supports_component_reset = pci_address and gpu_uuid
-
-                        recommended_action = self.get_recommended_action_from_dcgm_error_map(failure_details.code)
-                        isHealthy = False
-                        isFatal = recommended_action != platformconnector_pb2.NONE
-                        key = self._build_cache_key(check_name, entity.entityType, entity.entityValue)
-
-                        entry = self.entity_cache.get(key)
-                        if entry is None or failure_details.code not in entry.active_errors:
-                            existing_errors = set(entry.active_errors) if entry else set()
-                            existing_errors.add(failure_details.code)
-                            pending_cache_updates[key] = EntityCacheEntry(active_errors=existing_errors)
-
-                            # The COMPONENT_RESET recommended action requires that the GPU_UUID is present on the
-                            # unhealthy HealthEvent. Sending an event with COMPONENT_RESET that is missing the GPU_UUID
-                            # impacted entity will result in a failed partial drain in node-drainer (as well as a
-                            # failed remediation in fault-remediation). As a result, we are checking that the GPU_UUID
-                            # can be read from the MetadataReader and are falling back to the RESTART_VM action if it
-                            # is not present on the event.
-
-                            # Note that entity-specific HealthEvents require an exact match for the set of impacted
-                            # entities between the initial unhealthy event and the eventual healthy event which clears
-                            # it in fault-quarantine. To ensure that there's a consistent view of impacted
-                            # entities between healthy and unhealthy events, we will only send unhealthy HealthEvents
-                            # for COMPONENT_RESET which include the GPU index, PCI, and GPU_UUID (and the corresponding
-                            # HealthyEvent will include all of these as long as there's no failure extracting the PCI
-                            # or GPU_UUID from the MetadataReader).
-                            if (
-                                recommended_action == platformconnector_pb2.COMPONENT_RESET
-                                and not entities_impacted_supports_component_reset
-                            ):
-                                log.info(f"Overriding action from COMPONENT_RESET to RESTART_VM for {self._node_name}")
-                                recommended_action = platformconnector_pb2.RESTART_VM
-
-                            event_metadata = {}
-                            chassis_serial = self._metadata_reader.get_chassis_serial()
-                            if chassis_serial:
-                                event_metadata["chassis_serial"] = chassis_serial
-
-                            health_events.append(
-                                platformconnector_pb2.HealthEvent(
-                                    version=self._version,
-                                    agent=self._agent,
-                                    componentClass=self._component_class,
-                                    checkName=check_name,
-                                    generatedTimestamp=timestamp,
-                                    isFatal=isFatal,
-                                    isHealthy=isHealthy,
-                                    errorCode=error_code,
-                                    entitiesImpacted=entities_impacted,
-                                    message=message,
-                                    recommendedAction=recommended_action,
-                                    nodeName=self._node_name,
-                                    metadata=event_metadata,
-                                    processingStrategy=effective_strategy,
+                            pci_address = self._metadata_reader.get_pci_address(gpu_id)
+                            if pci_address:
+                                entities_impacted.append(
+                                    platformconnector_pb2.Entity(entityType="PCI", entityValue=pci_address)
                                 )
-                            )
-                            pending_metric_updates.append((check_name, gpu_id, 1))
+
+                            gpu_uuid = self._metadata_reader.get_gpu_uuid(gpu_id)
+                            if gpu_uuid:
+                                entities_impacted.append(
+                                    platformconnector_pb2.Entity(entityType="GPU_UUID", entityValue=gpu_uuid)
+                                )
+
+                            entities_impacted_supports_component_reset = pci_address and gpu_uuid
+
+                            recommended_action = self.get_recommended_action_from_dcgm_error_map(failure_details.code)
+                            isHealthy = False
+                            isFatal = recommended_action != platformconnector_pb2.NONE
+                            key = self._build_cache_key(check_name, entity.entityType, entity.entityValue)
+
+                            entry = pending_cache_updates.get(key, self.entity_cache.get(key))
+                            if entry is None or failure_details.code not in entry.active_errors:
+                                existing_errors = set(entry.active_errors) if entry else set()
+                                existing_errors.add(failure_details.code)
+                                pending_cache_updates[key] = EntityCacheEntry(active_errors=existing_errors)
+
+                                # The COMPONENT_RESET recommended action requires that the GPU_UUID is present on the
+                                # unhealthy HealthEvent. Sending an event with COMPONENT_RESET that is missing the GPU_UUID
+                                # impacted entity will result in a failed partial drain in node-drainer (as well as a
+                                # failed remediation in fault-remediation). As a result, we are checking that the GPU_UUID
+                                # can be read from the MetadataReader and are falling back to the RESTART_VM action if it
+                                # is not present on the event.
+
+                                # Note that entity-specific HealthEvents require an exact match for the set of impacted
+                                # entities between the initial unhealthy event and the eventual healthy event which clears
+                                # it in fault-quarantine. To ensure that there's a consistent view of impacted
+                                # entities between healthy and unhealthy events, we will only send unhealthy HealthEvents
+                                # for COMPONENT_RESET which include the GPU index, PCI, and GPU_UUID (and the corresponding
+                                # HealthyEvent will include all of these as long as there's no failure extracting the PCI
+                                # or GPU_UUID from the MetadataReader).
+                                if (
+                                    recommended_action == platformconnector_pb2.COMPONENT_RESET
+                                    and not entities_impacted_supports_component_reset
+                                ):
+                                    log.info(
+                                        f"Overriding action from COMPONENT_RESET to RESTART_VM for {self._node_name}"
+                                    )
+                                    recommended_action = platformconnector_pb2.RESTART_VM
+
+                                event_metadata = {}
+                                chassis_serial = self._metadata_reader.get_chassis_serial()
+                                if chassis_serial:
+                                    event_metadata["chassis_serial"] = chassis_serial
+
+                                health_events.append(
+                                    platformconnector_pb2.HealthEvent(
+                                        version=self._version,
+                                        agent=self._agent,
+                                        componentClass=self._component_class,
+                                        checkName=check_name,
+                                        generatedTimestamp=timestamp,
+                                        isFatal=isFatal,
+                                        isHealthy=isHealthy,
+                                        errorCode=error_code,
+                                        entitiesImpacted=entities_impacted,
+                                        message=message,
+                                        recommendedAction=recommended_action,
+                                        nodeName=self._node_name,
+                                        metadata=event_metadata,
+                                        processingStrategy=effective_strategy,
+                                    )
+                                )
+                                pending_metric_updates.append((check_name, gpu_id, 1))
                     else:
 
                         entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
@@ -656,10 +691,25 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         bounded critical-event budget. DCGMWatcher uses this synchronously before
         cleanup because cleanup itself can hang on an unresponsive DCGM probe.
         """
+        self._consecutive_connectivity_failures += 1
+        self._consecutive_connectivity_successes = 0
+        metrics.dcgm_connectivity_consecutive_observations.labels(result="failure").set(
+            self._consecutive_connectivity_failures
+        )
+        metrics.dcgm_connectivity_consecutive_observations.labels(result="success").set(0)
+
+        if self._consecutive_connectivity_failures < self._connectivity_failure_threshold:
+            log.warning(
+                "DCGM connectivity failure observed %d/%d consecutive cycles; suppressing health event",
+                self._consecutive_connectivity_failures,
+                self._connectivity_failure_threshold,
+            )
+            return True
+
         with metrics.dcgm_health_events_publish_time_to_grpc_channel.labels(
             "dcgm_connectivity_failure_to_grpc_channel"
         ).time():
-            log.error("DCGM connectivity failure detected, sending GpuDcgmConnectivityFailure health event")
+            log.error("DCGM connectivity failure threshold reached")
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
             health_events = []
@@ -667,10 +717,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             key = self._build_cache_key(check_name, "DCGM", "ALL")
             entry = self.entity_cache.get(key)
 
-            self._consecutive_connectivity_failures += 1
-            # One failed connection is worth a page. DCGM that stays unreachable
-            # cycle after cycle is a stuck driver, and the only fix for that is a
-            # reboot, so escalate the action once the operator's threshold is hit.
+            # Once the debounce threshold is met, persistent node-local
+            # unreachability may indicate a stuck driver. Escalate the action
+            # separately once the operator's escalation threshold is hit.
             escalate = (
                 self._connectivity_failure_escalation_threshold > 0
                 and self._consecutive_connectivity_failures >= self._connectivity_failure_escalation_threshold
@@ -713,6 +762,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             if not health_events:
                 return True
 
+            log.error("Sending GpuDcgmConnectivityFailure health event")
             try:
                 if self.send_health_event_with_retries(
                     health_events,

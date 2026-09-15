@@ -23,7 +23,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/yaml"
@@ -156,23 +155,9 @@ func TeardownNodeDrainer(ctx context.Context, t *testing.T, c *envconf.Config) c
 	t.Logf("Cleaning up node %s", nodeName)
 	SendHealthyEvent(ctx, t, nodeName)
 
-	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		node, err := GetNodeByName(ctx, client, nodeName)
-		if err != nil {
-			return err
-		}
+	t.Log("Manually uncordoning node")
 
-		if node.Spec.Unschedulable {
-			t.Log("Manually uncordoning node")
-
-			node.Spec.Unschedulable = false
-
-			return client.Resources().Update(ctx, node)
-		}
-
-		return nil
-	})
-	if err != nil {
+	if err := SetNodeCordon(ctx, client, nodeName, false); err != nil {
 		require.Fail(t, "failed to uncordon node", "nodeName", nodeName)
 	}
 

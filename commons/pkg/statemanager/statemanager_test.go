@@ -293,6 +293,9 @@ func TestStateTransitionValidProgression(t *testing.T) {
 		{"Draining to DrainSucceeded", string(DrainingLabelValue), DrainSucceededLabelValue, true, false},
 		{"Draining to DrainFailed", string(DrainingLabelValue), DrainFailedLabelValue, true, false},
 		{"DrainSucceeded to Remediating", string(DrainSucceededLabelValue), RemediatingLabelValue, true, false},
+		// Unsupported actions do not start remediation, so they transition directly to the
+		// terminal failure state to indicate that operator intervention is required.
+		{"DrainSucceeded to RemediationFailed", string(DrainSucceededLabelValue), RemediationFailedLabelValue, true, false},
 		{"Remediating to RemediationSucceeded", string(RemediatingLabelValue), RemediationSucceededLabelValue, true, false},
 		{"Remediating to RemediationFailed", string(RemediatingLabelValue), RemediationFailedLabelValue, true, false},
 		{"Quarantined to DrainSucceeded", string(QuarantinedLabelValue), DrainSucceededLabelValue, true, false},

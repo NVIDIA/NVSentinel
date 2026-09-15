@@ -207,6 +207,30 @@ embedded-mode because the main container is responsible for starting DCGM.
     {{- toYaml $root.Values.resources | nindent 4 }}
 {{- end }}
 
+{{/* Validate runtime connectivity debounce thresholds. */}}
+{{- define "gpu-health-monitor.dcgmConnectivityFailureThreshold" -}}
+{{- $threshold := .Values.dcgmConnectivity.runtimeDebounce.failureThreshold -}}
+{{- if not (or (kindIs "float64" $threshold) (kindIs "int" $threshold) (kindIs "int64" $threshold)) -}}
+{{- fail (printf "gpu-health-monitor.dcgmConnectivity.runtimeDebounce.failureThreshold must be an integer, got %s %#v" (kindOf $threshold) $threshold) -}}
+{{- end -}}
+{{- if or (lt (int $threshold) 1) (ne (float64 $threshold) (float64 (int $threshold))) -}}
+{{- fail "gpu-health-monitor.dcgmConnectivity.runtimeDebounce.failureThreshold must be an integer greater than or equal to 1" -}}
+{{- end -}}
+{{- int $threshold -}}
+{{- end }}
+
+{{- define "gpu-health-monitor.dcgmConnectivitySuccessThreshold" -}}
+{{- $threshold := .Values.dcgmConnectivity.runtimeDebounce.successThreshold -}}
+{{- if not (or (kindIs "float64" $threshold) (kindIs "int" $threshold) (kindIs "int64" $threshold)) -}}
+{{- fail (printf "gpu-health-monitor.dcgmConnectivity.runtimeDebounce.successThreshold must be an integer, got %s %#v" (kindOf $threshold) $threshold) -}}
+{{- end -}}
+{{- if or (lt (int $threshold) 1) (ne (float64 $threshold) (float64 (int $threshold))) -}}
+{{- fail "gpu-health-monitor.dcgmConnectivity.runtimeDebounce.successThreshold must be an integer greater than or equal to 1" -}}
+{{- end -}}
+{{- int $threshold -}}
+{{- end }}
+
+
 
 {{/*
 Chart-local copies of the umbrella chart's nvsentinel.pcAuth.* helpers, so this

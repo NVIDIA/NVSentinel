@@ -256,7 +256,7 @@ func run() error {
 		return err
 	}
 
-	slog.Info("RebootNode, TerminateNode, GPUReset, and ExternalRemediationRequest controllers registered")
+	slog.Info("Janitor controllers configured")
 
 	// Register TTL reconcilers for each maintenance CR kind. See
 	// docs/designs/037-janitor-cr-ttl-cleanup.md for the design.

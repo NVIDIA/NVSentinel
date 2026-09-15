@@ -37,6 +37,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/pkg/config"
+	"github.com/nvidia/nvsentinel/lifecycle-manager/pkg/metrics"
 )
 
 const (
@@ -145,6 +146,12 @@ TestGroup transitions within a ValidationRequest:
 2. With 1 retry: Pending -> Running -> Pending -> Running -> Succeeded/Failed
 3. Built directly as Failed with no attempts, if it cannot meet its batch minimum when initial TestGroups are built.
 4. Pending -> Failed/Succeeded with no attempts, if a deleted node drops it below its batch minimum before it starts.
+
+There is no overall timeout applied to a ValidationRequest. Our 2 initial clients (node-validation-controller and
+fault-quarantine) do not poll for the ValidationRequest status to enter a terminal state. A node will remain cordoned
+whether the ValidationRequest entered a terminal status or is blocked (on either a NodeReadinessViolation or
+stuck TestProvider resource deletion). In the future, we could add an optional timeout to requests if there are clients
+watching for ValidationRequests entering a terminal status.
 */
 func (r *ValidationRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var validationRequest v1alpha1.ValidationRequest
@@ -186,6 +193,8 @@ func (r *ValidationRequestReconciler) reconcileInit(ctx context.Context,
 		return ctrl.Result{}, fmt.Errorf("update ValidationRequest %q status to pending: %w",
 			validationRequest.Name, err)
 	}
+
+	metrics.ValidationRequestsTotal.Inc()
 
 	return ctrl.Result{}, nil
 }
@@ -319,8 +328,11 @@ passes the criteria.
 
 What causes a running ValidationRequest to be blocked (meaning that a TestGroup is stuck pending)?
 - A node referenced in the TestGroup has a NodeReadinessViolation.
-- A node referenced in the TestGroup overlaps with a running TestGroup.
+- A node referenced in the TestGroup overlaps with a running TestGroup. This period is bounded by the TestProvider
+timeoutSeconds which ensures groups make progress.
 - The MaxConcurrentGroups limit, which specifies the maximum number of running TestGroups, has been reached.
+- A previous TestGroup attempt has a resource stuck deleting. This could be caused by foregroundDeletion waiting on
+child resources to be deleted, custom finalizers, or a delay in pod deletion.
 - Note that we check if nodes are deleted or not ready prior to starting new TestGroups so it's possible that a pending
 TestGroup is marked as Failed without ever starting an attempt, if removing its deleted nodes drops it below the
 minimum required for a test with a BatchFailurePolicy of fail. No attempt is created in this case, so no failure
@@ -387,6 +399,10 @@ resource cleaned up prior to finalizer removal and ValidationRequest deletion. A
 be removed from the validation-session for the given node (and uncordoned or untainted if it was the last request in
 the session). If the ValidationRequest was running, the active-validation-request annotation will also be removed for
 the given node.
+
+Note that this function will not wait for any existing TestGroup resource to be fully deleted prior to removing the
+finalizer for current ValidationRequest. If we want to change this behavior in the future, we should check
+checkTestGroupObjectDeleted on each call to reconcileDelete prior to removing the finalizer.
 */
 func (r *ValidationRequestReconciler) reconcileDelete(ctx context.Context,
 	validationRequest *v1alpha1.ValidationRequest) (ctrl.Result, error) {
@@ -442,6 +458,16 @@ func (r *ValidationRequestReconciler) completeValidationRequest(ctx context.Cont
 		return ctrl.Result{}, fmt.Errorf("update ValidationRequest %q status to %s: %w",
 			validationRequest.Name, phase, err)
 	}
+
+	metricStatus := metrics.StatusFailure
+	if phase == v1alpha1.PhaseSucceeded {
+		metricStatus = metrics.StatusSuccess
+	}
+
+	metrics.ValidationRequestsCompletedTotal.WithLabelValues(metricStatus).Inc()
+
+	duration := now.Sub(validationRequest.Status.StartTime.Time)
+	metrics.ValidationRequestsDurationSeconds.WithLabelValues(metricStatus).Observe(duration.Seconds())
 
 	return ctrl.Result{}, nil
 }
@@ -571,6 +597,14 @@ func (r *ValidationRequestReconciler) reconcileRunningTestGroup(ctx context.Cont
 		return nil
 	}
 
+	return r.finalizeTestGroupAttempt(ctx, currentTestGroup, testGroupAttempt, newGroupPhase, attemptPhase,
+		attemptFailureReason, failedNodes)
+}
+
+func (r *ValidationRequestReconciler) finalizeTestGroupAttempt(ctx context.Context,
+	currentTestGroup *v1alpha1.TestGroupStatus, testGroupAttempt *v1alpha1.AttemptStatus,
+	newGroupPhase, attemptPhase v1alpha1.Phase, attemptFailureReason v1alpha1.FailureReason,
+	failedNodes []string) error {
 	currentTestGroup.Phase = newGroupPhase
 	testGroupAttempt.Phase = attemptPhase
 	testGroupAttempt.FailureReason = attemptFailureReason
@@ -578,7 +612,11 @@ func (r *ValidationRequestReconciler) reconcileRunningTestGroup(ctx context.Cont
 	testGroupAttempt.EndTime = &now
 	testGroupAttempt.FailedNodes = failedNodes
 
-	return r.deleteTestGroupObject(ctx, currentTestGroup, testGroupAttempt.ObjectName)
+	if err := r.deleteTestGroupObject(ctx, currentTestGroup, testGroupAttempt.ObjectName); err != nil {
+		return fmt.Errorf("deleting provider resource %q: %w", testGroupAttempt.ObjectName, err)
+	}
+
+	return nil
 }
 
 func (r *ValidationRequestReconciler) startPendingTestGroups(ctx context.Context,
@@ -632,19 +670,12 @@ func (r *ValidationRequestReconciler) startPendingTestGroup(ctx context.Context,
 		}
 	}
 
-	deletedNodes, nodesFailingReadiness, err := r.fetchDeletedAndNotReadyNodes(ctx, currentPendingTestGroup)
+	isBlocked, err := r.checkPendingTestGroupBlocked(ctx, validationRequest, currentPendingTestGroup)
 	if err != nil {
-		return false, fmt.Errorf("checking group nodes for %q: %w", currentPendingTestGroup.Name, err)
+		return false, err
 	}
 
-	if len(deletedNodes) > 0 {
-		nextPhase := removeDeletedNodesFromTestGroup(validationRequest, currentPendingTestGroup, deletedNodes, r.Config)
-		if nextPhase != v1alpha1.PhasePending {
-			return false, nil
-		}
-	}
-
-	if len(nodesFailingReadiness) > 0 {
+	if isBlocked {
 		return false, nil
 	}
 
@@ -667,6 +698,38 @@ func (r *ValidationRequestReconciler) startPendingTestGroup(ctx context.Context,
 	}
 
 	return true, nil
+}
+
+func (r *ValidationRequestReconciler) checkPendingTestGroupBlocked(ctx context.Context,
+	validationRequest *v1alpha1.ValidationRequest, currentPendingTestGroup *v1alpha1.TestGroupStatus) (bool, error) {
+	deletedNodes, nodesFailingReadiness, err := r.fetchDeletedAndNotReadyNodes(ctx, currentPendingTestGroup)
+	if err != nil {
+		return false, fmt.Errorf("checking group nodes for %q: %w", currentPendingTestGroup.Name, err)
+	}
+
+	if len(deletedNodes) > 0 {
+		nextPhase := removeDeletedNodesFromTestGroup(validationRequest, currentPendingTestGroup, deletedNodes, r.Config)
+		if nextPhase != v1alpha1.PhasePending {
+			return true, nil
+		}
+	}
+
+	if len(nodesFailingReadiness) > 0 {
+		return true, nil
+	}
+
+	if len(currentPendingTestGroup.Attempts) == 0 {
+		return false, nil
+	}
+
+	previousAttempt := currentPendingTestGroup.Attempts[len(currentPendingTestGroup.Attempts)-1]
+
+	deleted, err := r.checkTestGroupObjectDeleted(ctx, currentPendingTestGroup, previousAttempt.ObjectName)
+	if err != nil {
+		return false, fmt.Errorf("checking previous attempt %q is deleted: %w", previousAttempt.ObjectName, err)
+	}
+
+	return !deleted, nil
 }
 
 func terminalPhase(hasFailedTestGroups bool, validationRequest *v1alpha1.ValidationRequest) v1alpha1.Phase {

@@ -31,7 +31,7 @@ class ErrorDetails:
 @dataclasses.dataclass
 class HealthDetails:
     status: HealthStatus
-    entity_failures: dict[int, ErrorDetails]
+    entity_failures: dict[int, list[ErrorDetails]]
 
 
 @dataclasses.dataclass(frozen=True)

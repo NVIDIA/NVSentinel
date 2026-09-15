@@ -57,19 +57,43 @@ type Match struct {
 	All []Rule `toml:"all"`
 }
 
-type RuleSet struct {
+type RuleSetMeta struct {
 	Enabled  bool   `toml:"enabled"`
 	Version  string `toml:"version"`
 	Name     string `toml:"name"`
 	Priority int    `toml:"priority"`
 	Match    Match  `toml:"match"`
-	Taint    Taint  `toml:"taint"`
-	Label    Label  `toml:"label"`
-	Cordon   Cordon `toml:"cordon"`
+}
+
+type QuarantineRuleSet struct {
+	RuleSetMeta
+	Taint  Taint  `toml:"taint"`
+	Label  Label  `toml:"label"`
+	Cordon Cordon `toml:"cordon"`
+}
+
+type ValidationRuleSet struct {
+	RuleSetMeta
+	Tests []string `toml:"tests"`
+}
+
+// The ValidationConfig configures how fault-quarantine creates ValidationRequest CRDs after a quarantine
+// session's unhealthy events have all recovered and at least 1 event from the quarantine session required
+// a validation test according to Validation.RuleSets.
+type ValidationConfig struct {
+	Enabled           bool                `toml:"enabled"`
+	ApiGroup          string              `toml:"apiGroup"`
+	Version           string              `toml:"version"`
+	Kind              string              `toml:"kind"`
+	Resource          string              `toml:"resource"`
+	TemplateMountPath string              `toml:"templateMountPath"`
+	TemplateFileName  string              `toml:"templateFileName"`
+	RuleSets          []ValidationRuleSet `toml:"ruleSets"`
 }
 
 type TomlConfig struct {
-	LabelPrefix    string         `toml:"label-prefix"`
-	CircuitBreaker CircuitBreaker `toml:"circuitBreaker"`
-	RuleSets       []RuleSet      `toml:"rule-sets"`
+	LabelPrefix    string              `toml:"label-prefix"`
+	CircuitBreaker CircuitBreaker      `toml:"circuitBreaker"`
+	RuleSets       []QuarantineRuleSet `toml:"rule-sets"`
+	Validation     ValidationConfig    `toml:"validation"`
 }

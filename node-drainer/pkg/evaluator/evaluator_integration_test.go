@@ -29,6 +29,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/drain"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	annotation "github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
@@ -748,7 +749,10 @@ func TestDrainScopeFor_VaryingEventShapes_ReturnsEntityAndMatchingScope(t *testi
 				assert.Equal(t, tc.wantEntity, entity.GetEntityValue())
 			}
 
-			assertEntity(t, partialDrainEntity(tc.event, tc.enabled))
+			if tc.enabled {
+				entity, _ := drain.PartialDrainEntity(tc.event)
+				assertEntity(t, entity)
+			}
 
 			// Assert both return values of the exported wrapper. Checking only the scope
 			// would let a regression in the entity it returns pass, since that is the

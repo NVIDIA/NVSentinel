@@ -67,6 +67,8 @@ def _init_event_processor(
     processing_strategy: platformconnector_pb2.ProcessingStrategy,
     store_only_checks: frozenset[str],
     connectivity_failure_escalation_threshold: int,
+    connectivity_failure_threshold: int,
+    connectivity_success_threshold: int,
     platform_connector_token_path: str,
 ):
     platform_connector_config = config["eventprocessors.platformconnector"]
@@ -82,6 +84,8 @@ def _init_event_processor(
                 processing_strategy=processing_strategy,
                 store_only_checks=store_only_checks,
                 connectivity_failure_escalation_threshold=connectivity_failure_escalation_threshold,
+                connectivity_failure_threshold=connectivity_failure_threshold,
+                connectivity_success_threshold=connectivity_success_threshold,
                 token_path=platform_connector_token_path or None,
             )
         case _:
@@ -261,6 +265,8 @@ def cli(
     suppressed_error_codes = frozenset()
     connectivity_failure_escalation_threshold = 0
     health_check_min_consecutive_polls: dict[str, int] = {}
+    connectivity_failure_threshold = 1
+    connectivity_success_threshold = 1
     if config.has_section("dcgmhealthcheck"):
         health_check_config = config["dcgmhealthcheck"]
         suppressed_error_codes_raw = health_check_config.get("SuppressedErrorCodes", fallback="")
@@ -285,6 +291,26 @@ def cli(
         if health_check_min_consecutive_polls:
             log.info(f"DCGM incident debounce thresholds: {health_check_min_consecutive_polls}")
 
+    if config.has_section("dcgmconnectivity"):
+        connectivity_config = config["dcgmconnectivity"]
+        connectivity_failure_threshold = connectivity_config.getint("FailureThreshold", fallback=1)
+        connectivity_success_threshold = connectivity_config.getint("SuccessThreshold", fallback=1)
+    if connectivity_failure_threshold < 1:
+        raise click.BadParameter(
+            "must be at least 1",
+            param_hint="dcgmconnectivity.FailureThreshold",
+        )
+    if connectivity_success_threshold < 1:
+        raise click.BadParameter(
+            "must be at least 1",
+            param_hint="dcgmconnectivity.SuccessThreshold",
+        )
+    log.info(
+        "DCGM runtime connectivity debounce: failure_threshold=%d success_threshold=%d",
+        connectivity_failure_threshold,
+        connectivity_success_threshold,
+    )
+
     enabled_event_processor_names = cli_config["EnabledEventProcessors"].split(",")
     enabled_event_processors = []
     for event_processor in enabled_event_processor_names:
@@ -300,6 +326,8 @@ def cli(
                 processing_strategy_value,
                 store_only_checks,
                 connectivity_failure_escalation_threshold,
+                connectivity_failure_threshold,
+                connectivity_success_threshold,
                 platform_connector_token_path,
             )
         )

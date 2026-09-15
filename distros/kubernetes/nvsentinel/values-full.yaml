@@ -722,7 +722,13 @@ node-drainer:
   # Default: false if not specified
   drainGPUPods: false
 
-  # Namespace-specific eviction strategies
+  # Pod-label eviction strategies, evaluated in order; the first matching policy wins.
+  # Set userNamespaces: [] before adding policies; both lists cannot be non-empty.
+  # Unmatched pods are outside the drain scope. Cannot be combined with customDrain.
+  # See docs/configuration/node-drainer.md#pod-drain-policies for examples.
+  podDrainPolicies: []
+
+  # Namespace-specific eviction strategies (alternative to podDrainPolicies)
   # Define how pods in different namespaces should be evicted
   # Multiple rules can be defined with namespace patterns
   userNamespaces:
@@ -944,6 +950,34 @@ fault-remediation:
     enableAwsSosCollection: false
 
 ################################################################################
+# HEALTH-EVENTS-ANALYZER CONFIGURATION
+#
+# Evaluates rule-based aggregation pipelines against health events from the
+# datastore and publishes derived fatal health events for automated remediation.
+# Events are partitioned across concurrent workers by node name.
+################################################################################
+health-events-analyzer:
+  # Number of concurrent workers for event processing partitioned by node (default: 1)
+  # Scale this parameter based on the event ingestion rate in the datastore.
+  # Because each rule evaluation performs datastore aggregation queries (~17.5ms),
+  # each worker handles ~57 events/s. Increasing workers scales throughput linearly:
+  #   - 1 worker:   ~57 events/s  (default, clusters up to ~500 nodes)
+  #   - 4 workers:  ~220 events/s (clusters up to ~2,000 nodes)
+  #   - 8 workers:  ~440 events/s (clusters up to ~4,000 nodes)
+  #   - 16 workers: ~860 events/s (clusters up to ~8,000 nodes)
+  #   - 32 workers: ~1,680 events/s (clusters up to ~15,000 nodes)
+  workers: 1
+
+  # Maximum number of uncheckpointed in-flight events before backpressure is applied (default: 1000)
+  # When uncheckpointed events in memory reach this limit, ingestion from the watcher pauses.
+  # Increase proportionally when running with 16+ workers (e.g. 2000-4000) to avoid false stalls.
+  maxInFlight: 1000
+
+  # Processing strategy for health events (default: EXECUTE_REMEDIATION)
+  # Valid values: EXECUTE_REMEDIATION, STORE_ONLY
+  processingStrategy: EXECUTE_REMEDIATION
+
+################################################################################
 # KUBERNETES-OBJECT-MONITOR CONFIGURATION
 #
 # Watches configured Kubernetes resources and generates health events when
@@ -1035,6 +1069,17 @@ gpu-health-monitor:
       # Maximum seconds allowed for one DCGM connection and discovery attempt.
       # A timed-out attempt is terminated before the next retry begins.
       connectTimeoutSeconds: 10
+    # Debounce runtime connectivity transitions after the monitor has started.
+    # Defaults preserve the existing fail-once, recover-once behavior.
+    runtimeDebounce:
+      # Example: failureThreshold: 4 and successThreshold: 2 publishes failure
+      # after four failed cycles and recovery after two successful cycles.
+      # Consecutive failed cycles required to publish an unhealthy event.
+      failureThreshold: 1
+      # Consecutive successful cycles required to clear a published failure.
+      successThreshold: 1
+
+
 
   # Use host networking for GPU health monitor pods
   # Required when:
@@ -1241,7 +1286,7 @@ labeler:
 # Watches maintenance CRDs created by fault-remediation and performs the
 # actual infrastructure operations.
 #
-# Supports: AWS, GCP, Azure, OCI, kind (for testing), kwok (for testing)
+# Supports: AWS, GCP, Azure, OCI, generic, label, kind (for testing), kwok (for testing)
 ################################################################################
 janitor:
   # Number of pod replicas (recommend 1 for consistency)
@@ -2204,3 +2249,10 @@ janitor-provider:
     audience: "nvsentinel-csp-provider"
     allowedUsernames: []
   janitorServiceAccountName: "janitor"
+  csp:
+    # Set provider to "label" on Forge/NKE (or any platform that remediates from node labels).
+    # After reboot completion, the external controller MUST remove the reboot label.
+    # provider: "label"
+    label:
+      rebootKey: "nke.nvidia.com/reboot=requested-by-nvsentinel"
+      terminateKey: "nke.nvidia.com/terminate=requested-by-nvsentinel"

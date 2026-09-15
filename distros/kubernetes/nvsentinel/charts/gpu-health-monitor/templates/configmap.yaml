@@ -50,6 +50,10 @@ data:
 {{- end }}
     MinConsecutivePolls = {{ join "," $debounce }}
 
+    [dcgmconnectivity]
+    FailureThreshold = {{ include "gpu-health-monitor.dcgmConnectivityFailureThreshold" . }}
+    SuccessThreshold = {{ include "gpu-health-monitor.dcgmConnectivitySuccessThreshold" . }}
+
     [eventprocessors.kubernetes]
     ConflictRetryCount = 10
 

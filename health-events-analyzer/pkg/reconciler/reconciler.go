@@ -55,6 +55,8 @@ type HealthEventsAnalyzerReconcilerConfig struct {
 	Pipeline                  any
 	HealthEventsAnalyzerRules *config.TomlConfig
 	Publisher                 *publisher.PublisherConfig
+	Workers                   int
+	MaxInFlight               int
 }
 
 type Reconciler struct {
@@ -69,6 +71,31 @@ type Reconciler struct {
 func NewReconciler(cfg HealthEventsAnalyzerReconcilerConfig) *Reconciler {
 	return &Reconciler{
 		config: cfg,
+	}
+}
+
+func newEventProcessorConfig(cfg HealthEventsAnalyzerReconcilerConfig) client.EventProcessorConfig {
+	workers := cfg.Workers
+	if workers <= 0 {
+		workers = 1
+	}
+
+	maxInFlight := cfg.MaxInFlight
+	if maxInFlight <= 0 {
+		maxInFlight = 1000
+	}
+
+	// Keep the stream live after handler failures. The processor records the
+	// failure before checkpointing; checkpoint failures still stop processing.
+	return client.EventProcessorConfig{
+		EnableMetrics:        true,
+		MetricsLabels:        map[string]string{"module": agentName},
+		MarkProcessedOnError: true,
+		Workers:              workers,
+		MaxInFlight:          maxInFlight,
+		SkipEvent: func(event client.Event) bool {
+			return client.EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath)
+		},
 	}
 }
 
@@ -129,17 +156,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 
 	oldWatcher := unwrapable.Unwrap()
 
-	// Create and configure the unified EventProcessor
-	// Note: EventProcessor no longer retries internally to prevent blocking the event stream
-	// Failed events will be retried on next pod restart (via resume token)
-	processorConfig := client.EventProcessorConfig{
-		EnableMetrics:        true,
-		MetricsLabels:        map[string]string{"module": agentName},
-		MarkProcessedOnError: false, // IMPORTANT: Don't mark failed events as processed
-		SkipEvent: func(event client.Event) bool {
-			return client.EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath)
-		},
-	}
+	processorConfig := newEventProcessorConfig(r.config)
 
 	r.eventProcessor = client.NewEventProcessor(oldWatcher, r.databaseClient, processorConfig)
 

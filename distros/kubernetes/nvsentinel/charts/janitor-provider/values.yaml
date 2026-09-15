@@ -101,7 +101,7 @@ auth:
 # The janitor-provider module supports multiple cloud providers for node reboot operations
 # Configure the appropriate CSP for your environment
 csp:
-  # CSP provider type (kind, kwok, aws, gcp, azure, oci, nebius, lambda, generic)
+  # CSP provider type (kind, kwok, aws, gcp, azure, oci, nebius, lambda, generic, label)
   # - kind: For local development with kind clusters (simulated reboots)
   # - kwok: For testing with kwok (simulated nodes)
   # - aws: For AWS EKS clusters
@@ -111,6 +111,7 @@ csp:
   # - nebius: For Nebius Managed Kubernetes (MK8s) clusters
   # - lambda: For Lambda Cloud clusters (reboot = power cycle, terminate = terminate instance)
   # - generic: For bare-metal / on-premises clusters (reboots via privileged Job)
+  # - label: Request reboot/terminate by labeling the Node (default keys are NKE)
   provider: "kind"
 
   # Generic provider configuration (only used when provider=generic)
@@ -130,6 +131,18 @@ csp:
     imagePullSecrets: ""
     # Write a reboot attribution message to the node's syslog before rebooting
     writeSyslog: false
+
+  # Label provider configuration (only used when provider=label)
+  # Requests reboot/terminate by labeling the Node. An external controller
+  # running on the Kubernetes control plane watches the labels and performs
+  # the action. After reboot completion, that controller MUST remove the
+  # reboot label. The node is ready once the reboot label is gone and the
+  # node's boot ID has changed.
+  label:
+    # Node label spec used to request a reboot (key=value)
+    rebootKey: "nke.nvidia.com/reboot=requested-by-nvsentinel"
+    # Node label spec used to request termination (key=value)
+    terminateKey: "nke.nvidia.com/terminate=requested-by-nvsentinel"
 
   # AWS-specific configuration (only required when provider=aws)
   aws:

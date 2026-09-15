@@ -259,6 +259,52 @@ Alert separately when the init program itself is repeatedly failing:
     description: "The wait-for-dcgm init container in {{ $labels.namespace }}/{{ $labels.pod }} is repeatedly failing."
 ```
 
+## Runtime DCGM Connectivity Debounce
+
+After the main container has started, transient DCGM timeouts or connection errors can be debounced before they become `GpuDcgmConnectivityFailure` transitions. For example, the following configuration requires three consecutive failures:
+
+```yaml
+gpu-health-monitor:
+  dcgmConnectivity:
+    runtimeDebounce:
+      failureThreshold: 3
+      successThreshold: 1
+```
+
+`failureThreshold` is the number of consecutive failed DCGM connectivity cycles required before the unhealthy event is published. A successful cycle before the threshold resets the failure streak, so intermittent failures do not accumulate across healthy polls.
+
+`successThreshold` is the number of consecutive successful cycles required to clear an already-published connectivity failure. A failed cycle during recovery resets the success streak and keeps the existing unhealthy event active. The threshold does not delay the initial healthy baseline event emitted for a node with no prior connectivity state.
+
+Both values must be integers greater than or equal to `1`. They default to `1`, preserving the existing fail-once and recover-once behavior. Raising `failureThreshold` filters shorter connectivity interruptions at the cost of up to `failureThreshold - 1` additional poll intervals of detection latency.
+
+The debounce state belongs to the running monitor process and is not persisted. Restarting the process resets both observation streaks. The replacement process emits its normal initial healthy baseline as soon as a complete health check succeeds, allowing platform state left by the previous process to converge without waiting for `successThreshold`.
+
+The following metric exposes the current streaks:
+
+```text
+dcgm_connectivity_consecutive_observations{result="failure"}
+dcgm_connectivity_consecutive_observations{result="success"}
+```
+
+Runtime debounce and the startup gate address different phases:
+
+- `startupGate` prevents the monitor from starting and publishing connectivity failures before DCGM has been functional once.
+- `runtimeDebounce` filters short connectivity transitions after the monitor is running.
+- The probe watchdog is not delayed by `failureThreshold`: a DCGM call that has stopped returning may have no later poll from which to build a failure streak.
+
+`dcgmHealthCheck.connectivityFailureEscalationThreshold` continues to count consecutive failed observations. If its threshold is lower than the debounce failure threshold, the first published unhealthy event may already recommend `RESTART_BM`; configure escalation at or above `failureThreshold` when a preliminary `CONTACT_SUPPORT` event is desired.
+
+Example behavior for `failureThreshold: 4` and `successThreshold: 2`:
+
+```text
+failure 1-3  -> no unhealthy event
+failure 4    -> publish GpuDcgmConnectivityFailure
+success 1    -> keep the unhealthy event active
+failure      -> reset the recovery streak
+success 1    -> keep the unhealthy event active
+success 2    -> publish the healthy recovery event
+```
+
 ## Unresponsive DCGM Detection
 
 A DCGM call that stops answering never returns an error — callers park and the probe blocks forever rather than raising `DCGMError_Timeout`. Meanwhile the node can still report `Ready` with every GPU allocatable and no taint, so no other signal in the stack registers a fault. In `embedded-mode` that hang is node-local, but it is not yet proof of a kernel-driver wedge: DCGM userspace deadlock or lock contention can look the same until an independent NVML/`nvidia-smi` probe confirms the driver itself.

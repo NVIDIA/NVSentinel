@@ -1421,17 +1421,9 @@ func requireSingleNodeEvent(
 	return nodeEvents.Items[0]
 }
 
+// setupDirectTest builds the legacy namespace configuration used by reconciler API tests.
 func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun bool, drainGPUPods ...bool) *testSetup {
 	t.Helper()
-	ctx := t.Context()
-
-	testEnv := envtest.Environment{}
-	cfg, err := testEnv.Start()
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = testEnv.Stop() })
-
-	client, err := kubernetes.NewForConfig(cfg)
-	require.NoError(t, err)
 
 	enableDrainGPUPods := false
 	if len(drainGPUPods) > 0 {
@@ -1447,6 +1439,22 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 		UserNamespaces:            userNamespaces,
 		PartialDrainEnabled:       true,
 	}
+	return setupConfiguredTest(t, tomlConfig, dryRun)
+}
+
+// setupConfiguredTest
+// starts an API server, syncs the policy-aware informer and constructs a reconciler with a mock datastore.
+func setupConfiguredTest(t *testing.T, tomlConfig config.TomlConfig, dryRun bool) *testSetup {
+	t.Helper()
+	ctx := t.Context()
+	testEnv := envtest.Environment{}
+	cfg, err := testEnv.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = testEnv.Stop() })
+	client, err := kubernetes.NewForConfig(cfg)
+	require.NoError(t, err)
+	policies, err := config.CompilePodDrainPolicies(tomlConfig.PodDrainPolicies)
+	require.NoError(t, err)
 
 	// Create mock database config for testing
 	mockDatabaseConfig := &mockDatabaseConfig{
@@ -1470,9 +1478,10 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 		client,
 		1*time.Minute,
 		new(2),
-		enableDrainGPUPods,
+		tomlConfig.DrainGPUPods,
 		dryRun,
 		tomlConfig.SystemNamespaces,
+		policies.LabelKeys()...,
 	)
 	require.NoError(t, err)
 

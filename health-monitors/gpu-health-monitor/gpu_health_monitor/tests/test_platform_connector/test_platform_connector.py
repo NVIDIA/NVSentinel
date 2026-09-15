@@ -130,10 +130,12 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_events["DCGM_HEALTH_WATCH_INFOROM"] = dcgmtypes.HealthDetails(
             status=dcgmtypes.HealthStatus.FAIL,
             entity_failures={
-                0: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_CORRUPT_INFOROM",
-                    message="A corrupt InfoROM has been detected in GPU 0. Flash the InfoROM to clear this corruption.",
-                )
+                0: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_CORRUPT_INFOROM",
+                        message="A corrupt InfoROM has been detected in GPU 0. Flash the InfoROM to clear this corruption.",
+                    )
+                ]
             },
         )
 
@@ -154,10 +156,12 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_events["DCGM_HEALTH_WATCH_INFOROM"] = dcgmtypes.HealthDetails(
             status=dcgmtypes.HealthStatus.FAIL,
             entity_failures={
-                0: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_CORRUPT_INFOROM",
-                    message="A corrupt InfoROM has been detected in GPU 0. Flash the InfoROM to clear this corruption.",
-                )
+                0: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_CORRUPT_INFOROM",
+                        message="A corrupt InfoROM has been detected in GPU 0. Flash the InfoROM to clear this corruption.",
+                    )
+                ]
             },
         )
 
@@ -244,10 +248,12 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_events["DCGM_HEALTH_WATCH_NVLINK"] = dcgmtypes.HealthDetails(
             status=dcgmtypes.HealthStatus.FAIL,
             entity_failures={
-                0: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_NVLINK_DOWN",
-                    message=aggregated_message,
-                )
+                0: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_NVLINK_DOWN",
+                        message=aggregated_message,
+                    )
+                ]
             },
         )
 
@@ -358,14 +364,18 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_events["DCGM_HEALTH_WATCH_NVLINK"] = dcgmtypes.HealthDetails(
             status=dcgmtypes.HealthStatus.FAIL,
             entity_failures={
-                0: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_NVLINK_DOWN",
-                    message=gpu0_message,
-                ),
-                1: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_NVLINK_DOWN",
-                    message=gpu1_message,
-                ),
+                0: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_NVLINK_DOWN",
+                        message=gpu0_message,
+                    )
+                ],
+                1: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_NVLINK_DOWN",
+                        message=gpu1_message,
+                    )
+                ],
             },
         )
 
@@ -430,10 +440,12 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_events["DCGM_HEALTH_WATCH_NVLINK"] = dcgmtypes.HealthDetails(
             status=dcgmtypes.HealthStatus.FAIL,
             entity_failures={
-                1: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_NVLINK_DOWN",
-                    message=gpu1_message,
-                ),
+                1: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_NVLINK_DOWN",
+                        message=gpu1_message,
+                    )
+                ],
             },
         )
 
@@ -558,14 +570,18 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_events["DCGM_HEALTH_WATCH_NVLINK"] = dcgmtypes.HealthDetails(
             status=dcgmtypes.HealthStatus.FAIL,
             entity_failures={
-                0: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_NVLINK_DOWN",
-                    message=gpu0_message,
-                ),
-                1: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_NVLINK_DOWN",
-                    message=gpu1_message,
-                ),
+                0: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_NVLINK_DOWN",
+                        message=gpu0_message,
+                    )
+                ],
+                1: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_NVLINK_DOWN",
+                        message=gpu1_message,
+                    )
+                ],
             },
         )
 
@@ -778,20 +794,24 @@ class TestPlatformConnectors(unittest.TestCase):
             dcgm_health_events["DCGM_HEALTH_WATCH_MEM"] = dcgmtypes.HealthDetails(
                 status=dcgmtypes.HealthStatus.FAIL,
                 entity_failures={
-                    4: dcgm.types.ErrorDetails(
-                        code="DCGM_FR_XID_ERROR",
-                        message="ErrorCode:DCGM_FR_XID_ERROR GPU:4 PCI:0000:c4:00.0 "
-                        "Detected XID 31 for GPU 4 .Recommended Action=NONE;",
-                    )
+                    4: [
+                        dcgm.types.ErrorDetails(
+                            code="DCGM_FR_XID_ERROR",
+                            message="ErrorCode:DCGM_FR_XID_ERROR GPU:4 PCI:0000:c4:00.0 "
+                            "Detected XID 31 for GPU 4 .Recommended Action=NONE;",
+                        )
+                    ]
                 },
             )
             dcgm_health_events["DCGM_HEALTH_WATCH_THERMAL"] = dcgmtypes.HealthDetails(
                 status=dcgmtypes.HealthStatus.FAIL,
                 entity_failures={
-                    2: dcgm.types.ErrorDetails(
-                        code="DCGM_FR_TEMP_VIOLATION",
-                        message="GPU 2 temperature exceeds threshold",
-                    )
+                    2: [
+                        dcgm.types.ErrorDetails(
+                            code="DCGM_FR_TEMP_VIOLATION",
+                            message="GPU 2 temperature exceeds threshold",
+                        )
+                    ]
                 },
             )
 
@@ -936,10 +956,12 @@ class TestPlatformConnectors(unittest.TestCase):
             dcgm_health_events["DCGM_HEALTH_WATCH_POWER"] = dcgmtypes.HealthDetails(
                 status=dcgmtypes.HealthStatus.FAIL,
                 entity_failures={
-                    3: dcgm.types.ErrorDetails(
-                        code="DCGM_FR_POWER_UNREADABLE",
-                        message="GPU 3 power reading is unavailable",
-                    )
+                    3: [
+                        dcgm.types.ErrorDetails(
+                            code="DCGM_FR_POWER_UNREADABLE",
+                            message="GPU 3 power reading is unavailable",
+                        )
+                    ]
                 },
             )
 
@@ -1043,10 +1065,12 @@ class TestPlatformConnectors(unittest.TestCase):
             dcgm_health_events["DCGM_HEALTH_WATCH_POWER"] = dcgmtypes.HealthDetails(
                 status=dcgmtypes.HealthStatus.FAIL,
                 entity_failures={
-                    3: dcgm.types.ErrorDetails(
-                        code="DCGM_FR_CLOCK_THROTTLE_POWER",
-                        message="GPU 3 clock throttled due to power",
-                    )
+                    3: [
+                        dcgm.types.ErrorDetails(
+                            code="DCGM_FR_CLOCK_THROTTLE_POWER",
+                            message="GPU 3 clock throttled due to power",
+                        )
+                    ]
                 },
             )
 
@@ -1076,10 +1100,12 @@ class TestPlatformConnectors(unittest.TestCase):
             dcgm_health_events["DCGM_HEALTH_WATCH_POWER"] = dcgmtypes.HealthDetails(
                 status=dcgmtypes.HealthStatus.FAIL,
                 entity_failures={
-                    3: dcgm.types.ErrorDetails(
-                        code="DCGM_FR_POWER_UNREADABLE",
-                        message="GPU 3 power reading is unavailable",
-                    )
+                    3: [
+                        dcgm.types.ErrorDetails(
+                            code="DCGM_FR_POWER_UNREADABLE",
+                            message="GPU 3 power reading is unavailable",
+                        )
+                    ]
                 },
             )
 
@@ -1227,10 +1253,12 @@ class TestPlatformConnectors(unittest.TestCase):
             dcgm_health_events["DCGM_HEALTH_WATCH_INFOROM"] = dcgmtypes.HealthDetails(
                 status=dcgmtypes.HealthStatus.FAIL,
                 entity_failures={
-                    0: dcgm.types.ErrorDetails(
-                        code="DCGM_FR_CORRUPT_INFOROM",
-                        message="A corrupt InfoROM has been detected in GPU 0.",
-                    )
+                    0: [
+                        dcgm.types.ErrorDetails(
+                            code="DCGM_FR_CORRUPT_INFOROM",
+                            message="A corrupt InfoROM has been detected in GPU 0.",
+                        )
+                    ]
                 },
             )
             gpu_ids = [0]
@@ -1429,10 +1457,12 @@ class TestPlatformConnectors(unittest.TestCase):
             dcgm_health_events["DCGM_HEALTH_WATCH_INFOROM"] = dcgmtypes.HealthDetails(
                 status=dcgmtypes.HealthStatus.FAIL,
                 entity_failures={
-                    0: dcgm.types.ErrorDetails(
-                        code="DCGM_FR_CORRUPT_INFOROM",
-                        message="A corrupt InfoROM has been detected in GPU 0.",
-                    )
+                    0: [
+                        dcgm.types.ErrorDetails(
+                            code="DCGM_FR_CORRUPT_INFOROM",
+                            message="A corrupt InfoROM has been detected in GPU 0.",
+                        )
+                    ]
                 },
             )
 
@@ -1837,6 +1867,129 @@ class TestPlatformConnectors(unittest.TestCase):
             processor.clear_dcgm_unresponsive(timestamp)
 
             assert servicer.health_events is None
+
+    def test_connectivity_failure_waits_for_configured_threshold(self) -> None:
+        """Transient failures stay internal until the configured streak is reached."""
+        with self._running_connector(connectivity_failure_threshold=3) as (servicer, processor):
+            assert processor.dcgm_connectivity_failed() is True
+            assert processor.dcgm_connectivity_failed() is True
+            assert servicer.health_events is None
+            assert processor._consecutive_connectivity_failures == 2
+
+            assert processor.dcgm_connectivity_failed() is True
+            assert len(servicer.health_events) == 1
+            event = servicer.health_events[0]
+            assert event.checkName == "GpuDcgmConnectivityFailure"
+            assert event.isHealthy is False
+            assert event.errorCode == ["DCGM_CONNECTIVITY_ERROR"]
+
+    def test_connectivity_success_resets_a_pending_failure_streak(self) -> None:
+        """A successful cycle before the failure threshold starts a new streak."""
+        with self._running_connector(connectivity_failure_threshold=3) as (servicer, processor):
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            processor.clear_dcgm_connectivity_failure(timestamp)
+            assert servicer.health_events[0].isHealthy is True
+
+            servicer.health_events = None
+            processor.dcgm_connectivity_failed()
+            processor.dcgm_connectivity_failed()
+            assert servicer.health_events is None
+
+            processor.clear_dcgm_connectivity_failure(timestamp)
+            assert processor._consecutive_connectivity_failures == 0
+            assert servicer.health_events is None
+
+            processor.dcgm_connectivity_failed()
+            processor.dcgm_connectivity_failed()
+            assert servicer.health_events is None
+            processor.dcgm_connectivity_failed()
+            assert servicer.health_events[0].isHealthy is False
+
+    def test_connectivity_recovery_waits_for_configured_threshold(self) -> None:
+        """An active failure clears only after the configured successful streak."""
+        with self._running_connector(connectivity_success_threshold=2) as (servicer, processor):
+            processor.dcgm_connectivity_failed()
+            assert servicer.health_events[0].isHealthy is False
+
+            servicer.health_events = None
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            processor.clear_dcgm_connectivity_failure(timestamp)
+            assert servicer.health_events is None
+            assert processor._consecutive_connectivity_successes == 1
+
+            processor.clear_dcgm_connectivity_failure(timestamp)
+            assert len(servicer.health_events) == 1
+            assert servicer.health_events[0].isHealthy is True
+            assert processor._consecutive_connectivity_successes == 0
+
+    def test_connectivity_failure_interrupts_pending_recovery(self) -> None:
+        """A failed cycle resets recovery confirmation without duplicating the active event."""
+        with self._running_connector(connectivity_success_threshold=2) as (servicer, processor):
+            processor.dcgm_connectivity_failed()
+            servicer.health_events = None
+
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            processor.clear_dcgm_connectivity_failure(timestamp)
+            assert processor._consecutive_connectivity_successes == 1
+
+            processor.dcgm_connectivity_failed()
+            assert processor._consecutive_connectivity_successes == 0
+            assert servicer.health_events is None
+
+            processor.clear_dcgm_connectivity_failure(timestamp)
+            assert servicer.health_events is None
+            processor.clear_dcgm_connectivity_failure(timestamp)
+            assert servicer.health_events[0].isHealthy is True
+
+    def test_connectivity_initial_healthy_baseline_bypasses_recovery_threshold(self) -> None:
+        """Recovery debounce must not delay initial healthy Condition creation."""
+        with self._running_connector(connectivity_success_threshold=3) as (servicer, processor):
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            processor.clear_dcgm_connectivity_failure(timestamp)
+
+            assert len(servicer.health_events) == 1
+            assert servicer.health_events[0].isHealthy is True
+            assert processor._consecutive_connectivity_successes == 0
+
+    def test_connectivity_debounce_retries_failed_transition_delivery(self) -> None:
+        """A publish failure leaves the transition eligible for the next observation."""
+        with self._running_connector(connectivity_failure_threshold=2) as (servicer, processor):
+            processor.send_health_event_with_retries = unittest.mock.Mock(side_effect=[False, True])
+
+            assert processor.dcgm_connectivity_failed() is True
+            assert processor.send_health_event_with_retries.call_count == 0
+            assert processor.dcgm_connectivity_failed() is False
+            assert processor.send_health_event_with_retries.call_count == 1
+
+            assert processor.dcgm_connectivity_failed() is True
+            assert processor.send_health_event_with_retries.call_count == 2
+            key = processor._build_cache_key("GpuDcgmConnectivityFailure", "DCGM", "ALL")
+            assert processor.entity_cache[key].active_errors == {"DCGM_CONNECTIVITY_ERROR"}
+            assert servicer.health_events is None
+
+    def test_connectivity_debounce_retries_failed_recovery_delivery(self) -> None:
+        """A failed healthy publish keeps the active event and retries on the next success."""
+        with self._running_connector(connectivity_success_threshold=2) as (_servicer, processor):
+            processor.dcgm_connectivity_failed()
+            key = processor._build_cache_key("GpuDcgmConnectivityFailure", "DCGM", "ALL")
+
+            processor.send_health_event_with_retries = unittest.mock.Mock(side_effect=[False, True])
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+
+            processor.clear_dcgm_connectivity_failure(timestamp)
+            assert processor.send_health_event_with_retries.call_count == 0
+            processor.clear_dcgm_connectivity_failure(timestamp)
+            assert processor.send_health_event_with_retries.call_count == 1
+            assert processor.entity_cache[key].active_errors == {"DCGM_CONNECTIVITY_ERROR"}
+
+            processor.clear_dcgm_connectivity_failure(timestamp)
+            assert processor.send_health_event_with_retries.call_count == 2
+            assert processor.entity_cache[key].is_healthy
 
     def test_connectivity_failure_escalates_to_reboot_at_threshold(self):
         """DCGM unreachable cycle after cycle is a stuck driver, which needs a reboot."""
