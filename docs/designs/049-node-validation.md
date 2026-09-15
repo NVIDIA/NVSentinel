@@ -75,12 +75,12 @@ spec:
     condition: NewNodeValidated
     criteria:
     - name: recently-joined
-      expression: 'now() - timestamp(node.metadata.creationTimestamp) < duration("15m")'
+      expression: 'has(node.metadata.creationTimestamp) && now() - timestamp(node.metadata.creationTimestamp) < duration("15m")'
     - name: gpu-present
-      expression: '"nvidia.com/gpu.present" in node.metadata.labels'
+      expression: 'has(node.metadata.labels) && "nvidia.com/gpu.present" in node.metadata.labels && node.metadata.labels["nvidia.com/gpu.present"] == "true"'
     newNodeTests:
     - nccl-all-reduce
-    batchPeriod: 5m
+    batchPeriodSeconds: 300
   schedulingGate:
     cordon:
       remove: true
@@ -194,7 +194,7 @@ spec:
     * **criteria:** a set of CEL expressions evaluated against each node to determine whether it requires new node validation. All expressions must evaluate to true (along with the condition check above). The CEL environment exposes both the node being validated and the pods scheduled on it.
         * In the provided example, a node is eligible for new node validation when it was created within the last 15 minutes (to prevent triggering against existing nodes on the initial deployment of the validation-controller) and has the nvidia.com/gpu.present label.
     * **newNodeTests:** the list of tests to run for new nodes. These take precedence over defaultTests when a ValidationRequest is created for a new node.
-    * **batchPeriod:** the window during which the controller collects eligible new nodes before creating ValidationRequests for them as a batch. This only applies to new node validation.
+    * **batchPeriodSeconds:** the window during which the controller collects eligible new nodes before creating ValidationRequests for them as a batch. This only applies to new node validation.
 * **schedulingGate:** groups the scheduling gate controls the validation-controller manages during the lifecycle of a validation request.
     * **cordon.remove:** indicates whether nodes should be uncordoned after completing validation. A node will only be uncordoned once there are no pending, in-progress, or failed validation requests (a node may be targeted by multiple validation requests).
         * This behavior is similar to the fault-quarantine module, where a given quarantine session requires all unhealthy events to recover prior to removing the cordon for a node.
@@ -469,9 +469,9 @@ spec:
     condition: NewNodeValidated
     criteria:
     - name: recently-joined
-      expression: 'now() - timestamp(node.metadata.creationTimestamp) < duration("15m")'
+      expression: 'has(node.metadata.creationTimestamp) && now() - timestamp(node.metadata.creationTimestamp) < duration("15m")'
     - name: gpu-present
-      expression: '"nvidia.com/gpu.present" in node.metadata.labels'
+      expression: 'has(node.metadata.labels) && "nvidia.com/gpu.present" in node.metadata.labels && node.metadata.labels["nvidia.com/gpu.present"] == "true"'
     newNodeTests:
     - nccl-all-reduce
   defaultTests:
@@ -480,7 +480,7 @@ spec:
 ...
 ```
 
-After we detect nodes missing the NewNodeValidated condition, we will create a ValidationRequest with a new node property to indicate that the tests under newNodeValidation.newNodeTests should be executed against the nodes. Multiple nodes detected within the batchPeriod are batched into a single ValidationRequest:
+After we detect nodes missing the NewNodeValidated condition, we will create a ValidationRequest with a new node property to indicate that the tests under newNodeValidation.newNodeTests should be executed against the nodes. Multiple nodes detected within the batchPeriodSeconds window are batched into a single ValidationRequest:
 
 ```
 apiVersion: nvsentinel.nvidia.com/v1alpha1
