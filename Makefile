@@ -773,6 +773,8 @@ tilt-ci: ## Run Tilt in CI mode (no UI, waits for all resources)
 		echo "Error: tilt is not installed. Please install from https://tilt.dev/"; \
 		exit 1; \
 	fi
+	@echo "Creating KWOK nodes before starting Tilt CI..."
+	@bash tilt/create-kwok-nodes.sh
 	@echo "Starting Tilt with SKIP_KWOK_NODES_IN_TILT=1 (with retry logic)..."
 	@for i in 1 2 3; do \
 		echo "Attempt $$i of 3..."; \

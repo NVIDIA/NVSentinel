@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set -e
+set -euo pipefail
 
 NUM_GPU_NODES=${NUM_GPU_NODES:-50}
 NUM_KATA_TEST_NODES=${NUM_KATA_TEST_NODES:-5}
@@ -24,14 +24,21 @@ KATA_NODE_TEMPLATE="$SCRIPT_DIR/kwok-kata-test-node-template.yaml"
 
 echo "Creating $NUM_GPU_NODES regular KWOK GPU nodes..."
 for i in $(seq 0 $((NUM_GPU_NODES - 1))); do
-    sed "s/PLACEHOLDER/$i/g" "$NODE_TEMPLATE" | kubectl apply -f - >/dev/null 2>&1 || true
+    sed "s/PLACEHOLDER/$i/g" "$NODE_TEMPLATE" | kubectl apply -f - >/dev/null
 done
 echo "Created $NUM_GPU_NODES regular KWOK GPU nodes"
 
 echo "Creating $NUM_KATA_TEST_NODES KWOK Kata test nodes..."
 for i in $(seq 0 $((NUM_KATA_TEST_NODES - 1))); do
-    sed "s/PLACEHOLDER/$i/g" "$KATA_NODE_TEMPLATE" | kubectl apply -f - >/dev/null 2>&1 || true
+    sed "s/PLACEHOLDER/$i/g" "$KATA_NODE_TEMPLATE" | kubectl apply -f - >/dev/null
 done
 echo "Created $NUM_KATA_TEST_NODES KWOK Kata test nodes"
 
-echo "Total KWOK nodes created: $((NUM_GPU_NODES + NUM_KATA_TEST_NODES))"
+expected_total=$((NUM_GPU_NODES + NUM_KATA_TEST_NODES))
+actual_total=$(kubectl get nodes -l type=kwok --no-headers 2>/dev/null | wc -l | tr -d ' ')
+if [ "$actual_total" -lt "$expected_total" ]; then
+    echo "Error: Expected at least $expected_total KWOK nodes, but found $actual_total" >&2
+    exit 1
+fi
+
+echo "Total KWOK nodes created and verified: $actual_total"

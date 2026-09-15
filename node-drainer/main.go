@@ -118,10 +118,12 @@ func run() error {
 		*rateLimits,
 	)
 
+	readinessChecker := server.NewDatastoreReadinessChecker(nil)
+
 	// Create and start the health/metrics server BEFORE the potentially slow MongoDB
 	// initialization. This ensures Kubernetes liveness probes get HTTP 200 responses
 	// immediately, preventing the pod from being killed during initialization.
-	srv, err := createMetricsServer(*metricsPort)
+	srv, err := createMetricsServer(*metricsPort, readinessChecker)
 	if err != nil {
 		return err
 	}
@@ -135,6 +137,8 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize components: %w", err)
 	}
+
+	readinessChecker.SetWatcher(components.EventWatcher)
 
 	ff.Set("custom_drain", components.CustomDrainEnabled)
 
@@ -211,7 +215,7 @@ func newInitializationParams(databaseClientCertMountPath, kubeconfigPath, tomlCo
 }
 
 // createMetricsServer creates and configures the metrics server
-func createMetricsServer(metricsPort string) (server.Server, error) {
+func createMetricsServer(metricsPort string, readinessChecker server.ReadinessChecker) (server.Server, error) {
 	portInt, err := strconv.Atoi(metricsPort)
 	if err != nil {
 		return nil, fmt.Errorf("invalid metrics port: %w", err)
@@ -221,6 +225,7 @@ func createMetricsServer(metricsPort string) (server.Server, error) {
 		server.WithPort(portInt),
 		server.WithPrometheusMetrics(),
 		server.WithSimpleHealth(),
+		server.WithReadinessCheck(readinessChecker),
 	)
 
 	return srv, nil

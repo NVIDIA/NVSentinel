@@ -34,6 +34,7 @@ import (
 
 	annotationutil "github.com/nvidia/nvsentinel/commons/pkg/annotation"
 	cordonlabels "github.com/nvidia/nvsentinel/commons/pkg/labels"
+	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
@@ -111,6 +112,7 @@ type Reconciler struct {
 	uncordonedByLabelKey        string
 	uncordonedReasonLabelKey    string
 	uncordonedTimestampLabelKey string
+	readinessChecker            *server.DatastoreReadinessChecker
 }
 
 var (
@@ -174,6 +176,11 @@ func (r *Reconciler) SetEventWatcher(eventWatcher eventwatcher.EventWatcherInter
 	r.eventWatcher = eventWatcher
 }
 
+// SetReadinessChecker configures the datastore readiness checker.
+func (r *Reconciler) SetReadinessChecker(checker *server.DatastoreReadinessChecker) {
+	r.readinessChecker = checker
+}
+
 func (r *Reconciler) Start(ctx context.Context) error {
 	ds, err := datastore.NewDataStore(ctx, *r.config.DataStoreConfig)
 	if err != nil {
@@ -205,6 +212,10 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	oldWatcher, resumeControlDecision, err := r.setupChangeStreamWatcher(ctx, datastoreAdapter)
 	if err != nil {
 		return err
+	}
+
+	if r.readinessChecker != nil {
+		r.readinessChecker.SetWatcher(oldWatcher)
 	}
 
 	// Create event watcher with the new signature
