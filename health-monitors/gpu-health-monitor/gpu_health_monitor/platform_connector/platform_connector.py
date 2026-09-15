@@ -37,6 +37,12 @@ import dcgm_fields
 MAX_RETRIES = 10
 INITIAL_DELAY = 5
 GRPC_CALL_TIMEOUT_SECONDS = 5.0
+GPU_ONLY_FIELD_HEALTH_WATCHES = frozenset(
+    {
+        "DCGM_HEALTH_WATCH_POWER_BRAKE",
+        "DCGM_HEALTH_WATCH_THERMAL_MARGIN",
+    }
+)
 # Critical events are emitted while the DCGM loop is about to enter cleanup or
 # is already hung. Keep delivery bounded well inside the liveness restart budget.
 CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS = 15.0
@@ -523,6 +529,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             )
                             if had_errors:
                                 pending_metric_updates.append((check_name, gpu_id, 0))
+
+                if watch_name in GPU_ONLY_FIELD_HEALTH_WATCHES:
+                    continue
 
                 switch_failures = {
                     entity_key[1]: failure

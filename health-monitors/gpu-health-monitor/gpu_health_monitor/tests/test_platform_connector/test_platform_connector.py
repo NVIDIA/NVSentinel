@@ -243,7 +243,15 @@ class TestPlatformConnectors(unittest.TestCase):
                     "DCGM_HEALTH_WATCH_PCIE": dcgmtypes.HealthDetails(
                         status=dcgmtypes.HealthStatus.PASS,
                         entity_failures={},
-                    )
+                    ),
+                    "DCGM_HEALTH_WATCH_POWER_BRAKE": dcgmtypes.HealthDetails(
+                        status=dcgmtypes.HealthStatus.PASS,
+                        entity_failures={},
+                    ),
+                    "DCGM_HEALTH_WATCH_THERMAL_MARGIN": dcgmtypes.HealthDetails(
+                        status=dcgmtypes.HealthStatus.PASS,
+                        entity_failures={},
+                    ),
                 },
                 [],
                 [0],
@@ -255,6 +263,7 @@ class TestPlatformConnectors(unittest.TestCase):
             assert switch_events[0].entitiesImpacted == [
                 platformconnector_pb2.Entity(entityType="NVSWITCH", entityValue="0")
             ]
+            assert switch_events[0].checkName == "GpuPcieWatch"
             assert switch_events[0].processingStrategy == platformconnector_pb2.STORE_ONLY
         finally:
             os.unlink(temp_file_path)
