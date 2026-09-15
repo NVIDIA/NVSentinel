@@ -28,6 +28,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
 )
 
@@ -63,7 +64,8 @@ type kubeletHTTPSClient struct {
 
 	httpRoundTripper http.RoundTripper
 
-	// takes precedence over bearerTokenPath which will be dynamically loaded on every request, used for testing
+	// Legacy in-cluster auth reads the projected token on each attempt. Explicit kubeconfigs
+	// leave both fields empty and delegate credential handling to the client-go transport.
 	staticBearerToken string
 	bearerTokenPath   string
 	listPodsURI       string
@@ -71,8 +73,35 @@ type kubeletHTTPSClient struct {
 	listPodsTimeout   time.Duration
 }
 
-// NewKubeletHTTPSClient creates an HTTPS client configured to communicate with the local
-// kubelet. The provided ctx is used for the lifetime of list-pods requests made through the client.
+// newKubeletHTTPSClient reads the kubelet endpoint, trust, and credentials from an explicit
+// kubeconfig. An empty path retains KUBELET_HOST and projected ServiceAccount token behavior.
+// Requests use ctx for cancellation throughout the client's lifetime.
+func newKubeletHTTPSClient(ctx context.Context, kubeconfigPath string) (KubeletHTTPSClient, error) {
+	if kubeconfigPath == "" {
+		return NewKubeletHTTPSClient(ctx)
+	}
+
+	config, err := loadRESTConfig(kubeconfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("load kubelet configuration: %w", err)
+	}
+
+	transport, err := rest.TransportFor(config)
+	if err != nil {
+		return nil, fmt.Errorf("create kubelet transport: %w", err)
+	}
+
+	return &kubeletHTTPSClient{
+		ctx:              ctx,
+		httpRoundTripper: transport,
+		listPodsURI:      strings.TrimRight(config.Host, "/") + "/pods",
+		listPodsBackoff:  defaultListPodsBackoff,
+		listPodsTimeout:  defaultListPodsTimeout,
+	}, nil
+}
+
+// NewKubeletHTTPSClient retains the in-cluster endpoint, token, and TLS behavior.
+// Requests use ctx for cancellation throughout the client's lifetime.
 func NewKubeletHTTPSClient(ctx context.Context) (KubeletHTTPSClient, error) {
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{
@@ -100,8 +129,8 @@ func NewKubeletHTTPSClient(ctx context.Context) (KubeletHTTPSClient, error) {
 }
 
 /*
-This function calls the /pods Kubelet endpoint skipping Kubelet server certificate validation for TLS
-while passing a service account token for authN and authZ.
+This function calls the /pods Kubelet endpoint. Explicit kubeconfigs verify TLS and use
+client-go authentication. The legacy in-cluster mode described below is unchanged.
 
 - Kubelet host: by default the client connects to localhost, which works when kubelet binds to 0.0.0.0. On clusters
 where kubelet binds to the node's primary IP, set the KUBELET_HOST environment variable to the node's IP. The Helm
@@ -163,17 +192,20 @@ func (client *kubeletHTTPSClient) ListPods() ([]corev1.Pod, error) {
 // credential rotated part way through it is exactly what that wait is for; a token read once up
 // front would leave every attempt presenting the same expired credential.
 func (client *kubeletHTTPSClient) fetchPods(ctx context.Context) ([]byte, error) {
-	token, err := client.bearerToken()
-	if err != nil {
-		return nil, err
-	}
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, client.listPodsURI, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
+	if client.bearerTokenPath != "" || client.staticBearerToken != "" {
+		token, err := client.bearerToken()
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
+	}
+
 	req.Header.Add("Accept", "application/json")
 
 	resp, err := client.httpRoundTripper.RoundTrip(req)
@@ -221,12 +253,4 @@ func retriableUntil(ctx context.Context) func(error) bool {
 	return func(_ error) bool {
 		return ctx.Err() == nil
 	}
-}
-
-// Still used by the gRPC client. Retrying every error is not right: a permanent fault such as a
-// wrong bearerTokenPath is retried and then reported as though it were transient. Classifying
-// retryable against permanent is worth doing, but it interacts with the caller's failure
-// threshold, so it belongs in its own change.
-func retryAllErrors(_ error) bool {
-	return true
 }

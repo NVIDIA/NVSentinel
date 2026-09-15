@@ -55,7 +55,11 @@ var (
 	commit  = "none"
 	date    = "unknown"
 
-	outputPath = flag.String("output-path", defaultOutputPath, "Path to write the GPU metadata JSON file")
+	outputPath     = flag.String("output-path", defaultOutputPath, "Path to write the GPU metadata JSON file")
+	kubeconfigPath = flag.String("kubeconfig", "",
+		"Kubeconfig for Kubernetes API access; empty uses in-cluster auth")
+	kubeletKubeconfigPath = flag.String("kubelet-kubeconfig", "",
+		"Kubeconfig for the kubelet HTTPS endpoint; empty uses KUBELET_HOST and the pod ServiceAccount token")
 
 	maxConsecutivePodMapperFailures = flag.Int("pod-mapper-max-consecutive-failures",
 		defaultMaxConsecutivePodMapperFailures,
@@ -119,7 +123,8 @@ func main() {
 }
 
 func runMapper(ctx context.Context, metrics *podMapperMetrics) error {
-	podDeviceMapper, err := mapper.NewPodDeviceMapper(ctx)
+	podDeviceMapper, err := mapper.NewPodDeviceMapper(ctx,
+		mapper.WithKubeconfigs(*kubeconfigPath, *kubeletKubeconfigPath))
 	if err != nil {
 		return fmt.Errorf("could not create mapper: %w", err)
 	}

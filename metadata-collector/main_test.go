@@ -17,6 +17,8 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -76,7 +78,9 @@ func TestPollPodDevices_ConsecutiveFailuresReachThreshold_ReturnsError(t *testin
 	ticks := make(chan time.Time)
 
 	done := make(chan error, 1)
-	go func() { done <- pollPodDevices(context.Background(), mapper, ticks, 3, newPodMapperMetrics(prometheus.NewRegistry())) }()
+	go func() {
+		done <- pollPodDevices(context.Background(), mapper, ticks, 3, newPodMapperMetrics(prometheus.NewRegistry()))
+	}()
 
 	tick(t, ticks, 3)
 
@@ -246,4 +250,17 @@ func TestPollPodDevices_DefaultThreshold_RidesOutAtLeastAMinute(t *testing.T) {
 
 	assert.GreaterOrEqual(t, tolerated, time.Minute,
 		"the default must outlast a credential rotation, which is what #1767 was")
+}
+
+func TestRunMapper_ExplicitKubeconfig_IsUsedWithoutInClusterEnvironment(t *testing.T) {
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "")
+	previous := *kubeconfigPath
+	t.Cleanup(func() { *kubeconfigPath = previous })
+
+	require.NoError(t, flag.Set("kubeconfig", filepath.Join(t.TempDir(), "missing-api-config")))
+	err := runMapper(t.Context(), newPodMapperMetrics(prometheus.NewRegistry()))
+	require.ErrorContains(t, err, "missing-api-config")
+	require.NotContains(t, err.Error(), "in-cluster")
+	require.NotNil(t, flag.Lookup("kubelet-kubeconfig"))
 }
