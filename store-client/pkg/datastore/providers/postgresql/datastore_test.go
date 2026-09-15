@@ -17,6 +17,7 @@ package postgresql
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -232,6 +233,49 @@ func TestPostgreSQLDataStore_Ping(t *testing.T) {
 			assert.NoError(t, mock.ExpectationsWereMet())
 		})
 	}
+}
+
+func TestRecoveryIndexesIncludePartialPendingEventCursor(t *testing.T) {
+	var pendingIndex string
+	for _, statement := range recoveryIndexStatements {
+		if strings.Contains(statement, "idx_health_events_fault_quarantine_pending") {
+			pendingIndex = statement
+
+			break
+		}
+	}
+
+	require.NotEmpty(t, pendingIndex)
+	assert.Contains(t, pendingIndex, "ON health_events (created_at, id) WHERE")
+	assert.Contains(t, pendingIndex,
+		"COALESCE(document->'healtheventstatus'->>'nodequarantined', document->'healtheventstatus'->>'nodeQuarantined')")
+	assert.Contains(t, pendingIndex, "= 'NotStarted'")
+	assert.Contains(t, pendingIndex,
+		"document->'healtheventstatus'->>'faultquarantinerecovery' IS NULL")
+}
+
+// TestCreateChangeTriggers_MissingTriggers_CreatedRaceSafely verifies that
+// trigger creation SQL handles concurrent duplicate creation.
+func TestCreateChangeTriggers_MissingTriggers_CreatedRaceSafely(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	mock.ExpectExec(`(?s)CREATE OR REPLACE FUNCTION log_table_changes\(\)`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(
+		`(?s)DO \$\$.*IF NOT EXISTS.*tgname = 'maintenance_events_changes'.*` +
+			`CREATE TRIGGER maintenance_events_changes.*EXCEPTION.*` +
+			`WHEN duplicate_object THEN.*NULL`,
+	).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(
+		`(?s)DO \$\$.*IF NOT EXISTS.*tgname = 'health_events_changes'.*` +
+			`CREATE TRIGGER health_events_changes.*EXCEPTION.*` +
+			`WHEN duplicate_object THEN.*NULL`,
+	).WillReturnResult(sqlmock.NewResult(0, 0))
+
+	require.NoError(t, createChangeTriggers(context.Background(), db))
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestPostgreSQLDataStore_Provider(t *testing.T) {

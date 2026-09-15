@@ -99,10 +99,19 @@ spec:
               value: {{ .Values.csp.generic.rebootJobNamespace | default .Release.Namespace | quote }}
             - name: GENERIC_REBOOT_JOB_TTL
               value: {{ .Values.csp.generic.rebootJobTTLSeconds | quote }}
+            - name: GENERIC_REBOOT_WRITE_SYSLOG
+              value: {{ if hasKey .Values.csp.generic "writeSyslog" }}{{ .Values.csp.generic.writeSyslog | quote }}{{ else }}"false"{{ end }}
             {{- if .Values.csp.generic.imagePullSecrets }}
             - name: GENERIC_REBOOT_IMAGE_PULL_SECRETS
               value: {{ .Values.csp.generic.imagePullSecrets | quote }}
             {{- end }}
+            {{- end }}
+            {{- if eq (lower (.Values.csp.provider | default "kind")) "label" }}
+            # Label provider environment variables (key=value specs)
+            - name: LABEL_REBOOT_KEY
+              value: {{ ((.Values.csp.label).rebootKey) | default "nke.nvidia.com/reboot=requested-by-nvsentinel" | quote }}
+            - name: LABEL_TERMINATE_KEY
+              value: {{ ((.Values.csp.label).terminateKey) | default "nke.nvidia.com/terminate=requested-by-nvsentinel" | quote }}
             {{- end }}
             {{- if eq (.Values.csp.provider | default "kind") "aws" }}
             # AWS-specific environment variables

@@ -29,9 +29,9 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
-	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 )
 
 type scaleTestContextKey int
@@ -94,6 +94,15 @@ func TestScaleHealthEvents(t *testing.T) {
 		healthCheckNodes := kwokNodes[:nodesToCordon]
 		t.Logf("Selected %d KWOK nodes to cordon (%d above %d%% CB threshold of %d GPU nodes)",
 			len(healthCheckNodes), nodesToCordon, cbThresholdPercentage, totalGPUNodes)
+
+		for _, nodeName := range healthCheckNodes {
+			node, err := helpers.GetNodeByName(ctx, client, nodeName)
+			require.NoError(t, err, "failed to verify scale-test node %s", nodeName)
+			require.False(t, node.Spec.Unschedulable,
+				"scale-test node %s was already cordoned before events were sent", nodeName)
+			require.NotContains(t, node.Annotations, helpers.QuarantineHealthEventAnnotationKey,
+				"scale-test node %s retained a quarantine annotation from an earlier event", nodeName)
+		}
 
 		ctx = context.WithValue(ctx, keyNamespace, workloadNamespace)
 		ctx = context.WithValue(ctx, keyNodes, kwokNodes)

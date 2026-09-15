@@ -56,9 +56,11 @@ metadata:
     {{- include "syslog-health-monitor.labels" $root | nindent 4 }}
 spec:
   updateStrategy:
-    type: RollingUpdate
+    type: {{ $root.Values.updateStrategy.type }}
+    {{- if eq $root.Values.updateStrategy.type "RollingUpdate" }}
     rollingUpdate:
-      maxUnavailable: 5%
+      maxUnavailable: {{ $root.Values.updateStrategy.rollingUpdate.maxUnavailable }}
+    {{- end }}
   selector:
     matchLabels:
       {{- include "syslog-health-monitor.selectorLabels" $root | nindent 6 }}

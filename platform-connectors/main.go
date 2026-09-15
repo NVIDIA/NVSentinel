@@ -41,6 +41,7 @@ import (
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/auth"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/grpcsink"
 	k8sconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/kubernetes"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/prom"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/kubeconfig"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
@@ -571,84 +572,122 @@ func initializeGRPCSinkConnector(
 	return connector, nil
 }
 
+// connectorSet holds the connectors started by initializeConnectors. Grouping them keeps
+// adding a connector from growing the signature of every function that starts or stops them.
+type connectorSet struct {
+	k8sRingBuffer *ringbuffer.RingBuffer
+	store         *store.DatabaseStoreConnector
+	grpcSink      *grpcsink.GRPCSinkConnector
+	prom          *prom.PromConnector
+}
+
 func initializeConnectors(
 	ctx context.Context,
 	config map[string]any,
 	stopCh chan struct{},
 	databaseClientCertMountPath string,
 	kubeconfigPath string,
-) (*ringbuffer.RingBuffer, *store.DatabaseStoreConnector, *grpcsink.GRPCSinkConnector, error) {
+) (*connectorSet, error) {
 	var (
-		k8sRingBuffer     *ringbuffer.RingBuffer
-		storeConnector    *store.DatabaseStoreConnector
-		grpcSinkConnector *grpcsink.GRPCSinkConnector
-		err               error
+		set = &connectorSet{}
+		err error
 	)
 
 	if config["enableK8sPlatformConnector"] == True {
-		k8sRingBuffer, err = initializeK8sConnector(ctx, config, stopCh, kubeconfigPath)
+		set.k8sRingBuffer, err = initializeK8sConnector(ctx, config, stopCh, kubeconfigPath)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to initialize K8s connector: %w", err)
+			return nil, fmt.Errorf("failed to initialize K8s connector: %w", err)
 		}
 	}
 
 	// Keep the legacy config key name for backward compatibility with existing ConfigMaps
 	if config["enableMongoDBStorePlatformConnector"] == True || config["enablePostgresDBStorePlatformConnector"] == True {
-		storeConnector, err = initializeDatabaseStoreConnector(ctx, config, databaseClientCertMountPath)
+		set.store, err = initializeDatabaseStoreConnector(ctx, config, databaseClientCertMountPath)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to initialize database store connector: %w", err)
+			return nil, fmt.Errorf("failed to initialize database store connector: %w", err)
 		}
 	}
 
 	if config["enableGRPCSinkConnector"] == True {
-		grpcSinkConnector, err = initializeGRPCSinkConnector(ctx, config)
+		set.grpcSink, err = initializeGRPCSinkConnector(ctx, config)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to initialize gRPC sink connector: %w", err)
+			return nil, fmt.Errorf("failed to initialize gRPC sink connector: %w", err)
 		}
 	}
 
-	return k8sRingBuffer, storeConnector, grpcSinkConnector, nil
+	if config["enablePromPlatformConnector"] == True {
+		set.prom = initializePromConnector(ctx)
+	}
+
+	return set, nil
+}
+
+// initializePromConnector attaches a ring buffer that records health events as Prometheus
+// counters. It cannot fail: there is no external dependency to reach.
+func initializePromConnector(ctx context.Context) *prom.PromConnector {
+	ringBuffer := ringbuffer.NewRingBuffer("prom", ctx)
+	server.InitializeAndAttachRingBufferForConnectors(ringBuffer)
+
+	promConnector := prom.InitializePromConnector(ringBuffer)
+	go promConnector.FetchAndProcessHealthMetric(ctx)
+
+	return promConnector
 }
 
 func cleanupResources(
 	ctx context.Context,
 	socket string,
 	lis net.Listener,
-	k8sRingBuffer *ringbuffer.RingBuffer,
-	storeConnector *store.DatabaseStoreConnector,
-	grpcSinkConnector *grpcsink.GRPCSinkConnector,
+	set *connectorSet,
 ) error {
-	if lis != nil {
-		if k8sRingBuffer != nil {
-			k8sRingBuffer.ShutDownHealthMetricQueue()
-		}
+	closeListener(ctx, socket, lis, set.k8sRingBuffer)
 
-		if err := lis.Close(); err != nil {
-			slog.ErrorContext(ctx, "Failed to close listener", "error", err)
-		}
+	return shutdownConnectors(ctx, set)
+}
 
-		if err := os.Remove(socket); err != nil && !os.IsNotExist(err) {
-			slog.ErrorContext(ctx, "Failed to remove socket file", "error", err)
-		}
+// closeListener drains the K8s ring buffer, closes the listener and removes the socket.
+func closeListener(ctx context.Context, socket string, lis net.Listener, k8sRingBuffer *ringbuffer.RingBuffer) {
+	if lis == nil {
+		return
 	}
 
-	if storeConnector != nil {
-		storeConnector.ShutdownRingBuffer(ctx)
+	if k8sRingBuffer != nil {
+		k8sRingBuffer.ShutDownHealthMetricQueue()
+	}
+
+	if err := lis.Close(); err != nil {
+		slog.ErrorContext(ctx, "Failed to close listener", "error", err)
+	}
+
+	if err := os.Remove(socket); err != nil && !os.IsNotExist(err) {
+		slog.ErrorContext(ctx, "Failed to remove socket file", "error", err)
+	}
+}
+
+// shutdownConnectors drains each configured connector's ring buffer and closes its
+// external connections. Only the store connector's failure is fatal.
+func shutdownConnectors(ctx context.Context, set *connectorSet) error {
+	if set.store != nil {
+		set.store.ShutdownRingBuffer(ctx)
 
 		disconnectCtx, disconnectCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer disconnectCancel()
 
-		if err := storeConnector.Disconnect(disconnectCtx); err != nil {
+		if err := set.store.Disconnect(disconnectCtx); err != nil {
 			return fmt.Errorf("error disconnecting database store connector: %w", err)
 		}
 	}
 
-	if grpcSinkConnector != nil {
-		grpcSinkConnector.ShutdownRingBuffer()
+	if set.grpcSink != nil {
+		set.grpcSink.ShutdownRingBuffer()
 
-		if err := grpcSinkConnector.Close(); err != nil {
+		if err := set.grpcSink.Close(); err != nil {
 			slog.Error("Failed to close gRPC sink connector", "error", err)
 		}
+	}
+
+	if set.prom != nil {
+		set.prom.ShutdownRingBuffer(ctx)
 	}
 
 	return nil
@@ -697,9 +736,7 @@ func handleShutdown(
 	stopCh chan struct{},
 	cfg *platformConnectorConfig,
 	lis net.Listener,
-	k8sRingBuffer *ringbuffer.RingBuffer,
-	storeConnector *store.DatabaseStoreConnector,
-	grpcSinkConnector *grpcsink.GRPCSinkConnector,
+	set *connectorSet,
 	cancel context.CancelFunc,
 ) error {
 	slog.InfoContext(gCtx, "Waiting for SIGINT/SIGTERM or context cancellation")
@@ -719,7 +756,7 @@ func handleShutdown(
 
 	close(stopCh)
 
-	if err := cleanupResources(gCtx, cfg.socket, lis, k8sRingBuffer, storeConnector, grpcSinkConnector); err != nil {
+	if err := cleanupResources(gCtx, cfg.socket, lis, set); err != nil {
 		return err
 	}
 
@@ -760,7 +797,7 @@ func run() error {
 		return err
 	}
 
-	k8sRingBuffer, storeConnector, grpcSinkConnector, err := initializeConnectors(ctx,
+	connectors, err := initializeConnectors(ctx,
 		config, stopCh, cfg.databaseClientCertMountPath, cfg.kubeconfigPath)
 	if err != nil {
 		return fmt.Errorf("failed to initialize connectors: %w", err)
@@ -804,7 +841,7 @@ func run() error {
 	})
 
 	g.Go(func() error {
-		return handleShutdown(gCtx, sigs, stopCh, cfg, lis, k8sRingBuffer, storeConnector, grpcSinkConnector, cancel)
+		return handleShutdown(gCtx, sigs, stopCh, cfg, lis, connectors, cancel)
 	})
 
 	return g.Wait()

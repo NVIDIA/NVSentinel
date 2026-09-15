@@ -37,14 +37,21 @@ class FakeEventProcessorInTest(dcgm.types.CallbackInterface):
     def __init__(self) -> None:
         self.health_details = None
         self.gpu_id = None
+        self.switch_ids = None
         self.error_num = None
         self.serial = None
         self.fields_changes = None
         self.connectivity_failed_called = False
         self.probe_unresponsive_calls: list[tuple[str, float, str]] = []
 
-    def health_event_occurred(self, health_details: dict[str, dcgm.types.HealthDetails], gpu_ids: list[int]) -> None:
+    def health_event_occurred(
+        self,
+        health_details: dict[str, dcgm.types.HealthDetails],
+        gpu_ids: list[int],
+        switch_ids: list[int] | None = None,
+    ) -> None:
         self.health_details = health_details
+        self.switch_ids = switch_ids
 
     def dcgm_connectivity_failed(self) -> bool:
         self.connectivity_failed_called = True
@@ -114,7 +121,7 @@ class TestDCGMHealthChecks:
         )
         dcgm_group = MagicMock()
         dcgm_group.GetGpuIds.return_value = [0]
-        watcher._create_dcgm_group_with_all_entities = MagicMock(return_value=dcgm_group)
+        watcher._create_dcgm_group_with_all_entities = MagicMock(return_value=(dcgm_group, []))
         watcher._get_gpu_serial_numbers = MagicMock(return_value={})
 
         watcher._initialize_dcgm_monitoring(MagicMock())
@@ -160,7 +167,7 @@ class TestDCGMHealthChecks:
 
         assert result is not None
         assert result.status == dcgm.types.HealthStatus.FAIL
-        assert result.entity_failures[0].code == "GPU_HW_POWER_BRAKE_VIOLATION"
+        assert result.entity_failures[0][0].code == "GPU_HW_POWER_BRAKE_VIOLATION"
 
     def test_evaluate_gpu_power_brake_ignores_sw_power_cap(self) -> None:
         """SW power cap alone is normal capping under load and must not fail."""
@@ -187,7 +194,7 @@ class TestDCGMHealthChecks:
         assert first.status == dcgm.types.HealthStatus.PASS
         assert second.status == dcgm.types.HealthStatus.PASS
         assert third.status == dcgm.types.HealthStatus.FAIL
-        assert third.entity_failures[0].code == "GPU_HW_POWER_BRAKE_VIOLATION"
+        assert third.entity_failures[0][0].code == "GPU_HW_POWER_BRAKE_VIOLATION"
 
     def test_evaluate_gpu_power_brake_streak_resets_when_cleared(self) -> None:
         """A clear resets the streak, so a transient never accumulates to a failure."""
@@ -272,7 +279,7 @@ class TestDCGMHealthChecks:
             dcgm_k8s_service_enabled=False,
         )
         error_codes = watcher._get_available_error_codes()
-        assert len(error_codes) == 114
+        assert len(error_codes) == 116
 
     def test_get_available_fields(self):
         watcher = dcgm.DCGMWatcher(
@@ -345,7 +352,7 @@ class TestDCGMHealthChecks:
         dcgm_group_mock.samples.GetLatest.return_value = MagicMock(values={0: {field_id: [MagicMock(value=-3)]}})
         triggered = watcher._evaluate_gpu_thermal_margin(dcgm_group_mock, [0])
         assert triggered.status == dcgm.types.HealthStatus.FAIL
-        assert triggered.entity_failures[0].code == violation_code
+        assert triggered.entity_failures[0][0].code == violation_code
 
         # Phase 3: Adjust threshold to clear violation → PASS
         reader._metadata["gpus"][0]["slowdown_tlimit_c"] = -4
@@ -386,7 +393,7 @@ class TestDCGMHealthChecks:
         assert result.status == dcgm.types.HealthStatus.FAIL
         assert 0 not in result.entity_failures  # GPU 0 passed
         assert 1 in result.entity_failures  # GPU 1 failed
-        assert result.entity_failures[1].code == violation_code
+        assert result.entity_failures[1][0].code == violation_code
 
     @patch("pydcgm.DcgmGroup.__new__")
     def test_dcgm_create_group(self, mock_dcgm_group):
@@ -414,11 +421,12 @@ class TestDCGMHealthChecks:
         dcgm_system_mock.discovery.GetEntityGroupEntities = MagicMock(side_effect=GetEntityGroupEntities_mock)
         dcgm_handle_mock.GetSystem.return_value = dcgm_system_mock
 
-        dcgm_group = watcher._create_dcgm_group_with_all_entities(dcgm_handle_mock)
+        dcgm_group, switch_ids = watcher._create_dcgm_group_with_all_entities(dcgm_handle_mock)
         for gpu in supported_gpus:
             dcgm_group.AddEntity.assert_any_call(dcgm_fields.DCGM_FE_GPU, gpu)
         for switch in supported_switches:
             dcgm_group.AddEntity.assert_any_call(dcgm_fields.DCGM_FE_SWITCH, switch)
+        assert switch_ids == supported_switches
 
     def test_perform_health_check_all_watch_pass(self):
         watcher = dcgm.DCGMWatcher(
@@ -461,10 +469,12 @@ class TestDCGMHealthChecks:
         expected_response["DCGM_HEALTH_WATCH_PCIE"] = dcgm.types.HealthDetails(
             status=dcgm.types.HealthStatus.WARN,
             entity_failures={
-                1: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_PCI_REPLAY_RATE",
-                    message="Detected more than 8 PCIe replays per minute for GPU 1 : 99999 Reconnect PCIe card. Run system side PCIE diagnostic utilities to verify hops off the GPU board. If issue is on the board, run the field diagnostic.",
-                )
+                1: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_PCI_REPLAY_RATE",
+                        message="Detected more than 8 PCIe replays per minute for GPU 1 : 99999 Reconnect PCIe card. Run system side PCIE diagnostic utilities to verify hops off the GPU board. If issue is on the board, run the field diagnostic.",
+                    )
+                ]
             },
         )
         assert response == expected_response
@@ -492,19 +502,52 @@ class TestDCGMHealthChecks:
         expected_response["DCGM_HEALTH_WATCH_PCIE"] = dcgm.types.HealthDetails(
             status=dcgm.types.HealthStatus.WARN,
             entity_failures={
-                1: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_PCI_REPLAY_RATE",
-                    message="Detected more than 8 PCIe replays per minute for GPU 1 : 99999 Reconnect PCIe card. Run system side PCIE diagnostic utilities to verify hops off the GPU board. If issue is on the board, run the field diagnostic.",
-                ),
-                2: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_PCI_REPLAY_RATE",
-                    message="Detected more than 8 PCIe replays per minute for GPU 1 : 99999 Reconnect PCIe card. Run system side PCIE diagnostic utilities to verify hops off the GPU board. If issue is on the board, run the field diagnostic.",
-                ),
+                1: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_PCI_REPLAY_RATE",
+                        message="Detected more than 8 PCIe replays per minute for GPU 1 : 99999 Reconnect PCIe card. Run system side PCIE diagnostic utilities to verify hops off the GPU board. If issue is on the board, run the field diagnostic.",
+                    )
+                ],
+                2: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_PCI_REPLAY_RATE",
+                        message="Detected more than 8 PCIe replays per minute for GPU 1 : 99999 Reconnect PCIe card. Run system side PCIE diagnostic utilities to verify hops off the GPU board. If issue is on the board, run the field diagnostic.",
+                    )
+                ],
             },
         )
 
         assert response == expected_response
         assert connectivity_success == True
+
+    def test_perform_health_check_keeps_gpu_and_switch_with_same_id_separate(self) -> None:
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+        )
+        dcgm_group_mock = MagicMock()
+        mock_response = dcgm_structs.c_dcgmHealthResponse_v4
+        mock_response.version = dcgm_structs.dcgmHealthResponse_version4
+        mock_response.overallHealth = dcgm_structs.DCGM_HEALTH_RESULT_WARN
+        mock_response.incidentCount = 2
+        mock_response.incidents = (dcgm_structs.c_dcgmIncidentInfo_t * dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS)()
+        gpu_incident = self._get_pcie_incident(dcgm_fields.DCGM_FE_GPU, 0)
+        gpu_incident.error.msg = "GPU 0 PCIe failure"
+        switch_incident = self._get_pcie_incident(dcgm_fields.DCGM_FE_SWITCH, 0)
+        switch_incident.error.msg = "NVSwitch 0 PCIe failure"
+        mock_response.incidents[0] = gpu_incident
+        mock_response.incidents[1] = switch_incident
+        dcgm_group_mock.health.Check.return_value = mock_response()
+
+        response, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
+
+        failures = response["DCGM_HEALTH_WATCH_PCIE"].entity_failures
+        assert connectivity_success is True
+        assert len(failures) == 2
+        assert failures[0][0].message == "GPU 0 PCIe failure"
+        assert failures[(dcgm_fields.DCGM_FE_SWITCH, 0)][0].message == "NVSwitch 0 PCIe failure"
 
     def _get_power_throttle_incident(self, group_id, entity_id):
         """Helper to create a DCGM_FR_CLOCK_THROTTLE_POWER incident for testing."""
@@ -545,10 +588,12 @@ class TestDCGMHealthChecks:
         expected_response["DCGM_HEALTH_WATCH_POWER"] = dcgm.types.HealthDetails(
             status=dcgm.types.HealthStatus.WARN,
             entity_failures={
-                1: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_CLOCK_THROTTLE_POWER",
-                    message="ErrorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU:1 Recommended Action=NONE;",
-                )
+                1: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_CLOCK_THROTTLE_POWER",
+                        message="ErrorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU:1 Recommended Action=NONE;",
+                    )
+                ]
             },
         )
         assert response == expected_response
@@ -566,10 +611,12 @@ class TestDCGMHealthChecks:
         health_status["DCGM_HEALTH_WATCH_POWER"] = dcgm.types.HealthDetails(
             status=dcgm.types.HealthStatus.WARN,
             entity_failures={
-                1: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_CLOCK_THROTTLE_POWER",
-                    message="ErrorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU:1 Recommended Action=NONE;",
-                )
+                1: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_CLOCK_THROTTLE_POWER",
+                        message="ErrorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU:1 Recommended Action=NONE;",
+                    )
+                ]
             },
         )
         expected = copy.deepcopy(health_status)
@@ -592,10 +639,12 @@ class TestDCGMHealthChecks:
         health_status["DCGM_HEALTH_WATCH_POWER"] = dcgm.types.HealthDetails(
             status=dcgm.types.HealthStatus.WARN,
             entity_failures={
-                1: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_CLOCK_THROTTLE_POWER",
-                    message="ErrorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU:1 Recommended Action=NONE;",
-                )
+                1: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_CLOCK_THROTTLE_POWER",
+                        message="ErrorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU:1 Recommended Action=NONE;",
+                    )
+                ]
             },
         )
 
@@ -617,19 +666,23 @@ class TestDCGMHealthChecks:
         health_status["DCGM_HEALTH_WATCH_POWER"] = dcgm.types.HealthDetails(
             status=dcgm.types.HealthStatus.WARN,
             entity_failures={
-                1: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_CLOCK_THROTTLE_POWER",
-                    message="ErrorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU:1 Recommended Action=NONE;",
-                )
+                1: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_CLOCK_THROTTLE_POWER",
+                        message="ErrorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU:1 Recommended Action=NONE;",
+                    )
+                ]
             },
         )
         health_status["DCGM_HEALTH_WATCH_PCIE"] = dcgm.types.HealthDetails(
             status=dcgm.types.HealthStatus.WARN,
             entity_failures={
-                2: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_PCI_REPLAY_RATE",
-                    message="Detected more than 8 PCIe replays per minute for GPU 1.",
-                )
+                2: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_PCI_REPLAY_RATE",
+                        message="Detected more than 8 PCIe replays per minute for GPU 1.",
+                    )
+                ]
             },
         )
 
@@ -639,10 +692,12 @@ class TestDCGMHealthChecks:
         expected_response["DCGM_HEALTH_WATCH_PCIE"] = dcgm.types.HealthDetails(
             status=dcgm.types.HealthStatus.WARN,
             entity_failures={
-                2: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_PCI_REPLAY_RATE",
-                    message="Detected more than 8 PCIe replays per minute for GPU 1.",
-                )
+                2: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_PCI_REPLAY_RATE",
+                        message="Detected more than 8 PCIe replays per minute for GPU 1.",
+                    )
+                ]
             },
         )
         assert health_status == expected_response
@@ -662,10 +717,12 @@ class TestDCGMHealthChecks:
         health_status["DCGM_HEALTH_WATCH_THERMAL_MARGIN"] = dcgm.types.HealthDetails(
             status=dcgm.types.HealthStatus.WARN,
             entity_failures={
-                0: dcgm.types.ErrorDetails(
-                    code="GPU_TEMP_HW_SLOWDOWN_VIOLATION",
-                    message="GPU 0 thermal margin below HW slowdown T.Limit",
-                )
+                0: [
+                    dcgm.types.ErrorDetails(
+                        code="GPU_TEMP_HW_SLOWDOWN_VIOLATION",
+                        message="GPU 0 thermal margin below HW slowdown T.Limit",
+                    )
+                ]
             },
         )
 
@@ -676,6 +733,127 @@ class TestDCGMHealthChecks:
             status=dcgm.types.HealthStatus.PASS, entity_failures={}
         )
         assert health_status == expected_response
+
+    def _get_nvlink_watch_incident(self, entity_id, error_code, error_msg):
+        """Helper to create an arbitrary NVLINK-watch incident for testing."""
+        incident = dcgm_structs.c_dcgmIncidentInfo_t()
+        incident.system = dcgm_structs.DCGM_HEALTH_WATCH_NVLINK
+        incident.health = dcgm_structs.DCGM_HEALTH_RESULT_FAIL
+        incident.error = dcgm_structs.c_dcgmDiagErrorDetail_t()
+        incident.error.msg = error_msg
+        incident.error.code = error_code
+        incident.entityInfo = dcgm_structs.c_dcgmGroupEntityPair_t()
+        incident.entityInfo.entityGroupId = 0
+        incident.entityInfo.entityId = entity_id
+        return incident
+
+    def _make_suppressing_watcher(self, codes: set[str], **kwargs) -> dcgm.DCGMWatcher:
+        return dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            suppressed_error_codes=frozenset(codes),
+            **kwargs,
+        )
+
+    def _poll_with_suppression(self, watcher: dcgm.DCGMWatcher, dcgm_group_mock: MagicMock, incidents: list) -> dict:
+        health_status = self._poll(watcher, dcgm_group_mock, incidents)
+        watcher._suppress_configured_error_codes(health_status)
+        return health_status
+
+    def test_suppressed_code_keeps_other_incidents_on_the_same_gpu(self) -> None:
+        watcher = self._make_suppressing_watcher({"DCGM_FR_IMEX_UNHEALTHY"})
+
+        health_status = self._poll_with_suppression(
+            watcher,
+            MagicMock(),
+            [
+                self._get_nvlink_watch_incident(0, dcgm_errors.DCGM_FR_IMEX_UNHEALTHY, "GPU 0 IMEX is not healthy"),
+                self._get_nvlink_watch_incident(
+                    0, dcgm_errors.DCGM_FR_FABRIC_PROBE_STATE, "GPU 0 fabric probe state is not complete"
+                ),
+            ],
+        )
+
+        details = health_status["DCGM_HEALTH_WATCH_NVLINK"]
+        assert details.status == dcgm.types.HealthStatus.FAIL
+        # The surviving incident keeps its own code — the code drives remediation —
+        # and the suppressed incident's message is not merged into it.
+        assert details.entity_failures == {
+            0: [
+                dcgm.types.ErrorDetails(
+                    code="DCGM_FR_FABRIC_PROBE_STATE",
+                    message="GPU 0 fabric probe state is not complete",
+                )
+            ]
+        }
+
+    def test_suppressed_code_alone_leaves_the_watch_passing(self) -> None:
+        """A GPU whose only incident is suppressed still reports nothing, and the watch
+        it was raised under stays PASS."""
+        watcher = self._make_suppressing_watcher({"DCGM_FR_IMEX_UNHEALTHY"})
+
+        health_status = self._poll_with_suppression(
+            watcher,
+            MagicMock(),
+            [self._get_nvlink_watch_incident(0, dcgm_errors.DCGM_FR_IMEX_UNHEALTHY, "GPU 0 IMEX is not healthy")],
+        )
+
+        assert health_status["DCGM_HEALTH_WATCH_NVLINK"] == dcgm.types.HealthDetails(
+            status=dcgm.types.HealthStatus.PASS, entity_failures={}
+        )
+
+    def test_suppressed_code_on_one_gpu_keeps_another_gpus_fault(self) -> None:
+        """Suppression is scoped to the incident, so a genuine fault on a different GPU
+        under the same watch is reported and degrades the watch."""
+        watcher = self._make_suppressing_watcher({"DCGM_FR_IMEX_UNHEALTHY"})
+
+        health_status = self._poll_with_suppression(
+            watcher,
+            MagicMock(),
+            [
+                self._get_nvlink_watch_incident(0, dcgm_errors.DCGM_FR_IMEX_UNHEALTHY, "GPU 0 IMEX is not healthy"),
+                self._get_nvlink_incident(0, 1, 16),
+            ],
+        )
+
+        details = health_status["DCGM_HEALTH_WATCH_NVLINK"]
+        assert details.status == dcgm.types.HealthStatus.FAIL
+        assert 0 not in details.entity_failures
+        assert details.entity_failures[1][0].code == "DCGM_FR_NVLINK_DOWN"
+
+    def test_suppressed_incidents_are_counted_per_incident(self) -> None:
+        """Withheld incidents stay observable: the counter advances once per suppressed
+        incident record, matching the metric's name and _is_nvlink_down_false_positive."""
+        watcher = self._make_suppressing_watcher({"DCGM_FR_IMEX_UNHEALTHY"})
+        counter = dcgm.metrics.dcgm_health_check_suppressed_incidents.labels("DCGM_FR_IMEX_UNHEALTHY")
+        before = counter._value.get()
+
+        self._poll_with_suppression(
+            watcher,
+            MagicMock(),
+            [
+                self._get_nvlink_watch_incident(0, dcgm_errors.DCGM_FR_IMEX_UNHEALTHY, "GPU 0 IMEX is not healthy"),
+                self._get_nvlink_watch_incident(1, dcgm_errors.DCGM_FR_IMEX_UNHEALTHY, "GPU 1 IMEX is not healthy"),
+            ],
+        )
+
+        assert counter._value.get() == before + 2
+
+    def test_suppressed_code_does_not_build_a_debounce_streak(self) -> None:
+        """A suppressed incident is not an observation, so it must not advance the
+        streak of a code that is also debounced."""
+        watcher = self._make_suppressing_watcher(
+            {"DCGM_FR_NVLINK_DOWN"}, health_check_min_consecutive_polls={"DCGM_FR_NVLINK_DOWN": 2}
+        )
+        dcgm_group_mock = MagicMock()
+
+        for _ in range(3):
+            health_status = self._poll_with_suppression(watcher, dcgm_group_mock, [self._get_nvlink_incident(0, 1, 16)])
+            assert health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures == {}
+
+        assert watcher._incident_streaks == {}
 
     def _get_nvlink_incident(self, group_id, entity_id, link_id):
         """Helper to create NvLink down incident for testing."""
@@ -689,6 +867,172 @@ class TestDCGMHealthChecks:
         incident.entityInfo.entityGroupId = group_id
         incident.entityInfo.entityId = entity_id
         return incident
+
+    def _make_debounce_watcher(self, thresholds: dict[str, int]) -> dcgm.DCGMWatcher:
+        return dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            health_check_min_consecutive_polls=thresholds,
+        )
+
+    @staticmethod
+    def _health_response(incidents: list) -> dcgm_structs.c_dcgmHealthResponse_v4:
+        """Build a health check response carrying the given incidents."""
+        response = dcgm_structs.c_dcgmHealthResponse_v4()
+        response.version = dcgm_structs.dcgmHealthResponse_version4
+        response.overallHealth = (
+            dcgm_structs.DCGM_HEALTH_RESULT_FAIL if incidents else dcgm_structs.DCGM_DIAG_RESULT_PASS
+        )
+        response.incidentCount = len(incidents)
+        # Allocated per response rather than on the class, so one test cannot leak
+        # incidents into the next.
+        response.incidents = (dcgm_structs.c_dcgmIncidentInfo_t * dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS)()
+        for index, incident in enumerate(incidents):
+            response.incidents[index] = incident
+        return response
+
+    def _poll(self, watcher: dcgm.DCGMWatcher, dcgm_group_mock: MagicMock, incidents: list) -> dict:
+        dcgm_group_mock.health.Check.return_value = self._health_response(incidents)
+        health_status, _ = watcher._perform_health_check(dcgm_group_mock)
+        return health_status
+
+    def test_incident_debounce_publishes_first_observation_by_default(self) -> None:
+        """With no thresholds configured, an incident is published on the poll it appears."""
+        watcher = self._make_debounce_watcher({})
+
+        health_status = self._poll(watcher, MagicMock(), [self._get_nvlink_incident(0, 1, 16)])
+
+        assert health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[1][0].code == "DCGM_FR_NVLINK_DOWN"
+        # Unconfigured codes are never tracked, so the dict stays empty.
+        assert watcher._incident_streaks == {}
+
+    def test_incident_debounce_withholds_until_threshold_is_reached(self) -> None:
+        """A threshold of 2 withholds the first observation and publishes the second."""
+        watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
+        dcgm_group_mock = MagicMock()
+        incidents = [self._get_nvlink_incident(0, 1, 16)]
+
+        first = self._poll(watcher, dcgm_group_mock, incidents)
+        assert first["DCGM_HEALTH_WATCH_NVLINK"] == dcgm.types.HealthDetails(
+            status=dcgm.types.HealthStatus.PASS, entity_failures={}
+        )
+
+        second = self._poll(watcher, dcgm_group_mock, incidents)
+        assert second["DCGM_HEALTH_WATCH_NVLINK"].status == dcgm.types.HealthStatus.FAIL
+        assert second["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[1][0].code == "DCGM_FR_NVLINK_DOWN"
+
+    def test_incident_debounce_keeps_publishing_past_the_threshold(self) -> None:
+        """A sustained fault keeps publishing once the threshold is met."""
+        watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
+        dcgm_group_mock = MagicMock()
+        incidents = [self._get_nvlink_incident(0, 1, 16)]
+
+        self._poll(watcher, dcgm_group_mock, incidents)
+
+        for _ in range(3):
+            health_status = self._poll(watcher, dcgm_group_mock, incidents)
+            assert health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[1][0].code == "DCGM_FR_NVLINK_DOWN"
+
+    def test_incident_debounce_counts_one_streak_per_gpu_per_poll(self) -> None:
+        """DCGM reports one incident per down link, so a GPU with several down links
+        yields several records for the same code in a single poll. The streak must
+        advance once per poll, or the threshold is reached within the first poll and
+        the debounce is defeated."""
+        watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
+        dcgm_group_mock = MagicMock()
+        two_links_one_gpu = [self._get_nvlink_incident(0, 3, 16), self._get_nvlink_incident(0, 3, 17)]
+
+        first = self._poll(watcher, dcgm_group_mock, two_links_one_gpu)
+        assert first["DCGM_HEALTH_WATCH_NVLINK"].entity_failures == {}
+        assert watcher._incident_streaks == {("DCGM_FR_NVLINK_DOWN", 3): 1}
+
+        # Both records are published together once the threshold is genuinely met.
+        second = self._poll(watcher, dcgm_group_mock, two_links_one_gpu)
+        failure = second["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[3][0]
+        assert failure.code == "DCGM_FR_NVLINK_DOWN"
+        assert "link 16" in failure.message
+        assert "link 17" in failure.message
+
+    def test_incident_debounce_streak_resets_when_incident_is_absent(self) -> None:
+        """A link down on alternate polls never reaches its threshold."""
+        watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
+        dcgm_group_mock = MagicMock()
+        down = [self._get_nvlink_incident(0, 1, 16)]
+
+        for incidents in (down, [], down, [], down):
+            health_status = self._poll(watcher, dcgm_group_mock, incidents)
+            assert health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures == {}
+
+        assert watcher._incident_streaks == {("DCGM_FR_NVLINK_DOWN", 1): 1}
+
+    def test_incident_debounce_is_tracked_per_gpu(self) -> None:
+        """Reaching the threshold on one GPU does not publish another GPU's first observation."""
+        watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
+        dcgm_group_mock = MagicMock()
+
+        self._poll(watcher, dcgm_group_mock, [self._get_nvlink_incident(0, 1, 16)])
+        health_status = self._poll(
+            watcher,
+            dcgm_group_mock,
+            [self._get_nvlink_incident(0, 1, 16), self._get_nvlink_incident(0, 2, 16)],
+        )
+
+        failures = health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures
+        assert 1 in failures
+        assert 2 not in failures
+
+    def test_incident_debounce_only_applies_to_configured_codes(self) -> None:
+        """An unconfigured code in the same poll is published immediately."""
+        watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
+
+        health_status = self._poll(
+            watcher,
+            MagicMock(),
+            [self._get_nvlink_incident(0, 1, 16), self._get_pcie_incident(0, 1)],
+        )
+
+        assert health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures == {}
+        assert health_status["DCGM_HEALTH_WATCH_PCIE"].entity_failures[1][0].code == "DCGM_FR_PCI_REPLAY_RATE"
+
+    def test_incident_debounce_failed_poll_does_not_reset_the_streak(self) -> None:
+        """A poll that observed nothing must not clear a streak, so a fault spanning a
+        DCGM timeout still publishes on its next observation."""
+        watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
+        dcgm_group_mock = MagicMock()
+        incidents = [self._get_nvlink_incident(0, 1, 16)]
+
+        self._poll(watcher, dcgm_group_mock, incidents)
+
+        dcgm_group_mock.health.Check.side_effect = dcgm_structs.DCGMError_Timeout()
+        _, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
+        assert connectivity_success is False
+        assert watcher._incident_streaks == {("DCGM_FR_NVLINK_DOWN", 1): 1}
+
+        dcgm_group_mock.health.Check.side_effect = None
+        health_status = self._poll(watcher, dcgm_group_mock, incidents)
+        assert health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[1][0].code == "DCGM_FR_NVLINK_DOWN"
+
+    def test_incident_debounce_counts_withheld_incidents(self) -> None:
+        """Withheld incidents are observable via the debounced counter."""
+        watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
+        counter = dcgm.metrics.dcgm_health_check_debounced_incidents.labels("DCGM_FR_NVLINK_DOWN", "1")
+        before = counter._value.get()
+
+        # Two links on GPU 1 in one poll must count once, not twice.
+        self._poll(watcher, MagicMock(), [self._get_nvlink_incident(0, 1, 16), self._get_nvlink_incident(0, 1, 17)])
+
+        assert counter._value.get() == before + 1
+
+    def test_incident_debounce_threshold_of_one_is_not_tracked(self) -> None:
+        """A configured threshold of 1 is today's behaviour, so no streak is kept."""
+        watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 1})
+
+        health_status = self._poll(watcher, MagicMock(), [self._get_nvlink_incident(0, 1, 16)])
+
+        assert health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[1][0].code == "DCGM_FR_NVLINK_DOWN"
+        assert watcher._health_check_min_consecutive_polls == {}
 
     def test_perform_health_check_multiple_failures_same_gpu(self):
         """Test that multiple failures for the same GPU are aggregated into a single error message."""
@@ -726,10 +1070,12 @@ class TestDCGMHealthChecks:
         expected_response["DCGM_HEALTH_WATCH_NVLINK"] = dcgm.types.HealthDetails(
             status=dcgm.types.HealthStatus.FAIL,
             entity_failures={
-                0: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_NVLINK_DOWN",
-                    message=expected_message,
-                )
+                0: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_NVLINK_DOWN",
+                        message=expected_message,
+                    )
+                ]
             },
         )
 
@@ -737,13 +1083,13 @@ class TestDCGMHealthChecks:
         assert connectivity_success == True
 
         # Verify that all 4 failures are captured in the message
-        assert "link 8" in response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[0].message
-        assert "link 9" in response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[0].message
-        assert "link 14" in response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[0].message
-        assert "link 15" in response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[0].message
+        assert "link 8" in response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[0][0].message
+        assert "link 9" in response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[0][0].message
+        assert "link 14" in response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[0][0].message
+        assert "link 15" in response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[0][0].message
 
         # Verify messages are separated by semicolons
-        assert response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[0].message.count(";") == 3
+        assert response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[0][0].message.count(";") == 3
 
     def test_perform_health_check_multiple_gpus_multiple_failures_each(self):
         """Test that multiple failures across multiple GPUs are properly handled."""
@@ -778,7 +1124,7 @@ class TestDCGMHealthChecks:
         assert 1 in response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures
 
         # Verify GPU 0 has all 4 link failures
-        gpu0_message = response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[0].message
+        gpu0_message = response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[0][0].message
         assert "link 8" in gpu0_message
         assert "link 9" in gpu0_message
         assert "link 14" in gpu0_message
@@ -786,7 +1132,7 @@ class TestDCGMHealthChecks:
         assert gpu0_message.count(";") == 3
 
         # Verify GPU 1 has all 4 link failures
-        gpu1_message = response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[1].message
+        gpu1_message = response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[1][0].message
         assert "link 8" in gpu1_message
         assert "link 9" in gpu1_message
         assert "link 12" in gpu1_message
@@ -989,7 +1335,7 @@ class TestDCGMHealthChecks:
         assert connectivity_success == True
         assert response["DCGM_HEALTH_WATCH_ALL"].status == dcgm.types.HealthStatus.FAIL
         assert 0 in response["DCGM_HEALTH_WATCH_ALL"].entity_failures
-        assert response["DCGM_HEALTH_WATCH_ALL"].entity_failures[0].message == "XID 95 detected on GPU 0"
+        assert response["DCGM_HEALTH_WATCH_ALL"].entity_failures[0][0].message == "XID 95 detected on GPU 0"
 
     def test_perform_health_check_unknown_error_code(self):
         """Test that incidents with unknown error codes use DCGM_FR_UNKNOWN fallback."""
@@ -1023,7 +1369,7 @@ class TestDCGMHealthChecks:
         assert connectivity_success == True
         assert response["DCGM_HEALTH_WATCH_PCIE"].status == dcgm.types.HealthStatus.WARN
         assert 1 in response["DCGM_HEALTH_WATCH_PCIE"].entity_failures
-        assert response["DCGM_HEALTH_WATCH_PCIE"].entity_failures[1].code == "DCGM_FR_UNKNOWN"
+        assert response["DCGM_HEALTH_WATCH_PCIE"].entity_failures[1][0].code == "DCGM_FR_UNKNOWN"
 
     @patch("pydcgm.DcgmHandle")
     @patch("pydcgm.DcgmGroup")
@@ -1051,7 +1397,7 @@ class TestDCGMHealthChecks:
         dcgm_handle_mock.GetSystem.return_value = dcgm_system_mock
 
         # Call the method
-        group, gpu_ids, gpu_serials = watcher._initialize_dcgm_monitoring(dcgm_handle_mock)
+        group, gpu_ids, switch_ids, gpu_serials = watcher._initialize_dcgm_monitoring(dcgm_handle_mock)
 
         # Verify results
         # Note: group will be the conftest.py mock object, not our dcgm_group_mock
@@ -1059,6 +1405,7 @@ class TestDCGMHealthChecks:
         assert hasattr(group, "health")
         assert hasattr(group, "GetGpuIds")
         assert gpu_ids == [0, 1, 2, 3]
+        assert switch_ids == [0, 1, 2, 3]
         assert len(gpu_serials) == 4
         # Verify that health.Set was called on the actual group object
         group.health.Set.assert_called_once()
@@ -1264,7 +1611,7 @@ class TestSuppressNvlinkDownOnPcieGpus:
     def _assert_not_suppressed(self, health_status: dict[str, dcgm.types.HealthDetails]) -> None:
         details = health_status["DCGM_HEALTH_WATCH_NVLINK"]
         assert details.status == dcgm.types.HealthStatus.FAIL
-        assert details.entity_failures[0].code == "DCGM_FR_NVLINK_DOWN"
+        assert details.entity_failures[0][0].code == "DCGM_FR_NVLINK_DOWN"
 
     def test_suppress_no_nvlink_silicon_without_opt_in(self, tmp_path: Path) -> None:
         """L40-class GPU (zero hardware links): suppressed unconditionally —
@@ -1341,7 +1688,7 @@ class TestSuppressNvlinkDownOnPcieGpus:
         details = health_status["DCGM_HEALTH_WATCH_NVLINK"]
         assert details.status == dcgm.types.HealthStatus.FAIL
         assert 0 not in details.entity_failures
-        assert details.entity_failures[1].code == "DCGM_FR_NVLINK_DOWN"
+        assert details.entity_failures[1][0].code == "DCGM_FR_NVLINK_DOWN"
 
     def test_mixed_codes_same_gpu_preserves_genuine_incident(self, tmp_path: Path) -> None:
         """Regression: a genuine non-NVLINK_DOWN incident aggregated on the same
@@ -1364,9 +1711,9 @@ class TestSuppressNvlinkDownOnPcieGpus:
 
         details = health_status["DCGM_HEALTH_WATCH_NVLINK"]
         assert details.status == dcgm.types.HealthStatus.FAIL
-        assert details.entity_failures[0].code == "DCGM_FR_NVLINK_ERROR_THRESHOLD"
-        assert details.entity_failures[0].message == "GPU 0 NVLink error threshold exceeded"
-        assert "currently down" not in details.entity_failures[0].message
+        assert details.entity_failures[0][0].code == "DCGM_FR_NVLINK_ERROR_THRESHOLD"
+        assert details.entity_failures[0][0].message == "GPU 0 NVLink error threshold exceeded"
+        assert "currently down" not in details.entity_failures[0][0].message
 
     def test_no_suppress_when_metadata_unavailable(self) -> None:
         """Metadata file missing: incident NOT suppressed (fail closed)."""
@@ -1394,7 +1741,7 @@ class TestSuppressNvlinkDownOnPcieGpus:
 
         details = health_status["DCGM_HEALTH_WATCH_NVLINK"]
         assert details.status == dcgm.types.HealthStatus.FAIL
-        assert details.entity_failures[0].code == "DCGM_FR_NVLINK_ERROR_THRESHOLD"
+        assert details.entity_failures[0][0].code == "DCGM_FR_NVLINK_ERROR_THRESHOLD"
 
 
 class TestProbeWatchdog:

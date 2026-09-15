@@ -11,12 +11,18 @@
 - [ ] 🔨 Build/CI
 
 ## Component(s) Affected
-- [ ] Core Services
-- [ ] Documentation/CI
+- [ ] Health Monitor
+- [ ] Core Service
 - [ ] Fault Management
-- [ ] Health Monitors
 - [ ] Janitor
-- [ ] Other: ____________
+- [ ] Deployment/Config
+- [ ] API/Interface
+- [ ] Preflight
+- [ ] Plugins
+- [ ] Documentation/CI
+- [ ] New Component
+- [ ] Multiple Components
+- [ ] Other
 
 ## Testing
 - [ ] Tests pass locally

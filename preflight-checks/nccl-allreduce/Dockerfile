@@ -29,7 +29,7 @@ ARG VERSION="0.1.0"
 # =============================================================================
 # Build stage: Install Python dependencies
 # =============================================================================
-FROM public.ecr.aws/docker/library/python:3.13-trixie AS build
+FROM public.ecr.aws/docker/library/python:3.13-trixie@sha256:4a0820d8b1b1a1e012a23ff9a1296a3e28b48896a4d27a328a91ee197ce619d9 AS build
 
 ARG VERSION
 
@@ -63,6 +63,7 @@ RUN poetry export --format requirements.txt --output constraints.txt --without-h
 # - CUDA toolkit and drivers
 # - PyTorch distributed with NCCL backend
 # =============================================================================
+# Not digest-pinned: the tag is a build-matrix parameter (see Makefile) used to produce multiple image variants.
 FROM nvcr.io/nvidia/pytorch:${PYTORCH_VERSION} AS runtime
 
 ARG VERSION

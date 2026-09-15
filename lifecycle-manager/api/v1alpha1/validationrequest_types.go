@@ -31,13 +31,14 @@ const (
 )
 
 // FailureReason identifies why a test attempt failed.
-// +kubebuilder:validation:Enum=TestFailed;TestTimeout;NodeReadinessViolation;BatchMinimumNotMet
+// +kubebuilder:validation:Enum=TestFailed;TestTimeout;NodeReadinessViolation;NodeDeleted;BatchMinimumNotMet
 type FailureReason string
 
 const (
 	FailureReasonTestFailed             FailureReason = "TestFailed"
 	FailureReasonTestTimeout            FailureReason = "TestTimeout"
 	FailureReasonNodeReadinessViolation FailureReason = "NodeReadinessViolation"
+	FailureReasonNodeDeleted            FailureReason = "NodeDeleted"
 	FailureReasonBatchMinimumNotMet     FailureReason = "BatchMinimumNotMet"
 )
 
@@ -99,6 +100,16 @@ type TestGroupStatus struct {
 	// +required
 	Provider string `json:"provider"`
 
+	// Tests lists the test names included in this group.
+	// +required
+	// +kubebuilder:default:={}
+	Tests []string `json:"tests,omitempty"`
+
+	// Nodes lists the node names included in this group.
+	// +required
+	// +kubebuilder:default:={}
+	Nodes []string `json:"nodes,omitempty"`
+
 	// Phase is the current lifecycle state of this test group.
 	// +optional
 	Phase Phase `json:"phase,omitempty"`
@@ -152,7 +163,7 @@ type ValidationRequestStatus struct {
 // ValidationRequest is the Schema for the ValidationRequests API.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster
+// +kubebuilder:resource:scope=Cluster,shortName=vr
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 type ValidationRequest struct {

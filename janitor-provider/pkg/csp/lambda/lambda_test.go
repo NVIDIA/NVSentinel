@@ -189,7 +189,7 @@ func TestSendRebootSignal_Scenarios_PowerCyclesOrErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			api := tt.api
 
-			got, err := NewClient(&api).SendRebootSignal(context.Background(), tt.node)
+			got, err := NewClient(&api).SendRebootSignal(context.Background(), tt.node, "")
 			if tt.wantErr != "" {
 				assert.ErrorContains(t, err, tt.wantErr)
 				assert.Empty(t, got)
@@ -213,7 +213,7 @@ func TestSendRebootSignal_Scenarios_PowerCyclesOrErrors(t *testing.T) {
 func TestSendRebootSignal_BadProviderID_DoesNotCallAPI(t *testing.T) {
 	api := fakeAPI{}
 
-	_, err := NewClient(&api).SendRebootSignal(context.Background(), node("lambda://", "boot-1"))
+	_, err := NewClient(&api).SendRebootSignal(context.Background(), node("lambda://", "boot-1"), "")
 	require.Error(t, err)
 	assert.Empty(t, api.powerCycleCalls)
 }
@@ -227,7 +227,7 @@ func TestSendRebootSignal_BlockedAction_DoesNotPowerCycle(t *testing.T) {
 		Actions: commonslambda.InstanceActions{ColdReboot: blocked("vm-is-too-old", "unsupported")},
 	}}
 
-	_, err := NewClient(&api).SendRebootSignal(context.Background(), node("lambda://i-123", "boot-1"))
+	_, err := NewClient(&api).SendRebootSignal(context.Background(), node("lambda://i-123", "boot-1"), "")
 	require.Error(t, err)
 	assert.Empty(t, api.powerCycleCalls)
 }

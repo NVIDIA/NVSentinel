@@ -26,6 +26,8 @@ import (
 	"sync"
 	"time"
 
+	"log/slog"
+
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -41,10 +43,10 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
-	"github.com/nvidia/nvsentinel/janitor/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/janitor/pkg/gpuservices"
 	"github.com/nvidia/nvsentinel/janitor/pkg/metrics"
 )
@@ -133,6 +135,26 @@ func (r *GPUResetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 		locked := r.NodeLock.LockNode(ctx, &gpuReset, gpuReset.Spec.NodeName)
 		if !locked {
+			if !reconcileDelete {
+				holder, active, err := activeSameKindHolder(
+					ctx, r.Client, r.NodeLock, gpuReset.Spec.NodeName, "GPUReset",
+				)
+				if err != nil {
+					slog.WarnContext(ctx, "Unable to inspect node lock holder; will retry",
+						"node", gpuReset.Spec.NodeName, "error", err)
+				} else if active {
+					holderGPUReset, ok := holder.(*v1alpha1.GPUReset)
+					if ok && gpuUUIDsOverlap(gpuReset.Spec.Selector, holderGPUReset.Spec.Selector) {
+						return r.reconcileTerminalFailure(
+							ctx,
+							&gpuReset,
+							v1alpha1.ReasonGPUAlreadyUnderMaintenance,
+							fmt.Sprintf("GPUReset/%s is active for this node", holderGPUReset.Name),
+						)
+					}
+				}
+			}
+
 			return ctrl.Result{RequeueAfter: time.Second * 2}, nil
 		}
 
@@ -243,6 +265,12 @@ func (r *GPUResetReconciler) reconcileHelper(ctx context.Context, gr *v1alpha1.G
 // for GPUResets and owned Jobs, and adds field indexers for efficient lookups
 // of GPUResets by node name and Jobs by their controlling owner.
 func (r *GPUResetReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if !r.Config.Enabled {
+		slog.Info("GPUReset controller is disabled; skipping registration")
+
+		return nil
+	}
+
 	gpuServiceManager, err := gpuservices.NewManager(r.Config.ServiceManager.Name, r.Config.ServiceManager.Spec)
 	if err != nil {
 		return fmt.Errorf("failed to construct GPU service manager: %w", err)
@@ -260,7 +288,9 @@ func (r *GPUResetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.checkPodsReadyFn = r.checkPodsReady
 
 	// Initialize NodeLock for distributed locking across maintenance operations
-	r.NodeLock = distributedlock.NewNodeLock(mgr.GetClient(), r.LockNamespace)
+	r.NodeLock = distributedlock.NewNodeLock(
+		mgr.GetClient(), mgr.GetScheme(), r.LockNamespace, metrics.JanitorLockMetrics{},
+	)
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.GPUReset{}).
@@ -395,12 +425,8 @@ func (r *GPUResetReconciler) reconcileDelete(ctx context.Context, gr *v1alpha1.G
 	return ctrl.Result{}, nil
 }
 
-// isReady ensures only one GPUReset is executed at a time per node. It finds
-// all pending and in-progress resets for the target node and only allows the
-// oldest one (by creation timestamp) to proceed. All other resets for that node
-// are put into a waiting state with a 'ResourceContention' reason.
-//
-// It also enforces the 'pending' and 'active' gauge metrics based on the current cluster state.
+// isReady records that the GPUReset may proceed after the reconciler has
+// acquired the node-level lease.
 func (r *GPUResetReconciler) isReady(ctx context.Context, gr *v1alpha1.GPUReset) (ctrl.Result, error) {
 	nodeName := gr.Spec.NodeName
 
@@ -1323,6 +1349,8 @@ func reconcilePhase(reason v1alpha1.GPUResetReason) v1alpha1.GPUResetPhase {
 	case v1alpha1.ReasonRestoreTimeoutExceeded:
 		return v1alpha1.ResetFailed
 	case v1alpha1.ReasonInternalError:
+		return v1alpha1.ResetFailed
+	case v1alpha1.ReasonGPUAlreadyUnderMaintenance:
 		return v1alpha1.ResetFailed
 	default:
 		return v1alpha1.ResetUnknown

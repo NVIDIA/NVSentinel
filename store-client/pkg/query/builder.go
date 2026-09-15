@@ -163,7 +163,7 @@ func (c *eqCondition) ToSQL(paramNum int) (string, []any, int) {
 
 	sql := fmt.Sprintf("%s = $%d", sqlField, paramNum)
 
-	return sql, []any{c.value}, paramNum + 1
+	return sql, []any{jsonTextComparisonValue(c.field, c.value)}, paramNum + 1
 }
 
 // --- Not-Equal Condition ---
@@ -194,7 +194,7 @@ func (c *neCondition) ToSQL(paramNum int) (string, []any, int) {
 
 	sql := fmt.Sprintf("%s != $%d", sqlField, paramNum)
 
-	return sql, []any{c.value}, paramNum + 1
+	return sql, []any{jsonTextComparisonValue(c.field, c.value)}, paramNum + 1
 }
 
 // --- Greater-Than Condition ---
@@ -327,7 +327,7 @@ func (c *inCondition) ToSQL(paramNum int) (string, []any, int) {
 
 	for i, val := range c.values {
 		placeholders[i] = fmt.Sprintf("$%d", paramNum+i)
-		args[i] = val
+		args[i] = jsonTextComparisonValue(c.field, val)
 	}
 
 	sql := fmt.Sprintf("%s IN (%s)", sqlField, strings.Join(placeholders, ", "))
@@ -452,6 +452,26 @@ func (c *orCondition) ToSQL(paramNum int) (string, []any, int) {
 
 // --- Helper Functions ---
 
+// jsonTextComparisonValue converts scalar values when a nested JSON field is
+// compared through PostgreSQL's ->> operator. MongoDB keeps the original value
+// through ToMongo, while PostgreSQL must compare the extracted text with a text
+// parameter rather than, for example, text = integer.
+func jsonTextComparisonValue(field string, value any) any {
+	if isColumnField(toSnakeCase(field)) {
+		return value
+	}
+
+	switch value.(type) {
+	case bool,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64:
+		return fmt.Sprint(value)
+	default:
+		return value
+	}
+}
+
 // mongoFieldToJSONB converts a MongoDB dot-notation field path to PostgreSQL JSONB syntax
 // Example: "healtheventstatus.nodequarantined" -> "data->>'healtheventstatus'->>'nodequarantined'"
 //
@@ -507,7 +527,10 @@ func mongoFieldToJSONB(fieldPath string) string {
 }
 
 func convertToMongoObject(id any) any {
-	idStr := id.(string)
+	idStr, ok := id.(string)
+	if !ok {
+		return id
+	}
 
 	objID, err := bson.ObjectIDFromHex(idStr)
 	if err != nil {
@@ -521,6 +544,8 @@ func convertToMongoObject(id any) any {
 func needsDualCaseLookup(fieldName string) bool {
 	// Fields that might be stored in either lowercase or camelCase
 	dualCaseFields := map[string]bool{
+		"componentclass":  true, // Can be componentclass or componentClass
+		"checkname":       true, // Can be checkname or checkName
 		"nodename":        true, // Can be nodename or nodeName
 		"nodequarantined": true, // Can be nodequarantined or nodeQuarantined
 	}
@@ -555,6 +580,10 @@ func buildDualCaseJSONBPath(parts []string) string {
 func toCamelCase(s string) string {
 	// Handle specific known conversions
 	switch s {
+	case "componentclass":
+		return "componentClass"
+	case "checkname":
+		return "checkName"
 	case "nodename":
 		return "nodeName"
 	case "nodequarantined":

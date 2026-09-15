@@ -50,6 +50,7 @@ import (
 	annotation "github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/customdrain"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/evaluator"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/informers"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/queue"
@@ -937,6 +938,10 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			}
 
 			createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, tt.nodeName, nodeLabels, nodeAnnotations)
+			// Some cases (AlreadyQuarantined) read the node through the
+			// informer cache immediately; wait for watch delivery so the
+			// evaluation does not race it.
+			waitForNodeInInformer(t, setup.informersInstance, tt.nodeName)
 
 			for _, ns := range tt.namespaces {
 				createNamespace(setup.ctx, t, setup.client, ns)
@@ -1416,17 +1421,9 @@ func requireSingleNodeEvent(
 	return nodeEvents.Items[0]
 }
 
+// setupDirectTest builds the legacy namespace configuration used by reconciler API tests.
 func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun bool, drainGPUPods ...bool) *testSetup {
 	t.Helper()
-	ctx := t.Context()
-
-	testEnv := envtest.Environment{}
-	cfg, err := testEnv.Start()
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = testEnv.Stop() })
-
-	client, err := kubernetes.NewForConfig(cfg)
-	require.NoError(t, err)
 
 	enableDrainGPUPods := false
 	if len(drainGPUPods) > 0 {
@@ -1442,6 +1439,22 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 		UserNamespaces:            userNamespaces,
 		PartialDrainEnabled:       true,
 	}
+	return setupConfiguredTest(t, tomlConfig, dryRun)
+}
+
+// setupConfiguredTest
+// starts an API server, syncs the policy-aware informer and constructs a reconciler with a mock datastore.
+func setupConfiguredTest(t *testing.T, tomlConfig config.TomlConfig, dryRun bool) *testSetup {
+	t.Helper()
+	ctx := t.Context()
+	testEnv := envtest.Environment{}
+	cfg, err := testEnv.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = testEnv.Stop() })
+	client, err := kubernetes.NewForConfig(cfg)
+	require.NoError(t, err)
+	policies, err := config.CompilePodDrainPolicies(tomlConfig.PodDrainPolicies)
+	require.NoError(t, err)
 
 	// Create mock database config for testing
 	mockDatabaseConfig := &mockDatabaseConfig{
@@ -1465,9 +1478,10 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 		client,
 		1*time.Minute,
 		new(2),
-		enableDrainGPUPods,
+		tomlConfig.DrainGPUPods,
 		dryRun,
 		tomlConfig.SystemNamespaces,
+		policies.LabelKeys()...,
 	)
 	require.NoError(t, err)
 
@@ -1597,6 +1611,20 @@ func setupCustomDrainTest(t *testing.T, customDrainConfig config.CustomDrainConf
 func createNode(ctx context.Context, t *testing.T, client kubernetes.Interface, nodeName string) {
 	t.Helper()
 	createNodeWithLabelsAndAnnotations(ctx, t, client, nodeName, map[string]string{"test": "true"}, nil)
+}
+
+// waitForNodeInInformer blocks until the node created through the API server
+// becomes visible in the shared informer's local cache. Node creation and the
+// informer's watch delivery are asynchronous, so tests that evaluate a health
+// event immediately after creating the node race the cache and flake on
+// loaded runners without this wait.
+func waitForNodeInInformer(t *testing.T, inf *informers.Informers, nodeName string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		_, err := inf.GetNode(nodeName)
+		return err == nil
+	}, 30*time.Second, 50*time.Millisecond,
+		"node %s should become visible in the informer cache", nodeName)
 }
 
 func createNodeWithLabelsAndAnnotations(ctx context.Context, t *testing.T, client kubernetes.Interface,
@@ -1811,6 +1839,10 @@ func TestMetrics_AlreadyQuarantinedDoesNotIncrementDrainSuccess(t *testing.T) {
 	assert.NoError(t, err)
 	createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, nodeName, map[string]string{"test": "true"},
 		map[string]string{common.QuarantineHealthEventAnnotationKey: annotationValue})
+	// The AlreadyQuarantined path reads the node through the informer cache,
+	// which learns about the node asynchronously; without this wait the
+	// evaluation below races the watch delivery and flakes on loaded runners.
+	waitForNodeInInformer(t, setup.informersInstance, nodeName)
 
 	setup.healthEventStore.healthEvents = []datastore.HealthEventWithStatus{
 		{
@@ -1826,14 +1858,14 @@ func TestMetrics_AlreadyQuarantinedDoesNotIncrementDrainSuccess(t *testing.T) {
 		},
 	}
 
-	beforeSkipped := getCounterVecValue(t, metrics.EventsProcessed, metrics.DrainStatusSkipped, nodeName)
+	beforeSkipped := getCounterVecValue(t, metrics.EventsProcessed, metrics.DrainStatusSkipped, nodeName, string(evaluator.DrainScopeFull))
 
 	_ = processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, setup.healthEventStore, healthEventOptions{
 		nodeName:        nodeName,
 		nodeQuarantined: model.AlreadyQuarantined,
 	})
 
-	afterSkipped := getCounterVecValue(t, metrics.EventsProcessed, metrics.DrainStatusSkipped, nodeName)
+	afterSkipped := getCounterVecValue(t, metrics.EventsProcessed, metrics.DrainStatusSkipped, nodeName, string(evaluator.DrainScopeFull))
 	assert.GreaterOrEqual(t, afterSkipped, beforeSkipped+1, "EventsProcessed with drain_status=skipped should increment for already drained nodes")
 }
 

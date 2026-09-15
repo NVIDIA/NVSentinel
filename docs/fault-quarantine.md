@@ -24,9 +24,10 @@ The Fault Quarantine module solves this by:
 
 The Fault Quarantine module continuously watches the datastore for health events reported by the health monitors (GPU Health Monitor, Syslog Health Monitor, CSP Health Monitor). When a health event arrives, the module:
 
-1. **Evaluates the event** against configurable CEL rules to determine if quarantine is needed
-2. **Checks the circuit breaker** (if enabled) to ensure it's safe to take action
-3. **Takes quarantine action** if rules match:
+1. **Recovers unresolved events on startup** before moving to live events
+2. **Evaluates the event** against configurable CEL rules to determine if quarantine is needed
+3. **Checks the circuit breaker** (if enabled) to ensure it's safe to take action
+4. **Takes quarantine action** if rules match:
    - **Cordons the node**: Sets the node to "unschedulable" so no new pods are placed on it
    - **Applies taints**: Adds Kubernetes taints to repel running pods (optional)
    - **Updates annotations**: Records detailed information about why and when the node was quarantined

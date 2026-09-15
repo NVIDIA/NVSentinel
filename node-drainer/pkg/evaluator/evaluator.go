@@ -16,13 +16,13 @@ package evaluator
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/drain"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -32,23 +32,39 @@ import (
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/customdrain"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/queue"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
-	"github.com/nvidia/nvsentinel/store-client/pkg/query"
 )
 
 const (
 	customDrainPollInterval = 30 * time.Second
 )
 
+// DrainScope distinguishes a whole-node drain from one scoped to a single entity. It is used
+// as a metric label, so it is a small fixed set rather than a free-form string.
+type DrainScope string
+
+const (
+	DrainScopeFull    DrainScope = "full"
+	DrainScopePartial DrainScope = "partial"
+)
+
+// NewNodeDrainEvaluator compiles pod drain policies and creates a drain evaluator.
+// It returns an error when a configured pod drain policy is invalid.
 func NewNodeDrainEvaluator(
 	cfg config.TomlConfig,
 	informers InformersInterface,
 	customDrainClient CustomDrainClientInterface,
-) DrainEvaluator {
+) (DrainEvaluator, error) {
+	policies, err := config.CompilePodDrainPolicies(cfg.PodDrainPolicies)
+	if err != nil {
+		return nil, fmt.Errorf("compile pod drain policies: %w", err)
+	}
+
 	return &NodeDrainEvaluator{
 		config:            cfg,
 		informers:         informers,
 		customDrainClient: customDrainClient,
-	}
+		podPolicies:       policies,
+	}, nil
 }
 
 // EvaluateEvent method has been removed - use EvaluateEventWithDatabase instead
@@ -185,8 +201,14 @@ func (e *NodeDrainEvaluator) handleAlreadyQuarantined(ctx context.Context, statu
 	return nil
 }
 
+// evaluateUserNamespaceActions selects the next drain action using pod policies
+// when configured, or the legacy namespace rules otherwise.
 func (e *NodeDrainEvaluator) evaluateUserNamespaceActions(ctx context.Context,
 	healthEvent model.HealthEventWithStatus, partialDrainEntity *protos.Entity) (*DrainActionResult, error) {
+	if len(e.config.PodDrainPolicies) > 0 {
+		return e.evaluatePodPolicyActions(ctx, healthEvent, partialDrainEntity)
+	}
+
 	nodeName := healthEvent.HealthEvent.NodeName
 
 	systemNamespaces := e.config.SystemNamespaces
@@ -239,12 +261,14 @@ func mapUserNamespacesToMode(
 	}
 }
 
+// getAction checks Immediate, DeleteAfterTimeout, then AllowCompletion workloads,
+// carrying each mode's pod filter into the returned action.
 func (e *NodeDrainEvaluator) getAction(ctx context.Context, ns namespaces, nodeName string,
 	partialDrainEntity *protos.Entity) *DrainActionResult {
 	if len(ns.immediateEvictionNamespaces) > 0 {
 		timeout := e.config.EvictionTimeoutInSeconds.Duration
 		if !e.informers.CheckIfAllPodsAreEvictedInImmediateMode(ctx, ns.immediateEvictionNamespaces, nodeName,
-			timeout, partialDrainEntity) {
+			timeout, partialDrainEntity, ns.podFilters[config.ModeImmediateEvict]) {
 			slog.InfoContext(ctx, "Performing immediate eviction for node", "node", nodeName)
 
 			return &DrainActionResult{
@@ -252,6 +276,7 @@ func (e *NodeDrainEvaluator) getAction(ctx context.Context, ns namespaces, nodeN
 				Namespaces:         ns.immediateEvictionNamespaces,
 				Timeout:            timeout,
 				PartialDrainEntity: partialDrainEntity,
+				PodFilter:          ns.podFilters[config.ModeImmediateEvict],
 			}
 		}
 	}
@@ -282,12 +307,15 @@ func (e *NodeDrainEvaluator) getAction(ctx context.Context, ns namespaces, nodeN
 	}
 }
 
+// handleAllowCompletionNamespaces requests a completion check while selected pods
+// remain or cannot be listed, and returns nil once no selected pods remain.
 func (e *NodeDrainEvaluator) handleAllowCompletionNamespaces(ctx context.Context, ns namespaces, nodeName string,
 	partialDrainEntity *protos.Entity) *DrainActionResult {
 	hasRemainingPods := false
 
 	for _, namespace := range ns.allowCompletionNamespaces {
-		pods, err := e.informers.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity)
+		pods, err := e.informers.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity,
+			ns.podFilters[config.ModeAllowCompletion])
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to check pods in namespace on node",
 				"namespace", namespace,
@@ -313,18 +341,22 @@ func (e *NodeDrainEvaluator) handleAllowCompletionNamespaces(ctx context.Context
 			Action:             ActionCheckCompletion,
 			Namespaces:         ns.allowCompletionNamespaces,
 			PartialDrainEntity: partialDrainEntity,
+			PodFilter:          ns.podFilters[config.ModeAllowCompletion],
 		}
 	}
 
 	return nil
 }
 
+// handleDeleteAfterTimeoutNamespaces requests a deadline-based drain while selected
+// pods remain or cannot be listed, and returns nil once no selected pods remain.
 func (e *NodeDrainEvaluator) handleDeleteAfterTimeoutNamespaces(ctx context.Context, ns namespaces, nodeName string,
 	partialDrainEntity *protos.Entity) *DrainActionResult {
 	hasRemainingPods := false
 
 	for _, namespace := range ns.deleteAfterTimeoutNamespaces {
-		pods, err := e.informers.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity)
+		pods, err := e.informers.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity,
+			ns.podFilters[config.ModeDeleteAfterTimeout])
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to check pods in namespace on node",
 				"namespace", namespace,
@@ -351,6 +383,7 @@ func (e *NodeDrainEvaluator) handleDeleteAfterTimeoutNamespaces(ctx context.Cont
 			Namespaces:         ns.deleteAfterTimeoutNamespaces,
 			Timeout:            time.Duration(e.config.DeleteAfterTimeoutMinutes) * time.Minute,
 			PartialDrainEntity: partialDrainEntity,
+			PodFilter:          ns.podFilters[config.ModeDeleteAfterTimeout],
 		}
 	}
 
@@ -577,111 +610,25 @@ func (e *NodeDrainEvaluator) isNodeAlreadyDrained(ctx context.Context, currentEv
 	slog.InfoContext(ctx, "HealthEvents which are part of quarantineHealthEvent annotation",
 		"eventCount", len(healthEventsMap.Events))
 
+	events := make([]*protos.HealthEvent, 0, len(healthEventsMap.Events))
 	for _, healthEventFromAnnotation := range healthEventsMap.Events {
-		id := healthEventFromAnnotation.Id
-		if len(id) == 0 {
+		if len(healthEventFromAnnotation.Id) == 0 {
 			slog.ErrorContext(ctx, "HealthEvent is missing ID for database lookup, expected for old events",
 				"message", healthEventFromAnnotation.Message)
 
 			continue
 		}
 
-		if id == currentEventId {
-			continue
-		}
-
-		healthEventWithStatus, healthEvent, err := getHealthEventFromId(ctx, id, nodeName, healthEventStore)
-		if err != nil {
-			return false, true, err
-		}
-		// none of HealthEventStatus, UserPodsEvictionStatus, or Status are ptr values
-		drainCompleted := healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus.Status == datastore.StatusSucceeded
-
-		partialDrainEntity, err := e.shouldExecutePartialDrain(healthEvent)
-		if err != nil {
-			return false, true, err
-		}
-
-		skipDrain := canSkipDrain(ctx, drainCompleted, partialDrainEntity, currentPartialDrainEntity, id, nodeName)
-		if skipDrain {
-			return true, true, nil
-		}
-		// continue checking any other HealthEvents on quarantineHealthEvent annotation
+		events = append(events, healthEventFromAnnotation)
 	}
 
-	return false, true, nil
-}
-
-func getHealthEventFromId(ctx context.Context, id string, nodeName string,
-	healthEventStore datastore.HealthEventStore) (*datastore.HealthEventWithStatus, *protos.HealthEvent, error) {
-	q := query.New().Build(
-		query.Eq("_id", id),
-	)
-
-	events, err := healthEventStore.FindHealthEventsByQuery(ctx, q)
+	alreadyDrained, err := drain.IsNodeDrained(ctx, healthEventStore, nodeName, events, currentEventId,
+		currentPartialDrainEntity, e.shouldExecutePartialDrain)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to query health events for node %s and event ID %s: %w", nodeName, id, err)
+		return false, true, err
 	}
 
-	if len(events) != 1 {
-		return nil, nil, fmt.Errorf("unexpected number of events for node %s and event ID %s: %d", nodeName, id, len(events))
-	}
-
-	healthEventWithStatus := events[0]
-
-	// We have custom types in datastore which aren't from model nor protos packages. For example,
-	// datastore.HealthEventWithStatus.HealthEvent has type interface{}. If we check the underlying
-	// type, we are returned with map[string]interface{}. To convert this to protos.HealthEvent, we will convert to
-	// and from json rather than try to manually extract our fields.
-	healthEventBytes, err := json.Marshal(healthEventWithStatus.HealthEvent)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to marshal health event for node %s: %w", nodeName, err)
-	}
-
-	var healthEvent protos.HealthEvent
-	if err := json.Unmarshal(healthEventBytes, &healthEvent); err != nil {
-		return nil, nil, fmt.Errorf("failed to unmarshal health event for node %s: %w", nodeName, err)
-	}
-
-	return &healthEventWithStatus, &healthEvent, nil
-}
-
-func canSkipDrain(
-	ctx context.Context, drainCompleted bool,
-	partialDrainEntity, currentPartialDrainEntity *protos.Entity,
-	id, nodeName string,
-) bool {
-	if drainCompleted {
-		// We previously executed a full drain and it's complete. We can skip the current drain whether it's a full
-		// drain or a partial drain.
-		if partialDrainEntity == nil {
-			slog.InfoContext(ctx, "Full drain previously completed for node as part of old event, skipping drain",
-				"node", nodeName, "id", id)
-
-			return true
-		}
-		// If we previously completed a partial drain, we can skip the current drain if it's also a partial drain
-		// that matches the same impacted entity
-		if currentPartialDrainEntity != nil { // partialDrainEntity != nil
-			// The protos.Entity struct type cannot be compared with equals operator. As a result,
-			// we will check the identifying fields for EntityType and EntityValue rather than directly compare
-			// the structs via *partialDrainEntity == *currentPartialDrainEntity
-			partialDrainCompletedForSameEntity := partialDrainEntity.EntityType == currentPartialDrainEntity.EntityType &&
-				partialDrainEntity.EntityValue == currentPartialDrainEntity.EntityValue
-			if partialDrainCompletedForSameEntity {
-				slog.InfoContext(ctx, "Partial drain previously completed for entity as part of old event, skipping drain",
-					"node", nodeName, "id", id, "entityValue", currentPartialDrainEntity.EntityValue)
-
-				return true
-			}
-
-			slog.InfoContext(ctx, "Partial drain previously completed for a different entity as part of old event",
-				"node", nodeName, "id", id, "currentEntityValue", currentPartialDrainEntity.EntityValue,
-				"oldEntityValue", partialDrainEntity.EntityValue)
-		}
-	}
-
-	return false
+	return alreadyDrained, true, nil
 }
 
 /*
@@ -694,19 +641,26 @@ have a COMPONENT_RESET recommended action and have a GPU_UUID impacted entity.
 If the recommended action is COMPONENT_RESET but the given HealthEvent does not include a supported entity for partial
 drain, we will return an error. For all other recommended actions, we will proceed with a full drain.
 */
-func (e *NodeDrainEvaluator) shouldExecutePartialDrain(
-	healthEvent *protos.HealthEvent) (*protos.Entity, error) {
-	if e.config.PartialDrainEnabled && healthEvent.RecommendedAction == protos.RecommendedAction_COMPONENT_RESET {
-		for _, entity := range healthEvent.GetEntitiesImpacted() {
-			_, supportedEntity := model.EntityTypeToResourceNames[entity.EntityType]
-			if supportedEntity && len(entity.EntityValue) != 0 {
-				return entity, nil
-			}
-		}
-
-		return nil, fmt.Errorf("no supported entities for a partial drain found in health event for node: %s",
-			healthEvent.NodeName)
+func (e *NodeDrainEvaluator) shouldExecutePartialDrain(healthEvent *protos.HealthEvent) (*protos.Entity, error) {
+	if e.config.PartialDrainEnabled {
+		return drain.PartialDrainEntity(healthEvent)
 	}
 
 	return nil, nil
+}
+
+// DrainScopeFor reports whether the event drains the whole node or a single entity, and the
+// entity when the drain is partial. Callers need both, so returning them together keeps the
+// scope label and the entity from being derived independently and drifting apart.
+func DrainScopeFor(healthEvent *protos.HealthEvent, partialDrainEnabled bool) (DrainScope, *protos.Entity) {
+	if !partialDrainEnabled {
+		return DrainScopeFull, nil
+	}
+
+	entity, err := drain.PartialDrainEntity(healthEvent)
+	if err != nil || entity == nil {
+		return DrainScopeFull, nil
+	}
+
+	return DrainScopePartial, entity
 }

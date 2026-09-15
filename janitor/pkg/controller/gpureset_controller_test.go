@@ -16,6 +16,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	prmproto "github.com/prometheus/client_model/go"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -50,10 +53,18 @@ import (
 // isReady method of this controller which prevents concurrent GPUResets on the same node. The locking functionality in
 // NodeLock will take precedence over the existing logic in this controller. As a result, we should remove the locking
 // functionality in isReady and remove the corresponding tests.
-type mockNodeLock struct{}
+type mockNodeLock struct {
+	contended bool
+	holder    *metav1.OwnerReference
+	holderErr error
+}
 
 func (m *mockNodeLock) LockNode(ctx context.Context, maintenanceObject client.Object, nodeName string) bool {
-	return true
+	return !m.contended
+}
+
+func (m *mockNodeLock) GetHolder(ctx context.Context, nodeName string) (*metav1.OwnerReference, error) {
+	return m.holder, m.holderErr
 }
 
 func (m *mockNodeLock) CheckUnlock(ctx context.Context, maintenanceObject client.Object, nodeName string) (retryUnlock bool) {
@@ -174,6 +185,113 @@ var _ = Describe("GPUReset Controller", func() {
 		metrics.GPUResetFailureReasonsTotal.Reset()
 
 		cancel()
+	})
+
+	Context("Node lock contention", func() {
+		DescribeTable("evaluates selector overlap",
+			func(incomingSelector, holderSelector *v1alpha1.GPUSelector, expectTerminal bool) {
+				t := GinkgoT()
+				suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+				nodeName := "contention-node-" + suffix
+				holder := &v1alpha1.GPUReset{
+					ObjectMeta: metav1.ObjectMeta{Name: "holder-" + suffix},
+					Spec: v1alpha1.GPUResetSpec{
+						NodeName: nodeName,
+						Selector: holderSelector,
+					},
+				}
+				incoming := &v1alpha1.GPUReset{
+					ObjectMeta: metav1.ObjectMeta{Name: "incoming-" + suffix},
+					Spec: v1alpha1.GPUResetSpec{
+						NodeName: nodeName,
+						Selector: incomingSelector,
+					},
+				}
+
+				require.NoError(t, k8sClient.Create(ctx, &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+				}))
+				require.NoError(t, k8sClient.Create(ctx, holder))
+				require.NoError(t, k8sClient.Create(ctx, incoming))
+				DeferCleanup(func() {
+					require.NoError(t, client.IgnoreNotFound(k8sClient.Delete(ctx, incoming)))
+					require.NoError(t, client.IgnoreNotFound(k8sClient.Delete(ctx, holder)))
+					require.NoError(t, client.IgnoreNotFound(k8sClient.Delete(ctx, &corev1.Node{
+						ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+					})))
+				})
+
+				Eventually(func(g Gomega) {
+					var cachedHolder v1alpha1.GPUReset
+					g.Expect(mgrClient.Get(ctx, types.NamespacedName{Name: holder.Name}, &cachedHolder)).To(Succeed())
+					var cachedIncoming v1alpha1.GPUReset
+					g.Expect(mgrClient.Get(ctx, types.NamespacedName{Name: incoming.Name}, &cachedIncoming)).To(Succeed())
+				}, "10s", "100ms").Should(Succeed())
+
+				reconciler.NodeLock = &mockNodeLock{
+					contended: true,
+					holder: &metav1.OwnerReference{
+						Kind: "GPUReset",
+						Name: holder.Name,
+						UID:  holder.UID,
+					},
+				}
+
+				result, err := reconciler.Reconcile(ctx, ctrl.Request{
+					NamespacedName: types.NamespacedName{Name: incoming.Name},
+				})
+				require.NoError(t, err)
+
+				var updated v1alpha1.GPUReset
+				require.NoError(t, k8sClient.Get(ctx, types.NamespacedName{Name: incoming.Name}, &updated))
+
+				if !expectTerminal {
+					assert.Equal(t, 2*time.Second, result.RequeueAfter)
+					assert.Nil(t, updated.Status.CompletionTime)
+
+					return
+				}
+
+				assert.Equal(t, ctrl.Result{}, result)
+				require.NotNil(t, updated.Status.CompletionTime)
+				assert.Equal(t, v1alpha1.ResetFailed, updated.Status.Phase)
+
+				condition := meta.FindStatusCondition(updated.Status.Conditions, string(v1alpha1.Complete))
+				require.NotNil(t, condition)
+				assert.Equal(t, string(v1alpha1.ReasonGPUAlreadyUnderMaintenance), condition.Reason)
+				assert.Equal(t, fmt.Sprintf("GPUReset/%s is active for this node", holder.Name), condition.Message)
+			},
+			Entry(
+				"matching UUIDs set terminal status",
+				&v1alpha1.GPUSelector{UUIDs: []string{"GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"}},
+				&v1alpha1.GPUSelector{UUIDs: []string{"GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"}},
+				true,
+			),
+			Entry(
+				"a nil selector overlaps a specific GPU",
+				nil,
+				&v1alpha1.GPUSelector{UUIDs: []string{"GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"}},
+				true,
+			),
+			Entry(
+				"an empty selector overlaps a specific GPU",
+				&v1alpha1.GPUSelector{},
+				&v1alpha1.GPUSelector{UUIDs: []string{"GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"}},
+				true,
+			),
+			Entry(
+				"matching PCI bus IDs set terminal status",
+				&v1alpha1.GPUSelector{PCIBusIDs: []string{"0000:01:00.0"}},
+				&v1alpha1.GPUSelector{PCIBusIDs: []string{"0000:01:00.0"}},
+				true,
+			),
+			Entry(
+				"known distinct GPU UUIDs remain queued",
+				&v1alpha1.GPUSelector{UUIDs: []string{"GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"}},
+				&v1alpha1.GPUSelector{UUIDs: []string{"GPU-b2c3d4e5-f6a7-b8c9-d0e1-f2a3b4c5d6e7"}},
+				false,
+			),
+		)
 	})
 
 	Context("Successful Workflow with GPU Service Manager", func() {
@@ -747,41 +865,6 @@ var _ = Describe("GPUReset Controller", func() {
 
 			By("Verifying the Job's Pod template container still has pre-existing env vars")
 			Expect(targetContainer.Env).To(ContainElement(corev1.EnvVar{Name: "PRE_EXISTING_ENV", Value: "foo"}))
-		})
-	})
-
-	Context("Node Lock", func() {
-		var nodeName = "node-lock-test-node"
-		var node *corev1.Node
-
-		BeforeEach(func() {
-			node = &corev1.Node{Name: nodeName, Labels: make(map[string]string)}
-			Expect(k8sClient.Create(ctx, node)).To(Succeed())
-		})
-
-		AfterEach(func() {
-			if err := k8sClient.Delete(ctx, node); err != nil && !apierrors.IsNotFound(err) {
-				Expect(err).NotTo(HaveOccurred())
-			}
-			var resets v1alpha1.GPUResetList
-			Expect(k8sClient.List(ctx, &resets)).To(Succeed())
-			for _, r := range resets.Items {
-				if r.Spec.NodeName == nodeName {
-					if err := k8sClient.Delete(ctx, &r); err != nil && !apierrors.IsNotFound(err) {
-						Expect(err).NotTo(HaveOccurred())
-					}
-				}
-			}
-
-			var jobList batchv1.JobList
-			Expect(k8sClient.List(ctx, &jobList, client.InNamespace("default"))).To(Succeed())
-			for _, job := range jobList.Items {
-				if strings.HasPrefix(job.Name, "first-reset") || strings.HasPrefix(job.Name, "second-reset") {
-					if err := k8sClient.Delete(ctx, &job, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
-						Expect(err).NotTo(HaveOccurred())
-					}
-				}
-			}
 		})
 	})
 

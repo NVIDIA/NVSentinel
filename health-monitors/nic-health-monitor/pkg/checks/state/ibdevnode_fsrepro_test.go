@@ -95,7 +95,12 @@ func TestIBCharDev_RealNodeLayout_FilesystemRepro(t *testing.T) {
 	// Inclusion override keeps the classifier out of it (no gpu_metadata
 	// needed): scope is decided by our own IB-port gate, so mlx5_0
 	// (Ethernet) is still correctly out of scope.
-	cfg := &config.Config{NicInclusionRegexOverride: "mlx5_.*"}
+	// issm detection is opt-in (default never); this repro targets the issm
+	// mechanics, so enable it explicitly.
+	cfg := &config.Config{
+		NicInclusionRegexOverride: "mlx5_.*",
+		CharDeviceCheck:           config.CharDeviceCheckConfig{Issm: config.IssmModeAlways},
+	}
 	classifier := topology.NewOverrideClassifier(reader)
 
 	check := NewInfiniBandCharDeviceCheck("np-a62cfc8a-1", reader, cfg, classifier,

@@ -31,6 +31,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	drainv1alpha1 "github.com/nvidia/nvsentinel/plugins/slinky-drainer/api/v1alpha1"
+	"github.com/nvidia/nvsentinel/plugins/slinky-drainer/pkg/cacheconfig"
 	"github.com/nvidia/nvsentinel/plugins/slinky-drainer/pkg/controller"
 )
 
@@ -64,10 +65,17 @@ func main() {
 	flag.StringVar(&slinkyNamespace, "slinky-namespace", "slinky", "Namespace where Slinky workload pods run")
 	flag.Parse()
 
+	cacheOptions, err := cacheconfig.Build(slinkyNamespace)
+	if err != nil {
+		slog.Error("Unable to build cache options", "slinkyNamespace", slinkyNamespace, "error", err)
+		os.Exit(1)
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
+		Cache:                  cacheOptions,
 	})
 	if err != nil {
 		slog.Error("Unable to create manager", "error", err)

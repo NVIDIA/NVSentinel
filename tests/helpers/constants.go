@@ -24,6 +24,8 @@ const (
 	sleepForever = "sleep 3600"
 	// containerNameMain is the primary container name in fixture pod specs.
 	containerNameMain = "main"
+	// fieldNameKey is the "name" field key used when building unstructured object fixtures.
+	fieldNameKey = "name"
 
 	// labelApp and labelTest are the pod labels fixture workloads are selected by.
 	labelApp  = "app"

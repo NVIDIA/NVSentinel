@@ -31,7 +31,7 @@ import (
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
-	"github.com/nvidia/nvsentinel/janitor/pkg/distributedlock"
+	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 )
 
 var _ = Describe("TerminateNodeReconciler", func() {
@@ -92,7 +92,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 			dialProviderFunc: func(_ context.Context) (cspv1alpha1.CSPProviderServiceClient, func(), error) {
 				return mockCSP.Client, func() {}, nil
 			},
-			NodeLock: distributedlock.NewNodeLock(k8sClient, "default"),
+			NodeLock: distributedlock.NewNodeLock(k8sClient, scheme.Scheme, "default", nil),
 		}
 
 		// Default to success behavior - tests can override as needed
@@ -124,6 +124,42 @@ var _ = Describe("TerminateNodeReconciler", func() {
 				}
 				return updatedTerminateNode.Status.StartTime != nil
 			}, timeout, interval).Should(BeTrue())
+		})
+	})
+
+	Context("When another TerminateNode holds the node lock", func() {
+		It("Should mark the incoming TerminateNode terminal with holder feedback", func() {
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: crName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			duplicate := &janitordgxcnvidiacomv1alpha1.TerminateNode{
+				ObjectMeta: metav1.ObjectMeta{Name: crName + "-duplicate"},
+				Spec: janitordgxcnvidiacomv1alpha1.TerminateNodeSpec{
+					NodeName: nodeName,
+				},
+			}
+			Expect(k8sClient.Create(ctx, duplicate)).To(Succeed())
+
+			result, err := reconciler.Reconcile(ctx, ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: duplicate.Name},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(ctrl.Result{}))
+
+			var updated janitordgxcnvidiacomv1alpha1.TerminateNode
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: duplicate.Name}, &updated)).To(Succeed())
+			Expect(updated.Status.CompletionTime).NotTo(BeNil())
+
+			condition := findTerminateCondition(
+				updated.Status.Conditions,
+				janitordgxcnvidiacomv1alpha1.TerminateNodeConditionNodeTerminated,
+			)
+			Expect(condition).NotTo(BeNil())
+			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(condition.Reason).To(Equal(nodeAlreadyUnderMaintenanceReason))
+			Expect(condition.Message).To(Equal(fmt.Sprintf("TerminateNode/%s is active for this node", crName)))
 		})
 	})
 

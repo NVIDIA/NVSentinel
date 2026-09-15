@@ -48,13 +48,13 @@ Configure the Metadata Collector through Helm values:
 metadata-collector:
   enabled: true
   
-  # Runtime class for GPU access (omit for CRI-O environments)
+  # Runtime class for GPU access. Set to "" for CRI-O and NRI-mode clusters.
   runtimeClassName: "nvidia"
 ```
 
 ### Configuration Options
 
-- **Runtime Class**: Specify runtime class name for GPU access (typically "nvidia" for containerd). For CRI-O environments, do not set this field.
+- **Runtime Class**: Specify runtime class name for GPU access (typically `"nvidia"` for containerd). For CRI-O and NRI-mode clusters, set `runtimeClassName: ""` to omit the field. On NRI-mode GPU Operator clusters, also mount host driver libraries (see [Metadata Collector Configuration](./configuration/metadata-collector.md)).
 - **Output Path**: Path where metadata JSON is written (default: `/var/lib/nvsentinel/gpu_metadata.json`)
 
 ## What It Collects

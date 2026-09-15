@@ -69,8 +69,14 @@ func (d *Deduplicator) Name() string {
 }
 
 // Transform downgrades duplicate unhealthy events to STORE_ONLY so they are persisted
-// but do not create Kubernetes-side remediation effects.
+// but do not create Kubernetes-side remediation effects. Events already marked
+// STORE_ONLY (e.g. by the managed-label gate) are returned immediately without
+// entering the dedup tracker.
 func (d *Deduplicator) Transform(ctx context.Context, event *pb.HealthEvent) error {
+	if event.GetProcessingStrategy() == pb.ProcessingStrategy_STORE_ONLY {
+		return nil
+	}
+
 	if len(d.include) > 0 && !d.include[event.GetCheckName()] {
 		return nil
 	}

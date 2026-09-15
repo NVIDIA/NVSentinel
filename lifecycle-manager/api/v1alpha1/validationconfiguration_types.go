@@ -15,6 +15,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -79,7 +80,7 @@ type NewNodeValidationConfig struct {
 	// already been validated. The controller requires this condition to be absent or false before
 	// targeting a node, and sets it to True once a ValidationRequest is created.
 	// +optional
-	Condition string `json:"condition,omitempty"`
+	Condition corev1.NodeConditionType `json:"condition,omitempty"`
 
 	// Criteria are CEL expressions evaluated against each node to determine whether it requires
 	// new node validation. All expressions must evaluate to true.
@@ -124,6 +125,11 @@ type CordonConfig struct {
 	// Remove indicates whether nodes should be uncordoned after completing validation.
 	// +optional
 	Remove bool `json:"remove,omitempty"`
+
+	// LabelPrefix is prepended to the cordon-by/cordon-reason/cordon-timestamp and uncordon-by/uncordon-reason/
+	// uncordon-timestamp label keys when Remove is true. If empty, these labels are not modified.
+	// +optional
+	LabelPrefix string `json:"labelPrefix,omitempty"`
 }
 
 // TaintConfig describes a taint the controller removes from a node when validation completes.
@@ -136,7 +142,7 @@ type TaintConfig struct {
 	Value string `json:"value,omitempty"`
 	// Effect is the taint effect: NoSchedule, PreferNoSchedule, or NoExecute.
 	// +optional
-	Effect string `json:"effect,omitempty"`
+	Effect corev1.TaintEffect `json:"effect,omitempty"`
 	// Remove indicates whether this taint should be lifted after validation completes.
 	// +optional
 	Remove bool `json:"remove,omitempty"`
@@ -174,9 +180,9 @@ type ProviderConfig struct {
 	// +optional
 	Retries int `json:"retries,omitempty"`
 
-	// Timeout is the maximum duration allowed for a single test group attempt.
+	// TimeoutSeconds is the maximum number of seconds allowed for a single test group attempt.
 	// +optional
-	Timeout metav1.Duration `json:"timeout,omitempty"`
+	TimeoutSeconds int64 `json:"timeoutSeconds,omitempty"`
 
 	// SuccessfulCondition describes the condition on the provider resource that indicates a
 	// test run succeeded.
@@ -196,7 +202,7 @@ type ConditionMatch struct {
 	Type string `json:"type"`
 	// Status is the condition status to match.
 	// +required
-	Status string `json:"status"`
+	Status metav1.ConditionStatus `json:"status"`
 }
 
 // BatchFailurePolicy controls how a test group is handled when batch minimums are not met.
@@ -216,13 +222,17 @@ type TestConfig struct {
 	// +required
 	Provider string `json:"provider"`
 
-	// Image is the container image used by k8s-job-provider tests.
+	// Image is the container image referenced in test provider resource templates.
 	// +optional
 	Image string `json:"image,omitempty"`
 
-	// Command overrides the container entrypoint for k8s-job-provider tests.
+	// Command overrides the container entrypoint referenced in test provider resource templates.
 	// +optional
 	Command []string `json:"command,omitempty"`
+
+	// Env sets environment variables on test provider resource templates.
+	// +optional
+	Env []corev1.EnvVar `json:"env,omitempty"`
 
 	// SupportsBatchingNodes indicates whether multiple nodes can be tested together in a
 	// single provider resource.

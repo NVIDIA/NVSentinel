@@ -174,6 +174,17 @@ kubectl exec -n nvsentinel $FILE_SERVER_POD -- find /usr/share/nginx/html -type 
 kubectl patch pvc -n nvsentinel nvsentinel-incluster-file-server-data -p '{"spec":{"resources":{"requests":{"storage":"100Gi"}}}}'
 ```
 
+### Issue 6: nvidia-bug-report.sh not found in driver container
+
+**Error in logs**:
+```text
+error: OCI runtime exec failed: exec: "nvidia-bug-report.sh": executable file not found in $PATH
+```
+
+**Cause**: GPU Operator's `nvidia-driver-ctr` keeps NVIDIA binaries under `/run/nvidia/driver/usr/bin`, which is not on the default `kubectl exec` PATH.
+
+**Solution**: Upgrade to a log-collector image that prepends `/run/nvidia/driver/usr/bin` to PATH (or chroots into `DRIVER_ROOT`) before invoking `nvidia-bug-report.sh`. Workaround: disable log collection so remediation is not delayed by the collection timeout.
+
 ## Resolution Steps
 
 1. **Identify and fix the root cause** using diagnosis steps above

@@ -208,6 +208,7 @@ class DCGMWatcher:
         probe_deadline_seconds: float = 0.0,
         power_brake_enabled: bool = False,
         power_brake_min_consecutive_polls: int = 1,
+        health_check_min_consecutive_polls: dict[str, int] | None = None,
     ) -> None:
         self._addr = addr
         self._poll_interval_seconds = poll_interval_seconds
@@ -240,6 +241,24 @@ class DCGMWatcher:
                 DCGM_FIELDS_MONITORING["gpupowerbrakemonitoringenabled"].field_id,
                 HW_POWER_BRAKE_REASON_BIT,
                 self._power_brake_min_consecutive_polls,
+            )
+        # An incident published from a single poll can be a transient: SXM NVLink
+        # links are briefly down after every boot while they train. Codes listed
+        # here must persist for N consecutive polls per GPU; anything unlisted
+        # keeps today's behaviour of publishing on the first observation.
+        # A threshold of 1 or less is today's behaviour, so those are dropped here
+        # and no streak is ever tracked for them.
+        self._health_check_min_consecutive_polls = {
+            code: polls for code, polls in (health_check_min_consecutive_polls or {}).items() if polls > 1
+        }
+        self._incident_streaks: dict[tuple[str, types.EntityKey], int] = {}
+        if self._health_check_min_consecutive_polls:
+            log.info(
+                "DCGM health check incident debounce: %s",
+                ", ".join(
+                    f"{code}={polls} consecutive poll(s)"
+                    for code, polls in sorted(self._health_check_min_consecutive_polls.items())
+                ),
             )
         self._metadata_reader = metadata_reader
         self._suppress_unbridged_pcie_nvlink_down = suppress_unbridged_pcie_nvlink_down
@@ -325,27 +344,36 @@ class DCGMWatcher:
             health_status[system_name] = types.HealthDetails(status=types.HealthStatus.PASS, entity_failures={})
         return health_status
 
+    def _is_suppressed_error_code(self, watch_name: str, gpu_id: int, error_code: str) -> bool:
+        if error_code not in self._suppressed_error_codes:
+            return False
+
+        log.debug(
+            f"Suppressing incident for watch={watch_name} entity={gpu_id} "
+            f"error_code={error_code}: high-frequency non-actionable event"
+        )
+        metrics.dcgm_health_check_suppressed_incidents.labels(error_code).inc()
+        return True
+
     def _suppress_configured_error_codes(self, health_status: dict[str, types.HealthDetails]) -> None:
         if not self._suppressed_error_codes:
             return
 
         for watch_name, details in health_status.items():
-            suppressed_gpu_ids = [
-                gpu_id
-                for gpu_id, failure in details.entity_failures.items()
-                if failure.code in self._suppressed_error_codes
-            ]
-            for gpu_id in suppressed_gpu_ids:
-                error_code = details.entity_failures[gpu_id].code
-                log.debug(
-                    f"Suppressing incident for watch={watch_name} entity={gpu_id} "
-                    f"error_code={error_code}: high-frequency non-actionable event"
-                )
-                metrics.dcgm_health_check_suppressed_incidents.labels(error_code).inc()
-                del details.entity_failures[gpu_id]
+            had_failures = bool(details.entity_failures)
+            for gpu_id, failures in list(details.entity_failures.items()):
+                remaining = [
+                    failure
+                    for failure in failures
+                    if not self._is_suppressed_error_code(watch_name, gpu_id, failure.code)
+                ]
+                if remaining:
+                    details.entity_failures[gpu_id] = remaining
+                else:
+                    del details.entity_failures[gpu_id]
 
             # A watch with no remaining failures is healthy again.
-            if suppressed_gpu_ids and not details.entity_failures:
+            if had_failures and not details.entity_failures:
                 details.status = types.HealthStatus.PASS
 
     def _is_nvlink_down_false_positive(self, watch_name: str, gpu_id: int, error_code: str) -> bool:
@@ -399,6 +427,54 @@ class DCGMWatcher:
         metrics.dcgm_health_check_suppressed_incidents.labels(f"DCGM_FR_NVLINK_DOWN_{expectation.value.upper()}").inc()
 
         return True
+
+    def _is_incident_debounced(self, error_code: str, entity_key: types.EntityKey) -> bool:
+        """Return True when this incident has not yet persisted for the configured
+        number of consecutive polls, so it must be withheld this cycle.
+
+        Non-GPU keys include the entity group because DCGM entity IDs are group-local.
+        """
+        threshold = self._health_check_min_consecutive_polls.get(error_code)
+        if threshold is None:
+            return False
+
+        key = (error_code, entity_key)
+        streak = self._incident_streaks.get(key, 0) + 1
+        self._incident_streaks[key] = streak
+
+        if streak >= threshold:
+            log.debug(
+                "Incident %s on entity %s has persisted %d consecutive poll(s); publishing",
+                error_code,
+                entity_key,
+                streak,
+            )
+            return False
+
+        log.debug(
+            "Incident %s on entity %s seen %d/%d consecutive polls; withholding",
+            error_code,
+            entity_key,
+            streak,
+            threshold,
+        )
+        metrics.dcgm_health_check_debounced_incidents.labels(error_code, str(entity_key)).inc()
+
+        return True
+
+    def _reset_absent_incident_streaks(self, seen_this_poll: set[tuple[str, types.EntityKey]]) -> None:
+        """Drop the streak for every tracked incident absent from this poll.
+
+        A code that appears for a GPU on alternate polls therefore restarts from zero
+        each time and never reaches its threshold. The key is the code and GPU, not the
+        individual link, so a GPU reporting one link on one poll and another link on the
+        next keeps its streak: that GPU has had a link down continuously.
+
+        Only called after a successful health check, since a failed poll observed
+        nothing and must not clear a streak.
+        """
+        for key in [key for key in self._incident_streaks if key not in seen_this_poll]:
+            del self._incident_streaks[key]
 
     def _fire_callback_funcs(self, func_name: str, args: list[any]):
         def done_callback(class_name: str, func_name: str, future):
@@ -457,7 +533,10 @@ class DCGMWatcher:
             return contextlib.nullcontext()
         return self._probe_watchdog.probe(operation)
 
-    def _create_dcgm_group_with_all_entities(self, dcgm_handle: pydcgm.DcgmHandle) -> pydcgm.DcgmGroup:
+    def _create_dcgm_group_with_all_entities(
+        self,
+        dcgm_handle: pydcgm.DcgmHandle,
+    ) -> tuple[pydcgm.DcgmGroup, list[int]]:
         dcgm_system = dcgm_handle.GetSystem()
 
         with metrics.dcgm_api_latency.labels("discovery_get_entity_group_entities").time():
@@ -476,7 +555,7 @@ class DCGMWatcher:
             with metrics.dcgm_api_latency.labels("discovery_group_add_entity").time():
                 dcgm_group.AddEntity(dcgm_fields.DCGM_FE_SWITCH, switch)
 
-        return dcgm_group
+        return dcgm_group, supported_switches
 
     def _get_gpu_serial_numbers(self, dcgm_handle: pydcgm.DcgmHandle) -> dict[int, str]:
         dcgm_system = dcgm_handle.GetSystem()
@@ -508,8 +587,14 @@ class DCGMWatcher:
             log.debug(f"initial health status is {health_details}")
 
             health_status = self._get_health_status_dict()
-            # Temporary dict to accumulate multiple failures per GPU
-            gpu_failures_accumulator = {}
+            # Group repeated incidents by watch, entity and error code.
+            entity_failures_accumulator: dict[tuple[str, int, int, str], list[str]] = {}
+            # One debounce decision per (error code, GPU) per poll. DCGM reports an
+            # incident per down link, so a GPU with several down links produces several
+            # records for the same code; advancing the streak once per record would
+            # reach the threshold inside a single poll. Keys also record presence,
+            # which is what keeps a streak alive.
+            debounce_decisions: dict[tuple[str, types.EntityKey], bool] = {}
 
             log.debug(
                 f"Health check returned: overallHealth={health_details.overallHealth}, "
@@ -535,11 +620,13 @@ class DCGMWatcher:
                     metrics.dcgm_health_check_unknown_system_skipped.inc()
                     continue
 
-                gpu_id = incident.entityInfo.entityId
+                entity_group_id = incident.entityInfo.entityGroupId
+                entity_id = incident.entityInfo.entityId
+                entity_key = entity_id if entity_group_id == dcgm_fields.DCGM_FE_GPU else (entity_group_id, entity_id)
                 fallback_error_code = self._error_codes.get(dcgm_errors.DCGM_FR_UNKNOWN, "DCGM_FR_UNKNOWN")
                 error_code = self._error_codes.get(incident.error.code, fallback_error_code)
                 if error_code == fallback_error_code:
-                    log.warning(f"Unknown DCGM error code {incident.error.code} for entity {gpu_id}")
+                    log.warning(f"Unknown DCGM error code {incident.error.code} for entity {entity_id}")
                 error_msg = incident.error.msg
 
                 log.debug(f"incident.error.code is {incident.error.code} and error msg is {error_msg}")
@@ -547,27 +634,43 @@ class DCGMWatcher:
                 # Per-incident suppression: a suppressed incident must neither
                 # degrade the watch status nor land in the accumulator, while
                 # other incidents on the same GPU and watch are kept.
-                if self._is_nvlink_down_false_positive(watch_name, gpu_id, error_code):
+                if entity_group_id == dcgm_fields.DCGM_FE_GPU and self._is_nvlink_down_false_positive(
+                    watch_name, entity_id, error_code
+                ):
                     continue
 
-                health_status[watch_name].status = types.HealthStatus(int(incident.health))
+                if self._is_suppressed_error_code(watch_name, entity_id, error_code):
+                    continue
 
-                # Create a key for accumulating failures per GPU per watch
-                accumulator_key = (watch_name, gpu_id)
+                # Evaluated after suppression: a suppressed incident is not an
+                # observation, so it must not build a streak.
+                debounce_key = (error_code, entity_key)
+                if debounce_key not in debounce_decisions:
+                    debounce_decisions[debounce_key] = self._is_incident_debounced(error_code, entity_key)
 
-                if accumulator_key not in gpu_failures_accumulator:
-                    gpu_failures_accumulator[accumulator_key] = {"code": error_code, "messages": []}
+                # A debounced incident must neither degrade the watch status nor
+                # land in the accumulator, exactly like a suppressed one.
+                if debounce_decisions[debounce_key]:
+                    continue
 
-                # Accumulate all error messages for this GPU and watch type
-                gpu_failures_accumulator[accumulator_key]["messages"].append(error_msg)
-
-            # Now consolidate accumulated failures into health_status
-            for (watch_name, gpu_id), failure_data in gpu_failures_accumulator.items():
-                # Combine all messages with semicolon separator
-                combined_message = "; ".join(failure_data["messages"])
-                health_status[watch_name].entity_failures[gpu_id] = types.ErrorDetails(
-                    message=combined_message, code=failure_data["code"]
+                health_status[watch_name].status = types.HealthStatus(
+                    max(health_status[watch_name].status.value, int(incident.health))
                 )
+
+                # DCGM entity IDs are group-local. Keep the entity group and
+                # error code so overlapping IDs and distinct remediation remain separate.
+                accumulator_key = (watch_name, entity_group_id, entity_id, error_code)
+                entity_failures_accumulator.setdefault(accumulator_key, []).append(error_msg)
+
+            for (watch_name, entity_group_id, entity_id, error_code), messages in sorted(
+                entity_failures_accumulator.items()
+            ):
+                entity_key = entity_id if entity_group_id == dcgm_fields.DCGM_FE_GPU else (entity_group_id, entity_id)
+                health_status[watch_name].entity_failures.setdefault(entity_key, []).append(
+                    types.ErrorDetails(message="; ".join(messages), code=error_code)
+                )
+
+            self._reset_absent_incident_streaks(set(debounce_decisions))
 
             log.debug(f"filled in health details is {health_status}")
             return health_status, True
@@ -647,10 +750,12 @@ class DCGMWatcher:
                     slowdown_threshold,
                 )
                 margin_details.status = types.HealthStatus.FAIL
-                margin_details.entity_failures[gpu_id] = types.ErrorDetails(
-                    message=f"GPU {gpu_id} thermal margin {margin_c}°C below HW slowdown T.Limit (slowdown={slowdown_threshold}°C)",
-                    code=monitor.violation_code,
-                )
+                margin_details.entity_failures[gpu_id] = [
+                    types.ErrorDetails(
+                        message=f"GPU {gpu_id} thermal margin {margin_c}°C below HW slowdown T.Limit (slowdown={slowdown_threshold}°C)",
+                        code=monitor.violation_code,
+                    )
+                ]
             else:
                 log.debug(
                     "GPU %s thermal margin %s°C at or above HW slowdown T.Limit (slowdown=%s°C) for GpuThermalMarginWatch",
@@ -757,13 +862,15 @@ class DCGMWatcher:
                     streak,
                 )
                 brake_details.status = types.HealthStatus.FAIL
-                brake_details.entity_failures[gpu_id] = types.ErrorDetails(
-                    message=(
-                        f"GPU {gpu_id} hardware power brake asserted for {streak} consecutive "
-                        f"poll(s) (clocks event reasons mask 0x{reasons_mask:x})"
-                    ),
-                    code=monitor.violation_code,
-                )
+                brake_details.entity_failures[gpu_id] = [
+                    types.ErrorDetails(
+                        message=(
+                            f"GPU {gpu_id} hardware power brake asserted for {streak} consecutive "
+                            f"poll(s) (clocks event reasons mask 0x{reasons_mask:x})"
+                        ),
+                        code=monitor.violation_code,
+                    )
+                ]
             else:
                 self._power_brake_streaks.pop(gpu_id, None)
 
@@ -819,16 +926,19 @@ class DCGMWatcher:
             metrics.dcgm_api_failures.labels("ErrorInitDCGMHandle").inc()
             return None
 
-    def _initialize_dcgm_monitoring(self, dcgm_handle: pydcgm.DcgmHandle) -> tuple:
+    def _initialize_dcgm_monitoring(
+        self,
+        dcgm_handle: pydcgm.DcgmHandle,
+    ) -> tuple[pydcgm.DcgmGroup, list[int], list[int], dict[int, str]]:
         """Initialize DCGM monitoring components.
 
         Returns:
-            A tuple of (dcgm_group, gpu_ids, gpu_serials)
+            A tuple of (dcgm_group, gpu_ids, switch_ids, gpu_serials)
 
         If any step after group creation fails the group is deleted before the
         exception propagates so that it does not leak on the DCGM server.
         """
-        dcgm_group = self._create_dcgm_group_with_all_entities(dcgm_handle)
+        dcgm_group, switch_ids = self._create_dcgm_group_with_all_entities(dcgm_handle)
         self._field_group = None
         try:
             with metrics.dcgm_api_latency.labels("group_health_set").time():
@@ -878,7 +988,7 @@ class DCGMWatcher:
                     self._poll_interval_seconds,
                 )
 
-            return dcgm_group, gpu_ids, gpu_serials
+            return dcgm_group, gpu_ids, switch_ids, gpu_serials
         except Exception as e:
             log.warning(f"DCGM monitoring initialization failed, rolling back group: {e}")
             if self._field_group is not None:
@@ -944,6 +1054,7 @@ class DCGMWatcher:
         dcgm_handle = None
         dcgm_group = None
         gpu_ids = []
+        switch_ids = []
 
         # Tied to loop teardown rather than to the process exit event: on SIGTERM
         # during a hang the loop cannot return, and the stuck probe still needs
@@ -979,7 +1090,9 @@ class DCGMWatcher:
                                 self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
                                 continue
                             with self._probe("dcgm_initialize_monitoring"):
-                                dcgm_group, gpu_ids, _gpu_serials = self._initialize_dcgm_monitoring(dcgm_handle)
+                                dcgm_group, gpu_ids, switch_ids, _gpu_serials = self._initialize_dcgm_monitoring(
+                                    dcgm_handle
+                                )
                         except Exception as e:
                             log.error(f"Error getting DCGM handle: {e}")
                             self._report_connectivity_failed()
@@ -987,6 +1100,7 @@ class DCGMWatcher:
                             dcgm_handle = None
                             dcgm_group = None
                             gpu_ids = []
+                            switch_ids = []
                     else:
                         log.debug("Running health check")
                         with self._probe("dcgm_health_check"):
@@ -1002,6 +1116,7 @@ class DCGMWatcher:
                             dcgm_handle = None
                             dcgm_group = None
                             gpu_ids = []
+                            switch_ids = []
                         else:
                             with self._probe("dcgm_thermal_margin"):
                                 margin_details = self._evaluate_gpu_thermal_margin(dcgm_group, gpu_ids)
@@ -1019,7 +1134,7 @@ class DCGMWatcher:
                             log.debug("Publish DCGM health checks")
                             self._fire_callback_funcs(
                                 types.CallbackInterface.health_event_occurred.__name__,
-                                [health_status, gpu_ids],
+                                [health_status, gpu_ids, switch_ids],
                             )
         finally:
             # Stop the watchdog before teardown cleanup. A slow Shutdown() during

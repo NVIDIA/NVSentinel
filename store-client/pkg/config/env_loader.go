@@ -278,15 +278,12 @@ func newPostgreSQLCompatibleConfig(certMountPath, tableEnvVar, defaultTable stri
 
 	port := getEnvWithDefault("DATASTORE_PORT", "5432")
 	sslmode := getEnvWithDefault("DATASTORE_SSLMODE", "require")
-	sslcert := getEnvWithDefault("DATASTORE_SSLCERT", filepath.Join(certMountPath, "tls.crt"))
-	sslkey := getEnvWithDefault("DATASTORE_SSLKEY", filepath.Join(certMountPath, "tls.key"))
-	sslrootcert := getEnvWithDefault("DATASTORE_SSLROOTCERT", filepath.Join(certMountPath, "ca.crt"))
-
 	password := os.Getenv("DATASTORE_PASSWORD")
+	sslcert, sslkey, sslrootcert := resolvePostgreSQLCertPaths(certMountPath, password)
 
-	// Build connection URI in PostgreSQL format
-	connectionURI := fmt.Sprintf("host=%s port=%s dbname=%s user=%s sslmode=%s sslcert=%s sslkey=%s sslrootcert=%s",
-		host, port, database, username, sslmode, sslcert, sslkey, sslrootcert)
+	connectionURI := fmt.Sprintf("host=%s port=%s dbname=%s user=%s sslmode=%s",
+		host, port, database, username, sslmode)
+	connectionURI = appendPostgreSQLTLSParams(connectionURI, sslcert, sslkey, sslrootcert)
 
 	if password != "" {
 		connectionURI += " password=" + utils.QuotePQValue(password)
@@ -328,6 +325,49 @@ func newPostgreSQLCompatibleConfig(certMountPath, tableEnvVar, defaultTable stri
 		timeoutConfig:  timeoutConfig,
 		appName:        os.Getenv("APP_NAME"),
 	}, nil
+}
+
+// resolvePostgreSQLCertPaths returns explicit TLS paths and infers missing
+// paths from certMountPath only for certificate-based authentication.
+func resolvePostgreSQLCertPaths(certMountPath, password string) (string, string, string) {
+	sslcert := os.Getenv("DATASTORE_SSLCERT")
+	sslkey := os.Getenv("DATASTORE_SSLKEY")
+	sslrootcert := os.Getenv("DATASTORE_SSLROOTCERT")
+
+	if password != "" || certMountPath == "" {
+		return sslcert, sslkey, sslrootcert
+	}
+
+	if sslcert == "" {
+		sslcert = filepath.Join(certMountPath, "tls.crt")
+	}
+
+	if sslkey == "" {
+		sslkey = filepath.Join(certMountPath, "tls.key")
+	}
+
+	if sslrootcert == "" {
+		sslrootcert = filepath.Join(certMountPath, "ca.crt")
+	}
+
+	return sslcert, sslkey, sslrootcert
+}
+
+// appendPostgreSQLTLSParams adds configured TLS paths to a PostgreSQL URI.
+func appendPostgreSQLTLSParams(connectionURI, sslcert, sslkey, sslrootcert string) string {
+	if sslcert != "" {
+		connectionURI += " sslcert=" + utils.QuotePQValue(sslcert)
+	}
+
+	if sslkey != "" {
+		connectionURI += " sslkey=" + utils.QuotePQValue(sslkey)
+	}
+
+	if sslrootcert != "" {
+		connectionURI += " sslrootcert=" + utils.QuotePQValue(sslrootcert)
+	}
+
+	return connectionURI
 }
 
 func getRequiredEnv(name string) (string, error) {

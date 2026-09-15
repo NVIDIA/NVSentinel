@@ -102,8 +102,8 @@ global:
     # the cluster cordoned, drained and rebooted, so add sparingly.
     #
     # The bundled cluster-scoped monitors — csp-health-monitor,
-    # kubernetes-object-monitor, slurm-drain-monitor and health-events-analyzer
-    # — do NOT belong here. They are derived from the release namespace at
+    # kubernetes-object-monitor, nvcre-certification-monitor, slurm-drain-monitor
+    # and health-events-analyzer — do NOT belong here. They are derived from the release namespace at
     # render time for whichever of them are enabled, so installing into a
     # namespace other than nvsentinel needs no edit. Listing them by hand is
     # what used to break such an install: a hardcoded namespace rendered
@@ -134,6 +134,13 @@ global:
   #   # connection.* in the ConfigMap unless credentialsFromSecret is set; see docs/external-datastore.md.
   #   credentialsFromSecret:
   #     name: ""
+  #
+  #   # --- PostgreSQL password ---
+  #   # For PostgreSQL password authentication, set credentialsFromSecret.name;
+  #   # the referenced Secret must define DATASTORE_PASSWORD.
+  #   # Configure host, database, username, and sslmode under connection below.
+  #   # Client certificates are not inferred in password mode. Set connection.sslcert,
+  #   # connection.sslkey, and/or connection.sslrootcert explicitly when required.
   #
   #   # --- Connection metadata ---
   #   # Individual fields (PostgreSQL; optional MongoDB metadata such as database/collection names).
@@ -284,6 +291,8 @@ global:
     enabled: false
   kubernetesObjectMonitor:
     enabled: false
+  nvcreCertificationMonitor:
+    enabled: false
   eventExporter:
     enabled: false
   preflight:
@@ -357,6 +366,16 @@ platformConnector:
     # already writes to.
     tokenPath: ""
 
+  # Records every health event reaching the platform connector as the Prometheus counter
+  # health_events_total{node,agent,check_name,recommended_action,is_fatal,is_healthy}.
+  # Observation only: no sink and no external dependency. errorCode is not a label, being
+  # unbounded. See docs/METRICS.md for the label semantics.
+  promConnector:
+    # true registers the counter on the existing metrics endpoint; false skips the
+    # connector entirely, so no ring buffer is attached and nothing is recorded.
+    # Off by default, like the other optional connectors.
+    enabled: false
+
   k8sConnector:
     enabled: true
     maxNodeConditionMessageLength: 1024
@@ -384,7 +403,7 @@ platformConnector:
   pipeline:
     # List of transformers to execute (in order)
     - name: MetadataAugmentor
-      enabled: false
+      enabled: true
       config: /etc/config/metadata.toml
     
     - name: OverrideTransformer
@@ -396,7 +415,16 @@ platformConnector:
     # Metadata augmentor - enriches events with node labels and provider info
     MetadataAugmentor:
       cacheSize: 50
-      cacheTTLSeconds: 3600
+      # How long cached node metadata is considered fresh. Lower values mean
+      # label changes (e.g. managed=false) take effect faster, at the cost of
+      # more Kubernetes API GET calls. Failed lookups proceed ungated, so the
+      # gating window can exceed this during a Kubernetes API outage.
+      cacheTTLSeconds: 60
+      # Managed-label gate: when a node carries this label, its events are set
+      # to STORE_ONLY (stored for audit but no remediation or Kubernetes side
+      # effects). Format is "key=value". Leave empty to disable.
+      # Must match commons/pkg/managed.ManagedLabelKey and ManagedLabelValueFalse.
+      skipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false"
       allowedLabels:
         - "topology.kubernetes.io/zone"
         - "topology.kubernetes.io/region"
@@ -421,10 +449,10 @@ platformConnector:
         - "cloud.google.com/gce-topology-subblock"
         # Topograph-applied topology labels (present when Topograph is deployed in the cluster;
         # see https://github.com/NVIDIA/topograph/blob/main/docs/reference/node-labels.md)
-        - "network.topology.nvidia.com/accelerator"
-        - "network.topology.nvidia.com/leaf"
-        - "network.topology.nvidia.com/spine"
-        - "network.topology.nvidia.com/core"
+        - "accelerator.topograph.run/domain"
+        - "fabric.topograph.run/tier-0"
+        - "fabric.topograph.run/tier-1"
+        - "fabric.topograph.run/tier-2"
 
     # Property overrides - uses CEL expressions to override event properties
     OverrideTransformer:
@@ -470,3 +498,14 @@ podMonitor:
   # scrapeTimeout: ""  # Scrape timeout (defaults to Prometheus default if not specified)
   # metricsPath: "/metrics"  # Metrics path (defaults to /metrics)
   # labels: {}  # Additional labels for the PodMonitor resource
+
+# DaemonSet rolling update strategy for the platform-connectors DaemonSet.
+# type: RollingUpdate or OnDelete. rollingUpdate is only rendered for RollingUpdate.
+# maxUnavailable counts pods stranded on unreachable nodes as well, so a cluster with
+# many nodes down for service may need it raised or the rollout cannot start.
+# Example, absolute count instead of a percentage:
+#   updateStrategy: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 34}}
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 5%
