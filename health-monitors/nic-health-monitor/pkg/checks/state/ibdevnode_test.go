@@ -195,13 +195,32 @@ func newCharDevCheckWithManager(
 ) *InfiniBandCharDeviceCheck {
 	t.Helper()
 
+	// The bulk of the tests exercise the latch/debounce/baseline machinery
+	// through issm, so they run in "always" mode where issm is expected.
+	// Default-mode ("never") behaviour is covered by dedicated tests below.
+	return newCharDevCheckWithConfig(t, f, reader, mgr, issmModeCfg(config.IssmModeAlways), bootIDChanged)
+}
+
+// newCharDevCheckWithConfig builds the check with an explicit config so tests
+// can exercise the charDeviceCheck.issm modes.
+func newCharDevCheckWithConfig(
+	t *testing.T, f *charDevFixture, reader sysfs.Reader,
+	mgr *statefile.Manager, cfg *config.Config, bootIDChanged bool,
+) *InfiniBandCharDeviceCheck {
+	t.Helper()
+
 	classifier := buildClassifier(t, reader,
 		[]string{"0000:0f:00.0"},
 		map[string][]string{"mlx5_0": {"PIX"}},
 	)
 
-	return NewInfiniBandCharDeviceCheck("node1", reader, &config.Config{},
+	return NewInfiniBandCharDeviceCheck("node1", reader, cfg,
 		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, bootIDChanged)
+}
+
+// issmModeCfg returns a Config selecting a specific charDeviceCheck.issm mode.
+func issmModeCfg(mode string) *config.Config {
+	return &config.Config{CharDeviceCheck: config.CharDeviceCheckConfig{Issm: mode}}
 }
 
 // runQuietPolls runs the check n times, requiring every poll to emit no
@@ -780,6 +799,153 @@ func TestIBCharDev_UnsupportedVendorExcluded(t *testing.T) {
 	check := newCharDevCheck(t, f, reader, false)
 
 	runQuietPolls(t, check, 2*charDevMissThreshold)
+}
+
+func TestIBCharDev_DefaultSkipsIssm(t *testing.T) {
+	t.Parallel()
+
+	// Default config (issm unset -> "never"): a missing issm on an
+	// ACTIVE/LinkUp InfiniBand port must NOT fire. This is the GB300 fix — a
+	// platform that legitimately does not create issm nodes is never flagged.
+	_, f := singleIBNode(t)
+	f.mad = dropKind(f.mad, "issm")
+	reader := f.reader()
+	check := newCharDevCheckWithConfig(t, f, reader, freshStateManager(t), &config.Config{}, false)
+
+	runQuietPolls(t, check, 2*charDevMissThreshold)
+}
+
+func TestIBCharDev_NeverModeSkipsIssmButChecksUmad(t *testing.T) {
+	t.Parallel()
+
+	// never mode: issm is never expected, but a missing umad is still a
+	// genuine fault and must fire — never gates only issm.
+	_, f := singleIBNode(t)
+	f.mad = nil // drop both umad and issm.
+	reader := f.reader()
+	check := newCharDevCheckWithConfig(t, f, reader, freshStateManager(t), issmModeCfg(config.IssmModeNever), false)
+
+	runQuietPolls(t, check, charDevMissThreshold-1)
+
+	events, err := check.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 1, "missing umad must still fatal in never mode")
+	assert.True(t, events[0].IsFatal)
+	assert.Equal(t, []string{"umad"}, events[0].ErrorCode)
+}
+
+func TestIBCharDev_AlwaysModeExpectsIssm(t *testing.T) {
+	t.Parallel()
+
+	// always mode restores the pre-1663 behaviour: issm is expected on every
+	// InfiniBand-mode port, so a missing issm fatals after the debounce.
+	_, f := singleIBNode(t)
+	f.mad = dropKind(f.mad, "issm")
+	reader := f.reader()
+	check := newCharDevCheckWithConfig(t, f, reader, freshStateManager(t), issmModeCfg(config.IssmModeAlways), false)
+
+	runQuietPolls(t, check, charDevMissThreshold-1)
+
+	events, err := check.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	assert.True(t, events[0].IsFatal)
+	assert.Equal(t, []string{"issm"}, events[0].ErrorCode)
+}
+
+func TestIBCharDev_IssmModeChangeClearsLatchedFault(t *testing.T) {
+	t.Parallel()
+
+	// A confirmed issm fault under always mode, then a config change to never
+	// (e.g. upgrading a GB300 node to the default, or an operator opting issm
+	// out): the now-stale issm condition is released with an issm-scoped clear
+	// on the next pod start instead of being held until the next reboot.
+	mgr, statePath, bootIDPath := newStateManagerForTest(t, "boot-1")
+
+	_, f := singleIBNode(t)
+	f.mad = dropKind(f.mad, "issm")
+	reader := f.reader()
+	check := newCharDevCheckWithConfig(t, f, reader, mgr, issmModeCfg(config.IssmModeAlways), false)
+
+	runQuietPolls(t, check, charDevMissThreshold-1)
+
+	events, err := check.Run()
+	require.NoError(t, err)
+	require.Len(t, fatalEvents(events), 1)
+
+	// Pod restarts on the same boot with issm=never.
+	mgr2 := statefile.NewManagerWithPaths(statePath, bootIDPath)
+	require.NoError(t, mgr2.Load())
+	require.False(t, mgr2.BootIDChanged())
+
+	check2 := newCharDevCheckWithConfig(t, f, reader, mgr2, issmModeCfg(config.IssmModeNever), false)
+
+	events, err = check2.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 1, "mode change must release the stale issm latch")
+	assert.True(t, events[0].IsHealthy)
+	assert.Equal(t, []string{"issm"}, events[0].ErrorCode, "clear must be issm-scoped, not a check-wide baseline")
+	assertPortEntities(t, events[0], "mlx5_0", 1)
+
+	// The latch is dropped by the clear; steady state is then quiet.
+	runQuietPolls(t, check2, 2*charDevMissThreshold)
+
+	mgr3 := statefile.NewManagerWithPaths(statePath, bootIDPath)
+	require.NoError(t, mgr3.Load())
+	assert.Empty(t, mgr3.MissingCharDevices(), "issm latch must be cleared after the mode change")
+
+	check3 := newCharDevCheckWithConfig(t, f, reader, mgr3, issmModeCfg(config.IssmModeNever), false)
+
+	events, err = check3.Run()
+	require.NoError(t, err)
+	assert.Empty(t, events, "nothing to release once the latch is cleared")
+}
+
+func TestIBCharDev_IssmModeChangePreservesUmadLatch(t *testing.T) {
+	t.Parallel()
+
+	// A device missing BOTH issm and umad confirms two fatals under always.
+	// Switching issm to never must release ONLY the issm condition; the umad
+	// fault is unrelated to the issm config, its device is still missing, so
+	// its latch (and downstream condition) must be preserved untouched.
+	mgr, statePath, bootIDPath := newStateManagerForTest(t, "boot-1")
+
+	_, f := singleIBNode(t)
+	f.mad = nil // drop both umad and issm.
+	reader := f.reader()
+	check := newCharDevCheckWithConfig(t, f, reader, mgr, issmModeCfg(config.IssmModeAlways), false)
+
+	runQuietPolls(t, check, charDevMissThreshold-1)
+
+	events, err := check.Run()
+	require.NoError(t, err)
+	require.Len(t, fatalEvents(events), 2, "both issm and umad must fatal under always")
+
+	// Restart on the same boot with issm=never.
+	mgr2 := statefile.NewManagerWithPaths(statePath, bootIDPath)
+	require.NoError(t, mgr2.Load())
+
+	check2 := newCharDevCheckWithConfig(t, f, reader, mgr2, issmModeCfg(config.IssmModeNever), false)
+
+	events, err = check2.Run()
+	require.NoError(t, err)
+	require.Len(t, events, 1, "only the issm condition is released")
+	assert.True(t, events[0].IsHealthy)
+	assert.Equal(t, []string{"issm"}, events[0].ErrorCode)
+
+	// The umad latch must survive: it is still expected, still missing, so it
+	// stays latched (steady faulted state, silent) and its condition is intact.
+	runQuietPolls(t, check2, 2*charDevMissThreshold)
+
+	mgr3 := statefile.NewManagerWithPaths(statePath, bootIDPath)
+	require.NoError(t, mgr3.Load())
+
+	remaining := mgr3.MissingCharDevices()
+	require.Len(t, remaining, 1, "umad latch must be preserved, issm dropped")
+
+	for _, flag := range remaining {
+		assert.Equal(t, "umad", flag.Kind, "the surviving latch must be umad, not issm")
+	}
 }
 
 // dropKind removes every mad entry whose directory name starts with the

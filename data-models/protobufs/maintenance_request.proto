@@ -1,0 +1,72 @@
+// Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+package datamodels;
+
+import "google/protobuf/timestamp.proto";
+import "health_event.proto";
+import "external_remediation.proto";
+import "github.com/yandex/protoc-gen-crd/library/go/k8s/protoc_gen_crd/proto/crd.proto";
+
+option go_package = "github.com/nvidia/nvsentinel/data-models/pkg/protos";
+
+// MaintenanceRequestSpec is the desired state of a MaintenanceRequest. The
+// requester supplies a healthEvent describing the preparation NVSentinel must
+// perform, and a startTime recording when the maintenance window opens.
+message MaintenanceRequestSpec {
+  // healthEvent describes the preparation NVSentinel must perform. The
+  // reconciler re-emits this event into the pipeline as authored (the
+  // requester's recommendedAction stands), so the normal quarantine, drain,
+  // and remediation flow fires for whichever action the event names.
+  HealthEvent healthEvent = 1;
+
+  // startTime is when the maintenance window opens. It is recorded for
+  // observability and future scheduling; the node is prepared on creation
+  // today.
+  google.protobuf.Timestamp startTime = 2;
+}
+
+// MaintenanceRequestStatus is the observed state of a MaintenanceRequest.
+message MaintenanceRequestStatus {
+  // conditions represent the latest available observations of the MR's
+  // current state.
+  repeated Condition conditions = 1;
+}
+
+// MaintenanceRequest is the entry door for externally initiated node
+// maintenance. An external system or operator creates an MR to tell
+// NVSentinel that maintenance is incoming for a node, so NVSentinel
+// prepares the node (cordon, drain) before the work begins.
+//
+// See ADR-051 (docs/designs/051-maintenance-request.md) for the full design.
+message MaintenanceRequest {
+  option (protoc_gen_crd.k8s_crd) = {
+    api_group: "nvsentinel.dgxc.nvidia.com",
+    kind: "MaintenanceRequest",
+    plural: "maintenancerequests",
+    singular: "maintenancerequest",
+    short_names: ["mr"],
+    categories: ["nvsentinel"],
+    scope: ST_CLUSTER,
+    additional_columns: [
+      {name: "Node",      type: CT_STRING, json_path: ".spec.healthEvent.nodeName"},
+      {name: "StartTime", type: CT_STRING, format: CF_DATE, json_path: ".spec.startTime"}
+    ]
+  };
+  // spec is the desired state supplied by the requester.
+  MaintenanceRequestSpec spec = 1;
+  // status is the observed state populated by the controller.
+  MaintenanceRequestStatus status = 2;
+}

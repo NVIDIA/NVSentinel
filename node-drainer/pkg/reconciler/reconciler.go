@@ -81,6 +81,8 @@ type Reconciler struct {
 	nodeEventsMapMu     sync.Mutex
 }
 
+// NewReconciler creates the drain evaluator and registers the reconciler with its event queue.
+// It returns an error if policy compilation or custom-drain client initialization fails.
 func NewReconciler(
 	cfg config.ReconcilerConfig,
 	dryRunEnabled bool,
@@ -104,7 +106,10 @@ func NewReconciler(
 		}
 	}
 
-	drainEvaluator := evaluator.NewNodeDrainEvaluator(cfg.TomlConfig, informersInstance, customDrainClient)
+	drainEvaluator, err := evaluator.NewNodeDrainEvaluator(cfg.TomlConfig, informersInstance, customDrainClient)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize drain evaluator: %w", err)
+	}
 
 	reconciler := &Reconciler{
 		Config:              cfg,
@@ -602,7 +607,8 @@ func (r *Reconciler) executeSkip(ctx context.Context,
 		podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
 		podsEvictionStatus.Status = string(model.StatusSucceeded)
 
-		if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus, nodeName,
+		if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, healthEvent.HealthEvent,
+			podsEvictionStatus, nodeName,
 			metrics.DrainStatusCancelled); err != nil {
 			slog.ErrorContext(ctx, "Failed to update MongoDB status for unquarantined node",
 				"node", nodeName,
@@ -626,13 +632,15 @@ func (r *Reconciler) executeSkip(ctx context.Context,
 	return nil
 }
 
+// executeImmediateEviction applies the action's pod filter in each namespace and
+// returns an error to requeue the event for eviction completion checks.
 func (r *Reconciler) executeImmediateEviction(ctx context.Context, action *evaluator.DrainActionResult,
 	healthEvent model.HealthEventWithStatus, partialDrainEntity *protos.Entity) error {
 	nodeName := healthEvent.HealthEvent.NodeName
 
 	for _, namespace := range action.Namespaces {
 		if err := r.informers.EvictAllPodsInImmediateMode(ctx, namespace, nodeName, action.Timeout,
-			partialDrainEntity); err != nil {
+			partialDrainEntity, action.PodFilter); err != nil {
 			metrics.ProcessingErrors.WithLabelValues("immediate_eviction_error", nodeName).Inc()
 
 			span := tracing.SpanFromContext(ctx)
@@ -649,6 +657,8 @@ func (r *Reconciler) executeImmediateEviction(ctx context.Context, action *evalu
 	return fmt.Errorf("immediate eviction completed, requeuing for status verification")
 }
 
+// executeTimeoutEviction runs the filtered deadline-based drain unless the event was cancelled.
+// Active events are requeued to verify completion; cancelled events return nil.
 func (r *Reconciler) executeTimeoutEviction(ctx context.Context, action *evaluator.DrainActionResult,
 	healthEvent model.HealthEventWithStatus, eventID string, partialDrainEntity *protos.Entity) error {
 	span := tracing.SpanFromContext(ctx)
@@ -667,7 +677,7 @@ func (r *Reconciler) executeTimeoutEviction(ctx context.Context, action *evaluat
 	}
 
 	if err := r.informers.DeletePodsAfterTimeout(ctx,
-		nodeName, action.Namespaces, timeoutMinutes, &healthEvent, partialDrainEntity); err != nil {
+		nodeName, action.Namespaces, timeoutMinutes, &healthEvent, partialDrainEntity, action.PodFilter); err != nil {
 		if r.isTimeoutEvictionCancelled(ctx, eventID, nodeName, healthEvent.CreatedAt) {
 			return nil
 		}
@@ -704,6 +714,8 @@ func (r *Reconciler) isTimeoutEvictionCancelled(
 	return false
 }
 
+// executeCheckCompletion observes the action's selected pods without evicting them.
+// It requeues while pods remain and again after completion so the evaluator can update status.
 func (r *Reconciler) executeCheckCompletion(ctx context.Context, action *evaluator.DrainActionResult,
 	healthEvent model.HealthEventWithStatus, partialDrainEntity *protos.Entity) error {
 	span := tracing.SpanFromContext(ctx)
@@ -714,7 +726,8 @@ func (r *Reconciler) executeCheckCompletion(ctx context.Context, action *evaluat
 	var remainingPods []string
 
 	for _, namespace := range action.Namespaces {
-		pods, err := r.informers.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity)
+		pods, err := r.informers.FindEvictablePodsInNamespaceAndNode(
+			namespace, nodeName, partialDrainEntity, action.PodFilter)
 		if err != nil {
 			tracing.RecordError(span, err)
 			span.SetAttributes(
@@ -781,7 +794,7 @@ func (r *Reconciler) executeMarkAlreadyDrained(ctx context.Context,
 	podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
 	podsEvictionStatus.Status = string(status)
 
-	return r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus,
+	return r.updateNodeUserPodsEvictedStatus(ctx, database, event, healthEvent.HealthEvent, podsEvictionStatus,
 		nodeName, metrics.DrainStatusSkipped)
 }
 
@@ -802,7 +815,7 @@ func (r *Reconciler) executeCancelStatus(ctx context.Context,
 	podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
 	podsEvictionStatus.Status = string(status)
 
-	if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus,
+	if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, healthEvent.HealthEvent, podsEvictionStatus,
 		nodeName, metrics.DrainStatusCancelled); err != nil {
 		tracing.RecordError(span, err)
 		span.SetAttributes(
@@ -861,7 +874,7 @@ func (r *Reconciler) executeUpdateStatus(ctx context.Context, healthEvent model.
 		r.queueManager.ClearNodeDraining(nodeName)
 	}
 
-	return r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus,
+	return r.updateNodeUserPodsEvictedStatus(ctx, database, event, healthEvent.HealthEvent, podsEvictionStatus,
 		nodeName, metrics.DrainStatusDrained)
 }
 
@@ -912,7 +925,7 @@ func (r *Reconciler) updateNodeDrainStatus(ctx context.Context,
 }
 
 func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, database queue.DataStore,
-	event datastore.Event, userPodsEvictionStatus *protos.OperationStatus,
+	event datastore.Event, healthEvent *protos.HealthEvent, userPodsEvictionStatus *protos.OperationStatus,
 	nodeName string, drainStatus string) error {
 	ctx, span := tracing.StartSpan(ctx, "node_drainer.update_user_pods_eviction_status")
 	defer span.End()
@@ -966,10 +979,17 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 		attribute.String("node_drainer.user_pods_eviction_status", string(userPodsEvictionStatus.Status)),
 	)
 
+	drainScope, partialEntity := evaluator.DrainScopeFor(healthEvent, r.Config.TomlConfig.PartialDrainEnabled)
+
 	slog.InfoContext(ctx, "Health event status has been updated",
 		"documentID", documentID,
-		"evictionStatus", userPodsEvictionStatus.Status)
-	metrics.EventsProcessed.WithLabelValues(drainStatus, nodeName).Inc()
+		"evictionStatus", userPodsEvictionStatus.Status,
+		"drainScope", drainScope)
+	metrics.EventsProcessed.WithLabelValues(drainStatus, nodeName, string(drainScope)).Inc()
+
+	if partialEntity != nil {
+		metrics.RecordPartialDrain(nodeName, partialEntity.GetEntityType(), partialEntity.GetEntityValue())
+	}
 
 	return nil
 }
@@ -1201,7 +1221,8 @@ func (r *Reconciler) handleCancelledEvent(ctx context.Context, nodeName string,
 	podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
 	podsEvictionStatus.Status = string(model.Cancelled)
 
-	if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus, nodeName,
+	if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, healthEvent.HealthEvent,
+		podsEvictionStatus, nodeName,
 		metrics.DrainStatusCancelled); err != nil {
 		slog.ErrorContext(ctx, "Failed to update MongoDB status for cancelled event",
 			"node", nodeName,

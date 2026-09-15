@@ -255,6 +255,23 @@ builds:
       org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
       org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"
 
+  - id: nvcre-certification-monitor
+    dir: health-monitors/nvcre-certification-monitor
+    main: .
+    ldflags:
+      - "-s -w"
+      - "-X main.version={{.Env.VERSION}} -X main.commit={{.Env.GIT_COMMIT}} -X main.date={{.Env.BUILD_DATE}}"
+    annotations:
+      org.opencontainers.image.description: "NVCRE certification monitor publishing health events for nodes that fail Cluster Readiness Engine certifications"
+    labels:
+      org.opencontainers.image.source: "https://github.com/nvidia/nvsentinel"
+      org.opencontainers.image.licenses: "Apache-2.0"
+      org.opencontainers.image.title: "NVSentinel NVCRE Certification Monitor"
+      org.opencontainers.image.description: "NVCRE certification monitor publishing health events for nodes that fail Cluster Readiness Engine certifications"
+      org.opencontainers.image.version: "{{.Env.VERSION}}"
+      org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
+      org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"
+
   - id: nic-health-monitor
     dir: health-monitors/nic-health-monitor
     main: .

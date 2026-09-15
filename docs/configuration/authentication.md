@@ -118,8 +118,9 @@ other than the one they run on. Every entry grants the ability to have any node
 in the cluster cordoned, drained and rebooted — add sparingly.
 
 The bundled cluster-scoped monitors — `csp-health-monitor`,
-`kubernetes-object-monitor`, `slurm-drain-monitor` and `health-events-analyzer`
-— are **derived from the release namespace** for whichever of them are enabled.
+`kubernetes-object-monitor`, `nvcre-certification-monitor`,
+`slurm-drain-monitor` and `health-events-analyzer` — are **derived from the
+release namespace** for whichever of them are enabled.
 They do not belong in this list, and installing into a namespace other than
 `nvsentinel` needs no edit.
 

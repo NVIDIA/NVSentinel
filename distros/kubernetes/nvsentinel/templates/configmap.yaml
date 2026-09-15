@@ -38,6 +38,7 @@ data:
       ,"GRPCSinkTarget": "{{ .Values.platformConnector.grpcSinkConnector.target }}"
       ,"GRPCSinkConnectorMaxRetries": {{ .Values.platformConnector.grpcSinkConnector.maxRetries }}
       ,"GRPCSinkTokenPath": "{{ .Values.platformConnector.grpcSinkConnector.tokenPath }}"
+      ,"enablePromPlatformConnector": "{{ .Values.platformConnector.promConnector.enabled }}"
       {{- $pipeline := (.Values.platformConnector.pipeline | default list) }}
       {{- with .Values.platformConnector.dedup }}
       {{- $pipeline = append $pipeline (dict "name" "Deduplicator" "enabled" .enabled "config" "/etc/config/dedup.toml") }}
@@ -56,6 +57,9 @@ data:
     cacheTTL = "{{ .Values.platformConnector.transformers.MetadataAugmentor.cacheTTLSeconds }}s"
     {{- with .Values.platformConnector.transformers.MetadataAugmentor.allowedLabels }}
     allowedLabels = {{ . | toJson }}
+    {{- end }}
+    {{- with .Values.platformConnector.transformers.MetadataAugmentor.skipNodeLabel }}
+    skipNodeLabel = {{ . | quote }}
     {{- end }}
   {{- end }}
   {{- if .Values.platformConnector.transformers.OverrideTransformer }}

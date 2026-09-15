@@ -70,10 +70,19 @@ var (
 		},
 	)
 
-	EventBacklogSize = promauto.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "health_events_exporter_event_backlog_size",
-			Help: "Number of unprocessed events in the backlog.",
+	EventsFiltered = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "health_events_exporter_events_filtered_total",
+			Help: "Total number of events not published because the filter expression " +
+				"evaluated false.",
+		},
+	)
+
+	FilterErrors = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "health_events_exporter_filter_errors_total",
+			Help: "Total number of filter evaluation errors. The event is exported anyway, " +
+				"so this counts events that bypassed the filter rather than events dropped.",
 		},
 	)
 

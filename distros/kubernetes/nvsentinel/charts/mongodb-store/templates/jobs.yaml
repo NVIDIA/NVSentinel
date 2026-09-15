@@ -62,8 +62,8 @@ metadata:
     app.kubernetes.io/component: mongodb-init
     app.kubernetes.io/instance: {{ .Release.Name }}
   annotations:
-    # Argo: recreate this immutable Job on sync if the first run Failed and TTL
-    # did not change. Do not add helm.sh/hook (stuck Argo Application deletes).
+    # Argo: recreate this immutable Job on sync if the first run Failed and the
+    # name (TTL / oplog / script hash) did not change. Do not add helm.sh/hook.
     argocd.argoproj.io/sync-options: Force=true,Replace=true
 spec:
   ttlSecondsAfterFinished: 86400
@@ -248,6 +248,7 @@ spec:
             echo "MONGODB_DATABASE_NAME: $MONGODB_DATABASE_NAME"
             echo "MONGODB_COLLECTION_NAME: $MONGODB_COLLECTION_NAME"
             echo "MONGODB_TOKEN_COLLECTION_NAME: $MONGODB_TOKEN_COLLECTION_NAME"
+            echo "MONGODB_OPLOG_SIZE_MB: $MONGODB_OPLOG_SIZE_MB"
 
             {{- if .Values.mongodb.tls.enabled }}
             cat /certs/tls.crt /certs/tls.key > /tmp/tls.pem
@@ -267,13 +268,70 @@ spec:
               --tlsCAFile /certs/ca.crt \
               --tlsCertificateKeyFile /tmp/tls.pem \
               {{- end }}
-                              --eval "
+              --eval "
 {{ include "mongodb-store.initEval" . | indent 18 }}
-                "
+              "
             do
               echo "Waiting for mongodb to be ready...";
               sleep 5;
             done
+
+            echo "=============================="
+            echo "Resizing oplog on each replica..."
+            echo "=============================="
+
+            # replSetResizeOplog is per-member; replica-set URI would only hit primary.
+            # Percona databaseAdmin cannot run this; clusterAdmin can. Bitnami uses root.
+            # Bound retries so a down member cannot eat the 600s deadline (TTL still
+            # applies). Skip at most one unreachable member; never shrink unless
+            # MONGODB_OPLOG_ALLOW_SHRINK=true (see oplogEval).
+{{- if eq (include "mongodb-store.oplogResizeEnabled" . | trim) "true" }}
+            skipped=0
+            member_count=0
+            for host in {{ include "mongodb-store.oplogMemberHosts" . }}; do
+              member_count=$((member_count + 1))
+              echo "Oplog resize: $host -> ${MONGODB_OPLOG_SIZE_MB} MB"
+              ok=0
+              tries=0
+              max_tries=12
+              while [ "$tries" -lt "$max_tries" ]; do
+                tries=$((tries + 1))
+                if mongosh "mongodb://${host}:27017/?directConnection=true" \
+                  {{- if .Values.mongodb.auth.enabled }}
+                  --authenticationMechanism SCRAM-SHA-256 \
+                  {{- if .Values.usePerconaOperator }}
+                  --username "$MONGODB_CLUSTER_ADMIN_USER" --password "$MONGODB_CLUSTER_ADMIN_PASSWORD" --authenticationDatabase admin \
+                  {{- else }}
+                  --username {{ $rootUsername }} --password "$MONGODB_ROOT_PASSWORD" --authenticationDatabase admin \
+                  {{- end }}
+                  {{- end }}
+                  {{- if .Values.mongodb.tls.enabled }}
+                  --tls \
+                  --tlsCAFile /certs/ca.crt \
+                  --tlsCertificateKeyFile /tmp/tls.pem \
+                  {{- end }}
+                  --eval "
+{{ include "mongodb-store.oplogEval" . | indent 18 }}
+                  "
+                then
+                  ok=1
+                  break
+                fi
+                echo "Waiting for mongodb member $host (try ${tries}/${max_tries})..."
+                sleep 5
+              done
+              if [ "$ok" -ne 1 ]; then
+                echo "WARN: skip oplog resize on unreachable $host after ${max_tries} tries"
+                skipped=$((skipped + 1))
+              fi
+            done
+            if [ "$skipped" -ge "$member_count" ] || [ "$skipped" -gt 1 ]; then
+              echo "ERROR: oplog resize skipped on ${skipped}/${member_count} members"
+              exit 1
+            fi
+{{- else }}
+            echo "Skip oplog resize: data volume is not a PVC (emptyDir/hostPath or persistence.enabled=false)."
+{{- end }}
 
             echo "=============================="
             echo "mongodb user creation completed."
@@ -285,6 +343,16 @@ spec:
               secretKeyRef:
                 name: internal-mongodb-users
                 key: MONGODB_CLUSTER_MONITOR_USER
+          - name: MONGODB_CLUSTER_ADMIN_USER
+            valueFrom:
+              secretKeyRef:
+                name: internal-mongodb-users
+                key: MONGODB_CLUSTER_ADMIN_USER
+          - name: MONGODB_CLUSTER_ADMIN_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: internal-mongodb-users
+                key: MONGODB_CLUSTER_ADMIN_PASSWORD
           - name: MONGODB_ROOT_USER
             valueFrom:
               secretKeyRef:

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -216,6 +217,20 @@ func (ni *NodeInformer) GetNodeCounts() (totalNodes int, quarantinedNodesMap map
 // GetNode retrieves a node from the informer's cache.
 func (ni *NodeInformer) GetNode(name string) (*v1.Node, error) {
 	return ni.lister.Get(name)
+}
+
+// GetNodeDirect retrieves current node metadata and spec from the API server.
+// Status is stripped to keep the Node CEL contract identical to the informer view.
+func (ni *NodeInformer) GetNodeDirect(ctx context.Context, name string) (*v1.Node, error) {
+	node, err := ni.clientset.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	node = node.DeepCopy()
+	node.Status = v1.NodeStatus{}
+
+	return node, nil
 }
 
 // ListNodes lists all nodes from the informer's cache.

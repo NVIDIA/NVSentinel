@@ -14,5 +14,38 @@
 
 reviews:
   profile: chill
+
+  # Drop the report sections that restate what the diff already shows.
+  poem: false
+  review_status: false
+  collapse_walkthrough: true
+
+  # Generated, vendored and lock files. Nobody edits these by hand, and
+  # regenerating them produces large diffs that bury the real change.
+  path_filters:
+    - "!api/gen/**"
+    - "!**/*.pb.go"
+    - "!**/*_pb2.py"
+    - "!**/*_pb2.pyi"
+    - "!**/*_pb2_grpc.py"
+    - "!**/zz_generated.*.go"
+    - "!distros/kubernetes/nvsentinel/charts/*/crds/**"
+    - "!**/testdata/**"
+    - "!**/poetry.lock"
+    - "!**/go.sum"
+
   auto_review:
     enabled: true
+
+# Review against the conventions this repo actually documents, so guidance
+# comes from AGENTS.md rather than generic best practice.
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - AGENTS.md
+      - CONTRIBUTING.md
+      - DEVELOPMENT.md
+
+chat:
+  auto_reply: true

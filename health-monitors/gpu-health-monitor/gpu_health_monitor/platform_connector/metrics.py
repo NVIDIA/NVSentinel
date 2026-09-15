@@ -40,3 +40,9 @@ dcgm_health_active_events = Gauge(
     "Active health events by watch type and GPU",
     labelnames=["event_type", "gpu_id"],
 )
+
+dcgm_connectivity_consecutive_observations = Gauge(
+    "dcgm_connectivity_consecutive_observations",
+    "Consecutive DCGM connectivity observations by result",
+    labelnames=["result"],
+)

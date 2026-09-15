@@ -25,6 +25,7 @@ import shutil
 import tempfile
 from typing import Any, Iterator
 from concurrent import futures
+import dcgm_fields
 from gpu_health_monitor.dcgm_watcher import types as dcgmtypes
 from gpu_health_monitor.platform_connector import platform_connector
 from gpu_health_monitor.platform_connector import metrics as pc_metrics
@@ -80,6 +81,194 @@ class PlatformConnectorServicer(platformconnector_pb2_grpc.PlatformConnectorServ
 
 class TestPlatformConnectors(unittest.TestCase):
 
+    def test_health_event_preserves_nvswitch_identity_and_recovery(self) -> None:
+        temp_file_path = metadata_file()
+        processor = platform_connector.PlatformConnectorEventProcessor(
+            socket_path,
+            node_name,
+            Event(),
+            {
+                "GPU_ERROR": "CONTACT_SUPPORT",
+                "SWITCH_ERROR": "CONTACT_SUPPORT",
+                "SWITCH_ERROR_2": "NONE",
+            },
+            "statefile",
+            temp_file_path,
+            platformconnector_pb2.EXECUTE_REMEDIATION,
+        )
+        published_events = []
+
+        def capture_events(
+            events: list[platformconnector_pb2.HealthEvent],
+            delivery_timeout_seconds: float | None = None,
+        ) -> bool:
+            published_events.extend(events)
+            return True
+
+        processor.send_health_event_with_retries = capture_events
+
+        try:
+            health_details = {
+                "DCGM_HEALTH_WATCH_PCIE": dcgmtypes.HealthDetails(
+                    status=dcgmtypes.HealthStatus.FAIL,
+                    entity_failures={
+                        0: [dcgmtypes.ErrorDetails(code="GPU_ERROR", message="GPU 0 failed")],
+                        (dcgm_fields.DCGM_FE_SWITCH, 0): [
+                            dcgmtypes.ErrorDetails(
+                                code="SWITCH_ERROR",
+                                message="NVSwitch 0 failed",
+                            ),
+                            dcgmtypes.ErrorDetails(
+                                code="SWITCH_ERROR_2",
+                                message="NVSwitch 0 reported a second error",
+                            ),
+                        ],
+                        (999, 20): [
+                            dcgmtypes.ErrorDetails(
+                                code="SWITCH_ERROR",
+                                message="Unsupported entity failed",
+                            )
+                        ],
+                    },
+                )
+            }
+
+            processor.health_event_occurred(health_details, [0])
+
+            unhealthy_events = [event for event in published_events if not event.isHealthy]
+            assert len(unhealthy_events) == 3
+            assert {
+                (
+                    event.componentClass,
+                    event.entitiesImpacted[0].entityType,
+                    event.entitiesImpacted[0].entityValue,
+                )
+                for event in unhealthy_events
+            } == {
+                ("GPU", "GPU", "0"),
+                ("NVSWITCH", "NVSWITCH", "0"),
+            }
+            gpu_event = next(event for event in unhealthy_events if event.componentClass == "GPU")
+            switch_events = [event for event in unhealthy_events if event.componentClass == "NVSWITCH"]
+            assert {event.errorCode[0] for event in switch_events} == {"SWITCH_ERROR", "SWITCH_ERROR_2"}
+            assert gpu_event.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+            assert all(event.processingStrategy == platformconnector_pb2.STORE_ONLY for event in switch_events)
+
+            published_events.clear()
+            processor.health_event_occurred(health_details, [0])
+            assert published_events == []
+
+            health_details["DCGM_HEALTH_WATCH_PCIE"] = dcgmtypes.HealthDetails(
+                status=dcgmtypes.HealthStatus.PASS,
+                entity_failures={},
+            )
+            processor.health_event_occurred(health_details, [0])
+
+            assert len(published_events) == 2
+            assert all(event.isHealthy for event in published_events)
+            assert {
+                (
+                    event.componentClass,
+                    event.entitiesImpacted[0].entityType,
+                    event.entitiesImpacted[0].entityValue,
+                )
+                for event in published_events
+            } == {
+                ("GPU", "GPU", "0"),
+                ("NVSWITCH", "NVSWITCH", "0"),
+            }
+            gpu_event = next(event for event in published_events if event.componentClass == "GPU")
+            switch_events = [event for event in published_events if event.componentClass == "NVSWITCH"]
+            assert gpu_event.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+            assert all(event.processingStrategy == platformconnector_pb2.STORE_ONLY for event in switch_events)
+        finally:
+            os.unlink(temp_file_path)
+
+    def test_health_event_reports_healthy_nvswitch_after_restart(self) -> None:
+        temp_file_path = metadata_file()
+        with tempfile.NamedTemporaryFile(delete=False) as state_file:
+            state_file_path = state_file.name
+
+        def make_processor(
+            published_events: list[platformconnector_pb2.HealthEvent],
+        ) -> platform_connector.PlatformConnectorEventProcessor:
+            processor = platform_connector.PlatformConnectorEventProcessor(
+                socket_path,
+                node_name,
+                Event(),
+                {"SWITCH_ERROR": "CONTACT_SUPPORT"},
+                state_file_path,
+                temp_file_path,
+                platformconnector_pb2.EXECUTE_REMEDIATION,
+            )
+
+            def capture_events(
+                events: list[platformconnector_pb2.HealthEvent],
+                delivery_timeout_seconds: float | None = None,
+            ) -> bool:
+                published_events.extend(events)
+                return True
+
+            processor.send_health_event_with_retries = capture_events
+            return processor
+
+        try:
+            unhealthy_events: list[platformconnector_pb2.HealthEvent] = []
+            processor = make_processor(unhealthy_events)
+            processor.health_event_occurred(
+                {
+                    "DCGM_HEALTH_WATCH_PCIE": dcgmtypes.HealthDetails(
+                        status=dcgmtypes.HealthStatus.FAIL,
+                        entity_failures={
+                            (dcgm_fields.DCGM_FE_SWITCH, 0): [
+                                dcgmtypes.ErrorDetails(
+                                    code="SWITCH_ERROR",
+                                    message="NVSwitch 0 failed",
+                                )
+                            ]
+                        },
+                    )
+                },
+                [],
+                [0],
+            )
+            assert any(event.componentClass == "NVSWITCH" and not event.isHealthy for event in unhealthy_events)
+
+            recovered_events: list[platformconnector_pb2.HealthEvent] = []
+            restarted_processor = make_processor(recovered_events)
+            assert restarted_processor.entity_cache == {}
+
+            restarted_processor.health_event_occurred(
+                {
+                    "DCGM_HEALTH_WATCH_PCIE": dcgmtypes.HealthDetails(
+                        status=dcgmtypes.HealthStatus.PASS,
+                        entity_failures={},
+                    ),
+                    "DCGM_HEALTH_WATCH_POWER_BRAKE": dcgmtypes.HealthDetails(
+                        status=dcgmtypes.HealthStatus.PASS,
+                        entity_failures={},
+                    ),
+                    "DCGM_HEALTH_WATCH_THERMAL_MARGIN": dcgmtypes.HealthDetails(
+                        status=dcgmtypes.HealthStatus.PASS,
+                        entity_failures={},
+                    ),
+                },
+                [],
+                [0],
+            )
+
+            switch_events = [event for event in recovered_events if event.componentClass == "NVSWITCH"]
+            assert len(switch_events) == 1
+            assert switch_events[0].isHealthy
+            assert switch_events[0].entitiesImpacted == [
+                platformconnector_pb2.Entity(entityType="NVSWITCH", entityValue="0")
+            ]
+            assert switch_events[0].checkName == "GpuPcieWatch"
+            assert switch_events[0].processingStrategy == platformconnector_pb2.STORE_ONLY
+        finally:
+            os.unlink(temp_file_path)
+            os.unlink(state_file_path)
+
     def test_health_event_occurred(self):
         healthEventProcessor = PlatformConnectorServicer()
         server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
@@ -130,10 +319,12 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_events["DCGM_HEALTH_WATCH_INFOROM"] = dcgmtypes.HealthDetails(
             status=dcgmtypes.HealthStatus.FAIL,
             entity_failures={
-                0: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_CORRUPT_INFOROM",
-                    message="A corrupt InfoROM has been detected in GPU 0. Flash the InfoROM to clear this corruption.",
-                )
+                0: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_CORRUPT_INFOROM",
+                        message="A corrupt InfoROM has been detected in GPU 0. Flash the InfoROM to clear this corruption.",
+                    )
+                ]
             },
         )
 
@@ -154,10 +345,12 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_events["DCGM_HEALTH_WATCH_INFOROM"] = dcgmtypes.HealthDetails(
             status=dcgmtypes.HealthStatus.FAIL,
             entity_failures={
-                0: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_CORRUPT_INFOROM",
-                    message="A corrupt InfoROM has been detected in GPU 0. Flash the InfoROM to clear this corruption.",
-                )
+                0: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_CORRUPT_INFOROM",
+                        message="A corrupt InfoROM has been detected in GPU 0. Flash the InfoROM to clear this corruption.",
+                    )
+                ]
             },
         )
 
@@ -244,10 +437,12 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_events["DCGM_HEALTH_WATCH_NVLINK"] = dcgmtypes.HealthDetails(
             status=dcgmtypes.HealthStatus.FAIL,
             entity_failures={
-                0: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_NVLINK_DOWN",
-                    message=aggregated_message,
-                )
+                0: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_NVLINK_DOWN",
+                        message=aggregated_message,
+                    )
+                ]
             },
         )
 
@@ -358,14 +553,18 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_events["DCGM_HEALTH_WATCH_NVLINK"] = dcgmtypes.HealthDetails(
             status=dcgmtypes.HealthStatus.FAIL,
             entity_failures={
-                0: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_NVLINK_DOWN",
-                    message=gpu0_message,
-                ),
-                1: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_NVLINK_DOWN",
-                    message=gpu1_message,
-                ),
+                0: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_NVLINK_DOWN",
+                        message=gpu0_message,
+                    )
+                ],
+                1: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_NVLINK_DOWN",
+                        message=gpu1_message,
+                    )
+                ],
             },
         )
 
@@ -430,10 +629,12 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_events["DCGM_HEALTH_WATCH_NVLINK"] = dcgmtypes.HealthDetails(
             status=dcgmtypes.HealthStatus.FAIL,
             entity_failures={
-                1: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_NVLINK_DOWN",
-                    message=gpu1_message,
-                ),
+                1: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_NVLINK_DOWN",
+                        message=gpu1_message,
+                    )
+                ],
             },
         )
 
@@ -558,14 +759,18 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_events["DCGM_HEALTH_WATCH_NVLINK"] = dcgmtypes.HealthDetails(
             status=dcgmtypes.HealthStatus.FAIL,
             entity_failures={
-                0: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_NVLINK_DOWN",
-                    message=gpu0_message,
-                ),
-                1: dcgm.types.ErrorDetails(
-                    code="DCGM_FR_NVLINK_DOWN",
-                    message=gpu1_message,
-                ),
+                0: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_NVLINK_DOWN",
+                        message=gpu0_message,
+                    )
+                ],
+                1: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_NVLINK_DOWN",
+                        message=gpu1_message,
+                    )
+                ],
             },
         )
 
@@ -778,20 +983,24 @@ class TestPlatformConnectors(unittest.TestCase):
             dcgm_health_events["DCGM_HEALTH_WATCH_MEM"] = dcgmtypes.HealthDetails(
                 status=dcgmtypes.HealthStatus.FAIL,
                 entity_failures={
-                    4: dcgm.types.ErrorDetails(
-                        code="DCGM_FR_XID_ERROR",
-                        message="ErrorCode:DCGM_FR_XID_ERROR GPU:4 PCI:0000:c4:00.0 "
-                        "Detected XID 31 for GPU 4 .Recommended Action=NONE;",
-                    )
+                    4: [
+                        dcgm.types.ErrorDetails(
+                            code="DCGM_FR_XID_ERROR",
+                            message="ErrorCode:DCGM_FR_XID_ERROR GPU:4 PCI:0000:c4:00.0 "
+                            "Detected XID 31 for GPU 4 .Recommended Action=NONE;",
+                        )
+                    ]
                 },
             )
             dcgm_health_events["DCGM_HEALTH_WATCH_THERMAL"] = dcgmtypes.HealthDetails(
                 status=dcgmtypes.HealthStatus.FAIL,
                 entity_failures={
-                    2: dcgm.types.ErrorDetails(
-                        code="DCGM_FR_TEMP_VIOLATION",
-                        message="GPU 2 temperature exceeds threshold",
-                    )
+                    2: [
+                        dcgm.types.ErrorDetails(
+                            code="DCGM_FR_TEMP_VIOLATION",
+                            message="GPU 2 temperature exceeds threshold",
+                        )
+                    ]
                 },
             )
 
@@ -936,10 +1145,12 @@ class TestPlatformConnectors(unittest.TestCase):
             dcgm_health_events["DCGM_HEALTH_WATCH_POWER"] = dcgmtypes.HealthDetails(
                 status=dcgmtypes.HealthStatus.FAIL,
                 entity_failures={
-                    3: dcgm.types.ErrorDetails(
-                        code="DCGM_FR_POWER_UNREADABLE",
-                        message="GPU 3 power reading is unavailable",
-                    )
+                    3: [
+                        dcgm.types.ErrorDetails(
+                            code="DCGM_FR_POWER_UNREADABLE",
+                            message="GPU 3 power reading is unavailable",
+                        )
+                    ]
                 },
             )
 
@@ -1043,10 +1254,12 @@ class TestPlatformConnectors(unittest.TestCase):
             dcgm_health_events["DCGM_HEALTH_WATCH_POWER"] = dcgmtypes.HealthDetails(
                 status=dcgmtypes.HealthStatus.FAIL,
                 entity_failures={
-                    3: dcgm.types.ErrorDetails(
-                        code="DCGM_FR_CLOCK_THROTTLE_POWER",
-                        message="GPU 3 clock throttled due to power",
-                    )
+                    3: [
+                        dcgm.types.ErrorDetails(
+                            code="DCGM_FR_CLOCK_THROTTLE_POWER",
+                            message="GPU 3 clock throttled due to power",
+                        )
+                    ]
                 },
             )
 
@@ -1076,10 +1289,12 @@ class TestPlatformConnectors(unittest.TestCase):
             dcgm_health_events["DCGM_HEALTH_WATCH_POWER"] = dcgmtypes.HealthDetails(
                 status=dcgmtypes.HealthStatus.FAIL,
                 entity_failures={
-                    3: dcgm.types.ErrorDetails(
-                        code="DCGM_FR_POWER_UNREADABLE",
-                        message="GPU 3 power reading is unavailable",
-                    )
+                    3: [
+                        dcgm.types.ErrorDetails(
+                            code="DCGM_FR_POWER_UNREADABLE",
+                            message="GPU 3 power reading is unavailable",
+                        )
+                    ]
                 },
             )
 
@@ -1227,10 +1442,12 @@ class TestPlatformConnectors(unittest.TestCase):
             dcgm_health_events["DCGM_HEALTH_WATCH_INFOROM"] = dcgmtypes.HealthDetails(
                 status=dcgmtypes.HealthStatus.FAIL,
                 entity_failures={
-                    0: dcgm.types.ErrorDetails(
-                        code="DCGM_FR_CORRUPT_INFOROM",
-                        message="A corrupt InfoROM has been detected in GPU 0.",
-                    )
+                    0: [
+                        dcgm.types.ErrorDetails(
+                            code="DCGM_FR_CORRUPT_INFOROM",
+                            message="A corrupt InfoROM has been detected in GPU 0.",
+                        )
+                    ]
                 },
             )
             gpu_ids = [0]
@@ -1429,10 +1646,12 @@ class TestPlatformConnectors(unittest.TestCase):
             dcgm_health_events["DCGM_HEALTH_WATCH_INFOROM"] = dcgmtypes.HealthDetails(
                 status=dcgmtypes.HealthStatus.FAIL,
                 entity_failures={
-                    0: dcgm.types.ErrorDetails(
-                        code="DCGM_FR_CORRUPT_INFOROM",
-                        message="A corrupt InfoROM has been detected in GPU 0.",
-                    )
+                    0: [
+                        dcgm.types.ErrorDetails(
+                            code="DCGM_FR_CORRUPT_INFOROM",
+                            message="A corrupt InfoROM has been detected in GPU 0.",
+                        )
+                    ]
                 },
             )
 
@@ -1837,6 +2056,129 @@ class TestPlatformConnectors(unittest.TestCase):
             processor.clear_dcgm_unresponsive(timestamp)
 
             assert servicer.health_events is None
+
+    def test_connectivity_failure_waits_for_configured_threshold(self) -> None:
+        """Transient failures stay internal until the configured streak is reached."""
+        with self._running_connector(connectivity_failure_threshold=3) as (servicer, processor):
+            assert processor.dcgm_connectivity_failed() is True
+            assert processor.dcgm_connectivity_failed() is True
+            assert servicer.health_events is None
+            assert processor._consecutive_connectivity_failures == 2
+
+            assert processor.dcgm_connectivity_failed() is True
+            assert len(servicer.health_events) == 1
+            event = servicer.health_events[0]
+            assert event.checkName == "GpuDcgmConnectivityFailure"
+            assert event.isHealthy is False
+            assert event.errorCode == ["DCGM_CONNECTIVITY_ERROR"]
+
+    def test_connectivity_success_resets_a_pending_failure_streak(self) -> None:
+        """A successful cycle before the failure threshold starts a new streak."""
+        with self._running_connector(connectivity_failure_threshold=3) as (servicer, processor):
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            processor.clear_dcgm_connectivity_failure(timestamp)
+            assert servicer.health_events[0].isHealthy is True
+
+            servicer.health_events = None
+            processor.dcgm_connectivity_failed()
+            processor.dcgm_connectivity_failed()
+            assert servicer.health_events is None
+
+            processor.clear_dcgm_connectivity_failure(timestamp)
+            assert processor._consecutive_connectivity_failures == 0
+            assert servicer.health_events is None
+
+            processor.dcgm_connectivity_failed()
+            processor.dcgm_connectivity_failed()
+            assert servicer.health_events is None
+            processor.dcgm_connectivity_failed()
+            assert servicer.health_events[0].isHealthy is False
+
+    def test_connectivity_recovery_waits_for_configured_threshold(self) -> None:
+        """An active failure clears only after the configured successful streak."""
+        with self._running_connector(connectivity_success_threshold=2) as (servicer, processor):
+            processor.dcgm_connectivity_failed()
+            assert servicer.health_events[0].isHealthy is False
+
+            servicer.health_events = None
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            processor.clear_dcgm_connectivity_failure(timestamp)
+            assert servicer.health_events is None
+            assert processor._consecutive_connectivity_successes == 1
+
+            processor.clear_dcgm_connectivity_failure(timestamp)
+            assert len(servicer.health_events) == 1
+            assert servicer.health_events[0].isHealthy is True
+            assert processor._consecutive_connectivity_successes == 0
+
+    def test_connectivity_failure_interrupts_pending_recovery(self) -> None:
+        """A failed cycle resets recovery confirmation without duplicating the active event."""
+        with self._running_connector(connectivity_success_threshold=2) as (servicer, processor):
+            processor.dcgm_connectivity_failed()
+            servicer.health_events = None
+
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            processor.clear_dcgm_connectivity_failure(timestamp)
+            assert processor._consecutive_connectivity_successes == 1
+
+            processor.dcgm_connectivity_failed()
+            assert processor._consecutive_connectivity_successes == 0
+            assert servicer.health_events is None
+
+            processor.clear_dcgm_connectivity_failure(timestamp)
+            assert servicer.health_events is None
+            processor.clear_dcgm_connectivity_failure(timestamp)
+            assert servicer.health_events[0].isHealthy is True
+
+    def test_connectivity_initial_healthy_baseline_bypasses_recovery_threshold(self) -> None:
+        """Recovery debounce must not delay initial healthy Condition creation."""
+        with self._running_connector(connectivity_success_threshold=3) as (servicer, processor):
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            processor.clear_dcgm_connectivity_failure(timestamp)
+
+            assert len(servicer.health_events) == 1
+            assert servicer.health_events[0].isHealthy is True
+            assert processor._consecutive_connectivity_successes == 0
+
+    def test_connectivity_debounce_retries_failed_transition_delivery(self) -> None:
+        """A publish failure leaves the transition eligible for the next observation."""
+        with self._running_connector(connectivity_failure_threshold=2) as (servicer, processor):
+            processor.send_health_event_with_retries = unittest.mock.Mock(side_effect=[False, True])
+
+            assert processor.dcgm_connectivity_failed() is True
+            assert processor.send_health_event_with_retries.call_count == 0
+            assert processor.dcgm_connectivity_failed() is False
+            assert processor.send_health_event_with_retries.call_count == 1
+
+            assert processor.dcgm_connectivity_failed() is True
+            assert processor.send_health_event_with_retries.call_count == 2
+            key = processor._build_cache_key("GpuDcgmConnectivityFailure", "DCGM", "ALL")
+            assert processor.entity_cache[key].active_errors == {"DCGM_CONNECTIVITY_ERROR"}
+            assert servicer.health_events is None
+
+    def test_connectivity_debounce_retries_failed_recovery_delivery(self) -> None:
+        """A failed healthy publish keeps the active event and retries on the next success."""
+        with self._running_connector(connectivity_success_threshold=2) as (_servicer, processor):
+            processor.dcgm_connectivity_failed()
+            key = processor._build_cache_key("GpuDcgmConnectivityFailure", "DCGM", "ALL")
+
+            processor.send_health_event_with_retries = unittest.mock.Mock(side_effect=[False, True])
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+
+            processor.clear_dcgm_connectivity_failure(timestamp)
+            assert processor.send_health_event_with_retries.call_count == 0
+            processor.clear_dcgm_connectivity_failure(timestamp)
+            assert processor.send_health_event_with_retries.call_count == 1
+            assert processor.entity_cache[key].active_errors == {"DCGM_CONNECTIVITY_ERROR"}
+
+            processor.clear_dcgm_connectivity_failure(timestamp)
+            assert processor.send_health_event_with_retries.call_count == 2
+            assert processor.entity_cache[key].is_healthy
 
     def test_connectivity_failure_escalates_to_reboot_at_threshold(self):
         """DCGM unreachable cycle after cycle is a stuck driver, which needs a reboot."""

@@ -17,6 +17,7 @@ package metadata
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
@@ -30,6 +31,7 @@ type Reader struct {
 
 	mu     sync.Mutex
 	loaded bool
+	file   os.FileInfo
 
 	metadata *model.GPUMetadata
 
@@ -49,25 +51,42 @@ func NewReader(path string) *Reader {
 	}
 }
 
-func (r *Reader) ensureLoaded() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *Reader) ensureFreshLocked() error {
+	if !r.loaded {
+		return r.load()
+	}
 
-	if r.loaded {
+	info, err := os.Stat(r.path)
+	if err != nil {
+		slog.Warn("Failed to refresh GPU metadata; keeping last successful snapshot", "path", r.path, "error", err)
+		return nil
+	}
+
+	if sameFileVersion(r.file, info) {
 		return nil
 	}
 
 	if err := r.load(); err != nil {
-		return err
+		slog.Warn("Failed to refresh GPU metadata; keeping last successful snapshot", "path", r.path, "error", err)
+		return nil
 	}
-
-	r.loaded = true
 
 	return nil
 }
 
 func (r *Reader) load() error {
-	data, err := os.ReadFile(r.path)
+	file, err := os.Open(r.path)
+	if err != nil {
+		return fmt.Errorf("failed to read metadata file: %w", err)
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to stat metadata file: %w", err)
+	}
+
+	data, err := io.ReadAll(file)
 	if err != nil {
 		return fmt.Errorf("failed to read metadata file: %w", err)
 	}
@@ -77,10 +96,16 @@ func (r *Reader) load() error {
 		return fmt.Errorf("failed to parse metadata JSON: %w", err)
 	}
 
+	pciToGPU, uuidToInfo, nvswitchLinks := buildMaps(&metadata)
+	wasLoaded := r.loaded
 	r.metadata = &metadata
-	r.buildMaps()
+	r.pciToGPU = pciToGPU
+	r.uuidToInfo = uuidToInfo
+	r.nvswitchLinks = nvswitchLinks
+	r.file = info
+	r.loaded = true
 
-	if r.loaded {
+	if wasLoaded {
 		slog.Debug("GPU metadata reloaded",
 			"gpus", len(metadata.GPUs),
 			"driver_version", metadata.DriverVersion)
@@ -95,34 +120,50 @@ func (r *Reader) load() error {
 	return nil
 }
 
-func (r *Reader) buildMaps() {
-	r.pciToGPU = make(map[string]*model.GPUInfo)
-	r.uuidToInfo = make(map[string]*model.GPUInfo)
-	r.nvswitchLinks = make(map[string]map[int]*gpuLinkInfo)
+func buildMaps(metadata *model.GPUMetadata) (
+	map[string]*model.GPUInfo,
+	map[string]*model.GPUInfo,
+	map[string]map[int]*gpuLinkInfo,
+) {
+	pciToGPU := make(map[string]*model.GPUInfo)
+	uuidToInfo := make(map[string]*model.GPUInfo)
+	nvswitchLinks := make(map[string]map[int]*gpuLinkInfo)
 
-	for i := range r.metadata.GPUs {
-		gpu := &r.metadata.GPUs[i]
+	for i := range metadata.GPUs {
+		gpu := &metadata.GPUs[i]
 		normPCI := normalizePCI(gpu.PCIAddress)
-		r.pciToGPU[normPCI] = gpu
-		r.uuidToInfo[gpu.UUID] = gpu
+		pciToGPU[normPCI] = gpu
+		uuidToInfo[gpu.UUID] = gpu
 
 		for _, link := range gpu.NVLinks {
 			remotePCI := normalizePCI(link.RemotePCIAddress)
 
-			if r.nvswitchLinks[remotePCI] == nil {
-				r.nvswitchLinks[remotePCI] = make(map[int]*gpuLinkInfo)
+			if nvswitchLinks[remotePCI] == nil {
+				nvswitchLinks[remotePCI] = make(map[int]*gpuLinkInfo)
 			}
 
-			r.nvswitchLinks[remotePCI][link.RemoteLinkID] = &gpuLinkInfo{
+			nvswitchLinks[remotePCI][link.RemoteLinkID] = &gpuLinkInfo{
 				GPU:         gpu,
 				LocalLinkID: link.LinkID,
 			}
 		}
 	}
+
+	return pciToGPU, uuidToInfo, nvswitchLinks
+}
+
+func sameFileVersion(previous, current os.FileInfo) bool {
+	return previous != nil &&
+		os.SameFile(previous, current) &&
+		previous.Size() == current.Size() &&
+		previous.ModTime().Equal(current.ModTime())
 }
 
 func (r *Reader) GetInfoByUUID(uuid string) (*model.GPUInfo, error) {
-	if err := r.ensureLoaded(); err != nil {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if err := r.ensureFreshLocked(); err != nil {
 		return nil, fmt.Errorf("failed to load metadata for UUID lookup %s: %w", uuid, err)
 	}
 
@@ -135,7 +176,10 @@ func (r *Reader) GetInfoByUUID(uuid string) (*model.GPUInfo, error) {
 }
 
 func (r *Reader) GetGPUByPCI(pci string) (*model.GPUInfo, error) {
-	if err := r.ensureLoaded(); err != nil {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if err := r.ensureFreshLocked(); err != nil {
 		return nil, fmt.Errorf("failed to load metadata for PCI lookup %s: %w", pci, err)
 	}
 
@@ -150,7 +194,10 @@ func (r *Reader) GetGPUByPCI(pci string) (*model.GPUInfo, error) {
 }
 
 func (r *Reader) GetGPUByNVSwitchLink(nvswitchPCI string, linkID int) (*model.GPUInfo, int, error) {
-	if err := r.ensureLoaded(); err != nil {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if err := r.ensureFreshLocked(); err != nil {
 		return nil, -1, fmt.Errorf("failed to load metadata for NVSwitch lookup %s link %d: %w", nvswitchPCI, linkID, err)
 	}
 
@@ -171,7 +218,10 @@ func (r *Reader) GetGPUByNVSwitchLink(nvswitchPCI string, linkID int) (*model.GP
 }
 
 func (r *Reader) GetChassisSerial() *string {
-	if err := r.ensureLoaded(); err != nil {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if err := r.ensureFreshLocked(); err != nil {
 		return nil
 	}
 
@@ -180,27 +230,20 @@ func (r *Reader) GetChassisSerial() *string {
 
 // GetDriverVersion returns the GPU driver version from the metadata file.
 //
-// Unlike the other accessors, the driver version is typically consumed early
-// (e.g. when constructing the XID parser) and may still be empty if the
-// metadata-collector has not finished writing the file yet. Permanently caching
-// that empty value is dangerous: the XID sidecar would keep receiving an empty
-// driver_version and silently fall back to the wrong (V1) NVL5 decode table for
-// R575+ drivers, mis-classifying errors. To avoid that, re-attempt a load
-// whenever the cached driver version is still empty. Once a non-empty value is
-// observed it is cached like every other field.
+// The reader checks for metadata replacement on every accessor, including this
+// one, so an early empty driver version can be refreshed when the collector
+// publishes its next snapshot.
 func (r *Reader) GetDriverVersion() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if !r.loaded || r.metadata == nil || r.metadata.DriverVersion == "" {
-		if err := r.load(); err != nil {
+	if err := r.ensureFreshLocked(); err != nil {
+		if !r.loaded || r.metadata == nil {
 			slog.Warn("Failed to load GPU metadata for driver version",
 				"path", r.path, "error", err)
 
 			return ""
 		}
-
-		r.loaded = true
 	}
 
 	return r.metadata.DriverVersion

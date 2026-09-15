@@ -21,6 +21,8 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestPostgreSQLClient_BasicOperations tests basic CRUD operations
@@ -261,6 +263,33 @@ func TestAdjustParameterNumbersHandlesMultiDigitPlaceholders(t *testing.T) {
 	if got := client.adjustParameterNumbers(clause, 2); got != expected {
 		t.Fatalf("expected %q, got %q", expected, got)
 	}
+}
+
+// TestUpdateDocumentStatusFields_SharedParent_InitializesParentOnce verifies
+// that sibling status updates share one bounded parent initialization chain.
+func TestUpdateDocumentStatusFields_SharedParent_InitializesParentOnce(t *testing.T) {
+	var executedSQL string
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherFunc(
+		func(_ string, actual string) error {
+			executedSQL = actual
+
+			return nil
+		},
+	)))
+	require.NoError(t, err)
+	defer db.Close()
+
+	client := &PostgreSQLClient{db: db, table: "health_events"}
+	mock.ExpectExec("capture").WillReturnResult(sqlmock.NewResult(0, 1))
+
+	require.NoError(t, client.UpdateDocumentStatusFields(context.Background(), "event-id", map[string]any{
+		"healtheventstatus.alpha": "a",
+		"healtheventstatus.beta":  "b",
+		"healtheventstatus.gamma": "c",
+	}))
+	require.NoError(t, mock.ExpectationsWereMet())
+	assert.Equal(t, 3, strings.Count(executedSQL, "'{healtheventstatus}'"), executedSQL)
+	assert.Less(t, len(executedSQL), 1000, executedSQL)
 }
 
 // TestAggregationPipelineConversion tests aggregation pipeline parsing

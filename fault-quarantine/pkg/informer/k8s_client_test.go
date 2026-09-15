@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
@@ -449,6 +450,61 @@ func TestUnQuarantineNodeAndRemoveAnnotations(t *testing.T) {
 	}
 }
 
+func TestUnQuarantineNodeAndRemoveAnnotations_DryRunRemovesAnnotationsOnly(t *testing.T) {
+	ctx := context.Background()
+	const (
+		nodeName      = "dry-run-unquarantine"
+		annotationKey = "test-annotation"
+	)
+
+	node := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        nodeName,
+			Annotations: map[string]string{annotationKey: "test-value"},
+			Labels: map[string]string{
+				cordonedReasonLabelKey: "gpu-error",
+			},
+		},
+		Spec: v1.NodeSpec{
+			Unschedulable: true,
+			Taints: []v1.Taint{{
+				Key: "test-key", Value: "test-value", Effect: v1.TaintEffectNoSchedule,
+			}},
+		},
+	}
+	clientset := fake.NewSimpleClientset(node)
+	k8sClient := &FaultQuarantineClient{
+		Clientset:  clientset,
+		DryRunMode: true,
+	}
+
+	require.NoError(t, k8sClient.UnQuarantineNodeAndRemoveAnnotations(
+		ctx,
+		nodeName,
+		[]config.Taint{{Key: "test-key", Value: "test-value", Effect: "NoSchedule"}},
+		true,
+		[]string{annotationKey},
+		[]string{cordonedReasonLabelKey},
+		map[string]string{uncordonedByLabelKey: common.ServiceName},
+	))
+
+	updatedNode, err := clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.NotContains(t, updatedNode.Annotations, annotationKey)
+	assert.Equal(t, "gpu-error", updatedNode.Labels[cordonedReasonLabelKey])
+	assert.NotContains(t, updatedNode.Labels, uncordonedByLabelKey)
+	assert.True(t, updatedNode.Spec.Unschedulable)
+	require.Len(t, updatedNode.Spec.Taints, 1)
+
+	patches := 0
+	for _, action := range clientset.Actions() {
+		if action.GetVerb() == "patch" {
+			patches++
+		}
+	}
+	assert.Equal(t, 1, patches, "dry-run unquarantine should patch only the annotation removal")
+}
+
 func TestTaintAndCordonNode_NodeNotFound(t *testing.T) {
 	ctx := context.Background()
 	k8sClient := setupTestClient(t)
@@ -728,12 +784,13 @@ func TestTaintAndCordonNode_OverwriteAnnotation(t *testing.T) {
 func TestUnTaintAndUnCordonNode_NonExistentTaintRemoval(t *testing.T) {
 	ctx := context.Background()
 	nodeName := testutils.GenerateTestNodeName("test-nonexistent-taint-")
+	const annotationKey = "recovery-marker"
 
 	taints := []v1.Taint{
 		{Key: "taint1", Value: "val1", Effect: v1.TaintEffectNoSchedule},
 	}
 
-	createTestNode(ctx, t, nodeName, nil, nil, taints, false)
+	createTestNode(ctx, t, nodeName, map[string]string{annotationKey: "present"}, nil, taints, true)
 	defer func() {
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 	}()
@@ -741,7 +798,8 @@ func TestUnTaintAndUnCordonNode_NonExistentTaintRemoval(t *testing.T) {
 	k8sClient := setupTestClient(t)
 
 	taintsToRemove := []config.Taint{{Key: "taint-nonexistent", Value: "valX", Effect: "NoSchedule"}}
-	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(ctx, nodeName, taintsToRemove, true, nil, []string{}, map[string]string{})
+	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(
+		ctx, nodeName, taintsToRemove, true, []string{annotationKey}, []string{}, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -761,6 +819,12 @@ func TestUnTaintAndUnCordonNode_NonExistentTaintRemoval(t *testing.T) {
 	// Original taint should remain as we tried to remove a non-existent taint
 	if len(testTaints) != 1 {
 		t.Errorf("Expected 1 test taint to remain, got %d", len(testTaints))
+	}
+	if updatedNode.Spec.Unschedulable {
+		t.Errorf("Expected absent requested taint not to prevent uncordoning")
+	}
+	if _, exists := updatedNode.Annotations[annotationKey]; exists {
+		t.Errorf("Expected absent requested taint not to prevent annotation cleanup")
 	}
 }
 
@@ -1035,6 +1099,28 @@ func TestMergeAppliedTaints_ReplacesValueByKeyAndEffect(t *testing.T) {
 		},
 		{Key: "shared", Value: "keep", Effect: string(v1.TaintEffectNoExecute)},
 	}, merged)
+}
+
+func TestMergeQuarantineValidationHealthEventAnnotation_Concatenates(t *testing.T) {
+	existing, err := json.Marshal([]common.HealthEventWithTests{
+		{HealthEvent: &protos.HealthEvent{Id: "event-1", NodeName: "node-1"}, Tests: []string{"dcgm-diag-test"}},
+	})
+	require.NoError(t, err)
+
+	incoming, err := json.Marshal([]common.HealthEventWithTests{
+		{HealthEvent: &protos.HealthEvent{Id: "event-2", NodeName: "node-1"}, Tests: []string{"nccl-test"}},
+	})
+	require.NoError(t, err)
+
+	merged, err := mergeQuarantineValidationHealthEventAnnotation(string(existing), string(incoming))
+	require.NoError(t, err)
+
+	var mergedEvents []common.HealthEventWithTests
+	require.NoError(t, json.Unmarshal([]byte(merged), &mergedEvents))
+
+	require.Len(t, mergedEvents, 2, "both events should be present, not one overwriting the other")
+	assert.Equal(t, "event-1", mergedEvents[0].Id)
+	assert.Equal(t, "event-2", mergedEvents[1].Id)
 }
 
 // TestHasTaint_MatchesByKeyAndEffect verifies that changing a taint value does

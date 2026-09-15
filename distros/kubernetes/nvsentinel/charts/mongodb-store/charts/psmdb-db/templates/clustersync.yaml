@@ -1,0 +1,78 @@
+{{- if .Values.clusterSync.enabled }}
+apiVersion: psmdb.percona.com/v1
+kind: PerconaServerMongoDBClusterSync
+metadata:
+  name: {{ default (printf "%s-sync" (include "psmdb-database.fullname" .)) .Values.clusterSync.name }}
+  namespace: {{ include "psmdb-database.namespace" . }}
+  labels:
+{{ include "psmdb-database.labels" . | indent 4 }}
+spec:
+  clusterName: {{ default (include "psmdb-database.fullname" .) .Values.clusterSync.clusterName }}
+  image: {{ .Values.clusterSync.image | quote }}
+  {{- with .Values.clusterSync.imagePullPolicy }}
+  imagePullPolicy: {{ . }}
+  {{- end }}
+  {{- with .Values.clusterSync.imagePullSecrets }}
+  imagePullSecrets:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+  mode: {{ .Values.clusterSync.mode }}
+  source:
+    uri: {{ required "clusterSync.source.uri is required when clusterSync.enabled" .Values.clusterSync.source.uri | quote }}
+    credentialsSecret: {{ default (printf "%s-source" (default (printf "%s-sync" (include "psmdb-database.fullname" .)) .Values.clusterSync.name)) .Values.clusterSync.source.credentialsSecret }}
+  {{- with .Values.clusterSync.excludeNamespaces }}
+  excludeNamespaces:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+  {{- with .Values.clusterSync.pcsmConfig }}
+  pcsmConfig:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+  {{- with .Values.clusterSync.env }}
+  env:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+  {{- with .Values.clusterSync.resources }}
+  resources:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+  {{- with .Values.clusterSync.nodeSelector }}
+  nodeSelector:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+  {{- with .Values.clusterSync.tolerations }}
+  tolerations:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+  {{- with .Values.clusterSync.affinity }}
+  affinity:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+  {{- with .Values.clusterSync.labels }}
+  labels:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+  {{- with .Values.clusterSync.annotations }}
+  annotations:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+  {{- with .Values.clusterSync.runtimeClassName }}
+  runtimeClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.clusterSync.containerSecurityContext }}
+  containerSecurityContext:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+  {{- with .Values.clusterSync.podSecurityContext }}
+  podSecurityContext:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+  {{- with .Values.clusterSync.livenessProbe }}
+  livenessProbe:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+  {{- with .Values.clusterSync.readinessProbe }}
+  readinessProbe:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+{{- end }}

@@ -196,6 +196,31 @@ func setGenericPort(config *DataStoreConfig) {
 	}
 }
 
+// MaxConnections resolves the connection pool bound both providers apply: the
+// maxConnections option when it is set (LoadDatastoreConfig fills it from
+// DATASTORE_MAX_CONNECTIONS), otherwise DATASTORE_MAX_CONNECTIONS read
+// directly, for the paths that build a client without a DataStoreConfig. Zero
+// means unset, and the provider keeps its own default. A value that is not a
+// positive integer is ignored with a warning.
+func MaxConnections(options map[string]string) int {
+	for _, raw := range []string{options["maxConnections"], os.Getenv("DATASTORE_MAX_CONNECTIONS")} {
+		if raw == "" {
+			continue
+		}
+
+		size, err := strconv.Atoi(raw)
+		if err != nil || size <= 0 {
+			slog.Warn("Ignoring invalid max connections value", "value", raw)
+
+			continue
+		}
+
+		return size
+	}
+
+	return 0
+}
+
 // loadOptionsFromEnv loads options from environment variables
 func loadOptionsFromEnv(config *DataStoreConfig) {
 	config.Options = make(map[string]string)

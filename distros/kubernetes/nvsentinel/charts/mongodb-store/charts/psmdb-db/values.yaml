@@ -18,10 +18,11 @@ finalizers:
 #  - percona.com/delete-pitr-chunks
 
 nameOverride: ""
+namespaceOverride: ""
 fullnameOverride: ""
 
 
-crVersion: 1.21.1
+crVersion: 1.23.0
 pause: false
 unmanaged: false
 unsafeFlags:
@@ -33,6 +34,13 @@ unsafeFlags:
 
 enableVolumeExpansion: false
 # enableExternalVolumeAutoscaling: false
+
+# defaultRWConcern:
+#   readConcern: majority
+#   writeConcern:
+#     w: majority
+#     wtimeout: 0
+
 annotations: {}
 
 # ignoreAnnotations:
@@ -49,21 +57,31 @@ upgradeOptions:
   schedule: "0 2 * * *"
   setFCV: false
 
+# storageScaling:
+#  enableVolumeScaling: false
+#  enableExternalAutoscaling: false
+#  autoscaling:
+#    enabled: false
+#    triggerThresholdPercent: 80
+#    growthStep: "2Gi"
+#    maxSize: "100Gi"
+
 image:
   repository: percona/percona-server-mongodb
-  tag: 8.0.12-4
+  tag: 8.0.26-11
 
 imagePullPolicy: Always
 # imagePullSecrets: []
 # initImage:
 #   repository: percona/percona-server-mongodb-operator
-#   tag: 1.21.1
+#   tag: 1.23.0
 # initContainerSecurityContext: {}
 # tls:
 #   mode: preferTLS
 #   # 90 days in hours
 #   certValidityDuration: 2160h
 #   allowInvalidCertificates: true
+#   certManagementPolicy: auto
 #   issuerConf:
 #     name: special-selfsigned-issuer
 #     kind: ClusterIssuer
@@ -80,17 +98,44 @@ secrets: {}
   # ldapSecret: my-ldap-secret
   # sse: my-cluster-name-sse
 
+# vault:
+#   endpointURL: https://vault-service:8200
+#   tlsSecret: my-tls-vault-secret
+#   syncUsers:
+#     role: operator
+#     mountPath: secrets
+#     keyPath: psmdb/operator/namespace/my-cluster-name/users
+#     tokenSecret: my-vault-sync-token-secret
 pmm:
   enabled: false
   image:
     repository: percona/pmm-client
-    tag: 3.4.1
+    tag: 3.8.1
   serverHost: monitoring-service
 #  customClusterName: ""
 #  mongodParams: ""
 #  mongosParams: ""
 #  resources: {}
 #  containerSecurityContext: {}
+#  authenticationMechanism: SCRAM-SHA-256
+#  # Override the built-in liveness probe of the pmm-client container.
+#  # When not set, the Operator uses HTTP GET :7777/local/Status.
+#  livenessProbe:
+#    httpGet:
+#      path: /local/Status
+#      port: 7777
+#    initialDelaySeconds: 60
+#    timeoutSeconds: 5
+#    periodSeconds: 10
+#    failureThreshold: 5
+#  # Add a readiness probe for the pmm-client container.
+#  # When not set, the container has no readiness probe.
+#  readinessProbe:
+#    tcpSocket:
+#      port: 7777
+#    initialDelaySeconds: 5
+#    periodSeconds: 10
+#    failureThreshold: 3
 
 replsets:
   rs0:
@@ -104,6 +149,9 @@ replsets:
     #   votes: 0
     #   priority: 0
     # - host: 34.124.76.92
+    #   votes: 1
+    #   priority: 0
+    #   arbiterOnly: true
     # configuration: |
     #   operationProfiling:
     #     mode: slowOp
@@ -152,6 +200,19 @@ replsets:
     # labels: {}
     # podSecurityContext: {}
     # containerSecurityContext: {}
+    # env:
+    # - name: MY_ENV_VAR
+    #   value: "my-value"
+    # - name: MY_SECRET_VAR
+    #   valueFrom:
+    #     secretKeyRef:
+    #       name: my-secret
+    #       key: secret-key
+    # envFrom:
+    # - configMapRef:
+    #     name: my-configmap
+    # - secretRef:
+    #     name: my-secret
     # nodeSelector: {}
     # livenessProbe:
     #   failureThreshold: 4
@@ -166,6 +227,12 @@ replsets:
     #   successThreshold: 1
     #   timeoutSeconds: 2
     # runtimeClassName: image-rc
+    # hookScript:
+    #   configMapRef:
+    #     name: hookscript-configmap
+    #   script: |
+    #     #!/usr/bin/env bash
+    #     echo "Hookscript started"
     # storage:
     #   engine: wiredTiger
     #   wiredTiger:
@@ -268,11 +335,47 @@ replsets:
     #   hostnames:
     #   - "host1"
     #   - "host2"
+    # search:
+    #   # Per-replset override of the cluster-wide spec.search settings below.
+    #   # Only the fields listed here may be overridden per replset/shard and
+    #   # each field fully replaces (does not merge with) the cluster-wide value.
+    #   size: 1
+    #   resources:
+    #     requests:
+    #       cpu: "8"
+    #       memory: 32Gi
+    #   storage:
+    #     persistentVolumeClaim:
+    #       resources:
+    #         requests:
+    #           storage: 200Gi
+    #   affinity:
+    #     antiAffinityTopologyKey: "kubernetes.io/hostname"
+    #   # jvmFlags: []
+    #   # nodeSelector: {}
+    #   # tolerations: []
+    #   # annotations: {}
+    #   # labels: {}
+    #   # podSecurityContext: {}
+    #   # containerSecurityContext: {}
 
     hidden:
       enabled: false
 #      podSecurityContext: {}
 #      containerSecurityContext: {}
+#      env:
+#      - name: MY_ENV_VAR
+#        value: "my-value"
+#      - name: MY_SECRET_VAR
+#        valueFrom:
+#          secretKeyRef:
+#            name: my-secret
+#            key: secret-key
+#      envFrom:
+#      - configMapRef:
+#          name: my-configmap
+#      - secretRef:
+#          name: my-secret
       size: 2
 #      # for more configuration fields refer to https://docs.mongodb.com/manual/reference/configuration-options/
 #      configuration: |
@@ -280,6 +383,12 @@ replsets:
 #          mode: slowOp
 #        systemLog:
 #          verbosity: 1
+#      hookScript:
+#        configMapRef:
+#          name: hookscript-configmap
+#        script: |
+#          #!/usr/bin/env bash
+#          echo "Hookscript started"
       affinity:
         antiAffinityTopologyKey: "kubernetes.io/hostname"
 #        advanced:
@@ -334,6 +443,19 @@ replsets:
       enabled: false
       # podSecurityContext: {}
       # containerSecurityContext: {}
+      # env:
+      # - name: MY_ENV_VAR
+      #   value: "my-value"
+      # - name: MY_SECRET_VAR
+      #   valueFrom:
+      #     secretKeyRef:
+      #       name: my-secret
+      #       key: secret-key
+      # envFrom:
+      # - configMapRef:
+      #     name: my-configmap
+      # - secretRef:
+      #     name: my-secret
       size: 3
       # configuration: |
       #   operationProfiling:
@@ -341,6 +463,12 @@ replsets:
       #   systemLog:
       #     verbosity: 1
       # serviceAccountName: percona-server-mongodb-operator
+      # hookScript:
+      #   configMapRef:
+      #     name: hookscript-configmap
+      #   script: |
+      #     #!/usr/bin/env bash
+      #     echo "Hookscript started"
       affinity:
         antiAffinityTopologyKey: "kubernetes.io/hostname"
         # advanced:
@@ -385,7 +513,26 @@ replsets:
     arbiter:
       enabled: false
       size: 1
+      # env:
+      # - name: MY_ENV_VAR
+      #   value: "my-value"
+      # - name: MY_SECRET_VAR
+      #   valueFrom:
+      #     secretKeyRef:
+      #       name: my-secret
+      #       key: secret-key
+      # envFrom:
+      # - configMapRef:
+      #     name: my-configmap
+      # - secretRef:
+      #     name: my-secret
       # serviceAccountName: percona-server-mongodb-operator
+      # hookScript:
+      #   configMapRef:
+      #     name: hookscript-configmap
+      #   script: |
+      #     #!/usr/bin/env bash
+      #     echo "Hookscript started"
       affinity:
         antiAffinityTopologyKey: "kubernetes.io/hostname"
         # advanced:
@@ -426,6 +573,9 @@ sharding:
     #   votes: 0
     #   priority: 0
     # - host: 34.124.76.92
+    #   votes: 1
+    #   priority: 0
+    #   arbiterOnly: true
     # configuration: |
     #   operationProfiling:
     #     mode: slowOp
@@ -457,10 +607,29 @@ sharding:
     # labels: {}
     # podSecurityContext: {}
     # containerSecurityContext: {}
+    # env:
+    # - name: MY_ENV_VAR
+    #   value: "my-value"
+    # - name: MY_SECRET_VAR
+    #   valueFrom:
+    #     secretKeyRef:
+    #       name: my-secret
+    #       key: secret-key
+    # envFrom:
+    # - configMapRef:
+    #     name: my-configmap
+    # - secretRef:
+    #     name: my-secret
     # nodeSelector: {}
     # livenessProbe: {}
     # readinessProbe: {}
     # runtimeClassName: image-rc
+    # hookScript:
+    #   configMapRef:
+    #     name: hookscript-configmap
+    #   script: |
+    #     #!/usr/bin/env bash
+    #     echo "Hookscript started"
     # sidecars:
     # - image: busybox
     #   command: ["/bin/sh"]
@@ -528,6 +697,12 @@ sharding:
     #     maxSkew: 1
     #     topologyKey: kubernetes.io/hostname
     #     whenUnsatisfiable: DoNotSchedule
+    # hookScript:
+    #   configMapRef:
+    #     name: hookscript-configmap
+    #   script: |
+    #     #!/usr/bin/env bash
+    #     echo "Hookscript started"
     affinity:
       antiAffinityTopologyKey: "kubernetes.io/hostname"
       # advanced:
@@ -546,6 +721,19 @@ sharding:
     # labels: {}
     # podSecurityContext: {}
     # containerSecurityContext: {}
+    # env:
+    # - name: MY_ENV_VAR
+    #   value: "my-value"
+    # - name: MY_SECRET_VAR
+    #   valueFrom:
+    #     secretKeyRef:
+    #       name: my-secret
+    #       key: secret-key
+    # envFrom:
+    # - configMapRef:
+    #     name: my-configmap
+    # - secretRef:
+    #     name: my-secret
     # nodeSelector: {}
     # livenessProbe: {}
     # readinessProbe: {}
@@ -651,12 +839,31 @@ backup:
   enabled: true
   image:
     repository: percona/percona-backup-mongodb
-    tag: 2.11.0
+    tag: 2.15.0
   # startingDeadlineSeconds: 300
   # annotations:
   #   iam.amazonaws.com/role: role-arn
   # podSecurityContext: {}
+  # hookScript:
+  #   configMapRef:
+  #     name: hookscript-configmap
+  #   script: |
+  #     #!/usr/bin/env bash
+  #     echo "Hookscript started"
   # containerSecurityContext: {}
+  # env:
+  # - name: MY_ENV_VAR
+  #   value: "my-value"
+  # - name: MY_SECRET_VAR
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: my-secret
+  #       key: secret-key
+  # envFrom:
+  # - configMapRef:
+  #     name: my-configmap
+  # - secretRef:
+  #     name: my-secret
   # resources:
   #   limits:
   #     cpu: "300m"
@@ -664,6 +871,20 @@ backup:
   #   requests:
   #     cpu: "300m"
   #     memory: "1Gi"
+  # livenessProbe:
+  #   exec:
+  #     command:
+  #       - /bin/true
+  #   initialDelaySeconds: 30
+  #   periodSeconds: 15
+  #   failureThreshold: 5
+  # readinessProbe:
+  #   exec:
+  #     command:
+  #       - /bin/true
+  #   initialDelaySeconds: 5
+  #   periodSeconds: 10
+  #   failureThreshold: 3
   storages:
     # s3-us-west:
     #   main: true
@@ -687,24 +908,49 @@ backup:
     #     storageClass: STANDARD
     #     insecureSkipTLSVerify: false
     # gcs:
-    #  type: gcs
-    #  gcs:
-    #    bucket: GCS-BACKUP-BUCKET-NAME-HERE
-    #    prefix: ""
-    #    credentialsSecret: my-cluster-name-backup-gcs
-    #    chunkSize: 10485760
-    #    retryer:
-    #      backoffInitial: 1
-    #      backoffMax: 30
-    #      backoffMultiplier: 2
+    #   type: gcs
+    #   gcs:
+    #     bucket: GCS-BACKUP-BUCKET-NAME-HERE
+    #     prefix: ""
+    #     credentialsSecret: my-cluster-name-backup-gcs
+    #     chunkSize: 10485760
+    #     retryer:
+    #       backoffInitial: 1
+    #       backoffMax: 30
+    #       backoffMultiplier: 2
+    # oss-native:
+    #   type: oss
+    #   oss:
+    #     bucket: OSS-BACKUP-BUCKET-NAME-HERE
+    #     prefix: ""
+    #     credentialsSecret: my-cluster-name-backup-oss
+    #     endpointUrl: https://oss-eu-central-1.aliyuncs.com
+    #     region: eu-central-1
+    #     connectTimeout: 10s
+    #     uploadPartSize: 10485760
+    #     maxUploadParts: 10000
+    #     retryer:
+    #       maxAttempts: 3
+    #       maxBackoff: 5m
+    #       baseDelay: 1s
+    #     serverSideEncryption:
+    #       secretName: my-cluster-name-backup-oss-sse
+    #       encryptionMethod: sse
+    #       encryptionAlgorithm: KMS
+    #       encryptionKeyId: OSS-KMS-KEY-ID-HERE
     # minio:
-    #   type: s3
-    #   s3:
+    #   type: minio
+    #   minio:
     #     bucket: MINIO-BACKUP-BUCKET-NAME-HERE
     #     region: us-east-1
     #     credentialsSecret: my-cluster-name-backup-minio
-    #     endpointUrl: http://minio.psmdb.svc.cluster.local:9000/minio/
+    #     endpointUrl: minio.psmdb.svc.cluster.local:9000/minio/
+    #     insecureSkipTLSVerify: false
+    #     caBundle:
+    #       name: minio-ca-bundle
+    #       key: ca.crt
     #     prefix: ""
+    #     secure: false
     #   azure-blob:
     #     type: azure
     #     azure:
@@ -712,6 +958,25 @@ backup:
     #       prefix: PREFIX-NAME
     #       endpointUrl: https://accountName.blob.core.windows.net
     #       credentialsSecret: SECRET-NAME
+    # oci:
+    #   type: oci
+    #   oci:
+    #     bucket: OCI-BACKUP-BUCKET-NAME-HERE
+    #     namespace: OCI-OBJECT-STORAGE-NAMESPACE-HERE
+    #     region: us-ashburn-1
+    #     prefix: ""
+    #     credentials:
+    #       type: userPrincipal
+    #       secretName: my-cluster-name-backup-oci
+    #     serverSideEncryption:
+    #       kmsKeyID: OCI-KMS-KEY-OCID-HERE
+    #       secretName: my-cluster-name-backup-oci-sse
+    #     retryer:
+    #       maxAttempts: 3
+    #       maxBackoff: 5m
+    #     uploadPartSize: 10485760
+    #     maxObjSizeGB: 10
+    #     uploadConcurrency: 1
     #  backup-nfs:
     #    type: filesystem
     #    filesystem:
@@ -794,13 +1059,181 @@ logcollector:
   enabled: true
   image:
     repository: percona/fluentbit
-    tag: 4.0.1
-#  configuration: |
-#    [SERVICE]
-#        Flush        1
-#        Log_Level    error
-#        Daemon       off
+    tag: 5.0.9-1
+  #  configuration: |
+  #    [SERVICE]
+  #        Flush        1
+  #        Log_Level    error
+  #        Daemon       off
+  #  env:
+  #  - name: MY_ENV_VAR
+  #    value: "my-value"
+  #  - name: MY_SECRET_VAR
+  #    valueFrom:
+  #      secretKeyRef:
+  #        name: my-secret
+  #        key: secret-key
+  #  envFrom:
+  #  - configMapRef:
+  #      name: my-configmap
+  #  - secretRef:
+  #      name: my-secret
   resources:
     requests:
       memory: 100M
       cpu: 200m
+  # containerSecurityContext: {}
+# Add a liveness/readiness probe for the logs (fluent-bit) container.
+# When not set, the container has no probes.
+# NOTE: a tcpSocket/httpGet probe on port 2020 requires the fluent-bit
+# HTTP server to be enabled via `configuration` ([HTTP_SERVER] On).
+#  livenessProbe:
+#    tcpSocket:
+#      port: 2020
+#    initialDelaySeconds: 30
+#    periodSeconds: 15
+#  readinessProbe:
+#    tcpSocket:
+#      port: 2020
+#    initialDelaySeconds: 5
+#    periodSeconds: 10
+#  logrotate:
+#    configuration: |
+#      /data/db/logs/mongod.full.log {
+#          hourly
+#          rotate 24
+#      }
+#    extraConfig:
+#      name: logrotate-config
+#    schedule: "0 0 * * *"
+#    # Add a liveness/readiness probe for the logrotate container.
+#    # When not set, the container has no probes.
+#    livenessProbe:
+#      exec:
+#        command:
+#          - /bin/true
+#      initialDelaySeconds: 30
+#      periodSeconds: 15
+#    readinessProbe:
+#      exec:
+#        command:
+#          - /bin/true
+#      initialDelaySeconds: 5
+#      periodSeconds: 10
+
+# MongoDB Vector Search (mongot). When enabled the operator deploys one
+# mongot StatefulSet per replset (non-sharded) or per shard (sharded),
+# wires mongod/mongos to it and provisions the searchCoordinator user.
+# These are the cluster-wide defaults; per-replset overrides can be set
+# under replsets.<name>.search.
+# search:
+#   enabled: true
+#   image:
+#     repository: perconalab/percona-search-mongodb
+#     tag: 1.70.1-1
+#   # imagePullPolicy: Always
+#   size: 1
+#   # configuration is raw mongot YAML merged on top of the operator-generated mongot.conf
+#   # configuration: |
+#   #   syncSource:
+#   #     replicaSet:
+#   #       hostAndPort: ""
+#   storage:
+#     persistentVolumeClaim:
+#       resources:
+#         requests:
+#           storage: 10Gi
+#   resources:
+#     requests:
+#       cpu: "2"
+#       memory: 2Gi
+#   # jvmFlags: []
+#   affinity:
+#     antiAffinityTopologyKey: "kubernetes.io/hostname"
+#   # nodeSelector: {}
+#   # tolerations: []
+#   # annotations: {}
+#   # labels: {}
+#   # podSecurityContext: {}
+#   # containerSecurityContext: {}
+#   livenessProbe:
+#     initialDelaySeconds: 60
+#     periodSeconds: 30
+#     timeoutSeconds: 5
+#     failureThreshold: 4
+#   readinessProbe:
+#     initialDelaySeconds: 10
+#     periodSeconds: 10
+#     timeoutSeconds: 2
+#     failureThreshold: 3
+
+# Percona ClusterSync for MongoDB (PCSM): one-shot live replication from a
+# source MongoDB into this operator-managed cluster. The chart creates a
+# PerconaServerMongoDBClusterSync CR; the operator reconciles a PCSM
+# Deployment from it. CR existence is the lifecycle signal — disabling the
+# block removes the CR and the operator tears the job down.
+clusterSync:
+  enabled: false
+  # Defaults to "<release-fullname>-sync"
+  # name: ""
+  # Defaults to the PerconaServerMongoDB created by this chart (<release-fullname>)
+  # clusterName: ""
+  image: percona/percona-clustersync-mongodb:0.9.0
+  # imagePullPolicy: IfNotPresent
+  # imagePullSecrets:
+  #   - name: my-pull-secret
+
+  # Lifecycle intent. One of: running, paused, finalized.
+  #   running   - start/resume replication (default)
+  #   paused    - pause an active replication
+  #   finalized - stop replication and tear down owned resources
+  mode: running
+
+  source:
+    # Source MongoDB connection string WITHOUT credentials (mongos or mongod).
+    # Credentials from credentialsSecret are injected at runtime.
+    uri: ""
+    # Same-namespace Secret with `username`/`password` keys.
+    # Defaults to "<sync-name>-source" when left empty.
+    credentialsSecret: ""
+    # If username/password are set the chart creates the credentialsSecret
+    # automatically. Leave empty and pre-create the Secret yourself in prod.
+    credentials: {}
+    #   username: source
+    #   password: mys3cretpAss
+
+  # MongoDB namespaces (db or db.collection) to skip during sync.
+  # excludeNamespaces:
+  #   - admin
+  #   - local
+
+  # PCSM tuning. logLevel maps to --log-level; logJSON maps to --log-json.
+  pcsmConfig: {}
+  #   logLevel: info       # debug | info | warn | error
+  #   logJSON: true
+
+  # Extra env vars passed to the PCSM container (PCSM_* knobs go here).
+  env: []
+  #   - name: PCSM_SOMETHING
+  #     value: "1"
+
+  resources: {}
+  #   requests:
+  #     cpu: 500m
+  #     memory: 512Mi
+  #   limits:
+  #     cpu: "2"
+  #     memory: 2Gi
+
+  # Annotations and labels propagated by the operator to resources it creates
+  # for the ClusterSync (mapped to spec.annotations / spec.labels on the CR).
+  annotations: {}
+  labels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # runtimeClassName: ""
+  containerSecurityContext: {}
+  podSecurityContext: {}
+  livenessProbe: {}
+  readinessProbe: {}

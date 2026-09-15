@@ -16,6 +16,8 @@ navigation:
 
   - section: Tutorials
     contents:
+      - page: Integrating Node Problem Detector
+        path: tutorials/integrating-node-problem-detector.md
       - page: Writing a Health Monitor
         path: tutorials/writing-a-health-monitor.md
       - page: Writing a Preflight Check
@@ -46,6 +48,8 @@ navigation:
         path: nic-health-monitor.md
       - page: Kubernetes Object Monitor
         path: kubernetes-object-monitor.md
+      - page: NVCRE Certification Monitor
+        path: nvcre-certification-monitor.md
       - page: Event Exporter
         path: event-exporter.md
       - page: Metadata Collector
@@ -104,6 +108,8 @@ navigation:
         path: configuration/nic-health-monitor.md
       - page: Kubernetes Object Monitor
         path: configuration/kubernetes-object-monitor.md
+      - page: NVCRE Certification Monitor
+        path: configuration/nvcre-certification-monitor.md
       - page: Fault Quarantine
         path: configuration/fault-quarantine.md
       - page: Node Drainer

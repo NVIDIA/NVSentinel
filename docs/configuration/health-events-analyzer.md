@@ -69,6 +69,33 @@ Events are persisted and ingested by the Health Events Analyzer for rule evaluat
 #### STORE_ONLY
 Observability-only mode. Derived events are persisted and exported but do not modify any cluster resources. Use this mode to shadow-test new or customised rules in production before enabling full remediation.
 
+### Concurrent Event Processing
+
+The Health Events Analyzer partitions incoming events across a concurrent worker pool by node name. Events for distinct nodes are evaluated concurrently, while events for the same node are processed in strict chronological order. Checkpoints advance using a low-water mark tracker to guarantee at-least-once delivery without head-of-line blocking.
+
+```yaml
+health-events-analyzer:
+  workers: 1       # Number of concurrent workers (default: 1)
+  maxInFlight: 1000 # Maximum uncheckpointed in-flight events before backpressure (default: 1000)
+```
+
+#### Scaling Workers by Datastore Event Rate
+
+Each event evaluation executes rule aggregation queries against the datastore, averaging approximately 17.5 ms of I/O round-trip latency. A single worker achieves a processing ceiling of approximately 57 events/second. Throughput scales linearly with the number of workers ($\approx \text{Workers} \times 57\text{ events/s}$).
+
+Use the following reference table to configure `workers` and `maxInFlight` based on cluster size and expected event rate:
+
+| Offered Event Rate in DB | Recommended `workers` | Recommended `maxInFlight` | Estimated Throughput Capacity | Recommended Cluster Scale |
+|---|---|---|---|---|
+| $< 50$ events/s | `1` (default) | `1000` | ~57 events/s | Up to ~500 nodes |
+| $50 - 200$ events/s | `4` | `1000` | ~220 events/s | 500 – 2,000 nodes |
+| $200 - 400$ events/s | `8` | `2000` | ~440 events/s | 2,000 – 4,000 nodes |
+| $400 - 800$ events/s | `16` | `2000` | ~860 events/s | 4,000 – 8,000 nodes |
+| $800 - 1,500$ events/s | `32` | `4000` | ~1,680 events/s | 8,000 – 15,000 nodes |
+| $> 1,500$ events/s | `64` | `8000` | ~3,500 events/s | 15,000+ nodes |
+
+`maxInFlight` bounds uncheckpointed in-flight events in memory. When in-flight events reach this limit, stream ingestion pauses until workers resolve earlier events. Increase `maxInFlight` proportionally for larger worker counts to absorb bursty event traffic without stalling ingestion.
+
 ### Client Certificate Mount Path
 
 Path inside the container where TLS client certificates are mounted for authenticated MongoDB connections. Certificates are typically provisioned by cert-manager and mounted via a Kubernetes secret volume.
@@ -113,7 +140,7 @@ The following table summarises every flag, the XID or event type it covers, and 
 | Flag | Rule | Recommended Action | Description |
 |------|------|--------------------|-------------|
 | `enableMultipleRemediationsRule` | MultipleRemediations | `CONTACT_SUPPORT` | 5 or more remediations on the same node within 7 days |
-| `enableRepeatedXIDErrorOnSameGPURule` | RepeatedXIDErrorOnSameGPU | `CONTACT_SUPPORT` | Fatal XID 5 or more times within 24 hours on the same GPU (burst window 3 min, sticky XID window 3 h) |
+| `enableRepeatedXIDErrorOnSameGPURule` | RepeatedXIDErrorOnSameGPU | `CONTACT_SUPPORT` | Any XID except 31 and 45 five or more times within 24 hours on the same GPU (burst window 3 min, sticky XID window 3 h) |
 | `enableRepeatedXID31OnSameGPURule` | RepeatedXID31OnSameGPU | `RUN_DCGMEUD` | XID 31 two or more times on the same GPU within 24 hours |
 | `enableRepeatedXID31OnDifferentGPURule` | RepeatedXID31OnDifferentGPU | `NONE` | XID 31 on two or more different GPUs within 24 hours |
 | `enableRepeatedXID13OnSameGPCAndTPCRule` | RepeatedXID13OnSameGPCAndTPC | `RUN_DCGMEUD` | XID 13 two or more times on the same GPC and TPC within 24 hours |

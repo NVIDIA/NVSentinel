@@ -43,6 +43,7 @@ GO_MODULES := \
 	health-monitors/syslog-health-monitor \
 	health-monitors/csp-health-monitor \
 	health-monitors/kubernetes-object-monitor \
+	health-monitors/nvcre-certification-monitor \
 	health-monitors/nic-health-monitor \
 	platform-connectors \
 	health-events-analyzer \
@@ -859,6 +860,9 @@ cluster-create: ## Create local ctlptl-managed Kind cluster with registry
 	ctlptl apply -f $(CTLPTL_CONFIG_FILE)
 	@echo "Waiting for all nodes to be ready..."
 	@kubectl wait --for=condition=ready nodes --all --timeout=300s
+	@echo "Raising kindnet memory limit"
+	@kubectl -n kube-system patch daemonset kindnet -p '{"spec":{"template":{"spec":{"containers":[{"name":"kindnet-cni","resources":{"limits":{"memory":"250Mi"}}}]}}}}'
+	@kubectl -n kube-system rollout status daemonset kindnet --timeout=300s
 	@echo "Cluster created successfully!"
 	@echo "Registry available at localhost:$(REGISTRY_PORT)"
 

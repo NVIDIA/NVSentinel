@@ -15,6 +15,7 @@
 package evaluator
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
@@ -31,7 +32,10 @@ type MockRuleEvaluator struct {
 	err    error
 }
 
-func (m *MockRuleEvaluator) Evaluate(healthEvent *protos.HealthEvent) (common.RuleEvaluationResult, error) {
+func (m *MockRuleEvaluator) Evaluate(
+	_ context.Context,
+	healthEvent *protos.HealthEvent,
+) (common.RuleEvaluationResult, error) {
 	if m.result {
 		return common.RuleEvaluationSuccess, m.err
 	}
@@ -107,7 +111,7 @@ func TestAnyRuleSetEvaluator_Evaluate(t *testing.T) {
 				Priority:   1,
 			}
 
-			result, err := evaluator.Evaluate(tt.event)
+			result, err := evaluator.Evaluate(context.Background(), tt.event)
 			if result != tt.expected {
 				t.Errorf("Expected result %v, got %v", tt.expected, result)
 			}
@@ -194,7 +198,7 @@ func TestAllRuleSetEvaluator_Evaluate(t *testing.T) {
 				Priority:   1,
 			}
 
-			result, err := evaluator.Evaluate(tt.event)
+			result, err := evaluator.Evaluate(context.Background(), tt.event)
 			if result != tt.expected {
 				t.Errorf("Expected result %v, got %v", tt.expected, result)
 			}
@@ -226,7 +230,7 @@ func TestInitializeRuleSetEvaluators(t *testing.T) {
 		Expression: "",
 	}
 
-	ruleSet1 := config.RuleSet{
+	ruleSet1 := config.RuleSetMeta{
 		Enabled:  true,
 		Name:     "RuleSet1",
 		Version:  "1",
@@ -236,7 +240,7 @@ func TestInitializeRuleSetEvaluators(t *testing.T) {
 		},
 	}
 
-	ruleSet2 := config.RuleSet{
+	ruleSet2 := config.RuleSetMeta{
 		Enabled:  true,
 		Name:     "RuleSet2",
 		Version:  "1",
@@ -246,7 +250,7 @@ func TestInitializeRuleSetEvaluators(t *testing.T) {
 		},
 	}
 
-	ruleSetInvalid := config.RuleSet{
+	ruleSetInvalid := config.RuleSetMeta{
 		Enabled:  true,
 		Name:     "RuleSetInvalid",
 		Version:  "1",
@@ -258,31 +262,31 @@ func TestInitializeRuleSetEvaluators(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		ruleSets      []config.RuleSet
+		ruleSets      []config.RuleSetMeta
 		expectedCount int
 		expectErr     bool
 	}{
 		{
 			name:          "Valid rule sets",
-			ruleSets:      []config.RuleSet{ruleSet1, ruleSet2},
+			ruleSets:      []config.RuleSetMeta{ruleSet1, ruleSet2},
 			expectedCount: 2,
 			expectErr:     false,
 		},
 		{
 			name:          "Invalid rule set",
-			ruleSets:      []config.RuleSet{ruleSetInvalid},
+			ruleSets:      []config.RuleSetMeta{ruleSetInvalid},
 			expectedCount: 0,
 			expectErr:     true,
 		},
 		{
 			name:          "Mixed valid and invalid rule sets",
-			ruleSets:      []config.RuleSet{ruleSet1, ruleSetInvalid},
+			ruleSets:      []config.RuleSetMeta{ruleSet1, ruleSetInvalid},
 			expectedCount: 1,
 			expectErr:     true,
 		},
 		{
 			name:          "No rule sets",
-			ruleSets:      []config.RuleSet{},
+			ruleSets:      []config.RuleSetMeta{},
 			expectedCount: 0,
 			expectErr:     false,
 		},
@@ -408,7 +412,7 @@ func TestNewAnyRuleSetEvaluator(t *testing.T) {
 	evaluators := []RuleEvaluator{
 		&MockRuleEvaluator{result: true, err: nil},
 	}
-	ruleset := config.RuleSet{
+	ruleset := config.RuleSetMeta{
 		Name:     "AnyRuleSet",
 		Version:  "1",
 		Priority: 1,
@@ -437,7 +441,7 @@ func TestNewAllRuleSetEvaluator(t *testing.T) {
 	evaluators := []RuleEvaluator{
 		&MockRuleEvaluator{result: true, err: nil},
 	}
-	ruleset := config.RuleSet{
+	ruleset := config.RuleSetMeta{
 		Name:     "AllRuleSet",
 		Version:  "1",
 		Priority: 1,

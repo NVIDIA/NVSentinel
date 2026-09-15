@@ -200,6 +200,16 @@ All roles require ongoing participation:
 
 If a person is inactive for 6+ months, their status may be reviewed. Exceptions can be made for known circumstances (e.g., sabbatical, parental leave).
 
+## Emeritus Process
+
+Maintainers, Approvers, and Reviewers who step back from active participation can move to emeritus status rather than being removed outright:
+
+1. **Self-declared**: A person may request emeritus status at any time by notifying the Maintainers.
+2. **Inactivity-triggered**: If someone has been inactive for 6+ months per [Maintaining Status](#maintaining-status) and does not respond to outreach within 30 days, the Maintainers may move them to emeritus status.
+3. **Recognition**: Emeritus members are listed as such (rather than removed) in project documentation, in recognition of their past contributions.
+4. **Returning**: Emeritus members can be restored to their prior role by a majority vote of Maintainers, without repeating the full nomination process, if they resume active participation.
+5. **Privileges**: Emeritus members retain no approval or merge privileges while in emeritus status.
+
 ## Release Management
 
 - **Release Planning**: Maintainers coordinate release planning and scheduling

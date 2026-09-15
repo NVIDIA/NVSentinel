@@ -84,6 +84,16 @@ func TestParseHealthEventFromEvent(t *testing.T) {
 			expectError: true,
 		},
 		{
+			name: "error on nil health event status",
+			event: datastore.Event{
+				"healthevent": map[string]any{
+					"nodename":  "test-node",
+					"checkname": "GpuXidError",
+				},
+			},
+			expectError: true,
+		},
+		{
 			name: "parse PostgreSQL format with document field",
 			event: datastore.Event{
 				"operationType": "insert",

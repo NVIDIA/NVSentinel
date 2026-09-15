@@ -19,6 +19,12 @@ type: application
 version: 0.1.0
 appVersion: "1.16.0"
 
+# psmdb-operator and psmdb-db must be bumped together and must always match
+# (chart version == crVersion). Percona operator upgrades cannot skip a minor
+# version (see https://docs.percona.com/percona-operator-for-mongodb/update-operator.html),
+# so a live cluster running an older operator minor must be upgraded one minor
+# at a time up to the version below, not jump straight to it. See
+# https://github.com/NVIDIA/NVSentinel/issues/1737.
 dependencies:
   - name: mongodb
     version: "16.2.2"
@@ -29,6 +35,6 @@ dependencies:
     repository: ""
     condition: usePerconaOperator
   - name: psmdb-db
-    version: "1.21.1"
+    version: "1.23.0"
     repository: ""
     condition: usePerconaOperator

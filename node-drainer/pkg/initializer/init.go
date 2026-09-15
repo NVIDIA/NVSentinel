@@ -37,6 +37,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/informers"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/queue"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/reconciler"
 	"github.com/nvidia/nvsentinel/store-client/pkg/adapter"
@@ -84,11 +85,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		slog.InfoContext(ctx, "Running in dry-run mode")
 	}
 
-	if configs.tomlCfg.PartialDrainEnabled {
-		slog.InfoContext(ctx, "Running with partial drain enabled")
-	} else {
-		slog.InfoContext(ctx, "Running with partial drain disabled")
-	}
+	configurePartialDrain(ctx, configs.tomlCfg)
 
 	clientSet, restConfig, err := initializeKubernetesClient(params)
 	if err != nil {
@@ -102,12 +99,18 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		return nil, fmt.Errorf("failed to initialize dynamic client and mapper: %w", err)
 	}
 
+	podPolicies, err := config.CompilePodDrainPolicies(configs.tomlCfg.PodDrainPolicies)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compile pod drain policies: %w", err)
+	}
+
 	informersInstance, err := initializeInformers(
 		clientSet,
 		&configs.tomlCfg.NotReadyTimeoutMinutes,
 		configs.tomlCfg.DrainGPUPods,
 		params.DryRun,
 		configs.tomlCfg.SystemNamespaces,
+		podPolicies.LabelKeys()...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("error while initializing informers: %w", err)
@@ -312,8 +315,10 @@ func initializeKubernetesClient(params InitializationParams) (kubernetes.Interfa
 	return clientSet, restConfig, nil
 }
 
+// initializeInformers creates drain informers with an hourly resync and the configured policy label keys.
 func initializeInformers(clientset kubernetes.Interface,
-	notReadyTimeoutMinutes *int, drainGPUPods bool, dryRun bool, systemNamespaces string) (*informers.Informers, error) {
+	notReadyTimeoutMinutes *int, drainGPUPods bool, dryRun bool, systemNamespaces string,
+	podLabelKeys ...string) (*informers.Informers, error) {
 	return informers.NewInformers(
 		clientset,
 		time.Hour,
@@ -321,6 +326,7 @@ func initializeInformers(clientset kubernetes.Interface,
 		drainGPUPods,
 		dryRun,
 		systemNamespaces,
+		podLabelKeys...,
 	)
 }
 
@@ -380,4 +386,18 @@ func (a *databaseClientAdapter) FindDocuments(
 	ctx context.Context, filter any, options *client.FindOptions,
 ) (client.Cursor, error) {
 	return a.client.Find(ctx, filter, options)
+}
+
+// configurePartialDrain logs the partial drain mode and registers the opt-in entity metric.
+func configurePartialDrain(ctx context.Context, tomlCfg *config.TomlConfig) {
+	if tomlCfg.PartialDrainEnabled {
+		slog.InfoContext(ctx, "Running with partial drain enabled")
+	} else {
+		slog.InfoContext(ctx, "Running with partial drain disabled")
+	}
+
+	if tomlCfg.PartialDrainEntityMetricEnabled {
+		metrics.EnablePartialDrainEntityMetric()
+		slog.InfoContext(ctx, "Registered node_drainer_partial_drains_total with entity labels")
+	}
 }

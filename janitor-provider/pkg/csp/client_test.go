@@ -37,6 +37,7 @@ func TestProvider_String(t *testing.T) {
 		{"nebius provider", ProviderNebius, "nebius"},
 		{"lambda provider", ProviderLambda, "lambda"},
 		{"generic provider", ProviderGeneric, "generic"},
+		{"label provider", ProviderLabel, "label"},
 	}
 
 	for _, tt := range tests {
@@ -70,6 +71,7 @@ func TestGetProviderFromEnv_Valid(t *testing.T) {
 		{"nebius", "nebius", ProviderNebius},
 		{"lambda", "lambda", ProviderLambda},
 		{"generic", "generic", ProviderGeneric},
+		{"label", "label", ProviderLabel},
 	}
 
 	for _, tt := range tests {
@@ -197,6 +199,7 @@ func TestProviderConstants(t *testing.T) {
 	assert.Equal(t, Provider("nebius"), ProviderNebius)
 	assert.Equal(t, Provider("lambda"), ProviderLambda)
 	assert.Equal(t, Provider("generic"), ProviderGeneric)
+	assert.Equal(t, Provider("label"), ProviderLabel)
 }
 
 func TestNewWithProvider_AllProviders(t *testing.T) {
@@ -247,6 +250,12 @@ func TestNewWithProvider_AllProviders(t *testing.T) {
 			provider:      ProviderLambda,
 			shouldSucceed: false,
 			skipReason:    "Lambda client requires an API key",
+		},
+		{
+			name:          "label provider",
+			provider:      ProviderLabel,
+			shouldSucceed: false,
+			skipReason:    "label provider requires an in-cluster Kubernetes client",
 		},
 	}
 
@@ -310,6 +319,7 @@ func TestGetProviderFromString(t *testing.T) {
 		{"nebius lowercase", "nebius", ProviderNebius, false},
 		{"lambda lowercase", "lambda", ProviderLambda, false},
 		{"generic lowercase", "generic", ProviderGeneric, false},
+		{"label lowercase", "label", ProviderLabel, false},
 		{"kind uppercase", "KIND", ProviderKind, false}, // case insensitive
 		{"aws uppercase", "AWS", ProviderAWS, false},
 		{"gcp mixed case", "GcP", ProviderGCP, false},
@@ -317,6 +327,7 @@ func TestGetProviderFromString(t *testing.T) {
 		{"nebius mixed case", "Nebius", ProviderNebius, false},
 		{"lambda mixed case", "Lambda", ProviderLambda, false},
 		{"generic mixed case", "Generic", ProviderGeneric, false},
+		{"label mixed case", "Label", ProviderLabel, false},
 		{"invalid", "invalid", "", true},
 		{"empty", "", "", true},
 	}

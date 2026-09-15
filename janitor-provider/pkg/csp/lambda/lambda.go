@@ -117,7 +117,7 @@ func endpointFromEnv() (string, error) {
 
 // SendRebootSignal power-cycles the node's Lambda instance and returns
 // immediately, the janitor controller polls IsNodeReady for completion.
-func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
+func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node, _ string) (model.ResetSignalRequestRef, error) {
 	instanceID, err := parseProviderID(node.Spec.ProviderID)
 	if err != nil {
 		return "", fmt.Errorf("node %s: %w", node.Name, err)

@@ -239,6 +239,36 @@ Healthy events are not downgraded by deduplication. Before they continue downstr
 - The dedup counter is exposed as `nvsentinel_platform_connector_dedup_store_and_analyse_total{check,node,err_code}`.
 - `entitiesImpacted` and `errorCode` are canonicalized as sets for keying; ordering differences do not create distinct events.
 
+## Prometheus Connector
+
+Records every health event reaching the platform connector as a Prometheus counter. It has
+no sink and no external dependency: it only observes, so it cannot fail or block the
+connectors it shares the event fan-out with.
+
+```yaml
+platformConnector:
+  promConnector:
+    enabled: false
+```
+
+### Parameters
+
+#### enabled
+Registers `health_events_total{node, agent, check_name, recommended_action, is_fatal, is_healthy}`
+on the existing metrics endpoint. Defaults to `false`, like the other optional connectors.
+
+### Why it lives here rather than in each monitor
+
+Every monitor publishes through the platform connector, so one connector covers
+`gpu-health-monitor`, `syslog-health-monitor`, `nic-health-monitor`, `csp-health-monitor`,
+`kubernetes-object-monitor` and `health-events-analyzer` at once. It is also already the
+authority on severity, since `isFatal` is derived from `recommendedAction`.
+
+On a fleet where actionable events are rare, this is the metric that answers "what needs
+attention right now" without querying the datastore. See
+[Prometheus Connector Metrics](../METRICS.md#prometheus-connector-metrics) for the label
+rationale and example queries.
+
 ## Kubernetes Connector
 
 Configures the Kubernetes API client for creating node conditions and events.

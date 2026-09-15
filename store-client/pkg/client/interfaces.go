@@ -23,6 +23,13 @@ import (
 type DatabaseClient interface {
 	// Document operations
 	InsertMany(ctx context.Context, documents []any) (*InsertManyResult, error)
+	// InsertManyIdempotent inserts documents in order and continues past a
+	// document that already exists under the idempotency index, so a resent
+	// batch stores only its missing events and a monitor's events land in the
+	// order it sent them. Such duplicates are counted in the result's
+	// DuplicateCount; any other per-document failure stops the insert and is
+	// reported as a *datastore.BulkWriteFailure error.
+	InsertManyIdempotent(ctx context.Context, documents []any) (*InsertManyResult, error)
 	UpdateDocumentStatus(ctx context.Context, documentID string, statusPath string, status any) error
 	UpdateDocumentStatusFields(ctx context.Context, documentID string, fields map[string]any) error
 	UpdateDocument(ctx context.Context, filter any, update any) (*UpdateResult, error)
@@ -36,6 +43,17 @@ type DatabaseClient interface {
 
 	// Aggregation
 	Aggregate(ctx context.Context, pipeline any) (Cursor, error)
+
+	// Idempotency index management
+	// EnsureHealthEventIdempotencyIndex idempotently creates the unique partial
+	// index (datastore.HealthEventIdempotencyIndexName) that enforces per-event
+	// idempotency keys on health events.
+	EnsureHealthEventIdempotencyIndex(ctx context.Context) error
+	// VerifyHealthEventIdempotencyIndex returns nil only when the index exists
+	// with the expected name, key path, uniqueness, partial predicate, and a
+	// completed build; otherwise it returns datastore.ErrIndexMissing or
+	// datastore.ErrIndexMismatch wrapped with detail.
+	VerifyHealthEventIdempotencyIndex(ctx context.Context) error
 
 	// Health checks
 	Ping(ctx context.Context) error
@@ -69,6 +87,28 @@ type Event interface {
 	UnmarshalDocument(v any) error
 }
 
+type updatedFieldsEvent interface {
+	UpdatedFields() map[string]any
+}
+
+// EventUpdatesOnly reports whether an update changed exactly the named field.
+// Insert events and providers without update metadata return false.
+func EventUpdatesOnly(event Event, field string) bool {
+	updated, ok := event.(updatedFieldsEvent)
+	if !ok {
+		return false
+	}
+
+	fields := updated.UpdatedFields()
+	if len(fields) != 1 {
+		return false
+	}
+
+	_, exists := fields[field]
+
+	return exists
+}
+
 // ChangeStreamWatcher abstracts change stream operations
 type ChangeStreamWatcher interface {
 	Start(ctx context.Context)
@@ -95,6 +135,10 @@ type TokenConfig struct {
 // InsertManyResult represents the result of an insert many operation
 type InsertManyResult struct {
 	InsertedIDs []any
+	// DuplicateCount is the number of documents InsertManyIdempotent skipped
+	// because they were already stored under the idempotency index (a resend).
+	// Always 0 for InsertMany.
+	DuplicateCount int
 }
 
 // UpdateResult represents the result of an update operation

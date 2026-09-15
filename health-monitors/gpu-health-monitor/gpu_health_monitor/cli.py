@@ -27,6 +27,35 @@ from gpu_health_monitor.protos import health_event_pb2 as platformconnector_pb2
 from gpu_health_monitor.logger import set_default_structured_logger_with_level
 
 
+def _parse_min_consecutive_polls(raw: str) -> dict[str, int]:
+    """Parse ``CODE=N`` pairs from the INI value into a per-error-code threshold map.
+
+    INI has no nested sections, so the chart renders the values map as a comma
+    separated list. A malformed entry is logged and skipped rather than taken as a
+    reason to refuse to start, since the fail-open outcome is today's behaviour for
+    that one code.
+    """
+    thresholds: dict[str, int] = {}
+
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+
+        code, separator, polls = entry.partition("=")
+        code, polls = code.strip(), polls.strip()
+
+        # isascii guards the isdigit/int mismatch: "²".isdigit() is True but int("²")
+        # raises, which would crash startup instead of skipping the entry.
+        if not separator or not code or not (polls.isascii() and polls.isdigit()):
+            log.warning(f"Ignoring malformed MinConsecutivePolls entry {entry!r}; expected CODE=N")
+            continue
+
+        thresholds[code] = int(polls)
+
+    return thresholds
+
+
 def _init_event_processor(
     event_processor_name: str,
     config: configparser.ConfigParser,
@@ -38,6 +67,8 @@ def _init_event_processor(
     processing_strategy: platformconnector_pb2.ProcessingStrategy,
     store_only_checks: frozenset[str],
     connectivity_failure_escalation_threshold: int,
+    connectivity_failure_threshold: int,
+    connectivity_success_threshold: int,
     platform_connector_token_path: str,
 ):
     platform_connector_config = config["eventprocessors.platformconnector"]
@@ -53,6 +84,8 @@ def _init_event_processor(
                 processing_strategy=processing_strategy,
                 store_only_checks=store_only_checks,
                 connectivity_failure_escalation_threshold=connectivity_failure_escalation_threshold,
+                connectivity_failure_threshold=connectivity_failure_threshold,
+                connectivity_success_threshold=connectivity_success_threshold,
                 token_path=platform_connector_token_path or None,
             )
         case _:
@@ -231,6 +264,9 @@ def cli(
 
     suppressed_error_codes = frozenset()
     connectivity_failure_escalation_threshold = 0
+    health_check_min_consecutive_polls: dict[str, int] = {}
+    connectivity_failure_threshold = 1
+    connectivity_success_threshold = 1
     if config.has_section("dcgmhealthcheck"):
         health_check_config = config["dcgmhealthcheck"]
         suppressed_error_codes_raw = health_check_config.get("SuppressedErrorCodes", fallback="")
@@ -249,6 +285,32 @@ def cli(
                 connectivity_failure_escalation_threshold,
             )
 
+        health_check_min_consecutive_polls = _parse_min_consecutive_polls(
+            health_check_config.get("MinConsecutivePolls", fallback="")
+        )
+        if health_check_min_consecutive_polls:
+            log.info(f"DCGM incident debounce thresholds: {health_check_min_consecutive_polls}")
+
+    if config.has_section("dcgmconnectivity"):
+        connectivity_config = config["dcgmconnectivity"]
+        connectivity_failure_threshold = connectivity_config.getint("FailureThreshold", fallback=1)
+        connectivity_success_threshold = connectivity_config.getint("SuccessThreshold", fallback=1)
+    if connectivity_failure_threshold < 1:
+        raise click.BadParameter(
+            "must be at least 1",
+            param_hint="dcgmconnectivity.FailureThreshold",
+        )
+    if connectivity_success_threshold < 1:
+        raise click.BadParameter(
+            "must be at least 1",
+            param_hint="dcgmconnectivity.SuccessThreshold",
+        )
+    log.info(
+        "DCGM runtime connectivity debounce: failure_threshold=%d success_threshold=%d",
+        connectivity_failure_threshold,
+        connectivity_success_threshold,
+    )
+
     enabled_event_processor_names = cli_config["EnabledEventProcessors"].split(",")
     enabled_event_processors = []
     for event_processor in enabled_event_processor_names:
@@ -264,6 +326,8 @@ def cli(
                 processing_strategy_value,
                 store_only_checks,
                 connectivity_failure_escalation_threshold,
+                connectivity_failure_threshold,
+                connectivity_success_threshold,
                 platform_connector_token_path,
             )
         )
@@ -300,6 +364,7 @@ def cli(
         probe_deadline_seconds=probe_deadline_seconds,
         power_brake_enabled=power_brake_enabled,
         power_brake_min_consecutive_polls=power_brake_min_consecutive_polls,
+        health_check_min_consecutive_polls=health_check_min_consecutive_polls,
     )
     dcgm_watcher.start([], exit)
 

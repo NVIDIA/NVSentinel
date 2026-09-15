@@ -16,6 +16,7 @@ package kubeclient
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -201,6 +202,59 @@ func TestNodePatcher_Conflict_RefreshesLiveNodeBeforeRetry(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "preserved", updated.Labels["concurrent"])
 	assert.Equal(t, "true", updated.Labels["desired"])
+}
+
+// A shutting-down client fails requests with a wrapped context error. Such a
+// failure must surface as an error rather than letting Patch mutate a node it
+// never read.
+func TestNodePatcher_InterruptedRequest_ReportsError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{
+			name: "cancelled",
+			err:  fmt.Errorf("client rate limiter Wait returned an error: %w", context.Canceled),
+		},
+		{
+			name: "deadline exceeded",
+			err:  fmt.Errorf("client rate limiter Wait returned an error: %w", context.DeadlineExceeded),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, verb := range []string{"get", "patch"} {
+				t.Run(verb, func(t *testing.T) {
+					cached := node(map[string]string{"a": "1"}, nil)
+					clientset := fake.NewSimpleClientset(cached.DeepCopy())
+					clientset.PrependReactor(verb, "nodes", func(k8stesting.Action) (bool, runtime.Object, error) {
+						return true, nil, tt.err
+					})
+
+					// A pending write forces Patch to read the live node, so the
+					// "get" case exercises a failure before any mutation.
+					var patcher NodePatcher
+					patcher.pendingVersions.Store(cached.Name, "unobserved")
+
+					changed, err := patcher.Patch(
+						context.Background(),
+						clientset.CoreV1().Nodes(),
+						cached.Name,
+						cached,
+						func(node *v1.Node) error {
+							require.NotNil(t, node, "mutate must never receive an unread node")
+							node.Labels["b"] = "2"
+
+							return nil
+						},
+					)
+					require.ErrorIs(t, err, tt.err)
+					assert.False(t, changed)
+				})
+			}
+		})
+	}
 }
 
 func TestNodeMergePatch_ReturnsExpectedPatch(t *testing.T) {

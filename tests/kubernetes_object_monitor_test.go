@@ -545,14 +545,8 @@ func TestKubernetesObjectMonitorInitContainerFailures(t *testing.T) {
 		helpers.CleanupDaemonSet(ctx, t, client, testCtx.Namespace, "test-ds-init-cycle")
 
 		// Ensure node is uncordoned
-		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-		if err != nil {
-			t.Logf("Warning: failed to get node for cleanup: %v", err)
-		} else if node.Spec.Unschedulable {
-			node.Spec.Unschedulable = false
-			if updateErr := client.Resources().Update(ctx, node); updateErr != nil {
-				t.Logf("Warning: failed to uncordon node during teardown: %v", updateErr)
-			}
+		if err := helpers.SetNodeCordon(ctx, client, testCtx.NodeName, false); err != nil {
+			t.Logf("Warning: failed to uncordon node during teardown: %v", err)
 		}
 
 		return ctx
@@ -673,12 +667,8 @@ func TestKubernetesObjectMonitorMainContainerFailures(t *testing.T) {
 		require.NoError(t, err)
 
 		// Uncordon node first to allow cleanup (in case test failed midway)
-		node, err := helpers.GetNodeByName(ctx, client, testNodeName)
-		if err == nil && node.Spec.Unschedulable {
-			node.Spec.Unschedulable = false
-			if updateErr := client.Resources().Update(ctx, node); updateErr != nil {
-				t.Logf("Warning: failed to uncordon node: %v", updateErr)
-			}
+		if err := helpers.SetNodeCordon(ctx, client, testNodeName, false); err != nil {
+			t.Logf("Warning: failed to uncordon node: %v", err)
 		}
 
 		// Clean up DaemonSet

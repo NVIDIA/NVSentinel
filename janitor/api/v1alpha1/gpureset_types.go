@@ -80,6 +80,7 @@ const (
 	ReasonServiceRestoreFailed           GPUResetReason = "ServiceRestoreFailed"
 	ReasonRestoreTimeoutExceeded         GPUResetReason = "RestoreTimeoutExceeded"
 	ReasonInternalError                  GPUResetReason = "InternalError"
+	ReasonGPUAlreadyUnderMaintenance     GPUResetReason = "GPUAlreadyUnderMaintenance"
 )
 
 // GPUSelector allows specifying GPUs by different identifier types.

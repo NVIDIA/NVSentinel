@@ -19,8 +19,11 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"sort"
+	"strings"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"google.golang.org/protobuf/proto"
 )
 
 // EventKey represents the identifying fields of a HealthEvent for entity-level matching
@@ -147,7 +150,41 @@ func eventKeysCapacity(entityCount, errorCodeCount int) int {
 // Returns true if at least one entity was added or an existing entry's
 // RecommendedAction was refreshed.
 func (he *HealthEventsAnnotationMap) AddOrUpdateEvent(event *protos.HealthEvent) bool {
+	return he.AddOrUpdateEventFiltered(event, nil)
+}
+
+// AddOrUpdateEventFiltered applies only effect keys accepted by keep. When a
+// compound event is partially accepted, retained keys are compacted into exact
+// rectangular projections so JSON round trips cannot recreate filtered-out
+// effects without expanding one annotation payload per key.
+func (he *HealthEventsAnnotationMap) AddOrUpdateEventFiltered(
+	event *protos.HealthEvent,
+	keep func(HealthEventKey) bool,
+) bool {
 	keys := createEventKeys(event)
+	if keep != nil {
+		kept := keys[:0]
+		for _, key := range keys {
+			if keep(key) {
+				kept = append(kept, key)
+			}
+		}
+
+		if len(kept) != len(keys) {
+			keys = kept
+
+			updated := he.addEventKeys(event, keys)
+			if updated && len(he.Events) > 0 {
+				// Compact after replacing accepted keys. The remaining keys that
+				// still point at an older compound event must no longer serialize
+				// effects now owned by the replacement.
+				he.compactStoredValues()
+			}
+
+			return updated
+		}
+	}
+
 	updated := false
 
 	for _, key := range keys {
@@ -164,6 +201,182 @@ func (he *HealthEventsAnnotationMap) AddOrUpdateEvent(event *protos.HealthEvent)
 	}
 
 	return updated
+}
+
+func (he *HealthEventsAnnotationMap) addEventKeys(
+	event *protos.HealthEvent,
+	keys []HealthEventKey,
+) bool {
+	updated := false
+
+	for _, key := range keys {
+		existing, exists := he.Events[key]
+		if !exists || existing.RecommendedAction != event.RecommendedAction {
+			he.Events[key] = event
+			updated = true
+		}
+	}
+
+	return updated
+}
+
+type annotationRectangle struct {
+	keys       []HealthEventKey
+	entities   []HealthEventKey
+	errorCodes []string
+}
+
+func projectEventForRectangle(
+	event *protos.HealthEvent,
+	rectangle annotationRectangle,
+) *protos.HealthEvent {
+	projected := proto.Clone(event).(*protos.HealthEvent)
+	if len(rectangle.entities) == 1 &&
+		rectangle.entities[0].EntityType == "" && rectangle.entities[0].EntityValue == "" {
+		projected.EntitiesImpacted = nil
+	} else {
+		projected.EntitiesImpacted = make([]*protos.Entity, 0, len(rectangle.entities))
+		for _, entity := range rectangle.entities {
+			projected.EntitiesImpacted = append(projected.EntitiesImpacted, &protos.Entity{
+				EntityType: entity.EntityType, EntityValue: entity.EntityValue,
+			})
+		}
+	}
+
+	if len(rectangle.errorCodes) == 1 && rectangle.errorCodes[0] == "" &&
+		!slices.Contains(event.GetErrorCode(), "") {
+		projected.ErrorCode = nil
+	} else {
+		projected.ErrorCode = rectangle.errorCodes
+	}
+
+	return projected
+}
+
+func (he *HealthEventsAnnotationMap) compactStoredValues() {
+	keysByEvent := make(map[*protos.HealthEvent][]HealthEventKey)
+	for key, event := range he.Events {
+		keysByEvent[event] = append(keysByEvent[event], key)
+	}
+
+	for event, keys := range keysByEvent {
+		for _, rectangle := range compactAnnotationRectangles(keys) {
+			projected := projectEventForRectangle(event, rectangle)
+			for _, key := range rectangle.keys {
+				he.Events[key] = projected
+			}
+		}
+	}
+}
+
+func compactAnnotationRectangles(keys []HealthEventKey) []annotationRectangle {
+	rows := annotationRowRectangles(keys)
+
+	columns := annotationColumnRectangles(keys)
+	if len(columns) < len(rows) {
+		return columns
+	}
+
+	return rows
+}
+
+func annotationRowRectangles(keys []HealthEventKey) []annotationRectangle {
+	byEntity := make(map[string][]HealthEventKey)
+	for _, key := range keys {
+		byEntity[annotationEntityKey(key)] = append(byEntity[annotationEntityKey(key)], key)
+	}
+
+	byCodes := make(map[string]*annotationRectangle)
+
+	for _, rowKeys := range byEntity {
+		sort.Slice(rowKeys, func(i, j int) bool { return rowKeys[i].ErrorCode < rowKeys[j].ErrorCode })
+
+		codes := make([]string, 0, len(rowKeys))
+		for _, key := range rowKeys {
+			codes = append(codes, key.ErrorCode)
+		}
+
+		groupKey := annotationStringsKey(codes)
+
+		rectangle := byCodes[groupKey]
+		if rectangle == nil {
+			rectangle = &annotationRectangle{errorCodes: codes}
+			byCodes[groupKey] = rectangle
+		}
+
+		rectangle.keys = append(rectangle.keys, rowKeys...)
+		rectangle.entities = append(rectangle.entities, rowKeys[0])
+	}
+
+	return sortedAnnotationRectangles(byCodes)
+}
+
+func annotationColumnRectangles(keys []HealthEventKey) []annotationRectangle {
+	byCode := make(map[string][]HealthEventKey)
+	for _, key := range keys {
+		byCode[key.ErrorCode] = append(byCode[key.ErrorCode], key)
+	}
+
+	byEntities := make(map[string]*annotationRectangle)
+
+	for code, columnKeys := range byCode {
+		sort.Slice(columnKeys, func(i, j int) bool {
+			return annotationEntityKey(columnKeys[i]) < annotationEntityKey(columnKeys[j])
+		})
+
+		entityKeys := make([]string, 0, len(columnKeys))
+		for _, key := range columnKeys {
+			entityKeys = append(entityKeys, annotationEntityKey(key))
+		}
+
+		groupKey := annotationStringsKey(entityKeys)
+
+		rectangle := byEntities[groupKey]
+		if rectangle == nil {
+			rectangle = &annotationRectangle{entities: append([]HealthEventKey(nil), columnKeys...)}
+			byEntities[groupKey] = rectangle
+		}
+
+		rectangle.keys = append(rectangle.keys, columnKeys...)
+		rectangle.errorCodes = append(rectangle.errorCodes, code)
+	}
+
+	return sortedAnnotationRectangles(byEntities)
+}
+
+func sortedAnnotationRectangles(groups map[string]*annotationRectangle) []annotationRectangle {
+	groupKeys := make([]string, 0, len(groups))
+	for key := range groups {
+		groupKeys = append(groupKeys, key)
+	}
+
+	sort.Strings(groupKeys)
+
+	result := make([]annotationRectangle, 0, len(groupKeys))
+	for _, key := range groupKeys {
+		rectangle := groups[key]
+		sort.Strings(rectangle.errorCodes)
+		sort.Slice(rectangle.entities, func(i, j int) bool {
+			return annotationEntityKey(rectangle.entities[i]) < annotationEntityKey(rectangle.entities[j])
+		})
+		result = append(result, *rectangle)
+	}
+
+	return result
+}
+
+func annotationEntityKey(key HealthEventKey) string {
+	return annotationStringsKey([]string{key.EntityType, key.EntityValue})
+}
+
+func annotationStringsKey(values []string) string {
+	var key strings.Builder
+	for _, value := range values {
+		fmt.Fprintf(&key, "%d:", len(value))
+		key.WriteString(value)
+	}
+
+	return key.String()
 }
 
 // GetEvent checks if any entity from the event exists in the map
@@ -281,21 +494,35 @@ func (he *HealthEventsAnnotationMap) Count() int {
 //
 // Matching follows GetEvent's rules: empty incoming ErrorCode clears every code on the entity.
 func (he *HealthEventsAnnotationMap) RemoveEvent(event *protos.HealthEvent) int {
+	return he.RemoveEventFiltered(event, nil)
+}
+
+// RemoveEventFiltered removes only matching stored effect keys accepted by
+// keep. This lets cold-start replay a compound recovery without clearing
+// identities that have a newer known failure.
+func (he *HealthEventsAnnotationMap) RemoveEventFiltered(
+	event *protos.HealthEvent,
+	keep func(HealthEventKey) bool,
+) int {
 	// If no entities specified (check-level healthy event), remove all entities for this check
 	if len(event.EntitiesImpacted) == 0 {
-		return he.removeAllEntitiesForCheck(event)
+		return he.removeAllEntitiesForCheck(event, keep)
 	}
 
 	keysToRemove := make([]HealthEventKey, 0)
 
 	for storedKey := range he.Events {
-		if keyMatchesEvent(storedKey, event) {
+		if keyMatchesEvent(storedKey, event) && (keep == nil || keep(storedKey)) {
 			keysToRemove = append(keysToRemove, storedKey)
 		}
 	}
 
 	for _, key := range keysToRemove {
 		delete(he.Events, key)
+	}
+
+	if len(keysToRemove) > 0 && len(he.Events) > 0 {
+		he.compactStoredValues()
 	}
 
 	return len(keysToRemove)
@@ -305,33 +532,50 @@ func (he *HealthEventsAnnotationMap) RemoveEvent(event *protos.HealthEvent) int 
 // Used when a healthy event has no entities, meaning "all entities for this check are healthy"
 //
 // A non-empty incoming ErrorCode narrows removal to keys with a matching code.
-func (he *HealthEventsAnnotationMap) removeAllEntitiesForCheck(event *protos.HealthEvent) int {
-	removed := 0
+func (he *HealthEventsAnnotationMap) removeAllEntitiesForCheck(
+	event *protos.HealthEvent,
+	keep func(HealthEventKey) bool,
+) int {
 	keysToRemove := []HealthEventKey{}
 
 	// Find all keys matching this check (regardless of entity)
 	for key := range he.Events {
-		if key.Agent != event.Agent ||
-			key.ComponentClass != event.ComponentClass ||
-			key.CheckName != event.CheckName ||
-			key.Version != event.Version ||
-			key.NodeName != event.NodeName {
-			continue
-		}
-
-		if len(event.ErrorCode) > 0 && !errorCodeMatches(key.ErrorCode, event.ErrorCode) {
+		if !keyMatchesCheckRecovery(key, event, keep) {
 			continue
 		}
 
 		keysToRemove = append(keysToRemove, key)
-		removed++
 	}
 
 	for _, key := range keysToRemove {
 		delete(he.Events, key)
 	}
 
-	return removed
+	if len(keysToRemove) > 0 && len(he.Events) > 0 {
+		he.compactStoredValues()
+	}
+
+	return len(keysToRemove)
+}
+
+func keyMatchesCheckRecovery(
+	key HealthEventKey,
+	event *protos.HealthEvent,
+	keep func(HealthEventKey) bool,
+) bool {
+	if key.Agent != event.Agent ||
+		key.ComponentClass != event.ComponentClass ||
+		key.CheckName != event.CheckName ||
+		key.Version != event.Version ||
+		key.NodeName != event.NodeName {
+		return false
+	}
+
+	if len(event.ErrorCode) > 0 && !errorCodeMatches(key.ErrorCode, event.ErrorCode) {
+		return false
+	}
+
+	return keep == nil || keep(key)
 }
 
 // RemoveEntitiesForCheck removes specific entities for a check

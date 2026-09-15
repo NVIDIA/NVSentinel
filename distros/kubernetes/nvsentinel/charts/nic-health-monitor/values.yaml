@@ -73,6 +73,20 @@ nicInclusionRegexOverride: ""
 sysClassNetPath: "/nvsentinel/sys/class/net"
 sysClassInfinibandPath: "/nvsentinel/sys/class/infiniband"
 
+# InfiniBandCharDeviceCheck tuning. umad and uverbs are always required; only
+# the per-port issm expectation is configurable, because whether issm nodes are
+# created is architecture- and provider-dependent and cannot be inferred from
+# any port attribute (a fabric run by an external subnet manager reports
+# SM_DISABLED on every compute port whether or not issm exists).
+#   issm:
+#     never  (default) do not expect issm. umad/uverbs still cover the
+#            RDMA-fatal cases, and a platform that legitimately does not create
+#            issm nodes (e.g. GB300) is never falsely flagged.
+#     always expect one issm per InfiniBand-mode port (pre-1663 behavior).
+#            Enable only where issm nodes are guaranteed to be created.
+charDeviceCheck:
+  issm: never
+
 # Counter detection configuration
 counterDetection:
   enabled: true
@@ -195,3 +209,14 @@ logLevel: info
 # EXECUTE_REMEDIATION: normal behavior; downstream modules may update cluster state.
 # STORE_ONLY: observability-only behavior; event should be persisted/exported but should not modify cluster resources.
 processingStrategy: EXECUTE_REMEDIATION
+
+# DaemonSet rolling update strategy.
+# type: RollingUpdate or OnDelete. rollingUpdate is only rendered for RollingUpdate.
+# maxUnavailable counts pods stranded on unreachable nodes as well, so a cluster with
+# many nodes down for service may need it raised or the rollout cannot start.
+# Example, absolute count instead of a percentage:
+#   updateStrategy: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 34}}
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 5%
