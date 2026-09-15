@@ -37,7 +37,9 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/nodecache"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
 )
 
@@ -147,6 +149,57 @@ func TestNodeRuleEvaluatorWithMetadataAndSpecOnly(t *testing.T) {
 	if result != common.RuleEvaluationSuccess {
 		t.Fatalf("Evaluate() = %v, want success", result)
 	}
+}
+
+// A healthy node that has never been quarantined carries none of the keys the
+// cache retains, so it prunes to empty label and annotation maps. Converting it
+// for CEL drops an empty map, and an absent map raises "no such key" rather than
+// evaluating the guard as false, which would fail every rule and stop
+// fault-quarantine cordoning the node at all.
+func TestNodeRuleEvaluator_PrunedNodeKeepsNoRetainedKeys_EvaluatesOptOutGuards(t *testing.T) {
+	const optOutGuards = `!('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels &&
+		 node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
+	!('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels &&
+	  node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false") &&
+	!('quarantinedNodeUncordonedManually' in node.metadata.annotations)`
+
+	retained := nodecache.Derive(config.TomlConfig{
+		LabelPrefix: "k8saas.nvidia.com/",
+		RuleSets: []config.QuarantineRuleSet{{
+			RuleSetMeta: config.RuleSetMeta{
+				Enabled: true,
+				Name:    "shipped",
+				Match: config.Match{
+					All: []config.Rule{{Kind: "Node", Expression: optOutGuards}},
+				},
+			},
+		}},
+	}, nodecache.Operational{LabelPrefix: "k8saas.nvidia.com/"})
+
+	transformed, err := retained.Transform()(&corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "healthy-node",
+			Labels:      map[string]string{"kubernetes.io/hostname": "healthy-node"},
+			Annotations: map[string]string{"unrelated/annotation": "value"},
+		},
+	})
+	require.NoError(t, err)
+
+	pruned, ok := transformed.(*corev1.Node)
+	require.True(t, ok, "Transform() returned %T", transformed)
+	require.Empty(t, pruned.Labels, "node under test must retain no labels")
+	require.Empty(t, pruned.Annotations, "node under test must retain no annotations")
+
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	require.NoError(t, indexer.Add(pruned))
+
+	evaluator, err := NewNodeRuleEvaluator(optOutGuards, corelisters.NewNodeLister(indexer))
+	require.NoError(t, err)
+
+	result, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "healthy-node"})
+	require.NoError(t, err)
+	require.Equal(t, common.RuleEvaluationSuccess, result,
+		"a node that opted out of nothing must match the opt-out guards")
 }
 
 func TestNodeRuleEvaluator_RecoveryRead_UsesCurrentNode(t *testing.T) {
@@ -385,7 +438,7 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 				_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 			}()
 
-			nodeInformer, err := informer.NewNodeInformer(testClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue)
+			nodeInformer, err := informer.NewNodeInformer(testClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue, nodecache.Keys{})
 			if err != nil {
 				t.Fatalf("Failed to create NodeInformer: %v", err)
 			}

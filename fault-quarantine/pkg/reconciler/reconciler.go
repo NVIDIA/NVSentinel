@@ -2154,19 +2154,9 @@ func (r *Reconciler) getNodeQuarantineAnnotations(ctx context.Context, nodeName 
 
 	// Extract only quarantine annotations
 	quarantineAnnotations := make(map[string]string)
-	quarantineKeys := []string{
-		common.QuarantineHealthEventAnnotationKey,
-		common.QuarantineHealthEventAppliedTaintsAnnotationKey,
-		common.QuarantineHealthEventAppliedLabelsAnnotationKey,
-		common.QuarantineHealthEventIsCordonedAnnotationKey,
-		common.QuarantineHealthEventCordonPreExistingAnnotationKey,
-		common.QuarantinedNodeUncordonedManuallyAnnotationKey,
-		common.QuarantinedNodeIsUntaintedManuallyAnnotationKey,
-		common.QuarantineValidationHealthEventAnnotationKey,
-	}
 
 	if node.Annotations != nil {
-		for _, key := range quarantineKeys {
+		for _, key := range common.QuarantineAnnotationKeys {
 			if value, exists := node.Annotations[key]; exists {
 				quarantineAnnotations[key] = value
 			}

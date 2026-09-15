@@ -11,7 +11,14 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-package cel
+
+// Package celfields derives, from a compiled CEL expression, the field paths it
+// reads off a named object variable. Callers use the result to prune an
+// informer cache to the fields their expressions actually read.
+//
+// The object variable is named by the caller because each component binds its
+// own: kubernetes-object-monitor binds resource, fault-quarantine binds node.
+package celfields
 
 import (
 	"slices"
@@ -22,14 +29,8 @@ import (
 	"github.com/google/cel-go/common/types"
 )
 
-// ResourceVar is the name of the CEL variable bound to the watched object.
-const ResourceVar = "resource"
-
-// LookupFunc is the name of the CEL function that reads a second object.
-const LookupFunc = "lookup"
-
-// ResourceFieldPaths returns the field paths of the resource variable that
-// compiled reads, each as its own slice of segments.
+// FieldPaths returns the field paths of objectVar that compiled reads, each as
+// its own slice of segments. With objectVar "resource",
 // `resource.status.conditions.exists(c, c.type == "Ready")` yields
 // [["status", "conditions"]].
 //
@@ -50,12 +51,12 @@ const LookupFunc = "lookup"
 // describes what such an expression reads. Callers must cache the object in
 // full in that case: pruning against an incomplete field set silently changes
 // evaluation results.
-func ResourceFieldPaths(compiled *cel.Ast) (fieldPaths [][]string, isComplete bool) {
+func FieldPaths(compiled *cel.Ast, objectVar string) (fieldPaths [][]string, isComplete bool) {
 	if compiled == nil || compiled.NativeRep() == nil {
 		return nil, false
 	}
 
-	w := walkExpression(compiled)
+	w := walkExpression(compiled, objectVar, "")
 	if !w.ok {
 		return nil, false
 	}
@@ -64,8 +65,10 @@ func ResourceFieldPaths(compiled *cel.Ast) (fieldPaths [][]string, isComplete bo
 }
 
 // walkExpression walks compiled and returns the walker holding what it read.
-func walkExpression(compiled *cel.Ast) *fieldWalker {
-	w := &fieldWalker{ok: true}
+// lookupFunc is empty when the caller's environment has no lookup function, in
+// which case no call roots a chain the cache can serve.
+func walkExpression(compiled *cel.Ast, objectVar, lookupFunc string) *fieldWalker {
+	w := &fieldWalker{objectVar: objectVar, lookupFunc: lookupFunc, ok: true}
 	w.walk(compiled.NativeRep().Expr())
 
 	return w
@@ -79,11 +82,13 @@ func sortedUniquePaths(paths [][]string) [][]string {
 }
 
 // fieldWalker collects the field paths an expression graph reads, off the
-// resource variable and off the objects lookup() returns. shadowed counts the
-// enclosing comprehension bindings named after the resource variable, so an
+// object variable and off the objects lookup() returns. shadowed counts the
+// enclosing comprehension bindings named after the object variable, so an
 // iteration or accumulator variable that shadows it is not mistaken for the
 // object itself.
 type fieldWalker struct {
+	objectVar        string
+	lookupFunc       string
 	paths            [][]string
 	lookupFieldPaths []lookupFieldPath
 	shadowed         int
@@ -95,6 +100,10 @@ func (w *fieldWalker) walk(e ast.Expr) {
 		return
 	}
 
+	if w.recordMembership(e) {
+		return
+	}
+
 	if w.recordChain(e) {
 		return
 	}
@@ -103,16 +112,59 @@ func (w *fieldWalker) walk(e ast.Expr) {
 }
 
 // recordChain records e if it is a chain of field accesses rooted at an object
-// the cache can hold: the resource variable, or a lookup() call that names its
+// the cache can hold: the object variable, or a lookup() call that names its
 // apiVersion and kind with string literals. It reports whether e was one.
 func (w *fieldWalker) recordChain(e ast.Expr) bool {
 	base, path, _ := w.resolveChain(e)
 
+	return w.record(base, path, e)
+}
+
+// recordMembership records `"key" in <chain>` as a read of that one key rather
+// than of the whole container, and reports whether e was such a test.
+//
+// This is sound because a map pruned to key k answers `'k' in m` exactly as the
+// unpruned map does, and a container that is not a map is never pruned. It
+// matters because an absent key raises `no such key` rather than evaluating to
+// false, so every safe read of an optional label is written behind an `in`
+// guard. Without this case the guard would retain the whole map and defeat the
+// pruning the expression was meant to allow.
+func (w *fieldWalker) recordMembership(e ast.Expr) bool {
+	if e.Kind() != ast.CallKind {
+		return false
+	}
+
+	call := e.AsCall()
+	if !isInCall(call) {
+		return false
+	}
+
+	key, isLiteralKey := stringLiteral(call.Args()[0])
+	if !isLiteralKey {
+		// A computed key can name any entry, so the container is read whole.
+		// Returning false lets the ordinary chain handling record it.
+		return false
+	}
+
+	container := call.Args()[1]
+
+	base, path, exact := w.resolveChain(container)
+	if exact {
+		path = append(path, key)
+	}
+
+	return w.record(base, path, container)
+}
+
+// record attributes path to the object the chain is rooted at. chain is the
+// expression the path was read from, whose computed index keys are read in
+// their own right. It reports whether base was an object the cache can hold.
+func (w *fieldWalker) record(base ast.Expr, path []string, chain ast.Expr) bool {
 	switch {
 	case base == nil:
 		return false
 
-	case w.isResourceVar(base):
+	case w.isObjectVar(base):
 		if len(path) == 0 {
 			w.ok = false
 
@@ -120,15 +172,15 @@ func (w *fieldWalker) recordChain(e ast.Expr) bool {
 		}
 
 		w.paths = append(w.paths, slices.Clone(path))
-		w.walkIndexKeys(e)
+		w.walkIndexKeys(chain)
 
 		return true
 
-	case isLookupCall(base):
+	case w.isLookupCall(base):
 		w.recordLookup(base.AsCall(), path)
-		w.walkIndexKeys(e)
-		// The arguments name the object to read, and reach the resource or a
-		// further lookup to do so.
+		w.walkIndexKeys(chain)
+		// The arguments name the object to read, and reach the object variable
+		// or a further lookup to do so.
 		w.walkCall(base.AsCall())
 
 		return true
@@ -138,10 +190,10 @@ func (w *fieldWalker) recordChain(e ast.Expr) bool {
 	}
 }
 
-// isResourceVar reports whether base is the resource variable itself rather
-// than a comprehension binding that shadows its name.
-func (w *fieldWalker) isResourceVar(base ast.Expr) bool {
-	return base.Kind() == ast.IdentKind && base.AsIdent() == ResourceVar && w.shadowed == 0
+// isObjectVar reports whether base is the object variable itself rather than a
+// comprehension binding that shadows its name.
+func (w *fieldWalker) isObjectVar(base ast.Expr) bool {
+	return base.Kind() == ast.IdentKind && base.AsIdent() == w.objectVar && w.shadowed == 0
 }
 
 // recordLookup records one field path taken off the object call returned. A
@@ -237,9 +289,8 @@ func (w *fieldWalker) walkComprehension(c ast.ComprehensionExpr) {
 }
 
 // walkIndexKeys walks the key expressions of the index operations inside an
-// already recorded resource-rooted chain. The chain covers the values, but a
-// computed key such as metadata.labels[resource.spec.nodeName] reads the
-// resource in its own right.
+// already recorded chain. The chain covers the values, but a computed key such
+// as metadata.labels[resource.spec.nodeName] reads the object in its own right.
 func (w *fieldWalker) walkIndexKeys(e ast.Expr) {
 	for w.ok {
 		switch e.Kind() {
@@ -312,16 +363,16 @@ func (w *fieldWalker) resolveIndexChain(call ast.CallExpr) (base ast.Expr, path 
 }
 
 // pushBinding enters a comprehension binding, so that one named after the
-// resource variable shadows it for as long as it is in scope.
+// object variable shadows it for as long as it is in scope.
 func (w *fieldWalker) pushBinding(name string) {
-	if name == ResourceVar {
+	if name == w.objectVar {
 		w.shadowed++
 	}
 }
 
 // popBinding leaves a binding pushBinding entered.
 func (w *fieldWalker) popBinding(name string) {
-	if name == ResourceVar {
+	if name == w.objectVar {
 		w.shadowed--
 	}
 }
@@ -330,14 +381,26 @@ func isIndexCall(call ast.CallExpr) bool {
 	return call.FunctionName() == operators.Index && !call.IsMemberFunction() && len(call.Args()) == 2
 }
 
-func isLookupCall(e ast.Expr) bool {
-	if e.Kind() != ast.CallKind {
+// isInCall reports whether call is the membership test `<key> in <container>`.
+// The parser emits operators.In; operators.OldIn is accepted so an AST built by
+// an older parser is read the same way.
+func isInCall(call ast.CallExpr) bool {
+	name := call.FunctionName()
+	if name != operators.In && name != operators.OldIn {
+		return false
+	}
+
+	return !call.IsMemberFunction() && len(call.Args()) == 2
+}
+
+func (w *fieldWalker) isLookupCall(e ast.Expr) bool {
+	if w.lookupFunc == "" || e.Kind() != ast.CallKind {
 		return false
 	}
 
 	call := e.AsCall()
 
-	return call.FunctionName() == LookupFunc && !call.IsMemberFunction() && len(call.Args()) == lookupArgs
+	return call.FunctionName() == w.lookupFunc && !call.IsMemberFunction() && len(call.Args()) == lookupArgs
 }
 
 func stringLiteral(e ast.Expr) (string, bool) {

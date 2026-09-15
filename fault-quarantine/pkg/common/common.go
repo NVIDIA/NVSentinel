@@ -49,3 +49,22 @@ const (
 
 	ServiceName = "NVSentinel"
 )
+
+// QuarantineAnnotationKeys are every annotation key fault-quarantine reads off
+// a node or removes from one.
+//
+// This is the single source of truth for that set. The node informer cache
+// retains exactly these keys and drops the rest, so a key added above but not
+// listed here is not merely absent from a read: it disappears from the cache,
+// and fault-quarantine then concludes no quarantine is in progress and
+// re-cordons a node it has already handled.
+var QuarantineAnnotationKeys = []string{
+	QuarantineHealthEventAnnotationKey,
+	QuarantineHealthEventAppliedTaintsAnnotationKey,
+	QuarantineHealthEventAppliedLabelsAnnotationKey,
+	QuarantineHealthEventIsCordonedAnnotationKey,
+	QuarantineHealthEventCordonPreExistingAnnotationKey,
+	QuarantinedNodeUncordonedManuallyAnnotationKey,
+	QuarantinedNodeIsUntaintedManuallyAnnotationKey,
+	QuarantineValidationHealthEventAnnotationKey,
+}

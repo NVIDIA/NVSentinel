@@ -16,95 +16,127 @@ package informer
 
 import (
 	"encoding/json"
-	"reflect"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
+
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/nodecache"
 )
 
-func TestStripNodeStatus(t *testing.T) {
+func TestNodeCacheTransform_RetainAll_StripsOnlyStatus(t *testing.T) {
 	input := testFullNode()
 	wantMetadata := input.ObjectMeta.DeepCopy()
 	wantSpec := input.Spec.DeepCopy()
 
-	transformed, err := stripNodeStatus(input)
-	if err != nil {
-		t.Fatalf("stripNodeStatus() error = %v", err)
-	}
+	// The zero value retains every key, so this is the status-only transform
+	// the informer used before the retained set was derived from the rules.
+	transformed, err := nodecache.Keys{}.Transform()(input)
+	require.NoError(t, err)
 
 	node, ok := transformed.(*v1.Node)
-	if !ok {
-		t.Fatalf("stripNodeStatus() returned %T", transformed)
-	}
+	require.True(t, ok, "Transform() returned %T", transformed)
 
-	if node != input {
-		t.Fatal("stripNodeStatus() returned a copy instead of mutating in place")
-	}
-	if !reflect.DeepEqual(node.ObjectMeta, *wantMetadata) {
-		t.Fatalf("cached node metadata changed:\n got: %#v\nwant: %#v", node.ObjectMeta, *wantMetadata)
-	}
-	if !reflect.DeepEqual(node.Spec, *wantSpec) {
-		t.Fatalf("cached node spec changed:\n got: %#v\nwant: %#v", node.Spec, *wantSpec)
-	}
-	if !reflect.DeepEqual(node.Status, v1.NodeStatus{}) {
-		t.Fatalf("cached node retained status: %#v", node.Status)
-	}
+	require.Same(t, input, node, "Transform() returned a copy instead of mutating in place")
+	require.Equal(t, *wantMetadata, node.ObjectMeta, "cached node metadata changed")
+	require.Equal(t, *wantSpec, node.Spec, "cached node spec changed")
+	require.Equal(t, v1.NodeStatus{}, node.Status, "cached node retained status")
 }
 
-func TestNewNodeInformerStripsStatus(t *testing.T) {
+func TestNewNodeInformer_DerivedKeys_CachesOnlyRetainedEntries(t *testing.T) {
 	client := fake.NewClientset(testFullNode())
-	nodeInformer, err := NewNodeInformer(client, 0, GPUNodeLabel, GPUNodeLabelValue)
-	if err != nil {
-		t.Fatalf("NewNodeInformer() error = %v", err)
-	}
+
+	retained := nodecache.Derive(testRuleConfig(), nodecache.Operational{
+		GPUNodeLabelKey: GPUNodeLabel,
+		LabelPrefix:     "k8saas.nvidia.com/",
+	})
+
+	nodeInformer, err := NewNodeInformer(client, 0, GPUNodeLabel, GPUNodeLabelValue, retained)
+	require.NoError(t, err)
 
 	stopCh := make(chan struct{})
 	t.Cleanup(func() { close(stopCh) })
 
-	if err := nodeInformer.Run(stopCh); err != nil {
-		t.Fatalf("NodeInformer.Run() error = %v", err)
-	}
+	require.NoError(t, nodeInformer.Run(stopCh))
 
 	node, err := nodeInformer.GetNode("test-node")
-	if err != nil {
-		t.Fatalf("GetNode() error = %v", err)
-	}
+	require.NoError(t, err)
 
-	if !reflect.DeepEqual(node.Status, v1.NodeStatus{}) {
-		t.Fatalf("cached node retained status: %#v", node.Status)
-	}
-	if node.Labels["label"] != "value" || node.Spec.PodCIDR != "10.0.0.0/24" {
-		t.Fatal("cached node is missing metadata or spec fields")
+	require.Equal(t, v1.NodeStatus{}, node.Status, "cached node retained status")
+
+	// The rule reads this key, so it survives.
+	require.Equal(t, "false", node.Labels["opt-out"], "cached node dropped a label the rules read")
+
+	// The circuit breaker selects on this key, so it survives even though no
+	// rule mentions it.
+	require.Equal(t, GPUNodeLabelValue, node.Labels[GPUNodeLabel],
+		"cached node dropped the GPU label the breaker selects on")
+
+	// Nothing reads this one.
+	require.NotContains(t, node.Labels, "label", "cached node retained a label nothing reads")
+	require.NotContains(t, node.Annotations, "annotation", "cached node retained an annotation nothing reads")
+
+	// Spec is never pruned: the cordon path and untaint detection read it.
+	require.Equal(t, "10.0.0.0/24", node.Spec.PodCIDR, "cached node is missing a spec field")
+	require.True(t, node.Spec.Unschedulable, "cached node is missing a spec field")
+}
+
+// testRuleConfig is a ruleset of the shape the chart ships: one Node rule that
+// guards a label read with `in`, so that an operator can opt a node out.
+func testRuleConfig() config.TomlConfig {
+	return config.TomlConfig{
+		LabelPrefix: "k8saas.nvidia.com/",
+		RuleSets: []config.QuarantineRuleSet{{
+			RuleSetMeta: config.RuleSetMeta{
+				Enabled: true,
+				Name:    "test",
+				Match: config.Match{
+					All: []config.Rule{{
+						Kind:       "Node",
+						Expression: `!('opt-out' in node.metadata.labels && node.metadata.labels['opt-out'] == "false")`,
+					}},
+				},
+			},
+		}},
 	}
 }
 
-func BenchmarkStripNodeStatus(b *testing.B) {
-	fullNode := testFullNode()
-	fullJSON, err := json.Marshal(fullNode)
-	if err != nil {
-		b.Fatalf("json.Marshal(full node) error = %v", err)
-	}
+func BenchmarkNodeCacheTransform(b *testing.B) {
+	retained := nodecache.Derive(testRuleConfig(), nodecache.Operational{
+		GPUNodeLabelKey: GPUNodeLabel,
+		LabelPrefix:     "k8saas.nvidia.com/",
+	})
+	transform := retained.Transform()
 
-	transformed, err := stripNodeStatus(fullNode)
-	if err != nil {
-		b.Fatalf("stripNodeStatus() error = %v", err)
-	}
+	// Each measurement gets its own node. The transform mutates in place, so
+	// one shared fixture would be pruned by the first call and every later
+	// call would measure re-pruning an already-empty status and map.
+	fullJSON, err := json.Marshal(testFullNode())
+	require.NoError(b, err)
+
+	transformed, err := transform(testFullNode())
+	require.NoError(b, err)
+
 	slimJSON, err := json.Marshal(transformed)
-	if err != nil {
-		b.Fatalf("json.Marshal(slim node) error = %v", err)
-	}
+	require.NoError(b, err)
 
 	b.ResetTimer()
 
 	for b.Loop() {
-		if _, err := stripNodeStatus(fullNode); err != nil {
-			b.Fatal(err)
-		}
+		b.StopTimer()
+
+		node := testFullNode()
+
+		b.StartTimer()
+
+		_, err := transform(node)
+		require.NoError(b, err)
 	}
 
 	b.ReportMetric(float64(len(fullJSON)), "full-json-bytes")
@@ -117,7 +149,11 @@ func testFullNode() *v1.Node {
 		Name:            "test-node",
 		UID:             types.UID("test-uid"),
 		ResourceVersion: "42",
-		Labels:          map[string]string{"label": "value", GPUNodeLabel: GPUNodeLabelValue},
+		Labels: map[string]string{
+			"label":      "value",
+			"opt-out":    "false",
+			GPUNodeLabel: GPUNodeLabelValue,
+		},
 		Annotations:     map[string]string{"annotation": "value"},
 		OwnerReferences: []metav1.OwnerReference{{Name: "owner"}},
 		ManagedFields:   []metav1.ManagedFieldsEntry{{Manager: "manager"}},

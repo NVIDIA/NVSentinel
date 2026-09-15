@@ -231,9 +231,33 @@ func (nm *NodeRuleEvaluator) getNode(ctx context.Context, nodeName string) (map[
 		return nil, fmt.Errorf("failed to convert node %s to unstructured: %w", nodeName, err)
 	}
 
+	ensureMetadataMaps(unstructuredObj)
+
 	return map[string]any{
 		"node": unstructuredObj,
 	}, nil
+}
+
+// ensureMetadataMaps restores metadata.labels and metadata.annotations as empty
+// maps when the conversion left them out.
+//
+// The rules read these maps by key, and CEL raises "no such key: labels" for an
+// absent map rather than evaluating the guard as false. Both carry omitempty, so
+// the conversion drops whichever one is empty, and the informer cache prunes
+// them to the keys the rules read: a node holding none of those keys reaches
+// here with no maps at all. Restoring them makes a pruned node evaluate as the
+// whole one does, which is what keeps the rules independent of what is cached.
+func ensureMetadataMaps(unstructuredNode map[string]any) {
+	metadata, ok := unstructuredNode["metadata"].(map[string]any)
+	if !ok {
+		return
+	}
+
+	for _, key := range []string{"labels", "annotations"} {
+		if _, present := metadata[key]; !present {
+			metadata[key] = map[string]any{}
+		}
+	}
 }
 
 var primitiveKinds = map[reflect.Kind]bool{

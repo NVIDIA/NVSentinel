@@ -31,6 +31,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/nodecache"
 )
 
 const (
@@ -77,8 +78,13 @@ func (ni *NodeInformer) GetInformer() cache.SharedIndexInformer {
 // purpose of the circuit breaker denominator in GetNodeCounts(); they do not filter
 // the informer itself, so FQ can still look up and recover any node regardless of
 // whether its GPU label is currently present.
+//
+// retained names the label and annotation keys the cache keeps. Its zero value
+// keeps every key, so a caller that has not derived a set holds whole objects
+// rather than pruning one away.
 func NewNodeInformer(clientset kubernetes.Interface,
-	resyncPeriod time.Duration, gpuNodeLabelKey, gpuNodeLabelValue string) (*NodeInformer, error) {
+	resyncPeriod time.Duration, gpuNodeLabelKey, gpuNodeLabelValue string,
+	retained nodecache.Keys) (*NodeInformer, error) {
 	ni := &NodeInformer{
 		clientset:         clientset,
 		gpuNodeLabelKey:   gpuNodeLabelKey,
@@ -92,7 +98,7 @@ func NewNodeInformer(clientset kubernetes.Interface,
 	ni.lister = nodeInformerObj.Lister()
 	ni.informerSynced = nodeInformerObj.Informer().HasSynced
 
-	if err := ni.informer.SetTransform(stripNodeStatus); err != nil {
+	if err := ni.informer.SetTransform(retained.Transform()); err != nil {
 		return nil, fmt.Errorf("failed to set node cache transform: %w", err)
 	}
 
@@ -116,17 +122,6 @@ func NewNodeInformer(clientset kubernetes.Interface,
 		"gpuNodeLabelKey", gpuNodeLabelKey, "gpuNodeLabelValue", gpuNodeLabelValue)
 
 	return ni, nil
-}
-
-func stripNodeStatus(obj any) (any, error) {
-	node, ok := obj.(*v1.Node)
-	if !ok {
-		return nil, fmt.Errorf("expected node object, got %T", obj)
-	}
-
-	node.Status = v1.NodeStatus{}
-
-	return node, nil
 }
 
 // Run starts the informer and waits for cache sync.
