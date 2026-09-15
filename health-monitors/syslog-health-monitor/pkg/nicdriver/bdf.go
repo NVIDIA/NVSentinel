@@ -29,3 +29,17 @@ func extractBDF(line string) (string, bool) {
 
 	return m[1], true
 }
+
+// reIBDevice matches the "infiniband <ibdev>:" prefix that ibdev_err()
+// stamps on RDMA-device-scoped kernel messages (e.g. the efa driver's
+// admin queue errors), yielding the sysfs device name.
+var reIBDevice = regexp.MustCompile(`\binfiniband ([A-Za-z0-9_.-]+):`)
+
+func extractIBDevice(line string) (string, bool) {
+	m := reIBDevice.FindStringSubmatch(line)
+	if len(m) < 2 {
+		return "", false
+	}
+
+	return m[1], true
+}
