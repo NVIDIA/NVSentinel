@@ -1,0 +1,32 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: system-services-monitor
+  namespace: nvsentinel
+  labels:
+    app.kubernetes.io/name: system-services-monitor
+    app.kubernetes.io/instance: nvsentinel
+    app.kubernetes.io/component: metrics
+data:
+  CHECK_INTERVAL: "30"
+  METRICS_PORT: "9101"
+  BOOT_GRACE_PERIOD: "300"
+  FLAP_WINDOW: "600"
+  FLAP_THRESHOLD: "3"
+  ENABLE_FABRIC_CHECK: "true"
+  ENABLE_GPU_SERVICES_CHECK: "true"
+  LOG_LEVEL: "INFO"
