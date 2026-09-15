@@ -1,0 +1,173 @@
+# Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Native GPU Monitor Package
+
+on:
+  push:
+    branches:
+      - main
+      - 'pull-request/[0-9]+'
+    paths:
+      - 'health-monitors/gpu-health-monitor/**'
+      - 'distros/kubernetes/nvsentinel/charts/gpu-health-monitor/files/dcgmerrorsmapping.csv'
+      - '.versions.yaml'
+      - '.github/workflows/native-package.yml'
+      - '.github/workflows/release.yml'
+      - 'LICENSE'
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      release-tag:
+        description: 'Existing release tag; empty for a development build'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RELEASE_TAG: ${{ inputs.release-tag }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ inputs.release-tag && format('refs/tags/{0}', inputs.release-tag) || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify the release workflow source
+        if: inputs.release-tag != ''
+        run: |
+          # GitHub provenance describes the workflow ref, not an arbitrary checkout.
+          if [[ "$GITHUB_REF" != "refs/tags/$RELEASE_TAG" ]]; then
+            echo '::error::Run the Release workflow from the requested tag, not from main.'
+            exit 1
+          fi
+          workflow_commit=$(git rev-parse --verify "$GITHUB_SHA^{commit}") || exit 1
+          checkout_commit=$(git rev-parse --verify HEAD) || exit 1
+          if [[ "$checkout_commit" != "$workflow_commit" ]]; then
+            echo '::error::The workflow commit does not match the release checkout.'
+            exit 1
+          fi
+          python3 - <<'PY'
+          import os, sys
+          sys.path.insert(0, 'health-monitors/gpu-health-monitor/native')
+          from build_package import build_environment, release_version
+          print(release_version(os.environ['RELEASE_TAG'], build_environment()))
+          PY
+
+      # yq is included in the Ubuntu 24.04 GitHub-hosted runner image.
+      - name: Load pinned build inputs
+        id: versions
+        run: |
+          {
+            echo "python=$(yq -r '.languages.python' .versions.yaml)"
+            echo "poetry=$(yq -r '.build_tools.poetry' .versions.yaml)"
+            echo "export=$(yq -r '.build_tools.poetry_plugin_export' .versions.yaml)"
+            echo "black=$(yq -r '.linting.black' .versions.yaml)"
+            echo "syft=$(yq -r '.build_tools.native_sbom_syft' .versions.yaml)"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c  # v6.0.0
+        with:
+          python-version: ${{ steps.versions.outputs.python }}
+
+      - name: Install build tools in a private environment
+        env:
+          POETRY_VERSION: ${{ steps.versions.outputs.poetry }}
+          EXPORT_VERSION: ${{ steps.versions.outputs.export }}
+          BLACK_VERSION: ${{ steps.versions.outputs.black }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/native-tools"
+          "$RUNNER_TEMP/native-tools/bin/python3" -m pip install \
+            "poetry==$POETRY_VERSION" "poetry-plugin-export==$EXPORT_VERSION" "black==$BLACK_VERSION"
+          echo "$RUNNER_TEMP/native-tools/bin" >> "$GITHUB_PATH"
+
+      - name: Test native packaging
+        run: |
+          make -C health-monitors/gpu-health-monitor native-test
+          python3 -m black --check --config health-monitors/gpu-health-monitor/pyproject.toml \
+            health-monitors/gpu-health-monitor/native
+          shellcheck health-monitors/gpu-health-monitor/native/launcher.sh
+
+      - name: Build and verify the native package
+        id: build
+        run: |
+          NATIVE_OUTPUT="$RUNNER_TEMP/native-artifacts"
+          runtime="$RUNNER_TEMP/native-cpython.tar.gz"
+          url=$(yq -er '.native_gpu_monitor.linux_amd64.url' .versions.yaml)
+          digest=$(yq -er '.native_gpu_monitor.linux_amd64.sha256' .versions.yaml)
+          curl --fail --location --proto '=https' --proto-redir '=https' \
+            --retry 3 --connect-timeout 30 --max-time 600 "$url" --output "$runtime"
+          options=()
+          if [[ -n "$RELEASE_TAG" ]]; then
+            options+=(--release-tag "$RELEASE_TAG")
+          fi
+          python3 health-monitors/gpu-health-monitor/native/build_package.py \
+            --python-archive "$runtime" --python-sha256 "$digest" \
+            --output-dir "$NATIVE_OUTPUT" "${options[@]}"
+          archives=("$NATIVE_OUTPUT"/*.tar.gz)
+          [[ ${#archives[@]} -eq 1 && -f "${archives[0]}" ]]
+          archive=${archives[0]}
+          python3 health-monitors/gpu-health-monitor/native/check_package.py "$archive" \
+            --extract-dir "$RUNNER_TEMP/native-verified" "${options[@]}"
+          manifest="${archive%.tar.gz}.manifest.json"
+          [[ $(yq -r '.pythonVersion' "$manifest") == $(yq -r '.native_gpu_monitor.python_version' .versions.yaml) ]]
+          [[ $(yq -r '.sourceRevision' "$manifest") == $(git rev-parse HEAD) ]]
+          {
+            echo "base=${archive%.tar.gz}"
+            echo "directory=$NATIVE_OUTPUT"
+            echo "version=$(yq -r '.version' "$manifest")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate the native runtime SBOM
+        uses: anchore/sbom-action@8e94d75ddd33f69f691467e42275782e4bfefe84  # v0.20.9
+        env:
+          SYFT_CHECK_FOR_APP_UPDATE: 'false'
+          SYFT_SOURCE_NAME: gpu-health-monitor
+          SYFT_SOURCE_VERSION: ${{ steps.build.outputs.version }}
+        with:
+          path: ${{ runner.temp }}/native-verified/gpu-health-monitor
+          syft-version: ${{ steps.versions.outputs.syft }}
+          format: cyclonedx-json
+          output-file: ${{ steps.build.outputs.base }}.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Verify SBOM identity and runtime coverage
+        env:
+          PACKAGE_BASE: ${{ steps.build.outputs.base }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'health-monitors/gpu-health-monitor/native')
+          from check_package import check_sbom
+          base = os.environ['PACKAGE_BASE']
+          check_sbom(json.loads(Path(base + '.manifest.json').read_text()),
+                     json.loads(Path(base + '.cdx.json').read_text()))
+          PY
+
+      - name: Upload verified native assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: gpu-health-monitor-native-linux-amd64
+          path: ${{ steps.build.outputs.directory }}/*
+          if-no-files-found: error
+          retention-days: 14

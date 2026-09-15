@@ -38,6 +38,26 @@ include ../../make/common.mk
 include ../../make/python.mk
 include ../../make/docker.mk
 
+# Native packages are assembled on Linux from an explicitly pinned standalone
+# CPython archive. Neither this target nor the installed service uses a container.
+NATIVE_PYTHON_ARCHIVE ?=
+NATIVE_PYTHON_SHA256 ?=
+NATIVE_PACKAGE_VERSION ?=
+NATIVE_RELEASE_TAG ?=
+NATIVE_OUTPUT_DIR ?= $(CURDIR)/dist/native
+
+.PHONY: native-package native-test
+native-package: ## Build a host-native archive with private Python (see README.md)
+	python3 native/build_package.py \
+		--python-archive "$(NATIVE_PYTHON_ARCHIVE)" \
+		--python-sha256 "$(NATIVE_PYTHON_SHA256)" \
+		--output-dir "$(NATIVE_OUTPUT_DIR)" \
+		$(if $(NATIVE_PACKAGE_VERSION),--version "$(NATIVE_PACKAGE_VERSION)") \
+		$(if $(NATIVE_RELEASE_TAG),--release-tag "$(NATIVE_RELEASE_TAG)")
+
+native-test: ## Test native packaging and service supervision without a GPU
+	python3 -m unittest discover -s native/tests -p 'test_*.py' -v
+
 # Cache configuration for specialized builds (respect DISABLE_REGISTRY_CACHE)
 ifeq ($(DISABLE_REGISTRY_CACHE),true)
 CACHE_FROM_ARG_DCGM3 :=

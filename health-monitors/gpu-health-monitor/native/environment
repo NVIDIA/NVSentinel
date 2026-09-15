@@ -1,0 +1,10 @@
+# Host DCGM and the local platform connector must already be installed.
+# Node-specific NODE_NAME is written separately by the host installer.
+DCGM_PYTHON_PATH=/usr/share/datacenter-gpu-manager-4/bindings/python3
+DCGM_ADDR=127.0.0.1:5555
+GPU_HEALTH_MONITOR_PORT=2114
+GPU_HEALTH_MONITOR_METADATA=/var/lib/nvsentinel/gpu_metadata.json
+# This enables node-condition publication; it does not install remediation.
+GPU_HEALTH_MONITOR_PROCESSING_STRATEGY=EXECUTE_REMEDIATION
+# Set true only for a fleet known to use unbridged PCIe GPUs.
+GPU_HEALTH_MONITOR_SUPPRESS_UNBRIDGED_NVLINK=false

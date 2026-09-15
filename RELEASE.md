@@ -26,11 +26,11 @@ For standard releases from the main branch.
 2. **Automatic workflows trigger**:
    - Lint and Test workflow validates code quality
    - Publish Containers workflow builds and publishes all images
-   - Release workflow creates GitHub release and publishes Helm chart
+   - Release workflow builds and tests the native GPU monitor, publishes the Helm chart, and creates the GitHub release
 
 3. **Verify artifacts**:
    - Container images in GitHub Container Registry
-   - GitHub release with `versions.txt`
+   - GitHub release with `versions.txt` and experimental native GPU monitor assets
    - Helm chart at `oci://ghcr.io/nvidia/nvsentinel`
 
 ### Method 2: Manual Release
@@ -44,22 +44,28 @@ For rebuilding from existing tags or emergency releases.
 
 **GitHub Release**:
 1. Navigate to **Actions** → **Release**
-2. Click **Run workflow** → Enter tag (e.g., `v1.2.3`) → **Run workflow**
+2. Click **Run workflow**, select the release tag as the workflow ref, and enter that same tag (e.g., `v1.2.3`).
 3. Verify release creation
+
+The native build rejects a workflow ref that differs from the requested tag. This prevents provenance from identifying main while the package contains another revision. The tag must include the native release workflow and build inputs. Existing native assets are never replaced; use a new version when package inputs change.
 
 ## Workflow Pipeline
 
 ```mermaid
 graph LR
-    A[Tag Push] --> B[Lint & Test<br/>quality gates]
-    B --> C[Publish Containers<br/>all components]
-    C --> D[Release<br/>GitHub release + Helm chart]
+    A[Tag Push] --> B[Lint & Test]
+    A --> C[Publish Containers]
+    A --> N[Native build, tests, and SBOM]
+    N --> H[Image list and Helm publication]
+    H --> D[GitHub release and native provenance]
     
     style A fill:#e1f5ff
     style B fill:#fff4e1
     style C fill:#e8f5e9
     style D fill:#f3e5f5
 ```
+
+Lint and Test, Publish Containers, and Release are separate workflows. Release waits for its native build and Helm jobs. Maintainers must also verify the other workflow results before announcing a release.
 
 ## Released Components
 
@@ -71,6 +77,9 @@ graph LR
 **Artifacts**:
 - GitHub release with `versions.txt`
 - Helm chart at `oci://ghcr.io/nvidia/nvsentinel`
+- Experimental native GPU monitor archive, checksum, manifest, CycloneDX SBOM, and provenance bundle on the same GitHub release
+
+The native artifact contains only `gpu-health-monitor`. It does not replace the container distribution or bundle the other NVSentinel components. Its initial CI target is Ubuntu 24.04 / Linux amd64 with host-provided DCGM 4. See the [native package documentation](health-monitors/gpu-health-monitor/README.md#host-native-gpu-monitor-package) for host prerequisites, filenames, and qualification limits. `versions.txt` remains the container-image inventory.
 
 ## Quality Gates
 
@@ -79,7 +88,10 @@ All releases must pass:
 - **Unit tests**: All Go modules and Python packages
 - **Container builds**: All component images must build successfully
 - **E2E tests**: Integration testing (on PR/push)
+- **Native package checks**: Native unit tests, full assembly, archive and payload checksums, relocated private-Python imports, and SBOM generation
 - **Bundled datastore versions**: if they changed, the release notes carry the callout described in [Release Notes](#release-notes)
+
+Before declaring native production support, complete the [GPU-node qualification checklist](health-monitors/gpu-health-monitor/README.md#validation). CPU build checks do not replace service startup, fault/recovery, reconnect, upgrade, or rollback tests on supported hosts.
 
 ## Release Notes
 
@@ -199,6 +211,8 @@ it.
 - Use manual triggers with existing tag
 - No need to create new tags for rebuilds
 
+The native package is an exception to replacement on retry: its publication refuses existing native asset names. A completed native release cannot be overwritten. Inspect a partial upload before retrying; do not silently delete or replace native assets.
+
 **Release Validation**:
 ```bash
 # Verify versions.txt contains all components
@@ -218,7 +232,7 @@ helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel --version v1.2.3
 
 **Helm Chart**: `oci://ghcr.io/nvidia/nvsentinel:v1.2.3`
 
-**GitHub Release**: Includes `versions.txt` with complete artifact list and SHAs
+**GitHub Release**: Includes `versions.txt` for container images, plus the native package and verification assets described above.
 
 ### Verification
 
