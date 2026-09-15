@@ -67,6 +67,35 @@ When Percona is enabled, the replica set is configured under `psmdb-db` instead 
 
 The chart-generated `MONGODB_URI` follows the selected backend automatically (`mongodb-headless` for Bitnami, `mongodb-rs0` for Percona). If you set `global.datastore.connection.host` explicitly in your values, it must match the backend you selected.
 
+### Percona versions
+
+Three values carry the Percona **operator** version and must agree, because the init container runs the operator image:
+
+| Value | What it is |
+| --- | --- |
+| `psmdb-operator.image.tag` | the operator image |
+| `psmdb-db.crVersion` | the schema version of the `PerconaServerMongoDB` resource |
+| `psmdb-db.initImage.tag` | the init container, which is the operator image |
+
+Set **`mongodb-store.psmdbVersion`** to the version you intend to run. **It asserts rather than sets:** Helm resolves subchart values before any template runs, so a parent chart cannot write into them. Set the three values as usual and set `psmdbVersion` to match; the render then fails if any of them disagrees.
+
+That is what makes it useful. The mistake an operator carrying pins actually makes is a partial edit, raising the operator tag and init image but forgetting `crVersion`, and this refuses that instead of deploying it. Leaving `psmdbVersion` empty disables the assertion; the consistency checks below still run.
+
+The **mongod** version (`psmdb-db.image.tag`) is separate. It is a different product on its own version line, and which mongod a given operator certifies is published at `https://check.percona.com/versions/v1/psmdb-operator/<version>`, which the chart cannot consult while rendering. Check that matrix yourself before changing it; a pairing outside it renders and runs without complaint.
+
+#### Upgrading
+
+[Percona permits upgrading only to the nearest `major.minor`](https://docs.percona.com/percona-operator-for-mongodb/update-operator.html). The render enforces this: it fails when `crVersion` is more than one minor behind the operator, when the major versions differ, or when `crVersion` is ahead of the operator.
+
+**One minor of skew is allowed on purpose**, because that is how the documented upgrade is performed. Moving from 1.21 to 1.23 on a live cluster is two steps:
+
+1. Raise `psmdb-operator.image.tag` and `psmdb-db.initImage.tag` to `1.22.0`, leaving `crVersion` at `1.21.x`. The operator is now one minor ahead, which is permitted and does not roll the replica set.
+2. Raise `crVersion` to `1.22.0`. **This rolls the replica set**, because `crVersion` is a field of the custom resource, so the operator runs SmartUpdate across every member: secondaries first, then a primary step-down.
+
+Then repeat for 1.23. Do not set `psmdbVersion` until the ladder is finished, since it demands that all three agree.
+
+A non-semver operator tag, for example a local build, disables the skew comparison. The `psmdbVersion` and init image checks still apply.
+
 ### Volume size
 
 The Percona defaults request 8Gi data volumes. Some cloud providers enforce a larger minimum block volume size (OCI block volumes are at least 50Gi, for example). When the provisioned volume ends up larger than the requested size, the operator stops reconciling with `requested storage is less than actual storage` and the replica set never initializes. Set the volume size explicitly to at least your provider's minimum:
