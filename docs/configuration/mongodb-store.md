@@ -96,6 +96,20 @@ Then repeat for 1.23. Do not set `psmdbVersion` until the ladder is finished, si
 
 A non-semver operator tag, for example a local build, disables the skew comparison. The `psmdbVersion` and init image checks still apply.
 
+#### Checking the deployed resource
+
+Everything above compares values with each other. None of it can see the resource that is actually deployed, and that is the gap that bites an existing cluster: adopting a release moves the bundled versions together, so the values stay self-consistent while the live `PerconaServerMongoDB` still carries the `crVersion` it was installed with. `lookup` returns empty under `helm template`, so a render-time guard cannot close this for ArgoCD users either.
+
+Set **`mongodb-store.validateDeployedCrVersion: true`** to add an init container to the bootstrap Job that reads the deployed `crVersion` and applies the same rule: same major, and at most one minor behind the operator. It fails the Job rather than letting an unsupported pairing reconcile silently.
+
+It is **off by default** because enabling it grants the Job `get` on `perconaservermongodbs.psmdb.percona.com`. The grant and the check are gated on the same value, so no installation carries the permission without the check that needs it.
+
+Notes:
+
+- It runs after the operator-generated users secret exists, which means the operator has already reconciled the resource. A missing resource at that point is therefore an error, not a first install.
+- The resource name comes from `psmdb-db.fullnameOverride`. If you rename the resource by some other means the check will not find it and will fail loudly.
+- A first-time or air-gapped install has no deployed resource to compare against, so this cannot replace `psmdbVersion`. The two cover different moments.
+
 ### Volume size
 
 The Percona defaults request 8Gi data volumes. Some cloud providers enforce a larger minimum block volume size (OCI block volumes are at least 50Gi, for example). When the provisioned volume ends up larger than the requested size, the operator stops reconciling with `requested storage is less than actual storage` and the replica set never initializes. Set the volume size explicitly to at least your provider's minimum:

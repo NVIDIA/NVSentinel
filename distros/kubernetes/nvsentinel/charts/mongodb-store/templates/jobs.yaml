@@ -25,6 +25,13 @@ rules:
 - apiGroups: [""]
   resources: ["secrets"]
   verbs: ["get", "create", "delete"]
+{{- if and .Values.usePerconaOperator .Values.validateDeployedCrVersion }}
+# Paired with the validate-deployed-crversion init container: both appear only
+# when that check is enabled, so no install carries the grant without the check.
+- apiGroups: ["psmdb.percona.com"]
+  resources: ["perconaservermongodbs"]
+  verbs: ["get"]
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -214,6 +221,68 @@ spec:
             sleep 5
           done
           echo "MongoDB users secret is available, proceeding..."
+{{- if .Values.validateDeployedCrVersion }}
+
+      # The render compares the values with each other. It cannot see the live
+      # resource, because lookup returns empty under `helm template` and so is
+      # blind for every ArgoCD user. Runs after the users secret exists, which
+      # means the operator has already reconciled the CR, so a missing CR here
+      # is a real error rather than a first install.
+      - name: validate-deployed-crversion
+        image: "{{ $helperImages.kubectl.repository }}:{{ $helperImages.kubectl.tag }}"
+        imagePullPolicy: {{ $helperImages.kubectl.pullPolicy }}
+        command:
+        - sh
+        - -c
+        - |
+          set -e
+
+          NAMESPACE="{{ .Release.Namespace }}"
+          CR_NAME="{{ include "mongodb-store.psmdbCrName" . }}"
+          OP_TAG="{{ (index (index .Values "psmdb-operator" | default dict) "image" | default dict).tag | default "" }}"
+          DOC="See docs/configuration/mongodb-store.md#percona-versions"
+
+          if ! DEPLOYED=$(kubectl get perconaservermongodbs.psmdb.percona.com "$CR_NAME" \
+              -n "$NAMESPACE" -o jsonpath='{.spec.crVersion}' 2>/dev/null); then
+            echo "[ERROR] PerconaServerMongoDB '$CR_NAME' not found in '$NAMESPACE'."
+            echo "[ERROR] The operator-generated users secret exists, so the resource should too."
+            echo "[ERROR] If the resource is named differently, psmdb-db.fullnameOverride is what sets it. $DOC"
+            exit 1
+          fi
+
+          echo "[INFO] chart operator $OP_TAG, deployed crVersion ${DEPLOYED:-<unset>}"
+
+          is_semver() { echo "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'; }
+          if ! is_semver "$OP_TAG" || ! is_semver "$DEPLOYED"; then
+            echo "[INFO] Not both semver, skipping the comparison."
+            exit 0
+          fi
+
+          OP_MAJOR=$(echo "$OP_TAG" | cut -d. -f1);   OP_MINOR=$(echo "$OP_TAG" | cut -d. -f2)
+          CR_MAJOR=$(echo "$DEPLOYED" | cut -d. -f1); CR_MINOR=$(echo "$DEPLOYED" | cut -d. -f2)
+
+          if [ "$OP_MAJOR" -ne "$CR_MAJOR" ]; then
+            echo "[ERROR] The operator is $OP_TAG and the deployed crVersion is $DEPLOYED, which differ by a major version."
+            echo "[ERROR] Percona permits upgrading only to the nearest major.minor. $DOC"
+            exit 1
+          fi
+
+          SKEW=$((OP_MINOR - CR_MINOR))
+          if [ "$SKEW" -lt 0 ]; then
+            echo "[ERROR] The deployed crVersion is $DEPLOYED but the operator is only $OP_TAG."
+            echo "[ERROR] The custom resource cannot be ahead of the operator that reconciles it. $DOC"
+            exit 1
+          fi
+          if [ "$SKEW" -gt 1 ]; then
+            echo "[ERROR] The operator is $OP_TAG but the deployed crVersion is still $DEPLOYED, $SKEW minor versions behind."
+            echo "[ERROR] Percona permits upgrading only to the nearest major.minor, so raise crVersion one"
+            echo "[ERROR] minor at a time. Your values may already agree with each other while the live"
+            echo "[ERROR] resource was never upgraded, which is what this check exists to catch. $DOC"
+            exit 1
+          fi
+
+          echo "[INFO] Deployed crVersion is $SKEW minor behind the operator, which Percona permits."
+{{- end }}
 {{- else }}
       - name: wait-for-mongodb-secret
         image: "{{ $helperImages.kubectl.repository }}:{{ $helperImages.kubectl.tag }}"

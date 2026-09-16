@@ -266,3 +266,22 @@ staged upgrade Percona requires.
 {{- end -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+Name of the PerconaServerMongoDB resource psmdb-db renders. Mirrors that
+subchart's psmdb-database.fullname, so re-check it when re-vendoring Percona.
+*/}}
+{{- define "mongodb-store.psmdbCrName" -}}
+{{- $db := index .Values "psmdb-db" | default dict -}}
+{{- $full := (index $db "fullnameOverride") | default "" | toString -}}
+{{- if $full -}}
+{{- $full | trunc 21 | trimSuffix "-" -}}
+{{- else -}}
+{{- $name := (index $db "nameOverride") | default "psmdb-db" | toString -}}
+{{- if contains $name .Release.Name -}}
+{{- .Release.Name | trunc 21 | trimSuffix "-" -}}
+{{- else -}}
+{{- printf "%s-%s" .Release.Name $name | trunc 21 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
